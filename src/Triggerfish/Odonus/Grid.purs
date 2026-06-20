@@ -7,7 +7,7 @@ module Triggerfish.Odonus.Grid (component) where
 
 import Prelude
 
-import Data.Array (filter, findIndex, length, mapWithIndex, (!!))
+import Data.Array (concatMap, elem, filter, findIndex, length, mapWithIndex, range, (!!))
 import Data.Foldable (for_)
 import Data.Int (floor, round, toNumber)
 import Data.Maybe (Maybe(..), fromMaybe, maybe)
@@ -27,6 +27,7 @@ import Binnacle as Binnacle
 import Binnacle.Clock as Clock
 import Binnacle.Midi as Midi
 import Binnacle.Scheduler as Scheduler
+import Triggerfish.Scale as Scale
 import Web.Event.Event (EventType(..))
 import Web.Event.EventTarget (addEventListener, eventListener, removeEventListener)
 import Web.HTML (window)
@@ -87,6 +88,9 @@ data Action
   | ToggleSkip Int
   | ToggleHeadMute Int
   | CyclePattern Int
+  | CycleRoot Int
+  | CycleScaleType Int
+  | ToggleDist
   | KnobDown KnobTarget Int
   | DragMove Int
   | DragEnd
@@ -170,6 +174,9 @@ handleAction = case _ of
   ToggleSkip i -> H.modify_ \s -> s { odo = M.toggleSkip i s.odo }
   ToggleHeadMute h -> H.modify_ \s -> s { odo = M.toggleHeadMute h s.odo }
   CyclePattern h -> H.modify_ \s -> s { odo = M.cyclePattern h s.odo }
+  CycleRoot dir -> H.modify_ \s -> s { odo = M.cycleRoot dir s.odo }
+  CycleScaleType dir -> H.modify_ \s -> s { odo = M.cycleScaleType dir s.odo }
+  ToggleDist -> H.modify_ \s -> s { odo = M.toggleDistribution s.odo }
   KnobDown target startVal -> do
     sid <- setupDrag
     H.modify_ _ { dragging = Just { target, startY: 0, startVal }, dragSub = Just sid }
@@ -284,10 +291,40 @@ signed n = if n > 0 then "+" <> show n else show n
 engrave :: String
 engrave = "font-family:Georgia,'Times New Roman',serif;letter-spacing:0.12em;text-transform:uppercase;color:#5a564b"
 
+-- | Fullscreen, no margins: a right→left signal chain of full-height panels,
+-- | mirroring the scope's leftward note-flow. SOURCE (eDSL) ← GRID ← PLAYHEADS
+-- | ← QUANTIZE ← SCOPE. The grid authors integers, the playheads shift them in
+-- | degree-space, the quantizer collapses degrees to pitches, the scope shows
+-- | them flowing out the left.
 render :: forall m. State -> H.ComponentHTML Action () m
 render s =
-  HH.div [ style "display:flex;gap:16px;align-items:flex-start;justify-content:center;padding:36px 18px" ]
-    [ river s, panel s ]
+  HH.div
+    [ style $ "position:fixed;inset:0;display:flex;align-items:stretch;overflow:hidden;"
+        <> "background:#b7b1a0;font-family:Georgia,serif" ]
+    [ scopePanel s
+    , quantizerPanel s
+    , playheadsPanel s
+    , gridPanel s
+    , edslPanel s
+    ]
+
+-- | A pale Hainbach control panel: engraved header + body, full viewport height.
+panelShell
+  :: forall m
+   . String -> String -> String
+  -> Array (H.ComponentHTML Action () m) -> H.ComponentHTML Action () m
+panelShell label sub widthCss body =
+  HH.div
+    [ style $ widthCss <> ";flex:0 0 auto;height:100vh;box-sizing:border-box;overflow-y:auto;"
+        <> "background:linear-gradient(#dcd8c9,#cfcabb);border-left:1px solid #b3ae9c;"
+        <> "padding:18px 14px;display:flex;flex-direction:column" ]
+    ( [ HH.div
+          [ style $ engrave <> ";font-size:11px;display:flex;justify-content:space-between;"
+              <> "align-items:baseline;margin-bottom:14px;border-bottom:1px solid #00000018;padding-bottom:6px" ]
+          [ HH.span [ style "font-size:14px;letter-spacing:0.16em;color:#3f3c33" ] [ HH.text label ]
+          , HH.span [ style "font-size:8px" ] [ HH.text sub ]
+          ]
+      ] <> body )
 
 riverW :: Number
 riverW = 380.0
@@ -301,18 +338,38 @@ pxPerMs = 0.05
 pitchToY :: Int -> Number
 pitchToY pitch = riverH * (1.0 - (toNumber (clampI 24 96 pitch) - 24.0) / 72.0)
 
--- | The scrolling MIDI monitor — a dark scope screen; notes emit at the right
--- | edge (the panel's left edge) and flow left, fading as they go.
-river :: forall m. State -> H.ComponentHTML Action () m
-river s =
+-- | The scope — the hero panel on the far left, full height, flex-grow. Octave
+-- | gridlines + note labels (HTML, undistorted) under the stretched note SVG;
+-- | notes emit at the right edge and flow left, fading with age.
+scopePanel :: forall m. State -> H.ComponentHTML Action () m
+scopePanel s =
   HH.div
-    [ style $ "width:380px;height:520px;flex:none;"
-        <> "background:radial-gradient(120% 100% at 100% 50%,#15140f,#0b0a07);"
-        <> "border-radius:14px;border:1px solid #2b271f;overflow:hidden;box-shadow:0 10px 30px rgba(0,0,0,0.18)"
-    ]
-    [ svgEl "svg" [ svgAttr "width" "100%", svgAttr "height" "100%", svgAttr "viewBox" "0 0 380 520" ]
-        (map (noteBar s.nowMicros) s.notes)
-    ]
+    [ style $ "flex:1 1 0;min-width:300px;height:100vh;position:relative;overflow:hidden;"
+        <> "background:radial-gradient(140% 100% at 100% 50%,#15140f,#0b0a07)" ]
+    ( octaveGuides
+        <>
+          [ svgEl "svg"
+              [ svgAttr "width" "100%", svgAttr "height" "100%"
+              , svgAttr "viewBox" "0 0 380 520", svgAttr "preserveAspectRatio" "none"
+              , style "position:absolute;inset:0" ]
+              (map (noteBar s.nowMicros) s.notes)
+          ]
+    )
+
+-- | Faint horizontal line + a "C4"-style label at each octave C (HTML, so the
+-- | text isn't stretched by the scope's preserveAspectRatio=none).
+octaveGuides :: forall m. Array (H.ComponentHTML Action () m)
+octaveGuides = concatMap guide [ 24, 36, 48, 60, 72, 84, 96 ]
+  where
+  guide pitch =
+    let pct = pitchToY pitch / riverH * 100.0
+    in
+      [ HH.div [ style $ "position:absolute;left:0;right:0;top:" <> show pct
+            <> "%;height:1px;background:#ffffff12" ] []
+      , HH.div [ style $ "position:absolute;left:7px;top:calc(" <> show pct
+            <> "% - 7px);font-family:'SF Mono',Menlo,monospace;font-size:9px;color:#ffffff3a" ]
+          [ HH.text ("C" <> show (pitch / 12 - 1)) ]
+      ]
 
 noteBar :: forall m. Number -> NoteEvent -> H.ComponentHTML Action () m
 noteBar now n =
@@ -328,24 +385,124 @@ noteBar now n =
       , svgAttr "opacity" (show (max 0.12 (1.0 - elapsedMs / 7000.0)))
       ] []
 
-panel :: forall m. State -> H.ComponentHTML Action () m
-panel s =
-  HH.div
-    [ style $ "font-family:Georgia,serif;width:520px;flex:none;"
-        <> "background:linear-gradient(#dcd8c9,#cfcabb);border:1px solid #b3ae9c;"
-        <> "border-radius:14px;padding:22px;box-shadow:0 1px 0 #f3f0e6 inset,0 10px 30px rgba(0,0,0,0.12)"
-    ]
-    [ HH.div [ style $ engrave <> ";font-size:11px;display:flex;justify-content:space-between;align-items:baseline" ]
-        [ HH.span [ style "font-size:15px;letter-spacing:0.18em;color:#3f3c33" ] [ HH.text "ODONUS" ]
-        , HH.span [] [ HH.text "Cartesian Sequencer" ]
+-- ── QUANTIZE panel — the live pitch lens (scale + distribution) ──────────────
+
+quantizerPanel :: forall m. State -> H.ComponentHTML Action () m
+quantizerPanel s =
+  panelShell "QUANTIZE" "Scale Lens" "width:188px"
+    [ pcKeyboard s.odo
+    , stepperRow "ROOT" (Scale.rootName s.odo.rootPc) (CycleRoot (-1)) (CycleRoot 1)
+    , stepperRow "SCALE" (M.scaleTypeName s.odo) (CycleScaleType (-1)) (CycleScaleType 1)
+    , HH.div [ style "display:flex;align-items:center;justify-content:space-between;margin:8px 0" ]
+        [ HH.span [ style $ engrave <> ";font-size:9px" ] [ HH.text "MODE" ]
+        , HH.button
+            [ HE.onClick \_ -> ToggleDist
+            , style $ "padding:4px 10px;border:1px solid #a8a392;border-radius:6px;cursor:pointer;"
+                <> "background:linear-gradient(#efece1,#ddd9cb);font-family:'SF Mono',Menlo,monospace;font-size:10px;color:#3f3c33" ]
+            [ HH.text (show s.odo.dist) ]
         ]
-    , grid s
-    , sectionLabel "Playheads · Access Patterns"
-    , headBank s
+    , HH.div [ style $ engrave <> ";font-size:8px;color:#888273;margin-top:6px;line-height:1.5" ]
+        [ HH.text (case s.odo.dist of
+            Scale.Natural -> "Natural · cells snap to nearest scale tone"
+            Scale.Equal -> "Equal · cells index scale degrees from root") ]
+    ]
+
+-- | A 12-key chromatic strip; in-scale pitch classes lit, the root accented.
+pcKeyboard :: forall m. M.Odonus -> H.ComponentHTML Action () m
+pcKeyboard odo =
+  let lit = Scale.pitchClassesOf (M.scaleOf odo)
+  in
+    HH.div [ style "display:flex;gap:2px;margin-bottom:16px" ]
+      (map (pcKey odo.rootPc lit) (range 0 11))
+
+pcKey :: forall m. Int -> Array Int -> Int -> H.ComponentHTML Action () m
+pcKey rootPc lit pc =
+  let
+    on = elem pc lit
+    isRoot = pc == rootPc
+    bg = if isRoot then "#b5832b" else if on then "#8a9b6e" else "#bdb8a7"
+    fg = if isRoot || on then "#1c1a12" else "#7d7868"
+  in
+    HH.div
+      [ style $ "flex:1;height:36px;border-radius:3px;border:1px solid #00000018;background:" <> bg
+          <> ";display:flex;align-items:flex-end;justify-content:center;padding-bottom:2px" ]
+      [ HH.span [ style $ "font-family:'SF Mono',Menlo,monospace;font-size:7px;color:" <> fg ]
+          [ HH.text (Scale.rootName pc) ] ]
+
+stepperRow :: forall m. String -> String -> Action -> Action -> H.ComponentHTML Action () m
+stepperRow lbl val decA incA =
+  HH.div [ style "display:flex;align-items:center;justify-content:space-between;margin:8px 0" ]
+    [ HH.span [ style $ engrave <> ";font-size:9px" ] [ HH.text lbl ]
+    , HH.div [ style "display:flex;align-items:center;gap:6px" ]
+        [ stepBtn "‹" decA
+        , HH.span
+            [ style "font-family:'SF Mono',Menlo,monospace;font-size:11px;color:#3f3c33;min-width:78px;text-align:center" ]
+            [ HH.text val ]
+        , stepBtn "›" incA
+        ]
+    ]
+
+stepBtn :: forall m. String -> Action -> H.ComponentHTML Action () m
+stepBtn glyph act =
+  HH.button
+    [ HE.onClick \_ -> act
+    , style $ "width:22px;height:22px;border:1px solid #a8a392;border-radius:5px;cursor:pointer;"
+        <> "background:linear-gradient(#efece1,#ddd9cb);font-family:Georgia,serif;font-size:13px;color:#3f3c33;line-height:1" ]
+    [ HH.text glyph ]
+
+-- ── PLAYHEADS panel — the extracted Fugue-Machine head bank ──────────────────
+
+playheadsPanel :: forall m. State -> H.ComponentHTML Action () m
+playheadsPanel s =
+  panelShell "PLAYHEADS" "Fugue · Access" "width:296px" [ headBank s ]
+
+-- ── GRID panel — the 16 quartered pads + transport ───────────────────────────
+
+gridPanel :: forall m. State -> H.ComponentHTML Action () m
+gridPanel s =
+  panelShell "ODONUS" "16 · Cartesian" "width:352px"
+    [ grid s
     , controls s
     , statusBar s
     , nameplate s
     ]
+
+-- ── SOURCE panel — the live eDSL of the current setup (read-only) ────────────
+
+edslPanel :: forall m. State -> H.ComponentHTML Action () m
+edslPanel s =
+  panelShell "SOURCE" "eDSL" "width:280px"
+    [ HH.div
+        [ style $ "font-family:'SF Mono',Menlo,monospace;font-size:10.5px;line-height:1.55;"
+            <> "white-space:pre;color:#3a372e;background:#00000008;border:1px solid #00000012;"
+            <> "border-radius:6px;padding:10px;overflow-x:auto" ]
+        [ HH.text (edslText s.odo) ] ]
+
+-- | The current setup rendered as odonusWith{…} eDSL text. One-directional
+-- | (GUI→text), updating live — the consistency-with-text the rig will consume.
+edslText :: M.Odonus -> String
+edslText o =
+  let
+    arr f = "[ " <> joinWith ", " (map f o.cells) <> " ]"
+    bool b = if b then "T" else "F"
+    headLine i hd =
+      "    " <> roman i <> "  "
+        <> maybe "?" _.name (M.patternLibrary !! hd.patternIx)
+        <> "  " <> speedRatio hd.speedIx
+        <> " " <> dirName hd.direction
+        <> " " <> signed hd.transp
+        <> (if hd.mute then "  (mute)" else "")
+  in
+    joinWith "\n"
+      ( [ "odonusWith"
+        , "  { scale: " <> Scale.scaleName (M.scaleOf o)
+        , "  , distribution: " <> show o.dist
+        , "  , notes: " <> arr (show <<< _.note)
+        , "  , gate:  " <> arr (bool <<< _.gate)
+        , "  , skip:  " <> arr (bool <<< _.skip)
+        , "  , glide: " <> arr (bool <<< _.glide)
+        , "  , heads:"
+        ] <> mapWithIndex headLine o.heads <> [ "  }" ] )
 
 -- | Format a positive Number to one decimal place (so Link's constant
 -- | sub-BPM nudging is visible — the readout flickers when truly locked).
@@ -366,11 +523,6 @@ statusBar s =
     , HH.span [] [ HH.text $ "ANCHORS " <> show s.anchorCount ]
     , HH.span [] [ HH.text $ "MIDI " <> s.midiName ]
     ]
-
-sectionLabel :: forall m. String -> H.ComponentHTML Action () m
-sectionLabel t =
-  HH.div [ style $ engrave <> ";font-size:9px;margin:16px 0 6px;border-bottom:1px solid #00000018;padding-bottom:3px" ]
-    [ HH.text t ]
 
 grid :: forall m. State -> H.ComponentHTML Action () m
 grid s =

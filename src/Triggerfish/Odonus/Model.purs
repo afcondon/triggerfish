@@ -28,6 +28,12 @@ module Triggerfish.Odonus.Model
   , setHeadTransp
   , toggleHeadMute
   , cyclePattern
+  , scaleOf
+  , renderCell
+  , cycleRoot
+  , cycleScaleType
+  , toggleDistribution
+  , scaleTypeName
   ) where
 
 import Prelude
@@ -35,6 +41,7 @@ import Prelude
 import Data.Array (catMaybes, mapWithIndex, replicate, modifyAt, length, (!!))
 import Data.Int (floor, toNumber)
 import Data.Maybe (Maybe(..), fromMaybe, maybe)
+import Triggerfish.Scale (Scale, Distribution(..), applyDistribution, mkScale, scaleTypes, shiftDegrees)
 
 type Cell =
   { note :: Int
@@ -79,7 +86,28 @@ type Head =
 type Odonus =
   { cells :: Array Cell   -- length 16
   , heads :: Array Head
+  , rootPc :: Int         -- scale root pitch-class 0..11
+  , scaleTypeIx :: Int    -- index into Scale.scaleTypes
+  , dist :: Distribution  -- how a cell integer becomes a pitch
   }
+
+-- | The active scale built from the root + type selection.
+scaleOf :: Odonus -> Scale
+scaleOf o = mkScale o.rootPc (fromMaybe defaultType (scaleTypes !! o.scaleTypeIx))
+  where defaultType = { name: "minor", intervals: [ 0, 2, 3, 5, 7, 8, 10 ] }
+
+-- | Name of the current scale type (for display).
+scaleTypeName :: Odonus -> String
+scaleTypeName o = maybe "minor" _.name (scaleTypes !! o.scaleTypeIx)
+
+-- | Render a cell's stored integer to its final MIDI pitch for a given head:
+-- | distribute through the scale, then shift by the head's transposition in
+-- | scale degrees (the quantizer made concrete).
+renderCell :: Odonus -> Head -> Cell -> Int
+renderCell o hd c =
+  let scale = scaleOf o
+      base = applyDistribution o.dist scale c.note
+  in shiftDegrees scale hd.transp base
 
 speedTable :: Array Number
 speedTable = [ 0.25, 0.5, 0.75, 1.0, 1.5, 2.0, 3.0, 4.0 ]
@@ -111,7 +139,9 @@ defaultCells =
     (replicate 16 unit)
 
 defaultOdonus :: Odonus
-defaultOdonus = { cells: defaultCells, heads: defaultHeads }
+defaultOdonus =
+  { cells: defaultCells, heads: defaultHeads
+  , rootPc: 0, scaleTypeIx: 1, dist: Natural }   -- C minor, snap-to-scale
 
 -- ---------------------------------------------------------------------------
 -- traversal — walk the head's pattern ordering, skip-aware
@@ -194,7 +224,7 @@ stepEmit o =
       let moved = hd.cursor /= fromMaybe (-1) (oldCursors !! idx)
       in case o2.cells !! hd.cursor of
         Just c | moved && not hd.mute && c.gate && not c.skip ->
-          Just { headIdx: idx, pitch: c.note + hd.transp }
+          Just { headIdx: idx, pitch: renderCell o2 hd c }
         _ -> Nothing
   in
     { odo: o2, fired: catMaybes (mapWithIndex firedFor o2.heads) }
@@ -241,3 +271,22 @@ cyclePattern :: Int -> Odonus -> Odonus
 cyclePattern h = editHead h \hd ->
   let ni = (hd.patternIx + 1) `mod` length patternLibrary
   in hd { patternIx = ni, seqPos = 0, cursor = gridAt (orderOf ni) 0 }
+
+-- ---------------------------------------------------------------------------
+-- quantizer — the live pitch lens (scale + distribution)
+-- ---------------------------------------------------------------------------
+
+-- | Step the scale root up a semitone (wraps at the octave).
+cycleRoot :: Int -> Odonus -> Odonus
+cycleRoot dir o = o { rootPc = (o.rootPc + dir + 12) `mod` 12 }
+
+-- | Step to the next/prev scale type (major → minor → dorian → …).
+cycleScaleType :: Int -> Odonus -> Odonus
+cycleScaleType dir o =
+  o { scaleTypeIx = (o.scaleTypeIx + dir + length scaleTypes) `mod` length scaleTypes }
+
+-- | Flip between chromatic-snap (Natural) and degree-index (Equal).
+toggleDistribution :: Odonus -> Odonus
+toggleDistribution o = o { dist = case o.dist of
+  Natural -> Equal
+  Equal -> Natural }
