@@ -1,0 +1,34 @@
+package:
+  name: triggerfish
+  description: >
+    Triggerfish — direct-manipulation UIs for the BEAM-native sequencers and
+    Selene polysignals (the graphical sibling of Calypso #192). Odonus grid
+    first: copy the René/Cartesian baseline, then the Fugue-Machine multi-
+    playhead juice.
+  dependencies:
+    - prelude
+    - effect
+    - aff
+    - arrays
+    - maybe
+    - integers
+    - foldable-traversable
+    - tailrec
+    - halogen
+    - halogen-subscriptions
+    - web-html
+    - web-events
+    - web-uievents
+    - console
+    - js-timers
+    - binnacle
+  bundle:
+    module: Triggerfish.Main
+    outfile: public/bundle.js
+    platform: browser
+workspace:
+  extraPackages:
+    binnacle:
+      path: ../binnacle
+  packageSet:
+    registry: 73.3.0

@@ -1,0 +1,8 @@
+output/
+.spago/
+node_modules/
+*.log
+.DS_Store
+
+# Generated frontend bundle — regenerate via `spago bundle`.
+public/bundle.js
