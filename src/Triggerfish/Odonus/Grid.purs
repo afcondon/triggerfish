@@ -7,11 +7,13 @@ module Triggerfish.Odonus.Grid (component) where
 
 import Prelude
 
-import Data.Array (concatMap, deleteAt, elem, filter, findIndex, length, mapWithIndex, null, range, (!!))
-import Data.Foldable (for_)
+import Data.Array (concatMap, deleteAt, elem, filter, findIndex, length, mapWithIndex, null, range, updateAt, (!!))
+import Data.Foldable (foldl, for_)
+import Data.FoldableWithIndex (forWithIndex_)
 import Data.Int (floor, round, toNumber)
 import Data.Maybe (Maybe(..), fromMaybe, maybe)
 import Data.String.Common (joinWith)
+import Effect (Effect)
 import Effect.Aff.Class (class MonadAff)
 import Effect.Class (liftEffect)
 import Effect.Timer (setInterval)
@@ -42,6 +44,7 @@ data KnobTarget
   | HeadOffset Int
   | HeadLen Int
   | Spread
+  | GateLen
 
 targetRange :: KnobTarget -> { lo :: Int, hi :: Int }
 targetRange = case _ of
@@ -52,6 +55,7 @@ targetRange = case _ of
   HeadOffset _ -> { lo: 0, hi: 15 }
   HeadLen _ -> { lo: 1, hi: 16 }
   Spread -> { lo: 1, hi: 12 }
+  GateLen -> { lo: 10, hi: 200 }
 
 applyTarget :: KnobTarget -> Int -> M.Odonus -> M.Odonus
 applyTarget t v = case t of
@@ -62,6 +66,7 @@ applyTarget t v = case t of
   HeadOffset h -> M.setHeadOffset h v
   HeadLen h -> M.setHeadLen h v
   Spread -> M.setSpread v
+  GateLen -> M.setGatePct v
 
 type DragState = { target :: KnobTarget, startY :: Int, startVal :: Int }
 
@@ -96,6 +101,7 @@ type State =
   , sceneBarAnchor :: Int   -- bar at which the current scene started
   , barsPerScene :: Int
   , stepDiv :: Int          -- global clock divider (1=1/16 .. 16=whole note)
+  , headNote :: Array (Maybe Int)  -- the held/sounding MIDI note per head (4)
   }
 
 data Action
@@ -135,7 +141,7 @@ component =
         , midiOut: Nothing, midiName: "…", clockTempo: 120.0, clockLocked: false
         , clockBeat: 0.0, clockBar: 0, anchorCount: 0
         , scenes: [], chain: false, sceneIx: 0, sceneBarAnchor: 0, barsPerScene: 4
-        , stepDiv: 1 }
+        , stepDiv: 1, headNote: [ Nothing, Nothing, Nothing, Nothing ] }
     , render
     , eval: H.mkEval H.defaultEval
         { handleAction = handleAction, initialize = Just Initialize }
@@ -174,28 +180,30 @@ handleAction = case _ of
     -- Global step divider: the scheduler ticks on a fine 1/16 grid; advance the
     -- model only every stepDiv ticks, so STEP LENGTH sets what a 1× head plays.
     when (st.running && tick.index `mod` st.stepDiv == 0) do
-      let r = M.stepEmit st.odo
-      -- Each unmuted head that lands on a gated cell schedules a MIDI note
-      -- on its own channel (head I → ch 1 …), delivered at the scheduler's
-      -- precise fire-time so it's jitter-immune.
-      case st.midiOut of
-        Just out -> liftEffect $ for_ r.fired \f -> do
-          -- Glide → portamento on + a short glide time on this head's
-          -- channel; non-glide notes turn portamento off. (Needs a glide-
-          -- capable synth in Ableton; harmless otherwise. The es9 path maps
-          -- glide to cv-slew instead.)
-          if f.glide
-            then do
-              Midi.sendCC out { channel: f.headIdx, controller: 65, value: 127 }
-              Midi.sendCC out { channel: f.headIdx, controller: 5, value: 40 }
-            else Midi.sendCC out { channel: f.headIdx, controller: 65, value: 0 }
-          Midi.scheduleNote out
-            { channel: f.headIdx, note: f.pitch, velocity: 100
-            , delayMs: tick.delayMs, durMs: 160.0 }
-        Nothing -> pure unit
-      let fresh = map (\f -> { pitch: f.pitch, headIdx: f.headIdx
-                             , fireUnixMicros: tick.fireUnixMicros }) r.fired
-      H.modify_ \s -> s { odo = r.odo, notes = fresh <> s.notes }
+      let
+        r = M.stepEmit st.odo
+        -- A non-glide note's length scales with this head's note-spacing (so it
+        -- breathes with the tempo / step length) rather than a fixed blip.
+        gateMsFor f =
+          let spd = maybe 1.0 M.speedOf (r.odo.heads !! f.headIdx)
+              msPerBeat = 60000.0 / max 30.0 st.clockTempo
+          in (0.25 * toNumber st.stepDiv) * msPerBeat / max 1.0 spd
+               * (toNumber st.odo.gatePct / 100.0)
+        prevOf h = join (st.headNote !! h)
+      -- Emit MIDI with per-head legato: glide cells HOLD until the next note
+      -- (tie if same pitch, portamento-slide if different); non-glide cells are
+      -- gated notes whose length scales with tempo.
+      for_ st.midiOut \out -> liftEffect $ for_ r.fired \f ->
+        emitNote out tick.delayMs (gateMsFor f) (prevOf f.headIdx) f
+      let
+        -- A glide note stays held (its pitch); a gated note auto-ends.
+        nextNote f = if f.glide then Just f.pitch else Nothing
+        newHeadNote = foldl
+          (\arr f -> fromMaybe arr (updateAt f.headIdx (nextNote f) arr))
+          st.headNote r.fired
+        fresh = map (\f -> { pitch: f.pitch, headIdx: f.headIdx
+                           , fireUnixMicros: tick.fireUnixMicros }) r.fired
+      H.modify_ \s -> s { odo = r.odo, notes = fresh <> s.notes, headNote = newHeadNote }
   Frame -> do
     st <- H.get
     case st.binnacle of
@@ -227,11 +235,27 @@ handleAction = case _ of
             else base
       Nothing -> pure unit
   MidiReady mout nm -> H.modify_ _ { midiOut = mout, midiName = nm }
-  ToggleRun -> H.modify_ \s -> s { running = not s.running }
+  ToggleRun -> do
+    st <- H.get
+    -- Stopping: note-off every held note so nothing sticks on.
+    when st.running $ liftEffect $ silenceHeld st.midiOut st.headNote
+    H.modify_ \s -> s
+      { running = not s.running
+      , headNote = if s.running then map (const Nothing) s.headNote else s.headNote }
   ToggleGlide i -> H.modify_ \s -> s { odo = M.toggleGlide i s.odo }
   ToggleGate i -> H.modify_ \s -> s { odo = M.toggleGate i s.odo }
   ToggleSkip i -> H.modify_ \s -> s { odo = M.toggleSkip i s.odo }
-  ToggleHeadMute h -> H.modify_ \s -> s { odo = M.toggleHeadMute h s.odo }
+  ToggleHeadMute h -> do
+    st <- H.get
+    -- Muting a head that's holding a note → kill it (it won't emit again to
+    -- end itself), and clear its held-note slot.
+    let willMute = maybe false (\hd -> not hd.mute) (st.odo.heads !! h)
+    when willMute $ for_ st.midiOut \out -> case join (st.headNote !! h) of
+      Just n -> liftEffect $ Midi.noteOffAt out { channel: h, note: n, delayMs: 0.0 }
+      Nothing -> pure unit
+    H.modify_ \s -> s
+      { odo = M.toggleHeadMute h s.odo
+      , headNote = fromMaybe s.headNote (updateAt h Nothing s.headNote) }
   CyclePattern h -> H.modify_ \s -> s { odo = M.cyclePattern h s.odo }
   UnifyHeads -> H.modify_ \s -> s { odo = M.unifyHeads s.odo }
   CycleScaleType dir -> H.modify_ \s -> s { odo = M.cycleScaleType dir s.odo }
@@ -283,6 +307,45 @@ rigUrl = "ws://127.0.0.1:3012/ws"
 -- | One Odonus step = a 16th note; schedule ~120ms ahead, poll at 25ms.
 gridCfg :: Scheduler.GridConfig
 gridCfg = { stepBeats: 0.25, lookaheadMs: 120.0, tickMs: 25 }
+
+-- | The per-head legato state machine for one emitted note. `prev` is the note
+-- | currently held on this head's channel (from a previous glide), if any.
+-- |   glide + same pitch  → tie: leave the held note ringing (no retrigger)
+-- |   glide + diff pitch  → slide: porta-on, note-on new, note-off old (overlap)
+-- |   glide + nothing held → start a held note (no auto-off)
+-- |   no glide             → gated note: end any held note, then a note that
+-- |                          auto-offs after `gateMs` (rhythmic articulation)
+emitNote :: Midi.MidiOut -> Number -> Number -> Maybe Int -> M.Fired -> Effect Unit
+emitNote out delayMs gateMs prev f =
+  let h = f.headIdx
+      p = f.pitch
+      portaOn = do
+        Midi.sendCC out { channel: h, controller: 65, value: 127 }
+        Midi.sendCC out { channel: h, controller: 5, value: 40 }
+      portaOff = Midi.sendCC out { channel: h, controller: 65, value: 0 }
+  in case prev, f.glide of
+    Just q, true | q == p -> pure unit                         -- tie
+    Just q, true -> do                                          -- slide
+      portaOn
+      Midi.noteOnAt out { channel: h, note: p, velocity: 100, delayMs }
+      Midi.noteOffAt out { channel: h, note: q, delayMs: delayMs + 60.0 }
+    Just q, false -> do                                         -- gated, end held
+      Midi.noteOffAt out { channel: h, note: q, delayMs }
+      portaOff
+      Midi.scheduleNote out { channel: h, note: p, velocity: 100, delayMs, durMs: gateMs }
+    Nothing, true -> do                                         -- start held
+      portaOff
+      Midi.noteOnAt out { channel: h, note: p, velocity: 100, delayMs }
+    Nothing, false -> do                                        -- gated
+      portaOff
+      Midi.scheduleNote out { channel: h, note: p, velocity: 100, delayMs, durMs: gateMs }
+
+-- | Note-off every held note (e.g. on Stop) and clear the held-note table.
+silenceHeld :: Maybe Midi.MidiOut -> Array (Maybe Int) -> Effect Unit
+silenceHeld mout held = for_ mout \out ->
+  forWithIndex_ held \h mn -> case mn of
+    Just n -> Midi.noteOffAt out { channel: h, note: n, delayMs: 0.0 }
+    Nothing -> pure unit
 
 -- | MIDI output port (substring match). On macOS enable the IAC Driver in
 -- | Audio MIDI Setup and receive this bus in Ableton; each head sends on
@@ -595,10 +658,26 @@ gridPanel :: forall m. State -> H.ComponentHTML Action () m
 gridPanel s =
   panelShell "ODONUS" "16 · Cartesian" "flex:0 1 322px;min-width:0"
     [ grid s
-    , clockRow s
+    , HH.div [ style "display:flex;align-items:flex-end;gap:12px;margin-top:6px" ]
+        [ HH.div [ style "flex:1" ] [ clockRow s ]
+        , gateBlock s.odo
+        ]
     , controls s
     , statusBar s
     , nameplate s
+    ]
+
+-- | GATE knob: gated-note length as % of step (10..200; past 100 the notes
+-- | overlap into the next = legato, which lets portamento/glide slide).
+gateBlock :: forall m. M.Odonus -> H.ComponentHTML Action () m
+gateBlock odo =
+  HH.div [ style "display:flex;flex-direction:column;align-items:center;width:52px" ]
+    [ HH.span [ style $ engrave <> ";font-size:9px;margin-bottom:2px" ] [ HH.text "GATE" ]
+    , HH.div [ style "width:40px;height:40px" ]
+        [ knob { cx: 24.0, cy: 24.0, rOuter: 20.0, rInner: 8.0, color: "#b5832b", lo: 10, hi: 200, value: odo.gatePct }
+            (KnobDown GateLen odo.gatePct) ]
+    , HH.span [ style "font-family:'SF Mono',Menlo,monospace;font-size:8px;color:#3f3c33;margin-top:1px" ]
+        [ HH.text (show odo.gatePct <> "%") ]
     ]
 
 -- | Global step length — what a 1× head plays. Buttons map to the clock
@@ -644,6 +723,7 @@ edslText o =
         , "  , distribution: " <> show o.dist
         , "  , octave: " <> octLabel o.octaveShift
         , "  , scalarTransp: " <> romanNum o.degShift
+        , "  , gate: " <> show o.gatePct <> "%"
         , "  , notes: " <> arr (show <<< _.note)
         , "  , gate:  " <> arr (bool <<< _.gate)
         , "  , skip:  " <> arr (bool <<< _.skip)

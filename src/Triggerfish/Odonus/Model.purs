@@ -40,6 +40,7 @@ module Triggerfish.Odonus.Model
   , setRoot
   , setOctaveShift
   , setDegShift
+  , setGatePct
   , toggleScaleNote
   , setSpread
   , recallScene
@@ -102,6 +103,7 @@ type Odonus =
   , dist :: Distribution  -- how a cell integer becomes a pitch
   , octaveShift :: Int    -- global ± octaves applied to the output
   , degShift :: Int       -- global scalar transpose, in scale degrees (I..IX)
+  , gatePct :: Int        -- gated-note length as % of step spacing (>100 = legato)
   }
 
 -- | The active scale built from the root + interval mask.
@@ -161,7 +163,7 @@ defaultOdonus :: Odonus
 defaultOdonus =
   { cells: defaultCells, heads: defaultHeads
   , rootPc: 0, scaleIvls: [ 0, 2, 3, 5, 7, 8, 10 ], dist: Natural   -- C minor
-  , octaveShift: 0, degShift: 0 }
+  , octaveShift: 0, degShift: 0, gatePct: 90 }
 
 -- ---------------------------------------------------------------------------
 -- traversal — walk the head's pattern ordering, skip-aware
@@ -355,6 +357,11 @@ setOctaveShift n o = o { octaveShift = clampI (-3) 3 n }
 -- | the I..IX buttons).
 setDegShift :: Int -> Odonus -> Odonus
 setDegShift n o = o { degShift = clampI 0 8 n }
+
+-- | Gated-note length as a percentage of step spacing (10..200; >100 overlaps
+-- | into the next note = legato, which a portamento synth slides across).
+setGatePct :: Int -> Odonus -> Odonus
+setGatePct n o = o { gatePct = clampI 10 200 n }
 
 -- | Make every head a copy of head I, phase-aligned and unmuted: four voices
 -- | in exact unison. The starting point for Steve Reich phasing — from here,
