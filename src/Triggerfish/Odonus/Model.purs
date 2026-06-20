@@ -37,15 +37,20 @@ module Triggerfish.Odonus.Model
   , cycleScaleType
   , toggleDistribution
   , scaleTypeName
+  , setRoot
+  , setOctaveShift
+  , setDegShift
+  , toggleScaleNote
+  , setSpread
   , recallScene
   ) where
 
 import Prelude
 
-import Data.Array (catMaybes, mapWithIndex, replicate, modifyAt, length, zipWith, (!!))
+import Data.Array (catMaybes, elem, filter, findIndex, mapWithIndex, replicate, modifyAt, length, zipWith, (!!), (:))
 import Data.Int (floor, toNumber)
 import Data.Maybe (Maybe(..), fromMaybe, maybe)
-import Triggerfish.Scale (Scale, Distribution(..), applyDistribution, mkScale, scaleTypes, shiftDegrees)
+import Triggerfish.Scale (Scale, Distribution(..), applyDistribution, mkScaleFromIvls, normaliseIvls, quantiseToScale, recogniseScale, scaleTypes, shiftDegrees, spreadIvls)
 
 type Cell =
   { note :: Int
@@ -93,27 +98,34 @@ type Odonus =
   { cells :: Array Cell   -- length 16
   , heads :: Array Head
   , rootPc :: Int         -- scale root pitch-class 0..11
-  , scaleTypeIx :: Int    -- index into Scale.scaleTypes
+  , scaleIvls :: Array Int -- in-scale semitone offsets from root (the mask)
   , dist :: Distribution  -- how a cell integer becomes a pitch
+  , octaveShift :: Int    -- global ± octaves applied to the output
+  , degShift :: Int       -- global scalar transpose, in scale degrees (I..IX)
   }
 
--- | The active scale built from the root + type selection.
+-- | The active scale built from the root + interval mask.
 scaleOf :: Odonus -> Scale
-scaleOf o = mkScale o.rootPc (fromMaybe defaultType (scaleTypes !! o.scaleTypeIx))
-  where defaultType = { name: "minor", intervals: [ 0, 2, 3, 5, 7, 8, 10 ] }
+scaleOf o = mkScaleFromIvls o.rootPc o.scaleIvls
 
--- | Name of the current scale type (for display).
+-- | Auto-recognised name of the current scale (for display).
 scaleTypeName :: Odonus -> String
-scaleTypeName o = maybe "minor" _.name (scaleTypes !! o.scaleTypeIx)
+scaleTypeName o = recogniseScale o.scaleIvls
 
--- | Render a cell's stored integer to its final MIDI pitch for a given head:
--- | distribute through the scale, then shift by the head's transposition in
--- | scale degrees (the quantizer made concrete).
+-- | Render a cell's stored integer to its final MIDI pitch for a given head.
+-- | Everything upstream is CHROMATIC and predictable; the quantizer is the one
+-- | place pitch gets snapped to the scale ("reins it in"):
+-- |   cell → in-scale base → + per-head chromatic transpose, re-snapped
+-- |        → + global scalar transpose (whole degrees) → + global octaves.
 renderCell :: Odonus -> Head -> Cell -> Int
 renderCell o hd c =
-  let scale = scaleOf o
-      base = applyDistribution o.dist scale c.note
-  in shiftDegrees scale hd.transp base
+  let
+    scale = scaleOf o
+    base = applyDistribution o.dist scale c.note
+    headed = quantiseToScale scale (base + hd.transp)
+    degreed = shiftDegrees scale o.degShift headed
+  in
+    degreed + 12 * o.octaveShift
 
 speedTable :: Array Number
 speedTable = [ 0.125, 0.25, 0.5, 0.75, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0, 8.0 ]
@@ -148,7 +160,8 @@ defaultCells =
 defaultOdonus :: Odonus
 defaultOdonus =
   { cells: defaultCells, heads: defaultHeads
-  , rootPc: 0, scaleTypeIx: 1, dist: Natural }   -- C minor, snap-to-scale
+  , rootPc: 0, scaleIvls: [ 0, 2, 3, 5, 7, 8, 10 ], dist: Natural   -- C minor
+  , octaveShift: 0, degShift: 0 }
 
 -- ---------------------------------------------------------------------------
 -- traversal — walk the head's pattern ordering, skip-aware
@@ -297,16 +310,51 @@ cyclePattern h = editHead h \hd ->
 cycleRoot :: Int -> Odonus -> Odonus
 cycleRoot dir o = o { rootPc = (o.rootPc + dir + 12) `mod` 12 }
 
--- | Step to the next/prev scale type (major → minor → dorian → …).
+-- | Step to the next/prev preset scale shape, setting the mask. If the current
+-- | mask is a custom (unrecognised) set, stepping forward lands on the first
+-- | preset.
 cycleScaleType :: Int -> Odonus -> Odonus
 cycleScaleType dir o =
-  o { scaleTypeIx = (o.scaleTypeIx + dir + length scaleTypes) `mod` length scaleTypes }
+  let
+    cur = findIndex (\t -> normaliseIvls t.intervals == normaliseIvls o.scaleIvls) scaleTypes
+    base = fromMaybe (-1) cur
+    ni = ((base + dir) `mod` length scaleTypes + length scaleTypes) `mod` length scaleTypes
+  in
+    o { scaleIvls = maybe o.scaleIvls _.intervals (scaleTypes !! ni) }
+
+-- | Toggle a pitch class in/out of the scale (direct note choice). The root is
+-- | always kept. `pc` is absolute 0..11; membership is by interval from root.
+toggleScaleNote :: Int -> Odonus -> Odonus
+toggleScaleNote pc o =
+  let iv = (((pc - o.rootPc) `mod` 12) + 12) `mod` 12
+  in
+    if iv == 0 then o
+    else o { scaleIvls = normaliseIvls
+               (if elem iv o.scaleIvls then filter (_ /= iv) o.scaleIvls else iv : o.scaleIvls) }
+
+-- | Marbles "spread": set the scale to the first `k` consonance-ordered notes
+-- | (1 = root only, growing out through fifth/fourth/… to the full chromatic).
+setSpread :: Int -> Odonus -> Odonus
+setSpread k o = o { scaleIvls = spreadIvls k }
 
 -- | Flip between chromatic-snap (Natural) and degree-index (Equal).
 toggleDistribution :: Odonus -> Odonus
 toggleDistribution o = o { dist = case o.dist of
   Natural -> Equal
   Equal -> Natural }
+
+-- | Set the key directly (0..11) — the "change key" gesture.
+setRoot :: Int -> Odonus -> Odonus
+setRoot pc o = o { rootPc = ((pc `mod` 12) + 12) `mod` 12 }
+
+-- | Global octave shift (clamped ±3).
+setOctaveShift :: Int -> Odonus -> Odonus
+setOctaveShift n o = o { octaveShift = clampI (-3) 3 n }
+
+-- | Global scalar transpose within the key, in whole scale degrees (0..8 =
+-- | the I..IX buttons).
+setDegShift :: Int -> Odonus -> Odonus
+setDegShift n o = o { degShift = clampI 0 8 n }
 
 -- | Make every head a copy of head I, phase-aligned and unmuted: four voices
 -- | in exact unison. The starting point for Steve Reich phasing — from here,

@@ -9,8 +9,13 @@ module Triggerfish.Scale
   , ScaleType
   , scaleTypes
   , mkScale
+  , mkScaleFromIvls
+  , normaliseIvls
+  , recogniseScale
+  , spreadIvls
   , rootNames
   , rootName
+  , rootSlug
   , scaleName
   , renderDegree
   , quantiseToScale
@@ -22,10 +27,10 @@ module Triggerfish.Scale
 
 import Prelude
 
-import Data.Array (findIndex, index, length, (!!))
+import Data.Array (find, findIndex, index, length, nub, sort, take, (!!), (:))
 import Data.Foldable (minimumBy)
 import Data.Int (floor, toNumber)
-import Data.Maybe (fromMaybe)
+import Data.Maybe (Maybe(..), fromMaybe)
 import Data.Ord (abs)
 
 -- | A concrete scale: `root` is the MIDI note of degree 1, `intervals` are
@@ -73,6 +78,23 @@ rootNames = [ "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B" ]
 rootName :: Int -> String
 rootName pc = fromMaybe "?" (rootNames !! (((pc `mod` 12) + 12) `mod` 12))
 
+-- | Lowercase wire slug for a root pitch class ("c", "cs", "d", …).
+rootSlug :: Int -> String
+rootSlug pc = case rootName pc of
+  "C#" -> "cs"
+  "D#" -> "ds"
+  "F#" -> "fs"
+  "G#" -> "gs"
+  "A#" -> "as"
+  "C" -> "c"
+  "D" -> "d"
+  "E" -> "e"
+  "F" -> "f"
+  "G" -> "g"
+  "A" -> "a"
+  "B" -> "b"
+  o -> o
+
 -- | Build a Scale from a root pitch-class (0..11, placed in the middle octave)
 -- | and a scale type. The wire name is e.g. "c-minor".
 mkScale :: Int -> ScaleType -> Scale
@@ -80,25 +102,45 @@ mkScale rootPc t = Scale
   { root: 60 + (((rootPc `mod` 12) + 12) `mod` 12)
   , intervals: t.intervals
   , period: 12
-  , name: rootLower <> "-" <> t.name
+  , name: rootSlug rootPc <> "-" <> t.name
   }
-  where
-  rootLower = case rootName rootPc of
-    "C#" -> "cs"
-    "D#" -> "ds"
-    "F#" -> "fs"
-    "G#" -> "gs"
-    "A#" -> "as"
-    other -> map_ other
-  map_ s = case s of
-    "C" -> "c"
-    "D" -> "d"
-    "E" -> "e"
-    "F" -> "f"
-    "G" -> "g"
-    "A" -> "a"
-    "B" -> "b"
-    o -> o
+
+-- | Normalise an interval set: each into 0..11, with the root (0) always
+-- | present, sorted ascending and de-duplicated. The canonical scale form.
+normaliseIvls :: Array Int -> Array Int
+normaliseIvls ivls = nub (sort (0 : map (\i -> (((i `mod` 12) + 12) `mod` 12)) ivls))
+
+-- | Build a Scale directly from a root and an arbitrary interval set — the
+-- | pitch-class-mask model. The name is auto-recognised (e.g. "c-dorian", or
+-- | "5-note" for a custom set).
+mkScaleFromIvls :: Int -> Array Int -> Scale
+mkScaleFromIvls rootPc ivls =
+  let
+    rpc = (((rootPc `mod` 12) + 12) `mod` 12)
+    n = normaliseIvls ivls
+  in
+    Scale { root: 60 + rpc, intervals: n, period: 12
+          , name: rootSlug rpc <> "-" <> recogniseScale n }
+
+-- | Name an interval set by matching it against the known scale shapes;
+-- | falls back to "<count>-note" for an unrecognised custom set.
+recogniseScale :: Array Int -> String
+recogniseScale ivls =
+  let n = normaliseIvls ivls
+  in case find (\t -> normaliseIvls t.intervals == n) scaleTypes of
+    Just t -> t.name
+    Nothing -> show (length n) <> "-note"
+
+-- | Pitch classes ordered by consonance from the root — the order in which a
+-- | Marbles-style "spread" dial grows the scale: root, fifth, fourth, major
+-- | third, sixth, second, … out to the tritone.
+consonanceOrder :: Array Int
+consonanceOrder = [ 0, 7, 5, 4, 9, 2, 11, 3, 8, 10, 1, 6 ]
+
+-- | The scale of the first `k` consonance-ordered notes (1..12). spread 1 =
+-- | root only; 2 = root+fifth; … 12 = full chromatic.
+spreadIvls :: Int -> Array Int
+spreadIvls k = normaliseIvls (take (clamp 1 12 k) consonanceOrder)
 
 -- | The wire identifier for a scale ("c-minor", "a-dorian"…).
 scaleName :: Scale -> String

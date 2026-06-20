@@ -41,6 +41,7 @@ data KnobTarget
   | HeadTransp Int
   | HeadOffset Int
   | HeadLen Int
+  | Spread
 
 targetRange :: KnobTarget -> { lo :: Int, hi :: Int }
 targetRange = case _ of
@@ -50,6 +51,7 @@ targetRange = case _ of
   HeadTransp _ -> { lo: -24, hi: 24 }
   HeadOffset _ -> { lo: 0, hi: 15 }
   HeadLen _ -> { lo: 1, hi: 16 }
+  Spread -> { lo: 1, hi: 12 }
 
 applyTarget :: KnobTarget -> Int -> M.Odonus -> M.Odonus
 applyTarget t v = case t of
@@ -59,6 +61,7 @@ applyTarget t v = case t of
   HeadTransp h -> M.setHeadTransp h v
   HeadOffset h -> M.setHeadOffset h v
   HeadLen h -> M.setHeadLen h v
+  Spread -> M.setSpread v
 
 type DragState = { target :: KnobTarget, startY :: Int, startVal :: Int }
 
@@ -92,6 +95,7 @@ type State =
   , sceneIx :: Int          -- current scene in the chain
   , sceneBarAnchor :: Int   -- bar at which the current scene started
   , barsPerScene :: Int
+  , stepDiv :: Int          -- global clock divider (1=1/16 .. 16=whole note)
   }
 
 data Action
@@ -106,14 +110,18 @@ data Action
   | ToggleHeadMute Int
   | CyclePattern Int
   | UnifyHeads
-  | CycleRoot Int
   | CycleScaleType Int
   | ToggleDist
+  | SetRoot Int
+  | SetOctave Int
+  | SetDegShift Int
+  | ToggleScaleNote Int
   | CaptureScene
   | RecallScene Int
   | DeleteScene Int
   | ToggleChain
   | BumpBars Int
+  | SetStepDiv Int
   | KnobDown KnobTarget Int
   | DragMove Int
   | DragEnd
@@ -126,7 +134,8 @@ component =
         , notes: [], binnacle: Nothing, nowMicros: 0.0
         , midiOut: Nothing, midiName: "…", clockTempo: 120.0, clockLocked: false
         , clockBeat: 0.0, clockBar: 0, anchorCount: 0
-        , scenes: [], chain: false, sceneIx: 0, sceneBarAnchor: 0, barsPerScene: 4 }
+        , scenes: [], chain: false, sceneIx: 0, sceneBarAnchor: 0, barsPerScene: 4
+        , stepDiv: 1 }
     , render
     , eval: H.mkEval H.defaultEval
         { handleAction = handleAction, initialize = Just Initialize }
@@ -162,7 +171,9 @@ handleAction = case _ of
     H.modify_ _ { binnacle = Just bin }
   Step tick -> do
     st <- H.get
-    when st.running do
+    -- Global step divider: the scheduler ticks on a fine 1/16 grid; advance the
+    -- model only every stepDiv ticks, so STEP LENGTH sets what a 1× head plays.
+    when (st.running && tick.index `mod` st.stepDiv == 0) do
       let r = M.stepEmit st.odo
       -- Each unmuted head that lands on a gated cell schedules a MIDI note
       -- on its own channel (head I → ch 1 …), delivered at the scheduler's
@@ -223,9 +234,12 @@ handleAction = case _ of
   ToggleHeadMute h -> H.modify_ \s -> s { odo = M.toggleHeadMute h s.odo }
   CyclePattern h -> H.modify_ \s -> s { odo = M.cyclePattern h s.odo }
   UnifyHeads -> H.modify_ \s -> s { odo = M.unifyHeads s.odo }
-  CycleRoot dir -> H.modify_ \s -> s { odo = M.cycleRoot dir s.odo }
   CycleScaleType dir -> H.modify_ \s -> s { odo = M.cycleScaleType dir s.odo }
   ToggleDist -> H.modify_ \s -> s { odo = M.toggleDistribution s.odo }
+  SetRoot pc -> H.modify_ \s -> s { odo = M.setRoot pc s.odo }
+  SetOctave n -> H.modify_ \s -> s { odo = M.setOctaveShift n s.odo }
+  SetDegShift n -> H.modify_ \s -> s { odo = M.setDegShift n s.odo }
+  ToggleScaleNote pc -> H.modify_ \s -> s { odo = M.toggleScaleNote pc s.odo }
   CaptureScene -> H.modify_ \s ->
     s { scenes = s.scenes <> [ { name: sceneName s, odo: s.odo } ] }
   RecallScene i -> H.modify_ \s -> case s.scenes !! i of
@@ -234,6 +248,7 @@ handleAction = case _ of
   DeleteScene i -> H.modify_ \s -> s { scenes = fromMaybe s.scenes (deleteAt i s.scenes) }
   ToggleChain -> H.modify_ \s -> s { chain = not s.chain, sceneBarAnchor = s.clockBar }
   BumpBars d -> H.modify_ \s -> s { barsPerScene = clampI 1 32 (s.barsPerScene + d) }
+  SetStepDiv d -> H.modify_ \s -> s { stepDiv = d }
   KnobDown target startVal -> do
     sid <- setupDrag
     H.modify_ _ { dragging = Just { target, startY: 0, startVal }, dragSub = Just sid }
@@ -373,7 +388,7 @@ panelShell
   -> Array (H.ComponentHTML Action () m) -> H.ComponentHTML Action () m
 panelShell label sub widthCss body =
   HH.div
-    [ style $ widthCss <> ";flex:0 0 auto;height:100vh;box-sizing:border-box;overflow-y:auto;"
+    [ style $ widthCss <> ";height:100vh;box-sizing:border-box;overflow-y:auto;overflow-x:hidden;"
         <> "background:linear-gradient(#dcd8c9,#cfcabb);border-left:1px solid #b3ae9c;"
         <> "padding:18px 14px;display:flex;flex-direction:column" ]
     ( [ HH.div
@@ -402,7 +417,7 @@ pitchToY pitch = riverH * (1.0 - (toNumber (clampI 24 96 pitch) - 24.0) / 72.0)
 scopePanel :: forall m. State -> H.ComponentHTML Action () m
 scopePanel s =
   HH.div
-    [ style $ "flex:1 1 0;min-width:300px;height:100vh;position:relative;overflow:hidden;"
+    [ style $ "flex:1 1 360px;min-width:0;height:100vh;position:relative;overflow:hidden;"
         <> "background:radial-gradient(140% 100% at 100% 50%,#15140f,#0b0a07)" ]
     ( octaveGuides
         <>
@@ -447,11 +462,22 @@ noteBar now n =
 
 quantizerPanel :: forall m. State -> H.ComponentHTML Action () m
 quantizerPanel s =
-  panelShell "QUANTIZE" "Scale Lens" "width:188px"
+  panelShell "KEY" "Quantize · Transpose" "flex:0 1 232px;min-width:0"
     [ pcKeyboard s.odo
-    , stepperRow "ROOT" (Scale.rootName s.odo.rootPc) (CycleRoot (-1)) (CycleRoot 1)
-    , stepperRow "SCALE" (M.scaleTypeName s.odo) (CycleScaleType (-1)) (CycleScaleType 1)
-    , HH.div [ style "display:flex;align-items:center;justify-content:space-between;margin:8px 0" ]
+    , stepperRow "ROOT" (Scale.rootName s.odo.rootPc)
+        (SetRoot (s.odo.rootPc - 1)) (SetRoot (s.odo.rootPc + 1))
+    , HH.div [ style "display:flex;align-items:flex-end;gap:10px;margin:8px 0" ]
+        [ HH.div [ style "flex:1" ]
+            [ stepperRow "SCALE" (M.scaleTypeName s.odo) (CycleScaleType (-1)) (CycleScaleType 1) ]
+        , spreadBlock s.odo
+        ]
+    -- OCTAVE: chromatic ± octaves applied to the whole output.
+    , labelledRow "OCTAVE"
+        (map (\n -> tabBtn (octLabel n) (s.odo.octaveShift == n) (SetOctave n)) [ -2, -1, 0, 1, 2 ])
+    -- SCALAR TRANSP: shift the whole pattern by whole scale degrees, in-key.
+    , labelledRow "SCALAR TRANSP."
+        (map (\i -> tabBtn (romanNum i) (s.odo.degShift == i) (SetDegShift i)) (range 0 6))
+    , HH.div [ style "display:flex;align-items:center;justify-content:space-between;margin:10px 0 4px" ]
         [ HH.span [ style $ engrave <> ";font-size:9px" ] [ HH.text "MODE" ]
         , HH.button
             [ HE.onClick \_ -> ToggleDist
@@ -459,18 +485,20 @@ quantizerPanel s =
                 <> "background:linear-gradient(#efece1,#ddd9cb);font-family:'SF Mono',Menlo,monospace;font-size:10px;color:#3f3c33" ]
             [ HH.text (show s.odo.dist) ]
         ]
-    , HH.div [ style $ engrave <> ";font-size:8px;color:#888273;margin-top:6px;line-height:1.5" ]
+    , HH.div [ style $ engrave <> ";font-size:8px;color:#888273;margin-top:2px;line-height:1.5" ]
         [ HH.text (case s.odo.dist of
             Scale.Natural -> "Natural · cells snap to nearest scale tone"
             Scale.Equal -> "Equal · cells index scale degrees from root") ]
     ]
 
--- | A 12-key chromatic strip; in-scale pitch classes lit, the root accented.
+-- | A 12-key chromatic strip: in-scale pitch classes lit, the root accented.
+-- | Click a key to toggle it in/out of the scale (direct note choice); the
+-- | root is set by the ROOT stepper.
 pcKeyboard :: forall m. M.Odonus -> H.ComponentHTML Action () m
 pcKeyboard odo =
   let lit = Scale.pitchClassesOf (M.scaleOf odo)
   in
-    HH.div [ style "display:flex;gap:2px;margin-bottom:16px" ]
+    HH.div [ style "display:flex;gap:2px;margin-bottom:14px" ]
       (map (pcKey odo.rootPc lit) (range 0 11))
 
 pcKey :: forall m. Int -> Array Int -> Int -> H.ComponentHTML Action () m
@@ -482,10 +510,50 @@ pcKey rootPc lit pc =
     fg = if isRoot || on then "#1c1a12" else "#7d7868"
   in
     HH.div
-      [ style $ "flex:1;height:36px;border-radius:3px;border:1px solid #00000018;background:" <> bg
+      [ HE.onClick \_ -> ToggleScaleNote pc
+      , style $ "flex:1;height:38px;border-radius:3px;border:1px solid #00000018;cursor:pointer;background:" <> bg
           <> ";display:flex;align-items:flex-end;justify-content:center;padding-bottom:2px" ]
       [ HH.span [ style $ "font-family:'SF Mono',Menlo,monospace;font-size:7px;color:" <> fg ]
           [ HH.text (Scale.rootName pc) ] ]
+
+-- | The Marbles-style SPREAD knob: drag to grow the scale from the root
+-- | outward (unison → fifth → fourth → … → full chromatic). Value = note count.
+spreadBlock :: forall m. M.Odonus -> H.ComponentHTML Action () m
+spreadBlock odo =
+  let n = length odo.scaleIvls
+  in
+    HH.div [ style "display:flex;flex-direction:column;align-items:center;width:52px" ]
+      [ HH.span [ style $ engrave <> ";font-size:9px;margin-bottom:2px" ] [ HH.text "SPREAD" ]
+      , HH.div [ style "width:40px;height:40px" ]
+          [ knob { cx: 24.0, cy: 24.0, rOuter: 20.0, rInner: 8.0, color: "#8a9b6e", lo: 1, hi: 12, value: n }
+              (KnobDown Spread n) ]
+      , HH.span [ style "font-family:'SF Mono',Menlo,monospace;font-size:8px;color:#3f3c33;margin-top:1px" ]
+          [ HH.text (show n <> "n") ]
+      ]
+
+-- | A label over a row of tab buttons (OCTAVE / SCALAR TRANSP, Xynthesizr-style).
+labelledRow :: forall m. String -> Array (H.ComponentHTML Action () m) -> H.ComponentHTML Action () m
+labelledRow lbl btns =
+  HH.div [ style "margin:8px 0" ]
+    [ HH.div [ style $ engrave <> ";font-size:9px;margin-bottom:4px" ] [ HH.text lbl ]
+    , HH.div [ style "display:flex;gap:3px" ] btns
+    ]
+
+tabBtn :: forall m. String -> Boolean -> Action -> H.ComponentHTML Action () m
+tabBtn label active act =
+  HH.button
+    [ HE.onClick \_ -> act
+    , style $ "flex:1;padding:5px 0;border:1px solid #a8a392;border-radius:5px;cursor:pointer;"
+        <> "font-family:Georgia,serif;font-size:10px;color:" <> (if active then "#1c1a12" else "#3f3c33")
+        <> ";background:" <> (if active then "linear-gradient(#c8a86a,#b8975a)" else "linear-gradient(#efece1,#ddd9cb)") ]
+    [ HH.text label ]
+
+octLabel :: Int -> String
+octLabel n = if n > 0 then "+" <> show n else show n
+
+romanNum :: Int -> String
+romanNum i = fromMaybe (show (i + 1))
+  ([ "I", "II", "III", "IV", "V", "VI", "VII", "VIII", "IX" ] !! i)
 
 stepperRow :: forall m. String -> String -> Action -> Action -> H.ComponentHTML Action () m
 stepperRow lbl val decA incA =
@@ -512,7 +580,7 @@ stepBtn glyph act =
 
 playheadsPanel :: forall m. State -> H.ComponentHTML Action () m
 playheadsPanel s =
-  panelShell "PLAYHEADS" "Fugue · Access" "width:296px"
+  panelShell "PLAYHEADS" "Fugue · Access" "flex:0 1 290px;min-width:0"
     [ HH.button
         [ HE.onClick \_ -> UnifyHeads
         , style $ "width:100%;padding:6px;margin-bottom:10px;border:1px solid #a8a392;border-radius:7px;cursor:pointer;"
@@ -525,18 +593,28 @@ playheadsPanel s =
 
 gridPanel :: forall m. State -> H.ComponentHTML Action () m
 gridPanel s =
-  panelShell "ODONUS" "16 · Cartesian" "width:352px"
+  panelShell "ODONUS" "16 · Cartesian" "flex:0 1 322px;min-width:0"
     [ grid s
+    , clockRow s
     , controls s
     , statusBar s
     , nameplate s
     ]
 
+-- | Global step length — what a 1× head plays. Buttons map to the clock
+-- | divider (1=whole … 1/16=fast); per-head SPD multiplies from here.
+clockRow :: forall m. State -> H.ComponentHTML Action () m
+clockRow s =
+  labelledRow "STEP LENGTH"
+    (map (\d -> tabBtn d.lbl (s.stepDiv == d.div) (SetStepDiv d.div))
+      [ { lbl: "1", div: 16 }, { lbl: "½", div: 8 }, { lbl: "¼", div: 4 }
+      , { lbl: "⅛", div: 2 }, { lbl: "1/16", div: 1 } ])
+
 -- ── SOURCE panel — the live eDSL of the current setup (read-only) ────────────
 
 edslPanel :: forall m. State -> H.ComponentHTML Action () m
 edslPanel s =
-  panelShell "SOURCE" "eDSL" "width:280px"
+  panelShell "SOURCE" "eDSL" "flex:0 1 244px;min-width:0"
     [ HH.div
         [ style $ "font-family:'SF Mono',Menlo,monospace;font-size:10.5px;line-height:1.55;"
             <> "white-space:pre;color:#3a372e;background:#00000008;border:1px solid #00000012;"
@@ -564,6 +642,8 @@ edslText o =
       ( [ "odonusWith"
         , "  { scale: " <> Scale.scaleName (M.scaleOf o)
         , "  , distribution: " <> show o.dist
+        , "  , octave: " <> octLabel o.octaveShift
+        , "  , scalarTransp: " <> romanNum o.degShift
         , "  , notes: " <> arr (show <<< _.note)
         , "  , gate:  " <> arr (bool <<< _.gate)
         , "  , skip:  " <> arr (bool <<< _.skip)
@@ -579,7 +659,7 @@ sceneName s = show (length s.scenes + 1) <> " · " <> Scale.scaleName (M.scaleOf
 
 scenesPanel :: forall m. State -> H.ComponentHTML Action () m
 scenesPanel s =
-  panelShell "SCENES" "Song" "width:214px"
+  panelShell "SCENES" "Song" "flex:0 1 198px;min-width:0"
     [ HH.button
         [ HE.onClick \_ -> CaptureScene
         , style $ "width:100%;padding:7px;margin-bottom:10px;border:1px solid #a8a392;border-radius:7px;cursor:pointer;"
