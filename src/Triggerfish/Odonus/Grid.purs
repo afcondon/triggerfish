@@ -7,7 +7,7 @@ module Triggerfish.Odonus.Grid (component) where
 
 import Prelude
 
-import Data.Array (concatMap, elem, filter, findIndex, length, mapWithIndex, range, (!!))
+import Data.Array (concatMap, deleteAt, elem, filter, findIndex, length, mapWithIndex, null, range, (!!))
 import Data.Foldable (for_)
 import Data.Int (floor, round, toNumber)
 import Data.Maybe (Maybe(..), fromMaybe, maybe)
@@ -39,6 +39,8 @@ data KnobTarget
   | HeadDir Int
   | HeadSpeed Int
   | HeadTransp Int
+  | HeadOffset Int
+  | HeadLen Int
 
 targetRange :: KnobTarget -> { lo :: Int, hi :: Int }
 targetRange = case _ of
@@ -46,6 +48,8 @@ targetRange = case _ of
   HeadDir _ -> { lo: 0, hi: 2 }
   HeadSpeed _ -> { lo: 0, hi: length M.speedTable - 1 }
   HeadTransp _ -> { lo: -24, hi: 24 }
+  HeadOffset _ -> { lo: 0, hi: 15 }
+  HeadLen _ -> { lo: 1, hi: 16 }
 
 applyTarget :: KnobTarget -> Int -> M.Odonus -> M.Odonus
 applyTarget t v = case t of
@@ -53,6 +57,8 @@ applyTarget t v = case t of
   HeadDir h -> M.setHeadDir h v
   HeadSpeed h -> M.setHeadSpeedIx h v
   HeadTransp h -> M.setHeadTransp h v
+  HeadOffset h -> M.setHeadOffset h v
+  HeadLen h -> M.setHeadLen h v
 
 type DragState = { target :: KnobTarget, startY :: Int, startVal :: Int }
 
@@ -60,6 +66,11 @@ type DragState = { target :: KnobTarget, startY :: Int, startVal :: Int }
 -- | wall-clock instant it sounds; the river positions it by how long ago
 -- | that was (so the visual onset lands exactly on the audio onset).
 type NoteEvent = { pitch :: Int, headIdx :: Int, fireUnixMicros :: Number }
+
+-- | A saved whole-Odonus setting: notes, heads, scale — the unit of
+-- | composition. Sequencing scenes builds flowing fugues with key changes
+-- | and voices dropping in and out.
+type Scene = { name :: String, odo :: M.Odonus }
 
 type State =
   { odo :: M.Odonus
@@ -74,7 +85,13 @@ type State =
   , clockTempo :: Number
   , clockLocked :: Boolean
   , clockBeat :: Number
+  , clockBar :: Int
   , anchorCount :: Int
+  , scenes :: Array Scene
+  , chain :: Boolean        -- auto-advance scenes at bar boundaries
+  , sceneIx :: Int          -- current scene in the chain
+  , sceneBarAnchor :: Int   -- bar at which the current scene started
+  , barsPerScene :: Int
   }
 
 data Action
@@ -88,9 +105,15 @@ data Action
   | ToggleSkip Int
   | ToggleHeadMute Int
   | CyclePattern Int
+  | UnifyHeads
   | CycleRoot Int
   | CycleScaleType Int
   | ToggleDist
+  | CaptureScene
+  | RecallScene Int
+  | DeleteScene Int
+  | ToggleChain
+  | BumpBars Int
   | KnobDown KnobTarget Int
   | DragMove Int
   | DragEnd
@@ -102,7 +125,8 @@ component =
         { odo: M.defaultOdonus, running: false, dragging: Nothing, dragSub: Nothing
         , notes: [], binnacle: Nothing, nowMicros: 0.0
         , midiOut: Nothing, midiName: "…", clockTempo: 120.0, clockLocked: false
-        , clockBeat: 0.0, anchorCount: 0 }
+        , clockBeat: 0.0, clockBar: 0, anchorCount: 0
+        , scenes: [], chain: false, sceneIx: 0, sceneBarAnchor: 0, barsPerScene: 4 }
     , render
     , eval: H.mkEval H.defaultEval
         { handleAction = handleAction, initialize = Just Initialize }
@@ -144,7 +168,16 @@ handleAction = case _ of
       -- on its own channel (head I → ch 1 …), delivered at the scheduler's
       -- precise fire-time so it's jitter-immune.
       case st.midiOut of
-        Just out -> liftEffect $ for_ r.fired \f ->
+        Just out -> liftEffect $ for_ r.fired \f -> do
+          -- Glide → portamento on + a short glide time on this head's
+          -- channel; non-glide notes turn portamento off. (Needs a glide-
+          -- capable synth in Ableton; harmless otherwise. The es9 path maps
+          -- glide to cv-slew instead.)
+          if f.glide
+            then do
+              Midi.sendCC out { channel: f.headIdx, controller: 65, value: 127 }
+              Midi.sendCC out { channel: f.headIdx, controller: 5, value: 40 }
+            else Midi.sendCC out { channel: f.headIdx, controller: 65, value: 0 }
           Midi.scheduleNote out
             { channel: f.headIdx, note: f.pitch, velocity: 100
             , delayMs: tick.delayMs, durMs: 160.0 }
@@ -158,14 +191,29 @@ handleAction = case _ of
       Just bin -> do
         now <- liftEffect $ Clock.unixMicrosNow (Binnacle.clock bin)
         r <- liftEffect $ Clock.read (Binnacle.clock bin)
-        H.modify_ \s -> s
-          { nowMicros = now
-          , clockTempo = r.tempo
-          , clockLocked = r.locked
-          , clockBeat = r.beat
-          , anchorCount = r.anchorCount
-          , notes = filter (\n -> (now - n.fireUnixMicros) < windowMicros) s.notes
-          }
+        H.modify_ \s ->
+          let
+            base = s
+              { nowMicros = now
+              , clockTempo = r.tempo
+              , clockLocked = r.locked
+              , clockBeat = r.beat
+              , clockBar = r.bar
+              , anchorCount = r.anchorCount
+              , notes = filter (\n -> (now - n.fireUnixMicros) < windowMicros) s.notes
+              }
+            -- Chain mode: advance to the next scene once barsPerScene bars have
+            -- elapsed, carrying playhead phase across the swap.
+            advance = s.chain && not (null s.scenes)
+              && (r.bar - s.sceneBarAnchor) >= s.barsPerScene
+          in
+            if advance then
+              let ni = (s.sceneIx + 1) `mod` length s.scenes
+              in case s.scenes !! ni of
+                Just sc -> base
+                  { odo = M.recallScene s.odo sc.odo, sceneIx = ni, sceneBarAnchor = r.bar }
+                Nothing -> base
+            else base
       Nothing -> pure unit
   MidiReady mout nm -> H.modify_ _ { midiOut = mout, midiName = nm }
   ToggleRun -> H.modify_ \s -> s { running = not s.running }
@@ -174,9 +222,18 @@ handleAction = case _ of
   ToggleSkip i -> H.modify_ \s -> s { odo = M.toggleSkip i s.odo }
   ToggleHeadMute h -> H.modify_ \s -> s { odo = M.toggleHeadMute h s.odo }
   CyclePattern h -> H.modify_ \s -> s { odo = M.cyclePattern h s.odo }
+  UnifyHeads -> H.modify_ \s -> s { odo = M.unifyHeads s.odo }
   CycleRoot dir -> H.modify_ \s -> s { odo = M.cycleRoot dir s.odo }
   CycleScaleType dir -> H.modify_ \s -> s { odo = M.cycleScaleType dir s.odo }
   ToggleDist -> H.modify_ \s -> s { odo = M.toggleDistribution s.odo }
+  CaptureScene -> H.modify_ \s ->
+    s { scenes = s.scenes <> [ { name: sceneName s, odo: s.odo } ] }
+  RecallScene i -> H.modify_ \s -> case s.scenes !! i of
+    Just sc -> s { odo = M.recallScene s.odo sc.odo, sceneIx = i }
+    Nothing -> s
+  DeleteScene i -> H.modify_ \s -> s { scenes = fromMaybe s.scenes (deleteAt i s.scenes) }
+  ToggleChain -> H.modify_ \s -> s { chain = not s.chain, sceneBarAnchor = s.clockBar }
+  BumpBars d -> H.modify_ \s -> s { barsPerScene = clampI 1 32 (s.barsPerScene + d) }
   KnobDown target startVal -> do
     sid <- setupDrag
     H.modify_ _ { dragging = Just { target, startY: 0, startVal }, dragSub = Just sid }
@@ -306,6 +363,7 @@ render s =
     , playheadsPanel s
     , gridPanel s
     , edslPanel s
+    , scenesPanel s
     ]
 
 -- | A pale Hainbach control panel: engraved header + body, full viewport height.
@@ -454,7 +512,14 @@ stepBtn glyph act =
 
 playheadsPanel :: forall m. State -> H.ComponentHTML Action () m
 playheadsPanel s =
-  panelShell "PLAYHEADS" "Fugue · Access" "width:296px" [ headBank s ]
+  panelShell "PLAYHEADS" "Fugue · Access" "width:296px"
+    [ HH.button
+        [ HE.onClick \_ -> UnifyHeads
+        , style $ "width:100%;padding:6px;margin-bottom:10px;border:1px solid #a8a392;border-radius:7px;cursor:pointer;"
+            <> "background:linear-gradient(#efece1,#ddd9cb);font-family:Georgia,serif;font-size:11px;color:#3f3c33" ]
+        [ HH.text "≡ Unison · all heads = I" ]
+    , headBank s
+    ]
 
 -- ── GRID panel — the 16 quartered pads + transport ───────────────────────────
 
@@ -491,6 +556,8 @@ edslText o =
         <> "  " <> speedRatio hd.speedIx
         <> " " <> dirName hd.direction
         <> " " <> signed hd.transp
+        <> " off " <> show hd.offset
+        <> " len " <> show hd.len
         <> (if hd.mute then "  (mute)" else "")
   in
     joinWith "\n"
@@ -503,6 +570,58 @@ edslText o =
         , "  , glide: " <> arr (bool <<< _.glide)
         , "  , heads:"
         ] <> mapWithIndex headLine o.heads <> [ "  }" ] )
+
+-- ── SCENES panel — save whole settings, then sequence them ───────────────────
+
+-- | Auto-name a captured scene by its position + its scale.
+sceneName :: State -> String
+sceneName s = show (length s.scenes + 1) <> " · " <> Scale.scaleName (M.scaleOf s.odo)
+
+scenesPanel :: forall m. State -> H.ComponentHTML Action () m
+scenesPanel s =
+  panelShell "SCENES" "Song" "width:214px"
+    [ HH.button
+        [ HE.onClick \_ -> CaptureScene
+        , style $ "width:100%;padding:7px;margin-bottom:10px;border:1px solid #a8a392;border-radius:7px;cursor:pointer;"
+            <> "background:linear-gradient(#efece1,#ddd9cb);font-family:Georgia,serif;font-size:12px;color:#3f3c33" ]
+        [ HH.text "＋ Capture current" ]
+    , HH.div [ style "display:flex;align-items:center;justify-content:space-between;margin-bottom:6px" ]
+        [ HH.button
+            [ HE.onClick \_ -> ToggleChain
+            , style $ "padding:5px 10px;border:1px solid #a8a392;border-radius:6px;cursor:pointer;font-family:Georgia,serif;font-size:11px;color:#3f3c33;background:"
+                <> (if s.chain then "linear-gradient(#c8a86a,#b8975a)" else "linear-gradient(#efece1,#ddd9cb)") ]
+            [ HH.text (if s.chain then "■ Chain" else "▶ Chain") ]
+        , HH.div [ style "display:flex;align-items:center;gap:5px" ]
+            [ stepBtn "‹" (BumpBars (-1))
+            , HH.span [ style $ engrave <> ";font-size:9px;min-width:48px;text-align:center" ]
+                [ HH.text (show s.barsPerScene <> " bar" <> (if s.barsPerScene == 1 then "" else "s")) ]
+            , stepBtn "›" (BumpBars 1)
+            ]
+        ]
+    , HH.div [ style "display:flex;flex-direction:column;gap:5px;margin-top:8px" ]
+        ( if null s.scenes
+            then [ HH.div [ style $ engrave <> ";font-size:8px;color:#888273;margin-top:6px" ]
+                     [ HH.text "capture a few settings, then chain them" ] ]
+            else mapWithIndex (sceneChip s) s.scenes )
+    ]
+
+sceneChip :: forall m. State -> Int -> Scene -> H.ComponentHTML Action () m
+sceneChip s i sc =
+  let active = s.chain && s.sceneIx == i
+  in
+    HH.div
+      [ style $ "display:flex;align-items:center;gap:6px;padding:6px 8px;border-radius:7px;cursor:pointer;"
+          <> "background:#cbc6b6;box-shadow:0 0 0 1px " <> (if active then "#b5832b" else "#00000018")
+          <> (if active then ";outline:2px solid #b5832b66" else "") ]
+      [ HH.div
+          [ HE.onClick \_ -> RecallScene i
+          , style "flex:1;font-family:'SF Mono',Menlo,monospace;font-size:10px;color:#3f3c33" ]
+          [ HH.text sc.name ]
+      , HH.span
+          [ HE.onClick \_ -> DeleteScene i
+          , style "font-family:Georgia,serif;font-size:11px;color:#a06048;padding:0 3px" ]
+          [ HH.text "×" ]
+      ]
 
 -- | Format a positive Number to one decimal place (so Link's constant
 -- | sub-BPM nudging is visible — the readout flickers when truly locked).
@@ -594,12 +713,17 @@ headStrip h hd =
     pat = fromMaybe { name: "?", order: [] } (M.patternLibrary !! hd.patternIx)
   in
     HH.div
-      [ style $ "display:flex;align-items:center;gap:12px;padding:6px 12px;border-radius:8px;background:#cbc6b6;box-shadow:0 0 0 1px " <> col <> "66;" <> dim ]
+      [ style $ "display:flex;align-items:center;gap:10px;padding:7px 10px;border-radius:8px;background:#cbc6b6;box-shadow:0 0 0 1px " <> col <> "66;" <> dim ]
       [ muteBlock h hd col
       , patBlock h pat col hd.seqPos
-      , miniKnob (HeadDir h) hd.direction col "DIR" (dirName hd.direction)
-      , miniKnob (HeadSpeed h) hd.speedIx col "SPD" (speedRatio hd.speedIx)
-      , miniKnob (HeadTransp h) hd.transp col "INT" (signed hd.transp)
+      , HH.div
+          [ style "display:grid;grid-template-columns:repeat(3,1fr);gap:6px 4px" ]
+          [ miniKnob (HeadDir h) hd.direction col "DIR" (dirName hd.direction)
+          , miniKnob (HeadSpeed h) hd.speedIx col "SPD" (speedRatio hd.speedIx)
+          , miniKnob (HeadTransp h) hd.transp col "INT" (signed hd.transp)
+          , miniKnob (HeadOffset h) hd.offset col "OFF" (show hd.offset)
+          , miniKnob (HeadLen h) hd.len col "LEN" (show hd.len)
+          ]
       ]
 
 muteBlock :: forall m. Int -> M.Head -> String -> H.ComponentHTML Action () m

@@ -26,19 +26,23 @@ module Triggerfish.Odonus.Model
   , setHeadSpeedIx
   , setHeadDir
   , setHeadTransp
+  , setHeadOffset
+  , setHeadLen
   , toggleHeadMute
   , cyclePattern
+  , unifyHeads
   , scaleOf
   , renderCell
   , cycleRoot
   , cycleScaleType
   , toggleDistribution
   , scaleTypeName
+  , recallScene
   ) where
 
 import Prelude
 
-import Data.Array (catMaybes, mapWithIndex, replicate, modifyAt, length, (!!))
+import Data.Array (catMaybes, mapWithIndex, replicate, modifyAt, length, zipWith, (!!))
 import Data.Int (floor, toNumber)
 import Data.Maybe (Maybe(..), fromMaybe, maybe)
 import Triggerfish.Scale (Scale, Distribution(..), applyDistribution, mkScale, scaleTypes, shiftDegrees)
@@ -81,6 +85,8 @@ type Head =
   , transp :: Int
   , mute :: Boolean
   , patternIx :: Int
+  , offset :: Int   -- emit this many of THIS head's steps ahead (phase / canon)
+  , len :: Int      -- loop length: reset after L steps (polymeter)
   }
 
 type Odonus =
@@ -110,7 +116,7 @@ renderCell o hd c =
   in shiftDegrees scale hd.transp base
 
 speedTable :: Array Number
-speedTable = [ 0.25, 0.5, 0.75, 1.0, 1.5, 2.0, 3.0, 4.0 ]
+speedTable = [ 0.125, 0.25, 0.5, 0.75, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0, 8.0 ]
 
 speedOf :: Head -> Number
 speedOf h = fromMaybe 1.0 (speedTable !! h.speedIx)
@@ -121,16 +127,17 @@ replicate16 = replicate 16
 mkHead :: Int -> Int -> Int -> Boolean -> Int -> Head
 mkHead speedIx direction transp mute patternIx =
   { cursor: 0, seqPos: 0, accumulator: 0.0, pendStep: 1
-  , speedIx, direction, transp, mute, patternIx }
+  , speedIx, direction, transp, mute, patternIx, offset: 0, len: 16 }
 
 -- | Head I runs (Rows, 1.0×); II–IV start muted with distinct patterns + fugue
--- | offsets — unmute to build the canon.
+-- | offsets — unmute to build the canon. (Speed indices into the widened
+-- | 1/8…8× table: 4=1.0, 2=0.5, 6=2.0, 3=0.75.)
 defaultHeads :: Array Head
 defaultHeads =
-  [ mkHead 3 0 0 false 0       -- I:   Rows, 1.0× fwd
-  , mkHead 1 0 7 true 1        -- II:  Serpentine, 0.5× +7
-  , mkHead 5 1 (-12) true 3    -- III: Spiral, 2.0× rev −12
-  , mkHead 2 2 3 true 2        -- IV:  Columns, 0.75× pend +3
+  [ mkHead 4 0 0 false 0       -- I:   Rows, 1.0× fwd
+  , mkHead 2 0 7 true 1        -- II:  Serpentine, 0.5× +7
+  , mkHead 6 1 (-12) true 3    -- III: Spiral, 2.0× rev −12
+  , mkHead 3 2 3 true 2        -- IV:  Columns, 0.75× pend +3
   ]
 
 defaultCells :: Array Cell
@@ -164,43 +171,47 @@ decodeDir n
   | n == 1 = Back
   | otherwise = Pend
 
--- | Next seq position in `dir`, hopping positions whose grid cell is skipped.
-nextSeq :: Array Int -> Array Cell -> Int -> Int -> Int
-nextSeq order cells start dir = go (modPos (start + dir) 16) 0
+-- | Next seq position in `dir`, within a loop of `len` steps, hopping
+-- | positions whose grid cell is skipped.
+nextSeq :: Array Int -> Array Cell -> Int -> Int -> Int -> Int
+nextSeq order cells len start dir = go (modPos (start + dir) len) 0
   where
   go pos n
-    | n >= 16 = start
+    | n >= len = start
     | not (skipAt cells (gridAt order pos)) = pos
-    | otherwise = go (modPos (pos + dir) 16) (n + 1)
+    | otherwise = go (modPos (pos + dir) len) (n + 1)
 
-stepSeq :: Array Int -> Array Cell -> Dir -> { pos :: Int, pend :: Int } -> { pos :: Int, pend :: Int }
-stepSeq order cells dir st = case dir of
-  Fwd -> { pos: nextSeq order cells st.pos 1, pend: st.pend }
-  Back -> { pos: nextSeq order cells st.pos (-1), pend: st.pend }
+stepSeq :: Array Int -> Array Cell -> Int -> Dir -> { pos :: Int, pend :: Int } -> { pos :: Int, pend :: Int }
+stepSeq order cells len dir st = case dir of
+  Fwd -> { pos: nextSeq order cells len st.pos 1, pend: st.pend }
+  Back -> { pos: nextSeq order cells len st.pos (-1), pend: st.pend }
   Pend ->
     let
       ns
-        | st.pos == 0 && st.pend == (-1) = 1
-        | st.pos == 15 && st.pend == 1 = -1
+        | st.pos <= 0 && st.pend == (-1) = 1
+        | st.pos >= len - 1 && st.pend == 1 = -1
         | otherwise = st.pend
     in
-      { pos: nextSeq order cells st.pos ns, pend: ns }
+      { pos: nextSeq order cells len st.pos ns, pend: ns }
 
-advanceSeqN :: Array Int -> Array Cell -> Dir -> Int -> { pos :: Int, pend :: Int } -> { pos :: Int, pend :: Int }
-advanceSeqN order cells dir n st
+advanceSeqN :: Array Int -> Array Cell -> Int -> Dir -> Int -> { pos :: Int, pend :: Int } -> { pos :: Int, pend :: Int }
+advanceSeqN order cells len dir n st
   | n <= 0 = st
-  | otherwise = advanceSeqN order cells dir (n - 1) (stepSeq order cells dir st)
+  | otherwise = advanceSeqN order cells len dir (n - 1) (stepSeq order cells len dir st)
 
 advanceHead :: Array Cell -> Head -> Head
 advanceHead cells h =
   let
     order = orderOf h.patternIx
+    len = clampI 1 16 h.len
     newAcc = h.accumulator + speedOf h
     steps = floor newAcc
     remain = newAcc - toNumber steps
-    r = advanceSeqN order cells (decodeDir h.direction) steps { pos: h.seqPos, pend: h.pendStep }
+    r = advanceSeqN order cells len (decodeDir h.direction) steps { pos: h.seqPos, pend: h.pendStep }
   in
-    h { seqPos = r.pos, cursor = gridAt order r.pos, accumulator = remain, pendStep = r.pend }
+    h { seqPos = r.pos
+      , cursor = gridAt order (modPos (r.pos + h.offset) len)
+      , accumulator = remain, pendStep = r.pend }
 
 step :: Odonus -> Odonus
 step o = o { heads = map (advanceHead o.cells) o.heads }
@@ -208,9 +219,9 @@ step o = o { heads = map (advanceHead o.cells) o.heads }
 cursorsOf :: Odonus -> Array Int
 cursorsOf o = map _.cursor o.heads
 
--- | A note a head emits this tick: which head, and the resulting pitch
--- | (cell note + the head's transposition).
-type Fired = { headIdx :: Int, pitch :: Int }
+-- | A note a head emits this tick: which head, the resulting pitch, and
+-- | whether the cell is marked glide (→ MIDI portamento / CV slew).
+type Fired = { headIdx :: Int, pitch :: Int, glide :: Boolean }
 
 -- | Advance one tick and report what fired: an unmuted head that MOVED onto a
 -- | gated, non-skipped cell emits its note. (A head that didn't advance this
@@ -224,7 +235,7 @@ stepEmit o =
       let moved = hd.cursor /= fromMaybe (-1) (oldCursors !! idx)
       in case o2.cells !! hd.cursor of
         Just c | moved && not hd.mute && c.gate && not c.skip ->
-          Just { headIdx: idx, pitch: renderCell o2 hd c }
+          Just { headIdx: idx, pitch: renderCell o2 hd c, glide: c.glide }
         _ -> Nothing
   in
     { odo: o2, fired: catMaybes (mapWithIndex firedFor o2.heads) }
@@ -263,6 +274,12 @@ setHeadDir h v = editHead h \hd -> hd { direction = clampI 0 2 v }
 setHeadTransp :: Int -> Int -> Odonus -> Odonus
 setHeadTransp h v = editHead h \hd -> hd { transp = clampI (-24) 24 v }
 
+setHeadOffset :: Int -> Int -> Odonus -> Odonus
+setHeadOffset h v = editHead h \hd -> hd { offset = clampI 0 15 v }
+
+setHeadLen :: Int -> Int -> Odonus -> Odonus
+setHeadLen h v = editHead h \hd -> hd { len = clampI 1 16 v }
+
 toggleHeadMute :: Int -> Odonus -> Odonus
 toggleHeadMute h = editHead h \hd -> hd { mute = not hd.mute }
 
@@ -290,3 +307,32 @@ toggleDistribution :: Odonus -> Odonus
 toggleDistribution o = o { dist = case o.dist of
   Natural -> Equal
   Equal -> Natural }
+
+-- | Make every head a copy of head I, phase-aligned and unmuted: four voices
+-- | in exact unison. The starting point for Steve Reich phasing — from here,
+-- | nudge one head's LEN (metric phasing, Clapping-Music style) or OFF (static
+-- | canon) and listen to them drift against each other.
+unifyHeads :: Odonus -> Odonus
+unifyHeads o = case o.heads !! 0 of
+  Just h0 -> o { heads = map (\_ -> aligned h0) o.heads }
+  Nothing -> o
+  where
+  aligned h = h { cursor = 0, seqPos = 0, accumulator = 0.0, pendStep = 1, mute = false }
+
+-- ---------------------------------------------------------------------------
+-- scenes — load a saved setting over the live one, preserving playhead phase
+-- ---------------------------------------------------------------------------
+
+-- | Load `scene` over the currently-`live` patch, but carry each playhead's
+-- | LIVE phase (cursor / seqPos / accumulator / pendStep) across the swap — so
+-- | a scene change flows (new notes/scale/mutes/head-config take effect) rather
+-- | than hard-resetting every cursor to 0. This is what makes sequencing whole
+-- | settings sound like a continuing fugue with key changes and voices coming
+-- | and going, not a stack of restarts.
+recallScene :: Odonus -> Odonus -> Odonus
+recallScene live scene =
+  scene { heads = zipWith carry live.heads scene.heads }
+  where
+  carry lh sh = sh
+    { cursor = lh.cursor, seqPos = lh.seqPos
+    , accumulator = lh.accumulator, pendStep = lh.pendStep }
