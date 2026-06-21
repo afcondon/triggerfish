@@ -8,7 +8,7 @@ import Prelude
 import Data.Array (mapWithIndex, range, (!!))
 import Data.Int (toNumber)
 import Data.Int.Bits (and, shr)
-import Data.Maybe (fromMaybe)
+import Data.Maybe (fromMaybe, maybe)
 import Data.String.Common (joinWith)
 import Halogen as H
 import Halogen.HTML as HH
@@ -16,22 +16,48 @@ import Halogen.HTML.Events as HE
 import Triggerfish.Odonus.Model as M
 import Triggerfish.Odonus.Grid.Types (Action(..), KnobTarget(..), State)
 import Triggerfish.Odonus.Grid.Widgets
-  ( dirName, engrave, headColor, miniKnob, panelShell, roman, signed, speedRatio
-  , style, svgAttr, svgEl )
+  ( engrave, headColor, miniKnob, panelShell, roman, signed, speedRatio
+  , stepBtn, style, svgAttr, svgEl )
 
 playheadsPanel :: forall m. State -> H.ComponentHTML Action () m
 playheadsPanel s =
   panelShell s.collapsed "PLAYHEADS" "Fugue · Access" "flex:0 1 290px;min-width:min-content"
-    [ HH.button
-        [ HE.onClick \_ -> UnifyHeads
-        , style $ "width:100%;padding:6px;margin-bottom:10px;border:1px solid #a8a392;border-radius:7px;cursor:pointer;"
-            <> "background:linear-gradient(#efece1,#ddd9cb);font-family:Georgia,serif;font-size:11px;color:#3f3c33" ]
-        [ HH.text "≡ Unison · all heads = I" ]
+    [ phasingBlock s.odo
     , HH.span [ style $ engrave <> ";font-size:9px;opacity:0.85;display:block;margin-bottom:4px" ]
         [ HH.text "COMBINATIONS" ]
     , headMatrix s.odo
     , headBank s
     ]
+
+-- | PHASING — the Reichian macros over all four heads at once. UNISON collapses
+-- | to unison phase; FAN spreads the offsets into a static canon (0, n, 2n, 3n);
+-- | STAGGER ramps the loop lengths for metric phasing (Clapping-Music drift);
+-- | PHASE ± rotates the whole canon a step. FAN/STAGGER read back from head II,
+-- | so they round-trip the gesture and reflect the live spread.
+phasingBlock :: forall m. M.Odonus -> H.ComponentHTML Action () m
+phasingBlock odo =
+  let
+    fanN = maybe 0 _.offset (odo.heads !! 1)
+    stagN = 16 - maybe 16 _.len (odo.heads !! 1)
+  in
+    HH.div [ style "margin-bottom:12px" ]
+      [ HH.span [ style $ engrave <> ";font-size:9px;opacity:0.85;display:block;margin-bottom:5px" ]
+          [ HH.text "PHASING" ]
+      , HH.button
+          [ HE.onClick \_ -> UnifyHeads
+          , style $ "width:100%;padding:6px;margin-bottom:8px;border:1px solid #a8a392;border-radius:7px;cursor:pointer;"
+              <> "background:linear-gradient(#efece1,#ddd9cb);font-family:Georgia,serif;font-size:11px;color:#3f3c33" ]
+          [ HH.text "≡ Unison · all heads = I" ]
+      , HH.div [ style "display:flex;align-items:flex-end;justify-content:space-between;gap:8px" ]
+          [ miniKnob FanOff fanN "#6f7f88" "FAN" (show fanN)
+          , miniKnob StaggerLen stagN "#6f7f88" "STAGGER" (show stagN)
+          , HH.div [ style "display:flex;flex-direction:column;align-items:center;width:52px" ]
+              [ HH.span [ style $ engrave <> ";font-size:8px;margin-bottom:3px" ] [ HH.text "PHASE" ]
+              , HH.div [ style "display:flex;gap:5px" ]
+                  [ stepBtn "‹" (PhaseShift (-1)), stepBtn "›" (PhaseShift 1) ]
+              ]
+          ]
+      ]
 
 -- | The 16 head-activation combinations (2⁴) as a switch palette: each
 -- | switch is four vertical bars (I–IV, lit when that head sounds in this
@@ -76,18 +102,48 @@ headStrip h hd =
     pat = fromMaybe { name: "?", order: [] } (M.patternLibrary !! hd.patternIx)
   in
     HH.div
-      [ style $ "display:flex;align-items:center;gap:10px;padding:7px 10px;border-radius:8px;background:#cbc6b6;box-shadow:0 0 0 1px " <> col <> "66;" <> dim ]
+      [ style $ "display:flex;align-items:center;gap:12px;padding:7px 10px;border-radius:8px;background:#cbc6b6;box-shadow:0 0 0 1px " <> col <> "66;" <> dim ]
       [ muteBlock h hd col
-      , patBlock h pat col hd.seqPos
+      , HH.div [ style "display:flex;flex-direction:column;align-items:center;gap:4px" ]
+          [ patBlock h pat col hd.seqPos
+          , dirRadio h hd.direction col
+          ]
       , HH.div
-          [ style "display:grid;grid-template-columns:repeat(3,1fr);gap:6px 4px" ]
-          [ miniKnob (HeadDir h) hd.direction col "DIR" (dirName hd.direction)
-          , miniKnob (HeadSpeed h) hd.speedIx col "SPD" (speedRatio hd.speedIx)
+          [ style "display:flex;flex-direction:column;gap:6px;align-items:center" ]
+          [ HH.div [ style "display:flex;gap:8px" ]
+              [ miniKnob (HeadSpeed h) hd.speedIx col "SPD" (speedRatio hd.speedIx)
+              , miniKnob (HeadDiv h) hd.pulses col "DIV" (euclidLabel hd.pulses hd.len)
+              ]
           , miniKnob (HeadTransp h) hd.transp col "INT" (signed hd.transp)
-          , miniKnob (HeadOffset h) hd.offset col "OFF" (show hd.offset)
-          , miniKnob (HeadLen h) hd.len col "LEN" (show hd.len)
           ]
       ]
+
+-- | DIV readout: effective pulses / steps, e.g. "5/16" — the voice's Euclidean
+-- | density. At pulses ≥ len it reads "16/16" (every step, no gating).
+euclidLabel :: Int -> Int -> String
+euclidLabel pulses len = show (min pulses len) <> "/" <> show len
+
+-- | Direction as a three-way radio under the pattern thumbnail (→ forward,
+-- | ← backward, ↔ pendulum) — frees the knob row, and reads at a glance.
+dirRadio :: forall m. Int -> Int -> String -> H.ComponentHTML Action () m
+dirRadio h cur col =
+  HH.div [ style "display:flex;gap:3px;width:54px" ]
+    (map (\d -> dirBtn (dirGlyph d) (cur == d) col (SetHeadDir h d)) [ 0, 1, 2 ])
+
+dirGlyph :: Int -> String
+dirGlyph = case _ of
+  0 -> "→"
+  1 -> "←"
+  _ -> "↔"
+
+dirBtn :: forall m. String -> Boolean -> String -> Action -> H.ComponentHTML Action () m
+dirBtn glyph active col act =
+  HH.button
+    [ HE.onClick \_ -> act
+    , style $ "flex:1;padding:2px 0;border:1px solid #a8a392;border-radius:4px;cursor:pointer;line-height:1;"
+        <> "font-size:11px;color:" <> (if active then "#1c1a12" else "#6a6456")
+        <> ";background:" <> (if active then "linear-gradient(" <> col <> "," <> col <> ")" else "linear-gradient(#efece1,#ddd9cb)") ]
+    [ HH.text glyph ]
 
 muteBlock :: forall m. Int -> M.Head -> String -> H.ComponentHTML Action () m
 muteBlock h hd col =

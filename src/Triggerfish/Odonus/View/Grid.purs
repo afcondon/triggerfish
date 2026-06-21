@@ -13,20 +13,30 @@ import Triggerfish.Odonus.Model as M
 import Triggerfish.Ui.Knob (knob)
 import Triggerfish.Odonus.Grid.Types (Action(..), KnobTarget(..), State)
 import Triggerfish.Odonus.Grid.Widgets
-  ( cellChrome, engrave, labelledRow, panelShell, style, tabBtn )
+  ( cellChrome, engrave, labelledRow, miniKnob, panelShell, style, tabBtn )
 import Data.Array (length, mapWithIndex)
 
 gridPanel :: forall m. State -> H.ComponentHTML Action () m
 gridPanel s =
   panelShell s.collapsed "ODONUS" "16 · Cartesian" "flex:0 1 340px;min-width:min-content"
     [ grid s
-    , HH.div [ style "display:flex;align-items:flex-end;gap:12px;margin-top:6px" ]
+    , HH.div [ style "display:flex;align-items:flex-end;gap:10px;margin-top:6px" ]
         [ HH.div [ style "flex:1" ] [ clockRow s ]
-        , gateBlock s.odo
+        , feelBlock s
         ]
     , controls s
     , statusBar s
     , nameplate s
+    ]
+
+-- | GROOVE block: GATE length + SWING (off-beat lag) + HUMANISE (velocity
+-- | jitter) — the controls that pull the sequence off the metronome.
+feelBlock :: forall m. State -> H.ComponentHTML Action () m
+feelBlock s =
+  HH.div [ style "display:flex;align-items:flex-end;gap:8px" ]
+    [ gateBlock s.odo
+    , miniKnob SwingAmt (round (s.swing * 100.0)) "#7d8a93" "SWING" (show (round (s.swing * 100.0)) <> "%")
+    , miniKnob VelHuman s.velHumanize "#7d8a93" "HUMAN" ("±" <> show s.velHumanize)
     ]
 
 -- | GATE knob: gated-note length as % of step (10..200; past 100 the notes
@@ -125,6 +135,7 @@ setAllRow odo =
     [ HH.span [ style $ engrave <> ";font-size:8px;opacity:0.7;margin-right:1px" ] [ HH.text "SET ALL" ]
     , tabBtn "MIN" false (SetAllNotes (36 + odo.rootPc))
     , tabBtn "CENTER" false (SetAllNotes (60 + odo.rootPc))
+    , tabBtn "MELODY" false SeedMelody
     ]
 
 noteCell :: forall m. M.Odonus -> Int -> M.Cell -> H.ComponentHTML Action () m

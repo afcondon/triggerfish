@@ -46,8 +46,13 @@ data KnobTarget
   | HeadTransp Int
   | HeadOffset Int
   | HeadLen Int
+  | HeadDiv Int      -- per-voice Euclidean pulse count (DIV)
   | Spread
   | GateLen
+  | SwingAmt          -- groove: % a step delays off-beat model steps (lives on State)
+  | VelHuman          -- velocity humanise range ± (lives on State)
+  | FanOff           -- Reichian FAN: spread head offsets into a canon
+  | StaggerLen       -- Reichian STAGGER: ramp head lengths for metric phasing
   | ChordStep        -- chord-progression clock: steps per chord
   | GenRate GenKind  -- a source's randomisation rate, lives on State (see DragMove)
   | GenAmt GenKind   -- a source's mutation depth / intensity (0..100)
@@ -61,8 +66,13 @@ targetRange = case _ of
   HeadTransp _ -> { lo: -24, hi: 24 }
   HeadOffset _ -> { lo: 0, hi: 15 }
   HeadLen _ -> { lo: 1, hi: 16 }
+  HeadDiv _ -> { lo: 0, hi: 16 }
   Spread -> { lo: 1, hi: 12 }
   GateLen -> { lo: 10, hi: 200 }
+  SwingAmt -> { lo: 0, hi: 60 }
+  VelHuman -> { lo: 0, hi: 40 }
+  FanOff -> { lo: 0, hi: 5 }
+  StaggerLen -> { lo: 0, hi: 5 }
   ChordStep -> { lo: M.chordPeriodMin, hi: M.chordPeriodMax }
   GenRate _ -> { lo: 0, hi: rateMax }
   GenAmt _ -> { lo: 0, hi: 100 }
@@ -76,9 +86,14 @@ applyTarget t v = case t of
   HeadTransp h -> M.setHeadTransp h v
   HeadOffset h -> M.setHeadOffset h v
   HeadLen h -> M.setHeadLen h v
+  HeadDiv h -> M.setHeadPulses h v
   Spread -> M.setSpread v
   GateLen -> M.setGatePct v
+  FanOff -> M.fanOffsets v
+  StaggerLen -> M.staggerLengths v
   ChordStep -> M.setChordPeriod v
+  SwingAmt -> identity     -- handled at State level in DragMove, not on Odonus
+  VelHuman -> identity      -- handled at State level in DragMove, not on Odonus
   GenRate _ -> identity   -- handled at State level in DragMove, not on Odonus
   GenAmt _ -> identity     -- handled at State level in DragMove, not on Odonus
 
@@ -218,6 +233,8 @@ type State =
   , barsPerScene :: Int
   , stepDiv :: Int          -- global clock divider (1=1/16 .. 16=whole note)
   , headNote :: Array (Maybe Int)  -- the held/sounding MIDI note per head (4)
+  , swing :: Number          -- groove: fraction of a step that off-beats lag (0..0.6)
+  , velHumanize :: Int       -- velocity jitter range ± (0 = dead-flat)
   , gen :: Array GenSource    -- the randomisation matrix — one source per aspect
   , genSpread :: Number       -- Marbles X-Y pad: spread ∈ [0,1] (NOTES source)
   , genBias :: Number         -- Marbles X-Y pad: bias ∈ [0,1] (NOTES source)
@@ -237,10 +254,13 @@ data Action
   | ToggleGate Int
   | ToggleSkip Int
   | SetAllNotes Int
+  | SeedMelody              -- fill cells with a random in-harmony melodic line
   | ToggleHeadMute Int
   | SetHeadMask Int
   | CyclePattern Int
+  | SetHeadDir Int Int      -- head, direction (0 fwd / 1 back / 2 pend) — radio
   | UnifyHeads
+  | PhaseShift Int          -- Reichian PHASE ±: rotate the whole canon
   | CycleScaleType Int
   | ToggleDist
   | ToggleChord

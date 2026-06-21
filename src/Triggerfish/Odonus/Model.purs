@@ -41,11 +41,17 @@ module Triggerfish.Odonus.Model
   , setHeadTransp
   , setHeadOffset
   , setHeadLen
+  , setHeadPulses
+  , euclidHit
+  , harmonyPCs
   , toggleHeadMute
   , headMask
   , setHeadMask
   , cyclePattern
   , unifyHeads
+  , fanOffsets
+  , staggerLengths
+  , nudgeOffsets
   , scaleOf
   , renderCell
   , cycleRoot
@@ -70,7 +76,7 @@ import Data.Foldable (foldl)
 import Data.Int (floor, toNumber)
 import Data.Int.Bits (and, shl, shr)
 import Data.Maybe (Maybe(..), fromMaybe, maybe)
-import Triggerfish.Scale (Scale, Distribution(..), applyDistribution, mkScaleFromIvls, normaliseIvls, quantiseToChordPCs, quantiseToScale, randomisableScales, recogniseScale, scaleTypes, shiftDegrees, spreadIvls)
+import Triggerfish.Scale (Scale, Distribution(..), applyDistribution, mkScaleFromIvls, normaliseIvls, pitchClassesOf, quantiseToChordPCs, quantiseToScale, randomisableScales, recogniseScale, scaleTypes, shiftDegrees, spreadIvls)
 import Triggerfish.Vetula (Chord(..), Mode(Ionian), mcmullenYellow, mcmullenYellowNames, realize)
 
 type Cell =
@@ -114,6 +120,7 @@ type Head =
   , patternIx :: Int
   , offset :: Int   -- emit this many of THIS head's steps ahead (phase / canon)
   , len :: Int      -- loop length: reset after L steps (polymeter)
+  , pulses :: Int   -- Euclidean trigger count over `len` steps (pulses = len ⇒ every step)
   }
 
 -- | A chord-progression quantiser overlay. When `on`, the output is snapped a
@@ -187,6 +194,11 @@ currentChordPCs o =
 setChordPicks :: Array Int -> Odonus -> Odonus
 setChordPicks ps o = o { chord = o.chord { picks = ps, ix = 0, phase = 0 } }
 
+-- | The pitch classes the current harmony admits: the live chord if the chord
+-- | overlay is running, else the whole scale. Used to seed a melodic line.
+harmonyPCs :: Odonus -> Array Int
+harmonyPCs o = if o.chord.on then currentChordPCs o else pitchClassesOf (scaleOf o)
+
 chordPeriodMin :: Int
 chordPeriodMin = 1
 
@@ -226,7 +238,7 @@ replicate16 = replicate 16
 mkHead :: Int -> Int -> Int -> Boolean -> Int -> Head
 mkHead speedIx direction transp mute patternIx =
   { cursor: 0, seqPos: 0, accumulator: 0.0, pendStep: 1
-  , speedIx, direction, transp, mute, patternIx, offset: 0, len: 16 }
+  , speedIx, direction, transp, mute, patternIx, offset: 0, len: 16, pulses: 16 }
 
 -- | Head I runs (Rows, 1.0×); II–IV start muted with distinct patterns + fugue
 -- | offsets — unmute to build the canon. (Speed indices into the widened
@@ -338,8 +350,11 @@ stepEmit o =
     o2 = step o
     firedFor idx hd =
       let moved = hd.cursor /= fromMaybe (-1) (oldCursors !! idx)
+          -- This voice's own Euclidean clock: only steps that land on a pulse of
+          -- E(pulses, len) trigger. pulses = len ⇒ every step (no gating).
+          pulse = euclidHit hd.pulses (clampI 1 16 hd.len) hd.seqPos
       in case o2.cells !! hd.cursor of
-        Just c | moved && not hd.mute && c.gate && not c.skip ->
+        Just c | moved && pulse && not hd.mute && c.gate && not c.skip ->
           Just { headIdx: idx, pitch: renderCell o2 hd c, glide: c.glide, dur: c.dur }
         _ -> Nothing
   in
@@ -399,6 +414,19 @@ setHeadOffset h v = editHead h \hd -> hd { offset = clampI 0 15 v }
 
 setHeadLen :: Int -> Int -> Odonus -> Odonus
 setHeadLen h v = editHead h \hd -> hd { len = clampI 1 16 v }
+
+-- | Set a head's Euclidean pulse count (DIV). 0 silences the voice; pulses ≥ len
+-- | fires every step. The even (Bresenham) Euclidean distribution.
+setHeadPulses :: Int -> Int -> Odonus -> Odonus
+setHeadPulses h v = editHead h \hd -> hd { pulses = clampI 0 16 v }
+
+-- | Is step `i` a pulse of the even Euclidean rhythm E(pulses, steps)? 0 pulses
+-- | is silent; pulses ≥ steps is every step; otherwise pulses spread evenly.
+euclidHit :: Int -> Int -> Int -> Boolean
+euclidHit pulses steps i
+  | pulses <= 0 = false
+  | pulses >= steps = true
+  | otherwise = ((i `mod` steps) * pulses) `mod` steps < pulses
 
 toggleHeadMute :: Int -> Odonus -> Odonus
 toggleHeadMute h = editHead h \hd -> hd { mute = not hd.mute }
@@ -501,6 +529,24 @@ unifyHeads o = case o.heads !! 0 of
   Nothing -> o
   where
   aligned h = h { cursor = 0, seqPos = 0, accumulator = 0.0, pendStep = 1, mute = false }
+
+-- ---------------------------------------------------------------------------
+-- Reichian phasing macros — drive all four heads' OFFSET / LEN at once
+-- ---------------------------------------------------------------------------
+
+-- | FAN: spread the heads into a canon, offsets 0, n, 2n, 3n (head-steps) —
+-- | a static phase fan. n = 0 collapses to unison phase.
+fanOffsets :: Int -> Odonus -> Odonus
+fanOffsets n o = o { heads = mapWithIndex (\i hd -> hd { offset = clampI 0 15 (i * n) }) o.heads }
+
+-- | STAGGER: ramp the loop lengths 16, 16−n, 16−2n, 16−3n — metric phasing
+-- | (the heads fall out of step and slowly realign, Clapping-Music style).
+staggerLengths :: Int -> Odonus -> Odonus
+staggerLengths n o = o { heads = mapWithIndex (\i hd -> hd { len = clampI 1 16 (16 - i * n) }) o.heads }
+
+-- | PHASE ±: rotate the whole canon — shift every head's offset by `d` steps.
+nudgeOffsets :: Int -> Odonus -> Odonus
+nudgeOffsets d o = o { heads = map (\hd -> hd { offset = clampI 0 15 (hd.offset + d) }) o.heads }
 
 -- ---------------------------------------------------------------------------
 -- scenes — load a saved setting over the live one, preserving playhead phase

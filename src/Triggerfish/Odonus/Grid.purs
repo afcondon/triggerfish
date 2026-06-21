@@ -57,6 +57,7 @@ component =
         , clockBeat: 0.0, clockBar: 0, anchorCount: 0
         , scenes: [], chain: false, sceneIx: 0, sceneBarAnchor: 0, barsPerScene: 4
         , stepDiv: 1, headNote: [ Nothing, Nothing, Nothing, Nothing ]
+        , swing: 0.0, velHumanize: 12
         , gen: map (\k -> { kind: k, on: false, rate: genDefaultRate k, amt: genDefaultAmt k }) genKinds
         , genSpread: 0.5, genBias: 0.5, genSeed: Marbles.seedFrom 1
         , collapsed: [], lastTap: "", lastTapMicros: 0.0 }
@@ -112,15 +113,32 @@ handleAction = case _ of
         muteOf o h = maybe true _.mute (o.heads !! h)
         newlyMuted = filter (\h -> not (muteOf st.odo h) && muteOf g.odo h) (range 0 3)
         r = M.stepEmit o1
+        msPerBeat = 60000.0 / max 30.0 st.clockTempo
+        -- One model step in ms (a 1× head's note spacing at this STEP LENGTH).
+        stepMs = (0.25 * toNumber st.stepDiv) * msPerBeat
+        modelStep = tick.index / st.stepDiv
+        -- Swing: lag the off-beat (odd) model steps by a fraction of a step, so
+        -- the grid breathes instead of being metronomic. Applied to the audible
+        -- onset (and the scope), not the model advance.
+        swingMs = if modelStep `mod` 2 == 1 then st.swing * stepMs else 0.0
+        emitDelay = tick.delayMs + swingMs
+        -- Accent the beat (every 4th model step) so it isn't dead-flat.
+        accent = if modelStep `mod` 4 == 0 then 14 else 0
         -- A non-glide note's length scales with this head's note-spacing (so it
         -- breathes with the tempo / step length) rather than a fixed blip.
         gateMsFor f =
           let spd = maybe 1.0 M.speedOf (r.odo.heads !! f.headIdx)
-              msPerBeat = 60000.0 / max 30.0 st.clockTempo
-          in (0.25 * toNumber st.stepDiv) * msPerBeat / max 1.0 spd
-               * (toNumber r.odo.gatePct / 100.0)
-               * toNumber f.dur
+          in stepMs / max 1.0 spd * (toNumber r.odo.gatePct / 100.0) * toNumber f.dur
         prevOf h = join (st.headNote !! h)
+        -- Velocity: base + beat accent + seeded humanise (±velHumanize). Drawn
+        -- from the same PRNG as the generators, threaded on after Gen.
+        velStep acc f =
+          let { u, seed } = Marbles.nextRand acc.seed
+              hum = round ((u - 0.5) * 2.0 * toNumber st.velHumanize)
+              v = clampI 1 127 (100 + accent + hum)
+          in { items: acc.items <> [ { f, v } ], seed }
+        velied = foldl velStep { items: [], seed: g.seed } r.fired
+        firedV = velied.items
       -- Silence any voice the generator muted this step.
       for_ st.midiOut \out -> liftEffect $ for_ newlyMuted \h -> case join (st.headNote !! h) of
         Just n -> Midi.noteOffAt out { channel: h, note: n, delayMs: 0.0 }
@@ -128,8 +146,8 @@ handleAction = case _ of
       -- Emit MIDI with per-head legato: glide cells HOLD until the next note
       -- (tie if same pitch, portamento-slide if different); non-glide cells are
       -- gated notes whose length scales with tempo.
-      for_ st.midiOut \out -> liftEffect $ for_ r.fired \f ->
-        emitNote out tick.delayMs (gateMsFor f) (prevOf f.headIdx) f
+      for_ st.midiOut \out -> liftEffect $ for_ firedV \fv ->
+        emitNote out emitDelay (gateMsFor fv.f) fv.v (prevOf fv.f.headIdx) fv.f
       let
         -- A glide note stays held (its pitch); a gated note auto-ends.
         nextNote f = if f.glide then Just f.pitch else Nothing
@@ -139,10 +157,10 @@ handleAction = case _ of
         -- Clear the held-note slots of voices the generator just muted.
         clearedHeadNote = foldl (\arr h -> fromMaybe arr (updateAt h Nothing arr)) newHeadNote newlyMuted
         fresh = map (\f -> { pitch: f.pitch, headIdx: f.headIdx
-                           , fireUnixMicros: tick.fireUnixMicros }) r.fired
+                           , fireUnixMicros: tick.fireUnixMicros + swingMs * 1000.0 }) r.fired
       H.modify_ \s -> s
         { odo = r.odo, notes = fresh <> s.notes, headNote = clearedHeadNote
-        , genSeed = g.seed }
+        , genSeed = velied.seed }
   Frame -> do
     st <- H.get
     case st.binnacle of
@@ -185,6 +203,9 @@ handleAction = case _ of
   ToggleGate i -> H.modify_ \s -> s { odo = M.toggleGate i s.odo }
   ToggleSkip i -> H.modify_ \s -> s { odo = M.toggleSkip i s.odo }
   SetAllNotes v -> H.modify_ \s -> s { odo = M.setAllNotes v s.odo }
+  SeedMelody -> H.modify_ \s ->
+    let r = Gen.seedMelody (M.harmonyPCs s.odo) s.odo s.genSeed
+    in s { odo = r.odo, genSeed = r.seed }
   ToggleHeadMute h -> do
     st <- H.get
     -- Muting a head that's holding a note → kill it (it won't emit again to
@@ -210,7 +231,9 @@ handleAction = case _ of
       { odo = nextOdo
       , headNote = mapWithIndex (\h mn -> if nowMuted h then Nothing else mn) s.headNote }
   CyclePattern h -> H.modify_ \s -> s { odo = M.cyclePattern h s.odo }
+  SetHeadDir h d -> H.modify_ \s -> s { odo = M.setHeadDir h d s.odo }
   UnifyHeads -> H.modify_ \s -> s { odo = M.unifyHeads s.odo }
+  PhaseShift d -> H.modify_ \s -> s { odo = M.nudgeOffsets d s.odo }
   CycleScaleType dir -> H.modify_ \s -> s { odo = M.cycleScaleType dir s.odo }
   ToggleDist -> H.modify_ \s -> s { odo = M.toggleDistribution s.odo }
   ToggleChord -> H.modify_ \s ->
@@ -248,6 +271,8 @@ handleAction = case _ of
             case drag.target of
               GenRate kind -> H.modify_ \s -> s { gen = setRate kind newVal s.gen }
               GenAmt kind -> H.modify_ \s -> s { gen = setAmt kind newVal s.gen }
+              SwingAmt -> H.modify_ \s -> s { swing = toNumber newVal / 100.0 }
+              VelHuman -> H.modify_ \s -> s { velHumanize = newVal }
               _ -> H.modify_ \s -> s { odo = applyTarget drag.target newVal s.odo }
       _ -> pure unit
   DragEnd -> do
@@ -310,8 +335,8 @@ gridCfg = { stepBeats: 0.25, lookaheadMs: 120.0, tickMs: 25 }
 -- |   glide + nothing held → start a held note (no auto-off)
 -- |   no glide             → gated note: end any held note, then a note that
 -- |                          auto-offs after `gateMs` (rhythmic articulation)
-emitNote :: Midi.MidiOut -> Number -> Number -> Maybe Int -> M.Fired -> Effect Unit
-emitNote out delayMs gateMs prev f =
+emitNote :: Midi.MidiOut -> Number -> Number -> Int -> Maybe Int -> M.Fired -> Effect Unit
+emitNote out delayMs gateMs vel prev f =
   let h = f.headIdx
       p = f.pitch
       portaOn = do
@@ -322,18 +347,18 @@ emitNote out delayMs gateMs prev f =
     Just q, true | q == p -> pure unit                         -- tie
     Just q, true -> do                                          -- slide
       portaOn
-      Midi.noteOnAt out { channel: h, note: p, velocity: 100, delayMs }
+      Midi.noteOnAt out { channel: h, note: p, velocity: vel, delayMs }
       Midi.noteOffAt out { channel: h, note: q, delayMs: delayMs + 60.0 }
     Just q, false -> do                                         -- gated, end held
       Midi.noteOffAt out { channel: h, note: q, delayMs }
       portaOff
-      Midi.scheduleNote out { channel: h, note: p, velocity: 100, delayMs, durMs: gateMs }
+      Midi.scheduleNote out { channel: h, note: p, velocity: vel, delayMs, durMs: gateMs }
     Nothing, true -> do                                         -- start held
       portaOff
-      Midi.noteOnAt out { channel: h, note: p, velocity: 100, delayMs }
+      Midi.noteOnAt out { channel: h, note: p, velocity: vel, delayMs }
     Nothing, false -> do                                        -- gated
       portaOff
-      Midi.scheduleNote out { channel: h, note: p, velocity: 100, delayMs, durMs: gateMs }
+      Midi.scheduleNote out { channel: h, note: p, velocity: vel, delayMs, durMs: gateMs }
 
 -- | Note-off every held note (e.g. on Stop) and clear the held-note table.
 silenceHeld :: Maybe Midi.MidiOut -> Array (Maybe Int) -> Effect Unit

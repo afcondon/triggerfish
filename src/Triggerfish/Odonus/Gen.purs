@@ -13,15 +13,16 @@ module Triggerfish.Odonus.Gen
   , runGen
   , rollAllNotes
   , rollChords
+  , seedMelody
   ) where
 
 import Prelude
 
-import Data.Array (range, (!!))
+import Data.Array (elem, filter, length, null, range, (!!))
 import Data.Foldable (foldl)
 import Data.Int (round, toNumber)
 import Data.Int.Bits (shl, xor)
-import Data.Maybe (maybe)
+import Data.Maybe (fromMaybe, maybe)
 import Triggerfish.Odonus.Model as M
 import Triggerfish.Odonus.Marbles as Marbles
 import Triggerfish.Odonus.Grid.Types (GenKind(..), GenSource, periodOf)
@@ -154,3 +155,17 @@ rollChords tableSize = go 4 []
     | otherwise =
         let { n: ix, seed: seed' } = Marbles.nextInt tableSize seed
         in go (n - 1) (acc <> [ ix ]) seed'
+
+-- | Seed a plausible melody: 16 random notes from the harmony's pitch classes
+-- | (`pcs`) within a centred melodic band (~D3..D5). A CENTER-like reset that
+-- | already sits in the key/chord and reads as a line, not a flat block.
+seedMelody :: Array Int -> M.Odonus -> Marbles.Seed -> { odo :: M.Odonus, seed :: Marbles.Seed }
+seedMelody pcs odo seed0 =
+  let band = range 50 74
+      cands = filter (\n -> elem (mod n 12) pcs) band
+      cands' = if null cands then band else cands
+      pick acc _ =
+        let { n: i, seed } = Marbles.nextInt (length cands') acc.seed
+        in { values: acc.values <> [ fromMaybe 60 (cands' !! i) ], seed }
+      r = foldl pick { values: [], seed: seed0 } (range 0 15)
+  in { odo: M.setNotes r.values odo, seed: r.seed }

@@ -41,6 +41,7 @@ edslText o =
         <> " " <> signed hd.transp
         <> " off " <> show hd.offset
         <> " len " <> show hd.len
+        <> " div " <> show hd.pulses
         <> (if hd.mute then "  (mute)" else "")
   in
     joinWith "\n"
