@@ -140,6 +140,9 @@ type State =
   , marblesSeed :: Marbles.Seed
   , stepCounter :: Int       -- model advances since start, for bar boundaries
   , genLastScene :: Int      -- sceneIx the generator last saw (scene boundary)
+  , collapsed :: Array String  -- panel labels currently collapsed (accordion)
+  , lastPanel :: String        -- last panel toggled (debounce the double-dispatch)
+  , lastPanelMicros :: Number
   }
 
 data Action
@@ -175,3 +178,5 @@ data Action
   | MarblesPad Int Int Int     -- X-Y pad: clientX, clientY, buttons (read sync)
   | SetBoundary Boundary
   | MarblesRoll                -- one-shot: regenerate all cells now
+  | CollapsePanel String       -- fold a panel to a tab (idempotent)
+  | ExpandPanel String         -- reopen a panel (idempotent)

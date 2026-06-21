@@ -18,7 +18,7 @@ import Triggerfish.Odonus.Grid.Widgets
 
 edslPanel :: forall m. State -> H.ComponentHTML Action () m
 edslPanel s =
-  panelShell "SOURCE" "eDSL" "flex:0 1 244px;min-width:0"
+  panelShell s.collapsed "SOURCE" "eDSL" "flex:0 1 244px;min-width:0"
     [ HH.div
         [ style $ "font-family:'SF Mono',Menlo,monospace;font-size:10.5px;line-height:1.55;"
             <> "white-space:pre;color:#3a372e;background:#00000008;border:1px solid #00000012;"

@@ -9,7 +9,7 @@ module Triggerfish.Odonus.Grid (component) where
 
 import Prelude
 
-import Data.Array (deleteAt, filter, length, mapWithIndex, null, range, updateAt, (!!))
+import Data.Array (deleteAt, elem, filter, length, mapWithIndex, null, range, updateAt, (!!))
 import Data.Foldable (foldl, for_, maximum, minimum)
 import Data.FoldableWithIndex (forWithIndex_)
 import Data.Int (ceil, round, toNumber)
@@ -55,8 +55,9 @@ component =
         , clockBeat: 0.0, clockBar: 0, anchorCount: 0
         , scenes: [], chain: false, sceneIx: 0, sceneBarAnchor: 0, barsPerScene: 4
         , stepDiv: 1, headNote: [ Nothing, Nothing, Nothing, Nothing ]
-        , marbles: { on: false, spread: 0.5, bias: 0.5, amount: 0.5, boundary: EveryStep }
-        , marblesSeed: Marbles.seedFrom 1, stepCounter: 0, genLastScene: 0 }
+        , marbles: { on: false, spread: 0.5, bias: 0.5, amount: 0.05, boundary: EveryStep }
+        , marblesSeed: Marbles.seedFrom 1, stepCounter: 0, genLastScene: 0
+        , collapsed: [], lastPanel: "", lastPanelMicros: 0.0 }
     , render
     , eval: H.mkEval H.defaultEval
         { handleAction = handleAction, initialize = Just Initialize }
@@ -246,6 +247,27 @@ handleAction = case _ of
   MarblesRoll -> H.modify_ \s ->
     let g = regenerate (s { marbles = s.marbles { amount = 1.0 } })
     in s { odo = g.odo, marblesSeed = g.seed }
+  -- The header always collapses, the tab always expands. Each is idempotent
+  -- AND debounced per-label: a single click double-dispatches (one direct, one
+  -- via the eval queue) with a re-render between, so the 2nd event lands on the
+  -- swapped element and would otherwise undo the 1st. `panelBounced` drops a
+  -- same-label toggle within 120ms (the doubled events are near-instant;
+  -- deliberate re-clicks are slower).
+  CollapsePanel label -> H.modify_ \s ->
+    if panelBounced label s then s
+    else (markPanel label s)
+      { collapsed = if elem label s.collapsed then s.collapsed else s.collapsed <> [ label ] }
+  ExpandPanel label -> H.modify_ \s ->
+    if panelBounced label s then s
+    else (markPanel label s) { collapsed = filter (_ /= label) s.collapsed }
+
+-- | True if this label was just toggled (< 120ms ago) — the second of a
+-- | double-dispatched click. nowMicros advances via the Frame loop.
+panelBounced :: String -> State -> Boolean
+panelBounced label s = label == s.lastPanel && (s.nowMicros - s.lastPanelMicros) < 120000.0
+
+markPanel :: String -> State -> State
+markPanel label s = s { lastPanel = label, lastPanelMicros = s.nowMicros }
 
 -- | A head's loop period in model steps — how often it comes around (its
 -- | `len` cells traversed at its speed). The fastest/slowest unmuted voice

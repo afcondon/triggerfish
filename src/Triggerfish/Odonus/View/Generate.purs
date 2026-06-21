@@ -22,7 +22,7 @@ import Triggerfish.Ui.Knob (knob)
 
 generatePanel :: forall m. State -> HH.ComponentHTML Action () m
 generatePanel s =
-  panelShell "GENERATE" "Marbles · Random" "flex:0 1 218px;min-width:min-content"
+  panelShell s.collapsed "GENERATE" "Marbles · Random" "flex:0 1 218px;min-width:min-content"
     [ onSwitch s.marbles.on
     , xyPad s.marbles
     , HH.div [ style "display:flex;align-items:flex-end;gap:10px;margin:12px 0 6px" ]

@@ -18,7 +18,7 @@ import Data.Array (length, mapWithIndex)
 
 gridPanel :: forall m. State -> H.ComponentHTML Action () m
 gridPanel s =
-  panelShell "ODONUS" "16 · Cartesian" "flex:0 1 340px;min-width:min-content"
+  panelShell s.collapsed "ODONUS" "16 · Cartesian" "flex:0 1 340px;min-width:min-content"
     [ grid s
     , HH.div [ style "display:flex;align-items:flex-end;gap:12px;margin-top:6px" ]
         [ HH.div [ style "flex:1" ] [ clockRow s ]

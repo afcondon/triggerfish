@@ -27,7 +27,7 @@ module Triggerfish.Odonus.Grid.Widgets
 
 import Prelude
 
-import Data.Array (findIndex, (!!))
+import Data.Array (elem, findIndex, (!!))
 import Data.Maybe (Maybe(..), fromMaybe, maybe)
 import Halogen as H
 import Halogen.HTML as HH
@@ -79,22 +79,46 @@ clampI :: Int -> Int -> Int -> Int
 clampI lo hi v = if v < lo then lo else if v > hi then hi else v
 
 -- | A pale Hainbach control panel: engraved header + body, full viewport height.
+-- | A pale Hainbach control panel. Collapsible: its header is the toggle
+-- | (click to fold the panel to a thin tab); when its label is in `collapsed`
+-- | it renders as that tab instead, freeing its width for the open panels.
 panelShell
   :: forall m
-   . String -> String -> String
+   . Array String -> String -> String -> String
   -> Array (H.ComponentHTML Action () m) -> H.ComponentHTML Action () m
-panelShell label sub widthCss body =
+panelShell collapsed label sub widthCss body =
+  if elem label collapsed then panelTab label
+  else
+    HH.div
+      [ style $ widthCss <> ";height:100vh;box-sizing:border-box;overflow-y:auto;overflow-x:hidden;"
+          <> "background:linear-gradient(#dcd8c9,#cfcabb);border-left:1px solid #b3ae9c;"
+          <> "padding:18px 14px;display:flex;flex-direction:column" ]
+      ( [ HH.div
+            [ HE.onClick \_ -> CollapsePanel label
+            , style $ engrave <> ";font-size:11px;display:flex;justify-content:space-between;"
+                <> "align-items:baseline;margin-bottom:14px;border-bottom:1px solid #00000018;"
+                <> "padding-bottom:6px;cursor:pointer;user-select:none" ]
+            [ HH.span [ style "font-size:14px;letter-spacing:0.16em;color:#3f3c33" ] [ HH.text label ]
+            , HH.span [ style "font-size:8px;display:flex;gap:7px;align-items:baseline" ]
+                [ HH.span_ [ HH.text sub ]
+                , HH.span [ style "opacity:0.45;font-size:11px" ] [ HH.text "–" ]
+                ]
+            ]
+        ] <> body )
+
+-- | A collapsed panel: a thin full-height tab with the rotated label; click to
+-- | reopen. The freed width flows to the open panels and the scope.
+panelTab :: forall m. String -> H.ComponentHTML Action () m
+panelTab label =
   HH.div
-    [ style $ widthCss <> ";height:100vh;box-sizing:border-box;overflow-y:auto;overflow-x:hidden;"
-        <> "background:linear-gradient(#dcd8c9,#cfcabb);border-left:1px solid #b3ae9c;"
-        <> "padding:18px 14px;display:flex;flex-direction:column" ]
-    ( [ HH.div
-          [ style $ engrave <> ";font-size:11px;display:flex;justify-content:space-between;"
-              <> "align-items:baseline;margin-bottom:14px;border-bottom:1px solid #00000018;padding-bottom:6px" ]
-          [ HH.span [ style "font-size:14px;letter-spacing:0.16em;color:#3f3c33" ] [ HH.text label ]
-          , HH.span [ style "font-size:8px" ] [ HH.text sub ]
-          ]
-      ] <> body )
+    [ HE.onClick \_ -> ExpandPanel label
+    , style $ "flex:0 0 30px;min-width:30px;height:100vh;box-sizing:border-box;cursor:pointer;"
+        <> "display:flex;align-items:center;justify-content:center;user-select:none;"
+        <> "background:linear-gradient(#d2cec0,#c5c0b1);border-left:1px solid #b3ae9c" ]
+    [ HH.span
+        [ style $ engrave <> ";font-size:11px;letter-spacing:0.14em;color:#3f3c33;"
+            <> "transform:rotate(-90deg);white-space:nowrap;display:inline-block" ]
+        [ HH.text label ] ]
 
 -- | A label over a row of tab buttons (OCTAVE / SCALAR TRANSP, Xynthesizr-style).
 labelledRow :: forall m. String -> Array (H.ComponentHTML Action () m) -> H.ComponentHTML Action () m

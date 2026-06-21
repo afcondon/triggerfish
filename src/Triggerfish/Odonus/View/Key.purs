@@ -16,7 +16,7 @@ import Triggerfish.Odonus.Grid.Widgets
 
 quantizerPanel :: forall m. State -> H.ComponentHTML Action () m
 quantizerPanel s =
-  panelShell "KEY" "Quantize · Transpose" "flex:0 1 278px;min-width:min-content"
+  panelShell s.collapsed "KEY" "Quantize · Transpose" "flex:0 1 278px;min-width:min-content"
     [ pcKeyboard s.odo
     , stepperRow "ROOT" (Scale.rootName s.odo.rootPc)
         (SetRoot (s.odo.rootPc - 1)) (SetRoot (s.odo.rootPc + 1))
