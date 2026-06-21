@@ -21,6 +21,7 @@ module Triggerfish.Odonus.Model
   , toggleGate
   , toggleGlide
   , setNote
+  , setAllNotes
   , setCellDur
   , speedTable
   , speedOf
@@ -285,6 +286,11 @@ toggleGlide i = editCell i \c -> c { glide = not c.glide }
 
 setNote :: Int -> Int -> Odonus -> Odonus
 setNote i v = editCell i \c -> c { note = v }
+
+-- | Flatten every cell to one note value — a register reset to sculpt from
+-- | (MIN → bass register, CENTER → melodic register).
+setAllNotes :: Int -> Odonus -> Odonus
+setAllNotes v o = o { cells = map (_ { note = v }) o.cells }
 
 -- | Per-cell note duration in steps (1..8). 1 = a single-step gate (the old
 -- | behaviour); higher sustains the note across that many steps.

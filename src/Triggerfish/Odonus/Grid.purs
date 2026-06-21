@@ -119,6 +119,7 @@ data Action
   | ToggleGlide Int
   | ToggleGate Int
   | ToggleSkip Int
+  | SetAllNotes Int
   | ToggleHeadMute Int
   | SetHeadMask Int
   | CyclePattern Int
@@ -253,6 +254,7 @@ handleAction = case _ of
   ToggleGlide i -> H.modify_ \s -> s { odo = M.toggleGlide i s.odo }
   ToggleGate i -> H.modify_ \s -> s { odo = M.toggleGate i s.odo }
   ToggleSkip i -> H.modify_ \s -> s { odo = M.toggleSkip i s.odo }
+  SetAllNotes v -> H.modify_ \s -> s { odo = M.setAllNotes v s.odo }
   ToggleHeadMute h -> do
     st <- H.get
     -- Muting a head that's holding a note → kill it (it won't emit again to
@@ -917,10 +919,24 @@ fieldShell label body =
 noteField :: forall m. M.Odonus -> H.ComponentHTML Action () m
 noteField odo =
   fieldShell "NOTE"
-    ( HH.div
-        [ style "display:grid;grid-template-columns:repeat(4,1fr);gap:6px" ]
-        (mapWithIndex (noteCell odo) odo.cells)
+    ( HH.div_
+        [ HH.div
+            [ style "display:grid;grid-template-columns:repeat(4,1fr);gap:6px" ]
+            (mapWithIndex (noteCell odo) odo.cells)
+        , setAllRow
+        ]
     )
+
+-- | Flatten-the-grid macros: drop every note into the bass register (MIN)
+-- | or the melodic register (CENTER) as a starting point to sculpt from.
+-- | MARBLES (a spread/bias/déjà-vu generator) will join this row.
+setAllRow :: forall m. H.ComponentHTML Action () m
+setAllRow =
+  HH.div [ style "display:flex;align-items:center;gap:5px;margin-top:7px" ]
+    [ HH.span [ style $ engrave <> ";font-size:8px;opacity:0.7;margin-right:1px" ] [ HH.text "SET ALL" ]
+    , tabBtn "MIN" false (SetAllNotes 36)
+    , tabBtn "CENTER" false (SetAllNotes 60)
+    ]
 
 noteCell :: forall m. M.Odonus -> Int -> M.Cell -> H.ComponentHTML Action () m
 noteCell odo i c =
