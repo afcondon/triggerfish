@@ -54,3 +54,18 @@ Brüel & Kjær, HP, Western Electric, EMS, decade boxes, galvanometers.
 `Triggerfish.Ui.Knob` (ported Donut) + `Triggerfish.Odonus.Grid` (quartered pads,
 drag-to-turn knobs, first Hainbach dress). Runs on local model state; not yet
 wired to the real BEAM engine / the 16+24 outs.
+
+## Control idioms (decided in use)
+- **Parameter-major small multiples**, not cell-major channel strips: the 16
+  cells render as one field per parameter (NOTE knobs; GATE/SKIP/GLIDE/LENGTH),
+  every cell carrying the same head-presence ring so playheads sweep all fields.
+  Scales by appending a field, never by busying a pad. (Supersedes the quartered
+  pad above.)
+- **Detented knob** (`KnobView.ticks`): for small discrete ranges (length 1–8,
+  ratchet 1–8) the knob draws N tick marks and reads as a rotary selector —
+  square footprint of a knob, discreteness of a switch.
+- **X-Y selector for intimately-linked pairs**: SPREAD×BIAS is literally the
+  Marbles 5×3 chart, so the Marbles control is a single draggable puck in a 2-D
+  pad (X = spread, Y = bias), with the live distribution histogram rendered as
+  the pad background — you drag *through the diagram*. The rule generalises:
+  two parameters that are read together get one 2-D control, not two knobs.
