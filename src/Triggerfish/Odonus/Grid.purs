@@ -550,12 +550,12 @@ noteBar now n =
 
 quantizerPanel :: forall m. State -> H.ComponentHTML Action () m
 quantizerPanel s =
-  panelShell "KEY" "Quantize · Transpose" "flex:0 1 232px;min-width:0"
+  panelShell "KEY" "Quantize · Transpose" "flex:0 1 278px;min-width:0"
     [ pcKeyboard s.odo
     , stepperRow "ROOT" (Scale.rootName s.odo.rootPc)
         (SetRoot (s.odo.rootPc - 1)) (SetRoot (s.odo.rootPc + 1))
     , HH.div [ style "display:flex;align-items:flex-end;gap:10px;margin:8px 0" ]
-        [ HH.div [ style "flex:1" ]
+        [ HH.div [ style "flex:1;min-width:0" ]
             [ stepperRow "SCALE" (M.scaleTypeName s.odo) (CycleScaleType (-1)) (CycleScaleType 1) ]
         , spreadBlock s.odo
         ]
