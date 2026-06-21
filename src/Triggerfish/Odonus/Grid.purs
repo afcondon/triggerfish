@@ -11,6 +11,7 @@ import Data.Array (concatMap, deleteAt, elem, filter, findIndex, length, mapWith
 import Data.Foldable (foldl, for_)
 import Data.FoldableWithIndex (forWithIndex_)
 import Data.Int (floor, round, toNumber)
+import Data.Int.Bits (and, shr)
 import Data.Maybe (Maybe(..), fromMaybe, maybe)
 import Data.String.Common (joinWith)
 import Effect (Effect)
@@ -114,6 +115,7 @@ data Action
   | ToggleGate Int
   | ToggleSkip Int
   | ToggleHeadMute Int
+  | SetHeadMask Int
   | CyclePattern Int
   | UnifyHeads
   | CycleScaleType Int
@@ -256,6 +258,19 @@ handleAction = case _ of
     H.modify_ \s -> s
       { odo = M.toggleHeadMute h s.odo
       , headNote = fromMaybe s.headNote (updateAt h Nothing s.headNote) }
+  SetHeadMask mask -> do
+    st <- H.get
+    -- Heads this combination silences (held now, muted next) get a note-off,
+    -- and their held-note slots clear, so glide notes never stick.
+    let nextOdo = M.setHeadMask mask st.odo
+        nowMuted h = maybe true _.mute (nextOdo.heads !! h)
+    forWithIndex_ st.headNote \h mn -> case mn of
+      Just n | nowMuted h -> for_ st.midiOut \out ->
+        liftEffect $ Midi.noteOffAt out { channel: h, note: n, delayMs: 0.0 }
+      _ -> pure unit
+    H.modify_ \s -> s
+      { odo = nextOdo
+      , headNote = mapWithIndex (\h mn -> if nowMuted h then Nothing else mn) s.headNote }
   CyclePattern h -> H.modify_ \s -> s { odo = M.cyclePattern h s.odo }
   UnifyHeads -> H.modify_ \s -> s { odo = M.unifyHeads s.odo }
   CycleScaleType dir -> H.modify_ \s -> s { odo = M.cycleScaleType dir s.odo }
@@ -649,14 +664,47 @@ playheadsPanel s =
         , style $ "width:100%;padding:6px;margin-bottom:10px;border:1px solid #a8a392;border-radius:7px;cursor:pointer;"
             <> "background:linear-gradient(#efece1,#ddd9cb);font-family:Georgia,serif;font-size:11px;color:#3f3c33" ]
         [ HH.text "≡ Unison · all heads = I" ]
+    , HH.span [ style $ engrave <> ";font-size:9px;opacity:0.85;display:block;margin-bottom:4px" ]
+        [ HH.text "COMBINATIONS" ]
+    , headMatrix s.odo
     , headBank s
     ]
 
--- ── GRID panel — the 16 quartered pads + transport ───────────────────────────
+-- | The 16 head-activation combinations (2⁴) as a switch palette: each
+-- | switch is four vertical bars (I–IV, lit when that head sounds in this
+-- | combo); clicking it sets every head's mute in one move. The live combo
+-- | is ringed. Cut from any group of heads to any other in a single click.
+headMatrix :: forall m. M.Odonus -> H.ComponentHTML Action () m
+headMatrix odo =
+  let cur = M.headMask odo
+  in HH.div
+       [ style "display:grid;grid-template-columns:repeat(8,1fr);gap:4px;margin-bottom:12px" ]
+       (map (comboSwitch cur) (range 0 15))
+
+comboSwitch :: forall m. Int -> Int -> H.ComponentHTML Action () m
+comboSwitch cur n =
+  let live = n == cur
+  in HH.div
+       [ HE.onClick \_ -> SetHeadMask n
+       , style $ "display:flex;gap:2px;align-items:center;justify-content:center;height:18px;"
+           <> "border-radius:5px;cursor:pointer;background:#cbc6b6;box-shadow:0 0 0 1px "
+           <> (if live then "#3f3c33,0 0 0 2px #3f3c3355" else "#00000018")
+       ]
+       (map (\h -> comboBar (and (shr n h) 1 == 1) h) (range 0 3))
+
+comboBar :: forall m. Boolean -> Int -> H.ComponentHTML Action () m
+comboBar on h =
+  HH.div
+    [ style $ "width:5px;height:11px;border-radius:2px;background:"
+        <> (if on then headColor h else "#46433a")
+        <> (if on then ";box-shadow:0 0 4px " <> headColor h else "")
+    ] []
+
+-- ── GRID panel — the 16 cells as parameter-major small multiples + transport ─
 
 gridPanel :: forall m. State -> H.ComponentHTML Action () m
 gridPanel s =
-  panelShell "ODONUS" "16 · Cartesian" "flex:0 1 322px;min-width:0"
+  panelShell "ODONUS" "16 · Cartesian" "flex:0 1 340px;min-width:0"
     [ grid s
     , HH.div [ style "display:flex;align-items:flex-end;gap:12px;margin-top:6px" ]
         [ HH.div [ style "flex:1" ] [ clockRow s ]
@@ -803,19 +851,38 @@ statusBar s =
     , HH.span [] [ HH.text $ "MIDI " <> s.midiName ]
     ]
 
+-- | The grid is four **parameter-major small multiples** of the same 16
+-- | cells: one NOTE field (knobs) + three toggle fields (gate / skip /
+-- | glide). Each cell, in every field, carries the same head-presence
+-- | chrome, so you watch the playheads sweep through gate and skip and
+-- | glide, not only through the notes. This is the layout that scales —
+-- | a new per-cell parameter (length, pulses, gate-mode…) is just another
+-- | small multiple appended below, never a busier pad.
 grid :: forall m. State -> H.ComponentHTML Action () m
 grid s =
   HH.div
-    [ style "display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin:18px 0" ]
-    (mapWithIndex (pad s.odo) s.odo.cells)
+    [ style "display:flex;flex-direction:column;gap:10px;margin:14px 0" ]
+    [ noteField s.odo
+    -- The three boolean fields compress two-per-row into a 2×2 sub-grid;
+    -- the empty fourth slot is reserved for the next per-cell parameter
+    -- (LENGTH / PULSES / GATE-MODE).
+    , HH.div
+        [ style "display:grid;grid-template-columns:1fr 1fr;gap:9px 11px" ]
+        [ toggleField "GATE" "#e0a32e" _.gate ToggleGate s.odo
+        , toggleField "SKIP" "#c0563f" _.skip ToggleSkip s.odo
+        , toggleField "GLIDE" "#4f9d69" _.glide ToggleGlide s.odo
+        ]
+    ]
 
 headAt :: M.Odonus -> Int -> Maybe { idx :: Int, mute :: Boolean }
 headAt o i = case findIndex (\hd -> hd.cursor == i) o.heads of
   Just idx -> Just { idx, mute: maybe false _.mute (o.heads !! idx) }
   Nothing -> Nothing
 
-pad :: forall m. M.Odonus -> Int -> M.Cell -> H.ComponentHTML Action () m
-pad odo i c =
+-- | The per-cell chrome shared by every small multiple: pale pad +
+-- | head-presence ring (bright = a playhead is here, dim = a muted one).
+cellChrome :: M.Odonus -> Int -> String
+cellChrome odo i =
   let
     mh = headAt odo i
     ring = maybe "#a79f86" (\r -> headColor r.idx) mh
@@ -823,21 +890,32 @@ pad odo i c =
       Just r -> if r.mute then ",0 0 0 2px " <> ring <> "33" else ",0 0 0 3px " <> ring <> "66"
       Nothing -> ""
   in
-    HH.div
-      [ style $ "background:#cbc6b6;border-radius:9px;padding:5px;box-shadow:0 0 0 1px " <> ring <> glow
-          <> ";display:grid;grid-template-columns:1fr 1fr;grid-template-rows:1fr 1fr;gap:4px;aspect-ratio:1"
-      ]
-      [ knobQuarter i c
-      , lamp "G" c.glide "#4f9d69" (ToggleGlide i)
-      , lamp "T" c.gate "#e0a32e" (ToggleGate i)
-      , lamp "S" c.skip "#c0563f" (ToggleSkip i)
-      ]
+    "background:#cbc6b6;border-radius:7px;box-shadow:0 0 0 1px " <> ring <> glow
 
-knobQuarter :: forall m. Int -> M.Cell -> H.ComponentHTML Action () m
-knobQuarter i c =
+-- | A labelled small multiple: small-caps engraved label, then a 4×4 body.
+fieldShell :: forall m. String -> H.ComponentHTML Action () m -> H.ComponentHTML Action () m
+fieldShell label body =
+  HH.div [ style "display:flex;flex-direction:column;gap:3px" ]
+    [ HH.span [ style $ engrave <> ";font-size:9px;opacity:0.85" ] [ HH.text label ]
+    , body
+    ]
+
+-- | NOTE field — a 4×4 of value knobs, the only field that edits a number.
+noteField :: forall m. M.Odonus -> H.ComponentHTML Action () m
+noteField odo =
+  fieldShell "NOTE"
+    ( HH.div
+        [ style "display:grid;grid-template-columns:repeat(4,1fr);gap:6px" ]
+        (mapWithIndex (noteCell odo) odo.cells)
+    )
+
+noteCell :: forall m. M.Odonus -> Int -> M.Cell -> H.ComponentHTML Action () m
+noteCell odo i c =
   HH.div
-    [ style "display:flex;flex-direction:column;align-items:center;justify-content:center" ]
-    [ HH.div [ style "width:100%;height:100%;min-height:0" ]
+    [ style $ cellChrome odo i
+        <> ";padding:4px;aspect-ratio:1;display:flex;flex-direction:column;align-items:center;justify-content:center"
+    ]
+    [ HH.div [ style "width:100%;flex:1;min-height:0" ]
         [ knob
             { cx: 24.0, cy: 24.0, rOuter: 20.0, rInner: 9.0, color: "#b5832b", lo: 36, hi: 84, value: c.note }
             (KnobDown (CellNote i) c.note)
@@ -846,18 +924,32 @@ knobQuarter i c =
         [ HH.text (show c.note) ]
     ]
 
-lamp :: forall m. String -> Boolean -> String -> Action -> H.ComponentHTML Action () m
-lamp label on color act =
+-- | A toggle field — a 4×4 of clickable lamps for one boolean per cell.
+-- | Cells are flat (not square) so three fields stack under the NOTE grid
+-- | while their four columns stay aligned with it.
+toggleField
+  :: forall m
+   . String -> String -> (M.Cell -> Boolean) -> (Int -> Action) -> M.Odonus
+  -> H.ComponentHTML Action () m
+toggleField label color get act odo =
+  fieldShell label
+    ( HH.div
+        [ style "display:grid;grid-template-columns:repeat(4,1fr);gap:4px" ]
+        (mapWithIndex (\i c -> toggleCell odo color (get c) (act i) i) odo.cells)
+    )
+
+toggleCell :: forall m. M.Odonus -> String -> Boolean -> Action -> Int -> H.ComponentHTML Action () m
+toggleCell odo color on act i =
   HH.div
     [ HE.onClick \_ -> act
-    , style $ "display:flex;align-items:center;justify-content:center;gap:3px;cursor:pointer;background:#bfbaa9;border-radius:6px;user-select:none"
+    , style $ cellChrome odo i
+        <> ";height:14px;cursor:pointer;user-select:none;display:flex;align-items:center;justify-content:center"
     ]
     [ HH.div
-        [ style $ "width:8px;height:8px;border-radius:50%;border:1px solid #00000022;background:"
+        [ style $ "width:7px;height:7px;border-radius:50%;border:1px solid #00000022;background:"
             <> (if on then color else "#46433a")
             <> (if on then ";box-shadow:0 0 5px " <> color else "")
         ] []
-    , HH.span [ style $ engrave <> ";font-size:9px" ] [ HH.text label ]
     ]
 
 headBank :: forall m. State -> H.ComponentHTML Action () m
