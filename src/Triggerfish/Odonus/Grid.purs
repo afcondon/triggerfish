@@ -449,7 +449,11 @@ engrave = "font-family:Georgia,'Times New Roman',serif;letter-spacing:0.12em;tex
 render :: forall m. State -> H.ComponentHTML Action () m
 render s =
   HH.div
+    -- The whole surface is non-selectable: knob drags and toggle/matrix
+    -- clicks never start a text selection. Only the SOURCE eDSL re-enables
+    -- selection so it stays copyable.
     [ style $ "position:fixed;inset:0;display:flex;align-items:stretch;overflow:hidden;"
+        <> "user-select:none;-webkit-user-select:none;"
         <> "background:#b7b1a0;font-family:Georgia,serif" ]
     [ scopePanel s
     , quantizerPanel s
@@ -745,7 +749,8 @@ edslPanel s =
     [ HH.div
         [ style $ "font-family:'SF Mono',Menlo,monospace;font-size:10.5px;line-height:1.55;"
             <> "white-space:pre;color:#3a372e;background:#00000008;border:1px solid #00000012;"
-            <> "border-radius:6px;padding:10px;overflow-x:auto" ]
+            <> "border-radius:6px;padding:10px;overflow-x:auto;"
+            <> "user-select:text;-webkit-user-select:text;cursor:text" ]
         [ HH.text (edslText s.odo) ] ]
 
 -- | The current setup rendered as odonusWith{…} eDSL text. One-directional
