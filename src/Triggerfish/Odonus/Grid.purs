@@ -1,8 +1,10 @@
--- | The Odonus grid + four-head bank, Hainbach dress. Quartered pads (value knob
--- | + glide/gate/skip lamps) over a bank of four playheads; each head carries a
--- | René-style access **pattern** shown as a small-multiple thumbnail beside its
--- | direction / speed / interval knobs. Aesthetic: Swiss rigor × vintage-lab
--- | materiality (see BRIEF.md).
+-- | The Odonus grid + four-head bank, Hainbach dress. The 16 cells are shown
+-- | as parameter-major small multiples — a NOTE field of value knobs, then
+-- | GATE / SKIP / GLIDE / LENGTH fields — over a bank of four playheads; each
+-- | head carries a René-style access **pattern** shown as a small-multiple
+-- | thumbnail beside its direction / speed / interval knobs, and a 16-switch
+-- | head-activation matrix cuts between playhead combinations. Aesthetic:
+-- | Swiss rigor × vintage-lab materiality (see BRIEF.md).
 module Triggerfish.Odonus.Grid (component) where
 
 import Prelude
@@ -39,6 +41,7 @@ import Web.UIEvent.MouseEvent as ME
 
 data KnobTarget
   = CellNote Int
+  | CellDur Int
   | HeadDir Int
   | HeadSpeed Int
   | HeadTransp Int
@@ -50,6 +53,7 @@ data KnobTarget
 targetRange :: KnobTarget -> { lo :: Int, hi :: Int }
 targetRange = case _ of
   CellNote _ -> { lo: 36, hi: 84 }
+  CellDur _ -> { lo: 1, hi: 8 }
   HeadDir _ -> { lo: 0, hi: 2 }
   HeadSpeed _ -> { lo: 0, hi: length M.speedTable - 1 }
   HeadTransp _ -> { lo: -24, hi: 24 }
@@ -61,6 +65,7 @@ targetRange = case _ of
 applyTarget :: KnobTarget -> Int -> M.Odonus -> M.Odonus
 applyTarget t v = case t of
   CellNote i -> M.setNote i v
+  CellDur i -> M.setCellDur i v
   HeadDir h -> M.setHeadDir h v
   HeadSpeed h -> M.setHeadSpeedIx h v
   HeadTransp h -> M.setHeadTransp h v
@@ -191,6 +196,7 @@ handleAction = case _ of
               msPerBeat = 60000.0 / max 30.0 st.clockTempo
           in (0.25 * toNumber st.stepDiv) * msPerBeat / max 1.0 spd
                * (toNumber st.odo.gatePct / 100.0)
+               * toNumber f.dur
         prevOf h = join (st.headNote !! h)
       -- Emit MIDI with per-head legato: glide cells HOLD until the next note
       -- (tie if same pitch, portamento-slide if different); non-glide cells are
@@ -607,7 +613,7 @@ spreadBlock odo =
     HH.div [ style "display:flex;flex-direction:column;align-items:center;width:52px" ]
       [ HH.span [ style $ engrave <> ";font-size:9px;margin-bottom:2px" ] [ HH.text "SPREAD" ]
       , HH.div [ style "width:40px;height:40px" ]
-          [ knob { cx: 24.0, cy: 24.0, rOuter: 20.0, rInner: 8.0, color: "#8a9b6e", lo: 1, hi: 12, value: n }
+          [ knob { cx: 24.0, cy: 24.0, rOuter: 20.0, rInner: 8.0, color: "#8a9b6e", lo: 1, hi: 12, value: n, ticks: 0 }
               (KnobDown Spread n) ]
       , HH.span [ style "font-family:'SF Mono',Menlo,monospace;font-size:8px;color:#3f3c33;margin-top:1px" ]
           [ HH.text (show n <> "n") ]
@@ -726,7 +732,7 @@ gateBlock odo =
   HH.div [ style "display:flex;flex-direction:column;align-items:center;width:52px" ]
     [ HH.span [ style $ engrave <> ";font-size:9px;margin-bottom:2px" ] [ HH.text "GATE" ]
     , HH.div [ style "width:40px;height:40px" ]
-        [ knob { cx: 24.0, cy: 24.0, rOuter: 20.0, rInner: 8.0, color: "#b5832b", lo: 10, hi: 200, value: odo.gatePct }
+        [ knob { cx: 24.0, cy: 24.0, rOuter: 20.0, rInner: 8.0, color: "#b5832b", lo: 10, hi: 200, value: odo.gatePct, ticks: 0 }
             (KnobDown GateLen odo.gatePct) ]
     , HH.span [ style "font-family:'SF Mono',Menlo,monospace;font-size:8px;color:#3f3c33;margin-top:1px" ]
         [ HH.text (show odo.gatePct <> "%") ]
@@ -781,6 +787,7 @@ edslText o =
         , "  , gate:  " <> arr (bool <<< _.gate)
         , "  , skip:  " <> arr (bool <<< _.skip)
         , "  , glide: " <> arr (bool <<< _.glide)
+        , "  , len:   " <> arr (show <<< _.dur)
         , "  , heads:"
         ] <> mapWithIndex headLine o.heads <> [ "  }" ] )
 
@@ -868,14 +875,15 @@ grid s =
   HH.div
     [ style "display:flex;flex-direction:column;gap:10px;margin:14px 0" ]
     [ noteField s.odo
-    -- The three boolean fields compress two-per-row into a 2×2 sub-grid;
-    -- the empty fourth slot is reserved for the next per-cell parameter
-    -- (LENGTH / PULSES / GATE-MODE).
+    -- The boolean fields compress two-per-row into a 2×2 sub-grid; the
+    -- fourth slot holds the first per-cell knob field, LENGTH (PULSES /
+    -- GATE-MODE will extend it to 2×3).
     , HH.div
-        [ style "display:grid;grid-template-columns:1fr 1fr;gap:9px 11px" ]
+        [ style "display:grid;grid-template-columns:1fr 1fr;gap:10px 11px;align-items:start" ]
         [ toggleField "GATE" "#e0a32e" _.gate ToggleGate s.odo
         , toggleField "SKIP" "#c0563f" _.skip ToggleSkip s.odo
         , toggleField "GLIDE" "#4f9d69" _.glide ToggleGlide s.odo
+        , lengthField s.odo
         ]
     ]
 
@@ -922,11 +930,37 @@ noteCell odo i c =
     ]
     [ HH.div [ style "width:100%;flex:1;min-height:0" ]
         [ knob
-            { cx: 24.0, cy: 24.0, rOuter: 20.0, rInner: 9.0, color: "#b5832b", lo: 36, hi: 84, value: c.note }
+            { cx: 24.0, cy: 24.0, rOuter: 20.0, rInner: 9.0, color: "#b5832b", lo: 36, hi: 84, value: c.note, ticks: 0 }
             (KnobDown (CellNote i) c.note)
         ]
     , HH.span [ style "font-family:'SF Mono',Menlo,monospace;font-size:9px;color:#4a463d;margin-top:1px" ]
         [ HH.text (show c.note) ]
+    ]
+
+-- | LENGTH field — the fourth small multiple, the first knob field down
+-- | here: a 4×4 of small **detented** knobs, each = how many steps that
+-- | cell's note sustains (1..8). The square footprint keeps the grid's
+-- | rhythm; the eight detents read it as a discrete selector, slate-blue
+-- | to set it apart from the amber NOTE knobs.
+lengthField :: forall m. M.Odonus -> H.ComponentHTML Action () m
+lengthField odo =
+  fieldShell "LENGTH"
+    ( HH.div
+        [ style "display:grid;grid-template-columns:repeat(4,1fr);gap:4px" ]
+        (mapWithIndex (lengthCell odo) odo.cells)
+    )
+
+lengthCell :: forall m. M.Odonus -> Int -> M.Cell -> H.ComponentHTML Action () m
+lengthCell odo i c =
+  HH.div
+    [ style $ cellChrome odo i
+        <> ";padding:3px;aspect-ratio:1;display:flex;align-items:center;justify-content:center"
+    ]
+    [ HH.div [ style "width:100%;height:100%;min-height:0" ]
+        [ knob
+            { cx: 24.0, cy: 24.0, rOuter: 18.0, rInner: 7.0, color: "#7d8a93", lo: 1, hi: 8, value: c.dur, ticks: 8 }
+            (KnobDown (CellDur i) c.dur)
+        ]
     ]
 
 -- | A toggle field — a 4×4 of clickable lamps for one boolean per cell.
@@ -1051,7 +1085,7 @@ miniKnob target val color topLabel valText =
     HH.div [ style "display:flex;flex-direction:column;align-items:center;width:46px" ]
       [ HH.span [ style $ engrave <> ";font-size:8px;margin-bottom:1px" ] [ HH.text topLabel ]
       , HH.div [ style "width:38px;height:38px" ]
-          [ knob { cx: 24.0, cy: 24.0, rOuter: 20.0, rInner: 8.0, color, lo: r.lo, hi: r.hi, value: val } (KnobDown target val) ]
+          [ knob { cx: 24.0, cy: 24.0, rOuter: 20.0, rInner: 8.0, color, lo: r.lo, hi: r.hi, value: val, ticks: 0 } (KnobDown target val) ]
       , HH.span [ style "font-family:'SF Mono',Menlo,monospace;font-size:9px;color:#3f3c33;margin-top:1px" ]
           [ HH.text valText ]
       ]

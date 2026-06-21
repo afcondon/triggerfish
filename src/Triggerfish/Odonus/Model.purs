@@ -21,6 +21,7 @@ module Triggerfish.Odonus.Model
   , toggleGate
   , toggleGlide
   , setNote
+  , setCellDur
   , speedTable
   , speedOf
   , setHeadSpeedIx
@@ -62,6 +63,7 @@ type Cell =
   , skip :: Boolean
   , gate :: Boolean
   , glide :: Boolean
+  , dur :: Int       -- note sustain in steps (1..8); multiplies the gate length
   }
 
 -- | A René-style access pattern: a name + an ordering (permutation of 0..15,
@@ -160,7 +162,7 @@ defaultHeads =
 
 defaultCells :: Array Cell
 defaultCells =
-  mapWithIndex (\i _ -> { note: 60 + i, skip: false, gate: true, glide: false })
+  mapWithIndex (\i _ -> { note: 60 + i, skip: false, gate: true, glide: false, dur: 1 })
     (replicate 16 unit)
 
 defaultOdonus :: Odonus
@@ -240,7 +242,7 @@ cursorsOf o = map _.cursor o.heads
 
 -- | A note a head emits this tick: which head, the resulting pitch, and
 -- | whether the cell is marked glide (→ MIDI portamento / CV slew).
-type Fired = { headIdx :: Int, pitch :: Int, glide :: Boolean }
+type Fired = { headIdx :: Int, pitch :: Int, glide :: Boolean, dur :: Int }
 
 -- | Advance one tick and report what fired: an unmuted head that MOVED onto a
 -- | gated, non-skipped cell emits its note. (A head that didn't advance this
@@ -254,7 +256,7 @@ stepEmit o =
       let moved = hd.cursor /= fromMaybe (-1) (oldCursors !! idx)
       in case o2.cells !! hd.cursor of
         Just c | moved && not hd.mute && c.gate && not c.skip ->
-          Just { headIdx: idx, pitch: renderCell o2 hd c, glide: c.glide }
+          Just { headIdx: idx, pitch: renderCell o2 hd c, glide: c.glide, dur: c.dur }
         _ -> Nothing
   in
     { odo: o2, fired: catMaybes (mapWithIndex firedFor o2.heads) }
@@ -283,6 +285,11 @@ toggleGlide i = editCell i \c -> c { glide = not c.glide }
 
 setNote :: Int -> Int -> Odonus -> Odonus
 setNote i v = editCell i \c -> c { note = v }
+
+-- | Per-cell note duration in steps (1..8). 1 = a single-step gate (the old
+-- | behaviour); higher sustains the note across that many steps.
+setCellDur :: Int -> Int -> Odonus -> Odonus
+setCellDur i v = editCell i \c -> c { dur = clampI 1 8 v }
 
 setHeadSpeedIx :: Int -> Int -> Odonus -> Odonus
 setHeadSpeedIx h v = editHead h \hd -> hd { speedIx = clampI 0 (length speedTable - 1) v }

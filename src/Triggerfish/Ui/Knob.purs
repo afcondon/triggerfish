@@ -9,6 +9,7 @@ module Triggerfish.Ui.Knob
 
 import Prelude
 
+import Data.Array (range)
 import Data.Int (toNumber)
 import Data.Number (cos, sin, pi)
 import Halogen.HTML as HH
@@ -48,6 +49,7 @@ type KnobView =
   , lo :: Int
   , hi :: Int
   , value :: Int
+  , ticks :: Int    -- 0 = smooth; N > 1 draws N detent marks around the arc
   }
 
 valToAngle :: KnobView -> Number
@@ -97,28 +99,49 @@ knob k onDown =
       , svgAttr "height" "100%"
       , svgAttr "style" "display:block"
       ]
-      [ svgEl "path"
-          [ svgAttr "d" (arcPath k.cx k.cy k.rOuter k.rInner minAngle maxAngle)
-          , svgAttr "fill" "#bdb8a6"
-          ] []
-      , svgEl "path"
-          [ svgAttr "d" (arcPath k.cx k.cy k.rOuter k.rInner minAngle a)
-          , svgAttr "fill" k.color
-          ] []
-      , svgEl "circle"
-          [ svgAttr "cx" (s k.cx), svgAttr "cy" (s k.cy)
-          , svgAttr "r" (s (k.rInner - 1.0)), svgAttr "fill" "#34322c"
-          ] []
-      , svgEl "line"
-          [ svgAttr "x1" (s k.cx), svgAttr "y1" (s k.cy)
-          , svgAttr "x2" (s px), svgAttr "y2" (s py)
-          , svgAttr "stroke" "#e7e2d2", svgAttr "stroke-width" "2"
-          , svgAttr "stroke-linecap" "round"
-          ] []
-      , svgEl "circle"
-          [ svgAttr "cx" (s k.cx), svgAttr "cy" (s k.cy)
-          , svgAttr "r" (s k.rOuter), svgAttr "fill" "transparent"
-          , svgAttr "style" "cursor:ns-resize"
-          , svgOnDown (const onDown)
-          ] []
-      ]
+      ( [ svgEl "path"
+            [ svgAttr "d" (arcPath k.cx k.cy k.rOuter k.rInner minAngle maxAngle)
+            , svgAttr "fill" "#bdb8a6"
+            ] []
+        , svgEl "path"
+            [ svgAttr "d" (arcPath k.cx k.cy k.rOuter k.rInner minAngle a)
+            , svgAttr "fill" k.color
+            ] []
+        ] <> detents k <>
+        [ svgEl "circle"
+            [ svgAttr "cx" (s k.cx), svgAttr "cy" (s k.cy)
+            , svgAttr "r" (s (k.rInner - 1.0)), svgAttr "fill" "#34322c"
+            ] []
+        , svgEl "line"
+            [ svgAttr "x1" (s k.cx), svgAttr "y1" (s k.cy)
+            , svgAttr "x2" (s px), svgAttr "y2" (s py)
+            , svgAttr "stroke" "#e7e2d2", svgAttr "stroke-width" "2"
+            , svgAttr "stroke-linecap" "round"
+            ] []
+        , svgEl "circle"
+            [ svgAttr "cx" (s k.cx), svgAttr "cy" (s k.cy)
+            , svgAttr "r" (s k.rOuter), svgAttr "fill" "transparent"
+            , svgAttr "style" "cursor:ns-resize"
+            , svgOnDown (const onDown)
+            ] []
+        ] )
+
+-- | Detent ticks: short radial marks just outside the arc at each of the
+-- | `ticks` discrete positions, so a small-range knob reads as a rotary
+-- | selector. Empty when `ticks <= 1`.
+detents :: forall w i. KnobView -> Array (HH.HTML w i)
+detents k
+  | k.ticks <= 1 = []
+  | otherwise =
+      let s = show
+          tick i =
+            let frac = toNumber i / toNumber (k.ticks - 1)
+                ang = (minAngle + frac * sweep) - pi / 2.0
+                r0 = k.rOuter + 1.2
+                r1 = k.rOuter + 3.4
+            in svgEl "line"
+                 [ svgAttr "x1" (s (k.cx + r0 * cos ang)), svgAttr "y1" (s (k.cy + r0 * sin ang))
+                 , svgAttr "x2" (s (k.cx + r1 * cos ang)), svgAttr "y2" (s (k.cy + r1 * sin ang))
+                 , svgAttr "stroke" "#6b6657", svgAttr "stroke-width" "1"
+                 ] []
+      in map tick (range 0 (k.ticks - 1))
