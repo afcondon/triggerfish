@@ -10,9 +10,9 @@ module Triggerfish.Odonus.Grid (component) where
 import Prelude
 
 import Data.Array (deleteAt, elem, filter, length, mapWithIndex, null, range, updateAt, (!!))
-import Data.Foldable (foldl, for_, maximum, minimum)
+import Data.Foldable (foldl, for_)
 import Data.FoldableWithIndex (forWithIndex_)
-import Data.Int (ceil, round, toNumber)
+import Data.Int (round, toNumber)
 import Data.Maybe (Maybe(..), fromMaybe, maybe)
 import Data.String.Common (joinWith)
 import Effect (Effect)
@@ -24,6 +24,7 @@ import Halogen.HTML as HH
 import Halogen.Subscription as HS
 import Triggerfish.Odonus.Model as M
 import Triggerfish.Odonus.Marbles as Marbles
+import Triggerfish.Odonus.Gen as Gen
 import Triggerfish.Ui.Pointer as Pointer
 import Binnacle as Binnacle
 import Binnacle.Clock as Clock
@@ -35,7 +36,8 @@ import Web.HTML (window)
 import Web.HTML.Window as Window
 import Web.UIEvent.MouseEvent as ME
 import Triggerfish.Odonus.Grid.Types
-  ( Action(..), Boundary(..), KnobTarget(..), State, applyTarget, marblesPadId, targetRange )
+  ( Action(..), KnobTarget(..), State, applyTarget, genDefaultAmt, genDefaultRate, genKinds, genLabel
+  , marblesPadId, setAmt, setRate, targetRange, toggleGen )
 import Triggerfish.Odonus.Grid.Widgets (clampI, style)
 import Triggerfish.Odonus.View.Scope (scopePanel)
 import Triggerfish.Odonus.View.Key (quantizerPanel)
@@ -55,9 +57,9 @@ component =
         , clockBeat: 0.0, clockBar: 0, anchorCount: 0
         , scenes: [], chain: false, sceneIx: 0, sceneBarAnchor: 0, barsPerScene: 4
         , stepDiv: 1, headNote: [ Nothing, Nothing, Nothing, Nothing ]
-        , marbles: { on: false, spread: 0.5, bias: 0.5, amount: 0.05, boundary: EveryStep }
-        , marblesSeed: Marbles.seedFrom 1, stepCounter: 0, genLastScene: 0
-        , collapsed: [], lastPanel: "", lastPanelMicros: 0.0 }
+        , gen: map (\k -> { kind: k, on: false, rate: genDefaultRate k, amt: genDefaultAmt k }) genKinds
+        , genSpread: 0.5, genBias: 0.5, genSeed: Marbles.seedFrom 1
+        , collapsed: [], lastTap: "", lastTapMicros: 0.0 }
     , render
     , eval: H.mkEval H.defaultEval
         { handleAction = handleAction, initialize = Just Initialize }
@@ -97,21 +99,32 @@ handleAction = case _ of
     -- model only every stepDiv ticks, so STEP LENGTH sets what a 1× head plays.
     when (st.running && tick.index `mod` st.stepDiv == 0) do
       let
-        sc' = st.stepCounter + 1
-        -- The Marbles generator fires at its boundary, BEFORE the heads read,
-        -- so the new values are what plays this step (déjà-vu = hold prob).
-        fireGen = st.marbles.on && boundaryFired st sc'
-        g = if fireGen then regenerate st else { odo: st.odo, seed: st.marblesSeed }
-        r = M.stepEmit g.odo
+        -- The randomisation matrix fires BEFORE the heads read, so any mutated
+        -- value is what plays this step. Each source drifts one notch at a time.
+        g = Gen.runGen
+              { gen: st.gen, spread: st.genSpread, bias: st.genBias
+              , odo: st.odo, seed: st.genSeed }
+        -- The chord progression advances on its own clock, before the heads read,
+        -- so the new chord is what this step's notes quantize to.
+        o1 = if g.odo.chord.on then M.tickChord g.odo else g.odo
+        -- Heads the generator just silenced (HEADS source) get a note-off below,
+        -- so a glide note can't stick on a voice that's now muted.
+        muteOf o h = maybe true _.mute (o.heads !! h)
+        newlyMuted = filter (\h -> not (muteOf st.odo h) && muteOf g.odo h) (range 0 3)
+        r = M.stepEmit o1
         -- A non-glide note's length scales with this head's note-spacing (so it
         -- breathes with the tempo / step length) rather than a fixed blip.
         gateMsFor f =
           let spd = maybe 1.0 M.speedOf (r.odo.heads !! f.headIdx)
               msPerBeat = 60000.0 / max 30.0 st.clockTempo
           in (0.25 * toNumber st.stepDiv) * msPerBeat / max 1.0 spd
-               * (toNumber st.odo.gatePct / 100.0)
+               * (toNumber r.odo.gatePct / 100.0)
                * toNumber f.dur
         prevOf h = join (st.headNote !! h)
+      -- Silence any voice the generator muted this step.
+      for_ st.midiOut \out -> liftEffect $ for_ newlyMuted \h -> case join (st.headNote !! h) of
+        Just n -> Midi.noteOffAt out { channel: h, note: n, delayMs: 0.0 }
+        Nothing -> pure unit
       -- Emit MIDI with per-head legato: glide cells HOLD until the next note
       -- (tie if same pitch, portamento-slide if different); non-glide cells are
       -- gated notes whose length scales with tempo.
@@ -123,11 +136,13 @@ handleAction = case _ of
         newHeadNote = foldl
           (\arr f -> fromMaybe arr (updateAt f.headIdx (nextNote f) arr))
           st.headNote r.fired
+        -- Clear the held-note slots of voices the generator just muted.
+        clearedHeadNote = foldl (\arr h -> fromMaybe arr (updateAt h Nothing arr)) newHeadNote newlyMuted
         fresh = map (\f -> { pitch: f.pitch, headIdx: f.headIdx
                            , fireUnixMicros: tick.fireUnixMicros }) r.fired
       H.modify_ \s -> s
-        { odo = r.odo, notes = fresh <> s.notes, headNote = newHeadNote
-        , marblesSeed = g.seed, stepCounter = sc', genLastScene = s.sceneIx }
+        { odo = r.odo, notes = fresh <> s.notes, headNote = clearedHeadNote
+        , genSeed = g.seed }
   Frame -> do
     st <- H.get
     case st.binnacle of
@@ -198,6 +213,11 @@ handleAction = case _ of
   UnifyHeads -> H.modify_ \s -> s { odo = M.unifyHeads s.odo }
   CycleScaleType dir -> H.modify_ \s -> s { odo = M.cycleScaleType dir s.odo }
   ToggleDist -> H.modify_ \s -> s { odo = M.toggleDistribution s.odo }
+  ToggleChord -> H.modify_ \s ->
+    if tapBounced "chord" s then s else (markTap "chord" s) { odo = M.toggleChord s.odo }
+  ChordRoll -> H.modify_ \s ->
+    let r = Gen.rollChords M.numChordTable s.genSeed
+    in s { odo = M.setChordPicks r.picks s.odo, genSeed = r.seed }
   SetRoot pc -> H.modify_ \s -> s { odo = M.setRoot pc s.odo }
   SetOctave n -> H.modify_ \s -> s { odo = M.setOctaveShift n s.odo }
   SetDegShift n -> H.modify_ \s -> s { odo = M.setDegShift n s.odo }
@@ -226,7 +246,8 @@ handleAction = case _ of
               delta = round (toNumber (drag.startY - clientY) * toNumber (r.hi - r.lo) / 140.0)
               newVal = clampI r.lo r.hi (drag.startVal + delta)
             case drag.target of
-              MarblesAmt -> H.modify_ \s -> s { marbles = s.marbles { amount = toNumber newVal / 100.0 } }
+              GenRate kind -> H.modify_ \s -> s { gen = setRate kind newVal s.gen }
+              GenAmt kind -> H.modify_ \s -> s { gen = setAmt kind newVal s.gen }
               _ -> H.modify_ \s -> s { odo = applyTarget drag.target newVal s.odo }
       _ -> pure unit
   DragEnd -> do
@@ -235,18 +256,21 @@ handleAction = case _ of
       Just sid -> H.unsubscribe sid
       Nothing -> pure unit
     H.modify_ _ { dragging = Nothing, dragSub = Nothing }
-  ToggleMarbles -> H.modify_ \s -> s { marbles = s.marbles { on = not s.marbles.on } }
+  ToggleGen kind -> H.modify_ \s ->
+    -- Same double-dispatch guard as the panels: a flip-toggle would cancel
+    -- itself if the 30fps re-render replays the click, so debounce per source.
+    let k = "g:" <> genLabel kind
+    in if tapBounced k s then s else (markTap k s) { gen = toggleGen kind s.gen }
   MarblesPad cx cy btns ->
     -- Wired to mousedown + mousemove; act only while the button is held.
     -- X = BIAS (peak's horizontal position in the histogram, low→high notes);
     -- Y = SPREAD, inverted so up = wider.
     when (btns == 1) do
       { x, y } <- liftEffect $ Pointer.padNorm marblesPadId cx cy
-      H.modify_ \s -> s { marbles = s.marbles { bias = x, spread = 1.0 - y } }
-  SetBoundary b -> H.modify_ \s -> s { marbles = s.marbles { boundary = b } }
+      H.modify_ \s -> s { genBias = x, genSpread = 1.0 - y }
   MarblesRoll -> H.modify_ \s ->
-    let g = regenerate (s { marbles = s.marbles { amount = 1.0 } })
-    in s { odo = g.odo, marblesSeed = g.seed }
+    let g = Gen.rollAllNotes s.genSpread s.genBias s.odo s.genSeed
+    in s { odo = g.odo, genSeed = g.seed }
   -- The header always collapses, the tab always expands. Each is idempotent
   -- AND debounced per-label: a single click double-dispatches (one direct, one
   -- via the eval queue) with a re-render between, so the 2nd event lands on the
@@ -254,54 +278,21 @@ handleAction = case _ of
   -- same-label toggle within 120ms (the doubled events are near-instant;
   -- deliberate re-clicks are slower).
   CollapsePanel label -> H.modify_ \s ->
-    if panelBounced label s then s
-    else (markPanel label s)
+    if tapBounced label s then s
+    else (markTap label s)
       { collapsed = if elem label s.collapsed then s.collapsed else s.collapsed <> [ label ] }
   ExpandPanel label -> H.modify_ \s ->
-    if panelBounced label s then s
-    else (markPanel label s) { collapsed = filter (_ /= label) s.collapsed }
+    if tapBounced label s then s
+    else (markTap label s) { collapsed = filter (_ /= label) s.collapsed }
 
--- | True if this label was just toggled (< 120ms ago) — the second of a
--- | double-dispatched click. nowMicros advances via the Frame loop.
-panelBounced :: String -> State -> Boolean
-panelBounced label s = label == s.lastPanel && (s.nowMicros - s.lastPanelMicros) < 120000.0
+-- | True if this target was just toggled (< 120ms ago) — the second of a
+-- | double-dispatched click. nowMicros advances via the Frame loop. Shared by
+-- | the accordion panels and the GENERATE source LEDs.
+tapBounced :: String -> State -> Boolean
+tapBounced k s = k == s.lastTap && (s.nowMicros - s.lastTapMicros) < 120000.0
 
-markPanel :: String -> State -> State
-markPanel label s = s { lastPanel = label, lastPanelMicros = s.nowMicros }
-
--- | A head's loop period in model steps — how often it comes around (its
--- | `len` cells traversed at its speed). The fastest/slowest unmuted voice
--- | defines the BAR boundaries.
-headPeriod :: M.Head -> Int
-headPeriod h = max 1 (ceil (toNumber h.len / M.speedOf h))
-
-activePeriods :: M.Odonus -> Array Int
-activePeriods o = map headPeriod (filter (not <<< _.mute) o.heads)
-
-fastestPeriod :: M.Odonus -> Int
-fastestPeriod o = fromMaybe 16 (minimum (activePeriods o))
-
-slowestPeriod :: M.Odonus -> Int
-slowestPeriod o = fromMaybe 16 (maximum (activePeriods o))
-
--- | Has the Marbles source's boundary fired on this model step?
-boundaryFired :: State -> Int -> Boolean
-boundaryFired st sc = case st.marbles.boundary of
-  EveryStep -> true
-  BarFastest -> sc `mod` fastestPeriod st.odo == 0
-  BarSlowest -> sc `mod` slowestPeriod st.odo == 0
-  SceneChange -> st.sceneIx /= st.genLastScene
-
--- | Run the déjà-vu mutation over the cell notes (candidates stay chromatic —
--- | the quantizer reins them in), returning the new odo and advanced seed.
-regenerate :: State -> { odo :: M.Odonus, seed :: Marbles.Seed }
-regenerate st =
-  let m = Marbles.mutateInts
-            { spread: st.marbles.spread, bias: st.marbles.bias, amount: st.marbles.amount }
-            (range 36 84)
-            (map _.note st.odo.cells)
-            st.marblesSeed
-  in { odo: M.setNotes m.values st.odo, seed: m.seed }
+markTap :: String -> State -> State
+markTap k s = s { lastTap = k, lastTapMicros = s.nowMicros }
 
 -- | The rig WebSocket (purerl-tidal). Binnacle subscribes to the Link
 -- | anchor here and relays gates/CV to es9-daemon.

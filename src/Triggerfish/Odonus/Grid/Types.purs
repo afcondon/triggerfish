@@ -8,11 +8,19 @@ module Triggerfish.Odonus.Grid.Types
   , DragState
   , NoteEvent
   , Scene
-  , Boundary(..)
-  , boundaries
-  , boundaryShort
+  , GenKind(..)
+  , GenSource
+  , genKinds
+  , genLabel
+  , genSub
+  , genDefaultRate
+  , genDefaultAmt
+  , rateMax
+  , periodOf
+  , toggleGen
+  , setRate
+  , setAmt
   , marblesPadId
-  , MarblesCfg
   , State
   , Action(..)
   ) where
@@ -20,7 +28,9 @@ module Triggerfish.Odonus.Grid.Types
 import Prelude
 
 import Data.Array (length)
+import Data.Int (round, toNumber)
 import Data.Maybe (Maybe)
+import Data.Number (pow)
 import Halogen as H
 import Triggerfish.Odonus.Model as M
 import Triggerfish.Odonus.Marbles as Marbles
@@ -38,7 +48,9 @@ data KnobTarget
   | HeadLen Int
   | Spread
   | GateLen
-  | MarblesAmt    -- déjà-vu amount, lives on State not Odonus (see DragMove)
+  | ChordStep        -- chord-progression clock: steps per chord
+  | GenRate GenKind  -- a source's randomisation rate, lives on State (see DragMove)
+  | GenAmt GenKind   -- a source's mutation depth / intensity (0..100)
 
 targetRange :: KnobTarget -> { lo :: Int, hi :: Int }
 targetRange = case _ of
@@ -51,7 +63,9 @@ targetRange = case _ of
   HeadLen _ -> { lo: 1, hi: 16 }
   Spread -> { lo: 1, hi: 12 }
   GateLen -> { lo: 10, hi: 200 }
-  MarblesAmt -> { lo: 0, hi: 100 }
+  ChordStep -> { lo: M.chordPeriodMin, hi: M.chordPeriodMax }
+  GenRate _ -> { lo: 0, hi: rateMax }
+  GenAmt _ -> { lo: 0, hi: 100 }
 
 applyTarget :: KnobTarget -> Int -> M.Odonus -> M.Odonus
 applyTarget t v = case t of
@@ -64,7 +78,9 @@ applyTarget t v = case t of
   HeadLen h -> M.setHeadLen h v
   Spread -> M.setSpread v
   GateLen -> M.setGatePct v
-  MarblesAmt -> identity   -- handled at State level in DragMove, not on Odonus
+  ChordStep -> M.setChordPeriod v
+  GenRate _ -> identity   -- handled at State level in DragMove, not on Odonus
+  GenAmt _ -> identity     -- handled at State level in DragMove, not on Odonus
 
 type DragState = { target :: KnobTarget, startY :: Int, startVal :: Int }
 
@@ -78,41 +94,107 @@ type NoteEvent = { pitch :: Int, headIdx :: Int, fireUnixMicros :: Number }
 -- | and voices dropping in and out.
 type Scene = { name :: String, odo :: M.Odonus }
 
--- | When a randomisation source fires. Each source carries its own boundary,
--- | so a fast Marbles roll can run against a slow whole-rig drift.
-data Boundary
-  = EveryStep         -- every model advance
-  | BarFastest        -- each loop of the fastest unmuted voice
-  | BarSlowest        -- each loop of the slowest unmuted voice
-  | SceneChange       -- when the scene chain advances / a scene is recalled
+-- | A randomisation aspect: one independent slow-drift source. Each picks a
+-- | random element of its domain when it fires and mutates it by one notch —
+-- | a steady, low-probability evolution rather than a one-shot scramble.
+-- | (OFFSET and head LENGTH are deliberately excluded — those get direct
+-- | Reichian phase controls instead.)
+data GenKind
+  = GNotes      -- reroll one cell's note from the Marbles Beta distribution
+  | GGate       -- occasionally rest a step (biased toward mostly-gated)
+  | GSkip       -- occasionally drop a step (biased toward few skips)
+  | GGlide      -- occasionally tie/slew a step (biased toward few glides)
+  | GLen        -- drift one cell's note length ±1
+  | GHeads      -- walk the active-playhead combination (one bit on the 4-cube)
+  | GTransp     -- nudge one head's scalar transpose
+  | GPattern    -- advance one head's access pattern
+  | GSpeed      -- nudge one head's speed
+  | GKey        -- shift key by a fifth, change mode, or toggle a scale note
 
-derive instance eqBoundary :: Eq Boundary
+derive instance eqGenKind :: Eq GenKind
 
-boundaries :: Array Boundary
-boundaries = [ EveryStep, BarFastest, BarSlowest, SceneChange ]
+genKinds :: Array GenKind
+genKinds = [ GNotes, GGate, GSkip, GGlide, GLen, GHeads, GTransp, GPattern, GSpeed, GKey ]
 
-boundaryShort :: Boundary -> String
-boundaryShort = case _ of
-  EveryStep -> "STEP"
-  BarFastest -> "FAST"
-  BarSlowest -> "SLOW"
-  SceneChange -> "SCENE"
+genLabel :: GenKind -> String
+genLabel = case _ of
+  GNotes -> "NOTES"
+  GGate -> "GATE"
+  GSkip -> "SKIP"
+  GGlide -> "GLIDE"
+  GLen -> "LEN"
+  GHeads -> "HEADS"
+  GTransp -> "TRANSP"
+  GPattern -> "PATTERN"
+  GSpeed -> "SPEED"
+  GKey -> "KEY · SCALE"
+
+genSub :: GenKind -> String
+genSub = case _ of
+  GNotes -> "pitch · Marbles"
+  GGate -> "rest a step"
+  GSkip -> "drop a step"
+  GGlide -> "tie / slew"
+  GLen -> "note length"
+  GHeads -> "voice combination"
+  GTransp -> "scalar transpose"
+  GPattern -> "access pattern"
+  GSpeed -> "voice speed"
+  GKey -> "fifths · mode · degree"
+
+-- | One source's stored config: enabled, a rate index 0..`rateMax` (→ firing
+-- | period via `periodOf`), and an `amt` 0..100 giving the mutation DEPTH —
+-- | how big each change is when the source fires (a small constant nudge vs a
+-- | proper shake-up). The two axes are independent: how OFTEN, and how MUCH.
+type GenSource = { kind :: GenKind, on :: Boolean, rate :: Int, amt :: Int }
+
+-- | A source's initial rate index. LEN drifts more freely (a lower index = a
+-- | shorter period = more frequent) since note-length changes read as phrasing,
+-- | not chaos; everything else starts conservative.
+genDefaultRate :: GenKind -> Int
+genDefaultRate = case _ of
+  GLen -> 72
+  _ -> 96
+
+-- | A source's initial mutation depth (0..100). Chosen so a single source,
+-- | turned on alone, makes an audible difference — TRANSP needs more depth to
+-- | clear re-quantization, KEY stays gentle (mostly fifths).
+genDefaultAmt :: GenKind -> Int
+genDefaultAmt = case _ of
+  GNotes -> 20
+  GTransp -> 40
+  GKey -> 25
+  GLen -> 25
+  _ -> 30
+
+-- | The rate-index resolution. Drag the bare-number control across this range.
+rateMax :: Int
+rateMax = 200
+
+-- | Map a rate index to a firing PERIOD in model steps — the bare number the
+-- | control shows. Geometric from 1 (every step, chaos) up to ~16384 (a change
+-- | roughly every few thousand steps, i.e. rare drift). One change per N steps.
+periodOf :: Int -> Int
+periodOf r =
+  let rr = if r < 0 then 0 else if r > rateMax then rateMax else r
+  in max 1 (round (pow 16384.0 (toNumber rr / toNumber rateMax)))
+
+-- | Flip a source's enable.
+toggleGen :: GenKind -> Array GenSource -> Array GenSource
+toggleGen k = map \s -> if s.kind == k then s { on = not s.on } else s
+
+-- | Set a source's rate index (from a drag on its bare-number control).
+setRate :: GenKind -> Int -> Array GenSource -> Array GenSource
+setRate k v = map \s -> if s.kind == k then s { rate = v } else s
+
+-- | Set a source's mutation depth (from a drag on its AMT control).
+setAmt :: GenKind -> Int -> Array GenSource -> Array GenSource
+setAmt k v = map \s -> if s.kind == k then s { amt = v } else s
 
 -- | DOM id of the Marbles X-Y pad, shared by the view (the element) and the
 -- | handler (which looks it up to read pointer position).
 marblesPadId :: String
 marblesPadId = "tf-marbles-xy"
-
--- | The Marbles note-value generator's controls. `spread`/`bias` ∈ [0,1] (the
--- | X-Y pad axes); `amount` ∈ [0,1] is the déjà-vu — per-cell regenerate
--- | probability each time `boundary` fires.
-type MarblesCfg =
-  { on :: Boolean
-  , spread :: Number
-  , bias :: Number
-  , amount :: Number
-  , boundary :: Boundary
-  }
 
 type State =
   { odo :: M.Odonus
@@ -136,13 +218,13 @@ type State =
   , barsPerScene :: Int
   , stepDiv :: Int          -- global clock divider (1=1/16 .. 16=whole note)
   , headNote :: Array (Maybe Int)  -- the held/sounding MIDI note per head (4)
-  , marbles :: MarblesCfg    -- the note-value generator (source 1)
-  , marblesSeed :: Marbles.Seed
-  , stepCounter :: Int       -- model advances since start, for bar boundaries
-  , genLastScene :: Int      -- sceneIx the generator last saw (scene boundary)
+  , gen :: Array GenSource    -- the randomisation matrix — one source per aspect
+  , genSpread :: Number       -- Marbles X-Y pad: spread ∈ [0,1] (NOTES source)
+  , genBias :: Number         -- Marbles X-Y pad: bias ∈ [0,1] (NOTES source)
+  , genSeed :: Marbles.Seed   -- the shared PRNG every source draws from
   , collapsed :: Array String  -- panel labels currently collapsed (accordion)
-  , lastPanel :: String        -- last panel toggled (debounce the double-dispatch)
-  , lastPanelMicros :: Number
+  , lastTap :: String          -- last toggle target (debounce the double-dispatch)
+  , lastTapMicros :: Number
   }
 
 data Action
@@ -161,6 +243,8 @@ data Action
   | UnifyHeads
   | CycleScaleType Int
   | ToggleDist
+  | ToggleChord
+  | ChordRoll
   | SetRoot Int
   | SetOctave Int
   | SetDegShift Int
@@ -174,9 +258,8 @@ data Action
   | KnobDown KnobTarget Int
   | DragMove Int
   | DragEnd
-  | ToggleMarbles
+  | ToggleGen GenKind          -- enable/disable a randomisation source
   | MarblesPad Int Int Int     -- X-Y pad: clientX, clientY, buttons (read sync)
-  | SetBoundary Boundary
-  | MarblesRoll                -- one-shot: regenerate all cells now
+  | MarblesRoll                -- one-shot: regenerate all cell notes now
   | CollapsePanel String       -- fold a panel to a tab (idempotent)
   | ExpandPanel String         -- reopen a panel (idempotent)

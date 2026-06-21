@@ -111,19 +111,20 @@ noteField odo =
         [ HH.div
             [ style "display:grid;grid-template-columns:repeat(4,1fr);gap:6px" ]
             (mapWithIndex (noteCell odo) odo.cells)
-        , setAllRow
+        , setAllRow odo
         ]
     )
 
--- | Flatten-the-grid macros: drop every note into the bass register (MIN)
--- | or the melodic register (CENTER) as a starting point to sculpt from.
--- | MARBLES (a spread/bias/déjà-vu generator) will join this row.
-setAllRow :: forall m. H.ComponentHTML Action () m
-setAllRow =
+-- | Flatten-the-grid macros: drop every note onto the scale root — low octave
+-- | (MIN, for basslines) or middle octave (CENTER, for melodies) — as a tonic
+-- | starting point to sculpt from. Both follow the current key, so in D the
+-- | floor is a D, not a fixed chromatic value.
+setAllRow :: forall m. M.Odonus -> H.ComponentHTML Action () m
+setAllRow odo =
   HH.div [ style "display:flex;align-items:center;gap:5px;margin-top:7px" ]
     [ HH.span [ style $ engrave <> ";font-size:8px;opacity:0.7;margin-right:1px" ] [ HH.text "SET ALL" ]
-    , tabBtn "MIN" false (SetAllNotes 36)
-    , tabBtn "CENTER" false (SetAllNotes 60)
+    , tabBtn "MIN" false (SetAllNotes (36 + odo.rootPc))
+    , tabBtn "CENTER" false (SetAllNotes (60 + odo.rootPc))
     ]
 
 noteCell :: forall m. M.Odonus -> Int -> M.Cell -> H.ComponentHTML Action () m

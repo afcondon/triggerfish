@@ -8,9 +8,11 @@ module Triggerfish.Scale
   , Distribution(..)
   , ScaleType
   , scaleTypes
+  , randomisableScales
   , mkScale
   , mkScaleFromIvls
   , normaliseIvls
+  , quantiseToChordPCs
   , recogniseScale
   , spreadIvls
   , rootNames
@@ -69,6 +71,36 @@ scaleTypes =
   , { name: "pentaMinor",   intervals: [ 0, 3, 5, 7, 10 ] }
   , { name: "wholetone",    intervals: [ 0, 2, 4, 6, 8, 10 ] }
   , { name: "chromatic",    intervals: [ 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11 ] }
+  ]
+
+-- | A larger body of musically-reasonable scales for the KEY·SCALE randomiser
+-- | to draw from. Deliberately excludes the chromatic set (and any single
+-- | atonal note-toggling) — random tonal centres, not random clusters. The
+-- | seven diatonic modes, the minor variants, pentatonics, blues, and a handful
+-- | of evocative-but-grounded exotics (phrygian-dominant, hungarian minor,
+-- | hirajoshi, …).
+randomisableScales :: Array (Array Int)
+randomisableScales =
+  [ [ 0, 2, 4, 5, 7, 9, 11 ]      -- major (ionian)
+  , [ 0, 2, 3, 5, 7, 9, 10 ]      -- dorian
+  , [ 0, 1, 3, 5, 7, 8, 10 ]      -- phrygian
+  , [ 0, 2, 4, 6, 7, 9, 11 ]      -- lydian
+  , [ 0, 2, 4, 5, 7, 9, 10 ]      -- mixolydian
+  , [ 0, 2, 3, 5, 7, 8, 10 ]      -- minor (aeolian)
+  , [ 0, 1, 3, 5, 6, 8, 10 ]      -- locrian
+  , [ 0, 2, 3, 5, 7, 8, 11 ]      -- harmonic minor
+  , [ 0, 2, 3, 5, 7, 9, 11 ]      -- melodic minor
+  , [ 0, 2, 4, 5, 7, 8, 11 ]      -- harmonic major
+  , [ 0, 2, 4, 6, 7, 9, 10 ]      -- lydian dominant
+  , [ 0, 1, 4, 5, 7, 8, 10 ]      -- phrygian dominant
+  , [ 0, 2, 3, 6, 7, 8, 11 ]      -- hungarian minor
+  , [ 0, 2, 4, 7, 9 ]             -- major pentatonic
+  , [ 0, 3, 5, 7, 10 ]            -- minor pentatonic
+  , [ 0, 2, 5, 7, 10 ]            -- egyptian / suspended pentatonic
+  , [ 0, 3, 5, 6, 7, 10 ]         -- blues
+  , [ 0, 2, 3, 7, 8 ]             -- hirajoshi
+  , [ 0, 1, 5, 7, 8 ]             -- in / japanese
+  , [ 0, 2, 4, 6, 8, 10 ]         -- whole tone
   ]
 
 rootNames :: Array String
@@ -175,6 +207,22 @@ quantiseToScale (Scale s) note =
       pure (s.root + iv + s.period * o)
   in
     fromMaybe note (minimumBy (comparing \c -> abs (c - note)) cands)
+
+-- | Multi-octave chord quantiser (Instruō Dial-style): snap `note` to the
+-- | nearest pitch in ANY octave whose pitch-class is one of `pcs` (a chord's
+-- | tones, 0..11). Spreads voicings naturally across octaves — each cell lands
+-- | on whichever chord tone is closest, so notes fan out over the range. Empty
+-- | `pcs` passes the note through unchanged.
+quantiseToChordPCs :: Array Int -> Int -> Int
+quantiseToChordPCs pcs note =
+  let cands = map (nearestWithPc note) pcs
+  in fromMaybe note (minimumBy (comparing \c -> abs (c - note)) cands)
+
+-- | The note nearest to `note` whose pitch class is `pc` (0..11).
+nearestWithPc :: Int -> Int -> Int
+nearestWithPc note pc =
+  let r = (((pc - note) `mod` 12) + 12) `mod` 12
+  in if r <= 6 then note + r else note + r - 12
 
 -- | The 1-based degree of an in-scale note (snaps first if off-scale).
 noteToDegreeIn :: Scale -> Int -> Int

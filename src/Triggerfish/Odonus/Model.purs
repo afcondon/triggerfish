@@ -8,6 +8,16 @@ module Triggerfish.Odonus.Model
   ( Cell
   , Head
   , Odonus
+  , ChordSeq
+  , numChordTable
+  , chordNameAt
+  , currentChordPCs
+  , setChordPicks
+  , tickChord
+  , toggleChord
+  , setChordPeriod
+  , chordPeriodMin
+  , chordPeriodMax
   , Pattern
   , patternLibrary
   , orderOf
@@ -40,6 +50,8 @@ module Triggerfish.Odonus.Model
   , renderCell
   , cycleRoot
   , cycleScaleType
+  , numRandScales
+  , setRandScale
   , toggleDistribution
   , scaleTypeName
   , setRoot
@@ -58,7 +70,8 @@ import Data.Foldable (foldl)
 import Data.Int (floor, toNumber)
 import Data.Int.Bits (and, shl, shr)
 import Data.Maybe (Maybe(..), fromMaybe, maybe)
-import Triggerfish.Scale (Scale, Distribution(..), applyDistribution, mkScaleFromIvls, normaliseIvls, quantiseToScale, recogniseScale, scaleTypes, shiftDegrees, spreadIvls)
+import Triggerfish.Scale (Scale, Distribution(..), applyDistribution, mkScaleFromIvls, normaliseIvls, quantiseToChordPCs, quantiseToScale, randomisableScales, recogniseScale, scaleTypes, shiftDegrees, spreadIvls)
+import Triggerfish.Vetula (Chord(..), Mode(Ionian), mcmullenYellow, mcmullenYellowNames, realize)
 
 type Cell =
   { note :: Int
@@ -103,6 +116,20 @@ type Head =
   , len :: Int      -- loop length: reset after L steps (polymeter)
   }
 
+-- | A chord-progression quantiser overlay. When `on`, the output is snapped a
+-- | second time — past the scale — to the tones of the current chord, across
+-- | octaves. The progression is four chords drawn from Joe McMullen's Plaits
+-- | "Yellow" table (`picks` = indices into `mcmullenYellow`), realised against
+-- | the current root in Ionian — so it transposes with the key. It advances on
+-- | its own clock: `phase` counts model steps and rolls `ix` every `period`.
+type ChordSeq =
+  { on :: Boolean
+  , picks :: Array Int      -- four indices into the McMullen Yellow table
+  , ix :: Int               -- current position in the progression
+  , phase :: Int            -- model steps since the chord last advanced
+  , period :: Int           -- steps per chord (its own clock, related to main)
+  }
+
 type Odonus =
   { cells :: Array Cell   -- length 16
   , heads :: Array Head
@@ -112,6 +139,7 @@ type Odonus =
   , octaveShift :: Int    -- global ± octaves applied to the output
   , degShift :: Int       -- global scalar transpose, in scale degrees (I..IX)
   , gatePct :: Int        -- gated-note length as % of step spacing (>100 = legato)
+  , chord :: ChordSeq     -- the chord-progression quantiser overlay
   }
 
 -- | The active scale built from the root + interval mask.
@@ -134,8 +162,57 @@ renderCell o hd c =
     base = applyDistribution o.dist scale c.note
     headed = quantiseToScale scale (base + hd.transp)
     degreed = shiftDegrees scale o.degShift headed
+    -- The chord overlay is the LAST harmonic gate: snap the in-key note to the
+    -- nearest tone of the current chord, across octaves, when the sequence runs.
+    chorded = if o.chord.on then quantiseToChordPCs (currentChordPCs o) degreed else degreed
   in
-    degreed + 12 * o.octaveShift
+    chorded + 12 * o.octaveShift
+
+-- | How many chords the table offers, and a chord's display name.
+numChordTable :: Int
+numChordTable = length mcmullenYellow
+
+chordNameAt :: Int -> String
+chordNameAt ix = fromMaybe "?" (mcmullenYellowNames !! ix)
+
+-- | The pitch classes (0..11) of the chord at the progression's current
+-- | position — the picked McMullen chord realised against the current root.
+currentChordPCs :: Odonus -> Array Int
+currentChordPCs o =
+  case mcmullenYellow !! fromMaybe 0 (o.chord.picks !! o.chord.ix) of
+    Just dc -> case realize { tonic: o.rootPc, mode: Ionian } dc of Chord pcs -> pcs
+    Nothing -> []
+
+-- | Replace the four-chord progression (the chord randomiser's output).
+setChordPicks :: Array Int -> Odonus -> Odonus
+setChordPicks ps o = o { chord = o.chord { picks = ps, ix = 0, phase = 0 } }
+
+chordPeriodMin :: Int
+chordPeriodMin = 1
+
+chordPeriodMax :: Int
+chordPeriodMax = 64
+
+-- | Advance the chord clock one model step: roll to the next chord when this
+-- | one has held for `period` steps.
+tickChord :: Odonus -> Odonus
+tickChord o =
+  let
+    per = clampI chordPeriodMin chordPeriodMax o.chord.period
+    nCh = length o.chord.picks
+    ph = o.chord.phase + 1
+  in
+    if nCh <= 0 then o
+    else if ph >= per then o { chord = o.chord { phase = 0, ix = (o.chord.ix + 1) `mod` nCh } }
+    else o { chord = o.chord { phase = ph } }
+
+-- | Enable/disable the chord overlay, restarting the progression from its head.
+toggleChord :: Odonus -> Odonus
+toggleChord o = o { chord = o.chord { on = not o.chord.on, ix = 0, phase = 0 } }
+
+-- | Set the chord clock's period (steps per chord), clamped to the musical range.
+setChordPeriod :: Int -> Odonus -> Odonus
+setChordPeriod v o = o { chord = o.chord { period = clampI chordPeriodMin chordPeriodMax v } }
 
 speedTable :: Array Number
 speedTable = [ 0.125, 0.25, 0.5, 0.75, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0, 8.0 ]
@@ -167,11 +244,16 @@ defaultCells =
   mapWithIndex (\i _ -> { note: 60 + i, skip: false, gate: true, glide: false, dur: 1 })
     (replicate 16 unit)
 
+-- | The prototype progression: ii7 – V7 – Imaj7 – vi9, a ii–V–I–vi from the
+-- | McMullen Yellow table (indices 15, 10, 12, 13).
+defaultChord :: ChordSeq
+defaultChord = { on: false, picks: [ 15, 10, 12, 13 ], ix: 0, phase: 0, period: 16 }
+
 defaultOdonus :: Odonus
 defaultOdonus =
   { cells: defaultCells, heads: defaultHeads
   , rootPc: 0, scaleIvls: [ 0, 2, 3, 5, 7, 8, 10 ], dist: Natural   -- C minor
-  , octaveShift: 0, degShift: 0, gatePct: 90 }
+  , octaveShift: 0, degShift: 0, gatePct: 90, chord: defaultChord }
 
 -- ---------------------------------------------------------------------------
 -- traversal — walk the head's pattern ordering, skip-aware
@@ -360,6 +442,15 @@ cycleScaleType dir o =
     ni = ((base + dir) `mod` length scaleTypes + length scaleTypes) `mod` length scaleTypes
   in
     o { scaleIvls = maybe o.scaleIvls _.intervals (scaleTypes !! ni) }
+
+-- | How many curated scales the KEY·SCALE randomiser can pick from.
+numRandScales :: Int
+numRandScales = length randomisableScales
+
+-- | Install one of the curated musical scales by index (the randomiser's tonal
+-- | move — a whole reasonable mode, never a random note cluster).
+setRandScale :: Int -> Odonus -> Odonus
+setRandScale ix o = o { scaleIvls = fromMaybe o.scaleIvls (randomisableScales !! ix) }
 
 -- | Toggle a pitch class in/out of the scale (direct note choice). The root is
 -- | always kept. `pc` is absolute 0..11; membership is by interval from root.

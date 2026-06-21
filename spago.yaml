@@ -26,6 +26,9 @@ package:
     module: Triggerfish.Main
     outfile: public/bundle.js
     platform: browser
+  test:
+    main: Triggerfish.Harness
+    dependencies: []
 workspace:
   extraPackages:
     binnacle:

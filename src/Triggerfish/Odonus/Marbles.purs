@@ -11,6 +11,7 @@ module Triggerfish.Odonus.Marbles
   ( Seed
   , seedFrom
   , nextRand
+  , nextInt
   , concentration
   , betaWeights
   , rollValue
@@ -48,6 +49,13 @@ nextSeed s =
 -- | A uniform draw in [0,1) and the advanced seed.
 nextRand :: Seed -> { u :: Number, seed :: Seed }
 nextRand s = let s' = nextSeed s in { u: s' / modulus, seed: s' }
+
+-- | A uniform integer in [0, hi) and the advanced seed (hi should be ≥ 1).
+nextInt :: Int -> Seed -> { n :: Int, seed :: Seed }
+nextInt hi s =
+  let { u, seed } = nextRand s
+      n = floor (u * toNumber hi)
+  in { n: if n < 0 then 0 else if n >= hi then hi - 1 else n, seed }
 
 -- ── Beta distribution ────────────────────────────────────────────────────────
 

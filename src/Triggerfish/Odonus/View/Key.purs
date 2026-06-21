@@ -3,7 +3,7 @@ module Triggerfish.Odonus.View.Key (quantizerPanel) where
 
 import Prelude
 
-import Data.Array (elem, length, range)
+import Data.Array (elem, length, mapWithIndex, range)
 import Halogen as H
 import Halogen.HTML as HH
 import Halogen.HTML.Events as HE
@@ -43,7 +43,56 @@ quantizerPanel s =
         [ HH.text (case s.odo.dist of
             Scale.Natural -> "Natural · cells snap to nearest scale tone"
             Scale.Equal -> "Equal · cells index scale degrees from root") ]
+    , chordSection s.odo
     ]
+
+-- | CHORDS sub-panel: a diatonic progression that, when on, snaps the output a
+-- | second time to the current chord's tones (across octaves). It runs on its
+-- | own clock — STEPS/CHORD sets how long each chord holds. The chips show the
+-- | progression with the live chord lit.
+chordSection :: forall m. M.Odonus -> H.ComponentHTML Action () m
+chordSection odo =
+  let ch = odo.chord
+  in
+    HH.div [ style "margin-top:12px;padding-top:10px;border-top:1px solid #00000018" ]
+      [ HH.div [ style "display:flex;align-items:center;justify-content:space-between;margin-bottom:7px" ]
+          [ HH.span [ style $ engrave <> ";font-size:9px" ] [ HH.text "CHORDS" ]
+          , HH.button
+              [ HE.onClick \_ -> ToggleChord
+              , style $ "padding:4px 10px;border:1px solid #a8a392;border-radius:6px;cursor:pointer;"
+                  <> "font-family:'SF Mono',Menlo,monospace;font-size:10px;color:" <> (if ch.on then "#1c1a12" else "#3f3c33")
+                  <> ";background:" <> (if ch.on then "linear-gradient(#c8a86a,#b8975a)" else "linear-gradient(#efece1,#ddd9cb)") ]
+              [ HH.text (if ch.on then "● quantizing" else "○ off") ]
+          ]
+      , HH.div [ style "display:flex;gap:4px;margin-bottom:8px" ]
+          (mapWithIndex (chordChip ch.on ch.ix) ch.picks)
+      , HH.div [ style "display:flex;align-items:center;justify-content:space-between;gap:8px" ]
+          [ HH.button
+              [ HE.onClick \_ -> ChordRoll
+              , style $ "padding:4px 8px;border:1px solid #a8a392;border-radius:6px;cursor:pointer;"
+                  <> "background:linear-gradient(#efece1,#ddd9cb);font-family:Georgia,serif;font-size:10px;color:#3f3c33" ]
+              [ HH.text "⟳ chords" ]
+          , HH.div [ style "display:flex;align-items:center;gap:6px" ]
+              [ HH.span [ style $ engrave <> ";font-size:8px;opacity:0.8" ] [ HH.text "STEPS / CHORD" ]
+              , HH.div
+                  [ HE.onMouseDown \_ -> KnobDown ChordStep ch.period
+                  , style "cursor:ns-resize;user-select:none;font-family:'SF Mono',Menlo,monospace;font-size:15px;font-weight:600;color:#5a564b" ]
+                  [ HH.text (show ch.period) ]
+              ]
+          ]
+      ]
+
+-- | One chord in the progression — its McMullen name, lit when it's the chord
+-- | currently sounding (and the overlay is on).
+chordChip :: forall m. Boolean -> Int -> Int -> Int -> H.ComponentHTML Action () m
+chordChip on curIx i tableIx =
+  let live = on && i == curIx
+  in
+    HH.div
+      [ style $ "flex:1;text-align:center;padding:5px 1px;border-radius:5px;border:1px solid #00000018;"
+          <> "font-family:Georgia,serif;font-size:10px;white-space:nowrap;color:" <> (if live then "#1c1a12" else "#6a6456")
+          <> ";background:" <> (if live then "linear-gradient(#c8a86a,#b8975a)" else "#cbc6b6") ]
+      [ HH.text (M.chordNameAt tableIx) ]
 
 -- | A 12-key chromatic strip: in-scale pitch classes lit, the root accented.
 -- | Click a key to toggle it in/out of the scale (direct note choice); the
