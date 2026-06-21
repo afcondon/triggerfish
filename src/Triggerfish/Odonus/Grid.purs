@@ -9,10 +9,10 @@ module Triggerfish.Odonus.Grid (component) where
 
 import Prelude
 
-import Data.Array (deleteAt, filter, length, mapWithIndex, null, updateAt, (!!))
-import Data.Foldable (foldl, for_)
+import Data.Array (deleteAt, filter, length, mapWithIndex, null, range, updateAt, (!!))
+import Data.Foldable (foldl, for_, maximum, minimum)
 import Data.FoldableWithIndex (forWithIndex_)
-import Data.Int (round, toNumber)
+import Data.Int (ceil, round, toNumber)
 import Data.Maybe (Maybe(..), fromMaybe, maybe)
 import Data.String.Common (joinWith)
 import Effect (Effect)
@@ -23,6 +23,8 @@ import Halogen as H
 import Halogen.HTML as HH
 import Halogen.Subscription as HS
 import Triggerfish.Odonus.Model as M
+import Triggerfish.Odonus.Marbles as Marbles
+import Triggerfish.Ui.Pointer as Pointer
 import Binnacle as Binnacle
 import Binnacle.Clock as Clock
 import Binnacle.Midi as Midi
@@ -33,13 +35,14 @@ import Web.HTML (window)
 import Web.HTML.Window as Window
 import Web.UIEvent.MouseEvent as ME
 import Triggerfish.Odonus.Grid.Types
-  ( Action(..), State, applyTarget, targetRange )
+  ( Action(..), Boundary(..), KnobTarget(..), State, applyTarget, marblesPadId, targetRange )
 import Triggerfish.Odonus.Grid.Widgets (clampI, style)
 import Triggerfish.Odonus.View.Scope (scopePanel)
 import Triggerfish.Odonus.View.Key (quantizerPanel)
 import Triggerfish.Odonus.View.Playheads (playheadsPanel)
 import Triggerfish.Odonus.View.Grid (gridPanel)
 import Triggerfish.Odonus.View.Source (edslPanel)
+import Triggerfish.Odonus.View.Generate (generatePanel)
 import Triggerfish.Odonus.View.Scenes (scenesPanel, sceneName)
 
 component :: forall q i o m. MonadAff m => H.Component q i o m
@@ -51,7 +54,9 @@ component =
         , midiOut: Nothing, midiName: "…", clockTempo: 120.0, clockLocked: false
         , clockBeat: 0.0, clockBar: 0, anchorCount: 0
         , scenes: [], chain: false, sceneIx: 0, sceneBarAnchor: 0, barsPerScene: 4
-        , stepDiv: 1, headNote: [ Nothing, Nothing, Nothing, Nothing ] }
+        , stepDiv: 1, headNote: [ Nothing, Nothing, Nothing, Nothing ]
+        , marbles: { on: false, spread: 0.5, bias: 0.5, amount: 0.5, boundary: EveryStep }
+        , marblesSeed: Marbles.seedFrom 1, stepCounter: 0, genLastScene: 0 }
     , render
     , eval: H.mkEval H.defaultEval
         { handleAction = handleAction, initialize = Just Initialize }
@@ -91,7 +96,12 @@ handleAction = case _ of
     -- model only every stepDiv ticks, so STEP LENGTH sets what a 1× head plays.
     when (st.running && tick.index `mod` st.stepDiv == 0) do
       let
-        r = M.stepEmit st.odo
+        sc' = st.stepCounter + 1
+        -- The Marbles generator fires at its boundary, BEFORE the heads read,
+        -- so the new values are what plays this step (déjà-vu = hold prob).
+        fireGen = st.marbles.on && boundaryFired st sc'
+        g = if fireGen then regenerate st else { odo: st.odo, seed: st.marblesSeed }
+        r = M.stepEmit g.odo
         -- A non-glide note's length scales with this head's note-spacing (so it
         -- breathes with the tempo / step length) rather than a fixed blip.
         gateMsFor f =
@@ -114,7 +124,9 @@ handleAction = case _ of
           st.headNote r.fired
         fresh = map (\f -> { pitch: f.pitch, headIdx: f.headIdx
                            , fireUnixMicros: tick.fireUnixMicros }) r.fired
-      H.modify_ \s -> s { odo = r.odo, notes = fresh <> s.notes, headNote = newHeadNote }
+      H.modify_ \s -> s
+        { odo = r.odo, notes = fresh <> s.notes, headNote = newHeadNote
+        , marblesSeed = g.seed, stepCounter = sc', genLastScene = s.sceneIx }
   Frame -> do
     st <- H.get
     case st.binnacle of
@@ -212,7 +224,9 @@ handleAction = case _ of
               r = targetRange drag.target
               delta = round (toNumber (drag.startY - clientY) * toNumber (r.hi - r.lo) / 140.0)
               newVal = clampI r.lo r.hi (drag.startVal + delta)
-            H.modify_ \s -> s { odo = applyTarget drag.target newVal s.odo }
+            case drag.target of
+              MarblesAmt -> H.modify_ \s -> s { marbles = s.marbles { amount = toNumber newVal / 100.0 } }
+              _ -> H.modify_ \s -> s { odo = applyTarget drag.target newVal s.odo }
       _ -> pure unit
   DragEnd -> do
     st <- H.get
@@ -220,6 +234,52 @@ handleAction = case _ of
       Just sid -> H.unsubscribe sid
       Nothing -> pure unit
     H.modify_ _ { dragging = Nothing, dragSub = Nothing }
+  ToggleMarbles -> H.modify_ \s -> s { marbles = s.marbles { on = not s.marbles.on } }
+  MarblesPad cx cy btns ->
+    -- Wired to mousedown + mousemove; act only while the button is held.
+    -- X = BIAS (peak's horizontal position in the histogram, low→high notes);
+    -- Y = SPREAD, inverted so up = wider.
+    when (btns == 1) do
+      { x, y } <- liftEffect $ Pointer.padNorm marblesPadId cx cy
+      H.modify_ \s -> s { marbles = s.marbles { bias = x, spread = 1.0 - y } }
+  SetBoundary b -> H.modify_ \s -> s { marbles = s.marbles { boundary = b } }
+  MarblesRoll -> H.modify_ \s ->
+    let g = regenerate (s { marbles = s.marbles { amount = 1.0 } })
+    in s { odo = g.odo, marblesSeed = g.seed }
+
+-- | A head's loop period in model steps — how often it comes around (its
+-- | `len` cells traversed at its speed). The fastest/slowest unmuted voice
+-- | defines the BAR boundaries.
+headPeriod :: M.Head -> Int
+headPeriod h = max 1 (ceil (toNumber h.len / M.speedOf h))
+
+activePeriods :: M.Odonus -> Array Int
+activePeriods o = map headPeriod (filter (not <<< _.mute) o.heads)
+
+fastestPeriod :: M.Odonus -> Int
+fastestPeriod o = fromMaybe 16 (minimum (activePeriods o))
+
+slowestPeriod :: M.Odonus -> Int
+slowestPeriod o = fromMaybe 16 (maximum (activePeriods o))
+
+-- | Has the Marbles source's boundary fired on this model step?
+boundaryFired :: State -> Int -> Boolean
+boundaryFired st sc = case st.marbles.boundary of
+  EveryStep -> true
+  BarFastest -> sc `mod` fastestPeriod st.odo == 0
+  BarSlowest -> sc `mod` slowestPeriod st.odo == 0
+  SceneChange -> st.sceneIx /= st.genLastScene
+
+-- | Run the déjà-vu mutation over the cell notes (candidates stay chromatic —
+-- | the quantizer reins them in), returning the new odo and advanced seed.
+regenerate :: State -> { odo :: M.Odonus, seed :: Marbles.Seed }
+regenerate st =
+  let m = Marbles.mutateInts
+            { spread: st.marbles.spread, bias: st.marbles.bias, amount: st.marbles.amount }
+            (range 36 84)
+            (map _.note st.odo.cells)
+            st.marblesSeed
+  in { odo: M.setNotes m.values st.odo, seed: m.seed }
 
 -- | The rig WebSocket (purerl-tidal). Binnacle subscribes to the Link
 -- | anchor here and relays gates/CV to es9-daemon.
@@ -329,5 +389,6 @@ render s =
     , playheadsPanel s
     , gridPanel s
     , edslPanel s
+    , generatePanel s
     , scenesPanel s
     ]

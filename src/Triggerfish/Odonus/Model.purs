@@ -22,6 +22,7 @@ module Triggerfish.Odonus.Model
   , toggleGlide
   , setNote
   , setAllNotes
+  , setNotes
   , setCellDur
   , speedTable
   , speedOf
@@ -291,6 +292,11 @@ setNote i v = editCell i \c -> c { note = v }
 -- | (MIN → bass register, CENTER → melodic register).
 setAllNotes :: Int -> Odonus -> Odonus
 setAllNotes v o = o { cells = map (_ { note = v }) o.cells }
+
+-- | Write a whole array of note values onto the cells positionally (the
+-- | Marbles generator's output). Cells past the array length are untouched.
+setNotes :: Array Int -> Odonus -> Odonus
+setNotes ns o = o { cells = mapWithIndex (\i c -> maybe c (\n -> c { note = n }) (ns !! i)) o.cells }
 
 -- | Per-cell note duration in steps (1..8). 1 = a single-step gate (the old
 -- | behaviour); higher sustains the note across that many steps.
