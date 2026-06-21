@@ -21,7 +21,7 @@ import Triggerfish.Odonus.Grid.Widgets
 
 playheadsPanel :: forall m. State -> H.ComponentHTML Action () m
 playheadsPanel s =
-  panelShell "PLAYHEADS" "Fugue · Access" "flex:0 1 290px;min-width:0"
+  panelShell "PLAYHEADS" "Fugue · Access" "flex:0 1 290px;min-width:min-content"
     [ HH.button
         [ HE.onClick \_ -> UnifyHeads
         , style $ "width:100%;padding:6px;margin-bottom:10px;border:1px solid #a8a392;border-radius:7px;cursor:pointer;"

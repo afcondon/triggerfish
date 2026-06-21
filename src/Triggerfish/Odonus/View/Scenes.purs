@@ -18,7 +18,7 @@ sceneName s = show (length s.scenes + 1) <> " · " <> Scale.scaleName (M.scaleOf
 
 scenesPanel :: forall m. State -> H.ComponentHTML Action () m
 scenesPanel s =
-  panelShell "SCENES" "Song" "flex:0 1 198px;min-width:0"
+  panelShell "SCENES" "Song" "flex:0 1 198px;min-width:min-content"
     [ HH.button
         [ HE.onClick \_ -> CaptureScene
         , style $ "width:100%;padding:7px;margin-bottom:10px;border:1px solid #a8a392;border-radius:7px;cursor:pointer;"
