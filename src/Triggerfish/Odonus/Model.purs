@@ -29,6 +29,8 @@ module Triggerfish.Odonus.Model
   , setHeadOffset
   , setHeadLen
   , toggleHeadMute
+  , headMask
+  , setHeadMask
   , cyclePattern
   , unifyHeads
   , scaleOf
@@ -49,7 +51,9 @@ module Triggerfish.Odonus.Model
 import Prelude
 
 import Data.Array (catMaybes, elem, filter, findIndex, mapWithIndex, replicate, modifyAt, length, zipWith, (!!), (:))
+import Data.Foldable (foldl)
 import Data.Int (floor, toNumber)
+import Data.Int.Bits (and, shl, shr)
 import Data.Maybe (Maybe(..), fromMaybe, maybe)
 import Triggerfish.Scale (Scale, Distribution(..), applyDistribution, mkScaleFromIvls, normaliseIvls, quantiseToScale, recogniseScale, scaleTypes, shiftDegrees, spreadIvls)
 
@@ -297,6 +301,20 @@ setHeadLen h v = editHead h \hd -> hd { len = clampI 1 16 v }
 
 toggleHeadMute :: Int -> Odonus -> Odonus
 toggleHeadMute h = editHead h \hd -> hd { mute = not hd.mute }
+
+-- | The current head-activation combination as a bitmask: bit `h` set ⇒
+-- | head `h` is UNMUTED (sounding). Four heads ⇒ 16 possible combinations.
+headMask :: Odonus -> Int
+headMask o = foldl addBit 0 (mapWithIndex (\i hd -> { i, on: not hd.mute }) o.heads)
+  where
+  addBit acc r = if r.on then acc + shl 1 r.i else acc
+
+-- | Set every head's mute state from an activation bitmask in one move —
+-- | the head-matrix's single-click transition between any two combinations.
+setHeadMask :: Int -> Odonus -> Odonus
+setHeadMask mask o = o { heads = mapWithIndex setOne o.heads }
+  where
+  setOne i hd = hd { mute = and (shr mask i) 1 == 0 }
 
 -- | Advance a head to the next pattern in the library (resets its position).
 cyclePattern :: Int -> Odonus -> Odonus
