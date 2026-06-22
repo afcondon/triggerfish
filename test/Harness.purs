@@ -28,6 +28,7 @@ type Stats =
   , skipSum :: Int        -- Σ skipped-cell count per step
   , skipMax :: Int
   , gateOffSum :: Int     -- Σ rested-cell count per step
+  , ratchetOn :: Int      -- Σ ratcheted-cell count per step (ratchet > 1)
   , minActive :: Int      -- fewest unmuted voices seen (HEADS must never hit 0)
   , pitchLo :: Int
   , pitchHi :: Int
@@ -36,7 +37,7 @@ type Stats =
 emptyStats :: Stats
 emptyStats =
   { steps: 0, fired: 0, chordHits: 0, chordSeen: 0, skipSum: 0, skipMax: 0
-  , gateOffSum: 0, minActive: 99, pitchLo: 999, pitchHi: -999 }
+  , gateOffSum: 0, ratchetOn: 0, minActive: 99, pitchLo: 999, pitchHi: -999 }
 
 -- | One model step through the real pipeline, returning the post-step world,
 -- | the world the heads READ (o1), and what fired.
@@ -53,6 +54,7 @@ update :: Stats -> M.Odonus -> Array M.Fired -> Stats
 update s o1 fired =
   let skipped = length (filter _.skip o1.cells)
       gatesOff = length (filter (not <<< _.gate) o1.cells)
+      ratched = length (filter (\c -> c.ratchet > 1) o1.cells)
       active = length (filter (not <<< _.mute) o1.heads)
       pcs = M.currentChordPCs o1
       hits = if o1.chord.on then length (filter (\f -> elem (mod f.pitch 12) pcs) fired) else 0
@@ -66,6 +68,7 @@ update s o1 fired =
        , skipSum = s.skipSum + skipped
        , skipMax = max s.skipMax skipped
        , gateOffSum = s.gateOffSum + gatesOff
+       , ratchetOn = s.ratchetOn + ratched
        , minActive = min s.minActive active
        , pitchLo = foldl min s.pitchLo pitches
        , pitchHi = foldl max s.pitchHi pitches
@@ -137,6 +140,14 @@ main = do
   let d = simulate n (oneSource GHeads 0 100) 0.5 0.5 allVoices (Marbles.seedFrom 44)
   log "D. HEADS WALK"
   log ("   min active voices:  " <> show d.minActive <> "   (must be ≥ 1)\n")
+
+  -- F. RATCHET sparse-bias: turning RATCHET on alone should ratchet only a few
+  --    cells at a time, not roll the whole grid (the same sparse philosophy).
+  let f1 = simulate n (oneSource GRatchet 0 30) 0.5 0.5 allVoices (Marbles.seedFrom 66)
+  let f2 = simulate n (oneSource GRatchet 0 100) 0.5 0.5 allVoices (Marbles.seedFrom 67)
+  log "F. RATCHET DENSITY  (of 16 cells)"
+  log ("   depth 30%:  mean " <> mean1 f1.ratchetOn f1.steps <> " ratcheted")
+  log ("   depth 100%: mean " <> mean1 f2.ratchetOn f2.steps <> " ratcheted\n")
 
   -- E. Kitchen sink: everything on at defaults, chord on.
   let e = simulate n allOn 0.5 0.5 (M.toggleChord allVoices) (Marbles.seedFrom 55)

@@ -41,12 +41,15 @@ import Binnacle.Scheduler as Scheduler
 data KnobTarget
   = CellNote Int
   | CellDur Int
+  | CellRatchet Int  -- per-cell retrigger count (RATCHET field)
+  | CellVel Int      -- per-cell base velocity (VEL field)
   | HeadDir Int
   | HeadSpeed Int
   | HeadTransp Int
   | HeadOffset Int
   | HeadLen Int
-  | HeadDiv Int      -- per-voice Euclidean pulse count (DIV)
+  | HeadDiv Int      -- per-voice Euclidean pulse count (DIV) = k in E(k,n)
+  | HeadEStep Int    -- per-voice Euclidean step count (STEPS) = n in E(k,n)
   | Spread
   | GateLen
   | SwingAmt          -- groove: % a step delays off-beat model steps (lives on State)
@@ -61,12 +64,15 @@ targetRange :: KnobTarget -> { lo :: Int, hi :: Int }
 targetRange = case _ of
   CellNote _ -> { lo: 36, hi: 84 }
   CellDur _ -> { lo: 1, hi: 8 }
+  CellRatchet _ -> { lo: 1, hi: 8 }
+  CellVel _ -> { lo: 1, hi: 127 }
   HeadDir _ -> { lo: 0, hi: 2 }
   HeadSpeed _ -> { lo: 0, hi: length M.speedTable - 1 }
   HeadTransp _ -> { lo: -24, hi: 24 }
   HeadOffset _ -> { lo: 0, hi: 15 }
   HeadLen _ -> { lo: 1, hi: 16 }
   HeadDiv _ -> { lo: 0, hi: 16 }
+  HeadEStep _ -> { lo: 1, hi: 16 }
   Spread -> { lo: 1, hi: 12 }
   GateLen -> { lo: 10, hi: 200 }
   SwingAmt -> { lo: 0, hi: 60 }
@@ -81,12 +87,15 @@ applyTarget :: KnobTarget -> Int -> M.Odonus -> M.Odonus
 applyTarget t v = case t of
   CellNote i -> M.setNote i v
   CellDur i -> M.setCellDur i v
+  CellRatchet i -> M.setCellRatchet i v
+  CellVel i -> M.setCellVel i v
   HeadDir h -> M.setHeadDir h v
   HeadSpeed h -> M.setHeadSpeedIx h v
   HeadTransp h -> M.setHeadTransp h v
   HeadOffset h -> M.setHeadOffset h v
   HeadLen h -> M.setHeadLen h v
   HeadDiv h -> M.setHeadPulses h v
+  HeadEStep h -> M.setHeadEuclidSteps h v
   Spread -> M.setSpread v
   GateLen -> M.setGatePct v
   FanOff -> M.fanOffsets v
@@ -120,6 +129,7 @@ data GenKind
   | GSkip       -- occasionally drop a step (biased toward few skips)
   | GGlide      -- occasionally tie/slew a step (biased toward few glides)
   | GLen        -- drift one cell's note length ±1
+  | GRatchet    -- occasionally ratchet a step (biased toward few rolls), like GLen
   | GHeads      -- walk the active-playhead combination (one bit on the 4-cube)
   | GTransp     -- nudge one head's scalar transpose
   | GPattern    -- advance one head's access pattern
@@ -129,7 +139,7 @@ data GenKind
 derive instance eqGenKind :: Eq GenKind
 
 genKinds :: Array GenKind
-genKinds = [ GNotes, GGate, GSkip, GGlide, GLen, GHeads, GTransp, GPattern, GSpeed, GKey ]
+genKinds = [ GNotes, GGate, GSkip, GGlide, GLen, GRatchet, GHeads, GTransp, GPattern, GSpeed, GKey ]
 
 genLabel :: GenKind -> String
 genLabel = case _ of
@@ -138,6 +148,7 @@ genLabel = case _ of
   GSkip -> "SKIP"
   GGlide -> "GLIDE"
   GLen -> "LEN"
+  GRatchet -> "RATCHET"
   GHeads -> "HEADS"
   GTransp -> "TRANSP"
   GPattern -> "PATTERN"
@@ -151,6 +162,7 @@ genSub = case _ of
   GSkip -> "drop a step"
   GGlide -> "tie / slew"
   GLen -> "note length"
+  GRatchet -> "retrigger roll"
   GHeads -> "voice combination"
   GTransp -> "scalar transpose"
   GPattern -> "access pattern"
@@ -169,6 +181,7 @@ type GenSource = { kind :: GenKind, on :: Boolean, rate :: Int, amt :: Int }
 genDefaultRate :: GenKind -> Int
 genDefaultRate = case _ of
   GLen -> 72
+  GRatchet -> 72
   _ -> 96
 
 -- | A source's initial mutation depth (0..100). Chosen so a single source,
@@ -180,6 +193,7 @@ genDefaultAmt = case _ of
   GTransp -> 40
   GKey -> 25
   GLen -> 25
+  GRatchet -> 25
   _ -> 30
 
 -- | The rate-index resolution. Drag the bare-number control across this range.

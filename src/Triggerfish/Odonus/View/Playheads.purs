@@ -112,16 +112,18 @@ headStrip h hd =
           [ style "display:flex;flex-direction:column;gap:6px;align-items:center" ]
           [ HH.div [ style "display:flex;gap:8px" ]
               [ miniKnob (HeadSpeed h) hd.speedIx col "SPD" (speedRatio hd.speedIx)
-              , miniKnob (HeadDiv h) hd.pulses col "DIV" (euclidLabel hd.pulses hd.len)
+              , miniKnob (HeadDiv h) hd.pulses col "DIV" (euclidLabel hd.pulses hd.esteps)
+              , miniKnob (HeadEStep h) hd.esteps col "STEPS" (show hd.esteps)
               ]
           , miniKnob (HeadTransp h) hd.transp col "INT" (signed hd.transp)
           ]
       ]
 
--- | DIV readout: effective pulses / steps, e.g. "5/16" — the voice's Euclidean
--- | density. At pulses ≥ len it reads "16/16" (every step, no gating).
+-- | DIV readout: effective E(pulses, steps), e.g. "5/12" — the voice's Euclidean
+-- | density. Pulses is clamped to steps for display, so at pulses ≥ steps it
+-- | reads "n/n" (every step, no gating). STEPS is its own knob now, free of LEN.
 euclidLabel :: Int -> Int -> String
-euclidLabel pulses len = show (min pulses len) <> "/" <> show len
+euclidLabel pulses esteps = show (min pulses esteps) <> "/" <> show esteps
 
 -- | Direction as a three-way radio under the pattern thumbnail (→ forward,
 -- | ← backward, ↔ pendulum) — frees the knob row, and reads at a glance.

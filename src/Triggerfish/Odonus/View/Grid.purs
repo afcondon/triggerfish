@@ -93,15 +93,17 @@ grid s =
   HH.div
     [ style "display:flex;flex-direction:column;gap:10px;margin:14px 0" ]
     [ noteField s.odo
-    -- The boolean fields compress two-per-row into a 2×2 sub-grid; the
-    -- fourth slot holds the first per-cell knob field, LENGTH (PULSES /
-    -- GATE-MODE will extend it to 2×3).
+    -- A two-column sub-grid: the three boolean fields (GATE / SKIP / GLIDE),
+    -- then the three per-cell knob fields (LENGTH / RATCHET / VEL). Each new
+    -- per-cell parameter is just another small multiple — the layout that scales.
     , HH.div
         [ style "display:grid;grid-template-columns:1fr 1fr;gap:10px 11px;align-items:start" ]
         [ toggleField "GATE" "#e0a32e" _.gate ToggleGate s.odo
         , toggleField "SKIP" "#c0563f" _.skip ToggleSkip s.odo
         , toggleField "GLIDE" "#4f9d69" _.glide ToggleGlide s.odo
-        , lengthField s.odo
+        , perCellKnobField "LENGTH" "#7d8a93" 1 8 8 CellDur _.dur s.odo
+        , perCellKnobField "RATCHET" "#9d6b8a" 1 8 8 CellRatchet _.ratchet s.odo
+        , perCellKnobField "VEL" "#8a9d6b" 1 127 0 CellVel _.vel s.odo
         ]
     ]
 
@@ -153,29 +155,36 @@ noteCell odo i c =
         [ HH.text (show c.note) ]
     ]
 
--- | LENGTH field — the fourth small multiple, the first knob field down
--- | here: a 4×4 of small **detented** knobs, each = how many steps that
--- | cell's note sustains (1..8). The square footprint keeps the grid's
--- | rhythm; the eight detents read it as a discrete selector, slate-blue
--- | to set it apart from the amber NOTE knobs.
-lengthField :: forall m. M.Odonus -> H.ComponentHTML Action () m
-lengthField odo =
-  fieldShell "LENGTH"
+-- | A per-cell knob field — a 4×4 small multiple of small knobs over one cell
+-- | parameter (LENGTH, RATCHET, VEL…). `mkTarget` is the knob's drag target per
+-- | index, `getVal` reads the value; `ticks > 0` draws detents (discrete
+-- | selectors). The square footprint keeps the grid's rhythm; the colour sets
+-- | each field apart from the amber NOTE knobs. Appending a new per-cell
+-- | parameter is one more call to this — no new layout.
+perCellKnobField
+  :: forall m
+   . String -> String -> Int -> Int -> Int -> (Int -> KnobTarget) -> (M.Cell -> Int) -> M.Odonus
+  -> H.ComponentHTML Action () m
+perCellKnobField label color lo hi ticks mkTarget getVal odo =
+  fieldShell label
     ( HH.div
         [ style "display:grid;grid-template-columns:repeat(4,1fr);gap:4px" ]
-        (mapWithIndex (lengthCell odo) odo.cells)
+        (mapWithIndex (\i c -> perCellKnob odo color lo hi ticks (mkTarget i) (getVal c) i) odo.cells)
     )
 
-lengthCell :: forall m. M.Odonus -> Int -> M.Cell -> H.ComponentHTML Action () m
-lengthCell odo i c =
+perCellKnob
+  :: forall m
+   . M.Odonus -> String -> Int -> Int -> Int -> KnobTarget -> Int -> Int
+  -> H.ComponentHTML Action () m
+perCellKnob odo color lo hi ticks target val i =
   HH.div
     [ style $ cellChrome odo i
         <> ";padding:3px;aspect-ratio:1;display:flex;align-items:center;justify-content:center"
     ]
     [ HH.div [ style "width:100%;height:100%;min-height:0" ]
         [ knob
-            { cx: 24.0, cy: 24.0, rOuter: 18.0, rInner: 7.0, color: "#7d8a93", lo: 1, hi: 8, value: c.dur, ticks: 8 }
-            (KnobDown (CellDur i) c.dur)
+            { cx: 24.0, cy: 24.0, rOuter: 18.0, rInner: 7.0, color, lo, hi, value: val, ticks }
+            (KnobDown target val)
         ]
     ]
 

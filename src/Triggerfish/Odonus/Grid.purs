@@ -130,12 +130,13 @@ handleAction = case _ of
           let spd = maybe 1.0 M.speedOf (r.odo.heads !! f.headIdx)
           in stepMs / max 1.0 spd * (toNumber r.odo.gatePct / 100.0) * toNumber f.dur
         prevOf h = join (st.headNote !! h)
-        -- Velocity: base + beat accent + seeded humanise (±velHumanize). Drawn
-        -- from the same PRNG as the generators, threaded on after Gen.
+        -- Velocity: the cell's own base + beat accent + seeded humanise
+        -- (±velHumanize). Drawn from the same PRNG as the generators, threaded on
+        -- after Gen, so per-cell VEL authoring sets the contour the groove rides.
         velStep acc f =
           let { u, seed } = Marbles.nextRand acc.seed
               hum = round ((u - 0.5) * 2.0 * toNumber st.velHumanize)
-              v = clampI 1 127 (100 + accent + hum)
+              v = clampI 1 127 (f.vel + accent + hum)
           in { items: acc.items <> [ { f, v } ], seed }
         velied = foldl velStep { items: [], seed: g.seed } r.fired
         firedV = velied.items
@@ -333,8 +334,10 @@ gridCfg = { stepBeats: 0.25, lookaheadMs: 120.0, tickMs: 25 }
 -- |   glide + same pitch  → tie: leave the held note ringing (no retrigger)
 -- |   glide + diff pitch  → slide: porta-on, note-on new, note-off old (overlap)
 -- |   glide + nothing held → start a held note (no auto-off)
--- |   no glide             → gated note: end any held note, then a note that
--- |                          auto-offs after `gateMs` (rhythmic articulation)
+-- |   no glide             → gated note: end any held note, then a roll of
+-- |                          `ratchet` retriggers filling `gateMs` (1 = a single
+-- |                          hit; the old behaviour). Glide and ratchet don't mix
+-- |                          (a slide is a single sustained event).
 emitNote :: Midi.MidiOut -> Number -> Number -> Int -> Maybe Int -> M.Fired -> Effect Unit
 emitNote out delayMs gateMs vel prev f =
   let h = f.headIdx
@@ -343,6 +346,17 @@ emitNote out delayMs gateMs vel prev f =
         Midi.sendCC out { channel: h, controller: 65, value: 127 }
         Midi.sendCC out { channel: h, controller: 5, value: 40 }
       portaOff = Midi.sendCC out { channel: h, controller: 65, value: 0 }
+      -- Subdivide the gate window into `ratchet` evenly-spaced hits; each hit
+      -- sustains 85% of its slot so the retriggers stay articulate.
+      rat = if f.ratchet < 1 then 1 else f.ratchet
+      ratchetNote =
+        if rat <= 1 then Midi.scheduleNote out { channel: h, note: p, velocity: vel, delayMs, durMs: gateMs }
+        else
+          let sub = gateMs / toNumber rat
+          in for_ (range 0 (rat - 1)) \k ->
+               Midi.scheduleNote out
+                 { channel: h, note: p, velocity: vel
+                 , delayMs: delayMs + toNumber k * sub, durMs: sub * 0.85 }
   in case prev, f.glide of
     Just q, true | q == p -> pure unit                         -- tie
     Just q, true -> do                                          -- slide
@@ -352,13 +366,13 @@ emitNote out delayMs gateMs vel prev f =
     Just q, false -> do                                         -- gated, end held
       Midi.noteOffAt out { channel: h, note: q, delayMs }
       portaOff
-      Midi.scheduleNote out { channel: h, note: p, velocity: vel, delayMs, durMs: gateMs }
+      ratchetNote
     Nothing, true -> do                                         -- start held
       portaOff
       Midi.noteOnAt out { channel: h, note: p, velocity: vel, delayMs }
     Nothing, false -> do                                        -- gated
       portaOff
-      Midi.scheduleNote out { channel: h, note: p, velocity: vel, delayMs, durMs: gateMs }
+      ratchetNote
 
 -- | Note-off every held note (e.g. on Stop) and clear the held-note table.
 silenceHeld :: Maybe Midi.MidiOut -> Array (Maybe Int) -> Effect Unit

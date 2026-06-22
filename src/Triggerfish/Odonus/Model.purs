@@ -42,6 +42,9 @@ module Triggerfish.Odonus.Model
   , setHeadOffset
   , setHeadLen
   , setHeadPulses
+  , setHeadEuclidSteps
+  , setCellRatchet
+  , setCellVel
   , euclidHit
   , harmonyPCs
   , toggleHeadMute
@@ -85,6 +88,8 @@ type Cell =
   , gate :: Boolean
   , glide :: Boolean
   , dur :: Int       -- note sustain in steps (1..8); multiplies the gate length
+  , ratchet :: Int   -- retriggers within the gate window (1 = a single hit, 2..8 = a roll)
+  , vel :: Int       -- this cell's base MIDI velocity (1..127); accent + humanise add to it
   }
 
 -- | A René-style access pattern: a name + an ordering (permutation of 0..15,
@@ -120,7 +125,8 @@ type Head =
   , patternIx :: Int
   , offset :: Int   -- emit this many of THIS head's steps ahead (phase / canon)
   , len :: Int      -- loop length: reset after L steps (polymeter)
-  , pulses :: Int   -- Euclidean trigger count over `len` steps (pulses = len ⇒ every step)
+  , pulses :: Int   -- Euclidean trigger count: the k in E(k, esteps) (pulses ≥ esteps ⇒ every step)
+  , esteps :: Int   -- Euclidean step-count: the n in E(pulses, n) — INDEPENDENT of len, so E(5,12) etc.
   }
 
 -- | A chord-progression quantiser overlay. When `on`, the output is snapped a
@@ -238,7 +244,7 @@ replicate16 = replicate 16
 mkHead :: Int -> Int -> Int -> Boolean -> Int -> Head
 mkHead speedIx direction transp mute patternIx =
   { cursor: 0, seqPos: 0, accumulator: 0.0, pendStep: 1
-  , speedIx, direction, transp, mute, patternIx, offset: 0, len: 16, pulses: 16 }
+  , speedIx, direction, transp, mute, patternIx, offset: 0, len: 16, pulses: 16, esteps: 16 }
 
 -- | Head I runs (Rows, 1.0×); II–IV start muted with distinct patterns + fugue
 -- | offsets — unmute to build the canon. (Speed indices into the widened
@@ -253,7 +259,7 @@ defaultHeads =
 
 defaultCells :: Array Cell
 defaultCells =
-  mapWithIndex (\i _ -> { note: 60 + i, skip: false, gate: true, glide: false, dur: 1 })
+  mapWithIndex (\i _ -> { note: 60 + i, skip: false, gate: true, glide: false, dur: 1, ratchet: 1, vel: 100 })
     (replicate 16 unit)
 
 -- | The prototype progression: ii7 – V7 – Imaj7 – vi9, a ii–V–I–vi from the
@@ -336,9 +342,11 @@ step o = o { heads = map (advanceHead o.cells) o.heads }
 cursorsOf :: Odonus -> Array Int
 cursorsOf o = map _.cursor o.heads
 
--- | A note a head emits this tick: which head, the resulting pitch, and
--- | whether the cell is marked glide (→ MIDI portamento / CV slew).
-type Fired = { headIdx :: Int, pitch :: Int, glide :: Boolean, dur :: Int }
+-- | A note a head emits this tick: which head, the resulting pitch, whether the
+-- | cell is marked glide (→ MIDI portamento / CV slew), the cell's note length
+-- | and ratchet (retrigger) count, and the cell's base velocity.
+type Fired =
+  { headIdx :: Int, pitch :: Int, glide :: Boolean, dur :: Int, ratchet :: Int, vel :: Int }
 
 -- | Advance one tick and report what fired: an unmuted head that MOVED onto a
 -- | gated, non-skipped cell emits its note. (A head that didn't advance this
@@ -351,11 +359,13 @@ stepEmit o =
     firedFor idx hd =
       let moved = hd.cursor /= fromMaybe (-1) (oldCursors !! idx)
           -- This voice's own Euclidean clock: only steps that land on a pulse of
-          -- E(pulses, len) trigger. pulses = len ⇒ every step (no gating).
-          pulse = euclidHit hd.pulses (clampI 1 16 hd.len) hd.seqPos
+          -- E(pulses, esteps) trigger. esteps is independent of len, so the
+          -- Euclidean period can phase against the loop. pulses ≥ esteps ⇒ every step.
+          pulse = euclidHit hd.pulses (clampI 1 16 hd.esteps) hd.seqPos
       in case o2.cells !! hd.cursor of
         Just c | moved && pulse && not hd.mute && c.gate && not c.skip ->
-          Just { headIdx: idx, pitch: renderCell o2 hd c, glide: c.glide, dur: c.dur }
+          Just { headIdx: idx, pitch: renderCell o2 hd c, glide: c.glide
+               , dur: c.dur, ratchet: c.ratchet, vel: c.vel }
         _ -> Nothing
   in
     { odo: o2, fired: catMaybes (mapWithIndex firedFor o2.heads) }
@@ -400,6 +410,16 @@ setNotes ns o = o { cells = mapWithIndex (\i c -> maybe c (\n -> c { note = n })
 setCellDur :: Int -> Int -> Odonus -> Odonus
 setCellDur i v = editCell i \c -> c { dur = clampI 1 8 v }
 
+-- | Per-cell ratchet count (1..8). 1 = a single hit; higher subdivides the cell's
+-- | gate window into that many evenly-spaced retriggers (a drum-roll / arp burst).
+setCellRatchet :: Int -> Int -> Odonus -> Odonus
+setCellRatchet i v = editCell i \c -> c { ratchet = clampI 1 8 v }
+
+-- | Per-cell base velocity (1..127). The cell's own accent; the global beat
+-- | accent and HUMANISE jitter are added on top at emit time.
+setCellVel :: Int -> Int -> Odonus -> Odonus
+setCellVel i v = editCell i \c -> c { vel = clampI 1 127 v }
+
 setHeadSpeedIx :: Int -> Int -> Odonus -> Odonus
 setHeadSpeedIx h v = editHead h \hd -> hd { speedIx = clampI 0 (length speedTable - 1) v }
 
@@ -415,10 +435,15 @@ setHeadOffset h v = editHead h \hd -> hd { offset = clampI 0 15 v }
 setHeadLen :: Int -> Int -> Odonus -> Odonus
 setHeadLen h v = editHead h \hd -> hd { len = clampI 1 16 v }
 
--- | Set a head's Euclidean pulse count (DIV). 0 silences the voice; pulses ≥ len
--- | fires every step. The even (Bresenham) Euclidean distribution.
+-- | Set a head's Euclidean pulse count (DIV) — the k in E(k, esteps). 0 silences
+-- | the voice; pulses ≥ esteps fires every step. The even (Bresenham) distribution.
 setHeadPulses :: Int -> Int -> Odonus -> Odonus
 setHeadPulses h v = editHead h \hd -> hd { pulses = clampI 0 16 v }
+
+-- | Set a head's Euclidean step-count (STEPS) — the n in E(pulses, n). Independent
+-- | of the loop length, so the Euclidean rhythm can phase against the pattern.
+setHeadEuclidSteps :: Int -> Int -> Odonus -> Odonus
+setHeadEuclidSteps h v = editHead h \hd -> hd { esteps = clampI 1 16 v }
 
 -- | Is step `i` a pulse of the even Euclidean rhythm E(pulses, steps)? 0 pulses
 -- | is silent; pulses ≥ steps is every step; otherwise pulses spread evenly.

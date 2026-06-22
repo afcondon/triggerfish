@@ -41,7 +41,7 @@ edslText o =
         <> " " <> signed hd.transp
         <> " off " <> show hd.offset
         <> " len " <> show hd.len
-        <> " div " <> show hd.pulses
+        <> " E(" <> show hd.pulses <> "," <> show hd.esteps <> ")"
         <> (if hd.mute then "  (mute)" else "")
   in
     joinWith "\n"
@@ -56,5 +56,7 @@ edslText o =
         , "  , skip:  " <> arr (bool <<< _.skip)
         , "  , glide: " <> arr (bool <<< _.glide)
         , "  , len:   " <> arr (show <<< _.dur)
+        , "  , ratchet:" <> arr (show <<< _.ratchet)
+        , "  , vel:   " <> arr (show <<< _.vel)
         , "  , heads:"
         ] <> mapWithIndex headLine o.heads <> [ "  }" ] )

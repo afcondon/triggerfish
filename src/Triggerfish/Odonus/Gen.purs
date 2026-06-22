@@ -72,6 +72,19 @@ applyGen kind spread bias amt odo seed =
           { n: d, seed: s2 } = Marbles.nextInt 2 s1
           cur = maybe 1 _.dur (odo.cells !! i)
       in { odo: M.setCellDur i (cur + (if d == 0 then -mag else mag)) odo, seed: s2 }
+    -- Ratchets stay SPARSE (a ±drift would machine-gun the whole grid): landing
+    -- on an already-ratcheted cell restores it to a single hit; a plain cell gets
+    -- a 2..4 roll only with probability `amt01` (the depth). So rolls sparkle in
+    -- and out rather than accumulating. Mirrors `stepBias`, but sets a count.
+    GRatchet ->
+      let { n: i, seed: s1 } = Marbles.nextInt 16 seed
+          cur = maybe 1 _.ratchet (odo.cells !! i)
+      in if cur > 1 then { odo: M.setCellRatchet i 1 odo, seed: s1 }
+         else let { u, seed: s2 } = Marbles.nextRand s1
+              in if u < amt01 * 0.5   -- like SKIP/GATE/GLIDE: a third of the grid at full depth
+                 then let { n: r, seed: s3 } = Marbles.nextInt 3 s2   -- 2..4 hits
+                      in { odo: M.setCellRatchet i (2 + r) odo, seed: s3 }
+                 else { odo, seed: s2 }
     GHeads -> flipHeads (1 + round (amt01 * 2.0)) odo seed   -- 1..3 bits/fire
     GTransp ->
       let mag = 1 + round (amt01 * 11.0)   -- ±1..±12 semitones (deep enough to re-voice)
