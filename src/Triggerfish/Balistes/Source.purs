@@ -64,19 +64,32 @@ ratchetBlock b =
   in
     if null rs then "" else "\n-- ratchets\nratchet  " <> joinWith "  " rs
 
--- The explicit pad lanes as mini-notation-ish strings (only the programmed ones).
+-- The pad lanes as real Tidal: each lane's typed mini-notation `source`,
+-- `stack`ed with its clicked overlay (rendered as mini-notation at the lane's
+-- derived meter). Only the programmed lanes print.
 padBlock :: M.Balistes -> String
 padBlock b =
   let
-    cell i step = if M.padAt b i step then "x" else "·"
-    grp i g = joinWith "" (map (\sub -> cell i (g * 4 + sub)) (range 0 3))
-    laneStr i = joinWith " " (map (grp i) (range 0 7))
-    hasContent i = any (\step -> M.padAt b i step) (range 0 31)
-    active = filter hasContent (range 0 (M.padCount b - 1))
-    line i = "  " <> padR 3 (toLower (M.padName b i)) <> " \"" <> laneStr i <> "\""
+    nm i = padR 3 (toLower (M.padName b i))
+    laneLine i =
+      let
+        src = String.trim (M.padSource b i)
+        clk = M.padClicks b i
+        hasClk = any identity clk
+        clkStr = clicksMini clk
+      in
+        case src /= "", hasClk of
+          false, false -> Nothing
+          true, false -> Just ("  " <> nm i <> " \"" <> src <> "\"")
+          false, true -> Just ("  " <> nm i <> " \"" <> clkStr <> "\"")
+          true, true -> Just ("  " <> nm i <> " stack [\"" <> src <> "\", \"" <> clkStr <> "\"]")
+    lines = mapMaybe laneLine (range 0 (M.padCount b - 1))
   in
-    if null active then ""
-    else "\n-- pads\n" <> joinWith "\n" (map line active)
+    if null lines then "" else "\n-- pads\n" <> joinWith "\n" lines
+
+-- A clicked overlay as a flat mini-notation string at its own meter.
+clicksMini :: Array Boolean -> String
+clicksMini = joinWith "" <<< map (\c -> if c then "x" else "·")
 
 padR :: Int -> String -> String
 padR n s = if String.length s >= n then s else s <> joinWith "" (replicate (n - String.length s) " ")

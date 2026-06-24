@@ -33,17 +33,23 @@ module Triggerfish.Balistes.Model
   , PatternLane
   , firstPadLane
   , padCount
-  , padAt
-  , togglePad
   , padNote
   , padName
   , padColor
+  , padSource
+  , padClicks
+  , setPadSource
+  , setPadClicks
+  , setPadName
+  , clickAt
+  , setRoute
+  , ohPadIndex
   , clampI
   ) where
 
 import Prelude
 
-import Data.Array (length, mapWithIndex, replicate, updateAt, (!!))
+import Data.Array (length, replicate, updateAt, (!!))
 import Data.Maybe (Maybe(..), fromMaybe, maybe)
 import Triggerfish.Balistes.Engine (Trigger, evaluateStep, freshPerturbations, readDrumMap, clampDensity)
 
@@ -75,15 +81,26 @@ type Balistes =
   , ratchet :: Array Int
   , push :: Array Int
   , patternLanes :: Array PatternLane
+  -- routing patterns: `s`-style multi-voice mini-notation whose atoms route to
+  -- the Tidal kit lanes (and OH) by label. A small stack; merged at playback.
+  , routes :: Array String
   }
 
--- | One explicit pad lane below the Grids device: a named MIDI voice with a
--- | 32-step on/off pattern (the seed shape for a Tidal-authored lane).
+-- | One explicit pad lane below the Grids device: a named MIDI voice that is a
+-- | *pattern*, not a fixed grid. Two layers, merged (`stack`) at playback:
+-- |   • `source` — a Tidal mini-notation string (`"bd*3 ~ bd(3,8)"`); the
+-- |     vendored engine parses + queries it, and the lane's visible subdivision
+-- |     (its "meter") is *derived* from this pattern — polymeter across lanes.
+-- |   • `clicks` — a hand-toggled overlay on that derived meter (so empty/odd
+-- |     patterns still give you cells to click). Length tracks the meter.
+-- | Onsets fire at their true fractional time in the cycle — nothing snaps to
+-- | the Grids 32-grid. See `Triggerfish.Balistes.Tidal` for meter/onset logic.
 type PatternLane =
   { name :: String
   , note :: Int
   , color :: String
-  , steps :: Array Boolean
+  , source :: String
+  , clicks :: Array Boolean
   }
 
 -- | Central node, moderate density, no randomness — the firmware's neutral
@@ -102,32 +119,48 @@ defaultBalistes =
     , step: 0
     , perts: seeded.perts
     , rng: seeded.rng
-    -- one ratchet slot per (lane, step) across ALL 16 lanes (3 Grids + pads)
-    , ratchet: replicate ((3 + length defaultPatternLanes) * 32) 1
+    -- one ratchet slot per (lane, step) over the 3 Grids lanes only (96 = 3×32);
+    -- pad lanes subdivide through their pattern (`bd*2`), not the ratchet overlay
+    , ratchet: replicate 96 1
     , push: [ 0, 0, 0, 0 ]
     , patternLanes: defaultPatternLanes
+    , routes: [ "", "", "" ]
     }
 
--- | The 13 pad lanes below the 3-lane Grids device (16 pads total): OH first,
--- | then a GM-ish kit. Notes are sensible defaults to remap later.
+-- | The pad-lane index of OH — the open hat, the one lane that bridges the
+-- | Grids device and the Tidal kit. Fixed label, sits with the Grids group,
+-- | reachable by routing (`oh`) and by click.
+ohPadIndex :: Int
+ohPadIndex = 0
+
+-- | The cell count a pad lane falls back to when its `source` is empty or
+-- | unparseable — a friendly 16ths grid you can click straight into.
+defaultMeter :: Int
+defaultMeter = 16
+
+-- | The 13 pad lanes below the 3-lane Grids device. OH first (index 0) — the
+-- | fixed bridge into the Grids group — then the standalone Tidal drum machine:
+-- | 12 lanes with editable digraph labels, a GM-ish kit, on their own MIDI
+-- | channel. Routing patterns address these by label.
 defaultPatternLanes :: Array PatternLane
 defaultPatternLanes =
-  [ mkLane "OH" 46 "#2f8a8a"   -- open hi-hat
-  , mkLane "CP" 39 "#a8683f"   -- clap
-  , mkLane "RS" 37 "#8a6f3f"   -- rim / side-stick
-  , mkLane "LT" 45 "#6a5f8a"   -- low tom
-  , mkLane "MT" 47 "#7a5f7a"   -- mid tom
-  , mkLane "HT" 50 "#8a5f6a"   -- high tom
-  , mkLane "CR" 49 "#5f7a8a"   -- crash
-  , mkLane "RD" 51 "#5f8a7a"   -- ride
-  , mkLane "CB" 56 "#8a8a3f"   -- cowbell
-  , mkLane "TB" 54 "#6a8a5f"   -- tambourine
-  , mkLane "SH" 70 "#7a8a6a"   -- shaker
-  , mkLane "CL" 75 "#9a7a5a"   -- claves
-  , mkLane "PC" 62 "#8a6a5a"   -- conga / perc
+  [ mkLane "OH" 46 "#2f8a8a"   -- open hat — the Grids/Tidal bridge (label fixed)
+  -- the Tidal kit (labels editable; routing matches against them)
+  , mkLane "bd" 36 "#b04a2f"   -- kick
+  , mkLane "sn" 38 "#5f7d3f"   -- snare
+  , mkLane "ch" 42 "#3f6f8a"   -- closed hat
+  , mkLane "cp" 39 "#a8683f"   -- clap
+  , mkLane "rs" 37 "#8a6f3f"   -- rim / side-stick
+  , mkLane "lt" 45 "#6a5f8a"   -- low tom
+  , mkLane "mt" 47 "#7a5f7a"   -- mid tom
+  , mkLane "ht" 50 "#8a5f6a"   -- high tom
+  , mkLane "cr" 49 "#5f7a8a"   -- crash
+  , mkLane "rd" 51 "#5f8a7a"   -- ride
+  , mkLane "cb" 56 "#8a8a3f"   -- cowbell
+  , mkLane "sh" 70 "#7a8a6a"   -- shaker
   ]
   where
-  mkLane name note color = { name, note, color, steps: replicate 32 false }
+  mkLane name note color = { name, note, color, source: "", clicks: replicate defaultMeter false }
 
 -- | A nonzero seed (xorshift fixed-points at 0).
 initialSeed :: Int
@@ -235,13 +268,11 @@ setRatchetAt :: Inst -> Int -> Int -> Balistes -> Balistes
 setRatchetAt inst step v b =
   b { ratchet = fromMaybe b.ratchet (updateAt (inst * 32 + step) (clampI 1 8 v) b.ratchet) }
 
--- | Wipe the GRIDS lanes' ratchets (slots 0..95) back to single hits, leaving
--- | the pad lanes alone. Called when the X/Y cursor moves: Grids ratchets
--- | decorate the generative pattern you were on, so they don't follow you to a
--- | new one — but the pad lanes are explicit, so their ratchets persist like
--- | their on/off steps.
+-- | Wipe the Grids lanes' ratchets (the whole 96-slot overlay) back to single
+-- | hits. Called when the X/Y cursor moves: Grids ratchets decorate the
+-- | generative pattern you were on, so they don't follow you to a new one.
 clearRatchets :: Balistes -> Balistes
-clearRatchets b = b { ratchet = mapWithIndex (\i v -> if i < 96 then 1 else v) b.ratchet }
+clearRatchets b = b { ratchet = map (const 1) b.ratchet }
 
 -- | Per-lane timing offset in ms (signed: − earlier, + later).
 pushOf :: Inst -> Balistes -> Int
@@ -271,18 +302,41 @@ firstPadLane = 3
 padCount :: Balistes -> Int
 padCount b = length b.patternLanes
 
--- | Is pad lane `i` (0-based into patternLanes) on at `step`?
-padAt :: Balistes -> Int -> Int -> Boolean
-padAt b i step = maybe false (\pl -> fromMaybe false (pl.steps !! step)) (b.patternLanes !! i)
+-- | A pad lane's mini-notation source string (the Tidal layer).
+padSource :: Balistes -> Int -> String
+padSource b i = maybe "" _.source (b.patternLanes !! i)
 
--- | Toggle one step of pad lane `i`.
-togglePad :: Int -> Int -> Balistes -> Balistes
-togglePad i step b = case b.patternLanes !! i of
-  Just pl ->
-    let on' = not (fromMaybe false (pl.steps !! step))
-        steps' = fromMaybe pl.steps (updateAt step on' pl.steps)
-    in b { patternLanes = fromMaybe b.patternLanes (updateAt i (pl { steps = steps' }) b.patternLanes) }
+-- | A pad lane's clicked overlay (length = its derived meter).
+padClicks :: Balistes -> Int -> Array Boolean
+padClicks b i = maybe [] _.clicks (b.patternLanes !! i)
+
+-- | Set a pad lane's mini-notation source (raw — meter/clicks resize is handled
+-- | by `Triggerfish.Balistes.Tidal.setLaneSource`, which knows the parser).
+setPadSource :: Int -> String -> Balistes -> Balistes
+setPadSource i src b = case b.patternLanes !! i of
+  Just pl -> b { patternLanes = fromMaybe b.patternLanes (updateAt i (pl { source = src }) b.patternLanes) }
   Nothing -> b
+
+-- | Replace a pad lane's clicked overlay wholesale.
+setPadClicks :: Int -> Array Boolean -> Balistes -> Balistes
+setPadClicks i cs b = case b.patternLanes !! i of
+  Just pl -> b { patternLanes = fromMaybe b.patternLanes (updateAt i (pl { clicks = cs }) b.patternLanes) }
+  Nothing -> b
+
+-- | Rename a Tidal kit lane (its label is what routing patterns match against).
+-- | OH's label is fixed, so the component declines to call this for it.
+setPadName :: Int -> String -> Balistes -> Balistes
+setPadName i nm b = case b.patternLanes !! i of
+  Just pl -> b { patternLanes = fromMaybe b.patternLanes (updateAt i (pl { name = nm }) b.patternLanes) }
+  Nothing -> b
+
+-- | Set routing-pattern slot `i` (a small fixed stack).
+setRoute :: Int -> String -> Balistes -> Balistes
+setRoute i src b = b { routes = fromMaybe b.routes (updateAt i src b.routes) }
+
+-- | Is the clicked overlay of pad lane `i` on at cell `cell`?
+clickAt :: Balistes -> Int -> Int -> Boolean
+clickAt b i cell = maybe false (\pl -> fromMaybe false (pl.clicks !! cell)) (b.patternLanes !! i)
 
 padNote :: Balistes -> Int -> Int
 padNote b i = maybe 46 _.note (b.patternLanes !! i)

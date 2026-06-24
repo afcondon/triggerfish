@@ -22,6 +22,17 @@ package:
     - console
     - js-timers
     - binnacle
+    # vendored purerl-tidal mini-notation engine (src/Tidal/**)
+    - control
+    - either
+    - newtype
+    - numbers
+    - ordered-collections
+    - parsing
+    - rationals
+    - strings
+    - transformers
+    - tuples
   bundle:
     module: Triggerfish.Main
     outfile: public/bundle.js

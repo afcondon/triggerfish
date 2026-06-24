@@ -9,15 +9,25 @@
             "arrays",
             "binnacle",
             "console",
+            "control",
             "effect",
+            "either",
             "foldable-traversable",
             "halogen",
             "halogen-subscriptions",
             "integers",
             "js-timers",
             "maybe",
+            "newtype",
+            "numbers",
+            "ordered-collections",
+            "parsing",
             "prelude",
+            "rationals",
+            "strings",
             "tailrec",
+            "transformers",
+            "tuples",
             "web-events",
             "web-html",
             "web-uievents"
@@ -1120,6 +1130,16 @@
         "prelude"
       ]
     },
+    "js-bigints": {
+      "type": "registry",
+      "version": "2.2.1",
+      "integrity": "sha256-r1rE6Olv5b3JrP32lY2uKJ+eBRTsrVnC983K8VWwqe4=",
+      "dependencies": [
+        "integers",
+        "maybe",
+        "prelude"
+      ]
+    },
     "js-date": {
       "type": "registry",
       "version": "8.0.0",
@@ -1298,6 +1318,38 @@
         "transformers"
       ]
     },
+    "parsing": {
+      "type": "registry",
+      "version": "11.0.0",
+      "integrity": "sha256-N88gb/XbM29vw/Uop83shuMFT4wieQCz4wlQAct5eMs=",
+      "dependencies": [
+        "arrays",
+        "control",
+        "effect",
+        "either",
+        "enums",
+        "foldable-traversable",
+        "functions",
+        "identity",
+        "integers",
+        "lazy",
+        "lists",
+        "maybe",
+        "newtype",
+        "nullable",
+        "numbers",
+        "partial",
+        "prelude",
+        "st",
+        "strings",
+        "tailrec",
+        "transformers",
+        "tuples",
+        "unfoldable",
+        "unicode",
+        "unsafe-coerce"
+      ]
+    },
     "partial": {
       "type": "registry",
       "version": "4.0.0",
@@ -1323,6 +1375,16 @@
         "newtype",
         "prelude",
         "tuples"
+      ]
+    },
+    "rationals": {
+      "type": "registry",
+      "version": "6.0.0",
+      "integrity": "sha256-3Lbx690Q/oCtgh2Pbfjd0oAgrGXg8phLo2gLbuHtypk=",
+      "dependencies": [
+        "integers",
+        "js-bigints",
+        "prelude"
       ]
     },
     "refs": {
@@ -1449,6 +1511,21 @@
         "partial",
         "prelude",
         "tuples"
+      ]
+    },
+    "unicode": {
+      "type": "registry",
+      "version": "6.0.0",
+      "integrity": "sha256-5KugCNyYxscmZpnMbssOQA96XimuBN/bjHpdrtd5qaY=",
+      "dependencies": [
+        "arrays",
+        "enums",
+        "integers",
+        "maybe",
+        "partial",
+        "prelude",
+        "strings",
+        "unsafe-coerce"
       ]
     },
     "unsafe-coerce": {
