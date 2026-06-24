@@ -43,6 +43,7 @@ module Triggerfish.Balistes.Model
   , setPadName
   , clickAt
   , setRoute
+  , setRoutes
   , ohPadIndex
   , clampI
   ) where
@@ -333,6 +334,11 @@ setPadName i nm b = case b.patternLanes !! i of
 -- | Set routing-pattern slot `i` (a small fixed stack).
 setRoute :: Int -> String -> Balistes -> Balistes
 setRoute i src b = b { routes = fromMaybe b.routes (updateAt i src b.routes) }
+
+-- | Replace the whole routing stack (variable length) — used when the SOURCE
+-- | document is the authority for routes.
+setRoutes :: Array String -> Balistes -> Balistes
+setRoutes rs b = b { routes = rs }
 
 -- | Is the clicked overlay of pad lane `i` on at cell `cell`?
 clickAt :: Balistes -> Int -> Int -> Boolean

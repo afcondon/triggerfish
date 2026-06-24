@@ -18,7 +18,7 @@ module Triggerfish.Balistes.Component (component) where
 
 import Prelude
 
-import Data.Array (concatMap, filter, length, mapWithIndex, null, range, (!!))
+import Data.Array (concatMap, filter, length, null, range, (!!))
 import Data.Foldable (any, for_, sum)
 import Data.Int (round, toNumber)
 import Data.Int.Bits (shr)
@@ -109,6 +109,9 @@ type State =
   , dragging :: Maybe Drag
   , dragSub :: Maybe H.SubscriptionId
   , focus :: Focus
+  -- the editable SOURCE document — verbatim user text, the authority for the
+  -- typed lane sources + routing patterns (parsed into `bal` on every edit).
+  , sourceDoc :: String
   }
 
 data Action
@@ -126,9 +129,8 @@ data Action
   | DillaPreset
   | FlatGroove
   | TogglePad Int Int          -- pad-lane index, cell (within that lane's meter)
-  | SetSource Int String       -- pad-lane index, mini-notation source
+  | SetSourceDoc String        -- the whole editable SOURCE document, verbatim
   | SetLabel Int String        -- pad-lane index, new label
-  | SetRoute Int String        -- routing-pattern slot, mini-notation
   | CycleFocus
   | NoOp
 
@@ -136,10 +138,12 @@ component :: forall q i o m. MonadAff m => H.Component q i o m
 component =
   H.mkComponent
     { initialState: \_ ->
-        { bal: M.defaultBalistes, running: false, playStep: 0, flash: []
+        { bal: Source.parseBody Source.starterDoc M.defaultBalistes
+        , running: false, playStep: 0, flash: []
         , binnacle: Nothing, midiOut: Nothing, midiName: "…"
         , clockTempo: 120.0, clockLocked: false, clockBeat: 0.0, clockBar: 0, anchorCount: 0
-        , nowMicros: 0.0, dragging: Nothing, dragSub: Nothing, focus: FocusBoth }
+        , nowMicros: 0.0, dragging: Nothing, dragSub: Nothing, focus: FocusBoth
+        , sourceDoc: Source.starterDoc }
     , render
     , eval: H.mkEval H.defaultEval
         { handleAction = handleAction, initialize = Just Initialize }
@@ -283,9 +287,10 @@ handleAction = case _ of
   DillaPreset -> H.modify_ \s -> s { bal = M.dillaPush s.bal }
   FlatGroove -> H.modify_ \s -> s { bal = M.flatPush s.bal }
   TogglePad i cell -> H.modify_ \s -> s { bal = Tidal.toggleLaneClick i cell s.bal }
-  SetSource i src -> H.modify_ \s -> s { bal = Tidal.setLaneSource i src s.bal }
+  -- the textarea is the authority for typed sources + routes: store the verbatim
+  -- text, then re-derive those slices of the model from it (clicks/knobs untouched).
+  SetSourceDoc doc -> H.modify_ \s -> s { sourceDoc = doc, bal = Source.parseBody doc s.bal }
   SetLabel i nm -> H.modify_ \s -> s { bal = M.setPadName i nm s.bal }
-  SetRoute i src -> H.modify_ \s -> s { bal = M.setRoute i src s.bal }
   CycleFocus -> H.modify_ \s -> s { focus = nextFocus s.focus }
   NoOp -> pure unit
 
@@ -628,58 +633,34 @@ patternPanel :: forall m. State -> H.ComponentHTML Action () m
 patternPanel s =
   panel "PATTERN" "flex:1 1 480px;min-width:380px"
     [ HH.div [ style "width:100%;max-width:640px;margin:0 auto" ] [ heatSvg s ]
-    , sectionLabel "ROUTING PATTERNS — s-STYLE · ATOMS ROUTE TO LANES BY NAME"
-    , HH.div [ style "display:flex;flex-direction:column;gap:3px;max-width:640px;margin:0 auto" ]
-        (mapWithIndex (\i _ -> routeRow s i) s.bal.routes)
-    , sectionLabel "LANE SOURCES — PER-LANE RHYTHM (· STACKS WITH CLICKS ·)"
-    , HH.div [ style "display:flex;flex-direction:column;gap:3px;max-width:640px;margin:0 auto" ]
-        (map (laneSourceRow s) (range 0 (M.padCount s.bal - 1)))
+    , sectionLabel "KIT — COLOUR · LABEL (EDIT) · DERIVED METER"
+    , HH.div [ style "display:flex;flex-wrap:wrap;gap:5px 14px;max-width:640px;margin:0 auto" ]
+        (map (laneLegendRow s) (range 0 (M.padCount s.bal - 1)))
+    , HH.div [ style $ engrave <> ";font-size:8px;opacity:0.5;margin-top:12px;line-height:1.5;max-width:640px" ]
+        [ HH.text "EDIT LANE SOURCES + ROUTES IN THE SOURCE PANE → · A LANE LINE IS \"label \"\"mini-notation\"\"\"; A ROUTE LINE IS \"route \"\"…\"\"\". COMMENT (--) TO MUTE." ]
     ]
 
 sectionLabel :: forall m. String -> H.ComponentHTML Action () m
 sectionLabel t = HH.div [ style $ engrave <> ";font-size:9px;margin:16px 0 7px;opacity:0.65" ] [ HH.text t ]
 
--- One routing-pattern slot: the accent chip, a P-number, and the multi-voice
--- mini-notation input whose atoms route to the kit lanes by label.
-routeRow :: forall m. State -> Int -> H.ComponentHTML Action () m
-routeRow s i =
-  HH.div [ style "display:flex;align-items:center;gap:7px" ]
-    [ HH.div [ style $ "width:9px;height:9px;border-radius:2px;flex:0 0 auto;background:" <> routeAccent ] []
-    , HH.span [ style "width:26px;flex:0 0 auto;font-family:Georgia,serif;font-size:9px;color:#3f3c33" ]
-        [ HH.text ("P" <> show (i + 1)) ]
-    , HH.input
-        [ HP.value (fromMaybe "" (s.bal.routes !! i))
-        , HE.onValueInput (SetRoute i)
-        , HP.placeholder "bd sn bd sn"
-        , style $ "flex:1 1 auto;min-width:0;padding:3px 6px;border:1px solid #9a93ac;border-radius:4px;"
-            <> "background:#efecf3;font-family:'SF Mono',Menlo,monospace;font-size:10px;color:#3f3c33"
-        ]
-    ]
-
--- One row of the LANE SOURCES editor: colour chip, the (editable, except OH)
--- label, the per-lane rhythm input, and the resulting cell count.
-laneSourceRow :: forall m. State -> Int -> H.ComponentHTML Action () m
-laneSourceRow s i =
-  HH.div [ style "display:flex;align-items:center;gap:7px" ]
+-- One kit-legend entry: colour chip, the (editable, except OH) label, and the
+-- lane's derived meter. Sources + routes are authored in the SOURCE pane now;
+-- this row keeps the kit identity visible and the digraph editable.
+laneLegendRow :: forall m. State -> Int -> H.ComponentHTML Action () m
+laneLegendRow s i =
+  HH.div [ style "display:flex;align-items:center;gap:5px" ]
     [ HH.div [ style $ "width:9px;height:9px;border-radius:2px;flex:0 0 auto;background:" <> M.padColor s.bal i ] []
     , if i == M.ohPadIndex then
-        HH.span [ style "width:32px;flex:0 0 auto;font-family:Georgia,serif;font-size:9px;color:#3f3c33;letter-spacing:0.04em" ]
+        HH.span [ style "flex:0 0 auto;font-family:Georgia,serif;font-size:9px;color:#3f3c33;letter-spacing:0.04em" ]
           [ HH.text (M.padName s.bal i) ]
       else
         HH.input
           [ HP.value (M.padName s.bal i)
           , HE.onValueInput (SetLabel i)
-          , style $ "width:32px;flex:0 0 auto;padding:2px 4px;border:1px solid #b3ae9c66;border-radius:3px;"
+          , style $ "width:30px;flex:0 0 auto;padding:2px 4px;border:1px solid #b3ae9c66;border-radius:3px;"
               <> "background:#efece1;font-family:'SF Mono',Menlo,monospace;font-size:9px;color:#3f3c33"
           ]
-    , HH.input
-        [ HP.value (M.padSource s.bal i)
-        , HE.onValueInput (SetSource i)
-        , HP.placeholder "—"
-        , style $ "flex:1 1 auto;min-width:0;padding:3px 6px;border:1px solid #b3ae9c;border-radius:4px;"
-            <> "background:#efece1;font-family:'SF Mono',Menlo,monospace;font-size:10px;color:#3f3c33"
-        ]
-    , HH.span [ style $ engrave <> ";font-size:8px;opacity:0.5;width:26px;text-align:right;flex:0 0 auto" ]
+    , HH.span [ style $ engrave <> ";font-size:8px;opacity:0.5;flex:0 0 auto" ]
         [ HH.text ("×" <> show (Tidal.laneMeterAt s.bal i)) ]
     ]
 
@@ -893,9 +874,23 @@ grLabel t = HH.div [ style $ engrave <> ";font-size:8px;opacity:0.7" ] [ HH.text
 sourcePanel :: forall m. State -> H.ComponentHTML Action () m
 sourcePanel s =
   panel "SOURCE" "flex:0 0 340px"
-    [ HH.pre
-        [ style $ "font-family:'SF Mono',Menlo,monospace;font-size:10px;line-height:1.55;"
-            <> "color:#3f3c33;white-space:pre-wrap;word-break:break-word;margin:0;"
+    [ -- the reflective header: knob/pad/drag/click state as a read-only cell.
+      HH.pre
+        [ style $ "font-family:'SF Mono',Menlo,monospace;font-size:10px;line-height:1.5;"
+            <> "color:#3f3c33;opacity:0.62;white-space:pre-wrap;word-break:break-word;margin:0 0 10px;"
             <> "user-select:text;-webkit-user-select:text" ]
-        [ HH.text (Source.sourceText s.bal) ]
+        [ HH.text (Source.headerText s.bal) ]
+    , HH.div [ style "height:1px;background:#00000018;margin-bottom:8px" ] []
+    , HH.div [ style $ engrave <> ";font-size:8px;opacity:0.6;margin-bottom:6px" ]
+        [ HH.text "PATTERNS — EDITABLE · -- TO MUTE A LINE" ]
+    , -- the instrument: editable lane sources + routes, parsed live.
+      HH.textarea
+        [ HP.value s.sourceDoc
+        , HE.onValueInput SetSourceDoc
+        , HP.spellcheck false
+        , style $ "flex:1 1 auto;min-height:260px;resize:none;box-sizing:border-box;"
+            <> "padding:9px 10px;border:1px solid #a8a392;border-radius:6px;background:#f4f1e8;"
+            <> "font-family:'SF Mono',Menlo,monospace;font-size:11px;line-height:1.55;color:#2b2922;"
+            <> "white-space:pre;overflow:auto;outline:none"
+        ]
     ]
