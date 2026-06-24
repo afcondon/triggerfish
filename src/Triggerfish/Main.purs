@@ -19,13 +19,14 @@ import Halogen.VDom.Driver (runUI)
 import Type.Proxy (Proxy(..))
 import Triggerfish.Odonus.Grid as Odonus
 import Triggerfish.Balistes.Component as Balistes
+import Triggerfish.Selene.Component as Selene
 
 main :: Effect Unit
 main = HA.runHalogenAff do
   body <- HA.awaitBody
   void $ runUI root unit body
 
-data Which = Odo | Bal
+data Which = Odo | Bal | Sel
 
 derive instance Eq Which
 
@@ -36,6 +37,7 @@ type RState = { which :: Which }
 type Slots =
   ( odo :: H.Slot (Const Void) Void Unit
   , bal :: H.Slot (Const Void) Void Unit
+  , sel :: H.Slot (Const Void) Void Unit
   )
 
 _odo :: Proxy "odo"
@@ -43,6 +45,9 @@ _odo = Proxy
 
 _bal :: Proxy "bal"
 _bal = Proxy
+
+_sel :: Proxy "sel"
+_sel = Proxy
 
 root :: forall q i o m. MonadAff m => H.Component q i o m
 root =
@@ -62,6 +67,7 @@ render st =
     , case st.which of
         Odo -> HH.slot_ _odo unit Odonus.component unit
         Bal -> HH.slot_ _bal unit Balistes.component unit
+        Sel -> HH.slot_ _sel unit Selene.component unit
     ]
 
 -- A small floating selector, top-right, in the Hainbach idiom.
@@ -73,6 +79,7 @@ switchBar st =
         <> "box-shadow:0 1px 4px #0000002a;font-family:Georgia,serif" ]
     [ seg "ODONUS" (st.which == Odo) (Pick Odo)
     , seg "BALISTES" (st.which == Bal) (Pick Bal)
+    , seg "SELENE" (st.which == Sel) (Pick Sel)
     ]
 
 seg :: forall m. String -> Boolean -> RAction -> H.ComponentHTML RAction Slots m
