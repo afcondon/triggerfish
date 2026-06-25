@@ -1,69 +1,72 @@
--- | Triggerfish.Selene.Component — the fourth instrument in the rack: a
--- | direct-manipulation surface for the Selene polysignal generators. Skeleton:
--- | a generator selector (POLYLFO / POLYCLOCK / POLYEUCLID / POLYNOTE), an
--- | eight-slot bank editor for whichever is in focus, and the growing-spec
--- | SOURCE pane (the `octoLfo …` eDSL the BEAM cell / es9-daemon speak).
+-- | Triggerfish.Selene.Component — the polysignal rack, as a stack of
+-- | destinations. Each destination is a group of eight signals (one generator
+-- | kind) bound to a physical target; you add destinations in groups of eight
+-- | and configure each in place.
 -- |
--- | What is NOT here yet (the substantive next pass): the output path — Selene
--- | drives CV/gate over the es9-daemon `apply-polysignal` socket, not MIDI, so
--- | it wants Binnacle.Output (es9 cv-out/fire-at) rather than the Midi path the
--- | other two use; and the real polysignal drawing (live phase animation). This
--- | lays out the editable shape so those can land on top.
+-- | Increment 1 (this): the visual language. Every slot is drawn, not formed —
+-- | LFOs as scaled, log-frequency waveforms; Euclids as step-rings with k/n in
+-- | the centre; clocks + notes as number lists. Read-only: the viz reflects the
+-- | model. Editing the numbers comes next, in the SOURCE pane (then hover +
+-- | arrow-keys directly on these elements). No output/scheduling yet — Selene
+-- | drives CV/gate via es9-daemon (and, for MIDI targets, the Midi path).
 module Triggerfish.Selene.Component (component) where
 
 import Prelude
 
-import Data.Array (filter, length, mapWithIndex)
+import Data.Array (filter, length, mapWithIndex, range)
 import Data.Int (round, toNumber)
+import Data.Number (cos, pi, sin) as Num
 import Data.String.Common (joinWith)
 import Effect.Aff.Class (class MonadAff)
 import Halogen as H
 import Halogen.HTML as HH
 import Halogen.HTML.Events as HE
-import Triggerfish.Odonus.Grid.Widgets (engrave, style)
+import Halogen.HTML.Properties as HP
+import Triggerfish.Odonus.Grid.Widgets (engrave, style, svgAttr, svgEl)
 import Triggerfish.Selene.Model as M
+import Triggerfish.Selene.Source as Source
 
 -- ---------------------------------------------------------------------------
 -- State / Actions
 -- ---------------------------------------------------------------------------
 
-type State = { sel :: M.Selene }
+-- | The SOURCE document is the authority for the rack: `bal` is its parsed
+-- | projection, kept in sync on every edit so the visualisations reflect it.
+type State = { sel :: M.Selene, doc :: String }
 
 data Action
-  = PickGen M.Gen
-  | PickRange M.OutputRange
-  | LfoRate Int Number       -- slot, Hz delta
-  | ClkMult Int Int          -- slot, multiplier delta
-  | ClkPW Int Int            -- slot, pulse-width delta
-  | EucBeats Int Int         -- slot, beats delta
-  | EucSteps Int Int         -- slot, steps delta
-  | NoteBump Int Int         -- slot, semitone delta
+  = AddDest M.GenKind         -- append a template block (comment-safe)
+  | SetDoc String             -- the whole editable document, verbatim
 
 component :: forall q i o m. MonadAff m => H.Component q i o m
 component =
   H.mkComponent
-    { initialState: \_ -> { sel: M.defaultSelene }
+    { initialState: \_ ->
+        let doc = Source.printRack M.defaultSelene
+        in { sel: Source.parseRack doc, doc }
     , render
     , eval: H.mkEval H.defaultEval { handleAction = handleAction }
     }
 
 handleAction :: forall o m. MonadAff m => Action -> H.HalogenM State Action () o m Unit
 handleAction = case _ of
-  PickGen g -> H.modify_ \s -> s { sel = M.setGen g s.sel }
-  PickRange r -> H.modify_ \s -> s { sel = M.setRange r s.sel }
-  LfoRate i d -> H.modify_ \s -> s { sel = M.modLfo i (\sl -> sl { rate = clampNum 0.01 20.0 (sl.rate + d) }) s.sel }
-  ClkMult i d -> H.modify_ \s -> s { sel = M.modClock i (\sl -> sl { multiplier = M.clampI 1 32 (sl.multiplier + d) }) s.sel }
-  ClkPW i d -> H.modify_ \s -> s { sel = M.modClock i (\sl -> sl { pulseWidth = M.clampI 1 99 (sl.pulseWidth + d) }) s.sel }
-  EucBeats i d -> H.modify_ \s -> s { sel = M.modEuclid i (\sl -> sl { beats = M.clampI 1 sl.steps (sl.beats + d) }) s.sel }
-  EucSteps i d -> H.modify_ \s -> s { sel = M.modEuclid i (\sl -> let steps = M.clampI 1 32 (sl.steps + d) in sl { steps = steps, beats = M.clampI 1 steps sl.beats }) s.sel }
-  NoteBump i d -> H.modify_ \s -> s { sel = M.modNote i (\sl -> sl { note = M.clampI 0 127 (sl.note + d) }) s.sel }
+  -- append a fresh block to the document (so existing comments survive), then
+  -- re-derive the rack from the new text.
+  AddDest k -> H.modify_ \s ->
+    let block = Source.printDest { target: M.defaultTargetFor k, range: M.Bipolar5V, bank: M.freshBank k }
+        doc = s.doc <> "\n\n" <> block
+    in s { doc = doc, sel = Source.parseRack doc }
+  SetDoc doc -> H.modify_ \s -> s { doc = doc, sel = Source.parseRack doc }
 
 -- ---------------------------------------------------------------------------
 -- Constants
 -- ---------------------------------------------------------------------------
 
 accent :: String
-accent = "#3f6f8a"   -- steel-blue, Selene's electric accent (cf. the HH lane)
+accent = "#3f6f8a"   -- steel-blue, Selene's electric accent
+
+ink :: String
+ink = "#2b2922"
 
 -- ---------------------------------------------------------------------------
 -- render
@@ -72,10 +75,9 @@ accent = "#3f6f8a"   -- steel-blue, Selene's electric accent (cf. the HH lane)
 render :: forall m. State -> H.ComponentHTML Action () m
 render s =
   HH.div
-    [ style $ "position:fixed;inset:0;display:flex;align-items:stretch;overflow-x:auto;overflow-y:hidden;"
+    [ style $ "position:fixed;inset:0;display:flex;align-items:stretch;overflow:hidden;"
         <> "user-select:none;-webkit-user-select:none;background:#b7b1a0;font-family:Georgia,serif" ]
-    [ selectorPanel s
-    , bankPanel s
+    [ rackPanel s
     , sourcePanel s
     ]
 
@@ -92,240 +94,221 @@ panel label widthCss body =
       ] <> body )
 
 -- ---------------------------------------------------------------------------
--- Selector panel — pick the generator family + the output range
+-- The rack: a stack of destinations + the add bar
 -- ---------------------------------------------------------------------------
 
-selectorPanel :: forall m. State -> H.ComponentHTML Action () m
-selectorPanel s =
-  panel "SELENE" "flex:0 0 210px"
-    [ HH.div [ style $ engrave <> ";font-size:8px;opacity:0.6;margin-bottom:7px" ] [ HH.text "GENERATOR" ]
-    , HH.div [ style "display:flex;flex-direction:column;gap:7px" ]
-        (map (genButton s) M.allGens)
-    , HH.div [ style $ engrave <> ";font-size:8px;opacity:0.6;margin:18px 0 7px" ] [ HH.text "OUTPUT RANGE" ]
-    , HH.div [ style "display:flex;flex-wrap:wrap;gap:5px" ]
-        (map (rangeButton s) M.allRanges)
-    , HH.div [ style $ engrave <> ";font-size:8px;opacity:0.55;margin-top:20px;line-height:1.6" ]
-        [ HH.text (genBlurb s.sel.gen) ]
-    , HH.div [ style $ engrave <> ";font-size:8px;opacity:0.4;margin-top:14px;line-height:1.6" ]
-        [ HH.text "EIGHT SLOTS → EIGHT CV/GATE JACKS. THE RELATION BETWEEN THEM IS THE PATCH." ]
-    ]
+rackPanel :: forall m. State -> H.ComponentHTML Action () m
+rackPanel s =
+  panel "SELENE · DESTINATIONS" "flex:1 1 auto;min-width:0"
+    ( mapWithIndex destinationRow s.sel.destinations
+        <> [ addBar, footNote ]
+    )
 
-genButton :: forall m. State -> M.Gen -> H.ComponentHTML Action () m
-genButton s g =
-  let active = s.sel.gen == g
-  in
-    HH.button
-      [ HE.onClick \_ -> PickGen g
-      , style $ "padding:9px 11px;border:1px solid #a8a392;border-radius:6px;cursor:pointer;text-align:left;"
-          <> "font-family:Georgia,serif;font-size:12px;letter-spacing:0.1em;color:"
-          <> (if active then "#1c1a12" else "#5a564b")
-          <> ";background:" <> (if active then "linear-gradient(#c8a86a,#b8975a)" else "linear-gradient(#efece1,#ddd9cb)") ]
-      [ HH.text (M.genLabel g) ]
+addBar :: forall m. H.ComponentHTML Action () m
+addBar =
+  HH.div [ style "display:flex;align-items:center;gap:8px;margin-top:14px" ]
+    ( [ HH.span [ style $ engrave <> ";font-size:9px;opacity:0.6;margin-right:2px" ] [ HH.text "ADD 8 →" ] ]
+        <> map addButton M.allKinds
+    )
 
-rangeButton :: forall m. State -> M.OutputRange -> H.ComponentHTML Action () m
-rangeButton s r =
-  let active = s.sel.range == r
-  in
-    HH.button
-      [ HE.onClick \_ -> PickRange r
-      , style $ "padding:4px 8px;border:1px solid #a8a392;border-radius:5px;cursor:pointer;"
-          <> "font-family:'SF Mono',Menlo,monospace;font-size:10px;color:"
-          <> (if active then "#1c1a12" else "#5a564b")
-          <> ";background:" <> (if active then "linear-gradient(#c8a86a,#b8975a)" else "linear-gradient(#efece1,#ddd9cb)") ]
-      [ HH.text (M.rangeLabel r) ]
-
-genBlurb :: M.Gen -> String
-genBlurb = case _ of
-  M.GenLfo -> "PHASE-SPREAD FREE-RUNNING LFOS — A DC LEVEL PLUS SIX SUMMED SHAPES, EACH SLOT A SLICE OF THE TRAVELLING WAVE."
-  M.GenClock -> "TEMPO-LOCKED GATE DIVISIONS. BASE ÷ MULTIPLIER SETS THE PERIOD; PULSE WIDTH THE DUTY. RIDES THE LINK TEMPO."
-  M.GenEuclid -> "EUCLIDEAN GATES — K BEATS SPREAD OVER N STEPS BY THE BRESENHAM RULE, EACH SLOT ITS OWN POLYMETRIC RING."
-  M.GenNote -> "EIGHT HELD V/OCT PITCHES — A CHORD AS CONSTANT VOLTAGE. THE QUIET ROOT OF A PATCH."
-
--- ---------------------------------------------------------------------------
--- Bank panel — the eight slots of the active generator
--- ---------------------------------------------------------------------------
-
-bankPanel :: forall m. State -> H.ComponentHTML Action () m
-bankPanel s =
-  panel (M.genLabel s.sel.gen <> " · 8") "flex:1 1 560px;min-width:420px"
-    [ HH.div [ style "display:flex;flex-direction:column;gap:6px;max-width:720px" ]
-        (mapWithIndex slotRow (slotData s.sel))
-    ]
-
--- A uniform handle on "the active generator's slots" for rendering.
-data SlotView
-  = VLfo M.ModSlot
-  | VClock M.ClockSlot
-  | VEuclid M.EuclidSlot
-  | VNote M.PresetNoteSlot
-
-slotData :: M.Selene -> Array SlotView
-slotData sel = case sel.gen of
-  M.GenLfo -> map VLfo sel.lfo
-  M.GenClock -> map VClock sel.clock
-  M.GenEuclid -> map VEuclid sel.euclid
-  M.GenNote -> map VNote sel.note
-
-slotRow :: forall m. Int -> SlotView -> H.ComponentHTML Action () m
-slotRow i v =
-  HH.div
-    [ style $ "display:flex;align-items:center;gap:10px;padding:6px 8px;border-radius:6px;"
-        <> "background:#00000008;border:1px solid #00000010" ]
-    ( [ slotChip i ] <> slotBody i v )
-
-slotChip :: forall m. Int -> H.ComponentHTML Action () m
-slotChip i =
-  HH.div
-    [ style $ "width:20px;height:20px;flex:0 0 auto;border-radius:4px;display:flex;align-items:center;justify-content:center;"
-        <> "background:" <> accent <> ";color:#efece1;font-family:'SF Mono',Menlo,monospace;font-size:10px" ]
-    [ HH.text (show (i + 1)) ]
-
-slotBody :: forall m. Int -> SlotView -> Array (H.ComponentHTML Action () m)
-slotBody i = case _ of
-  VLfo sl ->
-    [ stepper (fmt2 sl.rate <> " Hz") (LfoRate i (-0.25)) (LfoRate i 0.25)
-    , readField "φ" (fmt2 sl.phase)
-    , readField "shapes" (lfoShapes sl)
-    , bar (clampNum 0.0 1.0 (sl.rate / 8.0))
-    ]
-  VClock sl ->
-    [ readField "base" (M.clockBaseLabel sl.base)
-    , stepper ("×" <> show sl.multiplier) (ClkMult i (-1)) (ClkMult i 1)
-    , stepper (show sl.pulseWidth <> "% pw") (ClkPW i (-5)) (ClkPW i 5)
-    , dutyBar sl.pulseWidth
-    ]
-  VEuclid sl ->
-    [ stepper (show sl.beats <> " k") (EucBeats i (-1)) (EucBeats i 1)
-    , stepper (show sl.steps <> " n") (EucSteps i (-1)) (EucSteps i 1)
-    , euclidDots sl
-    ]
-  VNote sl ->
-    [ stepper (M.noteName sl.note) (NoteBump i (-1)) (NoteBump i 1)
-    , readField "midi" (show sl.note)
-    , octave (NoteBump i (-12)) (NoteBump i 12)
-    , bar (clampNum 0.0 1.0 (toNumber sl.note / 127.0))
-    ]
-
--- ---------------------------------------------------------------------------
--- Small shared field widgets
--- ---------------------------------------------------------------------------
-
--- A ▼ value ▲ stepper.
-stepper :: forall m. String -> Action -> Action -> H.ComponentHTML Action () m
-stepper valueStr dec inc =
-  HH.div [ style "display:flex;align-items:center;gap:4px;flex:0 0 auto" ]
-    [ tick "▼" dec
-    , HH.span
-        [ style "min-width:62px;text-align:center;font-family:'SF Mono',Menlo,monospace;font-size:11px;color:#2b2922" ]
-        [ HH.text valueStr ]
-    , tick "▲" inc
-    ]
-
-octave :: forall m. Action -> Action -> H.ComponentHTML Action () m
-octave dec inc =
-  HH.div [ style "display:flex;align-items:center;gap:3px;flex:0 0 auto" ]
-    [ tick "−8va" dec, tick "+8va" inc ]
-
-tick :: forall m. String -> Action -> H.ComponentHTML Action () m
-tick glyph act =
+addButton :: forall m. M.GenKind -> H.ComponentHTML Action () m
+addButton k =
   HH.button
-    [ HE.onClick \_ -> act
-    , style $ "padding:2px 6px;border:1px solid #a8a392;border-radius:4px;cursor:pointer;"
-        <> "background:linear-gradient(#efece1,#ddd9cb);font-family:'SF Mono',Menlo,monospace;font-size:10px;color:#3f3c33" ]
-    [ HH.text glyph ]
+    [ HE.onClick \_ -> AddDest k
+    , style $ "padding:6px 11px;border:1px solid #a8a392;border-radius:6px;cursor:pointer;"
+        <> "font-family:Georgia,serif;font-size:11px;letter-spacing:0.08em;color:#3f3c33;"
+        <> "background:linear-gradient(#efece1,#ddd9cb)" ]
+    [ HH.text (M.kindLabel k) ]
 
-readField :: forall m. String -> String -> H.ComponentHTML Action () m
-readField label val =
-  HH.div [ style "display:flex;align-items:baseline;gap:4px;flex:0 0 auto" ]
-    [ HH.span [ style $ engrave <> ";font-size:8px;opacity:0.55" ] [ HH.text label ]
-    , HH.span [ style "font-family:'SF Mono',Menlo,monospace;font-size:11px;color:#2b2922" ] [ HH.text val ]
+footNote :: forall m. H.ComponentHTML Action () m
+footNote =
+  HH.div [ style $ engrave <> ";font-size:8px;opacity:0.45;margin-top:14px;line-height:1.6" ]
+    [ HH.text "EACH DESTINATION = 8 SIGNALS → 8 JACKS. EDIT THE NUMBERS — AND RE-PATCH / REMOVE BLOCKS — IN THE SOURCE PANE. -- MUTES A SLOT." ]
+
+-- One destination: a target/header strip on the left, eight visualised slots.
+destinationRow :: forall m. Int -> M.Destination -> H.ComponentHTML Action () m
+destinationRow i d =
+  HH.div
+    [ style $ "display:flex;align-items:stretch;gap:12px;padding:11px 12px;margin-bottom:10px;border-radius:8px;"
+        <> "background:#00000008;border:1px solid #00000012" ]
+    [ destHeader i d
+    , HH.div [ style "display:flex;flex-wrap:wrap;gap:7px;align-items:center;flex:1 1 auto" ]
+        (slotViews d.bank)
     ]
 
--- A thin proportional fill bar, 0..1.
-bar :: forall m. Number -> H.ComponentHTML Action () m
-bar frac =
-  HH.div [ style "flex:1 1 auto;min-width:40px;height:7px;border-radius:4px;background:#0000000f;overflow:hidden" ]
-    [ HH.div [ style $ "height:100%;width:" <> show (round (frac * 100.0)) <> "%;background:" <> accent <> "cc" ] [] ]
-
--- Pulse-width as a duty cycle bar (filled portion = high).
-dutyBar :: forall m. Int -> H.ComponentHTML Action () m
-dutyBar pw =
-  HH.div [ style "flex:1 1 auto;min-width:60px;height:14px;border-radius:3px;background:#0000000f;overflow:hidden;display:flex" ]
-    [ HH.div [ style $ "height:100%;width:" <> show pw <> "%;background:" <> accent <> "cc" ] []
-    , HH.div [ style "height:100%;flex:1 1 auto" ] []
+destHeader :: forall m. Int -> M.Destination -> H.ComponentHTML Action () m
+destHeader _ d =
+  HH.div [ style "display:flex;flex-direction:column;gap:5px;flex:0 0 132px;justify-content:center" ]
+    [ HH.div [ style $ engrave <> ";font-size:10px;letter-spacing:0.1em;color:" <> ink ]
+        [ HH.text (M.kindLabel (M.bankKind d.bank)) ]
+    , HH.div
+        [ style $ "padding:4px 8px;border-radius:5px;text-align:left;display:inline-block;align-self:flex-start;"
+            <> "font-family:'SF Mono',Menlo,monospace;font-size:10px;color:#efece1;background:" <> accent ]
+        [ HH.text (M.targetLabel d.target) ]
+    , HH.span [ style $ engrave <> ";font-size:8px;opacity:0.45" ]
+        [ HH.text ("→ " <> M.targetWire d.target) ]
     ]
-
--- The Euclidean pattern as a row of filled / hollow dots.
-euclidDots :: forall m. M.EuclidSlot -> H.ComponentHTML Action () m
-euclidDots sl =
-  HH.div [ style "display:flex;flex-wrap:wrap;gap:3px;flex:1 1 auto;align-items:center" ]
-    (map dot (M.euclidBits sl))
-  where
-  dot on =
-    HH.div
-      [ style $ "width:11px;height:11px;border-radius:50%;border:1px solid " <> accent
-          <> ";background:" <> (if on then accent else "transparent") ] []
-
--- The active shapes of an LFO slot, as a compact label (sin/sqr/tri/saw/rnd/nse).
-lfoShapes :: M.ModSlot -> String
-lfoShapes sl =
-  let
-    parts =
-      filter (_ /= "")
-        [ tagIf (sl.sin > 0.0) "sin"
-        , tagIf (sl.sqr > 0.0) "sqr"
-        , tagIf (sl.tri > 0.0) "tri"
-        , tagIf (sl.saw /= 0.0) "saw"
-        , tagIf (sl.rnd > 0.0) "rnd"
-        , tagIf (sl.nse > 0.0) "nse"
-        ]
-  in
-    if length parts == 0 then "—" else joinWith ", " parts
-  where
-  tagIf c t = if c then t else ""
 
 -- ---------------------------------------------------------------------------
--- Source panel — the growing-spec eDSL cell (read-only, like the others)
+-- Per-kind slot visualisations
+-- ---------------------------------------------------------------------------
+
+slotViews :: forall m. M.GenBank -> Array (H.ComponentHTML Action () m)
+slotViews = case _ of
+  M.GLfo slots -> map lfoCell slots
+  M.GEuclid slots -> map euclidRing slots
+  M.GClock slots -> mapWithIndex clockNumber slots
+  M.GNote slots -> map noteCell slots
+
+-- --- POLYLFO: a scaled waveform, 0V baseline, log-frequency, rate label ------
+
+lfoCell :: forall m. M.ModSlot -> H.ComponentHTML Action () m
+lfoCell sl =
+  let
+    w = 84.0
+    h = 50.0
+    mid = h / 2.0
+    -- normalise the summed wave into the cell (90% of half-height)
+    span = max 1.0 (abs sl.level + sl.sin + sl.sqr + sl.tri + abs sl.saw)
+    samples = 48
+    pt k =
+      let
+        u = toNumber k / toNumber samples
+        x = u * w
+        y = mid - (M.lfoValue sl u / span) * (mid * 0.9)
+      in
+        show (round2 x) <> "," <> show (round2 y)
+    poly = joinWith " " (map pt (range 0 samples))
+    hint = lfoShapeHint sl
+  in
+    cellBox 90.0
+      [ svgEl "svg"
+          [ svgAttr "viewBox" ("0 0 " <> show w <> " " <> show h), svgAttr "width" "100%"
+          , svgAttr "height" (show h), svgAttr "style" "display:block;overflow:visible" ]
+          [ svgEl "line"
+              [ svgAttr "x1" "0", svgAttr "y1" (show mid), svgAttr "x2" (show w), svgAttr "y2" (show mid)
+              , svgAttr "stroke" "#00000022", svgAttr "stroke-width" "0.8", svgAttr "stroke-dasharray" "2 2" ] []
+          , svgEl "polyline"
+              [ svgAttr "points" poly, svgAttr "fill" "none", svgAttr "stroke" accent
+              , svgAttr "stroke-width" "1.6", svgAttr "stroke-linejoin" "round" ] []
+          ]
+      , cellCaption (fmt2 sl.rate <> " Hz" <> hint)
+      ]
+
+-- which non-drawn shapes are present, as a tiny tag
+lfoShapeHint :: M.ModSlot -> String
+lfoShapeHint sl =
+  let tags = filter (_ /= "") [ if sl.rnd > 0.0 then "+rnd" else "", if sl.nse > 0.0 then "+nse" else "" ]
+  in if length tags == 0 then "" else " " <> joinWith "" tags
+
+-- --- POLYEUCLID: a ring of step-dots with k / n in the centre ----------------
+
+euclidRing :: forall m. M.EuclidSlot -> H.ComponentHTML Action () m
+euclidRing sl =
+  let
+    sz = 64.0
+    c = sz / 2.0
+    r = c - 8.0
+    bits = M.euclidBits sl
+    n = length bits
+    dotFor k on =
+      let
+        ang = (toNumber k / toNumber (max 1 n)) * 2.0 * pi - pi / 2.0
+        dx = c + r * cos ang
+        dy = c + r * sin ang
+        rad = if on then 3.4 else 2.0
+      in
+        svgEl "circle"
+          [ svgAttr "cx" (show (round2 dx)), svgAttr "cy" (show (round2 dy)), svgAttr "r" (show rad)
+          , svgAttr "fill" (if on then accent else "none")
+          , svgAttr "stroke" accent, svgAttr "stroke-width" (if on then "0" else "1") ] []
+  in
+    cellBox 70.0
+      [ svgEl "svg"
+          [ svgAttr "viewBox" ("0 0 " <> show sz <> " " <> show sz), svgAttr "width" "100%"
+          , svgAttr "height" (show sz), svgAttr "style" "display:block" ]
+          ( mapWithIndex dotFor bits
+              <> [ svgEl "text"
+                     [ svgAttr "x" (show c), svgAttr "y" (show (c + 4.0)), svgAttr "text-anchor" "middle"
+                     , svgAttr "fill" ink, svgAttr "font-family" "'SF Mono',Menlo,monospace"
+                     , svgAttr "font-size" "13" ]
+                     [ HH.text (show sl.beats <> "/" <> show sl.steps) ]
+                 ]
+          )
+      ]
+
+-- --- POLYCLOCK: a list of division numbers -----------------------------------
+
+clockNumber :: forall m. Int -> M.ClockSlot -> H.ComponentHTML Action () m
+clockNumber _ sl =
+  cellBox 58.0
+    [ HH.div [ style $ "font-family:'SF Mono',Menlo,monospace;font-size:18px;color:" <> ink <> ";text-align:center" ]
+        [ HH.text ("×" <> show sl.multiplier) ]
+    , cellCaption (M.clockBaseLabel sl.base <> " · " <> show sl.pulseWidth <> "%")
+    ]
+
+-- --- POLYNOTE: a list of notes -----------------------------------------------
+
+noteCell :: forall m. M.PresetNoteSlot -> H.ComponentHTML Action () m
+noteCell sl =
+  cellBox 58.0
+    [ HH.div [ style $ "font-family:'SF Mono',Menlo,monospace;font-size:16px;color:" <> ink <> ";text-align:center" ]
+        [ HH.text (M.noteName sl.note) ]
+    , cellCaption ("midi " <> show sl.note)
+    ]
+
+-- ---------------------------------------------------------------------------
+-- Cell chrome
+-- ---------------------------------------------------------------------------
+
+cellBox :: forall m. Number -> Array (H.ComponentHTML Action () m) -> H.ComponentHTML Action () m
+cellBox widthPx body =
+  HH.div
+    [ style $ "width:" <> show (round widthPx) <> "px;flex:0 0 auto;padding:5px 4px;border-radius:6px;"
+        <> "background:#ffffff55;border:1px solid #00000010;display:flex;flex-direction:column;gap:2px;align-items:center" ]
+    body
+
+cellCaption :: forall m. String -> H.ComponentHTML Action () m
+cellCaption t =
+  HH.span [ style $ engrave <> ";font-size:8px;opacity:0.55;text-align:center" ] [ HH.text t ]
+
+-- ---------------------------------------------------------------------------
+-- Source panel — the growing-spec eDSL, one block per destination (read-only)
 -- ---------------------------------------------------------------------------
 
 sourcePanel :: forall m. State -> H.ComponentHTML Action () m
 sourcePanel s =
-  panel "SOURCE" "flex:0 0 320px"
-    [ HH.pre
-        [ style $ "font-family:'SF Mono',Menlo,monospace;font-size:10px;line-height:1.55;"
-            <> "color:#3f3c33;white-space:pre-wrap;word-break:break-word;margin:0;"
-            <> "user-select:text;-webkit-user-select:text" ]
-        [ HH.text (seleneSource s.sel) ]
+  panel "SOURCE" "flex:0 0 340px"
+    [ HH.div [ style $ engrave <> ";font-size:8px;opacity:0.6;margin-bottom:6px" ]
+        [ HH.text "THE RACK · EDIT THE NUMBERS · -- MUTES A SLOT" ]
+    , HH.textarea
+        [ HP.value s.doc
+        , HE.onValueInput SetDoc
+        , HP.spellcheck false
+        , style $ "flex:1 1 auto;min-height:420px;resize:none;box-sizing:border-box;"
+            <> "padding:9px 10px;border:1px solid #a8a392;border-radius:6px;background:#f4f1e8;"
+            <> "font-family:'SF Mono',Menlo,monospace;font-size:11px;line-height:1.5;color:#2b2922;"
+            <> "white-space:pre;overflow:auto;outline:none" ]
     ]
-
--- The active generator rendered as its `octo…` constructor — the spec the BEAM
--- cell + es9-daemon already understand.
-seleneSource :: M.Selene -> String
-seleneSource sel =
-  case sel.gen of
-    M.GenLfo -> block "octoLfo es9Main" (mapWithIndex lfoRow sel.lfo)
-    M.GenClock -> block "octoClock es9Gt0" (mapWithIndex clockRow sel.clock)
-    M.GenEuclid -> block "octoEuclid es9Gt0" (mapWithIndex euclidRow sel.euclid)
-    M.GenNote -> block "octoPresetNote es9Main" (mapWithIndex noteRow sel.note)
-  where
-  block ctor rows =
-    ctor <> "\n  [ " <> joinWith "\n  , " rows <> "\n  ] (Just " <> M.rangeToWire sel.range <> ")"
-  lfoRow i sl = "silent { rate = " <> fmt2 sl.rate <> ", phase = " <> fmt2 sl.phase
-    <> ", sin = " <> fmt2 sl.sin <> " }" <> slotComment i
-  clockRow i sl = "clk " <> M.clockBaseToWire sl.base <> " × " <> show sl.multiplier
-    <> " pw " <> show sl.pulseWidth <> slotComment i
-  euclidRow i sl = "euclid " <> show sl.beats <> " " <> show sl.steps
-    <> " @ " <> show sl.rate <> slotComment i
-  noteRow i sl = "note " <> show sl.note <> "  -- " <> M.noteName sl.note <> slotComment i
-  slotComment i = "    -- " <> show (i + 1)
 
 -- ---------------------------------------------------------------------------
 -- helpers
 -- ---------------------------------------------------------------------------
 
-clampNum :: Number -> Number -> Number -> Number
-clampNum lo hi v = if v < lo then lo else if v > hi then hi else v
+pi :: Number
+pi = Num.pi
 
--- two-decimal fixed (good enough for the readouts)
+cos :: Number -> Number
+cos = Num.cos
+
+sin :: Number -> Number
+sin = Num.sin
+
+abs :: Number -> Number
+abs x = if x < 0.0 then -x else x
+
+round2 :: Number -> Number
+round2 x = toNumber (round (x * 100.0)) / 100.0
+
 fmt2 :: Number -> String
 fmt2 x = show (toNumber (round (x * 100.0)) / 100.0)
