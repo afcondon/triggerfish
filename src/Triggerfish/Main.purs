@@ -140,8 +140,9 @@ handleAction = case _ of
       Just feed -> void $ H.query _odo unit (SQ.FeedVoiceChords feed unit)
       Nothing -> pure unit
 
--- Push the master transport to every module. The three SourceQuery modules and
--- Vetula (its own query type) all answer SetMaster; Selene's is a no-op.
+-- Push the master transport to every module. Odonus/Balistes/Selene answer via
+-- the shared SourceQuery; Vetula via its own query type. Each sounds iff
+-- master && its own ARM.
 broadcastMaster :: forall o m. MonadAff m => Boolean -> H.HalogenM RState RAction Slots o m Unit
 broadcastMaster b = do
   _ <- H.query _odo unit (SQ.SetMaster b unit)

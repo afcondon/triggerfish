@@ -3,25 +3,38 @@
 -- | kind) bound to a physical target; you add destinations in groups of eight
 -- | and configure each in place.
 -- |
--- | Increment 1 (this): the visual language. Every slot is drawn, not formed —
--- | LFOs as scaled, log-frequency waveforms; Euclids as step-rings with k/n in
--- | the centre; clocks + notes as number lists. Read-only: the viz reflects the
--- | model. Editing the numbers comes next, in the SOURCE pane (then hover +
--- | arrow-keys directly on these elements). No output/scheduling yet — Selene
--- | drives CV/gate via es9-daemon (and, for MIDI targets, the Midi path).
+-- | The visual language: every slot is drawn, not formed — LFOs as scaled,
+-- | log-frequency waveforms; Euclids as step-rings; clocks + notes as numbers;
+-- | trig lanes as step-rows / Euclid rings with a route strip. The SOURCE pane
+-- | is the editable authority.
+-- |
+-- | Output (this pass): **POLYTRIG plays over MIDI**, on the shared Binnacle
+-- | clock, under the master transport — each jack's own pattern stacked with
+-- | the route onsets addressed to it, scheduled at true fractional times. The
+-- | es9 CV/gate path (LFO/Euclid/Clock/Note → ES-9 buses) and FH-2 delegation
+-- | are the next increment; non-MIDI targets are silent for now.
 module Triggerfish.Selene.Component (component) where
 
 import Prelude
 
 import Data.Array (filter, length, mapWithIndex, range, (!!))
+import Data.Foldable (for_)
 import Data.Int (round, toNumber)
 import Data.Number (cos, pi, sin) as Num
-import Data.String.Common (joinWith)
+import Data.String.Common (joinWith, toLower)
+import Effect (Effect)
 import Effect.Aff.Class (class MonadAff)
+import Effect.Class (liftEffect)
+import Effect.Timer (setInterval)
 import Halogen as H
 import Halogen.HTML as HH
 import Halogen.HTML.Events as HE
 import Halogen.HTML.Properties as HP
+import Halogen.Subscription as HS
+import Binnacle as Binnacle
+import Binnacle.Clock as Clock
+import Binnacle.Midi as Midi
+import Binnacle.Scheduler as Scheduler
 import Triggerfish.Odonus.Grid.Widgets (engrave, style, svgAttr, svgEl)
 import Triggerfish.Selene.Model as M
 import Triggerfish.Selene.Source as Source
@@ -33,12 +46,31 @@ import Data.Maybe (Maybe(..), fromMaybe)
 -- State / Actions
 -- ---------------------------------------------------------------------------
 
--- | The SOURCE document is the authority for the rack: `bal` is its parsed
--- | projection, kept in sync on every edit so the visualisations reflect it.
-type State = { sel :: M.Selene, doc :: String }
+-- | The SOURCE document is the authority for the rack: `sel` is its parsed
+-- | projection. The rest is the transport (mirrors Balistes): an ARM flag that
+-- | sounds only under the shell's master, the Binnacle clock + MIDI out, and
+-- | the live clock readouts.
+type State =
+  { sel :: M.Selene
+  , doc :: String
+  , running :: Boolean        -- ARM/cue (sticky); sounds only when master too
+  , master :: Boolean         -- the shell's master transport (via SetMaster)
+  , playStep :: Int
+  , binnacle :: Maybe Binnacle.Binnacle
+  , midiOut :: Maybe Midi.MidiOut
+  , midiName :: String
+  , clockTempo :: Number
+  , clockLocked :: Boolean
+  , clockBar :: Int
+  }
 
 data Action
-  = AddDest M.GenKind         -- append a template block (comment-safe)
+  = Initialize
+  | Step Scheduler.Tick
+  | Frame
+  | MidiReady (Maybe Midi.MidiOut) String
+  | ToggleArm
+  | AddDest M.GenKind         -- append a template block (comment-safe)
   | SetDoc String             -- the whole editable document, verbatim
 
 component :: forall i o m. MonadAff m => H.Component Query i o m
@@ -46,25 +78,77 @@ component =
   H.mkComponent
     { initialState: \_ ->
         let doc = Source.printRack M.defaultSelene
-        in { sel: Source.parseRack doc, doc }
+        in
+          { sel: Source.parseRack doc, doc
+          , running: false, master: false, playStep: 0
+          , binnacle: Nothing, midiOut: Nothing, midiName: "…"
+          , clockTempo: 120.0, clockLocked: false, clockBar: 0
+          }
     , render
-    , eval: H.mkEval H.defaultEval { handleAction = handleAction, handleQuery = handleQuery }
+    , eval: H.mkEval H.defaultEval
+        { handleAction = handleAction, handleQuery = handleQuery, initialize = Just Initialize }
     }
 
--- | Answer the shell's TIDAL-tab query with the verbatim rack document. Selene
--- | has no clock yet (its CV output path is unbuilt), so it ignores SyncFree.
-handleQuery :: forall o m a. Query a -> H.HalogenM State Action () o m (Maybe a)
+handleQuery :: forall o m a. MonadAff m => Query a -> H.HalogenM State Action () o m (Maybe a)
 handleQuery = case _ of
   AskSource reply -> do
     s <- H.get
     pure (Just (reply s.doc))
-  SyncFree _ _ next -> pure (Just next)
+  SyncFree startMicros tempo next -> do
+    s <- H.get
+    for_ s.binnacle \bin ->
+      liftEffect (Clock.setFreeBaseline (Binnacle.clock bin) { startMicros, tempo })
+    pure (Just next)
   FeedChords _ next -> pure (Just next)
   FeedVoiceChords _ next -> pure (Just next)   -- no chord quantiser
-  SetMaster _ next -> pure (Just next)   -- no transport yet; nothing to gate
+  SetMaster m next -> do
+    H.modify_ _ { master = m }
+    pure (Just next)
 
 handleAction :: forall o m. MonadAff m => Action -> H.HalogenM State Action () o m Unit
 handleAction = case _ of
+  Initialize -> do
+    bin <- liftEffect $ Binnacle.connect { url: rigUrl, tempo: 120.0 }
+    { emitter: stepE, listener: stepL } <- liftEffect HS.create
+    _ <- H.subscribe stepE
+    _ <- liftEffect $ Scheduler.startGrid (Binnacle.clock bin) gridCfg \tick ->
+      HS.notify stepL (Step tick)
+    { emitter: frameE, listener: frameL } <- liftEffect HS.create
+    _ <- H.subscribe frameE
+    _ <- liftEffect $ setInterval 33 (HS.notify frameL Frame)
+    { emitter: midiE, listener: midiL } <- liftEffect HS.create
+    _ <- H.subscribe midiE
+    liftEffect $ Midi.requestAccess \maccess -> case maccess of
+      Just access -> do
+        mout <- Midi.findOutput access midiPortName
+        names <- Midi.outputNames access
+        let nm = case mout of
+              Just _ -> midiPortName <> " ✓"
+              Nothing -> "no '" <> midiPortName <> "' — ports: " <> joinWith ", " names
+        HS.notify midiL (MidiReady mout nm)
+      Nothing -> HS.notify midiL (MidiReady Nothing "unavailable")
+    H.modify_ _ { binnacle = Just bin }
+
+  Step tick -> do
+    st <- H.get
+    when (st.master && st.running) do
+      let playedStep = tick.index `mod` cycleSteps
+      H.modify_ _ { playStep = playedStep }
+      for_ st.midiOut \out -> liftEffect $
+        for_ st.sel.destinations \d -> case d.target of
+          M.Midi ch -> emitDestination out (ch - 1) st.clockTempo tick playedStep d.bank
+          _ -> pure unit   -- non-MIDI targets await the es9 output path
+
+  Frame -> do
+    st <- H.get
+    for_ st.binnacle \bin -> do
+      r <- liftEffect $ Clock.read (Binnacle.clock bin)
+      H.modify_ _ { clockTempo = r.tempo, clockLocked = r.locked, clockBar = r.bar }
+
+  MidiReady mout nm -> H.modify_ _ { midiOut = mout, midiName = nm }
+
+  ToggleArm -> H.modify_ \s -> s { running = not s.running }
+
   -- append a fresh block to the document (so existing comments survive), then
   -- re-derive the rack from the new text.
   AddDest k -> H.modify_ \s ->
@@ -74,8 +158,69 @@ handleAction = case _ of
   SetDoc doc -> H.modify_ \s -> s { doc = doc, sel = Source.parseRack doc }
 
 -- ---------------------------------------------------------------------------
+-- Emit — POLYTRIG over MIDI (other kinds await the es9 path)
+-- ---------------------------------------------------------------------------
+
+-- | One Tidal cycle == `cycleSteps` grid steps (one bar). A trig jack's onsets
+-- | (its own pattern stacked with the route onsets addressed to its name) that
+-- | fall in THIS step's window fire at their true fractional sub-step time.
+emitDestination :: Midi.MidiOut -> Int -> Number -> Scheduler.Tick -> Int -> M.GenBank -> Effect Unit
+emitDestination out channel tempo tick playedStep bank = case bank of
+  M.GTrig tb ->
+    let
+      stepMs = 0.25 * 60000.0 / max 30.0 tempo
+      lo = toNumber playedStep / toNumber cycleSteps
+      hi = toNumber (playedStep + 1) / toNumber cycleSteps
+      inWin o = o >= lo && o < hi
+      routeOns name = map _.at (filter (\e -> eqName e.name name) (concatNamed tb.routes))
+      fireJack jack =
+        let
+          own = filter inWin (Lane.onsetsOf jack.source)
+          routed = filter inWin (routeOns jack.name)
+          fire o =
+            let sub = (o * toNumber cycleSteps - toNumber playedStep) * stepMs
+            in Midi.scheduleNote out
+                 { channel, note: jack.note, velocity: trigVel, delayMs: tick.delayMs + sub, durMs: trigGateMs }
+        in
+          for_ (own <> routed) fire
+    in
+      for_ tb.jacks fireJack
+  _ -> pure unit   -- LFO/Euclid/Clock/Note → es9 CV/gate, next increment
+
+-- All named onsets across every route line of a trig block.
+concatNamed :: Array String -> Array { name :: String, at :: Number }
+concatNamed = (=<<) Lane.namedOnsetsOf
+
+eqName :: String -> String -> Boolean
+eqName a b = toLower a == toLower b
+
+-- ---------------------------------------------------------------------------
 -- Constants
 -- ---------------------------------------------------------------------------
+
+-- ---------------------------------------------------------------------------
+-- Transport constants (mirror Odonus/Balistes)
+-- ---------------------------------------------------------------------------
+
+rigUrl :: String
+rigUrl = "ws://127.0.0.1:3012/ws"
+
+gridCfg :: Scheduler.GridConfig
+gridCfg = { stepBeats: 0.25, lookaheadMs: 120.0, tickMs: 25 }
+
+-- | One Tidal cycle == one bar (16 sixteenths), so `x*4` is four hits on the
+-- | beat. The absolute grid index is the pulse, so Selene shares the rig downbeat.
+cycleSteps :: Int
+cycleSteps = 16
+
+midiPortName :: String
+midiPortName = "IAC"
+
+trigVel :: Int
+trigVel = 100
+
+trigGateMs :: Number
+trigGateMs = 40.0
 
 accent :: String
 accent = "#3f6f8a"   -- steel-blue, Selene's electric accent
@@ -120,9 +265,34 @@ panel label widthCss body =
 rackPanel :: forall m. State -> H.ComponentHTML Action () m
 rackPanel s =
   panel "SELENE · DESTINATIONS" "flex:1 1 auto;min-width:0"
-    ( mapWithIndex destinationRow s.sel.destinations
+    ( [ transportStrip s ]
+        <> mapWithIndex destinationRow s.sel.destinations
         <> [ addBar, footNote ]
     )
+
+-- A compact horizontal transport: the ARM/cue toggle (sounds only under the
+-- shell master) + live clock + MIDI readouts. POLYTRIG plays through it today.
+transportStrip :: forall m. State -> H.ComponentHTML Action () m
+transportStrip s =
+  HH.div
+    [ style $ "display:flex;align-items:center;gap:14px;margin-bottom:14px;padding:8px 10px;"
+        <> "border-radius:7px;background:#00000008;border:1px solid #00000012" ]
+    [ HH.button
+        [ HE.onClick \_ -> ToggleArm
+        , style $ "padding:8px 16px;border:1px solid #a8a392;border-radius:6px;cursor:pointer;"
+            <> "font-family:Georgia,serif;font-size:13px;letter-spacing:0.1em;color:#1c1a12;"
+            <> "background:" <> (if s.running then "linear-gradient(#8fb0c0,#7a9eb0)" else "linear-gradient(#efece1,#ddd9cb)") ]
+        [ HH.text (if s.running then (if s.master then "❚❚ PLAYING" else "◆ CUED") else "▶ ARM") ]
+    , stat "TEMPO" (show (round s.clockTempo) <> " bpm" <> (if s.clockLocked then " ⛓" else " ·"))
+    , stat "BAR" (show s.clockBar <> " · step " <> show (s.playStep + 1) <> "/" <> show cycleSteps)
+    , stat "MIDI" s.midiName
+    ]
+  where
+  stat label val =
+    HH.div [ style "display:flex;flex-direction:column;gap:1px" ]
+      [ HH.span [ style $ engrave <> ";font-size:8px;opacity:0.55" ] [ HH.text label ]
+      , HH.span [ style $ "font-family:'SF Mono',Menlo,monospace;font-size:10px;color:" <> ink ] [ HH.text val ]
+      ]
 
 addBar :: forall m. H.ComponentHTML Action () m
 addBar =
