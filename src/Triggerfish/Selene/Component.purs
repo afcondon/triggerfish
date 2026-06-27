@@ -50,11 +50,14 @@ component =
     , eval: H.mkEval H.defaultEval { handleAction = handleAction, handleQuery = handleQuery }
     }
 
--- | Answer the shell's TIDAL-tab query with the verbatim rack document.
+-- | Answer the shell's TIDAL-tab query with the verbatim rack document. Selene
+-- | has no clock yet (its CV output path is unbuilt), so it ignores SyncFree.
 handleQuery :: forall o m a. Query a -> H.HalogenM State Action () o m (Maybe a)
-handleQuery (AskSource reply) = do
-  s <- H.get
-  pure (Just (reply s.doc))
+handleQuery = case _ of
+  AskSource reply -> do
+    s <- H.get
+    pure (Just (reply s.doc))
+  SyncFree _ _ next -> pure (Just next)
 
 handleAction :: forall o m. MonadAff m => Action -> H.HalogenM State Action () o m Unit
 handleAction = case _ of

@@ -150,12 +150,19 @@ component =
         { handleAction = handleAction, handleQuery = handleQuery, initialize = Just Initialize }
     }
 
--- | Answer the shell's TIDAL-tab query: the reflective header (X/Y, densities,
--- | groove, ratchets, tapped pads) over the editable lane/routing doc.
-handleQuery :: forall o m a. Query a -> H.HalogenM State Action () o m (Maybe a)
-handleQuery (AskSource reply) = do
-  s <- H.get
-  pure (Just (reply (Source.headerText s.bal <> "\n\n" <> s.sourceDoc)))
+-- | Answer the shell: the source (TIDAL tab) — the reflective header (X/Y,
+-- | densities, groove, ratchets, tapped pads) over the editable lane/routing
+-- | doc — or adopt the rack's shared free-run baseline.
+handleQuery :: forall o m a. MonadAff m => Query a -> H.HalogenM State Action () o m (Maybe a)
+handleQuery = case _ of
+  AskSource reply -> do
+    s <- H.get
+    pure (Just (reply (Source.headerText s.bal <> "\n\n" <> s.sourceDoc)))
+  SyncFree startMicros tempo next -> do
+    s <- H.get
+    for_ s.binnacle \bin ->
+      liftEffect (Clock.setFreeBaseline (Binnacle.clock bin) { startMicros, tempo })
+    pure (Just next)
 
 -- ---------------------------------------------------------------------------
 -- handleAction

@@ -70,11 +70,18 @@ component =
         { handleAction = handleAction, handleQuery = handleQuery, initialize = Just Initialize }
     }
 
--- | Answer the shell's TIDAL-tab query with the current eDSL.
-handleQuery :: forall o m a. Query a -> H.HalogenM State Action () o m (Maybe a)
-handleQuery (AskSource reply) = do
-  s <- H.get
-  pure (Just (reply (edslText s.odo)))
+-- | Answer the shell: the current eDSL (TIDAL tab), or adopt the rack's shared
+-- | free-run baseline so all modules share a downbeat with no rig.
+handleQuery :: forall o m a. MonadAff m => Query a -> H.HalogenM State Action () o m (Maybe a)
+handleQuery = case _ of
+  AskSource reply -> do
+    s <- H.get
+    pure (Just (reply (edslText s.odo)))
+  SyncFree startMicros tempo next -> do
+    s <- H.get
+    for_ s.binnacle \bin ->
+      liftEffect (Clock.setFreeBaseline (Binnacle.clock bin) { startMicros, tempo })
+    pure (Just next)
 
 handleAction :: forall o m. MonadAff m => Action -> H.HalogenM State Action () o m Unit
 handleAction = case _ of

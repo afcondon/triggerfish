@@ -19,25 +19,33 @@ module Triggerfish.Main where
 
 import Prelude
 
-import Data.Maybe (Maybe, fromMaybe)
+import Data.Maybe (Maybe(..), fromMaybe)
 import Data.String.Common (joinWith)
 import Data.Tuple (Tuple(..))
 import Effect (Effect)
 import Effect.Aff.Class (class MonadAff)
 import Effect.Class (liftEffect)
+import Effect.Timer (setInterval)
 import Halogen as H
 import Halogen.Aff as HA
 import Halogen.HTML as HH
 import Halogen.HTML.Events as HE
 import Halogen.HTML.Properties as HP
+import Halogen.Subscription as HS
 import Halogen.VDom.Driver (runUI)
 import Type.Proxy (Proxy(..))
+import Binnacle.Time (dateNow)
 import Triggerfish.Odonus.Grid as Odonus
 import Triggerfish.Balistes.Component as Balistes
 import Triggerfish.Selene.Component as Selene
 import Triggerfish.SourceQuery as SQ
 import Vetula.App as Vetula
 import Vetula.Clipboard (copyText)
+
+-- One free-run tempo for the whole rack with no rig. (On the rig the forwarded
+-- Link anchor overrides it.) A shell BPM control could drive this later.
+freeTempo :: Number
+freeTempo = 120.0
 
 main :: Effect Unit
 main = HA.runHalogenAff do
@@ -48,9 +56,9 @@ data Which = Odo | Bal | Sel | Vet | Tid
 
 derive instance Eq Which
 
-data RAction = Pick Which | RefreshTidal | CopyTidal
+data RAction = Init | SyncTick | Pick Which | RefreshTidal | CopyTidal
 
-type RState = { which :: Which, tidalDoc :: String }
+type RState = { which :: Which, tidalDoc :: String, freeT0 :: Number }
 
 type Slots =
   ( odo :: H.Slot SQ.Query Void Unit
@@ -74,13 +82,29 @@ _vet = Proxy
 root :: forall q i o m. MonadAff m => H.Component q i o m
 root =
   H.mkComponent
-    { initialState: \_ -> { which: Bal, tidalDoc: "" }
+    { initialState: \_ -> { which: Bal, tidalDoc: "", freeT0: 0.0 }
     , render
-    , eval: H.mkEval H.defaultEval { handleAction = handleAction }
+    , eval: H.mkEval H.defaultEval { handleAction = handleAction, initialize = Just Init }
     }
 
 handleAction :: forall o m. MonadAff m => RAction -> H.HalogenM RState RAction Slots o m Unit
 handleAction = case _ of
+  -- Pick one shared free-run epoch for the rack, then keep re-asserting it on a
+  -- slow timer so every (mounted, possibly late-initialised) module shares the
+  -- same downbeat. Idempotent; a no-op on any module currently Link-locked.
+  Init -> do
+    now <- liftEffect dateNow
+    H.modify_ _ { freeT0 = now * 1000.0 }
+    { emitter, listener } <- liftEffect HS.create
+    _ <- H.subscribe emitter
+    _ <- liftEffect $ setInterval 1500 (HS.notify listener SyncTick)
+    handleAction SyncTick
+  SyncTick -> do
+    t0 <- H.gets _.freeT0
+    _ <- H.query _odo unit (SQ.SyncFree t0 freeTempo unit)
+    _ <- H.query _bal unit (SQ.SyncFree t0 freeTempo unit)
+    _ <- H.query _sel unit (SQ.SyncFree t0 freeTempo unit)
+    pure unit
   -- Opening TIDAL pulls a fresh aggregate; the modules keep playing meanwhile.
   Pick Tid -> do
     H.modify_ _ { which = Tid }
