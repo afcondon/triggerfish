@@ -14,6 +14,15 @@ export const isFormField = (ev) => () => {
   return tag === "INPUT" || tag === "TEXTAREA" || t.isContentEditable === true;
 };
 
+// display:none yields a 0×0 bounding box (works for SVG, which has no reliable
+// offsetParent). Absent surface counts as hidden too.
+export const surfaceHidden = () => {
+  const el = document.querySelector(".vetula-surface");
+  if (!el) return true;
+  const r = el.getBoundingClientRect();
+  return r.width === 0 && r.height === 0;
+};
+
 export const svgXFromEvent = (ev) => () => {
   const el = ev.currentTarget;
   if (!el || !el.viewBox || !el.viewBox.baseVal) return 0.0;

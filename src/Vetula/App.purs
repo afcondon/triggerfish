@@ -50,7 +50,7 @@ import Web.HTML (window)
 import Web.HTML.Window as Window
 import Web.UIEvent.KeyboardEvent as KE
 import Web.UIEvent.MouseEvent as ME
-import Vetula.SvgCoord (svgYFromEvent, svgXFromEvent, isFormField)
+import Vetula.SvgCoord (svgYFromEvent, svgXFromEvent, isFormField, surfaceHidden)
 import Vetula.Path as Path
 import Vetula.Generate (GenMode(..), generateCandidates)
 import Binnacle.Ticker (startWorkerTicker)
@@ -423,7 +423,11 @@ handleAction = case _ of
         -- shortcuts (c = clear, r = reset, space, Tab…) must stand down — they
         -- were wiping the progression mid-type
         typing <- isFormField ev
-        when (not typing) $ case KE.fromEvent ev of
+        -- and when Vetula is mounted-but-hidden (it's one tab of the Triggerfish
+        -- rack), ignore keys entirely so they don't fire phantom chords while
+        -- another instrument is on screen. No-op standalone, where it's visible.
+        hidden <- surfaceHidden
+        when (not typing && not hidden) $ case KE.fromEvent ev of
           Just ke -> do
             let k = KE.key ke
             -- swallow the browser defaults for the keys we drive (scroll / focus)

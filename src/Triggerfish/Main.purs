@@ -1,8 +1,14 @@
--- | Triggerfish shell. Triggerfish is now a rack of direct-manipulation
--- | instruments over the BEAM-native modules, not just Odonus; this root holds
--- | a small instrument selector and mounts one at a time. Only the active
--- | instrument is mounted, so only one clock/MIDI path runs (switching
--- | unmounts the other and stops its scheduler).
+-- | Triggerfish shell. Triggerfish is a rack of direct-manipulation
+-- | instruments over the BEAM-native modules; this root holds a small
+-- | instrument selector and shows one at a time.
+-- |
+-- | All four instruments stay MOUNTED at once — the selector only toggles which
+-- | is VISIBLE (`display:none` for the rest). So each module keeps playing when
+-- | you switch away: start Odonus, switch to Balistes and start it too, and
+-- | they run together as a four-module rig jam (each on its own MIDI channel /
+-- | CV, so no conflict). With the rig's Link clock all four phase-lock to the
+-- | same anchor; in free-run (no rig) they each run at 120 from their own mount
+-- | time and can drift, so a tight multi-module jam wants the rig.
 module Triggerfish.Main where
 
 import Prelude
@@ -69,12 +75,19 @@ render :: forall m. MonadAff m => RState -> H.ComponentHTML RAction Slots m
 render st =
   HH.div_
     [ switchBar st
-    , case st.which of
-        Odo -> HH.slot_ _odo unit Odonus.component unit
-        Bal -> HH.slot_ _bal unit Balistes.component unit
-        Sel -> HH.slot_ _sel unit Selene.component unit
-        Vet -> HH.slot_ _vet unit Vetula.component unit
+    -- All four are always in the tree (hence always mounted + running); the
+    -- active one is shown, the rest are display:none but keep playing.
+    , pane (st.which == Odo) (HH.slot_ _odo unit Odonus.component unit)
+    , pane (st.which == Bal) (HH.slot_ _bal unit Balistes.component unit)
+    , pane (st.which == Sel) (HH.slot_ _sel unit Selene.component unit)
+    , pane (st.which == Vet) (HH.slot_ _vet unit Vetula.component unit)
     ]
+
+-- A mounted-but-maybe-hidden pane. `display:none` keeps the component alive
+-- (and its scheduler/MIDI running) while removing it from layout.
+pane :: forall m. Boolean -> H.ComponentHTML RAction Slots m -> H.ComponentHTML RAction Slots m
+pane visible content =
+  HH.div [ style (if visible then "" else "display:none") ] [ content ]
 
 -- A small floating selector, top-right, in the Hainbach idiom.
 switchBar :: forall m. RState -> H.ComponentHTML RAction Slots m
