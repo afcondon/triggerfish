@@ -60,7 +60,10 @@ component =
         , swing: 0.0, velHumanize: 12
         , gen: map (\k -> { kind: k, on: false, rate: genDefaultRate k, amt: genDefaultAmt k }) genKinds
         , genSpread: 0.5, genBias: 0.5, genSeed: Marbles.seedFrom 1
-        , collapsed: [], lastTap: "", lastTapMicros: 0.0 }
+        -- SOURCE folds away by default: the dedicated TIDAL tab is the
+        -- one-stop view of the whole setup; Odonus's own eDSL pane is for
+        -- when you want to inspect just this module.
+        , collapsed: [ "SOURCE" ], lastTap: "", lastTapMicros: 0.0 }
     , render
     , eval: H.mkEval H.defaultEval
         { handleAction = handleAction, initialize = Just Initialize }
