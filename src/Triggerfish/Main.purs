@@ -58,7 +58,7 @@ data Which = Odo | Bal | Sel | Vet | Tid
 
 derive instance Eq Which
 
-data RAction = Init | SyncTick | Pick Which | RefreshTidal | CopyTidal | PatchVetula | ToggleMaster
+data RAction = Init | SyncTick | PollVetula | Pick Which | RefreshTidal | CopyTidal | ToggleMaster
 
 -- `playing` is the MASTER transport. Each module's own run button is a sticky
 -- arm/cue toggle; a module sounds only when master `playing` AND it is armed. So
@@ -104,6 +104,9 @@ handleAction = case _ of
     { emitter, listener } <- liftEffect HS.create
     _ <- H.subscribe emitter
     _ <- liftEffect $ setInterval 1500 (HS.notify listener SyncTick)
+    -- Poll Vetula's Odonus-bound performance voices ~10×/s and feed each one's
+    -- current block chord to Odonus, so its quantiser follows the live conductor.
+    _ <- liftEffect $ setInterval 100 (HS.notify listener PollVetula)
     handleAction SyncTick
     -- Take control of the rack's transport: every armed module stays silent until
     -- the master PLAY. (Vetula defaults to master=true for standalone, so we must
@@ -129,12 +132,12 @@ handleAction = case _ of
   Pick w -> H.modify_ _ { which = w }
   RefreshTidal -> refreshTidal
   CopyTidal -> H.gets _.tidalDoc >>= (liftEffect <<< copyText)
-  -- The Vetula bridge: pull Vetula's current progression as PC sets and feed it
-  -- to Odonus's chord quantiser (which turns on, so it's audible immediately).
-  PatchVetula -> do
-    mchords <- H.query _vet unit (Vetula.AskChords identity)
-    case mchords of
-      Just chords -> void $ H.query _odo unit (SQ.FeedChords chords unit)
+  -- The live Vetula→Odonus bridge: pull each Odonus-bound voice's current block
+  -- chord and feed the set to Odonus, whose KEY pane picks one (or none) to follow.
+  PollVetula -> do
+    mfeed <- H.query _vet unit (Vetula.AskVoiceChords identity)
+    case mfeed of
+      Just feed -> void $ H.query _odo unit (SQ.FeedVoiceChords feed unit)
       Nothing -> pure unit
 
 -- Push the master transport to every module. The three SourceQuery modules and
@@ -178,21 +181,7 @@ render st =
     , pane (st.which == Sel) (HH.slot_ _sel unit Selene.component unit)
     , pane (st.which == Vet) (HH.slot_ _vet unit Vetula.component unit)
     , if st.which == Tid then tidalView st else HH.text ""
-    -- On the Odonus tab, a patch button pulls Vetula's progression into its
-    -- chord quantiser.
-    , if st.which == Odo then patchButton else HH.text ""
     ]
-
--- Pull Vetula's current progression into Odonus's chord quantiser.
-patchButton :: forall m. H.ComponentHTML RAction Slots m
-patchButton =
-  HH.button
-    [ HE.onClick \_ -> PatchVetula
-    , style $ "position:fixed;top:44px;right:14px;z-index:50;padding:5px 12px;cursor:pointer;"
-        <> "border:1px solid #b8975a;border-radius:6px;font-family:Georgia,serif;"
-        <> "font-size:10px;letter-spacing:0.1em;text-transform:uppercase;color:#5a4a22;"
-        <> "background:linear-gradient(#f3ecd9,#e9e0c6);box-shadow:0 1px 4px #0000002a" ]
-    [ HH.text "◄ Vetula chords" ]
 
 -- A mounted-but-maybe-hidden pane. `display:none` keeps the component alive
 -- (and its scheduler/MIDI running) while removing it from layout.

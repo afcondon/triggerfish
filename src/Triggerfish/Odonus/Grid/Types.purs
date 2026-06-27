@@ -257,6 +257,11 @@ type State =
   , collapsed :: Array String  -- panel labels currently collapsed (accordion)
   , lastTap :: String          -- last toggle target (debounce the double-dispatch)
   , lastTapMicros :: Number
+  -- The live Vetula→Odonus follow bridge. `voiceChords` is the latest poll of
+  -- the shell (each Odonus-bound Vetula voice's current block chord, keyed by id);
+  -- `follow` selects one of those ids (or none), whose chord the quantiser snaps to.
+  , voiceChords :: Array { id :: Int, pcs :: Array Int }
+  , follow :: Maybe Int
   }
 
 data Action
@@ -280,6 +285,7 @@ data Action
   | ToggleDist
   | ToggleChord
   | ChordRoll
+  | SetFollow (Maybe Int)    -- follow a Vetula Odonus-bound voice by id (Nothing = free)
   | SetRoot Int
   | SetOctave Int
   | SetDegShift Int

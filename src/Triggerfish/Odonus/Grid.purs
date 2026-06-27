@@ -9,7 +9,7 @@ module Triggerfish.Odonus.Grid (component) where
 
 import Prelude
 
-import Data.Array (deleteAt, elem, filter, length, mapWithIndex, null, range, updateAt, (!!))
+import Data.Array (deleteAt, elem, filter, find, length, mapWithIndex, null, range, updateAt, (!!))
 import Data.Foldable (foldl, for_)
 import Data.FoldableWithIndex (forWithIndex_)
 import Data.Int (round, toNumber)
@@ -64,7 +64,8 @@ component =
         -- SOURCE folds away by default: the dedicated TIDAL tab is the
         -- one-stop view of the whole setup; Odonus's own eDSL pane is for
         -- when you want to inspect just this module.
-        , collapsed: [ "SOURCE" ], lastTap: "", lastTapMicros: 0.0 }
+        , collapsed: [ "SOURCE" ], lastTap: "", lastTapMicros: 0.0
+        , voiceChords: [], follow: Nothing }
     , render
     , eval: H.mkEval H.defaultEval
         { handleAction = handleAction, handleQuery = handleQuery, initialize = Just Initialize }
@@ -85,6 +86,12 @@ handleQuery = case _ of
   -- The Vetula bridge: drive the chord quantiser from Vetula's progression.
   FeedChords pcs next -> do
     H.modify_ \s -> s { odo = M.setChordFeed pcs s.odo }
+    pure (Just next)
+  -- The LIVE Vetula→Odonus follow bridge: store the latest poll of Odonus-bound
+  -- voice chords, then re-derive the followed chord (a no-op overlay if nothing
+  -- is followed or the followed voice has gone away).
+  FeedVoiceChords vcs next -> do
+    H.modify_ \s -> recomputeFollow s { voiceChords = vcs }
     pure (Just next)
   -- The shell's master transport. Silence held notes if we were sounding (armed)
   -- and master is now stopping us.
@@ -278,6 +285,7 @@ handleAction = case _ of
   ChordRoll -> H.modify_ \s ->
     let r = Gen.rollChords M.numChordTable s.genSeed
     in s { odo = M.setChordPicks r.picks s.odo, genSeed = r.seed }
+  SetFollow mfid -> H.modify_ \s -> recomputeFollow s { follow = mfid }
   SetRoot pc -> H.modify_ \s -> s { odo = M.setRoot pc s.odo }
   SetOctave n -> H.modify_ \s -> s { odo = M.setOctaveShift n s.odo }
   SetDegShift n -> H.modify_ \s -> s { odo = M.setDegShift n s.odo }
@@ -355,6 +363,14 @@ tapBounced k s = k == s.lastTap && (s.nowMicros - s.lastTapMicros) < 120000.0
 
 markTap :: String -> State -> State
 markTap k s = s { lastTap = k, lastTapMicros = s.nowMicros }
+
+-- | Re-derive the chord overlay from the current follow selection + last poll:
+-- | the followed voice's chord becomes a one-element feed (overlay on); no
+-- | follow — or a followed voice that's vanished — clears it (overlay off).
+recomputeFollow :: State -> State
+recomputeFollow s =
+  let mpcs = s.follow >>= \fid -> _.pcs <$> find (\vc -> vc.id == fid) s.voiceChords
+  in s { odo = M.followChord mpcs s.odo }
 
 -- | The rig WebSocket (purerl-tidal). Binnacle subscribes to the Link
 -- | anchor here and relays gates/CV to es9-daemon.

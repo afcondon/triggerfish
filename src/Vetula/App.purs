@@ -99,13 +99,33 @@ data Renderer = Block | Strummed | Arp
 
 derive instance eqRenderer :: Eq Renderer
 
+-- | Where a voice's chord goes. ToMidi (the default) sounds it on the voice's
+-- | MIDI channel per its renderer. ToOdonus sends NO MIDI: the voice becomes a
+-- | block chord-conductor for Triggerfish's Odonus — it always runs (no mute),
+-- | and the `channel` field is reused as the Odonus id the shell feeds. The
+-- | standalone app only ever uses ToMidi (it has no Odonus to conduct).
+data VoiceDest = ToMidi | ToOdonus
+
+derive instance eqVoiceDest :: Eq VoiceDest
+
+destName :: VoiceDest -> String
+destName = case _ of
+  ToMidi -> "→ midi"
+  ToOdonus -> "→ odo"
+
+cycleDest :: VoiceDest -> VoiceDest
+cycleDest = case _ of
+  ToMidi -> ToOdonus
+  ToOdonus -> ToMidi
+
 -- | A performance VOICE: its own read-head into the loaded progression (its own
 -- | clock + offset, so voices can run locked or phased), a way to sound it, and
 -- | a MIDI channel. The shared material is the progression; the position is the
 -- | voice's own — overlapping pitch sets from one voice-led source.
 type Voice =
   { id :: Int
-  , channel :: Int          -- MIDI channel 0..15
+  , channel :: Int          -- MIDI channel 0..15 (ToMidi) / the Odonus id (ToOdonus)
+  , dest :: VoiceDest        -- MIDI out, or a block chord-conductor for Odonus
   , renderer :: Renderer
   , durs :: Array Int       -- BARS this voice dwells on each chord (one per progression
                             -- chord); 0 = skip that chord. The voice's own timeline.
@@ -276,6 +296,7 @@ data Action
   | AddVoice
   | RemoveVoice Int
   | SetVoiceChannel Int String
+  | CycleVoiceDest Int
   | CycleVoiceRenderer Int
   | BumpCell Int Int Boolean    -- voice id, chord index, shift-held (down) — set a cell's bars
   | SetVoicePhase Int String
@@ -294,6 +315,7 @@ data Action
 data SourceQuery a
   = AskSource (String -> a)
   | AskChords (Array (Array Int) -> a)
+  | AskVoiceChords (Array { id :: Int, pcs :: Array Int } -> a)  -- live per-Odonus-voice chord
   | SetMaster Boolean a
   | SyncFree Number Number a    -- adopt the rack's shared free-run baseline (start micros, BPM)
 
@@ -361,6 +383,12 @@ handleQuery = case _ of
   AskChords reply -> do
     s <- H.get
     pure (Just (reply (progressionPCs s)))
+  -- The live Odonus follow bridge: each ToOdonus voice's CURRENT block chord,
+  -- keyed by the voice's channel field (reused as the Odonus id). The shell polls
+  -- this ~100ms and feeds it to Odonus's quantiser.
+  AskVoiceChords reply -> do
+    s <- H.get
+    pure (Just (reply (voiceChordFeed s)))
   -- The shell's master transport: store it, then start/stop sounding so it plays
   -- exactly when armed && master.
   SetMaster m next -> do
@@ -379,6 +407,18 @@ handleQuery = case _ of
 -- | classes) — what Odonus's quantiser snaps to when fed from Vetula.
 progressionPCs :: State -> Array (Array Int)
 progressionPCs st = mapMaybe (\pid -> _.pcs <$> find (\c -> c.id == pid) st.chords) st.path
+
+-- | Each Odonus-bound voice's CURRENT block chord as pitch classes, keyed by its
+-- | channel (reused as the Odonus id). The shell polls this ~100ms and feeds it
+-- | to Odonus's follow selector. A ToMidi voice contributes nothing.
+voiceChordFeed :: State -> Array { id :: Int, pcs :: Array Int }
+voiceChordFeed st =
+  let chords = perfChords st
+  in mapMaybe
+       (\v -> if v.dest == ToOdonus
+                then (\c -> { id: v.channel, pcs: c.pcs }) <$> index chords v.cursor
+                else Nothing)
+       st.voices
 
 -- ---------------------------------------------------------------------------
 -- Force layout
@@ -848,6 +888,8 @@ handleAction = case _ of
     Just ch -> updateVoice vid (_ { channel = clamp 0 15 ch })
     Nothing -> pure unit
 
+  CycleVoiceDest vid -> updateVoice vid (\v -> v { dest = cycleDest v.dest })
+
   CycleVoiceRenderer vid -> updateVoice vid (\v -> v { renderer = nextRenderer v.renderer })
 
   -- click a grid cell to set how many bars this voice dwells on this chord:
@@ -972,7 +1014,7 @@ withHovered f = do
 -- | (= the old uniform behaviour), nothing skipped.
 defaultVoice :: Int -> Int -> Renderer -> Int -> Voice
 defaultVoice vid channel renderer n =
-  { id: vid, channel, renderer, durs: replicate n 1, phase: 0, cursor: 0, held: [], muted: false }
+  { id: vid, channel, dest: ToMidi, renderer, durs: replicate n 1, phase: 0, cursor: 0, held: [], muted: false }
 
 -- | Fit a voice's duration column to the current chord count (pad new chords with
 -- | one bar, drop any trailing extras) — keeps the grid + clock robust if the
@@ -1052,6 +1094,9 @@ perfChords st = case st.perfProg of
 -- | changed notes (common tones ring on via held); Arp plays one note per pulse.
 stepVoice :: Maybe Midi.MidiOut -> Array ChordNode -> Int -> Number -> Number -> Voice -> Effect Voice
 stepVoice mout chords pulse pulseMs baseDelayMs v
+  -- An Odonus-bound voice sounds no MIDI itself — it just advances its read-head
+  -- so the shell can poll its current chord. Always on (mute is a MIDI concept).
+  | v.dest == ToOdonus = pure v { cursor = fromMaybe v.cursor (cursorAt chords pulse v) }
   | v.muted = pure v
   | length chords == 0 = pure v
   | otherwise =
@@ -1091,6 +1136,19 @@ stepVoice mout chords pulse pulseMs baseDelayMs v
                           for_ entering \nn -> Midi.noteOnAt out { channel: v.channel, note: nn, velocity: 84, delayMs: baseDelayMs }
                         pure v { cursor = curIx, held = chordNotes }
                       else pure v { cursor = curIx }
+
+-- | The chord index a voice's read-head is on at this pulse (Nothing if its loop
+-- | is empty or it's resting between dwell segments). Shared by the MIDI path and
+-- | the Odonus-follow feed, which sounds no MIDI but still tracks the cursor.
+cursorAt :: Array ChordNode -> Int -> Voice -> Maybe Int
+cursorAt chords pulse v =
+  let n = length chords
+      ds = padDurs n v.durs
+      segs = timeline ds
+      loopLen = 16 * sum ds
+  in if loopLen <= 0 then Nothing
+     else let pos = mod (pulse + v.phase) loopLen
+          in _.ix <$> find (\seg -> pos >= seg.start && pos < seg.start + seg.len) segs
 
 -- | The pick-mode generator mode implied by a step selection over an n-step path:
 -- | one chord at the start prepends, at the end appends, in the middle
@@ -2179,19 +2237,27 @@ durCell st n i v =
       , HE.onClick \ev -> BumpCell v.id i (ME.shiftKey ev) ]
       [ HH.text (if d == 0 then "·" else show d) ]
 
--- | A voice's column header: mute, renderer, MIDI channel, phase offset, remove.
+-- | A voice's column header. A destination toggle (→ midi / → odo) leads; a MIDI
+-- | voice then shows mute + renderer + channel, an Odonus voice just its id (it's
+-- | always on, sounds no MIDI of its own). Phase + remove are common to both.
 voiceHeaderCell :: forall m. Voice -> H.ComponentHTML Action Slots m
 voiceHeaderCell v =
   HH.td
     [ HP.style ("padding: 4px 6px; border-left: 1px solid #f0f0f0; vertical-align: bottom; min-width: 52px; "
-        <> (if v.muted then "opacity: 0.5;" else "")) ]
+        <> (if v.muted && v.dest == ToMidi then "opacity: 0.5;" else "")) ]
     [ HH.div [ HP.style "display: flex; flex-direction: column; gap: 3px; align-items: stretch;" ]
-        [ cellBtn (if v.muted then "off" else "on") (not v.muted) (ToggleVoiceMute v.id)
-        , cellBtn (rendName v.renderer) true (CycleVoiceRenderer v.id)
-        , numField "ch" v.channel (SetVoiceChannel v.id)
-        , numField "φ" v.phase (SetVoicePhase v.id)
-        , HH.button [ HP.style "border: none; background: none; cursor: pointer; color: #c8c8c8; font-size: 14px; align-self: center;", HE.onClick \_ -> RemoveVoice v.id ] [ HH.text "×" ]
-        ]
+        ( [ cellBtn (destName v.dest) (v.dest == ToOdonus) (CycleVoiceDest v.id) ]
+            <> (case v.dest of
+                  ToMidi ->
+                    [ cellBtn (if v.muted then "off" else "on") (not v.muted) (ToggleVoiceMute v.id)
+                    , cellBtn (rendName v.renderer) true (CycleVoiceRenderer v.id)
+                    , numField "ch" v.channel (SetVoiceChannel v.id)
+                    ]
+                  ToOdonus ->
+                    [ numField "id" v.channel (SetVoiceChannel v.id) ])
+            <> [ numField "φ" v.phase (SetVoicePhase v.id)
+               , HH.button [ HP.style "border: none; background: none; cursor: pointer; color: #c8c8c8; font-size: 14px; align-self: center;", HE.onClick \_ -> RemoveVoice v.id ] [ HH.text "×" ]
+               ] )
     ]
 
 trimLower :: String -> String

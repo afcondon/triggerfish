@@ -12,6 +12,11 @@
 -- |     stopped rack is silent; master PLAY starts every armed module together on
 -- |     the shared downbeat; toggling arm mid-play drops a module in/out live.
 -- |     Modules with no transport (Selene) ignore it.
+-- |   * `FeedVoiceChords` — the LIVE Vetula→Odonus follow bridge. The shell polls
+-- |     Vetula ~100ms for each Odonus-bound performance voice's current block
+-- |     chord (`{ id, pcs }`, where `id` is the voice's channel reused as an
+-- |     Odonus id) and pushes the set here; Odonus's KEY pane selects one (or
+-- |     zero) to snap its output to. Modules without a chord quantiser ignore it.
 -- |
 -- | (Vetula, vendored from its own standalone app, defines its own structurally
 -- | similar source query — see Vetula.App.SourceQuery — with its own SetMaster.)
@@ -21,4 +26,5 @@ data Query a
   = AskSource (String -> a)
   | SyncFree Number Number a
   | FeedChords (Array (Array Int)) a
+  | FeedVoiceChords (Array { id :: Int, pcs :: Array Int }) a
   | SetMaster Boolean a

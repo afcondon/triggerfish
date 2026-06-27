@@ -125,18 +125,31 @@ just wasteful. Deferred.
 **First cut landed** (`30f89aa`): the "◄ Vetula chords" snapshot button feeds
 Vetula's whole progression into Odonus's `feed`/`currentChordPCs` quantizer.
 
-**Next (designed, NOT yet built) — MIDI / Odonus voice destinations.** Replace
-the snapshot with a live follow: each Vetula Performance voice gets a destination
-**MIDI** (today's behaviour) or **Odonus** (a block chord-conductor — no MIDI,
-always on, reuses the 1–16 channel field as an Odonus id). The shell polls Vetula
-~100 ms (`AskVoiceChords`) for each Odonus-dest voice's *current* block chord and
-feeds it to Odonus (`FeedVoiceChords`); Odonus stores `follow :: Maybe Int` and
-its KEY pane selects one-or-zero of those voices. **Remove the McMullen picker**
-(ii7/V7/Imaj7/vi9 chips + `⟳ chords` + STEPS/CHORD) and the "◄ Vetula chords"
-button entirely. Reuses the existing `feed → currentChordPCs → quantiseToChordPCs`
-engine (push a single-element feed each poll). This is the last of the three
-queued features; master transport (done) and Vetula-on-shared-clock (done) were
-the first two.
+**MIDI / Odonus voice destinations — LANDED (this session).** The snapshot is
+replaced by a live follow. Each Vetula Performance voice now carries a
+destination, toggled in its column header: **→ midi** (its old behaviour) or
+**→ odo** (a block chord-conductor — sends no MIDI, always runs regardless of
+mute, and reuses the 1–16 channel field as an Odonus *id*). `Vetula.stepVoice`
+short-circuits a `→ odo` voice to advance its read-head only (a shared `cursorAt`
+finds the chord index); `Vetula.voiceChordFeed` exposes each such voice's current
+block chord (`{ id, pcs }`) via a new `AskVoiceChords` query.
+
+The shell polls Vetula every 100 ms (`PollVetula`) and pushes the set to Odonus
+over a new shared `FeedVoiceChords` query (Balistes/Selene no-op it). Odonus's
+KEY pane swaps the McMullen picker (the ii7/V7/Imaj7/vi9 chips + `⟳ chords` +
+STEPS/CHORD knob) for a **CHORDS · FOLLOW VETULA** selector: a `free` chip plus
+one chip per Odonus-bound voice id, storing `follow :: Maybe Int` + the last poll
+in `voiceChords`. `M.followChord` re-derives the quantiser overlay each poll — the
+followed voice's chord becomes a one-element feed with the overlay on; `free` (or
+a vanished voice) clears it. The "◄ Vetula chords" snapshot button and
+`patchButton` are gone. *Verified build-clean + headless:* the FOLLOW pane renders
+(header / `○ free` / `free` chip / VOICE row / no-voices hint), the old McMullen
++ snapshot UI is gone, and the 100 ms poll loop runs with zero JS errors. **The
+`→ odo` voice toggle + audible follow are the rig/MIDI test — yours to confirm**
+(needs a loaded progression + Odonus listening).
+
+This was the last of the three queued features; master transport and
+Vetula-on-shared-clock (both done earlier today) were the first two.
 
 ### 4. Duplicated voicing engine
 

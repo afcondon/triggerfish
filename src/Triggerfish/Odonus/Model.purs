@@ -14,6 +14,7 @@ module Triggerfish.Odonus.Model
   , currentChordPCs
   , setChordPicks
   , setChordFeed
+  , followChord
   , tickChord
   , toggleChord
   , setChordPeriod
@@ -218,6 +219,16 @@ setChordPicks ps o = o { chord = o.chord { picks = ps, feed = [], ix = 0, phase 
 setChordFeed :: Array (Array Int) -> Odonus -> Odonus
 setChordFeed pcs o =
   o { chord = o.chord { feed = pcs, ix = 0, phase = 0, on = not (null pcs) || o.chord.on } }
+
+-- | Follow a single live chord from a Vetula voice (the live-follow bridge). A
+-- | `Just pcs` installs it as a one-element feed with the overlay ON, so the
+-- | output snaps to that chord; the shell overwrites it every poll as the voice
+-- | advances. A `Nothing` (no voice followed) clears the feed and turns the
+-- | overlay OFF — back to plain scale quantisation.
+followChord :: Maybe (Array Int) -> Odonus -> Odonus
+followChord mpcs o = case mpcs of
+  Just pcs -> o { chord = o.chord { feed = [ pcs ], ix = 0, phase = 0, on = true } }
+  Nothing -> o { chord = o.chord { feed = [], ix = 0, phase = 0, on = false } }
 
 -- | The pitch classes the current harmony admits: the live chord if the chord
 -- | overlay is running, else the whole scale. Used to seed a melodic line.

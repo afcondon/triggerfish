@@ -165,6 +165,7 @@ handleQuery = case _ of
       liftEffect (Clock.setFreeBaseline (Binnacle.clock bin) { startMicros, tempo })
     pure (Just next)
   FeedChords _ next -> pure (Just next)   -- a drum machine; no chord quantiser
+  FeedVoiceChords _ next -> pure (Just next)   -- ditto
   SetMaster m next -> do
     H.modify_ _ { master = m }
     pure (Just next)
