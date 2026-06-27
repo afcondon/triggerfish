@@ -53,7 +53,7 @@ import Web.UIEvent.MouseEvent as ME
 import Vetula.SvgCoord (svgYFromEvent, svgXFromEvent, isFormField)
 import Vetula.Path as Path
 import Vetula.Generate (GenMode(..), generateCandidates)
-import Vetula.Ticker (startTicker)
+import Binnacle.Ticker (startWorkerTicker)
 import Vetula.Tidal (progressionSource, parseProgression)
 import Vetula.Clipboard (copyText)
 import Binnacle.Midi as Midi
@@ -803,7 +803,7 @@ handleAction = case _ of
       { emitter, listener } <- liftEffect HS.create
       sid <- H.subscribe (PerfTick <$ emitter)
       let pulseMs = 60000.0 / toNumber st.tempo / 4.0
-      cancel <- liftEffect $ startTicker (round pulseMs) (HS.notify listener unit)
+      cancel <- liftEffect $ startWorkerTicker (round pulseMs) (HS.notify listener unit)
       H.modify_ _
         { playing = true, pulse = -1, perfSubId = Just sid, perfCancel = Just cancel
         , voices = map (_ { held = [], cursor = 0 }) st.voices }
