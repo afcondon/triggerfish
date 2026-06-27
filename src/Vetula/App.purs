@@ -271,7 +271,12 @@ data Action
   | PerfTick               -- one 16th-note pulse of the performance clock
   | SelectPerfChord Int    -- click a working-copy chord row (for live Tab-revoice)
 
-component :: forall q i o m. MonadAff m => H.Component q i o m
+-- | The query the Triggerfish shell uses to pull Vetula's current Tidal source
+-- | for the aggregate TIDAL tab. Defined here (not imported from Triggerfish)
+-- | so the standalone app — which never queries it — still builds.
+data SourceQuery a = AskSource (String -> a)
+
+component :: forall i o m. MonadAff m => H.Component SourceQuery i o m
 component = H.mkComponent
   { initialState: \_ ->
       { key: cMajorKey
@@ -317,8 +322,14 @@ component = H.mkComponent
       }
   , render
   , eval: H.mkEval H.defaultEval
-      { handleAction = handleAction, initialize = Just Initialize }
+      { handleAction = handleAction, handleQuery = handleQuery, initialize = Just Initialize }
   }
+
+-- | Answer the shell's TIDAL-tab query with the live progression as Tidal.
+handleQuery :: forall o m a. MonadAff m => SourceQuery a -> H.HalogenM State Action Slots o m (Maybe a)
+handleQuery (AskSource reply) = do
+  s <- H.get
+  pure (Just (reply (currentSource s)))
 
 -- ---------------------------------------------------------------------------
 -- Force layout

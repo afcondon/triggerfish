@@ -40,6 +40,7 @@ import Binnacle.Midi as Midi
 import Binnacle.Scheduler as Scheduler
 import Triggerfish.Balistes.Model as M
 import Triggerfish.Balistes.Source as Source
+import Triggerfish.SourceQuery (Query(..))
 import Triggerfish.Balistes.Tables as T
 import Triggerfish.Balistes.Tidal as Tidal
 import Triggerfish.Ui.Knob (knob)
@@ -134,7 +135,7 @@ data Action
   | CycleFocus
   | NoOp
 
-component :: forall q i o m. MonadAff m => H.Component q i o m
+component :: forall i o m. MonadAff m => H.Component Query i o m
 component =
   H.mkComponent
     { initialState: \_ ->
@@ -146,8 +147,15 @@ component =
         , sourceDoc: Source.starterDoc }
     , render
     , eval: H.mkEval H.defaultEval
-        { handleAction = handleAction, initialize = Just Initialize }
+        { handleAction = handleAction, handleQuery = handleQuery, initialize = Just Initialize }
     }
+
+-- | Answer the shell's TIDAL-tab query: the reflective header (X/Y, densities,
+-- | groove, ratchets, tapped pads) over the editable lane/routing doc.
+handleQuery :: forall o m a. Query a -> H.HalogenM State Action () o m (Maybe a)
+handleQuery (AskSource reply) = do
+  s <- H.get
+  pure (Just (reply (Source.headerText s.bal <> "\n\n" <> s.sourceDoc)))
 
 -- ---------------------------------------------------------------------------
 -- handleAction

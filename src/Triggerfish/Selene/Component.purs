@@ -25,6 +25,8 @@ import Halogen.HTML.Properties as HP
 import Triggerfish.Odonus.Grid.Widgets (engrave, style, svgAttr, svgEl)
 import Triggerfish.Selene.Model as M
 import Triggerfish.Selene.Source as Source
+import Triggerfish.SourceQuery (Query(..))
+import Data.Maybe (Maybe(..))
 
 -- ---------------------------------------------------------------------------
 -- State / Actions
@@ -38,15 +40,21 @@ data Action
   = AddDest M.GenKind         -- append a template block (comment-safe)
   | SetDoc String             -- the whole editable document, verbatim
 
-component :: forall q i o m. MonadAff m => H.Component q i o m
+component :: forall i o m. MonadAff m => H.Component Query i o m
 component =
   H.mkComponent
     { initialState: \_ ->
         let doc = Source.printRack M.defaultSelene
         in { sel: Source.parseRack doc, doc }
     , render
-    , eval: H.mkEval H.defaultEval { handleAction = handleAction }
+    , eval: H.mkEval H.defaultEval { handleAction = handleAction, handleQuery = handleQuery }
     }
+
+-- | Answer the shell's TIDAL-tab query with the verbatim rack document.
+handleQuery :: forall o m a. Query a -> H.HalogenM State Action () o m (Maybe a)
+handleQuery (AskSource reply) = do
+  s <- H.get
+  pure (Just (reply s.doc))
 
 handleAction :: forall o m. MonadAff m => Action -> H.HalogenM State Action () o m Unit
 handleAction = case _ of

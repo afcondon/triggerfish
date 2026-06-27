@@ -1,7 +1,7 @@
 -- | SOURCE panel — the live eDSL of the current setup (read-only). One-
 -- | directional (GUI→text), updating live — the consistency-with-text the rig
 -- | will consume.
-module Triggerfish.Odonus.View.Source (edslPanel) where
+module Triggerfish.Odonus.View.Source (edslPanel, edslText) where
 
 import Prelude
 

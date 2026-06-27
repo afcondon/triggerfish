@@ -43,11 +43,12 @@ import Triggerfish.Odonus.View.Scope (scopePanel)
 import Triggerfish.Odonus.View.Key (quantizerPanel)
 import Triggerfish.Odonus.View.Playheads (playheadsPanel)
 import Triggerfish.Odonus.View.Grid (gridPanel)
-import Triggerfish.Odonus.View.Source (edslPanel)
+import Triggerfish.Odonus.View.Source (edslPanel, edslText)
+import Triggerfish.SourceQuery (Query(..))
 import Triggerfish.Odonus.View.Generate (generatePanel)
 import Triggerfish.Odonus.View.Scenes (scenesPanel, sceneName)
 
-component :: forall q i o m. MonadAff m => H.Component q i o m
+component :: forall i o m. MonadAff m => H.Component Query i o m
 component =
   H.mkComponent
     { initialState: \_ ->
@@ -66,8 +67,14 @@ component =
         , collapsed: [ "SOURCE" ], lastTap: "", lastTapMicros: 0.0 }
     , render
     , eval: H.mkEval H.defaultEval
-        { handleAction = handleAction, initialize = Just Initialize }
+        { handleAction = handleAction, handleQuery = handleQuery, initialize = Just Initialize }
     }
+
+-- | Answer the shell's TIDAL-tab query with the current eDSL.
+handleQuery :: forall o m a. Query a -> H.HalogenM State Action () o m (Maybe a)
+handleQuery (AskSource reply) = do
+  s <- H.get
+  pure (Just (reply (edslText s.odo)))
 
 handleAction :: forall o m. MonadAff m => Action -> H.HalogenM State Action () o m Unit
 handleAction = case _ of
