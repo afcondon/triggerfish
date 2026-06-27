@@ -34,6 +34,7 @@ import Halogen.HTML.Properties as HP
 import Halogen.Subscription as HS
 import Halogen.VDom.Driver (runUI)
 import Type.Proxy (Proxy(..))
+import Binnacle.Audio (armAudioKeepAlive)
 import Binnacle.Time (dateNow)
 import Triggerfish.Odonus.Grid as Odonus
 import Triggerfish.Balistes.Component as Balistes
@@ -49,6 +50,7 @@ freeTempo = 120.0
 
 main :: Effect Unit
 main = HA.runHalogenAff do
+  liftEffect armAudioKeepAlive   -- keep the tab audible so background play survives
   body <- HA.awaitBody
   void $ runUI root unit body
 
