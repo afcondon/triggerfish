@@ -59,6 +59,7 @@ handleQuery = case _ of
     pure (Just (reply s.doc))
   SyncFree _ _ next -> pure (Just next)
   FeedChords _ next -> pure (Just next)
+  SetMaster _ next -> pure (Just next)   -- no transport yet; nothing to gate
 
 handleAction :: forall o m. MonadAff m => Action -> H.HalogenM State Action () o m Unit
 handleAction = case _ of

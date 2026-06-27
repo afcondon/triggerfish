@@ -58,9 +58,13 @@ data Which = Odo | Bal | Sel | Vet | Tid
 
 derive instance Eq Which
 
-data RAction = Init | SyncTick | Pick Which | RefreshTidal | CopyTidal | PatchVetula
+data RAction = Init | SyncTick | Pick Which | RefreshTidal | CopyTidal | PatchVetula | ToggleMaster
 
-type RState = { which :: Which, tidalDoc :: String, freeT0 :: Number }
+-- `playing` is the MASTER transport. Each module's own run button is a sticky
+-- arm/cue toggle; a module sounds only when master `playing` AND it is armed. So
+-- PLAY starts every armed module together on the shared downbeat, and arming a
+-- stopped rack is silent until PLAY.
+type RState = { which :: Which, tidalDoc :: String, freeT0 :: Number, playing :: Boolean }
 
 type Slots =
   ( odo :: H.Slot SQ.Query Void Unit
@@ -84,7 +88,7 @@ _vet = Proxy
 root :: forall q i o m. MonadAff m => H.Component q i o m
 root =
   H.mkComponent
-    { initialState: \_ -> { which: Bal, tidalDoc: "", freeT0: 0.0 }
+    { initialState: \_ -> { which: Bal, tidalDoc: "", freeT0: 0.0, playing: false }
     , render
     , eval: H.mkEval H.defaultEval { handleAction = handleAction, initialize = Just Init }
     }
@@ -101,11 +105,22 @@ handleAction = case _ of
     _ <- H.subscribe emitter
     _ <- liftEffect $ setInterval 1500 (HS.notify listener SyncTick)
     handleAction SyncTick
+    -- Take control of the rack's transport: every armed module stays silent until
+    -- the master PLAY. (Vetula defaults to master=true for standalone, so we must
+    -- push the real state here.)
+    broadcastMaster false
+  -- One master PLAY/STOP for the whole rack: flip it and tell every module, which
+  -- then sounds iff (master && its own arm).
+  ToggleMaster -> do
+    p <- not <$> H.gets _.playing
+    H.modify_ _ { playing = p }
+    broadcastMaster p
   SyncTick -> do
     t0 <- H.gets _.freeT0
     _ <- H.query _odo unit (SQ.SyncFree t0 freeTempo unit)
     _ <- H.query _bal unit (SQ.SyncFree t0 freeTempo unit)
     _ <- H.query _sel unit (SQ.SyncFree t0 freeTempo unit)
+    _ <- H.query _vet unit (Vetula.SyncFree t0 freeTempo unit)
     pure unit
   -- Opening TIDAL pulls a fresh aggregate; the modules keep playing meanwhile.
   Pick Tid -> do
@@ -121,6 +136,16 @@ handleAction = case _ of
     case mchords of
       Just chords -> void $ H.query _odo unit (SQ.FeedChords chords unit)
       Nothing -> pure unit
+
+-- Push the master transport to every module. The three SourceQuery modules and
+-- Vetula (its own query type) all answer SetMaster; Selene's is a no-op.
+broadcastMaster :: forall o m. MonadAff m => Boolean -> H.HalogenM RState RAction Slots o m Unit
+broadcastMaster b = do
+  _ <- H.query _odo unit (SQ.SetMaster b unit)
+  _ <- H.query _bal unit (SQ.SetMaster b unit)
+  _ <- H.query _sel unit (SQ.SetMaster b unit)
+  _ <- H.query _vet unit (Vetula.SetMaster b unit)
+  pure unit
 
 -- Query each mounted instrument for its current source and stitch the four
 -- into one labelled document.
@@ -143,7 +168,8 @@ assemble = joinWith "\n\n\n" <<< map section
 render :: forall m. MonadAff m => RState -> H.ComponentHTML RAction Slots m
 render st =
   HH.div_
-    [ switchBar st
+    [ masterBar st
+    , switchBar st
     -- All four are always in the tree (hence always mounted + running); the
     -- active one is shown, the rest are display:none but keep playing. On the
     -- TIDAL tab all four are hidden but still alive (and queryable).
@@ -204,6 +230,21 @@ barBtn label act =
         <> "font-size:10px;letter-spacing:0.1em;text-transform:uppercase;color:#5a4a22;"
         <> "background:linear-gradient(#f3ecd9,#e9e0c6)" ]
     [ HH.text label ]
+
+-- The master transport, top-left: one PLAY/STOP for the whole rack. Each module
+-- arms itself; this gates whether the armed ones sound.
+masterBar :: forall m. RState -> H.ComponentHTML RAction Slots m
+masterBar st =
+  HH.div
+    [ style "position:fixed;top:10px;left:14px;z-index:50;font-family:Georgia,serif" ]
+    [ HH.button
+        [ HE.onClick \_ -> ToggleMaster
+        , style $ "padding:6px 20px;border:1px solid #00000033;border-radius:7px;cursor:pointer;"
+            <> "font-size:12px;letter-spacing:0.16em;text-transform:uppercase;box-shadow:0 1px 4px #0000002a;"
+            <> "color:" <> (if st.playing then "#fbeae7" else "#1c1a12")
+            <> ";background:" <> (if st.playing then "linear-gradient(#b23b28,#9a3120)" else "linear-gradient(#c8a86a,#b8975a)") ]
+        [ HH.text (if st.playing then "■ STOP" else "▶ PLAY") ]
+    ]
 
 -- A small floating selector, top-right, in the Hainbach idiom.
 switchBar :: forall m. RState -> H.ComponentHTML RAction Slots m

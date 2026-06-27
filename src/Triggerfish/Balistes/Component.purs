@@ -95,7 +95,8 @@ targetRange = case _ of
 
 type State =
   { bal :: M.Balistes
-  , running :: Boolean
+  , running :: Boolean        -- the ARM/cue flag (sticky); sounds only when master too
+  , master :: Boolean         -- the shell's master transport (pushed via SetMaster)
   , playStep :: Int
   , flash :: Array Flash
   , binnacle :: Maybe Binnacle.Binnacle
@@ -140,7 +141,7 @@ component =
   H.mkComponent
     { initialState: \_ ->
         { bal: Source.parseBody Source.starterDoc M.defaultBalistes
-        , running: false, playStep: 0, flash: []
+        , running: false, master: false, playStep: 0, flash: []
         , binnacle: Nothing, midiOut: Nothing, midiName: "…"
         , clockTempo: 120.0, clockLocked: false, clockBeat: 0.0, clockBar: 0, anchorCount: 0
         , nowMicros: 0.0, dragging: Nothing, dragSub: Nothing, focus: FocusBoth
@@ -164,6 +165,9 @@ handleQuery = case _ of
       liftEffect (Clock.setFreeBaseline (Binnacle.clock bin) { startMicros, tempo })
     pure (Just next)
   FeedChords _ next -> pure (Just next)   -- a drum machine; no chord quantiser
+  SetMaster m next -> do
+    H.modify_ _ { master = m }
+    pure (Just next)
 
 -- ---------------------------------------------------------------------------
 -- handleAction
@@ -196,7 +200,7 @@ handleAction = case _ of
 
   Step tick -> do
     st <- H.get
-    when st.running do
+    when (st.master && st.running) do
       let
         playedStep = st.bal.step
         r = M.tick st.bal
@@ -261,6 +265,9 @@ handleAction = case _ of
 
   MidiReady mout nm -> H.modify_ _ { midiOut = mout, midiName = nm }
 
+  -- The RUN button is now a sticky ARM toggle; Balistes sounds only when armed
+  -- AND the shell's master is playing. Drum hits are scheduled one-shots, so
+  -- stopping just gates the next Step — nothing to silence.
   ToggleRun -> H.modify_ \s -> s { running = not s.running }
   ResetPat -> H.modify_ \s -> s { bal = M.reset s.bal, playStep = 0 }
   Dice -> H.modify_ \s -> s { bal = M.reseed s.bal }
@@ -471,7 +478,7 @@ transportPanel s =
             , style $ "padding:12px 0;border:1px solid #a8a392;border-radius:7px;cursor:pointer;"
                 <> "font-family:Georgia,serif;font-size:15px;letter-spacing:0.12em;color:#1c1a12;"
                 <> "background:" <> (if s.running then "linear-gradient(#c8a86a,#b8975a)" else "linear-gradient(#efece1,#ddd9cb)") ]
-            [ HH.text (if s.running then "■ STOP" else "▶ RUN") ]
+            [ HH.text (if s.running then (if s.master then "❚❚ PLAYING" else "◆ CUED") else "▶ ARM") ]
         , HH.div [ style "display:flex;gap:8px" ]
             [ flatBtn "RESET" ResetPat
             , flatBtn "DICE" Dice

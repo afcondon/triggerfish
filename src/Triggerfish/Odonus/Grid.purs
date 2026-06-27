@@ -52,7 +52,7 @@ component :: forall i o m. MonadAff m => H.Component Query i o m
 component =
   H.mkComponent
     { initialState: \_ ->
-        { odo: M.defaultOdonus, running: false, dragging: Nothing, dragSub: Nothing
+        { odo: M.defaultOdonus, running: false, master: false, dragging: Nothing, dragSub: Nothing
         , notes: [], binnacle: Nothing, nowMicros: 0.0
         , midiOut: Nothing, midiName: "…", clockTempo: 120.0, clockLocked: false
         , clockBeat: 0.0, clockBar: 0, anchorCount: 0
@@ -85,6 +85,17 @@ handleQuery = case _ of
   -- The Vetula bridge: drive the chord quantiser from Vetula's progression.
   FeedChords pcs next -> do
     H.modify_ \s -> s { odo = M.setChordFeed pcs s.odo }
+    pure (Just next)
+  -- The shell's master transport. Silence held notes if we were sounding (armed)
+  -- and master is now stopping us.
+  SetMaster m next -> do
+    st <- H.get
+    let wasSounding = st.master && st.running
+        nowSounding = m && st.running
+    when (wasSounding && not nowSounding) $ liftEffect $ silenceHeld st.midiOut st.headNote
+    H.modify_ \s -> s
+      { master = m
+      , headNote = if wasSounding && not nowSounding then map (const Nothing) s.headNote else s.headNote }
     pure (Just next)
 
 handleAction :: forall o m. MonadAff m => Action -> H.HalogenM State Action () o m Unit
@@ -119,7 +130,7 @@ handleAction = case _ of
     st <- H.get
     -- Global step divider: the scheduler ticks on a fine 1/16 grid; advance the
     -- model only every stepDiv ticks, so STEP LENGTH sets what a 1× head plays.
-    when (st.running && tick.index `mod` st.stepDiv == 0) do
+    when (st.master && st.running && tick.index `mod` st.stepDiv == 0) do
       let
         -- The randomisation matrix fires BEFORE the heads read, so any mutated
         -- value is what plays this step. Each source drifts one notch at a time.
@@ -214,13 +225,17 @@ handleAction = case _ of
             else base
       Nothing -> pure unit
   MidiReady mout nm -> H.modify_ _ { midiOut = mout, midiName = nm }
+  -- The run button is now a sticky ARM toggle. Odonus sounds only when armed AND
+  -- the shell's master is playing; when that combination goes false (disarm while
+  -- playing, or master stop) we note-off every held note so nothing sticks on.
   ToggleRun -> do
     st <- H.get
-    -- Stopping: note-off every held note so nothing sticks on.
-    when st.running $ liftEffect $ silenceHeld st.midiOut st.headNote
+    let wasSounding = st.master && st.running
+        nowSounding = st.master && not st.running
+    when (wasSounding && not nowSounding) $ liftEffect $ silenceHeld st.midiOut st.headNote
     H.modify_ \s -> s
       { running = not s.running
-      , headNote = if s.running then map (const Nothing) s.headNote else s.headNote }
+      , headNote = if wasSounding && not nowSounding then map (const Nothing) s.headNote else s.headNote }
   ToggleGlide i -> H.modify_ \s -> s { odo = M.toggleGlide i s.odo }
   ToggleGate i -> H.modify_ \s -> s { odo = M.toggleGate i s.odo }
   ToggleSkip i -> H.modify_ \s -> s { odo = M.toggleSkip i s.odo }

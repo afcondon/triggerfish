@@ -227,7 +227,8 @@ marblesPadId = "tf-marbles-xy"
 
 type State =
   { odo :: M.Odonus
-  , running :: Boolean
+  , running :: Boolean       -- the ARM/cue flag (sticky); sounds only when master too
+  , master :: Boolean        -- the shell's master transport (pushed via SetMaster)
   , dragging :: Maybe DragState
   , dragSub :: Maybe H.SubscriptionId
   , notes :: Array NoteEvent

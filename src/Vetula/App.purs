@@ -53,7 +53,10 @@ import Web.UIEvent.MouseEvent as ME
 import Vetula.SvgCoord (svgYFromEvent, svgXFromEvent, isFormField, surfaceHidden)
 import Vetula.Path as Path
 import Vetula.Generate (GenMode(..), generateCandidates)
-import Binnacle.Ticker (startWorkerTicker)
+import Binnacle as Binnacle
+import Binnacle.Clock as Clock
+import Binnacle.Scheduler as Scheduler
+import Binnacle.Time (dateNow)
 import Vetula.Tidal (progressionSource, parseProgression)
 import Vetula.Clipboard (copyText)
 import Binnacle.Midi as Midi
@@ -68,6 +71,16 @@ import Vetula.Harmony (ChordNode, Family, Kind(..), blackKeyPcs, diatonicTriads,
 
 midiPortName :: String
 midiPortName = "IAC"
+
+-- | The rig WebSocket (purerl-tidal); Binnacle subscribes to the Link anchor
+-- | here. Same endpoint Odonus/Balistes use, so all three share one clock.
+rigUrl :: String
+rigUrl = "ws://127.0.0.1:3012/ws"
+
+-- | One Vetula pulse = a 16th note; schedule ~120ms ahead, poll at 25ms — the
+-- | same lookahead config as Odonus/Balistes, so the three grids align.
+gridCfg :: Scheduler.GridConfig
+gridCfg = { stepBeats: 0.25, lookaheadMs: 120.0, tickMs: 25 }
 
 -- | The surfaces. Lab = the merged harmonic surface: one triad per scale degree,
 -- | each of which explodes into the web of its extensions / suspensions /
@@ -208,11 +221,13 @@ type State =
   , saveName :: String            -- name for the next saved progression
   , perfProg :: Maybe { name :: String, chordIds :: Array Int }  -- loaded copy (ids into `chords`)
   , voices :: Array Voice
-  , playing :: Boolean
-  , pulse :: Int                  -- global 16th-note pulse counter while playing
-  , tempo :: Int                  -- BPM
-  , perfCancel :: Maybe (Effect Unit)   -- the running ticker's canceller
-  , perfSubId :: Maybe H.SubscriptionId
+  , armed :: Boolean              -- the ARM/cue flag (sticky); sounds only when master too
+  , master :: Boolean            -- the shell's master transport (standalone: always true)
+  , playing :: Boolean           -- derived: currently sounding (= armed && master)
+  , pulse :: Int                  -- the shared clock's 16th-note grid index (from the scheduler tick)
+  , tempo :: Int                  -- BPM display (tracks the live clock; the bpm field nudges the free baseline)
+  , binnacle :: Maybe Binnacle.Binnacle  -- the shared transport (free-run → Link-lock), like Odonus/Balistes
+  , clockTempo :: Number          -- the clock's live tempo, read each tick (drives note durations)
   , nextVoiceId :: Int
   }
 
@@ -266,9 +281,10 @@ data Action
   | SetVoicePhase Int String
   | ToggleVoiceMute Int
   | SetTempo String
+  | ToggleArm              -- the ▶/■ button: sticky arm/cue under the shell master
   | PerfPlay
   | PerfStop
-  | PerfTick               -- one 16th-note pulse of the performance clock
+  | PerfTick Scheduler.Tick  -- one 16th-note pulse from the shared scheduler
   | SelectPerfChord Int    -- click a working-copy chord row (for live Tab-revoice)
 
 -- | The queries the Triggerfish shell pulls from Vetula: its current Tidal
@@ -278,6 +294,8 @@ data Action
 data SourceQuery a
   = AskSource (String -> a)
   | AskChords (Array (Array Int) -> a)
+  | SetMaster Boolean a
+  | SyncFree Number Number a    -- adopt the rack's shared free-run baseline (start micros, BPM)
 
 component :: forall i o m. MonadAff m => H.Component SourceQuery i o m
 component = H.mkComponent
@@ -316,11 +334,16 @@ component = H.mkComponent
       , saveName: ""
       , perfProg: Nothing
       , voices: []
+      , armed: false
+      -- standalone Vetula has no shell, so master defaults true (the play button
+      -- works as a direct transport). Inside Triggerfish the shell pushes false on
+      -- init and drives it from the master PLAY.
+      , master: true
       , playing: false
       , pulse: -1
-      , tempo: 100
-      , perfCancel: Nothing
-      , perfSubId: Nothing
+      , tempo: 120
+      , binnacle: Nothing
+      , clockTempo: 120.0
       , nextVoiceId: 0
       }
   , render
@@ -338,6 +361,19 @@ handleQuery = case _ of
   AskChords reply -> do
     s <- H.get
     pure (Just (reply (progressionPCs s)))
+  -- The shell's master transport: store it, then start/stop sounding so it plays
+  -- exactly when armed && master.
+  SetMaster m next -> do
+    H.modify_ _ { master = m }
+    reconcilePerf
+    pure (Just next)
+  -- The rack's shared free-run baseline: adopt it so Vetula shares the same
+  -- downbeat (and tempo) as Odonus/Balistes with no rig.
+  SyncFree startMicros tempo next -> do
+    st <- H.get
+    for_ st.binnacle \bin ->
+      liftEffect (Clock.setFreeBaseline (Binnacle.clock bin) { startMicros, tempo })
+    pure (Just next)
 
 -- | The current path as one PC set per step (each chord's absolute pitch
 -- | classes) — what Odonus's quantiser snaps to when fed from Vetula.
@@ -437,6 +473,16 @@ handleAction = case _ of
               Nothing -> "no '" <> midiPortName <> "' — ports: " <> joinWith ", " names
         HS.notify midiL (MidiReady mout nm)
       Nothing -> HS.notify midiL (MidiReady Nothing "no Web-MIDI")
+    -- The shared transport: connect Binnacle (free-run 120 → Link-lock on the
+    -- rig) and run the lookahead scheduler. It ticks the 16th-note grid always;
+    -- PerfTick gates on `playing`, so Vetula is a clock-peer of Odonus/Balistes
+    -- under the shell master — same downbeat, same tempo, background-safe.
+    bin <- liftEffect $ Binnacle.connect { url: rigUrl, tempo: 120.0 }
+    { emitter: stepE, listener: stepL } <- liftEffect HS.create
+    _ <- H.subscribe stepE
+    _ <- liftEffect $ Scheduler.startGrid (Binnacle.clock bin) gridCfg \tick ->
+      HS.notify stepL (PerfTick tick)
+    H.modify_ _ { binnacle = Just bin }
     -- keyboard
     { emitter: keyE, listener: keyL } <- liftEffect HS.create
     _ <- H.subscribe keyE
@@ -819,33 +865,44 @@ handleAction = case _ of
 
   ToggleVoiceMute vid -> updateVoice vid (\v -> v { muted = not v.muted })
 
+  -- The bpm field nudges the shared clock's free-run baseline (so it works
+  -- standalone). On the rig the Link anchor — and in the rack the shell's
+  -- SyncFree — re-asserts the shared tempo, since Vetula is now a clock-peer.
   SetTempo v -> case fromString v of
-    Just t -> H.modify_ _ { tempo = clamp 40 240 t }
+    Just t -> do
+      let t' = clamp 40 240 t
+      st <- H.get
+      now <- liftEffect dateNow
+      for_ st.binnacle \bin ->
+        liftEffect (Clock.setFreeBaseline (Binnacle.clock bin) { startMicros: now * 1000.0, tempo: toNumber t' })
+      H.modify_ _ { tempo = t', clockTempo = toNumber t' }
     Nothing -> pure unit
 
   SelectPerfChord pid -> H.modify_ _ { sounding = Just pid, selected = Nothing }
 
-  PerfPlay -> do
-    st <- H.get
-    unless st.playing do
-      { emitter, listener } <- liftEffect HS.create
-      sid <- H.subscribe (PerfTick <$ emitter)
-      let pulseMs = 60000.0 / toNumber st.tempo / 4.0
-      cancel <- liftEffect $ startWorkerTicker (round pulseMs) (HS.notify listener unit)
-      H.modify_ _
-        { playing = true, pulse = -1, perfSubId = Just sid, perfCancel = Just cancel
-        , voices = map (_ { held = [], cursor = 0 }) st.voices }
+  -- The play button is now a sticky ARM/cue toggle: flip arm, then let
+  -- reconcilePerf start or stop the ticker per (armed && master).
+  ToggleArm -> do
+    H.modify_ \s -> s { armed = not s.armed }
+    reconcilePerf
 
-  PerfStop -> stopClock
+  PerfPlay -> H.modify_ _ { armed = true } *> reconcilePerf
+  PerfStop -> H.modify_ _ { armed = false } *> reconcilePerf
 
-  PerfTick -> do
+  -- One 16th-note from the shared scheduler. We use the tick's absolute grid
+  -- INDEX as the pulse (so every voice — and every module — aligns to the same
+  -- downbeat), read the live tempo for note durations, and schedule at the tick's
+  -- lookahead delay so notes land on time.
+  PerfTick tick -> do
     st <- H.get
     when st.playing do
-      let pulse' = st.pulse + 1
-          chords = perfChords st
-          pulseMs = 60000.0 / toNumber st.tempo / 4.0
-      voices' <- liftEffect $ traverse (stepVoice st.midiOut chords pulse' pulseMs) st.voices
-      H.modify_ _ { pulse = pulse', voices = voices' }
+      tempo <- case st.binnacle of
+        Just bin -> liftEffect (_.tempo <$> Clock.read (Binnacle.clock bin))
+        Nothing -> pure (toNumber st.tempo)
+      let chords = perfChords st
+          pulseMs = 60000.0 / tempo / 4.0
+      voices' <- liftEffect $ traverse (stepVoice st.midiOut chords tick.index pulseMs tick.delayMs) st.voices
+      H.modify_ _ { pulse = tick.index, voices = voices', clockTempo = tempo, tempo = round tempo }
 
   -- parse the (possibly edited) Tidal source into note-lists, rebuild them as a
   -- fresh progression of imported chords, and point the path at them. The
@@ -955,15 +1012,33 @@ rendName = case _ of
 updateVoice :: forall o m. MonadAff m => Int -> (Voice -> Voice) -> H.HalogenM State Action Slots o m Unit
 updateVoice vid f = H.modify_ \s -> s { voices = map (\v -> if v.id == vid then f v else v) s.voices }
 
--- | Stop the performance clock + silence any held notes.
+-- | Bring sounding in line with the transport: the shared scheduler runs always,
+-- | so this only flips `playing` (= armed && master) and the voice note-state.
+-- | Starting clears each voice's cursor/held (a clean attack from the next
+-- | onset); stopping note-offs everything held. Called when either flag changes.
+reconcilePerf :: forall o m. MonadAff m => H.HalogenM State Action Slots o m Unit
+reconcilePerf = do
+  st <- H.get
+  let want = st.armed && st.master
+  when (st.playing && not want) (silenceHeld st)
+  H.modify_ \s -> s
+    { playing = want
+    , voices = if want && not s.playing then map (_ { held = [], cursor = 0 }) s.voices
+               else if not want then map (_ { held = [] }) s.voices
+               else s.voices }
+
+-- | Full stop (used when unloading a progression): disarm, silence, clear voices.
 stopClock :: forall o m. MonadAff m => H.HalogenM State Action Slots o m Unit
 stopClock = do
   st <- H.get
-  for_ st.perfCancel liftEffect
-  for_ st.perfSubId H.unsubscribe
+  silenceHeld st
+  H.modify_ _ { playing = false, armed = false, voices = map (_ { held = [] }) st.voices }
+
+-- | Note-off every voice's currently-held notes.
+silenceHeld :: forall o m. MonadAff m => State -> H.HalogenM State Action Slots o m Unit
+silenceHeld st =
   liftEffect $ for_ st.midiOut \out ->
     for_ st.voices \v -> for_ v.held \nn -> Midi.noteOffAt out { channel: v.channel, note: nn, delayMs: 0.0 }
-  H.modify_ _ { playing = false, perfCancel = Nothing, perfSubId = Nothing, voices = map (_ { held = [] }) st.voices }
 
 -- | The loaded performance progression's chords, resolved from the working copy.
 perfChords :: State -> Array ChordNode
@@ -975,8 +1050,8 @@ perfChords st = case st.perfProg of
 -- | its renderer. Returns the updated voice (cursor / held); sends MIDI as a side
 -- | effect. Block re-attacks the whole chord; Strummed re-triggers only the
 -- | changed notes (common tones ring on via held); Arp plays one note per pulse.
-stepVoice :: Maybe Midi.MidiOut -> Array ChordNode -> Int -> Number -> Voice -> Effect Voice
-stepVoice mout chords pulse pulseMs v
+stepVoice :: Maybe Midi.MidiOut -> Array ChordNode -> Int -> Number -> Number -> Voice -> Effect Voice
+stepVoice mout chords pulse pulseMs baseDelayMs v
   | v.muted = pure v
   | length chords == 0 = pure v
   | otherwise =
@@ -999,12 +1074,12 @@ stepVoice mout chords pulse pulseMs v
                       for_ mout \out ->
                         when (length chordNotes > 0) $
                           for_ (index chordNotes (mod (pos - seg.start) (length chordNotes))) \nn ->
-                            Midi.scheduleNote out { channel: v.channel, note: nn, velocity: 80, delayMs: 0.0, durMs: pulseMs * 0.9 }
+                            Midi.scheduleNote out { channel: v.channel, note: nn, velocity: 80, delayMs: baseDelayMs, durMs: pulseMs * 0.9 }
                       pure v { cursor = curIx }
                     Block ->
                       if onset then do
                         for_ mout \out -> for_ chordNotes \nn ->
-                          Midi.scheduleNote out { channel: v.channel, note: nn, velocity: 82, delayMs: 0.0, durMs: pulseMs * toNumber seg.len * 0.98 }
+                          Midi.scheduleNote out { channel: v.channel, note: nn, velocity: 82, delayMs: baseDelayMs, durMs: pulseMs * toNumber seg.len * 0.98 }
                         pure v { cursor = curIx, held = chordNotes }
                       else pure v { cursor = curIx }
                     Strummed ->
@@ -1012,8 +1087,8 @@ stepVoice mout chords pulse pulseMs v
                         let leaving = filter (\x -> not (elem x chordNotes)) v.held
                             entering = filter (\x -> not (elem x v.held)) chordNotes
                         for_ mout \out -> do
-                          for_ leaving \nn -> Midi.noteOffAt out { channel: v.channel, note: nn, delayMs: 0.0 }
-                          for_ entering \nn -> Midi.noteOnAt out { channel: v.channel, note: nn, velocity: 84, delayMs: 0.0 }
+                          for_ leaving \nn -> Midi.noteOffAt out { channel: v.channel, note: nn, delayMs: baseDelayMs }
+                          for_ entering \nn -> Midi.noteOnAt out { channel: v.channel, note: nn, velocity: 84, delayMs: baseDelayMs }
                         pure v { cursor = curIx, held = chordNotes }
                       else pure v { cursor = curIx }
 
@@ -2050,8 +2125,8 @@ loadedView st pp =
           , HH.button
               [ HP.style ("border: 1px solid " <> (if st.playing then "#b23b28" else "#b8860b") <> "; cursor: pointer; padding: 4px 16px; border-radius: 4px; font-size: 13px; font-weight: 600; "
                   <> (if st.playing then "background: #fbeae7; color: #b23b28;" else "background: #fbf6e9; color: #7a5c00;"))
-              , HE.onClick \_ -> if st.playing then PerfStop else PerfPlay ]
-              [ HH.text (if st.playing then "■ stop" else "▶ play") ]
+              , HE.onClick \_ -> ToggleArm ]
+              [ HH.text (if not st.armed then "▶ arm" else if st.playing then "■ stop" else "◆ cued") ]
           , numField "bpm" st.tempo SetTempo
           ]
       , HH.div [ HP.style "display: flex; align-items: baseline; gap: 12px; margin: 8px 0 6px;" ]

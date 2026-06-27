@@ -20,6 +20,35 @@ four-module rack you can play together and export whole.
   pasting into Calypso or an editor. Odonus's own SOURCE pane is collapsed by
   default; Balistes/Selene keep theirs (driven bidirectionally).
 
+## Master transport + Vetula on the shared clock (later, same day)
+
+Two more landed, both verified build-clean + headless:
+
+- **Master transport.** One **PLAY / STOP** at the shell (top-left). Every
+  module's own run button is now a sticky **ARM / cue** toggle; a module sounds
+  iff `master && armed`. So arming a stopped rack is silent (`◆ CUED`); PLAY
+  starts every armed module together on the shared downbeat (`❚❚ PLAYING`);
+  toggling arm mid-play drops a module in/out live. Wired by a `SetMaster Bool`
+  query broadcast to all four (Selene's is a no-op; Vetula has its own). Held
+  notes are silenced on every sounding→silent transition. *Verified:* Balistes
+  reads `◆ CUED` + frozen step while armed-but-stopped, advances only under PLAY,
+  freezes (still armed) on STOP — no page errors.
+- **Vetula's Performance transport is now on the shared Binnacle clock.** It was
+  free-running its own `startWorkerTicker` at its own BPM; now it
+  `Binnacle.connect`s (free-run 120 → Link-lock) and runs `Scheduler.startGrid`
+  like Odonus/Balistes, gated on `armed && master`. The tick's absolute grid
+  **index** is the pulse (so every voice — and every module — shares one
+  downbeat), note durations read the live clock tempo, and notes schedule at the
+  tick's lookahead `delayMs` (`stepVoice` gained a `baseDelayMs` arg). The shell
+  now broadcasts `SyncFree` to Vetula too; the bpm field nudges the free
+  baseline (so it still works standalone) and tracks the live tempo. *Verified
+  structurally:* three rig-WS connections now (Odonus + Balistes + **Vetula**),
+  renders clean, master broadcast reaches it across its own query type with zero
+  JS errors. **Audible "locks tight" is the rig/MIDI test — yours to confirm.**
+
+The standalone Vetula app (`/vetula`, a separate vendored copy) is untouched and
+still plays via its own default `master:true`.
+
 ## Known issues / deferred
 
 ### 1. Free-run timing alignment — ADDRESSED (shared baseline broadcast)
@@ -29,10 +58,9 @@ free-run epoch at startup and re-broadcasts `{freeT0, 120}` to the clocked
 sequencers (Odonus + Balistes) every 1.5 s via a `SyncFree` query; each adopts
 it with `Binnacle.Clock.setFreeBaseline`, so they share one free-run timeline
 and downbeat with no rig. Idempotent, catches late-mounters, and a no-op on any
-module currently Link-locked (the rig anchor still wins). Remaining follow-ons:
-a **shell BPM control** to drive `freeTempo` (today fixed at 120), and putting
-**Vetula's Performance transport on the Binnacle clock** (it still free-runs its
-own ticker at its own tempo, so it isn't part of the shared baseline).
+module currently Link-locked (the rig anchor still wins). **Vetula is now on this
+baseline too** (see "Vetula on the shared clock" above). Remaining follow-on: a
+**shell BPM control** to drive `freeTempo` (today fixed at 120).
 
 <details><summary>original analysis (kept for context)</summary>
 
@@ -94,9 +122,21 @@ just wasteful. Deferred.
 
 ### 3. Phase 2 — the Vetula → Odonus quantizer bridge
 
-The original integration target: Vetula's current progression feeds Odonus's
-KEY·CHORDS quantizer socket (quantize-to-chord-PCs vs. heads-play-the-literal-
-voicing). Both apps vendor the same `Tidal.Vetula`. Not started.
+**First cut landed** (`30f89aa`): the "◄ Vetula chords" snapshot button feeds
+Vetula's whole progression into Odonus's `feed`/`currentChordPCs` quantizer.
+
+**Next (designed, NOT yet built) — MIDI / Odonus voice destinations.** Replace
+the snapshot with a live follow: each Vetula Performance voice gets a destination
+**MIDI** (today's behaviour) or **Odonus** (a block chord-conductor — no MIDI,
+always on, reuses the 1–16 channel field as an Odonus id). The shell polls Vetula
+~100 ms (`AskVoiceChords`) for each Odonus-dest voice's *current* block chord and
+feeds it to Odonus (`FeedVoiceChords`); Odonus stores `follow :: Maybe Int` and
+its KEY pane selects one-or-zero of those voices. **Remove the McMullen picker**
+(ii7/V7/Imaj7/vi9 chips + `⟳ chords` + STEPS/CHORD) and the "◄ Vetula chords"
+button entirely. Reuses the existing `feed → currentChordPCs → quantiseToChordPCs`
+engine (push a single-element feed each poll). This is the last of the three
+queued features; master transport (done) and Vetula-on-shared-clock (done) were
+the first two.
 
 ### 4. Duplicated voicing engine
 

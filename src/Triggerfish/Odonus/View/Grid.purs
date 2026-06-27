@@ -224,9 +224,9 @@ controls s =
         , style $ "padding:6px 12px;border:1px solid #a8a392;border-radius:7px;"
             <> "background:linear-gradient(#efece1,#ddd9cb);font-family:Georgia,serif;font-size:12px;color:#3f3c33;cursor:pointer"
         ]
-        [ HH.text (if s.running then "❚❚ Stop" else "▶ Run") ]
+        [ HH.text (if s.running then (if s.master then "❚❚ Playing" else "◆ Cued") else "▶ Arm") ]
     , HH.span [ style $ engrave <> ";font-size:8px;color:#888273" ]
-        [ HH.text "click a thumbnail to change a head's pattern" ]
+        [ HH.text (if s.master then "click a thumbnail to change a head's pattern" else "armed modules start on master ▶") ]
     ]
 
 nameplate :: forall m. State -> H.ComponentHTML Action () m
