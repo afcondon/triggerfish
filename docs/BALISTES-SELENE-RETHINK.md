@@ -1,0 +1,189 @@
+# Balistes / Selene rethink — control-space navigation + the trigger-lane move
+
+*Design note, 2026-06-27. Supersedes the "Balistes = Grids + a bolted-on Tidal
+drum machine" shape that landed in `2ee8abb`/`4aaddce`.*
+
+## The cramp
+
+Balistes today is two instruments wearing one panel:
+
+1. a **faithful Grids** — X/Y morph pad, three densities (BD/SD/HH), randomness;
+   byte-identical to BEAM `balistes_voice` (the differential-conformance core);
+2. a **general mini-notation trigger engine** — the Tidal kit lanes + the OH
+   bridge + routing patterns — which *happens* to be pointed at drum notes.
+
+The second is what feels half-built, because it's a general thing forced into a
+drum-shaped hole. The rig is CV/gate and multi-out at heart; "one drum kit on two
+MIDI channels" is a software-era constraint, not a rig constraint. The fixed
+notes, the single extra channel, the 1/16-note OH ceiling, the FOCUS toggle that
+only matters when routing is heavy — all symptoms of the same cramp.
+
+## The decomposition — one idea per instrument
+
+**Balistes → Grids, deepened.** Shed the Tidal kit and the OH hack. It becomes
+*the* Grids instrument: the morphing pad, interpolation-as-visualization,
+extended only *in genre*. Its multi-out is the Grids voice set, not an arbitrary
+kit.
+
+**Selene → the home of authored + generative signal sources.** The mini-notation
+trigger lanes become a new GenKind beside polylfo / polyeuclid / polyclock /
+polypresetnote — "authored trigger pattern." A trigger lane is **not** a drum
+lane: the same `bd*4` can fire a drum, gate an envelope, clock Lubadh, advance a
+sequencer, strike Arbhar. Routing-by-name generalizes to routing-to-target.
+
+This also *advances Selene*, which today has no scheduler and no output path:
+moving the working Tidal-lane engine (parser, meter, onsets, MIDI scheduling)
+there gives Selene its first real playable generator. Two birds.
+
+### Why this is the right "16 outputs"
+
+Selene's model is already "a stack of **destinations**, each a group of eight
+signals **bound to a physical target**," fanning out to ES-9 buses (CV/gate) and
+MIDI. The multi-output idea isn't something to bolt onto Balistes — it's Selene's
+native shape. A block is **8 internally but routes to a target that consumes what
+it consumes**: 4 for vpme QuadDrum / Squarp Rample, 8 for an ES-9 destination.
+Fan-out is by target capacity. And because the BEAM Selene polysignals are
+*already* group-of-8 generators, the trigger-lane GenKind **retrofits straight
+onto the BEAM instrument** — virtual editor and real engine from one shape.
+
+## The open hat, as Emilie would have done it
+
+OG Grids never distinguished closed/open hat; our bolted-on OH lane only offered
+1/16 options while the Grids HH ticks faster. The elegant, Grids-native fix is
+**not** a second lane — it's a threshold that slides down the HH level landscape.
+
+Grids already computes a `level` (0–255) per hat step; the stressed beats *are*
+the high-level ones (accent is just `level > 192`). So:
+
+- One **OPEN** dial sets a second boundary on the same landscape. A hat fires
+  closed normally; if its level is *above the open boundary*, it fires **open**.
+- The boundary **starts at the accent line and descends** as you turn the dial —
+  the loudest, most-stressed hats open *first* (how a real player works the
+  pedal), and opening further recruits more modest hats.
+- **Open chokes closed** on that step (true hi-hat behaviour); opens get a longer
+  gate.
+
+Pure Grids: a continuous threshold on an interpolated field, coupled to the X/Y
+morph for free — move the cursor and the open hats follow the accent geography.
+It also dissolves the 1/16 ceiling: with OH back *inside* the HH stream it runs at
+the engine's full rate (ratchets already give 1/32 bursts where wanted). One knob
+replaces the whole OH apparatus and is more expressive.
+
+## The unification: presets, fills, risers, sequencing are one primitive
+
+Four ideas that look separate are one:
+
+| Gesture | What it is | When |
+|---|---|---|
+| **Preset** | a saved point in parameter space (X/Y + densities + open + push) | recalled manually |
+| **Fill** | jump to a preset, **hold one bar, revert** | conditional — every N bars |
+| **Riser** | **glide** from here to a target preset over N bars | triggered / scheduled |
+| **Sequence** | a pattern of presets over time | song structure |
+
+They are one primitive — **navigation through Grids' control space** — with four
+gestures: *a target in parameter space × how you reach it (jump / glide /
+hold-then-revert) × when (manual / bar-condition / sequenced).*
+
+This is Grids' thesis. Emilie's instrument let you fly the cursor by hand through
+drum-map space; Triggerfish's "past the hardware" move is to **record and
+automate flight paths** — points, momentary detours, glides, routes. Build the one
+primitive and all four gestures fall out, plus a slow 32-bar morph between two
+presets as an arrangement.
+
+The UI gesture is "buttons that fire envelopes, like programming an envelope in
+the modular," and it **generalizes beyond Balistes**: one reusable
+*ramp-a-scalar-from-A→B-over-N-bars-on-this-trigger* widget, drawn as a tiny
+envelope next to the knob, drives Grids density *and* a Euclidean `k` in
+Selene/Odonus. Very Rams.
+
+## The deepened Balistes is therefore
+
+1. **OPEN dial** (dissolves OH, the Emilie-grade hat).
+2. **Control-space navigation** — preset / fill / riser / sequence as one
+   mechanism, with the fire-an-envelope button row.
+3. **Accent + fill outputs** on their own buses (multi-out); accent already
+   computed, today only bumping velocity.
+4. Ratchets stay (in-genre, Elektron-style retrig).
+
+…and the trigger-lane engine leaves for Selene as a blocks-of-8, target-sized
+GenKind that also lands on BEAM.
+
+### Ideas deliberately refused
+
+To protect the one big idea (navigable control space), Balistes does **not** grow
+full p-locks, deep conditional-trig matrices, or Torso's whole transform stack.
+Worth stealing because they *fit*: per-step probability (Patterning, and Grids is
+already probabilistic) and conditional fill (Elektron) — both expressible inside
+the control-space frame.
+
+## The conformance boundary
+
+The Grids core stays byte-identical to BEAM `balistes_voice`. Accent-out makes it
+*more* faithful (accent is in the firmware). OPEN, presets, fills, risers,
+sequencing, ratchets, push are all Triggerfish **overlay** — exactly the layer
+that already carries ratchets and Dilla push. The engine ignores the overlay; the
+component applies it on emit.
+
+## PolyTrig refinements (2026-06-27, after the representation increment)
+
+Three things became clear once the trigger lanes were on screen.
+
+### a. Named jacks + lane-spanning route lines (coexisting)
+
+A per-jack-only model loses the *canonical* Tidal idiom — `"bd sn cp sn"`, one
+string whose atoms name **different** voices. So a PolyTrig block decouples
+*outputs* from *authoring*:
+
+- the **8 jacks** are the outputs — each a **name** (`bd`, `sn`, …) + a
+  note/value + an optional **per-jack** pattern (`bd "bd*2"`);
+- **route lines** are lane-spanning patterns (`route "bd sn cp sn"`) whose atoms
+  fire jacks **by name**.
+
+Both stack at playback. This is the old Balistes pad-lanes-plus-routes model,
+generalized — and it **preserves the blocks-of-8 / BEAM retrofit**, because a
+route line is just *authoring sugar that compiles down to the 8 per-jack onset
+streams* before anything leaves the box. The only model change: a trig slot
+needs its **name** back (so `bd` can address it).
+
+### b. PolyEuclid vs PolyTrig = delegated vs streamed execution
+
+The two kinds aren't "Euclid vs arbitrary" — they're split by *who runs the
+pattern*, which is the rack's real organizing principle:
+
+| | PolyEuclid | PolyTrig |
+|---|---|---|
+| FH-2 **generates** it (from a `{beats,steps,rate}` config) | ✅ delegated | ❌ never |
+| FH-2 **receives** streamed gates (as a dumb expander) | ✅ | ✅ |
+| BEAM **computes + streams** | ✅ (optional) | ✅ (required) |
+
+PolyEuclid is the **delegatable** form: the FH-2 self-generates it, sample-
+accurate, zero BEAM load, *runs even if the computer stops*. PolyTrig is
+arbitrary mini-notation — no hardware can parse it — so it's **always computed
+and streamed**. "Can't be sent to the FH-2 for execution" is PolyTrig's
+*defining* property, not an incidental limit. They must stay distinct. A
+destination therefore carries a notion of **delegated vs streamed**, decided by
+*whether the target can execute the kind* — the same capability-of-target
+thinking that runs through Bosun. The scheduler honors it: PolyEuclid→FH-2 = a
+config; everything else = computed gates.
+
+### c. Structure-driven viz — ring the Euclids
+
+Principle: **the viz follows the pattern's structure, not the GenKind.** A Euclid
+is a ring wherever it lives. So a PolyTrig jack whose source parses to a *pure*
+Euclid (`x(3,8)`) draws as the same ring PolyEuclid uses; a sequence draws the
+linear step row. A mixed block shows some rings, some rows — *informative*, not
+inconsistent. Bonus: a ringed trig jack visibly says "I'm a Euclid — I could be
+*promoted* to a delegatable PolyEuclid," making (b) an affordance.
+
+## Build order
+
+1. **Selene extraction** *(first — de-crufts the Balistes panel and unblocks
+   Selene's first scheduled output).* Lift the trigger-lane engine into a Selene
+   trigger-lane GenKind; generalize off drum notes to target-routed triggers;
+   blocks of 8, target-sized. **Representation increment landed**; PolyTrig
+   refinements (a–c) next, then the scheduler. Remove the Tidal kit + routing +
+   FOCUS from Balistes once Selene can play.
+2. **OPEN dial** *(the fun, self-contained win)* — replace the OH pad lane with
+   the descending-threshold open hat + choke.
+3. **Control-space navigation** — the preset/fill/riser/sequence primitive + the
+   envelope-on-a-scalar widget; accent + fill multi-out.

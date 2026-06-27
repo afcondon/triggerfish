@@ -69,3 +69,20 @@ wired to the real BEAM engine / the 16+24 outs.
   pad (X = spread, Y = bias), with the live distribution histogram rendered as
   the pad background — you drag *through the diagram*. The rule generalises:
   two parameters that are read together get one 2-D control, not two knobs.
+
+## Parking lot — future panes
+
+- **SuperDirt pane (deferred — after the Balistes/Selene rethink).** A virtual
+  module + Triggerfish pane specifically for **SuperDirt**, the software-synth
+  end of the trigger-lane spectrum. SuperDirt has a whole vocabulary that has no
+  CV/MIDI analogue: named **samples/sounds** (`s`, `n`/sample-index), per-event
+  **effects** (gain, pan, shape, crush, coarse, cutoff/resonance, room/size
+  reverb, delay/delaytime/delayfeedback, speed, accelerate, legato, sustain,
+  unit), and **orbits** (per-orbit effect busses). PolyTrig (Selene) is the
+  hardware-bound cousin — gates/notes to ES-9/FH-2/MIDI — and already speaks
+  SuperDirt's *naming* idiom (named voices declared in the block + lane-spanning
+  `"bd sn cp sn"` routes). The SuperDirt pane would be the full-fat version:
+  named samples with per-event parameter columns, addressed by the same
+  mini-notation, emitting OSC to SuperDirt rather than gates to hardware. The
+  through-line: *one trigger-lane mental model, three emit targets — gate (CV),
+  note (MIDI), sample+params (SuperDirt).*

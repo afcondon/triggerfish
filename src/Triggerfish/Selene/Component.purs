@@ -13,7 +13,7 @@ module Triggerfish.Selene.Component (component) where
 
 import Prelude
 
-import Data.Array (filter, length, mapWithIndex, range)
+import Data.Array (filter, length, mapWithIndex, range, (!!))
 import Data.Int (round, toNumber)
 import Data.Number (cos, pi, sin) as Num
 import Data.String.Common (joinWith)
@@ -26,7 +26,8 @@ import Triggerfish.Odonus.Grid.Widgets (engrave, style, svgAttr, svgEl)
 import Triggerfish.Selene.Model as M
 import Triggerfish.Selene.Source as Source
 import Triggerfish.SourceQuery (Query(..))
-import Data.Maybe (Maybe(..))
+import Triggerfish.Tidal.Lane as Lane
+import Data.Maybe (Maybe(..), fromMaybe)
 
 -- ---------------------------------------------------------------------------
 -- State / Actions
@@ -78,6 +79,11 @@ handleAction = case _ of
 
 accent :: String
 accent = "#3f6f8a"   -- steel-blue, Selene's electric accent
+
+-- A distinct muted violet for the lane-spanning route layer, so a routed
+-- gesture reads apart from the steel jacks (echoes Balistes' route accent).
+routeAccent :: String
+routeAccent = "#6a5f8a"
 
 ink :: String
 ink = "#2b2922"
@@ -146,9 +152,16 @@ destinationRow i d =
     [ style $ "display:flex;align-items:stretch;gap:12px;padding:11px 12px;margin-bottom:10px;border-radius:8px;"
         <> "background:#00000008;border:1px solid #00000012" ]
     [ destHeader i d
-    , HH.div [ style "display:flex;flex-wrap:wrap;gap:7px;align-items:center;flex:1 1 auto" ]
-        (slotViews d.bank)
+    , HH.div [ style (slotWrap d.bank) ] (slotViews d.bank)
     ]
+
+-- | The slot layout per kind. POLYTRIG lays its eight lanes 4-to-a-row (a 4×2
+-- | grid, wide columns) so real mini-notation stays legible; the compact kinds
+-- | flow eight-across.
+slotWrap :: M.GenBank -> String
+slotWrap = case _ of
+  M.GTrig _ -> "display:grid;grid-template-columns:repeat(4,1fr);gap:7px;flex:1 1 auto;min-width:0"
+  _ -> "display:flex;flex-wrap:wrap;gap:7px;align-items:center;flex:1 1 auto"
 
 destHeader :: forall m. Int -> M.Destination -> H.ComponentHTML Action () m
 destHeader _ d =
@@ -173,6 +186,7 @@ slotViews = case _ of
   M.GEuclid slots -> map euclidRing slots
   M.GClock slots -> mapWithIndex clockNumber slots
   M.GNote slots -> map noteCell slots
+  M.GTrig tb -> map trigCell tb.jacks <> map routeRow tb.routes
 
 -- --- POLYLFO: a scaled waveform, 0V baseline, log-frequency, rate label ------
 
@@ -218,16 +232,21 @@ lfoShapeHint sl =
 -- --- POLYEUCLID: a ring of step-dots with k / n in the centre ----------------
 
 euclidRing :: forall m. M.EuclidSlot -> H.ComponentHTML Action () m
-euclidRing sl =
+euclidRing sl = cellBox 70.0 [ ringFigure 64.0 sl.beats sl.steps ]
+
+-- | The Euclidean ring — a dot per step, filled on a pulse, k/n in the centre.
+-- | Shared by POLYEUCLID and any POLYTRIG jack whose source is a pure Euclid, so
+-- | the same rhythm reads identically wherever it lives (structure-driven viz).
+ringFigure :: forall m. Number -> Int -> Int -> H.ComponentHTML Action () m
+ringFigure sz k n =
   let
-    sz = 64.0
     c = sz / 2.0
     r = c - 8.0
-    bits = M.euclidBits sl
-    n = length bits
-    dotFor k on =
+    bits = M.euclidBits { beats: k, steps: n, rate: 0, accentRate: 0 }
+    nb = length bits
+    dotFor i on =
       let
-        ang = (toNumber k / toNumber (max 1 n)) * 2.0 * pi - pi / 2.0
+        ang = (toNumber i / toNumber (max 1 nb)) * 2.0 * pi - pi / 2.0
         dx = c + r * cos ang
         dy = c + r * sin ang
         rad = if on then 3.4 else 2.0
@@ -237,19 +256,17 @@ euclidRing sl =
           , svgAttr "fill" (if on then accent else "none")
           , svgAttr "stroke" accent, svgAttr "stroke-width" (if on then "0" else "1") ] []
   in
-    cellBox 70.0
-      [ svgEl "svg"
-          [ svgAttr "viewBox" ("0 0 " <> show sz <> " " <> show sz), svgAttr "width" "100%"
-          , svgAttr "height" (show sz), svgAttr "style" "display:block" ]
-          ( mapWithIndex dotFor bits
-              <> [ svgEl "text"
-                     [ svgAttr "x" (show c), svgAttr "y" (show (c + 4.0)), svgAttr "text-anchor" "middle"
-                     , svgAttr "fill" ink, svgAttr "font-family" "'SF Mono',Menlo,monospace"
-                     , svgAttr "font-size" "13" ]
-                     [ HH.text (show sl.beats <> "/" <> show sl.steps) ]
-                 ]
-          )
-      ]
+    svgEl "svg"
+      [ svgAttr "viewBox" ("0 0 " <> show sz <> " " <> show sz), svgAttr "width" "100%"
+      , svgAttr "height" (show sz), svgAttr "style" "display:block" ]
+      ( mapWithIndex dotFor bits
+          <> [ svgEl "text"
+                 [ svgAttr "x" (show c), svgAttr "y" (show (c + 4.0)), svgAttr "text-anchor" "middle"
+                 , svgAttr "fill" ink, svgAttr "font-family" "'SF Mono',Menlo,monospace"
+                 , svgAttr "font-size" "13" ]
+                 [ HH.text (show k <> "/" <> show n) ]
+             ]
+      )
 
 -- --- POLYCLOCK: a list of division numbers -----------------------------------
 
@@ -270,6 +287,73 @@ noteCell sl =
         [ HH.text (M.noteName sl.note) ]
     , cellCaption ("midi " <> show sl.note)
     ]
+
+-- --- POLYTRIG: a linear step row, lit at the pattern's onset cells -----------
+
+-- One POLYTRIG jack: its name + note, then a figure that follows the source's
+-- structure — the Euclid ring when the source is a pure `x(k,n)`, otherwise a
+-- linear step row. An empty source (the jack is driven only by routes) shows a
+-- faint "↳ route" caption.
+trigCell :: forall m. M.TrigSlot -> H.ComponentHTML Action () m
+trigCell sl =
+  let
+    figure = case Lane.euclidOf sl.source of
+      Just e -> ringFigure 46.0 e.k e.n
+      Nothing -> stepFigure sl.source
+    caption = if sl.source == "" then "↳ route" else sl.source
+  in
+    HH.div
+      [ style $ "padding:5px 6px;border-radius:6px;background:#ffffff55;border:1px solid #00000010;"
+          <> "display:flex;flex-direction:column;gap:4px;align-items:stretch;min-width:0" ]
+      [ HH.div [ style "display:flex;align-items:baseline;justify-content:space-between;gap:6px" ]
+          [ HH.span [ style $ "font-family:Georgia,serif;font-size:11px;color:" <> ink ] [ HH.text sl.name ]
+          , HH.span [ style $ engrave <> ";font-size:8px;opacity:0.5" ] [ HH.text (M.noteName sl.note) ]
+          ]
+      , figure
+      , cellCaption caption
+      ]
+
+-- A linear step row, lit at the pattern's onset cells (HTML so it fills width).
+stepFigure :: forall m. String -> H.ComponentHTML Action () m
+stepFigure src =
+  let
+    m = Lane.meterOf src
+    mask = Lane.cellMaskOf src
+    stepDiv k =
+      let on = fromMaybe false (mask !! k)
+      in
+        HH.div
+          [ style $ "flex:1 1 0;min-width:0;height:18px;border-radius:2px;"
+              <> (if on then "background:" <> accent
+                  else "background:#00000008;border:1px solid " <> accent <> "55;box-sizing:border-box") ]
+          []
+  in
+    HH.div [ style "display:flex;gap:2px;width:100%;height:18px;align-items:center" ]
+      (map stepDiv (range 0 (m - 1)))
+
+-- A lane-spanning route, full-width across the 4-column grid: its atoms placed
+-- at their true fractional times, each tick labelled with the jack it fires.
+routeRow :: forall m. String -> H.ComponentHTML Action () m
+routeRow src =
+  let
+    ons = Lane.namedOnsetsOf src
+    mark o =
+      HH.div
+        [ style $ "position:absolute;top:0;left:" <> show (round2 (o.at * 100.0)) <> "%;"
+            <> "transform:translateX(-50%);display:flex;flex-direction:column;align-items:center;gap:1px" ]
+        [ HH.div [ style $ "width:0;height:11px;border-left:2px solid " <> routeAccent ] []
+        , HH.span [ style $ "font-family:'SF Mono',Menlo,monospace;font-size:8px;color:" <> routeAccent ] [ HH.text o.name ]
+        ]
+  in
+    HH.div
+      [ style $ "grid-column:1 / -1;display:flex;align-items:center;gap:10px;padding:4px 8px;min-width:0;"
+          <> "border-radius:6px;background:#ffffff35;border:1px dashed " <> routeAccent <> "44" ]
+      [ HH.span [ style $ engrave <> ";font-size:8px;color:" <> routeAccent <> ";flex:0 0 auto" ] [ HH.text "ROUTE" ]
+      , HH.div [ style "position:relative;flex:1 1 auto;height:24px;min-width:40px" ] (map mark ons)
+      , HH.span
+          [ style "font-family:'SF Mono',Menlo,monospace;font-size:9px;color:#2b2922;opacity:0.65;flex:0 0 auto" ]
+          [ HH.text ("\"" <> src <> "\"") ]
+      ]
 
 -- ---------------------------------------------------------------------------
 -- Cell chrome
