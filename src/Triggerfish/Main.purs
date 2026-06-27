@@ -20,13 +20,14 @@ import Type.Proxy (Proxy(..))
 import Triggerfish.Odonus.Grid as Odonus
 import Triggerfish.Balistes.Component as Balistes
 import Triggerfish.Selene.Component as Selene
+import Vetula.App as Vetula
 
 main :: Effect Unit
 main = HA.runHalogenAff do
   body <- HA.awaitBody
   void $ runUI root unit body
 
-data Which = Odo | Bal | Sel
+data Which = Odo | Bal | Sel | Vet
 
 derive instance Eq Which
 
@@ -38,6 +39,7 @@ type Slots =
   ( odo :: H.Slot (Const Void) Void Unit
   , bal :: H.Slot (Const Void) Void Unit
   , sel :: H.Slot (Const Void) Void Unit
+  , vet :: H.Slot (Const Void) Void Unit
   )
 
 _odo :: Proxy "odo"
@@ -48,6 +50,9 @@ _bal = Proxy
 
 _sel :: Proxy "sel"
 _sel = Proxy
+
+_vet :: Proxy "vet"
+_vet = Proxy
 
 root :: forall q i o m. MonadAff m => H.Component q i o m
 root =
@@ -68,6 +73,7 @@ render st =
         Odo -> HH.slot_ _odo unit Odonus.component unit
         Bal -> HH.slot_ _bal unit Balistes.component unit
         Sel -> HH.slot_ _sel unit Selene.component unit
+        Vet -> HH.slot_ _vet unit Vetula.component unit
     ]
 
 -- A small floating selector, top-right, in the Hainbach idiom.
@@ -80,6 +86,7 @@ switchBar st =
     [ seg "ODONUS" (st.which == Odo) (Pick Odo)
     , seg "BALISTES" (st.which == Bal) (Pick Bal)
     , seg "SELENE" (st.which == Sel) (Pick Sel)
+    , seg "VETULA" (st.which == Vet) (Pick Vet)
     ]
 
 seg :: forall m. String -> Boolean -> RAction -> H.ComponentHTML RAction Slots m

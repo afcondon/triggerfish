@@ -8,17 +8,27 @@
             "aff",
             "arrays",
             "binnacle",
+            "colors",
             "console",
             "control",
             "effect",
             "either",
             "foldable-traversable",
+            "foreign-object",
             "halogen",
             "halogen-subscriptions",
+            "halogen-svg-elems",
+            "hylograph-d3-kernel",
+            "hylograph-halogen-ui",
+            "hylograph-selection",
+            "hylograph-simulation",
+            "hylograph-simulation-halogen",
             "integers",
             "js-timers",
+            "lists",
             "maybe",
             "newtype",
+            "nullable",
             "numbers",
             "ordered-collections",
             "parsing",
@@ -28,6 +38,7 @@
             "tailrec",
             "transformers",
             "tuples",
+            "web-dom",
             "web-events",
             "web-html",
             "web-uievents"
@@ -633,6 +644,9 @@
     "extra_packages": {
       "binnacle": {
         "path": "../binnacle"
+      },
+      "hylograph-halogen-ui": {
+        "path": "../../../purescript-hylograph-halogen-ui-v0.1"
       }
     }
   },
@@ -718,6 +732,24 @@
         "prelude",
         "tuples",
         "unfoldable"
+      ]
+    },
+    "colors": {
+      "type": "registry",
+      "version": "7.0.1",
+      "integrity": "sha256-3A93ysUoamlsH2yfIiPFH0SoG8DZQk2ytFKlKhd/aJg=",
+      "dependencies": [
+        "arrays",
+        "control",
+        "either",
+        "foldable-traversable",
+        "integers",
+        "lists",
+        "maybe",
+        "numbers",
+        "partial",
+        "prelude",
+        "strings"
       ]
     },
     "console": {
@@ -1014,6 +1046,21 @@
         "unfoldable"
       ]
     },
+    "graphs": {
+      "type": "registry",
+      "version": "8.1.0",
+      "integrity": "sha256-qllMIjmOGqwELOlXyHuiTT3YpeL/+gjaq7omAZ4npJQ=",
+      "dependencies": [
+        "bifunctors",
+        "catenable-lists",
+        "foldable-traversable",
+        "lists",
+        "maybe",
+        "ordered-collections",
+        "prelude",
+        "tuples"
+      ]
+    },
     "halogen": {
       "type": "registry",
       "version": "7.0.0",
@@ -1078,6 +1125,23 @@
         "unsafe-reference"
       ]
     },
+    "halogen-svg-elems": {
+      "type": "registry",
+      "version": "8.0.0",
+      "integrity": "sha256-Qt5bQm6CmqinstHajIn/o4eNTNpZVOODBgMlWTC8P24=",
+      "dependencies": [
+        "arrays",
+        "halogen",
+        "maybe",
+        "newtype",
+        "prelude",
+        "safe-coerce",
+        "strings",
+        "tuples",
+        "typelevel-prelude",
+        "web-uievents"
+      ]
+    },
     "halogen-vdom": {
       "type": "registry",
       "version": "8.0.0",
@@ -1098,6 +1162,183 @@
         "unsafe-coerce",
         "web-dom",
         "web-events"
+      ]
+    },
+    "hylograph-d3-kernel": {
+      "type": "registry",
+      "version": "0.1.0",
+      "integrity": "sha256-jP+uXTD1GhiZP1eXwANOcpifA7vI364NJWGEP1XLfx0=",
+      "dependencies": [
+        "arrays",
+        "effect",
+        "foldable-traversable",
+        "foreign-object",
+        "hylograph-simulation-core",
+        "maybe",
+        "nullable",
+        "ordered-collections",
+        "prelude",
+        "refs",
+        "tuples",
+        "typelevel-prelude",
+        "web-dom"
+      ]
+    },
+    "hylograph-graph": {
+      "type": "registry",
+      "version": "0.1.0",
+      "integrity": "sha256-0sfy5Z0U+X78LNRO/H6xJwi45ECaHr/FF2SNNcpAhew=",
+      "dependencies": [
+        "arrays",
+        "either",
+        "foldable-traversable",
+        "free",
+        "graphs",
+        "integers",
+        "lists",
+        "maybe",
+        "numbers",
+        "ordered-collections",
+        "prelude",
+        "tree-rose",
+        "tuples"
+      ]
+    },
+    "hylograph-halogen-ui": {
+      "type": "local",
+      "path": "../../../purescript-hylograph-halogen-ui-v0.1",
+      "dependencies": [
+        "aff",
+        "arrays",
+        "datetime",
+        "effect",
+        "halogen",
+        "halogen-subscriptions",
+        "integers",
+        "maybe",
+        "numbers",
+        "prelude",
+        "unsafe-coerce",
+        "web-dom",
+        "web-events",
+        "web-html",
+        "web-uievents"
+      ]
+    },
+    "hylograph-selection": {
+      "type": "registry",
+      "version": "0.1.1",
+      "integrity": "sha256-PGMAJeq9FiicgPQY4pdLDNmpSyfd6MbhYshehU9ZIbQ=",
+      "dependencies": [
+        "arrays",
+        "colors",
+        "console",
+        "contravariant",
+        "datetime",
+        "effect",
+        "either",
+        "foldable-traversable",
+        "free",
+        "graphs",
+        "hylograph-graph",
+        "hylograph-transitions",
+        "integers",
+        "lists",
+        "maybe",
+        "newtype",
+        "nullable",
+        "numbers",
+        "ordered-collections",
+        "partial",
+        "prelude",
+        "refs",
+        "strings",
+        "transformers",
+        "tree-rose",
+        "tuples",
+        "typelevel-prelude",
+        "unsafe-coerce",
+        "unsafe-reference",
+        "web-dom",
+        "web-html",
+        "web-pointerevents",
+        "web-uievents"
+      ]
+    },
+    "hylograph-simulation": {
+      "type": "registry",
+      "version": "0.1.0",
+      "integrity": "sha256-ZROzYOPgA2dmgp7kkrq+NoePd/01zoqr1zmVjSfp5Ak=",
+      "dependencies": [
+        "aff",
+        "arrays",
+        "console",
+        "effect",
+        "foldable-traversable",
+        "foreign-object",
+        "functions",
+        "hylograph-selection",
+        "hylograph-transitions",
+        "integers",
+        "maybe",
+        "newtype",
+        "nullable",
+        "numbers",
+        "ordered-collections",
+        "prelude",
+        "refs",
+        "tuples",
+        "typelevel-prelude",
+        "unsafe-coerce",
+        "web-dom"
+      ]
+    },
+    "hylograph-simulation-core": {
+      "type": "registry",
+      "version": "0.1.0",
+      "integrity": "sha256-t5hU6gx2zRbtaehPB8a2fFPYy3HuNWUQ3QCL2RXqwlw=",
+      "dependencies": [
+        "arrays",
+        "effect",
+        "foreign-object",
+        "integers",
+        "maybe",
+        "ordered-collections",
+        "prelude",
+        "refs"
+      ]
+    },
+    "hylograph-simulation-halogen": {
+      "type": "registry",
+      "version": "0.1.0",
+      "integrity": "sha256-+2nyyUJi7M18SJbc7ns9SUmMFh5xrlZDSRkeV8mt84g=",
+      "dependencies": [
+        "effect",
+        "halogen-subscriptions",
+        "hylograph-d3-kernel",
+        "hylograph-simulation",
+        "maybe",
+        "prelude",
+        "refs"
+      ]
+    },
+    "hylograph-transitions": {
+      "type": "registry",
+      "version": "0.1.0",
+      "integrity": "sha256-4OxA786UfwAbJYVyLKrbtR7Pc+B1chPKvYkmhh5ye04=",
+      "dependencies": [
+        "arrays",
+        "control",
+        "effect",
+        "either",
+        "foldable-traversable",
+        "integers",
+        "maybe",
+        "numbers",
+        "ordered-collections",
+        "prelude",
+        "refs",
+        "strings"
       ]
     },
     "identity": {
@@ -1474,6 +1715,20 @@
         "tailrec",
         "tuples",
         "unfoldable"
+      ]
+    },
+    "tree-rose": {
+      "type": "registry",
+      "version": "4.0.2",
+      "integrity": "sha256-7Zu/FJb5jmSDxy9N5t5cKUgTWUnXkOvyIoDT/07l8as=",
+      "dependencies": [
+        "control",
+        "foldable-traversable",
+        "free",
+        "lists",
+        "maybe",
+        "prelude",
+        "tailrec"
       ]
     },
     "tuples": {

@@ -33,6 +33,18 @@ package:
     - strings
     - transformers
     - tuples
+    # vendored Vetula harmonic surface (src/Vetula/**) — the 4th instrument
+    - nullable
+    - colors
+    - lists
+    - foreign-object
+    - web-dom
+    - halogen-svg-elems
+    - hylograph-halogen-ui
+    - hylograph-simulation
+    - hylograph-simulation-halogen
+    - hylograph-selection
+    - hylograph-d3-kernel
   bundle:
     module: Triggerfish.Main
     outfile: public/bundle.js
@@ -44,5 +56,10 @@ workspace:
   extraPackages:
     binnacle:
       path: ../binnacle
+    # Vetula dogfoods the shared widget library, pinned via the same git
+    # worktree it uses standalone (both repos sit at music/live-coding/<name>,
+    # so the relative path is identical).
+    hylograph-halogen-ui:
+      path: ../../../purescript-hylograph-halogen-ui-v0.1
   packageSet:
     registry: 73.3.0
