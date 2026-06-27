@@ -271,10 +271,13 @@ data Action
   | PerfTick               -- one 16th-note pulse of the performance clock
   | SelectPerfChord Int    -- click a working-copy chord row (for live Tab-revoice)
 
--- | The query the Triggerfish shell uses to pull Vetula's current Tidal source
--- | for the aggregate TIDAL tab. Defined here (not imported from Triggerfish)
--- | so the standalone app — which never queries it — still builds.
-data SourceQuery a = AskSource (String -> a)
+-- | The queries the Triggerfish shell pulls from Vetula: its current Tidal
+-- | source (for the aggregate TIDAL tab) and its current progression as PC sets
+-- | (for the Odonus chord-quantiser feed). Defined here (not imported from
+-- | Triggerfish) so the standalone app — which never queries it — still builds.
+data SourceQuery a
+  = AskSource (String -> a)
+  | AskChords (Array (Array Int) -> a)
 
 component :: forall i o m. MonadAff m => H.Component SourceQuery i o m
 component = H.mkComponent
@@ -325,11 +328,21 @@ component = H.mkComponent
       { handleAction = handleAction, handleQuery = handleQuery, initialize = Just Initialize }
   }
 
--- | Answer the shell's TIDAL-tab query with the live progression as Tidal.
+-- | Answer the shell: the live progression as Tidal (TIDAL tab), or as a
+-- | sequence of pitch-class sets (the Odonus chord-quantiser feed).
 handleQuery :: forall o m a. MonadAff m => SourceQuery a -> H.HalogenM State Action Slots o m (Maybe a)
-handleQuery (AskSource reply) = do
-  s <- H.get
-  pure (Just (reply (currentSource s)))
+handleQuery = case _ of
+  AskSource reply -> do
+    s <- H.get
+    pure (Just (reply (currentSource s)))
+  AskChords reply -> do
+    s <- H.get
+    pure (Just (reply (progressionPCs s)))
+
+-- | The current path as one PC set per step (each chord's absolute pitch
+-- | classes) — what Odonus's quantiser snaps to when fed from Vetula.
+progressionPCs :: State -> Array (Array Int)
+progressionPCs st = mapMaybe (\pid -> _.pcs <$> find (\c -> c.id == pid) st.chords) st.path
 
 -- ---------------------------------------------------------------------------
 -- Force layout

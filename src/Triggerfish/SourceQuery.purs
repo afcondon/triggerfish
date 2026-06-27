@@ -14,3 +14,4 @@ module Triggerfish.SourceQuery (Query(..)) where
 data Query a
   = AskSource (String -> a)
   | SyncFree Number Number a
+  | FeedChords (Array (Array Int)) a

@@ -5,7 +5,7 @@ module Triggerfish.Odonus.View.Source (edslPanel, edslText) where
 
 import Prelude
 
-import Data.Array (mapWithIndex, (!!))
+import Data.Array (length, mapWithIndex, null, (!!))
 import Data.Maybe (maybe)
 import Data.String.Common (joinWith)
 import Halogen as H
@@ -43,6 +43,13 @@ edslText o =
         <> " len " <> show hd.len
         <> " E(" <> show hd.pulses <> "," <> show hd.esteps <> ")"
         <> (if hd.mute then "  (mute)" else "")
+    chordLine c =
+      (if c.on then "on" else "off")
+        <> (if not (null c.feed)
+              then " · vetula " <> show (length c.feed) <> " chords ["
+                     <> joinWith " | " (map (joinWith "," <<< map show) c.feed) <> "]"
+              else " · mcmullen " <> show c.picks)
+        <> " · every " <> show c.period
   in
     joinWith "\n"
       ( [ "odonusWith"
@@ -58,5 +65,6 @@ edslText o =
         , "  , len:   " <> arr (show <<< _.dur)
         , "  , ratchet:" <> arr (show <<< _.ratchet)
         , "  , vel:   " <> arr (show <<< _.vel)
+        , "  , chord: " <> chordLine o.chord
         , "  , heads:"
         ] <> mapWithIndex headLine o.heads <> [ "  }" ] )

@@ -56,7 +56,7 @@ data Which = Odo | Bal | Sel | Vet | Tid
 
 derive instance Eq Which
 
-data RAction = Init | SyncTick | Pick Which | RefreshTidal | CopyTidal
+data RAction = Init | SyncTick | Pick Which | RefreshTidal | CopyTidal | PatchVetula
 
 type RState = { which :: Which, tidalDoc :: String, freeT0 :: Number }
 
@@ -112,6 +112,13 @@ handleAction = case _ of
   Pick w -> H.modify_ _ { which = w }
   RefreshTidal -> refreshTidal
   CopyTidal -> H.gets _.tidalDoc >>= (liftEffect <<< copyText)
+  -- The Vetula bridge: pull Vetula's current progression as PC sets and feed it
+  -- to Odonus's chord quantiser (which turns on, so it's audible immediately).
+  PatchVetula -> do
+    mchords <- H.query _vet unit (Vetula.AskChords identity)
+    case mchords of
+      Just chords -> void $ H.query _odo unit (SQ.FeedChords chords unit)
+      Nothing -> pure unit
 
 -- Query each mounted instrument for its current source and stitch the four
 -- into one labelled document.
@@ -143,7 +150,21 @@ render st =
     , pane (st.which == Sel) (HH.slot_ _sel unit Selene.component unit)
     , pane (st.which == Vet) (HH.slot_ _vet unit Vetula.component unit)
     , if st.which == Tid then tidalView st else HH.text ""
+    -- On the Odonus tab, a patch button pulls Vetula's progression into its
+    -- chord quantiser.
+    , if st.which == Odo then patchButton else HH.text ""
     ]
+
+-- Pull Vetula's current progression into Odonus's chord quantiser.
+patchButton :: forall m. H.ComponentHTML RAction Slots m
+patchButton =
+  HH.button
+    [ HE.onClick \_ -> PatchVetula
+    , style $ "position:fixed;top:44px;right:14px;z-index:50;padding:5px 12px;cursor:pointer;"
+        <> "border:1px solid #b8975a;border-radius:6px;font-family:Georgia,serif;"
+        <> "font-size:10px;letter-spacing:0.1em;text-transform:uppercase;color:#5a4a22;"
+        <> "background:linear-gradient(#f3ecd9,#e9e0c6);box-shadow:0 1px 4px #0000002a" ]
+    [ HH.text "◄ Vetula chords" ]
 
 -- A mounted-but-maybe-hidden pane. `display:none` keeps the component alive
 -- (and its scheduler/MIDI running) while removing it from layout.

@@ -13,6 +13,7 @@ module Triggerfish.Odonus.Model
   , chordNameAt
   , currentChordPCs
   , setChordPicks
+  , setChordFeed
   , tickChord
   , toggleChord
   , setChordPeriod
@@ -74,7 +75,7 @@ module Triggerfish.Odonus.Model
 
 import Prelude
 
-import Data.Array (catMaybes, elem, filter, findIndex, mapWithIndex, replicate, modifyAt, length, zipWith, (!!), (:))
+import Data.Array (catMaybes, elem, filter, findIndex, mapWithIndex, null, replicate, modifyAt, length, zipWith, (!!), (:))
 import Data.Foldable (foldl)
 import Data.Int (floor, toNumber)
 import Data.Int.Bits (and, shl, shr)
@@ -138,6 +139,8 @@ type Head =
 type ChordSeq =
   { on :: Boolean
   , picks :: Array Int      -- four indices into the McMullen Yellow table
+  , feed :: Array (Array Int) -- external progression as explicit PC sets (0-11);
+                              -- when non-empty it OVERRIDES picks (the Vetula feed)
   , ix :: Int               -- current position in the progression
   , phase :: Int            -- model steps since the chord last advanced
   , period :: Int           -- steps per chord (its own clock, related to main)
@@ -189,16 +192,32 @@ chordNameAt :: Int -> String
 chordNameAt ix = fromMaybe "?" (mcmullenYellowNames !! ix)
 
 -- | The pitch classes (0..11) of the chord at the progression's current
--- | position — the picked McMullen chord realised against the current root.
+-- | position. A non-empty `feed` (e.g. a Vetula progression) wins — its PC sets
+-- | are absolute and used verbatim; otherwise the picked McMullen chord is
+-- | realised against the current root in Ionian (so it transposes with the key).
 currentChordPCs :: Odonus -> Array Int
-currentChordPCs o =
-  case mcmullenYellow !! fromMaybe 0 (o.chord.picks !! o.chord.ix) of
-    Just dc -> case realize { tonic: o.rootPc, mode: Ionian } dc of Chord pcs -> pcs
-    Nothing -> []
+currentChordPCs o
+  | not (null o.chord.feed) = fromMaybe [] (o.chord.feed !! o.chord.ix)
+  | otherwise =
+      case mcmullenYellow !! fromMaybe 0 (o.chord.picks !! o.chord.ix) of
+        Just dc -> case realize { tonic: o.rootPc, mode: Ionian } dc of Chord pcs -> pcs
+        Nothing -> []
 
--- | Replace the four-chord progression (the chord randomiser's output).
+-- | How long the active progression is (the feed when present, else the picks).
+chordSeqLen :: ChordSeq -> Int
+chordSeqLen c = if null c.feed then length c.picks else length c.feed
+
+-- | Replace the four-chord progression (the chord randomiser's output). Clears
+-- | any external feed, handing control back to the McMullen table.
 setChordPicks :: Array Int -> Odonus -> Odonus
-setChordPicks ps o = o { chord = o.chord { picks = ps, ix = 0, phase = 0 } }
+setChordPicks ps o = o { chord = o.chord { picks = ps, feed = [], ix = 0, phase = 0 } }
+
+-- | Drive the quantiser from an external progression of explicit PC sets (the
+-- | Vetula feed): adopt it, restart at its head, and switch the overlay on so
+-- | it's audible immediately. An empty feed clears it back to the McMullen path.
+setChordFeed :: Array (Array Int) -> Odonus -> Odonus
+setChordFeed pcs o =
+  o { chord = o.chord { feed = pcs, ix = 0, phase = 0, on = not (null pcs) || o.chord.on } }
 
 -- | The pitch classes the current harmony admits: the live chord if the chord
 -- | overlay is running, else the whole scale. Used to seed a melodic line.
@@ -217,7 +236,7 @@ tickChord :: Odonus -> Odonus
 tickChord o =
   let
     per = clampI chordPeriodMin chordPeriodMax o.chord.period
-    nCh = length o.chord.picks
+    nCh = chordSeqLen o.chord
     ph = o.chord.phase + 1
   in
     if nCh <= 0 then o
@@ -265,7 +284,7 @@ defaultCells =
 -- | The prototype progression: ii7 – V7 – Imaj7 – vi9, a ii–V–I–vi from the
 -- | McMullen Yellow table (indices 15, 10, 12, 13).
 defaultChord :: ChordSeq
-defaultChord = { on: false, picks: [ 15, 10, 12, 13 ], ix: 0, phase: 0, period: 16 }
+defaultChord = { on: false, picks: [ 15, 10, 12, 13 ], feed: [], ix: 0, phase: 0, period: 16 }
 
 defaultOdonus :: Odonus
 defaultOdonus =

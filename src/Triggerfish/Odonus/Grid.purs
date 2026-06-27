@@ -82,6 +82,10 @@ handleQuery = case _ of
     for_ s.binnacle \bin ->
       liftEffect (Clock.setFreeBaseline (Binnacle.clock bin) { startMicros, tempo })
     pure (Just next)
+  -- The Vetula bridge: drive the chord quantiser from Vetula's progression.
+  FeedChords pcs next -> do
+    H.modify_ \s -> s { odo = M.setChordFeed pcs s.odo }
+    pure (Just next)
 
 handleAction :: forall o m. MonadAff m => Action -> H.HalogenM State Action () o m Unit
 handleAction = case _ of

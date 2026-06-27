@@ -58,6 +58,7 @@ handleQuery = case _ of
     s <- H.get
     pure (Just (reply s.doc))
   SyncFree _ _ next -> pure (Just next)
+  FeedChords _ next -> pure (Just next)
 
 handleAction :: forall o m. MonadAff m => Action -> H.HalogenM State Action () o m Unit
 handleAction = case _ of

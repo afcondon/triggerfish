@@ -163,6 +163,7 @@ handleQuery = case _ of
     for_ s.binnacle \bin ->
       liftEffect (Clock.setFreeBaseline (Binnacle.clock bin) { startMicros, tempo })
     pure (Just next)
+  FeedChords _ next -> pure (Just next)   -- a drum machine; no chord quantiser
 
 -- ---------------------------------------------------------------------------
 -- handleAction
