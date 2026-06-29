@@ -18,11 +18,11 @@ module Triggerfish.Balistes.Component (component) where
 
 import Prelude
 
-import Data.Array (concatMap, filter, length, null, range, (!!))
+import Data.Array (concatMap, filter, null, range)
 import Data.Foldable (any, for_, sum)
 import Data.Int (round, toNumber)
 import Data.Int.Bits (shr)
-import Data.Maybe (Maybe(..), fromMaybe)
+import Data.Maybe (Maybe(..))
 import Data.String.Common (joinWith)
 import Effect (Effect)
 import Effect.Aff.Class (class MonadAff)
@@ -31,7 +31,6 @@ import Effect.Timer (setInterval)
 import Halogen as H
 import Halogen.HTML as HH
 import Halogen.HTML.Events as HE
-import Halogen.HTML.Properties as HP
 import Halogen.Subscription as HS
 import Unsafe.Coerce (unsafeCoerce)
 import Binnacle as Binnacle
@@ -42,7 +41,6 @@ import Triggerfish.Balistes.Model as M
 import Triggerfish.Balistes.Source as Source
 import Triggerfish.SourceQuery (Query(..))
 import Triggerfish.Balistes.Tables as T
-import Triggerfish.Balistes.Tidal as Tidal
 import Triggerfish.Ui.Knob (knob)
 import Triggerfish.Ui.Pointer as Pointer
 import Triggerfish.Odonus.Grid.Widgets (clampI, engrave, style, svgAttr, svgEl)
@@ -60,25 +58,6 @@ import Web.UIEvent.MouseEvent as ME
 type Flash = { inst :: Int, accent :: Boolean, fireUnixMicros :: Number }
 
 data KnobTarget = KDens Int | KRand | KPush Int
-
--- | Which colour layer is in focus. The other desaturates to grey so the two
--- | colour systems (the kit's lane hues, the routing accent) never shout at
--- | once — your "monochrome one side at a time".
-data Focus = FocusBoth | FocusKit | FocusPatterns
-
-derive instance Eq Focus
-
-nextFocus :: Focus -> Focus
-nextFocus = case _ of
-  FocusBoth -> FocusKit
-  FocusKit -> FocusPatterns
-  FocusPatterns -> FocusBoth
-
-focusLabel :: Focus -> String
-focusLabel = case _ of
-  FocusBoth -> "BOTH"
-  FocusKit -> "KIT"
-  FocusPatterns -> "PATTERNS"
 
 -- | A document-tracked drag either turns a knob or subdivides a Grids cell into
 -- | ratchets (`DCell lane step`). One drag plumbing for both.
@@ -110,10 +89,6 @@ type State =
   , nowMicros :: Number
   , dragging :: Maybe Drag
   , dragSub :: Maybe H.SubscriptionId
-  , focus :: Focus
-  -- the editable SOURCE document — verbatim user text, the authority for the
-  -- typed lane sources + routing patterns (parsed into `bal` on every edit).
-  , sourceDoc :: String
   }
 
 data Action
@@ -130,22 +105,17 @@ data Action
   | DragEnd
   | DillaPreset
   | FlatGroove
-  | TogglePad Int Int          -- pad-lane index, cell (within that lane's meter)
-  | SetSourceDoc String        -- the whole editable SOURCE document, verbatim
-  | SetLabel Int String        -- pad-lane index, new label
-  | CycleFocus
   | NoOp
 
 component :: forall i o m. MonadAff m => H.Component Query i o m
 component =
   H.mkComponent
     { initialState: \_ ->
-        { bal: Source.parseBody Source.starterDoc M.defaultBalistes
+        { bal: M.defaultBalistes
         , running: false, master: false, playStep: 0, flash: []
         , binnacle: Nothing, midiOut: Nothing, midiName: "…"
         , clockTempo: 120.0, clockLocked: false, clockBeat: 0.0, clockBar: 0, anchorCount: 0
-        , nowMicros: 0.0, dragging: Nothing, dragSub: Nothing, focus: FocusBoth
-        , sourceDoc: Source.starterDoc }
+        , nowMicros: 0.0, dragging: Nothing, dragSub: Nothing }
     , render
     , eval: H.mkEval H.defaultEval
         { handleAction = handleAction, handleQuery = handleQuery, initialize = Just Initialize }
@@ -158,7 +128,7 @@ handleQuery :: forall o m a. MonadAff m => Query a -> H.HalogenM State Action ()
 handleQuery = case _ of
   AskSource reply -> do
     s <- H.get
-    pure (Just (reply (Source.headerText s.bal <> "\n\n" <> s.sourceDoc)))
+    pure (Just (reply (Source.headerText s.bal)))
   SyncFree startMicros tempo next -> do
     s <- H.get
     for_ s.binnacle \bin ->
@@ -206,46 +176,14 @@ handleAction = case _ of
         playedStep = st.bal.step
         r = M.tick st.bal
         stepMs = 0.25 * 60000.0 / max 30.0 st.clockTempo
-        pads = range 0 (M.padCount st.bal - 1)
-        -- One Tidal cycle == one Grids loop (cycleSteps steps). A pad lane is a
-        -- pattern with its own meter; we filter each lane's true cycle onsets to
-        -- THIS step's window and fire each at its sub-step offset — so a triplet
-        -- (`bd*3`) or a septuplet euclid lands off the 32-grid, exactly.
-        lo = toNumber playedStep / toNumber cycleSteps
-        hi = toNumber (playedStep + 1) / toNumber cycleSteps
-        inWin o = o >= lo && o < hi
-        -- each pad lane gets its OWN onsets (source + clicks) plus the onsets
-        -- routed to it by name from the routing patterns; both fire on the
-        -- lane's channel (OH on the Grids channel, the kit on its own).
-        padHits = map
-          ( \i ->
-              { i
-              , own: filter inWin (Tidal.laneCycleOnsetsAt st.bal i)
-              , routed: filter inWin (Tidal.routedOnsetsForLane st.bal i)
-              }
-          )
-          pads
-        firedPads = filter (\p -> not (null p.own) || not (null p.routed)) padHits
-      for_ st.midiOut \out -> liftEffect do
-        -- the three Grids lanes (still step-quantised, firmware-faithful)
+      for_ st.midiOut \out -> liftEffect $
+        -- the three Grids lanes (step-quantised, firmware-faithful), each with
+        -- its ratchet roll + per-voice Dilla push applied on emit.
         for_ r.fired \t ->
           emitHit out st.bal drumChannel stepMs tick.delayMs playedStep t.inst (M.instNote t.inst) t.accent
-        -- the pattern-native pad lanes, at true fractional times
-        for_ padHits \p ->
-          let
-            lane = M.firstPadLane + p.i
-            note = M.padNote st.bal p.i
-            ch = padChannel p.i
-            fire o =
-              let sub = (o * toNumber cycleSteps - toNumber playedStep) * stepMs
-              in emitHit out st.bal ch stepMs (tick.delayMs + sub) playedStep lane note false
-          in do
-            for_ p.own fire
-            for_ p.routed fire
       let
         gridsFlash = map (\t -> { inst: t.inst, accent: t.accent, fireUnixMicros: tick.fireUnixMicros }) r.fired
-        padFlash = map (\p -> { inst: M.firstPadLane + p.i, accent: false, fireUnixMicros: tick.fireUnixMicros }) firedPads
-      H.modify_ \s -> s { bal = r.bal, playStep = playedStep, flash = gridsFlash <> padFlash <> s.flash }
+      H.modify_ \s -> s { bal = r.bal, playStep = playedStep, flash = gridsFlash <> s.flash }
 
   Frame -> do
     st <- H.get
@@ -310,22 +248,16 @@ handleAction = case _ of
 
   DillaPreset -> H.modify_ \s -> s { bal = M.dillaPush s.bal }
   FlatGroove -> H.modify_ \s -> s { bal = M.flatPush s.bal }
-  TogglePad i cell -> H.modify_ \s -> s { bal = Tidal.toggleLaneClick i cell s.bal }
-  -- the textarea is the authority for typed sources + routes: store the verbatim
-  -- text, then re-derive those slices of the model from it (clicks/knobs untouched).
-  SetSourceDoc doc -> H.modify_ \s -> s { sourceDoc = doc, bal = Source.parseBody doc s.bal }
-  SetLabel i nm -> H.modify_ \s -> s { bal = M.setPadName i nm s.bal }
-  CycleFocus -> H.modify_ \s -> s { focus = nextFocus s.focus }
   NoOp -> pure unit
 
--- | Emit one hit on a lane: apply that lane's Dilla push (signed ms), and — for
--- | the Grids lanes — explode a ratcheted cell into N evenly-spaced retriggers
--- | at flat velocity. Lane 3 (open hat) rings longer; everything else is a blip.
+-- | Emit one Grids hit: apply that voice's Dilla push (signed ms) and explode a
+-- | ratcheted cell into N evenly-spaced retriggers at flat velocity. Hits are
+-- | short blips (the open hat's longer ring returns with the OPEN dial).
 emitHit
   :: Midi.MidiOut -> M.Balistes -> Int -> Number -> Number -> Int -> Int -> Int -> Boolean -> Effect Unit
 emitHit out b channel stepMs baseDelayMs step lane note accent =
   let
-    fullDur = if note == 46 then 200.0 else 30.0   -- open hat rings; rest are blips
+    fullDur = 30.0
     v0 = if accent then accentVel else baseVel
     delay0 = max 0.0 (baseDelayMs + toNumber (M.pushOf lane b))
     n = M.ratchetAt b lane step
@@ -361,37 +293,12 @@ rigUrl = "ws://127.0.0.1:3012/ws"
 gridCfg :: Scheduler.GridConfig
 gridCfg = { stepBeats: 0.25, lookaheadMs: 120.0, tickMs: 25 }
 
--- | Steps in one Grids loop — and one Tidal cycle. A pad lane's pattern is
--- | mapped onto [0,1) across the whole loop, so `bd*4` is four hits per loop;
--- | bump this mapping (or shorten the loop) if cycles should feel faster.
-cycleSteps :: Int
-cycleSteps = 32
-
 midiPortName :: String
 midiPortName = "IAC"
 
--- | GM drum channel (MIDI ch 10) — the Grids device + OH (the bridge).
+-- | GM drum channel (MIDI ch 10) — the Grids device (BD/SD/HH).
 drumChannel :: Int
 drumChannel = 9
-
--- | The Tidal kit's own channel (MIDI ch 11), so it's a genuinely separate
--- | drum machine: route a second Ableton track here. OH stays on `drumChannel`.
-tidalChannel :: Int
-tidalChannel = 10
-
--- | A pad lane's MIDI channel: OH bridges to the Grids channel; the rest of the
--- | kit is on the Tidal channel.
-padChannel :: Int -> Int
-padChannel i = if i == M.ohPadIndex then drumChannel else tidalChannel
-
--- | The routing layer's accent colour — one ink-violet hue distinct from the
--- | warm kit palette, so a multi-lane routed gesture binds by shared colour.
-routeAccent :: String
-routeAccent = "#46415f"
-
--- | The grey the unfocused colour layer desaturates to.
-dimGrey :: String
-dimGrey = "#b3afa3"
 
 accentVel :: Int
 accentVel = 120
@@ -410,8 +317,7 @@ instColor :: Int -> String
 instColor = case _ of
   0 -> "#b04a2f"   -- BD, amber-red
   1 -> "#5f7d3f"   -- SD, green
-  2 -> "#3f6f8a"   -- HH, steel-blue
-  _ -> "#2f8a8a"   -- OH, teal (the pattern lane)
+  _ -> "#3f6f8a"   -- HH, steel-blue
 
 -- ---------------------------------------------------------------------------
 -- Timers / drag plumbing (mirrors Odonus)
@@ -449,7 +355,6 @@ render s =
     [ transportPanel s
     , controlsPanel s
     , patternPanel s
-    , sourcePanel s
     ]
 
 -- A pale Hainbach panel (header + body). Scrolls vertically if its content is
@@ -483,15 +388,6 @@ transportPanel s =
         , HH.div [ style "display:flex;gap:8px" ]
             [ flatBtn "RESET" ResetPat
             , flatBtn "DICE" Dice
-            ]
-        , HH.div [ style "display:flex;align-items:center;gap:7px" ]
-            [ HH.span [ style $ engrave <> ";font-size:8px;opacity:0.6;width:30px;flex:0 0 auto" ] [ HH.text "FOCUS" ]
-            , HH.button
-                [ HE.onClick \_ -> CycleFocus
-                , style $ "flex:1;padding:6px 0;border:1px solid #a8a392;border-radius:6px;cursor:pointer;"
-                    <> "font-family:'SF Mono',Menlo,monospace;font-size:10px;letter-spacing:0.1em;color:#3f3c33;"
-                    <> "background:linear-gradient(#efece1,#ddd9cb)" ]
-                [ HH.text (focusLabel s.focus) ]
             ]
         , lampRow s
         , readout "TEMPO" (show (round s.clockTempo) <> " bpm" <> (if s.clockLocked then " ⛓" else " ·"))
@@ -575,7 +471,7 @@ controlsPanel s =
             ]
         ]
     , HH.div [ style $ engrave <> ";font-size:8px;opacity:0.55;text-align:center;line-height:1.5;margin-top:12px" ]
-        [ HH.text "CLICK A PAD LANE TO PROGRAM IT · ⌥ ALT-DRAG ANY CELL TO RATCHET" ]
+        [ HH.text "DRAG ANY HEATMAP CELL UP / DOWN TO RATCHET IT" ]
     ]
 
 padSvg :: forall m. State -> H.ComponentHTML Action () m
@@ -640,10 +536,6 @@ crosshair cx cy =
 concatMap' :: forall a b. Array a -> (a -> Array b) -> Array b
 concatMap' xs f = concatMap f xs
 
--- Clamp a Number to [lo, hi].
-clampNum :: Number -> Number -> Number -> Number
-clampNum lo hi v = if v < lo then lo else if v > hi then hi else v
-
 -- An SVG mouse handler (the `svgEl` row is `()`, so the typed HE.onMouse* props
 -- don't fit; coerce the MouseEvent decode like Ui.Knob's mousedown handler).
 svgMouse :: forall r i. String -> (ME.MouseEvent -> i) -> HH.IProp r i
@@ -657,35 +549,8 @@ patternPanel :: forall m. State -> H.ComponentHTML Action () m
 patternPanel s =
   panel "PATTERN" "flex:1 1 480px;min-width:380px"
     [ HH.div [ style "width:100%;max-width:640px;margin:0 auto" ] [ heatSvg s ]
-    , sectionLabel "KIT — COLOUR · LABEL (EDIT) · DERIVED METER"
-    , HH.div [ style "display:flex;flex-wrap:wrap;gap:5px 14px;max-width:640px;margin:0 auto" ]
-        (map (laneLegendRow s) (range 0 (M.padCount s.bal - 1)))
-    , HH.div [ style $ engrave <> ";font-size:8px;opacity:0.5;margin-top:12px;line-height:1.5;max-width:640px" ]
-        [ HH.text "EDIT LANE SOURCES + ROUTES IN THE SOURCE PANE → · A LANE LINE IS \"label \"\"mini-notation\"\"\"; A ROUTE LINE IS \"route \"\"…\"\"\". COMMENT (--) TO MUTE." ]
-    ]
-
-sectionLabel :: forall m. String -> H.ComponentHTML Action () m
-sectionLabel t = HH.div [ style $ engrave <> ";font-size:9px;margin:16px 0 7px;opacity:0.65" ] [ HH.text t ]
-
--- One kit-legend entry: colour chip, the (editable, except OH) label, and the
--- lane's derived meter. Sources + routes are authored in the SOURCE pane now;
--- this row keeps the kit identity visible and the digraph editable.
-laneLegendRow :: forall m. State -> Int -> H.ComponentHTML Action () m
-laneLegendRow s i =
-  HH.div [ style "display:flex;align-items:center;gap:5px" ]
-    [ HH.div [ style $ "width:9px;height:9px;border-radius:2px;flex:0 0 auto;background:" <> M.padColor s.bal i ] []
-    , if i == M.ohPadIndex then
-        HH.span [ style "flex:0 0 auto;font-family:Georgia,serif;font-size:9px;color:#3f3c33;letter-spacing:0.04em" ]
-          [ HH.text (M.padName s.bal i) ]
-      else
-        HH.input
-          [ HP.value (M.padName s.bal i)
-          , HE.onValueInput (SetLabel i)
-          , style $ "width:30px;flex:0 0 auto;padding:2px 4px;border:1px solid #b3ae9c66;border-radius:3px;"
-              <> "background:#efece1;font-family:'SF Mono',Menlo,monospace;font-size:9px;color:#3f3c33"
-          ]
-    , HH.span [ style $ engrave <> ";font-size:8px;opacity:0.5;flex:0 0 auto" ]
-        [ HH.text ("×" <> show (Tidal.laneMeterAt s.bal i)) ]
+    , HH.div [ style $ engrave <> ";font-size:8px;opacity:0.5;margin-top:14px;line-height:1.6;max-width:640px" ]
+        [ HH.text "THE 3 GRIDS VOICES (BD · SD · HH). FAINT = THE INTERPOLATED LANDSCAPE THE X/Y CURSOR SELECTS; SOLID = WHAT FIRES AT THIS DENSITY. DRAG A CELL UP/DOWN TO RATCHET IT." ]
     ]
 
 heatSvg :: forall m. State -> H.ComponentHTML Action () m
@@ -695,12 +560,10 @@ heatSvg s =
     cols = 32
     colW = 16.0
     rowH = 30.0
-    groupGap = 9.0   -- vertical space between banks of 4 lanes (MPC-style)
-    nLanes = 3 + M.padCount b
-    -- the top of a lane, with a gap added before each new bank of 4.
-    laneY lane = toNumber lane * rowH + toNumber (lane / 4) * groupGap
+    nLanes = 3
+    laneY lane = toNumber lane * rowH
     w = toNumber cols * colW
-    h = toNumber nLanes * rowH + toNumber ((nLanes - 1) / 4) * groupGap
+    h = toNumber nLanes * rowH
     rectBlock x0 y0 wid hgt c op =
       svgEl "rect"
         [ svgAttr "x" (show x0), svgAttr "y" (show y0)
@@ -745,92 +608,18 @@ heatSvg s =
         hint = if n > 1 && not fires then [ ratchetHint x y c n ] else []
       in
         [ landscape ] <> segs <> acc <> hint
-    -- a pad lane drawn at its OWN meter (the polymeter): m equal cells across
-    -- the full width, lit from the merged source+click mask, with thin ticks at
-    -- the source's TRUE onset positions (which need not land on the cells — that
-    -- is the Patterning-ring geometry showing through the notation).
-    padRow i =
-      let
-        laneIdx = M.firstPadLane + i
-        m = Tidal.laneMeterAt b i
-        mask = Tidal.laneCellMaskAt b i
-        onsets = Tidal.laneSourceOnsetsAt b i
-        routed = Tidal.routedOnsetsForLane b i
-        y = laneY laneIdx
-        -- the lane's own hue (its kit identity) and the routing accent, each
-        -- desaturated when the OTHER layer is in focus.
-        kc = if s.focus == FocusPatterns then dimGrey else M.padColor b i
-        rc = if s.focus == FocusKit then dimGrey else routeAccent
-        cw = w / toNumber m
-        -- Each pill is LEFT-aligned to its cell's onset (the beat), with the gap
-        -- on the right — so every lane's cell 0 starts at the same x, lined up
-        -- with the Grids downbeat and the first beat line. The gap scales with
-        -- cell width (capped) so fat and thin cells both read as distinct pills.
-        leftPad = 2.0
-        gap = clampNum 2.0 13.0 (cw * 0.13)
-        cell k =
-          let
-            x = toNumber k * cw
-            on = fromMaybe false (mask !! k)
-          in
-            [ svgEl "rect"
-                [ svgAttr "x" (show (x + leftPad)), svgAttr "y" (show (y + 2.0))
-                , svgAttr "width" (show (max 2.0 (cw - leftPad - gap))), svgAttr "height" (show (rowH - 4.0)), svgAttr "rx" "3"
-                , svgAttr "fill" kc, svgAttr "fill-opacity" (if on then "0.85" else "0.07")
-                , svgAttr "stroke" kc, svgAttr "stroke-opacity" (if on then "0.92" else "0.20")
-                , svgAttr "stroke-width" (if on then "1.1" else "0.7")
-                , svgAttr "style" "pointer-events:none" ] [] ]
-        -- ticks only when the source packs MORE onsets than there are cells (a
-        -- nested pattern like `[bd sn] cp`) — then they reveal the true sub-cell
-        -- hits the meter grid can't show. Aligned onsets would just be noise.
-        tick o =
-          [ svgEl "line"
-              [ svgAttr "x1" (show (o * w)), svgAttr "y1" (show (y + 3.0))
-              , svgAttr "x2" (show (o * w)), svgAttr "y2" (show (y + rowH - 3.0))
-              , svgAttr "stroke" "#1c1a12", svgAttr "stroke-opacity" "0.35", svgAttr "stroke-width" "0.8"
-              , svgAttr "style" "pointer-events:none" ] [] ]
-        ticks = if length onsets > m then onsets `concatMap'` tick else []
-        -- routed hits: accent-colour markers at their TRUE x (the routing
-        -- pattern's positions, not this lane's cells), overlaid on the row.
-        mark o =
-          [ svgEl "rect"
-              [ svgAttr "x" (show (o * w)), svgAttr "y" (show (y + 3.5))
-              , svgAttr "width" "6.5", svgAttr "height" (show (rowH - 7.0)), svgAttr "rx" "3"
-              , svgAttr "fill" rc, svgAttr "fill-opacity" "0.95"
-              , svgAttr "stroke" "#efece1", svgAttr "stroke-opacity" "0.35", svgAttr "stroke-width" "0.6"
-              , svgAttr "style" "pointer-events:none" ] [] ]
-        marks = routed `concatMap'` mark
-      in
-        (range 0 (m - 1) `concatMap'` cell) <> ticks <> marks
-    -- a pad cell click target: plain click toggles that cell of the lane's
-    -- clicked overlay (stacked onto the typed source).
-    padTarget i k =
-      let
-        m = Tidal.laneMeterAt b i
-        cw = w / toNumber m
-        x = toNumber k * cw
-        y = laneY (M.firstPadLane + i)
-      in
-        svgEl "rect"
-          [ svgAttr "x" (show x), svgAttr "y" (show y)
-          , svgAttr "width" (show (cw - 1.0)), svgAttr "height" (show (rowH - 1.0))
-          , svgAttr "fill" "rgba(0,0,0,0)", svgAttr "style" "cursor:pointer;pointer-events:all"
-          , svgMouse "mousedown" \_ -> TogglePad i k ] []
-    -- Grids cells have no plain action (hits come from X/Y); Alt-drag sets the
-    -- beat's ratchet (drag up/down).
+    -- Grids cells have no plain action (hits come from X/Y); a vertical drag
+    -- sets the beat's ratchet (up = more retriggers).
     gridsTarget lane step =
       let
         x = toNumber step * colW
         y = laneY lane
-        act e =
-          if ME.altKey e then StartDrag (DCell lane step) (M.ratchetAt b lane step)
-          else NoOp
       in
         svgEl "rect"
           [ svgAttr "x" (show x), svgAttr "y" (show y)
           , svgAttr "width" (show (colW - 1.0)), svgAttr "height" (show (rowH - 1.0))
           , svgAttr "fill" "rgba(0,0,0,0)", svgAttr "style" "cursor:ns-resize;pointer-events:all"
-          , svgMouse "mousedown" act ] []
+          , svgMouse "mousedown" \_ -> StartDrag (DCell lane step) (M.ratchetAt b lane step) ] []
     playhead =
       svgEl "rect"
         [ svgAttr "x" (show (toNumber s.playStep * colW)), svgAttr "y" "0"
@@ -851,26 +640,22 @@ heatSvg s =
         , svgAttr "y2" (show (laneY lane))
         , svgAttr "stroke" "#3f3c33", svgAttr "stroke-opacity" "0.12", svgAttr "stroke-width" "0.6"
         , svgAttr "style" "pointer-events:none" ] []
-    laneName lane = if lane < 3 then "Grids " <> M.instName lane else M.padName b (lane - 3)
     rowLabel lane =
       svgEl "text"
         [ svgAttr "x" "3", svgAttr "y" (show (laneY lane + 11.0))
         , svgAttr "fill" "#3f3c33", svgAttr "fill-opacity" "0.55", svgAttr "style" "pointer-events:none"
         , svgAttr "font-size" "8", svgAttr "font-family" "Georgia,serif" ]
-        [ HH.text (laneName lane) ]
-    pads = range 0 (M.padCount b - 1)
+        [ HH.text ("Grids " <> M.instName lane) ]
     visuals =
-      (range 0 2 `concatMap'` \lane -> range 0 (cols - 1) `concatMap'` \step -> gridsCell lane step)
-        <> (pads `concatMap'` padRow)
+      range 0 2 `concatMap'` \lane -> range 0 (cols - 1) `concatMap'` \step -> gridsCell lane step
     targets =
-      (range 0 2 `concatMap'` \lane -> range 0 (cols - 1) `concatMap'` \step -> [ gridsTarget lane step ])
-        <> (pads `concatMap'` \i -> range 0 (Tidal.laneMeterAt b i - 1) `concatMap'` \k -> [ padTarget i k ])
+      range 0 2 `concatMap'` \lane -> range 0 (cols - 1) `concatMap'` \step -> [ gridsTarget lane step ]
   in
     svgEl "svg"
       [ svgAttr "viewBox" ("0 0 " <> show w <> " " <> show h)
       , svgAttr "width" "100%", svgAttr "style" "display:block;max-height:90vh" ]
       ( visuals <> beatLines
-          <> map laneDivider (filter (\l -> l `mod` 4 /= 0) (range 1 (nLanes - 1)))
+          <> map laneDivider (range 1 (nLanes - 1))
           <> [ playhead ] <> map rowLabel (range 0 (nLanes - 1)) <> targets )
 
 bigKnob :: forall m. KnobTarget -> String -> String -> M.Balistes -> H.ComponentHTML Action () m
@@ -890,31 +675,3 @@ bigKnob target color label b =
 grLabel :: forall m. String -> H.ComponentHTML Action () m
 grLabel t = HH.div [ style $ engrave <> ";font-size:8px;opacity:0.7" ] [ HH.text t ]
 
--- ---------------------------------------------------------------------------
--- Source panel — the live state as a read-only `balistes { … }` cell, the
--- growing spec of the BEAM module (selectable so it's copyable).
--- ---------------------------------------------------------------------------
-
-sourcePanel :: forall m. State -> H.ComponentHTML Action () m
-sourcePanel s =
-  panel "SOURCE" "flex:0 0 340px"
-    [ -- the reflective header: knob/pad/drag/click state as a read-only cell.
-      HH.pre
-        [ style $ "font-family:'SF Mono',Menlo,monospace;font-size:10px;line-height:1.5;"
-            <> "color:#3f3c33;opacity:0.62;white-space:pre-wrap;word-break:break-word;margin:0 0 10px;"
-            <> "user-select:text;-webkit-user-select:text" ]
-        [ HH.text (Source.headerText s.bal) ]
-    , HH.div [ style "height:1px;background:#00000018;margin-bottom:8px" ] []
-    , HH.div [ style $ engrave <> ";font-size:8px;opacity:0.6;margin-bottom:6px" ]
-        [ HH.text "PATTERNS — EDITABLE · -- TO MUTE A LINE" ]
-    , -- the instrument: editable lane sources + routes, parsed live.
-      HH.textarea
-        [ HP.value s.sourceDoc
-        , HE.onValueInput SetSourceDoc
-        , HP.spellcheck false
-        , style $ "flex:1 1 auto;min-height:260px;resize:none;box-sizing:border-box;"
-            <> "padding:9px 10px;border:1px solid #a8a392;border-radius:6px;background:#f4f1e8;"
-            <> "font-family:'SF Mono',Menlo,monospace;font-size:11px;line-height:1.55;color:#2b2922;"
-            <> "white-space:pre;overflow:auto;outline:none"
-        ]
-    ]

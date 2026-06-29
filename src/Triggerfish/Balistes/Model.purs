@@ -30,44 +30,24 @@ module Triggerfish.Balistes.Model
   , setPush
   , dillaPush
   , flatPush
-  , PatternLane
-  , firstPadLane
-  , padCount
-  , padNote
-  , padName
-  , padColor
-  , padSource
-  , padClicks
-  , setPadSource
-  , setPadClicks
-  , setPadName
-  , clickAt
-  , setRoute
-  , setRoutes
-  , ohPadIndex
   , clampI
   ) where
 
 import Prelude
 
-import Data.Array (length, replicate, updateAt, (!!))
-import Data.Maybe (Maybe(..), fromMaybe, maybe)
+import Data.Array (replicate, updateAt, (!!))
+import Data.Maybe (fromMaybe)
 import Triggerfish.Balistes.Engine (Trigger, evaluateStep, freshPerturbations, readDrumMap, clampDensity)
 
--- | The whole module state. The top block is the faithful firmware core (X, Y,
--- | densities, randomness, step, perts, rng) — what agrees byte-for-byte with
--- | the BEAM `balistes_voice`, driving the three Grids lanes (BD/SD/HH). The
--- | bottom block is the Triggerfish overlay that grows past the hardware:
+-- | The whole module state — the faithful firmware core (X, Y, densities,
+-- | randomness, step, perts, rng), what agrees byte-for-byte with the BEAM
+-- | `balistes_voice` driving the three Grids lanes (BD/SD/HH), plus a thin
+-- | Triggerfish overlay the engine ignores and the component applies on emit:
 -- |   • `ratchet` — a 96-slot mask (lane*32+step) over the Grids lanes, >=1 =
 -- |     subdivide that beat into N retriggers when it fires (drag a cell);
--- |   • `push` — four signed-ms timing offsets, one per lane (BD/SD/HH/OH): the
--- |     J Dilla "drag and push" feel (snare late, hats early);
--- |   • `patternLanes` — the explicit drum-machine lanes *below* the Grids
--- |     device: each a name + MIDI note + colour + 32-step on/off pattern, NOT
--- |     Grids-generated. Lane 3 is OH (open hat); the rest are the other pads
--- |     (clap, toms, cymbals, perc) — 16 pads total. These are the lanes that
--- |     will eventually be authored in Tidal; today you click them in.
--- | The Grids engine ignores the overlay; the component applies it on emit.
+-- |   • `push` — four signed-ms timing offsets, one per voice (BD/SD/HH/OH): the
+-- |     J Dilla "drag and push" feel (snare late, hats early). The 4th slot is
+-- |     the open hat, which now emerges from the HH stream via the OPEN dial.
 type Balistes =
   { x :: Int
   , y :: Int
@@ -81,32 +61,11 @@ type Balistes =
   -- authoring overlay (Triggerfish extension, not in the firmware)
   , ratchet :: Array Int
   , push :: Array Int
-  , patternLanes :: Array PatternLane
-  -- routing patterns: `s`-style multi-voice mini-notation whose atoms route to
-  -- the Tidal kit lanes (and OH) by label. A small stack; merged at playback.
-  , routes :: Array String
-  }
-
--- | One explicit pad lane below the Grids device: a named MIDI voice that is a
--- | *pattern*, not a fixed grid. Two layers, merged (`stack`) at playback:
--- |   • `source` — a Tidal mini-notation string (`"bd*3 ~ bd(3,8)"`); the
--- |     vendored engine parses + queries it, and the lane's visible subdivision
--- |     (its "meter") is *derived* from this pattern — polymeter across lanes.
--- |   • `clicks` — a hand-toggled overlay on that derived meter (so empty/odd
--- |     patterns still give you cells to click). Length tracks the meter.
--- | Onsets fire at their true fractional time in the cycle — nothing snaps to
--- | the Grids 32-grid. See `Triggerfish.Balistes.Tidal` for meter/onset logic.
-type PatternLane =
-  { name :: String
-  , note :: Int
-  , color :: String
-  , source :: String
-  , clicks :: Array Boolean
   }
 
 -- | Central node, moderate density, no randomness — the firmware's neutral
 -- | starting point. Perturbations pre-sampled for the pattern starting at 0;
--- | overlay starts inert (no ratchets, no timing push, empty OH lane).
+-- | overlay starts inert (no ratchets, no timing push).
 defaultBalistes :: Balistes
 defaultBalistes =
   let seeded = (freshPerturbations 0 initialSeed)
@@ -120,48 +79,10 @@ defaultBalistes =
     , step: 0
     , perts: seeded.perts
     , rng: seeded.rng
-    -- one ratchet slot per (lane, step) over the 3 Grids lanes only (96 = 3×32);
-    -- pad lanes subdivide through their pattern (`bd*2`), not the ratchet overlay
+    -- one ratchet slot per (lane, step) over the 3 Grids lanes (96 = 3×32)
     , ratchet: replicate 96 1
     , push: [ 0, 0, 0, 0 ]
-    , patternLanes: defaultPatternLanes
-    , routes: [ "", "", "" ]
     }
-
--- | The pad-lane index of OH — the open hat, the one lane that bridges the
--- | Grids device and the Tidal kit. Fixed label, sits with the Grids group,
--- | reachable by routing (`oh`) and by click.
-ohPadIndex :: Int
-ohPadIndex = 0
-
--- | The cell count a pad lane falls back to when its `source` is empty or
--- | unparseable — a friendly 16ths grid you can click straight into.
-defaultMeter :: Int
-defaultMeter = 16
-
--- | The 13 pad lanes below the 3-lane Grids device. OH first (index 0) — the
--- | fixed bridge into the Grids group — then the standalone Tidal drum machine:
--- | 12 lanes with editable digraph labels, a GM-ish kit, on their own MIDI
--- | channel. Routing patterns address these by label.
-defaultPatternLanes :: Array PatternLane
-defaultPatternLanes =
-  [ mkLane "OH" 46 "#2f8a8a"   -- open hat — the Grids/Tidal bridge (label fixed)
-  -- the Tidal kit (labels editable; routing matches against them)
-  , mkLane "bd" 36 "#b04a2f"   -- kick
-  , mkLane "sn" 38 "#5f7d3f"   -- snare
-  , mkLane "ch" 42 "#3f6f8a"   -- closed hat
-  , mkLane "cp" 39 "#a8683f"   -- clap
-  , mkLane "rs" 37 "#8a6f3f"   -- rim / side-stick
-  , mkLane "lt" 45 "#6a5f8a"   -- low tom
-  , mkLane "mt" 47 "#7a5f7a"   -- mid tom
-  , mkLane "ht" 50 "#8a5f6a"   -- high tom
-  , mkLane "cr" 49 "#5f7a8a"   -- crash
-  , mkLane "rd" 51 "#5f8a7a"   -- ride
-  , mkLane "cb" 56 "#8a8a3f"   -- cowbell
-  , mkLane "sh" 70 "#7a8a6a"   -- shaker
-  ]
-  where
-  mkLane name note color = { name, note, color, source: "", clicks: replicate defaultMeter false }
 
 -- | A nonzero seed (xorshift fixed-points at 0).
 initialSeed :: Int
@@ -291,64 +212,3 @@ dillaPush b = b { push = [ 0, 16, -9, -9 ] }
 flatPush :: Balistes -> Balistes
 flatPush b = b { push = [ 0, 0, 0, 0 ] }
 
--- ---------------------------------------------------------------------------
--- Pattern lanes (the explicit drum-machine pads below the Grids device)
--- ---------------------------------------------------------------------------
-
--- | The heatmap lane index of the first pad lane (after BD/SD/HH).
-firstPadLane :: Int
-firstPadLane = 3
-
--- | How many pad lanes there are.
-padCount :: Balistes -> Int
-padCount b = length b.patternLanes
-
--- | A pad lane's mini-notation source string (the Tidal layer).
-padSource :: Balistes -> Int -> String
-padSource b i = maybe "" _.source (b.patternLanes !! i)
-
--- | A pad lane's clicked overlay (length = its derived meter).
-padClicks :: Balistes -> Int -> Array Boolean
-padClicks b i = maybe [] _.clicks (b.patternLanes !! i)
-
--- | Set a pad lane's mini-notation source (raw — meter/clicks resize is handled
--- | by `Triggerfish.Balistes.Tidal.setLaneSource`, which knows the parser).
-setPadSource :: Int -> String -> Balistes -> Balistes
-setPadSource i src b = case b.patternLanes !! i of
-  Just pl -> b { patternLanes = fromMaybe b.patternLanes (updateAt i (pl { source = src }) b.patternLanes) }
-  Nothing -> b
-
--- | Replace a pad lane's clicked overlay wholesale.
-setPadClicks :: Int -> Array Boolean -> Balistes -> Balistes
-setPadClicks i cs b = case b.patternLanes !! i of
-  Just pl -> b { patternLanes = fromMaybe b.patternLanes (updateAt i (pl { clicks = cs }) b.patternLanes) }
-  Nothing -> b
-
--- | Rename a Tidal kit lane (its label is what routing patterns match against).
--- | OH's label is fixed, so the component declines to call this for it.
-setPadName :: Int -> String -> Balistes -> Balistes
-setPadName i nm b = case b.patternLanes !! i of
-  Just pl -> b { patternLanes = fromMaybe b.patternLanes (updateAt i (pl { name = nm }) b.patternLanes) }
-  Nothing -> b
-
--- | Set routing-pattern slot `i` (a small fixed stack).
-setRoute :: Int -> String -> Balistes -> Balistes
-setRoute i src b = b { routes = fromMaybe b.routes (updateAt i src b.routes) }
-
--- | Replace the whole routing stack (variable length) — used when the SOURCE
--- | document is the authority for routes.
-setRoutes :: Array String -> Balistes -> Balistes
-setRoutes rs b = b { routes = rs }
-
--- | Is the clicked overlay of pad lane `i` on at cell `cell`?
-clickAt :: Balistes -> Int -> Int -> Boolean
-clickAt b i cell = maybe false (\pl -> fromMaybe false (pl.clicks !! cell)) (b.patternLanes !! i)
-
-padNote :: Balistes -> Int -> Int
-padNote b i = maybe 46 _.note (b.patternLanes !! i)
-
-padName :: Balistes -> Int -> String
-padName b i = maybe "" _.name (b.patternLanes !! i)
-
-padColor :: Balistes -> Int -> String
-padColor b i = maybe "#888888" _.color (b.patternLanes !! i)
