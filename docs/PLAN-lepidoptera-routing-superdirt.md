@@ -28,8 +28,31 @@ is valid PureScript eDSL.
   ratchet as record *fields*, not bespoke string syntax — constraint (1)).
   Faithful `balistesWith` print/parse; **migrate the localStorage Store from the
   current bespoke JSON to the Lepidoptera rendering.**
-- **A3 — Odonus round-trip.** It has the printer (the SOURCE pane); add the
-  *parser* side; persist its scenes/state as Lepidoptera.
+- **A3 — Odonus round-trip.** Bigger than it looks: the existing SOURCE pane is a
+  one-directional human *summary* (roman numerals, `E(3,8)`, `speedRatio`), not a
+  parseable form — so A3 is a fresh structured round-trip (printer + parser) over
+  the **full authored setup** (the `Odonus` core *plus* the State-side features the
+  current text omits: the gen matrix `gen :: Array GenSource`, Marbles
+  `genSpread`/`genBias`, `swing`, `velHumanize`, `stepDiv`). Exclude runtime
+  fields (head `cursor`/`seqPos`/`accumulator`/`pendStep`, chord `ix`/`phase`,
+  `genSeed`). Scale serialises as `root` + interval array (not the lossy display
+  name). Cells stay parallel parameter-arrays (`notes:[…]`, `gate:[T,F,…]`) — those
+  *do* compress and reveal the sequence, per AC's rule.
+
+  **AC's quantization reframe (2026-06-29, the design target):** model Odonus as
+  **parameterized by a single pluggable pitch source** — `quantize :: PitchSource`
+  = `scale <ivls> root <r>` | `vetula <voiceId>` | `chords [pcsets] every <n>`.
+  There is **NO second quantization**: Odonus snaps its own chromatic knob-values
+  (cell value, offset+scaled by head) to *one* source — a simple scale **or** the
+  Vetula progression — and **Vetula's pitches are taken as-is** (no re-snap),
+  because Vetula intentionally yields borrowed/out-of-scale tones and key changes
+  that a scale snap would destroy. A scale is just the constant-set degenerate case
+  of "a sequence of allowed pitch-sets." This **collapses today's `chord :: ChordSeq`
+  + `follow :: Maybe Int` + `voiceChords` into the one `quantize` field**;
+  `renderCell` becomes chromatic-value → map/snap to the source's current pitch-set
+  → octave; the distribution mapping also runs against that set. **This is a model
+  refactor, not format-only — so A3 merges with A4 (Vetula is one of the sources)
+  into one coherent next-session block.**
 - **A4 — Vetula round-trip.** Define its eDSL form (chord/pitch sets +
   progressions as `Tidal.*` values); persist; replace the in-memory library.
 - **A5 — The library-manager surface** on the Tidal page: browse / name / load /
