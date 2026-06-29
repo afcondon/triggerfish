@@ -18,11 +18,11 @@ module Triggerfish.Balistes.Component (component) where
 
 import Prelude
 
-import Data.Array (concatMap, filter, null, range)
+import Data.Array (concatMap, filter, length, null, range, (!!))
 import Data.Foldable (any, for_, sum)
 import Data.Int (round, toNumber)
 import Data.Int.Bits (shr)
-import Data.Maybe (Maybe(..))
+import Data.Maybe (Maybe(..), fromMaybe)
 import Data.String.Common (joinWith)
 import Effect (Effect)
 import Effect.Aff.Class (class MonadAff)
@@ -90,8 +90,15 @@ type State =
   , nowMicros :: Number
   , dragging :: Maybe Drag
   , dragSub :: Maybe H.SubscriptionId
-  -- when armed, a slot click STORES the current control point; otherwise recalls.
+  -- snapshot-bank arming: capArm → a slot click STORES; seqArm → a slot click
+  -- APPENDS to the sequence; neither → recall. Mutually exclusive.
   , capArm :: Boolean
+  , seqArm :: Boolean
+  -- sequence playback: enabled, the current step, and the absolute bar the step
+  -- began on (a big-negative sentinel forces an immediate advance on enable).
+  , seqEnabled :: Boolean
+  , seqPos :: Int
+  , seqStartBar :: Int
   }
 
 data Action
@@ -109,7 +116,11 @@ data Action
   | DillaPreset
   | FlatGroove
   | ToggleCap                  -- arm/disarm capture-on-slot-click
-  | SlotClick Int Boolean      -- slot i; shift = clear, else recall (or store when armed)
+  | ToggleSeqBuild             -- arm/disarm append-to-sequence-on-slot-click
+  | SlotClick Int Boolean      -- slot i; shift = clear; else store/append/recall by arm
+  | ToggleSeq                  -- play/stop the snapshot sequence
+  | SeqBarsDelta Int           -- nudge bars-per-step
+  | ClearSeq
   | NoOp
 
 component :: forall i o m. MonadAff m => H.Component Query i o m
@@ -120,7 +131,8 @@ component =
         , running: false, master: false, playStep: 0, flash: []
         , binnacle: Nothing, midiOut: Nothing, midiName: "…"
         , clockTempo: 120.0, clockLocked: false, clockBeat: 0.0, clockBar: 0, anchorCount: 0
-        , nowMicros: 0.0, dragging: Nothing, dragSub: Nothing, capArm: false }
+        , nowMicros: 0.0, dragging: Nothing, dragSub: Nothing
+        , capArm: false, seqArm: false, seqEnabled: false, seqPos: 0, seqStartBar: 0 }
     , render
     , eval: H.mkEval H.defaultEval
         { handleAction = handleAction, handleQuery = handleQuery, initialize = Just Initialize }
@@ -178,8 +190,21 @@ handleAction = case _ of
     st <- H.get
     when (st.master && st.running) do
       let
-        playedStep = st.bal.step
-        r = M.tick st.bal
+        -- a bar is 16 sixteenth-steps. If the sequence is running and this step
+        -- begins a step boundary (seqBars bars elapsed), advance the path and
+        -- recall its snapshot BEFORE ticking, so the kit morphs at the boundary.
+        bar = tick.index / stepsPerBar
+        seqLen = length st.bal.sequence
+        advancing = st.seqEnabled && seqLen > 0 && (bar - st.seqStartBar) >= st.bal.seqBars
+        nextPos = if advancing then (st.seqPos + 1) `mod` seqLen else st.seqPos
+        nextStartBar = if advancing then bar else st.seqStartBar
+        bal0 =
+          if advancing then case M.seqStepAt st.bal nextPos of
+            Just slot -> M.recallSnapshot slot st.bal
+            Nothing -> st.bal
+          else st.bal
+        playedStep = bal0.step
+        r = M.tick bal0
         stepMs = 0.25 * 60000.0 / max 30.0 st.clockTempo
       for_ st.midiOut \out -> liftEffect $
         -- the three Grids voices (step-quantised, firmware-faithful). A firing
@@ -188,19 +213,20 @@ handleAction = case _ of
         -- short blip. Ratchet roll + per-voice Dilla push applied on emit.
         for_ r.fired \t ->
           let
-            b = st.bal
-            opens = t.inst == 2 && M.opensAt b playedStep
+            opens = t.inst == 2 && M.opensAt bal0 playedStep
             note = if opens then ohNote else M.instNote t.inst
             durMs = if opens then openGateMs else closedGateMs
             pushLane = if opens then 3 else t.inst   -- open hats ride the OH push slot
-            delay0 = max 0.0 (tick.delayMs + toNumber (M.pushOf pushLane b))
-            n = M.ratchetAt b t.inst playedStep
+            delay0 = max 0.0 (tick.delayMs + toNumber (M.pushOf pushLane bal0))
+            n = M.ratchetAt bal0 t.inst playedStep
             v0 = if t.accent then accentVel else baseVel
           in
             emitHit out drumChannel stepMs delay0 note durMs v0 n
       let
         gridsFlash = map (\t -> { inst: t.inst, accent: t.accent, fireUnixMicros: tick.fireUnixMicros }) r.fired
-      H.modify_ \s -> s { bal = r.bal, playStep = playedStep, flash = gridsFlash <> s.flash }
+      H.modify_ \s -> s
+        { bal = r.bal, playStep = playedStep, seqPos = nextPos, seqStartBar = nextStartBar
+        , flash = gridsFlash <> s.flash }
 
   Frame -> do
     st <- H.get
@@ -265,13 +291,23 @@ handleAction = case _ of
 
   DillaPreset -> H.modify_ \s -> s { bal = M.dillaPush s.bal }
   FlatGroove -> H.modify_ \s -> s { bal = M.flatPush s.bal }
-  ToggleCap -> H.modify_ \s -> s { capArm = not s.capArm }
-  -- shift → clear; armed → store the current control point (and disarm);
+  -- the two arms are mutually exclusive.
+  ToggleCap -> H.modify_ \s -> s { capArm = not s.capArm, seqArm = false }
+  ToggleSeqBuild -> H.modify_ \s -> s { seqArm = not s.seqArm, capArm = false }
+  -- shift → clear; capArm → store (and disarm); seqArm → append to the path;
   -- otherwise recall whatever's there (instant jump).
   SlotClick i shift -> H.modify_ \s ->
     if shift then s { bal = M.clearSnapshot i s.bal }
     else if s.capArm then s { bal = M.storeSnapshot i s.bal, capArm = false }
+    else if s.seqArm then s { bal = M.appendSeq i s.bal }
     else s { bal = M.recallSnapshot i s.bal }
+  -- enabling: seed seqPos at the end and force an immediate advance to step 0
+  -- (the big-negative sentinel makes the first Step's bar gap exceed seqBars).
+  ToggleSeq -> H.modify_ \s ->
+    if s.seqEnabled then s { seqEnabled = false }
+    else s { seqEnabled = true, seqPos = max 0 (length s.bal.sequence - 1), seqStartBar = -100000 }
+  SeqBarsDelta d -> H.modify_ \s -> s { bal = M.setSeqBars (s.bal.seqBars + d) s.bal }
+  ClearSeq -> H.modify_ \s -> s { bal = M.clearSeq s.bal, seqEnabled = false, seqPos = 0 }
   NoOp -> pure unit
 
 -- | Emit one already-resolved hit: schedule `note` at `delay0` for `durMs`, or —
@@ -312,6 +348,10 @@ rigUrl = "ws://127.0.0.1:3012/ws"
 -- | One Grids step = a 16th note (32 steps = two bars). Same lookahead as Odonus.
 gridCfg :: Scheduler.GridConfig
 gridCfg = { stepBeats: 0.25, lookaheadMs: 120.0, tickMs: 25 }
+
+-- | Sixteenth-note steps per 4/4 bar — the unit the snapshot sequence counts in.
+stepsPerBar :: Int
+stepsPerBar = 16
 
 midiPortName :: String
 midiPortName = "IAC"
@@ -509,8 +549,6 @@ controlsPanel s =
         ]
     , HH.div [ style $ engrave <> ";font-size:8px;opacity:0.5;line-height:1.5;margin-top:6px" ]
         [ HH.text "OPEN turns the loudest HH hits into open hats (teal) — choke + ring. Drag any heatmap cell up/down to ratchet it." ]
-    , HH.div [ style "height:1px;background:#00000018;margin:14px 0 10px" ] []
-    , snapshotSection s
     ]
 
 -- The snapshot bank: capture the whole control point (X/Y + densities +
@@ -651,9 +689,79 @@ patternPanel :: forall m. State -> H.ComponentHTML Action () m
 patternPanel s =
   panel "PATTERN" "flex:1 1 480px;min-width:380px"
     [ HH.div [ style "width:100%;max-width:640px;margin:0 auto" ] [ heatSvg s ]
-    , HH.div [ style $ engrave <> ";font-size:8px;opacity:0.5;margin-top:14px;line-height:1.6;max-width:640px" ]
+    , HH.div [ style $ engrave <> ";font-size:8px;opacity:0.5;margin-top:10px;line-height:1.6;max-width:640px" ]
         [ HH.text "THE 3 GRIDS VOICES (BD · SD · HH). FAINT = THE INTERPOLATED LANDSCAPE THE X/Y CURSOR SELECTS; SOLID = WHAT FIRES AT THIS DENSITY. DRAG A CELL UP/DOWN TO RATCHET IT." ]
+    , HH.div [ style "max-width:640px;margin:20px auto 0" ]
+        [ snapshotSection s
+        , HH.div [ style "height:1px;background:#00000018;margin:16px 0 12px" ] []
+        , sequenceSection s
+        ]
     ]
+
+-- The snapshot sequence: a path of slot references the playhead walks, each
+-- held `seqBars` bars; advancing recalls that snapshot, morphing the kit. Build
+-- it with SEQ+ (then click snapshots in order); play it with ▸.
+sequenceSection :: forall m. State -> H.ComponentHTML Action () m
+sequenceSection s =
+  let
+    seq = s.bal.sequence
+    n = length seq
+  in
+    HH.div_
+      [ HH.div [ style "display:flex;align-items:center;gap:8px;margin-bottom:8px" ]
+          [ HH.span [ style $ engrave <> ";font-size:9px;flex:0 0 auto" ] [ HH.text "SEQUENCE" ]
+          , armBtn (if s.seqEnabled then "❚❚ STOP" else "▸ PLAY") s.seqEnabled ToggleSeq
+          , armBtn (if s.seqArm then "● BUILD" else "SEQ +") s.seqArm ToggleSeqBuild
+          , HH.div [ style "display:flex;align-items:center;gap:4px;margin-left:6px" ]
+              [ HH.span [ style $ engrave <> ";font-size:8px;opacity:0.6" ] [ HH.text "BARS/STEP" ]
+              , stepBtn "−" (SeqBarsDelta (-1))
+              , HH.span [ style "font-family:'SF Mono',Menlo,monospace;font-size:11px;color:#3f3c33;width:14px;text-align:center" ] [ HH.text (show s.bal.seqBars) ]
+              , stepBtn "+" (SeqBarsDelta 1)
+              ]
+          , flatBtn "CLEAR" ClearSeq
+          ]
+      , if n == 0 then
+          HH.div [ style $ engrave <> ";font-size:8px;opacity:0.5;line-height:1.6" ]
+            [ HH.text (if s.seqArm then "ARMED — CLICK SNAPSHOTS IN ORDER TO LAY THE PATH." else "PRESS SEQ + THEN CLICK SNAPSHOTS TO LAY A PATH; ▸ PLAYS IT, MORPHING THE KIT EACH STEP.") ]
+        else
+          HH.div [ style "display:flex;flex-wrap:wrap;gap:5px" ]
+            (map (seqCell s) (range 0 (n - 1)))
+      ]
+
+-- One step of the sequence lane: the snapshot index, highlighted on the playhead.
+seqCell :: forall m. State -> Int -> H.ComponentHTML Action () m
+seqCell s p =
+  let
+    slot = fromMaybe 0 (s.bal.sequence !! p)
+    here = s.seqEnabled && p == s.seqPos
+  in
+    HH.div
+      [ style $ "width:26px;height:26px;border-radius:5px;display:flex;align-items:center;justify-content:center;"
+          <> "font-family:'SF Mono',Menlo,monospace;font-size:11px;box-sizing:border-box;"
+          <> (if here then "background:#1c1a12;color:#efece1;border:1px solid #1c1a12"
+              else "background:#cfcabb;color:#3f3c33;border:1px solid #a8a392") ]
+      [ HH.text (show (slot + 1)) ]
+
+-- A small square stepper button (− / +).
+stepBtn :: forall m. String -> Action -> H.ComponentHTML Action () m
+stepBtn label act =
+  HH.button
+    [ HE.onClick \_ -> act
+    , style $ "width:18px;height:18px;border:1px solid #a8a392;border-radius:4px;cursor:pointer;"
+        <> "font-family:'SF Mono',Menlo,monospace;font-size:11px;color:#3f3c33;background:#efece1;"
+        <> "display:flex;align-items:center;justify-content:center;padding:0" ]
+    [ HH.text label ]
+
+-- A small arm/toggle button (brass when active).
+armBtn :: forall m. String -> Boolean -> Action -> H.ComponentHTML Action () m
+armBtn label active act =
+  HH.button
+    [ HE.onClick \_ -> act
+    , style $ "padding:4px 11px;border:1px solid #a8a392;border-radius:5px;cursor:pointer;"
+        <> "font-family:'SF Mono',Menlo,monospace;font-size:9px;letter-spacing:0.06em;"
+        <> (if active then "color:#1c1a12;background:linear-gradient(#c8a86a,#b8975a)"
+            else "color:#3f3c33;background:linear-gradient(#efece1,#ddd9cb)") ]
+    [ HH.text label ]
 
 heatSvg :: forall m. State -> H.ComponentHTML Action () m
 heatSvg s =

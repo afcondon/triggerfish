@@ -41,12 +41,16 @@ module Triggerfish.Balistes.Model
   , storeSnapshot
   , recallSnapshot
   , clearSnapshot
+  , appendSeq
+  , clearSeq
+  , setSeqBars
+  , seqStepAt
   , clampI
   ) where
 
 import Prelude
 
-import Data.Array (replicate, updateAt, (!!))
+import Data.Array (length, replicate, updateAt, (!!))
 import Data.Maybe (Maybe(..), fromMaybe)
 import Triggerfish.Balistes.Engine (Trigger, evaluateStep, freshPerturbations, readDrumMap, clampDensity)
 
@@ -81,6 +85,11 @@ type Balistes =
   -- of snapshots: record two-handed gestures one mouse can't make (kick up
   -- while snare down), then recall them instantly.
   , snapshots :: Array (Maybe Snapshot)
+  -- the snapshot SEQUENCE: an ordered path of slot indices, each held `seqBars`
+  -- bars; the playhead recalls each as it lands, morphing the kit along the
+  -- path (Grids-style song structure).
+  , sequence :: Array Int
+  , seqBars :: Int
   }
 
 -- | A captured point in control space: the X/Y cursor + the three densities +
@@ -121,6 +130,8 @@ defaultBalistes =
     -- a touch of open by default, so the loudest hats breathe
     , open: 70
     , snapshots: replicate snapshotCount Nothing
+    , sequence: []
+    , seqBars: 1
     }
 
 -- | A nonzero seed (xorshift fixed-points at 0).
@@ -304,4 +315,25 @@ recallSnapshot i b = case snapshotAt b i of
 
 clearSnapshot :: Int -> Balistes -> Balistes
 clearSnapshot i b = b { snapshots = fromMaybe b.snapshots (updateAt i Nothing b.snapshots) }
+
+-- ---------------------------------------------------------------------------
+-- Snapshot sequence — the path through control space
+-- ---------------------------------------------------------------------------
+
+-- | Append a snapshot slot to the sequence path.
+appendSeq :: Int -> Balistes -> Balistes
+appendSeq i b = b { sequence = b.sequence <> [ i ] }
+
+clearSeq :: Balistes -> Balistes
+clearSeq b = b { sequence = [] }
+
+setSeqBars :: Int -> Balistes -> Balistes
+setSeqBars n b = b { seqBars = clampI 1 16 n }
+
+-- | The snapshot slot at sequence position `p` (wrapping), if the path is
+-- | non-empty.
+seqStepAt :: Balistes -> Int -> Maybe Int
+seqStepAt b p =
+  let n = length b.sequence
+  in if n == 0 then Nothing else b.sequence !! (mod p n)
 
