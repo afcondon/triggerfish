@@ -63,7 +63,17 @@ instrument for now. Note: scenes-as-named-persistent-Lepidoptera is the BRIDGE �
 if every instrument's presets are named + persistent + Lepidoptera, a future
 unified arrangement page could sequence across instruments without rework.
 
-### Odonus — Key pane re-order (NEXT BUILD; design locked)
+### Odonus — Key pane re-order ✅ DONE (`decd2f5`)
+
+Built exactly as locked below — OCTAVE common at top, the Scale·Chord·Vetula
+selector, scalar-transpose folded into the Scale section, inactive sources greyed
+(opacity + pointer-events:none). The Chord source re-exposes the internal McMullen
+progression. **The `renderCell` single-snap change landed with it** (chord/Vetula
+source → chromatic value snaps straight to the chord tones, no scale pre-snap / no
+scalar transpose) — **AUDIO-SENSITIVE, AC to audition on the rig.** A model
+conflict surfaced + fixed: `recomputeFollow` used to force the overlay off when
+`follow=Nothing`, which the 100ms voice poll used to clobber the Chord source back
+to Scale; it now no-ops when not following (the source selection owns the overlay).
 
 AC: *"the scale at the top is no longer king … I think just making sub-sections
 and graying out the inactive ones would be enough."* Locked layout:
