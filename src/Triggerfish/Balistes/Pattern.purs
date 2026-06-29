@@ -19,6 +19,7 @@ module Triggerfish.Balistes.Pattern
   , laneName
   , laneNote
   , laneFromNote
+  , laneIndexOf
   , FixedPattern
   , Cell
   , TrigCond(..)
@@ -93,6 +94,10 @@ laneNote i = fromMaybe (36 + i) (map _.note (canonKit !! i))
 -- | the importer then asks the user where it goes).
 laneFromNote :: Int -> Maybe Int
 laneFromNote n = findIndex (\k -> k.note == n) canonKit
+
+-- | The kit lane index for a name (`"BD"` → 0). Used parsing the eDSL form back.
+laneIndexOf :: String -> Maybe Int
+laneIndexOf nm = findIndex (\k -> k.name == nm) canonKit
 
 -- | A trig condition — when (on which loop pass) a hit fires. `CAlways` always;
 -- | `CEvery x y` fires only on pass `x` of every `y` (Elektron-style 1:4 etc).

@@ -97,6 +97,17 @@ hold:**
 2. **The whole thing is valid PureScript eDSL** — a real `…With { … }` value,
    not an ad-hoc text format.
 
+**Refinement (AC, 2026-06-29) — use mini-notation only where it compresses a lot
+and reveals structure.** Mini-notation is the right register for `bd*4`,
+`x(3,8)`: a short string that makes a repetition or Euclidean structure *legible*.
+It is the *wrong* register for a dense per-cell grid with arbitrary velocities —
+chaining a rhythm string against a parallel `# gain "0.77 0.9 …"` string is
+*harder* to read, not easier (a human can't visually line the two up), and it
+isn't lossless. So a Balistes fixed rhythm serialises as a **fully-structured
+record** (lanes, hits, per-cell overlay as fields), not as mini-notation.
+Constraint (1) is about keeping embedded mini-notation compatible *where it
+genuinely appears*, not about forcing everything into it.
+
 Hold those two and the portability story is honest and useful: people extract
 mini-notation bits for their own Tidal sets, and we share whole presets with
 other eDSL-based apps — **Calypso today, maybe others later** — because they

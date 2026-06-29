@@ -1,9 +1,10 @@
 -- | Triggerfish.Balistes.Store — localStorage persistence for the fixed-rhythm
--- | library. Triggerfish is a browser instrument, so the patterns you author
--- | live in the browser; this serialises the library to a plain-JSON form
--- | (records/arrays/ints — `TrigCond` flattened to two ints) and round-trips it
--- | through `window.localStorage`. Lossy/corrupt reads degrade to `Nothing`, so
--- | the app falls back to the bundled patterns rather than crashing.
+-- | library, now serialised as **Lepidoptera eDSL text** (one `balistesPattern`
+-- | rendering per pattern), not bespoke JSON. The eDSL text is the canonical,
+-- | transferable form — a single pattern's text drops straight into Calypso or
+-- | ships to purerl-tidal, which speak the same dialect. The JSON here is only
+-- | the local envelope holding the array of texts. Mirrors Selene's Store;
+-- | converges the A2 step of the Lepidoptera plan.
 module Triggerfish.Balistes.Store
   ( saveLibrary
   , loadLibrary
@@ -11,47 +12,29 @@ module Triggerfish.Balistes.Store
 
 import Prelude
 
+import Data.Array (mapMaybe)
 import Data.Maybe (Maybe)
 import Data.Nullable (Nullable, toMaybe)
 import Effect (Effect)
-import Triggerfish.Balistes.Pattern (Cell, FixedPattern, TrigCond(..))
+import Triggerfish.Balistes.Lepidoptera (parsePattern, printPattern)
+import Triggerfish.Balistes.Pattern (FixedPattern)
 
+-- v2: format changed from bespoke JSON (v1) to eDSL text.
 storeKey :: String
-storeKey = "triggerfish.balistes.library.v1"
-
--- The on-disk shapes: plain JS objects (cond → cx/cy, CAlways = 0/0).
-type SCell = { vel :: Int, prob :: Int, cx :: Int, cy :: Int, ratchet :: Int }
-type SPattern = { name :: String, steps :: Int, notes :: Array Int, grid :: Array (Array SCell) }
+storeKey = "triggerfish.balistes.library.v2"
 
 foreign import _save :: String -> String -> Effect Unit
-foreign import _load :: String -> Effect (Nullable (Array SPattern))
-foreign import _stringify :: Array SPattern -> String
+foreign import _load :: String -> Effect (Nullable (Array String))
+foreign import _stringify :: Array String -> String
 
-toSCell :: Cell -> SCell
-toSCell c = case c.cond of
-  CAlways -> { vel: c.vel, prob: c.prob, cx: 0, cy: 0, ratchet: c.ratchet }
-  CEvery x y -> { vel: c.vel, prob: c.prob, cx: x, cy: y, ratchet: c.ratchet }
-
-fromSCell :: SCell -> Cell
-fromSCell s =
-  { vel: s.vel
-  , prob: s.prob
-  , ratchet: s.ratchet
-  , cond: if s.cy <= 0 then CAlways else CEvery s.cx s.cy
-  }
-
-toSPattern :: FixedPattern -> SPattern
-toSPattern p = { name: p.name, steps: p.steps, notes: p.notes, grid: map (map toSCell) p.grid }
-
-fromSPattern :: SPattern -> FixedPattern
-fromSPattern s = { name: s.name, steps: s.steps, notes: s.notes, grid: map (map fromSCell) s.grid }
-
--- | Persist the whole library (best-effort — failures are swallowed in the FFI).
+-- | Persist the library: each pattern rendered to its eDSL text, the array of
+-- | texts stored as a JSON envelope (best-effort — FFI swallows storage errors).
 saveLibrary :: Array FixedPattern -> Effect Unit
-saveLibrary lib = _save storeKey (_stringify (map toSPattern lib))
+saveLibrary lib = _save storeKey (_stringify (map printPattern lib))
 
--- | Load the stored library, or `Nothing` if absent / unparseable.
+-- | Load the library, parsing each eDSL text; unparseable entries are dropped,
+-- | and an absent / corrupt store yields `Nothing` → bundled fallback.
 loadLibrary :: Effect (Maybe (Array FixedPattern))
 loadLibrary = do
   m <- _load storeKey
-  pure (map (map fromSPattern) (toMaybe m))
+  pure (map (mapMaybe parsePattern) (toMaybe m))
