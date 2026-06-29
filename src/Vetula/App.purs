@@ -1983,7 +1983,7 @@ progressionPanel st =
               [ HP.style "margin-left: auto; border: 1px solid #b8860b; background: #fbf6e9; color: #7a5c00; cursor: pointer; padding: 3px 12px; border-radius: 4px; font-size: 12px; font-weight: 600;"
               , HE.onClick \_ -> PlayPath
               ]
-              [ HH.text "▶ play" ]
+              [ HH.text "▶ preview" ]
           ]
       , if length steps == 0 then HH.text "" else
           HH.div [ HP.style "display: flex; align-items: center; gap: 6px; margin: 0 0 8px;" ]
@@ -2181,10 +2181,14 @@ loadedView st pp =
           [ HH.button [ HP.style "border: 1px solid #d8d8d8; background: #fafafa; cursor: pointer; padding: 3px 10px; border-radius: 4px; font-size: 12px; color: #6a6a6a;", HE.onClick \_ -> UnloadProg ] [ HH.text "← library" ]
           , HH.span [ HP.style "font-size: 14px; font-weight: 600; color: #2a2a2a;" ] [ HH.text pp.name ]
           , HH.button
-              [ HP.style ("border: 1px solid " <> (if st.playing then "#b23b28" else "#b8860b") <> "; cursor: pointer; padding: 4px 16px; border-radius: 4px; font-size: 13px; font-weight: 600; "
-                  <> (if st.playing then "background: #fbeae7; color: #b23b28;" else "background: #fbf6e9; color: #7a5c00;"))
+              -- An ARM/cue subservient to the shell master (like the machine
+              -- instruments): amber when armed, neutral when not — never red,
+              -- since red ■ STOP is the master's alone. The label matches their
+              -- vocabulary (▶ ARM / ◆ CUED / ❚❚ PLAYING).
+              [ HP.style ("cursor: pointer; padding: 4px 16px; border-radius: 4px; font-size: 13px; font-weight: 600; letter-spacing: 0.08em; "
+                  <> (if st.armed then "border: 1px solid #b8860b; background: #fbf6e9; color: #7a5c00;" else "border: 1px solid #d8d8d8; background: #fafafa; color: #6a6a6a;"))
               , HE.onClick \_ -> ToggleArm ]
-              [ HH.text (if not st.armed then "▶ arm" else if st.playing then "■ stop" else "◆ cued") ]
+              [ HH.text (if not st.armed then "▶ ARM" else if st.playing then "❚❚ PLAYING" else "◆ CUED") ]
           , numField "bpm" st.tempo SetTempo
           ]
       , HH.div [ HP.style "display: flex; align-items: baseline; gap: 12px; margin: 8px 0 6px;" ]
