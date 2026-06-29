@@ -31,6 +31,7 @@ import Effect.Timer (setInterval)
 import Halogen as H
 import Halogen.HTML as HH
 import Halogen.HTML.Events as HE
+import Halogen.HTML.Properties as HP
 import Halogen.Subscription as HS
 import Unsafe.Coerce (unsafeCoerce)
 import Binnacle as Binnacle
@@ -40,6 +41,7 @@ import Binnacle.Scheduler as Scheduler
 import Triggerfish.Balistes.Model as M
 import Triggerfish.Balistes.Pattern as P
 import Triggerfish.Balistes.Source as Source
+import Triggerfish.Balistes.Store as Store
 import Triggerfish.SourceQuery (Query(..))
 import Triggerfish.Balistes.Tables as T
 import Triggerfish.Ui.Knob (knob)
@@ -149,6 +151,8 @@ data Action
   | SetCellRatchet Int         -- nudge its ratchet count
   | CycleCellCond              -- step its trig condition
   | ClearSelected              -- clear the selected cell + deselect
+  | NewPattern                 -- append a fresh empty rhythm + select it
+  | SetPatternName String      -- rename the active rhythm
   | NoOp
 
 component :: forall i o m. MonadAff m => H.Component Query i o m
@@ -213,6 +217,9 @@ handleAction = case _ of
               Nothing -> "no '" <> midiPortName <> "' — ports: " <> joinWith ", " names
         HS.notify midiL (MidiReady mout nm)
       Nothing -> HS.notify midiL (MidiReady Nothing "unavailable")
+    -- restore the saved rhythm library (falls back to the bundled patterns).
+    mlib <- liftEffect Store.loadLibrary
+    for_ mlib \lib -> H.modify_ _ { library = lib }
     H.modify_ _ { binnacle = Just bin }
 
   Step tick -> do
@@ -343,6 +350,7 @@ handleAction = case _ of
     st <- H.get
     for_ st.dragSub H.unsubscribe
     H.modify_ _ { dragging = Nothing, dragSub = Nothing }
+    persistLib   -- a note drag (NFixed) may have edited the library
 
   DillaPreset -> H.modify_ \s -> s { bal = M.dillaPush s.bal }
   FlatGroove -> H.modify_ \s -> s { bal = M.flatPush s.bal }
@@ -369,24 +377,54 @@ handleAction = case _ of
   ToggleEdit -> H.modify_ \s -> s { editing = not s.editing }
   -- click selects a cell for the NOTE inspector, creating a hit at the default
   -- velocity if the cell was empty; shift-click clears it.
-  CellClick lane step shift -> H.modify_ \s -> case s.active of
-    AGrids -> s
-    AFixed i ->
-      if shift then s
-        { library = modLibAt i (P.modifyCell lane step (const P.emptyCell)) s.library
-        , selected = if s.selected == Just { lane, step } then Nothing else s.selected }
-      else s
-        { library = modLibAt i (\p -> if P.firesAt p lane step then p else P.modifyCell lane step (const (P.hitCell editVel)) p) s.library
-        , selected = Just { lane, step } }
-  SetCellVel d -> H.modify_ (modSelectedCell \c -> c { vel = clampI 1 127 (c.vel + d) })
-  SetCellProb d -> H.modify_ (modSelectedCell \c -> c { prob = clampI 0 100 (c.prob + d) })
-  SetCellRatchet d -> H.modify_ (modSelectedCell \c -> c { ratchet = clampI 1 8 (c.ratchet + d) })
-  CycleCellCond -> H.modify_ (modSelectedCell \c -> c { cond = P.cycleCond c.cond })
-  ClearSelected -> H.modify_ \s -> case s.active, s.selected of
-    AFixed i, Just { lane, step } ->
-      s { library = modLibAt i (P.modifyCell lane step (const P.emptyCell)) s.library, selected = Nothing }
-    _, _ -> s
+  CellClick lane step shift -> do
+    H.modify_ \s -> case s.active of
+      AGrids -> s
+      AFixed i ->
+        if shift then s
+          { library = modLibAt i (P.modifyCell lane step (const P.emptyCell)) s.library
+          , selected = if s.selected == Just { lane, step } then Nothing else s.selected }
+        else s
+          { library = modLibAt i (\p -> if P.firesAt p lane step then p else P.modifyCell lane step (const (P.hitCell editVel)) p) s.library
+          , selected = Just { lane, step } }
+    persistLib
+  SetCellVel d -> do
+    H.modify_ (modSelectedCell \c -> c { vel = clampI 1 127 (c.vel + d) })
+    persistLib
+  SetCellProb d -> do
+    H.modify_ (modSelectedCell \c -> c { prob = clampI 0 100 (c.prob + d) })
+    persistLib
+  SetCellRatchet d -> do
+    H.modify_ (modSelectedCell \c -> c { ratchet = clampI 1 8 (c.ratchet + d) })
+    persistLib
+  CycleCellCond -> do
+    H.modify_ (modSelectedCell \c -> c { cond = P.cycleCond c.cond })
+    persistLib
+  ClearSelected -> do
+    H.modify_ \s -> case s.active, s.selected of
+      AFixed i, Just { lane, step } ->
+        s { library = modLibAt i (P.modifyCell lane step (const P.emptyCell)) s.library, selected = Nothing }
+      _, _ -> s
+    persistLib
+  -- a fresh empty rhythm, selected and opened in EDIT so all 16 lanes show.
+  NewPattern -> do
+    H.modify_ \s ->
+      let n = length s.library
+          p = P.emptyPattern ("pattern " <> show (n + 1)) 32
+      in s { library = s.library <> [ p ], active = AFixed n, editing = true, selected = Nothing }
+    persistLib
+  SetPatternName name -> do
+    H.modify_ \s -> case s.active of
+      AFixed i -> s { library = modLibAt i (_ { name = name }) s.library }
+      AGrids -> s
+    persistLib
   NoOp -> pure unit
+
+-- | Save the current rhythm library to localStorage (after any edit).
+persistLib :: forall o m. MonadAff m => H.HalogenM State Action () o m Unit
+persistLib = do
+  lib <- H.gets _.library
+  liftEffect (Store.saveLibrary lib)
 
 -- | Emit one already-resolved hit: schedule `note` at `delay0` for `durMs`, or —
 -- | when the cell is ratcheted (n > 1) — explode it into n evenly-spaced
@@ -925,7 +963,17 @@ patternSwitcher :: forall m. State -> H.ComponentHTML Action () m
 patternSwitcher s =
   HH.div [ style "display:flex;gap:6px;flex-wrap:wrap;margin-bottom:16px;max-width:640px" ]
     ( [ chip "◆ GRIDS" (s.active == AGrids) (SelectPattern AGrids) ]
-        <> mapWithIndex (\i pat -> chip pat.name (s.active == AFixed i) (SelectPattern (AFixed i))) s.library )
+        <> mapWithIndex (\i pat -> chip pat.name (s.active == AFixed i) (SelectPattern (AFixed i))) s.library
+        <> [ newChip ] )
+
+-- The "+ NEW" tab: appends a fresh empty rhythm (dashed to read as an action).
+newChip :: forall m. H.ComponentHTML Action () m
+newChip =
+  HH.button
+    [ HE.onClick \_ -> NewPattern
+    , style $ "padding:6px 13px;border:1px dashed #a8a392;border-radius:6px;cursor:pointer;"
+        <> "font-family:Georgia,serif;font-size:12px;color:#6a6657;background:#00000006" ]
+    [ HH.text "+ NEW" ]
 
 chip :: forall m. String -> Boolean -> Action -> H.ComponentHTML Action () m
 chip label active act =
@@ -958,7 +1006,12 @@ fixedBody :: forall m. State -> Int -> P.FixedPattern -> H.ComponentHTML Action 
 fixedBody s idx pat =
   HH.div_
     [ HH.div [ style "display:flex;align-items:center;gap:10px;max-width:640px;margin:0 auto 12px" ]
-        [ armBtn (if s.editing then "● EDITING" else "EDIT") s.editing ToggleEdit
+        [ HH.input
+            [ HP.value pat.name
+            , HE.onValueInput SetPatternName
+            , style $ "padding:5px 9px;border:1px solid #a8a392;border-radius:5px;background:#f3f1e8;"
+                <> "font-family:Georgia,serif;font-size:13px;color:#1c1a12;width:150px" ]
+        , armBtn (if s.editing then "● EDITING" else "EDIT") s.editing ToggleEdit
         , HH.span [ style $ engrave <> ";font-size:8px;opacity:0.6;line-height:1.5" ]
             [ HH.text (if s.editing
                 then "ALL 16 LANES — CLICK CELLS TO TOGGLE HITS · DRAG A ♪NOTE TO RETUNE A LANE."
