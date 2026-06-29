@@ -25,53 +25,72 @@ immediately; two flagged for discussion before building; the rest deferred.*
 
 ## Open for discussion (do NOT build until talked through)
 
-### Odonus — scenes become the recallable-preset store
+### Odonus — scenes become the recallable-preset store ✅ DONE (`dd533c4`)
 
-AC: *"scenes needs re-thinking — isn't that where we should be saving our
-recallable presets from?"* This answers the long-open
-`scenes-vs-content-library = one mechanism or two` question: **ONE mechanism —
-scenes ARE the Odonus preset library.**
+AC: *"I like 'Capture current' taking a name from a form and storing the whole
+Odonus config under that name, then switching them easily."* Answers the
+long-open `scenes-vs-content-library` question: **ONE mechanism — scenes ARE the
+Odonus preset library.** Built:
 
-Today scenes (`Scene = {name, odo}`) capture only the `Odonus` core, are
-ephemeral (not persisted), and serve live performance (phase-preserving recall +
-bar-boundary chaining). A3 added live-patch persistence; A5 exposes only the one
-"live" entry to the manager. The proposed unification:
+- **`Scene = {name, text}`** — the full authored patch rendered to Lepidoptera
+  eDSL (parsed back on recall; lossless). Replaces `{name, odo}` (which dropped
+  the State-side gen/swing/etc.).
+- A **name input** in the SCENES pane; "＋ Capture current" stores the whole
+  config under it.
+- **Persistence**: the Store holds `{live, scenes}` (v2), restored on init — the
+  scene library AND the live working patch survive reload.
+- **A5** exposes the scenes (`AskLibrary` → scenes; `LoadEntry i` cold-loads;
+  `ImportText` adds a scene). Cold load from the manager **hard-resets** the
+  playheads; the in-instrument SCENES strip **phase-preserves** (and chaining
+  uses the phase-preserving path) — two entry points, one store.
+- The **per-instrument sequencer stays** and now sequences the named scenes
+  (AC's "continue in that vein" — see the locality note below).
 
-- **Scene captures the full `OdonusPatch`** (not just `odo`) — so a recalled
-  scene restores the gen matrix / swing / velHumanize / stepDiv too.
-- **Scenes persist** (Lepidoptera-serialised, via an extended Store), replacing
-  the single-live-patch persistence A3 shipped.
-- **A5 exposes scenes** as Odonus's library entries: `AskLibrary` returns the
-  scenes, `LoadEntry i` recalls scene `i`, `ImportText` adds a scene.
-- The live roles stay: **recall still phase-preserves** (carry the playhead
-  cursor/seqPos/accumulator across an `applyPatch`), and **chaining** still
-  auto-advances scenes at bar boundaries. Two entry points, one store: live
-  recall (phase-preserving) vs a cold library load (hard reset) — same scenes.
+**Flagged future — monoidal loading (AC's aside, elegant):** if a patch were
+*every field a `Maybe` + a defined empty `Odonus` + a `Monoid`*, loading would
+be LAYERABLE — a preset that sets only some fields (just the scale, just the
+heads) overlaid on the current state; stack presets by `<>`. Today's scenes are
+full-config (every field set). Worth doing once there's a reason to partial-load;
+it's a real generalisation of "preset" toward "patch diff".
 
-Open question: is a cold load from the A5 manager phase-preserving or a hard
-reset? (Proposed: hard reset from the manager, phase-preserving from the
-in-instrument SCENES strip.)
+**Open architectural tension AC named (NOT resolved) — sequencer locality:**
+*"sequencing is composition, all sequencers should be on one page"* (Odonus +
+Balistes + Selene + Vetula sequencers coalescing into a new arrangement page)
+**vs** *"each instrument's sequencing needs to be right there so you don't bounce
+panes for a simple structure."* AC: we already have sequencing in Odonus,
+Balistes, Vetula → *"continue in that vein, but I'm really not sure."* Per-
+instrument for now. Note: scenes-as-named-persistent-Lepidoptera is the BRIDGE —
+if every instrument's presets are named + persistent + Lepidoptera, a future
+unified arrangement page could sequence across instruments without rework.
 
-### Odonus — Key pane re-order (AC has an idea; talk it through)
+### Odonus — Key pane re-order (NEXT BUILD; design locked)
 
-AC: *"the scale at the top is no longer king and has no role at all if Vetula is
-providing the quantisation targets … I have an idea how we can reorganise this,
-but we'll have to talk it through a bit."*
+AC: *"the scale at the top is no longer king … I think just making sub-sections
+and graying out the inactive ones would be enough."* Locked layout:
 
-Framing (mine, as a starting point for AC's idea): under the single
-`quantize :: PitchSource` model (scale | chords | vetula), the **pitch SOURCE is
-the top-level choice**, not the scale. When the source is Vetula or a chord
-progression, the scale plays no part in the final snap. So the Key pane's
-hierarchy should flip:
+- **OCTAVE at the very top, COMMON to all sources** — octave transpose is always
+  safe regardless of where the pitch-set comes from (AC).
+- **The source selector** — *Scale-Key · Chord · Vetula* (AC: *"your idea
+  Scale-Key / Chord / Vetula is good"*). The existing FOLLOW-VETULA pane folds in
+  here. The selected source's sub-section is active; the others grey out.
+- **Scale sub-section** (root / type / mask / SPREAD) — and **SCALAR TRANSPOSE
+  lives HERE, not common**: AC — *"it's not safe to transpose by a scalar unless
+  you know the scale, which you won't if it's from Vetula."* So scalar-transpose
+  greys out with the Scale section when Vetula/chords drive.
+- **Distribution** stays (shapes the chromatic knob-value before the snap).
 
-- **Top = the pitch-source selector** (Scale · Chords · follow-a-Vetula-voice) —
-  the new king (this is where the FOLLOW-VETULA pane already lives; fold it in).
-- The **scale controls** (root / type / mask / SPREAD) become a sub-section that
-  matters only when source = Scale — grey/collapse it when Vetula or chords drive.
-- **Octave / scalar-transpose / distribution** apply regardless (they shape the
-  chromatic knob-value *before* the snap), so they stay put.
+Pairs with the **deferred `renderCell` single-snap change** — when the source
+isn't the scale, the scale gets no say, which is exactly the re-order's premise.
+(Audio-sensitive — AC should audition.)
 
-This re-order is the natural moment to also land the **deferred `renderCell`
-single-snap change** (no scale pre-snap before a chord/Vetula snap) — when the
-source isn't the scale, the scale genuinely has no role, which is exactly the
-re-order's premise. AC to share their own reorganisation idea before we build.
+**New source idea (AC) — Chord from live MIDI input (KeyStep 37).** *"Perhaps we
+can replace or enhance Chord by taking notes from, say, my KeyStep 37 too."* The
+generalisation: the Chord/external source is just a **pitch-SET fed from
+somewhere** — a static McMullen progression, a followed Vetula voice, OR **live
+held notes on a MIDI input device** (play a chord on the KeyStep → Odonus
+quantises its playheads to those notes). Needs a NEW capability: **Web MIDI
+INPUT** (Triggerfish is output-only today; `Midi.requestAccess` already exposes
+inputs). Slots into the same selector as a fourth option (or the Chord source's
+"from MIDI" mode) — the same "external pitch-set" socket the Vetula feed already
+proves. Build after the re-order + the `renderCell` fix; design it as
+`PitchSource` gaining a `MidiIn`-style case.
