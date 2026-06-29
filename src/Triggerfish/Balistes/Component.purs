@@ -114,6 +114,11 @@ type State =
   -- the pattern family: which one is playing, and the fixed-rhythm library.
   , active :: Active
   , library :: Array P.FixedPattern
+  -- EDIT mode for a fixed rhythm: reveal all 16 lanes (greyed where empty) so
+  -- you can add voices; cells are click-to-toggle either way.
+  , editing :: Boolean
+  -- the cell the NOTE inspector is editing (lane, step) on the active rhythm.
+  , selected :: Maybe { lane :: Int, step :: Int }
   }
 
 data Action
@@ -137,6 +142,13 @@ data Action
   | SeqBarsDelta Int           -- nudge bars-per-step
   | ClearSeq
   | SelectPattern Active       -- switch the playing pattern (Grids / a rhythm)
+  | ToggleEdit                 -- reveal all 16 lanes on the active fixed rhythm
+  | CellClick Int Int Boolean  -- select a cell (lane, step); shift = clear
+  | SetCellVel Int             -- nudge the selected cell's velocity
+  | SetCellProb Int            -- nudge its probability
+  | SetCellRatchet Int         -- nudge its ratchet count
+  | CycleCellCond              -- step its trig condition
+  | ClearSelected              -- clear the selected cell + deselect
   | NoOp
 
 component :: forall i o m. MonadAff m => H.Component Query i o m
@@ -149,7 +161,7 @@ component =
         , clockTempo: 120.0, clockLocked: false, clockBeat: 0.0, clockBar: 0, anchorCount: 0
         , nowMicros: 0.0, dragging: Nothing, dragSub: Nothing
         , capArm: false, seqArm: false, seqEnabled: false, seqPos: 0, seqStartBar: 0
-        , active: AGrids, library: P.bundledPatterns }
+        , active: AGrids, library: P.bundledPatterns, editing: false, selected: Nothing }
     , render
     , eval: H.mkEval H.defaultEval
         { handleAction = handleAction, handleQuery = handleQuery, initialize = Just Initialize }
@@ -211,14 +223,16 @@ handleAction = case _ of
       AFixed i -> case st.library !! i of
         Nothing -> pure unit
         Just pat -> do
-          let fixedStep = tick.index `mod` pat.steps
+          let
+            fixedStep = tick.index `mod` pat.steps
+            loop = tick.index / pat.steps          -- which pass through the loop
+            stepMs = 0.25 * 60000.0 / max 30.0 st.clockTempo
           for_ st.midiOut \out -> liftEffect $
             for_ (P.usedLanes pat) \lane ->
-              let v = P.velAt pat lane fixedStep
-              in when (v > 0) $
-                   Midi.scheduleNote out
-                     { channel: drumChannel, note: P.noteOf pat lane, velocity: v
-                     , delayMs: max 0.0 tick.delayMs, durMs: laneGateMs lane }
+              let c = P.cellAt pat lane fixedStep
+              in when (c.vel > 0 && P.condFires c.cond loop && probPass c.prob tick.index lane fixedStep) $
+                   emitHit out drumChannel stepMs (max 0.0 tick.delayMs)
+                     (P.noteOf pat lane) (laneGateMs lane) c.vel c.ratchet
           H.modify_ _ { playStep = fixedStep }
       AGrids -> do
         let
@@ -352,6 +366,26 @@ handleAction = case _ of
   -- switching pattern just changes which branch the next Step takes; hits are
   -- one-shot, so nothing to silence.
   SelectPattern a -> H.modify_ _ { active = a }
+  ToggleEdit -> H.modify_ \s -> s { editing = not s.editing }
+  -- click selects a cell for the NOTE inspector, creating a hit at the default
+  -- velocity if the cell was empty; shift-click clears it.
+  CellClick lane step shift -> H.modify_ \s -> case s.active of
+    AGrids -> s
+    AFixed i ->
+      if shift then s
+        { library = modLibAt i (P.modifyCell lane step (const P.emptyCell)) s.library
+        , selected = if s.selected == Just { lane, step } then Nothing else s.selected }
+      else s
+        { library = modLibAt i (\p -> if P.firesAt p lane step then p else P.modifyCell lane step (const (P.hitCell editVel)) p) s.library
+        , selected = Just { lane, step } }
+  SetCellVel d -> H.modify_ (modSelectedCell \c -> c { vel = clampI 1 127 (c.vel + d) })
+  SetCellProb d -> H.modify_ (modSelectedCell \c -> c { prob = clampI 0 100 (c.prob + d) })
+  SetCellRatchet d -> H.modify_ (modSelectedCell \c -> c { ratchet = clampI 1 8 (c.ratchet + d) })
+  CycleCellCond -> H.modify_ (modSelectedCell \c -> c { cond = P.cycleCond c.cond })
+  ClearSelected -> H.modify_ \s -> case s.active, s.selected of
+    AFixed i, Just { lane, step } ->
+      s { library = modLibAt i (P.modifyCell lane step (const P.emptyCell)) s.library, selected = Nothing }
+    _, _ -> s
   NoOp -> pure unit
 
 -- | Emit one already-resolved hit: schedule `note` at `delay0` for `durMs`, or —
@@ -369,6 +403,16 @@ emitHit out channel stepMs delay0 note durMs velocity n =
          Midi.scheduleNote out
            { channel, note, velocity
            , delayMs: delay0 + toNumber k * sub, durMs: sub * 0.9 }
+
+-- | Apply a function to library pattern `i` (no-op if out of range).
+modLibAt :: Int -> (P.FixedPattern -> P.FixedPattern) -> Array P.FixedPattern -> Array P.FixedPattern
+modLibAt i f lib = fromMaybe lib (modifyAt i f lib)
+
+-- | Apply a function to the selected cell of the active fixed rhythm.
+modSelectedCell :: (P.Cell -> P.Cell) -> State -> State
+modSelectedCell f s = case s.active, s.selected of
+  AFixed i, Just { lane, step } -> s { library = modLibAt i (P.modifyCell lane step f) s.library }
+  _, _ -> s
 
 applyKnob :: KnobTarget -> Int -> M.Balistes -> M.Balistes
 applyKnob (KDens i) v = M.setDensity i v
@@ -409,6 +453,21 @@ accentVel = 120
 
 baseVel :: Int
 baseVel = 78
+
+-- | Velocity a freshly-clicked fixed-rhythm cell lands at (a firm hit).
+editVel :: Int
+editVel = 98
+
+-- | Does a `prob`% cell fire this step? Deterministic per (absolute step, lane,
+-- | step) so it's reproducible but varies pass-to-pass (the step index grows).
+probPass :: Int -> Int -> Int -> Int -> Boolean
+probPass prob idx lane step =
+  prob >= 100 || (prob > 0 && cellHash idx lane step < prob)
+
+cellHash :: Int -> Int -> Int -> Int
+cellHash idx lane step =
+  let h = idx * 73856093 + lane * 19349663 + step * 83492791
+  in (h `mod` 100 + 100) `mod` 100
 
 -- | Gate lengths: an open hat rings, a closed hat is a blip.
 openGateMs :: Number
@@ -498,10 +557,12 @@ render s =
   HH.div
     [ style $ "position:fixed;top:var(--tf-bar);left:0;right:0;bottom:0;display:flex;align-items:stretch;overflow-x:auto;overflow-y:hidden;"
         <> "user-select:none;-webkit-user-select:none;background:#b7b1a0;font-family:Georgia,serif" ]
-    -- CONTROL is Grids' own chrome (the X/Y morph + knobs); a fixed rhythm has
-    -- no control space, so that column drops out and PATTERN takes the room.
+    -- The middle column is Grids' CONTROL chrome (X/Y morph + knobs); for a
+    -- fixed rhythm it becomes the NOTE inspector for the selected cell.
     ( [ transportPanel s ]
-        <> (if s.active == AGrids then [ controlsPanel s ] else [])
+        <> (case s.active of
+              AGrids -> [ controlsPanel s ]
+              AFixed _ -> [ inspectorPanel s ])
         <> [ patternPanel s ] )
 
 -- A pale Hainbach panel (header + body). Scrolls vertically if its content is
@@ -632,6 +693,65 @@ controlsPanel s =
         ]
     , HH.div [ style $ engrave <> ";font-size:8px;opacity:0.5;line-height:1.5;margin-top:6px" ]
         [ HH.text "OPEN turns the loudest HH hits into open hats (teal) — choke + ring. Drag any heatmap cell up/down to ratchet it." ]
+    ]
+
+-- The NOTE inspector — the per-cell editor that fills the column CONTROL
+-- vacates for a fixed rhythm. Edits the selected cell's velocity / probability /
+-- trig-condition / ratchet (the overlay the grid's tweak-dot flags).
+inspectorPanel :: forall m. State -> H.ComponentHTML Action () m
+inspectorPanel s =
+  panel "NOTE" "flex:0 0 240px"
+    [ case s.active, s.selected of
+        AFixed i, Just sel -> case s.library !! i of
+          Just pat -> cellInspector pat sel
+          Nothing -> inspectorHint
+        _, _ -> inspectorHint
+    ]
+
+inspectorHint :: forall m. H.ComponentHTML Action () m
+inspectorHint =
+  HH.div [ style $ engrave <> ";font-size:9px;opacity:0.55;line-height:1.8;margin-top:8px" ]
+    [ HH.text "CLICK A CELL IN THE GRID TO INSPECT IT — VELOCITY · PROBABILITY · CONDITION · RATCHET. SHIFT-CLICK CLEARS A CELL." ]
+
+cellInspector :: forall m. P.FixedPattern -> { lane :: Int, step :: Int } -> H.ComponentHTML Action () m
+cellInspector pat sel =
+  let c = P.cellAt pat sel.lane sel.step
+  in HH.div [ style "display:flex;flex-direction:column;gap:13px;margin-top:6px" ]
+       [ HH.div [ style "display:flex;align-items:baseline;justify-content:space-between" ]
+           [ HH.span [ style $ "font-family:Georgia,serif;font-size:16px;font-weight:bold;color:" <> laneColor sel.lane ]
+               [ HH.text (P.laneName sel.lane) ]
+           , HH.span [ style $ engrave <> ";font-size:9px;opacity:0.6" ]
+               [ HH.text ("STEP " <> show (sel.step + 1) <> " · ♪" <> show (P.noteOf pat sel.lane)) ]
+           ]
+       , paramRow "VELOCITY" (show c.vel) (SetCellVel (-8)) (SetCellVel 8)
+       , paramRow "PROBABILITY" (show c.prob <> "%") (SetCellProb (-10)) (SetCellProb 10)
+       , paramRow "RATCHET" ("×" <> show c.ratchet) (SetCellRatchet (-1)) (SetCellRatchet 1)
+       , HH.div [ style "display:flex;align-items:center;justify-content:space-between;border-bottom:1px dotted #0000001a;padding-bottom:9px" ]
+           [ HH.span [ style $ engrave <> ";font-size:9px" ] [ HH.text "CONDITION" ]
+           , HH.button
+               [ HE.onClick \_ -> CycleCellCond
+               , style $ "padding:5px 14px;border:1px solid #a8a392;border-radius:5px;cursor:pointer;"
+                   <> "font-family:'SF Mono',Menlo,monospace;font-size:12px;color:#3f3c33;background:linear-gradient(#efece1,#ddd9cb)" ]
+               [ HH.text (condDisplay c.cond) ]
+           ]
+       , flatBtn "× CLEAR CELL" ClearSelected
+       ]
+
+-- The condition button's label ("ALWAYS" reads better than the "—" glyph here).
+condDisplay :: P.TrigCond -> String
+condDisplay P.CAlways = "ALWAYS"
+condDisplay c = P.condLabel c
+
+-- One inspector parameter row: label, − stepper, value, + stepper.
+paramRow :: forall m. String -> String -> Action -> Action -> H.ComponentHTML Action () m
+paramRow label val dec inc =
+  HH.div [ style "display:flex;align-items:center;justify-content:space-between;border-bottom:1px dotted #0000001a;padding-bottom:9px" ]
+    [ HH.span [ style $ engrave <> ";font-size:9px" ] [ HH.text label ]
+    , HH.div [ style "display:flex;align-items:center;gap:9px" ]
+        [ stepBtn "−" dec
+        , HH.span [ style "font-family:'SF Mono',Menlo,monospace;font-size:13px;color:#3f3c33;width:46px;text-align:center" ] [ HH.text val ]
+        , stepBtn "+" inc
+        ]
     ]
 
 -- The snapshot bank: capture the whole control point (X/Y + densities +
@@ -832,13 +952,21 @@ gridsBody s =
         ]
     ]
 
--- A fixed rhythm: the literal lane grid, folded to the lanes it actually uses.
+-- A fixed rhythm: the literal lane grid (folded to used lanes, or all 16 when
+-- editing), click-to-toggle cells, draggable per-lane notes.
 fixedBody :: forall m. State -> Int -> P.FixedPattern -> H.ComponentHTML Action () m
 fixedBody s idx pat =
   HH.div_
-    [ HH.div [ style "width:100%;max-width:640px;margin:0 auto" ] [ fixedSvg s idx pat ]
+    [ HH.div [ style "display:flex;align-items:center;gap:10px;max-width:640px;margin:0 auto 12px" ]
+        [ armBtn (if s.editing then "● EDITING" else "EDIT") s.editing ToggleEdit
+        , HH.span [ style $ engrave <> ";font-size:8px;opacity:0.6;line-height:1.5" ]
+            [ HH.text (if s.editing
+                then "ALL 16 LANES — CLICK CELLS TO TOGGLE HITS · DRAG A ♪NOTE TO RETUNE A LANE."
+                else "CLICK A CELL TO TOGGLE A HIT · EDIT REVEALS ALL 16 LANES TO ADD VOICES.") ]
+        ]
+    , HH.div [ style "width:100%;max-width:640px;margin:0 auto" ] [ fixedSvg s idx pat ]
     , HH.div [ style $ engrave <> ";font-size:8px;opacity:0.5;margin-top:10px;line-height:1.6;max-width:640px" ]
-        [ HH.text ("STARTER RHYTHM · " <> show pat.steps <> " STEPS · " <> show (length (P.usedLanes pat)) <> " OF 16 LANES. A FIXED LOOP — RECALL INSTANTLY, EDIT TO TASTE (EDITOR + IMPORT NEXT). SAMPLES SWAP DOWNSTREAM.") ]
+        [ HH.text ("STARTER RHYTHM · " <> show pat.steps <> " STEPS · " <> show (length (P.usedLanes pat)) <> " OF 16 LANES IN USE. A FIXED LOOP — RECALL INSTANTLY, EDIT TO TASTE. SAMPLES SWAP DOWNSTREAM.") ]
     ]
 
 -- The fixed-rhythm step grid: one row per used lane (kit name + GM note),
@@ -846,7 +974,8 @@ fixedBody s idx pat =
 fixedSvg :: forall m. State -> Int -> P.FixedPattern -> H.ComponentHTML Action () m
 fixedSvg s idx pat =
   let
-    lanes = P.usedLanes pat
+    -- folded to the lanes in use, or the whole 16-lane kit when editing.
+    lanes = if s.editing then range 0 (P.kitSize - 1) else P.usedLanes pat
     nLanes = length lanes
     cols = pat.steps
     colW = 16.0
@@ -856,15 +985,52 @@ fixedSvg s idx pat =
     h = toNumber nLanes * rowH
     here = s.playStep `mod` cols
     colX step = gutter + toNumber step * colW
-    cellFor row lane =
+    laneEmpty lane = not (any (P.firesAt pat lane) (range 0 (cols - 1)))
+    -- visuals only (the coloured hit + a faint slot in edit mode + the tweak-dot
+    -- + the selection outline).
+    rowVisuals row lane =
       range 0 (cols - 1) `concatMap'` \step ->
-        let v = P.velAt pat lane step
+        let c = P.cellAt pat lane step
+            v = c.vel
             x = colX step
             y = toNumber row * rowH
-        in if v <= 0 then []
-           else [ svgRect (x + 2.0) (y + 2.0) (colW - 4.0) (rowH - 5.0) (laneColor lane)
-                    (0.34 + toNumber v / 127.0 * 0.62) ]
-    cells = concatMap (\row -> cellFor row (fromMaybe 0 (lanes !! row))) (range 0 (nLanes - 1))
+            slot = if s.editing && v <= 0
+              then [ svgEl "rect"
+                       [ svgAttr "x" (show (x + 2.0)), svgAttr "y" (show (y + 2.0))
+                       , svgAttr "width" (show (colW - 4.0)), svgAttr "height" (show (rowH - 5.0)), svgAttr "rx" "2"
+                       , svgAttr "fill" "none", svgAttr "stroke" (laneColor lane), svgAttr "stroke-opacity" "0.16"
+                       , svgAttr "stroke-width" "0.8", svgAttr "style" "pointer-events:none" ] [] ]
+              else []
+            hit = if v <= 0 then []
+              else [ svgRect (x + 2.0) (y + 2.0) (colW - 4.0) (rowH - 5.0) (laneColor lane)
+                       (0.34 + toNumber v / 127.0 * 0.62) ]
+            -- a small dot marks a hit whose prob/cond/ratchet overlay was tweaked.
+            dot = if v > 0 && P.cellTweaked c
+              then [ svgEl "circle"
+                       [ svgAttr "cx" (show (x + colW - 3.6)), svgAttr "cy" (show (y + 4.6)), svgAttr "r" "1.9"
+                       , svgAttr "fill" "#1c1a12", svgAttr "fill-opacity" "0.85", svgAttr "style" "pointer-events:none" ] [] ]
+              else []
+            sel = if s.selected == Just { lane, step }
+              then [ svgEl "rect"
+                       [ svgAttr "x" (show (x + 0.5)), svgAttr "y" (show (y + 0.5))
+                       , svgAttr "width" (show (colW - 1.0)), svgAttr "height" (show (rowH - 1.0)), svgAttr "rx" "3"
+                       , svgAttr "fill" "none", svgAttr "stroke" "#1c1a12", svgAttr "stroke-width" "1.4"
+                       , svgAttr "stroke-opacity" "0.9", svgAttr "style" "pointer-events:none" ] [] ]
+              else []
+        in slot <> hit <> dot <> sel
+    -- a transparent click target per cell, drawn last so it always wins clicks.
+    rowTargets row lane =
+      range 0 (cols - 1) `concatMap'` \step ->
+        let x = colX step
+            y = toNumber row * rowH
+        in [ svgEl "rect"
+               [ svgAttr "x" (show x), svgAttr "y" (show y)
+               , svgAttr "width" (show (colW - 1.0)), svgAttr "height" (show (rowH - 1.0))
+               , svgAttr "fill" "rgba(0,0,0,0)", svgAttr "style" "cursor:pointer;pointer-events:all"
+               , svgMouse "click" \e -> CellClick lane step (ME.shiftKey e) ] [] ]
+    laneAt row = fromMaybe 0 (lanes !! row)
+    cells = concatMap (\row -> rowVisuals row (laneAt row)) (range 0 (nLanes - 1))
+    targets = concatMap (\row -> rowTargets row (laneAt row)) (range 0 (nLanes - 1))
     beatLines =
       range 0 (cols / 4) `concatMap'` \k ->
         let x = colX (k * 4)
@@ -878,11 +1044,13 @@ fixedSvg s idx pat =
         , svgAttr "y2" (show (toNumber row * rowH))
         , svgAttr "stroke" "#3f3c33", svgAttr "stroke-opacity" "0.12", svgAttr "stroke-width" "0.6"
         , svgAttr "style" "pointer-events:none" ] []
+    -- empty lanes (only visible while editing) are dimmed; named-and-used ones full.
     rowLabel row =
-      let lane = fromMaybe 0 (lanes !! row)
+      let lane = laneAt row
+          op = if laneEmpty lane then "0.4" else "0.9"
       in [ svgEl "text"
              [ svgAttr "x" "3", svgAttr "y" (show (toNumber row * rowH + 12.0))
-             , svgAttr "fill" (laneColor lane), svgAttr "fill-opacity" "0.9", svgAttr "style" "pointer-events:none"
+             , svgAttr "fill" (laneColor lane), svgAttr "fill-opacity" op, svgAttr "style" "pointer-events:none"
              , svgAttr "font-size" "9", svgAttr "font-weight" "bold", svgAttr "font-family" "Georgia,serif" ]
              [ HH.text (P.laneName lane) ]
          , noteTag 3.0 (toNumber row * rowH + 23.0) (NFixed idx lane) (P.noteOf pat lane)
@@ -900,7 +1068,7 @@ fixedSvg s idx pat =
       , svgAttr "width" "100%", svgAttr "style" "display:block;max-height:90vh" ]
       ( cells <> beatLines
           <> map laneDivider (range 1 (nLanes - 1))
-          <> [ playhead ] <> concatMap rowLabel (range 0 (nLanes - 1)) )
+          <> [ playhead ] <> concatMap rowLabel (range 0 (nLanes - 1)) <> targets )
 
 -- The snapshot sequence: a path of slot references the playhead walks, each
 -- held `seqBars` bars; advancing recalls that snapshot, morphing the kit. Build
