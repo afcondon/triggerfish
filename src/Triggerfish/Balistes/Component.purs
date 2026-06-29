@@ -22,7 +22,7 @@ import Data.Array (concatMap, filter, length, null, range, (!!))
 import Data.Foldable (any, for_, sum)
 import Data.Int (round, toNumber)
 import Data.Int.Bits (shr)
-import Data.Maybe (Maybe(..), fromMaybe)
+import Data.Maybe (Maybe(..), fromMaybe, isNothing)
 import Data.String.Common (joinWith)
 import Effect (Effect)
 import Effect.Aff.Class (class MonadAff)
@@ -254,8 +254,12 @@ handleAction = case _ of
   ResetPat -> H.modify_ \s -> s { bal = M.reset s.bal, playStep = 0 }
   Dice -> H.modify_ \s -> s { bal = M.reseed s.bal }
 
-  PadAt cx cy btns ->
-    when (btns == 1) do
+  -- The pad's own SVG mousemove fires whenever the cursor crosses it with a
+  -- button held — including mid-knob-drag. Guard on `dragging`: a knob drag owns
+  -- the pointer, so the pad ignores moves until that drag ends.
+  PadAt cx cy btns -> do
+    st <- H.get
+    when (btns == 1 && isNothing st.dragging) do
       { x, y } <- liftEffect $ Pointer.padNorm padId cx cy
       H.modify_ \s ->
         let
