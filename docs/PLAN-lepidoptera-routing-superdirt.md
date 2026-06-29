@@ -28,6 +28,12 @@ is valid PureScript eDSL.
   ratchet as record *fields*, not bespoke string syntax — constraint (1)).
   Faithful `balistesWith` print/parse; **migrate the localStorage Store from the
   current bespoke JSON to the Lepidoptera rendering.**
+- **A3 — Odonus round-trip. ✅ DONE 2026-06-29 (triggerfish `28fc770`).** Built as
+  the full-authored-`OdonusPatch` round-trip (`Odonus.{PitchSource,Lepidoptera,Patch,Store}`);
+  cells as parallel arrays; harmony as the single `quantize:` line via a derived
+  `PitchSource`; live patch persists. The `renderCell` double-snap→single-snap
+  collapse is DEFERRED as a separate auditioned pass (the format already speaks
+  PitchSource, so promoting it won't touch Lepidoptera). Details below.
 - **A3 — Odonus round-trip.** Bigger than it looks: the existing SOURCE pane is a
   one-directional human *summary* (roman numerals, `E(3,8)`, `speedRatio`), not a
   parseable form — so A3 is a fresh structured round-trip (printer + parser) over
@@ -53,8 +59,12 @@ is valid PureScript eDSL.
   → octave; the distribution mapping also runs against that set. **This is a model
   refactor, not format-only — so A3 merges with A4 (Vetula is one of the sources)
   into one coherent next-session block.**
-- **A4 — Vetula round-trip.** Define its eDSL form (chord/pitch sets +
-  progressions as `Tidal.*` values); persist; replace the in-memory library.
+- **A4 — Vetula round-trip. ✅ DONE 2026-06-29 (vetula `48b76d6`).** Vetula's eDSL
+  form already existed (`Vetula.Tidal.progressionSource`/`parseProgression` — the
+  voiced `note "<…>"` block); the gap was persistence, landed as a Selene-shaped
+  text-envelope `Vetula.Store` (`{name, tonic, mode-slug, source}`), reconstructed
+  at init via `parseProgression`→`importChord`. The in-memory library now survives
+  reload. (Standalone Vetula repo; the Triggerfish-vendored copy untouched.)
 - **A5 — The library-manager surface** on the Tidal page: browse / name / load /
   export / import the collection, with text/file export giving cross-app
   transfer for free (Calypso speaks the same records). Quick per-instrument
