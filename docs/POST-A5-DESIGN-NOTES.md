@@ -93,6 +93,10 @@ Pairs with the **deferred `renderCell` single-snap change** — when the source
 isn't the scale, the scale gets no say, which is exactly the re-order's premise.
 (Audio-sensitive — AC should audition.)
 
+**Refinement (AC, while testing) — the Vetula source is a SETTING, not a gated control (`ac588ff`).** First cut DISABLED the Vetula button until a voice was bound. AC: *"merely not receiving a signal shouldn't disable the choice — it should accept the input setting, but the pane below should have a clear callout that it's not active."* Done: State now carries an explicit `source :: SourceTag` intent (not derived from the overlay), so "Vetula selected, no signal yet" is a real selectable state; the button always sticks, and the FOLLOW VETULA section shows ● live chord / ◌ not active + a bordered callout. Binding a voice later auto-adopts it (the 100ms poll), so the callout resolves itself. General principle to carry: **a source/destination CHOICE is a setting the user owns; live-signal availability is feedback shown alongside, never a reason to disable the choice.**
+
+**FLAGGED (AC, while testing) — the Vetula→Odonus get-going WORKFLOW is too many steps.** To make Odonus follow Vetula you must: Lab → grow a progression → save → library; Performance → Load it; toggle a voice → odo; (Odonus) select Vetula + pick the voice. AC: *"we clearly need to work on the workflow on the Vetula side."* A dedicated Vetula-UX pass — streamline build→perform→bind (e.g. a one-click "send to Odonus", a default Performance voice already → odo, fewer hops Lab↔Performance). Pairs with the deferred Vetula brand-restyling.
+
 **New source idea (AC) — Chord from live MIDI input (KeyStep 37).** *"Perhaps we
 can replace or enhance Chord by taking notes from, say, my KeyStep 37 too."* The
 generalisation: the Chord/external source is just a **pitch-SET fed from
