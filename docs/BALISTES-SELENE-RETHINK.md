@@ -175,25 +175,63 @@ linear step row. A mixed block shows some rings, some rows — *informative*, no
 inconsistent. Bonus: a ringed trig jack visibly says "I'm a Euclid — I could be
 *promoted* to a delegatable PolyEuclid," making (b) an affordance.
 
-## Future direction — a real-pattern library, maybe a second node bank
+## The real-pattern library — Grids as one member of a Pattern family
 
-*(AC, 2026-06-29 — flagged, waiting on MIDI export.)* Grids generates from 25
-firmware drum-maps the X/Y pad morphs between. AC is transcribing a corpus of
-**real, hand-authored patterns** (the ~30 examples from *The Secrets of Dance
-Music Production*) in Ableton and exporting the MIDI, aiming at the Grids
-promise — *reliable instantaneous results without programming, with some
-tweaking (and maybe tweening)*. Two ways these could enter Balistes:
+*(AC, 2026-06-29 — resolved the placement, spine landed.)* AC is transcribing
+the ~30 starter beats from *The Secrets of Dance Music Production* in Ableton
+and exporting MIDI, aiming at the Grids promise — *reliable instantaneous
+results without programming, with some tweaking (and maybe tweening)*. The
+first export (`lo tempo house 110.mid`) settled the design.
 
-1. **As snapshot sources** — an imported pattern populates a control-space
-   snapshot/scene (see below), recalled and sequenced like any other.
-2. **As a second 5×5 node bank** *(the cheap experiment worth trying)* — 25 of
-   the patterns laid on the 5×5 node grid so the **existing bilinear
-   interpolation morphs between real genre patterns** instead of the firmware
-   maps. 30 patterns ≈ 25 nodes + spares; the X/Y pad would then fly through a
-   landscape of actual beats. Doubtful but cheap to test.
+**The unifying move (AC):** a Balistes panel plays a **Pattern**, and Grids is
+just *one* member — the special, generative, mutatable one. This dissolves the
+old "two instruments in one panel" cramp: there's now a single abstraction.
 
-The snapshot model below should stay agnostic to where a control point came
-from (live gesture vs imported pattern), so this folds in without rework.
+- **Grids** — the X/Y morph engine. Owns the CONTROL column. Conformance core
+  untouched.
+- **Fixed rhythm** — a literal `lane × step` velocity grid. A labelled loop you
+  recall instantly and edit; it doesn't morph.
+
+**The canonical 16-lane kit** (`Pattern.canonKit`: BD SD CP RS CH PH OH LT MT HT
+RD RB CR CW TB SH, GM percussion notes) is the shared coordinate system every
+fixed rhythm is laid against, so patterns stack, swap samples, and sequence
+against the same rows. Import maps each source MIDI note onto a lane by GM
+number (`laneFromNote`). Samples are swapped freely downstream (Ableton /
+SuperDirt / modular) — the notes are just the wire.
+
+**The bank** is `◆ GRIDS` plus the library rhythms; clicking a chip switches
+what plays. **CONTROL shows iff Grids is active** — a fixed rhythm has no
+control space, so that column drops and PATTERN takes the room.
+
+### Spine landed (2026-06-29)
+
+- `Triggerfish.Balistes.Pattern` — `KitLane`/`canonKit`/`FixedPattern`
+  (`{name, steps, grid :: Array (Array Int)}`, velocity 0..127), `velAt`,
+  `firesAt`, `usedLanes`, `laneFromNote`, `buildGrid`, and `houseLoTempo110`
+  decoded byte-faithfully from the MIDI (six voices: BD/CP/OH/HT/RD/CR).
+- `Component`: `Active = AGrids | AFixed Int` + `library`; the pattern switcher
+  chips; `fixedBody`/`fixedSvg` (folds to used lanes, label gutter, velocity =
+  cell intensity, per-lane gate so hats/cymbals ring); the Step handler emits
+  the fixed grid verbatim over MIDI (step = `tick.index mod steps`); CONTROL and
+  the Grids-specific transport readouts hide for fixed.
+
+### Still to build (the order AC will pick from)
+
+1. **In-app pattern editor** — click cells, name/assign lanes, expand the
+   folded view to the full 16 (greyed where unnamed). This *is* the import-
+   labelling UI and the extensibility story (starters are meant to be tweaked).
+2. **MIDI file import** — drop a `.mid`, map notes→lanes, save to the library.
+3. **Sequence across patterns** — broaden the sequencer's unit from "snapshot
+   slot" to "bank slot" so it sequences bars of Grids *and* bars of rhythms
+   (AC's explicit goal). A scene becomes Grids-control-point | fixed-rhythm.
+4. **The morph experiment** — lay rhythms on the 5×5 (or a 2-pattern A/B) and
+   let the bilinear engine interpolate between real beats. Grids' interpolation
+   is voice-count-agnostic, so an N-voice level field morphs for free. Cheap to
+   try once ≥2 patterns share the kit; may smear rather than groove — that's the
+   thing to find out.
+
+The snapshot model stays agnostic to where a control point came from (live
+gesture vs imported), so it folds into (3) without rework.
 
 ## Build order
 

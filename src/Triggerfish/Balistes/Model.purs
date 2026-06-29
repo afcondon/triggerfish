@@ -22,6 +22,8 @@ module Triggerfish.Balistes.Model
   , densityOf
   , Inst
   , instNote
+  , noteOf
+  , setNote
   , instName
   , ratchetAt
   , setRatchetAt
@@ -76,6 +78,9 @@ type Balistes =
   -- authoring overlay (Triggerfish extension, not in the firmware)
   , ratchet :: Array Int
   , push :: Array Int
+  -- per-lane MIDI note (BD/SD/HH/OH), editable so the same Grids pattern can
+  -- drive a different kick/snare/etc — another axis of saved variation.
+  , notes :: Array Int
   -- `open` (0..255) — the OPEN-hat dial. It sets a boundary that descends the
   -- HH level landscape: a firing hat whose level clears the boundary fires
   -- OPEN (and chokes its closed self) instead of closed. At 0 nothing opens;
@@ -127,6 +132,7 @@ defaultBalistes =
     -- one ratchet slot per (lane, step) over the 3 Grids lanes (96 = 3×32)
     , ratchet: replicate 96 1
     , push: [ 0, 0, 0, 0 ]
+    , notes: [ 36, 38, 42, 46 ]
     -- a touch of open by default, so the loudest hats breathe
     , open: 70
     , snapshots: replicate snapshotCount Nothing
@@ -215,7 +221,17 @@ instNote :: Inst -> Int
 instNote inst = case inst of
   0 -> 36
   1 -> 38
-  _ -> 42
+  2 -> 42
+  _ -> 46
+
+-- | This pattern's MIDI note for a lane (0=BD,1=SD,2=HH,3=OH), falling back to
+-- | the GM default. Editable — the same Grids beat, a different kick.
+noteOf :: Inst -> Balistes -> Int
+noteOf inst b = fromMaybe (instNote inst) (b.notes !! inst)
+
+-- | Set a lane's MIDI note (clamped to 0..127).
+setNote :: Inst -> Int -> Balistes -> Balistes
+setNote inst n b = b { notes = fromMaybe b.notes (updateAt inst (clampI 0 127 n) b.notes) }
 
 -- | The three Grids lanes are 0=BD, 1=SD, 2=HH.
 instName :: Inst -> String

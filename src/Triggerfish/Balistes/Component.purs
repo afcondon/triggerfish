@@ -18,7 +18,7 @@ module Triggerfish.Balistes.Component (component) where
 
 import Prelude
 
-import Data.Array (concatMap, filter, length, null, range, (!!))
+import Data.Array (concatMap, filter, length, mapWithIndex, modifyAt, null, range, (!!))
 import Data.Foldable (any, for_, sum)
 import Data.Int (round, toNumber)
 import Data.Int.Bits (shr)
@@ -38,6 +38,7 @@ import Binnacle.Clock as Clock
 import Binnacle.Midi as Midi
 import Binnacle.Scheduler as Scheduler
 import Triggerfish.Balistes.Model as M
+import Triggerfish.Balistes.Pattern as P
 import Triggerfish.Balistes.Source as Source
 import Triggerfish.SourceQuery (Query(..))
 import Triggerfish.Balistes.Tables as T
@@ -59,9 +60,20 @@ type Flash = { inst :: Int, accent :: Boolean, fireUnixMicros :: Number }
 
 data KnobTarget = KDens Int | KRand | KPush Int | KOpen
 
--- | A document-tracked drag either turns a knob or subdivides a Grids cell into
--- | ratchets (`DCell lane step`). One drag plumbing for both.
-data DragKind = DKnob KnobTarget | DCell Int Int
+-- | What the panel is currently playing. Grids is the special, generative,
+-- | mutatable pattern (it owns the CONTROL column); `AFixed i` is a literal
+-- | rhythm from the library (`library !! i`), played verbatim.
+data Active = AGrids | AFixed Int
+
+derive instance eqActive :: Eq Active
+
+-- | Which MIDI note a note-drag edits: a Grids lane (0..3) or a fixed-pattern
+-- | lane (`NFixed patternIx lane`).
+data NoteRef = NGrids Int | NFixed Int Int
+
+-- | A document-tracked drag turns a knob, subdivides a Grids cell into ratchets
+-- | (`DCell lane step`), or nudges a lane's MIDI note (`DNote`). One plumbing.
+data DragKind = DKnob KnobTarget | DCell Int Int | DNote NoteRef
 
 type Drag = { kind :: DragKind, startY :: Int, startVal :: Int }
 
@@ -99,6 +111,9 @@ type State =
   , seqEnabled :: Boolean
   , seqPos :: Int
   , seqStartBar :: Int
+  -- the pattern family: which one is playing, and the fixed-rhythm library.
+  , active :: Active
+  , library :: Array P.FixedPattern
   }
 
 data Action
@@ -121,6 +136,7 @@ data Action
   | ToggleSeq                  -- play/stop the snapshot sequence
   | SeqBarsDelta Int           -- nudge bars-per-step
   | ClearSeq
+  | SelectPattern Active       -- switch the playing pattern (Grids / a rhythm)
   | NoOp
 
 component :: forall i o m. MonadAff m => H.Component Query i o m
@@ -132,7 +148,8 @@ component =
         , binnacle: Nothing, midiOut: Nothing, midiName: "…"
         , clockTempo: 120.0, clockLocked: false, clockBeat: 0.0, clockBar: 0, anchorCount: 0
         , nowMicros: 0.0, dragging: Nothing, dragSub: Nothing
-        , capArm: false, seqArm: false, seqEnabled: false, seqPos: 0, seqStartBar: 0 }
+        , capArm: false, seqArm: false, seqEnabled: false, seqPos: 0, seqStartBar: 0
+        , active: AGrids, library: P.bundledPatterns }
     , render
     , eval: H.mkEval H.defaultEval
         { handleAction = handleAction, handleQuery = handleQuery, initialize = Just Initialize }
@@ -188,45 +205,60 @@ handleAction = case _ of
 
   Step tick -> do
     st <- H.get
-    when (st.master && st.running) do
-      let
-        -- a bar is 16 sixteenth-steps. If the sequence is running and this step
-        -- begins a step boundary (seqBars bars elapsed), advance the path and
-        -- recall its snapshot BEFORE ticking, so the kit morphs at the boundary.
-        bar = tick.index / stepsPerBar
-        seqLen = length st.bal.sequence
-        advancing = st.seqEnabled && seqLen > 0 && (bar - st.seqStartBar) >= st.bal.seqBars
-        nextPos = if advancing then (st.seqPos + 1) `mod` seqLen else st.seqPos
-        nextStartBar = if advancing then bar else st.seqStartBar
-        bal0 =
-          if advancing then case M.seqStepAt st.bal nextPos of
-            Just slot -> M.recallSnapshot slot st.bal
-            Nothing -> st.bal
-          else st.bal
-        playedStep = bal0.step
-        r = M.tick bal0
-        stepMs = 0.25 * 60000.0 / max 30.0 st.clockTempo
-      for_ st.midiOut \out -> liftEffect $
-        -- the three Grids voices (step-quantised, firmware-faithful). A firing
-        -- HH that clears the OPEN boundary rings as an open hat (note 46, OH
-        -- push slot, long gate) and chokes its closed self; everything else is a
-        -- short blip. Ratchet roll + per-voice Dilla push applied on emit.
-        for_ r.fired \t ->
-          let
-            opens = t.inst == 2 && M.opensAt bal0 playedStep
-            note = if opens then ohNote else M.instNote t.inst
-            durMs = if opens then openGateMs else closedGateMs
-            pushLane = if opens then 3 else t.inst   -- open hats ride the OH push slot
-            delay0 = max 0.0 (tick.delayMs + toNumber (M.pushOf pushLane bal0))
-            n = M.ratchetAt bal0 t.inst playedStep
-            v0 = if t.accent then accentVel else baseVel
-          in
-            emitHit out drumChannel stepMs delay0 note durMs v0 n
-      let
-        gridsFlash = map (\t -> { inst: t.inst, accent: t.accent, fireUnixMicros: tick.fireUnixMicros }) r.fired
-      H.modify_ \s -> s
-        { bal = r.bal, playStep = playedStep, seqPos = nextPos, seqStartBar = nextStartBar
-        , flash = gridsFlash <> s.flash }
+    when (st.master && st.running) case st.active of
+      -- A fixed rhythm: derive the step from the tick (no internal navigator),
+      -- then emit each used lane's hit verbatim at its kit note + velocity.
+      AFixed i -> case st.library !! i of
+        Nothing -> pure unit
+        Just pat -> do
+          let fixedStep = tick.index `mod` pat.steps
+          for_ st.midiOut \out -> liftEffect $
+            for_ (P.usedLanes pat) \lane ->
+              let v = P.velAt pat lane fixedStep
+              in when (v > 0) $
+                   Midi.scheduleNote out
+                     { channel: drumChannel, note: P.noteOf pat lane, velocity: v
+                     , delayMs: max 0.0 tick.delayMs, durMs: laneGateMs lane }
+          H.modify_ _ { playStep = fixedStep }
+      AGrids -> do
+        let
+          -- a bar is 16 sixteenth-steps. If the sequence is running and this step
+          -- begins a step boundary (seqBars bars elapsed), advance the path and
+          -- recall its snapshot BEFORE ticking, so the kit morphs at the boundary.
+          bar = tick.index / stepsPerBar
+          seqLen = length st.bal.sequence
+          advancing = st.seqEnabled && seqLen > 0 && (bar - st.seqStartBar) >= st.bal.seqBars
+          nextPos = if advancing then (st.seqPos + 1) `mod` seqLen else st.seqPos
+          nextStartBar = if advancing then bar else st.seqStartBar
+          bal0 =
+            if advancing then case M.seqStepAt st.bal nextPos of
+              Just slot -> M.recallSnapshot slot st.bal
+              Nothing -> st.bal
+            else st.bal
+          playedStep = bal0.step
+          r = M.tick bal0
+          stepMs = 0.25 * 60000.0 / max 30.0 st.clockTempo
+        for_ st.midiOut \out -> liftEffect $
+          -- the three Grids voices (step-quantised, firmware-faithful). A firing
+          -- HH that clears the OPEN boundary rings as an open hat (note 46, OH
+          -- push slot, long gate) and chokes its closed self; everything else is a
+          -- short blip. Ratchet roll + per-voice Dilla push applied on emit.
+          for_ r.fired \t ->
+            let
+              opens = t.inst == 2 && M.opensAt bal0 playedStep
+              note = if opens then M.noteOf 3 bal0 else M.noteOf t.inst bal0
+              durMs = if opens then openGateMs else closedGateMs
+              pushLane = if opens then 3 else t.inst   -- open hats ride the OH push slot
+              delay0 = max 0.0 (tick.delayMs + toNumber (M.pushOf pushLane bal0))
+              n = M.ratchetAt bal0 t.inst playedStep
+              v0 = if t.accent then accentVel else baseVel
+            in
+              emitHit out drumChannel stepMs delay0 note durMs v0 n
+        let
+          gridsFlash = map (\t -> { inst: t.inst, accent: t.accent, fireUnixMicros: tick.fireUnixMicros }) r.fired
+        H.modify_ \s -> s
+          { bal = r.bal, playStep = playedStep, seqPos = nextPos, seqStartBar = nextStartBar
+          , flash = gridsFlash <> s.flash }
 
   Frame -> do
     st <- H.get
@@ -287,6 +319,11 @@ handleAction = case _ of
               DCell inst step ->
                 let newVal = clampI 1 8 (d.startVal + round (toNumber dist / 22.0))
                 in H.modify_ \s -> s { bal = M.setRatchetAt inst step newVal s.bal }
+              DNote ref ->
+                let newVal = clampI 0 127 (d.startVal + round (toNumber dist / 7.0))
+                in H.modify_ \s -> case ref of
+                     NGrids lane -> s { bal = M.setNote lane newVal s.bal }
+                     NFixed i lane -> s { library = fromMaybe s.library (modifyAt i (P.setNoteAt lane newVal) s.library) }
       Nothing -> pure unit
   DragEnd -> do
     st <- H.get
@@ -312,6 +349,9 @@ handleAction = case _ of
     else s { seqEnabled = true, seqPos = max 0 (length s.bal.sequence - 1), seqStartBar = -100000 }
   SeqBarsDelta d -> H.modify_ \s -> s { bal = M.setSeqBars (s.bal.seqBars + d) s.bal }
   ClearSeq -> H.modify_ \s -> s { bal = M.clearSeq s.bal, seqEnabled = false, seqPos = 0 }
+  -- switching pattern just changes which branch the next Step takes; hits are
+  -- one-shot, so nothing to silence.
+  SelectPattern a -> H.modify_ _ { active = a }
   NoOp -> pure unit
 
 -- | Emit one already-resolved hit: schedule `note` at `delay0` for `durMs`, or —
@@ -370,10 +410,6 @@ accentVel = 120
 baseVel :: Int
 baseVel = 78
 
--- | GM open hat — what a hat fires when it clears the OPEN boundary.
-ohNote :: Int
-ohNote = 46
-
 -- | Gate lengths: an open hat rings, a closed hat is a blip.
 openGateMs :: Number
 openGateMs = 200.0
@@ -398,6 +434,36 @@ instColor = case _ of
   0 -> "#b04a2f"   -- BD, amber-red
   1 -> "#5f7d3f"   -- SD, green
   _ -> "#3f6f8a"   -- HH, steel-blue
+
+-- | Per-lane colour for a fixed rhythm's 16-lane kit, grouped by voice family
+-- | (kick/snare warm, hats cool, toms brown, cymbals gold, perc violet).
+laneColor :: Int -> String
+laneColor = case _ of
+  0 -> "#b04a2f"   -- BD
+  1 -> "#5f7d3f"   -- SD
+  2 -> "#a86a2f"   -- CP
+  3 -> "#8a6a4a"   -- RS
+  4 -> "#3f6f8a"   -- CH
+  5 -> "#4f7f9a"   -- PH
+  6 -> "#2f8a8a"   -- OH
+  7 -> "#7a5a3a"   -- LT
+  8 -> "#8a6a44"   -- MT
+  9 -> "#9a7a4a"   -- HT
+  10 -> "#9a7d3a"  -- RD
+  11 -> "#aa8d4a"  -- RB
+  12 -> "#b58a3a"  -- CR
+  13 -> "#6a5f8a"  -- CW
+  14 -> "#7a6f9a"  -- TB
+  _ -> "#8a7faa"   -- SH
+
+-- | Gate length per fixed-rhythm lane: hats/cymbals ring, drums blip.
+laneGateMs :: Int -> Number
+laneGateMs lane = case lane of
+  6 -> 180.0   -- OH
+  10 -> 200.0  -- RD
+  11 -> 200.0  -- RB
+  12 -> 320.0  -- CR
+  _ -> 55.0
 
 -- ---------------------------------------------------------------------------
 -- Timers / drag plumbing (mirrors Odonus)
@@ -432,10 +498,11 @@ render s =
   HH.div
     [ style $ "position:fixed;top:var(--tf-bar);left:0;right:0;bottom:0;display:flex;align-items:stretch;overflow-x:auto;overflow-y:hidden;"
         <> "user-select:none;-webkit-user-select:none;background:#b7b1a0;font-family:Georgia,serif" ]
-    [ transportPanel s
-    , controlsPanel s
-    , patternPanel s
-    ]
+    -- CONTROL is Grids' own chrome (the X/Y morph + knobs); a fixed rhythm has
+    -- no control space, so that column drops out and PATTERN takes the room.
+    ( [ transportPanel s ]
+        <> (if s.active == AGrids then [ controlsPanel s ] else [])
+        <> [ patternPanel s ] )
 
 -- A pale Hainbach panel (header + body). Scrolls vertically if its content is
 -- taller than the viewport (the consolidated CONTROL panel can be).
@@ -457,6 +524,18 @@ panel label widthCss body =
 
 transportPanel :: forall m. State -> H.ComponentHTML Action () m
 transportPanel s =
+  let
+    chLine = case s.active of
+      AGrids -> show (drumChannel + 1) <> "  ·  "
+        <> joinWith " / " (map (\l -> show (M.noteOf l s.bal)) [ 0, 1, 2 ])
+      AFixed i -> show (drumChannel + 1) <> "  ·  "
+        <> case s.library !! i of
+             Just p -> show (length (P.usedLanes p)) <> " voices"
+             Nothing -> "—"
+    helpText = case s.active of
+      AGrids -> "DRAG THE STYLE PAD TO MORPH THE KIT BETWEEN THE 25 NODES. DENSITY SETS HOW MANY HITS; RANDOMNESS NUDGES OFF-GRID EACH PATTERN."
+      AFixed _ -> "A FIXED STARTER RHYTHM IS PLAYING. SWITCH TO ◆ GRIDS FOR THE LIVE MORPH ENGINE AND ITS CONTROLS."
+  in
   panel "BALISTES" "flex:0 0 196px"
     [ HH.div [ style "display:flex;flex-direction:column;gap:12px;margin-top:4px" ]
         [ HH.button
@@ -473,9 +552,9 @@ transportPanel s =
         , readout "TEMPO" (show (round s.clockTempo) <> " bpm" <> (if s.clockLocked then " ⛓" else " ·"))
         , readout "BAR" (show s.clockBar <> "  ·  step " <> pad2 (s.playStep + 1) <> "/32")
         , readout "MIDI" s.midiName
-        , readout "CH" (show (drumChannel + 1) <> "  ·  36 / 38 / 42")
+        , readout "CH" chLine
         , HH.div [ style $ engrave <> ";font-size:8px;opacity:0.6;margin-top:6px;line-height:1.5" ]
-            [ HH.text "DRAG THE STYLE PAD TO MORPH THE KIT BETWEEN THE 25 NODES. DENSITY SETS HOW MANY HITS; RANDOMNESS NUDGES OFF-GRID EACH PATTERN." ]
+            [ HH.text helpText ]
         ]
     ]
 
@@ -680,6 +759,26 @@ crosshair cx cy =
 concatMap' :: forall a b. Array a -> (a -> Array b) -> Array b
 concatMap' xs f = concatMap f xs
 
+-- An editable MIDI-note tag in a lane gutter: drag up/down to nudge the note.
+-- Shared by the Grids heatmap and the fixed grid.
+noteTag :: forall m. Number -> Number -> NoteRef -> Int -> H.ComponentHTML Action () m
+noteTag x y ref n =
+  svgEl "text"
+    [ svgAttr "x" (show x), svgAttr "y" (show y)
+    , svgAttr "fill" "#3f3c33", svgAttr "fill-opacity" "0.7"
+    , svgAttr "font-size" "8.5", svgAttr "font-family" "'SF Mono',Menlo,monospace"
+    , svgAttr "style" "cursor:ns-resize"
+    , svgMouse "mousedown" \_ -> StartDrag (DNote ref) n ]
+    [ HH.text ("♪" <> show n) ]
+
+-- A filled, rounded SVG rect — the cell primitive shared by the fixed grid.
+svgRect :: forall w i. Number -> Number -> Number -> Number -> String -> Number -> HH.HTML w i
+svgRect x0 y0 wid hgt c op =
+  svgEl "rect"
+    [ svgAttr "x" (show x0), svgAttr "y" (show y0)
+    , svgAttr "width" (show wid), svgAttr "height" (show hgt), svgAttr "rx" "2"
+    , svgAttr "fill" c, svgAttr "fill-opacity" (show op) ] []
+
 -- An SVG mouse handler (the `svgEl` row is `()`, so the typed HE.onMouse* props
 -- don't fit; coerce the MouseEvent decode like Ui.Knob's mousedown handler).
 svgMouse :: forall r i. String -> (ME.MouseEvent -> i) -> HH.IProp r i
@@ -692,6 +791,37 @@ svgMouse name f = HE.handler (EventType name) (unsafeCoerce f)
 patternPanel :: forall m. State -> H.ComponentHTML Action () m
 patternPanel s =
   panel "PATTERN" "flex:1 1 480px;min-width:380px"
+    [ patternSwitcher s
+    , case s.active of
+        AGrids -> gridsBody s
+        AFixed i -> case s.library !! i of
+          Just pat -> fixedBody s i pat
+          Nothing -> HH.text "—"
+    ]
+
+-- The pattern bank: ◆ GRIDS (the live morph engine) plus each library rhythm.
+-- Clicking switches what plays; the active chip is brass.
+patternSwitcher :: forall m. State -> H.ComponentHTML Action () m
+patternSwitcher s =
+  HH.div [ style "display:flex;gap:6px;flex-wrap:wrap;margin-bottom:16px;max-width:640px" ]
+    ( [ chip "◆ GRIDS" (s.active == AGrids) (SelectPattern AGrids) ]
+        <> mapWithIndex (\i pat -> chip pat.name (s.active == AFixed i) (SelectPattern (AFixed i))) s.library )
+
+chip :: forall m. String -> Boolean -> Action -> H.ComponentHTML Action () m
+chip label active act =
+  HH.button
+    [ HE.onClick \_ -> act
+    , style $ "padding:6px 13px;border:1px solid #a8a392;border-radius:6px;cursor:pointer;"
+        <> "font-family:Georgia,serif;font-size:12px;letter-spacing:0.04em;"
+        <> (if active then "color:#1c1a12;background:linear-gradient(#c8a86a,#b8975a)"
+            else "color:#3f3c33;background:linear-gradient(#efece1,#ddd9cb)") ]
+    [ HH.text label ]
+
+-- The Grids pattern: the live interpolation heatmap + the snapshot bank +
+-- the snapshot sequence (the control-space machinery).
+gridsBody :: forall m. State -> H.ComponentHTML Action () m
+gridsBody s =
+  HH.div_
     [ HH.div [ style "width:100%;max-width:640px;margin:0 auto" ] [ heatSvg s ]
     , HH.div [ style $ engrave <> ";font-size:8px;opacity:0.5;margin-top:10px;line-height:1.6;max-width:640px" ]
         [ HH.text "THE 3 GRIDS VOICES (BD · SD · HH). FAINT = THE INTERPOLATED LANDSCAPE THE X/Y CURSOR SELECTS; SOLID = WHAT FIRES AT THIS DENSITY. DRAG A CELL UP/DOWN TO RATCHET IT." ]
@@ -701,6 +831,76 @@ patternPanel s =
         , sequenceSection s
         ]
     ]
+
+-- A fixed rhythm: the literal lane grid, folded to the lanes it actually uses.
+fixedBody :: forall m. State -> Int -> P.FixedPattern -> H.ComponentHTML Action () m
+fixedBody s idx pat =
+  HH.div_
+    [ HH.div [ style "width:100%;max-width:640px;margin:0 auto" ] [ fixedSvg s idx pat ]
+    , HH.div [ style $ engrave <> ";font-size:8px;opacity:0.5;margin-top:10px;line-height:1.6;max-width:640px" ]
+        [ HH.text ("STARTER RHYTHM · " <> show pat.steps <> " STEPS · " <> show (length (P.usedLanes pat)) <> " OF 16 LANES. A FIXED LOOP — RECALL INSTANTLY, EDIT TO TASTE (EDITOR + IMPORT NEXT). SAMPLES SWAP DOWNSTREAM.") ]
+    ]
+
+-- The fixed-rhythm step grid: one row per used lane (kit name + GM note),
+-- velocity as cell intensity, playhead sweeping the steps.
+fixedSvg :: forall m. State -> Int -> P.FixedPattern -> H.ComponentHTML Action () m
+fixedSvg s idx pat =
+  let
+    lanes = P.usedLanes pat
+    nLanes = length lanes
+    cols = pat.steps
+    colW = 16.0
+    rowH = 28.0
+    gutter = 34.0                       -- left margin for lane name + MIDI note
+    w = gutter + toNumber cols * colW
+    h = toNumber nLanes * rowH
+    here = s.playStep `mod` cols
+    colX step = gutter + toNumber step * colW
+    cellFor row lane =
+      range 0 (cols - 1) `concatMap'` \step ->
+        let v = P.velAt pat lane step
+            x = colX step
+            y = toNumber row * rowH
+        in if v <= 0 then []
+           else [ svgRect (x + 2.0) (y + 2.0) (colW - 4.0) (rowH - 5.0) (laneColor lane)
+                    (0.34 + toNumber v / 127.0 * 0.62) ]
+    cells = concatMap (\row -> cellFor row (fromMaybe 0 (lanes !! row))) (range 0 (nLanes - 1))
+    beatLines =
+      range 0 (cols / 4) `concatMap'` \k ->
+        let x = colX (k * 4)
+        in [ svgEl "line"
+               [ svgAttr "x1" (show x), svgAttr "y1" "0", svgAttr "x2" (show x), svgAttr "y2" (show h)
+               , svgAttr "stroke" "#3f3c33", svgAttr "stroke-opacity" "0.18", svgAttr "stroke-width" "0.8"
+               , svgAttr "style" "pointer-events:none" ] [] ]
+    laneDivider row =
+      svgEl "line"
+        [ svgAttr "x1" (show gutter), svgAttr "y1" (show (toNumber row * rowH)), svgAttr "x2" (show w)
+        , svgAttr "y2" (show (toNumber row * rowH))
+        , svgAttr "stroke" "#3f3c33", svgAttr "stroke-opacity" "0.12", svgAttr "stroke-width" "0.6"
+        , svgAttr "style" "pointer-events:none" ] []
+    rowLabel row =
+      let lane = fromMaybe 0 (lanes !! row)
+      in [ svgEl "text"
+             [ svgAttr "x" "3", svgAttr "y" (show (toNumber row * rowH + 12.0))
+             , svgAttr "fill" (laneColor lane), svgAttr "fill-opacity" "0.9", svgAttr "style" "pointer-events:none"
+             , svgAttr "font-size" "9", svgAttr "font-weight" "bold", svgAttr "font-family" "Georgia,serif" ]
+             [ HH.text (P.laneName lane) ]
+         , noteTag 3.0 (toNumber row * rowH + 23.0) (NFixed idx lane) (P.noteOf pat lane)
+         ]
+    playhead =
+      svgEl "rect"
+        [ svgAttr "x" (show (colX here)), svgAttr "y" "0"
+        , svgAttr "width" (show colW), svgAttr "height" (show h)
+        , svgAttr "fill" "#1c1a12", svgAttr "fill-opacity" (if s.running then "0.10" else "0.0")
+        , svgAttr "stroke" "#1c1a12", svgAttr "stroke-opacity" (if s.running then "0.5" else "0.15")
+        , svgAttr "stroke-width" "1", svgAttr "style" "pointer-events:none" ] []
+  in
+    svgEl "svg"
+      [ svgAttr "viewBox" ("0 0 " <> show w <> " " <> show h)
+      , svgAttr "width" "100%", svgAttr "style" "display:block;max-height:90vh" ]
+      ( cells <> beatLines
+          <> map laneDivider (range 1 (nLanes - 1))
+          <> [ playhead ] <> concatMap rowLabel (range 0 (nLanes - 1)) )
 
 -- The snapshot sequence: a path of slot references the playhead walks, each
 -- held `seqBars` bars; advancing recalls that snapshot, morphing the kit. Build
@@ -775,8 +975,10 @@ heatSvg s =
     colW = 16.0
     rowH = 30.0
     nLanes = 3
+    gutter = 34.0                       -- left margin for lane name + MIDI note
     laneY lane = toNumber lane * rowH
-    w = toNumber cols * colW
+    colX step = gutter + toNumber step * colW
+    w = gutter + toNumber cols * colW
     h = toNumber nLanes * rowH
     rectBlock x0 y0 wid hgt c op =
       svgEl "rect"
@@ -814,7 +1016,7 @@ heatSvg s =
         accent = fires && level > 192
         opens = lane == 2 && fires && M.opensAt b step   -- an open hat here
         n = M.ratchetAt b lane step
-        x = toNumber step * colW
+        x = colX step
         y = laneY lane
         c = if opens then ohColor else instColor lane
         landscape = rectBlock x y (colW - 1.0) (rowH - 1.0) c (toNumber level / 255.0 * 0.32)
@@ -827,7 +1029,7 @@ heatSvg s =
     -- sets the beat's ratchet (up = more retriggers).
     gridsTarget lane step =
       let
-        x = toNumber step * colW
+        x = colX step
         y = laneY lane
       in
         svgEl "rect"
@@ -837,30 +1039,34 @@ heatSvg s =
           , svgMouse "mousedown" \_ -> StartDrag (DCell lane step) (M.ratchetAt b lane step) ] []
     playhead =
       svgEl "rect"
-        [ svgAttr "x" (show (toNumber s.playStep * colW)), svgAttr "y" "0"
+        [ svgAttr "x" (show (colX s.playStep)), svgAttr "y" "0"
         , svgAttr "width" (show colW), svgAttr "height" (show h)
         , svgAttr "fill" "#1c1a12", svgAttr "fill-opacity" (if s.running then "0.10" else "0.0")
         , svgAttr "stroke" "#1c1a12", svgAttr "stroke-opacity" (if s.running then "0.5" else "0.15")
         , svgAttr "stroke-width" "1", svgAttr "style" "pointer-events:none" ] []
     beatLines =
       range 0 8 `concatMap'` \k ->
-        let x = toNumber (k * 4) * colW
+        let x = colX (k * 4)
         in [ svgEl "line"
                [ svgAttr "x1" (show x), svgAttr "y1" "0", svgAttr "x2" (show x), svgAttr "y2" (show h)
                , svgAttr "stroke" "#3f3c33", svgAttr "stroke-opacity" "0.18", svgAttr "stroke-width" "0.8"
                , svgAttr "style" "pointer-events:none" ] [] ]
     laneDivider lane =
       svgEl "line"
-        [ svgAttr "x1" "0", svgAttr "y1" (show (laneY lane)), svgAttr "x2" (show w)
+        [ svgAttr "x1" (show gutter), svgAttr "y1" (show (laneY lane)), svgAttr "x2" (show w)
         , svgAttr "y2" (show (laneY lane))
         , svgAttr "stroke" "#3f3c33", svgAttr "stroke-opacity" "0.12", svgAttr "stroke-width" "0.6"
         , svgAttr "style" "pointer-events:none" ] []
+    -- the lane name (bold, coloured) + its editable MIDI note below, pulled into
+    -- the gutter like the fixed grid.
     rowLabel lane =
-      svgEl "text"
-        [ svgAttr "x" "3", svgAttr "y" (show (laneY lane + 11.0))
-        , svgAttr "fill" "#3f3c33", svgAttr "fill-opacity" "0.55", svgAttr "style" "pointer-events:none"
-        , svgAttr "font-size" "8", svgAttr "font-family" "Georgia,serif" ]
-        [ HH.text ("Grids " <> M.instName lane) ]
+      [ svgEl "text"
+          [ svgAttr "x" "3", svgAttr "y" (show (laneY lane + 13.0))
+          , svgAttr "fill" (instColor lane), svgAttr "fill-opacity" "0.9", svgAttr "style" "pointer-events:none"
+          , svgAttr "font-size" "9", svgAttr "font-weight" "bold", svgAttr "font-family" "Georgia,serif" ]
+          [ HH.text (M.instName lane) ]
+      , noteTag 3.0 (laneY lane + 25.0) (NGrids lane) (M.noteOf lane b)
+      ]
     visuals =
       range 0 2 `concatMap'` \lane -> range 0 (cols - 1) `concatMap'` \step -> gridsCell lane step
     targets =
@@ -871,7 +1077,7 @@ heatSvg s =
       , svgAttr "width" "100%", svgAttr "style" "display:block;max-height:90vh" ]
       ( visuals <> beatLines
           <> map laneDivider (range 1 (nLanes - 1))
-          <> [ playhead ] <> map rowLabel (range 0 (nLanes - 1)) <> targets )
+          <> [ playhead ] <> concatMap rowLabel (range 0 (nLanes - 1)) <> targets )
 
 bigKnob :: forall m. KnobTarget -> String -> String -> M.Balistes -> H.ComponentHTML Action () m
 bigKnob target color label b =
