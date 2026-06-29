@@ -17,7 +17,7 @@ module Triggerfish.Selene.Component (component) where
 
 import Prelude
 
-import Data.Array (filter, length, mapWithIndex, range, (!!))
+import Data.Array (filter, length, mapWithIndex, modifyAt, null, range, (!!))
 import Data.Foldable (for_)
 import Data.Int (round, toNumber)
 import Data.Number (cos, pi, sin) as Num
@@ -38,6 +38,7 @@ import Binnacle.Scheduler as Scheduler
 import Triggerfish.Odonus.Grid.Widgets (engrave, style, svgAttr, svgEl)
 import Triggerfish.Selene.Model as M
 import Triggerfish.Selene.Source as Source
+import Triggerfish.Selene.Store as Store
 import Triggerfish.SourceQuery (Query(..))
 import Triggerfish.Tidal.Lane as Lane
 import Data.Maybe (Maybe(..), fromMaybe)
@@ -47,12 +48,14 @@ import Data.Maybe (Maybe(..), fromMaybe)
 -- ---------------------------------------------------------------------------
 
 -- | The SOURCE document is the authority for the rack: `sel` is its parsed
--- | projection. The rest is the transport (mirrors Balistes): an ARM flag that
--- | sounds only under the shell's master, the Binnacle clock + MIDI out, and
--- | the live clock readouts.
+-- | projection. The doc is now drawn from a named **library** of racks (the
+-- | active one is editable); `currentDoc` reads it. The rest is the transport
+-- | (mirrors Balistes): an ARM flag that sounds only under the shell's master,
+-- | the Binnacle clock + MIDI out, and the live clock readouts.
 type State =
   { sel :: M.Selene
-  , doc :: String
+  , library :: Array Store.Rack   -- named racks; each `doc` is the rack rendered
+  , active :: Int                 -- which rack is loaded + editable
   , running :: Boolean        -- ARM/cue (sticky); sounds only when master too
   , master :: Boolean         -- the shell's master transport (via SetMaster)
   , playStep :: Int
@@ -72,6 +75,9 @@ data Action
   | ToggleArm
   | AddDest M.GenKind         -- append a template block (comment-safe)
   | SetDoc String             -- the whole editable document, verbatim
+  | SelectRack Int            -- load a library rack into the editor
+  | NewRack                   -- append a fresh empty rack + select it
+  | SetRackName String        -- rename the active rack
 
 component :: forall i o m. MonadAff m => H.Component Query i o m
 component =
@@ -79,7 +85,8 @@ component =
     { initialState: \_ ->
         let doc = Source.printRack M.defaultSelene
         in
-          { sel: Source.parseRack doc, doc
+          { sel: Source.parseRack doc
+          , library: [ { name: "rack 1", doc } ], active: 0
           , running: false, master: false, playStep: 0
           , binnacle: Nothing, midiOut: Nothing, midiName: "…"
           , clockTempo: 120.0, clockLocked: false, clockBar: 0
@@ -93,7 +100,7 @@ handleQuery :: forall o m a. MonadAff m => Query a -> H.HalogenM State Action ()
 handleQuery = case _ of
   AskSource reply -> do
     s <- H.get
-    pure (Just (reply s.doc))
+    pure (Just (reply (currentDoc s)))
   SyncFree startMicros tempo next -> do
     s <- H.get
     for_ s.binnacle \bin ->
@@ -127,6 +134,12 @@ handleAction = case _ of
               Nothing -> "no '" <> midiPortName <> "' — ports: " <> joinWith ", " names
         HS.notify midiL (MidiReady mout nm)
       Nothing -> HS.notify midiL (MidiReady Nothing "unavailable")
+    -- restore the saved rack library (falls back to the default rack).
+    msaved <- liftEffect Store.loadLibrary
+    for_ msaved \sv -> when (not (null sv.library)) do
+      let a = if sv.active >= 0 && sv.active < length sv.library then sv.active else 0
+          doc = fromMaybe "" (map _.doc (sv.library !! a))
+      H.modify_ _ { library = sv.library, active = a, sel = Source.parseRack doc }
     H.modify_ _ { binnacle = Just bin }
 
   Step tick -> do
@@ -149,13 +162,45 @@ handleAction = case _ of
 
   ToggleArm -> H.modify_ \s -> s { running = not s.running }
 
-  -- append a fresh block to the document (so existing comments survive), then
-  -- re-derive the rack from the new text.
-  AddDest k -> H.modify_ \s ->
-    let block = Source.printDest { target: M.defaultTargetFor k, range: M.Bipolar5V, bank: M.freshBank k }
-        doc = s.doc <> "\n\n" <> block
-    in s { doc = doc, sel = Source.parseRack doc }
-  SetDoc doc -> H.modify_ \s -> s { doc = doc, sel = Source.parseRack doc }
+  -- append a fresh block to the active rack's doc (so existing comments
+  -- survive), then re-derive the rack from the new text.
+  AddDest k -> do
+    H.modify_ \s ->
+      let block = Source.printDest { target: M.defaultTargetFor k, range: M.Bipolar5V, bank: M.freshBank k }
+          doc = currentDoc s <> "\n\n" <> block
+      in s { library = setDocAt s.active doc s.library, sel = Source.parseRack doc }
+    persist
+  SetDoc doc -> do
+    H.modify_ \s -> s { library = setDocAt s.active doc s.library, sel = Source.parseRack doc }
+    persist
+  SelectRack i -> do
+    H.modify_ \s ->
+      let doc = fromMaybe "" (map _.doc (s.library !! i))
+      in s { active = i, sel = Source.parseRack doc }
+    persist
+  NewRack -> do
+    H.modify_ \s ->
+      let doc = Source.printRack M.defaultSelene
+          n = length s.library
+      in s { library = s.library <> [ { name: "rack " <> show (n + 1), doc } ], active = n, sel = Source.parseRack doc }
+    persist
+  SetRackName name -> do
+    H.modify_ \s -> s { library = fromMaybe s.library (modifyAt s.active (_ { name = name }) s.library) }
+    persist
+
+-- | The active rack's eDSL doc — the editable text + the AskSource answer.
+currentDoc :: State -> String
+currentDoc s = fromMaybe "" (map _.doc (s.library !! s.active))
+
+-- | Replace one rack's doc in the library.
+setDocAt :: Int -> String -> Array Store.Rack -> Array Store.Rack
+setDocAt i doc lib = fromMaybe lib (modifyAt i (_ { doc = doc }) lib)
+
+-- | Persist the rack library (after any library/active change).
+persist :: forall o m. MonadAff m => H.HalogenM State Action () o m Unit
+persist = do
+  s <- H.get
+  liftEffect (Store.saveLibrary { active: s.active, library: s.library })
 
 -- ---------------------------------------------------------------------------
 -- Emit — POLYTRIG over MIDI (other kinds await the es9 path)
@@ -265,10 +310,44 @@ panel label widthCss body =
 rackPanel :: forall m. State -> H.ComponentHTML Action () m
 rackPanel s =
   panel "SELENE · DESTINATIONS" "flex:1 1 auto;min-width:0"
-    ( [ transportStrip s ]
+    ( [ rackBar s, transportStrip s ]
         <> mapWithIndex destinationRow s.sel.destinations
         <> [ addBar, footNote ]
     )
+
+-- The rack library: named racks (each a saved eDSL doc), the active one brass +
+-- editable. Persists to localStorage; a rack's `doc` is its transferable form.
+rackBar :: forall m. State -> H.ComponentHTML Action () m
+rackBar s =
+  HH.div [ style "display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-bottom:12px" ]
+    ( [ HH.span [ style $ engrave <> ";font-size:9px;opacity:0.6;margin-right:2px" ] [ HH.text "RACKS" ] ]
+        <> mapWithIndex (\i r -> rackChip r.name (i == s.active) (SelectRack i)) s.library
+        <> [ newRackChip
+           , HH.input
+               [ HP.value (fromMaybe "" (map _.name (s.library !! s.active)))
+               , HE.onValueInput SetRackName
+               , style $ "margin-left:6px;padding:5px 9px;border:1px solid #a8a392;border-radius:5px;background:#f4f1e8;"
+                   <> "font-family:Georgia,serif;font-size:12px;color:#1c1a12;width:130px" ]
+           ]
+    )
+
+rackChip :: forall m. String -> Boolean -> Action -> H.ComponentHTML Action () m
+rackChip label active act =
+  HH.button
+    [ HE.onClick \_ -> act
+    , style $ "padding:5px 11px;border:1px solid #a8a392;border-radius:6px;cursor:pointer;"
+        <> "font-family:Georgia,serif;font-size:11px;letter-spacing:0.04em;"
+        <> (if active then "color:#1c1a12;background:linear-gradient(#8fb0c0,#7a9eb0)"
+            else "color:#3f3c33;background:linear-gradient(#efece1,#ddd9cb)") ]
+    [ HH.text label ]
+
+newRackChip :: forall m. H.ComponentHTML Action () m
+newRackChip =
+  HH.button
+    [ HE.onClick \_ -> NewRack
+    , style $ "padding:5px 11px;border:1px dashed #a8a392;border-radius:6px;cursor:pointer;"
+        <> "font-family:Georgia,serif;font-size:11px;color:#6a6657;background:#00000006" ]
+    [ HH.text "+ NEW" ]
 
 -- A compact horizontal transport: the ARM/cue toggle (sounds only under the
 -- shell master) + live clock + MIDI readouts. POLYTRIG plays through it today.
@@ -550,7 +629,7 @@ sourcePanel s =
     [ HH.div [ style $ engrave <> ";font-size:8px;opacity:0.6;margin-bottom:6px" ]
         [ HH.text "THE RACK · EDIT THE NUMBERS · -- MUTES A SLOT" ]
     , HH.textarea
-        [ HP.value s.doc
+        [ HP.value (currentDoc s)
         , HE.onValueInput SetDoc
         , HP.spellcheck false
         , style $ "flex:1 1 auto;min-height:420px;resize:none;box-sizing:border-box;"
