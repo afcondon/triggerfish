@@ -43,7 +43,6 @@ import Triggerfish.Odonus.View.Scope (scopePanel)
 import Triggerfish.Odonus.View.Key (quantizerPanel)
 import Triggerfish.Odonus.View.Playheads (playheadsPanel)
 import Triggerfish.Odonus.View.Grid (gridPanel)
-import Triggerfish.Odonus.View.Source (edslPanel)
 import Triggerfish.Odonus.Patch (applyPatch, patchText)
 import Triggerfish.Odonus.Store as Store
 import Triggerfish.Odonus.Lepidoptera (parsePatch)
@@ -513,16 +512,16 @@ setupDrag =
 -- ---------------------------------------------------------------------------
 
 -- | Fullscreen, no margins: a right→left signal chain of full-height panels,
--- | mirroring the scope's leftward note-flow. SOURCE (eDSL) ← GRID ← PLAYHEADS
--- | ← QUANTIZE ← SCOPE. The grid authors integers, the playheads shift them in
--- | degree-space, the quantizer collapses degrees to pitches, the scope shows
--- | them flowing out the left.
+-- | mirroring the scope's leftward note-flow. GRID ← PLAYHEADS ← QUANTIZE ←
+-- | SCOPE. The grid authors integers, the playheads shift them in degree-space,
+-- | the quantizer collapses degrees to pitches, the scope shows them flowing out
+-- | the left. (The eDSL SOURCE pane was retired — the patch's source now lives
+-- | only on the shell's Tidal page; `AskSource`/`patchText` still answer it.)
 render :: forall m. State -> H.ComponentHTML Action () m
 render s =
   HH.div
-    -- The whole surface is non-selectable: knob drags and toggle/matrix
-    -- clicks never start a text selection. Only the SOURCE eDSL re-enables
-    -- selection so it stays copyable.
+    -- The whole surface is non-selectable: knob drags and toggle/matrix clicks
+    -- never start a text selection.
     [ style $ "position:fixed;top:var(--tf-bar);left:0;right:0;bottom:0;display:flex;align-items:stretch;overflow-x:auto;overflow-y:hidden;"
         <> "user-select:none;-webkit-user-select:none;"
         <> "background:#b7b1a0;font-family:Georgia,serif" ]
@@ -530,7 +529,6 @@ render s =
     , quantizerPanel s
     , playheadsPanel s
     , gridPanel s
-    , edslPanel s
     , generatePanel s
     , scenesPanel s
     ]

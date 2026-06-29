@@ -260,14 +260,16 @@ pane visible extra content =
 
 -- The read-only aggregate of all four modules' source, for copy / paste into
 -- Calypso or an editor.
--- The TIDAL page: the cross-instrument LIBRARY manager (browse / load / export /
--- import the Lepidoptera presets) above the read-only SOURCE aggregate.
+-- The TIDAL page, two columns: the cross-instrument LIBRARY manager (browse /
+-- load / export / import the Lepidoptera presets) on the left, the read-only
+-- SOURCE aggregate full-length on the right (uncapped — read the whole rack).
 tidalView :: forall m. RState -> H.ComponentHTML RAction Slots m
 tidalView st =
   HH.div
-    [ style "max-width:880px;margin:calc(var(--tf-bar) + 18px) auto 40px;padding:0 16px;font-family:Georgia,serif" ]
-    [ libraryPanel st
-    , sourcePanel st
+    [ style $ "max-width:1440px;margin:calc(var(--tf-bar) + 18px) auto 40px;padding:0 20px;"
+        <> "font-family:Georgia,serif;display:flex;gap:26px;align-items:flex-start" ]
+    [ HH.div [ style "flex:0 0 400px;min-width:0" ] [ libraryPanel st ]
+    , HH.div [ style "flex:1 1 auto;min-width:0" ] [ sourcePanel st ]
     ]
 
 -- The library manager: each instrument's saved presets, grouped, each loadable
@@ -352,7 +354,7 @@ sourcePanel st =
         ]
     , HH.pre
         [ style $ "margin:0;padding:16px 18px;background:#ffffff;border:1px solid #e3dfd2;"
-            <> "border-radius:6px;box-shadow:0 1px 4px #00000012;overflow:auto;max-height:60vh;"
+            <> "border-radius:6px;box-shadow:0 1px 4px #00000012;overflow-x:auto;"
             <> "font-family:'SF Mono',Menlo,Consolas,monospace;font-size:12px;line-height:1.55;"
             <> "color:#2a271e;white-space:pre;-webkit-user-select:text;user-select:text" ]
         [ HH.text (if st.tidalDoc == "" then "(refresh to gather the four modules)" else st.tidalDoc) ]
