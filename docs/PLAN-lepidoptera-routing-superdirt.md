@@ -65,6 +65,15 @@ is valid PureScript eDSL.
   text-envelope `Vetula.Store` (`{name, tonic, mode-slug, source}`), reconstructed
   at init via `parseProgression`→`importChord`. The in-memory library now survives
   reload. (Standalone Vetula repo; the Triggerfish-vendored copy untouched.)
+- **A5 — The library-manager surface. ✅ DONE 2026-06-29 (triggerfish `2bd309e`).**
+  Built on the TIDAL page above the source aggregate: presets gathered from all
+  four instruments (new `AskLibrary`/`LoadEntry`/`ImportText` queries), grouped,
+  each LOAD (switches to the owning instrument) + COPY (export the Lepidoptera
+  text → Calypso). Import is explicit-target (the lenient Selene/Vetula parsers
+  make auto-routing fragile); each instrument accepts iff the text is its own.
+  **THE A-SERIES IS COMPLETE.** (File export-to-disk deferred; copy-to-clipboard
+  covers cross-app transfer. Gap: the Triggerfish-vendored Vetula lacks A4's
+  persistence — re-vendor later.)
 - **A5 — The library-manager surface** on the Tidal page: browse / name / load /
   export / import the collection, with text/file export giving cross-app
   transfer for free (Calypso speaks the same records). Quick per-instrument
