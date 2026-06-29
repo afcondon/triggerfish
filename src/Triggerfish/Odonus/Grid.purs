@@ -43,7 +43,10 @@ import Triggerfish.Odonus.View.Scope (scopePanel)
 import Triggerfish.Odonus.View.Key (quantizerPanel)
 import Triggerfish.Odonus.View.Playheads (playheadsPanel)
 import Triggerfish.Odonus.View.Grid (gridPanel)
-import Triggerfish.Odonus.View.Source (edslPanel, edslText)
+import Triggerfish.Odonus.View.Source (edslPanel)
+import Triggerfish.Odonus.Patch (applyPatch, patchText)
+import Triggerfish.Odonus.Store as Store
+import Triggerfish.Odonus.Lepidoptera (parsePatch)
 import Triggerfish.SourceQuery (Query(..))
 import Triggerfish.Odonus.View.Generate (generatePanel)
 import Triggerfish.Odonus.View.Scenes (scenesPanel, sceneName)
@@ -77,7 +80,7 @@ handleQuery :: forall o m a. MonadAff m => Query a -> H.HalogenM State Action ()
 handleQuery = case _ of
   AskSource reply -> do
     s <- H.get
-    pure (Just (reply (edslText s.odo)))
+    pure (Just (reply (patchText s)))
   SyncFree startMicros tempo next -> do
     s <- H.get
     for_ s.binnacle \bin ->
@@ -105,8 +108,25 @@ handleQuery = case _ of
       , headNote = if wasSounding && not nowSounding then map (const Nothing) s.headNote else s.headNote }
     pure (Just next)
 
+-- | Run the action, then persist the live patch — except for the high-frequency
+-- | / non-authoring actions (the clock tick, the river frame, a knob DRAG in
+-- | flight, MIDI readiness, and Initialize itself, which has just restored).
+-- | DragEnd is NOT excluded, so a knob edit persists once it settles.
 handleAction :: forall o m. MonadAff m => Action -> H.HalogenM State Action () o m Unit
-handleAction = case _ of
+handleAction a = do
+  dispatch a
+  case a of
+    Frame -> pure unit
+    Step _ -> pure unit
+    DragMove _ -> pure unit
+    MidiReady _ _ -> pure unit
+    Initialize -> pure unit
+    _ -> do
+      s <- H.get
+      liftEffect (Store.savePatch (patchText s))
+
+dispatch :: forall o m. MonadAff m => Action -> H.HalogenM State Action () o m Unit
+dispatch = case _ of
   Initialize -> do
     -- Connect to the rig. Binnacle's clock free-runs at 120 until the
     -- Link anchor arrives, then phase-locks — so Triggerfish runs solo
@@ -133,6 +153,10 @@ handleAction = case _ of
         HS.notify midiL (MidiReady mout nm)
       Nothing -> HS.notify midiL (MidiReady Nothing "unavailable")
     H.modify_ _ { binnacle = Just bin }
+    -- Restore the last live patch (Lepidoptera text → OdonusPatch → State).
+    -- Malformed / absent storage falls back to the default setup.
+    msaved <- liftEffect Store.loadPatch
+    for_ (msaved >>= parsePatch) \p -> H.modify_ (applyPatch p)
   Step tick -> do
     st <- H.get
     -- Global step divider: the scheduler ticks on a fine 1/16 grid; advance the

@@ -13,9 +13,15 @@ import Halogen.HTML as HH
 import Triggerfish.Odonus.Model as M
 import Triggerfish.Scale as Scale
 import Triggerfish.Odonus.Grid.Types (Action, State)
+import Triggerfish.Odonus.Patch (patchText)
 import Triggerfish.Odonus.Grid.Widgets
   ( dirName, octLabel, panelShell, roman, romanNum, signed, speedRatio, style )
 
+-- | The SOURCE pane: the whole live patch rendered as faithful, copyable
+-- | Lepidoptera eDSL text (`Patch.patchText` = `printPatch ∘ capturePatch`), the
+-- | transferable form the rig and Calypso consume. Read-only here; the TIDAL tab
+-- | is the one-stop view. (The earlier `edslText` human summary is retained
+-- | below for reference but no longer rendered.)
 edslPanel :: forall m. State -> H.ComponentHTML Action () m
 edslPanel s =
   panelShell s.collapsed "SOURCE" "eDSL" "flex:0 1 244px;min-width:0"
@@ -24,7 +30,7 @@ edslPanel s =
             <> "white-space:pre;color:#3a372e;background:#00000008;border:1px solid #00000012;"
             <> "border-radius:6px;padding:10px;overflow-x:auto;"
             <> "user-select:text;-webkit-user-select:text;cursor:text" ]
-        [ HH.text (edslText s.odo) ] ]
+        [ HH.text (patchText s) ] ]
 
 -- | The current setup rendered as odonusWith{…} eDSL text. One-directional
 -- | (GUI→text), updating live — the consistency-with-text the rig will consume.
