@@ -23,7 +23,9 @@ import Triggerfish.Odonus.Grid.Widgets
 
 quantizerPanel :: forall m. State -> H.ComponentHTML Action () m
 quantizerPanel s =
-  let tag = sourceTagOf s
+  let
+    tag = sourceTagOf s
+    hasVet = not (null s.voiceChords)
   in
     panelShell s.collapsed "KEY" "Source · Transpose" "flex:0 1 278px;min-width:min-content"
       -- OCTAVE: chromatic ± octaves, COMMON to every source — always safe, so it
@@ -31,16 +33,30 @@ quantizerPanel s =
       [ labelledRow "OCTAVE"
           (map (\n -> tabBtn (octLabel n) (s.odo.octaveShift == n) (SetOctave n)) [ -2, -1, 0, 1, 2 ])
       -- SOURCE: the pitch-set that drives the snap. The selected one's section is
-      -- live; the others grey out.
+      -- live; the others grey out. Vetula is only selectable once a Performance
+      -- voice is bound → odo (the shell's 100ms poll then sees it); until then it
+      -- reads disabled, with a hint so the dead button isn't a mystery.
       , labelledRow "SOURCE"
           [ tabBtn "Scale" (tag == SScale) (SetSource SScale)
           , tabBtn "Chord" (tag == SChord) (SetSource SChord)
-          , tabBtn "Vetula" (tag == SVetula) (SetSource SVetula)
+          , if hasVet then tabBtn "Vetula" (tag == SVetula) (SetSource SVetula)
+            else dimBtn "Vetula"
           ]
+      , if hasVet then HH.text ""
+        else HH.div [ style $ engrave <> ";font-size:8px;color:#888273;margin-top:4px;line-height:1.5" ]
+               [ HH.text "Vetula: in its Performance tab load a progression, then set a voice's destination → odo." ]
       , subSection (tag == SScale) (scaleSection s)
       , subSection (tag == SChord) (chordSection s)
       , subSection (tag == SVetula) [ followSection s ]
       ]
+
+-- | A disabled-looking, non-clickable source button (Vetula with no bound voices).
+dimBtn :: forall m. String -> H.ComponentHTML Action () m
+dimBtn label =
+  HH.span
+    [ style $ "padding:5px 11px;border:1px solid #cdc8b8;border-radius:6px;cursor:not-allowed;"
+        <> "font-family:Georgia,serif;font-size:11px;color:#a8a392;background:#00000006" ]
+    [ HH.text label ]
 
 -- | Which source is active, derived from the overlay + follow state (consistent
 -- | with the `PitchSource` print/parse model): a followed voice → Vetula; the
