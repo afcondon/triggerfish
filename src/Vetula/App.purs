@@ -490,7 +490,12 @@ startWith key focusId chords0 = do
       -- chords across untouched — changing key/scale mustn't wipe the loaded prog.
       let perfIds = maybe [] _.chordIds st.perfProg
           perfKept = filter (\c -> elem c.id perfIds) st.chords
-          placed = map (place key focus) chords0 <> perfKept
+          -- Carry the Lab PROGRESSION's chords across the rebuild too (it lives in
+          -- `path`), so the assembled progression survives a key/scale change or a
+          -- tab round-trip — not just the loaded-performance copy.
+          pathKept = filter (\c -> elem c.id st.path) st.chords
+          placed = nubByEq (\a b -> a.id == b.id)
+                     (map (place key focus) chords0 <> perfKept <> pathKept)
           simNodes = map mkSimNode (map (place key focus) chords0)
       result <- liftEffect $ runSimulation
         { engine: D3
@@ -586,13 +591,15 @@ handleAction = case _ of
 
   Hover mid -> H.modify_ _ { hoveredId = mid }
 
-  -- switching tabs is a hard rebuild (Performance never sims); the progression /
-  -- imports belong to the Lab surface, so they reset on the switch.
+  -- switching tabs is a hard rebuild of the SURFACE (Performance never sims) and
+  -- of the transient exploration scaffolding (families / candidates / borrow). But
+  -- the PROGRESSION (`path`) SURVIVES — it's the work you've assembled, so a peek
+  -- at Performance and back must not wipe it. `startWith` carries its chords across.
   SetTab t -> do
     st <- H.get
     when (t /= st.tab) do
       stopSim
-      H.modify_ _ { tab = t, hoveredId = Nothing, revoicing = Nothing, path = [], familyScale = Map.empty, focusedFamily = Nothing, stackHead = Nothing, dropped = Map.empty, borrowMode = Nothing, imported = Set.empty, sourceEdit = Nothing, genSel = [], candidates = [] }
+      H.modify_ _ { tab = t, hoveredId = Nothing, revoicing = Nothing, familyScale = Map.empty, focusedFamily = Nothing, stackHead = Nothing, dropped = Map.empty, borrowMode = Nothing, imported = Set.empty, sourceEdit = Nothing, genSel = [], candidates = [] }
       startWith st.key (seedFocus t) (seedsFor t st.key)
 
   Key k shift -> do
