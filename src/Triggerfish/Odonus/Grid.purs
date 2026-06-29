@@ -9,7 +9,7 @@ module Triggerfish.Odonus.Grid (component) where
 
 import Prelude
 
-import Data.Array (deleteAt, elem, filter, find, head, length, mapWithIndex, null, range, updateAt, (!!))
+import Data.Array (any, deleteAt, elem, filter, find, head, length, mapWithIndex, null, range, updateAt, (!!))
 import Data.Foldable (foldl, for_)
 import Data.FoldableWithIndex (forWithIndex_)
 import Data.Int (round, toNumber)
@@ -67,7 +67,7 @@ component =
         -- one-stop view of the whole setup; Odonus's own eDSL pane is for
         -- when you want to inspect just this module.
         , collapsed: [ "SOURCE" ], lastTap: "", lastTapMicros: 0.0
-        , voiceChords: [], follow: Nothing }
+        , voiceChords: [], follow: Nothing, source: SScale }
     , render
     , eval: H.mkEval H.defaultEval
         { handleAction = handleAction, handleQuery = handleQuery, initialize = Just Initialize }
@@ -93,7 +93,15 @@ handleQuery = case _ of
   -- voice chords, then re-derive the followed chord (a no-op overlay if nothing
   -- is followed or the followed voice has gone away).
   FeedVoiceChords vcs next -> do
-    H.modify_ \s -> recomputeFollow s { voiceChords = vcs }
+    H.modify_ \s ->
+      let
+        s1 = s { voiceChords = vcs }
+        -- When Vetula is the chosen source, keep a valid follow as voices come and
+        -- go (adopt the first if none is picked or the picked one vanished), so a
+        -- voice bound while Odonus waits is followed automatically.
+        s2 = if s1.source == SVetula then s1 { follow = keepOrFirst s1.follow vcs } else s1
+      in
+        recomputeFollow s2
     pure (Just next)
   -- The shell's master transport. Silence held notes if we were sounding (armed)
   -- and master is now stopping us.
@@ -332,24 +340,21 @@ dispatch = case _ of
   ChordRoll -> H.modify_ \s ->
     let r = Gen.rollChords M.numChordTable s.genSeed
     in s { odo = M.setChordPicks r.picks s.odo, genSeed = r.seed }
-  -- The KEY pane's pitch-source radio. Scale = overlay off; Chord = the internal
-  -- McMullen progression (overlay on, no follow); Vetula = follow a voice (the
-  -- first Odonus-bound one if none is yet picked; a no-op when there are none).
+  -- The KEY pane's pitch-source radio — an explicit `source` intent. Scale =
+  -- overlay off; Chord = the internal McMullen progression (overlay on); Vetula =
+  -- follow a voice. Selecting Vetula always sticks (even with no voice yet): it
+  -- adopts the first bound voice if available, else stays selected-but-inactive
+  -- (recomputeFollow leaves the overlay off; the sub-section shows it waiting).
   SetSource SScale -> H.modify_ \s ->
-    s { follow = Nothing, odo = s.odo { chord = s.odo.chord { on = false } } }
+    s { source = SScale, follow = Nothing, odo = s.odo { chord = s.odo.chord { on = false } } }
   SetSource SChord -> H.modify_ \s ->
-    s { follow = Nothing
+    s { source = SChord, follow = Nothing
       , odo = s.odo { chord = s.odo.chord { on = true, feed = [], ix = 0, phase = 0 } } }
-  SetSource SVetula -> H.modify_ \s -> case s.follow of
-    Just _ -> recomputeFollow s
-    Nothing -> case head s.voiceChords of
-      Just vc -> recomputeFollow (s { follow = Just vc.id })
-      Nothing -> s
-  -- "free" (Nothing) leaves Vetula → back to plain scale (overlay off); picking a
-  -- voice follows it.
-  SetFollow mfid -> H.modify_ \s -> case mfid of
-    Nothing -> s { follow = Nothing, odo = s.odo { chord = s.odo.chord { on = false } } }
-    Just _ -> recomputeFollow (s { follow = mfid })
+  SetSource SVetula -> H.modify_ \s ->
+    recomputeFollow (s { source = SVetula, follow = keepOrFirst s.follow s.voiceChords })
+  -- Pick a voice to follow, or "free" (Nothing = stay on Vetula but unfollowed →
+  -- inactive). recomputeFollow turns the overlay on/off accordingly.
+  SetFollow mfid -> H.modify_ \s -> recomputeFollow (s { follow = mfid })
   SetRoot pc -> H.modify_ \s -> s { odo = M.setRoot pc s.odo }
   SetOctave n -> H.modify_ \s -> s { odo = M.setOctaveShift n s.odo }
   SetDegShift n -> H.modify_ \s -> s { odo = M.setDegShift n s.odo }
@@ -434,15 +439,24 @@ tapBounced k s = k == s.lastTap && (s.nowMicros - s.lastTapMicros) < 120000.0
 markTap :: String -> State -> State
 markTap k s = s { lastTap = k, lastTapMicros = s.nowMicros }
 
--- | Re-derive the chord overlay from the current follow selection + last poll.
--- | ONLY acts when a voice is followed (the followed voice's chord becomes a
--- | one-element feed; a vanished voice clears it). When NOT following, it leaves
--- | the overlay alone — the source selection (Scale off / Chord on) owns it, so
--- | the 100ms voice-chord poll can't clobber the internal Chord source.
+-- | Re-derive the chord overlay from the follow selection + last poll. A followed
+-- | voice's chord becomes a one-element feed (overlay on; a vanished voice clears
+-- | it). With no follow, the overlay is owned by the chosen source: Vetula
+-- | selected-but-unfollowed is INACTIVE (overlay off — it's waiting for a voice);
+-- | Scale (off) / Chord (on) keep theirs, so the 100ms poll can't clobber them.
 recomputeFollow :: State -> State
 recomputeFollow s = case s.follow of
-  Nothing -> s
   Just fid -> s { odo = M.followChord (_.pcs <$> find (\vc -> vc.id == fid) s.voiceChords) s.odo }
+  Nothing -> case s.source of
+    SVetula -> s { odo = s.odo { chord = s.odo.chord { on = false } } }
+    _ -> s
+
+-- | Keep the current followed voice if it still exists, else adopt the first
+-- | bound voice (or none) — used to auto-track a voice for the Vetula source.
+keepOrFirst :: Maybe Int -> Array { id :: Int, pcs :: Array Int } -> Maybe Int
+keepOrFirst cur vcs = case cur of
+  Just fid | any (\vc -> vc.id == fid) vcs -> Just fid
+  _ -> map _.id (head vcs)
 
 -- | The rig WebSocket (purerl-tidal). Binnacle subscribes to the Link
 -- | anchor here and relays gates/CV to es9-daemon.

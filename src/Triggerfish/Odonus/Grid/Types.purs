@@ -276,6 +276,11 @@ type State =
   -- `follow` selects one of those ids (or none), whose chord the quantiser snaps to.
   , voiceChords :: Array { id :: Int, pcs :: Array Int }
   , follow :: Maybe Int
+  -- The chosen pitch SOURCE (the KEY pane radio). An explicit intent, NOT derived
+  -- from the overlay state — so "Vetula selected but no signal yet" is a real,
+  -- selectable state (the sub-section then shows it's waiting). `chord.on` still
+  -- tracks whether a live chord is actually driving the snap.
+  , source :: SourceTag
   }
 
 data Action

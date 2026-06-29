@@ -10,7 +10,7 @@ module Triggerfish.Odonus.View.Key (quantizerPanel) where
 import Prelude
 
 import Data.Array (elem, length, mapWithIndex, null, range, (:))
-import Data.Maybe (Maybe(..), isJust, isNothing)
+import Data.Maybe (Maybe(..), isNothing)
 import Halogen as H
 import Halogen.HTML as HH
 import Halogen.HTML.Events as HE
@@ -23,49 +23,26 @@ import Triggerfish.Odonus.Grid.Widgets
 
 quantizerPanel :: forall m. State -> H.ComponentHTML Action () m
 quantizerPanel s =
-  let
-    tag = sourceTagOf s
-    hasVet = not (null s.voiceChords)
+  let tag = s.source
   in
     panelShell s.collapsed "KEY" "Source · Transpose" "flex:0 1 278px;min-width:min-content"
       -- OCTAVE: chromatic ± octaves, COMMON to every source — always safe, so it
       -- sits at the top above the source-specific controls.
       [ labelledRow "OCTAVE"
           (map (\n -> tabBtn (octLabel n) (s.odo.octaveShift == n) (SetOctave n)) [ -2, -1, 0, 1, 2 ])
-      -- SOURCE: the pitch-set that drives the snap. The selected one's section is
-      -- live; the others grey out. Vetula is only selectable once a Performance
-      -- voice is bound → odo (the shell's 100ms poll then sees it); until then it
-      -- reads disabled, with a hint so the dead button isn't a mystery.
+      -- SOURCE: the pitch-set that drives the snap — an explicit choice (the
+      -- `source` intent). The selected one's section is live; the others grey out.
+      -- Vetula is always selectable; whether a signal is actually arriving is shown
+      -- INSIDE its section (a setting you make, not a control gated on live input).
       , labelledRow "SOURCE"
           [ tabBtn "Scale" (tag == SScale) (SetSource SScale)
           , tabBtn "Chord" (tag == SChord) (SetSource SChord)
-          , if hasVet then tabBtn "Vetula" (tag == SVetula) (SetSource SVetula)
-            else dimBtn "Vetula"
+          , tabBtn "Vetula" (tag == SVetula) (SetSource SVetula)
           ]
-      , if hasVet then HH.text ""
-        else HH.div [ style $ engrave <> ";font-size:8px;color:#888273;margin-top:4px;line-height:1.5" ]
-               [ HH.text "Vetula: in its Performance tab load a progression, then set a voice's destination → odo." ]
       , subSection (tag == SScale) (scaleSection s)
       , subSection (tag == SChord) (chordSection s)
       , subSection (tag == SVetula) [ followSection s ]
       ]
-
--- | A disabled-looking, non-clickable source button (Vetula with no bound voices).
-dimBtn :: forall m. String -> H.ComponentHTML Action () m
-dimBtn label =
-  HH.span
-    [ style $ "padding:5px 11px;border:1px solid #cdc8b8;border-radius:6px;cursor:not-allowed;"
-        <> "font-family:Georgia,serif;font-size:11px;color:#a8a392;background:#00000006" ]
-    [ HH.text label ]
-
--- | Which source is active, derived from the overlay + follow state (consistent
--- | with the `PitchSource` print/parse model): a followed voice → Vetula; the
--- | overlay on with no follow → the internal Chord progression; else the Scale.
-sourceTagOf :: State -> SourceTag
-sourceTagOf s =
-  if isJust s.follow then SVetula
-  else if s.odo.chord.on then SChord
-  else SScale
 
 -- | A source sub-section: live, or greyed + inert when its source isn't selected.
 subSection :: forall m. Boolean -> Array (H.ComponentHTML Action () m) -> H.ComponentHTML Action () m
@@ -154,20 +131,25 @@ chordChip curIx i pk =
 -- | walks its progression Odonus follows.
 followSection :: forall m. State -> H.ComponentHTML Action () m
 followSection s =
-  HH.div_
-    [ HH.div [ style "display:flex;align-items:center;justify-content:space-between;margin-bottom:7px" ]
-        [ HH.span [ style $ engrave <> ";font-size:9px" ] [ HH.text "FOLLOW VETULA" ]
-        , HH.span [ style $ engrave <> ";font-size:8px;color:#888273" ]
-            [ HH.text (if isJust s.follow then "● following" else "○ free") ]
-        ]
-    , labelledRow "VOICE"
-        ( tabBtn "free" (isNothing s.follow) (SetFollow Nothing)
-            : map (\vc -> tabBtn (show vc.id) (s.follow == Just vc.id) (SetFollow (Just vc.id))) s.voiceChords )
-    , if null s.voiceChords
-        then HH.div [ style $ engrave <> ";font-size:8px;color:#888273;margin-top:4px;line-height:1.5" ]
-               [ HH.text "No Odonus-bound Vetula voices. In Vetula's Performance rack, set a voice's destination to → ODO (its id = the voice channel field)." ]
-        else HH.text ""
-    ]
+  let live = s.odo.chord.on   -- a Vetula chord is actually driving the snap
+  in
+    HH.div_
+      [ HH.div [ style "display:flex;align-items:center;justify-content:space-between;margin-bottom:7px" ]
+          [ HH.span [ style $ engrave <> ";font-size:9px" ] [ HH.text "FOLLOW VETULA" ]
+          , HH.span [ style $ engrave <> ";font-size:8px;color:" <> (if live then "#5a7a3a" else "#a07a30") ]
+              [ HH.text (if live then "● live chord" else "◌ not active") ]
+          ]
+      , labelledRow "VOICE"
+          ( tabBtn "free" (isNothing s.follow) (SetFollow Nothing)
+              : map (\vc -> tabBtn (show vc.id) (s.follow == Just vc.id) (SetFollow (Just vc.id))) s.voiceChords )
+      -- The clear callout: Vetula is the chosen source, but nothing is feeding it.
+      , if null s.voiceChords
+          then HH.div
+                 [ style $ "margin-top:8px;padding:7px 9px;border-radius:6px;border:1px solid #d8b66a;"
+                     <> "background:#f6edd6;font-family:Georgia,serif;font-size:9px;color:#7a5c1a;line-height:1.5" ]
+                 [ HH.text "Not active — no Vetula voice is feeding. In Vetula's Performance tab, load a progression and set a voice's destination → odo (its id = the voice's channel field)." ]
+          else HH.text ""
+      ]
 
 -- ---------------------------------------------------------------------------
 -- shared scale widgets

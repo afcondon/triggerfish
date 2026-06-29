@@ -14,8 +14,8 @@ module Triggerfish.Odonus.Patch
 
 import Prelude
 
-import Data.Maybe (Maybe(..))
-import Triggerfish.Odonus.Grid.Types (State)
+import Data.Maybe (Maybe(..), isJust)
+import Triggerfish.Odonus.Grid.Types (SourceTag(..), State)
 import Triggerfish.Odonus.Lepidoptera (OdonusPatch, printPatch, parsePatch)
 import Triggerfish.Odonus.Model as M
 
@@ -40,6 +40,7 @@ applyPatch :: OdonusPatch -> State -> State
 applyPatch p s = s
   { odo = p.odo
   , follow = p.follow
+  , source = deriveSource p.follow p.odo.chord.on
   , gen = p.gen
   , genSpread = p.genSpread
   , genBias = p.genBias
@@ -47,6 +48,12 @@ applyPatch p s = s
   , velHumanize = p.velHumanize
   , stepDiv = p.stepDiv
   }
+
+-- | The source intent a loaded patch implies (it isn't serialised separately):
+-- | a follow → Vetula; the overlay on → Chord; else Scale.
+deriveSource :: Maybe Int -> Boolean -> SourceTag
+deriveSource follow chordOn =
+  if isJust follow then SVetula else if chordOn then SChord else SScale
 
 -- | The live patch rendered to eDSL text — the shell's `AskSource` answer and
 -- | the form a scene is saved in.
