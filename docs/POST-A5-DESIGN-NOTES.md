@@ -70,7 +70,8 @@ selector, scalar-transpose folded into the Scale section, inactive sources greye
 (opacity + pointer-events:none). The Chord source re-exposes the internal McMullen
 progression. **The `renderCell` single-snap change landed with it** (chord/Vetula
 source → chromatic value snaps straight to the chord tones, no scale pre-snap / no
-scalar transpose) — **AUDIO-SENSITIVE, AC to audition on the rig.** A model
+scalar transpose) — **✅ AUDITION-CONFIRMED (AC, via a Vetula follow): a borrowed
+chord with two out-of-scale notes comes through undistorted.** A model
 conflict surfaced + fixed: `recomputeFollow` used to force the overlay off when
 `follow=Nothing`, which the 100ms voice poll used to clobber the Chord source back
 to Scale; it now no-ops when not following (the source selection owns the overlay).
