@@ -66,7 +66,7 @@ import Hylograph.Simulation
   ( Engine(..), SimulationEvent(..), SimulationHandle, SimulationNode
   , Setup, runSimulation, setup, manyBody, collide, link, positionX, positionY
   , withStrength, withRadius, withDistance, withX, withY, static, dynamic )
-import Vetula.Theory (Key, Mode(..), cMajorKey)
+import Harmonia.Chord (Key, Mode(..), cMajorKey)
 import Vetula.Harmony (ChordNode, Family, Kind(..), blackKeyPcs, diatonicTriads, generate, interchangeChords, keyX, keyboard, latticeChild, latticeFamily, mcmullenChords, noteName, place, placeOutside, playNotes, scaleSet, suspendSet, triadOn, voicingCandidates, whiteKeyPcs)
 
 midiPortName :: String

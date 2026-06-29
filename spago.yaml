@@ -7,6 +7,7 @@ package:
     playhead juice.
   dependencies:
     - prelude
+    - harmonia
     - effect
     - aff
     - arrays
@@ -54,6 +55,8 @@ package:
     dependencies: []
 workspace:
   extraPackages:
+    harmonia:
+      path: ../harmonia
     binnacle:
       path: ../binnacle
     # Vetula dogfoods the shared widget library, pinned via the same git

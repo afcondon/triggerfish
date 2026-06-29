@@ -18,6 +18,7 @@
             "halogen",
             "halogen-subscriptions",
             "halogen-svg-elems",
+            "harmonia",
             "hylograph-d3-kernel",
             "hylograph-halogen-ui",
             "hylograph-selection",
@@ -645,6 +646,9 @@
       "binnacle": {
         "path": "../binnacle"
       },
+      "harmonia": {
+        "path": "../harmonia"
+      },
       "hylograph-halogen-ui": {
         "path": "../../../purescript-hylograph-halogen-ui-v0.1"
       }
@@ -1162,6 +1166,17 @@
         "unsafe-coerce",
         "web-dom",
         "web-events"
+      ]
+    },
+    "harmonia": {
+      "type": "local",
+      "path": "../harmonia",
+      "dependencies": [
+        "arrays",
+        "foldable-traversable",
+        "maybe",
+        "prelude",
+        "tuples"
       ]
     },
     "hylograph-d3-kernel": {

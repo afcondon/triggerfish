@@ -40,8 +40,8 @@ import Data.Foldable (any, elem, foldr, maximum)
 import Data.Int (toNumber)
 import Data.Maybe (Maybe(..), fromMaybe, maybe)
 import Data.Tuple (Tuple(..))
-import Vetula.Theory (Chord(..), DegreeChord, Key, Mode, chordBass, chordRoot, mcmullenYellow, modeIntervals, realize)
-import Vetula.Theory.Voicing (Voicing(..), closeVoicing, cluster, drop2, drop2and4, enumerateVoicings, openTriad, quartal, spread, voicingMidi)
+import Harmonia.Chord (Chord(..), DegreeChord, Key, Mode, chordBass, chordRoot, mcmullenYellow, modeIntervals, realize)
+import Harmonia.Voicing (Voicing(..), closeVoicing, cluster, drop2, drop2and4, enumerateVoicings, openTriad, quartal, spread, voicingMidi)
 
 data Kind = Seed | Voiced | Inverted | Suspended | Extended | Borrowed
 

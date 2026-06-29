@@ -82,7 +82,7 @@ import Data.Int (floor, toNumber)
 import Data.Int.Bits (and, shl, shr)
 import Data.Maybe (Maybe(..), fromMaybe, maybe)
 import Triggerfish.Scale (Scale, Distribution(..), applyDistribution, mkScaleFromIvls, normaliseIvls, pitchClassesOf, quantiseToChordPCs, quantiseToScale, randomisableScales, recogniseScale, scaleTypes, shiftDegrees, spreadIvls)
-import Triggerfish.Vetula (Chord(..), Mode(Ionian), mcmullenYellow, mcmullenYellowNames, realize)
+import Harmonia.Chord (Chord(..), Mode(Ionian), mcmullenYellow, mcmullenYellowNames, realize)
 
 type Cell =
   { note :: Int
