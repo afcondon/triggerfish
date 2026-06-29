@@ -9,7 +9,7 @@ module Triggerfish.Odonus.Grid (component) where
 
 import Prelude
 
-import Data.Array (deleteAt, elem, filter, find, length, mapWithIndex, null, range, updateAt, (!!))
+import Data.Array (deleteAt, elem, filter, find, head, length, mapWithIndex, null, range, updateAt, (!!))
 import Data.Foldable (foldl, for_)
 import Data.FoldableWithIndex (forWithIndex_)
 import Data.Int (round, toNumber)
@@ -36,7 +36,7 @@ import Web.HTML (window)
 import Web.HTML.Window as Window
 import Web.UIEvent.MouseEvent as ME
 import Triggerfish.Odonus.Grid.Types
-  ( Action(..), KnobTarget(..), State, applyTarget, genDefaultAmt, genDefaultRate, genKinds, genLabel
+  ( Action(..), KnobTarget(..), SourceTag(..), State, applyTarget, genDefaultAmt, genDefaultRate, genKinds, genLabel
   , marblesPadId, setAmt, setRate, targetRange, toggleGen )
 import Triggerfish.Odonus.Grid.Widgets (clampI, style)
 import Triggerfish.Odonus.View.Scope (scopePanel)
@@ -332,7 +332,24 @@ dispatch = case _ of
   ChordRoll -> H.modify_ \s ->
     let r = Gen.rollChords M.numChordTable s.genSeed
     in s { odo = M.setChordPicks r.picks s.odo, genSeed = r.seed }
-  SetFollow mfid -> H.modify_ \s -> recomputeFollow s { follow = mfid }
+  -- The KEY pane's pitch-source radio. Scale = overlay off; Chord = the internal
+  -- McMullen progression (overlay on, no follow); Vetula = follow a voice (the
+  -- first Odonus-bound one if none is yet picked; a no-op when there are none).
+  SetSource SScale -> H.modify_ \s ->
+    s { follow = Nothing, odo = s.odo { chord = s.odo.chord { on = false } } }
+  SetSource SChord -> H.modify_ \s ->
+    s { follow = Nothing
+      , odo = s.odo { chord = s.odo.chord { on = true, feed = [], ix = 0, phase = 0 } } }
+  SetSource SVetula -> H.modify_ \s -> case s.follow of
+    Just _ -> recomputeFollow s
+    Nothing -> case head s.voiceChords of
+      Just vc -> recomputeFollow (s { follow = Just vc.id })
+      Nothing -> s
+  -- "free" (Nothing) leaves Vetula → back to plain scale (overlay off); picking a
+  -- voice follows it.
+  SetFollow mfid -> H.modify_ \s -> case mfid of
+    Nothing -> s { follow = Nothing, odo = s.odo { chord = s.odo.chord { on = false } } }
+    Just _ -> recomputeFollow (s { follow = mfid })
   SetRoot pc -> H.modify_ \s -> s { odo = M.setRoot pc s.odo }
   SetOctave n -> H.modify_ \s -> s { odo = M.setOctaveShift n s.odo }
   SetDegShift n -> H.modify_ \s -> s { odo = M.setDegShift n s.odo }
@@ -417,13 +434,15 @@ tapBounced k s = k == s.lastTap && (s.nowMicros - s.lastTapMicros) < 120000.0
 markTap :: String -> State -> State
 markTap k s = s { lastTap = k, lastTapMicros = s.nowMicros }
 
--- | Re-derive the chord overlay from the current follow selection + last poll:
--- | the followed voice's chord becomes a one-element feed (overlay on); no
--- | follow — or a followed voice that's vanished — clears it (overlay off).
+-- | Re-derive the chord overlay from the current follow selection + last poll.
+-- | ONLY acts when a voice is followed (the followed voice's chord becomes a
+-- | one-element feed; a vanished voice clears it). When NOT following, it leaves
+-- | the overlay alone — the source selection (Scale off / Chord on) owns it, so
+-- | the 100ms voice-chord poll can't clobber the internal Chord source.
 recomputeFollow :: State -> State
-recomputeFollow s =
-  let mpcs = s.follow >>= \fid -> _.pcs <$> find (\vc -> vc.id == fid) s.voiceChords
-  in s { odo = M.followChord mpcs s.odo }
+recomputeFollow s = case s.follow of
+  Nothing -> s
+  Just fid -> s { odo = M.followChord (_.pcs <$> find (\vc -> vc.id == fid) s.voiceChords) s.odo }
 
 -- | The rig WebSocket (purerl-tidal). Binnacle subscribes to the Link
 -- | anchor here and relays gates/CV to es9-daemon.

@@ -168,22 +168,32 @@ scaleTypeName :: Odonus -> String
 scaleTypeName o = recogniseScale o.scaleIvls
 
 -- | Render a cell's stored integer to its final MIDI pitch for a given head.
--- | Everything upstream is CHROMATIC and predictable; the quantizer is the one
--- | place pitch gets snapped to the scale ("reins it in"):
--- |   cell → in-scale base → + per-head chromatic transpose, re-snapped
--- |        → + global scalar transpose (whole degrees) → + global octaves.
+-- | One snap to a SINGLE pitch source (the reframe): the chromatic knob-values
+-- | (cell + per-head transpose) map to ONE pitch-set.
+-- |
+-- | When an external source drives — a chord progression or a followed Vetula
+-- | voice (`chord.on`) — the chromatic value snaps DIRECTLY to the nearest tone
+-- | of the current chord across octaves. No scale pre-snap and no scalar
+-- | transpose (both are scale-degree notions, meaningless off-scale), so a Vetula
+-- | voice's borrowed / out-of-scale tones and key changes are reached AS-IS.
+-- |
+-- | Otherwise the scale is the lens: the cell is read through the distribution,
+-- | head-transposed and re-snapped to the scale, then shifted by whole scale
+-- | degrees. Global octave applies in both cases.
 renderCell :: Odonus -> Head -> Cell -> Int
 renderCell o hd c =
-  let
-    scale = scaleOf o
-    base = applyDistribution o.dist scale c.note
-    headed = quantiseToScale scale (base + hd.transp)
-    degreed = shiftDegrees scale o.degShift headed
-    -- The chord overlay is the LAST harmonic gate: snap the in-key note to the
-    -- nearest tone of the current chord, across octaves, when the sequence runs.
-    chorded = if o.chord.on then quantiseToChordPCs (currentChordPCs o) degreed else degreed
+  let octave = 12 * o.octaveShift
   in
-    chorded + 12 * o.octaveShift
+    if o.chord.on then
+      quantiseToChordPCs (currentChordPCs o) (c.note + hd.transp) + octave
+    else
+      let
+        scale = scaleOf o
+        base = applyDistribution o.dist scale c.note
+        headed = quantiseToScale scale (base + hd.transp)
+        degreed = shiftDegrees scale o.degShift headed
+      in
+        degreed + octave
 
 -- | How many chords the table offers, and a chord's display name.
 numChordTable :: Int

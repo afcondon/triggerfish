@@ -21,6 +21,7 @@ module Triggerfish.Odonus.Grid.Types
   , setRate
   , setAmt
   , marblesPadId
+  , SourceTag(..)
   , State
   , Action(..)
   ) where
@@ -228,6 +229,15 @@ setAmt k v = map \s -> if s.kind == k then s { amt = v } else s
 marblesPadId :: String
 marblesPadId = "tf-marbles-xy"
 
+-- | Which pitch source drives the quantizer — the KEY pane's top-level choice.
+-- | `SScale` snaps to the scale; `SChord` to the internal McMullen progression;
+-- | `SVetula` to a followed Vetula voice. Derived from `chord.on` + `follow`
+-- | (`Triggerfish.Odonus.View.Key.sourceTagOf`), consistent with the
+-- | `PitchSource` print/parse model.
+data SourceTag = SScale | SChord | SVetula
+
+derive instance eqSourceTag :: Eq SourceTag
+
 type State =
   { odo :: M.Odonus
   , running :: Boolean       -- the ARM/cue flag (sticky); sounds only when master too
@@ -289,6 +299,7 @@ data Action
   | ToggleDist
   | ToggleChord
   | ChordRoll
+  | SetSource SourceTag       -- pick the quantizer's pitch source (KEY pane)
   | SetFollow (Maybe Int)    -- follow a Vetula Odonus-bound voice by id (Nothing = free)
   | SetRoot Int
   | SetOctave Int
