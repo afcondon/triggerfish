@@ -33,13 +33,21 @@ module Triggerfish.Balistes.Model
   , openOf
   , setOpen
   , opensAt
+  , Snapshot
+  , snapshotCount
+  , captureSnapshot
+  , applySnapshot
+  , snapshotAt
+  , storeSnapshot
+  , recallSnapshot
+  , clearSnapshot
   , clampI
   ) where
 
 import Prelude
 
 import Data.Array (replicate, updateAt, (!!))
-import Data.Maybe (fromMaybe)
+import Data.Maybe (Maybe(..), fromMaybe)
 import Triggerfish.Balistes.Engine (Trigger, evaluateStep, freshPerturbations, readDrumMap, clampDensity)
 
 -- | The whole module state — the faithful firmware core (X, Y, densities,
@@ -69,6 +77,26 @@ type Balistes =
   -- OPEN (and chokes its closed self) instead of closed. At 0 nothing opens;
   -- turning it up recruits the loudest/most-stressed hats first.
   , open :: Int
+  -- a bank of captured control points (Nothing = empty slot). The whole point
+  -- of snapshots: record two-handed gestures one mouse can't make (kick up
+  -- while snare down), then recall them instantly.
+  , snapshots :: Array (Maybe Snapshot)
+  }
+
+-- | A captured point in control space: the X/Y cursor + the three densities +
+-- | randomness + open + the per-voice push. NOT the pattern position
+-- | (step/perts/rng) or the ratchet overlay — a snapshot is the knob+pad state,
+-- | recallable instantly. Agnostic to where it came from (a live gesture or, in
+-- | future, an imported pattern), per the rethink doc.
+type Snapshot =
+  { x :: Int
+  , y :: Int
+  , densBd :: Int
+  , densSd :: Int
+  , densHh :: Int
+  , randomness :: Int
+  , open :: Int
+  , push :: Array Int
   }
 
 -- | Central node, moderate density, no randomness — the firmware's neutral
@@ -92,6 +120,7 @@ defaultBalistes =
     , push: [ 0, 0, 0, 0 ]
     -- a touch of open by default, so the loudest hats breathe
     , open: 70
+    , snapshots: replicate snapshotCount Nothing
     }
 
 -- | A nonzero seed (xorshift fixed-points at 0).
@@ -240,4 +269,39 @@ setOpen v b = b { open = clampI 0 255 v }
 -- | level (the same landscape the heatmap paints), so visual + audio agree.
 opensAt :: Balistes -> Int -> Boolean
 opensAt b step = b.open > 0 && levelAt b 2 step >= 255 - b.open
+
+-- ---------------------------------------------------------------------------
+-- Snapshots — captured control points (the snapshot bank)
+-- ---------------------------------------------------------------------------
+
+snapshotCount :: Int
+snapshotCount = 8
+
+-- | Extract the current control point.
+captureSnapshot :: Balistes -> Snapshot
+captureSnapshot b =
+  { x: b.x, y: b.y, densBd: b.densBd, densSd: b.densSd, densHh: b.densHh
+  , randomness: b.randomness, open: b.open, push: b.push }
+
+-- | Set the control fields from a snapshot (instant jump). Pattern position and
+-- | the ratchet overlay are left as they are.
+applySnapshot :: Snapshot -> Balistes -> Balistes
+applySnapshot s b =
+  b { x = s.x, y = s.y, densBd = s.densBd, densSd = s.densSd, densHh = s.densHh
+    , randomness = s.randomness, open = s.open, push = s.push }
+
+snapshotAt :: Balistes -> Int -> Maybe Snapshot
+snapshotAt b i = join (b.snapshots !! i)
+
+storeSnapshot :: Int -> Balistes -> Balistes
+storeSnapshot i b =
+  b { snapshots = fromMaybe b.snapshots (updateAt i (Just (captureSnapshot b)) b.snapshots) }
+
+recallSnapshot :: Int -> Balistes -> Balistes
+recallSnapshot i b = case snapshotAt b i of
+  Just s -> applySnapshot s b
+  Nothing -> b
+
+clearSnapshot :: Int -> Balistes -> Balistes
+clearSnapshot i b = b { snapshots = fromMaybe b.snapshots (updateAt i Nothing b.snapshots) }
 

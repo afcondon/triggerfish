@@ -90,6 +90,8 @@ type State =
   , nowMicros :: Number
   , dragging :: Maybe Drag
   , dragSub :: Maybe H.SubscriptionId
+  -- when armed, a slot click STORES the current control point; otherwise recalls.
+  , capArm :: Boolean
   }
 
 data Action
@@ -106,6 +108,8 @@ data Action
   | DragEnd
   | DillaPreset
   | FlatGroove
+  | ToggleCap                  -- arm/disarm capture-on-slot-click
+  | SlotClick Int Boolean      -- slot i; shift = clear, else recall (or store when armed)
   | NoOp
 
 component :: forall i o m. MonadAff m => H.Component Query i o m
@@ -116,7 +120,7 @@ component =
         , running: false, master: false, playStep: 0, flash: []
         , binnacle: Nothing, midiOut: Nothing, midiName: "…"
         , clockTempo: 120.0, clockLocked: false, clockBeat: 0.0, clockBar: 0, anchorCount: 0
-        , nowMicros: 0.0, dragging: Nothing, dragSub: Nothing }
+        , nowMicros: 0.0, dragging: Nothing, dragSub: Nothing, capArm: false }
     , render
     , eval: H.mkEval H.defaultEval
         { handleAction = handleAction, handleQuery = handleQuery, initialize = Just Initialize }
@@ -261,6 +265,13 @@ handleAction = case _ of
 
   DillaPreset -> H.modify_ \s -> s { bal = M.dillaPush s.bal }
   FlatGroove -> H.modify_ \s -> s { bal = M.flatPush s.bal }
+  ToggleCap -> H.modify_ \s -> s { capArm = not s.capArm }
+  -- shift → clear; armed → store the current control point (and disarm);
+  -- otherwise recall whatever's there (instant jump).
+  SlotClick i shift -> H.modify_ \s ->
+    if shift then s { bal = M.clearSnapshot i s.bal }
+    else if s.capArm then s { bal = M.storeSnapshot i s.bal, capArm = false }
+    else s { bal = M.recallSnapshot i s.bal }
   NoOp -> pure unit
 
 -- | Emit one already-resolved hit: schedule `note` at `delay0` for `durMs`, or —
@@ -478,33 +489,92 @@ controlsPanel s =
         , HH.span [ style $ engrave <> ";font-size:9px" ] [ HH.text ("Y " <> show s.bal.y) ]
         ]
     , HH.div [ style "height:1px;background:#00000018;margin-bottom:10px" ] []
-    , HH.div [ style "display:flex;gap:16px;justify-content:center" ]
-        [ HH.div [ style "display:flex;flex-direction:column;gap:9px;align-items:center" ]
-            [ grLabel "DENSITY"
-            , bigKnob (KDens 0) (instColor 0) "BD" s.bal
-            , bigKnob (KDens 1) (instColor 1) "SD" s.bal
-            , bigKnob (KDens 2) (instColor 2) "HH" s.bal
-            , bigKnob KRand "#6a6657" "RAND" s.bal
-            ]
-        , HH.div [ style "display:flex;flex-direction:column;gap:9px;align-items:center" ]
-            [ grLabel "PUSH ms"
-            , bigKnob (KPush 0) (instColor 0) "BD" s.bal
-            , bigKnob (KPush 1) (instColor 1) "SD" s.bal
-            , bigKnob (KPush 2) (instColor 2) "HH" s.bal
-            , HH.div [ style "display:flex;flex-direction:column;gap:5px;width:64px;margin-top:2px" ]
-                [ flatBtn "DILLA" DillaPreset, flatBtn "FLAT" FlatGroove ]
-            ]
+    -- Knobs as compact rows (BD·SD·HH across), so the freed vertical space goes
+    -- to the snapshot sequencer below.
+    , knobRow "DENSITY"
+        [ bigKnob (KDens 0) (instColor 0) "BD" s.bal
+        , bigKnob (KDens 1) (instColor 1) "SD" s.bal
+        , bigKnob (KDens 2) (instColor 2) "HH" s.bal
         ]
-    , HH.div [ style "height:1px;background:#00000018;margin:14px 0 10px" ] []
-    , HH.div [ style "display:flex;flex-direction:column;align-items:center;gap:2px" ]
-        [ grLabel "OPEN HAT"
+    , knobRow "PUSH ms"
+        [ bigKnob (KPush 0) (instColor 0) "BD" s.bal
+        , bigKnob (KPush 1) (instColor 1) "SD" s.bal
+        , bigKnob (KPush 2) (instColor 2) "HH" s.bal
+        ]
+    , knobRow "GROOVE"
+        [ bigKnob KRand "#6a6657" "RAND" s.bal
         , bigKnob KOpen ohColor "OPEN" s.bal
-        , HH.div [ style $ engrave <> ";font-size:8px;opacity:0.5;text-align:center;line-height:1.5;max-width:200px;margin-top:4px" ]
-            [ HH.text "TURNS THE STRESSED HH HITS INTO OPEN HATS (TEAL), LOUDEST FIRST — IT CHOKES THE CLOSED HIT AND RINGS LONGER." ]
+        , HH.div [ style "display:flex;flex-direction:column;gap:5px;width:60px;align-self:center" ]
+            [ flatBtn "DILLA" DillaPreset, flatBtn "FLAT" FlatGroove ]
         ]
-    , HH.div [ style $ engrave <> ";font-size:8px;opacity:0.55;text-align:center;line-height:1.5;margin-top:12px" ]
-        [ HH.text "DRAG ANY HEATMAP CELL UP / DOWN TO RATCHET IT" ]
+    , HH.div [ style $ engrave <> ";font-size:8px;opacity:0.5;line-height:1.5;margin-top:6px" ]
+        [ HH.text "OPEN turns the loudest HH hits into open hats (teal) — choke + ring. Drag any heatmap cell up/down to ratchet it." ]
+    , HH.div [ style "height:1px;background:#00000018;margin:14px 0 10px" ] []
+    , snapshotSection s
     ]
+
+-- The snapshot bank: capture the whole control point (X/Y + densities +
+-- randomness + open + push) into a slot, recall it instantly. Records the
+-- two-handed gestures a single mouse can't (kick up while snare down). Each
+-- filled slot shows a mini X/Y dot so the bank reads as a constellation of
+-- points in control space.
+snapshotSection :: forall m. State -> H.ComponentHTML Action () m
+snapshotSection s =
+  HH.div_
+    [ HH.div [ style "display:flex;align-items:center;justify-content:space-between;margin-bottom:7px" ]
+        [ HH.span [ style $ engrave <> ";font-size:9px" ] [ HH.text "SNAPSHOTS" ]
+        , HH.button
+            [ HE.onClick \_ -> ToggleCap
+            , style $ "padding:4px 12px;border:1px solid #a8a392;border-radius:5px;cursor:pointer;"
+                <> "font-family:'SF Mono',Menlo,monospace;font-size:9px;letter-spacing:0.08em;"
+                <> (if s.capArm then "color:#fbeae7;background:linear-gradient(#b23b28,#9a3120)"
+                    else "color:#3f3c33;background:linear-gradient(#efece1,#ddd9cb)") ]
+            [ HH.text (if s.capArm then "● ARMED" else "CAPTURE") ]
+        ]
+    , HH.div [ style "display:grid;grid-template-columns:repeat(4,1fr);gap:6px;max-width:200px" ]
+        (map (snapshotSlot s) (range 0 (M.snapshotCount - 1)))
+    , HH.div [ style $ engrave <> ";font-size:8px;opacity:0.5;line-height:1.5;margin-top:8px" ]
+        [ HH.text (if s.capArm then "ARMED — CLICK A SLOT TO STORE THE CURRENT KIT." else "CLICK CAPTURE THEN A SLOT TO STORE · CLICK A SLOT TO RECALL · SHIFT-CLICK TO CLEAR.") ]
+    ]
+
+-- One snapshot slot: a mini X/Y pad. Filled shows the captured cursor as a dot;
+-- empty is a faint outline with its index.
+snapshotSlot :: forall m. State -> Int -> H.ComponentHTML Action () m
+snapshotSlot s i =
+  let
+    msnap = M.snapshotAt s.bal i
+    filled = case msnap of
+      Just _ -> true
+      Nothing -> false
+    body = case msnap of
+      Just snap ->
+        [ svgEl "svg"
+            [ svgAttr "viewBox" "0 0 100 100", svgAttr "width" "30", svgAttr "height" "30"
+            , svgAttr "style" "display:block" ]
+            [ svgEl "circle"
+                [ svgAttr "cx" (show (toNumber snap.x / 255.0 * 100.0))
+                , svgAttr "cy" (show ((1.0 - toNumber snap.y / 255.0) * 100.0))
+                , svgAttr "r" "13", svgAttr "fill" "#1c1a12" ] []
+            ]
+        ]
+      Nothing ->
+        [ HH.span [ style $ engrave <> ";font-size:9px;opacity:0.45" ] [ HH.text (show (i + 1)) ] ]
+  in
+    HH.div
+      [ HE.onClick \e -> SlotClick i (ME.shiftKey e)
+      , style $ "width:32px;height:32px;border-radius:5px;cursor:pointer;display:flex;"
+          <> "align-items:center;justify-content:center;box-sizing:border-box;"
+          <> (if filled then "border:1px solid #a8a392;background:#cfcabb"
+              else "border:1px dashed #b3ae9c;background:#00000006") ]
+      body
+
+-- One labelled row of knobs (the left label, then the knobs across).
+knobRow :: forall m. String -> Array (H.ComponentHTML Action () m) -> H.ComponentHTML Action () m
+knobRow label knobs =
+  HH.div [ style "display:flex;align-items:flex-start;gap:8px;margin-bottom:4px" ]
+    [ HH.div [ style $ engrave <> ";font-size:8px;opacity:0.7;width:42px;flex:0 0 auto;padding-top:6px;text-align:right" ]
+        [ HH.text label ]
+    , HH.div [ style "display:flex;gap:2px" ] knobs ]
 
 padSvg :: forall m. State -> H.ComponentHTML Action () m
 padSvg s =
@@ -697,14 +767,11 @@ bigKnob target color label b =
     v = knobValue target b
     r = targetRange target
   in
-    HH.div [ style "display:flex;flex-direction:column;align-items:center;width:72px" ]
+    HH.div [ style "display:flex;flex-direction:column;align-items:center;width:64px" ]
       [ HH.span [ style $ engrave <> ";font-size:9px;margin-bottom:2px" ] [ HH.text label ]
-      , HH.div [ style "width:58px;height:58px" ]
+      , HH.div [ style "width:50px;height:50px" ]
           [ knob { cx: 24.0, cy: 24.0, rOuter: 20.0, rInner: 8.0, color, lo: r.lo, hi: r.hi, value: v, ticks: 0 } (StartDrag (DKnob target) v) ]
       , HH.span [ style "font-family:'SF Mono',Menlo,monospace;font-size:10px;color:#3f3c33;margin-top:2px" ]
           [ HH.text (show v) ]
       ]
-
-grLabel :: forall m. String -> H.ComponentHTML Action () m
-grLabel t = HH.div [ style $ engrave <> ";font-size:8px;opacity:0.7" ] [ HH.text t ]
 

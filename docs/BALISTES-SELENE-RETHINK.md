@@ -175,6 +175,26 @@ linear step row. A mixed block shows some rings, some rows — *informative*, no
 inconsistent. Bonus: a ringed trig jack visibly says "I'm a Euclid — I could be
 *promoted* to a delegatable PolyEuclid," making (b) an affordance.
 
+## Future direction — a real-pattern library, maybe a second node bank
+
+*(AC, 2026-06-29 — flagged, waiting on MIDI export.)* Grids generates from 25
+firmware drum-maps the X/Y pad morphs between. AC is transcribing a corpus of
+**real, hand-authored patterns** (the ~30 examples from *The Secrets of Dance
+Music Production*) in Ableton and exporting the MIDI, aiming at the Grids
+promise — *reliable instantaneous results without programming, with some
+tweaking (and maybe tweening)*. Two ways these could enter Balistes:
+
+1. **As snapshot sources** — an imported pattern populates a control-space
+   snapshot/scene (see below), recalled and sequenced like any other.
+2. **As a second 5×5 node bank** *(the cheap experiment worth trying)* — 25 of
+   the patterns laid on the 5×5 node grid so the **existing bilinear
+   interpolation morphs between real genre patterns** instead of the firmware
+   maps. 30 patterns ≈ 25 nodes + spares; the X/Y pad would then fly through a
+   landscape of actual beats. Doubtful but cheap to test.
+
+The snapshot model below should stay agnostic to where a control point came
+from (live gesture vs imported pattern), so this folds in without rework.
+
 ## Build order
 
 1. **Selene extraction** *(first — de-crufts the Balistes panel and unblocks
