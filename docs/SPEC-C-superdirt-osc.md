@@ -105,6 +105,90 @@ Pick one, wire the `superdirt`/`es9` alias targets to match, and note the choice
 - The **interface-contract field** (how alias is selected) documented here for
   workstream B.
 
+## Resolution (2026-06-29) — what was built
+
+Implemented in **purerl-tidal**. `spago build` + `make erl` clean; the
+`/dirt/play` wire format was byte-verified (see recipe); the `es9` OSC
+output is unchanged (same FFI senders, same bytes — only its *port*
+moved, by design).
+
+### The interface-contract field (what workstream B sets)
+
+The alias is carried as a **`PrimAction` constructor**, exactly like every
+other emit kind (Gate / CV / MidiNote / …). A SuperDirt-routed source is a
+binding whose action list contains:
+
+```
+Dirt { alias :: String, orbit :: Int }
+```
+
+- `alias` — the OSC client to reach. **`superdirt`** by default (opened at
+  boot → real SuperDirt). `es9` is the CV/gate path. Extensible: any alias
+  declared via `registerCvRouter` resolves; unknown aliases fall back to
+  the `es9` client (so nothing silently drops).
+- `orbit` — the SuperDirt orbit (output bus / FX chain).
+
+It is set two ways, both stable and documented:
+
+1. **Text / WS verb (the seam B will emit):**
+   `bind <name> dirt <orbit> [<alias>]`
+   e.g. `bind sd dirt 0` (alias defaults to `superdirt`),
+   `bind sd dirt 2 superdirt` (explicit). Parsed by
+   `Tidal.Binding.parseAction`; mirrored client-side in
+   `tidal-protocol`'s `TidalProtocol.Binding` (parse + print round-trip)
+   so editors (tidal-cli, browser) speak it too.
+2. **Endpoint declaration (multi-rig / remote SuperDirt):**
+   `registerCvRouter { alias, host, port }` — opens (or replaces) the OSC
+   client for that alias at runtime via
+   `tidal_dispatcher:register_osc_router/3`. `es9` (→ `127.0.0.1:57130`)
+   and `superdirt` (→ `127.0.0.1:57120`) are opened at boot from app-env
+   (`gateHost`/`gatePort`, `superDirtHost`/`superDirtPort`,
+   `superDirtEnabled`); declaring an endpoint is only needed for extra
+   targets.
+
+The per-event param bag (`n`, `gain`, `pan`, `cutoff`, `speed`, `begin`,
+`end`, `shape`, …) rides through unchanged via the existing
+`#`-join → `Tidal.Sound.soundParams` path; the token is the SuperDirt `s`.
+`cps`/`cycle`/`delta` are threaded per-event by `Tidal.Voice` (reserved
+`_cps`/`_cycle`/`_delta` param keys, stripped before encode).
+
+### C3 — port layout (chosen + wired)
+
+SuperDirt keeps the conventional **57120**; **es9-daemon moved to 57130**.
+Edits: es9-daemon `OSC_PORT` (+ README), link-spike `ES9_DAEMON_ADDR`,
+purerl-tidal `gatePort` default + `Studio.cvRouter` + `Calypso.Prelude`
+docstring. The `es9` alias and SuperDirt alias targets match.
+
+### Manual test recipe (AC's rig — audio confirmation)
+
+A sandbox can't make sound; this is the rig test.
+
+1. **Boot SuperDirt** on the conventional port in SuperCollider:
+   ```supercollider
+   SuperDirt.start;   // listens on 57120 by default
+   ```
+   (es9-daemon, if running, is now on 57130 — no conflict.)
+2. **Start purerl-tidal** (`deepstar up`, or the usual boot). At boot it
+   opens the `superdirt` client → `127.0.0.1:57120`.
+3. **Connect** a client: `wscat -c ws://localhost:3012/ws` (or Calypso).
+4. **Route a one-shot to SuperDirt:**
+   ```
+   bind sd dirt 0
+   sd "bd*4"
+   ```
+   You should hear the `bd` sample, 4×/cycle, on orbit 0.
+5. **Exercise the param bag:**
+   ```
+   sd "bd sn hh sn" # gain "1 0.7 0.5 0.8" # n "0 1 2 0" # cutoff "800 1200"
+   ```
+6. **Confirm the es9 path still works** (no regression):
+   `kick "bd*4"` still fires the ES-9 gate (now via 57130).
+
+Wire-format check without audio (what the sandbox ran): a probe captured
+the datagram and decoded `address=/dirt/play`, typetag
+`,sssisfsfsfsf…`, args `s "bd" orbit 2 cps 0.5 cycle 12.0 delta 0.25
+gain … n … cutoff …` — the stock SuperDirt key/value param bag.
+
 ## Out of scope
 
 - The Triggerfish routing UI / capability switch (workstream B, the webapp
