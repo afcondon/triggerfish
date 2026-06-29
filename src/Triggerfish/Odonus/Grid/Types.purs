@@ -113,10 +113,13 @@ type DragState = { target :: KnobTarget, startY :: Int, startVal :: Int }
 -- | that was (so the visual onset lands exactly on the audio onset).
 type NoteEvent = { pitch :: Int, headIdx :: Int, fireUnixMicros :: Number }
 
--- | A saved whole-Odonus setting: notes, heads, scale — the unit of
--- | composition. Sequencing scenes builds flowing fugues with key changes
--- | and voices dropping in and out.
-type Scene = { name :: String, odo :: M.Odonus }
+-- | A saved whole-Odonus setting under a name — the recallable PRESET and the
+-- | unit of composition (sequencing scenes builds flowing fugues with key
+-- | changes and voices dropping in and out). The setting is stored as its
+-- | Lepidoptera `text` (the full authored patch rendered to eDSL — the same
+-- | canonical, transferable form the Tidal page shows), parsed back on recall.
+-- | Lossless: the A3 round-trip is byte-stable.
+type Scene = { name :: String, text :: String }
 
 -- | A randomisation aspect: one independent slow-drift source. Each picks a
 -- | random element of its domain when it fires and mutates it by one notch —
@@ -242,6 +245,7 @@ type State =
   , clockBar :: Int
   , anchorCount :: Int
   , scenes :: Array Scene
+  , sceneNameInput :: String  -- the name typed in the SCENES form for the next capture
   , chain :: Boolean        -- auto-advance scenes at bar boundaries
   , sceneIx :: Int          -- current scene in the chain
   , sceneBarAnchor :: Int   -- bar at which the current scene started
@@ -291,6 +295,7 @@ data Action
   | SetDegShift Int
   | ToggleScaleNote Int
   | CaptureScene
+  | SetSceneName String
   | RecallScene Int
   | DeleteScene Int
   | ToggleChain

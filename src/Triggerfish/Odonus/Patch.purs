@@ -8,12 +8,16 @@ module Triggerfish.Odonus.Patch
   ( capturePatch
   , applyPatch
   , patchText
+  , recallText
+  , loadText
   ) where
 
 import Prelude
 
+import Data.Maybe (Maybe(..))
 import Triggerfish.Odonus.Grid.Types (State)
-import Triggerfish.Odonus.Lepidoptera (OdonusPatch, printPatch)
+import Triggerfish.Odonus.Lepidoptera (OdonusPatch, printPatch, parsePatch)
+import Triggerfish.Odonus.Model as M
 
 -- | The authored slice of State, ready to render / persist. The live patch
 -- | carries the fixed name "live" until the library manager (A5) names entries.
@@ -44,7 +48,23 @@ applyPatch p s = s
   , stepDiv = p.stepDiv
   }
 
--- | The live patch rendered to eDSL text — the Source pane body and the
--- | shell's `AskSource` answer.
+-- | The live patch rendered to eDSL text — the shell's `AskSource` answer and
+-- | the form a scene is saved in.
 patchText :: State -> String
 patchText = printPatch <<< capturePatch
+
+-- | Recall a scene from its eDSL text, PHASE-PRESERVING: apply the saved patch
+-- | but carry the live playhead phase across (cursor / seqPos / accumulator /
+-- | pendStep), so a live scene change flows like a continuing fugue with key
+-- | changes and voices coming and going. Unparseable text → no-op.
+recallText :: String -> State -> State
+recallText txt s = case parsePatch txt of
+  Just p -> (applyPatch p s) { odo = M.recallScene s.odo p.odo }
+  Nothing -> s
+
+-- | Load a patch from its eDSL text, HARD-RESETTING the playheads — the cold
+-- | load from the Tidal library manager. Unparseable text → no-op.
+loadText :: String -> State -> State
+loadText txt s = case parsePatch txt of
+  Just p -> applyPatch p s
+  Nothing -> s

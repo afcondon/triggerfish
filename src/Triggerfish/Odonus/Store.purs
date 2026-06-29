@@ -1,13 +1,13 @@
--- | Triggerfish.Odonus.Store — localStorage persistence for the live Odonus
--- | patch, serialised as **Lepidoptera eDSL text** (one `odonusPatch` rendering).
--- | The text is the canonical, transferable form — drop it into Calypso or ship
--- | it to purerl-tidal, which speak the same dialect. Unlike Selene/Balistes
--- | this stores the raw eDSL string directly (no JSON envelope): a single live
--- | patch, not yet a named library. The cross-instrument library manager (A5)
--- | is where the named collection lands.
+-- | Triggerfish.Odonus.Store — localStorage persistence for Odonus. Persists
+-- | the named **scene library** (the recallable presets) plus the current `live`
+-- | working patch, each as Lepidoptera eDSL text — the canonical, transferable
+-- | form (a scene's text drops into Calypso / ships to purerl-tidal). The JSON
+-- | here is only the local envelope around those eDSL texts; mirrors Selene's
+-- | Store. (v2: was a single raw patch string; scenes became the preset library.)
 module Triggerfish.Odonus.Store
-  ( savePatch
-  , loadPatch
+  ( Saved
+  , saveAll
+  , loadAll
   ) where
 
 import Prelude
@@ -16,19 +16,26 @@ import Data.Maybe (Maybe)
 import Data.Nullable (Nullable, toMaybe)
 import Effect (Effect)
 
+-- | What we persist: the live working patch + the named scene library (each
+-- | scene's `text` is its full authored patch rendered to eDSL).
+type Saved =
+  { live :: String
+  , scenes :: Array { name :: String, text :: String }
+  }
+
 storeKey :: String
-storeKey = "triggerfish.odonus.patch.v1"
+storeKey = "triggerfish.odonus.patch.v2"
 
 foreign import _save :: String -> String -> Effect Unit
-foreign import _load :: String -> Effect (Nullable String)
+foreign import _load :: String -> Effect (Nullable Saved)
+foreign import _stringify :: Saved -> String
 
--- | Persist the live patch's eDSL text (best-effort — the FFI swallows
+-- | Persist the live patch + scene library (best-effort — the FFI swallows
 -- | quota / private-mode errors).
-savePatch :: String -> Effect Unit
-savePatch txt = _save storeKey txt
+saveAll :: Saved -> Effect Unit
+saveAll sv = _save storeKey (_stringify sv)
 
--- | Load the stored patch text, or `Nothing` if absent. The caller parses it
--- | back through `Lepidoptera.parsePatch` (which yields `Nothing` on malformed
--- | text, falling back to the default setup).
-loadPatch :: Effect (Maybe String)
-loadPatch = map toMaybe (_load storeKey)
+-- | Load the stored envelope, or `Nothing` if absent / unparseable. The caller
+-- | parses each `text` back through `Lepidoptera.parsePatch`.
+loadAll :: Effect (Maybe Saved)
+loadAll = map toMaybe (_load storeKey)

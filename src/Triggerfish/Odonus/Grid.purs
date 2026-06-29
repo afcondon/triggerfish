@@ -43,9 +43,9 @@ import Triggerfish.Odonus.View.Scope (scopePanel)
 import Triggerfish.Odonus.View.Key (quantizerPanel)
 import Triggerfish.Odonus.View.Playheads (playheadsPanel)
 import Triggerfish.Odonus.View.Grid (gridPanel)
-import Triggerfish.Odonus.Patch (applyPatch, patchText)
+import Triggerfish.Odonus.Patch (capturePatch, loadText, patchText, recallText)
 import Triggerfish.Odonus.Store as Store
-import Triggerfish.Odonus.Lepidoptera (parsePatch)
+import Triggerfish.Odonus.Lepidoptera (parsePatch, printPatch)
 import Triggerfish.SourceQuery (Query(..))
 import Triggerfish.Odonus.View.Generate (generatePanel)
 import Triggerfish.Odonus.View.Scenes (scenesPanel, sceneName)
@@ -58,7 +58,7 @@ component =
         , notes: [], binnacle: Nothing, nowMicros: 0.0
         , midiOut: Nothing, midiName: "…", clockTempo: 120.0, clockLocked: false
         , clockBeat: 0.0, clockBar: 0, anchorCount: 0
-        , scenes: [], chain: false, sceneIx: 0, sceneBarAnchor: 0, barsPerScene: 4
+        , scenes: [], sceneNameInput: "", chain: false, sceneIx: 0, sceneBarAnchor: 0, barsPerScene: 4
         , stepDiv: 1, headNote: [ Nothing, Nothing, Nothing, Nothing ]
         , swing: 0.0, velHumanize: 12
         , gen: map (\k -> { kind: k, on: false, rate: genDefaultRate k, amt: genDefaultAmt k }) genKinds
@@ -106,18 +106,22 @@ handleQuery = case _ of
       { master = m
       , headNote = if wasSounding && not nowSounding then map (const Nothing) s.headNote else s.headNote }
     pure (Just next)
-  -- A5 library manager: Odonus has no named collection — just the live patch,
-  -- which it exposes as the one entry (for export). LoadEntry is a no-op; an
-  -- imported patch is loaded LIVE (parsePatch self-guards on `odonusPatch`).
+  -- A5 library manager: Odonus's saved SCENES are its named presets. LoadEntry
+  -- cold-loads a scene (hard playhead reset); import adds a scene (parsePatch
+  -- self-guards on `odonusPatch`).
   AskLibrary reply -> do
     s <- H.get
-    pure (Just (reply [ { name: "live", text: patchText s } ]))
-  LoadEntry _ next -> pure (Just next)
+    pure (Just (reply s.scenes))
+  LoadEntry i next -> do
+    H.modify_ \s -> case s.scenes !! i of
+      Just sc -> loadText sc.text s
+      Nothing -> s
+    persistAll
+    pure (Just next)
   ImportText txt reply -> case parsePatch txt of
     Just p -> do
-      H.modify_ (applyPatch p)
-      s <- H.get
-      liftEffect (Store.savePatch (patchText s))
+      H.modify_ \s -> s { scenes = s.scenes <> [ { name: p.name, text: printPatch p } ] }
+      persistAll
       pure (Just (reply true))
     Nothing -> pure (Just (reply false))
 
@@ -134,9 +138,14 @@ handleAction a = do
     DragMove _ -> pure unit
     MidiReady _ _ -> pure unit
     Initialize -> pure unit
-    _ -> do
-      s <- H.get
-      liftEffect (Store.savePatch (patchText s))
+    SetSceneName _ -> pure unit   -- per-keystroke; nothing authoring changed yet
+    _ -> persistAll
+
+-- | Persist the live working patch + the named scene library.
+persistAll :: forall o m. MonadAff m => H.HalogenM State Action () o m Unit
+persistAll = do
+  s <- H.get
+  liftEffect (Store.saveAll { live: patchText s, scenes: s.scenes })
 
 dispatch :: forall o m. MonadAff m => Action -> H.HalogenM State Action () o m Unit
 dispatch = case _ of
@@ -166,10 +175,12 @@ dispatch = case _ of
         HS.notify midiL (MidiReady mout nm)
       Nothing -> HS.notify midiL (MidiReady Nothing "unavailable")
     H.modify_ _ { binnacle = Just bin }
-    -- Restore the last live patch (Lepidoptera text → OdonusPatch → State).
-    -- Malformed / absent storage falls back to the default setup.
-    msaved <- liftEffect Store.loadPatch
-    for_ (msaved >>= parsePatch) \p -> H.modify_ (applyPatch p)
+    -- Restore the saved scene library + the live working patch (each is
+    -- Lepidoptera text; unparseable / absent storage falls back to defaults).
+    msaved <- liftEffect Store.loadAll
+    for_ msaved \sv -> do
+      H.modify_ _ { scenes = sv.scenes }
+      H.modify_ (loadText sv.live)
   Step tick -> do
     st <- H.get
     -- Global step divider: the scheduler ticks on a fine 1/16 grid; advance the
@@ -263,8 +274,7 @@ dispatch = case _ of
             if advance then
               let ni = (s.sceneIx + 1) `mod` length s.scenes
               in case s.scenes !! ni of
-                Just sc -> base
-                  { odo = M.recallScene s.odo sc.odo, sceneIx = ni, sceneBarAnchor = r.bar }
+                Just sc -> (recallText sc.text base) { sceneIx = ni, sceneBarAnchor = r.bar }
                 Nothing -> base
             else base
       Nothing -> pure unit
@@ -327,10 +337,16 @@ dispatch = case _ of
   SetOctave n -> H.modify_ \s -> s { odo = M.setOctaveShift n s.odo }
   SetDegShift n -> H.modify_ \s -> s { odo = M.setDegShift n s.odo }
   ToggleScaleNote pc -> H.modify_ \s -> s { odo = M.toggleScaleNote pc s.odo }
+  -- Capture the WHOLE current setup under the typed name (or an auto-name), as
+  -- its Lepidoptera text — the named, recallable preset. (persistAll runs in the
+  -- handleAction wrapper.)
   CaptureScene -> H.modify_ \s ->
-    s { scenes = s.scenes <> [ { name: sceneName s, odo: s.odo } ] }
+    let nm = if s.sceneNameInput == "" then sceneName s else s.sceneNameInput
+    in s { scenes = s.scenes <> [ { name: nm, text: printPatch ((capturePatch s) { name = nm }) } ]
+         , sceneNameInput = "" }
+  SetSceneName n -> H.modify_ _ { sceneNameInput = n }
   RecallScene i -> H.modify_ \s -> case s.scenes !! i of
-    Just sc -> s { odo = M.recallScene s.odo sc.odo, sceneIx = i }
+    Just sc -> (recallText sc.text s) { sceneIx = i }
     Nothing -> s
   DeleteScene i -> H.modify_ \s -> s { scenes = fromMaybe s.scenes (deleteAt i s.scenes) }
   ToggleChain -> H.modify_ \s -> s { chain = not s.chain, sceneBarAnchor = s.clockBar }

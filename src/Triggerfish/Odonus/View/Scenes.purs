@@ -7,6 +7,7 @@ import Data.Array (length, mapWithIndex, null)
 import Halogen as H
 import Halogen.HTML as HH
 import Halogen.HTML.Events as HE
+import Halogen.HTML.Properties as HP
 import Triggerfish.Odonus.Model as M
 import Triggerfish.Scale as Scale
 import Triggerfish.Odonus.Grid.Types (Action(..), Scene, State)
@@ -19,7 +20,13 @@ sceneName s = show (length s.scenes + 1) <> " · " <> Scale.scaleName (M.scaleOf
 scenesPanel :: forall m. State -> H.ComponentHTML Action () m
 scenesPanel s =
   panelShell s.collapsed "SCENES" "Song" "flex:0 1 198px;min-width:min-content"
-    [ HH.button
+    [ HH.input
+        [ HP.value s.sceneNameInput
+        , HE.onValueInput SetSceneName
+        , HP.placeholder "name this setting…"
+        , style $ "width:100%;box-sizing:border-box;padding:6px 8px;margin-bottom:6px;border:1px solid #a8a392;"
+            <> "border-radius:6px;background:#f4f1e8;font-family:Georgia,serif;font-size:11px;color:#1c1a12" ]
+    , HH.button
         [ HE.onClick \_ -> CaptureScene
         , style $ "width:100%;padding:7px;margin-bottom:10px;border:1px solid #a8a392;border-radius:7px;cursor:pointer;"
             <> "background:linear-gradient(#efece1,#ddd9cb);font-family:Georgia,serif;font-size:12px;color:#3f3c33" ]
