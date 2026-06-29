@@ -30,6 +30,9 @@ module Triggerfish.Balistes.Model
   , setPush
   , dillaPush
   , flatPush
+  , openOf
+  , setOpen
+  , opensAt
   , clampI
   ) where
 
@@ -61,6 +64,11 @@ type Balistes =
   -- authoring overlay (Triggerfish extension, not in the firmware)
   , ratchet :: Array Int
   , push :: Array Int
+  -- `open` (0..255) — the OPEN-hat dial. It sets a boundary that descends the
+  -- HH level landscape: a firing hat whose level clears the boundary fires
+  -- OPEN (and chokes its closed self) instead of closed. At 0 nothing opens;
+  -- turning it up recruits the loudest/most-stressed hats first.
+  , open :: Int
   }
 
 -- | Central node, moderate density, no randomness — the firmware's neutral
@@ -82,6 +90,8 @@ defaultBalistes =
     -- one ratchet slot per (lane, step) over the 3 Grids lanes (96 = 3×32)
     , ratchet: replicate 96 1
     , push: [ 0, 0, 0, 0 ]
+    -- a touch of open by default, so the loudest hats breathe
+    , open: 70
     }
 
 -- | A nonzero seed (xorshift fixed-points at 0).
@@ -211,4 +221,23 @@ dillaPush b = b { push = [ 0, 16, -9, -9 ] }
 -- | Zero every lane's timing offset.
 flatPush :: Balistes -> Balistes
 flatPush b = b { push = [ 0, 0, 0, 0 ] }
+
+-- ---------------------------------------------------------------------------
+-- Open hat (the OPEN dial) — a descending boundary on the HH landscape
+-- ---------------------------------------------------------------------------
+
+openOf :: Balistes -> Int
+openOf b = b.open
+
+setOpen :: Int -> Balistes -> Balistes
+setOpen v b = b { open = clampI 0 255 v }
+
+-- | Does the HH voice fire OPEN at this step? The open boundary is `255 - open`,
+-- | so it descends from above the landscape (nothing opens at 0) down through
+-- | the accent line and toward the fire threshold as the dial rises — the
+-- | loudest, most-stressed hats convert to open first. Caller fires a hat here;
+-- | open means: ring longer, and choke the closed hit. Uses the deterministic
+-- | level (the same landscape the heatmap paints), so visual + audio agree.
+opensAt :: Balistes -> Int -> Boolean
+opensAt b step = b.open > 0 && levelAt b 2 step >= 255 - b.open
 

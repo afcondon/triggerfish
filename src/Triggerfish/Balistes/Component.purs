@@ -57,7 +57,7 @@ import Web.UIEvent.MouseEvent as ME
 -- | A recent hit, kept just long enough to flash the transport pilot lamps.
 type Flash = { inst :: Int, accent :: Boolean, fireUnixMicros :: Number }
 
-data KnobTarget = KDens Int | KRand | KPush Int
+data KnobTarget = KDens Int | KRand | KPush Int | KOpen
 
 -- | A document-tracked drag either turns a knob or subdivides a Grids cell into
 -- | ratchets (`DCell lane step`). One drag plumbing for both.
@@ -71,6 +71,7 @@ targetRange = case _ of
   KDens _ -> { lo: 0, hi: 255 }
   KRand -> { lo: 0, hi: 255 }
   KPush _ -> { lo: -50, hi: 50 }
+  KOpen -> { lo: 0, hi: 255 }
 
 type State =
   { bal :: M.Balistes
@@ -177,10 +178,22 @@ handleAction = case _ of
         r = M.tick st.bal
         stepMs = 0.25 * 60000.0 / max 30.0 st.clockTempo
       for_ st.midiOut \out -> liftEffect $
-        -- the three Grids lanes (step-quantised, firmware-faithful), each with
-        -- its ratchet roll + per-voice Dilla push applied on emit.
+        -- the three Grids voices (step-quantised, firmware-faithful). A firing
+        -- HH that clears the OPEN boundary rings as an open hat (note 46, OH
+        -- push slot, long gate) and chokes its closed self; everything else is a
+        -- short blip. Ratchet roll + per-voice Dilla push applied on emit.
         for_ r.fired \t ->
-          emitHit out st.bal drumChannel stepMs tick.delayMs playedStep t.inst (M.instNote t.inst) t.accent
+          let
+            b = st.bal
+            opens = t.inst == 2 && M.opensAt b playedStep
+            note = if opens then ohNote else M.instNote t.inst
+            durMs = if opens then openGateMs else closedGateMs
+            pushLane = if opens then 3 else t.inst   -- open hats ride the OH push slot
+            delay0 = max 0.0 (tick.delayMs + toNumber (M.pushOf pushLane b))
+            n = M.ratchetAt b t.inst playedStep
+            v0 = if t.accent then accentVel else baseVel
+          in
+            emitHit out drumChannel stepMs delay0 note durMs v0 n
       let
         gridsFlash = map (\t -> { inst: t.inst, accent: t.accent, fireUnixMicros: tick.fireUnixMicros }) r.fired
       H.modify_ \s -> s { bal = r.bal, playStep = playedStep, flash = gridsFlash <> s.flash }
@@ -250,37 +263,33 @@ handleAction = case _ of
   FlatGroove -> H.modify_ \s -> s { bal = M.flatPush s.bal }
   NoOp -> pure unit
 
--- | Emit one Grids hit: apply that voice's Dilla push (signed ms) and explode a
--- | ratcheted cell into N evenly-spaced retriggers at flat velocity. Hits are
--- | short blips (the open hat's longer ring returns with the OPEN dial).
+-- | Emit one already-resolved hit: schedule `note` at `delay0` for `durMs`, or —
+-- | when the cell is ratcheted (n > 1) — explode it into n evenly-spaced
+-- | retriggers at flat velocity. Push/ratchet/open are resolved by the caller.
 emitHit
-  :: Midi.MidiOut -> M.Balistes -> Int -> Number -> Number -> Int -> Int -> Int -> Boolean -> Effect Unit
-emitHit out b channel stepMs baseDelayMs step lane note accent =
-  let
-    fullDur = 30.0
-    v0 = if accent then accentVel else baseVel
-    delay0 = max 0.0 (baseDelayMs + toNumber (M.pushOf lane b))
-    n = M.ratchetAt b lane step
-  in
-    if n <= 1 then
-      Midi.scheduleNote out
-        { channel, note, velocity: v0, delayMs: delay0, durMs: fullDur }
-    else
-      let sub = stepMs / toNumber n
-      in for_ (range 0 (n - 1)) \k ->
-           Midi.scheduleNote out
-             { channel, note, velocity: v0
-             , delayMs: delay0 + toNumber k * sub, durMs: sub * 0.9 }
+  :: Midi.MidiOut -> Int -> Number -> Number -> Int -> Number -> Int -> Int -> Effect Unit
+emitHit out channel stepMs delay0 note durMs velocity n =
+  if n <= 1 then
+    Midi.scheduleNote out
+      { channel, note, velocity, delayMs: delay0, durMs }
+  else
+    let sub = stepMs / toNumber n
+    in for_ (range 0 (n - 1)) \k ->
+         Midi.scheduleNote out
+           { channel, note, velocity
+           , delayMs: delay0 + toNumber k * sub, durMs: sub * 0.9 }
 
 applyKnob :: KnobTarget -> Int -> M.Balistes -> M.Balistes
 applyKnob (KDens i) v = M.setDensity i v
 applyKnob KRand v = M.setRandomness v
 applyKnob (KPush i) v = M.setPush i v
+applyKnob KOpen v = M.setOpen v
 
 knobValue :: KnobTarget -> M.Balistes -> Int
 knobValue (KDens i) b = M.densityOf i b
 knobValue KRand b = b.randomness
 knobValue (KPush i) b = M.pushOf i b
+knobValue KOpen b = M.openOf b
 
 -- ---------------------------------------------------------------------------
 -- Constants
@@ -305,6 +314,22 @@ accentVel = 120
 
 baseVel :: Int
 baseVel = 78
+
+-- | GM open hat — what a hat fires when it clears the OPEN boundary.
+ohNote :: Int
+ohNote = 46
+
+-- | Gate lengths: an open hat rings, a closed hat is a blip.
+openGateMs :: Number
+openGateMs = 200.0
+
+closedGateMs :: Number
+closedGateMs = 30.0
+
+-- | The open hat's teal — distinct from HH steel-blue, so opening cells read as
+-- | a different voice in the heatmap.
+ohColor :: String
+ohColor = "#2f8a8a"
 
 padId :: String
 padId = "balistes-pad"
@@ -470,6 +495,13 @@ controlsPanel s =
                 [ flatBtn "DILLA" DillaPreset, flatBtn "FLAT" FlatGroove ]
             ]
         ]
+    , HH.div [ style "height:1px;background:#00000018;margin:14px 0 10px" ] []
+    , HH.div [ style "display:flex;flex-direction:column;align-items:center;gap:2px" ]
+        [ grLabel "OPEN HAT"
+        , bigKnob KOpen ohColor "OPEN" s.bal
+        , HH.div [ style $ engrave <> ";font-size:8px;opacity:0.5;text-align:center;line-height:1.5;max-width:200px;margin-top:4px" ]
+            [ HH.text "TURNS THE STRESSED HH HITS INTO OPEN HATS (TEAL), LOUDEST FIRST — IT CHOKES THE CLOSED HIT AND RINGS LONGER." ]
+        ]
     , HH.div [ style $ engrave <> ";font-size:8px;opacity:0.55;text-align:center;line-height:1.5;margin-top:12px" ]
         [ HH.text "DRAG ANY HEATMAP CELL UP / DOWN TO RATCHET IT" ]
     ]
@@ -598,10 +630,11 @@ heatSvg s =
         level = M.levelAt b lane step
         fires = M.wouldFire b lane step
         accent = fires && level > 192
+        opens = lane == 2 && fires && M.opensAt b step   -- an open hat here
         n = M.ratchetAt b lane step
         x = toNumber step * colW
         y = laneY lane
-        c = instColor lane
+        c = if opens then ohColor else instColor lane
         landscape = rectBlock x y (colW - 1.0) (rowH - 1.0) c (toNumber level / 255.0 * 0.32)
         segs = if not fires then [] else stackBlocks x y c n (if accent then 0.95 else 0.7)
         acc = if accent then [ accentOutline x y ] else []
