@@ -240,7 +240,7 @@ ink = "#2b2922"
 render :: forall m. State -> H.ComponentHTML Action () m
 render s =
   HH.div
-    [ style $ "position:fixed;inset:0;display:flex;align-items:stretch;overflow:hidden;"
+    [ style $ "position:fixed;top:var(--tf-bar);left:0;right:0;bottom:0;display:flex;align-items:stretch;overflow:hidden;"
         <> "user-select:none;-webkit-user-select:none;background:#b7b1a0;font-family:Georgia,serif" ]
     [ rackPanel s
     , sourcePanel s
@@ -249,7 +249,7 @@ render s =
 panel :: forall m. String -> String -> Array (H.ComponentHTML Action () m) -> H.ComponentHTML Action () m
 panel label widthCss body =
   HH.div
-    [ style $ widthCss <> ";height:100vh;box-sizing:border-box;overflow-y:auto;overflow-x:hidden;"
+    [ style $ widthCss <> ";height:calc(100vh - var(--tf-bar));box-sizing:border-box;overflow-y:auto;overflow-x:hidden;"
         <> "background:linear-gradient(#dcd8c9,#cfcabb);border-left:1px solid #b3ae9c;"
         <> "padding:18px 16px;display:flex;flex-direction:column" ]
     ( [ HH.div

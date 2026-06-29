@@ -485,7 +485,7 @@ render s =
     -- The whole surface is non-selectable: knob drags and toggle/matrix
     -- clicks never start a text selection. Only the SOURCE eDSL re-enables
     -- selection so it stays copyable.
-    [ style $ "position:fixed;inset:0;display:flex;align-items:stretch;overflow-x:auto;overflow-y:hidden;"
+    [ style $ "position:fixed;top:var(--tf-bar);left:0;right:0;bottom:0;display:flex;align-items:stretch;overflow-x:auto;overflow-y:hidden;"
         <> "user-select:none;-webkit-user-select:none;"
         <> "background:#b7b1a0;font-family:Georgia,serif" ]
     [ scopePanel s

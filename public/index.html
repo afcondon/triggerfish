@@ -7,6 +7,11 @@
   <style>
     html, body { margin: 0; background: #fafafa; }
 
+    /* The shared shell bar's height — the single source of truth every
+       instrument insets below (machine roots via top/height calc, the
+       in-flow Vetula + TIDAL via padding). */
+    :root { --tf-bar: 44px; }
+
     /* ───────── Vetula (the 4th instrument) surface styles ─────────
        Ported from the standalone Vetula index.html. Scoped to its own
        surface where it would otherwise be page-global, so the other

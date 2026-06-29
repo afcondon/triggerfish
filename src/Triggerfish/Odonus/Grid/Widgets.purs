@@ -90,7 +90,7 @@ panelShell collapsed label sub widthCss body =
   if elem label collapsed then panelTab label
   else
     HH.div
-      [ style $ widthCss <> ";height:100vh;box-sizing:border-box;overflow-y:auto;overflow-x:hidden;"
+      [ style $ widthCss <> ";height:calc(100vh - var(--tf-bar));box-sizing:border-box;overflow-y:auto;overflow-x:hidden;"
           <> "background:linear-gradient(#dcd8c9,#cfcabb);border-left:1px solid #b3ae9c;"
           <> "padding:18px 14px;display:flex;flex-direction:column" ]
       ( [ HH.div
@@ -112,7 +112,7 @@ panelTab :: forall m. String -> H.ComponentHTML Action () m
 panelTab label =
   HH.div
     [ HE.onClick \_ -> ExpandPanel label
-    , style $ "flex:0 0 30px;min-width:30px;height:100vh;box-sizing:border-box;cursor:pointer;"
+    , style $ "flex:0 0 30px;min-width:30px;height:calc(100vh - var(--tf-bar));box-sizing:border-box;cursor:pointer;"
         <> "display:flex;align-items:center;justify-content:center;user-select:none;"
         <> "background:linear-gradient(#d2cec0,#c5c0b1);border-left:1px solid #b3ae9c" ]
     [ HH.span

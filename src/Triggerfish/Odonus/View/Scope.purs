@@ -30,7 +30,7 @@ pitchToY pitch = riverH * (1.0 - (toNumber (clampI 24 96 pitch) - 24.0) / 72.0)
 scopePanel :: forall m. State -> H.ComponentHTML Action () m
 scopePanel s =
   HH.div
-    [ style $ "flex:1 1 360px;min-width:0;height:100vh;position:relative;overflow:hidden;"
+    [ style $ "flex:1 1 360px;min-width:0;height:calc(100vh - var(--tf-bar));position:relative;overflow:hidden;"
         <> "background:radial-gradient(140% 100% at 100% 50%,#15140f,#0b0a07)" ]
     ( octaveGuides
         <>

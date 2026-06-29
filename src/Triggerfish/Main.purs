@@ -172,30 +172,33 @@ assemble = joinWith "\n\n\n" <<< map section
 render :: forall m. MonadAff m => RState -> H.ComponentHTML RAction Slots m
 render st =
   HH.div_
-    [ masterBar st
-    , switchBar st
+    [ shellBar st
     -- All four are always in the tree (hence always mounted + running); the
     -- active one is shown, the rest are display:none but keep playing. On the
-    -- TIDAL tab all four are hidden but still alive (and queryable).
-    , pane (st.which == Odo) (HH.slot_ _odo unit Odonus.component unit)
-    , pane (st.which == Bal) (HH.slot_ _bal unit Balistes.component unit)
-    , pane (st.which == Sel) (HH.slot_ _sel unit Selene.component unit)
-    , pane (st.which == Vet) (HH.slot_ _vet unit Vetula.component unit)
+    -- TIDAL tab all four are hidden but still alive (and queryable). The three
+    -- machine instruments inset their own root below the bar (position:fixed
+    -- top:var(--tf-bar)); the in-flow Vetula pane is padded down to clear it.
+    , pane (st.which == Odo) "" (HH.slot_ _odo unit Odonus.component unit)
+    , pane (st.which == Bal) "" (HH.slot_ _bal unit Balistes.component unit)
+    , pane (st.which == Sel) "" (HH.slot_ _sel unit Selene.component unit)
+    , pane (st.which == Vet) "padding-top:var(--tf-bar)" (HH.slot_ _vet unit Vetula.component unit)
     , if st.which == Tid then tidalView st else HH.text ""
     ]
 
 -- A mounted-but-maybe-hidden pane. `display:none` keeps the component alive
--- (and its scheduler/MIDI running) while removing it from layout.
-pane :: forall m. Boolean -> H.ComponentHTML RAction Slots m -> H.ComponentHTML RAction Slots m
-pane visible content =
-  HH.div [ style (if visible then "" else "display:none") ] [ content ]
+-- (and its scheduler/MIDI running) while removing it from layout. `extra` adds
+-- per-pane style (the in-flow Vetula pane pads itself below the shell bar; the
+-- fixed-root machine instruments need nothing).
+pane :: forall m. Boolean -> String -> H.ComponentHTML RAction Slots m -> H.ComponentHTML RAction Slots m
+pane visible extra content =
+  HH.div [ style ((if visible then "" else "display:none;") <> extra) ] [ content ]
 
 -- The read-only aggregate of all four modules' source, for copy / paste into
 -- Calypso or an editor.
 tidalView :: forall m. RState -> H.ComponentHTML RAction Slots m
 tidalView st =
   HH.div
-    [ style "max-width:880px;margin:54px auto 40px;padding:0 16px;font-family:Georgia,serif" ]
+    [ style "max-width:880px;margin:calc(var(--tf-bar) + 18px) auto 40px;padding:0 16px;font-family:Georgia,serif" ]
     [ HH.div
         [ style "display:flex;align-items:baseline;gap:14px;margin-bottom:12px" ]
         [ HH.span
@@ -221,34 +224,47 @@ barBtn label act =
         <> "background:linear-gradient(#f3ecd9,#e9e0c6)" ]
     [ HH.text label ]
 
--- The master transport, top-left: one PLAY/STOP for the whole rack. Each module
--- arms itself; this gates whether the armed ones sound.
-masterBar :: forall m. RState -> H.ComponentHTML RAction Slots m
-masterBar st =
+-- The shared shell bar: one fixed strip across every tab — master transport
+-- (left), the rack/instrument nameplate (centred), the switcher (right). It
+-- reserves `--tf-bar` of height so no instrument's own top content collides
+-- with it, and gives the rack one identity over both the machine and oracle
+-- aesthetics underneath.
+shellBar :: forall m. RState -> H.ComponentHTML RAction Slots m
+shellBar st =
   HH.div
-    [ style "position:fixed;top:10px;left:14px;z-index:50;font-family:Georgia,serif" ]
+    [ style $ "position:fixed;top:0;left:0;right:0;height:var(--tf-bar);z-index:50;box-sizing:border-box;"
+        <> "display:flex;align-items:center;justify-content:space-between;padding:0 12px;"
+        <> "background:linear-gradient(#d4cfc0,#c2bcab);border-bottom:1px solid #00000026;"
+        <> "box-shadow:0 1px 4px #00000018;font-family:Georgia,serif" ]
     [ HH.button
         [ HE.onClick \_ -> ToggleMaster
-        , style $ "padding:6px 20px;border:1px solid #00000033;border-radius:7px;cursor:pointer;"
-            <> "font-size:12px;letter-spacing:0.16em;text-transform:uppercase;box-shadow:0 1px 4px #0000002a;"
+        , style $ "padding:6px 18px;border:1px solid #00000033;border-radius:6px;cursor:pointer;"
+            <> "font-size:11px;letter-spacing:0.16em;text-transform:uppercase;box-shadow:0 1px 3px #00000022;"
             <> "color:" <> (if st.playing then "#fbeae7" else "#1c1a12")
             <> ";background:" <> (if st.playing then "linear-gradient(#b23b28,#9a3120)" else "linear-gradient(#c8a86a,#b8975a)") ]
         [ HH.text (if st.playing then "■ STOP" else "▶ PLAY") ]
+    , HH.div
+        [ style $ "position:absolute;left:50%;transform:translateX(-50%);pointer-events:none;"
+            <> "font-size:11px;letter-spacing:0.22em;text-transform:uppercase;color:#4a463b" ]
+        [ HH.text ("Triggerfish · " <> whichName st.which) ]
+    , HH.div
+        [ style $ "display:flex;gap:0;border:1px solid #00000033;border-radius:6px;overflow:hidden;"
+            <> "box-shadow:0 1px 3px #00000022" ]
+        [ seg "ODONUS" (st.which == Odo) (Pick Odo)
+        , seg "BALISTES" (st.which == Bal) (Pick Bal)
+        , seg "SELENE" (st.which == Sel) (Pick Sel)
+        , seg "VETULA" (st.which == Vet) (Pick Vet)
+        , seg "TIDAL" (st.which == Tid) (Pick Tid)
+        ]
     ]
 
--- A small floating selector, top-right, in the Hainbach idiom.
-switchBar :: forall m. RState -> H.ComponentHTML RAction Slots m
-switchBar st =
-  HH.div
-    [ style $ "position:fixed;top:10px;right:14px;z-index:50;display:flex;gap:0;"
-        <> "border:1px solid #00000033;border-radius:7px;overflow:hidden;"
-        <> "box-shadow:0 1px 4px #0000002a;font-family:Georgia,serif" ]
-    [ seg "ODONUS" (st.which == Odo) (Pick Odo)
-    , seg "BALISTES" (st.which == Bal) (Pick Bal)
-    , seg "SELENE" (st.which == Sel) (Pick Sel)
-    , seg "VETULA" (st.which == Vet) (Pick Vet)
-    , seg "TIDAL" (st.which == Tid) (Pick Tid)
-    ]
+whichName :: Which -> String
+whichName = case _ of
+  Odo -> "Odonus"
+  Bal -> "Balistes"
+  Sel -> "Selene"
+  Vet -> "Vetula"
+  Tid -> "Tidal"
 
 seg :: forall m. String -> Boolean -> RAction -> H.ComponentHTML RAction Slots m
 seg label active act =
