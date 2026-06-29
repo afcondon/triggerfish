@@ -19,6 +19,7 @@ module Triggerfish.Main where
 
 import Prelude
 
+import Data.Array (filter, mapWithIndex, null)
 import Data.Maybe (Maybe(..), fromMaybe)
 import Data.String.Common (joinWith)
 import Data.Tuple (Tuple(..))
@@ -58,13 +59,25 @@ data Which = Odo | Bal | Sel | Vet | Tid
 
 derive instance Eq Which
 
-data RAction = Init | SyncTick | PollVetula | Pick Which | RefreshTidal | CopyTidal | ToggleMaster
+data RAction
+  = Init | SyncTick | PollVetula | Pick Which | RefreshTidal | CopyTidal | ToggleMaster
+  | LoadFromLib Which Int       -- A5: make a saved entry active in its instrument
+  | CopyEntry String            -- copy one entry's eDSL text
+  | SetImportText String
+  | ImportInto Which            -- route the paste box to one instrument's library
+
+-- One saved preset gathered from an instrument, for the cross-instrument LIBRARY
+-- manager on the TIDAL page. `text` is the entry rendered to Lepidoptera eDSL
+-- (the transferable form); `idx` is its position in that instrument's library.
+type LibRow = { inst :: Which, idx :: Int, name :: String, text :: String }
 
 -- `playing` is the MASTER transport. Each module's own run button is a sticky
 -- arm/cue toggle; a module sounds only when master `playing` AND it is armed. So
 -- PLAY starts every armed module together on the shared downbeat, and arming a
 -- stopped rack is silent until PLAY.
-type RState = { which :: Which, tidalDoc :: String, freeT0 :: Number, playing :: Boolean }
+type RState =
+  { which :: Which, tidalDoc :: String, freeT0 :: Number, playing :: Boolean
+  , library :: Array LibRow, importText :: String, importMsg :: String }
 
 type Slots =
   ( odo :: H.Slot SQ.Query Void Unit
@@ -88,7 +101,9 @@ _vet = Proxy
 root :: forall q i o m. MonadAff m => H.Component q i o m
 root =
   H.mkComponent
-    { initialState: \_ -> { which: Bal, tidalDoc: "", freeT0: 0.0, playing: false }
+    { initialState: \_ ->
+        { which: Bal, tidalDoc: "", freeT0: 0.0, playing: false
+        , library: [], importText: "", importMsg: "" }
     , render
     , eval: H.mkEval H.defaultEval { handleAction = handleAction, initialize = Just Init }
     }
@@ -125,13 +140,33 @@ handleAction = case _ of
     _ <- H.query _sel unit (SQ.SyncFree t0 freeTempo unit)
     _ <- H.query _vet unit (Vetula.SyncFree t0 freeTempo unit)
     pure unit
-  -- Opening TIDAL pulls a fresh aggregate; the modules keep playing meanwhile.
+  -- Opening TIDAL pulls a fresh aggregate + library; the modules keep playing.
   Pick Tid -> do
     H.modify_ _ { which = Tid }
     refreshTidal
+    refreshLibrary
   Pick w -> H.modify_ _ { which = w }
-  RefreshTidal -> refreshTidal
+  RefreshTidal -> refreshTidal *> refreshLibrary
   CopyTidal -> H.gets _.tidalDoc >>= (liftEffect <<< copyText)
+  -- A5 manager: load a saved entry into its instrument, and switch to it so the
+  -- change is visible. Copy exports one entry's eDSL text.
+  LoadFromLib w i -> do
+    _ <- queryLoad w i
+    H.modify_ _ { which = w }
+  CopyEntry txt -> liftEffect (copyText txt)
+  SetImportText t -> H.modify_ _ { importText = t }
+  -- Route the paste box to one instrument; it accepts iff the text is one of its
+  -- own presets. On success, clear the box and re-gather the library.
+  ImportInto w -> do
+    txt <- H.gets _.importText
+    accepted <- queryImport w txt
+    let ok = fromMaybe false accepted
+    H.modify_ _
+      { importMsg = if ok then "✓ imported into " <> whichName w
+                    else "✗ not a valid " <> whichName w <> " preset" }
+    when ok do
+      H.modify_ _ { importText = "" }
+      refreshLibrary
   -- The live Vetula→Odonus bridge: pull each Odonus-bound voice's current block
   -- chord and feed the set to Odonus, whose KEY pane picks one (or none) to follow.
   PollVetula -> do
@@ -169,6 +204,36 @@ assemble = joinWith "\n\n\n" <<< map section
   section (Tuple name msrc) =
     "-- ═══════════════  " <> name <> "  ═══════════════\n\n" <> fromMaybe "(no source)" msrc
 
+-- Gather every instrument's saved presets (via AskLibrary) into one flat list,
+-- tagged by instrument + index — the data the LIBRARY manager renders.
+refreshLibrary :: forall o m. H.HalogenM RState RAction Slots o m Unit
+refreshLibrary = do
+  o <- H.query _odo unit (SQ.AskLibrary identity)
+  b <- H.query _bal unit (SQ.AskLibrary identity)
+  s <- H.query _sel unit (SQ.AskLibrary identity)
+  v <- H.query _vet unit (Vetula.AskLibrary identity)
+  H.modify_ _ { library = rows Odo o <> rows Bal b <> rows Sel s <> rows Vet v }
+  where
+  rows w m = mapWithIndex (\i e -> { inst: w, idx: i, name: e.name, text: e.text }) (fromMaybe [] m)
+
+-- Dispatch a LoadEntry / ImportText to the right slot (the two query types — the
+-- shared SourceQuery and Vetula's own — agree on these constructors' shapes).
+queryLoad :: forall o m. Which -> Int -> H.HalogenM RState RAction Slots o m (Maybe Unit)
+queryLoad w i = case w of
+  Odo -> H.query _odo unit (SQ.LoadEntry i unit)
+  Bal -> H.query _bal unit (SQ.LoadEntry i unit)
+  Sel -> H.query _sel unit (SQ.LoadEntry i unit)
+  Vet -> H.query _vet unit (Vetula.LoadEntry i unit)
+  Tid -> pure Nothing
+
+queryImport :: forall o m. Which -> String -> H.HalogenM RState RAction Slots o m (Maybe Boolean)
+queryImport w txt = case w of
+  Odo -> H.query _odo unit (SQ.ImportText txt identity)
+  Bal -> H.query _bal unit (SQ.ImportText txt identity)
+  Sel -> H.query _sel unit (SQ.ImportText txt identity)
+  Vet -> H.query _vet unit (Vetula.ImportText txt identity)
+  Tid -> pure Nothing
+
 render :: forall m. MonadAff m => RState -> H.ComponentHTML RAction Slots m
 render st =
   HH.div_
@@ -195,21 +260,99 @@ pane visible extra content =
 
 -- The read-only aggregate of all four modules' source, for copy / paste into
 -- Calypso or an editor.
+-- The TIDAL page: the cross-instrument LIBRARY manager (browse / load / export /
+-- import the Lepidoptera presets) above the read-only SOURCE aggregate.
 tidalView :: forall m. RState -> H.ComponentHTML RAction Slots m
 tidalView st =
   HH.div
     [ style "max-width:880px;margin:calc(var(--tf-bar) + 18px) auto 40px;padding:0 16px;font-family:Georgia,serif" ]
+    [ libraryPanel st
+    , sourcePanel st
+    ]
+
+-- The library manager: each instrument's saved presets, grouped, each loadable
+-- and copyable (copy = export the Lepidoptera text, e.g. into Calypso); plus a
+-- paste box that imports into a chosen instrument.
+libraryPanel :: forall m. RState -> H.ComponentHTML RAction Slots m
+libraryPanel st =
+  HH.div [ style "margin-bottom:26px" ]
     [ HH.div
         [ style "display:flex;align-items:baseline;gap:14px;margin-bottom:12px" ]
         [ HH.span
             [ style "font-size:13px;letter-spacing:0.14em;text-transform:uppercase;color:#5a564b" ]
-            [ HH.text "Tidal — the whole playing surface" ]
+            [ HH.text "Library — presets across the rack" ]
+        , barBtn "refresh" RefreshTidal
+        ]
+    , if null st.library
+        then HH.div [ style "color:#8a8576;font-size:12px;font-style:italic;margin-bottom:14px" ]
+               [ HH.text "(refresh to gather each instrument's saved presets)" ]
+        else HH.div_ (map (groupSection st) [ Odo, Bal, Sel, Vet ])
+    , importBox st
+    ]
+
+groupSection :: forall m. RState -> Which -> H.ComponentHTML RAction Slots m
+groupSection st w =
+  let rows = filter (\r -> r.inst == w) st.library
+  in if null rows then HH.text ""
+     else HH.div [ style "margin-bottom:12px" ]
+       ( [ HH.div
+             [ style "font-size:10px;letter-spacing:0.16em;text-transform:uppercase;color:#8a7a4a;margin-bottom:5px" ]
+             [ HH.text (whichName w) ]
+         ] <> map entryRow rows )
+
+entryRow :: forall m. LibRow -> H.ComponentHTML RAction Slots m
+entryRow r =
+  HH.div
+    [ style $ "display:flex;align-items:center;gap:10px;padding:6px 10px;margin-bottom:3px;"
+        <> "background:#ffffff;border:1px solid #e3dfd2;border-radius:5px" ]
+    [ HH.span [ style "flex:1 1 auto;font-size:12px;color:#2a271e" ] [ HH.text r.name ]
+    , barBtn "load" (LoadFromLib r.inst r.idx)
+    , barBtn "copy" (CopyEntry r.text)
+    ]
+
+importBox :: forall m. RState -> H.ComponentHTML RAction Slots m
+importBox st =
+  HH.div
+    [ style "margin-top:16px;padding:12px;background:#f3efe4;border:1px solid #e3dfd2;border-radius:6px" ]
+    [ HH.div
+        [ style "font-size:10px;letter-spacing:0.12em;text-transform:uppercase;color:#7a7363;margin-bottom:7px" ]
+        [ HH.text "Import — paste Lepidoptera eDSL, then choose its instrument" ]
+    , HH.textarea
+        [ HP.value st.importText
+        , HE.onValueInput SetImportText
+        , HP.placeholder "balistesPattern \"…\"  ·  odonusPatch \"…\"  ·  a Selene rack  ·  a Vetula  note \"<…>\""
+        , HP.spellcheck false
+        , style $ "width:100%;box-sizing:border-box;min-height:84px;resize:vertical;padding:8px 10px;"
+            <> "border:1px solid #cdbb96;border-radius:5px;background:#fffdf8;"
+            <> "font-family:'SF Mono',Menlo,Consolas,monospace;font-size:11px;line-height:1.5;color:#2a271e" ]
+    , HH.div
+        [ style "display:flex;align-items:center;gap:7px;margin-top:8px" ]
+        [ HH.span [ style "font-size:10px;letter-spacing:0.1em;text-transform:uppercase;color:#7a7363" ] [ HH.text "import →" ]
+        , barBtn "Odonus" (ImportInto Odo)
+        , barBtn "Balistes" (ImportInto Bal)
+        , barBtn "Selene" (ImportInto Sel)
+        , barBtn "Vetula" (ImportInto Vet)
+        , if st.importMsg == "" then HH.text ""
+          else HH.span [ style "font-size:11px;color:#5a4a22;margin-left:4px" ] [ HH.text st.importMsg ]
+        ]
+    ]
+
+-- The read-only aggregate of all four modules' source, for copy / paste into
+-- Calypso or an editor.
+sourcePanel :: forall m. RState -> H.ComponentHTML RAction Slots m
+sourcePanel st =
+  HH.div_
+    [ HH.div
+        [ style "display:flex;align-items:baseline;gap:14px;margin-bottom:12px" ]
+        [ HH.span
+            [ style "font-size:13px;letter-spacing:0.14em;text-transform:uppercase;color:#5a564b" ]
+            [ HH.text "Source — the whole playing surface" ]
         , barBtn "copy" CopyTidal
         , barBtn "refresh" RefreshTidal
         ]
     , HH.pre
         [ style $ "margin:0;padding:16px 18px;background:#ffffff;border:1px solid #e3dfd2;"
-            <> "border-radius:6px;box-shadow:0 1px 4px #00000012;overflow:auto;max-height:78vh;"
+            <> "border-radius:6px;box-shadow:0 1px 4px #00000012;overflow:auto;max-height:60vh;"
             <> "font-family:'SF Mono',Menlo,Consolas,monospace;font-size:12px;line-height:1.55;"
             <> "color:#2a271e;white-space:pre;-webkit-user-select:text;user-select:text" ]
         [ HH.text (if st.tidalDoc == "" then "(refresh to gather the four modules)" else st.tidalDoc) ]

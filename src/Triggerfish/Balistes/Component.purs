@@ -42,6 +42,7 @@ import Triggerfish.Balistes.Model as M
 import Triggerfish.Balistes.Pattern as P
 import Triggerfish.Balistes.Source as Source
 import Triggerfish.Balistes.Store as Store
+import Triggerfish.Balistes.Lepidoptera (printPattern, parsePattern)
 import Triggerfish.SourceQuery (Query(..))
 import Triggerfish.Balistes.Tables as T
 import Triggerfish.Ui.Knob (knob)
@@ -189,6 +190,21 @@ handleQuery = case _ of
   SetMaster m next -> do
     H.modify_ _ { master = m }
     pure (Just next)
+  -- A5 library manager: the fixed-rhythm library, each as its balistesPattern eDSL.
+  -- (Grids is the live generative member, not a saved entry.)
+  AskLibrary reply -> do
+    s <- H.get
+    pure (Just (reply (map (\p -> { name: p.name, text: printPattern p }) s.library)))
+  LoadEntry i next -> do
+    H.modify_ _ { active = AFixed i }
+    pure (Just next)
+  -- parsePattern is strict (only `balistesPattern` text), so it self-guards.
+  ImportText txt reply -> case parsePattern txt of
+    Just p -> do
+      H.modify_ \s -> s { library = s.library <> [ p ], active = AFixed (length s.library) }
+      persistLib
+      pure (Just (reply true))
+    Nothing -> pure (Just (reply false))
 
 -- ---------------------------------------------------------------------------
 -- handleAction

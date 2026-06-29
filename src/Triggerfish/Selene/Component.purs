@@ -111,6 +111,25 @@ handleQuery = case _ of
   SetMaster m next -> do
     H.modify_ _ { master = m }
     pure (Just next)
+  -- A5 library manager: each rack's `doc` IS its transferable eDSL text.
+  AskLibrary reply -> do
+    s <- H.get
+    pure (Just (reply (map (\r -> { name: r.name, text: r.doc }) s.library)))
+  LoadEntry i next -> do
+    H.modify_ \s ->
+      let doc = fromMaybe "" (map _.doc (s.library !! i))
+      in s { active = i, sel = Source.parseRack doc }
+    persist
+    pure (Just next)
+  -- Import always succeeds (parseRack is total) — the manager routes here by an
+  -- explicit target, so the user already chose Selene.
+  ImportText txt reply -> do
+    H.modify_ \s ->
+      let n = length s.library
+      in s { library = s.library <> [ { name: "imported " <> show (n + 1), doc: txt } ], active = n
+           , sel = Source.parseRack txt }
+    persist
+    pure (Just (reply true))
 
 handleAction :: forall o m. MonadAff m => Action -> H.HalogenM State Action () o m Unit
 handleAction = case _ of

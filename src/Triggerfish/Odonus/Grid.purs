@@ -107,6 +107,20 @@ handleQuery = case _ of
       { master = m
       , headNote = if wasSounding && not nowSounding then map (const Nothing) s.headNote else s.headNote }
     pure (Just next)
+  -- A5 library manager: Odonus has no named collection — just the live patch,
+  -- which it exposes as the one entry (for export). LoadEntry is a no-op; an
+  -- imported patch is loaded LIVE (parsePatch self-guards on `odonusPatch`).
+  AskLibrary reply -> do
+    s <- H.get
+    pure (Just (reply [ { name: "live", text: patchText s } ]))
+  LoadEntry _ next -> pure (Just next)
+  ImportText txt reply -> case parsePatch txt of
+    Just p -> do
+      H.modify_ (applyPatch p)
+      s <- H.get
+      liftEffect (Store.savePatch (patchText s))
+      pure (Just (reply true))
+    Nothing -> pure (Just (reply false))
 
 -- | Run the action, then persist the live patch — except for the high-frequency
 -- | / non-authoring actions (the clock tick, the river frame, a knob DRAG in

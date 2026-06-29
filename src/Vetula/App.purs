@@ -318,6 +318,9 @@ data SourceQuery a
   | AskVoiceChords (Array { id :: Int, pcs :: Array Int } -> a)  -- live per-Odonus-voice chord
   | SetMaster Boolean a
   | SyncFree Number Number a    -- adopt the rack's shared free-run baseline (start micros, BPM)
+  | AskLibrary (Array { name :: String, text :: String } -> a)   -- A5 manager
+  | LoadEntry Int a
+  | ImportText String (Boolean -> a)
 
 component :: forall i o m. MonadAff m => H.Component SourceQuery i o m
 component = H.mkComponent
@@ -402,6 +405,23 @@ handleQuery = case _ of
     for_ st.binnacle \bin ->
       liftEffect (Clock.setFreeBaseline (Binnacle.clock bin) { startMicros, tempo })
     pure (Just next)
+  -- A5 cross-instrument library manager (the Triggerfish shell). Each library
+  -- entry renders to its voiced Tidal source; import rebuilds chords from a pasted
+  -- progression (the same parse path as paste-and-load) and appends an entry.
+  AskLibrary reply -> do
+    s <- H.get
+    pure (Just (reply (map (\e -> { name: e.name, text: progressionSource (groupLabel e.key) e.chords }) s.library)))
+  LoadEntry i next -> do
+    handleAction (LoadProg i)
+    pure (Just next)
+  ImportText txt reply -> do
+    st <- H.get
+    let noteLists = filter (\ns -> length ns > 0) (parseProgression txt)
+    if length noteLists == 0 then pure (Just (reply false))
+    else do
+      let chords = mapWithIndex importChord noteLists
+      H.modify_ \s -> s { library = s.library <> [ { name: "imported", key: st.key, chords } ] }
+      pure (Just (reply true))
 
 -- | The current path as one PC set per step (each chord's absolute pitch
 -- | classes) — what Odonus's quantiser snaps to when fed from Vetula.
