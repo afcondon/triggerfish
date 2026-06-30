@@ -439,6 +439,12 @@ dispatch = case _ of
     st <- H.get
     for_ st.binnacle \bin ->
       liftEffect $ Transport.send (Binnacle.socket bin) ("reef-odonus " <> encodeOdonus st.odo)
+  HushRig -> do
+    -- Stop the reef voice (and everything else) on the rig via the existing
+    -- hush verb, over the same socket the push used.
+    st <- H.get
+    for_ st.binnacle \bin ->
+      liftEffect $ Transport.send (Binnacle.socket bin) "hush"
 
 -- | True if this target was just toggled (< 120ms ago) — the second of a
 -- | double-dispatched click. nowMicros advances via the Frame loop. Shared by

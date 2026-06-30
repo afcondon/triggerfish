@@ -31,13 +31,21 @@ scenesPanel s =
         , style $ "width:100%;padding:7px;margin-bottom:6px;border:1px solid #a8a392;border-radius:7px;cursor:pointer;"
             <> "background:linear-gradient(#efece1,#ddd9cb);font-family:Georgia,serif;font-size:12px;color:#3f3c33" ]
         [ HH.text "＋ Capture current" ]
-    , HH.button
-        -- Push the whole record to the BEAM (Reef.Protocol over the rig WS).
-        -- Sibling of Capture: same patch-as-data gesture, to the wire not disk.
-        [ HE.onClick \_ -> PushToRig
-        , style $ "width:100%;padding:7px;margin-bottom:10px;border:1px solid #a8a392;border-radius:7px;cursor:pointer;"
-            <> "background:linear-gradient(#dfe7d6,#cdd9c0);font-family:Georgia,serif;font-size:12px;color:#3f4a33" ]
-        [ HH.text "⇪ Push to rig (ch15)" ]
+    , HH.div [ style "display:flex;gap:6px;margin-bottom:10px" ]
+        [ HH.button
+            -- Push the whole record to the BEAM (Reef.Protocol over the rig WS).
+            -- Sibling of Capture: same patch-as-data gesture, to the wire not disk.
+            [ HE.onClick \_ -> PushToRig
+            , style $ "flex:1;padding:7px;border:1px solid #a8a392;border-radius:7px;cursor:pointer;"
+                <> "background:linear-gradient(#dfe7d6,#cdd9c0);font-family:Georgia,serif;font-size:12px;color:#3f4a33" ]
+            [ HH.text "⇪ Push to rig (ch15)" ]
+        , HH.button
+            -- Send `hush` over the same socket — stops the reef voice.
+            [ HE.onClick \_ -> HushRig
+            , style $ "flex:0 0 auto;padding:7px 12px;border:1px solid #a8a392;border-radius:7px;cursor:pointer;"
+                <> "background:linear-gradient(#e7dcd6,#d9c8c0);font-family:Georgia,serif;font-size:12px;color:#4a3833" ]
+            [ HH.text "✋ Hush" ]
+        ]
     , HH.div [ style "display:flex;align-items:center;justify-content:space-between;margin-bottom:6px" ]
         [ HH.button
             [ HE.onClick \_ -> ToggleChain
