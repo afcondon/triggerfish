@@ -120,7 +120,8 @@ rerollNotes n bias spread odo seed
   | n <= 0 = { odo, seed }
   | otherwise =
       let { n: i, seed: s1 } = Marbles.nextInt 16 seed
-          r = Marbles.rollValue { bias, spread } (range 36 84) s1
+          -- cells are indices into the voice's PitchSet now (0 .. span·N−1).
+          r = Marbles.rollValue { bias, spread } (range 0 (M.cellIndexMax odo)) s1
       in rerollNotes (n - 1) bias spread (M.setNote i r.value odo) r.seed
 
 -- | Flip `n` random head bits, never landing on all-voices-off: an empty mask
@@ -155,7 +156,7 @@ rollAllNotes
   :: Number -> Number -> M.Odonus -> Marbles.Seed
   -> { odo :: M.Odonus, seed :: Marbles.Seed }
 rollAllNotes spread bias odo seed =
-  let m = Marbles.mutateInts { spread, bias, amount: 1.0 } (range 36 84) (map _.note odo.cells) seed
+  let m = Marbles.mutateInts { spread, bias, amount: 1.0 } (range 0 (M.cellIndexMax odo)) (map _.note odo.cells) seed
   in { odo: M.setNotes m.values odo, seed: m.seed }
 
 -- | Draw four random chord indices from a table of `tableSize` — a fresh
@@ -169,16 +170,15 @@ rollChords tableSize = go 4 []
         let { n: ix, seed: seed' } = Marbles.nextInt tableSize seed
         in go (n - 1) (acc <> [ ix ]) seed'
 
--- | Seed a plausible melody: 16 random notes from the harmony's pitch classes
--- | (`pcs`) within a centred melodic band (~D3..D5). A CENTER-like reset that
--- | already sits in the key/chord and reads as a line, not a flat block.
+-- | Seed a plausible melody: 16 random cell indices across the voice's set. In
+-- | index space every index is in-harmony by construction (the set IS the
+-- | harmony), so the old pitch-class filter is gone — the line reads as musical
+-- | because the set does. `pcs` is no longer needed (kept for call-site stability).
 seedMelody :: Array Int -> M.Odonus -> Marbles.Seed -> { odo :: M.Odonus, seed :: Marbles.Seed }
-seedMelody pcs odo seed0 =
-  let band = range 50 74
-      cands = filter (\n -> elem (mod n 12) pcs) band
-      cands' = if null cands then band else cands
+seedMelody _ odo seed0 =
+  let hi = M.cellIndexMax odo
       pick acc _ =
-        let { n: i, seed } = Marbles.nextInt (length cands') acc.seed
-        in { values: acc.values <> [ fromMaybe 60 (cands' !! i) ], seed }
+        let { n: i, seed } = Marbles.nextInt (hi + 1) acc.seed
+        in { values: acc.values <> [ i ], seed }
       r = foldl pick { values: [], seed: seed0 } (range 0 15)
   in { odo: M.setNotes r.values odo, seed: r.seed }

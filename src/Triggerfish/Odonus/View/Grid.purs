@@ -6,6 +6,7 @@ module Triggerfish.Odonus.View.Grid (gridPanel) where
 import Prelude
 
 import Data.Int (floor, round)
+import Data.Maybe (fromMaybe)
 import Halogen as H
 import Halogen.HTML as HH
 import Halogen.HTML.Events as HE
@@ -14,7 +15,7 @@ import Triggerfish.Ui.Knob (knob)
 import Triggerfish.Odonus.Grid.Types (Action(..), KnobTarget(..), State)
 import Triggerfish.Odonus.Grid.Widgets
   ( cellChrome, engrave, labelledRow, miniKnob, panelShell, style, tabBtn )
-import Data.Array (length, mapWithIndex)
+import Data.Array (length, mapWithIndex, (!!))
 
 gridPanel :: forall m. State -> H.ComponentHTML Action () m
 gridPanel s =
@@ -135,8 +136,8 @@ setAllRow :: forall m. M.Odonus -> H.ComponentHTML Action () m
 setAllRow odo =
   HH.div [ style "display:flex;align-items:center;gap:5px;margin-top:7px" ]
     [ HH.span [ style $ engrave <> ";font-size:8px;opacity:0.7;margin-right:1px" ] [ HH.text "SET ALL" ]
-    , tabBtn "MIN" false (SetAllNotes (36 + odo.rootPc))
-    , tabBtn "CENTER" false (SetAllNotes (60 + odo.rootPc))
+    , tabBtn "LOW" false (SetAllNotes 0)
+    , tabBtn "MID" false (SetAllNotes (M.cellIndexMax odo `div` 2))
     , tabBtn "MELODY" false SeedMelody
     ]
 
@@ -148,12 +149,21 @@ noteCell odo i c =
     ]
     [ HH.div [ style "width:100%;flex:1;min-height:0" ]
         [ knob
-            { cx: 24.0, cy: 24.0, rOuter: 20.0, rInner: 9.0, color: "#b5832b", lo: 36, hi: 84, value: c.note, ticks: 0 }
+            -- cell.note is now a discrete INDEX into the voice's PitchSet; the knob
+            -- ranges over the index space (0 .. span·N−1), not chromatic 36..84.
+            { cx: 24.0, cy: 24.0, rOuter: 20.0, rInner: 9.0, color: "#b5832b", lo: 0, hi: M.cellIndexMax odo, value: c.note, ticks: 0 }
             (KnobDown (CellNote i) c.note)
         ]
+      -- Label the cell with its REALIZED pitch — re-colours live as the set moves.
     , HH.span [ style "font-family:'SF Mono',Menlo,monospace;font-size:9px;color:#4a463d;margin-top:1px" ]
-        [ HH.text (show c.note) ]
+        [ HH.text (midiName (M.cellPitch odo c.note)) ]
     ]
+
+-- | MIDI note name, scientific pitch (middle C = C4 = 60).
+midiName :: Int -> String
+midiName n =
+  let names = [ "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B" ]
+  in fromMaybe "?" (names !! (n `mod` 12)) <> show ((n `div` 12) - 1)
 
 -- | A per-cell knob field — a 4×4 small multiple of small knobs over one cell
 -- | parameter (LENGTH, RATCHET, VEL…). `mkTarget` is the knob's drag target per

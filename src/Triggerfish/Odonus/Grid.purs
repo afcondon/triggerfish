@@ -387,7 +387,11 @@ dispatch = case _ of
             H.modify_ _ { dragging = Just drag { startY = clientY } }
         | otherwise -> do
             let
-              r = targetRange drag.target
+              -- cell.note is a discrete index now; its range is span × set
+              -- cardinality, derived from the live odo rather than the static table.
+              r = case drag.target of
+                    CellNote _ -> { lo: 0, hi: M.cellIndexMax st.odo }
+                    _ -> targetRange drag.target
               delta = round (toNumber (drag.startY - clientY) * toNumber (r.hi - r.lo) / 140.0)
               newVal = clampI r.lo r.hi (drag.startVal + delta)
             case drag.target of
