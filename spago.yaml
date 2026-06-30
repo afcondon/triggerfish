@@ -55,8 +55,12 @@ package:
     dependencies: []
 workspace:
   extraPackages:
+    # Published library, pinned to the git tag. (The registry 0.1.0 manifest is
+    # currently undecodable — over-long description — so we build from the tag;
+    # switch to `harmonia: <version>` once a clean version is on the registry.)
     harmonia:
-      path: ../../harmonia
+      git: https://github.com/afcondon/purescript-harmonia.git
+      ref: v0.1.1
     binnacle:
       path: ../binnacle
     # Vetula dogfoods the shared widget library, pinned via the same git

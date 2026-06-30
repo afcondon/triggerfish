@@ -647,7 +647,8 @@
         "path": "../binnacle"
       },
       "harmonia": {
-        "path": "../harmonia"
+        "git": "https://github.com/afcondon/purescript-harmonia.git",
+        "ref": "v0.1.1"
       },
       "hylograph-halogen-ui": {
         "path": "../../../purescript-hylograph-halogen-ui-v0.1"
@@ -1169,8 +1170,9 @@
       ]
     },
     "harmonia": {
-      "type": "local",
-      "path": "../harmonia",
+      "type": "git",
+      "url": "https://github.com/afcondon/purescript-harmonia.git",
+      "rev": "b9e5d7af31686d1cd8a53c6b1ddbc931bbbb4ee2",
       "dependencies": [
         "arrays",
         "foldable-traversable",
