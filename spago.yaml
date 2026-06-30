@@ -39,7 +39,9 @@ package:
     - nullable
     - colors
     - lists
+    - foreign         # reef's Reef.Protocol/Reef.Scale (transitive via reef)
     - foreign-object
+    - simple-json     # reef's wire codec (Reef.Protocol.encodeOdonus)
     - web-dom
     - halogen-svg-elems
     - hylograph-halogen-ui

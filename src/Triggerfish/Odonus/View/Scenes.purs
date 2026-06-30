@@ -28,9 +28,16 @@ scenesPanel s =
             <> "border-radius:6px;background:#f4f1e8;font-family:Georgia,serif;font-size:11px;color:#1c1a12" ]
     , HH.button
         [ HE.onClick \_ -> CaptureScene
-        , style $ "width:100%;padding:7px;margin-bottom:10px;border:1px solid #a8a392;border-radius:7px;cursor:pointer;"
+        , style $ "width:100%;padding:7px;margin-bottom:6px;border:1px solid #a8a392;border-radius:7px;cursor:pointer;"
             <> "background:linear-gradient(#efece1,#ddd9cb);font-family:Georgia,serif;font-size:12px;color:#3f3c33" ]
         [ HH.text "＋ Capture current" ]
+    , HH.button
+        -- Push the whole record to the BEAM (Reef.Protocol over the rig WS).
+        -- Sibling of Capture: same patch-as-data gesture, to the wire not disk.
+        [ HE.onClick \_ -> PushToRig
+        , style $ "width:100%;padding:7px;margin-bottom:10px;border:1px solid #a8a392;border-radius:7px;cursor:pointer;"
+            <> "background:linear-gradient(#dfe7d6,#cdd9c0);font-family:Georgia,serif;font-size:12px;color:#3f4a33" ]
+        [ HH.text "⇪ Push to rig (ch15)" ]
     , HH.div [ style "display:flex;align-items:center;justify-content:space-between;margin-bottom:6px" ]
         [ HH.button
             [ HE.onClick \_ -> ToggleChain

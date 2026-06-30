@@ -30,6 +30,8 @@ import Binnacle as Binnacle
 import Binnacle.Clock as Clock
 import Binnacle.Midi as Midi
 import Binnacle.Scheduler as Scheduler
+import Binnacle.Transport as Transport
+import Reef.Protocol (encodeOdonus)
 import Web.Event.Event (EventType(..))
 import Web.Event.EventTarget (addEventListener, eventListener, removeEventListener)
 import Web.HTML (window)
@@ -429,6 +431,14 @@ dispatch = case _ of
   ExpandPanel label -> H.modify_ \s ->
     if tapBounced label s then s
     else (markTap label s) { collapsed = filter (_ /= label) s.collapsed }
+  PushToRig -> do
+    -- Serialize the whole Odonus record with the shared reef codec and push it
+    -- over the already-open rig WebSocket (Binnacle's socket). The BEAM decodes
+    -- it with the SAME codec (Reef.Protocol) and runs it on the reef engine —
+    -- the frontend->wire->engine path that proves "one definition, two runtimes".
+    st <- H.get
+    for_ st.binnacle \bin ->
+      liftEffect $ Transport.send (Binnacle.socket bin) ("reef-odonus " <> encodeOdonus st.odo)
 
 -- | True if this target was just toggled (< 120ms ago) — the second of a
 -- | double-dispatched click. nowMicros advances via the Frame loop. Shared by

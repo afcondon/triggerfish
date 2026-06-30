@@ -325,3 +325,6 @@ data Action
   | MarblesRoll                -- one-shot: regenerate all cell notes now
   | CollapsePanel String       -- fold a panel to a tab (idempotent)
   | ExpandPanel String         -- reopen a panel (idempotent)
+  | PushToRig                  -- encode the whole Odonus record (Reef.Protocol)
+                               -- and send it over the rig WS as `reef-odonus <json>`,
+                               -- to run on the BEAM via the shared reef engine
