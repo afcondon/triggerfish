@@ -8,18 +8,9 @@ module Triggerfish.Odonus.Grid.Types
   , DragState
   , NoteEvent
   , Scene
-  , GenKind(..)
-  , GenSource
-  , genKinds
+  , module Reef.Gen
   , genLabel
   , genSub
-  , genDefaultRate
-  , genDefaultAmt
-  , rateMax
-  , periodOf
-  , toggleGen
-  , setRate
-  , setAmt
   , marblesPadId
   , SourceTag(..)
   , State
@@ -29,12 +20,17 @@ module Triggerfish.Odonus.Grid.Types
 import Prelude
 
 import Data.Array (length)
-import Data.Int (round, toNumber)
 import Data.Maybe (Maybe)
-import Data.Number (pow)
 import Halogen as H
 import Triggerfish.Odonus.Model as M
 import Triggerfish.Odonus.Marbles as Marbles
+-- The gen-source descriptor moved to the portable reef package (Reef.Gen) so
+-- generation runs on both runtimes; re-export it here under its historical home
+-- (the `module Reef.Gen` in the export list) so every existing importer of
+-- Grid.Types is unchanged, while the names stay in unqualified scope here.
+import Reef.Gen
+  ( GenKind(..), GenSource, genKinds, genDefaultRate, genDefaultAmt, rateMax
+  , periodOf, toggleGen, setRate, setAmt )
 import Binnacle (Binnacle)
 import Binnacle.Midi as Midi
 import Binnacle.Scheduler as Scheduler
@@ -122,29 +118,8 @@ type NoteEvent = { pitch :: Int, headIdx :: Int, fireUnixMicros :: Number }
 -- | Lossless: the A3 round-trip is byte-stable.
 type Scene = { name :: String, text :: String }
 
--- | A randomisation aspect: one independent slow-drift source. Each picks a
--- | random element of its domain when it fires and mutates it by one notch —
--- | a steady, low-probability evolution rather than a one-shot scramble.
--- | (OFFSET and head LENGTH are deliberately excluded — those get direct
--- | Reichian phase controls instead.)
-data GenKind
-  = GNotes      -- reroll one cell's note from the Marbles Beta distribution
-  | GGate       -- occasionally rest a step (biased toward mostly-gated)
-  | GSkip       -- occasionally drop a step (biased toward few skips)
-  | GGlide      -- occasionally tie/slew a step (biased toward few glides)
-  | GLen        -- drift one cell's note length ±1
-  | GRatchet    -- occasionally ratchet a step (biased toward few rolls), like GLen
-  | GHeads      -- walk the active-playhead combination (one bit on the 4-cube)
-  | GTransp     -- nudge one head's scalar transpose
-  | GPattern    -- advance one head's access pattern
-  | GSpeed      -- nudge one head's speed
-  | GKey        -- shift key by a fifth, change mode, or toggle a scale note
-
-derive instance eqGenKind :: Eq GenKind
-
-genKinds :: Array GenKind
-genKinds = [ GNotes, GGate, GSkip, GGlide, GLen, GRatchet, GHeads, GTransp, GPattern, GSpeed, GKey ]
-
+-- | The display strings for each gen source — UI-only, so they stay here (the
+-- | descriptor type `GenKind` itself, and the engine, live in `Reef.Gen`).
 genLabel :: GenKind -> String
 genLabel = case _ of
   GNotes -> "NOTES"
@@ -172,57 +147,6 @@ genSub = case _ of
   GPattern -> "access pattern"
   GSpeed -> "voice speed"
   GKey -> "fifths · mode · degree"
-
--- | One source's stored config: enabled, a rate index 0..`rateMax` (→ firing
--- | period via `periodOf`), and an `amt` 0..100 giving the mutation DEPTH —
--- | how big each change is when the source fires (a small constant nudge vs a
--- | proper shake-up). The two axes are independent: how OFTEN, and how MUCH.
-type GenSource = { kind :: GenKind, on :: Boolean, rate :: Int, amt :: Int }
-
--- | A source's initial rate index. LEN drifts more freely (a lower index = a
--- | shorter period = more frequent) since note-length changes read as phrasing,
--- | not chaos; everything else starts conservative.
-genDefaultRate :: GenKind -> Int
-genDefaultRate = case _ of
-  GLen -> 72
-  GRatchet -> 72
-  _ -> 96
-
--- | A source's initial mutation depth (0..100). Chosen so a single source,
--- | turned on alone, makes an audible difference — TRANSP needs more depth to
--- | clear re-quantization, KEY stays gentle (mostly fifths).
-genDefaultAmt :: GenKind -> Int
-genDefaultAmt = case _ of
-  GNotes -> 20
-  GTransp -> 40
-  GKey -> 25
-  GLen -> 25
-  GRatchet -> 25
-  _ -> 30
-
--- | The rate-index resolution. Drag the bare-number control across this range.
-rateMax :: Int
-rateMax = 200
-
--- | Map a rate index to a firing PERIOD in model steps — the bare number the
--- | control shows. Geometric from 1 (every step, chaos) up to ~16384 (a change
--- | roughly every few thousand steps, i.e. rare drift). One change per N steps.
-periodOf :: Int -> Int
-periodOf r =
-  let rr = if r < 0 then 0 else if r > rateMax then rateMax else r
-  in max 1 (round (pow 16384.0 (toNumber rr / toNumber rateMax)))
-
--- | Flip a source's enable.
-toggleGen :: GenKind -> Array GenSource -> Array GenSource
-toggleGen k = map \s -> if s.kind == k then s { on = not s.on } else s
-
--- | Set a source's rate index (from a drag on its bare-number control).
-setRate :: GenKind -> Int -> Array GenSource -> Array GenSource
-setRate k v = map \s -> if s.kind == k then s { rate = v } else s
-
--- | Set a source's mutation depth (from a drag on its AMT control).
-setAmt :: GenKind -> Int -> Array GenSource -> Array GenSource
-setAmt k v = map \s -> if s.kind == k then s { amt = v } else s
 
 -- | DOM id of the Marbles X-Y pad, shared by the view (the element) and the
 -- | handler (which looks it up to read pointer position).
