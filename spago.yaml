@@ -8,6 +8,7 @@ package:
   dependencies:
     - prelude
     - harmonia
+    - reef
     - effect
     - aff
     - arrays
@@ -61,6 +62,10 @@ workspace:
     harmonia:
       git: https://github.com/afcondon/purescript-harmonia.git
       ref: v0.1.1
+    # Portable virtual-module engines (Phase 1: Odonus). Path-dep during dev;
+    # git-tag once reef is published, like harmonia.
+    reef:
+      path: ../../reef
     binnacle:
       path: ../binnacle
     # Vetula dogfoods the shared widget library, pinned via the same git

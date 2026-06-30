@@ -35,6 +35,7 @@
             "parsing",
             "prelude",
             "rationals",
+            "reef",
             "strings",
             "tailrec",
             "transformers",
@@ -652,6 +653,9 @@
       },
       "hylograph-halogen-ui": {
         "path": "../../../purescript-hylograph-halogen-ui-v0.1"
+      },
+      "reef": {
+        "path": "../../reef"
       }
     }
   },
@@ -1642,6 +1646,18 @@
       "dependencies": [
         "integers",
         "js-bigints",
+        "prelude"
+      ]
+    },
+    "reef": {
+      "type": "local",
+      "path": "../../reef",
+      "dependencies": [
+        "arrays",
+        "foldable-traversable",
+        "harmonia",
+        "integers",
+        "maybe",
         "prelude"
       ]
     },
