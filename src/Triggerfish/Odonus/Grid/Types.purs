@@ -260,6 +260,9 @@ data Action
   | ToggleGen GenKind          -- enable/disable a randomisation source
   | MarblesPad Int Int Int     -- X-Y pad: clientX, clientY, buttons (read sync)
   | MarblesRoll                -- one-shot: regenerate all cell notes now
+  | ReseedTo Int               -- pin the PRNG seed to a known value (golden tests):
+                               -- sets genSeed = seedFrom n; the next Push hands the
+                               -- fixed seed to the rig for a reproducible take
   | CollapsePanel String       -- fold a panel to a tab (idempotent)
   | ExpandPanel String         -- reopen a panel (idempotent)
   | PushToRig                  -- encode the whole Odonus record (Reef.Protocol)

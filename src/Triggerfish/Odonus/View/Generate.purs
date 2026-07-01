@@ -58,6 +58,7 @@ notesExtras s =
   [ xyPad s
   , readout s
   , rollButton
+  , seedControl s
   ]
 
 -- | A round source-enable lamp. Click toggles; debounced in the handler so the
@@ -145,6 +146,22 @@ rollButton =
     , style $ "width:100%;margin-top:7px;padding:5px;border:1px solid #a8a392;border-radius:6px;cursor:pointer;"
         <> "background:linear-gradient(#efece1,#ddd9cb);font-family:Georgia,serif;font-size:10px;color:#3f3c33" ]
     [ HH.text "⟳ Roll notes once" ]
+
+-- | Dev affordance for golden tests: pin the shared PRNG seed to a known value so
+-- | a run is reproducible, and show the live seed so you can verify it. The seed
+-- | rides the reef-sim handoff, so pin-then-Push starts both runtimes identically.
+seedControl :: forall m. State -> HH.ComponentHTML Action () m
+seedControl s =
+  HH.div [ style "display:flex;align-items:center;gap:6px;margin-top:6px" ]
+    [ HH.button
+        [ HE.onClick \_ -> ReseedTo 1
+        , style $ "flex:0 0 auto;padding:4px 8px;border:1px solid #a8a392;border-radius:6px;cursor:pointer;"
+            <> "background:linear-gradient(#efece1,#ddd9cb);font-family:Georgia,serif;font-size:10px;color:#3f3c33" ]
+        [ HH.text "⚑ Pin seed" ]
+    , HH.span
+        [ style "font-family:'SF Mono',Menlo,monospace;font-size:8px;color:#5a564b" ]
+        [ HH.text ("seed " <> show (round s.genSeed)) ]
+    ]
 
 pct :: Number -> String
 pct x = show (round (x * 100.0)) <> "%"

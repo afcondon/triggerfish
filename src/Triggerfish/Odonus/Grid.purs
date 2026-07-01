@@ -228,7 +228,9 @@ dispatch = case _ of
         -- the grid breathes instead of being metronomic. Applied to the audible
         -- onset (and the scope), not the model advance.
         swingMs = if modelStep `mod` 2 == 1 then st.swing * stepMs else 0.0
-        emitDelay = tick.delayMs + swingMs
+        -- ABSOLUTE onset (performance.now ms) for this step's notes: schedule at the
+        -- fire time itself, not now+delay, so render-pipeline latency isn't added.
+        emitAtMs = tick.firePerfMs + swingMs
         -- Accent the beat (every 4th model step) so it isn't dead-flat.
         accent = if modelStep `mod` 4 == 0 then 14 else 0
         -- A non-glide note's length scales with this head's note-spacing (so it
@@ -255,7 +257,7 @@ dispatch = case _ of
       -- (tie if same pitch, portamento-slide if different); non-glide cells are
       -- gated notes whose length scales with tempo.
       for_ st.midiOut \out -> liftEffect $ for_ firedV \fv ->
-        emitNote out emitDelay (gateMsFor fv.f) fv.v (prevOf fv.f.headIdx) fv.f
+        emitNote out emitAtMs (gateMsFor fv.f) fv.v (prevOf fv.f.headIdx) fv.f
       let
         -- A glide note stays held (its pitch); a gated note auto-ends.
         nextNote f = if f.glide then Just f.pitch else Nothing
@@ -450,6 +452,10 @@ dispatch = case _ of
       H.modify_ \s -> s { genBias = x, genSpread = 1.0 - y }
   -- MarblesRoll threads the seed → deferred-on-both (as SeedMelody / ChordRoll).
   MarblesRoll -> enqueue RI.RollAllNotes
+  -- Pin the PRNG seed to a known value for reproducible golden takes. Local only —
+  -- the next Push hands the fixed seed to the rig, so both start from the same
+  -- point. Do it while stopped, then Push, then record.
+  ReseedTo n -> H.modify_ \s -> s { genSeed = Marbles.seedFrom n }
   -- The header always collapses, the tab always expands. Each is idempotent
   -- AND debounced per-label: a single click double-dispatches (one direct, one
   -- via the eval queue) with a re-render between, so the 2nd event lands on the
@@ -599,9 +605,13 @@ keepOrFirst cur vcs = case cur of
 rigUrl :: String
 rigUrl = "ws://127.0.0.1:3012/ws"
 
--- | One Odonus step = a 16th note; schedule ~120ms ahead, poll at 25ms.
+-- | One Odonus step = a 16th note; poll at 25ms. Lookahead 180ms sits in the gap
+-- | ABOVE the render-pipeline latency (~130-150ms, so absolute-scheduled notes are
+-- | committed before their onset and fire on time) and BELOW the deferred-input
+-- | buffer (inputBufferSteps × step ≈ 250ms @120bpm — a live edit must still be
+-- | queued before the Step loop reaches its tagged step, so lookahead < that).
 gridCfg :: Scheduler.GridConfig
-gridCfg = { stepBeats: 0.25, lookaheadMs: 120.0, tickMs: 25 }
+gridCfg = { stepBeats: 0.25, lookaheadMs: 180.0, tickMs: 25 }
 
 -- | The per-head legato state machine for one emitted note. `prev` is the note
 -- | currently held on this head's channel (from a previous glide), if any.
@@ -612,8 +622,13 @@ gridCfg = { stepBeats: 0.25, lookaheadMs: 120.0, tickMs: 25 }
 -- |                          `ratchet` retriggers filling `gateMs` (1 = a single
 -- |                          hit; the old behaviour). Glide and ratchet don't mix
 -- |                          (a slide is a single sustained event).
+-- | `atMs` is the ABSOLUTE performance.now onset for this note (from the
+-- | scheduler's `firePerfMs`, + swing). Every event is scheduled at an absolute
+-- | timestamp so Web MIDI fires it on the beat regardless of how long the Halogen
+-- | pipeline took to reach here — this is what keeps the frontend monitor locked to
+-- | the backend rather than trailing it by the render latency.
 emitNote :: Midi.MidiOut -> Number -> Number -> Int -> Maybe Int -> M.Fired -> Effect Unit
-emitNote out delayMs gateMs vel prev f =
+emitNote out atMs gateMs vel prev f =
   let h = f.headIdx
       p = f.pitch
       portaOn = do
@@ -624,26 +639,26 @@ emitNote out delayMs gateMs vel prev f =
       -- sustains 85% of its slot so the retriggers stay articulate.
       rat = if f.ratchet < 1 then 1 else f.ratchet
       ratchetNote =
-        if rat <= 1 then Midi.scheduleNote out { channel: h, note: p, velocity: vel, delayMs, durMs: gateMs }
+        if rat <= 1 then Midi.scheduleNoteAtMs out { channel: h, note: p, velocity: vel, atMs, durMs: gateMs }
         else
           let sub = gateMs / toNumber rat
           in for_ (range 0 (rat - 1)) \k ->
-               Midi.scheduleNote out
+               Midi.scheduleNoteAtMs out
                  { channel: h, note: p, velocity: vel
-                 , delayMs: delayMs + toNumber k * sub, durMs: sub * 0.85 }
+                 , atMs: atMs + toNumber k * sub, durMs: sub * 0.85 }
   in case prev, f.glide of
     Just q, true | q == p -> pure unit                         -- tie
     Just q, true -> do                                          -- slide
       portaOn
-      Midi.noteOnAt out { channel: h, note: p, velocity: vel, delayMs }
-      Midi.noteOffAt out { channel: h, note: q, delayMs: delayMs + 60.0 }
+      Midi.noteOnAtMs out { channel: h, note: p, velocity: vel, atMs }
+      Midi.noteOffAtMs out { channel: h, note: q, atMs: atMs + 60.0 }
     Just q, false -> do                                         -- gated, end held
-      Midi.noteOffAt out { channel: h, note: q, delayMs }
+      Midi.noteOffAtMs out { channel: h, note: q, atMs }
       portaOff
       ratchetNote
     Nothing, true -> do                                         -- start held
       portaOff
-      Midi.noteOnAt out { channel: h, note: p, velocity: vel, delayMs }
+      Midi.noteOnAtMs out { channel: h, note: p, velocity: vel, atMs }
     Nothing, false -> do                                        -- gated
       portaOff
       ratchetNote
