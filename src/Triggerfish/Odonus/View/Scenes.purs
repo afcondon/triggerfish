@@ -4,6 +4,7 @@ module Triggerfish.Odonus.View.Scenes (scenesPanel, sceneName) where
 import Prelude
 
 import Data.Array (length, mapWithIndex, null)
+import Data.Int (round)
 import Halogen as H
 import Halogen.HTML as HH
 import Halogen.HTML.Events as HE
@@ -17,10 +18,44 @@ import Triggerfish.Odonus.Grid.Widgets (engrave, panelShell, stepBtn, style)
 sceneName :: State -> String
 sceneName s = show (length s.scenes + 1) <> " · " <> Scale.scaleName (M.scaleOf s.odo)
 
+-- | RIG cluster at the top of Scenes: the rig/runtime one-shots (Push the whole
+-- | patch to the BEAM, Hush the reef voice, Pin the shared seed for reproducible
+-- | runs) grouped away from the per-song scene controls below. Pin seed shows the
+-- | live seed; it rides the reef-sim handoff so pin-then-Push starts both runtimes
+-- | identically.
+rigCluster :: forall m. State -> H.ComponentHTML Action () m
+rigCluster s =
+  HH.div [ style "margin-bottom:11px;padding-bottom:10px;border-bottom:1px solid #00000014" ]
+    [ HH.span [ style $ engrave <> ";font-size:8px;opacity:0.85;display:block;margin-bottom:5px" ]
+        [ HH.text "RIG" ]
+    , HH.div [ style "display:flex;gap:6px;margin-bottom:6px" ]
+        [ HH.button
+            [ HE.onClick \_ -> PushToRig
+            , style $ "flex:1;padding:7px;border:1px solid #a8a392;border-radius:7px;cursor:pointer;"
+                <> "background:linear-gradient(#dfe7d6,#cdd9c0);font-family:Georgia,serif;font-size:12px;color:#3f4a33" ]
+            [ HH.text "⇪ Push to rig (ch15)" ]
+        , HH.button
+            [ HE.onClick \_ -> HushRig
+            , style $ "flex:0 0 auto;padding:7px 12px;border:1px solid #a8a392;border-radius:7px;cursor:pointer;"
+                <> "background:linear-gradient(#e7dcd6,#d9c8c0);font-family:Georgia,serif;font-size:12px;color:#4a3833" ]
+            [ HH.text "✋ Hush" ]
+        ]
+    , HH.div [ style "display:flex;align-items:center;gap:6px" ]
+        [ HH.button
+            [ HE.onClick \_ -> ReseedTo 1
+            , style $ "flex:0 0 auto;padding:4px 8px;border:1px solid #a8a392;border-radius:6px;cursor:pointer;"
+                <> "background:linear-gradient(#efece1,#ddd9cb);font-family:Georgia,serif;font-size:10px;color:#3f3c33" ]
+            [ HH.text "⚑ Pin seed" ]
+        , HH.span [ style "font-family:'SF Mono',Menlo,monospace;font-size:8px;color:#5a564b" ]
+            [ HH.text ("seed " <> show (round s.genSeed)) ]
+        ]
+    ]
+
 scenesPanel :: forall m. State -> H.ComponentHTML Action () m
 scenesPanel s =
   panelShell s.collapsed "SCENES" "Song" "flex:0 1 198px;min-width:min-content"
-    [ HH.input
+    [ rigCluster s
+    , HH.input
         [ HP.value s.sceneNameInput
         , HE.onValueInput SetSceneName
         , HP.placeholder "name this setting…"
@@ -28,24 +63,9 @@ scenesPanel s =
             <> "border-radius:6px;background:#f4f1e8;font-family:Georgia,serif;font-size:11px;color:#1c1a12" ]
     , HH.button
         [ HE.onClick \_ -> CaptureScene
-        , style $ "width:100%;padding:7px;margin-bottom:6px;border:1px solid #a8a392;border-radius:7px;cursor:pointer;"
+        , style $ "width:100%;padding:7px;margin-bottom:10px;border:1px solid #a8a392;border-radius:7px;cursor:pointer;"
             <> "background:linear-gradient(#efece1,#ddd9cb);font-family:Georgia,serif;font-size:12px;color:#3f3c33" ]
         [ HH.text "＋ Capture current" ]
-    , HH.div [ style "display:flex;gap:6px;margin-bottom:10px" ]
-        [ HH.button
-            -- Push the whole record to the BEAM (Reef.Protocol over the rig WS).
-            -- Sibling of Capture: same patch-as-data gesture, to the wire not disk.
-            [ HE.onClick \_ -> PushToRig
-            , style $ "flex:1;padding:7px;border:1px solid #a8a392;border-radius:7px;cursor:pointer;"
-                <> "background:linear-gradient(#dfe7d6,#cdd9c0);font-family:Georgia,serif;font-size:12px;color:#3f4a33" ]
-            [ HH.text "⇪ Push to rig (ch15)" ]
-        , HH.button
-            -- Send `hush` over the same socket — stops the reef voice.
-            [ HE.onClick \_ -> HushRig
-            , style $ "flex:0 0 auto;padding:7px 12px;border:1px solid #a8a392;border-radius:7px;cursor:pointer;"
-                <> "background:linear-gradient(#e7dcd6,#d9c8c0);font-family:Georgia,serif;font-size:12px;color:#4a3833" ]
-            [ HH.text "✋ Hush" ]
-        ]
     , HH.div [ style "display:flex;align-items:center;justify-content:space-between;margin-bottom:6px" ]
         [ HH.button
             [ HE.onClick \_ -> ToggleChain

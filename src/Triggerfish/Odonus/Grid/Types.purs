@@ -79,7 +79,7 @@ targetRange = case _ of
   VelHuman -> { lo: 0, hi: 40 }
   FanOff -> { lo: 0, hi: 5 }
   StaggerLen -> { lo: 0, hi: 5 }
-  HeadSpread -> { lo: 0, hi: 8 }
+  HeadSpread -> { lo: 0, hi: length M.spreadVoicings - 1 }
   ChordStep -> { lo: M.chordPeriodMin, hi: M.chordPeriodMax }
   GenRate _ -> { lo: 0, hi: rateMax }
   GenAmt _ -> { lo: 0, hi: 100 }

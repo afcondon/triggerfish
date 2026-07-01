@@ -58,22 +58,19 @@ notesExtras :: forall m. State -> Array (HH.ComponentHTML Action () m)
 notesExtras s =
   [ xyPad s
   , readout s
-  , rollButton
-  , setAllRow s.odo
-  , seedControl s
+  , rollGrid s.odo
   ]
 
--- | Flatten-the-grid macros, sitting under Roll in the NOTES source: drop every
--- | note onto the scale root — low octave (LOW, for basslines) or middle octave
--- | (MID, for melodies) — or seed a fresh MELODY. Both octave floors follow the
--- | current key, so in D the floor is a D, not a fixed chromatic value.
-setAllRow :: forall m. M.Odonus -> HH.ComponentHTML Action () m
-setAllRow odo =
-  HH.div [ style "display:flex;align-items:center;gap:5px;margin-top:7px" ]
-    [ HH.span [ style $ engrave <> ";font-size:8px;opacity:0.7;margin-right:1px" ] [ HH.text "SET ALL" ]
-    , tabBtn "LOW" false (SetAllNotes 0)
+-- | The NOTES-source one-shots as a compact 2×2: flatten every note to the scale
+-- | root low (LOW, basslines) or middle (MID, melodies), seed a fresh MELODY line,
+-- | or ROLL the Marbles once. Both octave floors follow the current key.
+rollGrid :: forall m. M.Odonus -> HH.ComponentHTML Action () m
+rollGrid odo =
+  HH.div [ style "display:grid;grid-template-columns:1fr 1fr;gap:4px;margin-top:7px" ]
+    [ tabBtn "LOW" false (SetAllNotes 0)
     , tabBtn "MID" false (SetAllNotes (M.cellIndexMax odo `div` 2))
     , tabBtn "MELODY" false SeedMelody
+    , tabBtn "⟳ ROLL" false MarblesRoll
     ]
 
 -- | A round source-enable lamp. Click toggles; debounced in the handler so the
@@ -152,30 +149,6 @@ readout s =
   HH.div [ style "display:flex;justify-content:space-between;font-family:'SF Mono',Menlo,monospace;font-size:8px;color:#5a564b;margin-top:4px" ]
     [ HH.span_ [ HH.text ("bias " <> pct s.genBias) ]
     , HH.span_ [ HH.text ("spread " <> pct s.genSpread) ]
-    ]
-
-rollButton :: forall m. HH.ComponentHTML Action () m
-rollButton =
-  HH.button
-    [ HE.onClick \_ -> MarblesRoll
-    , style $ "width:100%;margin-top:7px;padding:5px;border:1px solid #a8a392;border-radius:6px;cursor:pointer;"
-        <> "background:linear-gradient(#efece1,#ddd9cb);font-family:Georgia,serif;font-size:10px;color:#3f3c33" ]
-    [ HH.text "⟳ Roll notes once" ]
-
--- | Dev affordance for golden tests: pin the shared PRNG seed to a known value so
--- | a run is reproducible, and show the live seed so you can verify it. The seed
--- | rides the reef-sim handoff, so pin-then-Push starts both runtimes identically.
-seedControl :: forall m. State -> HH.ComponentHTML Action () m
-seedControl s =
-  HH.div [ style "display:flex;align-items:center;gap:6px;margin-top:6px" ]
-    [ HH.button
-        [ HE.onClick \_ -> ReseedTo 1
-        , style $ "flex:0 0 auto;padding:4px 8px;border:1px solid #a8a392;border-radius:6px;cursor:pointer;"
-            <> "background:linear-gradient(#efece1,#ddd9cb);font-family:Georgia,serif;font-size:10px;color:#3f3c33" ]
-        [ HH.text "⚑ Pin seed" ]
-    , HH.span
-        [ style "font-family:'SF Mono',Menlo,monospace;font-size:8px;color:#5a564b" ]
-        [ HH.text ("seed " <> show (round s.genSeed)) ]
     ]
 
 pct :: Number -> String

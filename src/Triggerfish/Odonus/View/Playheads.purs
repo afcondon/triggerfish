@@ -5,7 +5,7 @@ module Triggerfish.Odonus.View.Playheads (playheadsPanel) where
 
 import Prelude
 
-import Data.Array (mapWithIndex, range, (!!))
+import Data.Array (findIndex, mapWithIndex, range, (!!))
 import Data.Int (round, toNumber)
 import Data.Int.Bits (and, shr)
 import Data.Maybe (fromMaybe, maybe)
@@ -40,7 +40,10 @@ phasingBlock odo =
   let
     fanN = maybe 0 _.offset (odo.heads !! 1)
     stagN = 16 - maybe 16 _.len (odo.heads !! 1)
-    spreadN = maybe 0 _.transp (odo.heads !! 1)
+    -- SPREAD is a voicing morph now, so read the knob back by matching the heads'
+    -- current transposes against the voicing table (exact right after a spread; a
+    -- manual INT edit that breaks the match just reads as 0, like FAN/STAGGER).
+    spreadN = fromMaybe 0 (findIndex (\v -> v == map _.transp odo.heads) M.spreadVoicings)
   in
     HH.div [ style "margin-bottom:12px" ]
       [ HH.span [ style $ engrave <> ";font-size:9px;opacity:0.85;display:block;margin-bottom:5px" ]
@@ -105,16 +108,19 @@ headStrip h hd =
     pat = fromMaybe { name: "?", order: [] } (M.patternLibrary !! hd.patternIx)
   in
     HH.div
-      [ style $ "display:flex;align-items:center;gap:10px;padding:7px 10px;border-radius:8px;background:#cbc6b6;box-shadow:0 0 0 1px " <> col <> "66;" <> dim ]
-      [ muteBlock h hd col
-      , HH.div [ style "display:flex;flex-direction:column;align-items:center;gap:4px" ]
-          [ patBlock h pat col hd.seqPos
-          , dirRadio h hd.direction col
+      [ style $ "display:flex;flex-direction:column;gap:8px;padding:8px 10px;border-radius:8px;background:#cbc6b6;box-shadow:0 0 0 1px " <> col <> "66;" <> dim ]
+      -- TOP TIER: engage/bypass in the top-left corner, then SPEED as one wide row.
+      [ HH.div [ style "display:flex;align-items:center;gap:12px" ]
+          [ muteBlock h hd col
+          , speedRow h hd.speedIx col
           ]
-      , euclidCell h hd col
-      , HH.div
-          [ style "display:flex;flex-direction:column;gap:6px;align-items:center" ]
-          [ speedRadio h hd.speedIx col
+      -- BOTTOM TIER: pattern + direction · Euclid ring · INT knob.
+      , HH.div [ style "display:flex;align-items:center;gap:14px" ]
+          [ HH.div [ style "display:flex;flex-direction:column;align-items:center;gap:4px" ]
+              [ patBlock h pat col hd.seqPos
+              , dirRadio h hd.direction col
+              ]
+          , euclidCell h hd col
           , miniKnob (HeadTransp h) hd.transp col "INT" (signed hd.transp)
           ]
       ]
@@ -125,8 +131,8 @@ headStrip h hd =
 -- | The model clamps (pulses 0..16, steps 1..16), so the clickers can't run past.
 euclidCell :: forall m. Int -> M.Head -> String -> H.ComponentHTML Action () m
 euclidCell h hd col =
-  HH.div [ style "position:relative;width:66px;height:66px;flex:0 0 auto" ]
-    [ euclidRing 66.0 hd.pulses hd.esteps hd.seqPos col
+  HH.div [ style "position:relative;width:82px;height:82px;flex:0 0 auto" ]
+    [ euclidRing 82.0 hd.pulses hd.esteps hd.seqPos col
     , cornerBtn "top:0;left:0" "k−" (SetHeadPulses h (hd.pulses - 1))
     , cornerBtn "top:0;right:0" "k+" (SetHeadPulses h (hd.pulses + 1))
     , cornerBtn "bottom:0;left:0" "n−" (SetHeadSteps h (hd.esteps - 1))
@@ -153,10 +159,10 @@ euclidRing sz k n seqPos col =
         svgEl "circle"
           [ svgAttr "cx" (show (r2 (c + r * Num.cos ang)))
           , svgAttr "cy" (show (r2 (c + r * Num.sin ang)))
-          , svgAttr "r" (if on then "3.2" else "2.0")
+          , svgAttr "r" (if on then "4.0" else "2.6")
           , svgAttr "fill" (if on then col else "none")
           , svgAttr "stroke" (if live then "#3f3c33" else col)
-          , svgAttr "stroke-width" (if live then "1.4" else (if on then "0" else "1")) ] []
+          , svgAttr "stroke-width" (if live then "1.6" else (if on then "0" else "1")) ] []
   in
     svgEl "svg"
       [ svgAttr "viewBox" ("0 0 " <> show sz <> " " <> show sz)
@@ -166,7 +172,7 @@ euclidRing sz k n seqPos col =
             [ svgEl "text"
                 [ svgAttr "x" (show c), svgAttr "y" (show (c + 4.0)), svgAttr "text-anchor" "middle"
                 , svgAttr "fill" "#3f3c33", svgAttr "font-family" "'SF Mono',Menlo,monospace"
-                , svgAttr "font-size" "12" ]
+                , svgAttr "font-size" "15" ]
                 [ HH.text (show (min k n) <> "/" <> show n) ]
             ]
       )
@@ -181,23 +187,21 @@ cornerBtn pos label act =
         <> "font-family:'SF Mono',Menlo,monospace;font-size:8px;line-height:1;color:#5a564b" ]
     [ HH.text label ]
 
--- | SPEED as a two-row radio (was a knob): every ratio in M.speedTable as a chip,
--- | the live one lit. Two rows keep it compact and leave room for the dotted values.
-speedRadio :: forall m. Int -> Int -> String -> H.ComponentHTML Action () m
-speedRadio h cur col =
-  HH.div [ style "display:flex;flex-direction:column;align-items:center;gap:3px;width:120px" ]
-    [ HH.span [ style $ engrave <> ";font-size:8px" ] [ HH.text "SPEED" ]
-    , HH.div [ style "display:grid;grid-template-columns:repeat(6,1fr);gap:2px;width:100%" ]
-        (mapWithIndex (speedChip h cur col) M.speedTable)
-    ]
+-- | SPEED as a single wide radio row across the top of the strip: every ratio in
+-- | M.speedTable as a chip, the live one lit. flex-wrap so adding dotted values
+-- | later simply wraps to a second row rather than overflowing.
+speedRow :: forall m. Int -> Int -> String -> H.ComponentHTML Action () m
+speedRow h cur col =
+  HH.div [ style "flex:1;display:flex;flex-wrap:wrap;gap:3px" ]
+    (mapWithIndex (speedChip h cur col) M.speedTable)
 
 speedChip :: forall m. Int -> Int -> String -> Int -> Number -> H.ComponentHTML Action () m
 speedChip h cur col ix val =
   let active = ix == cur
   in HH.button
        [ HE.onClick \_ -> SetHeadSpeed h ix
-       , style $ "padding:3px 0;border:1px solid #a8a392;border-radius:3px;cursor:pointer;line-height:1;"
-           <> "font-family:'SF Mono',Menlo,monospace;font-size:9px;color:"
+       , style $ "flex:1 1 auto;min-width:26px;padding:4px 0;border:1px solid #a8a392;border-radius:4px;"
+           <> "cursor:pointer;line-height:1;font-family:'SF Mono',Menlo,monospace;font-size:10px;color:"
            <> (if active then "#1c1a12" else "#6a6456")
            <> ";background:" <> (if active then "linear-gradient(" <> col <> "," <> col <> ")"
                                  else "linear-gradient(#efece1,#ddd9cb)") ]
