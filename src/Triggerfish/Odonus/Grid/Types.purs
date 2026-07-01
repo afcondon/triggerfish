@@ -205,6 +205,11 @@ type State =
   , genBias :: Number         -- Marbles X-Y pad: bias ∈ [0,1] (NOTES source)
   , genSeed :: Marbles.Seed   -- the shared PRNG every source draws from
   , pending :: Array PendingInput  -- lockstep (P4c): tick-tagged inputs awaiting their step
+  , nextModelStep :: Int     -- lockstep (P5): the absolute model step the NEXT Step loop will
+                             -- emit. `odo`/`gen`/`genSeed` are exactly that step's input, so a
+                             -- handoff stamped with this step (`reef-sim-at`) plays the pushed
+                             -- state on the SAME absolute step on the BEAM — phase-zero by
+                             -- construction (no more +1-step / +1-beat flam on Push).
   , collapsed :: Array String  -- panel labels currently collapsed (accordion)
   , lastTap :: String          -- last toggle target (debounce the double-dispatch)
   , lastTapMicros :: Number

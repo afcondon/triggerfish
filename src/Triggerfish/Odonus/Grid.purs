@@ -65,7 +65,7 @@ component =
         , stepDiv: 1, headNote: [ Nothing, Nothing, Nothing, Nothing ]
         , swing: 0.0, velHumanize: 12
         , gen: map (\k -> { kind: k, on: false, rate: genDefaultRate k, amt: genDefaultAmt k }) genKinds
-        , genSpread: 0.5, genBias: 0.5, genSeed: Marbles.seedFrom 1, pending: []
+        , genSpread: 0.5, genBias: 0.5, genSeed: Marbles.seedFrom 1, pending: [], nextModelStep: 0
         -- SOURCE folds away by default: the dedicated TIDAL tab is the
         -- one-stop view of the whole setup; Odonus's own eDSL pane is for
         -- when you want to inspect just this module.
@@ -280,7 +280,12 @@ dispatch = case _ of
         -- Write back the gen-config / pad any DUE inputs mutated (a no-op unless a
         -- gen gesture was synced this step), and drop the drained pending entries.
         , gen = sim0.gen, genSpread = sim0.spread, genBias = sim0.bias
-        , pending = stillPending }
+        , pending = stillPending
+        -- LOCKSTEP (P5): the state written back here (odo/gen/genSeed) is exactly
+        -- what the NEXT model step will consume, and that step is modelStep + 1. A
+        -- Push reads this to stamp the handoff (reef-sim-at), so the BEAM plays the
+        -- pushed state on the same absolute step the frontend will — no phase flam.
+        , nextModelStep = modelStep + 1 }
   Frame -> do
     st <- H.get
     case st.binnacle of
@@ -477,14 +482,23 @@ dispatch = case _ of
     -- generation and seed included, clock-locked to the same Link beat. Carrying
     -- the seed is what keeps the two runtimes' generative matrices bit-identical.
     st <- H.get
+    -- LOCKSTEP (P5): stamp the handoff with the absolute model step this snapshot
+    -- is the state FOR — `nextModelStep`, the step the frontend's next Step loop
+    -- will emit from exactly this `odo`/`gen`/`genSeed`. The BEAM installs the state
+    -- but holds it until that same step (start_sim_at_json sets last_step = N-1), so
+    -- both runtimes play the pushed state on the SAME absolute step. That kills the
+    -- old flam: `reef-sim` let the BEAM snap to ITS current step (~a model-step / up
+    -- to a beat away from the frontend's), which sounded as an echo after every Push.
+    -- Carry the model-step LENGTH in the handoff too (`reef-sim-at <step> <beats>
+    -- <json>`): `nextModelStep` is numbered in model steps (0.25 × stepDiv beats),
+    -- so the BEAM must install that same grid to interpret the step index. Setting
+    -- step length and hold-step atomically here means NO follow-up `reef-steplen`
+    -- (which would reset the voice's last_step and undo the phase alignment).
     for_ st.binnacle \bin ->
       liftEffect $ Transport.send (Binnacle.socket bin)
-        ("reef-sim " <> encodeSim
-           { odo: st.odo, gen: st.gen, spread: st.genSpread, bias: st.genBias, seed: st.genSeed })
-    -- The handoff (start_sim_json) resets the voice's step length to the 1/16
-    -- default, so re-assert the current STEP LENGTH right after so a Push at a
-    -- coarser step length lands in lockstep.
-    sendStepLen st
+        ("reef-sim-at " <> show st.nextModelStep <> " " <> show (stepBeatsOf st) <> " "
+           <> encodeSim
+                { odo: st.odo, gen: st.gen, spread: st.genSpread, bias: st.genBias, seed: st.genSeed })
   HushRig -> do
     -- Stop the reef voice (and everything else) on the rig via the existing
     -- hush verb, over the same socket the push used.
