@@ -31,7 +31,7 @@ import Binnacle.Clock as Clock
 import Binnacle.Midi as Midi
 import Binnacle.Scheduler as Scheduler
 import Binnacle.Transport as Transport
-import Reef.Protocol (encodeOdonus)
+import Reef.Protocol (encodeSim)
 import Web.Event.Event (EventType(..))
 import Web.Event.EventTarget (addEventListener, eventListener, removeEventListener)
 import Web.HTML (window)
@@ -258,7 +258,13 @@ dispatch = case _ of
                            , fireUnixMicros: tick.fireUnixMicros + swingMs * 1000.0 }) r.fired
       H.modify_ \s -> s
         { odo = r.odo, notes = fresh <> s.notes, headNote = clearedHeadNote
-        , genSeed = velied.seed }
+        -- LOCKSTEP (P4c, Option 2): the model seed advances ONLY via runGen (g.seed),
+        -- NOT via the velocity-humanise draws (velied.seed). Humanise still reads the
+        -- seed to jitter velocity, but must not perturb the shared generative stream —
+        -- otherwise the frontend's seed would diverge from the rig's (which does no
+        -- humanise), and the co-simulation would drift. Expression stays local; the
+        -- model stays byte-identical to reef_engine.stepTick on the BEAM.
+        , genSeed = g.seed }
   Frame -> do
     st <- H.get
     case st.binnacle of
@@ -436,13 +442,17 @@ dispatch = case _ of
     if tapBounced label s then s
     else (markTap label s) { collapsed = filter (_ /= label) s.collapsed }
   PushToRig -> do
-    -- Serialize the whole Odonus record with the shared reef codec and push it
-    -- over the already-open rig WebSocket (Binnacle's socket). The BEAM decodes
-    -- it with the SAME codec (Reef.Protocol) and runs it on the reef engine —
-    -- the frontend->wire->engine path that proves "one definition, two runtimes".
+    -- The lockstep HANDOFF (P4d): serialize the WHOLE SimState — Odonus + gen
+    -- config + Marbles pad + seed — with the shared reef codec and push it over
+    -- the already-open rig WebSocket. The BEAM's reef_voice decodes it with the
+    -- SAME codec (Reef.Protocol.decodeSim) and co-simulates from this exact state,
+    -- generation and seed included, clock-locked to the same Link beat. Carrying
+    -- the seed is what keeps the two runtimes' generative matrices bit-identical.
     st <- H.get
     for_ st.binnacle \bin ->
-      liftEffect $ Transport.send (Binnacle.socket bin) ("reef-odonus " <> encodeOdonus st.odo)
+      liftEffect $ Transport.send (Binnacle.socket bin)
+        ("reef-sim " <> encodeSim
+           { odo: st.odo, gen: st.gen, spread: st.genSpread, bias: st.genBias, seed: st.genSeed })
   HushRig -> do
     -- Stop the reef voice (and everything else) on the rig via the existing
     -- hush verb, over the same socket the push used.
