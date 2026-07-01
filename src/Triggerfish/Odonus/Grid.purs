@@ -433,10 +433,16 @@ dispatch = case _ of
       Nothing -> pure unit
     -- Sync the settled knob value on release (lockstep P4c): a Set* input for the
     -- final value, deferred + broadcast so the rig jumps to the same value on the
-    -- same step. Skipped for a bare click (no drag) and for local-only knobs
-    -- (swing / humanise, which are expression and never leave this runtime).
+    -- same step. Skipped for a bare click (no drag). SWING is the exception: it's
+    -- expression (never a tick-tagged model input, so targetToInput returns Nothing)
+    -- but it DOES shift the audible onset, so the rig must know it to render the same
+    -- groove — it rides its own `reef-swing` verb (like reef-steplen), sent
+    -- immediately on release, not deferred. Humanise stays fully local (velocity only,
+    -- undetectable in timing).
     for_ st.dragging \drag ->
-      when (drag.startY /= 0) $ for_ (targetToInput drag.target drag.curVal) enqueue
+      when (drag.startY /= 0) case drag.target of
+        SwingAmt -> sendSwing st
+        _ -> for_ (targetToInput drag.target drag.curVal) enqueue
     H.modify_ _ { dragging = Nothing, dragSub = Nothing }
   ToggleGen kind -> do
     -- Same double-dispatch guard as the panels: a flip-toggle would cancel itself
@@ -499,6 +505,9 @@ dispatch = case _ of
         ("reef-sim-at " <> show st.nextModelStep <> " " <> show (stepBeatsOf st) <> " "
            <> encodeSim
                 { odo: st.odo, gen: st.gen, spread: st.genSpread, bias: st.genBias, seed: st.genSeed })
+    -- A fresh voice starts with swing 0, so re-assert the current swing (its own
+    -- verb, no last_step reset — safe right after the handoff).
+    sendSwing st
   HushRig -> do
     -- Stop the reef voice (and everything else) on the rig via the existing
     -- hush verb, over the same socket the push used.
@@ -542,6 +551,18 @@ sendStepLen st =
   for_ st.binnacle \bin ->
     liftEffect $ Transport.send (Binnacle.socket bin)
       ("reef-steplen " <> show (stepBeatsOf st))
+
+-- | Tell the BEAM voice the current swing fraction (lockstep P4f render stage 2). A
+-- | no-op when the rig isn't attached. Swing lags the odd model steps by
+-- | `swing × stepMs` on the audible onset; the rig applies the SAME shift to the same
+-- | absolute-step parity so the groove renders identically. Sent on Push (fresh voice
+-- | defaults to 0) and on the swing knob's release. Not tick-tagged — swing is timing
+-- | expression, not model state, so it never enters the deterministic SimState.
+sendSwing :: forall o m. MonadAff m => State -> H.HalogenM State Action () o m Unit
+sendSwing st =
+  for_ st.binnacle \bin ->
+    liftEffect $ Transport.send (Binnacle.socket bin)
+      ("reef-swing " <> show st.swing)
 
 -- | Map a settled knob (target + final value) to the `Reef.Input` that sets it,
 -- | for the DragEnd broadcast (lockstep P4c). Every knob setter is an ABSOLUTE,
