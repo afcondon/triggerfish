@@ -348,6 +348,11 @@ dispatch = case _ of
   -- Head gestures — deferred + broadcast (lockstep P4c).
   CyclePattern h -> enqueue (RI.CyclePattern h)
   SetHeadDir h d -> enqueue (RI.SetHeadDir h d)
+  -- Click-radios / clickers: same deferred-broadcast lockstep path as SetHeadDir.
+  -- Absolute sets (the model clamps), so replaying the value on the rig is idempotent.
+  SetHeadSpeed h ix -> enqueue (RI.SetHeadSpeedIx h ix)
+  SetHeadPulses h k -> enqueue (RI.SetHeadPulses h k)
+  SetHeadSteps h n -> enqueue (RI.SetHeadEuclidSteps h n)
   UnifyHeads -> enqueue RI.UnifyHeads
   PhaseShift d -> enqueue (RI.NudgeOffsets d)
   CycleScaleType dir -> enqueue (RI.CycleScaleType dir)

@@ -6,9 +6,10 @@ module Triggerfish.Odonus.View.Playheads (playheadsPanel) where
 import Prelude
 
 import Data.Array (mapWithIndex, range, (!!))
-import Data.Int (toNumber)
+import Data.Int (round, toNumber)
 import Data.Int.Bits (and, shr)
 import Data.Maybe (fromMaybe, maybe)
+import Data.Number (cos, pi, sin) as Num
 import Data.String.Common (joinWith)
 import Halogen as H
 import Halogen.HTML as HH
@@ -16,7 +17,7 @@ import Halogen.HTML.Events as HE
 import Triggerfish.Odonus.Model as M
 import Triggerfish.Odonus.Grid.Types (Action(..), KnobTarget(..), State)
 import Triggerfish.Odonus.Grid.Widgets
-  ( engrave, headColor, miniKnob, panelShell, roman, signed, speedRatio
+  ( engrave, headColor, miniKnob, panelShell, roman, signed
   , stepBtn, style, svgAttr, svgEl )
 
 playheadsPanel :: forall m. State -> H.ComponentHTML Action () m
@@ -104,28 +105,114 @@ headStrip h hd =
     pat = fromMaybe { name: "?", order: [] } (M.patternLibrary !! hd.patternIx)
   in
     HH.div
-      [ style $ "display:flex;align-items:center;gap:12px;padding:7px 10px;border-radius:8px;background:#cbc6b6;box-shadow:0 0 0 1px " <> col <> "66;" <> dim ]
+      [ style $ "display:flex;align-items:center;gap:10px;padding:7px 10px;border-radius:8px;background:#cbc6b6;box-shadow:0 0 0 1px " <> col <> "66;" <> dim ]
       [ muteBlock h hd col
       , HH.div [ style "display:flex;flex-direction:column;align-items:center;gap:4px" ]
           [ patBlock h pat col hd.seqPos
           , dirRadio h hd.direction col
           ]
+      , euclidCell h hd col
       , HH.div
           [ style "display:flex;flex-direction:column;gap:6px;align-items:center" ]
-          [ HH.div [ style "display:flex;gap:8px" ]
-              [ miniKnob (HeadSpeed h) hd.speedIx col "SPD" (speedRatio hd.speedIx)
-              , miniKnob (HeadDiv h) hd.pulses col "DIV" (euclidLabel hd.pulses hd.esteps)
-              , miniKnob (HeadEStep h) hd.esteps col "STEPS" (show hd.esteps)
-              ]
+          [ speedRadio h hd.speedIx col
           , miniKnob (HeadTransp h) hd.transp col "INT" (signed hd.transp)
           ]
       ]
 
--- | DIV readout: effective E(pulses, steps), e.g. "5/12" — the voice's Euclidean
--- | density. Pulses is clamped to steps for display, so at pulses ≥ steps it
--- | reads "n/n" (every step, no gating). STEPS is its own knob now, free of LEN.
-euclidLabel :: Int -> Int -> String
-euclidLabel pulses esteps = show (min pulses esteps) <> "/" <> show esteps
+-- | The head's Euclidean gate E(pulses, steps) as a Selene-style dot ring — n dots
+-- | around the circle, the k pulses filled, the live step ringed, "k/n" at centre —
+-- | with four corner clickers: top nudges pulses (k−/k+), bottom nudges steps (n−/n+).
+-- | The model clamps (pulses 0..16, steps 1..16), so the clickers can't run past.
+euclidCell :: forall m. Int -> M.Head -> String -> H.ComponentHTML Action () m
+euclidCell h hd col =
+  HH.div [ style "position:relative;width:66px;height:66px;flex:0 0 auto" ]
+    [ euclidRing 66.0 hd.pulses hd.esteps hd.seqPos col
+    , cornerBtn "top:0;left:0" "k−" (SetHeadPulses h (hd.pulses - 1))
+    , cornerBtn "top:0;right:0" "k+" (SetHeadPulses h (hd.pulses + 1))
+    , cornerBtn "bottom:0;left:0" "n−" (SetHeadSteps h (hd.esteps - 1))
+    , cornerBtn "bottom:0;right:0" "n+" (SetHeadSteps h (hd.esteps + 1))
+    ]
+
+-- | The dot ring itself. Consistent with Selene's Euclid rings: dots evenly round
+-- | the circle (12 o'clock = step 0, clockwise), filled where E(k,n) pulses, the
+-- | current playhead step outlined in ink.
+euclidRing :: forall m. Number -> Int -> Int -> Int -> String -> H.ComponentHTML Action () m
+euclidRing sz k n seqPos col =
+  let
+    c = sz / 2.0
+    r = c - 12.0
+    steps = max 1 n
+    cur = seqPos `mod` steps
+    r2 x = toNumber (round (x * 100.0)) / 100.0
+    dotFor i =
+      let
+        ang = (toNumber i / toNumber steps) * 2.0 * Num.pi - Num.pi / 2.0
+        on = M.euclidHit k n i
+        live = i == cur
+      in
+        svgEl "circle"
+          [ svgAttr "cx" (show (r2 (c + r * Num.cos ang)))
+          , svgAttr "cy" (show (r2 (c + r * Num.sin ang)))
+          , svgAttr "r" (if on then "3.2" else "2.0")
+          , svgAttr "fill" (if on then col else "none")
+          , svgAttr "stroke" (if live then "#3f3c33" else col)
+          , svgAttr "stroke-width" (if live then "1.4" else (if on then "0" else "1")) ] []
+  in
+    svgEl "svg"
+      [ svgAttr "viewBox" ("0 0 " <> show sz <> " " <> show sz)
+      , svgAttr "width" (show sz), svgAttr "height" (show sz), svgAttr "style" "display:block" ]
+      ( map dotFor (range 0 (steps - 1))
+          <>
+            [ svgEl "text"
+                [ svgAttr "x" (show c), svgAttr "y" (show (c + 4.0)), svgAttr "text-anchor" "middle"
+                , svgAttr "fill" "#3f3c33", svgAttr "font-family" "'SF Mono',Menlo,monospace"
+                , svgAttr "font-size" "12" ]
+                [ HH.text (show (min k n) <> "/" <> show n) ]
+            ]
+      )
+
+-- | A small absolutely-positioned +/− clicker sitting in one corner of the ring box.
+cornerBtn :: forall m. String -> String -> Action -> H.ComponentHTML Action () m
+cornerBtn pos label act =
+  HH.button
+    [ HE.onClick \_ -> act
+    , style $ "position:absolute;" <> pos <> ";width:17px;height:14px;padding:0;cursor:pointer;"
+        <> "border:1px solid #a8a392;border-radius:4px;background:linear-gradient(#efece1,#ddd9cb);"
+        <> "font-family:'SF Mono',Menlo,monospace;font-size:8px;line-height:1;color:#5a564b" ]
+    [ HH.text label ]
+
+-- | SPEED as a two-row radio (was a knob): every ratio in M.speedTable as a chip,
+-- | the live one lit. Two rows keep it compact and leave room for the dotted values.
+speedRadio :: forall m. Int -> Int -> String -> H.ComponentHTML Action () m
+speedRadio h cur col =
+  HH.div [ style "display:flex;flex-direction:column;align-items:center;gap:3px;width:120px" ]
+    [ HH.span [ style $ engrave <> ";font-size:8px" ] [ HH.text "SPEED" ]
+    , HH.div [ style "display:grid;grid-template-columns:repeat(6,1fr);gap:2px;width:100%" ]
+        (mapWithIndex (speedChip h cur col) M.speedTable)
+    ]
+
+speedChip :: forall m. Int -> Int -> String -> Int -> Number -> H.ComponentHTML Action () m
+speedChip h cur col ix val =
+  let active = ix == cur
+  in HH.button
+       [ HE.onClick \_ -> SetHeadSpeed h ix
+       , style $ "padding:3px 0;border:1px solid #a8a392;border-radius:3px;cursor:pointer;line-height:1;"
+           <> "font-family:'SF Mono',Menlo,monospace;font-size:9px;color:"
+           <> (if active then "#1c1a12" else "#6a6456")
+           <> ";background:" <> (if active then "linear-gradient(" <> col <> "," <> col <> ")"
+                                 else "linear-gradient(#efece1,#ddd9cb)") ]
+       [ HH.text (speedLbl val) ]
+
+-- | Compact ratio label: unit fractions as glyphs, whole numbers bare, the rest
+-- | as a short decimal (so 1.5 stays "1.5" and future dotted values read cleanly).
+speedLbl :: Number -> String
+speedLbl x
+  | x == 0.125 = "⅛"
+  | x == 0.25 = "¼"
+  | x == 0.5 = "½"
+  | x == 0.75 = "¾"
+  | x == toNumber (round x) = show (round x)
+  | otherwise = show x
 
 -- | Direction as a three-way radio under the pattern thumbnail (→ forward,
 -- | ← backward, ↔ pendulum) — frees the knob row, and reads at a glance.

@@ -243,6 +243,9 @@ data Action
   | SetHeadMask Int
   | CyclePattern Int
   | SetHeadDir Int Int      -- head, direction (0 fwd / 1 back / 2 pend) — radio
+  | SetHeadSpeed Int Int    -- head, speedIx — two-row speed radio
+  | SetHeadPulses Int Int   -- head, pulses (k) — Euclidean-circle corner clicker
+  | SetHeadSteps Int Int    -- head, esteps (n) — Euclidean-circle corner clicker
   | UnifyHeads
   | PhaseShift Int          -- Reichian PHASE ±: rotate the whole canon
   | CycleScaleType Int
