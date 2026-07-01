@@ -587,6 +587,7 @@ targetToInput t v = case t of
   GateLen -> Just (RI.SetGatePct v)
   FanOff -> Just (RI.FanOffsets v)
   StaggerLen -> Just (RI.StaggerLengths v)
+  HeadSpread -> Just (RI.SpreadOctaves v)
   ChordStep -> Just (RI.SetChordPeriod v)
   GenRate kind -> Just (RI.SetRate kind v)
   GenAmt kind -> Just (RI.SetAmt kind v)

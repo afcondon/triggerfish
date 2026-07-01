@@ -55,6 +55,7 @@ data KnobTarget
   | VelHuman          -- velocity humanise range ± (lives on State)
   | FanOff           -- Reichian FAN: spread head offsets into a canon
   | StaggerLen       -- Reichian STAGGER: ramp head lengths for metric phasing
+  | HeadSpread       -- Reichian SPREAD: fan head transposes into a register-canon
   | ChordStep        -- chord-progression clock: steps per chord
   | GenRate GenKind  -- a source's randomisation rate, lives on State (see DragMove)
   | GenAmt GenKind   -- a source's mutation depth / intensity (0..100)
@@ -78,6 +79,7 @@ targetRange = case _ of
   VelHuman -> { lo: 0, hi: 40 }
   FanOff -> { lo: 0, hi: 5 }
   StaggerLen -> { lo: 0, hi: 5 }
+  HeadSpread -> { lo: 0, hi: 8 }
   ChordStep -> { lo: M.chordPeriodMin, hi: M.chordPeriodMax }
   GenRate _ -> { lo: 0, hi: rateMax }
   GenAmt _ -> { lo: 0, hi: 100 }
@@ -99,6 +101,7 @@ applyTarget t v = case t of
   GateLen -> M.setGatePct v
   FanOff -> M.fanOffsets v
   StaggerLen -> M.staggerLengths v
+  HeadSpread -> M.spreadOctaves v
   ChordStep -> M.setChordPeriod v
   SwingAmt -> identity     -- handled at State level in DragMove, not on Odonus
   VelHuman -> identity      -- handled at State level in DragMove, not on Odonus

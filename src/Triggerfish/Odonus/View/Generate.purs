@@ -20,8 +20,9 @@ import Halogen.HTML.Properties as HP
 import Web.UIEvent.MouseEvent as ME
 import Triggerfish.Odonus.Grid.Types
   ( Action(..), GenKind(..), KnobTarget(..), State, genKinds, genLabel, genSub, marblesPadId, periodOf )
-import Triggerfish.Odonus.Grid.Widgets (engrave, panelShell, style)
+import Triggerfish.Odonus.Grid.Widgets (engrave, panelShell, style, tabBtn)
 import Triggerfish.Odonus.Marbles (betaWeights)
+import Triggerfish.Odonus.Model as M
 
 generatePanel :: forall m. State -> HH.ComponentHTML Action () m
 generatePanel s =
@@ -58,8 +59,22 @@ notesExtras s =
   [ xyPad s
   , readout s
   , rollButton
+  , setAllRow s.odo
   , seedControl s
   ]
+
+-- | Flatten-the-grid macros, sitting under Roll in the NOTES source: drop every
+-- | note onto the scale root — low octave (LOW, for basslines) or middle octave
+-- | (MID, for melodies) — or seed a fresh MELODY. Both octave floors follow the
+-- | current key, so in D the floor is a D, not a fixed chromatic value.
+setAllRow :: forall m. M.Odonus -> HH.ComponentHTML Action () m
+setAllRow odo =
+  HH.div [ style "display:flex;align-items:center;gap:5px;margin-top:7px" ]
+    [ HH.span [ style $ engrave <> ";font-size:8px;opacity:0.7;margin-right:1px" ] [ HH.text "SET ALL" ]
+    , tabBtn "LOW" false (SetAllNotes 0)
+    , tabBtn "MID" false (SetAllNotes (M.cellIndexMax odo `div` 2))
+    , tabBtn "MELODY" false SeedMelody
+    ]
 
 -- | A round source-enable lamp. Click toggles; debounced in the handler so the
 -- | doubled re-render dispatch can't cancel the flip.

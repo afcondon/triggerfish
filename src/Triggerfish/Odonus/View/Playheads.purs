@@ -39,6 +39,7 @@ phasingBlock odo =
   let
     fanN = maybe 0 _.offset (odo.heads !! 1)
     stagN = 16 - maybe 16 _.len (odo.heads !! 1)
+    spreadN = maybe 0 _.transp (odo.heads !! 1)
   in
     HH.div [ style "margin-bottom:12px" ]
       [ HH.span [ style $ engrave <> ";font-size:9px;opacity:0.85;display:block;margin-bottom:5px" ]
@@ -51,6 +52,7 @@ phasingBlock odo =
       , HH.div [ style "display:flex;align-items:flex-end;justify-content:space-between;gap:8px" ]
           [ miniKnob FanOff fanN "#6f7f88" "FAN" (show fanN)
           , miniKnob StaggerLen stagN "#6f7f88" "STAGGER" (show stagN)
+          , miniKnob HeadSpread spreadN "#6f7f88" "SPREAD" (show spreadN)
           , HH.div [ style "display:flex;flex-direction:column;align-items:center;width:52px" ]
               [ HH.span [ style $ engrave <> ";font-size:8px;margin-bottom:3px" ] [ HH.text "PHASE" ]
               , HH.div [ style "display:flex;gap:5px" ]

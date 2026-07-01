@@ -124,22 +124,8 @@ noteField odo =
         [ HH.div
             [ style "display:grid;grid-template-columns:repeat(4,1fr);gap:6px" ]
             (mapWithIndex (noteCell odo) odo.cells)
-        , setAllRow odo
         ]
     )
-
--- | Flatten-the-grid macros: drop every note onto the scale root — low octave
--- | (MIN, for basslines) or middle octave (CENTER, for melodies) — as a tonic
--- | starting point to sculpt from. Both follow the current key, so in D the
--- | floor is a D, not a fixed chromatic value.
-setAllRow :: forall m. M.Odonus -> H.ComponentHTML Action () m
-setAllRow odo =
-  HH.div [ style "display:flex;align-items:center;gap:5px;margin-top:7px" ]
-    [ HH.span [ style $ engrave <> ";font-size:8px;opacity:0.7;margin-right:1px" ] [ HH.text "SET ALL" ]
-    , tabBtn "LOW" false (SetAllNotes 0)
-    , tabBtn "MID" false (SetAllNotes (M.cellIndexMax odo `div` 2))
-    , tabBtn "MELODY" false SeedMelody
-    ]
 
 noteCell :: forall m. M.Odonus -> Int -> M.Cell -> H.ComponentHTML Action () m
 noteCell odo i c =
