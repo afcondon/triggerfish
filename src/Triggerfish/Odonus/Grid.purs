@@ -9,10 +9,10 @@ module Triggerfish.Odonus.Grid (component) where
 
 import Prelude
 
-import Data.Array (any, deleteAt, elem, filter, find, head, length, mapWithIndex, null, range, updateAt, (!!))
+import Data.Array (any, deleteAt, elem, filter, find, head, length, null, range, updateAt, (!!))
 import Data.Foldable (foldl, for_)
 import Data.FoldableWithIndex (forWithIndex_)
-import Data.Int (round, toNumber)
+import Data.Int (floor, round, toNumber)
 import Data.Maybe (Maybe(..), fromMaybe, maybe)
 import Data.String.Common (joinWith)
 import Effect (Effect)
@@ -31,7 +31,8 @@ import Binnacle.Clock as Clock
 import Binnacle.Midi as Midi
 import Binnacle.Scheduler as Scheduler
 import Binnacle.Transport as Transport
-import Reef.Protocol (encodeSim)
+import Reef.Input as RI
+import Reef.Protocol (encodeSim, encodeTagged)
 import Web.Event.Event (EventType(..))
 import Web.Event.EventTarget (addEventListener, eventListener, removeEventListener)
 import Web.HTML (window)
@@ -39,7 +40,7 @@ import Web.HTML.Window as Window
 import Web.UIEvent.MouseEvent as ME
 import Triggerfish.Odonus.Grid.Types
   ( Action(..), KnobTarget(..), SourceTag(..), State, applyTarget, genDefaultAmt, genDefaultRate, genKinds, genLabel
-  , marblesPadId, setAmt, setRate, targetRange, toggleGen )
+  , marblesPadId, setAmt, setRate, targetRange )
 import Triggerfish.Odonus.Grid.Widgets (clampI, style)
 import Triggerfish.Odonus.View.Scope (scopePanel)
 import Triggerfish.Odonus.View.Key (quantizerPanel)
@@ -64,7 +65,7 @@ component =
         , stepDiv: 1, headNote: [ Nothing, Nothing, Nothing, Nothing ]
         , swing: 0.0, velHumanize: 12
         , gen: map (\k -> { kind: k, on: false, rate: genDefaultRate k, amt: genDefaultAmt k }) genKinds
-        , genSpread: 0.5, genBias: 0.5, genSeed: Marbles.seedFrom 1
+        , genSpread: 0.5, genBias: 0.5, genSeed: Marbles.seedFrom 1, pending: []
         -- SOURCE folds away by default: the dedicated TIDAL tab is the
         -- one-stop view of the whole setup; Odonus's own eDSL pane is for
         -- when you want to inspect just this module.
@@ -197,11 +198,21 @@ dispatch = case _ of
     -- model only every stepDiv ticks, so STEP LENGTH sets what a 1× head plays.
     when (st.master && st.running && tick.index `mod` st.stepDiv == 0) do
       let
+        modelStep = tick.index / st.stepDiv
+        -- LOCKSTEP (P4c): apply any tick-tagged inputs whose step has arrived
+        -- BEFORE the model steps — exactly as reef_voice's drain does on the BEAM,
+        -- so a deferred gesture lands on the same step on both runtimes. `<=` (not
+        -- `==`) self-heals: an input tagged while the transport was stopped applies
+        -- on the first step after it resumes; drained entries drop from `pending`.
+        due = filter (\p -> p.step <= modelStep) st.pending
+        stillPending = filter (\p -> p.step > modelStep) st.pending
+        sim0 = RI.applyInputs (map _.input due)
+                 { odo: st.odo, gen: st.gen, spread: st.genSpread, bias: st.genBias, seed: st.genSeed }
         -- The randomisation matrix fires BEFORE the heads read, so any mutated
         -- value is what plays this step. Each source drifts one notch at a time.
         g = Gen.runGen
-              { gen: st.gen, spread: st.genSpread, bias: st.genBias
-              , odo: st.odo, seed: st.genSeed }
+              { gen: sim0.gen, spread: sim0.spread, bias: sim0.bias
+              , odo: sim0.odo, seed: sim0.seed }
         -- The chord progression advances on its own clock, before the heads read,
         -- so the new chord is what this step's notes quantize to.
         o1 = if g.odo.chord.on then M.tickChord g.odo else g.odo
@@ -213,7 +224,6 @@ dispatch = case _ of
         msPerBeat = 60000.0 / max 30.0 st.clockTempo
         -- One model step in ms (a 1× head's note spacing at this STEP LENGTH).
         stepMs = (0.25 * toNumber st.stepDiv) * msPerBeat
-        modelStep = tick.index / st.stepDiv
         -- Swing: lag the off-beat (odd) model steps by a fraction of a step, so
         -- the grid breathes instead of being metronomic. Applied to the audible
         -- onset (and the scope), not the model advance.
@@ -264,7 +274,11 @@ dispatch = case _ of
         -- otherwise the frontend's seed would diverge from the rig's (which does no
         -- humanise), and the co-simulation would drift. Expression stays local; the
         -- model stays byte-identical to reef_engine.stepTick on the BEAM.
-        , genSeed = g.seed }
+        , genSeed = g.seed
+        -- Write back the gen-config / pad any DUE inputs mutated (a no-op unless a
+        -- gen gesture was synced this step), and drop the drained pending entries.
+        , gen = sim0.gen, genSpread = sim0.spread, genBias = sim0.bias
+        , pending = stillPending }
   Frame -> do
     st <- H.get
     case st.binnacle of
@@ -306,48 +320,35 @@ dispatch = case _ of
     H.modify_ \s -> s
       { running = not s.running
       , headNote = if wasSounding && not nowSounding then map (const Nothing) s.headNote else s.headNote }
-  ToggleGlide i -> H.modify_ \s -> s { odo = M.toggleGlide i s.odo }
-  ToggleGate i -> H.modify_ \s -> s { odo = M.toggleGate i s.odo }
-  ToggleSkip i -> H.modify_ \s -> s { odo = M.toggleSkip i s.odo }
-  SetAllNotes v -> H.modify_ \s -> s { odo = M.setAllNotes v s.odo }
-  SeedMelody -> H.modify_ \s ->
-    let r = Gen.seedMelody (M.harmonyPCs s.odo) s.odo s.genSeed
-    in s { odo = r.odo, genSeed = r.seed }
-  ToggleHeadMute h -> do
-    st <- H.get
-    -- Muting a head that's holding a note → kill it (it won't emit again to
-    -- end itself), and clear its held-note slot.
-    let willMute = maybe false (\hd -> not hd.mute) (st.odo.heads !! h)
-    when willMute $ for_ st.midiOut \out -> case join (st.headNote !! h) of
-      Just n -> liftEffect $ Midi.noteOffAt out { channel: h, note: n, delayMs: 0.0 }
-      Nothing -> pure unit
-    H.modify_ \s -> s
-      { odo = M.toggleHeadMute h s.odo
-      , headNote = fromMaybe s.headNote (updateAt h Nothing s.headNote) }
-  SetHeadMask mask -> do
-    st <- H.get
-    -- Heads this combination silences (held now, muted next) get a note-off,
-    -- and their held-note slots clear, so glide notes never stick.
-    let nextOdo = M.setHeadMask mask st.odo
-        nowMuted h = maybe true _.mute (nextOdo.heads !! h)
-    forWithIndex_ st.headNote \h mn -> case mn of
-      Just n | nowMuted h -> for_ st.midiOut \out ->
-        liftEffect $ Midi.noteOffAt out { channel: h, note: n, delayMs: 0.0 }
-      _ -> pure unit
-    H.modify_ \s -> s
-      { odo = nextOdo
-      , headNote = mapWithIndex (\h mn -> if nowMuted h then Nothing else mn) s.headNote }
-  CyclePattern h -> H.modify_ \s -> s { odo = M.cyclePattern h s.odo }
-  SetHeadDir h d -> H.modify_ \s -> s { odo = M.setHeadDir h d s.odo }
-  UnifyHeads -> H.modify_ \s -> s { odo = M.unifyHeads s.odo }
-  PhaseShift d -> H.modify_ \s -> s { odo = M.nudgeOffsets d s.odo }
-  CycleScaleType dir -> H.modify_ \s -> s { odo = M.cycleScaleType dir s.odo }
-  ToggleDist -> H.modify_ \s -> s { odo = M.toggleDistribution s.odo }
+  -- Cell edits — deferred + broadcast (lockstep P4c) so they land on the same
+  -- model step on both runtimes.
+  ToggleGlide i -> enqueue (RI.ToggleGlide i)
+  ToggleGate i -> enqueue (RI.ToggleGate i)
+  ToggleSkip i -> enqueue (RI.ToggleSkip i)
+  SetAllNotes v -> enqueue (RI.SetAllNotes v)
+  -- SeedMelody THREADS the shared seed, so deferred-on-both is mandatory: applied
+  -- a step apart the two PRNGs would desync permanently. (Reef.Gen.seedMelody
+  -- ignores its harmony-PC arg, so RI.SeedMelody == the old inline call.)
+  SeedMelody -> enqueue RI.SeedMelody
+  -- LOCKSTEP (P4c): head mute + activation-matrix are DEFERRED, not applied now —
+  -- enqueued for a near-future step and broadcast to the rig so both runtimes flip
+  -- the head on the same step (no flam through the edit). The note-off + held-slot
+  -- clearing that the immediate handlers used to do is now done by the Step loop's
+  -- `newlyMuted` path when the deferred mute actually lands (it compares the
+  -- pre-step odo to the post-gen odo, so a manual mute is caught there too).
+  ToggleHeadMute h -> enqueue (RI.ToggleHeadMute h)
+  SetHeadMask mask -> enqueue (RI.SetHeadMask mask)
+  -- Head gestures — deferred + broadcast (lockstep P4c).
+  CyclePattern h -> enqueue (RI.CyclePattern h)
+  SetHeadDir h d -> enqueue (RI.SetHeadDir h d)
+  UnifyHeads -> enqueue RI.UnifyHeads
+  PhaseShift d -> enqueue (RI.NudgeOffsets d)
+  CycleScaleType dir -> enqueue (RI.CycleScaleType dir)
+  ToggleDist -> enqueue RI.ToggleDistribution
   ToggleChord -> H.modify_ \s ->
     if tapBounced "chord" s then s else (markTap "chord" s) { odo = M.toggleChord s.odo }
-  ChordRoll -> H.modify_ \s ->
-    let r = Gen.rollChords M.numChordTable s.genSeed
-    in s { odo = M.setChordPicks r.picks s.odo, genSeed = r.seed }
+  -- ChordRoll threads the seed → deferred-on-both (as SeedMelody).
+  ChordRoll -> enqueue RI.RollChords
   -- The KEY pane's pitch-source radio — an explicit `source` intent. Scale =
   -- overlay off; Chord = the internal McMullen progression (overlay on); Vetula =
   -- follow a voice. Selecting Vetula always sticks (even with no voice yet): it
@@ -363,10 +364,11 @@ dispatch = case _ of
   -- Pick a voice to follow, or "free" (Nothing = stay on Vetula but unfollowed →
   -- inactive). recomputeFollow turns the overlay on/off accordingly.
   SetFollow mfid -> H.modify_ \s -> recomputeFollow (s { follow = mfid })
-  SetRoot pc -> H.modify_ \s -> s { odo = M.setRoot pc s.odo }
-  SetOctave n -> H.modify_ \s -> s { odo = M.setOctaveShift n s.odo }
-  SetDegShift n -> H.modify_ \s -> s { odo = M.setDegShift n s.odo }
-  ToggleScaleNote pc -> H.modify_ \s -> s { odo = M.toggleScaleNote pc s.odo }
+  -- Quantizer gestures — deferred + broadcast (lockstep P4c).
+  SetRoot pc -> enqueue (RI.SetRoot pc)
+  SetOctave n -> enqueue (RI.SetOctaveShift n)
+  SetDegShift n -> enqueue (RI.SetDegShift n)
+  ToggleScaleNote pc -> enqueue (RI.ToggleScaleNote pc)
   -- Capture the WHOLE current setup under the typed name (or an auto-name), as
   -- its Lepidoptera text — the named, recallable preset. (persistAll runs in the
   -- handleAction wrapper.)
@@ -381,10 +383,17 @@ dispatch = case _ of
   DeleteScene i -> H.modify_ \s -> s { scenes = fromMaybe s.scenes (deleteAt i s.scenes) }
   ToggleChain -> H.modify_ \s -> s { chain = not s.chain, sceneBarAnchor = s.clockBar }
   BumpBars d -> H.modify_ \s -> s { barsPerScene = clampI 1 32 (s.barsPerScene + d) }
-  SetStepDiv d -> H.modify_ \s -> s { stepDiv = d }
+  -- STEP LENGTH is a transport/clock param, not a SimState edit, so it rides its
+  -- own `reef-steplen` verb (not the tick-tagged input path): apply locally, then
+  -- tell the BEAM voice the new model-step length so it steps at the same rate and
+  -- keeps the same model-step numbering (lockstep P4c).
+  SetStepDiv d -> do
+    H.modify_ \s -> s { stepDiv = d }
+    st <- H.get
+    sendStepLen st
   KnobDown target startVal -> do
     sid <- setupDrag
-    H.modify_ _ { dragging = Just { target, startY: 0, startVal }, dragSub = Just sid }
+    H.modify_ _ { dragging = Just { target, startY: 0, startVal, curVal: startVal }, dragSub = Just sid }
   DragMove clientY -> do
     st <- H.get
     case st.dragging of
@@ -400,24 +409,38 @@ dispatch = case _ of
                     _ -> targetRange drag.target
               delta = round (toNumber (drag.startY - clientY) * toNumber (r.hi - r.lo) / 140.0)
               newVal = clampI r.lo r.hi (drag.startVal + delta)
+            -- Apply locally for responsive knob feel; remember the live value so
+            -- DragEnd can broadcast the settled value to the rig (lockstep P4c).
             case drag.target of
               GenRate kind -> H.modify_ \s -> s { gen = setRate kind newVal s.gen }
               GenAmt kind -> H.modify_ \s -> s { gen = setAmt kind newVal s.gen }
               SwingAmt -> H.modify_ \s -> s { swing = toNumber newVal / 100.0 }
               VelHuman -> H.modify_ \s -> s { velHumanize = newVal }
               _ -> H.modify_ \s -> s { odo = applyTarget drag.target newVal s.odo }
+            H.modify_ \s -> s { dragging = map (_ { curVal = newVal }) s.dragging }
       _ -> pure unit
   DragEnd -> do
     st <- H.get
     case st.dragSub of
       Just sid -> H.unsubscribe sid
       Nothing -> pure unit
+    -- Sync the settled knob value on release (lockstep P4c): a Set* input for the
+    -- final value, deferred + broadcast so the rig jumps to the same value on the
+    -- same step. Skipped for a bare click (no drag) and for local-only knobs
+    -- (swing / humanise, which are expression and never leave this runtime).
+    for_ st.dragging \drag ->
+      when (drag.startY /= 0) $ for_ (targetToInput drag.target drag.curVal) enqueue
     H.modify_ _ { dragging = Nothing, dragSub = Nothing }
-  ToggleGen kind -> H.modify_ \s ->
-    -- Same double-dispatch guard as the panels: a flip-toggle would cancel
-    -- itself if the 30fps re-render replays the click, so debounce per source.
+  ToggleGen kind -> do
+    -- Same double-dispatch guard as the panels: a flip-toggle would cancel itself
+    -- if the 30fps re-render replays the click, so debounce per source. On the real
+    -- click, DEFER + broadcast (lockstep P4c) — gen config drives generation, so it
+    -- must flip on the same step on both runtimes.
+    st <- H.get
     let k = "g:" <> genLabel kind
-    in if tapBounced k s then s else (markTap k s) { gen = toggleGen kind s.gen }
+    unless (tapBounced k st) do
+      H.modify_ (markTap k)
+      enqueue (RI.ToggleGen kind)
   MarblesPad cx cy btns ->
     -- Wired to mousedown + mousemove; act only while the button is held.
     -- X = BIAS (peak's horizontal position in the histogram, low→high notes);
@@ -425,9 +448,8 @@ dispatch = case _ of
     when (btns == 1) do
       { x, y } <- liftEffect $ Pointer.padNorm marblesPadId cx cy
       H.modify_ \s -> s { genBias = x, genSpread = 1.0 - y }
-  MarblesRoll -> H.modify_ \s ->
-    let g = Gen.rollAllNotes s.genSpread s.genBias s.odo s.genSeed
-    in s { odo = g.odo, genSeed = g.seed }
+  -- MarblesRoll threads the seed → deferred-on-both (as SeedMelody / ChordRoll).
+  MarblesRoll -> enqueue RI.RollAllNotes
   -- The header always collapses, the tab always expands. Each is idempotent
   -- AND debounced per-label: a single click double-dispatches (one direct, one
   -- via the eval queue) with a re-render between, so the 2nd event lands on the
@@ -453,6 +475,10 @@ dispatch = case _ of
       liftEffect $ Transport.send (Binnacle.socket bin)
         ("reef-sim " <> encodeSim
            { odo: st.odo, gen: st.gen, spread: st.genSpread, bias: st.genBias, seed: st.genSeed })
+    -- The handoff (start_sim_json) resets the voice's step length to the 1/16
+    -- default, so re-assert the current STEP LENGTH right after so a Push at a
+    -- coarser step length lands in lockstep.
+    sendStepLen st
   HushRig -> do
     -- Stop the reef voice (and everything else) on the rig via the existing
     -- hush verb, over the same socket the push used.
@@ -468,6 +494,86 @@ tapBounced k s = k == s.lastTap && (s.nowMicros - s.lastTapMicros) < 120000.0
 
 markTap :: String -> State -> State
 markTap k s = s { lastTap = k, lastTapMicros = s.nowMicros }
+
+-- | Lockstep (P4c): defer a synced gesture instead of applying it now. Tag it for
+-- | `soundingStep + inputBufferSteps` — far enough ahead to clear the BEAM voice's
+-- | scheduling lookahead — enqueue it locally (the Step loop applies it on that
+-- | step, via `Reef.Input.applyInput`), and broadcast the SAME tick-tagged input to
+-- | the rig, where reef_voice applies it on the same step. Both runtimes evolve
+-- | identically through the edit — the flam-free property survives live editing.
+-- | When the rig isn't attached the broadcast is skipped; the local queue still
+-- | applies it, so the standalone webapp behaves the same (just quantized to the
+-- | grid instead of instant).
+enqueue :: forall o m. MonadAff m => RI.Input -> H.HalogenM State Action () o m Unit
+enqueue input = do
+  st <- H.get
+  let tagStep = soundingStep st + inputBufferSteps
+  H.modify_ \s -> s { pending = s.pending <> [ { step: tagStep, input } ] }
+  for_ st.binnacle \bin ->
+    liftEffect $ Transport.send (Binnacle.socket bin)
+      ("reef-input " <> encodeTagged { tick: tagStep, input })
+
+-- | Tell the BEAM voice the current model-step length in beats (lockstep P4c). A
+-- | no-op when the rig isn't attached. Sent on Push and on every STEP LENGTH change
+-- | so reef_voice's grid tracks the frontend's — otherwise the BEAM keeps stepping
+-- | at 1/16 while the frontend steps coarser, and the two desync.
+sendStepLen :: forall o m. MonadAff m => State -> H.HalogenM State Action () o m Unit
+sendStepLen st =
+  for_ st.binnacle \bin ->
+    liftEffect $ Transport.send (Binnacle.socket bin)
+      ("reef-steplen " <> show (stepBeatsOf st))
+
+-- | Map a settled knob (target + final value) to the `Reef.Input` that sets it,
+-- | for the DragEnd broadcast (lockstep P4c). Every knob setter is an ABSOLUTE,
+-- | idempotent set (`fanOffsets n` → offset = i·n, etc.), so replaying the final
+-- | value on the BEAM lands exactly where the frontend's drag settled. `Nothing`
+-- | for the two local-only knobs (swing / velocity-humanise): those are expression
+-- | that never leaves this runtime, like the humanise draws in the Step loop.
+targetToInput :: KnobTarget -> Int -> Maybe RI.Input
+targetToInput t v = case t of
+  CellNote i -> Just (RI.SetNote i v)
+  CellDur i -> Just (RI.SetCellDur i v)
+  CellRatchet i -> Just (RI.SetCellRatchet i v)
+  CellVel i -> Just (RI.SetCellVel i v)
+  HeadDir h -> Just (RI.SetHeadDir h v)
+  HeadSpeed h -> Just (RI.SetHeadSpeedIx h v)
+  HeadTransp h -> Just (RI.SetHeadTransp h v)
+  HeadOffset h -> Just (RI.SetHeadOffset h v)
+  HeadLen h -> Just (RI.SetHeadLen h v)
+  HeadDiv h -> Just (RI.SetHeadPulses h v)
+  HeadEStep h -> Just (RI.SetHeadEuclidSteps h v)
+  Spread -> Just (RI.SetSpread v)
+  GateLen -> Just (RI.SetGatePct v)
+  FanOff -> Just (RI.FanOffsets v)
+  StaggerLen -> Just (RI.StaggerLengths v)
+  ChordStep -> Just (RI.SetChordPeriod v)
+  GenRate kind -> Just (RI.SetRate kind v)
+  GenAmt kind -> Just (RI.SetAmt kind v)
+  SwingAmt -> Nothing
+  VelHuman -> Nothing
+
+-- | The model step currently SOUNDING, off the shared Link clock — the same
+-- | quantity reef_voice derives (`trunc(BeatNow / step_beats)`), so a step tagged
+-- | here means the same step on the BEAM. Model-step length is `stepBeats × stepDiv`
+-- | (STEP LENGTH divides the scheduler's 1/16 grid); the BEAM voice is told the
+-- | same length via `reef-steplen`, so both agree on which model step is which at
+-- | any step length. (`floor(floor(beat/0.25)/stepDiv) = floor(beat/(0.25·stepDiv))`,
+-- | so this matches the Step loop's `tick.index / stepDiv`.)
+soundingStep :: State -> Int
+soundingStep s = floor (s.clockBeat / stepBeatsOf s)
+
+-- | Model-step length in beats: the scheduler's 1/16 grid times the STEP LENGTH
+-- | divider. This is what the BEAM voice must step on to stay in lockstep, sent via
+-- | `reef-steplen` on Push and whenever STEP LENGTH changes.
+stepBeatsOf :: State -> Number
+stepBeatsOf s = gridCfg.stepBeats * toNumber s.stepDiv
+
+-- | How far ahead a synced input is scheduled. Must exceed reef_voice's scheduling
+-- | lookahead (LOOKAHEAD_MS = 200ms) in steps, so the broadcast reaches the rig
+-- | before it has drained that step: at 120bpm a 1/16 is 125ms, so 2 steps (250ms)
+-- | clears it with margin. Fast tempi (≳160bpm) would want a larger buffer.
+inputBufferSteps :: Int
+inputBufferSteps = 2
 
 -- | Re-derive the chord overlay from the follow selection + last poll. A followed
 -- | voice's chord becomes a one-element feed (overlay on; a vanished voice clears

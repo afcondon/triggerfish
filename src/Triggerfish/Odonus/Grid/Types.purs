@@ -7,6 +7,7 @@ module Triggerfish.Odonus.Grid.Types
   , applyTarget
   , DragState
   , NoteEvent
+  , PendingInput
   , Scene
   , module Reef.Gen
   , genLabel
@@ -22,6 +23,7 @@ import Prelude
 import Data.Array (length)
 import Data.Maybe (Maybe)
 import Halogen as H
+import Reef.Input as RI
 import Triggerfish.Odonus.Model as M
 import Triggerfish.Odonus.Marbles as Marbles
 -- The gen-source descriptor moved to the portable reef package (Reef.Gen) so
@@ -103,7 +105,17 @@ applyTarget t v = case t of
   GenRate _ -> identity   -- handled at State level in DragMove, not on Odonus
   GenAmt _ -> identity     -- handled at State level in DragMove, not on Odonus
 
-type DragState = { target :: KnobTarget, startY :: Int, startVal :: Int }
+-- | `curVal` tracks the live value as the knob is dragged, so on release the
+-- | lockstep client can broadcast the FINAL value as a Set* input (P4c). A knob
+-- | edit syncs on release, not per-move — the backend jumps to the settled value.
+type DragState = { target :: KnobTarget, startY :: Int, startVal :: Int, curVal :: Int }
+
+-- | A locally-queued, tick-tagged input awaiting its beat (lockstep, P4c). A user
+-- | gesture that must stay in sync with the rig is deferred: it's enqueued here at
+-- | `step = soundingStep + buffer` AND broadcast to the BEAM tagged with the SAME
+-- | step, so both runtimes apply it on the same model step and the co-simulation
+-- | never flams. The Step loop drains entries whose `step` has arrived.
+type PendingInput = { step :: Int, input :: RI.Input }
 
 -- | One emitted note in the scrolling monitor. `fireUnixMicros` is the
 -- | wall-clock instant it sounds; the river positions it by how long ago
@@ -192,6 +204,7 @@ type State =
   , genSpread :: Number       -- Marbles X-Y pad: spread ∈ [0,1] (NOTES source)
   , genBias :: Number         -- Marbles X-Y pad: bias ∈ [0,1] (NOTES source)
   , genSeed :: Marbles.Seed   -- the shared PRNG every source draws from
+  , pending :: Array PendingInput  -- lockstep (P4c): tick-tagged inputs awaiting their step
   , collapsed :: Array String  -- panel labels currently collapsed (accordion)
   , lastTap :: String          -- last toggle target (debounce the double-dispatch)
   , lastTapMicros :: Number
