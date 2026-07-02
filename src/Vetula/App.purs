@@ -56,6 +56,9 @@ import Vetula.Generate (GenMode(..), generateCandidates)
 import Binnacle as Binnacle
 import Binnacle.Clock as Clock
 import Binnacle.Scheduler as Scheduler
+import Binnacle.Transport as Transport
+import Reef.Vetula.Perf (VDest(..), VRenderer(..)) as RV
+import Reef.Vetula.Protocol (encodePerf) as RV
 import Binnacle.Time (dateNow)
 import Vetula.Tidal (progressionSource, parseProgression)
 import Vetula.Clipboard (copyText)
@@ -303,6 +306,7 @@ data Action
   | ToggleVoiceMute Int
   | SetTempo String
   | ToggleArm              -- the ▶/■ button: sticky arm/cue under the shell master
+  | PushVetula             -- lockstep: push the whole performance to the rig (→ odo conducts reef_voice)
   | PerfPlay
   | PerfStop
   | PerfTick Scheduler.Tick  -- one 16th-note pulse from the shared scheduler
@@ -955,6 +959,16 @@ handleAction = case _ of
     H.modify_ \s -> s { armed = not s.armed }
     reconcilePerf
 
+  -- Push the whole performance to the rig: the shared Reef.Vetula.Perf scheduler
+  -- runs on the BEAM (reef_vetula_voice) and its → odo voice conducts reef_voice's
+  -- chord overlay — reproducing "Vetula progressions quantising Odonus" entirely in
+  -- the backend. A pure function of the absolute pulse, so ONE push is the whole
+  -- wire (a re-push after an edit swaps it in place). Push Odonus to the rig first.
+  PushVetula -> do
+    st <- H.get
+    for_ st.binnacle \bin ->
+      liftEffect $ Transport.send (Binnacle.socket bin) ("vetula-perf " <> RV.encodePerf (buildPerf st))
+
   PerfPlay -> H.modify_ _ { armed = true } *> reconcilePerf
   PerfStop -> H.modify_ _ { armed = false } *> reconcilePerf
 
@@ -1114,6 +1128,31 @@ perfChords :: State -> Array ChordNode
 perfChords st = case st.perfProg of
   Just pp -> mapMaybe (\pid -> find (\c -> c.id == pid) st.chords) pp.chordIds
   Nothing -> []
+
+-- | Project the live performance onto the shared `Reef.Vetula.Perf` (the wire shape
+-- | the rig runs): the resolved progression as `{ pcs, notes }` (pcs for the → odo
+-- | quantiser, notes = `playNotes` for the V2 MIDI voices) and each voice's dest /
+-- | renderer / channel / dwell schedule / phase mapped to the reef enums. The
+-- | frontend's own `Renderer`/`VoiceDest` map onto reef's by meaning, not order.
+buildPerf :: State -> { chords :: Array { pcs :: Array Int, notes :: Array Int }, voices :: Array { dest :: RV.VDest, renderer :: RV.VRenderer, channel :: Int, durs :: Array Int, phase :: Int, muted :: Boolean } }
+buildPerf st =
+  { chords: map (\c -> { pcs: c.pcs, notes: playNotes c }) (perfChords st)
+  , voices: map projectVoice st.voices
+  }
+  where
+  projectVoice v =
+    { dest: case v.dest of
+        ToMidi -> RV.VToMidi
+        ToOdonus -> RV.VToOdonus
+    , renderer: case v.renderer of
+        Block -> RV.VBlock
+        Arp -> RV.VArp
+        Strummed -> RV.VStrummed
+    , channel: v.channel
+    , durs: v.durs
+    , phase: v.phase
+    , muted: v.muted
+    }
 
 -- | One pulse of one voice: advance its read-head if due and sound the chord per
 -- | its renderer. Returns the updated voice (cursor / held); sends MIDI as a side
@@ -2216,6 +2255,13 @@ loadedView st pp =
                   <> (if st.armed then "border: 1px solid #b8860b; background: #fbf6e9; color: #7a5c00;" else "border: 1px solid #d8d8d8; background: #fafafa; color: #6a6a6a;"))
               , HE.onClick \_ -> ToggleArm ]
               [ HH.text (if not st.armed then "▶ ARM" else if st.playing then "❚❚ PLAYING" else "◆ CUED") ]
+          , HH.button
+              -- Push the whole performance to the rig: the → odo voice conducts the
+              -- rig's Odonus in lockstep (reef_vetula_voice → reef_voice). Re-push
+              -- after an edit to swap it in place. Neutral chrome; not a transport.
+              [ HP.style "cursor: pointer; padding: 4px 14px; border-radius: 4px; font-size: 12px; font-weight: 600; letter-spacing: 0.06em; border: 1px solid #cdd6cd; background: #f4f8f4; color: #4a6a4a;"
+              , HE.onClick \_ -> PushVetula ]
+              [ HH.text "→ RIG" ]
           , numField "bpm" st.tempo SetTempo
           ]
       , HH.div [ HP.style "display: flex; align-items: baseline; gap: 12px; margin: 8px 0 6px;" ]
