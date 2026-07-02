@@ -57,7 +57,7 @@ import Binnacle as Binnacle
 import Binnacle.Clock as Clock
 import Binnacle.Scheduler as Scheduler
 import Binnacle.Transport as Transport
-import Reef.Vetula.Perf (VDest(..), VRenderer(..)) as RV
+import Reef.Vetula.Perf (VChord, VVoice, VDest(..), VRenderer(..), cursorAt, renderVoiceMidiAt) as RV
 import Reef.Vetula.Protocol (encodePerf) as RV
 import Binnacle.Time (dateNow)
 import Vetula.Tidal (progressionSource, parseProgression)
@@ -982,9 +982,9 @@ handleAction = case _ of
       tempo <- case st.binnacle of
         Just bin -> liftEffect (_.tempo <$> Clock.read (Binnacle.clock bin))
         Nothing -> pure (toNumber st.tempo)
-      let chords = perfChords st
+      let reefChords = map toReefChord (perfChords st)
           pulseMs = 60000.0 / tempo / 4.0
-      voices' <- liftEffect $ traverse (stepVoice st.midiOut chords tick.index pulseMs tick.delayMs) st.voices
+      voices' <- liftEffect $ traverse (stepVoice st.midiOut reefChords tick.index pulseMs tick.delayMs) st.voices
       H.modify_ _ { pulse = tick.index, voices = voices', clockTempo = tempo, tempo = round tempo }
 
   -- parse the (possibly edited) Tidal source into note-lists, rebuild them as a
@@ -1134,74 +1134,53 @@ perfChords st = case st.perfProg of
 -- | quantiser, notes = `playNotes` for the V2 MIDI voices) and each voice's dest /
 -- | renderer / channel / dwell schedule / phase mapped to the reef enums. The
 -- | frontend's own `Renderer`/`VoiceDest` map onto reef's by meaning, not order.
-buildPerf :: State -> { chords :: Array { pcs :: Array Int, notes :: Array Int }, voices :: Array { dest :: RV.VDest, renderer :: RV.VRenderer, channel :: Int, durs :: Array Int, phase :: Int, muted :: Boolean } }
-buildPerf st =
-  { chords: map (\c -> { pcs: c.pcs, notes: playNotes c }) (perfChords st)
-  , voices: map projectVoice st.voices
-  }
-  where
-  projectVoice v =
-    { dest: case v.dest of
-        ToMidi -> RV.VToMidi
-        ToOdonus -> RV.VToOdonus
-    , renderer: case v.renderer of
-        Block -> RV.VBlock
-        Arp -> RV.VArp
-        Strummed -> RV.VStrummed
-    , channel: v.channel
-    , durs: v.durs
-    , phase: v.phase
-    , muted: v.muted
-    }
+-- | Project a live `ChordNode` onto the shared `Reef.Vetula.Perf` chord: the pitch
+-- | classes (→ odo quantiser) + the concrete `playNotes` (→ midi voices). Sorting is
+-- | the renderer's job, so `notes` rides through unsorted.
+toReefChord :: ChordNode -> RV.VChord
+toReefChord c = { pcs: c.pcs, notes: playNotes c }
 
--- | One pulse of one voice: advance its read-head if due and sound the chord per
--- | its renderer. Returns the updated voice (cursor / held); sends MIDI as a side
--- | effect. Block re-attacks the whole chord; Strummed re-triggers only the
--- | changed notes (common tones ring on via held); Arp plays one note per pulse.
-stepVoice :: Maybe Midi.MidiOut -> Array ChordNode -> Int -> Number -> Number -> Voice -> Effect Voice
-stepVoice mout chords pulse pulseMs baseDelayMs v
-  -- An Odonus-bound voice sounds no MIDI itself — it just advances its read-head
-  -- so the shell can poll its current chord. Always on (mute is a MIDI concept).
-  | v.dest == ToOdonus = pure v { cursor = fromMaybe v.cursor (cursorAt chords pulse v) }
-  | v.muted = pure v
-  | length chords == 0 = pure v
-  | otherwise =
-      let n = length chords
-          ds = padDurs n v.durs
-          segs = timeline ds
-          loopLen = 16 * sum ds        -- total pulses in this voice's loop
-      in if loopLen <= 0 then pure v   -- every chord skipped → silent
-         else
-           let pos = mod (pulse + v.phase) loopLen
-           in case find (\s -> pos >= s.start && pos < s.start + s.len) segs of
-                Nothing -> pure v
-                Just seg ->
-                  let curIx = seg.ix
-                      onset = pos == seg.start
-                      chordNotes = maybe [] (sort <<< playNotes) (index chords curIx)
-                  in case v.renderer of
-                    Arp -> do
-                      -- one note per pulse, cycling through the chord across the cell
-                      for_ mout \out ->
-                        when (length chordNotes > 0) $
-                          for_ (index chordNotes (mod (pos - seg.start) (length chordNotes))) \nn ->
-                            Midi.scheduleNote out { channel: v.channel, note: nn, velocity: 80, delayMs: baseDelayMs, durMs: pulseMs * 0.9 }
-                      pure v { cursor = curIx }
-                    Block ->
-                      if onset then do
-                        for_ mout \out -> for_ chordNotes \nn ->
-                          Midi.scheduleNote out { channel: v.channel, note: nn, velocity: 82, delayMs: baseDelayMs, durMs: pulseMs * toNumber seg.len * 0.98 }
-                        pure v { cursor = curIx, held = chordNotes }
-                      else pure v { cursor = curIx }
-                    Strummed ->
-                      if onset then do
-                        let leaving = filter (\x -> not (elem x chordNotes)) v.held
-                            entering = filter (\x -> not (elem x v.held)) chordNotes
-                        for_ mout \out -> do
-                          for_ leaving \nn -> Midi.noteOffAt out { channel: v.channel, note: nn, delayMs: baseDelayMs }
-                          for_ entering \nn -> Midi.noteOnAt out { channel: v.channel, note: nn, velocity: 84, delayMs: baseDelayMs }
-                        pure v { cursor = curIx, held = chordNotes }
-                      else pure v { cursor = curIx }
+-- | Project a performance voice onto the shared `VVoice`. The frontend's own
+-- | `Renderer`/`VoiceDest` map onto reef's by meaning, not order.
+toReefVoice :: Voice -> RV.VVoice
+toReefVoice v =
+  { dest: case v.dest of
+      ToMidi -> RV.VToMidi
+      ToOdonus -> RV.VToOdonus
+  , renderer: case v.renderer of
+      Block -> RV.VBlock
+      Arp -> RV.VArp
+      Strummed -> RV.VStrummed
+  , channel: v.channel
+  , durs: v.durs
+  , phase: v.phase
+  , muted: v.muted
+  }
+
+buildPerf :: State -> { chords :: Array RV.VChord, voices :: Array RV.VVoice }
+buildPerf st =
+  { chords: map toReefChord (perfChords st)
+  , voices: map toReefVoice st.voices
+  }
+
+-- | One pulse of one voice, rendered by the SHARED `Reef.Vetula.Perf` engine — the
+-- | exact code the rig's reef_vetula_voice runs, so browser and rig are identical BY
+-- | CONSTRUCTION (block / arp / strum all gated notes; strum's ties come out as one
+-- | long gate). A → odo voice sounds no MIDI, it just advances its read-head so the
+-- | shell can poll its chord. `held` is retired — gated notes end themselves.
+stepVoice :: Maybe Midi.MidiOut -> Array RV.VChord -> Int -> Number -> Number -> Voice -> Effect Voice
+stepVoice mout reefChords pulse pulseMs baseDelayMs v =
+  let rv = toReefVoice v
+      cur = fromMaybe v.cursor (RV.cursorAt (length reefChords) rv pulse)
+  in case v.dest of
+    ToOdonus -> pure v { cursor = cur }
+    ToMidi -> do
+      for_ mout \out ->
+        for_ (RV.renderVoiceMidiAt reefChords rv pulse) \e ->
+          Midi.scheduleNote out
+            { channel: v.channel, note: e.note, velocity: e.velocity
+            , delayMs: baseDelayMs, durMs: e.durPulses * pulseMs }
+      pure v { cursor = cur, held = [] }
 
 -- | The chord index a voice's read-head is on at this pulse (Nothing if its loop
 -- | is empty or it's resting between dwell segments). Shared by the MIDI path and
