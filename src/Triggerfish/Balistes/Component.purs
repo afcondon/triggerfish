@@ -141,6 +141,7 @@ data Action
   | ResetPat
   | Dice
   | PadAt Int Int Int          -- clientX clientY buttons
+  | PadRelease                 -- pad pointer-up: broadcast the settled X/Y to the rig
   | StartDrag DragKind Int     -- kind, startVal
   | DragMove Int
   | DragEnd
@@ -328,8 +329,17 @@ handleAction = case _ of
   -- AND the shell's master is playing. Drum hits are scheduled one-shots, so
   -- stopping just gates the next Step — nothing to silence.
   ToggleRun -> H.modify_ \s -> s { running = not s.running }
+  -- Reset shifts the model step (jump to 0), so applying it at different absolute
+  -- steps on the two runtimes would offset the pattern permanently — it needs
+  -- deferred-on-both (both apply at the same tagged step), not broadcast-on-settle.
+  -- Left rig-unsynced until the frontend input-drain lands. (Local-only for now.)
   ResetPat -> H.modify_ \s -> s { bal = M.reset s.bal, playStep = 0 }
-  Dice -> H.modify_ \s -> s { bal = M.reseed s.bal }
+  -- Dice only reseeds the perturbation RNG (no step change), so it converges: the rig
+  -- reseeds from the same RNG state at the tagged step. Rare edge = a 32-step resample
+  -- landing in the ~2-step apply window (self-heals at the next boundary).
+  Dice -> do
+    H.modify_ \s -> s { bal = M.reseed s.bal }
+    broadcastBInput RBI.BReseed
 
   -- The pad's own SVG mousemove fires whenever the cursor crosses it with a
   -- button held — including mid-knob-drag. Guard on `dragging`: a knob drag owns
@@ -344,6 +354,13 @@ handleAction = case _ of
           moved = b1.x /= s.bal.x || b1.y /= s.bal.y
         in
           s { bal = if moved then M.clearRatchets b1 else b1 }
+
+  -- Pad pointer-up: the X/Y were applied live during the drag; broadcast the settled
+  -- values so the rig lands on the same cursor. (Two absolute setters, one tag.)
+  PadRelease -> do
+    st <- H.get
+    broadcastBInput (RBI.BSetX st.bal.x)
+    broadcastBInput (RBI.BSetY st.bal.y)
 
   StartDrag kind startVal -> do
     sid <- setupDrag
@@ -489,6 +506,15 @@ soundingStep s = floor (s.clockBeat / 0.25)
 balInputMsg :: State -> RBI.BInput -> String
 balInputMsg s input =
   "balistes-input " <> encodeBTagged { tick: soundingStep s + inputBufferSteps, input }
+
+-- | Broadcast a settled gesture to the rig as a tick-tagged BInput (no-op if no rig
+-- | is connected). The frontend has already applied it locally; the rig applies it
+-- | (via the shared applyBInput) on the tagged step and converges.
+broadcastBInput :: forall o m. MonadAff m => RBI.BInput -> H.HalogenM State Action () o m Unit
+broadcastBInput input = do
+  st <- H.get
+  for_ st.binnacle \bin ->
+    liftEffect $ Transport.send (Binnacle.socket bin) (balInputMsg st input)
 
 -- | Map a settled drag to the BInput that reproduces it on the rig. The four knob
 -- | kinds, grid notes and ratchets sync; a fixed-rhythm note edit (NFixed) is
@@ -972,6 +998,7 @@ padSvg s =
       , svgAttr "id" padId
       , svgMouse "mousedown" \e -> PadAt (ME.clientX e) (ME.clientY e) (ME.buttons e)
       , svgMouse "mousemove" \e -> PadAt (ME.clientX e) (ME.clientY e) (ME.buttons e)
+      , svgMouse "mouseup" \_ -> PadRelease
       , svgAttr "style" "display:block;cursor:crosshair;touch-action:none"
       ]
       ( [ svgEl "rect"
