@@ -39,8 +39,9 @@ import Binnacle.Clock as Clock
 import Binnacle.Midi as Midi
 import Binnacle.Scheduler as Scheduler
 import Binnacle.Transport as Transport
-import Reef.Balistes.Protocol (encodeBalSim, encodeBTagged)
+import Reef.Balistes.Protocol (encodeBalSim, encodeBTagged, encodeFixed)
 import Reef.Balistes.Input as RBI
+import Reef.Balistes.Fixed as RF
 import Triggerfish.Balistes.Model as M
 import Triggerfish.Balistes.Pattern as P
 import Triggerfish.Balistes.Source as Source
@@ -104,6 +105,9 @@ type State =
   -- tick-tagged gestures awaiting their model step (deferred-on-both lockstep):
   -- applied in the Step loop when step <= tick.index, on both runtimes.
   , pending :: Array { step :: Int, input :: RBI.BInput }
+  -- has the user pushed to the rig this session? Gates the auto-re-push of fixed
+  -- edits so editing/selecting a pattern doesn't silently START the rig voice.
+  , pushed :: Boolean
   , flash :: Array Flash
   , binnacle :: Maybe Binnacle.Binnacle
   , midiOut :: Maybe Midi.MidiOut
@@ -175,7 +179,7 @@ component =
   H.mkComponent
     { initialState: \_ ->
         { bal: M.defaultBalistes
-        , running: false, master: false, playStep: 0, nextModelStep: 0, pending: [], flash: []
+        , running: false, master: false, playStep: 0, nextModelStep: 0, pending: [], pushed: false, flash: []
         , binnacle: Nothing, midiOut: Nothing, midiName: "…"
         , clockTempo: 120.0, clockLocked: false, clockBeat: 0.0, clockBar: 0, anchorCount: 0
         , nowMicros: 0.0, dragging: Nothing, dragSub: Nothing
@@ -260,17 +264,17 @@ handleAction = case _ of
       AFixed i -> case st.library !! i of
         Nothing -> pure unit
         Just pat -> do
-          let
-            fixedStep = tick.index `mod` pat.steps
-            loop = tick.index / pat.steps          -- which pass through the loop
-            stepMs = 0.25 * 60000.0 / max 30.0 st.clockTempo
+          let stepMs = 0.25 * 60000.0 / max 30.0 st.clockTempo
           for_ st.midiOut \out -> liftEffect $
-            for_ (P.usedLanes pat) \lane ->
-              let c = P.cellAt pat lane fixedStep
-              in when (c.vel > 0 && P.condFires c.cond loop && probPass c.prob tick.index lane fixedStep) $
-                   emitHit out drumChannel stepMs (max 0.0 tick.delayMs)
-                     (P.noteOf pat lane) (laneGateMs lane) c.vel c.ratchet
-          H.modify_ _ { playStep = fixedStep }
+            -- the SHARED fixed-rhythm render (Reef.Balistes.Fixed.renderFixed) — the
+            -- exact code the BEAM voice runs, keyed off the same absolute step, so a
+            -- pushed fixed rhythm plays in lockstep. The frontend projects its rich
+            -- pattern onto the wire-flat reef pattern (fixedOf).
+            for_ (RF.renderFixed (fixedOf pat) tick.index) \e ->
+              emitHit out drumChannel stepMs
+                (max 0.0 (tick.delayMs + toNumber e.pushMs))
+                e.note e.durMs e.velocity e.ratchet
+          H.modify_ _ { playStep = tick.index `mod` pat.steps }
       AGrids -> do
         let
           -- a bar is 16 sixteenth-steps. If the sequence is running and this step
@@ -440,7 +444,14 @@ handleAction = case _ of
   ClearSeq -> H.modify_ \s -> s { bal = M.clearSeq s.bal, seqEnabled = false, seqPos = 0 }
   -- switching pattern just changes which branch the next Step takes; hits are
   -- one-shot, so nothing to silence.
-  SelectPattern a -> H.modify_ _ { active = a }
+  -- switching pattern changes which branch the next Step takes; once pushed, make the
+  -- rig follow the selection too (a fixed pattern swaps in place; Grids re-hands-off).
+  SelectPattern a -> do
+    H.modify_ _ { active = a }
+    st <- H.get
+    when st.pushed case a of
+      AFixed _ -> repushFixed
+      AGrids -> pushHandoff st
   ToggleEdit -> H.modify_ \s -> s { editing = not s.editing }
   -- click selects a cell for the NOTE inspector, creating a hit at the default
   -- velocity if the cell was empty; shift-click clears it.
@@ -493,11 +504,20 @@ handleAction = case _ of
     -- nextModelStep so the browser (ch 10) and the rig (ch 11) play it on the same
     -- step — no handoff flam. The Balistes grid is fixed 1/16 → stepBeats 0.25.
     st <- H.get
-    pushHandoff st
+    case st.active of
+      -- Fixed rhythm: push the whole pattern (stateless, no phase-hold needed).
+      AFixed i -> for_ (st.library !! i) \pat ->
+        for_ st.binnacle \bin ->
+          liftEffect $ Transport.send (Binnacle.socket bin)
+            ("balistes-fixed " <> encodeFixed (fixedOf pat))
+      -- Grids: the phase-aligned BalSim handoff.
+      AGrids -> pushHandoff st
+    H.modify_ _ { pushed = true }
   HushBalistes -> do
     st <- H.get
     for_ st.binnacle \bin ->
       liftEffect $ Transport.send (Binnacle.socket bin) "hush"
+    H.modify_ _ { pushed = false }
   NoOp -> pure unit
 
 -- | Project the frontend Balistes record onto the shared `BalSim` — the lockstep
@@ -538,6 +558,22 @@ broadcastBInput input = do
   for_ st.binnacle \bin ->
     liftEffect $ Transport.send (Binnacle.socket bin) (balInputMsg st input)
 
+-- | Project the frontend's rich FixedPattern onto the wire-flat reef pattern: drop
+-- | the name/kit metadata and flatten each cell's TrigCond to condX/condY (CAlways →
+-- | 0). The frontend and the rig then share reef's renderFixed off this exact data.
+fixedOf :: P.FixedPattern -> RF.FixedPattern
+fixedOf p =
+  { steps: p.steps
+  , notes: p.notes
+  , grid: map (map cellOf) p.grid
+  }
+  where
+  cellOf c =
+    let cond = case c.cond of
+                 P.CAlways -> { x: 0, y: 0 }
+                 P.CEvery x y -> { x, y }
+    in { vel: c.vel, prob: c.prob, ratchet: c.ratchet, condX: cond.x, condY: cond.y }
+
 -- | Push the phase-aligned handoff: the whole BalSim stamped with nextModelStep, so
 -- | the rig holds it until that step. Used by the Push button and by snapshot recall
 -- | (a whole-kit jump, which the handoff is the natural fit for).
@@ -577,6 +613,20 @@ persistLib :: forall o m. MonadAff m => H.HalogenM State Action () o m Unit
 persistLib = do
   lib <- H.gets _.library
   liftEffect (Store.saveLibrary lib)
+  repushFixed
+
+-- | After a fixed-rhythm edit, re-push the active pattern to the rig so live cell /
+-- | velocity / condition edits reach it. The voice swaps the pattern IN PLACE
+-- | (set_pattern — no restart). Guarded on `pushed` so an edit never silently starts
+-- | the rig; a no-op in Grids mode or with no rig connected.
+repushFixed :: forall o m. MonadAff m => H.HalogenM State Action () o m Unit
+repushFixed = do
+  st <- H.get
+  when st.pushed case st.active of
+    AFixed i -> for_ (st.library !! i) \pat ->
+      for_ st.binnacle \bin ->
+        liftEffect $ Transport.send (Binnacle.socket bin) ("balistes-fixed " <> encodeFixed (fixedOf pat))
+    AGrids -> pure unit
 
 -- | Emit one already-resolved hit: schedule `note` at `delay0` for `durMs`, or —
 -- | when the cell is ratcheted (n > 1) — explode it into n evenly-spaced
@@ -642,16 +692,6 @@ drumChannel = 9
 editVel :: Int
 editVel = 98
 
--- | Does a `prob`% cell fire this step? Deterministic per (absolute step, lane,
--- | step) so it's reproducible but varies pass-to-pass (the step index grows).
-probPass :: Int -> Int -> Int -> Int -> Boolean
-probPass prob idx lane step =
-  prob >= 100 || (prob > 0 && cellHash idx lane step < prob)
-
-cellHash :: Int -> Int -> Int -> Int
-cellHash idx lane step =
-  let h = idx * 73856093 + lane * 19349663 + step * 83492791
-  in (h `mod` 100 + 100) `mod` 100
 
 
 -- | The open hat's teal — distinct from HH steel-blue, so opening cells read as
@@ -694,13 +734,6 @@ laneColor = case _ of
   _ -> "#8a7faa"   -- SH
 
 -- | Gate length per fixed-rhythm lane: hats/cymbals ring, drums blip.
-laneGateMs :: Int -> Number
-laneGateMs lane = case lane of
-  6 -> 180.0   -- OH
-  10 -> 200.0  -- RD
-  11 -> 200.0  -- RB
-  12 -> 320.0  -- CR
-  _ -> 55.0
 
 -- ---------------------------------------------------------------------------
 -- Timers / drag plumbing (mirrors Odonus)
