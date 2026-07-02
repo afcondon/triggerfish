@@ -44,7 +44,8 @@ import Triggerfish.Balistes.Source as Source
 import Triggerfish.Balistes.Store as Store
 import Triggerfish.Balistes.Lepidoptera (printPattern, parsePattern)
 import Triggerfish.SourceQuery (Query(..))
-import Triggerfish.Balistes.Tables as T
+import Reef.Balistes.Tables as T
+import Reef.Balistes.Sim as Sim
 import Triggerfish.Ui.Knob (knob)
 import Triggerfish.Ui.Pointer as Pointer
 import Triggerfish.Odonus.Grid.Widgets (clampI, engrave, style, svgAttr, svgEl)
@@ -276,21 +277,16 @@ handleAction = case _ of
           r = M.tick bal0
           stepMs = 0.25 * 60000.0 / max 30.0 st.clockTempo
         for_ st.midiOut \out -> liftEffect $
-          -- the three Grids voices (step-quantised, firmware-faithful). A firing
-          -- HH that clears the OPEN boundary rings as an open hat (note 46, OH
-          -- push slot, long gate) and chokes its closed self; everything else is a
-          -- short blip. Ratchet roll + per-voice Dilla push applied on emit.
-          for_ r.fired \t ->
-            let
-              opens = t.inst == 2 && M.opensAt bal0 playedStep
-              note = if opens then M.noteOf 3 bal0 else M.noteOf t.inst bal0
-              durMs = if opens then openGateMs else closedGateMs
-              pushLane = if opens then 3 else t.inst   -- open hats ride the OH push slot
-              delay0 = max 0.0 (tick.delayMs + toNumber (M.pushOf pushLane bal0))
-              n = M.ratchetAt bal0 t.inst playedStep
-              v0 = if t.accent then accentVel else baseVel
-            in
-              emitHit out drumChannel stepMs delay0 note durMs v0 n
+          -- the three Grids voices (step-quantised, firmware-faithful), resolved by
+          -- the SHARED render decision (Reef.Balistes.Sim.renderStep) — the exact
+          -- code the BEAM balistes voice runs. A firing HH that clears the OPEN
+          -- boundary rings as an open hat and chokes its closed self; ratchet roll
+          -- + per-voice Dilla push come back on each event. The runtime only
+          -- schedules the result — front and rig can't diverge on the decision.
+          for_ (Sim.renderStep bal0 playedStep r.fired) \e ->
+            emitHit out drumChannel stepMs
+              (max 0.0 (tick.delayMs + toNumber e.pushMs))
+              e.note e.durMs e.velocity e.ratchet
         let
           gridsFlash = map (\t -> { inst: t.inst, accent: t.accent, fireUnixMicros: tick.fireUnixMicros }) r.fired
         H.modify_ \s -> s
@@ -502,12 +498,6 @@ midiPortName = "IAC"
 drumChannel :: Int
 drumChannel = 9
 
-accentVel :: Int
-accentVel = 120
-
-baseVel :: Int
-baseVel = 78
-
 -- | Velocity a freshly-clicked fixed-rhythm cell lands at (a firm hit).
 editVel :: Int
 editVel = 98
@@ -523,12 +513,6 @@ cellHash idx lane step =
   let h = idx * 73856093 + lane * 19349663 + step * 83492791
   in (h `mod` 100 + 100) `mod` 100
 
--- | Gate lengths: an open hat rings, a closed hat is a blip.
-openGateMs :: Number
-openGateMs = 200.0
-
-closedGateMs :: Number
-closedGateMs = 30.0
 
 -- | The open hat's teal — distinct from HH steel-blue, so opening cells read as
 -- | a different voice in the heatmap.

@@ -54,7 +54,8 @@ import Prelude
 
 import Data.Array (length, replicate, updateAt, (!!))
 import Data.Maybe (Maybe(..), fromMaybe)
-import Triggerfish.Balistes.Engine (Trigger, evaluateStep, freshPerturbations, readDrumMap, clampDensity)
+import Reef.Balistes.Engine (Trigger, freshPerturbations, readDrumMap, clampDensity)
+import Reef.Balistes.Sim as Sim
 
 -- | The whole module state — the faithful firmware core (X, Y, densities,
 -- | randomness, step, perts, rng), what agrees byte-for-byte with the BEAM
@@ -149,18 +150,7 @@ initialSeed = 0x1A2B3C4D
 -- | state. When the step wraps back to 0 a fresh set of perturbations is
 -- | sampled for the new pattern — the firmware's once-per-pattern-start rule.
 tick :: Balistes -> { bal :: Balistes, fired :: Array Trigger }
-tick b =
-  let
-    fired = evaluateStep b.step b.x b.y [ b.densBd, b.densSd, b.densHh ] b.perts
-    nextStep = (b.step + 1) `mod` 32
-    b' =
-      if nextStep == 0 then
-        let s = freshPerturbations b.randomness b.rng
-        in b { step = nextStep, perts = s.perts, rng = s.rng }
-      else
-        b { step = nextStep }
-  in
-    { bal: b', fired }
+tick = Sim.stepBal
 
 -- | Jump to step 0 and resample — the panel RESET / restart.
 reset :: Balistes -> Balistes
@@ -218,16 +208,13 @@ wouldFire b inst step = levelAt b inst step > (255 - clampDensity (densityOf ins
 -- | Default GM-ish drum notes (the Balistes binding defaults): BD=36, SD=38,
 -- | HH=42. One MIDI channel; accent raises velocity.
 instNote :: Inst -> Int
-instNote inst = case inst of
-  0 -> 36
-  1 -> 38
-  2 -> 42
-  _ -> 46
+instNote = Sim.instNote
 
 -- | This pattern's MIDI note for a lane (0=BD,1=SD,2=HH,3=OH), falling back to
--- | the GM default. Editable — the same Grids beat, a different kick.
+-- | the GM default. Editable — the same Grids beat, a different kick. Delegated
+-- | to the shared sim so the frontend and the rig map notes identically.
 noteOf :: Inst -> Balistes -> Int
-noteOf inst b = fromMaybe (instNote inst) (b.notes !! inst)
+noteOf = Sim.noteOf
 
 -- | Set a lane's MIDI note (clamped to 0..127).
 setNote :: Inst -> Int -> Balistes -> Balistes
@@ -245,11 +232,12 @@ instName inst = case inst of
 -- ---------------------------------------------------------------------------
 
 clampI :: Int -> Int -> Int -> Int
-clampI lo hi v = if v < lo then lo else if v > hi then hi else v
+clampI = Sim.clampI
 
 -- | The ratchet count for a grid slot (inst, step), >= 1. 1 = a single hit.
+-- | Delegated to the shared sim (note the arg order flips: Sim takes inst/step/b).
 ratchetAt :: Balistes -> Inst -> Int -> Int
-ratchetAt b inst step = fromMaybe 1 (b.ratchet !! (inst * 32 + step))
+ratchetAt b inst step = Sim.ratchetAt inst step b
 
 -- | Set the ratchet count for a slot (clamped 1..8). Drag a heatmap cell.
 setRatchetAt :: Inst -> Int -> Int -> Balistes -> Balistes
@@ -264,7 +252,7 @@ clearRatchets b = b { ratchet = map (const 1) b.ratchet }
 
 -- | Per-lane timing offset in ms (signed: − earlier, + later).
 pushOf :: Inst -> Balistes -> Int
-pushOf inst b = fromMaybe 0 (b.push !! inst)
+pushOf = Sim.pushOf
 
 setPush :: Inst -> Int -> Balistes -> Balistes
 setPush inst v b = b { push = fromMaybe b.push (updateAt inst (clampI (-50) 50 v) b.push) }
@@ -295,7 +283,7 @@ setOpen v b = b { open = clampI 0 255 v }
 -- | open means: ring longer, and choke the closed hit. Uses the deterministic
 -- | level (the same landscape the heatmap paints), so visual + audio agree.
 opensAt :: Balistes -> Int -> Boolean
-opensAt b step = b.open > 0 && levelAt b 2 step >= 255 - b.open
+opensAt b step = Sim.opensAt step b
 
 -- ---------------------------------------------------------------------------
 -- Snapshots — captured control points (the snapshot bank)
