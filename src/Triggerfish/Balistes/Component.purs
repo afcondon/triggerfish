@@ -19,7 +19,7 @@ module Triggerfish.Balistes.Component (component) where
 import Prelude
 
 import Data.Array (concatMap, filter, length, mapWithIndex, modifyAt, null, range, (!!))
-import Data.Foldable (any, for_, sum)
+import Data.Foldable (any, foldl, for_, sum)
 import Data.Int (floor, round, toNumber)
 import Data.Int.Bits (shr)
 import Data.Maybe (Maybe(..), fromMaybe, isNothing)
@@ -101,6 +101,9 @@ type State =
   -- mode). PushBalistes stamps the handoff with this so the rig holds the pushed
   -- state until the same step — the Odonus #57 phase-alignment, for Balistes.
   , nextModelStep :: Int
+  -- tick-tagged gestures awaiting their model step (deferred-on-both lockstep):
+  -- applied in the Step loop when step <= tick.index, on both runtimes.
+  , pending :: Array { step :: Int, input :: RBI.BInput }
   , flash :: Array Flash
   , binnacle :: Maybe Binnacle.Binnacle
   , midiOut :: Maybe Midi.MidiOut
@@ -172,7 +175,7 @@ component =
   H.mkComponent
     { initialState: \_ ->
         { bal: M.defaultBalistes
-        , running: false, master: false, playStep: 0, nextModelStep: 0, flash: []
+        , running: false, master: false, playStep: 0, nextModelStep: 0, pending: [], flash: []
         , binnacle: Nothing, midiOut: Nothing, midiName: "…"
         , clockTempo: 120.0, clockLocked: false, clockBeat: 0.0, clockBar: 0, anchorCount: 0
         , nowMicros: 0.0, dragging: Nothing, dragSub: Nothing
@@ -278,11 +281,19 @@ handleAction = case _ of
           advancing = st.seqEnabled && seqLen > 0 && (bar - st.seqStartBar) >= st.bal.seqBars
           nextPos = if advancing then (st.seqPos + 1) `mod` seqLen else st.seqPos
           nextStartBar = if advancing then bar else st.seqStartBar
-          bal0 =
+          bal0raw =
             if advancing then case M.seqStepAt st.bal nextPos of
               Just slot -> M.recallSnapshot slot st.bal
               Nothing -> st.bal
             else st.bal
+          -- Lockstep input-drain (deferred-on-both): apply any tick-tagged inputs
+          -- whose step has arrived BEFORE ticking — the same order, and the same
+          -- shared reef applyBInput, the BEAM voice uses, so a deferred gesture
+          -- (Reset, …) lands on the SAME model step on both runtimes. `<=` self-heals
+          -- inputs that were buffered while stopped.
+          dueInputs = filter (\p -> p.step <= tick.index) st.pending
+          keepInputs = filter (\p -> p.step > tick.index) st.pending
+          bal0 = foldl (\b p -> RBI.applyBInput p.input b) bal0raw dueInputs
           playedStep = bal0.step
           r = M.tick bal0
           stepMs = 0.25 * 60000.0 / max 30.0 st.clockTempo
@@ -304,6 +315,7 @@ handleAction = case _ of
           -- r.bal is the state that plays NEXT, at absolute step tick.index + 1;
           -- PushBalistes stamps the handoff with this for phase alignment.
           , nextModelStep = tick.index + 1
+          , pending = keepInputs
           , flash = gridsFlash <> s.flash }
 
   Frame -> do
@@ -329,11 +341,11 @@ handleAction = case _ of
   -- AND the shell's master is playing. Drum hits are scheduled one-shots, so
   -- stopping just gates the next Step — nothing to silence.
   ToggleRun -> H.modify_ \s -> s { running = not s.running }
-  -- Reset shifts the model step (jump to 0), so applying it at different absolute
-  -- steps on the two runtimes would offset the pattern permanently — it needs
-  -- deferred-on-both (both apply at the same tagged step), not broadcast-on-settle.
-  -- Left rig-unsynced until the frontend input-drain lands. (Local-only for now.)
-  ResetPat -> H.modify_ \s -> s { bal = M.reset s.bal, playStep = 0 }
+  -- Reset shifts the model step (jump to 0), so it's DEFERRED-ON-BOTH: enqueued +
+  -- broadcast tagged for a near-future step, applied by the drain here and by the
+  -- voice on the rig at the SAME absolute step — no pattern offset. (When stopped it
+  -- queues and applies on the next play, the drain's `<=` self-heal.)
+  ResetPat -> enqueueBInput RBI.BReset
   -- Dice only reseeds the perturbation RNG (no step change), so it converges: the rig
   -- reseeds from the same RNG state at the tagged step. Rare edge = a 32-step resample
   -- landing in the ~2-step apply window (self-heals at the next boundary).
@@ -407,11 +419,18 @@ handleAction = case _ of
   ToggleSeqBuild -> H.modify_ \s -> s { seqArm = not s.seqArm, capArm = false }
   -- shift → clear; capArm → store (and disarm); seqArm → append to the path;
   -- otherwise recall whatever's there (instant jump).
-  SlotClick i shift -> H.modify_ \s ->
-    if shift then s { bal = M.clearSnapshot i s.bal }
-    else if s.capArm then s { bal = M.storeSnapshot i s.bal, capArm = false }
-    else if s.seqArm then s { bal = M.appendSeq i s.bal }
-    else s { bal = M.recallSnapshot i s.bal }
+  SlotClick i shift -> do
+    pre <- H.get
+    H.modify_ \s ->
+      if shift then s { bal = M.clearSnapshot i s.bal }
+      else if s.capArm then s { bal = M.storeSnapshot i s.bal, capArm = false }
+      else if s.seqArm then s { bal = M.appendSeq i s.bal }
+      else s { bal = M.recallSnapshot i s.bal }
+    -- a plain RECALL is a whole-kit jump; re-push the phase-aligned handoff so the
+    -- rig lands on the recalled state (the handoff is the natural fit for a big jump).
+    when (not shift && not pre.capArm && not pre.seqArm) do
+      st <- H.get
+      pushHandoff st
   -- enabling: seed seqPos at the end and force an immediate advance to step 0
   -- (the big-negative sentinel makes the first Step's bar gap exceed seqBars).
   ToggleSeq -> H.modify_ \s ->
@@ -474,9 +493,7 @@ handleAction = case _ of
     -- nextModelStep so the browser (ch 10) and the rig (ch 11) play it on the same
     -- step — no handoff flam. The Balistes grid is fixed 1/16 → stepBeats 0.25.
     st <- H.get
-    for_ st.binnacle \bin ->
-      liftEffect $ Transport.send (Binnacle.socket bin)
-        ("balistes-sim-at " <> show st.nextModelStep <> " 0.25 " <> encodeBalSim (balSimOf st.bal))
+    pushHandoff st
   HushBalistes -> do
     st <- H.get
     for_ st.binnacle \bin ->
@@ -491,10 +508,15 @@ balSimOf b =
   , randomness: b.randomness, step: b.step, perts: b.perts, rng: b.rng
   , notes: b.notes, open: b.open, push: b.push, ratchet: b.ratchet }
 
--- | Steps to defer a synced gesture: tagged for soundingStep + this, comfortably
--- | beyond the rig voice's lookahead horizon (~2 steps at 120bpm).
+-- | Steps to defer a synced gesture: tagged for soundingStep + this. It must clear
+-- | the rig voice's 200ms scheduling lookahead (~1.6 steps @120bpm) BY A MARGIN, plus
+-- | the frontend's own ~120ms lookahead and clock-read staleness — otherwise the rig
+-- | has already committed the tagged step and applies the gesture a step LATE. That's
+-- | inaudible for idempotent setters (a knob one step late looks the same), but a
+-- | step-SHIFTING gesture (Reset) offsets the pattern permanently. 4 steps (~500ms
+-- | @120bpm) clears both lookaheads with room; safe to ~180bpm.
 inputBufferSteps :: Int
-inputBufferSteps = 2
+inputBufferSteps = 4
 
 -- | The current sounding model step from the shared Link beat (Balistes grid is
 -- | fixed 1/16 → 0.25 beats/step). Matches reef_balistes_voice's trunc(beat/0.25).
@@ -513,6 +535,27 @@ balInputMsg s input =
 broadcastBInput :: forall o m. MonadAff m => RBI.BInput -> H.HalogenM State Action () o m Unit
 broadcastBInput input = do
   st <- H.get
+  for_ st.binnacle \bin ->
+    liftEffect $ Transport.send (Binnacle.socket bin) (balInputMsg st input)
+
+-- | Push the phase-aligned handoff: the whole BalSim stamped with nextModelStep, so
+-- | the rig holds it until that step. Used by the Push button and by snapshot recall
+-- | (a whole-kit jump, which the handoff is the natural fit for).
+pushHandoff :: forall o m. MonadAff m => State -> H.HalogenM State Action () o m Unit
+pushHandoff st =
+  for_ st.binnacle \bin ->
+    liftEffect $ Transport.send (Binnacle.socket bin)
+      ("balistes-sim-at " <> show st.nextModelStep <> " 0.25 " <> encodeBalSim (balSimOf st.bal))
+
+-- | Deferred-on-both: enqueue a gesture locally AND broadcast it, both tagged for the
+-- | same near-future step. The Step-loop drain applies it here, the voice applies it
+-- | on the rig — both on the SAME model step. Needed for gestures that shift the step
+-- | (Reset), where broadcast-on-settle would offset the pattern.
+enqueueBInput :: forall o m. MonadAff m => RBI.BInput -> H.HalogenM State Action () o m Unit
+enqueueBInput input = do
+  st <- H.get
+  let tag = soundingStep st + inputBufferSteps
+  H.modify_ \s -> s { pending = s.pending <> [ { step: tag, input } ] }
   for_ st.binnacle \bin ->
     liftEffect $ Transport.send (Binnacle.socket bin) (balInputMsg st input)
 
