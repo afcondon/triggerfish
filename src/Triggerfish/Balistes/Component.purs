@@ -38,6 +38,8 @@ import Binnacle as Binnacle
 import Binnacle.Clock as Clock
 import Binnacle.Midi as Midi
 import Binnacle.Scheduler as Scheduler
+import Binnacle.Transport as Transport
+import Reef.Balistes.Protocol (encodeBalSim)
 import Triggerfish.Balistes.Model as M
 import Triggerfish.Balistes.Pattern as P
 import Triggerfish.Balistes.Source as Source
@@ -94,6 +96,10 @@ type State =
   , running :: Boolean        -- the ARM/cue flag (sticky); sounds only when master too
   , master :: Boolean         -- the shell's master transport (pushed via SetMaster)
   , playStep :: Int
+  -- the ABSOLUTE model step the current `bal` will next be played from (Grids
+  -- mode). PushBalistes stamps the handoff with this so the rig holds the pushed
+  -- state until the same step — the Odonus #57 phase-alignment, for Balistes.
+  , nextModelStep :: Int
   , flash :: Array Flash
   , binnacle :: Maybe Binnacle.Binnacle
   , midiOut :: Maybe Midi.MidiOut
@@ -155,6 +161,8 @@ data Action
   | ClearSelected              -- clear the selected cell + deselect
   | NewPattern                 -- append a fresh empty rhythm + select it
   | SetPatternName String      -- rename the active rhythm
+  | PushBalistes               -- lockstep handoff: push BalSim to the rig (ch 11)
+  | HushBalistes               -- silence the rig
   | NoOp
 
 component :: forall i o m. MonadAff m => H.Component Query i o m
@@ -162,7 +170,7 @@ component =
   H.mkComponent
     { initialState: \_ ->
         { bal: M.defaultBalistes
-        , running: false, master: false, playStep: 0, flash: []
+        , running: false, master: false, playStep: 0, nextModelStep: 0, flash: []
         , binnacle: Nothing, midiOut: Nothing, midiName: "…"
         , clockTempo: 120.0, clockLocked: false, clockBeat: 0.0, clockBar: 0, anchorCount: 0
         , nowMicros: 0.0, dragging: Nothing, dragSub: Nothing
@@ -291,6 +299,9 @@ handleAction = case _ of
           gridsFlash = map (\t -> { inst: t.inst, accent: t.accent, fireUnixMicros: tick.fireUnixMicros }) r.fired
         H.modify_ \s -> s
           { bal = r.bal, playStep = playedStep, seqPos = nextPos, seqStartBar = nextStartBar
+          -- r.bal is the state that plays NEXT, at absolute step tick.index + 1;
+          -- PushBalistes stamps the handoff with this for phase alignment.
+          , nextModelStep = tick.index + 1
           , flash = gridsFlash <> s.flash }
 
   Frame -> do
@@ -430,7 +441,30 @@ handleAction = case _ of
       AFixed i -> s { library = modLibAt i (_ { name = name }) s.library }
       AGrids -> s
     persistLib
+  PushBalistes -> do
+    -- Lockstep HANDOFF: project the frontend Balistes state to a BalSim (the shared
+    -- serializable subset), encode with the reef codec, and push it phase-aligned to
+    -- the rig. reef_balistes_voice decodes with the SAME codec (decodeBalSim) and runs
+    -- the SAME stepBal + renderStep, holding the pushed state until absolute step
+    -- nextModelStep so the browser (ch 10) and the rig (ch 11) play it on the same
+    -- step — no handoff flam. The Balistes grid is fixed 1/16 → stepBeats 0.25.
+    st <- H.get
+    for_ st.binnacle \bin ->
+      liftEffect $ Transport.send (Binnacle.socket bin)
+        ("balistes-sim-at " <> show st.nextModelStep <> " 0.25 " <> encodeBalSim (balSimOf st.bal))
+  HushBalistes -> do
+    st <- H.get
+    for_ st.binnacle \bin ->
+      liftEffect $ Transport.send (Binnacle.socket bin) "hush"
   NoOp -> pure unit
+
+-- | Project the frontend Balistes record onto the shared `BalSim` — the lockstep
+-- | subset (engine state + render overlay). Snapshots/sequence stay frontend-only.
+balSimOf :: M.Balistes -> Sim.BalSim
+balSimOf b =
+  { x: b.x, y: b.y, densBd: b.densBd, densSd: b.densSd, densHh: b.densHh
+  , randomness: b.randomness, step: b.step, perts: b.perts, rng: b.rng
+  , notes: b.notes, open: b.open, push: b.push, ratchet: b.ratchet }
 
 -- | Save the current rhythm library to localStorage (after any edit).
 persistLib :: forall o m. MonadAff m => H.HalogenM State Action () o m Unit
@@ -646,6 +680,18 @@ transportPanel s =
         , HH.div [ style "display:flex;gap:8px" ]
             [ flatBtn "RESET" ResetPat
             , flatBtn "DICE" Dice
+            ]
+        , HH.div [ style "display:flex;gap:8px;padding-top:10px;border-top:1px solid #00000014" ]
+            [ HH.button
+                [ HE.onClick \_ -> PushBalistes
+                , style $ "flex:1;padding:8px 0;border:1px solid #a8a392;border-radius:7px;cursor:pointer;"
+                    <> "background:linear-gradient(#dfe7d6,#cdd9c0);font-family:Georgia,serif;font-size:12px;color:#3f4a33" ]
+                [ HH.text "⇪ Push to rig (ch11)" ]
+            , HH.button
+                [ HE.onClick \_ -> HushBalistes
+                , style $ "flex:0 0 auto;padding:8px 12px;border:1px solid #a8a392;border-radius:7px;cursor:pointer;"
+                    <> "background:linear-gradient(#e7dcd6,#d9c8c0);font-family:Georgia,serif;font-size:12px;color:#4a3833" ]
+                [ HH.text "✋ Hush" ]
             ]
         , lampRow s
         , readout "TEMPO" (show (round s.clockTempo) <> " bpm" <> (if s.clockLocked then " ⛓" else " ·"))
