@@ -20,7 +20,7 @@ import Prelude
 
 import Data.Array (concatMap, filter, length, mapWithIndex, modifyAt, null, range, (!!))
 import Data.Foldable (any, for_, sum)
-import Data.Int (round, toNumber)
+import Data.Int (floor, round, toNumber)
 import Data.Int.Bits (shr)
 import Data.Maybe (Maybe(..), fromMaybe, isNothing)
 import Data.String.Common (joinWith)
@@ -39,7 +39,8 @@ import Binnacle.Clock as Clock
 import Binnacle.Midi as Midi
 import Binnacle.Scheduler as Scheduler
 import Binnacle.Transport as Transport
-import Reef.Balistes.Protocol (encodeBalSim)
+import Reef.Balistes.Protocol (encodeBalSim, encodeBTagged)
+import Reef.Balistes.Input as RBI
 import Triggerfish.Balistes.Model as M
 import Triggerfish.Balistes.Pattern as P
 import Triggerfish.Balistes.Source as Source
@@ -372,6 +373,13 @@ handleAction = case _ of
   DragEnd -> do
     st <- H.get
     for_ st.dragSub H.unsubscribe
+    -- Live knob sync: broadcast the SETTLED gesture to the rig as a tick-tagged
+    -- BInput. reef_balistes_voice applies it (via the shared reef applyBInput) on the
+    -- tagged model step, so the rig follows the edit. Absolute idempotent setters, so
+    -- replaying the settled value lands the rig exactly where the drag settled.
+    for_ (st.dragging >>= \d -> dragToBInput d.kind st.bal) \input ->
+      for_ st.binnacle \bin ->
+        liftEffect $ Transport.send (Binnacle.socket bin) (balInputMsg st input)
     H.modify_ _ { dragging = Nothing, dragSub = Nothing }
     persistLib   -- a note drag (NFixed) may have edited the library
 
@@ -465,6 +473,35 @@ balSimOf b =
   { x: b.x, y: b.y, densBd: b.densBd, densSd: b.densSd, densHh: b.densHh
   , randomness: b.randomness, step: b.step, perts: b.perts, rng: b.rng
   , notes: b.notes, open: b.open, push: b.push, ratchet: b.ratchet }
+
+-- | Steps to defer a synced gesture: tagged for soundingStep + this, comfortably
+-- | beyond the rig voice's lookahead horizon (~2 steps at 120bpm).
+inputBufferSteps :: Int
+inputBufferSteps = 2
+
+-- | The current sounding model step from the shared Link beat (Balistes grid is
+-- | fixed 1/16 → 0.25 beats/step). Matches reef_balistes_voice's trunc(beat/0.25).
+soundingStep :: State -> Int
+soundingStep s = floor (s.clockBeat / 0.25)
+
+-- | Format a tick-tagged BInput for the wire, tagged a few steps ahead so the rig
+-- | applies it on the same model step the frontend is heading toward.
+balInputMsg :: State -> RBI.BInput -> String
+balInputMsg s input =
+  "balistes-input " <> encodeBTagged { tick: soundingStep s + inputBufferSteps, input }
+
+-- | Map a settled drag to the BInput that reproduces it on the rig. The four knob
+-- | kinds, grid notes and ratchets sync; a fixed-rhythm note edit (NFixed) is
+-- | frontend-only (not part of the shared Grids engine), so it doesn't.
+dragToBInput :: DragKind -> M.Balistes -> Maybe RBI.BInput
+dragToBInput kind b = case kind of
+  DKnob (KDens i) -> Just (RBI.BSetDensity i (M.densityOf i b))
+  DKnob KRand -> Just (RBI.BSetRandomness b.randomness)
+  DKnob (KPush i) -> Just (RBI.BSetPush i (M.pushOf i b))
+  DKnob KOpen -> Just (RBI.BSetOpen (M.openOf b))
+  DCell inst step -> Just (RBI.BSetRatchet inst step (M.ratchetAt b inst step))
+  DNote (NGrids lane) -> Just (RBI.BSetNote lane (M.noteOf lane b))
+  DNote (NFixed _ _) -> Nothing
 
 -- | Save the current rhythm library to localStorage (after any edit).
 persistLib :: forall o m. MonadAff m => H.HalogenM State Action () o m Unit
