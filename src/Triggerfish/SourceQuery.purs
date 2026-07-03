@@ -48,6 +48,13 @@ data Query a
   | FeedVoiceChords (Array { id :: Int, pcs :: Array Int }) a
   | SetMaster Boolean a
   | SetAudible Boolean a
+  -- Control-surface Phase 2 — the shell drives the rig handoff so there are no
+  -- manual "push" buttons. `SyncToRig` = "(re)do your full handoff to the rig
+  -- now" (run on entering ATLANTIS); `StopRig` = "silence your rig voice" (run on
+  -- entering SOLO, so the rig doesn't sound under local playback). Instruments
+  -- with no rig voice (Selene) ignore both.
+  | SyncToRig a
+  | StopRig a
   | AskLibrary (Array { name :: String, text :: String } -> a)
   | LoadEntry Int a
   | ImportText String (Boolean -> a)

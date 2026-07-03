@@ -20,6 +20,7 @@ module Triggerfish.Main where
 import Prelude
 
 import Data.Array (filter, mapWithIndex, null, replicate)
+import Data.Foldable (for_)
 import Data.Maybe (Maybe(..), fromMaybe)
 import Data.String.Common (joinWith)
 import Data.Tuple (Tuple(..))
@@ -96,7 +97,13 @@ type RState =
   -- `harm` is polled from Vetula: voice-0's bars-per-chord dwell schedule and the
   -- current playhead (-1 = none). Rendered as a glyph visible in every pane.
   , mode :: Mode
-  , harm :: { durs :: Array Int, active :: Int, chord :: String } }
+  , harm :: { durs :: Array Int, active :: Int, chord :: String }
+  -- Vetula auto-resync (ATLANTIS): the shell polls Vetula's rig payload and, when
+  -- it settles on a new value, re-pushes — so the progression re-voices live with
+  -- no manual button. `brushSent` = last value pushed; `brushPrev` = last poll's
+  -- value (a one-tick settle coalesces a drag into a single push).
+  , brushSent :: String
+  , brushPrev :: String }
 
 type Slots =
   ( odo :: H.Slot SQ.Query Void Unit
@@ -123,7 +130,8 @@ root =
     { initialState: \_ ->
         { which: Bal, tidalDoc: "", freeT0: 0.0, playing: false
         , library: [], importText: "", importMsg: ""
-        , mode: Solo, harm: { durs: [], active: -1, chord: "" } }
+        , mode: Solo, harm: { durs: [], active: -1, chord: "" }
+        , brushSent: "", brushPrev: "" }
     , render
     , eval: H.mkEval H.defaultEval { handleAction = handleAction, initialize = Just Init }
     }
@@ -157,11 +165,22 @@ handleAction = case _ of
     p <- not <$> H.gets _.playing
     H.modify_ _ { playing = p }
     broadcastMaster p
-  -- Flip the SOLO⟷ATLANTIS authority. SOLO ⇒ local Web-MIDI on; ATLANTIS ⇒ local
-  -- muted (rig authoritative), schedulers keep running for the lockstep animation.
+  -- Flip the SOLO⟷ATLANTIS authority. SOLO ⇒ local Web-MIDI on, rig hushed;
+  -- ATLANTIS ⇒ local muted (rig authoritative), one full handoff, then edits keep
+  -- the rig in sync automatically. The SOLO→ATLANTIS round-trip IS the resync.
   SetMode m -> do
     H.modify_ _ { mode = m }
+    -- Order matters: set audibility FIRST so the instruments' rig-send gate
+    -- (onRig = not audible) is already open when SyncToRig fires the handoff.
     broadcastAudible (m == Solo)
+    case m of
+      Atlantis -> do
+        broadcastSyncToRig
+        -- Seed the auto-resync baseline to what we just pushed, so the poll only
+        -- re-pushes on a FURTHER change, not immediately.
+        sig <- H.query _vet unit (Vetula.AskBrushSig identity)
+        for_ sig \s -> H.modify_ _ { brushSent = s, brushPrev = s }
+      Solo -> broadcastStopRig
   SyncTick -> do
     t0 <- H.gets _.freeT0
     _ <- H.query _odo unit (SQ.SyncFree t0 freeTempo unit)
@@ -208,6 +227,18 @@ handleAction = case _ of
     case mharm of
       Just h -> H.modify_ _ { harm = h }
       Nothing -> pure unit
+    -- Vetula auto-resync (ATLANTIS only): Vetula has no incremental rig path, so the
+    -- shell diffs its payload and re-pushes on a SETTLED change (payload stable for
+    -- one poll AND different from what was last sent). A drag coalesces into one push
+    -- ~one tick after it stops; glitchless because the rig re-push phase-aligns.
+    mode <- H.gets _.mode
+    msig <- H.query _vet unit (Vetula.AskBrushSig identity)
+    for_ msig \sig -> do
+      st <- H.get
+      when (mode == Atlantis && sig == st.brushPrev && sig /= st.brushSent) do
+        _ <- H.query _vet unit (Vetula.SyncToRig unit)
+        H.modify_ _ { brushSent = sig }
+      H.modify_ _ { brushPrev = sig }
 
 -- Push the master transport to every module. Odonus/Balistes/Selene answer via
 -- the shared SourceQuery; Vetula via its own query type. Each sounds iff
@@ -229,6 +260,26 @@ broadcastAudible a = do
   _ <- H.query _bal unit (SQ.SetAudible a unit)
   _ <- H.query _sel unit (SQ.SetAudible a unit)
   _ <- H.query _vet unit (Vetula.SetAudible a unit)
+  pure unit
+
+-- The initial handoff on entering ATLANTIS: every rig-capable module (re)pushes its
+-- full state to the rig. After this, Odonus/Balistes stream edits live and Vetula
+-- auto-re-pushes on change, so no manual push button is needed. (Selene has no rig
+-- voice; its SyncToRig is a no-op.)
+broadcastSyncToRig :: forall o m. MonadAff m => H.HalogenM RState RAction Slots o m Unit
+broadcastSyncToRig = do
+  _ <- H.query _odo unit (SQ.SyncToRig unit)
+  _ <- H.query _bal unit (SQ.SyncToRig unit)
+  _ <- H.query _vet unit (Vetula.SyncToRig unit)
+  pure unit
+
+-- Entering SOLO: hush every rig voice so the rig stops sounding under local
+-- playback (the frontend is authoritative again). A global `hush` reaches them all.
+broadcastStopRig :: forall o m. MonadAff m => H.HalogenM RState RAction Slots o m Unit
+broadcastStopRig = do
+  _ <- H.query _odo unit (SQ.StopRig unit)
+  _ <- H.query _bal unit (SQ.StopRig unit)
+  _ <- H.query _vet unit (Vetula.StopRig unit)
   pure unit
 
 -- Query each mounted instrument for its current source and stitch the four

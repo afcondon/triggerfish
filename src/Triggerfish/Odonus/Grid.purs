@@ -129,6 +129,11 @@ handleQuery = case _ of
       { audible = a
       , headNote = if wasSounding && not nowSounding then map (const Nothing) s.headNote else s.headNote }
     pure (Just next)
+  -- Control-surface Phase 2: the shell drives the handoff (no manual push button).
+  -- SyncToRig = full reef-sim-at handoff (on entering ATLANTIS); StopRig = global
+  -- hush (on entering SOLO, so the rig voice stops under local playback).
+  SyncToRig next -> handleAction PushToRig *> pure (Just next)
+  StopRig next -> handleAction HushRig *> pure (Just next)
   -- A5 library manager: Odonus's saved SCENES are its named presets. LoadEntry
   -- cold-loads a scene (hard playhead reset); import adds a scene (parsePatch
   -- self-guards on `odonusPatch`).
@@ -554,8 +559,11 @@ enqueue :: forall o m. MonadAff m => RI.Input -> H.HalogenM State Action () o m 
 enqueue input = do
   st <- H.get
   let tagStep = soundingStep st + inputBufferSteps
+  -- The local model always buffers the edit (SOLO plays it locally); only the
+  -- send to the rig is gated on ATLANTIS (onRig = not audible), so SOLO is silent
+  -- to the rig. In ATLANTIS the handoff created the voice and these stream to it.
   H.modify_ \s -> s { pending = s.pending <> [ { step: tagStep, input } ] }
-  for_ st.binnacle \bin ->
+  when (not st.audible) $ for_ st.binnacle \bin ->
     liftEffect $ Transport.send (Binnacle.socket bin)
       ("reef-input " <> encodeTagged { tick: tagStep, input })
 
@@ -565,7 +573,7 @@ enqueue input = do
 -- | at 1/16 while the frontend steps coarser, and the two desync.
 sendStepLen :: forall o m. MonadAff m => State -> H.HalogenM State Action () o m Unit
 sendStepLen st =
-  for_ st.binnacle \bin ->
+  when (not st.audible) $ for_ st.binnacle \bin ->
     liftEffect $ Transport.send (Binnacle.socket bin)
       ("reef-steplen " <> show (stepBeatsOf st))
 
@@ -577,7 +585,7 @@ sendStepLen st =
 -- | expression, not model state, so it never enters the deterministic SimState.
 sendSwing :: forall o m. MonadAff m => State -> H.HalogenM State Action () o m Unit
 sendSwing st =
-  for_ st.binnacle \bin ->
+  when (not st.audible) $ for_ st.binnacle \bin ->
     liftEffect $ Transport.send (Binnacle.socket bin)
       ("reef-swing " <> show st.swing)
 

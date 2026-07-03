@@ -327,8 +327,11 @@ data SourceQuery a
   | AskChords (Array (Array Int) -> a)
   | AskVoiceChords (Array { id :: Int, pcs :: Array Int } -> a)  -- live per-Odonus-voice chord
   | AskHarmonic ({ durs :: Array Int, active :: Int, chord :: String } -> a)  -- nav harmonic strip: voice-0 dwell schedule + live playhead + the active chord's notes
+  | AskBrushSig (String -> a)   -- the current rig payload string; the shell diffs it to auto-re-push on change
   | SetMaster Boolean a
   | SetAudible Boolean a        -- SOLO/ATLANTIS local-MIDI gate (false = rig authoritative)
+  | SyncToRig a                 -- (re)push the progression to the rig now (on entering ATLANTIS / on change)
+  | StopRig a                   -- hush the rig voice (on entering SOLO)
   | SyncFree Number Number a    -- adopt the rack's shared free-run baseline (start micros, BPM)
   | AskLibrary (Array { name :: String, text :: String } -> a)   -- A5 manager
   | LoadEntry Int a
@@ -423,6 +426,12 @@ handleQuery = case _ of
           Just c -> joinWith " " (map noteName (nub (map (\x -> mod x 12) (playNotes c))))
           Nothing -> ""
     pure (Just (reply { durs, active, chord }))
+  -- The exact rig payload string the progression would push (Vetula has no
+  -- incremental path, so this whole string IS the wire). The shell diffs it each
+  -- poll and, in ATLANTIS, calls SyncToRig on a settled change — no manual push.
+  AskBrushSig reply -> do
+    s <- H.get
+    pure (Just (reply (brushMsg s)))
   -- The shell's master transport: store it, then start/stop sounding so it plays
   -- exactly when armed && master.
   SetMaster m next -> do
@@ -439,6 +448,19 @@ handleQuery = case _ of
       silenceHeld st
       H.modify_ \s -> s { voices = map (_ { held = [] }) s.voices }
     H.modify_ _ { audible = a }
+    pure (Just next)
+  -- Control-surface Phase 2: the shell drives the handoff (no manual → RIG/→ BRUSH
+  -- button). SyncToRig = (re)push the progression as a Tidal pattern (the sole
+  -- Vetula→rig path; the old vetula-perf → RIG is retired). StopRig = global hush.
+  SyncToRig next -> do
+    st <- H.get
+    for_ st.binnacle \bin ->
+      liftEffect $ Transport.send (Binnacle.socket bin) (brushMsg st)
+    pure (Just next)
+  StopRig next -> do
+    st <- H.get
+    for_ st.binnacle \bin ->
+      liftEffect $ Transport.send (Binnacle.socket bin) "hush"
     pure (Just next)
   -- The rack's shared free-run baseline: adopt it so Vetula shares the same
   -- downbeat (and tempo) as Odonus/Balistes with no rig.
@@ -2326,20 +2348,9 @@ loadedView st pp =
                   <> (if st.armed then "border: 1px solid #b8860b; background: #fbf6e9; color: #7a5c00;" else "border: 1px solid #d8d8d8; background: #fafafa; color: #6a6a6a;"))
               , HE.onClick \_ -> ToggleArm ]
               [ HH.text (if not st.armed then "▶ ARM" else if st.playing then "❚❚ PLAYING" else "◆ CUED") ]
-          , HH.button
-              -- Push the whole performance to the rig: the → odo voice conducts the
-              -- rig's Odonus in lockstep (reef_vetula_voice → reef_voice). Re-push
-              -- after an edit to swap it in place. Neutral chrome; not a transport.
-              [ HP.style "cursor: pointer; padding: 4px 14px; border-radius: 4px; font-size: 12px; font-weight: 600; letter-spacing: 0.06em; border: 1px solid #cdd6cd; background: #f4f8f4; color: #4a6a4a;"
-              , HE.onClick \_ -> PushVetula ]
-              [ HH.text "→ RIG" ]
-          , HH.button
-              -- Push the progression as a real Tidal Pattern (Option B): the rig
-              -- plays it (reef_vetula_brush) and conducts Odonus from the same chord
-              -- clock. Uses voice 1's renderer + channel. Re-push to live re-voice.
-              [ HP.style "cursor: pointer; padding: 4px 14px; border-radius: 4px; font-size: 12px; font-weight: 600; letter-spacing: 0.06em; border: 1px solid #cdd6cd; background: #eef4f8; color: #4a5a6a;"
-              , HE.onClick \_ -> PushBrush ]
-              [ HH.text "→ BRUSH" ]
+          -- Control-surface Phase 2: no manual → RIG / → BRUSH push buttons. In
+          -- ATLANTIS the shell hands the progression to the rig and re-pushes on
+          -- change automatically (signature-diff); in SOLO it plays locally.
           , numField "bpm" st.tempo SetTempo
           , numField "preview ch" st.previewChan SetPreviewChan
           ]

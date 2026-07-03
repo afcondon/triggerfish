@@ -118,6 +118,9 @@ handleQuery = case _ of
   SetAudible a next -> do
     H.modify_ _ { audible = a }
     pure (Just next)
+  -- Selene has no rig voice — the handoff/stop queries are no-ops here.
+  SyncToRig next -> pure (Just next)
+  StopRig next -> pure (Just next)
   -- A5 library manager: each rack's `doc` IS its transferable eDSL text.
   AskLibrary reply -> do
     s <- H.get

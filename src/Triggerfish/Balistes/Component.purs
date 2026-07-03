@@ -215,6 +215,11 @@ handleQuery = case _ of
   SetAudible a next -> do
     H.modify_ _ { audible = a }
     pure (Just next)
+  -- Control-surface Phase 2: the shell drives the handoff (no manual push button).
+  -- SyncToRig = full balistes-sim-at handoff (on entering ATLANTIS); StopRig = global
+  -- hush (on entering SOLO).
+  SyncToRig next -> handleAction PushBalistes *> pure (Just next)
+  StopRig next -> handleAction HushBalistes *> pure (Just next)
   -- A5 library manager: the fixed-rhythm library, each as its balistesPattern eDSL.
   -- (Grids is the live generative member, not a saved entry.)
   AskLibrary reply -> do
@@ -417,7 +422,7 @@ handleAction = case _ of
     -- BInput. reef_balistes_voice applies it (via the shared reef applyBInput) on the
     -- tagged model step, so the rig follows the edit. Absolute idempotent setters, so
     -- replaying the settled value lands the rig exactly where the drag settled.
-    for_ (st.dragging >>= \d -> dragToBInput d.kind st.bal) \input ->
+    when (not st.audible) $ for_ (st.dragging >>= \d -> dragToBInput d.kind st.bal) \input ->
       for_ st.binnacle \bin ->
         liftEffect $ Transport.send (Binnacle.socket bin) (balInputMsg st input)
     H.modify_ _ { dragging = Nothing, dragSub = Nothing }
@@ -513,7 +518,7 @@ handleAction = case _ of
     st <- H.get
     case st.active of
       -- Fixed rhythm: push the whole pattern (stateless, no phase-hold needed).
-      AFixed i -> for_ (st.library !! i) \pat ->
+      AFixed i -> when (not st.audible) $ for_ (st.library !! i) \pat ->
         for_ st.binnacle \bin ->
           liftEffect $ Transport.send (Binnacle.socket bin)
             ("balistes-fixed " <> encodeFixed (fixedOf pat))
@@ -562,7 +567,8 @@ balInputMsg s input =
 broadcastBInput :: forall o m. MonadAff m => RBI.BInput -> H.HalogenM State Action () o m Unit
 broadcastBInput input = do
   st <- H.get
-  for_ st.binnacle \bin ->
+  -- Rig-send only in ATLANTIS (onRig = not audible); SOLO is silent to the rig.
+  when (not st.audible) $ for_ st.binnacle \bin ->
     liftEffect $ Transport.send (Binnacle.socket bin) (balInputMsg st input)
 
 -- | Project the frontend's rich FixedPattern onto the wire-flat reef pattern: drop
@@ -586,7 +592,9 @@ fixedOf p =
 -- | (a whole-kit jump, which the handoff is the natural fit for).
 pushHandoff :: forall o m. MonadAff m => State -> H.HalogenM State Action () o m Unit
 pushHandoff st =
-  for_ st.binnacle \bin ->
+  -- ATLANTIS only. Called by SyncToRig (the entering-ATLANTIS handoff, where audible
+  -- is already false) and by snapshot recall (a no-op in SOLO — no rig leak).
+  when (not st.audible) $ for_ st.binnacle \bin ->
     liftEffect $ Transport.send (Binnacle.socket bin)
       ("balistes-sim-at " <> show st.nextModelStep <> " 0.25 " <> encodeBalSim (balSimOf st.bal))
 
@@ -598,8 +606,9 @@ enqueueBInput :: forall o m. MonadAff m => RBI.BInput -> H.HalogenM State Action
 enqueueBInput input = do
   st <- H.get
   let tag = soundingStep st + inputBufferSteps
+  -- Local always applies (SOLO plays it); rig-send only in ATLANTIS.
   H.modify_ \s -> s { pending = s.pending <> [ { step: tag, input } ] }
-  for_ st.binnacle \bin ->
+  when (not st.audible) $ for_ st.binnacle \bin ->
     liftEffect $ Transport.send (Binnacle.socket bin) (balInputMsg st input)
 
 -- | Map a settled drag to the BInput that reproduces it on the rig. The four knob
@@ -629,7 +638,7 @@ persistLib = do
 repushFixed :: forall o m. MonadAff m => H.HalogenM State Action () o m Unit
 repushFixed = do
   st <- H.get
-  when st.pushed case st.active of
+  when (st.pushed && not st.audible) case st.active of
     AFixed i -> for_ (st.library !! i) \pat ->
       for_ st.binnacle \bin ->
         liftEffect $ Transport.send (Binnacle.socket bin) ("balistes-fixed " <> encodeFixed (fixedOf pat))
@@ -827,17 +836,14 @@ transportPanel s =
             [ flatBtn "RESET" ResetPat
             , flatBtn "DICE" Dice
             ]
+        -- Control-surface Phase 2: no manual "push to rig" — ATLANTIS hands off
+        -- automatically and edits stream live. Hush stays as a rig panic/stop.
         , HH.div [ style "display:flex;gap:8px;padding-top:10px;border-top:1px solid #00000014" ]
             [ HH.button
-                [ HE.onClick \_ -> PushBalistes
-                , style $ "flex:1;padding:8px 0;border:1px solid #a8a392;border-radius:7px;cursor:pointer;"
-                    <> "background:linear-gradient(#dfe7d6,#cdd9c0);font-family:Georgia,serif;font-size:12px;color:#3f4a33" ]
-                [ HH.text "⇪ Push to rig (ch11)" ]
-            , HH.button
                 [ HE.onClick \_ -> HushBalistes
-                , style $ "flex:0 0 auto;padding:8px 12px;border:1px solid #a8a392;border-radius:7px;cursor:pointer;"
+                , style $ "flex:1;padding:8px 0;border:1px solid #a8a392;border-radius:7px;cursor:pointer;"
                     <> "background:linear-gradient(#e7dcd6,#d9c8c0);font-family:Georgia,serif;font-size:12px;color:#4a3833" ]
-                [ HH.text "✋ Hush" ]
+                [ HH.text "✋ Hush rig" ]
             ]
         , lampRow s
         , readout "TEMPO" (show (round s.clockTempo) <> " bpm" <> (if s.clockLocked then " ⛓" else " ·"))
