@@ -28,15 +28,9 @@ rigCluster s =
   HH.div [ style "margin-bottom:11px;padding-bottom:10px;border-bottom:1px solid #00000014" ]
     [ HH.span [ style $ engrave <> ";font-size:8px;opacity:0.85;display:block;margin-bottom:5px" ]
         [ HH.text "RIG" ]
-    -- Control-surface Phase 2: no manual "push to rig" — in ATLANTIS the shell
-    -- hands off automatically and edits stream live. Hush stays as a rig panic/stop.
-    , HH.div [ style "display:flex;gap:6px;margin-bottom:6px" ]
-        [ HH.button
-            [ HE.onClick \_ -> HushRig
-            , style $ "flex:1;padding:7px;border:1px solid #a8a392;border-radius:7px;cursor:pointer;"
-                <> "background:linear-gradient(#e7dcd6,#d9c8c0);font-family:Georgia,serif;font-size:12px;color:#4a3833" ]
-            [ HH.text "✋ Hush rig" ]
-        ]
+    -- Control-surface Phase 2/refinement: no manual push OR hush here — in ATLANTIS
+    -- the shell hands off automatically and edits stream live; the global "Hush rig"
+    -- lives in the top nav (shown only in ATLANTIS). Only the shared seed stays.
     , HH.div [ style "display:flex;align-items:center;gap:6px" ]
         [ HH.button
             [ HE.onClick \_ -> ReseedTo 1

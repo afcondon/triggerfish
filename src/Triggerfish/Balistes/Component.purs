@@ -219,7 +219,19 @@ handleQuery = case _ of
   -- SyncToRig = full balistes-sim-at handoff (on entering ATLANTIS); StopRig = global
   -- hush (on entering SOLO).
   SyncToRig next -> handleAction PushBalistes *> pure (Just next)
-  StopRig next -> handleAction HushBalistes *> pure (Just next)
+  -- Per-voice stop: silence just the Balistes rig voice (restart = the handoff).
+  StopRig next -> do
+    s <- H.get
+    for_ s.binnacle \bin -> liftEffect $ Transport.send (Binnacle.socket bin) "balistes-stop"
+    pure (Just next)
+  -- Per-tab transport (the switcher dot).
+  SetArm b next -> do
+    s <- H.get
+    when (b /= s.running) (handleAction ToggleRun)
+    pure (Just next)
+  AskArmed reply -> do
+    s <- H.get
+    pure (Just (reply s.running))
   -- A5 library manager: the fixed-rhythm library, each as its balistesPattern eDSL.
   -- (Grids is the live generative member, not a saved entry.)
   AskLibrary reply -> do
@@ -826,25 +838,13 @@ transportPanel s =
   in
   panel "BALISTES" "flex:0 0 196px"
     [ HH.div [ style "display:flex;flex-direction:column;gap:12px;margin-top:4px" ]
-        [ HH.button
-            [ HE.onClick \_ -> ToggleRun
-            , style $ "padding:12px 0;border:1px solid #a8a392;border-radius:7px;cursor:pointer;"
-                <> "font-family:Georgia,serif;font-size:15px;letter-spacing:0.12em;color:#1c1a12;"
-                <> "background:" <> (if s.running then "linear-gradient(#c8a86a,#b8975a)" else "linear-gradient(#efece1,#ddd9cb)") ]
-            [ HH.text (if s.running then (if s.master then "❚❚ PLAYING" else "◆ CUED") else "▶ ARM") ]
-        , HH.div [ style "display:flex;gap:8px" ]
+        -- ARM now lives on the tab dot in the top switcher; RESET / DICE stay.
+        [ HH.div [ style "display:flex;gap:8px" ]
             [ flatBtn "RESET" ResetPat
             , flatBtn "DICE" Dice
             ]
-        -- Control-surface Phase 2: no manual "push to rig" — ATLANTIS hands off
-        -- automatically and edits stream live. Hush stays as a rig panic/stop.
-        , HH.div [ style "display:flex;gap:8px;padding-top:10px;border-top:1px solid #00000014" ]
-            [ HH.button
-                [ HE.onClick \_ -> HushBalistes
-                , style $ "flex:1;padding:8px 0;border:1px solid #a8a392;border-radius:7px;cursor:pointer;"
-                    <> "background:linear-gradient(#e7dcd6,#d9c8c0);font-family:Georgia,serif;font-size:12px;color:#4a3833" ]
-                [ HH.text "✋ Hush rig" ]
-            ]
+        -- Control-surface Phase 2/refinement: no per-pane push OR hush — ATLANTIS
+        -- hands off automatically; the global "Hush rig" lives in the top nav.
         , lampRow s
         , readout "TEMPO" (show (round s.clockTempo) <> " bpm" <> (if s.clockLocked then " ⛓" else " ·"))
         , readout "BAR" (show s.clockBar <> "  ·  step " <> pad2 (s.playStep + 1) <> "/32")

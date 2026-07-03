@@ -55,6 +55,11 @@ data Query a
   -- with no rig voice (Selene) ignore both.
   | SyncToRig a
   | StopRig a
+  -- Per-tab transport (the switcher's play/pause dot replaces each pane's ARM
+  -- button): `SetArm on` sets this module's sticky arm/cue; `AskArmed` reports it
+  -- so the shell can render the dot. A module sounds iff `master && armed`.
+  | SetArm Boolean a
+  | AskArmed (Boolean -> a)
   | AskLibrary (Array { name :: String, text :: String } -> a)
   | LoadEntry Int a
   | ImportText String (Boolean -> a)

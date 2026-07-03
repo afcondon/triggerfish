@@ -133,7 +133,21 @@ handleQuery = case _ of
   -- SyncToRig = full reef-sim-at handoff (on entering ATLANTIS); StopRig = global
   -- hush (on entering SOLO, so the rig voice stops under local playback).
   SyncToRig next -> handleAction PushToRig *> pure (Just next)
-  StopRig next -> handleAction HushRig *> pure (Just next)
+  -- Per-voice stop (ATLANTIS per-tab / SOLO handover): silence just THIS rig voice,
+  -- not a global hush. Restart is the handoff (SyncToRig / reef-sim-at).
+  StopRig next -> do
+    s <- H.get
+    for_ s.binnacle \bin -> liftEffect $ Transport.send (Binnacle.socket bin) "reef-stop"
+    pure (Just next)
+  -- Per-tab transport (the switcher dot). Reuse ToggleRun so its note-off-on-disarm
+  -- side effect runs; only when the target state actually differs.
+  SetArm b next -> do
+    s <- H.get
+    when (b /= s.running) (handleAction ToggleRun)
+    pure (Just next)
+  AskArmed reply -> do
+    s <- H.get
+    pure (Just (reply s.running))
   -- A5 library manager: Odonus's saved SCENES are its named presets. LoadEntry
   -- cold-loads a scene (hard playhead reset); import adds a scene (parsePatch
   -- self-guards on `odonusPatch`).

@@ -121,6 +121,14 @@ handleQuery = case _ of
   -- Selene has no rig voice — the handoff/stop queries are no-ops here.
   SyncToRig next -> pure (Just next)
   StopRig next -> pure (Just next)
+  -- Per-tab transport (the switcher dot). Selene's arm action is ToggleArm.
+  SetArm b next -> do
+    s <- H.get
+    when (b /= s.running) (handleAction ToggleArm)
+    pure (Just next)
+  AskArmed reply -> do
+    s <- H.get
+    pure (Just (reply s.running))
   -- A5 library manager: each rack's `doc` IS its transferable eDSL text.
   AskLibrary reply -> do
     s <- H.get
@@ -385,13 +393,8 @@ transportStrip s =
   HH.div
     [ style $ "display:flex;align-items:center;gap:14px;margin-bottom:14px;padding:8px 10px;"
         <> "border-radius:7px;background:#00000008;border:1px solid #00000012" ]
-    [ HH.button
-        [ HE.onClick \_ -> ToggleArm
-        , style $ "padding:8px 16px;border:1px solid #a8a392;border-radius:6px;cursor:pointer;"
-            <> "font-family:Georgia,serif;font-size:13px;letter-spacing:0.1em;color:#1c1a12;"
-            <> "background:" <> (if s.running then "linear-gradient(#8fb0c0,#7a9eb0)" else "linear-gradient(#efece1,#ddd9cb)") ]
-        [ HH.text (if s.running then (if s.master then "❚❚ PLAYING" else "◆ CUED") else "▶ ARM") ]
-    , stat "TEMPO" (show (round s.clockTempo) <> " bpm" <> (if s.clockLocked then " ⛓" else " ·"))
+    -- ARM now lives on the tab dot in the top switcher; this strip keeps the readouts.
+    [ stat "TEMPO" (show (round s.clockTempo) <> " bpm" <> (if s.clockLocked then " ⛓" else " ·"))
     , stat "BAR" (show s.clockBar <> " · step " <> show (s.playStep + 1) <> "/" <> show cycleSteps)
     , stat "MIDI" s.midiName
     ]

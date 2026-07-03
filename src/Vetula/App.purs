@@ -332,6 +332,8 @@ data SourceQuery a
   | SetAudible Boolean a        -- SOLO/ATLANTIS local-MIDI gate (false = rig authoritative)
   | SyncToRig a                 -- (re)push the progression to the rig now (on entering ATLANTIS / on change)
   | StopRig a                   -- hush the rig voice (on entering SOLO)
+  | SetArm Boolean a            -- set the sticky ARM/cue (the switcher's per-tab dot)
+  | AskArmed (Boolean -> a)     -- report ARM state so the shell can render the dot
   | SyncFree Number Number a    -- adopt the rack's shared free-run baseline (start micros, BPM)
   | AskLibrary (Array { name :: String, text :: String } -> a)   -- A5 manager
   | LoadEntry Int a
@@ -459,9 +461,18 @@ handleQuery = case _ of
     pure (Just next)
   StopRig next -> do
     st <- H.get
+    -- Per-voice stop: silence just the Vetula brush voice (restart = SyncToRig).
     for_ st.binnacle \bin ->
-      liftEffect $ Transport.send (Binnacle.socket bin) "hush"
+      liftEffect $ Transport.send (Binnacle.socket bin) "vetula-stop"
     pure (Just next)
+  -- Per-tab transport (the switcher dot). Reuse ToggleArm so reconcilePerf runs.
+  SetArm b next -> do
+    st <- H.get
+    when (b /= st.armed) (handleAction ToggleArm)
+    pure (Just next)
+  AskArmed reply -> do
+    st <- H.get
+    pure (Just (reply st.armed))
   -- The rack's shared free-run baseline: adopt it so Vetula shares the same
   -- downbeat (and tempo) as Odonus/Balistes with no rig.
   SyncFree startMicros tempo next -> do
@@ -2339,18 +2350,8 @@ loadedView st pp =
       [ HH.div [ HP.style "display: flex; align-items: center; gap: 12px; margin: 0 0 12px;" ]
           [ HH.button [ HP.style "border: 1px solid #d8d8d8; background: #fafafa; cursor: pointer; padding: 3px 10px; border-radius: 4px; font-size: 12px; color: #6a6a6a;", HE.onClick \_ -> UnloadProg ] [ HH.text "← library" ]
           , HH.span [ HP.style "font-size: 14px; font-weight: 600; color: #2a2a2a;" ] [ HH.text pp.name ]
-          , HH.button
-              -- An ARM/cue subservient to the shell master (like the machine
-              -- instruments): amber when armed, neutral when not — never red,
-              -- since red ■ STOP is the master's alone. The label matches their
-              -- vocabulary (▶ ARM / ◆ CUED / ❚❚ PLAYING).
-              [ HP.style ("cursor: pointer; padding: 4px 16px; border-radius: 4px; font-size: 13px; font-weight: 600; letter-spacing: 0.08em; "
-                  <> (if st.armed then "border: 1px solid #b8860b; background: #fbf6e9; color: #7a5c00;" else "border: 1px solid #d8d8d8; background: #fafafa; color: #6a6a6a;"))
-              , HE.onClick \_ -> ToggleArm ]
-              [ HH.text (if not st.armed then "▶ ARM" else if st.playing then "❚❚ PLAYING" else "◆ CUED") ]
-          -- Control-surface Phase 2: no manual → RIG / → BRUSH push buttons. In
-          -- ATLANTIS the shell hands the progression to the rig and re-pushes on
-          -- change automatically (signature-diff); in SOLO it plays locally.
+          -- Control-surface refinement: ARM now lives on the VETULA tab's dot in the
+          -- top switcher; no manual → RIG / → BRUSH push buttons (ATLANTIS auto-syncs).
           , numField "bpm" st.tempo SetTempo
           , numField "preview ch" st.previewChan SetPreviewChan
           ]
