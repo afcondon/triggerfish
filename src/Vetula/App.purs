@@ -1193,11 +1193,17 @@ rendBrush = case _ of
 brushMsg :: State -> String
 brushMsg st =
   let
+    chords = perfChords st
     v0 = head st.voices
     rend = maybe "block" (rendBrush <<< _.renderer) v0
     ch = maybe 8 _.channel v0
+    durs = maybe (replicate (length chords) 1) _.durs v0
     jsonRow xs = "[" <> joinWith "," (map show xs) <> "]"
-    json = "[" <> joinWith "," (map (jsonRow <<< playNotes) (perfChords st)) <> "]"
+    vJson = "[" <> joinWith "," (map (jsonRow <<< playNotes) chords) <> "]"
+    dJson = "[" <> joinWith "," (map show durs) <> "]"
+    -- {"v":[[..]],"d":[..]} — compact (no spaces; the rig splits the verb on spaces).
+    -- v = voicings, d = voice 1's bars-per-chord dwell (0 = skip).
+    json = "{\"v\":" <> vJson <> ",\"d\":" <> dJson <> "}"
   in
     "vetula-voicings " <> show ch <> " " <> rend <> " " <> json
 
