@@ -58,6 +58,7 @@ type State =
   , active :: Int                 -- which rack is loaded + editable
   , running :: Boolean        -- ARM/cue (sticky); sounds only when master too
   , master :: Boolean         -- the shell's master transport (via SetMaster)
+  , audible :: Boolean        -- SOLO/ATLANTIS local-MIDI gate (false = rig authoritative)
   , playStep :: Int
   , binnacle :: Maybe Binnacle.Binnacle
   , midiOut :: Maybe Midi.MidiOut
@@ -87,7 +88,7 @@ component =
         in
           { sel: Source.parseRack doc
           , library: [ { name: "rack 1", doc } ], active: 0
-          , running: false, master: false, playStep: 0
+          , running: false, master: false, audible: true, playStep: 0
           , binnacle: Nothing, midiOut: Nothing, midiName: "…"
           , clockTempo: 120.0, clockLocked: false, clockBar: 0
           }
@@ -110,6 +111,12 @@ handleQuery = case _ of
   FeedVoiceChords _ next -> pure (Just next)   -- no chord quantiser
   SetMaster m next -> do
     H.modify_ _ { master = m }
+    pure (Just next)
+  -- SOLO/ATLANTIS authority: mute local trigs when the rig is the sound source.
+  -- Selene has no held notes (gate-and-release poly-trigs); the Step handler's
+  -- `when` gate drops emission while the scheduler keeps running.
+  SetAudible a next -> do
+    H.modify_ _ { audible = a }
     pure (Just next)
   -- A5 library manager: each rack's `doc` IS its transferable eDSL text.
   AskLibrary reply -> do
@@ -163,7 +170,7 @@ handleAction = case _ of
 
   Step tick -> do
     st <- H.get
-    when (st.master && st.running) do
+    when (st.master && st.running && st.audible) do
       let playedStep = tick.index `mod` cycleSteps
       H.modify_ _ { playStep = playedStep }
       for_ st.midiOut \out -> liftEffect $

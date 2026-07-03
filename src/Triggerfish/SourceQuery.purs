@@ -12,6 +12,12 @@
 -- |     stopped rack is silent; master PLAY starts every armed module together on
 -- |     the shared downbeat; toggling arm mid-play drops a module in/out live.
 -- |     Modules with no transport (Selene) ignore it.
+-- |   * `SetAudible on` — the SOLO/ATLANTIS authority gate (control-surface
+-- |     consolidation). A module emits local Web-MIDI only when `audible`; in
+-- |     ATLANTIS the rig is authoritative and the frontend is muted (`audible =
+-- |     false`) but its scheduler/animation KEEPS RUNNING (lockstep co-sim). This
+-- |     is orthogonal to `master`: master is the transport (playing at all),
+-- |     audible is who makes the sound (local vs rig).
 -- |   * `FeedVoiceChords` — the LIVE Vetula→Odonus follow bridge. The shell polls
 -- |     Vetula ~100ms for each Odonus-bound performance voice's current block
 -- |     chord (`{ id, pcs }`, where `id` is the voice's channel reused as an
@@ -41,6 +47,7 @@ data Query a
   | FeedChords (Array (Array Int)) a
   | FeedVoiceChords (Array { id :: Int, pcs :: Array Int }) a
   | SetMaster Boolean a
+  | SetAudible Boolean a
   | AskLibrary (Array { name :: String, text :: String } -> a)
   | LoadEntry Int a
   | ImportText String (Boolean -> a)

@@ -57,7 +57,7 @@ component :: forall i o m. MonadAff m => H.Component Query i o m
 component =
   H.mkComponent
     { initialState: \_ ->
-        { odo: M.defaultOdonus, running: false, master: false, dragging: Nothing, dragSub: Nothing
+        { odo: M.defaultOdonus, running: false, master: false, audible: true, dragging: Nothing, dragSub: Nothing
         , notes: [], binnacle: Nothing, nowMicros: 0.0
         , midiOut: Nothing, midiName: "…", clockTempo: 120.0, clockLocked: false
         , clockBeat: 0.0, clockBar: 0, anchorCount: 0
@@ -115,6 +115,18 @@ handleQuery = case _ of
     when (wasSounding && not nowSounding) $ liftEffect $ silenceHeld st.midiOut st.headNote
     H.modify_ \s -> s
       { master = m
+      , headNote = if wasSounding && not nowSounding then map (const Nothing) s.headNote else s.headNote }
+    pure (Just next)
+  -- SOLO/ATLANTIS authority: mute local Web-MIDI when the rig is the sound source.
+  -- The scheduler keeps ticking (lockstep animation); only note emission is gated.
+  -- Silence any held voices on the transition to muted.
+  SetAudible a next -> do
+    st <- H.get
+    let wasSounding = st.master && st.running && st.audible
+        nowSounding = st.master && st.running && a
+    when (wasSounding && not nowSounding) $ liftEffect $ silenceHeld st.midiOut st.headNote
+    H.modify_ \s -> s
+      { audible = a
       , headNote = if wasSounding && not nowSounding then map (const Nothing) s.headNote else s.headNote }
     pure (Just next)
   -- A5 library manager: Odonus's saved SCENES are its named presets. LoadEntry
@@ -196,7 +208,7 @@ dispatch = case _ of
     st <- H.get
     -- Global step divider: the scheduler ticks on a fine 1/16 grid; advance the
     -- model only every stepDiv ticks, so STEP LENGTH sets what a 1× head plays.
-    when (st.master && st.running && tick.index `mod` st.stepDiv == 0) do
+    when (st.master && st.running && st.audible && tick.index `mod` st.stepDiv == 0) do
       let
         modelStep = tick.index / st.stepDiv
         -- LOCKSTEP (P4c): apply any tick-tagged inputs whose step has arrived

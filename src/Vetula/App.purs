@@ -199,6 +199,9 @@ type State =
   , subId :: Maybe H.SubscriptionId
   , midiOut :: Maybe Midi.MidiOut
   , midiName :: String
+  , previewChan :: Int              -- the MIDI channel chord/path AUDITION plays on (own
+                                    -- routable channel, so ATLANTIS preview can be cued
+                                    -- separately from the live brush; 0-indexed like voices)
   , sounding :: Maybe Int            -- the chord shown on the left-hand pitch ladder
   , revoicing :: Maybe Int           -- the chord open in the revoice modal (Nothing = closed)
   , drag :: Maybe DragState          -- an in-progress octave-drag on the ladder
@@ -246,6 +249,7 @@ type State =
   , voices :: Array Voice
   , armed :: Boolean              -- the ARM/cue flag (sticky); sounds only when master too
   , master :: Boolean            -- the shell's master transport (standalone: always true)
+  , audible :: Boolean           -- SOLO/ATLANTIS local-MIDI gate (false = rig authoritative; standalone always true)
   , playing :: Boolean           -- derived: currently sounding (= armed && master)
   , pulse :: Int                  -- the shared clock's 16th-note grid index (from the scheduler tick)
   , tempo :: Int                  -- BPM display (tracks the live clock; the bpm field nudges the free baseline)
@@ -299,6 +303,7 @@ data Action
   | AddVoice
   | RemoveVoice Int
   | SetVoiceChannel Int String
+  | SetPreviewChan String        -- set the chord/path audition channel
   | CycleVoiceDest Int
   | CycleVoiceRenderer Int
   | BumpCell Int Int Boolean    -- voice id, chord index, shift-held (down) — set a cell's bars
@@ -321,7 +326,9 @@ data SourceQuery a
   = AskSource (String -> a)
   | AskChords (Array (Array Int) -> a)
   | AskVoiceChords (Array { id :: Int, pcs :: Array Int } -> a)  -- live per-Odonus-voice chord
+  | AskHarmonic ({ durs :: Array Int, active :: Int, chord :: String } -> a)  -- nav harmonic strip: voice-0 dwell schedule + live playhead + the active chord's notes
   | SetMaster Boolean a
+  | SetAudible Boolean a        -- SOLO/ATLANTIS local-MIDI gate (false = rig authoritative)
   | SyncFree Number Number a    -- adopt the rack's shared free-run baseline (start micros, BPM)
   | AskLibrary (Array { name :: String, text :: String } -> a)   -- A5 manager
   | LoadEntry Int a
@@ -341,6 +348,7 @@ component = H.mkComponent
       , subId: Nothing
       , midiOut: Nothing
       , midiName: "…"
+      , previewChan: 0
       , sounding: Just 0
       , revoicing: Nothing
       , drag: Nothing
@@ -369,6 +377,7 @@ component = H.mkComponent
       -- works as a direct transport). Inside Triggerfish the shell pushes false on
       -- init and drives it from the master PLAY.
       , master: true
+      , audible: true
       , playing: false
       , pulse: -1
       , tempo: 120
@@ -397,11 +406,39 @@ handleQuery = case _ of
   AskVoiceChords reply -> do
     s <- H.get
     pure (Just (reply (voiceChordFeed s)))
+  -- The nav harmonic-context strip: the primary (voice-0) dwell schedule padded to
+  -- the progression length (bars-per-chord; 0 = a skip), and the live playhead — the
+  -- chord index voice-0's read-head sits on at the current pulse (-1 = none). The
+  -- shell polls this and renders the glyph in the top bar, visible in every pane.
+  AskHarmonic reply -> do
+    s <- H.get
+    let cs = perfChords s
+        n = length cs
+        v0 = head s.voices
+        durs = maybe (replicate n 1) (\v -> padDurs n v.durs) v0
+        active = fromMaybe (-1) (v0 >>= cursorAt cs s.pulse)
+        -- The active chord's notes, bass-up as note names (unique pitch classes in
+        -- voicing order) — the compact echo of the progression row's pitch ladder.
+        chord = case cs !! active of
+          Just c -> joinWith " " (map noteName (nub (map (\x -> mod x 12) (playNotes c))))
+          Nothing -> ""
+    pure (Just (reply { durs, active, chord }))
   -- The shell's master transport: store it, then start/stop sounding so it plays
   -- exactly when armed && master.
   SetMaster m next -> do
     H.modify_ _ { master = m }
     reconcilePerf
+    pure (Just next)
+  -- SOLO/ATLANTIS authority: mute local Web-MIDI when the rig is the sound source.
+  -- Gates the performance scheduler's emission (the PerfTick `when`); the clock keeps
+  -- ticking. Audition previews (playChord/playPath) stay local — they're the palette's
+  -- sample-the-harmony gesture, not the transport.
+  SetAudible a next -> do
+    st <- H.get
+    when (st.audible && not a && st.playing) do
+      silenceHeld st
+      H.modify_ \s -> s { voices = map (_ { held = [] }) s.voices }
+    H.modify_ _ { audible = a }
     pure (Just next)
   -- The rack's shared free-run baseline: adopt it so Vetula shares the same
   -- downbeat (and tempo) as Odonus/Balistes with no rig.
@@ -920,6 +957,12 @@ handleAction = case _ of
     Just ch -> updateVoice vid (_ { channel = clamp 0 15 ch })
     Nothing -> pure unit
 
+  -- The AUDITION channel (chord/path preview). Its own routable channel so, in
+  -- ATLANTIS, the preview can be cued/muted at the desk independently of the brush.
+  SetPreviewChan v -> case fromString v of
+    Just ch -> H.modify_ _ { previewChan = clamp 0 15 ch }
+    Nothing -> pure unit
+
   CycleVoiceDest vid -> updateVoice vid (\v -> v { dest = cycleDest v.dest })
 
   CycleVoiceRenderer vid -> updateVoice vid (\v -> v { renderer = nextRenderer v.renderer })
@@ -996,7 +1039,12 @@ handleAction = case _ of
         Nothing -> pure (toNumber st.tempo)
       let reefChords = map toReefChord (perfChords st)
           pulseMs = 60000.0 / tempo / 4.0
-      voices' <- liftEffect $ traverse (stepVoice st.midiOut reefChords tick.index pulseMs tick.delayMs) st.voices
+          -- ATLANTIS (audible=false): keep advancing each voice's read-head so the
+          -- pulse + cursor march on (the nav harmonic strip stays live in every
+          -- pane), but pass no MIDI-out so nothing sounds locally — the rig's brush
+          -- is the sound. SOLO: emit as normal.
+          mout = if st.audible then st.midiOut else Nothing
+      voices' <- liftEffect $ traverse (stepVoice mout reefChords tick.index pulseMs tick.delayMs) st.voices
       H.modify_ _ { pulse = tick.index, voices = voices', clockTempo = tempo, tempo = round tempo }
 
   -- parse the (possibly edited) Tidal source into note-lists, rebuild them as a
@@ -1276,7 +1324,7 @@ playChord c = do
   st <- H.get
   for_ st.midiOut \out ->
     liftEffect $ for_ (playNotes c) \n ->
-      Midi.scheduleNote out { channel: 0, note: n, velocity: 92, delayMs: 0.0, durMs: 900.0 }
+      Midi.scheduleNote out { channel: st.previewChan, note: n, velocity: 92, delayMs: 0.0, durMs: 900.0 }
 
 -- | Arpeggiate a path: each chord in turn, lightly rolled, ~440ms apart — the
 -- | segment heard as a phrase (the consonant, directional walk AC noticed).
@@ -1290,7 +1338,7 @@ playPath ids = do
     for_ (mapWithIndex Tuple chordsOnPath) \(Tuple i c) ->
       for_ (mapWithIndex Tuple (playNotes c)) \(Tuple j n) ->
         Midi.scheduleNote out
-          { channel: 0, note: n, velocity: 88
+          { channel: st.previewChan, note: n, velocity: 88
           , delayMs: toNumber i * stepMs + toNumber j * rollMs, durMs: stepMs * 0.9 }
 
 -- | The drawn path: bold gold edges for the smooth single-note bridges, and a
@@ -2293,6 +2341,7 @@ loadedView st pp =
               , HE.onClick \_ -> PushBrush ]
               [ HH.text "→ BRUSH" ]
           , numField "bpm" st.tempo SetTempo
+          , numField "preview ch" st.previewChan SetPreviewChan
           ]
       , HH.div [ HP.style "display: flex; align-items: baseline; gap: 12px; margin: 8px 0 6px;" ]
           [ HH.span [ HP.style "font-size: 12px; color: #6a6a6a; letter-spacing: 0.06em; text-transform: uppercase;" ] [ HH.text "Voices" ]

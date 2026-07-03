@@ -97,6 +97,7 @@ type State =
   { bal :: M.Balistes
   , running :: Boolean        -- the ARM/cue flag (sticky); sounds only when master too
   , master :: Boolean         -- the shell's master transport (pushed via SetMaster)
+  , audible :: Boolean        -- SOLO/ATLANTIS local-MIDI gate (false = rig authoritative)
   , playStep :: Int
   -- the ABSOLUTE model step the current `bal` will next be played from (Grids
   -- mode). PushBalistes stamps the handoff with this so the rig holds the pushed
@@ -179,7 +180,7 @@ component =
   H.mkComponent
     { initialState: \_ ->
         { bal: M.defaultBalistes
-        , running: false, master: false, playStep: 0, nextModelStep: 0, pending: [], pushed: false, flash: []
+        , running: false, master: false, audible: true, playStep: 0, nextModelStep: 0, pending: [], pushed: false, flash: []
         , binnacle: Nothing, midiOut: Nothing, midiName: "…"
         , clockTempo: 120.0, clockLocked: false, clockBeat: 0.0, clockBar: 0, anchorCount: 0
         , nowMicros: 0.0, dragging: Nothing, dragSub: Nothing
@@ -207,6 +208,12 @@ handleQuery = case _ of
   FeedVoiceChords _ next -> pure (Just next)   -- ditto
   SetMaster m next -> do
     H.modify_ _ { master = m }
+    pure (Just next)
+  -- SOLO/ATLANTIS authority: mute local hits when the rig is the sound source. Drum
+  -- hits are one-shots (no held notes), so nothing to silence; the Step handler's
+  -- `when` gate drops emission while the scheduler keeps running.
+  SetAudible a next -> do
+    H.modify_ _ { audible = a }
     pure (Just next)
   -- A5 library manager: the fixed-rhythm library, each as its balistesPattern eDSL.
   -- (Grids is the live generative member, not a saved entry.)
@@ -258,7 +265,7 @@ handleAction = case _ of
 
   Step tick -> do
     st <- H.get
-    when (st.master && st.running) case st.active of
+    when (st.master && st.running && st.audible) case st.active of
       -- A fixed rhythm: derive the step from the tick (no internal navigator),
       -- then emit each used lane's hit verbatim at its kit note + velocity.
       AFixed i -> case st.library !! i of

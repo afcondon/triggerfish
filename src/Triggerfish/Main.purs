@@ -19,7 +19,7 @@ module Triggerfish.Main where
 
 import Prelude
 
-import Data.Array (filter, mapWithIndex, null)
+import Data.Array (filter, mapWithIndex, null, replicate)
 import Data.Maybe (Maybe(..), fromMaybe)
 import Data.String.Common (joinWith)
 import Data.Tuple (Tuple(..))
@@ -59,8 +59,22 @@ data Which = Odo | Bal | Sel | Vet | Tid
 
 derive instance Eq Which
 
+-- The control-surface AUTHORITY mode (the SOLO⟷ATLANTIS toggle in the top nav).
+-- One authority per mode dissolves the "who's making the sound?" ambiguity:
+--   * Solo     — the FRONTEND is authoritative: engines run locally and play
+--                direct to a MIDI sink (Ableton) via Web MIDI. Standalone rig.
+--   * Atlantis — the RIG (backend) is authoritative: it makes the sound; the
+--                frontend is MUTED (audible = false) but keeps running its
+--                schedulers (lockstep animation). The palette is seen, the brush
+--                is heard from the backend.
+-- See docs/PLAN-control-surface-solo-atlantis.md.
+data Mode = Solo | Atlantis
+
+derive instance Eq Mode
+
 data RAction
   = Init | SyncTick | PollVetula | Pick Which | RefreshTidal | CopyTidal | ToggleMaster
+  | SetMode Mode                -- flip the SOLO⟷ATLANTIS authority
   | LoadFromLib Which Int       -- A5: make a saved entry active in its instrument
   | CopyEntry String            -- copy one entry's eDSL text
   | SetImportText String
@@ -77,7 +91,12 @@ type LibRow = { inst :: Which, idx :: Int, name :: String, text :: String }
 -- stopped rack is silent until PLAY.
 type RState =
   { which :: Which, tidalDoc :: String, freeT0 :: Number, playing :: Boolean
-  , library :: Array LibRow, importText :: String, importMsg :: String }
+  , library :: Array LibRow, importText :: String, importMsg :: String
+  -- The authority mode + the live harmonic-context strip shown in the top nav.
+  -- `harm` is polled from Vetula: voice-0's bars-per-chord dwell schedule and the
+  -- current playhead (-1 = none). Rendered as a glyph visible in every pane.
+  , mode :: Mode
+  , harm :: { durs :: Array Int, active :: Int, chord :: String } }
 
 type Slots =
   ( odo :: H.Slot SQ.Query Void Unit
@@ -103,7 +122,8 @@ root =
   H.mkComponent
     { initialState: \_ ->
         { which: Bal, tidalDoc: "", freeT0: 0.0, playing: false
-        , library: [], importText: "", importMsg: "" }
+        , library: [], importText: "", importMsg: ""
+        , mode: Solo, harm: { durs: [], active: -1, chord: "" } }
     , render
     , eval: H.mkEval H.defaultEval { handleAction = handleAction, initialize = Just Init }
     }
@@ -127,12 +147,21 @@ handleAction = case _ of
     -- the master PLAY. (Vetula defaults to master=true for standalone, so we must
     -- push the real state here.)
     broadcastMaster false
+    -- Assert the initial authority: SOLO ⇒ local Web-MIDI on. (Instruments default
+    -- audible=true, but push it so the shell is the one source of truth for mode.)
+    m0 <- H.gets _.mode
+    broadcastAudible (m0 == Solo)
   -- One master PLAY/STOP for the whole rack: flip it and tell every module, which
   -- then sounds iff (master && its own arm).
   ToggleMaster -> do
     p <- not <$> H.gets _.playing
     H.modify_ _ { playing = p }
     broadcastMaster p
+  -- Flip the SOLO⟷ATLANTIS authority. SOLO ⇒ local Web-MIDI on; ATLANTIS ⇒ local
+  -- muted (rig authoritative), schedulers keep running for the lockstep animation.
+  SetMode m -> do
+    H.modify_ _ { mode = m }
+    broadcastAudible (m == Solo)
   SyncTick -> do
     t0 <- H.gets _.freeT0
     _ <- H.query _odo unit (SQ.SyncFree t0 freeTempo unit)
@@ -174,6 +203,11 @@ handleAction = case _ of
     case mfeed of
       Just feed -> void $ H.query _odo unit (SQ.FeedVoiceChords feed unit)
       Nothing -> pure unit
+    -- Pull Vetula's progression + playhead for the nav harmonic-context strip.
+    mharm <- H.query _vet unit (Vetula.AskHarmonic identity)
+    case mharm of
+      Just h -> H.modify_ _ { harm = h }
+      Nothing -> pure unit
 
 -- Push the master transport to every module. Odonus/Balistes/Selene answer via
 -- the shared SourceQuery; Vetula via its own query type. Each sounds iff
@@ -184,6 +218,17 @@ broadcastMaster b = do
   _ <- H.query _bal unit (SQ.SetMaster b unit)
   _ <- H.query _sel unit (SQ.SetMaster b unit)
   _ <- H.query _vet unit (Vetula.SetMaster b unit)
+  pure unit
+
+-- Push the authority gate to every module: audible=true (SOLO — play local Web
+-- MIDI) or false (ATLANTIS — the rig makes the sound; stay muted but keep the
+-- scheduler/animation running). Orthogonal to master; see SourceQuery.SetAudible.
+broadcastAudible :: forall o m. MonadAff m => Boolean -> H.HalogenM RState RAction Slots o m Unit
+broadcastAudible a = do
+  _ <- H.query _odo unit (SQ.SetAudible a unit)
+  _ <- H.query _bal unit (SQ.SetAudible a unit)
+  _ <- H.query _sel unit (SQ.SetAudible a unit)
+  _ <- H.query _vet unit (Vetula.SetAudible a unit)
   pure unit
 
 -- Query each mounted instrument for its current source and stitch the four
@@ -388,10 +433,19 @@ shellBar st =
             <> "color:" <> (if st.playing then "#fbeae7" else "#1c1a12")
             <> ";background:" <> (if st.playing then "linear-gradient(#b23b28,#9a3120)" else "linear-gradient(#c8a86a,#b8975a)") ]
         [ HH.text (if st.playing then "■ STOP" else "▶ PLAY") ]
+    -- The centre strip: the wordmark, the SOLO⟷ATLANTIS authority toggle, and the
+    -- live harmonic-context glyph. Replaces the old `Triggerfish · <instrument>`
+    -- label (the instrument is already named by the switcher on the right); the
+    -- two things worth showing in EVERY pane are the mode and the progression.
     , HH.div
-        [ style $ "position:absolute;left:50%;transform:translateX(-50%);pointer-events:none;"
-            <> "font-size:11px;letter-spacing:0.22em;text-transform:uppercase;color:#4a463b" ]
-        [ HH.text ("Triggerfish · " <> whichName st.which) ]
+        [ style $ "position:absolute;left:50%;transform:translateX(-50%);"
+            <> "display:flex;align-items:center;gap:16px" ]
+        [ HH.span
+            [ style "font-size:11px;letter-spacing:0.22em;text-transform:uppercase;color:#4a463b" ]
+            [ HH.text "Triggerfish" ]
+        , modeToggle st
+        , harmStrip st
+        ]
     , HH.div
         [ style $ "display:flex;gap:0;border:1px solid #00000033;border-radius:6px;overflow:hidden;"
             <> "box-shadow:0 1px 3px #00000022" ]
@@ -419,6 +473,58 @@ seg label active act =
         <> "text-transform:uppercase;color:" <> (if active then "#1c1a12" else "#5a564b")
         <> ";background:" <> (if active then "linear-gradient(#c8a86a,#b8975a)" else "linear-gradient(#e9e5d9,#dcd8c9)") ]
     [ HH.text label ]
+
+-- The SOLO⟷ATLANTIS authority toggle. Each mode carries its own colour so the
+-- active authority reads at a glance: SOLO warm/gold (a standalone instrument),
+-- ATLANTIS deep sea-blue (the rig is the sound). Clicking a segment sets that mode.
+modeToggle :: forall m. RState -> H.ComponentHTML RAction Slots m
+modeToggle st =
+  HH.div
+    [ style $ "display:flex;border:1px solid #00000033;border-radius:5px;overflow:hidden;"
+        <> "box-shadow:0 1px 2px #00000022" ]
+    [ modeSeg "SOLO" (st.mode == Solo) "#1c1a12" "linear-gradient(#c8a86a,#b8975a)" (SetMode Solo)
+    , modeSeg "ATLANTIS" (st.mode == Atlantis) "#eaf3fa" "linear-gradient(#3a6b8a,#2d5670)" (SetMode Atlantis)
+    ]
+
+modeSeg :: forall m. String -> Boolean -> String -> String -> RAction -> H.ComponentHTML RAction Slots m
+modeSeg label active onColor onBg act =
+  HH.button
+    [ HE.onClick \_ -> act
+    , style $ "padding:5px 13px;border:0;cursor:pointer;font-size:10px;letter-spacing:0.16em;"
+        <> "text-transform:uppercase;color:" <> (if active then onColor else "#5a564b")
+        <> ";background:" <> (if active then onBg else "linear-gradient(#e9e5d9,#dcd8c9)") ]
+    [ HH.text label ]
+
+-- The live harmonic-context glyph, polled from Vetula: one mark per chord in the
+-- performance progression — ● the chord the playhead is on, ○ the others — with a
+-- trailing ‑ per extra bar of dwell and a · for a skipped chord. Visible in every
+-- pane, so the progression is always in view (the palette animation, surfaced).
+harmStrip :: forall m. RState -> H.ComponentHTML RAction Slots m
+harmStrip st =
+  HH.div
+    [ style "display:flex;align-items:baseline;gap:12px" ]
+    -- The progress row: where the playhead is in the progression.
+    [ HH.span
+        [ style $ "font-family:'SF Mono',Menlo,Consolas,monospace;font-size:13px;line-height:1;"
+            <> "letter-spacing:0.14em;color:#4a463b" ]
+        [ HH.text (harmGlyph st.harm) ]
+    -- The content row: the notes of the chord under the playhead (bass-up), so the
+    -- strip shows both WHERE we are and WHAT is sounding — the progression view's
+    -- pitch content, time-multiplexed through the playhead.
+    , HH.span
+        [ style $ "font-family:Georgia,serif;font-size:12px;letter-spacing:0.1em;"
+            <> "color:#2d5670;min-width:96px" ]
+        [ HH.text st.harm.chord ]
+    ]
+
+harmGlyph :: forall r. { durs :: Array Int, active :: Int | r } -> String
+harmGlyph h =
+  if null h.durs then "—"
+  else joinWith "" (mapWithIndex chunk h.durs)
+  where
+  chunk i d =
+    if d <= 0 then "·"
+    else (if i == h.active then "●" else "○") <> joinWith "" (replicate (d - 1) "‑")
 
 style :: forall r i. String -> HP.IProp r i
 style = HP.attr (H.AttrName "style")
