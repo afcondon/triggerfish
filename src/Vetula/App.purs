@@ -307,6 +307,7 @@ data Action
   | SetTempo String
   | ToggleArm              -- the ▶/■ button: sticky arm/cue under the shell master
   | PushVetula             -- lockstep: push the whole performance to the rig (→ odo conducts reef_voice)
+  | PushBrush              -- Option B: push the progression's voicings as a real Tidal Pattern (reef_vetula_brush)
   | PerfPlay
   | PerfStop
   | PerfTick Scheduler.Tick  -- one 16th-note pulse from the shared scheduler
@@ -969,6 +970,17 @@ handleAction = case _ of
     for_ st.binnacle \bin ->
       liftEffect $ Transport.send (Binnacle.socket bin) ("vetula-perf " <> RV.encodePerf (buildPerf st))
 
+  -- Push the progression's voicings as a real Tidal Pattern (Option B): the rig's
+  -- reef_vetula_brush queries it per pulse and, on each chord change, conducts
+  -- Odonus (reef_voice) with the active chord's pitch classes — one source of
+  -- truth for pads + quantise-target. Single brush voice for now: uses the FIRST
+  -- voice's renderer (Strummed → the legato/held reading) and channel. A re-push
+  -- live re-voices in place. (Push Odonus to the rig in follow-Vetula mode first.)
+  PushBrush -> do
+    st <- H.get
+    for_ st.binnacle \bin ->
+      liftEffect $ Transport.send (Binnacle.socket bin) (brushMsg st)
+
   PerfPlay -> H.modify_ _ { armed = true } *> reconcilePerf
   PerfStop -> H.modify_ _ { armed = false } *> reconcilePerf
 
@@ -1162,6 +1174,32 @@ buildPerf st =
   { chords: map toReefChord (perfChords st)
   , voices: map toReefVoice st.voices
   }
+
+-- | The brush renderer name for the `vetula-voicings` verb. Note Strummed → "held":
+-- | on the brush side the old "strum" is the legato / common-tone reading (the
+-- | audible voice-leading), not an intra-chord roll.
+rendBrush :: Renderer -> String
+rendBrush = case _ of
+  Block -> "block"
+  Arp -> "arp"
+  Strummed -> "held"
+
+-- | Build the `vetula-voicings <channel> <renderer> <json>` message: the whole
+-- | progression's hand-picked voicings (playNotes per chord) as a compact JSON
+-- | `Array (Array Int)` (no spaces — the rig splits the verb on spaces). Single
+-- | brush voice: takes the first voice's renderer + channel (defaults block / ch 8
+-- | if there are no voices yet). The rig treats <channel> as the link-spike
+-- | (1-indexed) MIDI channel.
+brushMsg :: State -> String
+brushMsg st =
+  let
+    v0 = head st.voices
+    rend = maybe "block" (rendBrush <<< _.renderer) v0
+    ch = maybe 8 _.channel v0
+    jsonRow xs = "[" <> joinWith "," (map show xs) <> "]"
+    json = "[" <> joinWith "," (map (jsonRow <<< playNotes) (perfChords st)) <> "]"
+  in
+    "vetula-voicings " <> show ch <> " " <> rend <> " " <> json
 
 -- | One pulse of one voice, rendered by the SHARED `Reef.Vetula.Perf` engine — the
 -- | exact code the rig's reef_vetula_voice runs, so browser and rig are identical BY
@@ -2241,6 +2279,13 @@ loadedView st pp =
               [ HP.style "cursor: pointer; padding: 4px 14px; border-radius: 4px; font-size: 12px; font-weight: 600; letter-spacing: 0.06em; border: 1px solid #cdd6cd; background: #f4f8f4; color: #4a6a4a;"
               , HE.onClick \_ -> PushVetula ]
               [ HH.text "→ RIG" ]
+          , HH.button
+              -- Push the progression as a real Tidal Pattern (Option B): the rig
+              -- plays it (reef_vetula_brush) and conducts Odonus from the same chord
+              -- clock. Uses voice 1's renderer + channel. Re-push to live re-voice.
+              [ HP.style "cursor: pointer; padding: 4px 14px; border-radius: 4px; font-size: 12px; font-weight: 600; letter-spacing: 0.06em; border: 1px solid #cdd6cd; background: #eef4f8; color: #4a5a6a;"
+              , HE.onClick \_ -> PushBrush ]
+              [ HH.text "→ BRUSH" ]
           , numField "bpm" st.tempo SetTempo
           ]
       , HH.div [ HP.style "display: flex; align-items: baseline; gap: 12px; margin: 8px 0 6px;" ]
