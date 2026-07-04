@@ -60,7 +60,9 @@ import Binnacle.Scheduler as Scheduler
 import Binnacle.Transport as Transport
 import Triggerfish.Transport (Sounding(..))
 import Vetula.Store as Store
-import Reef.Vetula.Perf (VChord, VVoice, VDest(..), VRenderer(..), cursorAt, renderVoiceMidiAt) as RV
+import Reef.Vetula.Perf (VChord, VVoice, VDest(..), VRenderer(..), PerfClock, cursorAtClock, renderClockMidiAt) as RV
+import Vetula.Playhead (clockFor, defaultPattern, patternClock)
+import Data.Either (Either(..))
 import Reef.Vetula.Protocol (encodePerf) as RV
 import Binnacle.Time (dateNow)
 import Vetula.Tidal (progressionSource, parseProgression)
@@ -133,9 +135,15 @@ type Voice =
   , channel :: Int          -- MIDI channel 0..15 (ToMidi) / the Odonus id (ToOdonus)
   , dest :: VoiceDest        -- MIDI out, or a block chord-conductor for Odonus
   , renderer :: Renderer
-  , durs :: Array Int       -- BARS this voice dwells on each chord (one per progression
-                            -- chord); 0 = skip that chord. The voice's own timeline.
-  , phase :: Int            -- pulse offset, so identical columns can phase apart
+  , pattern :: String       -- the LIVE-CODED read-head: a Tidal mini-notation pattern of
+                            -- chord indices ("0 1 2 3", "[0 1 2 3]/4", "0(3,8)"). Non-empty
+                            -- overrides `durs` (Vetula.Playhead.clockFor); 1 cycle = 1 bar.
+  , patternDraft :: String  -- the uncommitted edit buffer; `commit` copies it into `pattern`
+                            -- atomically (never debounced), so one edit lands as one change.
+  , durs :: Array Int       -- LEGACY bars-per-chord dwell (one per progression chord; 0 =
+                            -- skip). Used when `pattern` is empty, and still the rig-push
+                            -- shape until the rig learns patterns (#77).
+  , phase :: Int            -- pulse offset (the live-jump re-anchor), applied to either clock
   , cursor :: Int           -- the chord index it's currently on (derived, cached for display)
   , held :: Array Int       -- MIDI notes currently sounding (Strummed sustain / note-off on stop)
   , muted :: Boolean
@@ -326,6 +334,8 @@ data Action
   | CycleVoiceRenderer Int
   | BumpCell Int Int Boolean    -- voice id, chord index, shift-held (down) — set a cell's bars
   | SetVoicePhase Int String
+  | SetVoicePattern Int String  -- edit a voice's playhead-pattern draft (uncommitted)
+  | CommitVoicePattern Int      -- commit the draft into the live pattern (atomic, not debounced)
   | ToggleVoiceMute Int
   | SetTempo String
   | ToggleArm              -- the ▶/■ button: sticky arm/cue under the shell master
@@ -446,7 +456,7 @@ handleQuery = case _ of
     let cs = perfChords s
         n = length cs
         v0 = head s.voices
-        durs = maybe (replicate n 1) (\v -> padDurs n v.durs) v0
+        durs = maybe (replicate n 1) (\v -> displayDurs n (voiceClock n v)) v0
         active = fromMaybe (-1) (v0 >>= cursorAt cs s.pulse)
         -- The active chord's notes, bass-up as note names (unique pitch classes in
         -- voicing order) — the compact echo of the progression row's pitch ladder.
@@ -1084,6 +1094,13 @@ handleAction = case _ of
     Just n -> updateVoice vid (_ { phase = max 0 n })
     Nothing -> pure unit
 
+  -- live-code the read-head: type freely into the draft…
+  SetVoicePattern vid p -> updateVoice vid (_ { patternDraft = p })
+
+  -- …then commit it atomically. Committing resets the live-jump phase (the new
+  -- pattern re-anchors from bar 0) so an edit is a clean structural change.
+  CommitVoicePattern vid -> updateVoice vid (\v -> v { pattern = trim v.patternDraft, phase = 0 })
+
   ToggleVoiceMute vid -> updateVoice vid (\v -> v { muted = not v.muted })
 
   -- The bpm field nudges the shared clock's free-run baseline (so it works
@@ -1218,11 +1235,23 @@ withHovered f = do
 -- Performance — voices reading the loaded progression on their own clocks
 -- ---------------------------------------------------------------------------
 
--- | A fresh voice over an `n`-chord progression: dwells one bar on every chord
--- | (= the old uniform behaviour), nothing skipped.
+-- | A fresh voice over an `n`-chord progression: an empty `pattern` (so it falls back
+-- | to the uniform one-bar-per-chord `durs` — the old default clock exactly), nothing
+-- | skipped. The user live-codes a pattern to change the read-head.
 defaultVoice :: Int -> Int -> Renderer -> Int -> Voice
 defaultVoice vid channel renderer n =
-  { id: vid, channel, dest: ToMidi, renderer, durs: replicate n 1, phase: 0, cursor: 0, held: [], muted: false }
+  { id: vid, channel, dest: ToMidi, renderer, pattern: "", patternDraft: "", durs: replicate n 1, phase: 0, cursor: 0, held: [], muted: false }
+
+-- | The clock a voice plays: its committed pattern if non-empty & parseable, else its
+-- | legacy `durs`. The single frontend seam onto `Vetula.Playhead` / the reef realiser.
+voiceClock :: Int -> Voice -> RV.PerfClock
+voiceClock n v = clockFor n { pattern: v.pattern, durs: v.durs }
+
+-- | Bars-per-chord DERIVED from a clock (for the nav strip's dwell display): total
+-- | pulses landed on each chord index / 16. 0 = never visited. Works for pattern or durs.
+displayDurs :: Int -> RV.PerfClock -> Array Int
+displayDurs n clock =
+  map (\c -> sum (map _.len (filter (\s -> s.ix == c) clock.segs)) / 16) (range 0 (n - 1))
 
 -- | Fit a voice's duration column to the current chord count (pad new chords with
 -- | one bar, drop any trailing extras) — keeps the grid + clock robust if the
@@ -1397,12 +1426,13 @@ brushMsg st =
 stepVoice :: Maybe Midi.MidiOut -> Array RV.VChord -> Int -> Number -> Number -> Voice -> Effect Voice
 stepVoice mout reefChords pulse pulseMs baseDelayMs v =
   let rv = toReefVoice v
-      cur = fromMaybe v.cursor (RV.cursorAt (length reefChords) rv pulse)
+      clock = voiceClock (length reefChords) v
+      cur = fromMaybe v.cursor (RV.cursorAtClock clock v.phase pulse)
   in case v.dest of
     ToOdonus -> pure v { cursor = cur }
     ToMidi -> do
       for_ mout \out ->
-        for_ (RV.renderVoiceMidiAt reefChords rv pulse) \e ->
+        for_ (RV.renderClockMidiAt reefChords rv clock pulse) \e ->
           Midi.scheduleNote out
             { channel: v.channel, note: e.note, velocity: e.velocity
             , delayMs: baseDelayMs, durMs: e.durPulses * pulseMs }
@@ -1417,23 +1447,16 @@ stepVoice mout reefChords pulse pulseMs baseDelayMs v =
 -- | (no timeline segment) or the progression is empty. `n` = progression length.
 jumpVoice :: Int -> Int -> Int -> Voice -> Voice
 jumpVoice n pulse i v =
-  let ds = padDurs n v.durs
-      loopLen = 16 * sum ds
-  in case find (\seg -> seg.ix == i) (timeline ds) of
+  let clock = voiceClock n v
+      loopLen = clock.loopLen
+  in case find (\seg -> seg.ix == i) clock.segs of
        -- normalized positive modulo — `seg.start - pulse` can be negative, and Int
        -- `mod` can return a negative remainder, which cursorAt would then miss.
        Just seg | loopLen > 0 -> v { phase = mod (mod (seg.start - pulse) loopLen + loopLen) loopLen, cursor = i }
        _ -> v
 
 cursorAt :: Array ChordNode -> Int -> Voice -> Maybe Int
-cursorAt chords pulse v =
-  let n = length chords
-      ds = padDurs n v.durs
-      segs = timeline ds
-      loopLen = 16 * sum ds
-  in if loopLen <= 0 then Nothing
-     else let pos = mod (pulse + v.phase) loopLen
-          in _.ix <$> find (\seg -> pos >= seg.start && pos < seg.start + seg.len) segs
+cursorAt chords pulse v = RV.cursorAtClock (voiceClock (length chords) v) v.phase pulse
 
 -- | The pick-mode generator mode implied by a step selection over an n-step path:
 -- | one chord at the start prepends, at the end appends, in the middle
@@ -2508,23 +2531,73 @@ loadedView st pp =
           , numField "bpm" st.tempo SetTempo
           , numField "preview ch" st.previewChan SetPreviewChan
           ]
+      -- the PROGRESSION: chords as rows (pitch-ladder + label), the live playhead
+      -- lighting the active chord. Its READ-HEADS live below, as Tidal patterns.
       , HH.div [ HP.style "display: flex; align-items: baseline; gap: 12px; margin: 8px 0 6px;" ]
-          [ HH.span [ HP.style "font-size: 12px; color: #6a6a6a; letter-spacing: 0.06em; text-transform: uppercase;" ] [ HH.text "Voices" ]
-          , HH.span [ HP.style "font-size: 11px; color: #b0b0b0;" ] [ HH.text "bars per chord · click a cell to set · shift-click down · 0 = skip" ]
+          [ HH.span [ HP.style "font-size: 12px; color: #6a6a6a; letter-spacing: 0.06em; text-transform: uppercase;" ] [ HH.text "Progression" ]
+          , HH.span [ HP.style "font-size: 11px; color: #b0b0b0;" ] [ HH.text "click a chord to select it · Tab / ↑↓ revoice live" ]
+          ]
+      , HH.table [ HP.style "border-collapse: collapse;" ]
+          (mapWithIndex (gridChordRow st (length chords)) chords)
+      -- the PLAYHEADS: one live-coded Tidal read-head per voice.
+      , HH.div [ HP.style "display: flex; align-items: baseline; gap: 12px; margin: 18px 0 6px;" ]
+          [ HH.span [ HP.style "font-size: 12px; color: #6a6a6a; letter-spacing: 0.06em; text-transform: uppercase;" ] [ HH.text "Playheads" ]
+          , HH.span [ HP.style "font-size: 11px; color: #b0b0b0;" ] [ HH.text "Tidal pattern of chord indices · 1 cycle = 1 bar · commit to apply" ]
           , cellBtn "+ add voice" false AddVoice
           ]
-      -- the grid: chords are ROWS, voices are COLUMNS, each cell = bars dwelt
-      , HH.table [ HP.style "border-collapse: collapse;" ]
-          ( [ HH.tr []
-                ( [ HH.td [ HP.style "padding: 0 6px 5px 0;" ] [] ]
-                    <> map voiceHeaderCell st.voices ) ]
-            <> mapWithIndex (gridChordRow st (length chords)) chords )
+      , HH.div [ HP.style "display: flex; flex-direction: column; gap: 6px;" ]
+          (map (voicePlayheadRow (length chords)) st.voices)
       ]
 
+-- | One voice's live-coded read-head: its controls (destination / mute / renderer /
+-- | channel / remove) then a mini-notation input, a commit button, and a status
+-- | readout — parse error if the DRAFT is broken, else the committed loop length in
+-- | bars, with a • when there are uncommitted edits. Placeholder shows the default
+-- | (`[0 1 … n-1]/n`) that an empty pattern falls back to.
+voicePlayheadRow :: forall m. Int -> Voice -> H.ComponentHTML Action Slots m
+voicePlayheadRow n v =
+  let draft = trim v.patternDraft
+      draftErr = if draft == "" then Nothing
+                 else case patternClock n draft of
+                        Left e -> Just e
+                        Right _ -> Nothing
+      dirty = v.patternDraft /= v.pattern
+      borderCol = case draftErr of
+        Just _ -> "#e2b6ae"
+        Nothing -> "#dcdcdc"
+      loopBars = (voiceClock n v).loopLen / 16
+      status = case draftErr of
+        Just _ -> HH.span [ HP.style "font-size: 11px; color: #c0392b;" ] [ HH.text "⚠ parse error" ]
+        Nothing -> HH.span [ HP.style "font-size: 11px; color: #9a9a9a;" ]
+          [ HH.text ((if dirty then "• " else "") <> "loop " <> show loopBars <> "b") ]
+  in HH.div
+      [ HP.style ("display: flex; align-items: center; gap: 6px; padding: 4px 6px; border: 1px solid #eee; border-radius: 5px; background: #fbfbfa;"
+          <> (if v.muted && v.dest == ToMidi then " opacity: 0.5;" else "")) ]
+      ( [ cellBtn (destName v.dest) (v.dest == ToOdonus) (CycleVoiceDest v.id) ]
+          <> (case v.dest of
+                ToMidi ->
+                  [ cellBtn (if v.muted then "off" else "on") (not v.muted) (ToggleVoiceMute v.id)
+                  , cellBtn (rendName v.renderer) true (CycleVoiceRenderer v.id)
+                  , numField "ch" v.channel (SetVoiceChannel v.id)
+                  ]
+                ToOdonus ->
+                  [ numField "id" v.channel (SetVoiceChannel v.id) ])
+          <>
+          [ HH.input
+              [ HP.value v.patternDraft
+              , HP.placeholder (defaultPattern n)
+              , HP.style ("flex: 1 1 auto; min-width: 160px; font-family: ui-monospace, monospace; font-size: 12px; padding: 4px 6px; border-radius: 4px; border: 1px solid " <> borderCol <> ";")
+              , HE.onValueInput (SetVoicePattern v.id)
+              ]
+          , cellBtn "commit" dirty (CommitVoicePattern v.id)
+          , status
+          , HH.button [ HP.style "border: none; background: none; cursor: pointer; color: #c8c8c8; font-size: 14px;", HE.onClick \_ -> RemoveVoice v.id ] [ HH.text "×" ]
+          ] )
+
 -- | A grid row for one chord: the left info cell (number + pitch-row + label,
--- | clickable to select for live Tab-revoicing) then one duration cell per voice.
+-- | clickable to select for live Tab-revoicing). Read-heads are the Playheads list.
 gridChordRow :: forall m. State -> Int -> Int -> ChordNode -> H.ComponentHTML Action Slots m
-gridChordRow st n i c =
+gridChordRow st _ i c =
   let active = Just c.id == st.sounding
       onHead = any (\v -> not v.muted && v.cursor == i) st.voices
       rowBg = if active then "#f1efe7" else if onHead && st.playing then "#eef4ee" else "transparent"
@@ -2540,8 +2613,7 @@ gridChordRow st n i c =
                 , HH.span [ HP.style "flex: 0 0 26px; font-size: 10px; color: #b0b0b0;" ] [ HH.text c.label ]
                 ]
             ]
-        ]
-        <> map (durCell st n i) st.voices )
+        ] )
 
 -- | One grid cell: how many bars voice `v` dwells on chord `i`. Click bumps it up
 -- | (wrapping at 8), shift-click down; 0 shows as a faint dot (skipped). Lights up

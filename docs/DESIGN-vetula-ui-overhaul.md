@@ -128,3 +128,42 @@ decided as their structures land.
   onto the lattice as editable nodes (re-seat each by pcs → lattice position) or
   just re-arm the path? And how imported / off-lattice chords find a home.
 - Colour (above), Lab-lattice zoom (above).
+
+## Slice 3 — as built (playheads as Tidal)
+
+Chose **true index-patterns** (not a durs re-encode) and **1 cycle = 1 bar = 16
+pulses**. Architecture, seam-first:
+
+- **The segment clock is the byte-identical seam.** `Reef.Vetula.Perf` already ran
+  the realiser (block/arp/strum, cursor, strum-sustain) off a segment list
+  `Array {ix,start,len}` — `durs` was only ever an *input to* `timeline`. Refactored
+  reef to expose `PerfClock {segs, loopLen}` + clock-based cores (`cursorAtClock`,
+  `renderClockMidiAt`); `cursorAt`/`renderVoiceMidiAt` are now thin `durs` wrappers
+  (`clockOfDurs`). **All 14 reef goldens pass unchanged** — the durs path is proven
+  behaviour-preserving.
+- **`Vetula.Playhead`** (new, frontend) parses a mini-notation string via the vendored
+  Tidal engine and QUERIES it over its period → the same segment clock. `clockFor`
+  picks pattern-if-present else `durs`. A voice gained `pattern` (committed) +
+  `patternDraft` (edit buffer); `stepVoice`/`cursorAt`/`jumpVoice`/nav-strip all read
+  `voiceClock`. The live nav-jump still works: it re-anchors `phase` into the
+  *evaluated* pattern, never rewriting text.
+- **UI**: the durs matrix is gone. The chord table is now pure **Progression**
+  (ladders + active-chord highlight); a new **Playheads** list gives each voice a
+  mini-notation input + **commit** button (atomic, not debounced) + a status readout
+  (parse error, or committed loop-length in bars, • when uncommitted).
+
+**Mini-notation vocabulary (verified against this engine, `nChords=4`):**
+- `"0 1 2 3"` = a chord per beat (all four in one bar). `"0(3,8)"` euclid, `~` rest,
+  `[…]` groups, `*`/`!` all work. Out-of-range indices and non-numerics drop (= rests).
+- **One chord per bar** = `"[0 1 2 3]/4"` (bracketed `/` slow → loopLen 64, one/bar).
+  This is `defaultPattern n` and the empty-pattern fallback clock.
+- **Gotcha**: this engine parses `<…>` as *grouping*, NOT slow-alternation — so
+  `<0 1 2 3>` behaves like `0 1 2 3`, not one-per-bar. Use `[…]/n`. (`..` enum and
+  `@` elongate are also flaky in the engine; noted, not blocking.) Sub-bar subdivisions
+  that don't divide 16 (triplets) round to the nearest pulse — the rig IS a 16-grid.
+
+**Deferred to #77 (ATLANTIS):** the rig still receives `durs` (unchanged wire); a
+voice with a committed *pattern* diverges on push until reef learns to parse the
+pattern on the BEAM. The segment clock is the seam, so that's a localized future
+change (move `Vetula.Playhead`'s parse+query into reef), byte-identical by
+construction. SOLO is complete and non-divergent.
