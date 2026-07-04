@@ -20,8 +20,10 @@ module Triggerfish.Main where
 import Prelude
 
 import Data.Array (filter, mapWithIndex, null, replicate)
-import Data.Foldable (for_)
+import Data.Foldable (foldl, for_)
 import Data.Maybe (Maybe(..), fromMaybe)
+import Data.Set (Set)
+import Data.Set as Set
 import Data.String.Common (joinWith)
 import Data.Tuple (Tuple(..))
 import Effect (Effect)
@@ -44,6 +46,7 @@ import Triggerfish.Selene.Component as Selene
 import Triggerfish.SourceQuery as SQ
 import Vetula.App as Vetula
 import Vetula.Clipboard (copyText)
+import Triggerfish.Transport (Which(..), Mode(..), Sounding(..), soundingOf, anyArmed, allMachines)
 
 -- One free-run tempo for the whole rack with no rig. (On the rig the forwarded
 -- Link anchor overrides it.) A shell BPM control could drive this later.
@@ -56,22 +59,10 @@ main = HA.runHalogenAff do
   body <- HA.awaitBody
   void $ runUI root unit body
 
-data Which = Odo | Bal | Sel | Vet | Tid
-
-derive instance Eq Which
-
--- The control-surface AUTHORITY mode (the SOLO⟷ATLANTIS toggle in the top nav).
--- One authority per mode dissolves the "who's making the sound?" ambiguity:
---   * Solo     — the FRONTEND is authoritative: engines run locally and play
---                direct to a MIDI sink (Ableton) via Web MIDI. Standalone rig.
---   * Atlantis — the RIG (backend) is authoritative: it makes the sound; the
---                frontend is MUTED (audible = false) but keeps running its
---                schedulers (lockstep animation). The palette is seen, the brush
---                is heard from the backend.
--- See docs/PLAN-control-surface-solo-atlantis.md.
-data Mode = Solo | Atlantis
-
-derive instance Eq Mode
+-- `Which`, `Mode`, and the `Sounding` authority model now live in the pure
+-- Triggerfish.Transport module (the MISU core — see docs/DESIGN-transport-misu.md).
+-- The shell's entire transport state is `mode :: Mode` + `armed :: Set Which`;
+-- each machine's `Sounding` is `soundingOf mode armed w`, pushed via SetSounding.
 
 data RAction
   = Init | SyncTick | PollVetula | Pick Which | RefreshTidal | CopyTidal | ToggleMaster
@@ -87,12 +78,13 @@ data RAction
 -- (the transferable form); `idx` is its position in that instrument's library.
 type LibRow = { inst :: Which, idx :: Int, name :: String, text :: String }
 
--- `playing` is the MASTER transport. Each module's own run button is a sticky
--- arm/cue toggle; a module sounds only when master `playing` AND it is armed. So
--- PLAY starts every armed module together on the shared downbeat, and arming a
--- stopped rack is silent until PLAY.
+-- The shell's ENTIRE transport state (MISU refactor): the authority `mode` plus
+-- the set of armed machines. A machine's behaviour is `soundingOf mode armed w`
+-- — no separate master/playing/audible/rigOn booleans that can contradict it.
+-- "Master playing" is derived (`anyArmed armed`); rig-voice running is derived
+-- (`soundingOf … == Rig`) and each instrument edge-detects its own transitions.
 type RState =
-  { which :: Which, tidalDoc :: String, freeT0 :: Number, playing :: Boolean
+  { which :: Which, tidalDoc :: String, freeT0 :: Number
   , library :: Array LibRow, importText :: String, importMsg :: String
   -- The authority mode + the live harmonic-context strip shown in the top nav.
   -- `harm` is polled from Vetula: voice-0's bars-per-chord dwell schedule and the
@@ -100,18 +92,15 @@ type RState =
   , mode :: Mode
   , harm :: { durs :: Array Int, active :: Int, chord :: String }
   -- Vetula auto-resync (ATLANTIS): the shell polls Vetula's rig payload and, when
-  -- it settles on a new value, re-pushes — so the progression re-voices live with
-  -- no manual button. `brushSent` = last value pushed; `brushPrev` = last poll's
-  -- value (a one-tick settle coalesces a drag into a single push).
+  -- it settles on a new value, re-pushes (SetSounding Rig re-voices) — so the
+  -- progression re-voices live with no manual button. `brushSent` = last value
+  -- pushed; `brushPrev` = last poll's value (a one-tick settle coalesces a drag).
   , brushSent :: String
   , brushPrev :: String
-  -- Each instrument's sticky ARM state, mirrored here so the switcher can show a
-  -- per-tab play/pause dot (the pane ARM buttons are gone). Updated optimistically
-  -- on click and reconciled from the instruments on SyncTick.
-  , armed :: { odo :: Boolean, bal :: Boolean, sel :: Boolean, vet :: Boolean }
-  -- Which rig voices are currently RUNNING (ATLANTIS bookkeeping), so reconcileRig
-  -- only starts/stops a voice on a transition. Selene has no rig voice.
-  , rigOn :: { odo :: Boolean, bal :: Boolean, vet :: Boolean } }
+  -- The armed set: the single source of truth for the switcher's per-tab dots and
+  -- the master button label. Reconciled from the instruments on SyncTick (a machine
+  -- can self-disarm, e.g. Vetula unloading a progression).
+  , armed :: Set Which }
 
 type Slots =
   ( odo :: H.Slot SQ.Query Void Unit
@@ -136,12 +125,11 @@ root :: forall q i o m. MonadAff m => H.Component q i o m
 root =
   H.mkComponent
     { initialState: \_ ->
-        { which: Bal, tidalDoc: "", freeT0: 0.0, playing: false
+        { which: Bal, tidalDoc: "", freeT0: 0.0
         , library: [], importText: "", importMsg: ""
         , mode: Solo, harm: { durs: [], active: -1, chord: "" }
         , brushSent: "", brushPrev: ""
-        , armed: { odo: false, bal: false, sel: false, vet: false }
-        , rigOn: { odo: false, bal: false, vet: false } }
+        , armed: Set.empty }
     , render
     , eval: H.mkEval H.defaultEval { handleAction = handleAction, initialize = Just Init }
     }
@@ -161,71 +149,53 @@ handleAction = case _ of
     -- current block chord to Odonus, so its quantiser follows the live conductor.
     _ <- liftEffect $ setInterval 100 (HS.notify listener PollVetula)
     handleAction SyncTick
-    -- Unified transport: ARM is the single source of truth (a module sounds iff
-    -- armed). So the master gate stays permanently on and per-instrument `running`
-    -- (= armed) is the real control; the shell's master ▶/■ is arm-all / disarm-all.
-    broadcastMaster true
-    -- Assert the initial authority: SOLO ⇒ local Web-MIDI on. (Instruments default
-    -- audible=true, but push it so the shell is the one source of truth for mode.)
-    m0 <- H.gets _.mode
-    broadcastAudible (m0 == Solo)
-  -- Master ▶/■ = start ALL / stop ALL: arm every module if none is armed, else
-  -- disarm every module. `playing` mirrors "anything armed" (the button label). In
-  -- ATLANTIS this reconciles the rig voices too.
+    -- One source of truth: push each machine its derived Sounding (all Silent now —
+    -- nothing armed). Arm/mode changes re-derive and re-push; the instruments
+    -- edge-detect their own local-mute / rig-handoff transitions.
+    pushAll
+  -- Master ▶/■ = arm ALL / disarm ALL: arm every machine if none is armed, else
+  -- disarm every machine. The button label is `anyArmed`. pushAll re-derives each
+  -- machine's Sounding (in ATLANTIS that hands off / stops rig voices too).
   ToggleMaster -> do
     a <- H.gets _.armed
-    let nv = not (anyArmed a)
-        a' = { odo: nv, bal: nv, sel: nv, vet: nv }
-    H.modify_ _ { armed = a', playing = nv }
-    _ <- querySetArm Odo nv
-    _ <- querySetArm Bal nv
-    _ <- querySetArm Sel nv
-    _ <- querySetArm Vet nv
-    reconcileRig
-  -- Flip the SOLO⟷ATLANTIS authority. SOLO ⇒ local Web-MIDI on, rig hushed;
-  -- ATLANTIS ⇒ local muted (rig authoritative), one full handoff, then edits keep
-  -- the rig in sync automatically. The SOLO→ATLANTIS round-trip IS the resync.
+    H.modify_ _ { armed = if anyArmed a then Set.empty else allMachines }
+    pushAll
+  -- Flip the SOLO⟷ATLANTIS authority. Re-deriving every machine's Sounding IS the
+  -- whole transition: an armed rig machine goes Local⟷Rig (its SetSounding handler
+  -- hands off on entering Rig, stops its voice on leaving), Selene stays Local,
+  -- unarmed stay Silent. No manual handoff/hush ordering to get wrong.
   SetMode m -> do
     H.modify_ _ { mode = m }
-    -- Order matters: set audibility FIRST so the instruments' rig-send gate
-    -- (onRig = not audible) is already open when SyncToRig fires the handoff.
-    broadcastAudible (m == Solo)
-    -- Nothing is on the rig at a mode edge; reconcile from a clean slate.
-    H.modify_ _ { rigOn = { odo: false, bal: false, vet: false } }
-    case m of
-      -- Entering ATLANTIS: start the rig voices for whatever is armed.
-      Atlantis -> reconcileRig
-      -- Entering SOLO: stop every rig voice so the frontend is the sound again.
-      Solo -> broadcastStopRig
-  -- The switcher's per-tab play/pause dot: arm/disarm just this machine (from a
-  -- stopped state that's "play just this one"). Update the mirror optimistically,
-  -- push to the module, and reconcile its rig voice in ATLANTIS.
+    pushAll
+  -- The switcher's per-tab play/pause dot: toggle just this machine's arm, then
+  -- push its (re-derived) Sounding.
   ArmTab w -> do
     a <- H.gets _.armed
-    let nv = not (armedOf a w)
-        a' = setArmed a w nv
-    H.modify_ _ { armed = a', playing = anyArmed a' }
-    _ <- querySetArm w nv
-    reconcileRig
+    H.modify_ _ { armed = if Set.member w a then Set.delete w a else Set.insert w a }
+    pushSounding w
   SyncTick -> do
     t0 <- H.gets _.freeT0
     _ <- H.query _odo unit (SQ.SyncFree t0 freeTempo unit)
     _ <- H.query _bal unit (SQ.SyncFree t0 freeTempo unit)
     _ <- H.query _sel unit (SQ.SyncFree t0 freeTempo unit)
     _ <- H.query _vet unit (Vetula.SyncFree t0 freeTempo unit)
-    -- Reconcile the switcher's per-tab ARM dots with the instruments' real state
-    -- (they can disarm themselves, e.g. Vetula unloading a progression), refresh
-    -- the master-button label, and re-sync the rig to match (a self-disarm stops
-    -- its rig voice within a tick).
-    o <- H.query _odo unit (SQ.AskArmed identity)
-    b <- H.query _bal unit (SQ.AskArmed identity)
-    s <- H.query _sel unit (SQ.AskArmed identity)
-    v <- H.query _vet unit (Vetula.AskArmed identity)
-    H.modify_ \st ->
-      let a' = { odo: fromMaybe st.armed.odo o, bal: fromMaybe st.armed.bal b
-               , sel: fromMaybe st.armed.sel s, vet: fromMaybe st.armed.vet v }
-      in st { armed = a', playing = anyArmed a' }
-    reconcileRig
+    -- OBSERVE: reconcile the armed set with the instruments' EFFECTIVE sounding.
+    -- A machine can self-disarm (Vetula unloading a progression) — it reports
+    -- `Silent`, so we drop it from the set. Odo/Bal/Sel only ever echo what we
+    -- pushed, so they're stable. `Nothing` (query miss) leaves that machine as-is.
+    o <- askSounding Odo
+    b <- askSounding Bal
+    s <- askSounding Sel
+    v <- askSounding Vet
+    st0 <- H.get
+    let armed' = reconcileArmed st0.armed [ Tuple Odo o, Tuple Bal b, Tuple Sel s, Tuple Vet v ]
+    when (armed' /= st0.armed) do
+      H.modify_ _ { armed = armed' }
+      -- Re-push any machine whose membership changed so its Sounding (and thus its
+      -- rig voice) matches the reconciled truth. A Vetula self-disarm this way gets
+      -- SetSounding Silent → its handler sends vetula-stop (what reconcileRig did).
+      for_ [ Odo, Bal, Sel, Vet ] \w ->
+        when (Set.member w armed' /= Set.member w st0.armed) (pushSounding w)
   -- Opening TIDAL pulls a fresh aggregate + library; the modules keep playing.
   Pick Tid -> do
     H.modify_ _ { which = Tid }
@@ -270,121 +240,54 @@ handleAction = case _ of
     -- one poll AND different from what was last sent). A drag coalesces into one push
     -- ~one tick after it stops; glitchless because the rig re-push phase-aligns.
     -- Only when the Vetula voice is actually running on the rig (armed in ATLANTIS).
-    st0 <- H.get
     msig <- H.query _vet unit (Vetula.AskBrushSig identity)
     for_ msig \sig -> do
       st <- H.get
-      when (st0.mode == Atlantis && st.rigOn.vet && sig == st.brushPrev && sig /= st.brushSent) do
-        _ <- H.query _vet unit (Vetula.SyncToRig unit)
+      -- Re-push (SetSounding Rig re-voices) only when Vetula is actually rig-
+      -- authoritative — `soundingOf … Vet == Rig` already implies armed + ATLANTIS.
+      when (soundingOf st.mode st.armed Vet == Rig && sig == st.brushPrev && sig /= st.brushSent) do
+        _ <- H.query _vet unit (Vetula.SetSounding Rig unit)
         H.modify_ _ { brushSent = sig }
       H.modify_ _ { brushPrev = sig }
 
--- Push the master transport to every module. Odonus/Balistes/Selene answer via
--- the shared SourceQuery; Vetula via its own query type. Each sounds iff
--- master && its own ARM.
-broadcastMaster :: forall o m. MonadAff m => Boolean -> H.HalogenM RState RAction Slots o m Unit
-broadcastMaster b = do
-  _ <- H.query _odo unit (SQ.SetMaster b unit)
-  _ <- H.query _bal unit (SQ.SetMaster b unit)
-  _ <- H.query _sel unit (SQ.SetMaster b unit)
-  _ <- H.query _vet unit (Vetula.SetMaster b unit)
-  pure unit
+-- Push one machine its DERIVED Sounding (soundingOf mode armed). The instrument
+-- edge-detects the transition itself: local-mute on leaving Local, rig handoff on
+-- entering Rig, rig-stop on leaving Rig. This one call replaces the old
+-- broadcastMaster / broadcastAudible / broadcastSyncToRig / broadcastStopRig /
+-- reconcileRig — the shell no longer tracks a separate rig-running mirror.
+pushSounding :: forall o m. MonadAff m => Which -> H.HalogenM RState RAction Slots o m Unit
+pushSounding w = do
+  st <- H.get
+  void $ querySounding w (soundingOf st.mode st.armed w)
 
--- Push the authority gate to every module: audible=true (SOLO — play local Web
--- MIDI) or false (ATLANTIS — the rig makes the sound; stay muted but keep the
--- scheduler/animation running). Orthogonal to master; see SourceQuery.SetAudible.
-broadcastAudible :: forall o m. MonadAff m => Boolean -> H.HalogenM RState RAction Slots o m Unit
-broadcastAudible a = do
-  _ <- H.query _odo unit (SQ.SetAudible a unit)
-  _ <- H.query _bal unit (SQ.SetAudible a unit)
-  -- Selene has no rig voice, so it's frontend-authoritative in BOTH modes: never
-  -- muted, it plays locally (Web MIDI) whenever armed. (Its POLYTRIG drums overlap
-  -- Balistes — folding them together is a separate structural cleanup, task #75.)
-  _ <- H.query _vet unit (Vetula.SetAudible a unit)
-  pure unit
-
--- The initial handoff on entering ATLANTIS: every rig-capable module (re)pushes its
--- full state to the rig. After this, Odonus/Balistes stream edits live and Vetula
--- auto-re-pushes on change, so no manual push button is needed. (Selene has no rig
--- voice; its SyncToRig is a no-op.)
-broadcastSyncToRig :: forall o m. MonadAff m => H.HalogenM RState RAction Slots o m Unit
-broadcastSyncToRig = do
-  _ <- H.query _odo unit (SQ.SyncToRig unit)
-  _ <- H.query _bal unit (SQ.SyncToRig unit)
-  _ <- H.query _vet unit (Vetula.SyncToRig unit)
-  pure unit
-
--- Entering SOLO: hush every rig voice so the rig stops sounding under local
--- playback (the frontend is authoritative again). A global `hush` reaches them all.
-broadcastStopRig :: forall o m. MonadAff m => H.HalogenM RState RAction Slots o m Unit
-broadcastStopRig = do
-  _ <- H.query _odo unit (SQ.StopRig unit)
-  _ <- H.query _bal unit (SQ.StopRig unit)
-  _ <- H.query _vet unit (Vetula.StopRig unit)
-  pure unit
-
--- Per-tab ARM helpers (the switcher dots). `armedOf`/`setArmed` read/write the
--- shell's mirror by instrument; `querySetArm` pushes the value to the module.
-type ArmState = { odo :: Boolean, bal :: Boolean, sel :: Boolean, vet :: Boolean }
-
-armedOf :: ArmState -> Which -> Boolean
-armedOf a = case _ of
-  Odo -> a.odo
-  Bal -> a.bal
-  Sel -> a.sel
-  Vet -> a.vet
-  Tid -> false
-
-setArmed :: ArmState -> Which -> Boolean -> ArmState
-setArmed a w v = case w of
-  Odo -> a { odo = v }
-  Bal -> a { bal = v }
-  Sel -> a { sel = v }
-  Vet -> a { vet = v }
-  Tid -> a
-
-querySetArm :: forall o m. Which -> Boolean -> H.HalogenM RState RAction Slots o m (Maybe Unit)
-querySetArm w v = case w of
-  Odo -> H.query _odo unit (SQ.SetArm v unit)
-  Bal -> H.query _bal unit (SQ.SetArm v unit)
-  Sel -> H.query _sel unit (SQ.SetArm v unit)
-  Vet -> H.query _vet unit (Vetula.SetArm v unit)
+querySounding :: forall o m. Which -> Sounding -> H.HalogenM RState RAction Slots o m (Maybe Unit)
+querySounding w s = case w of
+  Odo -> H.query _odo unit (SQ.SetSounding s unit)
+  Bal -> H.query _bal unit (SQ.SetSounding s unit)
+  Sel -> H.query _sel unit (SQ.SetSounding s unit)
+  Vet -> H.query _vet unit (Vetula.SetSounding s unit)
   Tid -> pure Nothing
 
-anyArmed :: ArmState -> Boolean
-anyArmed a = a.odo || a.bal || a.sel || a.vet
+-- Re-derive and push every machine's Sounding (on arm-all / mode flip / init).
+pushAll :: forall o m. MonadAff m => H.HalogenM RState RAction Slots o m Unit
+pushAll = for_ [ Odo, Bal, Sel, Vet ] pushSounding
 
--- Make each rig voice match its arm intent (ATLANTIS only): start (handoff) the
--- armed ones that aren't running, stop the running ones that are no longer armed.
--- Transition-gated by `rigOn` so a running voice isn't re-pushed every reconcile.
--- Selene has no rig voice. In SOLO this is a no-op (the local engines are the sound).
-reconcileRig :: forall o m. MonadAff m => H.HalogenM RState RAction Slots o m Unit
-reconcileRig = do
-  st <- H.get
-  when (st.mode == Atlantis) do
-    when (st.armed.odo && not st.rigOn.odo) do
-      _ <- H.query _odo unit (SQ.SyncToRig unit)
-      H.modify_ \s -> s { rigOn = s.rigOn { odo = true } }
-    when (not st.armed.odo && st.rigOn.odo) do
-      _ <- H.query _odo unit (SQ.StopRig unit)
-      H.modify_ \s -> s { rigOn = s.rigOn { odo = false } }
-    when (st.armed.bal && not st.rigOn.bal) do
-      _ <- H.query _bal unit (SQ.SyncToRig unit)
-      H.modify_ \s -> s { rigOn = s.rigOn { bal = true } }
-    when (not st.armed.bal && st.rigOn.bal) do
-      _ <- H.query _bal unit (SQ.StopRig unit)
-      H.modify_ \s -> s { rigOn = s.rigOn { bal = false } }
-    -- Vetula: on START, seed the auto-resync baseline to the just-pushed payload so
-    -- the poll only re-pushes on a FURTHER edit.
-    when (st.armed.vet && not st.rigOn.vet) do
-      _ <- H.query _vet unit (Vetula.SyncToRig unit)
-      msig <- H.query _vet unit (Vetula.AskBrushSig identity)
-      H.modify_ \s -> s { rigOn = s.rigOn { vet = true }
-                        , brushSent = fromMaybe s.brushSent msig
-                        , brushPrev = fromMaybe s.brushPrev msig }
-    when (not st.armed.vet && st.rigOn.vet) do
-      _ <- H.query _vet unit (Vetula.StopRig unit)
-      H.modify_ \s -> s { rigOn = s.rigOn { vet = false } }
+-- Observe: ask one machine its EFFECTIVE sounding (Silent ⇒ not armed).
+askSounding :: forall o m. Which -> H.HalogenM RState RAction Slots o m (Maybe Sounding)
+askSounding w = case w of
+  Odo -> H.query _odo unit (SQ.AskSounding identity)
+  Bal -> H.query _bal unit (SQ.AskSounding identity)
+  Sel -> H.query _sel unit (SQ.AskSounding identity)
+  Vet -> H.query _vet unit (Vetula.AskSounding identity)
+  Tid -> pure Nothing
+
+-- Fold observed soundings into the armed set: `Silent` drops a machine, any other
+-- sounding adds it, a query miss (`Nothing`) leaves it unchanged.
+reconcileArmed :: Set Which -> Array (Tuple Which (Maybe Sounding)) -> Set Which
+reconcileArmed = foldl \acc (Tuple w ms) -> case ms of
+  Just Silent -> Set.delete w acc
+  Just _ -> Set.insert w acc
+  Nothing -> acc
 
 -- Query each mounted instrument for its current source and stitch the four
 -- into one labelled document.
@@ -585,9 +488,9 @@ shellBar st =
         [ HE.onClick \_ -> ToggleMaster
         , style $ "padding:6px 18px;border:1px solid #00000033;border-radius:6px;cursor:pointer;"
             <> "font-size:11px;letter-spacing:0.16em;text-transform:uppercase;box-shadow:0 1px 3px #00000022;"
-            <> "color:" <> (if st.playing then "#fbeae7" else "#1c1a12")
-            <> ";background:" <> (if st.playing then "linear-gradient(#b23b28,#9a3120)" else "linear-gradient(#c8a86a,#b8975a)") ]
-        [ HH.text (if st.playing then "■ STOP" else "▶ PLAY") ]
+            <> "color:" <> (if anyArmed st.armed then "#fbeae7" else "#1c1a12")
+            <> ";background:" <> (if anyArmed st.armed then "linear-gradient(#b23b28,#9a3120)" else "linear-gradient(#c8a86a,#b8975a)") ]
+        [ HH.text (if anyArmed st.armed then "■ STOP" else "▶ PLAY") ]
     -- The centre strip: the wordmark, the SOLO⟷ATLANTIS authority toggle, and the
     -- live harmonic-context glyph. Replaces the old `Triggerfish · <instrument>`
     -- label (the instrument is already named by the switcher on the right); the
@@ -637,7 +540,7 @@ seg label active act =
 armSeg :: forall m. RState -> Which -> String -> H.ComponentHTML RAction Slots m
 armSeg st w label =
   let active = st.which == w
-      isArmed = armedOf st.armed w
+      isArmed = Set.member w st.armed
       bg = if active then "linear-gradient(#c8a86a,#b8975a)" else "linear-gradient(#e9e5d9,#dcd8c9)"
   in HH.div
       [ style ("display:flex;align-items:center;background:" <> bg) ]

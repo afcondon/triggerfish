@@ -40,6 +40,7 @@ import Triggerfish.Selene.Model as M
 import Triggerfish.Selene.Source as Source
 import Triggerfish.Selene.Store as Store
 import Triggerfish.SourceQuery (Query(..))
+import Triggerfish.Transport (Sounding(..))
 import Triggerfish.Tidal.Lane as Lane
 import Data.Maybe (Maybe(..), fromMaybe)
 
@@ -56,9 +57,9 @@ type State =
   { sel :: M.Selene
   , library :: Array Store.Rack   -- named racks; each `doc` is the rack rendered
   , active :: Int                 -- which rack is loaded + editable
-  , running :: Boolean        -- ARM/cue (sticky); sounds only when master too
-  , master :: Boolean         -- the shell's master transport (via SetMaster)
-  , audible :: Boolean        -- SOLO/ATLANTIS local-MIDI gate (false = rig authoritative)
+  , sounding :: Sounding      -- the ONE transport value (MISU refactor): Silent | Local.
+                              -- Selene has no rig voice, so it's Local whenever armed in
+                              -- EITHER mode (frontend-authoritative) — never Rig.
   , playStep :: Int
   , binnacle :: Maybe Binnacle.Binnacle
   , midiOut :: Maybe Midi.MidiOut
@@ -73,7 +74,6 @@ data Action
   | Step Scheduler.Tick
   | Frame
   | MidiReady (Maybe Midi.MidiOut) String
-  | ToggleArm
   | AddDest M.GenKind         -- append a template block (comment-safe)
   | SetDoc String             -- the whole editable document, verbatim
   | SelectRack Int            -- load a library rack into the editor
@@ -88,7 +88,7 @@ component =
         in
           { sel: Source.parseRack doc
           , library: [ { name: "rack 1", doc } ], active: 0
-          , running: false, master: false, audible: true, playStep: 0
+          , sounding: Silent, playStep: 0
           , binnacle: Nothing, midiOut: Nothing, midiName: "…"
           , clockTempo: 120.0, clockLocked: false, clockBar: 0
           }
@@ -109,26 +109,15 @@ handleQuery = case _ of
     pure (Just next)
   FeedChords _ next -> pure (Just next)
   FeedVoiceChords _ next -> pure (Just next)   -- no chord quantiser
-  SetMaster m next -> do
-    H.modify_ _ { master = m }
+  -- The ONE transport query (control-surface MISU refactor). Selene has no rig
+  -- voice, so it's only ever Silent or Local (the shell never sends Rig); no held
+  -- notes to silence. Emission gates on `sounding == Local`.
+  SetSounding s next -> do
+    H.modify_ _ { sounding = s }
     pure (Just next)
-  -- SOLO/ATLANTIS authority: mute local trigs when the rig is the sound source.
-  -- Selene has no held notes (gate-and-release poly-trigs); the Step handler's
-  -- `when` gate drops emission while the scheduler keeps running.
-  SetAudible a next -> do
-    H.modify_ _ { audible = a }
-    pure (Just next)
-  -- Selene has no rig voice — the handoff/stop queries are no-ops here.
-  SyncToRig next -> pure (Just next)
-  StopRig next -> pure (Just next)
-  -- Per-tab transport (the switcher dot). Selene's arm action is ToggleArm.
-  SetArm b next -> do
+  AskSounding reply -> do
     s <- H.get
-    when (b /= s.running) (handleAction ToggleArm)
-    pure (Just next)
-  AskArmed reply -> do
-    s <- H.get
-    pure (Just (reply s.running))
+    pure (Just (reply s.sounding))
   -- A5 library manager: each rack's `doc` IS its transferable eDSL text.
   AskLibrary reply -> do
     s <- H.get
@@ -181,7 +170,7 @@ handleAction = case _ of
 
   Step tick -> do
     st <- H.get
-    when (st.master && st.running && st.audible) do
+    when (st.sounding == Local) do
       let playedStep = tick.index `mod` cycleSteps
       H.modify_ _ { playStep = playedStep }
       for_ st.midiOut \out -> liftEffect $
@@ -196,8 +185,6 @@ handleAction = case _ of
       H.modify_ _ { clockTempo = r.tempo, clockLocked = r.locked, clockBar = r.bar }
 
   MidiReady mout nm -> H.modify_ _ { midiOut = mout, midiName = nm }
-
-  ToggleArm -> H.modify_ \s -> s { running = not s.running }
 
   -- append a fresh block to the active rack's doc (so existing comments
   -- survive), then re-derive the rack from the new text.

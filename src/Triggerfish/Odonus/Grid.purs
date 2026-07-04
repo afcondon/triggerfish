@@ -41,6 +41,7 @@ import Web.UIEvent.MouseEvent as ME
 import Triggerfish.Odonus.Grid.Types
   ( Action(..), KnobTarget(..), SourceTag(..), State, applyTarget, genDefaultAmt, genDefaultRate, genKinds, genLabel
   , marblesPadId, setAmt, setRate, targetRange )
+import Triggerfish.Transport (Sounding(..))
 import Triggerfish.Odonus.Grid.Widgets (clampI, style)
 import Triggerfish.Odonus.View.Scope (scopePanel)
 import Triggerfish.Odonus.View.Key (quantizerPanel)
@@ -57,7 +58,7 @@ component :: forall i o m. MonadAff m => H.Component Query i o m
 component =
   H.mkComponent
     { initialState: \_ ->
-        { odo: M.defaultOdonus, running: false, master: false, audible: true, dragging: Nothing, dragSub: Nothing
+        { odo: M.defaultOdonus, sounding: Silent, dragging: Nothing, dragSub: Nothing
         , notes: [], binnacle: Nothing, nowMicros: 0.0
         , midiOut: Nothing, midiName: "…", clockTempo: 120.0, clockLocked: false
         , clockBeat: 0.0, clockBar: 0, anchorCount: 0
@@ -106,48 +107,27 @@ handleQuery = case _ of
       in
         recomputeFollow s2
     pure (Just next)
-  -- The shell's master transport. Silence held notes if we were sounding (armed)
-  -- and master is now stopping us.
-  SetMaster m next -> do
+  -- The ONE transport query (control-surface MISU refactor). The shell pushes this
+  -- machine's derived `Sounding`; we edge-detect and act:
+  --   * leaving Local  → note-off held local voices (the scheduler keeps ticking).
+  --   * leaving Rig    → per-voice `reef-stop` (silence just THIS rig voice).
+  --   * entering Rig   → full `reef-sim-at` handoff (re-issuing Rig re-hands-off).
+  -- Local emission is gated on `sounding == Local`; rig streaming on `== Rig`.
+  SetSounding s next -> do
     st <- H.get
-    let wasSounding = st.master && st.running
-        nowSounding = m && st.running
-    when (wasSounding && not nowSounding) $ liftEffect $ silenceHeld st.midiOut st.headNote
-    H.modify_ \s -> s
-      { master = m
-      , headNote = if wasSounding && not nowSounding then map (const Nothing) s.headNote else s.headNote }
+    let wasLocal = st.sounding == Local
+        nowLocal = s == Local
+    when (wasLocal && not nowLocal) $ liftEffect $ silenceHeld st.midiOut st.headNote
+    H.modify_ \s' -> s'
+      { sounding = s
+      , headNote = if wasLocal && not nowLocal then map (const Nothing) s'.headNote else s'.headNote }
+    when (st.sounding == Rig && s /= Rig) $
+      for_ st.binnacle \bin -> liftEffect $ Transport.send (Binnacle.socket bin) "reef-stop"
+    when (s == Rig) (handleAction PushToRig)
     pure (Just next)
-  -- SOLO/ATLANTIS authority: mute local Web-MIDI when the rig is the sound source.
-  -- The scheduler keeps ticking (lockstep animation); only note emission is gated.
-  -- Silence any held voices on the transition to muted.
-  SetAudible a next -> do
-    st <- H.get
-    let wasSounding = st.master && st.running && st.audible
-        nowSounding = st.master && st.running && a
-    when (wasSounding && not nowSounding) $ liftEffect $ silenceHeld st.midiOut st.headNote
-    H.modify_ \s -> s
-      { audible = a
-      , headNote = if wasSounding && not nowSounding then map (const Nothing) s.headNote else s.headNote }
-    pure (Just next)
-  -- Control-surface Phase 2: the shell drives the handoff (no manual push button).
-  -- SyncToRig = full reef-sim-at handoff (on entering ATLANTIS); StopRig = global
-  -- hush (on entering SOLO, so the rig voice stops under local playback).
-  SyncToRig next -> handleAction PushToRig *> pure (Just next)
-  -- Per-voice stop (ATLANTIS per-tab / SOLO handover): silence just THIS rig voice,
-  -- not a global hush. Restart is the handoff (SyncToRig / reef-sim-at).
-  StopRig next -> do
+  AskSounding reply -> do
     s <- H.get
-    for_ s.binnacle \bin -> liftEffect $ Transport.send (Binnacle.socket bin) "reef-stop"
-    pure (Just next)
-  -- Per-tab transport (the switcher dot). Reuse ToggleRun so its note-off-on-disarm
-  -- side effect runs; only when the target state actually differs.
-  SetArm b next -> do
-    s <- H.get
-    when (b /= s.running) (handleAction ToggleRun)
-    pure (Just next)
-  AskArmed reply -> do
-    s <- H.get
-    pure (Just (reply s.running))
+    pure (Just (reply s.sounding))
   -- A5 library manager: Odonus's saved SCENES are its named presets. LoadEntry
   -- cold-loads a scene (hard playhead reset); import adds a scene (parsePatch
   -- self-guards on `odonusPatch`).
@@ -227,7 +207,7 @@ dispatch = case _ of
     st <- H.get
     -- Global step divider: the scheduler ticks on a fine 1/16 grid; advance the
     -- model only every stepDiv ticks, so STEP LENGTH sets what a 1× head plays.
-    when (st.master && st.running && st.audible && tick.index `mod` st.stepDiv == 0) do
+    when (st.sounding == Local && tick.index `mod` st.stepDiv == 0) do
       let
         modelStep = tick.index / st.stepDiv
         -- LOCKSTEP (P4c): apply any tick-tagged inputs whose step has arrived
@@ -347,17 +327,6 @@ dispatch = case _ of
             else base
       Nothing -> pure unit
   MidiReady mout nm -> H.modify_ _ { midiOut = mout, midiName = nm }
-  -- The run button is now a sticky ARM toggle. Odonus sounds only when armed AND
-  -- the shell's master is playing; when that combination goes false (disarm while
-  -- playing, or master stop) we note-off every held note so nothing sticks on.
-  ToggleRun -> do
-    st <- H.get
-    let wasSounding = st.master && st.running
-        nowSounding = st.master && not st.running
-    when (wasSounding && not nowSounding) $ liftEffect $ silenceHeld st.midiOut st.headNote
-    H.modify_ \s -> s
-      { running = not s.running
-      , headNote = if wasSounding && not nowSounding then map (const Nothing) s.headNote else s.headNote }
   -- Cell edits — deferred + broadcast (lockstep P4c) so they land on the same
   -- model step on both runtimes.
   ToggleGlide i -> enqueue (RI.ToggleGlide i)
@@ -577,7 +546,7 @@ enqueue input = do
   -- send to the rig is gated on ATLANTIS (onRig = not audible), so SOLO is silent
   -- to the rig. In ATLANTIS the handoff created the voice and these stream to it.
   H.modify_ \s -> s { pending = s.pending <> [ { step: tagStep, input } ] }
-  when (not st.audible) $ for_ st.binnacle \bin ->
+  when (st.sounding == Rig) $ for_ st.binnacle \bin ->
     liftEffect $ Transport.send (Binnacle.socket bin)
       ("reef-input " <> encodeTagged { tick: tagStep, input })
 
@@ -587,7 +556,7 @@ enqueue input = do
 -- | at 1/16 while the frontend steps coarser, and the two desync.
 sendStepLen :: forall o m. MonadAff m => State -> H.HalogenM State Action () o m Unit
 sendStepLen st =
-  when (not st.audible) $ for_ st.binnacle \bin ->
+  when (st.sounding == Rig) $ for_ st.binnacle \bin ->
     liftEffect $ Transport.send (Binnacle.socket bin)
       ("reef-steplen " <> show (stepBeatsOf st))
 
@@ -599,7 +568,7 @@ sendStepLen st =
 -- | expression, not model state, so it never enters the deterministic SimState.
 sendSwing :: forall o m. MonadAff m => State -> H.HalogenM State Action () o m Unit
 sendSwing st =
-  when (not st.audible) $ for_ st.binnacle \bin ->
+  when (st.sounding == Rig) $ for_ st.binnacle \bin ->
     liftEffect $ Transport.send (Binnacle.socket bin)
       ("reef-swing " <> show st.swing)
 

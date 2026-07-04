@@ -26,6 +26,7 @@ import Halogen as H
 import Reef.Input as RI
 import Triggerfish.Odonus.Model as M
 import Triggerfish.Odonus.Marbles as Marbles
+import Triggerfish.Transport (Sounding)
 -- The gen-source descriptor moved to the portable reef package (Reef.Gen) so
 -- generation runs on both runtimes; re-export it here under its historical home
 -- (the `module Reef.Gen` in the export list) so every existing importer of
@@ -179,9 +180,9 @@ derive instance eqSourceTag :: Eq SourceTag
 
 type State =
   { odo :: M.Odonus
-  , running :: Boolean       -- the ARM/cue flag (sticky); sounds only when master too
-  , master :: Boolean        -- the shell's master transport (pushed via SetMaster)
-  , audible :: Boolean       -- SOLO/ATLANTIS local-MIDI gate (false = rig authoritative)
+  , sounding :: Sounding     -- the ONE transport value (control-surface MISU refactor):
+                             -- Silent = stopped, Local = play local Web-MIDI, Rig = rig
+                             -- authoritative (muted locally). Replaces running/master/audible.
   , dragging :: Maybe DragState
   , dragSub :: Maybe H.SubscriptionId
   , notes :: Array NoteEvent
@@ -234,7 +235,6 @@ data Action
   | Step Scheduler.Tick
   | Frame
   | MidiReady (Maybe Midi.MidiOut) String
-  | ToggleRun
   | ToggleGlide Int
   | ToggleGate Int
   | ToggleSkip Int

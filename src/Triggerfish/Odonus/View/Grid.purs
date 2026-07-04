@@ -213,12 +213,12 @@ toggleCell odo color on act i =
     ]
 
 controls :: forall m. State -> H.ComponentHTML Action () m
-controls s =
+controls _ =
   -- The ARM toggle now lives on the tab in the top switcher (the ▶/❚❚ dot); this
   -- row keeps only its hint.
   HH.div [ style "display:flex;gap:8px;align-items:center;margin-top:14px" ]
     [ HH.span [ style $ engrave <> ";font-size:8px;color:#888273" ]
-        [ HH.text (if s.master then "click a thumbnail to change a head's pattern" else "arm this tab (▶) then hit master ▶ to start") ]
+        [ HH.text "click a thumbnail to change a head's pattern" ]
     ]
 
 nameplate :: forall m. State -> H.ComponentHTML Action () m

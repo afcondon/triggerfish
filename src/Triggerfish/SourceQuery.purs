@@ -41,25 +41,26 @@
 -- | a STRUCTURAL record, so the two query types need share no nominal type.)
 module Triggerfish.SourceQuery (Query(..)) where
 
+import Triggerfish.Transport (Sounding)
+
 data Query a
   = AskSource (String -> a)
   | SyncFree Number Number a
   | FeedChords (Array (Array Int)) a
   | FeedVoiceChords (Array { id :: Int, pcs :: Array Int }) a
-  | SetMaster Boolean a
-  | SetAudible Boolean a
-  -- Control-surface Phase 2 — the shell drives the rig handoff so there are no
-  -- manual "push" buttons. `SyncToRig` = "(re)do your full handoff to the rig
-  -- now" (run on entering ATLANTIS); `StopRig` = "silence your rig voice" (run on
-  -- entering SOLO, so the rig doesn't sound under local playback). Instruments
-  -- with no rig voice (Selene) ignore both.
-  | SyncToRig a
-  | StopRig a
-  -- Per-tab transport (the switcher's play/pause dot replaces each pane's ARM
-  -- button): `SetArm on` sets this module's sticky arm/cue; `AskArmed` reports it
-  -- so the shell can render the dot. A module sounds iff `master && armed`.
-  | SetArm Boolean a
-  | AskArmed (Boolean -> a)
+  -- The ONE transport query (control-surface MISU refactor — see
+  -- docs/DESIGN-transport-misu.md). It replaces the old scatter of SetMaster /
+  -- SetAudible / SetArm / SyncToRig / StopRig: the shell derives each machine's
+  -- `Sounding` (Silent | Local | Rig) from (mode, armed) and pushes it here. The
+  -- instrument stores just this value and edge-detects transitions itself —
+  -- entering `Rig` hands off to the backend voice (re-issuing `Rig` re-voices),
+  -- leaving `Rig` stops it, `Local` plays local Web-MIDI, `Silent` is stopped.
+  -- Instruments with no rig voice (Selene) simply never receive `Rig`.
+  | SetSounding Sounding a
+  -- Observe: report the machine's EFFECTIVE sounding so the shell can reconcile
+  -- its `armed` set (a machine can self-disarm, e.g. Vetula unloading) and render
+  -- the switcher dot. `Silent` ⇒ not armed.
+  | AskSounding (Sounding -> a)
   | AskLibrary (Array { name :: String, text :: String } -> a)
   | LoadEntry Int a
   | ImportText String (Boolean -> a)

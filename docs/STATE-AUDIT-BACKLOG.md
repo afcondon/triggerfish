@@ -7,6 +7,18 @@ doc names the loose threads so the **next session can do a dedicated audit**:
 model the transport/authority as a proper state machine and make the illegal
 states unrepresentable.
 
+> **RESOLVED 2026-07-03** — the transport was re-modelled per
+> `docs/DESIGN-transport-misu.md`. Shell state is now `mode :: Mode` +
+> `armed :: Set Which`; each machine holds one `Sounding` (Silent | Local |
+> Rig) derived by `soundingOf`. Killed: the vestigial `master` gate,
+> `rigOn`, `playing`, the asymmetric arm records, `reconcileRig`, and the
+> dead `Hush*` actions. The six illegal states in the table below are now
+> unrepresentable. Audition policy settled (AC): audible when STOPPED,
+> silent-ok when MUTED → gates on `sounding /= Rig`. **Still open:** the
+> channel model (audit item 7), and the fully-MISU child-output path for
+> self-disarm (the SyncTick observe poll remains). Builds + bundles clean;
+> **rig-test pending.**
+
 ## The state we actually have
 
 Transport/authority is currently a scatter of booleans across the shell and four

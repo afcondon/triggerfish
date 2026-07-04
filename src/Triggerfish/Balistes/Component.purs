@@ -48,6 +48,7 @@ import Triggerfish.Balistes.Source as Source
 import Triggerfish.Balistes.Store as Store
 import Triggerfish.Balistes.Lepidoptera (printPattern, parsePattern)
 import Triggerfish.SourceQuery (Query(..))
+import Triggerfish.Transport (Sounding(..))
 import Reef.Balistes.Tables as T
 import Reef.Balistes.Sim as Sim
 import Triggerfish.Ui.Knob (knob)
@@ -95,9 +96,9 @@ targetRange = case _ of
 
 type State =
   { bal :: M.Balistes
-  , running :: Boolean        -- the ARM/cue flag (sticky); sounds only when master too
-  , master :: Boolean         -- the shell's master transport (pushed via SetMaster)
-  , audible :: Boolean        -- SOLO/ATLANTIS local-MIDI gate (false = rig authoritative)
+  , sounding :: Sounding       -- the ONE transport value (MISU refactor): Silent | Local | Rig.
+                               -- Replaces running/master/audible; `== Rig` also replaces `pushed`
+                               -- (the rig voice is running iff we're rig-authoritative).
   , playStep :: Int
   -- the ABSOLUTE model step the current `bal` will next be played from (Grids
   -- mode). PushBalistes stamps the handoff with this so the rig holds the pushed
@@ -106,9 +107,6 @@ type State =
   -- tick-tagged gestures awaiting their model step (deferred-on-both lockstep):
   -- applied in the Step loop when step <= tick.index, on both runtimes.
   , pending :: Array { step :: Int, input :: RBI.BInput }
-  -- has the user pushed to the rig this session? Gates the auto-re-push of fixed
-  -- edits so editing/selecting a pattern doesn't silently START the rig voice.
-  , pushed :: Boolean
   , flash :: Array Flash
   , binnacle :: Maybe Binnacle.Binnacle
   , midiOut :: Maybe Midi.MidiOut
@@ -145,7 +143,6 @@ data Action
   | Step Scheduler.Tick
   | Frame
   | MidiReady (Maybe Midi.MidiOut) String
-  | ToggleRun
   | ResetPat
   | Dice
   | PadAt Int Int Int          -- clientX clientY buttons
@@ -172,7 +169,6 @@ data Action
   | NewPattern                 -- append a fresh empty rhythm + select it
   | SetPatternName String      -- rename the active rhythm
   | PushBalistes               -- lockstep handoff: push BalSim to the rig (ch 11)
-  | HushBalistes               -- silence the rig
   | NoOp
 
 component :: forall i o m. MonadAff m => H.Component Query i o m
@@ -180,7 +176,7 @@ component =
   H.mkComponent
     { initialState: \_ ->
         { bal: M.defaultBalistes
-        , running: false, master: false, audible: true, playStep: 0, nextModelStep: 0, pending: [], pushed: false, flash: []
+        , sounding: Silent, playStep: 0, nextModelStep: 0, pending: [], flash: []
         , binnacle: Nothing, midiOut: Nothing, midiName: "…"
         , clockTempo: 120.0, clockLocked: false, clockBeat: 0.0, clockBar: 0, anchorCount: 0
         , nowMicros: 0.0, dragging: Nothing, dragSub: Nothing
@@ -206,32 +202,20 @@ handleQuery = case _ of
     pure (Just next)
   FeedChords _ next -> pure (Just next)   -- a drum machine; no chord quantiser
   FeedVoiceChords _ next -> pure (Just next)   -- ditto
-  SetMaster m next -> do
-    H.modify_ _ { master = m }
+  -- The ONE transport query (control-surface MISU refactor). The shell pushes this
+  -- machine's derived `Sounding`; drum hits are one-shots so there's nothing to
+  -- note-off — we only act on the rig edges: entering Rig hands off (re-issuing Rig
+  -- re-hands-off), leaving Rig stops the voice. Local emission gates on `== Local`.
+  SetSounding s next -> do
+    st <- H.get
+    when (st.sounding == Rig && s /= Rig) $
+      for_ st.binnacle \bin -> liftEffect $ Transport.send (Binnacle.socket bin) "balistes-stop"
+    H.modify_ _ { sounding = s }
+    when (s == Rig) (handleAction PushBalistes)
     pure (Just next)
-  -- SOLO/ATLANTIS authority: mute local hits when the rig is the sound source. Drum
-  -- hits are one-shots (no held notes), so nothing to silence; the Step handler's
-  -- `when` gate drops emission while the scheduler keeps running.
-  SetAudible a next -> do
-    H.modify_ _ { audible = a }
-    pure (Just next)
-  -- Control-surface Phase 2: the shell drives the handoff (no manual push button).
-  -- SyncToRig = full balistes-sim-at handoff (on entering ATLANTIS); StopRig = global
-  -- hush (on entering SOLO).
-  SyncToRig next -> handleAction PushBalistes *> pure (Just next)
-  -- Per-voice stop: silence just the Balistes rig voice (restart = the handoff).
-  StopRig next -> do
+  AskSounding reply -> do
     s <- H.get
-    for_ s.binnacle \bin -> liftEffect $ Transport.send (Binnacle.socket bin) "balistes-stop"
-    pure (Just next)
-  -- Per-tab transport (the switcher dot).
-  SetArm b next -> do
-    s <- H.get
-    when (b /= s.running) (handleAction ToggleRun)
-    pure (Just next)
-  AskArmed reply -> do
-    s <- H.get
-    pure (Just (reply s.running))
+    pure (Just (reply s.sounding))
   -- A5 library manager: the fixed-rhythm library, each as its balistesPattern eDSL.
   -- (Grids is the live generative member, not a saved entry.)
   AskLibrary reply -> do
@@ -282,7 +266,7 @@ handleAction = case _ of
 
   Step tick -> do
     st <- H.get
-    when (st.master && st.running && st.audible) case st.active of
+    when (st.sounding == Local) case st.active of
       -- A fixed rhythm: derive the step from the tick (no internal navigator),
       -- then emit each used lane's hit verbatim at its kit note + velocity.
       AFixed i -> case st.library !! i of
@@ -365,10 +349,6 @@ handleAction = case _ of
 
   MidiReady mout nm -> H.modify_ _ { midiOut = mout, midiName = nm }
 
-  -- The RUN button is now a sticky ARM toggle; Balistes sounds only when armed
-  -- AND the shell's master is playing. Drum hits are scheduled one-shots, so
-  -- stopping just gates the next Step — nothing to silence.
-  ToggleRun -> H.modify_ \s -> s { running = not s.running }
   -- Reset shifts the model step (jump to 0), so it's DEFERRED-ON-BOTH: enqueued +
   -- broadcast tagged for a near-future step, applied by the drain here and by the
   -- voice on the rig at the SAME absolute step — no pattern offset. (When stopped it
@@ -434,7 +414,7 @@ handleAction = case _ of
     -- BInput. reef_balistes_voice applies it (via the shared reef applyBInput) on the
     -- tagged model step, so the rig follows the edit. Absolute idempotent setters, so
     -- replaying the settled value lands the rig exactly where the drag settled.
-    when (not st.audible) $ for_ (st.dragging >>= \d -> dragToBInput d.kind st.bal) \input ->
+    when (st.sounding == Rig) $ for_ (st.dragging >>= \d -> dragToBInput d.kind st.bal) \input ->
       for_ st.binnacle \bin ->
         liftEffect $ Transport.send (Binnacle.socket bin) (balInputMsg st input)
     H.modify_ _ { dragging = Nothing, dragSub = Nothing }
@@ -473,7 +453,7 @@ handleAction = case _ of
   SelectPattern a -> do
     H.modify_ _ { active = a }
     st <- H.get
-    when st.pushed case a of
+    when (st.sounding == Rig) case a of
       AFixed _ -> repushFixed
       AGrids -> pushHandoff st
   ToggleEdit -> H.modify_ \s -> s { editing = not s.editing }
@@ -530,18 +510,12 @@ handleAction = case _ of
     st <- H.get
     case st.active of
       -- Fixed rhythm: push the whole pattern (stateless, no phase-hold needed).
-      AFixed i -> when (not st.audible) $ for_ (st.library !! i) \pat ->
+      AFixed i -> when (st.sounding == Rig) $ for_ (st.library !! i) \pat ->
         for_ st.binnacle \bin ->
           liftEffect $ Transport.send (Binnacle.socket bin)
             ("balistes-fixed " <> encodeFixed (fixedOf pat))
       -- Grids: the phase-aligned BalSim handoff.
       AGrids -> pushHandoff st
-    H.modify_ _ { pushed = true }
-  HushBalistes -> do
-    st <- H.get
-    for_ st.binnacle \bin ->
-      liftEffect $ Transport.send (Binnacle.socket bin) "hush"
-    H.modify_ _ { pushed = false }
   NoOp -> pure unit
 
 -- | Project the frontend Balistes record onto the shared `BalSim` — the lockstep
@@ -580,7 +554,7 @@ broadcastBInput :: forall o m. MonadAff m => RBI.BInput -> H.HalogenM State Acti
 broadcastBInput input = do
   st <- H.get
   -- Rig-send only in ATLANTIS (onRig = not audible); SOLO is silent to the rig.
-  when (not st.audible) $ for_ st.binnacle \bin ->
+  when (st.sounding == Rig) $ for_ st.binnacle \bin ->
     liftEffect $ Transport.send (Binnacle.socket bin) (balInputMsg st input)
 
 -- | Project the frontend's rich FixedPattern onto the wire-flat reef pattern: drop
@@ -606,7 +580,7 @@ pushHandoff :: forall o m. MonadAff m => State -> H.HalogenM State Action () o m
 pushHandoff st =
   -- ATLANTIS only. Called by SyncToRig (the entering-ATLANTIS handoff, where audible
   -- is already false) and by snapshot recall (a no-op in SOLO — no rig leak).
-  when (not st.audible) $ for_ st.binnacle \bin ->
+  when (st.sounding == Rig) $ for_ st.binnacle \bin ->
     liftEffect $ Transport.send (Binnacle.socket bin)
       ("balistes-sim-at " <> show st.nextModelStep <> " 0.25 " <> encodeBalSim (balSimOf st.bal))
 
@@ -620,7 +594,7 @@ enqueueBInput input = do
   let tag = soundingStep st + inputBufferSteps
   -- Local always applies (SOLO plays it); rig-send only in ATLANTIS.
   H.modify_ \s -> s { pending = s.pending <> [ { step: tag, input } ] }
-  when (not st.audible) $ for_ st.binnacle \bin ->
+  when (st.sounding == Rig) $ for_ st.binnacle \bin ->
     liftEffect $ Transport.send (Binnacle.socket bin) (balInputMsg st input)
 
 -- | Map a settled drag to the BInput that reproduces it on the rig. The four knob
@@ -650,7 +624,7 @@ persistLib = do
 repushFixed :: forall o m. MonadAff m => H.HalogenM State Action () o m Unit
 repushFixed = do
   st <- H.get
-  when (st.pushed && not st.audible) case st.active of
+  when (st.sounding == Rig) case st.active of
     AFixed i -> for_ (st.library !! i) \pat ->
       for_ st.binnacle \bin ->
         liftEffect $ Transport.send (Binnacle.socket bin) ("balistes-fixed " <> encodeFixed (fixedOf pat))
@@ -1311,8 +1285,8 @@ fixedSvg s idx pat =
       svgEl "rect"
         [ svgAttr "x" (show (colX here)), svgAttr "y" "0"
         , svgAttr "width" (show colW), svgAttr "height" (show h)
-        , svgAttr "fill" "#1c1a12", svgAttr "fill-opacity" (if s.running then "0.10" else "0.0")
-        , svgAttr "stroke" "#1c1a12", svgAttr "stroke-opacity" (if s.running then "0.5" else "0.15")
+        , svgAttr "fill" "#1c1a12", svgAttr "fill-opacity" (if s.sounding /= Silent then "0.10" else "0.0")
+        , svgAttr "stroke" "#1c1a12", svgAttr "stroke-opacity" (if s.sounding /= Silent then "0.5" else "0.15")
         , svgAttr "stroke-width" "1", svgAttr "style" "pointer-events:none" ] []
   in
     svgEl "svg"
@@ -1461,8 +1435,8 @@ heatSvg s =
       svgEl "rect"
         [ svgAttr "x" (show (colX s.playStep)), svgAttr "y" "0"
         , svgAttr "width" (show colW), svgAttr "height" (show h)
-        , svgAttr "fill" "#1c1a12", svgAttr "fill-opacity" (if s.running then "0.10" else "0.0")
-        , svgAttr "stroke" "#1c1a12", svgAttr "stroke-opacity" (if s.running then "0.5" else "0.15")
+        , svgAttr "fill" "#1c1a12", svgAttr "fill-opacity" (if s.sounding /= Silent then "0.10" else "0.0")
+        , svgAttr "stroke" "#1c1a12", svgAttr "stroke-opacity" (if s.sounding /= Silent then "0.5" else "0.15")
         , svgAttr "stroke-width" "1", svgAttr "style" "pointer-events:none" ] []
     beatLines =
       range 0 8 `concatMap'` \k ->

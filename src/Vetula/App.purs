@@ -57,6 +57,7 @@ import Binnacle as Binnacle
 import Binnacle.Clock as Clock
 import Binnacle.Scheduler as Scheduler
 import Binnacle.Transport as Transport
+import Triggerfish.Transport (Sounding(..))
 import Reef.Vetula.Perf (VChord, VVoice, VDest(..), VRenderer(..), cursorAt, renderVoiceMidiAt) as RV
 import Reef.Vetula.Protocol (encodePerf) as RV
 import Binnacle.Time (dateNow)
@@ -247,10 +248,13 @@ type State =
   , saveName :: String            -- name for the next saved progression
   , perfProg :: Maybe { name :: String, chordIds :: Array Int }  -- loaded copy (ids into `chords`)
   , voices :: Array Voice
-  , armed :: Boolean              -- the ARM/cue flag (sticky); sounds only when master too
-  , master :: Boolean            -- the shell's master transport (standalone: always true)
-  , audible :: Boolean           -- SOLO/ATLANTIS local-MIDI gate (false = rig authoritative; standalone always true)
-  , playing :: Boolean           -- derived: currently sounding (= armed && master)
+  , armed :: Boolean              -- the ARM/cue flag (sticky). Vetula keeps its own arm
+                                  -- lifecycle (standalone PerfPlay/PerfStop/unload); the
+                                  -- shell mirrors it through SetSounding (`Silent` ⇒ disarm).
+  , authority :: Sounding        -- where PERFORMANCE output goes (MISU refactor, replaces
+                                  -- master+audible): Local = local Web-MIDI, Rig = muted
+                                  -- locally + brush on the rig. Standalone stays Local.
+  , playing :: Boolean           -- derived: currently sounding (= armed, under authority)
   , pulse :: Int                  -- the shared clock's 16th-note grid index (from the scheduler tick)
   , tempo :: Int                  -- BPM display (tracks the live clock; the bpm field nudges the free baseline)
   , binnacle :: Maybe Binnacle.Binnacle  -- the shared transport (free-run → Link-lock), like Odonus/Balistes
@@ -328,12 +332,13 @@ data SourceQuery a
   | AskVoiceChords (Array { id :: Int, pcs :: Array Int } -> a)  -- live per-Odonus-voice chord
   | AskHarmonic ({ durs :: Array Int, active :: Int, chord :: String } -> a)  -- nav harmonic strip: voice-0 dwell schedule + live playhead + the active chord's notes
   | AskBrushSig (String -> a)   -- the current rig payload string; the shell diffs it to auto-re-push on change
-  | SetMaster Boolean a
-  | SetAudible Boolean a        -- SOLO/ATLANTIS local-MIDI gate (false = rig authoritative)
-  | SyncToRig a                 -- (re)push the progression to the rig now (on entering ATLANTIS / on change)
-  | StopRig a                   -- hush the rig voice (on entering SOLO)
-  | SetArm Boolean a            -- set the sticky ARM/cue (the switcher's per-tab dot)
-  | AskArmed (Boolean -> a)     -- report ARM state so the shell can render the dot
+  -- The ONE transport query (control-surface MISU refactor). The shell pushes the
+  -- derived `Sounding`: `Silent` disarms, `Local` plays local Web-MIDI, `Rig` mutes
+  -- locally + (re)pushes the brush to the rig voice. Replaces SetMaster/SetAudible/
+  -- SetArm/SyncToRig/StopRig. `AskSounding` reports the EFFECTIVE sounding (Silent
+  -- when self-disarmed, e.g. unloading a progression) so the shell can reconcile.
+  | SetSounding Sounding a
+  | AskSounding (Sounding -> a)
   | SyncFree Number Number a    -- adopt the rack's shared free-run baseline (start micros, BPM)
   | AskLibrary (Array { name :: String, text :: String } -> a)   -- A5 manager
   | LoadEntry Int a
@@ -378,11 +383,10 @@ component = H.mkComponent
       , perfProg: Nothing
       , voices: []
       , armed: false
-      -- standalone Vetula has no shell, so master defaults true (the play button
-      -- works as a direct transport). Inside Triggerfish the shell pushes false on
-      -- init and drives it from the master PLAY.
-      , master: true
-      , audible: true
+      -- standalone Vetula has no shell, so authority defaults Local (the play button
+      -- works as a direct local transport). Inside Triggerfish the shell drives it via
+      -- SetSounding (Silent on init since nothing is armed, then Local/Rig on arm).
+      , authority: Local
       , playing: false
       , pulse: -1
       , tempo: 120
@@ -434,45 +438,33 @@ handleQuery = case _ of
   AskBrushSig reply -> do
     s <- H.get
     pure (Just (reply (brushMsg s)))
-  -- The shell's master transport: store it, then start/stop sounding so it plays
-  -- exactly when armed && master.
-  SetMaster m next -> do
-    H.modify_ _ { master = m }
-    reconcilePerf
-    pure (Just next)
-  -- SOLO/ATLANTIS authority: mute local Web-MIDI when the rig is the sound source.
-  -- Gates the performance scheduler's emission (the PerfTick `when`); the clock keeps
-  -- ticking. Audition previews (playChord/playPath) stay local — they're the palette's
-  -- sample-the-harmony gesture, not the transport.
-  SetAudible a next -> do
+  -- The ONE transport query (control-surface MISU refactor). The shell pushes the
+  -- derived `Sounding`; we fold it into Vetula's own arm lifecycle and act:
+  --   * Silent ⇒ disarm; Local/Rig ⇒ arm (reconcilePerf starts/stops the ticker).
+  --   * leaving Local  → silence held local notes (the clock keeps ticking; audition
+  --     previews stay local and ungated — the palette's sample-the-harmony gesture).
+  --   * entering Rig   → (re)push the brush as a Tidal pattern (re-issuing Rig
+  --     re-voices — the shell does this on a settled edit); leaving Rig → vetula-stop.
+  SetSounding s next -> do
     st <- H.get
-    when (st.audible && not a && st.playing) do
+    let nowArmed = s /= Silent
+    when (st.authority == Local && s /= Local && st.playing) do
       silenceHeld st
-      H.modify_ \s -> s { voices = map (_ { held = [] }) s.voices }
-    H.modify_ _ { audible = a }
+      H.modify_ \s' -> s' { voices = map (_ { held = [] }) s'.voices }
+    H.modify_ _ { authority = s }
+    when (nowArmed /= st.armed) do
+      H.modify_ _ { armed = nowArmed }
+      reconcilePerf
+    when (st.authority == Rig && s /= Rig) $
+      for_ st.binnacle \bin -> liftEffect $ Transport.send (Binnacle.socket bin) "vetula-stop"
+    when (s == Rig) $
+      for_ st.binnacle \bin -> liftEffect $ Transport.send (Binnacle.socket bin) (brushMsg st)
     pure (Just next)
-  -- Control-surface Phase 2: the shell drives the handoff (no manual → RIG/→ BRUSH
-  -- button). SyncToRig = (re)push the progression as a Tidal pattern (the sole
-  -- Vetula→rig path; the old vetula-perf → RIG is retired). StopRig = global hush.
-  SyncToRig next -> do
+  -- Report the EFFECTIVE sounding: Silent when self-disarmed (unload) so the shell
+  -- drops us from its armed set; otherwise the pushed authority.
+  AskSounding reply -> do
     st <- H.get
-    for_ st.binnacle \bin ->
-      liftEffect $ Transport.send (Binnacle.socket bin) (brushMsg st)
-    pure (Just next)
-  StopRig next -> do
-    st <- H.get
-    -- Per-voice stop: silence just the Vetula brush voice (restart = SyncToRig).
-    for_ st.binnacle \bin ->
-      liftEffect $ Transport.send (Binnacle.socket bin) "vetula-stop"
-    pure (Just next)
-  -- Per-tab transport (the switcher dot). Reuse ToggleArm so reconcilePerf runs.
-  SetArm b next -> do
-    st <- H.get
-    when (b /= st.armed) (handleAction ToggleArm)
-    pure (Just next)
-  AskArmed reply -> do
-    st <- H.get
-    pure (Just (reply st.armed))
+    pure (Just (reply (if st.armed then st.authority else Silent)))
   -- The rack's shared free-run baseline: adopt it so Vetula shares the same
   -- downbeat (and tempo) as Odonus/Balistes with no rig.
   SyncFree startMicros tempo next -> do
@@ -1076,7 +1068,7 @@ handleAction = case _ of
           -- pulse + cursor march on (the nav harmonic strip stays live in every
           -- pane), but pass no MIDI-out so nothing sounds locally — the rig's brush
           -- is the sound. SOLO: emit as normal.
-          mout = if st.audible then st.midiOut else Nothing
+          mout = if st.authority == Local then st.midiOut else Nothing
       voices' <- liftEffect $ traverse (stepVoice mout reefChords tick.index pulseMs tick.delayMs) st.voices
       H.modify_ _ { pulse = tick.index, voices = voices', clockTempo = tempo, tempo = round tempo }
 
@@ -1195,7 +1187,7 @@ updateVoice vid f = H.modify_ \s -> s { voices = map (\v -> if v.id == vid then 
 reconcilePerf :: forall o m. MonadAff m => H.HalogenM State Action Slots o m Unit
 reconcilePerf = do
   st <- H.get
-  let want = st.armed && st.master
+  let want = st.armed
   when (st.playing && not want) (silenceHeld st)
   H.modify_ \s -> s
     { playing = want
@@ -1268,14 +1260,15 @@ rendBrush = case _ of
 -- | Build the `vetula-voicings <channel> <renderer> <json>` message: the whole
 -- | progression's hand-picked voicings (playNotes per chord) as a compact JSON
 -- | `Array (Array Int)` (no spaces — the rig splits the verb on spaces). Single
--- | brush voice: takes the first voice's renderer + channel (defaults block / ch 8
--- | if there are no voices yet). The rig treats <channel> as the link-spike
--- | (1-indexed) MIDI channel.
+-- | brush voice: takes the first → MIDI voice's renderer + channel + dwell (the
+-- | brush is a MIDI-out voice; a → odo voice only conducts Odonus and sounds no
+-- | MIDI, so it must NOT be the brush). Defaults block / ch 8 if there is no MIDI
+-- | voice yet. The rig treats <channel> as the link-spike (1-indexed) MIDI channel.
 brushMsg :: State -> String
 brushMsg st =
   let
     chords = perfChords st
-    v0 = head st.voices
+    v0 = find (\v -> v.dest == ToMidi) st.voices
     rend = maybe "block" (rendBrush <<< _.renderer) v0
     ch = maybe 8 _.channel v0
     durs = maybe (replicate (length chords) 1) _.durs v0
