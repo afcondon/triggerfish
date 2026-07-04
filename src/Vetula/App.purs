@@ -2661,8 +2661,9 @@ voicePlayheadRow n v =
               -- Axis B: how to sound the chord — a note-index pattern. Empty = the
               -- renderer (block/arp/strum). "0 1 2 3" arp · "3" top voice · "3 2 1 0" down.
               -- The button to the left picks the note ALPHABET both this pattern AND the
-              -- renderer use: block = the chord's own notes; voice-led = a line carried
-              -- through the loop (0=bass, -1=melody, and strum's common tones ring).
+              -- renderer use: block = the chord's own notes; voice-led = a fixed-N line
+              -- carried through the loop (0=bass, -1=melody, strum's common tones ring);
+              -- entering = just the notes new to each chord (arp the newcomers in).
               [ HP.value v.notePatternDraft
               , HP.placeholder ("empty = " <> rendName v.renderer)
               , HP.style ("flex: 1 1 auto; min-width: 110px; font-family: ui-monospace, monospace; font-size: 12px; padding: 4px 6px; border-radius: 4px; border: 1px solid " <> noteBorderCol <> ";")

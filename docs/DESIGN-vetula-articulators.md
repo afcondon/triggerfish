@@ -194,13 +194,45 @@ while genuinely new notes re-attack. **The voice-leading IS the held/entering
 distinction.** So `strum × voice-led` is "Strum re-expressed" with zero new type — the
 `Alphabet` stays a plain `Array Int` per chord.
 
-**Still deferred**: `voiceLeadN` (force exactly N voices — the chord→N-pc reduction so
-roles stay stable across *unequal*-size chords; today voice-led holds stable N only
-across equal-size runs), `featureVoice k` (largely reachable already as voice-led +
-`♪ k`), then `walkingBass`/`pedal`/`counterMelody`/`thicken`. Patterning the *entering*
-notes specifically (`entering: 0 1 2` arps the new notes in) would still want a way to
-address the entering subset — a later refinement now that the plain voice-led strum
-works.
+## As built — third cut (fixed-N voice-led + `entering`; the family filled out)
+
+- **`voiceLeadN` folded into `voice-led`.** `voiceLed` now forces every chord to N =
+  the largest chord's voice count, so index k is the same connected line across the WHOLE
+  progression — `0` = bass, `-1` = melody, size-independent, even when the chords are
+  different sizes. Equal-size progressions are byte-identical to before (N = the shared
+  size, nothing doubled, harmonia's optimal `voiceLead` fold). Smaller chords: each voice
+  placed at its nearest next pc (harmonia `nearestNote`), any uncovered pc forced onto the
+  cheapest voice, surplus voices double — non-lossy (never drops a chord tone), smooth,
+  stable count. No separate control: "voice-led" just always works now.
+- **`AEntering` — the new-notes alphabet.** Each chord's alphabet = the notes in its
+  (fixed-N) voice-led voicing that were NOT in the previous chord's; first chord = all.
+  So `♪ 0 1 2` arps the newcomers in, `♪ 0` picks the lowest new note. A chord all of
+  whose notes are held → empty alphabet → silence (honest: nothing new to articulate).
+
+Verified on a mixed-size ii–V–I (Dm7·G-triad·Cmaj7): voice-led gives 4 voices for all
+three (the triad doubled to `[59,62,67,71]`), roles stable; entering gives `[59,67,71]`
+then `[60,64]` (common tones held). Three articulators now: `block`, `voice-led`,
+`entering`, cycled by the one button. reef goldens unchanged.
+
+`featureVoice` needs no constructor — it's `voice-led` + `♪ 0`/`♪ -1` (solo the bass or
+melody line).
+
+### The richer-seam tier (not built — needs the seam to grow)
+
+`walkingBass`, `counterMelody`, `pedal`, `thicken` don't fit "one static alphabet per
+chord indexed by a pattern":
+
+- `walkingBass` / `counterMelody` are **time-varying WITHIN a chord** (a bass that walks
+  root→passing→approach across the chord's beats; an invented contrary line) — i.e. they
+  ARE patterns, generated per chord, not alphabets an external pattern indexes. The seam
+  would need an articulator that emits a *sub-pattern* per chord (nested clocks), or a
+  articulator-owns-the-note-clock variant.
+- `pedal` (a tone common to a *run* of chords sustains) and `thicken` (melody + parallel
+  3rd/6th — two notes moving together) want a **windowed** or **polyphonic** alphabet
+  entry (a slot that is itself a small chord). The current entry is a single Int.
+
+Both are a coherent next architectural step (articulator → per-chord pattern / poly
+slot), best taken deliberately rather than forced into the Int-per-slot model now.
 
 ## Open questions
 
