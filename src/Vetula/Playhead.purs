@@ -20,6 +20,7 @@
 module Vetula.Playhead
   ( patternClock
   , clockFor
+  , noteClock
   , defaultPattern
   ) where
 
@@ -29,7 +30,7 @@ import Control.Alternative (guard)
 import Data.Array (concatMap, find, mapMaybe, range, sortBy)
 import Data.Either (Either(..))
 import Data.Int as Int
-import Data.Maybe (Maybe, fromMaybe)
+import Data.Maybe (Maybe(..), fromMaybe)
 import Data.Rational (Rational, fromInt, toNumber)
 import Data.String (joinWith, trim)
 import Data.Tuple (Tuple(..))
@@ -60,6 +61,18 @@ clockFor nChords v =
   else case patternClock nChords v.pattern of
     Right clock -> clock
     Left _ -> clockOfDurs nChords v.durs
+
+-- | A NOTE-index pattern → clock (Axis B). Same evaluation as `patternClock`, but the
+-- | indices are note positions within a chord, bounded generously (reef wraps them into
+-- | the actual chord size at play time). So `"0 1 2 3"` arps, `"3"` holds the top note,
+-- | `"[0 1 2 3]*4"` is a fast arp. Empty or unparseable → Nothing (fall back to the
+-- | voice's block/arp/strum renderer).
+noteClock :: String -> Maybe PerfClock
+noteClock src =
+  if trim src == "" then Nothing
+  else case patternClock 128 src of
+    Right c -> Just c
+    Left _ -> Nothing
 
 -- | Parse + query a mini-notation string into a segment clock, or return the parse
 -- | error (for the commit UI). Indices outside `0 .. nChords-1` are dropped (they

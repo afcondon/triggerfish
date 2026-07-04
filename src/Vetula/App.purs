@@ -60,8 +60,8 @@ import Binnacle.Scheduler as Scheduler
 import Binnacle.Transport as Transport
 import Triggerfish.Transport (Sounding(..))
 import Vetula.Store as Store
-import Reef.Vetula.Perf (VChord, VVoice, VDest(..), VRenderer(..), PerfClock, cursorAtClock, renderClockMidiAt) as RV
-import Vetula.Playhead (clockFor, defaultPattern, patternClock)
+import Reef.Vetula.Perf (VChord, VVoice, VDest(..), VRenderer(..), PerfClock, cursorAtClock, renderClockMidiAt, renderNoteClockMidiAt) as RV
+import Vetula.Playhead (clockFor, defaultPattern, noteClock, patternClock)
 import Data.Either (Either(..))
 import Reef.Vetula.Protocol (encodePerf) as RV
 import Binnacle.Time (dateNow)
@@ -140,6 +140,10 @@ type Voice =
                             -- overrides `durs` (Vetula.Playhead.clockFor); 1 cycle = 1 bar.
   , patternDraft :: String  -- the uncommitted edit buffer; `commit` copies it into `pattern`
                             -- atomically (never debounced), so one edit lands as one change.
+  , notePattern :: String   -- Axis-B: a note-index pattern that sequences the CURRENT chord's
+                            -- notes ("0 1 2 3" arp, "3" top voice, "[0 1 2 3]*4" fast). Empty
+                            -- = use the block/arp/strum renderer instead.
+  , notePatternDraft :: String
   , durs :: Array Int       -- LEGACY bars-per-chord dwell (one per progression chord; 0 =
                             -- skip). Used when `pattern` is empty, and still the rig-push
                             -- shape until the rig learns patterns (#77).
@@ -334,8 +338,9 @@ data Action
   | CycleVoiceRenderer Int
   | BumpCell Int Int Boolean    -- voice id, chord index, shift-held (down) — set a cell's bars
   | SetVoicePhase Int String
-  | SetVoicePattern Int String  -- edit a voice's playhead-pattern draft (uncommitted)
-  | CommitVoicePattern Int      -- commit the draft into the live pattern (atomic, not debounced)
+  | SetVoicePattern Int String     -- edit a voice's read-head (chord) pattern draft
+  | SetVoiceNotePattern Int String -- edit a voice's Axis-B note-index pattern draft
+  | CommitVoicePattern Int         -- commit BOTH drafts into the live patterns (atomic)
   | ToggleVoiceMute Int
   | SetTempo String
   | ToggleArm              -- the ▶/■ button: sticky arm/cue under the shell master
@@ -1094,12 +1099,14 @@ handleAction = case _ of
     Just n -> updateVoice vid (_ { phase = max 0 n })
     Nothing -> pure unit
 
-  -- live-code the read-head: type freely into the draft…
+  -- live-code the read-head (which chord, when) and the note pattern (which note of it)…
   SetVoicePattern vid p -> updateVoice vid (_ { patternDraft = p })
+  SetVoiceNotePattern vid p -> updateVoice vid (_ { notePatternDraft = p })
 
-  -- …then commit it atomically. Committing resets the live-jump phase (the new
-  -- pattern re-anchors from bar 0) so an edit is a clean structural change.
-  CommitVoicePattern vid -> updateVoice vid (\v -> v { pattern = trim v.patternDraft, phase = 0 })
+  -- …then commit BOTH atomically. Committing resets the live-jump phase (the new
+  -- patterns re-anchor from bar 0) so an edit is a clean structural change.
+  CommitVoicePattern vid -> updateVoice vid \v ->
+    v { pattern = trim v.patternDraft, notePattern = trim v.notePatternDraft, phase = 0 }
 
   ToggleVoiceMute vid -> updateVoice vid (\v -> v { muted = not v.muted })
 
@@ -1243,7 +1250,8 @@ defaultVoice vid channel renderer n =
   -- prefill the read-head with its REAL default pattern (one chord per bar) as concrete
   -- editable text — WYSIWYG, so the field shows what's actually playing, not a look-alike
   -- placeholder. `durs` stays as the equivalent legacy fallback / rig-push shape.
-  { id: vid, channel, dest: ToMidi, renderer, pattern: defaultPattern n, patternDraft: defaultPattern n, durs: replicate n 1, phase: 0, cursor: 0, held: [], muted: false }
+  { id: vid, channel, dest: ToMidi, renderer, pattern: defaultPattern n, patternDraft: defaultPattern n
+  , notePattern: "", notePatternDraft: "", durs: replicate n 1, phase: 0, cursor: 0, held: [], muted: false }
 
 -- | The clock a voice plays: its committed pattern if non-empty & parseable, else its
 -- | legacy `durs`. The single frontend seam onto `Vetula.Playhead` / the reef realiser.
@@ -1431,11 +1439,16 @@ stepVoice mout reefChords pulse pulseMs baseDelayMs v =
   let rv = toReefVoice v
       clock = voiceClock (length reefChords) v
       cur = fromMaybe v.cursor (RV.cursorAtClock clock v.phase pulse)
+      -- Axis B: a non-empty note pattern sequences the current chord's notes; otherwise
+      -- fall back to the voice's block / arp / strum renderer.
+      emit = case noteClock v.notePattern of
+        Just nc -> RV.renderNoteClockMidiAt reefChords rv clock nc pulse
+        Nothing -> RV.renderClockMidiAt reefChords rv clock pulse
   in case v.dest of
     ToOdonus -> pure v { cursor = cur }
     ToMidi -> do
       for_ mout \out ->
-        for_ (RV.renderClockMidiAt reefChords rv clock pulse) \e ->
+        for_ emit \e ->
           Midi.scheduleNote out
             { channel: v.channel, note: e.note, velocity: e.velocity
             , delayMs: baseDelayMs, durMs: e.durPulses * pulseMs }
@@ -2390,7 +2403,7 @@ progressionRow st i c =
       [ HH.span
           [ HP.style ("flex: 0 0 16px; text-align: right; font-size: 11px; font-weight: 600; "
               <> (if picked then "color: #3f5f8a;" else if active then "color: #7a5c00;" else "color: #b0b0b0;")) ]
-          [ HH.text (show (i + 1)) ]
+          [ HH.text (show i) ]
       , SE.svg
           ( [ SA.viewBox 0.0 0.0 prowW prowH, HP.style "width: 100%; height: auto; display: block;" ]
               <> (case st.drag of
@@ -2538,15 +2551,23 @@ loadedView st pp =
       -- lighting the active chord. Its READ-HEADS live below, as Tidal patterns.
       , HH.div [ HP.style "display: flex; align-items: baseline; gap: 12px; margin: 8px 0 6px;" ]
           [ HH.span [ HP.style "font-size: 12px; color: #6a6a6a; letter-spacing: 0.06em; text-transform: uppercase;" ] [ HH.text "Progression" ]
-          , HH.span [ HP.style "font-size: 11px; color: #b0b0b0;" ] [ HH.text "click a chord to select it · Tab / ↑↓ revoice live" ]
+          , HH.span [ HP.style "font-size: 11px; color: #b0b0b0;" ] [ HH.text "chords numbered 0-based (the indices you type below) · click to select · Tab / ↑↓ revoice live" ]
           ]
       , HH.table [ HP.style "border-collapse: collapse;" ]
           (mapWithIndex (gridChordRow st (length chords)) chords)
       -- the PLAYHEADS: one live-coded Tidal read-head per voice.
       , HH.div [ HP.style "display: flex; align-items: baseline; gap: 12px; margin: 18px 0 6px;" ]
           [ HH.span [ HP.style "font-size: 12px; color: #6a6a6a; letter-spacing: 0.06em; text-transform: uppercase;" ] [ HH.text "Playheads" ]
-          , HH.span [ HP.style "font-size: 11px; color: #b0b0b0;" ] [ HH.text "Tidal pattern of chord indices · 1 cycle = 1 bar · commit to apply" ]
+          , HH.span [ HP.style "font-size: 11px; color: #b0b0b0;" ] [ HH.text "commit applies both boxes · empty ♪ = block/arp/strum renderer" ]
           , cellBtn "+ add voice" false AddVoice
+          ]
+      -- column header for the two pattern boxes (roughly aligned over them).
+      , HH.div [ HP.style "display: flex; align-items: center; gap: 6px; padding: 0 6px 2px; font-size: 10px; letter-spacing: 0.04em; text-transform: uppercase; color: #b8b8b8;" ]
+          [ HH.div [ HP.style "flex: 0 0 210px;" ] [ HH.text "voice" ]
+          , HH.div [ HP.style "flex: 1 1 auto; min-width: 120px;" ] [ HH.text "read-head — which chord, when" ]
+          , HH.span [ HP.style "flex: 0 0 auto; visibility: hidden;" ] [ HH.text "♪" ]
+          , HH.div [ HP.style "flex: 1 1 auto; min-width: 110px;" ] [ HH.text "♪ notes — which note (0 = lowest)" ]
+          , HH.div [ HP.style "flex: 0 0 130px;" ] []
           ]
       -- keyed by voice id: the pattern inputs are UNCONTROLLED (so the scheduler's
       -- ~10Hz re-render can't fight the caret while you live-code), so their DOM must
@@ -2567,14 +2588,23 @@ voicePlayheadRow n v =
                  else case patternClock n draft of
                         Left e -> Just e
                         Right _ -> Nothing
-      dirty = v.patternDraft /= v.pattern
-      borderCol = case draftErr of
+      -- Axis-B note pattern parse-check (indices bound generously, reef wraps to chord size)
+      noteDraft = trim v.notePatternDraft
+      noteErr = if noteDraft == "" then Nothing
+                else case patternClock 128 noteDraft of
+                       Left e -> Just e
+                       Right _ -> Nothing
+      dirty = v.patternDraft /= v.pattern || v.notePatternDraft /= v.notePattern
+      colOf = case _ of
         Just _ -> "#e2b6ae"
         Nothing -> "#dcdcdc"
+      borderCol = colOf draftErr
+      noteBorderCol = colOf noteErr
       loopBars = (voiceClock n v).loopLen / 16
-      status = case draftErr of
-        Just _ -> HH.span [ HP.style "font-size: 11px; color: #c0392b;" ] [ HH.text "⚠ parse error" ]
-        Nothing -> HH.span [ HP.style "font-size: 11px; color: #9a9a9a;" ]
+      anyErr = isJust draftErr || isJust noteErr
+      status = if anyErr
+        then HH.span [ HP.style "font-size: 11px; color: #c0392b;" ] [ HH.text "⚠ parse error" ]
+        else HH.span [ HP.style "font-size: 11px; color: #9a9a9a;" ]
           [ HH.text ((if dirty then "• " else "") <> "loop " <> show loopBars <> "b") ]
   in HH.div
       [ HP.style ("display: flex; align-items: center; gap: 6px; padding: 4px 6px; border: 1px solid #eee; border-radius: 5px; background: #fbfbfa;"
@@ -2595,8 +2625,17 @@ voicePlayheadRow n v =
               -- hint ("empty = …"), not as content.
               [ HP.value v.patternDraft
               , HP.placeholder ("empty = " <> defaultPattern n)
-              , HP.style ("flex: 1 1 auto; min-width: 160px; font-family: ui-monospace, monospace; font-size: 12px; padding: 4px 6px; border-radius: 4px; border: 1px solid " <> borderCol <> ";")
+              , HP.style ("flex: 1 1 auto; min-width: 120px; font-family: ui-monospace, monospace; font-size: 12px; padding: 4px 6px; border-radius: 4px; border: 1px solid " <> borderCol <> ";")
               , HE.onValueInput (SetVoicePattern v.id)
+              ]
+          , HH.span [ HP.style "font-size: 12px; color: #c0c0c0;" ] [ HH.text "♪" ]
+          , HH.input
+              -- Axis B: how to sound the chord — a note-index pattern. Empty = the
+              -- renderer (block/arp/strum). "0 1 2 3" arp · "3" top voice · "3 2 1 0" down.
+              [ HP.value v.notePatternDraft
+              , HP.placeholder ("empty = " <> rendName v.renderer)
+              , HP.style ("flex: 1 1 auto; min-width: 110px; font-family: ui-monospace, monospace; font-size: 12px; padding: 4px 6px; border-radius: 4px; border: 1px solid " <> noteBorderCol <> ";")
+              , HE.onValueInput (SetVoiceNotePattern v.id)
               ]
           , cellBtn "commit" dirty (CommitVoicePattern v.id)
           , status
@@ -2615,7 +2654,7 @@ gridChordRow st _ i c =
             [ HP.style "padding: 0 8px 0 0; cursor: pointer; white-space: nowrap;"
             , HE.onClick \_ -> SelectPerfChord c.id ]
             [ HH.div [ HP.style "display: flex; align-items: center; gap: 8px;" ]
-                [ HH.span [ HP.style ("flex: 0 0 18px; text-align: right; font-size: 11px; font-weight: 600; " <> (if active then "color: #7a5c00;" else "color: #b0b0b0;")) ] [ HH.text (show (i + 1)) ]
+                [ HH.span [ HP.style ("flex: 0 0 18px; text-align: right; font-size: 11px; font-weight: 600; " <> (if active then "color: #7a5c00;" else "color: #b0b0b0;")) ] [ HH.text (show i) ]
                 , SE.svg [ SA.viewBox 0.0 0.0 prowW prowH, HP.style "width: 300px; height: auto; display: block;" ]
                     (map (\m -> SE.line [ SA.x1 (prowPitchX m), SA.y1 4.0, SA.x2 (prowPitchX m), SA.y2 (prowH - 4.0), SA.class_ (cn "prow-oct") ]) [ 36, 48, 60, 72, 84 ]
                       <> mapWithIndex (\j m -> SE.circle [ SA.cx (prowPitchX m), SA.cy (prowH / 2.0), SA.r 4.5, SA.class_ (cn ("ladder-dot ladder-dot--" <> show (mod j 5))) ]) (playNotes c))
