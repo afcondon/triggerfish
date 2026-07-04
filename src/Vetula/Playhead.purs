@@ -70,7 +70,7 @@ clockFor nChords v =
 noteClock :: String -> Maybe PerfClock
 noteClock src =
   if trim src == "" then Nothing
-  else case patternClock 128 src of
+  else case patternClockBounded (-127) 128 src of
     Right c -> Just c
     Left _ -> Nothing
 
@@ -78,29 +78,35 @@ noteClock src =
 -- | error (for the commit UI). Indices outside `0 .. nChords-1` are dropped (they
 -- | read as rests), so a pattern can safely outlive a shortened progression.
 patternClock :: Int -> String -> Either String PerfClock
-patternClock nChords src = case parseMiniPattern src of
+patternClock nChords = patternClockBounded 0 nChords
+
+-- | `patternClock` generalised to an arbitrary index range `[lo, hi)`. Chord patterns
+-- | use `[0, nChords)`; note patterns use a range that ADMITS NEGATIVES (from-the-top
+-- | indexing, `-1` = highest), reef normalising them into the actual chord at play time.
+patternClockBounded :: Int -> Int -> String -> Either String PerfClock
+patternClockBounded lo hi src = case parseMiniPattern src of
   Left err -> Left err
   Right pat ->
     let period = detectPeriod pat
         segs = sortBy (comparing _.start)
-                 (concatMap (cycleSegs pat nChords) (range 0 (period - 1)))
+                 (concatMap (cycleSegs pat lo hi) (range 0 (period - 1)))
     in Right { segs, loopLen: period * pulsesPerCycle }
 
 -- | The segments whose ONSET falls in cycle `c` (so an event is counted once, in the
 -- | cycle it starts). Each digital event becomes `{ ix, start, len }` in pulses.
-cycleSegs :: Pattern String -> Int -> Int -> Array Seg
-cycleSegs pat nChords c =
-  mapMaybe (toSeg nChords c) (query pat (cycleArc c))
+cycleSegs :: Pattern String -> Int -> Int -> Int -> Array Seg
+cycleSegs pat lo hi c =
+  mapMaybe (toSeg lo hi c) (query pat (cycleArc c))
 
--- | One digital, in-cycle, in-range, positive-length event → a segment. Anything
--- | else (analog, wrong cycle, non-numeric / out-of-range value, zero length) drops.
-toSeg :: Int -> Int -> Event String -> Maybe Seg
-toSeg nChords c ev = do
+-- | One digital, in-cycle, in-range `[lo, hi)`, positive-length event → a segment.
+-- | Anything else (analog, wrong cycle, non-numeric / out-of-range, zero length) drops.
+toSeg :: Int -> Int -> Int -> Event String -> Maybe Seg
+toSeg lo hi c ev = do
   guard (isDigital ev)
   Arc w <- eventWhole ev
   guard (w.start >= fromInt c && w.start < fromInt (c + 1))
   ix <- Int.fromString (trim (eventValue ev))
-  guard (ix >= 0 && ix < nChords)
+  guard (ix >= lo && ix < hi)
   let start = toPulse w.start
       len = toPulse w.stop - start
   guard (len > 0)

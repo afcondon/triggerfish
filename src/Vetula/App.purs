@@ -2566,7 +2566,7 @@ loadedView st pp =
           [ HH.div [ HP.style "flex: 0 0 210px;" ] [ HH.text "voice" ]
           , HH.div [ HP.style "flex: 1 1 auto; min-width: 120px;" ] [ HH.text "read-head — which chord, when" ]
           , HH.span [ HP.style "flex: 0 0 auto; visibility: hidden;" ] [ HH.text "♪" ]
-          , HH.div [ HP.style "flex: 1 1 auto; min-width: 110px;" ] [ HH.text "♪ notes — which note (0 = lowest)" ]
+          , HH.div [ HP.style "flex: 1 1 auto; min-width: 110px;" ] [ HH.text "♪ notes — which note (0 = lowest · -1 = top)" ]
           , HH.div [ HP.style "flex: 0 0 130px;" ] []
           ]
       -- keyed by voice id: the pattern inputs are UNCONTROLLED (so the scheduler's
