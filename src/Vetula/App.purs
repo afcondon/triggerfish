@@ -1011,18 +1011,7 @@ handleAction = case _ of
         sig = currentSource st
     if length steps == 0
       then when (isJust st.lastCapIdx) (H.modify_ _ { lastCapIdx = Nothing, lastCapSig = "" })
-      else when (sig /= st.lastCapSig) do
-        let kl = groupLabel st.key
-        case st.lastCapIdx of
-          Just i | Just e <- index st.library i, not e.kept ->
-            H.modify_ _ { library = fromMaybe st.library (modifyAt i (_ { keyLabel = kl, source = sig }) st.library)
-                        , lastCapSig = sig }
-          _ -> do
-            let n = st.capSeq + 1
-                nm = kl <> " ◦" <> show n
-            H.modify_ _ { library = st.library <> [ { name: nm, keyLabel: kl, source: sig, kept: false } ]
-                        , lastCapIdx = Just (length st.library), capSeq = n, lastCapSig = sig }
-        persistLib
+      else when (sig /= st.lastCapSig) (captureSteps st)
 
   -- Promote an ephemeral to a keeper (or demote a keeper). Promoting the current
   -- session's ephemeral forks a fresh one for continued edits (lastCapIdx cleared).
@@ -1302,6 +1291,24 @@ persistLib :: forall o m. MonadAff m => H.HalogenM State Action Slots o m Unit
 persistLib = do
   lib <- H.gets _.library
   liftEffect $ Store.saveLibrary { library: lib }
+
+-- | Capture the current progression into the stack — update the session's ephemeral
+-- | ◦ in place, or open a new one — then persist. Shared by the settle-timer and the
+-- | key-change snapshot; uses the CURRENT key, so a key-change snapshot is
+-- | self-contained in the old key. Assumes a non-empty path.
+captureSteps :: forall o m. MonadAff m => State -> H.HalogenM State Action Slots o m Unit
+captureSteps st = do
+  let sig = currentSource st
+      kl = groupLabel st.key
+  case st.lastCapIdx of
+    Just i | Just e <- index st.library i, not e.kept ->
+      H.modify_ _ { library = fromMaybe st.library (modifyAt i (_ { keyLabel = kl, source = sig }) st.library), lastCapSig = sig }
+    _ -> do
+      let n = st.capSeq + 1
+          nm = kl <> " ◦" <> show n
+      H.modify_ _ { library = st.library <> [ { name: nm, keyLabel: kl, source: sig, kept: false } ]
+                  , lastCapIdx = Just (length st.library), capSeq = n, lastCapSig = sig }
+  persistLib
 
 -- | Note-off every voice's currently-held notes.
 silenceHeld :: forall o m. MonadAff m => State -> H.HalogenM State Action Slots o m Unit
@@ -1868,14 +1875,33 @@ resetPalette = do
   startWith st.key (seedFocus st.tab) set
 
 -- | Rebuild the palette in a new key/scale, keeping pinned chords.
+-- |
+-- | Slice 2 — non-destructive key change. Instead of wiping the progression, we
+-- | snapshot it (in the OLD key) to the stack, then TRANSPOSE it into the new key
+-- | and keep it. To the user the on-screen progression simply transposes; the old
+-- | key is preserved on the stack as an undo. The transposed chords become imported
+-- | (off-lattice) voicings, keeping their ids so `path` stays valid; the session
+-- | pointer is reset so the transposed copy forks a fresh ◦ (the old one is frozen).
 rebuild :: forall o m. MonadAff m => Key -> H.HalogenM State Action Slots o m Unit
 rebuild key = do
   st <- H.get
-  let kept = filter _.pinned st.chords
-      set = nubByEq (\a b -> a.id == b.id) (seedsFor st.tab key <> kept)
+  when (length (pathSteps st) > 0) (captureSteps st)
+  st2 <- H.get
+  let d = nearestShift st2.key.tonic key.tonic
+      pathIds = Set.fromFoldable st2.path
+      chords' = map (\c -> if Set.member c.id pathIds then transposeChord d c else c) st2.chords
+      kept = filter _.pinned st2.chords
+      set = nubByEq (\a b -> a.id == b.id) (seedsFor st2.tab key <> kept)
   stopSim
-  H.modify_ _ { path = [], familyScale = Map.empty, focusedFamily = Nothing, stackHead = Nothing, dropped = Map.empty, borrowMode = Nothing, imported = Set.empty, sourceEdit = Nothing, genSel = [], candidates = [] }
-  startWith key (seedFocus st.tab) set
+  H.modify_ _
+    { chords = chords'
+    , imported = Set.union st2.imported pathIds
+    , familyScale = Map.empty, focusedFamily = Nothing, stackHead = Nothing
+    , dropped = Map.empty, borrowMode = Nothing, sourceEdit = Nothing
+    , genSel = [], candidates = []
+    -- keep `path` (the progression, now transposed); fork a fresh capture session
+    , lastCapIdx = Nothing, lastCapSig = "" }
+  startWith key (seedFocus st2.tab) set
 
 -- ---------------------------------------------------------------------------
 -- Scale (mode) choices
@@ -2240,6 +2266,17 @@ importChord nid notes =
      , voicing: drop 1 sorted
      , kind: Voiced, label: noteName bp
      , pinned: false, outside: 0, targetX: 0.0, targetY: 0.0, isCentre: false }
+
+-- | Nearest chromatic shift (semitones, in [-5,6]) between two tonics — so a
+-- | key-change transposition keeps the progression in a similar register.
+nearestShift :: Int -> Int -> Int
+nearestShift old new = let d = mod (new - old) 12 in if d > 6 then d - 12 else d
+
+-- | Transpose a chord by `d` semitones, KEEPING its id (so `path` stays valid).
+-- | Re-imports the shifted notes, so pcs / bass / label come out right; the chord
+-- | becomes an imported (off-lattice) voicing in the new key.
+transposeChord :: Int -> ChordNode -> ChordNode
+transposeChord d c = importChord c.id (map (_ + d) (playNotes c))
 
 -- | The progression panel — the Lattice's right-hand side. The path assembles
 -- | top→bottom, each step a compact horizontal note-row (pitch left→right) you
