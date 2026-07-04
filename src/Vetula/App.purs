@@ -1240,7 +1240,10 @@ withHovered f = do
 -- | skipped. The user live-codes a pattern to change the read-head.
 defaultVoice :: Int -> Int -> Renderer -> Int -> Voice
 defaultVoice vid channel renderer n =
-  { id: vid, channel, dest: ToMidi, renderer, pattern: "", patternDraft: "", durs: replicate n 1, phase: 0, cursor: 0, held: [], muted: false }
+  -- prefill the read-head with its REAL default pattern (one chord per bar) as concrete
+  -- editable text — WYSIWYG, so the field shows what's actually playing, not a look-alike
+  -- placeholder. `durs` stays as the equivalent legacy fallback / rig-push shape.
+  { id: vid, channel, dest: ToMidi, renderer, pattern: defaultPattern n, patternDraft: defaultPattern n, durs: replicate n 1, phase: 0, cursor: 0, held: [], muted: false }
 
 -- | The clock a voice plays: its committed pattern if non-empty & parseable, else its
 -- | legacy `durs`. The single frontend seam onto `Vetula.Playhead` / the reef realiser.
@@ -2545,8 +2548,11 @@ loadedView st pp =
           , HH.span [ HP.style "font-size: 11px; color: #b0b0b0;" ] [ HH.text "Tidal pattern of chord indices · 1 cycle = 1 bar · commit to apply" ]
           , cellBtn "+ add voice" false AddVoice
           ]
-      , HH.div [ HP.style "display: flex; flex-direction: column; gap: 6px;" ]
-          (map (voicePlayheadRow (length chords)) st.voices)
+      -- keyed by voice id: the pattern inputs are UNCONTROLLED (so the scheduler's
+      -- ~10Hz re-render can't fight the caret while you live-code), so their DOM must
+      -- stay pinned to their voice across add / remove — the key guarantees that.
+      , HH.keyed (ElemName "div") [ HP.style "display: flex; flex-direction: column; gap: 6px;" ]
+          (map (\v -> Tuple (show v.id) (voicePlayheadRow (length chords) v)) st.voices)
       ]
 
 -- | One voice's live-coded read-head: its controls (destination / mute / renderer /
@@ -2584,8 +2590,11 @@ voicePlayheadRow n v =
                   [ numField "id" v.channel (SetVoiceChannel v.id) ])
           <>
           [ HH.input
+              -- controlled (like the bpm field, which edits fine); the field carries the
+              -- REAL pattern text. Placeholder only shows if you clear it, and reads as a
+              -- hint ("empty = …"), not as content.
               [ HP.value v.patternDraft
-              , HP.placeholder (defaultPattern n)
+              , HP.placeholder ("empty = " <> defaultPattern n)
               , HP.style ("flex: 1 1 auto; min-width: 160px; font-family: ui-monospace, monospace; font-size: 12px; padding: 4px 6px; border-radius: 4px; border: 1px solid " <> borderCol <> ";")
               , HE.onValueInput (SetVoicePattern v.id)
               ]
