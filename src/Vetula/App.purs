@@ -457,17 +457,20 @@ handleQuery = case _ of
   AskVoiceChords reply -> do
     s <- H.get
     pure (Just (reply (voiceChordFeed s)))
-  -- The nav harmonic-context strip: the primary (voice-0) dwell schedule padded to
+  -- The nav harmonic-context strip: the AUTHORITATIVE voice's dwell schedule padded to
   -- the progression length (bars-per-chord; 0 = a skip), and the live playhead — the
-  -- chord index voice-0's read-head sits on at the current pulse (-1 = none). The
+  -- chord index that voice's read-head sits on at the current pulse (-1 = none). The
   -- shell polls this and renders the glyph in the top bar, visible in every pane.
+  -- With several heads at different positions there is no single "current chord", so
+  -- `harmonicVoice` only names one when it is unambiguous (a lone voice, or an Odonus
+  -- conductor) — otherwise `active = -1`/`chord = ""` and the top bar asserts nothing.
   AskHarmonic reply -> do
     s <- H.get
     let cs = perfChords s
         n = length cs
-        v0 = head s.voices
-        durs = maybe (replicate n 1) (\v -> displayDurs n (voiceClock n v)) v0
-        active = fromMaybe (-1) (v0 >>= cursorAt cs s.pulse)
+        mv = harmonicVoice s
+        durs = maybe (replicate n 1) (\v -> displayDurs n (voiceClock n v)) mv
+        active = fromMaybe (-1) (mv >>= cursorAt cs s.pulse)
         -- The active chord's notes, bass-up as note names (unique pitch classes in
         -- voicing order) — the compact echo of the progression row's pitch ladder.
         chord = case cs !! active of
@@ -545,6 +548,19 @@ handleQuery = case _ of
 -- | classes) — what Odonus's quantiser snaps to when fed from Vetula.
 progressionPCs :: State -> Array (Array Int)
 progressionPCs st = mapMaybe (\pid -> _.pcs <$> find (\c -> c.id == pid) st.chords) st.path
+
+-- | The single voice (if any) whose read-head may honestly stand for "the" harmonic
+-- | context in the top bar. An Odonus-feeding voice wins outright — it conducts the
+-- | quantiser, so it IS the harmonic reading regardless of what the MIDI heads are
+-- | doing. Failing that, a lone voice is unambiguous. Two-or-more MIDI voices at
+-- | different positions have no single current chord, so we name none (`Nothing`).
+harmonicVoice :: State -> Maybe Voice
+harmonicVoice st =
+  case head (filter (\v -> v.dest == ToOdonus) st.voices) of
+    Just v -> Just v
+    Nothing -> case st.voices of
+      [ v ] -> Just v
+      _ -> Nothing
 
 -- | Each Odonus-bound voice's CURRENT block chord as pitch classes, keyed by its
 -- | channel (reused as the Odonus id). The shell polls this ~100ms and feeds it
