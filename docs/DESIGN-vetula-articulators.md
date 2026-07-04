@@ -167,12 +167,40 @@ change:
 Verified: on a 4-note ii–V–I, `♪ -1` (top) reads `A4 G4 G4` voice-led (a melody) vs
 `C4 F4 B4` block (register leaps); all rows length 4 so `0`/`-1` are stable roles.
 
-**Deferred to next cuts** (unchanged from the plan below): `voiceLeadN` (force exactly
-N voices — needs a chord→N-pc reduction so roles stay stable across *unequal*-size
-chords; today AVoiceLead only holds stable N across equal-size runs), `featureVoice k`,
-`strum` (held/entering — needs the lifetime flag), then `walkingBass`/`pedal`/
-`counterMelody`/`thicken`. The `Alphabet` pitch-vs-lifetime flag is still open — the
-first cut is pitch-only (`Array Int` per chord), which is why strum isn't here yet.
+**Deferred after the first cut**: `voiceLeadN`, `featureVoice`, `strum`, and the
+`Alphabet` lifetime flag — see the second cut below, which resolved most of this.
+
+## As built — second cut (articulator feeds every renderer; strum without a lifetime flag)
+
+The first cut only fed the alphabet to the **Axis-B note-pattern**, so a plain block or
+strum voice (no `♪` pattern — the common case) ignored the articulator entirely. This
+cut threads the alphabet into the **renderer path** too:
+
+- **reef** `Perf.renderAlphaBlockMidiAt`: block / arp / strum sound a precomputed
+  alphabet-per-chord instead of always the chord's own notes. `renderClockMidiAt` is now
+  `renderAlphaBlockMidiAt (map (sort <<< _.notes) chords)` and `strumSustain` reads the
+  same alphabets, so the block/arp/strum path stays byte-identical — all 14 goldens
+  (incl. the Vetula MIDI-render golden that exercises strum) green unchanged.
+- **triggerfish** `stepVoice`: computes the alphabet once and uses it for BOTH the
+  note-pattern path and the renderer path. The `block`/`voice-led` button now governs
+  every voice, not just `♪`-patterned ones.
+
+**Principled strum falls out for free — no lifetime flag needed.** The design above
+proposed an `Alphabet` `held`/`entering` role flag to make strum principled. But over a
+**voice-led** alphabet, common tones already carry the *identical MIDI number* chord-to-
+chord (that's what `voiceLead` does), so the existing strum test — "notes in this chord
+but not the previous segment's" — already tags them as held: they tie via `strumSustain`
+while genuinely new notes re-attack. **The voice-leading IS the held/entering
+distinction.** So `strum × voice-led` is "Strum re-expressed" with zero new type — the
+`Alphabet` stays a plain `Array Int` per chord.
+
+**Still deferred**: `voiceLeadN` (force exactly N voices — the chord→N-pc reduction so
+roles stay stable across *unequal*-size chords; today voice-led holds stable N only
+across equal-size runs), `featureVoice k` (largely reachable already as voice-led +
+`♪ k`), then `walkingBass`/`pedal`/`counterMelody`/`thicken`. Patterning the *entering*
+notes specifically (`entering: 0 1 2` arps the new notes in) would still want a way to
+address the entering subset — a later refinement now that the plain voice-led strum
+works.
 
 ## Open questions
 

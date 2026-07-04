@@ -60,7 +60,7 @@ import Binnacle.Scheduler as Scheduler
 import Binnacle.Transport as Transport
 import Triggerfish.Transport (Sounding(..))
 import Vetula.Store as Store
-import Reef.Vetula.Perf (VChord, VVoice, VDest(..), VRenderer(..), PerfClock, cursorAtClock, renderClockMidiAt, renderAlphaClockMidiAt) as RV
+import Reef.Vetula.Perf (VChord, VVoice, VDest(..), VRenderer(..), PerfClock, cursorAtClock, renderAlphaBlockMidiAt, renderAlphaClockMidiAt) as RV
 import Reef.Vetula.Articulate (VArticulator(..), articulate, articLabel, nextArtic) as RA
 import Vetula.Playhead (clockFor, defaultPattern, noteClock, patternClock)
 import Data.Either (Either(..))
@@ -1463,11 +1463,14 @@ stepVoice mout reefChords pulse pulseMs baseDelayMs v =
       cur = fromMaybe v.cursor (RV.cursorAtClock clock v.phase pulse)
       -- Axis B: a non-empty note pattern sequences the current chord's notes; otherwise
       -- fall back to the voice's block / arp / strum renderer.
+      -- The voice's articulator alphabet (block = the chord's own notes; voice-led = a
+      -- carried line, stable roles) feeds BOTH paths: the Axis-B note-pattern indexes it,
+      -- and the block/arp/strum renderer sounds it too (so a plain block or strum voice
+      -- honours the articulator — strum over voice-led notes is principled strum).
+      alphabets = RA.articulate v.articulator reefChords
       emit = case noteClock v.notePattern of
-        -- Axis-B present: the note-pattern indexes the voice's articulator alphabet
-        -- (block = the chord's own notes; voice-led = a carried line, stable roles).
-        Just nc -> RV.renderAlphaClockMidiAt (RA.articulate v.articulator reefChords) rv clock nc pulse
-        Nothing -> RV.renderClockMidiAt reefChords rv clock pulse
+        Just nc -> RV.renderAlphaClockMidiAt alphabets rv clock nc pulse
+        Nothing -> RV.renderAlphaBlockMidiAt alphabets rv clock pulse
   in case v.dest of
     ToOdonus -> pure v { cursor = cur }
     ToMidi -> do
@@ -2657,8 +2660,9 @@ voicePlayheadRow n v =
           , HH.input
               -- Axis B: how to sound the chord — a note-index pattern. Empty = the
               -- renderer (block/arp/strum). "0 1 2 3" arp · "3" top voice · "3 2 1 0" down.
-              -- The button to the left picks the alphabet those numbers index (block = the
-              -- chord's own notes; voice-led = a carried line so 0=bass, -1=melody).
+              -- The button to the left picks the note ALPHABET both this pattern AND the
+              -- renderer use: block = the chord's own notes; voice-led = a line carried
+              -- through the loop (0=bass, -1=melody, and strum's common tones ring).
               [ HP.value v.notePatternDraft
               , HP.placeholder ("empty = " <> rendName v.renderer)
               , HP.style ("flex: 1 1 auto; min-width: 110px; font-family: ui-monospace, monospace; font-size: 12px; padding: 4px 6px; border-radius: 4px; border: 1px solid " <> noteBorderCol <> ";")
