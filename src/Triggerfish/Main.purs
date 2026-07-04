@@ -68,6 +68,7 @@ data RAction
   = Init | SyncTick | PollVetula | Pick Which | RefreshTidal | CopyTidal | ToggleMaster
   | SetMode Mode                -- flip the SOLO⟷ATLANTIS authority
   | ArmTab Which                -- toggle one instrument's ARM from the switcher dot
+  | JumpVetula Int              -- nav strip: jump Vetula's progression to a chord (live)
   | LoadFromLib Which Int       -- A5: make a saved entry active in its instrument
   | CopyEntry String            -- copy one entry's eDSL text
   | SetImportText String
@@ -173,6 +174,9 @@ handleAction = case _ of
     a <- H.gets _.armed
     H.modify_ _ { armed = if Set.member w a then Set.delete w a else Set.insert w a }
     pushSounding w
+  -- Nav harmonic strip: jump Vetula's progression to a chord live. Playing → the
+  -- ensemble advances there; stopped → the → odo feed moves, re-quantising Odonus.
+  JumpVetula i -> void $ H.query _vet unit (Vetula.JumpChord i unit)
   SyncTick -> do
     t0 <- H.gets _.freeT0
     _ <- H.query _odo unit (SQ.SyncFree t0 freeTempo unit)
@@ -585,11 +589,15 @@ harmStrip :: forall m. RState -> H.ComponentHTML RAction Slots m
 harmStrip st =
   HH.div
     [ style "display:flex;align-items:baseline;gap:12px" ]
-    -- The progress row: where the playhead is in the progression.
-    [ HH.span
-        [ style $ "font-family:'SF Mono',Menlo,Consolas,monospace;font-size:13px;line-height:1;"
-            <> "letter-spacing:0.14em;color:#4a463b" ]
-        [ HH.text (harmGlyph st.harm) ]
+    -- The progress row: where the playhead is, as PER-CHORD click targets — click a
+    -- chord to jump Vetula's progression there live (advance the playhead when
+    -- playing; move the Odonus feed when stopped). See RAction.JumpVetula.
+    [ HH.div
+        [ style $ "display:flex;align-items:baseline;font-family:'SF Mono',Menlo,Consolas,monospace;"
+            <> "font-size:13px;line-height:1;letter-spacing:0.14em" ]
+        (if null st.harm.durs
+           then [ HH.span [ style "color:#4a463b" ] [ HH.text "—" ] ]
+           else mapWithIndex (harmChip st.harm.active) st.harm.durs)
     -- The content row: the notes of the chord under the playhead (bass-up), so the
     -- strip shows both WHERE we are and WHAT is sounding — the progression view's
     -- pitch content, time-multiplexed through the playhead.
@@ -599,14 +607,17 @@ harmStrip st =
         [ HH.text st.harm.chord ]
     ]
 
-harmGlyph :: forall r. { durs :: Array Int, active :: Int | r } -> String
-harmGlyph h =
-  if null h.durs then "—"
-  else joinWith "" (mapWithIndex chunk h.durs)
-  where
-  chunk i d =
-    if d <= 0 then "·"
-    else (if i == h.active then "●" else "○") <> joinWith "" (replicate (d - 1) "‑")
+-- One chord in the nav strip: its glyph (● at the playhead, ○ elsewhere) plus its
+-- dwell dashes, as a click target that jumps the progression to that chord. A
+-- skipped chord (dwell 0) is a dim, non-interactive dot.
+harmChip :: forall m. Int -> Int -> Int -> H.ComponentHTML RAction Slots m
+harmChip active i d =
+  if d <= 0
+    then HH.span [ style "color:#b0aa9c" ] [ HH.text "·" ]
+    else HH.span
+      [ HE.onClick \_ -> JumpVetula i
+      , style $ "cursor:pointer;color:" <> (if i == active then "#b23b28" else "#4a463b") ]
+      [ HH.text ((if i == active then "●" else "○") <> joinWith "" (replicate (d - 1) "‑")) ]
 
 style :: forall r i. String -> HP.IProp r i
 style = HP.attr (H.AttrName "style")

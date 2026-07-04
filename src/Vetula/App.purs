@@ -332,6 +332,11 @@ data SourceQuery a
   | AskVoiceChords (Array { id :: Int, pcs :: Array Int } -> a)  -- live per-Odonus-voice chord
   | AskHarmonic ({ durs :: Array Int, active :: Int, chord :: String } -> a)  -- nav harmonic strip: voice-0 dwell schedule + live playhead + the active chord's notes
   | AskBrushSig (String -> a)   -- the current rig payload string; the shell diffs it to auto-re-push on change
+  -- Live jump: re-anchor every voice so chord `i` reads NOW (from the nav strip).
+  -- Playing → the ensemble advances to chord i and continues; stopped → the → odo
+  -- feed + the strip's playhead move to i (so Odonus re-quantises). One gesture,
+  -- both effects. See jumpVoice.
+  | JumpChord Int a
   -- The ONE transport query (control-surface MISU refactor). The shell pushes the
   -- derived `Sounding`: `Silent` disarms, `Local` plays local Web-MIDI, `Rig` mutes
   -- locally + (re)pushes the brush to the rig voice. Replaces SetMaster/SetAudible/
@@ -438,6 +443,14 @@ handleQuery = case _ of
   AskBrushSig reply -> do
     s <- H.get
     pure (Just (reply (brushMsg s)))
+  -- Live jump from the nav strip: re-anchor every voice's read-head to chord i at
+  -- the current pulse (phase set so cursorAt = i now; cursor cached to i for the
+  -- stopped/feed case). No-op for voices that skip chord i, and for i out of range.
+  JumpChord i next -> do
+    st <- H.get
+    let n = length (perfChords st)
+    H.modify_ _ { voices = map (jumpVoice n st.pulse i) st.voices }
+    pure (Just next)
   -- The ONE transport query (control-surface MISU refactor). The shell pushes the
   -- derived `Sounding`; we fold it into Vetula's own arm lifecycle and act:
   --   * Silent ⇒ disarm; Local/Rig ⇒ arm (reconcilePerf starts/stops the ticker).
@@ -1303,6 +1316,20 @@ stepVoice mout reefChords pulse pulseMs baseDelayMs v =
 -- | The chord index a voice's read-head is on at this pulse (Nothing if its loop
 -- | is empty or it's resting between dwell segments). Shared by the MIDI path and
 -- | the Odonus-follow feed, which sounds no MIDI but still tracks the cursor.
+-- | Re-anchor a voice so its read-head is at the START of chord `i` at the given
+-- | pulse: set `phase` so `cursorAt pulse` = i, and cache `cursor = i` (which the
+-- | → odo feed reads directly while stopped). A no-op if the voice skips chord i
+-- | (no timeline segment) or the progression is empty. `n` = progression length.
+jumpVoice :: Int -> Int -> Int -> Voice -> Voice
+jumpVoice n pulse i v =
+  let ds = padDurs n v.durs
+      loopLen = 16 * sum ds
+  in case find (\seg -> seg.ix == i) (timeline ds) of
+       -- normalized positive modulo — `seg.start - pulse` can be negative, and Int
+       -- `mod` can return a negative remainder, which cursorAt would then miss.
+       Just seg | loopLen > 0 -> v { phase = mod (mod (seg.start - pulse) loopLen + loopLen) loopLen, cursor = i }
+       _ -> v
+
 cursorAt :: Array ChordNode -> Int -> Voice -> Maybe Int
 cursorAt chords pulse v =
   let n = length chords
