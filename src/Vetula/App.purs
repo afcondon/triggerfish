@@ -60,7 +60,8 @@ import Binnacle.Scheduler as Scheduler
 import Binnacle.Transport as Transport
 import Triggerfish.Transport (Sounding(..))
 import Vetula.Store as Store
-import Reef.Vetula.Perf (VChord, VVoice, VDest(..), VRenderer(..), PerfClock, cursorAtClock, renderClockMidiAt, renderNoteClockMidiAt) as RV
+import Reef.Vetula.Perf (VChord, VVoice, VDest(..), VRenderer(..), PerfClock, cursorAtClock, renderClockMidiAt, renderAlphaClockMidiAt) as RV
+import Reef.Vetula.Articulate (VArticulator(..), articulate, articLabel, nextArtic) as RA
 import Vetula.Playhead (clockFor, defaultPattern, noteClock, patternClock)
 import Data.Either (Either(..))
 import Reef.Vetula.Protocol (encodePerf) as RV
@@ -144,6 +145,9 @@ type Voice =
                             -- notes ("0 1 2 3" arp, "3" top voice, "[0 1 2 3]*4" fast). Empty
                             -- = use the block/arp/strum renderer instead.
   , notePatternDraft :: String
+  , articulator :: RA.VArticulator  -- Axis-B alphabet: how the note-pattern's numbers are
+                            -- read — `block` (the chord's own notes) or `voice-led` (a
+                            -- smooth line carried through the loop, stable voice roles).
   , durs :: Array Int       -- LEGACY bars-per-chord dwell (one per progression chord; 0 =
                             -- skip). Used when `pattern` is empty, and still the rig-push
                             -- shape until the rig learns patterns (#77).
@@ -340,6 +344,7 @@ data Action
   | SetVoicePhase Int String
   | SetVoicePattern Int String     -- edit a voice's read-head (chord) pattern draft
   | SetVoiceNotePattern Int String -- edit a voice's Axis-B note-index pattern draft
+  | CycleVoiceArticulator Int      -- cycle how the note-pattern reads (block / voice-led)
   | CommitVoicePattern Int         -- commit BOTH drafts into the live patterns (atomic)
   | ToggleVoiceMute Int
   | SetTempo String
@@ -1102,6 +1107,7 @@ handleAction = case _ of
   -- live-code the read-head (which chord, when) and the note pattern (which note of it)…
   SetVoicePattern vid p -> updateVoice vid (_ { patternDraft = p })
   SetVoiceNotePattern vid p -> updateVoice vid (_ { notePatternDraft = p })
+  CycleVoiceArticulator vid -> updateVoice vid (\v -> v { articulator = RA.nextArtic v.articulator })
 
   -- …then commit BOTH atomically. Committing resets the live-jump phase (the new
   -- patterns re-anchor from bar 0) so an edit is a clean structural change.
@@ -1251,7 +1257,7 @@ defaultVoice vid channel renderer n =
   -- editable text — WYSIWYG, so the field shows what's actually playing, not a look-alike
   -- placeholder. `durs` stays as the equivalent legacy fallback / rig-push shape.
   { id: vid, channel, dest: ToMidi, renderer, pattern: defaultPattern n, patternDraft: defaultPattern n
-  , notePattern: "", notePatternDraft: "", durs: replicate n 1, phase: 0, cursor: 0, held: [], muted: false }
+  , notePattern: "", notePatternDraft: "", articulator: RA.ABlock, durs: replicate n 1, phase: 0, cursor: 0, held: [], muted: false }
 
 -- | The clock a voice plays: its committed pattern if non-empty & parseable, else its
 -- | legacy `durs`. The single frontend seam onto `Vetula.Playhead` / the reef realiser.
@@ -1442,7 +1448,9 @@ stepVoice mout reefChords pulse pulseMs baseDelayMs v =
       -- Axis B: a non-empty note pattern sequences the current chord's notes; otherwise
       -- fall back to the voice's block / arp / strum renderer.
       emit = case noteClock v.notePattern of
-        Just nc -> RV.renderNoteClockMidiAt reefChords rv clock nc pulse
+        -- Axis-B present: the note-pattern indexes the voice's articulator alphabet
+        -- (block = the chord's own notes; voice-led = a carried line, stable roles).
+        Just nc -> RV.renderAlphaClockMidiAt (RA.articulate v.articulator reefChords) rv clock nc pulse
         Nothing -> RV.renderClockMidiAt reefChords rv clock pulse
   in case v.dest of
     ToOdonus -> pure v { cursor = cur }
@@ -2628,10 +2636,13 @@ voicePlayheadRow n v =
               , HP.style ("flex: 1 1 auto; min-width: 120px; font-family: ui-monospace, monospace; font-size: 12px; padding: 4px 6px; border-radius: 4px; border: 1px solid " <> borderCol <> ";")
               , HE.onValueInput (SetVoicePattern v.id)
               ]
+          , cellBtn (RA.articLabel v.articulator) (v.articulator /= RA.ABlock) (CycleVoiceArticulator v.id)
           , HH.span [ HP.style "font-size: 12px; color: #c0c0c0;" ] [ HH.text "♪" ]
           , HH.input
               -- Axis B: how to sound the chord — a note-index pattern. Empty = the
               -- renderer (block/arp/strum). "0 1 2 3" arp · "3" top voice · "3 2 1 0" down.
+              -- The button to the left picks the alphabet those numbers index (block = the
+              -- chord's own notes; voice-led = a carried line so 0=bass, -1=melody).
               [ HP.value v.notePatternDraft
               , HP.placeholder ("empty = " <> rendName v.renderer)
               , HP.style ("flex: 1 1 auto; min-width: 110px; font-family: ui-monospace, monospace; font-size: 12px; padding: 4px 6px; border-radius: 4px; border: 1px solid " <> noteBorderCol <> ";")

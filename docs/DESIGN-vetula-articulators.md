@@ -145,6 +145,35 @@ out, no lecture. (Compositional, not theory-exposing — Vetula's founding stanc
   the seam), then layer articulators in.
 - Slice 4 (unify Lab + Performance) is orthogonal layout work; independent.
 
+## As built — first cut (block + voice-led)
+
+Shipped the seam and the first two articulators, SOLO (frontend-only), no wire/golden
+change:
+
+- **reef** `Reef.Vetula.Articulate`: `VArticulator = ABlock | AVoiceLead` and
+  `articulate :: VArticulator -> Array VChord -> Array (Array Int)` (one alphabet per
+  chord). `ABlock` = the chord's own notes (Slice 3½ behaviour). `AVoiceLead` = harmonia
+  `closeVoicing` the first chord then `voiceLead` each next from the previous (a
+  `scanl`, exactly harmonia's `playFrom` shape) — a smooth line carried through the
+  loop.
+- **reef** `Reef.Vetula.Perf.renderAlphaClockMidiAt`: the note-pattern indexes a
+  precomputed alphabet. `renderNoteClockMidiAt` is now literally
+  `renderAlphaClockMidiAt (map (sort <<< _.notes) chords)`, so the block path is
+  byte-identical — all 14 goldens green unchanged.
+- **triggerfish**: `Voice` gains `articulator`; `stepVoice` computes the alphabets when
+  a note-pattern is present; a `block`/`voice-led` cycle button sits left of the `♪`
+  box.
+
+Verified: on a 4-note ii–V–I, `♪ -1` (top) reads `A4 G4 G4` voice-led (a melody) vs
+`C4 F4 B4` block (register leaps); all rows length 4 so `0`/`-1` are stable roles.
+
+**Deferred to next cuts** (unchanged from the plan below): `voiceLeadN` (force exactly
+N voices — needs a chord→N-pc reduction so roles stay stable across *unequal*-size
+chords; today AVoiceLead only holds stable N across equal-size runs), `featureVoice k`,
+`strum` (held/entering — needs the lifetime flag), then `walkingBass`/`pedal`/
+`counterMelody`/`thicken`. The `Alphabet` pitch-vs-lifetime flag is still open — the
+first cut is pitch-only (`Array Int` per chord), which is why strum isn't here yet.
+
 ## Open questions
 
 - The `Alphabet` lifetime/role vocabulary (the pitch-vs-timing knot).
