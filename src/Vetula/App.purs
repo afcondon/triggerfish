@@ -26,6 +26,7 @@ import Data.Number as Number
 import Data.Map (Map)
 import Data.Map as Map
 import Data.Maybe (Maybe(..), fromMaybe, isJust, maybe)
+import Effect.Timer (setInterval)
 import Data.Nullable (Nullable, null)
 import Data.Set (Set)
 import Data.Set as Set
@@ -58,6 +59,7 @@ import Binnacle.Clock as Clock
 import Binnacle.Scheduler as Scheduler
 import Binnacle.Transport as Transport
 import Triggerfish.Transport (Sounding(..))
+import Vetula.Store as Store
 import Reef.Vetula.Perf (VChord, VVoice, VDest(..), VRenderer(..), cursorAt, renderVoiceMidiAt) as RV
 import Reef.Vetula.Protocol (encodePerf) as RV
 import Binnacle.Time (dateNow)
@@ -141,10 +143,14 @@ type Voice =
 
 -- | A saved progression in the library: a self-contained copy (so it's immutable
 -- | while a loaded working copy is revoiced live), tagged with its key for search.
+-- A library entry's canonical form is its Tidal SOURCE (the "save the rendering"
+-- rule) — all-strings, so it persists to localStorage with no ChordNode/Key/Mode
+-- codecs and round-trips through the same render/parse as copy-paste + import.
 type LibEntry =
   { name :: String
-  , key :: Key
-  , chords :: Array ChordNode
+  , keyLabel :: String   -- the display label, e.g. "D major" (was structured Key)
+  , source :: String     -- the progression rendered to Tidal source (the chords)
+  , kept :: Boolean       -- promoted keeper (★, frozen) vs ephemeral auto-capture (◦, live)
   }
 
 -- | The simulation only needs the layout targets + a size for collision.
@@ -244,6 +250,12 @@ type State =
   , adventure :: Number      -- 0 = smoothest candidates … 1 = most striking
   -- Performance tab — the progression library + the loaded working copy + voices.
   , library :: Array LibEntry
+  -- Auto-capture bookkeeping (Slice 1): the current progression is captured to the
+  -- library on a slow timer — one ephemeral entry per building session, UPDATED in
+  -- place as you build (deduped by `lastCapSig`), then frozen when you promote it.
+  , capSeq :: Int                 -- running number for ephemeral autonames (◦N)
+  , lastCapIdx :: Maybe Int       -- library index of the current session's ephemeral (Nothing = start fresh)
+  , lastCapSig :: String          -- signature (currentSource) of the last capture, for dedup
   , libSearch :: String           -- filter the library by key
   , saveName :: String            -- name for the next saved progression
   , perfProg :: Maybe { name :: String, chordIds :: Array Int }  -- loaded copy (ids into `chords`)
@@ -299,7 +311,9 @@ data Action
   | SetAdventure String    -- the adventurousness dial (slider value)
   -- Performance tab
   | SetSaveName String
-  | SaveProg               -- save the current Lattice path to the library
+  | SaveProg               -- promote the current Lattice path to the library (a keeper)
+  | AutoCapture            -- timer: auto-capture the current path (ephemeral, update-in-place)
+  | KeepLib Int            -- promote / demote a library entry between keeper and ephemeral
   | SetLibSearch String
   | LoadProg Int           -- load library entry #i into the performance working copy
   | UnloadProg             -- back to the library
@@ -383,6 +397,9 @@ component = H.mkComponent
       , candidates: []
       , adventure: 0.25
       , library: []
+      , capSeq: 0
+      , lastCapIdx: Nothing
+      , lastCapSig: ""
       , libSearch: ""
       , saveName: ""
       , perfProg: Nothing
@@ -490,7 +507,7 @@ handleQuery = case _ of
   -- progression (the same parse path as paste-and-load) and appends an entry.
   AskLibrary reply -> do
     s <- H.get
-    pure (Just (reply (map (\e -> { name: e.name, text: progressionSource (groupLabel e.key) e.chords }) s.library)))
+    pure (Just (reply (map (\e -> { name: e.name, text: e.source }) s.library)))
   LoadEntry i next -> do
     handleAction (LoadProg i)
     pure (Just next)
@@ -500,7 +517,8 @@ handleQuery = case _ of
     if length noteLists == 0 then pure (Just (reply false))
     else do
       let chords = mapWithIndex importChord noteLists
-      H.modify_ \s -> s { library = s.library <> [ { name: "imported", key: st.key, chords } ] }
+      H.modify_ \s -> s { library = s.library <> [ { name: "imported", keyLabel: groupLabel st.key, source: progressionSource (groupLabel st.key) chords, kept: true } ] }
+      persistLib
       pure (Just (reply true))
 
 -- | The current path as one PC set per step (each chord's absolute pitch
@@ -627,7 +645,16 @@ handleAction = case _ of
     _ <- H.subscribe stepE
     _ <- liftEffect $ Scheduler.startGrid (Binnacle.clock bin) gridCfg \tick ->
       HS.notify stepL (PerfTick tick)
+    -- Slice 1: auto-capture the progression you're building to the library on a
+    -- slow timer (settle + update-in-place), so nothing is ever silently lost.
+    { emitter: capE, listener: capL } <- liftEffect HS.create
+    _ <- H.subscribe capE
+    _ <- liftEffect $ setInterval 1800 (HS.notify capL AutoCapture)
     H.modify_ _ { binnacle = Just bin }
+    -- Restore the persisted library (auto-capture stack) from localStorage. capSeq
+    -- continues past the restored count so new ◦ autonames don't collide.
+    msaved <- liftEffect Store.loadLibrary
+    for_ msaved \sv -> H.modify_ _ { library = sv.library, capSeq = length sv.library }
     -- keyboard
     { emitter: keyE, listener: keyL } <- liftEffect HS.create
     _ <- H.subscribe keyE
@@ -737,7 +764,10 @@ handleAction = case _ of
   PathPick pid -> do
     st <- H.get
     case last st.path of
-      Nothing -> H.modify_ _ { path = [ pid ] }
+      -- Starting a path from empty (after ANY clear: c / double-click / key rebuild)
+      -- opens a NEW capture session, so the next auto-capture forks a fresh ◦
+      -- instead of overwriting the previous progression's entry in place.
+      Nothing -> H.modify_ _ { path = [ pid ], lastCapIdx = Nothing, lastCapSig = "" }
       Just lastId
         | pid == lastId -> H.modify_ _ { path = [] }
         | otherwise -> case Path.shortestPath (Path.adjacency (neighborLinks st.chords)) lastId pid of
@@ -953,21 +983,65 @@ handleAction = case _ of
 
   SetSaveName s -> H.modify_ _ { saveName = s }
 
+  -- Manual save = promote the current path to a KEEPER (frozen). If the current
+  -- session's ephemeral is already in the library, promote it in place (+ rename);
+  -- otherwise append a fresh keeper.
   SaveProg -> do
     st <- H.get
     let steps = pathSteps st
     when (length steps > 0) do
       let nm = if st.saveName == "" then groupLabel st.key <> " · " <> show (length steps) else st.saveName
-      H.modify_ _ { library = st.library <> [ { name: nm, key: st.key, chords: steps } ], saveName = "" }
+          kl = groupLabel st.key
+          src = currentSource st
+      case st.lastCapIdx of
+        Just i | isJust (index st.library i) ->
+          H.modify_ _ { library = fromMaybe st.library (modifyAt i (_ { name = nm, keyLabel = kl, source = src, kept = true }) st.library)
+                      , saveName = "", lastCapIdx = Nothing }
+        _ ->
+          H.modify_ _ { library = st.library <> [ { name: nm, keyLabel: kl, source: src, kept: true } ], saveName = "" }
+      persistLib
+
+  -- Timer auto-capture (Slice 1). Empty path → close the current session (next
+  -- capture starts fresh). Non-empty + changed → UPDATE the session's ephemeral in
+  -- place (or open a new one), so a building session is one live-updated entry.
+  -- Keepers are never touched. The entry's canonical form is its Tidal source.
+  AutoCapture -> do
+    st <- H.get
+    let steps = pathSteps st
+        sig = currentSource st
+    if length steps == 0
+      then when (isJust st.lastCapIdx) (H.modify_ _ { lastCapIdx = Nothing, lastCapSig = "" })
+      else when (sig /= st.lastCapSig) do
+        let kl = groupLabel st.key
+        case st.lastCapIdx of
+          Just i | Just e <- index st.library i, not e.kept ->
+            H.modify_ _ { library = fromMaybe st.library (modifyAt i (_ { keyLabel = kl, source = sig }) st.library)
+                        , lastCapSig = sig }
+          _ -> do
+            let n = st.capSeq + 1
+                nm = kl <> " ◦" <> show n
+            H.modify_ _ { library = st.library <> [ { name: nm, keyLabel: kl, source: sig, kept: false } ]
+                        , lastCapIdx = Just (length st.library), capSeq = n, lastCapSig = sig }
+        persistLib
+
+  -- Promote an ephemeral to a keeper (or demote a keeper). Promoting the current
+  -- session's ephemeral forks a fresh one for continued edits (lastCapIdx cleared).
+  KeepLib i -> do
+    H.modify_ \s ->
+      let lib' = fromMaybe s.library (modifyAt i (\e -> e { kept = not e.kept }) s.library)
+      in s { library = lib', lastCapIdx = if Just i == s.lastCapIdx then Nothing else s.lastCapIdx }
+    persistLib
 
   SetLibSearch s -> H.modify_ _ { libSearch = s }
 
-  -- copy the library entry's chords into `chords` with fresh ids (imported, so
-  -- they stay off the lattice); the entry stays immutable, so live revoice is safe
+  -- Parse the entry's Tidal source into note-lists and rebuild them as fresh
+  -- imported chords (off the lattice); revoice stays safe, and this is the same
+  -- render/parse the source panel uses — so persisted entries reload identically.
   LoadProg i -> do
     st <- H.get
     for_ (index st.library i) \entry -> do
-      let fresh = mapWithIndex (\j c -> c { id = st.nextId + j, parentId = Nothing }) entry.chords
+      let noteLists = filter (\ns -> length ns > 0) (parseProgression entry.source)
+          fresh = mapWithIndex (\j ns -> importChord (st.nextId + j) ns) noteLists
           ids = map _.id fresh
       H.modify_ _
         { chords = st.chords <> fresh
@@ -983,7 +1057,10 @@ handleAction = case _ of
     stopClock
     H.modify_ _ { perfProg = Nothing, voices = [], playing = false }
 
-  DeleteLib i -> H.modify_ \s -> s { library = fromMaybe s.library (deleteAt i s.library) }
+  -- Delete shifts indices, so drop the session pointer to avoid it dangling.
+  DeleteLib i -> do
+    H.modify_ \s -> s { library = fromMaybe s.library (deleteAt i s.library), lastCapIdx = Nothing }
+    persistLib
 
   AddVoice -> H.modify_ \s ->
     s { voices = s.voices <> [ defaultVoice s.nextVoiceId (mod s.nextVoiceId 4) (rendOf s.nextVoiceId) (length (perfChords s)) ]
@@ -1101,6 +1178,9 @@ handleAction = case _ of
       , path = ids
       , sounding = head ids
       , sourceEdit = Nothing
+      -- loading a source is a new capture session (don't overwrite the last ◦)
+      , lastCapIdx = Nothing
+      , lastCapSig = ""
       }
 
   DragMove ev -> do
@@ -1214,6 +1294,14 @@ stopClock = do
   st <- H.get
   silenceHeld st
   H.modify_ _ { playing = false, armed = false, voices = map (_ { held = [] }) st.voices }
+
+-- | Persist the whole library (the auto-capture stack) to localStorage, best-
+-- | effort. Called after every library mutation. Entries are all-strings (Tidal
+-- | source + label), so this is a plain JSON.stringify — no ChordNode codecs.
+persistLib :: forall o m. MonadAff m => H.HalogenM State Action Slots o m Unit
+persistLib = do
+  lib <- H.gets _.library
+  liftEffect $ Store.saveLibrary { library: lib }
 
 -- | Note-off every voice's currently-held notes.
 silenceHeld :: forall o m. MonadAff m => State -> H.HalogenM State Action Slots o m Unit
@@ -2336,7 +2424,7 @@ numField lbl val act =
 libraryView :: forall m. MonadAff m => State -> H.ComponentHTML Action Slots m
 libraryView st =
   let q = trimLower st.libSearch
-      shown = filter (\(Tuple _ e) -> q == "" || contains (Pattern q) (trimLower (groupLabel e.key <> " " <> e.name)))
+      shown = filter (\(Tuple _ e) -> q == "" || contains (Pattern q) (trimLower (e.keyLabel <> " " <> e.name)))
                 (mapWithIndex Tuple st.library)
   in HH.div [ HP.style "max-width: 720px; padding: 6px 0;" ]
       [ HH.div [ HP.style "display: flex; align-items: center; gap: 12px; margin: 0 0 12px;" ]
@@ -2347,16 +2435,24 @@ libraryView st =
           ]
       , if length st.library == 0
           then HH.p [ HP.style "color: #c0c0c0; font-size: 13px; line-height: 1.6;" ]
-                 [ HH.text "No saved progressions yet. Build one on the Lattice and press “save” in its panel — it'll appear here to load and perform." ]
+                 [ HH.text "Nothing captured yet. Build a progression on the Lattice — it's auto-saved here as you go (◦). Star (★) the keepers." ]
           else HH.div [] (map libRow shown)
       ]
   where
   libRow (Tuple i e) =
     HH.div
-      [ HP.style "display: flex; align-items: center; gap: 12px; padding: 6px 4px; border-bottom: 1px solid #f0f0f0;" ]
-      [ HH.span [ HP.style "flex: 0 0 120px; font-size: 12px; color: #7a5c00;" ] [ HH.text (groupLabel e.key) ]
+      [ HP.style ("display: flex; align-items: center; gap: 12px; padding: 6px 4px; border-bottom: 1px solid #f0f0f0;"
+                  <> (if e.kept then "" else " opacity: 0.66;")) ]
+      -- ★ keeper (frozen) vs ☆ ephemeral auto-capture (live-updated). Click to toggle.
+      [ HH.button
+          [ HP.style ("border: none; background: none; cursor: pointer; font-size: 14px; color: "
+                      <> (if e.kept then "#c8a86a" else "#c8c4b8") <> ";")
+          , HP.title (if e.kept then "keeper — click to release to ephemeral" else "ephemeral — click to keep")
+          , HE.onClick \_ -> KeepLib i ]
+          [ HH.text (if e.kept then "★" else "☆") ]
+      , HH.span [ HP.style "flex: 0 0 120px; font-size: 12px; color: #7a5c00;" ] [ HH.text e.keyLabel ]
       , HH.span [ HP.style "flex: 1; font-size: 13px; color: #2a2a2a;" ] [ HH.text e.name ]
-      , HH.span [ HP.style "font-size: 11px; color: #b0b0b0;" ] [ HH.text (show (length e.chords) <> " chords") ]
+      , HH.span [ HP.style "font-size: 11px; color: #b0b0b0;" ] [ HH.text (show (length (parseProgression e.source)) <> " chords") ]
       , cellBtn "load" false (LoadProg i)
       , HH.button [ HP.style "border: none; background: none; cursor: pointer; color: #c0c0c0; font-size: 15px;", HE.onClick \_ -> DeleteLib i ] [ HH.text "×" ]
       ]
