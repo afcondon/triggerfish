@@ -70,6 +70,7 @@ import Vetula.Tidal (progressionSource, parseProgression)
 import Vetula.Clipboard (copyText)
 import Binnacle.Midi as Midi
 import Hylograph.Halogen.UI.Select as Select
+import Hylograph.Halogen.UI.Modal as Modal
 import Hylograph.ForceEngine.Halogen (toHalogenEmitter)
 import Hylograph.Simulation
   ( Engine(..), SimulationEvent(..), SimulationHandle, SimulationNode
@@ -823,9 +824,9 @@ handleAction = case _ of
       -- Starting a path from empty (after ANY clear: c / double-click / key rebuild)
       -- opens a NEW capture session, so the next auto-capture forks a fresh ◦
       -- instead of overwriting the previous progression's entry in place.
-      Nothing -> H.modify_ _ { path = [ pid ], focus = Perform, lastCapIdx = Nothing, lastCapSig = "" }
+      Nothing -> H.modify_ _ { path = [ pid ], lastCapIdx = Nothing, lastCapSig = "" }
       Just lastId
-        | pid == lastId -> H.modify_ _ { path = [], focus = Hunt }
+        | pid == lastId -> H.modify_ _ { path = [] }
         | otherwise -> case Path.shortestPath (Path.adjacency (neighborLinks st.chords)) lastId pid of
             Just bridge -> do
               let added = drop 1 bridge
@@ -1031,7 +1032,6 @@ handleAction = case _ of
         , imported = Set.insert newId st.imported
         , nextId = newId + 1
         , path = path'
-        , focus = if length st.path == 0 then Perform else st.focus
         , genSel = []
         , candidates = []
         , sounding = Just newId
@@ -1274,14 +1274,17 @@ handleAction = case _ of
   DragEnd -> do
     st <- H.get
     case st.drag of
-      -- an actual drag happened: re-sort the voicing so colours/indices stay
-      -- tidy, then resize the bubble (span changed) and let collision settle
-      -- a real drag: re-sort the voicing. With alt held, the grabbed voice's
-      -- ORIGINAL pitch is left behind as a doubled tone (root / fifth an octave
-      -- away) — append startMidi before sorting; otherwise it's a plain move.
+      -- an actual drag happened: keep the voice in its array SLOT (do NOT re-sort).
+      -- The slot is the voice's identity — the ladder-dot colour and the selection
+      -- ring are slot-keyed, so re-sorting reshuffled which note wore which colour
+      -- (dragging E below C made the gold "E" jump onto C). Dragging moves a voice in
+      -- pitch, not in identity, so the slot stays put. Downstream is order-independent:
+      -- chordGlyph places each notehead by its own pitch, discRadius uses min/max span,
+      -- and the reef realiser sorts its own alphabet. With alt held, the grabbed voice's
+      -- ORIGINAL pitch is left behind as a doubled tone (appended as a new slot).
       Just dg | dg.offset /= 0 -> do
         let addDouble v = if dg.double then v <> [ dg.startMidi ] else v
-            chords' = map (\c -> if c.id == dg.chordId then c { voicing = sort (addDouble c.voicing) } else c) st.chords
+            chords' = map (\c -> if c.id == dg.chordId then c { voicing = addDouble c.voicing } else c) st.chords
         applyChords chords'
         H.modify_ _ { drag = Nothing }
       -- a plain click (select only): leave the voicing alone
@@ -1963,7 +1966,9 @@ setVoice cid vix midi c
 
 -- | A chord's harmonic identity, for de-duplicating generated children.
 contentKey :: ChordNode -> String
-contentKey c = show c.pcs <> "|" <> show c.voicing <> "|" <> show c.bassPc
+-- voicing sorted here so a pure slot-reorder (a drag that keeps the same notes) reads
+-- as the same identity — the array order is a UI detail, not harmonic content.
+contentKey c = show c.pcs <> "|" <> show (sort c.voicing) <> "|" <> show c.bassPc
 
 -- | Reset to the McMullen palette in the current key/scale; pinned survive.
 resetPalette :: forall o m. MonadAff m => H.HalogenM State Action Slots o m Unit
@@ -2078,6 +2083,7 @@ render st =
     [ topNav st
     , unifiedBody st
     , helpOverlay st
+    , revoiceModal st
     ]
 
 -- | Slice 4b/4c — the one surface. Left the POOL (lattice), right the RAIL
@@ -2085,20 +2091,18 @@ render st =
 -- | dominant and the rail is a thin progression/stack column. Perform: the pool
 -- | collapses to a clickable spine and the rail takes the width, so the (wide) voice
 -- | forms fit. Nothing mounts/unmounts across the flip — the sim keeps running.
+-- | One always-visible surface: the lattice (pool) on the left, the rail (Progression /
+-- | Library / Voices) on the right. The old Hunt/Perform width-flip is retired — building
+-- | a progression IS hunting, so collapsing the lattice on the first pick fought the flow.
+-- | The `focus` state + poolSpine/focusTab remain dormant, pending the states/transitions
+-- | design (a deliberate "perform" collapse may return, but on an explicit trigger).
 unifiedBody :: forall m. MonadAff m => State -> H.ComponentHTML Action Slots m
 unifiedBody st =
   HH.div
     [ HP.style "display: flex; gap: 16px; align-items: flex-start;" ]
-    ( case st.focus of
-        Hunt ->
-          [ HH.div [ HP.style "flex: 1 1 auto; min-width: 0;" ] [ pickBar st, surface st ]
-          , HH.div [ HP.style "flex: 0 0 340px; min-width: 0;" ] [ railView st ]
-          ]
-        Perform ->
-          [ poolSpine
-          , HH.div [ HP.style "flex: 1 1 auto; min-width: 0;" ] [ railView st ]
-          ]
-    )
+    [ HH.div [ HP.style "flex: 1 1 auto; min-width: 0;" ] [ pickBar st, surface st ]
+    , HH.div [ HP.style "flex: 0 0 340px; min-width: 0;" ] [ railView st ]
+    ]
 
 -- | The collapsed pool (Perform mode): a thin clickable spine that expands the lattice
 -- | again — the always-available "back to hunt" gesture.
@@ -2149,8 +2153,6 @@ topNav st =
   HH.div
     [ HP.style "display: flex; align-items: center; gap: 12px; margin: 0 0 12px; padding-bottom: 9px; border-bottom: 1px solid #ededed; flex-wrap: wrap;" ]
     ( [ HH.h1 [ HP.style "font-weight: 600; font-size: 19px; letter-spacing: -0.01em; margin: 0 6px 0 0;" ] [ HH.text "Vetula" ]
-      , focusTab st Hunt "Hunt"
-      , focusTab st Perform "Perform"
       , divider
       , HH.span [ HP.style labelStyle ] [ HH.text "KEY" ]
       , HH.slot (Proxy :: _ "keySelect") unit Select.component
@@ -2162,7 +2164,7 @@ topNav st =
           \(Select.Selected v) -> SelectScale v
       ]
       <> familyPicker
-      <> (if st.focus == Hunt then dropButtons <> borrowPicker else [])
+      <> dropButtons <> borrowPicker
       <> [ HH.div
              [ HP.style "margin-left: auto; display: flex; align-items: center; gap: 8px;" ]
              [ midiChip st.midiName
@@ -2299,12 +2301,14 @@ surface st
                   ]
                 Nothing -> [])
       )
-      ( [ cloudClipDef st.tab
-        , clippedCloud
-            ( focusBeam focusRoot <> keyboardView scl <> axisLabels st.tab <> shelfMarker <> links <> pathEdges
-                <> map (nodeView scl pathOrder Set.empty posMap)
-                     (filter (\c -> not (Set.member c.id st.imported)) st.chords) )
-        ] <> revoiceModal st )
+      -- revoiceModal is no longer drawn into this SVG — it's a DOM-level modal
+      -- (shared Modal widget), rendered at the top of `render`.
+      [ cloudClipDef st.tab
+      , clippedCloud
+          ( focusBeam focusRoot <> keyboardView scl <> axisLabels st.tab <> shelfMarker <> links <> pathEdges
+              <> map (nodeView scl pathOrder Set.empty posMap)
+                   (filter (\c -> not (Set.member c.id st.imported)) st.chords) )
+      ]
 
 -- | The clip region for the chord cloud. On Explore it stops at the pitch
 -- | ladder's edge (x −304) so a dense beeswarm can't paint over the ladder; on
@@ -2514,23 +2518,18 @@ progressionPanel st =
 playheadsRack :: forall m. State -> H.ComponentHTML Action Slots m
 playheadsRack st =
   let chords = perfChords st
-  -- capped so the flex-1 pattern inputs don't stretch across the whole wide rail
-  -- (the "eats the display" bug); overflow-x keeps it from breaking a narrow rail.
-  in HH.div [ HP.style "max-width: 820px; overflow-x: auto;" ]
-      [ HH.div [ HP.style "display: flex; align-items: baseline; gap: 12px; margin: 0 0 6px; flex-wrap: wrap;" ]
+  -- Voices are stacked cards, tiled by a responsive grid: one column in a narrow
+  -- rail, several across a wide one. No fixed width / overflow band-aid needed —
+  -- each card fills its own track, so it can't "eat the display" (#91).
+  in HH.div_
+      [ HH.div [ HP.style "display: flex; align-items: baseline; gap: 12px; margin: 0 0 8px; flex-wrap: wrap;" ]
           [ HH.span [ HP.style "font-size: 11px; color: #b0b0b0;" ] [ HH.text "commit applies both boxes · empty ♪ = block/arp/strum renderer" ]
           , cellBtn "+ add voice" false AddVoice
           , numField "bpm" st.tempo SetTempo
           , numField "preview ch" st.previewChan SetPreviewChan
           ]
-      , HH.div [ HP.style "display: flex; align-items: center; gap: 6px; padding: 0 6px 2px; font-size: 10px; letter-spacing: 0.04em; text-transform: uppercase; color: #b8b8b8;" ]
-          [ HH.div [ HP.style "flex: 0 0 210px;" ] [ HH.text "voice" ]
-          , HH.div [ HP.style "flex: 1 1 auto; min-width: 120px;" ] [ HH.text "read-head — which chord, when" ]
-          , HH.span [ HP.style "flex: 0 0 auto; visibility: hidden;" ] [ HH.text "♪" ]
-          , HH.div [ HP.style "flex: 1 1 auto; min-width: 110px;" ] [ HH.text "♪ notes — which note (0 = lowest · -1 = top)" ]
-          , HH.div [ HP.style "flex: 0 0 130px;" ] []
-          ]
-      , HH.keyed (ElemName "div") [ HP.style "display: flex; flex-direction: column; gap: 6px;" ]
+      , HH.keyed (ElemName "div")
+          [ HP.style "display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 8px; align-items: start;" ]
           (map (\v -> Tuple (show v.id) (voicePlayheadRow (length chords) v)) st.voices)
       ]
 
@@ -2565,8 +2564,9 @@ progressionRow st i c =
       octLine m = SE.line [ SA.x1 (prowPitchX m), SA.y1 4.0, SA.x2 (prowPitchX m), SA.y2 (prowH - 4.0), SA.class_ (cn "prow-oct") ]
       dot j m = SE.circle
         [ SA.cx (prowPitchX m), SA.cy cy, SA.r 4.5
-        , SA.class_ (cn ("ladder-dot ladder-dot--" <> show (mod j 5)
-                         <> (if j == 0 then "" else " ladder-dot--drag")
+        -- colour = pitch class (see the revoice ladder) — one hue per chromatic tone
+        , SA.class_ (cn ("ladder-dot ladder-dot--" <> show (mod m 12)
+                         <> (if j == 0 then " ladder-dot--bass" else " ladder-dot--drag")
                          <> (if selHere j then " ladder-dot--sel" else "")))
         , if j == 0 then HE.onMouseDown \_ -> SelectVoice c.id BassVoice
                     else HE.onMouseDown \ev -> DragStart (ME.altKey ev) true c.id (j - 1) m
@@ -2728,46 +2728,53 @@ voicePlayheadRow n v =
         then HH.span [ HP.style "font-size: 11px; color: #c0392b;" ] [ HH.text "⚠ parse error" ]
         else HH.span [ HP.style "font-size: 11px; color: #9a9a9a;" ]
           [ HH.text ((if dirty then "• " else "") <> "loop " <> show loopBars <> "b") ]
+      -- one voice = one vertical card that fills its own grid track, so nothing
+      -- stretches across the whole rail (the old wide-row "eats the display" bug, #91).
+      fieldLabel txt = HH.div [ HP.style "font-size: 10px; letter-spacing: 0.04em; text-transform: uppercase; color: #b8b8b8; margin: 6px 0 2px;" ] [ HH.text txt ]
+      patInput val ph col act =
+        HH.input
+          -- controlled (like the bpm field, which edits fine); the field carries the
+          -- REAL pattern text. Placeholder only shows if you clear it, and reads as a hint.
+          [ HP.value val
+          , HP.placeholder ph
+          , HP.style ("width: 100%; box-sizing: border-box; font-family: ui-monospace, monospace; font-size: 12px; padding: 4px 6px; border-radius: 4px; border: 1px solid " <> col <> ";")
+          , HE.onValueInput act
+          ]
   in HH.div
-      [ HP.style ("display: flex; align-items: center; gap: 6px; padding: 4px 6px; border: 1px solid #eee; border-radius: 5px; background: #fbfbfa;"
+      [ HP.style ("display: flex; flex-direction: column; padding: 8px; border: 1px solid #eee; border-radius: 6px; background: #fbfbfa;"
           <> (if v.muted && v.dest == ToMidi then " opacity: 0.5;" else "")) ]
-      ( [ cellBtn (destName v.dest) (v.dest == ToOdonus) (CycleVoiceDest v.id) ]
-          <> (case v.dest of
-                ToMidi ->
-                  [ cellBtn (if v.muted then "off" else "on") (not v.muted) (ToggleVoiceMute v.id)
-                  , cellBtn (rendName v.renderer) true (CycleVoiceRenderer v.id)
-                  , numField "ch" v.channel (SetVoiceChannel v.id)
-                  ]
-                ToOdonus ->
-                  [ numField "id" v.channel (SetVoiceChannel v.id) ])
-          <>
-          [ HH.input
-              -- controlled (like the bpm field, which edits fine); the field carries the
-              -- REAL pattern text. Placeholder only shows if you clear it, and reads as a
-              -- hint ("empty = …"), not as content.
-              [ HP.value v.patternDraft
-              , HP.placeholder ("empty = " <> defaultPattern n)
-              , HP.style ("flex: 1 1 auto; min-width: 120px; font-family: ui-monospace, monospace; font-size: 12px; padding: 4px 6px; border-radius: 4px; border: 1px solid " <> borderCol <> ";")
-              , HE.onValueInput (SetVoicePattern v.id)
-              ]
+      [ -- header: destination + per-dest controls, remove on the right
+        HH.div [ HP.style "display: flex; align-items: center; gap: 6px; flex-wrap: wrap;" ]
+          ( [ cellBtn (destName v.dest) (v.dest == ToOdonus) (CycleVoiceDest v.id) ]
+              <> (case v.dest of
+                    ToMidi ->
+                      [ cellBtn (if v.muted then "off" else "on") (not v.muted) (ToggleVoiceMute v.id)
+                      , cellBtn (rendName v.renderer) true (CycleVoiceRenderer v.id)
+                      , numField "ch" v.channel (SetVoiceChannel v.id)
+                      ]
+                    ToOdonus ->
+                      [ numField "id" v.channel (SetVoiceChannel v.id) ])
+              <>
+              [ HH.div [ HP.style "flex: 1 1 auto;" ] []
+              , HH.button [ HP.style "border: none; background: none; cursor: pointer; color: #c8c8c8; font-size: 14px; line-height: 1;", HE.onClick \_ -> RemoveVoice v.id ] [ HH.text "×" ]
+              ] )
+      , fieldLabel "read-head — which chord, when"
+      , patInput v.patternDraft ("empty = " <> defaultPattern n) borderCol (SetVoicePattern v.id)
+      , HH.div [ HP.style "display: flex; align-items: center; justify-content: space-between; gap: 6px; margin: 6px 0 2px;" ]
+          [ HH.span [ HP.style "font-size: 10px; letter-spacing: 0.04em; text-transform: uppercase; color: #b8b8b8;" ] [ HH.text "♪ notes — 0 = lowest · -1 = top" ]
           , cellBtn (RA.articLabel v.articulator) (v.articulator /= RA.ABlock) (CycleVoiceArticulator v.id)
-          , HH.span [ HP.style "font-size: 12px; color: #c0c0c0;" ] [ HH.text "♪" ]
-          , HH.input
-              -- Axis B: how to sound the chord — a note-index pattern. Empty = the
-              -- renderer (block/arp/strum). "0 1 2 3" arp · "3" top voice · "3 2 1 0" down.
-              -- The button to the left picks the note ALPHABET both this pattern AND the
-              -- renderer use: block = the chord's own notes; voice-led = a fixed-N line
-              -- carried through the loop (0=bass, -1=melody, strum's common tones ring);
-              -- entering = just the notes new to each chord (arp the newcomers in).
-              [ HP.value v.notePatternDraft
-              , HP.placeholder ("empty = " <> rendName v.renderer)
-              , HP.style ("flex: 1 1 auto; min-width: 110px; font-family: ui-monospace, monospace; font-size: 12px; padding: 4px 6px; border-radius: 4px; border: 1px solid " <> noteBorderCol <> ";")
-              , HE.onValueInput (SetVoiceNotePattern v.id)
-              ]
-          , cellBtn "commit" dirty (CommitVoicePattern v.id)
+          ]
+        -- Axis B: how to sound the chord — a note-index pattern. Empty = the renderer
+        -- (block/arp/strum). The articulator button above picks the note ALPHABET both
+        -- this pattern AND the renderer use: block = the chord's own notes; voice-led = a
+        -- fixed-N line carried through the loop (0=bass, -1=melody); entering = just the
+        -- notes new to each chord (arp the newcomers in).
+      , patInput v.notePatternDraft ("empty = " <> rendName v.renderer) noteBorderCol (SetVoiceNotePattern v.id)
+      , HH.div [ HP.style "display: flex; align-items: center; justify-content: space-between; gap: 6px; margin-top: 8px;" ]
+          [ cellBtn "commit" dirty (CommitVoicePattern v.id)
           , status
-          , HH.button [ HP.style "border: none; background: none; cursor: pointer; color: #c8c8c8; font-size: 14px;", HE.onClick \_ -> RemoveVoice v.id ] [ HH.text "×" ]
-          ] )
+          ]
+      ]
 
 trimLower :: String -> String
 trimLower = toLower <<< trim
@@ -2816,8 +2823,10 @@ ladderView msel msound = grid <> octs <> dots
   -- chord (and makes it the active one) rather than a single global `sounding`.
   dot cid i m = SE.circle
     ( [ SA.cx dotX, SA.cy (midiToY m), SA.r 6.5
-      , SA.class_ (cn ("ladder-dot ladder-dot--" <> show (mod i 5)
-                       <> (if i == 0 then "" else " ladder-dot--drag")
+      -- colour = pitch class (one hue per chromatic tone), so a voice keeps its colour
+      -- through octave-drag / re-sort / doubling — identity follows the tone, not the slot.
+      , SA.class_ (cn ("ladder-dot ladder-dot--" <> show (mod m 12)
+                       <> (if i == 0 then " ladder-dot--bass" else " ladder-dot--drag")
                        <> (if selHere i then " ladder-dot--sel" else "")))
       , if i == 0 then HE.onMouseDown \_ -> SelectVoice cid BassVoice
                   else HE.onMouseDown \ev -> DragStart (ME.altKey ev) false cid (i - 1) m
@@ -2869,28 +2878,47 @@ voicingStrip msound favs = case msound of
 -- | every WITHIN-chord change. Octave-drag a note (⌥ doubles it), Tab/Shift-Tab
 -- | cycle voicings, ↑/↓ nudge a selected voice, f keeps a voicing, and the slash
 -- | row re-foots the chord on any of its tones. Esc / click-away closes.
-revoiceModal :: forall m. State -> Array (H.ComponentHTML Action Slots m)
-revoiceModal st = case st.revoicing >>= \cid -> find (\c -> c.id == cid) st.chords of
-  Nothing -> []
-  Just c ->
-    let tones = sort (nub c.pcs)
-    in [ SE.rect
-           [ SA.x (-440.0), SA.y (-300.0), SA.width 880.0, SA.height 600.0
-           , SA.class_ (cn "rv-backdrop"), HE.onClick \_ -> CloseRevoice ]
-       , SE.rect
-           [ SA.x (-452.0), SA.y (-300.0), SA.width 218.0, SA.height 600.0
-           , SA.class_ (cn "rv-drawer") ]
-       ]
-       <> voicingStrip (Just c) st.favorites
-       <> ladderView st.selected (Just c)
-       <> [ SE.text [ SA.x (-343.0), SA.y 222.0, SA.class_ (cn "rv-title") ]
-              [ HH.text (noteName c.root <> " · revoice") ]
-          , SE.text [ SA.x (-447.0), SA.y 250.0, SA.class_ (cn "rv-bass-label") ] [ HH.text "bass /" ]
-          ]
-       <> mapWithIndex (slashBtn c.bassPc) tones
-       <> [ SE.text [ SA.x (-343.0), SA.y 282.0, SA.class_ (cn "rv-hint") ]
-              [ HH.text "Tab voicings · ↑↓ nudge · drag = 8ve · ⌥ doubles · f keep · Esc" ] ]
+revoiceModal :: forall m. State -> H.ComponentHTML Action Slots m
+revoiceModal st =
+  Modal.modal
+    { open: isJust mc
+    , title: maybe "revoice" (\c -> noteName c.root <> " · revoice") mc
+    , onClose: CloseRevoice
+    }
+    (maybe [] revoiceBody mc)
   where
+  mc = st.revoicing >>= \cid -> find (\c -> c.id == cid) st.chords
+  -- The revoice content stays SVG (the ladder's octave-drag + voicing swatches are
+  -- intrinsically spatial), but now lives in a small self-contained <svg> INSIDE the
+  -- shared Modal widget's body rather than being painted into the lattice canvas. The
+  -- viewBox is a cropped window of the SAME user-space, so ladderView/voicingStrip keep
+  -- their exact coordinates and svgYFromEvent (reads currentTarget's own viewBox) keeps
+  -- the drag math (205 − y)/9.8 correct. Backdrop, title and × are the widget's job now.
+  revoiceBody c =
+    let tones = sort (nub c.pcs)
+    in [ SE.svg
+           ( [ SA.viewBox (-455.0) (-303.0) 290.0 565.0
+             , SA.class_ (cn "rv-svg")
+             -- suppress text-selection during octave-drag (the ladder labels were
+             -- getting selected, hijacking the pointer) — the lattice surface does this
+             -- via .vetula-surface CSS; the modal svg needs it inline.
+             , HP.style "display: block; margin: 0 auto; width: 280px; height: 545px; max-width: 100%; user-select: none; -webkit-user-select: none;"
+             ]
+               -- octave-drag: mirror the lattice surface's move/up/leave, only while dragging
+               <> (case st.drag of
+                     Just _ ->
+                       [ HE.onMouseMove (DragMove <<< ME.toEvent)
+                       , HE.onMouseUp \_ -> DragEnd
+                       , HE.onMouseLeave \_ -> DragEnd
+                       ]
+                     Nothing -> []) )
+           ( voicingStrip (Just c) st.favorites
+               <> ladderView st.selected (Just c)
+               <> [ SE.text [ SA.x (-447.0), SA.y 250.0, SA.class_ (cn "rv-bass-label") ] [ HH.text "bass /" ] ]
+               <> mapWithIndex (slashBtn c.bassPc) tones )
+       , HH.div [ HP.style "margin-top: 10px; font-size: 11px; color: #9a9a9a; text-align: center;" ]
+           [ HH.text "Tab voicings · ↑↓ nudge · drag = 8ve · ⌥ doubles · f keep · Esc" ]
+       ]
   slashBtn activeBass i pc =
     let w = 27.0
         x0 = -408.0 + toNumber i * (w + 2.0)
