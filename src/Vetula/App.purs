@@ -259,6 +259,7 @@ type State =
   -- (Nothing = show the live-derived source, which tracks revoicing).
   , sourceEdit :: Maybe String
   , sourceOpen :: Boolean   -- is the Tidal-source code revealed? (copy works either way)
+  , helpOpen :: Boolean     -- is the ⓘ help overlay open? (the notes, off the canvas)
   -- "pick mode": shift-clicked progression step indices (max 2). When non-empty,
   -- the left surface shows a generated candidate cloud to insert/substitute.
   , genSel :: Array Int
@@ -324,6 +325,7 @@ data Action
   | LoadSource             -- parse the textarea + rebuild the progression from it
   | RevertSource           -- discard edits, go back to the live-derived source
   | ToggleSource           -- reveal / hide the Tidal source code
+  | ToggleHelp             -- open / close the ⓘ help overlay
   | StepClick Int Boolean  -- a progression row clicked (index, shift) — play, or arm pick mode
   | PickCandidate Int      -- insert/substitute the chosen candidate into the progression
   | CancelGen              -- leave pick mode
@@ -416,6 +418,7 @@ component = H.mkComponent
       , imported: Set.empty
       , sourceEdit: Nothing
       , sourceOpen: false
+      , helpOpen: false
       , genSel: []
       , candidates: []
       , adventure: 0.25
@@ -964,6 +967,8 @@ handleAction = case _ of
   RevertSource -> H.modify_ _ { sourceEdit = Nothing }
 
   ToggleSource -> H.modify_ \s -> s { sourceOpen = not s.sourceOpen }
+
+  ToggleHelp -> H.modify_ \s -> s { helpOpen = not s.helpOpen }
 
   -- a progression row: plain click plays that step (out of sequence); shift-click
   -- arms pick mode by selecting it (max two — a 3rd starts fresh).
@@ -2059,9 +2064,7 @@ render st =
             , HH.div [ HP.style "flex: 0 0 340px;" ]
                 [ progressionPanel st ]
             ]
-    , HH.p
-        [ HP.style "color: #9a9a9a; font-size: 13px; margin: 8px 0 0;" ]
-        [ HH.text (helpText st.tab) ]
+    , helpOverlay st
     ]
 
 -- | Everything that used to stack down the page — title, tab switch, key, scale,
@@ -2085,13 +2088,26 @@ topNav st =
       ]
       <> familyPicker
       <> (if st.tab == Lab then dropButtons <> borrowPicker else [])
-      <> [ HH.span
-             [ HP.style "font-size: 12px; color: #9a9a9a; margin-left: auto;" ]
-             [ HH.text ("MIDI: " <> st.midiName) ]
+      <> [ HH.div
+             [ HP.style "margin-left: auto; display: flex; align-items: center; gap: 8px;" ]
+             [ midiChip st.midiName
+             , HH.button
+                 [ HP.style helpBtnStyle, HP.title "keys & help", HE.onClick \_ -> ToggleHelp ]
+                 [ HH.text "ⓘ" ]
+             ]
          ]
     )
   where
   labelStyle = "font-size: 12px; color: #6a6a6a;"
+  -- MIDI status as a compact pill: a dot (green = a port is bound, amber = still
+  -- resolving) plus the port name. Replaces the old full-width "MIDI: …" row.
+  midiChip nm =
+    let ok = nm /= "…" && nm /= ""
+    in HH.span
+         [ HP.style "display: inline-flex; align-items: center; gap: 5px; font-size: 11px; color: #8a8a8a; background: #f4f4f4; border: 1px solid #e8e8e8; border-radius: 10px; padding: 2px 9px;" ]
+         [ HH.span [ HP.style ("width: 7px; height: 7px; border-radius: 50%; background: " <> (if ok then "#5aa86a" else "#c9a23a") <> ";") ] []
+         , HH.text nm ]
+  helpBtnStyle = "border: 1px solid #e0e0e0; background: #fafafa; color: #7a7a7a; cursor: pointer; width: 22px; height: 22px; border-radius: 50%; font-size: 12px; line-height: 1; padding: 0;"
   divider = HH.span [ HP.style "width: 1px; align-self: stretch; background: #e6e6e6; margin: 2px 4px;" ] []
   -- the exterior signpost buttons: drop a curated chord set onto the outer rings
   -- (toggle to remove). Active = amber, matching the ring-index warmth.
@@ -2143,6 +2159,31 @@ helpText = case _ of
     "One triad per scale degree. Click a piano key to focus that root — a beam lights its column. Stack notes on the focused chord: number keys 2–7 add an interval that many steps up (3 = a third, so 3·3·3 climbs a seventh; 2·4 makes a sus2), e adds the next third (e·e = seventh), s drops the suspensions; press l to explode its whole lattice at once (l again to collapse). The McMullen button drops a curated signpost palette and BORROW pulls chromatic chords from a parallel mode (modal interchange) — chords the scale-pure lattice can't reach, floating up over their own roots and shaded warmer the further outside the chosen scale they sit. Hover any chord + space to hear it. Hover a chord and press v to REVOICE it — a modal with its pitch ladder (drag a note by octaves, ⌥ to double), Tab to cycle voicings, ↑↓ to nudge a voice, f to keep one, and a slash row to re-foot the bass; Esc closes. Click any chord — triads included — to grow the progression on the right: same family bridges by the shortest single-note walk (gold); a chord in another family leaps across as an interconnector (dashed violet). Chromatic keys summon borrowed roots (modulation). On the right: click a step to hear it (shift-click one or two to offer chords to add), then Tab / Shift-Tab cycles its voicings, ↑/↓ nudges a clicked voice, drag a note to move it by octaves (⌥-drag to double it); ▶ plays the whole thing, c clears it. The Tidal source tracks it live — copy to save, paste + Load to work on a saved one again. “save → library” stores it for the Performance tab."
   Performance ->
     "Load a saved progression and fan it to VOICES. The chords are ROWS; each voice is a COLUMN; every cell is how many BARS that voice dwells on that chord — click a cell to bump it up (shift-click down), 0 = skip. So a block voice can hold one chord for four bars while an arp runs every chord at one bar each, and any voice can sit out any chord. Each column header sets its renderer (block / strum = only new notes / arp), MIDI channel and phase offset; voices loop their own columns independently, so different totals drift them apart. ▶ runs the transport. Click a chord row to select it, then Tab / ↑↓ revoices it LIVE without changing the saved version."
+
+-- | The keys-and-help overlay (the ⓘ button). The reference text that used to sit as a
+-- | paragraph under the canvas, moved off it. Static, so click-anywhere dismisses.
+helpOverlay :: forall m. State -> H.ComponentHTML Action Slots m
+helpOverlay st =
+  if not st.helpOpen then HH.text ""
+  else HH.div
+    [ HP.style "position: fixed; inset: 0; background: rgba(20,20,20,0.28); z-index: 50; display: flex; align-items: flex-start; justify-content: center; padding: 56px 20px;"
+    , HE.onClick \_ -> ToggleHelp ]
+    [ HH.div
+        [ HP.style "background: #fff; max-width: 720px; max-height: 80vh; overflow-y: auto; border-radius: 8px; box-shadow: 0 10px 44px rgba(0,0,0,0.18); padding: 20px 26px 26px;" ]
+        [ HH.div [ HP.style "display: flex; align-items: baseline; gap: 10px; margin: 0 0 14px;" ]
+            [ HH.h2 [ HP.style "font-size: 15px; font-weight: 600; margin: 0; color: #2a2a2a;" ] [ HH.text "Keys & help" ]
+            , HH.span [ HP.style "font-size: 11px; color: #b0b0b0;" ] [ HH.text "click anywhere to close" ]
+            ]
+        , helpSection "Lattice" (helpText Lab)
+        , helpSection "Voices" (helpText Performance)
+        ]
+    ]
+  where
+  helpSection heading body =
+    HH.div [ HP.style "margin: 0 0 14px;" ]
+      [ HH.div [ HP.style "font-size: 11px; letter-spacing: 0.06em; text-transform: uppercase; color: #9a7a2a; margin: 0 0 5px;" ] [ HH.text heading ]
+      , HH.p [ HP.style "font-size: 12.5px; line-height: 1.65; color: #555; margin: 0;" ] [ HH.text body ]
+      ]
 
 surface :: forall m. State -> H.ComponentHTML Action Slots m
 surface st
