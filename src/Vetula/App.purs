@@ -274,7 +274,10 @@ type State =
   , lastCapSig :: String          -- signature (currentSource) of the last capture, for dedup
   , libSearch :: String           -- filter the library by key
   , saveName :: String            -- name for the next saved progression
-  , perfProg :: Maybe { name :: String, chordIds :: Array Int }  -- loaded copy (ids into `chords`)
+  -- Slice 4a — the live `path` IS the performed progression (no separate loaded
+  -- working copy). `perfName` is just the title of the snapshot last restored into
+  -- the path (Nothing = hand-built on the lattice); the chords come from `path`.
+  , perfName :: Maybe String
   , voices :: Array Voice
   , armed :: Boolean              -- the ARM/cue flag (sticky). Vetula keeps its own arm
                                   -- lifecycle (standalone PerfPlay/PerfStop/unload); the
@@ -422,7 +425,7 @@ component = H.mkComponent
       , lastCapSig: ""
       , libSearch: ""
       , saveName: ""
-      , perfProg: Nothing
+      , perfName: Nothing
       , voices: []
       , armed: false
       -- standalone Vetula has no shell, so authority defaults Local (the play button
@@ -619,17 +622,12 @@ startWith key focusId chords0 = do
   case find (\c -> c.id == focusId) chords0 of
     Nothing -> pure unit
     Just focus -> do
-      -- a loaded performance progression's chords also live in `chords` (as
-      -- imported copies). A lab rebuild replaces the seed set, so carry the perf
-      -- chords across untouched — changing key/scale mustn't wipe the loaded prog.
-      let perfIds = maybe [] _.chordIds st.perfProg
-          perfKept = filter (\c -> elem c.id perfIds) st.chords
-          -- Carry the Lab PROGRESSION's chords across the rebuild too (it lives in
-          -- `path`), so the assembled progression survives a key/scale change or a
-          -- tab round-trip — not just the loaded-performance copy.
-          pathKept = filter (\c -> elem c.id st.path) st.chords
+      -- The assembled progression lives in `path` (Slice 4a: the one source the
+      -- performance reads too). A lab rebuild replaces the seed set, so carry the
+      -- path's chords across untouched — changing key/scale mustn't wipe it.
+      let pathKept = filter (\c -> elem c.id st.path) st.chords
           placed = nubByEq (\a b -> a.id == b.id)
-                     (map (place key focus) chords0 <> perfKept <> pathKept)
+                     (map (place key focus) chords0 <> pathKept)
           simNodes = map mkSimNode (map (place key focus) chords0)
       result <- liftEffect $ runSimulation
         { engine: D3
@@ -647,8 +645,7 @@ startWith key focusId chords0 = do
         Stopped -> SimDone
       H.modify_ \s ->
         s { key = key, chords = placed, focusId = focusId, nodes = simNodes
-          , handle = Just result.handle, subId = Just sid
-          , imported = Set.union s.imported (Set.fromFoldable perfIds) }
+          , handle = Just result.handle, subId = Just sid }
 
 stopSim :: forall o m. MonadAff m => H.HalogenM State Action Slots o m Unit
 stopSim = do
@@ -1072,15 +1069,24 @@ handleAction = case _ of
         { chords = st.chords <> fresh
         , imported = st.imported <> Set.fromFoldable ids
         , nextId = st.nextId + length fresh
-        , perfProg = Just { name: entry.name, chordIds: ids }
+        -- Slice 4a: restore the snapshot INTO the path (the one performed progression),
+        -- not a parallel working copy.
+        , path = ids
+        , perfName = Just entry.name
         , voices = [ defaultVoice 0 0 Block (length fresh) ]
         , nextVoiceId = 1
         , sounding = head ids
         }
 
+  -- ← library: set the current progression aside to browse the stack. Slice 4a: the
+  -- path IS the progression, so snapshot it first (AutoCapture is on a timer and may
+  -- not have fired yet), then clear — non-destructive, and it's the design's
+  -- "library = snapshots you restore into the path".
   UnloadProg -> do
+    st <- H.get
+    when (length (pathSteps st) > 0) (captureSteps st)
     stopClock
-    H.modify_ _ { perfProg = Nothing, voices = [], playing = false }
+    H.modify_ _ { path = [], perfName = Nothing, voices = [], playing = false }
 
   -- Delete shifts indices, so drop the session pointer to avoid it dangling.
   DeleteLib i -> do
@@ -1211,6 +1217,7 @@ handleAction = case _ of
       , imported = st.imported <> Set.fromFoldable ids
       , nextId = st.nextId + length newChords
       , path = ids
+      , perfName = Nothing
       , sounding = head ids
       , sourceEdit = Nothing
       -- loading a source is a new capture session (don't overwrite the last ◦)
@@ -1379,10 +1386,12 @@ silenceHeld st =
     for_ st.voices \v -> for_ v.held \nn -> Midi.noteOffAt out { channel: v.channel, note: nn, delayMs: 0.0 }
 
 -- | The loaded performance progression's chords, resolved from the working copy.
+-- | The performed progression. Slice 4a: this IS the live `path` (`pathSteps`) — the
+-- | voices read what you're building, with no load-a-copy step. Kept as a named alias
+-- | because the reef-projection sites (`buildPerf`, `brushMsg`) read more clearly as
+-- | "the performance's chords"; 4b may inline it.
 perfChords :: State -> Array ChordNode
-perfChords st = case st.perfProg of
-  Just pp -> mapMaybe (\pid -> find (\c -> c.id == pid) st.chords) pp.chordIds
-  Nothing -> []
+perfChords = pathSteps
 
 -- | Project the live performance onto the shared `Reef.Vetula.Perf` (the wire shape
 -- | the rig runs): the resolved progression as `{ pcs, notes }` (pcs for the → odo
@@ -2501,9 +2510,11 @@ tidalExport open sourceEdit keyLabel steps =
 -- | The Performance tab: either the library (when nothing's loaded) or the
 -- | loaded progression's transport + voices rack. Isolated from the lab.
 performanceView :: forall m. MonadAff m => State -> H.ComponentHTML Action Slots m
-performanceView st = case st.perfProg of
-  Nothing -> libraryView st
-  Just pp -> loadedView st pp
+-- Slice 4a: the Performance tab reads the live `path`. Empty path → browse the
+-- library (restore a snapshot into the path); non-empty → the loaded view over it.
+performanceView st =
+  if length st.path == 0 then libraryView st
+  else loadedView st (fromMaybe "progression" st.perfName)
 
 cellBtn :: forall m. String -> Boolean -> Action -> H.ComponentHTML Action Slots m
 cellBtn label on act =
@@ -2562,13 +2573,13 @@ libraryView st =
 
 -- | The loaded progression: transport + the chords (revoiceable live) + the
 -- | voices rack (each a read-head into the progression on its own clock).
-loadedView :: forall m. MonadAff m => State -> { name :: String, chordIds :: Array Int } -> H.ComponentHTML Action Slots m
-loadedView st pp =
+loadedView :: forall m. MonadAff m => State -> String -> H.ComponentHTML Action Slots m
+loadedView st name =
   let chords = perfChords st
   in HH.div [ HP.style "max-width: 900px; padding: 6px 0;" ]
       [ HH.div [ HP.style "display: flex; align-items: center; gap: 12px; margin: 0 0 12px;" ]
           [ HH.button [ HP.style "border: 1px solid #d8d8d8; background: #fafafa; cursor: pointer; padding: 3px 10px; border-radius: 4px; font-size: 12px; color: #6a6a6a;", HE.onClick \_ -> UnloadProg ] [ HH.text "← library" ]
-          , HH.span [ HP.style "font-size: 14px; font-weight: 600; color: #2a2a2a;" ] [ HH.text pp.name ]
+          , HH.span [ HP.style "font-size: 14px; font-weight: 600; color: #2a2a2a;" ] [ HH.text name ]
           -- Control-surface refinement: ARM now lives on the VETULA tab's dot in the
           -- top switcher; no manual → RIG / → BRUSH push buttons (ATLANTIS auto-syncs).
           , numField "bpm" st.tempo SetTempo
