@@ -101,6 +101,23 @@ data Tab = Lab | Performance
 
 derive instance eqTab :: Eq Tab
 
+-- | Slice 4c: the surface's width-focus. Hunt = the lattice pool is dominant (you're
+-- | finding chords); Perform = the rail is dominant (you're playing voices). Auto-flips
+-- | on the empty↔non-empty path edge (first chord → Perform, cleared → Hunt); the
+-- | Hunt/Perform toggle (and the collapsed-pool spine) override by hand. Nothing
+-- | mounts/unmounts — focus only biases which column gets the width.
+data Focus = Hunt | Perform
+
+derive instance eqFocus :: Eq Focus
+
+-- | Slice 4b: which rail section is expanded. The rail is an accordion — one section
+-- | open at a time — over the three rail objects: the Progression (what), the Library
+-- | (saved progressions), and the Voices (how it's performed).
+data RailSection = SecProgression | SecLibrary | SecVoices
+
+derive instance eqRailSection :: Eq RailSection
+derive instance ordRailSection :: Ord RailSection
+
 -- | How a voice sounds the chord it's currently on. Block = the whole chord held
 -- | for the step; Strummed = re-trigger only the notes that changed (common tones
 -- | ring on); Arp = one chord note per pulse, cycling up.
@@ -212,7 +229,9 @@ type VoicingCycle =
 
 type State =
   { key :: Key
-  , tab :: Tab                         -- which surface is showing
+  , tab :: Tab                         -- lattice-setup mode (always Lab since 4b; kept for surface code)
+  , focus :: Focus                     -- Slice 4c: Hunt (lattice-dominant) vs Perform (rail-dominant)
+  , railOpen :: Set RailSection        -- Slice 4b: which rail accordion sections are open (multi)
   , chords :: Array ChordNode          -- the model (pin, provenance, layout targets)
   , nodes :: Array VNode               -- live positions from the simulation
   , focusId :: Int
@@ -300,7 +319,8 @@ data Action
   | SimTick
   | SimDone
   | Hover (Maybe Int)
-  | SetTab Tab
+  | SetFocus Focus         -- Slice 4c: switch the surface width-focus (Hunt / Perform)
+  | ToggleRailSection RailSection  -- Slice 4b: open/close a rail accordion section
   | Key String Boolean     -- key, shift held
   | SelectKey String
   | SelectScale String
@@ -393,6 +413,8 @@ component = H.mkComponent
   { initialState: \_ ->
       { key: cMajorKey
       , tab: Lab
+      , focus: Hunt
+      , railOpen: Set.fromFoldable [ SecProgression, SecLibrary, SecVoices ]
       , chords: []
       , nodes: []
       , focusId: 0           -- the first diatonic triad seed
@@ -734,16 +756,14 @@ handleAction = case _ of
 
   Hover mid -> H.modify_ _ { hoveredId = mid }
 
-  -- switching tabs is a hard rebuild of the SURFACE (Performance never sims) and
-  -- of the transient exploration scaffolding (families / candidates / borrow). But
-  -- the PROGRESSION (`path`) SURVIVES — it's the work you've assembled, so a peek
-  -- at Performance and back must not wipe it. `startWith` carries its chords across.
-  SetTab t -> do
-    st <- H.get
-    when (t /= st.tab) do
-      stopSim
-      H.modify_ _ { tab = t, hoveredId = Nothing, revoicing = Nothing, familyScale = Map.empty, focusedFamily = Nothing, stackHead = Nothing, dropped = Map.empty, borrowMode = Nothing, imported = Set.empty, sourceEdit = Nothing, genSel = [], candidates = [] }
-      startWith st.key (seedFocus t) (seedsFor t st.key)
+  -- Slice 4c: hand-override the width-focus (the Hunt/Perform toggle, the pool spine).
+  -- No surface rebuild — the lattice sim keeps running; we only change which column
+  -- gets the width.
+  SetFocus f -> H.modify_ _ { focus = f }
+
+  -- Toggle a rail accordion section (independent — several may be open at once).
+  ToggleRailSection sec -> H.modify_ \s ->
+    s { railOpen = if Set.member sec s.railOpen then Set.delete sec s.railOpen else Set.insert sec s.railOpen }
 
   Key k shift -> do
     st <- H.get
@@ -765,7 +785,7 @@ handleAction = case _ of
         "Tab" -> cycleVoicing (if shift then -1 else 1)
         "ArrowUp" -> nudgeSelected 1
         "ArrowDown" -> nudgeSelected (-1)
-        "c" -> H.modify_ _ { path = [] }
+        "c" -> H.modify_ _ { path = [], focus = Hunt }
         "p" -> H.gets _.path >>= playPath
         "f" -> toggleFavorite
         -- open the revoice modal on the hovered (else sounding) chord
@@ -803,9 +823,9 @@ handleAction = case _ of
       -- Starting a path from empty (after ANY clear: c / double-click / key rebuild)
       -- opens a NEW capture session, so the next auto-capture forks a fresh ◦
       -- instead of overwriting the previous progression's entry in place.
-      Nothing -> H.modify_ _ { path = [ pid ], lastCapIdx = Nothing, lastCapSig = "" }
+      Nothing -> H.modify_ _ { path = [ pid ], focus = Perform, lastCapIdx = Nothing, lastCapSig = "" }
       Just lastId
-        | pid == lastId -> H.modify_ _ { path = [] }
+        | pid == lastId -> H.modify_ _ { path = [], focus = Hunt }
         | otherwise -> case Path.shortestPath (Path.adjacency (neighborLinks st.chords)) lastId pid of
             Just bridge -> do
               let added = drop 1 bridge
@@ -1011,6 +1031,7 @@ handleAction = case _ of
         , imported = Set.insert newId st.imported
         , nextId = newId + 1
         , path = path'
+        , focus = if length st.path == 0 then Perform else st.focus
         , genSel = []
         , candidates = []
         , sounding = Just newId
@@ -1091,7 +1112,7 @@ handleAction = case _ of
     st <- H.get
     when (length (pathSteps st) > 0) (captureSteps st)
     stopClock
-    H.modify_ _ { path = [], perfName = Nothing, voices = [], playing = false }
+    H.modify_ _ { path = [], perfName = Nothing, focus = Hunt, voices = [], playing = false }
 
   -- Delete shifts indices, so drop the session pointer to avoid it dangling.
   DeleteLib i -> do
@@ -2055,17 +2076,71 @@ render st =
   HH.div
     [ HP.style "padding: 12px 24px 18px; max-width: 1600px; margin: 0 auto;" ]
     [ topNav st
-    , case st.tab of
-        Performance -> performanceView st
-        _ ->
-          HH.div
-            [ HP.style "display: flex; gap: 16px; align-items: flex-start;" ]
-            [ HH.div [ HP.style "flex: 1; min-width: 0;" ] [ pickBar st, surface st ]
-            , HH.div [ HP.style "flex: 0 0 340px;" ]
-                [ progressionPanel st ]
-            ]
+    , unifiedBody st
     , helpOverlay st
     ]
+
+-- | Slice 4b/4c — the one surface. Left the POOL (lattice), right the RAIL
+-- | (progression + playheads + stack); `focus` biases the width. Hunt: the pool is
+-- | dominant and the rail is a thin progression/stack column. Perform: the pool
+-- | collapses to a clickable spine and the rail takes the width, so the (wide) voice
+-- | forms fit. Nothing mounts/unmounts across the flip — the sim keeps running.
+unifiedBody :: forall m. MonadAff m => State -> H.ComponentHTML Action Slots m
+unifiedBody st =
+  HH.div
+    [ HP.style "display: flex; gap: 16px; align-items: flex-start;" ]
+    ( case st.focus of
+        Hunt ->
+          [ HH.div [ HP.style "flex: 1 1 auto; min-width: 0;" ] [ pickBar st, surface st ]
+          , HH.div [ HP.style "flex: 0 0 340px; min-width: 0;" ] [ railView st ]
+          ]
+        Perform ->
+          [ poolSpine
+          , HH.div [ HP.style "flex: 1 1 auto; min-width: 0;" ] [ railView st ]
+          ]
+    )
+
+-- | The collapsed pool (Perform mode): a thin clickable spine that expands the lattice
+-- | again — the always-available "back to hunt" gesture.
+poolSpine :: forall m. H.ComponentHTML Action Slots m
+poolSpine =
+  HH.div
+    [ HP.style "flex: 0 0 42px; align-self: stretch; min-height: 460px; border: 1px solid #ededed; border-radius: 6px; background: #fafafa; cursor: pointer; display: flex; flex-direction: column; align-items: center; padding: 12px 0; gap: 12px;"
+    , HP.title "expand the lattice — hunt for chords"
+    , HE.onClick \_ -> SetFocus Hunt ]
+    [ HH.span [ HP.style "font-size: 15px; color: #7a7a7a;" ] [ HH.text "▸" ]
+    , HH.span [ HP.style "writing-mode: vertical-rl; font-size: 11px; letter-spacing: 0.14em; text-transform: uppercase; color: #b0b0b0;" ] [ HH.text "pool" ]
+    ]
+
+-- | The right rail: an accordion over the three rail objects — Progression (what),
+-- | Library (saved progressions), Voices (how it's performed). One open at a time.
+railView :: forall m. MonadAff m => State -> H.ComponentHTML Action Slots m
+railView st =
+  HH.div
+    [ HP.style "border-left: 1px solid #ededed; padding-left: 14px;" ]
+    [ accSection st SecProgression "Progression" (countLabel (length (pathSteps st)) "step") (progressionPanel st)
+    , accSection st SecLibrary "Library" (countLabel (length st.library) "saved") (libraryView st)
+    , accSection st SecVoices "Voices" (countLabel (length st.voices) "voice") (playheadsRack st)
+    ]
+  where
+  countLabel n noun = show n <> " " <> noun <> (if n == 1 then "" else "s")
+
+-- | One accordion section: a click-to-open header (chevron + title + count) and, when
+-- | open, its body. Headers stay visible when collapsed so the rail reads as a stack.
+accSection :: forall m. State -> RailSection -> String -> String -> H.ComponentHTML Action Slots m -> H.ComponentHTML Action Slots m
+accSection st sec title subtitle body =
+  let open = Set.member sec st.railOpen
+  in HH.div
+      [ HP.style "border-top: 1px solid #ededed;" ]
+      [ HH.div
+          [ HP.style "display: flex; align-items: center; gap: 8px; padding: 9px 2px; cursor: pointer; user-select: none;"
+          , HE.onClick \_ -> ToggleRailSection sec ]
+          [ HH.span [ HP.style "font-size: 10px; color: #b0b0b0; width: 9px;" ] [ HH.text (if open then "▾" else "▸") ]
+          , HH.span [ HP.style "font-size: 12px; color: #6a6a6a; letter-spacing: 0.06em; text-transform: uppercase;" ] [ HH.text title ]
+          , HH.span [ HP.style "font-size: 11px; color: #bcbcbc;" ] [ HH.text subtitle ]
+          ]
+      , if open then HH.div [ HP.style "padding: 0 2px 14px;" ] [ body ] else HH.text ""
+      ]
 
 -- | Everything that used to stack down the page — title, tab switch, key, scale,
 -- | MIDI status — crushed into one slim top bar, to give the surface its room.
@@ -2074,8 +2149,8 @@ topNav st =
   HH.div
     [ HP.style "display: flex; align-items: center; gap: 12px; margin: 0 0 12px; padding-bottom: 9px; border-bottom: 1px solid #ededed; flex-wrap: wrap;" ]
     ( [ HH.h1 [ HP.style "font-weight: 600; font-size: 19px; letter-spacing: -0.01em; margin: 0 6px 0 0;" ] [ HH.text "Vetula" ]
-      , navTab st.tab Lab "Lab"
-      , navTab st.tab Performance "Performance"
+      , focusTab st Hunt "Hunt"
+      , focusTab st Perform "Perform"
       , divider
       , HH.span [ HP.style labelStyle ] [ HH.text "KEY" ]
       , HH.slot (Proxy :: _ "keySelect") unit Select.component
@@ -2087,7 +2162,7 @@ topNav st =
           \(Select.Selected v) -> SelectScale v
       ]
       <> familyPicker
-      <> (if st.tab == Lab then dropButtons <> borrowPicker else [])
+      <> (if st.focus == Hunt then dropButtons <> borrowPicker else [])
       <> [ HH.div
              [ HP.style "margin-left: auto; display: flex; align-items: center; gap: 8px;" ]
              [ midiChip st.midiName
@@ -2142,10 +2217,13 @@ topNav st =
          ]
     Nothing -> []
 
-navTab :: forall m. Tab -> Tab -> String -> H.ComponentHTML Action Slots m
-navTab active t label =
+-- | Slice 4c: the Hunt/Perform width-focus toggle — a segmented control that replaces
+-- | the old Lab/Performance tabs. Auto-flips on the path emptiness edge; this is the
+-- | manual override.
+focusTab :: forall m. State -> Focus -> String -> H.ComponentHTML Action Slots m
+focusTab st f label =
   HH.button
-    [ HP.style (btnStyle (t == active)), HE.onClick \_ -> SetTab t ]
+    [ HP.style (btnStyle (st.focus == f)), HE.onClick \_ -> SetFocus f ]
     [ HH.text label ]
   where
   btnStyle isActive =
@@ -2402,16 +2480,13 @@ progressionPanel :: forall m. MonadAff m => State -> H.ComponentHTML Action Slot
 progressionPanel st =
   let steps = pathSteps st
   in HH.div
-      [ HP.style "border-left: 1px solid #ededed; padding-left: 14px; max-height: 620px; overflow-y: auto;" ]
+      -- capped so the note-rows stay a compact reference even when the rail is wide
+      -- (Perform); the playheads, not the progression, get the extra width.
+      [ HP.style "margin: 0 0 6px; max-width: 360px;" ]
       [ HH.div
-          [ HP.style "display: flex; align-items: center; gap: 10px; margin: 2px 0 8px;" ]
-          [ HH.span
-              [ HP.style "font-size: 12px; color: #6a6a6a; letter-spacing: 0.06em; text-transform: uppercase;" ]
-              [ HH.text "Progression" ]
-          , HH.span [ HP.style "font-size: 11px; color: #b0b0b0;" ]
-              [ HH.text (show (length steps) <> (if length steps == 1 then " step" else " steps")) ]
-          , HH.button
-              [ HP.style "margin-left: auto; border: 1px solid #b8860b; background: #fbf6e9; color: #7a5c00; cursor: pointer; padding: 3px 12px; border-radius: 4px; font-size: 12px; font-weight: 600;"
+          [ HP.style "display: flex; align-items: center; gap: 8px; margin: 0 0 8px;" ]
+          [ HH.button
+              [ HP.style "border: 1px solid #b8860b; background: #fbf6e9; color: #7a5c00; cursor: pointer; padding: 3px 12px; border-radius: 4px; font-size: 12px; font-weight: 600;"
               , HE.onClick \_ -> PlayPath
               ]
               [ HH.text "▶ preview" ]
@@ -2431,7 +2506,32 @@ progressionPanel st =
                  [ HP.style "color: #c0c0c0; font-size: 12px; line-height: 1.6; margin: 4px 0 10px;" ]
                  [ HH.text "Shift-click chords on the lattice to grow a progression here. Or paste a saved one into the Tidal source below and press Load." ]
           else HH.div [ HP.style "margin: 0 0 10px;" ] (mapWithIndex (progressionRow st) steps)
-      , tidalExport st.sourceOpen st.sourceEdit (groupLabel st.key) steps
+      ]
+
+-- | The performance rack: transport (bpm / preview channel) + one live-coded Tidal
+-- | read-head per voice. Extracted from the old Performance `loadedView`; the rail shows
+-- | it only in Perform focus, where it has the width for the (wide) voice rows.
+playheadsRack :: forall m. State -> H.ComponentHTML Action Slots m
+playheadsRack st =
+  let chords = perfChords st
+  -- capped so the flex-1 pattern inputs don't stretch across the whole wide rail
+  -- (the "eats the display" bug); overflow-x keeps it from breaking a narrow rail.
+  in HH.div [ HP.style "max-width: 820px; overflow-x: auto;" ]
+      [ HH.div [ HP.style "display: flex; align-items: baseline; gap: 12px; margin: 0 0 6px; flex-wrap: wrap;" ]
+          [ HH.span [ HP.style "font-size: 11px; color: #b0b0b0;" ] [ HH.text "commit applies both boxes · empty ♪ = block/arp/strum renderer" ]
+          , cellBtn "+ add voice" false AddVoice
+          , numField "bpm" st.tempo SetTempo
+          , numField "preview ch" st.previewChan SetPreviewChan
+          ]
+      , HH.div [ HP.style "display: flex; align-items: center; gap: 6px; padding: 0 6px 2px; font-size: 10px; letter-spacing: 0.04em; text-transform: uppercase; color: #b8b8b8;" ]
+          [ HH.div [ HP.style "flex: 0 0 210px;" ] [ HH.text "voice" ]
+          , HH.div [ HP.style "flex: 1 1 auto; min-width: 120px;" ] [ HH.text "read-head — which chord, when" ]
+          , HH.span [ HP.style "flex: 0 0 auto; visibility: hidden;" ] [ HH.text "♪" ]
+          , HH.div [ HP.style "flex: 1 1 auto; min-width: 110px;" ] [ HH.text "♪ notes — which note (0 = lowest · -1 = top)" ]
+          , HH.div [ HP.style "flex: 0 0 130px;" ] []
+          ]
+      , HH.keyed (ElemName "div") [ HP.style "display: flex; flex-direction: column; gap: 6px;" ]
+          (map (\v -> Tuple (show v.id) (voicePlayheadRow (length chords) v)) st.voices)
       ]
 
 -- | The progression rows' pitch-axis geometry (shared with DragMove's inverse).
@@ -2544,19 +2644,6 @@ tidalExport open sourceEdit keyLabel steps =
     "border: 1px solid #cdbb96; background: #fbf6e9; color: #7a5c00; cursor: pointer; "
       <> "padding: 2px 10px; border-radius: 3px; font-size: 12px; font-weight: 600;"
 
--- ---------------------------------------------------------------------------
--- The Performance tab — load a saved progression, fan it to voices
--- ---------------------------------------------------------------------------
-
--- | The Performance tab: either the library (when nothing's loaded) or the
--- | loaded progression's transport + voices rack. Isolated from the lab.
-performanceView :: forall m. MonadAff m => State -> H.ComponentHTML Action Slots m
--- Slice 4a: the Performance tab reads the live `path`. Empty path → browse the
--- library (restore a snapshot into the path); non-empty → the loaded view over it.
-performanceView st =
-  if length st.path == 0 then libraryView st
-  else loadedView st (fromMaybe "progression" st.perfName)
-
 cellBtn :: forall m. String -> Boolean -> Action -> H.ComponentHTML Action Slots m
 cellBtn label on act =
   HH.button
@@ -2581,12 +2668,11 @@ libraryView st =
   let q = trimLower st.libSearch
       shown = filter (\(Tuple _ e) -> q == "" || contains (Pattern q) (trimLower (e.keyLabel <> " " <> e.name)))
                 (mapWithIndex Tuple st.library)
-  in HH.div [ HP.style "max-width: 720px; padding: 6px 0;" ]
-      [ HH.div [ HP.style "display: flex; align-items: center; gap: 12px; margin: 0 0 12px;" ]
-          [ HH.span [ HP.style "font-size: 13px; color: #6a6a6a; letter-spacing: 0.06em; text-transform: uppercase;" ] [ HH.text "Library" ]
-          , HH.input
+  in HH.div [ HP.style "padding: 2px 0;" ]
+      [ HH.div [ HP.style "display: flex; align-items: center; gap: 12px; margin: 0 0 10px;" ]
+          [ HH.input
               [ HP.value st.libSearch, HE.onValueInput SetLibSearch, HP.attr (AttrName "placeholder") "search by key…"
-              , HP.style "font-size: 13px; padding: 3px 8px; border: 1px solid #ddd; border-radius: 4px; width: 200px;" ]
+              , HP.style "font-size: 13px; padding: 3px 8px; border: 1px solid #ddd; border-radius: 4px; width: 100%; box-sizing: border-box;" ]
           ]
       , if length st.library == 0
           then HH.p [ HP.style "color: #c0c0c0; font-size: 13px; line-height: 1.6;" ]
@@ -2610,49 +2696,6 @@ libraryView st =
       , HH.span [ HP.style "font-size: 11px; color: #b0b0b0;" ] [ HH.text (show (length (parseProgression e.source)) <> " chords") ]
       , cellBtn "load" false (LoadProg i)
       , HH.button [ HP.style "border: none; background: none; cursor: pointer; color: #c0c0c0; font-size: 15px;", HE.onClick \_ -> DeleteLib i ] [ HH.text "×" ]
-      ]
-
--- | The loaded progression: transport + the chords (revoiceable live) + the
--- | voices rack (each a read-head into the progression on its own clock).
-loadedView :: forall m. MonadAff m => State -> String -> H.ComponentHTML Action Slots m
-loadedView st name =
-  let chords = perfChords st
-  in HH.div [ HP.style "max-width: 900px; padding: 6px 0;" ]
-      [ HH.div [ HP.style "display: flex; align-items: center; gap: 12px; margin: 0 0 12px;" ]
-          [ HH.button [ HP.style "border: 1px solid #d8d8d8; background: #fafafa; cursor: pointer; padding: 3px 10px; border-radius: 4px; font-size: 12px; color: #6a6a6a;", HE.onClick \_ -> UnloadProg ] [ HH.text "← library" ]
-          , HH.span [ HP.style "font-size: 14px; font-weight: 600; color: #2a2a2a;" ] [ HH.text name ]
-          -- Control-surface refinement: ARM now lives on the VETULA tab's dot in the
-          -- top switcher; no manual → RIG / → BRUSH push buttons (ATLANTIS auto-syncs).
-          , numField "bpm" st.tempo SetTempo
-          , numField "preview ch" st.previewChan SetPreviewChan
-          ]
-      -- the PROGRESSION: chords as rows (pitch-ladder + label), the live playhead
-      -- lighting the active chord. Its READ-HEADS live below, as Tidal patterns.
-      , HH.div [ HP.style "display: flex; align-items: baseline; gap: 12px; margin: 8px 0 6px;" ]
-          [ HH.span [ HP.style "font-size: 12px; color: #6a6a6a; letter-spacing: 0.06em; text-transform: uppercase;" ] [ HH.text "Progression" ]
-          , HH.span [ HP.style "font-size: 11px; color: #b0b0b0;" ] [ HH.text "chords numbered 0-based (the indices you type below) · click to select · Tab / ↑↓ revoice live" ]
-          ]
-      , HH.table [ HP.style "border-collapse: collapse;" ]
-          (mapWithIndex (gridChordRow st (length chords)) chords)
-      -- the PLAYHEADS: one live-coded Tidal read-head per voice.
-      , HH.div [ HP.style "display: flex; align-items: baseline; gap: 12px; margin: 18px 0 6px;" ]
-          [ HH.span [ HP.style "font-size: 12px; color: #6a6a6a; letter-spacing: 0.06em; text-transform: uppercase;" ] [ HH.text "Playheads" ]
-          , HH.span [ HP.style "font-size: 11px; color: #b0b0b0;" ] [ HH.text "commit applies both boxes · empty ♪ = block/arp/strum renderer" ]
-          , cellBtn "+ add voice" false AddVoice
-          ]
-      -- column header for the two pattern boxes (roughly aligned over them).
-      , HH.div [ HP.style "display: flex; align-items: center; gap: 6px; padding: 0 6px 2px; font-size: 10px; letter-spacing: 0.04em; text-transform: uppercase; color: #b8b8b8;" ]
-          [ HH.div [ HP.style "flex: 0 0 210px;" ] [ HH.text "voice" ]
-          , HH.div [ HP.style "flex: 1 1 auto; min-width: 120px;" ] [ HH.text "read-head — which chord, when" ]
-          , HH.span [ HP.style "flex: 0 0 auto; visibility: hidden;" ] [ HH.text "♪" ]
-          , HH.div [ HP.style "flex: 1 1 auto; min-width: 110px;" ] [ HH.text "♪ notes — which note (0 = lowest · -1 = top)" ]
-          , HH.div [ HP.style "flex: 0 0 130px;" ] []
-          ]
-      -- keyed by voice id: the pattern inputs are UNCONTROLLED (so the scheduler's
-      -- ~10Hz re-render can't fight the caret while you live-code), so their DOM must
-      -- stay pinned to their voice across add / remove — the key guarantees that.
-      , HH.keyed (ElemName "div") [ HP.style "display: flex; flex-direction: column; gap: 6px;" ]
-          (map (\v -> Tuple (show v.id) (voicePlayheadRow (length chords) v)) st.voices)
       ]
 
 -- | One voice's live-coded read-head: its controls (destination / mute / renderer /
@@ -2725,65 +2768,6 @@ voicePlayheadRow n v =
           , status
           , HH.button [ HP.style "border: none; background: none; cursor: pointer; color: #c8c8c8; font-size: 14px;", HE.onClick \_ -> RemoveVoice v.id ] [ HH.text "×" ]
           ] )
-
--- | A grid row for one chord: the left info cell (number + pitch-row + label,
--- | clickable to select for live Tab-revoicing). Read-heads are the Playheads list.
-gridChordRow :: forall m. State -> Int -> Int -> ChordNode -> H.ComponentHTML Action Slots m
-gridChordRow st _ i c =
-  let active = Just c.id == st.sounding
-      onHead = any (\v -> not v.muted && v.cursor == i) st.voices
-      rowBg = if active then "#f1efe7" else if onHead && st.playing then "#eef4ee" else "transparent"
-  in HH.tr [ HP.style ("background: " <> rowBg <> ";") ]
-      ( [ HH.td
-            [ HP.style "padding: 0 8px 0 0; cursor: pointer; white-space: nowrap;"
-            , HE.onClick \_ -> SelectPerfChord c.id ]
-            [ HH.div [ HP.style "display: flex; align-items: center; gap: 8px;" ]
-                [ HH.span [ HP.style ("flex: 0 0 18px; text-align: right; font-size: 11px; font-weight: 600; " <> (if active then "color: #7a5c00;" else "color: #b0b0b0;")) ] [ HH.text (show i) ]
-                , SE.svg [ SA.viewBox 0.0 0.0 prowW prowH, HP.style "width: 300px; height: auto; display: block;" ]
-                    (map (\m -> SE.line [ SA.x1 (prowPitchX m), SA.y1 4.0, SA.x2 (prowPitchX m), SA.y2 (prowH - 4.0), SA.class_ (cn "prow-oct") ]) [ 36, 48, 60, 72, 84 ]
-                      <> mapWithIndex (\j m -> SE.circle [ SA.cx (prowPitchX m), SA.cy (prowH / 2.0), SA.r 4.5, SA.class_ (cn ("ladder-dot ladder-dot--" <> show (mod j 5))) ]) (playNotes c))
-                , HH.span [ HP.style "flex: 0 0 26px; font-size: 10px; color: #b0b0b0;" ] [ HH.text c.label ]
-                ]
-            ]
-        ] )
-
--- | One grid cell: how many bars voice `v` dwells on chord `i`. Click bumps it up
--- | (wrapping at 8), shift-click down; 0 shows as a faint dot (skipped). Lights up
--- | green when this voice's playhead is currently on this chord.
-durCell :: forall m. State -> Int -> Int -> Voice -> H.ComponentHTML Action Slots m
-durCell st n i v =
-  let d = fromMaybe 1 (index (padDurs n v.durs) i)
-      isCur = st.playing && not v.muted && v.cursor == i && d > 0
-  in HH.td
-      [ HP.style ("text-align: center; min-width: 52px; padding: 5px 0; cursor: pointer; border-left: 1px solid #f0f0f0; font-size: 12px; "
-          <> (if isCur then "background: #dcebd9; " else "")
-          <> (if d == 0 then "color: #d4d4d4;" else "color: #3a3a3a; font-weight: 600;")
-          <> (if v.muted then " opacity: 0.45;" else ""))
-      , HE.onClick \ev -> BumpCell v.id i (ME.shiftKey ev) ]
-      [ HH.text (if d == 0 then "·" else show d) ]
-
--- | A voice's column header. A destination toggle (→ midi / → odo) leads; a MIDI
--- | voice then shows mute + renderer + channel, an Odonus voice just its id (it's
--- | always on, sounds no MIDI of its own). Phase + remove are common to both.
-voiceHeaderCell :: forall m. Voice -> H.ComponentHTML Action Slots m
-voiceHeaderCell v =
-  HH.td
-    [ HP.style ("padding: 4px 6px; border-left: 1px solid #f0f0f0; vertical-align: bottom; min-width: 52px; "
-        <> (if v.muted && v.dest == ToMidi then "opacity: 0.5;" else "")) ]
-    [ HH.div [ HP.style "display: flex; flex-direction: column; gap: 3px; align-items: stretch;" ]
-        ( [ cellBtn (destName v.dest) (v.dest == ToOdonus) (CycleVoiceDest v.id) ]
-            <> (case v.dest of
-                  ToMidi ->
-                    [ cellBtn (if v.muted then "off" else "on") (not v.muted) (ToggleVoiceMute v.id)
-                    , cellBtn (rendName v.renderer) true (CycleVoiceRenderer v.id)
-                    , numField "ch" v.channel (SetVoiceChannel v.id)
-                    ]
-                  ToOdonus ->
-                    [ numField "id" v.channel (SetVoiceChannel v.id) ])
-            <> [ numField "φ" v.phase (SetVoicePhase v.id)
-               , HH.button [ HP.style "border: none; background: none; cursor: pointer; color: #c8c8c8; font-size: 14px; align-self: center;", HE.onClick \_ -> RemoveVoice v.id ] [ HH.text "×" ]
-               ] )
-    ]
 
 trimLower :: String -> String
 trimLower = toLower <<< trim
