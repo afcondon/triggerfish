@@ -17,19 +17,18 @@ module Triggerfish.Stellatus.Component (component) where
 
 import Prelude
 
-import Data.Array (concatMap, elemIndex, find, head, length, mapWithIndex, range, uncons, (!!))
+import Binnacle as Binnacle
+import Binnacle.Transport as Transport
+import Data.Array (concatMap, elemIndex, find, head, length, mapWithIndex, range, (!!))
 import Data.Const (Const)
 import Data.Either (Either(..))
-import Data.Foldable (sum)
-import Data.FoldableWithIndex (foldlWithIndex)
+import Data.Foldable (for_)
 import Data.Int (floor, toNumber)
 import Data.Int (fromString) as Int
-import Data.Maybe (Maybe(..), fromMaybe)
+import Data.Maybe (Maybe(..), fromMaybe, maybe)
 import Data.Number (cos, pi, sin) as Num
 import Data.String (Pattern(..))
 import Data.String.CodeUnits (drop, indexOf, stripSuffix, take) as SCU
-import Data.Traversable (mapAccumL)
-import Effect (Effect)
 import Effect.Aff.Class (class MonadAff)
 import Effect.Class (liftEffect)
 import Effect.Timer (setInterval)
@@ -38,9 +37,11 @@ import Halogen.HTML as HH
 import Halogen.HTML.Events as HE
 import Halogen.HTML.Properties as HP
 import Halogen.Subscription as HS
+import Reef.Stellatus.Engine (Emit, Scene, Slot, walk, walkLen) as SE
+import Reef.Stellatus.Engine (GlitchRule) as SEG
+import Reef.Stellatus.Protocol (encodeScene) as SP
 import Triggerfish.Odonus.Grid.Widgets (style, svgEl, svgAttr, engrave, clampI)
-import Triggerfish.Stellatus.Lang (Arc, ArcParams, GlitchEffect(..), GlitchRule, JumpSpec, KitEntry, Mode(..), Target, parseScene)
-import Triggerfish.Stellatus.Osc (fire) as Osc
+import Triggerfish.Stellatus.Lang (Arc, ArcParams, GlitchEffect(..), GlitchRule, JumpSpec, KitEntry, Mode(..), parseScene)
 
 -- ---------------------------------------------------------------------------
 -- Model
@@ -63,17 +64,16 @@ type State =
   , glitch :: Array GlitchRule
   , jumps :: JumpSpec
   , parseErr :: Maybe String
-  -- audio emit (dev SuperDirt path via the bridge)
-  , sending :: Boolean
-  , bridgeUrl :: String
-  , lastStep :: Int
+  -- the resolved reef Scene (the shipping wire form) + rig transport
+  , scene :: SE.Scene
+  , binnacle :: Maybe Binnacle.Binnacle
   }
 
 data Action
   = Init | Tick
   | SetKitText String | SetPlayerText String
   | ToggleKit | TogglePlayer
-  | Shake | TogglePlay | ToggleSend
+  | Shake | TogglePlay | PushScene | StopRig
 
 kitTextDefault :: String
 kitTextDefault =
@@ -104,13 +104,58 @@ playerTextDefault =
     <> "  hh -> hh 0.7  sn 0.3\n"
     <> "  cp -> bd 1"
 
--- Reparse the panels into the live scene; keep the last good ring on error.
+rigUrl :: String
+rigUrl = "ws://127.0.0.1:3012/ws"
+
+emptyScene :: SE.Scene
+emptyScene = { slots: [], glitch: [], jumps: { prob: 0.0, table: [] }, seed: 3 }
+
+-- Reparse the panels into the live scene; keep the last good ring on error. Also
+-- resolves the reef Scene (slots + wire glitch + jumps) — the shipping wire form
+-- pushed to the rig and the source of truth for the visualizer's walk.
 reparse :: State -> State
 reparse st = case parseScene st.kitText st.playerText of
   Right sc -> st
     { arcs = sc.arcs, mode = sc.mode, kit = sc.kit, kitNames = map _.name sc.kit
-    , params = sc.params, glitch = sc.glitch, jumps = sc.jumps, parseErr = Nothing }
+    , params = sc.params, glitch = sc.glitch, jumps = sc.jumps, parseErr = Nothing
+    , scene = resolveScene st.seed sc.mode sc.kit sc.params sc.arcs sc.glitch sc.jumps }
   Left e -> st { parseErr = Just e }
+
+-- Build the reef Scene: resolve each arc into a Slot (sample + window + base
+-- speed/gain), project glitch effects to the wire shape, pass the jump table
+-- through (structurally identical). The rig runs the walk from exactly this.
+resolveScene
+  :: Int -> Mode -> Array KitEntry -> Array ArcParams -> Array Arc
+  -> Array GlitchRule -> JumpSpec -> SE.Scene
+resolveScene seed mode kit params arcs glitch jumps =
+  { slots: mapWithIndex (slotOf mode kit params) arcs
+  , glitch: map wireGlitch glitch
+  , jumps
+  , seed
+  }
+
+slotOf :: Mode -> Array KitEntry -> Array ArcParams -> Int -> Arc -> SE.Slot
+slotOf mode kit params i arc =
+  let smp = case mode of
+        KitMode ->
+          let sp = splitSrc (fromMaybe "" (map _.src (find (\e -> e.name == arc.name) kit)))
+          in { s: sp.folder, n: sp.n, begin: 0.0, end: 1.0 }
+        BufferMode ->
+          let sp = splitSrc (fromMaybe "" (map _.src (head kit)))
+          in { s: sp.folder, n: sp.n, begin: arc.onset, end: arc.onset + arc.span }
+      p = fromMaybe defaultParams (params !! i)
+  in { name: arc.name, onset: arc.onset, span: arc.span
+     , s: smp.s, n: smp.n
+     , begin: fromMaybe smp.begin p.begin
+     , end: fromMaybe smp.end p.end
+     , speed: p.speed, gain: p.gain }
+
+-- Lang's glitch effect ADT → the wire shape reef reads: kind 0 = reverse, 1 =
+-- speed×amount.
+wireGlitch :: GlitchRule -> SEG.GlitchRule
+wireGlitch r = case r.effect of
+  GReverse -> { prob: r.prob, kind: 0, amount: 0.0 }
+  GSpeed m -> { prob: r.prob, kind: 1, amount: m }
 
 -- ---------------------------------------------------------------------------
 -- Geometry (SVG; 0 rad = 12 o'clock, increasing clockwise)
@@ -156,45 +201,8 @@ hashNoise seed i =
   let x = Num.sin (toNumber (seed * 374761 + i * 668265 + 9127)) * 43758.5453
   in x - toNumber (floor x)
 
-type Step = { arc :: Int, from :: Maybe Int }
-
-walkLen :: Int -> Int
-walkLen count = clampI 12 48 (count * 4)
-
--- The walk advances arc-by-arc, but at each step may JUMP if the current arc's
--- name has a row in the jump table and the seeded die-roll clears `jumps.prob`.
--- The target is picked from the row's weighted list; jumps only fire where the
--- text declares a rule (so the matrix fully steers the leaping).
-buildWalk :: Int -> Array Arc -> JumpSpec -> Array Step
-buildWalk seed arcs jumps =
-  let count = length arcs
-      names = map _.name arcs
-  in if count <= 1 then [ { arc: 0, from: Nothing } ]
-     else (mapAccumL (step count names) 0 (range 0 (walkLen count - 1))).value
-  where
-  step count names cur i =
-    let hJump = hashNoise (seed * 13 + 5) i
-        hTgt = hashNoise (seed * 13 + 7) i
-        curName = fromMaybe "" (names !! cur)
-    in case find (\r -> r.from == curName) jumps.table of
-         Just row | hJump < jumps.prob ->
-           case pickTarget hTgt row.targets >>= \nm -> elemIndex nm names of
-             Just tgt -> { accum: tgt, value: { arc: tgt, from: Just cur } }
-             Nothing -> advance count cur
-         _ -> advance count cur
-  advance count cur = let nxt = mod (cur + 1) count in { accum: nxt, value: { arc: nxt, from: Nothing } }
-
--- Weighted choice over a jump row's targets, driven by a hash in [0,1).
-pickTarget :: Number -> Array Target -> Maybe String
-pickTarget h targets = go (h * sum (map _.weight targets)) 0.0 targets
-  where
-  go thr acc ts = case uncons ts of
-    Just { head: t, tail: rest } ->
-      if thr < acc + t.weight then Just t.name else go thr (acc + t.weight) rest
-    Nothing -> Nothing
-
 -- ---------------------------------------------------------------------------
--- Emit — one /dirt/play per fired slice, POSTed to the OSC bridge
+-- Scene resolution helpers (shared by the reef Scene build above)
 -- ---------------------------------------------------------------------------
 
 -- `folder:index` → the SuperDirt `s`/`n` pair.
@@ -203,56 +211,8 @@ splitSrc src = case SCU.indexOf (Pattern ":") src of
   Just i -> { folder: SCU.take i src, n: fromMaybe 0 (Int.fromString (SCU.drop (i + 1) src)) }
   Nothing -> { folder: src, n: 0 }
 
--- The sample + window for an arc: KIT mode plays the whole named sample; BUFFER
--- mode plays the arc's slice window of the one buffer (first kit entry).
-sampleFor :: State -> Arc -> { s :: String, n :: Int, begin :: Number, end :: Number }
-sampleFor st arc = case st.mode of
-  KitMode ->
-    let sp = splitSrc (fromMaybe "" (map _.src (find (\e -> e.name == arc.name) st.kit)))
-    in { s: sp.folder, n: sp.n, begin: 0.0, end: 1.0 }
-  BufferMode ->
-    let sp = splitSrc (fromMaybe "" (map _.src (head st.kit)))
-    in { s: sp.folder, n: sp.n, begin: arc.onset, end: arc.onset + arc.span }
-
 defaultParams :: ArcParams
 defaultParams = { speed: 1.0, gain: 0.9, begin: Nothing, end: Nothing }
-
--- Per-hit speed: the arc's base `# speed` value, then each glitch rule folded in
--- if its seeded per-step die-roll clears the rule's probability. `rev` flips the
--- sign (SuperDirt plays negative-speed backwards); `# speed N` multiplies.
-finalSpeed :: ArcParams -> Array GlitchRule -> Int -> Int -> Number
-finalSpeed p glitch seed stepIdx =
-  foldlWithIndex
-    (\i sp rule ->
-       if hashNoise (seed * 17 + i * 31 + 3) stepIdx < rule.prob then applyEffect rule.effect sp else sp)
-    p.speed
-    glitch
-
-applyEffect :: GlitchEffect -> Number -> Number
-applyEffect = case _ of
-  GReverse -> \sp -> negate sp
-  GSpeed m -> \sp -> sp * m
-
-emitStep :: State -> Int -> Array Step -> Effect Unit
-emitStep st step walk = case walk !! step of
-  Nothing -> pure unit
-  Just s -> case st.arcs !! s.arc of
-    Nothing -> pure unit
-    Just arc ->
-      let smp = sampleFor st arc
-          p = fromMaybe defaultParams (st.params !! s.arc)
-          beg = fromMaybe smp.begin p.begin
-          en = fromMaybe smp.end p.end
-      in if smp.s == "" then pure unit
-         else Osc.fire st.bridgeUrl
-                (eventJson { s: smp.s, n: smp.n, begin: beg, end: en
-                           , speed: finalSpeed p st.glitch st.seed step, gain: p.gain })
-
-eventJson :: { s :: String, n :: Int, begin :: Number, end :: Number, speed :: Number, gain :: Number } -> String
-eventJson e =
-  "{\"s\":\"" <> e.s <> "\",\"n\":" <> show e.n
-    <> ",\"begin\":" <> show e.begin <> ",\"end\":" <> show e.end
-    <> ",\"speed\":" <> show e.speed <> ",\"gain\":" <> show e.gain <> ",\"orbit\":0,\"cps\":0.5}"
 
 -- ---------------------------------------------------------------------------
 -- Component
@@ -266,7 +226,7 @@ component =
         , kitOpen: true, playerOpen: true, seed: 3, phase: 0.0, playing: true
         , arcs: [], mode: KitMode, kit: [], kitNames: [], parseErr: Nothing
         , params: [], glitch: [], jumps: { prob: 0.0, table: [] }
-        , sending: false, bridgeUrl: "http://127.0.0.1:57130/play", lastStep: -1 }
+        , scene: emptyScene, binnacle: Nothing }
     , render
     , eval: H.mkEval H.defaultEval { handleAction = handleAction, initialize = Just Init }
     }
@@ -274,32 +234,40 @@ component =
 handleAction :: forall m. MonadAff m => Action -> H.HalogenM State Action () Void m Unit
 handleAction = case _ of
   Init -> do
+    -- Open the rig transport (shared with the other instruments). The BEAM is the
+    -- audio authority; this browser only pushes the Scene and visualizes it.
+    bin <- liftEffect $ Binnacle.connect { url: rigUrl, tempo: 120.0 }
+    H.modify_ _ { binnacle = Just bin }
     { emitter, listener } <- liftEffect HS.create
     _ <- H.subscribe emitter
     _ <- liftEffect $ setInterval 45 (HS.notify listener Tick)
     pure unit
+  -- Advance the visual phase only — the rig owns timing + emit now, so the clock
+  -- here just sweeps the highlight. (Link-aligning the sweep to the rig via
+  -- Binnacle's clock is a later polish; the walk CONTENT already matches.)
   Tick -> do
     st <- H.get
     when st.playing do
-      let count = length st.arcs
-          steps = walkLen count
+      let steps = SE.walkLen (length st.arcs)
           dp = 1.0 / (toNumber steps * 7.0)
           p' = let p = st.phase + dp in if p >= 1.0 then p - 1.0 else p
-          walk = buildWalk st.seed st.arcs st.jumps
-          len = length walk
-          step' = clampI 0 (max 0 (len - 1)) (floor (p' * toNumber len))
       H.modify_ _ { phase = p' }
-      -- fire one SuperDirt event as the walk lands on a new step (arc = a hit)
-      when (st.sending && step' /= st.lastStep) do
-        liftEffect (emitStep st step' walk)
-        H.modify_ _ { lastStep = step' }
   SetKitText t -> H.modify_ (reparse <<< _ { kitText = t })
   SetPlayerText t -> H.modify_ (reparse <<< _ { playerText = t })
   ToggleKit -> H.modify_ \st -> st { kitOpen = not st.kitOpen }
   TogglePlayer -> H.modify_ \st -> st { playerOpen = not st.playerOpen }
-  Shake -> H.modify_ \st -> st { seed = mod (st.seed * 1103515245 + 12345) 2147483 + 1 }
+  Shake -> H.modify_ \st ->
+    let s = mod (st.seed * 1103515245 + 12345) 2147483 + 1
+    in st { seed = s, scene = st.scene { seed = s } }
   TogglePlay -> H.modify_ \st -> st { playing = not st.playing }
-  ToggleSend -> H.modify_ \st -> st { sending = not st.sending, lastStep = -1 }
+  -- Push the resolved Scene to the rig (reef_stellatus_voice runs the walk).
+  PushScene -> do
+    st <- H.get
+    for_ st.binnacle \bin ->
+      liftEffect $ Transport.send (Binnacle.socket bin) ("stellatus-scene " <> SP.encodeScene st.scene)
+  StopRig -> do
+    st <- H.get
+    for_ st.binnacle \bin -> liftEffect $ Transport.send (Binnacle.socket bin) "stellatus-stop"
 
 -- ---------------------------------------------------------------------------
 -- View
@@ -358,13 +326,13 @@ nameplate =
 ring :: forall m. State -> H.ComponentHTML Action () m
 ring st =
   let count = length st.arcs
-      walk = buildWalk st.seed st.arcs st.jumps
+      walk = SE.walk st.scene
       len = length walk
       stepF = st.phase * toNumber len
       step = clampI 0 (max 0 (len - 1)) (floor stepF)
       local = stepF - toNumber step
       cur = walk !! step
-      curArc = fromMaybe 0 (map _.arc cur)
+      curArc = fromMaybe 0 (map _.slot cur)
       arcs = mapWithIndex (\i a -> { i, a }) st.arcs
   in svgEl "svg"
       [ svgAttr "viewBox" ("0 0 " <> show vb <> " " <> show vb)
@@ -447,12 +415,12 @@ paramGlyph params { i, a } =
 fmtNum :: Number -> String
 fmtNum n = let s = show n in fromMaybe s (SCU.stripSuffix (Pattern ".0") s)
 
-jumpChord :: forall m. Array Arc -> Maybe Step -> Number -> Array (H.ComponentHTML Action () m)
+jumpChord :: forall m. Array Arc -> Maybe SE.Emit -> Number -> Array (H.ComponentHTML Action () m)
 jumpChord arcs mstep local = fromMaybe [] do
   s <- mstep
   from <- s.from
   a <- arcs !! from
-  b <- arcs !! s.arc
+  b <- arcs !! s.slot
   let aa = (a.onset + a.span / 2.0) * tau
       ab = b.onset * tau
       op = show (0.85 * (1.0 - local))
@@ -496,7 +464,7 @@ panelStack st =
             [ HH.text ("⚠ " <> e) ]
         Nothing ->
           HH.div [ style "font-size:9px;letter-spacing:0.1em;color:#4a525c;font-style:italic;padding-left:2px" ]
-            [ HH.text "place · verbs · glitch · jumps = live · pitch → Vetula next" ]
+            [ HH.text "edit · → RIG to push · the BEAM plays it · pitch → Vetula next" ]
     ]
 
 textPanel
@@ -547,15 +515,18 @@ transport st =
             <> "font-family:Georgia,serif;font-size:12px;letter-spacing:0.12em;color:#08181a;background:" <> cyanAccent ]
         [ HH.text "⟳ SHAKE" ]
     , HH.span [ style "width:1px;height:22px;background:#2a333c" ] []
-    -- SEND → SuperDirt via the OSC bridge (dev audition path; off by default).
+    -- Push the resolved Scene to the rig; the BEAM runs the walk and emits to
+    -- SuperDirt. STOP silences just this voice.
     , HH.button
-        [ HE.onClick \_ -> ToggleSend
-        , style $ "padding:7px 13px;border-radius:6px;cursor:pointer;border:1px solid "
-            <> (if st.sending then "#7a3030" else "#2a333c")
-            <> ";font-family:Georgia,serif;font-size:12px;letter-spacing:0.12em;"
-            <> "color:" <> (if st.sending then "#ffdede" else ink)
-            <> ";background:" <> (if st.sending then "#8a2c2c" else "#1a1f25") ]
-        [ HH.text (if st.sending then "◉ SENDING" else "○ SEND") ]
+        [ HE.onClick \_ -> PushScene
+        , style $ "padding:7px 13px;border-radius:6px;cursor:pointer;border:1px solid #1c4a50;"
+            <> "font-family:Georgia,serif;font-size:12px;letter-spacing:0.12em;color:#08181a;background:" <> cyanAccent ]
+        [ HH.text "→ RIG" ]
+    , HH.button
+        [ HE.onClick \_ -> StopRig
+        , style $ "padding:7px 13px;border-radius:6px;cursor:pointer;border:1px solid #2a333c;"
+            <> "font-family:Georgia,serif;font-size:12px;letter-spacing:0.12em;color:" <> ink <> ";background:#1a1f25" ]
+        [ HH.text "■ STOP" ]
     , HH.span [ style ("font-family:'SF Mono',monospace;font-size:10px;color:#5a626c;padding-left:2px") ]
-        [ HH.text (if st.sending then "→ SuperDirt :57120" else "seed " <> show st.seed) ]
+        [ HH.text (maybe "connecting…" (const "rig :3012") st.binnacle) ]
     ]
