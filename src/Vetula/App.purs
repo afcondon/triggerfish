@@ -124,6 +124,13 @@ data RailSection = SecProgression | SecLibrary | SecVoices
 derive instance eqRailSection :: Eq RailSection
 derive instance ordRailSection :: Ord RailSection
 
+-- | The LEFT accordion (the reclaimed top bar): Setup (key/scale/family/borrow/
+-- | palettes/connection), Tank (caught chords), Lens (view choice). Multi-open.
+data LeftSection = SecSetup | SecTank | SecLens
+
+derive instance eqLeftSection :: Eq LeftSection
+derive instance ordLeftSection :: Ord LeftSection
+
 -- | Slice C (tank model) — the Stage's swappable LENS. The pool is a frame; the
 -- | lens is the view inside it. Adding a lens is ADDITIVE: one constructor, one
 -- | `renderLens` branch, one `allLenses` entry — that's the decoupling proof.
@@ -279,6 +286,7 @@ type State =
   , tab :: Tab                         -- lattice-setup mode (always Lab since 4b; kept for surface code)
   , focus :: Focus                     -- Slice 4c: Hunt (lattice-dominant) vs Perform (rail-dominant)
   , railOpen :: Set RailSection        -- Slice 4b: which rail accordion sections are open (multi)
+  , leftOpen :: Set LeftSection        -- which LEFT accordion sections are open (multi)
   , chords :: Array ChordNode          -- the model (pin, provenance, layout targets)
   , nodes :: Array VNode               -- live positions from the simulation
   , focusId :: Int
@@ -389,6 +397,7 @@ data Action
   | HoverTriad (Maybe { root :: Int, pcs :: Array Int })  -- Tonnetz: hover a triad for space-preview
   | SetFocus Focus         -- Slice 4c: switch the surface width-focus (Hunt / Perform)
   | ToggleRailSection RailSection  -- Slice 4b: open/close a rail accordion section
+  | ToggleLeftSection LeftSection  -- open/close a left accordion section
   | Key String Boolean     -- key, shift held
   | SelectKey String
   | SelectScale String
@@ -504,6 +513,7 @@ component = H.mkComponent
       , tab: Lab
       , focus: Hunt
       , railOpen: Set.fromFoldable [ SecProgression, SecLibrary, SecVoices ]
+      , leftOpen: Set.fromFoldable [ SecSetup, SecTank, SecLens ]
       , chords: []
       , nodes: []
       , focusId: 0           -- the first diatonic triad seed
@@ -866,6 +876,9 @@ handleAction = case _ of
   -- Toggle a rail accordion section (independent — several may be open at once).
   ToggleRailSection sec -> H.modify_ \s ->
     s { railOpen = if Set.member sec s.railOpen then Set.delete sec s.railOpen else Set.insert sec s.railOpen }
+
+  ToggleLeftSection sec -> H.modify_ \s ->
+    s { leftOpen = if Set.member sec s.leftOpen then Set.delete sec s.leftOpen else Set.insert sec s.leftOpen }
 
   Key k shift -> do
     st <- H.get
@@ -2409,32 +2422,50 @@ currentModeValue mode = maybe "Ionian" _.value (find (\m -> m.mode == mode) mode
 cn :: String -> HH.ClassName
 cn = HH.ClassName
 
+-- Triggerfish idiom (Hainbach × Rams): a warm-paper canvas under darker-beige
+-- floating panels with brass borders and soft shadows.
+canvasBg :: String
+canvasBg = "#f6f3ea"
+
+panelCss :: String
+panelCss = "background: #e8e1cf; border: 1px solid #cdbb96; border-radius: 8px; box-shadow: 0 2px 14px #0000002a;"
+
+-- | The view SVG fills its layer (the canvas); the fixed 880×600 viewBox still
+-- | drives coordinates (scaled to fit by the browser), pan/zoom on top.
+surfaceFillCss :: String
+surfaceFillCss = "max-width: none; touch-action: none; width: 100%; height: 100%; display: block;"
+
+-- | The whole instrument: a near-fullscreen view canvas with the Setup/Tank/Lens
+-- | accordion floating top-left and the Progression/Library/Voices rail floating
+-- | top-right — both darker-beige cards sitting over the paper canvas.
 render :: forall m. MonadAff m => State -> H.ComponentHTML Action Slots m
 render st =
   HH.div
-    [ HP.style "padding: 12px 24px 18px; max-width: 1600px; margin: 0 auto;" ]
-    [ topNav st
-    , unifiedBody st
+    [ HP.style ("position: relative; width: 100%; height: calc(100vh - 118px); min-height: 620px; overflow: hidden; border-radius: 8px; background: " <> canvasBg <> ";") ]
+    [ HH.div [ HP.style "position: absolute; inset: 0;" ] [ surface st ]
+    , HH.div
+        [ HP.style ("position: absolute; top: 12px; left: 12px; width: 256px; max-height: calc(100% - 24px); overflow: visible; z-index: 6; padding: 2px 12px 10px; " <> panelCss) ]
+        [ leftColumn st ]
+    , HH.div
+        [ HP.style ("position: absolute; top: 12px; right: 12px; width: 340px; max-height: calc(100% - 24px); overflow-x: hidden; overflow-y: auto; z-index: 5; padding: 2px 12px 10px; " <> panelCss) ]
+        [ railView st ]
+    , HH.div
+        [ HP.style "position: absolute; bottom: 12px; left: 50%; transform: translateX(-50%); z-index: 5;" ]
+        [ pickBar st ]
     , helpOverlay st
     , revoiceModal st
     ]
 
--- | Slice 4b/4c — the one surface. Left the POOL (lattice), right the RAIL
--- | (progression + playheads + stack); `focus` biases the width. Hunt: the pool is
--- | dominant and the rail is a thin progression/stack column. Perform: the pool
--- | collapses to a clickable spine and the rail takes the width, so the (wide) voice
--- | forms fit. Nothing mounts/unmounts across the flip — the sim keeps running.
--- | One always-visible surface: the lattice (pool) on the left, the rail (Progression /
--- | Library / Voices) on the right. The old Hunt/Perform width-flip is retired — building
--- | a progression IS hunting, so collapsing the lattice on the first pick fought the flow.
--- | The `focus` state + poolSpine/focusTab remain dormant, pending the states/transitions
--- | design (a deliberate "perform" collapse may return, but on an explicit trigger).
-unifiedBody :: forall m. MonadAff m => State -> H.ComponentHTML Action Slots m
-unifiedBody st =
+-- | The reclaimed top bar, folded into a left accordion beside the full-height
+-- | pool: Setup (key/scale/family/borrow/palettes/connection), Tank (caught
+-- | chords), Lens (view choice). Multi-open, mirroring the right rail.
+leftColumn :: forall m. MonadAff m => State -> H.ComponentHTML Action Slots m
+leftColumn st =
   HH.div
-    [ HP.style "display: flex; gap: 16px; align-items: flex-start;" ]
-    [ HH.div [ HP.style "flex: 1 1 auto; min-width: 0;" ] [ tankView st, lensBar st, pickBar st, surface st ]
-    , HH.div [ HP.style "flex: 0 0 340px; min-width: 0;" ] [ railView st ]
+    [ HP.style "" ]
+    [ accBox (Set.member SecSetup st.leftOpen) (ToggleLeftSection SecSetup) "Setup" "" (setupPane st)
+    , accBox (Set.member SecTank st.leftOpen) (ToggleLeftSection SecTank) "Tank" (show (length st.tank) <> " caught") (tankPane st)
+    , accBox (Set.member SecLens st.leftOpen) (ToggleLeftSection SecLens) "Lens" (lensLabel st.lens) (lensBar st)
     ]
 
 -- | The Stage lens selector — a segmented control over `allLenses`. Switching the
@@ -2443,15 +2474,15 @@ unifiedBody st =
 lensBar :: forall m. State -> H.ComponentHTML Action Slots m
 lensBar st =
   HH.div
-    [ HP.style "display: flex; align-items: center; gap: 6px; margin: 0 0 8px;" ]
-    ( [ HH.span [ HP.style "font-size: 10px; color: #b0b0b0; letter-spacing: 0.12em; text-transform: uppercase; margin-right: 4px;" ] [ HH.text "Lens" ] ]
+    [ HP.style "display: flex; align-items: center; flex-wrap: wrap; gap: 6px; margin: 0 0 4px;" ]
+    ( [ HH.span [ HP.style "font-size: 10px; color: #b0b0b0; letter-spacing: 0.12em; text-transform: uppercase; margin-right: 4px; width: 100%;" ] [ HH.text "Lens" ] ]
         <> map lensChip allLenses
         <> shakeChip
         <> resetChip )
   where
   -- geometric lenses only, and only once the viewport has moved: a way back to the
   -- fitted view (scroll to zoom · drag to pan).
-  geometric = st.lens == LensCircleFifths || st.lens == LensTonnetz || st.lens == LensLattices || st.lens == LensGenerate
+  geometric = st.lens /= LensPadGrid
   -- the Generate lens's re-roll: a fresh crop of relatives around the same seeds.
   shakeChip =
     if st.lens == LensGenerate then
@@ -2480,7 +2511,7 @@ lensBar st =
         [ HP.style ("border: 1px solid " <> (if active then "#1a1a1a" else "#dcdcdc")
                      <> "; background: " <> (if active then "#1a1a1a" else "#fafafa")
                      <> "; color: " <> (if active then "#ffffff" else "#6a6a6a")
-                     <> "; cursor: pointer; padding: 3px 12px; border-radius: 4px; font-size: 12px;")
+                     <> "; cursor: pointer; padding: 3px 10px; border-radius: 4px; font-size: 12px; white-space: nowrap;")
         , HE.onClick \_ -> SetLens l ]
         [ HH.text (lensLabel l) ]
 
@@ -2501,7 +2532,7 @@ poolSpine =
 railView :: forall m. MonadAff m => State -> H.ComponentHTML Action Slots m
 railView st =
   HH.div
-    [ HP.style "border-left: 1px solid #ededed; padding-left: 14px;" ]
+    [ HP.style "" ]
     [ accSection st SecProgression "Progression" (countLabel (length (pathSteps st)) "step") (progressionPanel st)
     , accSection st SecLibrary "Library" (countLabel (length st.library) "saved") (libraryView st)
     , accSection st SecVoices "Voices" (countLabel (length st.voices) "voice") (playheadsRack st)
@@ -2510,65 +2541,59 @@ railView st =
   countLabel n noun = show n <> " " <> noun <> (if n == 1 then "" else "s")
 
 -- | One accordion section: a click-to-open header (chevron + title + count) and, when
--- | open, its body. Headers stay visible when collapsed so the rail reads as a stack.
-accSection :: forall m. State -> RailSection -> String -> String -> H.ComponentHTML Action Slots m -> H.ComponentHTML Action Slots m
-accSection st sec title subtitle body =
-  let open = Set.member sec st.railOpen
-  in HH.div
-      [ HP.style "border-top: 1px solid #ededed;" ]
-      [ HH.div
-          [ HP.style "display: flex; align-items: center; gap: 8px; padding: 9px 2px; cursor: pointer; user-select: none;"
-          , HE.onClick \_ -> ToggleRailSection sec ]
-          [ HH.span [ HP.style "font-size: 10px; color: #b0b0b0; width: 9px;" ] [ HH.text (if open then "▾" else "▸") ]
-          , HH.span [ HP.style "font-size: 12px; color: #6a6a6a; letter-spacing: 0.06em; text-transform: uppercase;" ] [ HH.text title ]
-          , HH.span [ HP.style "font-size: 11px; color: #bcbcbc;" ] [ HH.text subtitle ]
-          ]
-      , if open then HH.div [ HP.style "padding: 0 2px 14px;" ] [ body ] else HH.text ""
-      ]
-
--- | Everything that used to stack down the page — title, tab switch, key, scale,
--- | MIDI status — crushed into one slim top bar, to give the surface its room.
-topNav :: forall m. MonadAff m => State -> H.ComponentHTML Action Slots m
-topNav st =
+-- | open, its body. Headers stay visible when collapsed so the column reads as a stack.
+-- | Section-agnostic — the rail and the left column both drive it.
+accBox :: forall m. Boolean -> Action -> String -> String -> H.ComponentHTML Action Slots m -> H.ComponentHTML Action Slots m
+accBox open toggle title subtitle body =
   HH.div
-    [ HP.style "display: flex; align-items: center; gap: 12px; margin: 0 0 12px; padding-bottom: 9px; border-bottom: 1px solid #ededed; flex-wrap: wrap;" ]
-    ( [ HH.h1 [ HP.style "font-weight: 600; font-size: 19px; letter-spacing: -0.01em; margin: 0 6px 0 0;" ] [ HH.text "Vetula" ]
-      , divider
-      , HH.span [ HP.style labelStyle ] [ HH.text "KEY" ]
-      , HH.slot (Proxy :: _ "keySelect") unit Select.component
-          ((Select.defaultInput keyOptions) { selected = Just (show st.key.tonic), placeholder = "Key" })
-          \(Select.Selected v) -> SelectKey v
-      , HH.span [ HP.style (labelStyle <> " margin-left: 8px;") ] [ HH.text "SCALE" ]
-      , HH.slot (Proxy :: _ "scaleSelect") unit Select.component
-          ((Select.cascadingInput modeGroups) { selected = Just (currentModeValue st.key.mode), searchable = true })
-          \(Select.Selected v) -> SelectScale v
+    [ HP.style "border-top: 1px solid #d8ceb4;" ]
+    [ HH.div
+        [ HP.style "display: flex; align-items: center; gap: 8px; padding: 9px 2px; cursor: pointer; user-select: none;"
+        , HE.onClick \_ -> toggle ]
+        [ HH.span [ HP.style "font-size: 10px; color: #b0b0b0; width: 9px;" ] [ HH.text (if open then "▾" else "▸") ]
+        , HH.span [ HP.style "font-size: 12px; color: #6a6a6a; letter-spacing: 0.06em; text-transform: uppercase;" ] [ HH.text title ]
+        , HH.span [ HP.style "font-size: 11px; color: #bcbcbc;" ] [ HH.text subtitle ]
+        ]
+    , if open then HH.div [ HP.style "padding: 0 2px 14px;" ] [ body ] else HH.text ""
+    ]
+
+accSection :: forall m. State -> RailSection -> String -> String -> H.ComponentHTML Action Slots m -> H.ComponentHTML Action Slots m
+accSection st sec = accBox (Set.member sec st.railOpen) (ToggleRailSection sec)
+
+-- | The Setup pane — the reclaimed top bar, stacked vertically in the left
+-- | accordion: key, scale, the focused-family scale override, the borrow source,
+-- | the palette populators, and the rig connection + help. (The old `Vetula` title
+-- | is gone — the Triggerfish top nav already names the instrument.)
+setupPane :: forall m. MonadAff m => State -> H.ComponentHTML Action Slots m
+setupPane st =
+  HH.div
+    [ HP.style "display: flex; flex-direction: column; gap: 11px;" ]
+    ( [ field "KEY"
+          [ HH.slot (Proxy :: _ "keySelect") unit Select.component
+              ((Select.defaultInput keyOptions) { selected = Just (show st.key.tonic), placeholder = "Key" })
+              \(Select.Selected v) -> SelectKey v ]
+      , field "SCALE"
+          [ HH.slot (Proxy :: _ "scaleSelect") unit Select.component
+              ((Select.cascadingInput modeGroups) { selected = Just (currentModeValue st.key.mode), searchable = true })
+              \(Select.Selected v) -> SelectScale v ]
       ]
-      <> familyPicker
-      <> dropButtons <> borrowPicker
-      <> [ HH.div
-             [ HP.style "margin-left: auto; display: flex; align-items: center; gap: 8px;" ]
-             [ midiChip st.midiName
-             , HH.button
-                 [ HP.style helpBtnStyle, HP.title "keys & help", HE.onClick \_ -> ToggleHelp ]
-                 [ HH.text "ⓘ" ]
-             ]
-         ]
+        <> familyField
+        <> [ field "BORROW"
+               [ HH.slot (Proxy :: _ "borrowSelect") unit Select.component
+                   ((Select.cascadingInput borrowGroups) { selected = Just (fromMaybe "off" st.borrowMode), searchable = true })
+                   \(Select.Selected v) -> BorrowFrom v ]
+           , field "PALETTES"
+               [ HH.div [ HP.style "display: flex; flex-wrap: wrap; gap: 4px;" ] (map dropBtn exteriorGens) ]
+           , connectionRow
+           ]
     )
   where
-  labelStyle = "font-size: 12px; color: #6a6a6a;"
-  -- MIDI status as a compact pill: a dot (green = a port is bound, amber = still
-  -- resolving) plus the port name. Replaces the old full-width "MIDI: …" row.
-  midiChip nm =
-    let ok = nm /= "…" && nm /= ""
-    in HH.span
-         [ HP.style "display: inline-flex; align-items: center; gap: 5px; font-size: 11px; color: #8a8a8a; background: #f4f4f4; border: 1px solid #e8e8e8; border-radius: 10px; padding: 2px 9px;" ]
-         [ HH.span [ HP.style ("width: 7px; height: 7px; border-radius: 50%; background: " <> (if ok then "#5aa86a" else "#c9a23a") <> ";") ] []
-         , HH.text nm ]
-  helpBtnStyle = "border: 1px solid #e0e0e0; background: #fafafa; color: #7a7a7a; cursor: pointer; width: 22px; height: 22px; border-radius: 50%; font-size: 12px; line-height: 1; padding: 0;"
-  divider = HH.span [ HP.style "width: 1px; align-self: stretch; background: #e6e6e6; margin: 2px 4px;" ] []
-  -- the exterior signpost buttons: drop a curated chord set onto the outer rings
-  -- (toggle to remove). Active = amber, matching the ring-index warmth.
-  dropButtons = [ divider ] <> map dropBtn exteriorGens
+  labelStyle = "font-size: 10px; color: #9a9a9a; letter-spacing: 0.1em; text-transform: uppercase;"
+  field lbl controls =
+    HH.div [ HP.style "display: flex; flex-direction: column; gap: 4px;" ]
+      ([ HH.span [ HP.style labelStyle ] [ HH.text lbl ] ] <> controls)
+  -- the exterior signpost buttons: drop a curated chord set onto the pool (toggle
+  -- to remove). Active = amber, matching the ring-index warmth.
   dropBtn g =
     HH.button
       [ HP.style (dropBtnStyle (Map.member g.key st.dropped)), HE.onClick \_ -> DropSet g.key ]
@@ -2577,57 +2602,58 @@ topNav st =
     "border: 1px solid " <> (if active then "#c9a23a" else "#dcdcdc")
       <> "; background: " <> (if active then "#fbf3df" else "#fafafa")
       <> "; color: " <> (if active then "#7a5c00" else "#6a6a6a")
-      <> "; cursor: pointer; padding: 3px 10px; border-radius: 4px; font-size: 12px; margin-left: 4px;"
-  -- modal interchange: borrow chromatic chords from a parallel mode (explicit
-  -- "borrow from C ‹mode›"); the home tonic stays, the source mode is chosen here.
-  borrowPicker =
-    [ HH.span [ HP.style (labelStyle <> " margin-left: 8px;") ] [ HH.text "BORROW" ]
-    , HH.slot (Proxy :: _ "borrowSelect") unit Select.component
-        ((Select.cascadingInput borrowGroups) { selected = Just (fromMaybe "off" st.borrowMode), searchable = true })
-        \(Select.Selected v) -> BorrowFrom v
-    ]
+      <> "; cursor: pointer; padding: 3px 10px; border-radius: 4px; font-size: 12px;"
   -- a contextual scale picker for the focused family (click a keyboard key to
   -- focus one) — this is what lets two families hold different modes at once.
-  familyPicker = case st.focusedFamily >>= (\sid -> find (\c -> c.id == sid) st.chords) of
+  familyField = case st.focusedFamily >>= (\sid -> find (\c -> c.id == sid) st.chords) of
     Just seed ->
       let famMode = (fromMaybe st.key (Map.lookup seed.id st.familyScale)).mode
-      in [ divider
-         , HH.span [ HP.style (labelStyle <> " color: #7a5c00;") ] [ HH.text ("FAMILY " <> noteName seed.root) ]
-         , HH.slot (Proxy :: _ "familyScaleSelect") unit Select.component
-             ((Select.cascadingInput modeGroups) { selected = Just (currentModeValue famMode), searchable = true })
-             \(Select.Selected v) -> ReflavourFamily v
-         ]
+      in [ field ("FAMILY " <> noteName seed.root)
+             [ HH.slot (Proxy :: _ "familyScaleSelect") unit Select.component
+                 ((Select.cascadingInput modeGroups) { selected = Just (currentModeValue famMode), searchable = true })
+                 \(Select.Selected v) -> ReflavourFamily v ] ]
     Nothing -> []
+  -- rig connection (IAC) + the help modal trigger.
+  connectionRow =
+    HH.div [ HP.style "display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 2px;" ]
+      [ midiChip st.midiName
+      , HH.button
+          [ HP.style helpBtnStyle, HP.title "keys & help", HE.onClick \_ -> ToggleHelp ]
+          [ HH.text "ⓘ" ]
+      ]
+  midiChip nm =
+    let ok = nm /= "…" && nm /= ""
+    in HH.span
+         [ HP.style "display: inline-flex; align-items: center; gap: 5px; font-size: 11px; color: #8a8a8a; background: #f4f4f4; border: 1px solid #e8e8e8; border-radius: 10px; padding: 2px 9px;" ]
+         [ HH.span [ HP.style ("width: 7px; height: 7px; border-radius: 50%; background: " <> (if ok then "#5aa86a" else "#c9a23a") <> ";") ] []
+         , HH.text nm ]
+  helpBtnStyle = "border: 1px solid #e0e0e0; background: #fafafa; color: #7a7a7a; cursor: pointer; width: 22px; height: 22px; border-radius: 50%; font-size: 12px; line-height: 1; padding: 0;"
 
--- | The Tank — the durable, unordered collection of caught chords, laid out as a
--- | wrapping strip of specimen tiles below the surface. `k` over a lattice chord
--- | catches it; × deletes; click auditions. This is the persistent store the Stage
--- | + Sequences will later draw from; Slice A is catch + browse + audition only.
-tankView :: forall m. State -> H.ComponentHTML Action Slots m
-tankView st =
+-- | The Tank pane — the durable, unordered collection of caught chords, as a
+-- | wrapping grid of specimen tiles in the left accordion. `k` over a surface
+-- | chord catches it; × deletes; click stages a seed, shift-click sequences it.
+-- | The accordion header carries the "N caught" count, so this is just the
+-- | capo/clear toolbar + tiles (the gesture legend lives behind the ⓘ help).
+tankPane :: forall m. State -> H.ComponentHTML Action Slots m
+tankPane st =
   HH.div
-    [ HP.style "margin: 0 0 10px; padding-bottom: 10px; border-bottom: 1px solid #ededed; -webkit-user-select: none; user-select: none;" ]
+    [ HP.style "-webkit-user-select: none; user-select: none;" ]
     [ HH.div
-        [ HP.style "display: flex; align-items: baseline; gap: 10px; margin-bottom: 8px;" ]
-        ( [ HH.span [ HP.style "font-size: 12px; color: #6a6a6a; letter-spacing: 0.06em; text-transform: uppercase;" ] [ HH.text "Tank" ]
-          , HH.span [ HP.style "font-size: 11px; color: #bcbcbc;" ] [ HH.text (show (length st.tank) <> " caught") ]
-          ]
-          <> (if Map.isEmpty st.seedChord then []
+        [ HP.style "display: flex; align-items: center; gap: 8px; margin-bottom: 8px; font-size: 11px; color: #b0b0b0; min-height: 16px;" ]
+        ( (if Map.isEmpty st.seedChord then []
                 else [ HH.button
                          [ HP.style "border: none; background: none; color: #9a7a2a; font-size: 11px; cursor: pointer; padding: 0;"
                          , HP.title "unstage every seeded specimen"
                          , HE.onClick \_ -> ClearStage ]
                          [ HH.text ("clear stage (" <> show (Map.size st.seedChord) <> ")") ] ])
           <> (if length st.tank == 0 then []
-                else [ HH.span [ HP.style "font-size: 11px; color: #b0b0b0; margin-left: 6px;" ] [ HH.text "capo" ]
+                else [ HH.span [ HP.style "margin-left: auto;" ] [ HH.text "capo" ]
                      , capoBtn (-1) "♭" "whole tank down a semitone"
                      , capoBtn 1 "♯" "whole tank up a semitone" ])
-          <> [ HH.span [ HP.style "font-size: 11px; color: #c4c4c4; margin-left: auto;" ]
-                 [ HH.text "k catches · click stages a seed · shift-click → progression · × removes" ] ]
         )
     , if length st.tank == 0
-        then HH.div [ HP.style "font-size: 12px; color: #c4c4c4; padding: 8px 2px;" ]
-               [ HH.text "empty — hover a chord on the surface and press k to catch it" ]
+        then HH.div [ HP.style "font-size: 12px; color: #c4c4c4; padding: 4px 0;" ]
+               [ HH.text "empty — hover a chord and press k to catch it" ]
         else HH.div [ HP.style "display: flex; flex-wrap: wrap; gap: 8px;" ]
                (map (\s -> specimenTile (Map.member s.id st.seedChord) s) st.tank)
     ]
@@ -2756,15 +2782,20 @@ keyboardSurface st =
                , SE.text [ SA.x (-430.0), SA.y (-86.0), SA.class_ (cn "shelf-label") ] [ HH.text "OUTSIDE THE SCALE ↑" ]
                ]
           else []
+      vb = geoView st
   in SE.svg
-      ( [ SA.viewBox (-440.0) (-300.0) 880.0 600.0
+      ( [ SA.viewBox vb.x vb.y vb.w vb.h
         , SA.width 880.0
         , SA.height 600.0
         , SA.class_ (cn "vetula-surface")
         -- no left ladder on the Lab surface — let the cloud fill the wide window.
-        , HP.style "max-width: none;"
+        , HP.style surfaceFillCss
+        , HE.onWheel \we -> ZoomAt (WE.toEvent we) (WE.deltaY we)
+        , HE.onMouseDown (PanStart <<< ME.toEvent)
         ]
-          -- only listen for moves while a ladder voice is actually being dragged
+          <> geoPanAttrs st
+          -- also listen for moves while a ladder voice is being dragged (mutually
+          -- exclusive with a pan — the keyboard never starts a ladder drag itself)
           <> (case st.drag of
                 Just _ ->
                   [ HE.onMouseMove (DragMove <<< ME.toEvent)
@@ -2789,13 +2820,18 @@ keyboardSurface st =
 -- | strip above (recipes + paging come later — Slice F).
 padGridSurface :: forall m. State -> H.ComponentHTML Action Slots m
 padGridSurface st =
+  -- fill the canvas and settle the board centred at the bottom, clear of the
+  -- floating side panels (it's HTML, not a viewBox-scaled SVG like the other lenses)
   HH.div
-    [ HP.style "width: 880px; max-width: 100%; padding: 6px 0; -webkit-user-select: none; user-select: none;" ]
-    [ HH.div [ HP.style "font-size: 11px; color: #c4c4c4; margin: 0 0 8px; letter-spacing: 0.04em;" ]
-        [ HH.text "click a pad to play it · shift-click to seed the stage — nothing is committed" ]
-    , HH.div
-        [ HP.style "display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; max-width: 560px;" ]
-        (map (\i -> padCell (index st.tank i)) (range 0 15))
+    [ HP.style "width: 100%; height: 100%; display: flex; flex-direction: column; align-items: center; justify-content: flex-end; padding-bottom: 24px; -webkit-user-select: none; user-select: none;" ]
+    [ HH.div
+        [ HP.style "width: 560px; max-width: 90%;" ]
+        [ HH.div [ HP.style "font-size: 11px; color: #9a9488; margin: 0 0 8px; letter-spacing: 0.04em; text-align: center;" ]
+            [ HH.text "click a pad to play it · shift-click to seed the stage — nothing is committed" ]
+        , HH.div
+            [ HP.style "display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px;" ]
+            (map (\i -> padCell (index st.tank i)) (range 0 15))
+        ]
     ]
 
 -- | One pad on the board: a filled pad (glyph + label, playable) or a faint empty
@@ -2895,7 +2931,7 @@ circleFifthsSurface st =
         , SA.width 880.0
         , SA.height 600.0
         , SA.class_ (cn "vetula-surface")
-        , HP.style "max-width: none; touch-action: none;"
+        , HP.style surfaceFillCss
         , HE.onWheel \we -> ZoomAt (WE.toEvent we) (WE.deltaY we)
         , HE.onMouseDown (PanStart <<< ME.toEvent)
         ] <> geoPanAttrs st )
@@ -3046,7 +3082,7 @@ tonnetzSurface st =
         , SA.width 880.0
         , SA.height 600.0
         , SA.class_ (cn "vetula-surface")
-        , HP.style "max-width: none; touch-action: none;"
+        , HP.style surfaceFillCss
         , HE.onWheel \we -> ZoomAt (WE.toEvent we) (WE.deltaY we)
         , HE.onMouseDown (PanStart <<< ME.toEvent)
         ] <> geoPanAttrs st )
@@ -3298,7 +3334,7 @@ latticesSurface st =
         , SA.width 880.0
         , SA.height 600.0
         , SA.class_ (cn "vetula-surface")
-        , HP.style "max-width: none; touch-action: none;"
+        , HP.style surfaceFillCss
         , HE.onWheel \we -> ZoomAt (WE.toEvent we) (WE.deltaY we)
         , HE.onMouseDown (PanStart <<< ME.toEvent)
         ] <> geoPanAttrs st )
@@ -3361,7 +3397,7 @@ generativeSurface st =
         , SA.width 880.0
         , SA.height 600.0
         , SA.class_ (cn "vetula-surface")
-        , HP.style "max-width: none; touch-action: none;"
+        , HP.style surfaceFillCss
         , HE.onWheel \we -> ZoomAt (WE.toEvent we) (WE.deltaY we)
         , HE.onMouseDown (PanStart <<< ME.toEvent)
         ] <> geoPanAttrs st )
