@@ -7,26 +7,27 @@
 -- |
 -- | Programmed in TEXT (AC steer), not knobs. Two floating panels hold the
 -- | Lepidoptera surface: a KIT (name → sample) and a PLAYER (a `place` pattern
--- | OR a `slice N`, plus SuperDirt verbs and a `jump` matrix). As of S1a the
--- | PLACEMENT is LIVE — `place "…"` runs through the real Tidal parser and
--- | `slice N` cuts one buffer, both driving the ring as you type (see
--- | Stellatus.Lang). Verbs + the jump matrix are still illustrative (parsed
--- | next); the walk's jumps are seeded-random for now. Pure visualizer
+-- | OR a `slice N`, plus SuperDirt verbs, glitch combinators, and a `jump`
+-- | matrix). As of S1b the whole PLAYER is LIVE — placement runs through the
+-- | real Tidal parser; `# speed/gain/begin/end` are number patterns sampled at
+-- | each arc's onset; `# sometimes/# rarely` roll per-hit warps; and the `jump`
+-- | matrix steers the walk's leaps (all in Stellatus.Lang). Pure visualizer
 -- | (rig-only, no browser audio). Its own dark radar aesthetic.
 module Triggerfish.Stellatus.Component (component) where
 
 import Prelude
 
-import Data.Array (concatMap, elemIndex, find, head, length, mapWithIndex, range, replicate, (!!))
+import Data.Array (concatMap, elemIndex, find, head, length, mapWithIndex, range, uncons, (!!))
 import Data.Const (Const)
 import Data.Either (Either(..))
+import Data.Foldable (sum)
+import Data.FoldableWithIndex (foldlWithIndex)
 import Data.Int (floor, toNumber)
 import Data.Int (fromString) as Int
 import Data.Maybe (Maybe(..), fromMaybe)
-import Data.Number (cos, pi, pow, sin) as Num
+import Data.Number (cos, pi, sin) as Num
 import Data.String (Pattern(..))
-import Data.String.CodeUnits (drop, indexOf, take) as SCU
-import Data.String.Common (joinWith)
+import Data.String.CodeUnits (drop, indexOf, stripSuffix, take) as SCU
 import Data.Traversable (mapAccumL)
 import Effect (Effect)
 import Effect.Aff.Class (class MonadAff)
@@ -37,8 +38,8 @@ import Halogen.HTML as HH
 import Halogen.HTML.Events as HE
 import Halogen.HTML.Properties as HP
 import Halogen.Subscription as HS
-import Triggerfish.Odonus.Grid.Widgets (style, svgEl, svgAttr, engrave, clampI, signed)
-import Triggerfish.Stellatus.Lang (Arc, KitEntry, Mode(..), parseScene)
+import Triggerfish.Odonus.Grid.Widgets (style, svgEl, svgAttr, engrave, clampI)
+import Triggerfish.Stellatus.Lang (Arc, ArcParams, GlitchEffect(..), GlitchRule, JumpSpec, KitEntry, Mode(..), Target, parseScene)
 import Triggerfish.Stellatus.Osc (fire) as Osc
 
 -- ---------------------------------------------------------------------------
@@ -53,11 +54,14 @@ type State =
   , seed :: Int
   , phase :: Number
   , playing :: Boolean
-  -- parsed from the panels (S1a): the live ring
+  -- parsed from the panels: the live ring (S1a) + playback steering (S1b)
   , arcs :: Array Arc
   , mode :: Mode
   , kit :: Array KitEntry
   , kitNames :: Array String
+  , params :: Array ArcParams
+  , glitch :: Array GlitchRule
+  , jumps :: JumpSpec
   , parseErr :: Maybe String
   -- audio emit (dev SuperDirt path via the bridge)
   , sending :: Boolean
@@ -70,9 +74,6 @@ data Action
   | SetKitText String | SetPlayerText String
   | ToggleKit | TogglePlayer
   | Shake | TogglePlay | ToggleSend
-
-illustrativeJump :: Number
-illustrativeJump = 0.22
 
 kitTextDefault :: String
 kitTextDefault =
@@ -87,27 +88,28 @@ playerTextDefault =
   "-- PLACEMENT   the ring is one cycle  (place = KIT, slice N = one buffer)\n"
     <> "place \"bd sn hh*2 cp sn\"\n"
     <> "\n"
-    <> "-- PLAYBACK   SuperDirt verbs across the cycle\n"
-    <> "  # speed \"1 1 2 1 -1\"\n"
-    <> "  # begin \"0 0 .5 0 0\"\n"
-    <> "  # chop  4\n"
-    <> "  # gain  \"1 .9 .8 1 .85\"\n"
+    <> "-- PLAYBACK   verbs sampled at each arc's onset\n"
+    <> "# speed \"1 1 2 1 0.5\"\n"
+    <> "# begin \"0 0 0.5 0 0\"\n"
+    <> "# gain  \"1 0.9 0.8 1 0.85\"\n"
     <> "\n"
     <> "-- GLITCH   stochastic per-hit warps\n"
-    <> "  # sometimes rev\n"
-    <> "  # rarely   (# speed 2)\n"
+    <> "# sometimes rev\n"
+    <> "# rarely (# speed 2)\n"
     <> "\n"
-    <> "-- JUMPS   leap instead of advance (name -> targets)\n"
+    <> "-- JUMPS   leap instead of advance (name -> targets weight)\n"
     <> "jump 0.22\n"
-    <> "  bd -> sn .6  hh .4\n"
-    <> "  sn -> cp .5  bd .5\n"
-    <> "  hh -> hh .7  sn .3\n"
+    <> "  bd -> sn 0.6  hh 0.4\n"
+    <> "  sn -> cp 0.5  bd 0.5\n"
+    <> "  hh -> hh 0.7  sn 0.3\n"
     <> "  cp -> bd 1"
 
--- Reparse the panels into the live ring; keep the last good arcs on error.
+-- Reparse the panels into the live scene; keep the last good ring on error.
 reparse :: State -> State
 reparse st = case parseScene st.kitText st.playerText of
-  Right sc -> st { arcs = sc.arcs, mode = sc.mode, kit = sc.kit, kitNames = map _.name sc.kit, parseErr = Nothing }
+  Right sc -> st
+    { arcs = sc.arcs, mode = sc.mode, kit = sc.kit, kitNames = map _.name sc.kit
+    , params = sc.params, glitch = sc.glitch, jumps = sc.jumps, parseErr = Nothing }
   Left e -> st { parseErr = Just e }
 
 -- ---------------------------------------------------------------------------
@@ -154,38 +156,42 @@ hashNoise seed i =
   let x = Num.sin (toNumber (seed * 374761 + i * 668265 + 9127)) * 43758.5453
   in x - toNumber (floor x)
 
-pitchScatter :: Array Int
-pitchScatter = [ -12, -7, -5, 0, 0, 0, 0, 3, 5, 7, 12 ]
-
-type Warp = { reverse :: Boolean, pitch :: Int, ratchet :: Int }
-
-warpFor :: Int -> Int -> Warp
-warpFor seed idx =
-  let h1 = hashNoise (seed * 7 + 1) idx
-      h2 = hashNoise (seed * 7 + 2) idx
-      h3 = hashNoise (seed * 7 + 3) idx
-      p = fromMaybe 0 (pitchScatter !! clampI 0 (length pitchScatter - 1) (floor (h2 * toNumber (length pitchScatter))))
-  in { reverse: h1 < 0.28, pitch: p, ratchet: if h3 < 0.15 then 3 else if h3 < 0.4 then 2 else 1 }
-
 type Step = { arc :: Int, from :: Maybe Int }
 
 walkLen :: Int -> Int
 walkLen count = clampI 12 48 (count * 4)
 
-buildWalk :: Int -> Int -> Number -> Array Step
-buildWalk seed count jumpProb =
-  if count <= 1 then [ { arc: 0, from: Nothing } ]
-  else (mapAccumL step 0 (range 0 (walkLen count - 1))).value
+-- The walk advances arc-by-arc, but at each step may JUMP if the current arc's
+-- name has a row in the jump table and the seeded die-roll clears `jumps.prob`.
+-- The target is picked from the row's weighted list; jumps only fire where the
+-- text declares a rule (so the matrix fully steers the leaping).
+buildWalk :: Int -> Array Arc -> JumpSpec -> Array Step
+buildWalk seed arcs jumps =
+  let count = length arcs
+      names = map _.name arcs
+  in if count <= 1 then [ { arc: 0, from: Nothing } ]
+     else (mapAccumL (step count names) 0 (range 0 (walkLen count - 1))).value
   where
-  step cur i =
+  step count names cur i =
     let hJump = hashNoise (seed * 13 + 5) i
         hTgt = hashNoise (seed * 13 + 7) i
-    in if hJump < jumpProb then
-         let tgt = mod (floor (hTgt * toNumber count)) count
-         in { accum: tgt, value: { arc: tgt, from: Just cur } }
-       else
-         let nxt = mod (cur + 1) count
-         in { accum: nxt, value: { arc: nxt, from: Nothing } }
+        curName = fromMaybe "" (names !! cur)
+    in case find (\r -> r.from == curName) jumps.table of
+         Just row | hJump < jumps.prob ->
+           case pickTarget hTgt row.targets >>= \nm -> elemIndex nm names of
+             Just tgt -> { accum: tgt, value: { arc: tgt, from: Just cur } }
+             Nothing -> advance count cur
+         _ -> advance count cur
+  advance count cur = let nxt = mod (cur + 1) count in { accum: nxt, value: { arc: nxt, from: Nothing } }
+
+-- Weighted choice over a jump row's targets, driven by a hash in [0,1).
+pickTarget :: Number -> Array Target -> Maybe String
+pickTarget h targets = go (h * sum (map _.weight targets)) 0.0 targets
+  where
+  go thr acc ts = case uncons ts of
+    Just { head: t, tail: rest } ->
+      if thr < acc + t.weight then Just t.name else go thr (acc + t.weight) rest
+    Nothing -> Nothing
 
 -- ---------------------------------------------------------------------------
 -- Emit — one /dirt/play per fired slice, POSTed to the OSC bridge
@@ -208,10 +214,24 @@ sampleFor st arc = case st.mode of
     let sp = splitSrc (fromMaybe "" (map _.src (head st.kit)))
     in { s: sp.folder, n: sp.n, begin: arc.onset, end: arc.onset + arc.span }
 
--- Warp → signed vari-speed: reverse flips sign, pitch semitones set the ratio
--- (the Morphagene borrow). S3 will quantize the pitch to Vetula's chord.
-speedFor :: Warp -> Number
-speedFor w = (if w.reverse then -1.0 else 1.0) * Num.pow 2.0 (toNumber w.pitch / 12.0)
+defaultParams :: ArcParams
+defaultParams = { speed: 1.0, gain: 0.9, begin: Nothing, end: Nothing }
+
+-- Per-hit speed: the arc's base `# speed` value, then each glitch rule folded in
+-- if its seeded per-step die-roll clears the rule's probability. `rev` flips the
+-- sign (SuperDirt plays negative-speed backwards); `# speed N` multiplies.
+finalSpeed :: ArcParams -> Array GlitchRule -> Int -> Int -> Number
+finalSpeed p glitch seed stepIdx =
+  foldlWithIndex
+    (\i sp rule ->
+       if hashNoise (seed * 17 + i * 31 + 3) stepIdx < rule.prob then applyEffect rule.effect sp else sp)
+    p.speed
+    glitch
+
+applyEffect :: GlitchEffect -> Number -> Number
+applyEffect = case _ of
+  GReverse -> \sp -> negate sp
+  GSpeed m -> \sp -> sp * m
 
 emitStep :: State -> Int -> Array Step -> Effect Unit
 emitStep st step walk = case walk !! step of
@@ -220,16 +240,19 @@ emitStep st step walk = case walk !! step of
     Nothing -> pure unit
     Just arc ->
       let smp = sampleFor st arc
+          p = fromMaybe defaultParams (st.params !! s.arc)
+          beg = fromMaybe smp.begin p.begin
+          en = fromMaybe smp.end p.end
       in if smp.s == "" then pure unit
          else Osc.fire st.bridgeUrl
-                (eventJson { s: smp.s, n: smp.n, begin: smp.begin, end: smp.end
-                           , speed: speedFor (warpFor st.seed s.arc) })
+                (eventJson { s: smp.s, n: smp.n, begin: beg, end: en
+                           , speed: finalSpeed p st.glitch st.seed step, gain: p.gain })
 
-eventJson :: { s :: String, n :: Int, begin :: Number, end :: Number, speed :: Number } -> String
+eventJson :: { s :: String, n :: Int, begin :: Number, end :: Number, speed :: Number, gain :: Number } -> String
 eventJson e =
   "{\"s\":\"" <> e.s <> "\",\"n\":" <> show e.n
     <> ",\"begin\":" <> show e.begin <> ",\"end\":" <> show e.end
-    <> ",\"speed\":" <> show e.speed <> ",\"gain\":0.9,\"orbit\":0,\"cps\":0.5}"
+    <> ",\"speed\":" <> show e.speed <> ",\"gain\":" <> show e.gain <> ",\"orbit\":0,\"cps\":0.5}"
 
 -- ---------------------------------------------------------------------------
 -- Component
@@ -242,6 +265,7 @@ component =
         { kitText: kitTextDefault, playerText: playerTextDefault
         , kitOpen: true, playerOpen: true, seed: 3, phase: 0.0, playing: true
         , arcs: [], mode: KitMode, kit: [], kitNames: [], parseErr: Nothing
+        , params: [], glitch: [], jumps: { prob: 0.0, table: [] }
         , sending: false, bridgeUrl: "http://127.0.0.1:57130/play", lastStep: -1 }
     , render
     , eval: H.mkEval H.defaultEval { handleAction = handleAction, initialize = Just Init }
@@ -261,7 +285,7 @@ handleAction = case _ of
           steps = walkLen count
           dp = 1.0 / (toNumber steps * 7.0)
           p' = let p = st.phase + dp in if p >= 1.0 then p - 1.0 else p
-          walk = buildWalk st.seed count illustrativeJump
+          walk = buildWalk st.seed st.arcs st.jumps
           len = length walk
           step' = clampI 0 (max 0 (len - 1)) (floor (p' * toNumber len))
       H.modify_ _ { phase = p' }
@@ -334,7 +358,7 @@ nameplate =
 ring :: forall m. State -> H.ComponentHTML Action () m
 ring st =
   let count = length st.arcs
-      walk = buildWalk st.seed count illustrativeJump
+      walk = buildWalk st.seed st.arcs st.jumps
       len = length walk
       stepF = st.phase * toNumber len
       step = clampI 0 (max 0 (len - 1)) (floor stepF)
@@ -351,7 +375,7 @@ ring st =
       ( ringGuide
         <> ringWave st.seed
         <> concatMap (arcView st.mode st.kitNames count curArc) arcs
-        <> concatMap (warpGlyph st.seed) arcs
+        <> concatMap (paramGlyph st.params) arcs
         <> jumpChord st.arcs cur local
         <> centre st.arcs curArc count
       )
@@ -400,13 +424,17 @@ arcView mode kitNames count curArc { i, a } =
          [ HH.text a.name ]
      ]
 
-warpGlyph :: forall m. Int -> { i :: Int, a :: Arc } -> Array (H.ComponentHTML Action () m)
-warpGlyph seed { i, a } =
-  let w = warpFor seed i
-      arcPx = a.span * tau * ringR
-      lbl = (if w.reverse then "◀ " else "")
-              <> (if w.pitch /= 0 then signed w.pitch else "")
-              <> (if w.ratchet > 1 then " " <> joinWith "" (replicate w.ratchet "·") else "")
+-- The base `# speed` verb, shown outside its arc so the ring reflects what the
+-- text programmed: `◀` for reverse (negative), `×N` for a non-unit ratio. The
+-- stochastic glitch rolls aren't shown (they differ per hit); this is the
+-- steady-state steering.
+paramGlyph :: forall m. Array ArcParams -> { i :: Int, a :: Arc } -> Array (H.ComponentHTML Action () m)
+paramGlyph params { i, a } =
+  let arcPx = a.span * tau * ringR
+      lbl = case map _.speed (params !! i) of
+        Just sp | sp < 0.0 -> "◀"
+        Just sp | sp /= 1.0 -> "×" <> fmtNum sp
+        _ -> ""
       ang = (a.onset + a.span / 2.0) * tau
   in if arcPx < 24.0 || lbl == "" then []
      else [ svgEl "text"
@@ -414,6 +442,10 @@ warpGlyph seed { i, a } =
               , svgAttr "text-anchor" "middle"
               , svgAttr "style" ("font-family:'SF Mono',monospace;font-size:11px;fill:" <> ink) ]
               [ HH.text lbl ] ]
+
+-- Drop a trailing ".0" so 2.0 reads "2", 0.5 stays "0.5".
+fmtNum :: Number -> String
+fmtNum n = let s = show n in fromMaybe s (SCU.stripSuffix (Pattern ".0") s)
 
 jumpChord :: forall m. Array Arc -> Maybe Step -> Number -> Array (H.ComponentHTML Action () m)
 jumpChord arcs mstep local = fromMaybe [] do
@@ -464,7 +496,7 @@ panelStack st =
             [ HH.text ("⚠ " <> e) ]
         Nothing ->
           HH.div [ style "font-size:9px;letter-spacing:0.1em;color:#4a525c;font-style:italic;padding-left:2px" ]
-            [ HH.text "place · slice = live · verbs + jumps parsed next · pitch → Vetula" ]
+            [ HH.text "place · verbs · glitch · jumps = live · pitch → Vetula next" ]
     ]
 
 textPanel
@@ -525,5 +557,5 @@ transport st =
             <> ";background:" <> (if st.sending then "#8a2c2c" else "#1a1f25") ]
         [ HH.text (if st.sending then "◉ SENDING" else "○ SEND") ]
     , HH.span [ style ("font-family:'SF Mono',monospace;font-size:10px;color:#5a626c;padding-left:2px") ]
-        [ HH.text (if st.sending then "→ SuperDirt :57135" else "seed " <> show st.seed) ]
+        [ HH.text (if st.sending then "→ SuperDirt :57120" else "seed " <> show st.seed) ]
     ]
