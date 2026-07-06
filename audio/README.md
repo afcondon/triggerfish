@@ -1,9 +1,19 @@
 # Stellatus audio path — SuperDirt via the OSC bridge
 
-Stellatus is **rig-only** (no browser audio, by design). To *hear* it during
-development we route: **browser → HTTP → bridge → UDP OSC → SuperDirt**. This is
-a dev-audition scaffold; the eventual ship path is BEAM→SuperDirt (the C/B gates
-in `docs/SUFFLAMEN-DESIGN.md`). Two small daemons, both Bosun-ready.
+Stellatus is **rig-only** (no browser audio, by design).
+
+> **STATUS (2026-07-06): the shipping BEAM path has LANDED.** Stellatus now runs
+> BEAM-authoritative: the browser pushes a `stellatus-scene <json>` over the rig
+> WebSocket and `reef_stellatus_voice` (purerl-tidal) generates + emits
+> `/dirt/play` to SuperDirt, Link-locked and OSC-bundle-timetagged. The browser
+> is a pure visualizer. **`stellatus-bridge.mjs` below is now RETIRED** — it was
+> the dev-audition scaffold (browser → HTTP → bridge → UDP OSC → SuperDirt), kept
+> here only for reference. `superdirt-daemon.scd` / `boot-superdirt.sh` are still
+> live: SuperDirt itself is the sound engine either way.
+
+For the record, the retired dev-audition route was:
+**browser → HTTP → bridge → UDP OSC → SuperDirt**. Two small daemons, both
+Bosun-ready.
 
 ```
   Stellatus (browser)          stellatus-bridge.mjs         superdirt-daemon.scd
@@ -83,20 +93,28 @@ Both daemons already satisfy the `bosun-daemon` skill's contract:
    (SuperDirt, already bound + SC convention) and 57130 (bridge) in fleet.json**,
    and have the bridge + browser read the SuperDirt port from there.
 
-1. **No Marginalia / fleet.json rows yet.** Once heard-on-the-rig, register two
-   servers on the Stellatus project: `superdirt` (host `mbp`, the fleet-allocated
-   port, startCommand `boot-superdirt.sh`) and `stellatus-bridge` (host `mbp`,
-   :57130). Do NOT register until tested (the "never register untested" rule) —
-   the browser end isn't confirmed audible yet.
+1. **superdirt is now supervised (DONE); a fleet.json row is optional.** `superdirt`
+   is a stage-0 service in `ShapedSteer/bosun/fixtures/atlantis/compose.yml` (boots
+   `boot-superdirt.sh`, :57120), raised under `bosun supervise` and GREEN in the
+   Chair. **Finding: the Chair draws supervised nodes from the group's compose +
+   `/state`, NOT from fleet.json** — so no fleet.json row is needed to *see* it (the
+   earlier assumption here was wrong; fleet.json is the `bosun serve` router's
+   registry). A Marginalia/fleet row is still worth adding for documentation +
+   port-collision-avoidance, but it isn't what makes the node appear. The dev
+   `stellatus-bridge` is retired and needs no row.
 2. **Quartermaster host pre-flight** doesn't yet check for SuperCollider /
    Dirt-Samples / the SuperDirt+Vowel quarks. Add a `verify` check:
    `sclang` present, `~/Library/Application Support/SuperCollider/downloaded-quarks/{SuperDirt,Dirt-Samples}`
    exist.
-3. **Bosun group** — these two belong in the Atlantis group (`:3994`) alongside
-   the other rig services, launched `--held` and raised from Bosun's Chair. Add a
-   compose fixture. The scsynth-child pgid teardown is the one non-standard bit
-   (handled in `boot-superdirt.sh`; Bosun's process executor should model it as a
-   process-group, per the supervision-substrate steer).
+3. **Bosun group (DONE for superdirt).** `superdirt` is in the Atlantis group
+   (`:3994`) alongside the other rig services. The scsynth-child pgid teardown is
+   the one non-standard bit (handled in `boot-superdirt.sh`; Bosun's process
+   executor should model it as a process-group, per the supervision-substrate
+   steer). **Finding: `bosun supervise`'s INITIAL bring-up FORCE-RESTARTS the whole
+   group** (`kill -pgid` then relaunch), it does NOT adopt already-running
+   processes — so restarting the supervisor to add a service bounces the live rig.
+   Use `bosun supervise --held` (boot down, raise deliberately from the Chair) to
+   add/roll a service without a full-group bounce.
 4. **es9-daemon co-existence** — SuperDirt on 57135 avoids es9-daemon's 57120,
    but both open CoreAudio; on the rig, confirm scsynth uses an output device
    that doesn't fight es9-daemon's ES-9 claim (likely fine — different devices).

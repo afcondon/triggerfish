@@ -18,6 +18,7 @@ module Triggerfish.Stellatus.Component (component) where
 import Prelude
 
 import Binnacle as Binnacle
+import Binnacle.Clock as Clock
 import Binnacle.Transport as Transport
 import Data.Array (concatMap, elemIndex, find, head, length, mapWithIndex, range, (!!))
 import Data.Const (Const)
@@ -37,10 +38,10 @@ import Halogen.HTML as HH
 import Halogen.HTML.Events as HE
 import Halogen.HTML.Properties as HP
 import Halogen.Subscription as HS
-import Reef.Stellatus.Engine (Emit, Scene, Slot, walk, walkLen) as SE
+import Reef.Stellatus.Engine (Emit, Scene, Slot, walk) as SE
 import Reef.Stellatus.Engine (GlitchRule) as SEG
 import Reef.Stellatus.Protocol (encodeScene) as SP
-import Triggerfish.Odonus.Grid.Widgets (style, svgEl, svgAttr, engrave, clampI)
+import Triggerfish.Odonus.Grid.Widgets (style, svgEl, svgAttr, engrave)
 import Triggerfish.Stellatus.Lang (Arc, ArcParams, GlitchEffect(..), GlitchRule, JumpSpec, KitEntry, Mode(..), parseScene)
 
 -- ---------------------------------------------------------------------------
@@ -53,7 +54,7 @@ type State =
   , kitOpen :: Boolean
   , playerOpen :: Boolean
   , seed :: Int
-  , phase :: Number
+  , beat :: Number
   , playing :: Boolean
   -- parsed from the panels: the live ring (S1a) + playback steering (S1b)
   , arcs :: Array Arc
@@ -223,7 +224,7 @@ component =
   H.mkComponent
     { initialState: \_ -> reparse
         { kitText: kitTextDefault, playerText: playerTextDefault
-        , kitOpen: true, playerOpen: true, seed: 3, phase: 0.0, playing: true
+        , kitOpen: true, playerOpen: true, seed: 3, beat: 0.0, playing: true
         , arcs: [], mode: KitMode, kit: [], kitNames: [], parseErr: Nothing
         , params: [], glitch: [], jumps: { prob: 0.0, table: [] }
         , scene: emptyScene, binnacle: Nothing }
@@ -242,16 +243,15 @@ handleAction = case _ of
     _ <- H.subscribe emitter
     _ <- liftEffect $ setInterval 45 (HS.notify listener Tick)
     pure unit
-  -- Advance the visual phase only — the rig owns timing + emit now, so the clock
-  -- here just sweeps the highlight. (Link-aligning the sweep to the rig via
-  -- Binnacle's clock is a later polish; the walk CONTENT already matches.)
+  -- Read the rig's Link beat so the highlight sweep is aligned to what the BEAM
+  -- actually plays (Binnacle phase-locks the clock to the rig's anchor; free-runs
+  -- at the fallback tempo when no anchor). The walk CONTENT already matched; this
+  -- aligns the sweep PHASE too (D2).
   Tick -> do
     st <- H.get
-    when st.playing do
-      let steps = SE.walkLen (length st.arcs)
-          dp = 1.0 / (toNumber steps * 7.0)
-          p' = let p = st.phase + dp in if p >= 1.0 then p - 1.0 else p
-      H.modify_ _ { phase = p' }
+    when st.playing $ for_ st.binnacle \bin -> do
+      r <- liftEffect $ Clock.read (Binnacle.clock bin)
+      H.modify_ _ { beat = r.beat }
   SetKitText t -> H.modify_ (reparse <<< _ { kitText = t })
   SetPlayerText t -> H.modify_ (reparse <<< _ { playerText = t })
   ToggleKit -> H.modify_ \st -> st { kitOpen = not st.kitOpen }
@@ -328,9 +328,12 @@ ring st =
   let count = length st.arcs
       walk = SE.walk st.scene
       len = length walk
-      stepF = st.phase * toNumber len
-      step = clampI 0 (max 0 (len - 1)) (floor stepF)
-      local = stepF - toNumber step
+      -- one ring slot per 1/16 (reef STEP_BEATS = 0.25 → 4 steps/beat), indexed
+      -- exactly as reef_stellatus_voice does: absolute step `mod` loop length.
+      s = st.beat * 4.0
+      absStep = floor s
+      step = if len <= 0 then 0 else ((absStep `mod` len) + len) `mod` len
+      local = s - toNumber absStep
       cur = walk !! step
       curArc = fromMaybe 0 (map _.slot cur)
       arcs = mapWithIndex (\i a -> { i, a }) st.arcs
