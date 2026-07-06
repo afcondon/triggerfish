@@ -22,6 +22,7 @@ import Prelude
 import Data.Array (filter, mapWithIndex, null, replicate)
 import Data.Foldable (foldl, for_)
 import Data.Maybe (Maybe(..), fromMaybe)
+import Data.Const (Const)
 import Data.Set (Set)
 import Data.Set as Set
 import Data.String.Common (joinWith)
@@ -43,6 +44,7 @@ import Binnacle.Time (dateNow)
 import Triggerfish.Odonus.Grid as Odonus
 import Triggerfish.Balistes.Component as Balistes
 import Triggerfish.Selene.Component as Selene
+import Triggerfish.Sufflamen.Component as Sufflamen
 import Triggerfish.SourceQuery as SQ
 import Vetula.App as Vetula
 import Vetula.Clipboard (copyText)
@@ -108,6 +110,7 @@ type Slots =
   , bal :: H.Slot SQ.Query Void Unit
   , sel :: H.Slot SQ.Query Void Unit
   , vet :: H.Slot Vetula.SourceQuery Void Unit
+  , suf :: H.Slot (Const Void) Void Unit
   )
 
 _odo :: Proxy "odo"
@@ -121,6 +124,9 @@ _sel = Proxy
 
 _vet :: Proxy "vet"
 _vet = Proxy
+
+_suf :: Proxy "suf"
+_suf = Proxy
 
 root :: forall q i o m. MonadAff m => H.Component q i o m
 root =
@@ -271,6 +277,7 @@ querySounding w s = case w of
   Sel -> H.query _sel unit (SQ.SetSounding s unit)
   Vet -> H.query _vet unit (Vetula.SetSounding s unit)
   Tid -> pure Nothing
+  Suf -> pure Nothing
 
 -- Re-derive and push every machine's Sounding (on arm-all / mode flip / init).
 pushAll :: forall o m. MonadAff m => H.HalogenM RState RAction Slots o m Unit
@@ -284,6 +291,7 @@ askSounding w = case w of
   Sel -> H.query _sel unit (SQ.AskSounding identity)
   Vet -> H.query _vet unit (Vetula.AskSounding identity)
   Tid -> pure Nothing
+  Suf -> pure Nothing
 
 -- Fold observed soundings into the armed set: `Silent` drops a machine, any other
 -- sounding adds it, a query miss (`Nothing`) leaves it unchanged.
@@ -332,6 +340,7 @@ queryLoad w i = case w of
   Sel -> H.query _sel unit (SQ.LoadEntry i unit)
   Vet -> H.query _vet unit (Vetula.LoadEntry i unit)
   Tid -> pure Nothing
+  Suf -> pure Nothing
 
 queryImport :: forall o m. Which -> String -> H.HalogenM RState RAction Slots o m (Maybe Boolean)
 queryImport w txt = case w of
@@ -340,6 +349,7 @@ queryImport w txt = case w of
   Sel -> H.query _sel unit (SQ.ImportText txt identity)
   Vet -> H.query _vet unit (Vetula.ImportText txt identity)
   Tid -> pure Nothing
+  Suf -> pure Nothing
 
 render :: forall m. MonadAff m => RState -> H.ComponentHTML RAction Slots m
 render st =
@@ -354,6 +364,7 @@ render st =
     , pane (st.which == Bal) "" (HH.slot_ _bal unit Balistes.component unit)
     , pane (st.which == Sel) "" (HH.slot_ _sel unit Selene.component unit)
     , pane (st.which == Vet) "padding-top:var(--tf-bar)" (HH.slot_ _vet unit Vetula.component unit)
+    , pane (st.which == Suf) "" (HH.slot_ _suf unit Sufflamen.component unit)
     , if st.which == Tid then tidalView st else HH.text ""
     ]
 
@@ -515,6 +526,9 @@ shellBar st =
         , armSeg st Bal "BALISTES"
         , armSeg st Sel "SELENE"
         , armSeg st Vet "VETULA"
+        -- SUFFLAMEN is the rig-only SuperDirt instrument; in the D1 prototype it's
+        -- a pure visualizer (not armable yet) so it reads like TIDAL — no arm dot.
+        , seg "SUFFLAMEN" (st.which == Suf) (Pick Suf)
         -- TIDAL is a read-only aggregate, not an instrument — no play/pause dot.
         , seg "TIDAL" (st.which == Tid) (Pick Tid)
         ]
@@ -527,6 +541,7 @@ whichName = case _ of
   Sel -> "Selene"
   Vet -> "Vetula"
   Tid -> "Tidal"
+  Suf -> "Sufflamen"
 
 seg :: forall m. String -> Boolean -> RAction -> H.ComponentHTML RAction Slots m
 seg label active act =

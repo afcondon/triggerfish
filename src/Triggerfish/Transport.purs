@@ -31,8 +31,11 @@ import Data.Set (Set)
 import Data.Set as Set
 
 -- The tabs in the switcher. Odo/Bal/Sel/Vet are machines; Tid is the aggregate
--- source view, not a machine (never armed, no rig voice).
-data Which = Odo | Bal | Sel | Vet | Tid
+-- source view, not a machine (never armed, no rig voice). Suf (Sufflamen) is the
+-- rig-only SuperDirt instrument — present as a tab but not yet transport-wired
+-- (the D1 visualizer prototype; arm/emit arrive with routing gates C & B), so it
+-- behaves like Tid here: never armed, no local rig voice.
+data Which = Odo | Bal | Sel | Vet | Tid | Suf
 
 derive instance Eq Which
 derive instance Ord Which
@@ -64,6 +67,7 @@ hasRigVoice = case _ of
   Vet -> true
   Sel -> false
   Tid -> false
+  Suf -> false   -- rig-only at heart, but not transport-wired in the D1 prototype
 
 -- The whole authority model in one function.
 soundingOf :: Mode -> Set Which -> Which -> Sounding
