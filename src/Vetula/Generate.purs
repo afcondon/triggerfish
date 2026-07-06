@@ -27,6 +27,7 @@ import Data.Maybe (Maybe(..), fromMaybe, maybe)
 import Data.Number (sqrt)
 import Data.Ord (abs)
 import Data.Tuple (Tuple(..))
+import Harmonia.Anchor (Anchor(..))
 import Harmonia.Chord (Chord(..), Key)
 import Harmonia.Voicing (Voicing(..), voiceLead, voicingMidi)
 import Vetula.Harmony (ChordNode, Kind(..), noteName, scaleSet)
@@ -132,7 +133,7 @@ generateCandidates mode anchors key adventure startId =
         in { id: startId + p.i, parentId: Nothing, root: p.s.c.root, bassPc: bp
            , pcs: nub p.s.c.pcs, voicing: drop 1 p.midi, kind: Voiced
            , label: noteName p.s.c.root <> p.s.c.sfx, pinned: false, outside: p.s.outside
-           , targetX: pos.x, targetY: pos.y, isCentre: false }
+           , targetX: pos.x, targetY: pos.y, isCentre: false, anchor: Free }
   in zipWith build prelim relaxed
 
 -- | Push overlapping discs apart over a few iterations (a static stand-in for a

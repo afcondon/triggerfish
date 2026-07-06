@@ -19,7 +19,7 @@ module Vetula.App where
 import Prelude
 
 import Data.Array (concat, concatMap, deleteAt, drop, elem, elemIndex, filter, find, head, index, insertAt, last, length, mapMaybe, mapWithIndex, modifyAt, nub, nubByEq, range, replicate, sort, take, updateAt, zip, (!!))
-import Data.Foldable (any, foldl, foldr, for_, maximum, minimum, sum)
+import Data.Foldable (all, any, foldl, foldr, for_, maximum, minimum, sum)
 import Data.Traversable (traverse)
 import Data.Int (fromString, round, toNumber)
 import Data.Number as Number
@@ -51,6 +51,7 @@ import Web.HTML (window)
 import Web.HTML.Window as Window
 import Web.UIEvent.KeyboardEvent as KE
 import Web.UIEvent.MouseEvent as ME
+import Web.UIEvent.WheelEvent as WE
 import Vetula.SvgCoord (svgYFromEvent, svgXFromEvent, isFormField, surfaceHidden)
 import Vetula.Path as Path
 import Vetula.Generate (GenMode(..), generateCandidates)
@@ -60,6 +61,7 @@ import Binnacle.Scheduler as Scheduler
 import Binnacle.Transport as Transport
 import Triggerfish.Transport (Sounding(..))
 import Vetula.Store as Store
+import Vetula.Tank (Specimen, SpecimenId(..), Provenance(..), specNotes)
 import Reef.Vetula.Perf (VChord, VVoice, VDest(..), VRenderer(..), PerfClock, cursorAtClock, renderAlphaBlockMidiAt, renderAlphaClockMidiAt) as RV
 import Reef.Vetula.Articulate (VArticulator(..), articulate, articLabel, nextArtic) as RA
 import Vetula.Playhead (clockFor, defaultPattern, noteClock, patternClock)
@@ -76,8 +78,11 @@ import Hylograph.Simulation
   ( Engine(..), SimulationEvent(..), SimulationHandle, SimulationNode
   , Setup, runSimulation, setup, manyBody, collide, link, positionX, positionY
   , withStrength, withRadius, withDistance, withX, withY, static, dynamic )
+import Harmonia.Anchor (Anchor(..))
 import Harmonia.Chord (Key, Mode(..), cMajorKey)
-import Vetula.Harmony (ChordNode, Family, Kind(..), blackKeyPcs, diatonicTriads, generate, interchangeChords, keyX, keyboard, latticeChild, latticeFamily, mcmullenChords, noteName, place, placeOutside, playNotes, scaleSet, suspendSet, triadOn, voicingCandidates, whiteKeyPcs)
+import Harmonia.Graded (transpose) as Graded
+import Vetula.Palette (butlerChords, stockChords)
+import Vetula.Harmony (ChordNode, Family(..), Kind(..), blackKeyPcs, diatonicTriads, generate, interchangeChords, keyX, keyboard, latticeChild, latticeFamily, mcmullenChords, noteName, place, placeOutside, playNotes, scaleSet, suspendSet, triadNode, triadOn, voicingCandidates, whiteKeyPcs)
 
 midiPortName :: String
 midiPortName = "IAC"
@@ -118,6 +123,47 @@ data RailSection = SecProgression | SecLibrary | SecVoices
 
 derive instance eqRailSection :: Eq RailSection
 derive instance ordRailSection :: Ord RailSection
+
+-- | Slice C (tank model) — the Stage's swappable LENS. The pool is a frame; the
+-- | lens is the view inside it. Adding a lens is ADDITIVE: one constructor, one
+-- | `renderLens` branch, one `allLenses` entry — that's the decoupling proof.
+-- | Lenses span a density axis: Keyboard is the exhaustive hunting cloud (every
+-- | family + seed-bloom on the piano); PadGrid is a sparse, playable 4×4 board of
+-- | the tank — the mouse-driven seed of the control-surface idea (see
+-- | docs/DESIGN-vetula-tank-model.md).
+-- | `LensCircleFifths` is the first of the GEOMETRIC lenses: the same pool chords,
+-- | laid out by root on the circle of fifths (a spoke per root, radiating outward)
+-- | rather than over the piano. Its geometry and the grade agree — the active
+-- | key's diatonic roots form a contiguous highlighted wedge, borrowed roots sit
+-- | just outside it, distant roots fall around the far side.
+-- | `LensTonnetz` is the second geometric lens: the neo-Riemannian tonal net. Its
+-- | own triad-lattice (not a pool re-projection) — every triangle is a major or
+-- | minor triad, edge-adjacent triangles share two tones (the P/L/R moves), and
+-- | the active key's diatonic triads light up as a connected "spider".
+-- | `LensLattices` shows every scale degree's full tertian lattice at once — the
+-- | powerset web the keyboard's `l`-explode blooms one degree at a time — as
+-- | seven compact clusters of chromatic-circle polygon glyphs (no stave), tiled
+-- | in the zoomable container. A firehose meant to be roamed, not read at 1:1.
+-- | `LensGenerate` is the tank-seeded generative surface: it takes chords caught
+-- | in the tank as SEEDS and blooms a constellation of voice-led relatives around
+-- | each one (the "shake the etch-a-sketch, put chords back in, grow what relates"
+-- | idea). Catch a relative and it feeds the tank — the compositional loop closes.
+data StageLens = LensKeyboard | LensPadGrid | LensCircleFifths | LensTonnetz | LensLattices | LensGenerate
+
+derive instance eqStageLens :: Eq StageLens
+
+-- | The lens registry. A new lens appends here (+ a constructor + a render branch).
+allLenses :: Array StageLens
+allLenses = [ LensKeyboard, LensPadGrid, LensCircleFifths, LensTonnetz, LensLattices, LensGenerate ]
+
+lensLabel :: StageLens -> String
+lensLabel = case _ of
+  LensKeyboard -> "keyboard"
+  LensPadGrid -> "pad grid"
+  LensCircleFifths -> "fifths"
+  LensTonnetz -> "tonnetz"
+  LensLattices -> "lattices"
+  LensGenerate -> "grow"
 
 -- | How a voice sounds the chord it's currently on. Block = the whole chord held
 -- | for the step; Strummed = re-trigger only the notes that changed (common tones
@@ -237,6 +283,7 @@ type State =
   , nodes :: Array VNode               -- live positions from the simulation
   , focusId :: Int
   , hoveredId :: Maybe Int
+  , hoveredTriad :: Maybe { root :: Int, pcs :: Array Int }  -- Tonnetz hover (no pool id)
   , nextId :: Int
   , handle :: Maybe (SimulationHandle Row)
   , subId :: Maybe H.SubscriptionId
@@ -312,6 +359,25 @@ type State =
   , binnacle :: Maybe Binnacle.Binnacle  -- the shared transport (free-run → Link-lock), like Odonus/Balistes
   , clockTempo :: Number          -- the clock's live tempo, read each tick (drives note durations)
   , nextVoiceId :: Int
+  -- Tank model (Slice A): the durable, unordered collection of CAUGHT chords.
+  -- Frozen `Specimen`s reference no lattice node, so the volatile lattice can
+  -- reflow/regenerate underneath without disturbing them. `k` over a chord catches
+  -- it here; the tank persists until cleared and will feed the Stage + Sequences.
+  , tank :: Array Specimen
+  , nextSpecId :: Int             -- running number for minting SpecimenIds
+  , lens :: StageLens             -- Slice C: which Stage lens is showing
+  -- Geometric-lens viewport (CoF / Tonnetz): pan centre + zoom, applied as the
+  -- surface's viewBox. Wheel zooms toward the cursor; drag pans; reset re-fits.
+  , viewCx :: Number
+  , viewCy :: Number
+  , viewZoom :: Number
+  , panning :: Maybe { ux :: Number, uy :: Number }  -- grabbed anchor point in user-space
+  , panMoved :: Boolean            -- a real drag happened → swallow the ensuing click
+  , genRoll :: Int                 -- Generate lens: the "shake" counter (re-rolls relatives)
+  -- Tank model (Slice B): the staged seeds. Clicking a tank specimen injects it
+  -- into the pool as a centre chord (`seedChord` maps the specimen → its pool
+  -- chord id) and blooms its neighbours around it; clicking again unstages it.
+  , seedChord :: Map SpecimenId Int
   }
 
 data Action
@@ -320,6 +386,7 @@ data Action
   | SimTick
   | SimDone
   | Hover (Maybe Int)
+  | HoverTriad (Maybe { root :: Int, pcs :: Array Int })  -- Tonnetz: hover a triad for space-preview
   | SetFocus Focus         -- Slice 4c: switch the surface width-focus (Hunt / Perform)
   | ToggleRailSection RailSection  -- Slice 4b: open/close a rail accordion section
   | Key String Boolean     -- key, shift held
@@ -381,6 +448,27 @@ data Action
   | PerfStop
   | PerfTick Scheduler.Tick  -- one 16th-note pulse from the shared scheduler
   | SelectPerfChord Int    -- click a working-copy chord row (for live Tab-revoice)
+  -- Tank model (Slice A)
+  | PlayChordId Int        -- plain-click a pool chord: audition it (no path change)
+  | CatchChord Int         -- freeze lattice chord #id into the tank as a Specimen
+  | DeleteSpec SpecimenId  -- × a tank specimen
+  | AuditionSpec SpecimenId -- shift-click a tank specimen: hear it (no state change)
+  | StageSpec SpecimenId   -- click a tank specimen: seed the pool with it (toggle)
+  | SequenceSpec SpecimenId -- shift-click a tank specimen: append a snapshot to the progression
+  | ClearStage             -- remove all staged seeds + the chords bloomed from them
+  | AuditionTriad Int (Array Int)        -- Tonnetz: hear a triad off the net (root pc, pcs)
+  | CatchTriad Int (Array Int) Boolean   -- Tonnetz: freeze a triad into the tank (root, pcs, isMajor)
+  | AuditionNode ChordNode               -- Lattices: hear a generated chord (its own voicing)
+  | CatchNode ChordNode                  -- Lattices: freeze a generated chord into the tank
+  | ZoomAt Event Number    -- geometric lens: wheel-zoom toward the cursor (event, deltaY)
+  | PanStart Event         -- geometric lens: begin a grab-to-pan drag
+  | PanMove Event          -- geometric lens: drag the viewport
+  | PanEnd                 -- geometric lens: end the pan drag
+  | ResetView              -- geometric lens: re-fit (zoom 1, centred)
+  | ShakeGenerate          -- Generate lens: re-roll the tank-seeded relatives
+  | SetLens StageLens      -- Slice C: switch the Stage lens
+  | TransposeSpec SpecimenId Int -- Slice E: shift one tank specimen by n semitones (in place)
+  | CapoTank Int           -- Slice E: shift the WHOLE tank by n semitones (a capo)
 
 -- | The queries the Triggerfish shell pulls from Vetula: its current Tidal
 -- | source (for the aggregate TIDAL tab) and its current progression as PC sets
@@ -420,6 +508,7 @@ component = H.mkComponent
       , nodes: []
       , focusId: 0           -- the first diatonic triad seed
       , hoveredId: Nothing
+      , hoveredTriad: Nothing
       , nextId: 100          -- generated children start here; seeds are 0..17
       , handle: Nothing
       , subId: Nothing
@@ -464,6 +553,16 @@ component = H.mkComponent
       , binnacle: Nothing
       , clockTempo: 120.0
       , nextVoiceId: 0
+      , tank: []
+      , nextSpecId: 0
+      , seedChord: Map.empty
+      , lens: LensKeyboard
+      , viewCx: 0.0
+      , viewCy: 0.0
+      , viewZoom: 1.0
+      , panning: Nothing
+      , panMoved: false
+      , genRoll: 0
       }
   , render
   , eval: H.mkEval H.defaultEval
@@ -757,6 +856,8 @@ handleAction = case _ of
 
   Hover mid -> H.modify_ _ { hoveredId = mid }
 
+  HoverTriad mt -> H.modify_ _ { hoveredTriad = mt }
+
   -- Slice 4c: hand-override the width-focus (the Hunt/Perform toggle, the pool spine).
   -- No surface rebuild — the lattice sim keeps running; we only change which column
   -- gets the width.
@@ -789,6 +890,13 @@ handleAction = case _ of
         "c" -> H.modify_ _ { path = [], focus = Hunt }
         "p" -> H.gets _.path >>= playPath
         "f" -> toggleFavorite
+        -- catch the hovered chord into the tank: a Tonnetz triangle first (no pool
+        -- id), else the hovered pool chord, else the sounding one
+        "k" -> case st.hoveredTriad of
+                 Just t -> handleAction (CatchTriad t.root t.pcs (elem (mod (t.root + 4) 12) t.pcs))
+                 Nothing -> for_ (case st.hoveredId of
+                                    Just h -> Just h
+                                    Nothing -> st.sounding) (handleAction <<< CatchChord)
         -- open the revoice modal on the hovered (else sounding) chord
         "v" -> handleAction OpenRevoice
         -- explode / collapse the focused root's full lattice (the firehose)
@@ -1178,6 +1286,188 @@ handleAction = case _ of
     Nothing -> pure unit
 
   SelectPerfChord pid -> H.modify_ _ { sounding = Just pid, selected = Nothing }
+
+  -- Tank model (Slice A). Catch a lattice chord into the durable tank as a frozen
+  -- Specimen: absolute-MIDI voicing + bass (bassPc grounded an octave below middle
+  -- C, matching playNotes), a descriptive label + provenance. It references no
+  -- lattice id, so the cloud can regenerate underneath without disturbing it.
+  PlayChordId pid -> do
+    st <- H.get
+    if st.panMoved then H.modify_ _ { panMoved = false }
+    else playId pid
+
+  CatchChord pid -> do
+    st <- H.get
+    for_ (find (\c -> c.id == pid) st.chords) \c -> do
+      let spec = { id: SpecimenId st.nextSpecId
+                 , voicing: c.voicing
+                 , bass: c.bassPc + 36
+                 , label: c.label
+                 , provenance: FromLens (groupLabel st.key)
+                 , anchor: c.anchor   -- freeze the caught chord's harmonic reading
+                 }
+      H.modify_ _ { tank = st.tank <> [ spec ], nextSpecId = st.nextSpecId + 1 }
+
+  DeleteSpec sid -> H.modify_ \s -> s { tank = filter (\sp -> sp.id /= sid) s.tank }
+
+  AuditionSpec sid -> do
+    st <- H.get
+    for_ (find (\sp -> sp.id == sid) st.tank) playSpecimen
+
+  -- Seed the Stage from the tank. First click injects the specimen into the pool
+  -- as a centre chord and blooms its extensions around it (seed → generate);
+  -- clicking a staged specimen again unstages it, pruning the seed + its bloom.
+  StageSpec sid -> do
+    st <- H.get
+    case Map.lookup sid st.seedChord of
+      Just cid -> do
+        let removeIds = pruneSet st.chords [ cid ]
+            surviving = filter (\c -> not (elem c.id removeIds)) st.chords
+        H.modify_ _ { chords = surviving, seedChord = Map.delete sid st.seedChord }
+        for_ st.handle \h ->
+          liftEffect $ void $ h.updateData (map mkSimNode surviving) (neighborLinks surviving)
+      Nothing ->
+        for_ (find (\sp -> sp.id == sid) st.tank) \spec -> do
+          let seedId = st.nextId
+              node = specToNode seedId st.key spec
+              chords' = st.chords <> [ node ]
+          H.modify_ _
+            { chords = chords'
+            , nextId = seedId + 1
+            , seedChord = Map.insert sid seedId st.seedChord
+            , focusId = seedId
+            , focusedFamily = Just seedId
+            , sounding = Just seedId
+            }
+          spawn Extend seedId    -- a modest neighbourhood; richer lenses come in Slice C+
+          playSpecimen spec
+
+  ClearStage -> do
+    st <- H.get
+    let seedCids = map snd (Map.toUnfoldable st.seedChord :: Array (Tuple SpecimenId Int))
+        removeIds = pruneSet st.chords seedCids
+        surviving = filter (\c -> not (elem c.id removeIds)) st.chords
+    H.modify_ _ { chords = surviving, seedChord = Map.empty }
+    for_ st.handle \h ->
+      liftEffect $ void $ h.updateData (map mkSimNode surviving) (neighborLinks surviving)
+
+  -- Tonnetz lens: a triad picked straight off the tonal net. Audition sounds it
+  -- (no state change); catch freezes it into the tank as a Free-anchored Specimen,
+  -- exactly like a palette drop.
+  AuditionTriad root pcs -> do
+    st <- H.get
+    if st.panMoved then H.modify_ _ { panMoved = false }
+    else playChord (triadNode root pcs "")
+
+  CatchTriad root pcs isMajor -> do
+    st <- H.get
+    let node = triadNode root pcs (noteName root <> (if isMajor then "" else "m"))
+        spec = { id: SpecimenId st.nextSpecId
+               , voicing: node.voicing
+               , bass: node.bassPc + 36
+               , label: node.label
+               , provenance: FromLens (groupLabel st.key)
+               , anchor: node.anchor
+               }
+    H.modify_ _ { tank = st.tank <> [ spec ], nextSpecId = st.nextSpecId + 1 }
+
+  -- Lattices lens: a generated lattice chord carries its own voicing, so audition/
+  -- catch use it verbatim (unlike the triad path, which re-voices from pcs).
+  AuditionNode c -> do
+    st <- H.get
+    if st.panMoved then H.modify_ _ { panMoved = false }
+    else playChord c
+
+  CatchNode c -> do
+    st <- H.get
+    let spec = { id: SpecimenId st.nextSpecId
+               , voicing: c.voicing
+               , bass: c.bassPc + 36
+               , label: c.label
+               , provenance: FromLens (groupLabel st.key)
+               , anchor: c.anchor
+               }
+    H.modify_ _ { tank = st.tank <> [ spec ], nextSpecId = st.nextSpecId + 1 }
+
+  -- Wheel-zoom the geometric viewport toward the cursor. The point under the
+  -- pointer stays fixed: the centre's offset from it scales by the zoom ratio.
+  ZoomAt ev dy -> do
+    liftEffect (preventDefault ev)
+    st <- H.get
+    ux <- liftEffect (svgXFromEvent ev)
+    uy <- liftEffect (svgYFromEvent ev)
+    let factor = if dy > 0.0 then 1.0 / 1.06 else 1.06
+        z' = max 0.3 (min 5.0 (st.viewZoom * factor))
+        r = st.viewZoom / z'
+    H.modify_ _
+      { viewZoom = z'
+      , viewCx = ux + (st.viewCx - ux) * r
+      , viewCy = uy + (st.viewCy - uy) * r
+      }
+
+  -- Grab-to-pan: remember the user-space point under the cursor; each move shifts
+  -- the centre so that point stays under the cursor (self-correcting).
+  PanStart ev -> do
+    ux <- liftEffect (svgXFromEvent ev)
+    uy <- liftEffect (svgYFromEvent ev)
+    H.modify_ _ { panning = Just { ux, uy }, panMoved = false }
+
+  PanMove ev -> do
+    st <- H.get
+    for_ st.panning \anchor -> do
+      ux <- liftEffect (svgXFromEvent ev)
+      uy <- liftEffect (svgYFromEvent ev)
+      let dx = anchor.ux - ux
+          dy = anchor.uy - uy
+          mag = max (if dx < 0.0 then -dx else dx) (if dy < 0.0 then -dy else dy)
+      H.modify_ _
+        { viewCx = st.viewCx + dx
+        , viewCy = st.viewCy + dy
+        , panMoved = st.panMoved || mag > 3.0
+        }
+
+  PanEnd -> H.modify_ _ { panning = Nothing }
+
+  ResetView -> H.modify_ _ { viewCx = 0.0, viewCy = 0.0, viewZoom = 1.0, panning = Nothing, panMoved = false }
+
+  ShakeGenerate -> H.modify_ \s -> s { genRoll = s.genRoll + 1 }
+
+  SetLens l -> H.modify_ _
+    { lens = l, hoveredId = Nothing, hoveredTriad = Nothing
+    , viewCx = 0.0, viewCy = 0.0, viewZoom = 1.0, panning = Nothing, panMoved = false
+    }
+
+  -- Slice E — transpose. In-place shift of a specimen's absolute-MIDI voicing +
+  -- bass (arithmetic, since everything is absolute MIDI), relabelled to the new
+  -- root. Already-sequenced chords are untouched: they're separate imported
+  -- snapshots, so a tank capo never rewrites a built progression.
+  TransposeSpec sid n -> do
+    st <- H.get
+    let tank' = map (\sp -> if sp.id == sid then transposeSpecimen n sp else sp) st.tank
+    H.modify_ _ { tank = tank' }
+    for_ (find (\sp -> sp.id == sid) tank') playSpecimen
+
+  CapoTank n -> H.modify_ \s -> s { tank = map (transposeSpecimen n) s.tank }
+
+  -- Slice D — sequence a tank specimen onto the progression. It's materialised as
+  -- an IMPORTED (off-lattice) snapshot with its own stable id: it lives in `chords`
+  -- for playback / revoice / export but never renders on the lattice and is never
+  -- pruned or regenerated. So the progression is self-contained and survives every
+  -- context change — the original path-on-lattice staleness bug, fixed. (Same
+  -- stable-snapshot mechanism `PickCandidate` and `rebuild` already rely on.)
+  SequenceSpec sid -> do
+    st <- H.get
+    for_ (find (\sp -> sp.id == sid) st.tank) \spec -> do
+      let newId = st.nextId
+          node = (specToNode newId st.key spec) { isCentre = false }
+      H.modify_ _
+        { chords = st.chords <> [ node ]
+        , imported = Set.insert newId st.imported
+        , nextId = newId + 1
+        , path = st.path <> [ newId ]
+        , sounding = Just newId
+        }
+      playSpecimen spec
 
   -- The play button is now a sticky ARM/cue toggle: flip arm, then let
   -- reconcilePerf start or stop the ticker per (armed && master).
@@ -1578,6 +1868,43 @@ playChord c = do
     liftEffect $ for_ (playNotes c) \n ->
       Midi.scheduleNote out { channel: st.previewChan, note: n, velocity: 92, delayMs: 0.0, durMs: 900.0 }
 
+-- | Audition a tank specimen: sound its notes on the preview channel (no state
+-- | change). Same shape as `playChord`, but reads a self-contained Specimen.
+playSpecimen :: forall o m. MonadAff m => Specimen -> H.HalogenM State Action Slots o m Unit
+playSpecimen s = do
+  st <- H.get
+  for_ st.midiOut \out ->
+    liftEffect $ for_ (specNotes s) \n ->
+      Midi.scheduleNote out { channel: st.previewChan, note: n, velocity: 92, delayMs: 0.0, durMs: 900.0 }
+
+-- | In-place transpose of a tank specimen by `n` semitones — the capo move. Bass
+-- | and every upper voice shift arithmetically (absolute MIDI), and the label is
+-- | recomputed to the new root name. (The label loses any richer suffix — labels
+-- | are informational per the model, and the glyph shows the truth — but for the
+-- | bare root names the tank carries today that's exactly right.)
+transposeSpecimen :: Int -> Specimen -> Specimen
+transposeSpecimen n s =
+  s { voicing = map (_ + n) s.voicing
+    , bass = s.bass + n
+    , anchor = Graded.transpose n s.anchor   -- move the reading with the pitches
+    , label = noteName (mod (s.bass + n) 12)
+    }
+
+-- | Reconstruct a pool `ChordNode` from a frozen tank `Specimen` — the reverse of
+-- | a catch. The specimen shed its lattice identity, so we rebuild the fields the
+-- | surface needs: pitch-class set from the sounding notes, root ≈ the bass pc (a
+-- | fair placement anchor even for slash voicings), and its own voicing verbatim.
+-- | `place` then positions it as a centre; generation blooms around it.
+specToNode :: Int -> Key -> Specimen -> ChordNode
+specToNode newId key s =
+  let pcs = nub (map (\n -> mod n 12) ([ s.bass ] <> s.voicing))
+      base =
+        { id: newId, parentId: Nothing, root: mod s.bass 12, bassPc: mod s.bass 12
+        , pcs, voicing: s.voicing, kind: Seed, label: s.label, pinned: false
+        , outside: 0, targetX: 0.0, targetY: 0.0, isCentre: true
+        , anchor: s.anchor }   -- carry the tank reading back onto the surface
+  in place key base base
+
 -- | Arpeggiate a path: each chord in turn, lightly rolled, ~440ms apart — the
 -- | segment heard as a phrase (the consonant, directional walk AC noticed).
 playPath :: forall o m. MonadAff m => Array Int -> H.HalogenM State Action Slots o m Unit
@@ -1657,12 +1984,16 @@ nudgeSelected dir = do
 playHoveredOrSounding :: forall o m. MonadAff m => H.HalogenM State Action Slots o m Unit
 playHoveredOrSounding = do
   st <- H.get
-  case st.hoveredId of
-    -- in pick mode the hovered bubble is a candidate (not yet in `chords`);
-    -- preview it without committing (no sounding change, no insert)
-    Just hid | Just cand <- find (\c -> c.id == hid) st.candidates -> playChord cand
-    Just hid -> playId hid
-    Nothing -> for_ st.sounding \sid -> for_ (find (\c -> c.id == sid) st.chords) playChord
+  case st.hoveredTriad of
+    -- Tonnetz: a hovered triangle has no pool id, so preview it straight from its
+    -- root + pitch classes (no state change, like the candidate preview below).
+    Just t -> playChord (triadNode t.root t.pcs "")
+    Nothing -> case st.hoveredId of
+      -- in pick mode the hovered bubble is a candidate (not yet in `chords`);
+      -- preview it without committing (no sounding change, no insert)
+      Just hid | Just cand <- find (\c -> c.id == hid) st.candidates -> playChord cand
+      Just hid -> playId hid
+      Nothing -> for_ st.sounding \sid -> for_ (find (\c -> c.id == sid) st.chords) playChord
 
 -- | The key/scale a chord is gathered under — the bubblepack it joins.
 groupLabel :: Key -> String
@@ -1936,6 +2267,8 @@ latticeRowH = 52.0
 exteriorGens :: Array { key :: String, label :: String, gen :: Key -> Array ChordNode }
 exteriorGens =
   [ { key: "mcmullen", label: "McMullen", gen: mcmullenChords }
+  , { key: "butler",   label: "Butler",   gen: butlerChords }
+  , { key: "stock",    label: "Stock",    gen: stockChords }
   ]
 
 -- | Seeds + focus for a tab.
@@ -2100,9 +2433,56 @@ unifiedBody :: forall m. MonadAff m => State -> H.ComponentHTML Action Slots m
 unifiedBody st =
   HH.div
     [ HP.style "display: flex; gap: 16px; align-items: flex-start;" ]
-    [ HH.div [ HP.style "flex: 1 1 auto; min-width: 0;" ] [ pickBar st, surface st ]
+    [ HH.div [ HP.style "flex: 1 1 auto; min-width: 0;" ] [ tankView st, lensBar st, pickBar st, surface st ]
     , HH.div [ HP.style "flex: 0 0 340px; min-width: 0;" ] [ railView st ]
     ]
+
+-- | The Stage lens selector — a segmented control over `allLenses`. Switching the
+-- | lens re-projects the SAME material (the sim keeps running underneath); adding
+-- | a lens needs only a new `allLenses` entry, which is the decoupling proof.
+lensBar :: forall m. State -> H.ComponentHTML Action Slots m
+lensBar st =
+  HH.div
+    [ HP.style "display: flex; align-items: center; gap: 6px; margin: 0 0 8px;" ]
+    ( [ HH.span [ HP.style "font-size: 10px; color: #b0b0b0; letter-spacing: 0.12em; text-transform: uppercase; margin-right: 4px;" ] [ HH.text "Lens" ] ]
+        <> map lensChip allLenses
+        <> shakeChip
+        <> resetChip )
+  where
+  -- geometric lenses only, and only once the viewport has moved: a way back to the
+  -- fitted view (scroll to zoom · drag to pan).
+  geometric = st.lens == LensCircleFifths || st.lens == LensTonnetz || st.lens == LensLattices || st.lens == LensGenerate
+  -- the Generate lens's re-roll: a fresh crop of relatives around the same seeds.
+  shakeChip =
+    if st.lens == LensGenerate then
+      [ HH.button
+          [ HP.style "border: 1px solid #b8860b; background: #fbf6ea; color: #7a5c00; cursor: pointer; padding: 3px 12px; border-radius: 4px; font-size: 12px; margin-left: 8px;"
+          , HP.title "re-roll the relatives around each tank seed"
+          , HE.onClick \_ -> ShakeGenerate
+          ]
+          [ HH.text "shake ⟳" ]
+      ]
+    else []
+  moved = st.viewZoom /= 1.0 || st.viewCx /= 0.0 || st.viewCy /= 0.0
+  resetChip =
+    if geometric && moved then
+      [ HH.button
+          [ HP.style "border: 1px solid #dcdcdc; background: #fafafa; color: #6a6a6a; cursor: pointer; padding: 3px 12px; border-radius: 4px; font-size: 12px; margin-left: 8px;"
+          , HP.title "reset the view · scroll to zoom · drag to pan"
+          , HE.onClick \_ -> ResetView
+          ]
+          [ HH.text "reset view" ]
+      ]
+    else []
+  lensChip l =
+    let active = st.lens == l
+    in HH.button
+        [ HP.style ("border: 1px solid " <> (if active then "#1a1a1a" else "#dcdcdc")
+                     <> "; background: " <> (if active then "#1a1a1a" else "#fafafa")
+                     <> "; color: " <> (if active then "#ffffff" else "#6a6a6a")
+                     <> "; cursor: pointer; padding: 3px 12px; border-radius: 4px; font-size: 12px;")
+        , HE.onClick \_ -> SetLens l ]
+        [ HH.text (lensLabel l) ]
 
 -- | The collapsed pool (Perform mode): a thin clickable spine that expands the lattice
 -- | again — the always-available "back to hunt" gesture.
@@ -2219,6 +2599,85 @@ topNav st =
          ]
     Nothing -> []
 
+-- | The Tank — the durable, unordered collection of caught chords, laid out as a
+-- | wrapping strip of specimen tiles below the surface. `k` over a lattice chord
+-- | catches it; × deletes; click auditions. This is the persistent store the Stage
+-- | + Sequences will later draw from; Slice A is catch + browse + audition only.
+tankView :: forall m. State -> H.ComponentHTML Action Slots m
+tankView st =
+  HH.div
+    [ HP.style "margin: 0 0 10px; padding-bottom: 10px; border-bottom: 1px solid #ededed; -webkit-user-select: none; user-select: none;" ]
+    [ HH.div
+        [ HP.style "display: flex; align-items: baseline; gap: 10px; margin-bottom: 8px;" ]
+        ( [ HH.span [ HP.style "font-size: 12px; color: #6a6a6a; letter-spacing: 0.06em; text-transform: uppercase;" ] [ HH.text "Tank" ]
+          , HH.span [ HP.style "font-size: 11px; color: #bcbcbc;" ] [ HH.text (show (length st.tank) <> " caught") ]
+          ]
+          <> (if Map.isEmpty st.seedChord then []
+                else [ HH.button
+                         [ HP.style "border: none; background: none; color: #9a7a2a; font-size: 11px; cursor: pointer; padding: 0;"
+                         , HP.title "unstage every seeded specimen"
+                         , HE.onClick \_ -> ClearStage ]
+                         [ HH.text ("clear stage (" <> show (Map.size st.seedChord) <> ")") ] ])
+          <> (if length st.tank == 0 then []
+                else [ HH.span [ HP.style "font-size: 11px; color: #b0b0b0; margin-left: 6px;" ] [ HH.text "capo" ]
+                     , capoBtn (-1) "♭" "whole tank down a semitone"
+                     , capoBtn 1 "♯" "whole tank up a semitone" ])
+          <> [ HH.span [ HP.style "font-size: 11px; color: #c4c4c4; margin-left: auto;" ]
+                 [ HH.text "k catches · click stages a seed · shift-click → progression · × removes" ] ]
+        )
+    , if length st.tank == 0
+        then HH.div [ HP.style "font-size: 12px; color: #c4c4c4; padding: 8px 2px;" ]
+               [ HH.text "empty — hover a chord on the surface and press k to catch it" ]
+        else HH.div [ HP.style "display: flex; flex-wrap: wrap; gap: 8px;" ]
+               (map (\s -> specimenTile (Map.member s.id st.seedChord) s) st.tank)
+    ]
+
+-- | One tank specimen: a small treble-staff thumbnail of its voicing (reusing the
+-- | cloud's `chordGlyph`), its label, and a × delete. Plain-click STAGES it as a
+-- | seed (bloom around it in the pool); shift-click APPENDS it to the progression
+-- | as a stable snapshot. A staged tile wears a gold frame so the pool ↔ tank link
+-- | reads at a glance. (Staged-ness and sequenced-ness are orthogonal.)
+specimenTile :: forall m. Boolean -> Specimen -> H.ComponentHTML Action Slots m
+specimenTile staged s =
+  HH.div
+    [ HP.style ("position: relative; width: 66px; padding: 6px 6px 4px; border-radius: 6px; display: flex; flex-direction: column; align-items: center; "
+                 <> if staged then "border: 1px solid #c9a23a; background: #fbf3df;"
+                              else "border: 1px solid #eee; background: #fbfbfa;") ]
+    [ HH.button
+        [ HP.style "position: absolute; top: 1px; right: 3px; border: none; background: none; color: #c4c4c4; font-size: 13px; line-height: 1; cursor: pointer; padding: 0;"
+        , HP.title "remove from tank"
+        , HE.onClick \_ -> DeleteSpec s.id ]
+        [ HH.text "×" ]
+    , SE.svg
+        [ SA.viewBox (-18.0) (-22.0) 36.0 44.0, SA.width 52.0, SA.height 46.0
+        , HP.style "cursor: pointer;"
+        , HE.onClick \e -> if ME.shiftKey e then SequenceSpec s.id else StageSpec s.id ]
+        (chordGlyph [] 0.0 0.0 s.voicing)
+    , HH.div [ HP.style "font-size: 10px; color: #6a6a6a; margin-top: 2px; max-width: 60px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" ]
+        [ HH.text s.label ]
+    , HH.div [ HP.style "display: flex; gap: 10px; margin-top: 1px;" ]
+        [ transposeBtn s.id (-1) "♭" "down a semitone"
+        , transposeBtn s.id 1 "♯" "up a semitone" ]
+    ]
+
+-- | A small ♭/♯ button that transposes ONE tank specimen in place.
+transposeBtn :: forall m. SpecimenId -> Int -> String -> String -> H.ComponentHTML Action Slots m
+transposeBtn sid n glyph tip =
+  HH.button
+    [ HP.style "border: none; background: none; color: #b0b0b0; font-size: 12px; line-height: 1; cursor: pointer; padding: 0 1px;"
+    , HP.title tip
+    , HE.onClick \_ -> TransposeSpec sid n ]
+    [ HH.text glyph ]
+
+-- | A small ♭/♯ button that capos the WHOLE tank.
+capoBtn :: forall m. Int -> String -> String -> H.ComponentHTML Action Slots m
+capoBtn n glyph tip =
+  HH.button
+    [ HP.style "border: 1px solid #dcdcdc; background: #fafafa; color: #6a6a6a; font-size: 11px; line-height: 1; cursor: pointer; padding: 2px 6px; border-radius: 3px;"
+    , HP.title tip
+    , HE.onClick \_ -> CapoTank n ]
+    [ HH.text glyph ]
+
 -- | Slice 4c: the Hunt/Perform width-focus toggle — a segmented control that replaces
 -- | the old Lab/Performance tabs. Auto-flips on the path emptiness edge; this is the
 -- | manual override.
@@ -2265,10 +2724,23 @@ helpOverlay st =
       , HH.p [ HP.style "font-size: 12.5px; line-height: 1.65; color: #555; margin: 0;" ] [ HH.text body ]
       ]
 
+-- | The Stage frame: the pick-mode cloud always wins; otherwise the active lens
+-- | renders. Adding a lens is one more branch here + one `allLenses` entry.
 surface :: forall m. State -> H.ComponentHTML Action Slots m
 surface st
   | st.tab == Lab && length st.genSel > 0 && length st.candidates > 0 = pickSurface st
-  | otherwise =
+  | otherwise = case st.lens of
+      LensKeyboard -> keyboardSurface st
+      LensPadGrid -> padGridSurface st
+      LensCircleFifths -> circleFifthsSurface st
+      LensTonnetz -> tonnetzSurface st
+      LensLattices -> latticesSurface st
+      LensGenerate -> generativeSurface st
+
+-- | The Keyboard lens — the exhaustive hunting cloud: the piano keyboard, diatonic
+-- | triad families, seed-blooms, the voice-leading lattice, and the path overlay.
+keyboardSurface :: forall m. State -> H.ComponentHTML Action Slots m
+keyboardSurface st =
   let scl = scaleSet st.key
       posMap = Map.fromFoldable (map (\n -> Tuple n.id { x: n.x, y: n.y }) st.nodes)
       links = latticeLinkLines posMap st.chords
@@ -2308,6 +2780,648 @@ surface st
           ( focusBeam focusRoot <> keyboardView scl <> axisLabels st.tab <> shelfMarker <> links <> pathEdges
               <> map (nodeView scl pathOrder Set.empty posMap)
                    (filter (\c -> not (Set.member c.id st.imported)) st.chords) )
+      ]
+
+-- | The PadGrid lens — a sparse, playable 4×4 board of the tank. The mouse-driven
+-- | precursor to the MidiFighter/Push idea: click a pad to PLAY it (audition, no
+-- | commitment), shift-click to stage it as a seed. Empty cells are faint holders.
+-- | Sixteen cells, row-major over the tank; a tank beyond 16 is browsed in the
+-- | strip above (recipes + paging come later — Slice F).
+padGridSurface :: forall m. State -> H.ComponentHTML Action Slots m
+padGridSurface st =
+  HH.div
+    [ HP.style "width: 880px; max-width: 100%; padding: 6px 0; -webkit-user-select: none; user-select: none;" ]
+    [ HH.div [ HP.style "font-size: 11px; color: #c4c4c4; margin: 0 0 8px; letter-spacing: 0.04em;" ]
+        [ HH.text "click a pad to play it · shift-click to seed the stage — nothing is committed" ]
+    , HH.div
+        [ HP.style "display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; max-width: 560px;" ]
+        (map (\i -> padCell (index st.tank i)) (range 0 15))
+    ]
+
+-- | One pad on the board: a filled pad (glyph + label, playable) or a faint empty
+-- | holder. Same gesture split as the tank strip, but PLAY is the default here —
+-- | a pad's job is to sound, not to stage.
+padCell :: forall m. Maybe Specimen -> H.ComponentHTML Action Slots m
+padCell = case _ of
+  Nothing ->
+    HH.div
+      [ HP.style "aspect-ratio: 1 / 1; border: 1px dashed #ececec; border-radius: 8px; background: #fcfcfc;" ]
+      []
+  Just s ->
+    HH.div
+      [ HP.style "aspect-ratio: 1 / 1; border: 1px solid #e2e2e2; border-radius: 8px; background: #fbfbfa; cursor: pointer; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px;"
+      , HE.onClick \e -> if ME.shiftKey e then StageSpec s.id else AuditionSpec s.id ]
+      [ SE.svg
+          [ SA.viewBox (-20.0) (-24.0) 40.0 48.0, SA.width 66.0, SA.height 62.0 ]
+          (chordGlyph [] 0.0 0.0 s.voicing)
+      , HH.div [ HP.style "font-size: 11px; color: #6a6a6a; max-width: 88%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" ]
+          [ HH.text s.label ]
+      ]
+
+-- ---------------------------------------------------------------------------
+-- The Circle-of-Fifths lens (first geometric view)
+-- ---------------------------------------------------------------------------
+
+-- | Position of a pitch class on the circle of fifths (0 = C, 1 = G, 2 = D, …).
+-- | Seven is its own inverse mod 12, so the map is its own round-trip.
+cofIndex :: Int -> Int
+cofIndex pc = mod (pc * 7) 12
+
+-- | Radial geometry for the fifths wheel, in the surface's centred coordinates.
+-- | The wheel of root names sits at the HUB; chords bead outward along each
+-- | spoke from `baseR`, so a spoke has unlimited room to grow away from centre.
+cofWheel :: { hubR :: Number, baseR :: Number, dr :: Number, spokeLen :: Number }
+cofWheel = { hubR: 64.0, baseR: 122.0, dr: 56.0, spokeLen: 320.0 }
+
+-- | Angle (radians) of a pitch class on the wheel, with the active tonic rotated
+-- | to the top (12 o'clock) and the dominant direction clockwise. Diatonic roots
+-- | then fall as a contiguous run from the subdominant (one step anticlockwise)
+-- | clockwise through the sharp side.
+cofAngle :: Int -> Int -> Number
+cofAngle tonic pc =
+  (-Number.pi / 2.0) + toNumber (mod (cofIndex pc - cofIndex tonic) 12) * (Number.pi / 6.0)
+
+-- | The geometric viewport as a viewBox: the base window (−440,−300,880,600)
+-- | scaled by `viewZoom` about the pan centre (`viewCx`,`viewCy`).
+geoView :: State -> { x :: Number, y :: Number, w :: Number, h :: Number }
+geoView st =
+  let hw = 440.0 / st.viewZoom
+      hh = 300.0 / st.viewZoom
+  in { x: st.viewCx - hw, y: st.viewCy - hh, w: 2.0 * hw, h: 2.0 * hh }
+
+-- | The mouse-move / up / leave handlers a geometric surface adds *only while a
+-- | pan drag is live* — mirrors the ladder-drag pattern (no per-move action churn
+-- | when idle).
+geoPanAttrs
+  :: forall r
+   . State
+  -> Array (HP.IProp (onMouseMove :: ME.MouseEvent, onMouseUp :: ME.MouseEvent, onMouseLeave :: ME.MouseEvent | r) Action)
+geoPanAttrs st = case st.panning of
+  Just _ ->
+    [ HE.onMouseMove (PanMove <<< ME.toEvent)
+    , HE.onMouseUp \_ -> PanEnd
+    , HE.onMouseLeave \_ -> PanEnd
+    ]
+  Nothing -> []
+
+-- | The Circle-of-Fifths lens — the same pool chords as the Keyboard lens, but
+-- | laid out by root around a wheel of fifths instead of over the piano. The root
+-- | names sit at the HUB; each root owns a spoke, and chords sharing a root bead
+-- | OUTWARD along it from the centre — so every spoke has unlimited room to grow.
+-- | The active key's diatonic roots light up as a contiguous wedge (geometry ==
+-- | grade), so the friendly diatonic spokes cluster near the top and the
+-- | borrowings fan out to the sides and around the back. Rendering reuses
+-- | `nodeView` (same glyph, same audition/catch gestures, same path badges) via a
+-- | computed position map.
+circleFifthsSurface :: forall m. State -> H.ComponentHTML Action Slots m
+circleFifthsSurface st =
+  let scl = scaleSet st.key
+      tonic = st.key.tonic
+      shown = filter (\c -> not (Set.member c.id st.imported)) st.chords
+      pathOrder = Map.fromFoldable (mapWithIndex (\i pid -> Tuple pid (i + 1)) st.path)
+      -- group the pool by root pitch class, so same-root chords share a spoke
+      rootsPresent = nub (map (\c -> mod c.root 12) shown)
+      posFor c =
+        let pc = mod c.root 12
+            sameRoot = filter (\d -> mod d.root 12 == pc) shown
+            k = fromMaybe 0 (elemIndex c.id (map _.id sameRoot))
+            rad = cofWheel.baseR + toNumber k * cofWheel.dr
+            ang = cofAngle tonic pc
+        in Tuple c.id { x: rad * Number.cos ang, y: rad * Number.sin ang }
+      posMap = Map.fromFoldable (map posFor shown)
+      vb = geoView st
+  in SE.svg
+      ( [ SA.viewBox vb.x vb.y vb.w vb.h
+        , SA.width 880.0
+        , SA.height 600.0
+        , SA.class_ (cn "vetula-surface")
+        , HP.style "max-width: none; touch-action: none;"
+        , HE.onWheel \we -> ZoomAt (WE.toEvent we) (WE.deltaY we)
+        , HE.onMouseDown (PanStart <<< ME.toEvent)
+        ] <> geoPanAttrs st )
+      ( cofBackdrop tonic scl rootsPresent
+          <> map (nodeView scl pathOrder Set.empty posMap) shown
+      )
+
+-- | The wheel behind the chords: twelve spokes radiating OUT from the hub, and the
+-- | twelve root names ringed tightly around the centre. Diatonic roots (in the
+-- | active scale) are inked dark with a soft parchment disc; the rest are ghosted
+-- | grey. The tonic wears a gold ring. The spokes run from the hub outward so the
+-- | chords beaded along them read as belonging to their root.
+cofBackdrop
+  :: forall m
+   . Int -> Array Int -> Array Int -> Array (H.ComponentHTML Action Slots m)
+cofBackdrop tonic scl rootsPresent =
+  concatMap spoke (range 0 11) <> concatMap marker (range 0 11)
+  where
+  spoke i =
+    let pc = mod (i * 7) 12   -- walk the wheel in fifths so i is the wheel slot
+        diat = elem pc scl
+        ang = cofAngle tonic pc
+        x0 = cofWheel.hubR * Number.cos ang
+        y0 = cofWheel.hubR * Number.sin ang
+        x1 = cofWheel.spokeLen * Number.cos ang
+        y1 = cofWheel.spokeLen * Number.sin ang
+    in [ SE.line
+           [ SA.x1 x0, SA.y1 y0, SA.x2 x1, SA.y2 y1
+           , HP.style ("stroke: " <> (if diat then "#e2ddcb" else "#f2f2f2") <> "; stroke-width: 1;")
+           ]
+       ]
+  marker i =
+    let pc = mod (i * 7) 12
+        diat = elem pc scl
+        isTonic = pc == mod tonic 12
+        present = elem pc rootsPresent
+        ang = cofAngle tonic pc
+        x = cofWheel.hubR * Number.cos ang
+        y = cofWheel.hubR * Number.sin ang
+        disc =
+          if diat then
+            [ SE.circle
+                [ SA.cx x, SA.cy y, SA.r 12.0
+                , HP.style ("fill: " <> (if present then "#f1ead6" else "#f7f3e8") <> "; stroke: none;")
+                ]
+            ]
+          else []
+        tonicRing =
+          if isTonic then
+            [ SE.circle
+                [ SA.cx x, SA.cy y, SA.r 15.0
+                , HP.style "fill: none; stroke: #b8860b; stroke-width: 1.5;"
+                ]
+            ]
+          else []
+        txtColor = if diat then "#2a2a2a" else "#c4c4c4"
+    in disc <> tonicRing <>
+         [ SE.text
+             [ SA.x x, SA.y (y + 4.0)
+             , HP.attr (AttrName "text-anchor") "middle"
+             , HP.style ("font-size: 12px; fill: " <> txtColor <> "; letter-spacing: 0.02em; -webkit-user-select: none; user-select: none;")
+             ]
+             [ HH.text (noteName pc) ]
+         ]
+
+-- ---------------------------------------------------------------------------
+-- The Tonnetz lens (neo-Riemannian tonal net)
+-- ---------------------------------------------------------------------------
+
+-- | Lattice geometry. A node at grid (u,v) carries pitch class (7u + 4v) mod 12
+-- | — u steps a perfect fifth, v a major third — so up-triangles are major triads
+-- | and down-triangles minor. Drawn over a bounded window (a peek into the
+-- | infinite net); roaming by pan/zoom comes with the shared geometric host.
+tonnetz :: { s :: Number, rowH :: Number, uLo :: Int, uHi :: Int, vLo :: Int, vHi :: Int, nodeR :: Number }
+tonnetz =
+  { s: 78.0, rowH: 78.0 * 0.8660254, uLo: -5, uHi: 5, vLo: -3, vHi: 3, nodeR: 15.0 }
+
+tonPc :: Int -> Int -> Int
+tonPc u v = mod (7 * u + 4 * v) 12
+
+-- | Screen position of lattice node (u,v): fifths run horizontally, thirds up-and-
+-- | to-the-right (each row up shears half a step right), origin centred.
+tonPos :: Int -> Int -> { x :: Number, y :: Number }
+tonPos u v =
+  { x: (toNumber u + toNumber v * 0.5) * tonnetz.s
+  , y: negate (toNumber v) * tonnetz.rowH
+  }
+
+type TonTri =
+  { root :: Int
+  , pcs :: Array Int
+  , major :: Boolean
+  , verts :: Array { x :: Number, y :: Number }
+  }
+
+-- | The triad in a lattice triangle. An up-triangle {(u,v),(u+1,v),(u,v+1)} is the
+-- | major triad on its lower-left node; a down-triangle a minor triad a major-third
+-- | above (its lowest-left corner (u+1,v) plus the two up neighbours).
+tonTri :: Boolean -> Int -> Int -> TonTri
+tonTri isUp u v =
+  let b = tonPc u v
+      verts =
+        if isUp then [ tonPos u v, tonPos (u + 1) v, tonPos u (v + 1) ]
+        else [ tonPos (u + 1) v, tonPos u (v + 1), tonPos (u + 1) (v + 1) ]
+      pcs =
+        if isUp then [ b, mod (b + 7) 12, mod (b + 4) 12 ]
+        else [ mod (b + 7) 12, mod (b + 4) 12, mod (b + 11) 12 ]
+  in { root: if isUp then b else mod (b + 4) 12
+     , pcs: sort (nub pcs)
+     , major: isUp
+     , verts
+     }
+
+triLabel :: TonTri -> String
+triLabel t = noteName t.root <> (if t.major then "" else "m")
+
+ptsStr :: Array { x :: Number, y :: Number } -> String
+ptsStr = joinWith " " <<< map (\p -> show p.x <> "," <> show p.y)
+
+centroid :: Array { x :: Number, y :: Number } -> { x :: Number, y :: Number }
+centroid ps =
+  let n = max 1 (length ps)
+  in { x: sum (map _.x ps) / toNumber n, y: sum (map _.y ps) / toNumber n }
+
+-- | The Tonnetz lens — the tonal net as its OWN triad source (not a pool
+-- | projection). Every triangle is a triad; edge-adjacent triangles share two
+-- | tones (a P/L/R move). Diatonic triads of the active key (all three tones in
+-- | scale) fill parchment and carry a name — the connected "spider". Click a
+-- | triangle to audition it; shift-click to catch it into the tank.
+tonnetzSurface :: forall m. State -> H.ComponentHTML Action Slots m
+tonnetzSurface st =
+  let scl = scaleSet st.key
+      tonic = mod st.key.tonic 12
+      cells = do
+        u <- range tonnetz.uLo tonnetz.uHi
+        v <- range tonnetz.vLo tonnetz.vHi
+        pure (Tuple u v)
+      triCells = do
+        u <- range tonnetz.uLo (tonnetz.uHi - 1)
+        v <- range tonnetz.vLo (tonnetz.vHi - 1)
+        pure (Tuple u v)
+      tris = map (\(Tuple u v) -> tonTri true u v) triCells
+          <> map (\(Tuple u v) -> tonTri false u v) triCells
+      diatonic t = all (\p -> elem p scl) t.pcs
+      vb = geoView st
+  in SE.svg
+      ( [ SA.viewBox vb.x vb.y vb.w vb.h
+        , SA.width 880.0
+        , SA.height 600.0
+        , SA.class_ (cn "vetula-surface")
+        , HP.style "max-width: none; touch-action: none;"
+        , HE.onWheel \we -> ZoomAt (WE.toEvent we) (WE.deltaY we)
+        , HE.onMouseDown (PanStart <<< ME.toEvent)
+        ] <> geoPanAttrs st )
+      ( concatMap (tonFill diatonic) tris
+          <> concatMap (tonEdgesFrom scl) cells
+          <> concatMap (tonNode scl tonic) cells
+          <> concatMap (tonTriName diatonic) tris
+          <> map tonHit tris
+      )
+
+-- | A parchment fill for a diatonic triad (major warm, minor cool); nothing for a
+-- | non-diatonic one (still clickable via its transparent hit polygon).
+tonFill :: forall m. (TonTri -> Boolean) -> TonTri -> Array (H.ComponentHTML Action Slots m)
+tonFill diatonic t =
+  if diatonic t then
+    [ SE.element (ElemName "polygon")
+        [ HP.attr (AttrName "points") (ptsStr t.verts)
+        , HP.style ((if t.major then "fill: #f1ead6;" else "fill: #ebeee6;") <> " stroke: none; pointer-events: none;")
+        ]
+        []
+    ]
+  else []
+
+-- | The three lattice edges leading out of a node (fifth, major third, minor
+-- | third); each drawn once, stronger when both endpoints are in the scale.
+tonEdgesFrom :: forall m. Array Int -> Tuple Int Int -> Array (H.ComponentHTML Action Slots m)
+tonEdgesFrom scl (Tuple u v) =
+  let p = tonPos u v
+      inU w = w >= tonnetz.uLo && w <= tonnetz.uHi
+      inV w = w >= tonnetz.vLo && w <= tonnetz.vHi
+      mk du dv =
+        if inU (u + du) && inV (v + dv) then
+          let q = tonPos (u + du) (v + dv)
+              diat = elem (tonPc u v) scl && elem (tonPc (u + du) (v + dv)) scl
+          in [ SE.line
+                 [ SA.x1 p.x, SA.y1 p.y, SA.x2 q.x, SA.y2 q.y
+                 , HP.style ("stroke: " <> (if diat then "#ddd6c2" else "#eeeeee") <> "; stroke-width: 1; pointer-events: none;")
+                 ]
+             ]
+        else []
+  in mk 1 0 <> mk 0 1 <> mk 1 (-1)
+
+-- | A lattice node: a small white disc with the note name, inked when in-scale and
+-- | ghosted otherwise; the tonic wears a gold ring. Non-interactive (the triangles
+-- | take the clicks).
+tonNode :: forall m. Array Int -> Int -> Tuple Int Int -> Array (H.ComponentHTML Action Slots m)
+tonNode scl tonic (Tuple u v) =
+  let pc = tonPc u v
+      p = tonPos u v
+      inScale = elem pc scl
+      isTonic = pc == tonic
+      ring =
+        if isTonic then
+          [ SE.circle
+              [ SA.cx p.x, SA.cy p.y, SA.r (tonnetz.nodeR + 3.0)
+              , HP.style "fill: none; stroke: #b8860b; stroke-width: 1.5; pointer-events: none;"
+              ]
+          ]
+        else []
+  in [ SE.circle
+         [ SA.cx p.x, SA.cy p.y, SA.r tonnetz.nodeR
+         , HP.style ("fill: #ffffff; stroke: " <> (if inScale then "#d8d2be" else "#ededed") <> "; stroke-width: 1; pointer-events: none;")
+         ]
+     ]
+       <> ring
+       <>
+         [ SE.text
+             [ SA.x p.x, SA.y (p.y + 4.0)
+             , HP.attr (AttrName "text-anchor") "middle"
+             , HP.style ("font-size: 13px; fill: " <> (if inScale then "#2a2a2a" else "#cfcfcf") <> "; pointer-events: none; -webkit-user-select: none; user-select: none;")
+             ]
+             [ HH.text (noteName pc) ]
+         ]
+
+-- | The chord name at the centroid of a diatonic triangle — makes the spider read
+-- | as named chords rather than bare geometry.
+tonTriName :: forall m. (TonTri -> Boolean) -> TonTri -> Array (H.ComponentHTML Action Slots m)
+tonTriName diatonic t =
+  if diatonic t then
+    let c = centroid t.verts
+    in [ SE.text
+           [ SA.x c.x, SA.y (c.y + 4.0)
+           , HP.attr (AttrName "text-anchor") "middle"
+           , HP.style "font-size: 11px; fill: #7a6a3a; pointer-events: none; -webkit-user-select: none; user-select: none;"
+           ]
+           [ HH.text (triLabel t) ]
+       ]
+  else []
+
+-- | The transparent click target over a triangle: plain click auditions the triad,
+-- | shift-click catches it into the tank.
+tonHit :: forall m. TonTri -> H.ComponentHTML Action Slots m
+tonHit t =
+  SE.element (ElemName "polygon")
+    [ HP.attr (AttrName "points") (ptsStr t.verts)
+    , HP.style "fill: transparent; cursor: pointer;"
+    , HE.onMouseEnter \_ -> HoverTriad (Just { root: t.root, pcs: t.pcs })
+    , HE.onMouseLeave \_ -> HoverTriad Nothing
+    , HE.onClick \e -> if ME.shiftKey e then CatchTriad t.root t.pcs t.major else AuditionTriad t.root t.pcs
+    ]
+    []
+
+-- ---------------------------------------------------------------------------
+-- The Lattices lens (every degree's tertian powerset web, tiled + zoomable)
+-- ---------------------------------------------------------------------------
+
+-- | How high the tertian stack climbs (0 = triad tones … 4 = the 13th). The full
+-- | web is 63 chords per degree; keep it full and lean on zoom to roam it.
+latticeCap :: Int
+latticeCap = 4
+
+-- | Layout constants for the tiled lattices, in the surface's centred space. Seven
+-- | degree-bands span the width; the whole thing fits at zoom 1, zoom to read.
+latticeLeft :: Number
+latticeLeft = -360.0
+
+-- | `bandW` is the per-degree horizontal slot; `packW` is the narrower width the
+-- | glyphs actually pack into, so the difference is a gutter between the degree
+-- | lanes (keeps the same total span → still fits at zoom 1).
+latGeo :: { bandW :: Number, packW :: Number, cellH :: Number, levelGap :: Number, baseY :: Number, glyphR :: Number }
+latGeo = { bandW: 120.0, packW: 88.0, cellH: 25.0, levelGap: 9.0, baseY: 250.0, glyphR: 9.0 }
+
+latPerRow :: Int
+latPerRow = 4
+
+-- | A placed lattice member: its chord and screen centre, plus a synthetic id
+-- | (degree ×1000 + index) so the Hasse edges only join siblings of one degree.
+type LatMember = { id :: Int, chord :: ChordNode, cx :: Number, cy :: Number }
+
+-- | Lay out one degree's capped lattice as a compact cluster: levels stack upward
+-- | (triad at the base, extensions climbing), each level's members wrapped into
+-- | rows of `latPerRow`, centred in the degree's band.
+degreeCluster :: Key -> Int -> ChordNode -> Array LatMember
+degreeCluster key i seed =
+  let fam = filter (\f -> f.level <= latticeCap) (latticeFamily key seed)
+      cellW = latGeo.packW / toNumber latPerRow
+      degX = latticeLeft + toNumber i * latGeo.bandW
+      go level y acc =
+        if level > latticeCap then acc
+        else
+          let members = map _.chord (filter (\f -> f.level == level) fam)
+              n = length members
+              rows = (n + latPerRow - 1) / latPerRow
+              placed = mapWithIndex
+                (\k c ->
+                   { chord: c
+                   , cx: degX - latGeo.packW / 2.0 + cellW * (toNumber (mod k latPerRow) + 0.5)
+                   , cy: y - toNumber (k / latPerRow) * latGeo.cellH
+                   })
+                members
+              blockH = toNumber rows * latGeo.cellH + latGeo.levelGap
+          in go (level + 1) (y - blockH) (acc <> placed)
+  in mapWithIndex (\j m -> { id: i * 1000 + j, chord: m.chord, cx: m.cx, cy: m.cy }) (go 0 latGeo.baseY [])
+
+-- | The covering edges (Hasse diagram) within one degree's cluster: members that
+-- | differ by exactly one note. Scoped per degree so it stays ~O(63²), not O(441²).
+degreeEdges :: forall m. Array LatMember -> Array (H.ComponentHTML Action Slots m)
+degreeEdges ms =
+  let pairs = concat (mapWithIndex (\i a -> map (\b -> Tuple a b) (drop (i + 1) ms)) ms)
+  in concatMap
+       (\(Tuple a b) ->
+          if pcSymDiff a.chord.pcs b.chord.pcs == 1 then
+            [ SE.line [ SA.x1 a.cx, SA.y1 a.cy, SA.x2 b.cx, SA.y2 b.cy, HP.style "stroke: #e8e4d6; stroke-width: 1; pointer-events: none;" ] ]
+          else [])
+       pairs
+
+-- | Hover-discovery state for a glyph. `HiNone` = nothing hovered (even field).
+-- | `HiSame` = pitch-class IDENTICAL to the hovered chord (an "anagram" — the same
+-- | chord under another spelling/name, e.g. C# vs E♭m); it gets a contrasting teal,
+-- | wholly off the warm ramp, because it isn't *related* — it IS the chord.
+-- | `HiTier n` grades genuine relatedness on a warm ramp: 0 = shares nothing
+-- | (ghosted) … 4 = highly similar.
+data GlyphHi = HiNone | HiSame | HiTier Int
+
+-- | Pitch classes two chords share.
+sharedTones :: Array Int -> Array Int -> Int
+sharedTones a b =
+  let bs = nub (map (\x -> mod x 12) b)
+  in length (filter (\x -> elem x bs) (nub (map (\x -> mod x 12) a)))
+
+sameChordSet :: Array Int -> Array Int -> Boolean
+sameChordSet a b = sort (nub (map (\x -> mod x 12) a)) == sort (nub (map (\x -> mod x 12) b))
+
+-- | Grade a glyph against the hovered chord — the hovered chord itself is tier 5;
+-- | otherwise the Jaccard similarity (shared ÷ union of pitch classes) is banded
+-- | into tiers 0–4. Jaccard normalises for chord size, so a big chord that merely
+-- | overlaps a small one lands mid-ramp, and genuinely similar chords rank high —
+-- | the field reads as a graded web of relatedness rather than an on/off split.
+hiFor :: Maybe { root :: Int, pcs :: Array Int } -> Array Int -> GlyphHi
+hiFor mh pcs = case mh of
+  Nothing -> HiNone
+  Just h ->
+    if sameChordSet h.pcs pcs then HiSame
+    else
+      let a = nub (map (\x -> mod x 12) h.pcs)
+          s = sharedTones h.pcs pcs
+          u = length a + length (nub (map (\x -> mod x 12) pcs)) - s
+          j = if u == 0 then 0.0 else toNumber s / toNumber u
+      in HiTier (if j >= 0.6 then 4 else if j >= 0.45 then 3 else if j >= 0.28 then 2 else if j > 0.0 then 1 else 0)
+
+-- | The warm relatedness ramp: pale straw (weakly related) → gold → amber → burnt
+-- | orange (the hovered chord), with tier 0 ghosted back so the related web lifts.
+hiStyle :: GlyphHi -> { fill :: String, stroke :: String, sw :: String, rootDot :: String, otherDot :: String }
+hiStyle = case _ of
+  HiNone   -> { fill: "rgba(184,134,11,0.09)", stroke: "#bcac78", sw: "1",   rootDot: "#b8860b", otherDot: "#9a9a9a" }
+  HiSame   -> { fill: "rgba(20,130,128,0.26)",  stroke: "#0f7d7b", sw: "1.9", rootDot: "#0b5a58", otherDot: "#3a8f8d" }
+  HiTier 0 -> { fill: "rgba(150,150,150,0.02)", stroke: "#efeee9", sw: "1",   rootDot: "#e6ddc6", otherDot: "#ededed" }
+  HiTier 1 -> { fill: "rgba(200,180,120,0.11)", stroke: "#d8c98f", sw: "1",   rootDot: "#c9a94e", otherDot: "#c6c1ab" }
+  HiTier 2 -> { fill: "rgba(190,160,70,0.17)",  stroke: "#c9a445", sw: "1.2", rootDot: "#b8860b", otherDot: "#a9a48c" }
+  HiTier 3 -> { fill: "rgba(180,130,20,0.23)",  stroke: "#b3801f", sw: "1.4", rootDot: "#9a5f06", otherDot: "#8f8a72" }
+  HiTier 4 -> { fill: "rgba(160,95,5,0.29)",    stroke: "#9a5f06", sw: "1.6", rootDot: "#7a4300", otherDot: "#7a745c" }
+  HiTier _ -> { fill: "rgba(150,80,0,0.37)",    stroke: "#7a4300", sw: "1.9", rootDot: "#5c3200", otherDot: "#6a6450" }
+
+-- | A chord drawn as a polygon inscribed in the chromatic circle: a vertex per
+-- | pitch class (12 o'clock = C, clockwise by semitone), the root dotted gold. The
+-- | shape *is* the chord's interval structure — a compact, stave-less glyph. `hi`
+-- | tints it for hover-discovery (self / near relative / dimmed).
+pcPolygon :: forall m. GlyphHi -> Int -> Array Int -> Number -> Number -> Number -> Array (H.ComponentHTML Action Slots m)
+pcPolygon hi root pcs cx cy r =
+  let sty = hiStyle hi
+      ang p = (-Number.pi / 2.0) + toNumber p * (Number.pi / 6.0)
+      pt p = { x: cx + r * Number.cos (ang p), y: cy + r * Number.sin (ang p) }
+      sorted = sort (nub (map (\p -> mod p 12) pcs))
+      verts = map pt sorted
+      dot p =
+        let q = pt p
+        in SE.circle [ SA.cx q.x, SA.cy q.y, SA.r 1.6, HP.style ("fill: " <> (if p == mod root 12 then sty.rootDot else sty.otherDot) <> "; pointer-events: none;") ]
+  in [ SE.element (ElemName "polygon")
+         [ HP.attr (AttrName "points") (ptsStr verts)
+         , HP.style ("fill: " <> sty.fill <> "; stroke: " <> sty.stroke <> "; stroke-width: " <> sty.sw <> "; pointer-events: none;")
+         ]
+         []
+     ]
+       <> map dot sorted
+
+-- | The Lattices lens — every diatonic degree's full tertian lattice at once, as
+-- | seven compact clusters of chromatic-circle polygons with their Hasse edges.
+-- | Hover a glyph to space-preview it; click to audition, shift-click to catch.
+latticesSurface :: forall m. State -> H.ComponentHTML Action Slots m
+latticesSurface st =
+  let seeds = diatonicTriads st.key
+      clusters = mapWithIndex (degreeCluster st.key) seeds
+      members = concat clusters
+      edges = concatMap degreeEdges clusters
+      mh = st.hoveredTriad
+      vb = geoView st
+  in SE.svg
+      ( [ SA.viewBox vb.x vb.y vb.w vb.h
+        , SA.width 880.0
+        , SA.height 600.0
+        , SA.class_ (cn "vetula-surface")
+        , HP.style "max-width: none; touch-action: none;"
+        , HE.onWheel \we -> ZoomAt (WE.toEvent we) (WE.deltaY we)
+        , HE.onMouseDown (PanStart <<< ME.toEvent)
+        ] <> geoPanAttrs st )
+      ( edges
+          <> concatMap (latMemberView mh) members
+          <> mapWithIndex latDegreeLabel seeds
+      )
+
+-- | One lattice glyph plus its transparent click target (the polygon itself is
+-- | click-through so the disc-shaped hit region stays uniform). `mh` is the hovered
+-- | chord, driving cross-degree hover-discovery highlighting.
+latMemberView :: forall m. Maybe { root :: Int, pcs :: Array Int } -> LatMember -> Array (H.ComponentHTML Action Slots m)
+latMemberView mh m =
+  pcPolygon (hiFor mh m.chord.pcs) m.chord.root m.chord.pcs m.cx m.cy latGeo.glyphR
+    <>
+      [ SE.circle
+          [ SA.cx m.cx, SA.cy m.cy, SA.r latGeo.glyphR
+          , HP.style "fill: transparent; cursor: pointer;"
+          , HE.onMouseEnter \_ -> HoverTriad (Just { root: m.chord.root, pcs: m.chord.pcs })
+          , HE.onMouseLeave \_ -> HoverTriad Nothing
+          , HE.onClick \e -> if ME.shiftKey e then CatchNode m.chord else AuditionNode m.chord
+          ]
+      ]
+
+-- | The degree's root name under its cluster.
+latDegreeLabel :: forall m. Int -> ChordNode -> H.ComponentHTML Action Slots m
+latDegreeLabel i seed =
+  SE.text
+    [ SA.x (latticeLeft + toNumber i * latGeo.bandW), SA.y (latGeo.baseY + 26.0)
+    , HP.attr (AttrName "text-anchor") "middle"
+    , HP.style "font-size: 13px; fill: #6a6a6a; letter-spacing: 0.04em; -webkit-user-select: none; user-select: none;"
+    ]
+    [ HH.text (noteName seed.root) ]
+
+-- ---------------------------------------------------------------------------
+-- The Generate lens (tank-seeded relatives — the compositional loop)
+-- ---------------------------------------------------------------------------
+
+genRadius :: Number
+genRadius = 80.0
+
+-- | Where each seed's constellation sits — a 3-wide grid, so up to six tank seeds
+-- | tile two rows across the zoomable frame.
+genCenter :: Int -> { x :: Number, y :: Number }
+genCenter i =
+  { x: -230.0 + toNumber (mod i 3) * 230.0
+  , y: -120.0 + toNumber (i / 3) * 250.0
+  }
+
+-- | The Generate lens — each tank chord as a SEED with a ring of voice-led
+-- | relatives bloomed around it (reusing `generateCandidates`, the same engine the
+-- | Lab pick-mode uses). "shake" re-rolls: a different adventure + a rotated crop
+-- | of the ranked relatives. Hover a relative to preview, click to audition,
+-- | shift-click to catch it back into the tank — closing the catch→grow→catch loop.
+generativeSurface :: forall m. State -> H.ComponentHTML Action Slots m
+generativeSurface st =
+  let vb = geoView st
+  in SE.svg
+      ( [ SA.viewBox vb.x vb.y vb.w vb.h
+        , SA.width 880.0
+        , SA.height 600.0
+        , SA.class_ (cn "vetula-surface")
+        , HP.style "max-width: none; touch-action: none;"
+        , HE.onWheel \we -> ZoomAt (WE.toEvent we) (WE.deltaY we)
+        , HE.onMouseDown (PanStart <<< ME.toEvent)
+        ] <> geoPanAttrs st )
+      ( if length st.tank == 0
+          then
+            [ SE.text
+                [ SA.x 0.0, SA.y 0.0, HP.attr (AttrName "text-anchor") "middle"
+                , HP.style "font-size: 15px; fill: #b8b8b8; -webkit-user-select: none; user-select: none;"
+                ]
+                [ HH.text "catch chords into the tank, then grow relatives here — press shake ⟳" ]
+            ]
+          else concat (mapWithIndex (genCluster st) (take 6 st.tank))
+      )
+
+-- | One seed's constellation: the seed glyph at the centre, its relatives ringed
+-- | around it with faint spokes. `genRoll` varies both the adventure dial and which
+-- | slice of the ranked relatives shows, so each shake crops a fresh set.
+genCluster :: forall m. State -> Int -> Specimen -> Array (H.ComponentHTML Action Slots m)
+genCluster st i spec =
+  let key = st.key
+      center = genCenter i
+      seedN = specToNode (9000 + i) key spec
+      adv = toNumber (mod st.genRoll 5) * 0.2
+      rollRot = toNumber st.genRoll * 0.37
+      full = generateCandidates Append [ seedN ] key adv 0
+      rel = take 8 (drop (mod (st.genRoll * 2) 7) full)
+      n = max 1 (length rel)
+      placed = mapWithIndex
+        (\j c ->
+           let ang = toNumber j * (2.0 * Number.pi / toNumber n) + rollRot
+           in { c, cx: center.x + genRadius * Number.cos ang, cy: center.y + genRadius * Number.sin ang })
+        rel
+      spokes = map
+        (\p -> SE.line [ SA.x1 center.x, SA.y1 center.y, SA.x2 p.cx, SA.y2 p.cy, HP.style "stroke: #eceae2; stroke-width: 1; pointer-events: none;" ])
+        placed
+  in spokes
+       <> concatMap (\p -> genGlyph st.hoveredTriad p.cx p.cy 11.0 false p.c) placed
+       <> genGlyph st.hoveredTriad center.x center.y 15.0 true seedN
+
+-- | A generative glyph: the chromatic-circle polygon, a name below, and a
+-- | transparent hit target. The seed wears a gold ring and only auditions; a
+-- | relative auditions on click and catches on shift-click. `mh` (the hovered
+-- | chord) drives cross-constellation hover-discovery highlighting.
+genGlyph :: forall m. Maybe { root :: Int, pcs :: Array Int } -> Number -> Number -> Number -> Boolean -> ChordNode -> Array (H.ComponentHTML Action Slots m)
+genGlyph mh cx cy r isSeed c =
+  pcPolygon (hiFor mh c.pcs) c.root c.pcs cx cy r
+    <> (if isSeed then [ SE.circle [ SA.cx cx, SA.cy cy, SA.r (r + 4.0), HP.style "fill: none; stroke: #b8860b; stroke-width: 1.5; pointer-events: none;" ] ] else [])
+    <>
+      [ SE.text
+          [ SA.x cx, SA.y (cy + r + 11.0), HP.attr (AttrName "text-anchor") "middle"
+          , HP.style ("font-size: 10px; fill: " <> (if isSeed then "#7a5c00" else "#8a8a8a") <> "; pointer-events: none; -webkit-user-select: none; user-select: none;")
+          ]
+          [ HH.text c.label ]
+      , SE.circle
+          [ SA.cx cx, SA.cy cy, SA.r r
+          , HP.style "fill: transparent; cursor: pointer;"
+          , HE.onMouseEnter \_ -> HoverTriad (Just { root: c.root, pcs: c.pcs })
+          , HE.onMouseLeave \_ -> HoverTriad Nothing
+          , HE.onClick \e -> if (not isSeed) && ME.shiftKey e then CatchNode c else AuditionNode c
+          ]
       ]
 
 -- | The clip region for the chord cloud. On Explore it stops at the pitch
@@ -2463,7 +3577,8 @@ importChord nid notes =
      , pcs: nub (map (\m -> mod m 12) sorted)
      , voicing: drop 1 sorted
      , kind: Voiced, label: noteName bp
-     , pinned: false, outside: 0, targetX: 0.0, targetY: 0.0, isCentre: false }
+     , pinned: false, outside: 0, targetX: 0.0, targetY: 0.0, isCentre: false
+     , anchor: Free }   -- imported from raw MIDI: no scale reading
 
 -- | Nearest chromatic shift (semitones, in [-5,6]) between two tonics — so a
 -- | key-change transposition keeps the progression in a similar register.
@@ -2991,10 +4106,11 @@ nodeView scl pathOrder collectedHere posMap c =
       [ SA.class_ (cn (nodeClass c))
       , HE.onMouseEnter \_ -> Hover (Just c.id)
       , HE.onMouseLeave \_ -> Hover Nothing
-      -- a plain click on ANY chord grows the progression — triads included
-      -- (the bare-triad-can't-be-pathed defect is gone now that explode lives
-      -- on the `l` key, not on a seed click).
-      , HE.onClick \_ -> PathPick c.id
+      -- Tank model (Slice D): the pool is a hunting ground, not a progression
+      -- builder. Plain click AUDITIONS the chord (hear it, make it sounding);
+      -- shift-click CATCHES it into the tank (a mouse alternative to `k`).
+      -- Progressions are now sequenced from the tank, not walked on the lattice.
+      , HE.onClick \e -> if ME.shiftKey e then CatchChord c.id else PlayChordId c.id
       ]
       ( [ -- the disc; size = stave-span (cluster ↔ wide), fill = ring index
           -- (cool in-scale → warm the further outside the chosen scale it sits)

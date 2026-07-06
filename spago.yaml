@@ -63,7 +63,7 @@ workspace:
     # switch to `harmonia: <version>` once a clean version is on the registry.)
     harmonia:
       git: https://github.com/afcondon/purescript-harmonia.git
-      ref: v0.1.1
+      ref: v0.2.0
     # Portable virtual-module engines (Phase 1: Odonus). Path-dep during dev;
     # git-tag once reef is published, like harmonia.
     reef:

@@ -16,6 +16,7 @@ module Vetula.Harmony
   , borrowedChords
   , interchangeChords
   , diatonicTriads
+  , triadNode
   , latticeFamily
   , latticeChild
   , triadOn
@@ -40,6 +41,7 @@ import Data.Foldable (any, elem, foldr, maximum)
 import Data.Int (toNumber)
 import Data.Maybe (Maybe(..), fromMaybe, maybe)
 import Data.Tuple (Tuple(..))
+import Harmonia.Anchor (Anchor(..))
 import Harmonia.Chord (Chord(..), DegreeChord, Key, Mode, chordBass, chordRoot, mcmullenYellow, modeIntervals, realize)
 import Harmonia.Voicing (Voicing(..), closeVoicing, cluster, drop2, drop2and4, enumerateVoicings, openTriad, quartal, spread, voicingMidi)
 
@@ -66,6 +68,9 @@ type ChordNode =
   , targetX :: Number      -- the root's key (set by `place`)
   , targetY :: Number      -- inside (near keys) ↔ outside (high) (set by `place`)
   , isCentre :: Boolean
+  , anchor :: Anchor        -- Harmonia's scale reading: `Located` for seeds that
+                            -- know their recipe, `Free` for pitch-space growths.
+                            -- Carried into a Specimen on catch (grade + verbs).
   }
 
 playNotes :: ChordNode -> Array Int
@@ -92,6 +97,7 @@ fromDegree key i dc =
      , label: noteName r
      , pinned: false
      , outside: 0, targetX: 0.0, targetY: 0.0, isCentre: false
+     , anchor: Located key dc   -- the seed knows its recipe → a full reading
      }
 
 -- | The curated borrowed / chromatic-colour chords on the key's tonic — the
@@ -114,6 +120,7 @@ borrowedChords key = mapWithIndex mk moves
        , label: noteName nr <> " " <> m.lbl
        , pinned: false
        , outside: 0, targetX: 0.0, targetY: 0.0, isCentre: false
+       , anchor: Free   -- borrowed; no DegreeChord yet → Free for now (F1)
        }
 
 -- | Modal interchange — the explicit, general "borrow from ‹mode›". Builds the
@@ -151,6 +158,27 @@ triadAt s n i =
      , label: noteName root
      , pinned: false
      , outside: 0, targetX: 0.0, targetY: 0.0, isCentre: false
+     , anchor: Free   -- diatonic lattice triad; Located reading is F1b (see note)
+     }
+
+-- | A bare triad ChordNode rooted on a pitch class, voiced like the seeds (close
+-- | voicing, centre octave 4). The Tonnetz lens picks triads straight off the
+-- | tonal net with these — `anchor` is `Free` (a root+quality with no committed
+-- | scale reading, like the palette/borrowed chords). The id is provisional.
+triadNode :: Int -> Array Int -> String -> ChordNode
+triadNode root rawPcs label =
+  let pcs = sort (nub rawPcs)
+  in { id: 0
+     , parentId: Nothing
+     , root
+     , bassPc: root
+     , pcs
+     , voicing: voicingMidi (closeVoicing { centre: 4 } (Chord pcs))
+     , kind: Seed
+     , label
+     , pinned: false
+     , outside: 0, targetX: 0.0, targetY: 0.0, isCentre: false
+     , anchor: Free
      }
 
 -- | The whole tertian family of a seed triad: EVERY non-empty subset of the
@@ -186,6 +214,7 @@ latticeFamily key seed =
            , label: noteName seed.root
            , pinned: false
            , outside: 0, targetX: 0.0, targetY: 0.0, isCentre: false
+           , anchor: Free   -- extended lattice subset; faithful DegreeChord is F1b
            }
        }
 
@@ -235,6 +264,7 @@ latticeChild key seed rawPcs =
          , label: noteName seed.root
          , pinned: false
          , outside: 0, targetX: 0.0, targetY: 0.0, isCentre: false
+         , anchor: Free   -- extended lattice subset; faithful DegreeChord is F1b
          }
      }
 
