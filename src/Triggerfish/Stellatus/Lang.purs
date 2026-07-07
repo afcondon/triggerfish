@@ -64,9 +64,18 @@ data Mode = KitMode | BufferMode | OnsetMode
 derive instance eqMode :: Eq Mode
 
 -- | Per-arc SuperDirt params, index-aligned to `arcs`. `speed`/`gain` carry
--- | defaults; `begin`/`end` are Nothing when the verb is absent (the emitter
--- | then falls back to the mode's natural window).
-type ArcParams = { speed :: Number, gain :: Number, begin :: Maybe Number, end :: Maybe Number }
+-- | defaults; everything else is `Nothing` when the verb is absent — the scene
+-- | build resolves each to its wire off-sentinel (see `Reef.Stellatus.Engine`),
+-- | so an unset param never reaches SuperDirt.
+-- |
+-- | The tranche below is the slice-surgery verbs (cut/legato/accelerate/pan/
+-- | crush/coarse/cutoff/resonance): native SuperDirt controls, exposed to the
+-- | Stellatus text so the whole break can be mangled per slice without pitch.
+type ArcParams =
+  { speed :: Number, gain :: Number, begin :: Maybe Number, end :: Maybe Number
+  , cut :: Maybe Number, legato :: Maybe Number, accelerate :: Maybe Number
+  , pan :: Maybe Number, crush :: Maybe Number, coarse :: Maybe Number
+  , cutoff :: Maybe Number, resonance :: Maybe Number }
 
 -- | A stochastic per-hit warp.
 data GlitchEffect = GReverse | GSpeed Number
@@ -224,12 +233,25 @@ buildParams txt arcs =
       gn = verbAt "gain" txt arcs
       bg = verbAt "begin" txt arcs
       en = verbAt "end" txt arcs
+      -- the slice-surgery tranche — each a plain numeric verb (constant or a
+      -- mini-notation pattern sampled per onset, via the same `verbAt`).
+      cu = verbAt "cut" txt arcs
+      lg = verbAt "legato" txt arcs
+      ac = verbAt "accelerate" txt arcs
+      pn = verbAt "pan" txt arcs
+      cr = verbAt "crush" txt arcs
+      co = verbAt "coarse" txt arcs
+      cf = verbAt "cutoff" txt arcs
+      rs = verbAt "resonance" txt arcs
+      at a i = fromMaybe Nothing (a !! i)
   in mapWithIndex
        (\i _ ->
-          { speed: fromMaybe 1.0 (fromMaybe Nothing (spd !! i))
-          , gain: fromMaybe 0.9 (fromMaybe Nothing (gn !! i))
-          , begin: fromMaybe Nothing (bg !! i)
-          , end: fromMaybe Nothing (en !! i)
+          { speed: fromMaybe 1.0 (at spd i)
+          , gain: fromMaybe 0.9 (at gn i)
+          , begin: at bg i
+          , end: at en i
+          , cut: at cu i, legato: at lg i, accelerate: at ac i, pan: at pn i
+          , crush: at cr i, coarse: at co i, cutoff: at cf i, resonance: at rs i
           })
        arcs
 

@@ -56,6 +56,7 @@ type State =
   , playerText :: String
   , kitOpen :: Boolean
   , playerOpen :: Boolean
+  , transportOpen :: Boolean
   , seed :: Int
   , beat :: Number
   , playing :: Boolean
@@ -87,7 +88,7 @@ type DetCache =
 data Action
   = Init | Tick
   | SetKitText String | SetPlayerText String
-  | ToggleKit | TogglePlayer
+  | ToggleKit | TogglePlayer | ToggleTransport
   | Shake | TogglePlay | PushScene | StopRig
   | Detect
 
@@ -102,7 +103,8 @@ playerTextDefault =
     <> "onsets \"amen\"\n"
     <> "# sensitivity 0.4\n"
     <> "\n"
-    <> "-- PLAYBACK   verbs sampled at each detected slice\n"
+    <> "-- PLAYBACK   verbs sampled at each detected slice (constant or \"pattern\")\n"
+    <> "-- speed gain begin end · cut legato accelerate pan crush coarse cutoff resonance\n"
     <> "# gain 0.95\n"
     <> "\n"
     <> "-- GLITCH   stochastic per-hit warps\n"
@@ -196,7 +198,17 @@ slotOf mode kit params i arc =
      , s: smp.s, n: smp.n
      , begin: fromMaybe smp.begin p.begin
      , end: fromMaybe smp.end p.end
-     , speed: p.speed, gain: p.gain }
+     , speed: p.speed, gain: p.gain
+     -- resolve the optional tranche to the wire off-sentinels (pan -1, rest 0);
+     -- the BEAM voice gates each so unset params never reach SuperDirt.
+     , cut: fromMaybe 0.0 p.cut
+     , legato: fromMaybe 0.0 p.legato
+     , accelerate: fromMaybe 0.0 p.accelerate
+     , pan: fromMaybe (-1.0) p.pan
+     , crush: fromMaybe 0.0 p.crush
+     , coarse: fromMaybe 0.0 p.coarse
+     , cutoff: fromMaybe 0.0 p.cutoff
+     , resonance: fromMaybe 0.0 p.resonance }
 
 -- Lang's glitch effect ADT → the wire shape reef reads: kind 0 = reverse, 1 =
 -- speed×amount.
@@ -260,7 +272,10 @@ splitSrc src = case SCU.indexOf (Pattern ":") src of
   Nothing -> { folder: src, n: 0 }
 
 defaultParams :: ArcParams
-defaultParams = { speed: 1.0, gain: 0.9, begin: Nothing, end: Nothing }
+defaultParams =
+  { speed: 1.0, gain: 0.9, begin: Nothing, end: Nothing
+  , cut: Nothing, legato: Nothing, accelerate: Nothing, pan: Nothing
+  , crush: Nothing, coarse: Nothing, cutoff: Nothing, resonance: Nothing }
 
 -- ---------------------------------------------------------------------------
 -- Component
@@ -271,7 +286,7 @@ component =
   H.mkComponent
     { initialState: \_ -> reparse
         { kitText: kitTextDefault, playerText: playerTextDefault
-        , kitOpen: true, playerOpen: true, seed: 3, beat: 0.0, playing: true
+        , kitOpen: true, playerOpen: true, transportOpen: true, seed: 3, beat: 0.0, playing: true
         , arcs: [], mode: KitMode, kit: [], kitNames: [], parseErr: Nothing
         , params: [], glitch: [], jumps: { prob: 0.0, table: [] }
         , onsetSample: Nothing, sensitivity: 0.5, detCache: Nothing, detecting: false
@@ -305,6 +320,7 @@ handleAction = case _ of
   SetPlayerText t -> H.modify_ (reparse <<< _ { playerText = t })
   ToggleKit -> H.modify_ \st -> st { kitOpen = not st.kitOpen }
   TogglePlayer -> H.modify_ \st -> st { playerOpen = not st.playerOpen }
+  ToggleTransport -> H.modify_ \st -> st { transportOpen = not st.transportOpen }
   Shake -> H.modify_ \st ->
     let s = mod (st.seed * 1103515245 + 12345) 2147483 + 1
     in st { seed = s, scene = st.scene { seed = s } }
@@ -358,31 +374,10 @@ render :: forall m. State -> H.ComponentHTML Action () m
 render st =
   HH.div
     [ style $ "position:fixed;top:var(--tf-bar);left:0;right:0;bottom:0;box-sizing:border-box;"
-        <> "display:flex;flex-direction:column;background:#0c0e11;color:" <> ink
-        <> ";font-family:Georgia,serif;overflow:hidden" ]
-    [ nameplate
-    , HH.div
-        [ style "flex:1 1 auto;position:relative;min-height:0;display:flex;align-items:center;justify-content:center" ]
-        [ ring st
-        , panelStack st
-        , transport st
-        ]
-    ]
-
-nameplate :: forall m. H.ComponentHTML Action () m
-nameplate =
-  HH.div
-    [ style $ "flex:0 0 auto;display:flex;align-items:center;justify-content:space-between;"
-        <> "padding:9px 18px;background:#111418;border-bottom:1px solid #000" ]
-    [ HH.div [ style "display:flex;align-items:baseline;gap:12px" ]
-        [ HH.span [ style "font-family:Georgia,serif;font-size:15px;letter-spacing:0.28em;color:#dfe6ee" ]
-            [ HH.text "TRIGGERFISH" ]
-        , HH.span [ style "font-size:11px;letter-spacing:0.34em;color:#6f7885" ] [ HH.text "· MODEL STELLATUS" ]
-        ]
-    , HH.span
-        [ style $ "font-size:9px;letter-spacing:0.18em;text-transform:uppercase;padding:4px 10px;border-radius:3px;"
-            <> "background:#0f2a2e;border:1px solid #1c4a50;color:" <> cyanAccent ]
-        [ HH.text "Rig-only · no browser audio" ]
+        <> "display:flex;align-items:center;justify-content:center;"
+        <> "background:#0c0e11;color:" <> ink <> ";font-family:Georgia,serif;overflow:hidden" ]
+    [ ring st
+    , panelStack st
     ]
 
 -- ---------------------------------------------------------------------------
@@ -408,7 +403,9 @@ ring st =
       [ svgAttr "viewBox" ("0 0 " <> show vb <> " " <> show vb)
       , svgAttr "height" "100%"
       , svgAttr "preserveAspectRatio" "xMidYMid meet"
-      , svgAttr "style" "display:block;max-height:calc(100vh - var(--tf-bar) - 40px)"
+      -- capped both ways: the ring reads at ~600px and no longer fills the stage,
+      -- leaving right-hand room for a parallel control surface (the S2 jump-graph).
+      , svgAttr "style" "display:block;max-height:calc(100vh - var(--tf-bar) - 48px);max-width:min(58vw,600px)"
       ]
       ( ringGuide
         <> waveLayer st
@@ -579,9 +576,10 @@ centre arcs curArc count =
 panelStack :: forall m. State -> H.ComponentHTML Action () m
 panelStack st =
   HH.div
-    [ style "position:absolute;top:14px;left:14px;width:344px;display:flex;flex-direction:column;gap:10px;z-index:6" ]
-    [ textPanel st.kitOpen ToggleKit "KIT" "names → samples" st.kitText SetKitText 6
+    [ style "position:absolute;top:14px;left:14px;width:344px;max-height:calc(100% - 28px);display:flex;flex-direction:column;gap:10px;z-index:6;overflow-y:auto" ]
+    [ textPanel st.kitOpen ToggleKit "KIT" "names → samples" st.kitText SetKitText 5
     , textPanel st.playerOpen TogglePlayer "PLAYER" "place · verbs · jumps" st.playerText SetPlayerText 18
+    , transportPanel st
     , case st.parseErr of
         Just e ->
           HH.div
@@ -602,11 +600,13 @@ panelStack st =
               [ HH.text "edit · → RIG to push · the BEAM plays it" ]
     ]
 
-textPanel
+-- Shared accordion-panel chrome: a clickable header (title · sub · chevron) and,
+-- when open, an arbitrary body. KIT/PLAYER/TRANSPORT all wear it.
+panelShell
   :: forall m
-   . Boolean -> Action -> String -> String -> String -> (String -> Action) -> Int
+   . Boolean -> Action -> String -> String -> Array (H.ComponentHTML Action () m)
   -> H.ComponentHTML Action () m
-textPanel open toggle title sub value onInput rows =
+panelShell open toggle title sub body =
   HH.div
     [ style $ "background:rgba(15,18,22,0.94);border:1px solid #263039;border-radius:8px;"
         <> "box-shadow:0 4px 18px #00000060;overflow:hidden;backdrop-filter:blur(3px)" ]
@@ -620,57 +620,63 @@ textPanel open toggle title sub value onInput rows =
               ]
           , HH.span [ style "font-size:10px;color:#6f7885" ] [ HH.text (if open then "▾" else "▸") ]
           ]
-      ] <>
-        if open then
-          [ HH.textarea
-              [ HP.value value
-              , HE.onValueInput onInput
-              , HP.spellcheck false
-              , HP.rows rows
-              , style $ "width:100%;box-sizing:border-box;resize:vertical;border:0;outline:0;"
-                  <> "padding:10px 12px;background:transparent;color:#c6cdd5;"
-                  <> "font-family:'SF Mono',Menlo,Consolas,monospace;font-size:11.5px;line-height:1.55;"
-                  <> "tab-size:2;white-space:pre" ]
-          ]
-        else [] )
+      ] <> (if open then body else []) )
 
-transport :: forall m. State -> H.ComponentHTML Action () m
-transport st =
-  HH.div
-    [ style $ "position:absolute;top:14px;right:14px;display:flex;align-items:center;gap:8px;z-index:6;"
-        <> "background:rgba(15,18,22,0.94);border:1px solid #263039;border-radius:8px;padding:8px 10px" ]
-    [ HH.button
-        [ HE.onClick \_ -> TogglePlay
-        , style $ "padding:7px 13px;border-radius:6px;cursor:pointer;border:1px solid #2a333c;"
-            <> "font-family:Georgia,serif;font-size:12px;letter-spacing:0.12em;color:" <> ink <> ";background:#1a1f25" ]
-        [ HH.text (if st.playing then "❚❚ HOLD" else "▶ RUN") ]
-    , HH.button
-        [ HE.onClick \_ -> Shake
-        , style $ "padding:7px 13px;border-radius:6px;cursor:pointer;border:1px solid #1c4a50;"
-            <> "font-family:Georgia,serif;font-size:12px;letter-spacing:0.12em;color:#08181a;background:" <> cyanAccent ]
-        [ HH.text "⟳ SHAKE" ]
-    -- Onset-mode only: re-run transient detection on the loaded buffer.
-    , case st.onsetSample of
-        Just _ ->
-          HH.button
-            [ HE.onClick \_ -> Detect
-            , style $ "padding:7px 13px;border-radius:6px;cursor:pointer;border:1px solid #2a333c;"
-                <> "font-family:Georgia,serif;font-size:12px;letter-spacing:0.12em;color:" <> ink <> ";background:#1a1f25" ]
-            [ HH.text (if st.detecting then "◎ …" else "◎ DETECT") ]
-        Nothing -> HH.text ""
-    , HH.span [ style "width:1px;height:22px;background:#2a333c" ] []
-    -- Push the resolved Scene to the rig; the BEAM runs the walk and emits to
-    -- SuperDirt. STOP silences just this voice.
-    , HH.button
-        [ HE.onClick \_ -> PushScene
-        , style $ "padding:7px 13px;border-radius:6px;cursor:pointer;border:1px solid #1c4a50;"
-            <> "font-family:Georgia,serif;font-size:12px;letter-spacing:0.12em;color:#08181a;background:" <> cyanAccent ]
-        [ HH.text "→ RIG" ]
-    , HH.button
-        [ HE.onClick \_ -> StopRig
-        , style $ "padding:7px 13px;border-radius:6px;cursor:pointer;border:1px solid #2a333c;"
-            <> "font-family:Georgia,serif;font-size:12px;letter-spacing:0.12em;color:" <> ink <> ";background:#1a1f25" ]
-        [ HH.text "■ STOP" ]
-    , HH.span [ style ("font-family:'SF Mono',monospace;font-size:10px;color:#5a626c;padding-left:2px") ]
-        [ HH.text (maybe "connecting…" (const "rig :3012") st.binnacle) ]
+textPanel
+  :: forall m
+   . Boolean -> Action -> String -> String -> String -> (String -> Action) -> Int
+  -> H.ComponentHTML Action () m
+textPanel open toggle title sub value onInput rows =
+  panelShell open toggle title sub
+    -- white-space:pre-wrap (not pre) + overflow-x:hidden: long comment lines wrap
+    -- rather than forcing a horizontal scrollbar; the short jump-matrix rows never
+    -- wrap, so the code alignment survives.
+    [ HH.textarea
+        [ HP.value value
+        , HE.onValueInput onInput
+        , HP.spellcheck false
+        , HP.rows rows
+        , style $ "width:100%;box-sizing:border-box;resize:vertical;border:0;outline:0;"
+            <> "padding:10px 12px;background:transparent;color:#c6cdd5;"
+            <> "font-family:'SF Mono',Menlo,Consolas,monospace;font-size:11.5px;line-height:1.55;"
+            <> "tab-size:2;white-space:pre-wrap;overflow-x:hidden" ]
     ]
+
+-- The transport, now a pane in the accordion (was a floating top-right bar).
+transportPanel :: forall m. State -> H.ComponentHTML Action () m
+transportPanel st =
+  panelShell st.transportOpen ToggleTransport "TRANSPORT" "hold · shake · rig"
+    [ HH.div [ style "display:flex;flex-wrap:wrap;gap:7px;padding:10px 12px 8px" ]
+        [ tbtn (if st.playing then "❚❚ HOLD" else "▶ RUN") TogglePlay false
+        , tbtn "⟳ SHAKE" Shake true
+        -- Onset-mode only: re-run transient detection on the loaded buffer.
+        , case st.onsetSample of
+            Just _ -> tbtn (if st.detecting then "◎ …" else "◎ DETECT") Detect false
+            Nothing -> HH.text ""
+        -- Push the resolved Scene to the rig; the BEAM runs the walk and emits to
+        -- SuperDirt. STOP silences just this voice.
+        , tbtn "→ RIG" PushScene true
+        , tbtn "■ STOP" StopRig false
+        ]
+    , HH.div
+        [ style "display:flex;align-items:center;justify-content:space-between;gap:8px;padding:0 12px 10px" ]
+        [ HH.span
+            [ style $ "font-size:8px;letter-spacing:0.16em;text-transform:uppercase;padding:3px 8px;border-radius:3px;"
+                <> "background:#0f2a2e;border:1px solid #1c4a50;color:" <> cyanAccent ]
+            [ HH.text "rig-only · no browser audio" ]
+        , HH.span [ style "font-family:'SF Mono',monospace;font-size:10px;color:#5a626c" ]
+            [ HH.text (maybe "connecting…" (const "rig :3012") st.binnacle) ]
+        ]
+    ]
+
+-- A transport button; `accent` picks the cyan call-to-action treatment.
+tbtn :: forall m. String -> Action -> Boolean -> H.ComponentHTML Action () m
+tbtn label action accent =
+  HH.button
+    [ HE.onClick \_ -> action
+    , style $ "padding:7px 12px;border-radius:6px;cursor:pointer;"
+        <> "font-family:Georgia,serif;font-size:12px;letter-spacing:0.1em;"
+        <> (if accent
+            then "border:1px solid #1c4a50;color:#08181a;background:" <> cyanAccent
+            else "border:1px solid #2a333c;color:" <> ink <> ";background:#1a1f25") ]
+    [ HH.text label ]
