@@ -30,6 +30,7 @@ module Triggerfish.Stellatus.Lang
   , JumpSpec
   , Scene
   , parseScene
+  , buildParams
   ) where
 
 import Prelude
@@ -54,7 +55,11 @@ type Arc = { onset :: Number, span :: Number, name :: String }
 -- | One KIT line: a short name and its sample source (`bd`, `"808bd:3"`).
 type KitEntry = { name :: String, src :: String }
 
-data Mode = KitMode | BufferMode
+-- | KitMode — `place "…"` of named samples; BufferMode — `slice N` even cuts of
+-- | one buffer; OnsetMode — `onsets "name"` cuts of one buffer at DETECTED
+-- | transients (arcs supplied asynchronously by the browser's onset detector,
+-- | so the parse leaves them empty and records the sample name + sensitivity).
+data Mode = KitMode | BufferMode | OnsetMode
 
 derive instance eqMode :: Eq Mode
 
@@ -83,6 +88,11 @@ type Scene =
   , params :: Array ArcParams
   , glitch :: Array GlitchRule
   , jumps :: JumpSpec
+  -- OnsetMode only: the sample name to fetch+detect, and the detector threshold.
+  -- `arcs`/`params` are empty from the parse; the component fills them once the
+  -- browser has detected transients and re-derives params over those arcs.
+  , onsetSample :: Maybe String
+  , sensitivity :: Number
   }
 
 -- | Parse the KIT text and PLAYER text into a scene. Left = a human-readable
@@ -100,6 +110,8 @@ parseScene kitText playerText = do
     , params: buildParams playerText arcs
     , glitch: parseGlitch playerText
     , jumps: parseJumps playerText
+    , onsetSample: place.sample
+    , sensitivity: parseSensitivity playerText
     }
 
 lines :: String -> Array String
@@ -147,14 +159,31 @@ startsWith p s = case SCU.stripPrefix (Pattern p) s of
 
 -- ── Placement ────────────────────────────────────────────────────────────────
 
-parsePlacement :: String -> Either String { arcs :: Array Arc, mode :: Mode }
+parsePlacement :: String -> Either String { arcs :: Array Arc, mode :: Mode, sample :: Maybe String }
 parsePlacement txt =
   let ls = map trim (lines txt)
-  in case find (startsWith "slice") ls of
-       Just sl -> bufferArcs sl
-       Nothing -> case find (startsWith "place") ls of
-         Just pl -> kitArcs pl
-         Nothing -> Left "expected a  place \"…\"  or  slice N  line"
+  in case find (startsWith "onsets") ls of
+       Just on -> onsetPlacement on
+       Nothing -> case find (startsWith "slice") ls of
+         Just sl -> noSample <$> bufferArcs sl
+         Nothing -> case find (startsWith "place") ls of
+           Just pl -> noSample <$> kitArcs pl
+           Nothing -> Left "expected a  place \"…\" ,  slice N , or  onsets \"…\"  line"
+  where
+  noSample r = { arcs: r.arcs, mode: r.mode, sample: Nothing }
+
+-- `onsets "name"` — buffer sliced at detected transients. The arcs arrive later
+-- (async detection); the parse just records the sample name.
+onsetPlacement :: String -> Either String { arcs :: Array Arc, mode :: Mode, sample :: Maybe String }
+onsetPlacement line = case quotedIn line of
+  Just nm | trim nm /= "" -> Right { arcs: [], mode: OnsetMode, sample: Just (trim nm) }
+  _ -> Left "onsets needs a quoted sample name, e.g.  onsets \"amen\""
+
+-- `# sensitivity N` (0..1) tunes the onset detector; default 0.5.
+parseSensitivity :: String -> Number
+parseSensitivity txt = case findVerb "sensitivity" txt of
+  Just payload -> fromMaybe 0.5 (num payload)
+  Nothing -> 0.5
 
 bufferArcs :: String -> Either String { arcs :: Array Arc, mode :: Mode }
 bufferArcs line =

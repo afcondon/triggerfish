@@ -20,7 +20,7 @@ import Prelude
 import Binnacle as Binnacle
 import Binnacle.Clock as Clock
 import Binnacle.Transport as Transport
-import Data.Array (concatMap, elemIndex, find, head, length, mapWithIndex, range, (!!))
+import Data.Array (concatMap, drop, elemIndex, find, head, length, mapWithIndex, range, (!!))
 import Data.Const (Const)
 import Data.Either (Either(..))
 import Data.Foldable (for_)
@@ -30,8 +30,10 @@ import Data.Maybe (Maybe(..), fromMaybe, maybe)
 import Data.Number (cos, pi, sin) as Num
 import Data.String (Pattern(..))
 import Data.String.CodeUnits (drop, indexOf, stripSuffix, take) as SCU
+import Effect.Aff (attempt)
 import Effect.Aff.Class (class MonadAff)
 import Effect.Class (liftEffect)
+import Effect.Exception (message)
 import Effect.Timer (setInterval)
 import Halogen as H
 import Halogen.HTML as HH
@@ -42,7 +44,8 @@ import Reef.Stellatus.Engine (Emit, Scene, Slot, walk) as SE
 import Reef.Stellatus.Engine (GlitchRule) as SEG
 import Reef.Stellatus.Protocol (encodeScene) as SP
 import Triggerfish.Odonus.Grid.Widgets (style, svgEl, svgAttr, engrave)
-import Triggerfish.Stellatus.Lang (Arc, ArcParams, GlitchEffect(..), GlitchRule, JumpSpec, KitEntry, Mode(..), parseScene)
+import Triggerfish.Stellatus.Lang (Arc, ArcParams, GlitchEffect(..), GlitchRule, JumpSpec, KitEntry, Mode(..), buildParams, parseScene)
+import Triggerfish.Stellatus.Onsets as Onsets
 
 -- ---------------------------------------------------------------------------
 -- Model
@@ -65,45 +68,58 @@ type State =
   , glitch :: Array GlitchRule
   , jumps :: JumpSpec
   , parseErr :: Maybe String
+  -- OnsetMode: the sample name to fetch+detect, the detector threshold, and the
+  -- single loaded buffer's detection cache (transients + waveform). One buffer at
+  -- a time; re-detection replaces it.
+  , onsetSample :: Maybe String
+  , sensitivity :: Number
+  , detCache :: Maybe DetCache
+  , detecting :: Boolean
   -- the resolved reef Scene (the shipping wire form) + rig transport
   , scene :: SE.Scene
   , binnacle :: Maybe Binnacle.Binnacle
   }
+
+type DetCache =
+  { sample :: String, sens :: Number, onsets :: Array Number, wave :: Array Number, dur :: Number }
 
 data Action
   = Init | Tick
   | SetKitText String | SetPlayerText String
   | ToggleKit | TogglePlayer
   | Shake | TogglePlay | PushScene | StopRig
+  | Detect
 
 kitTextDefault :: String
 kitTextDefault =
   "-- KIT   name = sample:index  (Dirt-Samples folders)\n"
-    <> "bd = \"808bd:3\"\n"
-    <> "sn = \"sn:4\"\n"
-    <> "hh = \"hh27:6\"\n"
-    <> "cp = \"cp:1\""
+    <> "amen = \"breaks152:0\""
 
 playerTextDefault :: String
 playerTextDefault =
-  "-- PLACEMENT   the ring is one cycle  (place = KIT, slice N = one buffer)\n"
-    <> "place \"bd sn hh*2 cp sn\"\n"
+  "-- PLACEMENT   onsets = cut this buffer at DETECTED transients\n"
+    <> "onsets \"amen\"\n"
+    <> "# sensitivity 0.4\n"
     <> "\n"
-    <> "-- PLAYBACK   verbs sampled at each arc's onset\n"
-    <> "# speed \"1 1 2 1 0.5\"\n"
-    <> "# begin \"0 0 0.5 0 0\"\n"
-    <> "# gain  \"1 0.9 0.8 1 0.85\"\n"
+    <> "-- PLAYBACK   verbs sampled at each detected slice\n"
+    <> "# gain 0.95\n"
     <> "\n"
     <> "-- GLITCH   stochastic per-hit warps\n"
     <> "# sometimes rev\n"
     <> "# rarely (# speed 2)\n"
     <> "\n"
-    <> "-- JUMPS   leap instead of advance (name -> targets weight)\n"
-    <> "jump 0.22\n"
-    <> "  bd -> sn 0.6  hh 0.4\n"
-    <> "  sn -> cp 0.5  bd 0.5\n"
-    <> "  hh -> hh 0.7  sn 0.3\n"
-    <> "  cp -> bd 1"
+    <> "-- JUMPS   leap instead of advance (index -> targets weight)\n"
+    <> "jump 0.18\n"
+    <> "  0 -> 4 0.6  8 0.4\n"
+    <> "  4 -> 8 0.7  0 0.3"
+
+-- The built-in sample registry: onset-mode buffer name → fetchable URL for the
+-- browser's detector. The SuperDirt source (s:n) still comes from the KIT (like
+-- BufferMode). One entry today (the Amen break); the seam for a real registry.
+sampleUrl :: String -> Maybe String
+sampleUrl = case _ of
+  "amen" -> Just "samples/amen.wav"
+  _ -> Nothing
 
 rigUrl :: String
 rigUrl = "ws://127.0.0.1:3012/ws"
@@ -116,11 +132,39 @@ emptyScene = { slots: [], glitch: [], jumps: { prob: 0.0, table: [] }, seed: 3 }
 -- pushed to the rig and the source of truth for the visualizer's walk.
 reparse :: State -> State
 reparse st = case parseScene st.kitText st.playerText of
-  Right sc -> st
-    { arcs = sc.arcs, mode = sc.mode, kit = sc.kit, kitNames = map _.name sc.kit
-    , params = sc.params, glitch = sc.glitch, jumps = sc.jumps, parseErr = Nothing
-    , scene = resolveScene st.seed sc.mode sc.kit sc.params sc.arcs sc.glitch sc.jumps }
+  Right sc ->
+    -- In OnsetMode the arcs come from the detection cache (if the loaded buffer
+    -- matches the current `onsets "…"` name), not the parse; params are then
+    -- re-derived over those detected arcs so `# speed`/`# gain` still sample at
+    -- each slice. All other modes use the parse's arcs/params directly.
+    let arcs = case sc.mode of
+          OnsetMode -> maybe [] onsetArcs (cachedOnsets st sc.onsetSample)
+          _ -> sc.arcs
+        params = case sc.mode of
+          OnsetMode -> buildParams st.playerText arcs
+          _ -> sc.params
+    in st
+      { arcs = arcs, mode = sc.mode, kit = sc.kit, kitNames = map _.name sc.kit
+      , params = params, glitch = sc.glitch, jumps = sc.jumps, parseErr = Nothing
+      , onsetSample = sc.onsetSample, sensitivity = sc.sensitivity
+      , scene = resolveScene st.seed sc.mode sc.kit params arcs sc.glitch sc.jumps }
   Left e -> st { parseErr = Just e }
+
+-- The detected transients for the current `onsets "name"` — only when the loaded
+-- buffer matches that name (so stale caches don't leak across sample changes).
+cachedOnsets :: State -> Maybe String -> Maybe (Array Number)
+cachedOnsets st = case _ of
+  Just name -> case st.detCache of
+    Just c | c.sample == name -> Just c.onsets
+    _ -> Nothing
+  Nothing -> Nothing
+
+-- Sorted normalised transient positions (first is 0.0) → ring arcs. Each arc runs
+-- from one transient to the next; the last closes the ring at 1.0.
+onsetArcs :: Array Number -> Array Arc
+onsetArcs pts =
+  let ends = drop 1 pts <> [ 1.0 ]
+  in mapWithIndex (\i on -> { onset: on, span: fromMaybe 1.0 (ends !! i) - on, name: show i }) pts
 
 -- Build the reef Scene: resolve each arc into a Slot (sample + window + base
 -- speed/gain), project glitch effects to the wire shape, pass the jump table
@@ -141,7 +185,9 @@ slotOf mode kit params i arc =
         KitMode ->
           let sp = splitSrc (fromMaybe "" (map _.src (find (\e -> e.name == arc.name) kit)))
           in { s: sp.folder, n: sp.n, begin: 0.0, end: 1.0 }
-        BufferMode ->
+        -- BufferMode + OnsetMode: one buffer (the first KIT entry), windowed by
+        -- the arc's placement (even cuts vs detected transients respectively).
+        _ ->
           let sp = splitSrc (fromMaybe "" (map _.src (head kit)))
           in { s: sp.folder, n: sp.n, begin: arc.onset, end: arc.onset + arc.span }
       p = fromMaybe defaultParams (params !! i)
@@ -227,6 +273,7 @@ component =
         , kitOpen: true, playerOpen: true, seed: 3, beat: 0.0, playing: true
         , arcs: [], mode: KitMode, kit: [], kitNames: [], parseErr: Nothing
         , params: [], glitch: [], jumps: { prob: 0.0, table: [] }
+        , onsetSample: Nothing, sensitivity: 0.5, detCache: Nothing, detecting: false
         , scene: emptyScene, binnacle: Nothing }
     , render
     , eval: H.mkEval H.defaultEval { handleAction = handleAction, initialize = Just Init }
@@ -242,7 +289,8 @@ handleAction = case _ of
     { emitter, listener } <- liftEffect HS.create
     _ <- H.subscribe emitter
     _ <- liftEffect $ setInterval 45 (HS.notify listener Tick)
-    pure unit
+    -- Auto-load the default buffer so the ring shows the break on open.
+    handleAction Detect
   -- Read the rig's Link beat so the highlight sweep is aligned to what the BEAM
   -- actually plays (Binnacle phase-locks the clock to the rig's anchor; free-runs
   -- at the fallback tempo when no anchor). The walk CONTENT already matched; this
@@ -268,6 +316,22 @@ handleAction = case _ of
   StopRig -> do
     st <- H.get
     for_ st.binnacle \bin -> liftEffect $ Transport.send (Binnacle.socket bin) "stellatus-stop"
+  -- Fetch + decode the current onset-mode buffer and detect its transients (in
+  -- the browser). On success cache {onsets, wave} and reparse so the detected
+  -- arcs light up the ring; the resolved Scene is then ready for → RIG.
+  Detect -> do
+    st <- H.get
+    case st.onsetSample >>= \nm -> map { nm, url: _ } (sampleUrl nm) of
+      Nothing -> pure unit
+      Just { nm, url } -> do
+        H.modify_ _ { detecting = true }
+        res <- H.liftAff $ attempt (Onsets.detect url st.sensitivity)
+        case res of
+          Right det -> H.modify_ $ reparse <<< _
+            { detecting = false
+            , detCache = Just { sample: nm, sens: st.sensitivity
+                              , onsets: det.onsets, wave: det.wave, dur: det.dur } }
+          Left err -> H.modify_ _ { detecting = false, parseErr = Just ("detect: " <> message err) }
 
 -- ---------------------------------------------------------------------------
 -- View
@@ -286,7 +350,7 @@ arcCol mode kitNames count idx name =
        KitMode -> case elemIndex name kitNames of
          Just i -> hsl (360.0 * toNumber i / toNumber (max 1 (length kitNames)))
          Nothing -> "#6f7885"
-       BufferMode -> hsl (360.0 * toNumber idx / toNumber (max 1 count))
+       _ -> hsl (360.0 * toNumber idx / toNumber (max 1 count))
 
 render :: forall m. State -> H.ComponentHTML Action () m
 render st =
@@ -344,12 +408,19 @@ ring st =
       , svgAttr "style" "display:block;max-height:calc(100vh - var(--tf-bar) - 40px)"
       ]
       ( ringGuide
-        <> ringWave st.seed
+        <> waveLayer st
         <> concatMap (arcView st.mode st.kitNames count curArc) arcs
         <> concatMap (paramGlyph st.params) arcs
         <> jumpChord st.arcs cur local
         <> centre st.arcs curArc count
       )
+
+-- The ring's inner waveband: the REAL sample waveform + transient ticks once a
+-- buffer is detected (OnsetMode); otherwise the decorative radar wave.
+waveLayer :: forall m. State -> Array (H.ComponentHTML Action () m)
+waveLayer st = case st.detCache of
+  Just c | st.mode == OnsetMode -> realWave c.wave <> onsetTicks c.onsets
+  _ -> ringWave st.seed
 
 ringGuide :: forall m. Array (H.ComponentHTML Action () m)
 ringGuide =
@@ -372,6 +443,35 @@ ringWave seed =
              , svgAttr "stroke" "#39424c", svgAttr "stroke-width" "1.4" ] []
   in map bar (range 0 (n - 1))
 
+-- The actual detected sample waveform wrapped around the ring (abs-peak envelope,
+-- one radial bar per bucket). This is what you SEE the break as.
+realWave :: forall m. Array Number -> Array (H.ComponentHTML Action () m)
+realWave wave =
+  let n = length wave
+      bar i mag =
+        let a = tau * toNumber i / toNumber (max 1 n)
+            r0 = ringR - 5.0
+            r1 = r0 - (0.06 + 0.94 * mag) * 44.0
+        in svgEl "line"
+             [ svgAttr "x1" (show (ptx r0 a)), svgAttr "y1" (show (pty r0 a))
+             , svgAttr "x2" (show (ptx r1 a)), svgAttr "y2" (show (pty r1 a))
+             , svgAttr "stroke" "#3c4a54", svgAttr "stroke-width" "1.4" ] []
+  in mapWithIndex bar wave
+
+-- The detected transients as faint radial ticks just outside the ring — the cut
+-- points the walk re-sequences.
+onsetTicks :: forall m. Array Number -> Array (H.ComponentHTML Action () m)
+onsetTicks pts = map tick pts
+  where
+  tick p =
+    let a = p * tau
+        r0 = ringR + 3.0
+        r1 = ringR + 15.0
+    in svgEl "line"
+         [ svgAttr "x1" (show (ptx r0 a)), svgAttr "y1" (show (pty r0 a))
+         , svgAttr "x2" (show (ptx r1 a)), svgAttr "y2" (show (pty r1 a))
+         , svgAttr "stroke" cyanAccent, svgAttr "stroke-width" "1.3", svgAttr "opacity" "0.55" ] []
+
 arcView :: forall m. Mode -> Array String -> Int -> Int -> { i :: Int, a :: Arc } -> Array (H.ComponentHTML Action () m)
 arcView mode kitNames count curArc { i, a } =
   let a0 = a.onset * tau
@@ -387,13 +487,15 @@ arcView mode kitNames count curArc { i, a } =
          , svgAttr "stroke-linecap" "round"
          , svgAttr "opacity" (if lit then "1" else "0.8")
          , svgAttr "style" (if lit then "filter:drop-shadow(0 0 7px " <> col <> ")" else "") ] []
-     , svgEl "text"
-         [ svgAttr "x" (show (ptx (ringR - 26.0) mid)), svgAttr "y" (show (pty (ringR - 26.0) mid + 4.0))
-         , svgAttr "text-anchor" "middle"
-         , svgAttr "style" ("font-family:Georgia,serif;font-size:13px;letter-spacing:0.04em;fill:"
-             <> (if lit then "#eef3f8" else "#7a8490")) ]
-         [ HH.text a.name ]
      ]
+     -- Named samples (KitMode) get a label; numeric buffer/onset slices don't.
+     <> if mode /= KitMode then []
+        else [ svgEl "text"
+                 [ svgAttr "x" (show (ptx (ringR - 26.0) mid)), svgAttr "y" (show (pty (ringR - 26.0) mid + 4.0))
+                 , svgAttr "text-anchor" "middle"
+                 , svgAttr "style" ("font-family:Georgia,serif;font-size:13px;letter-spacing:0.04em;fill:"
+                     <> (if lit then "#eef3f8" else "#7a8490")) ]
+                 [ HH.text a.name ] ]
 
 -- The base `# speed` verb, shown outside its arc so the ring reflects what the
 -- text programmed: `◀` for reverse (negative), `×N` for a non-unit ratio. The
@@ -467,7 +569,10 @@ panelStack st =
             [ HH.text ("⚠ " <> e) ]
         Nothing ->
           HH.div [ style "font-size:9px;letter-spacing:0.1em;color:#4a525c;font-style:italic;padding-left:2px" ]
-            [ HH.text "edit · → RIG to push · the BEAM plays it · pitch → Vetula next" ]
+            [ HH.text $ case st.mode of
+                OnsetMode -> "◎ DETECT slices the buffer at its transients · → RIG plays them · "
+                  <> show (length st.arcs) <> " slices"
+                _ -> "edit · → RIG to push · the BEAM plays it" ]
     ]
 
 textPanel
@@ -517,6 +622,15 @@ transport st =
         , style $ "padding:7px 13px;border-radius:6px;cursor:pointer;border:1px solid #1c4a50;"
             <> "font-family:Georgia,serif;font-size:12px;letter-spacing:0.12em;color:#08181a;background:" <> cyanAccent ]
         [ HH.text "⟳ SHAKE" ]
+    -- Onset-mode only: re-run transient detection on the loaded buffer.
+    , case st.onsetSample of
+        Just _ ->
+          HH.button
+            [ HE.onClick \_ -> Detect
+            , style $ "padding:7px 13px;border-radius:6px;cursor:pointer;border:1px solid #2a333c;"
+                <> "font-family:Georgia,serif;font-size:12px;letter-spacing:0.12em;color:" <> ink <> ";background:#1a1f25" ]
+            [ HH.text (if st.detecting then "◎ …" else "◎ DETECT") ]
+        Nothing -> HH.text ""
     , HH.span [ style "width:1px;height:22px;background:#2a333c" ] []
     -- Push the resolved Scene to the rig; the BEAM runs the walk and emits to
     -- SuperDirt. STOP silences just this voice.
