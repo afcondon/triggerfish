@@ -81,7 +81,8 @@ type State =
   }
 
 type DetCache =
-  { sample :: String, sens :: Number, onsets :: Array Number, wave :: Array Number, dur :: Number }
+  { sample :: String, sens :: Number, onsets :: Array Number, wave :: Array Number
+  , dur :: Number, classes :: Array Int }
 
 data Action
   = Init | Tick
@@ -330,7 +331,8 @@ handleAction = case _ of
           Right det -> H.modify_ $ reparse <<< _
             { detecting = false
             , detCache = Just { sample: nm, sens: st.sensitivity
-                              , onsets: det.onsets, wave: det.wave, dur: det.dur } }
+                              , onsets: det.onsets, wave: det.wave, dur: det.dur
+                              , classes: det.classes } }
           Left err -> H.modify_ _ { detecting = false, parseErr = Just ("detect: " <> message err) }
 
 -- ---------------------------------------------------------------------------
@@ -401,6 +403,7 @@ ring st =
       cur = walk !! step
       curArc = fromMaybe 0 (map _.slot cur)
       arcs = mapWithIndex (\i a -> { i, a }) st.arcs
+      classes = maybe [] _.classes st.detCache
   in svgEl "svg"
       [ svgAttr "viewBox" ("0 0 " <> show vb <> " " <> show vb)
       , svgAttr "height" "100%"
@@ -409,7 +412,7 @@ ring st =
       ]
       ( ringGuide
         <> waveLayer st
-        <> concatMap (arcView st.mode st.kitNames count curArc) arcs
+        <> concatMap (arcView st.mode st.kitNames classes count curArc) arcs
         <> concatMap (paramGlyph st.params) arcs
         <> jumpChord st.arcs cur local
         <> centre st.arcs curArc count
@@ -472,12 +475,30 @@ onsetTicks pts = map tick pts
          , svgAttr "x2" (show (ptx r1 a)), svgAttr "y2" (show (pty r1 a))
          , svgAttr "stroke" cyanAccent, svgAttr "stroke-width" "1.3", svgAttr "opacity" "0.55" ] []
 
-arcView :: forall m. Mode -> Array String -> Int -> Int -> { i :: Int, a :: Arc } -> Array (H.ComponentHTML Action () m)
-arcView mode kitNames count curArc { i, a } =
+-- Hit-type colour for onset slices: 0 kick (low, warm red), 1 snare (mid, amber),
+-- 2 hat (high, blue). Makes the ring read as a drum break, not a rainbow.
+classColor :: Int -> String
+classColor = case _ of
+  0 -> "#d9694e"
+  1 -> "#c7a94a"
+  2 -> "#5aa9d6"
+  _ -> "#6f7885"
+
+-- A colour swatch + label for the onset-mode hit-type legend.
+legendDot :: forall m. String -> String -> H.ComponentHTML Action () m
+legendDot col label =
+  HH.span [ style "display:inline-flex;align-items:center;gap:3px" ]
+    [ HH.span [ style ("width:8px;height:8px;border-radius:50%;display:inline-block;background:" <> col) ] []
+    , HH.text label ]
+
+arcView :: forall m. Mode -> Array String -> Array Int -> Int -> Int -> { i :: Int, a :: Arc } -> Array (H.ComponentHTML Action () m)
+arcView mode kitNames classes count curArc { i, a } =
   let a0 = a.onset * tau
       a1 = (a.onset + a.span) * tau
       pad = min 0.02 (a.span * 0.12)
-      col = arcCol mode kitNames count i a.name
+      col = case mode of
+        OnsetMode -> classColor (fromMaybe 3 (classes !! i))
+        _ -> arcCol mode kitNames count i a.name
       lit = i == curArc
       mid = (a.onset + a.span / 2.0) * tau
   in [ svgEl "path"
@@ -567,12 +588,18 @@ panelStack st =
             [ style $ "font-family:'SF Mono',monospace;font-size:10px;color:#e88;"
                 <> "background:#2a1416;border:1px solid #5a2226;border-radius:5px;padding:6px 9px" ]
             [ HH.text ("⚠ " <> e) ]
-        Nothing ->
-          HH.div [ style "font-size:9px;letter-spacing:0.1em;color:#4a525c;font-style:italic;padding-left:2px" ]
-            [ HH.text $ case st.mode of
-                OnsetMode -> "◎ DETECT slices the buffer at its transients · → RIG plays them · "
-                  <> show (length st.arcs) <> " slices"
-                _ -> "edit · → RIG to push · the BEAM plays it" ]
+        Nothing -> case st.mode of
+          OnsetMode ->
+            HH.div
+              [ style "display:flex;align-items:center;gap:10px;font-size:9px;letter-spacing:0.08em;color:#4a525c;padding-left:2px" ]
+              [ HH.span [ style "font-style:italic" ] [ HH.text (show (length st.arcs) <> " slices ·") ]
+              , legendDot "#d9694e" "kick"
+              , legendDot "#c7a94a" "snare"
+              , legendDot "#5aa9d6" "hat"
+              ]
+          _ ->
+            HH.div [ style "font-size:9px;letter-spacing:0.1em;color:#4a525c;font-style:italic;padding-left:2px" ]
+              [ HH.text "edit · → RIG to push · the BEAM plays it" ]
     ]
 
 textPanel

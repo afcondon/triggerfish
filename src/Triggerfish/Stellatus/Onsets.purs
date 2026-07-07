@@ -34,6 +34,9 @@ type Detection =
   { onsets :: Array Number
   , wave :: Array Number
   , dur :: Number
+  -- Per-slice timbre class (aligned with `onsets`): 0 = kick/low, 1 = snare/mid,
+  -- 2 = hat/high. Colours the ring by hit type; later seeds the jump matrix.
+  , classes :: Array Int
   }
 
 foreign import detectImpl

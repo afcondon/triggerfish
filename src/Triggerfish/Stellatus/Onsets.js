@@ -113,5 +113,44 @@ function analyze(audio, sensitivity) {
     wave[b] = peak;
   }
 
-  return { onsets, wave, dur };
+  // Classify each slice (window between consecutive transients) by timbre — no
+  // FFT: a one-pole low-pass energy ratio (how bass-dominated) plus zero-crossing
+  // rate (how bright). 0 = kick/low, 1 = snare/mid, 2 = hat/high. Rough but enough
+  // to colour the ring and, later, seed the jump matrix by hit type.
+  const classes = [];
+  for (let i = 0; i < onsets.length; i++) {
+    const a = Math.floor(onsets[i] * n);
+    const b = Math.floor((i + 1 < onsets.length ? onsets[i + 1] : 1.0) * n);
+    classes.push(classify(mono, a, Math.min(b, n), sr));
+  }
+
+  return { onsets, wave, dur, classes };
+}
+
+function classify(mono, s0, s1, sr) {
+  const full = s1 - s0;
+  if (full <= 0) return 1;
+  // Analyse only the ATTACK (first ~40ms), not the ringing decay tail — the tail
+  // is high-frequency noise that would read as "hat" for every hit. The attack
+  // transient is where kick/snare/hat identity lives.
+  const win = Math.min(full, Math.max(1, Math.floor(0.04 * sr)));
+  const end = s0 + win;
+  // one-pole low-pass at ~180 Hz
+  const rc = 1 / (2 * Math.PI * 180);
+  const dt = 1 / sr;
+  const alpha = dt / (rc + dt);
+  let lp = 0, eLow = 0, eTot = 0, zc = 0, prev = 0;
+  for (let i = s0; i < end; i++) {
+    const x = mono[i];
+    lp = lp + alpha * (x - lp);
+    eLow += lp * lp;
+    eTot += x * x;
+    if ((x >= 0) !== (prev >= 0)) zc++;
+    prev = x;
+  }
+  const lowRatio = eTot > 0 ? eLow / eTot : 0;
+  const zcr = zc / win;
+  if (lowRatio > 0.45) return 0;  // bass-dominated attack → kick
+  if (zcr > 0.14) return 2;       // bright, sizzly attack → hat
+  return 1;                       // broadband mid attack → snare
 }
