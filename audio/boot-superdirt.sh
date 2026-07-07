@@ -9,6 +9,12 @@ set -euo pipefail
 
 SCLANG="${SCLANG:-/Applications/SuperCollider.app/Contents/MacOS/sclang}"
 export SUPERDIRT_PORT="${SUPERDIRT_PORT:-57135}"
+# scsynth output device (see superdirt-daemon.scd). Set HERE, not in the Bosun
+# compose env, because Bosun doesn't yet shell-quote env values containing spaces
+# ("BlackHole 2ch" renders as `env …=BlackHole 2ch` → `env: 2ch: not found`). Shell
+# quoting handles the space fine. Override by exporting SUPERDIRT_DEVICE before
+# launch; set to empty to hear SuperDirt on the system default output directly.
+export SUPERDIRT_DEVICE="${SUPERDIRT_DEVICE:-BlackHole 2ch}"
 DIR="$(cd "$(dirname "$0")" && pwd)"
 
 if [[ ! -x "$SCLANG" ]]; then
