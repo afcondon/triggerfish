@@ -506,43 +506,53 @@ shellBar :: forall m. RState -> H.ComponentHTML RAction Slots m
 shellBar st =
   HH.div
     [ style $ "position:fixed;top:0;left:0;right:0;height:var(--tf-bar);z-index:50;box-sizing:border-box;"
-        <> "display:flex;align-items:center;justify-content:space-between;padding:0 12px;"
+        <> "display:flex;align-items:center;justify-content:space-between;gap:16px;padding:0 12px;overflow:hidden;"
         <> "background:linear-gradient(#d4cfc0,#c2bcab);border-bottom:1px solid #00000026;"
         <> "box-shadow:0 1px 4px #00000018;font-family:Georgia,serif" ]
-    [ HH.button
+    -- LEFT: wordmark + the instrument switcher. Everything in this bar is a flat
+    -- flex row with NO absolute positioning — so nothing can overlap a tab. (The
+    -- old absolute-centered chrome's empty 96px chord-slot used to park over ODONUS
+    -- and swallow its click; a flex layout makes that impossible by construction.)
+    [ HH.div
+        [ style "display:flex;align-items:center;gap:16px;flex:0 0 auto" ]
+        [ HH.span
+            [ style "font-size:11px;letter-spacing:0.22em;text-transform:uppercase;color:#4a463b" ]
+            [ HH.text "Triggerfish" ]
+        , switcher st
+        ]
+    -- MIDDLE: the SOLO⟷ATLANTIS authority toggle + the live harmonic-context glyph.
+    -- Shrinkable + clipped, so a long progression compresses here rather than
+    -- pushing into its neighbours.
+    , HH.div
+        [ style "display:flex;align-items:center;gap:16px;flex:0 1 auto;min-width:0;overflow:hidden" ]
+        [ modeToggle st
+        , harmStrip st
+        ]
+    -- RIGHT: the master transport (arm-all / stop-all).
+    , HH.button
         [ HE.onClick \_ -> ToggleMaster
-        , style $ "padding:6px 18px;border:1px solid #00000033;border-radius:6px;cursor:pointer;"
+        , style $ "flex:0 0 auto;padding:6px 18px;border:1px solid #00000033;border-radius:6px;cursor:pointer;"
             <> "font-size:11px;letter-spacing:0.16em;text-transform:uppercase;box-shadow:0 1px 3px #00000022;"
             <> "color:" <> (if anyArmed st.armed then "#fbeae7" else "#1c1a12")
             <> ";background:" <> (if anyArmed st.armed then "linear-gradient(#b23b28,#9a3120)" else "linear-gradient(#c8a86a,#b8975a)") ]
         [ HH.text (if anyArmed st.armed then "■ STOP" else "▶ PLAY") ]
-    -- The centre strip: the wordmark, the SOLO⟷ATLANTIS authority toggle, and the
-    -- live harmonic-context glyph. Replaces the old `Triggerfish · <instrument>`
-    -- label (the instrument is already named by the switcher on the right); the
-    -- two things worth showing in EVERY pane are the mode and the progression.
-    , HH.div
-        [ style $ "position:absolute;left:50%;transform:translateX(-50%);"
-            <> "display:flex;align-items:center;gap:16px" ]
-        [ HH.span
-            [ style "font-size:11px;letter-spacing:0.22em;text-transform:uppercase;color:#4a463b" ]
-            [ HH.text "Triggerfish" ]
-        , modeToggle st
-        , harmStrip st
-        ]
-    , HH.div
-        [ style $ "display:flex;gap:0;border:1px solid #00000033;border-radius:6px;overflow:hidden;"
-            <> "box-shadow:0 1px 3px #00000022" ]
-        [ armSeg st Odo "ODONUS"
-        , armSeg st Bal "BALISTES"
-        , armSeg st Sel "SELENE"
-        , armSeg st Vet "VETULA"
-        -- SUFFLAMEN is the rig-only SuperDirt instrument; in the D1 prototype it's
-        -- a pure visualizer (not armable yet) so it reads like TIDAL — no arm dot.
-        , seg "SUFFLAMEN" (st.which == Suf) (Pick Suf)
-        , seg "STELLATUS" (st.which == Ste) (Pick Ste)
-        -- TIDAL is a read-only aggregate, not an instrument — no play/pause dot.
-        , seg "TIDAL" (st.which == Tid) (Pick Tid)
-        ]
+    ]
+
+-- The instrument switcher: one segmented control. Odo/Bal/Sel/Vet are armable
+-- (dot + name); Suf/Ste/Tid are plain (no arm dot — rig-only prototypes / the
+-- read-only aggregate).
+switcher :: forall m. RState -> H.ComponentHTML RAction Slots m
+switcher st =
+  HH.div
+    [ style $ "display:flex;gap:0;flex:0 0 auto;border:1px solid #00000033;border-radius:6px;overflow:hidden;"
+        <> "box-shadow:0 1px 3px #00000022" ]
+    [ armSeg st Odo "ODONUS"
+    , armSeg st Bal "BALISTES"
+    , armSeg st Sel "SELENE"
+    , armSeg st Vet "VETULA"
+    , seg "SUFFLAMEN" (st.which == Suf) (Pick Suf)
+    , seg "STELLATUS" (st.which == Ste) (Pick Ste)
+    , seg "TIDAL" (st.which == Tid) (Pick Tid)
     ]
 
 whichName :: Which -> String
@@ -628,9 +638,11 @@ harmStrip st =
     -- The content row: the notes of the chord under the playhead (bass-up), so the
     -- strip shows both WHERE we are and WHAT is sounding — the progression view's
     -- pitch content, time-multiplexed through the playhead.
+    -- Reserve the 96px chord slot ONLY when a chord is showing, so an empty
+    -- progression collapses to nothing instead of leaving a dead gap.
     , HH.span
-        [ style $ "font-family:Georgia,serif;font-size:12px;letter-spacing:0.1em;"
-            <> "color:#2d5670;min-width:96px" ]
+        [ style $ "font-family:Georgia,serif;font-size:12px;letter-spacing:0.1em;color:#2d5670;"
+            <> (if st.harm.chord == "" then "" else "min-width:96px") ]
         [ HH.text st.harm.chord ]
     ]
 
