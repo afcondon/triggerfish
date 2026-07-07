@@ -228,6 +228,13 @@ type State =
   -- selectable state (the sub-section then shows it's waiting). `chord.on` still
   -- tracks whether a live chord is actually driving the snap.
   , source :: SourceTag
+  -- One-shot connect-time rig reconcile: false until the first Frame fires a
+  -- `hush` to the rig (clears any voices orphaned by a PREVIOUS session's push —
+  -- a reload starts with nothing armed, so the rig should start silent, and the
+  -- arm/disarm rig-stop is edge-triggered with no "leaving Rig" edge on reload).
+  -- Hidden from the user; arming re-pushes. Odonus hosts it as the always-first-
+  -- mounted instrument (the shell owns no rig socket).
+  , reconciled :: Boolean
   }
 
 data Action

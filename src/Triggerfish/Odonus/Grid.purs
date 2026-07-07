@@ -71,7 +71,7 @@ component =
         -- one-stop view of the whole setup; Odonus's own eDSL pane is for
         -- when you want to inspect just this module.
         , collapsed: [ "SOURCE" ], lastTap: "", lastTapMicros: 0.0
-        , voiceChords: [], follow: Nothing, source: SScale }
+        , voiceChords: [], follow: Nothing, source: SScale, reconciled: false }
     , render
     , eval: H.mkEval H.defaultEval
         { handleAction = handleAction, handleQuery = handleQuery, initialize = Just Initialize }
@@ -207,7 +207,12 @@ dispatch = case _ of
     st <- H.get
     -- Global step divider: the scheduler ticks on a fine 1/16 grid; advance the
     -- model only every stepDiv ticks, so STEP LENGTH sets what a 1× head plays.
-    when (st.sounding == Local && tick.index `mod` st.stepDiv == 0) do
+    -- CO-SIM: advance the model whenever the machine is armed (Local OR Rig), not
+    -- just Local — otherwise Atlantis mode freezes the display. `tick.index` is
+    -- Link-absolute (ceil beat/stepBeats), so the frontend's modelStep matches the
+    -- rig's step and the co-simulation stays byte-identical (same inputs are
+    -- broadcast). MIDI emission below stays Local-only; the BEAM sounds in Rig mode.
+    when (st.sounding /= Silent && tick.index `mod` st.stepDiv == 0) do
       let
         modelStep = tick.index / st.stepDiv
         -- LOCKSTEP (P4c): apply any tick-tagged inputs whose step has arrived
@@ -260,15 +265,19 @@ dispatch = case _ of
           in { items: acc.items <> [ { f, v } ], seed }
         velied = foldl velStep { items: [], seed: g.seed } r.fired
         firedV = velied.items
-      -- Silence any voice the generator muted this step.
-      for_ st.midiOut \out -> liftEffect $ for_ newlyMuted \h -> case join (st.headNote !! h) of
-        Just n -> Midi.noteOffAt out { channel: h, note: n, delayMs: 0.0 }
-        Nothing -> pure unit
-      -- Emit MIDI with per-head legato: glide cells HOLD until the next note
-      -- (tie if same pitch, portamento-slide if different); non-glide cells are
-      -- gated notes whose length scales with tempo.
-      for_ st.midiOut \out -> liftEffect $ for_ firedV \fv ->
-        emitNote out emitAtMs (gateMsFor fv.f) fv.v (prevOf fv.f.headIdx) fv.f
+      -- Local MIDI I/O only. In Rig (Atlantis) mode the BEAM voice sounds; the
+      -- frontend advances the same model purely to mirror it (co-sim display), so
+      -- it must NOT also emit — otherwise you'd double-trigger on the rig.
+      when (st.sounding == Local) do
+        -- Silence any voice the generator muted this step.
+        for_ st.midiOut \out -> liftEffect $ for_ newlyMuted \h -> case join (st.headNote !! h) of
+          Just n -> Midi.noteOffAt out { channel: h, note: n, delayMs: 0.0 }
+          Nothing -> pure unit
+        -- Emit MIDI with per-head legato: glide cells HOLD until the next note
+        -- (tie if same pitch, portamento-slide if different); non-glide cells are
+        -- gated notes whose length scales with tempo.
+        for_ st.midiOut \out -> liftEffect $ for_ firedV \fv ->
+          emitNote out emitAtMs (gateMsFor fv.f) fv.v (prevOf fv.f.headIdx) fv.f
       let
         -- A glide note stays held (its pitch); a gated note auto-ends.
         nextNote f = if f.glide then Just f.pitch else Nothing
@@ -301,6 +310,16 @@ dispatch = case _ of
     st <- H.get
     case st.binnacle of
       Just bin -> do
+        -- Connect-time rig reconcile (once, hidden): fire a global `hush` on the
+        -- first Frame — by now (~one frame after connect) the WS is open, whereas
+        -- an inline send right after connect would race the handshake and drop
+        -- (Binnacle's send no-ops on a not-open socket). Clears voices orphaned by
+        -- a previous session; a fresh load has nothing armed, so the rig should be
+        -- silent, and arming re-pushes. Keeps the "user never tracks rig state" MISU
+        -- promise across a frontend reload.
+        when (not st.reconciled) do
+          liftEffect $ Transport.send (Binnacle.socket bin) "hush"
+          H.modify_ _ { reconciled = true }
         now <- liftEffect $ Clock.unixMicrosNow (Binnacle.clock bin)
         r <- liftEffect $ Clock.read (Binnacle.clock bin)
         H.modify_ \s ->
