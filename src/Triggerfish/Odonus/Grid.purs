@@ -51,6 +51,7 @@ import Triggerfish.Odonus.Patch (capturePatch, loadText, patchText, recallText)
 import Triggerfish.Odonus.Store as Store
 import Triggerfish.Odonus.Lepidoptera (parsePatch, printPatch)
 import Triggerfish.SourceQuery (Query(..))
+import Triggerfish.Midi.Routing as Routing
 import Triggerfish.Odonus.View.Generate (generatePanel)
 import Triggerfish.Odonus.View.Scenes (scenesPanel, sceneName)
 
@@ -686,7 +687,8 @@ gridCfg = { stepBeats: 0.25, lookaheadMs: 180.0, tickMs: 25 }
 -- | the backend rather than trailing it by the render latency.
 emitNote :: Midi.MidiOut -> Number -> Number -> Int -> Maybe Int -> M.Fired -> Effect Unit
 emitNote out atMs gateMs vel prev f =
-  let h = f.headIdx
+  -- The head's fixed channel, canonical 1..4 → WebMIDI 0..3 at this one boundary.
+  let h = Routing.toWire (Routing.odonusHeadChannel f.headIdx)
       p = f.pitch
       portaOn = do
         Midi.sendCC out { channel: h, controller: 65, value: 127 }
@@ -724,7 +726,7 @@ emitNote out atMs gateMs vel prev f =
 silenceHeld :: Maybe Midi.MidiOut -> Array (Maybe Int) -> Effect Unit
 silenceHeld mout held = for_ mout \out ->
   forWithIndex_ held \h mn -> case mn of
-    Just n -> Midi.noteOffAt out { channel: h, note: n, delayMs: 0.0 }
+    Just n -> Midi.noteOffAt out { channel: Routing.toWire (Routing.odonusHeadChannel h), note: n, delayMs: 0.0 }
     Nothing -> pure unit
 
 -- | MIDI output port (substring match). On macOS enable the IAC Driver in

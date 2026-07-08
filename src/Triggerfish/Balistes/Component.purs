@@ -49,6 +49,7 @@ import Triggerfish.Balistes.Store as Store
 import Triggerfish.Balistes.Lepidoptera (printPattern, parsePattern)
 import Triggerfish.SourceQuery (Query(..))
 import Triggerfish.Transport (Sounding(..))
+import Triggerfish.Midi.Routing as Routing
 import Reef.Balistes.Tables as T
 import Reef.Balistes.Sim as Sim
 import Triggerfish.Ui.Knob (knob)
@@ -686,9 +687,10 @@ stepsPerBar = 16
 midiPortName :: String
 midiPortName = "IAC"
 
--- | GM drum channel (MIDI ch 10) — the Grids device (BD/SD/HH).
+-- | GM drum channel (MIDI ch 10) — the Grids device (BD/SD/HH). Canonical
+-- | drums channel from the routing map, converted to WebMIDI's 0-indexed form.
 drumChannel :: Int
-drumChannel = 9
+drumChannel = Routing.toWire Routing.drumsChannel
 
 -- | Velocity a freshly-clicked fixed-rhythm cell lands at (a firm hit).
 editVel :: Int

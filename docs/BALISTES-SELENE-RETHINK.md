@@ -245,3 +245,45 @@ gesture vs imported), so it folds into (3) without rework.
    the descending-threshold open hat + choke.
 3. **Control-space navigation** — the preset/fill/riser/sequence primitive + the
    envelope-on-a-scalar widget; accent + fill multi-out.
+
+## Three-drum-tabs — the drum slice comes back to Balistes (2026-07-08)
+
+*(AC, 2026-07-08 — a **deliberate, considered reversal** of build-order #1
+above, for the drum-flavored slice only. Made possible by the destination
+model in `PLAN-midi-routing.md`, which the June decomposition didn't have yet.)*
+
+The June extraction was right that "a trigger lane is not a drum lane" — but it
+resolved the tension by *location* (move the engine to Selene). The routing
+model resolves it better by **destination binding**: one trigger engine, two
+authoring surfaces, each seeding a different default destination.
+
+- **Balistes** becomes a three-tab drum page — three ways to *specify* drums,
+  **one active at a time** (the user sees and hears only the visible tab; the
+  invariant is free because `Active` is already a single value). Each tab is
+  **self-contained** — its own editor *and* its own control column:
+
+  | Tab (working name during build) | Final label (post-hoc rename) | What it is |
+  |---|---|---|
+  | `AGrids` — MI Grids port | **Mutable** | the firmware-faithful X/Y morph engine + CONTROL. Already exists. |
+  | `AFixed` — rhythm library | **Grids** | user-programmed `lane × step` patterns (`houseLoTempo110`, the switcher chips). Already exists. |
+  | `ASelene` — relocated POLYTRIG | **Tidal** | Tidal mini-notation trigger patterns pointed at drum voices. Reuses the engine already extracted to Selene. New tab. |
+
+  All three default to **MIDI Ch 10** and very likely **also** fan out to
+  modular trigger outputs simultaneously (see the fan-out asymmetry in the plan).
+
+- **Selene keeps its general role** from the June doc: authored + generative
+  modular signal sources (LFOs, euclid triggers) bound to **FH-2 / ES-9**
+  outputs, presented in *those* terms — never MIDI channels. Only the
+  **drum-flavored** use of the trigger engine relocates; the general
+  target-routed trigger sources stay in Selene.
+
+**Rename discipline:** build with the honest current names (`AGrids`/`AFixed` +
+a new `ASelene`); do the cosmetic Grids→Mutable / Patterns→Grids /
+Selene-drums→Tidal relabel as a single pass *after* everything works. The word
+"Grids" is being recycled onto a different owner, so doing the swap mid-refactor
+would make the code lie about itself.
+
+**Effort:** two of three tabs already exist; the work is (a) the tabbed shell
+with the one-active invariant, (b) bringing the POLYTRIG drum surface back as
+`ASelene`, (c) the shared destination binding (Ch 10 + optional modular). The
+channel/routing half lives in `PLAN-midi-routing.md`.
