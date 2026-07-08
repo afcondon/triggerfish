@@ -60,6 +60,7 @@ import Binnacle.Clock as Clock
 import Binnacle.Scheduler as Scheduler
 import Binnacle.Transport as Transport
 import Triggerfish.Transport (Sounding(..))
+import Triggerfish.Midi.Routing as Routing
 import Vetula.Store as Store
 import Vetula.Tank (Specimen, SpecimenId(..), Provenance(..), specNotes)
 import Reef.Vetula.Perf (VChord, VVoice, VDest(..), VRenderer(..), PerfClock, cursorAtClock, renderAlphaBlockMidiAt, renderAlphaClockMidiAt) as RV
@@ -204,7 +205,9 @@ cycleDest = case _ of
 -- | voice's own — overlapping pitch sets from one voice-led source.
 type Voice =
   { id :: Int
-  , channel :: Int          -- MIDI channel 0..15 (ToMidi) / the Odonus id (ToOdonus)
+  , channel :: Int          -- the Odonus id (ToOdonus). ToMidi voices no longer carry a
+                            -- MIDI channel here — it comes from the routing map (default 5;
+                            -- named voices bind on the Tidal page). See Triggerfish.Midi.Routing.
   , dest :: VoiceDest        -- MIDI out, or a block chord-conductor for Odonus
   , renderer :: Renderer
   , pattern :: String       -- the LIVE-CODED read-head: a Tidal mini-notation pattern of
@@ -1715,7 +1718,7 @@ captureSteps st = do
 silenceHeld :: forall o m. MonadAff m => State -> H.HalogenM State Action Slots o m Unit
 silenceHeld st =
   liftEffect $ for_ st.midiOut \out ->
-    for_ st.voices \v -> for_ v.held \nn -> Midi.noteOffAt out { channel: v.channel, note: nn, delayMs: 0.0 }
+    for_ st.voices \v -> for_ v.held \nn -> Midi.noteOffAt out { channel: Routing.toWire Routing.vetulaDefaultChannel, note: nn, delayMs: 0.0 }
 
 -- | The loaded performance progression's chords, resolved from the working copy.
 -- | The performed progression. Slice 4a: this IS the live `path` (`pathSteps`) — the
@@ -1747,7 +1750,8 @@ toReefVoice v =
       Block -> RV.VBlock
       Arp -> RV.VArp
       Strummed -> RV.VStrummed
-  , channel: v.channel
+  -- canonical 1..16 for the rig (link-spike is 1-indexed); no toWire here.
+  , channel: Routing.vetulaDefaultChannel
   , durs: v.durs
   , phase: v.phase
   , muted: v.muted
@@ -1781,7 +1785,8 @@ brushMsg st =
     chords = perfChords st
     v0 = find (\v -> v.dest == ToMidi) st.voices
     rend = maybe "block" (rendBrush <<< _.renderer) v0
-    ch = maybe 8 _.channel v0
+    -- canonical 1..16 MIDI channel; the rig treats it as link-spike (1-indexed).
+    ch = Routing.vetulaDefaultChannel
     durs = maybe (replicate (length chords) 1) _.durs v0
     jsonRow xs = "[" <> joinWith "," (map show xs) <> "]"
     vJson = "[" <> joinWith "," (map (jsonRow <<< playNotes) chords) <> "]"
@@ -1818,7 +1823,7 @@ stepVoice mout reefChords pulse pulseMs baseDelayMs v =
       for_ mout \out ->
         for_ emit \e ->
           Midi.scheduleNote out
-            { channel: v.channel, note: e.note, velocity: e.velocity
+            { channel: Routing.toWire Routing.vetulaDefaultChannel, note: e.note, velocity: e.velocity
             , delayMs: baseDelayMs, durMs: e.durPulses * pulseMs }
       pure v { cursor = cur, held = [] }
 
@@ -3888,7 +3893,6 @@ voicePlayheadRow n v =
                     ToMidi ->
                       [ cellBtn (if v.muted then "off" else "on") (not v.muted) (ToggleVoiceMute v.id)
                       , cellBtn (rendName v.renderer) true (CycleVoiceRenderer v.id)
-                      , numField "ch" v.channel (SetVoiceChannel v.id)
                       ]
                     ToOdonus ->
                       [ numField "id" v.channel (SetVoiceChannel v.id) ])
