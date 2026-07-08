@@ -18,7 +18,7 @@ module Vetula.App where
 
 import Prelude
 
-import Data.Array (concat, concatMap, deleteAt, drop, elem, elemIndex, filter, find, head, index, insertAt, last, length, mapMaybe, mapWithIndex, modifyAt, nub, nubByEq, range, replicate, sort, take, updateAt, zip, (!!))
+import Data.Array (concat, concatMap, deleteAt, drop, elem, elemIndex, filter, find, head, index, insertAt, last, length, mapMaybe, mapWithIndex, modifyAt, nub, nubByEq, range, replicate, sort, take, updateAt, (!!))
 import Data.Foldable (all, any, foldl, foldr, for_, maximum, minimum, sum)
 import Data.Traversable (traverse)
 import Data.Int (fromString, round, toNumber)
@@ -1933,18 +1933,6 @@ playPath ids = do
           { channel: st.previewChan, note: n, velocity: 88
           , delayMs: toNumber i * stepMs + toNumber j * rollMs, durMs: stepMs * 0.9 }
 
--- | The drawn path: bold gold edges for the smooth single-note bridges, and a
--- | dashed violet edge for each interconnector leap (a step between two chords
--- | that aren't graph-adjacent — i.e. across families / degrees).
-pathLinkLines :: forall m. Map Int { x :: Number, y :: Number } -> Path.Graph -> Array Int -> Array (H.ComponentHTML Action Slots m)
-pathLinkLines posMap g ids = concatMap edge (zip ids (drop 1 ids))
-  where
-  adjacent a b = elem b (fromMaybe [] (Map.lookup a g))
-  edge (Tuple a b) = case Map.lookup a posMap, Map.lookup b posMap of
-    Just p, Just q ->
-      [ SE.line [ SA.x1 p.x, SA.y1 p.y, SA.x2 q.x, SA.y2 q.y, SA.class_ (cn (if adjacent a b then "path-edge" else "path-jump")) ] ]
-    _, _ -> []
-
 -- | Write a changed chord set back for rendering. A revoice (Tab / arrow-nudge)
 -- | changes only the glyph and the bubble's size — both read from `chords` — and
 -- | never a node's lattice position. So we deliberately do NOT re-feed the
@@ -2770,9 +2758,8 @@ keyboardSurface st =
   let scl = scaleSet st.key
       posMap = Map.fromFoldable (map (\n -> Tuple n.id { x: n.x, y: n.y }) st.nodes)
       links = latticeLinkLines posMap st.chords
-      -- the path overlay: chord id → 1-based step in the running sequence
+      -- chord id → 1-based step in the running sequence (the node step-number badge)
       pathOrder = Map.fromFoldable (mapWithIndex (\i pid -> Tuple pid (i + 1)) st.path)
-      pathEdges = pathLinkLines posMap (Path.adjacency (neighborLinks st.chords)) st.path
       -- the focused root (from a keyboard-key click) lights a beam up its column
       focusRoot = st.focusedFamily >>= \fid -> map _.root (find (\c -> c.id == fid) st.chords)
       -- a faint divider marking the OUTSIDE shelf — only when outside chords exist
@@ -2808,7 +2795,7 @@ keyboardSurface st =
       -- (shared Modal widget), rendered at the top of `render`.
       [ cloudClipDef st.tab
       , clippedCloud
-          ( focusBeam focusRoot <> keyboardView scl <> axisLabels st.tab <> shelfMarker <> links <> pathEdges
+          ( focusBeam focusRoot <> keyboardView scl <> axisLabels st.tab <> shelfMarker <> links
               <> map (nodeView scl pathOrder Set.empty posMap)
                    (filter (\c -> not (Set.member c.id st.imported)) st.chords) )
       ]
