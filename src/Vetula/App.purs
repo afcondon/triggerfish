@@ -208,6 +208,8 @@ type Voice =
   , channel :: Int          -- the Odonus id (ToOdonus). ToMidi voices no longer carry a
                             -- MIDI channel here — it comes from the routing map (default 5;
                             -- named voices bind on the Tidal page). See Triggerfish.Midi.Routing.
+  , name :: String          -- optional routing NAME for a → midi voice ("" = unnamed → the
+                            -- default channel). The Tidal page binds each name to a channel.
   , dest :: VoiceDest        -- MIDI out, or a block chord-conductor for Odonus
   , renderer :: Renderer
   , pattern :: String       -- the LIVE-CODED read-head: a Tidal mini-notation pattern of
@@ -370,6 +372,7 @@ type State =
   , binnacle :: Maybe Binnacle.Binnacle  -- the shared transport (free-run → Link-lock), like Odonus/Balistes
   , clockTempo :: Number          -- the clock's live tempo, read each tick (drives note durations)
   , nextVoiceId :: Int
+  , routing :: Map String Int   -- name → canonical MIDI channel, pushed from the Tidal page
   -- Tank model (Slice A): the durable, unordered collection of CAUGHT chords.
   -- Frozen `Specimen`s reference no lattice node, so the volatile lattice can
   -- reflow/regenerate underneath without disturbing them. `k` over a chord catches
@@ -442,6 +445,7 @@ data Action
   | AddVoice
   | RemoveVoice Int
   | SetVoiceChannel Int String
+  | SetVoiceName Int String        -- name a → midi voice (routing identity; "" = unnamed)
   | SetPreviewChan String        -- set the chord/path audition channel
   | CycleVoiceDest Int
   | CycleVoiceRenderer Int
@@ -508,6 +512,10 @@ data SourceQuery a
   | AskLibrary (Array { name :: String, text :: String } -> a)   -- A5 manager
   | LoadEntry Int a
   | ImportText String (Boolean -> a)
+  -- MIDI routing (Tidal-page channel map). The shell pushes the name → channel
+  -- bindings; the page asks which → midi voice names are in use so it can list them.
+  | SetRouting (Array { name :: String, ch :: Int }) a
+  | AskVoiceNames (Array String -> a)
 
 component :: forall i o m. MonadAff m => H.Component SourceQuery i o m
 component = H.mkComponent
@@ -566,6 +574,9 @@ component = H.mkComponent
       , binnacle: Nothing
       , clockTempo: 120.0
       , nextVoiceId: 0
+      -- name → canonical MIDI channel, pushed from the shell's Tidal-page routing
+      -- table (SetRouting). Unnamed / unbound voices fall back to the default channel.
+      , routing: Map.empty :: Map String Int
       , tank: []
       , nextSpecId: 0
       , seedChord: Map.empty
@@ -684,6 +695,13 @@ handleQuery = case _ of
       H.modify_ \s -> s { library = s.library <> [ { name: "imported", keyLabel: groupLabel st.key, source: progressionSource (groupLabel st.key) chords, kept: true } ] }
       persistLib
       pure (Just (reply true))
+  SetRouting binds next -> do
+    H.modify_ _ { routing = Map.fromFoldable (map (\b -> Tuple b.name b.ch) binds) }
+    pure (Just next)
+  AskVoiceNames reply -> do
+    s <- H.get
+    let names = nub (filter (_ /= "") (map _.name (filter (\v -> v.dest == ToMidi) s.voices)))
+    pure (Just (reply names))
 
 -- | The current path as one PC set per step (each chord's absolute pitch
 -- | classes) — what Odonus's quantiser snaps to when fed from Vetula.
@@ -1253,6 +1271,9 @@ handleAction = case _ of
     Just ch -> updateVoice vid (_ { channel = clamp 0 15 ch })
     Nothing -> pure unit
 
+  -- Name a → midi voice: its routing identity, which the Tidal page binds to a channel.
+  SetVoiceName vid nm -> updateVoice vid (_ { name = nm })
+
   -- The AUDITION channel (chord/path preview). Its own routable channel so, in
   -- ATLANTIS, the preview can be cued/muted at the desk independently of the brush.
   SetPreviewChan v -> case fromString v of
@@ -1532,7 +1553,7 @@ handleAction = case _ of
           -- pane), but pass no MIDI-out so nothing sounds locally — the rig's brush
           -- is the sound. SOLO: emit as normal.
           mout = if st.authority == Local then st.midiOut else Nothing
-      voices' <- liftEffect $ traverse (stepVoice mout reefChords tick.index pulseMs tick.delayMs) st.voices
+      voices' <- liftEffect $ traverse (stepVoice mout st.routing reefChords tick.index pulseMs tick.delayMs) st.voices
       H.modify_ _ { pulse = tick.index, voices = voices', clockTempo = tempo, tempo = round tempo }
 
   -- parse the (possibly edited) Tidal source into note-lists, rebuild them as a
@@ -1614,7 +1635,7 @@ defaultVoice vid channel renderer n =
   -- prefill the read-head with its REAL default pattern (one chord per bar) as concrete
   -- editable text — WYSIWYG, so the field shows what's actually playing, not a look-alike
   -- placeholder. `durs` stays as the equivalent legacy fallback / rig-push shape.
-  { id: vid, channel, dest: ToMidi, renderer, pattern: defaultPattern n, patternDraft: defaultPattern n
+  { id: vid, channel, name: "", dest: ToMidi, renderer, pattern: defaultPattern n, patternDraft: defaultPattern n
   , notePattern: "", notePatternDraft: "", articulator: RA.ABlock, durs: replicate n 1, phase: 0, cursor: 0, held: [], muted: false }
 
 -- | The clock a voice plays: its committed pattern if non-empty & parseable, else its
@@ -1718,7 +1739,7 @@ captureSteps st = do
 silenceHeld :: forall o m. MonadAff m => State -> H.HalogenM State Action Slots o m Unit
 silenceHeld st =
   liftEffect $ for_ st.midiOut \out ->
-    for_ st.voices \v -> for_ v.held \nn -> Midi.noteOffAt out { channel: Routing.toWire Routing.vetulaDefaultChannel, note: nn, delayMs: 0.0 }
+    for_ st.voices \v -> for_ v.held \nn -> Midi.noteOffAt out { channel: Routing.toWire (midiChannelFor st.routing v), note: nn, delayMs: 0.0 }
 
 -- | The loaded performance progression's chords, resolved from the working copy.
 -- | The performed progression. Slice 4a: this IS the live `path` (`pathSteps`) — the
@@ -1741,8 +1762,15 @@ toReefChord c = { pcs: c.pcs, notes: playNotes c }
 
 -- | Project a performance voice onto the shared `VVoice`. The frontend's own
 -- | `Renderer`/`VoiceDest` map onto reef's by meaning, not order.
-toReefVoice :: Voice -> RV.VVoice
-toReefVoice v =
+-- | The canonical 1..16 MIDI channel a → midi voice sounds on: its bound routing
+-- | name, else the default. Unnamed ("") or unbound names fall to the default channel.
+midiChannelFor :: Map String Int -> Voice -> Int
+midiChannelFor routing v =
+  if v.name == "" then Routing.vetulaDefaultChannel
+  else fromMaybe Routing.vetulaDefaultChannel (Map.lookup v.name routing)
+
+toReefVoice :: Map String Int -> Voice -> RV.VVoice
+toReefVoice routing v =
   { dest: case v.dest of
       ToMidi -> RV.VToMidi
       ToOdonus -> RV.VToOdonus
@@ -1751,7 +1779,7 @@ toReefVoice v =
       Arp -> RV.VArp
       Strummed -> RV.VStrummed
   -- canonical 1..16 for the rig (link-spike is 1-indexed); no toWire here.
-  , channel: Routing.vetulaDefaultChannel
+  , channel: midiChannelFor routing v
   , durs: v.durs
   , phase: v.phase
   , muted: v.muted
@@ -1760,7 +1788,7 @@ toReefVoice v =
 buildPerf :: State -> { chords :: Array RV.VChord, voices :: Array RV.VVoice }
 buildPerf st =
   { chords: map toReefChord (perfChords st)
-  , voices: map toReefVoice st.voices
+  , voices: map (toReefVoice st.routing) st.voices
   }
 
 -- | The brush renderer name for the `vetula-voicings` verb. Note Strummed → "held":
@@ -1786,7 +1814,7 @@ brushMsg st =
     v0 = find (\v -> v.dest == ToMidi) st.voices
     rend = maybe "block" (rendBrush <<< _.renderer) v0
     -- canonical 1..16 MIDI channel; the rig treats it as link-spike (1-indexed).
-    ch = Routing.vetulaDefaultChannel
+    ch = maybe Routing.vetulaDefaultChannel (midiChannelFor st.routing) v0
     durs = maybe (replicate (length chords) 1) _.durs v0
     jsonRow xs = "[" <> joinWith "," (map show xs) <> "]"
     vJson = "[" <> joinWith "," (map (jsonRow <<< playNotes) chords) <> "]"
@@ -1802,9 +1830,9 @@ brushMsg st =
 -- | CONSTRUCTION (block / arp / strum all gated notes; strum's ties come out as one
 -- | long gate). A → odo voice sounds no MIDI, it just advances its read-head so the
 -- | shell can poll its chord. `held` is retired — gated notes end themselves.
-stepVoice :: Maybe Midi.MidiOut -> Array RV.VChord -> Int -> Number -> Number -> Voice -> Effect Voice
-stepVoice mout reefChords pulse pulseMs baseDelayMs v =
-  let rv = toReefVoice v
+stepVoice :: Maybe Midi.MidiOut -> Map String Int -> Array RV.VChord -> Int -> Number -> Number -> Voice -> Effect Voice
+stepVoice mout routing reefChords pulse pulseMs baseDelayMs v =
+  let rv = toReefVoice routing v
       clock = voiceClock (length reefChords) v
       cur = fromMaybe v.cursor (RV.cursorAtClock clock v.phase pulse)
       -- Axis B: a non-empty note pattern sequences the current chord's notes; otherwise
@@ -1823,7 +1851,7 @@ stepVoice mout reefChords pulse pulseMs baseDelayMs v =
       for_ mout \out ->
         for_ emit \e ->
           Midi.scheduleNote out
-            { channel: Routing.toWire Routing.vetulaDefaultChannel, note: e.note, velocity: e.velocity
+            { channel: Routing.toWire (midiChannelFor routing v), note: e.note, velocity: e.velocity
             , delayMs: baseDelayMs, durMs: e.durPulses * pulseMs }
       pure v { cursor = cur, held = [] }
 
@@ -3893,6 +3921,12 @@ voicePlayheadRow n v =
                     ToMidi ->
                       [ cellBtn (if v.muted then "off" else "on") (not v.muted) (ToggleVoiceMute v.id)
                       , cellBtn (rendName v.renderer) true (CycleVoiceRenderer v.id)
+                      , HH.input
+                          [ HP.value v.name
+                          , HE.onValueInput (SetVoiceName v.id)
+                          , HP.placeholder "name → ch5"
+                          , HP.style "width:84px;font-family:ui-monospace,monospace;font-size:11px;padding:2px 5px;border-radius:4px;border:1px solid #d8d3c6;background:#fff"
+                          ]
                       ]
                     ToOdonus ->
                       [ numField "id" v.channel (SetVoiceChannel v.id) ])

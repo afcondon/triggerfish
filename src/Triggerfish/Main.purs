@@ -21,10 +21,13 @@ import Prelude
 
 import Data.Array (filter, mapWithIndex, null, replicate)
 import Data.Foldable (foldl, for_)
-import Data.Maybe (Maybe(..), fromMaybe)
+import Data.Maybe (Maybe(..), fromMaybe, maybe)
 import Data.Const (Const)
 import Data.Set (Set)
 import Data.Set as Set
+import Data.Map (Map)
+import Data.Map as Map
+import Data.Int as Int
 import Data.String.Common (joinWith)
 import Data.Tuple (Tuple(..))
 import Effect (Effect)
@@ -77,6 +80,7 @@ data RAction
   | CopyEntry String            -- copy one entry's eDSL text
   | SetImportText String
   | ImportInto Which            -- route the paste box to one instrument's library
+  | SetBinding String String    -- Tidal-page channel map: bind a Vetula voice name → channel
 
 -- One saved preset gathered from an instrument, for the cross-instrument LIBRARY
 -- manager on the TIDAL page. `text` is the entry rendered to Lepidoptera eDSL
@@ -105,7 +109,12 @@ type RState =
   -- The armed set: the single source of truth for the switcher's per-tab dots and
   -- the master button label. Reconciled from the instruments on SyncTick (a machine
   -- can self-disarm, e.g. Vetula unloading a progression).
-  , armed :: Set Which }
+  , armed :: Set Which
+  -- MIDI routing (Tidal-page channel map). `routing` is the shell-owned name →
+  -- canonical-channel table, pushed to Vetula (SetRouting); `vetulaNames` is the
+  -- set of → midi voice names in use, polled from Vetula so the page can list them.
+  , routing :: Map String Int
+  , vetulaNames :: Array String }
 
 type Slots =
   ( odo :: H.Slot SQ.Query Void Unit
@@ -142,7 +151,9 @@ root =
         , library: [], importText: "", importMsg: ""
         , mode: Solo, harm: { durs: [], active: -1, chord: "" }
         , brushSent: "", brushPrev: ""
-        , armed: Set.empty }
+        , armed: Set.empty
+        , routing: Map.empty
+        , vetulaNames: [] }
     , render
     , eval: H.mkEval H.defaultEval { handleAction = handleAction, initialize = Just Init }
     }
@@ -239,6 +250,13 @@ handleAction = case _ of
     when ok do
       H.modify_ _ { importText = "" }
       refreshLibrary
+  -- Tidal-page channel map: bind a Vetula voice name → channel (blank/invalid = unbind,
+  -- back to the default). Update the shell table, then push it to Vetula.
+  SetBinding name v -> do
+    case Int.fromString v of
+      Just ch | ch >= 1 && ch <= 16 -> H.modify_ \st -> st { routing = Map.insert name ch st.routing }
+      _ -> H.modify_ \st -> st { routing = Map.delete name st.routing }
+    pushRouting
   -- The live Vetula→Odonus bridge: pull each Odonus-bound voice's current block
   -- chord and feed the set to Odonus, whose KEY pane picks one (or none) to follow.
   PollVetula -> do
@@ -320,6 +338,19 @@ refreshTidal = do
   H.modify_ _
     { tidalDoc = assemble
         [ Tuple "ODONUS" o, Tuple "BALISTES" b, Tuple "SELENE" s, Tuple "VETULA" v ] }
+  -- Refresh the channel-map: which → midi voice names are in use, and re-push the
+  -- current bindings so Vetula stays in sync when the page reopens.
+  mnames <- H.query _vet unit (Vetula.AskVoiceNames identity)
+  for_ mnames \names -> H.modify_ _ { vetulaNames = names }
+  pushRouting
+
+-- Push the shell's name → channel table to Vetula (it resolves each voice's channel
+-- from it). Called on every binding edit and on Tidal-page refresh.
+pushRouting :: forall o m. H.HalogenM RState RAction Slots o m Unit
+pushRouting = do
+  routing <- H.gets _.routing
+  let binds = map (\(Tuple name ch) -> { name, ch }) (Map.toUnfoldable routing)
+  void $ H.query _vet unit (Vetula.SetRouting binds unit)
 
 assemble :: Array (Tuple String (Maybe String)) -> String
 assemble = joinWith "\n\n\n" <<< map section
@@ -396,7 +427,7 @@ tidalView :: forall m. RState -> H.ComponentHTML RAction Slots m
 tidalView st =
   HH.div
     [ style $ "max-width:1440px;margin:calc(var(--tf-bar) + 18px) auto 40px;padding:0 20px;font-family:Georgia,serif" ]
-    [ channelMapPanel
+    [ channelMapPanel st
     , HH.div
         [ style "display:flex;gap:26px;align-items:flex-start" ]
         [ HH.div [ style "flex:0 0 400px;min-width:0" ] [ libraryPanel st ]
@@ -404,23 +435,29 @@ tidalView st =
         ]
     ]
 
--- The rig's MIDI channel map — the config surface where channel assignment
--- lives (identity → destination; see docs/PLAN-midi-routing.md). Read-only for
--- now: the fixed defaults ARE the standard Ableton project template. Named
--- Vetula voices + editing land next.
-channelMapPanel :: forall m. H.ComponentHTML RAction Slots m
-channelMapPanel =
+-- The rig's MIDI channel map — the config surface where channel assignment lives
+-- (identity → destination; see docs/PLAN-midi-routing.md). The fixed defaults ARE
+-- the standard Ableton project template; named Vetula voices are editable (bind a
+-- name to a channel; blank = the ch5 default).
+channelMapPanel :: forall m. RState -> H.ComponentHTML RAction Slots m
+channelMapPanel st =
   HH.div [ style "margin-bottom:26px;padding:14px 16px;background:#f3efe4;border:1px solid #e3dfd2;border-radius:6px" ]
     [ HH.div
         [ style "font-size:13px;letter-spacing:0.14em;text-transform:uppercase;color:#5a564b;margin-bottom:10px" ]
         [ HH.text "MIDI output — channel map (the Ableton template)" ]
     , HH.div [ style "display:flex;flex-wrap:wrap;gap:6px 22px" ]
-        (map chanRow Routing.defaultRouting)
+        (map fixedRow Routing.defaultRouting)
+    , if null st.vetulaNames then HH.text ""
+      else HH.div [ style "margin-top:12px;padding-top:10px;border-top:1px dashed #d8d0bd" ]
+        [ HH.div [ style "font-size:10px;letter-spacing:0.14em;text-transform:uppercase;color:#8a7a4a;margin-bottom:7px" ]
+            [ HH.text "named Vetula voices" ]
+        , HH.div [ style "display:flex;flex-wrap:wrap;gap:6px 22px" ] (map nameRow st.vetulaNames)
+        ]
     , HH.div [ style "margin-top:11px;font-size:11px;color:#8a8576;font-style:italic" ]
-        [ HH.text "Selene → modular (FH-2 / ES-9) · Stellatus + Sufflamen → OSC. Named Vetula voices bind here (editing coming)." ]
+        [ HH.text "Selene → modular (FH-2 / ES-9) · Stellatus + Sufflamen → OSC. Name a Vetula → midi voice to route it off the ch5 default." ]
     ]
   where
-  chanRow r =
+  fixedRow r =
     HH.div [ style "display:flex;align-items:baseline;gap:8px;min-width:190px;flex:0 0 auto" ]
       [ HH.span [ style "font-size:12px;color:#2a271e" ] [ HH.text (Routing.sourceLabel r.source) ]
       , HH.span [ style "flex:1 1 auto;border-bottom:1px dotted #cdbb96;height:9px;min-width:14px" ] []
@@ -428,6 +465,19 @@ channelMapPanel =
           [ style "font-size:11px;letter-spacing:0.05em;color:#7a6a3a;font-family:'SF Mono',Menlo,Consolas,monospace" ]
           (map (\d -> HH.text (Routing.destLabel d)) r.dests)
       ]
+  -- Editable: a named voice → its bound channel (blank input = the default).
+  nameRow nm =
+    let bound = Map.lookup nm st.routing
+    in HH.div [ style "display:flex;align-items:baseline;gap:8px;min-width:190px;flex:0 0 auto" ]
+        [ HH.span [ style "font-size:12px;color:#2a271e" ] [ HH.text ("Vetula · " <> nm) ]
+        , HH.span [ style "flex:1 1 auto;border-bottom:1px dotted #cdbb96;height:9px;min-width:14px" ] []
+        , HH.input
+            [ HP.value (maybe "" show bound)
+            , HE.onValueInput (SetBinding nm)
+            , HP.placeholder (show Routing.vetulaDefaultChannel)
+            , style "width:42px;font-family:'SF Mono',Menlo,Consolas,monospace;font-size:11px;padding:2px 5px;border-radius:4px;border:1px solid #cdbb96;background:#fffdf8;text-align:center"
+            ]
+        ]
 
 -- The library manager: each instrument's saved presets, grouped, each loadable
 -- and copyable (copy = export the Lepidoptera text, e.g. into Calypso); plus a
