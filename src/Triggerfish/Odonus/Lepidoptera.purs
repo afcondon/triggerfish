@@ -238,7 +238,7 @@ headP = do
   est <- intL
   mute <- (true <$ PC.try (sym "mute")) <|> pure false
   pure
-    { cursor: 0, seqPos: 0, accumulator: 0, pendStep: 1
+    { cursor: 0, seqPos: 0, accumulator: 0, pendStep: 1, etick: 0
     , speedIx: spd, direction: dir, transp: tr, mute, patternIx: pat
     , offset: off, len: ln, pulses: pul, esteps: est }
 
