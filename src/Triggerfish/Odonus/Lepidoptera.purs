@@ -118,7 +118,6 @@ printGen g =
 printSource :: PitchSource -> String
 printSource = case _ of
   PScale -> "scale"
-  PChordsMcMullen picks per -> "chords mcmullen " <> intArr picks <> " every " <> show per
   PChordsPCs sets per ->
     "chords pcs [ " <> joinWith ", " (map intArr sets) <> " ] every " <> show per
   PVetula fid -> "vetula " <> show fid
@@ -211,13 +210,7 @@ sourceVal = PC.try scaleSrc <|> PC.try chordsSrc <|> vetulaSrc
   where
   scaleSrc = PScale <$ sym "scale"
   vetulaSrc = sym "vetula" *> (PVetula <$> intL)
-  chordsSrc = sym "chords" *> (mcmullen <|> pcs)
-  mcmullen = do
-    _ <- sym "mcmullen"
-    ps <- intArray
-    _ <- sym "every"
-    per <- intL
-    pure (PChordsMcMullen ps per)
+  chordsSrc = sym "chords" *> pcs
   pcs = do
     _ <- sym "pcs"
     sets <- fromFoldable <$> bracketed (PC.sepBy intArray (sym ","))

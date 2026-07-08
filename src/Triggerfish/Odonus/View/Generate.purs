@@ -65,10 +65,10 @@ notesExtras s =
 -- | root low (LOW, basslines) or middle (MID, melodies), seed a fresh MELODY line,
 -- | or ROLL the Marbles once. Both octave floors follow the current key.
 rollGrid :: forall m. M.Odonus -> HH.ComponentHTML Action () m
-rollGrid odo =
+rollGrid _ =
   HH.div [ style "display:grid;grid-template-columns:1fr 1fr;gap:4px;margin-top:7px" ]
     [ tabBtn "LOW" false (SetAllNotes 0)
-    , tabBtn "MID" false (SetAllNotes (M.cellIndexMax odo `div` 2))
+    , tabBtn "MID" false (SetAllNotes (M.knobMax `div` 2))
     , tabBtn "MELODY" false SeedMelody
     , tabBtn "⟳ ROLL" false MarblesRoll
     ]

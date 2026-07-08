@@ -22,31 +22,27 @@ module Triggerfish.Odonus.PitchSource
 
 import Prelude
 
-import Data.Array (null)
 import Data.Maybe (Maybe(..))
 import Triggerfish.Odonus.Model as M
 
 -- | The active source driving the final pitch snap.
 data PitchSource
   = PScale                                 -- snap to the scale (the `scale:` line)
-  | PChordsMcMullen (Array Int) Int        -- McMullen Yellow picks (key-relative), period
   | PChordsPCs (Array (Array Int)) Int     -- explicit PC sets (absolute), period
   | PVetula Int                            -- follow Vetula voice <id> (live feed)
 
 derive instance eqPitchSource :: Eq PitchSource
 
 -- | Read the active source from the model's harmony fields + the follow id. A
--- | live Vetula follow wins (it overrides the static progression each poll);
--- | otherwise the chord overlay decides — a non-empty feed is an explicit
--- | (absolute) progression, an empty feed falls back to the McMullen picks —
--- | and with the overlay off it's the plain scale.
+-- | live Vetula follow wins (it overrides the fed progression each poll); with the
+-- | overlay on it's the explicit (absolute) PC-set progression in the feed, and
+-- | with the overlay off it's the plain scale.
 pitchSourceFrom :: M.Odonus -> Maybe Int -> PitchSource
 pitchSourceFrom o = case _ of
   Just fid -> PVetula fid
   Nothing ->
     if not o.chord.on then PScale
-    else if not (null o.chord.feed) then PChordsPCs o.chord.feed o.chord.period
-    else PChordsMcMullen o.chord.picks o.chord.period
+    else PChordsPCs o.chord.feed o.chord.period
 
 -- | Install a source onto the model, returning the new `odo` plus the follow id
 -- | the State should adopt. The live Vetula poll fills `chord.feed` every tick,
@@ -56,9 +52,6 @@ applyPitchSource :: PitchSource -> M.Odonus -> { odo :: M.Odonus, follow :: Mayb
 applyPitchSource src o = case src of
   PScale ->
     { odo: o { chord = o.chord { on = false, feed = [], ix = 0, phase = 0 } }, follow: Nothing }
-  PChordsMcMullen picks per ->
-    { odo: o { chord = o.chord { on = true, picks = picks, feed = [], period = per, ix = 0, phase = 0 } }
-    , follow: Nothing }
   PChordsPCs sets per ->
     { odo: o { chord = o.chord { on = true, feed = sets, period = per, ix = 0, phase = 0 } }
     , follow: Nothing }

@@ -50,10 +50,10 @@ applyPatch p s = s
   }
 
 -- | The source intent a loaded patch implies (it isn't serialised separately):
--- | a follow → Vetula; the overlay on → Chord; else Scale.
+-- | a follow → Vetula; else Scale.
 deriveSource :: Maybe Int -> Boolean -> SourceTag
-deriveSource follow chordOn =
-  if isJust follow then SVetula else if chordOn then SChord else SScale
+deriveSource follow _ =
+  if isJust follow then SVetula else SScale
 
 -- | The live patch rendered to eDSL text — the shell's `AskSource` answer and
 -- | the form a scene is saved in.

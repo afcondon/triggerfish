@@ -378,18 +378,13 @@ dispatch = case _ of
   ToggleDist -> enqueue RI.ToggleDistribution
   ToggleChord -> H.modify_ \s ->
     if tapBounced "chord" s then s else (markTap "chord" s) { odo = M.toggleChord s.odo }
-  -- ChordRoll threads the seed → deferred-on-both (as SeedMelody).
-  ChordRoll -> enqueue RI.RollChords
   -- The KEY pane's pitch-source radio — an explicit `source` intent. Scale =
-  -- overlay off; Chord = the internal McMullen progression (overlay on); Vetula =
-  -- follow a voice. Selecting Vetula always sticks (even with no voice yet): it
-  -- adopts the first bound voice if available, else stays selected-but-inactive
-  -- (recomputeFollow leaves the overlay off; the sub-section shows it waiting).
+  -- overlay off; Vetula = follow a voice. Selecting Vetula always sticks (even with
+  -- no voice yet): it adopts the first bound voice if available, else stays
+  -- selected-but-inactive (recomputeFollow leaves the overlay off; the sub-section
+  -- shows it waiting).
   SetSource SScale -> H.modify_ \s ->
     s { source = SScale, follow = Nothing, odo = s.odo { chord = s.odo.chord { on = false } } }
-  SetSource SChord -> H.modify_ \s ->
-    s { source = SChord, follow = Nothing
-      , odo = s.odo { chord = s.odo.chord { on = true, feed = [], ix = 0, phase = 0 } } }
   SetSource SVetula -> H.modify_ \s ->
     recomputeFollow (s { source = SVetula, follow = keepOrFirst s.follow s.voiceChords })
   -- Pick a voice to follow, or "free" (Nothing = stay on Vetula but unfollowed →
@@ -433,10 +428,10 @@ dispatch = case _ of
             H.modify_ _ { dragging = Just drag { startY = clientY } }
         | otherwise -> do
             let
-              -- cell.note is a discrete index now; its range is span × set
-              -- cardinality, derived from the live odo rather than the static table.
+              -- cell.note is a raw knob now (0 .. knobMax); the pipeline equal-maps
+              -- it over the scale, so the range is fixed, not the set cardinality.
               r = case drag.target of
-                    CellNote _ -> { lo: 0, hi: M.cellIndexMax st.odo }
+                    CellNote _ -> { lo: 0, hi: M.knobMax }
                     _ -> targetRange drag.target
               delta = round (toNumber (drag.startY - clientY) * toNumber (r.hi - r.lo) / 140.0)
               newVal = clampI r.lo r.hi (drag.startVal + delta)
@@ -615,7 +610,6 @@ targetToInput t v = case t of
   FanOff -> Just (RI.FanOffsets v)
   StaggerLen -> Just (RI.StaggerLengths v)
   HeadSpread -> Just (RI.SpreadOctaves v)
-  ChordStep -> Just (RI.SetChordPeriod v)
   GenRate kind -> Just (RI.SetRate kind v)
   GenAmt kind -> Just (RI.SetAmt kind v)
   SwingAmt -> Nothing

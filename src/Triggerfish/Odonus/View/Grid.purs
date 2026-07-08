@@ -135,14 +135,15 @@ noteCell odo i c =
     ]
     [ HH.div [ style "width:100%;flex:1;min-height:0" ]
         [ knob
-            -- cell.note is now a discrete INDEX into the voice's PitchSet; the knob
-            -- ranges over the index space (0 .. span·N−1), not chromatic 36..84.
-            { cx: 24.0, cy: 24.0, rOuter: 20.0, rInner: 9.0, color: "#b5832b", lo: 0, hi: M.cellIndexMax odo, value: c.note, ticks: 0 }
+            -- cell.note is a raw KNOB now (0 .. knobMax); the pipeline equal-maps it
+            -- over the scale, so the range is fixed, not the set cardinality.
+            { cx: 24.0, cy: 24.0, rOuter: 20.0, rInner: 9.0, color: "#b5832b", lo: 0, hi: M.knobMax, value: c.note, ticks: 0 }
             (KnobDown (CellNote i) c.note)
         ]
-      -- Label the cell with its REALIZED pitch — re-colours live as the set moves.
+      -- Label the cell with the pitch its knob currently sounds — re-colours live as
+      -- the harmony moves (the offset-free voiceLabel).
     , HH.span [ style "font-family:'SF Mono',Menlo,monospace;font-size:9px;color:#4a463d;margin-top:1px" ]
-        [ HH.text (midiName (M.cellPitch odo c.note)) ]
+        [ HH.text (midiName (M.cellLabel odo c.note)) ]
     ]
 
 -- | MIDI note name, scientific pitch (middle C = C4 = 60).

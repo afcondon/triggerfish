@@ -12,4 +12,4 @@
 -- | of both modules don't see a doubly-imported name.)
 module Triggerfish.Odonus.Gen (module Reef.Gen) where
 
-import Reef.Gen (GenInput, runGen, rollAllNotes, rollChords, seedMelody)
+import Reef.Gen (GenInput, runGen, rollAllNotes, seedMelody)

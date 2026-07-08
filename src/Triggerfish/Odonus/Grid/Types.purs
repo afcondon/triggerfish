@@ -57,7 +57,6 @@ data KnobTarget
   | FanOff           -- Reichian FAN: spread head offsets into a canon
   | StaggerLen       -- Reichian STAGGER: ramp head lengths for metric phasing
   | HeadSpread       -- Reichian SPREAD: fan head transposes into a register-canon
-  | ChordStep        -- chord-progression clock: steps per chord
   | GenRate GenKind  -- a source's randomisation rate, lives on State (see DragMove)
   | GenAmt GenKind   -- a source's mutation depth / intensity (0..100)
 
@@ -81,7 +80,6 @@ targetRange = case _ of
   FanOff -> { lo: 0, hi: 5 }
   StaggerLen -> { lo: 0, hi: 5 }
   HeadSpread -> { lo: 0, hi: length M.spreadVoicings - 1 }
-  ChordStep -> { lo: M.chordPeriodMin, hi: M.chordPeriodMax }
   GenRate _ -> { lo: 0, hi: rateMax }
   GenAmt _ -> { lo: 0, hi: 100 }
 
@@ -103,7 +101,6 @@ applyTarget t v = case t of
   FanOff -> M.fanOffsets v
   StaggerLen -> M.staggerLengths v
   HeadSpread -> M.spreadOctaves v
-  ChordStep -> M.setChordPeriod v
   SwingAmt -> identity     -- handled at State level in DragMove, not on Odonus
   VelHuman -> identity      -- handled at State level in DragMove, not on Odonus
   GenRate _ -> identity   -- handled at State level in DragMove, not on Odonus
@@ -170,11 +167,9 @@ marblesPadId :: String
 marblesPadId = "tf-marbles-xy"
 
 -- | Which pitch source drives the quantizer — the KEY pane's top-level choice.
--- | `SScale` snaps to the scale; `SChord` to the internal McMullen progression;
--- | `SVetula` to a followed Vetula voice. Derived from `chord.on` + `follow`
--- | (`Triggerfish.Odonus.View.Key.sourceTagOf`), consistent with the
--- | `PitchSource` print/parse model.
-data SourceTag = SScale | SChord | SVetula
+-- | `SScale` snaps to the scale; `SVetula` to a followed Vetula voice. Derived
+-- | from `chord.on` + `follow` (`Triggerfish.Odonus.Patch.sourceOf`).
+data SourceTag = SScale | SVetula
 
 derive instance eqSourceTag :: Eq SourceTag
 
@@ -259,7 +254,6 @@ data Action
   | CycleScaleType Int
   | ToggleDist
   | ToggleChord
-  | ChordRoll
   | SetSource SourceTag       -- pick the quantizer's pitch source (KEY pane)
   | SetFollow (Maybe Int)    -- follow a Vetula Odonus-bound voice by id (Nothing = free)
   | SetRoot Int

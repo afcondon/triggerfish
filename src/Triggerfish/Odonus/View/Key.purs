@@ -19,7 +19,7 @@ import Triggerfish.Ui.Knob (knob)
 import Triggerfish.Scale as Scale
 import Triggerfish.Odonus.Grid.Types (Action(..), KnobTarget(..), SourceTag(..), State)
 import Triggerfish.Odonus.Grid.Widgets
-  ( engrave, labelledRow, octLabel, panelShell, romanNum, stepperRow, style, tabBtn )
+  ( engrave, labelledRow, octLabel, panelShell, stepperRow, style, tabBtn )
 
 quantizerPanel :: forall m. State -> H.ComponentHTML Action () m
 quantizerPanel s =
@@ -36,11 +36,9 @@ quantizerPanel s =
       -- INSIDE its section (a setting you make, not a control gated on live input).
       , labelledRow "SOURCE"
           [ tabBtn "Scale" (tag == SScale) (SetSource SScale)
-          , tabBtn "Chord" (tag == SChord) (SetSource SChord)
           , tabBtn "Vetula" (tag == SVetula) (SetSource SVetula)
           ]
       , subSection (tag == SScale) (scaleSection s)
-      , subSection (tag == SChord) (chordSection s)
       , subSection (tag == SVetula) [ followSection s ]
       ]
 
@@ -66,10 +64,9 @@ scaleSection s =
           [ stepperRow "SCALE" (M.scaleTypeName s.odo) (CycleScaleType (-1)) (CycleScaleType 1) ]
       , spreadBlock s.odo
       ]
-  -- SCALAR TRANSP: shift the whole pattern by whole scale degrees, in-key. Lives
-  -- in the SCALE section — it needs a known scale, so it's not safe off-scale.
-  , labelledRow "SCALAR TRANSP."
-      (map (\i -> tabBtn (romanNum i) (s.odo.degShift == i) (SetDegShift i)) (range 0 6))
+  -- SCALAR TRANSP retired: the ported pipeline drops the degShift scalar transpose
+  -- (key transposition lives in Vetula; the global octave shift is the only
+  -- surviving whole-set move). See docs/PLAN-odonus-pitch-pipeline.md.
   , HH.div [ style "display:flex;align-items:center;justify-content:space-between;margin:10px 0 4px" ]
       [ HH.span [ style $ engrave <> ";font-size:9px" ] [ HH.text "MODE" ]
       , HH.button
@@ -83,42 +80,6 @@ scaleSection s =
           Scale.Natural -> "Natural · cells snap to nearest scale tone"
           Scale.Equal -> "Equal · cells index scale degrees from root") ]
   ]
-
--- ---------------------------------------------------------------------------
--- CHORD source — the internal McMullen "Yellow" progression
--- ---------------------------------------------------------------------------
-
-chordSection :: forall m. State -> Array (H.ComponentHTML Action () m)
-chordSection s =
-  [ HH.div [ style "display:flex;align-items:center;justify-content:space-between;margin-bottom:7px" ]
-      [ HH.span [ style $ engrave <> ";font-size:9px" ] [ HH.text "PROGRESSION" ]
-      , HH.button
-          [ HE.onClick \_ -> ChordRoll
-          , style $ "padding:4px 10px;border:1px solid #a8a392;border-radius:6px;cursor:pointer;"
-              <> "background:linear-gradient(#efece1,#ddd9cb);font-family:Georgia,serif;font-size:10px;color:#3f3c33" ]
-          [ HH.text "⟳ new" ]
-      ]
-  , HH.div [ style "display:flex;gap:4px;flex-wrap:wrap;margin-bottom:9px" ]
-      (mapWithIndex (chordChip s.odo.chord.ix) s.odo.chord.picks)
-  , HH.div [ style "display:flex;align-items:center;gap:9px" ]
-      [ HH.span [ style $ engrave <> ";font-size:9px" ] [ HH.text "STEPS/CHORD" ]
-      , HH.div [ style "width:38px;height:38px" ]
-          [ knob
-              { cx: 22.0, cy: 22.0, rOuter: 18.0, rInner: 7.0, color: "#b5832b"
-              , lo: M.chordPeriodMin, hi: M.chordPeriodMax, value: s.odo.chord.period, ticks: 0 }
-              (KnobDown ChordStep s.odo.chord.period) ]
-      , HH.span [ style "font-family:'SF Mono',Menlo,monospace;font-size:10px;color:#3f3c33" ]
-          [ HH.text (show s.odo.chord.period) ]
-      ]
-  ]
-
--- One chord of the progression: its name, the current one in the cycle accented.
-chordChip :: forall m. Int -> Int -> Int -> H.ComponentHTML Action () m
-chordChip curIx i pk =
-  HH.span
-    [ style $ "padding:4px 8px;border-radius:5px;font-family:'SF Mono',Menlo,monospace;font-size:10px;"
-        <> (if curIx == i then "background:#b5832b;color:#1c1a12" else "background:#cbc6b6;color:#3f3c33") ]
-    [ HH.text (M.chordNameAt pk) ]
 
 -- ---------------------------------------------------------------------------
 -- VETULA source — follow a Performance voice
