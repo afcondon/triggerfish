@@ -83,6 +83,16 @@ matches "Vetula is about *progressions*, not *where they go*."
    start param (`reef_balistes_voice`, `reef_voice`, `reef_vetula_brush`); only
    `reef_vetula_voice`'s hardcoded `rig_channels() = [8,9,16]` needs replacing.
 
+## Status (2026-07-08) — Half A DONE
+
+A1 ✅ (`bea04cd`) · A2a ✅ (`33229c2`) · A3 ✅ (reef `258ffb5`, purerl-tidal
+`72798bc`; 25/25 conformance) · A2b ✅ (read-only `57b9993`, editable `fe22e45`).
+Both runtimes now honour one routing map: Odonus 1–4, Vetula 5 (named voices
+bindable to 6–8 on the Tidal page), Drums 10. **The rig needs an Atlantis bounce
+to pick up A3.** Remaining: Half B (Balistes three-tab restructure, see
+BALISTES-SELENE-RETHINK.md); Selene → FH-2/ES-9 destinations; the browser→modular
+fan-out bridge.
+
 ## Build order (Half A)
 
 - **A1 — Pin the default map** as a shared data module (also *is* the Ableton
