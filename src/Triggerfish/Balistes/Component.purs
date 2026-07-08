@@ -22,7 +22,7 @@ import Data.Array (concatMap, filter, length, mapWithIndex, modifyAt, null, rang
 import Data.Foldable (any, foldl, for_, sum)
 import Data.Int (floor, round, toNumber)
 import Data.Int.Bits (shr)
-import Data.Maybe (Maybe(..), fromMaybe, isNothing)
+import Data.Maybe (Maybe(..), fromMaybe, isNothing, maybe)
 import Data.String.Common (joinWith)
 import Effect (Effect)
 import Effect.Aff.Class (class MonadAff)
@@ -770,22 +770,60 @@ setupDrag =
 render :: forall m. State -> H.ComponentHTML Action () m
 render s =
   HH.div
-    [ style $ "position:fixed;top:var(--tf-bar);left:0;right:0;bottom:0;display:flex;align-items:stretch;overflow-x:auto;overflow-y:hidden;"
+    [ style $ "position:fixed;top:var(--tf-bar);left:0;right:0;bottom:0;display:flex;flex-direction:column;"
         <> "user-select:none;-webkit-user-select:none;background:#b7b1a0;font-family:Georgia,serif" ]
-    -- The middle column is Grids' CONTROL chrome (X/Y morph + knobs); for a
-    -- fixed rhythm it becomes the NOTE inspector for the selected cell.
-    ( [ transportPanel s ]
-        <> (case s.active of
-              AGrids -> [ controlsPanel s ]
-              AFixed _ -> [ inspectorPanel s ])
-        <> [ patternPanel s ] )
+    -- One of three drum-brains at a time, chosen by the tab bar. Each tab is
+    -- self-contained: its own CONTROL column (middle) + its own PATTERN surface
+    -- (right). Working names during the build — GRIDS (the MI morph engine),
+    -- PATTERNS (user rhythms), SELENE DRUMS (relocated POLYTRIG, B2). All → ch10.
+    [ tabBar s
+    , HH.div
+        [ style "flex:1 1 auto;min-height:0;display:flex;align-items:stretch;overflow-x:auto;overflow-y:hidden" ]
+        ( [ transportPanel s ]
+            <> (case s.active of
+                  AGrids -> [ controlsPanel s ]
+                  AFixed _ -> [ inspectorPanel s ])
+            <> [ patternPanel s ] )
+    ]
+
+-- The drum-brain tab bar. The active tab is a projection of `active`'s constructor;
+-- clicking a tab swaps the brain (PATTERNS remembers the last-selected rhythm, or
+-- falls to the first). SELENE DRUMS is a disabled placeholder until B2 relocates it.
+tabBar :: forall m. State -> H.ComponentHTML Action () m
+tabBar s =
+  HH.div
+    [ style $ "flex:0 0 auto;display:flex;gap:2px;padding:0 14px;background:#cfcabb;"
+        <> "border-bottom:1px solid #b3ae9c;box-shadow:0 1px 3px #00000010" ]
+    [ tabBtn "GRIDS" (isGrids s.active) (Just (SelectPattern AGrids))
+    , tabBtn "PATTERNS" (isFixed s.active) (Just (SelectPattern (AFixed (fixedIx s.active))))
+    , tabBtn "SELENE DRUMS" false Nothing
+    ]
+  where
+  isGrids = case _ of AGrids -> true
+                      _ -> false
+  isFixed = case _ of AFixed _ -> true
+                      _ -> false
+  fixedIx = case _ of AFixed i -> i
+                      _ -> 0
+
+tabBtn :: forall m. String -> Boolean -> Maybe Action -> H.ComponentHTML Action () m
+tabBtn label active mact =
+  HH.button
+    ( [ style $ "padding:9px 20px;border:none;background:none;border-bottom:3px solid "
+          <> (if active then "#b8975a" else "transparent") <> ";"
+          <> "font-family:Georgia,serif;font-size:12px;letter-spacing:0.1em;"
+          <> "cursor:" <> (maybe "default" (const "pointer") mact) <> ";"
+          <> (if active then "color:#1c1a12"
+              else maybe "color:#9a9484" (const "color:#3f3c33") mact) ]
+        <> maybe [] (\act -> [ HE.onClick \_ -> act ]) mact )
+    [ HH.text (label <> maybe "  ·soon" (const "") mact) ]
 
 -- A pale Hainbach panel (header + body). Scrolls vertically if its content is
 -- taller than the viewport (the consolidated CONTROL panel can be).
 panel :: forall m. String -> String -> Array (H.ComponentHTML Action () m) -> H.ComponentHTML Action () m
 panel label widthCss body =
   HH.div
-    [ style $ widthCss <> ";height:calc(100vh - var(--tf-bar));box-sizing:border-box;overflow-y:auto;overflow-x:hidden;"
+    [ style $ widthCss <> ";height:100%;box-sizing:border-box;overflow-y:auto;overflow-x:hidden;"
         <> "background:linear-gradient(#dcd8c9,#cfcabb);border-left:1px solid #b3ae9c;"
         <> "padding:18px 16px;display:flex;flex-direction:column" ]
     ( [ HH.div
@@ -810,7 +848,7 @@ transportPanel s =
              Nothing -> "—"
     helpText = case s.active of
       AGrids -> "DRAG THE STYLE PAD TO MORPH THE KIT BETWEEN THE 25 NODES. DENSITY SETS HOW MANY HITS; RANDOMNESS NUDGES OFF-GRID EACH PATTERN."
-      AFixed _ -> "A FIXED STARTER RHYTHM IS PLAYING. SWITCH TO ◆ GRIDS FOR THE LIVE MORPH ENGINE AND ITS CONTROLS."
+      AFixed _ -> "A FIXED STARTER RHYTHM IS PLAYING. PICK ANOTHER FROM THE BANK, OR THE GRIDS TAB FOR THE LIVE MORPH ENGINE."
   in
   panel "BALISTES" "flex:0 0 196px"
     [ HH.div [ style "display:flex;flex-direction:column;gap:12px;margin-top:4px" ]
@@ -1124,21 +1162,21 @@ svgMouse name f = HE.handler (EventType name) (unsafeCoerce f)
 patternPanel :: forall m. State -> H.ComponentHTML Action () m
 patternPanel s =
   panel "PATTERN" "flex:1 1 480px;min-width:380px"
-    [ patternSwitcher s
-    , case s.active of
-        AGrids -> gridsBody s
-        AFixed i -> case s.library !! i of
-          Just pat -> fixedBody s i pat
-          Nothing -> HH.text "—"
-    ]
+    ( (case s.active of
+         AGrids -> []
+         AFixed _ -> [ patternSwitcher s ])
+        <> [ case s.active of
+               AGrids -> gridsBody s
+               AFixed i -> case s.library !! i of
+                 Just pat -> fixedBody s i pat
+                 Nothing -> HH.text "—" ] )
 
--- The pattern bank: ◆ GRIDS (the live morph engine) plus each library rhythm.
--- Clicking switches what plays; the active chip is brass.
+-- Within the PATTERNS tab: the library of user rhythms as chips (the KIND is now
+-- the tab, so ◆ GRIDS is no longer a chip here). Clicking switches which rhythm plays.
 patternSwitcher :: forall m. State -> H.ComponentHTML Action () m
 patternSwitcher s =
   HH.div [ style "display:flex;gap:6px;flex-wrap:wrap;margin-bottom:16px;max-width:640px" ]
-    ( [ chip "◆ GRIDS" (s.active == AGrids) (SelectPattern AGrids) ]
-        <> mapWithIndex (\i pat -> chip pat.name (s.active == AFixed i) (SelectPattern (AFixed i))) s.library
+    ( mapWithIndex (\i pat -> chip pat.name (s.active == AFixed i) (SelectPattern (AFixed i))) s.library
         <> [ newChip ] )
 
 -- The "+ NEW" tab: appends a fresh empty rhythm (dashed to read as an action).
