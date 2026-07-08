@@ -23,7 +23,7 @@ import Data.Foldable (any, foldl, for_, sum)
 import Data.Int (floor, round, toNumber)
 import Data.Int.Bits (shr)
 import Data.Maybe (Maybe(..), fromMaybe, isNothing, maybe)
-import Data.String.Common (joinWith)
+import Data.String.Common (joinWith, toLower)
 import Effect (Effect)
 import Effect.Aff.Class (class MonadAff)
 import Effect.Class (liftEffect)
@@ -50,6 +50,7 @@ import Triggerfish.Balistes.Lepidoptera (printPattern, parsePattern)
 import Triggerfish.SourceQuery (Query(..))
 import Triggerfish.Transport (Sounding(..))
 import Triggerfish.Midi.Routing as Routing
+import Triggerfish.Tidal.Lane as Lane
 import Reef.Balistes.Tables as T
 import Reef.Balistes.Sim as Sim
 import Triggerfish.Ui.Knob (knob)
@@ -70,10 +71,12 @@ type Flash = { inst :: Int, accent :: Boolean, fireUnixMicros :: Number }
 
 data KnobTarget = KDens Int | KRand | KPush Int | KOpen
 
--- | What the panel is currently playing. Grids is the special, generative,
--- | mutatable pattern (it owns the CONTROL column); `AFixed i` is a literal
--- | rhythm from the library (`library !! i`), played verbatim.
-data Active = AGrids | AFixed Int
+-- | What the panel is currently playing — one drum-brain at a time (the tab
+-- | bar's projection). `AGrids` is the generative MI-Grids morph engine (owns
+-- | the CONTROL column); `AFixed i` is a literal rhythm from the library
+-- | (`library !! i`), played verbatim; `ASelene` is the relocated POLYTRIG jack
+-- | rack (browser-only) — named jacks + lane-spanning routes, all → ch 10.
+data Active = AGrids | AFixed Int | ASelene
 
 derive instance eqActive :: Eq Active
 
@@ -137,6 +140,8 @@ type State =
   , editing :: Boolean
   -- the cell the NOTE inspector is editing (lane, step) on the active rhythm.
   , selected :: Maybe { lane :: Int, step :: Int }
+  -- the POLYTRIG jack rack (SELENE DRUMS tab) — browser-only, no reef path.
+  , trig :: M.TrigBank
   }
 
 data Action
@@ -170,6 +175,13 @@ data Action
   | NewPattern                 -- append a fresh empty rhythm + select it
   | SetPatternName String      -- rename the active rhythm
   | PushBalistes               -- lockstep handoff: push BalSim to the rig (ch 11)
+  -- POLYTRIG (SELENE DRUMS tab) editor — browser-only, no rig sync.
+  | SetJackSource Int String   -- jack i's per-jack pattern
+  | SetJackName Int String     -- jack i's route-addressable name
+  | SetJackNote Int Int        -- nudge jack i's MIDI note
+  | SetRoute Int String        -- route line i
+  | AddRoute                   -- append an empty route line
+  | RemoveRoute Int            -- drop route line i
   | NoOp
 
 component :: forall i o m. MonadAff m => H.Component Query i o m
@@ -182,7 +194,8 @@ component =
         , clockTempo: 120.0, clockLocked: false, clockBeat: 0.0, clockBar: 0, anchorCount: 0
         , nowMicros: 0.0, dragging: Nothing, dragSub: Nothing
         , capArm: false, seqArm: false, seqEnabled: false, seqPos: 0, seqStartBar: 0
-        , active: AGrids, library: P.bundledPatterns, editing: false, selected: Nothing }
+        , active: AGrids, library: P.bundledPatterns, editing: false, selected: Nothing
+        , trig: M.defaultTrig }
     , render
     , eval: H.mkEval H.defaultEval
         { handleAction = handleAction, handleQuery = handleQuery, initialize = Just Initialize }
@@ -330,6 +343,30 @@ handleAction = case _ of
           , nextModelStep = tick.index + 1
           , pending = keepInputs
           , flash = gridsFlash <> s.flash }
+      -- POLYTRIG: each named jack's onsets (its own pattern stacked with the
+      -- route onsets addressed to its name) that fall in THIS step's window fire
+      -- at their true fractional sub-step time. One Tidal cycle == cycleSteps grid
+      -- steps (one bar). Browser-only, all jacks land on the drum channel (ch 10).
+      ASelene -> do
+        let
+          step = tick.index `mod` cycleSteps
+          stepMs = 0.25 * 60000.0 / max 30.0 st.clockTempo
+          lo = toNumber step / toNumber cycleSteps
+          hi = toNumber (step + 1) / toNumber cycleSteps
+          inWin o = o >= lo && o < hi
+          routeOns nm = map _.at (filter (\e -> eqTrigName e.name nm) (st.trig.routes >>= Lane.namedOnsetsOf))
+        for_ st.midiOut \out -> liftEffect $
+          for_ st.trig.jacks \jack -> do
+            let
+              own = filter inWin (Lane.onsetsOf jack.source)
+              routed = filter inWin (routeOns jack.name)
+              fire o =
+                let sub = (o * toNumber cycleSteps - toNumber step) * stepMs
+                in Midi.scheduleNote out
+                     { channel: drumChannel, note: jack.note, velocity: 100
+                     , delayMs: tick.delayMs + sub, durMs: 40.0 }
+            for_ (own <> routed) fire
+        H.modify_ _ { playStep = step }
 
   Frame -> do
     st <- H.get
@@ -457,12 +494,14 @@ handleAction = case _ of
     when (st.sounding == Rig) case a of
       AFixed _ -> repushFixed
       AGrids -> pushHandoff st
+      ASelene -> pure unit   -- browser-only; no rig voice to sync
   ToggleEdit -> H.modify_ \s -> s { editing = not s.editing }
   -- click selects a cell for the NOTE inspector, creating a hit at the default
   -- velocity if the cell was empty; shift-click clears it.
   CellClick lane step shift -> do
     H.modify_ \s -> case s.active of
       AGrids -> s
+      ASelene -> s
       AFixed i ->
         if shift then s
           { library = modLibAt i (P.modifyCell lane step (const P.emptyCell)) s.library
@@ -500,6 +539,7 @@ handleAction = case _ of
     H.modify_ \s -> case s.active of
       AFixed i -> s { library = modLibAt i (_ { name = name }) s.library }
       AGrids -> s
+      ASelene -> s
     persistLib
   PushBalistes -> do
     -- Lockstep HANDOFF: project the frontend Balistes state to a BalSim (the shared
@@ -517,6 +557,14 @@ handleAction = case _ of
             ("balistes-fixed " <> encodeFixed (fixedOf pat))
       -- Grids: the phase-aligned BalSim handoff.
       AGrids -> pushHandoff st
+      ASelene -> pure unit   -- browser-only; nothing to push
+  -- POLYTRIG editor — pure state edits, browser-only (no rig sync, no persist).
+  SetJackSource i src -> H.modify_ \s -> s { trig = M.setJackSource i src s.trig }
+  SetJackName i nm -> H.modify_ \s -> s { trig = M.setJackName i nm s.trig }
+  SetJackNote i d -> H.modify_ \s -> s { trig = M.setJackNote i (jackNoteOf s.trig i + d) s.trig }
+  SetRoute i src -> H.modify_ \s -> s { trig = M.setRoute i src s.trig }
+  AddRoute -> H.modify_ \s -> s { trig = M.addRoute s.trig }
+  RemoveRoute i -> H.modify_ \s -> s { trig = M.removeRoute i s.trig }
   NoOp -> pure unit
 
 -- | Project the frontend Balistes record onto the shared `BalSim` — the lockstep
@@ -630,6 +678,7 @@ repushFixed = do
       for_ st.binnacle \bin ->
         liftEffect $ Transport.send (Binnacle.socket bin) ("balistes-fixed " <> encodeFixed (fixedOf pat))
     AGrids -> pure unit
+    ASelene -> pure unit
 
 -- | Emit one already-resolved hit: schedule `note` at `delay0` for `durMs`, or —
 -- | when the cell is ratcheted (n > 1) — explode it into n evenly-spaced
@@ -691,6 +740,18 @@ midiPortName = "IAC"
 -- | drums channel from the routing map, converted to WebMIDI's 0-indexed form.
 drumChannel :: Int
 drumChannel = Routing.toWire Routing.drumsChannel
+
+-- | One Tidal cycle == this many POLYTRIG grid steps (one bar). Matches Selene.
+cycleSteps :: Int
+cycleSteps = 16
+
+-- | Route atoms address jacks case-insensitively (`BD` fires `bd`).
+eqTrigName :: String -> String -> Boolean
+eqTrigName a b = toLower a == toLower b
+
+-- | The current MIDI note of POLYTRIG jack `i` (default GM ladder if absent).
+jackNoteOf :: M.TrigBank -> Int -> Int
+jackNoteOf tb i = maybe (36 + i) _.note (tb.jacks !! i)
 
 -- | Velocity a freshly-clicked fixed-rhythm cell lands at (a firm hit).
 editVel :: Int
@@ -782,7 +843,8 @@ render s =
         ( [ transportPanel s ]
             <> (case s.active of
                   AGrids -> [ controlsPanel s ]
-                  AFixed _ -> [ inspectorPanel s ])
+                  AFixed _ -> [ inspectorPanel s ]
+                  ASelene -> [ trigInfoPanel s ])
             <> [ patternPanel s ] )
     ]
 
@@ -796,13 +858,15 @@ tabBar s =
         <> "border-bottom:1px solid #b3ae9c;box-shadow:0 1px 3px #00000010" ]
     [ tabBtn "GRIDS" (isGrids s.active) (Just (SelectPattern AGrids))
     , tabBtn "PATTERNS" (isFixed s.active) (Just (SelectPattern (AFixed (fixedIx s.active))))
-    , tabBtn "SELENE DRUMS" false Nothing
+    , tabBtn "SELENE DRUMS" (isSelene s.active) (Just (SelectPattern ASelene))
     ]
   where
   isGrids = case _ of AGrids -> true
                       _ -> false
   isFixed = case _ of AFixed _ -> true
                       _ -> false
+  isSelene = case _ of ASelene -> true
+                       _ -> false
   fixedIx = case _ of AFixed i -> i
                       _ -> 0
 
@@ -846,9 +910,12 @@ transportPanel s =
         <> case s.library !! i of
              Just p -> show (length (P.usedLanes p)) <> " voices"
              Nothing -> "—"
+      ASelene -> show (drumChannel + 1) <> "  ·  "
+        <> show (length s.trig.jacks) <> " jacks"
     helpText = case s.active of
       AGrids -> "DRAG THE STYLE PAD TO MORPH THE KIT BETWEEN THE 25 NODES. DENSITY SETS HOW MANY HITS; RANDOMNESS NUDGES OFF-GRID EACH PATTERN."
       AFixed _ -> "A FIXED STARTER RHYTHM IS PLAYING. PICK ANOTHER FROM THE BANK, OR THE GRIDS TAB FOR THE LIVE MORPH ENGINE."
+      ASelene -> "POLYTRIG: EIGHT NAMED JACKS, EACH WITH ITS OWN MINI-NOTATION PATTERN, PLUS LANE-SPANNING ROUTES (\"bd sn cp sn\") THAT FIRE JACKS BY NAME. ALL → CH 10."
   in
   panel "BALISTES" "flex:0 0 196px"
     [ HH.div [ style "display:flex;flex-direction:column;gap:12px;margin-top:4px" ]
@@ -1164,12 +1231,14 @@ patternPanel s =
   panel "PATTERN" "flex:1 1 480px;min-width:380px"
     ( (case s.active of
          AGrids -> []
-         AFixed _ -> [ patternSwitcher s ])
+         AFixed _ -> [ patternSwitcher s ]
+         ASelene -> [])
         <> [ case s.active of
                AGrids -> gridsBody s
                AFixed i -> case s.library !! i of
                  Just pat -> fixedBody s i pat
-                 Nothing -> HH.text "—" ] )
+                 Nothing -> HH.text "—"
+               ASelene -> trigBody s ] )
 
 -- Within the PATTERNS tab: the library of user rhythms as chips (the KIND is now
 -- the tab, so ◆ GRIDS is no longer a chip here). Clicking switches which rhythm plays.
@@ -1400,6 +1469,104 @@ armBtn label active act =
         <> (if active then "color:#1c1a12;background:linear-gradient(#c8a86a,#b8975a)"
             else "color:#3f3c33;background:linear-gradient(#efece1,#ddd9cb)") ]
     [ HH.text label ]
+
+-- ---------------------------------------------------------------------------
+-- POLYTRIG (SELENE DRUMS tab) — the middle info/routes column + the jack rack
+-- ---------------------------------------------------------------------------
+
+-- The middle column for the SELENE DRUMS tab: the lane-spanning ROUTES editor
+-- (each route is a mini-notation string whose atoms fire jacks by name), plus a
+-- short legend. Jacks live in the PATTERN column to the right.
+trigInfoPanel :: forall m. State -> H.ComponentHTML Action () m
+trigInfoPanel s =
+  panel "ROUTES" "flex:0 0 260px"
+    [ HH.div [ style $ engrave <> ";font-size:8px;opacity:0.55;line-height:1.6;margin-bottom:12px" ]
+        [ HH.text "A ROUTE IS A PATTERN WHOSE ATOMS FIRE JACKS BY NAME — \"bd sn cp sn\". IT STACKS WITH EACH JACK'S OWN SOURCE." ]
+    , HH.div [ style "display:flex;flex-direction:column;gap:8px" ]
+        (mapWithIndex routeLine s.trig.routes)
+    , HH.button
+        [ HE.onClick \_ -> AddRoute
+        , style $ "margin-top:10px;padding:6px 13px;border:1px dashed #a8a392;border-radius:6px;cursor:pointer;"
+            <> "font-family:Georgia,serif;font-size:12px;color:#6a6657;background:#00000006;align-self:flex-start" ]
+        [ HH.text "+ ROUTE" ]
+    ]
+
+-- One editable route line: a text field + a remove button.
+routeLine :: forall m. Int -> String -> H.ComponentHTML Action () m
+routeLine i src =
+  HH.div [ style "display:flex;align-items:center;gap:6px" ]
+    [ HH.input
+        [ HP.value src
+        , HP.placeholder "bd sn cp sn"
+        , HE.onValueInput (SetRoute i)
+        , style $ "flex:1 1 auto;min-width:0;padding:5px 8px;border:1px solid #a8a392;border-radius:5px;"
+            <> "background:#f3f1e8;font-family:'SF Mono',Menlo,monospace;font-size:11px;color:#1c1a12" ]
+    , HH.button
+        [ HE.onClick \_ -> RemoveRoute i
+        , style $ "flex:0 0 auto;width:22px;height:26px;border:1px solid #a8a392;border-radius:5px;cursor:pointer;"
+            <> "font-family:'SF Mono',Menlo,monospace;font-size:12px;color:#8a3120;background:#efece1" ]
+        [ HH.text "×" ]
+    ]
+
+-- The PATTERN column for the SELENE DRUMS tab: the eight named jacks as a grid.
+-- Each jack shows its name (editable), MIDI note (drag-free steppers), source
+-- pattern (editable), and a linear step figure lit at the source's onsets.
+trigBody :: forall m. State -> H.ComponentHTML Action () m
+trigBody s =
+  HH.div_
+    [ HH.div
+        [ style "display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;max-width:640px" ]
+        (mapWithIndex trigJackCell s.trig.jacks)
+    , HH.div [ style $ engrave <> ";font-size:8px;opacity:0.5;margin-top:12px;line-height:1.6;max-width:640px" ]
+        [ HH.text "EACH JACK: A NAME (WHAT ROUTES ADDRESS), A MIDI NOTE, AND AN OPTIONAL SOURCE PATTERN. LEAVE THE SOURCE BLANK TO DRIVE A JACK FROM ROUTES ALONE. RELOCATED FROM SELENE — CV/GATE TARGETS STAY ON SELENE." ]
+    ]
+
+-- One POLYTRIG jack: name + note steppers on top, a source input, then a step
+-- figure following the source's meter (faint "↳ route" when the source is empty).
+trigJackCell :: forall m. Int -> M.TrigSlot -> H.ComponentHTML Action () m
+trigJackCell i sl =
+  HH.div
+    [ style $ "padding:8px 9px;border-radius:7px;background:#ffffff55;border:1px solid #00000012;"
+        <> "display:flex;flex-direction:column;gap:6px;min-width:0" ]
+    [ HH.div [ style "display:flex;align-items:center;gap:6px" ]
+        [ HH.input
+            [ HP.value sl.name
+            , HE.onValueInput (SetJackName i)
+            , style $ "flex:1 1 auto;min-width:0;padding:3px 6px;border:1px solid #a8a392;border-radius:4px;"
+                <> "background:#f3f1e8;font-family:Georgia,serif;font-size:12px;color:#1c1a12" ]
+        , stepBtn "−" (SetJackNote i (-1))
+        , HH.span [ style "font-family:'SF Mono',Menlo,monospace;font-size:10px;color:#3f3c33;width:30px;text-align:center" ]
+            [ HH.text ("♪" <> show sl.note) ]
+        , stepBtn "+" (SetJackNote i 1)
+        ]
+    , HH.input
+        [ HP.value sl.source
+        , HP.placeholder "(routed)"
+        , HE.onValueInput (SetJackSource i)
+        , style $ "padding:4px 7px;border:1px solid #a8a392;border-radius:4px;background:#f3f1e8;"
+            <> "font-family:'SF Mono',Menlo,monospace;font-size:11px;color:#1c1a12;width:100%;box-sizing:border-box" ]
+    , trigStepFigure sl.source
+    ]
+
+-- A linear step row lit at the source's onset cells (HTML so it fills width).
+-- Adapted from Selene's stepFigure; the trig accent is a steel-blue.
+trigStepFigure :: forall m. String -> H.ComponentHTML Action () m
+trigStepFigure src =
+  let
+    m = Lane.meterOf src
+    mask = Lane.cellMaskOf src
+    trigAccent = "#3f6f8a"
+    stepDiv k =
+      let on = fromMaybe false (mask !! k)
+      in
+        HH.div
+          [ style $ "flex:1 1 0;min-width:0;height:14px;border-radius:2px;"
+              <> (if on then "background:" <> trigAccent
+                  else "background:#00000008;border:1px solid " <> trigAccent <> "44;box-sizing:border-box") ]
+          []
+  in
+    HH.div [ style "display:flex;gap:2px;width:100%;height:14px;align-items:center" ]
+      (map stepDiv (range 0 (m - 1)))
 
 heatSvg :: forall m. State -> H.ComponentHTML Action () m
 heatSvg s =
