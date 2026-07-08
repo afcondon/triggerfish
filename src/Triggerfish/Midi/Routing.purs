@@ -20,10 +20,13 @@ module Triggerfish.Midi.Routing
   , drumsChannel
   , toWire
   , defaultRouting
+  , sourceLabel
+  , destLabel
   ) where
 
 import Prelude
-import Data.Maybe (Maybe(..))
+import Data.Array ((!!))
+import Data.Maybe (Maybe(..), fromMaybe)
 
 -- | A heterogeneous output destination. Only `ToMidi` is honoured by the browser
 -- | today; the modular kinds are rig-reachable and browser-pending a WS→OSC
@@ -71,3 +74,19 @@ defaultRouting =
   , { source: VetulaVoice Nothing, dests: [ ToMidi vetulaDefaultChannel ] }
   , { source: Drums, dests: [ ToMidi drumsChannel ] }
   ]
+
+-- | Human label for a source identity (for the Tidal-page channel map).
+sourceLabel :: SourceId -> String
+sourceLabel = case _ of
+  OdonusHead h -> "Odonus " <> fromMaybe (show (h + 1)) ([ "I", "II", "III", "IV" ] !! h)
+  VetulaVoice Nothing -> "Vetula (default)"
+  VetulaVoice (Just nm) -> "Vetula · " <> nm
+  Drums -> "Drums"
+
+-- | Human label for a destination (for the Tidal-page channel map).
+destLabel :: Destination -> String
+destLabel = case _ of
+  ToMidi ch -> "MIDI ch " <> show ch
+  ToEs9 n -> "ES-9 bus " <> show n
+  ToFh2 n -> "FH-2 out " <> show n
+  ToOsc t -> "OSC " <> t

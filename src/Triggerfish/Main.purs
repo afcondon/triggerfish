@@ -47,6 +47,7 @@ import Triggerfish.Selene.Component as Selene
 import Triggerfish.Sufflamen.Component as Sufflamen
 import Triggerfish.Stellatus.Component as Stellatus
 import Triggerfish.SourceQuery as SQ
+import Triggerfish.Midi.Routing as Routing
 import Vetula.App as Vetula
 import Vetula.Clipboard (copyText)
 import Triggerfish.Transport (Which(..), Mode(..), Sounding(..), soundingOf, anyArmed, allMachines)
@@ -394,11 +395,39 @@ pane visible extra content =
 tidalView :: forall m. RState -> H.ComponentHTML RAction Slots m
 tidalView st =
   HH.div
-    [ style $ "max-width:1440px;margin:calc(var(--tf-bar) + 18px) auto 40px;padding:0 20px;"
-        <> "font-family:Georgia,serif;display:flex;gap:26px;align-items:flex-start" ]
-    [ HH.div [ style "flex:0 0 400px;min-width:0" ] [ libraryPanel st ]
-    , HH.div [ style "flex:1 1 auto;min-width:0" ] [ sourcePanel st ]
+    [ style $ "max-width:1440px;margin:calc(var(--tf-bar) + 18px) auto 40px;padding:0 20px;font-family:Georgia,serif" ]
+    [ channelMapPanel
+    , HH.div
+        [ style "display:flex;gap:26px;align-items:flex-start" ]
+        [ HH.div [ style "flex:0 0 400px;min-width:0" ] [ libraryPanel st ]
+        , HH.div [ style "flex:1 1 auto;min-width:0" ] [ sourcePanel st ]
+        ]
     ]
+
+-- The rig's MIDI channel map — the config surface where channel assignment
+-- lives (identity → destination; see docs/PLAN-midi-routing.md). Read-only for
+-- now: the fixed defaults ARE the standard Ableton project template. Named
+-- Vetula voices + editing land next.
+channelMapPanel :: forall m. H.ComponentHTML RAction Slots m
+channelMapPanel =
+  HH.div [ style "margin-bottom:26px;padding:14px 16px;background:#f3efe4;border:1px solid #e3dfd2;border-radius:6px" ]
+    [ HH.div
+        [ style "font-size:13px;letter-spacing:0.14em;text-transform:uppercase;color:#5a564b;margin-bottom:10px" ]
+        [ HH.text "MIDI output — channel map (the Ableton template)" ]
+    , HH.div [ style "display:flex;flex-wrap:wrap;gap:6px 22px" ]
+        (map chanRow Routing.defaultRouting)
+    , HH.div [ style "margin-top:11px;font-size:11px;color:#8a8576;font-style:italic" ]
+        [ HH.text "Selene → modular (FH-2 / ES-9) · Stellatus + Sufflamen → OSC. Named Vetula voices bind here (editing coming)." ]
+    ]
+  where
+  chanRow r =
+    HH.div [ style "display:flex;align-items:baseline;gap:8px;min-width:190px;flex:0 0 auto" ]
+      [ HH.span [ style "font-size:12px;color:#2a271e" ] [ HH.text (Routing.sourceLabel r.source) ]
+      , HH.span [ style "flex:1 1 auto;border-bottom:1px dotted #cdbb96;height:9px;min-width:14px" ] []
+      , HH.span
+          [ style "font-size:11px;letter-spacing:0.05em;color:#7a6a3a;font-family:'SF Mono',Menlo,Consolas,monospace" ]
+          (map (\d -> HH.text (Routing.destLabel d)) r.dests)
+      ]
 
 -- The library manager: each instrument's saved presets, grouped, each loadable
 -- and copyable (copy = export the Lepidoptera text, e.g. into Calypso); plus a
