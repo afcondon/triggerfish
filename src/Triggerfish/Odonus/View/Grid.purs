@@ -22,18 +22,24 @@ import Triggerfish.Odonus.Marbles (betaWeights)
 import Triggerfish.Odonus.Grid.Types
   ( Action(..), GenKind(..), KnobTarget(..), State, marblesPadId )
 import Triggerfish.Odonus.Grid.Widgets
-  ( cellChrome, engrave, genRow, labelledRow, miniKnob, octLabel, panelShell, style, tabBtn )
+  ( cellChrome, engrave, genRow, labelledRow, miniKnob, octLabel, panelShell, signed, stepperRow, style, tabBtn )
 import Data.Array (length, mapWithIndex, (!!))
 
 gridPanel :: forall m. State -> H.ComponentHTML Action () m
 gridPanel s =
   panelShell s.collapsed "NOTES" "pitch · Marbles" "flex:0 1 340px;min-width:min-content"
-    -- OCTAVE: the global ± octave, moved here from KEY — it shifts the register the
-    -- note grid plays and its knob labels now show (a chromatic move, common to
-    -- every pitch source).
-    [ HH.div [ style "margin-bottom:12px" ]
+    -- OCTAVE + TRANSP: the two global pitch moves, brought here from KEY — both
+    -- shift the register the note grid plays and its knob labels now show. OCTAVE
+    -- is chromatic (±octaves); TRANSP is scalar (shift every voice by N scale
+    -- degrees, in the set's own space, ahead of any chord snap).
+    [ HH.div [ style "margin-bottom:12px;display:flex;flex-direction:column;gap:8px" ]
         [ labelledRow "OCTAVE"
-            (map (\n -> tabBtn (octLabel n) (s.odo.octaveShift == n) (SetOctave n)) [ -2, -1, 0, 1, 2 ]) ]
+            (map (\n -> tabBtn (octLabel n) (s.odo.octaveShift == n) (SetOctave n)) [ -2, -1, 0, 1, 2 ])
+        , stepperRow "TRANSP"
+            (signed s.odo.degShift <> (if s.odo.degShift == 1 then " degree" else " degrees"))
+            (SetDegShift (s.odo.degShift - 1))
+            (SetDegShift (s.odo.degShift + 1))
+        ]
     , genRow s GNotes
     , xyPad s
     , readout s
