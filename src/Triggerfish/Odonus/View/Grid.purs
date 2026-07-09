@@ -1,27 +1,39 @@
--- | GRID panel — the 16 cells as parameter-major small multiples + transport.
--- | One NOTE field of value knobs, then GATE / SKIP / GLIDE toggle fields and a
--- | LENGTH knob field, over the clock / gate / run / status / nameplate chrome.
+-- | NOTES panel — the pitch surface. The NOTES random source (Marbles Beta
+-- | distribution + LOW/MID/MELODY/ROLL one-shots) sits above the 4×4 field of
+-- | value knobs it draws from. The other per-cell parameter grids (gate, skip,
+-- | glide, length, ratchet, velocity) moved to the PARAMETERS pane, each beside
+-- | its own generator. The transport chrome (step length, groove, status,
+-- | nameplate) stays here for now.
 module Triggerfish.Odonus.View.Grid (gridPanel) where
 
 import Prelude
 
+import Data.Foldable (maximum)
 import Data.Int (floor, round)
 import Data.Maybe (fromMaybe)
 import Halogen as H
 import Halogen.HTML as HH
 import Halogen.HTML.Events as HE
+import Halogen.HTML.Properties as HP
+import Web.UIEvent.MouseEvent as ME
 import Triggerfish.Odonus.Model as M
 import Triggerfish.Ui.Knob (knob)
-import Triggerfish.Odonus.Grid.Types (Action(..), KnobTarget(..), State)
+import Triggerfish.Odonus.Marbles (betaWeights)
+import Triggerfish.Odonus.Grid.Types
+  ( Action(..), GenKind(..), KnobTarget(..), State, marblesPadId )
 import Triggerfish.Odonus.Grid.Widgets
-  ( cellChrome, engrave, labelledRow, miniKnob, panelShell, style, tabBtn )
+  ( cellChrome, engrave, genRow, labelledRow, miniKnob, panelShell, style, tabBtn )
 import Data.Array (length, mapWithIndex, (!!))
 
 gridPanel :: forall m. State -> H.ComponentHTML Action () m
 gridPanel s =
-  panelShell s.collapsed "ODONUS" "16 · Cartesian" "flex:0 1 340px;min-width:min-content"
-    [ grid s
-    , HH.div [ style "display:flex;align-items:flex-end;gap:10px;margin-top:6px" ]
+  panelShell s.collapsed "NOTES" "pitch · Marbles" "flex:0 1 340px;min-width:min-content"
+    [ genRow s GNotes
+    , xyPad s
+    , readout s
+    , rollGrid
+    , HH.div [ style "margin-top:12px" ] [ noteField s.odo ]
+    , HH.div [ style "display:flex;align-items:flex-end;gap:10px;margin-top:12px" ]
         [ HH.div [ style "flex:1" ] [ clockRow s ]
         , feelBlock s
         ]
@@ -29,6 +41,67 @@ gridPanel s =
     , statusBar s
     , nameplate s
     ]
+
+-- ---------------------------------------------------------------------------
+-- NOTES random source — the Marbles distribution + one-shots (moved here from
+-- the old GENERATE pane, now co-located with the note grid it feeds).
+-- ---------------------------------------------------------------------------
+
+-- | The 2-D control: drag a puck through the live distribution. X = bias (peak
+-- | position, low→high notes), Y = spread (up = wider). The histogram behind
+-- | the puck is the Beta distribution for the current setting.
+xyPad :: forall m. State -> H.ComponentHTML Action () m
+xyPad s =
+  let
+    nbars = 24
+    ws = betaWeights nbars s.genBias s.genSpread
+    peak = fromMaybe 0.0 (maximum ws)
+    bar w =
+      let h = if peak <= 0.0 then 0.0 else (w / peak) * 100.0
+      in HH.div [ style "flex:1;display:flex;align-items:flex-end;justify-content:center;height:100%" ]
+           [ HH.div [ style $ "width:78%;height:" <> show h <> "%;background:#c0563f33;border-radius:1px 1px 0 0" ] [] ]
+    px = s.genBias * 100.0
+    py = (1.0 - s.genSpread) * 100.0
+  in
+    HH.div
+      [ HP.id marblesPadId
+      , HE.onMouseDown \e -> MarblesPad (ME.clientX e) (ME.clientY e) (ME.buttons e)
+      , HE.onMouseMove \e -> MarblesPad (ME.clientX e) (ME.clientY e) (ME.buttons e)
+      , style $ "position:relative;width:100%;height:108px;margin-top:8px;border-radius:6px;cursor:crosshair;"
+          <> "background:#cbc6b6;box-shadow:inset 0 0 0 1px #00000018;overflow:hidden;user-select:none" ]
+      [ HH.div [ style "position:absolute;inset:0;display:flex;align-items:flex-end" ]
+          (map bar ws)
+      , HH.div
+          [ style $ "position:absolute;width:13px;height:13px;border-radius:50%;background:#b5832b;"
+              <> "box-shadow:0 0 0 2px #fff8,0 0 6px #b5832b;transform:translate(-50%,-50%);pointer-events:none;"
+              <> "left:" <> show px <> "%;top:" <> show py <> "%" ] []
+      ]
+
+readout :: forall m. State -> H.ComponentHTML Action () m
+readout s =
+  HH.div [ style "display:flex;justify-content:space-between;font-family:'SF Mono',Menlo,monospace;font-size:8px;color:#5a564b;margin-top:4px" ]
+    [ HH.span_ [ HH.text ("bias " <> pct s.genBias) ]
+    , HH.span_ [ HH.text ("spread " <> pct s.genSpread) ]
+    ]
+
+pct :: Number -> String
+pct x = show (round (x * 100.0)) <> "%"
+
+-- | The NOTES one-shots as a compact 2×2: flatten every note to the scale root
+-- | low (LOW, basslines) or middle (MID, melodies), seed a fresh MELODY line, or
+-- | ROLL the Marbles once. Both octave floors follow the current key.
+rollGrid :: forall m. H.ComponentHTML Action () m
+rollGrid =
+  HH.div [ style "display:grid;grid-template-columns:1fr 1fr;gap:4px;margin-top:7px" ]
+    [ tabBtn "LOW" false (SetAllNotes 0)
+    , tabBtn "MID" false (SetAllNotes (M.knobMax `div` 2))
+    , tabBtn "MELODY" false SeedMelody
+    , tabBtn "⟳ ROLL" false MarblesRoll
+    ]
+
+-- ---------------------------------------------------------------------------
+-- Groove + transport chrome
+-- ---------------------------------------------------------------------------
 
 -- | GROOVE block: GATE length + SWING (off-beat lag) + HUMANISE (velocity
 -- | jitter) — the controls that pull the sequence off the metronome.
@@ -82,31 +155,9 @@ statusBar s =
     , HH.span [] [ HH.text $ "MIDI " <> s.midiName ]
     ]
 
--- | The grid is four **parameter-major small multiples** of the same 16
--- | cells: one NOTE field (knobs) + three toggle fields (gate / skip /
--- | glide). Each cell, in every field, carries the same head-presence
--- | chrome, so you watch the playheads sweep through gate and skip and
--- | glide, not only through the notes. This is the layout that scales —
--- | a new per-cell parameter (length, pulses, gate-mode…) is just another
--- | small multiple appended below, never a busier pad.
-grid :: forall m. State -> H.ComponentHTML Action () m
-grid s =
-  HH.div
-    [ style "display:flex;flex-direction:column;gap:10px;margin:14px 0" ]
-    [ noteField s.odo
-    -- A two-column sub-grid: the three boolean fields (GATE / SKIP / GLIDE),
-    -- then the three per-cell knob fields (LENGTH / RATCHET / VEL). Each new
-    -- per-cell parameter is just another small multiple — the layout that scales.
-    , HH.div
-        [ style "display:grid;grid-template-columns:1fr 1fr;gap:10px 11px;align-items:start" ]
-        [ toggleField "GATE" "#e0a32e" _.gate ToggleGate s.odo
-        , toggleField "SKIP" "#c0563f" _.skip ToggleSkip s.odo
-        , toggleField "GLIDE" "#4f9d69" _.glide ToggleGlide s.odo
-        , perCellKnobField "LENGTH" "#7d8a93" 1 8 8 CellDur _.dur s.odo
-        , perCellKnobField "RATCHET" "#9d6b8a" 1 8 8 CellRatchet _.ratchet s.odo
-        , perCellKnobField "VEL" "#8a9d6b" 1 127 0 CellVel _.vel s.odo
-        ]
-    ]
+-- ---------------------------------------------------------------------------
+-- NOTE field — the one grid that stays here (the value knobs)
+-- ---------------------------------------------------------------------------
 
 -- | A labelled small multiple: small-caps engraved label, then a 4×4 body.
 fieldShell :: forall m. String -> H.ComponentHTML Action () m -> H.ComponentHTML Action () m
@@ -151,67 +202,6 @@ midiName :: Int -> String
 midiName n =
   let names = [ "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B" ]
   in fromMaybe "?" (names !! (n `mod` 12)) <> show ((n `div` 12) - 1)
-
--- | A per-cell knob field — a 4×4 small multiple of small knobs over one cell
--- | parameter (LENGTH, RATCHET, VEL…). `mkTarget` is the knob's drag target per
--- | index, `getVal` reads the value; `ticks > 0` draws detents (discrete
--- | selectors). The square footprint keeps the grid's rhythm; the colour sets
--- | each field apart from the amber NOTE knobs. Appending a new per-cell
--- | parameter is one more call to this — no new layout.
-perCellKnobField
-  :: forall m
-   . String -> String -> Int -> Int -> Int -> (Int -> KnobTarget) -> (M.Cell -> Int) -> M.Odonus
-  -> H.ComponentHTML Action () m
-perCellKnobField label color lo hi ticks mkTarget getVal odo =
-  fieldShell label
-    ( HH.div
-        [ style "display:grid;grid-template-columns:repeat(4,1fr);gap:4px" ]
-        (mapWithIndex (\i c -> perCellKnob odo color lo hi ticks (mkTarget i) (getVal c) i) odo.cells)
-    )
-
-perCellKnob
-  :: forall m
-   . M.Odonus -> String -> Int -> Int -> Int -> KnobTarget -> Int -> Int
-  -> H.ComponentHTML Action () m
-perCellKnob odo color lo hi ticks target val i =
-  HH.div
-    [ style $ cellChrome odo i
-        <> ";padding:3px;aspect-ratio:1;display:flex;align-items:center;justify-content:center"
-    ]
-    [ HH.div [ style "width:100%;height:100%;min-height:0" ]
-        [ knob
-            { cx: 24.0, cy: 24.0, rOuter: 18.0, rInner: 7.0, color, lo, hi, value: val, ticks }
-            (KnobDown target val)
-        ]
-    ]
-
--- | A toggle field — a 4×4 of clickable lamps for one boolean per cell.
--- | Cells are flat (not square) so three fields stack under the NOTE grid
--- | while their four columns stay aligned with it.
-toggleField
-  :: forall m
-   . String -> String -> (M.Cell -> Boolean) -> (Int -> Action) -> M.Odonus
-  -> H.ComponentHTML Action () m
-toggleField label color get act odo =
-  fieldShell label
-    ( HH.div
-        [ style "display:grid;grid-template-columns:repeat(4,1fr);gap:4px" ]
-        (mapWithIndex (\i c -> toggleCell odo color (get c) (act i) i) odo.cells)
-    )
-
-toggleCell :: forall m. M.Odonus -> String -> Boolean -> Action -> Int -> H.ComponentHTML Action () m
-toggleCell odo color on act i =
-  HH.div
-    [ HE.onClick \_ -> act
-    , style $ cellChrome odo i
-        <> ";height:14px;cursor:pointer;user-select:none;display:flex;align-items:center;justify-content:center"
-    ]
-    [ HH.div
-        [ style $ "width:7px;height:7px;border-radius:50%;border:1px solid #00000022;background:"
-            <> (if on then color else "#46433a")
-            <> (if on then ";box-shadow:0 0 5px " <> color else "")
-        ] []
-    ]
 
 controls :: forall m. State -> H.ComponentHTML Action () m
 controls _ =

@@ -1,155 +1,120 @@
--- | GENERATE panel — the randomisation matrix. One row per aspect (NOTES,
--- | STEPS, HEADS, TRANSP, PATTERN, SPEED, KEY·SCALE): an LED enable, a label,
--- | and a bare draggable NUMBER giving the firing period ("one change per N
--- | steps", big range — drag up for rarer). The NOTES row additionally carries
--- | the Marbles X-Y pad (X = bias, Y = spread) over the live Beta histogram and
--- | a one-shot Roll. Each source drifts one notch at a time, so several can run
--- | at once without chaos. See the Mutable Instruments Marbles manual for the
--- | SPREAD×BIAS shapes.
+-- | PARAMETERS panel — the per-cell parameter grids, each co-located with the
+-- | random source that mutates it, plus the sources that have no grid.
+-- |
+-- | Top: the grid-less generators (HEADS, TRANSP, PATTERN, SPEED, KEY·SCALE) as
+-- | plain rows — an LED enable, a label, a mutation DEPTH and a firing PERIOD.
+-- | Below: one card per per-cell parameter (GATE / SKIP / GLIDE / LENGTH /
+-- | RATCHET), each a generator row over its 4×4 grid — one label serving both the
+-- | generator controls and the grid. VELOCITY has a grid but no generator, so its
+-- | card is grid-only. The NOTES source + its grid moved to the NOTES pane.
 module Triggerfish.Odonus.View.Generate (generatePanel) where
 
 import Prelude
 
-import Data.Array (find)
-import Data.Foldable (maximum)
-import Data.Int (round)
-import Data.Maybe (fromMaybe, maybe)
+import Data.Array (mapWithIndex)
 import Halogen.HTML as HH
 import Halogen.HTML.Events as HE
-import Halogen.HTML.Properties as HP
-import Web.UIEvent.MouseEvent as ME
-import Triggerfish.Odonus.Grid.Types
-  ( Action(..), GenKind(..), KnobTarget(..), State, genKinds, genLabel, genSub, marblesPadId, periodOf )
-import Triggerfish.Odonus.Grid.Widgets (engrave, panelShell, style, tabBtn)
-import Triggerfish.Odonus.Marbles (betaWeights)
+import Triggerfish.Odonus.Grid.Types (Action(..), GenKind(..), KnobTarget(..), State)
+import Triggerfish.Odonus.Grid.Widgets (cellChrome, engrave, genRow, panelShell, style)
 import Triggerfish.Odonus.Model as M
+import Triggerfish.Ui.Knob (knob)
 
 generatePanel :: forall m. State -> HH.ComponentHTML Action () m
 generatePanel s =
-  panelShell s.collapsed "GENERATE" "Random sources" "flex:0 1 236px;min-width:min-content"
-    (map (genRow s) genKinds)
+  panelShell s.collapsed "PARAMETERS" "sources · grids" "flex:0 1 300px;min-width:min-content"
+    ( map (topRow s) [ GHeads, GTransp, GPattern, GSpeed, GKey ]
+        <>
+        [ paramCard s GGate    (toggleGrid "#e0a32e" _.gate ToggleGate s.odo)
+        , paramCard s GSkip    (toggleGrid "#c0563f" _.skip ToggleSkip s.odo)
+        , paramCard s GGlide   (toggleGrid "#4f9d69" _.glide ToggleGlide s.odo)
+        , paramCard s GLen     (perCellKnobGrid "#7d8a93" 1 8 8 CellDur _.dur s.odo)
+        , paramCard s GRatchet (perCellKnobGrid "#9d6b8a" 1 8 8 CellRatchet _.ratchet s.odo)
+        , velCard              (perCellKnobGrid "#8a9d6b" 1 127 0 CellVel _.vel s.odo)
+        ]
+    )
 
--- | One source row. The NOTES row unfolds the X-Y pad + Roll beneath its head.
-genRow :: forall m. State -> GenKind -> HH.ComponentHTML Action () m
-genRow s kind =
-  let
-    on = maybe false _.on src
-    rate = maybe 90 _.rate src
-    amt = maybe 30 _.amt src
-    src = find (\g -> g.kind == kind) s.gen
-  in
-    HH.div [ style "margin-bottom:7px;padding-bottom:7px;border-bottom:1px solid #00000010" ]
-      ( [ HH.div [ style "display:flex;align-items:center;gap:7px" ]
-            [ led on kind
-            , HH.div [ style "flex:1;min-width:0" ]
-                [ HH.div [ style $ engrave <> ";font-size:11px;color:#3f3c33;line-height:1.1" ]
-                    [ HH.text (genLabel kind) ]
-                , HH.div [ style $ engrave <> ";font-size:8px;opacity:0.65;letter-spacing:0.06em" ]
-                    [ HH.text (genSub kind) ]
-                ]
-            , amtNumber kind amt on
-            , freqNumber kind rate on
-            ]
-        ] <> (if kind == GNotes then notesExtras s else [])
-      )
+-- | A grid-less generator (heads / transp / pattern / speed / key): the plain
+-- | source row with a divider under it, as the old GENERATE pane rendered them.
+topRow :: forall m. State -> GenKind -> HH.ComponentHTML Action () m
+topRow s kind =
+  HH.div [ style "margin-bottom:7px;padding-bottom:7px;border-bottom:1px solid #00000010" ]
+    [ genRow s kind ]
 
--- | The Marbles distribution controls only the NOTES source draws from.
-notesExtras :: forall m. State -> Array (HH.ComponentHTML Action () m)
-notesExtras s =
-  [ xyPad s
-  , readout s
-  , rollGrid s.odo
-  ]
-
--- | The NOTES-source one-shots as a compact 2×2: flatten every note to the scale
--- | root low (LOW, basslines) or middle (MID, melodies), seed a fresh MELODY line,
--- | or ROLL the Marbles once. Both octave floors follow the current key.
-rollGrid :: forall m. M.Odonus -> HH.ComponentHTML Action () m
-rollGrid _ =
-  HH.div [ style "display:grid;grid-template-columns:1fr 1fr;gap:4px;margin-top:7px" ]
-    [ tabBtn "LOW" false (SetAllNotes 0)
-    , tabBtn "MID" false (SetAllNotes (M.knobMax `div` 2))
-    , tabBtn "MELODY" false SeedMelody
-    , tabBtn "⟳ ROLL" false MarblesRoll
+-- | A parameter card: the generator row header (LED · label · depth · period)
+-- | over the bare 4×4 grid it drives. The generator's label serves for both, so
+-- | the grid carries no second label.
+paramCard :: forall m. State -> GenKind -> HH.ComponentHTML Action () m -> HH.ComponentHTML Action () m
+paramCard s kind gridBody =
+  HH.div [ style cardStyle ]
+    [ genRow s kind
+    , HH.div [ style "margin-top:7px" ] [ gridBody ]
     ]
 
--- | A round source-enable lamp. Click toggles; debounced in the handler so the
--- | doubled re-render dispatch can't cancel the flip.
-led :: forall m. Boolean -> GenKind -> HH.ComponentHTML Action () m
-led on kind =
+-- | The VELOCITY card — a grid with no random source, so a plain label instead of
+-- | a generator row.
+velCard :: forall m. HH.ComponentHTML Action () m -> HH.ComponentHTML Action () m
+velCard gridBody =
+  HH.div [ style cardStyle ]
+    [ HH.div [ style $ engrave <> ";font-size:11px;color:#3f3c33;line-height:1.1" ] [ HH.text "VELOCITY" ]
+    , HH.div [ style $ engrave <> ";font-size:8px;opacity:0.65;letter-spacing:0.06em" ] [ HH.text "per-cell accent" ]
+    , HH.div [ style "margin-top:7px" ] [ gridBody ]
+    ]
+
+cardStyle :: String
+cardStyle = "margin-bottom:9px;padding:8px 9px;border-radius:7px;background:#ffffff30;border:1px solid #00000012"
+
+-- ---------------------------------------------------------------------------
+-- Bare grids — the 4×4 small multiples, sans label (the card header labels them).
+-- ---------------------------------------------------------------------------
+
+-- | A boolean field — a 4×4 of clickable lamps for one per-cell boolean.
+toggleGrid
+  :: forall m
+   . String -> (M.Cell -> Boolean) -> (Int -> Action) -> M.Odonus
+  -> HH.ComponentHTML Action () m
+toggleGrid color get act odo =
   HH.div
-    [ HE.onClick \_ -> ToggleGen kind
-    , style $ "width:15px;height:15px;border-radius:50%;cursor:pointer;flex:0 0 auto;"
-        <> "border:1px solid #a8a392;box-shadow:inset 0 1px 1px #00000022;background:"
-        <> (if on then "radial-gradient(circle at 35% 30%, #f0c25a, #b5832b)" else "#c4bfb0") ]
-    []
+    [ style "display:grid;grid-template-columns:repeat(4,1fr);gap:4px" ]
+    (mapWithIndex (\i c -> toggleCell odo color (get c) (act i) i) odo.cells)
 
--- | The mutation-depth number (how MUCH each change is), dragged vertically.
--- | Small constant movement at low %, a real shake-up near 100%.
-amtNumber :: forall m. GenKind -> Int -> Boolean -> HH.ComponentHTML Action () m
-amtNumber kind amt on =
+toggleCell :: forall m. M.Odonus -> String -> Boolean -> Action -> Int -> HH.ComponentHTML Action () m
+toggleCell odo color on act i =
   HH.div
-    [ HE.onMouseDown \_ -> KnobDown (GenAmt kind) amt
-    , style "display:flex;flex-direction:column;align-items:flex-end;cursor:ns-resize;min-width:32px;user-select:none" ]
-    [ HH.span
-        [ style $ "font-family:'SF Mono',Menlo,monospace;font-size:12px;line-height:1;color:"
-            <> (if on then "#5a564b" else "#a9a497") ]
-        [ HH.text (show amt <> "%") ]
-    , HH.span [ style $ engrave <> ";font-size:7px;opacity:0.55;margin-top:1px" ]
-        [ HH.text "depth" ]
+    [ HE.onClick \_ -> act
+    , style $ cellChrome odo i
+        <> ";height:14px;cursor:pointer;user-select:none;display:flex;align-items:center;justify-content:center"
+    ]
+    [ HH.div
+        [ style $ "width:7px;height:7px;border-radius:50%;border:1px solid #00000022;background:"
+            <> (if on then color else "#46433a")
+            <> (if on then ";box-shadow:0 0 5px " <> color else "")
+        ] []
     ]
 
--- | The bare period number, dragged vertically (up = rarer). Reuses the knob
--- | drag infra via the GenRate target; renders as a plain number, no dial.
-freqNumber :: forall m. GenKind -> Int -> Boolean -> HH.ComponentHTML Action () m
-freqNumber kind rate on =
+-- | A per-cell knob field — a 4×4 small multiple of small knobs over one cell
+-- | parameter (LENGTH / RATCHET / VEL…). `mkTarget` is the knob's drag target per
+-- | index, `getVal` reads the value; `ticks > 0` draws detents.
+perCellKnobGrid
+  :: forall m
+   . String -> Int -> Int -> Int -> (Int -> KnobTarget) -> (M.Cell -> Int) -> M.Odonus
+  -> HH.ComponentHTML Action () m
+perCellKnobGrid color lo hi ticks mkTarget getVal odo =
   HH.div
-    [ HE.onMouseDown \_ -> KnobDown (GenRate kind) rate
-    , style "display:flex;flex-direction:column;align-items:flex-end;cursor:ns-resize;min-width:52px;user-select:none" ]
-    [ HH.span
-        [ style $ "font-family:'SF Mono',Menlo,monospace;font-size:17px;line-height:1;font-weight:600;color:"
-            <> (if on then "#7a3b1f" else "#9a9588") ]
-        [ HH.text (show (periodOf rate)) ]
-    , HH.span [ style $ engrave <> ";font-size:7px;opacity:0.6;margin-top:1px" ]
-        [ HH.text "1 / N steps" ]
+    [ style "display:grid;grid-template-columns:repeat(4,1fr);gap:4px" ]
+    (mapWithIndex (\i c -> perCellKnob odo color lo hi ticks (mkTarget i) (getVal c) i) odo.cells)
+
+perCellKnob
+  :: forall m
+   . M.Odonus -> String -> Int -> Int -> Int -> KnobTarget -> Int -> Int
+  -> HH.ComponentHTML Action () m
+perCellKnob odo color lo hi ticks target val i =
+  HH.div
+    [ style $ cellChrome odo i
+        <> ";padding:3px;aspect-ratio:1;display:flex;align-items:center;justify-content:center"
     ]
-
--- | The 2-D control: drag a puck through the live distribution. X = bias (peak
--- | position, low→high notes), Y = spread (up = wider). The histogram behind
--- | the puck is the Beta distribution for the current setting.
-xyPad :: forall m. State -> HH.ComponentHTML Action () m
-xyPad s =
-  let
-    nbars = 24
-    ws = betaWeights nbars s.genBias s.genSpread
-    peak = fromMaybe 0.0 (maximum ws)
-    bar w =
-      let h = if peak <= 0.0 then 0.0 else (w / peak) * 100.0
-      in HH.div [ style "flex:1;display:flex;align-items:flex-end;justify-content:center;height:100%" ]
-           [ HH.div [ style $ "width:78%;height:" <> show h <> "%;background:#c0563f33;border-radius:1px 1px 0 0" ] [] ]
-    px = s.genBias * 100.0
-    py = (1.0 - s.genSpread) * 100.0
-  in
-    HH.div
-      [ HP.id marblesPadId
-      , HE.onMouseDown \e -> MarblesPad (ME.clientX e) (ME.clientY e) (ME.buttons e)
-      , HE.onMouseMove \e -> MarblesPad (ME.clientX e) (ME.clientY e) (ME.buttons e)
-      , style $ "position:relative;width:100%;height:108px;margin-top:8px;border-radius:6px;cursor:crosshair;"
-          <> "background:#cbc6b6;box-shadow:inset 0 0 0 1px #00000018;overflow:hidden;user-select:none" ]
-      [ HH.div [ style "position:absolute;inset:0;display:flex;align-items:flex-end" ]
-          (map bar ws)
-      , HH.div
-          [ style $ "position:absolute;width:13px;height:13px;border-radius:50%;background:#b5832b;"
-              <> "box-shadow:0 0 0 2px #fff8,0 0 6px #b5832b;transform:translate(-50%,-50%);pointer-events:none;"
-              <> "left:" <> show px <> "%;top:" <> show py <> "%" ] []
-      ]
-
-readout :: forall m. State -> HH.ComponentHTML Action () m
-readout s =
-  HH.div [ style "display:flex;justify-content:space-between;font-family:'SF Mono',Menlo,monospace;font-size:8px;color:#5a564b;margin-top:4px" ]
-    [ HH.span_ [ HH.text ("bias " <> pct s.genBias) ]
-    , HH.span_ [ HH.text ("spread " <> pct s.genSpread) ]
+    [ HH.div [ style "width:100%;height:100%;min-height:0" ]
+        [ knob
+            { cx: 24.0, cy: 24.0, rOuter: 18.0, rInner: 7.0, color, lo, hi, value: val, ticks }
+            (KnobDown target val)
+        ]
     ]
-
-pct :: Number -> String
-pct x = show (round (x * 100.0)) <> "%"
