@@ -372,8 +372,10 @@ dispatch = case _ of
   -- Click-radios / clickers: same deferred-broadcast lockstep path as SetHeadDir.
   -- Absolute sets (the model clamps), so replaying the value on the rig is idempotent.
   SetHeadSpeed h ix -> enqueue (RI.SetHeadSpeedIx h ix)
-  SetHeadPulses h k -> enqueue (RI.SetHeadPulses h k)
-  SetHeadSteps h n -> enqueue (RI.SetHeadEuclidSteps h n)
+  -- Relative nudges, so a burst of clicks accumulates even while the edit is
+  -- buffered for the rig (an absolute current±1 would re-read the stale value).
+  NudgeHeadPulses h d -> enqueue (RI.NudgeHeadPulses h d)
+  NudgeHeadSteps h d -> enqueue (RI.NudgeHeadEuclidSteps h d)
   UnifyHeads -> enqueue RI.UnifyHeads
   PhaseShift d -> enqueue (RI.NudgeOffsets d)
   CycleScaleType dir -> enqueue (RI.CycleScaleType dir)

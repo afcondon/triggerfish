@@ -133,10 +133,10 @@ euclidCell :: forall m. Int -> M.Head -> String -> H.ComponentHTML Action Slots 
 euclidCell h hd col =
   HH.div [ style "position:relative;width:82px;height:82px;flex:0 0 auto" ]
     [ euclidRing 82.0 hd.pulses hd.esteps hd.seqPos col
-    , cornerBtn "top:0;left:0" "k−" (SetHeadPulses h (hd.pulses - 1))
-    , cornerBtn "top:0;right:0" "k+" (SetHeadPulses h (hd.pulses + 1))
-    , cornerBtn "bottom:0;left:0" "n−" (SetHeadSteps h (hd.esteps - 1))
-    , cornerBtn "bottom:0;right:0" "n+" (SetHeadSteps h (hd.esteps + 1))
+    , cornerBtn "top:0;left:0" "k−" (NudgeHeadPulses h (-1))
+    , cornerBtn "top:0;right:0" "k+" (NudgeHeadPulses h 1)
+    , cornerBtn "bottom:0;left:0" "n−" (NudgeHeadSteps h (-1))
+    , cornerBtn "bottom:0;right:0" "n+" (NudgeHeadSteps h 1)
     ]
 
 -- | The dot ring itself. Consistent with Selene's Euclid rings: dots evenly round
