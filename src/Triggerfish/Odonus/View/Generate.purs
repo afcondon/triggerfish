@@ -22,7 +22,8 @@ import Triggerfish.Ui.Knob (knob)
 generatePanel :: forall m. State -> HH.ComponentHTML Action Slots m
 generatePanel s =
   panelShell s.collapsed "PARAMETERS" "sources · grids" "flex:0 1 300px;min-width:min-content"
-    ( map (topRow s) [ GHeads, GTransp, GPattern, GSpeed ]
+    ( [ freezeToggle s ]
+        <> map (topRow s) [ GHeads, GTransp, GPattern, GSpeed ]
         <>
         [ paramCard s GGate    (toggleGrid "#e0a32e" _.gate ToggleGate s.odo)
         , paramCard s GSkip    (toggleGrid "#c0563f" _.skip ToggleSkip s.odo)
@@ -32,6 +33,20 @@ generatePanel s =
         , paramCard s GVel     (perCellKnobGrid "#8a9d6b" 1 127 0 CellVel _.vel s.odo)
         ]
     )
+
+-- | The freeze toggle — pauses ALL generation WITHOUT touching the config, so a
+-- | liked moment holds still long enough to hear, extend, or save it before the
+-- | matrix drifts on. Deferred-on-both, so the rig freezes on the same step.
+freezeToggle :: forall m. State -> HH.ComponentHTML Action Slots m
+freezeToggle s =
+  HH.div
+    [ HE.onClick \_ -> ToggleFreeze
+    , style $ "display:flex;align-items:center;justify-content:center;cursor:pointer;user-select:none;"
+        <> "margin-bottom:9px;padding:5px 0;border-radius:6px;font-size:11px;letter-spacing:0.07em;"
+        <> "border:1px solid " <> (if s.genFrozen then "#5b8bb0" else "#00000018") <> ";"
+        <> (if s.genFrozen then "background:#dcebf5;color:#2b5878;font-weight:600"
+                           else "background:#ffffff30;color:#6a6a6a") ]
+    [ HH.text (if s.genFrozen then "❄ FROZEN — generation paused" else "❄ freeze generation") ]
 
 -- | A grid-less generator (heads / transp / pattern / speed / key): the plain
 -- | source row with a divider under it, as the old GENERATE pane rendered them.

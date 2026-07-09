@@ -68,7 +68,7 @@ component =
         , stepDiv: 1, headNote: [ Nothing, Nothing, Nothing, Nothing ]
         , swing: 0.0, velHumanize: 12
         , gen: map (\k -> { kind: k, on: false, rate: genDefaultRate k, amt: genDefaultAmt k }) genKinds
-        , genSpread: 0.5, genBias: 0.5, genSeed: Marbles.seedFrom 1, pending: [], nextModelStep: 0
+        , genSpread: 0.5, genBias: 0.5, genSeed: Marbles.seedFrom 1, genFrozen: false, pending: [], nextModelStep: 0
         -- SOURCE folds away by default: the dedicated TIDAL tab is the
         -- one-stop view of the whole setup; Odonus's own eDSL pane is for
         -- when you want to inspect just this module.
@@ -225,12 +225,12 @@ dispatch = case _ of
         due = filter (\p -> p.step <= modelStep) st.pending
         stillPending = filter (\p -> p.step > modelStep) st.pending
         sim0 = RI.applyInputs (map _.input due)
-                 { odo: st.odo, gen: st.gen, spread: st.genSpread, bias: st.genBias, seed: st.genSeed }
+                 { odo: st.odo, gen: st.gen, spread: st.genSpread, bias: st.genBias, seed: st.genSeed, frozen: st.genFrozen }
         -- The randomisation matrix fires BEFORE the heads read, so any mutated
         -- value is what plays this step. Each source drifts one notch at a time.
         g = Gen.runGen
               { gen: sim0.gen, spread: sim0.spread, bias: sim0.bias
-              , odo: sim0.odo, seed: sim0.seed }
+              , odo: sim0.odo, seed: sim0.seed, frozen: sim0.frozen }
         -- The chord progression advances on its own clock, before the heads read,
         -- so the new chord is what this step's notes quantize to.
         o1 = if g.odo.chord.on then M.tickChord g.odo else g.odo
@@ -301,7 +301,7 @@ dispatch = case _ of
         , genSeed = g.seed
         -- Write back the gen-config / pad any DUE inputs mutated (a no-op unless a
         -- gen gesture was synced this step), and drop the drained pending entries.
-        , gen = sim0.gen, genSpread = sim0.spread, genBias = sim0.bias
+        , gen = sim0.gen, genSpread = sim0.spread, genBias = sim0.bias, genFrozen = sim0.frozen
         , pending = stillPending
         -- LOCKSTEP (P5): the state written back here (odo/gen/genSeed) is exactly
         -- what the NEXT model step will consume, and that step is modelStep + 1. A
@@ -487,6 +487,15 @@ dispatch = case _ of
     unless (tapBounced k st) do
       H.modify_ (markTap k)
       enqueue (RI.ToggleGen kind)
+  -- Freeze / thaw ALL generation. Deferred-on-both like ToggleGen (so both runtimes
+  -- pause on the same step); debounced against the 30fps re-render double-dispatch.
+  -- The generator config is untouched — freezing only gates runGen — so you can
+  -- freeze a moment you like and save it before it drifts.
+  ToggleFreeze -> do
+    st <- H.get
+    unless (tapBounced "freeze" st) do
+      H.modify_ (markTap "freeze")
+      enqueue (RI.SetFrozen (not st.genFrozen))
   MarblesPad cx cy btns ->
     -- Wired to mousedown + mousemove; act only while the button is held.
     -- X = BIAS (peak's horizontal position in the histogram, low→high notes);
@@ -537,7 +546,7 @@ dispatch = case _ of
       liftEffect $ Transport.send (Binnacle.socket bin)
         ("reef-sim-at " <> show st.nextModelStep <> " " <> show (stepBeatsOf st) <> " "
            <> encodeSim
-                { odo: st.odo, gen: st.gen, spread: st.genSpread, bias: st.genBias, seed: st.genSeed })
+                { odo: st.odo, gen: st.gen, spread: st.genSpread, bias: st.genBias, seed: st.genSeed, frozen: st.genFrozen })
     -- A fresh voice starts with swing 0, so re-assert the current swing (its own
     -- verb, no last_step reset — safe right after the handoff).
     sendSwing st

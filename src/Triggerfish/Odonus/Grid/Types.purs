@@ -214,6 +214,7 @@ type State =
   , genSpread :: Number       -- Marbles X-Y pad: spread ∈ [0,1] (NOTES source)
   , genBias :: Number         -- Marbles X-Y pad: bias ∈ [0,1] (NOTES source)
   , genSeed :: Marbles.Seed   -- the shared PRNG every source draws from
+  , genFrozen :: Boolean      -- all generation paused (config kept) — synced via SetFrozen
   , pending :: Array PendingInput  -- lockstep (P4c): tick-tagged inputs awaiting their step
   , nextModelStep :: Int     -- lockstep (P5): the absolute model step the NEXT Step loop will
                              -- emit. `odo`/`gen`/`genSeed` are exactly that step's input, so a
@@ -282,6 +283,7 @@ data Action
   | DragMove Int
   | DragEnd
   | ToggleGen GenKind          -- enable/disable a randomisation source
+  | ToggleFreeze               -- pause / resume ALL generation (deferred-on-both)
   | MarblesPad Int Int Int     -- X-Y pad: clientX, clientY, buttons (read sync)
   | MarblesRoll                -- one-shot: regenerate all cell notes now
   | ReseedTo Int               -- pin the PRNG seed to a known value (golden tests):

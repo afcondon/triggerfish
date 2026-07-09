@@ -45,7 +45,7 @@ advance
   :: Array GenSource -> Number -> Number -> Sim
   -> { next :: Sim, o1 :: M.Odonus, fired :: Array M.Fired }
 advance gen spread bias st =
-  let g = Gen.runGen { gen, spread, bias, odo: st.odo, seed: st.seed }
+  let g = Gen.runGen { gen, spread, bias, odo: st.odo, seed: st.seed, frozen: false }
       o1 = if g.odo.chord.on then M.tickChord g.odo else g.odo
       r = M.stepEmit o1
   in { next: { odo: r.odo, seed: g.seed }, o1, fired: r.fired }
