@@ -22,7 +22,7 @@ import Triggerfish.Ui.Knob (knob)
 generatePanel :: forall m. State -> HH.ComponentHTML Action () m
 generatePanel s =
   panelShell s.collapsed "PARAMETERS" "sources · grids" "flex:0 1 300px;min-width:min-content"
-    ( map (topRow s) [ GHeads, GTransp, GPattern, GSpeed, GKey ]
+    ( map (topRow s) [ GHeads, GTransp, GPattern, GSpeed ]
         <>
         [ paramCard s GGate    (toggleGrid "#e0a32e" _.gate ToggleGate s.odo)
         , paramCard s GSkip    (toggleGrid "#c0563f" _.skip ToggleSkip s.odo)
