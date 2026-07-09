@@ -14,8 +14,9 @@ module Triggerfish.Odonus.Patch
 
 import Prelude
 
+import Data.Array (find)
 import Data.Maybe (Maybe(..), isJust)
-import Triggerfish.Odonus.Grid.Types (SourceTag(..), State)
+import Triggerfish.Odonus.Grid.Types (GenSource, SourceTag(..), State, genKinds, genDefaultRate, genDefaultAmt)
 import Triggerfish.Odonus.Lepidoptera (OdonusPatch, printPatch, parsePatch)
 import Triggerfish.Odonus.Model as M
 
@@ -41,13 +42,26 @@ applyPatch p s = s
   { odo = p.odo
   , follow = p.follow
   , source = deriveSource p.follow p.odo.chord.on
-  , gen = p.gen
+  , gen = reconcileGen p.gen
   , genSpread = p.genSpread
   , genBias = p.genBias
   , swing = p.swing
   , velHumanize = p.velHumanize
   , stepDiv = p.stepDiv
   }
+
+-- | Reconcile a loaded gen array against the full generator set: keep every
+-- | source the patch saved, and fill in any generator the patch PREDATES (e.g.
+-- | a scene authored before GVel/VELOCITY existed) with its default, off. This
+-- | is the fix for a dead generator LED: without it, a source absent from the
+-- | loaded array is absent from `s.gen`, so its LED reads permanently off and
+-- | its toggle no-ops — `toggleGen` only maps over sources already present.
+-- | Iterating `genKinds` also fixes the on-screen order to the canonical one.
+reconcileGen :: Array GenSource -> Array GenSource
+reconcileGen loaded =
+  genKinds <#> \k -> case find (\g -> g.kind == k) loaded of
+    Just g -> g
+    Nothing -> { kind: k, on: false, rate: genDefaultRate k, amt: genDefaultAmt k }
 
 -- | The source intent a loaded patch implies (it isn't serialised separately):
 -- | a follow → Vetula; else Scale.
