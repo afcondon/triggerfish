@@ -19,7 +19,7 @@ import Triggerfish.Ui.Knob (knob)
 import Triggerfish.Scale as Scale
 import Triggerfish.Odonus.Grid.Types (Action(..), KnobTarget(..), SourceTag(..), State)
 import Triggerfish.Odonus.Grid.Widgets
-  ( engrave, labelledRow, octLabel, panelShell, stepperRow, style, tabBtn )
+  ( engrave, labelledRow, panelShell, stepperRow, style, tabBtn )
 import Triggerfish.Odonus.View.Scenes (scenesBody)
 
 -- | The merged KEY pane (#139): the pitch-quantizer controls, then the SCENES
@@ -31,15 +31,13 @@ quantizerPanel s =
   let tag = s.source
   in
     panelShell s.collapsed "KEY" "Source · Song" "flex:0 1 290px;min-width:min-content"
-      ( -- OCTAVE: chromatic ± octaves, COMMON to every source — always safe, so it
-        -- sits at the top above the source-specific controls.
-        [ labelledRow "OCTAVE"
-            (map (\n -> tabBtn (octLabel n) (s.odo.octaveShift == n) (SetOctave n)) [ -2, -1, 0, 1, 2 ])
+      ( -- OCTAVE moved to the top of the NOTES pane (it labels the note grid's
+        -- register). SOURCE leads here now.
         -- SOURCE: the pitch-set that drives the snap — an explicit choice (the
         -- `source` intent). The selected one's section is live; the others grey out.
         -- Vetula is always selectable; whether a signal is actually arriving is shown
         -- INSIDE its section (a setting you make, not a control gated on live input).
-        , labelledRow "SOURCE"
+        [ labelledRow "SOURCE"
             [ tabBtn "Scale" (tag == SScale) (SetSource SScale)
             , tabBtn "Vetula" (tag == SVetula) (SetSource SVetula)
             ]

@@ -22,13 +22,19 @@ import Triggerfish.Odonus.Marbles (betaWeights)
 import Triggerfish.Odonus.Grid.Types
   ( Action(..), GenKind(..), KnobTarget(..), State, marblesPadId )
 import Triggerfish.Odonus.Grid.Widgets
-  ( cellChrome, engrave, genRow, labelledRow, miniKnob, panelShell, style, tabBtn )
+  ( cellChrome, engrave, genRow, labelledRow, miniKnob, octLabel, panelShell, style, tabBtn )
 import Data.Array (length, mapWithIndex, (!!))
 
 gridPanel :: forall m. State -> H.ComponentHTML Action () m
 gridPanel s =
   panelShell s.collapsed "NOTES" "pitch · Marbles" "flex:0 1 340px;min-width:min-content"
-    [ genRow s GNotes
+    -- OCTAVE: the global ± octave, moved here from KEY — it shifts the register the
+    -- note grid plays and its knob labels now show (a chromatic move, common to
+    -- every pitch source).
+    [ HH.div [ style "margin-bottom:12px" ]
+        [ labelledRow "OCTAVE"
+            (map (\n -> tabBtn (octLabel n) (s.odo.octaveShift == n) (SetOctave n)) [ -2, -1, 0, 1, 2 ]) ]
+    , genRow s GNotes
     , xyPad s
     , readout s
     , rollGrid
