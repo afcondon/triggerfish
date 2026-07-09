@@ -53,7 +53,7 @@ import Triggerfish.Odonus.Lepidoptera (parsePatch, printPatch)
 import Triggerfish.SourceQuery (Query(..))
 import Triggerfish.Midi.Routing as Routing
 import Triggerfish.Odonus.View.Generate (generatePanel)
-import Triggerfish.Odonus.View.Scenes (scenesPanel, sceneName)
+import Triggerfish.Odonus.View.Scenes (sceneName)
 
 component :: forall i o m. MonadAff m => H.Component Query i o m
 component =
@@ -784,10 +784,11 @@ render s =
     [ style $ "position:fixed;top:var(--tf-bar);left:0;right:0;bottom:0;display:flex;align-items:stretch;overflow-x:auto;overflow-y:hidden;"
         <> "user-select:none;-webkit-user-select:none;"
         <> "background:#b7b1a0;font-family:Georgia,serif" ]
+    -- KEY now carries the SCENES song machinery in one merged column (#139),
+    -- freeing a horizontal slot for the panels that need the width.
     [ scopePanel s
     , quantizerPanel s
     , playheadsPanel s
     , gridPanel s
     , generatePanel s
-    , scenesPanel s
     ]

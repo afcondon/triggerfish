@@ -1,5 +1,8 @@
--- | SCENES panel — save whole settings, then sequence them into a song.
-module Triggerfish.Odonus.View.Scenes (scenesPanel, sceneName) where
+-- | SCENES section — save whole settings, then sequence them into a song. Since
+-- | the KEY/SCENES pane merge (#139) this is a *body* (an array of rows) stacked
+-- | below the KEY controls in one column, not its own `panelShell` — so it leads
+-- | with its own divider + section label instead of a panel header.
+module Triggerfish.Odonus.View.Scenes (scenesBody, sceneName) where
 
 import Prelude
 
@@ -12,7 +15,7 @@ import Halogen.HTML.Properties as HP
 import Triggerfish.Odonus.Model as M
 import Triggerfish.Scale as Scale
 import Triggerfish.Odonus.Grid.Types (Action(..), Scene, State)
-import Triggerfish.Odonus.Grid.Widgets (engrave, panelShell, stepBtn, style)
+import Triggerfish.Odonus.Grid.Widgets (engrave, stepBtn, style)
 
 -- | Auto-name a captured scene by its position + its scale.
 sceneName :: State -> String
@@ -42,10 +45,12 @@ rigCluster s =
         ]
     ]
 
-scenesPanel :: forall m. State -> H.ComponentHTML Action () m
-scenesPanel s =
-  panelShell s.collapsed "SCENES" "Song" "flex:0 1 198px;min-width:min-content"
-    [ rigCluster s
+-- | The SCENES rows, to stack below KEY in the merged pane. Leads with a section
+-- | divider so it reads as its own block within the shared column.
+scenesBody :: forall m. State -> Array (H.ComponentHTML Action () m)
+scenesBody s =
+    [ sceneDivider
+    , rigCluster s
     , HH.input
         [ HP.value s.sceneNameInput
         , HE.onValueInput SetSceneName
@@ -75,6 +80,18 @@ scenesPanel s =
             then [ HH.div [ style $ engrave <> ";font-size:8px;color:#888273;margin-top:6px" ]
                      [ HH.text "capture a few settings, then chain them" ] ]
             else mapWithIndex (sceneChip s) s.scenes )
+    ]
+
+-- | The divider + "SCENES" label that opens the scenes block within the merged
+-- | KEY pane (the visual seam where KEY's pitch controls end and the song
+-- | machinery begins).
+sceneDivider :: forall m. H.ComponentHTML Action () m
+sceneDivider =
+  HH.div
+    [ style $ "margin:14px 0 10px;padding-top:11px;border-top:1px solid #00000022;"
+        <> "display:flex;align-items:baseline;justify-content:space-between" ]
+    [ HH.span [ style $ engrave <> ";font-size:14px;letter-spacing:0.16em;color:#3f3c33" ] [ HH.text "SCENES" ]
+    , HH.span [ style $ engrave <> ";font-size:8px;opacity:0.6" ] [ HH.text "Song" ]
     ]
 
 sceneChip :: forall m. State -> Int -> Scene -> H.ComponentHTML Action () m

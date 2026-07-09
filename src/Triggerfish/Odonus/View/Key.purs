@@ -9,7 +9,7 @@ module Triggerfish.Odonus.View.Key (quantizerPanel) where
 
 import Prelude
 
-import Data.Array (elem, length, mapWithIndex, null, range, (:))
+import Data.Array (elem, length, null, range, (:))
 import Data.Maybe (Maybe(..), isNothing)
 import Halogen as H
 import Halogen.HTML as HH
@@ -20,27 +20,32 @@ import Triggerfish.Scale as Scale
 import Triggerfish.Odonus.Grid.Types (Action(..), KnobTarget(..), SourceTag(..), State)
 import Triggerfish.Odonus.Grid.Widgets
   ( engrave, labelledRow, octLabel, panelShell, stepperRow, style, tabBtn )
+import Triggerfish.Odonus.View.Scenes (scenesBody)
 
+-- | The merged KEY pane (#139): the pitch-quantizer controls, then the SCENES
+-- | song machinery stacked below in the same scrolling column — folded here so
+-- | the two no longer cost two horizontal columns. `scenesBody` leads with its
+-- | own divider + label, so the seam reads cleanly.
 quantizerPanel :: forall m. State -> H.ComponentHTML Action () m
 quantizerPanel s =
   let tag = s.source
   in
-    panelShell s.collapsed "KEY" "Source · Transpose" "flex:0 1 278px;min-width:min-content"
-      -- OCTAVE: chromatic ± octaves, COMMON to every source — always safe, so it
-      -- sits at the top above the source-specific controls.
-      [ labelledRow "OCTAVE"
-          (map (\n -> tabBtn (octLabel n) (s.odo.octaveShift == n) (SetOctave n)) [ -2, -1, 0, 1, 2 ])
-      -- SOURCE: the pitch-set that drives the snap — an explicit choice (the
-      -- `source` intent). The selected one's section is live; the others grey out.
-      -- Vetula is always selectable; whether a signal is actually arriving is shown
-      -- INSIDE its section (a setting you make, not a control gated on live input).
-      , labelledRow "SOURCE"
-          [ tabBtn "Scale" (tag == SScale) (SetSource SScale)
-          , tabBtn "Vetula" (tag == SVetula) (SetSource SVetula)
-          ]
-      , subSection (tag == SScale) (scaleSection s)
-      , subSection (tag == SVetula) [ followSection s ]
-      ]
+    panelShell s.collapsed "KEY" "Source · Song" "flex:0 1 290px;min-width:min-content"
+      ( -- OCTAVE: chromatic ± octaves, COMMON to every source — always safe, so it
+        -- sits at the top above the source-specific controls.
+        [ labelledRow "OCTAVE"
+            (map (\n -> tabBtn (octLabel n) (s.odo.octaveShift == n) (SetOctave n)) [ -2, -1, 0, 1, 2 ])
+        -- SOURCE: the pitch-set that drives the snap — an explicit choice (the
+        -- `source` intent). The selected one's section is live; the others grey out.
+        -- Vetula is always selectable; whether a signal is actually arriving is shown
+        -- INSIDE its section (a setting you make, not a control gated on live input).
+        , labelledRow "SOURCE"
+            [ tabBtn "Scale" (tag == SScale) (SetSource SScale)
+            , tabBtn "Vetula" (tag == SVetula) (SetSource SVetula)
+            ]
+        , subSection (tag == SScale) (scaleSection s)
+        , subSection (tag == SVetula) [ followSection s ]
+        ] <> scenesBody s )
 
 -- | A source sub-section: live, or greyed + inert when its source isn't selected.
 subSection :: forall m. Boolean -> Array (H.ComponentHTML Action () m) -> H.ComponentHTML Action () m
