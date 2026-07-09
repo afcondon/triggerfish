@@ -784,11 +784,12 @@ render s =
     [ style $ "position:fixed;top:var(--tf-bar);left:0;right:0;bottom:0;display:flex;align-items:stretch;overflow-x:auto;overflow-y:hidden;"
         <> "user-select:none;-webkit-user-select:none;"
         <> "background:#b7b1a0;font-family:Georgia,serif" ]
-    -- KEY now carries the SCENES song machinery in one merged column (#139),
-    -- freeing a horizontal slot for the panels that need the width.
+    -- KEY carries the SCENES song machinery in one merged column (#139); it now
+    -- sits at the RHS so the working order reads Scope · Playheads · Odonus ·
+    -- Generate · Key (the source/song settings live to the right of the grid).
     [ scopePanel s
-    , quantizerPanel s
     , playheadsPanel s
     , gridPanel s
     , generatePanel s
+    , quantizerPanel s
     ]
