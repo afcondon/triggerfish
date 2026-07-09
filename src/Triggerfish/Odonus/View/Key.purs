@@ -79,17 +79,43 @@ scalePicker s =
         (\(Select.Selected v) -> PickScale v)
     ]
 
--- | Odonus's preset scales, grouped for the cascading menu. `value` is the reef
--- | `scaleTypes` name (what PickScale matches); `label` is the readable form.
+-- | Odonus's preset scales, grouped by family for the cascading menu. `value` is
+-- | the reef `scaleTypes` name (what PickScale matches); `label` is the readable
+-- | form. A curated starter set — the eventual scale-library page will grow it and
+-- | let favourites feed this picker.
 scaleGroups :: Array Select.OptionGroup
 scaleGroups =
-  [ { label: "Diatonic"
+  [ { label: "Major Modes"
     , options:
-        [ { value: "major", label: "Major" }
-        , { value: "minor", label: "Minor" }
+        [ { value: "major", label: "Ionian (Major)" }
         , { value: "dorian", label: "Dorian" }
+        , { value: "phrygian", label: "Phrygian" }
+        , { value: "lydian", label: "Lydian" }
         , { value: "mixolydian", label: "Mixolydian" }
-        , { value: "harmonicMinor", label: "Harmonic Minor" }
+        , { value: "minor", label: "Aeolian (Minor)" }
+        , { value: "locrian", label: "Locrian" }
+        ]
+    }
+  , { label: "Melodic Minor Modes"
+    , options:
+        [ { value: "melodicMinor", label: "Melodic Minor" }
+        , { value: "dorianFlat2", label: "Dorian ♭2" }
+        , { value: "lydianAugmented", label: "Lydian Augmented" }
+        , { value: "lydianDominant", label: "Lydian Dominant" }
+        , { value: "melodicMajor", label: "Melodic Major" }
+        , { value: "halfDiminished", label: "Half-Diminished" }
+        , { value: "altered", label: "Altered" }
+        ]
+    }
+  , { label: "Harmonic Minor Modes"
+    , options:
+        [ { value: "harmonicMinor", label: "Harmonic Minor" }
+        , { value: "locrianNat6", label: "Locrian ♮6" }
+        , { value: "ionianAugmented", label: "Ionian Augmented" }
+        , { value: "ukrainianDorian", label: "Ukrainian Dorian" }
+        , { value: "phrygianDominant", label: "Phrygian Dominant" }
+        , { value: "lydianSharp2", label: "Lydian ♯2" }
+        , { value: "alteredDiminished", label: "Altered Diminished" }
         ]
     }
   , { label: "Pentatonic"
@@ -98,11 +124,27 @@ scaleGroups =
         , { value: "pentaMinor", label: "Penta Minor" }
         ]
     }
+  , { label: "Messiaen"
+    , options:
+        [ { value: "wholetone", label: "Mode 1 · Whole Tone" }
+        , { value: "messiaen2", label: "Mode 2 · Octatonic" }
+        , { value: "messiaen3", label: "Mode 3" }
+        , { value: "messiaen4", label: "Mode 4" }
+        , { value: "messiaen5", label: "Mode 5" }
+        , { value: "messiaen6", label: "Mode 6" }
+        , { value: "messiaen7", label: "Mode 7" }
+        ]
+    }
+  , { label: "Carnatic"
+    , options:
+        [ { value: "mayamalavagowla", label: "Mayamalavagowla" }
+        , { value: "simhendramadhyamam", label: "Simhendramadhyamam" }
+        , { value: "shanmukhapriya", label: "Shanmukhapriya" }
+        ]
+    }
   , { label: "Symmetric"
     , options:
-        [ { value: "wholetone", label: "Whole Tone" }
-        , { value: "chromatic", label: "Chromatic" }
-        ]
+        [ { value: "chromatic", label: "Chromatic" } ]
     }
   ]
 
