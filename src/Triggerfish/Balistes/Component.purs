@@ -835,8 +835,9 @@ render s =
         <> "user-select:none;-webkit-user-select:none;background:#b7b1a0;font-family:Georgia,serif" ]
     -- One of three drum-brains at a time, chosen by the tab bar. Each tab is
     -- self-contained: its own CONTROL column (middle) + its own PATTERN surface
-    -- (right). Working names during the build — GRIDS (the MI morph engine),
-    -- PATTERNS (user rhythms), SELENE DRUMS (relocated POLYTRIG, B2). All → ch10.
+    -- (right). Three drum models — MUTABLE (the MI-Grids morph engine, AGrids),
+    -- GRIDS (user rhythms, AFixed), TIDAL (the relocated POLYTRIG rack, ASelene).
+    -- All → ch10.
     [ tabBar s
     , HH.div
         [ style "flex:1 1 auto;min-height:0;display:flex;align-items:stretch;overflow-x:auto;overflow-y:hidden" ]
@@ -849,16 +850,19 @@ render s =
     ]
 
 -- The drum-brain tab bar. The active tab is a projection of `active`'s constructor;
--- clicking a tab swaps the brain (PATTERNS remembers the last-selected rhythm, or
--- falls to the first). SELENE DRUMS is a disabled placeholder until B2 relocates it.
+-- clicking a tab swaps the brain (GRIDS remembers the last-selected rhythm, or
+-- falls to the first). All three brains output on ch 10.
 tabBar :: forall m. State -> H.ComponentHTML Action () m
 tabBar s =
   HH.div
     [ style $ "flex:0 0 auto;display:flex;gap:2px;padding:0 14px;background:#cfcabb;"
         <> "border-bottom:1px solid #b3ae9c;box-shadow:0 1px 3px #00000010" ]
-    [ tabBtn "GRIDS" (isGrids s.active) (Just (SelectPattern AGrids))
-    , tabBtn "PATTERNS" (isFixed s.active) (Just (SelectPattern (AFixed (fixedIx s.active))))
-    , tabBtn "SELENE DRUMS" (isSelene s.active) (Just (SelectPattern ASelene))
+    -- Display names (the constructors keep their build-time identifiers):
+    -- MUTABLE = the MI-Grids morph engine (AGrids), GRIDS = user rhythms (AFixed),
+    -- TIDAL = the POLYTRIG jack rack (ASelene).
+    [ tabBtn "MUTABLE" (isGrids s.active) (Just (SelectPattern AGrids))
+    , tabBtn "GRIDS" (isFixed s.active) (Just (SelectPattern (AFixed (fixedIx s.active))))
+    , tabBtn "TIDAL" (isSelene s.active) (Just (SelectPattern ASelene))
     ]
   where
   isGrids = case _ of AGrids -> true
@@ -914,7 +918,7 @@ transportPanel s =
         <> show (length s.trig.jacks) <> " jacks"
     helpText = case s.active of
       AGrids -> "DRAG THE STYLE PAD TO MORPH THE KIT BETWEEN THE 25 NODES. DENSITY SETS HOW MANY HITS; RANDOMNESS NUDGES OFF-GRID EACH PATTERN."
-      AFixed _ -> "A FIXED STARTER RHYTHM IS PLAYING. PICK ANOTHER FROM THE BANK, OR THE GRIDS TAB FOR THE LIVE MORPH ENGINE."
+      AFixed _ -> "A FIXED STARTER RHYTHM IS PLAYING. PICK ANOTHER FROM THE BANK, OR THE MUTABLE TAB FOR THE LIVE MORPH ENGINE."
       ASelene -> "POLYTRIG: EIGHT NAMED JACKS, EACH WITH ITS OWN MINI-NOTATION PATTERN, PLUS LANE-SPANNING ROUTES (\"bd sn cp sn\") THAT FIRE JACKS BY NAME. ALL → CH 10."
   in
   panel "BALISTES" "flex:0 0 196px"
@@ -1240,8 +1244,9 @@ patternPanel s =
                  Nothing -> HH.text "—"
                ASelene -> trigBody s ] )
 
--- Within the PATTERNS tab: the library of user rhythms as chips (the KIND is now
--- the tab, so ◆ GRIDS is no longer a chip here). Clicking switches which rhythm plays.
+-- Within the GRIDS tab: the library of user rhythms as chips (the drum model is
+-- now the tab, so the morph engine is no longer a chip here). Clicking switches
+-- which rhythm plays.
 patternSwitcher :: forall m. State -> H.ComponentHTML Action () m
 patternSwitcher s =
   HH.div [ style "display:flex;gap:6px;flex-wrap:wrap;margin-bottom:16px;max-width:640px" ]
@@ -1274,7 +1279,7 @@ gridsBody s =
   HH.div_
     [ HH.div [ style "width:100%;max-width:640px;margin:0 auto" ] [ heatSvg s ]
     , HH.div [ style $ engrave <> ";font-size:8px;opacity:0.5;margin-top:10px;line-height:1.6;max-width:640px" ]
-        [ HH.text "THE 3 GRIDS VOICES (BD · SD · HH). FAINT = THE INTERPOLATED LANDSCAPE THE X/Y CURSOR SELECTS; SOLID = WHAT FIRES AT THIS DENSITY. DRAG A CELL UP/DOWN TO RATCHET IT." ]
+        [ HH.text "THE 3 MORPH-ENGINE VOICES (BD · SD · HH). FAINT = THE INTERPOLATED LANDSCAPE THE X/Y CURSOR SELECTS; SOLID = WHAT FIRES AT THIS DENSITY. DRAG A CELL UP/DOWN TO RATCHET IT." ]
     , HH.div [ style "max-width:640px;margin:20px auto 0" ]
         [ snapshotSection s
         , HH.div [ style "height:1px;background:#00000018;margin:16px 0 12px" ] []
