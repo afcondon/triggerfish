@@ -411,6 +411,7 @@ data Action
   | BorrowFrom String      -- modal interchange: borrow from a parallel mode (or off)
   | ReflavourFamily String -- re-flavour the focused family's scale (mode value)
   | PlayPath               -- ▶ play the whole progression
+  | ClearPath              -- ✕ empty the progression so the next shift-click starts fresh
   | PlayStep Int           -- hear one step (and make it the active chord)
   | CopyTidal String       -- copy the progression's Tidal source to the clipboard
   | EditSource String      -- the Tidal-source textarea was edited (freeze the live view)
@@ -898,7 +899,7 @@ handleAction = case _ of
         "Tab" -> cycleVoicing (if shift then -1 else 1)
         "ArrowUp" -> nudgeSelected 1
         "ArrowDown" -> nudgeSelected (-1)
-        "c" -> H.modify_ _ { path = [], focus = Hunt }
+        "c" -> handleAction ClearPath
         "p" -> H.gets _.path >>= playPath
         "f" -> toggleFavorite
         -- catch the hovered chord into the tank: a Tonnetz triangle first (no pool
@@ -1096,6 +1097,12 @@ handleAction = case _ of
     for_ (find (\d -> d.id == cid) chords') playChord
 
   PlayPath -> H.gets _.path >>= playPath
+
+  -- ✕ clear: empty the progression and drop back to Hunt, so the next shift-click
+  -- STARTS a fresh path instead of extending this one (the Nothing branch of
+  -- PathPick then opens a new capture session). The visible twin of the `c` key —
+  -- discoverable, and it works with a text field focused (where `c` is swallowed).
+  ClearPath -> H.modify_ _ { path = [], focus = Hunt }
 
   PlayStep pid -> playId pid
 
@@ -3632,12 +3639,23 @@ progressionPanel st =
       [ HP.style "margin: 0 0 6px; max-width: 360px;" ]
       [ HH.div
           [ HP.style "display: flex; align-items: center; gap: 8px; margin: 0 0 8px;" ]
-          [ HH.button
-              [ HP.style "border: 1px solid #b8860b; background: #fbf6e9; color: #7a5c00; cursor: pointer; padding: 3px 12px; border-radius: 4px; font-size: 12px; font-weight: 600;"
-              , HE.onClick \_ -> PlayPath
-              ]
-              [ HH.text "▶ preview" ]
-          ]
+          ( [ HH.button
+                [ HP.style "border: 1px solid #b8860b; background: #fbf6e9; color: #7a5c00; cursor: pointer; padding: 3px 12px; border-radius: 4px; font-size: 12px; font-weight: 600;"
+                , HE.onClick \_ -> PlayPath
+                ]
+                [ HH.text "▶ preview" ]
+            ]
+            -- ✕ clear appears only with a progression to clear; one click empties it
+            -- so the next shift-click on the lattice starts a NEW progression.
+            <> ( if length steps == 0 then [] else
+                   [ HH.button
+                       [ HP.style "border: 1px solid #e0d4d4; background: #fdf7f7; color: #9a6a6a; cursor: pointer; padding: 3px 11px; border-radius: 4px; font-size: 12px;"
+                       , HE.onClick \_ -> ClearPath
+                       ]
+                       [ HH.text "✕ clear" ]
+                   ]
+               )
+          )
       , if length steps == 0 then HH.text "" else
           HH.div [ HP.style "display: flex; align-items: center; gap: 6px; margin: 0 0 8px;" ]
             [ HH.input
