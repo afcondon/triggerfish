@@ -22,23 +22,24 @@ import Triggerfish.Odonus.Marbles (betaWeights)
 import Triggerfish.Odonus.Grid.Types
   ( Action(..), GenKind(..), KnobTarget(..), State, marblesPadId )
 import Triggerfish.Odonus.Grid.Widgets
-  ( cellChrome, engrave, genRow, labelledRow, miniKnob, octLabel, panelShell, signed, stepperRow, style, tabBtn )
+  ( cellChrome, engrave, genRow, labelledRow, miniKnob, octLabel, panelShell, style, tabBtn )
 import Data.Array (length, mapWithIndex, (!!))
 
 gridPanel :: forall m. State -> H.ComponentHTML Action () m
 gridPanel s =
   panelShell s.collapsed "NOTES" "pitch · Marbles" "flex:0 1 340px;min-width:min-content"
-    -- OCTAVE + TRANSP: the two global pitch moves, brought here from KEY — both
+    -- OCTAVE + DEGREE: the two global pitch moves, brought here from KEY — both
     -- shift the register the note grid plays and its knob labels now show. OCTAVE
-    -- is chromatic (±octaves); TRANSP is scalar (shift every voice by N scale
-    -- degrees, in the set's own space, ahead of any chord snap).
+    -- is chromatic (±octaves); DEGREE is scalar — shift every voice by a scale
+    -- degree, in the set's own space, ahead of any chord snap. The buttons are the
+    -- interval you jump TO: "1" = unison (no shift), "3" = a third, "5" = a fifth,
+    -- "7" = a seventh — so `degShift` is the button number minus one. (Distinct
+    -- from the per-head chromatic INT — see the PARAMETERS/Playheads panes.)
     [ HH.div [ style "margin-bottom:12px;display:flex;flex-direction:column;gap:8px" ]
         [ labelledRow "OCTAVE"
             (map (\n -> tabBtn (octLabel n) (s.odo.octaveShift == n) (SetOctave n)) [ -2, -1, 0, 1, 2 ])
-        , stepperRow "TRANSP"
-            (signed s.odo.degShift <> (if s.odo.degShift == 1 then " degree" else " degrees"))
-            (SetDegShift (s.odo.degShift - 1))
-            (SetDegShift (s.odo.degShift + 1))
+        , labelledRow "DEGREE"
+            (map (\d -> tabBtn (show (d + 1)) (s.odo.degShift == d) (SetDegShift d)) [ 0, 1, 2, 3, 4, 5, 6 ])
         ]
     , genRow s GNotes
     , xyPad s
