@@ -524,7 +524,10 @@ component = H.mkComponent
       , subId: Nothing
       , midiOut: Nothing
       , midiName: "…"
-      , previewChan: 0
+      -- chord/path auditions default to the canonical Vetula channel (MIDI ch 5,
+      -- where the standard config parks a pad/strings) — `playChord` sends this raw
+      -- to WebMIDI, so it's the 0-indexed toWire form of the canonical constant.
+      , previewChan: Routing.toWire Routing.vetulaDefaultChannel
       , sounding: Just 0
       , revoicing: Nothing
       , drag: Nothing
