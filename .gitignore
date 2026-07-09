@@ -1,5 +1,7 @@
 output/
 .spago/
+.psci_modules/
+.purs-repl
 node_modules/
 *.log
 .DS_Store
