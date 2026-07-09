@@ -16,10 +16,13 @@ module Triggerfish.Selene.Component (component) where
 
 import Prelude
 
-import Data.Array (filter, length, mapWithIndex, modifyAt, null, range, (!!))
-import Data.Foldable (for_)
+import Data.Array (drop, filter, length, mapMaybe, mapWithIndex, modifyAt, null, range, (!!))
+import Data.Foldable (for_, foldr)
 import Data.Int (round, toNumber)
+import Data.Map (Map)
+import Data.Map as Map
 import Data.Number (cos, pi, sin) as Num
+import Data.String as Str
 import Data.String.Common (joinWith)
 import Effect.Aff.Class (class MonadAff)
 import Effect.Class (liftEffect)
@@ -33,10 +36,12 @@ import Binnacle as Binnacle
 import Binnacle.Clock as Clock
 import Binnacle.Midi as Midi
 import Binnacle.Scheduler as Scheduler
+import Binnacle.Transport as Transport
 import Triggerfish.Odonus.Grid.Widgets (engrave, style, svgAttr, svgEl)
 import Triggerfish.Selene.Model as M
 import Triggerfish.Selene.Source as Source
 import Triggerfish.Selene.Store as Store
+import Triggerfish.Selene.Wire as Wire
 import Triggerfish.SourceQuery (Query(..))
 import Triggerfish.Transport (Sounding(..))
 import Data.Maybe (Maybe(..), fromMaybe)
@@ -64,6 +69,10 @@ type State =
   , clockTempo :: Number
   , clockLocked :: Boolean
   , clockBar :: Int
+  -- the daemons' replies to the last Apply → rig push, keyed "socket:bank"
+  -- (e.g. "es9:main"). "…" while a push is in flight; the daemon's OK/ERR line
+  -- once it answers. Drives the per-bank status readout (#142 S3).
+  , replies :: Map String String
   }
 
 data Action
@@ -76,6 +85,8 @@ data Action
   | SelectRack Int            -- load a library rack into the editor
   | NewRack                   -- append a fresh empty rack + select it
   | SetRackName String        -- rename the active rack
+  | ApplyToRig                -- push every modular destination to its daemon
+  | SeleneReply String        -- a raw `selene-reply …` frame from the rig
 
 component :: forall i o m. MonadAff m => H.Component Query i o m
 component =
@@ -88,6 +99,7 @@ component =
           , sounding: Silent, playStep: 0
           , binnacle: Nothing, midiOut: Nothing, midiName: "…"
           , clockTempo: 120.0, clockLocked: false, clockBar: 0
+          , replies: Map.empty
           }
     , render
     , eval: H.mkEval H.defaultEval
@@ -139,6 +151,11 @@ handleAction :: forall o m. MonadAff m => Action -> H.HalogenM State Action () o
 handleAction = case _ of
   Initialize -> do
     bin <- liftEffect $ Binnacle.connect { url: rigUrl, tempo: 120.0 }
+    -- Rig replies to the Apply → rig push (`selene-reply …`) arrive as non-anchor
+    -- frames; route them through Halogen so the per-bank status can update.
+    { emitter: replyE, listener: replyL } <- liftEffect HS.create
+    _ <- H.subscribe replyE
+    liftEffect $ Binnacle.onAppMessage bin \msg -> HS.notify replyL (SeleneReply msg)
     { emitter: stepE, listener: stepL } <- liftEffect HS.create
     _ <- H.subscribe stepE
     _ <- liftEffect $ Scheduler.startGrid (Binnacle.clock bin) gridCfg \tick ->
@@ -206,6 +223,31 @@ handleAction = case _ of
     H.modify_ \s -> s { library = fromMaybe s.library (modifyAt s.active (_ { name = name }) s.library) }
     persist
 
+  -- Apply → rig (#142 S3): push every modular destination's apply-polysignal
+  -- envelope to its daemon over the rig WS. es9-daemon / fh2-config generate the
+  -- CV autonomously from here (install-once, not per-tick). Each frame is
+  -- `selene-apply <socket> <bank> <json>`; the reply lands async in SeleneReply.
+  ApplyToRig -> do
+    st <- H.get
+    let envs = mapMaybe Wire.destinationEnvelope st.sel.destinations
+    for_ st.binnacle \bin ->
+      for_ envs \e ->
+        liftEffect $ Transport.send (Binnacle.socket bin)
+          ("selene-apply " <> e.socket <> " " <> e.bank <> " " <> e.json)
+    -- mark every pushed bank pending; the daemon's OK/ERR replaces it.
+    H.modify_ \s -> s { replies = foldr (\e m -> Map.insert (replyKey e.socket e.bank) "…" m) s.replies envs }
+
+  -- A `selene-reply <socket> <bank> <status…>` frame — record the status against
+  -- its bank. Non-matching frames (other verbs) are ignored.
+  SeleneReply raw -> case Str.stripPrefix (Str.Pattern "selene-reply ") raw of
+    Nothing -> pure unit
+    Just rest ->
+      let toks = Str.split (Str.Pattern " ") rest
+      in case toks !! 0, toks !! 1 of
+           Just socket, Just bank ->
+             H.modify_ \s -> s { replies = Map.insert (replyKey socket bank) (joinWith " " (drop 2 toks)) s.replies }
+           _, _ -> pure unit
+
 -- | The active rack's eDSL doc — the editable text + the AskSource answer.
 currentDoc :: State -> String
 currentDoc s = fromMaybe "" (map _.doc (s.library !! s.active))
@@ -230,6 +272,10 @@ persist = do
 
 rigUrl :: String
 rigUrl = "ws://127.0.0.1:3012/ws"
+
+-- | The `replies` map key for a pushed destination: "socket:bank" (e.g. "es9:main").
+replyKey :: String -> String -> String
+replyKey socket bank = socket <> ":" <> bank
 
 gridCfg :: Scheduler.GridConfig
 gridCfg = { stepBeats: 0.25, lookaheadMs: 120.0, tickMs: 25 }
@@ -319,25 +365,59 @@ newRackChip =
         <> "font-family:Georgia,serif;font-size:11px;color:#6a6657;background:#00000006" ]
     [ HH.text "+ NEW" ]
 
--- A compact horizontal transport: the ARM/cue toggle (sounds only under the
--- shell master) + live clock + MIDI readouts. No audible output yet — the es9
--- CV/gate path is the next increment (#142); the playhead sweeps meanwhile.
+-- A compact horizontal transport: live clock + MIDI readouts, the Apply → rig
+-- push button, and the per-bank status readout showing each daemon's OK / claim /
+-- ERR reply (#142). The rack's CV/gate is generated by the daemons once applied.
 transportStrip :: forall m. State -> H.ComponentHTML Action () m
 transportStrip s =
   HH.div
     [ style $ "display:flex;align-items:center;gap:14px;margin-bottom:14px;padding:8px 10px;"
-        <> "border-radius:7px;background:#00000008;border:1px solid #00000012" ]
+        <> "border-radius:7px;background:#00000008;border:1px solid #00000012;flex-wrap:wrap" ]
     -- ARM now lives on the tab dot in the top switcher; this strip keeps the readouts.
-    [ stat "TEMPO" (show (round s.clockTempo) <> " bpm" <> (if s.clockLocked then " ⛓" else " ·"))
-    , stat "BAR" (show s.clockBar <> " · step " <> show (s.playStep + 1) <> "/" <> show cycleSteps)
-    , stat "MIDI" s.midiName
-    ]
+    ( [ stat "TEMPO" (show (round s.clockTempo) <> " bpm" <> (if s.clockLocked then " ⛓" else " ·"))
+      , stat "BAR" (show s.clockBar <> " · step " <> show (s.playStep + 1) <> "/" <> show cycleSteps)
+      , stat "MIDI" s.midiName
+      , applyButton
+      ]
+        <> replyReadout s )
   where
   stat label val =
     HH.div [ style "display:flex;flex-direction:column;gap:1px" ]
       [ HH.span [ style $ engrave <> ";font-size:8px;opacity:0.55" ] [ HH.text label ]
       , HH.span [ style $ "font-family:'SF Mono',Menlo,monospace;font-size:10px;color:" <> ink ] [ HH.text val ]
       ]
+
+applyButton :: forall m. H.ComponentHTML Action () m
+applyButton =
+  HH.button
+    [ HE.onClick \_ -> ApplyToRig
+    , style $ "padding:7px 14px;border:1px solid #6f8fa0;border-radius:6px;cursor:pointer;"
+        <> "font-family:Georgia,serif;font-size:11px;letter-spacing:0.06em;color:#1c2a30;"
+        <> "background:linear-gradient(#9fc0d0,#7a9eb0)" ]
+    [ HH.text "APPLY → RIG" ]
+
+-- One status pill per modular (es9/fh2) destination: its socket:bank + the latest
+-- daemon reply. "—" before any push, "…" while in flight, then OK (green) / ERR
+-- (amber) once the daemon answers. Non-modular destinations (Midi/Virtual) don't
+-- appear — they aren't pushed.
+replyReadout :: forall m. State -> Array (H.ComponentHTML Action () m)
+replyReadout s = map pill (mapMaybe Wire.destinationEnvelope s.sel.destinations)
+  where
+  pill e =
+    let
+      key = replyKey e.socket e.bank
+      status = fromMaybe "—" (Map.lookup key s.replies)
+      col = if Str.contains (Str.Pattern "OK") status then "#4f7a3a"
+            else if Str.contains (Str.Pattern "ERR") status then "#9a6a20"
+            else ink
+    in
+      HH.div [ style "display:flex;flex-direction:column;gap:1px;max-width:220px" ]
+        [ HH.span [ style $ engrave <> ";font-size:8px;opacity:0.55" ] [ HH.text key ]
+        , HH.span
+            [ style $ "font-family:'SF Mono',Menlo,monospace;font-size:9px;color:" <> col
+                <> ";white-space:nowrap;overflow:hidden;text-overflow:ellipsis" ]
+            [ HH.text status ]
+        ]
 
 addBar :: forall m. H.ComponentHTML Action () m
 addBar =
