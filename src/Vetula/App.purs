@@ -551,7 +551,12 @@ component = H.mkComponent
       , libSearch: ""
       , saveName: ""
       , perfName: Nothing
-      , voices: []
+      -- one MIDI + one Odonus voice present from the start but MUTED, so both
+      -- destinations are one un-mute away — no Add-voice hunt to hear either.
+      , voices:
+          [ (defaultVoice 0 4 Block 0) { muted = true }
+          , (defaultVoice 1 0 Block 0) { dest = ToOdonus, muted = true }
+          ]
       , armed: false
       -- standalone Vetula has no shell, so authority defaults Local (the play button
       -- works as a direct local transport). Inside Triggerfish the shell drives it via
@@ -562,14 +567,14 @@ component = H.mkComponent
       , tempo: 120
       , binnacle: Nothing
       , clockTempo: 120.0
-      , nextVoiceId: 0
+      , nextVoiceId: 2
       -- name → canonical MIDI channel, pushed from the shell's Tidal-page routing
       -- table (SetRouting). Unnamed / unbound voices fall back to the default channel.
       , routing: Map.empty :: Map String Int
       , tank: []
       , nextSpecId: 0
       , seedChord: Map.empty
-      , lens: LensKeyboard
+      , lens: LensTonnetz  -- default: the tonal net shows the scale's shape best
       , viewCx: 0.0
       , viewCy: 0.0
       , viewZoom: 1.0
