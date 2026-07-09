@@ -20,12 +20,12 @@ import Triggerfish.Odonus.Model as M
 import Triggerfish.Ui.Knob (knob)
 import Triggerfish.Odonus.Marbles (betaWeights)
 import Triggerfish.Odonus.Grid.Types
-  ( Action(..), GenKind(..), KnobTarget(..), State, marblesPadId )
+  ( Action(..), GenKind(..), KnobTarget(..), Slots, State, marblesPadId )
 import Triggerfish.Odonus.Grid.Widgets
   ( cellChrome, engrave, genRow, labelledRow, miniKnob, octLabel, panelShell, style, tabBtn )
 import Data.Array (length, mapWithIndex, (!!))
 
-gridPanel :: forall m. State -> H.ComponentHTML Action () m
+gridPanel :: forall m. State -> H.ComponentHTML Action Slots m
 gridPanel s =
   panelShell s.collapsed "NOTES" "pitch · Marbles" "flex:0 1 340px;min-width:min-content"
     -- OCTAVE + DEGREE: the two global pitch moves, brought here from KEY — both
@@ -63,7 +63,7 @@ gridPanel s =
 -- | The 2-D control: drag a puck through the live distribution. X = bias (peak
 -- | position, low→high notes), Y = spread (up = wider). The histogram behind
 -- | the puck is the Beta distribution for the current setting.
-xyPad :: forall m. State -> H.ComponentHTML Action () m
+xyPad :: forall m. State -> H.ComponentHTML Action Slots m
 xyPad s =
   let
     nbars = 24
@@ -90,7 +90,7 @@ xyPad s =
               <> "left:" <> show px <> "%;top:" <> show py <> "%" ] []
       ]
 
-readout :: forall m. State -> H.ComponentHTML Action () m
+readout :: forall m. State -> H.ComponentHTML Action Slots m
 readout s =
   HH.div [ style "display:flex;justify-content:space-between;font-family:'SF Mono',Menlo,monospace;font-size:8px;color:#5a564b;margin-top:4px" ]
     [ HH.span_ [ HH.text ("bias " <> pct s.genBias) ]
@@ -103,7 +103,7 @@ pct x = show (round (x * 100.0)) <> "%"
 -- | The NOTES one-shots as a compact 2×2: flatten every note to the scale root
 -- | low (LOW, basslines) or middle (MID, melodies), seed a fresh MELODY line, or
 -- | ROLL the Marbles once. Both octave floors follow the current key.
-rollGrid :: forall m. H.ComponentHTML Action () m
+rollGrid :: forall m. H.ComponentHTML Action Slots m
 rollGrid =
   HH.div [ style "display:grid;grid-template-columns:1fr 1fr;gap:4px;margin-top:7px" ]
     [ tabBtn "LOW" false (SetAllNotes 0)
@@ -118,7 +118,7 @@ rollGrid =
 
 -- | GROOVE block: GATE length + SWING (off-beat lag) + HUMANISE (velocity
 -- | jitter) — the controls that pull the sequence off the metronome.
-feelBlock :: forall m. State -> H.ComponentHTML Action () m
+feelBlock :: forall m. State -> H.ComponentHTML Action Slots m
 feelBlock s =
   HH.div [ style "display:flex;align-items:flex-end;gap:8px" ]
     [ gateBlock s.odo
@@ -128,7 +128,7 @@ feelBlock s =
 
 -- | GATE knob: gated-note length as % of step (10..200; past 100 the notes
 -- | overlap into the next = legato, which lets portamento/glide slide).
-gateBlock :: forall m. M.Odonus -> H.ComponentHTML Action () m
+gateBlock :: forall m. M.Odonus -> H.ComponentHTML Action Slots m
 gateBlock odo =
   HH.div [ style "display:flex;flex-direction:column;align-items:center;width:52px" ]
     [ HH.span [ style $ engrave <> ";font-size:9px;margin-bottom:2px" ] [ HH.text "GATE" ]
@@ -141,7 +141,7 @@ gateBlock odo =
 
 -- | Global step length — what a 1× head plays. Buttons map to the clock
 -- | divider (1=whole … 1/16=fast); per-head SPD multiplies from here.
-clockRow :: forall m. State -> H.ComponentHTML Action () m
+clockRow :: forall m. State -> H.ComponentHTML Action Slots m
 clockRow s =
   labelledRow "STEP LENGTH"
     (map (\d -> tabBtn d.lbl (s.stepDiv == d.div) (SetStepDiv d.div))
@@ -155,7 +155,7 @@ oneDp x =
   let n = round (x * 10.0)
   in show (n `div` 10) <> "." <> show (n `mod` 10)
 
-statusBar :: forall m. State -> H.ComponentHTML Action () m
+statusBar :: forall m. State -> H.ComponentHTML Action Slots m
 statusBar s =
   HH.div [ style $ engrave <> ";font-size:8px;margin-top:10px;display:flex;gap:14px;color:#6a6456" ]
     [ HH.span [ style $ "color:" <> (if s.clockLocked then "#2f8a5c" else "#b0492f") ]
@@ -173,7 +173,7 @@ statusBar s =
 -- ---------------------------------------------------------------------------
 
 -- | A labelled small multiple: small-caps engraved label, then a 4×4 body.
-fieldShell :: forall m. String -> H.ComponentHTML Action () m -> H.ComponentHTML Action () m
+fieldShell :: forall m. String -> H.ComponentHTML Action Slots m -> H.ComponentHTML Action Slots m
 fieldShell label body =
   HH.div [ style "display:flex;flex-direction:column;gap:3px" ]
     [ HH.span [ style $ engrave <> ";font-size:9px;opacity:0.85" ] [ HH.text label ]
@@ -181,7 +181,7 @@ fieldShell label body =
     ]
 
 -- | NOTE field — a 4×4 of value knobs, the only field that edits a number.
-noteField :: forall m. M.Odonus -> H.ComponentHTML Action () m
+noteField :: forall m. M.Odonus -> H.ComponentHTML Action Slots m
 noteField odo =
   fieldShell "NOTE"
     ( HH.div_
@@ -191,7 +191,7 @@ noteField odo =
         ]
     )
 
-noteCell :: forall m. M.Odonus -> Int -> M.Cell -> H.ComponentHTML Action () m
+noteCell :: forall m. M.Odonus -> Int -> M.Cell -> H.ComponentHTML Action Slots m
 noteCell odo i c =
   HH.div
     [ style $ cellChrome odo i
@@ -216,7 +216,7 @@ midiName n =
   let names = [ "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B" ]
   in fromMaybe "?" (names !! (n `mod` 12)) <> show ((n `div` 12) - 1)
 
-controls :: forall m. State -> H.ComponentHTML Action () m
+controls :: forall m. State -> H.ComponentHTML Action Slots m
 controls _ =
   -- The ARM toggle now lives on the tab in the top switcher (the ▶/❚❚ dot); this
   -- row keeps only its hint.
@@ -225,7 +225,7 @@ controls _ =
         [ HH.text "click a thumbnail to change a head's pattern" ]
     ]
 
-nameplate :: forall m. State -> H.ComponentHTML Action () m
+nameplate :: forall m. State -> H.ComponentHTML Action Slots m
 nameplate s =
   HH.div
     [ style $ "margin-top:16px;padding:7px 10px;border-radius:6px;"

@@ -14,7 +14,7 @@ import Halogen.HTML.Events as HE
 import Halogen.HTML.Properties as HP
 import Triggerfish.Odonus.Model as M
 import Triggerfish.Scale as Scale
-import Triggerfish.Odonus.Grid.Types (Action(..), Scene, State)
+import Triggerfish.Odonus.Grid.Types (Action(..), Scene, Slots, State)
 import Triggerfish.Odonus.Grid.Widgets (engrave, stepBtn, style)
 
 -- | Auto-name a captured scene by its position + its scale.
@@ -26,7 +26,7 @@ sceneName s = show (length s.scenes + 1) <> " · " <> Scale.scaleName (M.scaleOf
 -- | runs) grouped away from the per-song scene controls below. Pin seed shows the
 -- | live seed; it rides the reef-sim handoff so pin-then-Push starts both runtimes
 -- | identically.
-rigCluster :: forall m. State -> H.ComponentHTML Action () m
+rigCluster :: forall m. State -> H.ComponentHTML Action Slots m
 rigCluster s =
   HH.div [ style "margin-bottom:11px;padding-bottom:10px;border-bottom:1px solid #00000014" ]
     [ HH.span [ style $ engrave <> ";font-size:8px;opacity:0.85;display:block;margin-bottom:5px" ]
@@ -47,7 +47,7 @@ rigCluster s =
 
 -- | The SCENES rows, to stack below KEY in the merged pane. Leads with a section
 -- | divider so it reads as its own block within the shared column.
-scenesBody :: forall m. State -> Array (H.ComponentHTML Action () m)
+scenesBody :: forall m. State -> Array (H.ComponentHTML Action Slots m)
 scenesBody s =
     [ sceneDivider
     , rigCluster s
@@ -85,7 +85,7 @@ scenesBody s =
 -- | The divider + "SCENES" label that opens the scenes block within the merged
 -- | KEY pane (the visual seam where KEY's pitch controls end and the song
 -- | machinery begins).
-sceneDivider :: forall m. H.ComponentHTML Action () m
+sceneDivider :: forall m. H.ComponentHTML Action Slots m
 sceneDivider =
   HH.div
     [ style $ "margin:14px 0 10px;padding-top:11px;border-top:1px solid #00000022;"
@@ -94,7 +94,7 @@ sceneDivider =
     , HH.span [ style $ engrave <> ";font-size:8px;opacity:0.6" ] [ HH.text "Song" ]
     ]
 
-sceneChip :: forall m. State -> Int -> Scene -> H.ComponentHTML Action () m
+sceneChip :: forall m. State -> Int -> Scene -> H.ComponentHTML Action Slots m
 sceneChip s i sc =
   let active = s.chain && s.sceneIx == i
   in

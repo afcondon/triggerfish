@@ -14,12 +14,12 @@ import Prelude
 import Data.Array (mapWithIndex)
 import Halogen.HTML as HH
 import Halogen.HTML.Events as HE
-import Triggerfish.Odonus.Grid.Types (Action(..), GenKind(..), KnobTarget(..), State)
+import Triggerfish.Odonus.Grid.Types (Action(..), GenKind(..), KnobTarget(..), Slots, State)
 import Triggerfish.Odonus.Grid.Widgets (cellChrome, engrave, genRow, panelShell, style)
 import Triggerfish.Odonus.Model as M
 import Triggerfish.Ui.Knob (knob)
 
-generatePanel :: forall m. State -> HH.ComponentHTML Action () m
+generatePanel :: forall m. State -> HH.ComponentHTML Action Slots m
 generatePanel s =
   panelShell s.collapsed "PARAMETERS" "sources · grids" "flex:0 1 300px;min-width:min-content"
     ( map (topRow s) [ GHeads, GTransp, GPattern, GSpeed ]
@@ -35,7 +35,7 @@ generatePanel s =
 
 -- | A grid-less generator (heads / transp / pattern / speed / key): the plain
 -- | source row with a divider under it, as the old GENERATE pane rendered them.
-topRow :: forall m. State -> GenKind -> HH.ComponentHTML Action () m
+topRow :: forall m. State -> GenKind -> HH.ComponentHTML Action Slots m
 topRow s kind =
   HH.div [ style "margin-bottom:7px;padding-bottom:7px;border-bottom:1px solid #00000010" ]
     [ genRow s kind ]
@@ -43,7 +43,7 @@ topRow s kind =
 -- | A parameter card: the generator row header (LED · label · depth · period)
 -- | over the bare 4×4 grid it drives. The generator's label serves for both, so
 -- | the grid carries no second label.
-paramCard :: forall m. State -> GenKind -> HH.ComponentHTML Action () m -> HH.ComponentHTML Action () m
+paramCard :: forall m. State -> GenKind -> HH.ComponentHTML Action Slots m -> HH.ComponentHTML Action Slots m
 paramCard s kind gridBody =
   HH.div [ style cardStyle ]
     [ genRow s kind
@@ -52,7 +52,7 @@ paramCard s kind gridBody =
 
 -- | The VELOCITY card — a grid with no random source, so a plain label instead of
 -- | a generator row.
-velCard :: forall m. HH.ComponentHTML Action () m -> HH.ComponentHTML Action () m
+velCard :: forall m. HH.ComponentHTML Action Slots m -> HH.ComponentHTML Action Slots m
 velCard gridBody =
   HH.div [ style cardStyle ]
     [ HH.div [ style $ engrave <> ";font-size:11px;color:#3f3c33;line-height:1.1" ] [ HH.text "VELOCITY" ]
@@ -71,13 +71,13 @@ cardStyle = "margin-bottom:9px;padding:8px 9px;border-radius:7px;background:#fff
 toggleGrid
   :: forall m
    . String -> (M.Cell -> Boolean) -> (Int -> Action) -> M.Odonus
-  -> HH.ComponentHTML Action () m
+  -> HH.ComponentHTML Action Slots m
 toggleGrid color get act odo =
   HH.div
     [ style "display:grid;grid-template-columns:repeat(4,1fr);gap:4px" ]
     (mapWithIndex (\i c -> toggleCell odo color (get c) (act i) i) odo.cells)
 
-toggleCell :: forall m. M.Odonus -> String -> Boolean -> Action -> Int -> HH.ComponentHTML Action () m
+toggleCell :: forall m. M.Odonus -> String -> Boolean -> Action -> Int -> HH.ComponentHTML Action Slots m
 toggleCell odo color on act i =
   HH.div
     [ HE.onClick \_ -> act
@@ -97,7 +97,7 @@ toggleCell odo color on act i =
 perCellKnobGrid
   :: forall m
    . String -> Int -> Int -> Int -> (Int -> KnobTarget) -> (M.Cell -> Int) -> M.Odonus
-  -> HH.ComponentHTML Action () m
+  -> HH.ComponentHTML Action Slots m
 perCellKnobGrid color lo hi ticks mkTarget getVal odo =
   HH.div
     [ style "display:grid;grid-template-columns:repeat(4,1fr);gap:4px" ]
@@ -106,7 +106,7 @@ perCellKnobGrid color lo hi ticks mkTarget getVal odo =
 perCellKnob
   :: forall m
    . M.Odonus -> String -> Int -> Int -> Int -> KnobTarget -> Int -> Int
-  -> HH.ComponentHTML Action () m
+  -> HH.ComponentHTML Action Slots m
 perCellKnob odo color lo hi ticks target val i =
   HH.div
     [ style $ cellChrome odo i

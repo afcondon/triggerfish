@@ -9,7 +9,7 @@ module Triggerfish.Odonus.Grid (component) where
 
 import Prelude
 
-import Data.Array (any, deleteAt, elem, filter, find, head, length, null, range, updateAt, (!!))
+import Data.Array (any, deleteAt, elem, filter, find, findIndex, head, length, null, range, updateAt, (!!))
 import Data.Foldable (foldl, for_)
 import Data.FoldableWithIndex (forWithIndex_)
 import Data.Int (floor, round, toNumber)
@@ -39,8 +39,9 @@ import Web.HTML (window)
 import Web.HTML.Window as Window
 import Web.UIEvent.MouseEvent as ME
 import Triggerfish.Odonus.Grid.Types
-  ( Action(..), KnobTarget(..), SourceTag(..), State, applyTarget, genDefaultAmt, genDefaultRate, genKinds, genLabel
+  ( Action(..), KnobTarget(..), SourceTag(..), Slots, State, applyTarget, genDefaultAmt, genDefaultRate, genKinds, genLabel
   , marblesPadId, setAmt, setRate, targetRange )
+import Triggerfish.Scale (scaleTypes)
 import Triggerfish.Transport (Sounding(..))
 import Triggerfish.Odonus.Grid.Widgets (clampI, style)
 import Triggerfish.Odonus.View.Scope (scopePanel)
@@ -80,7 +81,7 @@ component =
 
 -- | Answer the shell: the current eDSL (TIDAL tab), or adopt the rack's shared
 -- | free-run baseline so all modules share a downbeat with no rig.
-handleQuery :: forall o m a. MonadAff m => Query a -> H.HalogenM State Action () o m (Maybe a)
+handleQuery :: forall o m a. MonadAff m => Query a -> H.HalogenM State Action Slots o m (Maybe a)
 handleQuery = case _ of
   AskSource reply -> do
     s <- H.get
@@ -152,7 +153,7 @@ handleQuery = case _ of
 -- | / non-authoring actions (the clock tick, the river frame, a knob DRAG in
 -- | flight, MIDI readiness, and Initialize itself, which has just restored).
 -- | DragEnd is NOT excluded, so a knob edit persists once it settles.
-handleAction :: forall o m. MonadAff m => Action -> H.HalogenM State Action () o m Unit
+handleAction :: forall o m. MonadAff m => Action -> H.HalogenM State Action Slots o m Unit
 handleAction a = do
   dispatch a
   case a of
@@ -165,12 +166,12 @@ handleAction a = do
     _ -> persistAll
 
 -- | Persist the live working patch + the named scene library.
-persistAll :: forall o m. MonadAff m => H.HalogenM State Action () o m Unit
+persistAll :: forall o m. MonadAff m => H.HalogenM State Action Slots o m Unit
 persistAll = do
   s <- H.get
   liftEffect (Store.saveAll { live: patchText s, scenes: s.scenes })
 
-dispatch :: forall o m. MonadAff m => Action -> H.HalogenM State Action () o m Unit
+dispatch :: forall o m. MonadAff m => Action -> H.HalogenM State Action Slots o m Unit
 dispatch = case _ of
   Initialize -> do
     -- Connect to the rig. Binnacle's clock free-runs at 120 until the
@@ -376,6 +377,16 @@ dispatch = case _ of
   UnifyHeads -> enqueue RI.UnifyHeads
   PhaseShift d -> enqueue (RI.NudgeOffsets d)
   CycleScaleType dir -> enqueue (RI.CycleScaleType dir)
+  -- The Select widget picks a preset by NAME; jump straight to it by driving the
+  -- existing relative CycleScaleType input. `cur`/`tgt` use the same fromMaybe(-1)
+  -- rule cycleScaleType uses internally, so the delta lands exactly on target even
+  -- from a custom (unrecognised) scale.
+  PickScale name -> do
+    st <- H.get
+    let names = map _.name scaleTypes
+        cur = fromMaybe (-1) (findIndex (\n -> n == M.scaleTypeName st.odo) names)
+        tgt = fromMaybe cur (findIndex (\n -> n == name) names)
+    when (tgt /= cur) $ enqueue (RI.CycleScaleType (tgt - cur))
   ToggleDist -> enqueue RI.ToggleDistribution
   ToggleChord -> H.modify_ \s ->
     if tapBounced "chord" s then s else (markTap "chord" s) { odo = M.toggleChord s.odo }
@@ -553,7 +564,7 @@ markTap k s = s { lastTap = k, lastTapMicros = s.nowMicros }
 -- | When the rig isn't attached the broadcast is skipped; the local queue still
 -- | applies it, so the standalone webapp behaves the same (just quantized to the
 -- | grid instead of instant).
-enqueue :: forall o m. MonadAff m => RI.Input -> H.HalogenM State Action () o m Unit
+enqueue :: forall o m. MonadAff m => RI.Input -> H.HalogenM State Action Slots o m Unit
 enqueue input = do
   st <- H.get
   let tagStep = soundingStep st + inputBufferSteps
@@ -569,7 +580,7 @@ enqueue input = do
 -- | no-op when the rig isn't attached. Sent on Push and on every STEP LENGTH change
 -- | so reef_voice's grid tracks the frontend's — otherwise the BEAM keeps stepping
 -- | at 1/16 while the frontend steps coarser, and the two desync.
-sendStepLen :: forall o m. MonadAff m => State -> H.HalogenM State Action () o m Unit
+sendStepLen :: forall o m. MonadAff m => State -> H.HalogenM State Action Slots o m Unit
 sendStepLen st =
   when (st.sounding == Rig) $ for_ st.binnacle \bin ->
     liftEffect $ Transport.send (Binnacle.socket bin)
@@ -581,7 +592,7 @@ sendStepLen st =
 -- | absolute-step parity so the groove renders identically. Sent on Push (fresh voice
 -- | defaults to 0) and on the swing knob's release. Not tick-tagged — swing is timing
 -- | expression, not model state, so it never enters the deterministic SimState.
-sendSwing :: forall o m. MonadAff m => State -> H.HalogenM State Action () o m Unit
+sendSwing :: forall o m. MonadAff m => State -> H.HalogenM State Action Slots o m Unit
 sendSwing st =
   when (st.sounding == Rig) $ for_ st.binnacle \bin ->
     liftEffect $ Transport.send (Binnacle.socket bin)
@@ -752,7 +763,7 @@ frameTimer = liftEffect do
   _ <- setInterval 33 (HS.notify listener Frame)
   pure emitter
 
-setupDrag :: forall o m. MonadAff m => H.HalogenM State Action () o m H.SubscriptionId
+setupDrag :: forall o m. MonadAff m => H.HalogenM State Action Slots o m H.SubscriptionId
 setupDrag =
   H.subscribe $ HS.makeEmitter \emit -> do
     moveFn <- eventListener \e -> case ME.fromEvent e of
@@ -776,7 +787,7 @@ setupDrag =
 -- | the quantizer collapses degrees to pitches, the scope shows them flowing out
 -- | the left. (The eDSL SOURCE pane was retired — the patch's source now lives
 -- | only on the shell's Tidal page; `AskSource`/`patchText` still answer it.)
-render :: forall m. State -> H.ComponentHTML Action () m
+render :: forall m. MonadAff m => State -> H.ComponentHTML Action Slots m
 render s =
   HH.div
     -- The whole surface is non-selectable: knob drags and toggle/matrix clicks

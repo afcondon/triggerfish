@@ -9,12 +9,15 @@ import Prelude
 
 import Data.Array (elem, null, range, (:))
 import Data.Maybe (Maybe(..), isNothing)
+import Effect.Aff.Class (class MonadAff)
 import Halogen as H
 import Halogen.HTML as HH
 import Halogen.HTML.Events as HE
+import Hylograph.Halogen.UI.Select as Select
+import Type.Proxy (Proxy(..))
 import Triggerfish.Odonus.Model as M
 import Triggerfish.Scale as Scale
-import Triggerfish.Odonus.Grid.Types (Action(..), GenKind(..), SourceTag(..), State)
+import Triggerfish.Odonus.Grid.Types (Action(..), GenKind(..), Slots, SourceTag(..), State)
 import Triggerfish.Odonus.Grid.Widgets
   ( engrave, genRow, labelledRow, panelShell, stepperRow, style, tabBtn )
 import Triggerfish.Odonus.View.Scenes (scenesBody)
@@ -23,7 +26,7 @@ import Triggerfish.Odonus.View.Scenes (scenesBody)
 -- | song machinery stacked below in the same scrolling column — folded here so
 -- | the two no longer cost two horizontal columns. `scenesBody` leads with its
 -- | own divider + label, so the seam reads cleanly.
-quantizerPanel :: forall m. State -> H.ComponentHTML Action () m
+quantizerPanel :: forall m. MonadAff m => State -> H.ComponentHTML Action Slots m
 quantizerPanel s =
   let tag = s.source
   in
@@ -40,7 +43,7 @@ quantizerPanel s =
 
 -- | The Scale ⇄ Vetula switch that heads the pane — the two pitch sources, one
 -- | shown at a time.
-sourceToggle :: forall m. SourceTag -> H.ComponentHTML Action () m
+sourceToggle :: forall m. SourceTag -> H.ComponentHTML Action Slots m
 sourceToggle tag =
   HH.div [ style "display:flex;gap:3px" ]
     [ tabBtn "SCALE" (tag == SScale) (SetSource SScale)
@@ -51,7 +54,7 @@ sourceToggle tag =
 -- SCALE-KEY source
 -- ---------------------------------------------------------------------------
 
-scaleSection :: forall m. State -> Array (H.ComponentHTML Action () m)
+scaleSection :: forall m. MonadAff m => State -> Array (H.ComponentHTML Action Slots m)
 scaleSection s =
   -- The KEY·SCALE random source (moved here from the PARAMETERS pane — it mutates
   -- the scale/key, so it belongs with the scale controls).
@@ -59,9 +62,48 @@ scaleSection s =
   , HH.div [ style "margin-top:9px" ] [ pcKeyboard s.odo ]
   , stepperRow "ROOT" (Scale.rootName s.odo.rootPc)
       (SetRoot (s.odo.rootPc - 1)) (SetRoot (s.odo.rootPc + 1))
-  -- SCALE picker (stepper for now; a nested-menu widget over the scale list is the
-  -- next step). SPREAD + the dead Equal/Natural MODE toggle removed.
-  , stepperRow "SCALE" (M.scaleTypeName s.odo) (CycleScaleType (-1)) (CycleScaleType 1)
+  , scalePicker s
+  ]
+
+-- | SCALE — the shared Hylograph Select widget (dogfooded from Vetula), a
+-- | cascading nested menu over Odonus's OWN preset scales (no Vetula/Harmonia
+-- | linkage). Picking one raises `Selected name` → `PickScale`, which jumps the
+-- | scale by driving the existing relative CycleScaleType input.
+scalePicker :: forall m. MonadAff m => State -> H.ComponentHTML Action Slots m
+scalePicker s =
+  HH.div [ style "margin:8px 0" ]
+    [ HH.div [ style $ engrave <> ";font-size:9px;margin-bottom:4px" ] [ HH.text "SCALE" ]
+    , HH.slot (Proxy :: _ "scaleSelect") unit Select.component
+        ((Select.cascadingInput scaleGroups)
+           { selected = Just (M.scaleTypeName s.odo), searchable = true, placeholder = "Scale…" })
+        (\(Select.Selected v) -> PickScale v)
+    ]
+
+-- | Odonus's preset scales, grouped for the cascading menu. `value` is the reef
+-- | `scaleTypes` name (what PickScale matches); `label` is the readable form.
+scaleGroups :: Array Select.OptionGroup
+scaleGroups =
+  [ { label: "Diatonic"
+    , options:
+        [ { value: "major", label: "Major" }
+        , { value: "minor", label: "Minor" }
+        , { value: "dorian", label: "Dorian" }
+        , { value: "mixolydian", label: "Mixolydian" }
+        , { value: "harmonicMinor", label: "Harmonic Minor" }
+        ]
+    }
+  , { label: "Pentatonic"
+    , options:
+        [ { value: "pentaMajor", label: "Penta Major" }
+        , { value: "pentaMinor", label: "Penta Minor" }
+        ]
+    }
+  , { label: "Symmetric"
+    , options:
+        [ { value: "wholetone", label: "Whole Tone" }
+        , { value: "chromatic", label: "Chromatic" }
+        ]
+    }
   ]
 
 -- ---------------------------------------------------------------------------
@@ -73,7 +115,7 @@ scaleSection s =
 -- | of the Odonus-bound voices (each shown by its id = the voice's channel field)
 -- | to follow. The shell repolls the live chord ~100ms, so as the Vetula voice
 -- | walks its progression Odonus follows.
-followSection :: forall m. State -> H.ComponentHTML Action () m
+followSection :: forall m. State -> H.ComponentHTML Action Slots m
 followSection s =
   let live = s.odo.chord.on   -- a Vetula chord is actually driving the snap
   in
@@ -101,14 +143,14 @@ followSection s =
 
 -- | A 12-key chromatic strip: in-scale pitch classes lit, the root accented.
 -- | Click a key to toggle it in/out of the scale (direct note choice).
-pcKeyboard :: forall m. M.Odonus -> H.ComponentHTML Action () m
+pcKeyboard :: forall m. M.Odonus -> H.ComponentHTML Action Slots m
 pcKeyboard odo =
   let lit = Scale.pitchClassesOf (M.scaleOf odo)
   in
     HH.div [ style "display:flex;gap:2px;margin-bottom:12px" ]
       (map (pcKey odo.rootPc lit) (range 0 11))
 
-pcKey :: forall m. Int -> Array Int -> Int -> H.ComponentHTML Action () m
+pcKey :: forall m. Int -> Array Int -> Int -> H.ComponentHTML Action Slots m
 pcKey rootPc lit pc =
   let
     on = elem pc lit

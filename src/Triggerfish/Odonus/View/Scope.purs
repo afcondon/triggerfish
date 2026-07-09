@@ -9,7 +9,7 @@ import Data.Array (concatMap)
 import Data.Int (toNumber)
 import Halogen as H
 import Halogen.HTML as HH
-import Triggerfish.Odonus.Grid.Types (Action, NoteEvent, State)
+import Triggerfish.Odonus.Grid.Types (Action, NoteEvent, Slots, State)
 import Triggerfish.Odonus.Grid.Widgets (clampI, headColor, style, svgAttr, svgEl)
 
 riverW :: Number
@@ -27,7 +27,7 @@ pitchToY pitch = riverH * (1.0 - (toNumber (clampI 24 96 pitch) - 24.0) / 72.0)
 -- | The scope — the hero panel on the far left, full height, flex-grow. Octave
 -- | gridlines + note labels (HTML, undistorted) under the stretched note SVG;
 -- | notes emit at the right edge and flow left, fading with age.
-scopePanel :: forall m. State -> H.ComponentHTML Action () m
+scopePanel :: forall m. State -> H.ComponentHTML Action Slots m
 scopePanel s =
   HH.div
     [ style $ "flex:1 1 360px;min-width:0;height:calc(100vh - var(--tf-bar));position:relative;overflow:hidden;"
@@ -44,7 +44,7 @@ scopePanel s =
 
 -- | Faint horizontal line + a "C4"-style label at each octave C (HTML, so the
 -- | text isn't stretched by the scope's preserveAspectRatio=none).
-octaveGuides :: forall m. Array (H.ComponentHTML Action () m)
+octaveGuides :: forall m. Array (H.ComponentHTML Action Slots m)
 octaveGuides = concatMap guide [ 24, 36, 48, 60, 72, 84, 96 ]
   where
   guide pitch =
@@ -57,7 +57,7 @@ octaveGuides = concatMap guide [ 24, 36, 48, 60, 72, 84, 96 ]
           [ HH.text ("C" <> show (pitch / 12 - 1)) ]
       ]
 
-noteBar :: forall m. Number -> NoteEvent -> H.ComponentHTML Action () m
+noteBar :: forall m. Number -> NoteEvent -> H.ComponentHTML Action Slots m
 noteBar now n =
   let
     elapsedMs = (now - n.fireUnixMicros) / 1000.0

@@ -16,6 +16,7 @@ module Triggerfish.Odonus.Grid.Types
   , SourceTag(..)
   , State
   , Action(..)
+  , Slots
   ) where
 
 import Prelude
@@ -23,6 +24,7 @@ import Prelude
 import Data.Array (length)
 import Data.Maybe (Maybe)
 import Halogen as H
+import Hylograph.Halogen.UI.Select as Select
 import Reef.Input as RI
 import Triggerfish.Odonus.Model as M
 import Triggerfish.Odonus.Marbles as Marbles
@@ -166,6 +168,12 @@ genSub = case _ of
 marblesPadId :: String
 marblesPadId = "tf-marbles-xy"
 
+-- | The Odonus component's child-component slots. One entry so far: the shared
+-- | Hylograph Select widget driving the KEY pane's SCALE picker. The whole view
+-- | tree carries this row (concrete, not `()`), so any further shared widget is a
+-- | one-line addition here rather than a tree-wide retype.
+type Slots = ( scaleSelect :: Select.Slot Unit )
+
 -- | Which pitch source drives the quantizer — the KEY pane's top-level choice.
 -- | `SScale` snaps to the scale; `SVetula` to a followed Vetula voice. Derived
 -- | from `chord.on` + `follow` (`Triggerfish.Odonus.Patch.sourceOf`).
@@ -252,6 +260,7 @@ data Action
   | UnifyHeads
   | PhaseShift Int          -- Reichian PHASE ±: rotate the whole canon
   | CycleScaleType Int
+  | PickScale String          -- jump to a named preset scale (the Select widget)
   | ToggleDist
   | ToggleChord
   | SetSource SourceTag       -- pick the quantizer's pitch source (KEY pane)

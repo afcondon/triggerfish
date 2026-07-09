@@ -15,12 +15,12 @@ import Halogen as H
 import Halogen.HTML as HH
 import Halogen.HTML.Events as HE
 import Triggerfish.Odonus.Model as M
-import Triggerfish.Odonus.Grid.Types (Action(..), KnobTarget(..), State)
+import Triggerfish.Odonus.Grid.Types (Action(..), KnobTarget(..), Slots, State)
 import Triggerfish.Odonus.Grid.Widgets
   ( engrave, headColor, miniKnob, panelShell, roman, signed
   , stepBtn, style, svgAttr, svgEl )
 
-playheadsPanel :: forall m. State -> H.ComponentHTML Action () m
+playheadsPanel :: forall m. State -> H.ComponentHTML Action Slots m
 playheadsPanel s =
   panelShell s.collapsed "PLAYHEADS" "Fugue · Access" "flex:0 1 290px;min-width:min-content"
     [ phasingBlock s.odo
@@ -35,7 +35,7 @@ playheadsPanel s =
 -- | STAGGER ramps the loop lengths for metric phasing (Clapping-Music drift);
 -- | PHASE ± rotates the whole canon a step. FAN/STAGGER read back from head II,
 -- | so they round-trip the gesture and reflect the live spread.
-phasingBlock :: forall m. M.Odonus -> H.ComponentHTML Action () m
+phasingBlock :: forall m. M.Odonus -> H.ComponentHTML Action Slots m
 phasingBlock odo =
   let
     fanN = maybe 0 _.offset (odo.heads !! 1)
@@ -69,14 +69,14 @@ phasingBlock odo =
 -- | switch is four vertical bars (I–IV, lit when that head sounds in this
 -- | combo); clicking it sets every head's mute in one move. The live combo
 -- | is ringed. Cut from any group of heads to any other in a single click.
-headMatrix :: forall m. M.Odonus -> H.ComponentHTML Action () m
+headMatrix :: forall m. M.Odonus -> H.ComponentHTML Action Slots m
 headMatrix odo =
   let cur = M.headMask odo
   in HH.div
        [ style "display:grid;grid-template-columns:repeat(8,1fr);gap:4px;margin-bottom:12px" ]
        (map (comboSwitch cur) (range 0 15))
 
-comboSwitch :: forall m. Int -> Int -> H.ComponentHTML Action () m
+comboSwitch :: forall m. Int -> Int -> H.ComponentHTML Action Slots m
 comboSwitch cur n =
   let live = n == cur
   in HH.div
@@ -87,7 +87,7 @@ comboSwitch cur n =
        ]
        (map (\h -> comboBar (and (shr n h) 1 == 1) h) (range 0 3))
 
-comboBar :: forall m. Boolean -> Int -> H.ComponentHTML Action () m
+comboBar :: forall m. Boolean -> Int -> H.ComponentHTML Action Slots m
 comboBar on h =
   HH.div
     [ style $ "width:5px;height:11px;border-radius:2px;background:"
@@ -95,12 +95,12 @@ comboBar on h =
         <> (if on then ";box-shadow:0 0 4px " <> headColor h else "")
     ] []
 
-headBank :: forall m. State -> H.ComponentHTML Action () m
+headBank :: forall m. State -> H.ComponentHTML Action Slots m
 headBank s =
   HH.div [ style "display:flex;flex-direction:column;gap:8px" ]
     (mapWithIndex headStrip s.odo.heads)
 
-headStrip :: forall m. Int -> M.Head -> H.ComponentHTML Action () m
+headStrip :: forall m. Int -> M.Head -> H.ComponentHTML Action Slots m
 headStrip h hd =
   let
     col = headColor h
@@ -129,7 +129,7 @@ headStrip h hd =
 -- | around the circle, the k pulses filled, the live step ringed, "k/n" at centre —
 -- | with four corner clickers: top nudges pulses (k−/k+), bottom nudges steps (n−/n+).
 -- | The model clamps (pulses 0..16, steps 1..16), so the clickers can't run past.
-euclidCell :: forall m. Int -> M.Head -> String -> H.ComponentHTML Action () m
+euclidCell :: forall m. Int -> M.Head -> String -> H.ComponentHTML Action Slots m
 euclidCell h hd col =
   HH.div [ style "position:relative;width:82px;height:82px;flex:0 0 auto" ]
     [ euclidRing 82.0 hd.pulses hd.esteps hd.seqPos col
@@ -142,7 +142,7 @@ euclidCell h hd col =
 -- | The dot ring itself. Consistent with Selene's Euclid rings: dots evenly round
 -- | the circle (12 o'clock = step 0, clockwise), filled where E(k,n) pulses, the
 -- | current playhead step outlined in ink.
-euclidRing :: forall m. Number -> Int -> Int -> Int -> String -> H.ComponentHTML Action () m
+euclidRing :: forall m. Number -> Int -> Int -> Int -> String -> H.ComponentHTML Action Slots m
 euclidRing sz k n seqPos col =
   let
     c = sz / 2.0
@@ -178,7 +178,7 @@ euclidRing sz k n seqPos col =
       )
 
 -- | A small absolutely-positioned +/− clicker sitting in one corner of the ring box.
-cornerBtn :: forall m. String -> String -> Action -> H.ComponentHTML Action () m
+cornerBtn :: forall m. String -> String -> Action -> H.ComponentHTML Action Slots m
 cornerBtn pos label act =
   HH.button
     [ HE.onClick \_ -> act
@@ -190,12 +190,12 @@ cornerBtn pos label act =
 -- | SPEED as a single wide radio row across the top of the strip: every ratio in
 -- | M.speedTable as a chip, the live one lit. flex-wrap so adding dotted values
 -- | later simply wraps to a second row rather than overflowing.
-speedRow :: forall m. Int -> Int -> String -> H.ComponentHTML Action () m
+speedRow :: forall m. Int -> Int -> String -> H.ComponentHTML Action Slots m
 speedRow h cur col =
   HH.div [ style "flex:1;display:flex;flex-wrap:wrap;gap:3px" ]
     (mapWithIndex (speedChip h cur col) M.speedTable)
 
-speedChip :: forall m. Int -> Int -> String -> Int -> Number -> H.ComponentHTML Action () m
+speedChip :: forall m. Int -> Int -> String -> Int -> Number -> H.ComponentHTML Action Slots m
 speedChip h cur col ix val =
   let active = ix == cur
   in HH.button
@@ -220,7 +220,7 @@ speedLbl x
 
 -- | Direction as a three-way radio under the pattern thumbnail (→ forward,
 -- | ← backward, ↔ pendulum) — frees the knob row, and reads at a glance.
-dirRadio :: forall m. Int -> Int -> String -> H.ComponentHTML Action () m
+dirRadio :: forall m. Int -> Int -> String -> H.ComponentHTML Action Slots m
 dirRadio h cur col =
   HH.div [ style "display:flex;gap:3px;width:54px" ]
     (map (\d -> dirBtn (dirGlyph d) (cur == d) col (SetHeadDir h d)) [ 0, 1, 2 ])
@@ -231,7 +231,7 @@ dirGlyph = case _ of
   1 -> "←"
   _ -> "↔"
 
-dirBtn :: forall m. String -> Boolean -> String -> Action -> H.ComponentHTML Action () m
+dirBtn :: forall m. String -> Boolean -> String -> Action -> H.ComponentHTML Action Slots m
 dirBtn glyph active col act =
   HH.button
     [ HE.onClick \_ -> act
@@ -240,7 +240,7 @@ dirBtn glyph active col act =
         <> ";background:" <> (if active then "linear-gradient(" <> col <> "," <> col <> ")" else "linear-gradient(#efece1,#ddd9cb)") ]
     [ HH.text glyph ]
 
-muteBlock :: forall m. Int -> M.Head -> String -> H.ComponentHTML Action () m
+muteBlock :: forall m. Int -> M.Head -> String -> H.ComponentHTML Action Slots m
 muteBlock h hd col =
   HH.div
     [ HE.onClick \_ -> ToggleHeadMute h
@@ -254,7 +254,7 @@ muteBlock h hd col =
     , HH.span [ style $ engrave <> ";font-size:11px;margin-top:2px;color:" <> col ] [ HH.text (roman h) ]
     ]
 
-patBlock :: forall m. Int -> M.Pattern -> String -> Int -> H.ComponentHTML Action () m
+patBlock :: forall m. Int -> M.Pattern -> String -> Int -> H.ComponentHTML Action Slots m
 patBlock h pat col seqPos =
   HH.div
     [ HE.onClick \_ -> CyclePattern h
@@ -264,7 +264,7 @@ patBlock h pat col seqPos =
     , HH.span [ style $ engrave <> ";font-size:8px;margin-top:1px" ] [ HH.text pat.name ]
     ]
 
-patternThumb :: forall m. M.Pattern -> String -> Int -> H.ComponentHTML Action () m
+patternThumb :: forall m. M.Pattern -> String -> Int -> H.ComponentHTML Action Slots m
 patternThumb pat color seqPos =
   let
     st = 11.0

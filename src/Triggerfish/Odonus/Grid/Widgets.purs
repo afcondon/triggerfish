@@ -37,7 +37,7 @@ import Halogen.HTML.Properties as HP
 import Triggerfish.Odonus.Model as M
 import Triggerfish.Ui.Knob (knob)
 import Triggerfish.Odonus.Grid.Types
-  ( Action(..), KnobTarget(..), State, GenKind, targetRange, genLabel, genSub, periodOf )
+  ( Action(..), KnobTarget(..), Slots, State, GenKind, targetRange, genLabel, genSub, periodOf )
 
 style :: forall r i. String -> HP.IProp r i
 style = HP.attr (H.AttrName "style")
@@ -87,7 +87,7 @@ clampI lo hi v = if v < lo then lo else if v > hi then hi else v
 panelShell
   :: forall m
    . Array String -> String -> String -> String
-  -> Array (H.ComponentHTML Action () m) -> H.ComponentHTML Action () m
+  -> Array (H.ComponentHTML Action Slots m) -> H.ComponentHTML Action Slots m
 panelShell collapsed label sub widthCss body =
   if elem label collapsed then panelTab label
   else
@@ -110,7 +110,7 @@ panelShell collapsed label sub widthCss body =
 
 -- | A collapsed panel: a thin full-height tab with the rotated label; click to
 -- | reopen. The freed width flows to the open panels and the scope.
-panelTab :: forall m. String -> H.ComponentHTML Action () m
+panelTab :: forall m. String -> H.ComponentHTML Action Slots m
 panelTab label =
   HH.div
     [ HE.onClick \_ -> ExpandPanel label
@@ -123,14 +123,14 @@ panelTab label =
         [ HH.text label ] ]
 
 -- | A label over a row of tab buttons (OCTAVE / SCALAR TRANSP, Xynthesizr-style).
-labelledRow :: forall m. String -> Array (H.ComponentHTML Action () m) -> H.ComponentHTML Action () m
+labelledRow :: forall m. String -> Array (H.ComponentHTML Action Slots m) -> H.ComponentHTML Action Slots m
 labelledRow lbl btns =
   HH.div [ style "margin:8px 0" ]
     [ HH.div [ style $ engrave <> ";font-size:9px;margin-bottom:4px" ] [ HH.text lbl ]
     , HH.div [ style "display:flex;gap:3px" ] btns
     ]
 
-tabBtn :: forall m. String -> Boolean -> Action -> H.ComponentHTML Action () m
+tabBtn :: forall m. String -> Boolean -> Action -> H.ComponentHTML Action Slots m
 tabBtn label active act =
   HH.button
     [ HE.onClick \_ -> act
@@ -146,7 +146,7 @@ romanNum :: Int -> String
 romanNum i = fromMaybe (show (i + 1))
   ([ "I", "II", "III", "IV", "V", "VI", "VII", "VIII", "IX" ] !! i)
 
-stepperRow :: forall m. String -> String -> Action -> Action -> H.ComponentHTML Action () m
+stepperRow :: forall m. String -> String -> Action -> Action -> H.ComponentHTML Action Slots m
 stepperRow lbl val decA incA =
   HH.div [ style "display:flex;align-items:center;justify-content:space-between;margin:8px 0" ]
     [ HH.span [ style $ engrave <> ";font-size:9px" ] [ HH.text lbl ]
@@ -159,7 +159,7 @@ stepperRow lbl val decA incA =
         ]
     ]
 
-stepBtn :: forall m. String -> Action -> H.ComponentHTML Action () m
+stepBtn :: forall m. String -> Action -> H.ComponentHTML Action Slots m
 stepBtn glyph act =
   HH.button
     [ HE.onClick \_ -> act
@@ -185,7 +185,7 @@ cellChrome odo i =
   in
     "background:#cbc6b6;border-radius:7px;box-shadow:0 0 0 1px " <> ring <> glow
 
-miniKnob :: forall m. KnobTarget -> Int -> String -> String -> String -> H.ComponentHTML Action () m
+miniKnob :: forall m. KnobTarget -> Int -> String -> String -> String -> H.ComponentHTML Action Slots m
 miniKnob target val color topLabel valText =
   let r = targetRange target
   in
@@ -204,7 +204,7 @@ miniKnob target val color topLabel valText =
 -- The row is header-only; callers add any extras (Marbles pad, a grid) beneath.
 -- ---------------------------------------------------------------------------
 
-genRow :: forall m. State -> GenKind -> H.ComponentHTML Action () m
+genRow :: forall m. State -> GenKind -> H.ComponentHTML Action Slots m
 genRow s kind =
   let
     src = find (\g -> g.kind == kind) s.gen
@@ -226,7 +226,7 @@ genRow s kind =
 
 -- | A round source-enable lamp. Click toggles; debounced in the handler so the
 -- | doubled re-render dispatch can't cancel the flip.
-led :: forall m. Boolean -> GenKind -> H.ComponentHTML Action () m
+led :: forall m. Boolean -> GenKind -> H.ComponentHTML Action Slots m
 led on kind =
   HH.div
     [ HE.onClick \_ -> ToggleGen kind
@@ -236,7 +236,7 @@ led on kind =
     []
 
 -- | The mutation-depth number (how MUCH each change is), dragged vertically.
-amtNumber :: forall m. GenKind -> Int -> Boolean -> H.ComponentHTML Action () m
+amtNumber :: forall m. GenKind -> Int -> Boolean -> H.ComponentHTML Action Slots m
 amtNumber kind amt on =
   HH.div
     [ HE.onMouseDown \_ -> KnobDown (GenAmt kind) amt
@@ -251,7 +251,7 @@ amtNumber kind amt on =
 
 -- | The bare period number, dragged vertically (up = rarer). Reuses the knob
 -- | drag infra via the GenRate target; renders as a plain number, no dial.
-freqNumber :: forall m. GenKind -> Int -> Boolean -> H.ComponentHTML Action () m
+freqNumber :: forall m. GenKind -> Int -> Boolean -> H.ComponentHTML Action Slots m
 freqNumber kind rate on =
   HH.div
     [ HE.onMouseDown \_ -> KnobDown (GenRate kind) rate
