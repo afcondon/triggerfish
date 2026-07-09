@@ -58,8 +58,9 @@ data Sounding = Silent | Local | Rig
 derive instance Eq Sounding
 
 -- Does this machine have a BEAM voice that can take authority? Static, not state.
--- Selene is frontend-only (POLYTRIG drums) so it's never rig-authoritative — its
--- "Local in both modes" behaviour falls out of this, no special-casing needed.
+-- Selene is frontend-only (a CV/gate rack, no BEAM voice) so it's never
+-- rig-authoritative — its "Local in both modes" behaviour falls out of this,
+-- no special-casing needed.
 hasRigVoice :: Which -> Boolean
 hasRigVoice = case _ of
   Odo -> true

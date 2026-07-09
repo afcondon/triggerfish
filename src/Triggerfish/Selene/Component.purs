@@ -4,15 +4,14 @@
 -- | and configure each in place.
 -- |
 -- | The visual language: every slot is drawn, not formed — LFOs as scaled,
--- | log-frequency waveforms; Euclids as step-rings; clocks + notes as numbers;
--- | trig lanes as step-rows / Euclid rings with a route strip. The SOURCE pane
--- | is the editable authority.
+-- | log-frequency waveforms; Euclids as step-rings; clocks + notes as numbers.
+-- | The SOURCE pane is the editable authority.
 -- |
--- | Output (this pass): **POLYTRIG plays over MIDI**, on the shared Binnacle
--- | clock, under the master transport — each jack's own pattern stacked with
--- | the route onsets addressed to it, scheduled at true fractional times. The
--- | es9 CV/gate path (LFO/Euclid/Clock/Note → ES-9 buses) and FH-2 delegation
--- | are the next increment; non-MIDI targets are silent for now.
+-- | Selene is now the CV/gate rack only — POLYTRIG (the mini-notation drum lane)
+-- | was relocated to Balistes' TIDAL tab, so this component has no audible output
+-- | yet: the es9 CV/gate path (LFO/Euclid/Clock/Note → ES-9 buses) + FH-2
+-- | delegation is the next increment (#142). The playhead still sweeps so the
+-- | visuals stay live under the master transport.
 module Triggerfish.Selene.Component (component) where
 
 import Prelude
@@ -21,8 +20,7 @@ import Data.Array (filter, length, mapWithIndex, modifyAt, null, range, (!!))
 import Data.Foldable (for_)
 import Data.Int (round, toNumber)
 import Data.Number (cos, pi, sin) as Num
-import Data.String.Common (joinWith, toLower)
-import Effect (Effect)
+import Data.String.Common (joinWith)
 import Effect.Aff.Class (class MonadAff)
 import Effect.Class (liftEffect)
 import Effect.Timer (setInterval)
@@ -41,7 +39,6 @@ import Triggerfish.Selene.Source as Source
 import Triggerfish.Selene.Store as Store
 import Triggerfish.SourceQuery (Query(..))
 import Triggerfish.Transport (Sounding(..))
-import Triggerfish.Tidal.Lane as Lane
 import Data.Maybe (Maybe(..), fromMaybe)
 
 -- ---------------------------------------------------------------------------
@@ -170,13 +167,10 @@ handleAction = case _ of
 
   Step tick -> do
     st <- H.get
-    when (st.sounding == Local) do
-      let playedStep = tick.index `mod` cycleSteps
-      H.modify_ _ { playStep = playedStep }
-      for_ st.midiOut \out -> liftEffect $
-        for_ st.sel.destinations \d -> case d.target of
-          M.Midi ch -> emitDestination out (ch - 1) st.clockTempo tick playedStep d.bank
-          _ -> pure unit   -- non-MIDI targets await the es9 output path
+    -- No audible output yet (CV/gate awaits the es9 path, #142) — just advance
+    -- the playhead so the rack's visuals sweep under the master transport.
+    when (st.sounding == Local) $
+      H.modify_ _ { playStep = tick.index `mod` cycleSteps }
 
   Frame -> do
     st <- H.get
@@ -227,43 +221,6 @@ persist = do
   liftEffect (Store.saveLibrary { active: s.active, library: s.library })
 
 -- ---------------------------------------------------------------------------
--- Emit — POLYTRIG over MIDI (other kinds await the es9 path)
--- ---------------------------------------------------------------------------
-
--- | One Tidal cycle == `cycleSteps` grid steps (one bar). A trig jack's onsets
--- | (its own pattern stacked with the route onsets addressed to its name) that
--- | fall in THIS step's window fire at their true fractional sub-step time.
-emitDestination :: Midi.MidiOut -> Int -> Number -> Scheduler.Tick -> Int -> M.GenBank -> Effect Unit
-emitDestination out channel tempo tick playedStep bank = case bank of
-  M.GTrig tb ->
-    let
-      stepMs = 0.25 * 60000.0 / max 30.0 tempo
-      lo = toNumber playedStep / toNumber cycleSteps
-      hi = toNumber (playedStep + 1) / toNumber cycleSteps
-      inWin o = o >= lo && o < hi
-      routeOns name = map _.at (filter (\e -> eqName e.name name) (concatNamed tb.routes))
-      fireJack jack =
-        let
-          own = filter inWin (Lane.onsetsOf jack.source)
-          routed = filter inWin (routeOns jack.name)
-          fire o =
-            let sub = (o * toNumber cycleSteps - toNumber playedStep) * stepMs
-            in Midi.scheduleNote out
-                 { channel, note: jack.note, velocity: trigVel, delayMs: tick.delayMs + sub, durMs: trigGateMs }
-        in
-          for_ (own <> routed) fire
-    in
-      for_ tb.jacks fireJack
-  _ -> pure unit   -- LFO/Euclid/Clock/Note → es9 CV/gate, next increment
-
--- All named onsets across every route line of a trig block.
-concatNamed :: Array String -> Array { name :: String, at :: Number }
-concatNamed = (=<<) Lane.namedOnsetsOf
-
-eqName :: String -> String -> Boolean
-eqName a b = toLower a == toLower b
-
--- ---------------------------------------------------------------------------
 -- Constants
 -- ---------------------------------------------------------------------------
 
@@ -285,19 +242,8 @@ cycleSteps = 16
 midiPortName :: String
 midiPortName = "IAC"
 
-trigVel :: Int
-trigVel = 100
-
-trigGateMs :: Number
-trigGateMs = 40.0
-
 accent :: String
 accent = "#3f6f8a"   -- steel-blue, Selene's electric accent
-
--- A distinct muted violet for the lane-spanning route layer, so a routed
--- gesture reads apart from the steel jacks (echoes Balistes' route accent).
-routeAccent :: String
-routeAccent = "#6a5f8a"
 
 ink :: String
 ink = "#2b2922"
@@ -374,7 +320,8 @@ newRackChip =
     [ HH.text "+ NEW" ]
 
 -- A compact horizontal transport: the ARM/cue toggle (sounds only under the
--- shell master) + live clock + MIDI readouts. POLYTRIG plays through it today.
+-- shell master) + live clock + MIDI readouts. No audible output yet — the es9
+-- CV/gate path is the next increment (#142); the playhead sweeps meanwhile.
 transportStrip :: forall m. State -> H.ComponentHTML Action () m
 transportStrip s =
   HH.div
@@ -423,13 +370,10 @@ destinationRow i d =
     , HH.div [ style (slotWrap d.bank) ] (slotViews d.bank)
     ]
 
--- | The slot layout per kind. POLYTRIG lays its eight lanes 4-to-a-row (a 4×2
--- | grid, wide columns) so real mini-notation stays legible; the compact kinds
--- | flow eight-across.
+-- | The slot layout: the CV/gate kinds flow eight-across. (POLYTRIG's 4×2
+-- | mini-notation grid went with it to Balistes' TIDAL tab.)
 slotWrap :: M.GenBank -> String
-slotWrap = case _ of
-  M.GTrig _ -> "display:grid;grid-template-columns:repeat(4,1fr);gap:7px;flex:1 1 auto;min-width:0"
-  _ -> "display:flex;flex-wrap:wrap;gap:7px;align-items:center;flex:1 1 auto"
+slotWrap _ = "display:flex;flex-wrap:wrap;gap:7px;align-items:center;flex:1 1 auto"
 
 destHeader :: forall m. Int -> M.Destination -> H.ComponentHTML Action () m
 destHeader _ d =
@@ -454,7 +398,6 @@ slotViews = case _ of
   M.GEuclid slots -> map euclidRing slots
   M.GClock slots -> mapWithIndex clockNumber slots
   M.GNote slots -> map noteCell slots
-  M.GTrig tb -> map trigCell tb.jacks <> map routeRow tb.routes
 
 -- --- POLYLFO: a scaled waveform, 0V baseline, log-frequency, rate label ------
 
@@ -503,8 +446,7 @@ euclidRing :: forall m. M.EuclidSlot -> H.ComponentHTML Action () m
 euclidRing sl = cellBox 70.0 [ ringFigure 64.0 sl.beats sl.steps ]
 
 -- | The Euclidean ring — a dot per step, filled on a pulse, k/n in the centre.
--- | Shared by POLYEUCLID and any POLYTRIG jack whose source is a pure Euclid, so
--- | the same rhythm reads identically wherever it lives (structure-driven viz).
+-- | Drawn for every POLYEUCLID slot (structure-driven viz).
 ringFigure :: forall m. Number -> Int -> Int -> H.ComponentHTML Action () m
 ringFigure sz k n =
   let
@@ -555,73 +497,6 @@ noteCell sl =
         [ HH.text (M.noteName sl.note) ]
     , cellCaption ("midi " <> show sl.note)
     ]
-
--- --- POLYTRIG: a linear step row, lit at the pattern's onset cells -----------
-
--- One POLYTRIG jack: its name + note, then a figure that follows the source's
--- structure — the Euclid ring when the source is a pure `x(k,n)`, otherwise a
--- linear step row. An empty source (the jack is driven only by routes) shows a
--- faint "↳ route" caption.
-trigCell :: forall m. M.TrigSlot -> H.ComponentHTML Action () m
-trigCell sl =
-  let
-    figure = case Lane.euclidOf sl.source of
-      Just e -> ringFigure 46.0 e.k e.n
-      Nothing -> stepFigure sl.source
-    caption = if sl.source == "" then "↳ route" else sl.source
-  in
-    HH.div
-      [ style $ "padding:5px 6px;border-radius:6px;background:#ffffff55;border:1px solid #00000010;"
-          <> "display:flex;flex-direction:column;gap:4px;align-items:stretch;min-width:0" ]
-      [ HH.div [ style "display:flex;align-items:baseline;justify-content:space-between;gap:6px" ]
-          [ HH.span [ style $ "font-family:Georgia,serif;font-size:11px;color:" <> ink ] [ HH.text sl.name ]
-          , HH.span [ style $ engrave <> ";font-size:8px;opacity:0.5" ] [ HH.text (M.noteName sl.note) ]
-          ]
-      , figure
-      , cellCaption caption
-      ]
-
--- A linear step row, lit at the pattern's onset cells (HTML so it fills width).
-stepFigure :: forall m. String -> H.ComponentHTML Action () m
-stepFigure src =
-  let
-    m = Lane.meterOf src
-    mask = Lane.cellMaskOf src
-    stepDiv k =
-      let on = fromMaybe false (mask !! k)
-      in
-        HH.div
-          [ style $ "flex:1 1 0;min-width:0;height:18px;border-radius:2px;"
-              <> (if on then "background:" <> accent
-                  else "background:#00000008;border:1px solid " <> accent <> "55;box-sizing:border-box") ]
-          []
-  in
-    HH.div [ style "display:flex;gap:2px;width:100%;height:18px;align-items:center" ]
-      (map stepDiv (range 0 (m - 1)))
-
--- A lane-spanning route, full-width across the 4-column grid: its atoms placed
--- at their true fractional times, each tick labelled with the jack it fires.
-routeRow :: forall m. String -> H.ComponentHTML Action () m
-routeRow src =
-  let
-    ons = Lane.namedOnsetsOf src
-    mark o =
-      HH.div
-        [ style $ "position:absolute;top:0;left:" <> show (round2 (o.at * 100.0)) <> "%;"
-            <> "transform:translateX(-50%);display:flex;flex-direction:column;align-items:center;gap:1px" ]
-        [ HH.div [ style $ "width:0;height:11px;border-left:2px solid " <> routeAccent ] []
-        , HH.span [ style $ "font-family:'SF Mono',Menlo,monospace;font-size:8px;color:" <> routeAccent ] [ HH.text o.name ]
-        ]
-  in
-    HH.div
-      [ style $ "grid-column:1 / -1;display:flex;align-items:center;gap:10px;padding:4px 8px;min-width:0;"
-          <> "border-radius:6px;background:#ffffff35;border:1px dashed " <> routeAccent <> "44" ]
-      [ HH.span [ style $ engrave <> ";font-size:8px;color:" <> routeAccent <> ";flex:0 0 auto" ] [ HH.text "ROUTE" ]
-      , HH.div [ style "position:relative;flex:1 1 auto;height:24px;min-width:40px" ] (map mark ons)
-      , HH.span
-          [ style "font-family:'SF Mono',Menlo,monospace;font-size:9px;color:#2b2922;opacity:0.65;flex:0 0 auto" ]
-          [ HH.text ("\"" <> src <> "\"") ]
-      ]
 
 -- ---------------------------------------------------------------------------
 -- Cell chrome

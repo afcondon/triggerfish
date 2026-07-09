@@ -2,14 +2,11 @@
 -- | text document. Line-oriented (not the bracketed eDSL) because the document
 -- | is the instrument: you edit the numbers here and the visualisations follow.
 -- |
--- | Grammar:
+-- | Grammar (POLYTRIG relocated to Balistes' TIDAL tab; Selene is CV/gate only):
 -- |   <kind> <target>          opens a destination — a group of 8. kind ∈
 -- |                            lfo | euclid | clock | note; target is a wire
 -- |                            token (es9main, es9gt0, es98cv0, fh2_0, midi1,
 -- |                            virtual:bus).
--- |   trig <target> <roster>   opens a POLYTRIG block; <roster> declares the 8
--- |                            jacks by name (`bd sn cp …`), each `name` or
--- |                            `name:note`. Body lines (below) are sparse.
 -- |   <slot>                   one line per slot, following the header; the
 -- |                            block ends at the next blank line.
 -- |   -- <slot>                a muted slot (that output goes silent); the
@@ -22,9 +19,6 @@
 -- |   euclid  <beats> <steps> [@<rate>] [acc <n>]
 -- |   clock   <base> x<mult> [<pw>%] [ph<deg>]      (base = 1/4, 1/8T, …)
 -- |   note    <name-or-midi>                        (C4 or 60)
--- | POLYTRIG body lines (under a `trig` header, all optional / sparse):
--- |   <name>  "<mini-notation>"                     (a jack's own pattern)
--- |   route   "<mini-notation>"                     (lane-spanning: "bd sn cp sn")
 -- |
 -- | `parseRack` is total + lenient: bad fields fall back to defaults and short
 -- | blocks pad to eight with silent slots, so the live viz never blanks while
@@ -37,9 +31,9 @@ module Triggerfish.Selene.Source
 
 import Prelude
 
-import Data.Array (drop, filter, foldl, mapMaybe, mapWithIndex, null, range, snoc, take, (!!))
+import Data.Array (drop, filter, foldl, mapWithIndex, range, snoc, take, (!!))
 import Data.Int as Int
-import Data.Maybe (Maybe(..), fromMaybe, isJust, maybe)
+import Data.Maybe (Maybe(..), fromMaybe, maybe)
 import Data.Number as Number
 import Data.String as Str
 import Data.String.Common (joinWith, toLower)
@@ -58,35 +52,18 @@ printRack sel =
       [ "-- SELENE · edit the numbers; the rack follows."
       , "-- <kind> <target> opens a group of 8 · one slot per line · -- mutes a slot." ]
 
--- | One destination. POLYTRIG declares its jack roster in the header
--- | (`trig <target> bd sn cp …`, with a `:note` only where it overrides the
--- | positional default), then a sparse body: a `<name> "<pattern>"` line per
--- | jack that has a per-jack pattern, then any lane-spanning `route` lines. The
--- | other kinds print a `<kind> <target>` header then eight tagged slots.
+-- | One destination: a `<kind> <target>` header then eight tagged slots.
 printDest :: M.Destination -> String
-printDest d = case d.bank of
-  M.GTrig tb ->
-    let
-      roster = joinWith " " (mapWithIndex rosterTok tb.jacks)
-      srcLines = mapMaybe (\j -> if j.source == "" then Nothing else Just (indent (j.name <> " \"" <> j.source <> "\""))) tb.jacks
-      routeLines = map (\r -> indent ("route \"" <> r <> "\"")) tb.routes
-      bodyLines = srcLines <> routeLines
-    in
-      "trig " <> M.targetWire d.target <> " " <> roster
-        <> (if null bodyLines then "" else "\n" <> joinWith "\n" bodyLines)
-  other ->
-    (kindKeyword other <> " " <> M.targetWire d.target) <> "\n"
-      <> joinWith "\n" (mapWithIndex slotLine (bankSlots other))
+printDest d =
+  (kindKeyword d.bank <> " " <> M.targetWire d.target) <> "\n"
+    <> joinWith "\n" (mapWithIndex slotLine (bankSlots d.bank))
   where
-  indent s = "  " <> s
   slotLine i row = "  " <> row <> "   -- " <> show (i + 1)
-  rosterTok i j = if j.note == M.defaultJackNote i then j.name else j.name <> ":" <> show j.note
   bankSlots = case _ of
     M.GLfo slots -> map lfoLine slots
     M.GEuclid slots -> map euclidLine slots
     M.GClock slots -> map clockLine slots
     M.GNote slots -> map noteLine slots
-    M.GTrig _ -> []
 
 kindKeyword :: M.GenBank -> String
 kindKeyword = case _ of
@@ -94,7 +71,6 @@ kindKeyword = case _ of
   M.GEuclid _ -> "euclid"
   M.GClock _ -> "clock"
   M.GNote _ -> "note"
-  M.GTrig _ -> "trig"
 
 lfoLine :: M.ModSlot -> String
 lfoLine sl =
@@ -127,17 +103,13 @@ noteLine sl = M.noteName sl.note
 -- ---------------------------------------------------------------------------
 
 -- | Accumulator: the destinations closed so far + the block currently open.
--- | `rows` are slot lines for the four fixed-bank kinds (Nothing = muted).
--- | `jacks` is the POLYTRIG roster (declared in the header, sources filled by
--- | body lines); `routes` are its lane-spanning lines.
+-- | `rows` are slot lines for the four bank kinds (Nothing = muted).
 type PState =
   { dests :: Array M.Destination
   , open :: Maybe
       { target :: M.Target
       , kind :: M.GenKind
       , rows :: Array (Maybe String)
-      , jacks :: Array M.TrigSlot
-      , routes :: Array String
       }
   }
 
@@ -154,52 +126,13 @@ parseRack doc =
     in
       if t == "" then closeBlock st
       else case headerOf t of
-        Just hdr -> (closeBlock st) { open = Just { target: hdr.target, kind: hdr.kind, rows: [], jacks: hdr.jacks, routes: [] } }
+        Just hdr -> (closeBlock st) { open = Just { target: hdr.target, kind: hdr.kind, rows: [] } }
         Nothing -> case st.open of
           Just blk -> st { open = Just (addLine blk t) }
           Nothing -> st   -- a stray line outside any block: ignore
 
-  -- A line inside an open block. In a POLYTRIG block a `route "…"` line feeds
-  -- the routes accumulator; a `<name> "<pattern>"` line sets that jack's source
-  -- (muted clears it); other kinds: every line is a slot row.
-  addLine blk line = case blk.kind of
-    M.KTrig -> case classifyTrigLine line of
-      TRoute (Just src) -> blk { routes = snoc blk.routes src }
-      TRoute Nothing -> blk
-      TJack name msrc -> blk { jacks = applyJackSource name msrc blk.jacks }
-      TJunk -> blk
-    _ -> blk { rows = snoc blk.rows (slotText line) }
-
--- A POLYTRIG body line is a lane-spanning route, a per-jack source assignment
--- (by name; Nothing = muted → clear), or junk. All muteable with a leading --.
-data TrigLine = TRoute (Maybe String) | TJack String (Maybe String) | TJunk
-
-classifyTrigLine :: String -> TrigLine
-classifyTrigLine line =
-  let
-    muted = isJust (Str.stripPrefix (Str.Pattern "--") (Str.trim line))
-    body = if muted then Str.trim (fromMaybe "" (Str.stripPrefix (Str.Pattern "--") (Str.trim line))) else Str.trim line
-    { before, after } = breakFirstSpace body
-  in
-    if before == "" then TJunk
-    else if toLower before == "route" then TRoute (if muted then Nothing else Just (unquote (Str.trim after)))
-    else TJack before (if muted then Nothing else Just (extractSource after))
-
--- Set (or, when Nothing, clear) the source of the jack whose name matches.
-applyJackSource :: String -> Maybe String -> Array M.TrigSlot -> Array M.TrigSlot
-applyJackSource name msrc =
-  map (\j -> if toLower j.name == toLower name then j { source = fromMaybe "" msrc } else j)
-
--- Pull the text between the first pair of double-quotes (the jack's pattern);
--- "" when the line has no quoted part (a bare `bd` or `bd 36`).
-extractSource :: String -> String
-extractSource s = case Str.indexOf (Str.Pattern "\"") s of
-  Just i ->
-    let rest = Str.drop (i + 1) s
-    in case Str.indexOf (Str.Pattern "\"") rest of
-        Just j -> Str.take j rest
-        Nothing -> rest
-  Nothing -> ""
+  -- A line inside an open block: every line is a slot row (muted → Nothing).
+  addLine blk line = blk { rows = snoc blk.rows (slotText line) }
 
 -- A slot's text, or Nothing if the line is muted (leading `--`). Trailing
 -- `-- n` tags are stripped either way.
@@ -219,60 +152,33 @@ closeBlock :: PState -> PState
 closeBlock st = case st.open of
   Nothing -> st
   Just blk ->
-    let
-      bank = case blk.kind of
-        M.KTrig -> M.GTrig { jacks: fitJacks blk.jacks, routes: blk.routes }
-        _ -> buildBank blk.kind (fitTo M.slotCount blk.rows)
-    in
-      { dests: snoc st.dests { target: blk.target, range: M.Bipolar5V, bank }, open: Nothing }
-
--- Pad/truncate the jack roster to eight (missing jacks are silent placeholders).
-fitJacks :: Array M.TrigSlot -> Array M.TrigSlot
-fitJacks js = take M.slotCount (js <> map (const silentTrig) (range 0 M.slotCount))
+    let bank = buildBank blk.kind (fitTo M.slotCount blk.rows)
+    in { dests: snoc st.dests { target: blk.target, range: M.Bipolar5V, bank }, open: Nothing }
 
 -- Pad/truncate the row list to n (missing positions are muted → silent).
 fitTo :: Int -> Array (Maybe String) -> Array (Maybe String)
 fitTo n rows = take n (rows <> map (const Nothing) (range 0 n))
 
--- The four fixed-bank kinds (POLYTRIG is built directly in closeBlock from its
--- header roster + body assignments, so it never reaches here).
 buildBank :: M.GenKind -> Array (Maybe String) -> M.GenBank
 buildBank kind rows = case kind of
   M.KLfo -> M.GLfo (map (maybe silentLfo parseLfo) rows)
   M.KEuclid -> M.GEuclid (map (maybe silentEuclid parseEuclid) rows)
   M.KClock -> M.GClock (map (maybe silentClock parseClock) rows)
   M.KNote -> M.GNote (map (maybe silentNote parseNote) rows)
-  M.KTrig -> M.GTrig { jacks: [], routes: [] }
 
 -- ---------------------------------------------------------------------------
 -- Header
 -- ---------------------------------------------------------------------------
 
--- A block header. The four fixed kinds are exactly `<kind> <target>`; POLYTRIG
--- is `trig <target> <name|name:note> …` — the roster declares the jacks.
-headerOf :: String -> Maybe { kind :: M.GenKind, target :: M.Target, jacks :: Array M.TrigSlot }
+-- A block header — exactly `<kind> <target>`.
+headerOf :: String -> Maybe { kind :: M.GenKind, target :: M.Target }
 headerOf t = case words t of
   [] -> Nothing
   toks -> case toks !! 0 >>= kindOf of
-    Just M.KTrig -> case drop 1 toks of
-      tgtAndNames -> case tgtAndNames !! 0 of
-        Just tgt -> Just { kind: M.KTrig, target: parseTarget tgt, jacks: mapWithIndex parseRosterTok (drop 1 tgtAndNames) }
-        Nothing -> Nothing
     Just k -> case toks of
-      [ _, tgt ] -> Just { kind: k, target: parseTarget tgt, jacks: [] }
+      [ _, tgt ] -> Just { kind: k, target: parseTarget tgt }
       _ -> Nothing
     Nothing -> Nothing
-
--- One roster token: `name` or `name:note` (note name-or-midi). A bare name takes
--- the positional default note; the index supplies that default.
-parseRosterTok :: Int -> String -> M.TrigSlot
-parseRosterTok i tok = case Str.indexOf (Str.Pattern ":") tok of
-  Just idx ->
-    { name: Str.take idx tok
-    , note: M.clampI 0 127 (fromMaybe (M.defaultJackNote i) (noteToken (Str.drop (idx + 1) tok)))
-    , source: ""
-    }
-  Nothing -> { name: tok, note: M.defaultJackNote i, source: "" }
 
 kindOf :: String -> Maybe M.GenKind
 kindOf = case _ of
@@ -280,7 +186,6 @@ kindOf = case _ of
   "euclid" -> Just M.KEuclid
   "clock" -> Just M.KClock
   "note" -> Just M.KNote
-  "trig" -> Just M.KTrig
   _ -> Nothing
 
 parseTarget :: String -> M.Target
@@ -311,9 +216,6 @@ silentClock = { base: M.ClockQuarter, multiplier: 1, pulseWidth: 0, phase: 0 }
 
 silentNote :: M.PresetNoteSlot
 silentNote = { note: 0 }
-
-silentTrig :: M.TrigSlot
-silentTrig = { name: "·", note: 0, source: "" }
 
 -- lfo  <rate> @<phase> [lvl v] [sin a] [sqr a] [tri a] [saw a] [rnd a] [nse a]
 parseLfo :: String -> M.ModSlot
@@ -382,16 +284,6 @@ parseClock s =
 parseNote :: String -> M.PresetNoteSlot
 parseNote s = { note: M.clampI 0 127 (fromMaybe 60 (noteToken (fromMaybe "" (words s !! 0)))) }
 
-
-breakFirstSpace :: String -> { before :: String, after :: String }
-breakFirstSpace s = case Str.indexOf (Str.Pattern " ") s of
-  Just i -> { before: Str.take i s, after: Str.drop (i + 1) s }
-  Nothing -> { before: s, after: "" }
-
-unquote :: String -> String
-unquote s =
-  let s1 = fromMaybe s (Str.stripPrefix (Str.Pattern "\"") s)
-  in fromMaybe s1 (Str.stripSuffix (Str.Pattern "\"") s1)
 
 noteToken :: String -> Maybe Int
 noteToken tok = case Int.fromString tok of

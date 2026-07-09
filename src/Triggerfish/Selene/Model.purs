@@ -41,9 +41,6 @@ module Triggerfish.Selene.Model
   , ClockSlot
   , EuclidSlot
   , PresetNoteSlot
-  , TrigSlot
-  , TrigBank
-  , defaultJackNote
   , slotCount
   , euclidBits
   , noteName
@@ -64,16 +61,16 @@ import Data.Number (log, pi, sin) as N
 -- Generator kinds + their eight-slot banks
 -- ---------------------------------------------------------------------------
 
--- | The shipping polysignal families (a sixth, polyenv, is deferred). `KTrig`
--- | is the authored mini-notation trigger lane — the generalised home of what
--- | was Balistes' Tidal kit, now a target-routed gate/trigger source rather
--- | than a drum-only thing.
-data GenKind = KLfo | KEuclid | KClock | KNote | KTrig
+-- | The shipping polysignal families — all CV/gate sources. (A sixth, polyenv,
+-- | is deferred; the mini-notation trigger lane that used to live here as
+-- | `KTrig` was relocated to Balistes' TIDAL tab, so Selene is now purely the
+-- | ES-9 / FH-2 CV+gate rack.)
+data GenKind = KLfo | KEuclid | KClock | KNote
 
 derive instance Eq GenKind
 
 allKinds :: Array GenKind
-allKinds = [ KLfo, KEuclid, KClock, KNote, KTrig ]
+allKinds = [ KLfo, KEuclid, KClock, KNote ]
 
 kindLabel :: GenKind -> String
 kindLabel = case _ of
@@ -81,7 +78,6 @@ kindLabel = case _ of
   KEuclid -> "POLYEUCLID"
   KClock -> "POLYCLOCK"
   KNote -> "POLYNOTE"
-  KTrig -> "POLYTRIG"
 
 -- | An eight-slot bank, typed by its generator. The kind is implied by the
 -- | constructor (mirrors `Tidal.Selene`'s `Selene s` sum).
@@ -90,7 +86,6 @@ data GenBank
   | GEuclid (Array EuclidSlot)
   | GClock (Array ClockSlot)
   | GNote (Array PresetNoteSlot)
-  | GTrig TrigBank
 
 bankKind :: GenBank -> GenKind
 bankKind = case _ of
@@ -98,17 +93,6 @@ bankKind = case _ of
   GEuclid _ -> KEuclid
   GClock _ -> KClock
   GNote _ -> KNote
-  GTrig _ -> KTrig
-
--- | A POLYTRIG bank: eight named output **jacks** plus lane-spanning **routes**.
--- | A jack has a name (the atom a route addresses), a note/value, and an
--- | optional per-jack pattern. A route is a mini-notation string whose atoms
--- | fire jacks by name (`"bd sn cp sn"`). Both stack at playback; routes are
--- | authoring sugar that compiles down to the eight per-jack onset streams.
-type TrigBank =
-  { jacks :: Array TrigSlot
-  , routes :: Array String
-  }
 
 -- | The eight slots of an octo bank.
 slotCount :: Int
@@ -154,19 +138,6 @@ type EuclidSlot =
 -- | POLYPRESETNOTE: a static V/oct pitch, one held MIDI note per slot.
 type PresetNoteSlot =
   { note :: Int
-  }
-
--- | POLYTRIG jack: one named output. `name` is the atom a route addresses
--- | (`bd`); `note` is what lands on the target (a MIDI note for a MIDI channel,
--- | otherwise just the gate's identity); `source` is an optional *per-jack*
--- | pattern whose onsets are gate times over one cycle. A jack fires from its
--- | own `source` stacked with any route onsets addressed to its `name`. The
--- | atom names in a pattern don't matter for timing (only onset times do), so
--- | the same jack fires a drum, gates an envelope, or clocks a module.
-type TrigSlot =
-  { name :: String
-  , note :: Int
-  , source :: String
   }
 
 -- ---------------------------------------------------------------------------
@@ -224,7 +195,6 @@ defaultTargetFor = case _ of
   KNote -> ES9Cv 0
   KEuclid -> ES9Gt 0
   KClock -> ES9Gt 1
-  KTrig -> Midi 10
 
 -- ---------------------------------------------------------------------------
 -- Output range + clock bases
@@ -336,7 +306,6 @@ defaultSelene =
       , { target: ES9Gt 0, range: Bipolar5V, bank: freshBank KEuclid }
       , { target: ES9Gt 1, range: Bipolar5V, bank: freshBank KClock }
       , { target: Midi 1, range: Bipolar5V, bank: freshBank KNote }
-      , { target: Midi 10, range: Bipolar5V, bank: freshBank KTrig }
       ]
   }
 
@@ -348,7 +317,6 @@ freshBank = case _ of
   KEuclid -> GEuclid (map euclidSlot ixs)
   KClock -> GClock (map clockSlot ixs)
   KNote -> GNote (map noteSlot ixs)
-  KTrig -> GTrig { jacks: map trigSlot ixs, routes: [ "bd sn cp sn" ] }
   where
   ixs = range 0 (slotCount - 1)
   -- eight sines, phase-spread over the cycle (a travelling wave)
@@ -366,30 +334,10 @@ freshBank = case _ of
   -- C2 G2 C3 D3 E3 G3 C4 E4 — a Cadd9 voicing climbing the bank
   noteSlot i = { note: fromMaybe 60 (chord !! i) }
   chord = [ 36, 43, 48, 50, 52, 55, 60, 64 ]
-  -- eight named jacks — two carry their own ostinato (hh, oh), the rest are
-  -- driven by the lane-spanning route "bd sn cp sn", so the default reads as
-  -- real Tidal: named voices + a spanning pattern. Notes are the positional
-  -- GM-ish ladder, so the header prints clean (no `:note` overrides).
-  trigSlot i =
-    { name: fromMaybe "j" (trigNames !! i)
-    , note: defaultJackNote i
-    , source: fromMaybe "" (trigPats !! i)
-    }
-  trigNames = [ "bd", "sn", "cp", "hh", "oh", "rs", "lt", "ht" ]
-  trigPats = [ "", "", "", "x*8", "~ ~ x ~", "", "", "" ]
 
 -- ---------------------------------------------------------------------------
 -- Destination edits
 -- ---------------------------------------------------------------------------
-
--- | The default MIDI note for jack `i` when its header roster token omits a
--- | `:note` — a GM-ish drum ladder for the first eight, chromatic beyond. The
--- | printer omits the override exactly when a jack's note matches this, so the
--- | common header stays clean (`trig midi10 bd sn cp …`).
-defaultJackNote :: Int -> Int
-defaultJackNote i = fromMaybe (36 + i) (gmLadder !! i)
-  where
-  gmLadder = [ 36, 38, 39, 42, 46, 37, 45, 50 ]
 
 addDestination :: GenKind -> Selene -> Selene
 addDestination kind s =
