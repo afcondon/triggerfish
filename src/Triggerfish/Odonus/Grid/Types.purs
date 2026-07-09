@@ -148,6 +148,7 @@ genLabel = case _ of
   GPattern -> "PATTERN"
   GSpeed -> "SPEED"
   GKey -> "KEY · SCALE"
+  GVel -> "VELOCITY"
 
 genSub :: GenKind -> String
 genSub = case _ of
@@ -162,6 +163,7 @@ genSub = case _ of
   GPattern -> "access pattern"
   GSpeed -> "voice speed"
   GKey -> "fifths · mode · degree"
+  GVel -> "accent drift"
 
 -- | DOM id of the Marbles X-Y pad, shared by the view (the element) and the
 -- | handler (which looks it up to read pointer position).

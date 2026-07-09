@@ -15,7 +15,7 @@ import Data.Array (mapWithIndex)
 import Halogen.HTML as HH
 import Halogen.HTML.Events as HE
 import Triggerfish.Odonus.Grid.Types (Action(..), GenKind(..), KnobTarget(..), Slots, State)
-import Triggerfish.Odonus.Grid.Widgets (cellChrome, engrave, genRow, panelShell, style)
+import Triggerfish.Odonus.Grid.Widgets (cellChrome, genRow, panelShell, style)
 import Triggerfish.Odonus.Model as M
 import Triggerfish.Ui.Knob (knob)
 
@@ -29,7 +29,7 @@ generatePanel s =
         , paramCard s GGlide   (toggleGrid "#4f9d69" _.glide ToggleGlide s.odo)
         , paramCard s GLen     (perCellKnobGrid "#7d8a93" 1 8 8 CellDur _.dur s.odo)
         , paramCard s GRatchet (perCellKnobGrid "#9d6b8a" 1 8 8 CellRatchet _.ratchet s.odo)
-        , velCard              (perCellKnobGrid "#8a9d6b" 1 127 0 CellVel _.vel s.odo)
+        , paramCard s GVel     (perCellKnobGrid "#8a9d6b" 1 127 0 CellVel _.vel s.odo)
         ]
     )
 
@@ -47,16 +47,6 @@ paramCard :: forall m. State -> GenKind -> HH.ComponentHTML Action Slots m -> HH
 paramCard s kind gridBody =
   HH.div [ style cardStyle ]
     [ genRow s kind
-    , HH.div [ style "margin-top:7px" ] [ gridBody ]
-    ]
-
--- | The VELOCITY card — a grid with no random source, so a plain label instead of
--- | a generator row.
-velCard :: forall m. HH.ComponentHTML Action Slots m -> HH.ComponentHTML Action Slots m
-velCard gridBody =
-  HH.div [ style cardStyle ]
-    [ HH.div [ style $ engrave <> ";font-size:11px;color:#3f3c33;line-height:1.1" ] [ HH.text "VELOCITY" ]
-    , HH.div [ style $ engrave <> ";font-size:8px;opacity:0.65;letter-spacing:0.06em" ] [ HH.text "per-cell accent" ]
     , HH.div [ style "margin-top:7px" ] [ gridBody ]
     ]
 

@@ -293,6 +293,7 @@ genSlug = case _ of
   GPattern -> "pattern"
   GSpeed -> "speed"
   GKey -> "key"
+  GVel -> "vel"
 
 genOf :: String -> GenKind
 genOf slug = fromMaybe GNotes (Array.find (\k -> genSlug k == slug) genKinds)
