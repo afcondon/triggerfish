@@ -98,16 +98,6 @@ rigUrl = "ws://127.0.0.1:3012/ws"
 gridCfg :: Scheduler.GridConfig
 gridCfg = { stepBeats: 0.25, lookaheadMs: 120.0, tickMs: 25 }
 
--- | The surfaces. Lab = the merged harmonic surface: one triad per scale degree,
--- | each of which explodes into the web of its extensions / suspensions /
--- | bass-inversions; grow chords by ear, click chords to walk a progression that
--- | assembles down the right-hand side (each step a compact note-row to revoice +
--- | a Tidal source to save/load). Performance = fan a saved progression to voices,
--- | each reading the same chords on its own clock.
-data Tab = Lab | Performance
-
-derive instance eqTab :: Eq Tab
-
 -- | Slice 4c: the surface's width-focus. Hunt = the lattice pool is dominant (you're
 -- | finding chords); Perform = the rail is dominant (you're playing voices). Auto-flips
 -- | on the empty↔non-empty path edge (first chord → Perform, cleared → Hunt); the
@@ -288,7 +278,6 @@ type VoicingCycle =
 
 type State =
   { key :: Key
-  , tab :: Tab                         -- lattice-setup mode (always Lab since 4b; kept for surface code)
   , focus :: Focus                     -- Slice 4c: Hunt (lattice-dominant) vs Perform (rail-dominant)
   , railOpen :: Set RailSection        -- Slice 4b: which rail accordion sections are open (multi)
   , leftOpen :: Set LeftSection        -- which LEFT accordion sections are open (multi)
@@ -521,7 +510,6 @@ component :: forall i o m. MonadAff m => H.Component SourceQuery i o m
 component = H.mkComponent
   { initialState: \_ ->
       { key: cMajorKey
-      , tab: Lab
       , focus: Hunt
       , railOpen: Set.fromFoldable [ SecProgression, SecLibrary, SecVoices ]
       , leftOpen: Set.fromFoldable [ SecSetup, SecTank, SecLens ]
@@ -737,28 +725,17 @@ voiceChordFeed st =
 -- Force layout
 -- ---------------------------------------------------------------------------
 
--- | x is pinned HARD to the target; y-pin depends on the tab. Explore wants a
--- | gentle y so collision can beeswarm chords sharing a key into a vertical
--- | cluster; the Lattice wants a firm y so the extension strata hold their rows.
-forceSetupFor :: Tab -> Setup VNode
-forceSetupFor = case _ of
-  -- the Lab surface wants a firm y so the extension strata hold their rows; the
-  -- fallback (Performance, which never starts a simulation) is the gentle beeswarm.
-  Lab ->
-    setup "vetula"
-      [ positionX "px" # withX (dynamic _.targetX) # withStrength (static 0.12)
-      , positionY "py" # withY (dynamic _.targetY) # withStrength (static 0.55)
-      , link "neighbours" # withDistance (static 46.0) # withStrength (static 0.3)
-      , collide "collide" # withRadius (dynamic (\n -> n.radius + 6.0)) # withStrength (static 0.9)
-      , manyBody "charge" # withStrength (static (-8.0))
-      ]
-  _ ->
-    setup "vetula"
-      [ positionX "px" # withX (dynamic _.targetX) # withStrength (static 0.95)
-      , positionY "py" # withY (dynamic _.targetY) # withStrength (static 0.3)
-      , collide "collide" # withRadius (dynamic (\n -> n.radius + 6.0)) # withStrength (static 0.85)
-      , manyBody "charge" # withStrength (static (-6.0))
-      ]
+-- | x is pinned HARD to the target; y is firm so the extension strata hold their
+-- | rows (a gentler y would let collision beeswarm chords sharing a key).
+vetulaForceSetup :: Setup VNode
+vetulaForceSetup =
+  setup "vetula"
+    [ positionX "px" # withX (dynamic _.targetX) # withStrength (static 0.12)
+    , positionY "py" # withY (dynamic _.targetY) # withStrength (static 0.55)
+    , link "neighbours" # withDistance (static 46.0) # withStrength (static 0.3)
+    , collide "collide" # withRadius (dynamic (\n -> n.radius + 6.0)) # withStrength (static 0.9)
+    , manyBody "charge" # withStrength (static (-8.0))
+    ]
 
 mkSimNode :: ChordNode -> VNode
 mkSimNode c =
@@ -787,7 +764,7 @@ startWith key focusId chords0 = do
           simNodes = map mkSimNode (map (place key focus) chords0)
       result <- liftEffect $ runSimulation
         { engine: D3
-        , setup: forceSetupFor st.tab
+        , setup: vetulaForceSetup
         , nodes: simNodes
         , links: ([] :: Array { source :: Int, target :: Int })
         , container: "#vetula-surface"
@@ -870,7 +847,7 @@ handleAction = case _ of
       addEventListener (EventType "keydown") el false (Window.toEventTarget w)
     -- initial palette
     st <- H.get
-    startWith st.key (seedFocus st.tab) (seedsFor st.tab st.key)
+    startWith st.key seedFocus (seedsFor st.key)
 
   MidiReady mout nm ->
     H.modify_ _ { midiOut = mout, midiName = nm }
@@ -1007,11 +984,10 @@ handleAction = case _ of
   -- it the active chord so Tab / arrows / drag / f all target it inside the modal.
   OpenRevoice -> do
     st <- H.get
-    when (st.tab == Lab) do
-      let target = case st.hoveredId of
-            Just hid | any (\c -> c.id == hid) st.chords -> Just hid
-            _ -> st.sounding
-      for_ target \cid -> H.modify_ _ { revoicing = Just cid, sounding = Just cid }
+    let target = case st.hoveredId of
+          Just hid | any (\c -> c.id == hid) st.chords -> Just hid
+          _ -> st.sounding
+    for_ target \cid -> H.modify_ _ { revoicing = Just cid, sounding = Just cid }
 
   CloseRevoice -> H.modify_ _ { revoicing = Nothing }
 
@@ -2305,12 +2281,12 @@ exteriorGens =
   , { key: "stock",    label: "Stock",    gen: stockChords }
   ]
 
--- | Seeds + focus for a tab.
-seedsFor :: Tab -> Key -> Array ChordNode
-seedsFor _ = diatonicTriads
+-- | Seeds + focus for the lattice surface.
+seedsFor :: Key -> Array ChordNode
+seedsFor = diatonicTriads
 
-seedFocus :: Tab -> Int
-seedFocus _ = 0
+seedFocus :: Int
+seedFocus = 0
 
 -- | The set of ids to remove: the given roots plus all their (non-pinned)
 -- | descendants, by parent chain. Pinned chords are never pruned.
@@ -2342,10 +2318,10 @@ resetPalette :: forall o m. MonadAff m => H.HalogenM State Action Slots o m Unit
 resetPalette = do
   st <- H.get
   let kept = filter _.pinned st.chords
-      set = nubByEq (\a b -> a.id == b.id) (seedsFor st.tab st.key <> kept)
+      set = nubByEq (\a b -> a.id == b.id) (seedsFor st.key <> kept)
   stopSim
   H.modify_ _ { dropped = Map.empty, borrowMode = Nothing, focusedFamily = Nothing, stackHead = Nothing }
-  startWith st.key (seedFocus st.tab) set
+  startWith st.key seedFocus set
 
 -- | Rebuild the palette in a new key/scale, keeping pinned chords.
 -- |
@@ -2364,7 +2340,7 @@ rebuild key = do
       pathIds = Set.fromFoldable st2.path
       chords' = map (\c -> if Set.member c.id pathIds then transposeChord d c else c) st2.chords
       kept = filter _.pinned st2.chords
-      set = nubByEq (\a b -> a.id == b.id) (seedsFor st2.tab key <> kept)
+      set = nubByEq (\a b -> a.id == b.id) (seedsFor key <> kept)
   stopSim
   H.modify_ _
     { chords = chords'
@@ -2374,7 +2350,7 @@ rebuild key = do
     , genSel = [], candidates = []
     -- keep `path` (the progression, now transposed); fork a fresh capture session
     , lastCapIdx = Nothing, lastCapSig = "" }
-  startWith key (seedFocus st2.tab) set
+  startWith key seedFocus set
 
 -- ---------------------------------------------------------------------------
 -- Scale (mode) choices
@@ -2739,12 +2715,9 @@ focusTab st f label =
       <> if isActive then "color: #1a1a1a; border-bottom: 2px solid #1a1a1a; font-weight: 600;"
                      else "color: #9a9a9a; border-bottom: 2px solid transparent;"
 
-helpText :: Tab -> String
-helpText = case _ of
-  Lab ->
-    "One triad per scale degree. Click a piano key to focus that root — a beam lights its column. Stack notes on the focused chord: number keys 2–7 add an interval that many steps up (3 = a third, so 3·3·3 climbs a seventh; 2·4 makes a sus2), e adds the next third (e·e = seventh), s drops the suspensions; press l to explode its whole lattice at once (l again to collapse). The McMullen button drops a curated signpost palette and BORROW pulls chromatic chords from a parallel mode (modal interchange) — chords the scale-pure lattice can't reach, floating up over their own roots and shaded warmer the further outside the chosen scale they sit. Hover any chord + space to hear it. Hover a chord and press v to REVOICE it — a modal with its pitch ladder (drag a note by octaves, ⌥ to double), Tab to cycle voicings, ↑↓ to nudge a voice, f to keep one, and a slash row to re-foot the bass; Esc closes. Click any chord — triads included — to grow the progression on the right: same family bridges by the shortest single-note walk (gold); a chord in another family leaps across as an interconnector (dashed violet). Chromatic keys summon borrowed roots (modulation). On the right: click a step to hear it (shift-click one or two to offer chords to add), then Tab / Shift-Tab cycles its voicings, ↑/↓ nudges a clicked voice, drag a note to move it by octaves (⌥-drag to double it); ▶ plays the whole thing, c clears it. The Tidal source tracks it live — copy to save, paste + Load to work on a saved one again. “save → library” stores it for the Performance tab."
-  Performance ->
-    "Load a saved progression and fan it to VOICES. The chords are ROWS; each voice is a COLUMN; every cell is how many BARS that voice dwells on that chord — click a cell to bump it up (shift-click down), 0 = skip. So a block voice can hold one chord for four bars while an arp runs every chord at one bar each, and any voice can sit out any chord. Each column header sets its renderer (block / strum = only new notes / arp), MIDI channel and phase offset; voices loop their own columns independently, so different totals drift them apart. ▶ runs the transport. Click a chord row to select it, then Tab / ↑↓ revoices it LIVE without changing the saved version."
+helpText :: String
+helpText =
+  "One triad per scale degree. Click a piano key to focus that root — a beam lights its column. Stack notes on the focused chord: number keys 2–7 add an interval that many steps up (3 = a third, so 3·3·3 climbs a seventh; 2·4 makes a sus2), e adds the next third (e·e = seventh), s drops the suspensions; press l to explode its whole lattice at once (l again to collapse). The McMullen button drops a curated signpost palette and BORROW pulls chromatic chords from a parallel mode (modal interchange) — chords the scale-pure lattice can't reach, floating up over their own roots and shaded warmer the further outside the chosen scale they sit. Hover any chord + space to hear it. Hover a chord and press v to REVOICE it — a modal with its pitch ladder (drag a note by octaves, ⌥ to double), Tab to cycle voicings, ↑↓ to nudge a voice, f to keep one, and a slash row to re-foot the bass; Esc closes. Click any chord — triads included — to grow the progression on the right: same family bridges by the shortest single-note walk (gold); a chord in another family leaps across as an interconnector (dashed violet). Chromatic keys summon borrowed roots (modulation). On the right: click a step to hear it (shift-click one or two to offer chords to add), then Tab / Shift-Tab cycles its voicings, ↑/↓ nudges a clicked voice, drag a note to move it by octaves (⌥-drag to double it); ▶ plays the whole thing, c clears it. The Tidal source tracks it live — copy to save, paste + Load to work on a saved one again. “save → library” stores it in the progression library for later recall."
 
 -- | The keys-and-help overlay (the ⓘ button). The reference text that used to sit as a
 -- | paragraph under the canvas, moved off it. Static, so click-anywhere dismisses.
@@ -2760,8 +2733,7 @@ helpOverlay st =
             [ HH.h2 [ HP.style "font-size: 15px; font-weight: 600; margin: 0; color: #2a2a2a;" ] [ HH.text "Keys & help" ]
             , HH.span [ HP.style "font-size: 11px; color: #b0b0b0;" ] [ HH.text "click anywhere to close" ]
             ]
-        , helpSection "Lattice" (helpText Lab)
-        , helpSection "Voices" (helpText Performance)
+        , helpSection "Lattice" helpText
         ]
     ]
   where
@@ -2775,7 +2747,7 @@ helpOverlay st =
 -- | renders. Adding a lens is one more branch here + one `allLenses` entry.
 surface :: forall m. State -> H.ComponentHTML Action Slots m
 surface st
-  | st.tab == Lab && length st.genSel > 0 && length st.candidates > 0 = pickSurface st
+  | length st.genSel > 0 && length st.candidates > 0 = pickSurface st
   | otherwise = case st.lens of
       LensKeyboard -> keyboardSurface st
       LensPadGrid -> padGridSurface st
@@ -2826,9 +2798,9 @@ keyboardSurface st =
       )
       -- revoiceModal is no longer drawn into this SVG — it's a DOM-level modal
       -- (shared Modal widget), rendered at the top of `render`.
-      [ cloudClipDef st.tab
+      [ cloudClipDef
       , clippedCloud
-          ( focusBeam focusRoot <> keyboardView scl <> axisLabels st.tab <> shelfMarker <> links
+          ( focusBeam focusRoot <> keyboardView scl <> axisLabels <> shelfMarker <> links
               <> map (nodeView scl pathOrder Set.empty posMap)
                    (filter (\c -> not (Set.member c.id st.imported)) st.chords) )
       ]
@@ -3484,8 +3456,8 @@ genGlyph mh cx cy r isSeed c =
 -- | ladder's edge (x −304) so a dense beeswarm can't paint over the ladder; on
 -- | the Lattice there's no ladder, so it spans almost the full width (x −436),
 -- | reclaiming the old ladder strip for left-rooted families.
-cloudClipDef :: forall m. Tab -> H.ComponentHTML Action Slots m
-cloudClipDef _ =
+cloudClipDef :: forall m. H.ComponentHTML Action Slots m
+cloudClipDef =
   let x0 = -436.0
       w = 440.0 - x0
   in SE.defs []
@@ -3588,7 +3560,7 @@ candidateView c =
 -- | (smooth ↔ striking) + a cancel. Empty when not picking.
 pickBar :: forall m. State -> H.ComponentHTML Action Slots m
 pickBar st =
-  if st.tab == Lab && length st.genSel > 0
+  if length st.genSel > 0
     then HH.div
       [ HP.style "display: flex; align-items: center; gap: 10px; margin: 0 0 8px; font-size: 12px; color: #6a6a6a;" ]
       [ HH.span [ HP.style "letter-spacing: 0.04em;" ] [ HH.text "smooth" ]
@@ -4136,8 +4108,8 @@ keyboardView scl = whites <> blacks <> labels
   labels = map lbl whiteKeyPcs
   lbl pc = SE.text [ SA.x (keyX pc), SA.y (kb.bot - 5.0), SA.class_ (cn "pkey-label") ] [ HH.text (noteName pc) ]
 
-axisLabels :: forall m. Tab -> Array (H.ComponentHTML Action Slots m)
-axisLabels _ =
+axisLabels :: forall m. Array (H.ComponentHTML Action Slots m)
+axisLabels =
   [ lab 0.0 (-272.0) "↑ more extended (7 · 9 · 11 · 13)"
   , lab 0.0 216.0 "click a key to focus · 2–7 / e / s / l to grow"
   ]
