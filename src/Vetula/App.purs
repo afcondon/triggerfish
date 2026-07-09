@@ -286,6 +286,7 @@ type State =
   , focusId :: Int
   , hoveredId :: Maybe Int
   , hoveredTriad :: Maybe { root :: Int, pcs :: Array Int }  -- Tonnetz hover (no pool id)
+  , hoveredSpec :: Maybe SpecimenId  -- a hovered tank specimen (space previews it)
   , nextId :: Int
   , handle :: Maybe (SimulationHandle Row)
   , subId :: Maybe H.SubscriptionId
@@ -390,6 +391,7 @@ data Action
   | SimDone
   | Hover (Maybe Int)
   | HoverTriad (Maybe { root :: Int, pcs :: Array Int })  -- Tonnetz: hover a triad for space-preview
+  | HoverSpec (Maybe SpecimenId)  -- hover a tank specimen for space-preview
   | SetFocus Focus         -- Slice 4c: switch the surface width-focus (Hunt / Perform)
   | ToggleRailSection RailSection  -- Slice 4b: open/close a rail accordion section
   | ToggleLeftSection LeftSection  -- open/close a left accordion section
@@ -519,6 +521,7 @@ component = H.mkComponent
       , focusId: 0           -- the first diatonic triad seed
       , hoveredId: Nothing
       , hoveredTriad: Nothing
+      , hoveredSpec: Nothing
       , nextId: 100          -- generated children start here; seeds are 0..17
       , handle: Nothing
       , subId: Nothing
@@ -874,6 +877,11 @@ handleAction = case _ of
   Hover mid -> H.modify_ _ { hoveredId = mid }
 
   HoverTriad mt -> H.modify_ _ { hoveredTriad = mt }
+
+  -- entering a tank tile sets the hovered specimen (space previews it); leaving
+  -- clears it. Also clears any surface hover so space can't fall back to a stale
+  -- pool bubble while the pointer is over the tank.
+  HoverSpec ms -> H.modify_ _ { hoveredSpec = ms, hoveredId = Nothing, hoveredTriad = Nothing }
 
   -- Slice 4c: hand-override the width-focus (the Hunt/Perform toggle, the pool spine).
   -- No surface rebuild — the lattice sim keeps running; we only change which column
@@ -2009,16 +2017,20 @@ nudgeSelected dir = do
 playHoveredOrSounding :: forall o m. MonadAff m => H.HalogenM State Action Slots o m Unit
 playHoveredOrSounding = do
   st <- H.get
-  case st.hoveredTriad of
-    -- Tonnetz: a hovered triangle has no pool id, so preview it straight from its
-    -- root + pitch classes (no state change, like the candidate preview below).
-    Just t -> playChord (triadNode t.root t.pcs "")
-    Nothing -> case st.hoveredId of
-      -- in pick mode the hovered bubble is a candidate (not yet in `chords`);
-      -- preview it without committing (no sounding change, no insert)
-      Just hid | Just cand <- find (\c -> c.id == hid) st.candidates -> playChord cand
-      Just hid -> playId hid
-      Nothing -> for_ st.sounding \sid -> for_ (find (\c -> c.id == sid) st.chords) playChord
+  case st.hoveredSpec of
+    -- pointer over a tank tile: preview that frozen specimen straight from its
+    -- own voicing (no state change), so you can explore the tank by ear too.
+    Just sid | Just spec <- find (\sp -> sp.id == sid) st.tank -> playSpecimen spec
+    _ -> case st.hoveredTriad of
+      -- Tonnetz: a hovered triangle has no pool id, so preview it straight from its
+      -- root + pitch classes (no state change, like the candidate preview below).
+      Just t -> playChord (triadNode t.root t.pcs "")
+      Nothing -> case st.hoveredId of
+        -- in pick mode the hovered bubble is a candidate (not yet in `chords`);
+        -- preview it without committing (no sounding change, no insert)
+        Just hid | Just cand <- find (\c -> c.id == hid) st.candidates -> playChord cand
+        Just hid -> playId hid
+        Nothing -> for_ st.sounding \sid -> for_ (find (\c -> c.id == sid) st.chords) playChord
 
 -- | The key/scale a chord is gathered under — the bubblepack it joins.
 groupLabel :: Key -> String
@@ -2680,7 +2692,9 @@ specimenTile staged s =
   HH.div
     [ HP.style ("position: relative; width: 66px; padding: 6px 6px 4px; border-radius: 6px; display: flex; flex-direction: column; align-items: center; "
                  <> if staged then "border: 1px solid #c9a23a; background: #fbf3df;"
-                              else "border: 1px solid #eee; background: #fbfbfa;") ]
+                              else "border: 1px solid #eee; background: #fbfbfa;")
+    , HE.onMouseEnter \_ -> HoverSpec (Just s.id)
+    , HE.onMouseLeave \_ -> HoverSpec Nothing ]
     [ HH.button
         [ HP.style "position: absolute; top: 1px; right: 3px; border: none; background: none; color: #c4c4c4; font-size: 13px; line-height: 1; cursor: pointer; padding: 0;"
         , HP.title "remove from tank"
