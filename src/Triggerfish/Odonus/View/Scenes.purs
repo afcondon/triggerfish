@@ -8,6 +8,7 @@ import Prelude
 
 import Data.Array (length, mapWithIndex, null)
 import Data.Int (floor, round)
+import Data.Maybe (Maybe(..))
 import Halogen as H
 import Halogen.HTML as HH
 import Halogen.HTML.Events as HE
@@ -81,7 +82,16 @@ scenesBody s =
             then [ HH.div [ style $ engrave <> ";font-size:8px;color:#888273;margin-top:6px" ]
                      [ HH.text "capture a few settings, then chain them" ] ]
             else mapWithIndex (sceneChip s) s.scenes )
+    , publishStatus s
     ] <> logbookBody s
+
+-- | Transient status line for the last publish-scene-to-Amphora click (⚱).
+publishStatus :: forall m. State -> H.ComponentHTML Action Slots m
+publishStatus s = case s.publishMsg of
+  Nothing -> HH.text ""
+  Just msg ->
+    HH.div [ style $ engrave <> ";font-size:8px;color:#5a7458;margin-top:6px" ]
+      [ HH.text msg ]
 
 -- | The divider + "SCENES" label that opens the scenes block within the merged
 -- | KEY pane (the visual seam where KEY's pitch controls end and the song
@@ -160,10 +170,17 @@ sceneChip s i sc =
       [ HH.div [ style "display:flex;align-items:center;justify-content:space-between;gap:6px" ]
           [ HH.span [ style "font-family:'SF Mono',Menlo,monospace;font-size:10px;color:#3f3c33" ]
               [ HH.text sc.name ]
-          , HH.span
-              [ HE.onClick \_ -> DeleteScene i
-              , style "font-family:Georgia,serif;font-size:11px;color:#a06048;padding:0 3px;cursor:pointer" ]
-              [ HH.text "×" ]
+          , HH.div [ style "display:flex;align-items:center;gap:4px" ]
+              [ HH.span
+                  [ HE.onClick \_ -> PublishScene i
+                  , HP.title "publish this scene to the Amphora store"
+                  , style "font-family:Georgia,serif;font-size:11px;color:#5a7458;padding:0 3px;cursor:pointer" ]
+                  [ HH.text "⚱" ]
+              , HH.span
+                  [ HE.onClick \_ -> DeleteScene i
+                  , style "font-family:Georgia,serif;font-size:11px;color:#a06048;padding:0 3px;cursor:pointer" ]
+                  [ HH.text "×" ]
+              ]
           ]
       , HH.div [ style "display:flex;gap:5px" ]
           [ recallBtn (RecallScene i) "#3f3c33" "#00000018" "#ffffff40"

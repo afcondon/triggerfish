@@ -16,7 +16,7 @@ module Triggerfish.Selene.Component (component) where
 
 import Prelude
 
-import Data.Array (drop, filter, length, mapMaybe, mapWithIndex, modifyAt, null, range, (!!))
+import Data.Array (any, drop, filter, length, mapMaybe, mapWithIndex, modifyAt, null, range, (!!))
 import Data.Foldable (for_, foldr)
 import Data.Int (round, toNumber)
 import Data.Map (Map)
@@ -24,9 +24,12 @@ import Data.Map as Map
 import Data.Number (cos, pi, sin) as Num
 import Data.String as Str
 import Data.String.Common (joinWith)
-import Effect.Aff.Class (class MonadAff)
+import Effect.Aff (attempt)
+import Effect.Aff.Class (class MonadAff, liftAff)
 import Effect.Class (liftEffect)
 import Effect.Timer (setInterval)
+import Data.Either (Either(..))
+import Data.String.CodeUnits (take)
 import Halogen as H
 import Halogen.HTML as HH
 import Halogen.HTML.Events as HE
@@ -42,6 +45,7 @@ import Triggerfish.Selene.Model as M
 import Triggerfish.Selene.Source as Source
 import Triggerfish.Selene.Store as Store
 import Triggerfish.Selene.Wire as Wire
+import Triggerfish.Amphora as Amphora
 import Triggerfish.SourceQuery (Query(..))
 import Triggerfish.Transport (Sounding(..))
 import Data.Maybe (Maybe(..), fromMaybe)
@@ -73,6 +77,7 @@ type State =
   -- (e.g. "es9:main"). "…" while a push is in flight; the daemon's OK/ERR line
   -- once it answers. Drives the per-bank status readout (#142 S3).
   , replies :: Map String String
+  , publishMsg :: Maybe String   -- transient status from a publish-rack-to-Amphora click
   }
 
 data Action
@@ -87,6 +92,7 @@ data Action
   | SetRackName String        -- rename the active rack
   | ApplyToRig                -- push every modular destination to its daemon
   | SeleneReply String        -- a raw `selene-reply …` frame from the rig
+  | PublishRack               -- publish the active rack to the Amphora store (selene-rack)
 
 component :: forall i o m. MonadAff m => H.Component Query i o m
 component =
@@ -100,6 +106,7 @@ component =
           , binnacle: Nothing, midiOut: Nothing, midiName: "…"
           , clockTempo: 120.0, clockLocked: false, clockBar: 0
           , replies: Map.empty
+          , publishMsg: Nothing
           }
     , render
     , eval: H.mkEval H.defaultEval
@@ -180,6 +187,13 @@ handleAction = case _ of
       let a = if sv.active >= 0 && sv.active < length sv.library then sv.active else 0
           doc = fromMaybe "" (map _.doc (sv.library !! a))
       H.modify_ _ { library = sv.library, active = a, sel = Source.parseRack doc }
+    -- Merge the shared Amphora rack library over the local one (by name); the
+    -- store being offline is not fatal — we keep whatever's local.
+    dbRes <- liftAff (attempt (Amphora.fetchCollection "selene-rack"))
+    case dbRes of
+      Right items | not (null items) ->
+        H.modify_ \s -> s { library = mergeRacksByName s.library (map amphoraRack items) }
+      _ -> pure unit
     H.modify_ _ { binnacle = Just bin }
 
   Step tick -> do
@@ -248,6 +262,22 @@ handleAction = case _ of
              H.modify_ \s -> s { replies = Map.insert (replyKey socket bank) (joinWith " " (drop 2 toks)) s.replies }
            _, _ -> pure unit
 
+  -- Publish the active rack to the shared Amphora store (selene-rack collection).
+  -- The rack's doc is already its canonical eDSL form; the name rides the label.
+  -- Store offline → a transient failure message, never fatal.
+  PublishRack -> do
+    s <- H.get
+    case s.library !! s.active of
+      Nothing -> pure unit
+      Just r -> do
+        H.modify_ _ { publishMsg = Just "publishing…" }
+        res <- liftAff (attempt (Amphora.publish
+          { kind: "selene-rack", collection: "selene-rack"
+          , name: r.name, source: "user", payload: r.doc, tags: [] }))
+        H.modify_ _ { publishMsg = Just case res of
+          Right hash -> "✓ " <> r.name <> " · " <> take 8 hash
+          Left _ -> "✗ publish failed (store offline?)" }
+
 -- | The active rack's eDSL doc — the editable text + the AskSource answer.
 currentDoc :: State -> String
 currentDoc s = fromMaybe "" (map _.doc (s.library !! s.active))
@@ -255,6 +285,16 @@ currentDoc s = fromMaybe "" (map _.doc (s.library !! s.active))
 -- | Replace one rack's doc in the library.
 setDocAt :: Int -> String -> Array Store.Rack -> Array Store.Rack
 setDocAt i doc lib = fromMaybe lib (modifyAt i (_ { doc = doc }) lib)
+
+-- | An Amphora library item as a local rack (payload = the rack's eDSL doc).
+amphoraRack :: Amphora.LibItem -> Store.Rack
+amphoraRack it = { name: it.name, doc: it.payload }
+
+-- | Merge incoming (Amphora) racks over the current local ones by name: keep
+-- | every local rack, then append any incoming rack whose name isn't present.
+mergeRacksByName :: Array Store.Rack -> Array Store.Rack -> Array Store.Rack
+mergeRacksByName current incoming =
+  current <> filter (\p -> not (any (\q -> q.name == p.name) current)) incoming
 
 -- | Persist the rack library (after any library/active change).
 persist :: forall o m. MonadAff m => H.HalogenM State Action () o m Unit
@@ -344,8 +384,27 @@ rackBar s =
                , HE.onValueInput SetRackName
                , style $ "margin-left:6px;padding:5px 9px;border:1px solid #a8a392;border-radius:5px;background:#f4f1e8;"
                    <> "font-family:Georgia,serif;font-size:12px;color:#1c1a12;width:130px" ]
+           , publishRackChip
+           , publishStatus s
            ]
     )
+
+-- Publish the active rack to the Amphora store (⚱); a sibling of + NEW.
+publishRackChip :: forall m. H.ComponentHTML Action () m
+publishRackChip =
+  HH.button
+    [ HE.onClick \_ -> PublishRack
+    , HP.title "publish the active rack to the Amphora store"
+    , style $ "padding:5px 11px;border:1px solid #8aa08a;border-radius:6px;cursor:pointer;"
+        <> "font-family:Georgia,serif;font-size:11px;color:#3d5c3b;background:#00000006" ]
+    [ HH.text "⚱ PUBLISH" ]
+
+publishStatus :: forall m. State -> H.ComponentHTML Action () m
+publishStatus s = case s.publishMsg of
+  Nothing -> HH.text ""
+  Just msg ->
+    HH.span [ style $ engrave <> ";font-size:8px;color:#5a7458;margin-left:4px" ]
+      [ HH.text msg ]
 
 rackChip :: forall m. String -> Boolean -> Action -> H.ComponentHTML Action () m
 rackChip label active act =

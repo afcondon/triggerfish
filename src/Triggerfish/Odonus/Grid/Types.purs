@@ -333,6 +333,7 @@ type State =
   , anchorCount :: Int
   , scenes :: Array Scene
   , sceneNameInput :: String  -- the name typed in the SCENES form for the next capture
+  , publishMsg :: Maybe String  -- transient status from a publish-scene-to-Amphora click
   , chain :: Boolean        -- auto-advance scenes at bar boundaries
   , sceneIx :: Int          -- current scene in the chain
   , sceneBarAnchor :: Int   -- bar at which the current scene started
@@ -405,6 +406,7 @@ data Action
   | ToggleScaleNote Int
   | CaptureScene
   | SetSceneName String
+  | PublishScene Int         -- publish scene i to the Amphora store (odonus-scene)
   | RecallScene Int
   | RecallGesture Int
   | DeleteScene Int

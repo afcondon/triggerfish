@@ -17,8 +17,11 @@ import Data.Ord (abs)
 import Data.Maybe (Maybe(..), fromMaybe, isJust, isNothing, maybe)
 import Data.String.Common (joinWith)
 import Effect (Effect)
-import Effect.Aff.Class (class MonadAff)
+import Effect.Aff (attempt)
+import Effect.Aff.Class (class MonadAff, liftAff)
 import Effect.Class (liftEffect)
+import Data.Either (Either(..))
+import Data.String.CodeUnits (take)
 import Effect.Timer (setInterval)
 import Halogen as H
 import Halogen.HTML as HH
@@ -54,6 +57,7 @@ import Triggerfish.Odonus.View.Grid (gridPanel)
 import Triggerfish.Odonus.View.Replay (replayPanel, modeBar)
 import Triggerfish.Odonus.Patch (capturePatch, harmonicSummary, loadText, patchText, recallText, recallGestureText)
 import Triggerfish.Odonus.Store as Store
+import Triggerfish.Amphora as Amphora
 import Triggerfish.Odonus.Lepidoptera (parsePatch, printPatch)
 import Triggerfish.SourceQuery (Query(..))
 import Triggerfish.Midi.Routing as Routing
@@ -68,7 +72,7 @@ component =
         , notes: [], logbook: Logbook.emptyLog, view: VLive, playing: Nothing, regionDrag: Nothing, contextOpen: false, clips: [], twisterField: FNote, binnacle: Nothing, nowMicros: 0.0
         , midiOut: Nothing, midiName: "…", clockTempo: 120.0, clockLocked: false
         , clockBeat: 0.0, clockBar: 0, anchorCount: 0
-        , scenes: [], sceneNameInput: "", chain: false, sceneIx: 0, sceneBarAnchor: 0, barsPerScene: 4
+        , scenes: [], sceneNameInput: "", publishMsg: Nothing, chain: false, sceneIx: 0, sceneBarAnchor: 0, barsPerScene: 4
         , stepDiv: 1, headNote: [ Nothing, Nothing, Nothing, Nothing ]
         , swing: 0.0, velHumanize: 12
         , gen: map (\k -> { kind: k, on: false, rate: genDefaultRate k, amt: genDefaultAmt k }) genKinds
@@ -167,6 +171,7 @@ handleAction a = do
     MidiReady _ _ -> pure unit
     Initialize -> pure unit
     SetSceneName _ -> pure unit   -- per-keystroke; nothing authoring changed yet
+    PublishScene _ -> pure unit   -- a network write; no local authoring changed
     _ -> persistAll
 
 -- | Persist the live working patch + the named scene library.
@@ -174,6 +179,19 @@ persistAll :: forall o m. MonadAff m => H.HalogenM State Action Slots o m Unit
 persistAll = do
   s <- H.get
   liftEffect (Store.saveAll { live: patchText s, scenes: s.scenes })
+
+-- | An Amphora library item as a local scene (payload = the scene's eDSL text).
+amphoraScene :: Amphora.LibItem -> { name :: String, text :: String }
+amphoraScene it = { name: it.name, text: it.payload }
+
+-- | Merge incoming (Amphora) scenes over the current local ones by name: keep
+-- | every local scene, then append any incoming scene whose name isn't present.
+mergeScenesByName
+  :: Array { name :: String, text :: String }
+  -> Array { name :: String, text :: String }
+  -> Array { name :: String, text :: String }
+mergeScenesByName current incoming =
+  current <> filter (\p -> not (any (\q -> q.name == p.name) current)) incoming
 
 dispatch :: forall o m. MonadAff m => Action -> H.HalogenM State Action Slots o m Unit
 dispatch = case _ of
@@ -222,6 +240,13 @@ dispatch = case _ of
     for_ msaved \sv -> do
       H.modify_ _ { scenes = sv.scenes }
       H.modify_ (loadText sv.live)
+    -- Merge the shared Amphora scene library over the local one (by name);
+    -- the store being offline is not fatal — we keep whatever's local.
+    dbRes <- liftAff (attempt (Amphora.fetchCollection "odonus-scene"))
+    case dbRes of
+      Right items | not (null items) ->
+        H.modify_ \s -> s { scenes = mergeScenesByName s.scenes (map amphoraScene items) }
+      _ -> pure unit
   Step tick -> do
     st <- H.get
     -- Global step divider: the scheduler ticks on a fine 1/16 grid; advance the
@@ -484,6 +509,21 @@ dispatch = case _ of
     in s { scenes = s.scenes <> [ { name: nm, text: printPatch ((capturePatch s) { name = nm }) } ]
          , sceneNameInput = "" }
   SetSceneName n -> H.modify_ _ { sceneNameInput = n }
+  -- Publish scene i to the shared Amphora store (odonus-scene collection). The
+  -- scene text is already its canonical Lepidoptera form; the name rides the
+  -- label. Store offline → a transient failure message, never fatal.
+  PublishScene i -> do
+    s <- H.get
+    case s.scenes !! i of
+      Nothing -> pure unit
+      Just sc -> do
+        H.modify_ _ { publishMsg = Just "publishing…" }
+        res <- liftAff (attempt (Amphora.publish
+          { kind: "odonus-scene", collection: "odonus-scene"
+          , name: sc.name, source: "user", payload: sc.text, tags: [] }))
+        H.modify_ _ { publishMsg = Just case res of
+          Right hash -> "✓ " <> sc.name <> " · " <> take 8 hash
+          Left _ -> "✗ publish failed (store offline?)" }
   RecallScene i -> H.modify_ \s -> case s.scenes !! i of
     Just sc -> (recallText sc.text s) { sceneIx = i }
     Nothing -> s

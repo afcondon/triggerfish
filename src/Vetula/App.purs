@@ -31,10 +31,12 @@ import Data.Nullable (Nullable, null)
 import Data.Set (Set)
 import Data.Set as Set
 import Data.String (Pattern(..), contains)
+import Data.String.CodeUnits as SCU
 import Data.String.Common (joinWith, toLower, trim)
 import Data.Tuple (Tuple(..), snd)
 import Effect (Effect)
-import Effect.Aff.Class (class MonadAff)
+import Effect.Aff (attempt)
+import Effect.Aff.Class (class MonadAff, liftAff)
 import Effect.Class (liftEffect)
 import Halogen as H
 import Halogen.HTML as HH
@@ -62,6 +64,7 @@ import Binnacle.Transport as Transport
 import Triggerfish.Transport (Sounding(..))
 import Triggerfish.Midi.Routing as Routing
 import Vetula.Store as Store
+import Triggerfish.Amphora as Amphora
 import Vetula.Tank (Specimen, SpecimenId(..), Provenance(..), specNotes)
 import Reef.Vetula.Perf (VChord, VVoice, VDest(..), VRenderer(..), PerfClock, cursorAtClock, renderAlphaBlockMidiAt, renderAlphaClockMidiAt) as RV
 import Reef.Vetula.Articulate (VArticulator(..), articulate, articLabel, nextArtic) as RA
@@ -345,6 +348,7 @@ type State =
   , lastCapSig :: String          -- signature (currentSource) of the last capture, for dedup
   , libSearch :: String           -- filter the library by key
   , saveName :: String            -- name for the next saved progression
+  , publishMsg :: Maybe String    -- transient status from a publish-entry-to-Amphora click
   -- Slice 4a — the live `path` IS the performed progression (no separate loaded
   -- working copy). `perfName` is just the title of the snapshot last restored into
   -- the path (Nothing = hand-built on the lattice); the chords come from `path`.
@@ -434,6 +438,7 @@ data Action
   | LoadProg Int           -- load library entry #i into the performance working copy
   | UnloadProg             -- back to the library
   | DeleteLib Int          -- remove a library entry
+  | PublishLib Int         -- publish library entry #i to the Amphora store (vetula-progression)
   | AddVoice
   | RemoveVoice Int
   | SetVoiceChannel Int String
@@ -556,6 +561,7 @@ component = H.mkComponent
       , lastCapSig: ""
       , libSearch: ""
       , saveName: ""
+      , publishMsg: Nothing
       , perfName: Nothing
       -- one MIDI + one Odonus voice present from the start but MUTED, so both
       -- destinations are one un-mute away — no Add-voice hunt to hear either.
@@ -833,6 +839,13 @@ handleAction = case _ of
     -- continues past the restored count so new ◦ autonames don't collide.
     msaved <- liftEffect Store.loadLibrary
     for_ msaved \sv -> H.modify_ _ { library = sv.library, capSeq = length sv.library }
+    -- Merge the shared Amphora progression library over the local one (by name);
+    -- the store being offline is not fatal — we keep whatever's local.
+    dbRes <- liftAff (attempt (Amphora.fetchCollection "vetula-progression"))
+    case dbRes of
+      Right items | length items > 0 ->
+        H.modify_ \s -> s { library = mergeLibByName s.library (map amphoraEntry items) }
+      _ -> pure unit
     -- keyboard
     { emitter: keyE, listener: keyL } <- liftEffect HS.create
     _ <- H.subscribe keyE
@@ -1259,6 +1272,24 @@ handleAction = case _ of
   DeleteLib i -> do
     H.modify_ \s -> s { library = fromMaybe s.library (deleteAt i s.library), lastCapIdx = Nothing }
     persistLib
+
+  -- Publish library entry #i to the shared Amphora store (vetula-progression).
+  -- The entry's `source` is its canonical Tidal form; name + keyLabel + kept ride
+  -- the label (keyLabel as a `key:` tag, kept as a `kept` tag). Store offline → a
+  -- transient failure message, never fatal.
+  PublishLib i -> do
+    st <- H.get
+    case st.library !! i of
+      Nothing -> pure unit
+      Just e -> do
+        H.modify_ _ { publishMsg = Just "publishing…" }
+        let tags = [ "key:" <> e.keyLabel ] <> (if e.kept then [ "kept" ] else [])
+        res <- liftAff (attempt (Amphora.publish
+          { kind: "vetula-progression", collection: "vetula-progression"
+          , name: e.name, source: "user", payload: e.source, tags }))
+        H.modify_ _ { publishMsg = Just case res of
+          Right hash -> "✓ " <> e.name <> " · " <> SCU.take 8 hash
+          Left _ -> "✗ publish failed (store offline?)" }
 
   AddVoice -> H.modify_ \s ->
     s { voices = s.voices <> [ defaultVoice s.nextVoiceId (mod s.nextVoiceId 4) (rendOf s.nextVoiceId) (length (perfChords s)) ]
@@ -1715,6 +1746,23 @@ persistLib :: forall o m. MonadAff m => H.HalogenM State Action Slots o m Unit
 persistLib = do
   lib <- H.gets _.library
   liftEffect $ Store.saveLibrary { library: lib }
+
+-- | An Amphora library item as a local progression entry. The Tidal source is
+-- | the payload; the keyLabel is recovered from a `key:` tag (if present) and
+-- | `kept` from a `kept` tag.
+amphoraEntry :: Amphora.LibItem -> LibEntry
+amphoraEntry it =
+  { name: it.name
+  , keyLabel: fromMaybe "" (map (SCU.drop 4) (find (\t -> contains (Pattern "key:") t) it.tags))
+  , source: it.payload
+  , kept: elem "kept" it.tags
+  }
+
+-- | Merge incoming (Amphora) entries over the current local ones by name: keep
+-- | every local entry, then append any incoming entry whose name isn't present.
+mergeLibByName :: Array LibEntry -> Array LibEntry -> Array LibEntry
+mergeLibByName current incoming =
+  current <> filter (\p -> not (any (\q -> q.name == p.name) current)) incoming
 
 -- | Capture the current progression into the stack — update the session's ephemeral
 -- | ◦ in place, or open a new one — then persist. Shared by the settle-timer and the
@@ -3857,6 +3905,9 @@ libraryView st =
               [ HP.value st.libSearch, HE.onValueInput SetLibSearch, HP.attr (AttrName "placeholder") "search by key…"
               , HP.style "font-size: 13px; padding: 3px 8px; border: 1px solid #ddd; border-radius: 4px; width: 100%; box-sizing: border-box;" ]
           ]
+      , case st.publishMsg of
+          Nothing -> HH.text ""
+          Just msg -> HH.div [ HP.style "font-size: 11px; color: #5a7458; margin: 0 0 8px;" ] [ HH.text msg ]
       , if length st.library == 0
           then HH.p [ HP.style "color: #c0c0c0; font-size: 13px; line-height: 1.6;" ]
                  [ HH.text "Nothing captured yet. Build a progression on the Lattice — it's auto-saved here as you go (◦). Star (★) the keepers." ]
@@ -3878,6 +3929,10 @@ libraryView st =
       , HH.span [ HP.style "flex: 1; font-size: 13px; color: #2a2a2a;" ] [ HH.text e.name ]
       , HH.span [ HP.style "font-size: 11px; color: #b0b0b0;" ] [ HH.text (show (length (parseProgression e.source)) <> " chords") ]
       , cellBtn "load" false (LoadProg i)
+      , HH.button
+          [ HP.style "border: none; background: none; cursor: pointer; color: #5a7458; font-size: 14px;"
+          , HP.title "publish this progression to the Amphora store"
+          , HE.onClick \_ -> PublishLib i ] [ HH.text "⚱" ]
       , HH.button [ HP.style "border: none; background: none; cursor: pointer; color: #c0c0c0; font-size: 15px;", HE.onClick \_ -> DeleteLib i ] [ HH.text "×" ]
       ]
 
