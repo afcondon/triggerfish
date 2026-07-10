@@ -430,7 +430,7 @@ dispatch = case _ of
     Nothing -> s
   DeleteScene i -> H.modify_ \s -> s { scenes = fromMaybe s.scenes (deleteAt i s.scenes) }
   -- Performance logbook (#151): flag / drop a good bit, or purge the whole log.
-  MarkNow -> H.modify_ \s -> s { logbook = Logbook.mark s.nowMicros s.logbook }
+  MarkNow -> H.modify_ \s -> s { logbook = Logbook.mark s.nowMicros (patchText s) s.logbook }
   DeleteMark i -> H.modify_ \s -> s { logbook = Logbook.deleteMark i s.logbook }
   ClearLog -> H.modify_ \s -> s { logbook = Logbook.emptyLog }
   ToggleChain -> H.modify_ \s -> s { chain = not s.chain, sceneBarAnchor = s.clockBar }

@@ -14,7 +14,7 @@ import Halogen.HTML.Events as HE
 import Halogen.HTML.Properties as HP
 import Triggerfish.Odonus.Model as M
 import Triggerfish.Scale as Scale
-import Triggerfish.Odonus.Grid.Types (Action(..), Scene, Slots, State)
+import Triggerfish.Odonus.Grid.Types (Action(..), Mark, Scene, Slots, State)
 import Triggerfish.Odonus.Grid.Widgets (engrave, stepBtn, style)
 import Triggerfish.Odonus.Logbook (noteCount)
 
@@ -122,13 +122,13 @@ logbookBody s =
   ]
 
 -- | One flagged instant: how long ago it fired + a delete ×.
-markChip :: forall m. State -> Int -> Number -> H.ComponentHTML Action Slots m
+markChip :: forall m. State -> Int -> Mark -> H.ComponentHTML Action Slots m
 markChip s i m =
   HH.div
     [ style $ "display:flex;align-items:center;justify-content:space-between;padding:4px 8px;border-radius:6px;"
         <> "background:#cbc6b6;box-shadow:0 0 0 1px #00000012" ]
     [ HH.span [ style "font-family:'SF Mono',Menlo,monospace;font-size:10px;color:#3f3c33" ]
-        [ HH.text ("◆ " <> agoLabel (s.nowMicros - m)) ]
+        [ HH.text ("◆ " <> agoLabel (s.nowMicros - m.atMicros)) ]
     , HH.span
         [ HE.onClick \_ -> DeleteMark i
         , style "font-family:Georgia,serif;font-size:11px;color:#a06048;padding:0 3px;cursor:pointer" ]

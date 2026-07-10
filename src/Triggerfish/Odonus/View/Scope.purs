@@ -10,7 +10,7 @@ import Data.Int (toNumber)
 import Halogen as H
 import Halogen.HTML as HH
 import Halogen.HTML.Events as HE
-import Triggerfish.Odonus.Grid.Types (Action(..), NoteEvent, Slots, State)
+import Triggerfish.Odonus.Grid.Types (Action(..), Mark, NoteEvent, Slots, State)
 import Triggerfish.Odonus.Grid.Widgets (clampI, headColor, style, svgAttr, svgEl)
 import Triggerfish.Odonus.Logbook (noteCount)
 
@@ -69,13 +69,13 @@ logbookOverlay s =
     ]
 
 -- | Marks recent enough to still be on-screen (within the river's fade span).
-visibleMarks :: Number -> Array Number -> Array Number
-visibleMarks now = filter (\m -> (now - m) / 1000.0 * pxPerMs < riverW)
+visibleMarks :: Number -> Array Mark -> Array Mark
+visibleMarks now = filter (\m -> (now - m.atMicros) / 1000.0 * pxPerMs < riverW)
 
 -- | A flagged instant as a full-height gold line, positioned like a note by age.
-markLine :: forall m. Number -> Number -> H.ComponentHTML Action Slots m
+markLine :: forall m. Number -> Mark -> H.ComponentHTML Action Slots m
 markLine now m =
-  let x = riverW - (now - m) / 1000.0 * pxPerMs - 10.0
+  let x = riverW - (now - m.atMicros) / 1000.0 * pxPerMs - 10.0
   in
     svgEl "rect"
       [ svgAttr "x" (show x), svgAttr "y" "0"

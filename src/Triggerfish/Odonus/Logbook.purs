@@ -58,14 +58,14 @@ freeze now lb =
     frozen :: Chunk
     frozen = { fromMicros: lb.liveFrom, toMicros: now, events: lb.live }
     cutoff = now - retentionMicros
-    keep c = c.toMicros >= cutoff || any (\m -> m >= c.fromMicros && m <= c.toMicros) lb.marks
+    keep c = c.toMicros >= cutoff || any (\m -> m.atMicros >= c.fromMicros && m.atMicros <= c.toMicros) lb.marks
     chunks' = filter keep (frozen : lb.chunks)
   in
     lb { live = [], liveFrom = now, chunks = chunks' }
 
--- | Flag a good bit at instant `now`.
-mark :: Number -> Logbook -> Logbook
-mark now lb = lb { marks = now : lb.marks }
+-- | Flag a good bit at instant `now`, snapshotting the live patch alongside it.
+mark :: Number -> String -> Logbook -> Logbook
+mark now patch lb = lb { marks = { atMicros: now, patch } : lb.marks }
 
 deleteMark :: Int -> Logbook -> Logbook
 deleteMark i lb = lb { marks = fromMaybe lb.marks (deleteAt i lb.marks) }
