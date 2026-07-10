@@ -656,14 +656,27 @@ markTap k s = s { lastTap = k, lastTapMicros = s.nowMicros }
 enqueue :: forall o m. MonadAff m => RI.Input -> H.HalogenM State Action Slots o m Unit
 enqueue input = do
   st <- H.get
-  let tagStep = soundingStep st + inputBufferSteps
-  -- The local model always buffers the edit (SOLO plays it locally); only the
-  -- send to the rig is gated on ATLANTIS (onRig = not audible), so SOLO is silent
-  -- to the rig. In ATLANTIS the handoff created the voice and these stream to it.
-  H.modify_ \s -> s { pending = s.pending <> [ { step: tagStep, input } ] }
-  when (st.sounding == Rig) $ for_ st.binnacle \bin ->
-    liftEffect $ Transport.send (Binnacle.socket bin)
-      ("reef-input " <> encodeTagged { tick: tagStep, input })
+  -- STOPPED: the Step loop is gated on `sounding /= Silent`, so a deferred edit
+  -- would sit in `pending` forever and the surface would be inert until playback.
+  -- With nothing sounding there's no flam to avoid, so apply the edit NOW. The
+  -- resulting setup state is exactly what the Push handoff ships to the rig, so
+  -- lockstep starts from what you built while stopped.
+  if st.sounding == Silent
+    then H.modify_ \s ->
+      let sim = RI.applyInputs [ input ]
+                  { odo: s.odo, gen: s.gen, spread: s.genSpread, bias: s.genBias
+                  , seed: s.genSeed, frozen: s.genFrozen }
+      in s { odo = sim.odo, gen = sim.gen, genSpread = sim.spread, genBias = sim.bias
+           , genSeed = sim.seed, genFrozen = sim.frozen }
+    else do
+      let tagStep = soundingStep st + inputBufferSteps
+      -- The local model always buffers the edit (SOLO plays it locally); only the
+      -- send to the rig is gated on ATLANTIS (onRig = not audible), so SOLO is silent
+      -- to the rig. In ATLANTIS the handoff created the voice and these stream to it.
+      H.modify_ \s -> s { pending = s.pending <> [ { step: tagStep, input } ] }
+      when (st.sounding == Rig) $ for_ st.binnacle \bin ->
+        liftEffect $ Transport.send (Binnacle.socket bin)
+          ("reef-input " <> encodeTagged { tick: tagStep, input })
 
 -- | Tell the BEAM voice the current model-step length in beats (lockstep P4c). A
 -- | no-op when the rig isn't attached. Sent on Push and on every STEP LENGTH change
