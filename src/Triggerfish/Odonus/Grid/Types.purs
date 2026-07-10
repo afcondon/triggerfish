@@ -16,6 +16,8 @@ module Triggerfish.Odonus.Grid.Types
   , replayTimelineId
   , Logbook
   , PlayState
+  , PlaySource(..)
+  , Clip
   , module Reef.Gen
   , genLabel
   , genSub
@@ -138,11 +140,34 @@ type NoteEvent = { pitch :: Int, headIdx :: Int, fireUnixMicros :: Number, vel :
 -- | A REPLAY loop in progress (#151, R2b): the region bounds in recording time,
 -- | which mark it came from, the perf-clock instant the NEXT loop iteration
 -- | should be scheduled at, and the 0..1 playhead position for the view.
+-- | What the REPLAY loop is currently playing: a region around a mark on the
+-- | timeline, or a captured clip. The scheduler is source-agnostic (it reads the
+-- | rebased `events`); the source only decides what the view highlights.
+data PlaySource = FromRegion Int | FromClip Int
+
+derive instance eqPlaySource :: Eq PlaySource
+
 type PlayState =
-  { fromMicros :: Number, toMicros :: Number, markIdx :: Int
+  { source :: PlaySource
+  , events :: Array NoteEvent  -- the loop's notes, rebased to [0, lenMicros)
+  , lenMicros :: Number        -- loop length; the notes repeat every lenMicros
+  , fromMicros :: Number       -- region bounds on the timeline (FromRegion playhead only)
+  , toMicros :: Number
   , loopStartMs :: Number      -- perf-now ms that the loop's phase-0 aligns to
   , scheduledUntilMs :: Number  -- watermark: notes are queued up to this perf-now ms
   , playheadFrac :: Number
+  }
+
+-- | A captured performance clip (#151, R2d): a span of the logbook lifted out as
+-- | a self-contained, replayable artefact — its notes copied and rebased to zero
+-- | (so it survives the buffer reset and can be scheduled anywhere), its length,
+-- | and the Odonus patch that made it (harmonic context / promote-to-scene). The
+-- | durable harvest, as against the ephemeral logbook it came from.
+type Clip =
+  { name :: String
+  , events :: Array NoteEvent  -- rebased to [0, lenMicros)
+  , lenMicros :: Number
+  , patch :: String            -- the Odonus patch (Lepidoptera text) at capture
   }
 
 -- | A saved whole-Odonus setting under a name — the recallable PRESET and the
@@ -269,6 +294,7 @@ type State =
   , playing :: Maybe PlayState    -- a REPLAY loop in flight (Nothing = not replaying)
   , regionDrag :: Maybe RegionDrag  -- a loop-region resize/slide in progress
   , contextOpen :: Boolean          -- REPLAY control card: harmonic-context panel open
+  , clips :: Array Clip             -- captured performance clips (#151, R2d), newest-first
   , binnacle :: Maybe Binnacle
   , nowMicros :: Number
   , midiOut :: Maybe Midi.MidiOut
@@ -365,6 +391,9 @@ data Action
   | RegionMove Int Int      -- pointer moved during a region drag: clientX, clientY
   | RegionUp                -- release a region drag (click→play, or finalize resize)
   | SaveMarkScene Int       -- promote a mark's captured patch into the SCENES list
+  | SaveMarkClip Int        -- lift a mark's region out as a captured clip (#151, R2d)
+  | PlayClip Int            -- audition a captured clip (loops, like a region)
+  | DeleteClip Int          -- drop a captured clip
   | ToggleContext           -- REPLAY card: show/hide the active mark's harmonic context
   | ToggleChain
   | BumpBars Int

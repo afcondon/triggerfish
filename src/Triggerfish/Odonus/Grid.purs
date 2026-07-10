@@ -41,7 +41,7 @@ import Web.HTML (window)
 import Web.HTML.Window as Window
 import Web.UIEvent.MouseEvent as ME
 import Triggerfish.Odonus.Grid.Types
-  ( Action(..), KnobTarget(..), SourceTag(..), OdonusView(..), RegionEdge(..), Logbook, NoteEvent, PlayState, Slots, State, applyTarget, genDefaultAmt, genDefaultRate, genKinds, genLabel
+  ( Action(..), KnobTarget(..), SourceTag(..), OdonusView(..), RegionEdge(..), PlaySource(..), Logbook, NoteEvent, Slots, State, applyTarget, genDefaultAmt, genDefaultRate, genKinds, genLabel
   , marblesPadId, replayTimelineId, setAmt, setRate, targetRange )
 import Triggerfish.Scale (scaleTypes)
 import Triggerfish.Transport (Sounding(..))
@@ -65,7 +65,7 @@ component =
   H.mkComponent
     { initialState: \_ ->
         { odo: M.defaultOdonus, sounding: Silent, dragging: Nothing, dragSub: Nothing
-        , notes: [], logbook: Logbook.emptyLog, view: VLive, playing: Nothing, regionDrag: Nothing, contextOpen: false, binnacle: Nothing, nowMicros: 0.0
+        , notes: [], logbook: Logbook.emptyLog, view: VLive, playing: Nothing, regionDrag: Nothing, contextOpen: false, clips: [], binnacle: Nothing, nowMicros: 0.0
         , midiOut: Nothing, midiName: "…", clockTempo: 120.0, clockLocked: false
         , clockBeat: 0.0, clockBar: 0, anchorCount: 0
         , scenes: [], sceneNameInput: "", chain: false, sceneIx: 0, sceneBarAnchor: 0, barsPerScene: 4
@@ -523,6 +523,25 @@ dispatch = case _ of
                  Nothing -> "loop " <> show (i + 1)
       in s { scenes = s.scenes <> [ { name: nm, text: m.patch } ] }
     Nothing -> s
+  -- Lift a mark's region out as a captured clip (#151, R2d): copy its notes,
+  -- rebased to zero, plus the patch that made them — a self-contained artefact
+  -- that survives the buffer reset. In-session for now (persistence = big-think).
+  SaveMarkClip i -> H.modify_ \s -> case s.logbook.marks !! i of
+    Just m ->
+      let nm = case harmonicSummary m.patch of
+                 Just h -> "clip · " <> h.root <> " " <> h.scale
+                 Nothing -> "clip " <> show (length s.clips + 1)
+          clip = { name: nm, events: materializeRegion m.from m.to s.logbook
+                 , lenMicros: m.to - m.from, patch: m.patch }
+      in s { clips = [ clip ] <> s.clips }
+    Nothing -> s
+  PlayClip i -> startClip i
+  DeleteClip i -> do
+    hushReplayVoices
+    H.modify_ \s -> s { clips = fromMaybe s.clips (deleteAt i s.clips)
+                      , playing = case s.playing of
+                          Just p | p.source == FromClip i -> Nothing
+                          _ -> s.playing }
   ToggleContext -> H.modify_ \s -> s { contextOpen = not s.contextOpen }
   ToggleChain -> H.modify_ \s -> s { chain = not s.chain, sceneBarAnchor = s.clockBar }
   BumpBars d -> H.modify_ \s -> s { barsPerScene = clampI 1 32 (s.barsPerScene + d) }
@@ -675,15 +694,16 @@ driveReplay = do
     Just ps -> do
       nowMs <- liftEffect Time.perfNow
       let
-        loopLenMs = max 1.0 ((ps.toMicros - ps.fromMicros) / 1000.0)
+        loopLenMs = max 1.0 (ps.lenMicros / 1000.0)
         horizon = nowMs + replayLookaheadMs
-      -- Queue each region note's NEXT occurrence after the watermark, if it lands
-      -- inside the window. The loop repeats every loopLenMs, so an event at phase
-      -- `off` sounds at loopStartMs + off + k·loopLenMs; pick the first k past the
-      -- watermark. Windows are one frame wide (≪ a loop), so ≤ one hit per event.
-      for_ st.midiOut \out -> liftEffect $ for_ (regionEvents ps st.logbook) \e -> do
+      -- Queue each note's NEXT occurrence after the watermark, if it lands inside
+      -- the window. The loop repeats every loopLenMs, so an event at phase `off`
+      -- (its rebased time) sounds at loopStartMs + off + k·loopLenMs; pick the
+      -- first k past the watermark. Windows are one frame wide (≪ a loop), so ≤
+      -- one hit per event. `ps.events` are rebased to [0, lenMicros).
+      for_ st.midiOut \out -> liftEffect $ for_ ps.events \e -> do
         let
-          off = (e.fireUnixMicros - ps.fromMicros) / 1000.0
+          off = e.fireUnixMicros / 1000.0
           k = ceil ((ps.scheduledUntilMs - ps.loopStartMs - off) / loopLenMs)
           atMs = ps.loopStartMs + off + toNumber k * loopLenMs
         when (atMs > ps.scheduledUntilMs && atMs <= horizon) $
@@ -718,7 +738,23 @@ startRegion i = do
     -- Watermark starts a hair before the origin so a phase-0 note (off == 0) is
     -- included on the first frame rather than falling on the strict `>` boundary.
     H.modify_ _ { playing = Just
-      { fromMicros: m.from, toMicros: m.to, markIdx: i
+      { source: FromRegion i
+      , events: materializeRegion m.from m.to st.logbook, lenMicros: m.to - m.from
+      , fromMicros: m.from, toMicros: m.to
+      , loopStartMs: nowMs, scheduledUntilMs: nowMs - 1.0, playheadFrac: 0.0 } }
+
+-- | Start auditioning captured clip `i` — same looping scheduler as a region,
+-- | but the notes come from the clip (already rebased) and it isn't on the
+-- | timeline, so nothing highlights there.
+startClip :: forall o m. MonadAff m => Int -> H.HalogenM State Action Slots o m Unit
+startClip i = do
+  st <- H.get
+  for_ (st.clips !! i) \c -> do
+    nowMs <- liftEffect Time.perfNow
+    H.modify_ _ { playing = Just
+      { source: FromClip i
+      , events: c.events, lenMicros: c.lenMicros
+      , fromMicros: 0.0, toMicros: c.lenMicros
       , loopStartMs: nowMs, scheduledUntilMs: nowMs - 1.0, playheadFrac: 0.0 } }
 
 -- | The timeline's earliest-note origin and total span — the SAME formula the
@@ -746,17 +782,24 @@ setRegionBounds i b s =
             (modifyAt i (\m -> m { from = b.from, to = b.to }) s.logbook.marks) } }
 
 -- | If mark `i` is the one currently looping, carry a bounds edit onto the live
--- | loop too, so a resize/slide is heard on the next iteration.
+-- | loop too (re-materialising its notes), so a resize/slide is heard on the next
+-- | iteration.
 syncPlaying :: Int -> { from :: Number, to :: Number } -> State -> State
 syncPlaying i b s = case s.playing of
-  Just p | p.markIdx == i -> s { playing = Just p { fromMicros = b.from, toMicros = b.to } }
+  Just p | p.source == FromRegion i ->
+    s { playing = Just p { fromMicros = b.from, toMicros = b.to
+                         , events = materializeRegion b.from b.to s.logbook
+                         , lenMicros = b.to - b.from } }
   _ -> s
 
--- | The captured notes falling inside a replay region.
-regionEvents :: PlayState -> Logbook -> Array NoteEvent
-regionEvents ps lb =
-  filter (\e -> e.fireUnixMicros >= ps.fromMicros && e.fireUnixMicros <= ps.toMicros)
-    (lb.live <> concatMap _.events lb.chunks)
+-- | The captured notes falling inside a [from,to] window, copied out and rebased
+-- | so the earliest is at 0 — a self-contained loop body (the replay scheduler
+-- | and a captured clip both read this form).
+materializeRegion :: Number -> Number -> Logbook -> Array NoteEvent
+materializeRegion from to lb =
+  map (\e -> e { fireUnixMicros = e.fireUnixMicros - from })
+    (filter (\e -> e.fireUnixMicros >= from && e.fireUnixMicros <= to)
+      (lb.live <> concatMap _.events lb.chunks))
 
 -- | Schedule the next loop iteration this far before its onset (perf ms).
 replayLookaheadMs :: Number
