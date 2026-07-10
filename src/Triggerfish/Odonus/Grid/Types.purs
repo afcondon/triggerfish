@@ -140,7 +140,9 @@ type NoteEvent = { pitch :: Int, headIdx :: Int, fireUnixMicros :: Number, vel :
 -- | should be scheduled at, and the 0..1 playhead position for the view.
 type PlayState =
   { fromMicros :: Number, toMicros :: Number, markIdx :: Int
-  , nextLoopMs :: Number, playheadFrac :: Number
+  , loopStartMs :: Number      -- perf-now ms that the loop's phase-0 aligns to
+  , scheduledUntilMs :: Number  -- watermark: notes are queued up to this perf-now ms
+  , playheadFrac :: Number
   }
 
 -- | A saved whole-Odonus setting under a name — the recallable PRESET and the

@@ -12,7 +12,7 @@ import Prelude
 import Data.Array (any, concatMap, deleteAt, elem, filter, find, findIndex, head, length, modifyAt, null, range, updateAt, (!!))
 import Data.Foldable (foldl, for_)
 import Data.FoldableWithIndex (forWithIndex_)
-import Data.Int (floor, round, toNumber)
+import Data.Int (ceil, floor, round, toNumber)
 import Data.Ord (abs)
 import Data.Maybe (Maybe(..), fromMaybe, isJust, isNothing, maybe)
 import Data.String.Common (joinWith)
@@ -453,17 +453,25 @@ dispatch = case _ of
   -- buffer is a scratchpad, so each REPLAY visit reviews "the take since I last
   -- left" and leaving clears the slate. Saved scenes are already copied out and
   -- survive; unsaved marks + captured notes are intentionally ephemeral.
-  SetView v -> H.modify_ \s ->
-    let leavingReplay = s.view == VReplay && v == VLive
-    in s { view = v
-         , playing = if v == VReplay then s.playing else Nothing
-         , regionDrag = if v == VReplay then s.regionDrag else Nothing
-         , contextOpen = if v == VReplay then s.contextOpen else false
-         , logbook = if leavingReplay then Logbook.emptyLog else s.logbook }
+  SetView v -> do
+    st <- H.get
+    when (st.view == VReplay && v == VLive) hushReplayVoices
+    H.modify_ \s ->
+      let leavingReplay = s.view == VReplay && v == VLive
+      in s { view = v
+           , playing = if v == VReplay then s.playing else Nothing
+           , regionDrag = if v == VReplay then s.regionDrag else Nothing
+           , contextOpen = if v == VReplay then s.contextOpen else false
+           , logbook = if leavingReplay then Logbook.emptyLog else s.logbook }
   -- REPLAY (#151, R2b): start looping the one-bar region around mark i. The Frame
   -- loop (driveReplay) schedules each iteration; StopPlay ends it.
   PlayRegion i -> startRegion i
-  StopPlay -> H.modify_ _ { playing = Nothing }
+  -- Stop the loop AND cut anything already sounding: the windowed scheduler
+  -- leaves at most one lookahead of notes queued, and all-notes-off silences a
+  -- note mid-ring, so stop is instant.
+  StopPlay -> do
+    hushReplayVoices
+    H.modify_ _ { playing = Nothing }
   -- REPLAY region drag (#151, R2c): grab a band's edge (resize) or body (slide).
   -- The pointer maps straight to a recording time via padNorm over the timeline.
   RegionDown i edge cx cy -> do
@@ -652,10 +660,13 @@ dispatch = case _ of
     for_ st.binnacle \bin ->
       liftEffect $ Transport.send (Binnacle.socket bin) "hush"
 
--- | REPLAY loop driver (#151, R2b), run each Frame. While a region is playing,
--- | schedule the next loop iteration once we're within lookahead of its start —
--- | each note is a self-contained scheduleNoteAtMs (auto note-off), so nothing
--- | sticks. Also advances the 0..1 playhead for the view. No-op when idle.
+-- | REPLAY loop driver (#151, R2b), run each Frame. A WINDOWED scheduler: each
+-- | frame it queues only the notes falling in the short lookahead window ahead of
+-- | the scheduling watermark — NOT a whole loop iteration at once. So StopPlay
+-- | leaves at most `replayLookaheadMs` of notes queued (and StopPlay also sends
+-- | all-notes-off), rather than a full loop that keeps sounding. Each note is a
+-- | self-contained scheduleNoteAtMs (auto note-off). Also advances the 0..1
+-- | playhead for the view. No-op when idle.
 driveReplay :: forall o m. MonadAff m => H.HalogenM State Action Slots o m Unit
 driveReplay = do
   st <- H.get
@@ -663,23 +674,39 @@ driveReplay = do
     Nothing -> pure unit
     Just ps -> do
       nowMs <- liftEffect Time.perfNow
-      let loopLenMs = max 1.0 ((ps.toMicros - ps.fromMicros) / 1000.0)
-      when (nowMs >= ps.nextLoopMs - replayLookaheadMs) do
-        for_ st.midiOut \out -> liftEffect $ for_ (regionEvents ps st.logbook) \e ->
+      let
+        loopLenMs = max 1.0 ((ps.toMicros - ps.fromMicros) / 1000.0)
+        horizon = nowMs + replayLookaheadMs
+      -- Queue each region note's NEXT occurrence after the watermark, if it lands
+      -- inside the window. The loop repeats every loopLenMs, so an event at phase
+      -- `off` sounds at loopStartMs + off + k·loopLenMs; pick the first k past the
+      -- watermark. Windows are one frame wide (≪ a loop), so ≤ one hit per event.
+      for_ st.midiOut \out -> liftEffect $ for_ (regionEvents ps st.logbook) \e -> do
+        let
+          off = (e.fireUnixMicros - ps.fromMicros) / 1000.0
+          k = ceil ((ps.scheduledUntilMs - ps.loopStartMs - off) / loopLenMs)
+          atMs = ps.loopStartMs + off + toNumber k * loopLenMs
+        when (atMs > ps.scheduledUntilMs && atMs <= horizon) $
           Midi.scheduleNoteAtMs out
             { channel: Routing.toWire (Routing.odonusHeadChannel e.headIdx)
-            , note: e.pitch, velocity: e.vel
-            , atMs: ps.nextLoopMs + (e.fireUnixMicros - ps.fromMicros) / 1000.0
-            , durMs: e.gateMs }
-        H.modify_ \s -> case s.playing of
-          Just p -> s { playing = Just p { nextLoopMs = p.nextLoopMs + loopLenMs } }
-          Nothing -> s
+            , note: e.pitch, velocity: e.vel, atMs, durMs: e.gateMs }
       H.modify_ \s -> case s.playing of
         Just p ->
-          let started = p.nextLoopMs - loopLenMs
-              frac = max 0.0 (min 1.0 ((nowMs - started) / loopLenMs))
-          in s { playing = Just p { playheadFrac = frac } }
+          let
+            elapsed = nowMs - p.loopStartMs
+            frac = (elapsed - toNumber (floor (elapsed / loopLenMs)) * loopLenMs) / loopLenMs
+          in s { playing = Just p { scheduledUntilMs = max p.scheduledUntilMs horizon
+                                  , playheadFrac = max 0.0 (min 1.0 frac) } }
         Nothing -> s
+
+-- | All-notes-off (CC 123) on the four Odonus head channels — cuts any note the
+-- | REPLAY loop left ringing, so StopPlay / leaving REPLAY is instantly silent.
+hushReplayVoices :: forall o m. MonadAff m => H.HalogenM State Action Slots o m Unit
+hushReplayVoices = do
+  st <- H.get
+  for_ st.midiOut \out -> liftEffect $ for_ (range 0 3) \h ->
+    Midi.sendCC out
+      { channel: Routing.toWire (Routing.odonusHeadChannel h), controller: 123, value: 0 }
 
 -- | Start looping the region stored on mark `i` (shared by PlayRegion and a bare
 -- | click at the end of a region drag).
@@ -688,8 +715,11 @@ startRegion i = do
   st <- H.get
   for_ (st.logbook.marks !! i) \m -> do
     nowMs <- liftEffect Time.perfNow
+    -- Watermark starts a hair before the origin so a phase-0 note (off == 0) is
+    -- included on the first frame rather than falling on the strict `>` boundary.
     H.modify_ _ { playing = Just
-      { fromMicros: m.from, toMicros: m.to, markIdx: i, nextLoopMs: nowMs, playheadFrac: 0.0 } }
+      { fromMicros: m.from, toMicros: m.to, markIdx: i
+      , loopStartMs: nowMs, scheduledUntilMs: nowMs - 1.0, playheadFrac: 0.0 } }
 
 -- | The timeline's earliest-note origin and total span — the SAME formula the
 -- | Replay view uses to lay notes out, so pointer↔time round-trips exactly.
