@@ -94,27 +94,41 @@ sceneDivider =
     , HH.span [ style $ engrave <> ";font-size:8px;opacity:0.6" ] [ HH.text "Song" ]
     ]
 
+-- | A scene chip: the name + delete on top, then two full-width recall buttons.
+-- | "as saved" restores the whole scene (its own key/scale/progression too);
+-- | "in key" recalls only the gesture — cells, playheads, generators, feel —
+-- | over the CURRENT harmony, so the same riff re-voices in the live key.
 sceneChip :: forall m. State -> Int -> Scene -> H.ComponentHTML Action Slots m
 sceneChip s i sc =
   let active = s.chain && s.sceneIx == i
   in
     HH.div
-      [ style $ "display:flex;align-items:center;gap:6px;padding:6px 8px;border-radius:7px;cursor:pointer;"
+      [ style $ "display:flex;flex-direction:column;gap:6px;padding:7px 8px;border-radius:7px;"
           <> "background:#cbc6b6;box-shadow:0 0 0 1px " <> (if active then "#b5832b" else "#00000018")
           <> (if active then ";outline:2px solid #b5832b66" else "") ]
-      [ HH.div
-          [ HE.onClick \_ -> RecallScene i
-          , HP.title "recall the whole scene — its own key/progression too"
-          , style "flex:1;font-family:'SF Mono',Menlo,monospace;font-size:10px;color:#3f3c33" ]
-          [ HH.text sc.name ]
-      , HH.span
-          [ HE.onClick \_ -> RecallGesture i
-          , HP.title "recall the gesture in the CURRENT key — same lick, live harmony"
-          , style $ "font-family:Georgia,serif;font-size:9px;letter-spacing:0.04em;color:#5a7a58;"
-              <> "padding:1px 5px;border-radius:5px;border:1px solid #5a7a5844;background:#5a7a5814" ]
-          [ HH.text "in key" ]
-      , HH.span
-          [ HE.onClick \_ -> DeleteScene i
-          , style "font-family:Georgia,serif;font-size:11px;color:#a06048;padding:0 3px" ]
-          [ HH.text "×" ]
+      [ HH.div [ style "display:flex;align-items:center;justify-content:space-between;gap:6px" ]
+          [ HH.span [ style "font-family:'SF Mono',Menlo,monospace;font-size:10px;color:#3f3c33" ]
+              [ HH.text sc.name ]
+          , HH.span
+              [ HE.onClick \_ -> DeleteScene i
+              , style "font-family:Georgia,serif;font-size:11px;color:#a06048;padding:0 3px;cursor:pointer" ]
+              [ HH.text "×" ]
+          ]
+      , HH.div [ style "display:flex;gap:5px" ]
+          [ recallBtn (RecallScene i) "#3f3c33" "#00000018" "#ffffff40"
+              "recall the whole scene — its own key/scale/progression too" "recall as saved"
+          , recallBtn (RecallGesture i) "#3d5c3b" "#5a7a5855" "#5a7a5814"
+              "recall the gesture in the CURRENT key — same riff, live harmony" "recall in key"
+          ]
       ]
+
+-- | One of the two recall buttons: full-width, Georgia, tinted per mode.
+recallBtn :: forall m. Action -> String -> String -> String -> String -> String -> H.ComponentHTML Action Slots m
+recallBtn act fg border bg titleTxt label =
+  HH.button
+    [ HE.onClick \_ -> act
+    , HP.title titleTxt
+    , style $ "flex:1;padding:4px 6px;border-radius:6px;cursor:pointer;font-family:Georgia,serif;"
+        <> "font-size:10px;letter-spacing:0.02em;color:" <> fg <> ";border:1px solid " <> border
+        <> ";background:" <> bg ]
+    [ HH.text label ]
