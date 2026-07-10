@@ -444,7 +444,9 @@ dispatch = case _ of
   MarkNow -> H.modify_ \s -> s { logbook = Logbook.mark s.nowMicros (patchText s) s.logbook }
   DeleteMark i -> H.modify_ \s -> s { logbook = Logbook.deleteMark i s.logbook }
   ClearLog -> H.modify_ \s -> s { logbook = Logbook.emptyLog }
-  SetView v -> H.modify_ _ { view = v }
+  -- Leaving REPLAY stops any running loop — otherwise it keeps sounding on a
+  -- screen with no visible stop control.
+  SetView v -> H.modify_ \s -> s { view = v, playing = if v == VReplay then s.playing else Nothing }
   -- REPLAY (#151, R2b): start looping the one-bar region around mark i. The Frame
   -- loop (driveReplay) schedules each iteration; StopPlay ends it.
   PlayRegion i -> do

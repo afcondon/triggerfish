@@ -67,8 +67,11 @@ replayPanel s =
       ( if null events then [ emptyState ]
         else
           let
-            tMax = s.nowMicros
-            tMin = foldl (\a e -> min a e.fireUnixMicros) tMax events
+            -- The timeline spans the actual recording — earliest to LATEST
+            -- captured note — NOT the live `now`, so it stops stretching the
+            -- moment capture stops (while capturing, the last note ≈ now anyway).
+            tMin = foldl (\a e -> min a e.fireUnixMicros) 1.0e18 events
+            tMax = foldl (\a e -> max a e.fireUnixMicros) 0.0 events
             span = max 1.0 (tMax - tMin)
             xOf t = (t - tMin) / span * tlW      -- svg viewBox units (0..tlW)
             pctOf t = (t - tMin) / span * 100.0  -- percent, for HTML overlays
