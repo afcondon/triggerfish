@@ -448,9 +448,18 @@ dispatch = case _ of
     in s { logbook = Logbook.pushMark m s.logbook }
   DeleteMark i -> H.modify_ \s -> s { logbook = Logbook.deleteMark i s.logbook }
   ClearLog -> H.modify_ \s -> s { logbook = Logbook.emptyLog }
-  -- Leaving REPLAY stops any running loop — otherwise it keeps sounding on a
-  -- screen with no visible stop control.
-  SetView v -> H.modify_ \s -> s { view = v, playing = if v == VReplay then s.playing else Nothing }
+  -- Leaving REPLAY stops any running loop (otherwise it keeps sounding on a
+  -- screen with no visible stop control) AND wipes the logbook: the replay
+  -- buffer is a scratchpad, so each REPLAY visit reviews "the take since I last
+  -- left" and leaving clears the slate. Saved scenes are already copied out and
+  -- survive; unsaved marks + captured notes are intentionally ephemeral.
+  SetView v -> H.modify_ \s ->
+    let leavingReplay = s.view == VReplay && v == VLive
+    in s { view = v
+         , playing = if v == VReplay then s.playing else Nothing
+         , regionDrag = if v == VReplay then s.regionDrag else Nothing
+         , contextOpen = if v == VReplay then s.contextOpen else false
+         , logbook = if leavingReplay then Logbook.emptyLog else s.logbook }
   -- REPLAY (#151, R2b): start looping the one-bar region around mark i. The Frame
   -- loop (driveReplay) schedules each iteration; StopPlay ends it.
   PlayRegion i -> startRegion i
