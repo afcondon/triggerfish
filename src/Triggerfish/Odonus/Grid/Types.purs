@@ -17,6 +17,7 @@ module Triggerfish.Odonus.Grid.Types
   , genSub
   , marblesPadId
   , SourceTag(..)
+  , OdonusView(..)
   , State
   , Action(..)
   , Slots
@@ -212,6 +213,13 @@ data SourceTag = SScale | SVetula
 
 derive instance eqSourceTag :: Eq SourceTag
 
+-- | Which surface the Odonus instrument shows: the LIVE performance panels, or
+-- | the REPLAY editor over the logbook (#151). A tab within Odonus — replay
+-- | reviews Odonus's own capture, and lives where that data + the emit path are.
+data OdonusView = VLive | VReplay
+
+derive instance eqOdonusView :: Eq OdonusView
+
 type State =
   { odo :: M.Odonus
   , sounding :: Sounding     -- the ONE transport value (control-surface MISU refactor):
@@ -221,6 +229,7 @@ type State =
   , dragSub :: Maybe H.SubscriptionId
   , notes :: Array NoteEvent
   , logbook :: Logbook            -- always-on performance capture (#151)
+  , view :: OdonusView            -- LIVE panels vs the REPLAY editor over the logbook
   , binnacle :: Maybe Binnacle
   , nowMicros :: Number
   , midiOut :: Maybe Midi.MidiOut
@@ -310,6 +319,7 @@ data Action
   | MarkNow                 -- flag "a good bit" at the current instant (logbook)
   | DeleteMark Int          -- drop a flagged instant
   | ClearLog                -- purge the whole logbook manually
+  | SetView OdonusView      -- switch the Odonus surface (LIVE / REPLAY)
   | ToggleChain
   | BumpBars Int
   | SetStepDiv Int

@@ -39,7 +39,7 @@ import Web.HTML (window)
 import Web.HTML.Window as Window
 import Web.UIEvent.MouseEvent as ME
 import Triggerfish.Odonus.Grid.Types
-  ( Action(..), KnobTarget(..), SourceTag(..), Slots, State, applyTarget, genDefaultAmt, genDefaultRate, genKinds, genLabel
+  ( Action(..), KnobTarget(..), SourceTag(..), OdonusView(..), Slots, State, applyTarget, genDefaultAmt, genDefaultRate, genKinds, genLabel
   , marblesPadId, setAmt, setRate, targetRange )
 import Triggerfish.Scale (scaleTypes)
 import Triggerfish.Transport (Sounding(..))
@@ -49,6 +49,7 @@ import Triggerfish.Odonus.View.Scope (scopePanel)
 import Triggerfish.Odonus.View.Key (quantizerPanel)
 import Triggerfish.Odonus.View.Playheads (playheadsPanel)
 import Triggerfish.Odonus.View.Grid (gridPanel)
+import Triggerfish.Odonus.View.Replay (replayPanel, modeBar)
 import Triggerfish.Odonus.Patch (capturePatch, loadText, patchText, recallText, recallGestureText)
 import Triggerfish.Odonus.Store as Store
 import Triggerfish.Odonus.Lepidoptera (parsePatch, printPatch)
@@ -62,7 +63,7 @@ component =
   H.mkComponent
     { initialState: \_ ->
         { odo: M.defaultOdonus, sounding: Silent, dragging: Nothing, dragSub: Nothing
-        , notes: [], logbook: Logbook.emptyLog, binnacle: Nothing, nowMicros: 0.0
+        , notes: [], logbook: Logbook.emptyLog, view: VLive, binnacle: Nothing, nowMicros: 0.0
         , midiOut: Nothing, midiName: "…", clockTempo: 120.0, clockLocked: false
         , clockBeat: 0.0, clockBar: 0, anchorCount: 0
         , scenes: [], sceneNameInput: "", chain: false, sceneIx: 0, sceneBarAnchor: 0, barsPerScene: 4
@@ -433,6 +434,7 @@ dispatch = case _ of
   MarkNow -> H.modify_ \s -> s { logbook = Logbook.mark s.nowMicros (patchText s) s.logbook }
   DeleteMark i -> H.modify_ \s -> s { logbook = Logbook.deleteMark i s.logbook }
   ClearLog -> H.modify_ \s -> s { logbook = Logbook.emptyLog }
+  SetView v -> H.modify_ _ { view = v }
   ToggleChain -> H.modify_ \s -> s { chain = not s.chain, sceneBarAnchor = s.clockBar }
   BumpBars d -> H.modify_ \s -> s { barsPerScene = clampI 1 32 (s.barsPerScene + d) }
   -- STEP LENGTH is a transport/clock param, not a SimState edit, so it rides its
@@ -814,16 +816,24 @@ render :: forall m. MonadAff m => State -> H.ComponentHTML Action Slots m
 render s =
   HH.div
     -- The whole surface is non-selectable: knob drags and toggle/matrix clicks
-    -- never start a text selection.
-    [ style $ "position:fixed;top:var(--tf-bar);left:0;right:0;bottom:0;display:flex;align-items:stretch;overflow-x:auto;overflow-y:hidden;"
+    -- never start a text selection. The container is a positioning context for
+    -- the floating LIVE/REPLAY mode bar; content fills it at full height.
+    [ style $ "position:fixed;top:var(--tf-bar);left:0;right:0;bottom:0;overflow:hidden;"
         <> "user-select:none;-webkit-user-select:none;"
         <> "background:#b7b1a0;font-family:Georgia,serif" ]
-    -- KEY carries the SCENES song machinery in one merged column (#139); it now
-    -- sits at the RHS so the working order reads Scope · Playheads · Odonus ·
-    -- Generate · Key (the source/song settings live to the right of the grid).
-    [ scopePanel s
-    , playheadsPanel s
-    , gridPanel s
-    , generatePanel s
-    , quantizerPanel s
+    [ modeBar s
+    , case s.view of
+        -- KEY carries the SCENES song machinery in one merged column (#139); it now
+        -- sits at the RHS so the working order reads Scope · Playheads · Odonus ·
+        -- Generate · Key (the source/song settings live to the right of the grid).
+        VLive ->
+          HH.div
+            [ style "height:100%;display:flex;align-items:stretch;overflow-x:auto;overflow-y:hidden" ]
+            [ scopePanel s
+            , playheadsPanel s
+            , gridPanel s
+            , generatePanel s
+            , quantizerPanel s
+            ]
+        VReplay -> replayPanel s
     ]
