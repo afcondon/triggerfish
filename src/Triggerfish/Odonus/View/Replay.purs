@@ -19,6 +19,7 @@ import Halogen.HTML as HH
 import Halogen.HTML.Events as HE
 import Triggerfish.Odonus.Grid.Types (Action(..), Mark, NoteEvent, OdonusView(..), PlayState, Slots, State)
 import Triggerfish.Odonus.Grid.Widgets (clampI, headColor, style, svgAttr, svgEl)
+import Triggerfish.Odonus.Logbook (regionBounds)
 
 -- viewBox units — the timeline's internal coordinate space (stretched to fit).
 tlW :: Number
@@ -75,7 +76,6 @@ replayPanel s =
             span = max 1.0 (tMax - tMin)
             xOf t = (t - tMin) / span * tlW      -- svg viewBox units (0..tlW)
             pctOf t = (t - tMin) / span * 100.0  -- percent, for HTML overlays
-            barMicros = 4.0 * 60.0e6 / (if s.clockTempo > 1.0 then s.clockTempo else 120.0)
           in
             [ svgEl "svg"
                 [ svgAttr "width" "100%", svgAttr "height" "100%"
@@ -84,7 +84,7 @@ replayPanel s =
                 , style "position:absolute;inset:0" ]
                 (map (noteDot xOf) (decimate events) <> map (markLine xOf) lb.marks)
             ]
-              <> mapWithIndex (regionBand pctOf barMicros s.playing) lb.marks
+              <> mapWithIndex (regionBand pctOf s.clockTempo s.playing) lb.marks
               <> playhead pctOf s.playing
               <> [ caption (length events) (length lb.marks), transport s.playing ]
       )
@@ -109,13 +109,15 @@ noteDot xOf e =
     , svgAttr "fill" (headColor e.headIdx), svgAttr "opacity" "0.72"
     ] []
 
--- | The default one-bar loop window around a mark — a clickable gold band (an
--- | HTML overlay, percent-positioned over the svg) that starts the region
--- | looping. Brighter while it's the one playing.
+-- | The bar-aligned loop window around a mark — a clickable gold band (an HTML
+-- | overlay, percent-positioned over the svg) that starts the region looping.
+-- | Uses the same regionBounds as playback, so what you see is what loops.
+-- | Brighter while it's the one playing.
 regionBand :: forall m. (Number -> Number) -> Number -> Maybe PlayState -> Int -> Mark -> H.ComponentHTML Action Slots m
-regionBand pctOf barMicros playing i m =
-  let l = pctOf (m.atMicros - barMicros / 2.0)
-      r = pctOf (m.atMicros + barMicros / 2.0)
+regionBand pctOf tempo playing i m =
+  let rb = regionBounds tempo m
+      l = pctOf rb.from
+      r = pctOf rb.to
       active = case playing of
         Just p -> p.markIdx == i
         Nothing -> false

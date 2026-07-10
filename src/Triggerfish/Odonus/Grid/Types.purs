@@ -153,11 +153,12 @@ type Scene = { name :: String, text :: String }
 -- | O(whole session), and makes retention a matter of dropping whole chunks.
 type Chunk = { fromMicros :: Number, toMicros :: Number, events :: Array NoteEvent }
 
--- | A flagged good bit: WHEN it happened plus the Odonus `patch` (Lepidoptera
--- | text) live at that instant. So a mark carries both the notes that came out
--- | (via its position in the note stream) and the machine state that made them —
--- | the seam to later "loop this / get me back into that headspace" reuse.
-type Mark = { atMicros :: Number, patch :: String }
+-- | A flagged good bit: WHEN it happened (wall clock + the absolute Link `beat`,
+-- | so a loop window can bar-align) plus the Odonus `patch` (Lepidoptera text)
+-- | live at that instant. So a mark carries both the notes that came out (via its
+-- | position in the note stream) and the machine state that made them — the seam
+-- | to later "loop this / get me back into that headspace" reuse.
+type Mark = { atMicros :: Number, beat :: Number, patch :: String }
 
 -- | The always-on performance logbook (#151): the scope's note stream WITHOUT
 -- | the ~8s prune, so what actually happened survives. The rig is always

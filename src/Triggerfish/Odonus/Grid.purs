@@ -441,7 +441,7 @@ dispatch = case _ of
     Nothing -> s
   DeleteScene i -> H.modify_ \s -> s { scenes = fromMaybe s.scenes (deleteAt i s.scenes) }
   -- Performance logbook (#151): flag / drop a good bit, or purge the whole log.
-  MarkNow -> H.modify_ \s -> s { logbook = Logbook.mark s.nowMicros (patchText s) s.logbook }
+  MarkNow -> H.modify_ \s -> s { logbook = Logbook.mark s.nowMicros s.clockBeat (patchText s) s.logbook }
   DeleteMark i -> H.modify_ \s -> s { logbook = Logbook.deleteMark i s.logbook }
   ClearLog -> H.modify_ \s -> s { logbook = Logbook.emptyLog }
   -- Leaving REPLAY stops any running loop — otherwise it keeps sounding on a
@@ -454,9 +454,9 @@ dispatch = case _ of
     case st.logbook.marks !! i of
       Just m -> do
         nowMs <- liftEffect Time.perfNow
-        let barMicros = 4.0 * 60.0e6 / (if st.clockTempo > 1.0 then st.clockTempo else 120.0)
+        let rb = Logbook.regionBounds st.clockTempo m
         H.modify_ _ { playing = Just
-          { fromMicros: m.atMicros - barMicros / 2.0, toMicros: m.atMicros + barMicros / 2.0
+          { fromMicros: rb.from, toMicros: rb.to
           , markIdx: i, nextLoopMs: nowMs, playheadFrac: 0.0 } }
       Nothing -> pure unit
   StopPlay -> H.modify_ _ { playing = Nothing }

@@ -16,6 +16,7 @@ module Triggerfish.Odonus.Logbook
   , mark
   , deleteMark
   , noteCount
+  , regionBounds
   , retentionMicros
   , chunkSize
   ) where
@@ -24,8 +25,9 @@ import Prelude
 
 import Data.Array (any, deleteAt, filter, length, null, (:))
 import Data.Foldable (sum)
+import Data.Int (floor, toNumber)
 import Data.Maybe (fromMaybe)
-import Triggerfish.Odonus.Grid.Types (Chunk, Logbook, NoteEvent)
+import Triggerfish.Odonus.Grid.Types (Chunk, Logbook, Mark, NoteEvent)
 
 -- | Freeze the live chunk once it reaches this many notes (~20s at typical
 -- | density). Small enough that the per-step `fresh <> live` copy stays cheap.
@@ -63,9 +65,30 @@ freeze now lb =
   in
     lb { live = [], liveFrom = now, chunks = chunks' }
 
--- | Flag a good bit at instant `now`, snapshotting the live patch alongside it.
-mark :: Number -> String -> Logbook -> Logbook
-mark now patch lb = lb { marks = { atMicros: now, patch } : lb.marks }
+-- | Flag a good bit at instant `now` (with the live Link `beat`), snapshotting
+-- | the live patch alongside it.
+mark :: Number -> Number -> String -> Logbook -> Logbook
+mark now beat patch lb = lb { marks = { atMicros: now, beat, patch } : lb.marks }
+
+-- | Beats per bar the rig runs (4/4). The loop window is a whole number of these.
+quantum :: Number
+quantum = 4.0
+
+-- | How many bars a default loop window spans.
+loopBars :: Int
+loopBars = 2
+
+-- | The bar-aligned loop window around a mark: `loopBars` bars starting at the
+-- | downbeat of the bar the mark falls in. Computed in beat space (from the
+-- | mark's absolute Link beat) and converted to recording micros via the tempo —
+-- | bar alignment is what keeps the loop seam clean rather than clicking.
+regionBounds :: Number -> Mark -> { from :: Number, to :: Number }
+regionBounds tempo m =
+  let beatMicros = 60.0e6 / (if tempo > 1.0 then tempo else 120.0)
+      barStartBeat = toNumber (floor (m.beat / quantum)) * quantum
+      toBeat = barStartBeat + toNumber loopBars * quantum
+  in { from: m.atMicros + (barStartBeat - m.beat) * beatMicros
+     , to: m.atMicros + (toBeat - m.beat) * beatMicros }
 
 deleteMark :: Int -> Logbook -> Logbook
 deleteMark i lb = lb { marks = fromMaybe lb.marks (deleteAt i lb.marks) }
