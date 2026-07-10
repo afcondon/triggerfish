@@ -266,6 +266,7 @@ type State =
   , view :: OdonusView            -- LIVE panels vs the REPLAY editor over the logbook
   , playing :: Maybe PlayState    -- a REPLAY loop in flight (Nothing = not replaying)
   , regionDrag :: Maybe RegionDrag  -- a loop-region resize/slide in progress
+  , contextOpen :: Boolean          -- REPLAY control card: harmonic-context panel open
   , binnacle :: Maybe Binnacle
   , nowMicros :: Number
   , midiOut :: Maybe Midi.MidiOut
@@ -361,6 +362,8 @@ data Action
   | RegionDown Int RegionEdge Int Int  -- grab a region: markIdx, edge, clientX, clientY
   | RegionMove Int Int      -- pointer moved during a region drag: clientX, clientY
   | RegionUp                -- release a region drag (click→play, or finalize resize)
+  | SaveMarkScene Int       -- promote a mark's captured patch into the SCENES list
+  | ToggleContext           -- REPLAY card: show/hide the active mark's harmonic context
   | ToggleChain
   | BumpBars Int
   | SetStepDiv Int

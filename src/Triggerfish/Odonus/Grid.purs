@@ -52,7 +52,7 @@ import Triggerfish.Odonus.View.Key (quantizerPanel)
 import Triggerfish.Odonus.View.Playheads (playheadsPanel)
 import Triggerfish.Odonus.View.Grid (gridPanel)
 import Triggerfish.Odonus.View.Replay (replayPanel, modeBar)
-import Triggerfish.Odonus.Patch (capturePatch, loadText, patchText, recallText, recallGestureText)
+import Triggerfish.Odonus.Patch (capturePatch, harmonicSummary, loadText, patchText, recallText, recallGestureText)
 import Triggerfish.Odonus.Store as Store
 import Triggerfish.Odonus.Lepidoptera (parsePatch, printPatch)
 import Triggerfish.SourceQuery (Query(..))
@@ -65,7 +65,7 @@ component =
   H.mkComponent
     { initialState: \_ ->
         { odo: M.defaultOdonus, sounding: Silent, dragging: Nothing, dragSub: Nothing
-        , notes: [], logbook: Logbook.emptyLog, view: VLive, playing: Nothing, regionDrag: Nothing, binnacle: Nothing, nowMicros: 0.0
+        , notes: [], logbook: Logbook.emptyLog, view: VLive, playing: Nothing, regionDrag: Nothing, contextOpen: false, binnacle: Nothing, nowMicros: 0.0
         , midiOut: Nothing, midiName: "…", clockTempo: 120.0, clockLocked: false
         , clockBeat: 0.0, clockBar: 0, anchorCount: 0
         , scenes: [], sceneNameInput: "", chain: false, sceneIx: 0, sceneBarAnchor: 0, barsPerScene: 4
@@ -496,6 +496,17 @@ dispatch = case _ of
                         , to: Logbook.snapMicrosToBeat st.clockTempo m m.to }
           in H.modify_ \s -> syncPlaying rd.markIdx snapped (setRegionBounds rd.markIdx snapped s)
     H.modify_ _ { regionDrag = Nothing, dragSub = Nothing }
+  -- Promote a captured good bit into the SCENES list: a mark's stored patch IS
+  -- a scene's text (same Lepidoptera form), so the loop can graduate into a
+  -- chainable, recallable (as-saved / in-key #150) scene. Auto-named by its key.
+  SaveMarkScene i -> H.modify_ \s -> case s.logbook.marks !! i of
+    Just m ->
+      let nm = case harmonicSummary m.patch of
+                 Just h -> "loop · " <> h.root <> " " <> h.scale
+                 Nothing -> "loop " <> show (i + 1)
+      in s { scenes = s.scenes <> [ { name: nm, text: m.patch } ] }
+    Nothing -> s
+  ToggleContext -> H.modify_ \s -> s { contextOpen = not s.contextOpen }
   ToggleChain -> H.modify_ \s -> s { chain = not s.chain, sceneBarAnchor = s.clockBar }
   BumpBars d -> H.modify_ \s -> s { barsPerScene = clampI 1 32 (s.barsPerScene + d) }
   -- STEP LENGTH is a transport/clock param, not a SimState edit, so it rides its

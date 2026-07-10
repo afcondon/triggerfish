@@ -10,16 +10,18 @@ module Triggerfish.Odonus.View.Replay (replayPanel, modeBar) where
 
 import Prelude
 
-import Data.Array (concat, concatMap, length, mapWithIndex, null)
+import Data.Array (concat, concatMap, length, mapWithIndex, null, (!!))
 import Data.Foldable (foldl)
 import Data.Int (toNumber)
 import Data.Maybe (Maybe(..))
+import Data.String.Common (joinWith)
 import Halogen as H
 import Halogen.HTML as HH
 import Halogen.HTML.Events as HE
 import Halogen.HTML.Properties as HP
 import Web.UIEvent.MouseEvent as ME
 import Triggerfish.Odonus.Grid.Types (Action(..), Mark, NoteEvent, OdonusView(..), PlayState, RegionEdge(..), Slots, State, replayTimelineId)
+import Triggerfish.Odonus.Patch (harmonicSummary)
 import Triggerfish.Odonus.Grid.Widgets (clampI, headColor, style, svgAttr, svgEl)
 
 -- viewBox units — the timeline's internal coordinate space (stretched to fit).
@@ -88,7 +90,8 @@ replayPanel s =
             ]
               <> concat (mapWithIndex (regionBand pctOf s.playing) lb.marks)
               <> playhead pctOf s.playing
-              <> [ caption (length events) (length lb.marks), transport s.playing ]
+              <> [ caption (length events) (length lb.marks) ]
+              <> controlCard pctOf s
       )
 
 -- | Keep at most `maxDraw` notes by taking every stride-th one — enough for the
@@ -155,19 +158,84 @@ playhead pctOf = case _ of
                <> "background:#ffffff;opacity:0.85;pointer-events:none" ]
            [] ]
 
--- | The replay transport: a STOP control shown while a loop runs.
-transport :: forall m. Maybe PlayState -> H.ComponentHTML Action Slots m
-transport = case _ of
+-- | The control card: a small floating panel pinned to the TOP of the active
+-- | (playing) loop region, the home for everything you'd do with a good bit —
+-- | stop, save it as a chainable scene, read its harmonic context to jam over,
+-- | and (soon) lift it into a named clip. When nothing's playing it's just the
+-- | "click a band" hint. Anchors to the region's left edge, flipping to a right
+-- | anchor past mid-timeline so it never runs off-screen.
+controlCard :: forall m. (Number -> Number) -> State -> Array (H.ComponentHTML Action Slots m)
+controlCard pctOf s = case s.playing of
   Nothing ->
-    HH.div
-      [ style $ "position:absolute;bottom:9px;right:12px;font-family:Georgia,serif;font-size:10px;color:#ffffff44" ]
-      [ HH.text "click a gold band to loop it" ]
-  Just p ->
-    HH.button
-      [ HE.onClick \_ -> StopPlay
-      , style $ "position:absolute;bottom:9px;right:12px;padding:4px 12px;border-radius:7px;cursor:pointer;"
-          <> "border:1px solid #e8c14a66;background:#e8c14a1f;color:#e8c14a;font-family:Georgia,serif;font-size:11px" ]
-      [ HH.text ("■ stop · looping mark " <> show (p.markIdx + 1)) ]
+    [ HH.div
+        [ style $ "position:absolute;bottom:9px;right:12px;font-family:Georgia,serif;font-size:10px;color:#ffffff44" ]
+        [ HH.text "click a gold band to loop it" ]
+    ]
+  Just p -> case s.logbook.marks !! p.markIdx of
+    Nothing -> []
+    Just m ->
+      let
+        l = pctOf m.from
+        r = pctOf m.to
+        anchor = if l < 55.0 then "left:" <> show l <> "%" else "right:" <> show (100.0 - r) <> "%"
+      in
+        [ HH.div
+            [ style $ "position:absolute;top:6px;" <> anchor <> ";z-index:7;min-width:150px;"
+                <> "border-radius:9px;padding:7px 8px;background:#151310ee;border:1px solid #e8c14a55;"
+                <> "box-shadow:0 4px 14px #00000066" ]
+            ( [ HH.div [ style $ "font-family:'SF Mono',Menlo,monospace;font-size:8px;letter-spacing:0.1em;"
+                    <> "color:#e8c14a;margin-bottom:6px" ]
+                  [ HH.text ("LOOPING · MARK " <> show (p.markIdx + 1)) ]
+              , HH.div [ style "display:flex;gap:4px;flex-wrap:wrap" ]
+                  [ cardBtn StopPlay "#e8c14a" "stop the loop" "■ stop"
+                  , cardBtn (SaveMarkScene p.markIdx) "#cdb98a" "save this good bit into the SCENES list" "⛭ scene"
+                  , cardBtn ToggleContext (if s.contextOpen then "#e8c14a" else "#cdb98a")
+                      "show the key & chord to jam over" "♫ context"
+                  , cardBtnDim "clip export — coming next" "⧉ clip"
+                  ]
+              ]
+              <> (if s.contextOpen then [ contextPanel m ] else [])
+            )
+        ]
+
+-- | A card action button — Georgia, tinted, transparent.
+cardBtn :: forall m. Action -> String -> String -> String -> H.ComponentHTML Action Slots m
+cardBtn act fg titleTxt label =
+  HH.button
+    [ HE.onClick \_ -> act
+    , HP.title titleTxt
+    , style $ "padding:3px 8px;border-radius:6px;cursor:pointer;border:1px solid #ffffff1a;"
+        <> "background:#ffffff10;font-family:Georgia,serif;font-size:10px;color:" <> fg ]
+    [ HH.text label ]
+
+-- | A dimmed, inert card button — a control with its home but not yet wired.
+cardBtnDim :: forall m. String -> String -> H.ComponentHTML Action Slots m
+cardBtnDim titleTxt label =
+  HH.span
+    [ HP.title titleTxt
+    , style $ "padding:3px 8px;border-radius:6px;border:1px dashed #ffffff14;"
+        <> "font-family:Georgia,serif;font-size:10px;color:#ffffff33;cursor:default" ]
+    [ HH.text label ]
+
+-- | The harmonic context of the looped mark, reconstructed from its stored
+-- | patch: key (root + scale), the sounding chord if the overlay's on, and the
+-- | scale's notes — what a guitarist reads to jam over the section.
+contextPanel :: forall m. Mark -> H.ComponentHTML Action Slots m
+contextPanel m =
+  HH.div [ style "margin-top:7px;padding-top:6px;border-top:1px solid #ffffff14" ]
+    ( case harmonicSummary m.patch of
+        Nothing -> [ HH.div [ ctxStyle "#ffffff44" ] [ HH.text "harmony unavailable" ] ]
+        Just h ->
+          [ HH.div [ style "font-family:Georgia,serif;font-size:13px;color:#f0ead8;margin-bottom:3px" ]
+              [ HH.text (h.root <> " " <> h.scale) ]
+          ]
+            <> (case h.chord of
+                  Just c -> [ HH.div [ ctxStyle "#e8c14a" ] [ HH.text ("chord · " <> c) ] ]
+                  Nothing -> [ HH.div [ ctxStyle "#8a8578" ] [ HH.text "no chord colour" ] ])
+            <> [ HH.div [ ctxStyle "#b7b09c" ] [ HH.text (joinWith " " h.notes) ] ]
+    )
+  where
+  ctxStyle col = style $ "font-family:'SF Mono',Menlo,monospace;font-size:10px;margin-top:2px;color:" <> col
 
 markLine :: forall m. (Number -> Number) -> Mark -> H.ComponentHTML Action Slots m
 markLine xOf m =

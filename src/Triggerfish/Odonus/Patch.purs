@@ -11,15 +11,19 @@ module Triggerfish.Odonus.Patch
   , recallText
   , recallGestureText
   , loadText
+  , HarmonicContext
+  , harmonicSummary
   ) where
 
 import Prelude
 
-import Data.Array (find)
+import Data.Array (find, (!!))
 import Data.Maybe (Maybe(..), isJust)
+import Data.String.Common (joinWith)
 import Triggerfish.Odonus.Grid.Types (GenSource, SourceTag(..), State, genKinds, genDefaultRate, genDefaultAmt)
 import Triggerfish.Odonus.Lepidoptera (OdonusPatch, printPatch, parsePatch)
 import Triggerfish.Odonus.Model as M
+import Triggerfish.Scale as Scale
 
 -- | The authored slice of State, ready to render / persist. The live patch
 -- | carries the fixed name "live" until the library manager (A5) names entries.
@@ -112,3 +116,30 @@ loadText :: String -> State -> State
 loadText txt s = case parsePatch txt of
   Just p -> applyPatch p s
   Nothing -> s
+
+-- | The harmonic reading of a captured patch, for the REPLAY card's "show
+-- | harmonic context" — what a guitarist needs to jam over a looped good bit:
+-- | the key (root + auto-named scale), the scale's pitches as note names, and
+-- | the current chord (as note names) when the chord overlay is driving.
+type HarmonicContext =
+  { root :: String          -- e.g. "D"
+  , scale :: String         -- auto-recognised scale name, e.g. "dorian"
+  , chord :: Maybe String   -- the sounding chord as note names, if the overlay is on
+  , notes :: Array String   -- the scale's pitch classes as note names
+  }
+
+-- | Read the harmony out of a mark's stored patch text. Unparseable → Nothing.
+harmonicSummary :: String -> Maybe HarmonicContext
+harmonicSummary txt = case parsePatch txt of
+  Nothing -> Nothing
+  Just p ->
+    let
+      odo = p.odo
+      chordPcs = if odo.chord.on then odo.chord.feed !! odo.chord.ix else Nothing
+    in
+      Just
+        { root: Scale.rootName odo.rootPc
+        , scale: M.scaleTypeName odo
+        , chord: map (joinWith " " <<< map Scale.rootName) chordPcs
+        , notes: map Scale.rootName (Scale.pitchClassesOf (M.scaleOf odo))
+        }
