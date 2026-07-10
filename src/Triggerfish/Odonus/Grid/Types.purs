@@ -24,6 +24,8 @@ module Triggerfish.Odonus.Grid.Types
   , marblesPadId
   , SourceTag(..)
   , OdonusView(..)
+  , TwisterField(..)
+  , twisterFieldLabel
   , State
   , Action(..)
   , Slots
@@ -281,6 +283,30 @@ data OdonusView = VLive | VReplay
 
 derive instance eqOdonusView :: Eq OdonusView
 
+-- | Which grid the MidiFighter Twister's 16 rotaries currently drive (bank 1). A
+-- | PUSH switch selects it (row 1 = the four cell VALUE grids, row 2 = the three
+-- | cell BOOLEAN grids + the MACRO pane); every rotary then edits that grid.
+-- | NOTE/LEN/RATCHET/VEL set a per-cell value; GATE/SKIP/GLIDE set a per-cell
+-- | boolean (right = on); MACRO maps the 16 rotaries onto the pane's global knobs
+-- | (octave/degree/marbles, generation, feel) rather than per-cell.
+data TwisterField
+  = FNote | FLen | FRatchet | FVel
+  | FGate | FSkip | FGlide
+  | FMacro
+
+derive instance eqTwisterField :: Eq TwisterField
+
+twisterFieldLabel :: TwisterField -> String
+twisterFieldLabel = case _ of
+  FNote -> "NOTE"
+  FLen -> "LEN"
+  FRatchet -> "RATCHET"
+  FVel -> "VEL"
+  FGate -> "GATE"
+  FSkip -> "SKIP"
+  FGlide -> "GLIDE"
+  FMacro -> "MACRO"
+
 type State =
   { odo :: M.Odonus
   , sounding :: Sounding     -- the ONE transport value (control-surface MISU refactor):
@@ -295,6 +321,7 @@ type State =
   , regionDrag :: Maybe RegionDrag  -- a loop-region resize/slide in progress
   , contextOpen :: Boolean          -- REPLAY control card: harmonic-context panel open
   , clips :: Array Clip             -- captured performance clips (#151, R2d), newest-first
+  , twisterField :: TwisterField    -- which cell attribute the Twister's rotaries drive (bank 1)
   , binnacle :: Maybe Binnacle
   , nowMicros :: Number
   , midiOut :: Maybe Midi.MidiOut
@@ -415,3 +442,7 @@ data Action
                                -- to run on the BEAM via the shared reef engine
   | HushRig                    -- send `hush` over the rig WS (stops the reef voice
                                -- the push started, plus everything else on the rig)
+  | TwisterMsg Int Int Int     -- a raw MIDI message from the MidiFighter Twister
+                               -- (status, data1, data2). Bank 1: encoders 0..15 map
+                               -- 1:1 onto the 16 cells — rotate sets the cell note
+                               -- (absolute), push toggles SKIP. Decoded in the handler.

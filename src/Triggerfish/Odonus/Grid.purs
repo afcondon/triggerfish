@@ -9,7 +9,7 @@ module Triggerfish.Odonus.Grid (component) where
 
 import Prelude
 
-import Data.Array (any, concatMap, deleteAt, elem, filter, find, findIndex, head, length, modifyAt, null, range, updateAt, (!!))
+import Data.Array (any, concatMap, deleteAt, elem, filter, find, findIndex, head, length, modifyAt, null, range, replicate, updateAt, (!!))
 import Data.Foldable (foldl, for_)
 import Data.FoldableWithIndex (forWithIndex_)
 import Data.Int (ceil, floor, round, toNumber)
@@ -41,8 +41,8 @@ import Web.HTML (window)
 import Web.HTML.Window as Window
 import Web.UIEvent.MouseEvent as ME
 import Triggerfish.Odonus.Grid.Types
-  ( Action(..), KnobTarget(..), SourceTag(..), OdonusView(..), RegionEdge(..), PlaySource(..), Logbook, NoteEvent, Slots, State, applyTarget, genDefaultAmt, genDefaultRate, genKinds, genLabel
-  , marblesPadId, replayTimelineId, setAmt, setRate, targetRange )
+  ( Action(..), GenKind(..), KnobTarget(..), SourceTag(..), OdonusView(..), RegionEdge(..), PlaySource(..), TwisterField(..), Logbook, NoteEvent, Slots, State, applyTarget, genDefaultAmt, genDefaultRate, genKinds, genLabel
+  , marblesPadId, rateMax, replayTimelineId, setAmt, setRate, targetRange )
 import Triggerfish.Scale (scaleTypes)
 import Triggerfish.Transport (Sounding(..))
 import Triggerfish.Odonus.Grid.Widgets (clampI, style)
@@ -65,7 +65,7 @@ component =
   H.mkComponent
     { initialState: \_ ->
         { odo: M.defaultOdonus, sounding: Silent, dragging: Nothing, dragSub: Nothing
-        , notes: [], logbook: Logbook.emptyLog, view: VLive, playing: Nothing, regionDrag: Nothing, contextOpen: false, clips: [], binnacle: Nothing, nowMicros: 0.0
+        , notes: [], logbook: Logbook.emptyLog, view: VLive, playing: Nothing, regionDrag: Nothing, contextOpen: false, clips: [], twisterField: FNote, binnacle: Nothing, nowMicros: 0.0
         , midiOut: Nothing, midiName: "…", clockTempo: 120.0, clockLocked: false
         , clockBeat: 0.0, clockBar: 0, anchorCount: 0
         , scenes: [], sceneNameInput: "", chain: false, sceneIx: 0, sceneBarAnchor: 0, barsPerScene: 4
@@ -197,10 +197,23 @@ dispatch = case _ of
       Just access -> do
         mout <- Midi.findOutput access midiPortName
         names <- Midi.outputNames access
-        let nm = case mout of
+        -- Control surface IN (MidiFighter Twister, bank 1): route every incoming
+        -- message through the SAME Action pipeline the trackpad uses, so a
+        -- knob-turn is byte-identical to a knob-drag (and stays in lockstep on-rig).
+        -- Missing surface → skip; the subscription lives for the session. Fold the
+        -- in/out port status into one line so a name-match miss is visible, not silent.
+        minput <- Midi.findInput access twisterInputName
+        innames <- Midi.inputNames access
+        let outNm = case mout of
               Just _ -> midiPortName <> " ✓"
-              Nothing -> "no '" <> midiPortName <> "' — ports: " <> joinWith ", " names
+              Nothing -> "no '" <> midiPortName <> "' (" <> joinWith ", " names <> ")"
+            twNm = case minput of
+              Just _ -> twisterInputName <> " ✓"
+              Nothing -> "no '" <> twisterInputName <> "' in: " <> joinWith ", " innames
+            nm = outNm <> " · " <> twNm
         HS.notify midiL (MidiReady mout nm)
+        for_ minput \inp -> void $ Midi.onMessage inp \m ->
+          HS.notify midiL (TwisterMsg m.status m.data1 m.data2)
       Nothing -> HS.notify midiL (MidiReady Nothing "unavailable")
     H.modify_ _ { binnacle = Just bin }
     -- Restore the saved scene library + the live working patch (each is
@@ -364,6 +377,44 @@ dispatch = case _ of
         driveReplay
       Nothing -> pure unit
   MidiReady mout nm -> H.modify_ _ { midiOut = mout, midiName = nm }
+  -- MidiFighter Twister, bank 1: the 16 encoders map 1:1 onto the 16 cells.
+  -- ROTATE (absolute CC on the rotate channel) sets the ACTIVE grid's field for that
+  -- cell — scaled from 0..127 into the field's range and pushed through the SAME
+  -- Set* input a trackpad drag emits, so it defers + broadcasts (lockstep P4c)
+  -- identically. PUSH on a top-row encoder (0..3) SELECTS the active grid
+  -- (NOTE/LEN/RATCHET/VEL). Other channels / kinds / future banks are ignored.
+  TwisterMsg status d1 d2 -> do
+    let kind = status `div` 16   -- high nibble: 0xB CC, 0x9 note-on
+        ch = status `mod` 16     -- low nibble: 0-based MIDI channel
+        bank = d1 `div` 16       -- CC 0..15 = bank 1 (cells), 16..31 = bank 2 (voices)
+        idx = d1 `mod` 16        -- position within the bank's 4×4
+        isRotate = kind == 0xB && ch == twisterRotateCh
+        isPush = (kind == 0xB && ch == twisterPushCh && d2 > 0) || (kind == 0x9 && d2 > 0)
+    case bank of
+      -- Bank 1: the 16 cells (value + boolean grids) + the Notes-pane MACRO.
+      0 ->
+        if isRotate then do
+          st <- H.get
+          case st.twisterField of
+            -- Value grids: 0..127 → the field's range → the same Set* input the knob emits.
+            FNote -> valueRotary (CellNote idx) 0 M.knobMax d2
+            FLen -> valueRotary (CellDur idx) 1 8 d2
+            FRatchet -> valueRotary (CellRatchet idx) 1 8 d2
+            FVel -> valueRotary (CellVel idx) 1 127 d2
+            -- Boolean grids: right (≥64) = on, left = off. Fire the existing TOGGLE
+            -- only when the cell disagrees, giving absolute on/off from a toggle input.
+            FGate -> for_ (st.odo.cells !! idx) \c -> when (c.gate /= (d2 >= 64)) (twisterApply (RI.ToggleGate idx))
+            FSkip -> for_ (st.odo.cells !! idx) \c -> when (c.skip /= (d2 >= 64)) (twisterApply (RI.ToggleSkip idx))
+            FGlide -> for_ (st.odo.cells !! idx) \c -> when (c.glide /= (d2 >= 64)) (twisterApply (RI.ToggleGlide idx))
+            -- Macro pane: the 16 rotaries drive the Notes-pane globals, not the cells.
+            FMacro -> twisterMacro idx d2 st
+        else if isPush then
+          for_ (twisterFieldForPush idx) \fld -> H.modify_ _ { twisterField = fld }
+        else pure unit
+      -- Bank 2: each ROW is a voice (head 0..3); the four columns are pattern /
+      -- euclid-k / euclid-n / transpose. Pushes here are unmapped for now.
+      1 -> when isRotate $ twisterVoice idx d2
+      _ -> pure unit
   -- Cell edits — deferred + broadcast (lockstep P4c) so they land on the same
   -- model step on both runtimes.
   ToggleGlide i -> enqueue (RI.ToggleGlide i)
@@ -848,6 +899,27 @@ enqueue input = do
         liftEffect $ Transport.send (Binnacle.socket bin)
           ("reef-input " <> encodeTagged { tick: tagStep, input })
 
+-- | Apply a Twister edit for RESPONSIVE feel. Unlike `enqueue` — which, while
+-- | playing, DEFERS the input to a near-future model step to stay flam-free with the
+-- | rig — this applies it to local state IMMEDIATELY, exactly as the on-screen knob
+-- | does mid-drag. That removes the step-grid lag ("slow polling") AND fixes the
+-- | boolean grids: the next message reads the freshly-applied state, so a crossing
+-- | toggles once instead of thrashing on stale reads. On ATLANTIS it still broadcasts
+-- | the tagged input so the rig converges, landing the edit on-grid (rig stays
+-- | flam-free; only the local view runs ahead, as it already does under a knob drag).
+twisterApply :: forall o m. MonadAff m => RI.Input -> H.HalogenM State Action Slots o m Unit
+twisterApply input = do
+  st <- H.get
+  H.modify_ \s ->
+    let sim = RI.applyInputs [ input ]
+                { odo: s.odo, gen: s.gen, spread: s.genSpread, bias: s.genBias
+                , seed: s.genSeed, frozen: s.genFrozen }
+    in s { odo = sim.odo, gen = sim.gen, genSpread = sim.spread, genBias = sim.bias
+         , genSeed = sim.seed, genFrozen = sim.frozen }
+  when (st.sounding == Rig) $ for_ st.binnacle \bin ->
+    liftEffect $ Transport.send (Binnacle.socket bin)
+      ("reef-input " <> encodeTagged { tick: soundingStep st + inputBufferSteps, input })
+
 -- | Tell the BEAM voice the current model-step length in beats (lockstep P4c). A
 -- | no-op when the rig isn't attached. Sent on Push and on every STEP LENGTH change
 -- | so reef_voice's grid tracks the frontend's — otherwise the BEAM keeps stepping
@@ -1018,6 +1090,104 @@ silenceHeld mout held = for_ mout \out ->
 -- | Binnacle.Output for when the rig is patched.)
 midiPortName :: String
 midiPortName = "IAC"
+
+-- | The MidiFighter Twister presents a MIDI port whose name contains this.
+twisterInputName :: String
+twisterInputName = "Twister"
+
+-- | Factory-default Twister map: encoder ROTATE arrives as CC on MIDI channel 1
+-- | (0-based 0), the encoder PUSH switch as CC on channel 2 (0-based 1). Set the
+-- | Twister to match in the MidiFighter Utility — encoders ABSOLUTE, switches CC.
+twisterRotateCh :: Int
+twisterRotateCh = 0
+
+twisterPushCh :: Int
+twisterPushCh = 1
+
+-- | Map an absolute 0..127 encoder onto an integer range [lo,hi].
+twisterScale :: Int -> Int -> Int -> Int
+twisterScale lo hi d2 = lo + round (toNumber d2 / 127.0 * toNumber (hi - lo))
+
+-- | PUSH switch → active grid. Row 1 (enc 0..3) = the four cell VALUE grids; row 2
+-- | (enc 4..7) = the three cell BOOLEAN grids + the MACRO pane. Other pushes are
+-- | free (future banks). The "dedicated selector pushes" scheme.
+twisterFieldForPush :: Int -> Maybe TwisterField
+twisterFieldForPush = case _ of
+  0 -> Just FNote
+  1 -> Just FLen
+  2 -> Just FRatchet
+  3 -> Just FVel
+  4 -> Just FGate
+  5 -> Just FSkip
+  6 -> Just FGlide
+  7 -> Just FMacro
+  _ -> Nothing
+
+-- | A value-grid rotary: 0..127 → [lo,hi] → the same Set* input the knob emits.
+valueRotary
+  :: forall o m. MonadAff m
+  => KnobTarget -> Int -> Int -> Int -> H.HalogenM State Action Slots o m Unit
+valueRotary tgt lo hi d2 = for_ (targetToInput tgt (twisterScale lo hi d2)) twisterApply
+
+-- | The MACRO grid: the 16 rotaries drive the Notes-pane globals (not the cells).
+-- | Layout, row-major over the 4×4:
+-- |   0 octave   1 degree    2 marbles-X  3 marbles-Y
+-- |   4 gen-on   5 depth     6 rate       7 roll
+-- |   8 step-div 9 gate%    10 swing     11 humanise
+-- | Continuous knobs map absolute; gen-on crosses at the midpoint; roll is a
+-- | one-shot per turn (debounced). Positions 12..15 are unused for now.
+twisterMacro
+  :: forall o m. MonadAff m
+  => Int -> Int -> State -> H.HalogenM State Action Slots o m Unit
+twisterMacro cell d2 st = case cell of
+  0 -> twisterApply (RI.SetOctaveShift (twisterScale (-2) 2 d2))
+  1 -> twisterApply (RI.SetDegShift (twisterScale 0 6 d2))
+  2 -> H.modify_ _ { genBias = toNumber d2 / 127.0 }
+  3 -> H.modify_ _ { genSpread = toNumber d2 / 127.0 }
+  -- Generation on/off for the NOTES source specifically (not global freeze): fire
+  -- the toggle only when the source disagrees with the knob (right ≥64 = on).
+  4 -> for_ (find (\g -> g.kind == GNotes) st.gen) \g ->
+         when (g.on /= (d2 >= 64)) (twisterApply (RI.ToggleGen GNotes))
+  5 -> twisterApply (RI.SetAmt GNotes (twisterScale 0 100 d2))
+  6 -> twisterApply (RI.SetRate GNotes (twisterScale 0 rateMax d2))
+  7 -> unless (tapBounced "tw-roll" st) do
+         H.modify_ (markTap "tw-roll")
+         twisterApply RI.RollAllNotes
+  8 -> do
+         H.modify_ _ { stepDiv = twisterScale 1 16 d2 }
+         H.get >>= sendStepLen
+  9 -> enqueue (RI.SetGatePct (twisterScale 10 200 d2))
+  10 -> do
+         H.modify_ _ { swing = toNumber (twisterScale 0 60 d2) / 100.0 }
+         H.get >>= sendSwing
+  11 -> H.modify_ _ { velHumanize = twisterScale 0 40 d2 }
+  _ -> pure unit
+
+-- | Bank 2 rotary: each ROW is a voice (head 0..3); the four columns are
+-- | pattern / euclid-k / euclid-n / transpose. `idx` is the 0..15 grid position.
+twisterVoice :: forall o m. MonadAff m => Int -> Int -> H.HalogenM State Action Slots o m Unit
+twisterVoice idx d2 =
+  let voice = idx `div` 4
+      knob = idx `mod` 4
+  in case knob of
+    0 -> twisterPattern voice d2
+    1 -> valueRotary (HeadDiv voice) 0 16 d2          -- Euclidean k (pulses)
+    2 -> valueRotary (HeadEStep voice) 1 16 d2         -- Euclidean n (steps)
+    3 -> valueRotary (HeadTransp voice) (-24) 24 d2    -- per-voice transpose
+    _ -> pure unit
+
+-- | The pattern knob: access patterns are cycle-only in the model (no absolute
+-- | setter), so map the absolute encoder to a target index and CYCLE the wrapping
+-- | ring up to it — the same `CyclePattern` input the on-screen button uses,
+-- | applied the needed number of times (Euclidean mod, so it wraps cleanly).
+twisterPattern :: forall o m. MonadAff m => Int -> Int -> H.HalogenM State Action Slots o m Unit
+twisterPattern voice d2 = do
+  st <- H.get
+  let nPat = length M.patternLibrary
+  for_ (st.odo.heads !! voice) \h -> do
+    let desired = twisterScale 0 (nPat - 1) d2
+        delta = ((desired - h.patternIx) `mod` nPat + nPat) `mod` nPat
+    for_ (replicate delta unit) \_ -> twisterApply (RI.CyclePattern voice)
 
 -- | Drop monitor notes once they've scrolled off the left edge (~8s).
 windowMicros :: Number

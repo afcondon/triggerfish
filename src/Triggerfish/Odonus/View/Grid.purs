@@ -20,7 +20,7 @@ import Triggerfish.Odonus.Model as M
 import Triggerfish.Ui.Knob (knob)
 import Triggerfish.Odonus.Marbles (betaWeights)
 import Triggerfish.Odonus.Grid.Types
-  ( Action(..), GenKind(..), KnobTarget(..), Slots, State, marblesPadId )
+  ( Action(..), GenKind(..), KnobTarget(..), Slots, State, marblesPadId, twisterFieldLabel )
 import Triggerfish.Odonus.Grid.Widgets
   ( cellChrome, engrave, genRow, labelledRow, miniKnob, octLabel, panelShell, style, tabBtn )
 import Data.Array (length, mapWithIndex, (!!))
@@ -166,6 +166,9 @@ statusBar s =
       -- ANCHORS climbs iff the rig is actually feeding us (the diagnostic).
     , HH.span [] [ HH.text $ "ANCHORS " <> show s.anchorCount ]
     , HH.span [] [ HH.text $ "MIDI " <> s.midiName ]
+      -- MidiFighter Twister (bank 1): which cell grid the rotaries drive now.
+    , HH.span [ style "color:#2f6a8a" ]
+        [ HH.text $ "TWISTER ▸ " <> twisterFieldLabel s.twisterField ]
     ]
 
 -- ---------------------------------------------------------------------------
