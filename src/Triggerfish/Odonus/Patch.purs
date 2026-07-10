@@ -9,6 +9,7 @@ module Triggerfish.Odonus.Patch
   , applyPatch
   , patchText
   , recallText
+  , recallGestureText
   , loadText
   ) where
 
@@ -81,6 +82,28 @@ patchText = printPatch <<< capturePatch
 recallText :: String -> State -> State
 recallText txt s = case parsePatch txt of
   Just p -> (applyPatch p s) { odo = M.recallScene s.odo p.odo }
+  Nothing -> s
+
+-- | Recall a scene's GESTURE into the CURRENT harmonic context (#150): apply
+-- | the saved cells / playheads / register transforms / gen matrix / feel, but
+-- | KEEP the live harmony — root, scale, distribution, any Vetula pitchSet, the
+-- | chord overlay, and whether we're following a voice. Because cell notes are
+-- | scale degrees, the saved riff re-voices through whatever key or progression
+-- | is sounding now: the same lick in the current key. Playhead phase carries
+-- | across (as `recallText`). The gen matrix / marbles / swing / stepDiv ARE
+-- | part of the gesture, so they come from the scene; `follow`/`source` do not.
+-- | Unparseable text → no-op.
+recallGestureText :: String -> State -> State
+recallGestureText txt s = case parsePatch txt of
+  Just p -> s
+    { odo = M.recallGesture s.odo p.odo
+    , gen = reconcileGen p.gen
+    , genSpread = p.genSpread
+    , genBias = p.genBias
+    , swing = p.swing
+    , velHumanize = p.velHumanize
+    , stepDiv = p.stepDiv
+    }
   Nothing -> s
 
 -- | Load a patch from its eDSL text, HARD-RESETTING the playheads — the cold

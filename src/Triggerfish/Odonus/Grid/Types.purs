@@ -275,6 +275,7 @@ data Action
   | CaptureScene
   | SetSceneName String
   | RecallScene Int
+  | RecallGesture Int
   | DeleteScene Int
   | ToggleChain
   | BumpBars Int

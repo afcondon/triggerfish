@@ -48,7 +48,7 @@ import Triggerfish.Odonus.View.Scope (scopePanel)
 import Triggerfish.Odonus.View.Key (quantizerPanel)
 import Triggerfish.Odonus.View.Playheads (playheadsPanel)
 import Triggerfish.Odonus.View.Grid (gridPanel)
-import Triggerfish.Odonus.Patch (capturePatch, loadText, patchText, recallText)
+import Triggerfish.Odonus.Patch (capturePatch, loadText, patchText, recallText, recallGestureText)
 import Triggerfish.Odonus.Store as Store
 import Triggerfish.Odonus.Lepidoptera (parsePatch, printPatch)
 import Triggerfish.SourceQuery (Query(..))
@@ -419,6 +419,10 @@ dispatch = case _ of
   SetSceneName n -> H.modify_ _ { sceneNameInput = n }
   RecallScene i -> H.modify_ \s -> case s.scenes !! i of
     Just sc -> (recallText sc.text s) { sceneIx = i }
+    Nothing -> s
+  -- Recall the scene's gesture but stay in the live key/progression (#150).
+  RecallGesture i -> H.modify_ \s -> case s.scenes !! i of
+    Just sc -> (recallGestureText sc.text s) { sceneIx = i }
     Nothing -> s
   DeleteScene i -> H.modify_ \s -> s { scenes = fromMaybe s.scenes (deleteAt i s.scenes) }
   ToggleChain -> H.modify_ \s -> s { chain = not s.chain, sceneBarAnchor = s.clockBar }

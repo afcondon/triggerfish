@@ -104,8 +104,15 @@ sceneChip s i sc =
           <> (if active then ";outline:2px solid #b5832b66" else "") ]
       [ HH.div
           [ HE.onClick \_ -> RecallScene i
+          , HP.title "recall the whole scene — its own key/progression too"
           , style "flex:1;font-family:'SF Mono',Menlo,monospace;font-size:10px;color:#3f3c33" ]
           [ HH.text sc.name ]
+      , HH.span
+          [ HE.onClick \_ -> RecallGesture i
+          , HP.title "recall the gesture in the CURRENT key — same lick, live harmony"
+          , style $ "font-family:Georgia,serif;font-size:9px;letter-spacing:0.04em;color:#5a7a58;"
+              <> "padding:1px 5px;border-radius:5px;border:1px solid #5a7a5844;background:#5a7a5814" ]
+          [ HH.text "in key" ]
       , HH.span
           [ HE.onClick \_ -> DeleteScene i
           , style "font-family:Georgia,serif;font-size:11px;color:#a06048;padding:0 3px" ]
