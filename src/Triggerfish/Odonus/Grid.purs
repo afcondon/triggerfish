@@ -44,6 +44,7 @@ import Triggerfish.Odonus.Grid.Types
 import Triggerfish.Scale (scaleTypes)
 import Triggerfish.Transport (Sounding(..))
 import Triggerfish.Odonus.Grid.Widgets (clampI, style)
+import Triggerfish.Odonus.Logbook as Logbook
 import Triggerfish.Odonus.View.Scope (scopePanel)
 import Triggerfish.Odonus.View.Key (quantizerPanel)
 import Triggerfish.Odonus.View.Playheads (playheadsPanel)
@@ -61,7 +62,7 @@ component =
   H.mkComponent
     { initialState: \_ ->
         { odo: M.defaultOdonus, sounding: Silent, dragging: Nothing, dragSub: Nothing
-        , notes: [], binnacle: Nothing, nowMicros: 0.0
+        , notes: [], logbook: Logbook.emptyLog, binnacle: Nothing, nowMicros: 0.0
         , midiOut: Nothing, midiName: "…", clockTempo: 120.0, clockLocked: false
         , clockBeat: 0.0, clockBar: 0, anchorCount: 0
         , scenes: [], sceneNameInput: "", chain: false, sceneIx: 0, sceneBarAnchor: 0, barsPerScene: 4
@@ -292,6 +293,9 @@ dispatch = case _ of
                            , fireUnixMicros: tick.fireUnixMicros + swingMs * 1000.0 }) r.fired
       H.modify_ \s -> s
         { odo = r.odo, notes = fresh <> s.notes, headNote = clearedHeadNote
+        -- Performance logbook (#151): the same fresh notes accumulate, unpruned,
+        -- into the always-on capture (chunked + retention-bounded). Frontend-only.
+        , logbook = Logbook.logAppend (tick.fireUnixMicros) fresh s.logbook
         -- LOCKSTEP (P4c, Option 2): the model seed advances ONLY via runGen (g.seed),
         -- NOT via the velocity-humanise draws (velied.seed). Humanise still reads the
         -- seed to jitter velocity, but must not perturb the shared generative stream —
@@ -425,6 +429,10 @@ dispatch = case _ of
     Just sc -> (recallGestureText sc.text s) { sceneIx = i }
     Nothing -> s
   DeleteScene i -> H.modify_ \s -> s { scenes = fromMaybe s.scenes (deleteAt i s.scenes) }
+  -- Performance logbook (#151): flag / drop a good bit, or purge the whole log.
+  MarkNow -> H.modify_ \s -> s { logbook = Logbook.mark s.nowMicros s.logbook }
+  DeleteMark i -> H.modify_ \s -> s { logbook = Logbook.deleteMark i s.logbook }
+  ClearLog -> H.modify_ \s -> s { logbook = Logbook.emptyLog }
   ToggleChain -> H.modify_ \s -> s { chain = not s.chain, sceneBarAnchor = s.clockBar }
   BumpBars d -> H.modify_ \s -> s { barsPerScene = clampI 1 32 (s.barsPerScene + d) }
   -- STEP LENGTH is a transport/clock param, not a SimState edit, so it rides its

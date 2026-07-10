@@ -9,6 +9,8 @@ module Triggerfish.Odonus.Grid.Types
   , NoteEvent
   , PendingInput
   , Scene
+  , Chunk
+  , Logbook
   , module Reef.Gen
   , genLabel
   , genSub
@@ -133,6 +135,26 @@ type NoteEvent = { pitch :: Int, headIdx :: Int, fireUnixMicros :: Number }
 -- | Lossless: the A3 round-trip is byte-stable.
 type Scene = { name :: String, text :: String }
 
+-- | One frozen span of the always-on logbook: a chunk of captured notes with
+-- | its time bounds. Chunking keeps the live append O(current chunk) instead of
+-- | O(whole session), and makes retention a matter of dropping whole chunks.
+type Chunk = { fromMicros :: Number, toMicros :: Number, events :: Array NoteEvent }
+
+-- | The always-on performance logbook (#151): the scope's note stream WITHOUT
+-- | the ~8s prune, so what actually happened survives. The rig is always
+-- | capturing — no arm. `live` is the growing current chunk (newest-first, like
+-- | `notes`); once it fills, it freezes into `chunks` (newest-first) and a new
+-- | live chunk starts. `marks` are wall-clock instants the performer tapped to
+-- | flag a good bit — the seam to lift a span into a scene later. Retention: on
+-- | each freeze, chunks older than the window are dropped UNLESS a mark falls
+-- | within them ("the recent past plus anything I flagged"). Frontend-only.
+type Logbook =
+  { live :: Array NoteEvent    -- current growing chunk, newest-first
+  , liveFrom :: Number         -- wall-clock start of the live chunk
+  , chunks :: Array Chunk      -- frozen chunks, newest-first
+  , marks :: Array Number      -- flagged instants, newest-first
+  }
+
 -- | The display strings for each gen source — UI-only, so they stay here (the
 -- | descriptor type `GenKind` itself, and the engine, live in `Reef.Gen`).
 genLabel :: GenKind -> String
@@ -191,6 +213,7 @@ type State =
   , dragging :: Maybe DragState
   , dragSub :: Maybe H.SubscriptionId
   , notes :: Array NoteEvent
+  , logbook :: Logbook            -- always-on performance capture (#151)
   , binnacle :: Maybe Binnacle
   , nowMicros :: Number
   , midiOut :: Maybe Midi.MidiOut
@@ -277,6 +300,9 @@ data Action
   | RecallScene Int
   | RecallGesture Int
   | DeleteScene Int
+  | MarkNow                 -- flag "a good bit" at the current instant (logbook)
+  | DeleteMark Int          -- drop a flagged instant
+  | ClearLog                -- purge the whole logbook manually
   | ToggleChain
   | BumpBars Int
   | SetStepDiv Int

@@ -7,7 +7,7 @@ module Triggerfish.Odonus.View.Scenes (scenesBody, sceneName) where
 import Prelude
 
 import Data.Array (length, mapWithIndex, null)
-import Data.Int (round)
+import Data.Int (floor, round)
 import Halogen as H
 import Halogen.HTML as HH
 import Halogen.HTML.Events as HE
@@ -16,6 +16,7 @@ import Triggerfish.Odonus.Model as M
 import Triggerfish.Scale as Scale
 import Triggerfish.Odonus.Grid.Types (Action(..), Scene, Slots, State)
 import Triggerfish.Odonus.Grid.Widgets (engrave, stepBtn, style)
+import Triggerfish.Odonus.Logbook (noteCount)
 
 -- | Auto-name a captured scene by its position + its scale.
 sceneName :: State -> String
@@ -80,7 +81,7 @@ scenesBody s =
             then [ HH.div [ style $ engrave <> ";font-size:8px;color:#888273;margin-top:6px" ]
                      [ HH.text "capture a few settings, then chain them" ] ]
             else mapWithIndex (sceneChip s) s.scenes )
-    ]
+    ] <> logbookBody s
 
 -- | The divider + "SCENES" label that opens the scenes block within the merged
 -- | KEY pane (the visual seam where KEY's pitch controls end and the song
@@ -93,6 +94,56 @@ sceneDivider =
     [ HH.span [ style $ engrave <> ";font-size:14px;letter-spacing:0.16em;color:#3f3c33" ] [ HH.text "SCENES" ]
     , HH.span [ style $ engrave <> ";font-size:8px;opacity:0.6" ] [ HH.text "Song" ]
     ]
+
+-- | The LOGBOOK block — the always-on performance capture, sibling to SCENES.
+-- | The rig is always recording; this is the REVIEW surface: session stats and
+-- | the list of flagged instants (the live "◆ mark" button is on the scope).
+-- | Marks are the seam to a later "lift this span into a scene" slice.
+logbookBody :: forall m. State -> Array (H.ComponentHTML Action Slots m)
+logbookBody s =
+  [ HH.div
+      [ style $ "margin:14px 0 8px;padding-top:11px;border-top:1px solid #00000022;"
+          <> "display:flex;align-items:baseline;justify-content:space-between" ]
+      [ HH.span [ style $ engrave <> ";font-size:14px;letter-spacing:0.16em;color:#3f3c33" ] [ HH.text "LOGBOOK" ]
+      , HH.span [ style $ engrave <> ";font-size:8px;opacity:0.6" ] [ HH.text "always on · ~90 min" ]
+      ]
+  , HH.div [ style $ engrave <> ";font-size:9px;color:#6a6558;margin-bottom:7px" ]
+      [ HH.text (show (noteCount s.logbook) <> " notes captured · " <> show (length s.logbook.marks) <> " marks") ]
+  , HH.div [ style "display:flex;flex-direction:column;gap:4px" ]
+      ( if null s.logbook.marks
+          then [ HH.div [ style $ engrave <> ";font-size:8px;color:#888273" ]
+                   [ HH.text "tap ◆ mark on the scope to flag a good bit" ] ]
+          else mapWithIndex (markChip s) s.logbook.marks )
+  , HH.button
+      [ HE.onClick \_ -> ClearLog
+      , style $ "align-self:flex-start;margin-top:8px;padding:3px 9px;border:1px solid #00000018;border-radius:6px;"
+          <> "cursor:pointer;background:#ffffff30;font-family:Georgia,serif;font-size:9px;color:#8a6048" ]
+      [ HH.text "clear log" ]
+  ]
+
+-- | One flagged instant: how long ago it fired + a delete ×.
+markChip :: forall m. State -> Int -> Number -> H.ComponentHTML Action Slots m
+markChip s i m =
+  HH.div
+    [ style $ "display:flex;align-items:center;justify-content:space-between;padding:4px 8px;border-radius:6px;"
+        <> "background:#cbc6b6;box-shadow:0 0 0 1px #00000012" ]
+    [ HH.span [ style "font-family:'SF Mono',Menlo,monospace;font-size:10px;color:#3f3c33" ]
+        [ HH.text ("◆ " <> agoLabel (s.nowMicros - m)) ]
+    , HH.span
+        [ HE.onClick \_ -> DeleteMark i
+        , style "font-family:Georgia,serif;font-size:11px;color:#a06048;padding:0 3px;cursor:pointer" ]
+        [ HH.text "×" ]
+    ]
+
+-- | Render an elapsed micros gap as "m:ss ago" (or "just now" under a second).
+agoLabel :: Number -> String
+agoLabel micros =
+  let secs = floor (micros / 1.0e6)
+  in
+    if secs < 1 then "just now"
+    else let mm = secs / 60
+             ss = mod secs 60
+         in show mm <> ":" <> (if ss < 10 then "0" else "") <> show ss <> " ago"
 
 -- | A scene chip: the name + delete on top, then two full-width recall buttons.
 -- | "as saved" restores the whole scene (its own key/scale/progression too);

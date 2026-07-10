@@ -5,12 +5,14 @@ module Triggerfish.Odonus.View.Scope (scopePanel) where
 
 import Prelude
 
-import Data.Array (concatMap)
+import Data.Array (concatMap, filter, length)
 import Data.Int (toNumber)
 import Halogen as H
 import Halogen.HTML as HH
-import Triggerfish.Odonus.Grid.Types (Action, NoteEvent, Slots, State)
+import Halogen.HTML.Events as HE
+import Triggerfish.Odonus.Grid.Types (Action(..), NoteEvent, Slots, State)
 import Triggerfish.Odonus.Grid.Widgets (clampI, headColor, style, svgAttr, svgEl)
+import Triggerfish.Odonus.Logbook (noteCount)
 
 riverW :: Number
 riverW = 380.0
@@ -38,9 +40,48 @@ scopePanel s =
               [ svgAttr "width" "100%", svgAttr "height" "100%"
               , svgAttr "viewBox" "0 0 380 520", svgAttr "preserveAspectRatio" "none"
               , style "position:absolute;inset:0" ]
-              (map (noteBar s.nowMicros) s.notes)
+              ( map (markLine s.nowMicros) (visibleMarks s.nowMicros s.logbook.marks)
+                  <> map (noteBar s.nowMicros) s.notes )
+          , logbookOverlay s
           ]
     )
+
+-- | The always-on logbook readout + mark button, floated top-left over the
+-- | river. There's no arm — the rig is always capturing; the "● logging" dot
+-- | just confirms it. "◆ mark" flags the current instant (a gold line on the
+-- | river); the count shows captured notes and flags this session.
+logbookOverlay :: forall m. State -> H.ComponentHTML Action Slots m
+logbookOverlay s =
+  HH.div
+    [ style $ "position:absolute;top:10px;left:10px;display:flex;align-items:center;gap:9px;"
+        <> "padding:5px 9px;border-radius:8px;background:#ffffff0d;backdrop-filter:blur(2px);"
+        <> "border:1px solid #ffffff14;font-family:'SF Mono',Menlo,monospace;font-size:9px;color:#c9c4b4" ]
+    [ HH.span [ style "display:flex;align-items:center;gap:4px" ]
+        [ HH.span [ style "width:7px;height:7px;border-radius:50%;background:#c65a4a;box-shadow:0 0 5px #c65a4a" ] []
+        , HH.text "logging" ]
+    , HH.span [ style "opacity:0.7" ]
+        [ HH.text (show (noteCount s.logbook) <> " notes · " <> show (length s.logbook.marks) <> " ◆") ]
+    , HH.button
+        [ HE.onClick \_ -> MarkNow
+        , style $ "padding:2px 9px;border-radius:6px;cursor:pointer;font-family:Georgia,serif;font-size:10px;"
+            <> "color:#e8c14a;border:1px solid #e8c14a55;background:#e8c14a1a" ]
+        [ HH.text "◆ mark" ]
+    ]
+
+-- | Marks recent enough to still be on-screen (within the river's fade span).
+visibleMarks :: Number -> Array Number -> Array Number
+visibleMarks now = filter (\m -> (now - m) / 1000.0 * pxPerMs < riverW)
+
+-- | A flagged instant as a full-height gold line, positioned like a note by age.
+markLine :: forall m. Number -> Number -> H.ComponentHTML Action Slots m
+markLine now m =
+  let x = riverW - (now - m) / 1000.0 * pxPerMs - 10.0
+  in
+    svgEl "rect"
+      [ svgAttr "x" (show x), svgAttr "y" "0"
+      , svgAttr "width" "1.5", svgAttr "height" (show riverH)
+      , svgAttr "fill" "#e8c14a", svgAttr "opacity" "0.5"
+      ] []
 
 -- | Faint horizontal line + a "C4"-style label at each octave C (HTML, so the
 -- | text isn't stretched by the scope's preserveAspectRatio=none).
