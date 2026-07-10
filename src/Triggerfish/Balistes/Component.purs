@@ -25,7 +25,9 @@ import Data.Int.Bits (shr)
 import Data.Maybe (Maybe(..), fromMaybe, isNothing, maybe)
 import Data.String.Common (joinWith, toLower)
 import Effect (Effect)
-import Effect.Aff.Class (class MonadAff)
+import Data.Either (Either(..))
+import Effect.Aff (attempt)
+import Effect.Aff.Class (class MonadAff, liftAff)
 import Effect.Class (liftEffect)
 import Effect.Timer (setInterval)
 import Halogen as H
@@ -46,6 +48,7 @@ import Triggerfish.Balistes.Model as M
 import Triggerfish.Balistes.Pattern as P
 import Triggerfish.Balistes.Source as Source
 import Triggerfish.Balistes.Store as Store
+import Triggerfish.Balistes.Remote as Remote
 import Triggerfish.Balistes.Lepidoptera (printPattern, parsePattern)
 import Triggerfish.SourceQuery (Query(..))
 import Triggerfish.Transport (Sounding(..))
@@ -276,6 +279,13 @@ handleAction = case _ of
     -- restore the saved rhythm library (falls back to the bundled patterns).
     mlib <- liftEffect Store.loadLibrary
     for_ mlib \lib -> H.modify_ _ { library = lib }
+    -- source the shared library from Amphora (the store of record): merge in any
+    -- DB pattern not already present by name. Offline → keep saved/bundled.
+    dbResult <- liftAff (attempt Remote.fetchLibrary)
+    case dbResult of
+      Right dbPats | not (null dbPats) ->
+        H.modify_ \s -> s { library = mergeByName s.library dbPats }
+      _ -> pure unit
     H.modify_ _ { binnacle = Just bin }
 
   Step tick -> do
@@ -699,6 +709,14 @@ emitHit out channel stepMs delay0 note durMs velocity n =
 -- | Apply a function to library pattern `i` (no-op if out of range).
 modLibAt :: Int -> (P.FixedPattern -> P.FixedPattern) -> Array P.FixedPattern -> Array P.FixedPattern
 modLibAt i f lib = fromMaybe lib (modifyAt i f lib)
+
+-- | Union two libraries by pattern name: keep everything in `current`, append
+-- | any `incoming` whose name isn't already present. Used to fold the Amphora
+-- | `balistes-grid` patterns in over the locally-saved library without
+-- | clobbering the user's own edits.
+mergeByName :: Array P.FixedPattern -> Array P.FixedPattern -> Array P.FixedPattern
+mergeByName current incoming =
+  current <> filter (\p -> not (any (\q -> q.name == p.name) current)) incoming
 
 -- | Apply a function to the selected cell of the active fixed rhythm.
 modSelectedCell :: (P.Cell -> P.Cell) -> State -> State
