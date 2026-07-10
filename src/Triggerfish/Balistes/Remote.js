@@ -41,3 +41,49 @@ export const fetchCollectionImpl = (collection) => (onError) => (onSuccess) => (
     .then((payloads) => done(payloads.filter((p) => typeof p === "string")))
     .catch(fail);
 };
+
+// "house 122" → { genre: "house", bpm: 122 }. Tempo is the trailing integer.
+const parseName = (name) => {
+  const m = name.match(/^(.*?)\s+(\d+)\s*$/);
+  return m ? { genre: m[1].trim(), bpm: Number(m[2]) } : { genre: name, bpm: null };
+};
+
+// publishPatternImpl(payload)(name)(source)(onError)(onSuccess)() :: Effect Unit
+// content (dedup by hash) → label (genre + bpm tags, guarded) → favourite into
+// balistes-grid (guarded). Resolves the content hash. Mirrors the seed script.
+export const publishPatternImpl =
+  (payload) => (name) => (source) => (onError) => (onSuccess) => () => {
+    const base = amphoraBase();
+    const COLLECTION = "balistes-grid";
+    const fail = (e) => onError(e instanceof Error ? e : new Error(String(e)))();
+
+    const j = (method, path, body) =>
+      fetch(base + path, {
+        method,
+        headers: { "Content-Type": "application/json" },
+        body: body === undefined ? undefined : JSON.stringify(body),
+      }).then(async (r) => {
+        if (!r.ok) throw new Error(method + " " + path + " → HTTP " + r.status + ": " + (await r.text()));
+        return r.json();
+      });
+
+    (async () => {
+      const { hash } = await j("POST", "/content", { kind: "balistes-pattern", payload });
+
+      const { genre, bpm } = parseName(name);
+      const tags = [genre];
+      if (bpm != null) tags.push("bpm:" + bpm);
+      const labels = await j("GET", "/labels?hash=" + hash);
+      if (!labels.some((l) => l.name === name)) {
+        await j("POST", "/labels", { contentHash: hash, name, source, tags });
+      }
+
+      const favs = await j("GET", "/favorites?collection=" + COLLECTION);
+      if (!favs.some((f) => f.contentHash === hash)) {
+        await j("POST", "/favorites", { contentHash: hash, collection: COLLECTION });
+      }
+      return hash;
+    })()
+      .then((hash) => onSuccess(hash)())
+      .catch(fail);
+  };

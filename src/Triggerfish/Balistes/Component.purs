@@ -24,6 +24,7 @@ import Data.Int (floor, round, toNumber)
 import Data.Int.Bits (shr)
 import Data.Maybe (Maybe(..), fromMaybe, isNothing, maybe)
 import Data.String.Common (joinWith, toLower)
+import Data.String.CodeUnits (take)
 import Effect (Effect)
 import Data.Either (Either(..))
 import Effect.Aff (attempt)
@@ -145,6 +146,8 @@ type State =
   , selected :: Maybe { lane :: Int, step :: Int }
   -- the POLYTRIG jack rack (SELENE DRUMS tab) — browser-only, no reef path.
   , trig :: M.TrigBank
+  -- transient status for the "publish to Amphora" action on the active rhythm.
+  , publishMsg :: Maybe String
   }
 
 data Action
@@ -177,6 +180,7 @@ data Action
   | ClearSelected              -- clear the selected cell + deselect
   | NewPattern                 -- append a fresh empty rhythm + select it
   | SetPatternName String      -- rename the active rhythm
+  | PublishActive              -- publish the active rhythm to Amphora (persist + share)
   | PushBalistes               -- lockstep handoff: push BalSim to the rig (ch 11)
   -- POLYTRIG (SELENE DRUMS tab) editor — browser-only, no rig sync.
   | SetJackSource Int String   -- jack i's per-jack pattern
@@ -198,7 +202,7 @@ component =
         , nowMicros: 0.0, dragging: Nothing, dragSub: Nothing
         , capArm: false, seqArm: false, seqEnabled: false, seqPos: 0, seqStartBar: 0
         , active: AGrids, library: P.bundledPatterns, editing: false, selected: Nothing
-        , trig: M.defaultTrig }
+        , trig: M.defaultTrig, publishMsg: Nothing }
     , render
     , eval: H.mkEval H.defaultEval
         { handleAction = handleAction, handleQuery = handleQuery, initialize = Just Initialize }
@@ -499,7 +503,7 @@ handleAction = case _ of
   -- switching pattern changes which branch the next Step takes; once pushed, make the
   -- rig follow the selection too (a fixed pattern swaps in place; Grids re-hands-off).
   SelectPattern a -> do
-    H.modify_ _ { active = a }
+    H.modify_ _ { active = a, publishMsg = Nothing }
     st <- H.get
     when (st.sounding == Rig) case a of
       AFixed _ -> repushFixed
@@ -551,6 +555,22 @@ handleAction = case _ of
       AGrids -> s
       ASelene -> s
     persistLib
+  -- Write-back to Amphora: publish the active fixed rhythm to the store (content
+  -- + label + balistes-grid favourite), so a pattern built in the app persists
+  -- and round-trips on next load. Content-addressed, so re-publishing an
+  -- unchanged pattern is a no-op dedup.
+  PublishActive -> do
+    st <- H.get
+    case st.active of
+      AFixed i -> case st.library !! i of
+        Just pat -> do
+          H.modify_ _ { publishMsg = Just "publishing…" }
+          res <- liftAff (attempt (Remote.publishPattern pat))
+          H.modify_ _ { publishMsg = Just case res of
+            Right hash -> "✓ published · " <> take 8 hash
+            Left _ -> "✗ publish failed (store offline?)" }
+        Nothing -> pure unit
+      _ -> H.modify_ _ { publishMsg = Just "select a GRIDS rhythm first" }
   PushBalistes -> do
     -- Lockstep HANDOFF: project the frontend Balistes state to a BalSim (the shared
     -- serializable subset), encode with the reef codec, and push it phase-aligned to
@@ -1317,10 +1337,14 @@ fixedBody s idx pat =
             , style $ "padding:5px 9px;border:1px solid #a8a392;border-radius:5px;background:#f3f1e8;"
                 <> "font-family:Georgia,serif;font-size:13px;color:#1c1a12;width:150px" ]
         , armBtn (if s.editing then "● EDITING" else "EDIT") s.editing ToggleEdit
-        , HH.span [ style $ engrave <> ";font-size:8px;opacity:0.6;line-height:1.5" ]
-            [ HH.text (if s.editing
-                then "ALL 16 LANES — CLICK CELLS TO TOGGLE HITS · DRAG A ♪NOTE TO RETUNE A LANE."
-                else "CLICK A CELL TO TOGGLE A HIT · EDIT REVEALS ALL 16 LANES TO ADD VOICES.") ]
+        , armBtn "PUBLISH ⚱" false PublishActive
+        , case s.publishMsg of
+            Just msg -> HH.span [ style $ engrave <> ";font-size:8px;opacity:0.8;color:#2f6a4a" ] [ HH.text msg ]
+            Nothing ->
+              HH.span [ style $ engrave <> ";font-size:8px;opacity:0.6;line-height:1.5" ]
+                [ HH.text (if s.editing
+                    then "ALL 16 LANES — CLICK CELLS TO TOGGLE HITS · DRAG A ♪NOTE TO RETUNE A LANE."
+                    else "CLICK A CELL TO TOGGLE A HIT · EDIT REVEALS ALL 16 LANES TO ADD VOICES.") ]
         ]
     , HH.div [ style "width:100%;max-width:640px;margin:0 auto" ] [ fixedSvg s idx pat ]
     , HH.div [ style $ engrave <> ";font-size:8px;opacity:0.5;margin-top:10px;line-height:1.6;max-width:640px" ]
