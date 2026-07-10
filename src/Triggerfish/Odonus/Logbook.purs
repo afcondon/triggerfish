@@ -13,10 +13,11 @@
 module Triggerfish.Odonus.Logbook
   ( emptyLog
   , logAppend
-  , mark
+  , pushMark
   , deleteMark
   , noteCount
   , regionBounds
+  , snapMicrosToBeat
   , retentionMicros
   , chunkSize
   ) where
@@ -25,7 +26,7 @@ import Prelude
 
 import Data.Array (any, deleteAt, filter, length, null, (:))
 import Data.Foldable (sum)
-import Data.Int (floor, toNumber)
+import Data.Int (floor, round, toNumber)
 import Data.Maybe (fromMaybe)
 import Triggerfish.Odonus.Grid.Types (Chunk, Logbook, Mark, NoteEvent)
 
@@ -65,10 +66,9 @@ freeze now lb =
   in
     lb { live = [], liveFrom = now, chunks = chunks' }
 
--- | Flag a good bit at instant `now` (with the live Link `beat`), snapshotting
--- | the live patch alongside it.
-mark :: Number -> Number -> String -> Logbook -> Logbook
-mark now beat patch lb = lb { marks = { atMicros: now, beat, patch } : lb.marks }
+-- | Push a fully-built mark (instant + beat + region + patch) onto the log.
+pushMark :: Mark -> Logbook -> Logbook
+pushMark m lb = lb { marks = m : lb.marks }
 
 -- | Beats per bar the rig runs (4/4). The loop window is a whole number of these.
 quantum :: Number
@@ -78,17 +78,27 @@ quantum = 4.0
 loopBars :: Int
 loopBars = 2
 
--- | The bar-aligned loop window around a mark: `loopBars` bars starting at the
--- | downbeat of the bar the mark falls in. Computed in beat space (from the
--- | mark's absolute Link beat) and converted to recording micros via the tempo —
--- | bar alignment is what keeps the loop seam clean rather than clicking.
-regionBounds :: Number -> Mark -> { from :: Number, to :: Number }
-regionBounds tempo m =
+-- | The bar-aligned default loop window for a mark at `atMicros` / Link `beat`:
+-- | `loopBars` bars starting at the downbeat of the bar the mark falls in.
+-- | Computed in beat space and converted to recording micros via the tempo — bar
+-- | alignment is what keeps the loop seam clean rather than clicking. Used once at
+-- | capture; the stored `from`/`to` are then freely draggable.
+regionBounds :: Number -> Number -> Number -> { from :: Number, to :: Number }
+regionBounds tempo atMicros beat =
   let beatMicros = 60.0e6 / (if tempo > 1.0 then tempo else 120.0)
-      barStartBeat = toNumber (floor (m.beat / quantum)) * quantum
+      barStartBeat = toNumber (floor (beat / quantum)) * quantum
       toBeat = barStartBeat + toNumber loopBars * quantum
-  in { from: m.atMicros + (barStartBeat - m.beat) * beatMicros
-     , to: m.atMicros + (toBeat - m.beat) * beatMicros }
+  in { from: atMicros + (barStartBeat - beat) * beatMicros
+     , to: atMicros + (toBeat - beat) * beatMicros }
+
+-- | Snap a recording time to the nearest beat line, using a mark as the grid
+-- | anchor (its atMicros ↔ Link beat). Applied to a dragged region edge on
+-- | release, so a freehand resize still lands musically.
+snapMicrosToBeat :: Number -> Mark -> Number -> Number
+snapMicrosToBeat tempo m t =
+  let beatMicros = 60.0e6 / (if tempo > 1.0 then tempo else 120.0)
+      beatAt = m.beat + (t - m.atMicros) / beatMicros
+  in m.atMicros + (toNumber (round beatAt) - m.beat) * beatMicros
 
 deleteMark :: Int -> Logbook -> Logbook
 deleteMark i lb = lb { marks = fromMaybe lb.marks (deleteAt i lb.marks) }

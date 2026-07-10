@@ -9,10 +9,11 @@ module Triggerfish.Odonus.Grid (component) where
 
 import Prelude
 
-import Data.Array (any, concatMap, deleteAt, elem, filter, find, findIndex, head, length, null, range, updateAt, (!!))
+import Data.Array (any, concatMap, deleteAt, elem, filter, find, findIndex, head, length, modifyAt, null, range, updateAt, (!!))
 import Data.Foldable (foldl, for_)
 import Data.FoldableWithIndex (forWithIndex_)
 import Data.Int (floor, round, toNumber)
+import Data.Ord (abs)
 import Data.Maybe (Maybe(..), fromMaybe, isJust, isNothing, maybe)
 import Data.String.Common (joinWith)
 import Effect (Effect)
@@ -40,8 +41,8 @@ import Web.HTML (window)
 import Web.HTML.Window as Window
 import Web.UIEvent.MouseEvent as ME
 import Triggerfish.Odonus.Grid.Types
-  ( Action(..), KnobTarget(..), SourceTag(..), OdonusView(..), Logbook, NoteEvent, PlayState, Slots, State, applyTarget, genDefaultAmt, genDefaultRate, genKinds, genLabel
-  , marblesPadId, setAmt, setRate, targetRange )
+  ( Action(..), KnobTarget(..), SourceTag(..), OdonusView(..), RegionEdge(..), Logbook, NoteEvent, PlayState, Slots, State, applyTarget, genDefaultAmt, genDefaultRate, genKinds, genLabel
+  , marblesPadId, replayTimelineId, setAmt, setRate, targetRange )
 import Triggerfish.Scale (scaleTypes)
 import Triggerfish.Transport (Sounding(..))
 import Triggerfish.Odonus.Grid.Widgets (clampI, style)
@@ -64,7 +65,7 @@ component =
   H.mkComponent
     { initialState: \_ ->
         { odo: M.defaultOdonus, sounding: Silent, dragging: Nothing, dragSub: Nothing
-        , notes: [], logbook: Logbook.emptyLog, view: VLive, playing: Nothing, binnacle: Nothing, nowMicros: 0.0
+        , notes: [], logbook: Logbook.emptyLog, view: VLive, playing: Nothing, regionDrag: Nothing, binnacle: Nothing, nowMicros: 0.0
         , midiOut: Nothing, midiName: "…", clockTempo: 120.0, clockLocked: false
         , clockBeat: 0.0, clockBar: 0, anchorCount: 0
         , scenes: [], sceneNameInput: "", chain: false, sceneIx: 0, sceneBarAnchor: 0, barsPerScene: 4
@@ -441,7 +442,10 @@ dispatch = case _ of
     Nothing -> s
   DeleteScene i -> H.modify_ \s -> s { scenes = fromMaybe s.scenes (deleteAt i s.scenes) }
   -- Performance logbook (#151): flag / drop a good bit, or purge the whole log.
-  MarkNow -> H.modify_ \s -> s { logbook = Logbook.mark s.nowMicros s.clockBeat (patchText s) s.logbook }
+  MarkNow -> H.modify_ \s ->
+    let rb = Logbook.regionBounds s.clockTempo s.nowMicros s.clockBeat
+        m = { atMicros: s.nowMicros, beat: s.clockBeat, from: rb.from, to: rb.to, patch: patchText s }
+    in s { logbook = Logbook.pushMark m s.logbook }
   DeleteMark i -> H.modify_ \s -> s { logbook = Logbook.deleteMark i s.logbook }
   ClearLog -> H.modify_ \s -> s { logbook = Logbook.emptyLog }
   -- Leaving REPLAY stops any running loop — otherwise it keeps sounding on a
@@ -449,17 +453,49 @@ dispatch = case _ of
   SetView v -> H.modify_ \s -> s { view = v, playing = if v == VReplay then s.playing else Nothing }
   -- REPLAY (#151, R2b): start looping the one-bar region around mark i. The Frame
   -- loop (driveReplay) schedules each iteration; StopPlay ends it.
-  PlayRegion i -> do
-    st <- H.get
-    case st.logbook.marks !! i of
-      Just m -> do
-        nowMs <- liftEffect Time.perfNow
-        let rb = Logbook.regionBounds st.clockTempo m
-        H.modify_ _ { playing = Just
-          { fromMicros: rb.from, toMicros: rb.to
-          , markIdx: i, nextLoopMs: nowMs, playheadFrac: 0.0 } }
-      Nothing -> pure unit
+  PlayRegion i -> startRegion i
   StopPlay -> H.modify_ _ { playing = Nothing }
+  -- REPLAY region drag (#151, R2c): grab a band's edge (resize) or body (slide).
+  -- The pointer maps straight to a recording time via padNorm over the timeline.
+  RegionDown i edge cx cy -> do
+    sid <- setupRegionDrag
+    st <- H.get
+    grab <- liftEffect $ pointerMicros st cx cy
+    for_ (st.logbook.marks !! i) \m ->
+      H.modify_ _ { regionDrag = Just
+        { markIdx: i, edge, grabMicros: grab, startFrom: m.from, startTo: m.to, moved: false }
+      , dragSub = Just sid }
+  RegionMove cx cy -> do
+    st <- H.get
+    for_ st.regionDrag \rd -> do
+      cur <- liftEffect $ pointerMicros st cx cy
+      -- A body grab only becomes a slide past a small threshold, so a click (with
+      -- a stray pixel of jitter) still plays; edge grabs resize from the first move.
+      let past = abs (cur - rd.grabMicros) > (timelineBounds st).span * 0.005
+      when (rd.moved || rd.edge /= EdgeBody || past) do
+        let d = cur - rd.grabMicros
+            minLen = 60.0e6 / max 30.0 st.clockTempo   -- ≥ one beat
+            bounds = case rd.edge of
+              EdgeFrom -> { from: min (rd.startTo - minLen) cur, to: rd.startTo }
+              EdgeTo -> { from: rd.startFrom, to: max (rd.startFrom + minLen) cur }
+              EdgeBody -> { from: rd.startFrom + d, to: rd.startTo + d }
+        H.modify_ \s ->
+          let s1 = setRegionBounds rd.markIdx bounds s
+              s2 = s1 { regionDrag = map (_ { moved = true }) s1.regionDrag }
+          in syncPlaying rd.markIdx bounds s2
+  RegionUp -> do
+    st <- H.get
+    for_ st.dragSub H.unsubscribe
+    for_ st.regionDrag \rd ->
+      case rd.edge, rd.moved of
+        -- A bare click on the body plays the region; a resize/slide is finalized
+        -- by snapping its edges to the beat grid so a freehand drag stays musical.
+        EdgeBody, false -> startRegion rd.markIdx
+        _, _ -> for_ (st.logbook.marks !! rd.markIdx) \m ->
+          let snapped = { from: Logbook.snapMicrosToBeat st.clockTempo m m.from
+                        , to: Logbook.snapMicrosToBeat st.clockTempo m m.to }
+          in H.modify_ \s -> syncPlaying rd.markIdx snapped (setRegionBounds rd.markIdx snapped s)
+    H.modify_ _ { regionDrag = Nothing, dragSub = Nothing }
   ToggleChain -> H.modify_ \s -> s { chain = not s.chain, sceneBarAnchor = s.clockBar }
   BumpBars d -> H.modify_ \s -> s { barsPerScene = clampI 1 32 (s.barsPerScene + d) }
   -- STEP LENGTH is a transport/clock param, not a SimState edit, so it rides its
@@ -624,6 +660,47 @@ driveReplay = do
               frac = max 0.0 (min 1.0 ((nowMs - started) / loopLenMs))
           in s { playing = Just p { playheadFrac = frac } }
         Nothing -> s
+
+-- | Start looping the region stored on mark `i` (shared by PlayRegion and a bare
+-- | click at the end of a region drag).
+startRegion :: forall o m. MonadAff m => Int -> H.HalogenM State Action Slots o m Unit
+startRegion i = do
+  st <- H.get
+  for_ (st.logbook.marks !! i) \m -> do
+    nowMs <- liftEffect Time.perfNow
+    H.modify_ _ { playing = Just
+      { fromMicros: m.from, toMicros: m.to, markIdx: i, nextLoopMs: nowMs, playheadFrac: 0.0 } }
+
+-- | The timeline's earliest-note origin and total span — the SAME formula the
+-- | Replay view uses to lay notes out, so pointer↔time round-trips exactly.
+timelineBounds :: State -> { tMin :: Number, span :: Number }
+timelineBounds st =
+  let evs = st.logbook.live <> concatMap _.events st.logbook.chunks
+      tMin = foldl (\a e -> min a e.fireUnixMicros) 1.0e18 evs
+      tMax = foldl (\a e -> max a e.fireUnixMicros) 0.0 evs
+  in { tMin, span: max 1.0 (tMax - tMin) }
+
+-- | The pointer's recording-time position: its normalised X within the timeline
+-- | element mapped over the timeline span.
+pointerMicros :: State -> Int -> Int -> Effect Number
+pointerMicros st cx cy = do
+  { x } <- Pointer.padNorm replayTimelineId cx cy
+  let b = timelineBounds st
+  pure (b.tMin + x * b.span)
+
+-- | Write a region's bounds onto its mark.
+setRegionBounds :: Int -> { from :: Number, to :: Number } -> State -> State
+setRegionBounds i b s =
+  s { logbook = s.logbook
+        { marks = fromMaybe s.logbook.marks
+            (modifyAt i (\m -> m { from = b.from, to = b.to }) s.logbook.marks) } }
+
+-- | If mark `i` is the one currently looping, carry a bounds edit onto the live
+-- | loop too, so a resize/slide is heard on the next iteration.
+syncPlaying :: Int -> { from :: Number, to :: Number } -> State -> State
+syncPlaying i b s = case s.playing of
+  Just p | p.markIdx == i -> s { playing = Just p { fromMicros = b.from, toMicros = b.to } }
+  _ -> s
 
 -- | The captured notes falling inside a replay region.
 regionEvents :: PlayState -> Logbook -> Array NoteEvent
@@ -872,6 +949,22 @@ setupDrag =
       Just me -> emit (DragMove (ME.clientY me))
       Nothing -> pure unit
     upFn <- eventListener \_ -> emit DragEnd
+    target <- Window.toEventTarget <$> window
+    addEventListener (EventType "mousemove") moveFn false target
+    addEventListener (EventType "mouseup") upFn false target
+    pure do
+      removeEventListener (EventType "mousemove") moveFn false target
+      removeEventListener (EventType "mouseup") upFn false target
+
+-- | Like `setupDrag`, but for a REPLAY region drag: emits `RegionMove` with BOTH
+-- | pointer coords (padNorm needs clientX + clientY) and `RegionUp` on release.
+setupRegionDrag :: forall o m. MonadAff m => H.HalogenM State Action Slots o m H.SubscriptionId
+setupRegionDrag =
+  H.subscribe $ HS.makeEmitter \emit -> do
+    moveFn <- eventListener \e -> case ME.fromEvent e of
+      Just me -> emit (RegionMove (ME.clientX me) (ME.clientY me))
+      Nothing -> pure unit
+    upFn <- eventListener \_ -> emit RegionUp
     target <- Window.toEventTarget <$> window
     addEventListener (EventType "mousemove") moveFn false target
     addEventListener (EventType "mouseup") upFn false target

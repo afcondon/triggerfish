@@ -11,6 +11,9 @@ module Triggerfish.Odonus.Grid.Types
   , Scene
   , Chunk
   , Mark
+  , RegionEdge(..)
+  , RegionDrag
+  , replayTimelineId
   , Logbook
   , PlayState
   , module Reef.Gen
@@ -153,12 +156,26 @@ type Scene = { name :: String, text :: String }
 -- | O(whole session), and makes retention a matter of dropping whole chunks.
 type Chunk = { fromMicros :: Number, toMicros :: Number, events :: Array NoteEvent }
 
--- | A flagged good bit: WHEN it happened (wall clock + the absolute Link `beat`,
--- | so a loop window can bar-align) plus the Odonus `patch` (Lepidoptera text)
--- | live at that instant. So a mark carries both the notes that came out (via its
--- | position in the note stream) and the machine state that made them — the seam
--- | to later "loop this / get me back into that headspace" reuse.
-type Mark = { atMicros :: Number, beat :: Number, patch :: String }
+-- | A flagged good bit: WHEN it happened (wall clock + the absolute Link `beat`),
+-- | the loop window `from`/`to` (recording micros — bar-aligned at capture, then
+-- | freely draggable/resizable), and the Odonus `patch` (Lepidoptera text) live
+-- | at that instant. So a mark carries the notes that came out (via its span in
+-- | the note stream), an editable loop region, and the machine state that made it.
+type Mark = { atMicros :: Number, beat :: Number, from :: Number, to :: Number, patch :: String }
+
+-- | Which part of a loop region a drag grabbed: its left edge (move the start),
+-- | right edge (move the end), or body (slide the whole window).
+data RegionEdge = EdgeFrom | EdgeTo | EdgeBody
+
+derive instance eqRegionEdge :: Eq RegionEdge
+
+-- | A region drag in progress. `grabMicros` is the pointer position (in recording
+-- | micros) where the grab began; `moved` distinguishes a resize/slide from a bare
+-- | click (a click on the body starts playback instead).
+type RegionDrag =
+  { markIdx :: Int, edge :: RegionEdge, grabMicros :: Number
+  , startFrom :: Number, startTo :: Number, moved :: Boolean
+  }
 
 -- | The always-on performance logbook (#151): the scope's note stream WITHOUT
 -- | the ~8s prune, so what actually happened survives. The rig is always
@@ -212,6 +229,11 @@ genSub = case _ of
 marblesPadId :: String
 marblesPadId = "tf-marbles-xy"
 
+-- | DOM id of the REPLAY timeline, so a region drag can read the pointer's
+-- | normalised X within it (via `Pointer.padNorm`) and map straight to a time.
+replayTimelineId :: String
+replayTimelineId = "tf-replay-timeline"
+
 -- | The Odonus component's child-component slots. One entry so far: the shared
 -- | Hylograph Select widget driving the KEY pane's SCALE picker. The whole view
 -- | tree carries this row (concrete, not `()`), so any further shared widget is a
@@ -243,6 +265,7 @@ type State =
   , logbook :: Logbook            -- always-on performance capture (#151)
   , view :: OdonusView            -- LIVE panels vs the REPLAY editor over the logbook
   , playing :: Maybe PlayState    -- a REPLAY loop in flight (Nothing = not replaying)
+  , regionDrag :: Maybe RegionDrag  -- a loop-region resize/slide in progress
   , binnacle :: Maybe Binnacle
   , nowMicros :: Number
   , midiOut :: Maybe Midi.MidiOut
@@ -335,6 +358,9 @@ data Action
   | SetView OdonusView      -- switch the Odonus surface (LIVE / REPLAY)
   | PlayRegion Int          -- start looping the region around mark i (REPLAY)
   | StopPlay                -- stop the REPLAY loop
+  | RegionDown Int RegionEdge Int Int  -- grab a region: markIdx, edge, clientX, clientY
+  | RegionMove Int Int      -- pointer moved during a region drag: clientX, clientY
+  | RegionUp                -- release a region drag (click→play, or finalize resize)
   | ToggleChain
   | BumpBars Int
   | SetStepDiv Int

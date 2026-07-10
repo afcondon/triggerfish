@@ -10,16 +10,17 @@ module Triggerfish.Odonus.View.Replay (replayPanel, modeBar) where
 
 import Prelude
 
-import Data.Array (concatMap, length, mapWithIndex, null)
+import Data.Array (concat, concatMap, length, mapWithIndex, null)
 import Data.Foldable (foldl)
 import Data.Int (toNumber)
 import Data.Maybe (Maybe(..))
 import Halogen as H
 import Halogen.HTML as HH
 import Halogen.HTML.Events as HE
-import Triggerfish.Odonus.Grid.Types (Action(..), Mark, NoteEvent, OdonusView(..), PlayState, Slots, State)
+import Halogen.HTML.Properties as HP
+import Web.UIEvent.MouseEvent as ME
+import Triggerfish.Odonus.Grid.Types (Action(..), Mark, NoteEvent, OdonusView(..), PlayState, RegionEdge(..), Slots, State, replayTimelineId)
 import Triggerfish.Odonus.Grid.Widgets (clampI, headColor, style, svgAttr, svgEl)
-import Triggerfish.Odonus.Logbook (regionBounds)
 
 -- viewBox units — the timeline's internal coordinate space (stretched to fit).
 tlW :: Number
@@ -63,7 +64,8 @@ replayPanel s =
     events = lb.live <> concatMap _.events lb.chunks
   in
     HH.div
-      [ style $ "height:100%;position:relative;overflow:hidden;"
+      [ HP.id replayTimelineId
+      , style $ "height:100%;position:relative;overflow:hidden;"
           <> "background:radial-gradient(140% 120% at 50% 40%,#15140f,#0b0a07)" ]
       ( if null events then [ emptyState ]
         else
@@ -84,7 +86,7 @@ replayPanel s =
                 , style "position:absolute;inset:0" ]
                 (map (noteDot xOf) (decimate events) <> map (markLine xOf) lb.marks)
             ]
-              <> mapWithIndex (regionBand pctOf s.clockTempo s.playing) lb.marks
+              <> concat (mapWithIndex (regionBand pctOf s.playing) lb.marks)
               <> playhead pctOf s.playing
               <> [ caption (length events) (length lb.marks), transport s.playing ]
       )
@@ -109,26 +111,38 @@ noteDot xOf e =
     , svgAttr "fill" (headColor e.headIdx), svgAttr "opacity" "0.72"
     ] []
 
--- | The bar-aligned loop window around a mark — a clickable gold band (an HTML
--- | overlay, percent-positioned over the svg) that starts the region looping.
--- | Uses the same regionBounds as playback, so what you see is what loops.
--- | Brighter while it's the one playing.
-regionBand :: forall m. (Number -> Number) -> Number -> Maybe PlayState -> Int -> Mark -> H.ComponentHTML Action Slots m
-regionBand pctOf tempo playing i m =
-  let rb = regionBounds tempo m
-      l = pctOf rb.from
-      r = pctOf rb.to
+-- | A loop region — the gold band [from,to] stored on the mark, as HTML overlays
+-- | over the svg. The body (grab to slide, click to play) and two edge handles
+-- | (grab to resize) are SIBLINGS, not nested, so an edge grab doesn't also fire
+-- | the body's mousedown. Brighter while it's the one playing.
+regionBand :: forall m. (Number -> Number) -> Maybe PlayState -> Int -> Mark -> Array (H.ComponentHTML Action Slots m)
+regionBand pctOf playing i m =
+  let l = pctOf m.from
+      r = pctOf m.to
+      w = max 0.3 (r - l)
       active = case playing of
         Just p -> p.markIdx == i
         Nothing -> false
   in
-    HH.div
-      [ HE.onClick \_ -> PlayRegion i
-      , style $ "position:absolute;top:0;bottom:0;left:" <> show l <> "%;width:" <> show (max 0.3 (r - l)) <> "%;"
-          <> "cursor:pointer;border-left:1px solid #e8c14a66;border-right:1px solid #e8c14a66;"
-          <> "background:rgba(232,193,74," <> (if active then "0.22" else "0.10") <> ")"
-          <> (if active then ";box-shadow:inset 0 0 0 1px #e8c14a" else "") ]
-      []
+    [ HH.div
+        [ HE.onMouseDown \me -> RegionDown i EdgeBody (ME.clientX me) (ME.clientY me)
+        , style $ "position:absolute;top:0;bottom:0;left:" <> show l <> "%;width:" <> show w <> "%;"
+            <> "cursor:grab;border-left:1px solid #e8c14a66;border-right:1px solid #e8c14a66;"
+            <> "background:rgba(232,193,74," <> (if active then "0.22" else "0.10") <> ")"
+            <> (if active then ";box-shadow:inset 0 0 0 1px #e8c14a" else "") ]
+        []
+    , edgeHandle i EdgeFrom l
+    , edgeHandle i EdgeTo r
+    ]
+
+-- | A thin resize grip at a region edge (percent x), on top of the body.
+edgeHandle :: forall m. Int -> RegionEdge -> Number -> H.ComponentHTML Action Slots m
+edgeHandle i edge xPct =
+  HH.div
+    [ HE.onMouseDown \me -> RegionDown i edge (ME.clientX me) (ME.clientY me)
+    , style $ "position:absolute;top:0;bottom:0;left:calc(" <> show xPct <> "% - 4px);width:8px;"
+        <> "cursor:ew-resize;background:rgba(232,193,74,0.4)" ]
+    []
 
 -- | The moving loop playhead, shown while replaying.
 playhead :: forall m. (Number -> Number) -> Maybe PlayState -> Array (H.ComponentHTML Action Slots m)
