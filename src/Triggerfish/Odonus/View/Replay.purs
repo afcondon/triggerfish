@@ -13,10 +13,11 @@ import Prelude
 import Data.Array (concatMap, length, mapWithIndex, null)
 import Data.Foldable (foldl)
 import Data.Int (toNumber)
+import Data.Maybe (Maybe(..))
 import Halogen as H
 import Halogen.HTML as HH
 import Halogen.HTML.Events as HE
-import Triggerfish.Odonus.Grid.Types (Action(..), Mark, NoteEvent, OdonusView(..), Slots, State)
+import Triggerfish.Odonus.Grid.Types (Action(..), Mark, NoteEvent, OdonusView(..), PlayState, Slots, State)
 import Triggerfish.Odonus.Grid.Widgets (clampI, headColor, style, svgAttr, svgEl)
 
 -- viewBox units — the timeline's internal coordinate space (stretched to fit).
@@ -69,7 +70,8 @@ replayPanel s =
             tMax = s.nowMicros
             tMin = foldl (\a e -> min a e.fireUnixMicros) tMax events
             span = max 1.0 (tMax - tMin)
-            xOf t = (t - tMin) / span * tlW
+            xOf t = (t - tMin) / span * tlW      -- svg viewBox units (0..tlW)
+            pctOf t = (t - tMin) / span * 100.0  -- percent, for HTML overlays
             barMicros = 4.0 * 60.0e6 / (if s.clockTempo > 1.0 then s.clockTempo else 120.0)
           in
             [ svgEl "svg"
@@ -77,11 +79,11 @@ replayPanel s =
                 , svgAttr "viewBox" ("0 0 " <> show tlW <> " " <> show tlH)
                 , svgAttr "preserveAspectRatio" "none"
                 , style "position:absolute;inset:0" ]
-                ( map (noteDot xOf) (decimate events)
-                    <> map (regionBand xOf barMicros) lb.marks
-                    <> map (markLine xOf) lb.marks )
-            , caption (length events) (length lb.marks)
+                (map (noteDot xOf) (decimate events) <> map (markLine xOf) lb.marks)
             ]
+              <> mapWithIndex (regionBand pctOf barMicros s.playing) lb.marks
+              <> playhead pctOf s.playing
+              <> [ caption (length events) (length lb.marks), transport s.playing ]
       )
 
 -- | Keep at most `maxDraw` notes by taking every stride-th one — enough for the
@@ -104,18 +106,49 @@ noteDot xOf e =
     , svgAttr "fill" (headColor e.headIdx), svgAttr "opacity" "0.72"
     ] []
 
--- | The default one-bar loop window around a mark — a faint gold band.
-regionBand :: forall m. (Number -> Number) -> Number -> Mark -> H.ComponentHTML Action Slots m
-regionBand xOf barMicros m =
-  let x0 = xOf (m.atMicros - barMicros / 2.0)
-      x1 = xOf (m.atMicros + barMicros / 2.0)
+-- | The default one-bar loop window around a mark — a clickable gold band (an
+-- | HTML overlay, percent-positioned over the svg) that starts the region
+-- | looping. Brighter while it's the one playing.
+regionBand :: forall m. (Number -> Number) -> Number -> Maybe PlayState -> Int -> Mark -> H.ComponentHTML Action Slots m
+regionBand pctOf barMicros playing i m =
+  let l = pctOf (m.atMicros - barMicros / 2.0)
+      r = pctOf (m.atMicros + barMicros / 2.0)
+      active = case playing of
+        Just p -> p.markIdx == i
+        Nothing -> false
   in
-    svgEl "rect"
-      [ svgAttr "x" (show x0), svgAttr "y" "0"
-      , svgAttr "width" (show (max 1.0 (x1 - x0))), svgAttr "height" (show tlH)
-      , svgAttr "fill" "#e8c14a", svgAttr "opacity" "0.1"
-      , svgAttr "stroke" "#e8c14a", svgAttr "stroke-opacity" "0.35", svgAttr "stroke-width" "1"
-      ] []
+    HH.div
+      [ HE.onClick \_ -> PlayRegion i
+      , style $ "position:absolute;top:0;bottom:0;left:" <> show l <> "%;width:" <> show (max 0.3 (r - l)) <> "%;"
+          <> "cursor:pointer;border-left:1px solid #e8c14a66;border-right:1px solid #e8c14a66;"
+          <> "background:rgba(232,193,74," <> (if active then "0.22" else "0.10") <> ")"
+          <> (if active then ";box-shadow:inset 0 0 0 1px #e8c14a" else "") ]
+      []
+
+-- | The moving loop playhead, shown while replaying.
+playhead :: forall m. (Number -> Number) -> Maybe PlayState -> Array (H.ComponentHTML Action Slots m)
+playhead pctOf = case _ of
+  Nothing -> []
+  Just p ->
+    let x = pctOf (p.fromMicros + p.playheadFrac * (p.toMicros - p.fromMicros))
+    in [ HH.div
+           [ style $ "position:absolute;top:0;bottom:0;left:" <> show x <> "%;width:2px;"
+               <> "background:#ffffff;opacity:0.85;pointer-events:none" ]
+           [] ]
+
+-- | The replay transport: a STOP control shown while a loop runs.
+transport :: forall m. Maybe PlayState -> H.ComponentHTML Action Slots m
+transport = case _ of
+  Nothing ->
+    HH.div
+      [ style $ "position:absolute;bottom:9px;right:12px;font-family:Georgia,serif;font-size:10px;color:#ffffff44" ]
+      [ HH.text "click a gold band to loop it" ]
+  Just p ->
+    HH.button
+      [ HE.onClick \_ -> StopPlay
+      , style $ "position:absolute;bottom:9px;right:12px;padding:4px 12px;border-radius:7px;cursor:pointer;"
+          <> "border:1px solid #e8c14a66;background:#e8c14a1f;color:#e8c14a;font-family:Georgia,serif;font-size:11px" ]
+      [ HH.text ("■ stop · looping mark " <> show (p.markIdx + 1)) ]
 
 markLine :: forall m. (Number -> Number) -> Mark -> H.ComponentHTML Action Slots m
 markLine xOf m =

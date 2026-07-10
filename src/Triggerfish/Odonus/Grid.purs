@@ -9,11 +9,11 @@ module Triggerfish.Odonus.Grid (component) where
 
 import Prelude
 
-import Data.Array (any, deleteAt, elem, filter, find, findIndex, head, length, null, range, updateAt, (!!))
+import Data.Array (any, concatMap, deleteAt, elem, filter, find, findIndex, head, length, null, range, updateAt, (!!))
 import Data.Foldable (foldl, for_)
 import Data.FoldableWithIndex (forWithIndex_)
 import Data.Int (floor, round, toNumber)
-import Data.Maybe (Maybe(..), fromMaybe, maybe)
+import Data.Maybe (Maybe(..), fromMaybe, isJust, isNothing, maybe)
 import Data.String.Common (joinWith)
 import Effect (Effect)
 import Effect.Aff.Class (class MonadAff)
@@ -30,6 +30,7 @@ import Binnacle as Binnacle
 import Binnacle.Clock as Clock
 import Binnacle.Midi as Midi
 import Binnacle.Scheduler as Scheduler
+import Binnacle.Time as Time
 import Binnacle.Transport as Transport
 import Reef.Input as RI
 import Reef.Protocol (encodeSim, encodeTagged)
@@ -39,7 +40,7 @@ import Web.HTML (window)
 import Web.HTML.Window as Window
 import Web.UIEvent.MouseEvent as ME
 import Triggerfish.Odonus.Grid.Types
-  ( Action(..), KnobTarget(..), SourceTag(..), OdonusView(..), Slots, State, applyTarget, genDefaultAmt, genDefaultRate, genKinds, genLabel
+  ( Action(..), KnobTarget(..), SourceTag(..), OdonusView(..), Logbook, NoteEvent, PlayState, Slots, State, applyTarget, genDefaultAmt, genDefaultRate, genKinds, genLabel
   , marblesPadId, setAmt, setRate, targetRange )
 import Triggerfish.Scale (scaleTypes)
 import Triggerfish.Transport (Sounding(..))
@@ -63,7 +64,7 @@ component =
   H.mkComponent
     { initialState: \_ ->
         { odo: M.defaultOdonus, sounding: Silent, dragging: Nothing, dragSub: Nothing
-        , notes: [], logbook: Logbook.emptyLog, view: VLive, binnacle: Nothing, nowMicros: 0.0
+        , notes: [], logbook: Logbook.emptyLog, view: VLive, playing: Nothing, binnacle: Nothing, nowMicros: 0.0
         , midiOut: Nothing, midiName: "…", clockTempo: 120.0, clockLocked: false
         , clockBeat: 0.0, clockBar: 0, anchorCount: 0
         , scenes: [], sceneNameInput: "", chain: false, sceneIx: 0, sceneBarAnchor: 0, barsPerScene: 4
@@ -272,7 +273,9 @@ dispatch = case _ of
       -- Local MIDI I/O only. In Rig (Atlantis) mode the BEAM voice sounds; the
       -- frontend advances the same model purely to mirror it (co-sim display), so
       -- it must NOT also emit — otherwise you'd double-trigger on the rig.
-      when (st.sounding == Local) do
+      -- Solo: while a REPLAY loop is running, the live model still advances
+      -- (silently) but does NOT emit — replay owns the MIDI out (#151, R2b).
+      when (st.sounding == Local && isNothing st.playing) do
         -- Silence any voice the generator muted this step.
         for_ st.midiOut \out -> liftEffect $ for_ newlyMuted \h -> case join (st.headNote !! h) of
           Just n -> Midi.noteOffAt out { channel: h, note: n, delayMs: 0.0 }
@@ -290,13 +293,19 @@ dispatch = case _ of
           st.headNote r.fired
         -- Clear the held-note slots of voices the generator just muted.
         clearedHeadNote = foldl (\arr h -> fromMaybe arr (updateAt h Nothing arr)) newHeadNote newlyMuted
-        fresh = map (\f -> { pitch: f.pitch, headIdx: f.headIdx
-                           , fireUnixMicros: tick.fireUnixMicros + swingMs * 1000.0 }) r.fired
+        -- Built from `firedV` (not `r.fired`) so the capture carries velocity and
+        -- gate length too — REPLAY re-emits these faithfully. The scope ignores them.
+        fresh = map (\fv -> { pitch: fv.f.pitch, headIdx: fv.f.headIdx
+                            , fireUnixMicros: tick.fireUnixMicros + swingMs * 1000.0
+                            , vel: fv.v, gateMs: gateMsFor fv.f }) firedV
       H.modify_ \s -> s
         { odo = r.odo, notes = fresh <> s.notes, headNote = clearedHeadNote
         -- Performance logbook (#151): the same fresh notes accumulate, unpruned,
         -- into the always-on capture (chunked + retention-bounded). Frontend-only.
-        , logbook = Logbook.logAppend (tick.fireUnixMicros) fresh s.logbook
+        -- Paused while a REPLAY loop runs, so replay-time silent gen doesn't pollute
+        -- the log.
+        , logbook = if isJust s.playing then s.logbook
+                    else Logbook.logAppend (tick.fireUnixMicros) fresh s.logbook
         -- LOCKSTEP (P4c, Option 2): the model seed advances ONLY via runGen (g.seed),
         -- NOT via the velocity-humanise draws (velied.seed). Humanise still reads the
         -- seed to jitter velocity, but must not perturb the shared generative stream —
@@ -351,6 +360,7 @@ dispatch = case _ of
                 Just sc -> (recallText sc.text base) { sceneIx = ni, sceneBarAnchor = r.bar }
                 Nothing -> base
             else base
+        driveReplay
       Nothing -> pure unit
   MidiReady mout nm -> H.modify_ _ { midiOut = mout, midiName = nm }
   -- Cell edits — deferred + broadcast (lockstep P4c) so they land on the same
@@ -435,6 +445,19 @@ dispatch = case _ of
   DeleteMark i -> H.modify_ \s -> s { logbook = Logbook.deleteMark i s.logbook }
   ClearLog -> H.modify_ \s -> s { logbook = Logbook.emptyLog }
   SetView v -> H.modify_ _ { view = v }
+  -- REPLAY (#151, R2b): start looping the one-bar region around mark i. The Frame
+  -- loop (driveReplay) schedules each iteration; StopPlay ends it.
+  PlayRegion i -> do
+    st <- H.get
+    case st.logbook.marks !! i of
+      Just m -> do
+        nowMs <- liftEffect Time.perfNow
+        let barMicros = 4.0 * 60.0e6 / (if st.clockTempo > 1.0 then st.clockTempo else 120.0)
+        H.modify_ _ { playing = Just
+          { fromMicros: m.atMicros - barMicros / 2.0, toMicros: m.atMicros + barMicros / 2.0
+          , markIdx: i, nextLoopMs: nowMs, playheadFrac: 0.0 } }
+      Nothing -> pure unit
+  StopPlay -> H.modify_ _ { playing = Nothing }
   ToggleChain -> H.modify_ \s -> s { chain = not s.chain, sceneBarAnchor = s.clockBar }
   BumpBars d -> H.modify_ \s -> s { barsPerScene = clampI 1 32 (s.barsPerScene + d) }
   -- STEP LENGTH is a transport/clock param, not a SimState edit, so it rides its
@@ -570,6 +593,45 @@ dispatch = case _ of
     st <- H.get
     for_ st.binnacle \bin ->
       liftEffect $ Transport.send (Binnacle.socket bin) "hush"
+
+-- | REPLAY loop driver (#151, R2b), run each Frame. While a region is playing,
+-- | schedule the next loop iteration once we're within lookahead of its start —
+-- | each note is a self-contained scheduleNoteAtMs (auto note-off), so nothing
+-- | sticks. Also advances the 0..1 playhead for the view. No-op when idle.
+driveReplay :: forall o m. MonadAff m => H.HalogenM State Action Slots o m Unit
+driveReplay = do
+  st <- H.get
+  case st.playing of
+    Nothing -> pure unit
+    Just ps -> do
+      nowMs <- liftEffect Time.perfNow
+      let loopLenMs = max 1.0 ((ps.toMicros - ps.fromMicros) / 1000.0)
+      when (nowMs >= ps.nextLoopMs - replayLookaheadMs) do
+        for_ st.midiOut \out -> liftEffect $ for_ (regionEvents ps st.logbook) \e ->
+          Midi.scheduleNoteAtMs out
+            { channel: Routing.toWire (Routing.odonusHeadChannel e.headIdx)
+            , note: e.pitch, velocity: e.vel
+            , atMs: ps.nextLoopMs + (e.fireUnixMicros - ps.fromMicros) / 1000.0
+            , durMs: e.gateMs }
+        H.modify_ \s -> case s.playing of
+          Just p -> s { playing = Just p { nextLoopMs = p.nextLoopMs + loopLenMs } }
+          Nothing -> s
+      H.modify_ \s -> case s.playing of
+        Just p ->
+          let started = p.nextLoopMs - loopLenMs
+              frac = max 0.0 (min 1.0 ((nowMs - started) / loopLenMs))
+          in s { playing = Just p { playheadFrac = frac } }
+        Nothing -> s
+
+-- | The captured notes falling inside a replay region.
+regionEvents :: PlayState -> Logbook -> Array NoteEvent
+regionEvents ps lb =
+  filter (\e -> e.fireUnixMicros >= ps.fromMicros && e.fireUnixMicros <= ps.toMicros)
+    (lb.live <> concatMap _.events lb.chunks)
+
+-- | Schedule the next loop iteration this far before its onset (perf ms).
+replayLookaheadMs :: Number
+replayLookaheadMs = 120.0
 
 -- | True if this target was just toggled (< 120ms ago) — the second of a
 -- | double-dispatched click. nowMicros advances via the Frame loop. Shared by

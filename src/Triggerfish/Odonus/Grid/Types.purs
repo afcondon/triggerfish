@@ -12,6 +12,7 @@ module Triggerfish.Odonus.Grid.Types
   , Chunk
   , Mark
   , Logbook
+  , PlayState
   , module Reef.Gen
   , genLabel
   , genSub
@@ -124,10 +125,20 @@ type DragState = { target :: KnobTarget, startY :: Int, startVal :: Int, curVal 
 -- | never flams. The Step loop drains entries whose `step` has arrived.
 type PendingInput = { step :: Int, input :: RI.Input }
 
--- | One emitted note in the scrolling monitor. `fireUnixMicros` is the
--- | wall-clock instant it sounds; the river positions it by how long ago
--- | that was (so the visual onset lands exactly on the audio onset).
-type NoteEvent = { pitch :: Int, headIdx :: Int, fireUnixMicros :: Number }
+-- | One emitted note in the scrolling monitor / logbook. `fireUnixMicros` is the
+-- | wall-clock instant it sounds; the river positions it by how long ago that was
+-- | (so the visual onset lands exactly on the audio onset). `vel`/`gateMs` are
+-- | carried so REPLAY (#151) can re-emit the note faithfully — velocity dynamics
+-- | and note length are part of "the good bit". The scope ignores them.
+type NoteEvent = { pitch :: Int, headIdx :: Int, fireUnixMicros :: Number, vel :: Int, gateMs :: Number }
+
+-- | A REPLAY loop in progress (#151, R2b): the region bounds in recording time,
+-- | which mark it came from, the perf-clock instant the NEXT loop iteration
+-- | should be scheduled at, and the 0..1 playhead position for the view.
+type PlayState =
+  { fromMicros :: Number, toMicros :: Number, markIdx :: Int
+  , nextLoopMs :: Number, playheadFrac :: Number
+  }
 
 -- | A saved whole-Odonus setting under a name — the recallable PRESET and the
 -- | unit of composition (sequencing scenes builds flowing fugues with key
@@ -230,6 +241,7 @@ type State =
   , notes :: Array NoteEvent
   , logbook :: Logbook            -- always-on performance capture (#151)
   , view :: OdonusView            -- LIVE panels vs the REPLAY editor over the logbook
+  , playing :: Maybe PlayState    -- a REPLAY loop in flight (Nothing = not replaying)
   , binnacle :: Maybe Binnacle
   , nowMicros :: Number
   , midiOut :: Maybe Midi.MidiOut
@@ -320,6 +332,8 @@ data Action
   | DeleteMark Int          -- drop a flagged instant
   | ClearLog                -- purge the whole logbook manually
   | SetView OdonusView      -- switch the Odonus surface (LIVE / REPLAY)
+  | PlayRegion Int          -- start looping the region around mark i (REPLAY)
+  | StopPlay                -- stop the REPLAY loop
   | ToggleChain
   | BumpBars Int
   | SetStepDiv Int
