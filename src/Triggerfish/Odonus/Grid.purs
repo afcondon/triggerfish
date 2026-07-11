@@ -156,6 +156,14 @@ handleQuery = case _ of
       persistAll
       pure (Just (reply true))
     Nothing -> pure (Just (reply false))
+  -- macro-tidal `# scale` transform: adopt an explicit scale. Reuse the existing
+  -- KEY-pane actions — switch to Scale source (off any chord-follow), set the
+  -- root, then jump the scale type by name.
+  SetScale root ty next -> do
+    handleAction (SetSource SScale)
+    handleAction (SetRoot root)
+    handleAction (PickScale ty)
+    pure (Just next)
 
 -- | Run the action, then persist the live patch — except for the high-frequency
 -- | / non-authoring actions (the clock tick, the river frame, a knob DRAG in

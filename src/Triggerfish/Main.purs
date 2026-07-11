@@ -19,7 +19,7 @@ module Triggerfish.Main where
 
 import Prelude
 
-import Data.Array (any, filter, find, length, mapWithIndex, null, replicate)
+import Data.Array (any, elem, filter, find, findIndex, length, mapWithIndex, null, replicate, uncons)
 import Data.Foldable (for_)
 import Data.Either (Either(..))
 import Data.Maybe (Maybe(..), fromMaybe, maybe)
@@ -29,6 +29,7 @@ import Data.Set as Set
 import Data.Map (Map)
 import Data.Map as Map
 import Data.Int as Int
+import Data.String as String
 import Data.String.Common (joinWith)
 import Data.Tuple (Tuple(..))
 import Effect (Effect)
@@ -54,6 +55,8 @@ import Triggerfish.Stellatus.Component as Stellatus
 import Triggerfish.SourceQuery as SQ
 import Triggerfish.Midi.Routing as Routing
 import Triggerfish.Amphora as Amphora
+import Triggerfish.Macro (Cell(Quiet, Load), Step, ResolvedMod, laneFormNames, parseLane, resolveStep, stepLabel)
+import Triggerfish.Scale (rootNames, scaleTypes)
 import Vetula.App as Vetula
 import Vetula.Clipboard (copyText)
 import Triggerfish.Transport (Which(..), Mode(..), Sounding(..), soundingOf, anyArmed, allMachines)
@@ -92,6 +95,13 @@ data RAction
   | PreviewEntry LibRow        -- workbench: load + Local-audition a setup (rig untouched)
   | StopPreview                -- workbench: end the preview, restore its sounding
   | VetulaArmed Boolean        -- Vetula's self-arm/disarm EVENT (replaces the poll)
+  -- macro-tidal (Slice 1): the arrangement layer on the TIDAL page. One lane of
+  -- Odonus scene-names, sequenced over bar-quantized steps.
+  | SetMacroText String        -- edit the lane pattern
+  | SetMacroBars String        -- edit bars-per-step
+  | ToggleMacro                -- run / stop the macro sequencer
+  | MacroTick                  -- the bar-quantized clock poll (step-boundary driver)
+  | AppendMacroName String     -- palette: append an available scene name to the lane
 
 -- One saved preset gathered from an instrument, for the cross-instrument LIBRARY
 -- manager on the TIDAL page. `text` is the entry rendered to Lepidoptera eDSL
@@ -137,7 +147,14 @@ type RState =
   -- canonical-channel table, pushed to Vetula (SetRouting); `vetulaNames` is the
   -- set of → midi voice names in use, polled from Vetula so the page can list them.
   , routing :: Map String Int
-  , vetulaNames :: Array String }
+  , vetulaNames :: Array String
+  -- macro-tidal (Slice 1): the Odonus arrangement lane. `macroText` is the
+  -- mini-notation pattern of scene-names; `macroBars` = bars per step; `macroOn`
+  -- runs the sequencer. `macroStep` is the last GLOBAL step index applied (-1 =
+  -- none yet) so we only load at a boundary; `macroCell` is the label last loaded
+  -- (for the readout — "" none, "~" a rest, "name ?" an unresolved name).
+  , macroText :: String, macroBars :: Int, macroOn :: Boolean
+  , macroStep :: Int, macroCell :: String }
 
 type Slots =
   ( odo :: H.Slot SQ.Query Void Unit
@@ -177,7 +194,9 @@ root =
         , brushSent: "", brushPrev: ""
         , armed: Set.empty
         , routing: Map.empty
-        , vetulaNames: [] }
+        , vetulaNames: []
+        , macroText: "", macroBars: 4, macroOn: false
+        , macroStep: -1, macroCell: "" }
     , render
     , eval: H.mkEval H.defaultEval { handleAction = handleAction, initialize = Just Init }
     }
@@ -196,6 +215,9 @@ handleAction = case _ of
     -- Poll Vetula's Odonus-bound performance voices ~10×/s and feed each one's
     -- current block chord to Odonus, so its quantiser follows the live conductor.
     _ <- liftEffect $ setInterval 100 (HS.notify listener PollVetula)
+    -- The macro clock: poll ~8×/s and act only when a bar-quantized step boundary
+    -- is crossed (MacroTick is a no-op while the sequencer is stopped).
+    _ <- liftEffect $ setInterval 120 (HS.notify listener MacroTick)
     handleAction SyncTick
     -- One source of truth: push each machine its derived Sounding (all Silent now —
     -- nothing armed). Arm/mode changes re-derive and re-push; the instruments
@@ -303,6 +325,43 @@ handleAction = case _ of
   VetulaArmed on -> do
     H.modify_ \st -> st { armed = if on then Set.insert Vet st.armed else Set.delete Vet st.armed }
     pushSounding Vet
+  -- macro-tidal: edit the Odonus lane / bars-per-step.
+  SetMacroText t -> H.modify_ _ { macroText = t }
+  SetMacroBars v -> case Int.fromString v of
+    Just n | n >= 1 -> H.modify_ _ { macroBars = n }
+    _ -> pure unit
+  -- Palette click: append a scene name to the lane (with a separating space).
+  -- A name containing a space is quoted so it stays one token.
+  AppendMacroName name -> do
+    let tok = if String.contains (String.Pattern " ") name then "\"" <> name <> "\"" else name
+    H.modify_ \st -> st { macroText = if st.macroText == "" then tok else st.macroText <> " " <> tok }
+  -- Run / stop the sequencer. Turning ON re-gathers the library (so names resolve)
+  -- and resets `macroStep` to -1 so the next tick applies the current step at once.
+  ToggleMacro -> do
+    on <- H.gets _.macroOn
+    if on
+      then H.modify_ _ { macroOn = false }
+      else do
+        refreshLibrary
+        H.modify_ _ { macroOn = true, macroStep = -1 }
+  -- The bar-quantized clock. Compute the current global step from the shared
+  -- free-run epoch; when it crosses a boundary, resolve the cell and apply it.
+  -- Rig-locked timing (reading the Link anchor instead of freeTempo) is a later
+  -- slice — this drives the Solo/standalone case.
+  MacroTick -> do
+    st <- H.get
+    when st.macroOn do
+      let toks = parseLane st.macroText
+          n = length toks
+      when (n > 0 && st.macroBars > 0) do
+        now <- liftEffect dateNow
+        let barMs = 4.0 * 60000.0 / freeTempo
+            epochMs = st.freeT0 / 1000.0
+            barIdx = max 0 (Int.floor ((now - epochMs) / barMs))
+            stepGlobal = barIdx `div` st.macroBars
+        when (stepGlobal /= st.macroStep) do
+          H.modify_ _ { macroStep = stepGlobal }
+          applyCell (resolveStep toks (stepGlobal `mod` n) (stepGlobal `div` n))
   -- Star / unstar a setup: promote it onto the go-to wall (publish its content and
   -- favourite it into `triggerfish-goto`) or take it off (unpublish that favourite).
   -- Content stays addressable either way; the wall is pure curation. Then re-fetch.
@@ -350,6 +409,73 @@ pushSounding :: forall o m. MonadAff m => Which -> H.HalogenM RState RAction Slo
 pushSounding w = do
   st <- H.get
   void $ querySounding w (soundingOf st.mode st.armed (previewSet st) w)
+
+-- macro-tidal: enact one resolved step on the Odonus lane. A named form loads its
+-- scene and arms Odonus so it sounds; a rest (or the silent branch of an
+-- alternation) disarms it. An unresolved name is held (Odonus keeps playing what
+-- it had) and flagged in the readout. The sequencer thus owns Odonus's arm — the
+-- generalisation of scene-scheduling up out of the instrument.
+applyCell :: forall o m. MonadAff m => Cell -> H.HalogenM RState RAction Slots o m Unit
+applyCell = case _ of
+  Quiet -> do
+    a <- H.gets _.armed
+    when (Set.member Odo a) do
+      H.modify_ _ { armed = Set.delete Odo a }
+      pushSounding Odo
+    H.modify_ _ { macroCell = "~" }
+  Load name mods -> do
+    lib <- H.gets _.library
+    case find (\r -> r.inst == Odo && r.name == name) lib of
+      Just row -> do
+        _ <- queryLoad Odo row.idx
+        a <- H.gets _.armed
+        when (not (Set.member Odo a)) (H.modify_ _ { armed = Set.insert Odo a })
+        for_ mods applyMod   -- apply the transform stack to the freshly loaded form
+        pushSounding Odo
+        H.modify_ _ { macroCell = name <> joinWith "" (map (\md -> " #" <> md.verb) mods) }
+      Nothing -> H.modify_ _ { macroCell = name <> " ?" }
+
+-- Interpret one resolved modifier against Odonus. `scale` re-quantises to a named
+-- scale (the injected-realize seam). Other verbs are no-ops for now — the seam is
+-- here for fast / bass / transpose to slot into. An unparseable scale arg is
+-- silently skipped (the readout still shows the verb was requested).
+applyMod :: forall o m. MonadAff m => ResolvedMod -> H.HalogenM RState RAction Slots o m Unit
+applyMod md = case md.verb of
+  "scale" -> case parseScaleArg md.arg of
+    Just s -> void $ H.query _odo unit (SQ.SetScale s.root s.scaleType unit)
+    Nothing -> pure unit
+  _ -> pure unit
+
+-- Parse a `# scale` argument ("F# lydian dominant", "G major") into a root pitch
+-- class + a Reef.Scale scale-type name. Forgiving: the root matches rootNames
+-- case-insensitively (with flat aliases); the type is normalised (lowercased,
+-- spaces removed) against scaleTypes; a bare root defaults to major.
+parseScaleArg :: String -> Maybe { root :: Int, scaleType :: String }
+parseScaleArg s = case uncons (filter (_ /= "") (String.split (String.Pattern " ") s)) of
+  Nothing -> Nothing
+  Just { head: rootTok, tail: scaleWords } -> do
+    rootPc <- matchRoot rootTok
+    scaleType <-
+      if null scaleWords then Just "major"
+      else matchScaleType (String.toLower (joinWith "" scaleWords))
+    Just { root: rootPc, scaleType }
+
+matchRoot :: String -> Maybe Int
+matchRoot tok =
+  let u = String.toUpper tok
+  in case findIndex (\n -> String.toUpper n == u) rootNames of
+       Just i -> Just i
+       Nothing -> case find (\(Tuple a _) -> a == u) rootFlatAliases of
+         Just (Tuple _ canon) -> findIndex (_ == canon) rootNames
+         Nothing -> Nothing
+
+-- Flat spellings → their sharp equivalent in rootNames (keys uppercased).
+rootFlatAliases :: Array (Tuple String String)
+rootFlatAliases =
+  [ Tuple "DB" "C#", Tuple "EB" "D#", Tuple "GB" "F#", Tuple "AB" "G#", Tuple "BB" "A#" ]
+
+matchScaleType :: String -> Maybe String
+matchScaleType norm = map _.name (find (\t -> String.toLower t.name == norm) scaleTypes)
 
 -- The set of machines currently auditioning — the third input to `soundingOf`, so
 -- preview is part of the derivation. Ending a preview is just removing it here and
@@ -514,6 +640,7 @@ tidalView st =
   HH.div
     [ style $ "max-width:1440px;margin:calc(var(--tf-bar) + 18px) auto 40px;padding:0 20px;font-family:Georgia,serif" ]
     [ channelMapPanel st
+    , macroPanel st
     , workbenchHeader st
     , HH.div
         [ style "display:flex;gap:26px;align-items:flex-start" ]
@@ -587,6 +714,94 @@ channelMapPanel st =
             , style "width:42px;font-family:'SF Mono',Menlo,Consolas,monospace;font-size:11px;padding:2px 5px;border-radius:4px;border:1px solid #cdbb96;background:#fffdf8;text-align:center"
             ]
         ]
+
+-- macro-tidal (Slice 1): the ARRANGEMENT lane. A mini-notation string of Odonus
+-- scene-names sequenced over bar-quantized steps — "midnight ~ <descent drift>".
+-- Space-separated tokens divide the macro-cycle into equal steps; `~` is a rest;
+-- `<a b c>` alternates one inner form per cycle. Run it and the sequencer loads
+-- the resolved scene into Odonus at each step boundary (arming it to sound; a
+-- rest disarms). The palette lists the available Odonus scenes to click into the
+-- lane; unresolved names show in red and are held.
+macroPanel :: forall m. RState -> H.ComponentHTML RAction Slots m
+macroPanel st =
+  let toks = parseLane st.macroText
+      n = length toks
+      odoNames = map _.name (filter (\r -> r.inst == Odo) st.library)
+      curStep = if st.macroOn && st.macroStep >= 0 && n > 0 then Just (st.macroStep `mod` n) else Nothing
+      unknown = filter (\nm -> not (nm `elem` odoNames)) (laneFormNames toks)
+  in HH.div [ style "margin-bottom:26px;padding:14px 16px;background:#eef1ec;border:1px solid #d6ddd2;border-radius:6px" ]
+    [ HH.div [ style "display:flex;align-items:baseline;justify-content:space-between;gap:14px;margin-bottom:11px" ]
+        [ HH.span [ style "font-size:13px;letter-spacing:0.14em;text-transform:uppercase;color:#3f5a3f" ]
+            [ HH.text "Arrangement — macro-tidal · Odonus lane" ]
+        , HH.div [ style "display:flex;align-items:center;gap:12px" ]
+            [ HH.span [ style "font-size:10px;letter-spacing:0.08em;text-transform:uppercase;color:#6a7a6a" ]
+                [ HH.text "bars/step" ]
+            , HH.input
+                [ HP.value (show st.macroBars)
+                , HE.onValueInput SetMacroBars
+                , style "width:44px;font-family:'SF Mono',Menlo,Consolas,monospace;font-size:11px;padding:2px 5px;border-radius:4px;border:1px solid #b8c4b0;background:#fffdf8;text-align:center" ]
+            , HH.span
+                [ HE.onClick \_ -> ToggleMacro
+                , style $ "cursor:pointer;padding:4px 14px;border-radius:5px;font-size:11px;letter-spacing:0.14em;"
+                    <> "text-transform:uppercase;border:1px solid " <> (if st.macroOn then "#7aa07a" else "#b8c4b0") <> ";"
+                    <> (if st.macroOn then "color:#eaf3ea;background:linear-gradient(#4a7a4a,#3a6a3a)" else "color:#3f5a3f;background:linear-gradient(#e4ece0,#d6ddd2)") ]
+                [ HH.text (if st.macroOn then "■ stop" else "▶ run") ]
+            ]
+        ]
+    , HH.div [ style "font-size:10px;color:#7a8a7a;margin-bottom:7px;font-family:'SF Mono',Menlo,Consolas,monospace" ]
+        [ HH.text "~ rest · <a b> alternate per cycle · # scale <\"F# lydian dominant\" \"G major\"> re-quantise" ]
+    , HH.input
+        [ HP.value st.macroText
+        , HE.onValueInput SetMacroText
+        , HP.placeholder "\"bopping along\" # scale <\"F# lydian dominant\" \"G major\">"
+        , HP.spellcheck false
+        , style $ "width:100%;box-sizing:border-box;padding:9px 11px;border:1px solid #b8c4b0;border-radius:5px;"
+            <> "background:#fffdf8;font-family:'SF Mono',Menlo,Consolas,monospace;font-size:13px;letter-spacing:0.02em;color:#22301f" ]
+    -- The parsed step readout: one chip per top-level step, the running step lit,
+    -- unresolved names ringed red. Plus the live cell + cycle when running.
+    , if n == 0 then HH.text ""
+      else HH.div [ style "display:flex;flex-wrap:wrap;align-items:center;gap:6px;margin-top:10px" ]
+        ( mapWithIndex (stepChip odoNames curStep) toks
+            <> [ if st.macroOn
+                   then HH.span [ style "margin-left:8px;font-size:11px;color:#3d6b3d;font-style:italic" ]
+                          [ HH.text ("♪ " <> (if st.macroCell == "" then "…" else st.macroCell)
+                                      <> "  · cycle " <> show (if n > 0 then st.macroStep `div` n else 0)) ]
+                   else HH.text "" ] )
+    -- The palette: the Odonus scenes you can name in the lane (click to append).
+    , HH.div [ style "margin-top:11px;padding-top:9px;border-top:1px dashed #c8d2c0" ]
+        [ HH.span [ style "font-size:10px;letter-spacing:0.12em;text-transform:uppercase;color:#7a8a7a;margin-right:8px" ]
+            [ HH.text "scenes" ]
+        , if null odoNames
+            then HH.span [ style "font-size:11px;color:#9aa89a;font-style:italic" ]
+                   [ HH.text "save / refresh to gather Odonus scenes" ]
+            else HH.span [ style "display:inline-flex;flex-wrap:wrap;gap:5px" ] (map paletteChip odoNames)
+        ]
+    , if null unknown then HH.text ""
+      else HH.div [ style "margin-top:8px;font-size:11px;color:#a03028" ]
+        [ HH.text ("unresolved (held): " <> joinWith ", " unknown) ]
+    ]
+  where
+  paletteChip nm =
+    HH.span
+      [ HE.onClick \_ -> AppendMacroName nm
+      , style $ "cursor:pointer;padding:2px 9px;border:1px solid #b8c4b0;border-radius:11px;background:#fbfdf9;"
+          <> "font-family:'SF Mono',Menlo,Consolas,monospace;font-size:11px;color:#2f4a2f" ]
+      [ HH.text nm ]
+
+-- One step in the arrangement readout: its source label (a name, `~`, or a
+-- `<…>` group), lit when it's the running step, ringed red if it names a form
+-- that doesn't resolve against the loaded Odonus library.
+stepChip :: forall m. Array String -> Maybe Int -> Int -> Step -> H.ComponentHTML RAction Slots m
+stepChip odoNames curStep i step =
+  let live = curStep == Just i
+      resolvable = null (filter (\nm -> not (nm `elem` odoNames)) (laneFormNames [ step ]))
+      border = if not resolvable then "#c85a50" else if live then "#4a7a4a" else "#c8d2c0"
+      bg = if live then "linear-gradient(#dcecd6,#cde3c4)" else "#fbfdf9"
+  in HH.span
+    [ style $ "padding:3px 10px;border:1px solid " <> border <> ";border-radius:4px;background:" <> bg <> ";"
+        <> "font-family:'SF Mono',Menlo,Consolas,monospace;font-size:12px;"
+        <> "color:" <> (if not resolvable then "#a03028" else "#2f4a2f") ]
+    [ HH.text (stepLabel step) ]
 
 -- The SHELF: the curated ★ GO-TO wall leads (starred setups across every
 -- instrument — the Cianni shelf), then the full archive sits behind a "dig"
