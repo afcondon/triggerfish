@@ -80,7 +80,11 @@ xyPad s =
       [ HP.id marblesPadId
       , HE.onMouseDown \e -> MarblesPad (ME.clientX e) (ME.clientY e) (ME.buttons e)
       , HE.onMouseMove \e -> MarblesPad (ME.clientX e) (ME.clientY e) (ME.buttons e)
-      , style $ "position:relative;width:100%;height:108px;margin-top:8px;border-radius:6px;cursor:crosshair;"
+      -- flex:0 0 auto pins the pad in the fixed-height NOTES column: without it the
+      -- flex algorithm shrinks this pure-CSS-height box (no intrinsic content) to
+      -- fit, halving the histogram when the column overflows. Now the column scrolls
+      -- (overflow-y:auto on panelShell) instead of squashing the pad.
+      , style $ "flex:0 0 auto;position:relative;width:100%;height:108px;margin-top:8px;border-radius:6px;cursor:crosshair;"
           <> "background:#cbc6b6;box-shadow:inset 0 0 0 1px #00000018;overflow:hidden;user-select:none" ]
       [ HH.div [ style "position:absolute;inset:0;display:flex;align-items:flex-end" ]
           (map bar ws)
