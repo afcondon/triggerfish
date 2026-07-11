@@ -32,7 +32,6 @@ quantizerPanel s =
 contextDisplay :: forall m. M.Odonus -> H.ComponentHTML Action Slots m
 contextDisplay odo =
   let ctx = contextInfo odo
-      firing = odo.chord.on
   in HH.div_
     [ HH.div [ style "display:flex;align-items:baseline;justify-content:space-between;margin-bottom:8px" ]
         [ HH.span [ style $ engrave <> ";font-size:9px" ] [ HH.text "HARMONIC CONTEXT" ]
@@ -41,10 +40,8 @@ contextDisplay odo =
     , HH.div [ style "font-family:Georgia,serif;font-size:15px;color:#2a271e;margin-bottom:9px" ]
         [ HH.text (Scale.rootName ctx.rootPc <> "  " <> ctx.name) ]
     , pcKeyboardRO ctx.rootPc ctx.pcs
-    , HH.div [ style $ engrave <> ";font-size:8px;color:" <> (if firing then "#5a7a3a" else "#8a8576") ]
-        [ HH.text (if firing then "● chord firing (Vetula progression)" else "◌ resting scale") ]
-    , HH.div [ style "margin-top:7px;font-family:Georgia,serif;font-size:9px;color:#8a8576;line-height:1.5;font-style:italic" ]
-        [ HH.text "Vetula owns the scale — set it there (key / scale), or with a macro `# scale`." ]
+    , HH.div [ style "font-family:Georgia,serif;font-size:9px;color:#8a8576;line-height:1.5;font-style:italic" ]
+        [ HH.text "Vetula owns the harmonic context — the active chord of a progression, or the browsed scale. Set it in Vetula, or with a macro `# scale`." ]
     ]
 
 -- | Extract the display facts from the effective pitch set. `root` is a MIDI note;
