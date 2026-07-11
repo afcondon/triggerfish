@@ -73,7 +73,7 @@ component =
         , notes: [], logbook: Logbook.emptyLog, view: VLive, playing: Nothing, regionDrag: Nothing, contextOpen: false, clips: [], twisterField: FNote, binnacle: Nothing, nowMicros: 0.0
         , midiOut: Nothing, midiName: "…", clockTempo: 120.0, clockLocked: false
         , clockBeat: 0.0, clockBar: 0, anchorCount: 0
-        , scenes: [], sceneNameInput: "", publishMsg: Nothing, chain: false, sceneIx: 0, sceneBarAnchor: 0, barsPerScene: 4
+        , scenes: [], sceneNameInput: "", publishMsg: Nothing
         , stepDiv: 1, headNote: [ Nothing, Nothing, Nothing, Nothing ]
         , swing: 0.0, velHumanize: 12
         , gen: map (\k -> { kind: k, on: false, rate: genDefaultRate k, amt: genDefaultAmt k }) genKinds
@@ -386,28 +386,17 @@ dispatch = case _ of
           H.modify_ _ { reconciled = true }
         now <- liftEffect $ Clock.unixMicrosNow (Binnacle.clock bin)
         r <- liftEffect $ Clock.read (Binnacle.clock bin)
-        H.modify_ \s ->
-          let
-            base = s
-              { nowMicros = now
-              , clockTempo = r.tempo
-              , clockLocked = r.locked
-              , clockBeat = r.beat
-              , clockBar = r.bar
-              , anchorCount = r.anchorCount
-              , notes = filter (\n -> (now - n.fireUnixMicros) < windowMicros) s.notes
-              }
-            -- Chain mode: advance to the next scene once barsPerScene bars have
-            -- elapsed, carrying playhead phase across the swap.
-            advance = s.chain && not (null s.scenes)
-              && (r.bar - s.sceneBarAnchor) >= s.barsPerScene
-          in
-            if advance then
-              let ni = (s.sceneIx + 1) `mod` length s.scenes
-              in case s.scenes !! ni of
-                Just sc -> (recallText sc.text base) { sceneIx = ni, sceneBarAnchor = r.bar }
-                Nothing -> base
-            else base
+        -- Scene SEQUENCING moved to the macro-tidal Tidal page; Odonus just tracks
+        -- the clock here (scenes are captured/recalled, not auto-chained).
+        H.modify_ \s -> s
+          { nowMicros = now
+          , clockTempo = r.tempo
+          , clockLocked = r.locked
+          , clockBeat = r.beat
+          , clockBar = r.bar
+          , anchorCount = r.anchorCount
+          , notes = filter (\n -> (now - n.fireUnixMicros) < windowMicros) s.notes
+          }
         driveReplay
       Nothing -> pure unit
   MidiReady mout nm -> H.modify_ _ { midiOut = mout, midiName = nm }
@@ -534,11 +523,11 @@ dispatch = case _ of
           Right hash -> "✓ " <> sc.name <> " · " <> take 8 hash
           Left _ -> "✗ publish failed (store offline?)" }
   RecallScene i -> H.modify_ \s -> case s.scenes !! i of
-    Just sc -> (recallText sc.text s) { sceneIx = i }
+    Just sc -> recallText sc.text s
     Nothing -> s
   -- Recall the scene's gesture but stay in the live key/progression (#150).
   RecallGesture i -> H.modify_ \s -> case s.scenes !! i of
-    Just sc -> (recallGestureText sc.text s) { sceneIx = i }
+    Just sc -> recallGestureText sc.text s
     Nothing -> s
   DeleteScene i -> H.modify_ \s -> s { scenes = fromMaybe s.scenes (deleteAt i s.scenes) }
   -- Performance logbook (#151): flag / drop a good bit, or purge the whole log.
@@ -643,8 +632,6 @@ dispatch = case _ of
                           Just p | p.source == FromClip i -> Nothing
                           _ -> s.playing }
   ToggleContext -> H.modify_ \s -> s { contextOpen = not s.contextOpen }
-  ToggleChain -> H.modify_ \s -> s { chain = not s.chain, sceneBarAnchor = s.clockBar }
-  BumpBars d -> H.modify_ \s -> s { barsPerScene = clampI 1 32 (s.barsPerScene + d) }
   -- STEP LENGTH is a transport/clock param, not a SimState edit, so it rides its
   -- own `reef-steplen` verb (not the tick-tagged input path): apply locally, then
   -- tell the BEAM voice the new model-step length so it steps at the same rate and

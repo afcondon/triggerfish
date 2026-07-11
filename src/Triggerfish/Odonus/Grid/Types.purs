@@ -334,10 +334,6 @@ type State =
   , scenes :: Array Scene
   , sceneNameInput :: String  -- the name typed in the SCENES form for the next capture
   , publishMsg :: Maybe String  -- transient status from a publish-scene-to-Amphora click
-  , chain :: Boolean        -- auto-advance scenes at bar boundaries
-  , sceneIx :: Int          -- current scene in the chain
-  , sceneBarAnchor :: Int   -- bar at which the current scene started
-  , barsPerScene :: Int
   , stepDiv :: Int          -- global clock divider (1=1/16 .. 16=whole note)
   , headNote :: Array (Maybe Int)  -- the held/sounding MIDI note per head (4)
   , swing :: Number          -- groove: fraction of a step that off-beats lag (0..0.6)
@@ -424,8 +420,6 @@ data Action
   | PlayClip Int            -- audition a captured clip (loops, like a region)
   | DeleteClip Int          -- drop a captured clip
   | ToggleContext           -- REPLAY card: show/hide the active mark's harmonic context
-  | ToggleChain
-  | BumpBars Int
   | SetStepDiv Int
   | KnobDown KnobTarget Int
   | DragMove Int
