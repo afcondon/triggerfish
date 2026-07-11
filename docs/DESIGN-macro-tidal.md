@@ -60,11 +60,23 @@ Building `# scale` surfaced a dual-authority problem: Odonus owned a scale, but
 so did the Vetula chord-follow and now the macro layer. The resolution is by
 DELETION, not reconciliation:
 
-- **Vetula is the SINGLE harmonic authority for the rig.** It emits a harmonic
-  context (a PitchSet) at ALL times:
-  - progression playing → the current chord/scale (exists: `FeedVoiceChords`);
-  - no progression → the diatonic scale of Vetula's chosen key (`st.key` +
-    `Mode`; `harmonia` owns `Key → PitchSet`).
+- **Vetula is the SINGLE harmonic authority for the rig.** It emits ONE harmonic-
+  context set at all times (`Vetula.harmonicContext`). Refined rule (AC 2026-07-11
+  — descriptive-not-prescriptive means a progression's chords are free of any
+  scale, so there is no scale to underlay: the CHORD itself is the set). Precedence:
+  1. an explicit `# scale` override (the user deliberately imposed a scale);
+  2. a loaded progression → its ACTIVE chord's pitch classes (current chord when
+     playing, else the sounding/first) — **chord-quantise, not scale**;
+  3. otherwise → the **lens scale** (`st.key`), re-quantising live as the browsed
+     scale changes.
+  Free-auditioning arbitrary chords with no progression falls to case 3 (accepted;
+  unrelated chords can't relate to Odonus). This DECOUPLES "Vetula's lens scale"
+  (what it draws chords from) from "what Odonus quantises to". No separate chord
+  overlay — the one set is pushed as Odonus's `pitchSet`. `LoadProg` restores the
+  loaded progression's key (`parseKeyLabel` inverts `groupLabel`) so case 3 is
+  right and Vetula's own display tracks it. Successor: a **clever intermediate
+  layer** (Marginalia #180) — holistic progression reading, leading tones,
+  Harmonia-driven expansion — to widen case 2 past bare arpeggiation.
 - **Odonus (and every pitched voice) becomes a pure follower.** It already works
   in index-space with an injected `realize :: Index → Pitch` reconstructed from a
   PitchSet; that PitchSet now ALWAYS comes from Vetula. Odonus's KEY-pane scale/
