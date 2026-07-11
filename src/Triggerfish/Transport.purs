@@ -71,9 +71,13 @@ hasRigVoice = case _ of
   Suf -> false   -- rig-only at heart, but not transport-wired in the D1 prototype
   Ste -> false   -- likewise: the Stellatus ring is a pure visualizer for now
 
--- The whole authority model in one function.
-soundingOf :: Mode -> Set Which -> Which -> Sounding
-soundingOf mode armed w
+-- The whole authority model in one function. `previewing` is the set of machines
+-- being auditioned from the workbench: a preview forces Local (audition in place,
+-- rig untouched) regardless of arm/mode, so preview is PART of the derivation, not
+-- an out-of-band override — the shell never writes a Sounding this can't produce.
+soundingOf :: Mode -> Set Which -> Set Which -> Which -> Sounding
+soundingOf mode armed previewing w
+  | Set.member w previewing  = Local
   | not (Set.member w armed) = Silent
   | otherwise = case mode of
       Solo     -> Local

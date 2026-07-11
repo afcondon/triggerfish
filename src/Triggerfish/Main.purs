@@ -19,8 +19,8 @@ module Triggerfish.Main where
 
 import Prelude
 
-import Data.Array (any, filter, find, mapWithIndex, null, replicate)
-import Data.Foldable (foldl, for_)
+import Data.Array (any, filter, find, length, mapWithIndex, null, replicate)
+import Data.Foldable (for_)
 import Data.Either (Either(..))
 import Data.Maybe (Maybe(..), fromMaybe, maybe)
 import Data.Const (Const)
@@ -89,6 +89,9 @@ data RAction
   | ToggleDig                  -- workbench: expand/collapse the full archive
   | ToggleStar LibRow          -- workbench: add/remove a setup from the go-to wall
   | RefreshGoTo                -- workbench: re-fetch the triggerfish-goto collection
+  | PreviewEntry LibRow        -- workbench: load + Local-audition a setup (rig untouched)
+  | StopPreview                -- workbench: end the preview, restore its sounding
+  | VetulaArmed Boolean        -- Vetula's self-arm/disarm EVENT (replaces the poll)
 
 -- One saved preset gathered from an instrument, for the cross-instrument LIBRARY
 -- manager on the TIDAL page. `text` is the entry rendered to Lepidoptera eDSL
@@ -110,6 +113,11 @@ type RState =
   -- same content hash).
   , picked :: Maybe LibRow, sourceOpen :: Boolean, digOpen :: Boolean
   , goTo :: Array Amphora.LibItem
+  -- The setups currently being previewed — one per instrument (an instrument
+  -- sounds one setup at a time), each loaded into its editor and forced to Local
+  -- sound (the rig + the others untouched). Multiple instruments can audition at
+  -- once — that's how you hear a combination — so each gets its own stop control.
+  , previewing :: Array LibRow
   -- The authority mode + the live harmonic-context strip shown in the top nav.
   -- `harm` is polled from Vetula: voice-0's bars-per-chord dwell schedule and the
   -- current playhead (-1 = none). Rendered as a glyph visible in every pane.
@@ -135,7 +143,7 @@ type Slots =
   ( odo :: H.Slot SQ.Query Void Unit
   , bal :: H.Slot SQ.Query Void Unit
   , sel :: H.Slot SQ.Query Void Unit
-  , vet :: H.Slot Vetula.SourceQuery Void Unit
+  , vet :: H.Slot Vetula.SourceQuery Vetula.Output Unit
   , suf :: H.Slot (Const Void) Void Unit
   , ste :: H.Slot (Const Void) Void Unit
   )
@@ -164,7 +172,7 @@ root =
     { initialState: \_ ->
         { which: Bal, tidalDoc: "", freeT0: 0.0
         , library: [], importText: "", importMsg: ""
-        , picked: Nothing, sourceOpen: false, digOpen: false, goTo: []
+        , picked: Nothing, sourceOpen: false, digOpen: false, goTo: [], previewing: []
         , mode: Solo, harm: { durs: [], active: -1, chord: "" }
         , brushSent: "", brushPrev: ""
         , armed: Set.empty
@@ -222,23 +230,11 @@ handleAction = case _ of
     _ <- H.query _bal unit (SQ.SyncFree t0 freeTempo unit)
     _ <- H.query _sel unit (SQ.SyncFree t0 freeTempo unit)
     _ <- H.query _vet unit (Vetula.SyncFree t0 freeTempo unit)
-    -- OBSERVE: reconcile the armed set with the instruments' EFFECTIVE sounding.
-    -- A machine can self-disarm (Vetula unloading a progression) — it reports
-    -- `Silent`, so we drop it from the set. Odo/Bal/Sel only ever echo what we
-    -- pushed, so they're stable. `Nothing` (query miss) leaves that machine as-is.
-    o <- askSounding Odo
-    b <- askSounding Bal
-    s <- askSounding Sel
-    v <- askSounding Vet
-    st0 <- H.get
-    let armed' = reconcileArmed st0.armed [ Tuple Odo o, Tuple Bal b, Tuple Sel s, Tuple Vet v ]
-    when (armed' /= st0.armed) do
-      H.modify_ _ { armed = armed' }
-      -- Re-push any machine whose membership changed so its Sounding (and thus its
-      -- rig voice) matches the reconciled truth. A Vetula self-disarm this way gets
-      -- SetSounding Silent → its handler sends vetula-stop (what reconcileRig did).
-      for_ [ Odo, Bal, Sel, Vet ] \w ->
-        when (Set.member w armed' /= Set.member w st0.armed) (pushSounding w)
+    -- No armed-reconcile poll here anymore: `armed` is written only by the user
+    -- (ArmTab / ToggleMaster) and by Vetula's self-disarm EVENT (VetulaArmed). Odo/
+    -- Bal/Sel never self-disarm, so nothing needs observing. Sounding is now purely
+    -- one-directional (shell state → instruments) — no two-way binding to fight.
+    pure unit
   -- Opening TIDAL pulls a fresh aggregate + library; the modules keep playing.
   Pick Tid -> do
     H.modify_ _ { which = Tid }
@@ -280,6 +276,33 @@ handleAction = case _ of
   ToggleSource -> H.modify_ \st -> st { sourceOpen = not st.sourceOpen }
   ToggleDig -> H.modify_ \st -> st { digOpen = not st.digOpen }
   RefreshGoTo -> fetchGoTo
+  -- Preview toggle: load the setup into its editor and force ONLY that instrument
+  -- to Local sound — the rig and every other instrument keep their derived
+  -- Sounding, so nothing goes to the modular. Re-clicking the same row stops it.
+  -- Several instruments can preview at once (hear a combination); one setup per
+  -- instrument, so previewing a second setup on the same instrument swaps it.
+  PreviewEntry r -> do
+    st <- H.get
+    if isPreviewing st r
+      then do
+        H.modify_ \s -> s { previewing = filter (not <<< sameRow r) s.previewing }
+        pushSounding r.inst   -- re-derives its resting Sounding (no longer previewing)
+      else do
+        _ <- queryLoad r.inst r.idx
+        -- one setup per instrument: drop any other row already previewing on it
+        H.modify_ \s -> s { previewing = filter (\p -> p.inst /= r.inst) s.previewing <> [ r ] }
+        pushSounding r.inst   -- re-derives Local (now in the preview set)
+  -- Stop every preview at once (the header "stop all").
+  StopPreview -> do
+    insts <- H.gets (map _.inst <<< _.previewing)
+    H.modify_ _ { previewing = [] }
+    for_ insts pushSounding
+  -- Vetula self-armed / self-disarmed (its own play/stop/unload). The shell owns
+  -- `armed`, so update its membership and re-derive Vetula's Sounding — the event
+  -- that replaces the old poll-and-reconcile loop.
+  VetulaArmed on -> do
+    H.modify_ \st -> st { armed = if on then Set.insert Vet st.armed else Set.delete Vet st.armed }
+    pushSounding Vet
   -- Star / unstar a setup: promote it onto the go-to wall (publish its content and
   -- favourite it into `triggerfish-goto`) or take it off (unpublish that favourite).
   -- Content stays addressable either way; the wall is pure curation. Then re-fetch.
@@ -313,7 +336,7 @@ handleAction = case _ of
       st <- H.get
       -- Re-push (SetSounding Rig re-voices) only when Vetula is actually rig-
       -- authoritative — `soundingOf … Vet == Rig` already implies armed + ATLANTIS.
-      when (soundingOf st.mode st.armed Vet == Rig && sig == st.brushPrev && sig /= st.brushSent) do
+      when (soundingOf st.mode st.armed (previewSet st) Vet == Rig && sig == st.brushPrev && sig /= st.brushSent) do
         _ <- H.query _vet unit (Vetula.SetSounding Rig unit)
         H.modify_ _ { brushSent = sig }
       H.modify_ _ { brushPrev = sig }
@@ -326,7 +349,21 @@ handleAction = case _ of
 pushSounding :: forall o m. MonadAff m => Which -> H.HalogenM RState RAction Slots o m Unit
 pushSounding w = do
   st <- H.get
-  void $ querySounding w (soundingOf st.mode st.armed w)
+  void $ querySounding w (soundingOf st.mode st.armed (previewSet st) w)
+
+-- The set of machines currently auditioning — the third input to `soundingOf`, so
+-- preview is part of the derivation. Ending a preview is just removing it here and
+-- re-deriving; there is no separate "force Local / restore" pathway to get wrong.
+previewSet :: RState -> Set Which
+previewSet st = Set.fromFoldable (map _.inst st.previewing)
+
+-- Row identity (instrument + index) — the key both picking and previewing use.
+sameRow :: LibRow -> LibRow -> Boolean
+sameRow a b = a.inst == b.inst && a.idx == b.idx
+
+-- Is this shelf row currently auditioning?
+isPreviewing :: RState -> LibRow -> Boolean
+isPreviewing st r = any (sameRow r) st.previewing
 
 querySounding :: forall o m. Which -> Sounding -> H.HalogenM RState RAction Slots o m (Maybe Unit)
 querySounding w s = case w of
@@ -341,25 +378,6 @@ querySounding w s = case w of
 -- Re-derive and push every machine's Sounding (on arm-all / mode flip / init).
 pushAll :: forall o m. MonadAff m => H.HalogenM RState RAction Slots o m Unit
 pushAll = for_ [ Odo, Bal, Sel, Vet ] pushSounding
-
--- Observe: ask one machine its EFFECTIVE sounding (Silent ⇒ not armed).
-askSounding :: forall o m. Which -> H.HalogenM RState RAction Slots o m (Maybe Sounding)
-askSounding w = case w of
-  Odo -> H.query _odo unit (SQ.AskSounding identity)
-  Bal -> H.query _bal unit (SQ.AskSounding identity)
-  Sel -> H.query _sel unit (SQ.AskSounding identity)
-  Vet -> H.query _vet unit (Vetula.AskSounding identity)
-  Tid -> pure Nothing
-  Suf -> pure Nothing
-  Ste -> pure Nothing
-
--- Fold observed soundings into the armed set: `Silent` drops a machine, any other
--- sounding adds it, a query miss (`Nothing`) leaves it unchanged.
-reconcileArmed :: Set Which -> Array (Tuple Which (Maybe Sounding)) -> Set Which
-reconcileArmed = foldl \acc (Tuple w ms) -> case ms of
-  Just Silent -> Set.delete w acc
-  Just _ -> Set.insert w acc
-  Nothing -> acc
 
 -- Query each mounted instrument for its current source and stitch the four
 -- into one labelled document.
@@ -465,7 +483,8 @@ render st =
     , pane (st.which == Odo) "" (HH.slot_ _odo unit Odonus.component unit)
     , pane (st.which == Bal) "" (HH.slot_ _bal unit Balistes.component unit)
     , pane (st.which == Sel) "" (HH.slot_ _sel unit Selene.component unit)
-    , pane (st.which == Vet) "padding-top:var(--tf-bar)" (HH.slot_ _vet unit Vetula.component unit)
+    , pane (st.which == Vet) "padding-top:var(--tf-bar)"
+        (HH.slot _vet unit Vetula.component unit (\(Vetula.ArmChanged on) -> VetulaArmed on))
     , pane (st.which == Suf) "" (HH.slot_ _suf unit Sufflamen.component unit)
     , pane (st.which == Ste) "" (HH.slot_ _ste unit Stellatus.component unit)
     , if st.which == Tid then tidalView st else HH.text ""
@@ -513,7 +532,14 @@ workbenchHeader st =
         [ style "font-size:15px;letter-spacing:0.16em;text-transform:uppercase;color:#4a463b" ]
         [ HH.text "Workbench — the go-to shelf" ]
     , HH.div [ style "display:flex;align-items:center;gap:8px" ]
-        [ barBtn "refresh" RefreshTidal
+        [ if null st.previewing then HH.text ""
+          else HH.span
+            [ HP.title "stop every local preview"
+            , style $ "cursor:pointer;padding:3px 11px;border:1px solid #7aa07a;border-radius:4px;"
+                <> "font-size:10px;letter-spacing:0.08em;text-transform:uppercase;color:#2f5a2f;background:#e4f0e2"
+            , HE.onClick \_ -> StopPreview ]
+            [ HH.text ("■ stop all previews (" <> show (length st.previewing) <> ")") ]
+        , barBtn "refresh" RefreshTidal
         , barBtn (if st.sourceOpen then "source ▾" else "source ▸") ToggleSource
         ]
     ]
@@ -600,13 +626,16 @@ groupSection st w =
          ] <> map (entryRow st false) rows )
 
 -- One shelf tile: a ★/☆ star toggle (curation), the name (click to pick onto the
--- bench), and copy. The picked one is brass-highlighted; on the go-to wall the row
--- shows its instrument (the wall is cross-instrument). The star and copy don't
--- pick — only the name does — so the two gestures never collide.
+-- bench), and a ▶/■ preview toggle that auditions it locally right there — so any
+-- running preview can be stopped from the same row that started it. The picked one
+-- is brass-highlighted; on the go-to wall the row shows its instrument (the wall is
+-- cross-instrument). Star / name / preview are separate gestures — they never
+-- collide. (Copy lives on the bench.)
 entryRow :: forall m. RState -> Boolean -> LibRow -> H.ComponentHTML RAction Slots m
 entryRow st showInst r =
   let on = isPicked st.picked r
       starred = isStarred st r
+      auditioning = isPreviewing st r
   in HH.div
     [ style $ "display:flex;align-items:center;gap:8px;padding:6px 10px;margin-bottom:3px;"
         <> "border-radius:5px;border:1px solid " <> (if on then "#b5832b" else "#e3dfd2") <> ";"
@@ -625,7 +654,12 @@ entryRow st showInst r =
             else HH.text ""
         , HH.text r.name
         ]
-    , barBtn "copy" (CopyEntry r.text)
+    , HH.span
+        [ HP.title (if auditioning then "stop this local preview" else "preview locally (rig untouched)")
+        , style $ "cursor:pointer;font-size:12px;padding:0 4px;color:"
+            <> (if auditioning then "#2f7a2f" else "#9a9484")
+        , HE.onClick \_ -> PreviewEntry r ]
+        [ HH.text (if auditioning then "■" else "▶") ]
     ]
 
 -- The BENCH: the picked setup, with preview (local audition), transforms, and a
@@ -645,11 +679,15 @@ benchPanel st = case st.picked of
               [ HH.text (whichName r.inst) ]
           , HH.span [ style "font-size:16px;color:#2a271e" ] [ HH.text r.name ]
           ]
-      , HH.div [ style "display:flex;gap:8px;margin:12px 0 16px" ]
-          [ stubBtn "▶ preview (local)" "preview lands next slice"
+      , HH.div [ style "display:flex;align-items:center;gap:8px;margin:12px 0 16px" ]
+          [ barBtn (if isPreviewing st r then "■ stop preview" else "▶ preview (local)") (PreviewEntry r)
           , barBtn "commit → editor" (LoadFromLib r.inst r.idx)
           , barBtn "copy" (CopyEntry r.text)
           , barBtn (if isStarred st r then "★ keep" else "☆ keep") (ToggleStar r)
+          , if isPreviewing st r
+              then HH.span [ style "font-size:11px;color:#3d6b3d;font-style:italic;margin-left:4px" ]
+                     [ HH.text "♪ auditioning locally · rig untouched" ]
+              else HH.text ""
           ]
       , transformRow
       , HH.pre

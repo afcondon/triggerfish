@@ -514,7 +514,14 @@ data SourceQuery a
   | SetRouting (Array { name :: String, ch :: Int }) a
   | AskVoiceNames (Array String -> a)
 
-component :: forall i o m. MonadAff m => H.Component SourceQuery i o m
+-- The one thing Vetula tells the shell without being asked: it armed or disarmed
+-- itself (its own play / stop / unload). The shell owns the `armed` set, so this
+-- event lets it update membership directly — replacing the old per-tick poll of
+-- every instrument's effective sounding. Odo/Bal/Sel never self-disarm, so only
+-- Vetula needs an output.
+data Output = ArmChanged Boolean
+
+component :: forall i m. MonadAff m => H.Component SourceQuery i Output m
 component = H.mkComponent
   { initialState: \_ ->
       { key: cMajorKey
@@ -601,7 +608,7 @@ component = H.mkComponent
 
 -- | Answer the shell: the live progression as Tidal (TIDAL tab), or as a
 -- | sequence of pitch-class sets (the Odonus chord-quantiser feed).
-handleQuery :: forall o m a. MonadAff m => SourceQuery a -> H.HalogenM State Action Slots o m (Maybe a)
+handleQuery :: forall m a. MonadAff m => SourceQuery a -> H.HalogenM State Action Slots Output m (Maybe a)
 handleQuery = case _ of
   AskSource reply -> do
     s <- H.get
@@ -805,7 +812,7 @@ stopSim = do
   for_ st.handle \h -> liftEffect h.stop
   H.modify_ _ { subId = Nothing, handle = Nothing }
 
-handleAction :: forall o m. MonadAff m => Action -> H.HalogenM State Action Slots o m Unit
+handleAction :: forall m. MonadAff m => Action -> H.HalogenM State Action Slots Output m Unit
 handleAction = case _ of
   Initialize -> do
     -- MIDI out
@@ -1267,6 +1274,8 @@ handleAction = case _ of
     when (length (pathSteps st) > 0) (captureSteps st)
     stopClock
     H.modify_ _ { path = [], perfName = Nothing, focus = Hunt, voices = [], playing = false }
+    -- Unloading self-disarms; tell the shell so it drops Vetula from `armed`.
+    when st.armed (H.raise (ArmChanged false))
 
   -- Delete shifts indices, so drop the session pointer to avoid it dangling.
   DeleteLib i -> do
@@ -1563,8 +1572,8 @@ handleAction = case _ of
     for_ st.binnacle \bin ->
       liftEffect $ Transport.send (Binnacle.socket bin) (brushMsg st)
 
-  PerfPlay -> H.modify_ _ { armed = true } *> reconcilePerf
-  PerfStop -> H.modify_ _ { armed = false } *> reconcilePerf
+  PerfPlay -> H.modify_ _ { armed = true } *> reconcilePerf *> H.raise (ArmChanged true)
+  PerfStop -> H.modify_ _ { armed = false } *> reconcilePerf *> H.raise (ArmChanged false)
 
   -- One 16th-note from the shared scheduler. We use the tick's absolute grid
   -- INDEX as the pulse (so every voice — and every module — aligns to the same
