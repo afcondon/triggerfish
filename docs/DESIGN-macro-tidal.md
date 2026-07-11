@@ -99,18 +99,38 @@ a law. One datum with three faces:
 
 Recall surfaces it as a chip: "captured in F# lydian → load into Vetula".
 
-## Build slices (next session)
+## Build slices
 
-1. **V — Vetula emission.** Always-on `AskHarmonicContext` (returns a PitchSet:
-   current chord if playing, else `keyScale st.key`) + a `SetRestingScale` setter.
-2. **O — Odonus follower.** Drop scale ownership; collapse the source radio;
-   follow the Vetula PitchSet; KEY pane → read-only context display.
-3. **M — re-point `# scale`.** Odonus `SetScale` → Vetula `SetRestingScale`; the
-   verb becomes rig-global.
-4. **P — provenance.** Capture writes `label.harmonic`; recall shows the
-   "captured in X → load into Vetula" chip; compound restore.
-5. Follower scope: Odonus first; Stellatus / Sufflamen / future pitched voices
-   adopt the same authority afterward.
+1. **V — Vetula emission. DONE (commit 4735716).** `AskContextScale` returns
+   `{root, offsets}` (the key's diatonic set, or a `# scale` override held in new
+   `restScale` state); `SetRestingScale` installs the override; picking a
+   key/scale clears it. The shell polls it each `PollVetula` and, on change
+   (deduped via `ctxScaleKey`), installs it as Odonus's `pitchSet` through the
+   lockstep-safe `RI.SetPitchSet` (new `SourceQuery.SetContextPitchSet`).
+2. **O — Odonus follower. DONE (commit 4735716).** `FeedVoiceChords` always
+   adopts the Vetula feed (auto-follow first voice; empty → overlay off → just the
+   scale); the source-radio gate is gone. `View.Key` rewritten read-only: a
+   HARMONIC CONTEXT display (root + recognised scale + lit pitch-classes +
+   firing/resting) reading the effective pitchSet.
+3. **M — re-point `# scale`. DONE (commit 4735716).** `# scale` → Vetula
+   `SetRestingScale` (the Reef scale's intervals); rig-global verb, grammar
+   unchanged.
+4. **P — provenance. TODO.** Capture writes `label.harmonic` (thread the field
+   through `Triggerfish.Amphora` publish + fetch and Odonus's `PublishScene`);
+   recall shows a "captured in X → load into Vetula" chip; compound restore =
+   load scene + push its context to Vetula.
+5. Follower scope: Odonus first (done); Stellatus / Sufflamen / future pitched
+   voices adopt the same authority afterward. TODO.
+
+## Try it (V/O/M)
+
+- Odonus follows Vetula's key (C major default) — its KEY pane is a read-only
+  HARMONIC CONTEXT display. Change Vetula's key/scale and Odonus re-quantises;
+  play a Vetula progression routed to an odo voice and the chord overlay fires
+  over the scale.
+- `"scene" # scale <"F# lydian dominant" "G major">` in the macro lane now sets
+  the whole rig's harmonic context per cycle (via Vetula), not an Odonus-local
+  scale.
 
 ## Open / deferred
 
