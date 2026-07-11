@@ -81,6 +81,8 @@ data RAction
   | SetImportText String
   | ImportInto Which            -- route the paste box to one instrument's library
   | SetBinding String String    -- Tidal-page channel map: bind a Vetula voice name → channel
+  | PickEntry LibRow            -- workbench: put a shelf entry on the bench
+  | ToggleSource               -- workbench: slide the raw-source drawer open/shut
 
 -- One saved preset gathered from an instrument, for the cross-instrument LIBRARY
 -- manager on the TIDAL page. `text` is the entry rendered to Lepidoptera eDSL
@@ -95,6 +97,10 @@ type LibRow = { inst :: Which, idx :: Int, name :: String, text :: String }
 type RState =
   { which :: Which, tidalDoc :: String, freeT0 :: Number
   , library :: Array LibRow, importText :: String, importMsg :: String
+  -- Workbench (TIDAL page): the shelf entry currently on the bench, and whether
+  -- the raw-source drawer is slid open (source is demoted from a column to a
+  -- drawer so the workbench has the canvas).
+  , picked :: Maybe LibRow, sourceOpen :: Boolean
   -- The authority mode + the live harmonic-context strip shown in the top nav.
   -- `harm` is polled from Vetula: voice-0's bars-per-chord dwell schedule and the
   -- current playhead (-1 = none). Rendered as a glyph visible in every pane.
@@ -149,6 +155,7 @@ root =
     { initialState: \_ ->
         { which: Bal, tidalDoc: "", freeT0: 0.0
         , library: [], importText: "", importMsg: ""
+        , picked: Nothing, sourceOpen: false
         , mode: Solo, harm: { durs: [], active: -1, chord: "" }
         , brushSent: "", brushPrev: ""
         , armed: Set.empty
@@ -257,6 +264,10 @@ handleAction = case _ of
       Just ch | ch >= 1 && ch <= 16 -> H.modify_ \st -> st { routing = Map.insert name ch st.routing }
       _ -> H.modify_ \st -> st { routing = Map.delete name st.routing }
     pushRouting
+  -- Workbench: put a shelf entry on the bench (or clear it if re-clicked).
+  PickEntry r -> H.modify_ \st ->
+    st { picked = if isPicked st.picked r then Nothing else Just r }
+  ToggleSource -> H.modify_ \st -> st { sourceOpen = not st.sourceOpen }
   -- The live Vetula→Odonus bridge: pull each Odonus-bound voice's current block
   -- chord and feed the set to Odonus, whose KEY pane picks one (or none) to follow.
   PollVetula -> do
@@ -418,20 +429,42 @@ pane :: forall m. Boolean -> String -> H.ComponentHTML RAction Slots m -> H.Comp
 pane visible extra content =
   HH.div [ style ((if visible then "" else "display:none;") <> extra) ] [ content ]
 
--- The read-only aggregate of all four modules' source, for copy / paste into
--- Calypso or an editor.
--- The TIDAL page, two columns: the cross-instrument LIBRARY manager (browse /
--- load / export / import the Lepidoptera presets) on the left, the read-only
--- SOURCE aggregate full-length on the right (uncapped — read the whole rack).
+-- Is shelf row `r` the one currently on the bench? (identity = instrument + idx).
+isPicked :: Maybe LibRow -> LibRow -> Boolean
+isPicked mp r = case mp of
+  Just p -> p.inst == r.inst && p.idx == r.idx
+  Nothing -> false
+
+-- The TIDAL page is the WORKBENCH: a curated shelf of saved setups (left) feeding
+-- a bench (right) where one is picked, previewed, transformed, and committed back
+-- to its instrument. The raw-source aggregate is demoted to a slide-out drawer
+-- (⟨ source ⟩) so the workbench owns the canvas. Content comes from Amphora via
+-- each instrument's merged library (refreshLibrary → AskLibrary aggregate).
 tidalView :: forall m. RState -> H.ComponentHTML RAction Slots m
 tidalView st =
   HH.div
     [ style $ "max-width:1440px;margin:calc(var(--tf-bar) + 18px) auto 40px;padding:0 20px;font-family:Georgia,serif" ]
     [ channelMapPanel st
+    , workbenchHeader st
     , HH.div
         [ style "display:flex;gap:26px;align-items:flex-start" ]
-        [ HH.div [ style "flex:0 0 400px;min-width:0" ] [ libraryPanel st ]
-        , HH.div [ style "flex:1 1 auto;min-width:0" ] [ sourcePanel st ]
+        [ HH.div [ style "flex:0 0 380px;min-width:0" ] [ shelfPanel st ]
+        , HH.div [ style "flex:1 1 auto;min-width:0" ] [ benchPanel st ]
+        ]
+    , if st.sourceOpen then sourceDrawer st else HH.text ""
+    ]
+
+-- The workbench title bar: heading + the source-drawer toggle on the right.
+workbenchHeader :: forall m. RState -> H.ComponentHTML RAction Slots m
+workbenchHeader st =
+  HH.div
+    [ style "display:flex;align-items:baseline;justify-content:space-between;gap:14px;margin-bottom:16px" ]
+    [ HH.span
+        [ style "font-size:15px;letter-spacing:0.16em;text-transform:uppercase;color:#4a463b" ]
+        [ HH.text "Workbench — the go-to shelf" ]
+    , HH.div [ style "display:flex;align-items:center;gap:8px" ]
+        [ barBtn "refresh" RefreshTidal
+        , barBtn (if st.sourceOpen then "source ▾" else "source ▸") ToggleSource
         ]
     ]
 
@@ -479,22 +512,16 @@ channelMapPanel st =
             ]
         ]
 
--- The library manager: each instrument's saved presets, grouped, each loadable
--- and copyable (copy = export the Lepidoptera text, e.g. into Calypso); plus a
--- paste box that imports into a chosen instrument.
-libraryPanel :: forall m. RState -> H.ComponentHTML RAction Slots m
-libraryPanel st =
+-- The SHELF: each instrument's saved setups, grouped, each a click-to-pick tile
+-- that lands on the bench. (Save-everything is the cheap substrate; a later slice
+-- adds the ★ go-to tier so the shelf leads with the curated wall and the rest sits
+-- behind "dig".) The paste-import box sits at the foot as the manual add path.
+shelfPanel :: forall m. RState -> H.ComponentHTML RAction Slots m
+shelfPanel st =
   HH.div [ style "margin-bottom:26px" ]
-    [ HH.div
-        [ style "display:flex;align-items:baseline;gap:14px;margin-bottom:12px" ]
-        [ HH.span
-            [ style "font-size:13px;letter-spacing:0.14em;text-transform:uppercase;color:#5a564b" ]
-            [ HH.text "Library — presets across the rack" ]
-        , barBtn "refresh" RefreshTidal
-        ]
-    , if null st.library
+    [ if null st.library
         then HH.div [ style "color:#8a8576;font-size:12px;font-style:italic;margin-bottom:14px" ]
-               [ HH.text "(refresh to gather each instrument's saved presets)" ]
+               [ HH.text "(refresh to gather each instrument's saved setups)" ]
         else HH.div_ (map (groupSection st) [ Odo, Bal, Sel, Vet ])
     , importBox st
     ]
@@ -507,17 +534,81 @@ groupSection st w =
        ( [ HH.div
              [ style "font-size:10px;letter-spacing:0.16em;text-transform:uppercase;color:#8a7a4a;margin-bottom:5px" ]
              [ HH.text (whichName w) ]
-         ] <> map entryRow rows )
+         ] <> map (entryRow st) rows )
 
-entryRow :: forall m. LibRow -> H.ComponentHTML RAction Slots m
-entryRow r =
-  HH.div
-    [ style $ "display:flex;align-items:center;gap:10px;padding:6px 10px;margin-bottom:3px;"
-        <> "background:#ffffff;border:1px solid #e3dfd2;border-radius:5px" ]
+-- One shelf tile: click anywhere to pick it onto the bench; the picked one is
+-- brass-highlighted. Copy stays as a quick side action.
+entryRow :: forall m. RState -> LibRow -> H.ComponentHTML RAction Slots m
+entryRow st r =
+  let on = isPicked st.picked r
+  in HH.div
+    [ style $ "display:flex;align-items:center;gap:10px;padding:6px 10px;margin-bottom:3px;cursor:pointer;"
+        <> "border-radius:5px;border:1px solid " <> (if on then "#b5832b" else "#e3dfd2") <> ";"
+        <> "background:" <> (if on then "linear-gradient(#f6ecd4,#efe2c2)" else "#ffffff")
+    , HE.onClick \_ -> PickEntry r ]
     [ HH.span [ style "flex:1 1 auto;font-size:12px;color:#2a271e" ] [ HH.text r.name ]
-    , barBtn "load" (LoadFromLib r.inst r.idx)
     , barBtn "copy" (CopyEntry r.text)
     ]
+
+-- The BENCH: the picked setup, with preview (local audition), transforms, and a
+-- commit back to its instrument. Preview + transforms are stubbed this slice
+-- (the shelf→pick→commit loop is live); commit = LoadFromLib, which already loads
+-- the entry into its editor and switches to it.
+benchPanel :: forall m. RState -> H.ComponentHTML RAction Slots m
+benchPanel st = case st.picked of
+  Nothing ->
+    HH.div [ style benchShell ]
+      [ HH.div [ style "color:#8a8576;font-size:13px;font-style:italic;padding:30px 6px;text-align:center" ]
+          [ HH.text "pick a setup from the shelf to work on it" ] ]
+  Just r ->
+    HH.div [ style benchShell ]
+      [ HH.div [ style "display:flex;align-items:baseline;gap:10px;margin-bottom:4px" ]
+          [ HH.span [ style "font-size:10px;letter-spacing:0.16em;text-transform:uppercase;color:#8a7a4a" ]
+              [ HH.text (whichName r.inst) ]
+          , HH.span [ style "font-size:16px;color:#2a271e" ] [ HH.text r.name ]
+          ]
+      , HH.div [ style "display:flex;gap:8px;margin:12px 0 16px" ]
+          [ stubBtn "▶ preview (local)" "preview lands next slice"
+          , barBtn "commit → editor" (LoadFromLib r.inst r.idx)
+          , barBtn "copy" (CopyEntry r.text)
+          , stubBtn "★ keep" "the go-to tier lands next slice"
+          ]
+      , transformRow
+      , HH.pre
+          [ style $ "margin-top:14px;padding:10px 12px;border-radius:6px;"
+              <> "background:#fbf9f2;border:1px solid #e3dfd2;white-space:pre-wrap;word-break:break-word;"
+              <> "font-family:'SF Mono',Menlo,Consolas,monospace;font-size:11px;line-height:1.5;color:#3a352a" ]
+          [ HH.text r.text ]
+      ]
+  where
+  benchShell = "padding:16px 18px;background:#f3efe4;border:1px solid #e3dfd2;border-radius:8px"
+
+-- The transform rack — the heart of the workbench. Stubbed controls this slice;
+-- next slice each becomes a morphism that yields new content + an edge to source.
+transformRow :: forall m. H.ComponentHTML RAction Slots m
+transformRow =
+  HH.div [ style "display:flex;flex-wrap:wrap;gap:14px 22px;padding:12px 14px;background:#efe9db;border:1px solid #e3dfd2;border-radius:6px" ]
+    [ tGroup "speed" [ "½", "¾", "1", "2" ]
+    , tGroup "transpose" [ "−5", "+0", "+7" ]
+    , tGroup "bass" [ "F#2" ]
+    , tGroup "scale" [ "swap →" ]
+    , tGroup "layer +" [ "breakbeat ▾" ]
+    ]
+  where
+  tGroup label opts =
+    HH.div [ style "display:flex;align-items:baseline;gap:7px" ]
+      ( [ HH.span [ style "font-size:10px;letter-spacing:0.08em;text-transform:uppercase;color:#8a7a4a" ] [ HH.text label ] ]
+          <> map (\o -> stubBtn o "transforms land next slice") opts )
+
+-- A disabled placeholder control (tooltip explains it's coming), so the workbench
+-- layout is fully legible before the seams behind it exist.
+stubBtn :: forall m. String -> String -> H.ComponentHTML RAction Slots m
+stubBtn label hint =
+  HH.span
+    [ HP.title hint
+    , style $ "padding:3px 10px;border:1px dashed #cdbb96;border-radius:4px;opacity:0.55;cursor:not-allowed;"
+        <> "font-size:10px;letter-spacing:0.08em;text-transform:uppercase;color:#8a7a4a;background:#00000005" ]
+    [ HH.text label ]
 
 importBox :: forall m. RState -> H.ComponentHTML RAction Slots m
 importBox st =
@@ -546,11 +637,12 @@ importBox st =
         ]
     ]
 
--- The read-only aggregate of all four modules' source, for copy / paste into
--- Calypso or an editor.
-sourcePanel :: forall m. RState -> H.ComponentHTML RAction Slots m
-sourcePanel st =
-  HH.div_
+-- The read-only aggregate of all four modules' source — demoted from a column to
+-- a slide-out drawer below the workbench (toggled by ⟨ source ⟩). Still the copy /
+-- paste-into-Calypso surface; just no longer eating half the canvas.
+sourceDrawer :: forall m. RState -> H.ComponentHTML RAction Slots m
+sourceDrawer st =
+  HH.div [ style "margin-top:22px;padding-top:18px;border-top:1px solid #d8d0bd" ]
     [ HH.div
         [ style "display:flex;align-items:baseline;gap:14px;margin-bottom:12px" ]
         [ HH.span
