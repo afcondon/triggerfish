@@ -154,6 +154,19 @@ Recall surfaces it as a chip: "captured in F# lydian → load into Vetula".
 - Accepted commitment: standalone-Odonus scale changes route through Vetula
   (Vetula is always mounted, so always available even in Solo).
 
+## Per-instrument sequencing → the Tidal page (the pattern)
+
+Each instrument sheds its own sequencing and becomes a form-player + form-library;
+sequencing lives on the Tidal page (the macro lane). Progress:
+
+- **Odonus — DONE (commit 0ce4f9e, #181).** Removed the scene Chain/auto-advance;
+  kept capture/recall. Sequenced via the `odo` lane.
+- **Balistes — TODO (#182).** A small sequencing bit still lives in the *Mutable*
+  section only. Rip it out and replace with a **snapshot maker/taker that works
+  across all three modes** (Mutable / Grids / Tidal) — named, recallable forms —
+  then sequence them from a `bal` lane.
+- **Selene / others** follow the same shape as their lanes arrive.
+
 ## Pointers
 
 - `src/Triggerfish/Macro.purs` — the language.
