@@ -252,8 +252,8 @@ handleQuery = case _ of
       persistLib
       pure (Just (reply true))
     Nothing -> pure (Just (reply false))
-  -- No pitch quantiser — the macro `# scale` transform doesn't apply to Balistes.
-  SetScale _ _ next -> pure (Just next)
+  -- No pitch quantiser — the rig's harmonic context doesn't apply to Balistes.
+  SetContextPitchSet _ _ next -> pure (Just next)
 
 -- ---------------------------------------------------------------------------
 -- handleAction

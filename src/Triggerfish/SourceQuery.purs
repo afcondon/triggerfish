@@ -64,8 +64,8 @@ data Query a
   | AskLibrary (Array { name :: String, text :: String } -> a)
   | LoadEntry Int a
   | ImportText String (Boolean -> a)
-  -- macro-tidal `# scale` transform: re-quantise to an explicit scale (root pc +
-  -- scale-type name from Reef.Scale). Puts the instrument in explicit-scale mode
-  -- (source = Scale, overriding any live chord-follow). Instruments with no
-  -- quantiser ignore it.
-  | SetScale Int String a
+  -- macro-tidal harmonic authority: install the rig's resting harmonic context
+  -- (root pc + intervals) as the pitch-quantisation set. Pushed by the shell from
+  -- Vetula (the single harmonic authority); Odonus realises through it. Instruments
+  -- with no quantiser ignore it.
+  | SetContextPitchSet Int (Array Int) a

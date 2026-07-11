@@ -37,6 +37,7 @@ import Binnacle.Scheduler as Scheduler
 import Binnacle.Time as Time
 import Binnacle.Transport as Transport
 import Reef.Input as RI
+import Reef.PitchSet (PitchSet(..))
 import Reef.Protocol (encodeSim, encodeTagged)
 import Web.Event.Event (EventType(..))
 import Web.Event.EventTarget (addEventListener, eventListener, removeEventListener)
@@ -109,11 +110,12 @@ handleQuery = case _ of
   FeedVoiceChords vcs next -> do
     H.modify_ \s ->
       let
-        s1 = s { voiceChords = vcs }
-        -- When Vetula is the chosen source, keep a valid follow as voices come and
-        -- go (adopt the first if none is picked or the picked one vanished), so a
-        -- voice bound while Odonus waits is followed automatically.
-        s2 = if s1.source == SVetula then s1 { follow = keepOrFirst s1.follow vcs } else s1
+        -- Vetula is the sole harmonic authority now: Odonus ALWAYS follows the feed
+        -- (auto-adopting the first Odonus-bound voice), so a firing chord colours the
+        -- output on top of the resting scale with no source radio to set. An empty
+        -- feed leaves `follow` Nothing → the overlay off → just the scale.
+        s1 = s { voiceChords = vcs, source = SVetula }
+        s2 = s1 { follow = keepOrFirst s1.follow vcs }
       in
         recomputeFollow s2
     pure (Just next)
@@ -156,13 +158,12 @@ handleQuery = case _ of
       persistAll
       pure (Just (reply true))
     Nothing -> pure (Just (reply false))
-  -- macro-tidal `# scale` transform: adopt an explicit scale. Reuse the existing
-  -- KEY-pane actions — switch to Scale source (off any chord-follow), set the
-  -- root, then jump the scale type by name.
-  SetScale root ty next -> do
-    handleAction (SetSource SScale)
-    handleAction (SetRoot root)
-    handleAction (PickScale ty)
+  -- macro-tidal harmonic authority: install the resting context scale the shell
+  -- polled from Vetula as Odonus's pitchSet (the injected-realize seam). Rides the
+  -- lockstep-safe RI.SetPitchSet input so the BEAM voice stays in sync. Odonus no
+  -- longer owns a scale — it follows whatever Vetula supplies.
+  SetContextPitchSet root offsets next -> do
+    enqueue (RI.SetPitchSet (PitchSet { offsets, root: 48 + root, period: Just 12 }))
     pure (Just next)
 
 -- | Run the action, then persist the live patch — except for the high-frequency

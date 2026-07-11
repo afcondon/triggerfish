@@ -281,6 +281,12 @@ type VoicingCycle =
 
 type State =
   { key :: Key
+  -- The rig's resting harmonic scale (macro-tidal harmonic-authority): Nothing =
+  -- follow the key's diatonic set; Just = an explicit `# scale` override (root pc
+  -- + intervals from any Reef scale, beyond the diatonic modes the key can name).
+  -- Vetula is the single harmonic authority — this is what pitched voices quantise
+  -- to when no chord is firing.
+  , restScale :: Maybe { root :: Int, offsets :: Array Int }
   , focus :: Focus                     -- Slice 4c: Hunt (lattice-dominant) vs Perform (rail-dominant)
   , railOpen :: Set RailSection        -- Slice 4b: which rail accordion sections are open (multi)
   , leftOpen :: Set LeftSection        -- which LEFT accordion sections are open (multi)
@@ -513,6 +519,12 @@ data SourceQuery a
   -- bindings; the page asks which → midi voice names are in use so it can list them.
   | SetRouting (Array { name :: String, ch :: Int }) a
   | AskVoiceNames (Array String -> a)
+  -- macro-tidal harmonic authority. The shell polls the rig's resting harmonic
+  -- context (the key's diatonic set, or a `# scale` override) and pushes it into
+  -- Odonus's pitchSet. `SetRestingScale` is where the macro `# scale` verb lands
+  -- (root pc + intervals) — Vetula owns the scale, every pitched voice follows.
+  | AskContextScale ({ root :: Int, offsets :: Array Int } -> a)
+  | SetRestingScale Int (Array Int) a
 
 -- The one thing Vetula tells the shell without being asked: it armed or disarmed
 -- itself (its own play / stop / unload). The shell owns the `armed` set, so this
@@ -525,6 +537,7 @@ component :: forall i m. MonadAff m => H.Component SourceQuery i Output m
 component = H.mkComponent
   { initialState: \_ ->
       { key: cMajorKey
+      , restScale: Nothing
       , focus: Hunt
       , railOpen: Set.fromFoldable [ SecProgression, SecLibrary, SecVoices ]
       , leftOpen: Set.fromFoldable [ SecSetup, SecTank, SecLens ]
@@ -715,6 +728,25 @@ handleQuery = case _ of
     s <- H.get
     let names = nub (filter (_ /= "") (map _.name (filter (\v -> v.dest == ToMidi) s.voices)))
     pure (Just (reply names))
+  -- macro-tidal harmonic authority: hand the shell the resting context scale.
+  AskContextScale reply -> do
+    s <- H.get
+    pure (Just (reply (contextScaleOf s)))
+  -- The macro `# scale` verb: install an explicit resting scale (any Reef scale).
+  SetRestingScale root offsets next -> do
+    H.modify_ _ { restScale = Just { root: mod root 12, offsets } }
+    pure (Just next)
+
+-- | The resting harmonic context Vetula hands the rig: a `# scale` override if one
+-- | is set, else the key's own diatonic set (root pc + intervals up from the
+-- | tonic). Odonus quantises to this when no chord is firing — Vetula is the single
+-- | harmonic authority, every pitched voice follows.
+contextScaleOf :: State -> { root :: Int, offsets :: Array Int }
+contextScaleOf st = case st.restScale of
+  Just rs -> rs
+  Nothing ->
+    { root: mod st.key.tonic 12
+    , offsets: map (\pc -> mod (pc - st.key.tonic + 12) 12) (scaleSet st.key) }
 
 -- | The current path as one PC set per step (each chord's absolute pitch
 -- | classes) — what Odonus's quantiser snaps to when fed from Vetula.
@@ -964,11 +996,14 @@ handleAction = case _ of
   SelectKey v -> case fromString v of
     Just pc -> do
       st <- H.get
+      -- picking a key retakes harmonic authority from any `# scale` override
+      H.modify_ _ { restScale = Nothing }
       rebuild (st.key { tonic = mod pc 12 })
     Nothing -> pure unit
 
   SelectScale v -> do
     st <- H.get
+    H.modify_ _ { restScale = Nothing }
     rebuild (st.key { mode = modeOf v })
 
   -- shift-click a Lattice chord to grow the running path. From the current end:

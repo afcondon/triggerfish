@@ -154,7 +154,10 @@ type RState =
   -- none yet) so we only load at a boundary; `macroCell` is the label last loaded
   -- (for the readout — "" none, "~" a rest, "name ?" an unresolved name).
   , macroText :: String, macroBars :: Int, macroOn :: Boolean
-  , macroStep :: Int, macroCell :: String }
+  , macroStep :: Int, macroCell :: String
+  -- Harmonic-authority bridge: the last resting-context scale pushed from Vetula
+  -- into Odonus (serialised for dedup, so the 100ms poll only re-pushes on change).
+  , ctxScaleKey :: String }
 
 type Slots =
   ( odo :: H.Slot SQ.Query Void Unit
@@ -196,7 +199,7 @@ root =
         , routing: Map.empty
         , vetulaNames: []
         , macroText: "", macroBars: 4, macroOn: false
-        , macroStep: -1, macroCell: "" }
+        , macroStep: -1, macroCell: "", ctxScaleKey: "" }
     , render
     , eval: H.mkEval H.defaultEval { handleAction = handleAction, initialize = Just Init }
     }
@@ -385,6 +388,16 @@ handleAction = case _ of
     case mharm of
       Just h -> H.modify_ _ { harm = h }
       Nothing -> pure unit
+    -- Harmonic authority: pull Vetula's resting context scale and, when it CHANGES,
+    -- install it as Odonus's pitchSet (RI.SetPitchSet, lockstep-safe). Vetula owns
+    -- the scale; Odonus follows. Deduped so the 100ms poll doesn't flood the input.
+    mctx <- H.query _vet unit (Vetula.AskContextScale identity)
+    for_ mctx \ctx -> do
+      let key = show ctx.root <> ":" <> show ctx.offsets
+      prev <- H.gets _.ctxScaleKey
+      when (key /= prev) do
+        H.modify_ _ { ctxScaleKey = key }
+        void $ H.query _odo unit (SQ.SetContextPitchSet ctx.root ctx.offsets unit)
     -- Vetula auto-resync (ATLANTIS only): Vetula has no incremental rig path, so the
     -- shell diffs its payload and re-pushes on a SETTLED change (payload stable for
     -- one poll AND different from what was last sent). A drag coalesces into one push
@@ -435,30 +448,31 @@ applyCell = case _ of
         H.modify_ _ { macroCell = name <> joinWith "" (map (\md -> " #" <> md.verb) mods) }
       Nothing -> H.modify_ _ { macroCell = name <> " ?" }
 
--- Interpret one resolved modifier against Odonus. `scale` re-quantises to a named
--- scale (the injected-realize seam). Other verbs are no-ops for now — the seam is
--- here for fast / bass / transpose to slot into. An unparseable scale arg is
--- silently skipped (the readout still shows the verb was requested).
+-- Interpret one resolved modifier. `scale` re-quantises the whole rig by setting
+-- VETULA's resting scale (Vetula is the single harmonic authority; the poll bridge
+-- then pushes it into Odonus's pitchSet). So `# scale` is a rig-global harmonic
+-- verb, not an Odonus-local edit. Other verbs are no-ops for now — the seam is here
+-- for fast / bass / transpose. An unparseable scale arg is silently skipped.
 applyMod :: forall o m. MonadAff m => ResolvedMod -> H.HalogenM RState RAction Slots o m Unit
 applyMod md = case md.verb of
   "scale" -> case parseScaleArg md.arg of
-    Just s -> void $ H.query _odo unit (SQ.SetScale s.root s.scaleType unit)
+    Just s -> void $ H.query _vet unit (Vetula.SetRestingScale s.root s.offsets unit)
     Nothing -> pure unit
   _ -> pure unit
 
 -- Parse a `# scale` argument ("F# lydian dominant", "G major") into a root pitch
--- class + a Reef.Scale scale-type name. Forgiving: the root matches rootNames
--- case-insensitively (with flat aliases); the type is normalised (lowercased,
--- spaces removed) against scaleTypes; a bare root defaults to major.
-parseScaleArg :: String -> Maybe { root :: Int, scaleType :: String }
+-- class + the scale's intervals (from Reef.Scale). Forgiving: the root matches
+-- rootNames case-insensitively (with flat aliases); the type is normalised
+-- (lowercased, spaces removed) against scaleTypes; a bare root defaults to major.
+parseScaleArg :: String -> Maybe { root :: Int, offsets :: Array Int }
 parseScaleArg s = case uncons (filter (_ /= "") (String.split (String.Pattern " ") s)) of
   Nothing -> Nothing
   Just { head: rootTok, tail: scaleWords } -> do
     rootPc <- matchRoot rootTok
-    scaleType <-
-      if null scaleWords then Just "major"
-      else matchScaleType (String.toLower (joinWith "" scaleWords))
-    Just { root: rootPc, scaleType }
+    offsets <-
+      if null scaleWords then Just [ 0, 2, 4, 5, 7, 9, 11 ]
+      else matchScaleIvls (String.toLower (joinWith "" scaleWords))
+    Just { root: rootPc, offsets }
 
 matchRoot :: String -> Maybe Int
 matchRoot tok =
@@ -474,8 +488,8 @@ rootFlatAliases :: Array (Tuple String String)
 rootFlatAliases =
   [ Tuple "DB" "C#", Tuple "EB" "D#", Tuple "GB" "F#", Tuple "AB" "G#", Tuple "BB" "A#" ]
 
-matchScaleType :: String -> Maybe String
-matchScaleType norm = map _.name (find (\t -> String.toLower t.name == norm) scaleTypes)
+matchScaleIvls :: String -> Maybe (Array Int)
+matchScaleIvls norm = map _.intervals (find (\t -> String.toLower t.name == norm) scaleTypes)
 
 -- The set of machines currently auditioning — the third input to `soundingOf`, so
 -- preview is part of the derivation. Ending a preview is just removing it here and
