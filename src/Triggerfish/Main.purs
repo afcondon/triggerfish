@@ -376,13 +376,10 @@ handleAction = case _ of
         { kind: kindOf r.inst, collection: goToCollection
         , name: r.name, source: "workbench", payload: r.text, tags: [] })))
     fetchGoTo
-  -- The live Vetula→Odonus bridge: pull each Odonus-bound voice's current block
-  -- chord and feed the set to Odonus, whose KEY pane picks one (or none) to follow.
+  -- The live Vetula→Odonus bridge. Odonus quantises to ONE harmonic-context set
+  -- (chord-when-progression, else lens scale) pushed below as its pitchSet — no
+  -- separate chord overlay, so the old per-voice chord feed is retired.
   PollVetula -> do
-    mfeed <- H.query _vet unit (Vetula.AskVoiceChords identity)
-    case mfeed of
-      Just feed -> void $ H.query _odo unit (SQ.FeedVoiceChords feed unit)
-      Nothing -> pure unit
     -- Pull Vetula's progression + playhead for the nav harmonic-context strip.
     mharm <- H.query _vet unit (Vetula.AskHarmonic identity)
     case mharm of

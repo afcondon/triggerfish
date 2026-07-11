@@ -523,6 +523,8 @@ data SourceQuery a
   -- context (the key's diatonic set, or a `# scale` override) and pushes it into
   -- Odonus's pitchSet. `SetRestingScale` is where the macro `# scale` verb lands
   -- (root pc + intervals) — Vetula owns the scale, every pitched voice follows.
+  -- The harmonic context Odonus quantises to — ONE set (chord-or-scale), per the
+  -- rule in `harmonicContext`. `SetRestingScale` is the macro `# scale` override.
   | AskContextScale ({ root :: Int, offsets :: Array Int } -> a)
   | SetRestingScale Int (Array Int) a
 
@@ -728,25 +730,64 @@ handleQuery = case _ of
     s <- H.get
     let names = nub (filter (_ /= "") (map _.name (filter (\v -> v.dest == ToMidi) s.voices)))
     pure (Just (reply names))
-  -- macro-tidal harmonic authority: hand the shell the resting context scale.
+  -- macro-tidal harmonic authority: hand the shell the harmonic context set.
   AskContextScale reply -> do
     s <- H.get
-    pure (Just (reply (contextScaleOf s)))
+    pure (Just (reply (harmonicContext s)))
   -- The macro `# scale` verb: install an explicit resting scale (any Reef scale).
   SetRestingScale root offsets next -> do
     H.modify_ _ { restScale = Just { root: mod root 12, offsets } }
     pure (Just next)
 
--- | The resting harmonic context Vetula hands the rig: a `# scale` override if one
--- | is set, else the key's own diatonic set (root pc + intervals up from the
--- | tonic). Odonus quantises to this when no chord is firing — Vetula is the single
--- | harmonic authority, every pitched voice follows.
-contextScaleOf :: State -> { root :: Int, offsets :: Array Int }
-contextScaleOf st = case st.restScale of
+-- | The ONE harmonic-context set Odonus quantises to (root pc + intervals). The
+-- | rule, in precedence order — the decoupling of "Vetula's lens scale" from "what
+-- | Odonus quantises to", honouring descriptive-not-prescriptive (a progression's
+-- | chords are free of any scale, so the CHORD itself is the set):
+-- |
+-- |   1. an explicit `# scale` override (the user deliberately imposed a scale);
+-- |   2. a loaded progression → its ACTIVE chord's pitch classes (current chord
+-- |      when playing, else the sounding/first chord) — chord-quantise, not scale;
+-- |   3. otherwise → the lens scale (`st.key`), which re-quantises live as the user
+-- |      changes the scale they're browsing.
+-- |
+-- | (Free-auditioning arbitrary chords with no progression falls into case 3 — the
+-- | lens scale — which we accept: unrelated chords can't relate to Odonus. A future
+-- | "clever layer" could look at the whole progression holistically — leading
+-- | tones, Harmonia-driven expansion — to widen case 2 past bare arpeggiation.)
+harmonicContext :: State -> { root :: Int, offsets :: Array Int }
+harmonicContext st = case st.restScale of
   Just rs -> rs
-  Nothing ->
-    { root: mod st.key.tonic 12
-    , offsets: map (\pc -> mod (pc - st.key.tonic + 12) 12) (scaleSet st.key) }
+  Nothing -> case activeChordPcs st of
+    Just pcs | length pcs > 0 -> pcsToSet pcs
+    _ -> { root: mod st.key.tonic 12
+         , offsets: map (\pc -> mod (pc - st.key.tonic + 12) 12) (scaleSet st.key) }
+
+-- | The active chord of a loaded progression as pitch classes: the chord under the
+-- | playhead when playing, else the sounding chord, else the first — `Nothing` when
+-- | no progression is loaded (empty path).
+activeChordPcs :: State -> Maybe (Array Int)
+activeChordPcs st
+  | length st.path == 0 = Nothing
+  | otherwise =
+      let cs = perfChords st
+          byPulse =
+            if st.playing then (harmonicVoice st >>= cursorAt cs st.pulse) >>= (cs !! _)
+            else Nothing
+          bySounding = st.sounding >>= \sid -> find (\c -> c.id == sid) cs
+          chosen = case byPulse of
+            Just c -> Just c
+            Nothing -> case bySounding of
+              Just c -> Just c
+              Nothing -> head cs
+      in (\c -> nub (map (\x -> mod x 12) (playNotes c))) <$> chosen
+
+-- | A set of pitch classes → a PitchSet payload (lowest pc as root, ascending
+-- | intervals up from it). Order/duplicates normalised.
+pcsToSet :: Array Int -> { root :: Int, offsets :: Array Int }
+pcsToSet pcs = case sort (nub (map (\x -> mod x 12) pcs)) of
+  sorted -> case head sorted of
+    Just r -> { root: r, offsets: map (_ - r) sorted }
+    Nothing -> { root: 0, offsets: [ 0 ] }
 
 -- | The current path as one PC set per step (each chord's absolute pitch
 -- | classes) — what Odonus's quantiser snaps to when fed from Vetula.
@@ -1298,7 +1339,13 @@ handleAction = case _ of
         , voices = [ defaultVoice 0 0 Block (length fresh) ]
         , nextVoiceId = 1
         , sounding = head ids
+        -- The loaded progression's key becomes the live harmonic context: clear any
+        -- `# scale` override, then adopt the entry's saved key so the resting scale
+        -- (and every following voice, incl. Odonus) tracks it. Without this the scale
+        -- stayed on whatever was loaded before — the "dark pads stayed C minor" bug.
+        , restScale = Nothing
         }
+      for_ (parseKeyLabel entry.keyLabel) \k -> H.modify_ _ { key = k }
 
   -- ← library: set the current progression aside to browse the stack. Slice 4a: the
   -- path IS the progression, so snapshot it first (AutoCapture is on a timer and may
@@ -2152,6 +2199,20 @@ modeShort = case _ of
   LocrianNat2 -> "locrian ♮2"
   Altered -> "altered"
   Custom _ -> "custom"
+
+-- | Inverse of `groupLabel`: parse a stored key label ("F# phryg. dom.", "C major")
+-- | back into a Key. The note name is the first word; the rest is a `modeShort`
+-- | value (which can itself contain spaces, so split at the FIRST space only). Used
+-- | when loading a saved progression so its key becomes the live harmonic context.
+parseKeyLabel :: String -> Maybe Key
+parseKeyLabel lbl = case SCU.indexOf (Pattern " ") lbl of
+  Nothing -> Nothing
+  Just ix -> do
+    let noteTok = SCU.take ix lbl
+        modeTok = SCU.drop (ix + 1) lbl
+    tonic <- find (\pc -> noteName pc == noteTok) (range 0 11)
+    mode <- _.mode <$> find (\c -> modeShort c.mode == modeTok) modeChoices
+    pure { tonic, mode }
 
 -- | Star / unstar the sounding chord's current voicing in its favourites — the
 -- | kept voicings of this one note-set, surfaced in the strip above the ladder.
