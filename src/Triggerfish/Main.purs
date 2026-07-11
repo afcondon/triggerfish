@@ -19,8 +19,9 @@ module Triggerfish.Main where
 
 import Prelude
 
-import Data.Array (filter, mapWithIndex, null, replicate)
+import Data.Array (any, filter, find, mapWithIndex, null, replicate)
 import Data.Foldable (foldl, for_)
+import Data.Either (Either(..))
 import Data.Maybe (Maybe(..), fromMaybe, maybe)
 import Data.Const (Const)
 import Data.Set (Set)
@@ -31,7 +32,8 @@ import Data.Int as Int
 import Data.String.Common (joinWith)
 import Data.Tuple (Tuple(..))
 import Effect (Effect)
-import Effect.Aff.Class (class MonadAff)
+import Effect.Aff (attempt)
+import Effect.Aff.Class (class MonadAff, liftAff)
 import Effect.Class (liftEffect)
 import Effect.Timer (setInterval)
 import Halogen as H
@@ -51,6 +53,7 @@ import Triggerfish.Sufflamen.Component as Sufflamen
 import Triggerfish.Stellatus.Component as Stellatus
 import Triggerfish.SourceQuery as SQ
 import Triggerfish.Midi.Routing as Routing
+import Triggerfish.Amphora as Amphora
 import Vetula.App as Vetula
 import Vetula.Clipboard (copyText)
 import Triggerfish.Transport (Which(..), Mode(..), Sounding(..), soundingOf, anyArmed, allMachines)
@@ -83,6 +86,9 @@ data RAction
   | SetBinding String String    -- Tidal-page channel map: bind a Vetula voice name → channel
   | PickEntry LibRow            -- workbench: put a shelf entry on the bench
   | ToggleSource               -- workbench: slide the raw-source drawer open/shut
+  | ToggleDig                  -- workbench: expand/collapse the full archive
+  | ToggleStar LibRow          -- workbench: add/remove a setup from the go-to wall
+  | RefreshGoTo                -- workbench: re-fetch the triggerfish-goto collection
 
 -- One saved preset gathered from an instrument, for the cross-instrument LIBRARY
 -- manager on the TIDAL page. `text` is the entry rendered to Lepidoptera eDSL
@@ -97,10 +103,13 @@ type LibRow = { inst :: Which, idx :: Int, name :: String, text :: String }
 type RState =
   { which :: Which, tidalDoc :: String, freeT0 :: Number
   , library :: Array LibRow, importText :: String, importMsg :: String
-  -- Workbench (TIDAL page): the shelf entry currently on the bench, and whether
-  -- the raw-source drawer is slid open (source is demoted from a column to a
-  -- drawer so the workbench has the canvas).
-  , picked :: Maybe LibRow, sourceOpen :: Boolean
+  -- Workbench (TIDAL page): the shelf entry currently on the bench, whether the
+  -- raw-source drawer is slid open, whether the archive ("dig") is expanded, and
+  -- the fetched go-to collection (the curated wall — starred setups across every
+  -- instrument, matched to shelf rows by payload equality since same payload =
+  -- same content hash).
+  , picked :: Maybe LibRow, sourceOpen :: Boolean, digOpen :: Boolean
+  , goTo :: Array Amphora.LibItem
   -- The authority mode + the live harmonic-context strip shown in the top nav.
   -- `harm` is polled from Vetula: voice-0's bars-per-chord dwell schedule and the
   -- current playhead (-1 = none). Rendered as a glyph visible in every pane.
@@ -155,7 +164,7 @@ root =
     { initialState: \_ ->
         { which: Bal, tidalDoc: "", freeT0: 0.0
         , library: [], importText: "", importMsg: ""
-        , picked: Nothing, sourceOpen: false
+        , picked: Nothing, sourceOpen: false, digOpen: false, goTo: []
         , mode: Solo, harm: { durs: [], active: -1, chord: "" }
         , brushSent: "", brushPrev: ""
         , armed: Set.empty
@@ -235,8 +244,9 @@ handleAction = case _ of
     H.modify_ _ { which = Tid }
     refreshTidal
     refreshLibrary
+    fetchGoTo
   Pick w -> H.modify_ _ { which = w }
-  RefreshTidal -> refreshTidal *> refreshLibrary
+  RefreshTidal -> refreshTidal *> refreshLibrary *> fetchGoTo
   CopyTidal -> H.gets _.tidalDoc >>= (liftEffect <<< copyText)
   -- A5 manager: load a saved entry into its instrument, and switch to it so the
   -- change is visible. Copy exports one entry's eDSL text.
@@ -268,6 +278,19 @@ handleAction = case _ of
   PickEntry r -> H.modify_ \st ->
     st { picked = if isPicked st.picked r then Nothing else Just r }
   ToggleSource -> H.modify_ \st -> st { sourceOpen = not st.sourceOpen }
+  ToggleDig -> H.modify_ \st -> st { digOpen = not st.digOpen }
+  RefreshGoTo -> fetchGoTo
+  -- Star / unstar a setup: promote it onto the go-to wall (publish its content and
+  -- favourite it into `triggerfish-goto`) or take it off (unpublish that favourite).
+  -- Content stays addressable either way; the wall is pure curation. Then re-fetch.
+  ToggleStar r -> do
+    st <- H.get
+    case find (\g -> g.payload == r.text) st.goTo of
+      Just g -> void (liftAff (attempt (Amphora.unpublish goToCollection g.hash)))
+      Nothing -> void (liftAff (attempt (Amphora.publish
+        { kind: kindOf r.inst, collection: goToCollection
+        , name: r.name, source: "workbench", payload: r.text, tags: [] })))
+    fetchGoTo
   -- The live Vetula→Odonus bridge: pull each Odonus-bound voice's current block
   -- chord and feed the set to Odonus, whose KEY pane picks one (or none) to follow.
   PollVetula -> do
@@ -380,6 +403,33 @@ refreshLibrary = do
   H.modify_ _ { library = rows Odo o <> rows Bal b <> rows Sel s <> rows Vet v }
   where
   rows w m = mapWithIndex (\i e -> { inst: w, idx: i, name: e.name, text: e.text }) (fromMaybe [] m)
+
+-- The cross-instrument curated wall — one favourite collection holding starred
+-- setups from every instrument (the Cianni shelf of go-to's).
+goToCollection :: String
+goToCollection = "triggerfish-goto"
+
+-- Each instrument's Amphora content kind (used when a star publishes a setup).
+kindOf :: Which -> String
+kindOf = case _ of
+  Odo -> "odonus-scene"
+  Bal -> "balistes-pattern"
+  Sel -> "selene-rack"
+  Vet -> "vetula-progression"
+  _ -> "misc"
+
+-- Re-fetch the go-to collection from Amphora (offline → keep what we have).
+fetchGoTo :: forall o m. MonadAff m => H.HalogenM RState RAction Slots o m Unit
+fetchGoTo = do
+  res <- liftAff (attempt (Amphora.fetchCollection goToCollection))
+  case res of
+    Right items -> H.modify_ _ { goTo = items }
+    Left _ -> pure unit
+
+-- Is this shelf row on the go-to wall? Content-address identity: same payload =
+-- same hash, so an exact payload match is a hash match without hashing here.
+isStarred :: RState -> LibRow -> Boolean
+isStarred st r = any (\g -> g.payload == r.text) st.goTo
 
 -- Dispatch a LoadEntry / ImportText to the right slot (the two query types — the
 -- shared SourceQuery and Vetula's own — agree on these constructors' shapes).
@@ -512,14 +562,27 @@ channelMapPanel st =
             ]
         ]
 
--- The SHELF: each instrument's saved setups, grouped, each a click-to-pick tile
--- that lands on the bench. (Save-everything is the cheap substrate; a later slice
--- adds the ★ go-to tier so the shelf leads with the curated wall and the rest sits
--- behind "dig".) The paste-import box sits at the foot as the manual add path.
+-- The SHELF: the curated ★ GO-TO wall leads (starred setups across every
+-- instrument — the Cianni shelf), then the full archive sits behind a "dig"
+-- toggle, grouped by instrument. Save-everything is the cheap substrate; the wall
+-- is what you reach for. The paste-import box is the manual add path at the foot.
 shelfPanel :: forall m. RState -> H.ComponentHTML RAction Slots m
 shelfPanel st =
-  HH.div [ style "margin-bottom:26px" ]
-    [ if null st.library
+  let starred = filter (isStarred st) st.library
+  in HH.div [ style "margin-bottom:26px" ]
+    [ HH.div
+        [ style "font-size:11px;letter-spacing:0.16em;text-transform:uppercase;color:#8a6a2a;margin-bottom:7px" ]
+        [ HH.text "★ Go-to" ]
+    , if null starred
+        then HH.div [ style "color:#a89b78;font-size:11px;font-style:italic;margin-bottom:12px" ]
+               [ HH.text "star a setup (☆) to pin it to your go-to wall" ]
+        else HH.div_ (map (entryRow st true) starred)
+    , HH.div
+        [ style "margin:14px 0 8px;cursor:pointer;font-size:10px;letter-spacing:0.14em;text-transform:uppercase;color:#8a7a4a"
+        , HE.onClick \_ -> ToggleDig ]
+        [ HH.text (if st.digOpen then "▾ archive — all setups" else "▸ dig the archive — all setups") ]
+    , if not st.digOpen then HH.text ""
+      else if null st.library
         then HH.div [ style "color:#8a8576;font-size:12px;font-style:italic;margin-bottom:14px" ]
                [ HH.text "(refresh to gather each instrument's saved setups)" ]
         else HH.div_ (map (groupSection st) [ Odo, Bal, Sel, Vet ])
@@ -534,19 +597,34 @@ groupSection st w =
        ( [ HH.div
              [ style "font-size:10px;letter-spacing:0.16em;text-transform:uppercase;color:#8a7a4a;margin-bottom:5px" ]
              [ HH.text (whichName w) ]
-         ] <> map (entryRow st) rows )
+         ] <> map (entryRow st false) rows )
 
--- One shelf tile: click anywhere to pick it onto the bench; the picked one is
--- brass-highlighted. Copy stays as a quick side action.
-entryRow :: forall m. RState -> LibRow -> H.ComponentHTML RAction Slots m
-entryRow st r =
+-- One shelf tile: a ★/☆ star toggle (curation), the name (click to pick onto the
+-- bench), and copy. The picked one is brass-highlighted; on the go-to wall the row
+-- shows its instrument (the wall is cross-instrument). The star and copy don't
+-- pick — only the name does — so the two gestures never collide.
+entryRow :: forall m. RState -> Boolean -> LibRow -> H.ComponentHTML RAction Slots m
+entryRow st showInst r =
   let on = isPicked st.picked r
+      starred = isStarred st r
   in HH.div
-    [ style $ "display:flex;align-items:center;gap:10px;padding:6px 10px;margin-bottom:3px;cursor:pointer;"
+    [ style $ "display:flex;align-items:center;gap:8px;padding:6px 10px;margin-bottom:3px;"
         <> "border-radius:5px;border:1px solid " <> (if on then "#b5832b" else "#e3dfd2") <> ";"
-        <> "background:" <> (if on then "linear-gradient(#f6ecd4,#efe2c2)" else "#ffffff")
-    , HE.onClick \_ -> PickEntry r ]
-    [ HH.span [ style "flex:1 1 auto;font-size:12px;color:#2a271e" ] [ HH.text r.name ]
+        <> "background:" <> (if on then "linear-gradient(#f6ecd4,#efe2c2)" else "#ffffff") ]
+    [ HH.span
+        [ HP.title (if starred then "on the go-to wall — click to remove" else "star → pin to the go-to wall")
+        , style $ "cursor:pointer;font-size:13px;color:" <> (if starred then "#c8a02a" else "#c8c4b8")
+        , HE.onClick \_ -> ToggleStar r ]
+        [ HH.text (if starred then "★" else "☆") ]
+    , HH.span
+        [ style "flex:1 1 auto;cursor:pointer;font-size:12px;color:#2a271e"
+        , HE.onClick \_ -> PickEntry r ]
+        [ if showInst
+            then HH.span [ style "color:#8a7a4a;font-size:9px;letter-spacing:0.1em;text-transform:uppercase;margin-right:6px" ]
+                   [ HH.text (whichName r.inst) ]
+            else HH.text ""
+        , HH.text r.name
+        ]
     , barBtn "copy" (CopyEntry r.text)
     ]
 
@@ -571,7 +649,7 @@ benchPanel st = case st.picked of
           [ stubBtn "▶ preview (local)" "preview lands next slice"
           , barBtn "commit → editor" (LoadFromLib r.inst r.idx)
           , barBtn "copy" (CopyEntry r.text)
-          , stubBtn "★ keep" "the go-to tier lands next slice"
+          , barBtn (if isStarred st r then "★ keep" else "☆ keep") (ToggleStar r)
           ]
       , transformRow
       , HH.pre
