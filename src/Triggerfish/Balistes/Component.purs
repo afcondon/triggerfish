@@ -42,9 +42,10 @@ import Binnacle.Clock as Clock
 import Binnacle.Midi as Midi
 import Binnacle.Scheduler as Scheduler
 import Binnacle.Transport as Transport
-import Reef.Balistes.Protocol (encodeBalSim, encodeBTagged, encodeFixed)
+import Reef.Balistes.Protocol (encodeBalSim, encodeBTagged, encodeFixed, encodeTrigKit)
 import Reef.Balistes.Input as RBI
 import Reef.Balistes.Fixed as RF
+import Reef.Balistes.Trig as Trig
 import Triggerfish.Balistes.Model as M
 import Triggerfish.Balistes.Pattern as P
 import Triggerfish.Balistes.Source as Source
@@ -359,29 +360,22 @@ handleAction = case _ of
           , nextModelStep = tick.index + 1
           , pending = keepInputs
           , flash = gridsFlash <> s.flash }
-      -- POLYTRIG: each named jack's onsets (its own pattern stacked with the
-      -- route onsets addressed to its name) that fall in THIS step's window fire
-      -- at their true fractional sub-step time. One Tidal cycle == cycleSteps grid
-      -- steps (one bar). Browser-only, all jacks land on the drum channel (ch 10).
+      -- POLYTRIG: resolve the rack to onset-fractions per jack (own source ∪ route
+      -- atoms addressed to its name), then let the SHARED reef renderer slice out the
+      -- onsets that fall in THIS step's window and their fractional sub-step time —
+      -- the EXACT code reef_balistes_voice runs off the pushed kit, so browser
+      -- (ch 10) and rig co-simulate byte-for-byte. One Tidal cycle == cycleSteps grid
+      -- steps (one bar). Local emits; Rig follows the pushed kit.
       ASelene -> do
         let
           step = tick.index `mod` cycleSteps
           stepMs = 0.25 * 60000.0 / max 30.0 st.clockTempo
-          lo = toNumber step / toNumber cycleSteps
-          hi = toNumber (step + 1) / toNumber cycleSteps
-          inWin o = o >= lo && o < hi
-          routeOns nm = map _.at (filter (\e -> eqTrigName e.name nm) (st.trig.routes >>= Lane.namedOnsetsOf))
+          fires = Trig.renderTrigStep (resolveTrigKit st.trig) tick.index cycleSteps
         for_ st.midiOut \out -> liftEffect $
-          for_ st.trig.jacks \jack -> do
-            let
-              own = filter inWin (Lane.onsetsOf jack.source)
-              routed = filter inWin (routeOns jack.name)
-              fire o =
-                let sub = (o * toNumber cycleSteps - toNumber step) * stepMs
-                in Midi.scheduleNote out
-                     { channel: drumChannel, note: jack.note, velocity: 100
-                     , delayMs: tick.delayMs + sub, durMs: 40.0 }
-            for_ (own <> routed) fire
+          for_ fires \f ->
+            Midi.scheduleNote out
+              { channel: drumChannel, note: f.note, velocity: Trig.trigVelocity
+              , delayMs: tick.delayMs + f.frac * stepMs, durMs: Trig.trigGateMs }
         H.modify_ _ { playStep = step }
 
   Frame -> do
@@ -510,7 +504,7 @@ handleAction = case _ of
     when (st.sounding == Rig) case a of
       AFixed _ -> repushFixed
       AGrids -> pushHandoff st
-      ASelene -> pure unit   -- browser-only; no rig voice to sync
+      ASelene -> pushTrig   -- push the resolved POLYTRIG kit to the rig voice
   ToggleEdit -> H.modify_ \s -> s { editing = not s.editing }
   -- click selects a cell for the NOTE inspector, creating a hit at the default
   -- velocity if the cell was empty; shift-click clears it.
@@ -589,14 +583,30 @@ handleAction = case _ of
             ("balistes-fixed " <> encodeFixed (fixedOf pat))
       -- Grids: the phase-aligned BalSim handoff.
       AGrids -> pushHandoff st
-      ASelene -> pure unit   -- browser-only; nothing to push
-  -- POLYTRIG editor — pure state edits, browser-only (no rig sync, no persist).
-  SetJackSource i src -> H.modify_ \s -> s { trig = M.setJackSource i src s.trig }
-  SetJackName i nm -> H.modify_ \s -> s { trig = M.setJackName i nm s.trig }
-  SetJackNote i d -> H.modify_ \s -> s { trig = M.setJackNote i (jackNoteOf s.trig i + d) s.trig }
-  SetRoute i src -> H.modify_ \s -> s { trig = M.setRoute i src s.trig }
-  AddRoute -> H.modify_ \s -> s { trig = M.addRoute s.trig }
-  RemoveRoute i -> H.modify_ \s -> s { trig = M.removeRoute i s.trig }
+      -- POLYTRIG: push the whole resolved kit (stateless, no phase-hold needed —
+      -- both runtimes read the same Link step, the fixed-rhythm discipline).
+      ASelene -> pushTrig
+  -- POLYTRIG editor — state edits; re-push the resolved kit so live jack/route
+  -- edits reach the rig voice in place (a no-op in Local/Silent). Browser-only
+  -- persistence: the rack isn't saved to localStorage (unlike the fixed library).
+  SetJackSource i src -> do
+    H.modify_ \s -> s { trig = M.setJackSource i src s.trig }
+    pushTrig
+  SetJackName i nm -> do
+    H.modify_ \s -> s { trig = M.setJackName i nm s.trig }
+    pushTrig
+  SetJackNote i d -> do
+    H.modify_ \s -> s { trig = M.setJackNote i (jackNoteOf s.trig i + d) s.trig }
+    pushTrig
+  SetRoute i src -> do
+    H.modify_ \s -> s { trig = M.setRoute i src s.trig }
+    pushTrig
+  AddRoute -> do
+    H.modify_ \s -> s { trig = M.addRoute s.trig }
+    pushTrig
+  RemoveRoute i -> do
+    H.modify_ \s -> s { trig = M.removeRoute i s.trig }
+    pushTrig
   NoOp -> pure unit
 
 -- | Project the frontend Balistes record onto the shared `BalSim` — the lockstep
@@ -664,6 +674,28 @@ pushHandoff st =
   when (st.sounding == Rig) $ for_ st.binnacle \bin ->
     liftEffect $ Transport.send (Binnacle.socket bin)
       ("balistes-sim-at " <> show st.nextModelStep <> " 0.25 " <> encodeBalSim (balSimOf st.bal))
+
+-- | Resolve a POLYTRIG bank to the wire-flat `Trig.TrigKit` the rig runs: each jack
+-- | becomes its MIDI note + the onset fractions it fires at over one cycle (its own
+-- | source pattern ∪ the route atoms addressed to its name). The mini-notation parse
+-- | happens HERE (reef has no Tidal parser); the shared `renderTrigStep` then slices
+-- | these onsets into steps identically on both runtimes. Concatenation order (own
+-- | then routed, no dedup) matches the frontend's own playback exactly.
+resolveTrigKit :: M.TrigBank -> Trig.TrigKit
+resolveTrigKit tb =
+  map (\jack -> { note: jack.note, onsets: Lane.onsetsOf jack.source <> routeOns jack.name }) tb.jacks
+  where
+  routeOns nm = map _.at (filter (\e -> eqTrigName e.name nm) (tb.routes >>= Lane.namedOnsetsOf))
+
+-- | Push the resolved POLYTRIG kit to the rig voice (`balistes-trig <json>`). Like the
+-- | fixed-rhythm push, no phase-hold: a rack is a pure function of the absolute step,
+-- | so the rig snaps to the current Link step and agrees. A no-op unless rig-authoritative.
+pushTrig :: forall o m. MonadAff m => H.HalogenM State Action () o m Unit
+pushTrig = do
+  st <- H.get
+  when (st.sounding == Rig) $ for_ st.binnacle \bin ->
+    liftEffect $ Transport.send (Binnacle.socket bin)
+      ("balistes-trig " <> encodeTrigKit (resolveTrigKit st.trig))
 
 -- | Deferred-on-both: enqueue a gesture locally AND broadcast it, both tagged for the
 -- | same near-future step. The Step-loop drain applies it here, the voice applies it
