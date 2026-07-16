@@ -19,6 +19,7 @@ module Triggerfish.Balistes.Types
   , Drag
   , State
   , Action(..)
+  , activePattern
   , rigUrl
   , gridCfg
   , stepsPerBar
@@ -35,7 +36,7 @@ module Triggerfish.Balistes.Types
 import Prelude
 
 import Data.Array ((!!))
-import Data.Maybe (Maybe, maybe)
+import Data.Maybe (Maybe(..), maybe)
 import Data.String.Common (toLower)
 import Binnacle as Binnacle
 import Binnacle.Midi as Midi
@@ -44,6 +45,7 @@ import Halogen as H
 import Reef.Balistes.Input as RBI
 import Triggerfish.Balistes.Model as M
 import Triggerfish.Balistes.Pattern as P
+import Triggerfish.Balistes.TriSnapshot (TriSnapshot)
 import Triggerfish.Midi.Routing as Routing
 import Triggerfish.Transport (Sounding)
 
@@ -125,9 +127,21 @@ type State =
   , seqEnabled :: Boolean
   , seqPos :: Int
   , seqStartBar :: Int
+  -- the TRI-SNAPSHOT bank: a slot holds a captured playing-state of ANY of the
+  -- three brains (Mutable / Grids / Tidal), so one bank sequences them
+  -- intermingled — the macro-tidal surface (#182/#199). `sequence` is the path
+  -- of slot indices the playhead walks, each held `seqBars` bars.
+  , snapshots :: Array (Maybe TriSnapshot)
+  , sequence :: Array Int
+  , seqBars :: Int
   -- the pattern family: which one is playing, and the fixed-rhythm library.
   , active :: Active
   , library :: Array P.FixedPattern
+  -- an EPHEMERAL fixed rhythm played from a recalled `TSFixed` snapshot: when
+  -- `Just`, it overrides the `AFixed` library index (played read-only), so
+  -- recalling a snapshot never mutates the library. Cleared on any deliberate
+  -- tab / library selection. See `activePattern`.
+  , scratchFixed :: Maybe P.FixedPattern
   -- EDIT mode for a fixed rhythm: reveal all 16 lanes (greyed where empty) so
   -- you can add voices; cells are click-to-toggle either way.
   , editing :: Boolean
@@ -179,6 +193,16 @@ data Action
   | AddRoute                   -- append an empty route line
   | RemoveRoute Int            -- drop route line i
   | NoOp
+
+-- | The fixed rhythm currently in view on the GRIDS tab: the ephemeral
+-- | `scratchFixed` (a recalled snapshot, played read-only) if set, else the
+-- | library entry the `AFixed` index points at. `Nothing` off the GRIDS tab.
+activePattern :: State -> Maybe P.FixedPattern
+activePattern s = case s.active of
+  AFixed i -> case s.scratchFixed of
+    Just p -> Just p
+    Nothing -> s.library !! i
+  _ -> Nothing
 
 -- ---------------------------------------------------------------------------
 -- Constants

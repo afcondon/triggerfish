@@ -23,7 +23,6 @@ import Triggerfish.Transport (Sounding(..))
 import Triggerfish.Balistes.Types (Action(..), DragKind(..), KnobTarget(..), NoteRef(..), State, padId)
 import Triggerfish.Balistes.Widgets
   ( panel, knobRow, bigKnob, flatBtn, svgMouse, noteTag, instColor, ohColor, concatMap' )
-import Triggerfish.Balistes.Snapshot (snapshotSection, sequenceSection)
 
 controlsPanel :: forall m. State -> H.ComponentHTML Action () m
 controlsPanel s =
@@ -116,19 +115,14 @@ crosshair cx cy =
       , svgAttr "fill" "#1c1a12", svgAttr "stroke" "#efece1", svgAttr "stroke-width" "2" ] []
   ]
 
--- The Grids pattern: the live interpolation heatmap + the snapshot bank +
--- the snapshot sequence (the control-space machinery).
+-- The Grids pattern: the live interpolation heatmap. (The snapshot bank +
+-- sequence moved to the persistent right-hand rail, present in all three tabs.)
 gridsBody :: forall m. State -> H.ComponentHTML Action () m
 gridsBody s =
   HH.div_
     [ HH.div [ style "width:100%;max-width:640px;margin:0 auto" ] [ heatSvg s ]
     , HH.div [ style $ engrave <> ";font-size:8px;opacity:0.5;margin-top:10px;line-height:1.6;max-width:640px" ]
         [ HH.text "THE 3 MORPH-ENGINE VOICES (BD · SD · HH). FAINT = THE INTERPOLATED LANDSCAPE THE X/Y CURSOR SELECTS; SOLID = WHAT FIRES AT THIS DENSITY. DRAG A CELL UP/DOWN TO RATCHET IT." ]
-    , HH.div [ style "max-width:640px;margin:20px auto 0" ]
-        [ snapshotSection s
-        , HH.div [ style "height:1px;background:#00000018;margin:16px 0 12px" ] []
-        , sequenceSection s
-        ]
     ]
 
 heatSvg :: forall m. State -> H.ComponentHTML Action () m

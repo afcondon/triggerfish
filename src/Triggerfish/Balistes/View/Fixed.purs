@@ -22,7 +22,7 @@ import Web.UIEvent.MouseEvent as ME
 import Triggerfish.Odonus.Grid.Widgets (engrave, style, svgAttr, svgEl)
 import Triggerfish.Balistes.Pattern as P
 import Triggerfish.Transport (Sounding(..))
-import Triggerfish.Balistes.Types (Action(..), Active(..), NoteRef(..), State)
+import Triggerfish.Balistes.Types (Action(..), Active(..), NoteRef(..), State, activePattern)
 import Triggerfish.Balistes.Widgets
   ( panel, flatBtn, armBtn, stepBtn, chip, newChip, svgMouse, svgRect, noteTag
   , laneColor, concatMap' )
@@ -34,7 +34,7 @@ inspectorPanel :: forall m. State -> H.ComponentHTML Action () m
 inspectorPanel s =
   panel "NOTE" "flex:0 0 240px"
     [ case s.active, s.selected of
-        AFixed i, Just sel -> case s.library !! i of
+        AFixed _, Just sel -> case activePattern s of
           Just pat -> cellInspector pat sel
           Nothing -> inspectorHint
         _, _ -> inspectorHint

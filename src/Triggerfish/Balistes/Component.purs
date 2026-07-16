@@ -18,7 +18,7 @@ module Triggerfish.Balistes.Component (component) where
 
 import Prelude
 
-import Data.Array (filter, length, modifyAt, null, range, (!!))
+import Data.Array (filter, length, modifyAt, null, range, replicate, updateAt, (!!))
 import Data.Foldable (any, foldl, for_)
 import Data.Int (floor, round, toNumber)
 import Data.Maybe (Maybe(..), fromMaybe, isNothing, maybe)
@@ -47,13 +47,15 @@ import Triggerfish.Balistes.Model as M
 import Triggerfish.Balistes.Pattern as P
 import Triggerfish.Balistes.Types
   ( KnobTarget(..), targetRange, applyKnob, Active(..)
-  , NoteRef(..), DragKind(..), State, Action(..), rigUrl, gridCfg
+  , NoteRef(..), DragKind(..), State, Action(..), activePattern, rigUrl, gridCfg
   , stepsPerBar, midiPortName, drumChannel, cycleSteps, editVel, flashWindow
   , padId, eqTrigName, jackNoteOf )
+import Triggerfish.Balistes.TriSnapshot (TriSnapshot(..))
 import Triggerfish.Balistes.Widgets (flatBtn, instColor, panel, readout)
 import Triggerfish.Balistes.View.Trig (trigBody, trigInfoPanel)
 import Triggerfish.Balistes.View.Fixed (fixedBody, inspectorPanel, patternSwitcher)
 import Triggerfish.Balistes.View.Grids (controlsPanel, gridsBody)
+import Triggerfish.Balistes.Snapshot (snapshotRail)
 import Triggerfish.Balistes.Source as Source
 import Triggerfish.Balistes.Store as Store
 import Triggerfish.Balistes.Remote as Remote
@@ -80,7 +82,9 @@ component =
         , clockTempo: 120.0, clockLocked: false, clockBeat: 0.0, clockBar: 0, anchorCount: 0
         , nowMicros: 0.0, dragging: Nothing, dragSub: Nothing
         , capArm: false, seqArm: false, seqEnabled: false, seqPos: 0, seqStartBar: 0
+        , snapshots: replicate M.snapshotCount Nothing, sequence: [], seqBars: 1
         , active: AGrids, library: P.bundledPatterns, editing: false, selected: Nothing
+        , scratchFixed: Nothing
         , trig: M.defaultTrig, publishMsg: Nothing }
     , render
     , eval: H.mkEval H.defaultEval
@@ -174,11 +178,17 @@ handleAction = case _ of
     H.modify_ _ { binnacle = Just bin }
 
   Step tick -> do
+    -- Mode-agnostic sequence advance FIRST: if a bar boundary elapsed, recall the
+    -- next slot's TriSnapshot — which may switch the active brain — then the
+    -- per-mode emit below runs on the (possibly just-switched) brain. This is what
+    -- lets a Mutable→Tidal→Grids march play intermingled (#182/#199).
+    advanceSeq tick
     st <- H.get
     when (st.sounding == Local) case st.active of
       -- A fixed rhythm: derive the step from the tick (no internal navigator),
-      -- then emit each used lane's hit verbatim at its kit note + velocity.
-      AFixed i -> case st.library !! i of
+      -- then emit each used lane's hit verbatim at its kit note + velocity. Reads
+      -- `activePattern` so an ephemeral recalled snapshot (scratchFixed) plays too.
+      AFixed _ -> case activePattern st of
         Nothing -> pure unit
         Just pat -> do
           let stepMs = 0.25 * 60000.0 / max 30.0 st.clockTempo
@@ -194,27 +204,15 @@ handleAction = case _ of
           H.modify_ _ { playStep = tick.index `mod` pat.steps }
       AGrids -> do
         let
-          -- a bar is 16 sixteenth-steps. If the sequence is running and this step
-          -- begins a step boundary (seqBars bars elapsed), advance the path and
-          -- recall its snapshot BEFORE ticking, so the kit morphs at the boundary.
-          bar = tick.index / stepsPerBar
-          seqLen = length st.bal.sequence
-          advancing = st.seqEnabled && seqLen > 0 && (bar - st.seqStartBar) >= st.bal.seqBars
-          nextPos = if advancing then (st.seqPos + 1) `mod` seqLen else st.seqPos
-          nextStartBar = if advancing then bar else st.seqStartBar
-          bal0raw =
-            if advancing then case M.seqStepAt st.bal nextPos of
-              Just slot -> M.recallSnapshot slot st.bal
-              Nothing -> st.bal
-            else st.bal
           -- Lockstep input-drain (deferred-on-both): apply any tick-tagged inputs
           -- whose step has arrived BEFORE ticking — the same order, and the same
           -- shared reef applyBInput, the BEAM voice uses, so a deferred gesture
           -- (Reset, …) lands on the SAME model step on both runtimes. `<=` self-heals
-          -- inputs that were buffered while stopped.
+          -- inputs that were buffered while stopped. (The sequence advance that used
+          -- to live here is now `advanceSeq`, run at the top of Step for all brains.)
           dueInputs = filter (\p -> p.step <= tick.index) st.pending
           keepInputs = filter (\p -> p.step > tick.index) st.pending
-          bal0 = foldl (\b p -> RBI.applyBInput p.input b) bal0raw dueInputs
+          bal0 = foldl (\b p -> RBI.applyBInput p.input b) st.bal dueInputs
           playedStep = bal0.step
           r = M.tick bal0
           stepMs = 0.25 * 60000.0 / max 30.0 st.clockTempo
@@ -232,7 +230,7 @@ handleAction = case _ of
         let
           gridsFlash = map (\t -> { inst: t.inst, accent: t.accent, fireUnixMicros: tick.fireUnixMicros }) r.fired
         H.modify_ \s -> s
-          { bal = r.bal, playStep = playedStep, seqPos = nextPos, seqStartBar = nextStartBar
+          { bal = r.bal, playStep = playedStep
           -- r.bal is the state that plays NEXT, at absolute step tick.index + 1;
           -- PushBalistes stamps the handoff with this for phase alignment.
           , nextModelStep = tick.index + 1
@@ -351,33 +349,34 @@ handleAction = case _ of
   -- the two arms are mutually exclusive.
   ToggleCap -> H.modify_ \s -> s { capArm = not s.capArm, seqArm = false }
   ToggleSeqBuild -> H.modify_ \s -> s { seqArm = not s.seqArm, capArm = false }
-  -- shift → clear; capArm → store (and disarm); seqArm → append to the path;
-  -- otherwise recall whatever's there (instant jump).
+  -- shift → clear; capArm → CAPTURE the active brain's state into the slot (and
+  -- disarm); seqArm → append to the path; otherwise RECALL (switch tab + restore +
+  -- rig push). The bank now holds a `TriSnapshot` of whichever brain was active.
   SlotClick i shift -> do
     pre <- H.get
-    H.modify_ \s ->
-      if shift then s { bal = M.clearSnapshot i s.bal }
-      else if s.capArm then s { bal = M.storeSnapshot i s.bal, capArm = false }
-      else if s.seqArm then s { bal = M.appendSeq i s.bal }
-      else s { bal = M.recallSnapshot i s.bal }
-    -- a plain RECALL is a whole-kit jump; re-push the phase-aligned handoff so the
-    -- rig lands on the recalled state (the handoff is the natural fit for a big jump).
-    when (not shift && not pre.capArm && not pre.seqArm) do
-      st <- H.get
-      pushHandoff st
+    if shift then
+      H.modify_ \s -> s { snapshots = fromMaybe s.snapshots (updateAt i Nothing s.snapshots) }
+    else if pre.capArm then
+      H.modify_ \s -> s { snapshots = fromMaybe s.snapshots (updateAt i (captureTri s) s.snapshots), capArm = false }
+    else if pre.seqArm then
+      H.modify_ \s -> s { sequence = s.sequence <> [ i ] }
+    else
+      recallTri i
   -- enabling: seed seqPos at the end and force an immediate advance to step 0
   -- (the big-negative sentinel makes the first Step's bar gap exceed seqBars).
   ToggleSeq -> H.modify_ \s ->
     if s.seqEnabled then s { seqEnabled = false }
-    else s { seqEnabled = true, seqPos = max 0 (length s.bal.sequence - 1), seqStartBar = -100000 }
-  SeqBarsDelta d -> H.modify_ \s -> s { bal = M.setSeqBars (s.bal.seqBars + d) s.bal }
-  ClearSeq -> H.modify_ \s -> s { bal = M.clearSeq s.bal, seqEnabled = false, seqPos = 0 }
+    else s { seqEnabled = true, seqPos = max 0 (length s.sequence - 1), seqStartBar = -100000 }
+  SeqBarsDelta d -> H.modify_ \s -> s { seqBars = clampI 1 16 (s.seqBars + d) }
+  ClearSeq -> H.modify_ \s -> s { sequence = [], seqEnabled = false, seqPos = 0 }
   -- switching pattern just changes which branch the next Step takes; hits are
   -- one-shot, so nothing to silence.
   -- switching pattern changes which branch the next Step takes; once pushed, make the
   -- rig follow the selection too (a fixed pattern swaps in place; Grids re-hands-off).
   SelectPattern a -> do
-    H.modify_ _ { active = a, publishMsg = Nothing }
+    -- a deliberate tab / library selection clears any ephemeral recalled snapshot,
+    -- returning the GRIDS tab to its library index.
+    H.modify_ _ { active = a, scratchFixed = Nothing, publishMsg = Nothing }
     st <- H.get
     when (st.sounding == Rig) case a of
       AFixed _ -> repushFixed
@@ -386,17 +385,18 @@ handleAction = case _ of
   ToggleEdit -> H.modify_ \s -> s { editing = not s.editing }
   -- click selects a cell for the NOTE inspector, creating a hit at the default
   -- velocity if the cell was empty; shift-click clears it.
+  -- Edits are disabled on an ephemeral recalled snapshot (scratchFixed) — a
+  -- frozen artefact plays read-only; the library is never mutated behind it.
   CellClick lane step shift -> do
     H.modify_ \s -> case s.active of
-      AGrids -> s
-      ASelene -> s
-      AFixed i ->
+      AFixed i | isNothing s.scratchFixed ->
         if shift then s
           { library = modLibAt i (P.modifyCell lane step (const P.emptyCell)) s.library
           , selected = if s.selected == Just { lane, step } then Nothing else s.selected }
         else s
           { library = modLibAt i (\p -> if P.firesAt p lane step then p else P.modifyCell lane step (const (P.hitCell editVel)) p) s.library
           , selected = Just { lane, step } }
+      _ -> s
     persistLib
   SetCellVel d -> do
     H.modify_ (modSelectedCell \c -> c { vel = clampI 1 127 (c.vel + d) })
@@ -412,7 +412,7 @@ handleAction = case _ of
     persistLib
   ClearSelected -> do
     H.modify_ \s -> case s.active, s.selected of
-      AFixed i, Just { lane, step } ->
+      AFixed i, Just { lane, step } | isNothing s.scratchFixed ->
         s { library = modLibAt i (P.modifyCell lane step (const P.emptyCell)) s.library, selected = Nothing }
       _, _ -> s
     persistLib
@@ -425,9 +425,8 @@ handleAction = case _ of
     persistLib
   SetPatternName name -> do
     H.modify_ \s -> case s.active of
-      AFixed i -> s { library = modLibAt i (_ { name = name }) s.library }
-      AGrids -> s
-      ASelene -> s
+      AFixed i | isNothing s.scratchFixed -> s { library = modLibAt i (_ { name = name }) s.library }
+      _ -> s
     persistLib
   -- Write-back to Amphora: publish the active fixed rhythm to the store (content
   -- + label + balistes-grid favourite), so a pattern built in the app persists
@@ -436,7 +435,7 @@ handleAction = case _ of
   PublishActive -> do
     st <- H.get
     case st.active of
-      AFixed i -> case st.library !! i of
+      AFixed _ -> case activePattern st of
         Just pat -> do
           H.modify_ _ { publishMsg = Just "publishing…" }
           res <- liftAff (attempt (Remote.publishPattern pat))
@@ -455,7 +454,7 @@ handleAction = case _ of
     st <- H.get
     case st.active of
       -- Fixed rhythm: push the whole pattern (stateless, no phase-hold needed).
-      AFixed i -> when (st.sounding == Rig) $ for_ (st.library !! i) \pat ->
+      AFixed _ -> when (st.sounding == Rig) $ for_ (activePattern st) \pat ->
         for_ st.binnacle \bin ->
           liftEffect $ Transport.send (Binnacle.socket bin)
             ("balistes-fixed " <> encodeFixed (fixedOf pat))
@@ -553,6 +552,56 @@ pushHandoff st =
     liftEffect $ Transport.send (Binnacle.socket bin)
       ("balistes-sim-at " <> show st.nextModelStep <> " 0.25 " <> encodeBalSim (balSimOf st.bal))
 
+-- | Capture the CURRENTLY ACTIVE brain's playing-state into a `TriSnapshot`, so one
+-- | bank sequences Mutable / Grids / Tidal intermingled. Stores the whole artefact
+-- | (not a reference), so a snapshot survives library edits and can be pushed to the
+-- | rig verbatim. `Nothing` only if a GRIDS tab has no pattern in view.
+captureTri :: State -> Maybe TriSnapshot
+captureTri s = case s.active of
+  AGrids -> Just (TSGrids (M.captureSnapshot s.bal))
+  AFixed _ -> TSFixed <$> activePattern s
+  ASelene -> Just (TSTrig s.trig)
+
+-- | Recall slot `i`: switch the active tab to the snapshot's brain, restore that
+-- | brain's state, and — when rig-authoritative — push the matching handoff so the
+-- | rig follows. The rig side re-modes in place on any of balistes-sim-at / -fixed /
+-- | -trig, so a mid-sequence Mutable→Tidal→Grids march is just three pushes, no gap.
+-- | `TSFixed` restores EPHEMERALLY (scratchFixed), never touching the library.
+recallTri :: forall o m. MonadAff m => Int -> H.HalogenM State Action () o m Unit
+recallTri i = do
+  st <- H.get
+  case join (st.snapshots !! i) of
+    Nothing -> pure unit
+    Just (TSGrids gsnap) -> do
+      H.modify_ \s -> s { active = AGrids, scratchFixed = Nothing, bal = M.applySnapshot gsnap s.bal }
+      H.get >>= pushHandoff
+    Just (TSFixed pat) -> do
+      H.modify_ _ { active = AFixed 0, scratchFixed = Just pat }
+      st2 <- H.get
+      when (st2.sounding == Rig) $ for_ st2.binnacle \bin ->
+        liftEffect $ Transport.send (Binnacle.socket bin) ("balistes-fixed " <> encodeFixed (fixedOf pat))
+    Just (TSTrig rack) -> do
+      H.modify_ _ { active = ASelene, scratchFixed = Nothing, trig = rack }
+      pushTrig
+
+-- | Mode-agnostic sequence advance, run at the top of every Step: if a bar boundary
+-- | elapsed while the sequence is playing, step the path and recall the next slot's
+-- | TriSnapshot (which may switch the visible brain). Runs whenever the transport
+-- | sounds (Local or Rig) so the rig follows the arrangement too.
+advanceSeq :: forall o m. MonadAff m => Scheduler.Tick -> H.HalogenM State Action () o m Unit
+advanceSeq tick = do
+  st <- H.get
+  let
+    bar = tick.index / stepsPerBar
+    seqLen = length st.sequence
+    advancing = st.sounding /= Silent && st.seqEnabled && seqLen > 0 && (bar - st.seqStartBar) >= st.seqBars
+  when advancing do
+    let nextPos = (st.seqPos + 1) `mod` seqLen
+    H.modify_ _ { seqPos = nextPos, seqStartBar = bar }
+    case st.sequence !! nextPos of
+      Just slot -> recallTri slot
+      Nothing -> pure unit
+
 -- | Resolve a POLYTRIG bank to the wire-flat `Trig.TrigKit` the rig runs: each jack
 -- | becomes its MIDI note + the onset fractions it fires at over one cycle (its own
 -- | source pattern ∪ the route atoms addressed to its name). The mini-notation parse
@@ -616,7 +665,7 @@ repushFixed :: forall o m. MonadAff m => H.HalogenM State Action () o m Unit
 repushFixed = do
   st <- H.get
   when (st.sounding == Rig) case st.active of
-    AFixed i -> for_ (st.library !! i) \pat ->
+    AFixed _ -> for_ (activePattern st) \pat ->
       for_ st.binnacle \bin ->
         liftEffect $ Transport.send (Binnacle.socket bin) ("balistes-fixed " <> encodeFixed (fixedOf pat))
     AGrids -> pure unit
@@ -653,7 +702,8 @@ mergeByName current incoming =
 -- | Apply a function to the selected cell of the active fixed rhythm.
 modSelectedCell :: (P.Cell -> P.Cell) -> State -> State
 modSelectedCell f s = case s.active, s.selected of
-  AFixed i, Just { lane, step } -> s { library = modLibAt i (P.modifyCell lane step f) s.library }
+  AFixed i, Just { lane, step } | isNothing s.scratchFixed ->
+    s { library = modLibAt i (P.modifyCell lane step f) s.library }
   _, _ -> s
 
 -- ---------------------------------------------------------------------------
@@ -702,7 +752,10 @@ render s =
                   AGrids -> [ controlsPanel s ]
                   AFixed _ -> [ inspectorPanel s ]
                   ASelene -> [ trigInfoPanel s ])
-            <> [ patternPanel s ] )
+            <> [ patternPanel s ]
+            -- the macro-tidal ARRANGE rail — the persistent snapshot bank +
+            -- sequence, present in every tab so the three brains sequence together.
+            <> [ snapshotRail s ] )
     ]
 
 -- The drum-brain tab bar. The active tab is a projection of `active`'s constructor;
@@ -752,8 +805,8 @@ transportPanel s =
     chLine = case s.active of
       AGrids -> show (drumChannel + 1) <> "  ·  "
         <> joinWith " / " (map (\l -> show (M.noteOf l s.bal)) [ 0, 1, 2 ])
-      AFixed i -> show (drumChannel + 1) <> "  ·  "
-        <> case s.library !! i of
+      AFixed _ -> show (drumChannel + 1) <> "  ·  "
+        <> case activePattern s of
              Just p -> show (length (P.usedLanes p)) <> " voices"
              Nothing -> "—"
       ASelene -> show (drumChannel + 1) <> "  ·  "
@@ -814,7 +867,7 @@ patternPanel s =
          ASelene -> [])
         <> [ case s.active of
                AGrids -> gridsBody s
-               AFixed i -> case s.library !! i of
+               AFixed i -> case activePattern s of
                  Just pat -> fixedBody s i pat
                  Nothing -> HH.text "—"
                ASelene -> trigBody s ] )

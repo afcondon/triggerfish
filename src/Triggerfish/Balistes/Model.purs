@@ -39,14 +39,6 @@ module Triggerfish.Balistes.Model
   , snapshotCount
   , captureSnapshot
   , applySnapshot
-  , snapshotAt
-  , storeSnapshot
-  , recallSnapshot
-  , clearSnapshot
-  , appendSeq
-  , clearSeq
-  , setSeqBars
-  , seqStepAt
   , clampI
   , TrigBank
   , TrigSlot
@@ -96,15 +88,6 @@ type Balistes =
   -- OPEN (and chokes its closed self) instead of closed. At 0 nothing opens;
   -- turning it up recruits the loudest/most-stressed hats first.
   , open :: Int
-  -- a bank of captured control points (Nothing = empty slot). The whole point
-  -- of snapshots: record two-handed gestures one mouse can't make (kick up
-  -- while snare down), then recall them instantly.
-  , snapshots :: Array (Maybe Snapshot)
-  -- the snapshot SEQUENCE: an ordered path of slot indices, each held `seqBars`
-  -- bars; the playhead recalls each as it lands, morphing the kit along the
-  -- path (Grids-style song structure).
-  , sequence :: Array Int
-  , seqBars :: Int
   }
 
 -- | A captured point in control space: the X/Y cursor + the three densities +
@@ -145,9 +128,6 @@ defaultBalistes =
     , notes: [ 36, 38, 42, 46 ]
     -- a touch of open by default, so the loudest hats breathe
     , open: 70
-    , snapshots: replicate snapshotCount Nothing
-    , sequence: []
-    , seqBars: 1
     }
 
 -- | A nonzero seed (xorshift fixed-points at 0).
@@ -313,42 +293,6 @@ applySnapshot :: Snapshot -> Balistes -> Balistes
 applySnapshot s b =
   b { x = s.x, y = s.y, densBd = s.densBd, densSd = s.densSd, densHh = s.densHh
     , randomness = s.randomness, open = s.open, push = s.push }
-
-snapshotAt :: Balistes -> Int -> Maybe Snapshot
-snapshotAt b i = join (b.snapshots !! i)
-
-storeSnapshot :: Int -> Balistes -> Balistes
-storeSnapshot i b =
-  b { snapshots = fromMaybe b.snapshots (updateAt i (Just (captureSnapshot b)) b.snapshots) }
-
-recallSnapshot :: Int -> Balistes -> Balistes
-recallSnapshot i b = case snapshotAt b i of
-  Just s -> applySnapshot s b
-  Nothing -> b
-
-clearSnapshot :: Int -> Balistes -> Balistes
-clearSnapshot i b = b { snapshots = fromMaybe b.snapshots (updateAt i Nothing b.snapshots) }
-
--- ---------------------------------------------------------------------------
--- Snapshot sequence — the path through control space
--- ---------------------------------------------------------------------------
-
--- | Append a snapshot slot to the sequence path.
-appendSeq :: Int -> Balistes -> Balistes
-appendSeq i b = b { sequence = b.sequence <> [ i ] }
-
-clearSeq :: Balistes -> Balistes
-clearSeq b = b { sequence = [] }
-
-setSeqBars :: Int -> Balistes -> Balistes
-setSeqBars n b = b { seqBars = clampI 1 16 n }
-
--- | The snapshot slot at sequence position `p` (wrapping), if the path is
--- | non-empty.
-seqStepAt :: Balistes -> Int -> Maybe Int
-seqStepAt b p =
-  let n = length b.sequence
-  in if n == 0 then Nothing else b.sequence !! (mod p n)
 
 -- ---------------------------------------------------------------------------
 -- POLYTRIG — the third Balistes drum-brain (relocated from Selene, browser-only)

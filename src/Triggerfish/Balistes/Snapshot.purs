@@ -9,7 +9,8 @@
 -- | rail. Pure renderers — capture/recall touch `HalogenM` and live in
 -- | `Balistes.Component`.
 module Triggerfish.Balistes.Snapshot
-  ( snapshotSection
+  ( snapshotRail
+  , snapshotSection
   , snapshotSlot
   , sequenceSection
   , seqCell
@@ -18,22 +19,33 @@ module Triggerfish.Balistes.Snapshot
 import Prelude
 
 import Data.Array (length, range, (!!))
-import Data.Int (toNumber)
-import Data.Maybe (Maybe(..), fromMaybe)
+import Data.Maybe (Maybe(..), fromMaybe, maybe)
 import Halogen as H
 import Halogen.HTML as HH
 import Halogen.HTML.Events as HE
+import Halogen.HTML.Properties as HP
 import Web.UIEvent.MouseEvent as ME
-import Triggerfish.Odonus.Grid.Widgets (engrave, style, svgAttr, svgEl)
+import Triggerfish.Odonus.Grid.Widgets (engrave, style)
 import Triggerfish.Balistes.Model as M
+import Triggerfish.Balistes.TriSnapshot (brainBadge, brainOf, describeTri)
 import Triggerfish.Balistes.Types (Action(..), State)
-import Triggerfish.Balistes.Widgets (armBtn, flatBtn, stepBtn)
+import Triggerfish.Balistes.Widgets (armBtn, flatBtn, panel, stepBtn)
 
--- The snapshot bank: capture the whole control point (X/Y + densities +
--- randomness + open + push) into a slot, recall it instantly. Records the
--- two-handed gestures a single mouse can't (kick up while snare down). Each
--- filled slot shows a mini X/Y dot so the bank reads as a constellation of
--- points in control space.
+-- The persistent right-hand rail — the macro-tidal ARRANGE surface. Present in
+-- ALL three tabs (lifted out of the Grids body), so a snapshot can capture
+-- whichever brain is active and the sequence marches them intermingled. Stacks
+-- the bank over the sequence path.
+snapshotRail :: forall m. State -> H.ComponentHTML Action () m
+snapshotRail s =
+  panel "ARRANGE" "flex:0 0 236px"
+    [ snapshotSection s
+    , HH.div [ style "height:1px;background:#00000018;margin:16px 0 12px" ] []
+    , sequenceSection s
+    ]
+
+-- The snapshot bank: capture the active brain's playing-state into a slot, recall
+-- it instantly. Each filled slot shows the brain badge (M / G / T) so the bank
+-- reads as an intermingled arrangement at a glance.
 snapshotSection :: forall m. State -> H.ComponentHTML Action () m
 snapshotSection s =
   HH.div_
@@ -53,31 +65,28 @@ snapshotSection s =
         [ HH.text (if s.capArm then "ARMED — CLICK A SLOT TO STORE THE CURRENT KIT." else "CLICK CAPTURE THEN A SLOT TO STORE · CLICK A SLOT TO RECALL · SHIFT-CLICK TO CLEAR.") ]
     ]
 
--- One snapshot slot: a mini X/Y pad. Filled shows the captured cursor as a dot;
--- empty is a faint outline with its index.
+-- One snapshot slot. A filled slot shows the engraved brain badge (M / G / T) of
+-- whichever brain was captured — so the bank reads as an intermingled arrangement
+-- at a glance — with `describeTri` as the hover title. Empty is a faint outline
+-- with its index.
 snapshotSlot :: forall m. State -> Int -> H.ComponentHTML Action () m
 snapshotSlot s i =
   let
-    msnap = M.snapshotAt s.bal i
+    msnap = join (s.snapshots !! i)
     filled = case msnap of
       Just _ -> true
       Nothing -> false
     body = case msnap of
       Just snap ->
-        [ svgEl "svg"
-            [ svgAttr "viewBox" "0 0 100 100", svgAttr "width" "30", svgAttr "height" "30"
-            , svgAttr "style" "display:block" ]
-            [ svgEl "circle"
-                [ svgAttr "cx" (show (toNumber snap.x / 255.0 * 100.0))
-                , svgAttr "cy" (show ((1.0 - toNumber snap.y / 255.0) * 100.0))
-                , svgAttr "r" "13", svgAttr "fill" "#1c1a12" ] []
-            ]
-        ]
+        [ HH.span
+            [ style "font-family:Georgia,serif;font-size:15px;font-weight:bold;color:#1c1a12" ]
+            [ HH.text (brainBadge (brainOf snap)) ] ]
       Nothing ->
         [ HH.span [ style $ engrave <> ";font-size:9px;opacity:0.45" ] [ HH.text (show (i + 1)) ] ]
   in
     HH.div
       [ HE.onClick \e -> SlotClick i (ME.shiftKey e)
+      , HP.title (maybe ("slot " <> show (i + 1) <> " · empty") describeTri msnap)
       , style $ "width:32px;height:32px;border-radius:5px;cursor:pointer;display:flex;"
           <> "align-items:center;justify-content:center;box-sizing:border-box;"
           <> (if filled then "border:1px solid #a8a392;background:#cfcabb"
@@ -90,7 +99,7 @@ snapshotSlot s i =
 sequenceSection :: forall m. State -> H.ComponentHTML Action () m
 sequenceSection s =
   let
-    seq = s.bal.sequence
+    seq = s.sequence
     n = length seq
   in
     HH.div_
@@ -101,7 +110,7 @@ sequenceSection s =
           , HH.div [ style "display:flex;align-items:center;gap:4px;margin-left:6px" ]
               [ HH.span [ style $ engrave <> ";font-size:8px;opacity:0.6" ] [ HH.text "BARS/STEP" ]
               , stepBtn "−" (SeqBarsDelta (-1))
-              , HH.span [ style "font-family:'SF Mono',Menlo,monospace;font-size:11px;color:#3f3c33;width:14px;text-align:center" ] [ HH.text (show s.bal.seqBars) ]
+              , HH.span [ style "font-family:'SF Mono',Menlo,monospace;font-size:11px;color:#3f3c33;width:14px;text-align:center" ] [ HH.text (show s.seqBars) ]
               , stepBtn "+" (SeqBarsDelta 1)
               ]
           , flatBtn "CLEAR" ClearSeq
@@ -118,7 +127,7 @@ sequenceSection s =
 seqCell :: forall m. State -> Int -> H.ComponentHTML Action () m
 seqCell s p =
   let
-    slot = fromMaybe 0 (s.bal.sequence !! p)
+    slot = fromMaybe 0 (s.sequence !! p)
     here = s.seqEnabled && p == s.seqPos
   in
     HH.div
