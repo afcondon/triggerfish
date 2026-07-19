@@ -76,4 +76,4 @@ workspace:
     hylograph-halogen-ui:
       path: ../../../purescript-hylograph-halogen-ui-v0.1
   packageSet:
-    registry: 73.3.0
+    registry: 77.13.1
