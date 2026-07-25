@@ -58,12 +58,9 @@ package:
     dependencies: []
 workspace:
   extraPackages:
-    # Published library, pinned to the git tag. (The registry 0.1.0 manifest is
-    # currently undecodable — over-long description — so we build from the tag;
-    # switch to `harmonia: <version>` once a clean version is on the registry.)
-    harmonia:
-      git: https://github.com/afcondon/purescript-harmonia.git
-      ref: v0.2.0
+    # Published library, from the registry (clean 0.2.0 manifest; the old broken
+    # 0.1.0 over-long-description entry is gone from the index).
+    harmonia: 0.2.0
     # Portable virtual-module engines (Phase 1: Odonus). Path-dep during dev;
     # git-tag once reef is published, like harmonia.
     reef:
