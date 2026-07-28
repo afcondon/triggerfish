@@ -14,7 +14,7 @@
 -- | for that module — the same role Odonus plays for `odonus_engine`. Output is
 -- | one MIDI channel (BD/SD/HH = 36/38/42) to an IAC bus into Ableton, clocked
 -- | by Binnacle (free-run → Link-lock), exactly like Odonus.
-module Triggerfish.Balistes.Component (component) where
+module Triggerfish.Balistes.Component (component, Output(..)) where
 
 import Prelude
 
@@ -33,7 +33,6 @@ import Effect.Timer (setInterval)
 import Halogen as H
 import Halogen.HTML as HH
 import Halogen.HTML.Events as HE
-import Halogen.HTML.Properties as HP
 import Halogen.Subscription as HS
 import Binnacle as Binnacle
 import Binnacle.Clock as Clock
@@ -74,7 +73,12 @@ import Web.HTML (window)
 import Web.HTML.Window as Window
 import Web.UIEvent.MouseEvent as ME
 
-component :: forall i o m. MonadAff m => H.Component Query i o m
+-- | The upward message to the shell: Balistes' identity-chip view (or `Nothing`
+-- | when nothing is parked), for the six-machine status board. Raised from the
+-- | Frame loop only when the view changes (see `chipViewOf`).
+data Output = IdentityChanged (Maybe G.ChipView)
+
+component :: forall i m. MonadAff m => H.Component Query i Output m
 component =
   H.mkComponent
     { initialState: \_ ->
@@ -85,7 +89,7 @@ component =
         , nowMicros: 0.0, dragging: Nothing, dragSub: Nothing
         , capArm: false, seqArm: false, seqEnabled: false, seqPos: 0, seqStartBar: 0
         , snapshots: replicate M.snapshotCount Nothing, sequence: [], seqBars: 1
-        , identity: Nothing
+        , identity: Nothing, lastChip: Nothing
         , active: AGrids, library: P.bundledPatterns, editing: false, selected: Nothing
         , scratchFixed: Nothing
         , trig: M.defaultTrig, publishMsg: Nothing }
@@ -97,7 +101,7 @@ component =
 -- | Answer the shell: the source (TIDAL tab) — the reflective header (X/Y,
 -- | densities, groove, ratchets, tapped pads) over the editable lane/routing
 -- | doc — or adopt the rack's shared free-run baseline.
-handleQuery :: forall o m a. MonadAff m => Query a -> H.HalogenM State Action () o m (Maybe a)
+handleQuery :: forall m a. MonadAff m => Query a -> H.HalogenM State Action () Output m (Maybe a)
 handleQuery = case _ of
   AskSource reply -> do
     s <- H.get
@@ -145,7 +149,7 @@ handleQuery = case _ of
 -- handleAction
 -- ---------------------------------------------------------------------------
 
-handleAction :: forall o m. MonadAff m => Action -> H.HalogenM State Action () o m Unit
+handleAction :: forall m. MonadAff m => Action -> H.HalogenM State Action () Output m Unit
 handleAction = case _ of
   Initialize -> do
     -- Same rig handshake as Odonus: Binnacle free-runs at 120 until the Link
@@ -280,6 +284,13 @@ handleAction = case _ of
           , flash = filter (\f -> (now - f.fireUnixMicros) < flashWindow) s.flash
           }
       Nothing -> pure unit
+    -- Report the identity chip up to the shell's status board, but only when it
+    -- actually changed (this fires ~30×/s) — capture/recall/divergence all land here.
+    s2 <- H.get
+    let cv = chipViewOf s2
+    when (cv /= s2.lastChip) do
+      H.modify_ _ { lastChip = cv }
+      H.raise (IdentityChanged cv)
 
   MidiReady mout nm -> H.modify_ _ { midiOut = mout, midiName = nm }
 
@@ -812,8 +823,6 @@ tabBar s =
     [ tabBtn "MUTABLE" (isGrids s.active) (Just (SelectPattern AGrids))
     , tabBtn "GRIDS" (isFixed s.active) (Just (SelectPattern (AFixed (fixedIx s.active))))
     , tabBtn "TIDAL" (isSelene s.active) (Just (SelectPattern ASelene))
-    , HH.div [ style "flex:1 1 auto" ] []
-    , identityChip s
     ]
   where
   isGrids = case _ of AGrids -> true
@@ -837,56 +846,15 @@ tabBtn label active mact =
         <> maybe [] (\act -> [ HE.onClick \_ -> act ]) mact )
     [ HH.text (label <> maybe "  ·soon" (const "") mact) ]
 
--- The IDENTITY CHIP — Balistes' current glyph, in a fixed spot at the right of the
--- brain-tab bar (the machine-scale rehearsal of the tab-bar status board;
--- docs/DESIGN-scene-modal.md). Three states:
---   • SOLID  — the live state still matches the parked identity (held).
---   • GHOST  — faint + dashed once the live state diverges from it (the dirty
---              indicator: it shows what you diverged FROM, tagged MOD).
---   • EMPTY  — a dashed placeholder before anything is captured or recalled.
--- The two icons are the content glyph (hashed from the snapshot's canonical text);
--- the hue is Balistes' machine colour. `alias` rides alongside as the typeable form.
-identityChip :: forall m. State -> H.ComponentHTML Action () m
-identityChip s =
-  let hue = G.hueOf G.Balistes
-  in case s.identity of
-    Nothing ->
-      chipShell ("1px dashed #00000026") "transparent"
-        [ HH.span [ style $ engrave <> ";font-size:9px;opacity:0.4" ] [ HH.text "—" ] ]
-    Just idn ->
-      let
-        g = G.glyphOf (printTri idn)
-        held = captureTri s == Just idn
-        op = if held then "1" else "0.34"
-        border = if held then "1px solid " <> hue <> "66" else "1px dashed " <> hue <> "55"
-        bg = if held then hue <> "12" else "transparent"
-      in
-        chipShell border bg
-          [ HH.div [ style $ "display:flex;align-items:center;gap:5px;opacity:" <> op ]
-              [ faIcon hue g.first.icon, faIcon hue g.second.icon ]
-          , HH.span
-              [ style $ "font-family:'SF Mono',Menlo,monospace;font-size:8px;color:#3f3c33;opacity:"
-                  <> (if held then "0.7" else "0.4") ]
-              [ HH.text g.alias ]
-          , if held then HH.text ""
-            else HH.span [ style $ engrave <> ";font-size:7px;opacity:0.55;letter-spacing:0.1em" ] [ HH.text "MOD" ]
-          ]
-
-chipShell :: forall m. String -> String -> Array (H.ComponentHTML Action () m) -> H.ComponentHTML Action () m
-chipShell border bg kids =
-  HH.div
-    [ HP.attr (H.AttrName "title") "current identity — solid while unchanged, ghosted once you diverge"
-    , style $ "display:flex;align-items:center;gap:7px;padding:2px 10px;align-self:center;"
-        <> "border-radius:7px;box-sizing:border-box;border:" <> border <> ";background:" <> bg ]
-    kids
-
--- One FontAwesome solid glyph, tinted the machine hue (FA solid inherits `color`).
-faIcon :: forall m. String -> String -> H.ComponentHTML Action () m
-faIcon hue name =
-  HH.i
-    [ HP.attr (H.AttrName "class") ("fa-solid fa-" <> name)
-    , style $ "font-size:15px;line-height:1;color:" <> hue ]
-    []
+-- The identity-chip view Balistes reports to the shell's six-machine status board:
+-- the glyph of the parked identity + whether the live state has diverged from it
+-- (per docs/DESIGN-scene-modal.md). `Nothing` when nothing is parked (empty). The
+-- glyph is content-hashed from the parked snapshot's canonical text; divergence is
+-- just "the live capture no longer equals the parked identity".
+chipViewOf :: State -> Maybe G.ChipView
+chipViewOf s = case s.identity of
+  Nothing -> Nothing
+  Just idn -> Just { glyph: G.glyphOf (printTri idn), diverged: captureTri s /= Just idn }
 
 -- ---------------------------------------------------------------------------
 -- Transport panel

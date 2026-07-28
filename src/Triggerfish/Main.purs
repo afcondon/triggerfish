@@ -53,6 +53,8 @@ import Triggerfish.Selene.Component as Selene
 import Triggerfish.Sufflamen.Component as Sufflamen
 import Triggerfish.Stellatus.Component as Stellatus
 import Triggerfish.SourceQuery as SQ
+import Triggerfish.Glyph as G
+import Triggerfish.GlyphView (chipIcons)
 import Triggerfish.Midi.Routing as Routing
 import Triggerfish.Amphora as Amphora
 import Triggerfish.Macro (Cell(Quiet, Load), Step, ResolvedMod, laneFormNames, parseLane, resolveStep, stepLabel)
@@ -95,6 +97,7 @@ data RAction
   | PreviewEntry LibRow        -- workbench: load + Local-audition a setup (rig untouched)
   | StopPreview                -- workbench: end the preview, restore its sounding
   | VetulaArmed Boolean        -- Vetula's self-arm/disarm EVENT (replaces the poll)
+  | BalChipChanged (Maybe G.ChipView)  -- Balistes' identity-chip view, for the status board
   -- macro-tidal (Slice 1): the arrangement layer on the TIDAL page. One lane of
   -- Odonus scene-names, sequenced over bar-quantized steps.
   | SetMacroText String        -- edit the lane pattern
@@ -157,11 +160,15 @@ type RState =
   , macroStep :: Int, macroCell :: String
   -- Harmonic-authority bridge: the last resting-context scale pushed from Vetula
   -- into Odonus (serialised for dedup, so the 100ms poll only re-pushes on change).
-  , ctxScaleKey :: String }
+  , ctxScaleKey :: String
+  -- the six-machine status board: each machine's identity-chip view, pushed up by
+  -- that machine (Balistes so far; the rest report Nothing until they gain the
+  -- glyph substrate). Rendered as glyphs in the switcher.
+  , balChip :: Maybe G.ChipView }
 
 type Slots =
   ( odo :: H.Slot SQ.Query Void Unit
-  , bal :: H.Slot SQ.Query Void Unit
+  , bal :: H.Slot SQ.Query Balistes.Output Unit
   , sel :: H.Slot SQ.Query Void Unit
   , vet :: H.Slot Vetula.SourceQuery Vetula.Output Unit
   , suf :: H.Slot (Const Void) Void Unit
@@ -199,7 +206,7 @@ root =
         , routing: Map.empty
         , vetulaNames: []
         , macroText: "", macroBars: 4, macroOn: false
-        , macroStep: -1, macroCell: "", ctxScaleKey: "" }
+        , macroStep: -1, macroCell: "", ctxScaleKey: "", balChip: Nothing }
     , render
     , eval: H.mkEval H.defaultEval { handleAction = handleAction, initialize = Just Init }
     }
@@ -328,6 +335,9 @@ handleAction = case _ of
   VetulaArmed on -> do
     H.modify_ \st -> st { armed = if on then Set.insert Vet st.armed else Set.delete Vet st.armed }
     pushSounding Vet
+  -- Balistes pushed a new identity-chip view (capture / recall / divergence) — park it
+  -- for the status board. Cheap: Balistes only raises this when the view changed.
+  BalChipChanged cv -> H.modify_ _ { balChip = cv }
   -- macro-tidal: edit the Odonus lane / bars-per-step.
   SetMacroText t -> H.modify_ _ { macroText = t }
   SetMacroBars v -> case Int.fromString v of
@@ -618,7 +628,8 @@ render st =
     -- machine instruments inset their own root below the bar (position:fixed
     -- top:var(--tf-bar)); the in-flow Vetula pane is padded down to clear it.
     , pane (st.which == Odo) "" (HH.slot_ _odo unit Odonus.component unit)
-    , pane (st.which == Bal) "" (HH.slot_ _bal unit Balistes.component unit)
+    , pane (st.which == Bal) ""
+        (HH.slot _bal unit Balistes.component unit (\(Balistes.IdentityChanged cv) -> BalChipChanged cv))
     , pane (st.which == Sel) "" (HH.slot_ _sel unit Selene.component unit)
     , pane (st.which == Vet) "padding-top:var(--tf-bar)"
         (HH.slot _vet unit Vetula.component unit (\(Vetula.ArmChanged on) -> VetulaArmed on))
@@ -1108,7 +1119,29 @@ armSeg st w label =
           , style $ "padding:6px 13px 6px 5px;cursor:pointer;font-size:11px;letter-spacing:0.12em;"
               <> "text-transform:uppercase;color:" <> (if active then "#1c1a12" else "#5a564b") ]
           [ HH.text label ]
+      -- the machine's identity glyph, in its hue — the six-machine status board.
+      -- Only Balistes reports one so far; the rest are Nothing (blank) until wired.
+      , chipIcons (whichHue w) (chipOf st w)
       ]
+
+-- The chip view for a machine, from the shell's status-board state. Balistes is
+-- the only live reporter for now; every other machine is empty until it gains the
+-- glyph substrate (docs/DESIGN-scene-modal.md).
+chipOf :: RState -> Which -> Maybe G.ChipView
+chipOf st = case _ of
+  Bal -> st.balChip
+  _ -> Nothing
+
+-- A machine's identity hue (Glyph's per-machine colour), for the status-board chips.
+whichHue :: Which -> String
+whichHue = case _ of
+  Odo -> G.hueOf G.Odonus
+  Bal -> G.hueOf G.Balistes
+  Sel -> G.hueOf G.Selene
+  Vet -> G.hueOf G.Vetula
+  Suf -> G.hueOf G.Sufflamen
+  Ste -> G.hueOf G.Stellatus
+  Tid -> "#5a564b"
 
 -- The SOLO⟷ATLANTIS authority toggle. Each mode carries its own colour so the
 -- active authority reads at a glance: SOLO warm/gold (a standalone instrument),

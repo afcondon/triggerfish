@@ -46,6 +46,7 @@ import Reef.Balistes.Input as RBI
 import Triggerfish.Balistes.Model as M
 import Triggerfish.Balistes.Pattern as P
 import Triggerfish.Balistes.TriSnapshot (TriSnapshot)
+import Triggerfish.Glyph as G
 import Triggerfish.Midi.Routing as Routing
 import Triggerfish.Transport (Sounding)
 
@@ -140,6 +141,9 @@ type State =
   -- once you diverge — the continuous dirty indicator (see docs/DESIGN-scene-modal.md).
   -- Transient (not persisted): reload restores the arrangement, never a live identity.
   , identity :: Maybe TriSnapshot
+  -- the last chip-view raised to the shell's status board — bookkeeping so the
+  -- Frame loop only re-raises `IdentityChanged` when the view actually changes.
+  , lastChip :: Maybe G.ChipView
   -- the pattern family: which one is playing, and the fixed-rhythm library.
   , active :: Active
   , library :: Array P.FixedPattern

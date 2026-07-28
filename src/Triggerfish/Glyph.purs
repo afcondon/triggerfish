@@ -34,6 +34,7 @@ module Triggerfish.Glyph
   , Glyph
   , glyphOf
   , glyphFromAlias
+  , ChipView
   ) where
 
 import Prelude
@@ -121,6 +122,15 @@ type Glyph =
   { first :: DeckEntry
   , second :: DeckEntry
   , alias :: String
+  }
+
+-- | What a machine reports up to the shell's six-machine status board: its parked
+-- | glyph and whether the live state has diverged from it (`true` → render ghosted
+-- | + MOD, `false` → solid/held). A machine with no parked identity reports
+-- | `Nothing` (empty), so `Maybe ChipView` is the full per-machine chip state.
+type ChipView =
+  { glyph :: Glyph
+  , diverged :: Boolean
   }
 
 -- | The glyph for a canonical text (e.g. a `TriSnapshot`'s `printTri`). Two
