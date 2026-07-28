@@ -134,6 +134,12 @@ type State =
   , snapshots :: Array (Maybe TriSnapshot)
   , sequence :: Array Int
   , seqBars :: Int
+  -- the IDENTITY CHIP's parked glyph: the `TriSnapshot` the machine is currently
+  -- "on" (last recalled, or just captured). The chip renders its glyph SOLID
+  -- while the live state still matches (`captureTri s == identity`) and GHOSTED
+  -- once you diverge — the continuous dirty indicator (see docs/DESIGN-scene-modal.md).
+  -- Transient (not persisted): reload restores the arrangement, never a live identity.
+  , identity :: Maybe TriSnapshot
   -- the pattern family: which one is playing, and the fixed-rhythm library.
   , active :: Active
   , library :: Array P.FixedPattern

@@ -33,6 +33,7 @@ import Effect.Timer (setInterval)
 import Halogen as H
 import Halogen.HTML as HH
 import Halogen.HTML.Events as HE
+import Halogen.HTML.Properties as HP
 import Halogen.Subscription as HS
 import Binnacle as Binnacle
 import Binnacle.Clock as Clock
@@ -50,7 +51,8 @@ import Triggerfish.Balistes.Types
   , NoteRef(..), DragKind(..), State, Action(..), activePattern, rigUrl, gridCfg
   , stepsPerBar, midiPortName, drumChannel, cycleSteps, editVel, flashWindow
   , padId, eqTrigName, jackNoteOf )
-import Triggerfish.Balistes.TriSnapshot (TriSnapshot(..))
+import Triggerfish.Balistes.TriSnapshot (TriSnapshot(..), printTri)
+import Triggerfish.Glyph as G
 import Triggerfish.Balistes.Widgets (flatBtn, instColor, panel, readout)
 import Triggerfish.Balistes.View.Trig (trigBody, trigInfoPanel)
 import Triggerfish.Balistes.View.Fixed (fixedBody, inspectorPanel, patternSwitcher)
@@ -83,6 +85,7 @@ component =
         , nowMicros: 0.0, dragging: Nothing, dragSub: Nothing
         , capArm: false, seqArm: false, seqEnabled: false, seqPos: 0, seqStartBar: 0
         , snapshots: replicate M.snapshotCount Nothing, sequence: [], seqBars: 1
+        , identity: Nothing
         , active: AGrids, library: P.bundledPatterns, editing: false, selected: Nothing
         , scratchFixed: Nothing
         , trig: M.defaultTrig, publishMsg: Nothing }
@@ -364,7 +367,8 @@ handleAction = case _ of
     if shift then
       H.modify_ \s -> s { snapshots = fromMaybe s.snapshots (updateAt i Nothing s.snapshots) }
     else if pre.capArm then
-      H.modify_ \s -> s { snapshots = fromMaybe s.snapshots (updateAt i (captureTri s) s.snapshots), capArm = false }
+      -- capturing also parks the identity chip on the just-captured state.
+      H.modify_ \s -> s { snapshots = fromMaybe s.snapshots (updateAt i (captureTri s) s.snapshots), capArm = false, identity = captureTri s }
     else if pre.seqArm then
       H.modify_ \s -> s { sequence = s.sequence <> [ i ] }
     else
@@ -582,7 +586,8 @@ captureTri s = case s.active of
 recallTri :: forall o m. MonadAff m => Int -> H.HalogenM State Action () o m Unit
 recallTri i = do
   st <- H.get
-  case join (st.snapshots !! i) of
+  let msnap = join (st.snapshots !! i)
+  case msnap of
     Nothing -> pure unit
     Just (TSGrids gsnap) -> do
       H.modify_ \s -> s { active = AGrids, scratchFixed = Nothing, bal = M.applySnapshot gsnap s.bal }
@@ -601,6 +606,9 @@ recallTri i = do
     Just (TSTrig rack) -> do
       H.modify_ _ { active = ASelene, scratchFixed = Nothing, trig = rack }
       pushTrig
+  -- Park the identity chip on the recalled snapshot: the chip now shows its glyph
+  -- SOLID, and ghosts the moment the live state diverges from it.
+  for_ msnap \snap -> H.modify_ _ { identity = Just snap }
 
 -- | Mode-agnostic sequence advance, run at the top of every Step: if a bar boundary
 -- | elapsed while the sequence is playing, step the path and recall the next slot's
@@ -804,6 +812,8 @@ tabBar s =
     [ tabBtn "MUTABLE" (isGrids s.active) (Just (SelectPattern AGrids))
     , tabBtn "GRIDS" (isFixed s.active) (Just (SelectPattern (AFixed (fixedIx s.active))))
     , tabBtn "TIDAL" (isSelene s.active) (Just (SelectPattern ASelene))
+    , HH.div [ style "flex:1 1 auto" ] []
+    , identityChip s
     ]
   where
   isGrids = case _ of AGrids -> true
@@ -826,6 +836,57 @@ tabBtn label active mact =
               else maybe "color:#9a9484" (const "color:#3f3c33") mact) ]
         <> maybe [] (\act -> [ HE.onClick \_ -> act ]) mact )
     [ HH.text (label <> maybe "  ·soon" (const "") mact) ]
+
+-- The IDENTITY CHIP — Balistes' current glyph, in a fixed spot at the right of the
+-- brain-tab bar (the machine-scale rehearsal of the tab-bar status board;
+-- docs/DESIGN-scene-modal.md). Three states:
+--   • SOLID  — the live state still matches the parked identity (held).
+--   • GHOST  — faint + dashed once the live state diverges from it (the dirty
+--              indicator: it shows what you diverged FROM, tagged MOD).
+--   • EMPTY  — a dashed placeholder before anything is captured or recalled.
+-- The two icons are the content glyph (hashed from the snapshot's canonical text);
+-- the hue is Balistes' machine colour. `alias` rides alongside as the typeable form.
+identityChip :: forall m. State -> H.ComponentHTML Action () m
+identityChip s =
+  let hue = G.hueOf G.Balistes
+  in case s.identity of
+    Nothing ->
+      chipShell ("1px dashed #00000026") "transparent"
+        [ HH.span [ style $ engrave <> ";font-size:9px;opacity:0.4" ] [ HH.text "—" ] ]
+    Just idn ->
+      let
+        g = G.glyphOf (printTri idn)
+        held = captureTri s == Just idn
+        op = if held then "1" else "0.34"
+        border = if held then "1px solid " <> hue <> "66" else "1px dashed " <> hue <> "55"
+        bg = if held then hue <> "12" else "transparent"
+      in
+        chipShell border bg
+          [ HH.div [ style $ "display:flex;align-items:center;gap:5px;opacity:" <> op ]
+              [ faIcon hue g.first.icon, faIcon hue g.second.icon ]
+          , HH.span
+              [ style $ "font-family:'SF Mono',Menlo,monospace;font-size:8px;color:#3f3c33;opacity:"
+                  <> (if held then "0.7" else "0.4") ]
+              [ HH.text g.alias ]
+          , if held then HH.text ""
+            else HH.span [ style $ engrave <> ";font-size:7px;opacity:0.55;letter-spacing:0.1em" ] [ HH.text "MOD" ]
+          ]
+
+chipShell :: forall m. String -> String -> Array (H.ComponentHTML Action () m) -> H.ComponentHTML Action () m
+chipShell border bg kids =
+  HH.div
+    [ HP.attr (H.AttrName "title") "current identity — solid while unchanged, ghosted once you diverge"
+    , style $ "display:flex;align-items:center;gap:7px;padding:2px 10px;align-self:center;"
+        <> "border-radius:7px;box-sizing:border-box;border:" <> border <> ";background:" <> bg ]
+    kids
+
+-- One FontAwesome solid glyph, tinted the machine hue (FA solid inherits `color`).
+faIcon :: forall m. String -> String -> H.ComponentHTML Action () m
+faIcon hue name =
+  HH.i
+    [ HP.attr (H.AttrName "class") ("fa-solid fa-" <> name)
+    , style $ "font-size:15px;line-height:1;color:" <> hue ]
+    []
 
 -- ---------------------------------------------------------------------------
 -- Transport panel
