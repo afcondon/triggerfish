@@ -165,6 +165,8 @@ handleQuery = case _ of
   SetContextPitchSet root offsets next -> do
     enqueue (RI.SetPitchSet (PitchSet { offsets, root: 48 + root, period: Just 12 }))
     pure (Just next)
+  -- No glyph substrate yet — ignore the capture hotkey (task #6 lights this up).
+  Capture next -> pure (Just next)
 
 -- | Run the action, then persist the live patch — except for the high-frequency
 -- | / non-authoring actions (the clock tick, the river frame, a knob DRAG in

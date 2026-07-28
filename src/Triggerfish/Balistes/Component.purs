@@ -144,6 +144,26 @@ handleQuery = case _ of
     Nothing -> pure (Just (reply false))
   -- No pitch quantiser — the rig's harmonic context doesn't apply to Balistes.
   SetContextPitchSet _ _ next -> pure (Just next)
+  -- The shell's CAPTURE hotkey: bank the current playing-state and park identity
+  -- on it (the chip shows the freshly-minted glyph, held). See captureNow.
+  Capture next -> do
+    captureNow
+    pure (Just next)
+
+-- | Bank the current playing-state as a preset without the arm-then-slot dance:
+-- | mint it into the first empty slot (or, when the bank is full, the last slot —
+-- | transitional until the bank becomes a growing glyph-list), park `identity` on
+-- | it so the status-board chip reflects the capture, and persist. A no-op only if
+-- | the active brain has nothing to capture (an empty GRIDS tab).
+captureNow :: forall m. MonadAff m => H.HalogenM State Action () Output m Unit
+captureNow = do
+  s <- H.get
+  case captureTri s of
+    Nothing -> pure unit
+    js -> do
+      let i = fromMaybe (M.snapshotCount - 1) (findIndex isNothing s.snapshots)
+      H.modify_ \st -> st { snapshots = fromMaybe st.snapshots (updateAt i js st.snapshots), identity = js }
+      persist
 
 -- ---------------------------------------------------------------------------
 -- handleAction

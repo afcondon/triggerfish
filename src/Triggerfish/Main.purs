@@ -22,7 +22,7 @@ import Prelude
 import Data.Array (any, elem, filter, find, findIndex, length, mapWithIndex, null, replicate, uncons)
 import Data.Foldable (for_)
 import Data.Either (Either(..))
-import Data.Maybe (Maybe(..), fromMaybe, maybe)
+import Data.Maybe (Maybe(..), fromMaybe, isJust, maybe)
 import Data.Const (Const)
 import Data.Set (Set)
 import Data.Set as Set
@@ -44,7 +44,15 @@ import Halogen.HTML.Events as HE
 import Halogen.HTML.Properties as HP
 import Halogen.Subscription as HS
 import Halogen.VDom.Driver (runUI)
+import Halogen.Query.Event (eventListener)
 import Type.Proxy (Proxy(..))
+import Web.Event.Event as E
+import Web.HTML (window)
+import Web.HTML.Window as Window
+import Web.HTML.HTMLInputElement as HInput
+import Web.HTML.HTMLTextAreaElement as HTextArea
+import Web.UIEvent.KeyboardEvent as KE
+import Web.UIEvent.KeyboardEvent.EventTypes as KET
 import Binnacle.Audio (armAudioKeepAlive)
 import Binnacle.Time (dateNow)
 import Triggerfish.Odonus.Grid as Odonus
@@ -98,6 +106,7 @@ data RAction
   | StopPreview                -- workbench: end the preview, restore its sounding
   | VetulaArmed Boolean        -- Vetula's self-arm/disarm EVENT (replaces the poll)
   | BalChipChanged (Maybe G.ChipView)  -- Balistes' identity-chip view, for the status board
+  | CaptureKey                 -- the global CAPTURE hotkey → bank a preset on the active machine
   -- macro-tidal (Slice 1): the arrangement layer on the TIDAL page. One lane of
   -- Odonus scene-names, sequenced over bar-quantized steps.
   | SetMacroText String        -- edit the lane pattern
@@ -228,6 +237,11 @@ handleAction = case _ of
     -- The macro clock: poll ~8×/s and act only when a bar-quantized step boundary
     -- is crossed (MacroTick is a no-op while the sequencer is stopped).
     _ <- liftEffect $ setInterval 120 (HS.notify listener MacroTick)
+    -- The global CAPTURE hotkey: one window-level keydown listener (the "same key
+    -- on every pane" binding) → CaptureKey, which routes to the active machine.
+    -- Guarded so it never fires while typing in a text field.
+    target <- liftEffect $ Window.toEventTarget <$> window
+    _ <- H.subscribe $ eventListener KET.keydown target keyToAction
     handleAction SyncTick
     -- One source of truth: push each machine its derived Sounding (all Silent now —
     -- nothing armed). Arm/mode changes re-derive and re-push; the instruments
@@ -338,6 +352,15 @@ handleAction = case _ of
   -- Balistes pushed a new identity-chip view (capture / recall / divergence) — park it
   -- for the status board. Cheap: Balistes only raises this when the view changed.
   BalChipChanged cv -> H.modify_ _ { balChip = cv }
+  -- The CAPTURE hotkey: tell the active machine to bank its current state as a
+  -- preset. Only the SQ.Query machines answer; Balistes is the only live one so far.
+  CaptureKey -> do
+    w <- H.gets _.which
+    case w of
+      Odo -> void $ H.query _odo unit (SQ.Capture unit)
+      Bal -> void $ H.query _bal unit (SQ.Capture unit)
+      Sel -> void $ H.query _sel unit (SQ.Capture unit)
+      _ -> pure unit
   -- macro-tidal: edit the Odonus lane / bars-per-step.
   SetMacroText t -> H.modify_ _ { macroText = t }
   SetMacroBars v -> case Int.fromString v of
@@ -1142,6 +1165,26 @@ whichHue = case _ of
   Suf -> G.hueOf G.Sufflamen
   Ste -> G.hueOf G.Stellatus
   Tid -> "#5a564b"
+
+-- The CAPTURE hotkey — the same key on every pane. Modifier-free `c`, ignored while
+-- a text field is focused (so it never fires mid-typing). Easy to rebind here.
+captureKey :: String
+captureKey = "c"
+
+keyToAction :: E.Event -> Maybe RAction
+keyToAction e = case KE.fromEvent e of
+  Just ke
+    | KE.key ke == captureKey
+    , not (KE.ctrlKey ke || KE.metaKey ke || KE.altKey ke)
+    , not (targetIsField e) -> Just CaptureKey
+  _ -> Nothing
+
+-- True when the event originated in a text input / textarea, so the hotkey yields
+-- to typing (the eDSL source drawer, pattern-name fields, the channel-map inputs).
+targetIsField :: E.Event -> Boolean
+targetIsField e = case E.target e of
+  Just t -> isJust (HInput.fromEventTarget t) || isJust (HTextArea.fromEventTarget t)
+  Nothing -> false
 
 -- The SOLO⟷ATLANTIS authority toggle. Each mode carries its own colour so the
 -- active authority reads at a glance: SOLO warm/gold (a standalone instrument),

@@ -69,3 +69,7 @@ data Query a
   -- Vetula (the single harmonic authority); Odonus realises through it. Instruments
   -- with no quantiser ignore it.
   | SetContextPitchSet Int (Array Int) a
+  -- The shell's CAPTURE hotkey (same key on every pane): "bank your current
+  -- playing-state as a preset (mint its glyph) and park your identity on it".
+  -- Routed to the active machine. Machines without a capture/glyph notion ignore it.
+  | Capture a

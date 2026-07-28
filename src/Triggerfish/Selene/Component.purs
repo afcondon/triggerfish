@@ -155,6 +155,8 @@ handleQuery = case _ of
     pure (Just (reply true))
   -- No quantiser — the rig's harmonic context doesn't apply to Selene.
   SetContextPitchSet _ _ next -> pure (Just next)
+  -- No glyph substrate yet — ignore the capture hotkey (task #6 lights this up).
+  Capture next -> pure (Just next)
 
 handleAction :: forall o m. MonadAff m => Action -> H.HalogenM State Action () o m Unit
 handleAction = case _ of
