@@ -19,11 +19,18 @@ module Triggerfish.Balistes.TriSnapshot
   , brainBadge
   , brainLabel
   , describeTri
+  , printTri
+  , parseTri
   ) where
 
 import Prelude
 
-import Data.Array (length)
+import Data.Array (drop, elemIndex, filter, length, mapMaybe, take, uncons)
+import Data.Int (fromString)
+import Data.Maybe (Maybe(..))
+import Data.String.Common (joinWith, split, trim)
+import Data.String.Pattern (Pattern(..))
+import Triggerfish.Balistes.Lepidoptera (parsePattern, printPattern)
 import Triggerfish.Balistes.Model (Snapshot, TrigBank)
 import Triggerfish.Balistes.Pattern (FixedPattern, usedLanes)
 
@@ -78,3 +85,78 @@ describeTri = case _ of
   TSGrids snap -> "MUTABLE · x" <> show snap.x <> " y" <> show snap.y
   TSFixed pat -> "GRIDS · " <> show (length (usedLanes pat)) <> " lanes"
   TSTrig rack -> "TIDAL · " <> show (length rack.jacks) <> " jacks"
+
+-- ---------------------------------------------------------------------------
+-- Text codec (slice 5) — the transferable, localStorage-friendly form.
+--
+-- A snapshot serialises as `<tag-line>\n<payload>`: a one-char brain tag (the
+-- same M/G/T badges) picks the constructor, the rest is TEXT — the Lepidoptera
+-- "save the rendering, not bespoke structure" rule. `TSFixed` reuses the eDSL
+-- (`printPattern`, so a slot drops straight into Calypso); `TSGrids`/`TSTrig`
+-- get compact line forms. Parse is total + lenient (`Nothing` on malformed
+-- input → the Store drops the slot), mirroring `parsePattern`.
+-- ---------------------------------------------------------------------------
+
+printTri :: TriSnapshot -> String
+printTri = case _ of
+  TSGrids s -> "M\n" <> printSnap s
+  TSFixed p -> "G\n" <> printPattern p
+  TSTrig r -> "T\n" <> printTrig r
+
+parseTri :: String -> Maybe TriSnapshot
+parseTri text = case uncons (split (Pattern "\n") text) of
+  Just { head, tail } ->
+    let body = joinWith "\n" tail
+    in case trim head of
+      "M" -> TSGrids <$> parseSnap body
+      "G" -> TSFixed <$> parsePattern body
+      "T" -> TSTrig <$> parseTrig body
+      _ -> Nothing
+  Nothing -> Nothing
+
+-- The Mutable control point: seven space-joined ints, then ` | ` and the push
+-- overlay (a variable-length int array).
+printSnap :: Snapshot -> String
+printSnap s =
+  joinWith " " (map show [ s.x, s.y, s.densBd, s.densSd, s.densHh, s.randomness, s.open ])
+    <> " | " <> joinWith " " (map show s.push)
+
+parseSnap :: String -> Maybe Snapshot
+parseSnap body = case split (Pattern " | ") body of
+  [ headPart, pushPart ] -> case mapMaybe fromString (words headPart) of
+    [ x, y, densBd, densSd, densHh, randomness, open ] ->
+      Just
+        { x, y, densBd, densSd, densHh, randomness, open
+        , push: mapMaybe fromString (words pushPart)
+        }
+    _ -> Nothing
+  _ -> Nothing
+
+-- The POLYTRIG rack: one tab-delimited jack per line (`name<TAB>note<TAB>src`,
+-- so a Tidal source's spaces survive), a `--routes--` marker, then one route
+-- per line. Tabs never occur in mini-notation, so they're a safe field split.
+printTrig :: TrigBank -> String
+printTrig tb =
+  joinWith "\n" (map jackLine tb.jacks)
+    <> "\n--routes--"
+    <> joinWith "" (map (\r -> "\n" <> r) tb.routes)
+  where
+  jackLine j = j.name <> "\t" <> show j.note <> "\t" <> j.source
+
+parseTrig :: String -> Maybe TrigBank
+parseTrig body =
+  let ls = split (Pattern "\n") body
+  in case elemIndex "--routes--" ls of
+    Just i -> Just
+      { jacks: mapMaybe parseJack (take i ls)
+      , routes: filter (_ /= "") (drop (i + 1) ls)
+      }
+    Nothing -> Just { jacks: mapMaybe parseJack ls, routes: [] }
+  where
+  parseJack line = case split (Pattern "\t") line of
+    [ nm, noteS, src ] -> fromString noteS <#> \note -> { name: nm, note, source: src }
+    _ -> Nothing
+
+-- Split on spaces, dropping the empty runs a leading/collapsed space would make.
+words :: String -> Array String
+words = filter (_ /= "") <<< split (Pattern " ")

@@ -18,7 +18,7 @@ module Triggerfish.Balistes.Component (component) where
 
 import Prelude
 
-import Data.Array (filter, length, modifyAt, null, range, replicate, updateAt, (!!))
+import Data.Array (filter, findIndex, length, modifyAt, null, range, replicate, updateAt, (!!))
 import Data.Foldable (any, foldl, for_)
 import Data.Int (floor, round, toNumber)
 import Data.Maybe (Maybe(..), fromMaybe, isNothing, maybe)
@@ -165,9 +165,16 @@ handleAction = case _ of
               Nothing -> "no '" <> midiPortName <> "' — ports: " <> joinWith ", " names
         HS.notify midiL (MidiReady mout nm)
       Nothing -> HS.notify midiL (MidiReady Nothing "unavailable")
-    -- restore the saved rhythm library (falls back to the bundled patterns).
-    mlib <- liftEffect Store.loadLibrary
-    for_ mlib \lib -> H.modify_ _ { library = lib }
+    -- restore the saved artefact: the rhythm library AND the ARRANGE rail (bank +
+    -- sequence + bars-per-step). Falls back to the bundled patterns / empty rail.
+    -- Playback is NOT restored (seqEnabled stays false) — a reload never auto-plays.
+    msaved <- liftEffect Store.load
+    for_ msaved \sv -> H.modify_ _
+      { library = sv.library
+      , snapshots = fitBank sv.bank
+      , sequence = sv.sequence
+      , seqBars = sv.seqBars
+      }
     -- source the shared library from Amphora (the store of record): merge in any
     -- DB pattern not already present by name. Offline → keep saved/bundled.
     dbResult <- liftAff (attempt Remote.fetchLibrary)
@@ -362,13 +369,18 @@ handleAction = case _ of
       H.modify_ \s -> s { sequence = s.sequence <> [ i ] }
     else
       recallTri i
+    persist
   -- enabling: seed seqPos at the end and force an immediate advance to step 0
   -- (the big-negative sentinel makes the first Step's bar gap exceed seqBars).
   ToggleSeq -> H.modify_ \s ->
     if s.seqEnabled then s { seqEnabled = false }
     else s { seqEnabled = true, seqPos = max 0 (length s.sequence - 1), seqStartBar = -100000 }
-  SeqBarsDelta d -> H.modify_ \s -> s { seqBars = clampI 1 16 (s.seqBars + d) }
-  ClearSeq -> H.modify_ \s -> s { sequence = [], seqEnabled = false, seqPos = 0 }
+  SeqBarsDelta d -> do
+    H.modify_ \s -> s { seqBars = clampI 1 16 (s.seqBars + d) }
+    persist
+  ClearSeq -> do
+    H.modify_ \s -> s { sequence = [], seqEnabled = false, seqPos = 0 }
+    persist
   -- switching pattern just changes which branch the next Step takes; hits are
   -- one-shot, so nothing to silence.
   -- switching pattern changes which branch the next Step takes; once pushed, make the
@@ -576,7 +588,13 @@ recallTri i = do
       H.modify_ \s -> s { active = AGrids, scratchFixed = Nothing, bal = M.applySnapshot gsnap s.bal }
       H.get >>= pushHandoff
     Just (TSFixed pat) -> do
-      H.modify_ _ { active = AFixed 0, scratchFixed = Just pat }
+      -- Highlight the library chip that matches the snapshot BY NAME (the identity
+      -- the user reasons about — "funk 100"), so the switcher agrees with what's
+      -- playing. Playback still comes from `scratchFixed` (the frozen artefact),
+      -- so a later library edit never mutates the recalled snapshot. No match
+      -- (pattern deleted) → fall back to slot 0.
+      let idx = fromMaybe 0 (findIndex (\p -> p.name == pat.name) st.library)
+      H.modify_ _ { active = AFixed idx, scratchFixed = Just pat }
       st2 <- H.get
       when (st2.sounding == Rig) $ for_ st2.binnacle \bin ->
         liftEffect $ Transport.send (Binnacle.socket bin) ("balistes-fixed " <> encodeFixed (fixedOf pat))
@@ -650,12 +668,26 @@ dragToBInput kind b = case kind of
   DNote (NGrids lane) -> Just (RBI.BSetNote lane (M.noteOf lane b))
   DNote (NFixed _ _) -> Nothing
 
--- | Save the current rhythm library to localStorage (after any edit).
+-- | Project component `State` onto the persisted artefact (library + ARRANGE rail).
+savedOf :: State -> Store.Saved
+savedOf s =
+  { library: s.library, bank: s.snapshots, sequence: s.sequence, seqBars: s.seqBars }
+
+-- | Normalise a restored bank to the fixed slot count: pad short (missing slots →
+-- | empty) and truncate long, so the rail always renders exactly `snapshotCount`.
+fitBank :: Array (Maybe TriSnapshot) -> Array (Maybe TriSnapshot)
+fitBank b = map (\i -> join (b !! i)) (range 0 (M.snapshotCount - 1))
+
+-- | Save the whole artefact to localStorage (library + bank + sequence). Called
+-- | after any bank / sequence edit; `persistLib` layers the rig re-push on top.
+persist :: forall o m. MonadAff m => H.HalogenM State Action () o m Unit
+persist = do
+  s <- H.get
+  liftEffect (Store.save (savedOf s))
+
+-- | Save after a library edit, then re-push the active pattern to the rig.
 persistLib :: forall o m. MonadAff m => H.HalogenM State Action () o m Unit
-persistLib = do
-  lib <- H.gets _.library
-  liftEffect (Store.saveLibrary lib)
-  repushFixed
+persistLib = persist *> repushFixed
 
 -- | After a fixed-rhythm edit, re-push the active pattern to the rig so live cell /
 -- | velocity / condition edits reach it. The voice swaps the pattern IN PLACE

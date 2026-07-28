@@ -144,7 +144,11 @@ Trig payloads).
 3. **Recall + playback** — `recallTri` (tab-switch + restore + rig push); lift
    the sequence advance to the top of `Step`.
 4. **UI** — persistent pane across all tabs + per-brain slot rendering + badge.
-5. **Persist** — codec + Store round-trip.
+5. **Persist** — codec + Store round-trip. ✅ *(2026-07-27)* Text-per-payload
+   `printTri`/`parseTri` (brain tag + eDSL/compact text; `TSFixed` reuses
+   `printPattern`). `Store` grew to a v3 envelope `{ library, bank, sequence,
+   seqBars }` (v2 library-only stores migrate), saved after every bank/sequence
+   edit and restored on `Initialize`. Transient playback state is not saved.
 6. **Cosmetic** — Hainbach/Rams pass over the pane (folds into the broader #199
    three-tab UI pass).
 
