@@ -63,7 +63,7 @@ import Triggerfish.Sufflamen.Component as Sufflamen
 import Triggerfish.Stellatus.Component as Stellatus
 import Triggerfish.SourceQuery as SQ
 import Triggerfish.Glyph as G
-import Triggerfish.GlyphView (chipIcons)
+import Triggerfish.GlyphView (chipIcons, faIcon)
 import Triggerfish.Midi.Routing as Routing
 import Triggerfish.Amphora as Amphora
 import Triggerfish.Macro (Cell(Quiet, Load), Step, ResolvedMod, laneFormNames, parseLane, resolveStep, stepLabel)
@@ -108,6 +108,9 @@ data RAction
   | VetulaArmed Boolean        -- Vetula's self-arm/disarm EVENT (replaces the poll)
   | BalChipChanged (Maybe G.ChipView)  -- Balistes' identity-chip view, for the status board
   | CaptureKey                 -- the global CAPTURE hotkey → bank a preset on the active machine
+  | OpenChipMenu Which         -- click a status-board glyph → open (or close) its recall menu
+  | CloseChipMenu
+  | RecallFrom Which Int        -- recall bank slot i on machine w, then close the menu
   -- macro-tidal (Slice 1): the arrangement layer on the TIDAL page. One lane of
   -- Odonus scene-names, sequenced over bar-quantized steps.
   | SetMacroText String        -- edit the lane pattern
@@ -183,7 +186,11 @@ type RState =
   , pollBusy :: Boolean
   -- true once an Amphora fetch has failed (store unreachable) — drives the shell's
   -- "no favourites / backend not running" banner. Probed once on Init.
-  , amphoraDown :: Boolean }
+  , amphoraDown :: Boolean
+  -- the status-board chip's recall menu: which machine's bank is open + its slots
+  -- (each an alias the shell renders via glyphFromAlias). Nothing = closed. Fetched
+  -- on open (AskBank), so it's a snapshot of the bank at click time.
+  , chipMenu :: Maybe { w :: Which, items :: Array { slot :: Int, alias :: String } } }
 
 type Slots =
   ( odo :: H.Slot SQ.Query Void Unit
@@ -226,7 +233,7 @@ root =
         , vetulaNames: []
         , macroText: "", macroBars: 4, macroOn: false
         , macroStep: -1, macroCell: "", ctxScaleKey: "", balChip: Nothing, captureFlash: false
-        , pollBusy: false, amphoraDown: false }
+        , pollBusy: false, amphoraDown: false, chipMenu: Nothing }
     , render
     , eval: H.mkEval H.defaultEval { handleAction = handleAction, initialize = Just Init }
     }
@@ -389,6 +396,19 @@ handleAction = case _ of
       Bal -> void $ H.query _bal unit (SQ.Capture unit)
       Sel -> void $ H.query _sel unit (SQ.Capture unit)
       _ -> pure unit
+  -- Click a status-board glyph: toggle its recall menu. On open, snapshot the
+  -- machine's bank (AskBank) so the menu lists its presets as glyphs.
+  OpenChipMenu w -> do
+    open <- H.gets _.chipMenu
+    case open of
+      Just m | m.w == w -> H.modify_ _ { chipMenu = Nothing }
+      _ -> do
+        items <- fromMaybe [] <$> queryBank w
+        H.modify_ _ { chipMenu = Just { w, items } }
+  CloseChipMenu -> H.modify_ _ { chipMenu = Nothing }
+  RecallFrom w slot -> do
+    _ <- queryRecall w slot
+    H.modify_ _ { chipMenu = Nothing }
   -- macro-tidal: edit the Odonus lane / bars-per-step.
   SetMacroText t -> H.modify_ _ { macroText = t }
   SetMacroBars v -> case Int.fromString v of
@@ -588,6 +608,23 @@ querySounding w s = case w of
 pushAll :: forall o m. MonadAff m => H.HalogenM RState RAction Slots o m Unit
 pushAll = for_ [ Odo, Bal, Sel, Vet ] pushSounding
 
+-- Ask a machine for its bank (recall menu contents). Only the SQ.Query machines
+-- answer; Balistes is the only one with real presets so far.
+queryBank :: forall o m. Which -> H.HalogenM RState RAction Slots o m (Maybe (Array { slot :: Int, alias :: String }))
+queryBank = case _ of
+  Odo -> H.query _odo unit (SQ.AskBank identity)
+  Bal -> H.query _bal unit (SQ.AskBank identity)
+  Sel -> H.query _sel unit (SQ.AskBank identity)
+  _ -> pure Nothing
+
+-- Recall bank slot i on a machine (switch to it + restore).
+queryRecall :: forall o m. Which -> Int -> H.HalogenM RState RAction Slots o m (Maybe Unit)
+queryRecall w i = case w of
+  Odo -> H.query _odo unit (SQ.RecallSlot i unit)
+  Bal -> H.query _bal unit (SQ.RecallSlot i unit)
+  Sel -> H.query _sel unit (SQ.RecallSlot i unit)
+  _ -> pure Nothing
+
 -- Query each mounted instrument for its current source and stitch the four
 -- into one labelled document.
 refreshTidal :: forall o m. H.HalogenM RState RAction Slots o m Unit
@@ -686,6 +723,7 @@ render :: forall m. MonadAff m => RState -> H.ComponentHTML RAction Slots m
 render st =
   HH.div_
     [ shellBar st
+    , chipMenuPanel st
     -- All four are always in the tree (hence always mounted + running); the
     -- active one is shown, the rest are display:none but keep playing. On the
     -- TIDAL tab all four are hidden but still alive (and queryable). The three
@@ -1126,6 +1164,46 @@ shellBar st =
         [ HH.text (if anyArmed st.armed then "■ STOP" else "▶ PLAY") ]
     ]
 
+-- The recall menu: a floating panel (escapes the bar's overflow via position:fixed)
+-- listing the machine's banked presets as their coloured glyphs. Click one to
+-- recall it. Opened by clicking a status-board glyph; closes on recall or re-click.
+chipMenuPanel :: forall m. RState -> H.ComponentHTML RAction Slots m
+chipMenuPanel st = case st.chipMenu of
+  Nothing -> HH.text ""
+  Just m ->
+    HH.div
+      [ style $ "position:fixed;top:calc(var(--tf-bar) + 5px);left:250px;z-index:60;box-sizing:border-box;"
+          <> "background:#efece1;border:1px solid #a8a392;border-radius:8px;padding:7px;min-width:150px;"
+          <> "box-shadow:0 6px 18px #00000033;display:flex;flex-direction:column;gap:3px;font-family:Georgia,serif" ]
+      ( [ HH.div
+            [ style "display:flex;align-items:center;justify-content:space-between;gap:12px;padding:2px 6px 5px" ]
+            [ HH.span [ style "font-size:8px;letter-spacing:0.12em;color:#8a8676;text-transform:uppercase" ]
+                [ HH.text ("Recall · " <> whichName m.w) ]
+            , HH.span
+                [ HE.onClick \_ -> CloseChipMenu
+                , style "cursor:pointer;color:#8a8676;font-size:11px;line-height:1" ]
+                [ HH.text "✕" ]
+            ]
+        ]
+          <>
+            ( if null m.items then
+                [ HH.div [ style "padding:4px 8px;font-size:9px;color:#a09a88;font-style:italic" ]
+                    [ HH.text "no presets yet" ] ]
+              else map (recallRow m.w) m.items
+            )
+      )
+
+recallRow :: forall m. Which -> { slot :: Int, alias :: String } -> H.ComponentHTML RAction Slots m
+recallRow w item =
+  let g = G.glyphFromAlias item.alias
+  in HH.div
+      [ HE.onClick \_ -> RecallFrom w item.slot
+      , style $ "display:flex;align-items:center;gap:8px;padding:4px 8px;border-radius:5px;cursor:pointer;"
+          <> "background:#e7e3d6" ]
+      [ HH.span [ style "display:inline-flex;align-items:center;gap:3px" ] [ faIcon g.first, faIcon g.second ]
+      , HH.span [ style "font-family:'SF Mono',Menlo,monospace;font-size:9px;color:#4a463b" ] [ HH.text item.alias ]
+      ]
+
 -- A clear, non-blocking status pill shown when the Amphora store (:3024) is
 -- unreachable: the app degrades to "no favourites" rather than hanging, and this
 -- tells the user why (start Amphora to restore load/save of favourites).
@@ -1199,8 +1277,15 @@ armSeg st w label =
               <> "text-transform:uppercase;color:" <> (if active then "#1c1a12" else "#5a564b") ]
           [ HH.text label ]
       -- the machine's identity glyph (icons coloured by content) — the six-machine
-      -- status board. Only Balistes reports one so far; the rest are Nothing (blank).
-      , chipIcons (chipOf st w)
+      -- status board. Clicking it opens the recall menu. Only Balistes reports one
+      -- so far; the rest are Nothing (blank, not clickable).
+      , case chipOf st w of
+          Nothing -> HH.text ""
+          Just _ -> HH.span
+            [ HE.onClick \_ -> OpenChipMenu w
+            , HP.attr (H.AttrName "title") "recall a preset"
+            , style "display:inline-flex;align-items:center;cursor:pointer" ]
+            [ chipIcons (chipOf st w) ]
       ]
 
 -- The chip view for a machine, from the shell's status-board state. Balistes is

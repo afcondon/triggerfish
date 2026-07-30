@@ -149,6 +149,21 @@ handleQuery = case _ of
   Capture next -> do
     captureNow
     pure (Just next)
+  -- The status-board chip's recall menu: report each filled bank slot as its glyph
+  -- alias (the shell reconstructs the coloured glyph via glyphFromAlias, faithful
+  -- because colour follows the icon name), and recall a chosen slot.
+  AskBank reply -> do
+    s <- H.get
+    let
+      items = do
+        i <- range 0 (M.snapshotCount - 1)
+        case join (s.snapshots !! i) of
+          Just snap -> [ { slot: i, alias: (G.glyphOf (printTri snap)).alias } ]
+          Nothing -> []
+    pure (Just (reply items))
+  RecallSlot i next -> do
+    recallTri i
+    pure (Just next)
 
 -- | Bank the current playing-state as a preset without the arm-then-slot dance:
 -- | mint it into the first empty slot (or, when the bank is full, the last slot —
