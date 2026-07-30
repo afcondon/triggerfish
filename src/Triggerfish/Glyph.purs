@@ -77,14 +77,17 @@ machineLabel = case _ of
 -- | The machine's identity hue, as a CSS colour. Restrained, spaced around the
 -- | wheel so six chips are distinguishable at tab size but stay Swiss-muted
 -- | (mid-saturation, mid-lightness — not primary-bright).
+-- Darkened for legibility: a small icon on the light/gold tab bar needs strong
+-- contrast, so these sit low on the lightness scale (still hue-distinct up close,
+-- but reading almost as tinted-black at tab size).
 hueOf :: Machine -> String
 hueOf = case _ of
-  Odonus -> "hsl(210, 46%, 46%)" -- blue
-  Balistes -> "hsl(150, 40%, 40%)" -- green
-  Selene -> "hsl(270, 32%, 52%)" -- violet
-  Vetula -> "hsl(35, 55%, 46%)" -- amber
-  Sufflamen -> "hsl(0, 48%, 50%)" -- red
-  Stellatus -> "hsl(188, 44%, 40%)" -- teal
+  Odonus -> "hsl(210, 60%, 32%)" -- blue
+  Balistes -> "hsl(150, 55%, 26%)" -- green
+  Selene -> "hsl(270, 42%, 40%)" -- violet
+  Vetula -> "hsl(32, 75%, 34%)" -- amber
+  Sufflamen -> "hsl(0, 58%, 40%)" -- red
+  Stellatus -> "hsl(188, 60%, 26%)" -- teal
 
 -- ---------------------------------------------------------------------------
 -- The icon deck — memorable, concrete nouns that each have a FontAwesome free

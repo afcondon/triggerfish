@@ -24,7 +24,7 @@ faIcon :: forall w i. String -> String -> HH.HTML w i
 faIcon hue name =
   HH.i
     [ HP.attr (H.AttrName "class") ("fa-solid fa-" <> name)
-    , style ("font-size:14px;line-height:1;color:" <> hue) ]
+    , style ("font-size:17px;line-height:1;color:" <> hue) ]
     []
 
 -- | A machine's chip icons for the tab-bar status board: the icon-pair, tinted
