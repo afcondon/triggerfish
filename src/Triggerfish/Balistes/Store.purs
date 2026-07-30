@@ -1,15 +1,15 @@
--- | Triggerfish.Balistes.Store — localStorage persistence for the whole Balistes
--- | artefact: the fixed-rhythm library **and** the PRESET bank (the unified preset
--- | list + sequence + bars-per-step). Everything saves/loads from this one surface
--- | (the "final panel" owns persistence); the per-tab panels hold no storage.
+-- | Triggerfish.Balistes.Store — localStorage persistence for the Balistes
+-- | artefact: the fixed-rhythm library **and** the unified PRESET bank. Everything
+-- | saves/loads from this one surface; the per-tab panels hold no storage.
 -- |
 -- | Each preset's `content` is already eDSL / compact TEXT (a brain-tagged `printTri`
 -- | for a Balistes snapshot) — the Lepidoptera "save the rendering" rule; `name` and
 -- | `starred` are small envelope metadata. A library entry is one `printPattern`.
 -- | The JSON here is only the local envelope holding those texts. Mirrors Selene.
 -- |
--- | Transient playback state (`seqEnabled`/`seqPos`/`seqStartBar`) is deliberately
--- | NOT saved — reopening the app should restore the arrangement, not start it.
+-- | (The per-machine SEQUENCE — `sequence`/`seqBars` — was dropped 2026-07-30 when
+-- | the rig-wide scene grid + macro-tidal lanes subsumed it. Old v4 saves still
+-- | carry those fields; they're simply ignored on decode.)
 module Triggerfish.Balistes.Store
   ( Saved
   , save
@@ -30,8 +30,6 @@ import Triggerfish.Preset (Preset)
 type Saved =
   { library :: Array FixedPattern
   , presets :: Array Preset
-  , sequence :: Array Int
-  , seqBars :: Int
   }
 
 -- | The on-disk shape (v4): library as texts, presets as { content, name, starred }
@@ -39,8 +37,6 @@ type Saved =
 type Envelope =
   { library :: Array String
   , presets :: Array { content :: String, name :: String, starred :: Boolean }
-  , sequence :: Array Int
-  , seqBars :: Int
   }
 
 -- | v3's on-disk shape — a fixed bank of `printTri` texts (`""` = empty slot).
@@ -48,8 +44,6 @@ type Envelope =
 type EnvelopeV3 =
   { library :: Array String
   , bank :: Array String
-  , sequence :: Array Int
-  , seqBars :: Int
   }
 
 -- v4: the fixed Maybe-bank became a growing unified preset list (name + starred).
@@ -67,7 +61,7 @@ foreign import _save :: String -> String -> Effect Unit
 foreign import _load :: forall a. String -> Effect (Nullable a)
 foreign import _stringify :: forall a. a -> String
 
--- | Persist the whole artefact (best-effort — the FFI swallows quota / private-mode
+-- | Persist the artefact (best-effort — the FFI swallows quota / private-mode
 -- | errors), each payload rendered to its canonical text.
 save :: Saved -> Effect Unit
 save s = _save storeKey (_stringify env)
@@ -76,8 +70,6 @@ save s = _save storeKey (_stringify env)
   env =
     { library: map printPattern s.library
     , presets: map (\p -> { content: p.content, name: fromMaybe "" p.name, starred: p.starred }) s.presets
-    , sequence: s.sequence
-    , seqBars: s.seqBars
     }
 
 -- | Load the artefact. Prefers v4; migrates a v3 fixed-bank store (each non-empty
@@ -95,22 +87,18 @@ load = do
         Nothing -> do
           mLib <- _load legacyLibraryKey
           pure $ toMaybe (mLib :: Nullable (Array String)) <#> \texts ->
-            { library: mapMaybe parsePattern texts, presets: [], sequence: [], seqBars: 1 }
+            { library: mapMaybe parsePattern texts, presets: [] }
 
 decode :: Envelope -> Saved
 decode env =
   { library: mapMaybe parsePattern env.library
   , presets: map (\e -> { content: e.content, name: if e.name == "" then Nothing else Just e.name, starred: e.starred }) env.presets
-  , sequence: env.sequence
-  , seqBars: env.seqBars
   }
 
 decodeV3 :: EnvelopeV3 -> Saved
 decodeV3 v3 =
   { library: mapMaybe parsePattern v3.library
   , presets: map (\t -> { content: t, name: Nothing, starred: false }) (filter (_ /= "") v3.bank)
-  , sequence: v3.sequence
-  , seqBars: v3.seqBars
   }
   where
   filter p = mapMaybe \x -> if p x then Just x else Nothing

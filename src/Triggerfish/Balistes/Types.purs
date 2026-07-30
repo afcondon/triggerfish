@@ -119,21 +119,13 @@ type State =
   , nowMicros :: Number
   , dragging :: Maybe Drag
   , dragSub :: Maybe H.SubscriptionId
-  -- seqArm → a slot click APPENDS to the sequence path (else it recalls).
-  , seqArm :: Boolean
-  -- sequence playback: enabled, the current step, and the absolute bar the step
-  -- began on (a big-negative sentinel forces an immediate advance on enable).
-  , seqEnabled :: Boolean
-  , seqPos :: Int
-  , seqStartBar :: Int
   -- the PRESET bank (unified model, docs/DESIGN-scene-modal.md): a growing list,
   -- each preset a captured playing-state of ANY brain (Mutable / Grids / Tidal)
   -- rendered to text, anonymous (glyph-only) or named, freely intermixed. Capture
-  -- DEDUPS by content. `sequence` is the path of preset indices the playhead walks,
-  -- each held `seqBars` bars — the macro-tidal surface (#182/#199).
+  -- DEDUPS by content. Capture is the `c` hotkey; recall/star/delete live on the
+  -- status-board chip's menu. (The old per-machine SEQUENCE path was stripped once
+  -- the rig-wide scene grid + macro-tidal lanes subsumed it — 2026-07-30.)
   , presets :: Array Preset
-  , sequence :: Array Int
-  , seqBars :: Int
   -- the IDENTITY CHIP's parked content: the preset TEXT the machine is currently
   -- "on" (last recalled, or just captured). The chip renders its glyph SOLID while
   -- the live state still matches and GHOSTED once you diverge — the continuous
@@ -175,12 +167,6 @@ data Action
   | DragEnd
   | DillaPreset
   | FlatGroove
-  | CaptureBank                -- append the current playing-state as a preset (dedup)
-  | ToggleSeqBuild             -- arm/disarm append-to-sequence-on-slot-click
-  | SlotClick Int Boolean      -- preset i; shift = delete; seqArm = append to path; else recall
-  | ToggleSeq                  -- play/stop the snapshot sequence
-  | SeqBarsDelta Int           -- nudge bars-per-step
-  | ClearSeq
   | SelectPattern Active       -- switch the playing pattern (Grids / a rhythm)
   | ToggleEdit                 -- reveal all 16 lanes on the active fixed rhythm
   | CellClick Int Int Boolean  -- select a cell (lane, step); shift = clear

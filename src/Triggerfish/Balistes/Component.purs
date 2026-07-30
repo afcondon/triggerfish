@@ -18,7 +18,7 @@ module Triggerfish.Balistes.Component (component, Output(..)) where
 
 import Prelude
 
-import Data.Array (deleteAt, filter, findIndex, length, mapMaybe, mapWithIndex, modifyAt, null, range, (!!))
+import Data.Array (deleteAt, filter, findIndex, length, mapWithIndex, modifyAt, null, range, (!!))
 import Data.Foldable (any, foldl, for_)
 import Data.Int (floor, round, toNumber)
 import Data.Maybe (Maybe(..), fromMaybe, isNothing, maybe)
@@ -48,7 +48,7 @@ import Triggerfish.Balistes.Pattern as P
 import Triggerfish.Balistes.Types
   ( KnobTarget(..), targetRange, applyKnob, Active(..)
   , NoteRef(..), DragKind(..), State, Action(..), activePattern, rigUrl, gridCfg
-  , stepsPerBar, midiPortName, drumChannel, cycleSteps, editVel, flashWindow
+  , midiPortName, drumChannel, cycleSteps, editVel, flashWindow
   , padId, eqTrigName, jackNoteOf )
 import Triggerfish.Balistes.TriSnapshot (TriSnapshot(..), printTri, parseTri)
 import Triggerfish.Glyph as G
@@ -57,7 +57,6 @@ import Triggerfish.Balistes.Widgets (flatBtn, instColor, panel, readout)
 import Triggerfish.Balistes.View.Trig (trigBody, trigInfoPanel)
 import Triggerfish.Balistes.View.Fixed (fixedBody, inspectorPanel, patternSwitcher)
 import Triggerfish.Balistes.View.Grids (controlsPanel, gridsBody)
-import Triggerfish.Balistes.Snapshot (snapshotRail)
 import Triggerfish.Balistes.Source as Source
 import Triggerfish.Balistes.Store as Store
 import Triggerfish.Balistes.Remote as Remote
@@ -88,8 +87,7 @@ component =
         , binnacle: Nothing, midiOut: Nothing, midiName: "…"
         , clockTempo: 120.0, clockLocked: false, clockBeat: 0.0, clockBar: 0, anchorCount: 0
         , nowMicros: 0.0, dragging: Nothing, dragSub: Nothing
-        , seqArm: false, seqEnabled: false, seqPos: 0, seqStartBar: 0
-        , presets: [], sequence: [], seqBars: 1
+        , presets: []
         , identity: Nothing, lastChip: Nothing
         , active: AGrids, library: P.bundledPatterns, editing: false, selected: Nothing
         , scratchFixed: Nothing
@@ -215,14 +213,11 @@ handleAction = case _ of
         HS.notify midiL (MidiReady mout nm)
       Nothing -> HS.notify midiL (MidiReady Nothing "unavailable")
     -- restore the saved artefact: the rhythm library AND the ARRANGE rail (bank +
-    -- sequence + bars-per-step). Falls back to the bundled patterns / empty rail.
-    -- Playback is NOT restored (seqEnabled stays false) — a reload never auto-plays.
+    -- Falls back to the bundled patterns / empty bank.
     msaved <- liftEffect Store.load
     for_ msaved \sv -> H.modify_ _
       { library = sv.library
       , presets = sv.presets
-      , sequence = sv.sequence
-      , seqBars = sv.seqBars
       }
     H.modify_ _ { binnacle = Just bin }
     -- Merge the shared Amphora library in the BACKGROUND. Forked deliberately: the
@@ -238,11 +233,6 @@ handleAction = case _ of
         _ -> pure unit
 
   Step tick -> do
-    -- Mode-agnostic sequence advance FIRST: if a bar boundary elapsed, recall the
-    -- next slot's TriSnapshot — which may switch the active brain — then the
-    -- per-mode emit below runs on the (possibly just-switched) brain. This is what
-    -- lets a Mutable→Tidal→Grids march play intermingled (#182/#199).
-    advanceSeq tick
     st <- H.get
     when (st.sounding == Local) case st.active of
       -- A fixed rhythm: derive the step from the tick (no internal navigator),
@@ -413,31 +403,6 @@ handleAction = case _ of
 
   DillaPreset -> H.modify_ \s -> s { bal = M.dillaPush s.bal }
   FlatGroove -> H.modify_ \s -> s { bal = M.flatPush s.bal }
-  -- CAPTURE the active brain's state as a preset (dedup-append + park identity).
-  CaptureBank -> captureNow
-  ToggleSeqBuild -> H.modify_ \s -> s { seqArm = not s.seqArm }
-  -- shift → DELETE preset i; seqArm → append it to the path; otherwise RECALL
-  -- (switch tab + restore + rig push).
-  SlotClick i shift -> do
-    pre <- H.get
-    if shift then
-      H.modify_ (deletePresetAt i)
-    else if pre.seqArm then
-      H.modify_ \s -> s { sequence = s.sequence <> [ i ] }
-    else
-      recallPreset i
-    persist
-  -- enabling: seed seqPos at the end and force an immediate advance to step 0
-  -- (the big-negative sentinel makes the first Step's bar gap exceed seqBars).
-  ToggleSeq -> H.modify_ \s ->
-    if s.seqEnabled then s { seqEnabled = false }
-    else s { seqEnabled = true, seqPos = max 0 (length s.sequence - 1), seqStartBar = -100000 }
-  SeqBarsDelta d -> do
-    H.modify_ \s -> s { seqBars = clampI 1 16 (s.seqBars + d) }
-    persist
-  ClearSeq -> do
-    H.modify_ \s -> s { sequence = [], seqEnabled = false, seqPos = 0 }
-    persist
   -- switching pattern just changes which branch the next Step takes; hits are
   -- one-shot, so nothing to silence.
   -- switching pattern changes which branch the next Step takes; once pushed, make the
@@ -669,24 +634,6 @@ recallPreset i = do
         recallSnap snap
         H.modify_ _ { identity = Just p.content }
 
--- | Mode-agnostic sequence advance, run at the top of every Step: if a bar boundary
--- | elapsed while the sequence is playing, step the path and recall the next preset
--- | (which may switch the visible brain). Runs whenever the transport sounds (Local
--- | or Rig) so the rig follows the arrangement too.
-advanceSeq :: forall o m. MonadAff m => Scheduler.Tick -> H.HalogenM State Action () o m Unit
-advanceSeq tick = do
-  st <- H.get
-  let
-    bar = tick.index / stepsPerBar
-    seqLen = length st.sequence
-    advancing = st.sounding /= Silent && st.seqEnabled && seqLen > 0 && (bar - st.seqStartBar) >= st.seqBars
-  when advancing do
-    let nextPos = (st.seqPos + 1) `mod` seqLen
-    H.modify_ _ { seqPos = nextPos, seqStartBar = bar }
-    case st.sequence !! nextPos of
-      Just slot -> recallPreset slot
-      Nothing -> pure unit
-
 -- | Resolve a POLYTRIG bank to the wire-flat `Trig.TrigKit` the rig runs: each jack
 -- | becomes its MIDI note + the onset fractions it fires at over one cycle (its own
 -- | source pattern ∪ the route atoms addressed to its name). The mini-notation parse
@@ -735,23 +682,13 @@ dragToBInput kind b = case kind of
   DNote (NGrids lane) -> Just (RBI.BSetNote lane (M.noteOf lane b))
   DNote (NFixed _ _) -> Nothing
 
--- | Delete preset `i` and keep the sequence consistent: drop path steps pointing at
--- | it, and decrement steps pointing past it (indices shift left on removal).
+-- | Delete preset `i` from the bank.
 deletePresetAt :: Int -> State -> State
-deletePresetAt i s =
-  s { presets = fromMaybe s.presets (deleteAt i s.presets)
-    , sequence = mapMaybe adjust s.sequence
-    }
-  where
-  adjust j
-    | j == i = Nothing
-    | j > i = Just (j - 1)
-    | otherwise = Just j
+deletePresetAt i s = s { presets = fromMaybe s.presets (deleteAt i s.presets) }
 
 -- | Project component `State` onto the persisted artefact (library + preset bank).
 savedOf :: State -> Store.Saved
-savedOf s =
-  { library: s.library, presets: s.presets, sequence: s.sequence, seqBars: s.seqBars }
+savedOf s = { library: s.library, presets: s.presets }
 
 -- | Save the whole artefact to localStorage (library + bank + sequence). Called
 -- | after any bank / sequence edit; `persistLib` layers the rig re-push on top.
@@ -860,9 +797,10 @@ render s =
                   AFixed _ -> [ inspectorPanel s ]
                   ASelene -> [ trigInfoPanel s ])
             <> [ patternPanel s ]
-            -- the macro-tidal ARRANGE rail — the persistent snapshot bank +
-            -- sequence, present in every tab so the three brains sequence together.
-            <> [ snapshotRail s ] )
+            -- (The per-machine ARRANGE rail was stripped 2026-07-30: capture is the
+            -- `c` hotkey, recall/star/delete live on the status-board chip's menu, and
+            -- the rig-wide scene grid + macro-tidal lanes own sequencing.)
+          )
     ]
 
 -- The drum-brain tab bar. The active tab is a projection of `active`'s constructor;
