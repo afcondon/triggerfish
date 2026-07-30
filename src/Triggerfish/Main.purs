@@ -19,7 +19,7 @@ module Triggerfish.Main where
 
 import Prelude
 
-import Data.Array (any, deleteAt, elem, filter, find, findIndex, length, mapWithIndex, modifyAt, null, replicate, uncons, (!!))
+import Data.Array (any, deleteAt, filter, find, findIndex, length, mapMaybe, mapWithIndex, modifyAt, null, replicate, uncons, (!!))
 import Data.FoldableWithIndex (forWithIndex_)
 import Data.Foldable (for_)
 import Data.Either (Either(..))
@@ -67,9 +67,10 @@ import Triggerfish.Glyph as G
 import Triggerfish.GlyphView (chipIcons, faIcon)
 import Triggerfish.Scenes as Scenes
 import Triggerfish.Scenes.Store as ScenesStore
+import Triggerfish.Macro.Store as MacroStore
 import Triggerfish.Midi.Routing as Routing
 import Triggerfish.Amphora as Amphora
-import Triggerfish.Macro (Cell(Quiet, Load), Step, ResolvedMod, laneFormNames, parseLane, resolveStep, stepLabel)
+import Triggerfish.Macro (Cell(Quiet, Load), Step, ResolvedMod, parseLane, resolveStep, stepLabel)
 import Triggerfish.Scale (rootNames, scaleTypes)
 import Vetula.App as Vetula
 import Vetula.Clipboard (copyText)
@@ -120,11 +121,10 @@ data RAction
   | DeleteFrom Which Int        -- delete a preset (menu stays open, refreshed)
   -- macro-tidal (Slice 1): the arrangement layer on the TIDAL page. One lane of
   -- Odonus scene-names, sequenced over bar-quantized steps.
-  | SetMacroText String        -- edit the lane pattern
+  | SetLaneText Which String   -- edit one machine's mini-notation lane
   | SetMacroBars String        -- edit bars-per-step
   | ToggleMacro                -- run / stop the macro sequencer
   | MacroTick                  -- the bar-quantized clock poll (step-boundary driver)
-  | AppendMacroName String     -- palette: append an available scene name to the lane
   -- Scene grid (Ableton-like sequencer, docs/DESIGN-scene-modal.md). A rig-wide
   -- grid: rows = scenes, columns = the live machines; a cell is a machine's glyph.
   | AddSceneFromRig            -- snapshot every machine's current chip glyph → a new scene
@@ -183,13 +183,18 @@ type RState =
   -- set of → midi voice names in use, polled from Vetula so the page can list them.
   , routing :: Map String Int
   , vetulaNames :: Array String
-  -- macro-tidal (Slice 1): the Odonus arrangement lane. `macroText` is the
-  -- mini-notation pattern of scene-names; `macroBars` = bars per step; `macroOn`
-  -- runs the sequencer. `macroStep` is the last GLOBAL step index applied (-1 =
-  -- none yet) so we only load at a boundary; `macroCell` is the label last loaded
-  -- (for the readout — "" none, "~" a rest, "name ?" an unresolved name).
-  , macroText :: String, macroBars :: Int, macroOn :: Boolean
-  , macroStep :: Int, macroCell :: String
+  -- macro-tidal — the Tidal-like sequencer (docs/DESIGN-scene-modal.md): one
+  -- mini-notation LANE per machine, over glyph ALIASES (`"owl-bomb star-ambulance
+  -- ~"`). Each lane resolves against its machine's preset bank (recall by alias),
+  -- and — unlike the scene grid's leave-as-is — a `~` step is a REST = silence
+  -- (the machine disarms). Lanes are polymetric: they share the bar pulse but each
+  -- cycles at its own token count. `macroLanes` holds each lane's text; `macroBars`
+  -- = bars per step; `macroOn` runs it; `macroStep` is the last global step applied
+  -- (-1 = none, so we only act at a boundary); `macroReadout` is each lane's live
+  -- current-token label ("~" rest, "alias" resolved, "alias ?" unresolved).
+  , macroLanes :: Map Which String
+  , macroReadout :: Map Which String
+  , macroBars :: Int, macroOn :: Boolean, macroStep :: Int
   -- Harmonic-authority bridge: the last resting-context scale pushed from Vetula
   -- into Odonus (serialised for dedup, so the 100ms poll only re-pushes on change).
   , ctxScaleKey :: String
@@ -269,8 +274,8 @@ root =
         , armed: Set.empty
         , routing: Map.empty
         , vetulaNames: []
-        , macroText: "", macroBars: 4, macroOn: false
-        , macroStep: -1, macroCell: "", ctxScaleKey: "", balChip: Nothing, selChip: Nothing, odoChip: Nothing, vetChip: Nothing, captureFlash: false
+        , macroLanes: Map.empty, macroReadout: Map.empty, macroBars: 4, macroOn: false, macroStep: -1
+        , ctxScaleKey: "", balChip: Nothing, selChip: Nothing, odoChip: Nothing, vetChip: Nothing, captureFlash: false
         , pollBusy: false, amphoraDown: false, chipMenu: Nothing
         , scenes: [], sceneRun: false, scenePos: -1, sceneBars: 4, sceneStep: -1, scenePick: Nothing }
     , render
@@ -301,6 +306,11 @@ handleAction = case _ of
     -- stays false) — a reload never auto-plays, mirroring the machines.
     msc <- liftEffect ScenesStore.load
     for_ msc \sv -> H.modify_ _ { scenes = sv.scenes }
+    -- Restore the saved macro-tidal lanes + bars-per-step (macroOn stays false).
+    mmac <- liftEffect MacroStore.load
+    for_ mmac \sv -> H.modify_ _
+      { macroLanes = Map.fromFoldable (mapMaybe (\e -> (\w -> Tuple w e.text) <$> whichFromLane e.machine) sv.lanes)
+      , macroBars = if sv.bars >= 1 then sv.bars else 4 }
     -- The global CAPTURE hotkey: one window-level keydown listener (the "same key
     -- on every pane" binding) → CaptureKey, which routes to the active machine.
     -- Guarded so it never fires while typing in a text field.
@@ -462,43 +472,41 @@ handleAction = case _ of
   DeleteFrom w slot -> do
     _ <- queryDelete w slot
     refreshChipMenu w
-  -- macro-tidal: edit the Odonus lane / bars-per-step.
-  SetMacroText t -> H.modify_ _ { macroText = t }
+  -- macro-tidal: edit one machine's lane / the shared bars-per-step.
+  SetLaneText w t -> do
+    H.modify_ \s -> s { macroLanes = Map.insert w t s.macroLanes }
+    persistMacro
   SetMacroBars v -> case Int.fromString v of
-    Just n | n >= 1 -> H.modify_ _ { macroBars = n }
+    Just n | n >= 1 -> do
+      H.modify_ _ { macroBars = n }
+      persistMacro
     _ -> pure unit
-  -- Palette click: append a scene name to the lane (with a separating space).
-  -- A name containing a space is quoted so it stays one token.
-  AppendMacroName name -> do
-    let tok = if String.contains (String.Pattern " ") name then "\"" <> name <> "\"" else name
-    H.modify_ \st -> st { macroText = if st.macroText == "" then tok else st.macroText <> " " <> tok }
-  -- Run / stop the sequencer. Turning ON re-gathers the library (so names resolve)
-  -- and resets `macroStep` to -1 so the next tick applies the current step at once.
+  -- Run / stop the sequencer. Turning ON resets `macroStep` to -1 so the next tick
+  -- applies the current step at once. (No library re-gather — lanes now resolve
+  -- against the local preset banks by glyph alias, not Amphora scene names.)
   ToggleMacro -> do
     on <- H.gets _.macroOn
     if on
       then H.modify_ _ { macroOn = false }
-      else do
-        refreshLibrary
-        H.modify_ _ { macroOn = true, macroStep = -1 }
+      else H.modify_ _ { macroOn = true, macroStep = -1 }
   -- The bar-quantized clock. Compute the current global step from the shared
-  -- free-run epoch; when it crosses a boundary, resolve the cell and apply it.
-  -- Rig-locked timing (reading the Link anchor instead of freeTempo) is a later
-  -- slice — this drives the Solo/standalone case.
+  -- free-run epoch; when it crosses a boundary, resolve + apply EACH machine's lane
+  -- at its own token count (so lanes of different lengths phase polymetrically).
+  -- Rig-locked timing (reading the Link anchor) is a later slice — this drives Solo.
   MacroTick -> do
     st <- H.get
-    when st.macroOn do
-      let toks = parseLane st.macroText
-          n = length toks
-      when (n > 0 && st.macroBars > 0) do
-        now <- liftEffect dateNow
-        let barMs = 4.0 * 60000.0 / freeTempo
-            epochMs = st.freeT0 / 1000.0
-            barIdx = max 0 (Int.floor ((now - epochMs) / barMs))
-            stepGlobal = barIdx `div` st.macroBars
-        when (stepGlobal /= st.macroStep) do
-          H.modify_ _ { macroStep = stepGlobal }
-          applyCell (resolveStep toks (stepGlobal `mod` n) (stepGlobal `div` n))
+    when (st.macroOn && st.macroBars > 0) do
+      now <- liftEffect dateNow
+      let barMs = 4.0 * 60000.0 / freeTempo
+          epochMs = st.freeT0 / 1000.0
+          barIdx = max 0 (Int.floor ((now - epochMs) / barMs))
+          stepGlobal = barIdx `div` st.macroBars
+      when (stepGlobal /= st.macroStep) do
+        H.modify_ _ { macroStep = stepGlobal }
+        for_ Scenes.sceneMachines \w -> do
+          let toks = parseLane (fromMaybe "" (Map.lookup w st.macroLanes))
+              n = length toks
+          when (n > 0) (applyLaneCell w (resolveStep toks (stepGlobal `mod` n) (stepGlobal `div` n)))
   -- Scene grid (Ableton-like). Snapshot the rig: read every machine's CURRENT chip
   -- glyph (the alias it's parked on) into a new scene row. A machine with no chip
   -- (nothing captured) contributes a leave-as-is cell. The capture-hotkey ethos at
@@ -618,30 +626,43 @@ pushSounding w = do
   st <- H.get
   void $ querySounding w (soundingOf st.mode st.armed (previewSet st) w)
 
--- macro-tidal: enact one resolved step on the Odonus lane. A named form loads its
--- scene and arms Odonus so it sounds; a rest (or the silent branch of an
--- alternation) disarms it. An unresolved name is held (Odonus keeps playing what
--- it had) and flagged in the readout. The sequencer thus owns Odonus's arm — the
--- generalisation of scene-scheduling up out of the instrument.
-applyCell :: forall o m. MonadAff m => Cell -> H.HalogenM RState RAction Slots o m Unit
-applyCell = case _ of
+-- macro-tidal: enact one resolved lane step on machine `w`. A glyph-alias token
+-- recalls that preset (by alias, from the machine's bank) and ARMS the machine so
+-- it sounds; a `~` rest (or the silent branch of an alternation) DISARMS it —
+-- silence, the Tidal-like reading (vs the scene grid's leave-as-is). An unresolved
+-- alias (its preset was deleted) is held and flagged in the readout. The sequencer
+-- thus owns each machine's arm — scene-scheduling lifted up out of the instrument.
+applyLaneCell :: forall o m. MonadAff m => Which -> Cell -> H.HalogenM RState RAction Slots o m Unit
+applyLaneCell w = case _ of
   Quiet -> do
     a <- H.gets _.armed
-    when (Set.member Odo a) do
-      H.modify_ _ { armed = Set.delete Odo a }
-      pushSounding Odo
-    H.modify_ _ { macroCell = "~" }
-  Load name mods -> do
-    lib <- H.gets _.library
-    case find (\r -> r.inst == Odo && r.name == name) lib of
-      Just row -> do
-        _ <- queryLoad Odo row.idx
-        a <- H.gets _.armed
-        when (not (Set.member Odo a)) (H.modify_ _ { armed = Set.insert Odo a })
-        for_ mods applyMod   -- apply the transform stack to the freshly loaded form
-        pushSounding Odo
-        H.modify_ _ { macroCell = name <> joinWith "" (map (\md -> " #" <> md.verb) mods) }
-      Nothing -> H.modify_ _ { macroCell = name <> " ?" }
+    when (Set.member w a) do
+      H.modify_ _ { armed = Set.delete w a }
+      pushSounding w
+    setLaneReadout w "~"
+  Load alias mods -> do
+    ok <- recallAlias w alias
+    if ok then do
+      a <- H.gets _.armed
+      when (not (Set.member w a)) (H.modify_ _ { armed = Set.insert w a })
+      for_ mods applyMod   -- apply the transform stack (e.g. `# scale`) to the form
+      pushSounding w
+      setLaneReadout w (alias <> joinWith "" (map (\md -> " #" <> md.verb) mods))
+    else setLaneReadout w (alias <> " ?")
+
+-- Record one lane's current-token label for its live readout.
+setLaneReadout :: forall o m. Which -> String -> H.HalogenM RState RAction Slots o m Unit
+setLaneReadout w s = H.modify_ \st -> st { macroReadout = Map.insert w s st.macroReadout }
+
+-- Recall a machine's preset by glyph alias: ask its bank for the matching slot
+-- (alias = stable content identity), then RecallSlot it. `true` iff it resolved.
+-- Shared by the macro lanes and the scene grid launch.
+recallAlias :: forall o m. Which -> String -> H.HalogenM RState RAction Slots o m Boolean
+recallAlias w alias = do
+  mbank <- queryBank w
+  case mbank >>= (\bank -> _.slot <$> find (\it -> it.alias == alias) bank) of
+    Just slot -> queryRecall w slot $> true
+    Nothing -> pure false
 
 -- Interpret one resolved modifier. `scale` re-quantises the whole rig by setting
 -- VETULA's resting scale (Vetula is the single harmonic authority; the poll bridge
@@ -769,11 +790,7 @@ launchScene i = do
     Just sc -> do
       H.modify_ _ { scenePos = i }
       forWithIndex_ sc.cells \mIx mAlias -> case mAlias, Scenes.sceneMachines !! mIx of
-        Just alias, Just w -> do
-          mbank <- queryBank w
-          case mbank >>= (\bank -> _.slot <$> find (\it -> it.alias == alias) bank) of
-            Just slot -> void (queryRecall w slot)
-            Nothing -> pure unit
+        Just alias, Just w -> void (recallAlias w alias)
         _, _ -> pure unit
 
 -- Persist the rig-wide scene grid after any edit.
@@ -781,6 +798,22 @@ persistScenes :: forall o m. MonadAff m => H.HalogenM RState RAction Slots o m U
 persistScenes = do
   scs <- H.gets _.scenes
   liftEffect (ScenesStore.save { scenes: scs })
+
+-- Persist the macro-tidal lanes (keyed by lane tag) + bars-per-step.
+persistMacro :: forall o m. MonadAff m => H.HalogenM RState RAction Slots o m Unit
+persistMacro = do
+  s <- H.get
+  let lanes = map (\(Tuple w t) -> { machine: laneLabel w, text: t }) (Map.toUnfoldable s.macroLanes)
+  liftEffect (MacroStore.save { lanes, bars: s.macroBars })
+
+-- The machine a lane tag names (inverse of `laneLabel`), for restoring saved lanes.
+whichFromLane :: String -> Maybe Which
+whichFromLane = case _ of
+  "odo" -> Just Odo
+  "bal" -> Just Bal
+  "sel" -> Just Sel
+  "vet" -> Just Vet
+  _ -> Nothing
 
 -- Query each mounted instrument for its current source and stitch the four
 -- into one labelled document.
@@ -1000,24 +1033,20 @@ channelMapPanel st =
             ]
         ]
 
--- macro-tidal (Slice 1): the ARRANGEMENT lane. A mini-notation string of Odonus
--- scene-names sequenced over bar-quantized steps — "midnight ~ <descent drift>".
--- Space-separated tokens divide the macro-cycle into equal steps; `~` is a rest;
--- `<a b c>` alternates one inner form per cycle. Run it and the sequencer loads
--- the resolved scene into Odonus at each step boundary (arming it to sound; a
--- rest disarms). The palette lists the available Odonus scenes to click into the
--- lane; unresolved names show in red and are held.
+-- macro-tidal — the Tidal-like sequencer: one mini-notation LANE per machine, over
+-- glyph ALIASES ("owl-bomb star-ambulance ~"). Space-separated tokens divide the
+-- lane's cycle into equal steps; `~` is a REST = silence (the machine disarms);
+-- `<a b c>` alternates one inner form per cycle; `# scale <…>` re-quantises the rig
+-- (via Vetula). Run it and each lane recalls its resolved preset into its machine
+-- at each bar-step boundary (arming it), all sharing one pulse but each cycling at
+-- its own token count — polymetric. Type aliases directly (read them off the chips
+-- / recall menus); `:`+Tab completion + a glyph mirror are the next slice.
 macroPanel :: forall m. RState -> H.ComponentHTML RAction Slots m
 macroPanel st =
-  let toks = parseLane st.macroText
-      n = length toks
-      odoNames = map _.name (filter (\r -> r.inst == Odo) st.library)
-      curStep = if st.macroOn && st.macroStep >= 0 && n > 0 then Just (st.macroStep `mod` n) else Nothing
-      unknown = filter (\nm -> not (nm `elem` odoNames)) (laneFormNames toks)
-  in HH.div [ style "margin-bottom:26px;padding:14px 16px;background:#eef1ec;border:1px solid #d6ddd2;border-radius:6px" ]
-    [ HH.div [ style "display:flex;align-items:baseline;justify-content:space-between;gap:14px;margin-bottom:11px" ]
+  HH.div [ style "margin-bottom:26px;padding:14px 16px;background:#eef1ec;border:1px solid #d6ddd2;border-radius:6px" ]
+    [ HH.div [ style "display:flex;align-items:baseline;justify-content:space-between;gap:14px;margin-bottom:9px" ]
         [ HH.span [ style "font-size:13px;letter-spacing:0.14em;text-transform:uppercase;color:#3f5a3f" ]
-            [ HH.text "Arrangement — macro-tidal · Odonus lane" ]
+            [ HH.text "Arrangement — macro-tidal · per-machine lanes" ]
         , HH.div [ style "display:flex;align-items:center;gap:12px" ]
             [ HH.span [ style "font-size:10px;letter-spacing:0.08em;text-transform:uppercase;color:#6a7a6a" ]
                 [ HH.text "bars/step" ]
@@ -1033,59 +1062,64 @@ macroPanel st =
                 [ HH.text (if st.macroOn then "■ stop" else "▶ run") ]
             ]
         ]
-    , HH.div [ style "font-size:10px;color:#7a8a7a;margin-bottom:7px;font-family:'SF Mono',Menlo,Consolas,monospace" ]
-        [ HH.text "~ rest · <a b> alternate per cycle · # scale <\"F# lydian dominant\" \"G major\"> re-quantise" ]
-    , HH.input
-        [ HP.value st.macroText
-        , HE.onValueInput SetMacroText
-        , HP.placeholder "\"bopping along\" # scale <\"F# lydian dominant\" \"G major\">"
-        , HP.spellcheck false
-        , style $ "width:100%;box-sizing:border-box;padding:9px 11px;border:1px solid #b8c4b0;border-radius:5px;"
-            <> "background:#fffdf8;font-family:'SF Mono',Menlo,Consolas,monospace;font-size:13px;letter-spacing:0.02em;color:#22301f" ]
-    -- The parsed step readout: one chip per top-level step, the running step lit,
-    -- unresolved names ringed red. Plus the live cell + cycle when running.
-    , if n == 0 then HH.text ""
-      else HH.div [ style "display:flex;flex-wrap:wrap;align-items:center;gap:6px;margin-top:10px" ]
-        ( mapWithIndex (stepChip odoNames curStep) toks
-            <> [ if st.macroOn
-                   then HH.span [ style "margin-left:8px;font-size:11px;color:#3d6b3d;font-style:italic" ]
-                          [ HH.text ("♪ " <> (if st.macroCell == "" then "…" else st.macroCell)
-                                      <> "  · cycle " <> show (if n > 0 then st.macroStep `div` n else 0)) ]
-                   else HH.text "" ] )
-    -- The palette: the Odonus scenes you can name in the lane (click to append).
-    , HH.div [ style "margin-top:11px;padding-top:9px;border-top:1px dashed #c8d2c0" ]
-        [ HH.span [ style "font-size:10px;letter-spacing:0.12em;text-transform:uppercase;color:#7a8a7a;margin-right:8px" ]
-            [ HH.text "scenes" ]
-        , if null odoNames
-            then HH.span [ style "font-size:11px;color:#9aa89a;font-style:italic" ]
-                   [ HH.text "save / refresh to gather Odonus scenes" ]
-            else HH.span [ style "display:inline-flex;flex-wrap:wrap;gap:5px" ] (map paletteChip odoNames)
-        ]
-    , if null unknown then HH.text ""
-      else HH.div [ style "margin-top:8px;font-size:11px;color:#a03028" ]
-        [ HH.text ("unresolved (held): " <> joinWith ", " unknown) ]
+    , HH.div [ style "font-size:10px;color:#7a8a7a;margin-bottom:4px;font-family:'SF Mono',Menlo,Consolas,monospace" ]
+        [ HH.text "~ rest = silence · <a b> alternate per cycle · # scale <\"F# lydian dominant\" \"G major\"> re-quantise" ]
+    , HH.div_ (map (laneRow st) Scenes.sceneMachines)
     ]
-  where
-  paletteChip nm =
-    HH.span
-      [ HE.onClick \_ -> AppendMacroName nm
-      , style $ "cursor:pointer;padding:2px 9px;border:1px solid #b8c4b0;border-radius:11px;background:#fbfdf9;"
-          <> "font-family:'SF Mono',Menlo,Consolas,monospace;font-size:11px;color:#2f4a2f" ]
-      [ HH.text nm ]
 
--- One step in the arrangement readout: its source label (a name, `~`, or a
--- `<…>` group), lit when it's the running step, ringed red if it names a form
--- that doesn't resolve against the loaded Odonus library.
-stepChip :: forall m. Array String -> Maybe Int -> Int -> Step -> H.ComponentHTML RAction Slots m
-stepChip odoNames curStep i step =
+-- One machine's lane: its tag + the mini-notation input + (when running) a step
+-- readout with the current step lit and the live resolved token.
+laneRow :: forall m. RState -> Which -> H.ComponentHTML RAction Slots m
+laneRow st w =
+  let
+    text = fromMaybe "" (Map.lookup w st.macroLanes)
+    toks = parseLane text
+    n = length toks
+    curStep = if st.macroOn && st.macroStep >= 0 && n > 0 then Just (st.macroStep `mod` n) else Nothing
+    readout = fromMaybe "" (Map.lookup w st.macroReadout)
+  in
+    HH.div [ style "display:flex;align-items:flex-start;gap:10px;margin-top:9px" ]
+      [ HH.span
+          [ style "flex:0 0 38px;padding-top:8px;font-family:'SF Mono',Menlo,Consolas,monospace;font-size:12px;letter-spacing:0.06em;color:#5a6a5a" ]
+          [ HH.text (laneLabel w) ]
+      , HH.div [ style "flex:1 1 auto;min-width:0" ]
+          [ HH.input
+              [ HP.value text
+              , HE.onValueInput (SetLaneText w)
+              , HP.placeholder "owl-bomb star-ambulance ~ <owl-bomb star-ambulance>"
+              , HP.spellcheck false
+              , style $ "width:100%;box-sizing:border-box;padding:8px 11px;border:1px solid #b8c4b0;border-radius:5px;"
+                  <> "background:#fffdf8;font-family:'SF Mono',Menlo,Consolas,monospace;font-size:13px;letter-spacing:0.02em;color:#22301f" ]
+          , if n == 0 then HH.text ""
+            else HH.div [ style "display:flex;flex-wrap:wrap;align-items:center;gap:6px;margin-top:7px" ]
+              ( mapWithIndex (laneStepChip curStep) toks
+                  <> [ if st.macroOn && readout /= ""
+                         then HH.span [ style "margin-left:6px;font-size:11px;color:#3d6b3d;font-style:italic" ]
+                                [ HH.text ("♪ " <> readout <> "  · cycle " <> show (if n > 0 then st.macroStep `div` n else 0)) ]
+                         else HH.text "" ] )
+          ]
+      ]
+
+-- The lowercase Tidal-style lane tag for a machine.
+laneLabel :: Which -> String
+laneLabel = case _ of
+  Odo -> "odo"
+  Bal -> "bal"
+  Sel -> "sel"
+  Vet -> "vet"
+  _ -> "?"
+
+-- One step in a lane's readout: its label (an alias, `~`, or a `<…>` group), lit
+-- when it's the running step. (Unresolved aliases surface at runtime in the live
+-- readout — "alias ?" — since the bank isn't known synchronously here.)
+laneStepChip :: forall m. Maybe Int -> Int -> Step -> H.ComponentHTML RAction Slots m
+laneStepChip curStep i step =
   let live = curStep == Just i
-      resolvable = null (filter (\nm -> not (nm `elem` odoNames)) (laneFormNames [ step ]))
-      border = if not resolvable then "#c85a50" else if live then "#4a7a4a" else "#c8d2c0"
+      border = if live then "#4a7a4a" else "#c8d2c0"
       bg = if live then "linear-gradient(#dcecd6,#cde3c4)" else "#fbfdf9"
   in HH.span
     [ style $ "padding:3px 10px;border:1px solid " <> border <> ";border-radius:4px;background:" <> bg <> ";"
-        <> "font-family:'SF Mono',Menlo,Consolas,monospace;font-size:12px;"
-        <> "color:" <> (if not resolvable then "#a03028" else "#2f4a2f") ]
+        <> "font-family:'SF Mono',Menlo,Consolas,monospace;font-size:12px;color:#2f4a2f" ]
     [ HH.text (stepLabel step) ]
 
 -- The SHELF: the curated ★ GO-TO wall leads (starred setups across every
