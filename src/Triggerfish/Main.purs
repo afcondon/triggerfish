@@ -19,7 +19,7 @@ module Triggerfish.Main where
 
 import Prelude
 
-import Data.Array (any, deleteAt, filter, find, findIndex, length, mapMaybe, mapWithIndex, modifyAt, null, replicate, uncons, (!!))
+import Data.Array (any, deleteAt, filter, find, findIndex, last, length, mapMaybe, mapWithIndex, modifyAt, null, replicate, uncons, unsnoc, (!!))
 import Data.FoldableWithIndex (forWithIndex_)
 import Data.Foldable (for_)
 import Data.Either (Either(..))
@@ -70,7 +70,7 @@ import Triggerfish.Scenes.Store as ScenesStore
 import Triggerfish.Macro.Store as MacroStore
 import Triggerfish.Midi.Routing as Routing
 import Triggerfish.Amphora as Amphora
-import Triggerfish.Macro (Cell(Quiet, Load), Step, ResolvedMod, parseLane, resolveStep, stepLabel)
+import Triggerfish.Macro (Cell(Quiet, Load), Form(..), Step, ResolvedMod, parseLane, resolveStep, stepLabel)
 import Triggerfish.Scale (rootNames, scaleTypes)
 import Vetula.App as Vetula
 import Vetula.Clipboard (copyText)
@@ -137,6 +137,8 @@ data RAction
   | ToggleSceneRun             -- run / stop the bar-quantized auto-advance
   | SetSceneBars String        -- bars per scene
   | SceneTick                  -- the scene bar-clock poll (advance at a boundary)
+  | AcceptCompletion Which String  -- accept a `:`-completion: insert the glyph alias
+  | CloseCompletion            -- dismiss the `:`-completion popup (blur / Esc)
 
 -- One saved preset gathered from an instrument, for the cross-instrument LIBRARY
 -- manager on the TIDAL page. `text` is the entry rendered to Lepidoptera eDSL
@@ -195,6 +197,10 @@ type RState =
   , macroLanes :: Map Which String
   , macroReadout :: Map Which String
   , macroBars :: Int, macroOn :: Boolean, macroStep :: Int
+  -- The `:`-completion popup for a lane: which machine, the `:`-prefix being typed
+  -- (the trailing token), and its bank's matching glyphs. Nothing = closed. Typing
+  -- a `:foo` token opens it (emoji-picker over that machine's bank); click inserts.
+  , laneComplete :: Maybe { w :: Which, prefix :: String, items :: Array MenuItem }
   -- Harmonic-authority bridge: the last resting-context scale pushed from Vetula
   -- into Odonus (serialised for dedup, so the 100ms poll only re-pushes on change).
   , ctxScaleKey :: String
@@ -274,7 +280,7 @@ root =
         , armed: Set.empty
         , routing: Map.empty
         , vetulaNames: []
-        , macroLanes: Map.empty, macroReadout: Map.empty, macroBars: 4, macroOn: false, macroStep: -1
+        , macroLanes: Map.empty, macroReadout: Map.empty, macroBars: 4, macroOn: false, macroStep: -1, laneComplete: Nothing
         , ctxScaleKey: "", balChip: Nothing, selChip: Nothing, odoChip: Nothing, vetChip: Nothing, captureFlash: false
         , pollBusy: false, amphoraDown: false, chipMenu: Nothing
         , scenes: [], sceneRun: false, scenePos: -1, sceneBars: 4, sceneStep: -1, scenePick: Nothing }
@@ -476,6 +482,22 @@ handleAction = case _ of
   SetLaneText w t -> do
     H.modify_ \s -> s { macroLanes = Map.insert w t s.macroLanes }
     persistMacro
+    -- `:`-completion: if the trailing token is a `:prefix`, open a scoped popup of
+    -- that machine's bank glyphs whose alias matches; otherwise close it.
+    case String.stripPrefix (String.Pattern ":") (trailingToken t) of
+      Just prefix -> do
+        items <- fromMaybe [] <$> queryBank w
+        let matched = filter (\it -> String.contains (String.Pattern prefix) it.alias) items
+        H.modify_ _ { laneComplete = Just { w, prefix, items: matched } }
+      Nothing -> H.modify_ _ { laneComplete = Nothing }
+  -- Accept a completion: replace the trailing `:prefix` token with the glyph alias
+  -- (plus a trailing space so typing flows on), and close the popup.
+  AcceptCompletion w alias -> do
+    H.modify_ \s ->
+      let cur = fromMaybe "" (Map.lookup w s.macroLanes)
+      in s { macroLanes = Map.insert w (replaceTrailingToken cur alias <> " ") s.macroLanes, laneComplete = Nothing }
+    persistMacro
+  CloseCompletion -> H.modify_ _ { laneComplete = Nothing }
   SetMacroBars v -> case Int.fromString v of
     Just n | n >= 1 -> do
       H.modify_ _ { macroBars = n }
@@ -815,6 +837,17 @@ whichFromLane = case _ of
   "vet" -> Just Vet
   _ -> Nothing
 
+-- The last space-separated token of a lane (the one the caret is completing).
+trailingToken :: String -> String
+trailingToken t = fromMaybe "" (last (String.split (String.Pattern " ") t))
+
+-- Replace a lane's trailing token with `alias` (the accepted completion).
+replaceTrailingToken :: String -> String -> String
+replaceTrailingToken cur alias =
+  case unsnoc (String.split (String.Pattern " ") cur) of
+    Just { init } -> joinWith " " (init <> [ alias ])
+    Nothing -> alias
+
 -- Query each mounted instrument for its current source and stitch the four
 -- into one labelled document.
 refreshTidal :: forall o m. H.HalogenM RState RAction Slots o m Unit
@@ -1039,8 +1072,9 @@ channelMapPanel st =
 -- `<a b c>` alternates one inner form per cycle; `# scale <…>` re-quantises the rig
 -- (via Vetula). Run it and each lane recalls its resolved preset into its machine
 -- at each bar-step boundary (arming it), all sharing one pulse but each cycling at
--- its own token count — polymetric. Type aliases directly (read them off the chips
--- / recall menus); `:`+Tab completion + a glyph mirror are the next slice.
+-- its own token count — polymetric. Type a `:prefix` for a scoped glyph-completion
+-- popup over that machine's bank (click to insert); each lane's steps render as a
+-- PICTOGRAPHIC MIRROR of coloured glyph-pairs below the input.
 macroPanel :: forall m. RState -> H.ComponentHTML RAction Slots m
 macroPanel st =
   HH.div [ style "margin-bottom:26px;padding:14px 16px;background:#eef1ec;border:1px solid #d6ddd2;border-radius:6px" ]
@@ -1090,6 +1124,11 @@ laneRow st w =
               , HP.spellcheck false
               , style $ "width:100%;box-sizing:border-box;padding:8px 11px;border:1px solid #b8c4b0;border-radius:5px;"
                   <> "background:#fffdf8;font-family:'SF Mono',Menlo,Consolas,monospace;font-size:13px;letter-spacing:0.02em;color:#22301f" ]
+          -- the `:`-completion popup for THIS lane (emoji-picker over its bank)
+          , case st.laneComplete of
+              Just c | c.w == w -> completionPopup w c.prefix c.items
+              _ -> HH.text ""
+          -- the pictographic mirror: the parsed steps as GLYPHS, running step lit
           , if n == 0 then HH.text ""
             else HH.div [ style "display:flex;flex-wrap:wrap;align-items:center;gap:6px;margin-top:7px" ]
               ( mapWithIndex (laneStepChip curStep) toks
@@ -1100,6 +1139,32 @@ laneRow st w =
           ]
       ]
 
+-- The `:`-completion popup: this machine's bank glyphs matching the typed prefix,
+-- click to insert the alias (Tab-accept lands with the CodeMirror upgrade). Empty
+-- match → a hint. Renders inline under the lane input.
+completionPopup :: forall m. Which -> String -> Array MenuItem -> H.ComponentHTML RAction Slots m
+completionPopup w prefix items =
+  HH.div
+    [ style $ "margin-top:4px;padding:5px;border:1px solid #a8b8a0;border-radius:6px;background:#f4f7f1;"
+        <> "box-shadow:0 4px 12px #00000022;display:flex;flex-wrap:wrap;gap:4px;align-items:center" ]
+    ( [ HH.span [ style "font-size:8px;letter-spacing:0.1em;text-transform:uppercase;color:#8a9a8a;margin-right:3px" ]
+          [ HH.text (":" <> prefix) ] ]
+        <>
+          ( if null items
+              then [ HH.span [ style "font-size:10px;color:#9aaa9a;font-style:italic" ] [ HH.text "no matching glyph in this bank" ] ]
+              else map (completionItem w) items ) )
+
+completionItem :: forall m. Which -> MenuItem -> H.ComponentHTML RAction Slots m
+completionItem w item =
+  let g = G.glyphFromAlias item.alias
+  in HH.span
+      [ HE.onClick \_ -> AcceptCompletion w item.alias
+      , HP.attr (H.AttrName "title") item.alias
+      , style $ "display:inline-flex;align-items:center;gap:4px;cursor:pointer;padding:2px 8px;border-radius:11px;"
+          <> "border:1px solid #cbd8c4;background:#ffffff" ]
+      [ HH.span [ style "display:inline-flex;align-items:center;gap:2px" ] [ faIcon g.first, faIcon g.second ]
+      , HH.span [ style "font-family:'SF Mono',Menlo,monospace;font-size:9px;color:#4a5a4a" ] [ HH.text item.alias ] ]
+
 -- The lowercase Tidal-style lane tag for a machine.
 laneLabel :: Which -> String
 laneLabel = case _ of
@@ -1109,18 +1174,27 @@ laneLabel = case _ of
   Vet -> "vet"
   _ -> "?"
 
--- One step in a lane's readout: its label (an alias, `~`, or a `<…>` group), lit
--- when it's the running step. (Unresolved aliases surface at runtime in the live
--- readout — "alias ?" — since the bank isn't known synchronously here.)
+-- One step in a lane's PICTOGRAPHIC MIRROR: a glyph-alias renders as its coloured
+-- glyph-pair (+ the alias in small text), a `~` rest as a dash, an alternation
+-- `<…>` as its text; the running step is lit. This is the arrangement-as-glyph-score
+-- (docs/DESIGN-scene-modal.md). (An alias always renders SOME glyph — deterministic
+-- from its text — so a typo shows a "wrong" glyph; unresolved-against-the-bank is
+-- flagged at runtime in the live readout, "alias ?".)
 laneStepChip :: forall m. Maybe Int -> Int -> Step -> H.ComponentHTML RAction Slots m
 laneStepChip curStep i step =
   let live = curStep == Just i
       border = if live then "#4a7a4a" else "#c8d2c0"
       bg = if live then "linear-gradient(#dcecd6,#cde3c4)" else "#fbfdf9"
   in HH.span
-    [ style $ "padding:3px 10px;border:1px solid " <> border <> ";border-radius:4px;background:" <> bg <> ";"
-        <> "font-family:'SF Mono',Menlo,Consolas,monospace;font-size:12px;color:#2f4a2f" ]
-    [ HH.text (stepLabel step) ]
+    [ style $ "display:inline-flex;align-items:center;gap:5px;padding:3px 9px;border:1px solid " <> border
+        <> ";border-radius:4px;background:" <> bg <> ";font-family:'SF Mono',Menlo,Consolas,monospace;font-size:12px;color:#2f4a2f" ]
+    ( case step.form of
+        FName alias ->
+          let g = G.glyphFromAlias alias
+          in [ HH.span [ style "display:inline-flex;align-items:center;gap:2px" ] [ faIcon g.first, faIcon g.second ]
+             , HH.span [ style "font-size:10px;color:#5a6a5a" ] [ HH.text alias ] ]
+        FRest -> [ HH.span [ style "color:#9aaa9a" ] [ HH.text "~" ] ]
+        FAlt _ -> [ HH.text (stepLabel step) ] )
 
 -- The SHELF: the curated ★ GO-TO wall leads (starred setups across every
 -- instrument — the Cianni shelf), then the full archive sits behind a "dig"
