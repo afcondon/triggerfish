@@ -2722,12 +2722,27 @@ render st =
   HH.div
     [ HP.style ("position: relative; width: 100%; height: calc(100vh - 118px); min-height: 620px; overflow: hidden; border-radius: 8px; background: " <> canvasBg <> ";") ]
     [ HH.div [ HP.style "position: absolute; inset: 0;" ] [ surface st ]
-    , HH.div
-        [ HP.style ("position: absolute; top: 12px; left: 12px; width: 256px; max-height: calc(100% - 24px); overflow: visible; z-index: 6; padding: 2px 12px 10px; " <> panelCss) ]
-        [ leftColumn st ]
-    , HH.div
-        [ HP.style ("position: absolute; top: 12px; right: 12px; width: 340px; max-height: calc(100% - 24px); overflow-x: hidden; overflow-y: auto; z-index: 5; padding: 2px 12px 10px; " <> panelCss) ]
-        [ railView st ]
+    -- Three FLOATING controls (docs/DESIGN-vetula-progression-building.md), each
+    -- owning one Harmonia layer: A = harmonic context (Key + palette + geometry),
+    -- B = tank & progression (the Phrase), C = voices (Voicing). Placeholder names
+    -- A/B/C; placement provisional — they float over the stage and will be made
+    -- movable later. Library panel retired (→ between-sessions modal, #16); the
+    -- "grow" and "pad grid" lenses left the geometry selector (grow → B; pad grid
+    -- retired).
+    , floatCard "A" "context"
+        "position: absolute; top: 12px; left: 12px; width: 248px; max-height: calc(100% - 24px); overflow-y: auto; overflow-x: visible; z-index: 6;"
+        [ setupPane st
+        , subGroup "Lens" (lensBar st)
+        ]
+    , floatCard "B" "tank & progression"
+        "position: absolute; top: 12px; right: 12px; width: 340px; max-height: calc(100% - 264px); overflow-y: auto; overflow-x: hidden; z-index: 6;"
+        [ subGroup ("Tank · " <> show (length st.tank) <> " caught") (tankPane st)
+        , growBar st
+        , subGroup ("Progression · " <> countLabel (length (pathSteps st)) "step") (progressionPanel st)
+        ]
+    , floatCard "C" "voices"
+        "position: absolute; bottom: 12px; left: 12px; right: 12px; max-height: 232px; overflow-y: auto; overflow-x: hidden; z-index: 4;"
+        [ playheadsRack st ]
     , HH.div
         [ HP.style "position: absolute; bottom: 12px; left: 50%; transform: translateX(-50%); z-index: 5;" ]
         [ pickBar st ]
@@ -2735,47 +2750,80 @@ render st =
     , revoiceModal st
     ]
 
--- | The reclaimed top bar, folded into a left accordion beside the full-height
--- | pool: Setup (key/scale/family/borrow/palettes/connection), Tank (caught
--- | chords), Lens (view choice). Multi-open, mirroring the right rail.
-leftColumn :: forall m. MonadAff m => State -> H.ComponentHTML Action Slots m
-leftColumn st =
+-- | A floating control card: a placeholder tag (A/B/C) + concern label header,
+-- | then the panel body. Positioning is passed in (provisional — these will be
+-- | made draggable once the placement settles).
+floatCard :: forall m. String -> String -> String -> Array (H.ComponentHTML Action Slots m) -> H.ComponentHTML Action Slots m
+floatCard tag title posCss body =
   HH.div
-    [ HP.style "" ]
-    [ accBox (Set.member SecSetup st.leftOpen) (ToggleLeftSection SecSetup) "Setup" "" (setupPane st)
-    , accBox (Set.member SecTank st.leftOpen) (ToggleLeftSection SecTank) "Tank" (show (length st.tank) <> " caught") (tankPane st)
-    , accBox (Set.member SecLens st.leftOpen) (ToggleLeftSection SecLens) "Lens" (lensLabel st.lens) (lensBar st)
+    [ HP.style (posCss <> " padding: 2px 12px 10px; " <> panelCss) ]
+    ( [ HH.div
+          [ HP.style "display: flex; align-items: baseline; gap: 8px; padding: 6px 2px 2px;" ]
+          [ HH.span [ HP.style "font-size: 13px; font-weight: 700; color: #1a1a1a; letter-spacing: 0.04em;" ] [ HH.text tag ]
+          , HH.span [ HP.style "font-size: 10px; color: #b0b0b0; letter-spacing: 0.14em; text-transform: uppercase;" ] [ HH.text title ]
+          ]
+      ] <> body )
+
+-- | Grow lives with the tank now (it operates on CAUGHT chords, not on the
+-- | geometry). A single toggle: enter the grow surface, re-roll it, or leave.
+growBar :: forall m. State -> H.ComponentHTML Action Slots m
+growBar st =
+  HH.div
+    [ HP.style "display: flex; align-items: center; gap: 6px; padding: 8px 2px; border-top: 1px solid #d8ceb4;" ]
+    ( if st.lens == LensGenerate then
+        [ HH.button
+            [ HP.style "border: 1px solid #b8860b; background: #fbf6ea; color: #7a5c00; cursor: pointer; padding: 3px 12px; border-radius: 4px; font-size: 12px;"
+            , HP.title "re-roll the relatives around each tank seed"
+            , HE.onClick \_ -> ShakeGenerate ]
+            [ HH.text "shake ⟳" ]
+        , HH.button
+            [ HP.style "border: 1px solid #dcdcdc; background: #fafafa; color: #6a6a6a; cursor: pointer; padding: 3px 12px; border-radius: 4px; font-size: 12px;"
+            , HP.title "leave the grow surface"
+            , HE.onClick \_ -> SetLens LensTonnetz ]
+            [ HH.text "done" ]
+        ]
+      else
+        [ HH.button
+            [ HP.style "border: 1px solid #b8860b; background: #fbf6ea; color: #7a5c00; cursor: pointer; padding: 3px 12px; border-radius: 4px; font-size: 12px;"
+            , HP.title "bloom voice-led relatives around the caught chords"
+            , HE.onClick \_ -> SetLens LensGenerate ]
+            [ HH.text "grow ⟳" ]
+        ]
+    )
+
+-- | A flat labelled group inside a floating control — a small uppercase caption
+-- | over a divider, then the body. Replaces the old collapsible accordion box:
+-- | the controls float, they don't fold.
+subGroup :: forall m. String -> H.ComponentHTML Action Slots m -> H.ComponentHTML Action Slots m
+subGroup label body =
+  HH.div
+    [ HP.style "border-top: 1px solid #d8ceb4; margin-top: 8px; padding-top: 6px;" ]
+    [ HH.div [ HP.style "font-size: 10px; color: #b0b0b0; letter-spacing: 0.12em; text-transform: uppercase; margin: 0 2px 6px;" ] [ HH.text label ]
+    , body
     ]
 
--- | The Stage lens selector — a segmented control over `allLenses`. Switching the
--- | lens re-projects the SAME material (the sim keeps running underneath); adding
--- | a lens needs only a new `allLenses` entry, which is the decoupling proof.
+-- | "N steps" / "N step" for the control captions.
+countLabel :: Int -> String -> String
+countLabel n noun = show n <> " " <> noun <> (if n == 1 then "" else "s")
+
+-- | The Stage GEOMETRY selector. The two "lenses" that weren't geometries have
+-- | left: `grow` is a tank operation (it lives in control B now) and `pad grid`
+-- | is retired. What remains are the four ways of LAYING OUT chords — two families
+-- | (relational: tonnetz / lattices; root-picker: keyboard / fifths). Switching
+-- | re-projects the SAME material (the sim keeps running underneath).
+geometryLenses :: Array StageLens
+geometryLenses = [ LensKeyboard, LensCircleFifths, LensTonnetz, LensLattices ]
+
 lensBar :: forall m. State -> H.ComponentHTML Action Slots m
 lensBar st =
   HH.div
     [ HP.style "display: flex; align-items: center; flex-wrap: wrap; gap: 6px; margin: 0 0 4px;" ]
-    ( [ HH.span [ HP.style "font-size: 10px; color: #b0b0b0; letter-spacing: 0.12em; text-transform: uppercase; margin-right: 4px; width: 100%;" ] [ HH.text "Lens" ] ]
-        <> map lensChip allLenses
-        <> shakeChip
-        <> resetChip )
+    ( map lensChip geometryLenses <> resetChip )
   where
-  -- geometric lenses only, and only once the viewport has moved: a way back to the
-  -- fitted view (scroll to zoom · drag to pan).
-  geometric = st.lens /= LensPadGrid
-  -- the Generate lens's re-roll: a fresh crop of relatives around the same seeds.
-  shakeChip =
-    if st.lens == LensGenerate then
-      [ HH.button
-          [ HP.style "border: 1px solid #b8860b; background: #fbf6ea; color: #7a5c00; cursor: pointer; padding: 3px 12px; border-radius: 4px; font-size: 12px; margin-left: 8px;"
-          , HP.title "re-roll the relatives around each tank seed"
-          , HE.onClick \_ -> ShakeGenerate
-          ]
-          [ HH.text "shake ⟳" ]
-      ]
-    else []
+  -- a way back to the fitted view (scroll to zoom · drag to pan), once it's moved.
   moved = st.viewZoom /= 1.0 || st.viewCx /= 0.0 || st.viewCy /= 0.0
   resetChip =
-    if geometric && moved then
+    if moved then
       [ HH.button
           [ HP.style "border: 1px solid #dcdcdc; background: #fafafa; color: #6a6a6a; cursor: pointer; padding: 3px 12px; border-radius: 4px; font-size: 12px; margin-left: 8px;"
           , HP.title "reset the view · scroll to zoom · drag to pan"
@@ -2805,39 +2853,6 @@ poolSpine =
     [ HH.span [ HP.style "font-size: 15px; color: #7a7a7a;" ] [ HH.text "▸" ]
     , HH.span [ HP.style "writing-mode: vertical-rl; font-size: 11px; letter-spacing: 0.14em; text-transform: uppercase; color: #b0b0b0;" ] [ HH.text "pool" ]
     ]
-
--- | The right rail: an accordion over the three rail objects — Progression (what),
--- | Library (saved progressions), Voices (how it's performed). One open at a time.
-railView :: forall m. MonadAff m => State -> H.ComponentHTML Action Slots m
-railView st =
-  HH.div
-    [ HP.style "" ]
-    [ accSection st SecProgression "Progression" (countLabel (length (pathSteps st)) "step") (progressionPanel st)
-    , accSection st SecLibrary "Library" (countLabel (length st.library) "saved") (libraryView st)
-    , accSection st SecVoices "Voices" (countLabel (length st.voices) "voice") (playheadsRack st)
-    ]
-  where
-  countLabel n noun = show n <> " " <> noun <> (if n == 1 then "" else "s")
-
--- | One accordion section: a click-to-open header (chevron + title + count) and, when
--- | open, its body. Headers stay visible when collapsed so the column reads as a stack.
--- | Section-agnostic — the rail and the left column both drive it.
-accBox :: forall m. Boolean -> Action -> String -> String -> H.ComponentHTML Action Slots m -> H.ComponentHTML Action Slots m
-accBox open toggle title subtitle body =
-  HH.div
-    [ HP.style "border-top: 1px solid #d8ceb4;" ]
-    [ HH.div
-        [ HP.style "display: flex; align-items: center; gap: 8px; padding: 9px 2px; cursor: pointer; user-select: none;"
-        , HE.onClick \_ -> toggle ]
-        [ HH.span [ HP.style "font-size: 10px; color: #b0b0b0; width: 9px;" ] [ HH.text (if open then "▾" else "▸") ]
-        , HH.span [ HP.style "font-size: 12px; color: #6a6a6a; letter-spacing: 0.06em; text-transform: uppercase;" ] [ HH.text title ]
-        , HH.span [ HP.style "font-size: 11px; color: #bcbcbc;" ] [ HH.text subtitle ]
-        ]
-    , if open then HH.div [ HP.style "padding: 0 2px 14px;" ] [ body ] else HH.text ""
-    ]
-
-accSection :: forall m. State -> RailSection -> String -> String -> H.ComponentHTML Action Slots m -> H.ComponentHTML Action Slots m
-accSection st sec = accBox (Set.member sec st.railOpen) (ToggleRailSection sec)
 
 -- | The Setup pane — the reclaimed top bar, stacked vertically in the left
 -- | accordion: key, scale, the focused-family scale override, the borrow source,
