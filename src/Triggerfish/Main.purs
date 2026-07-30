@@ -1198,9 +1198,9 @@ armSeg st w label =
           , style $ "padding:6px 13px 6px 5px;cursor:pointer;font-size:11px;letter-spacing:0.12em;"
               <> "text-transform:uppercase;color:" <> (if active then "#1c1a12" else "#5a564b") ]
           [ HH.text label ]
-      -- the machine's identity glyph, in its hue — the six-machine status board.
-      -- Only Balistes reports one so far; the rest are Nothing (blank) until wired.
-      , chipIcons (whichHue w) (chipOf st w)
+      -- the machine's identity glyph (icons coloured by content) — the six-machine
+      -- status board. Only Balistes reports one so far; the rest are Nothing (blank).
+      , chipIcons (chipOf st w)
       ]
 
 -- The chip view for a machine, from the shell's status-board state. Balistes is
@@ -1210,17 +1210,6 @@ chipOf :: RState -> Which -> Maybe G.ChipView
 chipOf st = case _ of
   Bal -> st.balChip
   _ -> Nothing
-
--- A machine's identity hue (Glyph's per-machine colour), for the status-board chips.
-whichHue :: Which -> String
-whichHue = case _ of
-  Odo -> G.hueOf G.Odonus
-  Bal -> G.hueOf G.Balistes
-  Sel -> G.hueOf G.Selene
-  Vet -> G.hueOf G.Vetula
-  Suf -> G.hueOf G.Sufflamen
-  Ste -> G.hueOf G.Stellatus
-  Tid -> "#5a564b"
 
 -- The CAPTURE hotkey — the same key on every pane. Modifier-free `c`, ignored while
 -- a text field is focused (so it never fires mid-typing). Easy to rebind here.
