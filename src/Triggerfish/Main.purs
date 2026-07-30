@@ -107,6 +107,7 @@ data RAction
   | StopPreview                -- workbench: end the preview, restore its sounding
   | VetulaArmed Boolean        -- Vetula's self-arm/disarm EVENT (replaces the poll)
   | BalChipChanged (Maybe G.ChipView)  -- Balistes' identity-chip view, for the status board
+  | SelChipChanged (Maybe G.ChipView)  -- Selene's identity-chip view, for the status board
   | CaptureKey                 -- the global CAPTURE hotkey → bank a preset on the active machine
   | OpenChipMenu Which         -- click a status-board glyph → open (or close) its recall menu
   | CloseChipMenu
@@ -177,9 +178,10 @@ type RState =
   -- into Odonus (serialised for dedup, so the 100ms poll only re-pushes on change).
   , ctxScaleKey :: String
   -- the six-machine status board: each machine's identity-chip view, pushed up by
-  -- that machine (Balistes so far; the rest report Nothing until they gain the
-  -- glyph substrate). Rendered as glyphs in the switcher.
+  -- that machine (Balistes + Selene so far; the rest report Nothing until they gain
+  -- the glyph substrate). Rendered as glyphs in the switcher.
   , balChip :: Maybe G.ChipView
+  , selChip :: Maybe G.ChipView
   -- brief true after the CAPTURE hotkey fires, so the active tab pulses — a visible
   -- "key registered" cue (the hotkey needs page focus; the pulse tells you it got it).
   , captureFlash :: Boolean
@@ -200,7 +202,7 @@ type MenuItem = { slot :: Int, alias :: String, name :: String, starred :: Boole
 type Slots =
   ( odo :: H.Slot SQ.Query Void Unit
   , bal :: H.Slot SQ.Query Balistes.Output Unit
-  , sel :: H.Slot SQ.Query Void Unit
+  , sel :: H.Slot SQ.Query Selene.Output Unit
   , vet :: H.Slot Vetula.SourceQuery Vetula.Output Unit
   , suf :: H.Slot (Const Void) Void Unit
   , ste :: H.Slot (Const Void) Void Unit
@@ -237,7 +239,7 @@ root =
         , routing: Map.empty
         , vetulaNames: []
         , macroText: "", macroBars: 4, macroOn: false
-        , macroStep: -1, macroCell: "", ctxScaleKey: "", balChip: Nothing, captureFlash: false
+        , macroStep: -1, macroCell: "", ctxScaleKey: "", balChip: Nothing, selChip: Nothing, captureFlash: false
         , pollBusy: false, amphoraDown: false, chipMenu: Nothing }
     , render
     , eval: H.mkEval H.defaultEval { handleAction = handleAction, initialize = Just Init }
@@ -383,6 +385,7 @@ handleAction = case _ of
   -- Balistes pushed a new identity-chip view (capture / recall / divergence) — park it
   -- for the status board. Cheap: Balistes only raises this when the view changed.
   BalChipChanged cv -> H.modify_ _ { balChip = cv }
+  SelChipChanged cv -> H.modify_ _ { selChip = cv }
   -- The CAPTURE hotkey: tell the active machine to bank its current state as a
   -- preset. Only the SQ.Query machines answer; Balistes is the only live one so far.
   CaptureKey -> do
@@ -762,7 +765,8 @@ render st =
     , pane (st.which == Odo) "" (HH.slot_ _odo unit Odonus.component unit)
     , pane (st.which == Bal) ""
         (HH.slot _bal unit Balistes.component unit (\(Balistes.IdentityChanged cv) -> BalChipChanged cv))
-    , pane (st.which == Sel) "" (HH.slot_ _sel unit Selene.component unit)
+    , pane (st.which == Sel) ""
+        (HH.slot _sel unit Selene.component unit (\(Selene.IdentityChanged cv) -> SelChipChanged cv))
     , pane (st.which == Vet) "padding-top:var(--tf-bar)"
         (HH.slot _vet unit Vetula.component unit (\(Vetula.ArmChanged on) -> VetulaArmed on))
     , pane (st.which == Suf) "" (HH.slot_ _suf unit Sufflamen.component unit)
@@ -1326,7 +1330,7 @@ armSeg st w label =
               <> "text-transform:uppercase;color:" <> (if active then "#1c1a12" else "#5a564b") ]
           [ HH.text label ]
       -- the machine's identity glyph (icons coloured by content) — the six-machine
-      -- status board. Clicking it opens the recall menu. Only Balistes reports one
+      -- status board. Clicking it opens the recall menu. Balistes + Selene report one
       -- so far; the rest are Nothing (blank, not clickable).
       , case chipOf st w of
           Nothing -> HH.text ""
@@ -1343,6 +1347,7 @@ armSeg st w label =
 chipOf :: RState -> Which -> Maybe G.ChipView
 chipOf st = case _ of
   Bal -> st.balChip
+  Sel -> st.selChip
   _ -> Nothing
 
 -- The CAPTURE hotkey — the same key on every pane. Modifier-free `c`, ignored while

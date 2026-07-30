@@ -12,11 +12,11 @@
 -- | yet: the es9 CV/gate path (LFO/Euclid/Clock/Note → ES-9 buses) + FH-2
 -- | delegation is the next increment (#142). The playhead still sweeps so the
 -- | visuals stay live under the master transport.
-module Triggerfish.Selene.Component (component) where
+module Triggerfish.Selene.Component (component, Output(..)) where
 
 import Prelude
 
-import Data.Array (any, drop, filter, length, mapMaybe, mapWithIndex, modifyAt, null, range, (!!))
+import Data.Array (any, deleteAt, drop, filter, length, mapMaybe, mapWithIndex, modifyAt, null, range, (!!))
 import Data.Foldable (for_, foldr)
 import Data.Int (round, toNumber)
 import Data.Map (Map)
@@ -46,6 +46,8 @@ import Triggerfish.Selene.Source as Source
 import Triggerfish.Selene.Store as Store
 import Triggerfish.Selene.Wire as Wire
 import Triggerfish.Amphora as Amphora
+import Triggerfish.Glyph as G
+import Triggerfish.Preset (Preset, indexOfContent, presetAlias)
 import Triggerfish.SourceQuery (Query(..))
 import Triggerfish.Transport (Sounding(..))
 import Data.Maybe (Maybe(..), fromMaybe)
@@ -78,6 +80,13 @@ type State =
   -- once it answers. Drives the per-bank status readout (#142 S3).
   , replies :: Map String String
   , publishMsg :: Maybe String   -- transient status from a publish-rack-to-Amphora click
+  -- The unified glyph-chip PRESET bank (docs/DESIGN-scene-modal.md): captured rack
+  -- docs, anonymous or named, freely intermixed. `identity` is the parked preset's
+  -- content (the chip glyph; ghosts when the live doc diverges from it); `lastChip`
+  -- guards the Frame → shell status-board emit so it only raises on change.
+  , presets :: Array Preset
+  , identity :: Maybe String
+  , lastChip :: Maybe G.ChipView
   }
 
 data Action
@@ -94,7 +103,12 @@ data Action
   | SeleneReply String        -- a raw `selene-reply …` frame from the rig
   | PublishRack               -- publish the active rack to the Amphora store (selene-rack)
 
-component :: forall i o m. MonadAff m => H.Component Query i o m
+-- | The upward message to the shell: Selene's identity-chip view (or `Nothing` when
+-- | nothing is parked), for the six-machine status board. Raised from the Frame loop
+-- | only when the view changes (see `chipViewOf`). Mirrors Balistes' Output.
+data Output = IdentityChanged (Maybe G.ChipView)
+
+component :: forall i m. MonadAff m => H.Component Query i Output m
 component =
   H.mkComponent
     { initialState: \_ ->
@@ -107,13 +121,14 @@ component =
           , clockTempo: 120.0, clockLocked: false, clockBar: 0
           , replies: Map.empty
           , publishMsg: Nothing
+          , presets: [], identity: Nothing, lastChip: Nothing
           }
     , render
     , eval: H.mkEval H.defaultEval
         { handleAction = handleAction, handleQuery = handleQuery, initialize = Just Initialize }
     }
 
-handleQuery :: forall o m a. MonadAff m => Query a -> H.HalogenM State Action () o m (Maybe a)
+handleQuery :: forall m a. MonadAff m => Query a -> H.HalogenM State Action () Output m (Maybe a)
 handleQuery = case _ of
   AskSource reply -> do
     s <- H.get
@@ -155,14 +170,70 @@ handleQuery = case _ of
     pure (Just (reply true))
   -- No quantiser — the rig's harmonic context doesn't apply to Selene.
   SetContextPitchSet _ _ next -> pure (Just next)
-  -- No glyph substrate yet — ignore the capture hotkey + recall menu (task #6).
-  Capture next -> pure (Just next)
-  AskBank reply -> pure (Just (reply []))
-  RecallSlot _ next -> pure (Just next)
-  StarSlot _ next -> pure (Just next)
-  DeleteSlot _ next -> pure (Just next)
+  -- The shell's CAPTURE hotkey: bank the active rack's doc as a preset and park
+  -- identity on it (the chip shows the freshly-minted glyph, held). See captureNow.
+  Capture next -> do
+    captureNow
+    pure (Just next)
+  -- The status-board chip's recall menu: report each preset as its glyph alias +
+  -- optional name + star flag; recall / star / delete a chosen preset.
+  AskBank reply -> do
+    s <- H.get
+    pure (Just (reply (mapWithIndex (\i p -> { slot: i, alias: presetAlias p, name: fromMaybe "" p.name, starred: p.starred }) s.presets)))
+  RecallSlot i next -> do
+    recallPreset i
+    pure (Just next)
+  StarSlot i next -> do
+    H.modify_ \s -> s { presets = fromMaybe s.presets (modifyAt i (\p -> p { starred = not p.starred }) s.presets) }
+    persist
+    pure (Just next)
+  DeleteSlot i next -> do
+    H.modify_ \s -> s { presets = fromMaybe s.presets (deleteAt i s.presets) }
+    persist
+    pure (Just next)
 
-handleAction :: forall o m. MonadAff m => Action -> H.HalogenM State Action () o m Unit
+-- | Bank the active rack's doc as a preset — the CAPTURE hotkey. DEDUPS by content
+-- | (identical doc ⇒ identical glyph): already banked ⇒ just re-park `identity`;
+-- | otherwise append an anonymous preset. Either way the chip shows the glyph held,
+-- | and we persist. No-op only when the active rack doc is empty.
+captureNow :: forall o m. MonadAff m => H.HalogenM State Action () o m Unit
+captureNow = do
+  s <- H.get
+  let text = currentDoc s
+  when (text /= "") do
+    case indexOfContent text s.presets of
+      Just _ -> H.modify_ _ { identity = Just text }
+      Nothing -> H.modify_ \st -> st
+        { presets = st.presets <> [ { content: text, name: Nothing, starred: false } ]
+        , identity = Just text
+        }
+    persist
+
+-- | Recall preset `i`: load its rack-doc content into the active rack (re-derive the
+-- | rack from it), and park the chip on the preset's text (glyph SOLID; ghosts on
+-- | later divergence). Mirrors Balistes' `recallPreset` for the SetDoc-shaped state.
+recallPreset :: forall o m. MonadAff m => Int -> H.HalogenM State Action () o m Unit
+recallPreset i = do
+  st <- H.get
+  case st.presets !! i of
+    Nothing -> pure unit
+    Just p -> do
+      H.modify_ \s -> s
+        { library = setDocAt s.active p.content s.library
+        , sel = Source.parseRack p.content
+        , identity = Just p.content
+        }
+      persist
+
+-- | The identity-chip view Selene reports to the shell's status board: the glyph of
+-- | the parked rack-doc + whether the live doc has diverged from it (edited away).
+-- | `Nothing` when nothing is parked.
+chipViewOf :: State -> Maybe G.ChipView
+chipViewOf s = case s.identity of
+  Nothing -> Nothing
+  Just text -> Just { glyph: G.glyphOf text, diverged: currentDoc s /= text }
+
+handleAction :: forall m. MonadAff m => Action -> H.HalogenM State Action () Output m Unit
 handleAction = case _ of
   Initialize -> do
     bin <- liftEffect $ Binnacle.connect { url: rigUrl, tempo: 120.0 }
@@ -189,12 +260,14 @@ handleAction = case _ of
               Nothing -> "no '" <> midiPortName <> "' — ports: " <> joinWith ", " names
         HS.notify midiL (MidiReady mout nm)
       Nothing -> HS.notify midiL (MidiReady Nothing "unavailable")
-    -- restore the saved rack library (falls back to the default rack).
+    -- restore the saved rack library + preset bank (falls back to the default rack).
     msaved <- liftEffect Store.loadLibrary
-    for_ msaved \sv -> when (not (null sv.library)) do
-      let a = if sv.active >= 0 && sv.active < length sv.library then sv.active else 0
-          doc = fromMaybe "" (map _.doc (sv.library !! a))
-      H.modify_ _ { library = sv.library, active = a, sel = Source.parseRack doc }
+    for_ msaved \sv -> do
+      H.modify_ _ { presets = sv.presets }
+      when (not (null sv.library)) do
+        let a = if sv.active >= 0 && sv.active < length sv.library then sv.active else 0
+            doc = fromMaybe "" (map _.doc (sv.library !! a))
+        H.modify_ _ { library = sv.library, active = a, sel = Source.parseRack doc }
     H.modify_ _ { binnacle = Just bin }
     -- Merge the shared Amphora rack library over the local one (by name), in the
     -- BACKGROUND: awaiting it blocked Initialize (hence all queries to Selene) until
@@ -218,6 +291,13 @@ handleAction = case _ of
     for_ st.binnacle \bin -> do
       r <- liftEffect $ Clock.read (Binnacle.clock bin)
       H.modify_ _ { clockTempo = r.tempo, clockLocked = r.locked, clockBar = r.bar }
+    -- Report the identity chip up to the shell's status board, but only when it
+    -- actually changed (this fires ~30×/s) — capture/recall/divergence all land here.
+    s2 <- H.get
+    let cv = chipViewOf s2
+    when (cv /= s2.lastChip) do
+      H.modify_ _ { lastChip = cv }
+      H.raise (IdentityChanged cv)
 
   MidiReady mout nm -> H.modify_ _ { midiOut = mout, midiName = nm }
 
@@ -306,11 +386,11 @@ mergeRacksByName :: Array Store.Rack -> Array Store.Rack -> Array Store.Rack
 mergeRacksByName current incoming =
   current <> filter (\p -> not (any (\q -> q.name == p.name) current)) incoming
 
--- | Persist the rack library (after any library/active change).
+-- | Persist the rack library + preset bank (after any library/active/preset change).
 persist :: forall o m. MonadAff m => H.HalogenM State Action () o m Unit
 persist = do
   s <- H.get
-  liftEffect (Store.saveLibrary { active: s.active, library: s.library })
+  liftEffect (Store.saveLibrary { active: s.active, library: s.library, presets: s.presets })
 
 -- ---------------------------------------------------------------------------
 -- Constants
