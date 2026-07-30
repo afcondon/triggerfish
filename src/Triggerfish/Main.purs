@@ -33,9 +33,10 @@ import Data.String as String
 import Data.String.Common (joinWith)
 import Data.Tuple (Tuple(..))
 import Effect (Effect)
-import Effect.Aff (attempt)
+import Effect.Aff (attempt, delay)
 import Effect.Aff.Class (class MonadAff, liftAff)
 import Effect.Class (liftEffect)
+import Data.Time.Duration (Milliseconds(..))
 import Effect.Timer (setInterval)
 import Halogen as H
 import Halogen.Aff as HA
@@ -173,7 +174,16 @@ type RState =
   -- the six-machine status board: each machine's identity-chip view, pushed up by
   -- that machine (Balistes so far; the rest report Nothing until they gain the
   -- glyph substrate). Rendered as glyphs in the switcher.
-  , balChip :: Maybe G.ChipView }
+  , balChip :: Maybe G.ChipView
+  -- brief true after the CAPTURE hotkey fires, so the active tab pulses — a visible
+  -- "key registered" cue (the hotkey needs page focus; the pulse tells you it got it).
+  , captureFlash :: Boolean
+  -- single-flight guard for the 100ms Vetula poll, so it can't pile up queries
+  -- against a still-initialising Vetula (see PollVetula).
+  , pollBusy :: Boolean
+  -- true once an Amphora fetch has failed (store unreachable) — drives the shell's
+  -- "no favourites / backend not running" banner. Probed once on Init.
+  , amphoraDown :: Boolean }
 
 type Slots =
   ( odo :: H.Slot SQ.Query Void Unit
@@ -215,7 +225,8 @@ root =
         , routing: Map.empty
         , vetulaNames: []
         , macroText: "", macroBars: 4, macroOn: false
-        , macroStep: -1, macroCell: "", ctxScaleKey: "", balChip: Nothing }
+        , macroStep: -1, macroCell: "", ctxScaleKey: "", balChip: Nothing, captureFlash: false
+        , pollBusy: false, amphoraDown: false }
     , render
     , eval: H.mkEval H.defaultEval { handleAction = handleAction, initialize = Just Init }
     }
@@ -245,8 +256,12 @@ handleAction = case _ of
     handleAction SyncTick
     -- One source of truth: push each machine its derived Sounding (all Silent now —
     -- nothing armed). Arm/mode changes re-derive and re-push; the instruments
-    -- edge-detect their own local-mute / rig-handoff transitions.
-    pushAll
+    -- edge-detect their own local-mute / rig-handoff transitions. Forked so a slow
+    -- child initialize can't block the shell's action queue during startup.
+    void $ H.fork pushAll
+    -- Probe Amphora once so the offline banner appears within the fetch timeout if
+    -- the store is down. Forked — the shell must not wait on it.
+    void $ H.fork fetchGoTo
   -- Master ▶/■ = arm ALL / disarm ALL: arm every machine if none is armed, else
   -- disarm every machine. The button label is `anyArmed`. pushAll re-derives each
   -- machine's Sounding (in ATLANTIS that hands off / stops rig voices too).
@@ -270,7 +285,11 @@ handleAction = case _ of
   -- Nav harmonic strip: jump Vetula's progression to a chord live. Playing → the
   -- ensemble advances there; stopped → the → odo feed moves, re-quantising Odonus.
   JumpVetula i -> void $ H.query _vet unit (Vetula.JumpChord i unit)
-  SyncTick -> do
+  -- Forked so a still-initialising child (Vetula's lattice build can take tens of
+  -- seconds) can't stall the shell's action queue on the `H.query`. A blocked queue
+  -- means keydowns/clicks don't register until every child is ready — the CAPTURE
+  -- hotkey "dead for a minute" bug. The queries land whenever the children answer.
+  SyncTick -> void $ H.fork do
     t0 <- H.gets _.freeT0
     _ <- H.query _odo unit (SQ.SyncFree t0 freeTempo unit)
     _ <- H.query _bal unit (SQ.SyncFree t0 freeTempo unit)
@@ -355,8 +374,17 @@ handleAction = case _ of
   -- The CAPTURE hotkey: tell the active machine to bank its current state as a
   -- preset. Only the SQ.Query machines answer; Balistes is the only live one so far.
   CaptureKey -> do
+    -- Pulse FIRST, and independent of the child query: a child `H.query` blocks
+    -- until that child has finished initializing (tens of seconds at cold start
+    -- for the heavy panes), and doing it before the flash made the hotkey look
+    -- dead for ~a minute after load. Pulse now (visible "key registered" cue),
+    -- then fork the actual capture so it lands whenever the machine is ready.
+    H.modify_ _ { captureFlash = true }
+    void $ H.fork do
+      H.liftAff (delay (Milliseconds 260.0))
+      H.modify_ _ { captureFlash = false }
     w <- H.gets _.which
-    case w of
+    void $ H.fork case w of
       Odo -> void $ H.query _odo unit (SQ.Capture unit)
       Bal -> void $ H.query _bal unit (SQ.Capture unit)
       Sel -> void $ H.query _sel unit (SQ.Capture unit)
@@ -412,36 +440,47 @@ handleAction = case _ of
   -- The live Vetula→Odonus bridge. Odonus quantises to ONE harmonic-context set
   -- (chord-when-progression, else lens scale) pushed below as its pitchSet — no
   -- separate chord overlay, so the old per-voice chord feed is retired.
+  -- Forked + single-flighted (`pollBusy`): the 100ms poll queries Vetula, which
+  -- blocks until Vetula finishes initialising (its lattice build can take tens of
+  -- seconds). Running it inline held the shell's action queue that whole time, so
+  -- keydowns/clicks didn't register until Vetula was ready — the CAPTURE-hotkey
+  -- "dead for a minute" bug. The fork frees the queue; the guard stops the poll
+  -- piling up ~one query per 100ms against the not-yet-ready child.
   PollVetula -> do
-    -- Pull Vetula's progression + playhead for the nav harmonic-context strip.
-    mharm <- H.query _vet unit (Vetula.AskHarmonic identity)
-    case mharm of
-      Just h -> H.modify_ _ { harm = h }
-      Nothing -> pure unit
-    -- Harmonic authority: pull Vetula's resting context scale and, when it CHANGES,
-    -- install it as Odonus's pitchSet (RI.SetPitchSet, lockstep-safe). Vetula owns
-    -- the scale; Odonus follows. Deduped so the 100ms poll doesn't flood the input.
-    mctx <- H.query _vet unit (Vetula.AskContextScale identity)
-    for_ mctx \ctx -> do
-      let key = show ctx.root <> ":" <> show ctx.offsets
-      prev <- H.gets _.ctxScaleKey
-      when (key /= prev) do
-        H.modify_ _ { ctxScaleKey = key }
-        void $ H.query _odo unit (SQ.SetContextPitchSet ctx.root ctx.offsets unit)
-    -- Vetula auto-resync (ATLANTIS only): Vetula has no incremental rig path, so the
-    -- shell diffs its payload and re-pushes on a SETTLED change (payload stable for
-    -- one poll AND different from what was last sent). A drag coalesces into one push
-    -- ~one tick after it stops; glitchless because the rig re-push phase-aligns.
-    -- Only when the Vetula voice is actually running on the rig (armed in ATLANTIS).
-    msig <- H.query _vet unit (Vetula.AskBrushSig identity)
-    for_ msig \sig -> do
-      st <- H.get
-      -- Re-push (SetSounding Rig re-voices) only when Vetula is actually rig-
-      -- authoritative — `soundingOf … Vet == Rig` already implies armed + ATLANTIS.
-      when (soundingOf st.mode st.armed (previewSet st) Vet == Rig && sig == st.brushPrev && sig /= st.brushSent) do
-        _ <- H.query _vet unit (Vetula.SetSounding Rig unit)
-        H.modify_ _ { brushSent = sig }
-      H.modify_ _ { brushPrev = sig }
+    busy <- H.gets _.pollBusy
+    unless busy do
+      H.modify_ _ { pollBusy = true }
+      void $ H.fork do
+        -- Pull Vetula's progression + playhead for the nav harmonic-context strip.
+        mharm <- H.query _vet unit (Vetula.AskHarmonic identity)
+        case mharm of
+          Just h -> H.modify_ _ { harm = h }
+          Nothing -> pure unit
+        -- Harmonic authority: pull Vetula's resting context scale and, when it CHANGES,
+        -- install it as Odonus's pitchSet (RI.SetPitchSet, lockstep-safe). Vetula owns
+        -- the scale; Odonus follows. Deduped so the 100ms poll doesn't flood the input.
+        mctx <- H.query _vet unit (Vetula.AskContextScale identity)
+        for_ mctx \ctx -> do
+          let key = show ctx.root <> ":" <> show ctx.offsets
+          prev <- H.gets _.ctxScaleKey
+          when (key /= prev) do
+            H.modify_ _ { ctxScaleKey = key }
+            void $ H.query _odo unit (SQ.SetContextPitchSet ctx.root ctx.offsets unit)
+        -- Vetula auto-resync (ATLANTIS only): Vetula has no incremental rig path, so the
+        -- shell diffs its payload and re-pushes on a SETTLED change (payload stable for
+        -- one poll AND different from what was last sent). A drag coalesces into one push
+        -- ~one tick after it stops; glitchless because the rig re-push phase-aligns.
+        -- Only when the Vetula voice is actually running on the rig (armed in ATLANTIS).
+        msig <- H.query _vet unit (Vetula.AskBrushSig identity)
+        for_ msig \sig -> do
+          st <- H.get
+          -- Re-push (SetSounding Rig re-voices) only when Vetula is actually rig-
+          -- authoritative — `soundingOf … Vet == Rig` already implies armed + ATLANTIS.
+          when (soundingOf st.mode st.armed (previewSet st) Vet == Rig && sig == st.brushPrev && sig /= st.brushSent) do
+            _ <- H.query _vet unit (Vetula.SetSounding Rig unit)
+            H.modify_ _ { brushSent = sig }
+          H.modify_ _ { brushPrev = sig }
+        H.modify_ _ { pollBusy = false }
 
 -- Push one machine its DERIVED Sounding (soundingOf mode armed). The instrument
 -- edge-detects the transition itself: local-mute on leaving Local, rig handoff on
@@ -611,8 +650,10 @@ fetchGoTo :: forall o m. MonadAff m => H.HalogenM RState RAction Slots o m Unit
 fetchGoTo = do
   res <- liftAff (attempt (Amphora.fetchCollection goToCollection))
   case res of
-    Right items -> H.modify_ _ { goTo = items }
-    Left _ -> pure unit
+    Right items -> H.modify_ _ { goTo = items, amphoraDown = false }
+    -- a failed fetch (now a ~2.5s timeout, not a 30s hang) means the store is
+    -- unreachable → raise the shell banner so the user knows favourites are offline.
+    Left _ -> H.modify_ _ { amphoraDown = true }
 
 -- Is this shelf row on the go-to wall? Content-address identity: same payload =
 -- same hash, so an exact payload match is a hash match without hashing here.
@@ -1072,9 +1113,9 @@ shellBar st =
     -- pushing into its neighbours.
     , HH.div
         [ style "display:flex;align-items:center;gap:16px;flex:0 1 auto;min-width:0;overflow:hidden" ]
-        [ modeToggle st
-        , harmStrip st
-        ]
+        ( [ modeToggle st ]
+            <> (if st.amphoraDown then [ amphoraOfflinePill ] else [])
+            <> [ harmStrip st ] )
     -- RIGHT: the master transport (arm-all / stop-all).
     , HH.button
         [ HE.onClick \_ -> ToggleMaster
@@ -1084,6 +1125,18 @@ shellBar st =
             <> ";background:" <> (if anyArmed st.armed then "linear-gradient(#b23b28,#9a3120)" else "linear-gradient(#c8a86a,#b8975a)") ]
         [ HH.text (if anyArmed st.armed then "■ STOP" else "▶ PLAY") ]
     ]
+
+-- A clear, non-blocking status pill shown when the Amphora store (:3024) is
+-- unreachable: the app degrades to "no favourites" rather than hanging, and this
+-- tells the user why (start Amphora to restore load/save of favourites).
+amphoraOfflinePill :: forall m. H.ComponentHTML RAction Slots m
+amphoraOfflinePill =
+  HH.span
+    [ HP.attr (H.AttrName "title") "Amphora artefact store (:3024) is not reachable — start it to load and save favourites"
+    , style $ "flex:0 0 auto;display:flex;align-items:center;gap:6px;padding:3px 10px;border-radius:5px;white-space:nowrap;"
+        <> "background:#f6e9cf;border:1px solid #d8b24a;color:#7a5c00;"
+        <> "font-family:'SF Mono',Menlo,monospace;font-size:9px;letter-spacing:0.03em" ]
+    [ HH.text "⚠ No favorites — Amphora backend not running" ]
 
 -- The instrument switcher: one segmented control. Odo/Bal/Sel/Vet are armable
 -- (dot + name); Suf/Ste/Tid are plain (no arm dot — rig-only prototypes / the
@@ -1129,9 +1182,12 @@ armSeg :: forall m. RState -> Which -> String -> H.ComponentHTML RAction Slots m
 armSeg st w label =
   let active = st.which == w
       isArmed = Set.member w st.armed
-      bg = if active then "linear-gradient(#c8a86a,#b8975a)" else "linear-gradient(#e9e5d9,#dcd8c9)"
+      bg = if active
+             then if st.captureFlash then "linear-gradient(#dcecc4,#b6d491)"  -- capture pulse
+                  else "linear-gradient(#c8a86a,#b8975a)"
+             else "linear-gradient(#e9e5d9,#dcd8c9)"
   in HH.div
-      [ style ("display:flex;align-items:center;background:" <> bg) ]
+      [ style ("display:flex;align-items:center;transition:background 240ms ease;background:" <> bg) ]
       [ HH.span
           [ HE.onClick \_ -> ArmTab w
           , style $ "padding:6px 3px 6px 9px;cursor:pointer;font-size:9px;line-height:1;"

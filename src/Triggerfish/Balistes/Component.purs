@@ -202,14 +202,18 @@ handleAction = case _ of
       , sequence = sv.sequence
       , seqBars = sv.seqBars
       }
-    -- source the shared library from Amphora (the store of record): merge in any
-    -- DB pattern not already present by name. Offline → keep saved/bundled.
-    dbResult <- liftAff (attempt Remote.fetchLibrary)
-    case dbResult of
-      Right dbPats | not (null dbPats) ->
-        H.modify_ \s -> s { library = mergeByName s.library dbPats }
-      _ -> pure unit
     H.modify_ _ { binnacle = Just bin }
+    -- Merge the shared Amphora library in the BACKGROUND. Forked deliberately: the
+    -- fetch times out at ~30s when the store is unreachable, and awaiting it here
+    -- kept Balistes' Initialize (hence the whole component) from completing — so the
+    -- shell's queries (SetSounding, the CAPTURE hotkey) blocked until the timeout.
+    -- Offline → keep the saved/bundled library; the merge lands if/when the DB answers.
+    void $ H.fork do
+      dbResult <- liftAff (attempt Remote.fetchLibrary)
+      case dbResult of
+        Right dbPats | not (null dbPats) ->
+          H.modify_ \s -> s { library = mergeByName s.library dbPats }
+        _ -> pure unit
 
   Step tick -> do
     -- Mode-agnostic sequence advance FIRST: if a bar boundary elapsed, recall the

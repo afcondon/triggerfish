@@ -23,11 +23,18 @@ export const fetchCollectionImpl = (collection) => (onError) => (onSuccess) => (
   const fail = (e) => onError(e instanceof Error ? e : new Error(String(e)))();
   const done = (payloads) => onSuccess(payloads)();
 
-  const getJSON = (url) =>
-    fetch(url).then((r) => {
-      if (!r.ok) throw new Error("GET " + url + " → HTTP " + r.status);
-      return r.json();
-    });
+  // Fail fast when Amphora (:3024) is down, instead of hanging on the browser's
+  // ~30s default — otherwise this blocks Balistes' Initialize. AbortError → Left.
+  const getJSON = (url) => {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 2500);
+    return fetch(url, { signal: ctrl.signal })
+      .then((r) => {
+        if (!r.ok) throw new Error("GET " + url + " → HTTP " + r.status);
+        return r.json();
+      })
+      .finally(() => clearTimeout(timer));
+  };
 
   getJSON(base + "/favorites?collection=" + encodeURIComponent(collection))
     .then((favs) => {

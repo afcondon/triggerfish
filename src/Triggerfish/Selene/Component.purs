@@ -191,14 +191,16 @@ handleAction = case _ of
       let a = if sv.active >= 0 && sv.active < length sv.library then sv.active else 0
           doc = fromMaybe "" (map _.doc (sv.library !! a))
       H.modify_ _ { library = sv.library, active = a, sel = Source.parseRack doc }
-    -- Merge the shared Amphora rack library over the local one (by name); the
-    -- store being offline is not fatal — we keep whatever's local.
-    dbRes <- liftAff (attempt (Amphora.fetchCollection "selene-rack"))
-    case dbRes of
-      Right items | not (null items) ->
-        H.modify_ \s -> s { library = mergeRacksByName s.library (map amphoraRack items) }
-      _ -> pure unit
     H.modify_ _ { binnacle = Just bin }
+    -- Merge the shared Amphora rack library over the local one (by name), in the
+    -- BACKGROUND: awaiting it blocked Initialize (hence all queries to Selene) until
+    -- the ~30s offline timeout. The store being offline is not fatal — keep local.
+    void $ H.fork do
+      dbRes <- liftAff (attempt (Amphora.fetchCollection "selene-rack"))
+      case dbRes of
+        Right items | not (null items) ->
+          H.modify_ \s -> s { library = mergeRacksByName s.library (map amphoraRack items) }
+        _ -> pure unit
 
   Step tick -> do
     st <- H.get

@@ -251,13 +251,15 @@ dispatch = case _ of
     for_ msaved \sv -> do
       H.modify_ _ { scenes = sv.scenes }
       H.modify_ (loadText sv.live)
-    -- Merge the shared Amphora scene library over the local one (by name);
-    -- the store being offline is not fatal — we keep whatever's local.
-    dbRes <- liftAff (attempt (Amphora.fetchCollection "odonus-scene"))
-    case dbRes of
-      Right items | not (null items) ->
-        H.modify_ \s -> s { scenes = mergeScenesByName s.scenes (map amphoraScene items) }
-      _ -> pure unit
+    -- Merge the shared Amphora scene library over the local one (by name), in the
+    -- BACKGROUND: awaiting it blocked Initialize (hence all queries to Odonus) until
+    -- the ~30s offline timeout. The store being offline is not fatal — keep local.
+    void $ H.fork do
+      dbRes <- liftAff (attempt (Amphora.fetchCollection "odonus-scene"))
+      case dbRes of
+        Right items | not (null items) ->
+          H.modify_ \s -> s { scenes = mergeScenesByName s.scenes (map amphoraScene items) }
+        _ -> pure unit
   Step tick -> do
     st <- H.get
     -- Global step divider: the scheduler ticks on a fine 1/16 grid; advance the

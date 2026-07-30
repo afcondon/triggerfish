@@ -919,13 +919,15 @@ handleAction = case _ of
     -- continues past the restored count so new ◦ autonames don't collide.
     msaved <- liftEffect Store.loadLibrary
     for_ msaved \sv -> H.modify_ _ { library = sv.library, capSeq = length sv.library }
-    -- Merge the shared Amphora progression library over the local one (by name);
-    -- the store being offline is not fatal — we keep whatever's local.
-    dbRes <- liftAff (attempt (Amphora.fetchCollection "vetula-progression"))
-    case dbRes of
-      Right items | length items > 0 ->
-        H.modify_ \s -> s { library = mergeLibByName s.library (map amphoraEntry items) }
-      _ -> pure unit
+    -- Merge the shared Amphora progression library in the BACKGROUND: awaiting it
+    -- blocked Initialize (hence the shell's polls of Vetula) until the ~30s offline
+    -- timeout. The store being offline is not fatal — keep whatever's local.
+    void $ H.fork do
+      dbRes <- liftAff (attempt (Amphora.fetchCollection "vetula-progression"))
+      case dbRes of
+        Right items | length items > 0 ->
+          H.modify_ \s -> s { library = mergeLibByName s.library (map amphoraEntry items) }
+        _ -> pure unit
     -- keyboard
     { emitter: keyE, listener: keyL } <- liftEffect HS.create
     _ <- H.subscribe keyE
