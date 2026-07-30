@@ -85,7 +85,8 @@ import Hylograph.Simulation
   , Setup, runSimulation, setup, manyBody, collide, link, positionX, positionY
   , withStrength, withRadius, withDistance, withX, withY, static, dynamic )
 import Harmonia.Anchor (Anchor(..))
-import Harmonia.Chord (Key, Mode(..), cMajorKey)
+import Harmonia.Chord (Key, Mode(..), cMajorKey, chordRoot)
+import Vetula.Between (bridgeNotes, maxBridge)
 import Harmonia.Graded (transpose) as Graded
 import Vetula.Palette (butlerChords, stockChords)
 import Vetula.Harmony (ChordNode, Family(..), Kind(..), blackKeyPcs, diatonicTriads, generate, interchangeChords, keyX, keyboard, latticeChild, latticeFamily, mcmullenChords, noteName, place, placeOutside, playNotes, scaleSet, suspendSet, triadNode, triadOn, voicingCandidates, whiteKeyPcs)
@@ -346,6 +347,10 @@ type State =
   , genSel :: Array Int
   , candidates :: Array ChordNode
   , adventure :: Number      -- 0 = smoothest candidates … 1 = most striking
+  -- ARRANGE (control B): how many bridge chords `Vetula.Between` lays in front of
+  -- a tank chord as it's dropped into the progression — the "cadence length" dial
+  -- (0 = drop it bare, 1 = V, 2 = ii–V, …). See docs/DESIGN-vetula-progression-building.md.
+  , bridgeLen :: Int
   -- Performance tab — the progression library + the loaded working copy + voices.
   , library :: Array LibEntry
   -- Auto-capture bookkeeping (Slice 1): the current progression is captured to the
@@ -483,6 +488,8 @@ data Action
   | AuditionSpec SpecimenId -- shift-click a tank specimen: hear it (no state change)
   | StageSpec SpecimenId   -- click a tank specimen: seed the pool with it (toggle)
   | SequenceSpec SpecimenId -- shift-click a tank specimen: append a snapshot to the progression
+  | ArrangeSpec SpecimenId  -- drop a tank chord into the progression, bridged by `bridgeLen`
+  | SetBridgeLen Int        -- set the cadence-length dial (clamped 0..maxBridge)
   | ClearStage             -- remove all staged seeds + the chords bloomed from them
   | AuditionTriad Int (Array Int)        -- Tonnetz: hear a triad off the net (root pc, pcs)
   | CatchTriad Int (Array Int) Boolean   -- Tonnetz: freeze a triad into the tank (root, pcs, isMajor)
@@ -597,6 +604,7 @@ component = H.mkComponent
       , genSel: []
       , candidates: []
       , adventure: 0.25
+      , bridgeLen: 2
       , library: []
       , capSeq: 0
       , lastCapIdx: Nothing
@@ -1681,6 +1689,34 @@ handleAction = case _ of
         }
       playSpecimen spec
 
+  SetBridgeLen n -> H.modify_ _ { bridgeLen = clamp 0 maxBridge n }
+
+  -- Drop a caught chord into the progression, BRIDGED. Between the current end
+  -- and the dropped chord `Vetula.Between` lays `bridgeLen` passing chords (a
+  -- tonicizing turnaround into the target's root); the bridge is skipped for the
+  -- first chord (nothing to bridge from) or when the dial is 0. All new chords
+  -- are minted as imported nodes and appended in order, then the segment plays.
+  ArrangeSpec sid -> do
+    st <- H.get
+    for_ (find (\sp -> sp.id == sid) st.tank) \spec -> do
+      let bnotes = case last st.path of
+            Just _ -> bridgeNotes st.bridgeLen (specRoot spec)
+            Nothing -> []
+          nB = length bnotes
+          bridgeNodes = mapWithIndex (\i ns -> importChord (st.nextId + i) ns) bnotes
+          targetId = st.nextId + nB
+          targetNode = (specToNode targetId st.key spec) { isCentre = false }
+          newChords = bridgeNodes <> [ targetNode ]
+          newIds = map _.id newChords
+      H.modify_ _
+        { chords = st.chords <> newChords
+        , imported = foldr Set.insert st.imported newIds
+        , nextId = targetId + 1
+        , path = st.path <> newIds
+        , sounding = Just targetId
+        }
+      playPath (maybe newIds (\l -> [ l ] <> newIds) (last st.path))
+
   -- The play button is now a sticky ARM/cue toggle: flip arm, then let
   -- reconcilePerf start or stop the ticker per (armed && master).
   ToggleArm -> do
@@ -2181,6 +2217,14 @@ transposeSpecimen n s =
 -- | surface needs: pitch-class set from the sounding notes, root ≈ the bass pc (a
 -- | fair placement anchor even for slash voicings), and its own voicing verbatim.
 -- | `place` then positions it as a centre; generation blooms around it.
+-- | A caught chord's ROOT pitch class — from its Harmonia reading when it has one
+-- | (`Located` → `chordRoot` against the anchor's own key), else its frozen foot.
+-- | The betweening engine needs it to tonicize toward the target.
+specRoot :: Specimen -> Int
+specRoot s = case s.anchor of
+  Located k dc -> chordRoot k dc
+  Free -> mod s.bass 12
+
 specToNode :: Int -> Key -> Specimen -> ChordNode
 specToNode newId key s =
   let pcs = nub (map (\n -> mod n 12) ([ s.bass ] <> s.voicing))
@@ -2737,6 +2781,7 @@ render st =
     , floatCard "B" "tank & progression"
         "position: absolute; top: 12px; right: 12px; width: 340px; max-height: calc(100% - 264px); overflow-y: auto; overflow-x: hidden; z-index: 6;"
         [ subGroup ("Tank · " <> show (length st.tank) <> " caught") (tankPane st)
+        , arrangeBar st
         , growBar st
         , subGroup ("Progression · " <> countLabel (length (pathSteps st)) "step") (progressionPanel st)
         ]
@@ -2763,6 +2808,43 @@ floatCard tag title posCss body =
           , HH.span [ HP.style "font-size: 10px; color: #b0b0b0; letter-spacing: 0.14em; text-transform: uppercase;" ] [ HH.text title ]
           ]
       ] <> body )
+
+-- | What the cadence dial's `n` means, in Roman numerals — the tonicizing
+-- | turnaround `Vetula.Between` lays in front of the dropped chord.
+cadenceName :: Int -> String
+cadenceName = case _ of
+  0 -> "bare"
+  1 -> "V"
+  2 -> "ii–V"
+  3 -> "vi–ii–V"
+  _ -> "iii–vi–ii–V"
+
+-- | The ARRANGE row (control B): the bridge between gather and compose. A hint
+-- | (shift-click a caught chord to drop it in) and the CADENCE dial — how many
+-- | passing chords `Vetula.Between` lays in front of each dropped chord.
+arrangeBar :: forall m. State -> H.ComponentHTML Action Slots m
+arrangeBar st =
+  HH.div
+    [ HP.style "border-top: 1px solid #d8ceb4; margin-top: 8px; padding-top: 6px; display: flex; flex-direction: column; gap: 6px;" ]
+    [ HH.div [ HP.style "font-size: 10px; color: #b0b0b0; letter-spacing: 0.12em; text-transform: uppercase; margin: 0 2px;" ] [ HH.text "Arrange" ]
+    , HH.div [ HP.style "font-size: 11px; color: #a0a0a0; margin: 0 2px;" ] [ HH.text "shift-click a caught chord to drop it into the progression, bridged." ]
+    , HH.div
+        [ HP.style "display: flex; align-items: center; gap: 8px; margin: 0 2px;" ]
+        [ HH.span [ HP.style "font-size: 11px; color: #7a7a7a;" ] [ HH.text "cadence" ]
+        , stepBtn "−" (SetBridgeLen (st.bridgeLen - 1)) (st.bridgeLen <= 0)
+        , HH.span [ HP.style "font-size: 12px; color: #1a1a1a; min-width: 12px; text-align: center;" ] [ HH.text (show st.bridgeLen) ]
+        , stepBtn "+" (SetBridgeLen (st.bridgeLen + 1)) (st.bridgeLen >= maxBridge)
+        , HH.span [ HP.style "font-size: 12px; color: #7a5c00; font-variant: small-caps;" ] [ HH.text (cadenceName st.bridgeLen) ]
+        ]
+    ]
+  where
+  stepBtn glyph act disabled =
+    HH.button
+      [ HP.style ("border: 1px solid #dcdcdc; background: #fafafa; border-radius: 4px; width: 22px; height: 22px; font-size: 13px; line-height: 1; "
+                   <> if disabled then "color: #d8d8d8; cursor: default;" else "color: #6a6a6a; cursor: pointer;")
+      , HP.disabled disabled
+      , HE.onClick \_ -> act ]
+      [ HH.text glyph ]
 
 -- | Grow lives with the tank now (it operates on CAUGHT chords, not on the
 -- | geometry). A single toggle: enter the grow surface, re-roll it, or leave.
@@ -2954,9 +3036,10 @@ tankPane st =
 
 -- | One tank specimen: a small treble-staff thumbnail of its voicing (reusing the
 -- | cloud's `chordGlyph`), its label, and a × delete. Plain-click STAGES it as a
--- | seed (bloom around it in the pool); shift-click APPENDS it to the progression
--- | as a stable snapshot. A staged tile wears a gold frame so the pool ↔ tank link
--- | reads at a glance. (Staged-ness and sequenced-ness are orthogonal.)
+-- | seed (bloom around it in the pool); shift-click ARRANGES it into the
+-- | progression — bridged by the cadence dial (`ArrangeSpec`). A staged tile wears
+-- | a gold frame so the pool ↔ tank link reads at a glance. (Staged-ness and
+-- | arranged-ness are orthogonal.)
 specimenTile :: forall m. Boolean -> Specimen -> H.ComponentHTML Action Slots m
 specimenTile staged s =
   HH.div
@@ -2973,7 +3056,7 @@ specimenTile staged s =
     , SE.svg
         [ SA.viewBox (-18.0) (-22.0) 36.0 44.0, SA.width 52.0, SA.height 46.0
         , HP.style "cursor: pointer;"
-        , HE.onClick \e -> if ME.shiftKey e then SequenceSpec s.id else StageSpec s.id ]
+        , HE.onClick \e -> if ME.shiftKey e then ArrangeSpec s.id else StageSpec s.id ]
         (chordGlyph [] 0.0 0.0 s.voicing)
     , HH.div [ HP.style "font-size: 10px; color: #6a6a6a; margin-top: 2px; max-width: 60px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" ]
         [ HH.text s.label ]
