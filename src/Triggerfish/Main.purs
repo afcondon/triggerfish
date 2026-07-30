@@ -19,7 +19,8 @@ module Triggerfish.Main where
 
 import Prelude
 
-import Data.Array (any, elem, filter, find, findIndex, length, mapWithIndex, null, replicate, uncons)
+import Data.Array (any, deleteAt, elem, filter, find, findIndex, length, mapWithIndex, modifyAt, null, replicate, uncons, (!!))
+import Data.FoldableWithIndex (forWithIndex_)
 import Data.Foldable (for_)
 import Data.Either (Either(..))
 import Data.Maybe (Maybe(..), fromMaybe, isJust, maybe)
@@ -64,6 +65,8 @@ import Triggerfish.Stellatus.Component as Stellatus
 import Triggerfish.SourceQuery as SQ
 import Triggerfish.Glyph as G
 import Triggerfish.GlyphView (chipIcons, faIcon)
+import Triggerfish.Scenes as Scenes
+import Triggerfish.Scenes.Store as ScenesStore
 import Triggerfish.Midi.Routing as Routing
 import Triggerfish.Amphora as Amphora
 import Triggerfish.Macro (Cell(Quiet, Load), Step, ResolvedMod, laneFormNames, parseLane, resolveStep, stepLabel)
@@ -122,6 +125,18 @@ data RAction
   | ToggleMacro                -- run / stop the macro sequencer
   | MacroTick                  -- the bar-quantized clock poll (step-boundary driver)
   | AppendMacroName String     -- palette: append an available scene name to the lane
+  -- Scene grid (Ableton-like sequencer, docs/DESIGN-scene-modal.md). A rig-wide
+  -- grid: rows = scenes, columns = the live machines; a cell is a machine's glyph.
+  | AddSceneFromRig            -- snapshot every machine's current chip glyph → a new scene
+  | LaunchScene Int            -- recall a scene's tuple across machines (manual fire)
+  | DeleteScene Int
+  | SetSceneName Int String    -- name (promote) a scene; "" leaves it unnamed
+  | OpenCellPick Int Int       -- click a cell (scene, machine col) → open its bank picker
+  | CloseCellPick
+  | SetSceneCell Int Int (Maybe String)  -- assign/clear a cell (scene, machine col, alias)
+  | ToggleSceneRun             -- run / stop the bar-quantized auto-advance
+  | SetSceneBars String        -- bars per scene
+  | SceneTick                  -- the scene bar-clock poll (advance at a boundary)
 
 -- One saved preset gathered from an instrument, for the cross-instrument LIBRARY
 -- manager on the TIDAL page. `text` is the entry rendered to Lepidoptera eDSL
@@ -198,7 +213,19 @@ type RState =
   -- the status-board chip's recall menu: which machine's bank is open + its slots
   -- (each an alias the shell renders via glyphFromAlias). Nothing = closed. Fetched
   -- on open (AskBank), so it's a snapshot of the bank at click time.
-  , chipMenu :: Maybe { w :: Which, items :: Array MenuItem } }
+  , chipMenu :: Maybe { w :: Which, items :: Array MenuItem }
+  -- Scene grid (Ableton-like sequencer): the rig-wide grid + its transport. `scenes`
+  -- is the ordered list of scenes (each a tuple of glyph aliases across machines);
+  -- `sceneRun` runs the bar-quantized auto-advance; `scenePos` is the last-launched
+  -- row (-1 = none, for the highlight); `sceneBars` = bars per scene; `sceneStep`
+  -- is the last global bar-step applied (advance only at a boundary). `scenePick`
+  -- is the open per-cell bank picker (Nothing = closed).
+  , scenes :: Array Scenes.Scene
+  , sceneRun :: Boolean
+  , scenePos :: Int
+  , sceneBars :: Int
+  , sceneStep :: Int
+  , scenePick :: Maybe { scene :: Int, machine :: Int, items :: Array MenuItem } }
 
 -- One preset in the recall menu: its glyph alias + optional name + star flag.
 type MenuItem = { slot :: Int, alias :: String, name :: String, starred :: Boolean }
@@ -244,7 +271,8 @@ root =
         , vetulaNames: []
         , macroText: "", macroBars: 4, macroOn: false
         , macroStep: -1, macroCell: "", ctxScaleKey: "", balChip: Nothing, selChip: Nothing, odoChip: Nothing, vetChip: Nothing, captureFlash: false
-        , pollBusy: false, amphoraDown: false, chipMenu: Nothing }
+        , pollBusy: false, amphoraDown: false, chipMenu: Nothing
+        , scenes: [], sceneRun: false, scenePos: -1, sceneBars: 4, sceneStep: -1, scenePick: Nothing }
     , render
     , eval: H.mkEval H.defaultEval { handleAction = handleAction, initialize = Just Init }
     }
@@ -266,6 +294,13 @@ handleAction = case _ of
     -- The macro clock: poll ~8×/s and act only when a bar-quantized step boundary
     -- is crossed (MacroTick is a no-op while the sequencer is stopped).
     _ <- liftEffect $ setInterval 120 (HS.notify listener MacroTick)
+    -- The scene clock: same ~8×/s bar-boundary poll for the Ableton-like grid's
+    -- auto-advance (SceneTick is a no-op while the grid isn't running).
+    _ <- liftEffect $ setInterval 120 (HS.notify listener SceneTick)
+    -- Restore the saved scene grid (rig-wide). Playback is NOT restored (sceneRun
+    -- stays false) — a reload never auto-plays, mirroring the machines.
+    msc <- liftEffect ScenesStore.load
+    for_ msc \sv -> H.modify_ _ { scenes = sv.scenes }
     -- The global CAPTURE hotkey: one window-level keydown listener (the "same key
     -- on every pane" binding) → CaptureKey, which routes to the active machine.
     -- Guarded so it never fires while typing in a text field.
@@ -464,6 +499,54 @@ handleAction = case _ of
         when (stepGlobal /= st.macroStep) do
           H.modify_ _ { macroStep = stepGlobal }
           applyCell (resolveStep toks (stepGlobal `mod` n) (stepGlobal `div` n))
+  -- Scene grid (Ableton-like). Snapshot the rig: read every machine's CURRENT chip
+  -- glyph (the alias it's parked on) into a new scene row. A machine with no chip
+  -- (nothing captured) contributes a leave-as-is cell. The capture-hotkey ethos at
+  -- rig level — get it sounding right, bank the whole tuple in one gesture.
+  AddSceneFromRig -> do
+    st <- H.get
+    let cells = map (\w -> _.alias <<< _.glyph <$> chipOf st w) Scenes.sceneMachines
+    H.modify_ \s -> s { scenes = s.scenes <> [ { name: Nothing, cells } ] }
+    persistScenes
+  LaunchScene i -> launchScene i
+  DeleteScene i -> do
+    H.modify_ \s -> s { scenes = fromMaybe s.scenes (deleteAt i s.scenes), scenePos = if s.scenePos == i then -1 else s.scenePos }
+    persistScenes
+  SetSceneName i name -> do
+    H.modify_ \s -> s
+      { scenes = fromMaybe s.scenes
+          (modifyAt i (_ { name = if name == "" then Nothing else Just name }) s.scenes) }
+    persistScenes
+  -- click a cell → open that machine's bank as a picker, so a glyph can be assigned.
+  OpenCellPick sceneIx machineIx -> case Scenes.sceneMachines !! machineIx of
+    Nothing -> pure unit
+    Just w -> do
+      items <- fromMaybe [] <$> queryBank w
+      H.modify_ _ { scenePick = Just { scene: sceneIx, machine: machineIx, items } }
+  CloseCellPick -> H.modify_ _ { scenePick = Nothing }
+  SetSceneCell sceneIx machineIx mAlias -> do
+    H.modify_ \s -> s
+      { scenes = fromMaybe s.scenes (modifyAt sceneIx (Scenes.setCellAt machineIx mAlias) s.scenes)
+      , scenePick = Nothing }
+    persistScenes
+  ToggleSceneRun ->
+    H.modify_ \s -> if s.sceneRun then s { sceneRun = false } else s { sceneRun = true, sceneStep = -1 }
+  SetSceneBars v -> case Int.fromString v of
+    Just n | n >= 1 -> H.modify_ _ { sceneBars = n }
+    _ -> pure unit
+  -- The scene bar-clock: like MacroTick, compute the current global bar-step from
+  -- the shared free-run epoch; when it crosses a boundary, launch the next scene.
+  SceneTick -> do
+    st <- H.get
+    when (st.sceneRun && length st.scenes > 0) do
+      now <- liftEffect dateNow
+      let barMs = 4.0 * 60000.0 / freeTempo
+          epochMs = st.freeT0 / 1000.0
+          barIdx = max 0 (Int.floor ((now - epochMs) / barMs))
+          stepGlobal = barIdx `div` max 1 st.sceneBars
+      when (stepGlobal /= st.sceneStep) do
+        H.modify_ _ { sceneStep = stepGlobal }
+        launchScene (stepGlobal `mod` length st.scenes)
   -- Star / unstar a setup: promote it onto the go-to wall (publish its content and
   -- favourite it into `triggerfish-goto`) or take it off (unpublish that favourite).
   -- Content stays addressable either way; the wall is pure curation. Then re-fetch.
@@ -673,6 +756,32 @@ refreshChipMenu w = do
   items <- fromMaybe [] <$> queryBank w
   H.modify_ _ { chipMenu = Just { w, items } }
 
+-- Launch scene `i`: recall each non-empty cell on its machine. For a cell's glyph
+-- alias, ask that machine's bank for the matching slot (aliases are stable content
+-- identity), then RecallSlot it — content only (arming stays the tab-dots). An
+-- alias with no match (its preset was deleted) is skipped. Sets scenePos for the
+-- row highlight. Reuses queryBank/queryRecall — no new per-machine wiring.
+launchScene :: forall o m. MonadAff m => Int -> H.HalogenM RState RAction Slots o m Unit
+launchScene i = do
+  st <- H.get
+  case st.scenes !! i of
+    Nothing -> pure unit
+    Just sc -> do
+      H.modify_ _ { scenePos = i }
+      forWithIndex_ sc.cells \mIx mAlias -> case mAlias, Scenes.sceneMachines !! mIx of
+        Just alias, Just w -> do
+          mbank <- queryBank w
+          case mbank >>= (\bank -> _.slot <$> find (\it -> it.alias == alias) bank) of
+            Just slot -> void (queryRecall w slot)
+            Nothing -> pure unit
+        _, _ -> pure unit
+
+-- Persist the rig-wide scene grid after any edit.
+persistScenes :: forall o m. MonadAff m => H.HalogenM RState RAction Slots o m Unit
+persistScenes = do
+  scs <- H.gets _.scenes
+  liftEffect (ScenesStore.save { scenes: scs })
+
 -- Query each mounted instrument for its current source and stitch the four
 -- into one labelled document.
 refreshTidal :: forall o m. H.HalogenM RState RAction Slots o m Unit
@@ -772,6 +881,7 @@ render st =
   HH.div_
     [ shellBar st
     , chipMenuPanel st
+    , sceneCellPickPanel st
     -- All four are always in the tree (hence always mounted + running); the
     -- active one is shown, the rest are display:none but keep playing. On the
     -- TIDAL tab all four are hidden but still alive (and queryable). The three
@@ -813,7 +923,8 @@ tidalView :: forall m. RState -> H.ComponentHTML RAction Slots m
 tidalView st =
   HH.div
     [ style $ "max-width:1440px;margin:calc(var(--tf-bar) + 18px) auto 40px;padding:0 20px;font-family:Georgia,serif" ]
-    [ channelMapPanel st
+    [ sceneGridPanel st
+    , channelMapPanel st
     , macroPanel st
     , workbenchHeader st
     , HH.div
@@ -1271,6 +1382,154 @@ recallRow w item =
           , HP.attr (H.AttrName "title") "delete"
           , style "cursor:pointer;color:#b0a898;font-size:11px;line-height:1" ]
           [ HH.text "✕" ]
+      ]
+
+-- ─────────────────────────  Scene grid (Ableton-like)  ─────────────────────────
+-- The rig-wide arrangement grid on the TIDAL page: rows = scenes, columns = the
+-- live machines, cells = glyphs. Launching a row recalls its tuple across
+-- machines (content only). Built on the same preset banks + glyph aliases the
+-- chips use, so the grid IS a pictographic score. See docs/DESIGN-scene-modal.md.
+
+-- The machine columns, aligned with Scenes.sceneMachines.
+sceneColLabels :: Array String
+sceneColLabels = [ "ODO", "BAL", "SEL", "VET" ]
+
+sceneGridPanel :: forall m. RState -> H.ComponentHTML RAction Slots m
+sceneGridPanel st =
+  HH.div [ style "margin-bottom:26px;padding:14px 16px;background:#f3eee2;border:1px solid #e0d8c4;border-radius:6px" ]
+    [ HH.div [ style "display:flex;align-items:baseline;justify-content:space-between;gap:14px;margin-bottom:12px" ]
+        [ HH.span [ style "font-size:13px;letter-spacing:0.14em;text-transform:uppercase;color:#7a5c2a" ]
+            [ HH.text "Scenes — the rig-wide grid" ]
+        , sceneTransport st
+        ]
+    , if null st.scenes
+        then HH.div [ style "font-size:11px;color:#9a8a6a;font-style:italic;padding:6px 2px" ]
+               [ HH.text "No scenes yet — get the rig sounding how you want, then ‘+ scene from rig’ banks the whole tuple." ]
+        else HH.div_ ( [ sceneHeaderRow ] <> mapWithIndex (sceneRow st) st.scenes )
+    ]
+
+-- The transport strip: the fast build gesture + the auto-advance controls.
+sceneTransport :: forall m. RState -> H.ComponentHTML RAction Slots m
+sceneTransport st =
+  HH.div [ style "display:flex;align-items:center;gap:12px" ]
+    [ HH.span
+        [ HE.onClick \_ -> AddSceneFromRig
+        , HP.title "snapshot every machine's current glyph into a new scene"
+        , style $ "cursor:pointer;padding:4px 11px;border:1px solid #c9a23a;border-radius:5px;background:#fbf3df;"
+            <> "font-size:10px;letter-spacing:0.06em;text-transform:uppercase;color:#7a5c00" ]
+        [ HH.text "+ scene from rig" ]
+    , HH.span [ style "font-size:9px;letter-spacing:0.08em;text-transform:uppercase;color:#9a8a6a" ] [ HH.text "bars/scene" ]
+    , HH.input
+        [ HP.value (show st.sceneBars)
+        , HE.onValueInput SetSceneBars
+        , style "width:40px;font-family:'SF Mono',Menlo,monospace;font-size:11px;padding:2px 5px;border-radius:4px;border:1px solid #d8cdb2;background:#fbf8f0;text-align:center;color:#3a3222" ]
+    , HH.span
+        [ HE.onClick \_ -> ToggleSceneRun
+        , style $ "cursor:pointer;padding:4px 12px;border-radius:5px;font-size:10px;letter-spacing:0.06em;text-transform:uppercase;"
+            <> (if st.sceneRun then "background:linear-gradient(#b8975a,#a8863f);color:#231c08;border:1px solid #8a6a20"
+                else "background:#eee7d6;color:#6a5c3a;border:1px solid #cbbf9e") ]
+        [ HH.text (if st.sceneRun then "❚❚ stop" else "▸ run") ]
+    ]
+
+-- The machine-label header, aligned to the cell columns below.
+sceneHeaderRow :: forall m. H.ComponentHTML RAction Slots m
+sceneHeaderRow =
+  HH.div [ style "display:flex;align-items:center;gap:8px;padding-bottom:3px" ]
+    ( [ HH.div [ style "flex:0 0 30px" ] []
+      , HH.div [ style "flex:0 0 118px" ] []
+      ]
+        <> map (\lbl -> HH.div [ style "flex:0 0 64px;text-align:center;font-size:9px;letter-spacing:0.12em;color:#9a8a6a" ] [ HH.text lbl ]) sceneColLabels
+        <> [ HH.div [ style "flex:0 0 22px" ] [] ]
+    )
+
+-- One scene row: launch caret + name field + the machine cells + delete.
+sceneRow :: forall m. RState -> Int -> Scenes.Scene -> H.ComponentHTML RAction Slots m
+sceneRow st i sc =
+  let playing = st.scenePos == i
+  in HH.div
+      [ style $ "display:flex;align-items:center;gap:8px;padding:4px 0;border-top:1px solid #00000010"
+          <> (if playing then ";background:#faf3df" else "") ]
+      ( [ HH.span
+            [ HE.onClick \_ -> LaunchScene i
+            , HP.title "launch scene (recall the tuple)"
+            , style $ "flex:0 0 30px;text-align:center;cursor:pointer;font-size:13px;color:"
+                <> (if playing then "#b8860b" else "#a2916a") ]
+            [ HH.text "▲" ]
+        , HH.input
+            [ HP.value (fromMaybe "" sc.name)
+            , HP.placeholder ("scene " <> show (i + 1))
+            , HE.onValueInput (SetSceneName i)
+            , style "flex:0 0 118px;padding:3px 7px;border:1px solid #d8cdb2;border-radius:4px;background:#fbf8f0;font-family:Georgia,serif;font-size:11px;color:#3a3222" ]
+        ]
+          <> mapWithIndex (sceneCellView i) sc.cells
+          <> [ HH.span
+                 [ HE.onClick \_ -> DeleteScene i
+                 , HP.title "delete scene"
+                 , style "flex:0 0 22px;text-align:center;cursor:pointer;color:#b0a898;font-size:11px" ]
+                 [ HH.text "✕" ] ]
+      )
+
+-- One cell: the machine's chosen glyph (or a leave-as-is dash), click to edit.
+sceneCellView :: forall m. Int -> Int -> Scenes.SceneCell -> H.ComponentHTML RAction Slots m
+sceneCellView sceneIx machineIx mAlias =
+  HH.div
+    [ HE.onClick \_ -> OpenCellPick sceneIx machineIx
+    , HP.title "pick a glyph for this machine (or clear = leave as-is)"
+    , style "flex:0 0 64px;height:30px;display:flex;align-items:center;justify-content:center;cursor:pointer;border-radius:5px;background:#ffffff66;border:1px solid #00000012" ]
+    ( case mAlias of
+        Nothing -> [ HH.span [ style "color:#c8bd9e;font-size:14px;line-height:1" ] [ HH.text "—" ] ]
+        Just alias ->
+          let g = G.glyphFromAlias alias
+          in [ HH.span [ style "display:inline-flex;align-items:center;gap:2px" ] [ faIcon g.first, faIcon g.second ] ]
+    )
+
+-- The per-cell bank picker (floating): assign one of the machine's banked glyphs
+-- to the clicked cell, or clear it back to leave-as-is. Snapshot of the bank at
+-- open time (via AskBank), starred glyphs first — same idiom as the recall menu.
+sceneCellPickPanel :: forall m. RState -> H.ComponentHTML RAction Slots m
+sceneCellPickPanel st = case st.scenePick of
+  Nothing -> HH.text ""
+  Just p ->
+    HH.div
+      [ style $ "position:fixed;top:80px;left:50%;transform:translateX(-50%);z-index:70;box-sizing:border-box;"
+          <> "background:#efece1;border:1px solid #a8a392;border-radius:8px;padding:8px;min-width:180px;max-height:70vh;overflow-y:auto;"
+          <> "box-shadow:0 8px 24px #00000038;display:flex;flex-direction:column;gap:3px;font-family:Georgia,serif" ]
+      ( [ HH.div
+            [ style "display:flex;align-items:center;justify-content:space-between;gap:12px;padding:2px 6px 5px" ]
+            [ HH.span [ style "font-size:8px;letter-spacing:0.12em;color:#8a8676;text-transform:uppercase" ]
+                [ HH.text ("Set " <> fromMaybe "cell" (sceneColLabels !! p.machine)) ]
+            , HH.span
+                [ HE.onClick \_ -> CloseCellPick
+                , style "cursor:pointer;color:#8a8676;font-size:11px;line-height:1" ]
+                [ HH.text "✕" ]
+            ]
+        , -- leave-as-is (clear)
+          HH.div
+            [ HE.onClick \_ -> SetSceneCell p.scene p.machine Nothing
+            , style "display:flex;align-items:center;gap:8px;padding:4px 6px;border-radius:5px;cursor:pointer;background:#e7e3d6" ]
+            [ HH.span [ style "color:#a8a08c;font-size:13px;width:34px;text-align:center" ] [ HH.text "—" ]
+            , HH.span [ style "font-family:'SF Mono',Menlo,monospace;font-size:9px;color:#7a746a" ] [ HH.text "leave as-is" ] ]
+        ]
+          <>
+            ( if null p.items then
+                [ HH.div [ style "padding:4px 8px;font-size:9px;color:#a09a88;font-style:italic" ]
+                    [ HH.text "no presets on this machine yet" ] ]
+              else map (scenePickRow p.scene p.machine) (filter _.starred p.items <> filter (not <<< _.starred) p.items)
+            )
+      )
+
+scenePickRow :: forall m. Int -> Int -> MenuItem -> H.ComponentHTML RAction Slots m
+scenePickRow sceneIx machineIx item =
+  let
+    g = G.glyphFromAlias item.alias
+    label = if item.name == "" then item.alias else item.name
+  in
+    HH.div
+      [ HE.onClick \_ -> SetSceneCell sceneIx machineIx (Just item.alias)
+      , style "display:flex;align-items:center;gap:8px;padding:4px 6px;border-radius:5px;cursor:pointer;background:#e7e3d6" ]
+      [ HH.span [ style $ "font-size:11px;width:12px;color:" <> (if item.starred then "#c9a23a" else "#d8d2c2") ] [ HH.text (if item.starred then "★" else "") ]
+      , HH.span [ style "display:inline-flex;align-items:center;gap:3px" ] [ faIcon g.first, faIcon g.second ]
+      , HH.span [ style "font-family:'SF Mono',Menlo,monospace;font-size:9px;color:#4a463b" ] [ HH.text label ]
       ]
 
 -- A clear, non-blocking status pill shown when the Amphora store (:3024) is

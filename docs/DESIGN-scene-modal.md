@@ -297,3 +297,63 @@ macro-Tidal-vs-global-scene arrangement fork with its live-legibility risks.
   — the arrangement-as-song surface Balistes already prototypes.
 - Per-machine prior art: `Odonus/View/Scenes.purs`, `Balistes/Snapshot.purs`,
   the three `Store.purs`.
+
+## Resolution 2026-07-30: substrate done → TWO sequencers, not one
+
+The staging above is now realised through step 2: the glyph substrate + identity
+chip + per-machine **preset bank** (fast anonymous capture, recall-by-glyph, star,
+persist) ships on all four real machines (Odonus / Balistes / Selene / Vetula;
+Suf/Ste are prototypes). Balistes/Odonus/Selene **push** their chip from a Frame
+loop; Vetula, which has no continuous frame loop, **pulls** — the shell's 100ms
+`PollVetula` reads an `AskChip` query. Capture is the global `c` hotkey (Vetula's
+old `c` = clear moved to Backspace to free the letter).
+
+**The arrangement fork resolved not by choosing but by building both altitudes**
+(AC, 2026-07-30): *"there are two incompatible types of sequencing — Ableton-like
+or Tidal-like, and we'll do both."* They are genuinely different paradigms, and
+the empty-cell/rest question that looked like a conflict is simply **their
+defining difference**:
+
+| | **Scene grid (Ableton-like)** | **Macro-Tidal lanes (Tidal-like)** |
+|---|---|---|
+| unit | a *scene* = a column = a tuple across machines | a *lane* = one machine's mini-notation string |
+| a cell/atom | a machine's chosen glyph (its preset) | a glyph alias as a mini-notation event |
+| **empty** | **leave-as-is** (a scene touches only the machines you set) | **`~` = rest = silence** (Tidal semantics) |
+| launch | recall the whole tuple at once (session-view) | play the pattern step-by-step, polymetric |
+| altitude | coarse, rig-wide, song-level | fine, per-machine, patterned |
+| legibility | high (readable spine) | rich but the flagged live-risk |
+
+Both read/write the **same preset banks** via the same glyph-alias identity, so a
+grid cell and a lane atom are the same kind of token. The grid is the "global-scene
+row above the per-machine macros" the staging note anticipated. How the two
+**coexist when both address one machine** (mode-switch? grid sets base + lanes
+pattern within? a machine is owned by one or the other?) is **deferred** — the
+grid stands alone, so it doesn't block; settle it when the lanes land, likely as
+"arrangements-of-arrangements" (a grid cell may itself hold a lane state).
+
+### Build order (2026-07-30)
+
+1. **Scene grid FIRST** (the chosen first move) — the Ableton-like global
+   sequencer, on the Tidal tab for now (lift to a modal once it earns it):
+   - **A scene = a column**; each cell stores a machine's chosen **glyph alias**
+     (stable identity, renders as the glyph, resolves to the live preset via the
+     bank; a deleted preset shows a ghost cell to re-point). *Not* a slot index.
+   - **Empty cell = leave-as-is.** (An explicit per-cell rest/mute is a later add.)
+   - **Build a scene two speeds:** *fast* — `+ scene from rig` snapshots every
+     machine's current chip glyph into a new column (capture-ethos at rig level);
+     *deliberate* — click a cell → that machine's bank dropdown → pick/clear;
+     name the column (fast columns stay numbered).
+   - **Launch a column** = recall each non-empty cell on its machine — **content
+     only** (chips flip; the pictographic score animates for free). **Arming stays
+     the tab-dots** (two orthogonal axes). Auto-advance is bar-quantized (reuse
+     `MacroTick`), `bars/scene`, looping, current column highlit. **Stop = freeze**
+     on the current column (chips hold); Hush is the separate silence — this is the
+     fix for the two-transport "Stop doesn't stop" bug.
+   - **Persist rig-wide** in a new shell-level `triggerfish.scenes` store (scenes
+     span machines → they belong to the shell, not any one machine).
+2. **Macro-Tidal per-machine lanes** — the Tidal-like layer on top, over the same
+   glyph aliases (`Triggerfish.Macro` parser already exists), with `:`+Tab
+   completion, CodeMirror atomic glyph decorations, and the read-only Tidal pane
+   as the pictographic mirror.
+3. **Then** strip the redundant per-machine chrome (Balistes ARRANGE rail, the
+   Tidal tab's edit role) once the two sequencers subsume it, and settle coexistence.
