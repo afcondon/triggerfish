@@ -18,7 +18,7 @@ module Triggerfish.Balistes.Component (component, Output(..)) where
 
 import Prelude
 
-import Data.Array (filter, findIndex, length, modifyAt, null, range, replicate, updateAt, (!!))
+import Data.Array (deleteAt, filter, findIndex, length, mapWithIndex, modifyAt, null, range, (!!))
 import Data.Foldable (any, foldl, for_)
 import Data.Int (floor, round, toNumber)
 import Data.Maybe (Maybe(..), fromMaybe, isNothing, maybe)
@@ -50,8 +50,9 @@ import Triggerfish.Balistes.Types
   , NoteRef(..), DragKind(..), State, Action(..), activePattern, rigUrl, gridCfg
   , stepsPerBar, midiPortName, drumChannel, cycleSteps, editVel, flashWindow
   , padId, eqTrigName, jackNoteOf )
-import Triggerfish.Balistes.TriSnapshot (TriSnapshot(..), printTri)
+import Triggerfish.Balistes.TriSnapshot (TriSnapshot(..), printTri, parseTri)
 import Triggerfish.Glyph as G
+import Triggerfish.Preset (indexOfContent, presetAlias)
 import Triggerfish.Balistes.Widgets (flatBtn, instColor, panel, readout)
 import Triggerfish.Balistes.View.Trig (trigBody, trigInfoPanel)
 import Triggerfish.Balistes.View.Fixed (fixedBody, inspectorPanel, patternSwitcher)
@@ -87,8 +88,8 @@ component =
         , binnacle: Nothing, midiOut: Nothing, midiName: "…"
         , clockTempo: 120.0, clockLocked: false, clockBeat: 0.0, clockBar: 0, anchorCount: 0
         , nowMicros: 0.0, dragging: Nothing, dragSub: Nothing
-        , capArm: false, seqArm: false, seqEnabled: false, seqPos: 0, seqStartBar: 0
-        , snapshots: replicate M.snapshotCount Nothing, sequence: [], seqBars: 1
+        , seqArm: false, seqEnabled: false, seqPos: 0, seqStartBar: 0
+        , presets: [], sequence: [], seqBars: 1
         , identity: Nothing, lastChip: Nothing
         , active: AGrids, library: P.bundledPatterns, editing: false, selected: Nothing
         , scratchFixed: Nothing
@@ -149,35 +150,33 @@ handleQuery = case _ of
   Capture next -> do
     captureNow
     pure (Just next)
-  -- The status-board chip's recall menu: report each filled bank slot as its glyph
-  -- alias (the shell reconstructs the coloured glyph via glyphFromAlias, faithful
-  -- because colour follows the icon name), and recall a chosen slot.
+  -- The status-board chip's recall menu: report each preset as its glyph alias (the
+  -- shell reconstructs the coloured glyph via glyphFromAlias, faithful because
+  -- colour follows the icon name), and recall a chosen preset.
   AskBank reply -> do
     s <- H.get
-    let
-      items = do
-        i <- range 0 (M.snapshotCount - 1)
-        case join (s.snapshots !! i) of
-          Just snap -> [ { slot: i, alias: (G.glyphOf (printTri snap)).alias } ]
-          Nothing -> []
-    pure (Just (reply items))
+    pure (Just (reply (mapWithIndex (\i p -> { slot: i, alias: presetAlias p }) s.presets)))
   RecallSlot i next -> do
-    recallTri i
+    recallPreset i
     pure (Just next)
 
--- | Bank the current playing-state as a preset without the arm-then-slot dance:
--- | mint it into the first empty slot (or, when the bank is full, the last slot —
--- | transitional until the bank becomes a growing glyph-list), park `identity` on
--- | it so the status-board chip reflects the capture, and persist. A no-op only if
--- | the active brain has nothing to capture (an empty GRIDS tab).
+-- | Bank the current playing-state as a preset — the CAPTURE hotkey / button. DEDUPS
+-- | by content (identical state ⇒ identical glyph): if it's already banked, just
+-- | re-park `identity` on it; otherwise append an anonymous preset. Either way the
+-- | chip shows the glyph held, and we persist. No-op only if the active brain has
+-- | nothing to capture (an empty GRIDS tab).
 captureNow :: forall m. MonadAff m => H.HalogenM State Action () Output m Unit
 captureNow = do
   s <- H.get
-  case captureTri s of
+  case printTri <$> captureTri s of
     Nothing -> pure unit
-    js -> do
-      let i = fromMaybe (M.snapshotCount - 1) (findIndex isNothing s.snapshots)
-      H.modify_ \st -> st { snapshots = fromMaybe st.snapshots (updateAt i js st.snapshots), identity = js }
+    Just text -> do
+      case indexOfContent text s.presets of
+        Just _ -> H.modify_ _ { identity = Just text }
+        Nothing -> H.modify_ \st -> st
+          { presets = st.presets <> [ { content: text, name: Nothing, starred: false } ]
+          , identity = Just text
+          }
       persist
 
 -- ---------------------------------------------------------------------------
@@ -213,7 +212,7 @@ handleAction = case _ of
     msaved <- liftEffect Store.load
     for_ msaved \sv -> H.modify_ _
       { library = sv.library
-      , snapshots = fitBank sv.bank
+      , presets = sv.presets
       , sequence = sv.sequence
       , seqBars = sv.seqBars
       }
@@ -406,23 +405,19 @@ handleAction = case _ of
 
   DillaPreset -> H.modify_ \s -> s { bal = M.dillaPush s.bal }
   FlatGroove -> H.modify_ \s -> s { bal = M.flatPush s.bal }
-  -- the two arms are mutually exclusive.
-  ToggleCap -> H.modify_ \s -> s { capArm = not s.capArm, seqArm = false }
-  ToggleSeqBuild -> H.modify_ \s -> s { seqArm = not s.seqArm, capArm = false }
-  -- shift → clear; capArm → CAPTURE the active brain's state into the slot (and
-  -- disarm); seqArm → append to the path; otherwise RECALL (switch tab + restore +
-  -- rig push). The bank now holds a `TriSnapshot` of whichever brain was active.
+  -- CAPTURE the active brain's state as a preset (dedup-append + park identity).
+  CaptureBank -> captureNow
+  ToggleSeqBuild -> H.modify_ \s -> s { seqArm = not s.seqArm }
+  -- shift → DELETE preset i; seqArm → append it to the path; otherwise RECALL
+  -- (switch tab + restore + rig push).
   SlotClick i shift -> do
     pre <- H.get
     if shift then
-      H.modify_ \s -> s { snapshots = fromMaybe s.snapshots (updateAt i Nothing s.snapshots) }
-    else if pre.capArm then
-      -- capturing also parks the identity chip on the just-captured state.
-      H.modify_ \s -> s { snapshots = fromMaybe s.snapshots (updateAt i (captureTri s) s.snapshots), capArm = false, identity = captureTri s }
+      H.modify_ \s -> s { presets = fromMaybe s.presets (deleteAt i s.presets) }
     else if pre.seqArm then
       H.modify_ \s -> s { sequence = s.sequence <> [ i ] }
     else
-      recallTri i
+      recallPreset i
     persist
   -- enabling: seed seqPos at the end and force an immediate advance to step 0
   -- (the big-negative sentinel makes the first Step's bar gap exceed seqBars).
@@ -628,42 +623,48 @@ captureTri s = case s.active of
   AFixed _ -> TSFixed <$> activePattern s
   ASelene -> Just (TSTrig s.trig)
 
--- | Recall slot `i`: switch the active tab to the snapshot's brain, restore that
+-- | Restore a `TriSnapshot`: switch the active tab to its brain, restore that
 -- | brain's state, and — when rig-authoritative — push the matching handoff so the
 -- | rig follows. The rig side re-modes in place on any of balistes-sim-at / -fixed /
 -- | -trig, so a mid-sequence Mutable→Tidal→Grids march is just three pushes, no gap.
--- | `TSFixed` restores EPHEMERALLY (scratchFixed), never touching the library.
-recallTri :: forall o m. MonadAff m => Int -> H.HalogenM State Action () o m Unit
-recallTri i = do
+-- | `TSFixed` restores EPHEMERALLY (scratchFixed), never touching the library. Does
+-- | NOT set `identity` — the caller (`recallPreset`) parks it on the preset's text.
+recallSnap :: forall o m. MonadAff m => TriSnapshot -> H.HalogenM State Action () o m Unit
+recallSnap = case _ of
+  TSGrids gsnap -> do
+    H.modify_ \s -> s { active = AGrids, scratchFixed = Nothing, bal = M.applySnapshot gsnap s.bal }
+    H.get >>= pushHandoff
+  TSFixed pat -> do
+    -- Highlight the library chip that matches the snapshot BY NAME (the identity the
+    -- user reasons about — "funk 100"), so the switcher agrees with what's playing.
+    -- Playback still comes from `scratchFixed` (the frozen artefact). No match → 0.
+    st <- H.get
+    let idx = fromMaybe 0 (findIndex (\p -> p.name == pat.name) st.library)
+    H.modify_ _ { active = AFixed idx, scratchFixed = Just pat }
+    st2 <- H.get
+    when (st2.sounding == Rig) $ for_ st2.binnacle \bin ->
+      liftEffect $ Transport.send (Binnacle.socket bin) ("balistes-fixed " <> encodeFixed (fixedOf pat))
+  TSTrig rack -> do
+    H.modify_ _ { active = ASelene, scratchFixed = Nothing, trig = rack }
+    pushTrig
+
+-- | Recall preset `i`: parse its content to a `TriSnapshot`, restore it, and park
+-- | the identity chip on the preset's text (glyph SOLID; ghosts on divergence).
+recallPreset :: forall o m. MonadAff m => Int -> H.HalogenM State Action () o m Unit
+recallPreset i = do
   st <- H.get
-  let msnap = join (st.snapshots !! i)
-  case msnap of
+  case st.presets !! i of
     Nothing -> pure unit
-    Just (TSGrids gsnap) -> do
-      H.modify_ \s -> s { active = AGrids, scratchFixed = Nothing, bal = M.applySnapshot gsnap s.bal }
-      H.get >>= pushHandoff
-    Just (TSFixed pat) -> do
-      -- Highlight the library chip that matches the snapshot BY NAME (the identity
-      -- the user reasons about — "funk 100"), so the switcher agrees with what's
-      -- playing. Playback still comes from `scratchFixed` (the frozen artefact),
-      -- so a later library edit never mutates the recalled snapshot. No match
-      -- (pattern deleted) → fall back to slot 0.
-      let idx = fromMaybe 0 (findIndex (\p -> p.name == pat.name) st.library)
-      H.modify_ _ { active = AFixed idx, scratchFixed = Just pat }
-      st2 <- H.get
-      when (st2.sounding == Rig) $ for_ st2.binnacle \bin ->
-        liftEffect $ Transport.send (Binnacle.socket bin) ("balistes-fixed " <> encodeFixed (fixedOf pat))
-    Just (TSTrig rack) -> do
-      H.modify_ _ { active = ASelene, scratchFixed = Nothing, trig = rack }
-      pushTrig
-  -- Park the identity chip on the recalled snapshot: the chip now shows its glyph
-  -- SOLID, and ghosts the moment the live state diverges from it.
-  for_ msnap \snap -> H.modify_ _ { identity = Just snap }
+    Just p -> case parseTri p.content of
+      Nothing -> pure unit
+      Just snap -> do
+        recallSnap snap
+        H.modify_ _ { identity = Just p.content }
 
 -- | Mode-agnostic sequence advance, run at the top of every Step: if a bar boundary
--- | elapsed while the sequence is playing, step the path and recall the next slot's
--- | TriSnapshot (which may switch the visible brain). Runs whenever the transport
--- | sounds (Local or Rig) so the rig follows the arrangement too.
+-- | elapsed while the sequence is playing, step the path and recall the next preset
+-- | (which may switch the visible brain). Runs whenever the transport sounds (Local
+-- | or Rig) so the rig follows the arrangement too.
 advanceSeq :: forall o m. MonadAff m => Scheduler.Tick -> H.HalogenM State Action () o m Unit
 advanceSeq tick = do
   st <- H.get
@@ -675,7 +676,7 @@ advanceSeq tick = do
     let nextPos = (st.seqPos + 1) `mod` seqLen
     H.modify_ _ { seqPos = nextPos, seqStartBar = bar }
     case st.sequence !! nextPos of
-      Just slot -> recallTri slot
+      Just slot -> recallPreset slot
       Nothing -> pure unit
 
 -- | Resolve a POLYTRIG bank to the wire-flat `Trig.TrigKit` the rig runs: each jack
@@ -726,15 +727,10 @@ dragToBInput kind b = case kind of
   DNote (NGrids lane) -> Just (RBI.BSetNote lane (M.noteOf lane b))
   DNote (NFixed _ _) -> Nothing
 
--- | Project component `State` onto the persisted artefact (library + ARRANGE rail).
+-- | Project component `State` onto the persisted artefact (library + preset bank).
 savedOf :: State -> Store.Saved
 savedOf s =
-  { library: s.library, bank: s.snapshots, sequence: s.sequence, seqBars: s.seqBars }
-
--- | Normalise a restored bank to the fixed slot count: pad short (missing slots →
--- | empty) and truncate long, so the rail always renders exactly `snapshotCount`.
-fitBank :: Array (Maybe TriSnapshot) -> Array (Maybe TriSnapshot)
-fitBank b = map (\i -> join (b !! i)) (range 0 (M.snapshotCount - 1))
+  { library: s.library, presets: s.presets, sequence: s.sequence, seqBars: s.seqBars }
 
 -- | Save the whole artefact to localStorage (library + bank + sequence). Called
 -- | after any bank / sequence edit; `persistLib` layers the rig re-push on top.
@@ -893,7 +889,7 @@ tabBtn label active mact =
 chipViewOf :: State -> Maybe G.ChipView
 chipViewOf s = case s.identity of
   Nothing -> Nothing
-  Just idn -> Just { glyph: G.glyphOf (printTri idn), diverged: captureTri s /= Just idn }
+  Just text -> Just { glyph: G.glyphOf text, diverged: (printTri <$> captureTri s) /= Just text }
 
 -- ---------------------------------------------------------------------------
 -- Transport panel

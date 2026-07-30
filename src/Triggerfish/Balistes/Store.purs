@@ -1,13 +1,12 @@
 -- | Triggerfish.Balistes.Store — localStorage persistence for the whole Balistes
--- | artefact: the fixed-rhythm library **and** the ARRANGE rail (the tri-snapshot
--- | bank + sequence + bars-per-step). Everything saves/loads from this one surface
+-- | artefact: the fixed-rhythm library **and** the PRESET bank (the unified preset
+-- | list + sequence + bars-per-step). Everything saves/loads from this one surface
 -- | (the "final panel" owns persistence); the per-tab panels hold no storage.
 -- |
--- | Every payload is serialised as **eDSL / compact text**, never bespoke JSON —
--- | the Lepidoptera "save the rendering, not the structure" rule. A library entry
--- | is one `printPattern`; a bank slot is one `printTri` (a brain-tagged text that
--- | drops straight into Calypso for the Fixed case). The JSON here is only the
--- | local envelope holding those texts. Mirrors Selene's Store.
+-- | Each preset's `content` is already eDSL / compact TEXT (a brain-tagged `printTri`
+-- | for a Balistes snapshot) — the Lepidoptera "save the rendering" rule; `name` and
+-- | `starred` are small envelope metadata. A library entry is one `printPattern`.
+-- | The JSON here is only the local envelope holding those texts. Mirrors Selene.
 -- |
 -- | Transient playback state (`seqEnabled`/`seqPos`/`seqStartBar`) is deliberately
 -- | NOT saved — reopening the app should restore the arrangement, not start it.
@@ -20,35 +19,47 @@ module Triggerfish.Balistes.Store
 import Prelude
 
 import Data.Array (mapMaybe)
-import Data.Maybe (Maybe(..), maybe)
+import Data.Maybe (Maybe(..), fromMaybe)
 import Data.Nullable (Nullable, toMaybe)
 import Effect (Effect)
 import Triggerfish.Balistes.Lepidoptera (parsePattern, printPattern)
 import Triggerfish.Balistes.Pattern (FixedPattern)
-import Triggerfish.Balistes.TriSnapshot (TriSnapshot, parseTri, printTri)
+import Triggerfish.Preset (Preset)
 
--- | What a session restores: the library + the ARRANGE rail. `bank` is the
--- | fixed-length slot array (`Nothing` = empty slot).
+-- | What a session restores: the library + the PRESET bank (unified list).
 type Saved =
   { library :: Array FixedPattern
-  , bank :: Array (Maybe TriSnapshot)
+  , presets :: Array Preset
   , sequence :: Array Int
   , seqBars :: Int
   }
 
--- | The on-disk shape: every payload flattened to text (`""` = empty bank slot).
+-- | The on-disk shape (v4): library as texts, presets as { content, name, starred }
+-- | (empty `name` = anonymous). `content` is the preset's canonical text verbatim.
 type Envelope =
+  { library :: Array String
+  , presets :: Array { content :: String, name :: String, starred :: Boolean }
+  , sequence :: Array Int
+  , seqBars :: Int
+  }
+
+-- | v3's on-disk shape — a fixed bank of `printTri` texts (`""` = empty slot).
+-- | Migrated to the unified preset list when v4 is absent.
+type EnvelopeV3 =
   { library :: Array String
   , bank :: Array String
   , sequence :: Array Int
   , seqBars :: Int
   }
 
--- v3: the envelope grew from library-only (v2) to library + ARRANGE rail.
+-- v4: the fixed Maybe-bank became a growing unified preset list (name + starred).
 storeKey :: String
-storeKey = "triggerfish.balistes.v3"
+storeKey = "triggerfish.balistes.v4"
 
--- v2 stored the library alone as an `Array String`; recovered if v3 is absent.
+legacyBankKey :: String
+legacyBankKey = "triggerfish.balistes.v3"
+
+-- v2 stored the library alone as an `Array String`; recovered if v3/v4 absent.
 legacyLibraryKey :: String
 legacyLibraryKey = "triggerfish.balistes.library.v2"
 
@@ -64,30 +75,42 @@ save s = _save storeKey (_stringify env)
   env :: Envelope
   env =
     { library: map printPattern s.library
-    , bank: map (maybe "" printTri) s.bank
+    , presets: map (\p -> { content: p.content, name: fromMaybe "" p.name, starred: p.starred }) s.presets
     , sequence: s.sequence
     , seqBars: s.seqBars
     }
 
--- | Load the artefact. Prefers the v3 envelope; if absent, migrates a v2
--- | library-only store (empty ARRANGE rail). `Nothing` → the bundled fallback.
--- | Unparseable library entries / bank slots are dropped, never fatal.
+-- | Load the artefact. Prefers v4; migrates a v3 fixed-bank store (each non-empty
+-- | slot → an anonymous preset), else a v2 library-only store. `Nothing` → the
+-- | bundled fallback. Unparseable library entries are dropped, never fatal.
 load :: Effect (Maybe Saved)
 load = do
   mEnv <- _load storeKey
   case toMaybe (mEnv :: Nullable Envelope) of
     Just env -> pure (Just (decode env))
     Nothing -> do
-      mLib <- _load legacyLibraryKey
-      pure $ toMaybe (mLib :: Nullable (Array String)) <#> \texts ->
-        { library: mapMaybe parsePattern texts, bank: [], sequence: [], seqBars: 1 }
+      mV3 <- _load legacyBankKey
+      case toMaybe (mV3 :: Nullable EnvelopeV3) of
+        Just v3 -> pure (Just (decodeV3 v3))
+        Nothing -> do
+          mLib <- _load legacyLibraryKey
+          pure $ toMaybe (mLib :: Nullable (Array String)) <#> \texts ->
+            { library: mapMaybe parsePattern texts, presets: [], sequence: [], seqBars: 1 }
 
 decode :: Envelope -> Saved
 decode env =
   { library: mapMaybe parsePattern env.library
-  , bank: map slot env.bank
+  , presets: map (\e -> { content: e.content, name: if e.name == "" then Nothing else Just e.name, starred: e.starred }) env.presets
   , sequence: env.sequence
   , seqBars: env.seqBars
   }
+
+decodeV3 :: EnvelopeV3 -> Saved
+decodeV3 v3 =
+  { library: mapMaybe parsePattern v3.library
+  , presets: map (\t -> { content: t, name: Nothing, starred: false }) (filter (_ /= "") v3.bank)
+  , sequence: v3.sequence
+  , seqBars: v3.seqBars
+  }
   where
-  slot t = if t == "" then Nothing else parseTri t
+  filter p = mapMaybe \x -> if p x then Just x else Nothing

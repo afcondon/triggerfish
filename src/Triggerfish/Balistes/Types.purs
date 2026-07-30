@@ -45,8 +45,8 @@ import Halogen as H
 import Reef.Balistes.Input as RBI
 import Triggerfish.Balistes.Model as M
 import Triggerfish.Balistes.Pattern as P
-import Triggerfish.Balistes.TriSnapshot (TriSnapshot)
 import Triggerfish.Glyph as G
+import Triggerfish.Preset (Preset)
 import Triggerfish.Midi.Routing as Routing
 import Triggerfish.Transport (Sounding)
 
@@ -119,28 +119,26 @@ type State =
   , nowMicros :: Number
   , dragging :: Maybe Drag
   , dragSub :: Maybe H.SubscriptionId
-  -- snapshot-bank arming: capArm → a slot click STORES; seqArm → a slot click
-  -- APPENDS to the sequence; neither → recall. Mutually exclusive.
-  , capArm :: Boolean
+  -- seqArm → a slot click APPENDS to the sequence path (else it recalls).
   , seqArm :: Boolean
   -- sequence playback: enabled, the current step, and the absolute bar the step
   -- began on (a big-negative sentinel forces an immediate advance on enable).
   , seqEnabled :: Boolean
   , seqPos :: Int
   , seqStartBar :: Int
-  -- the TRI-SNAPSHOT bank: a slot holds a captured playing-state of ANY of the
-  -- three brains (Mutable / Grids / Tidal), so one bank sequences them
-  -- intermingled — the macro-tidal surface (#182/#199). `sequence` is the path
-  -- of slot indices the playhead walks, each held `seqBars` bars.
-  , snapshots :: Array (Maybe TriSnapshot)
+  -- the PRESET bank (unified model, docs/DESIGN-scene-modal.md): a growing list,
+  -- each preset a captured playing-state of ANY brain (Mutable / Grids / Tidal)
+  -- rendered to text, anonymous (glyph-only) or named, freely intermixed. Capture
+  -- DEDUPS by content. `sequence` is the path of preset indices the playhead walks,
+  -- each held `seqBars` bars — the macro-tidal surface (#182/#199).
+  , presets :: Array Preset
   , sequence :: Array Int
   , seqBars :: Int
-  -- the IDENTITY CHIP's parked glyph: the `TriSnapshot` the machine is currently
-  -- "on" (last recalled, or just captured). The chip renders its glyph SOLID
-  -- while the live state still matches (`captureTri s == identity`) and GHOSTED
-  -- once you diverge — the continuous dirty indicator (see docs/DESIGN-scene-modal.md).
-  -- Transient (not persisted): reload restores the arrangement, never a live identity.
-  , identity :: Maybe TriSnapshot
+  -- the IDENTITY CHIP's parked content: the preset TEXT the machine is currently
+  -- "on" (last recalled, or just captured). The chip renders its glyph SOLID while
+  -- the live state still matches and GHOSTED once you diverge — the continuous
+  -- dirty indicator (see docs/DESIGN-scene-modal.md). Transient (not persisted).
+  , identity :: Maybe String
   -- the last chip-view raised to the shell's status board — bookkeeping so the
   -- Frame loop only re-raises `IdentityChanged` when the view actually changes.
   , lastChip :: Maybe G.ChipView
@@ -177,9 +175,9 @@ data Action
   | DragEnd
   | DillaPreset
   | FlatGroove
-  | ToggleCap                  -- arm/disarm capture-on-slot-click
+  | CaptureBank                -- append the current playing-state as a preset (dedup)
   | ToggleSeqBuild             -- arm/disarm append-to-sequence-on-slot-click
-  | SlotClick Int Boolean      -- slot i; shift = clear; else store/append/recall by arm
+  | SlotClick Int Boolean      -- preset i; shift = delete; seqArm = append to path; else recall
   | ToggleSeq                  -- play/stop the snapshot sequence
   | SeqBarsDelta Int           -- nudge bars-per-step
   | ClearSeq
