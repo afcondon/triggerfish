@@ -40,6 +40,8 @@ import Hylograph.Halogen.UI.Select as Select
 import Reef.Input as RI
 import Triggerfish.Odonus.Model as M
 import Triggerfish.Odonus.Marbles as Marbles
+import Triggerfish.Preset (Preset)
+import Triggerfish.Glyph (ChipView)
 import Triggerfish.Transport (Sounding)
 -- The gen-source descriptor moved to the portable reef package (Reef.Gen) so
 -- generation runs on both runtimes; re-export it here under its historical home
@@ -369,6 +371,14 @@ type State =
   -- Hidden from the user; arming re-pushes. Odonus hosts it as the always-first-
   -- mounted instrument (the shell owns no rig socket).
   , reconciled :: Boolean
+  -- The unified glyph-chip PRESET bank (docs/DESIGN-scene-modal.md): captured live
+  -- patches, anonymous or named, freely intermixed — distinct from the named SCENE
+  -- library. `identity` is the parked preset's text (the chip glyph; ghosts when the
+  -- live patch diverges from it); `lastChip` guards the Frame → shell status-board
+  -- emit so it only raises on change.
+  , presets :: Array Preset
+  , identity :: Maybe String
+  , lastChip :: Maybe ChipView
   }
 
 data Action

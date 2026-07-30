@@ -5,11 +5,11 @@
 -- | thumbnail beside its direction / speed / interval knobs, and a 16-switch
 -- | head-activation matrix cuts between playhead combinations. Aesthetic:
 -- | Swiss rigor × vintage-lab materiality (see BRIEF.md).
-module Triggerfish.Odonus.Grid (component) where
+module Triggerfish.Odonus.Grid (component, Output(..)) where
 
 import Prelude
 
-import Data.Array (any, concatMap, deleteAt, elem, filter, find, findIndex, head, length, modifyAt, null, range, replicate, updateAt, (!!))
+import Data.Array (any, concatMap, deleteAt, elem, filter, find, findIndex, head, length, mapWithIndex, modifyAt, null, range, replicate, updateAt, (!!))
 import Data.Foldable (foldl, for_)
 import Data.FoldableWithIndex (forWithIndex_)
 import Data.Int (ceil, floor, round, toNumber)
@@ -59,13 +59,20 @@ import Triggerfish.Odonus.View.Replay (replayPanel, modeBar)
 import Triggerfish.Odonus.Patch (capturePatch, harmonicSummary, loadText, patchText, recallText, recallGestureText)
 import Triggerfish.Odonus.Store as Store
 import Triggerfish.Amphora as Amphora
+import Triggerfish.Glyph as G
+import Triggerfish.Preset (indexOfContent, presetAlias)
 import Triggerfish.Odonus.Lepidoptera (parsePatch, printPatch)
 import Triggerfish.SourceQuery (Query(..))
 import Triggerfish.Midi.Routing as Routing
 import Triggerfish.Odonus.View.Generate (generatePanel)
 import Triggerfish.Odonus.View.Scenes (sceneName)
 
-component :: forall i o m. MonadAff m => H.Component Query i o m
+-- | The upward message to the shell: Odonus's identity-chip view (or `Nothing` when
+-- | nothing is parked), for the six-machine status board. Raised from the Frame loop
+-- | only when the view changes (see `chipViewOf`). Mirrors Balistes/Selene's Output.
+data Output = IdentityChanged (Maybe G.ChipView)
+
+component :: forall i m. MonadAff m => H.Component Query i Output m
 component =
   H.mkComponent
     { initialState: \_ ->
@@ -82,7 +89,8 @@ component =
         -- one-stop view of the whole setup; Odonus's own eDSL pane is for
         -- when you want to inspect just this module.
         , collapsed: [ "SOURCE" ], lastTap: "", lastTapMicros: 0.0
-        , voiceChords: [], follow: Nothing, source: SScale, reconciled: false }
+        , voiceChords: [], follow: Nothing, source: SScale, reconciled: false
+        , presets: [], identity: Nothing, lastChip: Nothing }
     , render
     , eval: H.mkEval H.defaultEval
         { handleAction = handleAction, handleQuery = handleQuery, initialize = Just Initialize }
@@ -90,7 +98,7 @@ component =
 
 -- | Answer the shell: the current eDSL (TIDAL tab), or adopt the rack's shared
 -- | free-run baseline so all modules share a downbeat with no rig.
-handleQuery :: forall o m a. MonadAff m => Query a -> H.HalogenM State Action Slots o m (Maybe a)
+handleQuery :: forall m a. MonadAff m => Query a -> H.HalogenM State Action Slots Output m (Maybe a)
 handleQuery = case _ of
   AskSource reply -> do
     s <- H.get
@@ -165,18 +173,71 @@ handleQuery = case _ of
   SetContextPitchSet root offsets next -> do
     enqueue (RI.SetPitchSet (PitchSet { offsets, root: 48 + root, period: Just 12 }))
     pure (Just next)
-  -- No glyph substrate yet — ignore the capture hotkey + recall menu (task #6).
-  Capture next -> pure (Just next)
-  AskBank reply -> pure (Just (reply []))
-  RecallSlot _ next -> pure (Just next)
-  StarSlot _ next -> pure (Just next)
-  DeleteSlot _ next -> pure (Just next)
+  -- The shell's CAPTURE hotkey: bank the live patch as a preset and park identity
+  -- on it (the chip shows the freshly-minted glyph, held). See captureNow.
+  Capture next -> do
+    captureNow
+    pure (Just next)
+  -- The status-board chip's recall menu: report each preset as its glyph alias +
+  -- optional name + star flag; recall / star / delete a chosen preset.
+  AskBank reply -> do
+    s <- H.get
+    pure (Just (reply (mapWithIndex (\i p -> { slot: i, alias: presetAlias p, name: fromMaybe "" p.name, starred: p.starred }) s.presets)))
+  RecallSlot i next -> do
+    recallPreset i
+    pure (Just next)
+  StarSlot i next -> do
+    H.modify_ \s -> s { presets = fromMaybe s.presets (modifyAt i (\p -> p { starred = not p.starred }) s.presets) }
+    persistAll
+    pure (Just next)
+  DeleteSlot i next -> do
+    H.modify_ \s -> s { presets = fromMaybe s.presets (deleteAt i s.presets) }
+    persistAll
+    pure (Just next)
+
+-- | Bank the live patch as a preset — the CAPTURE hotkey. DEDUPS by content (an
+-- | unchanged authored patch ⇒ identical glyph, so hammering the hotkey is
+-- | idempotent): already banked ⇒ just re-park `identity`; otherwise append an
+-- | anonymous preset. `content` is `patchText s` (the same authored slice `AskSource`
+-- | answers — playhead-independent, so playback doesn't perturb it). Then persist.
+captureNow :: forall m. MonadAff m => H.HalogenM State Action Slots Output m Unit
+captureNow = do
+  s <- H.get
+  let text = patchText s
+  case indexOfContent text s.presets of
+    Just _ -> H.modify_ _ { identity = Just text }
+    Nothing -> H.modify_ \st -> st
+      { presets = st.presets <> [ { content: text, name: Nothing, starred: false } ]
+      , identity = Just text
+      }
+  persistAll
+
+-- | Recall preset `i`: apply its patch text PHASE-PRESERVING (`recallText`, exactly
+-- | as RecallScene) so a live change flows on without a playhead jump, and park the
+-- | chip on the preset's text (glyph SOLID; ghosts on later divergence).
+recallPreset :: forall m. MonadAff m => Int -> H.HalogenM State Action Slots Output m Unit
+recallPreset i = do
+  st <- H.get
+  case st.presets !! i of
+    Nothing -> pure unit
+    Just p -> do
+      H.modify_ \s -> (recallText p.content s) { identity = Just p.content }
+      persistAll
+
+-- | The identity-chip view Odonus reports to the shell's status board: the glyph of
+-- | the parked patch + whether the live patch has diverged from it (edited away).
+-- | `Nothing` when nothing is parked. `patchText` excludes the playhead/seed, so a
+-- | running-but-unedited patch stays SOLID.
+chipViewOf :: State -> Maybe G.ChipView
+chipViewOf s = case s.identity of
+  Nothing -> Nothing
+  Just text -> Just { glyph: G.glyphOf text, diverged: patchText s /= text }
 
 -- | Run the action, then persist the live patch — except for the high-frequency
 -- | / non-authoring actions (the clock tick, the river frame, a knob DRAG in
 -- | flight, MIDI readiness, and Initialize itself, which has just restored).
 -- | DragEnd is NOT excluded, so a knob edit persists once it settles.
-handleAction :: forall o m. MonadAff m => Action -> H.HalogenM State Action Slots o m Unit
+handleAction :: forall m. MonadAff m => Action -> H.HalogenM State Action Slots Output m Unit
 handleAction a = do
   dispatch a
   case a of
@@ -193,7 +254,7 @@ handleAction a = do
 persistAll :: forall o m. MonadAff m => H.HalogenM State Action Slots o m Unit
 persistAll = do
   s <- H.get
-  liftEffect (Store.saveAll { live: patchText s, scenes: s.scenes })
+  liftEffect (Store.saveAll { live: patchText s, scenes: s.scenes, presets: s.presets })
 
 -- | An Amphora library item as a local scene (payload = the scene's eDSL text).
 amphoraScene :: Amphora.LibItem -> { name :: String, text :: String }
@@ -208,7 +269,7 @@ mergeScenesByName
 mergeScenesByName current incoming =
   current <> filter (\p -> not (any (\q -> q.name == p.name) current)) incoming
 
-dispatch :: forall o m. MonadAff m => Action -> H.HalogenM State Action Slots o m Unit
+dispatch :: forall m. MonadAff m => Action -> H.HalogenM State Action Slots Output m Unit
 dispatch = case _ of
   Initialize -> do
     -- Connect to the rig. Binnacle's clock free-runs at 120 until the
@@ -253,7 +314,7 @@ dispatch = case _ of
     -- Lepidoptera text; unparseable / absent storage falls back to defaults).
     msaved <- liftEffect Store.loadAll
     for_ msaved \sv -> do
-      H.modify_ _ { scenes = sv.scenes }
+      H.modify_ _ { scenes = sv.scenes, presets = sv.presets }
       H.modify_ (loadText sv.live)
     -- Merge the shared Amphora scene library over the local one (by name), in the
     -- BACKGROUND: awaiting it blocked Initialize (hence all queries to Odonus) until
@@ -407,6 +468,13 @@ dispatch = case _ of
           }
         driveReplay
       Nothing -> pure unit
+    -- Report the identity chip up to the shell's status board, but only when it
+    -- actually changed (this fires ~30×/s) — capture/recall/divergence all land here.
+    s2 <- H.get
+    let cv = chipViewOf s2
+    when (cv /= s2.lastChip) do
+      H.modify_ _ { lastChip = cv }
+      H.raise (IdentityChanged cv)
   MidiReady mout nm -> H.modify_ _ { midiOut = mout, midiName = nm }
   -- MidiFighter Twister, bank 1: the 16 encoders map 1:1 onto the 16 cells.
   -- ROTATE (absolute CC on the rotate channel) sets the ACTIVE grid's field for that
