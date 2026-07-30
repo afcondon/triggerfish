@@ -159,6 +159,8 @@ handleQuery = case _ of
   Capture next -> pure (Just next)
   AskBank reply -> pure (Just (reply []))
   RecallSlot _ next -> pure (Just next)
+  StarSlot _ next -> pure (Just next)
+  DeleteSlot _ next -> pure (Just next)
 
 handleAction :: forall o m. MonadAff m => Action -> H.HalogenM State Action () o m Unit
 handleAction = case _ of

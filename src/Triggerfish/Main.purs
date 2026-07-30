@@ -111,6 +111,8 @@ data RAction
   | OpenChipMenu Which         -- click a status-board glyph → open (or close) its recall menu
   | CloseChipMenu
   | RecallFrom Which Int        -- recall bank slot i on machine w, then close the menu
+  | StarFrom Which Int          -- toggle a preset's star (menu stays open, refreshed)
+  | DeleteFrom Which Int        -- delete a preset (menu stays open, refreshed)
   -- macro-tidal (Slice 1): the arrangement layer on the TIDAL page. One lane of
   -- Odonus scene-names, sequenced over bar-quantized steps.
   | SetMacroText String        -- edit the lane pattern
@@ -190,7 +192,10 @@ type RState =
   -- the status-board chip's recall menu: which machine's bank is open + its slots
   -- (each an alias the shell renders via glyphFromAlias). Nothing = closed. Fetched
   -- on open (AskBank), so it's a snapshot of the bank at click time.
-  , chipMenu :: Maybe { w :: Which, items :: Array { slot :: Int, alias :: String } } }
+  , chipMenu :: Maybe { w :: Which, items :: Array MenuItem } }
+
+-- One preset in the recall menu: its glyph alias + optional name + star flag.
+type MenuItem = { slot :: Int, alias :: String, name :: String, starred :: Boolean }
 
 type Slots =
   ( odo :: H.Slot SQ.Query Void Unit
@@ -402,13 +407,17 @@ handleAction = case _ of
     open <- H.gets _.chipMenu
     case open of
       Just m | m.w == w -> H.modify_ _ { chipMenu = Nothing }
-      _ -> do
-        items <- fromMaybe [] <$> queryBank w
-        H.modify_ _ { chipMenu = Just { w, items } }
+      _ -> refreshChipMenu w
   CloseChipMenu -> H.modify_ _ { chipMenu = Nothing }
   RecallFrom w slot -> do
     _ <- queryRecall w slot
     H.modify_ _ { chipMenu = Nothing }
+  StarFrom w slot -> do
+    _ <- queryStar w slot
+    refreshChipMenu w
+  DeleteFrom w slot -> do
+    _ <- queryDelete w slot
+    refreshChipMenu w
   -- macro-tidal: edit the Odonus lane / bars-per-step.
   SetMacroText t -> H.modify_ _ { macroText = t }
   SetMacroBars v -> case Int.fromString v of
@@ -610,7 +619,7 @@ pushAll = for_ [ Odo, Bal, Sel, Vet ] pushSounding
 
 -- Ask a machine for its bank (recall menu contents). Only the SQ.Query machines
 -- answer; Balistes is the only one with real presets so far.
-queryBank :: forall o m. Which -> H.HalogenM RState RAction Slots o m (Maybe (Array { slot :: Int, alias :: String }))
+queryBank :: forall o m. Which -> H.HalogenM RState RAction Slots o m (Maybe (Array MenuItem))
 queryBank = case _ of
   Odo -> H.query _odo unit (SQ.AskBank identity)
   Bal -> H.query _bal unit (SQ.AskBank identity)
@@ -624,6 +633,27 @@ queryRecall w i = case w of
   Bal -> H.query _bal unit (SQ.RecallSlot i unit)
   Sel -> H.query _sel unit (SQ.RecallSlot i unit)
   _ -> pure Nothing
+
+-- Toggle a preset's star / delete a preset on a machine.
+queryStar :: forall o m. Which -> Int -> H.HalogenM RState RAction Slots o m (Maybe Unit)
+queryStar w i = case w of
+  Odo -> H.query _odo unit (SQ.StarSlot i unit)
+  Bal -> H.query _bal unit (SQ.StarSlot i unit)
+  Sel -> H.query _sel unit (SQ.StarSlot i unit)
+  _ -> pure Nothing
+
+queryDelete :: forall o m. Which -> Int -> H.HalogenM RState RAction Slots o m (Maybe Unit)
+queryDelete w i = case w of
+  Odo -> H.query _odo unit (SQ.DeleteSlot i unit)
+  Bal -> H.query _bal unit (SQ.DeleteSlot i unit)
+  Sel -> H.query _sel unit (SQ.DeleteSlot i unit)
+  _ -> pure Nothing
+
+-- (Re)load a machine's bank into the open recall menu — after open / star / delete.
+refreshChipMenu :: forall o m. Which -> H.HalogenM RState RAction Slots o m Unit
+refreshChipMenu w = do
+  items <- fromMaybe [] <$> queryBank w
+  H.modify_ _ { chipMenu = Just { w, items } }
 
 -- Query each mounted instrument for its current source and stitch the four
 -- into one labelled document.
@@ -1189,19 +1219,38 @@ chipMenuPanel st = case st.chipMenu of
             ( if null m.items then
                 [ HH.div [ style "padding:4px 8px;font-size:9px;color:#a09a88;font-style:italic" ]
                     [ HH.text "no presets yet" ] ]
-              else map (recallRow m.w) m.items
+              -- starred presets surface first (the go-to tier)
+              else map (recallRow m.w) (filter _.starred m.items <> filter (not <<< _.starred) m.items)
             )
       )
 
-recallRow :: forall m. Which -> { slot :: Int, alias :: String } -> H.ComponentHTML RAction Slots m
+recallRow :: forall m. Which -> MenuItem -> H.ComponentHTML RAction Slots m
 recallRow w item =
-  let g = G.glyphFromAlias item.alias
-  in HH.div
-      [ HE.onClick \_ -> RecallFrom w item.slot
-      , style $ "display:flex;align-items:center;gap:8px;padding:4px 8px;border-radius:5px;cursor:pointer;"
-          <> "background:#e7e3d6" ]
-      [ HH.span [ style "display:inline-flex;align-items:center;gap:3px" ] [ faIcon g.first, faIcon g.second ]
-      , HH.span [ style "font-family:'SF Mono',Menlo,monospace;font-size:9px;color:#4a463b" ] [ HH.text item.alias ]
+  let
+    g = G.glyphFromAlias item.alias
+    label = if item.name == "" then item.alias else item.name
+  in
+    HH.div
+      [ style "display:flex;align-items:center;gap:7px;padding:4px 6px;border-radius:5px;background:#e7e3d6" ]
+      [ -- star toggle (the go-to tier)
+        HH.span
+          [ HE.onClick \_ -> StarFrom w item.slot
+          , HP.attr (H.AttrName "title") (if item.starred then "unstar" else "star (go-to)")
+          , style $ "cursor:pointer;font-size:12px;line-height:1;color:" <> (if item.starred then "#c9a23a" else "#c2beb0") ]
+          [ HH.text (if item.starred then "★" else "☆") ]
+      , -- glyph + label → recall
+        HH.span
+          [ HE.onClick \_ -> RecallFrom w item.slot
+          , style "display:flex;align-items:center;gap:8px;cursor:pointer;flex:1 1 auto" ]
+          [ HH.span [ style "display:inline-flex;align-items:center;gap:3px" ] [ faIcon g.first, faIcon g.second ]
+          , HH.span [ style "font-family:'SF Mono',Menlo,monospace;font-size:9px;color:#4a463b" ] [ HH.text label ]
+          ]
+      , -- delete
+        HH.span
+          [ HE.onClick \_ -> DeleteFrom w item.slot
+          , HP.attr (H.AttrName "title") "delete"
+          , style "cursor:pointer;color:#b0a898;font-size:11px;line-height:1" ]
+          [ HH.text "✕" ]
       ]
 
 -- A clear, non-blocking status pill shown when the Amphora store (:3024) is

@@ -18,7 +18,7 @@ module Triggerfish.Balistes.Component (component, Output(..)) where
 
 import Prelude
 
-import Data.Array (deleteAt, filter, findIndex, length, mapWithIndex, modifyAt, null, range, (!!))
+import Data.Array (deleteAt, filter, findIndex, length, mapMaybe, mapWithIndex, modifyAt, null, range, (!!))
 import Data.Foldable (any, foldl, for_)
 import Data.Int (floor, round, toNumber)
 import Data.Maybe (Maybe(..), fromMaybe, isNothing, maybe)
@@ -155,9 +155,17 @@ handleQuery = case _ of
   -- colour follows the icon name), and recall a chosen preset.
   AskBank reply -> do
     s <- H.get
-    pure (Just (reply (mapWithIndex (\i p -> { slot: i, alias: presetAlias p }) s.presets)))
+    pure (Just (reply (mapWithIndex (\i p -> { slot: i, alias: presetAlias p, name: fromMaybe "" p.name, starred: p.starred }) s.presets)))
   RecallSlot i next -> do
     recallPreset i
+    pure (Just next)
+  StarSlot i next -> do
+    H.modify_ \s -> s { presets = fromMaybe s.presets (modifyAt i (\p -> p { starred = not p.starred }) s.presets) }
+    persist
+    pure (Just next)
+  DeleteSlot i next -> do
+    H.modify_ (deletePresetAt i)
+    persist
     pure (Just next)
 
 -- | Bank the current playing-state as a preset — the CAPTURE hotkey / button. DEDUPS
@@ -413,7 +421,7 @@ handleAction = case _ of
   SlotClick i shift -> do
     pre <- H.get
     if shift then
-      H.modify_ \s -> s { presets = fromMaybe s.presets (deleteAt i s.presets) }
+      H.modify_ (deletePresetAt i)
     else if pre.seqArm then
       H.modify_ \s -> s { sequence = s.sequence <> [ i ] }
     else
@@ -726,6 +734,19 @@ dragToBInput kind b = case kind of
   DCell inst step -> Just (RBI.BSetRatchet inst step (M.ratchetAt b inst step))
   DNote (NGrids lane) -> Just (RBI.BSetNote lane (M.noteOf lane b))
   DNote (NFixed _ _) -> Nothing
+
+-- | Delete preset `i` and keep the sequence consistent: drop path steps pointing at
+-- | it, and decrement steps pointing past it (indices shift left on removal).
+deletePresetAt :: Int -> State -> State
+deletePresetAt i s =
+  s { presets = fromMaybe s.presets (deleteAt i s.presets)
+    , sequence = mapMaybe adjust s.sequence
+    }
+  where
+  adjust j
+    | j == i = Nothing
+    | j > i = Just (j - 1)
+    | otherwise = Just j
 
 -- | Project component `State` onto the persisted artefact (library + preset bank).
 savedOf :: State -> Store.Saved

@@ -169,6 +169,8 @@ handleQuery = case _ of
   Capture next -> pure (Just next)
   AskBank reply -> pure (Just (reply []))
   RecallSlot _ next -> pure (Just next)
+  StarSlot _ next -> pure (Just next)
+  DeleteSlot _ next -> pure (Just next)
 
 -- | Run the action, then persist the live patch — except for the high-frequency
 -- | / non-authoring actions (the clock tick, the river frame, a knob DRAG in

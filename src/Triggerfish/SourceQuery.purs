@@ -73,8 +73,11 @@ data Query a
   -- playing-state as a preset (mint its glyph) and park your identity on it".
   -- Routed to the active machine. Machines without a capture/glyph notion ignore it.
   | Capture a
-  -- The status-board chip's recall menu: "hand me your banked presets as
-  -- { slot, alias }" (the shell renders each via glyphFromAlias) and "recall slot i"
-  -- (switch to + restore that preset). Machines without a bank answer [] / ignore.
-  | AskBank (Array { slot :: Int, alias :: String } -> a)
+  -- The status-board chip's recall menu: "hand me your banked presets" (the shell
+  -- renders each via glyphFromAlias; `name` "" = anonymous), "recall slot i", and
+  -- the curate verbs — toggle a star, delete a preset. Machines without a bank
+  -- answer [] / ignore.
+  | AskBank (Array { slot :: Int, alias :: String, name :: String, starred :: Boolean } -> a)
   | RecallSlot Int a
+  | StarSlot Int a
+  | DeleteSlot Int a
