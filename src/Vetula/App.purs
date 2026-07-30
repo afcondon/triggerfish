@@ -63,6 +63,8 @@ import Binnacle.Scheduler as Scheduler
 import Binnacle.Transport as Transport
 import Triggerfish.Transport (Sounding(..))
 import Triggerfish.Midi.Routing as Routing
+import Triggerfish.Glyph (ChipView, glyphOf)
+import Triggerfish.Preset (Preset, indexOfContent, presetAlias)
 import Vetula.Store as Store
 import Triggerfish.Amphora as Amphora
 import Vetula.Tank (Specimen, SpecimenId(..), Provenance(..), specNotes)
@@ -392,6 +394,13 @@ type State =
   -- into the pool as a centre chord (`seedChord` maps the specimen → its pool
   -- chord id) and blooms its neighbours around it; clicking again unstages it.
   , seedChord :: Map SpecimenId Int
+  -- The unified glyph-chip PRESET bank (docs/DESIGN-scene-modal.md): captured
+  -- progression sources, anonymous or named, freely intermixed — distinct from the
+  -- auto-capture `library`. `identity` is the parked preset's source text (the chip
+  -- glyph; ghosts when the live progression diverges from it). No `lastChip` guard:
+  -- Vetula reports its chip by PULL (AskChip), not a change-gated push.
+  , presets :: Array Preset
+  , identity :: Maybe String
   }
 
 data Action
@@ -527,6 +536,17 @@ data SourceQuery a
   -- rule in `harmonicContext`. `SetRestingScale` is the macro `# scale` override.
   | AskContextScale ({ root :: Int, offsets :: Array Int } -> a)
   | SetRestingScale Int (Array Int) a
+  -- The unified glyph-chip PRESET bank (docs/DESIGN-scene-modal.md). Vetula reports
+  -- its chip by PULL (`AskChip`, polled by the shell's 100ms PollVetula loop) rather
+  -- than a push Output, since it has no continuous frame loop. `content` is the
+  -- progression's Tidal source (`currentSource`). Capture/recall/star/cull mirror the
+  -- other machines; the bank is distinct from Vetula's own auto-capture library.
+  | Capture a
+  | AskBank (Array { slot :: Int, alias :: String, name :: String, starred :: Boolean } -> a)
+  | RecallSlot Int a
+  | StarSlot Int a
+  | DeleteSlot Int a
+  | AskChip (Maybe ChipView -> a)
 
 -- The one thing Vetula tells the shell without being asked: it armed or disarmed
 -- itself (its own play / stop / unload). The shell owns the `armed` set, so this
@@ -608,6 +628,7 @@ component = H.mkComponent
       , tank: []
       , nextSpecId: 0
       , seedChord: Map.empty
+      , presets: [], identity: Nothing
       , lens: LensTonnetz  -- default: the tonal net shows the scale's shape best
       , viewCx: 0.0
       , viewCy: 0.0
@@ -738,6 +759,32 @@ handleQuery = case _ of
   SetRestingScale root offsets next -> do
     H.modify_ _ { restScale = Just { root: mod root 12, offsets } }
     pure (Just next)
+  -- The shell's CAPTURE hotkey: bank the live progression source as a preset and
+  -- park identity on it (the chip shows the freshly-minted glyph, held). No-op with
+  -- an empty progression. See captureNow.
+  Capture next -> do
+    captureNow
+    pure (Just next)
+  -- The status-board chip's recall menu: report each preset as its glyph alias +
+  -- optional name + star flag; recall / star / delete a chosen preset.
+  AskBank reply -> do
+    s <- H.get
+    pure (Just (reply (mapWithIndex (\i p -> { slot: i, alias: presetAlias p, name: fromMaybe "" p.name, starred: p.starred }) s.presets)))
+  RecallSlot i next -> do
+    recallPreset i
+    pure (Just next)
+  StarSlot i next -> do
+    H.modify_ \s -> s { presets = fromMaybe s.presets (modifyAt i (\p -> p { starred = not p.starred }) s.presets) }
+    persistLib
+    pure (Just next)
+  DeleteSlot i next -> do
+    H.modify_ \s -> s { presets = fromMaybe s.presets (deleteAt i s.presets) }
+    persistLib
+    pure (Just next)
+  -- The pull the shell's 100ms PollVetula uses to light Vetula's status-board chip.
+  AskChip reply -> do
+    s <- H.get
+    pure (Just (reply (chipViewOf s)))
 
 -- | The ONE harmonic-context set Odonus quantises to (root pc + intervals). The
 -- | rule, in precedence order — the decoupling of "Vetula's lens scale" from "what
@@ -918,7 +965,7 @@ handleAction = case _ of
     -- Restore the persisted library (auto-capture stack) from localStorage. capSeq
     -- continues past the restored count so new ◦ autonames don't collide.
     msaved <- liftEffect Store.loadLibrary
-    for_ msaved \sv -> H.modify_ _ { library = sv.library, capSeq = length sv.library }
+    for_ msaved \sv -> H.modify_ _ { library = sv.library, capSeq = length sv.library, presets = sv.presets }
     -- Merge the shared Amphora progression library in the BACKGROUND: awaiting it
     -- blocked Initialize (hence the shell's polls of Vetula) until the ~30s offline
     -- timeout. The store being offline is not fatal — keep whatever's local.
@@ -935,8 +982,9 @@ handleAction = case _ of
       w <- window
       el <- eventListener \ev -> do
         -- while typing in a name / search / source field, the single-key
-        -- shortcuts (c = clear, r = reset, space, Tab…) must stand down — they
-        -- were wiping the progression mid-type
+        -- shortcuts (⌫ = clear, r = reset, space, Tab…) must stand down — they
+        -- were wiping the progression mid-type. `c` is the shell's global CAPTURE
+        -- hotkey now, not a Vetula key.
         typing <- isFormField ev
         -- and when Vetula is mounted-but-hidden (it's one tab of the Triggerfish
         -- rack), ignore keys entirely so they don't fire phantom chords while
@@ -1010,7 +1058,11 @@ handleAction = case _ of
         "Tab" -> cycleVoicing (if shift then -1 else 1)
         "ArrowUp" -> nudgeSelected 1
         "ArrowDown" -> nudgeSelected (-1)
-        "c" -> handleAction ClearPath
+        -- Clear the path is Backspace/Delete (the ✕ button also does it). `c` used to
+        -- clear here, but it's now the shell's global CAPTURE hotkey (same key on every
+        -- pane, docs/DESIGN-scene-modal.md) — so clear yields it the letter.
+        "Backspace" -> handleAction ClearPath
+        "Delete" -> handleAction ClearPath
         "p" -> H.gets _.path >>= playPath
         "f" -> toggleFavorite
         -- catch the hovered chord into the tank: a Tonnetz triangle first (no pool
@@ -1837,8 +1889,56 @@ stopClock = do
 -- | source + label), so this is a plain JSON.stringify — no ChordNode codecs.
 persistLib :: forall o m. MonadAff m => H.HalogenM State Action Slots o m Unit
 persistLib = do
-  lib <- H.gets _.library
-  liftEffect $ Store.saveLibrary { library: lib }
+  s <- H.get
+  liftEffect $ Store.saveLibrary { library: s.library, presets: s.presets }
+
+-- | Bank the live progression source as a preset — the CAPTURE hotkey. DEDUPS by
+-- | content (an unchanged progression ⇒ identical glyph): already banked ⇒ just
+-- | re-park `identity`; otherwise append an anonymous preset. `content` is
+-- | `currentSource` (the AskSource text — stable under playback, since a pulse moves
+-- | the playhead, not the chords). No-op on an empty progression. Then persist.
+captureNow :: forall o m. MonadAff m => H.HalogenM State Action Slots o m Unit
+captureNow = do
+  s <- H.get
+  when (length (pathSteps s) > 0) do
+    let text = currentSource s
+    case indexOfContent text s.presets of
+      Just _ -> H.modify_ _ { identity = Just text }
+      Nothing -> H.modify_ \st -> st
+        { presets = st.presets <> [ { content: text, name: Nothing, starred: false } ]
+        , identity = Just text
+        }
+    persistLib
+
+-- | Recall preset `i`: rebuild the performed `path` from its source (as `LoadProg`
+-- | does from a library entry), and park the chip on the preset's text (glyph SOLID;
+-- | ghosts on later divergence). No-op on unparseable / empty source.
+recallPreset :: forall o m. MonadAff m => Int -> H.HalogenM State Action Slots o m Unit
+recallPreset i = do
+  st <- H.get
+  for_ (st.presets !! i) \p -> do
+    let noteLists = filter (\ns -> length ns > 0) (parseProgression p.content)
+        fresh = mapWithIndex (\j ns -> importChord (st.nextId + j) ns) noteLists
+        ids = map _.id fresh
+    when (length ids > 0) do
+      H.modify_ _
+        { chords = st.chords <> fresh
+        , imported = st.imported <> Set.fromFoldable ids
+        , nextId = st.nextId + length fresh
+        , path = ids
+        , perfName = Nothing
+        , sounding = head ids
+        , identity = Just p.content
+        }
+      persistLib
+
+-- | The identity-chip view Vetula reports (by pull) to the shell's status board: the
+-- | glyph of the parked progression + whether the live progression has diverged from
+-- | it (revoiced / edited away). `Nothing` when nothing is parked.
+chipViewOf :: State -> Maybe ChipView
+chipViewOf s = case s.identity of
+  Nothing -> Nothing
+  Just text -> Just { glyph: glyphOf text, diverged: currentSource s /= text }
 
 -- | An Amphora library item as a local progression entry. The Tidal source is
 -- | the payload; the keyLabel is recovered from a `key:` tag (if present) and

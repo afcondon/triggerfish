@@ -178,12 +178,14 @@ type RState =
   -- Harmonic-authority bridge: the last resting-context scale pushed from Vetula
   -- into Odonus (serialised for dedup, so the 100ms poll only re-pushes on change).
   , ctxScaleKey :: String
-  -- the six-machine status board: each machine's identity-chip view, pushed up by
-  -- that machine (Balistes + Selene + Odonus so far; the rest report Nothing until
-  -- they gain the glyph substrate). Rendered as glyphs in the switcher.
+  -- the six-machine status board: each machine's identity-chip view. Odonus /
+  -- Balistes / Selene PUSH theirs via Output (change-gated from their Frame loop);
+  -- Vetula has no continuous frame loop, so the shell PULLS its chip in PollVetula
+  -- (AskChip) and parks it in `vetChip`. Suf/Ste report Nothing (prototypes).
   , balChip :: Maybe G.ChipView
   , selChip :: Maybe G.ChipView
   , odoChip :: Maybe G.ChipView
+  , vetChip :: Maybe G.ChipView
   -- brief true after the CAPTURE hotkey fires, so the active tab pulses — a visible
   -- "key registered" cue (the hotkey needs page focus; the pulse tells you it got it).
   , captureFlash :: Boolean
@@ -241,7 +243,7 @@ root =
         , routing: Map.empty
         , vetulaNames: []
         , macroText: "", macroBars: 4, macroOn: false
-        , macroStep: -1, macroCell: "", ctxScaleKey: "", balChip: Nothing, selChip: Nothing, odoChip: Nothing, captureFlash: false
+        , macroStep: -1, macroCell: "", ctxScaleKey: "", balChip: Nothing, selChip: Nothing, odoChip: Nothing, vetChip: Nothing, captureFlash: false
         , pollBusy: false, amphoraDown: false, chipMenu: Nothing }
     , render
     , eval: H.mkEval H.defaultEval { handleAction = handleAction, initialize = Just Init }
@@ -406,6 +408,7 @@ handleAction = case _ of
       Odo -> void $ H.query _odo unit (SQ.Capture unit)
       Bal -> void $ H.query _bal unit (SQ.Capture unit)
       Sel -> void $ H.query _sel unit (SQ.Capture unit)
+      Vet -> void $ H.query _vet unit (Vetula.Capture unit)
       _ -> pure unit
   -- Click a status-board glyph: toggle its recall menu. On open, snapshot the
   -- machine's bank (AskBank) so the menu lists its presets as glyphs.
@@ -491,6 +494,11 @@ handleAction = case _ of
         case mharm of
           Just h -> H.modify_ _ { harm = h }
           Nothing -> pure unit
+        -- Pull Vetula's identity chip for the status board (Vetula has no continuous
+        -- frame loop to push it, so it rides this existing 100ms poll). `Nothing` (no
+        -- answer) leaves the last chip; an answer of Nothing clears it (nothing parked).
+        mchip <- H.query _vet unit (Vetula.AskChip identity)
+        for_ mchip \cv -> H.modify_ _ { vetChip = cv }
         -- Harmonic authority: pull Vetula's resting context scale and, when it CHANGES,
         -- install it as Odonus's pitchSet (RI.SetPitchSet, lockstep-safe). Vetula owns
         -- the scale; Odonus follows. Deduped so the 100ms poll doesn't flood the input.
@@ -630,6 +638,7 @@ queryBank = case _ of
   Odo -> H.query _odo unit (SQ.AskBank identity)
   Bal -> H.query _bal unit (SQ.AskBank identity)
   Sel -> H.query _sel unit (SQ.AskBank identity)
+  Vet -> H.query _vet unit (Vetula.AskBank identity)
   _ -> pure Nothing
 
 -- Recall bank slot i on a machine (switch to it + restore).
@@ -638,6 +647,7 @@ queryRecall w i = case w of
   Odo -> H.query _odo unit (SQ.RecallSlot i unit)
   Bal -> H.query _bal unit (SQ.RecallSlot i unit)
   Sel -> H.query _sel unit (SQ.RecallSlot i unit)
+  Vet -> H.query _vet unit (Vetula.RecallSlot i unit)
   _ -> pure Nothing
 
 -- Toggle a preset's star / delete a preset on a machine.
@@ -646,6 +656,7 @@ queryStar w i = case w of
   Odo -> H.query _odo unit (SQ.StarSlot i unit)
   Bal -> H.query _bal unit (SQ.StarSlot i unit)
   Sel -> H.query _sel unit (SQ.StarSlot i unit)
+  Vet -> H.query _vet unit (Vetula.StarSlot i unit)
   _ -> pure Nothing
 
 queryDelete :: forall o m. Which -> Int -> H.HalogenM RState RAction Slots o m (Maybe Unit)
@@ -653,6 +664,7 @@ queryDelete w i = case w of
   Odo -> H.query _odo unit (SQ.DeleteSlot i unit)
   Bal -> H.query _bal unit (SQ.DeleteSlot i unit)
   Sel -> H.query _sel unit (SQ.DeleteSlot i unit)
+  Vet -> H.query _vet unit (Vetula.DeleteSlot i unit)
   _ -> pure Nothing
 
 -- (Re)load a machine's bank into the open recall menu — after open / star / delete.
@@ -1334,8 +1346,8 @@ armSeg st w label =
               <> "text-transform:uppercase;color:" <> (if active then "#1c1a12" else "#5a564b") ]
           [ HH.text label ]
       -- the machine's identity glyph (icons coloured by content) — the six-machine
-      -- status board. Clicking it opens the recall menu. Odonus + Balistes + Selene
-      -- report one so far; the rest are Nothing (blank, not clickable).
+      -- status board. Clicking it opens the recall menu. Odonus + Balistes + Selene +
+      -- Vetula report one; Suf/Ste are Nothing (blank, not clickable) — prototypes.
       , case chipOf st w of
           Nothing -> HH.text ""
           Just _ -> HH.span
@@ -1353,6 +1365,7 @@ chipOf st = case _ of
   Odo -> st.odoChip
   Bal -> st.balChip
   Sel -> st.selChip
+  Vet -> st.vetChip
   _ -> Nothing
 
 -- The CAPTURE hotkey — the same key on every pane. Modifier-free `c`, ignored while
