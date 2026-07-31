@@ -351,6 +351,10 @@ type State =
   -- a tank chord as it's dropped into the progression — the "cadence length" dial
   -- (0 = drop it bare, 1 = V, 2 = ii–V, …). See docs/DESIGN-vetula-progression-building.md.
   , bridgeLen :: Int
+  -- Floating-control fold state: each card collapses to just its header (click the
+  -- title bar) to cede the stage to the underlying music viz. See `floatCard`.
+  , foldCtx :: Boolean
+  , foldProg :: Boolean
   -- Performance tab — the progression library + the loaded working copy + voices.
   , library :: Array LibEntry
   -- Auto-capture bookkeeping (Slice 1): the current progression is captured to the
@@ -407,6 +411,9 @@ type State =
   , presets :: Array Preset
   , identity :: Maybe String
   }
+
+-- | Which floating control a fold toggle targets.
+data VPanel = VCtx | VProg
 
 data Action
   = Initialize
@@ -490,6 +497,7 @@ data Action
   | SequenceSpec SpecimenId -- shift-click a tank specimen: append a snapshot to the progression
   | ArrangeSpec SpecimenId  -- drop a tank chord into the progression, bridged by `bridgeLen`
   | SetBridgeLen Int        -- set the cadence-length dial (clamped 0..maxBridge)
+  | ToggleFold VPanel       -- collapse/expand a floating control to just its header
   | ClearStage             -- remove all staged seeds + the chords bloomed from them
   | AuditionTriad Int (Array Int)        -- Tonnetz: hear a triad off the net (root pc, pcs)
   | CatchTriad Int (Array Int) Boolean   -- Tonnetz: freeze a triad into the tank (root, pcs, isMajor)
@@ -610,6 +618,8 @@ component = H.mkComponent
       , candidates: []
       , adventure: 0.25
       , bridgeLen: 2
+      , foldCtx: false
+      , foldProg: false
       , library: []
       , capSeq: 0
       , lastCapIdx: Nothing
@@ -1700,6 +1710,9 @@ handleAction = case _ of
       playSpecimen spec
 
   SetBridgeLen n -> H.modify_ _ { bridgeLen = clamp 0 maxBridge n }
+  ToggleFold p -> H.modify_ \st -> case p of
+    VCtx -> st { foldCtx = not st.foldCtx }
+    VProg -> st { foldProg = not st.foldProg }
 
   -- Drop a caught chord into the progression, BRIDGED. Between the current end
   -- and the dropped chord `Vetula.Between` lays `bridgeLen` passing chords (a
@@ -2796,12 +2809,12 @@ render st =
     -- movable later. Library panel retired (→ between-sessions modal, #16); the
     -- "grow" and "pad grid" lenses left the geometry selector (grow → B; pad grid
     -- retired).
-    , floatCard "A" "context"
+    , floatCard "context" st.foldCtx (ToggleFold VCtx)
         "position: absolute; top: 12px; left: 12px; width: 248px; max-height: calc(100% - 24px); overflow-y: auto; overflow-x: visible; z-index: 6;"
         [ setupPane st
         , subGroup "Lens" (lensBar st)
         ]
-    , floatCard "B" "tank & progression"
+    , floatCard "tank & progression" st.foldProg (ToggleFold VProg)
         "position: absolute; top: 12px; right: 12px; width: 340px; max-height: calc(100% - 264px); overflow-y: auto; overflow-x: hidden; z-index: 6;"
         [ subGroup ("Tank · " <> show (length st.tank) <> " caught") (tankPane st)
         , arrangeBar st
@@ -2819,19 +2832,22 @@ render st =
     , revoiceModal st
     ]
 
--- | A floating control card: a placeholder tag (A/B/C) + concern label header,
--- | then the panel body. Positioning is passed in (provisional — these will be
--- | made draggable once the placement settles).
-floatCard :: forall m. String -> String -> String -> Array (H.ComponentHTML Action Slots m) -> H.ComponentHTML Action Slots m
-floatCard tag title posCss body =
+-- | A floating control card: a clickable title bar (the concern name), then the
+-- | panel body — which collapses to just the bar when `collapsed`, ceding the
+-- | stage to the music viz underneath. Positioning is passed in (provisional —
+-- | these will be made draggable once the placement settles).
+floatCard :: forall m. String -> Boolean -> Action -> String -> Array (H.ComponentHTML Action Slots m) -> H.ComponentHTML Action Slots m
+floatCard title collapsed toggle posCss body =
   HH.div
-    [ HP.style (posCss <> " padding: 2px 12px 10px; " <> panelCss) ]
+    [ HP.style (posCss <> " padding: 2px 12px " <> (if collapsed then "4px" else "10px") <> "; " <> panelCss) ]
     ( [ HH.div
-          [ HP.style "display: flex; align-items: baseline; gap: 8px; padding: 6px 2px 2px;" ]
-          [ HH.span [ HP.style "font-size: 13px; font-weight: 700; color: #1a1a1a; letter-spacing: 0.04em;" ] [ HH.text tag ]
-          , HH.span [ HP.style "font-size: 10px; color: #b0b0b0; letter-spacing: 0.14em; text-transform: uppercase;" ] [ HH.text title ]
+          [ HP.style "display: flex; align-items: center; gap: 8px; padding: 6px 2px 2px; cursor: pointer; user-select: none;"
+          , HP.title (if collapsed then "expand" else "collapse")
+          , HE.onClick \_ -> toggle ]
+          [ HH.span [ HP.style "font-size: 9px; color: #b0b0b0; width: 9px;" ] [ HH.text (if collapsed then "▸" else "▾") ]
+          , HH.span [ HP.style "font-size: 11px; font-weight: 700; color: #1a1a1a; letter-spacing: 0.12em; text-transform: uppercase;" ] [ HH.text title ]
           ]
-      ] <> body )
+      ] <> (if collapsed then [] else body) )
 
 -- | What the cadence dial's `n` means, in Roman numerals — the tonicizing
 -- | turnaround `Vetula.Between` lays in front of the dropped chord.
