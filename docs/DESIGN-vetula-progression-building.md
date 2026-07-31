@@ -143,6 +143,47 @@ voice-leading) is NOT here — it waits on the VST audition.
    (cross-register polychords, e.g. Dm bass + F maj an octave up). The stack
    catches to the tank as one `Anchor`.
 
+### Built (2026-07-31) — all five steps done, verified in-browser
+
+Commits `cc08677` (1) · `0a52dad` (2) · `70937fd`+`3ed2835` (3) · `1cbecf5`
+(4) · `d548946` (5) on `macro-tidal`.
+
+- **Step 1** — `keyboard` dropped from `geometryLenses`; `lattices` relabelled
+  **voice-leading lattice**; the circle-of-fifths root markers are clickable
+  (plain = audition the root's `triadOn` triad, shift = catch).
+- **Step 2** — `ColorLayer` (diatonic/borrowed/McMullen/Butler/Stock), each a
+  fixed hue; `colorLayers :: Set ColorLayer`; `ToggleLayer`; PALETTE chips are
+  show/hide toggles with hue swatches (they double as the legend).
+- **Step 3** — color chords are **de-duplicated by content** (`mergedLayerChords`)
+  and each shown ONCE as a real chord glyph BADGED by source (`layerBadges`, one
+  hue pip per set): notes-on-stave on the fifths corona (`colorGlyphAt`), native
+  chromatic polygon on the VL-lattice ribbon (`latColorRibbon`). *(This is AC's
+  revision of the first cut, which drew plain dots per-source.)*
+- **Step 4** — those glyphs are catchable (`colorHit`: hover-preview, click =
+  audition, shift = catch). The **BORROW picker only shows when the borrowed
+  layer is engaged** (AC), sitting under the PALETTE toggles.
+- **Step 5** — Tonnetz **triad stacking**: **alt-click** accumulates triads into
+  `tonnetzStack` (toggle), plain/shift unchanged (audition/catch); stacked
+  triangles get a violet wash + pick-order badge (`tonStackMark`); a `stackBar`
+  HUD names the triads + the pc-union polychord and offers **catch as anchor**
+  (`CommitStack` → one tank Specimen) / **clear**. Edge-adjacent triads fold into
+  7ths/9ths for free (F + Am → C E F A = Fmaj7, verified).
+
+**Gesture model (AC decision, 2026-07-31):** keep **plain = audition, shift =
+catch**, and use **alt = stack** — NOT the doc's original "click = catch /
+shift = stack" inversion (rejected: it would have cost one-click auditioning
+across every surface).
+
+**Follow-ups left open:**
+- **Cross-register polychords** — step 5 stacks in one register (the pc-union).
+  Dm-bass + F-maj-an-octave-up needs a register field per stack entry + a gesture
+  to bump octave (e.g. alt+shift-click raises register). Deferred.
+- **VL-lattice true integration** — the color layers ride a ribbon across the top
+  rather than being placed into the web by voice-leading distance. A deeper pass
+  would weave them in. Deferred.
+- **Diatonic-on-fifths redundancy** — the diatonic corona ring duplicates the
+  wheel's own wedge/markers; fine but could be suppressed.
+
 ### Open implementation questions (resolve during build)
 
 - Voice-leading lattice node content vs tonnetz — keep them genuinely distinct
