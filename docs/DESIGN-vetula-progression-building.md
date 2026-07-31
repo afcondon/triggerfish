@@ -119,6 +119,30 @@ Across all three views: **click = catch to tank**; **shift-click = stack/extend*
 where it means something (tonnetz especially). Consistent with the existing `k`
 catch.
 
+### Implementation sequence (autonomous run — commit each step, verify in browser)
+
+Each step is independently buildable/committable; do them in order and stop to
+flag only a genuine fork. The betweening-flavor decision (cadence vs
+voice-leading) is NOT here — it waits on the VST audition.
+
+1. **Drop `keyboard`, make `fifths` interactive.** Remove `LensKeyboard` from
+   `geometryLenses`; wire click-to-catch on the circle-of-fifths surface (today
+   non-interactive). Rename the `lattices` lens label → **voice-leading lattice**.
+   Smallest first step; leaves 3 views.
+2. **Palette → color-overlay model.** State gains a set of *active color layers*
+   (diatonic / borrowed / McMullen / Butler / Stock), each with a fixed hue.
+   Palette chips flip from mode-select to show/hide toggles. No render yet.
+3. **Render the color layers on fifths + VL-lattice.** Generate each layer's
+   chords from Harmonia for the current key (+ the borrow scale for the borrowed
+   layer) and paint them as colored tokens on those two surfaces. Tonnetz stays
+   triads-only. A small legend.
+4. **Unified catch gesture.** click = catch to tank; shift-click = stack/extend,
+   consistent across the three views (folds in the existing `k` catch).
+5. **Tonnetz triad stacking.** shift-click accumulates triads into an ordered
+   (triad, register) stack — edge-adjacent → 7ths/9ths, but freeform too
+   (cross-register polychords, e.g. Dm bass + F maj an octave up). The stack
+   catches to the tank as one `Anchor`.
+
 ### Open implementation questions (resolve during build)
 
 - Voice-leading lattice node content vs tonnetz — keep them genuinely distinct
