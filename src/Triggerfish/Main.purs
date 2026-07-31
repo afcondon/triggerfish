@@ -34,6 +34,7 @@ import Data.String as String
 import Data.String.Common (joinWith)
 import Data.Tuple (Tuple(..))
 import Effect (Effect)
+import Effect.Unsafe (unsafePerformEffect)
 import Effect.Aff (attempt, delay)
 import Effect.Aff.Class (class MonadAff, liftAff)
 import Effect.Class (liftEffect)
@@ -92,8 +93,21 @@ main = HA.runHalogenAff do
 -- The shell's entire transport state is `mode :: Mode` + `armed :: Set Which`;
 -- each machine's `Sounding` is `soundingOf mode armed w`, pushed via SetSounding.
 
+-- The five focused overlays that replace the old TIDAL aggregate tab — each a
+-- cross-cutting concern lifted off any single machine, opened by a hotkey
+-- (⌘1..⌘5) over a blurred backdrop. See docs/DESIGN-scene-modal.md.
+data ModalId
+  = MRouting     -- ⌘1 the MIDI channel map
+  | MSceneSeq    -- ⌘2 the scene grid (Ableton-like sequencing)
+  | MTidalSeq    -- ⌘3 the macro-tidal lanes (Tidal-like sequencing)
+  | MSource      -- ⌘4 the raw Tidal-source aggregate
+  | MPresets     -- ⌘5 the workbench (saved setups)
+
+derive instance eqModalId :: Eq ModalId
+
 data RAction
   = Init | SyncTick | PollVetula | Pick Which | RefreshTidal | CopyTidal | ToggleMaster
+  | OpenModal ModalId | CloseModal   -- the hotkey overlays (⌘1..⌘5; Esc closes)
   | SetMode Mode                -- flip the SOLO⟷ATLANTIS authority
   | ArmTab Which                -- toggle one instrument's ARM from the switcher dot
   | JumpVetula Int              -- nav strip: jump Vetula's progression to a chord (live)
@@ -152,6 +166,7 @@ type LibRow = { inst :: Which, idx :: Int, name :: String, text :: String }
 -- (`soundingOf … == Rig`) and each instrument edge-detects its own transitions.
 type RState =
   { which :: Which, tidalDoc :: String, freeT0 :: Number
+  , modal :: Maybe ModalId          -- the open hotkey overlay (⌘1..⌘5), or Nothing
   , library :: Array LibRow, importText :: String, importMsg :: String
   -- Workbench (TIDAL page): the shelf entry currently on the bench, whether the
   -- raw-source drawer is slid open, whether the archive ("dig") is expanded, and
@@ -280,6 +295,7 @@ root =
         , armed: Set.empty
         , routing: Map.empty
         , vetulaNames: []
+        , modal: Nothing
         , macroLanes: Map.empty, macroReadout: Map.empty, macroBars: 4, macroOn: false, macroStep: -1, laneComplete: Nothing
         , ctxScaleKey: "", balChip: Nothing, selChip: Nothing, odoChip: Nothing, vetChip: Nothing, captureFlash: false
         , pollBusy: false, amphoraDown: false, chipMenu: Nothing
@@ -331,6 +347,11 @@ handleAction = case _ of
     -- Probe Amphora once so the offline banner appears within the fetch timeout if
     -- the store is down. Forked — the shell must not wait on it.
     void $ H.fork fetchGoTo
+  -- The hotkey overlays (⌘1..⌘5). Opening one replaces any other that's open;
+  -- Esc / backdrop click closes.
+  OpenModal m -> H.modify_ _ { modal = Just m }
+  CloseModal -> H.modify_ _ { modal = Nothing }
+
   -- Master ▶/■ = arm ALL / disarm ALL: arm every machine if none is armed, else
   -- disarm every machine. The button label is `anyArmed`. pushAll re-derives each
   -- machine's Sounding (in ATLANTIS that hands off / stops rig voices too).
@@ -963,8 +984,76 @@ render st =
         (HH.slot _vet unit Vetula.component unit (\(Vetula.ArmChanged on) -> VetulaArmed on))
     , pane (st.which == Suf) "" (HH.slot_ _suf unit Sufflamen.component unit)
     , pane (st.which == Ste) "" (HH.slot_ _ste unit Stellatus.component unit)
-    , if st.which == Tid then tidalView st else HH.text ""
+    , modalOverlay st
     ]
+
+-- The hotkey overlay (⌘1..⌘5): a blurred backdrop + a centred ~2/3-screen panel
+-- holding ONE focused surface — the pieces that used to stack on the TIDAL tab,
+-- now each a modal reachable from any machine. The backdrop is a sibling BEHIND
+-- the panel (higher z), so a click outside closes while a click inside doesn't —
+-- no stopPropagation needed. Esc also closes (keyToAction).
+modalOverlay :: forall m. RState -> H.ComponentHTML RAction Slots m
+modalOverlay st = case st.modal of
+  Nothing -> HH.text ""
+  Just m ->
+    HH.div
+      [ style "position:fixed;inset:0;z-index:100;display:flex;align-items:center;justify-content:center;font-family:Georgia,serif" ]
+      [ HH.div   -- the click-catching, blurred backdrop, behind the panel
+          [ style $ "position:absolute;inset:0;z-index:0;background:rgba(30,28,22,0.30);"
+              <> "backdrop-filter:blur(6px);-webkit-backdrop-filter:blur(6px)"
+          , HE.onClick \_ -> CloseModal ]
+          []
+      , HH.div   -- the panel: sized to its content, capped so tall surfaces scroll
+          [ style $ "position:relative;z-index:1;width:min(66vw,1180px);max-height:min(84vh,900px);"
+              <> "display:flex;flex-direction:column;background:linear-gradient(#f6f2e8,#efe9db);"
+              <> "border:1px solid #cdc4ad;border-radius:10px;box-shadow:0 24px 70px #00000055;overflow:hidden" ]
+          [ HH.div
+              [ style $ "display:flex;align-items:center;justify-content:space-between;gap:12px;flex:0 0 auto;"
+                  <> "padding:13px 22px;border-bottom:1px solid #ddd5c0;background:linear-gradient(#efe8d8,#e6dec9)" ]
+              [ HH.div [ style "display:flex;align-items:baseline;gap:11px" ]
+                  [ HH.span [ style "font-size:14px;letter-spacing:0.16em;text-transform:uppercase;color:#4a463b" ] [ HH.text (modalTitle m) ]
+                  , HH.span [ style "font-size:11px;letter-spacing:0.08em;color:#a89e86" ] [ HH.text (modalHotkey m) ]
+                  ]
+              , HH.button
+                  [ style "border:none;background:none;cursor:pointer;font-size:18px;line-height:1;color:#8a8272"
+                  , HP.title "close (Esc)"
+                  , HE.onClick \_ -> CloseModal ]
+                  [ HH.text "✕" ]
+              ]
+          , HH.div [ style "flex:1 1 auto;min-height:0;overflow:auto;padding:18px 22px" ] [ modalBody st m ]
+          ]
+      ]
+
+-- Each overlay's body reuses the panel that used to live on the TIDAL tab.
+modalBody :: forall m. RState -> ModalId -> H.ComponentHTML RAction Slots m
+modalBody st = case _ of
+  MRouting -> channelMapPanel st
+  MSceneSeq -> sceneGridPanel st
+  MTidalSeq -> macroPanel st
+  MSource -> sourceDrawer st
+  MPresets -> HH.div_
+    [ workbenchHeader st
+    , HH.div [ style "display:flex;gap:26px;align-items:flex-start" ]
+        [ HH.div [ style "flex:0 0 380px;min-width:0" ] [ shelfPanel st ]
+        , HH.div [ style "flex:1 1 auto;min-width:0" ] [ benchPanel st ]
+        ]
+    ]
+
+modalTitle :: ModalId -> String
+modalTitle = case _ of
+  MRouting -> "Routing"
+  MSceneSeq -> "Sequencing — scenes"
+  MTidalSeq -> "Sequencing — tidal"
+  MSource -> "Tidal source"
+  MPresets -> "Presets — workbench"
+
+modalHotkey :: ModalId -> String
+modalHotkey = case _ of
+  MRouting -> "⌘1"
+  MSceneSeq -> "⌘2"
+  MTidalSeq -> "⌘3"
+  MSource -> "⌘4"
+  MPresets -> "⌘5"
 
 -- A mounted-but-maybe-hidden pane. `display:none` keeps the component alive
 -- (and its scheduler/MIDI running) while removing it from layout. `extra` adds
@@ -980,46 +1069,21 @@ isPicked mp r = case mp of
   Just p -> p.inst == r.inst && p.idx == r.idx
   Nothing -> false
 
--- The TIDAL page is the WORKBENCH: a curated shelf of saved setups (left) feeding
--- a bench (right) where one is picked, previewed, transformed, and committed back
--- to its instrument. The raw-source aggregate is demoted to a slide-out drawer
--- (⟨ source ⟩) so the workbench owns the canvas. Content comes from Amphora via
--- each instrument's merged library (refreshLibrary → AskLibrary aggregate).
-tidalView :: forall m. RState -> H.ComponentHTML RAction Slots m
-tidalView st =
-  HH.div
-    [ style $ "max-width:1440px;margin:calc(var(--tf-bar) + 18px) auto 40px;padding:0 20px;font-family:Georgia,serif" ]
-    [ sceneGridPanel st
-    , channelMapPanel st
-    , macroPanel st
-    , workbenchHeader st
-    , HH.div
-        [ style "display:flex;gap:26px;align-items:flex-start" ]
-        [ HH.div [ style "flex:0 0 380px;min-width:0" ] [ shelfPanel st ]
-        , HH.div [ style "flex:1 1 auto;min-width:0" ] [ benchPanel st ]
-        ]
-    , if st.sourceOpen then sourceDrawer st else HH.text ""
-    ]
-
 -- The workbench title bar: heading + the source-drawer toggle on the right.
 workbenchHeader :: forall m. RState -> H.ComponentHTML RAction Slots m
 workbenchHeader st =
+  -- The modal frame titles this now; the ⟨source⟩ toggle is gone (source is its
+  -- own ⌘4 overlay). Just the workbench's own actions, right-aligned.
   HH.div
-    [ style "display:flex;align-items:baseline;justify-content:space-between;gap:14px;margin-bottom:16px" ]
-    [ HH.span
-        [ style "font-size:15px;letter-spacing:0.16em;text-transform:uppercase;color:#4a463b" ]
-        [ HH.text "Workbench — the go-to shelf" ]
-    , HH.div [ style "display:flex;align-items:center;gap:8px" ]
-        [ if null st.previewing then HH.text ""
-          else HH.span
-            [ HP.title "stop every local preview"
-            , style $ "cursor:pointer;padding:3px 11px;border:1px solid #7aa07a;border-radius:4px;"
-                <> "font-size:10px;letter-spacing:0.08em;text-transform:uppercase;color:#2f5a2f;background:#e4f0e2"
-            , HE.onClick \_ -> StopPreview ]
-            [ HH.text ("■ stop all previews (" <> show (length st.previewing) <> ")") ]
-        , barBtn "refresh" RefreshTidal
-        , barBtn (if st.sourceOpen then "source ▾" else "source ▸") ToggleSource
-        ]
+    [ style "display:flex;align-items:center;justify-content:flex-end;gap:8px;margin-bottom:16px" ]
+    [ if null st.previewing then HH.text ""
+      else HH.span
+        [ HP.title "stop every local preview"
+        , style $ "cursor:pointer;padding:3px 11px;border:1px solid #7aa07a;border-radius:4px;"
+            <> "font-size:10px;letter-spacing:0.08em;text-transform:uppercase;color:#2f5a2f;background:#e4f0e2"
+        , HE.onClick \_ -> StopPreview ]
+        [ HH.text ("■ stop all previews (" <> show (length st.previewing) <> ")") ]
+    , barBtn "refresh" RefreshTidal
     ]
 
 -- The rig's MIDI channel map — the config surface where channel assignment lives
@@ -1028,11 +1092,9 @@ workbenchHeader st =
 -- name to a channel; blank = the ch5 default).
 channelMapPanel :: forall m. RState -> H.ComponentHTML RAction Slots m
 channelMapPanel st =
-  HH.div [ style "margin-bottom:26px;padding:14px 16px;background:#f3efe4;border:1px solid #e3dfd2;border-radius:6px" ]
-    [ HH.div
-        [ style "font-size:13px;letter-spacing:0.14em;text-transform:uppercase;color:#5a564b;margin-bottom:10px" ]
-        [ HH.text "MIDI output — channel map (the Ableton template)" ]
-    , HH.div [ style "display:flex;flex-wrap:wrap;gap:6px 22px" ]
+  -- The modal frame supplies the title + container; this is just the content.
+  HH.div_
+    [ HH.div [ style "display:flex;flex-wrap:wrap;gap:6px 22px" ]
         (map fixedRow Routing.defaultRouting)
     , if null st.vetulaNames then HH.text ""
       else HH.div [ style "margin-top:12px;padding-top:10px;border-top:1px dashed #d8d0bd" ]
@@ -1077,11 +1139,9 @@ channelMapPanel st =
 -- PICTOGRAPHIC MIRROR of coloured glyph-pairs below the input.
 macroPanel :: forall m. RState -> H.ComponentHTML RAction Slots m
 macroPanel st =
-  HH.div [ style "margin-bottom:26px;padding:14px 16px;background:#eef1ec;border:1px solid #d6ddd2;border-radius:6px" ]
-    [ HH.div [ style "display:flex;align-items:baseline;justify-content:space-between;gap:14px;margin-bottom:9px" ]
-        [ HH.span [ style "font-size:13px;letter-spacing:0.14em;text-transform:uppercase;color:#3f5a3f" ]
-            [ HH.text "Arrangement — macro-tidal · per-machine lanes" ]
-        , HH.div [ style "display:flex;align-items:center;gap:12px" ]
+  HH.div_
+    [ HH.div [ style "display:flex;align-items:center;justify-content:flex-end;gap:14px;margin-bottom:9px" ]
+        [ HH.div [ style "display:flex;align-items:center;gap:12px" ]
             [ HH.span [ style "font-size:10px;letter-spacing:0.08em;text-transform:uppercase;color:#6a7a6a" ]
                 [ HH.text "bars/step" ]
             , HH.input
@@ -1366,13 +1426,10 @@ importBox st =
 -- paste-into-Calypso surface; just no longer eating half the canvas.
 sourceDrawer :: forall m. RState -> H.ComponentHTML RAction Slots m
 sourceDrawer st =
-  HH.div [ style "margin-top:22px;padding-top:18px;border-top:1px solid #d8d0bd" ]
+  HH.div_
     [ HH.div
-        [ style "display:flex;align-items:baseline;gap:14px;margin-bottom:12px" ]
-        [ HH.span
-            [ style "font-size:13px;letter-spacing:0.14em;text-transform:uppercase;color:#5a564b" ]
-            [ HH.text "Source — the whole playing surface" ]
-        , barBtn "copy" CopyTidal
+        [ style "display:flex;align-items:baseline;gap:10px;margin-bottom:12px" ]
+        [ barBtn "copy" CopyTidal
         , barBtn "refresh" RefreshTidal
         ]
     , HH.pre
@@ -1504,12 +1561,9 @@ sceneColLabels = [ "ODO", "BAL", "SEL", "VET" ]
 
 sceneGridPanel :: forall m. RState -> H.ComponentHTML RAction Slots m
 sceneGridPanel st =
-  HH.div [ style "margin-bottom:26px;padding:14px 16px;background:#f3eee2;border:1px solid #e0d8c4;border-radius:6px" ]
-    [ HH.div [ style "display:flex;align-items:baseline;justify-content:space-between;gap:14px;margin-bottom:12px" ]
-        [ HH.span [ style "font-size:13px;letter-spacing:0.14em;text-transform:uppercase;color:#7a5c2a" ]
-            [ HH.text "Scenes — the rig-wide grid" ]
-        , sceneTransport st
-        ]
+  HH.div_
+    [ HH.div [ style "display:flex;justify-content:flex-end;margin-bottom:12px" ]
+        [ sceneTransport st ]
     , if null st.scenes
         then HH.div [ style "font-size:11px;color:#9a8a6a;font-style:italic;padding:6px 2px" ]
                [ HH.text "No scenes yet — get the rig sounding how you want, then ‘+ scene from rig’ banks the whole tuple." ]
@@ -1666,7 +1720,8 @@ switcher st =
     , armSeg st Vet "VETULA"
     , seg "SUFFLAMEN" (st.which == Suf) (Pick Suf)
     , seg "STELLATUS" (st.which == Ste) (Pick Ste)
-    , seg "TIDAL" (st.which == Tid) (Pick Tid)
+    -- TIDAL is no longer a tab — its five surfaces are the ⌘1..⌘5 overlays now
+    -- (see `modalOverlay`). The nav is just the machines.
     ]
 
 whichName :: Which -> String
@@ -1743,9 +1798,30 @@ captureKey = "c"
 keyToAction :: E.Event -> Maybe RAction
 keyToAction e = case KE.fromEvent e of
   Just ke
+    -- ⌘1..⌘5 open the overlays. We preventDefault SYNCHRONOUSLY here in the
+    -- listener (via unsafePerformEffect, forced by the case) so Chrome doesn't
+    -- steal ⌘-number for its own tab switching before the page sees it. If a
+    -- given Chrome build still swallows them, switch `modalForDigit`'s trigger to
+    -- ⌥ (altKey) — a one-line change.
+    | KE.metaKey ke
+    , Just m <- modalForDigit (KE.key ke) ->
+        case unsafePerformEffect (E.preventDefault e) of
+          _ -> Just (OpenModal m)
+    | KE.key ke == "Escape" -> Just CloseModal
     | KE.key ke == captureKey
     , not (KE.ctrlKey ke || KE.metaKey ke || KE.altKey ke)
     , not (targetIsField e) -> Just CaptureKey
+  _ -> Nothing
+
+-- The ⌘-number → overlay map (also the source of truth for the labels shown on
+-- the modals). `Nothing` for any other digit/key.
+modalForDigit :: String -> Maybe ModalId
+modalForDigit = case _ of
+  "1" -> Just MRouting
+  "2" -> Just MSceneSeq
+  "3" -> Just MTidalSeq
+  "4" -> Just MSource
+  "5" -> Just MPresets
   _ -> Nothing
 
 -- True when the event originated in a text input / textarea, so the hotkey yields
