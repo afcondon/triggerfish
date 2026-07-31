@@ -487,6 +487,7 @@ data VPanel = VCtx | VProg
 data Action
   = Initialize
   | MidiReady (Maybe Midi.MidiOut) String
+  | RetryMidi              -- (re)request Web-MIDI access from a user gesture (chip click)
   | SimTick
   | SimDone
   | Hover (Maybe Int)
@@ -1035,21 +1036,39 @@ stopSim = do
   for_ st.handle \h -> liftEffect h.stop
   H.modify_ _ { subId = Nothing, handle = Nothing }
 
+-- | Request Web-MIDI access and pick the output. Prefers the Continuo audition
+-- | port when it's live (a JUCE virtual dest named "continuo" — Piano One/strings
+-- | for hearing Vetula, see the continuo-vst-daemon note), falling back to the IAC
+-- | bus that feeds the rig in production. Called on Initialize AND from the chip
+-- | click (RetryMidi) — the click is the user gesture Chrome needs to prompt.
+connectMidi :: forall m. MonadAff m => H.HalogenM State Action Slots Output m Unit
+connectMidi = do
+  { emitter: midiE, listener: midiL } <- liftEffect HS.create
+  _ <- H.subscribe midiE
+  liftEffect $ Midi.requestAccess \maccess -> case maccess of
+    Just access -> do
+      mcont <- Midi.findOutput access "continuo"
+      miac <- Midi.findOutput access midiPortName
+      names <- Midi.outputNames access
+      let mout = case mcont of
+            Just _ -> mcont
+            Nothing -> miac
+          nm = case mcont of
+            Just _ -> "continuo ✓"
+            Nothing -> case miac of
+              Just _ -> midiPortName <> " ✓"
+              Nothing -> "no '" <> midiPortName <> "'/continuo — ports: " <> joinWith ", " names
+      HS.notify midiL (MidiReady mout nm)
+    Nothing -> HS.notify midiL (MidiReady Nothing "no Web-MIDI")
+
 handleAction :: forall m. MonadAff m => Action -> H.HalogenM State Action Slots Output m Unit
 handleAction = case _ of
   Initialize -> do
-    -- MIDI out
-    { emitter: midiE, listener: midiL } <- liftEffect HS.create
-    _ <- H.subscribe midiE
-    liftEffect $ Midi.requestAccess \maccess -> case maccess of
-      Just access -> do
-        mout <- Midi.findOutput access midiPortName
-        names <- Midi.outputNames access
-        let nm = case mout of
-              Just _ -> midiPortName <> " ✓"
-              Nothing -> "no '" <> midiPortName <> "' — ports: " <> joinWith ", " names
-        HS.notify midiL (MidiReady mout nm)
-      Nothing -> HS.notify midiL (MidiReady Nothing "no Web-MIDI")
+    -- MIDI out. NB modern Chrome only shows the Web-MIDI permission prompt in
+    -- response to a USER GESTURE, so this page-load request often resolves to
+    -- "no Web-MIDI" the first time — clicking the MIDI chip (→ RetryMidi) re-runs
+    -- it from a real gesture and surfaces the prompt. See connectMidi.
+    connectMidi
     -- The shared transport: connect Binnacle (free-run 120 → Link-lock on the
     -- rig) and run the lookahead scheduler. It ticks the 16th-note grid always;
     -- PerfTick gates on `playing`, so Vetula is a clock-peer of Odonus/Balistes
@@ -1109,6 +1128,12 @@ handleAction = case _ of
 
   MidiReady mout nm ->
     H.modify_ _ { midiOut = mout, midiName = nm }
+
+  -- Click the MIDI chip to (re)request access — this runs from a user gesture,
+  -- which is what makes Chrome actually show the permission prompt.
+  RetryMidi -> do
+    H.modify_ _ { midiName = "…" }
+    connectMidi
 
   SimTick -> do
     st <- H.get
@@ -3203,10 +3228,15 @@ setupPane st =
           [ HP.style helpBtnStyle, HP.title "keys & help", HE.onClick \_ -> ToggleHelp ]
           [ HH.text "ⓘ" ]
       ]
+  -- clickable: a click is the user gesture Chrome needs to actually show the
+  -- Web-MIDI permission prompt (the page-load request stays silent), so clicking
+  -- the chip (re)connects. Green = connected, amber = click to enable/retry.
   midiChip nm =
-    let ok = nm /= "…" && nm /= ""
-    in HH.span
-         [ HP.style "display: inline-flex; align-items: center; gap: 5px; font-size: 11px; color: #8a8a8a; background: #f4f4f4; border: 1px solid #e8e8e8; border-radius: 10px; padding: 2px 9px;" ]
+    let ok = nm /= "…" && nm /= "" && nm /= "no Web-MIDI"
+    in HH.button
+         [ HP.style "display: inline-flex; align-items: center; gap: 5px; font-size: 11px; color: #8a8a8a; background: #f4f4f4; border: 1px solid #e8e8e8; border-radius: 10px; padding: 2px 9px; cursor: pointer;"
+         , HP.title (if ok then "Web-MIDI connected — click to reconnect" else "click to enable Web-MIDI (grant the permission prompt)")
+         , HE.onClick \_ -> RetryMidi ]
          [ HH.span [ HP.style ("width: 7px; height: 7px; border-radius: 50%; background: " <> (if ok then "#5aa86a" else "#c9a23a") <> ";") ] []
          , HH.text nm ]
   helpBtnStyle = "border: 1px solid #e0e0e0; background: #fafafa; color: #7a7a7a; cursor: pointer; width: 22px; height: 22px; border-radius: 50%; font-size: 12px; line-height: 1; padding: 0;"
