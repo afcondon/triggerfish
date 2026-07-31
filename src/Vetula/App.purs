@@ -18,7 +18,7 @@ module Vetula.App where
 
 import Prelude
 
-import Data.Array (concat, concatMap, deleteAt, drop, elem, elemIndex, filter, find, head, index, insertAt, last, length, mapMaybe, mapWithIndex, modifyAt, nub, nubByEq, range, replicate, sort, take, updateAt, (!!))
+import Data.Array (concat, concatMap, deleteAt, drop, elem, elemIndex, filter, find, findIndex, head, index, insertAt, last, length, mapMaybe, mapWithIndex, modifyAt, nub, nubByEq, range, replicate, sort, take, updateAt, (!!))
 import Data.Foldable (all, any, foldl, foldr, for_, maximum, minimum, sum)
 import Data.Traversable (traverse)
 import Data.Int (fromString, round, toNumber)
@@ -397,6 +397,11 @@ type State =
   -- are painted onto the geometric views, each in its own hue. Replaces the
   -- old "drop chords into the pool" palette mode. Rendered in Step 3.
   , colorLayers :: Set ColorLayer
+  -- the tonnetz triad STACK (2026-07-31 redesign): triads accumulated by
+  -- alt-clicking triangles, in pick order. Edge-adjacent triads fold into
+  -- 7ths/9ths naturally (the polychord is the pitch-class union); the whole
+  -- stack catches to the tank as one Anchor. Empty = not stacking.
+  , tonnetzStack :: Array { root :: Int, pcs :: Array Int, major :: Boolean }
   -- chords reconstructed by pasting a saved Tidal progression back in. They live
   -- in `chords` (so the Revoice ladders + export work on them) but are kept off
   -- the Explore/Lattice surfaces — they aren't lattice nodes.
@@ -506,6 +511,9 @@ data Action
   | SlashBass Int          -- set the revoiced chord's bass to a pitch class (slash chord)
   | DropSet String         -- toggle an exterior signpost set (McMullen …)
   | ToggleLayer ColorLayer -- toggle a color-overlay layer on/off (2026-07-31)
+  | StackTriad Int (Array Int) Boolean -- alt-click a Tonnetz triad: add/remove it from the stack
+  | CommitStack            -- catch the accumulated Tonnetz stack to the tank as one Anchor
+  | ClearStack             -- discard the Tonnetz stack
   | BorrowFrom String      -- modal interchange: borrow from a parallel mode (or off)
   | ReflavourFamily String -- re-flavour the focused family's scale (mode value)
   | PlayPath               -- ▶ play the whole progression
@@ -676,6 +684,7 @@ component = H.mkComponent
       , dropped: Map.empty
       , borrowMode: Nothing
       , colorLayers: Set.singleton LayerDiatonic
+      , tonnetzStack: []
       , imported: Set.empty
       , sourceEdit: Nothing
       , sourceOpen: false
@@ -1684,6 +1693,40 @@ handleAction = case _ of
                , anchor: node.anchor
                }
     H.modify_ _ { tank = st.tank <> [ spec ], nextSpecId = st.nextSpecId + 1 }
+
+  -- Tonnetz stacking (2026-07-31): alt-click accumulates triads into a stack
+  -- (toggle — alt-clicking a stacked triad removes it). The stack builds a
+  -- polychord; edge-adjacent triads fold into 7ths/9ths since the chord is the
+  -- pitch-class union. Auditions the triad on the way in so you hear it stack.
+  StackTriad root pcs isMajor -> do
+    playChord (triadNode root pcs "")
+    H.modify_ \s ->
+      let same e = e.root == root && e.pcs == pcs
+      in s { tonnetzStack = case find same s.tonnetzStack of
+               Just _ -> filter (not <<< same) s.tonnetzStack
+               Nothing -> s.tonnetzStack <> [ { root, pcs, major: isMajor } ] }
+
+  -- Catch the whole stack to the tank as ONE Anchor: the pitch-class union,
+  -- bassed on the first (lowest-picked) triad, labelled as the stacked triads.
+  CommitStack -> do
+    st <- H.get
+    case st.tonnetzStack of
+      [] -> pure unit
+      stack -> do
+        let allPcs = nub (concatMap _.pcs stack)
+            root = maybe 0 _.root (head stack)
+            label = joinWith "+" (map (\e -> noteName e.root <> (if e.major then "" else "m")) stack)
+            node = triadNode root allPcs label
+            spec = { id: SpecimenId st.nextSpecId
+                   , voicing: node.voicing
+                   , bass: node.bassPc + 36
+                   , label: node.label
+                   , provenance: FromLens (groupLabel st.key)
+                   , anchor: node.anchor
+                   }
+        H.modify_ _ { tank = st.tank <> [ spec ], nextSpecId = st.nextSpecId + 1, tonnetzStack = [] }
+
+  ClearStack -> H.modify_ _ { tonnetzStack = [] }
 
   -- Lattices lens: a generated lattice chord carries its own voicing, so audition/
   -- catch use it verbatim (unlike the triad path, which re-voices from pcs).
@@ -2890,7 +2933,8 @@ render st =
         ]
     , floatCard "tank & progression" st.foldProg (ToggleFold VProg)
         "position: absolute; top: 12px; right: 12px; width: 340px; max-height: calc(100% - 264px); overflow-y: auto; overflow-x: hidden; z-index: 6;"
-        [ subGroup ("Tank · " <> show (length st.tank) <> " caught") (tankPane st)
+        [ stackBar st
+        , subGroup ("Tank · " <> show (length st.tank) <> " caught") (tankPane st)
         , arrangeBar st
         , growBar st
         , subGroup ("Progression · " <> countLabel (length (pathSteps st)) "step") (progressionPanel st)
@@ -2905,6 +2949,35 @@ render st =
     , helpOverlay st
     , revoiceModal st
     ]
+
+-- | The Tonnetz-stack HUD in the tank card (2026-07-31): shown only while a stack
+-- | is accumulating. Names the picked triads and the resulting polychord's pitch
+-- | classes, and offers to catch the whole stack to the tank as one Anchor, or
+-- | clear it. (Renders nothing when the stack is empty.)
+stackBar :: forall m. State -> H.ComponentHTML Action Slots m
+stackBar st =
+  let stack = st.tonnetzStack in
+  if length stack == 0 then HH.text ""
+  else
+    let names = joinWith " + " (map (\e -> noteName e.root <> (if e.major then "" else "m")) stack)
+        pcs = joinWith " " (map noteName (sort (nub (concatMap _.pcs stack))))
+        btn bg fg brd act lbl =
+          HH.button
+            [ HP.style ("border: 1px solid " <> brd <> "; background: " <> bg <> "; color: " <> fg
+                         <> "; cursor: pointer; padding: 4px 10px; border-radius: 4px; font-size: 12px;")
+            , HE.onClick \_ -> act ]
+            [ HH.text lbl ]
+    in HH.div
+         [ HP.style "border: 1px solid #cbb8e0; background: #f6f1fb; border-radius: 6px; padding: 8px 10px; margin: 0 0 8px; display: flex; flex-direction: column; gap: 6px;" ]
+         [ HH.div [ HP.style "font-size: 10px; color: #7a5c9a; letter-spacing: 0.1em; text-transform: uppercase;" ]
+             [ HH.text ("Tonnetz stack · " <> countLabel (length stack) "triad") ]
+         , HH.div [ HP.style "font-size: 13px; color: #4a3a5a;" ] [ HH.text names ]
+         , HH.div [ HP.style "font-size: 11px; color: #8a7a9a; letter-spacing: 0.04em;" ] [ HH.text pcs ]
+         , HH.div [ HP.style "display: flex; gap: 6px;" ]
+             [ btn "#6a4a9a" "#ffffff" "#6a4a9a" CommitStack "catch as anchor"
+             , btn "#faf7fd" "#7a5c9a" "#d8c8ea" ClearStack "clear"
+             ]
+         ]
 
 -- | A floating control card: a clickable title bar (the concern name), then the
 -- | panel body — which collapses to just the bar when `collapsed`, ceding the
@@ -3688,6 +3761,7 @@ tonnetzSurface st =
           <> concatMap (tonEdgesFrom scl) cells
           <> concatMap (tonNode scl tonic) cells
           <> concatMap (tonTriName diatonic) tris
+          <> concatMap (tonStackMark st.tonnetzStack) tris
           <> map tonHit tris
       )
 
@@ -3771,7 +3845,8 @@ tonTriName diatonic t =
   else []
 
 -- | The transparent click target over a triangle: plain click auditions the triad,
--- | shift-click catches it into the tank.
+-- | shift-click catches it into the tank, alt-click adds it to the Tonnetz stack
+-- | (2026-07-31 — the freeform triad-stacking gesture).
 tonHit :: forall m. TonTri -> H.ComponentHTML Action Slots m
 tonHit t =
   SE.element (ElemName "polygon")
@@ -3779,9 +3854,37 @@ tonHit t =
     , HP.style "fill: transparent; cursor: pointer;"
     , HE.onMouseEnter \_ -> HoverTriad (Just { root: t.root, pcs: t.pcs })
     , HE.onMouseLeave \_ -> HoverTriad Nothing
-    , HE.onClick \e -> if ME.shiftKey e then CatchTriad t.root t.pcs t.major else AuditionTriad t.root t.pcs
+    , HE.onClick \e ->
+        if ME.altKey e then StackTriad t.root t.pcs t.major
+        else if ME.shiftKey e then CatchTriad t.root t.pcs t.major
+        else AuditionTriad t.root t.pcs
     ]
     []
+
+-- | The stack highlight over a triangle that is currently in the Tonnetz stack:
+-- | a violet wash + a numbered badge at its centroid showing its pick order.
+tonStackMark
+  :: forall m
+   . Array { root :: Int, pcs :: Array Int, major :: Boolean }
+  -> TonTri -> Array (H.ComponentHTML Action Slots m)
+tonStackMark stack t =
+  case findIndex (\e -> e.root == t.root && e.pcs == t.pcs) stack of
+    Nothing -> []
+    Just i ->
+      let c = centroid t.verts
+      in [ SE.element (ElemName "polygon")
+             [ HP.attr (AttrName "points") (ptsStr t.verts)
+             , HP.style "fill: rgba(106,74,154,0.20); stroke: #6a4a9a; stroke-width: 2; pointer-events: none;" ]
+             []
+         , SE.circle
+             [ SA.cx c.x, SA.cy (c.y - 15.0), SA.r 7.0
+             , HP.style "fill: #6a4a9a; stroke: #ffffff; stroke-width: 1; pointer-events: none;" ]
+         , SE.text
+             [ SA.x c.x, SA.y (c.y - 15.0 + 3.0)
+             , HP.attr (AttrName "text-anchor") "middle"
+             , HP.style "font-size: 9px; fill: #ffffff; pointer-events: none; -webkit-user-select: none; user-select: none;" ]
+             [ HH.text (show (i + 1)) ]
+         ]
 
 -- ---------------------------------------------------------------------------
 -- The Lattices lens (every degree's tertian powerset web, tiled + zoomable)
