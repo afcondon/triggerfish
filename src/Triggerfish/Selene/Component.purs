@@ -17,7 +17,11 @@ module Triggerfish.Selene.Component (component, Output(..)) where
 import Prelude
 
 import Data.Array (any, deleteAt, drop, filter, length, mapMaybe, mapWithIndex, modifyAt, null, range, (!!))
-import Data.Foldable (for_, foldr)
+import Data.Foldable (for_, foldl, foldr)
+import Data.Tuple (Tuple(..), fst, snd)
+import Web.UIEvent.KeyboardEvent (KeyboardEvent)
+import Web.UIEvent.KeyboardEvent as KE
+import Web.Event.Event (preventDefault)
 import Data.Int (round, toNumber)
 import Data.Map (Map)
 import Data.Map as Map
@@ -98,7 +102,14 @@ type State =
   , presets :: Array Preset
   , identity :: Maybe String
   , lastChip :: Maybe G.ChipView
+  -- The slot under the keyboard/mouse editor: (destination index, slot 0..7),
+  -- or Nothing. Clicking a drawn slot selects it (a black box); arrow keys then
+  -- edit it in place. The SOURCE pane stays the read/compare surface.
+  , selected :: Maybe Sel
   }
+
+-- | Which drawn slot the direct-manipulation editor is aimed at.
+type Sel = { dest :: Int, slot :: Int }
 
 data Action
   = Initialize
@@ -108,6 +119,9 @@ data Action
   | AddDest M.GenKind         -- append a template block (comment-safe)
   | SetDoc String             -- the whole editable document, verbatim
   | RetargetDest Int String   -- re-route destination i to a target wire (cascade menu)
+  | SelectSlot Int Int        -- click a drawn slot (dest, slot): select it — or, if it's an
+                              -- already-selected LFO, cycle its waveform
+  | SlotKeyDown KeyboardEvent -- a keystroke on the focused slot cell (arrows nudge the field)
   | SelectRack Int            -- load a library rack into the editor
   | NewRack                   -- append a fresh empty rack + select it
   | SetRackName String        -- rename the active rack
@@ -134,6 +148,7 @@ component =
           , replies: Map.empty
           , publishMsg: Nothing
           , presets: [], identity: Nothing, lastChip: Nothing
+          , selected: Nothing
           }
     , render
     , eval: H.mkEval H.defaultEval
@@ -347,6 +362,22 @@ handleAction = case _ of
           doc = Source.printRack rack'
       in s { library = setDocAt s.active doc s.library, sel = Source.parseRack doc }
     persist
+  -- Click a drawn slot. First click selects (the black box); re-clicking an
+  -- already-selected LFO slot cycles its waveform (the one edit that reads best
+  -- as a click rather than a key).
+  SelectSlot d j -> do
+    s <- H.get
+    if s.selected == Just { dest: d, slot: j } && kindAt d s == Just M.KLfo
+      then editDest d (onBank (cycleWaveBank j))
+      else H.modify_ _ { selected = Just { dest: d, slot: j } }
+  -- Arrow keys nudge the selected slot's field, per kind (see nudgeSlot). Printable
+  -- keys (typed note/clock entry) are a later increment; ignored for now.
+  SlotKeyDown ev -> do
+    s <- H.get
+    for_ s.selected \{ dest, slot } ->
+      for_ (dirOf (KE.key ev)) \dir -> do
+        liftEffect (preventDefault (KE.toEvent ev))
+        editDest dest (onBank (nudgeSlot dir (KE.shiftKey ev) slot))
   SelectRack i -> do
     H.modify_ \s ->
       let doc = fromMaybe "" (map _.doc (s.library !! i))
@@ -463,6 +494,128 @@ ink = "#2b2922"
 -- render
 -- ---------------------------------------------------------------------------
 
+-- ---------------------------------------------------------------------------
+-- Direct-manipulation slot editing (mouse-select + arrow-key nudge)
+-- ---------------------------------------------------------------------------
+
+-- | Arrow direction. The convention: →/↑ increase, ←/↓ decrease.
+data NudgeDir = NLeft | NRight | NUp | NDown
+
+dirOf :: String -> Maybe NudgeDir
+dirOf = case _ of
+  "ArrowLeft" -> Just NLeft
+  "ArrowRight" -> Just NRight
+  "ArrowUp" -> Just NUp
+  "ArrowDown" -> Just NDown
+  _ -> Nothing
+
+-- | The generator kind of destination `d` (for the LFO re-click-to-cycle rule).
+kindAt :: Int -> State -> Maybe M.GenKind
+kindAt d s = map (M.bankKind <<< _.bank) (s.sel.destinations !! d)
+
+-- | Apply a bank transform to one destination, then reprint → reparse → persist:
+-- | the same doc-as-authority round-trip as RetargetDest / SetDoc, so the drawn
+-- | slot, the SOURCE pane, and the routing modal stay in lockstep.
+editDest :: forall m. MonadAff m => Int -> (M.Destination -> M.Destination) -> H.HalogenM State Action Slots Output m Unit
+editDest d f = do
+  H.modify_ \s ->
+    let dests' = mapWithIndex (\i dd -> if i == d then f dd else dd) s.sel.destinations
+        doc = Source.printRack (s.sel { destinations = dests' })
+    in s { library = setDocAt s.active doc s.library, sel = Source.parseRack doc }
+  persist
+
+onBank :: (M.GenBank -> M.GenBank) -> M.Destination -> M.Destination
+onBank g dd = dd { bank = g dd.bank }
+
+overAt :: forall a. Int -> (a -> a) -> Array a -> Array a
+overAt j f xs = fromMaybe xs (modifyAt j f xs)
+
+-- | Nudge slot `j` of a bank by one arrow step; the field it moves is per-kind.
+nudgeSlot :: NudgeDir -> Boolean -> Int -> M.GenBank -> M.GenBank
+nudgeSlot dir shift j = case _ of
+  M.GLfo xs -> M.GLfo (overAt j (nudgeLfo dir shift) xs)
+  M.GEuclid xs -> M.GEuclid (overAt j (nudgeEuclid dir shift) xs)
+  M.GClock xs -> M.GClock (overAt j (nudgeClock dir shift) xs)
+  M.GNote xs -> M.GNote (overAt j (nudgeNote dir) xs)
+
+-- LFO: ←/→ wavelength (rate Hz, inverted so → = shorter wave = higher Hz),
+-- ↑/↓ amplitude of the active shape. Shift = ×10 step.
+nudgeLfo :: NudgeDir -> Boolean -> M.ModSlot -> M.ModSlot
+nudgeLfo dir shift sl = case dir of
+  NRight -> sl { rate = clamp 0.01 50.0 (sl.rate + rStep) }
+  NLeft -> sl { rate = clamp 0.01 50.0 (sl.rate - rStep) }
+  NUp -> setActiveAmp (activeAmp sl + aStep) sl
+  NDown -> setActiveAmp (activeAmp sl - aStep) sl
+  where
+  rStep = if shift then 1.0 else 0.1
+  aStep = if shift then 0.5 else 0.05
+
+-- Euclid: ←/→ n (steps), ↑/↓ k (beats); beats stay clamped inside steps.
+nudgeEuclid :: NudgeDir -> Boolean -> M.EuclidSlot -> M.EuclidSlot
+nudgeEuclid dir shift sl = case dir of
+  NRight -> retab (sl.steps + st)
+  NLeft -> retab (sl.steps - st)
+  NUp -> sl { beats = clamp 0 sl.steps (sl.beats + st) }
+  NDown -> sl { beats = clamp 0 sl.steps (sl.beats - st) }
+  where
+  st = if shift then 4 else 1
+  retab n = let ns = clamp 1 32 n in sl { steps = ns, beats = clamp 0 ns sl.beats }
+
+-- Clock: ←/→ multiplier (typed ×2 //2 comes later), ↑/↓ pulse width %.
+nudgeClock :: NudgeDir -> Boolean -> M.ClockSlot -> M.ClockSlot
+nudgeClock dir shift sl = case dir of
+  NRight -> sl { multiplier = clamp 1 64 (sl.multiplier + m) }
+  NLeft -> sl { multiplier = clamp 1 64 (sl.multiplier - m) }
+  NUp -> sl { pulseWidth = clamp 1 99 (sl.pulseWidth + 5) }
+  NDown -> sl { pulseWidth = clamp 1 99 (sl.pulseWidth - 5) }
+  where
+  m = if shift then 4 else 1
+
+-- Note: ↑/↓ semitone, ←/→ octave (typed C4 entry comes later).
+nudgeNote :: NudgeDir -> M.PresetNoteSlot -> M.PresetNoteSlot
+nudgeNote dir sl = case dir of
+  NUp -> sl { note = clamp 0 127 (sl.note + 1) }
+  NDown -> sl { note = clamp 0 127 (sl.note - 1) }
+  NRight -> sl { note = clamp 0 127 (sl.note + 12) }
+  NLeft -> sl { note = clamp 0 127 (sl.note - 12) }
+
+-- The LFO reduced to its dominant shape: the utility view treats each slot as a
+-- single waveform (index into [sin sqr tri saw rnd nse]); the SOURCE pane keeps
+-- the full six-way mix for anyone who wants it.
+lfoAmps :: M.ModSlot -> Array Number
+lfoAmps sl = [ sl.sin, sl.sqr, sl.tri, sl.saw, sl.rnd, sl.nse ]
+
+shapeName :: Int -> String
+shapeName = case _ of
+  0 -> "sin"
+  1 -> "sqr"
+  2 -> "tri"
+  3 -> "saw"
+  4 -> "rnd"
+  _ -> "nse"
+
+activeShape :: M.ModSlot -> Int
+activeShape sl = fst (foldl (\best (Tuple k v) -> if v > snd best then Tuple k v else best) (Tuple 0 (-1.0)) (mapWithIndex Tuple (lfoAmps sl)))
+
+activeAmp :: M.ModSlot -> Number
+activeAmp sl = fromMaybe 0.0 (lfoAmps sl !! activeShape sl)
+
+setShape :: Int -> Number -> M.ModSlot -> M.ModSlot
+setShape ix amp sl = sl { sin = a 0, sqr = a 1, tri = a 2, saw = a 3, rnd = a 4, nse = a 5 }
+  where
+  a k = if k == ix then max 0.0 amp else 0.0
+
+setActiveAmp :: Number -> M.ModSlot -> M.ModSlot
+setActiveAmp amp sl = setShape (activeShape sl) (clamp 0.0 2.0 amp) sl
+
+cycleWave :: M.ModSlot -> M.ModSlot
+cycleWave sl = setShape ((activeShape sl + 1) `mod` 6) (max 0.1 (activeAmp sl)) sl
+
+cycleWaveBank :: Int -> M.GenBank -> M.GenBank
+cycleWaveBank j = case _ of
+  M.GLfo xs -> M.GLfo (overAt j cycleWave xs)
+  b -> b
+
 render :: forall m. MonadAff m => State -> H.ComponentHTML Action Slots m
 render s =
   HH.div
@@ -492,7 +645,7 @@ rackPanel :: forall m. MonadAff m => State -> H.ComponentHTML Action Slots m
 rackPanel s =
   panel "SELENE · DESTINATIONS" "flex:1 1 auto;min-width:0"
     ( [ rackBar s, transportStrip s ]
-        <> mapWithIndex destinationRow s.sel.destinations
+        <> mapWithIndex (destinationRow s.selected) s.sel.destinations
         <> [ addBar, footNote ]
     )
 
@@ -625,13 +778,13 @@ footNote =
     [ HH.text "EACH DESTINATION = 8 SIGNALS → 8 JACKS. EDIT THE NUMBERS — AND RE-PATCH / REMOVE BLOCKS — IN THE SOURCE PANE. -- MUTES A SLOT." ]
 
 -- One destination: a target/header strip on the left, eight visualised slots.
-destinationRow :: forall m. MonadAff m => Int -> M.Destination -> H.ComponentHTML Action Slots m
-destinationRow i d =
+destinationRow :: forall m. MonadAff m => Maybe Sel -> Int -> M.Destination -> H.ComponentHTML Action Slots m
+destinationRow sel i d =
   HH.div
     [ style $ "display:flex;align-items:stretch;gap:12px;padding:11px 12px;margin-bottom:10px;border-radius:8px;"
         <> "background:#00000008;border:1px solid #00000012" ]
     [ destHeader i d
-    , HH.div [ style (slotWrap d.bank) ] (slotViews d.bank)
+    , HH.div [ style (slotWrap d.bank) ] (slotViews i sel d.bank)
     ]
 
 -- | The slot layout: the CV/gate kinds flow eight-across. (POLYTRIG's 4×2
@@ -658,17 +811,37 @@ destHeader i d =
 -- Per-kind slot visualisations
 -- ---------------------------------------------------------------------------
 
-slotViews :: forall m. M.GenBank -> Array (H.ComponentHTML Action Slots m)
-slotViews = case _ of
-  M.GLfo slots -> map lfoCell slots
-  M.GEuclid slots -> map euclidRing slots
-  M.GClock slots -> mapWithIndex clockNumber slots
-  M.GNote slots -> map noteCell slots
+-- Each slot is drawn inside a focusable cell: clicking selects it (a black box);
+-- arrow keys then nudge it. `slotViews` threads the destination index + current
+-- selection so each cell knows whether it's the selected one and what to fire.
+slotViews :: forall m. Int -> Maybe Sel -> M.GenBank -> Array (H.ComponentHTML Action Slots m)
+slotViews d sel = case _ of
+  M.GLfo slots -> mapWithIndex (cellFor d sel 90.0 lfoInner) slots
+  M.GEuclid slots -> mapWithIndex (cellFor d sel 70.0 euclidInner) slots
+  M.GClock slots -> mapWithIndex (cellFor d sel 58.0 clockInner) slots
+  M.GNote slots -> mapWithIndex (cellFor d sel 58.0 noteInner) slots
+
+-- | Wrap one slot's inner drawing in the focusable, selectable cell.
+cellFor :: forall m a. Int -> Maybe Sel -> Number -> (a -> Array (H.ComponentHTML Action Slots m)) -> Int -> a -> H.ComponentHTML Action Slots m
+cellFor d sel widthPx inner j sl =
+  slotCell d j (sel == Just { dest: d, slot: j }) widthPx (inner sl)
+
+slotCell :: forall m. Int -> Int -> Boolean -> Number -> Array (H.ComponentHTML Action Slots m) -> H.ComponentHTML Action Slots m
+slotCell d j isSel widthPx body =
+  HH.div
+    [ HP.tabIndex 0
+    , style $ "width:" <> show (round widthPx) <> "px;flex:0 0 auto;padding:5px 4px;border-radius:6px;"
+        <> "display:flex;flex-direction:column;gap:2px;align-items:center;cursor:pointer;outline:none;"
+        <> ( if isSel then "background:#ffffffcc;border:2px solid #1a1a1a;"
+             else "background:#ffffff55;border:1px solid #00000010;padding:6px 5px;" )
+    , HE.onClick \_ -> SelectSlot d j
+    , HE.onKeyDown SlotKeyDown ]
+    body
 
 -- --- POLYLFO: a scaled waveform, 0V baseline, log-frequency, rate label ------
 
-lfoCell :: forall m. M.ModSlot -> H.ComponentHTML Action Slots m
-lfoCell sl =
+lfoInner :: forall m. M.ModSlot -> Array (H.ComponentHTML Action Slots m)
+lfoInner sl =
   let
     w = 84.0
     h = 50.0
@@ -686,19 +859,18 @@ lfoCell sl =
     poly = joinWith " " (map pt (range 0 samples))
     hint = lfoShapeHint sl
   in
-    cellBox 90.0
-      [ svgEl "svg"
-          [ svgAttr "viewBox" ("0 0 " <> show w <> " " <> show h), svgAttr "width" "100%"
-          , svgAttr "height" (show h), svgAttr "style" "display:block;overflow:visible" ]
-          [ svgEl "line"
-              [ svgAttr "x1" "0", svgAttr "y1" (show mid), svgAttr "x2" (show w), svgAttr "y2" (show mid)
-              , svgAttr "stroke" "#00000022", svgAttr "stroke-width" "0.8", svgAttr "stroke-dasharray" "2 2" ] []
-          , svgEl "polyline"
-              [ svgAttr "points" poly, svgAttr "fill" "none", svgAttr "stroke" accent
-              , svgAttr "stroke-width" "1.6", svgAttr "stroke-linejoin" "round" ] []
-          ]
-      , cellCaption (fmt2 sl.rate <> " Hz" <> hint)
-      ]
+    [ svgEl "svg"
+        [ svgAttr "viewBox" ("0 0 " <> show w <> " " <> show h), svgAttr "width" "100%"
+        , svgAttr "height" (show h), svgAttr "style" "display:block;overflow:visible" ]
+        [ svgEl "line"
+            [ svgAttr "x1" "0", svgAttr "y1" (show mid), svgAttr "x2" (show w), svgAttr "y2" (show mid)
+            , svgAttr "stroke" "#00000022", svgAttr "stroke-width" "0.8", svgAttr "stroke-dasharray" "2 2" ] []
+        , svgEl "polyline"
+            [ svgAttr "points" poly, svgAttr "fill" "none", svgAttr "stroke" accent
+            , svgAttr "stroke-width" "1.6", svgAttr "stroke-linejoin" "round" ] []
+        ]
+    , cellCaption (shapeName (activeShape sl) <> " · " <> fmt2 sl.rate <> " Hz" <> hint)
+    ]
 
 -- which non-drawn shapes are present, as a tiny tag
 lfoShapeHint :: M.ModSlot -> String
@@ -708,8 +880,8 @@ lfoShapeHint sl =
 
 -- --- POLYEUCLID: a ring of step-dots with k / n in the centre ----------------
 
-euclidRing :: forall m. M.EuclidSlot -> H.ComponentHTML Action Slots m
-euclidRing sl = cellBox 70.0 [ ringFigure 64.0 sl.beats sl.steps ]
+euclidInner :: forall m. M.EuclidSlot -> Array (H.ComponentHTML Action Slots m)
+euclidInner sl = [ ringFigure 64.0 sl.beats sl.steps ]
 
 -- | The Euclidean ring — a dot per step, filled on a pulse, k/n in the centre.
 -- | Drawn for every POLYEUCLID slot (structure-driven viz).
@@ -746,34 +918,25 @@ ringFigure sz k n =
 
 -- --- POLYCLOCK: a list of division numbers -----------------------------------
 
-clockNumber :: forall m. Int -> M.ClockSlot -> H.ComponentHTML Action Slots m
-clockNumber _ sl =
-  cellBox 58.0
-    [ HH.div [ style $ "font-family:'SF Mono',Menlo,monospace;font-size:18px;color:" <> ink <> ";text-align:center" ]
-        [ HH.text ("×" <> show sl.multiplier) ]
-    , cellCaption (M.clockBaseLabel sl.base <> " · " <> show sl.pulseWidth <> "%")
-    ]
+clockInner :: forall m. M.ClockSlot -> Array (H.ComponentHTML Action Slots m)
+clockInner sl =
+  [ HH.div [ style $ "font-family:'SF Mono',Menlo,monospace;font-size:18px;color:" <> ink <> ";text-align:center" ]
+      [ HH.text ("×" <> show sl.multiplier) ]
+  , cellCaption (M.clockBaseLabel sl.base <> " · " <> show sl.pulseWidth <> "%")
+  ]
 
 -- --- POLYNOTE: a list of notes -----------------------------------------------
 
-noteCell :: forall m. M.PresetNoteSlot -> H.ComponentHTML Action Slots m
-noteCell sl =
-  cellBox 58.0
-    [ HH.div [ style $ "font-family:'SF Mono',Menlo,monospace;font-size:16px;color:" <> ink <> ";text-align:center" ]
-        [ HH.text (M.noteName sl.note) ]
-    , cellCaption ("midi " <> show sl.note)
-    ]
+noteInner :: forall m. M.PresetNoteSlot -> Array (H.ComponentHTML Action Slots m)
+noteInner sl =
+  [ HH.div [ style $ "font-family:'SF Mono',Menlo,monospace;font-size:16px;color:" <> ink <> ";text-align:center" ]
+      [ HH.text (M.noteName sl.note) ]
+  , cellCaption ("midi " <> show sl.note)
+  ]
 
 -- ---------------------------------------------------------------------------
 -- Cell chrome
 -- ---------------------------------------------------------------------------
-
-cellBox :: forall m. Number -> Array (H.ComponentHTML Action Slots m) -> H.ComponentHTML Action Slots m
-cellBox widthPx body =
-  HH.div
-    [ style $ "width:" <> show (round widthPx) <> "px;flex:0 0 auto;padding:5px 4px;border-radius:6px;"
-        <> "background:#ffffff55;border:1px solid #00000010;display:flex;flex-direction:column;gap:2px;align-items:center" ]
-    body
 
 cellCaption :: forall m. String -> H.ComponentHTML Action Slots m
 cellCaption t =
