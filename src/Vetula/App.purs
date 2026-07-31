@@ -169,6 +169,51 @@ lensLabel = case _ of
   LensLattices -> "voice-leading lattice"
   LensGenerate -> "grow"
 
+-- | The color-overlay layers (2026-07-31 redesign — see
+-- | docs/DESIGN-vetula-progression-building.md §"Context-panel redesign").
+-- | The palettes stopped being MODE selectors that inject chords into the pool
+-- | and became an always-on annotation layer: each set of chords is *painted*
+-- | onto the geometric views in its own fixed hue, toggled independently. The
+-- | diatonic triads are the base layer; borrowed comes from the BORROW scale;
+-- | McMullen/Butler/Stock are the curated exterior signpost sets. Rendering the
+-- | layers is Step 3 — this type + its state + the toggles are Step 2.
+data ColorLayer = LayerDiatonic | LayerBorrowed | LayerMcMullen | LayerButler | LayerStock
+
+derive instance eqColorLayer :: Eq ColorLayer
+derive instance ordColorLayer :: Ord ColorLayer
+
+-- | The layer registry, in legend order (base first).
+allColorLayers :: Array ColorLayer
+allColorLayers = [ LayerDiatonic, LayerBorrowed, LayerMcMullen, LayerButler, LayerStock ]
+
+layerLabel :: ColorLayer -> String
+layerLabel = case _ of
+  LayerDiatonic -> "diatonic"
+  LayerBorrowed -> "borrowed"
+  LayerMcMullen -> "McMullen"
+  LayerButler -> "Butler"
+  LayerStock -> "Stock"
+
+-- | Each layer's own distinct hue — a legend, NOT the tonnetz outside-distance
+-- | ramp (AC decision 3, 2026-07-31). Diatonic is a quiet base ink; the color
+-- | sets each get a saturated, legible hue that reads on parchment.
+layerHue :: ColorLayer -> String
+layerHue = case _ of
+  LayerDiatonic -> "#6a6a6a"
+  LayerBorrowed -> "#b5622d"
+  LayerMcMullen -> "#3f7d54"
+  LayerButler -> "#4a6da8"
+  LayerStock -> "#8a5a9a"
+
+-- | The exterior-generator key a color layer draws from (Nothing for the
+-- | diatonic base and the borrow-sourced layer, which have their own sources).
+layerGenKey :: ColorLayer -> Maybe String
+layerGenKey = case _ of
+  LayerMcMullen -> Just "mcmullen"
+  LayerButler -> Just "butler"
+  LayerStock -> Just "stock"
+  _ -> Nothing
+
 -- | How a voice sounds the chord it's currently on. Block = the whole chord held
 -- | for the step; Strummed = re-trigger only the notes that changed (common tones
 -- | ring on); Arp = one chord note per pulse, cycling up.
@@ -333,6 +378,10 @@ type State =
   -- the modal-interchange source mode currently borrowed from (the picker's
   -- value; Nothing = none). Its chords live in `dropped` under "interchange".
   , borrowMode :: Maybe String
+  -- the active color-overlay layers (2026-07-31 redesign): which palette sets
+  -- are painted onto the geometric views, each in its own hue. Replaces the
+  -- old "drop chords into the pool" palette mode. Rendered in Step 3.
+  , colorLayers :: Set ColorLayer
   -- chords reconstructed by pasting a saved Tidal progression back in. They live
   -- in `chords` (so the Revoice ladders + export work on them) but are kept off
   -- the Explore/Lattice surfaces — they aren't lattice nodes.
@@ -441,6 +490,7 @@ data Action
   | CloseRevoice           -- dismiss the revoice modal
   | SlashBass Int          -- set the revoiced chord's bass to a pitch class (slash chord)
   | DropSet String         -- toggle an exterior signpost set (McMullen …)
+  | ToggleLayer ColorLayer -- toggle a color-overlay layer on/off (2026-07-31)
   | BorrowFrom String      -- modal interchange: borrow from a parallel mode (or off)
   | ReflavourFamily String -- re-flavour the focused family's scale (mode value)
   | PlayPath               -- ▶ play the whole progression
@@ -610,6 +660,7 @@ component = H.mkComponent
       , stackHead: Nothing
       , dropped: Map.empty
       , borrowMode: Nothing
+      , colorLayers: Set.singleton LayerDiatonic
       , imported: Set.empty
       , sourceEdit: Nothing
       , sourceOpen: false
@@ -1221,6 +1272,14 @@ handleAction = case _ of
             , nextId = st.nextId + length placed
             , dropped = Map.insert gkey (map _.id placed) st.dropped
             }
+
+  -- toggle a color-overlay layer (2026-07-31 redesign): pure state — the layer
+  -- is painted or not painted onto the views (Step 3), the pool is untouched.
+  ToggleLayer l ->
+    H.modify_ \s ->
+      s { colorLayers =
+            if Set.member l s.colorLayers then Set.delete l s.colorLayers
+            else Set.insert l s.colorLayers }
 
   -- modal interchange: borrow the chosen parallel mode's chromatic chords (or
   -- "off" to clear). Always replaces the previous interchange set, so the picker
@@ -3003,7 +3062,7 @@ setupPane st =
                    ((Select.cascadingInput borrowGroups) { selected = Just (fromMaybe "off" st.borrowMode), searchable = true })
                    \(Select.Selected v) -> BorrowFrom v ]
            , field "PALETTES"
-               [ HH.div [ HP.style "display: flex; flex-wrap: wrap; gap: 4px;" ] (map dropBtn exteriorGens) ]
+               [ HH.div [ HP.style "display: flex; flex-wrap: wrap; gap: 4px;" ] (map layerChip allColorLayers) ]
            , connectionRow
            ]
     )
@@ -3012,17 +3071,25 @@ setupPane st =
   field lbl controls =
     HH.div [ HP.style "display: flex; flex-direction: column; gap: 4px;" ]
       ([ HH.span [ HP.style labelStyle ] [ HH.text lbl ] ] <> controls)
-  -- the exterior signpost buttons: drop a curated chord set onto the pool (toggle
-  -- to remove). Active = amber, matching the ring-index warmth.
-  dropBtn g =
-    HH.button
-      [ HP.style (dropBtnStyle (Map.member g.key st.dropped)), HE.onClick \_ -> DropSet g.key ]
-      [ HH.text g.label ]
-  dropBtnStyle active =
-    "border: 1px solid " <> (if active then "#c9a23a" else "#dcdcdc")
-      <> "; background: " <> (if active then "#fbf3df" else "#fafafa")
-      <> "; color: " <> (if active then "#7a5c00" else "#6a6a6a")
-      <> "; cursor: pointer; padding: 3px 10px; border-radius: 4px; font-size: 12px;"
+  -- the palette chips are now SHOW/HIDE toggles for the color-overlay layers
+  -- (2026-07-31 redesign), not pool-injecting mode buttons. Each carries a
+  -- swatch in the layer's own hue; active = the swatch fills + hue-tinted chip.
+  layerChip l =
+    let on = Set.member l st.colorLayers
+        hue = layerHue l
+    in HH.button
+         [ HP.style ("display: inline-flex; align-items: center; gap: 6px; border: 1px solid "
+                      <> (if on then hue else "#dcdcdc")
+                      <> "; background: " <> (if on then "#fafafa" else "#fafafa")
+                      <> "; color: " <> (if on then hue else "#9a9a9a")
+                      <> "; cursor: pointer; padding: 3px 9px; border-radius: 4px; font-size: 12px;")
+         , HP.title (if on then "hide the " <> layerLabel l <> " layer" else "show the " <> layerLabel l <> " layer")
+         , HE.onClick \_ -> ToggleLayer l ]
+         [ HH.span
+             [ HP.style ("width: 9px; height: 9px; border-radius: 2px; border: 1px solid " <> hue
+                          <> "; background: " <> (if on then hue else "transparent") <> ";") ]
+             []
+         , HH.text (layerLabel l) ]
   -- a contextual scale picker for the focused family (click a keyboard key to
   -- focus one) — this is what lets two families hold different modes at once.
   familyField = case st.focusedFamily >>= (\sid -> find (\c -> c.id == sid) st.chords) of
