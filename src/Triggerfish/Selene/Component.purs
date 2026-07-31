@@ -50,7 +50,18 @@ import Triggerfish.Glyph as G
 import Triggerfish.Preset (Preset, indexOfContent, presetAlias)
 import Triggerfish.SourceQuery (Query(..))
 import Triggerfish.Transport (Sounding(..))
+import Triggerfish.Rig (defaultRig, targetGroups)
+import Halogen.Widgets.Select as Select
+import Type.Proxy (Proxy(..))
 import Data.Maybe (Maybe(..), fromMaybe)
+
+-- | The rack view hosts one cascade target-picker per destination, keyed by
+-- | destination index — the same nested ES-9/FH-2/MIDI menu the routing modal
+-- | uses (the machine's own copy of the shared control; see Triggerfish.Rig).
+type Slots = ( selTarget :: Select.Slot Int )
+
+_selTarget :: Proxy "selTarget"
+_selTarget = Proxy
 
 -- ---------------------------------------------------------------------------
 -- State / Actions
@@ -96,6 +107,7 @@ data Action
   | MidiReady (Maybe Midi.MidiOut) String
   | AddDest M.GenKind         -- append a template block (comment-safe)
   | SetDoc String             -- the whole editable document, verbatim
+  | RetargetDest Int String   -- re-route destination i to a target wire (cascade menu)
   | SelectRack Int            -- load a library rack into the editor
   | NewRack                   -- append a fresh empty rack + select it
   | SetRackName String        -- rename the active rack
@@ -128,7 +140,7 @@ component =
         { handleAction = handleAction, handleQuery = handleQuery, initialize = Just Initialize }
     }
 
-handleQuery :: forall m a. MonadAff m => Query a -> H.HalogenM State Action () Output m (Maybe a)
+handleQuery :: forall m a. MonadAff m => Query a -> H.HalogenM State Action Slots Output m (Maybe a)
 handleQuery = case _ of
   AskSource reply -> do
     s <- H.get
@@ -206,7 +218,7 @@ handleQuery = case _ of
 -- | (identical doc ⇒ identical glyph): already banked ⇒ just re-park `identity`;
 -- | otherwise append an anonymous preset. Either way the chip shows the glyph held,
 -- | and we persist. No-op only when the active rack doc is empty.
-captureNow :: forall o m. MonadAff m => H.HalogenM State Action () o m Unit
+captureNow :: forall o m. MonadAff m => H.HalogenM State Action Slots o m Unit
 captureNow = do
   s <- H.get
   let text = currentDoc s
@@ -222,7 +234,7 @@ captureNow = do
 -- | Recall preset `i`: load its rack-doc content into the active rack (re-derive the
 -- | rack from it), and park the chip on the preset's text (glyph SOLID; ghosts on
 -- | later divergence). Mirrors Balistes' `recallPreset` for the SetDoc-shaped state.
-recallPreset :: forall o m. MonadAff m => Int -> H.HalogenM State Action () o m Unit
+recallPreset :: forall o m. MonadAff m => Int -> H.HalogenM State Action Slots o m Unit
 recallPreset i = do
   st <- H.get
   case st.presets !! i of
@@ -243,7 +255,7 @@ chipViewOf s = case s.identity of
   Nothing -> Nothing
   Just text -> Just { glyph: G.glyphOf text, diverged: currentDoc s /= text }
 
-handleAction :: forall m. MonadAff m => Action -> H.HalogenM State Action () Output m Unit
+handleAction :: forall m. MonadAff m => Action -> H.HalogenM State Action Slots Output m Unit
 handleAction = case _ of
   Initialize -> do
     bin <- liftEffect $ Binnacle.connect { url: rigUrl, tempo: 120.0 }
@@ -322,6 +334,19 @@ handleAction = case _ of
   SetDoc doc -> do
     H.modify_ \s -> s { library = setDocAt s.active doc s.library, sel = Source.parseRack doc }
     persist
+  -- Re-route one destination from its cascade menu: retarget in the parsed rack,
+  -- reprint, and re-derive — the same doc-as-authority round-trip as SetDoc (and
+  -- as the routing modal's PutSource), so both surfaces stay in sync.
+  RetargetDest i wire -> do
+    H.modify_ \s ->
+      let rack = Source.parseRack (currentDoc s)
+          rack' = rack
+            { destinations = mapWithIndex
+                (\j d -> if j == i then d { target = Source.parseTarget wire } else d)
+                rack.destinations }
+          doc = Source.printRack rack'
+      in s { library = setDocAt s.active doc s.library, sel = Source.parseRack doc }
+    persist
   SelectRack i -> do
     H.modify_ \s ->
       let doc = fromMaybe "" (map _.doc (s.library !! i))
@@ -397,7 +422,7 @@ mergeRacksByName current incoming =
   current <> filter (\p -> not (any (\q -> q.name == p.name) current)) incoming
 
 -- | Persist the rack library + preset bank (after any library/active/preset change).
-persist :: forall o m. MonadAff m => H.HalogenM State Action () o m Unit
+persist :: forall o m. MonadAff m => H.HalogenM State Action Slots o m Unit
 persist = do
   s <- H.get
   liftEffect (Store.saveLibrary { active: s.active, library: s.library, presets: s.presets })
@@ -438,7 +463,7 @@ ink = "#2b2922"
 -- render
 -- ---------------------------------------------------------------------------
 
-render :: forall m. State -> H.ComponentHTML Action () m
+render :: forall m. MonadAff m => State -> H.ComponentHTML Action Slots m
 render s =
   HH.div
     [ style $ "position:fixed;top:var(--tf-bar);left:0;right:0;bottom:0;display:flex;align-items:stretch;overflow:hidden;"
@@ -447,7 +472,7 @@ render s =
     , sourcePanel s
     ]
 
-panel :: forall m. String -> String -> Array (H.ComponentHTML Action () m) -> H.ComponentHTML Action () m
+panel :: forall m. String -> String -> Array (H.ComponentHTML Action Slots m) -> H.ComponentHTML Action Slots m
 panel label widthCss body =
   HH.div
     [ style $ widthCss <> ";height:calc(100vh - var(--tf-bar));box-sizing:border-box;overflow-y:auto;overflow-x:hidden;"
@@ -463,7 +488,7 @@ panel label widthCss body =
 -- The rack: a stack of destinations + the add bar
 -- ---------------------------------------------------------------------------
 
-rackPanel :: forall m. State -> H.ComponentHTML Action () m
+rackPanel :: forall m. MonadAff m => State -> H.ComponentHTML Action Slots m
 rackPanel s =
   panel "SELENE · DESTINATIONS" "flex:1 1 auto;min-width:0"
     ( [ rackBar s, transportStrip s ]
@@ -473,7 +498,7 @@ rackPanel s =
 
 -- The rack library: named racks (each a saved eDSL doc), the active one brass +
 -- editable. Persists to localStorage; a rack's `doc` is its transferable form.
-rackBar :: forall m. State -> H.ComponentHTML Action () m
+rackBar :: forall m. State -> H.ComponentHTML Action Slots m
 rackBar s =
   HH.div [ style "display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-bottom:12px" ]
     ( [ HH.span [ style $ engrave <> ";font-size:9px;opacity:0.6;margin-right:2px" ] [ HH.text "RACKS" ] ]
@@ -490,7 +515,7 @@ rackBar s =
     )
 
 -- Publish the active rack to the Amphora store (⚱); a sibling of + NEW.
-publishRackChip :: forall m. H.ComponentHTML Action () m
+publishRackChip :: forall m. H.ComponentHTML Action Slots m
 publishRackChip =
   HH.button
     [ HE.onClick \_ -> PublishRack
@@ -499,14 +524,14 @@ publishRackChip =
         <> "font-family:Georgia,serif;font-size:11px;color:#3d5c3b;background:#00000006" ]
     [ HH.text "⚱ PUBLISH" ]
 
-publishStatus :: forall m. State -> H.ComponentHTML Action () m
+publishStatus :: forall m. State -> H.ComponentHTML Action Slots m
 publishStatus s = case s.publishMsg of
   Nothing -> HH.text ""
   Just msg ->
     HH.span [ style $ engrave <> ";font-size:8px;color:#5a7458;margin-left:4px" ]
       [ HH.text msg ]
 
-rackChip :: forall m. String -> Boolean -> Action -> H.ComponentHTML Action () m
+rackChip :: forall m. String -> Boolean -> Action -> H.ComponentHTML Action Slots m
 rackChip label active act =
   HH.button
     [ HE.onClick \_ -> act
@@ -516,7 +541,7 @@ rackChip label active act =
             else "color:#3f3c33;background:linear-gradient(#efece1,#ddd9cb)") ]
     [ HH.text label ]
 
-newRackChip :: forall m. H.ComponentHTML Action () m
+newRackChip :: forall m. H.ComponentHTML Action Slots m
 newRackChip =
   HH.button
     [ HE.onClick \_ -> NewRack
@@ -527,7 +552,7 @@ newRackChip =
 -- A compact horizontal transport: live clock + MIDI readouts, the Apply → rig
 -- push button, and the per-bank status readout showing each daemon's OK / claim /
 -- ERR reply (#142). The rack's CV/gate is generated by the daemons once applied.
-transportStrip :: forall m. State -> H.ComponentHTML Action () m
+transportStrip :: forall m. State -> H.ComponentHTML Action Slots m
 transportStrip s =
   HH.div
     [ style $ "display:flex;align-items:center;gap:14px;margin-bottom:14px;padding:8px 10px;"
@@ -546,7 +571,7 @@ transportStrip s =
       , HH.span [ style $ "font-family:'SF Mono',Menlo,monospace;font-size:10px;color:" <> ink ] [ HH.text val ]
       ]
 
-applyButton :: forall m. H.ComponentHTML Action () m
+applyButton :: forall m. H.ComponentHTML Action Slots m
 applyButton =
   HH.button
     [ HE.onClick \_ -> ApplyToRig
@@ -559,7 +584,7 @@ applyButton =
 -- daemon reply. "—" before any push, "…" while in flight, then OK (green) / ERR
 -- (amber) once the daemon answers. Non-modular destinations (Midi/Virtual) don't
 -- appear — they aren't pushed.
-replyReadout :: forall m. State -> Array (H.ComponentHTML Action () m)
+replyReadout :: forall m. State -> Array (H.ComponentHTML Action Slots m)
 replyReadout s = map pill (mapMaybe Wire.destinationEnvelope s.sel.destinations)
   where
   pill e =
@@ -578,14 +603,14 @@ replyReadout s = map pill (mapMaybe Wire.destinationEnvelope s.sel.destinations)
             [ HH.text status ]
         ]
 
-addBar :: forall m. H.ComponentHTML Action () m
+addBar :: forall m. H.ComponentHTML Action Slots m
 addBar =
   HH.div [ style "display:flex;align-items:center;gap:8px;margin-top:14px" ]
     ( [ HH.span [ style $ engrave <> ";font-size:9px;opacity:0.6;margin-right:2px" ] [ HH.text "ADD 8 →" ] ]
         <> map addButton M.allKinds
     )
 
-addButton :: forall m. M.GenKind -> H.ComponentHTML Action () m
+addButton :: forall m. M.GenKind -> H.ComponentHTML Action Slots m
 addButton k =
   HH.button
     [ HE.onClick \_ -> AddDest k
@@ -594,13 +619,13 @@ addButton k =
         <> "background:linear-gradient(#efece1,#ddd9cb)" ]
     [ HH.text (M.kindLabel k) ]
 
-footNote :: forall m. H.ComponentHTML Action () m
+footNote :: forall m. H.ComponentHTML Action Slots m
 footNote =
   HH.div [ style $ engrave <> ";font-size:8px;opacity:0.45;margin-top:14px;line-height:1.6" ]
     [ HH.text "EACH DESTINATION = 8 SIGNALS → 8 JACKS. EDIT THE NUMBERS — AND RE-PATCH / REMOVE BLOCKS — IN THE SOURCE PANE. -- MUTES A SLOT." ]
 
 -- One destination: a target/header strip on the left, eight visualised slots.
-destinationRow :: forall m. Int -> M.Destination -> H.ComponentHTML Action () m
+destinationRow :: forall m. MonadAff m => Int -> M.Destination -> H.ComponentHTML Action Slots m
 destinationRow i d =
   HH.div
     [ style $ "display:flex;align-items:stretch;gap:12px;padding:11px 12px;margin-bottom:10px;border-radius:8px;"
@@ -614,15 +639,17 @@ destinationRow i d =
 slotWrap :: M.GenBank -> String
 slotWrap _ = "display:flex;flex-wrap:wrap;gap:7px;align-items:center;flex:1 1 auto"
 
-destHeader :: forall m. Int -> M.Destination -> H.ComponentHTML Action () m
-destHeader _ d =
-  HH.div [ style "display:flex;flex-direction:column;gap:5px;flex:0 0 132px;justify-content:center" ]
+destHeader :: forall m. MonadAff m => Int -> M.Destination -> H.ComponentHTML Action Slots m
+destHeader i d =
+  HH.div [ style "display:flex;flex-direction:column;gap:5px;flex:0 0 190px;justify-content:center" ]
     [ HH.div [ style $ engrave <> ";font-size:10px;letter-spacing:0.1em;color:" <> ink ]
         [ HH.text (M.kindLabel (M.bankKind d.bank)) ]
-    , HH.div
-        [ style $ "padding:4px 8px;border-radius:5px;text-align:left;display:inline-block;align-self:flex-start;"
-            <> "font-family:'SF Mono',Menlo,monospace;font-size:10px;color:#efece1;background:" <> accent ]
-        [ HH.text (M.targetLabel d.target) ]
+    -- The routing atom, now direct-manipulation: the same rig-bounded cascade
+    -- menu the routing modal uses, editing this destination's target in place.
+    , HH.slot _selTarget i Select.component
+        ((Select.cascadingInput (targetGroups defaultRig))
+           { selected = Just (M.targetWire d.target), placeholder = "route" })
+        (\(Select.Selected wire) -> RetargetDest i wire)
     , HH.span [ style $ engrave <> ";font-size:8px;opacity:0.45" ]
         [ HH.text ("→ " <> M.targetWire d.target) ]
     ]
@@ -631,7 +658,7 @@ destHeader _ d =
 -- Per-kind slot visualisations
 -- ---------------------------------------------------------------------------
 
-slotViews :: forall m. M.GenBank -> Array (H.ComponentHTML Action () m)
+slotViews :: forall m. M.GenBank -> Array (H.ComponentHTML Action Slots m)
 slotViews = case _ of
   M.GLfo slots -> map lfoCell slots
   M.GEuclid slots -> map euclidRing slots
@@ -640,7 +667,7 @@ slotViews = case _ of
 
 -- --- POLYLFO: a scaled waveform, 0V baseline, log-frequency, rate label ------
 
-lfoCell :: forall m. M.ModSlot -> H.ComponentHTML Action () m
+lfoCell :: forall m. M.ModSlot -> H.ComponentHTML Action Slots m
 lfoCell sl =
   let
     w = 84.0
@@ -681,12 +708,12 @@ lfoShapeHint sl =
 
 -- --- POLYEUCLID: a ring of step-dots with k / n in the centre ----------------
 
-euclidRing :: forall m. M.EuclidSlot -> H.ComponentHTML Action () m
+euclidRing :: forall m. M.EuclidSlot -> H.ComponentHTML Action Slots m
 euclidRing sl = cellBox 70.0 [ ringFigure 64.0 sl.beats sl.steps ]
 
 -- | The Euclidean ring — a dot per step, filled on a pulse, k/n in the centre.
 -- | Drawn for every POLYEUCLID slot (structure-driven viz).
-ringFigure :: forall m. Number -> Int -> Int -> H.ComponentHTML Action () m
+ringFigure :: forall m. Number -> Int -> Int -> H.ComponentHTML Action Slots m
 ringFigure sz k n =
   let
     c = sz / 2.0
@@ -719,7 +746,7 @@ ringFigure sz k n =
 
 -- --- POLYCLOCK: a list of division numbers -----------------------------------
 
-clockNumber :: forall m. Int -> M.ClockSlot -> H.ComponentHTML Action () m
+clockNumber :: forall m. Int -> M.ClockSlot -> H.ComponentHTML Action Slots m
 clockNumber _ sl =
   cellBox 58.0
     [ HH.div [ style $ "font-family:'SF Mono',Menlo,monospace;font-size:18px;color:" <> ink <> ";text-align:center" ]
@@ -729,7 +756,7 @@ clockNumber _ sl =
 
 -- --- POLYNOTE: a list of notes -----------------------------------------------
 
-noteCell :: forall m. M.PresetNoteSlot -> H.ComponentHTML Action () m
+noteCell :: forall m. M.PresetNoteSlot -> H.ComponentHTML Action Slots m
 noteCell sl =
   cellBox 58.0
     [ HH.div [ style $ "font-family:'SF Mono',Menlo,monospace;font-size:16px;color:" <> ink <> ";text-align:center" ]
@@ -741,14 +768,14 @@ noteCell sl =
 -- Cell chrome
 -- ---------------------------------------------------------------------------
 
-cellBox :: forall m. Number -> Array (H.ComponentHTML Action () m) -> H.ComponentHTML Action () m
+cellBox :: forall m. Number -> Array (H.ComponentHTML Action Slots m) -> H.ComponentHTML Action Slots m
 cellBox widthPx body =
   HH.div
     [ style $ "width:" <> show (round widthPx) <> "px;flex:0 0 auto;padding:5px 4px;border-radius:6px;"
         <> "background:#ffffff55;border:1px solid #00000010;display:flex;flex-direction:column;gap:2px;align-items:center" ]
     body
 
-cellCaption :: forall m. String -> H.ComponentHTML Action () m
+cellCaption :: forall m. String -> H.ComponentHTML Action Slots m
 cellCaption t =
   HH.span [ style $ engrave <> ";font-size:8px;opacity:0.55;text-align:center" ] [ HH.text t ]
 
@@ -756,7 +783,7 @@ cellCaption t =
 -- Source panel — the growing-spec eDSL, one block per destination (read-only)
 -- ---------------------------------------------------------------------------
 
-sourcePanel :: forall m. State -> H.ComponentHTML Action () m
+sourcePanel :: forall m. State -> H.ComponentHTML Action Slots m
 sourcePanel s =
   panel "SOURCE" "flex:0 0 340px"
     [ HH.div [ style $ engrave <> ";font-size:8px;opacity:0.6;margin-bottom:6px" ]
