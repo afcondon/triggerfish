@@ -348,8 +348,16 @@ handleAction = case _ of
     -- the store is down. Forked — the shell must not wait on it.
     void $ H.fork fetchGoTo
   -- The hotkey overlays (⌘1..⌘5). Opening one replaces any other that's open;
-  -- Esc / backdrop click closes.
-  OpenModal m -> H.modify_ _ { modal = Just m }
+  -- Esc / backdrop click closes. Opening REFRESHES the data that modal shows —
+  -- the old "switch to the TIDAL tab to refresh" trigger went away with the tab,
+  -- so the overlay pulls fresh source / voice-names / library on open.
+  OpenModal m -> do
+    H.modify_ _ { modal = Just m }
+    case m of
+      MRouting -> refreshTidal
+      MSource -> refreshTidal
+      MPresets -> refreshTidal *> refreshLibrary *> fetchGoTo
+      _ -> pure unit
   CloseModal -> H.modify_ _ { modal = Nothing }
 
   -- Master ▶/■ = arm ALL / disarm ALL: arm every machine if none is armed, else
@@ -1090,43 +1098,58 @@ workbenchHeader st =
 -- (identity → destination; see docs/PLAN-midi-routing.md). The fixed defaults ARE
 -- the standard Ableton project template; named Vetula voices are editable (bind a
 -- name to a channel; blank = the ch5 default).
+-- One COLUMN per machine — a lineless table (see docs/PLAN-midi-routing.md): the
+-- machine name over its own little stack of destination rows. Odonus/Balistes/
+-- Vetula carry real routing (Vetula's named voices are editable); Selene needs a
+-- multi-type control (ES-9 / FH-2 / MIDI) that two-way-syncs with its Tidal
+-- source — a placeholder for now; Sufflamen/Stellatus are placeholders too.
 channelMapPanel :: forall m. RState -> H.ComponentHTML RAction Slots m
 channelMapPanel st =
-  -- The modal frame supplies the title + container; this is just the content.
-  HH.div_
-    [ HH.div [ style "display:flex;flex-wrap:wrap;gap:6px 22px" ]
-        (map fixedRow Routing.defaultRouting)
-    , if null st.vetulaNames then HH.text ""
-      else HH.div [ style "margin-top:12px;padding-top:10px;border-top:1px dashed #d8d0bd" ]
-        [ HH.div [ style "font-size:10px;letter-spacing:0.14em;text-transform:uppercase;color:#8a7a4a;margin-bottom:7px" ]
-            [ HH.text "named Vetula voices" ]
-        , HH.div [ style "display:flex;flex-wrap:wrap;gap:6px 22px" ] (map nameRow st.vetulaNames)
-        ]
-    , HH.div [ style "margin-top:11px;font-size:11px;color:#8a8576;font-style:italic" ]
-        [ HH.text "Selene → modular (FH-2 / ES-9) · Stellatus + Sufflamen → OSC. Name a Vetula → midi voice to route it off the ch5 default." ]
+  HH.div [ style "display:flex;gap:24px;align-items:flex-start" ]
+    [ machineCol "Odonus" odonusRows
+    , machineCol "Balistes" [ fixedEntry "kit" ("ch " <> show Routing.drumsChannel) ]
+    , machineCol "Selene" seleneRows
+    , machineCol "Vetula" vetulaRows
+    , machineCol "Sufflamen" [ tbd ]
+    , machineCol "Stellatus" [ tbd ]
     ]
   where
-  fixedRow r =
-    HH.div [ style "display:flex;align-items:baseline;gap:8px;min-width:190px;flex:0 0 auto" ]
-      [ HH.span [ style "font-size:12px;color:#2a271e" ] [ HH.text (Routing.sourceLabel r.source) ]
-      , HH.span [ style "flex:1 1 auto;border-bottom:1px dotted #cdbb96;height:9px;min-width:14px" ] []
-      , HH.span
-          [ style "font-size:11px;letter-spacing:0.05em;color:#7a6a3a;font-family:'SF Mono',Menlo,Consolas,monospace" ]
-          (map (\d -> HH.text (Routing.destLabel d)) r.dests)
+  romans = [ "I", "II", "III", "IV" ]
+  odonusRows =
+    mapWithIndex
+      (\h r -> fixedEntry r ("ch " <> show (Routing.odonusHeadChannel h)))
+      romans
+  vetulaRows =
+    [ fixedEntry "(default)" ("ch " <> show Routing.vetulaDefaultChannel) ]
+      <> map nameEntry st.vetulaNames
+  seleneRows =
+    [ HH.div [ style "font-size:11px;color:#7a6a3a;font-family:'SF Mono',Menlo,monospace" ] [ HH.text "ES-9 / FH-2" ]
+    , note "routes live in the Selene tab — two-way sync TBD" ]
+
+  machineCol name rows =
+    HH.div [ style "flex:1 1 0;min-width:0;display:flex;flex-direction:column;gap:5px" ]
+      ( [ HH.div [ style "font-size:11px;letter-spacing:0.14em;text-transform:uppercase;color:#5a564b;margin-bottom:4px" ] [ HH.text name ] ]
+          <> rows )
+
+  fixedEntry label val =
+    HH.div [ style "display:flex;align-items:baseline;justify-content:space-between;gap:8px;font-size:12px" ]
+      [ HH.span [ style "color:#2a271e" ] [ HH.text label ]
+      , HH.span [ style "color:#7a6a3a;font-family:'SF Mono',Menlo,monospace;font-size:11px" ] [ HH.text val ]
       ]
-  -- Editable: a named voice → its bound channel (blank input = the default).
-  nameRow nm =
-    let bound = Map.lookup nm st.routing
-    in HH.div [ style "display:flex;align-items:baseline;gap:8px;min-width:190px;flex:0 0 auto" ]
-        [ HH.span [ style "font-size:12px;color:#2a271e" ] [ HH.text ("Vetula · " <> nm) ]
-        , HH.span [ style "flex:1 1 auto;border-bottom:1px dotted #cdbb96;height:9px;min-width:14px" ] []
-        , HH.input
-            [ HP.value (maybe "" show bound)
-            , HE.onValueInput (SetBinding nm)
-            , HP.placeholder (show Routing.vetulaDefaultChannel)
-            , style "width:42px;font-family:'SF Mono',Menlo,Consolas,monospace;font-size:11px;padding:2px 5px;border-radius:4px;border:1px solid #cdbb96;background:#fffdf8;text-align:center"
-            ]
-        ]
+
+  -- Editable: a named Vetula voice → its bound channel (blank = the ch5 default).
+  nameEntry nm =
+    HH.div [ style "display:flex;align-items:baseline;justify-content:space-between;gap:8px;font-size:12px" ]
+      [ HH.span [ style "color:#2a271e" ] [ HH.text nm ]
+      , HH.input
+          [ HP.value (maybe "" show (Map.lookup nm st.routing))
+          , HE.onValueInput (SetBinding nm)
+          , HP.placeholder (show Routing.vetulaDefaultChannel)
+          , style "width:38px;font-family:'SF Mono',Menlo,monospace;font-size:11px;padding:2px 4px;border-radius:4px;border:1px solid #cdbb96;background:#fffdf8;text-align:center" ]
+      ]
+
+  note t = HH.div [ style "font-size:10px;color:#b0a690;font-style:italic;line-height:1.4" ] [ HH.text t ]
+  tbd = HH.div [ style "font-size:11px;color:#b8b0a0;font-style:italic" ] [ HH.text "— TBD —" ]
 
 -- macro-tidal — the Tidal-like sequencer: one mini-notation LANE per machine, over
 -- glyph ALIASES ("owl-bomb star-ambulance ~"). Space-separated tokens divide the
