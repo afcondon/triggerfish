@@ -77,11 +77,6 @@ import Vetula.App as Vetula
 import Vetula.Clipboard (copyText)
 import Triggerfish.Transport (Which(..), Mode(..), Sounding(..), soundingOf, anyArmed, allMachines)
 
--- One free-run tempo for the whole rack with no rig. (On the rig the forwarded
--- Link anchor overrides it.) A shell BPM control could drive this later.
-freeTempo :: Number
-freeTempo = 120.0
-
 main :: Effect Unit
 main = HA.runHalogenAff do
   liftEffect armAudioKeepAlive   -- keep the tab audible so background play survives
@@ -108,6 +103,7 @@ derive instance eqModalId :: Eq ModalId
 data RAction
   = Init | SyncTick | PollVetula | Pick Which | RefreshTidal | CopyTidal | ToggleMaster
   | OpenModal ModalId | CloseModal   -- the hotkey overlays (⌘1..⌘5; Esc closes)
+  | SetBpm String                    -- nav system-BPM field (free-run baseline)
   | SetMode Mode                -- flip the SOLO⟷ATLANTIS authority
   | ArmTab Which                -- toggle one instrument's ARM from the switcher dot
   | JumpVetula Int              -- nav strip: jump Vetula's progression to a chord (live)
@@ -167,6 +163,13 @@ type LibRow = { inst :: Which, idx :: Int, name :: String, text :: String }
 type RState =
   { which :: Which, tidalDoc :: String, freeT0 :: Number
   , modal :: Maybe ModalId          -- the open hotkey overlay (⌘1..⌘5), or Nothing
+  -- The SYSTEM tempo (docs/DESIGN-transport-misu.md). `bpm` is the shell-owned
+  -- free-run baseline, broadcast to every machine via SyncFree; `liveTempo` /
+  -- `linkLocked` are polled from a machine's clock for the nav readout — when
+  -- Link-locked the rig anchor overrides `bpm`, so the nav shows it read-only.
+  , bpm :: Int
+  , liveTempo :: Number
+  , linkLocked :: Boolean
   , library :: Array LibRow, importText :: String, importMsg :: String
   -- Workbench (TIDAL page): the shelf entry currently on the bench, whether the
   -- raw-source drawer is slid open, whether the archive ("dig") is expanded, and
@@ -288,6 +291,7 @@ root =
   H.mkComponent
     { initialState: \_ ->
         { which: Bal, tidalDoc: "", freeT0: 0.0
+        , bpm: 120, liveTempo: 120.0, linkLocked: false
         , library: [], importText: "", importMsg: ""
         , picked: Nothing, sourceOpen: false, digOpen: false, goTo: [], previewing: []
         , mode: Solo, harm: { durs: [], active: -1, chord: "" }
@@ -387,17 +391,19 @@ handleAction = case _ of
   -- seconds) can't stall the shell's action queue on the `H.query`. A blocked queue
   -- means keydowns/clicks don't register until every child is ready — the CAPTURE
   -- hotkey "dead for a minute" bug. The queries land whenever the children answer.
-  SyncTick -> void $ H.fork do
-    t0 <- H.gets _.freeT0
-    _ <- H.query _odo unit (SQ.SyncFree t0 freeTempo unit)
-    _ <- H.query _bal unit (SQ.SyncFree t0 freeTempo unit)
-    _ <- H.query _sel unit (SQ.SyncFree t0 freeTempo unit)
-    _ <- H.query _vet unit (Vetula.SyncFree t0 freeTempo unit)
-    -- No armed-reconcile poll here anymore: `armed` is written only by the user
-    -- (ArmTab / ToggleMaster) and by Vetula's self-disarm EVENT (VetulaArmed). Odo/
-    -- Bal/Sel never self-disarm, so nothing needs observing. Sounding is now purely
-    -- one-directional (shell state → instruments) — no two-way binding to fight.
-    pure unit
+  -- No armed-reconcile poll here anymore: `armed` is written only by the user
+  -- (ArmTab / ToggleMaster) and by Vetula's self-disarm EVENT (VetulaArmed). Odo/
+  -- Bal/Sel never self-disarm, so nothing needs observing. Sounding is now purely
+  -- one-directional (shell state → instruments) — no two-way binding to fight.
+  SyncTick -> void $ H.fork pushFree
+
+  -- The nav BPM field (free-run only; read-only while Link-locked). Set the
+  -- shell's baseline and re-broadcast it to every machine.
+  SetBpm v -> case Int.fromString v of
+    Just n -> do
+      H.modify_ _ { bpm = clamp 20 999 n }
+      pushFree
+    Nothing -> pure unit
   -- Opening TIDAL pulls a fresh aggregate + library; the modules keep playing.
   Pick Tid -> do
     H.modify_ _ { which = Tid }
@@ -548,7 +554,7 @@ handleAction = case _ of
     st <- H.get
     when (st.macroOn && st.macroBars > 0) do
       now <- liftEffect dateNow
-      let barMs = 4.0 * 60000.0 / freeTempo
+      let barMs = 4.0 * 60000.0 / Int.toNumber st.bpm
           epochMs = st.freeT0 / 1000.0
           barIdx = max 0 (Int.floor ((now - epochMs) / barMs))
           stepGlobal = barIdx `div` st.macroBars
@@ -599,7 +605,7 @@ handleAction = case _ of
     st <- H.get
     when (st.sceneRun && length st.scenes > 0) do
       now <- liftEffect dateNow
-      let barMs = 4.0 * 60000.0 / freeTempo
+      let barMs = 4.0 * 60000.0 / Int.toNumber st.bpm
           epochMs = st.freeT0 / 1000.0
           barIdx = max 0 (Int.floor ((now - epochMs) / barMs))
           stepGlobal = barIdx `div` max 1 st.sceneBars
@@ -651,6 +657,10 @@ handleAction = case _ of
           when (key /= prev) do
             H.modify_ _ { ctxScaleKey = key }
             void $ H.query _odo unit (SQ.SetContextPitchSet ctx.root ctx.offsets unit)
+        -- The system-tempo readout: pull one machine's live clock (Odonus, always
+        -- mounted) for the nav BPM display + the Link-locked read-only gate.
+        mclk <- H.query _odo unit (SQ.AskClock identity)
+        for_ mclk \c -> H.modify_ _ { liveTempo = c.tempo, linkLocked = c.locked }
         -- Vetula auto-resync (ATLANTIS only): Vetula has no incremental rig path, so the
         -- shell diffs its payload and re-pushes on a SETTLED change (payload stable for
         -- one poll AND different from what was last sent). A drag coalesces into one push
@@ -896,6 +906,20 @@ refreshTidal = do
 
 -- Push the shell's name → channel table to Vetula (it resolves each voice's channel
 -- from it). Called on every binding edit and on Tidal-page refresh.
+-- Broadcast the shell's free-run baseline (shared start + `bpm`) to every
+-- machine. A no-op on any module currently Link-locked (it honours the rig
+-- anchor instead), so this is safe to call whether free-running or on the rig.
+pushFree :: forall o m. MonadAff m => H.HalogenM RState RAction Slots o m Unit
+pushFree = do
+  st <- H.get
+  let t0 = st.freeT0
+      tempo = Int.toNumber st.bpm
+  _ <- H.query _odo unit (SQ.SyncFree t0 tempo unit)
+  _ <- H.query _bal unit (SQ.SyncFree t0 tempo unit)
+  _ <- H.query _sel unit (SQ.SyncFree t0 tempo unit)
+  _ <- H.query _vet unit (Vetula.SyncFree t0 tempo unit)
+  pure unit
+
 pushRouting :: forall o m. H.HalogenM RState RAction Slots o m Unit
 pushRouting = do
   routing <- H.gets _.routing
@@ -1503,7 +1527,9 @@ shellBar st =
         ( [ modeToggle st ]
             <> (if st.amphoraDown then [ amphoraOfflinePill ] else [])
             <> [ harmStrip st ] )
-    -- RIGHT: the master transport (arm-all / stop-all).
+    -- RIGHT: the system BPM (reclaimed space where TIDAL used to sit) + the
+    -- master transport (arm-all / stop-all).
+    , bpmControl st
     , HH.button
         [ HE.onClick \_ -> ToggleMaster
         , style $ "flex:0 0 auto;padding:6px 18px;border:1px solid #00000033;border-radius:6px;cursor:pointer;"
@@ -1511,6 +1537,26 @@ shellBar st =
             <> "color:" <> (if anyArmed st.armed then "#fbeae7" else "#1c1a12")
             <> ";background:" <> (if anyArmed st.armed then "linear-gradient(#b23b28,#9a3120)" else "linear-gradient(#c8a86a,#b8975a)") ]
         [ HH.text (if anyArmed st.armed then "■ STOP" else "▶ PLAY") ]
+    ]
+
+-- The system-tempo control in the nav. Link-locked: a read-only readout of the
+-- live rig tempo with a ⛓ badge (the rig anchor is boss). Free-run: an editable
+-- BPM that drives every machine's shared baseline (`SetBpm` → `pushFree`).
+bpmControl :: forall m. RState -> H.ComponentHTML RAction Slots m
+bpmControl st =
+  HH.div
+    [ style "display:flex;align-items:center;gap:6px;flex:0 0 auto" ]
+    [ HH.span [ style "font-size:9px;letter-spacing:0.14em;text-transform:uppercase;color:#6a655a" ] [ HH.text "bpm" ]
+    , if st.linkLocked
+        then HH.span
+               [ HP.title "Link-locked — tempo follows the rig clock"
+               , style "font-family:'SF Mono',Menlo,monospace;font-size:13px;color:#2d5670;display:flex;align-items:center;gap:4px" ]
+               [ HH.text (show (Int.round st.liveTempo)), HH.span [ style "font-size:10px" ] [ HH.text "⛓" ] ]
+        else HH.input
+               [ HP.value (show st.bpm)
+               , HE.onValueInput SetBpm
+               , style "width:50px;font-family:'SF Mono',Menlo,monospace;font-size:13px;padding:3px 6px;border-radius:5px;border:1px solid #00000030;background:#fffdf8;text-align:center;color:#2a271e"
+               , HP.title "free-run tempo — drives every machine" ]
     ]
 
 -- The recall menu: a floating panel (escapes the bar's overflow via position:fixed)

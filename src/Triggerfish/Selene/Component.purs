@@ -133,6 +133,9 @@ handleQuery = case _ of
   AskSource reply -> do
     s <- H.get
     pure (Just (reply (currentDoc s)))
+  -- Selene has no clock of its own (it ignores SyncFree); answer the default so
+  -- the shell's BPM poll stays total.
+  AskClock reply -> pure (Just (reply { tempo: 120.0, locked: false }))
   SyncFree startMicros tempo next -> do
     s <- H.get
     for_ s.binnacle \bin ->

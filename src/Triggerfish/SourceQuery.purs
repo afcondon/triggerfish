@@ -46,6 +46,11 @@ import Triggerfish.Transport (Sounding)
 data Query a
   = AskSource (String -> a)
   | SyncFree Number Number a
+  -- Report the machine's live clock for the shell's system-BPM readout: the
+  -- tempo it's currently running at and whether it's Link-LOCKED (rig anchor
+  -- present, so the shell's free-run baseline is overridden). Clock-less machines
+  -- answer their last-known / default.
+  | AskClock ({ tempo :: Number, locked :: Boolean } -> a)
   | FeedChords (Array (Array Int)) a
   | FeedVoiceChords (Array { id :: Int, pcs :: Array Int }) a
   -- The ONE transport query (control-surface MISU refactor — see

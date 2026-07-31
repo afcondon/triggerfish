@@ -103,6 +103,9 @@ handleQuery = case _ of
   AskSource reply -> do
     s <- H.get
     pure (Just (reply (patchText s)))
+  AskClock reply -> do
+    s <- H.get
+    pure (Just (reply { tempo: s.clockTempo, locked: s.clockLocked }))
   SyncFree startMicros tempo next -> do
     s <- H.get
     for_ s.binnacle \bin ->

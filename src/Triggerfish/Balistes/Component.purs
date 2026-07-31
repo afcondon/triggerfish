@@ -105,6 +105,9 @@ handleQuery = case _ of
   AskSource reply -> do
     s <- H.get
     pure (Just (reply (Source.headerText s.bal)))
+  AskClock reply -> do
+    s <- H.get
+    pure (Just (reply { tempo: s.clockTempo, locked: s.clockLocked }))
   SyncFree startMicros tempo next -> do
     s <- H.get
     for_ s.binnacle \bin ->
