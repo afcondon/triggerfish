@@ -536,14 +536,14 @@ nudgeSlot dir shift j = case _ of
   M.GLfo xs -> M.GLfo (overAt j (nudgeLfo dir shift) xs)
   M.GEuclid xs -> M.GEuclid (overAt j (nudgeEuclid dir shift) xs)
   M.GClock xs -> M.GClock (overAt j (nudgeClock dir shift) xs)
-  M.GNote xs -> M.GNote (overAt j (nudgeNote dir) xs)
+  M.GNote xs -> M.GNote (overAt j (nudgeNote dir shift) xs)
 
--- LFO: ←/→ wavelength (rate Hz, inverted so → = shorter wave = higher Hz),
+-- LFO: ←/→ wavelength (→ stretches the wave = lower Hz, matching the eye),
 -- ↑/↓ amplitude of the active shape. Shift = ×10 step.
 nudgeLfo :: NudgeDir -> Boolean -> M.ModSlot -> M.ModSlot
 nudgeLfo dir shift sl = case dir of
-  NRight -> sl { rate = clamp 0.01 50.0 (sl.rate + rStep) }
-  NLeft -> sl { rate = clamp 0.01 50.0 (sl.rate - rStep) }
+  NRight -> sl { rate = clamp 0.01 50.0 (sl.rate - rStep) }
+  NLeft -> sl { rate = clamp 0.01 50.0 (sl.rate + rStep) }
   NUp -> setActiveAmp (activeAmp sl + aStep) sl
   NDown -> setActiveAmp (activeAmp sl - aStep) sl
   where
@@ -561,23 +561,65 @@ nudgeEuclid dir shift sl = case dir of
   st = if shift then 4 else 1
   retab n = let ns = clamp 1 32 n in sl { steps = ns, beats = clamp 0 ns sl.beats }
 
--- Clock: ←/→ multiplier (typed ×2 //2 comes later), ↑/↓ pulse width %.
+-- Clock: ←/→ walk a slow→fast ladder that runs through DIVISION (below ×1, via
+-- a longer base) as well as multiplication; ↑/↓ pulse width %. Shift = coarse.
 nudgeClock :: NudgeDir -> Boolean -> M.ClockSlot -> M.ClockSlot
 nudgeClock dir shift sl = case dir of
-  NRight -> sl { multiplier = clamp 1 64 (sl.multiplier + m) }
-  NLeft -> sl { multiplier = clamp 1 64 (sl.multiplier - m) }
+  NRight -> setSpeed (speedIndex sl + step) sl   -- faster, into ×N
+  NLeft -> setSpeed (speedIndex sl - step) sl    -- slower, into ÷N
   NUp -> sl { pulseWidth = clamp 1 99 (sl.pulseWidth + 5) }
   NDown -> sl { pulseWidth = clamp 1 99 (sl.pulseWidth - 5) }
   where
-  m = if shift then 4 else 1
+  step = if shift then 2 else 1
 
--- Note: ↑/↓ semitone, ←/→ octave (typed C4 entry comes later).
-nudgeNote :: NudgeDir -> M.PresetNoteSlot -> M.PresetNoteSlot
-nudgeNote dir sl = case dir of
-  NUp -> sl { note = clamp 0 127 (sl.note + 1) }
-  NDown -> sl { note = clamp 0 127 (sl.note - 1) }
-  NRight -> sl { note = clamp 0 127 (sl.note + 12) }
-  NLeft -> sl { note = clamp 0 127 (sl.note - 12) }
+-- The ladder: division rungs (a longer base at ×1) below the multiplication
+-- rungs (the multiplier over a quarter). One monotonic slow→fast axis.
+clockSpeeds :: Array { base :: M.ClockBase, mult :: Int }
+clockSpeeds =
+  [ { base: M.ClockWhole, mult: 1 }     -- ÷4
+  , { base: M.ClockHalf, mult: 1 }      -- ÷2
+  , { base: M.ClockQuarter, mult: 1 }   -- ×1
+  , { base: M.ClockQuarter, mult: 2 }
+  , { base: M.ClockQuarter, mult: 3 }
+  , { base: M.ClockQuarter, mult: 4 }
+  , { base: M.ClockQuarter, mult: 6 }
+  , { base: M.ClockQuarter, mult: 8 }
+  , { base: M.ClockQuarter, mult: 16 }
+  ]
+
+-- Pulses per beat: 1.0 = ×1. Both base and multiplier feed it.
+clockRate :: M.ClockSlot -> Number
+clockRate sl = toNumber sl.multiplier / M.clockBaseBeats sl.base
+
+-- The nearest ladder rung to the slot's current rate — so an exotic source value
+-- (a triplet base, an odd multiplier) still steps to a defined neighbour.
+speedIndex :: M.ClockSlot -> Int
+speedIndex sl =
+  let target = clockRate sl
+      rateOf e = toNumber e.mult / M.clockBaseBeats e.base
+      paired = mapWithIndex (\i e -> Tuple i (abs (rateOf e - target))) clockSpeeds
+  in fst (foldl (\best (Tuple i dist) -> if dist < snd best then Tuple i dist else best) (Tuple 2 1.0e9) paired)
+
+setSpeed :: Int -> M.ClockSlot -> M.ClockSlot
+setSpeed i sl = case clockSpeeds !! clamp 0 (length clockSpeeds - 1) i of
+  Just e -> sl { base = e.base, multiplier = e.mult }
+  Nothing -> sl
+
+-- The effective ratio shown big in the cell: ×N over a beat, or ÷N below it.
+clockRatioLabel :: M.ClockSlot -> String
+clockRatioLabel sl =
+  let r = clockRate sl
+  in if r >= 1.0 then "×" <> show (round r) else "÷" <> show (round (1.0 / r))
+
+-- Note: arrows = ±semitone; SHIFT = ±octave (any direction; ↑/→ up, ↓/← down).
+nudgeNote :: NudgeDir -> Boolean -> M.PresetNoteSlot -> M.PresetNoteSlot
+nudgeNote dir shift sl =
+  let d = if shift then 12 else 1
+  in case dir of
+    NUp -> sl { note = clamp 0 127 (sl.note + d) }
+    NRight -> sl { note = clamp 0 127 (sl.note + d) }
+    NDown -> sl { note = clamp 0 127 (sl.note - d) }
+    NLeft -> sl { note = clamp 0 127 (sl.note - d) }
 
 -- The LFO reduced to its dominant shape: the utility view treats each slot as a
 -- single waveform (index into [sin sqr tri saw rnd nse]); the SOURCE pane keeps
@@ -921,7 +963,7 @@ ringFigure sz k n =
 clockInner :: forall m. M.ClockSlot -> Array (H.ComponentHTML Action Slots m)
 clockInner sl =
   [ HH.div [ style $ "font-family:'SF Mono',Menlo,monospace;font-size:18px;color:" <> ink <> ";text-align:center" ]
-      [ HH.text ("×" <> show sl.multiplier) ]
+      [ HH.text (clockRatioLabel sl) ]
   , cellCaption (M.clockBaseLabel sl.base <> " · " <> show sl.pulseWidth <> "%")
   ]
 
