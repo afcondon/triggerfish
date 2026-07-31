@@ -133,6 +133,13 @@ handleQuery = case _ of
   AskSource reply -> do
     s <- H.get
     pure (Just (reply (currentDoc s)))
+  PutSource doc next -> do
+    -- The write mirror of AskSource — same effect as the editor's SetDoc, so an
+    -- edit from the routing modal round-trips through the active rack exactly as
+    -- a keystroke in the Selene tab would.
+    H.modify_ \s -> s { library = setDocAt s.active doc s.library, sel = Source.parseRack doc }
+    persist
+    pure (Just next)
   -- Selene has no clock of its own (it ignores SyncFree); answer the default so
   -- the shell's BPM poll stays total.
   AskClock reply -> pure (Just (reply { tempo: 120.0, locked: false }))

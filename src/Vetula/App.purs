@@ -77,8 +77,8 @@ import Binnacle.Time (dateNow)
 import Vetula.Tidal (progressionSource, parseProgression)
 import Vetula.Clipboard (copyText)
 import Binnacle.Midi as Midi
-import Hylograph.Halogen.UI.Select as Select
-import Hylograph.Halogen.UI.Modal as Modal
+import Halogen.Widgets.Select as Select
+import Halogen.Widgets.Modal as Modal
 import Hylograph.ForceEngine.Halogen (toHalogenEmitter)
 import Hylograph.Simulation
   ( Engine(..), SimulationEvent(..), SimulationHandle, SimulationNode

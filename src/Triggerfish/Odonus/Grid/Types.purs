@@ -36,7 +36,7 @@ import Prelude
 import Data.Array (length)
 import Data.Maybe (Maybe)
 import Halogen as H
-import Hylograph.Halogen.UI.Select as Select
+import Halogen.Widgets.Select as Select
 import Reef.Input as RI
 import Triggerfish.Odonus.Model as M
 import Triggerfish.Odonus.Marbles as Marbles

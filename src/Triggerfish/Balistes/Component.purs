@@ -105,6 +105,7 @@ handleQuery = case _ of
   AskSource reply -> do
     s <- H.get
     pure (Just (reply (Source.headerText s.bal)))
+  PutSource _ next -> pure (Just next)   -- shell never rewrites Balistes's kit
   AskClock reply -> do
     s <- H.get
     pure (Just (reply { tempo: s.clockTempo, locked: s.clockLocked }))

@@ -45,6 +45,12 @@ import Triggerfish.Transport (Sounding)
 
 data Query a
   = AskSource (String -> a)
+  -- The write mirror of `AskSource`: "replace your active source with this
+  -- string, verbatim". Lets a second surface (the routing modal's Selene
+  -- column) edit the same document the machine's own tab shows — the doc is the
+  -- authority, so both surfaces stay in sync through it. Machines whose source
+  -- the shell never rewrites just no-op.
+  | PutSource String a
   | SyncFree Number Number a
   -- Report the machine's live clock for the shell's system-BPM readout: the
   -- tempo it's currently running at and whether it's Link-LOCKED (rig anchor

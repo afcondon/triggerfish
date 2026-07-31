@@ -61,6 +61,10 @@ import Binnacle.Time (dateNow)
 import Triggerfish.Odonus.Grid as Odonus
 import Triggerfish.Balistes.Component as Balistes
 import Triggerfish.Selene.Component as Selene
+import Triggerfish.Selene.Source as SelSrc
+import Triggerfish.Selene.Model as SelM
+import Triggerfish.Rig (defaultRig, targetGroups)
+import Halogen.Widgets.Select as Select
 import Triggerfish.Sufflamen.Component as Sufflamen
 import Triggerfish.Stellatus.Component as Stellatus
 import Triggerfish.SourceQuery as SQ
@@ -113,6 +117,7 @@ data RAction
   | SetImportText String
   | ImportInto Which            -- route the paste box to one instrument's library
   | SetBinding String String    -- Tidal-page channel map: bind a Vetula voice name → channel
+  | SetSeleneTarget Int String  -- routing modal: re-target Selene destination i to a wire (nested menu)
   | PickEntry LibRow            -- workbench: put a shelf entry on the bench
   | ToggleSource               -- workbench: slide the raw-source drawer open/shut
   | ToggleDig                  -- workbench: expand/collapse the full archive
@@ -205,6 +210,11 @@ type RState =
   -- set of → midi voice names in use, polled from Vetula so the page can list them.
   , routing :: Map String Int
   , vetulaNames :: Array String
+  -- Selene's live source, stashed on every routing-modal refresh. The doc IS
+  -- the routing authority (destination header tokens carry the Target), so the
+  -- modal's cascade menus parse it, edit it, and push it back via PutSource —
+  -- keeping the modal and the Selene tab in sync through the one document.
+  , seleneDoc :: String
   -- macro-tidal — the Tidal-like sequencer (docs/DESIGN-scene-modal.md): one
   -- mini-notation LANE per machine, over glyph ALIASES (`"owl-bomb star-ambulance
   -- ~"`). Each lane resolves against its machine's preset bank (recall by alias),
@@ -268,6 +278,9 @@ type Slots =
   , vet :: H.Slot Vetula.SourceQuery Vetula.Output Unit
   , suf :: H.Slot (Const Void) Void Unit
   , ste :: H.Slot (Const Void) Void Unit
+  -- One cascade-menu per Selene destination in the routing modal, keyed by
+  -- destination index — the nested ES-9/FH-2/MIDI target picker.
+  , selTarget :: Select.Slot Int
   )
 
 _odo :: Proxy "odo"
@@ -288,6 +301,9 @@ _suf = Proxy
 _ste :: Proxy "ste"
 _ste = Proxy
 
+_selTarget :: Proxy "selTarget"
+_selTarget = Proxy
+
 root :: forall q i o m. MonadAff m => H.Component q i o m
 root =
   H.mkComponent
@@ -300,7 +316,7 @@ root =
         , brushSent: "", brushPrev: ""
         , armed: Set.empty
         , routing: Map.empty
-        , vetulaNames: []
+        , vetulaNames: [], seleneDoc: ""
         , modal: Nothing
         , macroLanes: Map.empty, macroReadout: Map.empty, macroBars: 4, macroOn: false, macroStep: -1, laneComplete: Nothing
         , ctxScaleKey: "", balChip: Nothing, selChip: Nothing, odoChip: Nothing, vetChip: Nothing, captureFlash: false
@@ -449,6 +465,21 @@ handleAction = case _ of
       Just ch | ch >= 1 && ch <= 16 -> H.modify_ \st -> st { routing = Map.insert name ch st.routing }
       _ -> H.modify_ \st -> st { routing = Map.delete name st.routing }
     pushRouting
+  -- Re-target one Selene destination from its cascade menu. Round-trips through
+  -- Selene's own source: pull the live doc, retarget destination i, reprint,
+  -- push back via PutSource (the write mirror of AskSource). The Selene tab and
+  -- this modal both read that same doc, so they stay in lockstep.
+  SetSeleneTarget i wire -> do
+    ms <- H.query _sel unit (SQ.AskSource identity)
+    for_ ms \doc -> do
+      let rack = SelSrc.parseRack doc
+          rack' = rack
+            { destinations = mapWithIndex
+                (\j d -> if j == i then d { target = SelSrc.parseTarget wire } else d)
+                rack.destinations }
+          doc' = SelSrc.printRack rack'
+      void $ H.query _sel unit (SQ.PutSource doc' unit)
+      H.modify_ _ { seleneDoc = doc' }
   -- Workbench: put a shelf entry on the bench (or clear it if re-clicked).
   PickEntry r -> H.modify_ \st ->
     st { picked = if isPicked st.picked r then Nothing else Just r }
@@ -910,7 +941,8 @@ refreshTidal = do
   v <- H.query _vet unit (Vetula.AskSource identity)
   H.modify_ _
     { tidalDoc = assemble
-        [ Tuple "ODONUS" o, Tuple "BALISTES" b, Tuple "SELENE" s, Tuple "VETULA" v ] }
+        [ Tuple "ODONUS" o, Tuple "BALISTES" b, Tuple "SELENE" s, Tuple "VETULA" v ]
+    , seleneDoc = fromMaybe "" s }
   -- Refresh the channel-map: which → midi voice names are in use, and re-push the
   -- current bindings so Vetula stays in sync when the page reopens.
   mnames <- H.query _vet unit (Vetula.AskVoiceNames identity)
@@ -1037,10 +1069,19 @@ render st =
 -- now each a modal reachable from any machine. The backdrop is a sibling BEHIND
 -- the panel (higher z), so a click outside closes while a click inside doesn't —
 -- no stopPropagation needed. Esc also closes (keyToAction).
-modalOverlay :: forall m. RState -> H.ComponentHTML RAction Slots m
+modalOverlay :: forall m. MonadAff m => RState -> H.ComponentHTML RAction Slots m
 modalOverlay st = case st.modal of
   Nothing -> HH.text ""
   Just m ->
+    -- The routing modal hosts nested cascade menus that must pop OUT of the panel
+    -- (a clipped scroll box would swallow the fly-out). Its content is short, so
+    -- it renders un-clipped; the taller modals keep their scroll cap.
+    let clips = case m of
+          MRouting -> false
+          _ -> true
+        panelOverflow = if clips then "overflow:hidden;" else "overflow:visible;"
+        bodyOverflow = if clips then "overflow:auto;" else "overflow:visible;"
+    in
     HH.div
       [ style "position:fixed;inset:0;z-index:100;display:flex;align-items:center;justify-content:center;font-family:Georgia,serif" ]
       [ HH.div   -- the click-catching, blurred backdrop, behind the panel
@@ -1051,7 +1092,7 @@ modalOverlay st = case st.modal of
       , HH.div   -- the panel: sized to its content, capped so tall surfaces scroll
           [ style $ "position:relative;z-index:1;width:min(66vw,1180px);max-height:min(84vh,900px);"
               <> "display:flex;flex-direction:column;background:linear-gradient(#f6f2e8,#efe9db);"
-              <> "border:1px solid #cdc4ad;border-radius:10px;box-shadow:0 24px 70px #00000055;overflow:hidden" ]
+              <> "border:1px solid #cdc4ad;border-radius:10px;box-shadow:0 24px 70px #00000055;" <> panelOverflow ]
           [ HH.div
               [ style $ "display:flex;align-items:center;justify-content:space-between;gap:12px;flex:0 0 auto;"
                   <> "padding:13px 22px;border-bottom:1px solid #ddd5c0;background:linear-gradient(#efe8d8,#e6dec9)" ]
@@ -1065,12 +1106,12 @@ modalOverlay st = case st.modal of
                   , HE.onClick \_ -> CloseModal ]
                   [ HH.text "✕" ]
               ]
-          , HH.div [ style "flex:1 1 auto;min-height:0;overflow:auto;padding:18px 22px" ] [ modalBody st m ]
+          , HH.div [ style $ "flex:1 1 auto;min-height:0;padding:18px 22px;" <> bodyOverflow ] [ modalBody st m ]
           ]
       ]
 
 -- Each overlay's body reuses the panel that used to live on the TIDAL tab.
-modalBody :: forall m. RState -> ModalId -> H.ComponentHTML RAction Slots m
+modalBody :: forall m. MonadAff m => RState -> ModalId -> H.ComponentHTML RAction Slots m
 modalBody st = case _ of
   MRouting -> channelMapPanel st
   MSceneSeq -> sceneGridPanel st
@@ -1140,7 +1181,7 @@ workbenchHeader st =
 -- Vetula carry real routing (Vetula's named voices are editable); Selene needs a
 -- multi-type control (ES-9 / FH-2 / MIDI) that two-way-syncs with its Tidal
 -- source — a placeholder for now; Sufflamen/Stellatus are placeholders too.
-channelMapPanel :: forall m. RState -> H.ComponentHTML RAction Slots m
+channelMapPanel :: forall m. MonadAff m => RState -> H.ComponentHTML RAction Slots m
 channelMapPanel st =
   HH.div_
     [ HH.div [ style "display:flex;gap:24px;align-items:flex-start" ]
@@ -1171,12 +1212,28 @@ channelMapPanel st =
   vetulaRows =
     [ fixedEntry "(default)" ("ch " <> show Routing.vetulaDefaultChannel) ]
       <> map nameEntry st.vetulaNames
+  -- One row per declared Selene destination (polysignal group): its kind on the
+  -- left, a nested ES-9/FH-2/MIDI cascade menu on the right, bounded to the
+  -- known-good targets of the current rig. Editing pushes back to the Selene tab.
   seleneRows =
-    [ HH.div [ style "font-size:11px;color:#7a6a3a;font-family:'SF Mono',Menlo,monospace" ] [ HH.text "ES-9 / FH-2" ]
-    , note "routes live in the Selene tab — two-way sync TBD" ]
+    let dests = (SelSrc.parseRack st.seleneDoc).destinations
+    in if null dests
+         then [ note "declare a polysignal in the Selene tab" ]
+         else mapWithIndex seleneEntry dests
+
+  seleneEntry i d =
+    HH.div [ style "display:flex;align-items:center;justify-content:space-between;gap:8px;font-size:12px" ]
+      [ HH.span [ style "color:#2a271e" ] [ HH.text (SelSrc.kindKeyword d.bank) ]
+      , HH.slot _selTarget i Select.component
+          ((Select.cascadingInput (targetGroups defaultRig))
+             { selected = Just (SelM.targetWire d.target), placeholder = "route" })
+          (\(Select.Selected wire) -> SetSeleneTarget i wire) ]
 
   machineCol name rows =
-    HH.div [ style "flex:1 1 0;min-width:0;display:flex;flex-direction:column;gap:5px" ]
+    -- Content-sized, not equal-flex: Selene's cascade selects have a 180px floor,
+    -- so equal columns would let them spill into their neighbour. Each column
+    -- takes exactly the width it needs; the row left-aligns them with a gap.
+    HH.div [ style "flex:0 0 auto;display:flex;flex-direction:column;gap:5px" ]
       ( [ HH.div [ style "font-size:11px;letter-spacing:0.14em;text-transform:uppercase;color:#5a564b;margin-bottom:4px" ] [ HH.text name ] ]
           <> rows )
 

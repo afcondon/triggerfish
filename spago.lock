@@ -19,9 +19,9 @@
             "halogen",
             "halogen-subscriptions",
             "halogen-svg-elems",
+            "halogen-widgets",
             "harmonia",
             "hylograph-d3-kernel",
-            "hylograph-halogen-ui",
             "hylograph-selection",
             "hylograph-simulation",
             "hylograph-simulation-halogen",
@@ -706,10 +706,8 @@
       "binnacle": {
         "path": "../binnacle"
       },
+      "halogen-widgets": "0.2.0",
       "harmonia": "0.2.0",
-      "hylograph-halogen-ui": {
-        "path": "../../../purescript-hylograph-halogen-ui-v0.1"
-      },
       "reef": {
         "path": "../../reef"
       }
@@ -1229,6 +1227,30 @@
         "web-events"
       ]
     },
+    "halogen-widgets": {
+      "type": "registry",
+      "version": "0.2.0",
+      "integrity": "sha256-GAipE7ui4nVR1GbmWv8/Yuk8OvE0S54FWTHTMI2zdPU=",
+      "dependencies": [
+        "aff",
+        "arrays",
+        "datetime",
+        "dom-indexed",
+        "effect",
+        "halogen",
+        "halogen-subscriptions",
+        "integers",
+        "maybe",
+        "numbers",
+        "prelude",
+        "strings",
+        "unsafe-coerce",
+        "web-dom",
+        "web-events",
+        "web-html",
+        "web-uievents"
+      ]
+    },
     "harmonia": {
       "type": "registry",
       "version": "0.2.0",
@@ -1279,27 +1301,6 @@
         "prelude",
         "tree-rose",
         "tuples"
-      ]
-    },
-    "hylograph-halogen-ui": {
-      "type": "local",
-      "path": "../../../purescript-hylograph-halogen-ui-v0.1",
-      "dependencies": [
-        "aff",
-        "arrays",
-        "datetime",
-        "effect",
-        "halogen",
-        "halogen-subscriptions",
-        "integers",
-        "maybe",
-        "numbers",
-        "prelude",
-        "unsafe-coerce",
-        "web-dom",
-        "web-events",
-        "web-html",
-        "web-uievents"
       ]
     },
     "hylograph-selection": {
