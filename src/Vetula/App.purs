@@ -3437,41 +3437,69 @@ circleFifthsSurface st =
         ] <> geoPanAttrs st )
       ( cofBackdrop st.key tonic scl rootsPresent
           <> map (nodeView scl pathOrder Set.empty posMap) shown
-          <> cofCorona st tonic
+          <> cofCorona st tonic scl
       )
 
--- | The color-overlay corona on the circle of fifths (2026-07-31 redesign): each
--- | active layer paints its chords as a ring of colored tokens beyond the pool,
--- | one ring per layer, each token at its root's wheel angle (same-root chords
--- | fanned by a small angular nudge). The token wears the layer's hue; its label
--- | is the chord's short name. The CONTEXT card's PALETTE swatches are the legend.
--- | Non-interactive for now — the unified catch gesture lands in Step 4.
-cofCorona :: forall m. State -> Int -> Array (H.ComponentHTML Action Slots m)
-cofCorona st tonic =
-  concat (mapWithIndex ring (filter (\l -> Set.member l st.colorLayers) allColorLayers))
-  where
-  ring i layer =
-    let hue = layerHue layer
-        rad = 244.0 + toNumber i * 15.0
-        chords = layerChords st layer
-        token j c =
-          let pc = mod c.root 12
-              dupIx = length (filter (\d -> mod d.root 12 == pc) (take j chords))
-              ang = cofAngle tonic pc + toNumber dupIx * 0.11
-              x = rad * Number.cos ang
-              y = rad * Number.sin ang
-          in [ SE.circle
-                 [ SA.cx x, SA.cy y, SA.r 5.0
-                 , HP.style ("fill: " <> hue <> "; stroke: #ffffff; stroke-width: 1; pointer-events: none;")
-                 ]
-             , SE.text
-                 [ SA.x x, SA.y (y - 8.0)
-                 , HP.attr (AttrName "text-anchor") "middle"
-                 , HP.style ("font-size: 9px; fill: " <> hue <> "; pointer-events: none; -webkit-user-select: none; user-select: none;")
-                 ]
-                 [ HH.text (chordTag c) ]
-             ]
-    in concat (mapWithIndex token chords)
+-- | The active color layers' chords, DE-DUPLICATED by content: each unique chord
+-- | appears once, carrying the list of layers that contain it (so a chord that is
+-- | both McMullen and borrowed is one glyph with two source badges, not two
+-- | overlapping tokens). Layer order follows `allColorLayers` (diatonic first).
+mergedLayerChords :: State -> Array { chord :: ChordNode, layers :: Array ColorLayer }
+mergedLayerChords st =
+  let active = filter (\l -> Set.member l st.colorLayers) allColorLayers
+      tagged = concatMap (\l -> map (\c -> { layer: l, chord: c }) (layerChords st l)) active
+      keys = nub (map (\e -> contentKey e.chord) tagged)
+      forKey k =
+        let ms = filter (\e -> contentKey e.chord == k) tagged
+        in map (\e -> { chord: e.chord, layers: nub (map _.layer ms) }) (head ms)
+  in mapMaybe forKey keys
+
+-- | A row of small badge pips, centred at (cx,cy), one per source layer in that
+-- | layer's hue. This is the "why is this here" key — a chord that is both
+-- | McMullen and borrowed wears two pips. The CONTEXT PALETTE swatches name each hue.
+layerBadges :: forall m. Number -> Number -> Array ColorLayer -> Array (H.ComponentHTML Action Slots m)
+layerBadges cx cy layers =
+  let k = length layers
+  in mapWithIndex
+       (\j l ->
+          SE.circle
+            [ SA.cx (cx - toNumber (k - 1) * 3.5 + toNumber j * 7.0), SA.cy cy, SA.r 2.8
+            , HP.style ("fill: " <> layerHue l <> "; stroke: #ffffff; stroke-width: 0.8; pointer-events: none;") ])
+       layers
+
+-- | One color-overlay chord drawn as notes-on-stave (the same `chordGlyph` the
+-- | pool uses — the notation IS the chord's identity) on a soft backing disc,
+-- | with a row of source badges above it. Used on the circle of fifths, whose
+-- | native chord glyph is the stave.
+colorGlyphAt
+  :: forall m
+   . Array Int -> Number -> Number -> ChordNode -> Array ColorLayer
+  -> Array (H.ComponentHTML Action Slots m)
+colorGlyphAt scl cx cy chord layers =
+  [ SE.circle
+      [ SA.cx cx, SA.cy cy, SA.r 15.0
+      , HP.style "fill: #fcfbf8; stroke: #e4e0d4; stroke-width: 1; pointer-events: none;" ]
+  ]
+    <> chordGlyph scl cx cy chord.voicing
+    <> layerBadges cx (cy - 19.0) layers
+
+-- | The color-overlay corona on the circle of fifths (2026-07-31 redesign): the
+-- | active layers' chords (de-duplicated, badged by source) painted as staff
+-- | glyphs beyond the pool, each at its root's wheel angle. Same-root chords stack
+-- | radially outward along the spoke. The CONTEXT card's PALETTE swatches map hue
+-- | → set. Non-interactive for now — the unified catch gesture lands in Step 4.
+cofCorona :: forall m. State -> Int -> Array Int -> Array (H.ComponentHTML Action Slots m)
+cofCorona st tonic scl =
+  let entries = mergedLayerChords st
+      place j e =
+        let pc = mod e.chord.root 12
+            dupIx = length (filter (\d -> mod d.chord.root 12 == pc) (take j entries))
+            ang = cofAngle tonic pc
+            rad = 246.0 + toNumber dupIx * 34.0
+            x = rad * Number.cos ang
+            y = rad * Number.sin ang
+        in colorGlyphAt scl x y e.chord e.layers
+  in concat (mapWithIndex place entries)
 
 -- | The wheel behind the chords: twelve spokes radiating OUT from the hub, and the
 -- | twelve root names ringed tightly around the centre. Diatonic roots (in the
@@ -3890,7 +3918,29 @@ latticesSurface st =
       ( edges
           <> concatMap (latMemberView mh) members
           <> mapWithIndex latDegreeLabel seeds
+          <> latColorRibbon st
       )
+
+-- | The color-overlay layers on the voice-leading lattice (2026-07-31 redesign).
+-- | The lattice's own glyphs are chromatic-circle POLYGONS (stave-less), and its
+-- | tertian webs climb UPWARD from baseY — so the empty top of the surface carries
+-- | the color chords as a wrapping ribbon of polygon glyphs (matching this
+-- | surface's vocabulary, the way the fifths corona matches the stave), each
+-- | de-duplicated and badged by source. The CONTEXT PALETTE swatches name the hues.
+-- | Non-interactive for now (catch = Step 4). A deeper pass would place each color
+-- | chord by voice-leading distance into the web itself — logged as a follow-up.
+latColorRibbon :: forall m. State -> Array (H.ComponentHTML Action Slots m)
+latColorRibbon st =
+  let entries = mergedLayerChords st
+      perRow = 22
+      place j e =
+        let col = mod j perRow
+            row = j / perRow
+            x = latticeLeft + 24.0 + toNumber col * 34.0
+            y = -280.0 + toNumber row * 42.0
+        in pcPolygon HiNone e.chord.root e.chord.pcs x y 9.0
+             <> layerBadges x (y - 16.0) e.layers
+  in concat (mapWithIndex place entries)
 
 -- | One lattice glyph plus its transparent click target (the polygon itself is
 -- | click-through so the disc-shaped hit region stays uniform). `mh` is the hovered
