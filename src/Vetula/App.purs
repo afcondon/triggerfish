@@ -613,12 +613,9 @@ component = H.mkComponent
       , saveName: ""
       , publishMsg: Nothing
       , perfName: Nothing
-      -- one MIDI + one Odonus voice present from the start but MUTED, so both
-      -- destinations are one un-mute away — no Add-voice hunt to hear either.
-      , voices:
-          [ (defaultVoice 0 4 Block 0) { muted = true }
-          , (defaultVoice 1 0 Block 0) { dest = ToOdonus, muted = true }
-          ]
+      -- the four fixed lanes of the bottom voice bar, all MUTED (one toggle from
+      -- sounding). See `canonicalVoices`.
+      , voices: canonicalVoices 0
       , armed: false
       -- standalone Vetula has no shell, so authority defaults Local (the play button
       -- works as a direct local transport). Inside Triggerfish the shell drives it via
@@ -629,7 +626,7 @@ component = H.mkComponent
       , tempo: 120
       , binnacle: Nothing
       , clockTempo: 120.0
-      , nextVoiceId: 2
+      , nextVoiceId: 4
       -- name → canonical MIDI channel, pushed from the shell's Tidal-page routing
       -- table (SetRouting). Unnamed / unbound voices fall back to the default channel.
       , routing: Map.empty :: Map String Int
@@ -1398,8 +1395,8 @@ handleAction = case _ of
         -- not a parallel working copy.
         , path = ids
         , perfName = Just entry.name
-        , voices = [ defaultVoice 0 0 Block (length fresh) ]
-        , nextVoiceId = 1
+        , voices = canonicalVoices (length fresh)
+        , nextVoiceId = 4
         , sounding = head ids
         -- The loaded progression's key becomes the live harmonic context: clear any
         -- `# scale` override, then adopt the entry's saved key so the resting scale
@@ -1848,6 +1845,19 @@ defaultVoice vid channel renderer n =
   -- placeholder. `durs` stays as the equivalent legacy fallback / rig-push shape.
   { id: vid, channel, name: "", dest: ToMidi, renderer, pattern: defaultPattern n, patternDraft: defaultPattern n
   , notePattern: "", notePatternDraft: "", articulator: RA.ABlock, durs: replicate n 1, phase: 0, cursor: 0, held: [], muted: false }
+
+-- | The FOUR fixed lanes of the bottom voice bar: three MIDI voices (one per
+-- | renderer) + one Odonus conductor, ids 0..3, all muted so each is one toggle
+-- | from sounding. `n` = progression length (for the legacy `durs` fallback).
+-- | Seeded at init AND wherever the voice set is reset, so the bar always finds
+-- | its four lanes. Routing (channel/name/odo id) lives in the routing modal.
+canonicalVoices :: Int -> Array Voice
+canonicalVoices n =
+  [ (defaultVoice 0 5 Block n)    { name = "block", muted = true }
+  , (defaultVoice 1 5 Strummed n) { name = "strum", muted = true }
+  , (defaultVoice 2 5 Arp n)      { name = "arp",   muted = true }
+  , (defaultVoice 3 0 Block n)    { dest = ToOdonus, muted = true }
+  ]
 
 -- | The clock a voice plays: its committed pattern if non-empty & parseable, else its
 -- | legacy `durs`. The single frontend seam onto `Vetula.Playhead` / the reef realiser.
@@ -2785,11 +2795,12 @@ render st =
         , growBar st
         , subGroup ("Progression · " <> countLabel (length (pathSteps st)) "step") (progressionPanel st)
         ]
-    , floatCard "C" "voices"
-        "position: absolute; bottom: 12px; left: 12px; right: 12px; max-height: 232px; overflow-y: auto; overflow-x: hidden; z-index: 4;"
-        [ playheadsRack st ]
+    -- the one-line bottom voice bar (four fixed lanes), fixed to the window edge.
+    -- (Old control C — the tall voices card — was deleted once the bar reached
+    -- parity; its routing controls move to the routing modal.)
+    , voiceBar st
     , HH.div
-        [ HP.style "position: absolute; bottom: 12px; left: 50%; transform: translateX(-50%); z-index: 5;" ]
+        [ HP.style "position: absolute; bottom: 44px; left: 50%; transform: translateX(-50%); z-index: 5;" ]
         [ pickBar st ]
     , helpOverlay st
     , revoiceModal st
@@ -4051,6 +4062,59 @@ progressionPanel st =
 -- | The performance rack: transport (bpm / preview channel) + one live-coded Tidal
 -- | read-head per voice. Extracted from the old Performance `loadedView`; the rail shows
 -- | it only in Perform focus, where it has the width for the (wide) voice rows.
+-- | The new bottom VOICE BAR (docs/DESIGN-scene-modal.md) — a one-line strip of
+-- | FOUR FIXED lanes (block · strum · arp · odo). Each lane is just its live
+-- | surface: an enable light (green on / red off), its two mini-notation fields
+-- | (read-head + notes), and a commit arrow (red when there are uncommitted edits).
+-- | Deliberately NO routing / bpm / channel here — those move to the routing modal.
+-- | Built alongside the old Voices card (control C); C is deleted once this is at
+-- | parity (`canonicalVoices` guarantees the four lanes always exist).
+voiceBar :: forall m. State -> H.ComponentHTML Action Slots m
+voiceBar st =
+  HH.div
+    -- Tied to the WINDOW bottom edge like the shell's top nav — `fixed`, not
+    -- `absolute`, because the Vetula container's `calc(100vh - 118px)` height
+    -- stops short of the true bottom. Same gradient/bevel treatment as the nav,
+    -- but COLOURED and thin — minimal padding, ceding vertical space to the
+    -- lattice above.
+    [ HP.style ( "position: fixed; bottom: 0; left: 0; right: 0; z-index: 40; box-sizing: border-box; "
+        <> "display: flex; gap: 10px; align-items: center; padding: 3px 12px; overflow: hidden; "
+        <> "font-family: Georgia, serif; background: linear-gradient(#b6c3cc,#a4b4be); "
+        <> "border-top: 1px solid #00000026; box-shadow: 0 -1px 4px #00000018;" ) ]
+    ( [ HH.span [ HP.style "font-size: 11px; letter-spacing: 0.16em; text-transform: uppercase; color: #33424d; flex: 0 0 auto;" ] [ HH.text "voices" ] ]
+        <> map (voiceLane st) [ Tuple 0 "block", Tuple 1 "strum", Tuple 2 "arp", Tuple 3 "odo" ] )
+
+-- | One fixed lane of the voice bar, found by its canonical id.
+voiceLane :: forall m. State -> Tuple Int String -> H.ComponentHTML Action Slots m
+voiceLane st (Tuple vid label) = case find (\v -> v.id == vid) st.voices of
+  Nothing -> HH.text ""
+  Just v ->
+    let dirty = v.patternDraft /= v.pattern || v.notePatternDraft /= v.notePattern
+        on = not v.muted
+    in HH.div
+        [ HP.style "flex: 1 1 0; min-width: 0; display: flex; align-items: center; gap: 6px; border-left: 1px solid #00000022; padding-left: 8px;" ]
+        [ HH.button
+            [ HP.style ("border: none; background: none; cursor: pointer; font-size: 12px; line-height: 1; padding: 0; " <> if on then "color: #2f8f3f;" else "color: #c14a4a;")
+            , HP.title (if on then label <> " on — click to mute" else label <> " off — click to enable")
+            , HE.onClick \_ -> ToggleVoiceMute vid ]
+            [ HH.text "●" ]
+        , HH.span [ HP.style "font-size: 11px; color: #2c3944; width: 32px; letter-spacing: 0.03em;" ] [ HH.text label ]
+        , laneInput v.patternDraft "chord" (SetVoicePattern vid)
+        , laneInput v.notePatternDraft "notes" (SetVoiceNotePattern vid)
+        , HH.button
+            [ HP.style ("border: none; background: none; cursor: pointer; font-size: 13px; line-height: 1; padding: 0; " <> if dirty then "color: #c0392b;" else "color: #7d8d97;")
+            , HP.title "commit both patterns"
+            , HE.onClick \_ -> CommitVoicePattern vid ]
+            [ HH.text "▶" ]
+        ]
+
+-- | A compact monospace mini-notation field for one lane of the voice bar.
+laneInput :: forall m. String -> String -> (String -> Action) -> H.ComponentHTML Action Slots m
+laneInput val ph onInput =
+  HH.input
+    [ HP.value val, HE.onValueInput onInput, HP.placeholder ph
+    , HP.style "flex: 1 1 0; min-width: 36px; font-family: ui-monospace, monospace; font-size: 11px; padding: 3px 6px; border-radius: 4px; border: 1px solid #ddd6c6; background: #fff;" ]
+
 playheadsRack :: forall m. State -> H.ComponentHTML Action Slots m
 playheadsRack st =
   let chords = perfChords st
