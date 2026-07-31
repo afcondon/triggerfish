@@ -3072,16 +3072,23 @@ setupPane st =
               \(Select.Selected v) -> SelectScale v ]
       ]
         <> familyField
-        <> [ field "BORROW"
-               [ HH.slot (Proxy :: _ "borrowSelect") unit Select.component
-                   ((Select.cascadingInput borrowGroups) { selected = Just (fromMaybe "off" st.borrowMode), searchable = true })
-                   \(Select.Selected v) -> BorrowFrom v ]
-           , field "PALETTES"
+        <> [ field "PALETTES"
                [ HH.div [ HP.style "display: flex; flex-wrap: wrap; gap: 4px;" ] (map layerChip allColorLayers) ]
-           , connectionRow
            ]
+        <> borrowField
+        <> [ connectionRow ]
     )
   where
+  -- the borrow-scale picker only appears when the BORROWED color layer is
+  -- engaged — it is that layer's source, meaningless otherwise (AC, 2026-07-31).
+  borrowField =
+    if Set.member LayerBorrowed st.colorLayers then
+      [ field "BORROW"
+          [ HH.slot (Proxy :: _ "borrowSelect") unit Select.component
+              ((Select.cascadingInput borrowGroups) { selected = Just (fromMaybe "off" st.borrowMode), searchable = true })
+              \(Select.Selected v) -> BorrowFrom v ]
+      ]
+    else []
   labelStyle = "font-size: 10px; color: #9a9a9a; letter-spacing: 0.1em; text-transform: uppercase;"
   field lbl controls =
     HH.div [ HP.style "display: flex; flex-direction: column; gap: 4px;" ]
@@ -3467,10 +3474,23 @@ layerBadges cx cy layers =
             , HP.style ("fill: " <> layerHue l <> "; stroke: #ffffff; stroke-width: 0.8; pointer-events: none;") ])
        layers
 
+-- | The transparent click target over a color-overlay chord: the unified gesture
+-- | (matching every other Vetula surface) — plain click auditions the chord,
+-- | shift-click catches it into the tank. Hover space-previews it.
+colorHit :: forall m. ChordNode -> Number -> Number -> Number -> H.ComponentHTML Action Slots m
+colorHit chord cx cy r =
+  SE.circle
+    [ SA.cx cx, SA.cy cy, SA.r r
+    , HP.style "fill: transparent; cursor: pointer;"
+    , HE.onMouseEnter \_ -> HoverTriad (Just { root: chord.root, pcs: chord.pcs })
+    , HE.onMouseLeave \_ -> HoverTriad Nothing
+    , HE.onClick \e -> if ME.shiftKey e then CatchNode chord else AuditionNode chord
+    ]
+
 -- | One color-overlay chord drawn as notes-on-stave (the same `chordGlyph` the
 -- | pool uses — the notation IS the chord's identity) on a soft backing disc,
--- | with a row of source badges above it. Used on the circle of fifths, whose
--- | native chord glyph is the stave.
+-- | with a row of source badges above it, over a catch/audition hit target. Used
+-- | on the circle of fifths, whose native chord glyph is the stave.
 colorGlyphAt
   :: forall m
    . Array Int -> Number -> Number -> ChordNode -> Array ColorLayer
@@ -3482,6 +3502,7 @@ colorGlyphAt scl cx cy chord layers =
   ]
     <> chordGlyph scl cx cy chord.voicing
     <> layerBadges cx (cy - 19.0) layers
+    <> [ colorHit chord cx cy 15.0 ]
 
 -- | The color-overlay corona on the circle of fifths (2026-07-31 redesign): the
 -- | active layers' chords (de-duplicated, badged by source) painted as staff
@@ -3940,6 +3961,7 @@ latColorRibbon st =
             y = -280.0 + toNumber row * 42.0
         in pcPolygon HiNone e.chord.root e.chord.pcs x y 9.0
              <> layerBadges x (y - 16.0) e.layers
+             <> [ colorHit e.chord x y 11.0 ]
   in concat (mapWithIndex place entries)
 
 -- | One lattice glyph plus its transparent click target (the polygon itself is
