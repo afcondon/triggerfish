@@ -69,6 +69,65 @@ Claude's instinct: **B** (tank-as-palette) is the most coherent; **A** is the
 cheap restore. Open question for AC: *what progression-building experience do you
 want when you sit down with Vetula?* — answer that first, then pick the shape.
 
+## Context-panel redesign — three views + a color-chord overlay (2026-07-31)
+
+AC's design pass on the CONTEXT control (the left floating card). Agreed shape;
+this is the plan to **implement after the VST audition + a compact**.
+
+### The three views (down from four lenses)
+
+Drop `keyboard` — it is only a root-picker subset of `fifths`. Make `fifths`
+interactive and that retires it. What remains, each a way of laying out the SAME
+material:
+
+1. **Circle of fifths** (now interactive) — the "extensions" home. Always shows
+   the color-chords (McMullen / Butler / Stock) and the **borrowed-scale** chords
+   sitting on the ring. The manual `e`/`s` extension toggles go away — the
+   color-chords *are* the extensions (they recapitulated the lattice anyway).
+2. **Tonnetz** — diatonic triads of the primary scale by third-relations. Triads
+   only; its job is triad relationships + **stacking** (below).
+3. **Voice-leading lattice** (this is the name for the current unnamed "lattice")
+   — chords by smooth voice-leading distance. Can carry the borrow + color-chord
+   layers too.
+
+### The key reframe: palettes are a color OVERLAY, not a mode
+
+Today McMullen/Butler/Stock and the borrow scale are *selectors that change what's
+shown*, and they connect to nothing on the geometry. Instead they become an
+**always-on annotation layer** painted onto the views. This fixes every
+disconnection listed in the findings: the borrow scale and the chord-sets stop
+being inert dropdowns and become colored chords *on the view*. Palette chips
+become **show/hide toggles** for each color layer, not a mode switch.
+
+### Decisions (AC, 2026-07-31)
+
+1. **Which layers on which view:** the color layers are available on BOTH the
+   circle of fifths and the voice-leading lattice, each toggleable; the view only
+   changes the spatial arrangement. **Tonnetz stays triads-only.** (strong agree)
+2. **Triad stacking (tonnetz):** shift-click accumulates triads into a stack.
+   Edge-adjacent triangles (sharing two notes) fold into 7ths/9ths, BUT stacking
+   is **freeform** — you can also pick odd combinations, e.g. a D-minor triad in
+   the bass and an F-major triad an octave up (a cross-register polychord). So the
+   stack is an ordered set of (triad, register) picks, not only adjacent merges.
+3. **Colors:** each chord-set gets its OWN distinct color — borrowed = one hue,
+   McMullen = another, Butler = another, Stock = another, diatonic = the base.
+   A legend. (NOT sharing the tonnetz outside-distance ramp.)
+
+### Unified gesture
+
+Across all three views: **click = catch to tank**; **shift-click = stack/extend**
+where it means something (tonnetz especially). Consistent with the existing `k`
+catch.
+
+### Open implementation questions (resolve during build)
+
+- Voice-leading lattice node content vs tonnetz — keep them genuinely distinct
+  (third-relations vs voice-leading distance), not two skins of one graph.
+- Where the color-chord sets come from in Harmonia (the palette generators) and
+  how a "borrowed" chord is tagged for its color.
+- Stack → tank product: a stacked polychord caught to the tank as one `Anchor`?
+- Fifths interactivity: click a root vs click a color-chord token on the ring.
+
 ## Related
 
 - The Vetula preset **chip** (capture/recall of the progression source) already
