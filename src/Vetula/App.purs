@@ -166,7 +166,7 @@ lensLabel = case _ of
   LensPadGrid -> "pad grid"
   LensCircleFifths -> "fifths"
   LensTonnetz -> "tonnetz"
-  LensLattices -> "lattices"
+  LensLattices -> "voice-leading lattice"
   LensGenerate -> "grow"
 
 -- | How a voice sounds the chord it's currently on. Block = the whole chord held
@@ -2933,8 +2933,12 @@ countLabel n noun = show n <> " " <> noun <> (if n == 1 then "" else "s")
 -- | is retired. What remains are the four ways of LAYING OUT chords — two families
 -- | (relational: tonnetz / lattices; root-picker: keyboard / fifths). Switching
 -- | re-projects the SAME material (the sim keeps running underneath).
+-- | The geometric views the CONTEXT card offers. Down to three after the
+-- | 2026-07-31 redesign (see docs/DESIGN-vetula-progression-building.md): the
+-- | keyboard was a root-picker subset of the (now interactive) circle of
+-- | fifths, so it retired. Circle of fifths · Tonnetz · voice-leading lattice.
 geometryLenses :: Array StageLens
-geometryLenses = [ LensKeyboard, LensCircleFifths, LensTonnetz, LensLattices ]
+geometryLenses = [ LensCircleFifths, LensTonnetz, LensLattices ]
 
 lensBar :: forall m. State -> H.ComponentHTML Action Slots m
 lensBar st =
@@ -3349,7 +3353,7 @@ circleFifthsSurface st =
         , HE.onWheel \we -> ZoomAt (WE.toEvent we) (WE.deltaY we)
         , HE.onMouseDown (PanStart <<< ME.toEvent)
         ] <> geoPanAttrs st )
-      ( cofBackdrop tonic scl rootsPresent
+      ( cofBackdrop st.key tonic scl rootsPresent
           <> map (nodeView scl pathOrder Set.empty posMap) shown
       )
 
@@ -3360,8 +3364,8 @@ circleFifthsSurface st =
 -- | chords beaded along them read as belonging to their root.
 cofBackdrop
   :: forall m
-   . Int -> Array Int -> Array Int -> Array (H.ComponentHTML Action Slots m)
-cofBackdrop tonic scl rootsPresent =
+   . Key -> Int -> Array Int -> Array Int -> Array (H.ComponentHTML Action Slots m)
+cofBackdrop key tonic scl rootsPresent =
   concatMap spoke (range 0 11) <> concatMap marker (range 0 11)
   where
   spoke i =
@@ -3402,14 +3406,29 @@ cofBackdrop tonic scl rootsPresent =
             ]
           else []
         txtColor = if diat then "#2a2a2a" else "#c4c4c4"
+        -- the diatonic triad rooted here — the wheel is now a catch surface:
+        -- plain click auditions the root's triad, shift-click catches it (the
+        -- same gesture as the Tonnetz). Every root gets a transparent hit disc,
+        -- so out-of-scale roots (label-only, no parchment disc) click too.
+        triadPcs = triadOn key pc
+        isMajor = elem (mod (pc + 4) 12) triadPcs
+        hit =
+          [ SE.circle
+              [ SA.cx x, SA.cy y, SA.r 14.0
+              , HP.style "fill: transparent; cursor: pointer;"
+              , HE.onMouseEnter \_ -> HoverTriad (Just { root: pc, pcs: triadPcs })
+              , HE.onMouseLeave \_ -> HoverTriad Nothing
+              , HE.onClick \e -> if ME.shiftKey e then CatchTriad pc triadPcs isMajor else AuditionTriad pc triadPcs
+              ]
+          ]
     in disc <> tonicRing <>
          [ SE.text
              [ SA.x x, SA.y (y + 4.0)
              , HP.attr (AttrName "text-anchor") "middle"
-             , HP.style ("font-size: 12px; fill: " <> txtColor <> "; letter-spacing: 0.02em; -webkit-user-select: none; user-select: none;")
+             , HP.style ("font-size: 12px; fill: " <> txtColor <> "; letter-spacing: 0.02em; pointer-events: none; -webkit-user-select: none; user-select: none;")
              ]
              [ HH.text (noteName pc) ]
-         ]
+         ] <> hit
 
 -- ---------------------------------------------------------------------------
 -- The Tonnetz lens (neo-Riemannian tonal net)
