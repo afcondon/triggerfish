@@ -535,6 +535,11 @@ data SourceQuery a
   -- bindings; the page asks which → midi voice names are in use so it can list them.
   | SetRouting (Array { name :: String, ch :: Int }) a
   | AskVoiceNames (Array String -> a)
+  -- The chord/path AUDITION channel, surfaced in the shell's routing modal now
+  -- that Vetula's voice card is gone. Canonical 1..16 across the query boundary
+  -- (Vetula stores WebMIDI 0..15 internally).
+  | AskPreviewChan (Int -> a)
+  | SetPreviewChanC Int a
   -- macro-tidal harmonic authority. The shell polls the rig's resting harmonic
   -- context (the key's diatonic set, or a `# scale` override) and pushes it into
   -- Odonus's pitchSet. `SetRestingScale` is where the macro `# scale` verb lands
@@ -790,6 +795,14 @@ handleQuery = case _ of
   AskChip reply -> do
     s <- H.get
     pure (Just (reply (chipViewOf s)))
+
+  -- Audition channel, canonical 1..16 (stored 0..15).
+  AskPreviewChan reply -> do
+    s <- H.get
+    pure (Just (reply (s.previewChan + 1)))
+  SetPreviewChanC ch next -> do
+    H.modify_ _ { previewChan = clamp 0 15 (ch - 1) }
+    pure (Just next)
 
 -- | The ONE harmonic-context set Odonus quantises to (root pc + intervals). The
 -- | rule, in precedence order — the decoupling of "Vetula's lens scale" from "what

@@ -104,6 +104,7 @@ data RAction
   = Init | SyncTick | PollVetula | Pick Which | RefreshTidal | CopyTidal | ToggleMaster
   | OpenModal ModalId | CloseModal   -- the hotkey overlays (⌘1..⌘5; Esc closes)
   | SetBpm String                    -- nav system-BPM field (free-run baseline)
+  | SetPreviewCh String              -- routing modal: Vetula's audition channel
   | SetMode Mode                -- flip the SOLO⟷ATLANTIS authority
   | ArmTab Which                -- toggle one instrument's ARM from the switcher dot
   | JumpVetula Int              -- nav strip: jump Vetula's progression to a chord (live)
@@ -170,6 +171,7 @@ type RState =
   , bpm :: Int
   , liveTempo :: Number
   , linkLocked :: Boolean
+  , previewCh :: Int                -- Vetula's audition channel (canonical 1..16), shown in the routing modal
   , library :: Array LibRow, importText :: String, importMsg :: String
   -- Workbench (TIDAL page): the shelf entry currently on the bench, whether the
   -- raw-source drawer is slid open, whether the archive ("dig") is expanded, and
@@ -291,7 +293,7 @@ root =
   H.mkComponent
     { initialState: \_ ->
         { which: Bal, tidalDoc: "", freeT0: 0.0
-        , bpm: 120, liveTempo: 120.0, linkLocked: false
+        , bpm: 120, liveTempo: 120.0, linkLocked: false, previewCh: 5
         , library: [], importText: "", importMsg: ""
         , picked: Nothing, sourceOpen: false, digOpen: false, goTo: [], previewing: []
         , mode: Solo, harm: { durs: [], active: -1, chord: "" }
@@ -403,6 +405,14 @@ handleAction = case _ of
     Just n -> do
       H.modify_ _ { bpm = clamp 20 999 n }
       pushFree
+    Nothing -> pure unit
+
+  -- Routing modal: set Vetula's audition channel (canonical 1..16).
+  SetPreviewCh v -> case Int.fromString v of
+    Just n -> do
+      let ch = clamp 1 16 n
+      H.modify_ _ { previewCh = ch }
+      void $ H.query _vet unit (Vetula.SetPreviewChanC ch unit)
     Nothing -> pure unit
   -- Opening TIDAL pulls a fresh aggregate + library; the modules keep playing.
   Pick Tid -> do
@@ -661,6 +671,9 @@ handleAction = case _ of
         -- mounted) for the nav BPM display + the Link-locked read-only gate.
         mclk <- H.query _odo unit (SQ.AskClock identity)
         for_ mclk \c -> H.modify_ _ { liveTempo = c.tempo, linkLocked = c.locked }
+        -- Vetula's audition channel for the routing modal's preview-ch field.
+        mpc <- H.query _vet unit (Vetula.AskPreviewChan identity)
+        for_ mpc \pc -> H.modify_ _ { previewCh = pc }
         -- Vetula auto-resync (ATLANTIS only): Vetula has no incremental rig path, so the
         -- shell diffs its payload and re-pushes on a SETTLED change (payload stable for
         -- one poll AND different from what was last sent). A drag coalesces into one push
@@ -1129,13 +1142,25 @@ workbenchHeader st =
 -- source — a placeholder for now; Sufflamen/Stellatus are placeholders too.
 channelMapPanel :: forall m. RState -> H.ComponentHTML RAction Slots m
 channelMapPanel st =
-  HH.div [ style "display:flex;gap:24px;align-items:flex-start" ]
-    [ machineCol "Odonus" odonusRows
-    , machineCol "Balistes" [ fixedEntry "kit" ("ch " <> show Routing.drumsChannel) ]
-    , machineCol "Selene" seleneRows
-    , machineCol "Vetula" vetulaRows
-    , machineCol "Sufflamen" [ tbd ]
-    , machineCol "Stellatus" [ tbd ]
+  HH.div_
+    [ HH.div [ style "display:flex;gap:24px;align-items:flex-start" ]
+        [ machineCol "Odonus" odonusRows
+        , machineCol "Balistes" [ fixedEntry "kit" ("ch " <> show Routing.drumsChannel) ]
+        , machineCol "Selene" seleneRows
+        , machineCol "Vetula" vetulaRows
+        , machineCol "Sufflamen" [ tbd ]
+        , machineCol "Stellatus" [ tbd ]
+        ]
+    -- A rig-wide setting, sitting below the per-machine columns: the channel the
+    -- Vetula ▶-preview / arrange audition sounds on.
+    , HH.div [ style "display:flex;align-items:baseline;gap:8px;margin-top:22px" ]
+        [ HH.span [ style "font-size:11px;letter-spacing:0.06em;color:#6a655a" ] [ HH.text "audition preview →" ]
+        , HH.input
+            [ HP.value (show st.previewCh)
+            , HE.onValueInput SetPreviewCh
+            , style "width:44px;font-family:'SF Mono',Menlo,monospace;font-size:12px;padding:2px 5px;border-radius:4px;border:1px solid #cdbb96;background:#fffdf8;text-align:center" ]
+        , HH.span [ style "font-size:11px;color:#9a9284" ] [ HH.text "ch" ]
+        ]
     ]
   where
   romans = [ "I", "II", "III", "IV" ]
