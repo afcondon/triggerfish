@@ -205,14 +205,29 @@ layerHue = case _ of
   LayerButler -> "#4a6da8"
   LayerStock -> "#8a5a9a"
 
--- | The exterior-generator key a color layer draws from (Nothing for the
--- | diatonic base and the borrow-sourced layer, which have their own sources).
-layerGenKey :: ColorLayer -> Maybe String
-layerGenKey = case _ of
-  LayerMcMullen -> Just "mcmullen"
-  LayerButler -> Just "butler"
-  LayerStock -> Just "stock"
-  _ -> Nothing
+-- | The chords a color layer paints for the current key: the diatonic triads,
+-- | the borrow scale's interchange chords (only when a BORROW mode is chosen),
+-- | or one of the curated exterior signpost sets. These are generated on the
+-- | fly for annotation — they are NOT added to the pool (`st.chords`).
+layerChords :: State -> ColorLayer -> Array ChordNode
+layerChords st = case _ of
+  LayerDiatonic -> diatonicTriads st.key
+  LayerBorrowed -> case st.borrowMode of
+    Just v -> interchangeChords (modeOf v) st.key
+    Nothing -> []
+  LayerMcMullen -> mcmullenChords st.key
+  LayerButler -> butlerChords st.key
+  LayerStock -> stockChords st.key
+
+-- | A chord's short name from its root + quality (major bare, minor "m", else
+-- | the bare root) — the token label on the color corona.
+chordTag :: ChordNode -> String
+chordTag c =
+  let pc = mod c.root 12
+  in noteName pc
+       <> (if elem (mod (pc + 4) 12) c.pcs then ""
+           else if elem (mod (pc + 3) 12) c.pcs then "m"
+           else "")
 
 -- | How a voice sounds the chord it's currently on. Block = the whole chord held
 -- | for the step; Strummed = re-trigger only the notes that changed (common tones
@@ -3422,7 +3437,41 @@ circleFifthsSurface st =
         ] <> geoPanAttrs st )
       ( cofBackdrop st.key tonic scl rootsPresent
           <> map (nodeView scl pathOrder Set.empty posMap) shown
+          <> cofCorona st tonic
       )
+
+-- | The color-overlay corona on the circle of fifths (2026-07-31 redesign): each
+-- | active layer paints its chords as a ring of colored tokens beyond the pool,
+-- | one ring per layer, each token at its root's wheel angle (same-root chords
+-- | fanned by a small angular nudge). The token wears the layer's hue; its label
+-- | is the chord's short name. The CONTEXT card's PALETTE swatches are the legend.
+-- | Non-interactive for now — the unified catch gesture lands in Step 4.
+cofCorona :: forall m. State -> Int -> Array (H.ComponentHTML Action Slots m)
+cofCorona st tonic =
+  concat (mapWithIndex ring (filter (\l -> Set.member l st.colorLayers) allColorLayers))
+  where
+  ring i layer =
+    let hue = layerHue layer
+        rad = 244.0 + toNumber i * 15.0
+        chords = layerChords st layer
+        token j c =
+          let pc = mod c.root 12
+              dupIx = length (filter (\d -> mod d.root 12 == pc) (take j chords))
+              ang = cofAngle tonic pc + toNumber dupIx * 0.11
+              x = rad * Number.cos ang
+              y = rad * Number.sin ang
+          in [ SE.circle
+                 [ SA.cx x, SA.cy y, SA.r 5.0
+                 , HP.style ("fill: " <> hue <> "; stroke: #ffffff; stroke-width: 1; pointer-events: none;")
+                 ]
+             , SE.text
+                 [ SA.x x, SA.y (y - 8.0)
+                 , HP.attr (AttrName "text-anchor") "middle"
+                 , HP.style ("font-size: 9px; fill: " <> hue <> "; pointer-events: none; -webkit-user-select: none; user-select: none;")
+                 ]
+                 [ HH.text (chordTag c) ]
+             ]
+    in concat (mapWithIndex token chords)
 
 -- | The wheel behind the chords: twelve spokes radiating OUT from the hub, and the
 -- | twelve root names ringed tightly around the centre. Diatonic roots (in the
