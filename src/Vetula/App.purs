@@ -48,6 +48,8 @@ import Halogen.Svg.Attributes as SA
 import Halogen.Svg.Elements as SE
 import Type.Proxy (Proxy(..))
 import Web.Event.Event (Event, EventType(..), preventDefault)
+import Web.HTML.Event.DragEvent (DragEvent)
+import Web.HTML.Event.DragEvent as DE
 import Web.Event.EventTarget (addEventListener, eventListener)
 import Web.HTML (window)
 import Web.HTML.Window as Window
@@ -153,13 +155,18 @@ derive instance ordLeftSection :: Ord LeftSection
 -- | in the tank as SEEDS and blooms a constellation of voice-led relatives around
 -- | each one (the "shake the etch-a-sketch, put chords back in, grow what relates"
 -- | idea). Catch a relative and it feeds the tank — the compositional loop closes.
-data StageLens = LensKeyboard | LensPadGrid | LensCircleFifths | LensTonnetz | LensLattices | LensGenerate
+-- |
+-- | `LensPerform` is the PERFORM surface (docs/DESIGN-vetula-chyron-redesign §Perform):
+-- | not another projection of the pool but a live rig — a row of player BOXES, one
+-- | per output, onto which you drop saved sequence-tokens; each box loops its token
+-- | while the transport plays. The function stack + non-MIDI sinks land on top later.
+data StageLens = LensKeyboard | LensPadGrid | LensCircleFifths | LensTonnetz | LensLattices | LensGenerate | LensPerform
 
 derive instance eqStageLens :: Eq StageLens
 
 -- | The lens registry. A new lens appends here (+ a constructor + a render branch).
 allLenses :: Array StageLens
-allLenses = [ LensKeyboard, LensPadGrid, LensCircleFifths, LensTonnetz, LensLattices, LensGenerate ]
+allLenses = [ LensKeyboard, LensPadGrid, LensCircleFifths, LensTonnetz, LensLattices, LensGenerate, LensPerform ]
 
 lensLabel :: StageLens -> String
 lensLabel = case _ of
@@ -169,6 +176,7 @@ lensLabel = case _ of
   LensTonnetz -> "tonnetz"
   LensLattices -> "voice-leading lattice"
   LensGenerate -> "explore"
+  LensPerform -> "perform"
 
 -- | Where Vetula's chord/path AUDITION goes, chosen in the shell's routing modal
 -- | (2026-08-01): Off (muted), Continuo (the piano+strings VST preview via the
@@ -378,6 +386,18 @@ type SavedSeq =
   , glyph :: Glyph
   }
 
+-- | A PERFORM box: one persistent player slot on the Perform surface, bound to a
+-- | MIDI channel. When a saved token is dropped on it, the box LOOPS that token's
+-- | chords (one per beat, phase-locked to the shared clock) on its channel while
+-- | the transport plays. Empty boxes are silent. The function stack
+-- | (transpose/arp/strum/retime) and non-MIDI sinks are later layers on this — see
+-- | docs/DESIGN-vetula-chyron-redesign §Perform.
+type PerfBox =
+  { channel :: Int
+  , label   :: String
+  , seq     :: Maybe SavedSeq
+  }
+
 type State =
   { key :: Key
   -- The rig's resting harmonic scale (macro-tidal harmonic-authority): Nothing =
@@ -533,6 +553,10 @@ type State =
   -- (noodle without cluttering). Defaults true — always-on capture, the flow AC
   -- liked; disarm only when you want to explore off the record.
   , chyronArmed :: Boolean
+  -- PERFORM surface: player boxes (one per output) + the token "picked up" for
+  -- placement (shift-click / drag a saved token, then click / drop on a box).
+  , perfBoxes :: Array PerfBox
+  , perfHeld :: Maybe Int
   }
 
 -- | Which floating control a fold toggle targets.
@@ -641,6 +665,11 @@ data Action
   | PlaySaved Int          -- replay a pinned saved sequence (with its timing)
   | DeleteSaved Int        -- × a pinned saved sequence
   | ToggleChyronArm        -- record-arm the chyron on/off
+  -- PERFORM surface
+  | PerfPickup Int         -- pick up saved token i for placement (toggle)
+  | PerfDropBox Int        -- place the held token onto box i (loop it there)
+  | PerfClearBox Int       -- empty box i (stop its loop)
+  | PerfDragOver DragEvent -- allow HTML5 drop onto a box (preventDefault)
   | ZoomAt Event Number    -- geometric lens: wheel-zoom toward the cursor (event, deltaY)
   | PanStart Event         -- geometric lens: begin a grab-to-pan drag
   | PanMove Event          -- geometric lens: drag the viewport
@@ -804,6 +833,10 @@ component = H.mkComponent
       , chyronSel: Nothing
       , chyronSaved: []
       , chyronArmed: true
+      -- four player boxes on MIDI ch 1-4 (Odonus I-IV in AC's routing); a token
+      -- dropped on one loops there while the transport plays.
+      , perfBoxes: map (\n -> { channel: n, label: "P" <> show n, seq: Nothing }) (range 1 4)
+      , perfHeld: Nothing
       }
   , render
   , eval: H.mkEval H.defaultEval
@@ -1922,6 +1955,26 @@ handleAction = case _ of
 
   ToggleChyronArm -> H.modify_ \st -> st { chyronArmed = not st.chyronArmed }
 
+  -- PERFORM: pick up / drop / clear a player box. Pickup toggles (click the held
+  -- token again to drop it). Drop assigns the held token and clears the hand;
+  -- with nothing in hand it is a no-op (so a bubbled × clear is harmless).
+  PerfPickup i -> H.modify_ \st ->
+    st { perfHeld = if st.perfHeld == Just i then Nothing else Just i }
+
+  PerfDropBox b -> do
+    st <- H.get
+    case st.perfHeld >>= index st.chyronSaved of
+      Just s -> H.modify_ _
+        { perfBoxes = mapWithIndex (\j box -> if j == b then box { seq = Just s } else box) st.perfBoxes
+        , perfHeld = Nothing
+        }
+      Nothing -> pure unit
+
+  PerfClearBox b -> H.modify_ \st ->
+    st { perfBoxes = mapWithIndex (\j box -> if j == b then box { seq = Nothing } else box) st.perfBoxes }
+
+  PerfDragOver ev -> liftEffect (preventDefault (DE.toEvent ev))
+
   -- Wheel-zoom the geometric viewport toward the cursor. The point under the
   -- pointer stays fixed: the centre's offset from it scales by the zoom ratio.
   ZoomAt ev dy -> do
@@ -2081,6 +2134,20 @@ handleAction = case _ of
           -- is the sound. SOLO: emit as normal.
           mout = if st.authority == Local then st.midiOut else Nothing
       voices' <- liftEffect $ traverse (stepVoice mout st.routing reefChords tick.index pulseMs tick.delayMs) st.voices
+      -- PERFORM boxes: on each beat (every 4th 16th), each filled box advances one
+      -- chord through its token and fires it as a BLOCK on its channel. Phase-locked
+      -- to the shared grid, so tokens of different lengths drift against each other
+      -- (free polymeter). MIDI-only for now, gated by `mout` like the voices.
+      when (tick.index `mod` 4 == 0) $
+        for_ mout \out -> liftEffect $
+          for_ st.perfBoxes \box ->
+            for_ box.seq \s -> do
+              let n = length s.events
+              when (n > 0) $
+                for_ (index s.events (mod (tick.index / 4) n)) \ev ->
+                  for_ ev.notes \note ->
+                    Midi.scheduleNote out
+                      { channel: box.channel, note, velocity: 90, delayMs: tick.delayMs, durMs: pulseMs * 3.6 }
       H.modify_ _ { pulse = tick.index, voices = voices', clockTempo = tempo, tempo = round tempo }
 
   -- parse the (possibly edited) Tidal source into note-lists, rebuild them as a
@@ -3266,12 +3333,19 @@ chyronBar st =
   -- the live stave-glyphs, so "named unit" reads at a glance). Click the icons to
   -- replay it with timing; × deletes. Tooltip carries the chord names.
   savedToken i s =
-    HH.span
-      [ HP.style "position: relative; flex: 0 0 auto; display: inline-flex; align-items: center; gap: 3px; border: 1px solid #cdbb8c; background: #f6efdc; border-radius: 4px; padding: 3px 6px; line-height: 1;"
-      , HP.title ("saved · " <> joinWith " " (map _.label s.events)) ]
+    let held = st.perfHeld == Just i
+    in HH.span
+      [ HP.style ("position: relative; flex: 0 0 auto; display: inline-flex; align-items: center; gap: 3px; border: 1px solid "
+                   <> (if held then "#b8860b" else "#cdbb8c")
+                   <> "; background: " <> (if held then "#fbf1d6" else "#f6efdc")
+                   <> "; box-shadow: " <> (if held then "0 0 0 2px #f1e2b4" else "none")
+                   <> "; border-radius: 4px; padding: 3px 6px; line-height: 1;")
+      , HP.draggable true
+      , HE.onDragStart \_ -> PerfPickup i
+      , HP.title ("saved · " <> joinWith " " (map _.label s.events) <> " · click plays · shift-click / drag → a Perform box") ]
       [ HH.span
           [ HP.style "display: inline-flex; align-items: center; gap: 3px; cursor: pointer;"
-          , HE.onClick \_ -> PlaySaved i ]
+          , HE.onClick \e -> if ME.shiftKey e then PerfPickup i else PlaySaved i ]
           [ faIcon s.glyph.first, faIcon s.glyph.second ]
       , HH.button
           [ HP.style "position: absolute; top: -5px; right: -3px; z-index: 2; border: 1px solid #cdbb8c; background: #f6efdc; color: #b06a5a; font-size: 10px; line-height: 1; cursor: pointer; padding: 0 3px; border-radius: 8px;"
@@ -3455,7 +3529,7 @@ lensBar :: forall m. State -> H.ComponentHTML Action Slots m
 lensBar st =
   HH.div
     [ HP.style "display: flex; align-items: center; flex-wrap: wrap; gap: 6px; margin: 0 0 4px;" ]
-    ( map lensChip geometryLenses <> resetChip )
+    ( map lensChip geometryLenses <> [ lensChip LensPerform ] <> resetChip )
   where
   -- a way back to the fitted view (scroll to zoom · drag to pan), once it's moved.
   moved = st.viewZoom /= 1.0 || st.viewCx /= 0.0 || st.viewCy /= 0.0
@@ -3712,6 +3786,67 @@ surface st
       LensTonnetz -> tonnetzSurface st
       LensLattices -> latticesSurface st
       LensGenerate -> generativeSurface st
+      LensPerform -> performSurface st
+
+-- | The PERFORM surface — a row of player BOXES, one per output. Shift-click (or
+-- | drag) a saved token in the chyron to pick it up, then click (or drop it onto)
+-- | a box: the box loops that token's chords on its MIDI channel while the
+-- | transport plays. This is the first slice of the Perform view (DESIGN §Perform);
+-- | function stacks and non-MIDI sinks come later.
+performSurface :: forall m. State -> H.ComponentHTML Action Slots m
+performSurface st =
+  HH.div
+    [ HP.style "position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 26px; padding: 40px;" ]
+    [ HH.div
+        [ HP.style "font-size: 12px; letter-spacing: 0.14em; text-transform: uppercase; color: #9a7a2a; text-align: center; max-width: 520px; line-height: 1.6;" ]
+        [ HH.text $ case st.perfHeld of
+            Just _ -> "token in hand — click a player to drop it"
+            Nothing ->
+              if any (\b -> isJust b.seq) st.perfBoxes
+                then "press PLAY to loop the players · shift-click or drag a saved token onto a box"
+                else "shift-click (or drag) a saved token below onto a player — it loops while the transport plays"
+        ]
+    , HH.div
+        [ HP.style "display: flex; gap: 20px; flex-wrap: wrap; justify-content: center; max-width: 760px;" ]
+        (mapWithIndex (perfBox st) st.perfBoxes)
+    ]
+
+-- | One PERFORM player box: its channel label, the assigned token's 2-glyph
+-- | identity (or a ＋ placeholder), and a × to empty it. A drop target for both
+-- | the click-to-place gesture and HTML5 drag-drop; when a token is in hand every
+-- | box lights as a receiver.
+perfBox :: forall m. State -> Int -> PerfBox -> H.ComponentHTML Action Slots m
+perfBox st i box =
+  let held = isJust st.perfHeld
+      filled = isJust box.seq
+      brd = if held then "#b8860b" else if filled then "#cdbb8c" else "#d8ceb4"
+      bg = if held then "#fbf6ea" else "#faf7ee"
+  in HH.div
+       [ HP.style ("position: relative; width: 150px; height: 118px; border: 2px "
+                    <> (if held then "dashed " else "solid ") <> brd
+                    <> "; background: " <> bg
+                    <> "; border-radius: 10px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; cursor: pointer;")
+       , HP.title (if held then "drop the held token here" else box.label <> " · MIDI ch " <> show box.channel)
+       , HE.onClick \_ -> PerfDropBox i
+       , HE.onDragOver PerfDragOver
+       , HE.onDrop \_ -> PerfDropBox i
+       ]
+       [ HH.div [ HP.style "font-size: 10px; letter-spacing: 0.1em; text-transform: uppercase; color: #b0a684;" ]
+           [ HH.text (box.label <> " · ch " <> show box.channel) ]
+       , case box.seq of
+           Just s ->
+             HH.div [ HP.style "display: flex; align-items: center; gap: 6px; font-size: 22px; color: #7a5c00;" ]
+               [ faIcon s.glyph.first, faIcon s.glyph.second ]
+           Nothing ->
+             HH.div [ HP.style "font-size: 28px; color: #d8ceb4; line-height: 1;" ] [ HH.text "＋" ]
+       , if filled
+           then HH.button
+                  [ HP.style "position: absolute; top: 4px; right: 7px; border: none; background: transparent; color: #b06a5a; font-size: 15px; line-height: 1; cursor: pointer;"
+                  , HP.title "clear this player"
+                  , HE.onClick \_ -> PerfClearBox i ]
+                  [ HH.text "×" ]
+           else HH.text ""
+       ]
 
 -- | The Keyboard lens — the exhaustive hunting cloud: the piano keyboard, diatonic
 -- | triad families, seed-blooms, the voice-leading lattice, and the path overlay.
