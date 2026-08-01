@@ -25,9 +25,19 @@ A ticker along the bottom of the screen (ABOVE the output-destinations bar) that
 **logs every audition, in order**, scrolling one notch per new chord (not
 constant drift, not scrolling-away). Always on, in every view.
 
-Because it is *always recording*, you never arm it. You bang on chords — on the
-fifths ring, the Tonnetz, the lattice, the grow/explore bloom — and the trace
-accumulates. A progression is then something you **lift retroactively** from a
+You bang on chords — on the fifths ring, the Tonnetz, the lattice, the
+grow/explore bloom — and the trace accumulates.
+
+> **Revision (AC 2026-08-01, from playing with it):** "always recording" was too
+> much — it sweeps up exploratory noodling and wrong turns. The chyron wants a
+> **record-arm** toggle (capture *when you're ready*), while STILL permitting
+> "leave record enabled" (always-on becomes a *choice*, not forced). Small
+> Phase-1.5 refinement: a `chyronArmed :: Boolean` guarding `logChyron`, a
+> transport-style record button + a "recording" indicator on the bar. Fork:
+> default armed (keeps the retroactive "capture what I just played" feel) vs
+> disarmed. Nice option: keep a short **pre-roll** capturing even when disarmed,
+> so arming can retroactively grab the last few — honours both "record when
+> ready" and "never miss a take." A progression is then something you **lift retroactively** from a
 span of the trace, not something you assemble chord-by-chord in advance. The
 connective tissue (cadence bridge / voice-leading) is applied **at lift time**,
 to a run you already like the sound of — which is also where the long-parked
