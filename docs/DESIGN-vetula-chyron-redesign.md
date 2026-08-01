@@ -461,6 +461,32 @@ guidance:** resist over-generalizing the function system early; start with a
 fixed small palette (transpose / arp / strum / hold / retime) wired to the
 existing `f`/`g`, let the drag-compose UI grow from there.
 
+### Saved setups = scenes; rich composable stack = unlimited (AC 2026-08-01)
+
+**Saved performance setups ARE scenes** — a saved board (boxes +
+function-stacks) is a scene, so you recall-and-tweak, never build from scratch.
+Completes a **reuse hierarchy**: sequence tokens (glyph-named) → box configs /
+function-stacks (savable as named composite-transform "macros") → performance
+setups = scenes (typed-named) → the scene grid (#11) sequences them over time.
+Reuse at every tier ⇒ "rarely set up new."
+
+**"Rich stack ⇒ unlimited" is FP leverage, made real by discipline** (Tidal's
+lesson: a modest set of composable transforms, not a big feature list):
+- **orthogonal** — each function does one thing (transpose/rotate/retime/arp/
+  probability), composes cleanly;
+- **parameterized** — `arp rate pat`, `transpose n`, `every n f` — parameters
+  are where the combinatorial space explodes;
+- **total** — any stack is valid or GRACEFULLY DEGRADES (sink greys inert fns;
+  `Located`-only ops dim on `Free`). Keeps "unlimited expressiveness" from
+  becoming "unlimited ways to break."
+- Each function is just PureScript ⇒ palette grows forever with NO UI redesign
+  (new capability = new draggable block). This is why it's worth building as
+  INFRASTRUCTURE, not features.
+
+Implication for the type: nudges `PlayerConfig` away from a config *record*
+toward a *composed pipeline of transforms* — the more Tidal (and more unlimited)
+shape.
+
 ## Future direction — Vetula as a composition window, + realiser machines (AC 2026-08-01, NOT NOW)
 
 The chyron makes something conceptually clear that was implicit: Vetula is
