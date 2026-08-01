@@ -28,6 +28,12 @@ constant drift, not scrolling-away). Always on, in every view.
 You bang on chords — on the fifths ring, the Tonnetz, the lattice, the
 grow/explore bloom — and the trace accumulates.
 
+> **BUILT (commit below, 2026-08-01):** `chyronArmed` (default true) guards
+> `logChyron`; a ●/○ record toggle at the left of the bar (red ● = capturing,
+> ○ = paused, auditions still sound). Default-armed keeps the always-on flow AC
+> liked; disarm to explore off the record. Verified: disarmed → played chords
+> don't log.
+>
 > **Revision (AC 2026-08-01, from playing with it):** "always recording" was too
 > much — it sweeps up exploratory noodling and wrong turns. The chyron wants a
 > **record-arm** toggle (capture *when you're ready*), while STILL permitting

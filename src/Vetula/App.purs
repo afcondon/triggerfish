@@ -529,6 +529,10 @@ type State =
   -- Saved sequences: pinned 2-glyph tokens on the left of the chyron. Saving a
   -- selection compresses its live chips into one of these (reclaiming space).
   , chyronSaved :: Array SavedSeq
+  -- Record-arm: when false, auditions still SOUND but don't log to the trace
+  -- (noodle without cluttering). Defaults true — always-on capture, the flow AC
+  -- liked; disarm only when you want to explore off the record.
+  , chyronArmed :: Boolean
   }
 
 -- | Which floating control a fold toggle targets.
@@ -636,6 +640,7 @@ data Action
   | SaveChyronSel          -- compress the selection into a pinned 2-glyph token
   | PlaySaved Int          -- replay a pinned saved sequence (with its timing)
   | DeleteSaved Int        -- × a pinned saved sequence
+  | ToggleChyronArm        -- record-arm the chyron on/off
   | ZoomAt Event Number    -- geometric lens: wheel-zoom toward the cursor (event, deltaY)
   | PanStart Event         -- geometric lens: begin a grab-to-pan drag
   | PanMove Event          -- geometric lens: drag the viewport
@@ -798,6 +803,7 @@ component = H.mkComponent
       , hoveredChyron: Nothing
       , chyronSel: Nothing
       , chyronSaved: []
+      , chyronArmed: true
       }
   , render
   , eval: H.mkEval H.defaultEval
@@ -1914,6 +1920,8 @@ handleAction = case _ of
 
   DeleteSaved i -> H.modify_ \st -> st { chyronSaved = fromMaybe st.chyronSaved (deleteAt i st.chyronSaved) }
 
+  ToggleChyronArm -> H.modify_ \st -> st { chyronArmed = not st.chyronArmed }
+
   -- Wheel-zoom the geometric viewport toward the cursor. The point under the
   -- pointer stays fixed: the centre's offset from it scales by the zoom ratio.
   ZoomAt ev dy -> do
@@ -2509,12 +2517,15 @@ playId pid = do
 -- | audition (no `midiOut`) still lands here. See DESIGN-vetula-chyron-redesign.
 logChyron :: forall o m. MonadAff m => String -> Array Int -> Array Int -> H.HalogenM State Action Slots o m Unit
 logChyron label notes pcs = do
-  now <- liftEffect dateNow
-  -- never log a blank chip: fall back to the pitch-class names if a call site
-  -- has no label (e.g. an off-net triad before it's named).
-  let lab = if label == "" then joinWith " " (map noteName (sort pcs)) else label
-      ev = { label: lab, notes, pcs, at: now }
-  H.modify_ \st -> st { chyron = takeEnd chyronCap (st.chyron <> [ ev ]) }
+  st <- H.get
+  -- record-arm: disarmed → the audition still sounded, it just isn't captured.
+  when st.chyronArmed do
+    now <- liftEffect dateNow
+    -- never log a blank chip: fall back to the pitch-class names if a call site
+    -- has no label (e.g. an off-net triad before it's named).
+    let lab = if label == "" then joinWith " " (map noteName (sort pcs)) else label
+        ev = { label: lab, notes, pcs, at: now }
+    H.modify_ \s -> s { chyron = takeEnd chyronCap (s.chyron <> [ ev ]) }
 
 -- | The chyron selection state machine: a click at index i starts a fresh single
 -- | endpoint, completes a span from a pending endpoint (lo==hi), or resets from a
@@ -3208,7 +3219,14 @@ chyronBar st =
         <> "border-top: 1px solid #0000000f; box-shadow: 0 -1px 3px #0000000d;" ) ]
     [ HH.div
         [ HP.style "flex: 0 0 auto; display: flex; align-items: center; gap: 6px;" ]
-        ( [ HH.span
+        ( [ -- record-arm toggle: ● red = capturing, ○ = paused (still audible)
+            HH.button
+              [ HP.style ("border: none; background: none; cursor: pointer; padding: 0; font-size: 13px; line-height: 1; color: "
+                           <> (if st.chyronArmed then "#c0392b" else "#b9ad8c") <> ";")
+              , HP.title (if st.chyronArmed then "recording auditions — click to pause capture" else "capture paused (auditions still sound) — click to record")
+              , HE.onClick \_ -> ToggleChyronArm ]
+              [ HH.text (if st.chyronArmed then "●" else "○") ]
+          , HH.span
               [ HP.style "font-size: 10px; letter-spacing: 0.16em; text-transform: uppercase; color: #8a7d5a;" ]
               [ HH.text "audition" ] ]
           -- ⏎ save appears only while a completed span is selected
