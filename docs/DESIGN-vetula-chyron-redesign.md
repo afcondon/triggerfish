@@ -216,6 +216,59 @@ the browser. The chyron substrate first because everything hangs off it.
   #3 (Tonnetz register). Each its own small commit.
 - **Deferred:** #14 collections.
 
+## The chyron as LEDGER — saving = compression (AC 2026-08-01, "from swimming")
+
+A bigger reframe that mostly *unifies pieces already built* rather than adding
+new ones. The chyron stops being a ticker that scrolls into the void and becomes
+the **composition ledger**: it grows UP, line by line, and **saving a run
+compresses it to its 2-glyph token** with a single keystroke — the abstraction
+becomes a spatial reward, and reclaimed space is the incentive to name.
+
+- The **2-glyph token is the existing identity glyph-pair** (the preset-chip
+  substrate, already built + rolled to Vetula). A saved progression IS a preset
+  chip. So **the "Progression panel" dissolves into the chyron** — this REPLACES
+  the Phase 2b/4 "lift into a separate panel" plan with "select run → keystroke →
+  collapse to a token in place." Tokens already have downstream homes (macro-Tidal
+  lanes + scene grid already speak glyph-tokens).
+- Pairs with record-arm (#17) + a **Clear split**: **Clear unsaved** (prune
+  noodling) vs **Clear all** (reset). Saving earns room; armed capture keeps the
+  ledger intentional. These are the GOVERNORS that keep the ledger from eating
+  the composition surface — the board must stay primary (bounded/scrollable
+  ledger, compression as pressure-release), NOT unbounded growth.
+
+**Functions over progressions — gated by the type system.** Transpose is the
+only *universally* meaningful op: voice-leading / re-harmonization need a tonal
+reading that borrowed / cross-scale / stacked-triad chords lack. But Harmonia's
+`Anchor` already encodes this — `Located` (has a key reading) vs `Free`. So the
+function menu gates itself: **universal** (transpose, retrograde, rotate) always
+on; **tonal** (maximise voice-leading, re-cadence) light up only when every
+chord is `Located`. Named, transformable units → deployable into the macro-Tidal
+sequencer (their 2-glyph rep fits the lanes).
+
+**Naming asymmetry:** an individual progression is **glyph-auto-named**
+(recognized by sight); a **collection** takes a **typed mnemonic name**
+(referred to — "verse-ideas"). Collections = the organizing tier (payload for
+the between-sessions modal #16), so a growing library lives there, off the live
+surface. ("Huge collection = user's problem" — fine.)
+
+**Dispatch = material × realiser, on the transient/committed spine.** The
+"send a progression somewhere to play" idea untangles into two axes:
+- *Material* = progressions (tokens); *Realiser* = plays material in a voice
+  (Odonus quantiser / MIDI / the new pad-arp-strum machine).
+- **Sequencing** = material×realiser over TIME (scene grid / macro-Tidal);
+  **quick-compare** = fire one material→realiser ONCE (no timeline).
+- Same op, two time-scopes — the SAME transient↔committed spine the chyron
+  already has (audition → lift): **drag a token onto a realiser = live-preview
+  binding (transient); drop into a scene cell = commit to the sequence.**
+- Routing UI: NOT a Sankey (that encodes quantity-flow); a **patch/assignment
+  graph** (which token → which player) — i.e. the drawn routing-graph already
+  parked in the routing FUTURE note. Drag-drop lands naturally there.
+
+**Roadmap effect:** reshapes Phase 2b/4 → lift becomes compress-in-place, no
+separate panel. Realiser layer = the bigger later move (the inversion below).
+Nail the TIMING first (span playback) — "compress a run to a token" only feels
+good if the run plays back cleanly.
+
 ## Future direction — Vetula as a composition window, + realiser machines (AC 2026-08-01, NOT NOW)
 
 The chyron makes something conceptually clear that was implicit: Vetula is
