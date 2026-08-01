@@ -115,6 +115,44 @@ A highlighted span with timing can **loop** (`playPath`-like, but scheduled to
 repeat) so you can leave a run playing and audition *over* it — the natural way
 to test a betweening flavor by ear.
 
+## Chyron interaction spec (Phases 2–3) — resolved 2026-08-01
+
+**Chip content — DECIDED: the Tank's mini stave-glyph**, not text. Name-free
+(the interesting chords are the hard-to-name ones), same visual language as the
+tank you lift *into*, narrower than a spelled-out pitch-set. Reuse
+`chordGlyph [] 0 0 ev.notes` in a small `SE.svg` exactly like `specimenTile`.
+Name/pcs live in a hover tooltip.
+
+**Gesture model on the chyron:**
+
+| Gesture | Effect |
+|---|---|
+| hover + `space` (pointer over a chip) | audition that chord — **no re-log** (a no-log audition path; avoids feedback) |
+| hover a selection + `space` | audition the whole selection, with its **original captured timing** (from `at`) |
+| click | set one selection endpoint; the **next click** completes the span; a further click starts fresh |
+| shift-click a chip | add that chord to the **Tank** (as a `Specimen`, like `CatchNode`) |
+| shift-click **inside the selection** | **lift the selection as a progression** |
+
+Selection state: `chyronSel :: Maybe {lo,hi}` — `lo==hi` is a pending single
+endpoint; a second click sets the span; a third click resets to a new endpoint.
+Hover state: `hoveredChyron :: Maybe Int`.
+
+**Lift-to-progression — DECIDED: every lifted progression is NAMED.** The name
+**auto-generates** (from the chords, or a glyph-name) and is editable, so it's
+not a friction modal — accept the default and move on. It is saved to the
+library AND loaded as current. Losing a *transient unnamed* current is fine —
+the durable unit is always a named progression (this is exactly the shape
+collections #14 will save). No separate "protect the unnamed current" logic.
+
+**Phasing within 2–3:**
+- **2a** — glyph chips; `hoveredChyron`; no-log audition path; `space` auditions
+  the hovered chip; click-selection; shift-click → Tank.
+- **2b** — `space` over a selection plays it with original timing;
+  shift-click-in-selection → lift as an auto-named, saved, loaded progression;
+  **remove `ArrangeSpec`'s auto-bridge** (snag #1 retired). Bridging moves to a
+  lift-time option.
+- **3** — de-quantise / re-quantise verbs on a lifted progression; span loop.
+
 ## Panels (snag #13)
 
 Split the current unified "TANK & PROGRESSION" panel:

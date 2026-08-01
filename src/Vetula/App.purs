@@ -507,9 +507,15 @@ type State =
   , presets :: Array Preset
   , identity :: Maybe String
   -- The CHYRON: an append-only (capped) log of everything auditioned this
-  -- session, oldest→newest. Read-only in Phase 1 (just the ticker); Phases 2–3
-  -- add span-selection + lift + timing verbs. See DESIGN-vetula-chyron-redesign.
+  -- session, oldest→newest. Phase 1 = the ticker; Phase 2 adds interaction.
+  -- See DESIGN-vetula-chyron-redesign.
   , chyron :: Array ChyronEvent
+  -- Chyron interaction (Phase 2). `hoveredChyron` = the chip index under the
+  -- pointer (space auditions it, no re-log). `chyronSel` = the selected span:
+  -- lo==hi is a pending single endpoint, a second click completes the span, a
+  -- further click resets.
+  , hoveredChyron :: Maybe Int
+  , chyronSel :: Maybe { lo :: Int, hi :: Int }
   }
 
 -- | Which floating control a fold toggle targets.
@@ -608,6 +614,10 @@ data Action
   | CatchTriad Int (Array Int) Boolean   -- Tonnetz: freeze a triad into the tank (root, pcs, isMajor)
   | AuditionNode ChordNode               -- Lattices: hear a generated chord (its own voicing)
   | CatchNode ChordNode                  -- Lattices: freeze a generated chord into the tank
+  -- Chyron (Phase 2): hover a chip (space auditions it), or click one — plain
+  -- click builds the selection span, shift-click lifts (to the tank for now).
+  | HoverChyron (Maybe Int)
+  | ChyronClick Int Boolean
   | ZoomAt Event Number    -- geometric lens: wheel-zoom toward the cursor (event, deltaY)
   | PanStart Event         -- geometric lens: begin a grab-to-pan drag
   | PanMove Event          -- geometric lens: drag the viewport
@@ -767,6 +777,8 @@ component = H.mkComponent
       , panMoved: false
       , genRoll: 0
       , chyron: []
+      , hoveredChyron: Nothing
+      , chyronSel: Nothing
       }
   , render
   , eval: H.mkEval H.defaultEval
@@ -1826,6 +1838,32 @@ handleAction = case _ of
                }
     H.modify_ _ { tank = st.tank <> [ spec ], nextSpecId = st.nextSpecId + 1 }
 
+  -- Chyron: remember which chip the pointer is over so space auditions it.
+  HoverChyron mi -> H.modify_ _ { hoveredChyron = mi }
+
+  -- Chyron click. Plain click walks the selection state machine (endpoint →
+  -- span → reset). Shift-click LIFTS: for now, catch the chord into the tank
+  -- (Phase 2b will special-case a shift-click INSIDE the span to lift the whole
+  -- selection as a named progression).
+  ChyronClick i shift -> do
+    st <- H.get
+    case index st.chyron i of
+      Nothing -> pure unit
+      Just ev
+        | shift -> do
+            let sorted = sort ev.notes
+                foot = fromMaybe 0 (head sorted)
+                spec = { id: SpecimenId st.nextSpecId
+                       , voicing: drop 1 sorted
+                       , bass: foot
+                       , label: ev.label
+                       , provenance: Imported   -- lifted from the audition trace
+                       , anchor: Free
+                       }
+            H.modify_ _ { tank = st.tank <> [ spec ], nextSpecId = st.nextSpecId + 1 }
+        | otherwise ->
+            H.modify_ _ { chyronSel = Just (nextSel st.chyronSel i) }
+
   -- Wheel-zoom the geometric viewport toward the cursor. The point under the
   -- pointer stays fixed: the centre's offset from it scales by the zoom ratio.
   ZoomAt ev dy -> do
@@ -2428,6 +2466,44 @@ logChyron label notes pcs = do
       ev = { label: lab, notes, pcs, at: now }
   H.modify_ \st -> st { chyron = takeEnd chyronCap (st.chyron <> [ ev ]) }
 
+-- | The chyron selection state machine: a click at index i starts a fresh single
+-- | endpoint, completes a span from a pending endpoint (lo==hi), or resets from a
+-- | complete span.
+nextSel :: Maybe { lo :: Int, hi :: Int } -> Int -> { lo :: Int, hi :: Int }
+nextSel msel i = case msel of
+  Nothing -> { lo: i, hi: i }
+  Just s
+    | s.lo == s.hi -> { lo: min s.lo i, hi: max s.lo i }
+    | otherwise -> { lo: i, hi: i }
+
+-- | Schedule notes on the preview channel WITHOUT logging to the chyron — for
+-- | re-auditioning a chip already in the trace (no feedback loop).
+auditionNotesNoLog :: forall o m. MonadAff m => Array Int -> H.HalogenM State Action Slots o m Unit
+auditionNotesNoLog notes = do
+  st <- H.get
+  for_ st.midiOut \out ->
+    liftEffect $ for_ notes \n ->
+      Midi.scheduleNote out { channel: st.previewChan, note: n, velocity: 92, delayMs: 0.0, durMs: 900.0 }
+
+-- | Play the selected chyron span back with its ORIGINAL captured timing (the
+-- | inter-onset gaps from each event's `at`), notes lightly rolled. No re-log.
+-- | (Phase 3 will add a de-quantised / grid-snapped alternative.)
+playChyronSelection :: forall o m. MonadAff m => H.HalogenM State Action Slots o m Unit
+playChyronSelection = do
+  st <- H.get
+  case st.chyronSel of
+    Just sel | sel.hi > sel.lo -> do
+      let evs = mapMaybe (\ix -> index st.chyron ix) (range sel.lo sel.hi)
+          t0 = maybe 0.0 _.at (head evs)
+          rollMs = 22.0
+      for_ st.midiOut \out -> liftEffect $
+        for_ evs \ev ->
+          for_ (mapWithIndex Tuple ev.notes) \(Tuple j n) ->
+            Midi.scheduleNote out
+              { channel: st.previewChan, note: n, velocity: 88
+              , delayMs: (ev.at - t0) + toNumber j * rollMs, durMs: 780.0 }
+    _ -> pure unit
+
 -- | Send a chord's notes to the MIDI bus (no state change) and log it to the chyron.
 playChord :: forall o m. MonadAff m => ChordNode -> H.HalogenM State Action Slots o m Unit
 playChord c = do
@@ -2553,20 +2629,28 @@ nudgeSelected dir = do
 playHoveredOrSounding :: forall o m. MonadAff m => H.HalogenM State Action Slots o m Unit
 playHoveredOrSounding = do
   st <- H.get
-  case st.hoveredSpec of
-    -- pointer over a tank tile: preview that frozen specimen straight from its
-    -- own voicing (no state change), so you can explore the tank by ear too.
-    Just sid | Just spec <- find (\sp -> sp.id == sid) st.tank -> playSpecimen spec
-    _ -> case st.hoveredTriad of
-      -- Tonnetz: a hovered triangle has no pool id, so preview it straight from its
-      -- root + pitch classes (no state change, like the candidate preview below).
-      Just t -> playChord (triadNode t.root t.pcs "")
-      Nothing -> case st.hoveredId of
-        -- in pick mode the hovered bubble is a candidate (not yet in `chords`);
-        -- preview it without committing (no sounding change, no insert)
-        Just hid | Just cand <- find (\c -> c.id == hid) st.candidates -> playChord cand
-        Just hid -> playId hid
-        Nothing -> for_ st.sounding \sid -> for_ (find (\c -> c.id == sid) st.chords) playChord
+  case st.hoveredChyron of
+    -- pointer over the chyron: audition the hovered chip, or — if it's inside a
+    -- completed span — play the whole selection with its original timing. Never
+    -- re-logs (it's already in the trace).
+    Just i | Just ev <- index st.chyron i ->
+      case st.chyronSel of
+        Just sel | sel.hi > sel.lo, i >= sel.lo, i <= sel.hi -> playChyronSelection
+        _ -> auditionNotesNoLog ev.notes
+    _ -> case st.hoveredSpec of
+      -- pointer over a tank tile: preview that frozen specimen straight from its
+      -- own voicing (no state change), so you can explore the tank by ear too.
+      Just sid | Just spec <- find (\sp -> sp.id == sid) st.tank -> playSpecimen spec
+      _ -> case st.hoveredTriad of
+        -- Tonnetz: a hovered triangle has no pool id, so preview it straight from its
+        -- root + pitch classes (no state change, like the candidate preview below).
+        Just t -> playChord (triadNode t.root t.pcs "")
+        Nothing -> case st.hoveredId of
+          -- in pick mode the hovered bubble is a candidate (not yet in `chords`);
+          -- preview it without committing (no sounding change, no insert)
+          Just hid | Just cand <- find (\c -> c.id == hid) st.candidates -> playChord cand
+          Just hid -> playId hid
+          Nothing -> for_ st.sounding \sid -> for_ (find (\c -> c.id == sid) st.chords) playChord
 
 -- | The key/scale a chord is gathered under — the bubblepack it joins.
 groupLabel :: Key -> String
@@ -3058,24 +3142,44 @@ chyronBar :: forall m. State -> H.ComponentHTML Action Slots m
 chyronBar st =
   HH.div
     [ HP.style ( "position: fixed; bottom: 30px; left: 0; right: 0; z-index: 39; box-sizing: border-box; "
-        <> "display: flex; gap: 10px; align-items: center; padding: 2px 12px; overflow: hidden; "
+        <> "display: flex; gap: 10px; align-items: center; padding: 3px 12px; min-height: 44px; overflow: hidden; "
         <> "font-family: Georgia, serif; background: linear-gradient(#efe9d8,#e7e0cb); "
         <> "border-top: 1px solid #0000000f; box-shadow: 0 -1px 3px #0000000d;" ) ]
     [ HH.span
         [ HP.style "font-size: 10px; letter-spacing: 0.16em; text-transform: uppercase; color: #8a7d5a; flex: 0 0 auto;" ]
         [ HH.text "audition" ]
     , HH.div
-        [ HP.style "flex: 1 1 auto; overflow: hidden; display: flex; gap: 6px; align-items: center; justify-content: flex-end;" ]
+        [ HP.style "flex: 1 1 auto; overflow: hidden; display: flex; gap: 5px; align-items: center; justify-content: flex-end;" ]
         ( if length st.chyron == 0
             then [ HH.span [ HP.style "font-size: 11px; color: #b3a888; font-style: italic;" ] [ HH.text "play a chord anywhere — it lands here" ] ]
-            else map chyronChip (takeEnd 30 st.chyron)
+            else let off = max 0 (length st.chyron - 30)
+                 in mapWithIndex (\j ev -> chyronChip (off + j) ev) (takeEnd 30 st.chyron)
         )
     ]
   where
-  chyronChip ev =
-    HH.span
-      [ HP.style "flex: 0 0 auto; white-space: nowrap; font-size: 12px; color: #5a4f38; background: #faf7ee; border: 1px solid #d8ceb4; border-radius: 3px; padding: 1px 7px;" ]
-      [ HH.text ev.label ]
+  -- one chip = the chord's mini stave-glyph (same as the Tank), name-free. Hover
+  -- + space auditions it; click builds the selection span; shift-click lifts it
+  -- to the tank. In-span chips wear a warm wash; the span's endpoints a gold rim.
+  chyronChip i ev =
+    let inSel = case st.chyronSel of
+                  Just sel -> i >= sel.lo && i <= sel.hi
+                  Nothing -> false
+        isEnd = case st.chyronSel of
+                  Just sel -> i == sel.lo || i == sel.hi
+                  Nothing -> false
+        bg = if inSel then "#efe6c8" else "#faf7ee"
+        brd = if isEnd then "#b8860b" else if inSel then "#cdbb8c" else "#d8ceb4"
+        pcNames = joinWith " " (map noteName (sort ev.pcs))
+    in HH.span
+        [ HP.style ("flex: 0 0 auto; white-space: nowrap; border: 1px solid " <> brd
+                     <> "; background: " <> bg <> "; border-radius: 3px; padding: 0 1px; cursor: pointer; line-height: 0;")
+        , HP.title (ev.label <> (if pcNames == "" then "" else " · " <> pcNames))
+        , HE.onMouseEnter \_ -> HoverChyron (Just i)
+        , HE.onMouseLeave \_ -> HoverChyron Nothing
+        , HE.onClick \e -> ChyronClick i (ME.shiftKey e) ]
+        [ SE.svg
+            [ SA.viewBox (-18.0) (-22.0) 36.0 44.0, SA.width 30.0, SA.height 38.0 ]
+            (chordGlyph [] 0.0 0.0 ev.notes) ]
 
 -- | The Tonnetz-stack HUD in the tank card (2026-07-31): shown only while a stack
 -- | is accumulating. Names the picked triads and the resulting polychord's pitch
