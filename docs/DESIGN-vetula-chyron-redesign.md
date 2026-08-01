@@ -198,6 +198,44 @@ the browser. The chyron substrate first because everything hangs off it.
   #3 (Tonnetz register). Each its own small commit.
 - **Deferred:** #14 collections.
 
+## Future direction — Vetula as a composition window, + realiser machines (AC 2026-08-01, NOT NOW)
+
+The chyron makes something conceptually clear that was implicit: Vetula is
+becoming a **live composition surface** whose product is *material* — chord
+shapes and progressions — not sound. That invites an **architecture inversion**:
+
+- Today Vetula both composes AND plays: it owns a voice bar that routes per-voice
+  MIDI + an Odonus chord-quantiser feed. Playing is Vetula's job.
+- Inverted: Vetula emits only **material** (the tank's chord shapes, lifted
+  progressions). Downstream **realiser machines** *interpret* that material, each
+  in its own voice. Vetula sheds the player role; the **output/voice bar gets
+  ripped out** and playing is delegated.
+
+The motivating new machine: a **Harmonia-driven string player** that takes a
+chord-set / progression and makes its **own sequenceable decisions** —
+arpeggiation, counterpoint, voice-leading, register, rhythm. "Sequenceable" is
+load-bearing: those decisions are themselves patternable (they belong in the
+macro-Tidal lanes + the scene grid), so the realiser is an instrument you
+*perform*, not a fixed renderer.
+
+Why it fits what's already here:
+- Vetula's internal `Voice` type is already "its own read-head into the loaded
+  progression" — this generalises that idea *across machines*: shared material,
+  many read-heads.
+- Harmonia already carries the realiser machinery — `Voicing` (incl. `quartal`),
+  `Graded` anchors, `Voice`, `Quantise`.
+- Odonus is already one consumer of Vetula's chord feed; a string-player is just
+  another consumer of the same material. The chyron/progression becomes the
+  shared score; machines become **realisers/voices** over it.
+- **Two empty nav slots already exist** — Sufflamen and Stellatus are `— TBD —`
+  in the shell today (both triggerfish genera, matching the naming). The new
+  machine(s) can fill them.
+
+Sequencing: **finish the chyron redesign (through Phase 4) before starting
+this.** It's an architecture-level move (a new machine + retiring Vetula's voice
+bar) and wants the composition surface settled first. Likely a new Marginalia
+project when it begins.
+
 ## Open decisions (resolve as we reach them)
 
 - **Chyron cap + persistence.** Session-only rolling buffer, or persisted? Start
