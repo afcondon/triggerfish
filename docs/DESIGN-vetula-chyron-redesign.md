@@ -1,0 +1,171 @@
+# Vetula redesign-2 — the audition chyron and what it dissolves
+
+**Status:** design, 2026-08-01. Follows `DESIGN-vetula-progression-building.md`
+(the three-view redesign, all built). This doc is the *second* redesign, born
+from a hands-on shakedown session auditioning through Continuo (Piano One + LABS
+strings → ADAM monitors). Source snags/ideas: the session scratch list.
+
+## The core realization
+
+The three-view redesign gave Vetula good *surfaces* to explore harmony on. The
+shakedown exposed that the **progression-building model underneath them is
+wrong**. Today you build a progression by **shift-clicking a caught chord to
+drop it into the progression, bridged** (`ArrangeSpec` → `Vetula.Between`
+inserts `bridgeLen` cadence chords in front of it). Observed failure: the
+progression grew **1 → 4 → 6** as bridge chords piled in, with no way to tell
+anchors from bridges. That's snag #1, and it isn't a bug to patch — it's a
+signal that *deciding to build a progression up front* is the wrong frame.
+
+The fix is a single new primitive that **all** the good ideas from the session
+turn out to be facets of:
+
+### The audition chyron — a rolling harmonic capture buffer
+
+A ticker along the bottom of the screen (ABOVE the output-destinations bar) that
+**logs every audition, in order**, scrolling one notch per new chord (not
+constant drift, not scrolling-away). Always on, in every view.
+
+Because it is *always recording*, you never arm it. You bang on chords — on the
+fifths ring, the Tonnetz, the lattice, the grow/explore bloom — and the trace
+accumulates. A progression is then something you **lift retroactively** from a
+span of the trace, not something you assemble chord-by-chord in advance. The
+connective tissue (cadence bridge / voice-leading) is applied **at lift time**,
+to a run you already like the sound of — which is also where the long-parked
+*cadence-vs-voice-leading* decision finally lives (it becomes a per-lift choice,
+not a global mode).
+
+This is the direct-manipulation thesis (CLAUDE.md) applied to composition:
+**operate on the trace of what you did, not a blank score.**
+
+## What the chyron absorbs
+
+| Session item | How the chyron subsumes it |
+|---|---|
+| #1 bridge-on-catch grows 1→4→6 | Retired. No bridging on catch; you lift a span and bridge at lift. |
+| #7 rename "grow" → "explore" | Part of the same pass; grow becomes a *jam surface* whose output is the trace. |
+| #8 grow-view progression-gathering | The trace IS the path you walk through the satellite blooms. |
+| #12 the chyron itself | The keystone. |
+| #13 split Tank / Progression panels | Falls out: tank = caught-anchor pool; progression = a lifted span. Different lifecycles → different panels. |
+| #14 collections of progressions | A saved unit becomes `{ pool, named progressions[] }` — many lifts off one pool. |
+
+The remaining session items are independent of the chyron and ride along:
+
+- **#2** ring orderings (chromatic *and* circle-of-fifths) + speculative spiral.
+- **#3** Tonnetz register — pure pitch-class (clean modal-family shapes) vs a
+  pitch-space/spiral variant with real octaves. Ties to #2's spiral.
+- **#4/#9** unhide the cascade `Select`; reconcile the published widget package
+  name (`halogen-ui` vs the pinned `halogen-widgets: 0.2.0`).
+- **#5** grey out inert color layers (borrowed/McMullen/Butler/Stock) in the
+  triads-only Tonnetz view.
+- **#6** a persistent mini-Tonnetz in the selector panel using the modal-family
+  shapes as an interface element.
+- **#10** surface Harmonia's full 21-member `Mode` ADT (diatonic +
+  harmonic-minor + melodic-minor modes) + hexatonic catalog in the scale picker.
+- **#11** quartal harmony: `Harmonia.Voicing.quartal` already exists; a quartal
+  "Tonnetz" collapses to the line/circle of fifths (P4 ≡ inverted P5), so it's a
+  *reading* of the fifths axis, not a new lattice. Optional quartal-neighbor
+  bloom in explore.
+
+## Data model
+
+Current relevant state (`src/Vetula/App.purs`):
+
+- `tank :: Array Specimen` — the durable, unordered pool of caught chords.
+- `path :: Array Int` — the current progression as chord ids on the live surface.
+- `bridgeLen :: Int` — the cadence-length dial (0..`maxBridge`), consumed by
+  `ArrangeSpec` via `Vetula.Between.bridgeNotes`.
+- Audition choke-points: `playChord :: ChordNode -> …` and
+  `playSpecimen :: Specimen -> …` (both schedule `playNotes`/`specNotes` on
+  `previewChan`). `playPath` replays an existing path — must NOT re-log.
+
+New state:
+
+```purescript
+-- one audition event: what sounded, when, and enough to re-sound + label it.
+type ChyronEvent =
+  { pcs   :: Array Int      -- pitch-class set (for glyph + dedup)
+  , notes :: Array Int      -- absolute MIDI (for exact replay)
+  , label :: String         -- chord name as shown
+  , at    :: Number         -- capture time (ms, from Date.now via FFI/Now)
+  }
+
+-- the rolling buffer + the current highlight span.
+, chyron     :: Array ChyronEvent   -- append-only within a session; capped length
+, chyronSpan :: Maybe { lo :: Int, hi :: Int }   -- highlighted [lo,hi] indices
+```
+
+`playChord` and `playSpecimen` gain one line: append a `ChyronEvent`. That is
+the entire capture mechanism — because those two functions are the only
+single-chord audition paths, everything auditioned anywhere lands in the trace
+for free.
+
+### Lift targets (the three verbs off a highlighted span)
+
+1. **→ tank** — every distinct chord in the span becomes a `Specimen` (loose
+   anchors). De-duped by pcs.
+2. **→ progression, ordinal** — the span in order, timing dropped ("de-quantise").
+3. **→ progression, timed** — the span in order, keeping captured inter-onset
+   gaps ("re-quantise" snaps those gaps to a grid; a third state is
+   timeless-ordinal). Three timing states: *captured-free-time ↔ grid-snapped ↔
+   timeless-ordinal*, two verbs (de-quantise / re-quantise) moving between them.
+
+### Loop
+
+A highlighted span with timing can **loop** (`playPath`-like, but scheduled to
+repeat) so you can leave a run playing and audition *over* it — the natural way
+to test a betweening flavor by ear.
+
+## Panels (snag #13)
+
+Split the current unified "TANK & PROGRESSION" panel:
+
+- **Tank** — stays where it is (top-left family), collapses UP.
+- **Progression** — becomes a **bottom-left floating panel**, collapsible but
+  **collapsing DOWN**. Build collapse-direction as a *parameter* on one reusable
+  panel widget and **extract it to `halogen-ui`** (do this alongside #4/#9 so
+  the package touch is one pass, not three).
+
+## Collections (snag #14 — deferred)
+
+Once lifts are cheap, one chord pool spawns many progressions. The saved unit
+becomes `{ pool (= tank), named progressions[] }` — the shape of song form
+(verse / pre-chorus / chorus / bridge / coda reuse the same chords in different
+orders). Kin to the already-built **scene grid** (sections ≈ scenes) and the
+richer target for the **library/preset tier + between-sessions modal**
+(task #16). Compose it from tank+chyron+preset machinery; don't build a silo.
+**Not now** — bridge too far mid-refactor.
+
+## Implementation phases
+
+Ordered so each phase is independently buildable, committable, and verifiable in
+the browser. The chyron substrate first because everything hangs off it.
+
+- **Phase 0 — rename.** `LensGenerate` label "grow" → "explore" (+ any user-
+  facing "grow" strings). Trivial, isolates the rename from behavior. (#7)
+- **Phase 1 — chyron substrate (keystone).** `ChyronEvent`, `chyron` state,
+  capture in `playChord`/`playSpecimen`, a `Now`/`Date.now` FFI for `at`, the
+  bottom ticker render (above the output bar; scroll one notch per event; cap
+  length). Read-only: it just shows what you played. (#12, part)
+- **Phase 2 — highlight + lift.** `chyronSpan` selection on the ticker; the
+  three lift verbs (→ tank / → progression ordinal / → progression timed);
+  wire lift-time bridging (reuse `Vetula.Between`) so the old `ArrangeSpec`
+  auto-bridge on catch is removed. Retires snag #1. (#12 + #1)
+- **Phase 3 — timing + loop.** de-quantise / re-quantise verbs; span loop
+  playback. (#12, timing axis)
+- **Phase 4 — panel split.** Tank vs Progression panels; the collapse-DOWN
+  floating panel widget, extracted to `halogen-ui`. Bundle with #4/#9 package
+  reconcile. (#13)
+- **Phase 5+ — ride-along view/theory items**, independently: #10 (Mode ADT),
+  #11 (quartal), #2 (ring orderings), #5 (grey inert layers), #6 (mini-Tonnetz),
+  #3 (Tonnetz register). Each its own small commit.
+- **Deferred:** #14 collections.
+
+## Open decisions (resolve as we reach them)
+
+- **Chyron cap + persistence.** Session-only rolling buffer, or persisted? Start
+  session-only, capped (say 128 events); persistence can come with collections.
+- **Grid source for re-quantise.** System BPM (shell `bpm`) is the obvious grid.
+- **Lift-time bridging default.** Cadence vs voice-leading as the default verb —
+  the ear decision, now made *in situ* on a real span rather than abstractly.
+- **Does the chyron go global** (all machines) eventually? Design it Vetula-local
+  but keep the event type machine-agnostic.

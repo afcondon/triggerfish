@@ -18,7 +18,7 @@ module Vetula.App where
 
 import Prelude
 
-import Data.Array (concat, concatMap, deleteAt, drop, elem, elemIndex, filter, find, findIndex, head, index, insertAt, last, length, mapMaybe, mapWithIndex, modifyAt, nub, nubByEq, range, replicate, sort, take, updateAt, (!!))
+import Data.Array (concat, concatMap, deleteAt, drop, elem, elemIndex, filter, find, findIndex, head, index, insertAt, last, length, mapMaybe, mapWithIndex, modifyAt, nub, nubByEq, range, replicate, sort, take, takeEnd, updateAt, (!!))
 import Data.Foldable (all, any, foldl, foldr, for_, maximum, minimum, sum)
 import Data.Traversable (traverse)
 import Data.Int (fromString, round, toNumber)
@@ -167,7 +167,7 @@ lensLabel = case _ of
   LensCircleFifths -> "fifths"
   LensTonnetz -> "tonnetz"
   LensLattices -> "voice-leading lattice"
-  LensGenerate -> "grow"
+  LensGenerate -> "explore"
 
 -- | Where Vetula's chord/path AUDITION goes, chosen in the shell's routing modal
 -- | (2026-08-01): Off (muted), Continuo (the piano+strings VST preview via the
@@ -350,6 +350,24 @@ type VoicingCycle =
   , ix :: Int
   }
 
+-- | One audition event on the CHYRON — the rolling harmonic capture buffer (see
+-- | docs/DESIGN-vetula-chyron-redesign.md). Every single-chord audition (via
+-- | `playChord`/`playSpecimen`, the only two audition choke-points) appends one
+-- | of these, whether or not sound actually came out. `pcs` for the glyph/dedup,
+-- | `notes` for exact replay, `at` (ms, `dateNow`) for the timing axis that a
+-- | later lift can quantise or drop. The trace is what a progression gets LIFTED
+-- | from retroactively, replacing build-a-progression-up-front.
+type ChyronEvent =
+  { pcs   :: Array Int
+  , notes :: Array Int
+  , label :: String
+  , at    :: Number
+  }
+
+-- | Cap on the rolling chyron buffer — oldest events fall off the left.
+chyronCap :: Int
+chyronCap = 128
+
 type State =
   { key :: Key
   -- The rig's resting harmonic scale (macro-tidal harmonic-authority): Nothing =
@@ -488,6 +506,10 @@ type State =
   -- Vetula reports its chip by PULL (AskChip), not a change-gated push.
   , presets :: Array Preset
   , identity :: Maybe String
+  -- The CHYRON: an append-only (capped) log of everything auditioned this
+  -- session, oldest→newest. Read-only in Phase 1 (just the ticker); Phases 2–3
+  -- add span-selection + lift + timing verbs. See DESIGN-vetula-chyron-redesign.
+  , chyron :: Array ChyronEvent
   }
 
 -- | Which floating control a fold toggle targets.
@@ -744,6 +766,7 @@ component = H.mkComponent
       , panning: Nothing
       , panMoved: false
       , genRoll: 0
+      , chyron: []
       }
   , render
   , eval: H.mkEval H.defaultEval
@@ -1736,7 +1759,8 @@ handleAction = case _ of
   AuditionTriad root pcs -> do
     st <- H.get
     if st.panMoved then H.modify_ _ { panMoved = false }
-    else playChord (triadNode root pcs "")
+    -- label it like CatchTriad (root name + minor mark) so the chyron reads it
+    else playChord (triadNode root pcs (noteName root <> (if elem (mod (root + 4) 12) pcs then "" else "m")))
 
   CatchTriad root pcs isMajor -> do
     st <- H.get
@@ -2391,22 +2415,40 @@ playId pid = do
   st <- H.get
   for_ (find (\c -> c.id == pid) st.chords) playChord
 
--- | Send a chord's notes to the MIDI bus (no state change).
+-- | Append one audition to the CHYRON (the rolling capture buffer), oldest
+-- | events falling off past `chyronCap`. Called from the single-chord audition
+-- | choke-points below, unconditionally — the trace records intent, so a muted
+-- | audition (no `midiOut`) still lands here. See DESIGN-vetula-chyron-redesign.
+logChyron :: forall o m. MonadAff m => String -> Array Int -> Array Int -> H.HalogenM State Action Slots o m Unit
+logChyron label notes pcs = do
+  now <- liftEffect dateNow
+  -- never log a blank chip: fall back to the pitch-class names if a call site
+  -- has no label (e.g. an off-net triad before it's named).
+  let lab = if label == "" then joinWith " " (map noteName (sort pcs)) else label
+      ev = { label: lab, notes, pcs, at: now }
+  H.modify_ \st -> st { chyron = takeEnd chyronCap (st.chyron <> [ ev ]) }
+
+-- | Send a chord's notes to the MIDI bus (no state change) and log it to the chyron.
 playChord :: forall o m. MonadAff m => ChordNode -> H.HalogenM State Action Slots o m Unit
 playChord c = do
   st <- H.get
+  let notes = playNotes c
   for_ st.midiOut \out ->
-    liftEffect $ for_ (playNotes c) \n ->
+    liftEffect $ for_ notes \n ->
       Midi.scheduleNote out { channel: st.previewChan, note: n, velocity: 92, delayMs: 0.0, durMs: 900.0 }
+  logChyron c.label notes (nub (map (\x -> mod x 12) notes))
 
 -- | Audition a tank specimen: sound its notes on the preview channel (no state
--- | change). Same shape as `playChord`, but reads a self-contained Specimen.
+-- | change) and log it to the chyron. Same shape as `playChord`, but reads a
+-- | self-contained Specimen.
 playSpecimen :: forall o m. MonadAff m => Specimen -> H.HalogenM State Action Slots o m Unit
 playSpecimen s = do
   st <- H.get
+  let notes = specNotes s
   for_ st.midiOut \out ->
-    liftEffect $ for_ (specNotes s) \n ->
+    liftEffect $ for_ notes \n ->
       Midi.scheduleNote out { channel: st.previewChan, note: n, velocity: 92, delayMs: 0.0, durMs: 900.0 }
+  logChyron s.label notes (nub (map (\x -> mod x 12) notes))
 
 -- | In-place transpose of a tank specimen by `n` semitones — the capo move. Bass
 -- | and every upper voice shift arithmetically (absolute MIDI), and the label is
@@ -2999,12 +3041,41 @@ render st =
     -- (Old control C — the tall voices card — was deleted once the bar reached
     -- parity; its routing controls move to the routing modal.)
     , voiceBar st
+    , chyronBar st
     , HH.div
         [ HP.style "position: absolute; bottom: 44px; left: 50%; transform: translateX(-50%); z-index: 5;" ]
         [ pickBar st ]
     , helpOverlay st
     , revoiceModal st
     ]
+
+-- | The CHYRON — a thin ticker pinned just above the voice bar that logs every
+-- | audition this session (see DESIGN-vetula-chyron-redesign.md). Oldest→newest,
+-- | newest pinned at the right; older events clip off the left as the row fills
+-- | (one notch per new chord). Phase 1 is read-only — a running trace of what you
+-- | played; Phases 2–3 add span-selection, lift-to-progression, and timing verbs.
+chyronBar :: forall m. State -> H.ComponentHTML Action Slots m
+chyronBar st =
+  HH.div
+    [ HP.style ( "position: fixed; bottom: 30px; left: 0; right: 0; z-index: 39; box-sizing: border-box; "
+        <> "display: flex; gap: 10px; align-items: center; padding: 2px 12px; overflow: hidden; "
+        <> "font-family: Georgia, serif; background: linear-gradient(#efe9d8,#e7e0cb); "
+        <> "border-top: 1px solid #0000000f; box-shadow: 0 -1px 3px #0000000d;" ) ]
+    [ HH.span
+        [ HP.style "font-size: 10px; letter-spacing: 0.16em; text-transform: uppercase; color: #8a7d5a; flex: 0 0 auto;" ]
+        [ HH.text "audition" ]
+    , HH.div
+        [ HP.style "flex: 1 1 auto; overflow: hidden; display: flex; gap: 6px; align-items: center; justify-content: flex-end;" ]
+        ( if length st.chyron == 0
+            then [ HH.span [ HP.style "font-size: 11px; color: #b3a888; font-style: italic;" ] [ HH.text "play a chord anywhere — it lands here" ] ]
+            else map chyronChip (takeEnd 30 st.chyron)
+        )
+    ]
+  where
+  chyronChip ev =
+    HH.span
+      [ HP.style "flex: 0 0 auto; white-space: nowrap; font-size: 12px; color: #5a4f38; background: #faf7ee; border: 1px solid #d8ceb4; border-radius: 3px; padding: 1px 7px;" ]
+      [ HH.text ev.label ]
 
 -- | The Tonnetz-stack HUD in the tank card (2026-07-31): shown only while a stack
 -- | is accumulating. Names the picked triads and the resulting polychord's pitch
@@ -3103,7 +3174,7 @@ growBar st =
             [ HH.text "shake ⟳" ]
         , HH.button
             [ HP.style "border: 1px solid #dcdcdc; background: #fafafa; color: #6a6a6a; cursor: pointer; padding: 3px 12px; border-radius: 4px; font-size: 12px;"
-            , HP.title "leave the grow surface"
+            , HP.title "leave the explore surface"
             , HE.onClick \_ -> SetLens LensTonnetz ]
             [ HH.text "done" ]
         ]
@@ -3112,7 +3183,7 @@ growBar st =
             [ HP.style "border: 1px solid #b8860b; background: #fbf6ea; color: #7a5c00; cursor: pointer; padding: 3px 12px; border-radius: 4px; font-size: 12px;"
             , HP.title "bloom voice-led relatives around the caught chords"
             , HE.onClick \_ -> SetLens LensGenerate ]
-            [ HH.text "grow ⟳" ]
+            [ HH.text "explore ⟳" ]
         ]
     )
 
