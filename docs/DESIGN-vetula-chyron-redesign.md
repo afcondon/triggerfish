@@ -269,6 +269,55 @@ separate panel. Realiser layer = the bigger later move (the inversion below).
 Nail the TIMING first (span playback) — "compress a run to a token" only feels
 good if the run plays back cleanly.
 
+## The realiser pipeline as types (AC 2026-08-01)
+
+AC's formulation — the spine of the realiser layer:
+
+```purescript
+f :: Progression -> Timings -> TimedProgression       -- give it rhythm
+g :: TimedProgression -> PlayerConfig -> OutputStream  -- give it a voice
+-- e.g. C-D-G + [4,4,4] bars → 4 bars each; + [4,2,2] → 4 of C, 2 each D,G.
+-- g arpeggiates / holds / strums / quantises Odonus.
+```
+
+Why it's right: it's the classic **content / time / voice** separation (what
+notation and DAWs both rest on). C-D-G is pitch content; `Timings` is rhythm;
+`PlayerConfig` is orchestration/articulation. Three composable stages.
+
+It **absorbs the timing work** — Phase 3 isn't separate. `f`'s second arg IS the
+de-quantise/re-quantise axis generalized: the ledger emits the ordinal
+`Progression`; the three timing states (ordinal / captured-free-time /
+grid-snapped) are values or sources of `Timings`; "4 bars each" / "4+2+2" are
+hand-set ones. `Progression` = the saved 2-glyph token's payload (untimed).
+
+Wrinkles that shape the design:
+1. **`Timings` tempo-relative, not absolute** (Link/clock rig → cycles, not ms).
+   Deeper: a `TimedProgression` is essentially a **Tidal `Pattern` of chords**,
+   and the macro-Tidal engine already exists. DECISION: is `TimedProgression`
+   its own type or literally a chord `Pattern`? If `Pattern`, `g` + downstream
+   inherit the Tidal machinery for free.
+2. **Split realization from routing** — don't fold both into the sound-producer:
+   `g :: TimedProgression -> PlayerConfig -> EventStream` (musical: arp/held/
+   strum/quantise) and `route :: EventStream -> Sink -> Effect Unit` (MIDI ch /
+   Odonus / string machine). Lets the same realization hit two sinks, or one
+   TimedProgression be realized two ways to compare (the earlier A/B wish = vary
+   one arg).
+3. **Odonus breaks `OutputStream = notes`** — usefully. Arp/held/strum GENERATE
+   notes; Odonus IS a generator (feed it the chord/scale, it makes its own
+   rhythm). So for Odonus, `g` emits **quantiser-context changes** timed by the
+   progression, not notes. → `EventStream` must be abstract over BOTH note events
+   AND "set the harmonic context" events. Not `Array MidiNote`; a stream of typed
+   musical events, some notes, some "constrain that other machine."
+4. **"Drop a progression on a function" = a typed dataflow = ShapedSteer.**
+   `Progression` token → Timings node → `TimedProgression` token → Player node →
+   sound is nodes-are-computations / edges-are-typed-dependencies. AC already has
+   that workbench. FORK: bespoke Vetula drag-drop vs borrow the ShapedSteer
+   pattern — but same shape confirms the factoring.
+
+Two decisions shape everything downstream: **is `TimedProgression` a Tidal
+`Pattern`** (reuse the engine), and **is `EventStream` abstract over
+notes-vs-context** (so Odonus sits alongside arps).
+
 ## Future direction — Vetula as a composition window, + realiser machines (AC 2026-08-01, NOT NOW)
 
 The chyron makes something conceptually clear that was implicit: Vetula is
