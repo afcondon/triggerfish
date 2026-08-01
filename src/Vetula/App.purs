@@ -618,6 +618,8 @@ data Action
   -- click builds the selection span, shift-click lifts (to the tank for now).
   | HoverChyron (Maybe Int)
   | ChyronClick Int Boolean
+  | DeleteChyron Int       -- × a single audition out of the trace
+  | ClearChyron            -- wipe the whole audition trace
   | ZoomAt Event Number    -- geometric lens: wheel-zoom toward the cursor (event, deltaY)
   | PanStart Event         -- geometric lens: begin a grab-to-pan drag
   | PanMove Event          -- geometric lens: drag the viewport
@@ -1863,6 +1865,14 @@ handleAction = case _ of
             H.modify_ _ { tank = st.tank <> [ spec ], nextSpecId = st.nextSpecId + 1 }
         | otherwise ->
             H.modify_ _ { chyronSel = Just (nextSel st.chyronSel i) }
+
+  -- Delete one audition (indices shift, so drop any selection/hover to stay safe).
+  DeleteChyron i -> H.modify_ \st ->
+    st { chyron = fromMaybe st.chyron (deleteAt i st.chyron)
+       , chyronSel = Nothing
+       , hoveredChyron = Nothing }
+
+  ClearChyron -> H.modify_ _ { chyron = [], chyronSel = Nothing, hoveredChyron = Nothing }
 
   -- Wheel-zoom the geometric viewport toward the cursor. The point under the
   -- pointer stays fixed: the centre's offset from it scales by the zoom ratio.
@@ -3148,9 +3158,19 @@ chyronBar st =
         <> "user-select: none; -webkit-user-select: none; "
         <> "font-family: Georgia, serif; background: linear-gradient(#efe9d8,#e7e0cb); "
         <> "border-top: 1px solid #0000000f; box-shadow: 0 -1px 3px #0000000d;" ) ]
-    [ HH.span
-        [ HP.style "font-size: 10px; letter-spacing: 0.16em; text-transform: uppercase; color: #8a7d5a; flex: 0 0 auto;" ]
-        [ HH.text "audition" ]
+    [ HH.div
+        [ HP.style "flex: 0 0 auto; display: flex; align-items: center; gap: 6px;" ]
+        ( [ HH.span
+              [ HP.style "font-size: 10px; letter-spacing: 0.16em; text-transform: uppercase; color: #8a7d5a;" ]
+              [ HH.text "audition" ] ]
+          <> ( if length st.chyron == 0 then []
+               else [ HH.button
+                        [ HP.style "border: 1px solid #d8ceb4; background: #faf7ee; color: #9a8d6a; font-size: 11px; line-height: 1; cursor: pointer; padding: 2px 5px; border-radius: 3px;"
+                        , HP.title "clear the whole audition trace"
+                        , HE.onClick \_ -> ClearChyron ]
+                        [ HH.text "clear ✕" ] ]
+             )
+        )
     , HH.div
         [ HP.style "flex: 1 1 auto; overflow: hidden; display: flex; gap: 5px; align-items: center; justify-content: flex-end;" ]
         ( if length st.chyron == 0
@@ -3170,19 +3190,30 @@ chyronBar st =
         isEnd = case st.chyronSel of
                   Just sel -> i == sel.lo || i == sel.hi
                   Nothing -> false
+        hov = st.hoveredChyron == Just i
         bg = if inSel then "#efe6c8" else "#faf7ee"
         brd = if isEnd then "#b8860b" else if inSel then "#cdbb8c" else "#d8ceb4"
         pcNames = joinWith " " (map noteName (sort ev.pcs))
+        -- a delete × surfaces on hover (its own element, NOT the select target)
+        delX = if hov
+          then [ HH.button
+                   [ HP.style "position: absolute; top: -1px; right: -1px; z-index: 2; border: none; background: #faf7ee; color: #b06a5a; font-size: 11px; line-height: 1; cursor: pointer; padding: 0 2px; border-radius: 6px;"
+                   , HP.title "delete this audition"
+                   , HE.onClick \_ -> DeleteChyron i ]
+                   [ HH.text "×" ] ]
+          else []
     in HH.span
-        [ HP.style ("flex: 0 0 auto; white-space: nowrap; border: 1px solid " <> brd
+        [ HP.style ("position: relative; flex: 0 0 auto; white-space: nowrap; border: 1px solid " <> brd
                      <> "; background: " <> bg <> "; border-radius: 3px; padding: 0 1px; cursor: pointer; line-height: 0;")
         , HP.title (ev.label <> (if pcNames == "" then "" else " · " <> pcNames))
         , HE.onMouseEnter \_ -> HoverChyron (Just i)
-        , HE.onMouseLeave \_ -> HoverChyron Nothing
-        , HE.onClick \e -> ChyronClick i (ME.shiftKey e) ]
-        [ SE.svg
-            [ SA.viewBox (-18.0) (-22.0) 36.0 44.0, SA.width 30.0, SA.height 38.0 ]
-            (chordGlyph [] 0.0 0.0 ev.notes) ]
+        , HE.onMouseLeave \_ -> HoverChyron Nothing ]
+        ( delX <>
+          [ SE.svg
+              [ SA.viewBox (-18.0) (-22.0) 36.0 44.0, SA.width 30.0, SA.height 38.0
+              , HE.onClick \e -> ChyronClick i (ME.shiftKey e) ]
+              (chordGlyph [] 0.0 0.0 ev.notes) ]
+        )
 
 -- | The Tonnetz-stack HUD in the tank card (2026-07-31): shown only while a stack
 -- | is accumulating. Names the picked triads and the resulting polychord's pitch
