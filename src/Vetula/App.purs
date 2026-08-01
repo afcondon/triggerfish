@@ -63,7 +63,8 @@ import Binnacle.Scheduler as Scheduler
 import Binnacle.Transport as Transport
 import Triggerfish.Transport (Sounding(..))
 import Triggerfish.Midi.Routing as Routing
-import Triggerfish.Glyph (ChipView, glyphOf)
+import Triggerfish.Glyph (ChipView, Glyph, glyphOf)
+import Triggerfish.GlyphView (faIcon)
 import Triggerfish.Preset (Preset, indexOfContent, presetAlias)
 import Vetula.Store as Store
 import Triggerfish.Amphora as Amphora
@@ -368,6 +369,15 @@ type ChyronEvent =
 chyronCap :: Int
 chyronCap = 128
 
+-- | A SAVED sequence: a span lifted out of the live trace and compressed to a
+-- | pinned 2-glyph token (its identity, from `glyphOf` over the sequence's
+-- | content). Carries the full events so it can be replayed with timing and,
+-- | later, `split` into (Progression, Timings). See DESIGN-vetula-chyron-redesign.
+type SavedSeq =
+  { events :: Array ChyronEvent
+  , glyph :: Glyph
+  }
+
 type State =
   { key :: Key
   -- The rig's resting harmonic scale (macro-tidal harmonic-authority): Nothing =
@@ -516,6 +526,9 @@ type State =
   -- further click resets.
   , hoveredChyron :: Maybe Int
   , chyronSel :: Maybe { lo :: Int, hi :: Int }
+  -- Saved sequences: pinned 2-glyph tokens on the left of the chyron. Saving a
+  -- selection compresses its live chips into one of these (reclaiming space).
+  , chyronSaved :: Array SavedSeq
   }
 
 -- | Which floating control a fold toggle targets.
@@ -620,6 +633,9 @@ data Action
   | ChyronClick Int Boolean
   | DeleteChyron Int       -- × a single audition out of the trace
   | ClearChyron            -- wipe the whole audition trace
+  | SaveChyronSel          -- compress the selection into a pinned 2-glyph token
+  | PlaySaved Int          -- replay a pinned saved sequence (with its timing)
+  | DeleteSaved Int        -- × a pinned saved sequence
   | ZoomAt Event Number    -- geometric lens: wheel-zoom toward the cursor (event, deltaY)
   | PanStart Event         -- geometric lens: begin a grab-to-pan drag
   | PanMove Event          -- geometric lens: drag the viewport
@@ -781,6 +797,7 @@ component = H.mkComponent
       , chyron: []
       , hoveredChyron: Nothing
       , chyronSel: Nothing
+      , chyronSaved: []
       }
   , render
   , eval: H.mkEval H.defaultEval
@@ -1259,6 +1276,8 @@ handleAction = case _ of
         -- pane, docs/DESIGN-scene-modal.md) — so clear yields it the letter.
         "Backspace" -> handleAction ClearPath
         "Delete" -> handleAction ClearPath
+        -- Enter: compress the current chyron selection into a saved glyph token
+        "Enter" -> handleAction SaveChyronSel
         "p" -> H.gets _.path >>= playPath
         "f" -> toggleFavorite
         -- catch the hovered chord into the tank: a Tonnetz triangle first (no pool
@@ -1873,6 +1892,27 @@ handleAction = case _ of
        , hoveredChyron = Nothing }
 
   ClearChyron -> H.modify_ _ { chyron = [], chyronSel = Nothing, hoveredChyron = Nothing }
+
+  -- Compress the selected span into a pinned 2-glyph token: mint a SavedSeq from
+  -- its events + content-glyph, then REMOVE those events from the live trace
+  -- (reclaiming the space — the saving is the compression).
+  SaveChyronSel -> do
+    st <- H.get
+    case st.chyronSel of
+      Just sel | sel.hi > sel.lo -> do
+        let evs = mapMaybe (\ix -> index st.chyron ix) (range sel.lo sel.hi)
+            saved = { events: evs, glyph: glyphOf (seqContent evs) }
+            keep = mapMaybe (\(Tuple ix e) -> if ix < sel.lo || ix > sel.hi then Just e else Nothing)
+                     (mapWithIndex Tuple st.chyron)
+        H.modify_ _ { chyronSaved = st.chyronSaved <> [ saved ], chyron = keep
+                    , chyronSel = Nothing, hoveredChyron = Nothing }
+      _ -> pure unit
+
+  PlaySaved i -> do
+    st <- H.get
+    for_ (index st.chyronSaved i) \s -> playEvents s.events
+
+  DeleteSaved i -> H.modify_ \st -> st { chyronSaved = fromMaybe st.chyronSaved (deleteAt i st.chyronSaved) }
 
   -- Wheel-zoom the geometric viewport toward the cursor. The point under the
   -- pointer stays fixed: the centre's offset from it scales by the zoom ratio.
@@ -2495,23 +2535,31 @@ auditionNotesNoLog notes = do
     liftEffect $ for_ notes \n ->
       Midi.scheduleNote out { channel: st.previewChan, note: n, velocity: 92, delayMs: 0.0, durMs: 900.0 }
 
--- | Play the selected chyron span back with its ORIGINAL captured timing (the
--- | inter-onset gaps from each event's `at`), notes lightly rolled. No re-log.
--- | (Phase 3 will add a de-quantised / grid-snapped alternative.)
+-- | Canonical content of a sequence — the ordered pc-sets (duplicates KEPT, so a
+-- | strum reads as its own token), hashed by `glyphOf` to a stable 2-glyph pair.
+seqContent :: Array ChyronEvent -> String
+seqContent evs = joinWith " " (map (\e -> joinWith "," (map show (sort e.pcs))) evs)
+
+-- | Play a list of captured events back with their ORIGINAL timing (inter-onset
+-- | gaps from each `at`), each chord as a BLOCK (all notes together — no per-note
+-- | roll, which read as an unwanted arpeggio). No re-log.
+playEvents :: forall o m. MonadAff m => Array ChyronEvent -> H.HalogenM State Action Slots o m Unit
+playEvents evs = do
+  st <- H.get
+  let t0 = maybe 0.0 _.at (head evs)
+  for_ st.midiOut \out -> liftEffect $
+    for_ evs \ev ->
+      for_ ev.notes \n ->
+        Midi.scheduleNote out
+          { channel: st.previewChan, note: n, velocity: 88, delayMs: ev.at - t0, durMs: 780.0 }
+
+-- | Play the selected chyron span (see `playEvents`). Phase 3 will add a
+-- | de-quantised / grid-snapped alternative.
 playChyronSelection :: forall o m. MonadAff m => H.HalogenM State Action Slots o m Unit
 playChyronSelection = do
   st <- H.get
   case st.chyronSel of
-    Just sel | sel.hi > sel.lo -> do
-      let evs = mapMaybe (\ix -> index st.chyron ix) (range sel.lo sel.hi)
-          t0 = maybe 0.0 _.at (head evs)
-          rollMs = 22.0
-      for_ st.midiOut \out -> liftEffect $
-        for_ evs \ev ->
-          for_ (mapWithIndex Tuple ev.notes) \(Tuple j n) ->
-            Midi.scheduleNote out
-              { channel: st.previewChan, note: n, velocity: 88
-              , delayMs: (ev.at - t0) + toNumber j * rollMs, durMs: 780.0 }
+    Just sel | sel.hi > sel.lo -> playEvents (mapMaybe (\ix -> index st.chyron ix) (range sel.lo sel.hi))
     _ -> pure unit
 
 -- | Send a chord's notes to the MIDI bus (no state change) and log it to the chyron.
@@ -3163,6 +3211,15 @@ chyronBar st =
         ( [ HH.span
               [ HP.style "font-size: 10px; letter-spacing: 0.16em; text-transform: uppercase; color: #8a7d5a;" ]
               [ HH.text "audition" ] ]
+          -- ⏎ save appears only while a completed span is selected
+          <> ( case st.chyronSel of
+                 Just sel | sel.hi > sel.lo ->
+                   [ HH.button
+                       [ HP.style "border: 1px solid #b8860b; background: #fbf6ea; color: #7a5c00; font-size: 11px; line-height: 1; cursor: pointer; padding: 2px 6px; border-radius: 3px;"
+                       , HP.title "save selection as a glyph token (⏎)"
+                       , HE.onClick \_ -> SaveChyronSel ]
+                       [ HH.text "⏎ save" ] ]
+                 _ -> [] )
           <> ( if length st.chyron == 0 then []
                else [ HH.button
                         [ HP.style "border: 1px solid #d8ceb4; background: #faf7ee; color: #9a8d6a; font-size: 11px; line-height: 1; cursor: pointer; padding: 2px 5px; border-radius: 3px;"
@@ -3171,8 +3228,15 @@ chyronBar st =
                         [ HH.text "clear ✕" ] ]
              )
         )
+    -- SAVED region: pinned 2-glyph tokens, left, natural width (they push the
+    -- live region rightward as they accumulate — saving reclaims live space).
     , HH.div
-        [ HP.style "flex: 1 1 auto; overflow: hidden; display: flex; gap: 5px; align-items: center; justify-content: flex-end;" ]
+        [ HP.style "flex: 0 0 auto; display: flex; align-items: center; gap: 7px;" ]
+        (mapWithIndex savedToken st.chyronSaved)
+    -- LIVE region: fills the rest; newest right, oldest clips left; shrinks as the
+    -- saved region grows (min-width:0).
+    , HH.div
+        [ HP.style "flex: 1 1 auto; min-width: 0; overflow: hidden; display: flex; gap: 5px; align-items: center; justify-content: flex-end;" ]
         ( if length st.chyron == 0
             then [ HH.span [ HP.style "font-size: 11px; color: #b3a888; font-style: italic;" ] [ HH.text "play a chord anywhere — it lands here" ] ]
             else let off = max 0 (length st.chyron - 30)
@@ -3180,6 +3244,23 @@ chyronBar st =
         )
     ]
   where
+  -- a SAVED sequence: its 2-glyph identity (FA icon pair — visually distinct from
+  -- the live stave-glyphs, so "named unit" reads at a glance). Click the icons to
+  -- replay it with timing; × deletes. Tooltip carries the chord names.
+  savedToken i s =
+    HH.span
+      [ HP.style "position: relative; flex: 0 0 auto; display: inline-flex; align-items: center; gap: 3px; border: 1px solid #cdbb8c; background: #f6efdc; border-radius: 4px; padding: 3px 6px; line-height: 1;"
+      , HP.title ("saved · " <> joinWith " " (map _.label s.events)) ]
+      [ HH.span
+          [ HP.style "display: inline-flex; align-items: center; gap: 3px; cursor: pointer;"
+          , HE.onClick \_ -> PlaySaved i ]
+          [ faIcon s.glyph.first, faIcon s.glyph.second ]
+      , HH.button
+          [ HP.style "position: absolute; top: -5px; right: -3px; z-index: 2; border: 1px solid #cdbb8c; background: #f6efdc; color: #b06a5a; font-size: 10px; line-height: 1; cursor: pointer; padding: 0 3px; border-radius: 8px;"
+          , HP.title "delete this saved sequence"
+          , HE.onClick \_ -> DeleteSaved i ]
+          [ HH.text "×" ]
+      ]
   -- one chip = the chord's mini stave-glyph (same as the Tank), name-free. Hover
   -- + space auditions it; click builds the selection span; shift-click lifts it
   -- to the tank. In-span chips wear a warm wash; the span's endpoints a gold rim.

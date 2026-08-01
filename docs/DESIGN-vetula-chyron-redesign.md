@@ -173,6 +173,37 @@ Split the current unified "TANK & PROGRESSION" panel:
   panel widget and **extract it to `halogen-ui`** (do this alongside #4/#9 so
   the package touch is one pass, not three).
 
+## BUILT — save-to-token + hybrid pinned layout (2026-08-01)
+
+The chyron-as-ledger, first slice. A selected span → **⏎ save** (Enter key or a
+gold button that appears only while a span is selected) → compresses into a
+pinned **2-glyph token** (`glyphOf` over the span's canonical pc-content → the
+identity glyph-pair, rendered as the FA icon pair — visually distinct from the
+live stave-glyphs, so "named unit" reads at a glance). Saving REMOVES those
+events from the live trace (the compression reclaims space). `SavedSeq` carries
+the full events, so a token replays with timing (click it) and can later
+`split` into (Progression, Timings). × deletes a token.
+
+**Hybrid single-line layout:** `[AUDITION | ⏎save/clear] [saved tokens →]
+[…live chips → newest]`. Saved tokens pinned left (natural width, accumulate
+rightward); live region `flex:1 min-width:0` shrinks as saved grows (unsaved
+chips clip off its left). ~10–15 tokens fit before you run out of live room —
+enough for a working set; overflow home is collections / the between-sessions
+modal. Abandons "grow up into the display" (keeps the thin single line + the
+composition surface fully intact).
+
+**Two-bar fallback (AC, if the single line ever feels tight):** move the saved
+tokens to their OWN thin bar ABOVE the chyron — more room, still bounded, still
+no growing up the screen. The saved region is already its own flex child, so
+this is a move, not a rewrite.
+
+Also: `playChyronSelection` refactored onto a shared `playEvents` (block chords —
+all notes of a chord together, no per-note roll; that roll had read as an
+unwanted arpeggio on playback vs the block chords heard live).
+
+Still TODO in 2b: shift-click INSIDE a span as an alt save gesture; remove
+`ArrangeSpec`'s auto-bridge (retire snag #1); typed name / collections tier.
+
 ## Progression panel rendering (AC 2026-08-01 — do with 2b/4)
 
 Render progression steps with the **same compact glyph-chip** the chyron uses —
