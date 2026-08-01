@@ -96,11 +96,11 @@ main = HA.runHalogenAff do
 -- cross-cutting concern lifted off any single machine, opened by a hotkey
 -- (⌘1..⌘5) over a blurred backdrop. See docs/DESIGN-scene-modal.md.
 data ModalId
-  = MRouting     -- ⌘1 the MIDI channel map
-  | MSceneSeq    -- ⌘2 the scene grid (Ableton-like sequencing)
-  | MTidalSeq    -- ⌘3 the macro-tidal lanes (Tidal-like sequencing)
-  | MSource      -- ⌘4 the raw Tidal-source aggregate
-  | MPresets     -- ⌘5 the workbench (saved setups)
+  = MRouting     -- ⌥1 the MIDI channel map
+  | MSceneSeq    -- ⌥2 the scene grid (Ableton-like sequencing)
+  | MTidalSeq    -- ⌥3 the macro-tidal lanes (Tidal-like sequencing)
+  | MSource      -- ⌥4 the raw Tidal-source aggregate
+  | MPresets     -- ⌥5 the workbench (saved setups)
 
 derive instance eqModalId :: Eq ModalId
 
@@ -109,6 +109,8 @@ data RAction
   | OpenModal ModalId | CloseModal   -- the hotkey overlays (⌘1..⌘5; Esc closes)
   | SetBpm String                    -- nav system-BPM field (free-run baseline)
   | SetPreviewCh String              -- routing modal: Vetula's audition channel
+  | CycleAudition Which              -- routing modal: cycle a machine's audition dest None→Continuo→Midi
+  | SetAuditionCh Which String       -- routing modal: set a machine's audition MIDI channel
   | SetMode Mode                -- flip the SOLO⟷ATLANTIS authority
   | ArmTab Which                -- toggle one instrument's ARM from the switcher dot
   | JumpVetula Int              -- nav strip: jump Vetula's progression to a chord (live)
@@ -166,6 +168,32 @@ type LibRow = { inst :: Which, idx :: Int, name :: String, text :: String }
 -- — no separate master/playing/audible/rigOn booleans that can contradict it.
 -- "Master playing" is derived (`anyArmed armed`); rig-voice running is derived
 -- (`soundingOf … == Rig`) and each instrument edge-detects its own transitions.
+-- | Where a machine's AUDITION goes (routing modal's per-machine cycle, 2026-08-01):
+-- | None (silent), Continuo (the piano+strings VST preview), or Midi (the rig/IAC
+-- | bus, on a per-machine channel). Cycle order None → Continuo → Midi → None. Only
+-- | Vetula is wired to act on it today; the others store the choice for later.
+data AuditionDest = ADNone | ADContinuo | ADMidi
+
+derive instance eqAuditionDest :: Eq AuditionDest
+
+-- | Machines shown with an audition control in the routing modal, in column order.
+auditionMachines :: Array { w :: Which, label :: String }
+auditionMachines =
+  [ { w: Odo, label: "Odonus" }, { w: Bal, label: "Balistes" }, { w: Sel, label: "Selene" }
+  , { w: Vet, label: "Vetula" }, { w: Suf, label: "Sufflamen" }, { w: Ste, label: "Stellatus" } ]
+
+auditionLabel :: AuditionDest -> String
+auditionLabel = case _ of
+  ADNone -> "None"
+  ADContinuo -> "Continuo"
+  ADMidi -> "MIDI"
+
+toAuditionSel :: AuditionDest -> Vetula.AuditionSel
+toAuditionSel = case _ of
+  ADNone -> Vetula.AuditionOff
+  ADContinuo -> Vetula.AuditionContinuo
+  ADMidi -> Vetula.AuditionMidi
+
 type RState =
   { which :: Which, tidalDoc :: String, freeT0 :: Number
   , modal :: Maybe ModalId          -- the open hotkey overlay (⌘1..⌘5), or Nothing
@@ -177,6 +205,10 @@ type RState =
   , liveTempo :: Number
   , linkLocked :: Boolean
   , previewCh :: Int                -- Vetula's audition channel (canonical 1..16), shown in the routing modal
+  -- Per-machine audition destination + its MIDI channel (routing modal cycle).
+  -- `audition` lookup defaults to ADNone; `auditionCh` defaults to 5.
+  , audition :: Map Which AuditionDest
+  , auditionCh :: Map Which Int
   , library :: Array LibRow, importText :: String, importMsg :: String
   -- Workbench (TIDAL page): the shelf entry currently on the bench, whether the
   -- raw-source drawer is slid open, whether the archive ("dig") is expanded, and
@@ -310,6 +342,9 @@ root =
     { initialState: \_ ->
         { which: Bal, tidalDoc: "", freeT0: 0.0
         , bpm: 120, liveTempo: 120.0, linkLocked: false, previewCh: 5
+        , audition: Map.singleton Vet ADContinuo   -- Vetula auditions via Continuo by default
+        , auditionCh: Map.empty                     -- per-machine channel; lookup defaults to 5
+
         , library: [], importText: "", importMsg: ""
         , picked: Nothing, sourceOpen: false, digOpen: false, goTo: [], previewing: []
         , mode: Solo, harm: { durs: [], active: -1, chord: "" }
@@ -429,6 +464,30 @@ handleAction = case _ of
       let ch = clamp 1 16 n
       H.modify_ _ { previewCh = ch }
       void $ H.query _vet unit (Vetula.SetPreviewChanC ch unit)
+    Nothing -> pure unit
+
+  -- Routing modal: cycle a machine's audition destination None → Continuo → Midi.
+  -- Only Vetula is wired to act (via SetAuditionQ + its preview channel); the rest
+  -- just store the choice for now.
+  CycleAudition w -> do
+    st <- H.get
+    let cur = fromMaybe ADNone (Map.lookup w st.audition)
+        nxt = case cur of
+                ADNone -> ADContinuo
+                ADContinuo -> ADMidi
+                ADMidi -> ADNone
+    H.modify_ _ { audition = Map.insert w nxt st.audition }
+    when (w == Vet) do
+      void $ H.query _vet unit (Vetula.SetAuditionQ (toAuditionSel nxt) unit)
+      when (nxt == ADMidi) $
+        void $ H.query _vet unit (Vetula.SetPreviewChanC (fromMaybe 5 (Map.lookup Vet st.auditionCh)) unit)
+
+  -- Routing modal: a machine's audition MIDI channel (only meaningful in Midi mode).
+  SetAuditionCh w v -> case Int.fromString v of
+    Just n -> do
+      let ch = clamp 1 16 n
+      H.modify_ \s -> s { auditionCh = Map.insert w ch s.auditionCh }
+      when (w == Vet) $ void $ H.query _vet unit (Vetula.SetPreviewChanC ch unit)
     Nothing -> pure unit
   -- Opening TIDAL pulls a fresh aggregate + library; the modules keep playing.
   Pick Tid -> do
@@ -1135,11 +1194,11 @@ modalTitle = case _ of
 
 modalHotkey :: ModalId -> String
 modalHotkey = case _ of
-  MRouting -> "⌘1"
-  MSceneSeq -> "⌘2"
-  MTidalSeq -> "⌘3"
-  MSource -> "⌘4"
-  MPresets -> "⌘5"
+  MRouting -> "⌥1"
+  MSceneSeq -> "⌥2"
+  MTidalSeq -> "⌥3"
+  MSource -> "⌥4"
+  MPresets -> "⌥5"
 
 -- A mounted-but-maybe-hidden pane. `display:none` keeps the component alive
 -- (and its scheduler/MIDI running) while removing it from layout. `extra` adds
@@ -1192,18 +1251,40 @@ channelMapPanel st =
         , machineCol "Sufflamen" [ tbd ]
         , machineCol "Stellatus" [ tbd ]
         ]
-    -- A rig-wide setting, sitting below the per-machine columns: the channel the
-    -- Vetula ▶-preview / arrange audition sounds on.
-    , HH.div [ style "display:flex;align-items:baseline;gap:8px;margin-top:22px" ]
-        [ HH.span [ style "font-size:11px;letter-spacing:0.06em;color:#6a655a" ] [ HH.text "audition preview →" ]
-        , HH.input
-            [ HP.value (show st.previewCh)
-            , HE.onValueInput SetPreviewCh
-            , style "width:44px;font-family:'SF Mono',Menlo,monospace;font-size:12px;padding:2px 5px;border-radius:4px;border:1px solid #cdbb96;background:#fffdf8;text-align:center" ]
-        , HH.span [ style "font-size:11px;color:#9a9284" ] [ HH.text "ch" ]
-        ]
+    -- Per-machine AUDITION destination, below the columns: each machine cycles
+    -- None → Continuo → MIDI (click), and MIDI reveals its channel. Only Vetula
+    -- is wired to act today; the rest store the choice. (Replaces the old single
+    -- "audition preview → ch" row.)
+    , HH.div [ style "display:flex;align-items:center;gap:20px;margin-top:24px;flex-wrap:wrap" ]
+        ( [ HH.span [ style "font-size:11px;letter-spacing:0.06em;color:#6a655a" ] [ HH.text "audition →" ] ]
+            <> map auditionControl auditionMachines )
     ]
   where
+  -- one machine's audition control: a click-to-cycle pill + (in MIDI mode) a channel.
+  auditionControl m =
+    let dest = fromMaybe ADNone (Map.lookup m.w st.audition)
+        ch = fromMaybe 5 (Map.lookup m.w st.auditionCh)
+        active = dest /= ADNone
+        pillStyle = "cursor:pointer;font-size:11px;padding:2px 9px;border-radius:10px;border:1px solid "
+                    <> (if active then "#8a6a3a" else "#d8cdb8")
+                    <> ";background:" <> (if active then "#f6efe0" else "#faf7f0")
+                    <> ";color:" <> (if active then "#6a4a1a" else "#9a9284")
+        chanField = case dest of
+          ADMidi ->
+            [ HH.input
+                [ HP.value (show ch)
+                , HE.onValueInput (SetAuditionCh m.w)
+                , style "width:36px;font-family:'SF Mono',Menlo,monospace;font-size:11px;padding:2px 4px;border-radius:4px;border:1px solid #cdbb96;background:#fffdf8;text-align:center" ]
+            , HH.span [ style "font-size:10px;color:#9a9284" ] [ HH.text "ch" ] ]
+          _ -> []
+    in HH.div [ style "display:flex;align-items:center;gap:6px" ]
+         ( [ HH.span [ style "font-size:11px;color:#5a564b" ] [ HH.text m.label ]
+           , HH.button
+               [ style pillStyle
+               , HP.title "cycle: None → Continuo → MIDI"
+               , HE.onClick \_ -> CycleAudition m.w ]
+               [ HH.text (auditionLabel dest) ]
+           ] <> chanField )
   romans = [ "I", "II", "III", "IV" ]
   odonusRows =
     mapWithIndex
@@ -1949,13 +2030,12 @@ captureKey = "c"
 keyToAction :: E.Event -> Maybe RAction
 keyToAction e = case KE.fromEvent e of
   Just ke
-    -- ⌘1..⌘5 open the overlays. We preventDefault SYNCHRONOUSLY here in the
-    -- listener (via unsafePerformEffect, forced by the case) so Chrome doesn't
-    -- steal ⌘-number for its own tab switching before the page sees it. If a
-    -- given Chrome build still swallows them, switch `modalForDigit`'s trigger to
-    -- ⌥ (altKey) — a one-line change.
-    | KE.metaKey ke
-    , Just m <- modalForDigit (KE.key ke) ->
+    -- ⌥1..⌥5 (Option/Alt + digit) open the overlays. This deliberately AVOIDS
+    -- ⌘-number, which Chrome steals for tab switching (and ⌘⇧3/4/5, which macOS
+    -- steals for screenshots). ⌥+digit has no tab/OS binding on any platform. We
+    -- still preventDefault synchronously so Option doesn't insert its glyph.
+    | KE.altKey ke
+    , Just m <- modalForDigit (KE.code ke) ->
         case unsafePerformEffect (E.preventDefault e) of
           _ -> Just (OpenModal m)
     | KE.key ke == "Escape" -> Just CloseModal
@@ -1966,13 +2046,15 @@ keyToAction e = case KE.fromEvent e of
 
 -- The ⌘-number → overlay map (also the source of truth for the labels shown on
 -- the modals). `Nothing` for any other digit/key.
+-- Keyed on the physical `code` ("Digit1"…), NOT `key`, so the modifier (⌥ on
+-- macOS mangles the character: ⌥1 = "¡") never breaks the match.
 modalForDigit :: String -> Maybe ModalId
 modalForDigit = case _ of
-  "1" -> Just MRouting
-  "2" -> Just MSceneSeq
-  "3" -> Just MTidalSeq
-  "4" -> Just MSource
-  "5" -> Just MPresets
+  "Digit1" -> Just MRouting
+  "Digit2" -> Just MSceneSeq
+  "Digit3" -> Just MTidalSeq
+  "Digit4" -> Just MSource
+  "Digit5" -> Just MPresets
   _ -> Nothing
 
 -- True when the event originated in a text input / textarea, so the hotkey yields

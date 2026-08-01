@@ -169,6 +169,14 @@ lensLabel = case _ of
   LensLattices -> "voice-leading lattice"
   LensGenerate -> "grow"
 
+-- | Where Vetula's chord/path AUDITION goes, chosen in the shell's routing modal
+-- | (2026-08-01): Off (muted), Continuo (the piano+strings VST preview via the
+-- | "continuo" virtual port), or Midi (the rig/IAC bus, on the preview channel).
+-- | The shell drives this with SetAuditionQ; connectMidi picks the port from it.
+data AuditionSel = AuditionOff | AuditionContinuo | AuditionMidi
+
+derive instance eqAuditionSel :: Eq AuditionSel
+
 -- | The color-overlay layers (2026-07-31 redesign — see
 -- | docs/DESIGN-vetula-progression-building.md §"Context-panel redesign").
 -- | The palettes stopped being MODE selectors that inject chords into the pool
@@ -364,6 +372,7 @@ type State =
   , subId :: Maybe H.SubscriptionId
   , midiOut :: Maybe Midi.MidiOut
   , midiName :: String
+  , auditionSel :: AuditionSel      -- where the audition goes (Off/Continuo/Midi); shell-driven
   , previewChan :: Int              -- the MIDI channel chord/path AUDITION plays on (own
                                     -- routable channel, so ATLANTIS preview can be cued
                                     -- separately from the live brush; 0-indexed like voices)
@@ -622,6 +631,8 @@ data SourceQuery a
   -- (Vetula stores WebMIDI 0..15 internally).
   | AskPreviewChan (Int -> a)
   | SetPreviewChanC Int a
+  -- Where the audition goes (routing modal's per-machine cycle): Off/Continuo/Midi.
+  | SetAuditionQ AuditionSel a
   -- macro-tidal harmonic authority. The shell polls the rig's resting harmonic
   -- context (the key's diatonic set, or a `# scale` override) and pushes it into
   -- Odonus's pitchSet. `SetRestingScale` is where the macro `# scale` verb lands
@@ -668,6 +679,7 @@ component = H.mkComponent
       , subId: Nothing
       , midiOut: Nothing
       , midiName: "…"
+      , auditionSel: AuditionContinuo   -- audition through the Continuo VST by default
       -- chord/path auditions default to the canonical Vetula channel (MIDI ch 5,
       -- where the standard config parks a pad/strings) — `playChord` sends this raw
       -- to WebMIDI, so it's the 0-indexed toWire form of the canonical constant.
@@ -889,6 +901,12 @@ handleQuery = case _ of
   SetPreviewChanC ch next -> do
     H.modify_ _ { previewChan = clamp 0 15 (ch - 1) }
     pure (Just next)
+  SetAuditionQ sel next -> do
+    H.modify_ _ { auditionSel = sel }
+    case sel of
+      AuditionOff -> H.modify_ _ { midiOut = Nothing, midiName = "muted" }
+      _ -> connectMidi   -- re-pick the output port (continuo vs IAC) for the new mode
+    pure (Just next)
 
 -- | The ONE harmonic-context set Odonus quantises to (root pc + intervals). The
 -- | rule, in precedence order — the decoupling of "Vetula's lens scale" from "what
@@ -1043,23 +1061,36 @@ stopSim = do
 -- | click (RetryMidi) — the click is the user gesture Chrome needs to prompt.
 connectMidi :: forall m. MonadAff m => H.HalogenM State Action Slots Output m Unit
 connectMidi = do
+  sel <- H.gets _.auditionSel
   { emitter: midiE, listener: midiL } <- liftEffect HS.create
   _ <- H.subscribe midiE
   liftEffect $ Midi.requestAccess \maccess -> case maccess of
-    Just access -> do
-      mcont <- Midi.findOutput access "continuo"
-      miac <- Midi.findOutput access midiPortName
-      names <- Midi.outputNames access
-      let mout = case mcont of
-            Just _ -> mcont
-            Nothing -> miac
-          nm = case mcont of
-            Just _ -> "continuo ✓"
-            Nothing -> case miac of
-              Just _ -> midiPortName <> " ✓"
-              Nothing -> "no '" <> midiPortName <> "'/continuo — ports: " <> joinWith ", " names
-      HS.notify midiL (MidiReady mout nm)
     Nothing -> HS.notify midiL (MidiReady Nothing "no Web-MIDI")
+    Just access -> case sel of
+      -- Off: no output at all.
+      AuditionOff -> HS.notify midiL (MidiReady Nothing "muted")
+      -- Midi: the rig/IAC bus only (the rig is the audition, no Continuo fallback).
+      AuditionMidi -> do
+        miac <- Midi.findOutput access midiPortName
+        names <- Midi.outputNames access
+        let nm = case miac of
+              Just _ -> midiPortName <> " ✓"
+              Nothing -> "no '" <> midiPortName <> "' — ports: " <> joinWith ", " names
+        HS.notify midiL (MidiReady miac nm)
+      -- Continuo: the VST preview port when live, else fall back to IAC.
+      AuditionContinuo -> do
+        mcont <- Midi.findOutput access "continuo"
+        miac <- Midi.findOutput access midiPortName
+        names <- Midi.outputNames access
+        let mout = case mcont of
+              Just _ -> mcont
+              Nothing -> miac
+            nm = case mcont of
+              Just _ -> "continuo ✓"
+              Nothing -> case miac of
+                Just _ -> midiPortName <> " ✓"
+                Nothing -> "no '" <> midiPortName <> "'/continuo — ports: " <> joinWith ", " names
+        HS.notify midiL (MidiReady mout nm)
 
 handleAction :: forall m. MonadAff m => Action -> H.HalogenM State Action Slots Output m Unit
 handleAction = case _ of
@@ -3232,7 +3263,7 @@ setupPane st =
   -- Web-MIDI permission prompt (the page-load request stays silent), so clicking
   -- the chip (re)connects. Green = connected, amber = click to enable/retry.
   midiChip nm =
-    let ok = nm /= "…" && nm /= "" && nm /= "no Web-MIDI"
+    let ok = nm /= "…" && nm /= "" && nm /= "no Web-MIDI" && nm /= "muted"
     in HH.button
          [ HP.style "display: inline-flex; align-items: center; gap: 5px; font-size: 11px; color: #8a8a8a; background: #f4f4f4; border: 1px solid #e8e8e8; border-radius: 10px; padding: 2px 9px; cursor: pointer;"
          , HP.title (if ok then "Web-MIDI connected — click to reconnect" else "click to enable Web-MIDI (grant the permission prompt)")
