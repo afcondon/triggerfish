@@ -348,6 +348,24 @@ Consequences:
 split/recombine is a clean little algebra → the idea is provably free of
 internal contradictions (AC's confidence check).
 
+**Keep duplicate chords — they're the rhythm (AC 2026-08-01).** Since we capture
+timing from the user, ACCEPT consecutive duplicate chords (C-C-C-G-G): the
+repeats ARE a comping/strum rhythm, not redundancy. Principle: **capture
+lossless, project lossy.** The raw `TimedProgression` is the source of truth
+(every hit); `split` recovers the harmonic `Progression` by collapsing
+**consecutive** duplicates (run-length, NOT global — C-G-C keeps both Cs), while
+`Timings` retains the full hit-pattern → the extracted groove is a strum/comping
+pattern, not just change-points (bank a comp, apply to new harmony).
+- Reinforces `TimedProgression` ≈ Tidal `Pattern`: with duplicates, `Timings` is
+  a pattern of *references* into the deduped chord-set + onsets — `"c c c g g"`
+  over `{c,g}` — which the macro-Tidal engine eats directly.
+- **Retroactively settles the early "consecutive-dedup the chyron?" question:
+  NO — never dedup at capture.** The current chyron already appends every
+  audition (lossless), so no change is needed.
+- Flag for `split`: "same chord" = same pcs (dedup harmony) or exact voicing (a
+  re-voice may be intentional)? Lean pcs for the Progression reading, keep
+  voicing in the capture. Decide when building `split`.
+
 ## Future direction — Vetula as a composition window, + realiser machines (AC 2026-08-01, NOT NOW)
 
 The chyron makes something conceptually clear that was implicit: Vetula is
