@@ -318,6 +318,36 @@ Two decisions shape everything downstream: **is `TimedProgression` a Tidal
 `Pattern`** (reuse the engine), and **is `EventStream` abstract over
 notes-vs-context** (so Odonus sits alongside arps).
 
+### Capture already yields a TimedProgression — split gives a groove pool (AC 2026-08-01)
+
+The loop closes: `ChyronEvent.at` means **a captured span is already a
+`TimedProgression`** (chords + timing), implicitly. So the ledger's primary
+product is `TimedProgression`; the ordinal `Progression` is a *projection*. The
+algebra:
+
+```purescript
+capture  :: … -> TimedProgression                     -- at-deltas ARE Timings, for free
+quantise :: TimedProgression -> TimedProgression       -- probably necessary; keep BOTH raw + snapped
+split    :: TimedProgression -> (Progression, Timings) -- keep both, deploy separately
+f        :: Progression -> Timings -> TimedProgression  -- recombine, any × any
+```
+
+Consequences:
+- **`Timings` becomes a first-class saveable token — a GROOVE.** Lift the rhythm
+  of a take off its chords and apply it to a different progression, or vice
+  versa. Harmony and rhythm = independently reusable materials. (Timings wants
+  its own glyph/identity + a place in collections alongside progressions.)
+- **A groove pool, for free.** Un-quantised `at` is the *feel* (rubato,
+  hesitations) — extracting it is exactly Ableton's Groove Pool / MPC-swing.
+  Quantise for the grid; keep the raw as the "human" version; both savable.
+- **Reinforces record-arm (#17):** raw `at` is only a *groove* if played
+  deliberately — noodling gaps are thinking-time, not rhythm. Armed capture is
+  what makes the extracted `Timings` musically meaningful. Record-arm turns `at`
+  from a timestamp into music.
+
+split/recombine is a clean little algebra → the idea is provably free of
+internal contradictions (AC's confidence check).
+
 ## Future direction — Vetula as a composition window, + realiser machines (AC 2026-08-01, NOT NOW)
 
 The chyron makes something conceptually clear that was implicit: Vetula is
