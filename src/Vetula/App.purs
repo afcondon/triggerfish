@@ -3143,6 +3143,9 @@ chyronBar st =
   HH.div
     [ HP.style ( "position: fixed; bottom: 30px; left: 0; right: 0; z-index: 39; box-sizing: border-box; "
         <> "display: flex; gap: 10px; align-items: center; padding: 3px 12px; min-height: 44px; overflow: hidden; "
+        -- shift-click is a gesture here (→ tank / lift), so kill the browser's
+        -- shift-click text selection across the bar. user-select inherits to chips.
+        <> "user-select: none; -webkit-user-select: none; "
         <> "font-family: Georgia, serif; background: linear-gradient(#efe9d8,#e7e0cb); "
         <> "border-top: 1px solid #0000000f; box-shadow: 0 -1px 3px #0000000d;" ) ]
     [ HH.span
