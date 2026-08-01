@@ -163,6 +163,14 @@ Split the current unified "TANK & PROGRESSION" panel:
   panel widget and **extract it to `halogen-ui`** (do this alongside #4/#9 so
   the package touch is one pass, not three).
 
+## Progression panel rendering (AC 2026-08-01 — do with 2b/4)
+
+Render progression steps with the **same compact glyph-chip** the chyron uses —
+the mini stave-glyph is small enough to fit several steps across a row, far
+denser than today's per-step dot-matrix. Reserve the larger per-step view for
+**re-voicing**, or drop it. This unifies the visual language: the chyron trace,
+the tank, and the progression all read as the same glyph.
+
 ## Collections (snag #14 — deferred)
 
 Once lifts are cheap, one chord pool spawns many progressions. The saved unit
