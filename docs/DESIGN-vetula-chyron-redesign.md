@@ -426,10 +426,23 @@ Structural decisions as it forms:
    (MIDI channels, Odonus, ES-9/FH-2 targets, future string machine). The Perform
    view IS the routing surface for the live case (subsumes the routing modal's
    live job).
-2. **Box TYPE gates the function palette** — the Odonus asymmetry made physical:
-   note-player boxes (→MIDI: arp/strum/hold make notes) vs *constrainer* boxes
-   (Odonus takes chord/scale, makes its own rhythm — no arp). Each box advertises
-   which functions it accepts. (= `EventStream` abstract over notes-vs-context.)
+2. **Output mode = the terminal `Sink` in the stack, not a box type** (AC refine
+   2026-08-01). "Quantise (Odonus) vs play (MIDI)" is just another — the LAST —
+   box: `render :: EventStream -> Sink -> Effect`, MIDI-play and Odonus-quantise
+   are two `Sink` values. The huge functional gap (emit notes vs set the
+   quantiser's harmonic context) lives inside those two `render`s; the
+   performer's gesture stays uniform (operationally the same, functionally
+   worlds apart — hide the machinery). Consequences:
+   - **The terminal drives which upstream functions are live**: arp/strum/hold
+     shape notes → inert above an Odonus sink (dim them). Cleaner than
+     "box-type gates palette" — it falls out of the last element.
+   - **A/B for free**: swap the terminal sink to re-point the same
+     material+transforms MIDI↔Odonus in one gesture (the "arp vs Odonus"
+     comparison wanted since the start).
+   - **Reconcile with "boxes per output":** a box comes PRE-SEEDED with its
+     natural terminal sink (dropping is instant), and that sink is also just the
+     bottom of the stack (swappable). Immediate by default, composable when
+     reached for.
 3. **Drop = LOOP, not one-shot** (live performance): dropping starts the token
    looping through that player (tempo-relative, Link-locked); pulling it stops.
    Token's `at` gives the loop feel; a retime function overrides.
