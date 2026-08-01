@@ -403,6 +403,51 @@ pattern, not just change-points (bank a comp, apply to new harmony).
   re-voice may be intentional)? Lean pcs for the Progression reading, keep
   voicing in the capture. Decide when building `split`.
 
+## The PERFORM view — the realiser pipeline as a Vetula lens (AC 2026-08-01)
+
+AC's vision: a **4th lens** beside Fifths / Tonnetz / Lattice — **Perform**. NOT a
+new machine; a performance surface always available in Vetula. This is the
+realiser pipeline (`f`/`g`) as a direct-manipulation board, and scoping it as a
+`StageLens` collapses the earlier "new machine + inter-machine routing"
+complexity — it lives where the material is made.
+
+- **A box = a player** = `g`'s realiser + `route`'s sink, fused. Drag a saved
+  **sequence glyph onto a box** → the glyph sits on top and the voice plays.
+- **Function stack on a box = the pipeline, composed visually** (functions stack;
+  maybe dragged out of a palette onto the box/voice). transpose (universal op on
+  the Progression), arpeggiate/strum/hold (`g`'s `PlayerConfig` — realization),
+  retime/quantise (`f`'s `Timings`). Reads `token |> transpose 3 |> retime |>
+  strum → sink`. Very Tidal (`#`-chain), very FP; ORDER matters.
+- "Blurs routing responsibilities" — deliberately: this IS live-performance
+  routing (material → output) with transforms on it.
+
+Structural decisions as it forms:
+1. **Boxes = the rig's real outputs.** Seed from `Triggerfish.Rig`/RigConfig
+   (MIDI channels, Odonus, ES-9/FH-2 targets, future string machine). The Perform
+   view IS the routing surface for the live case (subsumes the routing modal's
+   live job).
+2. **Box TYPE gates the function palette** — the Odonus asymmetry made physical:
+   note-player boxes (→MIDI: arp/strum/hold make notes) vs *constrainer* boxes
+   (Odonus takes chord/scale, makes its own rhythm — no arp). Each box advertises
+   which functions it accepts. (= `EventStream` abstract over notes-vs-context.)
+3. **Drop = LOOP, not one-shot** (live performance): dropping starts the token
+   looping through that player (tempo-relative, Link-locked); pulling it stops.
+   Token's `at` gives the loop feel; a retime function overrides.
+4. **A Perform configuration IS a scene** → closes the loop with the scene grid
+   (#11): Perform view = live editing face of ONE scene; the scene grid sequences
+   Perform configs over time. Also where Vetula's PLAY-role migrates — the bottom
+   voice bar doesn't get deleted, it BECOMES this (AC's "rip play out of Vetula").
+
+Type gating carries: transpose universal (borrowed/cross-scale/stacked fine);
+voice-leading/re-cadence only light up for `Located` material — palette greys
+itself honestly.
+
+It's the ShapedSteer typed-dataflow (nodes=computations, edges=typed deps) as a
+live board — the third appearance of this shape ⇒ factoring confirmed. **Build
+guidance:** resist over-generalizing the function system early; start with a
+fixed small palette (transpose / arp / strum / hold / retime) wired to the
+existing `f`/`g`, let the drag-compose UI grow from there.
+
 ## Future direction — Vetula as a composition window, + realiser machines (AC 2026-08-01, NOT NOW)
 
 The chyron makes something conceptually clear that was implicit: Vetula is
