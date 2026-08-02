@@ -93,6 +93,7 @@ import Hylograph.Simulation
   , Setup, runSimulation, setup, manyBody, collide, link, positionX, positionY
   , withStrength, withRadius, withDistance, withX, withY, static, dynamic )
 import Harmonia.Anchor (Anchor(..))
+import Harmonia.Voicing (Voicing(..), Selector(..), voicingMidi, takeVoicing, openTriad, rootless, drop2, drop2and4, quartal, cluster)
 import Harmonia.Chord (Key, Mode(..), cMajorKey, chordRoot)
 import Vetula.Between (bridgeNotes, maxBridge)
 import Harmonia.Graded (transpose) as Graded
@@ -401,8 +402,21 @@ data PerfFx
   = Transpose Int    -- ± semitones
   | Octave Int       -- ± octaves
   | Rate Int         -- speed: n>0 `fast n`, n<0 `slow (-n)`, 0 = identity
+  | Voice VoiceShape -- re-voice each chord (Harmonia VoicingStrategy)
+  | Select PerfSel   -- thin each chord to some of its voices (Harmonia takeVoicing)
 
 derive instance eqPerfFx :: Eq PerfFx
+
+-- | Chord re-voicings — Harmonia `Voicing -> Voicing` strategies.
+data VoiceShape = Open | Rootless | Drop2 | Drop24 | Quartal | Cluster
+
+derive instance eqVoiceShape :: Eq VoiceShape
+
+-- | Voice selection — keep the low or high N voices of each chord (Harmonia
+-- | `Selector`). `Low 1` = a bass line; `High 1` = a melody line.
+data PerfSel = Low Int | High Int
+
+derive instance eqPerfSel :: Eq PerfSel
 
 -- | A PERFORM box: one persistent player slot on the Perform surface, bound to a
 -- | MIDI channel. A dropped token LOOPS through its function `stack` (folded over
@@ -414,6 +428,7 @@ type PerfBox =
   , label   :: String
   , seq     :: Maybe SavedSeq
   , stack   :: Array PerfFx
+  , realize :: Renderer   -- terminal chord→time: Block | Strummed | Arp
   }
 
 type State =
@@ -693,6 +708,7 @@ data Action
   | PerfPickFx PerfFx      -- pick up an fx from the palette for placement (toggle)
   | PerfFxNudge Int Int Int -- nudge box b's stack layer i by delta
   | PerfFxRemove Int Int   -- remove box b's stack layer i
+  | PerfCycleRealize Int   -- cycle box b's terminal realise mode (block/strum/arp)
   | ZoomAt Event Number    -- geometric lens: wheel-zoom toward the cursor (event, deltaY)
   | PanStart Event         -- geometric lens: begin a grab-to-pan drag
   | PanMove Event          -- geometric lens: drag the viewport
@@ -858,7 +874,7 @@ component = H.mkComponent
       , chyronArmed: true
       -- four player boxes on MIDI ch 1-4 (Odonus I-IV in AC's routing); a token
       -- dropped on one loops there while the transport plays.
-      , perfBoxes: map (\n -> { channel: n, label: "P" <> show n, seq: Nothing, stack: [] }) (range 1 4)
+      , perfBoxes: map (\n -> { channel: n, label: "P" <> show n, seq: Nothing, stack: [], realize: Block }) (range 1 4)
       , perfHeld: Nothing
       , perfHeldFx: Nothing
       }
@@ -2020,6 +2036,11 @@ handleAction = case _ of
            if j == b then box { stack = fromMaybe box.stack (deleteAt i box.stack) } else box)
          st.perfBoxes }
 
+  PerfCycleRealize b -> H.modify_ \st ->
+    st { perfBoxes = mapWithIndex (\j box ->
+           if j == b then box { realize = nextRenderer box.realize } else box)
+         st.perfBoxes }
+
   -- Wheel-zoom the geometric viewport toward the cursor. The point under the
   -- pointer stays fixed: the centre's offset from it scales by the zoom ratio.
   ZoomAt ev dy -> do
@@ -2692,6 +2713,28 @@ applyFx = case _ of
     | n > 0 -> fast (Rat.fromInt n)
     | n < 0 -> slow (Rat.fromInt (-n))
     | otherwise -> identity
+  Voice shape -> map (revoice (voiceStrategy shape))
+  Select sel -> map (revoice (takeVoicing (selSelector sel)))
+
+-- | Run a Harmonia `Voicing -> Voicing` over one chord's notes. The notes are
+-- | sorted low→high first so the strategies and Low/High selectors read voices
+-- | correctly, then unwrapped back to a bare `Array Int`.
+revoice :: (Voicing -> Voicing) -> Array Int -> Array Int
+revoice f = voicingMidi <<< f <<< Voicing <<< sort
+
+voiceStrategy :: VoiceShape -> (Voicing -> Voicing)
+voiceStrategy = case _ of
+  Open -> openTriad
+  Rootless -> rootless
+  Drop2 -> drop2
+  Drop24 -> drop2and4
+  Quartal -> quartal
+  Cluster -> cluster
+
+selSelector :: PerfSel -> Selector
+selSelector = case _ of
+  Low n -> TakeLow n
+  High n -> TakeHigh n
 
 -- | A short chip label for a stack layer.
 fxLabel :: PerfFx -> String
@@ -2702,13 +2745,36 @@ fxLabel = case _ of
     | n > 0 -> "rate ×" <> show n
     | n < 0 -> "rate ÷" <> show (-n)
     | otherwise -> "rate ×1"
+  Voice shape -> "voice " <> voiceShapeName shape
+  Select (Low n) -> "bottom " <> show n
+  Select (High n) -> "top " <> show n
 
--- | Nudge a layer's parameter by `d` (the chip's − / + controls), clamped.
+voiceShapeName :: VoiceShape -> String
+voiceShapeName = case _ of
+  Open -> "open"
+  Rootless -> "rootless"
+  Drop2 -> "drop2"
+  Drop24 -> "drop2&4"
+  Quartal -> "quartal"
+  Cluster -> "cluster"
+
+-- | Nudge a layer's parameter by `d` (the chip's − / + controls), clamped. Voice
+-- | cycles through the shapes; Select nudges the voice count (min 1).
 fxNudge :: Int -> PerfFx -> PerfFx
 fxNudge d = case _ of
   Transpose n -> Transpose (clamp (-24) 24 (n + d))
   Octave n -> Octave (clamp (-4) 4 (n + d))
   Rate n -> Rate (clamp (-8) 8 (n + d))
+  Voice shape -> Voice (cycleVoiceShape d shape)
+  Select (Low n) -> Select (Low (clamp 1 6 (n + d)))
+  Select (High n) -> Select (High (clamp 1 6 (n + d)))
+
+cycleVoiceShape :: Int -> VoiceShape -> VoiceShape
+cycleVoiceShape d shape =
+  let shapes = [ Open, Rootless, Drop2, Drop24, Quartal, Cluster ]
+      i = fromMaybe 0 (elemIndex shape shapes)
+      n = length shapes
+  in fromMaybe shape (index shapes (mod (i + d) n))
 
 showSigned :: Int -> String
 showSigned n = if n >= 0 then "+" <> show n else show n
@@ -2723,24 +2789,31 @@ boxPattern box = foldl (\p fx -> applyFx fx p) base box.stack
     Just s -> fromChords (map _.notes s.events)
     Nothing -> fromChords []
 
--- | Query a box's pattern over this beat-cycle `b` and schedule every note of every
--- | digital chord-event on the box's channel, positioned by the event's arc within
--- | the beat (block chords land together; `fast`/`ply` subdivide the beat).
+-- | Query a box's pattern over this beat-cycle `b` and schedule every chord-event
+-- | it yields on the box's channel, positioned by the event's arc within the beat.
+-- | The box's `realize` mode spreads each chord's notes across the event's slot:
+-- | Block = all together; Arp = evenly across the slot (low→high); Strummed = a
+-- | small fixed onset stagger. `fast`/`ply` subdivide the beat orthogonally.
 scheduleBox :: Midi.MidiOut -> Int -> Number -> Number -> PerfBox -> Effect Unit
 scheduleBox out b beatMs baseDelayMs box =
   for_ (query (boxPattern box) (mkState (mkArc (Rat.fromInt b) (Rat.fromInt (b + 1))))) \ev ->
     when (isDigital ev) $
       for_ (eventWhole ev) \(Arc w) ->
-        let startFrac = Rat.toNumber (w.start - Rat.fromInt b)
-            lenFrac = Rat.toNumber (w.stop - w.start)
-        in for_ (eventValue ev) \note ->
-             Midi.scheduleNote out
-               { channel: box.channel
-               , note
-               , velocity: 90
-               , delayMs: baseDelayMs + startFrac * beatMs
-               , durMs: max 20.0 (lenFrac * beatMs * 0.9)
-               }
+        let startMs = baseDelayMs + Rat.toNumber (w.start - Rat.fromInt b) * beatMs
+            slotMs = max 20.0 (Rat.toNumber (w.stop - w.start) * beatMs)
+            notes = eventValue ev
+            n = max 1 (length notes)
+            stepMs = slotMs / toNumber n
+        in for_ (mapWithIndex Tuple notes) \(Tuple k note) ->
+             let onset = case box.realize of
+                   Block -> startMs
+                   Arp -> startMs + toNumber k * stepMs
+                   Strummed -> startMs + toNumber k * 14.0
+                 dur = case box.realize of
+                   Arp -> max 20.0 (stepMs * 0.9)
+                   _ -> max 20.0 (slotMs * 0.9)
+             in Midi.scheduleNote out
+                  { channel: box.channel, note, velocity: 90, delayMs: onset, durMs: dur }
 
 -- | Send a chord's notes to the MIDI bus (no state change) and log it to the chyron.
 playChord :: forall o m. MonadAff m => ChordNode -> H.HalogenM State Action Slots o m Unit
@@ -3923,7 +3996,7 @@ fxPalette st =
   HH.div
     [ HP.style "display: flex; align-items: center; gap: 8px;" ]
     ( [ HH.span [ HP.style "font-size: 10px; letter-spacing: 0.12em; text-transform: uppercase; color: #b0a684;" ] [ HH.text "fx" ] ]
-        <> map paletteChip [ Transpose 0, Octave (-1), Rate 2 ]
+        <> map paletteChip [ Transpose 0, Octave (-1), Rate 2, Voice Open, Select (High 1), Select (Low 1) ]
     )
   where
   paletteChip fx =
@@ -3956,8 +4029,15 @@ perfBox st i box =
        , HE.onDragOver PerfDragOver
        , HE.onDrop \_ -> PerfDropBox i
        ]
-       ( [ HH.div [ HP.style "font-size: 10px; letter-spacing: 0.1em; text-transform: uppercase; color: #b0a684;" ]
-             [ HH.text (box.label <> " · ch " <> show box.channel) ]
+       ( [ HH.div [ HP.style "display: flex; align-items: center; gap: 6px;" ]
+             [ HH.span [ HP.style "font-size: 10px; letter-spacing: 0.1em; text-transform: uppercase; color: #b0a684;" ]
+                 [ HH.text (box.label <> " · ch " <> show box.channel) ]
+             , HH.button
+                 [ HP.style "border: 1px solid #dcd2b4; background: #faf6ea; color: #8a7a4a; cursor: pointer; padding: 0 5px; border-radius: 3px; font-size: 9px; letter-spacing: 0.06em; text-transform: uppercase;"
+                 , HP.title "terminal realisation — click to cycle block / strum / arp"
+                 , HE.onClick \_ -> PerfCycleRealize i ]
+                 [ HH.text (rendName box.realize) ]
+             ]
          , case box.seq of
              Just s ->
                HH.div [ HP.style "display: flex; align-items: center; gap: 6px; font-size: 22px; color: #7a5c00;" ]
