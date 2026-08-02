@@ -14,31 +14,26 @@
 -- | `Array Int` note-sets (no `PitchedNote12`/`Voicing` dependency needed). The
 -- | value carried is the MIDI note number itself.
 -- |
--- | Convention here: **one pattern cycle = one Perform beat** (a chord's slot). A
--- | block chord fills the cycle; an arp fans its notes across it; `fast 2` doubles
--- | it; and so on — all by composition on the returned `Pattern`.
+-- | Convention here: **one pattern cycle = one Perform beat** (a chord's slot).
+-- |
+-- | The carrier VALUE is a CHORD — `Pattern (Array Int)`, an `Array Int` of MIDI
+-- | notes — not an individual note. This is deliberate: the pitch-shaping layers
+-- | (voice / select / transpose) act on the chord *as a group*, so the grouping
+-- | must survive down the stack. The chord→time explosion (block / arp / strum) is
+-- | the terminal REALISATION step done at schedule time, not a stack layer — so
+-- | every stack layer stays a uniform `Pattern (Array Int) -> Pattern (Array Int)`
+-- | and drags anywhere.
 module Vetula.Realise
-  ( chordStack
-  , chordArp
-  , fromChords
+  ( fromChords
   ) where
 
 import Prelude
 
-import Tidal.Pattern.Core (cat, fastCat, stack)
+import Tidal.Pattern.Core (cat)
 import Tidal.Pattern.Types (Pattern)
 
--- | One chord as a BLOCK: every note sounds together, spanning the whole cycle.
-chordStack :: Array Int -> Pattern Int
-chordStack = stack <<< map pure
-
--- | One chord ARPEGGIATED: the notes spread evenly across the cycle (low→high, in
--- | the order given). `fastCat` squeezes each note into an equal slice.
-chordArp :: Array Int -> Pattern Int
-chordArp = fastCat <<< map pure
-
--- | A whole saved sequence: one chord (block) per cycle, in order, looping. `cat`
--- | plays element `cycle `mod` length` each cycle, so querying cycle `b` yields
--- | chord `b `mod` n`.
-fromChords :: Array (Array Int) -> Pattern Int
-fromChords = cat <<< map chordStack
+-- | A whole saved sequence: one chord per cycle, in order, looping. `cat` plays
+-- | element `cycle `mod` length` each cycle, so querying cycle `b` yields chord
+-- | `b `mod` n` as a single event carrying that chord's note-set.
+fromChords :: Array (Array Int) -> Pattern (Array Int)
+fromChords = cat <<< map pure

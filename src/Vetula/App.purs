@@ -75,6 +75,7 @@ import Reef.Vetula.Perf (VChord, VVoice, VDest(..), VRenderer(..), PerfClock, cu
 import Reef.Vetula.Articulate (VArticulator(..), articulate, articLabel, nextArtic) as RA
 import Vetula.Playhead (clockFor, defaultPattern, noteClock, patternClock)
 import Vetula.Realise (fromChords)
+import Tidal.Pattern.Core (fast, slow)
 import Tidal.Pattern.Types (Arc(..), eventValue, eventWhole, isDigital, mkArc, mkState, query)
 import Tidal.Pattern.Types (Pattern) as PT
 import Data.Rational as Rat
@@ -390,16 +391,29 @@ type SavedSeq =
   , glyph :: Glyph
   }
 
+-- | A function-stack LAYER on a Perform box — a uniform `Pattern (Array Int) ->
+-- | Pattern (Array Int)` endomorphism (see `applyFx`), so any layer drags anywhere
+-- | in the stack or between boxes. Two families under one type: pitch-shapers that
+-- | `map` over each chord (Transpose · Octave) and Tidal combinators polymorphic in
+-- | the value (Rate = `fast`/`slow`). Voice/Select (Harmonia) + more land next;
+-- | arp/strum are the terminal REALISATION, not layers (they explode chord→time).
+data PerfFx
+  = Transpose Int    -- ± semitones
+  | Octave Int       -- ± octaves
+  | Rate Int         -- speed: n>0 `fast n`, n<0 `slow (-n)`, 0 = identity
+
+derive instance eqPerfFx :: Eq PerfFx
+
 -- | A PERFORM box: one persistent player slot on the Perform surface, bound to a
--- | MIDI channel. When a saved token is dropped on it, the box LOOPS that token's
--- | chords (one per beat, phase-locked to the shared clock) on its channel while
--- | the transport plays. Empty boxes are silent. The function stack
--- | (transpose/arp/strum/retime) and non-MIDI sinks are later layers on this — see
--- | docs/DESIGN-vetula-chyron-redesign §Perform.
+-- | MIDI channel. A dropped token LOOPS through its function `stack` (folded over
+-- | the chord pattern) on its channel while the transport plays. Empty boxes are
+-- | silent. The forked terminal (→ midi / → odo, Solo/Atlantis) lands in a later
+-- | slice — see docs/DESIGN-vetula-chyron-redesign §Perform.
 type PerfBox =
   { channel :: Int
   , label   :: String
   , seq     :: Maybe SavedSeq
+  , stack   :: Array PerfFx
   }
 
 type State =
@@ -558,9 +572,11 @@ type State =
   -- liked; disarm only when you want to explore off the record.
   , chyronArmed :: Boolean
   -- PERFORM surface: player boxes (one per output) + the token "picked up" for
-  -- placement (shift-click / drag a saved token, then click / drop on a box).
+  -- placement (shift-click / drag a saved token, then click / drop on a box), and
+  -- an fx "picked up" from the palette for placement onto a box's stack.
   , perfBoxes :: Array PerfBox
   , perfHeld :: Maybe Int
+  , perfHeldFx :: Maybe PerfFx
   }
 
 -- | Which floating control a fold toggle targets.
@@ -671,9 +687,12 @@ data Action
   | ToggleChyronArm        -- record-arm the chyron on/off
   -- PERFORM surface
   | PerfPickup Int         -- pick up saved token i for placement (toggle)
-  | PerfDropBox Int        -- place the held token onto box i (loop it there)
+  | PerfDropBox Int        -- place the held token/fx onto box i
   | PerfClearBox Int       -- empty box i (stop its loop)
   | PerfDragOver DragEvent -- allow HTML5 drop onto a box (preventDefault)
+  | PerfPickFx PerfFx      -- pick up an fx from the palette for placement (toggle)
+  | PerfFxNudge Int Int Int -- nudge box b's stack layer i by delta
+  | PerfFxRemove Int Int   -- remove box b's stack layer i
   | ZoomAt Event Number    -- geometric lens: wheel-zoom toward the cursor (event, deltaY)
   | PanStart Event         -- geometric lens: begin a grab-to-pan drag
   | PanMove Event          -- geometric lens: drag the viewport
@@ -839,8 +858,9 @@ component = H.mkComponent
       , chyronArmed: true
       -- four player boxes on MIDI ch 1-4 (Odonus I-IV in AC's routing); a token
       -- dropped on one loops there while the transport plays.
-      , perfBoxes: map (\n -> { channel: n, label: "P" <> show n, seq: Nothing }) (range 1 4)
+      , perfBoxes: map (\n -> { channel: n, label: "P" <> show n, seq: Nothing, stack: [] }) (range 1 4)
       , perfHeld: Nothing
+      , perfHeldFx: Nothing
       }
   , render
   , eval: H.mkEval H.defaultEval
@@ -1963,21 +1983,42 @@ handleAction = case _ of
   -- token again to drop it). Drop assigns the held token and clears the hand;
   -- with nothing in hand it is a no-op (so a bubbled × clear is harmless).
   PerfPickup i -> H.modify_ \st ->
-    st { perfHeld = if st.perfHeld == Just i then Nothing else Just i }
+    st { perfHeld = if st.perfHeld == Just i then Nothing else Just i, perfHeldFx = Nothing }
 
+  -- Drop onto box b: an fx-in-hand appends to the box's stack (fx wins if both are
+  -- somehow held); else a token-in-hand assigns the sequence; else no-op (so a
+  -- bubbled × clear stays harmless).
   PerfDropBox b -> do
     st <- H.get
-    case st.perfHeld >>= index st.chyronSaved of
-      Just s -> H.modify_ _
-        { perfBoxes = mapWithIndex (\j box -> if j == b then box { seq = Just s } else box) st.perfBoxes
-        , perfHeld = Nothing
+    case st.perfHeldFx of
+      Just fx -> H.modify_ _
+        { perfBoxes = mapWithIndex (\j box -> if j == b then box { stack = box.stack <> [ fx ] } else box) st.perfBoxes
+        , perfHeldFx = Nothing
         }
-      Nothing -> pure unit
+      Nothing -> case st.perfHeld >>= index st.chyronSaved of
+        Just s -> H.modify_ _
+          { perfBoxes = mapWithIndex (\j box -> if j == b then box { seq = Just s } else box) st.perfBoxes
+          , perfHeld = Nothing
+          }
+        Nothing -> pure unit
 
   PerfClearBox b -> H.modify_ \st ->
     st { perfBoxes = mapWithIndex (\j box -> if j == b then box { seq = Nothing } else box) st.perfBoxes }
 
   PerfDragOver ev -> liftEffect (preventDefault (DE.toEvent ev))
+
+  PerfPickFx fx -> H.modify_ \st ->
+    st { perfHeldFx = if st.perfHeldFx == Just fx then Nothing else Just fx, perfHeld = Nothing }
+
+  PerfFxNudge b i d -> H.modify_ \st ->
+    st { perfBoxes = mapWithIndex (\j box ->
+           if j == b then box { stack = fromMaybe box.stack (modifyAt i (fxNudge d) box.stack) } else box)
+         st.perfBoxes }
+
+  PerfFxRemove b i -> H.modify_ \st ->
+    st { perfBoxes = mapWithIndex (\j box ->
+           if j == b then box { stack = fromMaybe box.stack (deleteAt i box.stack) } else box)
+         st.perfBoxes }
 
   -- Wheel-zoom the geometric viewport toward the cursor. The point under the
   -- pointer stays fixed: the centre's offset from it scales by the zoom ratio.
@@ -2640,18 +2681,51 @@ playChyronSelection = do
     Just sel | sel.hi > sel.lo -> playEvents (mapMaybe (\ix -> index st.chyron ix) (range sel.lo sel.hi))
     _ -> pure unit
 
--- | The `Pattern Int` a Perform box realises this cycle: its saved sequence as a
--- | looping chord pattern (one chord per beat-cycle), with the box's function
--- | stack folded over it. Slice 1 has no stack, so this is just `fromChords`; the
--- | stack fold lands in slice 2 (`foldl applyFx (fromChords …) box.stack`).
-boxPattern :: PerfBox -> PT.Pattern Int
-boxPattern box = case box.seq of
-  Just s -> fromChords (map _.notes s.events)
-  Nothing -> fromChords []
+-- | One function-stack layer as a `Pattern (Array Int)` endomorphism. Pitch-shapers
+-- | `map` over each chord's notes; Tidal combinators (`Rate`) are polymorphic in
+-- | the value, so they compose with the pitch layers at the same type.
+applyFx :: PerfFx -> PT.Pattern (Array Int) -> PT.Pattern (Array Int)
+applyFx = case _ of
+  Transpose k -> map (map (_ + k))
+  Octave k -> map (map (_ + 12 * k))
+  Rate n
+    | n > 0 -> fast (Rat.fromInt n)
+    | n < 0 -> slow (Rat.fromInt (-n))
+    | otherwise -> identity
 
--- | Query a box's pattern over this beat-cycle `b` and schedule every digital note
--- | it produces on the box's channel, positioned by each event's arc within the
--- | beat (so block chords land together, arps fan out, `fast`/`ply` subdivide).
+-- | A short chip label for a stack layer.
+fxLabel :: PerfFx -> String
+fxLabel = case _ of
+  Transpose n -> "transpose " <> showSigned n
+  Octave n -> "8ve " <> showSigned n
+  Rate n
+    | n > 0 -> "rate ×" <> show n
+    | n < 0 -> "rate ÷" <> show (-n)
+    | otherwise -> "rate ×1"
+
+-- | Nudge a layer's parameter by `d` (the chip's − / + controls), clamped.
+fxNudge :: Int -> PerfFx -> PerfFx
+fxNudge d = case _ of
+  Transpose n -> Transpose (clamp (-24) 24 (n + d))
+  Octave n -> Octave (clamp (-4) 4 (n + d))
+  Rate n -> Rate (clamp (-8) 8 (n + d))
+
+showSigned :: Int -> String
+showSigned n = if n >= 0 then "+" <> show n else show n
+
+-- | The `Pattern (Array Int)` a Perform box realises this cycle: its saved sequence
+-- | as a looping chord pattern (one chord per beat-cycle), with the box's function
+-- | `stack` folded over it (first layer applied first / innermost).
+boxPattern :: PerfBox -> PT.Pattern (Array Int)
+boxPattern box = foldl (\p fx -> applyFx fx p) base box.stack
+  where
+  base = case box.seq of
+    Just s -> fromChords (map _.notes s.events)
+    Nothing -> fromChords []
+
+-- | Query a box's pattern over this beat-cycle `b` and schedule every note of every
+-- | digital chord-event on the box's channel, positioned by the event's arc within
+-- | the beat (block chords land together; `fast`/`ply` subdivide the beat).
 scheduleBox :: Midi.MidiOut -> Int -> Number -> Number -> PerfBox -> Effect Unit
 scheduleBox out b beatMs baseDelayMs box =
   for_ (query (boxPattern box) (mkState (mkArc (Rat.fromInt b) (Rat.fromInt (b + 1))))) \ev ->
@@ -2659,13 +2733,14 @@ scheduleBox out b beatMs baseDelayMs box =
       for_ (eventWhole ev) \(Arc w) ->
         let startFrac = Rat.toNumber (w.start - Rat.fromInt b)
             lenFrac = Rat.toNumber (w.stop - w.start)
-        in Midi.scheduleNote out
-             { channel: box.channel
-             , note: eventValue ev
-             , velocity: 90
-             , delayMs: baseDelayMs + startFrac * beatMs
-             , durMs: max 20.0 (lenFrac * beatMs * 0.9)
-             }
+        in for_ (eventValue ev) \note ->
+             Midi.scheduleNote out
+               { channel: box.channel
+               , note
+               , velocity: 90
+               , delayMs: baseDelayMs + startFrac * beatMs
+               , durMs: max 20.0 (lenFrac * beatMs * 0.9)
+               }
 
 -- | Send a chord's notes to the MIDI bus (no state change) and log it to the chyron.
 playChord :: forall o m. MonadAff m => ChordNode -> H.HalogenM State Action Slots o m Unit
@@ -3826,17 +3901,40 @@ performSurface st =
     [ HP.style "position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 26px; padding: 40px;" ]
     [ HH.div
         [ HP.style "font-size: 12px; letter-spacing: 0.14em; text-transform: uppercase; color: #9a7a2a; text-align: center; max-width: 520px; line-height: 1.6;" ]
-        [ HH.text $ case st.perfHeld of
-            Just _ -> "token in hand — click a player to drop it"
-            Nothing ->
-              if any (\b -> isJust b.seq) st.perfBoxes
-                then "press PLAY to loop the players · shift-click or drag a saved token onto a box"
-                else "shift-click (or drag) a saved token below onto a player — it loops while the transport plays"
+        [ HH.text $ case st.perfHeldFx of
+            Just fx -> "layer in hand (" <> fxLabel fx <> ") — click a player to add it to its stack"
+            Nothing -> case st.perfHeld of
+              Just _ -> "token in hand — click a player to drop it"
+              Nothing ->
+                if any (\b -> isJust b.seq) st.perfBoxes
+                  then "press PLAY to loop the players · click an FX below then a player to stack it"
+                  else "shift-click (or drag) a saved token below onto a player — it loops while the transport plays"
         ]
+    , fxPalette st
     , HH.div
-        [ HP.style "display: flex; gap: 20px; flex-wrap: wrap; justify-content: center; max-width: 760px;" ]
+        [ HP.style "display: flex; gap: 20px; flex-wrap: wrap; justify-content: center; align-items: flex-start; max-width: 820px;" ]
         (mapWithIndex (perfBox st) st.perfBoxes)
     ]
+
+-- | The FX palette: click a layer to pick it up, then click a player box to append
+-- | it to that box's stack (drag comes in a later slice). The held chip lights gold.
+fxPalette :: forall m. State -> H.ComponentHTML Action Slots m
+fxPalette st =
+  HH.div
+    [ HP.style "display: flex; align-items: center; gap: 8px;" ]
+    ( [ HH.span [ HP.style "font-size: 10px; letter-spacing: 0.12em; text-transform: uppercase; color: #b0a684;" ] [ HH.text "fx" ] ]
+        <> map paletteChip [ Transpose 0, Octave (-1), Rate 2 ]
+    )
+  where
+  paletteChip fx =
+    let held = st.perfHeldFx == Just fx
+    in HH.button
+         [ HP.style ("border: 1px solid " <> (if held then "#b8860b" else "#dcd2b4")
+                      <> "; background: " <> (if held then "#fbf1d6" else "#faf6ea")
+                      <> "; color: #6a5a2a; cursor: pointer; padding: 3px 10px; border-radius: 4px; font-size: 11px; white-space: nowrap;")
+         , HP.title "pick up this layer, then click a player to stack it"
+         , HE.onClick \_ -> PerfPickFx fx ]
+         [ HH.text (fxLabel fx) ]
 
 -- | One PERFORM player box: its channel label, the assigned token's 2-glyph
 -- | identity (or a ＋ placeholder), and a × to empty it. A drop target for both
@@ -3844,36 +3942,64 @@ performSurface st =
 -- | box lights as a receiver.
 perfBox :: forall m. State -> Int -> PerfBox -> H.ComponentHTML Action Slots m
 perfBox st i box =
-  let held = isJust st.perfHeld
+  let held = isJust st.perfHeld || isJust st.perfHeldFx
       filled = isJust box.seq
       brd = if held then "#b8860b" else if filled then "#cdbb8c" else "#d8ceb4"
       bg = if held then "#fbf6ea" else "#faf7ee"
   in HH.div
-       [ HP.style ("position: relative; width: 150px; height: 118px; border: 2px "
+       [ HP.style ("position: relative; width: 150px; min-height: 118px; border: 2px "
                     <> (if held then "dashed " else "solid ") <> brd
                     <> "; background: " <> bg
-                    <> "; border-radius: 10px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; cursor: pointer;")
-       , HP.title (if held then "drop the held token here" else box.label <> " · MIDI ch " <> show box.channel)
+                    <> "; border-radius: 10px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; padding: 10px 8px; cursor: pointer;")
+       , HP.title (if held then "drop the held token/layer here" else box.label <> " · MIDI ch " <> show box.channel)
        , HE.onClick \_ -> PerfDropBox i
        , HE.onDragOver PerfDragOver
        , HE.onDrop \_ -> PerfDropBox i
        ]
-       [ HH.div [ HP.style "font-size: 10px; letter-spacing: 0.1em; text-transform: uppercase; color: #b0a684;" ]
-           [ HH.text (box.label <> " · ch " <> show box.channel) ]
-       , case box.seq of
-           Just s ->
-             HH.div [ HP.style "display: flex; align-items: center; gap: 6px; font-size: 22px; color: #7a5c00;" ]
-               [ faIcon s.glyph.first, faIcon s.glyph.second ]
-           Nothing ->
-             HH.div [ HP.style "font-size: 28px; color: #d8ceb4; line-height: 1;" ] [ HH.text "＋" ]
-       , if filled
-           then HH.button
-                  [ HP.style "position: absolute; top: 4px; right: 7px; border: none; background: transparent; color: #b06a5a; font-size: 15px; line-height: 1; cursor: pointer;"
-                  , HP.title "clear this player"
-                  , HE.onClick \_ -> PerfClearBox i ]
-                  [ HH.text "×" ]
-           else HH.text ""
-       ]
+       ( [ HH.div [ HP.style "font-size: 10px; letter-spacing: 0.1em; text-transform: uppercase; color: #b0a684;" ]
+             [ HH.text (box.label <> " · ch " <> show box.channel) ]
+         , case box.seq of
+             Just s ->
+               HH.div [ HP.style "display: flex; align-items: center; gap: 6px; font-size: 22px; color: #7a5c00;" ]
+                 [ faIcon s.glyph.first, faIcon s.glyph.second ]
+             Nothing ->
+               HH.div [ HP.style "font-size: 28px; color: #d8ceb4; line-height: 1;" ] [ HH.text "＋" ]
+         ]
+         <> stackRegion
+         <> [ if filled
+                then HH.button
+                       [ HP.style "position: absolute; top: 4px; right: 7px; border: none; background: transparent; color: #b06a5a; font-size: 15px; line-height: 1; cursor: pointer;"
+                       , HP.title "clear this player"
+                       , HE.onClick \_ -> PerfClearBox i ]
+                       [ HH.text "×" ]
+                else HH.text "" ]
+       )
+  where
+  -- the box's function stack, one small chip per layer: − / label / + to nudge the
+  -- param, × to drop the layer. First chip = applied first (innermost).
+  stackRegion =
+    if length box.stack == 0 then []
+    else [ HH.div
+             [ HP.style "display: flex; flex-wrap: wrap; gap: 4px; justify-content: center;" ]
+             (mapWithIndex fxChip box.stack) ]
+  fxChip fxIx fx =
+    HH.span
+      [ HP.style "display: inline-flex; align-items: center; gap: 2px; border: 1px solid #cdbb8c; background: #f3ead2; border-radius: 3px; padding: 1px 2px; font-size: 10px; color: #6a5a2a; line-height: 1.4;" ]
+      [ nudge fxIx (-1) "−"
+      , HH.span [ HP.style "padding: 0 2px; white-space: nowrap;" ] [ HH.text (fxLabel fx) ]
+      , nudge fxIx 1 "+"
+      , HH.button
+          [ HP.style "border: none; background: transparent; color: #b06a5a; font-size: 11px; line-height: 1; cursor: pointer; padding: 0 1px;"
+          , HP.title "remove this layer"
+          , HE.onClick \_ -> PerfFxRemove i fxIx ]
+          [ HH.text "×" ]
+      ]
+  nudge fxIx d glyph =
+    HH.button
+      [ HP.style "border: none; background: transparent; color: #8a7a4a; font-size: 11px; line-height: 1; cursor: pointer; padding: 0 1px;"
+      , HP.title "nudge this layer's value"
+      , HE.onClick \_ -> PerfFxNudge i fxIx d ]
+      [ HH.text glyph ]
 
 -- | The Keyboard lens — the exhaustive hunting cloud: the piano keyboard, diatonic
 -- | triad families, seed-blooms, the voice-leading lattice, and the path overlay.
