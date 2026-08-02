@@ -418,6 +418,11 @@ data PerfSel = Low Int | High Int
 
 derive instance eqPerfSel :: Eq PerfSel
 
+-- | What an HTML5 drag is carrying: a fresh layer FROM the palette, or an existing
+-- | layer being moved FROM a box's stack (box index, layer index). Dropping onto a
+-- | box appends; onto a layer chip inserts before it (reorder / precise placement).
+data PerfDragSrc = FromPalette PerfFx | FromBox Int Int
+
 -- | A PERFORM box: one persistent player slot on the Perform surface, bound to a
 -- | MIDI channel. A dropped token LOOPS through its function `stack` (folded over
 -- | the chord pattern) on its channel while the transport plays. Empty boxes are
@@ -593,6 +598,7 @@ type State =
   , perfBoxes :: Array PerfBox
   , perfHeld :: Maybe Int
   , perfHeldFx :: Maybe PerfFx
+  , perfDrag :: Maybe PerfDragSrc   -- the in-flight HTML5 drag payload
   }
 
 -- | Which floating control a fold toggle targets.
@@ -711,6 +717,9 @@ data Action
   | PerfFxRemove Int Int   -- remove box b's stack layer i
   | PerfSetRealize Int Renderer -- set box b's terminal realise mode directly
   | PerfToggleMute Int     -- silence/unsilence box b's pipeline
+  | PerfDragStart PerfDragSrc -- begin an HTML5 drag of a palette/box layer
+  | PerfDropOnChip Int Int -- drop the dragged layer before box b's chip i
+  | PerfDragEnd            -- clear the drag payload (drop landed or was abandoned)
   | ZoomAt Event Number    -- geometric lens: wheel-zoom toward the cursor (event, deltaY)
   | PanStart Event         -- geometric lens: begin a grab-to-pan drag
   | PanMove Event          -- geometric lens: drag the viewport
@@ -879,6 +888,7 @@ component = H.mkComponent
       , perfBoxes: map (\n -> { channel: n, label: "P" <> show n, seq: Nothing, stack: [], realize: Block, muted: false }) (range 1 4)
       , perfHeld: Nothing
       , perfHeldFx: Nothing
+      , perfDrag: Nothing
       }
   , render
   , eval: H.mkEval H.defaultEval
@@ -2003,22 +2013,24 @@ handleAction = case _ of
   PerfPickup i -> H.modify_ \st ->
     st { perfHeld = if st.perfHeld == Just i then Nothing else Just i, perfHeldFx = Nothing }
 
-  -- Drop onto box b: an fx-in-hand appends to the box's stack (fx wins if both are
-  -- somehow held); else a token-in-hand assigns the sequence; else no-op (so a
-  -- bubbled × clear stays harmless).
+  -- Drop onto box b (appends): a DRAGGED layer (palette or moved from another box)
+  -- wins; else an fx-in-hand (click-place); else a token-in-hand assigns the
+  -- sequence; else no-op (so a bubbled × clear / chip-drop stays harmless).
   PerfDropBox b -> do
     st <- H.get
-    case st.perfHeldFx of
-      Just fx -> H.modify_ _
-        { perfBoxes = mapWithIndex (\j box -> if j == b then box { stack = box.stack <> [ fx ] } else box) st.perfBoxes
-        , perfHeldFx = Nothing
-        }
-      Nothing -> case st.perfHeld >>= index st.chyronSaved of
-        Just s -> H.modify_ _
-          { perfBoxes = mapWithIndex (\j box -> if j == b then box { seq = Just s } else box) st.perfBoxes
-          , perfHeld = Nothing
+    case st.perfDrag of
+      Just src -> H.modify_ _ { perfBoxes = dropFxInto src b Nothing st.perfBoxes, perfDrag = Nothing }
+      Nothing -> case st.perfHeldFx of
+        Just fx -> H.modify_ _
+          { perfBoxes = mapWithIndex (\j box -> if j == b then box { stack = box.stack <> [ fx ] } else box) st.perfBoxes
+          , perfHeldFx = Nothing
           }
-        Nothing -> pure unit
+        Nothing -> case st.perfHeld >>= index st.chyronSaved of
+          Just s -> H.modify_ _
+            { perfBoxes = mapWithIndex (\j box -> if j == b then box { seq = Just s } else box) st.perfBoxes
+            , perfHeld = Nothing
+            }
+          Nothing -> pure unit
 
   PerfClearBox b -> H.modify_ \st ->
     st { perfBoxes = mapWithIndex (\j box -> if j == b then box { seq = Nothing } else box) st.perfBoxes }
@@ -2047,6 +2059,19 @@ handleAction = case _ of
     st { perfBoxes = mapWithIndex (\j box ->
            if j == b then box { muted = not box.muted } else box)
          st.perfBoxes }
+
+  PerfDragStart src -> H.modify_ _ { perfDrag = Just src }
+
+  PerfDragEnd -> H.modify_ _ { perfDrag = Nothing }
+
+  -- Drop the dragged layer BEFORE box b's chip i (reorder within a box, or precise
+  -- cross-box placement). Consumes perfDrag, so the bubbled box-level PerfDropBox
+  -- that follows is a no-op.
+  PerfDropOnChip b i -> do
+    st <- H.get
+    case st.perfDrag of
+      Just src -> H.modify_ _ { perfBoxes = dropFxInto src b (Just i) st.perfBoxes, perfDrag = Nothing }
+      Nothing -> pure unit
 
   -- Wheel-zoom the geometric viewport toward the cursor. The point under the
   -- pointer stays fixed: the centre's offset from it scales by the zoom ratio.
@@ -2709,6 +2734,31 @@ playChyronSelection = do
   case st.chyronSel of
     Just sel | sel.hi > sel.lo -> playEvents (mapMaybe (\ix -> index st.chyron ix) (range sel.lo sel.hi))
     _ -> pure unit
+
+-- | Resolve a drag-drop of a layer into the boxes: pull the layer's value (from the
+-- | palette, or out of its source box), remove it from the source box if it came
+-- | from one, then insert it into the target box — at `mpos` (Just = before that
+-- | chip index) or appended (Nothing). A same-box move shifts the insert index down
+-- | by one when the removed layer sat before it.
+dropFxInto :: PerfDragSrc -> Int -> Maybe Int -> Array PerfBox -> Array PerfBox
+dropFxInto src tb mpos boxes =
+  case fxOf src of
+    Nothing -> boxes
+    Just fx ->
+      let removed = case src of
+            FromBox sb si -> adjustStack sb (\s -> fromMaybe s (deleteAt si s)) boxes
+            FromPalette _ -> boxes
+          pos = case mpos of
+            Nothing -> maybe 0 (length <<< _.stack) (index removed tb)
+            Just i -> case src of
+              FromBox sb si | sb == tb && si < i -> i - 1
+              _ -> i
+      in adjustStack tb (\s -> fromMaybe (s <> [ fx ]) (insertAt pos fx s)) removed
+  where
+  fxOf = case _ of
+    FromPalette fx -> Just fx
+    FromBox b i -> index boxes b >>= \bx -> index bx.stack i
+  adjustStack bi f = mapWithIndex (\j bx -> if j == bi then bx { stack = f bx.stack } else bx)
 
 -- | One function-stack layer as a `Pattern (Array Int)` endomorphism. Pitch-shapers
 -- | `map` over each chord's notes; Tidal combinators (`Rate`) are polymorphic in
@@ -4012,8 +4062,11 @@ fxPalette st =
     in HH.button
          [ HP.style ("border: 1px solid " <> (if held then "#b8860b" else "#dcd2b4")
                       <> "; background: " <> (if held then "#fbf1d6" else "#faf6ea")
-                      <> "; color: #6a5a2a; cursor: pointer; padding: 3px 10px; border-radius: 4px; font-size: 11px; white-space: nowrap;")
-         , HP.title "pick up this layer, then click a player to stack it"
+                      <> "; color: #6a5a2a; cursor: grab; padding: 3px 10px; border-radius: 4px; font-size: 11px; white-space: nowrap;")
+         , HP.title "drag onto a player (or click, then click a player) to stack this layer"
+         , HP.draggable true
+         , HE.onDragStart \_ -> PerfDragStart (FromPalette fx)
+         , HE.onDragEnd \_ -> PerfDragEnd
          , HE.onClick \_ -> PerfPickFx fx ]
          [ HH.text (fxLabel fx) ]
 
@@ -4078,7 +4131,13 @@ perfBox st i box =
              (mapWithIndex fxChip box.stack) ]
   fxChip fxIx fx =
     HH.span
-      [ HP.style "display: inline-flex; align-items: center; gap: 2px; border: 1px solid #cdbb8c; background: #f3ead2; border-radius: 3px; padding: 1px 2px; font-size: 10px; color: #6a5a2a; line-height: 1.4;" ]
+      [ HP.style "display: inline-flex; align-items: center; gap: 2px; border: 1px solid #cdbb8c; background: #f3ead2; border-radius: 3px; padding: 1px 2px; font-size: 10px; color: #6a5a2a; line-height: 1.4; cursor: grab;"
+      , HP.draggable true
+      , HP.title "drag to reorder, or onto another player to move it"
+      , HE.onDragStart \_ -> PerfDragStart (FromBox i fxIx)
+      , HE.onDragEnd \_ -> PerfDragEnd
+      , HE.onDragOver PerfDragOver
+      , HE.onDrop \_ -> PerfDropOnChip i fxIx ]
       [ nudge fxIx (-1) "−"
       , HH.span [ HP.style "padding: 0 2px; white-space: nowrap;" ] [ HH.text (fxLabel fx) ]
       , nudge fxIx 1 "+"
