@@ -429,6 +429,7 @@ type PerfBox =
   , seq     :: Maybe SavedSeq
   , stack   :: Array PerfFx
   , realize :: Renderer   -- terminal chord→time: Block | Strummed | Arp
+  , muted   :: Boolean    -- silence this pipeline without tearing it down
   }
 
 type State =
@@ -708,7 +709,8 @@ data Action
   | PerfPickFx PerfFx      -- pick up an fx from the palette for placement (toggle)
   | PerfFxNudge Int Int Int -- nudge box b's stack layer i by delta
   | PerfFxRemove Int Int   -- remove box b's stack layer i
-  | PerfCycleRealize Int   -- cycle box b's terminal realise mode (block/strum/arp)
+  | PerfSetRealize Int Renderer -- set box b's terminal realise mode directly
+  | PerfToggleMute Int     -- silence/unsilence box b's pipeline
   | ZoomAt Event Number    -- geometric lens: wheel-zoom toward the cursor (event, deltaY)
   | PanStart Event         -- geometric lens: begin a grab-to-pan drag
   | PanMove Event          -- geometric lens: drag the viewport
@@ -874,7 +876,7 @@ component = H.mkComponent
       , chyronArmed: true
       -- four player boxes on MIDI ch 1-4 (Odonus I-IV in AC's routing); a token
       -- dropped on one loops there while the transport plays.
-      , perfBoxes: map (\n -> { channel: n, label: "P" <> show n, seq: Nothing, stack: [], realize: Block }) (range 1 4)
+      , perfBoxes: map (\n -> { channel: n, label: "P" <> show n, seq: Nothing, stack: [], realize: Block, muted: false }) (range 1 4)
       , perfHeld: Nothing
       , perfHeldFx: Nothing
       }
@@ -2036,9 +2038,14 @@ handleAction = case _ of
            if j == b then box { stack = fromMaybe box.stack (deleteAt i box.stack) } else box)
          st.perfBoxes }
 
-  PerfCycleRealize b -> H.modify_ \st ->
+  PerfSetRealize b r -> H.modify_ \st ->
     st { perfBoxes = mapWithIndex (\j box ->
-           if j == b then box { realize = nextRenderer box.realize } else box)
+           if j == b then box { realize = r } else box)
+         st.perfBoxes }
+
+  PerfToggleMute b -> H.modify_ \st ->
+    st { perfBoxes = mapWithIndex (\j box ->
+           if j == b then box { muted = not box.muted } else box)
          st.perfBoxes }
 
   -- Wheel-zoom the geometric viewport toward the cursor. The point under the
@@ -2209,7 +2216,8 @@ handleAction = case _ of
         for_ mout \out -> liftEffect $
           for_ st.perfBoxes \box ->
             for_ box.seq \_ ->
-              scheduleBox out (tick.index / 4) (pulseMs * 4.0) tick.delayMs box
+              when (not box.muted) $
+                scheduleBox out (tick.index / 4) (pulseMs * 4.0) tick.delayMs box
       H.modify_ _ { pulse = tick.index, voices = voices', clockTempo = tempo, tempo = round tempo }
 
   -- parse the (possibly edited) Tidal source into note-lists, rebuild them as a
@@ -4023,20 +4031,26 @@ perfBox st i box =
        [ HP.style ("position: relative; width: 150px; min-height: 118px; border: 2px "
                     <> (if held then "dashed " else "solid ") <> brd
                     <> "; background: " <> bg
-                    <> "; border-radius: 10px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; padding: 10px 8px; cursor: pointer;")
+                    <> "; border-radius: 10px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; padding: 10px 8px; cursor: pointer;"
+                    <> (if box.muted then " opacity: 0.5;" else ""))
        , HP.title (if held then "drop the held token/layer here" else box.label <> " · MIDI ch " <> show box.channel)
        , HE.onClick \_ -> PerfDropBox i
        , HE.onDragOver PerfDragOver
        , HE.onDrop \_ -> PerfDropBox i
        ]
-       ( [ HH.div [ HP.style "display: flex; align-items: center; gap: 6px;" ]
+       ( [ HH.div [ HP.style "display: flex; align-items: center; gap: 6px; flex-wrap: wrap; justify-content: center;" ]
              [ HH.span [ HP.style "font-size: 10px; letter-spacing: 0.1em; text-transform: uppercase; color: #b0a684;" ]
                  [ HH.text (box.label <> " · ch " <> show box.channel) ]
              , HH.button
-                 [ HP.style "border: 1px solid #dcd2b4; background: #faf6ea; color: #8a7a4a; cursor: pointer; padding: 0 5px; border-radius: 3px; font-size: 9px; letter-spacing: 0.06em; text-transform: uppercase;"
-                 , HP.title "terminal realisation — click to cycle block / strum / arp"
-                 , HE.onClick \_ -> PerfCycleRealize i ]
-                 [ HH.text (rendName box.realize) ]
+                 [ HP.style ("border: 1px solid " <> (if box.muted then "#c8a24a" else "#dcd2b4")
+                              <> "; background: " <> (if box.muted then "#f3e6c4" else "#faf6ea")
+                              <> "; color: " <> (if box.muted then "#9a6a1a" else "#8a7a4a")
+                              <> "; cursor: pointer; padding: 0 6px; border-radius: 3px; font-size: 9px; letter-spacing: 0.06em; text-transform: uppercase;")
+                 , HP.title (if box.muted then "muted — click to play" else "playing — click to mute")
+                 , HE.onClick \_ -> PerfToggleMute i ]
+                 [ HH.text (if box.muted then "muted" else "on") ]
+             , HH.div [ HP.style "display: inline-flex; border: 1px solid #dcd2b4; border-radius: 3px; overflow: hidden;" ]
+                 (map realizeBtn [ Block, Strummed, Arp ])
              ]
          , case box.seq of
              Just s ->
@@ -4080,6 +4094,15 @@ perfBox st i box =
       , HP.title "nudge this layer's value"
       , HE.onClick \_ -> PerfFxNudge i fxIx d ]
       [ HH.text glyph ]
+  -- one segment of the block/strum/arp realise selector; the active mode is filled.
+  realizeBtn r =
+    let active = box.realize == r
+    in HH.button
+         [ HP.style ("border: none; cursor: pointer; padding: 1px 5px; font-size: 9px; letter-spacing: 0.05em; text-transform: uppercase; background: "
+                      <> (if active then "#8a7a4a" else "#faf6ea") <> "; color: " <> (if active then "#ffffff" else "#8a7a4a") <> ";")
+         , HP.title ("realise as " <> rendName r)
+         , HE.onClick \_ -> PerfSetRealize i r ]
+         [ HH.text (rendName r) ]
 
 -- | The Keyboard lens — the exhaustive hunting cloud: the piano keyboard, diatonic
 -- | triad families, seed-blooms, the voice-leading lattice, and the path overlay.
