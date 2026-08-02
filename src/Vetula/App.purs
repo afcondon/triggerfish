@@ -30,9 +30,9 @@ import Effect.Timer (setInterval)
 import Data.Nullable (Nullable, null)
 import Data.Set (Set)
 import Data.Set as Set
-import Data.String (Pattern(..), contains)
+import Data.String (Pattern(..), contains, stripPrefix)
 import Data.String.CodeUnits as SCU
-import Data.String.Common (joinWith, toLower, trim)
+import Data.String.Common (joinWith, split, toLower, trim)
 import Data.Tuple (Tuple(..), fst, snd)
 import Effect (Effect)
 import Effect.Aff (attempt)
@@ -818,7 +818,8 @@ data Action
   | PerfFxAlt Int Int      -- box b, layer i: alternate control (arp cycles direction)
   | PerfFxWhen Int Int     -- box b, layer i: cycle the when clause (always / every n)
   | PerfSetTerm Int PerfTerm -- set box b's terminal sink directly
-  | PerfSetSeq Int String  -- edit box b's text-hatch sequence (mini-notation)
+  | PerfSetSeq Int String  -- edit box b's text-hatch sequence (mini-notation) only
+  | PerfSetPipeline Int String -- edit box b's WHOLE pipeline text (seq # layers)
   | PerfOpenEdit Int       -- open the sequence editor modal for box b
   | PerfCloseEdit          -- close the sequence editor modal
   | PerfNop                -- no-op (used to stop a click bubbling without a re-render)
@@ -2205,6 +2206,13 @@ handleAction = case _ of
            if j == b then box { seqText = txt } else box)
          st.perfBoxes }
 
+  -- the round-trip commit: parse the whole pipeline text back into the structured
+  -- box (seq part + layer stack), so the text field and the chips stay one thing.
+  PerfSetPipeline b txt -> H.modify_ \st ->
+    st { perfBoxes = mapWithIndex (\j box ->
+           if j == b then let r = parsePipeline txt in box { seqText = r.seqText, stack = r.stack } else box)
+         st.perfBoxes }
+
   PerfOpenEdit b -> H.modify_ _ { perfEditBox = Just b }
 
   PerfCloseEdit -> H.modify_ _ { perfEditBox = Nothing }
@@ -3042,6 +3050,128 @@ cycleVoiceShape d shape =
 
 showSigned :: Int -> String
 showSigned n = if n >= 0 then "+" <> show n else show n
+
+-- ============================================================================
+-- Canonical pipeline text ⇄ structure — the chrome↔text round-trip.
+--
+-- A box prints to `<seqPart> # <layer> # <layer> …` and parses back exactly, so
+-- the text field and the chips are two views of ONE structured box. The vocabulary
+-- is ASCII and round-trippable — NOT the glyph `fxLabel`s, which are lossy. Total +
+-- lenient (Selene `Source.purs` discipline): an unknown directive drops; a
+-- recognised-but-partial one falls back to a sensible default; values are clamped
+-- to the same ranges as the chip nudges. INVARIANT (the reconciliation point):
+--   parsePipeline (printPipeline box) == { seqText: trim box.seqText, stack: box.stack }
+-- so text-edit and chip-edit can never silently diverge. Use plain `show` here, not
+-- `showSigned` — a leading '+' makes `Int.fromString` return Nothing.
+-- ============================================================================
+
+printArpDir :: ArpDir -> String
+printArpDir = case _ of
+  ArpUp -> "up"
+  ArpDown -> "down"
+  ArpUpDown -> "updown"
+
+parseArpDir :: String -> ArpDir
+parseArpDir = case _ of
+  "down" -> ArpDown
+  "updown" -> ArpUpDown
+  _ -> ArpUp
+
+printVoiceShape :: VoiceShape -> String
+printVoiceShape = case _ of
+  Open -> "open"
+  Rootless -> "rootless"
+  Drop2 -> "drop2"
+  Drop24 -> "drop24"
+  Quartal -> "quartal"
+  Cluster -> "cluster"
+
+parseVoiceShape :: String -> Maybe VoiceShape
+parseVoiceShape = case _ of
+  "open" -> Just Open
+  "rootless" -> Just Rootless
+  "drop2" -> Just Drop2
+  "drop24" -> Just Drop24
+  "quartal" -> Just Quartal
+  "cluster" -> Just Cluster
+  _ -> Nothing
+
+printPerfFx :: PerfFx -> String
+printPerfFx = case _ of
+  Transpose n -> "transpose " <> show n
+  Octave n -> "oct " <> show n
+  Rate n -> "rate " <> show n
+  Voice shape -> "voice " <> printVoiceShape shape
+  Select (High n) -> "top " <> show n
+  Select (Low n) -> "bottom " <> show n
+  Arpg dir r -> "arp " <> printArpDir dir <> " " <> show r
+  Strum ms -> "strum " <> show ms
+
+printWhen :: When -> String
+printWhen = case _ of
+  Always -> ""
+  Every n -> " every " <> show n
+
+printLayer :: Layer -> String
+printLayer lyr = printPerfFx lyr.fx <> printWhen lyr.when
+
+printPipeline :: PerfBox -> String
+printPipeline box =
+  let s = trim box.seqText
+      layers = map printLayer box.stack
+  in if s == "" && length layers == 0 then ""
+     else if s == "" then "# " <> joinWith " # " layers
+     else joinWith " # " ([ s ] <> layers)
+
+-- whitespace tokens of a segment (drops empty tokens from runs of spaces).
+tokensOf :: String -> Array String
+tokensOf = filter (_ /= "") <<< split (Pattern " ") <<< trim
+
+-- one integer token, lenient: strips a leading '+' (which `fromString` rejects),
+-- falls back to `def` on anything non-numeric.
+tokInt :: Int -> String -> Int
+tokInt def s = fromMaybe def (fromString (fromMaybe s (stripPrefix (Pattern "+") s)))
+
+parsePerfFx :: Array String -> Maybe PerfFx
+parsePerfFx toks = case head toks of
+  Nothing -> Nothing
+  Just kw ->
+    let args = drop 1 toks
+        a0 d = tokInt d (fromMaybe "" (head args))
+        a1 d = tokInt d (fromMaybe "" (index args 1))
+    in case toLower kw of
+         "transpose" -> Just (Transpose (clamp (-24) 24 (a0 0)))
+         "trans" -> Just (Transpose (clamp (-24) 24 (a0 0)))
+         "oct" -> Just (Octave (clamp (-4) 4 (a0 0)))
+         "octave" -> Just (Octave (clamp (-4) 4 (a0 0)))
+         "8ve" -> Just (Octave (clamp (-4) 4 (a0 0)))
+         "rate" -> Just (Rate (clamp (-8) 8 (a0 2)))
+         "voice" -> Just (Voice (fromMaybe Open (head args >>= parseVoiceShape)))
+         "top" -> Just (Select (High (clamp 1 6 (a0 1))))
+         "bottom" -> Just (Select (Low (clamp 1 6 (a0 1))))
+         "arp" -> Just (Arpg (parseArpDir (fromMaybe "up" (head args))) (clamp 1 16 (a1 4)))
+         "strum" -> Just (Strum (clamp 0 80 (a0 14)))
+         _ -> Nothing
+
+parseLayer :: String -> Maybe Layer
+parseLayer seg =
+  let toks = tokensOf seg
+      n = length toks
+      -- peel a trailing `every N` (only when the last token is actually a number)
+      everyClause = do
+        kw <- index toks (n - 2)
+        num <- index toks (n - 1) >>= fromString
+        if kw == "every" then Just num else Nothing
+      body = maybe toks (\_ -> take (n - 2) toks) everyClause
+      w = maybe Always Every everyClause
+  in map (\fx -> { fx, when: w }) (parsePerfFx body)
+
+parsePipeline :: String -> { seqText :: String, stack :: Array Layer }
+parsePipeline txt =
+  let segs = split (Pattern "#") txt
+  in { seqText: trim (fromMaybe "" (head segs))
+     , stack: mapMaybe parseLayer (drop 1 segs)
+     }
 
 -- | The `Pattern (Array Int)` a Perform box realises this cycle: its saved sequence
 -- | as a looping chord pattern (one chord per beat-cycle), with the box's function
@@ -4307,17 +4437,21 @@ perfEditModal st = case st.perfEditBox >>= \i -> map (Tuple i) (index st.perfBox
               [ HP.style ("width: 100%; box-sizing: border-box; border: 1px solid "
                            <> (if boxUsesSeq box then "#b8860b" else "#cdbb8c")
                            <> "; background: #fff; color: #3a3a3a; border-radius: 6px; padding: 9px 12px; font-size: 15px; font-family: ui-monospace, monospace;")
-              , HP.value box.seqText
-              , HP.attr (AttrName "placeholder") "0 1 2 3"
-              , HE.onValueChange \s -> PerfSetSeq i s ]
+              , HP.value (printPipeline box)
+              , HP.attr (AttrName "placeholder") "0 1 2 3 # arp up 4"
+              , HE.onValueChange \s -> PerfSetPipeline i s ]
           , HH.div [ HP.style "font-size: 11px; color: #9a8a5a; margin: 8px 0 16px;" ]
               [ HH.text "One cycle = one bar; numbers index the token's chords (out-of-range = rest). Type freely, click away to apply." ]
           , sectionLabel "Examples — click to use"
           , HH.div [ HP.style "display: flex; flex-wrap: wrap; gap: 6px; margin: 0 0 18px;" ]
               (map (exampleChip i) examples)
-          , sectionLabel "Mini-notation"
+          , sectionLabel "Mini-notation (the sequence)"
           , HH.div [ HP.style "display: grid; grid-template-columns: auto 1fr; gap: 4px 14px; font-size: 12.5px; color: #555;" ]
               (concatMap guideRow guide)
+          , HH.div [ HP.style "height: 14px;" ] []
+          , sectionLabel "Layers (after each #)"
+          , HH.div [ HP.style "display: grid; grid-template-columns: auto 1fr; gap: 4px 14px; font-size: 12.5px; color: #555;" ]
+              (concatMap guideRow layerGuide)
           ]
       ]
   where
@@ -4350,6 +4484,16 @@ perfEditModal st = case st.perfEditBox >>= \i -> map (Tuple i) (index st.perfBox
     , Tuple "a!n" "repeat a, n times"
     , Tuple "a*n / a/n" "speed up / slow down"
     , Tuple "a?" "randomly drop (degrade)"
+    ]
+  layerGuide =
+    [ Tuple "# transpose 5" "shift every chord ±semitones"
+    , Tuple "# oct -1" "shift ±octaves"
+    , Tuple "# rate 2" "loop faster (negative = slower)"
+    , Tuple "# voice open" "re-voice: open/rootless/drop2/drop24/quartal/cluster"
+    , Tuple "# top 1 · # bottom 1" "keep the top / bottom N voices"
+    , Tuple "# arp up 4" "arpeggiate: up/down/updown, notes per beat"
+    , Tuple "# strum 14" "strum — ms between notes"
+    , Tuple "… every 4" "apply a layer only every N cycles"
     ]
 
 -- | The FX palette: click a layer to pick it up, then click a player box to append
@@ -4443,14 +4587,16 @@ perfBox st i box =
           [ HP.style ("flex: 1 1 auto; min-width: 0; box-sizing: border-box; border: 1px solid "
                        <> (if boxUsesSeq box then "#b8860b" else "#dcd2b4")
                        <> "; background: #fbfaf4; color: #6a5a2a; border-radius: 4px; padding: 2px 6px; font-size: 11px; font-family: ui-monospace, monospace;")
-          , HP.value box.seqText
-          , HP.attr (AttrName "placeholder") "seq · 0 1 2 3"
-          , HP.title "mini-notation sequence over the token's chords (cycle = 1 bar): 0 1 2 3 · <0 2> 1 · 0(3,8)"
+          , HP.value (printPipeline box)
+          , HP.attr (AttrName "placeholder") "0 1 2 3 # arp up 4"
+          , HP.title "the box pipeline as text (two views of one thing — edit here or the chips below): a mini-notation sequence (cycle = 1 bar) then # layers, e.g. 0 1 2 3 # voice open # arp up 4"
           -- commit on CHANGE (blur / enter), not on every keystroke: binding the live
           -- value back via `HP.value` each input snaps the caret to the end and blocks
           -- editing. `onValueChange` leaves the field uncontrolled while you type, then
-          -- commits — so you can freely edit an expression and hear it on blur.
-          , HE.onValueChange \s -> PerfSetSeq i s
+          -- commits — so you can freely edit the pipeline and hear it on blur. The value
+          -- is DERIVED (`printPipeline`), so chip edits re-render it and text edits parse
+          -- back into the structured box — the round-trip's single reconciliation point.
+          , HE.onValueChange \s -> PerfSetPipeline i s
           -- stop a focus-click bubbling to the box's drop handler, without a re-render.
           , HE.onClick \e -> PerfStopClick e PerfNop ]
       , HH.button
