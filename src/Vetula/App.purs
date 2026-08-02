@@ -718,7 +718,7 @@ data Action
   | PerfSetRealize Int Renderer -- set box b's terminal realise mode directly
   | PerfToggleMute Int     -- silence/unsilence box b's pipeline
   | PerfDragStart PerfDragSrc -- begin an HTML5 drag of a palette/box layer
-  | PerfDropOnChip Int Int -- drop the dragged layer before box b's chip i
+  | PerfDropOnChip DragEvent Int Int -- drop the dragged layer before box b's chip i
   | PerfDragEnd            -- clear the drag payload (drop landed or was abandoned)
   | PerfStopClick ME.MouseEvent Action -- run Action but stop the click bubbling to the box
   | ZoomAt Event Number    -- geometric lens: wheel-zoom toward the cursor (event, deltaY)
@@ -2061,7 +2061,9 @@ handleAction = case _ of
            if j == b then box { muted = not box.muted } else box)
          st.perfBoxes }
 
-  PerfDragStart src -> H.modify_ _ { perfDrag = Just src }
+  -- Starting a drag abandons any click-to-place hold, so the two gestures can't
+  -- coexist and leave a stray held layer to be dropped by a later bubbled event.
+  PerfDragStart src -> H.modify_ _ { perfDrag = Just src, perfHeld = Nothing, perfHeldFx = Nothing }
 
   PerfDragEnd -> H.modify_ _ { perfDrag = Nothing }
 
@@ -2075,7 +2077,10 @@ handleAction = case _ of
   -- Drop the dragged layer BEFORE box b's chip i (reorder within a box, or precise
   -- cross-box placement). Consumes perfDrag, so the bubbled box-level PerfDropBox
   -- that follows is a no-op.
-  PerfDropOnChip b i -> do
+  PerfDropOnChip ev b i -> do
+    -- stop the drop bubbling to the box-level PerfDropBox (which would otherwise
+    -- also drop any click-held layer onto the box — a spurious duplicate).
+    liftEffect $ stopPropagation (DE.toEvent ev)
     st <- H.get
     case st.perfDrag of
       Just src -> H.modify_ _ { perfBoxes = dropFxInto src b (Just i) st.perfBoxes, perfDrag = Nothing }
@@ -4145,7 +4150,7 @@ perfBox st i box =
       , HE.onDragStart \_ -> PerfDragStart (FromBox i fxIx)
       , HE.onDragEnd \_ -> PerfDragEnd
       , HE.onDragOver PerfDragOver
-      , HE.onDrop \_ -> PerfDropOnChip i fxIx ]
+      , HE.onDrop \e -> PerfDropOnChip e i fxIx ]
       [ nudge fxIx (-1) "−"
       , HH.span [ HP.style "padding: 0 2px; white-space: nowrap;" ] [ HH.text (fxLabel fx) ]
       , nudge fxIx 1 "+"
