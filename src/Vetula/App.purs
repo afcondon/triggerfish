@@ -76,6 +76,7 @@ import Reef.Vetula.Articulate (VArticulator(..), articulate, articLabel, nextArt
 import Vetula.Playhead (clockFor, defaultPattern, noteClock, patternClock)
 import Vetula.Realise (fromChords)
 import Tidal.Pattern.Core (fast, slow, every)
+import Tidal.Pattern.Mini (parseMiniPattern)
 import Tidal.Pattern.Types (Arc(..), eventValue, eventWhole, isDigital, mkArc, mkState, query)
 import Tidal.Pattern.Types (Pattern) as PT
 import Data.Rational as Rat
@@ -524,6 +525,8 @@ type PerfBox =
   , seq     :: Maybe SavedSeq
   , stack   :: Array Layer   -- ordered function layers (fx + when clause); arp/strum
                              -- among them carry the chord→time realisation (block = none)
+  , seqText :: String     -- the TEXT HATCH: a mini-notation sequence over the token's
+                          -- chord indices (cycle = 1 bar). "" = default (one/beat).
   , muted   :: Boolean    -- silence this pipeline without tearing it down
   , term    :: PerfTerm   -- the terminal sink: → midi | → odo | → rig
   }
@@ -814,6 +817,7 @@ data Action
   | PerfFxAlt Int Int      -- box b, layer i: alternate control (arp cycles direction)
   | PerfFxWhen Int Int     -- box b, layer i: cycle the when clause (always / every n)
   | PerfSetTerm Int PerfTerm -- set box b's terminal sink directly
+  | PerfSetSeq Int String  -- edit box b's text-hatch sequence (mini-notation)
   | PerfToggleMute Int     -- silence/unsilence box b's pipeline
   | PerfDragStart PerfDragSrc -- begin an HTML5 drag of a palette/box layer
   | PerfDropOnChip DragEvent Int Int -- drop the dragged layer before box b's chip i
@@ -984,7 +988,7 @@ component = H.mkComponent
       , chyronArmed: true
       -- four player boxes on MIDI ch 1-4 (Odonus I-IV in AC's routing); a token
       -- dropped on one loops there while the transport plays.
-      , perfBoxes: map (\n -> { channel: n, label: "P" <> show n, seq: Nothing, stack: [], muted: false, term: TMidi }) (range 1 4)
+      , perfBoxes: map (\n -> { channel: n, label: "P" <> show n, seq: Nothing, stack: [], seqText: "", muted: false, term: TMidi }) (range 1 4)
       , perfHeld: Nothing
       , perfHeldFx: Nothing
       , perfDrag: Nothing
@@ -2191,6 +2195,11 @@ handleAction = case _ of
            if j == b then box { term = t } else box)
          st.perfBoxes }
 
+  PerfSetSeq b txt -> H.modify_ \st ->
+    st { perfBoxes = mapWithIndex (\j box ->
+           if j == b then box { seqText = txt } else box)
+         st.perfBoxes }
+
   -- Starting a drag abandons any click-to-place hold, so the two gestures can't
   -- coexist and leave a stray held layer to be dropped by a later bubbled event.
   PerfDragStart src -> H.modify_ _ { perfDrag = Just src, perfHeld = Nothing, perfHeldFx = Nothing }
@@ -2375,19 +2384,22 @@ handleAction = case _ of
           -- is the sound. SOLO: emit as normal.
           mout = if st.authority == Local then st.midiOut else Nothing
       voices' <- liftEffect $ traverse (stepVoice mout st.routing reefChords tick.index pulseMs tick.delayMs) st.voices
-      -- PERFORM boxes: on each beat (every 4th 16th) query each filled box's
-      -- `Pattern` over the current beat-cycle and schedule the notes it yields
-      -- (block chords land together; arps/`fast`/`ply` subdivide the beat). One
-      -- beat = one pattern cycle. MIDI-only for now, gated by `mout` like the
-      -- voices; the function stack + forked terminal land in later slices.
-      when (tick.index `mod` 4 == 0) $
-        for_ mout \out -> liftEffect $
-          for_ st.perfBoxes \box ->
-            for_ box.seq \_ ->
-              -- only the → midi terminal schedules browser notes; → odo feeds
-              -- Odonus (via voiceChordFeed poll) and → rig is rig-only.
-              when (not box.muted && box.term == TMidi) $
-                scheduleBox out (tick.index / 4) (pulseMs * 4.0) tick.delayMs box
+      -- PERFORM boxes: query each filled box's `Pattern` for the current cycle and
+      -- schedule the notes it yields (block together; arp/`fast` subdivide). A box
+      -- with a text-hatch sequence plays on the BAR grid (mini-notation cycle = one
+      -- bar); a plain box on the per-BEAT grid (one chord per beat, unchanged).
+      -- MIDI-only (→ odo feeds Odonus via poll, → rig is rig-only).
+      let beatMs = pulseMs * 4.0
+          barMs = pulseMs * 16.0
+      for_ mout \out -> liftEffect $
+        for_ st.perfBoxes \box ->
+          for_ box.seq \_ ->
+            when (not box.muted && box.term == TMidi) $
+              if boxUsesSeq box
+                then when (tick.index `mod` 16 == 0) $
+                       scheduleBox out (tick.index / 16) barMs beatMs tick.delayMs box
+                else when (tick.index `mod` 4 == 0) $
+                       scheduleBox out (tick.index / 4) beatMs beatMs tick.delayMs box
       H.modify_ _ { pulse = tick.index, voices = voices', clockTempo = tempo, tempo = round tempo }
 
   -- parse the (possibly edited) Tidal source into note-lists, rebuild them as a
@@ -3023,12 +3035,32 @@ showSigned n = if n >= 0 then "+" <> show n else show n
 -- | The `Pattern (Array Int)` a Perform box realises this cycle: its saved sequence
 -- | as a looping chord pattern (one chord per beat-cycle), with the box's function
 -- | `stack` folded over it (first layer applied first / innermost).
+-- | The text-hatch sequence, if the box has a parseable mini-notation over its
+-- | token's chord indices: each index event becomes that chord (out-of-range → a
+-- | rest), cycle = one bar. `Nothing` when the field is empty or won't parse (fall
+-- | back to the default one-chord-per-beat `fromChords`).
+seqPattern :: Array (Array Int) -> String -> Maybe (PT.Pattern (Array Int))
+seqPattern chords txt
+  | trim txt == "" = Nothing
+  | otherwise = case parseMiniPattern txt of
+      Left _ -> Nothing
+      Right idxPat -> Just (map (\s -> fromMaybe [] (fromString (trim s) >>= index chords)) idxPat)
+
+-- | Whether a box plays on the BAR grid (a valid text-hatch sequence) rather than
+-- | the default per-beat grid.
+boxUsesSeq :: PerfBox -> Boolean
+boxUsesSeq box = case box.seq of
+  Just s -> isJust (seqPattern (map _.notes s.events) box.seqText)
+  Nothing -> false
+
 boxPattern :: PerfBox -> PT.Pattern (Array Int)
 boxPattern box = foldl (\p lyr -> applyLayer lyr p) base box.stack
   where
   base = case box.seq of
-    Just s -> fromChords (map _.notes s.events)
     Nothing -> fromChords []
+    Just s ->
+      let chords = map _.notes s.events
+      in fromMaybe (fromChords chords) (seqPattern chords box.seqText)
 
 -- | Query a box's pattern over this beat-cycle `b` and schedule every chord-event
 -- | it yields on the box's channel, positioned by the event's arc within the beat.
@@ -3036,14 +3068,14 @@ boxPattern box = foldl (\p lyr -> applyLayer lyr p) base box.stack
 -- | Block = all together; Arp = a FIXED step per note (beatMs / rate — density
 -- | doesn't change the speed); Strum = a small fixed ms onset stagger. `fast`/
 -- | `rate` subdivide the beat orthogonally (they change the chord pattern upstream).
-scheduleBox :: Midi.MidiOut -> Int -> Number -> Number -> PerfBox -> Effect Unit
-scheduleBox out b beatMs baseDelayMs box =
+scheduleBox :: Midi.MidiOut -> Int -> Number -> Number -> Number -> PerfBox -> Effect Unit
+scheduleBox out c cycleMs beatMs baseDelayMs box =
   let realise = boxRealise box.stack
-  in for_ (query (boxPattern box) (mkState (mkArc (Rat.fromInt b) (Rat.fromInt (b + 1))))) \ev ->
+  in for_ (query (boxPattern box) (mkState (mkArc (Rat.fromInt c) (Rat.fromInt (c + 1))))) \ev ->
        when (isDigital ev) $
          for_ (eventWhole ev) \(Arc w) ->
-           let startMs = baseDelayMs + Rat.toNumber (w.start - Rat.fromInt b) * beatMs
-               slotMs = max 20.0 (Rat.toNumber (w.stop - w.start) * beatMs)
+           let startMs = baseDelayMs + Rat.toNumber (w.start - Rat.fromInt c) * cycleMs
+               slotMs = max 20.0 (Rat.toNumber (w.stop - w.start) * cycleMs)
                notes = case realise of
                  RArp dir _ -> arpOrder dir (eventValue ev)
                  _ -> eventValue ev
@@ -4298,6 +4330,7 @@ perfBox st i box =
              Nothing ->
                HH.div [ HP.style "font-size: 28px; color: #d8ceb4; line-height: 1; margin: 2px 0;" ] [ HH.text "＋" ]
          ]
+         <> [ seqRow ]
          <> stackRows
          -- the terminal SINK — a midi · odo · rig pill row (the fold's cap)
          <> [ HH.div [ HP.style "display: inline-flex; border: 1px solid #dcd2b4; border-radius: 3px; overflow: hidden; margin-top: 2px;" ]
@@ -4316,6 +4349,18 @@ perfBox st i box =
        )
   where
   ghost = boxGhosted st.authority box
+  -- the TEXT HATCH: a mini-notation sequence over the token's chord indices (cycle
+  -- = one bar). Empty = default one-chord-per-beat. Border lights when it's driving.
+  seqRow =
+    HH.input
+      [ HP.style ("width: 100%; box-sizing: border-box; border: 1px solid "
+                   <> (if boxUsesSeq box then "#b8860b" else "#dcd2b4")
+                   <> "; background: #fbfaf4; color: #6a5a2a; border-radius: 4px; padding: 2px 6px; font-size: 11px; font-family: ui-monospace, monospace;")
+      , HP.value box.seqText
+      , HP.attr (AttrName "placeholder") "seq · 0 1 2 3"
+      , HP.title "mini-notation sequence over the token's chords (cycle = 1 bar): 0 1 2 3 · <0 2> 1 · 0(3,8)"
+      , HE.onValueInput \s -> PerfSetSeq i s
+      , HE.onClick \e -> PerfStopClick e (PerfSetSeq i box.seqText) ]
   -- the box's function stack, one FULL-WIDTH row per layer: name · (alt control) ·
   -- − / + to nudge · × to remove. Rows are draggable to reorder or move between
   -- boxes. First row = applied first (innermost); arp/strum realise at the sink.
