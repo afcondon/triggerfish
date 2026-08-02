@@ -11,12 +11,17 @@ import Prelude
 import Data.Array (elem, filter, length)
 import Data.Foldable (foldl)
 import Data.Int (round, toNumber)
+import Data.Maybe (Maybe(..))
+import Data.String (Pattern(..))
+import Data.String.Common (joinWith, split)
 import Effect (Effect)
 import Effect.Console (log)
 import Triggerfish.Odonus.Model as M
 import Triggerfish.Odonus.Marbles as Marbles
 import Triggerfish.Odonus.Gen as Gen
 import Triggerfish.Odonus.Grid.Types (GenKind(..), GenSource, genDefaultAmt, genDefaultRate, genKinds)
+import Vetula.App (ArpDir(..), PerfFx(..), PerfTerm(..), VoiceShape(..), When(..), mkLayer)
+import Vetula.Lepidoptera (PerfDoc, parsePerform, performSource, roundTrips)
 
 type Sim = { odo :: M.Odonus, seed :: Marbles.Seed }
 
@@ -110,6 +115,29 @@ mean1 a b = if b == 0 then "0" else
 n :: Int
 n = 1500
 
+-- | A three-voice Perform surface exercising the Lepidoptera round-trip: a shared
+-- | source (A) played two ways would go here; this uses two sources + a sourceless
+-- | rig voice, a gated arp (`every`), a fused arp verb, and a non-default terminal.
+lepDoc :: PerfDoc
+lepDoc =
+  { key: "C major"
+  , sources:
+      [ { name: "A", chords: [ [60,64,67], [57,60,64], [62,65,69], [55,59,62] ] }
+      , { name: "B", chords: [ [60,64,67,71,74] ] }
+      ]
+  , voices:
+      [ { channel: 1, source: Just "A", seqText: "0 1 2 3"
+        , stack: [ mkLayer (Voice Open), mkLayer (Strum 14) ], term: TMidi, muted: false }
+      , { channel: 2, source: Just "B", seqText: "0 1 2 3"
+        , stack: [ (mkLayer (Arpg ArpUp 4)) { when = Every 4 } ], term: TMidi, muted: false }
+      , { channel: 5, source: Nothing, seqText: ""
+        , stack: [ mkLayer (Transpose 12) ], term: TRig, muted: false }
+      ]
+  }
+
+yn :: Boolean -> String
+yn b = if b then "✓ PASS" else "✗ FAIL"
+
 main :: Effect Unit
 main = do
   log "════ Triggerfish sampling harness ════"
@@ -157,4 +185,23 @@ main = do
   log ("   pitch range:        " <> show e.pitchLo <> "–" <> show e.pitchHi)
   log ("   skip mean/max:      " <> mean1 e.skipSum e.steps <> " / " <> show e.skipMax)
   log ("   min active voices:  " <> show e.minActive)
+
+  -- G. Lepidoptera round-trip: the Perform surface ⇄ one transferable document.
+  --    print → parse → equal? (structure is source of truth; text is derived).
+  log "\nG. LEPIDOPTERA ROUND-TRIP  (Perform surface ⇄ document)"
+  log "   ── performSource lepDoc ──"
+  log (indent (performSource lepDoc))
+  log ("   print∘parse fixpoint: " <> yn (roundTrips lepDoc) <> "   (want PASS)")
+  -- a hand-written document parses leniently (unknown `frobnicate` mod drops,
+  -- half `# arp` → default) and re-prints to a canonical, stable form:
+  let hand = "-- vetula perform · G mixolydian · 1 voices\n"
+          <> "source A \"<[g4,b4,d5,f5]>\"\n"
+          <> "ch3 A \"0 0 <1 2>\" # frobnicate 9 # transpose -5 # every 2 # out odo"
+  let reparsed = performSource (parsePerform hand)
+  log "   ── hand-written (lenient) parse → re-print ──"
+  log (indent reparsed)
+  log ("   stable under re-parse: " <> yn (performSource (parsePerform reparsed) == reparsed) <> "   (want PASS)")
   log "\n════ done ════"
+  where
+  indent = \s -> "     " <> replaceNL s
+  replaceNL = \s -> joinWith "\n     " (split (Pattern "\n") s)
