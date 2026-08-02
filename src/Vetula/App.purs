@@ -818,6 +818,7 @@ data Action
   | PerfFxWhen Int Int     -- box b, layer i: cycle the when clause (always / every n)
   | PerfSetTerm Int PerfTerm -- set box b's terminal sink directly
   | PerfSetSeq Int String  -- edit box b's text-hatch sequence (mini-notation)
+  | PerfNop                -- no-op (used to stop a click bubbling without a re-render)
   | PerfToggleMute Int     -- silence/unsilence box b's pipeline
   | PerfDragStart PerfDragSrc -- begin an HTML5 drag of a palette/box layer
   | PerfDropOnChip DragEvent Int Int -- drop the dragged layer before box b's chip i
@@ -2199,6 +2200,8 @@ handleAction = case _ of
     st { perfBoxes = mapWithIndex (\j box ->
            if j == b then box { seqText = txt } else box)
          st.perfBoxes }
+
+  PerfNop -> pure unit
 
   -- Starting a drag abandons any click-to-place hold, so the two gestures can't
   -- coexist and leave a stray held layer to be dropped by a later bubbled event.
@@ -4359,8 +4362,13 @@ perfBox st i box =
       , HP.value box.seqText
       , HP.attr (AttrName "placeholder") "seq · 0 1 2 3"
       , HP.title "mini-notation sequence over the token's chords (cycle = 1 bar): 0 1 2 3 · <0 2> 1 · 0(3,8)"
-      , HE.onValueInput \s -> PerfSetSeq i s
-      , HE.onClick \e -> PerfStopClick e (PerfSetSeq i box.seqText) ]
+      -- commit on CHANGE (blur / enter), not on every keystroke: binding the live
+      -- value back via `HP.value` each input snaps the caret to the end and blocks
+      -- editing. `onValueChange` leaves the field uncontrolled while you type, then
+      -- commits — so you can freely edit an expression and hear it on blur.
+      , HE.onValueChange \s -> PerfSetSeq i s
+      -- stop a focus-click bubbling to the box's drop handler, without a re-render.
+      , HE.onClick \e -> PerfStopClick e PerfNop ]
   -- the box's function stack, one FULL-WIDTH row per layer: name · (alt control) ·
   -- − / + to nudge · × to remove. Rows are draggable to reorder or move between
   -- boxes. First row = applied first (innermost); arp/strum realise at the sink.
