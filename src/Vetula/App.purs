@@ -18,7 +18,7 @@ module Vetula.App where
 
 import Prelude
 
-import Data.Array (concat, concatMap, deleteAt, drop, elem, elemIndex, filter, find, findIndex, head, index, insertAt, last, length, mapMaybe, mapWithIndex, modifyAt, nub, nubByEq, range, replicate, sort, take, takeEnd, updateAt, (!!))
+import Data.Array (concat, concatMap, deleteAt, drop, elem, elemIndex, filter, find, findIndex, head, index, insertAt, last, length, mapMaybe, mapWithIndex, modifyAt, nub, nubByEq, range, replicate, reverse, sort, take, takeEnd, updateAt, (!!))
 import Data.Foldable (all, any, foldl, foldr, for_, maximum, minimum, sum)
 import Data.Traversable (traverse)
 import Data.Int (fromString, round, toNumber)
@@ -404,8 +404,36 @@ data PerfFx
   | Rate Int         -- speed: n>0 `fast n`, n<0 `slow (-n)`, 0 = identity
   | Voice VoiceShape -- re-voice each chord (Harmonia VoicingStrategy)
   | Select PerfSel   -- thin each chord to some of its voices (Harmonia takeVoicing)
+  | Arpg ArpDir Int  -- explode chord→time at a FIXED rate (notes per beat), a
+                     -- direction; block = no arp. Rate-driven, so dense chords
+                     -- don't rush (each note the same length regardless of count).
+  | Strum Int        -- explode chord→time as a fast onset stagger (ms per note)
 
 derive instance eqPerfFx :: Eq PerfFx
+
+-- | Arpeggiation order of a chord's notes (low→high, high→low, or bounce).
+data ArpDir = ArpUp | ArpDown | ArpUpDown
+
+derive instance eqArpDir :: Eq ArpDir
+
+arpDirGlyph :: ArpDir -> String
+arpDirGlyph = case _ of
+  ArpUp -> "↑"
+  ArpDown -> "↓"
+  ArpUpDown -> "↕"
+
+cycleArpDir :: ArpDir -> ArpDir
+cycleArpDir = case _ of
+  ArpUp -> ArpDown
+  ArpDown -> ArpUpDown
+  ArpUpDown -> ArpUp
+
+-- | A chord's notes in an arp direction's order.
+arpOrder :: ArpDir -> Array Int -> Array Int
+arpOrder = case _ of
+  ArpUp -> identity
+  ArpDown -> reverse
+  ArpUpDown -> \ns -> ns <> reverse ns
 
 -- | Chord re-voicings — Harmonia `Voicing -> Voicing` strategies.
 data VoiceShape = Open | Rootless | Drop2 | Drop24 | Quartal | Cluster
@@ -439,6 +467,13 @@ termLabel = case _ of
   TOdo -> "→ odo"
   TRig -> "→ rig"
 
+-- | Short pill label for the terminal selector.
+termShort :: PerfTerm -> String
+termShort = case _ of
+  TMidi -> "midi"
+  TOdo -> "odo"
+  TRig -> "rig"
+
 nextTerm :: PerfTerm -> PerfTerm
 nextTerm = case _ of
   TMidi -> TOdo
@@ -459,8 +494,8 @@ type PerfBox =
   { channel :: Int
   , label   :: String
   , seq     :: Maybe SavedSeq
-  , stack   :: Array PerfFx
-  , realize :: Renderer   -- terminal chord→time: Block | Strummed | Arp
+  , stack   :: Array PerfFx  -- ordered function layers; arp/strum among them
+                             -- carry the chord→time realisation (block = none)
   , muted   :: Boolean    -- silence this pipeline without tearing it down
   , term    :: PerfTerm   -- the terminal sink: → midi | → odo | → rig
   }
@@ -748,9 +783,9 @@ data Action
   | PerfPickFx PerfFx      -- pick up an fx from the palette for placement (toggle)
   | PerfFxNudge Int Int Int -- nudge box b's stack layer i by delta
   | PerfFxRemove Int Int   -- remove box b's stack layer i
-  | PerfSetRealize Int Renderer -- set box b's terminal realise mode directly
+  | PerfFxAlt Int Int      -- box b, layer i: alternate control (arp cycles direction)
+  | PerfSetTerm Int PerfTerm -- set box b's terminal sink directly
   | PerfToggleMute Int     -- silence/unsilence box b's pipeline
-  | PerfCycleTerm Int      -- cycle box b's terminal sink (midi/odo/rig)
   | PerfDragStart PerfDragSrc -- begin an HTML5 drag of a palette/box layer
   | PerfDropOnChip DragEvent Int Int -- drop the dragged layer before box b's chip i
   | PerfDragEnd            -- clear the drag payload (drop landed or was abandoned)
@@ -920,7 +955,7 @@ component = H.mkComponent
       , chyronArmed: true
       -- four player boxes on MIDI ch 1-4 (Odonus I-IV in AC's routing); a token
       -- dropped on one loops there while the transport plays.
-      , perfBoxes: map (\n -> { channel: n, label: "P" <> show n, seq: Nothing, stack: [], realize: Block, muted: false, term: TMidi }) (range 1 4)
+      , perfBoxes: map (\n -> { channel: n, label: "P" <> show n, seq: Nothing, stack: [], muted: false, term: TMidi }) (range 1 4)
       , perfHeld: Nothing
       , perfHeldFx: Nothing
       , perfDrag: Nothing
@@ -2107,9 +2142,9 @@ handleAction = case _ of
            if j == b then box { stack = fromMaybe box.stack (deleteAt i box.stack) } else box)
          st.perfBoxes }
 
-  PerfSetRealize b r -> H.modify_ \st ->
+  PerfFxAlt b i -> H.modify_ \st ->
     st { perfBoxes = mapWithIndex (\j box ->
-           if j == b then box { realize = r } else box)
+           if j == b then box { stack = fromMaybe box.stack (modifyAt i fxAlt box.stack) } else box)
          st.perfBoxes }
 
   PerfToggleMute b -> H.modify_ \st ->
@@ -2117,9 +2152,9 @@ handleAction = case _ of
            if j == b then box { muted = not box.muted } else box)
          st.perfBoxes }
 
-  PerfCycleTerm b -> H.modify_ \st ->
+  PerfSetTerm b t -> H.modify_ \st ->
     st { perfBoxes = mapWithIndex (\j box ->
-           if j == b then box { term = nextTerm box.term } else box)
+           if j == b then box { term = t } else box)
          st.perfBoxes }
 
   -- Starting a drag abandons any click-to-place hold, so the two gestures can't
@@ -2849,6 +2884,24 @@ applyFx = case _ of
     | otherwise -> identity
   Voice shape -> map (revoice (voiceStrategy shape))
   Select sel -> map (revoice (takeVoicing (selSelector sel)))
+  -- arp/strum don't change the chord PATTERN — they explode each chord across
+  -- time at the terminal (see `boxRealise`/`scheduleBox`), at a fixed rate. They
+  -- sit in the stack as config-carrying layers; their timing applies at the sink.
+  Arpg _ _ -> identity
+  Strum _ -> identity
+
+-- | The chord→time REALISATION a box's stack asks for — the last arp/strum layer
+-- | wins, else a plain block chord. Applied at schedule time (not in the pattern),
+-- | at a FIXED per-note rate so dense chords don't rush.
+data Realise = RBlock | RArp ArpDir Int | RStrum Int
+
+boxRealise :: Array PerfFx -> Realise
+boxRealise = foldl pick RBlock
+  where
+  pick acc = case _ of
+    Arpg dir r -> RArp dir r
+    Strum ms -> RStrum ms
+    _ -> acc
 
 -- | Run a Harmonia `Voicing -> Voicing` over one chord's notes. The notes are
 -- | sorted low→high first so the strategies and Low/High selectors read voices
@@ -2882,6 +2935,8 @@ fxLabel = case _ of
   Voice shape -> "voice " <> voiceShapeName shape
   Select (Low n) -> "bottom " <> show n
   Select (High n) -> "top " <> show n
+  Arpg dir r -> "arp " <> arpDirGlyph dir <> " ×" <> show r
+  Strum ms -> "strum " <> show ms <> "ms"
 
 voiceShapeName :: VoiceShape -> String
 voiceShapeName = case _ of
@@ -2902,6 +2957,15 @@ fxNudge d = case _ of
   Voice shape -> Voice (cycleVoiceShape d shape)
   Select (Low n) -> Select (Low (clamp 1 6 (n + d)))
   Select (High n) -> Select (High (clamp 1 6 (n + d)))
+  Arpg dir r -> Arpg dir (clamp 1 16 (r + d))     -- nudge the fixed rate (notes/beat)
+  Strum ms -> Strum (clamp 0 80 (ms + d))
+
+-- | The layer's ALTERNATE control (the second param when it has one): arp cycles
+-- | its direction; everything else is unchanged.
+fxAlt :: PerfFx -> PerfFx
+fxAlt = case _ of
+  Arpg dir r -> Arpg (cycleArpDir dir) r
+  other -> other
 
 cycleVoiceShape :: Int -> VoiceShape -> VoiceShape
 cycleVoiceShape d shape =
@@ -2925,29 +2989,34 @@ boxPattern box = foldl (\p fx -> applyFx fx p) base box.stack
 
 -- | Query a box's pattern over this beat-cycle `b` and schedule every chord-event
 -- | it yields on the box's channel, positioned by the event's arc within the beat.
--- | The box's `realize` mode spreads each chord's notes across the event's slot:
--- | Block = all together; Arp = evenly across the slot (low→high); Strummed = a
--- | small fixed onset stagger. `fast`/`ply` subdivide the beat orthogonally.
+-- | The stack's realisation (`boxRealise`) spreads each chord's notes across TIME:
+-- | Block = all together; Arp = a FIXED step per note (beatMs / rate — density
+-- | doesn't change the speed); Strum = a small fixed ms onset stagger. `fast`/
+-- | `rate` subdivide the beat orthogonally (they change the chord pattern upstream).
 scheduleBox :: Midi.MidiOut -> Int -> Number -> Number -> PerfBox -> Effect Unit
 scheduleBox out b beatMs baseDelayMs box =
-  for_ (query (boxPattern box) (mkState (mkArc (Rat.fromInt b) (Rat.fromInt (b + 1))))) \ev ->
-    when (isDigital ev) $
-      for_ (eventWhole ev) \(Arc w) ->
-        let startMs = baseDelayMs + Rat.toNumber (w.start - Rat.fromInt b) * beatMs
-            slotMs = max 20.0 (Rat.toNumber (w.stop - w.start) * beatMs)
-            notes = eventValue ev
-            n = max 1 (length notes)
-            stepMs = slotMs / toNumber n
-        in for_ (mapWithIndex Tuple notes) \(Tuple k note) ->
-             let onset = case box.realize of
-                   Block -> startMs
-                   Arp -> startMs + toNumber k * stepMs
-                   Strummed -> startMs + toNumber k * 14.0
-                 dur = case box.realize of
-                   Arp -> max 20.0 (stepMs * 0.9)
-                   _ -> max 20.0 (slotMs * 0.9)
-             in Midi.scheduleNote out
-                  { channel: box.channel, note, velocity: 90, delayMs: onset, durMs: dur }
+  let realise = boxRealise box.stack
+  in for_ (query (boxPattern box) (mkState (mkArc (Rat.fromInt b) (Rat.fromInt (b + 1))))) \ev ->
+       when (isDigital ev) $
+         for_ (eventWhole ev) \(Arc w) ->
+           let startMs = baseDelayMs + Rat.toNumber (w.start - Rat.fromInt b) * beatMs
+               slotMs = max 20.0 (Rat.toNumber (w.stop - w.start) * beatMs)
+               notes = case realise of
+                 RArp dir _ -> arpOrder dir (eventValue ev)
+                 _ -> eventValue ev
+               -- fixed per-note step (ms): arp = one note per (beat / rate);
+               -- strum = a small fixed stagger; block = 0 (all together).
+               stepMs = case realise of
+                 RArp _ rate -> beatMs / toNumber (max 1 rate)
+                 RStrum ms -> toNumber ms
+                 RBlock -> 0.0
+               noteDur = case realise of
+                 RArp _ rate -> max 20.0 (beatMs / toNumber (max 1 rate) * 0.9)
+                 _ -> max 20.0 (slotMs * 0.9)
+           in for_ (mapWithIndex Tuple notes) \(Tuple k note) ->
+                Midi.scheduleNote out
+                  { channel: box.channel, note, velocity: 90
+                  , delayMs: startMs + toNumber k * stepMs, durMs: noteDur }
 
 -- | Send a chord's notes to the MIDI bus (no state change) and log it to the chyron.
 playChord :: forall o m. MonadAff m => ChordNode -> H.HalogenM State Action Slots o m Unit
@@ -4119,7 +4188,7 @@ performSurface st =
         ]
     , fxPalette st
     , HH.div
-        [ HP.style "display: flex; gap: 20px; flex-wrap: wrap; justify-content: center; align-items: flex-start; max-width: 820px;" ]
+        [ HP.style "display: flex; gap: 18px; flex-wrap: wrap; justify-content: center; align-items: flex-start; max-width: 940px;" ]
         (mapWithIndex (perfBox st) st.perfBoxes)
     ]
 
@@ -4130,7 +4199,7 @@ fxPalette st =
   HH.div
     [ HP.style "display: flex; align-items: center; gap: 8px;" ]
     ( [ HH.span [ HP.style "font-size: 10px; letter-spacing: 0.12em; text-transform: uppercase; color: #b0a684;" ] [ HH.text "fx" ] ]
-        <> map paletteChip [ Transpose 0, Octave (-1), Rate 2, Voice Open, Select (High 1), Select (Low 1) ]
+        <> map paletteChip [ Transpose 0, Octave (-1), Rate 2, Voice Open, Select (High 1), Select (Low 1), Arpg ArpUp 4, Strum 14 ]
     )
   where
   paletteChip fx =
@@ -4154,56 +4223,47 @@ perfBox :: forall m. State -> Int -> PerfBox -> H.ComponentHTML Action Slots m
 perfBox st i box =
   let held = isJust st.perfHeld || isJust st.perfHeldFx
       filled = isJust box.seq
-      ghost = boxGhosted st.authority box
       brd = if held then "#b8860b" else if filled then "#cdbb8c" else "#d8ceb4"
       bg = if held then "#fbf6ea" else "#faf7ee"
   in HH.div
-       [ HP.style ("position: relative; width: 150px; min-height: 118px; border: 2px "
+       [ HP.style ("position: relative; width: 208px; min-height: 118px; border: 2px "
                     <> (if held then "dashed " else "solid ") <> brd
                     <> "; background: " <> bg
-                    <> "; border-radius: 10px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; padding: 10px 8px; cursor: pointer;"
+                    <> "; border-radius: 10px; display: flex; flex-direction: column; align-items: center; justify-content: flex-start; gap: 8px; padding: 10px 10px; cursor: pointer;"
                     <> (if box.muted || ghost then " opacity: 0.5;" else ""))
        , HP.title (if held then "drop the held token/layer here" else box.label <> " · MIDI ch " <> show box.channel)
        , HE.onClick \_ -> PerfDropBox i
        , HE.onDragOver PerfDragOver
        , HE.onDrop \_ -> PerfDropBox i
        ]
-       ( [ HH.div [ HP.style "display: flex; align-items: center; gap: 6px; flex-wrap: wrap; justify-content: center;" ]
+       ( [ HH.div [ HP.style "display: flex; align-items: center; gap: 8px;" ]
              [ HH.span [ HP.style "font-size: 10px; letter-spacing: 0.1em; text-transform: uppercase; color: #b0a684;" ]
                  [ HH.text (box.label <> " · ch " <> show box.channel) ]
              , HH.button
                  [ HP.style ("border: 1px solid " <> (if box.muted then "#c8a24a" else "#dcd2b4")
                               <> "; background: " <> (if box.muted then "#f3e6c4" else "#faf6ea")
                               <> "; color: " <> (if box.muted then "#9a6a1a" else "#8a7a4a")
-                              <> "; cursor: pointer; padding: 0 6px; border-radius: 3px; font-size: 9px; letter-spacing: 0.06em; text-transform: uppercase;")
+                              <> "; cursor: pointer; padding: 1px 8px; border-radius: 3px; font-size: 9px; letter-spacing: 0.06em; text-transform: uppercase;")
                  , HP.title (if box.muted then "muted — click to play" else "playing — click to mute")
                  , HE.onClick \e -> PerfStopClick e (PerfToggleMute i) ]
                  [ HH.text (if box.muted then "muted" else "on") ]
-             , HH.div [ HP.style "display: inline-flex; border: 1px solid #dcd2b4; border-radius: 3px; overflow: hidden;" ]
-                 (map realizeBtn [ Block, Strummed, Arp ])
-             -- the terminal SINK — click to cycle → midi / → odo / → rig
-             , HH.button
-                 [ HP.style ("border: 1px solid " <> (if ghost then "#c88a6a" else "#dcd2b4")
-                              <> "; background: " <> (if ghost then "#f3ddd0" else "#faf6ea")
-                              <> "; color: " <> (if ghost then "#a05a3a" else "#8a7a4a")
-                              <> "; cursor: pointer; padding: 0 6px; border-radius: 3px; font-size: 9px; letter-spacing: 0.05em;")
-                 , HP.title "terminal sink — click to cycle → midi / → odo / → rig"
-                 , HE.onClick \e -> PerfStopClick e (PerfCycleTerm i) ]
-                 [ HH.text (termLabel box.term) ]
              ]
-         , if ghost
-             then HH.div [ HP.style "font-size: 9px; letter-spacing: 0.06em; text-transform: uppercase; color: #a05a3a;" ]
-                    [ HH.text "✕ rig only" ]
-             else HH.text ""
          , case box.seq of
              Just s ->
-               HH.div [ HP.style "display: flex; align-items: center; gap: 6px; font-size: 22px; color: #7a5c00;" ]
+               HH.div [ HP.style "display: flex; align-items: center; gap: 6px; font-size: 22px; color: #7a5c00; margin: 2px 0;" ]
                  [ faIcon s.glyph.first, faIcon s.glyph.second ]
              Nothing ->
-               HH.div [ HP.style "font-size: 28px; color: #d8ceb4; line-height: 1;" ] [ HH.text "＋" ]
+               HH.div [ HP.style "font-size: 28px; color: #d8ceb4; line-height: 1; margin: 2px 0;" ] [ HH.text "＋" ]
          ]
-         <> stackRegion
-         <> [ if filled
+         <> stackRows
+         -- the terminal SINK — a midi · odo · rig pill row (the fold's cap)
+         <> [ HH.div [ HP.style "display: inline-flex; border: 1px solid #dcd2b4; border-radius: 3px; overflow: hidden; margin-top: 2px;" ]
+                (map termBtn [ TMidi, TOdo, TRig ])
+            , if ghost
+                then HH.div [ HP.style "font-size: 9px; letter-spacing: 0.06em; text-transform: uppercase; color: #a05a3a;" ]
+                       [ HH.text "✕ rig only" ]
+                else HH.text ""
+            , if filled
                 then HH.button
                        [ HP.style "position: absolute; top: 4px; right: 7px; border: none; background: transparent; color: #b06a5a; font-size: 15px; line-height: 1; cursor: pointer;"
                        , HP.title "clear this player"
@@ -4212,46 +4272,58 @@ perfBox st i box =
                 else HH.text "" ]
        )
   where
-  -- the box's function stack, one small chip per layer: − / label / + to nudge the
-  -- param, × to drop the layer. First chip = applied first (innermost).
-  stackRegion =
-    if length box.stack == 0 then []
-    else [ HH.div
-             [ HP.style "display: flex; flex-wrap: wrap; gap: 4px; justify-content: center;" ]
-             (mapWithIndex fxChip box.stack) ]
-  fxChip fxIx fx =
-    HH.span
-      [ HP.style "display: inline-flex; align-items: center; gap: 2px; border: 1px solid #cdbb8c; background: #f3ead2; border-radius: 3px; padding: 1px 2px; font-size: 10px; color: #6a5a2a; line-height: 1.4; cursor: grab;"
+  ghost = boxGhosted st.authority box
+  -- the box's function stack, one FULL-WIDTH row per layer: name · (alt control) ·
+  -- − / + to nudge · × to remove. Rows are draggable to reorder or move between
+  -- boxes. First row = applied first (innermost); arp/strum realise at the sink.
+  stackRows = mapWithIndex fxRow box.stack
+  fxRow fxIx fx =
+    HH.div
+      [ HP.style "display: flex; align-items: center; width: 100%; box-sizing: border-box; gap: 3px; border: 1px solid #cdbb8c; background: #f3ead2; border-radius: 4px; padding: 2px 5px; font-size: 11px; color: #6a5a2a; cursor: grab;"
       , HP.draggable true
       , HP.title "drag to reorder, or onto another player to move it"
       , HE.onDragStart \_ -> PerfDragStart (FromBox i fxIx)
       , HE.onDragEnd \_ -> PerfDragEnd
       , HE.onDragOver PerfDragOver
       , HE.onDrop \e -> PerfDropOnChip e i fxIx ]
-      [ nudge fxIx (-1) "−"
-      , HH.span [ HP.style "padding: 0 2px; white-space: nowrap;" ] [ HH.text (fxLabel fx) ]
-      , nudge fxIx 1 "+"
-      , HH.button
-          [ HP.style "border: none; background: transparent; color: #b06a5a; font-size: 11px; line-height: 1; cursor: pointer; padding: 0 1px;"
-          , HP.title "remove this layer"
-          , HE.onClick \e -> PerfStopClick e (PerfFxRemove i fxIx) ]
-          [ HH.text "×" ]
-      ]
+      ( [ HH.span [ HP.style "flex: 1 1 auto; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;" ] [ HH.text (fxLabel fx) ] ]
+          <> altBtns fx fxIx
+          <> [ nudge fxIx (-1) "−"
+             , nudge fxIx 1 "+"
+             , HH.button
+                 [ HP.style "border: none; background: transparent; color: #b06a5a; font-size: 12px; line-height: 1; cursor: pointer; padding: 0 2px;"
+                 , HP.title "remove this layer"
+                 , HE.onClick \e -> PerfStopClick e (PerfFxRemove i fxIx) ]
+                 [ HH.text "×" ]
+             ]
+      )
+  -- an extra per-layer control: arp gets a direction-cycle button; others none.
+  altBtns fx fxIx = case fx of
+    Arpg _ _ ->
+      [ HH.button
+          [ HP.style "border: 1px solid #cdbb8c; background: #faf6ea; color: #8a7a4a; font-size: 10px; line-height: 1.2; cursor: pointer; padding: 0 4px; border-radius: 3px;"
+          , HP.title "cycle arp direction"
+          , HE.onClick \e -> PerfStopClick e (PerfFxAlt i fxIx) ]
+          [ HH.text "↻" ] ]
+    _ -> []
   nudge fxIx d glyph =
     HH.button
-      [ HP.style "border: none; background: transparent; color: #8a7a4a; font-size: 11px; line-height: 1; cursor: pointer; padding: 0 1px;"
+      [ HP.style "border: 1px solid #cdbb8c; background: #faf6ea; color: #8a7a4a; font-size: 12px; line-height: 1.1; cursor: pointer; padding: 0 5px; border-radius: 3px;"
       , HP.title "nudge this layer's value"
       , HE.onClick \e -> PerfStopClick e (PerfFxNudge i fxIx d) ]
       [ HH.text glyph ]
-  -- one segment of the block/strum/arp realise selector; the active mode is filled.
-  realizeBtn r =
-    let active = box.realize == r
+  -- one segment of the midi · odo · rig terminal selector; the active sink filled,
+  -- rig tinted when it would be ghosted (rig-only outside Atlantis).
+  termBtn t =
+    let active = box.term == t
+        rigCol = t == TRig && ghost
     in HH.button
-         [ HP.style ("border: none; cursor: pointer; padding: 1px 5px; font-size: 9px; letter-spacing: 0.05em; text-transform: uppercase; background: "
-                      <> (if active then "#8a7a4a" else "#faf6ea") <> "; color: " <> (if active then "#ffffff" else "#8a7a4a") <> ";")
-         , HP.title ("realise as " <> rendName r)
-         , HE.onClick \e -> PerfStopClick e (PerfSetRealize i r) ]
-         [ HH.text (rendName r) ]
+         [ HP.style ("border: none; cursor: pointer; padding: 1px 8px; font-size: 9px; letter-spacing: 0.04em; text-transform: uppercase; background: "
+                      <> (if active then "#8a7a4a" else "#faf6ea")
+                      <> "; color: " <> (if active then "#ffffff" else if rigCol then "#a05a3a" else "#8a7a4a") <> ";")
+         , HP.title ("sink " <> termLabel t)
+         , HE.onClick \e -> PerfStopClick e (PerfSetTerm i t) ]
+         [ HH.text (termShort t) ]
 
 -- | The Keyboard lens — the exhaustive hunting cloud: the piano keyboard, diatonic
 -- | triad families, seed-blooms, the voice-leading lattice, and the path overlay.
