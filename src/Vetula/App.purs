@@ -423,11 +423,38 @@ derive instance eqPerfSel :: Eq PerfSel
 -- | box appends; onto a layer chip inserts before it (reorder / precise placement).
 data PerfDragSrc = FromPalette PerfFx | FromBox Int Int
 
+-- | The box's terminal SINK — the fold's cap, one per box, swapped not stacked
+-- | (docs/DESIGN-vetula-chyron-redesign §Perform, Model A "forked tail"). The seam
+-- | where Solo and Atlantis diverge: `TMidi`/`TOdo` are Solo-capable (browser
+-- | WebMIDI / feed Odonus locally); `TRig` is a rig-only destination (CV/OSC/ES-9/
+-- | FH-2) the browser can't sound — so in Solo it GHOSTS (silent, greyed). Only
+-- | the terminal forks; the whole layer body above it is shared across runtimes.
+data PerfTerm = TMidi | TOdo | TRig
+
+derive instance eqPerfTerm :: Eq PerfTerm
+
+termLabel :: PerfTerm -> String
+termLabel = case _ of
+  TMidi -> "→ midi"
+  TOdo -> "→ odo"
+  TRig -> "→ rig"
+
+nextTerm :: PerfTerm -> PerfTerm
+nextTerm = case _ of
+  TMidi -> TOdo
+  TOdo -> TRig
+  TRig -> TMidi
+
+-- | A rig-only terminal has no local (browser) realisation.
+termRigOnly :: PerfTerm -> Boolean
+termRigOnly = case _ of
+  TRig -> true
+  _ -> false
+
 -- | A PERFORM box: one persistent player slot on the Perform surface, bound to a
 -- | MIDI channel. A dropped token LOOPS through its function `stack` (folded over
--- | the chord pattern) on its channel while the transport plays. Empty boxes are
--- | silent. The forked terminal (→ midi / → odo, Solo/Atlantis) lands in a later
--- | slice — see docs/DESIGN-vetula-chyron-redesign §Perform.
+-- | the chord pattern) while the transport plays, out its terminal `term`. Empty or
+-- | muted boxes are silent; a rig-only terminal is silent+ghosted in Solo.
 type PerfBox =
   { channel :: Int
   , label   :: String
@@ -435,7 +462,13 @@ type PerfBox =
   , stack   :: Array PerfFx
   , realize :: Renderer   -- terminal chord→time: Block | Strummed | Arp
   , muted   :: Boolean    -- silence this pipeline without tearing it down
+  , term    :: PerfTerm   -- the terminal sink: → midi | → odo | → rig
   }
+
+-- | A box is GHOSTED when its terminal can't sound in the current authority — a
+-- | rig-only sink anywhere but Atlantis (Rig). Ghosted boxes are silent and dimmed.
+boxGhosted :: Sounding -> PerfBox -> Boolean
+boxGhosted authority box = termRigOnly box.term && authority /= Rig
 
 type State =
   { key :: Key
@@ -717,6 +750,7 @@ data Action
   | PerfFxRemove Int Int   -- remove box b's stack layer i
   | PerfSetRealize Int Renderer -- set box b's terminal realise mode directly
   | PerfToggleMute Int     -- silence/unsilence box b's pipeline
+  | PerfCycleTerm Int      -- cycle box b's terminal sink (midi/odo/rig)
   | PerfDragStart PerfDragSrc -- begin an HTML5 drag of a palette/box layer
   | PerfDropOnChip DragEvent Int Int -- drop the dragged layer before box b's chip i
   | PerfDragEnd            -- clear the drag payload (drop landed or was abandoned)
@@ -886,7 +920,7 @@ component = H.mkComponent
       , chyronArmed: true
       -- four player boxes on MIDI ch 1-4 (Odonus I-IV in AC's routing); a token
       -- dropped on one loops there while the transport plays.
-      , perfBoxes: map (\n -> { channel: n, label: "P" <> show n, seq: Nothing, stack: [], realize: Block, muted: false }) (range 1 4)
+      , perfBoxes: map (\n -> { channel: n, label: "P" <> show n, seq: Nothing, stack: [], realize: Block, muted: false, term: TMidi }) (range 1 4)
       , perfHeld: Nothing
       , perfHeldFx: Nothing
       , perfDrag: Nothing
@@ -1128,11 +1162,33 @@ harmonicVoice st =
 voiceChordFeed :: State -> Array { id :: Int, pcs :: Array Int }
 voiceChordFeed st =
   let chords = perfChords st
-  in mapMaybe
-       (\v -> if v.dest == ToOdonus
-                then (\c -> { id: v.channel, pcs: c.pcs }) <$> index chords v.cursor
-                else Nothing)
-       st.voices
+      voices = mapMaybe
+        (\v -> if v.dest == ToOdonus
+                 then (\c -> { id: v.channel, pcs: c.pcs }) <$> index chords v.cursor
+                 else Nothing)
+        st.voices
+  in voices <> perfBoxOdoFeed st
+
+-- | Perform boxes whose terminal is `→ odo` contribute their CURRENT block chord
+-- | to the Odonus feed (keyed by the box's channel, reused as the Odonus id) — the
+-- | same conductor role a `ToOdonus` voice plays. Muted / ghosted / empty boxes and
+-- | non-odo terminals don't feed.
+perfBoxOdoFeed :: State -> Array { id :: Int, pcs :: Array Int }
+perfBoxOdoFeed st =
+  mapMaybe
+    (\box ->
+       if box.term == TOdo && not box.muted && isJust box.seq && not (boxGhosted st.authority box)
+         then case boxCurrentChord box (st.pulse / 4) of
+                Just notes | length notes > 0 -> Just { id: box.channel, pcs: nub (map (\x -> mod x 12) notes) }
+                _ -> Nothing
+         else Nothing)
+    st.perfBoxes
+
+-- | The chord a box is sounding at beat-cycle `b` — the first digital event of its
+-- | folded pattern over that cycle (the block chord Odonus would quantise).
+boxCurrentChord :: PerfBox -> Int -> Maybe (Array Int)
+boxCurrentChord box b =
+  eventValue <$> head (filter isDigital (query (boxPattern box) (mkState (mkArc (Rat.fromInt b) (Rat.fromInt (b + 1))))))
 
 -- ---------------------------------------------------------------------------
 -- Force layout
@@ -2061,6 +2117,11 @@ handleAction = case _ of
            if j == b then box { muted = not box.muted } else box)
          st.perfBoxes }
 
+  PerfCycleTerm b -> H.modify_ \st ->
+    st { perfBoxes = mapWithIndex (\j box ->
+           if j == b then box { term = nextTerm box.term } else box)
+         st.perfBoxes }
+
   -- Starting a drag abandons any click-to-place hold, so the two gestures can't
   -- coexist and leave a stray held layer to be dropped by a later bubbled event.
   PerfDragStart src -> H.modify_ _ { perfDrag = Just src, perfHeld = Nothing, perfHeldFx = Nothing }
@@ -2254,7 +2315,9 @@ handleAction = case _ of
         for_ mout \out -> liftEffect $
           for_ st.perfBoxes \box ->
             for_ box.seq \_ ->
-              when (not box.muted) $
+              -- only the → midi terminal schedules browser notes; → odo feeds
+              -- Odonus (via voiceChordFeed poll) and → rig is rig-only.
+              when (not box.muted && box.term == TMidi) $
                 scheduleBox out (tick.index / 4) (pulseMs * 4.0) tick.delayMs box
       H.modify_ _ { pulse = tick.index, voices = voices', clockTempo = tempo, tempo = round tempo }
 
@@ -4091,6 +4154,7 @@ perfBox :: forall m. State -> Int -> PerfBox -> H.ComponentHTML Action Slots m
 perfBox st i box =
   let held = isJust st.perfHeld || isJust st.perfHeldFx
       filled = isJust box.seq
+      ghost = boxGhosted st.authority box
       brd = if held then "#b8860b" else if filled then "#cdbb8c" else "#d8ceb4"
       bg = if held then "#fbf6ea" else "#faf7ee"
   in HH.div
@@ -4098,7 +4162,7 @@ perfBox st i box =
                     <> (if held then "dashed " else "solid ") <> brd
                     <> "; background: " <> bg
                     <> "; border-radius: 10px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; padding: 10px 8px; cursor: pointer;"
-                    <> (if box.muted then " opacity: 0.5;" else ""))
+                    <> (if box.muted || ghost then " opacity: 0.5;" else ""))
        , HP.title (if held then "drop the held token/layer here" else box.label <> " · MIDI ch " <> show box.channel)
        , HE.onClick \_ -> PerfDropBox i
        , HE.onDragOver PerfDragOver
@@ -4117,7 +4181,20 @@ perfBox st i box =
                  [ HH.text (if box.muted then "muted" else "on") ]
              , HH.div [ HP.style "display: inline-flex; border: 1px solid #dcd2b4; border-radius: 3px; overflow: hidden;" ]
                  (map realizeBtn [ Block, Strummed, Arp ])
+             -- the terminal SINK — click to cycle → midi / → odo / → rig
+             , HH.button
+                 [ HP.style ("border: 1px solid " <> (if ghost then "#c88a6a" else "#dcd2b4")
+                              <> "; background: " <> (if ghost then "#f3ddd0" else "#faf6ea")
+                              <> "; color: " <> (if ghost then "#a05a3a" else "#8a7a4a")
+                              <> "; cursor: pointer; padding: 0 6px; border-radius: 3px; font-size: 9px; letter-spacing: 0.05em;")
+                 , HP.title "terminal sink — click to cycle → midi / → odo / → rig"
+                 , HE.onClick \e -> PerfStopClick e (PerfCycleTerm i) ]
+                 [ HH.text (termLabel box.term) ]
              ]
+         , if ghost
+             then HH.div [ HP.style "font-size: 9px; letter-spacing: 0.06em; text-transform: uppercase; color: #a05a3a;" ]
+                    [ HH.text "✕ rig only" ]
+             else HH.text ""
          , case box.seq of
              Just s ->
                HH.div [ HP.style "display: flex; align-items: center; gap: 6px; font-size: 22px; color: #7a5c00;" ]
