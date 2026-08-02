@@ -47,7 +47,7 @@ import Halogen.Subscription as HS
 import Halogen.Svg.Attributes as SA
 import Halogen.Svg.Elements as SE
 import Type.Proxy (Proxy(..))
-import Web.Event.Event (Event, EventType(..), preventDefault)
+import Web.Event.Event (Event, EventType(..), preventDefault, stopPropagation)
 import Web.HTML.Event.DragEvent (DragEvent)
 import Web.HTML.Event.DragEvent as DE
 import Web.Event.EventTarget (addEventListener, eventListener)
@@ -720,6 +720,7 @@ data Action
   | PerfDragStart PerfDragSrc -- begin an HTML5 drag of a palette/box layer
   | PerfDropOnChip Int Int -- drop the dragged layer before box b's chip i
   | PerfDragEnd            -- clear the drag payload (drop landed or was abandoned)
+  | PerfStopClick ME.MouseEvent Action -- run Action but stop the click bubbling to the box
   | ZoomAt Event Number    -- geometric lens: wheel-zoom toward the cursor (event, deltaY)
   | PanStart Event         -- geometric lens: begin a grab-to-pan drag
   | PanMove Event          -- geometric lens: drag the viewport
@@ -2063,6 +2064,13 @@ handleAction = case _ of
   PerfDragStart src -> H.modify_ _ { perfDrag = Just src }
 
   PerfDragEnd -> H.modify_ _ { perfDrag = Nothing }
+
+  -- Run an inner-control action but stop the click bubbling to the box's
+  -- placement onClick — otherwise nudging/removing a layer while something is in
+  -- hand would also drop that held item onto the box.
+  PerfStopClick ev act -> do
+    liftEffect $ stopPropagation (ME.toEvent ev)
+    handleAction act
 
   -- Drop the dragged layer BEFORE box b's chip i (reorder within a box, or precise
   -- cross-box placement). Consumes perfDrag, so the bubbled box-level PerfDropBox
@@ -4100,7 +4108,7 @@ perfBox st i box =
                               <> "; color: " <> (if box.muted then "#9a6a1a" else "#8a7a4a")
                               <> "; cursor: pointer; padding: 0 6px; border-radius: 3px; font-size: 9px; letter-spacing: 0.06em; text-transform: uppercase;")
                  , HP.title (if box.muted then "muted — click to play" else "playing — click to mute")
-                 , HE.onClick \_ -> PerfToggleMute i ]
+                 , HE.onClick \e -> PerfStopClick e (PerfToggleMute i) ]
                  [ HH.text (if box.muted then "muted" else "on") ]
              , HH.div [ HP.style "display: inline-flex; border: 1px solid #dcd2b4; border-radius: 3px; overflow: hidden;" ]
                  (map realizeBtn [ Block, Strummed, Arp ])
@@ -4117,7 +4125,7 @@ perfBox st i box =
                 then HH.button
                        [ HP.style "position: absolute; top: 4px; right: 7px; border: none; background: transparent; color: #b06a5a; font-size: 15px; line-height: 1; cursor: pointer;"
                        , HP.title "clear this player"
-                       , HE.onClick \_ -> PerfClearBox i ]
+                       , HE.onClick \e -> PerfStopClick e (PerfClearBox i) ]
                        [ HH.text "×" ]
                 else HH.text "" ]
        )
@@ -4144,14 +4152,14 @@ perfBox st i box =
       , HH.button
           [ HP.style "border: none; background: transparent; color: #b06a5a; font-size: 11px; line-height: 1; cursor: pointer; padding: 0 1px;"
           , HP.title "remove this layer"
-          , HE.onClick \_ -> PerfFxRemove i fxIx ]
+          , HE.onClick \e -> PerfStopClick e (PerfFxRemove i fxIx) ]
           [ HH.text "×" ]
       ]
   nudge fxIx d glyph =
     HH.button
       [ HP.style "border: none; background: transparent; color: #8a7a4a; font-size: 11px; line-height: 1; cursor: pointer; padding: 0 1px;"
       , HP.title "nudge this layer's value"
-      , HE.onClick \_ -> PerfFxNudge i fxIx d ]
+      , HE.onClick \e -> PerfStopClick e (PerfFxNudge i fxIx d) ]
       [ HH.text glyph ]
   -- one segment of the block/strum/arp realise selector; the active mode is filled.
   realizeBtn r =
@@ -4160,7 +4168,7 @@ perfBox st i box =
          [ HP.style ("border: none; cursor: pointer; padding: 1px 5px; font-size: 9px; letter-spacing: 0.05em; text-transform: uppercase; background: "
                       <> (if active then "#8a7a4a" else "#faf6ea") <> "; color: " <> (if active then "#ffffff" else "#8a7a4a") <> ";")
          , HP.title ("realise as " <> rendName r)
-         , HE.onClick \_ -> PerfSetRealize i r ]
+         , HE.onClick \e -> PerfStopClick e (PerfSetRealize i r) ]
          [ HH.text (rendName r) ]
 
 -- | The Keyboard lens — the exhaustive hunting cloud: the piano keyboard, diatonic
