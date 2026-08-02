@@ -74,6 +74,10 @@ import Vetula.Tank (Specimen, SpecimenId(..), Provenance(..), specNotes)
 import Reef.Vetula.Perf (VChord, VVoice, VDest(..), VRenderer(..), PerfClock, cursorAtClock, renderAlphaBlockMidiAt, renderAlphaClockMidiAt) as RV
 import Reef.Vetula.Articulate (VArticulator(..), articulate, articLabel, nextArtic) as RA
 import Vetula.Playhead (clockFor, defaultPattern, noteClock, patternClock)
+import Vetula.Realise (fromChords)
+import Tidal.Pattern.Types (Arc(..), eventValue, eventWhole, isDigital, mkArc, mkState, query)
+import Tidal.Pattern.Types (Pattern) as PT
+import Data.Rational as Rat
 import Data.Either (Either(..))
 import Reef.Vetula.Protocol (encodePerf) as RV
 import Binnacle.Time (dateNow)
@@ -2134,20 +2138,16 @@ handleAction = case _ of
           -- is the sound. SOLO: emit as normal.
           mout = if st.authority == Local then st.midiOut else Nothing
       voices' <- liftEffect $ traverse (stepVoice mout st.routing reefChords tick.index pulseMs tick.delayMs) st.voices
-      -- PERFORM boxes: on each beat (every 4th 16th), each filled box advances one
-      -- chord through its token and fires it as a BLOCK on its channel. Phase-locked
-      -- to the shared grid, so tokens of different lengths drift against each other
-      -- (free polymeter). MIDI-only for now, gated by `mout` like the voices.
+      -- PERFORM boxes: on each beat (every 4th 16th) query each filled box's
+      -- `Pattern` over the current beat-cycle and schedule the notes it yields
+      -- (block chords land together; arps/`fast`/`ply` subdivide the beat). One
+      -- beat = one pattern cycle. MIDI-only for now, gated by `mout` like the
+      -- voices; the function stack + forked terminal land in later slices.
       when (tick.index `mod` 4 == 0) $
         for_ mout \out -> liftEffect $
           for_ st.perfBoxes \box ->
-            for_ box.seq \s -> do
-              let n = length s.events
-              when (n > 0) $
-                for_ (index s.events (mod (tick.index / 4) n)) \ev ->
-                  for_ ev.notes \note ->
-                    Midi.scheduleNote out
-                      { channel: box.channel, note, velocity: 90, delayMs: tick.delayMs, durMs: pulseMs * 3.6 }
+            for_ box.seq \_ ->
+              scheduleBox out (tick.index / 4) (pulseMs * 4.0) tick.delayMs box
       H.modify_ _ { pulse = tick.index, voices = voices', clockTempo = tempo, tempo = round tempo }
 
   -- parse the (possibly edited) Tidal source into note-lists, rebuild them as a
@@ -2639,6 +2639,33 @@ playChyronSelection = do
   case st.chyronSel of
     Just sel | sel.hi > sel.lo -> playEvents (mapMaybe (\ix -> index st.chyron ix) (range sel.lo sel.hi))
     _ -> pure unit
+
+-- | The `Pattern Int` a Perform box realises this cycle: its saved sequence as a
+-- | looping chord pattern (one chord per beat-cycle), with the box's function
+-- | stack folded over it. Slice 1 has no stack, so this is just `fromChords`; the
+-- | stack fold lands in slice 2 (`foldl applyFx (fromChords …) box.stack`).
+boxPattern :: PerfBox -> PT.Pattern Int
+boxPattern box = case box.seq of
+  Just s -> fromChords (map _.notes s.events)
+  Nothing -> fromChords []
+
+-- | Query a box's pattern over this beat-cycle `b` and schedule every digital note
+-- | it produces on the box's channel, positioned by each event's arc within the
+-- | beat (so block chords land together, arps fan out, `fast`/`ply` subdivide).
+scheduleBox :: Midi.MidiOut -> Int -> Number -> Number -> PerfBox -> Effect Unit
+scheduleBox out b beatMs baseDelayMs box =
+  for_ (query (boxPattern box) (mkState (mkArc (Rat.fromInt b) (Rat.fromInt (b + 1))))) \ev ->
+    when (isDigital ev) $
+      for_ (eventWhole ev) \(Arc w) ->
+        let startFrac = Rat.toNumber (w.start - Rat.fromInt b)
+            lenFrac = Rat.toNumber (w.stop - w.start)
+        in Midi.scheduleNote out
+             { channel: box.channel
+             , note: eventValue ev
+             , velocity: 90
+             , delayMs: baseDelayMs + startFrac * beatMs
+             , durMs: max 20.0 (lenFrac * beatMs * 0.9)
+             }
 
 -- | Send a chord's notes to the MIDI bus (no state change) and log it to the chyron.
 playChord :: forall o m. MonadAff m => ChordNode -> H.HalogenM State Action Slots o m Unit

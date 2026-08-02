@@ -487,6 +487,83 @@ Implication for the type: nudges `PlayerConfig` away from a config *record*
 toward a *composed pipeline of transforms* — the more Tidal (and more unlimited)
 shape.
 
+### The functional-layer palette + the Solo/Atlantis seam (RESOLVED 2026-08-02)
+
+Design of the per-box function stack, grounded in existing ecosystem code
+(grepped API-INDEX). Two source families collapse into ONE endomorphism type so
+layers drag/reorder/move-between-boxes freely:
+
+- **pitch/shape layers** = Harmonia `VoicingStrategy = Voicing -> Voicing`:
+  `openTriad · rootless · drop2 · drop2and4 · quartal · cluster · spread {low,high}`
+  and `takeVoicing (Selector)` (`TakeLow/High/Range/Every`). Already exist, already
+  compose. **Pure PureScript ⇒ cross-compile ⇒ identical in both runtimes.**
+- **time/structure layers** = Tidal `Pattern a -> Pattern a`:
+  `fast · slow · rev · rotL · every · iter · ply · chunk · degradeBy · swingBy`.
+
+**The "Pattern limitation" was mostly illusory.** `Tidal.Pattern.Core` +
+`Tidal.Eval.Interpret` are **vendored inside triggerfish/src** (spago pulls
+`rationals`/`parsing` for exactly this) — the browser bundle already carries the
+full lazy Tidal algebra + mini-notation interpreter. So the carrier is a real
+`Pattern` queried LOCALLY for Solo preview (WYSIWYG + full power; `every`/`chunk`
+are tier-1, not tier-2). The only real port cost: the pure Vetula chord→Pattern
+bridges (`voicingAsArp/Stack/Stabs`, `queryNotes`) currently live BEAM-side
+(`purerl-tidal/src/Tidal/Vetula/Pattern.purs`) — pure, so a small frontend port.
+
+**Recommended palette (★ = MVP-5, the minimal complete set):**
+`★Transpose n · ★Octave ±n · ★Voice shape · ★Select sel · ★Arp dir rate gate ·
+Rate ×/÷ · Strum ms · Ply n · Euclid k n rot · Swing · Rotate · Reverse · ToScale
+· Accent`. The ★-five already yield an ensemble from ONE token: bass = `Octave -2
+· Select Low1`, pad = `Voice open` held, lead = `Select High1 · Arp up`, comp =
+raw block chords.
+
+```purescript
+data PerfFx = Transpose Int | Octave Int | Voice VoiceShape | Select VoiceSel
+            | Arp ArpDir Int Number | Rate Rational | Strum Int | Ply Int
+            | Euclid Int Int Int | Swing Number | Rotate Int | Reverse
+            | ToScale | Accent (Array Int)
+```
+
+**The terminal is NOT a `PerfFx`** — it's the fold's cap (`Stack -> Effect`), so
+exactly one per box, PINNED, swapped-not-stacked. It reuses Vetula's existing
+`data VoiceDest = ToMidi | ToOdonus` (`destName` "→ midi"/"→ odo", `cycleDest`) —
+`→ midi` schedules the queried stream on the box channel; `→ odo` feeds the
+current block chord to an Odonus head via the existing `AskVoiceChords` bridge.
+So **a PerfBox is a Voice + a stack**: `{channel, label, seq, stack :: Array
+PerfFx, dest :: VoiceDest}`. Realiser = `foldl applyFx (patternOf seq) stack` →
+dispatch on `dest`.
+
+**DECIDED — Model A (shared body, forked tail), + adopt the frontend Pattern
+carrier now (AC 2026-08-02):**
+
+- **Where the abstraction actually breaks is NOT the pattern algebra** (shared,
+  vendored) **nor the pitch endos** (pure Harmonia, shared) — it's the
+  **terminal + its target vocabulary + who schedules it**. Solo → `→ midi ch`,
+  browser-queried + WebMIDI, notes only. Atlantis → the BEAM (rig ws :3012) is
+  authoritative, unlocking `→ odo`, ES-9 CV/gate, FH-2, OSC (the Selene
+  `Destination` space) + sample-accurate scheduling + CV-only behaviours
+  (slew/glide) the browser can't preview.
+- So: **one shared body of pitch+time layers → a forked TERMINAL** (Solo tail ‖
+  Atlantis tail), each offering only the destinations its runtime can honour.
+  Not two full duplicate pipelines — the seam is just the tail. (Optional per-box
+  "unlink tails" escape hatch if a box ever wants genuinely divergent Solo vs
+  Atlantis arrangements.)
+- **Ghosting (AC UX):** in Solo, a box whose ACTIVE terminal is a rig-only target
+  (OSC/CV/ES-9/FH-2) is **silent + the whole pipeline greys out**, with a small
+  "✕ rig only" note under it. Ghosting = a pure function of (authority, terminal
+  capability). Generalises the "sink greys inert upstream layers" idiom to the
+  authority axis.
+- **The bottom voice bar folds INTO the boxes.** Its `block/strum/arp/odo` lanes
+  (mini-notation → the same `Tidal.Pattern.Core`) ARE proto pattern-tails: a
+  box's time-tail IS a macro-tidal lane, the lane's `odo` IS the box's `→ odo`
+  sink. Migrating them in retires the bar (reclaims the space) and unifies the
+  model.
+- **North star = Model D** (the stack compiles to a Tidal expression shipped to
+  the BEAM for Atlantis; local interpret for Solo). Model A *is* D with only the
+  local interpreter wired, so A stages cleanly toward it.
+- **Alternatives considered + rejected for now:** B (two full pipelines/box —
+  re-authors shared layers twice, silent drift); C (one stack, per-layer rig-only
+  badges — can't hold divergent arrangements). D deferred (BEAM ship plumbing).
+
 ## Future direction — Vetula as a composition window, + realiser machines (AC 2026-08-01, NOT NOW)
 
 The chyron makes something conceptually clear that was implicit: Vetula is
