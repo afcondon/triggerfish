@@ -75,7 +75,7 @@ import Reef.Vetula.Perf (VChord, VVoice, VDest(..), VRenderer(..), PerfClock, cu
 import Reef.Vetula.Articulate (VArticulator(..), articulate, articLabel, nextArtic) as RA
 import Vetula.Playhead (clockFor, defaultPattern, noteClock, patternClock)
 import Vetula.Realise (fromChords)
-import Tidal.Pattern.Core (fast, slow)
+import Tidal.Pattern.Core (fast, slow, every)
 import Tidal.Pattern.Types (Arc(..), eventValue, eventWhole, isDigital, mkArc, mkState, query)
 import Tidal.Pattern.Types (Pattern) as PT
 import Data.Rational as Rat
@@ -446,6 +446,34 @@ data PerfSel = Low Int | High Int
 
 derive instance eqPerfSel :: Eq PerfSel
 
+-- | The "WHEN" clause on a layer — the flat form of Tidal's conditional combinators
+-- | (`every` / `sometimesBy` / `within`). Rather than a layer that WRAPS a sub-stack,
+-- | each layer carries a condition for when it applies, implemented with Tidal's own
+-- | cycle-aware combinators. Prototype: `Always` or `Every n` (via `every`).
+data When = Always | Every Int
+
+derive instance eqWhen :: Eq When
+
+whenLabel :: When -> String
+whenLabel = case _ of
+  Always -> "∀"
+  Every n -> "e" <> show n
+
+cycleWhen :: When -> When
+cycleWhen = case _ of
+  Always -> Every 2
+  Every 2 -> Every 3
+  Every 3 -> Every 4
+  Every 4 -> Every 8
+  Every _ -> Always
+
+-- | A stack entry: a function `fx` plus the `when` clause gating it per cycle.
+type Layer = { fx :: PerfFx, when :: When }
+
+-- | A fresh layer from the palette applies every cycle until you dial its clause.
+mkLayer :: PerfFx -> Layer
+mkLayer fx = { fx, when: Always }
+
 -- | What an HTML5 drag is carrying: a fresh layer FROM the palette, or an existing
 -- | layer being moved FROM a box's stack (box index, layer index). Dropping onto a
 -- | box appends; onto a layer chip inserts before it (reorder / precise placement).
@@ -494,8 +522,8 @@ type PerfBox =
   { channel :: Int
   , label   :: String
   , seq     :: Maybe SavedSeq
-  , stack   :: Array PerfFx  -- ordered function layers; arp/strum among them
-                             -- carry the chord→time realisation (block = none)
+  , stack   :: Array Layer   -- ordered function layers (fx + when clause); arp/strum
+                             -- among them carry the chord→time realisation (block = none)
   , muted   :: Boolean    -- silence this pipeline without tearing it down
   , term    :: PerfTerm   -- the terminal sink: → midi | → odo | → rig
   }
@@ -784,6 +812,7 @@ data Action
   | PerfFxNudge Int Int Int -- nudge box b's stack layer i by delta
   | PerfFxRemove Int Int   -- remove box b's stack layer i
   | PerfFxAlt Int Int      -- box b, layer i: alternate control (arp cycles direction)
+  | PerfFxWhen Int Int     -- box b, layer i: cycle the when clause (always / every n)
   | PerfSetTerm Int PerfTerm -- set box b's terminal sink directly
   | PerfToggleMute Int     -- silence/unsilence box b's pipeline
   | PerfDragStart PerfDragSrc -- begin an HTML5 drag of a palette/box layer
@@ -2114,7 +2143,7 @@ handleAction = case _ of
       Just src -> H.modify_ _ { perfBoxes = dropFxInto src b Nothing st.perfBoxes, perfDrag = Nothing }
       Nothing -> case st.perfHeldFx of
         Just fx -> H.modify_ _
-          { perfBoxes = mapWithIndex (\j box -> if j == b then box { stack = box.stack <> [ fx ] } else box) st.perfBoxes
+          { perfBoxes = mapWithIndex (\j box -> if j == b then box { stack = box.stack <> [ mkLayer fx ] } else box) st.perfBoxes
           , perfHeldFx = Nothing
           }
         Nothing -> case st.perfHeld >>= index st.chyronSaved of
@@ -2134,7 +2163,12 @@ handleAction = case _ of
 
   PerfFxNudge b i d -> H.modify_ \st ->
     st { perfBoxes = mapWithIndex (\j box ->
-           if j == b then box { stack = fromMaybe box.stack (modifyAt i (fxNudge d) box.stack) } else box)
+           if j == b then box { stack = fromMaybe box.stack (modifyAt i (\lyr -> lyr { fx = fxNudge d lyr.fx }) box.stack) } else box)
+         st.perfBoxes }
+
+  PerfFxWhen b i -> H.modify_ \st ->
+    st { perfBoxes = mapWithIndex (\j box ->
+           if j == b then box { stack = fromMaybe box.stack (modifyAt i (\lyr -> lyr { when = cycleWhen lyr.when }) box.stack) } else box)
          st.perfBoxes }
 
   PerfFxRemove b i -> H.modify_ \st ->
@@ -2144,7 +2178,7 @@ handleAction = case _ of
 
   PerfFxAlt b i -> H.modify_ \st ->
     st { perfBoxes = mapWithIndex (\j box ->
-           if j == b then box { stack = fromMaybe box.stack (modifyAt i fxAlt box.stack) } else box)
+           if j == b then box { stack = fromMaybe box.stack (modifyAt i (\lyr -> lyr { fx = fxAlt lyr.fx }) box.stack) } else box)
          st.perfBoxes }
 
   PerfToggleMute b -> H.modify_ \st ->
@@ -2867,7 +2901,7 @@ dropFxInto src tb mpos boxes =
       in adjustStack tb (\s -> fromMaybe (s <> [ fx ]) (insertAt pos fx s)) removed
   where
   fxOf = case _ of
-    FromPalette fx -> Just fx
+    FromPalette fx -> Just (mkLayer fx)
     FromBox b i -> index boxes b >>= \bx -> index bx.stack i
   adjustStack bi f = mapWithIndex (\j bx -> if j == bi then bx { stack = f bx.stack } else bx)
 
@@ -2895,13 +2929,22 @@ applyFx = case _ of
 -- | at a FIXED per-note rate so dense chords don't rush.
 data Realise = RBlock | RArp ArpDir Int | RStrum Int
 
-boxRealise :: Array PerfFx -> Realise
-boxRealise = foldl pick RBlock
+boxRealise :: Array Layer -> Realise
+boxRealise = foldl pick RBlock <<< map _.fx
   where
   pick acc = case _ of
     Arpg dir r -> RArp dir r
     Strum ms -> RStrum ms
     _ -> acc
+
+-- | Apply a layer, gated by its `when` clause — `Always` runs it every cycle;
+-- | `Every n` runs it only on cycles divisible by n (Tidal's `every`). Since arp/
+-- | strum's `applyFx` is identity (they realise at the sink), gating them here is a
+-- | harmless no-op — their `when` is currently ignored.
+applyLayer :: Layer -> PT.Pattern (Array Int) -> PT.Pattern (Array Int)
+applyLayer { fx, when: w } = case w of
+  Always -> applyFx fx
+  Every n -> every n (applyFx fx)
 
 -- | Run a Harmonia `Voicing -> Voicing` over one chord's notes. The notes are
 -- | sorted low→high first so the strategies and Low/High selectors read voices
@@ -2981,7 +3024,7 @@ showSigned n = if n >= 0 then "+" <> show n else show n
 -- | as a looping chord pattern (one chord per beat-cycle), with the box's function
 -- | `stack` folded over it (first layer applied first / innermost).
 boxPattern :: PerfBox -> PT.Pattern (Array Int)
-boxPattern box = foldl (\p fx -> applyFx fx p) base box.stack
+boxPattern box = foldl (\p lyr -> applyLayer lyr p) base box.stack
   where
   base = case box.seq of
     Just s -> fromChords (map _.notes s.events)
@@ -4277,7 +4320,7 @@ perfBox st i box =
   -- − / + to nudge · × to remove. Rows are draggable to reorder or move between
   -- boxes. First row = applied first (innermost); arp/strum realise at the sink.
   stackRows = mapWithIndex fxRow box.stack
-  fxRow fxIx fx =
+  fxRow fxIx lyr =
     HH.div
       [ HP.style "display: flex; align-items: center; width: 100%; box-sizing: border-box; gap: 3px; border: 1px solid #cdbb8c; background: #f3ead2; border-radius: 4px; padding: 2px 5px; font-size: 11px; color: #6a5a2a; cursor: grab;"
       , HP.draggable true
@@ -4286,8 +4329,9 @@ perfBox st i box =
       , HE.onDragEnd \_ -> PerfDragEnd
       , HE.onDragOver PerfDragOver
       , HE.onDrop \e -> PerfDropOnChip e i fxIx ]
-      ( [ HH.span [ HP.style "flex: 1 1 auto; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;" ] [ HH.text (fxLabel fx) ] ]
-          <> altBtns fx fxIx
+      ( [ HH.span [ HP.style "flex: 1 1 auto; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;" ] [ HH.text (fxLabel lyr.fx) ]
+        , whenBtn fxIx lyr.when ]
+          <> altBtns lyr.fx fxIx
           <> [ nudge fxIx (-1) "−"
              , nudge fxIx 1 "+"
              , HH.button
@@ -4297,6 +4341,18 @@ perfBox st i box =
                  [ HH.text "×" ]
              ]
       )
+  -- the layer's WHEN clause — a pill showing ∀ (every cycle) or eN (every n cycles);
+  -- click to cycle. Faint when Always, gold when conditional (so an active clause reads).
+  whenBtn fxIx w =
+    let on = w /= Always
+    in HH.button
+         [ HP.style ("border: 1px solid " <> (if on then "#b8860b" else "#dcd2b4")
+                      <> "; background: " <> (if on then "#fbf1d6" else "#faf6ea")
+                      <> "; color: " <> (if on then "#7a5c00" else "#b0a684")
+                      <> "; font-size: 10px; line-height: 1.2; cursor: pointer; padding: 0 5px; border-radius: 3px;")
+         , HP.title "when this layer applies — click to cycle every-n"
+         , HE.onClick \e -> PerfStopClick e (PerfFxWhen i fxIx) ]
+         [ HH.text (whenLabel w) ]
   -- an extra per-layer control: arp gets a direction-cycle button; others none.
   altBtns fx fxIx = case fx of
     Arpg _ _ ->
