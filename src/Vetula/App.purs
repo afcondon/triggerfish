@@ -33,7 +33,7 @@ import Data.Set as Set
 import Data.String (Pattern(..), contains)
 import Data.String.CodeUnits as SCU
 import Data.String.Common (joinWith, toLower, trim)
-import Data.Tuple (Tuple(..), snd)
+import Data.Tuple (Tuple(..), fst, snd)
 import Effect (Effect)
 import Effect.Aff (attempt)
 import Effect.Aff.Class (class MonadAff, liftAff)
@@ -698,6 +698,7 @@ type State =
   , perfHeld :: Maybe Int
   , perfHeldFx :: Maybe PerfFx
   , perfDrag :: Maybe PerfDragSrc   -- the in-flight HTML5 drag payload
+  , perfEditBox :: Maybe Int        -- box whose sequence is open in the editor modal
   }
 
 -- | Which floating control a fold toggle targets.
@@ -818,6 +819,8 @@ data Action
   | PerfFxWhen Int Int     -- box b, layer i: cycle the when clause (always / every n)
   | PerfSetTerm Int PerfTerm -- set box b's terminal sink directly
   | PerfSetSeq Int String  -- edit box b's text-hatch sequence (mini-notation)
+  | PerfOpenEdit Int       -- open the sequence editor modal for box b
+  | PerfCloseEdit          -- close the sequence editor modal
   | PerfNop                -- no-op (used to stop a click bubbling without a re-render)
   | PerfToggleMute Int     -- silence/unsilence box b's pipeline
   | PerfDragStart PerfDragSrc -- begin an HTML5 drag of a palette/box layer
@@ -993,6 +996,7 @@ component = H.mkComponent
       , perfHeld: Nothing
       , perfHeldFx: Nothing
       , perfDrag: Nothing
+      , perfEditBox: Nothing
       }
   , render
   , eval: H.mkEval H.defaultEval
@@ -2200,6 +2204,10 @@ handleAction = case _ of
     st { perfBoxes = mapWithIndex (\j box ->
            if j == b then box { seqText = txt } else box)
          st.perfBoxes }
+
+  PerfOpenEdit b -> H.modify_ _ { perfEditBox = Just b }
+
+  PerfCloseEdit -> H.modify_ _ { perfEditBox = Nothing }
 
   PerfNop -> pure unit
 
@@ -4268,6 +4276,80 @@ performSurface st =
     , HH.div
         [ HP.style "display: flex; gap: 18px; flex-wrap: wrap; justify-content: center; align-items: flex-start; max-width: 940px;" ]
         (mapWithIndex (perfBox st) st.perfBoxes)
+    , perfEditModal st
+    ]
+
+-- | The sequence-editor modal — a roomier surface for the text hatch than the
+-- | inline field, with a mini-notation guide and clickable examples in place. Edits
+-- | box `perfEditBox`'s `seqText` directly (same `PerfSetSeq` path, committed on
+-- | blur). Examples drop straight into the field; the guide makes the notation
+-- | learnable where you use it (the complexity-budget point).
+perfEditModal :: forall m. State -> H.ComponentHTML Action Slots m
+perfEditModal st = case st.perfEditBox >>= \i -> map (Tuple i) (index st.perfBoxes i) of
+  Nothing -> HH.text ""
+  Just (Tuple i box) ->
+    HH.div
+      [ HP.style "position: fixed; inset: 0; background: rgba(20,20,20,0.32); z-index: 60; display: flex; align-items: center; justify-content: center; padding: 40px;"
+      , HE.onClick \_ -> PerfCloseEdit ]
+      [ HH.div
+          [ HP.style "background: #fbfaf4; width: 560px; max-width: 92vw; max-height: 84vh; overflow-y: auto; border-radius: 10px; box-shadow: 0 12px 48px rgba(0,0,0,0.24); padding: 22px 26px 24px;"
+          , HE.onClick \e -> PerfStopClick e PerfNop ]
+          [ HH.div [ HP.style "display: flex; align-items: baseline; justify-content: space-between; margin: 0 0 14px;" ]
+              [ HH.h2 [ HP.style "font-size: 15px; font-weight: 600; margin: 0; color: #2a2a2a;" ]
+                  [ HH.text ("Sequence · " <> box.label <> " · ch " <> show box.channel) ]
+              , HH.button
+                  [ HP.style "border: none; background: transparent; color: #9a9a9a; font-size: 18px; cursor: pointer; line-height: 1;"
+                  , HP.title "close"
+                  , HE.onClick \_ -> PerfCloseEdit ]
+                  [ HH.text "×" ]
+              ]
+          , HH.input
+              [ HP.style ("width: 100%; box-sizing: border-box; border: 1px solid "
+                           <> (if boxUsesSeq box then "#b8860b" else "#cdbb8c")
+                           <> "; background: #fff; color: #3a3a3a; border-radius: 6px; padding: 9px 12px; font-size: 15px; font-family: ui-monospace, monospace;")
+              , HP.value box.seqText
+              , HP.attr (AttrName "placeholder") "0 1 2 3"
+              , HE.onValueChange \s -> PerfSetSeq i s ]
+          , HH.div [ HP.style "font-size: 11px; color: #9a8a5a; margin: 8px 0 16px;" ]
+              [ HH.text "One cycle = one bar; numbers index the token's chords (out-of-range = rest). Type freely, click away to apply." ]
+          , sectionLabel "Examples — click to use"
+          , HH.div [ HP.style "display: flex; flex-wrap: wrap; gap: 6px; margin: 0 0 18px;" ]
+              (map (exampleChip i) examples)
+          , sectionLabel "Mini-notation"
+          , HH.div [ HP.style "display: grid; grid-template-columns: auto 1fr; gap: 4px 14px; font-size: 12.5px; color: #555;" ]
+              (concatMap guideRow guide)
+          ]
+      ]
+  where
+  sectionLabel t =
+    HH.div [ HP.style "font-size: 10px; letter-spacing: 0.1em; text-transform: uppercase; color: #b0a684; margin: 0 0 7px;" ] [ HH.text t ]
+  exampleChip i ex =
+    HH.button
+      [ HP.style "border: 1px solid #cdbb8c; background: #f3ead2; color: #6a5a2a; cursor: pointer; padding: 3px 9px; border-radius: 4px; font-size: 12px; font-family: ui-monospace, monospace;"
+      , HP.title (snd ex)
+      , HE.onClick \_ -> PerfSetSeq i (fst ex) ]
+      [ HH.text (fst ex) ]
+  guideRow (Tuple syntax meaning) =
+    [ HH.code [ HP.style "font-family: ui-monospace, monospace; color: #7a5c00;" ] [ HH.text syntax ]
+    , HH.span_ [ HH.text meaning ] ]
+  examples =
+    [ Tuple "0 1 2 3" "one chord per beat"
+    , Tuple "0 ~ 2 ~" "beats 1 and 3 only (rests)"
+    , Tuple "<0 2> 1" "alternate 0/2 each bar, then 1"
+    , Tuple "0(3,8)" "euclidean — 3 hits over 8"
+    , Tuple "[0 1] 2" "0 and 1 share a beat, then 2"
+    , Tuple "0!3 1" "repeat chord 0 three times, then 1"
+    , Tuple "0*2 1" "chord 0 twice as fast, then 1"
+    ]
+  guide =
+    [ Tuple "0 1 2" "a sequence — one step each"
+    , Tuple "~" "a rest"
+    , Tuple "[a b]" "group into one step (subdivide)"
+    , Tuple "<a b>" "alternate, one per cycle"
+    , Tuple "a(k,n)" "euclidean rhythm — k hits in n"
+    , Tuple "a!n" "repeat a, n times"
+    , Tuple "a*n / a/n" "speed up / slow down"
+    , Tuple "a?" "randomly drop (degrade)"
     ]
 
 -- | The FX palette: click a layer to pick it up, then click a player box to append
@@ -4355,20 +4437,27 @@ perfBox st i box =
   -- the TEXT HATCH: a mini-notation sequence over the token's chord indices (cycle
   -- = one bar). Empty = default one-chord-per-beat. Border lights when it's driving.
   seqRow =
-    HH.input
-      [ HP.style ("width: 100%; box-sizing: border-box; border: 1px solid "
-                   <> (if boxUsesSeq box then "#b8860b" else "#dcd2b4")
-                   <> "; background: #fbfaf4; color: #6a5a2a; border-radius: 4px; padding: 2px 6px; font-size: 11px; font-family: ui-monospace, monospace;")
-      , HP.value box.seqText
-      , HP.attr (AttrName "placeholder") "seq · 0 1 2 3"
-      , HP.title "mini-notation sequence over the token's chords (cycle = 1 bar): 0 1 2 3 · <0 2> 1 · 0(3,8)"
-      -- commit on CHANGE (blur / enter), not on every keystroke: binding the live
-      -- value back via `HP.value` each input snaps the caret to the end and blocks
-      -- editing. `onValueChange` leaves the field uncontrolled while you type, then
-      -- commits — so you can freely edit an expression and hear it on blur.
-      , HE.onValueChange \s -> PerfSetSeq i s
-      -- stop a focus-click bubbling to the box's drop handler, without a re-render.
-      , HE.onClick \e -> PerfStopClick e PerfNop ]
+    HH.div
+      [ HP.style "display: flex; align-items: center; width: 100%; gap: 3px;" ]
+      [ HH.input
+          [ HP.style ("flex: 1 1 auto; min-width: 0; box-sizing: border-box; border: 1px solid "
+                       <> (if boxUsesSeq box then "#b8860b" else "#dcd2b4")
+                       <> "; background: #fbfaf4; color: #6a5a2a; border-radius: 4px; padding: 2px 6px; font-size: 11px; font-family: ui-monospace, monospace;")
+          , HP.value box.seqText
+          , HP.attr (AttrName "placeholder") "seq · 0 1 2 3"
+          , HP.title "mini-notation sequence over the token's chords (cycle = 1 bar): 0 1 2 3 · <0 2> 1 · 0(3,8)"
+          -- commit on CHANGE (blur / enter), not on every keystroke: binding the live
+          -- value back via `HP.value` each input snaps the caret to the end and blocks
+          -- editing. `onValueChange` leaves the field uncontrolled while you type, then
+          -- commits — so you can freely edit an expression and hear it on blur.
+          , HE.onValueChange \s -> PerfSetSeq i s
+          -- stop a focus-click bubbling to the box's drop handler, without a re-render.
+          , HE.onClick \e -> PerfStopClick e PerfNop ]
+      , HH.button
+          [ HP.style "flex: 0 0 auto; border: 1px solid #dcd2b4; background: #faf6ea; color: #8a7a4a; cursor: pointer; padding: 1px 6px; border-radius: 4px; font-size: 12px; line-height: 1.2;"
+          , HP.title "open the sequence editor — notation guide + examples"
+          , HE.onClick \e -> PerfStopClick e (PerfOpenEdit i) ]
+          [ HH.text "⤢" ] ]
   -- the box's function stack, one FULL-WIDTH row per layer: name · (alt control) ·
   -- − / + to nudge · × to remove. Rows are draggable to reorder or move between
   -- boxes. First row = applied first (innermost); arp/strum realise at the sink.

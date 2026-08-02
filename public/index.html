@@ -158,6 +158,11 @@
   </style>
 </head>
 <body>
-  <script src="bundle.js"></script>
+  <!-- Dev cache-bust: static-httpd sends no Cache-Control, so a normal (even
+       "forced") reload kept serving a stale bundle after each rebuild. Appending
+       a per-load version query forces the browser to fetch the current bundle
+       every time. Written at parse time (end of body), so mount timing is
+       unchanged. -->
+  <script>document.write('<script src="bundle.js?v=' + Date.now() + '"><\/script>');</script>
 </body>
 </html>
