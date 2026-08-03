@@ -601,6 +601,10 @@ type State =
   -- a subsequent shift-click re-extends from.
   , hoveredChyron :: Maybe Int
   , chyronSel :: Maybe { lo :: Int, hi :: Int, anchor :: Int }
+  -- The chip index currently being dragged to REORDER the buffer (Nothing = no
+  -- drag in flight). Reordering makes the buffer a list, not a tape (§8): order,
+  -- not timestamps, becomes the arrangement.
+  , chyronDrag :: Maybe Int
   -- Saved sequences: pinned 2-glyph tokens on the left of the chyron. Saving a
   -- selection compresses its live chips into one of these (reclaiming space).
   , chyronSaved :: Array SavedSeq
@@ -732,8 +736,12 @@ data Action
   | DeleteChyron Int       -- × a single audition out of the trace
   | ClearChyron            -- wipe the whole audition trace
   | SaveChyronSel          -- compress the selection into a pinned 2-glyph token
+  | ChyronDragStart Int    -- begin dragging chip i to reorder the buffer
+  | ChyronDropOn Int       -- drop the dragged chip before chip i (reorder)
+  | ChyronDragEnd          -- drag ended (clear the in-flight index)
   | PlaySaved Int          -- replay a pinned saved sequence (with its timing)
   | DeleteSaved Int        -- × a pinned saved sequence
+  | Unbundle Int           -- open a saved token back into the working buffer (§6)
   | ToggleChyronArm        -- record-arm the chyron on/off
   -- PERFORM surface
   | PerfPickup Int         -- pick up saved token i for placement (toggle)
@@ -917,6 +925,7 @@ component = H.mkComponent
       , chyron: []
       , hoveredChyron: Nothing
       , chyronSel: Nothing
+      , chyronDrag: Nothing
       , chyronSaved: []
       , chyronArmed: true
       -- four player boxes on MIDI ch 1-4 (Odonus I-IV in AC's routing); a token
@@ -2139,11 +2148,46 @@ handleAction = case _ of
                     , chyronSel = Nothing, hoveredChyron = Nothing }
       _ -> pure unit
 
+  -- Reorder the buffer by drag-and-drop (§10.4): drop chip `f` before chip `t`.
+  -- Arrangement is ORDER now, not timestamps (§8), so a plain array move is the
+  -- whole story; the selection is dropped since its indices no longer mean the
+  -- same chords.
+  ChyronDragStart i -> H.modify_ _ { chyronDrag = Just i }
+
+  ChyronDropOn t -> H.modify_ \st -> case st.chyronDrag of
+    Nothing -> st
+    Just f
+      | f == t -> st { chyronDrag = Nothing }
+      | otherwise -> case index st.chyron f of
+          Nothing -> st { chyronDrag = Nothing }
+          Just el ->
+            let without = fromMaybe st.chyron (deleteAt f st.chyron)
+                t' = if f < t then t - 1 else t     -- removing f before t shifts t left
+                reordered = fromMaybe (without <> [ el ]) (insertAt t' el without)
+            in st { chyron = reordered, chyronDrag = Nothing, chyronSel = Nothing }
+
+  ChyronDragEnd -> H.modify_ _ { chyronDrag = Nothing }
+
   PlaySaved i -> do
     st <- H.get
     for_ (index st.chyronSaved i) \s -> playEvents s.events
 
   DeleteSaved i -> H.modify_ \st -> st { chyronSaved = fromMaybe st.chyronSaved (deleteAt i st.chyronSaved) }
+
+  -- Unbundle a saved token back into the working buffer for editing (§6): append
+  -- its events and SELECT the appended run, so you can immediately reorder / revoice
+  -- / Explore it. Additive — the token stays on the shelf; rebundling (SaveChyronSel)
+  -- mints a NEW token, never overwriting. (The cap can trim the front, so the
+  -- selection is computed against the merged length.)
+  Unbundle i -> H.modify_ \st -> case index st.chyronSaved i of
+    Nothing -> st
+    Just s ->
+      let merged = takeEnd chyronCap (st.chyron <> s.events)
+          addN = length s.events
+          selLo = max 0 (length merged - addN)
+          selHi = max selLo (length merged - 1)
+      in st { chyron = merged
+            , chyronSel = if addN == 0 then st.chyronSel else Just { lo: selLo, hi: selHi, anchor: selLo } }
 
   ToggleChyronArm -> H.modify_ \st -> st { chyronArmed = not st.chyronArmed }
 
@@ -3897,7 +3941,8 @@ chyronBar st =
   where
   -- a SAVED sequence: its 2-glyph identity (FA icon pair — visually distinct from
   -- the live stave-glyphs, so "named unit" reads at a glance). Click the icons to
-  -- replay it with timing; × deletes. Tooltip carries the chord names.
+  -- replay it with timing; ✎ unbundles it back into the buffer to edit; × deletes.
+  -- Tooltip carries the chord names.
   savedToken i s =
     let held = st.perfHeld == Just i
     in HH.span
@@ -3908,11 +3953,16 @@ chyronBar st =
                    <> "; border-radius: 4px; padding: 3px 6px; line-height: 1;")
       , HP.draggable true
       , HE.onDragStart \_ -> PerfPickup i
-      , HP.title ("saved · " <> joinWith " " (map _.label s.events) <> " · click plays · shift-click / drag → a Perform box") ]
+      , HP.title ("saved · " <> joinWith " " (map _.label s.events) <> " · click plays · ✎ unbundles to the buffer · shift-click / drag → a Perform box") ]
       [ HH.span
           [ HP.style "display: inline-flex; align-items: center; gap: 3px; cursor: pointer;"
           , HE.onClick \e -> if ME.shiftKey e then PerfPickup i else PlaySaved i ]
           [ faIcon s.glyph.first, faIcon s.glyph.second ]
+      , HH.button
+          [ HP.style "position: absolute; top: -5px; left: -3px; z-index: 2; border: 1px solid #cdbb8c; background: #f6efdc; color: #7a5c00; font-size: 10px; line-height: 1; cursor: pointer; padding: 0 3px; border-radius: 8px;"
+          , HP.title "unbundle into the buffer to edit (rebundle mints a new token)"
+          , HE.onClick \_ -> Unbundle i ]
+          [ HH.text "✎" ]
       , HH.button
           [ HP.style "position: absolute; top: -5px; right: -3px; z-index: 2; border: 1px solid #cdbb8c; background: #f6efdc; color: #b06a5a; font-size: 10px; line-height: 1; cursor: pointer; padding: 0 3px; border-radius: 8px;"
           , HP.title "delete this saved sequence"
@@ -3921,7 +3971,8 @@ chyronBar st =
       ]
   -- one chip = the chord's mini stave-glyph (same as the Tank), name-free. Hover
   -- + space auditions it; click selects this one chord; shift-click extends the
-  -- range from the anchor. In-span chips wear a warm wash; the endpoints a gold rim.
+  -- range from the anchor; DRAG it to reorder the buffer (§10.4). In-span chips
+  -- wear a warm wash; the endpoints a gold rim; the dragged chip dims.
   chyronChip i ev =
     let inSel = case st.chyronSel of
                   Just sel -> i >= sel.lo && i <= sel.hi
@@ -3930,6 +3981,7 @@ chyronBar st =
                   Just sel -> i == sel.lo || i == sel.hi
                   Nothing -> false
         hov = st.hoveredChyron == Just i
+        dragging = st.chyronDrag == Just i
         bg = if inSel then "#efe6c8" else "#faf7ee"
         brd = if isEnd then "#b8860b" else if inSel then "#cdbb8c" else "#d8ceb4"
         pcNames = joinWith " " (map noteName (sort ev.pcs))
@@ -3943,8 +3995,14 @@ chyronBar st =
           else []
     in HH.span
         [ HP.style ("position: relative; flex: 0 0 auto; white-space: nowrap; border: 1px solid " <> brd
-                     <> "; background: " <> bg <> "; border-radius: 3px; padding: 0 1px; cursor: pointer; line-height: 0;")
+                     <> "; background: " <> bg <> "; border-radius: 3px; padding: 0 1px; cursor: grab; line-height: 0; opacity: "
+                     <> (if dragging then "0.4" else "1") <> ";")
         , HP.title (ev.label <> (if pcNames == "" then "" else " · " <> pcNames))
+        , HP.draggable true
+        , HE.onDragStart \_ -> ChyronDragStart i
+        , HE.onDragOver PerfDragOver
+        , HE.onDrop \_ -> ChyronDropOn i
+        , HE.onDragEnd \_ -> ChyronDragEnd
         , HE.onMouseEnter \_ -> HoverChyron (Just i)
         , HE.onMouseLeave \_ -> HoverChyron Nothing ]
         ( delX <>
