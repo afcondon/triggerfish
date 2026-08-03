@@ -57,7 +57,39 @@ arguments to the Perform layers**, catching the card up to what the lane already
 Beyond scalar→pattern args, Tidal offers structural transforms we do not expose: `rev`,
 `off` / `superimpose`, `iter`, `palindrome`, `chunk`, `jux`, `sometimesBy`. Worth having,
 but *breadth*. Depth (pattern args) multiplies what the eight verbs we already have can
-say, and it is the move that unifies the two scales — so it comes first.
+say, and it is the move that unifies the two scales — so it comes first. **One exception
+jumps the queue: `slow` — see §2.4.**
+
+### 2.4 The most-missing verb is `slow` — and it exposes a time-base assumption (AC)
+
+The single most-wanted verb is **`slow`**. You almost inevitably want a harmonic
+progression to unfold **much slower than a bar** — unless you are chasing bebop. Two
+forces make this the norm, not the exception:
+
+- **Conditioning Odonus.** When a Vetula progression is *conditioning* Odonus (setting its
+  harmonic frame), Odonus is running constant variations underneath that **need time to be
+  appreciated**. A chord change every bar strobes past that motion; a chord held over 4–8
+  bars lets the variation speak.
+- **Ambient.** Very slow progressions with **very sparse arpeggios** are a whole register
+  the current one-bar assumption can't reach.
+
+Three consequences for the grammar:
+
+1. **`slow N` becomes a first-class verb.** It exists today only *encoded as negative
+   `rate`* (`rate -4` = 4× slower, clamped to −8). That is unintuitive and undiscoverable —
+   nobody reaches for "negative rate" to mean "hold this longer." Promote `slow N`
+   (and `fast N`) to Tidal-canonical verbs; a card should say `# slow 4`, not `# rate -4`.
+2. **Rename/retire our `rate`.** In real Tidal `rate` is **sample playback speed** (a pitch
+   control), *not* time-stretch — our signed `rate` collides with that meaning. Time belongs
+   to `slow`/`fast`; if a pitch/speed control is wanted later it can take the `rate` name
+   honestly. (Migration: keep parsing `rate -n`/`rate n` as `slow`/`fast` for old scenes.)
+3. **The range must go large.** `slow` wants to reach **8 · 16 · 32 · 64** bars, not cap at
+   8. The one-bar cycle is the *sequence*'s home; `slow` is precisely how a progression
+   stops being a one-bar loop and becomes an arc. (Open decision 6.7: does `slow`'s cap come
+   off entirely, and does `boxUsesSeq`/the bar-grid need to know a box is multi-bar?)
+
+`slow` is also a clean early win: it is a *time* transform on the whole box, independent of
+the pattern-arg work, so it can land first (or alongside step 1) and be felt immediately.
 
 ## 3. The unifying grammar — micro == macro
 
@@ -142,10 +174,19 @@ resolving against a loaded form.
    (§2.3: `rev` / `off` / `iter` / …) as a later, à-la-carte slice.
 6. **Complexity budget.** The text hatch grows in *depth* (richer args), not *width* (a
    wall of verbs) — this is the `learn-the-chrome ≈ learn-Tidal` guardrail from
-   `inherited-crafting-moler`. Every added verb must earn a chip.
+   `inherited-crafting-moler`. Every added verb must earn a chip. (`slow` earns its chip on
+   sight — §2.4.)
+7. **`slow`'s ceiling and the bar grid** (§2.4). Does `slow N` cap at all, or reach
+   arbitrarily large (32/64 bars)? And does a multi-bar box need `boxUsesSeq` / the
+   bar-vs-beat grid (`scheduleBox`) to know its true length, or does `slow` compose cleanly
+   on top of the existing one-bar scheduling? This is the one place `slow` touches more than
+   a verb table.
 
 ## 7. Execution sequence (proposed — not started)
 
+0. **`slow` / `fast` as first-class time verbs** (§2.4) — the quick, felt win, independent of
+   the pattern-arg work. Promote `slow N` / `fast N`, migrate old `rate ±n`, lift the range
+   for multi-bar arcs, check the bar-grid (decision 6.7). Can land first.
 1. **Quote-aware `parseLayer`** + a `PatternArg` type; printer round-trips literal vs quoted.
    Reconciliation invariant re-proved. *No behaviour change yet (all args still literals).*
 2. **`applyLayer` samples the arg pattern per cycle** — the first live pattern-arg
