@@ -11,6 +11,9 @@ module Vetula.Store
   , Saved
   , saveLibrary
   , loadLibrary
+  , SessionState
+  , saveSession
+  , loadSession
   ) where
 
 import Prelude
@@ -76,3 +79,25 @@ decode env =
   { library: env.library
   , presets: map (\e -> { content: e.content, name: if e.name == "" then Nothing else Just e.name, starred: e.starred }) env.presets
   }
+
+-- ---------------------------------------------------------------------------
+-- Perform SESSION — the persistent container for saved scenes (see the Perform
+-- surface). One session per working body-of-work: it RESUMES across app reloads
+-- (a reload must not fragment a sitting), and only an explicit "new session"
+-- mints a fresh one. `alias` is the session's monochrome glyph-triple identity
+-- (`Glyph.sessionAliasOf`); `name` is an optional promotion ("" = use the alias);
+-- `nextScene` is the monotonic scene counter within this session.
+-- ---------------------------------------------------------------------------
+
+type SessionState = { alias :: String, name :: String, nextScene :: Int }
+
+sessionKey :: String
+sessionKey = "triggerfish.vetula.session.v1"
+
+saveSession :: SessionState -> Effect Unit
+saveSession s = _save sessionKey (_stringify s)
+
+loadSession :: Effect (Maybe SessionState)
+loadSession = do
+  m <- _load sessionKey
+  pure (toMaybe (m :: Nullable SessionState))

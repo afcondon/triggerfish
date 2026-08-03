@@ -23,6 +23,7 @@ package:
     - web-uievents
     - console
     - js-timers
+    - random
     - binnacle
     # vendored purerl-tidal mini-notation engine (src/Tidal/**)
     - control

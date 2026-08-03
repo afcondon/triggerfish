@@ -39,17 +39,18 @@ module Triggerfish.Glyph
   , Glyph
   , glyphOf
   , glyphFromAlias
+  , sessionAliasOf
   , ChipView
   ) where
 
 import Prelude
 
-import Data.Array (index, length)
+import Data.Array (elem, index, length)
 import Data.Char (toCharCode)
 import Data.Foldable (foldl)
 import Data.Maybe (fromMaybe)
 import Data.String.CodeUnits (toCharArray)
-import Data.String.Common (split)
+import Data.String.Common (joinWith, split)
 import Data.String.Pattern (Pattern(..))
 
 -- ---------------------------------------------------------------------------
@@ -189,6 +190,25 @@ glyphFromAlias :: String -> Glyph
 glyphFromAlias alias = case split (Pattern "-") alias of
   [ a, b ] -> glyphFor a b
   _ -> glyphFor alias alias
+
+-- | A SESSION's identity alias: three DISTINCT deck icons picked from a seed,
+-- | hyphen-joined (`"cat-rocket-anchor"`). Deliberately a TRIPLE (chord tokens are
+-- | pairs) and rendered MONOCHROME by the view (chord tokens are coloured), so a
+-- | session container never reads as a chord token. Seed-driven, NOT content-
+-- | hashed: a session is a container, so it should not dedup or be reproducible
+-- | from content — the seed is minted once (Effect) and only the alias persists;
+-- | the icons recover from `split "-"`, exactly like `glyphFromAlias`.
+sessionAliasOf :: Int -> String
+sessionAliasOf seed =
+  let
+    s = show seed
+    i1 = hashWith 5381 33 s `mod` deckSize
+    i2 = avoid [ i1 ] (hashWith 7919 37 s `mod` deckSize)
+    i3 = avoid [ i1, i2 ] (hashWith 104729 41 s `mod` deckSize)
+  in
+    joinWith "-" (map entryAt [ i1, i2, i3 ])
+  where
+  avoid used x = if elem x used then avoid used ((x + 1) `mod` deckSize) else x
 
 -- ---------------------------------------------------------------------------
 -- Internals

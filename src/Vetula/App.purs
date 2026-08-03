@@ -35,6 +35,7 @@ import Data.String.CodeUnits as SCU
 import Data.String.Common (joinWith, split, toLower, trim)
 import Data.Tuple (Tuple(..), fst, snd)
 import Effect (Effect)
+import Effect.Random (randomInt)
 import Effect.Aff (attempt)
 import Effect.Aff.Class (class MonadAff, liftAff)
 import Effect.Class (liftEffect)
@@ -65,7 +66,7 @@ import Binnacle.Scheduler as Scheduler
 import Binnacle.Transport as Transport
 import Triggerfish.Transport (Sounding(..))
 import Triggerfish.Midi.Routing as Routing
-import Triggerfish.Glyph (ChipView, Glyph, glyphOf)
+import Triggerfish.Glyph (ChipView, Glyph, glyphOf, sessionAliasOf)
 import Triggerfish.GlyphView (faIcon)
 import Triggerfish.Preset (Preset, indexOfContent, presetAlias)
 import Vetula.Store as Store
@@ -602,6 +603,9 @@ type State =
   , perfHeldFx :: Maybe PerfFx
   , perfDrag :: Maybe PerfDragSrc   -- the in-flight HTML5 drag payload
   , perfEditBox :: Maybe Int        -- box whose sequence is open in the editor modal
+  -- The persistent Perform SESSION: the container for saved scenes. Resumes across
+  -- reloads; scenes save as `⟨alias|name⟩ #nextScene`. Minted/restored in Initialize.
+  , perfSession :: Store.SessionState
   }
 
 -- | Which floating control a fold toggle targets.
@@ -664,6 +668,7 @@ data Action
   | DeleteLib Int          -- remove a library entry
   | PublishLib Int         -- publish library entry #i to the Amphora store (vetula-progression)
   | SaveScene              -- serialise the whole Perform surface as a vetulaScene → Amphora
+  | PerfNewSession         -- mint a fresh session glyph-triple (rolls the scene counter)
   | AddVoice
   | RemoveVoice Int
   | SetVoiceChannel Int String
@@ -902,6 +907,8 @@ component = H.mkComponent
       , perfHeldFx: Nothing
       , perfDrag: Nothing
       , perfEditBox: Nothing
+      -- placeholder; Initialize resumes the persisted session or mints a fresh one
+      , perfSession: { alias: "", name: "", nextScene: 1 }
       }
   , render
   , eval: H.mkEval H.defaultEval
@@ -1299,6 +1306,15 @@ handleAction = case _ of
     -- continues past the restored count so new ◦ autonames don't collide.
     msaved <- liftEffect Store.loadLibrary
     for_ msaved \sv -> H.modify_ _ { library = sv.library, capSeq = length sv.library, presets = sv.presets }
+    -- Resume the persisted Perform session (a reload must NOT start a new session);
+    -- mint one only on the very first launch. `perfSession` then rides every save.
+    msess <- liftEffect Store.loadSession
+    case msess of
+      Just sess -> H.modify_ _ { perfSession = sess }
+      Nothing -> do
+        fresh <- liftEffect mintSession
+        liftEffect (Store.saveSession fresh)
+        H.modify_ _ { perfSession = fresh }
     -- Merge the shared Amphora progression library in the BACKGROUND: awaiting it
     -- blocked Initialize (hence the shell's polls of Vetula) until the ~30s offline
     -- timeout. The store being offline is not fatal — keep whatever's local.
@@ -1786,23 +1802,40 @@ handleAction = case _ of
           Left _ -> "✗ publish failed (store offline?)" }
 
   -- Serialise the whole Perform surface as a `vetulaScene` record and publish it
-  -- to the shared Amphora store (collection `vetula-scene`). The payload is the
-  -- Tier-3 `printAsRecord` form (the A5 cross-instrument idiom); sources dedup by
-  -- content, so voices sharing chords share one `source`. Store offline → a
-  -- transient failure message, never fatal.
+  -- to the shared Amphora store (collection `vetula-scene`). The scene is auto-
+  -- named `⟨session alias|name⟩ #N` (no naming friction — identity without a name,
+  -- per the glyph substrate) and tagged `session:`/`scene:` so recall groups by
+  -- session; `nextScene` increments (and persists) only on a successful save, so a
+  -- failed store doesn't burn a number. Payload is the Tier-3 `printAsRecord` form;
+  -- sources dedup by content. Store offline → a transient message, never fatal.
   SaveScene -> do
     st <- H.get
     H.modify_ _ { publishMsg = Just "saving scene…" }
     let keyLabel = groupLabel st.key
-        name = fromMaybe ("scene · " <> keyLabel) st.perfName
+        sess = st.perfSession
+        n = sess.nextScene
+        handle = if sess.name == "" then sess.alias else sess.name
+        label = handle <> " #" <> show n
         doc = docFromVoices keyLabel (map boxSpec st.perfBoxes)
-        payload = printAsRecord name doc
+        payload = printAsRecord label doc
+        tags = [ "session:" <> sess.alias, "scene:" <> show n, "key:" <> keyLabel ]
     res <- liftAff (attempt (Amphora.publish
       { kind: "vetula-scene", collection: "vetula-scene"
-      , name, source: "user", payload, tags: [ "key:" <> keyLabel ] }))
-    H.modify_ _ { publishMsg = Just case res of
-      Right hash -> "✓ scene · " <> name <> " · " <> SCU.take 8 hash
-      Left _ -> "✗ save failed (store offline?)" }
+      , name: label, source: "user", payload, tags }))
+    case res of
+      Right hash -> do
+        let sess' = sess { nextScene = n + 1 }
+        liftEffect (Store.saveSession sess')
+        H.modify_ _ { perfSession = sess', publishMsg = Just ("✓ " <> label <> " · " <> SCU.take 8 hash) }
+      Left _ -> H.modify_ _ { publishMsg = Just "✗ save failed (store offline?)" }
+
+  -- Mint a fresh session (a new monochrome glyph-triple, scene counter back to 1)
+  -- and persist it. The deliberate "I'm starting a new body of work" boundary — the
+  -- only thing besides a first-ever launch that rolls the session (reloads resume).
+  PerfNewSession -> do
+    fresh <- liftEffect mintSession
+    liftEffect (Store.saveSession fresh)
+    H.modify_ _ { perfSession = fresh, publishMsg = Just ("new session · " <> fresh.alias) }
 
   AddVoice -> H.modify_ \s ->
     s { voices = s.voices <> [ defaultVoice s.nextVoiceId (mod s.nextVoiceId 4) (rendOf s.nextVoiceId) (length (perfChords s)) ]
@@ -4280,6 +4313,13 @@ surface st
 -- | a box: the box loops that token's chords on its MIDI channel while the
 -- | transport plays. This is the first slice of the Perform view (DESIGN §Perform);
 -- | function stacks and non-MIDI sinks come later.
+-- | Mint a fresh Perform session: a random seed → a monochrome glyph-triple alias,
+-- | scene counter at 1. Random (not content-derived) — a session is a container.
+mintSession :: Effect Store.SessionState
+mintSession = do
+  seed <- randomInt 0 999999
+  pure { alias: sessionAliasOf seed, name: "", nextScene: 1 }
+
 -- | A live Perform box → the neutral `VoiceSpec` the Lepidoptera serialiser takes
 -- | (its chords are the token's event notes; empty seq = a sourceless voice).
 boxSpec :: PerfBox -> VoiceSpec
@@ -4291,6 +4331,24 @@ boxSpec box =
   , term: box.term
   , muted: box.muted
   }
+
+-- | The persistent SESSION identity next to the save button: the session's
+-- | monochrome glyph-TRIPLE (three black FontAwesome icons — deliberately unlike a
+-- | chord token's coloured PAIR) reconstructed from its persisted alias, plus the
+-- | alias/name and the next scene number a save will mint.
+sessionChip :: forall m. Store.SessionState -> H.ComponentHTML Action Slots m
+sessionChip sess =
+  HH.span
+    [ HP.style "display: inline-flex; align-items: center; gap: 7px; padding: 3px 11px; border: 1px solid #d8cfa8; border-radius: 5px; background: #faf7ee;"
+    , HP.title "this session's identity — every scene you save is tagged with it; ↻ new session rolls it" ]
+    [ HH.span
+        [ HP.style "display: inline-flex; align-items: center; gap: 4px;" ]
+        (if sess.alias == "" then [ HH.text "…" ]
+         else map (\name -> faIcon { icon: name, color: "#2a2a2a" }) (split (Pattern "-") sess.alias))
+    , HH.span
+        [ HP.style "font-size: 11px; color: #6a5a2a; letter-spacing: 0.03em;" ]
+        [ HH.text (if sess.name == "" then sess.alias else sess.name) ]
+    ]
 
 performSurface :: forall m. State -> H.ComponentHTML Action Slots m
 performSurface st =
@@ -4308,8 +4366,9 @@ performSurface st =
                   else "shift-click (or drag) a saved token below onto a player — it loops while the transport plays"
         ]
     , HH.div
-        [ HP.style "display: flex; align-items: center; gap: 12px; min-height: 24px;" ]
-        [ HH.button
+        [ HP.style "display: flex; align-items: center; gap: 12px; min-height: 26px; flex-wrap: wrap; justify-content: center;" ]
+        [ sessionChip st.perfSession
+        , HH.button
             [ HP.style ("border: 1px solid #cdbb8c; border-radius: 5px; padding: 5px 14px; font-size: 12px; letter-spacing: 0.06em; cursor: pointer; "
                          <> (if any (\b -> isJust b.seq) st.perfBoxes
                               then "background: #f3ead2; color: #6a5a2a;"
@@ -4317,7 +4376,12 @@ performSurface st =
             , HP.title "serialise this Perform surface as a vetulaScene and save it to Amphora"
             , HP.enabled (any (\b -> isJust b.seq) st.perfBoxes)
             , HE.onClick \_ -> SaveScene ]
-            [ HH.text "⬡ save scene" ]
+            [ HH.text ("⬡ save scene #" <> show st.perfSession.nextScene) ]
+        , HH.button
+            [ HP.style "border: 1px solid #ddd3b4; border-radius: 5px; padding: 5px 11px; font-size: 11px; letter-spacing: 0.04em; cursor: pointer; background: transparent; color: #9a8a5a;"
+            , HP.title "start a new session — a fresh glyph-triple and scene counter (reloads keep the current session; this is the deliberate new-body-of-work boundary)"
+            , HE.onClick \_ -> PerfNewSession ]
+            [ HH.text "↻ new session" ]
         , case st.publishMsg of
             Just m -> HH.span [ HP.style "font-size: 11px; color: #7a6a3a; font-family: ui-monospace, monospace;" ] [ HH.text m ]
             Nothing -> HH.text ""
