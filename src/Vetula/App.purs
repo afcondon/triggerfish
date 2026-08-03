@@ -107,6 +107,7 @@ import Data.Either (Either(..))
 import Reef.Vetula.Protocol (encodePerf) as RV
 import Binnacle.Time (dateNow)
 import Vetula.Tidal (progressionSource, parseProgression)
+import Vetula.Lepidoptera (VoiceSpec, docFromVoices, printAsRecord)
 import Vetula.Clipboard (copyText)
 import Binnacle.Midi as Midi
 import Halogen.Widgets.Select as Select
@@ -662,6 +663,7 @@ data Action
   | UnloadProg             -- back to the library
   | DeleteLib Int          -- remove a library entry
   | PublishLib Int         -- publish library entry #i to the Amphora store (vetula-progression)
+  | SaveScene              -- serialise the whole Perform surface as a vetulaScene → Amphora
   | AddVoice
   | RemoveVoice Int
   | SetVoiceChannel Int String
@@ -1782,6 +1784,25 @@ handleAction = case _ of
         H.modify_ _ { publishMsg = Just case res of
           Right hash -> "✓ " <> e.name <> " · " <> SCU.take 8 hash
           Left _ -> "✗ publish failed (store offline?)" }
+
+  -- Serialise the whole Perform surface as a `vetulaScene` record and publish it
+  -- to the shared Amphora store (collection `vetula-scene`). The payload is the
+  -- Tier-3 `printAsRecord` form (the A5 cross-instrument idiom); sources dedup by
+  -- content, so voices sharing chords share one `source`. Store offline → a
+  -- transient failure message, never fatal.
+  SaveScene -> do
+    st <- H.get
+    H.modify_ _ { publishMsg = Just "saving scene…" }
+    let keyLabel = groupLabel st.key
+        name = fromMaybe ("scene · " <> keyLabel) st.perfName
+        doc = docFromVoices keyLabel (map boxSpec st.perfBoxes)
+        payload = printAsRecord name doc
+    res <- liftAff (attempt (Amphora.publish
+      { kind: "vetula-scene", collection: "vetula-scene"
+      , name, source: "user", payload, tags: [ "key:" <> keyLabel ] }))
+    H.modify_ _ { publishMsg = Just case res of
+      Right hash -> "✓ scene · " <> name <> " · " <> SCU.take 8 hash
+      Left _ -> "✗ save failed (store offline?)" }
 
   AddVoice -> H.modify_ \s ->
     s { voices = s.voices <> [ defaultVoice s.nextVoiceId (mod s.nextVoiceId 4) (rendOf s.nextVoiceId) (length (perfChords s)) ]
@@ -4259,6 +4280,18 @@ surface st
 -- | a box: the box loops that token's chords on its MIDI channel while the
 -- | transport plays. This is the first slice of the Perform view (DESIGN §Perform);
 -- | function stacks and non-MIDI sinks come later.
+-- | A live Perform box → the neutral `VoiceSpec` the Lepidoptera serialiser takes
+-- | (its chords are the token's event notes; empty seq = a sourceless voice).
+boxSpec :: PerfBox -> VoiceSpec
+boxSpec box =
+  { channel: box.channel
+  , chords: maybe [] (\s -> map _.notes s.events) box.seq
+  , seqText: box.seqText
+  , stack: box.stack
+  , term: box.term
+  , muted: box.muted
+  }
+
 performSurface :: forall m. State -> H.ComponentHTML Action Slots m
 performSurface st =
   HH.div
@@ -4273,6 +4306,21 @@ performSurface st =
                 if any (\b -> isJust b.seq) st.perfBoxes
                   then "press PLAY to loop the players · click an FX below then a player to stack it"
                   else "shift-click (or drag) a saved token below onto a player — it loops while the transport plays"
+        ]
+    , HH.div
+        [ HP.style "display: flex; align-items: center; gap: 12px; min-height: 24px;" ]
+        [ HH.button
+            [ HP.style ("border: 1px solid #cdbb8c; border-radius: 5px; padding: 5px 14px; font-size: 12px; letter-spacing: 0.06em; cursor: pointer; "
+                         <> (if any (\b -> isJust b.seq) st.perfBoxes
+                              then "background: #f3ead2; color: #6a5a2a;"
+                              else "background: #f6f3ea; color: #c2b790; cursor: default;"))
+            , HP.title "serialise this Perform surface as a vetulaScene and save it to Amphora"
+            , HP.enabled (any (\b -> isJust b.seq) st.perfBoxes)
+            , HE.onClick \_ -> SaveScene ]
+            [ HH.text "⬡ save scene" ]
+        , case st.publishMsg of
+            Just m -> HH.span [ HP.style "font-size: 11px; color: #7a6a3a; font-family: ui-monospace, monospace;" ] [ HH.text m ]
+            Nothing -> HH.text ""
         ]
     , fxPalette st
     , HH.div
