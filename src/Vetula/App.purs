@@ -2081,11 +2081,22 @@ handleAction = case _ of
               _ -> { lo: i, hi: i, anchor: i }
         in H.modify_ _ { chyronSel = Just sel }
 
-  -- Delete one audition (indices shift, so drop any selection/hover to stay safe).
+  -- Delete one audition. Indices shift, so ADJUST the selection rather than drop it:
+  -- a delete below the span slides it down; a delete inside shrinks the top; deleting
+  -- the lone selected chord clears it. Keeping the selection alive through edits is
+  -- what leaves the ⏎ save (rebundle) button available while you're editing an
+  -- unbundled progression (the check-out → edit → check-in loop, §6).
   DeleteChyron i -> H.modify_ \st ->
-    st { chyron = fromMaybe st.chyron (deleteAt i st.chyron)
-       , chyronSel = Nothing
-       , hoveredChyron = Nothing }
+    let sel' = case st.chyronSel of
+          Nothing -> Nothing
+          Just s
+            | i < s.lo    -> Just { lo: s.lo - 1, hi: s.hi - 1, anchor: max 0 (s.anchor - 1) }
+            | i > s.hi    -> Just s
+            | s.hi > s.lo -> Just { lo: s.lo, hi: s.hi - 1, anchor: clamp s.lo (s.hi - 1) s.anchor }
+            | otherwise   -> Nothing   -- the single selected chord was deleted
+    in st { chyron = fromMaybe st.chyron (deleteAt i st.chyron)
+          , chyronSel = sel'
+          , hoveredChyron = Nothing }
 
   ClearChyron -> H.modify_ _ { chyron = [], chyronSel = Nothing, hoveredChyron = Nothing }
 
@@ -2130,11 +2141,13 @@ handleAction = case _ of
 
   DeleteSaved i -> H.modify_ \st -> st { chyronSaved = fromMaybe st.chyronSaved (deleteAt i st.chyronSaved) }
 
-  -- Unbundle a saved token back into the working buffer for editing (§6): append
-  -- its events and SELECT the appended run, so you can immediately reorder / revoice
-  -- / Explore it. Additive — the token stays on the shelf; rebundling (SaveChyronSel)
-  -- mints a NEW token, never overwriting. (The cap can trim the front, so the
-  -- selection is computed against the merged length.)
+  -- Unbundle (check OUT) a saved token into the working buffer to edit it (§6): the
+  -- token LEAVES the shelf, its events append to the buffer, and the appended run is
+  -- SELECTED so you can immediately reorder / revoice / Explore / delete it — and the
+  -- ⏎ save (rebundle) button is right there. Editing then ⏎-saving mints a fresh token
+  -- (new content-glyph) back onto the shelf: check-out → edit → check-in, additive,
+  -- never a silent overwrite. (The cap can trim the front, so the selection is
+  -- computed against the merged length.)
   Unbundle i -> H.modify_ \st -> case index st.chyronSaved i of
     Nothing -> st
     Just s ->
@@ -2143,6 +2156,7 @@ handleAction = case _ of
           selLo = max 0 (length merged - addN)
           selHi = max selLo (length merged - 1)
       in st { chyron = merged
+            , chyronSaved = fromMaybe st.chyronSaved (deleteAt i st.chyronSaved)
             , chyronSel = if addN == 0 then st.chyronSel else Just { lo: selLo, hi: selHi, anchor: selLo } }
 
   ToggleChyronArm -> H.modify_ \st -> st { chyronArmed = not st.chyronArmed }
@@ -3914,7 +3928,7 @@ chyronBar st =
           [ faIcon s.glyph.first, faIcon s.glyph.second ]
       , HH.button
           [ HP.style "position: absolute; top: -5px; left: -3px; z-index: 2; border: 1px solid #cdbb8c; background: #f6efdc; color: #7a5c00; font-size: 10px; line-height: 1; cursor: pointer; padding: 0 3px; border-radius: 8px;"
-          , HP.title "unbundle into the buffer to edit (rebundle mints a new token)"
+          , HP.title "check out to the buffer to edit — the token leaves the shelf; ⏎ save re-bundles a new one"
           , HE.onClick \_ -> Unbundle i ]
           [ HH.text "✎" ]
       , HH.button
