@@ -152,14 +152,26 @@ gets its own session rather than a bolt-on. Two anchors for that session:
 
 ## 10. Execution sequence
 
-1. **Enrich `ChyronEvent`** with per-chord `{ voicing, anchor }`; populate at the
-   audition choke-points; confirm `SavedSeq` carries it. Verify by ear (explore lands
-   right). ← *the first commit; everything rests on it.*
-2. **Chyron selection** — click / shift-click range.
-3. **Explore re-point** — seed from the chyron selection instead of the Tank; append
-   results.
-4. **Reorder** — drag-and-drop in the chyron; **edit-mode** expansion (§3.5).
-5. **Unbundle / rebundle** — token ↔ chyron; new glyph on rebundle.
-6. **Delete the Tank panel, catch-to-tank, Preview.**
-7. **Recall/Lepidoptera reading** — decide persist-vs-re-derive (§7).
-8. **Timing session** — later (§8).
+1. ✅ **Enrich `ChyronEvent`** with per-chord `anchor` (notes already serve as the
+   voicing); populated at the audition choke-points; `SavedSeq` carries it. Done
+   `98b01bd`.
+2. ✅ **Chyron selection** — click / shift-click range (Mac anchor semantics). Done
+   `57da687`.
+3. ✅ **Explore re-point** — seeds from the chyron selection (no selection → last-6
+   tape); results append on audition. Verified by ear (Cmaj/Fm bloom right) + seed
+   labels made quality-aware. Done `7cd30b0`. *Explore workflow/UX flagged for
+   iteration once lived-with; Tonnetz/keyboard seeds bloom `Free` (design decision
+   pending).*
+4. ✅ **Reorder** — drag-and-drop in the chyron. Done `ebdc7b0`. *Edit-mode
+   expansion (§3.5) deferred → fold into the lower-third MIDI-flow chyron (#18).*
+5. ✅ **Unbundle / rebundle** — ✎ on a token appends+selects it into the buffer;
+   rebundle (⏎ save) mints a new glyph; additive. Done `ebdc7b0`.
+6. ✅ **Delete the Tank & Progression card, catch-to-tank, Preview.** Done `a8bb48b`.
+   *Dormant-but-kept for re-homing: `Vetula.Between` (cadence bridge),
+   ArrangeSpec/SequenceSpec/StageSpec, StackTriad, and the dead render helpers
+   (tankPane/stackBar/arrangeBar/growBar/progressionPanel — a later pass deletes
+   them). Betweening was already non-functional; re-home it onto the chyron (insert
+   N cadence-bridge chords between two selected chyron chords) before a final code
+   sweep.*
+7. **Recall/Lepidoptera reading** — decide persist-vs-re-derive (§7). *Open.*
+8. **Timing session** — later (§8). *Open.*
