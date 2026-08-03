@@ -45,6 +45,7 @@ module Vetula.Lepidoptera
   , VoiceSpec
   , PerfDoc
   , performSource
+  , printAsRecord
   , parsePerform
   , docFromVoices
   , roundTrips
@@ -135,6 +136,26 @@ fxDir = case _ of
 
 quote :: String -> String
 quote x = "\"" <> x <> "\""
+
+-- | Tier 3 — the same document as a record literal, mirroring the ecosystem
+-- | idiom (`Odonus.Lepidoptera` `odonusPatch <name> { … }`): an outer record
+-- | shell with `field:` labels whose list ELEMENTS are the compact directive
+-- | lines (`printSource` / `printVoice`) — the flat form of `performSource` is
+-- | exactly the element grammar, so this is a shell over it, nothing re-derived.
+-- | This is the shape the A5 cross-instrument library manager reads. Print-only
+-- | for now; the elements already parse via `parsePerform`, so a `parseRecord`
+-- | is just the shell. (Head keyword `vetulaScene` — a saved surface IS a scene.)
+printAsRecord :: String -> PerfDoc -> String
+printAsRecord name doc =
+  joinWith "\n"
+    [ "vetulaScene " <> show name
+    , "  { key: " <> show doc.key
+    , "  , sources:"
+    , "      [ " <> joinWith "\n      , " (map printSource doc.sources) <> " ]"
+    , "  , voices:"
+    , "      [ " <> joinWith "\n      , " (map printVoice doc.voices) <> " ]"
+    , "  }"
+    ]
 
 -- ============================================================================
 -- Parse — total + lenient

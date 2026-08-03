@@ -21,7 +21,7 @@ import Triggerfish.Odonus.Marbles as Marbles
 import Triggerfish.Odonus.Gen as Gen
 import Triggerfish.Odonus.Grid.Types (GenKind(..), GenSource, genDefaultAmt, genDefaultRate, genKinds)
 import Vetula.Perform.Types (ArpDir(..), PerfFx(..), PerfTerm(..), VoiceShape(..), When(..), mkLayer)
-import Vetula.Lepidoptera (PerfDoc, parsePerform, performSource, roundTrips)
+import Vetula.Lepidoptera (PerfDoc, parsePerform, performSource, printAsRecord, roundTrips)
 
 type Sim = { odo :: M.Odonus, seed :: Marbles.Seed }
 
@@ -201,6 +201,9 @@ main = do
   log "   ── hand-written (lenient) parse → re-print ──"
   log (indent reparsed)
   log ("   stable under re-parse: " <> yn (performSource (parsePerform reparsed) == reparsed) <> "   (want PASS)")
+  -- Tier 3: the same document as a record literal (A5 cross-instrument idiom).
+  log "   ── printAsRecord lepDoc (Tier 3) ──"
+  log (indent (printAsRecord "warm pad" lepDoc))
   log "\n════ done ════"
   where
   indent = \s -> "     " <> replaceNL s
