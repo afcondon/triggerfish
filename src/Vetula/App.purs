@@ -3812,23 +3812,15 @@ surfaceFillCss = "max-width: none; touch-action: none; width: 100%; height: 100%
 render :: forall m. MonadAff m => State -> H.ComponentHTML Action Slots m
 render st =
   HH.div
-    -- Pushed down by one nav-height (`--tf-bar`) so the stage clears the AUDITION
-    -- bar now docked under the shell nav; the old bottom voice bar is gone, so the
-    -- stage fills to the window bottom (freed lower strip → future MIDI-flow chyron).
-    [ HP.style ("position: relative; margin-top: var(--tf-bar); width: 100%; height: calc(100vh - 88px); min-height: 620px; overflow: hidden; border-radius: 8px; background: " <> canvasBg <> ";") ]
+    -- Pushed down by the nav (`--tf-bar`) + the 42px CONTEXT bar + the 44px AUDITION
+    -- chyron, so the stage clears both top strips; the old bottom voice bar is gone,
+    -- so it fills to the window bottom (freed lower strip → future MIDI-flow chyron).
+    [ HP.style ("position: relative; margin-top: calc(var(--tf-bar) + 42px); width: 100%; height: calc(100vh - 130px); min-height: 620px; overflow: hidden; border-radius: 8px; background: " <> canvasBg <> ";") ]
     [ HH.div [ HP.style "position: absolute; inset: 0;" ] [ surface st ]
-    -- Three FLOATING controls (docs/DESIGN-vetula-progression-building.md), each
-    -- owning one Harmonia layer: A = harmonic context (Key + palette + geometry),
-    -- B = tank & progression (the Phrase), C = voices (Voicing). Placeholder names
-    -- A/B/C; placement provisional — they float over the stage and will be made
-    -- movable later. Library panel retired (→ between-sessions modal, #16); the
-    -- "grow" and "pad grid" lenses left the geometry selector (grow → B; pad grid
-    -- retired).
-    , floatCard "context" st.foldCtx (ToggleFold VCtx)
-        "position: absolute; top: 12px; left: 12px; width: 248px; max-height: calc(100% - 24px); overflow-y: auto; overflow-x: visible; z-index: 6;"
-        [ setupPane st
-        , subGroup "Lens" (lensBar st)
-        ]
+    -- CONTEXT is now a docked control bar between the nav and the chyron (the last
+    -- floating overlay is gone, reclaiming the whole left column): key · scale ·
+    -- palettes · lens · rig/help. See `contextBar`.
+    , contextBar st
     -- The Tank & Progression card is retired (Tank overhaul §10.6): the chyron is
     -- now the single surface for collect · select · reorder · bundle/unbundle, so
     -- the tank tiles, the tonnetz stack, arrange/grow, and the built-progression
@@ -3854,7 +3846,7 @@ render st =
 chyronBar :: forall m. State -> H.ComponentHTML Action Slots m
 chyronBar st =
   HH.div
-    [ HP.style ( "position: fixed; top: var(--tf-bar); left: 0; right: 0; z-index: 39; box-sizing: border-box; "
+    [ HP.style ( "position: fixed; top: calc(var(--tf-bar) + 42px); left: 0; right: 0; z-index: 39; box-sizing: border-box; "
         <> "display: flex; gap: 10px; align-items: center; padding: 3px 12px; min-height: 44px; overflow: hidden; "
         -- shift-click is a selection gesture here (extend the range), so kill the
         -- browser's own shift-click text selection across the bar. user-select
@@ -4167,14 +4159,19 @@ poolSpine =
     , HH.span [ HP.style "writing-mode: vertical-rl; font-size: 11px; letter-spacing: 0.14em; text-transform: uppercase; color: #b0b0b0;" ] [ HH.text "pool" ]
     ]
 
--- | The Setup pane — the reclaimed top bar, stacked vertically in the left
--- | accordion: key, scale, the focused-family scale override, the borrow source,
--- | the palette populators, and the rig connection + help. (The old `Vetula` title
--- | is gone — the Triggerfish top nav already names the instrument.)
-setupPane :: forall m. MonadAff m => State -> H.ComponentHTML Action Slots m
-setupPane st =
+-- | The CONTEXT bar — a thin control strip docked between the top nav and the
+-- | AUDITION chyron (Tank-overhaul follow-on: kills the last floating overlay,
+-- | reclaiming the whole left column). Horizontal: key · scale · [family] ·
+-- | palettes · [borrow] · lens, with the rig connection + help pushed right. The
+-- | fields keep their little labels stacked over each control, so it reads as a
+-- | labelled toolbar. Dropdowns open DOWN over the surface (z above the chyron),
+-- | so the bar must not clip overflow.
+contextBar :: forall m. MonadAff m => State -> H.ComponentHTML Action Slots m
+contextBar st =
   HH.div
-    [ HP.style "display: flex; flex-direction: column; gap: 11px;" ]
+    [ HP.style ( "position: fixed; top: var(--tf-bar); left: 0; right: 0; z-index: 40; box-sizing: border-box; "
+        <> "display: flex; align-items: flex-end; flex-wrap: nowrap; gap: 16px; padding: 3px 12px 5px; min-height: 42px; overflow: visible; "
+        <> "background: linear-gradient(#f3eee0,#ece5d0); border-bottom: 1px solid #0000000f; box-shadow: 0 1px 3px #0000000d;" ) ]
     ( [ field "KEY"
           [ HH.slot (Proxy :: _ "keySelect") unit Select.component
               ((Select.defaultInput keyOptions) { selected = Just (show st.key.tonic), placeholder = "Key" })
@@ -4186,10 +4183,15 @@ setupPane st =
       ]
         <> familyField
         <> [ field "PALETTES"
-               [ HH.div [ HP.style "display: flex; flex-wrap: wrap; gap: 4px;" ] (map layerChip allColorLayers) ]
+               [ HH.div [ HP.style "display: flex; flex-wrap: nowrap; gap: 4px;" ] (map layerChip allColorLayers) ]
            ]
         <> borrowField
-        <> [ connectionRow ]
+        <> [ field "LENS" [ lensBar st ] ]
+        <> [ HH.div
+               [ HP.style "margin-left: auto; display: flex; align-items: center; gap: 8px; padding-bottom: 2px;" ]
+               [ midiChip st.midiName
+               , HH.button [ HP.style helpBtnStyle, HP.title "keys & help", HE.onClick \_ -> ToggleHelp ] [ HH.text "ⓘ" ] ]
+           ]
     )
   where
   -- the borrow-scale picker only appears when the BORROWED color layer is
@@ -4235,14 +4237,6 @@ setupPane st =
                  ((Select.cascadingInput modeGroups) { selected = Just (currentModeValue famMode), searchable = true })
                  \(Select.Selected v) -> ReflavourFamily v ] ]
     Nothing -> []
-  -- rig connection (IAC) + the help modal trigger.
-  connectionRow =
-    HH.div [ HP.style "display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 2px;" ]
-      [ midiChip st.midiName
-      , HH.button
-          [ HP.style helpBtnStyle, HP.title "keys & help", HE.onClick \_ -> ToggleHelp ]
-          [ HH.text "ⓘ" ]
-      ]
   -- clickable: a click is the user gesture Chrome needs to actually show the
   -- Web-MIDI permission prompt (the page-load request stays silent), so clicking
   -- the chip (re)connects. Green = connected, amber = click to enable/retry.
