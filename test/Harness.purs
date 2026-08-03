@@ -204,6 +204,11 @@ main = do
   -- Tier 3: the same document as a record literal (A5 cross-instrument idiom).
   log "   ── printAsRecord lepDoc (Tier 3) ──"
   log (indent (printAsRecord "warm pad" lepDoc))
+  -- Recall: the SAME parser reads the record form back (the stored scene payload).
+  let recalled = parsePerform (printAsRecord "warm pad" lepDoc)
+  log ("   record recall (parse∘printAsRecord): "
+        <> yn (recalled.voices == lepDoc.voices && recalled.sources == lepDoc.sources)
+        <> "   (want PASS)")
   log "\n════ done ════"
   where
   indent = \s -> "     " <> replaceNL s

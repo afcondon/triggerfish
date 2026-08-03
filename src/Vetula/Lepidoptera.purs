@@ -179,8 +179,16 @@ findKey lines = fromMaybe "" (find isHeader lines >>= keyOf)
   isHeader l = stripPrefix (Pattern "-- vetula perform") l /= Nothing
   keyOf l = map trim (index (split (Pattern "·") l) 1)
 
+-- Drop record-literal punctuation ("[", "]", ",") so the SAME line parsers handle
+-- both the flat `performSource` form and the `printAsRecord` form (whose elements
+-- are wrapped `[ … , … ]`). Bare brackets never occur in our grammar except as
+-- record punctuation — mini-notation brackets live INSIDE quoted heads, which
+-- tokenize keeps intact. This is what makes `parsePerform` recall a saved scene.
+stripPunct :: Array String -> Array String
+stripPunct = filter (\t -> t /= "[" && t /= "]" && t /= ",")
+
 parseSourceLine :: String -> Maybe NamedSource
-parseSourceLine l = case tokenize l of
+parseSourceLine l = case stripPunct (tokenize l) of
   toks | (toks !! 0) == Just "source" ->
     case toks !! 1 of
       Just name -> Just { name, chords: parseProgression l }
@@ -189,7 +197,7 @@ parseSourceLine l = case tokenize l of
 
 parseVoiceLine :: String -> Maybe VoiceEntry
 parseVoiceLine l =
-  let toks = tokenize l
+  let toks = stripPunct (tokenize l)
   in case toks !! 0 >>= parseCh of
        Nothing -> Nothing
        Just channel ->

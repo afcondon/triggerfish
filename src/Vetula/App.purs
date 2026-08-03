@@ -36,6 +36,7 @@ import Data.String.Common (joinWith, split, toLower, trim)
 import Data.Tuple (Tuple(..), fst, snd)
 import Effect (Effect)
 import Effect.Random (randomInt)
+import Effect.Class.Console as Console
 import Effect.Aff (attempt)
 import Effect.Aff.Class (class MonadAff, liftAff)
 import Effect.Class (liftEffect)
@@ -108,7 +109,7 @@ import Data.Either (Either(..))
 import Reef.Vetula.Protocol (encodePerf) as RV
 import Binnacle.Time (dateNow)
 import Vetula.Tidal (progressionSource, parseProgression)
-import Vetula.Lepidoptera (VoiceSpec, docFromVoices, printAsRecord)
+import Vetula.Lepidoptera (PerfDoc, VoiceSpec, docFromVoices, parsePerform, printAsRecord)
 import Vetula.Clipboard (copyText)
 import Binnacle.Midi as Midi
 import Halogen.Widgets.Select as Select
@@ -606,6 +607,9 @@ type State =
   -- The persistent Perform SESSION: the container for saved scenes. Resumes across
   -- reloads; scenes save as `⟨alias|name⟩ #nextScene`. Minted/restored in Initialize.
   , perfSession :: Store.SessionState
+  -- Recall: scenes fetched from Amphora (collection `vetula-scene`), + modal flag.
+  , perfScenes :: Array { hash :: String, name :: String, payload :: String, tags :: Array String }
+  , perfRecallOpen :: Boolean
   }
 
 -- | Which floating control a fold toggle targets.
@@ -669,6 +673,9 @@ data Action
   | PublishLib Int         -- publish library entry #i to the Amphora store (vetula-progression)
   | SaveScene              -- serialise the whole Perform surface as a vetulaScene → Amphora
   | PerfNewSession         -- mint a fresh session glyph-triple (rolls the scene counter)
+  | PerfOpenRecall         -- fetch saved scenes from Amphora + open the recall modal
+  | PerfCloseRecall
+  | PerfLoadScene String   -- parse a scene payload and load it onto the surface
   | AddVoice
   | RemoveVoice Int
   | SetVoiceChannel Int String
@@ -909,6 +916,8 @@ component = H.mkComponent
       , perfEditBox: Nothing
       -- placeholder; Initialize resumes the persisted session or mints a fresh one
       , perfSession: { alias: "", name: "", nextScene: 1 }
+      , perfScenes: []
+      , perfRecallOpen: false
       }
   , render
   , eval: H.mkEval H.defaultEval
@@ -1310,10 +1319,13 @@ handleAction = case _ of
     -- mint one only on the very first launch. `perfSession` then rides every save.
     msess <- liftEffect Store.loadSession
     case msess of
-      Just sess -> H.modify_ _ { perfSession = sess }
+      Just sess -> do
+        Console.log ("Vetula session: resumed " <> sess.alias <> " (next #" <> show sess.nextScene <> ")")
+        H.modify_ _ { perfSession = sess }
       Nothing -> do
         fresh <- liftEffect mintSession
         liftEffect (Store.saveSession fresh)
+        Console.log ("Vetula session: minted (first-launch) " <> fresh.alias)
         H.modify_ _ { perfSession = fresh }
     -- Merge the shared Amphora progression library in the BACKGROUND: awaiting it
     -- blocked Initialize (hence the shell's polls of Vetula) until the ~30s offline
@@ -1835,7 +1847,28 @@ handleAction = case _ of
   PerfNewSession -> do
     fresh <- liftEffect mintSession
     liftEffect (Store.saveSession fresh)
+    Console.log ("Vetula session: new-session button → " <> fresh.alias)
     H.modify_ _ { perfSession = fresh, publishMsg = Just ("new session · " <> fresh.alias) }
+
+  -- Open the recall modal, fetching the saved scenes from Amphora (grouped by
+  -- session in the view). Store offline → an empty list + a note, never fatal.
+  PerfOpenRecall -> do
+    H.modify_ _ { perfRecallOpen = true, publishMsg = Just "loading scenes…" }
+    res <- liftAff (attempt (Amphora.fetchCollection "vetula-scene"))
+    case res of
+      Right items -> H.modify_ _ { perfScenes = items, publishMsg = Nothing }
+      Left _ -> H.modify_ _ { perfScenes = [], publishMsg = Just "✗ scenes: store offline?" }
+
+  PerfCloseRecall -> H.modify_ _ { perfRecallOpen = false }
+
+  -- Parse a stored scene payload (the `vetulaScene { … }` record) back into a
+  -- document and reconstruct the surface's boxes. Lenient: a payload that yields
+  -- no voices is left as a note rather than blanking the surface.
+  PerfLoadScene payload -> do
+    let boxes = boxesFromDoc (parsePerform payload)
+    if length boxes == 0
+      then H.modify_ _ { perfRecallOpen = false, publishMsg = Just "✗ couldn't read that scene" }
+      else H.modify_ _ { perfBoxes = boxes, perfRecallOpen = false, publishMsg = Just "scene loaded" }
 
   AddVoice -> H.modify_ \s ->
     s { voices = s.voices <> [ defaultVoice s.nextVoiceId (mod s.nextVoiceId 4) (rendOf s.nextVoiceId) (length (perfChords s)) ]
@@ -4320,6 +4353,38 @@ mintSession = do
   seed <- randomInt 0 999999
   pure { alias: sessionAliasOf seed, name: "", nextScene: 1 }
 
+-- | Mint a `SavedSeq` back from a source's chords (the inverse of `boxSpec`'s
+-- | `map _.notes s.events`): one synthesised event per chord, carrying the notes
+-- | (pcs/label/at are cosmetic for Perform playback, which reads only `.notes`),
+-- | and a content glyph over the chords so the reconstructed token still has an
+-- | identity. Used by `boxesFromDoc` to recall a saved scene onto the surface.
+mkSavedSeq :: Array (Array Int) -> SavedSeq
+mkSavedSeq chords =
+  { events: mapWithIndex evt chords
+  , glyph: glyphOf (joinWith " " (map (joinWith "," <<< map show) chords))
+  }
+  where
+  evt i notes = { pcs: map (\n -> mod n 12) notes, notes, label: show (i + 1), at: toNumber i }
+
+-- | Reconstruct the live Perform boxes from a parsed scene document (the inverse
+-- | of `map boxSpec perfBoxes` at save): one box per voice, on its channel, with
+-- | its source's chords minted back into a `SavedSeq`; a sourceless voice (or an
+-- | unknown source name) gets an empty box. This is what `PerfLoadScene` applies.
+boxesFromDoc :: PerfDoc -> Array PerfBox
+boxesFromDoc doc = map voiceToBox doc.voices
+  where
+  chordsOf name = maybe [] _.chords (find (\s -> s.name == name) doc.sources)
+  voiceToBox v =
+    let cs = maybe [] chordsOf v.source
+    in { channel: v.channel
+       , label: "P" <> show v.channel
+       , seq: if length cs == 0 then Nothing else Just (mkSavedSeq cs)
+       , stack: v.stack
+       , seqText: v.seqText
+       , muted: v.muted
+       , term: v.term
+       }
+
 -- | A live Perform box → the neutral `VoiceSpec` the Lepidoptera serialiser takes
 -- | (its chords are the token's event notes; empty seq = a sourceless voice).
 boxSpec :: PerfBox -> VoiceSpec
@@ -4349,6 +4414,46 @@ sessionChip sess =
         [ HP.style "font-size: 11px; color: #6a5a2a; letter-spacing: 0.03em;" ]
         [ HH.text (if sess.name == "" then sess.alias else sess.name) ]
     ]
+
+-- | The recall modal — saved scenes fetched from Amphora, grouped by SESSION (each
+-- | group headed by its monochrome triple). Click a scene to parse its payload and
+-- | reconstruct the surface (`PerfLoadScene`). Empty / offline → a gentle note.
+perfRecallModal :: forall m. State -> H.ComponentHTML Action Slots m
+perfRecallModal st =
+  if not st.perfRecallOpen then HH.text ""
+  else
+    HH.div
+      [ HP.style "position: fixed; inset: 0; background: rgba(20,20,20,0.32); z-index: 60; display: flex; align-items: center; justify-content: center; padding: 40px;"
+      , HE.onClick \_ -> PerfCloseRecall ]
+      [ HH.div
+          [ HP.style "background: #fbfaf4; width: 520px; max-width: 92vw; max-height: 84vh; overflow-y: auto; border-radius: 10px; box-shadow: 0 12px 48px rgba(0,0,0,0.24); padding: 22px 26px 24px;"
+          , HE.onClick \e -> PerfStopClick e PerfNop ]
+          [ HH.div [ HP.style "display: flex; align-items: baseline; justify-content: space-between; margin: 0 0 14px;" ]
+              [ HH.h2 [ HP.style "font-size: 15px; font-weight: 600; margin: 0; color: #2a2a2a;" ] [ HH.text "Recall scene" ]
+              , HH.button
+                  [ HP.style "border: none; background: transparent; color: #9a9a9a; font-size: 18px; cursor: pointer; line-height: 1;"
+                  , HP.title "close", HE.onClick \_ -> PerfCloseRecall ]
+                  [ HH.text "×" ]
+              ]
+          , if length st.perfScenes == 0
+              then HH.div [ HP.style "font-size: 12px; color: #9a8a5a; padding: 8px 0 4px;" ]
+                     [ HH.text "no scenes saved yet — save one from the surface (or the store is offline)." ]
+              else HH.div_ (concatMap groupView (nub (map sessionTagOf st.perfScenes)))
+          ]
+      ]
+  where
+  sessionTagOf item = fromMaybe "?" (head (mapMaybe (stripPrefix (Pattern "session:")) item.tags))
+  groupView alias =
+    [ HH.div [ HP.style "display: flex; align-items: center; gap: 7px; margin: 12px 0 6px; padding-bottom: 5px; border-bottom: 1px solid #eee4cc;" ]
+        ( map (\n -> faIcon { icon: n, color: "#2a2a2a" }) (split (Pattern "-") alias)
+          <> [ HH.span [ HP.style "font-size: 11px; color: #8a7a4a; letter-spacing: 0.03em;" ] [ HH.text alias ] ] )
+    ] <> map sceneRow (filter (\i -> sessionTagOf i == alias) st.perfScenes)
+  sceneRow item =
+    HH.button
+      [ HP.style "display: block; width: 100%; text-align: left; border: 1px solid #e4dcc2; background: #fcfaf3; color: #4a4436; cursor: pointer; padding: 7px 12px; margin: 0 0 5px; border-radius: 5px; font-size: 13px; font-family: ui-monospace, monospace;"
+      , HP.title "load this scene onto the Perform surface"
+      , HE.onClick \_ -> PerfLoadScene item.payload ]
+      [ HH.text item.name ]
 
 performSurface :: forall m. State -> H.ComponentHTML Action Slots m
 performSurface st =
@@ -4382,6 +4487,11 @@ performSurface st =
             , HP.title "start a new session — a fresh glyph-triple and scene counter (reloads keep the current session; this is the deliberate new-body-of-work boundary)"
             , HE.onClick \_ -> PerfNewSession ]
             [ HH.text "↻ new session" ]
+        , HH.button
+            [ HP.style "border: 1px solid #cdbb8c; border-radius: 5px; padding: 5px 12px; font-size: 12px; letter-spacing: 0.04em; cursor: pointer; background: #f6f1e3; color: #6a5a2a;"
+            , HP.title "recall a saved scene onto the surface"
+            , HE.onClick \_ -> PerfOpenRecall ]
+            [ HH.text "↴ scenes" ]
         , case st.publishMsg of
             Just m -> HH.span [ HP.style "font-size: 11px; color: #7a6a3a; font-family: ui-monospace, monospace;" ] [ HH.text m ]
             Nothing -> HH.text ""
@@ -4391,6 +4501,7 @@ performSurface st =
         [ HP.style "display: flex; gap: 18px; flex-wrap: wrap; justify-content: center; align-items: flex-start; max-width: 940px;" ]
         (mapWithIndex (perfBox st) st.perfBoxes)
     , perfEditModal st
+    , perfRecallModal st
     ]
 
 -- | The sequence-editor modal — a roomier surface for the text hatch than the
