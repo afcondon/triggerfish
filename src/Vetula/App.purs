@@ -220,6 +220,39 @@ viewtypeLabel = case _ of
 viewtypes :: Array Viewtype
 viewtypes = [ Fifths, Tonnetz, Lattice, Explore ]
 
+-- | The View as a nav dropdown: the four browse projections then Perform, each a
+-- | stable string `value` ↔ `View`, with a readable menu `label`. (AC, 2026-08-03.)
+allViews :: Array View
+allViews = map Browse viewtypes <> [ Perform ]
+
+viewValue :: View -> String
+viewValue = case _ of
+  Browse Fifths -> "fifths"
+  Browse Tonnetz -> "tonnetz"
+  Browse Lattice -> "lattice"
+  Browse Explore -> "explore"
+  Perform -> "perform"
+
+viewFromValue :: String -> View
+viewFromValue = case _ of
+  "fifths" -> Browse Fifths
+  "tonnetz" -> Browse Tonnetz
+  "lattice" -> Browse Lattice
+  "explore" -> Browse Explore
+  "perform" -> Perform
+  _ -> Browse Tonnetz
+
+viewMenuLabel :: View -> String
+viewMenuLabel = case _ of
+  Browse Fifths -> "circle of fifths"
+  Browse Tonnetz -> "tonnetz"
+  Browse Lattice -> "voice-leading lattice"
+  Browse Explore -> "explore"
+  Perform -> "perform"
+
+viewOptions :: Array { value :: String, label :: String }
+viewOptions = map (\v -> { value: viewValue v, label: viewMenuLabel v }) allViews
+
 -- | Where Vetula's chord/path AUDITION goes, chosen in the shell's routing modal
 -- | (2026-08-01): Off (muted), Continuo (the piano+strings VST preview via the
 -- | "continuo" virtual port), or Midi (the rig/IAC bus, on the preview channel).
@@ -374,6 +407,7 @@ type Slots =
   , familyScaleSelect :: Select.Slot Unit
   , borrowSelect :: Select.Slot Unit
   , paletteSelect :: MultiSelect.Slot Unit
+  , viewSelect :: Select.Slot Unit
   )
 
 -- | An in-progress octave-drag of one voice on the left-hand pitch ladder.
@@ -640,6 +674,10 @@ type State =
   -- Recall: scenes fetched from Amphora (collection `vetula-scene`), + modal flag.
   , perfScenes :: Array { hash :: String, name :: String, payload :: String, tags :: Array String }
   , perfRecallOpen :: Boolean
+  -- The session/scene command menu in the secondary nav (the ⋯ dropdown off the
+  -- session badge) — session + scene + chyron housekeeping, moved off the Perform
+  -- header. (AC, 2026-08-03.)
+  , perfMenuOpen :: Boolean
   }
 
 -- | Which floating control a fold toggle targets.
@@ -706,6 +744,9 @@ data Action
   | PerfNewSession         -- mint a fresh session glyph-triple (rolls the scene counter)
   | PerfOpenRecall         -- fetch saved scenes from Amphora + open the recall modal
   | PerfCloseRecall
+  | PerfMenuToggle         -- open/close the session/scene command menu (nav ⋯)
+  | PerfMenuClose          -- close it (backdrop click, or after picking an item)
+  | PerfMenuPick Action    -- close the menu, then run the picked command
   | PerfLoadScene String   -- parse a scene payload and load it onto the surface
   | AddVoice
   | RemoveVoice Int
@@ -747,6 +788,7 @@ data Action
   | ChyronClick Int Boolean
   | DeleteChyron Int       -- × a single audition out of the trace
   | ClearChyron            -- wipe the whole audition trace
+  | DedupeChyron           -- drop repeat chords (same pcs), keeping first occurrence
   | SaveChyronSel          -- compress the selection into a pinned 2-glyph token
   | ChyronDragStart Int    -- begin dragging chip i to reorder the buffer
   | ChyronDropOn Int       -- drop the dragged chip before chip i (reorder)
@@ -953,6 +995,7 @@ component = H.mkComponent
       , perfSession: { alias: "", name: "", nextScene: 1 }
       , perfScenes: []
       , perfRecallOpen: false
+      , perfMenuOpen: false
       }
   , render
   , eval: H.mkEval H.defaultEval
@@ -1893,6 +1936,12 @@ handleAction = case _ of
 
   PerfCloseRecall -> H.modify_ _ { perfRecallOpen = false }
 
+  PerfMenuToggle -> H.modify_ \st -> st { perfMenuOpen = not st.perfMenuOpen }
+  PerfMenuClose -> H.modify_ _ { perfMenuOpen = false }
+  PerfMenuPick act -> do
+    H.modify_ _ { perfMenuOpen = false }
+    handleAction act
+
   -- Parse a stored scene payload (the `vetulaScene { … }` record) back into a
   -- document and reconstruct the surface's boxes. Lenient: a payload that yields
   -- no voices is left as a note rather than blanking the surface.
@@ -2120,6 +2169,12 @@ handleAction = case _ of
           , hoveredChyron = Nothing }
 
   ClearChyron -> H.modify_ _ { chyron = [], chyronSel = Nothing, hoveredChyron = Nothing }
+
+  -- Drop repeat chords from the trace (same pitch-class set), keeping the first of
+  -- each. Selection is cleared since indices shift.
+  DedupeChyron -> H.modify_ \st ->
+    st { chyron = nubByEq (\a b -> a.pcs == b.pcs) st.chyron
+       , chyronSel = Nothing, hoveredChyron = Nothing }
 
   -- Compress the selected span into a pinned 2-glyph token: mint a SavedSeq from
   -- its events + content-glyph, then REMOVE those events from the live trace
@@ -4155,7 +4210,10 @@ contextBar st =
         <> "background: linear-gradient(#f3eee0,#ece5d0); border-bottom: 1px solid #0000000f; box-shadow: 0 1px 3px #0000000d;" ) ]
     -- Labels dropped (the controls speak for themselves); subtle dividers group
     -- key/scale · palettes · lens instead. (AC, 2026-08-03.)
-    ( [ HH.slot (Proxy :: _ "keySelect") unit Select.component
+    -- Session/scene menu at the far left (was the Perform header's control row),
+    -- then key/scale · palettes · view. Labels dropped; subtle dividers group.
+    ( [ sessionMenu, divider
+      , HH.slot (Proxy :: _ "keySelect") unit Select.component
           ((Select.defaultInput keyOptions) { selected = Just (show st.key.tonic), placeholder = "Key", minWidth = Just "72px" })
           \(Select.Selected v) -> SelectKey v
       , HH.slot (Proxy :: _ "scaleSelect") unit Select.component
@@ -4170,18 +4228,20 @@ contextBar st =
                \(MultiSelect.SelectedMany vs) -> SetLayers vs ]
         <> borrowField
         <> [ divider ]
-        -- View as `Browse <viewtype> | Perform`: the four browse projections
-        -- cluster, Perform sits apart past a hairline. The shake ⟳ appears only
-        -- while Explore is the active projection.
+        -- View as one dropdown: the four browse projections then Perform. The shake
+        -- ⟳ sits beside it, shown only while Explore is the active projection.
         <> [ HH.div [ HP.style "display: flex; align-items: center; gap: 6px;" ]
-               ( map viewtypeChip viewtypes
-                 <> shakeChip
-                 <> [ HH.div [ HP.style "width: 1px; height: 16px; background: #0000001a; margin: 0 3px;" ] [] ]
-                 <> [ modeChip (st.view == Perform) "perform" (SetView Perform) ] ) ]
+               ( [ HH.slot (Proxy :: _ "viewSelect") unit Select.component
+                     ((Select.defaultInput viewOptions) { selected = Just (viewValue st.view), minWidth = Just "116px" })
+                     \(Select.Selected v) -> SetView (viewFromValue v) ]
+                 <> shakeChip ) ]
         <> resetChip
         <> [ HH.div
                [ HP.style "margin-left: auto; display: flex; align-items: center; gap: 8px;" ]
-               [ midiChip st.midiName
+               [ case st.publishMsg of
+                   Just m -> HH.span [ HP.style "font-size: 11px; color: #7a6a3a; font-family: ui-monospace, monospace;" ] [ HH.text m ]
+                   Nothing -> HH.text ""
+               , midiChip st.midiName
                , HH.button [ HP.style helpBtnStyle, HP.title "keys & help", HE.onClick \_ -> ToggleHelp ] [ HH.text "ⓘ" ] ]
            ]
     )
@@ -4197,16 +4257,51 @@ contextBar st =
     else []
   -- a hairline group separator.
   divider = HH.div [ HP.style "width: 1px; height: 22px; background: #00000016;" ] []
-  -- one mode chip. Active = filled dark.
-  modeChip active label act =
+  -- The session badge doubling as the session/scene/chyron command menu (the
+  -- Perform header's old control row, moved here). Click the 3-glyph badge to drop
+  -- the menu; a transparent backdrop closes it; each item runs via `PerfMenuPick`
+  -- (close, then act). Global — reachable from every view, not just Perform.
+  sessionMenu =
+    HH.div [ HP.style "position: relative; display: flex; align-items: center;" ]
+      ( [ HH.button
+            [ HP.style ("display: inline-flex; align-items: center; gap: 7px; padding: 3px 10px; border: 1px solid #d8cfa8; border-radius: 5px; cursor: pointer; background: "
+                         <> (if st.perfMenuOpen then "#f3ead2" else "#faf7ee") <> ";")
+            , HP.title "session · scenes · chyron housekeeping"
+            , HE.onClick \_ -> PerfMenuToggle ]
+            [ badgeGlyphs st.perfSession
+            , HH.span [ HP.style "font-size: 11px; color: #6a5a2a; letter-spacing: 0.03em;" ]
+                [ HH.text sessionName ]
+            , HH.span [ HP.style "font-size: 10px; color: #b0a684;" ] [ HH.text "▾" ] ] ]
+          <> (if st.perfMenuOpen then [ menuBackdrop, menuDropdown ] else []) )
+  badgeGlyphs sess =
+    HH.span [ HP.style "display: inline-flex; align-items: center; gap: 4px;" ]
+      (if sess.alias == "" then [ HH.text "…" ]
+       else map (\name -> faIcon { icon: name, color: "#2a2a2a" }) (split (Pattern "-") sess.alias))
+  sessionName = if st.perfSession.name == "" then st.perfSession.alias else st.perfSession.name
+  menuBackdrop =
+    HH.div [ HP.style "position: fixed; inset: 0; z-index: 45;", HE.onClick \_ -> PerfMenuClose ] []
+  menuDropdown =
+    HH.div
+      [ HP.style "position: absolute; top: 38px; left: 0; z-index: 46; min-width: 200px; background: #fff; border: 1px solid #e0d8bf; border-radius: 7px; box-shadow: 0 8px 28px rgba(0,0,0,0.16); padding: 5px 0; overflow: hidden;"
+      , HE.onClick \e -> PerfStopClick e PerfNop ]
+      [ menuItem hasFilled ("⬡ save scene #" <> show st.perfSession.nextScene) SaveScene
+      , menuItem true "↴ load scene…" PerfOpenRecall
+      , menuItem true "↻ new session" PerfNewSession
+      , menuDivider
+      , menuItem hasChyron "⌫ clear chyron" ClearChyron
+      , menuItem hasChyron "≡ de-dupe chyron" DedupeChyron
+      ]
+    where
+    hasFilled = any (\b -> isJust b.seq) st.perfBoxes
+    hasChyron = length st.chyron > 0
+  menuDivider = HH.div [ HP.style "height: 1px; background: #efe8d4; margin: 4px 0;" ] []
+  menuItem enabled label act =
     HH.button
-      [ HP.style ("border: 1px solid " <> (if active then "#1a1a1a" else "#dcdcdc")
-                   <> "; background: " <> (if active then "#1a1a1a" else "#fafafa")
-                   <> "; color: " <> (if active then "#ffffff" else "#6a6a6a")
-                   <> "; cursor: pointer; padding: 3px 10px; border-radius: 4px; font-size: 12px; white-space: nowrap;")
-      , HE.onClick \_ -> act ]
+      [ HP.style ("display: block; width: 100%; text-align: left; border: none; background: transparent; padding: 6px 14px; font-size: 12px; "
+                   <> (if enabled then "color: #4a4a4a; cursor: pointer;" else "color: #c4bfa8; cursor: default;"))
+      , HP.enabled enabled
+      , HE.onClick \_ -> if enabled then PerfMenuPick act else PerfNop ]
       [ HH.text label ]
-  viewtypeChip vt = modeChip (st.view == Browse vt) (viewtypeLabel vt) (SetView (Browse vt))
   -- shake re-rolls Explore's relatives; only meaningful while Explore is showing.
   shakeChip =
     if st.view == Browse Explore then
@@ -4455,20 +4550,6 @@ boxSpec box =
 -- | monochrome glyph-TRIPLE (three black FontAwesome icons — deliberately unlike a
 -- | chord token's coloured PAIR) reconstructed from its persisted alias, plus the
 -- | alias/name and the next scene number a save will mint.
-sessionChip :: forall m. Store.SessionState -> H.ComponentHTML Action Slots m
-sessionChip sess =
-  HH.span
-    [ HP.style "display: inline-flex; align-items: center; gap: 7px; padding: 3px 11px; border: 1px solid #d8cfa8; border-radius: 5px; background: #faf7ee;"
-    , HP.title "this session's identity — every scene you save is tagged with it; ↻ new session rolls it" ]
-    [ HH.span
-        [ HP.style "display: inline-flex; align-items: center; gap: 4px;" ]
-        (if sess.alias == "" then [ HH.text "…" ]
-         else map (\name -> faIcon { icon: name, color: "#2a2a2a" }) (split (Pattern "-") sess.alias))
-    , HH.span
-        [ HP.style "font-size: 11px; color: #6a5a2a; letter-spacing: 0.03em;" ]
-        [ HH.text (if sess.name == "" then sess.alias else sess.name) ]
-    ]
-
 -- | The recall modal — saved scenes fetched from Amphora, grouped by SESSION (each
 -- | group headed by its monochrome triple). Click a scene to parse its payload and
 -- | reconstruct the surface (`PerfLoadScene`). Empty / offline → a gentle note.
@@ -4516,44 +4597,10 @@ performSurface st =
     -- FX palette floated to the top of the surface (holding pattern — its final home
     -- and framing, "training wheels for Tidal" vs "starter-pack suggestions", is a
     -- parked design question). AC, 2026-08-03.
+    -- The scene/session controls (save · new session · scenes · the 3-glyph badge)
+    -- moved to the secondary nav's session menu (⋯). The surface is now just the
+    -- palette and its players.
     [ fxPalette st
-    , HH.div
-        [ HP.style "font-size: 12px; letter-spacing: 0.14em; text-transform: uppercase; color: #9a7a2a; text-align: center; max-width: 520px; line-height: 1.6;" ]
-        [ HH.text $ case st.perfHeldFx of
-            Just fx -> "layer in hand (" <> fxLabel fx <> ") — click a player to add it to its stack"
-            Nothing -> case st.perfHeld of
-              Just _ -> "token in hand — click a player to drop it"
-              Nothing ->
-                if any (\b -> isJust b.seq) st.perfBoxes
-                  then "press PLAY to loop the players · click an FX below then a player to stack it"
-                  else "shift-click (or drag) a saved token below onto a player — it loops while the transport plays"
-        ]
-    , HH.div
-        [ HP.style "display: flex; align-items: center; gap: 12px; min-height: 26px; flex-wrap: wrap; justify-content: center;" ]
-        [ sessionChip st.perfSession
-        , HH.button
-            [ HP.style ("border: 1px solid #cdbb8c; border-radius: 5px; padding: 5px 14px; font-size: 12px; letter-spacing: 0.06em; cursor: pointer; "
-                         <> (if any (\b -> isJust b.seq) st.perfBoxes
-                              then "background: #f3ead2; color: #6a5a2a;"
-                              else "background: #f6f3ea; color: #c2b790; cursor: default;"))
-            , HP.title "serialise this Perform surface as a vetulaScene and save it to Amphora"
-            , HP.enabled (any (\b -> isJust b.seq) st.perfBoxes)
-            , HE.onClick \_ -> SaveScene ]
-            [ HH.text ("⬡ save scene #" <> show st.perfSession.nextScene) ]
-        , HH.button
-            [ HP.style "border: 1px solid #ddd3b4; border-radius: 5px; padding: 5px 11px; font-size: 11px; letter-spacing: 0.04em; cursor: pointer; background: transparent; color: #9a8a5a;"
-            , HP.title "start a new session — a fresh glyph-triple and scene counter (reloads keep the current session; this is the deliberate new-body-of-work boundary)"
-            , HE.onClick \_ -> PerfNewSession ]
-            [ HH.text "↻ new session" ]
-        , HH.button
-            [ HP.style "border: 1px solid #cdbb8c; border-radius: 5px; padding: 5px 12px; font-size: 12px; letter-spacing: 0.04em; cursor: pointer; background: #f6f1e3; color: #6a5a2a;"
-            , HP.title "recall a saved scene onto the surface"
-            , HE.onClick \_ -> PerfOpenRecall ]
-            [ HH.text "↴ scenes" ]
-        , case st.publishMsg of
-            Just m -> HH.span [ HP.style "font-size: 11px; color: #7a6a3a; font-family: ui-monospace, monospace;" ] [ HH.text m ]
-            Nothing -> HH.text ""
-        ]
     , HH.div
         [ HP.style "display: flex; gap: 18px; flex-wrap: wrap; justify-content: center; align-items: flex-start; max-width: 1180px;" ]
         (mapWithIndex (perfBox st) st.perfBoxes <> [ addPlayerTile ])
