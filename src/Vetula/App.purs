@@ -716,7 +716,6 @@ data Action
   | SelectPerfChord Int    -- click a working-copy chord row (for live Tab-revoice)
   -- Tank model (Slice A)
   | PlayChordId Int        -- plain-click a pool chord: audition it (no path change)
-  | CatchChord Int         -- freeze lattice chord #id into the tank as a Specimen
   | DeleteSpec SpecimenId  -- × a tank specimen
   | AuditionSpec SpecimenId -- shift-click a tank specimen: hear it (no state change)
   | StageSpec SpecimenId   -- click a tank specimen: seed the pool with it (toggle)
@@ -726,11 +725,9 @@ data Action
   | ToggleFold VPanel       -- collapse/expand a floating control to just its header
   | ClearStage             -- remove all staged seeds + the chords bloomed from them
   | AuditionTriad Int (Array Int)        -- Tonnetz: hear a triad off the net (root pc, pcs)
-  | CatchTriad Int (Array Int) Boolean   -- Tonnetz: freeze a triad into the tank (root, pcs, isMajor)
   | AuditionNode ChordNode               -- Lattices: hear a generated chord (its own voicing)
-  | CatchNode ChordNode                  -- Lattices: freeze a generated chord into the tank
-  -- Chyron (Phase 2): hover a chip (space auditions it), or click one — plain
-  -- click builds the selection span, shift-click lifts (to the tank for now).
+  -- Chyron: hover a chip (space auditions it), or click one — plain click selects
+  -- a single chord, shift-click extends the range from the anchor (Mac semantics).
   | HoverChyron (Maybe Int)
   | ChyronClick Int Boolean
   | DeleteChyron Int       -- × a single audition out of the trace
@@ -1455,13 +1452,6 @@ handleAction = case _ of
         "Enter" -> handleAction SaveChyronSel
         "p" -> H.gets _.path >>= playPath
         "f" -> toggleFavorite
-        -- catch the hovered chord into the tank: a Tonnetz triangle first (no pool
-        -- id), else the hovered pool chord, else the sounding one
-        "k" -> case st.hoveredTriad of
-                 Just t -> handleAction (CatchTriad t.root t.pcs (elem (mod (t.root + 4) 12) t.pcs))
-                 Nothing -> for_ (case st.hoveredId of
-                                    Just h -> Just h
-                                    Nothing -> st.sounding) (handleAction <<< CatchChord)
         -- open the revoice modal on the hovered (else sounding) chord
         "v" -> handleAction OpenRevoice
         -- explode / collapse the focused root's full lattice (the firehose)
@@ -1974,18 +1964,6 @@ handleAction = case _ of
     if st.panMoved then H.modify_ _ { panMoved = false }
     else playId pid
 
-  CatchChord pid -> do
-    st <- H.get
-    for_ (find (\c -> c.id == pid) st.chords) \c -> do
-      let spec = { id: SpecimenId st.nextSpecId
-                 , voicing: c.voicing
-                 , bass: c.bassPc + 36
-                 , label: c.label
-                 , provenance: FromLens (groupLabel st.key)
-                 , anchor: c.anchor   -- freeze the caught chord's harmonic reading
-                 }
-      H.modify_ _ { tank = st.tank <> [ spec ], nextSpecId = st.nextSpecId + 1 }
-
   DeleteSpec sid -> H.modify_ \s -> s { tank = filter (\sp -> sp.id /= sid) s.tank }
 
   AuditionSpec sid -> do
@@ -2038,18 +2016,6 @@ handleAction = case _ of
     -- label it like CatchTriad (root name + minor mark) so the chyron reads it
     else playChord (triadNode root pcs (noteName root <> (if elem (mod (root + 4) 12) pcs then "" else "m")))
 
-  CatchTriad root pcs isMajor -> do
-    st <- H.get
-    let node = triadNode root pcs (noteName root <> (if isMajor then "" else "m"))
-        spec = { id: SpecimenId st.nextSpecId
-               , voicing: node.voicing
-               , bass: node.bassPc + 36
-               , label: node.label
-               , provenance: FromLens (groupLabel st.key)
-               , anchor: node.anchor
-               }
-    H.modify_ _ { tank = st.tank <> [ spec ], nextSpecId = st.nextSpecId + 1 }
-
   -- Tonnetz stacking (2026-07-31): alt-click accumulates triads into a stack
   -- (toggle — alt-clicking a stacked triad removes it). The stack builds a
   -- polychord; edge-adjacent triads fold into 7ths/9ths since the chord is the
@@ -2091,16 +2057,6 @@ handleAction = case _ of
     if st.panMoved then H.modify_ _ { panMoved = false }
     else playChord c
 
-  CatchNode c -> do
-    st <- H.get
-    let spec = { id: SpecimenId st.nextSpecId
-               , voicing: c.voicing
-               , bass: c.bassPc + 36
-               , label: c.label
-               , provenance: FromLens (groupLabel st.key)
-               , anchor: c.anchor
-               }
-    H.modify_ _ { tank = st.tank <> [ spec ], nextSpecId = st.nextSpecId + 1 }
 
   -- Chyron: remember which chip the pointer is over so space auditions it.
   HoverChyron mi -> H.modify_ _ { hoveredChyron = mi }
@@ -3859,14 +3815,12 @@ render st =
         [ setupPane st
         , subGroup "Lens" (lensBar st)
         ]
-    , floatCard "tank & progression" st.foldProg (ToggleFold VProg)
-        "position: absolute; top: 12px; right: 12px; width: 340px; max-height: calc(100% - 264px); overflow-y: auto; overflow-x: hidden; z-index: 6;"
-        [ stackBar st
-        , subGroup ("Tank · " <> show (length st.tank) <> " caught") (tankPane st)
-        , arrangeBar st
-        , growBar st
-        , subGroup ("Progression · " <> countLabel (length (pathSteps st)) "step") (progressionPanel st)
-        ]
+    -- The Tank & Progression card is retired (Tank overhaul §10.6): the chyron is
+    -- now the single surface for collect · select · reorder · bundle/unbundle, so
+    -- the tank tiles, the tonnetz stack, arrange/grow, and the built-progression
+    -- panel (with its ▶ preview) are all superseded. The underlying code —
+    -- specimens, `Vetula.Between` (the cadence bridge), ArrangeSpec/SequenceSpec —
+    -- is kept dormant in the source for re-homing onto the chyron later.
     -- The AUDITION bar (chyron) now docks under the shell nav (top). The old bottom
     -- voice bar (four mini-notation lanes) was removed — the Perform surface
     -- supersedes it — and the freed bottom is reserved for a future MIDI-flow chyron.
@@ -5051,7 +5005,7 @@ colorHit chord cx cy r =
     , HP.style "fill: transparent; cursor: pointer;"
     , HE.onMouseEnter \_ -> HoverTriad (Just { root: chord.root, pcs: chord.pcs })
     , HE.onMouseLeave \_ -> HoverTriad Nothing
-    , HE.onClick \e -> if ME.shiftKey e then CatchNode chord else AuditionNode chord
+    , HE.onClick \_ -> AuditionNode chord
     ]
 
 -- | One color-overlay chord drawn as notes-on-stave (the same `chordGlyph` the
@@ -5138,19 +5092,17 @@ cofBackdrop key tonic scl rootsPresent =
             ]
           else []
         txtColor = if diat then "#2a2a2a" else "#c4c4c4"
-        -- the diatonic triad rooted here — the wheel is now a catch surface:
-        -- plain click auditions the root's triad, shift-click catches it (the
-        -- same gesture as the Tonnetz). Every root gets a transparent hit disc,
-        -- so out-of-scale roots (label-only, no parchment disc) click too.
+        -- the diatonic triad rooted here — click auditions the root's triad (it
+        -- lands in the chyron). Every root gets a transparent hit disc, so
+        -- out-of-scale roots (label-only, no parchment disc) click too.
         triadPcs = triadOn key pc
-        isMajor = elem (mod (pc + 4) 12) triadPcs
         hit =
           [ SE.circle
               [ SA.cx x, SA.cy y, SA.r 14.0
               , HP.style "fill: transparent; cursor: pointer;"
               , HE.onMouseEnter \_ -> HoverTriad (Just { root: pc, pcs: triadPcs })
               , HE.onMouseLeave \_ -> HoverTriad Nothing
-              , HE.onClick \e -> if ME.shiftKey e then CatchTriad pc triadPcs isMajor else AuditionTriad pc triadPcs
+              , HE.onClick \_ -> AuditionTriad pc triadPcs
               ]
           ]
     in disc <> tonicRing <>
@@ -5348,10 +5300,7 @@ tonHit t =
     , HP.style "fill: transparent; cursor: pointer;"
     , HE.onMouseEnter \_ -> HoverTriad (Just { root: t.root, pcs: t.pcs })
     , HE.onMouseLeave \_ -> HoverTriad Nothing
-    , HE.onClick \e ->
-        if ME.altKey e then StackTriad t.root t.pcs t.major
-        else if ME.shiftKey e then CatchTriad t.root t.pcs t.major
-        else AuditionTriad t.root t.pcs
+    , HE.onClick \_ -> AuditionTriad t.root t.pcs
     ]
     []
 
@@ -5573,7 +5522,7 @@ latMemberView mh m =
           , HP.style "fill: transparent; cursor: pointer;"
           , HE.onMouseEnter \_ -> HoverTriad (Just { root: m.chord.root, pcs: m.chord.pcs })
           , HE.onMouseLeave \_ -> HoverTriad Nothing
-          , HE.onClick \e -> if ME.shiftKey e then CatchNode m.chord else AuditionNode m.chord
+          , HE.onClick \_ -> AuditionNode m.chord
           ]
       ]
 
@@ -5708,7 +5657,7 @@ genGlyph mh cx cy r isSeed c =
           , HP.style "fill: transparent; cursor: pointer;"
           , HE.onMouseEnter \_ -> HoverTriad (Just { root: c.root, pcs: c.pcs })
           , HE.onMouseLeave \_ -> HoverTriad Nothing
-          , HE.onClick \e -> if (not isSeed) && ME.shiftKey e then CatchNode c else AuditionNode c
+          , HE.onClick \_ -> AuditionNode c
           ]
       ]
 
@@ -6474,7 +6423,7 @@ nodeView scl pathOrder collectedHere posMap c =
       -- builder. Plain click AUDITIONS the chord (hear it, make it sounding);
       -- shift-click CATCHES it into the tank (a mouse alternative to `k`).
       -- Progressions are now sequenced from the tank, not walked on the lattice.
-      , HE.onClick \e -> if ME.shiftKey e then CatchChord c.id else PlayChordId c.id
+      , HE.onClick \_ -> PlayChordId c.id
       ]
       ( [ -- the disc; size = stave-span (cluster ↔ wide), fill = ring index
           -- (cool in-scale → warm the further outside the chosen scale it sits)
