@@ -141,11 +141,11 @@ gridCfg :: Scheduler.GridConfig
 gridCfg = { stepBeats: 0.25, lookaheadMs: 120.0, tickMs: 25 }
 
 -- | Slice 4c: the surface's width-focus. Hunt = the lattice pool is dominant (you're
--- | finding chords); Perform = the rail is dominant (you're playing voices). Auto-flips
--- | on the empty↔non-empty path edge (first chord → Perform, cleared → Hunt); the
--- | Hunt/Perform toggle (and the collapsed-pool spine) override by hand. Nothing
--- | mounts/unmounts — focus only biases which column gets the width.
-data Focus = Hunt | Perform
+-- | finding chords); Rail = the progression rail is dominant (you're playing voices).
+-- | (`Rail` renamed from `Perform` — that name now belongs to the top-level `View`.)
+-- | Nothing mounts/unmounts — focus only biases which column gets the width. Largely
+-- | vestigial now that Perform is its own View; kept until the rail UI is retired.
+data Focus = Hunt | Rail
 
 derive instance eqFocus :: Eq Focus
 
@@ -193,23 +193,31 @@ derive instance ordLeftSection :: Ord LeftSection
 -- | not another projection of the pool but a live rig — a row of player BOXES, one
 -- | per output, onto which you drop saved sequence-tokens; each box loops its token
 -- | while the transport plays. The function stack + non-MIDI sinks land on top later.
-data StageLens = LensKeyboard | LensPadGrid | LensCircleFifths | LensTonnetz | LensLattices | LensGenerate | LensPerform
+-- | The Stage is one of two MODES, and this is the crux of the model (AC,
+-- | 2026-08-03): `Perform` is a genuinely different activity (the box surface, its
+-- | own interaction loop), while the geometric views are all the SAME activity —
+-- | *browsing* harmonic space — seen through different projections. So it is not a
+-- | flat list of peers but `Browse <viewtype> | Perform`. Adding a browse
+-- | projection is one `Viewtype` constructor + one `surface` branch; Perform stays
+-- | untouched. (Keyboard / pad-grid retired — subsumed by the interactive fifths.)
+data Viewtype = Fifths | Tonnetz | Lattice | Explore
 
-derive instance eqStageLens :: Eq StageLens
+derive instance eqViewtype :: Eq Viewtype
 
--- | The lens registry. A new lens appends here (+ a constructor + a render branch).
-allLenses :: Array StageLens
-allLenses = [ LensKeyboard, LensPadGrid, LensCircleFifths, LensTonnetz, LensLattices, LensGenerate, LensPerform ]
+data View = Browse Viewtype | Perform
 
-lensLabel :: StageLens -> String
-lensLabel = case _ of
-  LensKeyboard -> "keyboard"
-  LensPadGrid -> "pad grid"
-  LensCircleFifths -> "fifths"
-  LensTonnetz -> "tonnetz"
-  LensLattices -> "voice-leading lattice"
-  LensGenerate -> "explore"
-  LensPerform -> "perform"
+derive instance eqView :: Eq View
+
+viewtypeLabel :: Viewtype -> String
+viewtypeLabel = case _ of
+  Fifths -> "fifths"
+  Tonnetz -> "tonnetz"
+  Lattice -> "voice-leading lattice"
+  Explore -> "explore"
+
+-- | The browse projections, in bar order.
+viewtypes :: Array Viewtype
+viewtypes = [ Fifths, Tonnetz, Lattice, Explore ]
 
 -- | Where Vetula's chord/path AUDITION goes, chosen in the shell's routing modal
 -- | (2026-08-01): Off (muted), Continuo (the piano+strings VST preview via the
@@ -568,7 +576,7 @@ type State =
   -- it here; the tank persists until cleared and will feed the Stage + Sequences.
   , tank :: Array Specimen
   , nextSpecId :: Int             -- running number for minting SpecimenIds
-  , lens :: StageLens             -- Slice C: which Stage lens is showing
+  , view :: View                  -- which Stage mode/projection is showing
   -- Geometric-lens viewport (CoF / Tonnetz): pan centre + zoom, applied as the
   -- surface's viewBox. Wheel zooms toward the cursor; drag pans; reset re-fits.
   , viewCx :: Number
@@ -767,7 +775,7 @@ data Action
   | PanEnd                 -- geometric lens: end the pan drag
   | ResetView              -- geometric lens: re-fit (zoom 1, centred)
   | ShakeGenerate          -- Generate lens: re-roll the tank-seeded relatives
-  | SetLens StageLens      -- Slice C: switch the Stage lens
+  | SetView View           -- switch the Stage mode/projection
   | TransposeSpec SpecimenId Int -- Slice E: shift one tank specimen by n semitones (in place)
   | CapoTank Int           -- Slice E: shift the WHOLE tank by n semitones (a capo)
 
@@ -912,7 +920,7 @@ component = H.mkComponent
       , nextSpecId: 0
       , seedChord: Map.empty
       , presets: [], identity: Nothing
-      , lens: LensTonnetz  -- default: the tonal net shows the scale's shape best
+      , view: Browse Tonnetz  -- default: the tonal net shows the scale's shape best
       , viewCx: 0.0
       , viewCy: 0.0
       , viewZoom: 1.0
@@ -2310,8 +2318,8 @@ handleAction = case _ of
 
   ShakeGenerate -> H.modify_ \s -> s { genRoll = s.genRoll + 1 }
 
-  SetLens l -> H.modify_ _
-    { lens = l, hoveredId = Nothing, hoveredTriad = Nothing
+  SetView v -> H.modify_ _
+    { view = v, hoveredId = Nothing, hoveredTriad = Nothing
     , viewCx = 0.0, viewCy = 0.0, viewZoom = 1.0, panning = Nothing, panMoved = false
     }
 
@@ -4065,33 +4073,6 @@ arrangeBar st =
       , HE.onClick \_ -> act ]
       [ HH.text glyph ]
 
--- | Grow lives with the tank now (it operates on CAUGHT chords, not on the
--- | geometry). A single toggle: enter the grow surface, re-roll it, or leave.
-growBar :: forall m. State -> H.ComponentHTML Action Slots m
-growBar st =
-  HH.div
-    [ HP.style "display: flex; align-items: center; gap: 6px; padding: 8px 2px; border-top: 1px solid #d8ceb4;" ]
-    ( if st.lens == LensGenerate then
-        [ HH.button
-            [ HP.style "border: 1px solid #b8860b; background: #fbf6ea; color: #7a5c00; cursor: pointer; padding: 3px 12px; border-radius: 4px; font-size: 12px;"
-            , HP.title "re-roll the relatives around each tank seed"
-            , HE.onClick \_ -> ShakeGenerate ]
-            [ HH.text "shake ⟳" ]
-        , HH.button
-            [ HP.style "border: 1px solid #dcdcdc; background: #fafafa; color: #6a6a6a; cursor: pointer; padding: 3px 12px; border-radius: 4px; font-size: 12px;"
-            , HP.title "leave the explore surface"
-            , HE.onClick \_ -> SetLens LensTonnetz ]
-            [ HH.text "done" ]
-        ]
-      else
-        [ HH.button
-            [ HP.style "border: 1px solid #b8860b; background: #fbf6ea; color: #7a5c00; cursor: pointer; padding: 3px 12px; border-radius: 4px; font-size: 12px;"
-            , HP.title "bloom voice-led relatives around the caught chords"
-            , HE.onClick \_ -> SetLens LensGenerate ]
-            [ HH.text "explore ⟳" ]
-        ]
-    )
-
 -- | A flat labelled group inside a floating control — a small uppercase caption
 -- | over a divider, then the body. Replaces the old collapsible accordion box:
 -- | the controls float, they don't fold.
@@ -4106,46 +4087,6 @@ subGroup label body =
 -- | "N steps" / "N step" for the control captions.
 countLabel :: Int -> String -> String
 countLabel n noun = show n <> " " <> noun <> (if n == 1 then "" else "s")
-
--- | The Stage GEOMETRY selector. The two "lenses" that weren't geometries have
--- | left: `grow` is a tank operation (it lives in control B now) and `pad grid`
--- | is retired. What remains are the four ways of LAYING OUT chords — two families
--- | (relational: tonnetz / lattices; root-picker: keyboard / fifths). Switching
--- | re-projects the SAME material (the sim keeps running underneath).
--- | The geometric views the CONTEXT card offers. Down to three after the
--- | 2026-07-31 redesign (see docs/DESIGN-vetula-progression-building.md): the
--- | keyboard was a root-picker subset of the (now interactive) circle of
--- | fifths, so it retired. Circle of fifths · Tonnetz · voice-leading lattice.
-geometryLenses :: Array StageLens
-geometryLenses = [ LensCircleFifths, LensTonnetz, LensLattices ]
-
-lensBar :: forall m. State -> H.ComponentHTML Action Slots m
-lensBar st =
-  HH.div
-    [ HP.style "display: flex; align-items: center; flex-wrap: wrap; gap: 6px; margin: 0 0 4px;" ]
-    ( map lensChip geometryLenses <> [ lensChip LensPerform ] <> resetChip )
-  where
-  -- a way back to the fitted view (scroll to zoom · drag to pan), once it's moved.
-  moved = st.viewZoom /= 1.0 || st.viewCx /= 0.0 || st.viewCy /= 0.0
-  resetChip =
-    if moved then
-      [ HH.button
-          [ HP.style "border: 1px solid #dcdcdc; background: #fafafa; color: #6a6a6a; cursor: pointer; padding: 3px 12px; border-radius: 4px; font-size: 12px; margin-left: 8px;"
-          , HP.title "reset the view · scroll to zoom · drag to pan"
-          , HE.onClick \_ -> ResetView
-          ]
-          [ HH.text "reset view" ]
-      ]
-    else []
-  lensChip l =
-    let active = st.lens == l
-    in HH.button
-        [ HP.style ("border: 1px solid " <> (if active then "#1a1a1a" else "#dcdcdc")
-                     <> "; background: " <> (if active then "#1a1a1a" else "#fafafa")
-                     <> "; color: " <> (if active then "#ffffff" else "#6a6a6a")
-                     <> "; cursor: pointer; padding: 3px 10px; border-radius: 4px; font-size: 12px; white-space: nowrap;")
-        , HE.onClick \_ -> SetLens l ]
-        [ HH.text (lensLabel l) ]
 
 -- | The collapsed pool (Perform mode): a thin clickable spine that expands the lattice
 -- | again — the always-available "back to hunt" gesture.
@@ -4186,13 +4127,14 @@ contextBar st =
         <> [ HH.div [ HP.style "display: flex; flex-wrap: nowrap; gap: 4px;" ] (map layerChip allColorLayers) ]
         <> borrowField
         <> [ divider ]
-        -- LENS as `Browse <viewtype> | Perform` (AC): the geometric views are the
-        -- Browse cluster, Perform sits apart past a hairline. (The `data View =
-        -- Browse Viewtype | Perform` model refactor is a separate follow-up.)
+        -- View as `Browse <viewtype> | Perform`: the four browse projections
+        -- cluster, Perform sits apart past a hairline. The shake ⟳ appears only
+        -- while Explore is the active projection.
         <> [ HH.div [ HP.style "display: flex; align-items: center; gap: 6px;" ]
-               ( map lensChip geometryLenses
+               ( map viewtypeChip viewtypes
+                 <> shakeChip
                  <> [ HH.div [ HP.style "width: 1px; height: 16px; background: #0000001a; margin: 0 3px;" ] [] ]
-                 <> [ lensChip LensPerform ] ) ]
+                 <> [ modeChip (st.view == Perform) "perform" (SetView Perform) ] ) ]
         <> resetChip
         <> [ HH.div
                [ HP.style "margin-left: auto; display: flex; align-items: center; gap: 8px;" ]
@@ -4212,16 +4154,25 @@ contextBar st =
     else []
   -- a hairline group separator.
   divider = HH.div [ HP.style "width: 1px; height: 22px; background: #00000016;" ] []
-  -- one lens chip (viewtype or Perform). Active = filled dark.
-  lensChip l =
-    let active = st.lens == l
-    in HH.button
-        [ HP.style ("border: 1px solid " <> (if active then "#1a1a1a" else "#dcdcdc")
-                     <> "; background: " <> (if active then "#1a1a1a" else "#fafafa")
-                     <> "; color: " <> (if active then "#ffffff" else "#6a6a6a")
-                     <> "; cursor: pointer; padding: 3px 10px; border-radius: 4px; font-size: 12px; white-space: nowrap;")
-        , HE.onClick \_ -> SetLens l ]
-        [ HH.text (lensLabel l) ]
+  -- one mode chip. Active = filled dark.
+  modeChip active label act =
+    HH.button
+      [ HP.style ("border: 1px solid " <> (if active then "#1a1a1a" else "#dcdcdc")
+                   <> "; background: " <> (if active then "#1a1a1a" else "#fafafa")
+                   <> "; color: " <> (if active then "#ffffff" else "#6a6a6a")
+                   <> "; cursor: pointer; padding: 3px 10px; border-radius: 4px; font-size: 12px; white-space: nowrap;")
+      , HE.onClick \_ -> act ]
+      [ HH.text label ]
+  viewtypeChip vt = modeChip (st.view == Browse vt) (viewtypeLabel vt) (SetView (Browse vt))
+  -- shake re-rolls Explore's relatives; only meaningful while Explore is showing.
+  shakeChip =
+    if st.view == Browse Explore then
+      [ HH.button
+          [ HP.style "border: 1px solid #cdbb8c; background: #fbf6ea; color: #7a5c00; cursor: pointer; padding: 3px 10px; border-radius: 4px; font-size: 12px; white-space: nowrap;"
+          , HP.title "re-roll the relatives around each seed"
+          , HE.onClick \_ -> ShakeGenerate ]
+          [ HH.text "shake ⟳" ] ]
+    else []
   -- the borrow-scale picker only appears when the BORROWED color layer is
   -- engaged — it is that layer's source, meaningless otherwise (AC, 2026-07-31).
   -- Kept with a small inline label (unlike key/scale) since it appears
@@ -4400,19 +4351,17 @@ helpOverlay st =
       , HH.p [ HP.style "font-size: 12.5px; line-height: 1.65; color: #555; margin: 0;" ] [ HH.text body ]
       ]
 
--- | The Stage frame: the pick-mode cloud always wins; otherwise the active lens
--- | renders. Adding a lens is one more branch here + one `allLenses` entry.
+-- | The Stage frame: the pick-mode cloud always wins; otherwise the active View
+-- | renders. `Perform` is its own surface; every `Browse` viewtype is one branch.
 surface :: forall m. State -> H.ComponentHTML Action Slots m
 surface st
   | length st.genSel > 0 && length st.candidates > 0 = pickSurface st
-  | otherwise = case st.lens of
-      LensKeyboard -> keyboardSurface st
-      LensPadGrid -> padGridSurface st
-      LensCircleFifths -> circleFifthsSurface st
-      LensTonnetz -> tonnetzSurface st
-      LensLattices -> latticesSurface st
-      LensGenerate -> generativeSurface st
-      LensPerform -> performSurface st
+  | otherwise = case st.view of
+      Perform -> performSurface st
+      Browse Fifths -> circleFifthsSurface st
+      Browse Tonnetz -> tonnetzSurface st
+      Browse Lattice -> latticesSurface st
+      Browse Explore -> generativeSurface st
 
 -- | The PERFORM surface — a row of player BOXES, one per output. Shift-click (or
 -- | drag) a saved token in the chyron to pick it up, then click (or drop it onto)
