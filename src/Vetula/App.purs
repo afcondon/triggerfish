@@ -220,38 +220,39 @@ viewtypeLabel = case _ of
 viewtypes :: Array Viewtype
 viewtypes = [ Fifths, Tonnetz, Lattice, Explore ]
 
--- | The View as a nav dropdown: the four browse projections then Perform, each a
--- | stable string `value` ↔ `View`, with a readable menu `label`. (AC, 2026-08-03.)
-allViews :: Array View
-allViews = map Browse viewtypes <> [ Perform ]
+-- | The four BROWSE projections as a nav dropdown: a stable string `value` ↔
+-- | `Viewtype`, with a readable menu `label`. Perform is NOT here — it is a mode
+-- | apart (its own button beside the dropdown). (AC, 2026-08-03.)
+viewtypeValue :: Viewtype -> String
+viewtypeValue = case _ of
+  Fifths -> "fifths"
+  Tonnetz -> "tonnetz"
+  Lattice -> "lattice"
+  Explore -> "explore"
 
-viewValue :: View -> String
-viewValue = case _ of
-  Browse Fifths -> "fifths"
-  Browse Tonnetz -> "tonnetz"
-  Browse Lattice -> "lattice"
-  Browse Explore -> "explore"
-  Perform -> "perform"
+viewtypeFromValue :: String -> Viewtype
+viewtypeFromValue = case _ of
+  "fifths" -> Fifths
+  "tonnetz" -> Tonnetz
+  "lattice" -> Lattice
+  "explore" -> Explore
+  _ -> Tonnetz
 
-viewFromValue :: String -> View
-viewFromValue = case _ of
-  "fifths" -> Browse Fifths
-  "tonnetz" -> Browse Tonnetz
-  "lattice" -> Browse Lattice
-  "explore" -> Browse Explore
-  "perform" -> Perform
-  _ -> Browse Tonnetz
+viewtypeMenuLabel :: Viewtype -> String
+viewtypeMenuLabel = case _ of
+  Fifths -> "circle of fifths"
+  Tonnetz -> "tonnetz"
+  Lattice -> "voice-leading lattice"
+  Explore -> "explore"
 
-viewMenuLabel :: View -> String
-viewMenuLabel = case _ of
-  Browse Fifths -> "circle of fifths"
-  Browse Tonnetz -> "tonnetz"
-  Browse Lattice -> "voice-leading lattice"
-  Browse Explore -> "explore"
-  Perform -> "perform"
+browseOptions :: Array { value :: String, label :: String }
+browseOptions = map (\vt -> { value: viewtypeValue vt, label: viewtypeMenuLabel vt }) viewtypes
 
-viewOptions :: Array { value :: String, label :: String }
-viewOptions = map (\v -> { value: viewValue v, label: viewMenuLabel v }) allViews
+-- | The browse projection a View names, or `fallback` when it's Perform.
+browseOr :: Viewtype -> View -> Viewtype
+browseOr fallback = case _ of
+  Browse vt -> vt
+  Perform -> fallback
 
 -- | Where Vetula's chord/path AUDITION goes, chosen in the shell's routing modal
 -- | (2026-08-01): Off (muted), Continuo (the piano+strings VST preview via the
@@ -617,6 +618,8 @@ type State =
   , tank :: Array Specimen
   , nextSpecId :: Int             -- running number for minting SpecimenIds
   , view :: View                  -- which Stage mode/projection is showing
+  , lastBrowse :: Viewtype        -- the browse projection to return to from Perform
+                                  -- (Perform is a mode apart — its own nav button)
   -- Geometric-lens viewport (CoF / Tonnetz): pan centre + zoom, applied as the
   -- surface's viewBox. Wheel zooms toward the cursor; drag pans; reset re-fits.
   , viewCx :: Number
@@ -972,6 +975,7 @@ component = H.mkComponent
       , seedChord: Map.empty
       , presets: [], identity: Nothing
       , view: Browse Tonnetz  -- default: the tonal net shows the scale's shape best
+      , lastBrowse: Tonnetz
       , viewCx: 0.0
       , viewCy: 0.0
       , viewZoom: 1.0
@@ -2399,8 +2403,10 @@ handleAction = case _ of
 
   ShakeGenerate -> H.modify_ \s -> s { genRoll = s.genRoll + 1 }
 
-  SetView v -> H.modify_ _
-    { view = v, hoveredId = Nothing, hoveredTriad = Nothing
+  SetView v -> H.modify_ \st -> st
+    { view = v
+    , lastBrowse = browseOr st.lastBrowse v
+    , hoveredId = Nothing, hoveredTriad = Nothing
     , viewCx = 0.0, viewCy = 0.0, viewZoom = 1.0, panning = Nothing, panMoved = false
     }
 
@@ -4228,13 +4234,19 @@ contextBar st =
                \(MultiSelect.SelectedMany vs) -> SetLayers vs ]
         <> borrowField
         <> [ divider ]
-        -- View as one dropdown: the four browse projections then Perform. The shake
-        -- ⟳ sits beside it, shown only while Explore is the active projection.
+        -- View: the four browse projections as a dropdown, shake ⟳ beside it
+        -- (Explore-only), then a hairline and Perform as its OWN button — Perform is
+        -- a mode apart, not a fifth projection. The dropdown shows the current (or
+        -- last) browse projection even while Perform is active, so it's the way back.
         <> [ HH.div [ HP.style "display: flex; align-items: center; gap: 6px;" ]
                ( [ HH.slot (Proxy :: _ "viewSelect") unit Select.component
-                     ((Select.defaultInput viewOptions) { selected = Just (viewValue st.view), minWidth = Just "116px" })
-                     \(Select.Selected v) -> SetView (viewFromValue v) ]
-                 <> shakeChip ) ]
+                     ((Select.defaultInput browseOptions)
+                        { selected = Just (viewtypeValue (browseOr st.lastBrowse st.view))
+                        , minWidth = Just "116px" })
+                     \(Select.Selected v) -> SetView (Browse (viewtypeFromValue v)) ]
+                 <> shakeChip
+                 <> [ HH.div [ HP.style "width: 1px; height: 16px; background: #0000001a; margin: 0 3px;" ] [] ]
+                 <> [ performButton ] ) ]
         <> resetChip
         <> [ HH.div
                [ HP.style "margin-left: auto; display: flex; align-items: center; gap: 8px;" ]
@@ -4302,6 +4314,20 @@ contextBar st =
       , HP.enabled enabled
       , HE.onClick \_ -> if enabled then PerfMenuPick act else PerfNop ]
       [ HH.text label ]
+  -- Perform as its own button — a mode apart from the browse projections. Filled
+  -- dark when active; a toggle, so clicking it while in Perform returns to the last
+  -- browse view (a guaranteed way back, since re-picking the dropdown's current
+  -- value wouldn't fire).
+  performButton =
+    let active = st.view == Perform
+    in HH.button
+         [ HP.style ("border: 1px solid " <> (if active then "#1a1a1a" else "#dcdcdc")
+                      <> "; background: " <> (if active then "#1a1a1a" else "#fafafa")
+                      <> "; color: " <> (if active then "#ffffff" else "#6a6a6a")
+                      <> "; cursor: pointer; padding: 3px 12px; border-radius: 4px; font-size: 12px; white-space: nowrap;")
+         , HP.title (if active then "leave Perform — back to the browse view" else "Perform — loop the players")
+         , HE.onClick \_ -> SetView (if active then Browse st.lastBrowse else Perform) ]
+         [ HH.text "perform" ]
   -- shake re-rolls Explore's relatives; only meaningful while Explore is showing.
   shakeChip =
     if st.view == Browse Explore then
