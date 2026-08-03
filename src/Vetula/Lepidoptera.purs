@@ -42,10 +42,11 @@
 module Vetula.Lepidoptera
   ( NamedSource
   , VoiceEntry
+  , VoiceSpec
   , PerfDoc
   , performSource
   , parsePerform
-  , docFromBoxes
+  , docFromVoices
   , roundTrips
   ) where
 
@@ -54,11 +55,11 @@ import Prelude
 import Data.Array (drop, filter, find, index, length, mapMaybe, mapWithIndex, null, snoc, updateAt, (!!))
 import Data.Foldable (foldl)
 import Data.Int as Int
-import Data.Maybe (Maybe(..), fromMaybe, maybe)
+import Data.Maybe (Maybe(..), fromMaybe)
 import Data.String (Pattern(..), stripPrefix)
 import Data.String.Common (joinWith, split, trim)
 import Triggerfish.Macro (Arg(..), Form(..), parseLane, tokenize)
-import Vetula.App (ArpDir(..), Layer, PerfBox, PerfFx(..), PerfSel(..), PerfTerm(..), VoiceShape(..), When(..), mkLayer, parseVoiceShape, printArpDir, printVoiceShape, termShort)
+import Vetula.Perform.Types (ArpDir(..), Layer, PerfFx(..), PerfSel(..), PerfTerm(..), VoiceShape(..), When(..), mkLayer, parseVoiceShape, printArpDir, printVoiceShape, termShort)
 import Vetula.Tidal (parseProgression, tidalNoteName)
 
 -- | A named chord set the voices reference. `chords` are note-lists in *stored
@@ -265,33 +266,42 @@ argInt :: Int -> String -> Int
 argInt def s = fromMaybe def (Int.fromString (fromMaybe s (stripPrefix (Pattern "+") s)))
 
 -- ============================================================================
--- Build a document from live boxes (the App-facing entry; the inverse — minting
--- SavedSeqs with synthesised events/glyphs — lives App-side and is deferred).
+-- Build a document from live voices. Takes a NEUTRAL spec (raw chords, not a
+-- PerfBox) so this module stays free of App / SavedSeq — App extracts
+-- `map _.notes s.events` from each box at the call site. The inverse (minting
+-- SavedSeqs with synthesised events/glyphs from a parsed doc) lives App-side.
 -- ============================================================================
 
-docFromBoxes :: String -> Array PerfBox -> PerfDoc
-docFromBoxes key boxes =
+-- | The serialisable core of a live voice, decoupled from `PerfBox` — App maps
+-- | its boxes to these (a box's chords = `map _.notes s.events`).
+type VoiceSpec =
+  { channel :: Int
+  , chords  :: Array (Array Int)   -- source material; empty = sourceless
+  , seqText :: String
+  , stack   :: Array Layer
+  , term    :: PerfTerm
+  , muted   :: Boolean
+  }
+
+docFromVoices :: String -> Array VoiceSpec -> PerfDoc
+docFromVoices key specs =
   { key
   , sources: named
-  , voices: map toVoice boxes
+  , voices: map toVoice specs
   }
   where
-  -- distinct non-empty chord sets across all boxes, in first-seen order → named
-  distinct = foldl (\acc c -> if null c || contains acc c then acc else snoc acc c) [] (map boxChords boxes)
+  -- distinct non-empty chord sets across all voices, in first-seen order → named;
+  -- two voices with the same chords dedup to ONE source (sharing = co-reference)
+  distinct = foldl (\acc c -> if null c || isJustArr (find (_ == c) acc) then acc else snoc acc c) [] (map _.chords specs)
   named = mapWithIndex (\i c -> { name: srcName i, chords: c }) distinct
-  contains acc c = isJustArr (find (_ == c) acc)
-  toVoice box =
-    let c = boxChords box
-    in { channel: box.channel
-       , source: if null c then Nothing else map _.name (find (\ns -> ns.chords == c) named)
-       , seqText: trim box.seqText
-       , stack: box.stack
-       , term: box.term
-       , muted: box.muted
-       }
-
-boxChords :: PerfBox -> Array (Array Int)
-boxChords box = maybe [] (\s -> map _.notes s.events) box.seq
+  toVoice spec =
+    { channel: spec.channel
+    , source: if null spec.chords then Nothing else map _.name (find (\ns -> ns.chords == spec.chords) named)
+    , seqText: trim spec.seqText
+    , stack: spec.stack
+    , term: spec.term
+    , muted: spec.muted
+    }
 
 isJustArr :: forall a. Maybe a -> Boolean
 isJustArr = case _ of

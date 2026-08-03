@@ -20,7 +20,7 @@ import Triggerfish.Odonus.Model as M
 import Triggerfish.Odonus.Marbles as Marbles
 import Triggerfish.Odonus.Gen as Gen
 import Triggerfish.Odonus.Grid.Types (GenKind(..), GenSource, genDefaultAmt, genDefaultRate, genKinds)
-import Vetula.App (ArpDir(..), PerfFx(..), PerfTerm(..), VoiceShape(..), When(..), mkLayer)
+import Vetula.Perform.Types (ArpDir(..), PerfFx(..), PerfTerm(..), VoiceShape(..), When(..), mkLayer)
 import Vetula.Lepidoptera (PerfDoc, parsePerform, performSource, roundTrips)
 
 type Sim = { odo :: M.Odonus, seed :: Marbles.Seed }
