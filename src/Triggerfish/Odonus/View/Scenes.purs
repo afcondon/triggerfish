@@ -16,7 +16,7 @@ import Halogen.HTML.Properties as HP
 import Triggerfish.Odonus.Model as M
 import Triggerfish.Scale as Scale
 import Triggerfish.Odonus.Grid.Types (Action(..), Mark, Scene, Slots, State)
-import Triggerfish.Odonus.Grid.Widgets (engrave, stepBtn, style)
+import Triggerfish.Odonus.Grid.Widgets (engrave, style)
 import Triggerfish.Odonus.Logbook (noteCount)
 
 -- | Auto-name a captured scene by its position + its scale.
@@ -64,23 +64,12 @@ scenesBody s =
         , style $ "width:100%;padding:7px;margin-bottom:10px;border:1px solid #a8a392;border-radius:7px;cursor:pointer;"
             <> "background:linear-gradient(#efece1,#ddd9cb);font-family:Georgia,serif;font-size:12px;color:#3f3c33" ]
         [ HH.text "＋ Capture current" ]
-    , HH.div [ style "display:flex;align-items:center;justify-content:space-between;margin-bottom:6px" ]
-        [ HH.button
-            [ HE.onClick \_ -> ToggleChain
-            , style $ "padding:5px 10px;border:1px solid #a8a392;border-radius:6px;cursor:pointer;font-family:Georgia,serif;font-size:11px;color:#3f3c33;background:"
-                <> (if s.chain then "linear-gradient(#c8a86a,#b8975a)" else "linear-gradient(#efece1,#ddd9cb)") ]
-            [ HH.text (if s.chain then "■ Chain" else "▶ Chain") ]
-        , HH.div [ style "display:flex;align-items:center;gap:5px" ]
-            [ stepBtn "‹" (BumpBars (-1))
-            , HH.span [ style $ engrave <> ";font-size:9px;min-width:48px;text-align:center" ]
-                [ HH.text (show s.barsPerScene <> " bar" <> (if s.barsPerScene == 1 then "" else "s")) ]
-            , stepBtn "›" (BumpBars 1)
-            ]
-        ]
+    -- Scene SEQUENCING lives on the macro-tidal Tidal page now; this pane just
+    -- captures + recalls named settings (loaded by name from the arrangement lane).
     , HH.div [ style "display:flex;flex-direction:column;gap:5px;margin-top:8px" ]
         ( if null s.scenes
             then [ HH.div [ style $ engrave <> ";font-size:8px;color:#888273;margin-top:6px" ]
-                     [ HH.text "capture a few settings, then chain them" ] ]
+                     [ HH.text "capture a few settings; sequence them on the Tidal page" ] ]
             else mapWithIndex (sceneChip s) s.scenes )
     , publishStatus s
     ] <> logbookBody s
@@ -160,13 +149,10 @@ agoLabel micros =
 -- | "in key" recalls only the gesture — cells, playheads, generators, feel —
 -- | over the CURRENT harmony, so the same riff re-voices in the live key.
 sceneChip :: forall m. State -> Int -> Scene -> H.ComponentHTML Action Slots m
-sceneChip s i sc =
-  let active = s.chain && s.sceneIx == i
-  in
+sceneChip _ i sc =
     HH.div
       [ style $ "display:flex;flex-direction:column;gap:6px;padding:7px 8px;border-radius:7px;"
-          <> "background:#cbc6b6;box-shadow:0 0 0 1px " <> (if active then "#b5832b" else "#00000018")
-          <> (if active then ";outline:2px solid #b5832b66" else "") ]
+          <> "background:#cbc6b6;box-shadow:0 0 0 1px #00000018" ]
       [ HH.div [ style "display:flex;align-items:center;justify-content:space-between;gap:6px" ]
           [ HH.span [ style "font-family:'SF Mono',Menlo,monospace;font-size:10px;color:#3f3c33" ]
               [ HH.text sc.name ]

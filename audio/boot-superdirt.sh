@@ -22,6 +22,20 @@ if [[ ! -x "$SCLANG" ]]; then
   exit 1
 fi
 
+# Singleton guard. Two sclang running superdirt-daemon.scd fight over SuperDirt's
+# OSC port (57120): the loser boots into a deaf, CPU-burning, audio-device-holding
+# zombie. This actually happened (2026-07-30 — a midnight cron/manual boot landed
+# atop a days-old one). If one is already alive, this boot is a no-op success
+# (idempotent — safe for a repeated manual/cron invocation); set FORCE=1 to
+# override deliberately. A Bosun `supervise` wrapper should be the SOLE launcher,
+# so under supervision this path shouldn't trigger.
+EXISTING="$(pgrep -f 'sclang .*superdirt-daemon\.scd' || true)"
+if [[ -n "$EXISTING" && "${FORCE:-0}" != "1" ]]; then
+  echo "SuperDirt already running (sclang pid(s): ${EXISTING//$'\n'/ }) — not launching a second." >&2
+  echo "  kill it first, or set FORCE=1 to override." >&2
+  exit 0
+fi
+
 echo "booting SuperDirt on UDP $SUPERDIRT_PORT (sclang $SCLANG) …"
 
 # Run sclang in its own process group so we can tear the whole tree down.

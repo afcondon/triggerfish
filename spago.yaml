@@ -23,6 +23,7 @@ package:
     - web-uievents
     - console
     - js-timers
+    - random
     - binnacle
     # vendored purerl-tidal mini-notation engine (src/Tidal/**)
     - control
@@ -44,7 +45,7 @@ package:
     - simple-json     # reef's wire codec (Reef.Protocol.encodeOdonus)
     - web-dom
     - halogen-svg-elems
-    - hylograph-halogen-ui
+    - halogen-widgets
     - hylograph-simulation
     - hylograph-simulation-halogen
     - hylograph-selection
@@ -58,22 +59,19 @@ package:
     dependencies: []
 workspace:
   extraPackages:
-    # Published library, pinned to the git tag. (The registry 0.1.0 manifest is
-    # currently undecodable — over-long description — so we build from the tag;
-    # switch to `harmonia: <version>` once a clean version is on the registry.)
-    harmonia:
-      git: https://github.com/afcondon/purescript-harmonia.git
-      ref: v0.2.0
+    # Published library, from the registry (clean 0.2.0 manifest; the old broken
+    # 0.1.0 over-long-description entry is gone from the index).
+    harmonia: 0.2.0
     # Portable virtual-module engines (Phase 1: Odonus). Path-dep during dev;
     # git-tag once reef is published, like harmonia.
     reef:
       path: ../../reef
     binnacle:
       path: ../binnacle
-    # Vetula dogfoods the shared widget library, pinned via the same git
-    # worktree it uses standalone (both repos sit at music/live-coding/<name>,
-    # so the relative path is identical).
-    hylograph-halogen-ui:
-      path: ../../../purescript-hylograph-halogen-ui-v0.1
+    # Shared widget library (Vetula's Select/Modal + the Selene routing
+    # cascade menu). Now the registry release `halogen-widgets` (namespace
+    # Halogen.Widgets.*), migrated 2026-07-31 off the old path-dep
+    # hylograph-halogen-ui v0.1 (Hylograph.Halogen.UI.*).
+    halogen-widgets: 0.2.0
   packageSet:
-    registry: 73.3.0
+    registry: 77.13.1

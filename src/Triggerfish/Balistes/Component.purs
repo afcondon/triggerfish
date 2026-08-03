@@ -14,16 +14,15 @@
 -- | for that module — the same role Odonus plays for `odonus_engine`. Output is
 -- | one MIDI channel (BD/SD/HH = 36/38/42) to an IAC bus into Ableton, clocked
 -- | by Binnacle (free-run → Link-lock), exactly like Odonus.
-module Triggerfish.Balistes.Component (component) where
+module Triggerfish.Balistes.Component (component, Output(..)) where
 
 import Prelude
 
-import Data.Array (concatMap, filter, length, mapWithIndex, modifyAt, null, range, (!!))
-import Data.Foldable (any, foldl, for_, sum)
+import Data.Array (deleteAt, filter, findIndex, length, mapWithIndex, modifyAt, null, range, (!!))
+import Data.Foldable (any, foldl, for_)
 import Data.Int (floor, round, toNumber)
-import Data.Int.Bits (shr)
 import Data.Maybe (Maybe(..), fromMaybe, isNothing, maybe)
-import Data.String.Common (joinWith, toLower)
+import Data.String.Common (joinWith)
 import Data.String.CodeUnits (take)
 import Effect (Effect)
 import Data.Either (Either(..))
@@ -34,164 +33,52 @@ import Effect.Timer (setInterval)
 import Halogen as H
 import Halogen.HTML as HH
 import Halogen.HTML.Events as HE
-import Halogen.HTML.Properties as HP
 import Halogen.Subscription as HS
-import Unsafe.Coerce (unsafeCoerce)
 import Binnacle as Binnacle
 import Binnacle.Clock as Clock
 import Binnacle.Midi as Midi
 import Binnacle.Scheduler as Scheduler
 import Binnacle.Transport as Transport
-import Reef.Balistes.Protocol (encodeBalSim, encodeBTagged, encodeFixed)
+import Reef.Balistes.Protocol (encodeBalSim, encodeBTagged, encodeFixed, encodeTrigKit)
 import Reef.Balistes.Input as RBI
 import Reef.Balistes.Fixed as RF
+import Reef.Balistes.Trig as Trig
 import Triggerfish.Balistes.Model as M
 import Triggerfish.Balistes.Pattern as P
+import Triggerfish.Balistes.Types
+  ( KnobTarget(..), targetRange, applyKnob, Active(..)
+  , NoteRef(..), DragKind(..), State, Action(..), activePattern, rigUrl, gridCfg
+  , midiPortName, drumChannel, cycleSteps, editVel, flashWindow
+  , padId, eqTrigName, jackNoteOf )
+import Triggerfish.Balistes.TriSnapshot (TriSnapshot(..), printTri, parseTri)
+import Triggerfish.Glyph as G
+import Triggerfish.Preset (indexOfContent, presetAlias)
+import Triggerfish.Balistes.Widgets (flatBtn, instColor, panel, readout)
+import Triggerfish.Balistes.View.Trig (trigBody, trigInfoPanel)
+import Triggerfish.Balistes.View.Fixed (fixedBody, inspectorPanel, patternSwitcher)
+import Triggerfish.Balistes.View.Grids (controlsPanel, gridsBody)
 import Triggerfish.Balistes.Source as Source
 import Triggerfish.Balistes.Store as Store
 import Triggerfish.Balistes.Remote as Remote
 import Triggerfish.Balistes.Lepidoptera (printPattern, parsePattern)
 import Triggerfish.SourceQuery (Query(..))
 import Triggerfish.Transport (Sounding(..))
-import Triggerfish.Midi.Routing as Routing
 import Triggerfish.Tidal.Lane as Lane
-import Reef.Balistes.Tables as T
 import Reef.Balistes.Sim as Sim
-import Triggerfish.Ui.Knob (knob)
 import Triggerfish.Ui.Pointer as Pointer
-import Triggerfish.Odonus.Grid.Widgets (clampI, engrave, style, svgAttr, svgEl)
+import Triggerfish.Odonus.Grid.Widgets (clampI, engrave, style)
 import Web.Event.Event (EventType(..))
 import Web.Event.EventTarget (addEventListener, eventListener, removeEventListener)
 import Web.HTML (window)
 import Web.HTML.Window as Window
 import Web.UIEvent.MouseEvent as ME
 
--- ---------------------------------------------------------------------------
--- State / Actions
--- ---------------------------------------------------------------------------
+-- | The upward message to the shell: Balistes' identity-chip view (or `Nothing`
+-- | when nothing is parked), for the six-machine status board. Raised from the
+-- | Frame loop only when the view changes (see `chipViewOf`).
+data Output = IdentityChanged (Maybe G.ChipView)
 
--- | A recent hit, kept just long enough to flash the transport pilot lamps.
-type Flash = { inst :: Int, accent :: Boolean, fireUnixMicros :: Number }
-
-data KnobTarget = KDens Int | KRand | KPush Int | KOpen
-
--- | What the panel is currently playing — one drum-brain at a time (the tab
--- | bar's projection). `AGrids` is the generative MI-Grids morph engine (owns
--- | the CONTROL column); `AFixed i` is a literal rhythm from the library
--- | (`library !! i`), played verbatim; `ASelene` is the relocated POLYTRIG jack
--- | rack (browser-only) — named jacks + lane-spanning routes, all → ch 10.
-data Active = AGrids | AFixed Int | ASelene
-
-derive instance eqActive :: Eq Active
-
--- | Which MIDI note a note-drag edits: a Grids lane (0..3) or a fixed-pattern
--- | lane (`NFixed patternIx lane`).
-data NoteRef = NGrids Int | NFixed Int Int
-
--- | A document-tracked drag turns a knob, subdivides a Grids cell into ratchets
--- | (`DCell lane step`), or nudges a lane's MIDI note (`DNote`). One plumbing.
-data DragKind = DKnob KnobTarget | DCell Int Int | DNote NoteRef
-
-type Drag = { kind :: DragKind, startY :: Int, startVal :: Int }
-
--- | The value range each knob spans (so the drag scales correctly per target).
-targetRange :: KnobTarget -> { lo :: Int, hi :: Int }
-targetRange = case _ of
-  KDens _ -> { lo: 0, hi: 255 }
-  KRand -> { lo: 0, hi: 255 }
-  KPush _ -> { lo: -50, hi: 50 }
-  KOpen -> { lo: 0, hi: 255 }
-
-type State =
-  { bal :: M.Balistes
-  , sounding :: Sounding       -- the ONE transport value (MISU refactor): Silent | Local | Rig.
-                               -- Replaces running/master/audible; `== Rig` also replaces `pushed`
-                               -- (the rig voice is running iff we're rig-authoritative).
-  , playStep :: Int
-  -- the ABSOLUTE model step the current `bal` will next be played from (Grids
-  -- mode). PushBalistes stamps the handoff with this so the rig holds the pushed
-  -- state until the same step — the Odonus #57 phase-alignment, for Balistes.
-  , nextModelStep :: Int
-  -- tick-tagged gestures awaiting their model step (deferred-on-both lockstep):
-  -- applied in the Step loop when step <= tick.index, on both runtimes.
-  , pending :: Array { step :: Int, input :: RBI.BInput }
-  , flash :: Array Flash
-  , binnacle :: Maybe Binnacle.Binnacle
-  , midiOut :: Maybe Midi.MidiOut
-  , midiName :: String
-  , clockTempo :: Number
-  , clockLocked :: Boolean
-  , clockBeat :: Number
-  , clockBar :: Int
-  , anchorCount :: Int
-  , nowMicros :: Number
-  , dragging :: Maybe Drag
-  , dragSub :: Maybe H.SubscriptionId
-  -- snapshot-bank arming: capArm → a slot click STORES; seqArm → a slot click
-  -- APPENDS to the sequence; neither → recall. Mutually exclusive.
-  , capArm :: Boolean
-  , seqArm :: Boolean
-  -- sequence playback: enabled, the current step, and the absolute bar the step
-  -- began on (a big-negative sentinel forces an immediate advance on enable).
-  , seqEnabled :: Boolean
-  , seqPos :: Int
-  , seqStartBar :: Int
-  -- the pattern family: which one is playing, and the fixed-rhythm library.
-  , active :: Active
-  , library :: Array P.FixedPattern
-  -- EDIT mode for a fixed rhythm: reveal all 16 lanes (greyed where empty) so
-  -- you can add voices; cells are click-to-toggle either way.
-  , editing :: Boolean
-  -- the cell the NOTE inspector is editing (lane, step) on the active rhythm.
-  , selected :: Maybe { lane :: Int, step :: Int }
-  -- the POLYTRIG jack rack (SELENE DRUMS tab) — browser-only, no reef path.
-  , trig :: M.TrigBank
-  -- transient status for the "publish to Amphora" action on the active rhythm.
-  , publishMsg :: Maybe String
-  }
-
-data Action
-  = Initialize
-  | Step Scheduler.Tick
-  | Frame
-  | MidiReady (Maybe Midi.MidiOut) String
-  | ResetPat
-  | Dice
-  | PadAt Int Int Int          -- clientX clientY buttons
-  | PadRelease                 -- pad pointer-up: broadcast the settled X/Y to the rig
-  | StartDrag DragKind Int     -- kind, startVal
-  | DragMove Int
-  | DragEnd
-  | DillaPreset
-  | FlatGroove
-  | ToggleCap                  -- arm/disarm capture-on-slot-click
-  | ToggleSeqBuild             -- arm/disarm append-to-sequence-on-slot-click
-  | SlotClick Int Boolean      -- slot i; shift = clear; else store/append/recall by arm
-  | ToggleSeq                  -- play/stop the snapshot sequence
-  | SeqBarsDelta Int           -- nudge bars-per-step
-  | ClearSeq
-  | SelectPattern Active       -- switch the playing pattern (Grids / a rhythm)
-  | ToggleEdit                 -- reveal all 16 lanes on the active fixed rhythm
-  | CellClick Int Int Boolean  -- select a cell (lane, step); shift = clear
-  | SetCellVel Int             -- nudge the selected cell's velocity
-  | SetCellProb Int            -- nudge its probability
-  | SetCellRatchet Int         -- nudge its ratchet count
-  | CycleCellCond              -- step its trig condition
-  | ClearSelected              -- clear the selected cell + deselect
-  | NewPattern                 -- append a fresh empty rhythm + select it
-  | SetPatternName String      -- rename the active rhythm
-  | PublishActive              -- publish the active rhythm to Amphora (persist + share)
-  | PushBalistes               -- lockstep handoff: push BalSim to the rig (ch 11)
-  -- POLYTRIG (SELENE DRUMS tab) editor — browser-only, no rig sync.
-  | SetJackSource Int String   -- jack i's per-jack pattern
-  | SetJackName Int String     -- jack i's route-addressable name
-  | SetJackNote Int Int        -- nudge jack i's MIDI note
-  | SetRoute Int String        -- route line i
-  | AddRoute                   -- append an empty route line
-  | RemoveRoute Int            -- drop route line i
-  | NoOp
-
-component :: forall i o m. MonadAff m => H.Component Query i o m
+component :: forall i m. MonadAff m => H.Component Query i Output m
 component =
   H.mkComponent
     { initialState: \_ ->
@@ -200,8 +87,10 @@ component =
         , binnacle: Nothing, midiOut: Nothing, midiName: "…"
         , clockTempo: 120.0, clockLocked: false, clockBeat: 0.0, clockBar: 0, anchorCount: 0
         , nowMicros: 0.0, dragging: Nothing, dragSub: Nothing
-        , capArm: false, seqArm: false, seqEnabled: false, seqPos: 0, seqStartBar: 0
+        , presets: []
+        , identity: Nothing, lastChip: Nothing
         , active: AGrids, library: P.bundledPatterns, editing: false, selected: Nothing
+        , scratchFixed: Nothing
         , trig: M.defaultTrig, publishMsg: Nothing }
     , render
     , eval: H.mkEval H.defaultEval
@@ -211,11 +100,15 @@ component =
 -- | Answer the shell: the source (TIDAL tab) — the reflective header (X/Y,
 -- | densities, groove, ratchets, tapped pads) over the editable lane/routing
 -- | doc — or adopt the rack's shared free-run baseline.
-handleQuery :: forall o m a. MonadAff m => Query a -> H.HalogenM State Action () o m (Maybe a)
+handleQuery :: forall m a. MonadAff m => Query a -> H.HalogenM State Action () Output m (Maybe a)
 handleQuery = case _ of
   AskSource reply -> do
     s <- H.get
     pure (Just (reply (Source.headerText s.bal)))
+  PutSource _ next -> pure (Just next)   -- shell never rewrites Balistes's kit
+  AskClock reply -> do
+    s <- H.get
+    pure (Just (reply { tempo: s.clockTempo, locked: s.clockLocked }))
   SyncFree startMicros tempo next -> do
     s <- H.get
     for_ s.binnacle \bin ->
@@ -252,12 +145,55 @@ handleQuery = case _ of
       persistLib
       pure (Just (reply true))
     Nothing -> pure (Just (reply false))
+  -- No pitch quantiser — the rig's harmonic context doesn't apply to Balistes.
+  SetContextPitchSet _ _ next -> pure (Just next)
+  -- The shell's CAPTURE hotkey: bank the current playing-state and park identity
+  -- on it (the chip shows the freshly-minted glyph, held). See captureNow.
+  Capture next -> do
+    captureNow
+    pure (Just next)
+  -- The status-board chip's recall menu: report each preset as its glyph alias (the
+  -- shell reconstructs the coloured glyph via glyphFromAlias, faithful because
+  -- colour follows the icon name), and recall a chosen preset.
+  AskBank reply -> do
+    s <- H.get
+    pure (Just (reply (mapWithIndex (\i p -> { slot: i, alias: presetAlias p, name: fromMaybe "" p.name, starred: p.starred }) s.presets)))
+  RecallSlot i next -> do
+    recallPreset i
+    pure (Just next)
+  StarSlot i next -> do
+    H.modify_ \s -> s { presets = fromMaybe s.presets (modifyAt i (\p -> p { starred = not p.starred }) s.presets) }
+    persist
+    pure (Just next)
+  DeleteSlot i next -> do
+    H.modify_ (deletePresetAt i)
+    persist
+    pure (Just next)
+
+-- | Bank the current playing-state as a preset — the CAPTURE hotkey / button. DEDUPS
+-- | by content (identical state ⇒ identical glyph): if it's already banked, just
+-- | re-park `identity` on it; otherwise append an anonymous preset. Either way the
+-- | chip shows the glyph held, and we persist. No-op only if the active brain has
+-- | nothing to capture (an empty GRIDS tab).
+captureNow :: forall m. MonadAff m => H.HalogenM State Action () Output m Unit
+captureNow = do
+  s <- H.get
+  case printTri <$> captureTri s of
+    Nothing -> pure unit
+    Just text -> do
+      case indexOfContent text s.presets of
+        Just _ -> H.modify_ _ { identity = Just text }
+        Nothing -> H.modify_ \st -> st
+          { presets = st.presets <> [ { content: text, name: Nothing, starred: false } ]
+          , identity = Just text
+          }
+      persist
 
 -- ---------------------------------------------------------------------------
 -- handleAction
 -- ---------------------------------------------------------------------------
 
-handleAction :: forall o m. MonadAff m => Action -> H.HalogenM State Action () o m Unit
+handleAction :: forall m. MonadAff m => Action -> H.HalogenM State Action () Output m Unit
 handleAction = case _ of
   Initialize -> do
     -- Same rig handshake as Odonus: Binnacle free-runs at 120 until the Link
@@ -280,24 +216,33 @@ handleAction = case _ of
               Nothing -> "no '" <> midiPortName <> "' — ports: " <> joinWith ", " names
         HS.notify midiL (MidiReady mout nm)
       Nothing -> HS.notify midiL (MidiReady Nothing "unavailable")
-    -- restore the saved rhythm library (falls back to the bundled patterns).
-    mlib <- liftEffect Store.loadLibrary
-    for_ mlib \lib -> H.modify_ _ { library = lib }
-    -- source the shared library from Amphora (the store of record): merge in any
-    -- DB pattern not already present by name. Offline → keep saved/bundled.
-    dbResult <- liftAff (attempt Remote.fetchLibrary)
-    case dbResult of
-      Right dbPats | not (null dbPats) ->
-        H.modify_ \s -> s { library = mergeByName s.library dbPats }
-      _ -> pure unit
+    -- restore the saved artefact: the rhythm library AND the ARRANGE rail (bank +
+    -- Falls back to the bundled patterns / empty bank.
+    msaved <- liftEffect Store.load
+    for_ msaved \sv -> H.modify_ _
+      { library = sv.library
+      , presets = sv.presets
+      }
     H.modify_ _ { binnacle = Just bin }
+    -- Merge the shared Amphora library in the BACKGROUND. Forked deliberately: the
+    -- fetch times out at ~30s when the store is unreachable, and awaiting it here
+    -- kept Balistes' Initialize (hence the whole component) from completing — so the
+    -- shell's queries (SetSounding, the CAPTURE hotkey) blocked until the timeout.
+    -- Offline → keep the saved/bundled library; the merge lands if/when the DB answers.
+    void $ H.fork do
+      dbResult <- liftAff (attempt Remote.fetchLibrary)
+      case dbResult of
+        Right dbPats | not (null dbPats) ->
+          H.modify_ \s -> s { library = mergeByName s.library dbPats }
+        _ -> pure unit
 
   Step tick -> do
     st <- H.get
     when (st.sounding == Local) case st.active of
       -- A fixed rhythm: derive the step from the tick (no internal navigator),
-      -- then emit each used lane's hit verbatim at its kit note + velocity.
-      AFixed i -> case st.library !! i of
+      -- then emit each used lane's hit verbatim at its kit note + velocity. Reads
+      -- `activePattern` so an ephemeral recalled snapshot (scratchFixed) plays too.
+      AFixed _ -> case activePattern st of
         Nothing -> pure unit
         Just pat -> do
           let stepMs = 0.25 * 60000.0 / max 30.0 st.clockTempo
@@ -313,27 +258,15 @@ handleAction = case _ of
           H.modify_ _ { playStep = tick.index `mod` pat.steps }
       AGrids -> do
         let
-          -- a bar is 16 sixteenth-steps. If the sequence is running and this step
-          -- begins a step boundary (seqBars bars elapsed), advance the path and
-          -- recall its snapshot BEFORE ticking, so the kit morphs at the boundary.
-          bar = tick.index / stepsPerBar
-          seqLen = length st.bal.sequence
-          advancing = st.seqEnabled && seqLen > 0 && (bar - st.seqStartBar) >= st.bal.seqBars
-          nextPos = if advancing then (st.seqPos + 1) `mod` seqLen else st.seqPos
-          nextStartBar = if advancing then bar else st.seqStartBar
-          bal0raw =
-            if advancing then case M.seqStepAt st.bal nextPos of
-              Just slot -> M.recallSnapshot slot st.bal
-              Nothing -> st.bal
-            else st.bal
           -- Lockstep input-drain (deferred-on-both): apply any tick-tagged inputs
           -- whose step has arrived BEFORE ticking — the same order, and the same
           -- shared reef applyBInput, the BEAM voice uses, so a deferred gesture
           -- (Reset, …) lands on the SAME model step on both runtimes. `<=` self-heals
-          -- inputs that were buffered while stopped.
+          -- inputs that were buffered while stopped. (The sequence advance that used
+          -- to live here is now `advanceSeq`, run at the top of Step for all brains.)
           dueInputs = filter (\p -> p.step <= tick.index) st.pending
           keepInputs = filter (\p -> p.step > tick.index) st.pending
-          bal0 = foldl (\b p -> RBI.applyBInput p.input b) bal0raw dueInputs
+          bal0 = foldl (\b p -> RBI.applyBInput p.input b) st.bal dueInputs
           playedStep = bal0.step
           r = M.tick bal0
           stepMs = 0.25 * 60000.0 / max 30.0 st.clockTempo
@@ -351,35 +284,28 @@ handleAction = case _ of
         let
           gridsFlash = map (\t -> { inst: t.inst, accent: t.accent, fireUnixMicros: tick.fireUnixMicros }) r.fired
         H.modify_ \s -> s
-          { bal = r.bal, playStep = playedStep, seqPos = nextPos, seqStartBar = nextStartBar
+          { bal = r.bal, playStep = playedStep
           -- r.bal is the state that plays NEXT, at absolute step tick.index + 1;
           -- PushBalistes stamps the handoff with this for phase alignment.
           , nextModelStep = tick.index + 1
           , pending = keepInputs
           , flash = gridsFlash <> s.flash }
-      -- POLYTRIG: each named jack's onsets (its own pattern stacked with the
-      -- route onsets addressed to its name) that fall in THIS step's window fire
-      -- at their true fractional sub-step time. One Tidal cycle == cycleSteps grid
-      -- steps (one bar). Browser-only, all jacks land on the drum channel (ch 10).
+      -- POLYTRIG: resolve the rack to onset-fractions per jack (own source ∪ route
+      -- atoms addressed to its name), then let the SHARED reef renderer slice out the
+      -- onsets that fall in THIS step's window and their fractional sub-step time —
+      -- the EXACT code reef_balistes_voice runs off the pushed kit, so browser
+      -- (ch 10) and rig co-simulate byte-for-byte. One Tidal cycle == cycleSteps grid
+      -- steps (one bar). Local emits; Rig follows the pushed kit.
       ASelene -> do
         let
           step = tick.index `mod` cycleSteps
           stepMs = 0.25 * 60000.0 / max 30.0 st.clockTempo
-          lo = toNumber step / toNumber cycleSteps
-          hi = toNumber (step + 1) / toNumber cycleSteps
-          inWin o = o >= lo && o < hi
-          routeOns nm = map _.at (filter (\e -> eqTrigName e.name nm) (st.trig.routes >>= Lane.namedOnsetsOf))
+          fires = Trig.renderTrigStep (resolveTrigKit st.trig) tick.index cycleSteps
         for_ st.midiOut \out -> liftEffect $
-          for_ st.trig.jacks \jack -> do
-            let
-              own = filter inWin (Lane.onsetsOf jack.source)
-              routed = filter inWin (routeOns jack.name)
-              fire o =
-                let sub = (o * toNumber cycleSteps - toNumber step) * stepMs
-                in Midi.scheduleNote out
-                     { channel: drumChannel, note: jack.note, velocity: 100
-                     , delayMs: tick.delayMs + sub, durMs: 40.0 }
-            for_ (own <> routed) fire
+          for_ fires \f ->
+            Midi.scheduleNote out
+              { channel: drumChannel, note: f.note, velocity: Trig.trigVelocity
+              , delayMs: tick.delayMs + f.frac * stepMs, durMs: Trig.trigGateMs }
         H.modify_ _ { playStep = step }
 
   Frame -> do
@@ -398,6 +324,13 @@ handleAction = case _ of
           , flash = filter (\f -> (now - f.fireUnixMicros) < flashWindow) s.flash
           }
       Nothing -> pure unit
+    -- Report the identity chip up to the shell's status board, but only when it
+    -- actually changed (this fires ~30×/s) — capture/recall/divergence all land here.
+    s2 <- H.get
+    let cv = chipViewOf s2
+    when (cv /= s2.lastChip) do
+      H.modify_ _ { lastChip = cv }
+      H.raise (IdentityChanged cv)
 
   MidiReady mout nm -> H.modify_ _ { midiOut = mout, midiName = nm }
 
@@ -474,55 +407,34 @@ handleAction = case _ of
 
   DillaPreset -> H.modify_ \s -> s { bal = M.dillaPush s.bal }
   FlatGroove -> H.modify_ \s -> s { bal = M.flatPush s.bal }
-  -- the two arms are mutually exclusive.
-  ToggleCap -> H.modify_ \s -> s { capArm = not s.capArm, seqArm = false }
-  ToggleSeqBuild -> H.modify_ \s -> s { seqArm = not s.seqArm, capArm = false }
-  -- shift → clear; capArm → store (and disarm); seqArm → append to the path;
-  -- otherwise recall whatever's there (instant jump).
-  SlotClick i shift -> do
-    pre <- H.get
-    H.modify_ \s ->
-      if shift then s { bal = M.clearSnapshot i s.bal }
-      else if s.capArm then s { bal = M.storeSnapshot i s.bal, capArm = false }
-      else if s.seqArm then s { bal = M.appendSeq i s.bal }
-      else s { bal = M.recallSnapshot i s.bal }
-    -- a plain RECALL is a whole-kit jump; re-push the phase-aligned handoff so the
-    -- rig lands on the recalled state (the handoff is the natural fit for a big jump).
-    when (not shift && not pre.capArm && not pre.seqArm) do
-      st <- H.get
-      pushHandoff st
-  -- enabling: seed seqPos at the end and force an immediate advance to step 0
-  -- (the big-negative sentinel makes the first Step's bar gap exceed seqBars).
-  ToggleSeq -> H.modify_ \s ->
-    if s.seqEnabled then s { seqEnabled = false }
-    else s { seqEnabled = true, seqPos = max 0 (length s.bal.sequence - 1), seqStartBar = -100000 }
-  SeqBarsDelta d -> H.modify_ \s -> s { bal = M.setSeqBars (s.bal.seqBars + d) s.bal }
-  ClearSeq -> H.modify_ \s -> s { bal = M.clearSeq s.bal, seqEnabled = false, seqPos = 0 }
   -- switching pattern just changes which branch the next Step takes; hits are
   -- one-shot, so nothing to silence.
   -- switching pattern changes which branch the next Step takes; once pushed, make the
   -- rig follow the selection too (a fixed pattern swaps in place; Grids re-hands-off).
   SelectPattern a -> do
-    H.modify_ _ { active = a, publishMsg = Nothing }
+    -- a deliberate tab / library selection clears any ephemeral recalled snapshot,
+    -- returning the GRIDS tab to its library index.
+    H.modify_ _ { active = a, scratchFixed = Nothing, publishMsg = Nothing }
     st <- H.get
     when (st.sounding == Rig) case a of
       AFixed _ -> repushFixed
       AGrids -> pushHandoff st
-      ASelene -> pure unit   -- browser-only; no rig voice to sync
+      ASelene -> pushTrig   -- push the resolved POLYTRIG kit to the rig voice
   ToggleEdit -> H.modify_ \s -> s { editing = not s.editing }
   -- click selects a cell for the NOTE inspector, creating a hit at the default
   -- velocity if the cell was empty; shift-click clears it.
+  -- Edits are disabled on an ephemeral recalled snapshot (scratchFixed) — a
+  -- frozen artefact plays read-only; the library is never mutated behind it.
   CellClick lane step shift -> do
     H.modify_ \s -> case s.active of
-      AGrids -> s
-      ASelene -> s
-      AFixed i ->
+      AFixed i | isNothing s.scratchFixed ->
         if shift then s
           { library = modLibAt i (P.modifyCell lane step (const P.emptyCell)) s.library
           , selected = if s.selected == Just { lane, step } then Nothing else s.selected }
         else s
           { library = modLibAt i (\p -> if P.firesAt p lane step then p else P.modifyCell lane step (const (P.hitCell editVel)) p) s.library
           , selected = Just { lane, step } }
+      _ -> s
     persistLib
   SetCellVel d -> do
     H.modify_ (modSelectedCell \c -> c { vel = clampI 1 127 (c.vel + d) })
@@ -538,7 +450,7 @@ handleAction = case _ of
     persistLib
   ClearSelected -> do
     H.modify_ \s -> case s.active, s.selected of
-      AFixed i, Just { lane, step } ->
+      AFixed i, Just { lane, step } | isNothing s.scratchFixed ->
         s { library = modLibAt i (P.modifyCell lane step (const P.emptyCell)) s.library, selected = Nothing }
       _, _ -> s
     persistLib
@@ -551,9 +463,8 @@ handleAction = case _ of
     persistLib
   SetPatternName name -> do
     H.modify_ \s -> case s.active of
-      AFixed i -> s { library = modLibAt i (_ { name = name }) s.library }
-      AGrids -> s
-      ASelene -> s
+      AFixed i | isNothing s.scratchFixed -> s { library = modLibAt i (_ { name = name }) s.library }
+      _ -> s
     persistLib
   -- Write-back to Amphora: publish the active fixed rhythm to the store (content
   -- + label + balistes-grid favourite), so a pattern built in the app persists
@@ -562,7 +473,7 @@ handleAction = case _ of
   PublishActive -> do
     st <- H.get
     case st.active of
-      AFixed i -> case st.library !! i of
+      AFixed _ -> case activePattern st of
         Just pat -> do
           H.modify_ _ { publishMsg = Just "publishing…" }
           res <- liftAff (attempt (Remote.publishPattern pat))
@@ -581,20 +492,36 @@ handleAction = case _ of
     st <- H.get
     case st.active of
       -- Fixed rhythm: push the whole pattern (stateless, no phase-hold needed).
-      AFixed i -> when (st.sounding == Rig) $ for_ (st.library !! i) \pat ->
+      AFixed _ -> when (st.sounding == Rig) $ for_ (activePattern st) \pat ->
         for_ st.binnacle \bin ->
           liftEffect $ Transport.send (Binnacle.socket bin)
             ("balistes-fixed " <> encodeFixed (fixedOf pat))
       -- Grids: the phase-aligned BalSim handoff.
       AGrids -> pushHandoff st
-      ASelene -> pure unit   -- browser-only; nothing to push
-  -- POLYTRIG editor — pure state edits, browser-only (no rig sync, no persist).
-  SetJackSource i src -> H.modify_ \s -> s { trig = M.setJackSource i src s.trig }
-  SetJackName i nm -> H.modify_ \s -> s { trig = M.setJackName i nm s.trig }
-  SetJackNote i d -> H.modify_ \s -> s { trig = M.setJackNote i (jackNoteOf s.trig i + d) s.trig }
-  SetRoute i src -> H.modify_ \s -> s { trig = M.setRoute i src s.trig }
-  AddRoute -> H.modify_ \s -> s { trig = M.addRoute s.trig }
-  RemoveRoute i -> H.modify_ \s -> s { trig = M.removeRoute i s.trig }
+      -- POLYTRIG: push the whole resolved kit (stateless, no phase-hold needed —
+      -- both runtimes read the same Link step, the fixed-rhythm discipline).
+      ASelene -> pushTrig
+  -- POLYTRIG editor — state edits; re-push the resolved kit so live jack/route
+  -- edits reach the rig voice in place (a no-op in Local/Silent). Browser-only
+  -- persistence: the rack isn't saved to localStorage (unlike the fixed library).
+  SetJackSource i src -> do
+    H.modify_ \s -> s { trig = M.setJackSource i src s.trig }
+    pushTrig
+  SetJackName i nm -> do
+    H.modify_ \s -> s { trig = M.setJackName i nm s.trig }
+    pushTrig
+  SetJackNote i d -> do
+    H.modify_ \s -> s { trig = M.setJackNote i (jackNoteOf s.trig i + d) s.trig }
+    pushTrig
+  SetRoute i src -> do
+    H.modify_ \s -> s { trig = M.setRoute i src s.trig }
+    pushTrig
+  AddRoute -> do
+    H.modify_ \s -> s { trig = M.addRoute s.trig }
+    pushTrig
+  RemoveRoute i -> do
+    H.modify_ \s -> s { trig = M.removeRoute i s.trig }
+    pushTrig
   NoOp -> pure unit
 
 -- | Project the frontend Balistes record onto the shared `BalSim` — the lockstep
@@ -663,6 +590,76 @@ pushHandoff st =
     liftEffect $ Transport.send (Binnacle.socket bin)
       ("balistes-sim-at " <> show st.nextModelStep <> " 0.25 " <> encodeBalSim (balSimOf st.bal))
 
+-- | Capture the CURRENTLY ACTIVE brain's playing-state into a `TriSnapshot`, so one
+-- | bank sequences Mutable / Grids / Tidal intermingled. Stores the whole artefact
+-- | (not a reference), so a snapshot survives library edits and can be pushed to the
+-- | rig verbatim. `Nothing` only if a GRIDS tab has no pattern in view.
+captureTri :: State -> Maybe TriSnapshot
+captureTri s = case s.active of
+  AGrids -> Just (TSGrids (M.captureSnapshot s.bal))
+  AFixed _ -> TSFixed <$> activePattern s
+  ASelene -> Just (TSTrig s.trig)
+
+-- | Restore a `TriSnapshot`: switch the active tab to its brain, restore that
+-- | brain's state, and — when rig-authoritative — push the matching handoff so the
+-- | rig follows. The rig side re-modes in place on any of balistes-sim-at / -fixed /
+-- | -trig, so a mid-sequence Mutable→Tidal→Grids march is just three pushes, no gap.
+-- | `TSFixed` restores EPHEMERALLY (scratchFixed), never touching the library. Does
+-- | NOT set `identity` — the caller (`recallPreset`) parks it on the preset's text.
+recallSnap :: forall o m. MonadAff m => TriSnapshot -> H.HalogenM State Action () o m Unit
+recallSnap = case _ of
+  TSGrids gsnap -> do
+    H.modify_ \s -> s { active = AGrids, scratchFixed = Nothing, bal = M.applySnapshot gsnap s.bal }
+    H.get >>= pushHandoff
+  TSFixed pat -> do
+    -- Highlight the library chip that matches the snapshot BY NAME (the identity the
+    -- user reasons about — "funk 100"), so the switcher agrees with what's playing.
+    -- Playback still comes from `scratchFixed` (the frozen artefact). No match → 0.
+    st <- H.get
+    let idx = fromMaybe 0 (findIndex (\p -> p.name == pat.name) st.library)
+    H.modify_ _ { active = AFixed idx, scratchFixed = Just pat }
+    st2 <- H.get
+    when (st2.sounding == Rig) $ for_ st2.binnacle \bin ->
+      liftEffect $ Transport.send (Binnacle.socket bin) ("balistes-fixed " <> encodeFixed (fixedOf pat))
+  TSTrig rack -> do
+    H.modify_ _ { active = ASelene, scratchFixed = Nothing, trig = rack }
+    pushTrig
+
+-- | Recall preset `i`: parse its content to a `TriSnapshot`, restore it, and park
+-- | the identity chip on the preset's text (glyph SOLID; ghosts on divergence).
+recallPreset :: forall o m. MonadAff m => Int -> H.HalogenM State Action () o m Unit
+recallPreset i = do
+  st <- H.get
+  case st.presets !! i of
+    Nothing -> pure unit
+    Just p -> case parseTri p.content of
+      Nothing -> pure unit
+      Just snap -> do
+        recallSnap snap
+        H.modify_ _ { identity = Just p.content }
+
+-- | Resolve a POLYTRIG bank to the wire-flat `Trig.TrigKit` the rig runs: each jack
+-- | becomes its MIDI note + the onset fractions it fires at over one cycle (its own
+-- | source pattern ∪ the route atoms addressed to its name). The mini-notation parse
+-- | happens HERE (reef has no Tidal parser); the shared `renderTrigStep` then slices
+-- | these onsets into steps identically on both runtimes. Concatenation order (own
+-- | then routed, no dedup) matches the frontend's own playback exactly.
+resolveTrigKit :: M.TrigBank -> Trig.TrigKit
+resolveTrigKit tb =
+  map (\jack -> { note: jack.note, onsets: Lane.onsetsOf jack.source <> routeOns jack.name }) tb.jacks
+  where
+  routeOns nm = map _.at (filter (\e -> eqTrigName e.name nm) (tb.routes >>= Lane.namedOnsetsOf))
+
+-- | Push the resolved POLYTRIG kit to the rig voice (`balistes-trig <json>`). Like the
+-- | fixed-rhythm push, no phase-hold: a rack is a pure function of the absolute step,
+-- | so the rig snaps to the current Link step and agrees. A no-op unless rig-authoritative.
+pushTrig :: forall o m. MonadAff m => H.HalogenM State Action () o m Unit
+pushTrig = do
+  st <- H.get
+  when (st.sounding == Rig) $ for_ st.binnacle \bin ->
+    liftEffect $ Transport.send (Binnacle.socket bin)
+      ("balistes-trig " <> encodeTrigKit (resolveTrigKit st.trig))
+
 -- | Deferred-on-both: enqueue a gesture locally AND broadcast it, both tagged for the
 -- | same near-future step. The Step-loop drain applies it here, the voice applies it
 -- | on the rig — both on the SAME model step. Needed for gestures that shift the step
@@ -689,12 +686,24 @@ dragToBInput kind b = case kind of
   DNote (NGrids lane) -> Just (RBI.BSetNote lane (M.noteOf lane b))
   DNote (NFixed _ _) -> Nothing
 
--- | Save the current rhythm library to localStorage (after any edit).
+-- | Delete preset `i` from the bank.
+deletePresetAt :: Int -> State -> State
+deletePresetAt i s = s { presets = fromMaybe s.presets (deleteAt i s.presets) }
+
+-- | Project component `State` onto the persisted artefact (library + preset bank).
+savedOf :: State -> Store.Saved
+savedOf s = { library: s.library, presets: s.presets }
+
+-- | Save the whole artefact to localStorage (library + bank + sequence). Called
+-- | after any bank / sequence edit; `persistLib` layers the rig re-push on top.
+persist :: forall o m. MonadAff m => H.HalogenM State Action () o m Unit
+persist = do
+  s <- H.get
+  liftEffect (Store.save (savedOf s))
+
+-- | Save after a library edit, then re-push the active pattern to the rig.
 persistLib :: forall o m. MonadAff m => H.HalogenM State Action () o m Unit
-persistLib = do
-  lib <- H.gets _.library
-  liftEffect (Store.saveLibrary lib)
-  repushFixed
+persistLib = persist *> repushFixed
 
 -- | After a fixed-rhythm edit, re-push the active pattern to the rig so live cell /
 -- | velocity / condition edits reach it. The voice swaps the pattern IN PLACE
@@ -704,7 +713,7 @@ repushFixed :: forall o m. MonadAff m => H.HalogenM State Action () o m Unit
 repushFixed = do
   st <- H.get
   when (st.sounding == Rig) case st.active of
-    AFixed i -> for_ (st.library !! i) \pat ->
+    AFixed _ -> for_ (activePattern st) \pat ->
       for_ st.binnacle \bin ->
         liftEffect $ Transport.send (Binnacle.socket bin) ("balistes-fixed " <> encodeFixed (fixedOf pat))
     AGrids -> pure unit
@@ -741,102 +750,9 @@ mergeByName current incoming =
 -- | Apply a function to the selected cell of the active fixed rhythm.
 modSelectedCell :: (P.Cell -> P.Cell) -> State -> State
 modSelectedCell f s = case s.active, s.selected of
-  AFixed i, Just { lane, step } -> s { library = modLibAt i (P.modifyCell lane step f) s.library }
+  AFixed i, Just { lane, step } | isNothing s.scratchFixed ->
+    s { library = modLibAt i (P.modifyCell lane step f) s.library }
   _, _ -> s
-
-applyKnob :: KnobTarget -> Int -> M.Balistes -> M.Balistes
-applyKnob (KDens i) v = M.setDensity i v
-applyKnob KRand v = M.setRandomness v
-applyKnob (KPush i) v = M.setPush i v
-applyKnob KOpen v = M.setOpen v
-
-knobValue :: KnobTarget -> M.Balistes -> Int
-knobValue (KDens i) b = M.densityOf i b
-knobValue KRand b = b.randomness
-knobValue (KPush i) b = M.pushOf i b
-knobValue KOpen b = M.openOf b
-
--- ---------------------------------------------------------------------------
--- Constants
--- ---------------------------------------------------------------------------
-
-rigUrl :: String
-rigUrl = "ws://127.0.0.1:3012/ws"
-
--- | One Grids step = a 16th note (32 steps = two bars). Same lookahead as Odonus.
-gridCfg :: Scheduler.GridConfig
-gridCfg = { stepBeats: 0.25, lookaheadMs: 120.0, tickMs: 25 }
-
--- | Sixteenth-note steps per 4/4 bar — the unit the snapshot sequence counts in.
-stepsPerBar :: Int
-stepsPerBar = 16
-
-midiPortName :: String
-midiPortName = "IAC"
-
--- | GM drum channel (MIDI ch 10) — the Grids device (BD/SD/HH). Canonical
--- | drums channel from the routing map, converted to WebMIDI's 0-indexed form.
-drumChannel :: Int
-drumChannel = Routing.toWire Routing.drumsChannel
-
--- | One Tidal cycle == this many POLYTRIG grid steps (one bar). Matches Selene.
-cycleSteps :: Int
-cycleSteps = 16
-
--- | Route atoms address jacks case-insensitively (`BD` fires `bd`).
-eqTrigName :: String -> String -> Boolean
-eqTrigName a b = toLower a == toLower b
-
--- | The current MIDI note of POLYTRIG jack `i` (default GM ladder if absent).
-jackNoteOf :: M.TrigBank -> Int -> Int
-jackNoteOf tb i = maybe (36 + i) _.note (tb.jacks !! i)
-
--- | Velocity a freshly-clicked fixed-rhythm cell lands at (a firm hit).
-editVel :: Int
-editVel = 98
-
-
-
--- | The open hat's teal — distinct from HH steel-blue, so opening cells read as
--- | a different voice in the heatmap.
-ohColor :: String
-ohColor = "#2f8a8a"
-
-padId :: String
-padId = "balistes-pad"
-
--- | Keep a hit around ~0.4s — long enough for the pilot lamps to glow.
-flashWindow :: Number
-flashWindow = 400000.0
-
-instColor :: Int -> String
-instColor = case _ of
-  0 -> "#b04a2f"   -- BD, amber-red
-  1 -> "#5f7d3f"   -- SD, green
-  _ -> "#3f6f8a"   -- HH, steel-blue
-
--- | Per-lane colour for a fixed rhythm's 16-lane kit, grouped by voice family
--- | (kick/snare warm, hats cool, toms brown, cymbals gold, perc violet).
-laneColor :: Int -> String
-laneColor = case _ of
-  0 -> "#b04a2f"   -- BD
-  1 -> "#5f7d3f"   -- SD
-  2 -> "#a86a2f"   -- CP
-  3 -> "#8a6a4a"   -- RS
-  4 -> "#3f6f8a"   -- CH
-  5 -> "#4f7f9a"   -- PH
-  6 -> "#2f8a8a"   -- OH
-  7 -> "#7a5a3a"   -- LT
-  8 -> "#8a6a44"   -- MT
-  9 -> "#9a7a4a"   -- HT
-  10 -> "#9a7d3a"  -- RD
-  11 -> "#aa8d4a"  -- RB
-  12 -> "#b58a3a"  -- CR
-  13 -> "#6a5f8a"  -- CW
-  14 -> "#7a6f9a"  -- TB
-  _ -> "#8a7faa"   -- SH
-
--- | Gate length per fixed-rhythm lane: hats/cymbals ring, drums blip.
 
 -- ---------------------------------------------------------------------------
 -- Timers / drag plumbing (mirrors Odonus)
@@ -884,7 +800,11 @@ render s =
                   AGrids -> [ controlsPanel s ]
                   AFixed _ -> [ inspectorPanel s ]
                   ASelene -> [ trigInfoPanel s ])
-            <> [ patternPanel s ] )
+            <> [ patternPanel s ]
+            -- (The per-machine ARRANGE rail was stripped 2026-07-30: capture is the
+            -- `c` hotkey, recall/star/delete live on the status-board chip's menu, and
+            -- the rig-wide scene grid + macro-tidal lanes own sequencing.)
+          )
     ]
 
 -- The drum-brain tab bar. The active tab is a projection of `active`'s constructor;
@@ -924,19 +844,15 @@ tabBtn label active mact =
         <> maybe [] (\act -> [ HE.onClick \_ -> act ]) mact )
     [ HH.text (label <> maybe "  ·soon" (const "") mact) ]
 
--- A pale Hainbach panel (header + body). Scrolls vertically if its content is
--- taller than the viewport (the consolidated CONTROL panel can be).
-panel :: forall m. String -> String -> Array (H.ComponentHTML Action () m) -> H.ComponentHTML Action () m
-panel label widthCss body =
-  HH.div
-    [ style $ widthCss <> ";height:100%;box-sizing:border-box;overflow-y:auto;overflow-x:hidden;"
-        <> "background:linear-gradient(#dcd8c9,#cfcabb);border-left:1px solid #b3ae9c;"
-        <> "padding:18px 16px;display:flex;flex-direction:column" ]
-    ( [ HH.div
-          [ style $ engrave <> ";font-size:14px;letter-spacing:0.16em;color:#3f3c33;"
-              <> "margin-bottom:14px;border-bottom:1px solid #00000018;padding-bottom:6px" ]
-          [ HH.text label ]
-      ] <> body )
+-- The identity-chip view Balistes reports to the shell's six-machine status board:
+-- the glyph of the parked identity + whether the live state has diverged from it
+-- (per docs/DESIGN-scene-modal.md). `Nothing` when nothing is parked (empty). The
+-- glyph is content-hashed from the parked snapshot's canonical text; divergence is
+-- just "the live capture no longer equals the parked identity".
+chipViewOf :: State -> Maybe G.ChipView
+chipViewOf s = case s.identity of
+  Nothing -> Nothing
+  Just text -> Just { glyph: G.glyphOf text, diverged: (printTri <$> captureTri s) /= Just text }
 
 -- ---------------------------------------------------------------------------
 -- Transport panel
@@ -948,8 +864,8 @@ transportPanel s =
     chLine = case s.active of
       AGrids -> show (drumChannel + 1) <> "  ·  "
         <> joinWith " / " (map (\l -> show (M.noteOf l s.bal)) [ 0, 1, 2 ])
-      AFixed i -> show (drumChannel + 1) <> "  ·  "
-        <> case s.library !! i of
+      AFixed _ -> show (drumChannel + 1) <> "  ·  "
+        <> case activePattern s of
              Just p -> show (length (P.usedLanes p)) <> " voices"
              Nothing -> "—"
       ASelene -> show (drumChannel + 1) <> "  ·  "
@@ -978,22 +894,6 @@ transportPanel s =
         ]
     ]
 
-flatBtn :: forall m. String -> Action -> H.ComponentHTML Action () m
-flatBtn label act =
-  HH.button
-    [ HE.onClick \_ -> act
-    , style $ "flex:1;padding:8px 0;border:1px solid #a8a392;border-radius:6px;cursor:pointer;"
-        <> "font-family:Georgia,serif;font-size:11px;letter-spacing:0.08em;color:#3f3c33;"
-        <> "background:linear-gradient(#efece1,#ddd9cb)" ]
-    [ HH.text label ]
-
-readout :: forall m. String -> String -> H.ComponentHTML Action () m
-readout label val =
-  HH.div [ style "display:flex;justify-content:space-between;align-items:baseline;border-bottom:1px dotted #0000001a;padding-bottom:3px" ]
-    [ HH.span [ style $ engrave <> ";font-size:9px" ] [ HH.text label ]
-    , HH.span [ style "font-family:'SF Mono',Menlo,monospace;font-size:10px;color:#3f3c33;text-align:right" ] [ HH.text val ]
-    ]
-
 -- Three pilot lamps that glow on a recent hit (bright = accented).
 lampRow :: forall m. State -> H.ComponentHTML Action () m
 lampRow s =
@@ -1017,257 +917,6 @@ lampRow s =
 pad2 :: Int -> String
 pad2 n = if n < 10 then "0" <> show n else show n
 
--- ---------------------------------------------------------------------------
--- Control panel — the STYLE pad + density/groove knobs, consolidated so the
--- SOURCE pane has room. Pad on top; two knob columns (DENSITY · PUSH) below.
--- ---------------------------------------------------------------------------
-
-controlsPanel :: forall m. State -> H.ComponentHTML Action () m
-controlsPanel s =
-  panel "CONTROL" "flex:0 0 300px"
-    [ HH.div [ style "display:flex;justify-content:center" ]
-        [ HH.div [ style "width:252px;height:252px" ] [ padSvg s ] ]
-    , HH.div [ style "display:flex;justify-content:space-between;margin:2px 6px 8px" ]
-        [ HH.span [ style $ engrave <> ";font-size:9px" ] [ HH.text ("X " <> show s.bal.x) ]
-        , HH.span [ style $ engrave <> ";font-size:9px" ] [ HH.text ("Y " <> show s.bal.y) ]
-        ]
-    , HH.div [ style "height:1px;background:#00000018;margin-bottom:10px" ] []
-    -- Knobs as compact rows (BD·SD·HH across), so the freed vertical space goes
-    -- to the snapshot sequencer below.
-    , knobRow "DENSITY"
-        [ bigKnob (KDens 0) (instColor 0) "BD" s.bal
-        , bigKnob (KDens 1) (instColor 1) "SD" s.bal
-        , bigKnob (KDens 2) (instColor 2) "HH" s.bal
-        ]
-    , knobRow "PUSH ms"
-        [ bigKnob (KPush 0) (instColor 0) "BD" s.bal
-        , bigKnob (KPush 1) (instColor 1) "SD" s.bal
-        , bigKnob (KPush 2) (instColor 2) "HH" s.bal
-        ]
-    , knobRow "GROOVE"
-        [ bigKnob KRand "#6a6657" "RAND" s.bal
-        , bigKnob KOpen ohColor "OPEN" s.bal
-        , HH.div [ style "display:flex;flex-direction:column;gap:5px;width:60px;align-self:center" ]
-            [ flatBtn "DILLA" DillaPreset, flatBtn "FLAT" FlatGroove ]
-        ]
-    , HH.div [ style $ engrave <> ";font-size:8px;opacity:0.5;line-height:1.5;margin-top:6px" ]
-        [ HH.text "OPEN turns the loudest HH hits into open hats (teal) — choke + ring. Drag any heatmap cell up/down to ratchet it." ]
-    ]
-
--- The NOTE inspector — the per-cell editor that fills the column CONTROL
--- vacates for a fixed rhythm. Edits the selected cell's velocity / probability /
--- trig-condition / ratchet (the overlay the grid's tweak-dot flags).
-inspectorPanel :: forall m. State -> H.ComponentHTML Action () m
-inspectorPanel s =
-  panel "NOTE" "flex:0 0 240px"
-    [ case s.active, s.selected of
-        AFixed i, Just sel -> case s.library !! i of
-          Just pat -> cellInspector pat sel
-          Nothing -> inspectorHint
-        _, _ -> inspectorHint
-    ]
-
-inspectorHint :: forall m. H.ComponentHTML Action () m
-inspectorHint =
-  HH.div [ style $ engrave <> ";font-size:9px;opacity:0.55;line-height:1.8;margin-top:8px" ]
-    [ HH.text "CLICK A CELL IN THE GRID TO INSPECT IT — VELOCITY · PROBABILITY · CONDITION · RATCHET. SHIFT-CLICK CLEARS A CELL." ]
-
-cellInspector :: forall m. P.FixedPattern -> { lane :: Int, step :: Int } -> H.ComponentHTML Action () m
-cellInspector pat sel =
-  let c = P.cellAt pat sel.lane sel.step
-  in HH.div [ style "display:flex;flex-direction:column;gap:13px;margin-top:6px" ]
-       [ HH.div [ style "display:flex;align-items:baseline;justify-content:space-between" ]
-           [ HH.span [ style $ "font-family:Georgia,serif;font-size:16px;font-weight:bold;color:" <> laneColor sel.lane ]
-               [ HH.text (P.laneName sel.lane) ]
-           , HH.span [ style $ engrave <> ";font-size:9px;opacity:0.6" ]
-               [ HH.text ("STEP " <> show (sel.step + 1) <> " · ♪" <> show (P.noteOf pat sel.lane)) ]
-           ]
-       , paramRow "VELOCITY" (show c.vel) (SetCellVel (-8)) (SetCellVel 8)
-       , paramRow "PROBABILITY" (show c.prob <> "%") (SetCellProb (-10)) (SetCellProb 10)
-       , paramRow "RATCHET" ("×" <> show c.ratchet) (SetCellRatchet (-1)) (SetCellRatchet 1)
-       , HH.div [ style "display:flex;align-items:center;justify-content:space-between;border-bottom:1px dotted #0000001a;padding-bottom:9px" ]
-           [ HH.span [ style $ engrave <> ";font-size:9px" ] [ HH.text "CONDITION" ]
-           , HH.button
-               [ HE.onClick \_ -> CycleCellCond
-               , style $ "padding:5px 14px;border:1px solid #a8a392;border-radius:5px;cursor:pointer;"
-                   <> "font-family:'SF Mono',Menlo,monospace;font-size:12px;color:#3f3c33;background:linear-gradient(#efece1,#ddd9cb)" ]
-               [ HH.text (condDisplay c.cond) ]
-           ]
-       , flatBtn "× CLEAR CELL" ClearSelected
-       ]
-
--- The condition button's label ("ALWAYS" reads better than the "—" glyph here).
-condDisplay :: P.TrigCond -> String
-condDisplay P.CAlways = "ALWAYS"
-condDisplay c = P.condLabel c
-
--- One inspector parameter row: label, − stepper, value, + stepper.
-paramRow :: forall m. String -> String -> Action -> Action -> H.ComponentHTML Action () m
-paramRow label val dec inc =
-  HH.div [ style "display:flex;align-items:center;justify-content:space-between;border-bottom:1px dotted #0000001a;padding-bottom:9px" ]
-    [ HH.span [ style $ engrave <> ";font-size:9px" ] [ HH.text label ]
-    , HH.div [ style "display:flex;align-items:center;gap:9px" ]
-        [ stepBtn "−" dec
-        , HH.span [ style "font-family:'SF Mono',Menlo,monospace;font-size:13px;color:#3f3c33;width:46px;text-align:center" ] [ HH.text val ]
-        , stepBtn "+" inc
-        ]
-    ]
-
--- The snapshot bank: capture the whole control point (X/Y + densities +
--- randomness + open + push) into a slot, recall it instantly. Records the
--- two-handed gestures a single mouse can't (kick up while snare down). Each
--- filled slot shows a mini X/Y dot so the bank reads as a constellation of
--- points in control space.
-snapshotSection :: forall m. State -> H.ComponentHTML Action () m
-snapshotSection s =
-  HH.div_
-    [ HH.div [ style "display:flex;align-items:center;justify-content:space-between;margin-bottom:7px" ]
-        [ HH.span [ style $ engrave <> ";font-size:9px" ] [ HH.text "SNAPSHOTS" ]
-        , HH.button
-            [ HE.onClick \_ -> ToggleCap
-            , style $ "padding:4px 12px;border:1px solid #a8a392;border-radius:5px;cursor:pointer;"
-                <> "font-family:'SF Mono',Menlo,monospace;font-size:9px;letter-spacing:0.08em;"
-                <> (if s.capArm then "color:#fbeae7;background:linear-gradient(#b23b28,#9a3120)"
-                    else "color:#3f3c33;background:linear-gradient(#efece1,#ddd9cb)") ]
-            [ HH.text (if s.capArm then "● ARMED" else "CAPTURE") ]
-        ]
-    , HH.div [ style "display:grid;grid-template-columns:repeat(4,1fr);gap:6px;max-width:200px" ]
-        (map (snapshotSlot s) (range 0 (M.snapshotCount - 1)))
-    , HH.div [ style $ engrave <> ";font-size:8px;opacity:0.5;line-height:1.5;margin-top:8px" ]
-        [ HH.text (if s.capArm then "ARMED — CLICK A SLOT TO STORE THE CURRENT KIT." else "CLICK CAPTURE THEN A SLOT TO STORE · CLICK A SLOT TO RECALL · SHIFT-CLICK TO CLEAR.") ]
-    ]
-
--- One snapshot slot: a mini X/Y pad. Filled shows the captured cursor as a dot;
--- empty is a faint outline with its index.
-snapshotSlot :: forall m. State -> Int -> H.ComponentHTML Action () m
-snapshotSlot s i =
-  let
-    msnap = M.snapshotAt s.bal i
-    filled = case msnap of
-      Just _ -> true
-      Nothing -> false
-    body = case msnap of
-      Just snap ->
-        [ svgEl "svg"
-            [ svgAttr "viewBox" "0 0 100 100", svgAttr "width" "30", svgAttr "height" "30"
-            , svgAttr "style" "display:block" ]
-            [ svgEl "circle"
-                [ svgAttr "cx" (show (toNumber snap.x / 255.0 * 100.0))
-                , svgAttr "cy" (show ((1.0 - toNumber snap.y / 255.0) * 100.0))
-                , svgAttr "r" "13", svgAttr "fill" "#1c1a12" ] []
-            ]
-        ]
-      Nothing ->
-        [ HH.span [ style $ engrave <> ";font-size:9px;opacity:0.45" ] [ HH.text (show (i + 1)) ] ]
-  in
-    HH.div
-      [ HE.onClick \e -> SlotClick i (ME.shiftKey e)
-      , style $ "width:32px;height:32px;border-radius:5px;cursor:pointer;display:flex;"
-          <> "align-items:center;justify-content:center;box-sizing:border-box;"
-          <> (if filled then "border:1px solid #a8a392;background:#cfcabb"
-              else "border:1px dashed #b3ae9c;background:#00000006") ]
-      body
-
--- One labelled row of knobs (the left label, then the knobs across).
-knobRow :: forall m. String -> Array (H.ComponentHTML Action () m) -> H.ComponentHTML Action () m
-knobRow label knobs =
-  HH.div [ style "display:flex;align-items:flex-start;gap:8px;margin-bottom:4px" ]
-    [ HH.div [ style $ engrave <> ";font-size:8px;opacity:0.7;width:42px;flex:0 0 auto;padding-top:6px;text-align:right" ]
-        [ HH.text label ]
-    , HH.div [ style "display:flex;gap:2px" ] knobs ]
-
-padSvg :: forall m. State -> H.ComponentHTML Action () m
-padSvg s =
-  let
-    b = s.bal
-    -- node value 0..255 for grid index 0..4
-    nodeVal k = toNumber k * 255.0 / 4.0
-    sx v = v
-    sy v = 255.0 - v
-    i0 = b.x `shr` 6
-    j0 = b.y `shr` 6
-    bracket i j = (i == i0 || i == i0 + 1) && (j == j0 || j == j0 + 1)
-    -- a node dot, radius by its overall energy
-    dot i j =
-      let
-        nv = T.node (T.drumMapIx i j)
-        energy = if null nv then 0.0 else toNumber (sum nv) / (96.0 * 255.0)
-        r = 3.0 + energy * 7.0
-        hot = bracket i j
-        dcx = sx (nodeVal i)
-        dcy = sy (nodeVal j)
-      in
-        svgEl "circle"
-          [ svgAttr "cx" (show dcx), svgAttr "cy" (show dcy), svgAttr "r" (show r)
-          , svgAttr "fill" (if hot then "#7a7460" else "#9a9583")
-          , svgAttr "fill-opacity" (if hot then "0.85" else "0.4")
-          ] []
-    cx = sx (toNumber b.x)
-    cy = sy (toNumber b.y)
-  in
-    svgEl "svg"
-      [ svgAttr "viewBox" "-8 -8 272 272", svgAttr "width" "100%", svgAttr "height" "100%"
-      , svgAttr "id" padId
-      , svgMouse "mousedown" \e -> PadAt (ME.clientX e) (ME.clientY e) (ME.buttons e)
-      , svgMouse "mousemove" \e -> PadAt (ME.clientX e) (ME.clientY e) (ME.buttons e)
-      , svgMouse "mouseup" \_ -> PadRelease
-      , svgAttr "style" "display:block;cursor:crosshair;touch-action:none"
-      ]
-      ( [ svgEl "rect"
-            [ svgAttr "x" "-8", svgAttr "y" "-8", svgAttr "width" "272", svgAttr "height" "272"
-            , svgAttr "rx" "8", svgAttr "fill" "#c4bfae", svgAttr "stroke" "#a8a392" ] []
-        ]
-        <> (range 0 4 `concatMap'` \i -> range 0 4 `concatMap'` \j -> [ dot i j ])
-        <> crosshair cx cy
-      )
-
--- crosshair lines + a filled cursor dot
-crosshair :: forall w i. Number -> Number -> Array (HH.HTML w i)
-crosshair cx cy =
-  [ svgEl "line"
-      [ svgAttr "x1" "0", svgAttr "y1" (show cy), svgAttr "x2" "255", svgAttr "y2" (show cy)
-      , svgAttr "stroke" "#3f3c33", svgAttr "stroke-opacity" "0.25", svgAttr "stroke-width" "0.8" ] []
-  , svgEl "line"
-      [ svgAttr "x1" (show cx), svgAttr "y1" "0", svgAttr "x2" (show cx), svgAttr "y2" "255"
-      , svgAttr "stroke" "#3f3c33", svgAttr "stroke-opacity" "0.25", svgAttr "stroke-width" "0.8" ] []
-  , svgEl "circle"
-      [ svgAttr "cx" (show cx), svgAttr "cy" (show cy), svgAttr "r" "7"
-      , svgAttr "fill" "#1c1a12", svgAttr "stroke" "#efece1", svgAttr "stroke-width" "2" ] []
-  ]
-
--- Flipped concatMap so the call sites read `range … `concatMap'` \i -> …`.
-concatMap' :: forall a b. Array a -> (a -> Array b) -> Array b
-concatMap' xs f = concatMap f xs
-
--- An editable MIDI-note tag in a lane gutter: drag up/down to nudge the note.
--- Shared by the Grids heatmap and the fixed grid.
-noteTag :: forall m. Number -> Number -> NoteRef -> Int -> H.ComponentHTML Action () m
-noteTag x y ref n =
-  svgEl "text"
-    [ svgAttr "x" (show x), svgAttr "y" (show y)
-    , svgAttr "fill" "#3f3c33", svgAttr "fill-opacity" "0.7"
-    , svgAttr "font-size" "8.5", svgAttr "font-family" "'SF Mono',Menlo,monospace"
-    , svgAttr "style" "cursor:ns-resize"
-    , svgMouse "mousedown" \_ -> StartDrag (DNote ref) n ]
-    [ HH.text ("♪" <> show n) ]
-
--- A filled, rounded SVG rect — the cell primitive shared by the fixed grid.
-svgRect :: forall w i. Number -> Number -> Number -> Number -> String -> Number -> HH.HTML w i
-svgRect x0 y0 wid hgt c op =
-  svgEl "rect"
-    [ svgAttr "x" (show x0), svgAttr "y" (show y0)
-    , svgAttr "width" (show wid), svgAttr "height" (show hgt), svgAttr "rx" "2"
-    , svgAttr "fill" c, svgAttr "fill-opacity" (show op) ] []
-
--- An SVG mouse handler (the `svgEl` row is `()`, so the typed HE.onMouse* props
--- don't fit; coerce the MouseEvent decode like Ui.Knob's mousedown handler).
-svgMouse :: forall r i. String -> (ME.MouseEvent -> i) -> HH.IProp r i
-svgMouse name f = HE.handler (EventType name) (unsafeCoerce f)
-
--- ---------------------------------------------------------------------------
--- Pattern heatmap — 3 instruments × 32 steps
--- ---------------------------------------------------------------------------
-
 patternPanel :: forall m. State -> H.ComponentHTML Action () m
 patternPanel s =
   panel "PATTERN" "flex:1 1 480px;min-width:380px"
@@ -1277,467 +926,10 @@ patternPanel s =
          ASelene -> [])
         <> [ case s.active of
                AGrids -> gridsBody s
-               AFixed i -> case s.library !! i of
+               AFixed i -> case activePattern s of
                  Just pat -> fixedBody s i pat
                  Nothing -> HH.text "—"
                ASelene -> trigBody s ] )
 
--- Within the GRIDS tab: the library of user rhythms as chips (the drum model is
--- now the tab, so the morph engine is no longer a chip here). Clicking switches
--- which rhythm plays.
-patternSwitcher :: forall m. State -> H.ComponentHTML Action () m
-patternSwitcher s =
-  HH.div [ style "display:flex;gap:6px;flex-wrap:wrap;margin-bottom:16px;max-width:640px" ]
-    ( mapWithIndex (\i pat -> chip pat.name (s.active == AFixed i) (SelectPattern (AFixed i))) s.library
-        <> [ newChip ] )
 
--- The "+ NEW" tab: appends a fresh empty rhythm (dashed to read as an action).
-newChip :: forall m. H.ComponentHTML Action () m
-newChip =
-  HH.button
-    [ HE.onClick \_ -> NewPattern
-    , style $ "padding:6px 13px;border:1px dashed #a8a392;border-radius:6px;cursor:pointer;"
-        <> "font-family:Georgia,serif;font-size:12px;color:#6a6657;background:#00000006" ]
-    [ HH.text "+ NEW" ]
-
-chip :: forall m. String -> Boolean -> Action -> H.ComponentHTML Action () m
-chip label active act =
-  HH.button
-    [ HE.onClick \_ -> act
-    , style $ "padding:6px 13px;border:1px solid #a8a392;border-radius:6px;cursor:pointer;"
-        <> "font-family:Georgia,serif;font-size:12px;letter-spacing:0.04em;"
-        <> (if active then "color:#1c1a12;background:linear-gradient(#c8a86a,#b8975a)"
-            else "color:#3f3c33;background:linear-gradient(#efece1,#ddd9cb)") ]
-    [ HH.text label ]
-
--- The Grids pattern: the live interpolation heatmap + the snapshot bank +
--- the snapshot sequence (the control-space machinery).
-gridsBody :: forall m. State -> H.ComponentHTML Action () m
-gridsBody s =
-  HH.div_
-    [ HH.div [ style "width:100%;max-width:640px;margin:0 auto" ] [ heatSvg s ]
-    , HH.div [ style $ engrave <> ";font-size:8px;opacity:0.5;margin-top:10px;line-height:1.6;max-width:640px" ]
-        [ HH.text "THE 3 MORPH-ENGINE VOICES (BD · SD · HH). FAINT = THE INTERPOLATED LANDSCAPE THE X/Y CURSOR SELECTS; SOLID = WHAT FIRES AT THIS DENSITY. DRAG A CELL UP/DOWN TO RATCHET IT." ]
-    , HH.div [ style "max-width:640px;margin:20px auto 0" ]
-        [ snapshotSection s
-        , HH.div [ style "height:1px;background:#00000018;margin:16px 0 12px" ] []
-        , sequenceSection s
-        ]
-    ]
-
--- A fixed rhythm: the literal lane grid (folded to used lanes, or all 16 when
--- editing), click-to-toggle cells, draggable per-lane notes.
-fixedBody :: forall m. State -> Int -> P.FixedPattern -> H.ComponentHTML Action () m
-fixedBody s idx pat =
-  HH.div_
-    [ HH.div [ style "display:flex;align-items:center;gap:10px;max-width:640px;margin:0 auto 12px" ]
-        [ HH.input
-            [ HP.value pat.name
-            , HE.onValueInput SetPatternName
-            , style $ "padding:5px 9px;border:1px solid #a8a392;border-radius:5px;background:#f3f1e8;"
-                <> "font-family:Georgia,serif;font-size:13px;color:#1c1a12;width:150px" ]
-        , armBtn (if s.editing then "● EDITING" else "EDIT") s.editing ToggleEdit
-        , armBtn "PUBLISH ⚱" false PublishActive
-        , case s.publishMsg of
-            Just msg -> HH.span [ style $ engrave <> ";font-size:8px;opacity:0.8;color:#2f6a4a" ] [ HH.text msg ]
-            Nothing ->
-              HH.span [ style $ engrave <> ";font-size:8px;opacity:0.6;line-height:1.5" ]
-                [ HH.text (if s.editing
-                    then "ALL 16 LANES — CLICK CELLS TO TOGGLE HITS · DRAG A ♪NOTE TO RETUNE A LANE."
-                    else "CLICK A CELL TO TOGGLE A HIT · EDIT REVEALS ALL 16 LANES TO ADD VOICES.") ]
-        ]
-    , HH.div [ style "width:100%;max-width:640px;margin:0 auto" ] [ fixedSvg s idx pat ]
-    , HH.div [ style $ engrave <> ";font-size:8px;opacity:0.5;margin-top:10px;line-height:1.6;max-width:640px" ]
-        [ HH.text ("STARTER RHYTHM · " <> show pat.steps <> " STEPS · " <> show (length (P.usedLanes pat)) <> " OF 16 LANES IN USE. A FIXED LOOP — RECALL INSTANTLY, EDIT TO TASTE. SAMPLES SWAP DOWNSTREAM.") ]
-    ]
-
--- The fixed-rhythm step grid: one row per used lane (kit name + GM note),
--- velocity as cell intensity, playhead sweeping the steps.
-fixedSvg :: forall m. State -> Int -> P.FixedPattern -> H.ComponentHTML Action () m
-fixedSvg s idx pat =
-  let
-    -- folded to the lanes in use, or the whole 16-lane kit when editing.
-    lanes = if s.editing then range 0 (P.kitSize - 1) else P.usedLanes pat
-    nLanes = length lanes
-    cols = pat.steps
-    colW = 16.0
-    rowH = 28.0
-    gutter = 34.0                       -- left margin for lane name + MIDI note
-    w = gutter + toNumber cols * colW
-    h = toNumber nLanes * rowH
-    here = s.playStep `mod` cols
-    colX step = gutter + toNumber step * colW
-    laneEmpty lane = not (any (P.firesAt pat lane) (range 0 (cols - 1)))
-    -- visuals only (the coloured hit + a faint slot in edit mode + the tweak-dot
-    -- + the selection outline).
-    rowVisuals row lane =
-      range 0 (cols - 1) `concatMap'` \step ->
-        let c = P.cellAt pat lane step
-            v = c.vel
-            x = colX step
-            y = toNumber row * rowH
-            slot = if s.editing && v <= 0
-              then [ svgEl "rect"
-                       [ svgAttr "x" (show (x + 2.0)), svgAttr "y" (show (y + 2.0))
-                       , svgAttr "width" (show (colW - 4.0)), svgAttr "height" (show (rowH - 5.0)), svgAttr "rx" "2"
-                       , svgAttr "fill" "none", svgAttr "stroke" (laneColor lane), svgAttr "stroke-opacity" "0.16"
-                       , svgAttr "stroke-width" "0.8", svgAttr "style" "pointer-events:none" ] [] ]
-              else []
-            hit = if v <= 0 then []
-              else [ svgRect (x + 2.0) (y + 2.0) (colW - 4.0) (rowH - 5.0) (laneColor lane)
-                       (0.34 + toNumber v / 127.0 * 0.62) ]
-            -- a small dot marks a hit whose prob/cond/ratchet overlay was tweaked.
-            dot = if v > 0 && P.cellTweaked c
-              then [ svgEl "circle"
-                       [ svgAttr "cx" (show (x + colW - 3.6)), svgAttr "cy" (show (y + 4.6)), svgAttr "r" "1.9"
-                       , svgAttr "fill" "#1c1a12", svgAttr "fill-opacity" "0.85", svgAttr "style" "pointer-events:none" ] [] ]
-              else []
-            sel = if s.selected == Just { lane, step }
-              then [ svgEl "rect"
-                       [ svgAttr "x" (show (x + 0.5)), svgAttr "y" (show (y + 0.5))
-                       , svgAttr "width" (show (colW - 1.0)), svgAttr "height" (show (rowH - 1.0)), svgAttr "rx" "3"
-                       , svgAttr "fill" "none", svgAttr "stroke" "#1c1a12", svgAttr "stroke-width" "1.4"
-                       , svgAttr "stroke-opacity" "0.9", svgAttr "style" "pointer-events:none" ] [] ]
-              else []
-        in slot <> hit <> dot <> sel
-    -- a transparent click target per cell, drawn last so it always wins clicks.
-    rowTargets row lane =
-      range 0 (cols - 1) `concatMap'` \step ->
-        let x = colX step
-            y = toNumber row * rowH
-        in [ svgEl "rect"
-               [ svgAttr "x" (show x), svgAttr "y" (show y)
-               , svgAttr "width" (show (colW - 1.0)), svgAttr "height" (show (rowH - 1.0))
-               , svgAttr "fill" "rgba(0,0,0,0)", svgAttr "style" "cursor:pointer;pointer-events:all"
-               , svgMouse "click" \e -> CellClick lane step (ME.shiftKey e) ] [] ]
-    laneAt row = fromMaybe 0 (lanes !! row)
-    cells = concatMap (\row -> rowVisuals row (laneAt row)) (range 0 (nLanes - 1))
-    targets = concatMap (\row -> rowTargets row (laneAt row)) (range 0 (nLanes - 1))
-    beatLines =
-      range 0 (cols / 4) `concatMap'` \k ->
-        let x = colX (k * 4)
-        in [ svgEl "line"
-               [ svgAttr "x1" (show x), svgAttr "y1" "0", svgAttr "x2" (show x), svgAttr "y2" (show h)
-               , svgAttr "stroke" "#3f3c33", svgAttr "stroke-opacity" "0.18", svgAttr "stroke-width" "0.8"
-               , svgAttr "style" "pointer-events:none" ] [] ]
-    laneDivider row =
-      svgEl "line"
-        [ svgAttr "x1" (show gutter), svgAttr "y1" (show (toNumber row * rowH)), svgAttr "x2" (show w)
-        , svgAttr "y2" (show (toNumber row * rowH))
-        , svgAttr "stroke" "#3f3c33", svgAttr "stroke-opacity" "0.12", svgAttr "stroke-width" "0.6"
-        , svgAttr "style" "pointer-events:none" ] []
-    -- empty lanes (only visible while editing) are dimmed; named-and-used ones full.
-    rowLabel row =
-      let lane = laneAt row
-          op = if laneEmpty lane then "0.4" else "0.9"
-      in [ svgEl "text"
-             [ svgAttr "x" "3", svgAttr "y" (show (toNumber row * rowH + 12.0))
-             , svgAttr "fill" (laneColor lane), svgAttr "fill-opacity" op, svgAttr "style" "pointer-events:none"
-             , svgAttr "font-size" "9", svgAttr "font-weight" "bold", svgAttr "font-family" "Georgia,serif" ]
-             [ HH.text (P.laneName lane) ]
-         , noteTag 3.0 (toNumber row * rowH + 23.0) (NFixed idx lane) (P.noteOf pat lane)
-         ]
-    playhead =
-      svgEl "rect"
-        [ svgAttr "x" (show (colX here)), svgAttr "y" "0"
-        , svgAttr "width" (show colW), svgAttr "height" (show h)
-        , svgAttr "fill" "#1c1a12", svgAttr "fill-opacity" (if s.sounding /= Silent then "0.10" else "0.0")
-        , svgAttr "stroke" "#1c1a12", svgAttr "stroke-opacity" (if s.sounding /= Silent then "0.5" else "0.15")
-        , svgAttr "stroke-width" "1", svgAttr "style" "pointer-events:none" ] []
-  in
-    svgEl "svg"
-      [ svgAttr "viewBox" ("0 0 " <> show w <> " " <> show h)
-      , svgAttr "width" "100%", svgAttr "style" "display:block;max-height:90vh" ]
-      ( cells <> beatLines
-          <> map laneDivider (range 1 (nLanes - 1))
-          <> [ playhead ] <> concatMap rowLabel (range 0 (nLanes - 1)) <> targets )
-
--- The snapshot sequence: a path of slot references the playhead walks, each
--- held `seqBars` bars; advancing recalls that snapshot, morphing the kit. Build
--- it with SEQ+ (then click snapshots in order); play it with ▸.
-sequenceSection :: forall m. State -> H.ComponentHTML Action () m
-sequenceSection s =
-  let
-    seq = s.bal.sequence
-    n = length seq
-  in
-    HH.div_
-      [ HH.div [ style "display:flex;align-items:center;gap:8px;margin-bottom:8px" ]
-          [ HH.span [ style $ engrave <> ";font-size:9px;flex:0 0 auto" ] [ HH.text "SEQUENCE" ]
-          , armBtn (if s.seqEnabled then "❚❚ STOP" else "▸ PLAY") s.seqEnabled ToggleSeq
-          , armBtn (if s.seqArm then "● BUILD" else "SEQ +") s.seqArm ToggleSeqBuild
-          , HH.div [ style "display:flex;align-items:center;gap:4px;margin-left:6px" ]
-              [ HH.span [ style $ engrave <> ";font-size:8px;opacity:0.6" ] [ HH.text "BARS/STEP" ]
-              , stepBtn "−" (SeqBarsDelta (-1))
-              , HH.span [ style "font-family:'SF Mono',Menlo,monospace;font-size:11px;color:#3f3c33;width:14px;text-align:center" ] [ HH.text (show s.bal.seqBars) ]
-              , stepBtn "+" (SeqBarsDelta 1)
-              ]
-          , flatBtn "CLEAR" ClearSeq
-          ]
-      , if n == 0 then
-          HH.div [ style $ engrave <> ";font-size:8px;opacity:0.5;line-height:1.6" ]
-            [ HH.text (if s.seqArm then "ARMED — CLICK SNAPSHOTS IN ORDER TO LAY THE PATH." else "PRESS SEQ + THEN CLICK SNAPSHOTS TO LAY A PATH; ▸ PLAYS IT, MORPHING THE KIT EACH STEP.") ]
-        else
-          HH.div [ style "display:flex;flex-wrap:wrap;gap:5px" ]
-            (map (seqCell s) (range 0 (n - 1)))
-      ]
-
--- One step of the sequence lane: the snapshot index, highlighted on the playhead.
-seqCell :: forall m. State -> Int -> H.ComponentHTML Action () m
-seqCell s p =
-  let
-    slot = fromMaybe 0 (s.bal.sequence !! p)
-    here = s.seqEnabled && p == s.seqPos
-  in
-    HH.div
-      [ style $ "width:26px;height:26px;border-radius:5px;display:flex;align-items:center;justify-content:center;"
-          <> "font-family:'SF Mono',Menlo,monospace;font-size:11px;box-sizing:border-box;"
-          <> (if here then "background:#1c1a12;color:#efece1;border:1px solid #1c1a12"
-              else "background:#cfcabb;color:#3f3c33;border:1px solid #a8a392") ]
-      [ HH.text (show (slot + 1)) ]
-
--- A small square stepper button (− / +).
-stepBtn :: forall m. String -> Action -> H.ComponentHTML Action () m
-stepBtn label act =
-  HH.button
-    [ HE.onClick \_ -> act
-    , style $ "width:18px;height:18px;border:1px solid #a8a392;border-radius:4px;cursor:pointer;"
-        <> "font-family:'SF Mono',Menlo,monospace;font-size:11px;color:#3f3c33;background:#efece1;"
-        <> "display:flex;align-items:center;justify-content:center;padding:0" ]
-    [ HH.text label ]
-
--- A small arm/toggle button (brass when active).
-armBtn :: forall m. String -> Boolean -> Action -> H.ComponentHTML Action () m
-armBtn label active act =
-  HH.button
-    [ HE.onClick \_ -> act
-    , style $ "padding:4px 11px;border:1px solid #a8a392;border-radius:5px;cursor:pointer;"
-        <> "font-family:'SF Mono',Menlo,monospace;font-size:9px;letter-spacing:0.06em;"
-        <> (if active then "color:#1c1a12;background:linear-gradient(#c8a86a,#b8975a)"
-            else "color:#3f3c33;background:linear-gradient(#efece1,#ddd9cb)") ]
-    [ HH.text label ]
-
--- ---------------------------------------------------------------------------
--- POLYTRIG (SELENE DRUMS tab) — the middle info/routes column + the jack rack
--- ---------------------------------------------------------------------------
-
--- The middle column for the SELENE DRUMS tab: the lane-spanning ROUTES editor
--- (each route is a mini-notation string whose atoms fire jacks by name), plus a
--- short legend. Jacks live in the PATTERN column to the right.
-trigInfoPanel :: forall m. State -> H.ComponentHTML Action () m
-trigInfoPanel s =
-  panel "ROUTES" "flex:0 0 260px"
-    [ HH.div [ style $ engrave <> ";font-size:8px;opacity:0.55;line-height:1.6;margin-bottom:12px" ]
-        [ HH.text "A ROUTE IS A PATTERN WHOSE ATOMS FIRE JACKS BY NAME — \"bd sn cp sn\". IT STACKS WITH EACH JACK'S OWN SOURCE." ]
-    , HH.div [ style "display:flex;flex-direction:column;gap:8px" ]
-        (mapWithIndex routeLine s.trig.routes)
-    , HH.button
-        [ HE.onClick \_ -> AddRoute
-        , style $ "margin-top:10px;padding:6px 13px;border:1px dashed #a8a392;border-radius:6px;cursor:pointer;"
-            <> "font-family:Georgia,serif;font-size:12px;color:#6a6657;background:#00000006;align-self:flex-start" ]
-        [ HH.text "+ ROUTE" ]
-    ]
-
--- One editable route line: a text field + a remove button.
-routeLine :: forall m. Int -> String -> H.ComponentHTML Action () m
-routeLine i src =
-  HH.div [ style "display:flex;align-items:center;gap:6px" ]
-    [ HH.input
-        [ HP.value src
-        , HP.placeholder "bd sn cp sn"
-        , HE.onValueInput (SetRoute i)
-        , style $ "flex:1 1 auto;min-width:0;padding:5px 8px;border:1px solid #a8a392;border-radius:5px;"
-            <> "background:#f3f1e8;font-family:'SF Mono',Menlo,monospace;font-size:11px;color:#1c1a12" ]
-    , HH.button
-        [ HE.onClick \_ -> RemoveRoute i
-        , style $ "flex:0 0 auto;width:22px;height:26px;border:1px solid #a8a392;border-radius:5px;cursor:pointer;"
-            <> "font-family:'SF Mono',Menlo,monospace;font-size:12px;color:#8a3120;background:#efece1" ]
-        [ HH.text "×" ]
-    ]
-
--- The PATTERN column for the SELENE DRUMS tab: the eight named jacks as a grid.
--- Each jack shows its name (editable), MIDI note (drag-free steppers), source
--- pattern (editable), and a linear step figure lit at the source's onsets.
-trigBody :: forall m. State -> H.ComponentHTML Action () m
-trigBody s =
-  HH.div_
-    [ HH.div
-        [ style "display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;max-width:640px" ]
-        (mapWithIndex trigJackCell s.trig.jacks)
-    , HH.div [ style $ engrave <> ";font-size:8px;opacity:0.5;margin-top:12px;line-height:1.6;max-width:640px" ]
-        [ HH.text "EACH JACK: A NAME (WHAT ROUTES ADDRESS), A MIDI NOTE, AND AN OPTIONAL SOURCE PATTERN. LEAVE THE SOURCE BLANK TO DRIVE A JACK FROM ROUTES ALONE. RELOCATED FROM SELENE — CV/GATE TARGETS STAY ON SELENE." ]
-    ]
-
--- One POLYTRIG jack: name + note steppers on top, a source input, then a step
--- figure following the source's meter (faint "↳ route" when the source is empty).
-trigJackCell :: forall m. Int -> M.TrigSlot -> H.ComponentHTML Action () m
-trigJackCell i sl =
-  HH.div
-    [ style $ "padding:8px 9px;border-radius:7px;background:#ffffff55;border:1px solid #00000012;"
-        <> "display:flex;flex-direction:column;gap:6px;min-width:0" ]
-    [ HH.div [ style "display:flex;align-items:center;gap:6px" ]
-        [ HH.input
-            [ HP.value sl.name
-            , HE.onValueInput (SetJackName i)
-            , style $ "flex:1 1 auto;min-width:0;padding:3px 6px;border:1px solid #a8a392;border-radius:4px;"
-                <> "background:#f3f1e8;font-family:Georgia,serif;font-size:12px;color:#1c1a12" ]
-        , stepBtn "−" (SetJackNote i (-1))
-        , HH.span [ style "font-family:'SF Mono',Menlo,monospace;font-size:10px;color:#3f3c33;width:30px;text-align:center" ]
-            [ HH.text ("♪" <> show sl.note) ]
-        , stepBtn "+" (SetJackNote i 1)
-        ]
-    , HH.input
-        [ HP.value sl.source
-        , HP.placeholder "(routed)"
-        , HE.onValueInput (SetJackSource i)
-        , style $ "padding:4px 7px;border:1px solid #a8a392;border-radius:4px;background:#f3f1e8;"
-            <> "font-family:'SF Mono',Menlo,monospace;font-size:11px;color:#1c1a12;width:100%;box-sizing:border-box" ]
-    , trigStepFigure sl.source
-    ]
-
--- A linear step row lit at the source's onset cells (HTML so it fills width).
--- Adapted from Selene's stepFigure; the trig accent is a steel-blue.
-trigStepFigure :: forall m. String -> H.ComponentHTML Action () m
-trigStepFigure src =
-  let
-    m = Lane.meterOf src
-    mask = Lane.cellMaskOf src
-    trigAccent = "#3f6f8a"
-    stepDiv k =
-      let on = fromMaybe false (mask !! k)
-      in
-        HH.div
-          [ style $ "flex:1 1 0;min-width:0;height:14px;border-radius:2px;"
-              <> (if on then "background:" <> trigAccent
-                  else "background:#00000008;border:1px solid " <> trigAccent <> "44;box-sizing:border-box") ]
-          []
-  in
-    HH.div [ style "display:flex;gap:2px;width:100%;height:14px;align-items:center" ]
-      (map stepDiv (range 0 (m - 1)))
-
-heatSvg :: forall m. State -> H.ComponentHTML Action () m
-heatSvg s =
-  let
-    b = s.bal
-    cols = 32
-    colW = 16.0
-    rowH = 30.0
-    nLanes = 3
-    gutter = 34.0                       -- left margin for lane name + MIDI note
-    laneY lane = toNumber lane * rowH
-    colX step = gutter + toNumber step * colW
-    w = gutter + toNumber cols * colW
-    h = toNumber nLanes * rowH
-    rectBlock x0 y0 wid hgt c op =
-      svgEl "rect"
-        [ svgAttr "x" (show x0), svgAttr "y" (show y0)
-        , svgAttr "width" (show wid), svgAttr "height" (show hgt), svgAttr "rx" "2"
-        , svgAttr "fill" c, svgAttr "fill-opacity" (show op) ] []
-    accentOutline x0 y0 =
-      svgEl "rect"
-        [ svgAttr "x" (show (x0 + 1.0)), svgAttr "y" (show (y0 + 1.0))
-        , svgAttr "width" (show (colW - 3.0)), svgAttr "height" (show (rowH - 3.0)), svgAttr "rx" "3"
-        , svgAttr "fill" "none", svgAttr "stroke" "#1c1a12", svgAttr "stroke-width" "1.2"
-        , svgAttr "style" "pointer-events:none" ] []
-    -- ratchets as a vertical STACK of n blocks down the tall pill (readable,
-    -- since the cell is taller than wide), all at the same (flat) opacity.
-    stackBlocks x y c n op =
-      if n <= 1 then [ rectBlock (x + 2.0) (y + 2.0) (colW - 5.0) (rowH - 5.0) c op ]
-      else
-        range 0 (n - 1) `concatMap'` \k ->
-          let segH = (rowH - 4.0) / toNumber n
-              sy = y + 2.0 + toNumber k * segH
-          in [ rectBlock (x + 2.0) sy (colW - 5.0) (segH - 1.0) c op ]
-    -- the small ⋮N marker shown on a ratcheted slot that isn't firing.
-    ratchetHint x y c n =
-      svgEl "text"
-        [ svgAttr "x" (show (x + colW / 2.0)), svgAttr "y" (show (y + rowH / 2.0 + 3.0))
-        , svgAttr "fill" c, svgAttr "fill-opacity" "0.6", svgAttr "font-size" "8"
-        , svgAttr "text-anchor" "middle", svgAttr "font-family" "Georgia,serif"
-        , svgAttr "style" "pointer-events:none" ]
-        [ HH.text ("⋮" <> show n) ]
-    -- a Grids lane cell: faint interpolated landscape + ratcheted hit + accent.
-    gridsCell lane step =
-      let
-        level = M.levelAt b lane step
-        fires = M.wouldFire b lane step
-        accent = fires && level > 192
-        opens = lane == 2 && fires && M.opensAt b step   -- an open hat here
-        n = M.ratchetAt b lane step
-        x = colX step
-        y = laneY lane
-        c = if opens then ohColor else instColor lane
-        landscape = rectBlock x y (colW - 1.0) (rowH - 1.0) c (toNumber level / 255.0 * 0.32)
-        segs = if not fires then [] else stackBlocks x y c n (if accent then 0.95 else 0.7)
-        acc = if accent then [ accentOutline x y ] else []
-        hint = if n > 1 && not fires then [ ratchetHint x y c n ] else []
-      in
-        [ landscape ] <> segs <> acc <> hint
-    -- Grids cells have no plain action (hits come from X/Y); a vertical drag
-    -- sets the beat's ratchet (up = more retriggers).
-    gridsTarget lane step =
-      let
-        x = colX step
-        y = laneY lane
-      in
-        svgEl "rect"
-          [ svgAttr "x" (show x), svgAttr "y" (show y)
-          , svgAttr "width" (show (colW - 1.0)), svgAttr "height" (show (rowH - 1.0))
-          , svgAttr "fill" "rgba(0,0,0,0)", svgAttr "style" "cursor:ns-resize;pointer-events:all"
-          , svgMouse "mousedown" \_ -> StartDrag (DCell lane step) (M.ratchetAt b lane step) ] []
-    playhead =
-      svgEl "rect"
-        [ svgAttr "x" (show (colX s.playStep)), svgAttr "y" "0"
-        , svgAttr "width" (show colW), svgAttr "height" (show h)
-        , svgAttr "fill" "#1c1a12", svgAttr "fill-opacity" (if s.sounding /= Silent then "0.10" else "0.0")
-        , svgAttr "stroke" "#1c1a12", svgAttr "stroke-opacity" (if s.sounding /= Silent then "0.5" else "0.15")
-        , svgAttr "stroke-width" "1", svgAttr "style" "pointer-events:none" ] []
-    beatLines =
-      range 0 8 `concatMap'` \k ->
-        let x = colX (k * 4)
-        in [ svgEl "line"
-               [ svgAttr "x1" (show x), svgAttr "y1" "0", svgAttr "x2" (show x), svgAttr "y2" (show h)
-               , svgAttr "stroke" "#3f3c33", svgAttr "stroke-opacity" "0.18", svgAttr "stroke-width" "0.8"
-               , svgAttr "style" "pointer-events:none" ] [] ]
-    laneDivider lane =
-      svgEl "line"
-        [ svgAttr "x1" (show gutter), svgAttr "y1" (show (laneY lane)), svgAttr "x2" (show w)
-        , svgAttr "y2" (show (laneY lane))
-        , svgAttr "stroke" "#3f3c33", svgAttr "stroke-opacity" "0.12", svgAttr "stroke-width" "0.6"
-        , svgAttr "style" "pointer-events:none" ] []
-    -- the lane name (bold, coloured) + its editable MIDI note below, pulled into
-    -- the gutter like the fixed grid.
-    rowLabel lane =
-      [ svgEl "text"
-          [ svgAttr "x" "3", svgAttr "y" (show (laneY lane + 13.0))
-          , svgAttr "fill" (instColor lane), svgAttr "fill-opacity" "0.9", svgAttr "style" "pointer-events:none"
-          , svgAttr "font-size" "9", svgAttr "font-weight" "bold", svgAttr "font-family" "Georgia,serif" ]
-          [ HH.text (M.instName lane) ]
-      , noteTag 3.0 (laneY lane + 25.0) (NGrids lane) (M.noteOf lane b)
-      ]
-    visuals =
-      range 0 2 `concatMap'` \lane -> range 0 (cols - 1) `concatMap'` \step -> gridsCell lane step
-    targets =
-      range 0 2 `concatMap'` \lane -> range 0 (cols - 1) `concatMap'` \step -> [ gridsTarget lane step ]
-  in
-    svgEl "svg"
-      [ svgAttr "viewBox" ("0 0 " <> show w <> " " <> show h)
-      , svgAttr "width" "100%", svgAttr "style" "display:block;max-height:90vh" ]
-      ( visuals <> beatLines
-          <> map laneDivider (range 1 (nLanes - 1))
-          <> [ playhead ] <> concatMap rowLabel (range 0 (nLanes - 1)) <> targets )
-
-bigKnob :: forall m. KnobTarget -> String -> String -> M.Balistes -> H.ComponentHTML Action () m
-bigKnob target color label b =
-  let
-    v = knobValue target b
-    r = targetRange target
-  in
-    HH.div [ style "display:flex;flex-direction:column;align-items:center;width:64px" ]
-      [ HH.span [ style $ engrave <> ";font-size:9px;margin-bottom:2px" ] [ HH.text label ]
-      , HH.div [ style "width:50px;height:50px" ]
-          [ knob { cx: 24.0, cy: 24.0, rOuter: 20.0, rInner: 8.0, color, lo: r.lo, hi: r.hi, value: v, ticks: 0 } (StartDrag (DKnob target) v) ]
-      , HH.span [ style "font-family:'SF Mono',Menlo,monospace;font-size:10px;color:#3f3c33;margin-top:2px" ]
-          [ HH.text (show v) ]
-      ]
 

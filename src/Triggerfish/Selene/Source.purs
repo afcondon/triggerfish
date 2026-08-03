@@ -27,6 +27,8 @@ module Triggerfish.Selene.Source
   ( printRack
   , printDest
   , parseRack
+  , parseTarget
+  , kindKeyword
   ) where
 
 import Prelude

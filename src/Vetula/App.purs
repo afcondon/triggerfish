@@ -18,7 +18,7 @@ module Vetula.App where
 
 import Prelude
 
-import Data.Array (concat, concatMap, deleteAt, drop, elem, elemIndex, filter, find, head, index, insertAt, last, length, mapMaybe, mapWithIndex, modifyAt, nub, nubByEq, range, replicate, sort, take, updateAt, (!!))
+import Data.Array (concat, concatMap, deleteAt, drop, elem, elemIndex, filter, find, findIndex, head, index, insertAt, last, length, mapMaybe, mapWithIndex, modifyAt, nub, nubByEq, range, replicate, sort, take, takeEnd, updateAt, (!!))
 import Data.Foldable (all, any, foldl, foldr, for_, maximum, minimum, sum)
 import Data.Traversable (traverse)
 import Data.Int (fromString, round, toNumber)
@@ -30,11 +30,13 @@ import Effect.Timer (setInterval)
 import Data.Nullable (Nullable, null)
 import Data.Set (Set)
 import Data.Set as Set
-import Data.String (Pattern(..), contains)
+import Data.String (Pattern(..), contains, stripPrefix)
 import Data.String.CodeUnits as SCU
-import Data.String.Common (joinWith, toLower, trim)
-import Data.Tuple (Tuple(..), snd)
+import Data.String.Common (joinWith, split, toLower, trim)
+import Data.Tuple (Tuple(..), fst, snd)
 import Effect (Effect)
+import Effect.Random (randomInt)
+import Effect.Class.Console as Console
 import Effect.Aff (attempt)
 import Effect.Aff.Class (class MonadAff, liftAff)
 import Effect.Class (liftEffect)
@@ -47,7 +49,9 @@ import Halogen.Subscription as HS
 import Halogen.Svg.Attributes as SA
 import Halogen.Svg.Elements as SE
 import Type.Proxy (Proxy(..))
-import Web.Event.Event (Event, EventType(..), preventDefault)
+import Web.Event.Event (Event, EventType(..), preventDefault, stopPropagation)
+import Web.HTML.Event.DragEvent (DragEvent)
+import Web.HTML.Event.DragEvent as DE
 import Web.Event.EventTarget (addEventListener, eventListener)
 import Web.HTML (window)
 import Web.HTML.Window as Window
@@ -63,27 +67,62 @@ import Binnacle.Scheduler as Scheduler
 import Binnacle.Transport as Transport
 import Triggerfish.Transport (Sounding(..))
 import Triggerfish.Midi.Routing as Routing
+import Triggerfish.Glyph (ChipView, Glyph, glyphOf, sessionAliasOf)
+import Triggerfish.GlyphView (faIcon)
+import Triggerfish.Preset (Preset, indexOfContent, presetAlias)
 import Vetula.Store as Store
 import Triggerfish.Amphora as Amphora
 import Vetula.Tank (Specimen, SpecimenId(..), Provenance(..), specNotes)
 import Reef.Vetula.Perf (VChord, VVoice, VDest(..), VRenderer(..), PerfClock, cursorAtClock, renderAlphaBlockMidiAt, renderAlphaClockMidiAt) as RV
 import Reef.Vetula.Articulate (VArticulator(..), articulate, articLabel, nextArtic) as RA
 import Vetula.Playhead (clockFor, defaultPattern, noteClock, patternClock)
+import Vetula.Realise (fromChords)
+import Vetula.Perform.Types
+  ( PerfFx(..)
+  , ArpDir(..)
+  , VoiceShape(..)
+  , PerfSel(..)
+  , When(..)
+  , Layer
+  , PerfTerm(..)
+  , PerfDragSrc(..)
+  , mkLayer
+  , arpDirGlyph
+  , cycleArpDir
+  , arpOrder
+  , whenLabel
+  , cycleWhen
+  , termLabel
+  , termShort
+  , termRigOnly
+  , printArpDir
+  , parseArpDir
+  , printVoiceShape
+  , parseVoiceShape
+  )
+import Tidal.Pattern.Core (fast, slow, every)
+import Tidal.Pattern.Mini (parseMiniPattern)
+import Tidal.Pattern.Types (Arc(..), eventValue, eventWhole, isDigital, mkArc, mkState, query)
+import Tidal.Pattern.Types (Pattern) as PT
+import Data.Rational as Rat
 import Data.Either (Either(..))
 import Reef.Vetula.Protocol (encodePerf) as RV
 import Binnacle.Time (dateNow)
 import Vetula.Tidal (progressionSource, parseProgression)
+import Vetula.Lepidoptera (PerfDoc, VoiceSpec, docFromVoices, parsePerform, printAsRecord)
 import Vetula.Clipboard (copyText)
 import Binnacle.Midi as Midi
-import Hylograph.Halogen.UI.Select as Select
-import Hylograph.Halogen.UI.Modal as Modal
+import Halogen.Widgets.Select as Select
+import Halogen.Widgets.Modal as Modal
 import Hylograph.ForceEngine.Halogen (toHalogenEmitter)
 import Hylograph.Simulation
   ( Engine(..), SimulationEvent(..), SimulationHandle, SimulationNode
   , Setup, runSimulation, setup, manyBody, collide, link, positionX, positionY
   , withStrength, withRadius, withDistance, withX, withY, static, dynamic )
 import Harmonia.Anchor (Anchor(..))
-import Harmonia.Chord (Key, Mode(..), cMajorKey)
+import Harmonia.Voicing (Voicing(..), Selector(..), voicingMidi, takeVoicing, openTriad, rootless, drop2, drop2and4, quartal, cluster)
+import Harmonia.Chord (Key, Mode(..), cMajorKey, chordRoot)
+import Vetula.Between (bridgeNotes, maxBridge)
 import Harmonia.Graded (transpose) as Graded
 import Vetula.Palette (butlerChords, stockChords)
 import Vetula.Harmony (ChordNode, Family(..), Kind(..), blackKeyPcs, diatonicTriads, generate, interchangeChords, keyX, keyboard, latticeChild, latticeFamily, mcmullenChords, noteName, place, placeOutside, playNotes, scaleSet, suspendSet, triadNode, triadOn, voicingCandidates, whiteKeyPcs)
@@ -149,13 +188,18 @@ derive instance ordLeftSection :: Ord LeftSection
 -- | in the tank as SEEDS and blooms a constellation of voice-led relatives around
 -- | each one (the "shake the etch-a-sketch, put chords back in, grow what relates"
 -- | idea). Catch a relative and it feeds the tank — the compositional loop closes.
-data StageLens = LensKeyboard | LensPadGrid | LensCircleFifths | LensTonnetz | LensLattices | LensGenerate
+-- |
+-- | `LensPerform` is the PERFORM surface (docs/DESIGN-vetula-chyron-redesign §Perform):
+-- | not another projection of the pool but a live rig — a row of player BOXES, one
+-- | per output, onto which you drop saved sequence-tokens; each box loops its token
+-- | while the transport plays. The function stack + non-MIDI sinks land on top later.
+data StageLens = LensKeyboard | LensPadGrid | LensCircleFifths | LensTonnetz | LensLattices | LensGenerate | LensPerform
 
 derive instance eqStageLens :: Eq StageLens
 
 -- | The lens registry. A new lens appends here (+ a constructor + a render branch).
 allLenses :: Array StageLens
-allLenses = [ LensKeyboard, LensPadGrid, LensCircleFifths, LensTonnetz, LensLattices, LensGenerate ]
+allLenses = [ LensKeyboard, LensPadGrid, LensCircleFifths, LensTonnetz, LensLattices, LensGenerate, LensPerform ]
 
 lensLabel :: StageLens -> String
 lensLabel = case _ of
@@ -163,8 +207,77 @@ lensLabel = case _ of
   LensPadGrid -> "pad grid"
   LensCircleFifths -> "fifths"
   LensTonnetz -> "tonnetz"
-  LensLattices -> "lattices"
-  LensGenerate -> "grow"
+  LensLattices -> "voice-leading lattice"
+  LensGenerate -> "explore"
+  LensPerform -> "perform"
+
+-- | Where Vetula's chord/path AUDITION goes, chosen in the shell's routing modal
+-- | (2026-08-01): Off (muted), Continuo (the piano+strings VST preview via the
+-- | "continuo" virtual port), or Midi (the rig/IAC bus, on the preview channel).
+-- | The shell drives this with SetAuditionQ; connectMidi picks the port from it.
+data AuditionSel = AuditionOff | AuditionContinuo | AuditionMidi
+
+derive instance eqAuditionSel :: Eq AuditionSel
+
+-- | The color-overlay layers (2026-07-31 redesign — see
+-- | docs/DESIGN-vetula-progression-building.md §"Context-panel redesign").
+-- | The palettes stopped being MODE selectors that inject chords into the pool
+-- | and became an always-on annotation layer: each set of chords is *painted*
+-- | onto the geometric views in its own fixed hue, toggled independently. The
+-- | diatonic triads are the base layer; borrowed comes from the BORROW scale;
+-- | McMullen/Butler/Stock are the curated exterior signpost sets. Rendering the
+-- | layers is Step 3 — this type + its state + the toggles are Step 2.
+data ColorLayer = LayerDiatonic | LayerBorrowed | LayerMcMullen | LayerButler | LayerStock
+
+derive instance eqColorLayer :: Eq ColorLayer
+derive instance ordColorLayer :: Ord ColorLayer
+
+-- | The layer registry, in legend order (base first).
+allColorLayers :: Array ColorLayer
+allColorLayers = [ LayerDiatonic, LayerBorrowed, LayerMcMullen, LayerButler, LayerStock ]
+
+layerLabel :: ColorLayer -> String
+layerLabel = case _ of
+  LayerDiatonic -> "diatonic"
+  LayerBorrowed -> "borrowed"
+  LayerMcMullen -> "McMullen"
+  LayerButler -> "Butler"
+  LayerStock -> "Stock"
+
+-- | Each layer's own distinct hue — a legend, NOT the tonnetz outside-distance
+-- | ramp (AC decision 3, 2026-07-31). Diatonic is a quiet base ink; the color
+-- | sets each get a saturated, legible hue that reads on parchment.
+layerHue :: ColorLayer -> String
+layerHue = case _ of
+  LayerDiatonic -> "#6a6a6a"
+  LayerBorrowed -> "#b5622d"
+  LayerMcMullen -> "#3f7d54"
+  LayerButler -> "#4a6da8"
+  LayerStock -> "#8a5a9a"
+
+-- | The chords a color layer paints for the current key: the diatonic triads,
+-- | the borrow scale's interchange chords (only when a BORROW mode is chosen),
+-- | or one of the curated exterior signpost sets. These are generated on the
+-- | fly for annotation — they are NOT added to the pool (`st.chords`).
+layerChords :: State -> ColorLayer -> Array ChordNode
+layerChords st = case _ of
+  LayerDiatonic -> diatonicTriads st.key
+  LayerBorrowed -> case st.borrowMode of
+    Just v -> interchangeChords (modeOf v) st.key
+    Nothing -> []
+  LayerMcMullen -> mcmullenChords st.key
+  LayerButler -> butlerChords st.key
+  LayerStock -> stockChords st.key
+
+-- | A chord's short name from its root + quality (major bare, minor "m", else
+-- | the bare root) — the token label on the color corona.
+chordTag :: ChordNode -> String
+chordTag c =
+  let pc = mod c.root 12
+  in noteName pc
+       <> (if elem (mod (pc + 4) 12) c.pcs then ""
+           else if elem (mod (pc + 3) 12) c.pcs then "m"
+           else "")
 
 -- | How a voice sounds the chord it's currently on. Block = the whole chord held
 -- | for the step; Strummed = re-trigger only the notes that changed (common tones
@@ -279,8 +392,72 @@ type VoicingCycle =
   , ix :: Int
   }
 
+-- | One audition event on the CHYRON — the rolling harmonic capture buffer (see
+-- | docs/DESIGN-vetula-chyron-redesign.md). Every single-chord audition (via
+-- | `playChord`/`playSpecimen`, the only two audition choke-points) appends one
+-- | of these, whether or not sound actually came out. `pcs` for the glyph/dedup,
+-- | `notes` for exact replay, `at` (ms, `dateNow`) for the timing axis that a
+-- | later lift can quantise or drop. The trace is what a progression gets LIFTED
+-- | from retroactively, replacing build-a-progression-up-front.
+-- |
+-- | `anchor` carries the chord's *harmonic reading* (`Harmonia.Anchor`) — the one
+-- | thing the raw notes cannot reconstruct: where the chord sits in a scale. This
+-- | is what Explore needs to bloom the *right* neighbourhood around a captured
+-- | chord (a progression can span scales, so the reading is per-chord, never
+-- | per-buffer). `notes` already serves as the voicing (`bass : voicing`), so the
+-- | anchor is the only enrichment the event needs over its notes. A chord minted
+-- | with no reading (recall from a bare note-list) carries `Free`.
+type ChyronEvent =
+  { pcs    :: Array Int
+  , notes  :: Array Int
+  , label  :: String
+  , at     :: Number
+  , anchor :: Anchor
+  }
+
+-- | Cap on the rolling chyron buffer — oldest events fall off the left.
+chyronCap :: Int
+chyronCap = 128
+
+-- | A SAVED sequence: a span lifted out of the live trace and compressed to a
+-- | pinned 2-glyph token (its identity, from `glyphOf` over the sequence's
+-- | content). Carries the full events so it can be replayed with timing and,
+-- | later, `split` into (Progression, Timings). See DESIGN-vetula-chyron-redesign.
+type SavedSeq =
+  { events :: Array ChyronEvent
+  , glyph :: Glyph
+  }
+
+
+-- | A PERFORM box: one persistent player slot on the Perform surface, bound to a
+-- | MIDI channel. A dropped token LOOPS through its function `stack` (folded over
+-- | the chord pattern) while the transport plays, out its terminal `term`. Empty or
+-- | muted boxes are silent; a rig-only terminal is silent+ghosted in Solo.
+type PerfBox =
+  { channel :: Int
+  , label   :: String
+  , seq     :: Maybe SavedSeq
+  , stack   :: Array Layer   -- ordered function layers (fx + when clause); arp/strum
+                             -- among them carry the chord→time realisation (block = none)
+  , seqText :: String     -- the TEXT HATCH: a mini-notation sequence over the token's
+                          -- chord indices (cycle = 1 bar). "" = default (one/beat).
+  , muted   :: Boolean    -- silence this pipeline without tearing it down
+  , term    :: PerfTerm   -- the terminal sink: → midi | → odo | → rig
+  }
+
+-- | A box is GHOSTED when its terminal can't sound in the current authority — a
+-- | rig-only sink anywhere but Atlantis (Rig). Ghosted boxes are silent and dimmed.
+boxGhosted :: Sounding -> PerfBox -> Boolean
+boxGhosted authority box = termRigOnly box.term && authority /= Rig
+
 type State =
   { key :: Key
+  -- The rig's resting harmonic scale (macro-tidal harmonic-authority): Nothing =
+  -- follow the key's diatonic set; Just = an explicit `# scale` override (root pc
+  -- + intervals from any Reef scale, beyond the diatonic modes the key can name).
+  -- Vetula is the single harmonic authority — this is what pitched voices quantise
+  -- to when no chord is firing.
+  , restScale :: Maybe { root :: Int, offsets :: Array Int }
   , focus :: Focus                     -- Slice 4c: Hunt (lattice-dominant) vs Perform (rail-dominant)
   , railOpen :: Set RailSection        -- Slice 4b: which rail accordion sections are open (multi)
   , leftOpen :: Set LeftSection        -- which LEFT accordion sections are open (multi)
@@ -295,6 +472,7 @@ type State =
   , subId :: Maybe H.SubscriptionId
   , midiOut :: Maybe Midi.MidiOut
   , midiName :: String
+  , auditionSel :: AuditionSel      -- where the audition goes (Off/Continuo/Midi); shell-driven
   , previewChan :: Int              -- the MIDI channel chord/path AUDITION plays on (own
                                     -- routable channel, so ATLANTIS preview can be cued
                                     -- separately from the live brush; 0-indexed like voices)
@@ -324,6 +502,15 @@ type State =
   -- the modal-interchange source mode currently borrowed from (the picker's
   -- value; Nothing = none). Its chords live in `dropped` under "interchange".
   , borrowMode :: Maybe String
+  -- the active color-overlay layers (2026-07-31 redesign): which palette sets
+  -- are painted onto the geometric views, each in its own hue. Replaces the
+  -- old "drop chords into the pool" palette mode. Rendered in Step 3.
+  , colorLayers :: Set ColorLayer
+  -- the tonnetz triad STACK (2026-07-31 redesign): triads accumulated by
+  -- alt-clicking triangles, in pick order. Edge-adjacent triads fold into
+  -- 7ths/9ths naturally (the polychord is the pitch-class union); the whole
+  -- stack catches to the tank as one Anchor. Empty = not stacking.
+  , tonnetzStack :: Array { root :: Int, pcs :: Array Int, major :: Boolean }
   -- chords reconstructed by pasting a saved Tidal progression back in. They live
   -- in `chords` (so the Revoice ladders + export work on them) but are kept off
   -- the Explore/Lattice surfaces — they aren't lattice nodes.
@@ -338,6 +525,14 @@ type State =
   , genSel :: Array Int
   , candidates :: Array ChordNode
   , adventure :: Number      -- 0 = smoothest candidates … 1 = most striking
+  -- ARRANGE (control B): how many bridge chords `Vetula.Between` lays in front of
+  -- a tank chord as it's dropped into the progression — the "cadence length" dial
+  -- (0 = drop it bare, 1 = V, 2 = ii–V, …). See docs/DESIGN-vetula-progression-building.md.
+  , bridgeLen :: Int
+  -- Floating-control fold state: each card collapses to just its header (click the
+  -- title bar) to cede the stage to the underlying music viz. See `floatCard`.
+  , foldCtx :: Boolean
+  , foldProg :: Boolean
   -- Performance tab — the progression library + the loaded working copy + voices.
   , library :: Array LibEntry
   -- Auto-capture bookkeeping (Slice 1): the current progression is captured to the
@@ -386,11 +581,56 @@ type State =
   -- into the pool as a centre chord (`seedChord` maps the specimen → its pool
   -- chord id) and blooms its neighbours around it; clicking again unstages it.
   , seedChord :: Map SpecimenId Int
+  -- The unified glyph-chip PRESET bank (docs/DESIGN-scene-modal.md): captured
+  -- progression sources, anonymous or named, freely intermixed — distinct from the
+  -- auto-capture `library`. `identity` is the parked preset's source text (the chip
+  -- glyph; ghosts when the live progression diverges from it). No `lastChip` guard:
+  -- Vetula reports its chip by PULL (AskChip), not a change-gated push.
+  , presets :: Array Preset
+  , identity :: Maybe String
+  -- The CHYRON: an append-only (capped) log of everything auditioned this
+  -- session, oldest→newest. Phase 1 = the ticker; Phase 2 adds interaction.
+  -- See DESIGN-vetula-chyron-redesign.
+  , chyron :: Array ChyronEvent
+  -- Chyron interaction. `hoveredChyron` = the chip index under the pointer (space
+  -- auditions it, no re-log). `chyronSel` = the current selection, Mac text-editing
+  -- semantics: a plain click drops a fresh single-chord selection (`lo==hi`) and
+  -- sets the `anchor`; a shift-click extends the range from that fixed anchor
+  -- (anchor stays put, the clicked chip becomes the moving end). `lo`/`hi` are the
+  -- sorted span endpoints the render/save/play all read; `anchor` is the fixed end
+  -- a subsequent shift-click re-extends from.
+  , hoveredChyron :: Maybe Int
+  , chyronSel :: Maybe { lo :: Int, hi :: Int, anchor :: Int }
+  -- Saved sequences: pinned 2-glyph tokens on the left of the chyron. Saving a
+  -- selection compresses its live chips into one of these (reclaiming space).
+  , chyronSaved :: Array SavedSeq
+  -- Record-arm: when false, auditions still SOUND but don't log to the trace
+  -- (noodle without cluttering). Defaults true — always-on capture, the flow AC
+  -- liked; disarm only when you want to explore off the record.
+  , chyronArmed :: Boolean
+  -- PERFORM surface: player boxes (one per output) + the token "picked up" for
+  -- placement (shift-click / drag a saved token, then click / drop on a box), and
+  -- an fx "picked up" from the palette for placement onto a box's stack.
+  , perfBoxes :: Array PerfBox
+  , perfHeld :: Maybe Int
+  , perfHeldFx :: Maybe PerfFx
+  , perfDrag :: Maybe PerfDragSrc   -- the in-flight HTML5 drag payload
+  , perfEditBox :: Maybe Int        -- box whose sequence is open in the editor modal
+  -- The persistent Perform SESSION: the container for saved scenes. Resumes across
+  -- reloads; scenes save as `⟨alias|name⟩ #nextScene`. Minted/restored in Initialize.
+  , perfSession :: Store.SessionState
+  -- Recall: scenes fetched from Amphora (collection `vetula-scene`), + modal flag.
+  , perfScenes :: Array { hash :: String, name :: String, payload :: String, tags :: Array String }
+  , perfRecallOpen :: Boolean
   }
+
+-- | Which floating control a fold toggle targets.
+data VPanel = VCtx | VProg
 
 data Action
   = Initialize
   | MidiReady (Maybe Midi.MidiOut) String
+  | RetryMidi              -- (re)request Web-MIDI access from a user gesture (chip click)
   | SimTick
   | SimDone
   | Hover (Maybe Int)
@@ -414,6 +654,10 @@ data Action
   | CloseRevoice           -- dismiss the revoice modal
   | SlashBass Int          -- set the revoiced chord's bass to a pitch class (slash chord)
   | DropSet String         -- toggle an exterior signpost set (McMullen …)
+  | ToggleLayer ColorLayer -- toggle a color-overlay layer on/off (2026-07-31)
+  | StackTriad Int (Array Int) Boolean -- alt-click a Tonnetz triad: add/remove it from the stack
+  | CommitStack            -- catch the accumulated Tonnetz stack to the tank as one Anchor
+  | ClearStack             -- discard the Tonnetz stack
   | BorrowFrom String      -- modal interchange: borrow from a parallel mode (or off)
   | ReflavourFamily String -- re-flavour the focused family's scale (mode value)
   | PlayPath               -- ▶ play the whole progression
@@ -439,6 +683,11 @@ data Action
   | UnloadProg             -- back to the library
   | DeleteLib Int          -- remove a library entry
   | PublishLib Int         -- publish library entry #i to the Amphora store (vetula-progression)
+  | SaveScene              -- serialise the whole Perform surface as a vetulaScene → Amphora
+  | PerfNewSession         -- mint a fresh session glyph-triple (rolls the scene counter)
+  | PerfOpenRecall         -- fetch saved scenes from Amphora + open the recall modal
+  | PerfCloseRecall
+  | PerfLoadScene String   -- parse a scene payload and load it onto the surface
   | AddVoice
   | RemoveVoice Int
   | SetVoiceChannel Int String
@@ -468,11 +717,45 @@ data Action
   | AuditionSpec SpecimenId -- shift-click a tank specimen: hear it (no state change)
   | StageSpec SpecimenId   -- click a tank specimen: seed the pool with it (toggle)
   | SequenceSpec SpecimenId -- shift-click a tank specimen: append a snapshot to the progression
+  | ArrangeSpec SpecimenId  -- drop a tank chord into the progression, bridged by `bridgeLen`
+  | SetBridgeLen Int        -- set the cadence-length dial (clamped 0..maxBridge)
+  | ToggleFold VPanel       -- collapse/expand a floating control to just its header
   | ClearStage             -- remove all staged seeds + the chords bloomed from them
   | AuditionTriad Int (Array Int)        -- Tonnetz: hear a triad off the net (root pc, pcs)
   | CatchTriad Int (Array Int) Boolean   -- Tonnetz: freeze a triad into the tank (root, pcs, isMajor)
   | AuditionNode ChordNode               -- Lattices: hear a generated chord (its own voicing)
   | CatchNode ChordNode                  -- Lattices: freeze a generated chord into the tank
+  -- Chyron (Phase 2): hover a chip (space auditions it), or click one — plain
+  -- click builds the selection span, shift-click lifts (to the tank for now).
+  | HoverChyron (Maybe Int)
+  | ChyronClick Int Boolean
+  | DeleteChyron Int       -- × a single audition out of the trace
+  | ClearChyron            -- wipe the whole audition trace
+  | SaveChyronSel          -- compress the selection into a pinned 2-glyph token
+  | PlaySaved Int          -- replay a pinned saved sequence (with its timing)
+  | DeleteSaved Int        -- × a pinned saved sequence
+  | ToggleChyronArm        -- record-arm the chyron on/off
+  -- PERFORM surface
+  | PerfPickup Int         -- pick up saved token i for placement (toggle)
+  | PerfDropBox Int        -- place the held token/fx onto box i
+  | PerfClearBox Int       -- empty box i (stop its loop)
+  | PerfDragOver DragEvent -- allow HTML5 drop onto a box (preventDefault)
+  | PerfPickFx PerfFx      -- pick up an fx from the palette for placement (toggle)
+  | PerfFxNudge Int Int Int -- nudge box b's stack layer i by delta
+  | PerfFxRemove Int Int   -- remove box b's stack layer i
+  | PerfFxAlt Int Int      -- box b, layer i: alternate control (arp cycles direction)
+  | PerfFxWhen Int Int     -- box b, layer i: cycle the when clause (always / every n)
+  | PerfSetTerm Int PerfTerm -- set box b's terminal sink directly
+  | PerfSetSeq Int String  -- edit box b's text-hatch sequence (mini-notation) only
+  | PerfSetPipeline Int String -- edit box b's WHOLE pipeline text (seq # layers)
+  | PerfOpenEdit Int       -- open the sequence editor modal for box b
+  | PerfCloseEdit          -- close the sequence editor modal
+  | PerfNop                -- no-op (used to stop a click bubbling without a re-render)
+  | PerfToggleMute Int     -- silence/unsilence box b's pipeline
+  | PerfDragStart PerfDragSrc -- begin an HTML5 drag of a palette/box layer
+  | PerfDropOnChip DragEvent Int Int -- drop the dragged layer before box b's chip i
+  | PerfDragEnd            -- clear the drag payload (drop landed or was abandoned)
+  | PerfStopClick ME.MouseEvent Action -- run Action but stop the click bubbling to the box
   | ZoomAt Event Number    -- geometric lens: wheel-zoom toward the cursor (event, deltaY)
   | PanStart Event         -- geometric lens: begin a grab-to-pan drag
   | PanMove Event          -- geometric lens: drag the viewport
@@ -513,6 +796,32 @@ data SourceQuery a
   -- bindings; the page asks which → midi voice names are in use so it can list them.
   | SetRouting (Array { name :: String, ch :: Int }) a
   | AskVoiceNames (Array String -> a)
+  -- The chord/path AUDITION channel, surfaced in the shell's routing modal now
+  -- that Vetula's voice card is gone. Canonical 1..16 across the query boundary
+  -- (Vetula stores WebMIDI 0..15 internally).
+  | AskPreviewChan (Int -> a)
+  | SetPreviewChanC Int a
+  -- Where the audition goes (routing modal's per-machine cycle): Off/Continuo/Midi.
+  | SetAuditionQ AuditionSel a
+  -- macro-tidal harmonic authority. The shell polls the rig's resting harmonic
+  -- context (the key's diatonic set, or a `# scale` override) and pushes it into
+  -- Odonus's pitchSet. `SetRestingScale` is where the macro `# scale` verb lands
+  -- (root pc + intervals) — Vetula owns the scale, every pitched voice follows.
+  -- The harmonic context Odonus quantises to — ONE set (chord-or-scale), per the
+  -- rule in `harmonicContext`. `SetRestingScale` is the macro `# scale` override.
+  | AskContextScale ({ root :: Int, offsets :: Array Int } -> a)
+  | SetRestingScale Int (Array Int) a
+  -- The unified glyph-chip PRESET bank (docs/DESIGN-scene-modal.md). Vetula reports
+  -- its chip by PULL (`AskChip`, polled by the shell's 100ms PollVetula loop) rather
+  -- than a push Output, since it has no continuous frame loop. `content` is the
+  -- progression's Tidal source (`currentSource`). Capture/recall/star/cull mirror the
+  -- other machines; the bank is distinct from Vetula's own auto-capture library.
+  | Capture a
+  | AskBank (Array { slot :: Int, alias :: String, name :: String, starred :: Boolean } -> a)
+  | RecallSlot Int a
+  | StarSlot Int a
+  | DeleteSlot Int a
+  | AskChip (Maybe ChipView -> a)
 
 -- The one thing Vetula tells the shell without being asked: it armed or disarmed
 -- itself (its own play / stop / unload). The shell owns the `armed` set, so this
@@ -525,6 +834,7 @@ component :: forall i m. MonadAff m => H.Component SourceQuery i Output m
 component = H.mkComponent
   { initialState: \_ ->
       { key: cMajorKey
+      , restScale: Nothing
       , focus: Hunt
       , railOpen: Set.fromFoldable [ SecProgression, SecLibrary, SecVoices ]
       , leftOpen: Set.fromFoldable [ SecSetup, SecTank, SecLens ]
@@ -539,6 +849,7 @@ component = H.mkComponent
       , subId: Nothing
       , midiOut: Nothing
       , midiName: "…"
+      , auditionSel: AuditionContinuo   -- audition through the Continuo VST by default
       -- chord/path auditions default to the canonical Vetula channel (MIDI ch 5,
       -- where the standard config parks a pad/strings) — `playChord` sends this raw
       -- to WebMIDI, so it's the 0-indexed toWire form of the canonical constant.
@@ -555,6 +866,8 @@ component = H.mkComponent
       , stackHead: Nothing
       , dropped: Map.empty
       , borrowMode: Nothing
+      , colorLayers: Set.singleton LayerDiatonic
+      , tonnetzStack: []
       , imported: Set.empty
       , sourceEdit: Nothing
       , sourceOpen: false
@@ -562,6 +875,9 @@ component = H.mkComponent
       , genSel: []
       , candidates: []
       , adventure: 0.25
+      , bridgeLen: 2
+      , foldCtx: false
+      , foldProg: false
       , library: []
       , capSeq: 0
       , lastCapIdx: Nothing
@@ -570,12 +886,9 @@ component = H.mkComponent
       , saveName: ""
       , publishMsg: Nothing
       , perfName: Nothing
-      -- one MIDI + one Odonus voice present from the start but MUTED, so both
-      -- destinations are one un-mute away — no Add-voice hunt to hear either.
-      , voices:
-          [ (defaultVoice 0 4 Block 0) { muted = true }
-          , (defaultVoice 1 0 Block 0) { dest = ToOdonus, muted = true }
-          ]
+      -- the four fixed lanes of the bottom voice bar, all MUTED (one toggle from
+      -- sounding). See `canonicalVoices`.
+      , voices: canonicalVoices 0
       , armed: false
       -- standalone Vetula has no shell, so authority defaults Local (the play button
       -- works as a direct local transport). Inside Triggerfish the shell drives it via
@@ -586,13 +899,14 @@ component = H.mkComponent
       , tempo: 120
       , binnacle: Nothing
       , clockTempo: 120.0
-      , nextVoiceId: 2
+      , nextVoiceId: 4
       -- name → canonical MIDI channel, pushed from the shell's Tidal-page routing
       -- table (SetRouting). Unnamed / unbound voices fall back to the default channel.
       , routing: Map.empty :: Map String Int
       , tank: []
       , nextSpecId: 0
       , seedChord: Map.empty
+      , presets: [], identity: Nothing
       , lens: LensTonnetz  -- default: the tonal net shows the scale's shape best
       , viewCx: 0.0
       , viewCy: 0.0
@@ -600,6 +914,22 @@ component = H.mkComponent
       , panning: Nothing
       , panMoved: false
       , genRoll: 0
+      , chyron: []
+      , hoveredChyron: Nothing
+      , chyronSel: Nothing
+      , chyronSaved: []
+      , chyronArmed: true
+      -- four player boxes on MIDI ch 1-4 (Odonus I-IV in AC's routing); a token
+      -- dropped on one loops there while the transport plays.
+      , perfBoxes: map (\n -> { channel: n, label: "P" <> show n, seq: Nothing, stack: [], seqText: "", muted: false, term: TMidi }) (range 1 4)
+      , perfHeld: Nothing
+      , perfHeldFx: Nothing
+      , perfDrag: Nothing
+      , perfEditBox: Nothing
+      -- placeholder; Initialize resumes the persisted session or mints a fresh one
+      , perfSession: { alias: "", name: "", nextScene: 1 }
+      , perfScenes: []
+      , perfRecallOpen: false
       }
   , render
   , eval: H.mkEval H.defaultEval
@@ -715,6 +1045,104 @@ handleQuery = case _ of
     s <- H.get
     let names = nub (filter (_ /= "") (map _.name (filter (\v -> v.dest == ToMidi) s.voices)))
     pure (Just (reply names))
+  -- macro-tidal harmonic authority: hand the shell the harmonic context set.
+  AskContextScale reply -> do
+    s <- H.get
+    pure (Just (reply (harmonicContext s)))
+  -- The macro `# scale` verb: install an explicit resting scale (any Reef scale).
+  SetRestingScale root offsets next -> do
+    H.modify_ _ { restScale = Just { root: mod root 12, offsets } }
+    pure (Just next)
+  -- The shell's CAPTURE hotkey: bank the live progression source as a preset and
+  -- park identity on it (the chip shows the freshly-minted glyph, held). No-op with
+  -- an empty progression. See captureNow.
+  Capture next -> do
+    captureNow
+    pure (Just next)
+  -- The status-board chip's recall menu: report each preset as its glyph alias +
+  -- optional name + star flag; recall / star / delete a chosen preset.
+  AskBank reply -> do
+    s <- H.get
+    pure (Just (reply (mapWithIndex (\i p -> { slot: i, alias: presetAlias p, name: fromMaybe "" p.name, starred: p.starred }) s.presets)))
+  RecallSlot i next -> do
+    recallPreset i
+    pure (Just next)
+  StarSlot i next -> do
+    H.modify_ \s -> s { presets = fromMaybe s.presets (modifyAt i (\p -> p { starred = not p.starred }) s.presets) }
+    persistLib
+    pure (Just next)
+  DeleteSlot i next -> do
+    H.modify_ \s -> s { presets = fromMaybe s.presets (deleteAt i s.presets) }
+    persistLib
+    pure (Just next)
+  -- The pull the shell's 100ms PollVetula uses to light Vetula's status-board chip.
+  AskChip reply -> do
+    s <- H.get
+    pure (Just (reply (chipViewOf s)))
+
+  -- Audition channel, canonical 1..16 (stored 0..15).
+  AskPreviewChan reply -> do
+    s <- H.get
+    pure (Just (reply (s.previewChan + 1)))
+  SetPreviewChanC ch next -> do
+    H.modify_ _ { previewChan = clamp 0 15 (ch - 1) }
+    pure (Just next)
+  SetAuditionQ sel next -> do
+    H.modify_ _ { auditionSel = sel }
+    case sel of
+      AuditionOff -> H.modify_ _ { midiOut = Nothing, midiName = "muted" }
+      _ -> connectMidi   -- re-pick the output port (continuo vs IAC) for the new mode
+    pure (Just next)
+
+-- | The ONE harmonic-context set Odonus quantises to (root pc + intervals). The
+-- | rule, in precedence order — the decoupling of "Vetula's lens scale" from "what
+-- | Odonus quantises to", honouring descriptive-not-prescriptive (a progression's
+-- | chords are free of any scale, so the CHORD itself is the set):
+-- |
+-- |   1. an explicit `# scale` override (the user deliberately imposed a scale);
+-- |   2. a loaded progression → its ACTIVE chord's pitch classes (current chord
+-- |      when playing, else the sounding/first chord) — chord-quantise, not scale;
+-- |   3. otherwise → the lens scale (`st.key`), which re-quantises live as the user
+-- |      changes the scale they're browsing.
+-- |
+-- | (Free-auditioning arbitrary chords with no progression falls into case 3 — the
+-- | lens scale — which we accept: unrelated chords can't relate to Odonus. A future
+-- | "clever layer" could look at the whole progression holistically — leading
+-- | tones, Harmonia-driven expansion — to widen case 2 past bare arpeggiation.)
+harmonicContext :: State -> { root :: Int, offsets :: Array Int }
+harmonicContext st = case st.restScale of
+  Just rs -> rs
+  Nothing -> case activeChordPcs st of
+    Just pcs | length pcs > 0 -> pcsToSet pcs
+    _ -> { root: mod st.key.tonic 12
+         , offsets: map (\pc -> mod (pc - st.key.tonic + 12) 12) (scaleSet st.key) }
+
+-- | The active chord of a loaded progression as pitch classes: the chord under the
+-- | playhead when playing, else the sounding chord, else the first — `Nothing` when
+-- | no progression is loaded (empty path).
+activeChordPcs :: State -> Maybe (Array Int)
+activeChordPcs st
+  | length st.path == 0 = Nothing
+  | otherwise =
+      let cs = perfChords st
+          byPulse =
+            if st.playing then (harmonicVoice st >>= cursorAt cs st.pulse) >>= (cs !! _)
+            else Nothing
+          bySounding = st.sounding >>= \sid -> find (\c -> c.id == sid) cs
+          chosen = case byPulse of
+            Just c -> Just c
+            Nothing -> case bySounding of
+              Just c -> Just c
+              Nothing -> head cs
+      in (\c -> nub (map (\x -> mod x 12) (playNotes c))) <$> chosen
+
+-- | A set of pitch classes → a PitchSet payload (lowest pc as root, ascending
+-- | intervals up from it). Order/duplicates normalised.
+pcsToSet :: Array Int -> { root :: Int, offsets :: Array Int }
+pcsToSet pcs = case sort (nub (map (\x -> mod x 12) pcs)) of
+  sorted -> case head sorted of
+    Just r -> { root: r, offsets: map (_ - r) sorted }
+    Nothing -> { root: 0, offsets: [ 0 ] }
 
 -- | The current path as one PC set per step (each chord's absolute pitch
 -- | classes) — what Odonus's quantiser snaps to when fed from Vetula.
@@ -740,11 +1168,33 @@ harmonicVoice st =
 voiceChordFeed :: State -> Array { id :: Int, pcs :: Array Int }
 voiceChordFeed st =
   let chords = perfChords st
-  in mapMaybe
-       (\v -> if v.dest == ToOdonus
-                then (\c -> { id: v.channel, pcs: c.pcs }) <$> index chords v.cursor
-                else Nothing)
-       st.voices
+      voices = mapMaybe
+        (\v -> if v.dest == ToOdonus
+                 then (\c -> { id: v.channel, pcs: c.pcs }) <$> index chords v.cursor
+                 else Nothing)
+        st.voices
+  in voices <> perfBoxOdoFeed st
+
+-- | Perform boxes whose terminal is `→ odo` contribute their CURRENT block chord
+-- | to the Odonus feed (keyed by the box's channel, reused as the Odonus id) — the
+-- | same conductor role a `ToOdonus` voice plays. Muted / ghosted / empty boxes and
+-- | non-odo terminals don't feed.
+perfBoxOdoFeed :: State -> Array { id :: Int, pcs :: Array Int }
+perfBoxOdoFeed st =
+  mapMaybe
+    (\box ->
+       if box.term == TOdo && not box.muted && isJust box.seq && not (boxGhosted st.authority box)
+         then case boxCurrentChord box (st.pulse / 4) of
+                Just notes | length notes > 0 -> Just { id: box.channel, pcs: nub (map (\x -> mod x 12) notes) }
+                _ -> Nothing
+         else Nothing)
+    st.perfBoxes
+
+-- | The chord a box is sounding at beat-cycle `b` — the first digital event of its
+-- | folded pattern over that cycle (the block chord Odonus would quantise).
+boxCurrentChord :: PerfBox -> Int -> Maybe (Array Int)
+boxCurrentChord box b =
+  eventValue <$> head (filter isDigital (query (boxPattern box) (mkState (mkArc (Rat.fromInt b) (Rat.fromInt (b + 1))))))
 
 -- ---------------------------------------------------------------------------
 -- Force layout
@@ -812,21 +1262,52 @@ stopSim = do
   for_ st.handle \h -> liftEffect h.stop
   H.modify_ _ { subId = Nothing, handle = Nothing }
 
+-- | Request Web-MIDI access and pick the output. Prefers the Continuo audition
+-- | port when it's live (a JUCE virtual dest named "continuo" — Piano One/strings
+-- | for hearing Vetula, see the continuo-vst-daemon note), falling back to the IAC
+-- | bus that feeds the rig in production. Called on Initialize AND from the chip
+-- | click (RetryMidi) — the click is the user gesture Chrome needs to prompt.
+connectMidi :: forall m. MonadAff m => H.HalogenM State Action Slots Output m Unit
+connectMidi = do
+  sel <- H.gets _.auditionSel
+  { emitter: midiE, listener: midiL } <- liftEffect HS.create
+  _ <- H.subscribe midiE
+  liftEffect $ Midi.requestAccess \maccess -> case maccess of
+    Nothing -> HS.notify midiL (MidiReady Nothing "no Web-MIDI")
+    Just access -> case sel of
+      -- Off: no output at all.
+      AuditionOff -> HS.notify midiL (MidiReady Nothing "muted")
+      -- Midi: the rig/IAC bus only (the rig is the audition, no Continuo fallback).
+      AuditionMidi -> do
+        miac <- Midi.findOutput access midiPortName
+        names <- Midi.outputNames access
+        let nm = case miac of
+              Just _ -> midiPortName <> " ✓"
+              Nothing -> "no '" <> midiPortName <> "' — ports: " <> joinWith ", " names
+        HS.notify midiL (MidiReady miac nm)
+      -- Continuo: the VST preview port when live, else fall back to IAC.
+      AuditionContinuo -> do
+        mcont <- Midi.findOutput access "continuo"
+        miac <- Midi.findOutput access midiPortName
+        names <- Midi.outputNames access
+        let mout = case mcont of
+              Just _ -> mcont
+              Nothing -> miac
+            nm = case mcont of
+              Just _ -> "continuo ✓"
+              Nothing -> case miac of
+                Just _ -> midiPortName <> " ✓"
+                Nothing -> "no '" <> midiPortName <> "'/continuo — ports: " <> joinWith ", " names
+        HS.notify midiL (MidiReady mout nm)
+
 handleAction :: forall m. MonadAff m => Action -> H.HalogenM State Action Slots Output m Unit
 handleAction = case _ of
   Initialize -> do
-    -- MIDI out
-    { emitter: midiE, listener: midiL } <- liftEffect HS.create
-    _ <- H.subscribe midiE
-    liftEffect $ Midi.requestAccess \maccess -> case maccess of
-      Just access -> do
-        mout <- Midi.findOutput access midiPortName
-        names <- Midi.outputNames access
-        let nm = case mout of
-              Just _ -> midiPortName <> " ✓"
-              Nothing -> "no '" <> midiPortName <> "' — ports: " <> joinWith ", " names
-        HS.notify midiL (MidiReady mout nm)
-      Nothing -> HS.notify midiL (MidiReady Nothing "no Web-MIDI")
+    -- MIDI out. NB modern Chrome only shows the Web-MIDI permission prompt in
+    -- response to a USER GESTURE, so this page-load request often resolves to
+    -- "no Web-MIDI" the first time — clicking the MIDI chip (→ RetryMidi) re-runs
+    -- it from a real gesture and surfaces the prompt. See connectMidi.
+    connectMidi
     -- The shared transport: connect Binnacle (free-run 120 → Link-lock on the
     -- rig) and run the lookahead scheduler. It ticks the 16th-note grid always;
     -- PerfTick gates on `playing`, so Vetula is a clock-peer of Odonus/Balistes
@@ -845,14 +1326,28 @@ handleAction = case _ of
     -- Restore the persisted library (auto-capture stack) from localStorage. capSeq
     -- continues past the restored count so new ◦ autonames don't collide.
     msaved <- liftEffect Store.loadLibrary
-    for_ msaved \sv -> H.modify_ _ { library = sv.library, capSeq = length sv.library }
-    -- Merge the shared Amphora progression library over the local one (by name);
-    -- the store being offline is not fatal — we keep whatever's local.
-    dbRes <- liftAff (attempt (Amphora.fetchCollection "vetula-progression"))
-    case dbRes of
-      Right items | length items > 0 ->
-        H.modify_ \s -> s { library = mergeLibByName s.library (map amphoraEntry items) }
-      _ -> pure unit
+    for_ msaved \sv -> H.modify_ _ { library = sv.library, capSeq = length sv.library, presets = sv.presets }
+    -- Resume the persisted Perform session (a reload must NOT start a new session);
+    -- mint one only on the very first launch. `perfSession` then rides every save.
+    msess <- liftEffect Store.loadSession
+    case msess of
+      Just sess -> do
+        Console.log ("Vetula session: resumed " <> sess.alias <> " (next #" <> show sess.nextScene <> ")")
+        H.modify_ _ { perfSession = sess }
+      Nothing -> do
+        fresh <- liftEffect mintSession
+        liftEffect (Store.saveSession fresh)
+        Console.log ("Vetula session: minted (first-launch) " <> fresh.alias)
+        H.modify_ _ { perfSession = fresh }
+    -- Merge the shared Amphora progression library in the BACKGROUND: awaiting it
+    -- blocked Initialize (hence the shell's polls of Vetula) until the ~30s offline
+    -- timeout. The store being offline is not fatal — keep whatever's local.
+    void $ H.fork do
+      dbRes <- liftAff (attempt (Amphora.fetchCollection "vetula-progression"))
+      case dbRes of
+        Right items | length items > 0 ->
+          H.modify_ \s -> s { library = mergeLibByName s.library (map amphoraEntry items) }
+        _ -> pure unit
     -- keyboard
     { emitter: keyE, listener: keyL } <- liftEffect HS.create
     _ <- H.subscribe keyE
@@ -860,8 +1355,9 @@ handleAction = case _ of
       w <- window
       el <- eventListener \ev -> do
         -- while typing in a name / search / source field, the single-key
-        -- shortcuts (c = clear, r = reset, space, Tab…) must stand down — they
-        -- were wiping the progression mid-type
+        -- shortcuts (⌫ = clear, r = reset, space, Tab…) must stand down — they
+        -- were wiping the progression mid-type. `c` is the shell's global CAPTURE
+        -- hotkey now, not a Vetula key.
         typing <- isFormField ev
         -- and when Vetula is mounted-but-hidden (it's one tab of the Triggerfish
         -- rack), ignore keys entirely so they don't fire phantom chords while
@@ -883,6 +1379,12 @@ handleAction = case _ of
 
   MidiReady mout nm ->
     H.modify_ _ { midiOut = mout, midiName = nm }
+
+  -- Click the MIDI chip to (re)request access — this runs from a user gesture,
+  -- which is what makes Chrome actually show the permission prompt.
+  RetryMidi -> do
+    H.modify_ _ { midiName = "…" }
+    connectMidi
 
   SimTick -> do
     st <- H.get
@@ -935,7 +1437,13 @@ handleAction = case _ of
         "Tab" -> cycleVoicing (if shift then -1 else 1)
         "ArrowUp" -> nudgeSelected 1
         "ArrowDown" -> nudgeSelected (-1)
-        "c" -> handleAction ClearPath
+        -- Clear the path is Backspace/Delete (the ✕ button also does it). `c` used to
+        -- clear here, but it's now the shell's global CAPTURE hotkey (same key on every
+        -- pane, docs/DESIGN-scene-modal.md) — so clear yields it the letter.
+        "Backspace" -> handleAction ClearPath
+        "Delete" -> handleAction ClearPath
+        -- Enter: compress the current chyron selection into a saved glyph token
+        "Enter" -> handleAction SaveChyronSel
         "p" -> H.gets _.path >>= playPath
         "f" -> toggleFavorite
         -- catch the hovered chord into the tank: a Tonnetz triangle first (no pool
@@ -964,11 +1472,14 @@ handleAction = case _ of
   SelectKey v -> case fromString v of
     Just pc -> do
       st <- H.get
+      -- picking a key retakes harmonic authority from any `# scale` override
+      H.modify_ _ { restScale = Nothing }
       rebuild (st.key { tonic = mod pc 12 })
     Nothing -> pure unit
 
   SelectScale v -> do
     st <- H.get
+    H.modify_ _ { restScale = Nothing }
     rebuild (st.key { mode = modeOf v })
 
   -- shift-click a Lattice chord to grow the running path. From the current end:
@@ -1063,6 +1574,14 @@ handleAction = case _ of
             , nextId = st.nextId + length placed
             , dropped = Map.insert gkey (map _.id placed) st.dropped
             }
+
+  -- toggle a color-overlay layer (2026-07-31 redesign): pure state — the layer
+  -- is painted or not painted onto the views (Step 3), the pool is untouched.
+  ToggleLayer l ->
+    H.modify_ \s ->
+      s { colorLayers =
+            if Set.member l s.colorLayers then Set.delete l s.colorLayers
+            else Set.insert l s.colorLayers }
 
   -- modal interchange: borrow the chosen parallel mode's chromatic chords (or
   -- "off" to clear). Always replaces the previous interchange set, so the picker
@@ -1260,10 +1779,16 @@ handleAction = case _ of
         -- not a parallel working copy.
         , path = ids
         , perfName = Just entry.name
-        , voices = [ defaultVoice 0 0 Block (length fresh) ]
-        , nextVoiceId = 1
+        , voices = canonicalVoices (length fresh)
+        , nextVoiceId = 4
         , sounding = head ids
+        -- The loaded progression's key becomes the live harmonic context: clear any
+        -- `# scale` override, then adopt the entry's saved key so the resting scale
+        -- (and every following voice, incl. Odonus) tracks it. Without this the scale
+        -- stayed on whatever was loaded before — the "dark pads stayed C minor" bug.
+        , restScale = Nothing
         }
+      for_ (parseKeyLabel entry.keyLabel) \k -> H.modify_ _ { key = k }
 
   -- ← library: set the current progression aside to browse the stack. Slice 4a: the
   -- path IS the progression, so snapshot it first (AutoCapture is on a timer and may
@@ -1299,6 +1824,74 @@ handleAction = case _ of
         H.modify_ _ { publishMsg = Just case res of
           Right hash -> "✓ " <> e.name <> " · " <> SCU.take 8 hash
           Left _ -> "✗ publish failed (store offline?)" }
+
+  -- Serialise the whole Perform surface as a `vetulaScene` record and publish it
+  -- to the shared Amphora store (collection `vetula-scene`). The scene is auto-
+  -- named `⟨session alias|name⟩ #N` (no naming friction — identity without a name,
+  -- per the glyph substrate) and tagged `session:`/`scene:` so recall groups by
+  -- session; `nextScene` increments (and persists) only on a successful save, so a
+  -- failed store doesn't burn a number. Payload is the Tier-3 `printAsRecord` form;
+  -- sources dedup by content. Store offline → a transient message, never fatal.
+  SaveScene -> do
+    st <- H.get
+    H.modify_ _ { publishMsg = Just "saving scene…" }
+    let keyLabel = groupLabel st.key
+        sess = st.perfSession
+        n = sess.nextScene
+        handle = if sess.name == "" then sess.alias else sess.name
+        label = handle <> " #" <> show n
+        doc = docFromVoices keyLabel (map boxSpec st.perfBoxes)
+        payload = printAsRecord label doc
+        tags = [ "session:" <> sess.alias, "scene:" <> show n, "key:" <> keyLabel ]
+    res <- liftAff (attempt (Amphora.publish
+      { kind: "vetula-scene", collection: "vetula-scene"
+      , name: label, source: "user", payload, tags }))
+    case res of
+      Right hash -> do
+        let sess' = sess { nextScene = n + 1 }
+        liftEffect (Store.saveSession sess')
+        H.modify_ _ { perfSession = sess', publishMsg = Just ("✓ " <> label <> " · " <> SCU.take 8 hash) }
+      Left _ -> H.modify_ _ { publishMsg = Just "✗ save failed (store offline?)" }
+
+  -- Mint a fresh session (a new monochrome glyph-triple, scene counter back to 1)
+  -- and persist it. The deliberate "I'm starting a new body of work" boundary — the
+  -- only thing besides a first-ever launch that rolls the session (reloads resume).
+  PerfNewSession -> do
+    fresh <- liftEffect mintSession
+    liftEffect (Store.saveSession fresh)
+    Console.log ("Vetula session: new-session button → " <> fresh.alias)
+    H.modify_ _ { perfSession = fresh, publishMsg = Just ("new session · " <> fresh.alias) }
+
+  -- Open the recall modal, fetching the saved scenes from Amphora (grouped by
+  -- session in the view). Store offline → an empty list + a note, never fatal.
+  PerfOpenRecall -> do
+    H.modify_ _ { perfRecallOpen = true, publishMsg = Just "loading scenes…" }
+    res <- liftAff (attempt (Amphora.fetchCollection "vetula-scene"))
+    case res of
+      Right items -> H.modify_ _ { perfScenes = items, publishMsg = Nothing }
+      Left _ -> H.modify_ _ { perfScenes = [], publishMsg = Just "✗ scenes: store offline?" }
+
+  PerfCloseRecall -> H.modify_ _ { perfRecallOpen = false }
+
+  -- Parse a stored scene payload (the `vetulaScene { … }` record) back into a
+  -- document and reconstruct the surface's boxes. Lenient: a payload that yields
+  -- no voices is left as a note rather than blanking the surface.
+  -- Load a scene onto the Perform surface AND surface its progressions in the
+  -- chyron: each named source becomes a saved 2-glyph token (its content glyph),
+  -- so a recalled scene's chord sets are right there to replay or unbundle for
+  -- editing — closing the save→recall→edit loop (DESIGN-tank-overhaul.md §6). One
+  -- token per distinct source preserves the multi-source separation (a voice's
+  -- substitution-sibling or different-key set stays its own token). The saved
+  -- region belongs to the loaded document, so it REPLACES what was there; the live
+  -- capture buffer is left untouched.
+  PerfLoadScene payload -> do
+    let doc = parsePerform payload
+        boxes = boxesFromDoc doc
+        tokens = map (\s -> mkSavedSeq s.chords) doc.sources
+    if length boxes == 0
+      then H.modify_ _ { perfRecallOpen = false, publishMsg = Just "✗ couldn't read that scene" }
+      else H.modify_ _ { perfBoxes = boxes, chyronSaved = tokens
+                       , perfRecallOpen = false, publishMsg = Just "scene loaded" }
 
   AddVoice -> H.modify_ \s ->
     s { voices = s.voices <> [ defaultVoice s.nextVoiceId (mod s.nextVoiceId 4) (rendOf s.nextVoiceId) (length (perfChords s)) ]
@@ -1433,7 +2026,8 @@ handleAction = case _ of
   AuditionTriad root pcs -> do
     st <- H.get
     if st.panMoved then H.modify_ _ { panMoved = false }
-    else playChord (triadNode root pcs "")
+    -- label it like CatchTriad (root name + minor mark) so the chyron reads it
+    else playChord (triadNode root pcs (noteName root <> (if elem (mod (root + 4) 12) pcs then "" else "m")))
 
   CatchTriad root pcs isMajor -> do
     st <- H.get
@@ -1446,6 +2040,40 @@ handleAction = case _ of
                , anchor: node.anchor
                }
     H.modify_ _ { tank = st.tank <> [ spec ], nextSpecId = st.nextSpecId + 1 }
+
+  -- Tonnetz stacking (2026-07-31): alt-click accumulates triads into a stack
+  -- (toggle — alt-clicking a stacked triad removes it). The stack builds a
+  -- polychord; edge-adjacent triads fold into 7ths/9ths since the chord is the
+  -- pitch-class union. Auditions the triad on the way in so you hear it stack.
+  StackTriad root pcs isMajor -> do
+    playChord (triadNode root pcs "")
+    H.modify_ \s ->
+      let same e = e.root == root && e.pcs == pcs
+      in s { tonnetzStack = case find same s.tonnetzStack of
+               Just _ -> filter (not <<< same) s.tonnetzStack
+               Nothing -> s.tonnetzStack <> [ { root, pcs, major: isMajor } ] }
+
+  -- Catch the whole stack to the tank as ONE Anchor: the pitch-class union,
+  -- bassed on the first (lowest-picked) triad, labelled as the stacked triads.
+  CommitStack -> do
+    st <- H.get
+    case st.tonnetzStack of
+      [] -> pure unit
+      stack -> do
+        let allPcs = nub (concatMap _.pcs stack)
+            root = maybe 0 _.root (head stack)
+            label = joinWith "+" (map (\e -> noteName e.root <> (if e.major then "" else "m")) stack)
+            node = triadNode root allPcs label
+            spec = { id: SpecimenId st.nextSpecId
+                   , voicing: node.voicing
+                   , bass: node.bassPc + 36
+                   , label: node.label
+                   , provenance: FromLens (groupLabel st.key)
+                   , anchor: node.anchor
+                   }
+        H.modify_ _ { tank = st.tank <> [ spec ], nextSpecId = st.nextSpecId + 1, tonnetzStack = [] }
+
+  ClearStack -> H.modify_ _ { tonnetzStack = [] }
 
   -- Lattices lens: a generated lattice chord carries its own voicing, so audition/
   -- catch use it verbatim (unlike the triad path, which re-voices from pcs).
@@ -1464,6 +2092,166 @@ handleAction = case _ of
                , anchor: c.anchor
                }
     H.modify_ _ { tank = st.tank <> [ spec ], nextSpecId = st.nextSpecId + 1 }
+
+  -- Chyron: remember which chip the pointer is over so space auditions it.
+  HoverChyron mi -> H.modify_ _ { hoveredChyron = mi }
+
+  -- Chyron click. Plain click walks the selection state machine (endpoint →
+  -- span → reset). Shift-click LIFTS: for now, catch the chord into the tank
+  -- (Phase 2b will special-case a shift-click INSIDE the span to lift the whole
+  -- selection as a named progression).
+  -- Chyron selection, Mac text-editing semantics. Plain click drops a fresh
+  -- single-chord selection whose `anchor` is that chord; shift-click extends the
+  -- range from the fixed anchor (a shift-click with no prior selection is just a
+  -- plain click). This is the collector-and-editor's select gesture — it no longer
+  -- catches to the tank (the tank is being retired; you explore from the selection
+  -- itself, DESIGN-tank-overhaul.md §§3–4).
+  ChyronClick i shift -> do
+    st <- H.get
+    case index st.chyron i of
+      Nothing -> pure unit
+      Just _ ->
+        let sel = case st.chyronSel of
+              Just s | shift -> { lo: min s.anchor i, hi: max s.anchor i, anchor: s.anchor }
+              _ -> { lo: i, hi: i, anchor: i }
+        in H.modify_ _ { chyronSel = Just sel }
+
+  -- Delete one audition (indices shift, so drop any selection/hover to stay safe).
+  DeleteChyron i -> H.modify_ \st ->
+    st { chyron = fromMaybe st.chyron (deleteAt i st.chyron)
+       , chyronSel = Nothing
+       , hoveredChyron = Nothing }
+
+  ClearChyron -> H.modify_ _ { chyron = [], chyronSel = Nothing, hoveredChyron = Nothing }
+
+  -- Compress the selected span into a pinned 2-glyph token: mint a SavedSeq from
+  -- its events + content-glyph, then REMOVE those events from the live trace
+  -- (reclaiming the space — the saving is the compression).
+  SaveChyronSel -> do
+    st <- H.get
+    case st.chyronSel of
+      Just sel | sel.hi > sel.lo -> do
+        let evs = mapMaybe (\ix -> index st.chyron ix) (range sel.lo sel.hi)
+            saved = { events: evs, glyph: glyphOf (seqContent evs) }
+            keep = mapMaybe (\(Tuple ix e) -> if ix < sel.lo || ix > sel.hi then Just e else Nothing)
+                     (mapWithIndex Tuple st.chyron)
+        H.modify_ _ { chyronSaved = st.chyronSaved <> [ saved ], chyron = keep
+                    , chyronSel = Nothing, hoveredChyron = Nothing }
+      _ -> pure unit
+
+  PlaySaved i -> do
+    st <- H.get
+    for_ (index st.chyronSaved i) \s -> playEvents s.events
+
+  DeleteSaved i -> H.modify_ \st -> st { chyronSaved = fromMaybe st.chyronSaved (deleteAt i st.chyronSaved) }
+
+  ToggleChyronArm -> H.modify_ \st -> st { chyronArmed = not st.chyronArmed }
+
+  -- PERFORM: pick up / drop / clear a player box. Pickup toggles (click the held
+  -- token again to drop it). Drop assigns the held token and clears the hand;
+  -- with nothing in hand it is a no-op (so a bubbled × clear is harmless).
+  PerfPickup i -> H.modify_ \st ->
+    st { perfHeld = if st.perfHeld == Just i then Nothing else Just i, perfHeldFx = Nothing }
+
+  -- Drop onto box b (appends): a DRAGGED layer (palette or moved from another box)
+  -- wins; else an fx-in-hand (click-place); else a token-in-hand assigns the
+  -- sequence; else no-op (so a bubbled × clear / chip-drop stays harmless).
+  PerfDropBox b -> do
+    st <- H.get
+    case st.perfDrag of
+      Just src -> H.modify_ _ { perfBoxes = dropFxInto src b Nothing st.perfBoxes, perfDrag = Nothing }
+      Nothing -> case st.perfHeldFx of
+        Just fx -> H.modify_ _
+          { perfBoxes = mapWithIndex (\j box -> if j == b then box { stack = box.stack <> [ mkLayer fx ] } else box) st.perfBoxes
+          , perfHeldFx = Nothing
+          }
+        Nothing -> case st.perfHeld >>= index st.chyronSaved of
+          Just s -> H.modify_ _
+            { perfBoxes = mapWithIndex (\j box -> if j == b then box { seq = Just s } else box) st.perfBoxes
+            , perfHeld = Nothing
+            }
+          Nothing -> pure unit
+
+  PerfClearBox b -> H.modify_ \st ->
+    st { perfBoxes = mapWithIndex (\j box -> if j == b then box { seq = Nothing } else box) st.perfBoxes }
+
+  PerfDragOver ev -> liftEffect (preventDefault (DE.toEvent ev))
+
+  PerfPickFx fx -> H.modify_ \st ->
+    st { perfHeldFx = if st.perfHeldFx == Just fx then Nothing else Just fx, perfHeld = Nothing }
+
+  PerfFxNudge b i d -> H.modify_ \st ->
+    st { perfBoxes = mapWithIndex (\j box ->
+           if j == b then box { stack = fromMaybe box.stack (modifyAt i (\lyr -> lyr { fx = fxNudge d lyr.fx }) box.stack) } else box)
+         st.perfBoxes }
+
+  PerfFxWhen b i -> H.modify_ \st ->
+    st { perfBoxes = mapWithIndex (\j box ->
+           if j == b then box { stack = fromMaybe box.stack (modifyAt i (\lyr -> lyr { when = cycleWhen lyr.when }) box.stack) } else box)
+         st.perfBoxes }
+
+  PerfFxRemove b i -> H.modify_ \st ->
+    st { perfBoxes = mapWithIndex (\j box ->
+           if j == b then box { stack = fromMaybe box.stack (deleteAt i box.stack) } else box)
+         st.perfBoxes }
+
+  PerfFxAlt b i -> H.modify_ \st ->
+    st { perfBoxes = mapWithIndex (\j box ->
+           if j == b then box { stack = fromMaybe box.stack (modifyAt i (\lyr -> lyr { fx = fxAlt lyr.fx }) box.stack) } else box)
+         st.perfBoxes }
+
+  PerfToggleMute b -> H.modify_ \st ->
+    st { perfBoxes = mapWithIndex (\j box ->
+           if j == b then box { muted = not box.muted } else box)
+         st.perfBoxes }
+
+  PerfSetTerm b t -> H.modify_ \st ->
+    st { perfBoxes = mapWithIndex (\j box ->
+           if j == b then box { term = t } else box)
+         st.perfBoxes }
+
+  PerfSetSeq b txt -> H.modify_ \st ->
+    st { perfBoxes = mapWithIndex (\j box ->
+           if j == b then box { seqText = txt } else box)
+         st.perfBoxes }
+
+  -- the round-trip commit: parse the whole pipeline text back into the structured
+  -- box (seq part + layer stack), so the text field and the chips stay one thing.
+  PerfSetPipeline b txt -> H.modify_ \st ->
+    st { perfBoxes = mapWithIndex (\j box ->
+           if j == b then let r = parsePipeline txt in box { seqText = r.seqText, stack = r.stack } else box)
+         st.perfBoxes }
+
+  PerfOpenEdit b -> H.modify_ _ { perfEditBox = Just b }
+
+  PerfCloseEdit -> H.modify_ _ { perfEditBox = Nothing }
+
+  PerfNop -> pure unit
+
+  -- Starting a drag abandons any click-to-place hold, so the two gestures can't
+  -- coexist and leave a stray held layer to be dropped by a later bubbled event.
+  PerfDragStart src -> H.modify_ _ { perfDrag = Just src, perfHeld = Nothing, perfHeldFx = Nothing }
+
+  PerfDragEnd -> H.modify_ _ { perfDrag = Nothing }
+
+  -- Run an inner-control action but stop the click bubbling to the box's
+  -- placement onClick — otherwise nudging/removing a layer while something is in
+  -- hand would also drop that held item onto the box.
+  PerfStopClick ev act -> do
+    liftEffect $ stopPropagation (ME.toEvent ev)
+    handleAction act
+
+  -- Drop the dragged layer BEFORE box b's chip i (reorder within a box, or precise
+  -- cross-box placement). Consumes perfDrag, so the bubbled box-level PerfDropBox
+  -- that follows is a no-op.
+  PerfDropOnChip ev b i -> do
+    -- stop the drop bubbling to the box-level PerfDropBox (which would otherwise
+    -- also drop any click-held layer onto the box — a spurious duplicate).
+    liftEffect $ stopPropagation (DE.toEvent ev)
+    st <- H.get
+    case st.perfDrag of
+      Just src -> H.modify_ _ { perfBoxes = dropFxInto src b (Just i) st.perfBoxes, perfDrag = Nothing }
+      Nothing -> pure unit
 
   -- Wheel-zoom the geometric viewport toward the cursor. The point under the
   -- pointer stays fixed: the centre's offset from it scales by the zoom ratio.
@@ -1545,6 +2333,37 @@ handleAction = case _ of
         }
       playSpecimen spec
 
+  SetBridgeLen n -> H.modify_ _ { bridgeLen = clamp 0 maxBridge n }
+  ToggleFold p -> H.modify_ \st -> case p of
+    VCtx -> st { foldCtx = not st.foldCtx }
+    VProg -> st { foldProg = not st.foldProg }
+
+  -- Drop a caught chord into the progression, BRIDGED. Between the current end
+  -- and the dropped chord `Vetula.Between` lays `bridgeLen` passing chords (a
+  -- tonicizing turnaround into the target's root); the bridge is skipped for the
+  -- first chord (nothing to bridge from) or when the dial is 0. All new chords
+  -- are minted as imported nodes and appended in order, then the segment plays.
+  ArrangeSpec sid -> do
+    st <- H.get
+    for_ (find (\sp -> sp.id == sid) st.tank) \spec -> do
+      let bnotes = case last st.path of
+            Just _ -> bridgeNotes st.bridgeLen (specRoot spec)
+            Nothing -> []
+          nB = length bnotes
+          bridgeNodes = mapWithIndex (\i ns -> importChord (st.nextId + i) ns) bnotes
+          targetId = st.nextId + nB
+          targetNode = (specToNode targetId st.key spec) { isCentre = false }
+          newChords = bridgeNodes <> [ targetNode ]
+          newIds = map _.id newChords
+      H.modify_ _
+        { chords = st.chords <> newChords
+        , imported = foldr Set.insert st.imported newIds
+        , nextId = targetId + 1
+        , path = st.path <> newIds
+        , sounding = Just targetId
+        }
+      playPath (maybe newIds (\l -> [ l ] <> newIds) (last st.path))
+
   -- The play button is now a sticky ARM/cue toggle: flip arm, then let
   -- reconcilePerf start or stop the ticker per (armed && master).
   ToggleArm -> do
@@ -1593,6 +2412,22 @@ handleAction = case _ of
           -- is the sound. SOLO: emit as normal.
           mout = if st.authority == Local then st.midiOut else Nothing
       voices' <- liftEffect $ traverse (stepVoice mout st.routing reefChords tick.index pulseMs tick.delayMs) st.voices
+      -- PERFORM boxes: query each filled box's `Pattern` for the current cycle and
+      -- schedule the notes it yields (block together; arp/`fast` subdivide). A box
+      -- with a text-hatch sequence plays on the BAR grid (mini-notation cycle = one
+      -- bar); a plain box on the per-BEAT grid (one chord per beat, unchanged).
+      -- MIDI-only (→ odo feeds Odonus via poll, → rig is rig-only).
+      let beatMs = pulseMs * 4.0
+          barMs = pulseMs * 16.0
+      for_ mout \out -> liftEffect $
+        for_ st.perfBoxes \box ->
+          for_ box.seq \_ ->
+            when (not box.muted && box.term == TMidi) $
+              if boxUsesSeq box
+                then when (tick.index `mod` 16 == 0) $
+                       scheduleBox out (tick.index / 16) barMs beatMs tick.delayMs box
+                else when (tick.index `mod` 4 == 0) $
+                       scheduleBox out (tick.index / 4) beatMs beatMs tick.delayMs box
       H.modify_ _ { pulse = tick.index, voices = voices', clockTempo = tempo, tempo = round tempo }
 
   -- parse the (possibly edited) Tidal source into note-lists, rebuild them as a
@@ -1677,6 +2512,19 @@ defaultVoice vid channel renderer n =
   { id: vid, channel, name: "", dest: ToMidi, renderer, pattern: defaultPattern n, patternDraft: defaultPattern n
   , notePattern: "", notePatternDraft: "", articulator: RA.ABlock, durs: replicate n 1, phase: 0, cursor: 0, held: [], muted: false }
 
+-- | The FOUR fixed lanes of the bottom voice bar: three MIDI voices (one per
+-- | renderer) + one Odonus conductor, ids 0..3, all muted so each is one toggle
+-- | from sounding. `n` = progression length (for the legacy `durs` fallback).
+-- | Seeded at init AND wherever the voice set is reset, so the bar always finds
+-- | its four lanes. Routing (channel/name/odo id) lives in the routing modal.
+canonicalVoices :: Int -> Array Voice
+canonicalVoices n =
+  [ (defaultVoice 0 5 Block n)    { name = "block", muted = true }
+  , (defaultVoice 1 5 Strummed n) { name = "strum", muted = true }
+  , (defaultVoice 2 5 Arp n)      { name = "arp",   muted = true }
+  , (defaultVoice 3 0 Block n)    { dest = ToOdonus, muted = true }
+  ]
+
 -- | The clock a voice plays: its committed pattern if non-empty & parseable, else its
 -- | legacy `durs`. The single frontend seam onto `Vetula.Playhead` / the reef realiser.
 voiceClock :: Int -> Voice -> RV.PerfClock
@@ -1753,8 +2601,56 @@ stopClock = do
 -- | source + label), so this is a plain JSON.stringify — no ChordNode codecs.
 persistLib :: forall o m. MonadAff m => H.HalogenM State Action Slots o m Unit
 persistLib = do
-  lib <- H.gets _.library
-  liftEffect $ Store.saveLibrary { library: lib }
+  s <- H.get
+  liftEffect $ Store.saveLibrary { library: s.library, presets: s.presets }
+
+-- | Bank the live progression source as a preset — the CAPTURE hotkey. DEDUPS by
+-- | content (an unchanged progression ⇒ identical glyph): already banked ⇒ just
+-- | re-park `identity`; otherwise append an anonymous preset. `content` is
+-- | `currentSource` (the AskSource text — stable under playback, since a pulse moves
+-- | the playhead, not the chords). No-op on an empty progression. Then persist.
+captureNow :: forall o m. MonadAff m => H.HalogenM State Action Slots o m Unit
+captureNow = do
+  s <- H.get
+  when (length (pathSteps s) > 0) do
+    let text = currentSource s
+    case indexOfContent text s.presets of
+      Just _ -> H.modify_ _ { identity = Just text }
+      Nothing -> H.modify_ \st -> st
+        { presets = st.presets <> [ { content: text, name: Nothing, starred: false } ]
+        , identity = Just text
+        }
+    persistLib
+
+-- | Recall preset `i`: rebuild the performed `path` from its source (as `LoadProg`
+-- | does from a library entry), and park the chip on the preset's text (glyph SOLID;
+-- | ghosts on later divergence). No-op on unparseable / empty source.
+recallPreset :: forall o m. MonadAff m => Int -> H.HalogenM State Action Slots o m Unit
+recallPreset i = do
+  st <- H.get
+  for_ (st.presets !! i) \p -> do
+    let noteLists = filter (\ns -> length ns > 0) (parseProgression p.content)
+        fresh = mapWithIndex (\j ns -> importChord (st.nextId + j) ns) noteLists
+        ids = map _.id fresh
+    when (length ids > 0) do
+      H.modify_ _
+        { chords = st.chords <> fresh
+        , imported = st.imported <> Set.fromFoldable ids
+        , nextId = st.nextId + length fresh
+        , path = ids
+        , perfName = Nothing
+        , sounding = head ids
+        , identity = Just p.content
+        }
+      persistLib
+
+-- | The identity-chip view Vetula reports (by pull) to the shell's status board: the
+-- | glyph of the parked progression + whether the live progression has diverged from
+-- | it (revoiced / edited away). `Nothing` when nothing is parked.
+chipViewOf :: State -> Maybe ChipView
+chipViewOf s = case s.identity of
+  Nothing -> Nothing
+  Just text -> Just { glyph: glyphOf text, diverged: currentSource s /= text }
 
 -- | An Amphora library item as a local progression entry. The Tidal source is
 -- | the payload; the keyLabel is recovered from a `key:` tag (if present) and
@@ -1962,22 +2858,372 @@ playId pid = do
   st <- H.get
   for_ (find (\c -> c.id == pid) st.chords) playChord
 
--- | Send a chord's notes to the MIDI bus (no state change).
+-- | Append one audition to the CHYRON (the rolling capture buffer), oldest
+-- | events falling off past `chyronCap`. Called from the single-chord audition
+-- | choke-points below, unconditionally — the trace records intent, so a muted
+-- | audition (no `midiOut`) still lands here. See DESIGN-vetula-chyron-redesign.
+logChyron :: forall o m. MonadAff m => String -> Array Int -> Array Int -> Anchor -> H.HalogenM State Action Slots o m Unit
+logChyron label notes pcs anchor = do
+  st <- H.get
+  -- record-arm: disarmed → the audition still sounded, it just isn't captured.
+  when st.chyronArmed do
+    now <- liftEffect dateNow
+    -- never log a blank chip: fall back to the pitch-class names if a call site
+    -- has no label (e.g. an off-net triad before it's named).
+    let lab = if label == "" then joinWith " " (map noteName (sort pcs)) else label
+        ev = { label: lab, notes, pcs, at: now, anchor }
+    H.modify_ \s -> s { chyron = takeEnd chyronCap (s.chyron <> [ ev ]) }
+
+-- | Schedule notes on the preview channel WITHOUT logging to the chyron — for
+-- | re-auditioning a chip already in the trace (no feedback loop).
+auditionNotesNoLog :: forall o m. MonadAff m => Array Int -> H.HalogenM State Action Slots o m Unit
+auditionNotesNoLog notes = do
+  st <- H.get
+  for_ st.midiOut \out ->
+    liftEffect $ for_ notes \n ->
+      Midi.scheduleNote out { channel: st.previewChan, note: n, velocity: 92, delayMs: 0.0, durMs: 900.0 }
+
+-- | Canonical content of a sequence — the ordered pc-sets (duplicates KEPT, so a
+-- | strum reads as its own token), hashed by `glyphOf` to a stable 2-glyph pair.
+seqContent :: Array ChyronEvent -> String
+seqContent evs = joinWith " " (map (\e -> joinWith "," (map show (sort e.pcs))) evs)
+
+-- | Play a list of captured events back with their ORIGINAL timing (inter-onset
+-- | gaps from each `at`), each chord as a BLOCK (all notes together — no per-note
+-- | roll, which read as an unwanted arpeggio). No re-log.
+playEvents :: forall o m. MonadAff m => Array ChyronEvent -> H.HalogenM State Action Slots o m Unit
+playEvents evs = do
+  st <- H.get
+  let t0 = maybe 0.0 _.at (head evs)
+  for_ st.midiOut \out -> liftEffect $
+    for_ evs \ev ->
+      for_ ev.notes \n ->
+        Midi.scheduleNote out
+          { channel: st.previewChan, note: n, velocity: 88, delayMs: ev.at - t0, durMs: 780.0 }
+
+-- | Play the selected chyron span (see `playEvents`). Phase 3 will add a
+-- | de-quantised / grid-snapped alternative.
+playChyronSelection :: forall o m. MonadAff m => H.HalogenM State Action Slots o m Unit
+playChyronSelection = do
+  st <- H.get
+  case st.chyronSel of
+    Just sel | sel.hi > sel.lo -> playEvents (mapMaybe (\ix -> index st.chyron ix) (range sel.lo sel.hi))
+    _ -> pure unit
+
+-- | Resolve a drag-drop of a layer into the boxes: pull the layer's value (from the
+-- | palette, or out of its source box), remove it from the source box if it came
+-- | from one, then insert it into the target box — at `mpos` (Just = before that
+-- | chip index) or appended (Nothing). A same-box move shifts the insert index down
+-- | by one when the removed layer sat before it.
+dropFxInto :: PerfDragSrc -> Int -> Maybe Int -> Array PerfBox -> Array PerfBox
+dropFxInto src tb mpos boxes =
+  case fxOf src of
+    Nothing -> boxes
+    Just fx ->
+      let removed = case src of
+            FromBox sb si -> adjustStack sb (\s -> fromMaybe s (deleteAt si s)) boxes
+            FromPalette _ -> boxes
+          pos = case mpos of
+            Nothing -> maybe 0 (length <<< _.stack) (index removed tb)
+            Just i -> case src of
+              FromBox sb si | sb == tb && si < i -> i - 1
+              _ -> i
+      in adjustStack tb (\s -> fromMaybe (s <> [ fx ]) (insertAt pos fx s)) removed
+  where
+  fxOf = case _ of
+    FromPalette fx -> Just (mkLayer fx)
+    FromBox b i -> index boxes b >>= \bx -> index bx.stack i
+  adjustStack bi f = mapWithIndex (\j bx -> if j == bi then bx { stack = f bx.stack } else bx)
+
+-- | One function-stack layer as a `Pattern (Array Int)` endomorphism. Pitch-shapers
+-- | `map` over each chord's notes; Tidal combinators (`Rate`) are polymorphic in
+-- | the value, so they compose with the pitch layers at the same type.
+applyFx :: PerfFx -> PT.Pattern (Array Int) -> PT.Pattern (Array Int)
+applyFx = case _ of
+  Transpose k -> map (map (_ + k))
+  Octave k -> map (map (_ + 12 * k))
+  Rate n
+    | n > 0 -> fast (Rat.fromInt n)
+    | n < 0 -> slow (Rat.fromInt (-n))
+    | otherwise -> identity
+  Voice shape -> map (revoice (voiceStrategy shape))
+  Select sel -> map (revoice (takeVoicing (selSelector sel)))
+  -- arp/strum don't change the chord PATTERN — they explode each chord across
+  -- time at the terminal (see `boxRealise`/`scheduleBox`), at a fixed rate. They
+  -- sit in the stack as config-carrying layers; their timing applies at the sink.
+  Arpg _ _ -> identity
+  Strum _ -> identity
+
+-- | The chord→time REALISATION a box's stack asks for — the last arp/strum layer
+-- | wins, else a plain block chord. Applied at schedule time (not in the pattern),
+-- | at a FIXED per-note rate so dense chords don't rush.
+data Realise = RBlock | RArp ArpDir Int | RStrum Int
+
+boxRealise :: Array Layer -> Realise
+boxRealise = foldl pick RBlock <<< map _.fx
+  where
+  pick acc = case _ of
+    Arpg dir r -> RArp dir r
+    Strum ms -> RStrum ms
+    _ -> acc
+
+-- | Apply a layer, gated by its `when` clause — `Always` runs it every cycle;
+-- | `Every n` runs it only on cycles divisible by n (Tidal's `every`). Since arp/
+-- | strum's `applyFx` is identity (they realise at the sink), gating them here is a
+-- | harmless no-op — their `when` is currently ignored.
+applyLayer :: Layer -> PT.Pattern (Array Int) -> PT.Pattern (Array Int)
+applyLayer { fx, when: w } = case w of
+  Always -> applyFx fx
+  Every n -> every n (applyFx fx)
+
+-- | Run a Harmonia `Voicing -> Voicing` over one chord's notes. The notes are
+-- | sorted low→high first so the strategies and Low/High selectors read voices
+-- | correctly, then unwrapped back to a bare `Array Int`.
+revoice :: (Voicing -> Voicing) -> Array Int -> Array Int
+revoice f = voicingMidi <<< f <<< Voicing <<< sort
+
+voiceStrategy :: VoiceShape -> (Voicing -> Voicing)
+voiceStrategy = case _ of
+  Open -> openTriad
+  Rootless -> rootless
+  Drop2 -> drop2
+  Drop24 -> drop2and4
+  Quartal -> quartal
+  Cluster -> cluster
+
+selSelector :: PerfSel -> Selector
+selSelector = case _ of
+  Low n -> TakeLow n
+  High n -> TakeHigh n
+
+-- | A short chip label for a stack layer.
+fxLabel :: PerfFx -> String
+fxLabel = case _ of
+  Transpose n -> "transpose " <> showSigned n
+  Octave n -> "8ve " <> showSigned n
+  Rate n
+    | n > 0 -> "rate ×" <> show n
+    | n < 0 -> "rate ÷" <> show (-n)
+    | otherwise -> "rate ×1"
+  Voice shape -> "voice " <> voiceShapeName shape
+  Select (Low n) -> "bottom " <> show n
+  Select (High n) -> "top " <> show n
+  Arpg dir r -> "arp " <> arpDirGlyph dir <> " ×" <> show r
+  Strum ms -> "strum " <> show ms <> "ms"
+
+voiceShapeName :: VoiceShape -> String
+voiceShapeName = case _ of
+  Open -> "open"
+  Rootless -> "rootless"
+  Drop2 -> "drop2"
+  Drop24 -> "drop2&4"
+  Quartal -> "quartal"
+  Cluster -> "cluster"
+
+-- | Nudge a layer's parameter by `d` (the chip's − / + controls), clamped. Voice
+-- | cycles through the shapes; Select nudges the voice count (min 1).
+fxNudge :: Int -> PerfFx -> PerfFx
+fxNudge d = case _ of
+  Transpose n -> Transpose (clamp (-24) 24 (n + d))
+  Octave n -> Octave (clamp (-4) 4 (n + d))
+  Rate n -> Rate (clamp (-8) 8 (n + d))
+  Voice shape -> Voice (cycleVoiceShape d shape)
+  Select (Low n) -> Select (Low (clamp 1 6 (n + d)))
+  Select (High n) -> Select (High (clamp 1 6 (n + d)))
+  Arpg dir r -> Arpg dir (clamp 1 16 (r + d))     -- nudge the fixed rate (notes/beat)
+  Strum ms -> Strum (clamp 0 80 (ms + d))
+
+-- | The layer's ALTERNATE control (the second param when it has one): arp cycles
+-- | its direction; everything else is unchanged.
+fxAlt :: PerfFx -> PerfFx
+fxAlt = case _ of
+  Arpg dir r -> Arpg (cycleArpDir dir) r
+  other -> other
+
+cycleVoiceShape :: Int -> VoiceShape -> VoiceShape
+cycleVoiceShape d shape =
+  let shapes = [ Open, Rootless, Drop2, Drop24, Quartal, Cluster ]
+      i = fromMaybe 0 (elemIndex shape shapes)
+      n = length shapes
+  in fromMaybe shape (index shapes (mod (i + d) n))
+
+showSigned :: Int -> String
+showSigned n = if n >= 0 then "+" <> show n else show n
+
+-- ============================================================================
+-- Canonical pipeline text ⇄ structure — the chrome↔text round-trip.
+--
+-- A box prints to `<seqPart> # <layer> # <layer> …` and parses back exactly, so
+-- the text field and the chips are two views of ONE structured box. The vocabulary
+-- is ASCII and round-trippable — NOT the glyph `fxLabel`s, which are lossy. Total +
+-- lenient (Selene `Source.purs` discipline): an unknown directive drops; a
+-- recognised-but-partial one falls back to a sensible default; values are clamped
+-- to the same ranges as the chip nudges. INVARIANT (the reconciliation point):
+--   parsePipeline (printPipeline box) == { seqText: trim box.seqText, stack: box.stack }
+-- so text-edit and chip-edit can never silently diverge. Use plain `show` here, not
+-- `showSigned` — a leading '+' makes `Int.fromString` return Nothing.
+-- ============================================================================
+
+
+printPerfFx :: PerfFx -> String
+printPerfFx = case _ of
+  Transpose n -> "transpose " <> show n
+  Octave n -> "oct " <> show n
+  Rate n -> "rate " <> show n
+  Voice shape -> "voice " <> printVoiceShape shape
+  Select (High n) -> "top " <> show n
+  Select (Low n) -> "bottom " <> show n
+  Arpg dir r -> "arp " <> printArpDir dir <> " " <> show r
+  Strum ms -> "strum " <> show ms
+
+printWhen :: When -> String
+printWhen = case _ of
+  Always -> ""
+  Every n -> " every " <> show n
+
+printLayer :: Layer -> String
+printLayer lyr = printPerfFx lyr.fx <> printWhen lyr.when
+
+printPipeline :: PerfBox -> String
+printPipeline box =
+  let s = trim box.seqText
+      layers = map printLayer box.stack
+  in if s == "" && length layers == 0 then ""
+     else if s == "" then "# " <> joinWith " # " layers
+     else joinWith " # " ([ s ] <> layers)
+
+-- whitespace tokens of a segment (drops empty tokens from runs of spaces).
+tokensOf :: String -> Array String
+tokensOf = filter (_ /= "") <<< split (Pattern " ") <<< trim
+
+-- one integer token, lenient: strips a leading '+' (which `fromString` rejects),
+-- falls back to `def` on anything non-numeric.
+tokInt :: Int -> String -> Int
+tokInt def s = fromMaybe def (fromString (fromMaybe s (stripPrefix (Pattern "+") s)))
+
+parsePerfFx :: Array String -> Maybe PerfFx
+parsePerfFx toks = case head toks of
+  Nothing -> Nothing
+  Just kw ->
+    let args = drop 1 toks
+        a0 d = tokInt d (fromMaybe "" (head args))
+        a1 d = tokInt d (fromMaybe "" (index args 1))
+    in case toLower kw of
+         "transpose" -> Just (Transpose (clamp (-24) 24 (a0 0)))
+         "trans" -> Just (Transpose (clamp (-24) 24 (a0 0)))
+         "oct" -> Just (Octave (clamp (-4) 4 (a0 0)))
+         "octave" -> Just (Octave (clamp (-4) 4 (a0 0)))
+         "8ve" -> Just (Octave (clamp (-4) 4 (a0 0)))
+         "rate" -> Just (Rate (clamp (-8) 8 (a0 2)))
+         "voice" -> Just (Voice (fromMaybe Open (head args >>= parseVoiceShape)))
+         "top" -> Just (Select (High (clamp 1 6 (a0 1))))
+         "bottom" -> Just (Select (Low (clamp 1 6 (a0 1))))
+         "arp" -> Just (Arpg (parseArpDir (fromMaybe "up" (head args))) (clamp 1 16 (a1 4)))
+         "strum" -> Just (Strum (clamp 0 80 (a0 14)))
+         _ -> Nothing
+
+parseLayer :: String -> Maybe Layer
+parseLayer seg =
+  let toks = tokensOf seg
+      n = length toks
+      -- peel a trailing `every N` (only when the last token is actually a number)
+      everyClause = do
+        kw <- index toks (n - 2)
+        num <- index toks (n - 1) >>= fromString
+        if kw == "every" then Just num else Nothing
+      body = maybe toks (\_ -> take (n - 2) toks) everyClause
+      w = maybe Always Every everyClause
+  in map (\fx -> { fx, when: w }) (parsePerfFx body)
+
+parsePipeline :: String -> { seqText :: String, stack :: Array Layer }
+parsePipeline txt =
+  let segs = split (Pattern "#") txt
+  in { seqText: trim (fromMaybe "" (head segs))
+     , stack: mapMaybe parseLayer (drop 1 segs)
+     }
+
+-- | The `Pattern (Array Int)` a Perform box realises this cycle: its saved sequence
+-- | as a looping chord pattern (one chord per beat-cycle), with the box's function
+-- | `stack` folded over it (first layer applied first / innermost).
+-- | The text-hatch sequence, if the box has a parseable mini-notation over its
+-- | token's chord indices: each index event becomes that chord (out-of-range → a
+-- | rest), cycle = one bar. `Nothing` when the field is empty or won't parse (fall
+-- | back to the default one-chord-per-beat `fromChords`).
+seqPattern :: Array (Array Int) -> String -> Maybe (PT.Pattern (Array Int))
+seqPattern chords txt
+  | trim txt == "" = Nothing
+  | otherwise = case parseMiniPattern txt of
+      Left _ -> Nothing
+      Right idxPat -> Just (map (\s -> fromMaybe [] (fromString (trim s) >>= index chords)) idxPat)
+
+-- | Whether a box plays on the BAR grid (a valid text-hatch sequence) rather than
+-- | the default per-beat grid.
+boxUsesSeq :: PerfBox -> Boolean
+boxUsesSeq box = case box.seq of
+  Just s -> isJust (seqPattern (map _.notes s.events) box.seqText)
+  Nothing -> false
+
+boxPattern :: PerfBox -> PT.Pattern (Array Int)
+boxPattern box = foldl (\p lyr -> applyLayer lyr p) base box.stack
+  where
+  base = case box.seq of
+    Nothing -> fromChords []
+    Just s ->
+      let chords = map _.notes s.events
+      in fromMaybe (fromChords chords) (seqPattern chords box.seqText)
+
+-- | Query a box's pattern over this beat-cycle `b` and schedule every chord-event
+-- | it yields on the box's channel, positioned by the event's arc within the beat.
+-- | The stack's realisation (`boxRealise`) spreads each chord's notes across TIME:
+-- | Block = all together; Arp = a FIXED step per note (beatMs / rate — density
+-- | doesn't change the speed); Strum = a small fixed ms onset stagger. `fast`/
+-- | `rate` subdivide the beat orthogonally (they change the chord pattern upstream).
+scheduleBox :: Midi.MidiOut -> Int -> Number -> Number -> Number -> PerfBox -> Effect Unit
+scheduleBox out c cycleMs beatMs baseDelayMs box =
+  let realise = boxRealise box.stack
+  in for_ (query (boxPattern box) (mkState (mkArc (Rat.fromInt c) (Rat.fromInt (c + 1))))) \ev ->
+       when (isDigital ev) $
+         for_ (eventWhole ev) \(Arc w) ->
+           let startMs = baseDelayMs + Rat.toNumber (w.start - Rat.fromInt c) * cycleMs
+               slotMs = max 20.0 (Rat.toNumber (w.stop - w.start) * cycleMs)
+               notes = case realise of
+                 RArp dir _ -> arpOrder dir (eventValue ev)
+                 _ -> eventValue ev
+               -- fixed per-note step (ms): arp = one note per (beat / rate);
+               -- strum = a small fixed stagger; block = 0 (all together).
+               stepMs = case realise of
+                 RArp _ rate -> beatMs / toNumber (max 1 rate)
+                 RStrum ms -> toNumber ms
+                 RBlock -> 0.0
+               noteDur = case realise of
+                 RArp _ rate -> max 20.0 (beatMs / toNumber (max 1 rate) * 0.9)
+                 _ -> max 20.0 (slotMs * 0.9)
+           in for_ (mapWithIndex Tuple notes) \(Tuple k note) ->
+                Midi.scheduleNote out
+                  { channel: box.channel, note, velocity: 90
+                  , delayMs: startMs + toNumber k * stepMs, durMs: noteDur }
+
+-- | Send a chord's notes to the MIDI bus (no state change) and log it to the chyron.
 playChord :: forall o m. MonadAff m => ChordNode -> H.HalogenM State Action Slots o m Unit
 playChord c = do
   st <- H.get
+  let notes = playNotes c
   for_ st.midiOut \out ->
-    liftEffect $ for_ (playNotes c) \n ->
+    liftEffect $ for_ notes \n ->
       Midi.scheduleNote out { channel: st.previewChan, note: n, velocity: 92, delayMs: 0.0, durMs: 900.0 }
+  logChyron c.label notes (nub (map (\x -> mod x 12) notes)) c.anchor
 
 -- | Audition a tank specimen: sound its notes on the preview channel (no state
--- | change). Same shape as `playChord`, but reads a self-contained Specimen.
+-- | change) and log it to the chyron. Same shape as `playChord`, but reads a
+-- | self-contained Specimen.
 playSpecimen :: forall o m. MonadAff m => Specimen -> H.HalogenM State Action Slots o m Unit
 playSpecimen s = do
   st <- H.get
+  let notes = specNotes s
   for_ st.midiOut \out ->
-    liftEffect $ for_ (specNotes s) \n ->
+    liftEffect $ for_ notes \n ->
       Midi.scheduleNote out { channel: st.previewChan, note: n, velocity: 92, delayMs: 0.0, durMs: 900.0 }
+  logChyron s.label notes (nub (map (\x -> mod x 12) notes)) s.anchor
 
 -- | In-place transpose of a tank specimen by `n` semitones — the capo move. Bass
 -- | and every upper voice shift arithmetically (absolute MIDI), and the label is
@@ -1997,6 +3243,14 @@ transposeSpecimen n s =
 -- | surface needs: pitch-class set from the sounding notes, root ≈ the bass pc (a
 -- | fair placement anchor even for slash voicings), and its own voicing verbatim.
 -- | `place` then positions it as a centre; generation blooms around it.
+-- | A caught chord's ROOT pitch class — from its Harmonia reading when it has one
+-- | (`Located` → `chordRoot` against the anchor's own key), else its frozen foot.
+-- | The betweening engine needs it to tonicize toward the target.
+specRoot :: Specimen -> Int
+specRoot s = case s.anchor of
+  Located k dc -> chordRoot k dc
+  Free -> mod s.bass 12
+
 specToNode :: Int -> Key -> Specimen -> ChordNode
 specToNode newId key s =
   let pcs = nub (map (\n -> mod n 12) ([ s.bass ] <> s.voicing))
@@ -2074,20 +3328,28 @@ nudgeSelected dir = do
 playHoveredOrSounding :: forall o m. MonadAff m => H.HalogenM State Action Slots o m Unit
 playHoveredOrSounding = do
   st <- H.get
-  case st.hoveredSpec of
-    -- pointer over a tank tile: preview that frozen specimen straight from its
-    -- own voicing (no state change), so you can explore the tank by ear too.
-    Just sid | Just spec <- find (\sp -> sp.id == sid) st.tank -> playSpecimen spec
-    _ -> case st.hoveredTriad of
-      -- Tonnetz: a hovered triangle has no pool id, so preview it straight from its
-      -- root + pitch classes (no state change, like the candidate preview below).
-      Just t -> playChord (triadNode t.root t.pcs "")
-      Nothing -> case st.hoveredId of
-        -- in pick mode the hovered bubble is a candidate (not yet in `chords`);
-        -- preview it without committing (no sounding change, no insert)
-        Just hid | Just cand <- find (\c -> c.id == hid) st.candidates -> playChord cand
-        Just hid -> playId hid
-        Nothing -> for_ st.sounding \sid -> for_ (find (\c -> c.id == sid) st.chords) playChord
+  case st.hoveredChyron of
+    -- pointer over the chyron: audition the hovered chip, or — if it's inside a
+    -- completed span — play the whole selection with its original timing. Never
+    -- re-logs (it's already in the trace).
+    Just i | Just ev <- index st.chyron i ->
+      case st.chyronSel of
+        Just sel | sel.hi > sel.lo, i >= sel.lo, i <= sel.hi -> playChyronSelection
+        _ -> auditionNotesNoLog ev.notes
+    _ -> case st.hoveredSpec of
+      -- pointer over a tank tile: preview that frozen specimen straight from its
+      -- own voicing (no state change), so you can explore the tank by ear too.
+      Just sid | Just spec <- find (\sp -> sp.id == sid) st.tank -> playSpecimen spec
+      _ -> case st.hoveredTriad of
+        -- Tonnetz: a hovered triangle has no pool id, so preview it straight from its
+        -- root + pitch classes (no state change, like the candidate preview below).
+        Just t -> playChord (triadNode t.root t.pcs "")
+        Nothing -> case st.hoveredId of
+          -- in pick mode the hovered bubble is a candidate (not yet in `chords`);
+          -- preview it without committing (no sounding change, no insert)
+          Just hid | Just cand <- find (\c -> c.id == hid) st.candidates -> playChord cand
+          Just hid -> playId hid
+          Nothing -> for_ st.sounding \sid -> for_ (find (\c -> c.id == sid) st.chords) playChord
 
 -- | The key/scale a chord is gathered under — the bubblepack it joins.
 groupLabel :: Key -> String
@@ -2117,6 +3379,20 @@ modeShort = case _ of
   LocrianNat2 -> "locrian ♮2"
   Altered -> "altered"
   Custom _ -> "custom"
+
+-- | Inverse of `groupLabel`: parse a stored key label ("F# phryg. dom.", "C major")
+-- | back into a Key. The note name is the first word; the rest is a `modeShort`
+-- | value (which can itself contain spaces, so split at the FIRST space only). Used
+-- | when loading a saved progression so its key becomes the live harmonic context.
+parseKeyLabel :: String -> Maybe Key
+parseKeyLabel lbl = case SCU.indexOf (Pattern " ") lbl of
+  Nothing -> Nothing
+  Just ix -> do
+    let noteTok = SCU.take ix lbl
+        modeTok = SCU.drop (ix + 1) lbl
+    tonic <- find (\pc -> noteName pc == noteTok) (range 0 11)
+    mode <- _.mode <$> find (\c -> modeShort c.mode == modeTok) modeChoices
+    pure { tonic, mode }
 
 -- | Star / unstar the sounding chord's current voicing in its favourites — the
 -- | kept voicings of this one note-set, surfaced in the strip above the ladder.
@@ -2522,62 +3798,309 @@ surfaceFillCss = "max-width: none; touch-action: none; width: 100%; height: 100%
 render :: forall m. MonadAff m => State -> H.ComponentHTML Action Slots m
 render st =
   HH.div
-    [ HP.style ("position: relative; width: 100%; height: calc(100vh - 118px); min-height: 620px; overflow: hidden; border-radius: 8px; background: " <> canvasBg <> ";") ]
+    -- Pushed down by one nav-height (`--tf-bar`) so the stage clears the AUDITION
+    -- bar now docked under the shell nav; the old bottom voice bar is gone, so the
+    -- stage fills to the window bottom (freed lower strip → future MIDI-flow chyron).
+    [ HP.style ("position: relative; margin-top: var(--tf-bar); width: 100%; height: calc(100vh - 88px); min-height: 620px; overflow: hidden; border-radius: 8px; background: " <> canvasBg <> ";") ]
     [ HH.div [ HP.style "position: absolute; inset: 0;" ] [ surface st ]
+    -- Three FLOATING controls (docs/DESIGN-vetula-progression-building.md), each
+    -- owning one Harmonia layer: A = harmonic context (Key + palette + geometry),
+    -- B = tank & progression (the Phrase), C = voices (Voicing). Placeholder names
+    -- A/B/C; placement provisional — they float over the stage and will be made
+    -- movable later. Library panel retired (→ between-sessions modal, #16); the
+    -- "grow" and "pad grid" lenses left the geometry selector (grow → B; pad grid
+    -- retired).
+    , floatCard "context" st.foldCtx (ToggleFold VCtx)
+        "position: absolute; top: 12px; left: 12px; width: 248px; max-height: calc(100% - 24px); overflow-y: auto; overflow-x: visible; z-index: 6;"
+        [ setupPane st
+        , subGroup "Lens" (lensBar st)
+        ]
+    , floatCard "tank & progression" st.foldProg (ToggleFold VProg)
+        "position: absolute; top: 12px; right: 12px; width: 340px; max-height: calc(100% - 264px); overflow-y: auto; overflow-x: hidden; z-index: 6;"
+        [ stackBar st
+        , subGroup ("Tank · " <> show (length st.tank) <> " caught") (tankPane st)
+        , arrangeBar st
+        , growBar st
+        , subGroup ("Progression · " <> countLabel (length (pathSteps st)) "step") (progressionPanel st)
+        ]
+    -- The AUDITION bar (chyron) now docks under the shell nav (top). The old bottom
+    -- voice bar (four mini-notation lanes) was removed — the Perform surface
+    -- supersedes it — and the freed bottom is reserved for a future MIDI-flow chyron.
+    , chyronBar st
     , HH.div
-        [ HP.style ("position: absolute; top: 12px; left: 12px; width: 256px; max-height: calc(100% - 24px); overflow: visible; z-index: 6; padding: 2px 12px 10px; " <> panelCss) ]
-        [ leftColumn st ]
-    , HH.div
-        [ HP.style ("position: absolute; top: 12px; right: 12px; width: 340px; max-height: calc(100% - 24px); overflow-x: hidden; overflow-y: auto; z-index: 5; padding: 2px 12px 10px; " <> panelCss) ]
-        [ railView st ]
-    , HH.div
-        [ HP.style "position: absolute; bottom: 12px; left: 50%; transform: translateX(-50%); z-index: 5;" ]
+        [ HP.style "position: absolute; bottom: 44px; left: 50%; transform: translateX(-50%); z-index: 5;" ]
         [ pickBar st ]
     , helpOverlay st
     , revoiceModal st
     ]
 
--- | The reclaimed top bar, folded into a left accordion beside the full-height
--- | pool: Setup (key/scale/family/borrow/palettes/connection), Tank (caught
--- | chords), Lens (view choice). Multi-open, mirroring the right rail.
-leftColumn :: forall m. MonadAff m => State -> H.ComponentHTML Action Slots m
-leftColumn st =
+-- | The CHYRON — a thin ticker pinned just above the voice bar that logs every
+-- | audition this session (see DESIGN-vetula-chyron-redesign.md). Oldest→newest,
+-- | newest pinned at the right; older events clip off the left as the row fills
+-- | (one notch per new chord). Phase 1 is read-only — a running trace of what you
+-- | played; Phases 2–3 add span-selection, lift-to-progression, and timing verbs.
+chyronBar :: forall m. State -> H.ComponentHTML Action Slots m
+chyronBar st =
   HH.div
-    [ HP.style "" ]
-    [ accBox (Set.member SecSetup st.leftOpen) (ToggleLeftSection SecSetup) "Setup" "" (setupPane st)
-    , accBox (Set.member SecTank st.leftOpen) (ToggleLeftSection SecTank) "Tank" (show (length st.tank) <> " caught") (tankPane st)
-    , accBox (Set.member SecLens st.leftOpen) (ToggleLeftSection SecLens) "Lens" (lensLabel st.lens) (lensBar st)
+    [ HP.style ( "position: fixed; top: var(--tf-bar); left: 0; right: 0; z-index: 39; box-sizing: border-box; "
+        <> "display: flex; gap: 10px; align-items: center; padding: 3px 12px; min-height: 44px; overflow: hidden; "
+        -- shift-click is a selection gesture here (extend the range), so kill the
+        -- browser's own shift-click text selection across the bar. user-select
+        -- inherits to the chips.
+        <> "user-select: none; -webkit-user-select: none; "
+        <> "font-family: Georgia, serif; background: linear-gradient(#efe9d8,#e7e0cb); "
+        <> "border-bottom: 1px solid #0000000f; box-shadow: 0 1px 3px #0000000d;" ) ]
+    [ HH.div
+        [ HP.style "flex: 0 0 auto; display: flex; align-items: center; gap: 6px;" ]
+        ( [ -- record-arm toggle: ● red = capturing, ○ = paused (still audible)
+            HH.button
+              [ HP.style ("border: none; background: none; cursor: pointer; padding: 0; font-size: 13px; line-height: 1; color: "
+                           <> (if st.chyronArmed then "#c0392b" else "#b9ad8c") <> ";")
+              , HP.title (if st.chyronArmed then "recording auditions — click to pause capture" else "capture paused (auditions still sound) — click to record")
+              , HE.onClick \_ -> ToggleChyronArm ]
+              [ HH.text (if st.chyronArmed then "●" else "○") ]
+          , HH.span
+              [ HP.style "font-size: 10px; letter-spacing: 0.16em; text-transform: uppercase; color: #8a7d5a;" ]
+              [ HH.text "audition" ] ]
+          -- ⏎ save appears only while a completed span is selected
+          <> ( case st.chyronSel of
+                 Just sel | sel.hi > sel.lo ->
+                   [ HH.button
+                       [ HP.style "border: 1px solid #b8860b; background: #fbf6ea; color: #7a5c00; font-size: 11px; line-height: 1; cursor: pointer; padding: 2px 6px; border-radius: 3px;"
+                       , HP.title "save selection as a glyph token (⏎)"
+                       , HE.onClick \_ -> SaveChyronSel ]
+                       [ HH.text "⏎ save" ] ]
+                 _ -> [] )
+          <> ( if length st.chyron == 0 then []
+               else [ HH.button
+                        [ HP.style "border: 1px solid #d8ceb4; background: #faf7ee; color: #9a8d6a; font-size: 11px; line-height: 1; cursor: pointer; padding: 2px 5px; border-radius: 3px;"
+                        , HP.title "clear the whole audition trace"
+                        , HE.onClick \_ -> ClearChyron ]
+                        [ HH.text "clear ✕" ] ]
+             )
+        )
+    -- SAVED region: pinned 2-glyph tokens, left, natural width (they push the
+    -- live region rightward as they accumulate — saving reclaims live space).
+    , HH.div
+        [ HP.style "flex: 0 0 auto; display: flex; align-items: center; gap: 7px;" ]
+        (mapWithIndex savedToken st.chyronSaved)
+    -- LIVE region: fills the rest; newest right, oldest clips left; shrinks as the
+    -- saved region grows (min-width:0).
+    , HH.div
+        [ HP.style "flex: 1 1 auto; min-width: 0; overflow: hidden; display: flex; gap: 5px; align-items: center; justify-content: flex-end;" ]
+        ( if length st.chyron == 0
+            then [ HH.span [ HP.style "font-size: 11px; color: #b3a888; font-style: italic;" ] [ HH.text "play a chord anywhere — it lands here" ] ]
+            else let off = max 0 (length st.chyron - 30)
+                 in mapWithIndex (\j ev -> chyronChip (off + j) ev) (takeEnd 30 st.chyron)
+        )
+    ]
+  where
+  -- a SAVED sequence: its 2-glyph identity (FA icon pair — visually distinct from
+  -- the live stave-glyphs, so "named unit" reads at a glance). Click the icons to
+  -- replay it with timing; × deletes. Tooltip carries the chord names.
+  savedToken i s =
+    let held = st.perfHeld == Just i
+    in HH.span
+      [ HP.style ("position: relative; flex: 0 0 auto; display: inline-flex; align-items: center; gap: 3px; border: 1px solid "
+                   <> (if held then "#b8860b" else "#cdbb8c")
+                   <> "; background: " <> (if held then "#fbf1d6" else "#f6efdc")
+                   <> "; box-shadow: " <> (if held then "0 0 0 2px #f1e2b4" else "none")
+                   <> "; border-radius: 4px; padding: 3px 6px; line-height: 1;")
+      , HP.draggable true
+      , HE.onDragStart \_ -> PerfPickup i
+      , HP.title ("saved · " <> joinWith " " (map _.label s.events) <> " · click plays · shift-click / drag → a Perform box") ]
+      [ HH.span
+          [ HP.style "display: inline-flex; align-items: center; gap: 3px; cursor: pointer;"
+          , HE.onClick \e -> if ME.shiftKey e then PerfPickup i else PlaySaved i ]
+          [ faIcon s.glyph.first, faIcon s.glyph.second ]
+      , HH.button
+          [ HP.style "position: absolute; top: -5px; right: -3px; z-index: 2; border: 1px solid #cdbb8c; background: #f6efdc; color: #b06a5a; font-size: 10px; line-height: 1; cursor: pointer; padding: 0 3px; border-radius: 8px;"
+          , HP.title "delete this saved sequence"
+          , HE.onClick \_ -> DeleteSaved i ]
+          [ HH.text "×" ]
+      ]
+  -- one chip = the chord's mini stave-glyph (same as the Tank), name-free. Hover
+  -- + space auditions it; click selects this one chord; shift-click extends the
+  -- range from the anchor. In-span chips wear a warm wash; the endpoints a gold rim.
+  chyronChip i ev =
+    let inSel = case st.chyronSel of
+                  Just sel -> i >= sel.lo && i <= sel.hi
+                  Nothing -> false
+        isEnd = case st.chyronSel of
+                  Just sel -> i == sel.lo || i == sel.hi
+                  Nothing -> false
+        hov = st.hoveredChyron == Just i
+        bg = if inSel then "#efe6c8" else "#faf7ee"
+        brd = if isEnd then "#b8860b" else if inSel then "#cdbb8c" else "#d8ceb4"
+        pcNames = joinWith " " (map noteName (sort ev.pcs))
+        -- a delete × surfaces on hover (its own element, NOT the select target)
+        delX = if hov
+          then [ HH.button
+                   [ HP.style "position: absolute; top: -1px; right: -1px; z-index: 2; border: none; background: #faf7ee; color: #b06a5a; font-size: 11px; line-height: 1; cursor: pointer; padding: 0 2px; border-radius: 6px;"
+                   , HP.title "delete this audition"
+                   , HE.onClick \_ -> DeleteChyron i ]
+                   [ HH.text "×" ] ]
+          else []
+    in HH.span
+        [ HP.style ("position: relative; flex: 0 0 auto; white-space: nowrap; border: 1px solid " <> brd
+                     <> "; background: " <> bg <> "; border-radius: 3px; padding: 0 1px; cursor: pointer; line-height: 0;")
+        , HP.title (ev.label <> (if pcNames == "" then "" else " · " <> pcNames))
+        , HE.onMouseEnter \_ -> HoverChyron (Just i)
+        , HE.onMouseLeave \_ -> HoverChyron Nothing ]
+        ( delX <>
+          [ SE.svg
+              [ SA.viewBox (-18.0) (-22.0) 36.0 44.0, SA.width 30.0, SA.height 38.0
+              , HE.onClick \e -> ChyronClick i (ME.shiftKey e) ]
+              (chordGlyph [] 0.0 0.0 ev.notes) ]
+        )
+
+-- | The Tonnetz-stack HUD in the tank card (2026-07-31): shown only while a stack
+-- | is accumulating. Names the picked triads and the resulting polychord's pitch
+-- | classes, and offers to catch the whole stack to the tank as one Anchor, or
+-- | clear it. (Renders nothing when the stack is empty.)
+stackBar :: forall m. State -> H.ComponentHTML Action Slots m
+stackBar st =
+  let stack = st.tonnetzStack in
+  if length stack == 0 then HH.text ""
+  else
+    let names = joinWith " + " (map (\e -> noteName e.root <> (if e.major then "" else "m")) stack)
+        pcs = joinWith " " (map noteName (sort (nub (concatMap _.pcs stack))))
+        btn bg fg brd act lbl =
+          HH.button
+            [ HP.style ("border: 1px solid " <> brd <> "; background: " <> bg <> "; color: " <> fg
+                         <> "; cursor: pointer; padding: 4px 10px; border-radius: 4px; font-size: 12px;")
+            , HE.onClick \_ -> act ]
+            [ HH.text lbl ]
+    in HH.div
+         [ HP.style "border: 1px solid #cbb8e0; background: #f6f1fb; border-radius: 6px; padding: 8px 10px; margin: 0 0 8px; display: flex; flex-direction: column; gap: 6px;" ]
+         [ HH.div [ HP.style "font-size: 10px; color: #7a5c9a; letter-spacing: 0.1em; text-transform: uppercase;" ]
+             [ HH.text ("Tonnetz stack · " <> countLabel (length stack) "triad") ]
+         , HH.div [ HP.style "font-size: 13px; color: #4a3a5a;" ] [ HH.text names ]
+         , HH.div [ HP.style "font-size: 11px; color: #8a7a9a; letter-spacing: 0.04em;" ] [ HH.text pcs ]
+         , HH.div [ HP.style "display: flex; gap: 6px;" ]
+             [ btn "#6a4a9a" "#ffffff" "#6a4a9a" CommitStack "catch as anchor"
+             , btn "#faf7fd" "#7a5c9a" "#d8c8ea" ClearStack "clear"
+             ]
+         ]
+
+-- | A floating control card: a clickable title bar (the concern name), then the
+-- | panel body — which collapses to just the bar when `collapsed`, ceding the
+-- | stage to the music viz underneath. Positioning is passed in (provisional —
+-- | these will be made draggable once the placement settles).
+floatCard :: forall m. String -> Boolean -> Action -> String -> Array (H.ComponentHTML Action Slots m) -> H.ComponentHTML Action Slots m
+floatCard title collapsed toggle posCss body =
+  HH.div
+    [ HP.style (posCss <> " padding: 2px 12px " <> (if collapsed then "4px" else "10px") <> "; " <> panelCss) ]
+    ( [ HH.div
+          [ HP.style "display: flex; align-items: center; gap: 8px; padding: 6px 2px 2px; cursor: pointer; user-select: none;"
+          , HP.title (if collapsed then "expand" else "collapse")
+          , HE.onClick \_ -> toggle ]
+          [ HH.span [ HP.style "font-size: 9px; color: #b0b0b0; width: 9px;" ] [ HH.text (if collapsed then "▸" else "▾") ]
+          , HH.span [ HP.style "font-size: 11px; font-weight: 700; color: #1a1a1a; letter-spacing: 0.12em; text-transform: uppercase;" ] [ HH.text title ]
+          ]
+      ] <> (if collapsed then [] else body) )
+
+-- | What the cadence dial's `n` means, in Roman numerals — the tonicizing
+-- | turnaround `Vetula.Between` lays in front of the dropped chord.
+cadenceName :: Int -> String
+cadenceName = case _ of
+  0 -> "bare"
+  1 -> "V"
+  2 -> "ii–V"
+  3 -> "vi–ii–V"
+  _ -> "iii–vi–ii–V"
+
+-- | The ARRANGE row (control B): the bridge between gather and compose. A hint
+-- | (shift-click a caught chord to drop it in) and the CADENCE dial — how many
+-- | passing chords `Vetula.Between` lays in front of each dropped chord.
+arrangeBar :: forall m. State -> H.ComponentHTML Action Slots m
+arrangeBar st =
+  HH.div
+    [ HP.style "border-top: 1px solid #d8ceb4; margin-top: 8px; padding-top: 6px; display: flex; flex-direction: column; gap: 6px;" ]
+    [ HH.div [ HP.style "font-size: 10px; color: #b0b0b0; letter-spacing: 0.12em; text-transform: uppercase; margin: 0 2px;" ] [ HH.text "Arrange" ]
+    , HH.div [ HP.style "font-size: 11px; color: #a0a0a0; margin: 0 2px;" ] [ HH.text "shift-click a caught chord to drop it into the progression, bridged." ]
+    , HH.div
+        [ HP.style "display: flex; align-items: center; gap: 8px; margin: 0 2px;" ]
+        [ HH.span [ HP.style "font-size: 11px; color: #7a7a7a;" ] [ HH.text "cadence" ]
+        , stepBtn "−" (SetBridgeLen (st.bridgeLen - 1)) (st.bridgeLen <= 0)
+        , HH.span [ HP.style "font-size: 12px; color: #1a1a1a; min-width: 12px; text-align: center;" ] [ HH.text (show st.bridgeLen) ]
+        , stepBtn "+" (SetBridgeLen (st.bridgeLen + 1)) (st.bridgeLen >= maxBridge)
+        , HH.span [ HP.style "font-size: 12px; color: #7a5c00; font-variant: small-caps;" ] [ HH.text (cadenceName st.bridgeLen) ]
+        ]
+    ]
+  where
+  stepBtn glyph act disabled =
+    HH.button
+      [ HP.style ("border: 1px solid #dcdcdc; background: #fafafa; border-radius: 4px; width: 22px; height: 22px; font-size: 13px; line-height: 1; "
+                   <> if disabled then "color: #d8d8d8; cursor: default;" else "color: #6a6a6a; cursor: pointer;")
+      , HP.disabled disabled
+      , HE.onClick \_ -> act ]
+      [ HH.text glyph ]
+
+-- | Grow lives with the tank now (it operates on CAUGHT chords, not on the
+-- | geometry). A single toggle: enter the grow surface, re-roll it, or leave.
+growBar :: forall m. State -> H.ComponentHTML Action Slots m
+growBar st =
+  HH.div
+    [ HP.style "display: flex; align-items: center; gap: 6px; padding: 8px 2px; border-top: 1px solid #d8ceb4;" ]
+    ( if st.lens == LensGenerate then
+        [ HH.button
+            [ HP.style "border: 1px solid #b8860b; background: #fbf6ea; color: #7a5c00; cursor: pointer; padding: 3px 12px; border-radius: 4px; font-size: 12px;"
+            , HP.title "re-roll the relatives around each tank seed"
+            , HE.onClick \_ -> ShakeGenerate ]
+            [ HH.text "shake ⟳" ]
+        , HH.button
+            [ HP.style "border: 1px solid #dcdcdc; background: #fafafa; color: #6a6a6a; cursor: pointer; padding: 3px 12px; border-radius: 4px; font-size: 12px;"
+            , HP.title "leave the explore surface"
+            , HE.onClick \_ -> SetLens LensTonnetz ]
+            [ HH.text "done" ]
+        ]
+      else
+        [ HH.button
+            [ HP.style "border: 1px solid #b8860b; background: #fbf6ea; color: #7a5c00; cursor: pointer; padding: 3px 12px; border-radius: 4px; font-size: 12px;"
+            , HP.title "bloom voice-led relatives around the caught chords"
+            , HE.onClick \_ -> SetLens LensGenerate ]
+            [ HH.text "explore ⟳" ]
+        ]
+    )
+
+-- | A flat labelled group inside a floating control — a small uppercase caption
+-- | over a divider, then the body. Replaces the old collapsible accordion box:
+-- | the controls float, they don't fold.
+subGroup :: forall m. String -> H.ComponentHTML Action Slots m -> H.ComponentHTML Action Slots m
+subGroup label body =
+  HH.div
+    [ HP.style "border-top: 1px solid #d8ceb4; margin-top: 8px; padding-top: 6px;" ]
+    [ HH.div [ HP.style "font-size: 10px; color: #b0b0b0; letter-spacing: 0.12em; text-transform: uppercase; margin: 0 2px 6px;" ] [ HH.text label ]
+    , body
     ]
 
--- | The Stage lens selector — a segmented control over `allLenses`. Switching the
--- | lens re-projects the SAME material (the sim keeps running underneath); adding
--- | a lens needs only a new `allLenses` entry, which is the decoupling proof.
+-- | "N steps" / "N step" for the control captions.
+countLabel :: Int -> String -> String
+countLabel n noun = show n <> " " <> noun <> (if n == 1 then "" else "s")
+
+-- | The Stage GEOMETRY selector. The two "lenses" that weren't geometries have
+-- | left: `grow` is a tank operation (it lives in control B now) and `pad grid`
+-- | is retired. What remains are the four ways of LAYING OUT chords — two families
+-- | (relational: tonnetz / lattices; root-picker: keyboard / fifths). Switching
+-- | re-projects the SAME material (the sim keeps running underneath).
+-- | The geometric views the CONTEXT card offers. Down to three after the
+-- | 2026-07-31 redesign (see docs/DESIGN-vetula-progression-building.md): the
+-- | keyboard was a root-picker subset of the (now interactive) circle of
+-- | fifths, so it retired. Circle of fifths · Tonnetz · voice-leading lattice.
+geometryLenses :: Array StageLens
+geometryLenses = [ LensCircleFifths, LensTonnetz, LensLattices ]
+
 lensBar :: forall m. State -> H.ComponentHTML Action Slots m
 lensBar st =
   HH.div
     [ HP.style "display: flex; align-items: center; flex-wrap: wrap; gap: 6px; margin: 0 0 4px;" ]
-    ( [ HH.span [ HP.style "font-size: 10px; color: #b0b0b0; letter-spacing: 0.12em; text-transform: uppercase; margin-right: 4px; width: 100%;" ] [ HH.text "Lens" ] ]
-        <> map lensChip allLenses
-        <> shakeChip
-        <> resetChip )
+    ( map lensChip geometryLenses <> [ lensChip LensPerform ] <> resetChip )
   where
-  -- geometric lenses only, and only once the viewport has moved: a way back to the
-  -- fitted view (scroll to zoom · drag to pan).
-  geometric = st.lens /= LensPadGrid
-  -- the Generate lens's re-roll: a fresh crop of relatives around the same seeds.
-  shakeChip =
-    if st.lens == LensGenerate then
-      [ HH.button
-          [ HP.style "border: 1px solid #b8860b; background: #fbf6ea; color: #7a5c00; cursor: pointer; padding: 3px 12px; border-radius: 4px; font-size: 12px; margin-left: 8px;"
-          , HP.title "re-roll the relatives around each tank seed"
-          , HE.onClick \_ -> ShakeGenerate
-          ]
-          [ HH.text "shake ⟳" ]
-      ]
-    else []
+  -- a way back to the fitted view (scroll to zoom · drag to pan), once it's moved.
   moved = st.viewZoom /= 1.0 || st.viewCx /= 0.0 || st.viewCy /= 0.0
   resetChip =
-    if geometric && moved then
+    if moved then
       [ HH.button
           [ HP.style "border: 1px solid #dcdcdc; background: #fafafa; color: #6a6a6a; cursor: pointer; padding: 3px 12px; border-radius: 4px; font-size: 12px; margin-left: 8px;"
           , HP.title "reset the view · scroll to zoom · drag to pan"
@@ -2608,39 +4131,6 @@ poolSpine =
     , HH.span [ HP.style "writing-mode: vertical-rl; font-size: 11px; letter-spacing: 0.14em; text-transform: uppercase; color: #b0b0b0;" ] [ HH.text "pool" ]
     ]
 
--- | The right rail: an accordion over the three rail objects — Progression (what),
--- | Library (saved progressions), Voices (how it's performed). One open at a time.
-railView :: forall m. MonadAff m => State -> H.ComponentHTML Action Slots m
-railView st =
-  HH.div
-    [ HP.style "" ]
-    [ accSection st SecProgression "Progression" (countLabel (length (pathSteps st)) "step") (progressionPanel st)
-    , accSection st SecLibrary "Library" (countLabel (length st.library) "saved") (libraryView st)
-    , accSection st SecVoices "Voices" (countLabel (length st.voices) "voice") (playheadsRack st)
-    ]
-  where
-  countLabel n noun = show n <> " " <> noun <> (if n == 1 then "" else "s")
-
--- | One accordion section: a click-to-open header (chevron + title + count) and, when
--- | open, its body. Headers stay visible when collapsed so the column reads as a stack.
--- | Section-agnostic — the rail and the left column both drive it.
-accBox :: forall m. Boolean -> Action -> String -> String -> H.ComponentHTML Action Slots m -> H.ComponentHTML Action Slots m
-accBox open toggle title subtitle body =
-  HH.div
-    [ HP.style "border-top: 1px solid #d8ceb4;" ]
-    [ HH.div
-        [ HP.style "display: flex; align-items: center; gap: 8px; padding: 9px 2px; cursor: pointer; user-select: none;"
-        , HE.onClick \_ -> toggle ]
-        [ HH.span [ HP.style "font-size: 10px; color: #b0b0b0; width: 9px;" ] [ HH.text (if open then "▾" else "▸") ]
-        , HH.span [ HP.style "font-size: 12px; color: #6a6a6a; letter-spacing: 0.06em; text-transform: uppercase;" ] [ HH.text title ]
-        , HH.span [ HP.style "font-size: 11px; color: #bcbcbc;" ] [ HH.text subtitle ]
-        ]
-    , if open then HH.div [ HP.style "padding: 0 2px 14px;" ] [ body ] else HH.text ""
-    ]
-
-accSection :: forall m. State -> RailSection -> String -> String -> H.ComponentHTML Action Slots m -> H.ComponentHTML Action Slots m
-accSection st sec = accBox (Set.member sec st.railOpen) (ToggleRailSection sec)
-
 -- | The Setup pane — the reclaimed top bar, stacked vertically in the left
 -- | accordion: key, scale, the focused-family scale override, the borrow source,
 -- | the palette populators, and the rig connection + help. (The old `Vetula` title
@@ -2659,31 +4149,46 @@ setupPane st =
               \(Select.Selected v) -> SelectScale v ]
       ]
         <> familyField
-        <> [ field "BORROW"
-               [ HH.slot (Proxy :: _ "borrowSelect") unit Select.component
-                   ((Select.cascadingInput borrowGroups) { selected = Just (fromMaybe "off" st.borrowMode), searchable = true })
-                   \(Select.Selected v) -> BorrowFrom v ]
-           , field "PALETTES"
-               [ HH.div [ HP.style "display: flex; flex-wrap: wrap; gap: 4px;" ] (map dropBtn exteriorGens) ]
-           , connectionRow
+        <> [ field "PALETTES"
+               [ HH.div [ HP.style "display: flex; flex-wrap: wrap; gap: 4px;" ] (map layerChip allColorLayers) ]
            ]
+        <> borrowField
+        <> [ connectionRow ]
     )
   where
+  -- the borrow-scale picker only appears when the BORROWED color layer is
+  -- engaged — it is that layer's source, meaningless otherwise (AC, 2026-07-31).
+  borrowField =
+    if Set.member LayerBorrowed st.colorLayers then
+      [ field "BORROW"
+          [ HH.slot (Proxy :: _ "borrowSelect") unit Select.component
+              ((Select.cascadingInput borrowGroups) { selected = Just (fromMaybe "off" st.borrowMode), searchable = true })
+              \(Select.Selected v) -> BorrowFrom v ]
+      ]
+    else []
   labelStyle = "font-size: 10px; color: #9a9a9a; letter-spacing: 0.1em; text-transform: uppercase;"
   field lbl controls =
     HH.div [ HP.style "display: flex; flex-direction: column; gap: 4px;" ]
       ([ HH.span [ HP.style labelStyle ] [ HH.text lbl ] ] <> controls)
-  -- the exterior signpost buttons: drop a curated chord set onto the pool (toggle
-  -- to remove). Active = amber, matching the ring-index warmth.
-  dropBtn g =
-    HH.button
-      [ HP.style (dropBtnStyle (Map.member g.key st.dropped)), HE.onClick \_ -> DropSet g.key ]
-      [ HH.text g.label ]
-  dropBtnStyle active =
-    "border: 1px solid " <> (if active then "#c9a23a" else "#dcdcdc")
-      <> "; background: " <> (if active then "#fbf3df" else "#fafafa")
-      <> "; color: " <> (if active then "#7a5c00" else "#6a6a6a")
-      <> "; cursor: pointer; padding: 3px 10px; border-radius: 4px; font-size: 12px;"
+  -- the palette chips are now SHOW/HIDE toggles for the color-overlay layers
+  -- (2026-07-31 redesign), not pool-injecting mode buttons. Each carries a
+  -- swatch in the layer's own hue; active = the swatch fills + hue-tinted chip.
+  layerChip l =
+    let on = Set.member l st.colorLayers
+        hue = layerHue l
+    in HH.button
+         [ HP.style ("display: inline-flex; align-items: center; gap: 6px; border: 1px solid "
+                      <> (if on then hue else "#dcdcdc")
+                      <> "; background: " <> (if on then "#fafafa" else "#fafafa")
+                      <> "; color: " <> (if on then hue else "#9a9a9a")
+                      <> "; cursor: pointer; padding: 3px 9px; border-radius: 4px; font-size: 12px;")
+         , HP.title (if on then "hide the " <> layerLabel l <> " layer" else "show the " <> layerLabel l <> " layer")
+         , HE.onClick \_ -> ToggleLayer l ]
+         [ HH.span
+             [ HP.style ("width: 9px; height: 9px; border-radius: 2px; border: 1px solid " <> hue
+                          <> "; background: " <> (if on then hue else "transparent") <> ";") ]
+             []
+         , HH.text (layerLabel l) ]
   -- a contextual scale picker for the focused family (click a keyboard key to
   -- focus one) — this is what lets two families hold different modes at once.
   familyField = case st.focusedFamily >>= (\sid -> find (\c -> c.id == sid) st.chords) of
@@ -2702,10 +4207,15 @@ setupPane st =
           [ HP.style helpBtnStyle, HP.title "keys & help", HE.onClick \_ -> ToggleHelp ]
           [ HH.text "ⓘ" ]
       ]
+  -- clickable: a click is the user gesture Chrome needs to actually show the
+  -- Web-MIDI permission prompt (the page-load request stays silent), so clicking
+  -- the chip (re)connects. Green = connected, amber = click to enable/retry.
   midiChip nm =
-    let ok = nm /= "…" && nm /= ""
-    in HH.span
-         [ HP.style "display: inline-flex; align-items: center; gap: 5px; font-size: 11px; color: #8a8a8a; background: #f4f4f4; border: 1px solid #e8e8e8; border-radius: 10px; padding: 2px 9px;" ]
+    let ok = nm /= "…" && nm /= "" && nm /= "no Web-MIDI" && nm /= "muted"
+    in HH.button
+         [ HP.style "display: inline-flex; align-items: center; gap: 5px; font-size: 11px; color: #8a8a8a; background: #f4f4f4; border: 1px solid #e8e8e8; border-radius: 10px; padding: 2px 9px; cursor: pointer;"
+         , HP.title (if ok then "Web-MIDI connected — click to reconnect" else "click to enable Web-MIDI (grant the permission prompt)")
+         , HE.onClick \_ -> RetryMidi ]
          [ HH.span [ HP.style ("width: 7px; height: 7px; border-radius: 50%; background: " <> (if ok then "#5aa86a" else "#c9a23a") <> ";") ] []
          , HH.text nm ]
   helpBtnStyle = "border: 1px solid #e0e0e0; background: #fafafa; color: #7a7a7a; cursor: pointer; width: 22px; height: 22px; border-radius: 50%; font-size: 12px; line-height: 1; padding: 0;"
@@ -2741,9 +4251,10 @@ tankPane st =
 
 -- | One tank specimen: a small treble-staff thumbnail of its voicing (reusing the
 -- | cloud's `chordGlyph`), its label, and a × delete. Plain-click STAGES it as a
--- | seed (bloom around it in the pool); shift-click APPENDS it to the progression
--- | as a stable snapshot. A staged tile wears a gold frame so the pool ↔ tank link
--- | reads at a glance. (Staged-ness and sequenced-ness are orthogonal.)
+-- | seed (bloom around it in the pool); shift-click ARRANGES it into the
+-- | progression — bridged by the cadence dial (`ArrangeSpec`). A staged tile wears
+-- | a gold frame so the pool ↔ tank link reads at a glance. (Staged-ness and
+-- | arranged-ness are orthogonal.)
 specimenTile :: forall m. Boolean -> Specimen -> H.ComponentHTML Action Slots m
 specimenTile staged s =
   HH.div
@@ -2760,7 +4271,7 @@ specimenTile staged s =
     , SE.svg
         [ SA.viewBox (-18.0) (-22.0) 36.0 44.0, SA.width 52.0, SA.height 46.0
         , HP.style "cursor: pointer;"
-        , HE.onClick \e -> if ME.shiftKey e then SequenceSpec s.id else StageSpec s.id ]
+        , HE.onClick \e -> if ME.shiftKey e then ArrangeSpec s.id else StageSpec s.id ]
         (chordGlyph [] 0.0 0.0 s.voicing)
     , HH.div [ HP.style "font-size: 10px; color: #6a6a6a; margin-top: 2px; max-width: 60px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" ]
         [ HH.text s.label ]
@@ -2841,6 +4352,433 @@ surface st
       LensTonnetz -> tonnetzSurface st
       LensLattices -> latticesSurface st
       LensGenerate -> generativeSurface st
+      LensPerform -> performSurface st
+
+-- | The PERFORM surface — a row of player BOXES, one per output. Shift-click (or
+-- | drag) a saved token in the chyron to pick it up, then click (or drop it onto)
+-- | a box: the box loops that token's chords on its MIDI channel while the
+-- | transport plays. This is the first slice of the Perform view (DESIGN §Perform);
+-- | function stacks and non-MIDI sinks come later.
+-- | Mint a fresh Perform session: a random seed → a monochrome glyph-triple alias,
+-- | scene counter at 1. Random (not content-derived) — a session is a container.
+mintSession :: Effect Store.SessionState
+mintSession = do
+  seed <- randomInt 0 999999
+  pure { alias: sessionAliasOf seed, name: "", nextScene: 1 }
+
+-- | Mint a `SavedSeq` back from a source's chords (the inverse of `boxSpec`'s
+-- | `map _.notes s.events`): one synthesised event per chord, carrying the notes
+-- | (pcs/label/at are cosmetic for Perform playback, which reads only `.notes`),
+-- | and a content glyph over the chords so the reconstructed token still has an
+-- | identity. Used by `boxesFromDoc` to recall a saved scene onto the surface.
+mkSavedSeq :: Array (Array Int) -> SavedSeq
+mkSavedSeq chords =
+  { events: mapWithIndex evt chords
+  , glyph: glyphOf (joinWith " " (map (joinWith "," <<< map show) chords))
+  }
+  where
+  -- `Free`: a recalled note-list carries no scale reading (the source grammar
+  -- stores notes only). Re-deriving an anchor from pcs+key is the §7 open
+  -- decision; until then a recalled chord explores as an unlocated pitch-bag.
+  evt i notes = { pcs: map (\n -> mod n 12) notes, notes, label: show (i + 1), at: toNumber i, anchor: Free }
+
+-- | Reconstruct the live Perform boxes from a parsed scene document (the inverse
+-- | of `map boxSpec perfBoxes` at save): one box per voice, on its channel, with
+-- | its source's chords minted back into a `SavedSeq`; a sourceless voice (or an
+-- | unknown source name) gets an empty box. This is what `PerfLoadScene` applies.
+boxesFromDoc :: PerfDoc -> Array PerfBox
+boxesFromDoc doc = map voiceToBox doc.voices
+  where
+  chordsOf name = maybe [] _.chords (find (\s -> s.name == name) doc.sources)
+  voiceToBox v =
+    let cs = maybe [] chordsOf v.source
+    in { channel: v.channel
+       , label: "P" <> show v.channel
+       , seq: if length cs == 0 then Nothing else Just (mkSavedSeq cs)
+       , stack: v.stack
+       , seqText: v.seqText
+       , muted: v.muted
+       , term: v.term
+       }
+
+-- | A live Perform box → the neutral `VoiceSpec` the Lepidoptera serialiser takes
+-- | (its chords are the token's event notes; empty seq = a sourceless voice).
+boxSpec :: PerfBox -> VoiceSpec
+boxSpec box =
+  { channel: box.channel
+  , chords: maybe [] (\s -> map _.notes s.events) box.seq
+  , seqText: box.seqText
+  , stack: box.stack
+  , term: box.term
+  , muted: box.muted
+  }
+
+-- | The persistent SESSION identity next to the save button: the session's
+-- | monochrome glyph-TRIPLE (three black FontAwesome icons — deliberately unlike a
+-- | chord token's coloured PAIR) reconstructed from its persisted alias, plus the
+-- | alias/name and the next scene number a save will mint.
+sessionChip :: forall m. Store.SessionState -> H.ComponentHTML Action Slots m
+sessionChip sess =
+  HH.span
+    [ HP.style "display: inline-flex; align-items: center; gap: 7px; padding: 3px 11px; border: 1px solid #d8cfa8; border-radius: 5px; background: #faf7ee;"
+    , HP.title "this session's identity — every scene you save is tagged with it; ↻ new session rolls it" ]
+    [ HH.span
+        [ HP.style "display: inline-flex; align-items: center; gap: 4px;" ]
+        (if sess.alias == "" then [ HH.text "…" ]
+         else map (\name -> faIcon { icon: name, color: "#2a2a2a" }) (split (Pattern "-") sess.alias))
+    , HH.span
+        [ HP.style "font-size: 11px; color: #6a5a2a; letter-spacing: 0.03em;" ]
+        [ HH.text (if sess.name == "" then sess.alias else sess.name) ]
+    ]
+
+-- | The recall modal — saved scenes fetched from Amphora, grouped by SESSION (each
+-- | group headed by its monochrome triple). Click a scene to parse its payload and
+-- | reconstruct the surface (`PerfLoadScene`). Empty / offline → a gentle note.
+perfRecallModal :: forall m. State -> H.ComponentHTML Action Slots m
+perfRecallModal st =
+  if not st.perfRecallOpen then HH.text ""
+  else
+    HH.div
+      [ HP.style "position: fixed; inset: 0; background: rgba(20,20,20,0.32); z-index: 60; display: flex; align-items: center; justify-content: center; padding: 40px;"
+      , HE.onClick \_ -> PerfCloseRecall ]
+      [ HH.div
+          [ HP.style "background: #fbfaf4; width: 520px; max-width: 92vw; max-height: 84vh; overflow-y: auto; border-radius: 10px; box-shadow: 0 12px 48px rgba(0,0,0,0.24); padding: 22px 26px 24px;"
+          , HE.onClick \e -> PerfStopClick e PerfNop ]
+          [ HH.div [ HP.style "display: flex; align-items: baseline; justify-content: space-between; margin: 0 0 14px;" ]
+              [ HH.h2 [ HP.style "font-size: 15px; font-weight: 600; margin: 0; color: #2a2a2a;" ] [ HH.text "Recall scene" ]
+              , HH.button
+                  [ HP.style "border: none; background: transparent; color: #9a9a9a; font-size: 18px; cursor: pointer; line-height: 1;"
+                  , HP.title "close", HE.onClick \_ -> PerfCloseRecall ]
+                  [ HH.text "×" ]
+              ]
+          , if length st.perfScenes == 0
+              then HH.div [ HP.style "font-size: 12px; color: #9a8a5a; padding: 8px 0 4px;" ]
+                     [ HH.text "no scenes saved yet — save one from the surface (or the store is offline)." ]
+              else HH.div_ (concatMap groupView (nub (map sessionTagOf st.perfScenes)))
+          ]
+      ]
+  where
+  sessionTagOf item = fromMaybe "?" (head (mapMaybe (stripPrefix (Pattern "session:")) item.tags))
+  groupView alias =
+    [ HH.div [ HP.style "display: flex; align-items: center; gap: 7px; margin: 12px 0 6px; padding-bottom: 5px; border-bottom: 1px solid #eee4cc;" ]
+        ( map (\n -> faIcon { icon: n, color: "#2a2a2a" }) (split (Pattern "-") alias)
+          <> [ HH.span [ HP.style "font-size: 11px; color: #8a7a4a; letter-spacing: 0.03em;" ] [ HH.text alias ] ] )
+    ] <> map sceneRow (filter (\i -> sessionTagOf i == alias) st.perfScenes)
+  sceneRow item =
+    HH.button
+      [ HP.style "display: block; width: 100%; text-align: left; border: 1px solid #e4dcc2; background: #fcfaf3; color: #4a4436; cursor: pointer; padding: 7px 12px; margin: 0 0 5px; border-radius: 5px; font-size: 13px; font-family: ui-monospace, monospace;"
+      , HP.title "load this scene onto the Perform surface"
+      , HE.onClick \_ -> PerfLoadScene item.payload ]
+      [ HH.text item.name ]
+
+performSurface :: forall m. State -> H.ComponentHTML Action Slots m
+performSurface st =
+  HH.div
+    [ HP.style "position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 26px; padding: 40px;" ]
+    [ HH.div
+        [ HP.style "font-size: 12px; letter-spacing: 0.14em; text-transform: uppercase; color: #9a7a2a; text-align: center; max-width: 520px; line-height: 1.6;" ]
+        [ HH.text $ case st.perfHeldFx of
+            Just fx -> "layer in hand (" <> fxLabel fx <> ") — click a player to add it to its stack"
+            Nothing -> case st.perfHeld of
+              Just _ -> "token in hand — click a player to drop it"
+              Nothing ->
+                if any (\b -> isJust b.seq) st.perfBoxes
+                  then "press PLAY to loop the players · click an FX below then a player to stack it"
+                  else "shift-click (or drag) a saved token below onto a player — it loops while the transport plays"
+        ]
+    , HH.div
+        [ HP.style "display: flex; align-items: center; gap: 12px; min-height: 26px; flex-wrap: wrap; justify-content: center;" ]
+        [ sessionChip st.perfSession
+        , HH.button
+            [ HP.style ("border: 1px solid #cdbb8c; border-radius: 5px; padding: 5px 14px; font-size: 12px; letter-spacing: 0.06em; cursor: pointer; "
+                         <> (if any (\b -> isJust b.seq) st.perfBoxes
+                              then "background: #f3ead2; color: #6a5a2a;"
+                              else "background: #f6f3ea; color: #c2b790; cursor: default;"))
+            , HP.title "serialise this Perform surface as a vetulaScene and save it to Amphora"
+            , HP.enabled (any (\b -> isJust b.seq) st.perfBoxes)
+            , HE.onClick \_ -> SaveScene ]
+            [ HH.text ("⬡ save scene #" <> show st.perfSession.nextScene) ]
+        , HH.button
+            [ HP.style "border: 1px solid #ddd3b4; border-radius: 5px; padding: 5px 11px; font-size: 11px; letter-spacing: 0.04em; cursor: pointer; background: transparent; color: #9a8a5a;"
+            , HP.title "start a new session — a fresh glyph-triple and scene counter (reloads keep the current session; this is the deliberate new-body-of-work boundary)"
+            , HE.onClick \_ -> PerfNewSession ]
+            [ HH.text "↻ new session" ]
+        , HH.button
+            [ HP.style "border: 1px solid #cdbb8c; border-radius: 5px; padding: 5px 12px; font-size: 12px; letter-spacing: 0.04em; cursor: pointer; background: #f6f1e3; color: #6a5a2a;"
+            , HP.title "recall a saved scene onto the surface"
+            , HE.onClick \_ -> PerfOpenRecall ]
+            [ HH.text "↴ scenes" ]
+        , case st.publishMsg of
+            Just m -> HH.span [ HP.style "font-size: 11px; color: #7a6a3a; font-family: ui-monospace, monospace;" ] [ HH.text m ]
+            Nothing -> HH.text ""
+        ]
+    , fxPalette st
+    , HH.div
+        [ HP.style "display: flex; gap: 18px; flex-wrap: wrap; justify-content: center; align-items: flex-start; max-width: 940px;" ]
+        (mapWithIndex (perfBox st) st.perfBoxes)
+    , perfEditModal st
+    , perfRecallModal st
+    ]
+
+-- | The sequence-editor modal — a roomier surface for the text hatch than the
+-- | inline field, with a mini-notation guide and clickable examples in place. Edits
+-- | box `perfEditBox`'s `seqText` directly (same `PerfSetSeq` path, committed on
+-- | blur). Examples drop straight into the field; the guide makes the notation
+-- | learnable where you use it (the complexity-budget point).
+perfEditModal :: forall m. State -> H.ComponentHTML Action Slots m
+perfEditModal st = case st.perfEditBox >>= \i -> map (Tuple i) (index st.perfBoxes i) of
+  Nothing -> HH.text ""
+  Just (Tuple i box) ->
+    HH.div
+      [ HP.style "position: fixed; inset: 0; background: rgba(20,20,20,0.32); z-index: 60; display: flex; align-items: center; justify-content: center; padding: 40px;"
+      , HE.onClick \_ -> PerfCloseEdit ]
+      [ HH.div
+          [ HP.style "background: #fbfaf4; width: 560px; max-width: 92vw; max-height: 84vh; overflow-y: auto; border-radius: 10px; box-shadow: 0 12px 48px rgba(0,0,0,0.24); padding: 22px 26px 24px;"
+          , HE.onClick \e -> PerfStopClick e PerfNop ]
+          [ HH.div [ HP.style "display: flex; align-items: baseline; justify-content: space-between; margin: 0 0 14px;" ]
+              [ HH.h2 [ HP.style "font-size: 15px; font-weight: 600; margin: 0; color: #2a2a2a;" ]
+                  [ HH.text ("Sequence · " <> box.label <> " · ch " <> show box.channel) ]
+              , HH.button
+                  [ HP.style "border: none; background: transparent; color: #9a9a9a; font-size: 18px; cursor: pointer; line-height: 1;"
+                  , HP.title "close"
+                  , HE.onClick \_ -> PerfCloseEdit ]
+                  [ HH.text "×" ]
+              ]
+          , HH.input
+              [ HP.style ("width: 100%; box-sizing: border-box; border: 1px solid "
+                           <> (if boxUsesSeq box then "#b8860b" else "#cdbb8c")
+                           <> "; background: #fff; color: #3a3a3a; border-radius: 6px; padding: 9px 12px; font-size: 15px; font-family: ui-monospace, monospace;")
+              , HP.value (printPipeline box)
+              , HP.attr (AttrName "placeholder") "0 1 2 3 # arp up 4"
+              , HE.onValueChange \s -> PerfSetPipeline i s ]
+          , HH.div [ HP.style "font-size: 11px; color: #9a8a5a; margin: 8px 0 16px;" ]
+              [ HH.text "One cycle = one bar; numbers index the token's chords (out-of-range = rest). Type freely, click away to apply." ]
+          , sectionLabel "Examples — click to use"
+          , HH.div [ HP.style "display: flex; flex-wrap: wrap; gap: 6px; margin: 0 0 18px;" ]
+              (map (exampleChip i) examples)
+          , sectionLabel "Mini-notation (the sequence)"
+          , HH.div [ HP.style "display: grid; grid-template-columns: auto 1fr; gap: 4px 14px; font-size: 12.5px; color: #555;" ]
+              (concatMap guideRow guide)
+          , HH.div [ HP.style "height: 14px;" ] []
+          , sectionLabel "Layers (after each #)"
+          , HH.div [ HP.style "display: grid; grid-template-columns: auto 1fr; gap: 4px 14px; font-size: 12.5px; color: #555;" ]
+              (concatMap guideRow layerGuide)
+          ]
+      ]
+  where
+  sectionLabel t =
+    HH.div [ HP.style "font-size: 10px; letter-spacing: 0.1em; text-transform: uppercase; color: #b0a684; margin: 0 0 7px;" ] [ HH.text t ]
+  exampleChip i ex =
+    HH.button
+      [ HP.style "border: 1px solid #cdbb8c; background: #f3ead2; color: #6a5a2a; cursor: pointer; padding: 3px 9px; border-radius: 4px; font-size: 12px; font-family: ui-monospace, monospace;"
+      , HP.title (snd ex)
+      , HE.onClick \_ -> PerfSetSeq i (fst ex) ]
+      [ HH.text (fst ex) ]
+  guideRow (Tuple syntax meaning) =
+    [ HH.code [ HP.style "font-family: ui-monospace, monospace; color: #7a5c00;" ] [ HH.text syntax ]
+    , HH.span_ [ HH.text meaning ] ]
+  examples =
+    [ Tuple "0 1 2 3" "one chord per beat"
+    , Tuple "0 ~ 2 ~" "beats 1 and 3 only (rests)"
+    , Tuple "<0 2> 1" "alternate 0/2 each bar, then 1"
+    , Tuple "0(3,8)" "euclidean — 3 hits over 8"
+    , Tuple "[0 1] 2" "0 and 1 share a beat, then 2"
+    , Tuple "0!3 1" "repeat chord 0 three times, then 1"
+    , Tuple "0*2 1" "chord 0 twice as fast, then 1"
+    ]
+  guide =
+    [ Tuple "0 1 2" "a sequence — one step each"
+    , Tuple "~" "a rest"
+    , Tuple "[a b]" "group into one step (subdivide)"
+    , Tuple "<a b>" "alternate, one per cycle"
+    , Tuple "a(k,n)" "euclidean rhythm — k hits in n"
+    , Tuple "a!n" "repeat a, n times"
+    , Tuple "a*n / a/n" "speed up / slow down"
+    , Tuple "a?" "randomly drop (degrade)"
+    ]
+  layerGuide =
+    [ Tuple "# transpose 5" "shift every chord ±semitones"
+    , Tuple "# oct -1" "shift ±octaves"
+    , Tuple "# rate 2" "loop faster (negative = slower)"
+    , Tuple "# voice open" "re-voice: open/rootless/drop2/drop24/quartal/cluster"
+    , Tuple "# top 1 · # bottom 1" "keep the top / bottom N voices"
+    , Tuple "# arp up 4" "arpeggiate: up/down/updown, notes per beat"
+    , Tuple "# strum 14" "strum — ms between notes"
+    , Tuple "… every 4" "apply a layer only every N cycles"
+    ]
+
+-- | The FX palette: click a layer to pick it up, then click a player box to append
+-- | it to that box's stack (drag comes in a later slice). The held chip lights gold.
+fxPalette :: forall m. State -> H.ComponentHTML Action Slots m
+fxPalette st =
+  HH.div
+    [ HP.style "display: flex; align-items: center; gap: 8px;" ]
+    ( [ HH.span [ HP.style "font-size: 10px; letter-spacing: 0.12em; text-transform: uppercase; color: #b0a684;" ] [ HH.text "fx" ] ]
+        <> map paletteChip [ Transpose 0, Octave (-1), Rate 2, Voice Open, Select (High 1), Select (Low 1), Arpg ArpUp 4, Strum 14 ]
+    )
+  where
+  paletteChip fx =
+    let held = st.perfHeldFx == Just fx
+    in HH.button
+         [ HP.style ("border: 1px solid " <> (if held then "#b8860b" else "#dcd2b4")
+                      <> "; background: " <> (if held then "#fbf1d6" else "#faf6ea")
+                      <> "; color: #6a5a2a; cursor: grab; padding: 3px 10px; border-radius: 4px; font-size: 11px; white-space: nowrap;")
+         , HP.title "drag onto a player (or click, then click a player) to stack this layer"
+         , HP.draggable true
+         , HE.onDragStart \_ -> PerfDragStart (FromPalette fx)
+         , HE.onDragEnd \_ -> PerfDragEnd
+         , HE.onClick \_ -> PerfPickFx fx ]
+         [ HH.text (fxLabel fx) ]
+
+-- | One PERFORM player box: its channel label, the assigned token's 2-glyph
+-- | identity (or a ＋ placeholder), and a × to empty it. A drop target for both
+-- | the click-to-place gesture and HTML5 drag-drop; when a token is in hand every
+-- | box lights as a receiver.
+perfBox :: forall m. State -> Int -> PerfBox -> H.ComponentHTML Action Slots m
+perfBox st i box =
+  let held = isJust st.perfHeld || isJust st.perfHeldFx
+      filled = isJust box.seq
+      brd = if held then "#b8860b" else if filled then "#cdbb8c" else "#d8ceb4"
+      bg = if held then "#fbf6ea" else "#faf7ee"
+  in HH.div
+       [ HP.style ("position: relative; width: 208px; min-height: 118px; border: 2px "
+                    <> (if held then "dashed " else "solid ") <> brd
+                    <> "; background: " <> bg
+                    <> "; border-radius: 10px; display: flex; flex-direction: column; align-items: center; justify-content: flex-start; gap: 8px; padding: 10px 10px; cursor: pointer;"
+                    <> (if box.muted || ghost then " opacity: 0.5;" else ""))
+       , HP.title (if held then "drop the held token/layer here" else box.label <> " · MIDI ch " <> show box.channel)
+       , HE.onClick \_ -> PerfDropBox i
+       , HE.onDragOver PerfDragOver
+       , HE.onDrop \_ -> PerfDropBox i
+       ]
+       ( [ HH.div [ HP.style "display: flex; align-items: center; gap: 8px;" ]
+             [ HH.span [ HP.style "font-size: 10px; letter-spacing: 0.1em; text-transform: uppercase; color: #b0a684;" ]
+                 [ HH.text (box.label <> " · ch " <> show box.channel) ]
+             , HH.button
+                 [ HP.style ("border: 1px solid " <> (if box.muted then "#c8a24a" else "#dcd2b4")
+                              <> "; background: " <> (if box.muted then "#f3e6c4" else "#faf6ea")
+                              <> "; color: " <> (if box.muted then "#9a6a1a" else "#8a7a4a")
+                              <> "; cursor: pointer; padding: 1px 8px; border-radius: 3px; font-size: 9px; letter-spacing: 0.06em; text-transform: uppercase;")
+                 , HP.title (if box.muted then "muted — click to play" else "playing — click to mute")
+                 , HE.onClick \e -> PerfStopClick e (PerfToggleMute i) ]
+                 [ HH.text (if box.muted then "muted" else "on") ]
+             ]
+         , case box.seq of
+             Just s ->
+               HH.div [ HP.style "display: flex; align-items: center; gap: 6px; font-size: 22px; color: #7a5c00; margin: 2px 0;" ]
+                 [ faIcon s.glyph.first, faIcon s.glyph.second ]
+             Nothing ->
+               HH.div [ HP.style "font-size: 28px; color: #d8ceb4; line-height: 1; margin: 2px 0;" ] [ HH.text "＋" ]
+         ]
+         <> [ seqRow ]
+         <> stackRows
+         -- the terminal SINK — a midi · odo · rig pill row (the fold's cap)
+         <> [ HH.div [ HP.style "display: inline-flex; border: 1px solid #dcd2b4; border-radius: 3px; overflow: hidden; margin-top: 2px;" ]
+                (map termBtn [ TMidi, TOdo, TRig ])
+            , if ghost
+                then HH.div [ HP.style "font-size: 9px; letter-spacing: 0.06em; text-transform: uppercase; color: #a05a3a;" ]
+                       [ HH.text "✕ rig only" ]
+                else HH.text ""
+            , if filled
+                then HH.button
+                       [ HP.style "position: absolute; top: 4px; right: 7px; border: none; background: transparent; color: #b06a5a; font-size: 15px; line-height: 1; cursor: pointer;"
+                       , HP.title "clear this player"
+                       , HE.onClick \e -> PerfStopClick e (PerfClearBox i) ]
+                       [ HH.text "×" ]
+                else HH.text "" ]
+       )
+  where
+  ghost = boxGhosted st.authority box
+  -- the TEXT HATCH: a mini-notation sequence over the token's chord indices (cycle
+  -- = one bar). Empty = default one-chord-per-beat. Border lights when it's driving.
+  seqRow =
+    HH.div
+      [ HP.style "display: flex; align-items: center; width: 100%; gap: 3px;" ]
+      [ HH.input
+          [ HP.style ("flex: 1 1 auto; min-width: 0; box-sizing: border-box; border: 1px solid "
+                       <> (if boxUsesSeq box then "#b8860b" else "#dcd2b4")
+                       <> "; background: #fbfaf4; color: #6a5a2a; border-radius: 4px; padding: 2px 6px; font-size: 11px; font-family: ui-monospace, monospace;")
+          , HP.value (printPipeline box)
+          , HP.attr (AttrName "placeholder") "0 1 2 3 # arp up 4"
+          , HP.title "the box pipeline as text (two views of one thing — edit here or the chips below): a mini-notation sequence (cycle = 1 bar) then # layers, e.g. 0 1 2 3 # voice open # arp up 4"
+          -- commit on CHANGE (blur / enter), not on every keystroke: binding the live
+          -- value back via `HP.value` each input snaps the caret to the end and blocks
+          -- editing. `onValueChange` leaves the field uncontrolled while you type, then
+          -- commits — so you can freely edit the pipeline and hear it on blur. The value
+          -- is DERIVED (`printPipeline`), so chip edits re-render it and text edits parse
+          -- back into the structured box — the round-trip's single reconciliation point.
+          , HE.onValueChange \s -> PerfSetPipeline i s
+          -- stop a focus-click bubbling to the box's drop handler, without a re-render.
+          , HE.onClick \e -> PerfStopClick e PerfNop ]
+      , HH.button
+          [ HP.style "flex: 0 0 auto; border: 1px solid #dcd2b4; background: #faf6ea; color: #8a7a4a; cursor: pointer; padding: 1px 6px; border-radius: 4px; font-size: 12px; line-height: 1.2;"
+          , HP.title "open the sequence editor — notation guide + examples"
+          , HE.onClick \e -> PerfStopClick e (PerfOpenEdit i) ]
+          [ HH.text "⤢" ] ]
+  -- the box's function stack, one FULL-WIDTH row per layer: name · (alt control) ·
+  -- − / + to nudge · × to remove. Rows are draggable to reorder or move between
+  -- boxes. First row = applied first (innermost); arp/strum realise at the sink.
+  stackRows = mapWithIndex fxRow box.stack
+  fxRow fxIx lyr =
+    HH.div
+      [ HP.style "display: flex; align-items: center; width: 100%; box-sizing: border-box; gap: 3px; border: 1px solid #cdbb8c; background: #f3ead2; border-radius: 4px; padding: 2px 5px; font-size: 11px; color: #6a5a2a; cursor: grab;"
+      , HP.draggable true
+      , HP.title "drag to reorder, or onto another player to move it"
+      , HE.onDragStart \_ -> PerfDragStart (FromBox i fxIx)
+      , HE.onDragEnd \_ -> PerfDragEnd
+      , HE.onDragOver PerfDragOver
+      , HE.onDrop \e -> PerfDropOnChip e i fxIx ]
+      ( [ HH.span [ HP.style "flex: 1 1 auto; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;" ] [ HH.text (fxLabel lyr.fx) ]
+        , whenBtn fxIx lyr.when ]
+          <> altBtns lyr.fx fxIx
+          <> [ nudge fxIx (-1) "−"
+             , nudge fxIx 1 "+"
+             , HH.button
+                 [ HP.style "border: none; background: transparent; color: #b06a5a; font-size: 12px; line-height: 1; cursor: pointer; padding: 0 2px;"
+                 , HP.title "remove this layer"
+                 , HE.onClick \e -> PerfStopClick e (PerfFxRemove i fxIx) ]
+                 [ HH.text "×" ]
+             ]
+      )
+  -- the layer's WHEN clause — a pill showing ∀ (every cycle) or eN (every n cycles);
+  -- click to cycle. Faint when Always, gold when conditional (so an active clause reads).
+  whenBtn fxIx w =
+    let on = w /= Always
+    in HH.button
+         [ HP.style ("border: 1px solid " <> (if on then "#b8860b" else "#dcd2b4")
+                      <> "; background: " <> (if on then "#fbf1d6" else "#faf6ea")
+                      <> "; color: " <> (if on then "#7a5c00" else "#b0a684")
+                      <> "; font-size: 10px; line-height: 1.2; cursor: pointer; padding: 0 5px; border-radius: 3px;")
+         , HP.title "when this layer applies — click to cycle every-n"
+         , HE.onClick \e -> PerfStopClick e (PerfFxWhen i fxIx) ]
+         [ HH.text (whenLabel w) ]
+  -- an extra per-layer control: arp gets a direction-cycle button; others none.
+  altBtns fx fxIx = case fx of
+    Arpg _ _ ->
+      [ HH.button
+          [ HP.style "border: 1px solid #cdbb8c; background: #faf6ea; color: #8a7a4a; font-size: 10px; line-height: 1.2; cursor: pointer; padding: 0 4px; border-radius: 3px;"
+          , HP.title "cycle arp direction"
+          , HE.onClick \e -> PerfStopClick e (PerfFxAlt i fxIx) ]
+          [ HH.text "↻" ] ]
+    _ -> []
+  nudge fxIx d glyph =
+    HH.button
+      [ HP.style "border: 1px solid #cdbb8c; background: #faf6ea; color: #8a7a4a; font-size: 12px; line-height: 1.1; cursor: pointer; padding: 0 5px; border-radius: 3px;"
+      , HP.title "nudge this layer's value"
+      , HE.onClick \e -> PerfStopClick e (PerfFxNudge i fxIx d) ]
+      [ HH.text glyph ]
+  -- one segment of the midi · odo · rig terminal selector; the active sink filled,
+  -- rig tinted when it would be ghosted (rig-only outside Atlantis).
+  termBtn t =
+    let active = box.term == t
+        rigCol = t == TRig && ghost
+    in HH.button
+         [ HP.style ("border: none; cursor: pointer; padding: 1px 8px; font-size: 9px; letter-spacing: 0.04em; text-transform: uppercase; background: "
+                      <> (if active then "#8a7a4a" else "#faf6ea")
+                      <> "; color: " <> (if active then "#ffffff" else if rigCol then "#a05a3a" else "#8a7a4a") <> ";")
+         , HP.title ("sink " <> termLabel t)
+         , HE.onClick \e -> PerfStopClick e (PerfSetTerm i t) ]
+         [ HH.text (termShort t) ]
 
 -- | The Keyboard lens — the exhaustive hunting cloud: the piano keyboard, diatonic
 -- | triad families, seed-blooms, the voice-leading lattice, and the path overlay.
@@ -3013,9 +4951,85 @@ circleFifthsSurface st =
         , HE.onWheel \we -> ZoomAt (WE.toEvent we) (WE.deltaY we)
         , HE.onMouseDown (PanStart <<< ME.toEvent)
         ] <> geoPanAttrs st )
-      ( cofBackdrop tonic scl rootsPresent
+      ( cofBackdrop st.key tonic scl rootsPresent
           <> map (nodeView scl pathOrder Set.empty posMap) shown
+          <> cofCorona st tonic scl
       )
+
+-- | The active color layers' chords, DE-DUPLICATED by content: each unique chord
+-- | appears once, carrying the list of layers that contain it (so a chord that is
+-- | both McMullen and borrowed is one glyph with two source badges, not two
+-- | overlapping tokens). Layer order follows `allColorLayers` (diatonic first).
+mergedLayerChords :: State -> Array { chord :: ChordNode, layers :: Array ColorLayer }
+mergedLayerChords st =
+  let active = filter (\l -> Set.member l st.colorLayers) allColorLayers
+      tagged = concatMap (\l -> map (\c -> { layer: l, chord: c }) (layerChords st l)) active
+      keys = nub (map (\e -> contentKey e.chord) tagged)
+      forKey k =
+        let ms = filter (\e -> contentKey e.chord == k) tagged
+        in map (\e -> { chord: e.chord, layers: nub (map _.layer ms) }) (head ms)
+  in mapMaybe forKey keys
+
+-- | A row of small badge pips, centred at (cx,cy), one per source layer in that
+-- | layer's hue. This is the "why is this here" key — a chord that is both
+-- | McMullen and borrowed wears two pips. The CONTEXT PALETTE swatches name each hue.
+layerBadges :: forall m. Number -> Number -> Array ColorLayer -> Array (H.ComponentHTML Action Slots m)
+layerBadges cx cy layers =
+  let k = length layers
+  in mapWithIndex
+       (\j l ->
+          SE.circle
+            [ SA.cx (cx - toNumber (k - 1) * 3.5 + toNumber j * 7.0), SA.cy cy, SA.r 2.8
+            , HP.style ("fill: " <> layerHue l <> "; stroke: #ffffff; stroke-width: 0.8; pointer-events: none;") ])
+       layers
+
+-- | The transparent click target over a color-overlay chord: the unified gesture
+-- | (matching every other Vetula surface) — plain click auditions the chord,
+-- | shift-click catches it into the tank. Hover space-previews it.
+colorHit :: forall m. ChordNode -> Number -> Number -> Number -> H.ComponentHTML Action Slots m
+colorHit chord cx cy r =
+  SE.circle
+    [ SA.cx cx, SA.cy cy, SA.r r
+    , HP.style "fill: transparent; cursor: pointer;"
+    , HE.onMouseEnter \_ -> HoverTriad (Just { root: chord.root, pcs: chord.pcs })
+    , HE.onMouseLeave \_ -> HoverTriad Nothing
+    , HE.onClick \e -> if ME.shiftKey e then CatchNode chord else AuditionNode chord
+    ]
+
+-- | One color-overlay chord drawn as notes-on-stave (the same `chordGlyph` the
+-- | pool uses — the notation IS the chord's identity) on a soft backing disc,
+-- | with a row of source badges above it, over a catch/audition hit target. Used
+-- | on the circle of fifths, whose native chord glyph is the stave.
+colorGlyphAt
+  :: forall m
+   . Array Int -> Number -> Number -> ChordNode -> Array ColorLayer
+  -> Array (H.ComponentHTML Action Slots m)
+colorGlyphAt scl cx cy chord layers =
+  [ SE.circle
+      [ SA.cx cx, SA.cy cy, SA.r 15.0
+      , HP.style "fill: #fcfbf8; stroke: #e4e0d4; stroke-width: 1; pointer-events: none;" ]
+  ]
+    <> chordGlyph scl cx cy chord.voicing
+    <> layerBadges cx (cy - 19.0) layers
+    <> [ colorHit chord cx cy 15.0 ]
+
+-- | The color-overlay corona on the circle of fifths (2026-07-31 redesign): the
+-- | active layers' chords (de-duplicated, badged by source) painted as staff
+-- | glyphs beyond the pool, each at its root's wheel angle. Same-root chords stack
+-- | radially outward along the spoke. The CONTEXT card's PALETTE swatches map hue
+-- | → set. Non-interactive for now — the unified catch gesture lands in Step 4.
+cofCorona :: forall m. State -> Int -> Array Int -> Array (H.ComponentHTML Action Slots m)
+cofCorona st tonic scl =
+  let entries = mergedLayerChords st
+      place j e =
+        let pc = mod e.chord.root 12
+            dupIx = length (filter (\d -> mod d.chord.root 12 == pc) (take j entries))
+            ang = cofAngle tonic pc
+            rad = 246.0 + toNumber dupIx * 34.0
+            x = rad * Number.cos ang
+            y = rad * Number.sin ang
+        in colorGlyphAt scl x y e.chord e.layers
+  in concat (mapWithIndex place entries)
 
 -- | The wheel behind the chords: twelve spokes radiating OUT from the hub, and the
 -- | twelve root names ringed tightly around the centre. Diatonic roots (in the
@@ -3024,8 +5038,8 @@ circleFifthsSurface st =
 -- | chords beaded along them read as belonging to their root.
 cofBackdrop
   :: forall m
-   . Int -> Array Int -> Array Int -> Array (H.ComponentHTML Action Slots m)
-cofBackdrop tonic scl rootsPresent =
+   . Key -> Int -> Array Int -> Array Int -> Array (H.ComponentHTML Action Slots m)
+cofBackdrop key tonic scl rootsPresent =
   concatMap spoke (range 0 11) <> concatMap marker (range 0 11)
   where
   spoke i =
@@ -3066,14 +5080,29 @@ cofBackdrop tonic scl rootsPresent =
             ]
           else []
         txtColor = if diat then "#2a2a2a" else "#c4c4c4"
+        -- the diatonic triad rooted here — the wheel is now a catch surface:
+        -- plain click auditions the root's triad, shift-click catches it (the
+        -- same gesture as the Tonnetz). Every root gets a transparent hit disc,
+        -- so out-of-scale roots (label-only, no parchment disc) click too.
+        triadPcs = triadOn key pc
+        isMajor = elem (mod (pc + 4) 12) triadPcs
+        hit =
+          [ SE.circle
+              [ SA.cx x, SA.cy y, SA.r 14.0
+              , HP.style "fill: transparent; cursor: pointer;"
+              , HE.onMouseEnter \_ -> HoverTriad (Just { root: pc, pcs: triadPcs })
+              , HE.onMouseLeave \_ -> HoverTriad Nothing
+              , HE.onClick \e -> if ME.shiftKey e then CatchTriad pc triadPcs isMajor else AuditionTriad pc triadPcs
+              ]
+          ]
     in disc <> tonicRing <>
          [ SE.text
              [ SA.x x, SA.y (y + 4.0)
              , HP.attr (AttrName "text-anchor") "middle"
-             , HP.style ("font-size: 12px; fill: " <> txtColor <> "; letter-spacing: 0.02em; -webkit-user-select: none; user-select: none;")
+             , HP.style ("font-size: 12px; fill: " <> txtColor <> "; letter-spacing: 0.02em; pointer-events: none; -webkit-user-select: none; user-select: none;")
              ]
              [ HH.text (noteName pc) ]
-         ]
+         ] <> hit
 
 -- ---------------------------------------------------------------------------
 -- The Tonnetz lens (neo-Riemannian tonal net)
@@ -3168,6 +5197,7 @@ tonnetzSurface st =
           <> concatMap (tonEdgesFrom scl) cells
           <> concatMap (tonNode scl tonic) cells
           <> concatMap (tonTriName diatonic) tris
+          <> concatMap (tonStackMark st.tonnetzStack) tris
           <> map tonHit tris
       )
 
@@ -3251,7 +5281,8 @@ tonTriName diatonic t =
   else []
 
 -- | The transparent click target over a triangle: plain click auditions the triad,
--- | shift-click catches it into the tank.
+-- | shift-click catches it into the tank, alt-click adds it to the Tonnetz stack
+-- | (2026-07-31 — the freeform triad-stacking gesture).
 tonHit :: forall m. TonTri -> H.ComponentHTML Action Slots m
 tonHit t =
   SE.element (ElemName "polygon")
@@ -3259,9 +5290,37 @@ tonHit t =
     , HP.style "fill: transparent; cursor: pointer;"
     , HE.onMouseEnter \_ -> HoverTriad (Just { root: t.root, pcs: t.pcs })
     , HE.onMouseLeave \_ -> HoverTriad Nothing
-    , HE.onClick \e -> if ME.shiftKey e then CatchTriad t.root t.pcs t.major else AuditionTriad t.root t.pcs
+    , HE.onClick \e ->
+        if ME.altKey e then StackTriad t.root t.pcs t.major
+        else if ME.shiftKey e then CatchTriad t.root t.pcs t.major
+        else AuditionTriad t.root t.pcs
     ]
     []
+
+-- | The stack highlight over a triangle that is currently in the Tonnetz stack:
+-- | a violet wash + a numbered badge at its centroid showing its pick order.
+tonStackMark
+  :: forall m
+   . Array { root :: Int, pcs :: Array Int, major :: Boolean }
+  -> TonTri -> Array (H.ComponentHTML Action Slots m)
+tonStackMark stack t =
+  case findIndex (\e -> e.root == t.root && e.pcs == t.pcs) stack of
+    Nothing -> []
+    Just i ->
+      let c = centroid t.verts
+      in [ SE.element (ElemName "polygon")
+             [ HP.attr (AttrName "points") (ptsStr t.verts)
+             , HP.style "fill: rgba(106,74,154,0.20); stroke: #6a4a9a; stroke-width: 2; pointer-events: none;" ]
+             []
+         , SE.circle
+             [ SA.cx c.x, SA.cy (c.y - 15.0), SA.r 7.0
+             , HP.style "fill: #6a4a9a; stroke: #ffffff; stroke-width: 1; pointer-events: none;" ]
+         , SE.text
+             [ SA.x c.x, SA.y (c.y - 15.0 + 3.0)
+             , HP.attr (AttrName "text-anchor") "middle"
+             , HP.style "font-size: 9px; fill: #ffffff; pointer-events: none; -webkit-user-select: none; user-select: none;" ]
+             [ HH.text (show (i + 1)) ]
+         ]
 
 -- ---------------------------------------------------------------------------
 -- The Lattices lens (every degree's tertian powerset web, tiled + zoomable)
@@ -3419,7 +5478,30 @@ latticesSurface st =
       ( edges
           <> concatMap (latMemberView mh) members
           <> mapWithIndex latDegreeLabel seeds
+          <> latColorRibbon st
       )
+
+-- | The color-overlay layers on the voice-leading lattice (2026-07-31 redesign).
+-- | The lattice's own glyphs are chromatic-circle POLYGONS (stave-less), and its
+-- | tertian webs climb UPWARD from baseY — so the empty top of the surface carries
+-- | the color chords as a wrapping ribbon of polygon glyphs (matching this
+-- | surface's vocabulary, the way the fifths corona matches the stave), each
+-- | de-duplicated and badged by source. The CONTEXT PALETTE swatches name the hues.
+-- | Non-interactive for now (catch = Step 4). A deeper pass would place each color
+-- | chord by voice-leading distance into the web itself — logged as a follow-up.
+latColorRibbon :: forall m. State -> Array (H.ComponentHTML Action Slots m)
+latColorRibbon st =
+  let entries = mergedLayerChords st
+      perRow = 22
+      place j e =
+        let col = mod j perRow
+            row = j / perRow
+            x = latticeLeft + 24.0 + toNumber col * 34.0
+            y = -280.0 + toNumber row * 42.0
+        in pcPolygon HiNone e.chord.root e.chord.pcs x y 9.0
+             <> layerBadges x (y - 16.0) e.layers
+             <> [ colorHit e.chord x y 11.0 ]
+  in concat (mapWithIndex place entries)
 
 -- | One lattice glyph plus its transparent click target (the polygon itself is
 -- | click-through so the disc-shaped hit region stays uniform). `mh` is the hovered
@@ -3462,11 +5544,39 @@ genCenter i =
   , y: -120.0 + toNumber (i / 3) * 250.0
   }
 
--- | The Generate lens — each tank chord as a SEED with a ring of voice-led
--- | relatives bloomed around it (reusing `generateCandidates`, the same engine the
--- | Lab pick-mode uses). "shake" re-rolls: a different adventure + a rotated crop
--- | of the ranked relatives. Hover a relative to preview, click to audition,
--- | shift-click to catch it back into the tank — closing the catch→grow→catch loop.
+-- | A chyron audition lifted into a SEED specimen for Explore. Carries the event's
+-- | real harmonic reading (`anchor`, enriched in step 1) so `specToNode` blooms the
+-- | RIGHT neighbourhood per chord — a selection can span scales, so the reading must
+-- | travel with each seed, never the buffer (DESIGN-tank-overhaul.md §§1, 4). `notes`
+-- | is `bass : voicing`, so the foot is the low note and the rest is the voicing.
+specFromEvent :: Int -> ChyronEvent -> Specimen
+specFromEvent i ev =
+  let sorted = sort ev.notes
+  in { id: SpecimenId i
+     , voicing: drop 1 sorted
+     , bass: fromMaybe 0 (head sorted)
+     , label: ev.label
+     , provenance: Imported     -- lifted from the audition trace
+     , anchor: ev.anchor
+     }
+
+-- | The seeds Explore blooms around: the chyron SELECTION when there is one (each
+-- | selected chord seeds its own neighbourhood), else the tail of the tape as a
+-- | convenience so Explore is never blank. Capped at 6 rings to keep the layout
+-- | sane (mirrors the old `take 6` over the tank).
+chyronSeeds :: State -> Array Specimen
+chyronSeeds st =
+  let evs = case st.chyronSel of
+        Just sel -> mapMaybe (\ix -> index st.chyron ix) (range sel.lo sel.hi)
+        Nothing  -> takeEnd 6 st.chyron
+  in mapWithIndex specFromEvent (take 6 evs)
+
+-- | The Generate lens — each SEED (now a chyron-selection chord, formerly a tank
+-- | specimen) with a ring of voice-led relatives bloomed around it (reusing
+-- | `generateCandidates`, the same engine the Lab pick-mode uses). "shake" re-rolls:
+-- | a different adventure + a rotated crop of the ranked relatives. Hover a relative
+-- | to preview, click to audition — which appends it to the chyron, growing the
+-- | buffer (DESIGN-tank-overhaul.md §4).
 generativeSurface :: forall m. State -> H.ComponentHTML Action Slots m
 generativeSurface st =
   let vb = geoView st
@@ -3479,15 +5589,16 @@ generativeSurface st =
         , HE.onWheel \we -> ZoomAt (WE.toEvent we) (WE.deltaY we)
         , HE.onMouseDown (PanStart <<< ME.toEvent)
         ] <> geoPanAttrs st )
-      ( if length st.tank == 0
+      ( let seeds = chyronSeeds st
+        in if length seeds == 0
           then
             [ SE.text
                 [ SA.x 0.0, SA.y 0.0, HP.attr (AttrName "text-anchor") "middle"
                 , HP.style "font-size: 15px; fill: #b8b8b8; -webkit-user-select: none; user-select: none;"
                 ]
-                [ HH.text "catch chords into the tank, then grow relatives here — press shake ⟳" ]
+                [ HH.text "audition chords — they land in the chyron; select some, then grow relatives here — shake ⟳" ]
             ]
-          else concat (mapWithIndex (genCluster st) (take 6 st.tank))
+          else concat (mapWithIndex (genCluster st) seeds)
       )
 
 -- | One seed's constellation: the seed glyph at the centre, its relatives ringed
@@ -3497,7 +5608,12 @@ genCluster :: forall m. State -> Int -> Specimen -> Array (H.ComponentHTML Actio
 genCluster st i spec =
   let key = st.key
       center = genCenter i
-      seedN = specToNode (9000 + i) key spec
+      -- name the seed from its own pitches (quality-aware: minor gets its "m"),
+      -- not the captured audition label — some lens paths label a minor triad with
+      -- just its bare root, which reads fine for C major but wrong for F minor. The
+      -- relatives are already named by the generator.
+      seedBase = specToNode (9000 + i) key spec
+      seedN = seedBase { label = chordTag seedBase }
       adv = toNumber (mod st.genRoll 5) * 0.2
       rollRot = toNumber st.genRoll * 0.37
       full = generateCandidates Append [ seedN ] key adv 0
@@ -3755,6 +5871,59 @@ progressionPanel st =
 -- | The performance rack: transport (bpm / preview channel) + one live-coded Tidal
 -- | read-head per voice. Extracted from the old Performance `loadedView`; the rail shows
 -- | it only in Perform focus, where it has the width for the (wide) voice rows.
+-- | The new bottom VOICE BAR (docs/DESIGN-scene-modal.md) — a one-line strip of
+-- | FOUR FIXED lanes (block · strum · arp · odo). Each lane is just its live
+-- | surface: an enable light (green on / red off), its two mini-notation fields
+-- | (read-head + notes), and a commit arrow (red when there are uncommitted edits).
+-- | Deliberately NO routing / bpm / channel here — those move to the routing modal.
+-- | Built alongside the old Voices card (control C); C is deleted once this is at
+-- | parity (`canonicalVoices` guarantees the four lanes always exist).
+voiceBar :: forall m. State -> H.ComponentHTML Action Slots m
+voiceBar st =
+  HH.div
+    -- Tied to the WINDOW bottom edge like the shell's top nav — `fixed`, not
+    -- `absolute`, because the Vetula container's `calc(100vh - 118px)` height
+    -- stops short of the true bottom. Same gradient/bevel treatment as the nav,
+    -- but COLOURED and thin — minimal padding, ceding vertical space to the
+    -- lattice above.
+    [ HP.style ( "position: fixed; bottom: 0; left: 0; right: 0; z-index: 40; box-sizing: border-box; "
+        <> "display: flex; gap: 10px; align-items: center; padding: 3px 12px; overflow: hidden; "
+        <> "font-family: Georgia, serif; background: linear-gradient(#b6c3cc,#a4b4be); "
+        <> "border-top: 1px solid #00000026; box-shadow: 0 -1px 4px #00000018;" ) ]
+    ( [ HH.span [ HP.style "font-size: 11px; letter-spacing: 0.16em; text-transform: uppercase; color: #33424d; flex: 0 0 auto;" ] [ HH.text "voices" ] ]
+        <> map (voiceLane st) [ Tuple 0 "block", Tuple 1 "strum", Tuple 2 "arp", Tuple 3 "odo" ] )
+
+-- | One fixed lane of the voice bar, found by its canonical id.
+voiceLane :: forall m. State -> Tuple Int String -> H.ComponentHTML Action Slots m
+voiceLane st (Tuple vid label) = case find (\v -> v.id == vid) st.voices of
+  Nothing -> HH.text ""
+  Just v ->
+    let dirty = v.patternDraft /= v.pattern || v.notePatternDraft /= v.notePattern
+        on = not v.muted
+    in HH.div
+        [ HP.style "flex: 1 1 0; min-width: 0; display: flex; align-items: center; gap: 6px; border-left: 1px solid #00000022; padding-left: 8px;" ]
+        [ HH.button
+            [ HP.style ("border: none; background: none; cursor: pointer; font-size: 12px; line-height: 1; padding: 0; " <> if on then "color: #2f8f3f;" else "color: #c14a4a;")
+            , HP.title (if on then label <> " on — click to mute" else label <> " off — click to enable")
+            , HE.onClick \_ -> ToggleVoiceMute vid ]
+            [ HH.text "●" ]
+        , HH.span [ HP.style "font-size: 11px; color: #2c3944; width: 32px; letter-spacing: 0.03em;" ] [ HH.text label ]
+        , laneInput v.patternDraft "chord" (SetVoicePattern vid)
+        , laneInput v.notePatternDraft "notes" (SetVoiceNotePattern vid)
+        , HH.button
+            [ HP.style ("border: none; background: none; cursor: pointer; font-size: 13px; line-height: 1; padding: 0; " <> if dirty then "color: #c0392b;" else "color: #7d8d97;")
+            , HP.title "commit both patterns"
+            , HE.onClick \_ -> CommitVoicePattern vid ]
+            [ HH.text "▶" ]
+        ]
+
+-- | A compact monospace mini-notation field for one lane of the voice bar.
+laneInput :: forall m. String -> String -> (String -> Action) -> H.ComponentHTML Action Slots m
+laneInput val ph onInput =
+  HH.input
+    [ HP.value val, HE.onValueInput onInput, HP.placeholder ph
+    , HP.style "flex: 1 1 0; min-width: 36px; font-family: ui-monospace, monospace; font-size: 11px; padding: 3px 6px; border-radius: 4px; border: 1px solid #ddd6c6; background: #fff;" ]
+
 playheadsRack :: forall m. State -> H.ComponentHTML Action Slots m
 playheadsRack st =
   let chords = perfChords st

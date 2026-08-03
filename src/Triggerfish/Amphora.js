@@ -22,11 +22,22 @@ const amphoraBase = () => {
   return proto + "//" + host + ":3024";
 };
 
-const getJSON = (url) =>
-  fetch(url).then((r) => {
-    if (!r.ok) throw new Error("GET " + url + " → HTTP " + r.status);
-    return r.json();
-  });
+// A down/unreachable Amphora (:3024) otherwise leaves fetch pending until the
+// browser's ~30s timeout, which stalls whoever awaits it. Fail fast instead so
+// the app degrades to "no favourites" in a couple of seconds. AbortError → the
+// PureScript side gets a Left and surfaces the offline banner.
+const FETCH_TIMEOUT_MS = 2500;
+
+const getJSON = (url) => {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), FETCH_TIMEOUT_MS);
+  return fetch(url, { signal: ctrl.signal })
+    .then((r) => {
+      if (!r.ok) throw new Error("GET " + url + " → HTTP " + r.status);
+      return r.json();
+    })
+    .finally(() => clearTimeout(timer));
+};
 
 const sendJSON = (base, method, path, body) =>
   fetch(base + path, {

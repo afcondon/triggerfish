@@ -45,7 +45,18 @@ import Triggerfish.Transport (Sounding)
 
 data Query a
   = AskSource (String -> a)
+  -- The write mirror of `AskSource`: "replace your active source with this
+  -- string, verbatim". Lets a second surface (the routing modal's Selene
+  -- column) edit the same document the machine's own tab shows — the doc is the
+  -- authority, so both surfaces stay in sync through it. Machines whose source
+  -- the shell never rewrites just no-op.
+  | PutSource String a
   | SyncFree Number Number a
+  -- Report the machine's live clock for the shell's system-BPM readout: the
+  -- tempo it's currently running at and whether it's Link-LOCKED (rig anchor
+  -- present, so the shell's free-run baseline is overridden). Clock-less machines
+  -- answer their last-known / default.
+  | AskClock ({ tempo :: Number, locked :: Boolean } -> a)
   | FeedChords (Array (Array Int)) a
   | FeedVoiceChords (Array { id :: Int, pcs :: Array Int }) a
   -- The ONE transport query (control-surface MISU refactor — see
@@ -64,3 +75,20 @@ data Query a
   | AskLibrary (Array { name :: String, text :: String } -> a)
   | LoadEntry Int a
   | ImportText String (Boolean -> a)
+  -- macro-tidal harmonic authority: install the rig's resting harmonic context
+  -- (root pc + intervals) as the pitch-quantisation set. Pushed by the shell from
+  -- Vetula (the single harmonic authority); Odonus realises through it. Instruments
+  -- with no quantiser ignore it.
+  | SetContextPitchSet Int (Array Int) a
+  -- The shell's CAPTURE hotkey (same key on every pane): "bank your current
+  -- playing-state as a preset (mint its glyph) and park your identity on it".
+  -- Routed to the active machine. Machines without a capture/glyph notion ignore it.
+  | Capture a
+  -- The status-board chip's recall menu: "hand me your banked presets" (the shell
+  -- renders each via glyphFromAlias; `name` "" = anonymous), "recall slot i", and
+  -- the curate verbs — toggle a star, delete a preset. Machines without a bank
+  -- answer [] / ignore.
+  | AskBank (Array { slot :: Int, alias :: String, name :: String, starred :: Boolean } -> a)
+  | RecallSlot Int a
+  | StarSlot Int a
+  | DeleteSlot Int a

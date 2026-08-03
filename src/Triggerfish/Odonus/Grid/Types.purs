@@ -36,10 +36,12 @@ import Prelude
 import Data.Array (length)
 import Data.Maybe (Maybe)
 import Halogen as H
-import Hylograph.Halogen.UI.Select as Select
+import Halogen.Widgets.Select as Select
 import Reef.Input as RI
 import Triggerfish.Odonus.Model as M
 import Triggerfish.Odonus.Marbles as Marbles
+import Triggerfish.Preset (Preset)
+import Triggerfish.Glyph (ChipView)
 import Triggerfish.Transport (Sounding)
 -- The gen-source descriptor moved to the portable reef package (Reef.Gen) so
 -- generation runs on both runtimes; re-export it here under its historical home
@@ -334,10 +336,6 @@ type State =
   , scenes :: Array Scene
   , sceneNameInput :: String  -- the name typed in the SCENES form for the next capture
   , publishMsg :: Maybe String  -- transient status from a publish-scene-to-Amphora click
-  , chain :: Boolean        -- auto-advance scenes at bar boundaries
-  , sceneIx :: Int          -- current scene in the chain
-  , sceneBarAnchor :: Int   -- bar at which the current scene started
-  , barsPerScene :: Int
   , stepDiv :: Int          -- global clock divider (1=1/16 .. 16=whole note)
   , headNote :: Array (Maybe Int)  -- the held/sounding MIDI note per head (4)
   , swing :: Number          -- groove: fraction of a step that off-beats lag (0..0.6)
@@ -373,6 +371,14 @@ type State =
   -- Hidden from the user; arming re-pushes. Odonus hosts it as the always-first-
   -- mounted instrument (the shell owns no rig socket).
   , reconciled :: Boolean
+  -- The unified glyph-chip PRESET bank (docs/DESIGN-scene-modal.md): captured live
+  -- patches, anonymous or named, freely intermixed — distinct from the named SCENE
+  -- library. `identity` is the parked preset's text (the chip glyph; ghosts when the
+  -- live patch diverges from it); `lastChip` guards the Frame → shell status-board
+  -- emit so it only raises on change.
+  , presets :: Array Preset
+  , identity :: Maybe String
+  , lastChip :: Maybe ChipView
   }
 
 data Action
@@ -424,8 +430,6 @@ data Action
   | PlayClip Int            -- audition a captured clip (loops, like a region)
   | DeleteClip Int          -- drop a captured clip
   | ToggleContext           -- REPLAY card: show/hide the active mark's harmonic context
-  | ToggleChain
-  | BumpBars Int
   | SetStepDiv Int
   | KnobDown KnobTarget Int
   | DragMove Int

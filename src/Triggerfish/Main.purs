@@ -19,22 +19,26 @@ module Triggerfish.Main where
 
 import Prelude
 
-import Data.Array (any, filter, find, length, mapWithIndex, null, replicate)
+import Data.Array (any, deleteAt, filter, find, findIndex, last, length, mapMaybe, mapWithIndex, modifyAt, null, replicate, uncons, unsnoc, (!!))
+import Data.FoldableWithIndex (forWithIndex_)
 import Data.Foldable (for_)
 import Data.Either (Either(..))
-import Data.Maybe (Maybe(..), fromMaybe, maybe)
+import Data.Maybe (Maybe(..), fromMaybe, isJust, maybe)
 import Data.Const (Const)
 import Data.Set (Set)
 import Data.Set as Set
 import Data.Map (Map)
 import Data.Map as Map
 import Data.Int as Int
+import Data.String as String
 import Data.String.Common (joinWith)
 import Data.Tuple (Tuple(..))
 import Effect (Effect)
-import Effect.Aff (attempt)
+import Effect.Unsafe (unsafePerformEffect)
+import Effect.Aff (attempt, delay)
 import Effect.Aff.Class (class MonadAff, liftAff)
 import Effect.Class (liftEffect)
+import Data.Time.Duration (Milliseconds(..))
 import Effect.Timer (setInterval)
 import Halogen as H
 import Halogen.Aff as HA
@@ -43,25 +47,39 @@ import Halogen.HTML.Events as HE
 import Halogen.HTML.Properties as HP
 import Halogen.Subscription as HS
 import Halogen.VDom.Driver (runUI)
+import Halogen.Query.Event (eventListener)
 import Type.Proxy (Proxy(..))
+import Web.Event.Event as E
+import Web.HTML (window)
+import Web.HTML.Window as Window
+import Web.HTML.HTMLInputElement as HInput
+import Web.HTML.HTMLTextAreaElement as HTextArea
+import Web.UIEvent.KeyboardEvent as KE
+import Web.UIEvent.KeyboardEvent.EventTypes as KET
 import Binnacle.Audio (armAudioKeepAlive)
 import Binnacle.Time (dateNow)
 import Triggerfish.Odonus.Grid as Odonus
 import Triggerfish.Balistes.Component as Balistes
 import Triggerfish.Selene.Component as Selene
+import Triggerfish.Selene.Source as SelSrc
+import Triggerfish.Selene.Model as SelM
+import Triggerfish.Rig (defaultRig, targetGroups)
+import Halogen.Widgets.Select as Select
 import Triggerfish.Sufflamen.Component as Sufflamen
 import Triggerfish.Stellatus.Component as Stellatus
 import Triggerfish.SourceQuery as SQ
+import Triggerfish.Glyph as G
+import Triggerfish.GlyphView (chipIcons, faIcon)
+import Triggerfish.Scenes as Scenes
+import Triggerfish.Scenes.Store as ScenesStore
+import Triggerfish.Macro.Store as MacroStore
 import Triggerfish.Midi.Routing as Routing
 import Triggerfish.Amphora as Amphora
+import Triggerfish.Macro (Cell(Quiet, Load), Form(..), Step, ResolvedMod, parseLane, resolveStep, stepLabel)
+import Triggerfish.Scale (rootNames, scaleTypes)
 import Vetula.App as Vetula
 import Vetula.Clipboard (copyText)
 import Triggerfish.Transport (Which(..), Mode(..), Sounding(..), soundingOf, anyArmed, allMachines)
-
--- One free-run tempo for the whole rack with no rig. (On the rig the forwarded
--- Link anchor overrides it.) A shell BPM control could drive this later.
-freeTempo :: Number
-freeTempo = 120.0
 
 main :: Effect Unit
 main = HA.runHalogenAff do
@@ -74,8 +92,25 @@ main = HA.runHalogenAff do
 -- The shell's entire transport state is `mode :: Mode` + `armed :: Set Which`;
 -- each machine's `Sounding` is `soundingOf mode armed w`, pushed via SetSounding.
 
+-- The five focused overlays that replace the old TIDAL aggregate tab — each a
+-- cross-cutting concern lifted off any single machine, opened by a hotkey
+-- (⌘1..⌘5) over a blurred backdrop. See docs/DESIGN-scene-modal.md.
+data ModalId
+  = MRouting     -- ⌥1 the MIDI channel map
+  | MSceneSeq    -- ⌥2 the scene grid (Ableton-like sequencing)
+  | MTidalSeq    -- ⌥3 the macro-tidal lanes (Tidal-like sequencing)
+  | MSource      -- ⌥4 the raw Tidal-source aggregate
+  | MPresets     -- ⌥5 the workbench (saved setups)
+
+derive instance eqModalId :: Eq ModalId
+
 data RAction
   = Init | SyncTick | PollVetula | Pick Which | RefreshTidal | CopyTidal | ToggleMaster
+  | OpenModal ModalId | CloseModal   -- the hotkey overlays (⌘1..⌘5; Esc closes)
+  | SetBpm String                    -- nav system-BPM field (free-run baseline)
+  | SetPreviewCh String              -- routing modal: Vetula's audition channel
+  | CycleAudition Which              -- routing modal: cycle a machine's audition dest None→Continuo→Midi
+  | SetAuditionCh Which String       -- routing modal: set a machine's audition MIDI channel
   | SetMode Mode                -- flip the SOLO⟷ATLANTIS authority
   | ArmTab Which                -- toggle one instrument's ARM from the switcher dot
   | JumpVetula Int              -- nav strip: jump Vetula's progression to a chord (live)
@@ -84,6 +119,7 @@ data RAction
   | SetImportText String
   | ImportInto Which            -- route the paste box to one instrument's library
   | SetBinding String String    -- Tidal-page channel map: bind a Vetula voice name → channel
+  | SetSeleneTarget Int String  -- routing modal: re-target Selene destination i to a wire (nested menu)
   | PickEntry LibRow            -- workbench: put a shelf entry on the bench
   | ToggleSource               -- workbench: slide the raw-source drawer open/shut
   | ToggleDig                  -- workbench: expand/collapse the full archive
@@ -92,6 +128,35 @@ data RAction
   | PreviewEntry LibRow        -- workbench: load + Local-audition a setup (rig untouched)
   | StopPreview                -- workbench: end the preview, restore its sounding
   | VetulaArmed Boolean        -- Vetula's self-arm/disarm EVENT (replaces the poll)
+  | BalChipChanged (Maybe G.ChipView)  -- Balistes' identity-chip view, for the status board
+  | SelChipChanged (Maybe G.ChipView)  -- Selene's identity-chip view, for the status board
+  | OdoChipChanged (Maybe G.ChipView)  -- Odonus's identity-chip view, for the status board
+  | CaptureKey                 -- the global CAPTURE hotkey → bank a preset on the active machine
+  | OpenChipMenu Which         -- click a status-board glyph → open (or close) its recall menu
+  | CloseChipMenu
+  | RecallFrom Which Int        -- recall bank slot i on machine w, then close the menu
+  | StarFrom Which Int          -- toggle a preset's star (menu stays open, refreshed)
+  | DeleteFrom Which Int        -- delete a preset (menu stays open, refreshed)
+  -- macro-tidal (Slice 1): the arrangement layer on the TIDAL page. One lane of
+  -- Odonus scene-names, sequenced over bar-quantized steps.
+  | SetLaneText Which String   -- edit one machine's mini-notation lane
+  | SetMacroBars String        -- edit bars-per-step
+  | ToggleMacro                -- run / stop the macro sequencer
+  | MacroTick                  -- the bar-quantized clock poll (step-boundary driver)
+  -- Scene grid (Ableton-like sequencer, docs/DESIGN-scene-modal.md). A rig-wide
+  -- grid: rows = scenes, columns = the live machines; a cell is a machine's glyph.
+  | AddSceneFromRig            -- snapshot every machine's current chip glyph → a new scene
+  | LaunchScene Int            -- recall a scene's tuple across machines (manual fire)
+  | DeleteScene Int
+  | SetSceneName Int String    -- name (promote) a scene; "" leaves it unnamed
+  | OpenCellPick Int Int       -- click a cell (scene, machine col) → open its bank picker
+  | CloseCellPick
+  | SetSceneCell Int Int (Maybe String)  -- assign/clear a cell (scene, machine col, alias)
+  | ToggleSceneRun             -- run / stop the bar-quantized auto-advance
+  | SetSceneBars String        -- bars per scene
+  | SceneTick                  -- the scene bar-clock poll (advance at a boundary)
+  | AcceptCompletion Which String  -- accept a `:`-completion: insert the glyph alias
+  | CloseCompletion            -- dismiss the `:`-completion popup (blur / Esc)
 
 -- One saved preset gathered from an instrument, for the cross-instrument LIBRARY
 -- manager on the TIDAL page. `text` is the entry rendered to Lepidoptera eDSL
@@ -103,8 +168,47 @@ type LibRow = { inst :: Which, idx :: Int, name :: String, text :: String }
 -- — no separate master/playing/audible/rigOn booleans that can contradict it.
 -- "Master playing" is derived (`anyArmed armed`); rig-voice running is derived
 -- (`soundingOf … == Rig`) and each instrument edge-detects its own transitions.
+-- | Where a machine's AUDITION goes (routing modal's per-machine cycle, 2026-08-01):
+-- | None (silent), Continuo (the piano+strings VST preview), or Midi (the rig/IAC
+-- | bus, on a per-machine channel). Cycle order None → Continuo → Midi → None. Only
+-- | Vetula is wired to act on it today; the others store the choice for later.
+data AuditionDest = ADNone | ADContinuo | ADMidi
+
+derive instance eqAuditionDest :: Eq AuditionDest
+
+-- | Machines shown with an audition control in the routing modal, in column order.
+auditionMachines :: Array { w :: Which, label :: String }
+auditionMachines =
+  [ { w: Odo, label: "Odonus" }, { w: Bal, label: "Balistes" }, { w: Sel, label: "Selene" }
+  , { w: Vet, label: "Vetula" }, { w: Suf, label: "Sufflamen" }, { w: Ste, label: "Stellatus" } ]
+
+auditionLabel :: AuditionDest -> String
+auditionLabel = case _ of
+  ADNone -> "None"
+  ADContinuo -> "Continuo"
+  ADMidi -> "MIDI"
+
+toAuditionSel :: AuditionDest -> Vetula.AuditionSel
+toAuditionSel = case _ of
+  ADNone -> Vetula.AuditionOff
+  ADContinuo -> Vetula.AuditionContinuo
+  ADMidi -> Vetula.AuditionMidi
+
 type RState =
   { which :: Which, tidalDoc :: String, freeT0 :: Number
+  , modal :: Maybe ModalId          -- the open hotkey overlay (⌘1..⌘5), or Nothing
+  -- The SYSTEM tempo (docs/DESIGN-transport-misu.md). `bpm` is the shell-owned
+  -- free-run baseline, broadcast to every machine via SyncFree; `liveTempo` /
+  -- `linkLocked` are polled from a machine's clock for the nav readout — when
+  -- Link-locked the rig anchor overrides `bpm`, so the nav shows it read-only.
+  , bpm :: Int
+  , liveTempo :: Number
+  , linkLocked :: Boolean
+  , previewCh :: Int                -- Vetula's audition channel (canonical 1..16), shown in the routing modal
+  -- Per-machine audition destination + its MIDI channel (routing modal cycle).
+  -- `audition` lookup defaults to ADNone; `auditionCh` defaults to 5.
+  , audition :: Map Which AuditionDest
+  , auditionCh :: Map Which Int
   , library :: Array LibRow, importText :: String, importMsg :: String
   -- Workbench (TIDAL page): the shelf entry currently on the bench, whether the
   -- raw-source drawer is slid open, whether the archive ("dig") is expanded, and
@@ -137,15 +241,78 @@ type RState =
   -- canonical-channel table, pushed to Vetula (SetRouting); `vetulaNames` is the
   -- set of → midi voice names in use, polled from Vetula so the page can list them.
   , routing :: Map String Int
-  , vetulaNames :: Array String }
+  , vetulaNames :: Array String
+  -- Selene's live source, stashed on every routing-modal refresh. The doc IS
+  -- the routing authority (destination header tokens carry the Target), so the
+  -- modal's cascade menus parse it, edit it, and push it back via PutSource —
+  -- keeping the modal and the Selene tab in sync through the one document.
+  , seleneDoc :: String
+  -- macro-tidal — the Tidal-like sequencer (docs/DESIGN-scene-modal.md): one
+  -- mini-notation LANE per machine, over glyph ALIASES (`"owl-bomb star-ambulance
+  -- ~"`). Each lane resolves against its machine's preset bank (recall by alias),
+  -- and — unlike the scene grid's leave-as-is — a `~` step is a REST = silence
+  -- (the machine disarms). Lanes are polymetric: they share the bar pulse but each
+  -- cycles at its own token count. `macroLanes` holds each lane's text; `macroBars`
+  -- = bars per step; `macroOn` runs it; `macroStep` is the last global step applied
+  -- (-1 = none, so we only act at a boundary); `macroReadout` is each lane's live
+  -- current-token label ("~" rest, "alias" resolved, "alias ?" unresolved).
+  , macroLanes :: Map Which String
+  , macroReadout :: Map Which String
+  , macroBars :: Int, macroOn :: Boolean, macroStep :: Int
+  -- The `:`-completion popup for a lane: which machine, the `:`-prefix being typed
+  -- (the trailing token), and its bank's matching glyphs. Nothing = closed. Typing
+  -- a `:foo` token opens it (emoji-picker over that machine's bank); click inserts.
+  , laneComplete :: Maybe { w :: Which, prefix :: String, items :: Array MenuItem }
+  -- Harmonic-authority bridge: the last resting-context scale pushed from Vetula
+  -- into Odonus (serialised for dedup, so the 100ms poll only re-pushes on change).
+  , ctxScaleKey :: String
+  -- the six-machine status board: each machine's identity-chip view. Odonus /
+  -- Balistes / Selene PUSH theirs via Output (change-gated from their Frame loop);
+  -- Vetula has no continuous frame loop, so the shell PULLS its chip in PollVetula
+  -- (AskChip) and parks it in `vetChip`. Suf/Ste report Nothing (prototypes).
+  , balChip :: Maybe G.ChipView
+  , selChip :: Maybe G.ChipView
+  , odoChip :: Maybe G.ChipView
+  , vetChip :: Maybe G.ChipView
+  -- brief true after the CAPTURE hotkey fires, so the active tab pulses — a visible
+  -- "key registered" cue (the hotkey needs page focus; the pulse tells you it got it).
+  , captureFlash :: Boolean
+  -- single-flight guard for the 100ms Vetula poll, so it can't pile up queries
+  -- against a still-initialising Vetula (see PollVetula).
+  , pollBusy :: Boolean
+  -- true once an Amphora fetch has failed (store unreachable) — drives the shell's
+  -- "no favourites / backend not running" banner. Probed once on Init.
+  , amphoraDown :: Boolean
+  -- the status-board chip's recall menu: which machine's bank is open + its slots
+  -- (each an alias the shell renders via glyphFromAlias). Nothing = closed. Fetched
+  -- on open (AskBank), so it's a snapshot of the bank at click time.
+  , chipMenu :: Maybe { w :: Which, items :: Array MenuItem }
+  -- Scene grid (Ableton-like sequencer): the rig-wide grid + its transport. `scenes`
+  -- is the ordered list of scenes (each a tuple of glyph aliases across machines);
+  -- `sceneRun` runs the bar-quantized auto-advance; `scenePos` is the last-launched
+  -- row (-1 = none, for the highlight); `sceneBars` = bars per scene; `sceneStep`
+  -- is the last global bar-step applied (advance only at a boundary). `scenePick`
+  -- is the open per-cell bank picker (Nothing = closed).
+  , scenes :: Array Scenes.Scene
+  , sceneRun :: Boolean
+  , scenePos :: Int
+  , sceneBars :: Int
+  , sceneStep :: Int
+  , scenePick :: Maybe { scene :: Int, machine :: Int, items :: Array MenuItem } }
+
+-- One preset in the recall menu: its glyph alias + optional name + star flag.
+type MenuItem = { slot :: Int, alias :: String, name :: String, starred :: Boolean }
 
 type Slots =
-  ( odo :: H.Slot SQ.Query Void Unit
-  , bal :: H.Slot SQ.Query Void Unit
-  , sel :: H.Slot SQ.Query Void Unit
+  ( odo :: H.Slot SQ.Query Odonus.Output Unit
+  , bal :: H.Slot SQ.Query Balistes.Output Unit
+  , sel :: H.Slot SQ.Query Selene.Output Unit
   , vet :: H.Slot Vetula.SourceQuery Vetula.Output Unit
   , suf :: H.Slot (Const Void) Void Unit
   , ste :: H.Slot (Const Void) Void Unit
+  -- One cascade-menu per Selene destination in the routing modal, keyed by
+  -- destination index — the nested ES-9/FH-2/MIDI target picker.
+  , selTarget :: Select.Slot Int
   )
 
 _odo :: Proxy "odo"
@@ -166,18 +333,30 @@ _suf = Proxy
 _ste :: Proxy "ste"
 _ste = Proxy
 
+_selTarget :: Proxy "selTarget"
+_selTarget = Proxy
+
 root :: forall q i o m. MonadAff m => H.Component q i o m
 root =
   H.mkComponent
     { initialState: \_ ->
         { which: Bal, tidalDoc: "", freeT0: 0.0
+        , bpm: 120, liveTempo: 120.0, linkLocked: false, previewCh: 5
+        , audition: Map.singleton Vet ADContinuo   -- Vetula auditions via Continuo by default
+        , auditionCh: Map.empty                     -- per-machine channel; lookup defaults to 5
+
         , library: [], importText: "", importMsg: ""
         , picked: Nothing, sourceOpen: false, digOpen: false, goTo: [], previewing: []
         , mode: Solo, harm: { durs: [], active: -1, chord: "" }
         , brushSent: "", brushPrev: ""
         , armed: Set.empty
         , routing: Map.empty
-        , vetulaNames: [] }
+        , vetulaNames: [], seleneDoc: ""
+        , modal: Nothing
+        , macroLanes: Map.empty, macroReadout: Map.empty, macroBars: 4, macroOn: false, macroStep: -1, laneComplete: Nothing
+        , ctxScaleKey: "", balChip: Nothing, selChip: Nothing, odoChip: Nothing, vetChip: Nothing, captureFlash: false
+        , pollBusy: false, amphoraDown: false, chipMenu: Nothing
+        , scenes: [], sceneRun: false, scenePos: -1, sceneBars: 4, sceneStep: -1, scenePick: Nothing }
     , render
     , eval: H.mkEval H.defaultEval { handleAction = handleAction, initialize = Just Init }
     }
@@ -196,11 +375,48 @@ handleAction = case _ of
     -- Poll Vetula's Odonus-bound performance voices ~10×/s and feed each one's
     -- current block chord to Odonus, so its quantiser follows the live conductor.
     _ <- liftEffect $ setInterval 100 (HS.notify listener PollVetula)
+    -- The macro clock: poll ~8×/s and act only when a bar-quantized step boundary
+    -- is crossed (MacroTick is a no-op while the sequencer is stopped).
+    _ <- liftEffect $ setInterval 120 (HS.notify listener MacroTick)
+    -- The scene clock: same ~8×/s bar-boundary poll for the Ableton-like grid's
+    -- auto-advance (SceneTick is a no-op while the grid isn't running).
+    _ <- liftEffect $ setInterval 120 (HS.notify listener SceneTick)
+    -- Restore the saved scene grid (rig-wide). Playback is NOT restored (sceneRun
+    -- stays false) — a reload never auto-plays, mirroring the machines.
+    msc <- liftEffect ScenesStore.load
+    for_ msc \sv -> H.modify_ _ { scenes = sv.scenes }
+    -- Restore the saved macro-tidal lanes + bars-per-step (macroOn stays false).
+    mmac <- liftEffect MacroStore.load
+    for_ mmac \sv -> H.modify_ _
+      { macroLanes = Map.fromFoldable (mapMaybe (\e -> (\w -> Tuple w e.text) <$> whichFromLane e.machine) sv.lanes)
+      , macroBars = if sv.bars >= 1 then sv.bars else 4 }
+    -- The global CAPTURE hotkey: one window-level keydown listener (the "same key
+    -- on every pane" binding) → CaptureKey, which routes to the active machine.
+    -- Guarded so it never fires while typing in a text field.
+    target <- liftEffect $ Window.toEventTarget <$> window
+    _ <- H.subscribe $ eventListener KET.keydown target keyToAction
     handleAction SyncTick
     -- One source of truth: push each machine its derived Sounding (all Silent now —
     -- nothing armed). Arm/mode changes re-derive and re-push; the instruments
-    -- edge-detect their own local-mute / rig-handoff transitions.
-    pushAll
+    -- edge-detect their own local-mute / rig-handoff transitions. Forked so a slow
+    -- child initialize can't block the shell's action queue during startup.
+    void $ H.fork pushAll
+    -- Probe Amphora once so the offline banner appears within the fetch timeout if
+    -- the store is down. Forked — the shell must not wait on it.
+    void $ H.fork fetchGoTo
+  -- The hotkey overlays (⌘1..⌘5). Opening one replaces any other that's open;
+  -- Esc / backdrop click closes. Opening REFRESHES the data that modal shows —
+  -- the old "switch to the TIDAL tab to refresh" trigger went away with the tab,
+  -- so the overlay pulls fresh source / voice-names / library on open.
+  OpenModal m -> do
+    H.modify_ _ { modal = Just m }
+    case m of
+      MRouting -> refreshTidal
+      MSource -> refreshTidal
+      MPresets -> refreshTidal *> refreshLibrary *> fetchGoTo
+      _ -> pure unit
+  CloseModal -> H.modify_ _ { modal = Nothing }
+
   -- Master ▶/■ = arm ALL / disarm ALL: arm every machine if none is armed, else
   -- disarm every machine. The button label is `anyArmed`. pushAll re-derives each
   -- machine's Sounding (in ATLANTIS that hands off / stops rig voices too).
@@ -224,17 +440,55 @@ handleAction = case _ of
   -- Nav harmonic strip: jump Vetula's progression to a chord live. Playing → the
   -- ensemble advances there; stopped → the → odo feed moves, re-quantising Odonus.
   JumpVetula i -> void $ H.query _vet unit (Vetula.JumpChord i unit)
-  SyncTick -> do
-    t0 <- H.gets _.freeT0
-    _ <- H.query _odo unit (SQ.SyncFree t0 freeTempo unit)
-    _ <- H.query _bal unit (SQ.SyncFree t0 freeTempo unit)
-    _ <- H.query _sel unit (SQ.SyncFree t0 freeTempo unit)
-    _ <- H.query _vet unit (Vetula.SyncFree t0 freeTempo unit)
-    -- No armed-reconcile poll here anymore: `armed` is written only by the user
-    -- (ArmTab / ToggleMaster) and by Vetula's self-disarm EVENT (VetulaArmed). Odo/
-    -- Bal/Sel never self-disarm, so nothing needs observing. Sounding is now purely
-    -- one-directional (shell state → instruments) — no two-way binding to fight.
-    pure unit
+  -- Forked so a still-initialising child (Vetula's lattice build can take tens of
+  -- seconds) can't stall the shell's action queue on the `H.query`. A blocked queue
+  -- means keydowns/clicks don't register until every child is ready — the CAPTURE
+  -- hotkey "dead for a minute" bug. The queries land whenever the children answer.
+  -- No armed-reconcile poll here anymore: `armed` is written only by the user
+  -- (ArmTab / ToggleMaster) and by Vetula's self-disarm EVENT (VetulaArmed). Odo/
+  -- Bal/Sel never self-disarm, so nothing needs observing. Sounding is now purely
+  -- one-directional (shell state → instruments) — no two-way binding to fight.
+  SyncTick -> void $ H.fork pushFree
+
+  -- The nav BPM field (free-run only; read-only while Link-locked). Set the
+  -- shell's baseline and re-broadcast it to every machine.
+  SetBpm v -> case Int.fromString v of
+    Just n -> do
+      H.modify_ _ { bpm = clamp 20 999 n }
+      pushFree
+    Nothing -> pure unit
+
+  -- Routing modal: set Vetula's audition channel (canonical 1..16).
+  SetPreviewCh v -> case Int.fromString v of
+    Just n -> do
+      let ch = clamp 1 16 n
+      H.modify_ _ { previewCh = ch }
+      void $ H.query _vet unit (Vetula.SetPreviewChanC ch unit)
+    Nothing -> pure unit
+
+  -- Routing modal: cycle a machine's audition destination None → Continuo → Midi.
+  -- Only Vetula is wired to act (via SetAuditionQ + its preview channel); the rest
+  -- just store the choice for now.
+  CycleAudition w -> do
+    st <- H.get
+    let cur = fromMaybe ADNone (Map.lookup w st.audition)
+        nxt = case cur of
+                ADNone -> ADContinuo
+                ADContinuo -> ADMidi
+                ADMidi -> ADNone
+    H.modify_ _ { audition = Map.insert w nxt st.audition }
+    when (w == Vet) do
+      void $ H.query _vet unit (Vetula.SetAuditionQ (toAuditionSel nxt) unit)
+      when (nxt == ADMidi) $
+        void $ H.query _vet unit (Vetula.SetPreviewChanC (fromMaybe 5 (Map.lookup Vet st.auditionCh)) unit)
+
+  -- Routing modal: a machine's audition MIDI channel (only meaningful in Midi mode).
+  SetAuditionCh w v -> case Int.fromString v of
+    Just n -> do
+      let ch = clamp 1 16 n
+      H.modify_ \s -> s { auditionCh = Map.insert w ch s.auditionCh }
+      when (w == Vet) $ void $ H.query _vet unit (Vetula.SetPreviewChanC ch unit)
+    Nothing -> pure unit
   -- Opening TIDAL pulls a fresh aggregate + library; the modules keep playing.
   Pick Tid -> do
     H.modify_ _ { which = Tid }
@@ -270,6 +524,21 @@ handleAction = case _ of
       Just ch | ch >= 1 && ch <= 16 -> H.modify_ \st -> st { routing = Map.insert name ch st.routing }
       _ -> H.modify_ \st -> st { routing = Map.delete name st.routing }
     pushRouting
+  -- Re-target one Selene destination from its cascade menu. Round-trips through
+  -- Selene's own source: pull the live doc, retarget destination i, reprint,
+  -- push back via PutSource (the write mirror of AskSource). The Selene tab and
+  -- this modal both read that same doc, so they stay in lockstep.
+  SetSeleneTarget i wire -> do
+    ms <- H.query _sel unit (SQ.AskSource identity)
+    for_ ms \doc -> do
+      let rack = SelSrc.parseRack doc
+          rack' = rack
+            { destinations = mapWithIndex
+                (\j d -> if j == i then d { target = SelSrc.parseTarget wire } else d)
+                rack.destinations }
+          doc' = SelSrc.printRack rack'
+      void $ H.query _sel unit (SQ.PutSource doc' unit)
+      H.modify_ _ { seleneDoc = doc' }
   -- Workbench: put a shelf entry on the bench (or clear it if re-clicked).
   PickEntry r -> H.modify_ \st ->
     st { picked = if isPicked st.picked r then Nothing else Just r }
@@ -303,6 +572,146 @@ handleAction = case _ of
   VetulaArmed on -> do
     H.modify_ \st -> st { armed = if on then Set.insert Vet st.armed else Set.delete Vet st.armed }
     pushSounding Vet
+  -- Balistes pushed a new identity-chip view (capture / recall / divergence) — park it
+  -- for the status board. Cheap: Balistes only raises this when the view changed.
+  BalChipChanged cv -> H.modify_ _ { balChip = cv }
+  SelChipChanged cv -> H.modify_ _ { selChip = cv }
+  OdoChipChanged cv -> H.modify_ _ { odoChip = cv }
+  -- The CAPTURE hotkey: tell the active machine to bank its current state as a
+  -- preset. Only the SQ.Query machines answer; Balistes is the only live one so far.
+  CaptureKey -> do
+    -- Pulse FIRST, and independent of the child query: a child `H.query` blocks
+    -- until that child has finished initializing (tens of seconds at cold start
+    -- for the heavy panes), and doing it before the flash made the hotkey look
+    -- dead for ~a minute after load. Pulse now (visible "key registered" cue),
+    -- then fork the actual capture so it lands whenever the machine is ready.
+    H.modify_ _ { captureFlash = true }
+    void $ H.fork do
+      H.liftAff (delay (Milliseconds 260.0))
+      H.modify_ _ { captureFlash = false }
+    w <- H.gets _.which
+    void $ H.fork case w of
+      Odo -> void $ H.query _odo unit (SQ.Capture unit)
+      Bal -> void $ H.query _bal unit (SQ.Capture unit)
+      Sel -> void $ H.query _sel unit (SQ.Capture unit)
+      Vet -> void $ H.query _vet unit (Vetula.Capture unit)
+      _ -> pure unit
+  -- Click a status-board glyph: toggle its recall menu. On open, snapshot the
+  -- machine's bank (AskBank) so the menu lists its presets as glyphs.
+  OpenChipMenu w -> do
+    open <- H.gets _.chipMenu
+    case open of
+      Just m | m.w == w -> H.modify_ _ { chipMenu = Nothing }
+      _ -> refreshChipMenu w
+  CloseChipMenu -> H.modify_ _ { chipMenu = Nothing }
+  RecallFrom w slot -> do
+    _ <- queryRecall w slot
+    H.modify_ _ { chipMenu = Nothing }
+  StarFrom w slot -> do
+    _ <- queryStar w slot
+    refreshChipMenu w
+  DeleteFrom w slot -> do
+    _ <- queryDelete w slot
+    refreshChipMenu w
+  -- macro-tidal: edit one machine's lane / the shared bars-per-step.
+  SetLaneText w t -> do
+    H.modify_ \s -> s { macroLanes = Map.insert w t s.macroLanes }
+    persistMacro
+    -- `:`-completion: if the trailing token is a `:prefix`, open a scoped popup of
+    -- that machine's bank glyphs whose alias matches; otherwise close it.
+    case String.stripPrefix (String.Pattern ":") (trailingToken t) of
+      Just prefix -> do
+        items <- fromMaybe [] <$> queryBank w
+        let matched = filter (\it -> String.contains (String.Pattern prefix) it.alias) items
+        H.modify_ _ { laneComplete = Just { w, prefix, items: matched } }
+      Nothing -> H.modify_ _ { laneComplete = Nothing }
+  -- Accept a completion: replace the trailing `:prefix` token with the glyph alias
+  -- (plus a trailing space so typing flows on), and close the popup.
+  AcceptCompletion w alias -> do
+    H.modify_ \s ->
+      let cur = fromMaybe "" (Map.lookup w s.macroLanes)
+      in s { macroLanes = Map.insert w (replaceTrailingToken cur alias <> " ") s.macroLanes, laneComplete = Nothing }
+    persistMacro
+  CloseCompletion -> H.modify_ _ { laneComplete = Nothing }
+  SetMacroBars v -> case Int.fromString v of
+    Just n | n >= 1 -> do
+      H.modify_ _ { macroBars = n }
+      persistMacro
+    _ -> pure unit
+  -- Run / stop the sequencer. Turning ON resets `macroStep` to -1 so the next tick
+  -- applies the current step at once. (No library re-gather — lanes now resolve
+  -- against the local preset banks by glyph alias, not Amphora scene names.)
+  ToggleMacro -> do
+    on <- H.gets _.macroOn
+    if on
+      then H.modify_ _ { macroOn = false }
+      else H.modify_ _ { macroOn = true, macroStep = -1 }
+  -- The bar-quantized clock. Compute the current global step from the shared
+  -- free-run epoch; when it crosses a boundary, resolve + apply EACH machine's lane
+  -- at its own token count (so lanes of different lengths phase polymetrically).
+  -- Rig-locked timing (reading the Link anchor) is a later slice — this drives Solo.
+  MacroTick -> do
+    st <- H.get
+    when (st.macroOn && st.macroBars > 0) do
+      now <- liftEffect dateNow
+      let barMs = 4.0 * 60000.0 / Int.toNumber st.bpm
+          epochMs = st.freeT0 / 1000.0
+          barIdx = max 0 (Int.floor ((now - epochMs) / barMs))
+          stepGlobal = barIdx `div` st.macroBars
+      when (stepGlobal /= st.macroStep) do
+        H.modify_ _ { macroStep = stepGlobal }
+        for_ Scenes.sceneMachines \w -> do
+          let toks = parseLane (fromMaybe "" (Map.lookup w st.macroLanes))
+              n = length toks
+          when (n > 0) (applyLaneCell w (resolveStep toks (stepGlobal `mod` n) (stepGlobal `div` n)))
+  -- Scene grid (Ableton-like). Snapshot the rig: read every machine's CURRENT chip
+  -- glyph (the alias it's parked on) into a new scene row. A machine with no chip
+  -- (nothing captured) contributes a leave-as-is cell. The capture-hotkey ethos at
+  -- rig level — get it sounding right, bank the whole tuple in one gesture.
+  AddSceneFromRig -> do
+    st <- H.get
+    let cells = map (\w -> _.alias <<< _.glyph <$> chipOf st w) Scenes.sceneMachines
+    H.modify_ \s -> s { scenes = s.scenes <> [ { name: Nothing, cells } ] }
+    persistScenes
+  LaunchScene i -> launchScene i
+  DeleteScene i -> do
+    H.modify_ \s -> s { scenes = fromMaybe s.scenes (deleteAt i s.scenes), scenePos = if s.scenePos == i then -1 else s.scenePos }
+    persistScenes
+  SetSceneName i name -> do
+    H.modify_ \s -> s
+      { scenes = fromMaybe s.scenes
+          (modifyAt i (_ { name = if name == "" then Nothing else Just name }) s.scenes) }
+    persistScenes
+  -- click a cell → open that machine's bank as a picker, so a glyph can be assigned.
+  OpenCellPick sceneIx machineIx -> case Scenes.sceneMachines !! machineIx of
+    Nothing -> pure unit
+    Just w -> do
+      items <- fromMaybe [] <$> queryBank w
+      H.modify_ _ { scenePick = Just { scene: sceneIx, machine: machineIx, items } }
+  CloseCellPick -> H.modify_ _ { scenePick = Nothing }
+  SetSceneCell sceneIx machineIx mAlias -> do
+    H.modify_ \s -> s
+      { scenes = fromMaybe s.scenes (modifyAt sceneIx (Scenes.setCellAt machineIx mAlias) s.scenes)
+      , scenePick = Nothing }
+    persistScenes
+  ToggleSceneRun ->
+    H.modify_ \s -> if s.sceneRun then s { sceneRun = false } else s { sceneRun = true, sceneStep = -1 }
+  SetSceneBars v -> case Int.fromString v of
+    Just n | n >= 1 -> H.modify_ _ { sceneBars = n }
+    _ -> pure unit
+  -- The scene bar-clock: like MacroTick, compute the current global bar-step from
+  -- the shared free-run epoch; when it crosses a boundary, launch the next scene.
+  SceneTick -> do
+    st <- H.get
+    when (st.sceneRun && length st.scenes > 0) do
+      now <- liftEffect dateNow
+      let barMs = 4.0 * 60000.0 / Int.toNumber st.bpm
+          epochMs = st.freeT0 / 1000.0
+          barIdx = max 0 (Int.floor ((now - epochMs) / barMs))
+          stepGlobal = barIdx `div` max 1 st.sceneBars
+      when (stepGlobal /= st.sceneStep) do
+        H.modify_ _ { sceneStep = stepGlobal }
+        launchScene (stepGlobal `mod` length st.scenes)
   -- Star / unstar a setup: promote it onto the go-to wall (publish its content and
   -- favourite it into `triggerfish-goto`) or take it off (unpublish that favourite).
   -- Content stays addressable either way; the wall is pure curation. Then re-fetch.
@@ -314,32 +723,62 @@ handleAction = case _ of
         { kind: kindOf r.inst, collection: goToCollection
         , name: r.name, source: "workbench", payload: r.text, tags: [] })))
     fetchGoTo
-  -- The live Vetula→Odonus bridge: pull each Odonus-bound voice's current block
-  -- chord and feed the set to Odonus, whose KEY pane picks one (or none) to follow.
+  -- The live Vetula→Odonus bridge. Odonus quantises to ONE harmonic-context set
+  -- (chord-when-progression, else lens scale) pushed below as its pitchSet — no
+  -- separate chord overlay, so the old per-voice chord feed is retired.
+  -- Forked + single-flighted (`pollBusy`): the 100ms poll queries Vetula, which
+  -- blocks until Vetula finishes initialising (its lattice build can take tens of
+  -- seconds). Running it inline held the shell's action queue that whole time, so
+  -- keydowns/clicks didn't register until Vetula was ready — the CAPTURE-hotkey
+  -- "dead for a minute" bug. The fork frees the queue; the guard stops the poll
+  -- piling up ~one query per 100ms against the not-yet-ready child.
   PollVetula -> do
-    mfeed <- H.query _vet unit (Vetula.AskVoiceChords identity)
-    case mfeed of
-      Just feed -> void $ H.query _odo unit (SQ.FeedVoiceChords feed unit)
-      Nothing -> pure unit
-    -- Pull Vetula's progression + playhead for the nav harmonic-context strip.
-    mharm <- H.query _vet unit (Vetula.AskHarmonic identity)
-    case mharm of
-      Just h -> H.modify_ _ { harm = h }
-      Nothing -> pure unit
-    -- Vetula auto-resync (ATLANTIS only): Vetula has no incremental rig path, so the
-    -- shell diffs its payload and re-pushes on a SETTLED change (payload stable for
-    -- one poll AND different from what was last sent). A drag coalesces into one push
-    -- ~one tick after it stops; glitchless because the rig re-push phase-aligns.
-    -- Only when the Vetula voice is actually running on the rig (armed in ATLANTIS).
-    msig <- H.query _vet unit (Vetula.AskBrushSig identity)
-    for_ msig \sig -> do
-      st <- H.get
-      -- Re-push (SetSounding Rig re-voices) only when Vetula is actually rig-
-      -- authoritative — `soundingOf … Vet == Rig` already implies armed + ATLANTIS.
-      when (soundingOf st.mode st.armed (previewSet st) Vet == Rig && sig == st.brushPrev && sig /= st.brushSent) do
-        _ <- H.query _vet unit (Vetula.SetSounding Rig unit)
-        H.modify_ _ { brushSent = sig }
-      H.modify_ _ { brushPrev = sig }
+    busy <- H.gets _.pollBusy
+    unless busy do
+      H.modify_ _ { pollBusy = true }
+      void $ H.fork do
+        -- Pull Vetula's progression + playhead for the nav harmonic-context strip.
+        mharm <- H.query _vet unit (Vetula.AskHarmonic identity)
+        case mharm of
+          Just h -> H.modify_ _ { harm = h }
+          Nothing -> pure unit
+        -- Pull Vetula's identity chip for the status board (Vetula has no continuous
+        -- frame loop to push it, so it rides this existing 100ms poll). `Nothing` (no
+        -- answer) leaves the last chip; an answer of Nothing clears it (nothing parked).
+        mchip <- H.query _vet unit (Vetula.AskChip identity)
+        for_ mchip \cv -> H.modify_ _ { vetChip = cv }
+        -- Harmonic authority: pull Vetula's resting context scale and, when it CHANGES,
+        -- install it as Odonus's pitchSet (RI.SetPitchSet, lockstep-safe). Vetula owns
+        -- the scale; Odonus follows. Deduped so the 100ms poll doesn't flood the input.
+        mctx <- H.query _vet unit (Vetula.AskContextScale identity)
+        for_ mctx \ctx -> do
+          let key = show ctx.root <> ":" <> show ctx.offsets
+          prev <- H.gets _.ctxScaleKey
+          when (key /= prev) do
+            H.modify_ _ { ctxScaleKey = key }
+            void $ H.query _odo unit (SQ.SetContextPitchSet ctx.root ctx.offsets unit)
+        -- The system-tempo readout: pull one machine's live clock (Odonus, always
+        -- mounted) for the nav BPM display + the Link-locked read-only gate.
+        mclk <- H.query _odo unit (SQ.AskClock identity)
+        for_ mclk \c -> H.modify_ _ { liveTempo = c.tempo, linkLocked = c.locked }
+        -- Vetula's audition channel for the routing modal's preview-ch field.
+        mpc <- H.query _vet unit (Vetula.AskPreviewChan identity)
+        for_ mpc \pc -> H.modify_ _ { previewCh = pc }
+        -- Vetula auto-resync (ATLANTIS only): Vetula has no incremental rig path, so the
+        -- shell diffs its payload and re-pushes on a SETTLED change (payload stable for
+        -- one poll AND different from what was last sent). A drag coalesces into one push
+        -- ~one tick after it stops; glitchless because the rig re-push phase-aligns.
+        -- Only when the Vetula voice is actually running on the rig (armed in ATLANTIS).
+        msig <- H.query _vet unit (Vetula.AskBrushSig identity)
+        for_ msig \sig -> do
+          st <- H.get
+          -- Re-push (SetSounding Rig re-voices) only when Vetula is actually rig-
+          -- authoritative — `soundingOf … Vet == Rig` already implies armed + ATLANTIS.
+          when (soundingOf st.mode st.armed (previewSet st) Vet == Rig && sig == st.brushPrev && sig /= st.brushSent) do
+            _ <- H.query _vet unit (Vetula.SetSounding Rig unit)
+            H.modify_ _ { brushSent = sig }
+          H.modify_ _ { brushPrev = sig }
+        H.modify_ _ { pollBusy = false }
 
 -- Push one machine its DERIVED Sounding (soundingOf mode armed). The instrument
 -- edge-detects the transition itself: local-mute on leaving Local, rig handoff on
@@ -350,6 +789,87 @@ pushSounding :: forall o m. MonadAff m => Which -> H.HalogenM RState RAction Slo
 pushSounding w = do
   st <- H.get
   void $ querySounding w (soundingOf st.mode st.armed (previewSet st) w)
+
+-- macro-tidal: enact one resolved lane step on machine `w`. A glyph-alias token
+-- recalls that preset (by alias, from the machine's bank) and ARMS the machine so
+-- it sounds; a `~` rest (or the silent branch of an alternation) DISARMS it —
+-- silence, the Tidal-like reading (vs the scene grid's leave-as-is). An unresolved
+-- alias (its preset was deleted) is held and flagged in the readout. The sequencer
+-- thus owns each machine's arm — scene-scheduling lifted up out of the instrument.
+applyLaneCell :: forall o m. MonadAff m => Which -> Cell -> H.HalogenM RState RAction Slots o m Unit
+applyLaneCell w = case _ of
+  Quiet -> do
+    a <- H.gets _.armed
+    when (Set.member w a) do
+      H.modify_ _ { armed = Set.delete w a }
+      pushSounding w
+    setLaneReadout w "~"
+  Load alias mods -> do
+    ok <- recallAlias w alias
+    if ok then do
+      a <- H.gets _.armed
+      when (not (Set.member w a)) (H.modify_ _ { armed = Set.insert w a })
+      for_ mods applyMod   -- apply the transform stack (e.g. `# scale`) to the form
+      pushSounding w
+      setLaneReadout w (alias <> joinWith "" (map (\md -> " #" <> md.verb) mods))
+    else setLaneReadout w (alias <> " ?")
+
+-- Record one lane's current-token label for its live readout.
+setLaneReadout :: forall o m. Which -> String -> H.HalogenM RState RAction Slots o m Unit
+setLaneReadout w s = H.modify_ \st -> st { macroReadout = Map.insert w s st.macroReadout }
+
+-- Recall a machine's preset by glyph alias: ask its bank for the matching slot
+-- (alias = stable content identity), then RecallSlot it. `true` iff it resolved.
+-- Shared by the macro lanes and the scene grid launch.
+recallAlias :: forall o m. Which -> String -> H.HalogenM RState RAction Slots o m Boolean
+recallAlias w alias = do
+  mbank <- queryBank w
+  case mbank >>= (\bank -> _.slot <$> find (\it -> it.alias == alias) bank) of
+    Just slot -> queryRecall w slot $> true
+    Nothing -> pure false
+
+-- Interpret one resolved modifier. `scale` re-quantises the whole rig by setting
+-- VETULA's resting scale (Vetula is the single harmonic authority; the poll bridge
+-- then pushes it into Odonus's pitchSet). So `# scale` is a rig-global harmonic
+-- verb, not an Odonus-local edit. Other verbs are no-ops for now — the seam is here
+-- for fast / bass / transpose. An unparseable scale arg is silently skipped.
+applyMod :: forall o m. MonadAff m => ResolvedMod -> H.HalogenM RState RAction Slots o m Unit
+applyMod md = case md.verb of
+  "scale" -> case parseScaleArg md.arg of
+    Just s -> void $ H.query _vet unit (Vetula.SetRestingScale s.root s.offsets unit)
+    Nothing -> pure unit
+  _ -> pure unit
+
+-- Parse a `# scale` argument ("F# lydian dominant", "G major") into a root pitch
+-- class + the scale's intervals (from Reef.Scale). Forgiving: the root matches
+-- rootNames case-insensitively (with flat aliases); the type is normalised
+-- (lowercased, spaces removed) against scaleTypes; a bare root defaults to major.
+parseScaleArg :: String -> Maybe { root :: Int, offsets :: Array Int }
+parseScaleArg s = case uncons (filter (_ /= "") (String.split (String.Pattern " ") s)) of
+  Nothing -> Nothing
+  Just { head: rootTok, tail: scaleWords } -> do
+    rootPc <- matchRoot rootTok
+    offsets <-
+      if null scaleWords then Just [ 0, 2, 4, 5, 7, 9, 11 ]
+      else matchScaleIvls (String.toLower (joinWith "" scaleWords))
+    Just { root: rootPc, offsets }
+
+matchRoot :: String -> Maybe Int
+matchRoot tok =
+  let u = String.toUpper tok
+  in case findIndex (\n -> String.toUpper n == u) rootNames of
+       Just i -> Just i
+       Nothing -> case find (\(Tuple a _) -> a == u) rootFlatAliases of
+         Just (Tuple _ canon) -> findIndex (_ == canon) rootNames
+         Nothing -> Nothing
+
+-- Flat spellings → their sharp equivalent in rootNames (keys uppercased).
+rootFlatAliases :: Array (Tuple String String)
+rootFlatAliases =
+  [ Tuple "DB" "C#", Tuple "EB" "D#", Tuple "GB" "F#", Tuple "AB" "G#", Tuple "BB" "A#" ]
+
+matchScaleIvls :: String -> Maybe (Array Int)
+matchScaleIvls norm = map _.intervals (find (\t -> String.toLower t.name == norm) scaleTypes)
 
 -- The set of machines currently auditioning — the third input to `soundingOf`, so
 -- preview is part of the derivation. Ending a preview is just removing it here and
@@ -379,6 +899,97 @@ querySounding w s = case w of
 pushAll :: forall o m. MonadAff m => H.HalogenM RState RAction Slots o m Unit
 pushAll = for_ [ Odo, Bal, Sel, Vet ] pushSounding
 
+-- Ask a machine for its bank (recall menu contents). Only the SQ.Query machines
+-- answer; Balistes is the only one with real presets so far.
+queryBank :: forall o m. Which -> H.HalogenM RState RAction Slots o m (Maybe (Array MenuItem))
+queryBank = case _ of
+  Odo -> H.query _odo unit (SQ.AskBank identity)
+  Bal -> H.query _bal unit (SQ.AskBank identity)
+  Sel -> H.query _sel unit (SQ.AskBank identity)
+  Vet -> H.query _vet unit (Vetula.AskBank identity)
+  _ -> pure Nothing
+
+-- Recall bank slot i on a machine (switch to it + restore).
+queryRecall :: forall o m. Which -> Int -> H.HalogenM RState RAction Slots o m (Maybe Unit)
+queryRecall w i = case w of
+  Odo -> H.query _odo unit (SQ.RecallSlot i unit)
+  Bal -> H.query _bal unit (SQ.RecallSlot i unit)
+  Sel -> H.query _sel unit (SQ.RecallSlot i unit)
+  Vet -> H.query _vet unit (Vetula.RecallSlot i unit)
+  _ -> pure Nothing
+
+-- Toggle a preset's star / delete a preset on a machine.
+queryStar :: forall o m. Which -> Int -> H.HalogenM RState RAction Slots o m (Maybe Unit)
+queryStar w i = case w of
+  Odo -> H.query _odo unit (SQ.StarSlot i unit)
+  Bal -> H.query _bal unit (SQ.StarSlot i unit)
+  Sel -> H.query _sel unit (SQ.StarSlot i unit)
+  Vet -> H.query _vet unit (Vetula.StarSlot i unit)
+  _ -> pure Nothing
+
+queryDelete :: forall o m. Which -> Int -> H.HalogenM RState RAction Slots o m (Maybe Unit)
+queryDelete w i = case w of
+  Odo -> H.query _odo unit (SQ.DeleteSlot i unit)
+  Bal -> H.query _bal unit (SQ.DeleteSlot i unit)
+  Sel -> H.query _sel unit (SQ.DeleteSlot i unit)
+  Vet -> H.query _vet unit (Vetula.DeleteSlot i unit)
+  _ -> pure Nothing
+
+-- (Re)load a machine's bank into the open recall menu — after open / star / delete.
+refreshChipMenu :: forall o m. Which -> H.HalogenM RState RAction Slots o m Unit
+refreshChipMenu w = do
+  items <- fromMaybe [] <$> queryBank w
+  H.modify_ _ { chipMenu = Just { w, items } }
+
+-- Launch scene `i`: recall each non-empty cell on its machine. For a cell's glyph
+-- alias, ask that machine's bank for the matching slot (aliases are stable content
+-- identity), then RecallSlot it — content only (arming stays the tab-dots). An
+-- alias with no match (its preset was deleted) is skipped. Sets scenePos for the
+-- row highlight. Reuses queryBank/queryRecall — no new per-machine wiring.
+launchScene :: forall o m. MonadAff m => Int -> H.HalogenM RState RAction Slots o m Unit
+launchScene i = do
+  st <- H.get
+  case st.scenes !! i of
+    Nothing -> pure unit
+    Just sc -> do
+      H.modify_ _ { scenePos = i }
+      forWithIndex_ sc.cells \mIx mAlias -> case mAlias, Scenes.sceneMachines !! mIx of
+        Just alias, Just w -> void (recallAlias w alias)
+        _, _ -> pure unit
+
+-- Persist the rig-wide scene grid after any edit.
+persistScenes :: forall o m. MonadAff m => H.HalogenM RState RAction Slots o m Unit
+persistScenes = do
+  scs <- H.gets _.scenes
+  liftEffect (ScenesStore.save { scenes: scs })
+
+-- Persist the macro-tidal lanes (keyed by lane tag) + bars-per-step.
+persistMacro :: forall o m. MonadAff m => H.HalogenM RState RAction Slots o m Unit
+persistMacro = do
+  s <- H.get
+  let lanes = map (\(Tuple w t) -> { machine: laneLabel w, text: t }) (Map.toUnfoldable s.macroLanes)
+  liftEffect (MacroStore.save { lanes, bars: s.macroBars })
+
+-- The machine a lane tag names (inverse of `laneLabel`), for restoring saved lanes.
+whichFromLane :: String -> Maybe Which
+whichFromLane = case _ of
+  "odo" -> Just Odo
+  "bal" -> Just Bal
+  "sel" -> Just Sel
+  "vet" -> Just Vet
+  _ -> Nothing
+
+-- The last space-separated token of a lane (the one the caret is completing).
+trailingToken :: String -> String
+trailingToken t = fromMaybe "" (last (String.split (String.Pattern " ") t))
+
+-- Replace a lane's trailing token with `alias` (the accepted completion).
+replaceTrailingToken :: String -> String -> String
+replaceTrailingToken cur alias =
+  case unsnoc (String.split (String.Pattern " ") cur) of
+    Just { init } -> joinWith " " (init <> [ alias ])
+    Nothing -> alias
+
 -- Query each mounted instrument for its current source and stitch the four
 -- into one labelled document.
 refreshTidal :: forall o m. H.HalogenM RState RAction Slots o m Unit
@@ -389,7 +1000,8 @@ refreshTidal = do
   v <- H.query _vet unit (Vetula.AskSource identity)
   H.modify_ _
     { tidalDoc = assemble
-        [ Tuple "ODONUS" o, Tuple "BALISTES" b, Tuple "SELENE" s, Tuple "VETULA" v ] }
+        [ Tuple "ODONUS" o, Tuple "BALISTES" b, Tuple "SELENE" s, Tuple "VETULA" v ]
+    , seleneDoc = fromMaybe "" s }
   -- Refresh the channel-map: which → midi voice names are in use, and re-push the
   -- current bindings so Vetula stays in sync when the page reopens.
   mnames <- H.query _vet unit (Vetula.AskVoiceNames identity)
@@ -398,6 +1010,20 @@ refreshTidal = do
 
 -- Push the shell's name → channel table to Vetula (it resolves each voice's channel
 -- from it). Called on every binding edit and on Tidal-page refresh.
+-- Broadcast the shell's free-run baseline (shared start + `bpm`) to every
+-- machine. A no-op on any module currently Link-locked (it honours the rig
+-- anchor instead), so this is safe to call whether free-running or on the rig.
+pushFree :: forall o m. MonadAff m => H.HalogenM RState RAction Slots o m Unit
+pushFree = do
+  st <- H.get
+  let t0 = st.freeT0
+      tempo = Int.toNumber st.bpm
+  _ <- H.query _odo unit (SQ.SyncFree t0 tempo unit)
+  _ <- H.query _bal unit (SQ.SyncFree t0 tempo unit)
+  _ <- H.query _sel unit (SQ.SyncFree t0 tempo unit)
+  _ <- H.query _vet unit (Vetula.SyncFree t0 tempo unit)
+  pure unit
+
 pushRouting :: forall o m. H.HalogenM RState RAction Slots o m Unit
 pushRouting = do
   routing <- H.gets _.routing
@@ -441,8 +1067,10 @@ fetchGoTo :: forall o m. MonadAff m => H.HalogenM RState RAction Slots o m Unit
 fetchGoTo = do
   res <- liftAff (attempt (Amphora.fetchCollection goToCollection))
   case res of
-    Right items -> H.modify_ _ { goTo = items }
-    Left _ -> pure unit
+    Right items -> H.modify_ _ { goTo = items, amphoraDown = false }
+    -- a failed fetch (now a ~2.5s timeout, not a 30s hang) means the store is
+    -- unreachable → raise the shell banner so the user knows favourites are offline.
+    Left _ -> H.modify_ _ { amphoraDown = true }
 
 -- Is this shelf row on the go-to wall? Content-address identity: same payload =
 -- same hash, so an exact payload match is a hash match without hashing here.
@@ -475,20 +1103,102 @@ render :: forall m. MonadAff m => RState -> H.ComponentHTML RAction Slots m
 render st =
   HH.div_
     [ shellBar st
+    , chipMenuPanel st
+    , sceneCellPickPanel st
     -- All four are always in the tree (hence always mounted + running); the
     -- active one is shown, the rest are display:none but keep playing. On the
     -- TIDAL tab all four are hidden but still alive (and queryable). The three
     -- machine instruments inset their own root below the bar (position:fixed
     -- top:var(--tf-bar)); the in-flow Vetula pane is padded down to clear it.
-    , pane (st.which == Odo) "" (HH.slot_ _odo unit Odonus.component unit)
-    , pane (st.which == Bal) "" (HH.slot_ _bal unit Balistes.component unit)
-    , pane (st.which == Sel) "" (HH.slot_ _sel unit Selene.component unit)
+    , pane (st.which == Odo) ""
+        (HH.slot _odo unit Odonus.component unit (\(Odonus.IdentityChanged cv) -> OdoChipChanged cv))
+    , pane (st.which == Bal) ""
+        (HH.slot _bal unit Balistes.component unit (\(Balistes.IdentityChanged cv) -> BalChipChanged cv))
+    , pane (st.which == Sel) ""
+        (HH.slot _sel unit Selene.component unit (\(Selene.IdentityChanged cv) -> SelChipChanged cv))
     , pane (st.which == Vet) "padding-top:var(--tf-bar)"
         (HH.slot _vet unit Vetula.component unit (\(Vetula.ArmChanged on) -> VetulaArmed on))
     , pane (st.which == Suf) "" (HH.slot_ _suf unit Sufflamen.component unit)
     , pane (st.which == Ste) "" (HH.slot_ _ste unit Stellatus.component unit)
-    , if st.which == Tid then tidalView st else HH.text ""
+    , modalOverlay st
     ]
+
+-- The hotkey overlay (⌘1..⌘5): a blurred backdrop + a centred ~2/3-screen panel
+-- holding ONE focused surface — the pieces that used to stack on the TIDAL tab,
+-- now each a modal reachable from any machine. The backdrop is a sibling BEHIND
+-- the panel (higher z), so a click outside closes while a click inside doesn't —
+-- no stopPropagation needed. Esc also closes (keyToAction).
+modalOverlay :: forall m. MonadAff m => RState -> H.ComponentHTML RAction Slots m
+modalOverlay st = case st.modal of
+  Nothing -> HH.text ""
+  Just m ->
+    -- The routing modal hosts nested cascade menus that must pop OUT of the panel
+    -- (a clipped scroll box would swallow the fly-out). Its content is short, so
+    -- it renders un-clipped; the taller modals keep their scroll cap.
+    let clips = case m of
+          MRouting -> false
+          _ -> true
+        panelOverflow = if clips then "overflow:hidden;" else "overflow:visible;"
+        bodyOverflow = if clips then "overflow:auto;" else "overflow:visible;"
+    in
+    HH.div
+      [ style "position:fixed;inset:0;z-index:100;display:flex;align-items:center;justify-content:center;font-family:Georgia,serif" ]
+      [ HH.div   -- the click-catching, blurred backdrop, behind the panel
+          [ style $ "position:absolute;inset:0;z-index:0;background:rgba(30,28,22,0.30);"
+              <> "backdrop-filter:blur(6px);-webkit-backdrop-filter:blur(6px)"
+          , HE.onClick \_ -> CloseModal ]
+          []
+      , HH.div   -- the panel: sized to its content, capped so tall surfaces scroll
+          [ style $ "position:relative;z-index:1;width:min(66vw,1180px);max-height:min(84vh,900px);"
+              <> "display:flex;flex-direction:column;background:linear-gradient(#f6f2e8,#efe9db);"
+              <> "border:1px solid #cdc4ad;border-radius:10px;box-shadow:0 24px 70px #00000055;" <> panelOverflow ]
+          [ HH.div
+              [ style $ "display:flex;align-items:center;justify-content:space-between;gap:12px;flex:0 0 auto;"
+                  <> "padding:13px 22px;border-bottom:1px solid #ddd5c0;background:linear-gradient(#efe8d8,#e6dec9)" ]
+              [ HH.div [ style "display:flex;align-items:baseline;gap:11px" ]
+                  [ HH.span [ style "font-size:14px;letter-spacing:0.16em;text-transform:uppercase;color:#4a463b" ] [ HH.text (modalTitle m) ]
+                  , HH.span [ style "font-size:11px;letter-spacing:0.08em;color:#a89e86" ] [ HH.text (modalHotkey m) ]
+                  ]
+              , HH.button
+                  [ style "border:none;background:none;cursor:pointer;font-size:18px;line-height:1;color:#8a8272"
+                  , HP.title "close (Esc)"
+                  , HE.onClick \_ -> CloseModal ]
+                  [ HH.text "✕" ]
+              ]
+          , HH.div [ style $ "flex:1 1 auto;min-height:0;padding:18px 22px;" <> bodyOverflow ] [ modalBody st m ]
+          ]
+      ]
+
+-- Each overlay's body reuses the panel that used to live on the TIDAL tab.
+modalBody :: forall m. MonadAff m => RState -> ModalId -> H.ComponentHTML RAction Slots m
+modalBody st = case _ of
+  MRouting -> channelMapPanel st
+  MSceneSeq -> sceneGridPanel st
+  MTidalSeq -> macroPanel st
+  MSource -> sourceDrawer st
+  MPresets -> HH.div_
+    [ workbenchHeader st
+    , HH.div [ style "display:flex;gap:26px;align-items:flex-start" ]
+        [ HH.div [ style "flex:0 0 380px;min-width:0" ] [ shelfPanel st ]
+        , HH.div [ style "flex:1 1 auto;min-width:0" ] [ benchPanel st ]
+        ]
+    ]
+
+modalTitle :: ModalId -> String
+modalTitle = case _ of
+  MRouting -> "Routing"
+  MSceneSeq -> "Sequencing — scenes"
+  MTidalSeq -> "Sequencing — tidal"
+  MSource -> "Tidal source"
+  MPresets -> "Presets — workbench"
+
+modalHotkey :: ModalId -> String
+modalHotkey = case _ of
+  MRouting -> "⌥1"
+  MSceneSeq -> "⌥2"
+  MTidalSeq -> "⌥3"
+  MSource -> "⌥4"
+  MPresets -> "⌥5"
 
 -- A mounted-but-maybe-hidden pane. `display:none` keeps the component alive
 -- (and its scheduler/MIDI running) while removing it from layout. `extra` adds
@@ -504,89 +1214,257 @@ isPicked mp r = case mp of
   Just p -> p.inst == r.inst && p.idx == r.idx
   Nothing -> false
 
--- The TIDAL page is the WORKBENCH: a curated shelf of saved setups (left) feeding
--- a bench (right) where one is picked, previewed, transformed, and committed back
--- to its instrument. The raw-source aggregate is demoted to a slide-out drawer
--- (⟨ source ⟩) so the workbench owns the canvas. Content comes from Amphora via
--- each instrument's merged library (refreshLibrary → AskLibrary aggregate).
-tidalView :: forall m. RState -> H.ComponentHTML RAction Slots m
-tidalView st =
-  HH.div
-    [ style $ "max-width:1440px;margin:calc(var(--tf-bar) + 18px) auto 40px;padding:0 20px;font-family:Georgia,serif" ]
-    [ channelMapPanel st
-    , workbenchHeader st
-    , HH.div
-        [ style "display:flex;gap:26px;align-items:flex-start" ]
-        [ HH.div [ style "flex:0 0 380px;min-width:0" ] [ shelfPanel st ]
-        , HH.div [ style "flex:1 1 auto;min-width:0" ] [ benchPanel st ]
-        ]
-    , if st.sourceOpen then sourceDrawer st else HH.text ""
-    ]
-
 -- The workbench title bar: heading + the source-drawer toggle on the right.
 workbenchHeader :: forall m. RState -> H.ComponentHTML RAction Slots m
 workbenchHeader st =
+  -- The modal frame titles this now; the ⟨source⟩ toggle is gone (source is its
+  -- own ⌘4 overlay). Just the workbench's own actions, right-aligned.
   HH.div
-    [ style "display:flex;align-items:baseline;justify-content:space-between;gap:14px;margin-bottom:16px" ]
-    [ HH.span
-        [ style "font-size:15px;letter-spacing:0.16em;text-transform:uppercase;color:#4a463b" ]
-        [ HH.text "Workbench — the go-to shelf" ]
-    , HH.div [ style "display:flex;align-items:center;gap:8px" ]
-        [ if null st.previewing then HH.text ""
-          else HH.span
-            [ HP.title "stop every local preview"
-            , style $ "cursor:pointer;padding:3px 11px;border:1px solid #7aa07a;border-radius:4px;"
-                <> "font-size:10px;letter-spacing:0.08em;text-transform:uppercase;color:#2f5a2f;background:#e4f0e2"
-            , HE.onClick \_ -> StopPreview ]
-            [ HH.text ("■ stop all previews (" <> show (length st.previewing) <> ")") ]
-        , barBtn "refresh" RefreshTidal
-        , barBtn (if st.sourceOpen then "source ▾" else "source ▸") ToggleSource
-        ]
+    [ style "display:flex;align-items:center;justify-content:flex-end;gap:8px;margin-bottom:16px" ]
+    [ if null st.previewing then HH.text ""
+      else HH.span
+        [ HP.title "stop every local preview"
+        , style $ "cursor:pointer;padding:3px 11px;border:1px solid #7aa07a;border-radius:4px;"
+            <> "font-size:10px;letter-spacing:0.08em;text-transform:uppercase;color:#2f5a2f;background:#e4f0e2"
+        , HE.onClick \_ -> StopPreview ]
+        [ HH.text ("■ stop all previews (" <> show (length st.previewing) <> ")") ]
+    , barBtn "refresh" RefreshTidal
     ]
 
 -- The rig's MIDI channel map — the config surface where channel assignment lives
 -- (identity → destination; see docs/PLAN-midi-routing.md). The fixed defaults ARE
 -- the standard Ableton project template; named Vetula voices are editable (bind a
 -- name to a channel; blank = the ch5 default).
-channelMapPanel :: forall m. RState -> H.ComponentHTML RAction Slots m
+-- One COLUMN per machine — a lineless table (see docs/PLAN-midi-routing.md): the
+-- machine name over its own little stack of destination rows. Odonus/Balistes/
+-- Vetula carry real routing (Vetula's named voices are editable); Selene needs a
+-- multi-type control (ES-9 / FH-2 / MIDI) that two-way-syncs with its Tidal
+-- source — a placeholder for now; Sufflamen/Stellatus are placeholders too.
+channelMapPanel :: forall m. MonadAff m => RState -> H.ComponentHTML RAction Slots m
 channelMapPanel st =
-  HH.div [ style "margin-bottom:26px;padding:14px 16px;background:#f3efe4;border:1px solid #e3dfd2;border-radius:6px" ]
-    [ HH.div
-        [ style "font-size:13px;letter-spacing:0.14em;text-transform:uppercase;color:#5a564b;margin-bottom:10px" ]
-        [ HH.text "MIDI output — channel map (the Ableton template)" ]
-    , HH.div [ style "display:flex;flex-wrap:wrap;gap:6px 22px" ]
-        (map fixedRow Routing.defaultRouting)
-    , if null st.vetulaNames then HH.text ""
-      else HH.div [ style "margin-top:12px;padding-top:10px;border-top:1px dashed #d8d0bd" ]
-        [ HH.div [ style "font-size:10px;letter-spacing:0.14em;text-transform:uppercase;color:#8a7a4a;margin-bottom:7px" ]
-            [ HH.text "named Vetula voices" ]
-        , HH.div [ style "display:flex;flex-wrap:wrap;gap:6px 22px" ] (map nameRow st.vetulaNames)
+  HH.div_
+    [ HH.div [ style "display:flex;gap:24px;align-items:flex-start" ]
+        [ machineCol "Odonus" odonusRows
+        , machineCol "Balistes" [ fixedEntry "kit" ("ch " <> show Routing.drumsChannel) ]
+        , machineCol "Selene" seleneRows
+        , machineCol "Vetula" vetulaRows
+        , machineCol "Sufflamen" [ tbd ]
+        , machineCol "Stellatus" [ tbd ]
         ]
-    , HH.div [ style "margin-top:11px;font-size:11px;color:#8a8576;font-style:italic" ]
-        [ HH.text "Selene → modular (FH-2 / ES-9) · Stellatus + Sufflamen → OSC. Name a Vetula → midi voice to route it off the ch5 default." ]
+    -- Per-machine AUDITION destination, below the columns: each machine cycles
+    -- None → Continuo → MIDI (click), and MIDI reveals its channel. Only Vetula
+    -- is wired to act today; the rest store the choice. (Replaces the old single
+    -- "audition preview → ch" row.)
+    , HH.div [ style "display:flex;align-items:center;gap:20px;margin-top:24px;flex-wrap:wrap" ]
+        ( [ HH.span [ style "font-size:11px;letter-spacing:0.06em;color:#6a655a" ] [ HH.text "audition →" ] ]
+            <> map auditionControl auditionMachines )
     ]
   where
-  fixedRow r =
-    HH.div [ style "display:flex;align-items:baseline;gap:8px;min-width:190px;flex:0 0 auto" ]
-      [ HH.span [ style "font-size:12px;color:#2a271e" ] [ HH.text (Routing.sourceLabel r.source) ]
-      , HH.span [ style "flex:1 1 auto;border-bottom:1px dotted #cdbb96;height:9px;min-width:14px" ] []
-      , HH.span
-          [ style "font-size:11px;letter-spacing:0.05em;color:#7a6a3a;font-family:'SF Mono',Menlo,Consolas,monospace" ]
-          (map (\d -> HH.text (Routing.destLabel d)) r.dests)
+  -- one machine's audition control: a click-to-cycle pill + (in MIDI mode) a channel.
+  auditionControl m =
+    let dest = fromMaybe ADNone (Map.lookup m.w st.audition)
+        ch = fromMaybe 5 (Map.lookup m.w st.auditionCh)
+        active = dest /= ADNone
+        pillStyle = "cursor:pointer;font-size:11px;padding:2px 9px;border-radius:10px;border:1px solid "
+                    <> (if active then "#8a6a3a" else "#d8cdb8")
+                    <> ";background:" <> (if active then "#f6efe0" else "#faf7f0")
+                    <> ";color:" <> (if active then "#6a4a1a" else "#9a9284")
+        chanField = case dest of
+          ADMidi ->
+            [ HH.input
+                [ HP.value (show ch)
+                , HE.onValueInput (SetAuditionCh m.w)
+                , style "width:36px;font-family:'SF Mono',Menlo,monospace;font-size:11px;padding:2px 4px;border-radius:4px;border:1px solid #cdbb96;background:#fffdf8;text-align:center" ]
+            , HH.span [ style "font-size:10px;color:#9a9284" ] [ HH.text "ch" ] ]
+          _ -> []
+    in HH.div [ style "display:flex;align-items:center;gap:6px" ]
+         ( [ HH.span [ style "font-size:11px;color:#5a564b" ] [ HH.text m.label ]
+           , HH.button
+               [ style pillStyle
+               , HP.title "cycle: None → Continuo → MIDI"
+               , HE.onClick \_ -> CycleAudition m.w ]
+               [ HH.text (auditionLabel dest) ]
+           ] <> chanField )
+  romans = [ "I", "II", "III", "IV" ]
+  odonusRows =
+    mapWithIndex
+      (\h r -> fixedEntry r ("ch " <> show (Routing.odonusHeadChannel h)))
+      romans
+  vetulaRows =
+    [ fixedEntry "(default)" ("ch " <> show Routing.vetulaDefaultChannel) ]
+      <> map nameEntry st.vetulaNames
+  -- One row per declared Selene destination (polysignal group): its kind on the
+  -- left, a nested ES-9/FH-2/MIDI cascade menu on the right, bounded to the
+  -- known-good targets of the current rig. Editing pushes back to the Selene tab.
+  seleneRows =
+    let dests = (SelSrc.parseRack st.seleneDoc).destinations
+    in if null dests
+         then [ note "declare a polysignal in the Selene tab" ]
+         else mapWithIndex seleneEntry dests
+
+  seleneEntry i d =
+    HH.div [ style "display:flex;align-items:center;justify-content:space-between;gap:8px;font-size:12px" ]
+      [ HH.span [ style "color:#2a271e" ] [ HH.text (SelSrc.kindKeyword d.bank) ]
+      , HH.slot _selTarget i Select.component
+          ((Select.cascadingInput (targetGroups defaultRig))
+             { selected = Just (SelM.targetWire d.target), placeholder = "route" })
+          (\(Select.Selected wire) -> SetSeleneTarget i wire) ]
+
+  machineCol name rows =
+    -- Content-sized, not equal-flex: Selene's cascade selects have a 180px floor,
+    -- so equal columns would let them spill into their neighbour. Each column
+    -- takes exactly the width it needs; the row left-aligns them with a gap.
+    HH.div [ style "flex:0 0 auto;display:flex;flex-direction:column;gap:5px" ]
+      ( [ HH.div [ style "font-size:11px;letter-spacing:0.14em;text-transform:uppercase;color:#5a564b;margin-bottom:4px" ] [ HH.text name ] ]
+          <> rows )
+
+  fixedEntry label val =
+    HH.div [ style "display:flex;align-items:baseline;justify-content:space-between;gap:8px;font-size:12px" ]
+      [ HH.span [ style "color:#2a271e" ] [ HH.text label ]
+      , HH.span [ style "color:#7a6a3a;font-family:'SF Mono',Menlo,monospace;font-size:11px" ] [ HH.text val ]
       ]
-  -- Editable: a named voice → its bound channel (blank input = the default).
-  nameRow nm =
-    let bound = Map.lookup nm st.routing
-    in HH.div [ style "display:flex;align-items:baseline;gap:8px;min-width:190px;flex:0 0 auto" ]
-        [ HH.span [ style "font-size:12px;color:#2a271e" ] [ HH.text ("Vetula · " <> nm) ]
-        , HH.span [ style "flex:1 1 auto;border-bottom:1px dotted #cdbb96;height:9px;min-width:14px" ] []
-        , HH.input
-            [ HP.value (maybe "" show bound)
-            , HE.onValueInput (SetBinding nm)
-            , HP.placeholder (show Routing.vetulaDefaultChannel)
-            , style "width:42px;font-family:'SF Mono',Menlo,Consolas,monospace;font-size:11px;padding:2px 5px;border-radius:4px;border:1px solid #cdbb96;background:#fffdf8;text-align:center"
+
+  -- Editable: a named Vetula voice → its bound channel (blank = the ch5 default).
+  nameEntry nm =
+    HH.div [ style "display:flex;align-items:baseline;justify-content:space-between;gap:8px;font-size:12px" ]
+      [ HH.span [ style "color:#2a271e" ] [ HH.text nm ]
+      , HH.input
+          [ HP.value (maybe "" show (Map.lookup nm st.routing))
+          , HE.onValueInput (SetBinding nm)
+          , HP.placeholder (show Routing.vetulaDefaultChannel)
+          , style "width:38px;font-family:'SF Mono',Menlo,monospace;font-size:11px;padding:2px 4px;border-radius:4px;border:1px solid #cdbb96;background:#fffdf8;text-align:center" ]
+      ]
+
+  note t = HH.div [ style "font-size:10px;color:#b0a690;font-style:italic;line-height:1.4" ] [ HH.text t ]
+  tbd = HH.div [ style "font-size:11px;color:#b8b0a0;font-style:italic" ] [ HH.text "— TBD —" ]
+
+-- macro-tidal — the Tidal-like sequencer: one mini-notation LANE per machine, over
+-- glyph ALIASES ("owl-bomb star-ambulance ~"). Space-separated tokens divide the
+-- lane's cycle into equal steps; `~` is a REST = silence (the machine disarms);
+-- `<a b c>` alternates one inner form per cycle; `# scale <…>` re-quantises the rig
+-- (via Vetula). Run it and each lane recalls its resolved preset into its machine
+-- at each bar-step boundary (arming it), all sharing one pulse but each cycling at
+-- its own token count — polymetric. Type a `:prefix` for a scoped glyph-completion
+-- popup over that machine's bank (click to insert); each lane's steps render as a
+-- PICTOGRAPHIC MIRROR of coloured glyph-pairs below the input.
+macroPanel :: forall m. RState -> H.ComponentHTML RAction Slots m
+macroPanel st =
+  HH.div_
+    [ HH.div [ style "display:flex;align-items:center;justify-content:flex-end;gap:14px;margin-bottom:9px" ]
+        [ HH.div [ style "display:flex;align-items:center;gap:12px" ]
+            [ HH.span [ style "font-size:10px;letter-spacing:0.08em;text-transform:uppercase;color:#6a7a6a" ]
+                [ HH.text "bars/step" ]
+            , HH.input
+                [ HP.value (show st.macroBars)
+                , HE.onValueInput SetMacroBars
+                , style "width:44px;font-family:'SF Mono',Menlo,Consolas,monospace;font-size:11px;padding:2px 5px;border-radius:4px;border:1px solid #b8c4b0;background:#fffdf8;text-align:center" ]
+            , HH.span
+                [ HE.onClick \_ -> ToggleMacro
+                , style $ "cursor:pointer;padding:4px 14px;border-radius:5px;font-size:11px;letter-spacing:0.14em;"
+                    <> "text-transform:uppercase;border:1px solid " <> (if st.macroOn then "#7aa07a" else "#b8c4b0") <> ";"
+                    <> (if st.macroOn then "color:#eaf3ea;background:linear-gradient(#4a7a4a,#3a6a3a)" else "color:#3f5a3f;background:linear-gradient(#e4ece0,#d6ddd2)") ]
+                [ HH.text (if st.macroOn then "■ stop" else "▶ run") ]
             ]
         ]
+    , HH.div [ style "font-size:10px;color:#7a8a7a;margin-bottom:4px;font-family:'SF Mono',Menlo,Consolas,monospace" ]
+        [ HH.text "~ rest = silence · <a b> alternate per cycle · # scale <\"F# lydian dominant\" \"G major\"> re-quantise" ]
+    , HH.div_ (map (laneRow st) Scenes.sceneMachines)
+    ]
+
+-- One machine's lane: its tag + the mini-notation input + (when running) a step
+-- readout with the current step lit and the live resolved token.
+laneRow :: forall m. RState -> Which -> H.ComponentHTML RAction Slots m
+laneRow st w =
+  let
+    text = fromMaybe "" (Map.lookup w st.macroLanes)
+    toks = parseLane text
+    n = length toks
+    curStep = if st.macroOn && st.macroStep >= 0 && n > 0 then Just (st.macroStep `mod` n) else Nothing
+    readout = fromMaybe "" (Map.lookup w st.macroReadout)
+  in
+    HH.div [ style "display:flex;align-items:flex-start;gap:10px;margin-top:9px" ]
+      [ HH.span
+          [ style "flex:0 0 38px;padding-top:8px;font-family:'SF Mono',Menlo,Consolas,monospace;font-size:12px;letter-spacing:0.06em;color:#5a6a5a" ]
+          [ HH.text (laneLabel w) ]
+      , HH.div [ style "flex:1 1 auto;min-width:0" ]
+          [ HH.input
+              [ HP.value text
+              , HE.onValueInput (SetLaneText w)
+              , HP.placeholder "owl-bomb star-ambulance ~ <owl-bomb star-ambulance>"
+              , HP.spellcheck false
+              , style $ "width:100%;box-sizing:border-box;padding:8px 11px;border:1px solid #b8c4b0;border-radius:5px;"
+                  <> "background:#fffdf8;font-family:'SF Mono',Menlo,Consolas,monospace;font-size:13px;letter-spacing:0.02em;color:#22301f" ]
+          -- the `:`-completion popup for THIS lane (emoji-picker over its bank)
+          , case st.laneComplete of
+              Just c | c.w == w -> completionPopup w c.prefix c.items
+              _ -> HH.text ""
+          -- the pictographic mirror: the parsed steps as GLYPHS, running step lit
+          , if n == 0 then HH.text ""
+            else HH.div [ style "display:flex;flex-wrap:wrap;align-items:center;gap:6px;margin-top:7px" ]
+              ( mapWithIndex (laneStepChip curStep) toks
+                  <> [ if st.macroOn && readout /= ""
+                         then HH.span [ style "margin-left:6px;font-size:11px;color:#3d6b3d;font-style:italic" ]
+                                [ HH.text ("♪ " <> readout <> "  · cycle " <> show (if n > 0 then st.macroStep `div` n else 0)) ]
+                         else HH.text "" ] )
+          ]
+      ]
+
+-- The `:`-completion popup: this machine's bank glyphs matching the typed prefix,
+-- click to insert the alias (Tab-accept lands with the CodeMirror upgrade). Empty
+-- match → a hint. Renders inline under the lane input.
+completionPopup :: forall m. Which -> String -> Array MenuItem -> H.ComponentHTML RAction Slots m
+completionPopup w prefix items =
+  HH.div
+    [ style $ "margin-top:4px;padding:5px;border:1px solid #a8b8a0;border-radius:6px;background:#f4f7f1;"
+        <> "box-shadow:0 4px 12px #00000022;display:flex;flex-wrap:wrap;gap:4px;align-items:center" ]
+    ( [ HH.span [ style "font-size:8px;letter-spacing:0.1em;text-transform:uppercase;color:#8a9a8a;margin-right:3px" ]
+          [ HH.text (":" <> prefix) ] ]
+        <>
+          ( if null items
+              then [ HH.span [ style "font-size:10px;color:#9aaa9a;font-style:italic" ] [ HH.text "no matching glyph in this bank" ] ]
+              else map (completionItem w) items ) )
+
+completionItem :: forall m. Which -> MenuItem -> H.ComponentHTML RAction Slots m
+completionItem w item =
+  let g = G.glyphFromAlias item.alias
+  in HH.span
+      [ HE.onClick \_ -> AcceptCompletion w item.alias
+      , HP.attr (H.AttrName "title") item.alias
+      , style $ "display:inline-flex;align-items:center;gap:4px;cursor:pointer;padding:2px 8px;border-radius:11px;"
+          <> "border:1px solid #cbd8c4;background:#ffffff" ]
+      [ HH.span [ style "display:inline-flex;align-items:center;gap:2px" ] [ faIcon g.first, faIcon g.second ]
+      , HH.span [ style "font-family:'SF Mono',Menlo,monospace;font-size:9px;color:#4a5a4a" ] [ HH.text item.alias ] ]
+
+-- The lowercase Tidal-style lane tag for a machine.
+laneLabel :: Which -> String
+laneLabel = case _ of
+  Odo -> "odo"
+  Bal -> "bal"
+  Sel -> "sel"
+  Vet -> "vet"
+  _ -> "?"
+
+-- One step in a lane's PICTOGRAPHIC MIRROR: a glyph-alias renders as its coloured
+-- glyph-pair (+ the alias in small text), a `~` rest as a dash, an alternation
+-- `<…>` as its text; the running step is lit. This is the arrangement-as-glyph-score
+-- (docs/DESIGN-scene-modal.md). (An alias always renders SOME glyph — deterministic
+-- from its text — so a typo shows a "wrong" glyph; unresolved-against-the-bank is
+-- flagged at runtime in the live readout, "alias ?".)
+laneStepChip :: forall m. Maybe Int -> Int -> Step -> H.ComponentHTML RAction Slots m
+laneStepChip curStep i step =
+  let live = curStep == Just i
+      border = if live then "#4a7a4a" else "#c8d2c0"
+      bg = if live then "linear-gradient(#dcecd6,#cde3c4)" else "#fbfdf9"
+  in HH.span
+    [ style $ "display:inline-flex;align-items:center;gap:5px;padding:3px 9px;border:1px solid " <> border
+        <> ";border-radius:4px;background:" <> bg <> ";font-family:'SF Mono',Menlo,Consolas,monospace;font-size:12px;color:#2f4a2f" ]
+    ( case step.form of
+        FName alias ->
+          let g = G.glyphFromAlias alias
+          in [ HH.span [ style "display:inline-flex;align-items:center;gap:2px" ] [ faIcon g.first, faIcon g.second ]
+             , HH.span [ style "font-size:10px;color:#5a6a5a" ] [ HH.text alias ] ]
+        FRest -> [ HH.span [ style "color:#9aaa9a" ] [ HH.text "~" ] ]
+        FAlt _ -> [ HH.text (stepLabel step) ] )
 
 -- The SHELF: the curated ★ GO-TO wall leads (starred setups across every
 -- instrument — the Cianni shelf), then the full archive sits behind a "dig"
@@ -758,13 +1636,10 @@ importBox st =
 -- paste-into-Calypso surface; just no longer eating half the canvas.
 sourceDrawer :: forall m. RState -> H.ComponentHTML RAction Slots m
 sourceDrawer st =
-  HH.div [ style "margin-top:22px;padding-top:18px;border-top:1px solid #d8d0bd" ]
+  HH.div_
     [ HH.div
-        [ style "display:flex;align-items:baseline;gap:14px;margin-bottom:12px" ]
-        [ HH.span
-            [ style "font-size:13px;letter-spacing:0.14em;text-transform:uppercase;color:#5a564b" ]
-            [ HH.text "Source — the whole playing surface" ]
-        , barBtn "copy" CopyTidal
+        [ style "display:flex;align-items:baseline;gap:10px;margin-bottom:12px" ]
+        [ barBtn "copy" CopyTidal
         , barBtn "refresh" RefreshTidal
         ]
     , HH.pre
@@ -812,10 +1687,12 @@ shellBar st =
     -- pushing into its neighbours.
     , HH.div
         [ style "display:flex;align-items:center;gap:16px;flex:0 1 auto;min-width:0;overflow:hidden" ]
-        [ modeToggle st
-        , harmStrip st
-        ]
-    -- RIGHT: the master transport (arm-all / stop-all).
+        ( [ modeToggle st ]
+            <> (if st.amphoraDown then [ amphoraOfflinePill ] else [])
+            <> [ harmStrip st ] )
+    -- RIGHT: the system BPM (reclaimed space where TIDAL used to sit) + the
+    -- master transport (arm-all / stop-all).
+    , bpmControl st
     , HH.button
         [ HE.onClick \_ -> ToggleMaster
         , style $ "flex:0 0 auto;padding:6px 18px;border:1px solid #00000033;border-radius:6px;cursor:pointer;"
@@ -824,6 +1701,242 @@ shellBar st =
             <> ";background:" <> (if anyArmed st.armed then "linear-gradient(#b23b28,#9a3120)" else "linear-gradient(#c8a86a,#b8975a)") ]
         [ HH.text (if anyArmed st.armed then "■ STOP" else "▶ PLAY") ]
     ]
+
+-- The system-tempo control in the nav. Link-locked: a read-only readout of the
+-- live rig tempo with a ⛓ badge (the rig anchor is boss). Free-run: an editable
+-- BPM that drives every machine's shared baseline (`SetBpm` → `pushFree`).
+bpmControl :: forall m. RState -> H.ComponentHTML RAction Slots m
+bpmControl st =
+  HH.div
+    [ style "display:flex;align-items:center;gap:6px;flex:0 0 auto" ]
+    [ HH.span [ style "font-size:9px;letter-spacing:0.14em;text-transform:uppercase;color:#6a655a" ] [ HH.text "bpm" ]
+    , if st.linkLocked
+        then HH.span
+               [ HP.title "Link-locked — tempo follows the rig clock"
+               , style "font-family:'SF Mono',Menlo,monospace;font-size:13px;color:#2d5670;display:flex;align-items:center;gap:4px" ]
+               [ HH.text (show (Int.round st.liveTempo)), HH.span [ style "font-size:10px" ] [ HH.text "⛓" ] ]
+        else HH.input
+               [ HP.value (show st.bpm)
+               , HE.onValueInput SetBpm
+               , style "width:50px;font-family:'SF Mono',Menlo,monospace;font-size:13px;padding:3px 6px;border-radius:5px;border:1px solid #00000030;background:#fffdf8;text-align:center;color:#2a271e"
+               , HP.title "free-run tempo — drives every machine" ]
+    ]
+
+-- The recall menu: a floating panel (escapes the bar's overflow via position:fixed)
+-- listing the machine's banked presets as their coloured glyphs. Click one to
+-- recall it. Opened by clicking a status-board glyph; closes on recall or re-click.
+chipMenuPanel :: forall m. RState -> H.ComponentHTML RAction Slots m
+chipMenuPanel st = case st.chipMenu of
+  Nothing -> HH.text ""
+  Just m ->
+    HH.div
+      [ style $ "position:fixed;top:calc(var(--tf-bar) + 5px);left:250px;z-index:60;box-sizing:border-box;"
+          <> "background:#efece1;border:1px solid #a8a392;border-radius:8px;padding:7px;min-width:150px;"
+          <> "box-shadow:0 6px 18px #00000033;display:flex;flex-direction:column;gap:3px;font-family:Georgia,serif" ]
+      ( [ HH.div
+            [ style "display:flex;align-items:center;justify-content:space-between;gap:12px;padding:2px 6px 5px" ]
+            [ HH.span [ style "font-size:8px;letter-spacing:0.12em;color:#8a8676;text-transform:uppercase" ]
+                [ HH.text ("Recall · " <> whichName m.w) ]
+            , HH.span
+                [ HE.onClick \_ -> CloseChipMenu
+                , style "cursor:pointer;color:#8a8676;font-size:11px;line-height:1" ]
+                [ HH.text "✕" ]
+            ]
+        ]
+          <>
+            ( if null m.items then
+                [ HH.div [ style "padding:4px 8px;font-size:9px;color:#a09a88;font-style:italic" ]
+                    [ HH.text "no presets yet" ] ]
+              -- starred presets surface first (the go-to tier)
+              else map (recallRow m.w) (filter _.starred m.items <> filter (not <<< _.starred) m.items)
+            )
+      )
+
+recallRow :: forall m. Which -> MenuItem -> H.ComponentHTML RAction Slots m
+recallRow w item =
+  let
+    g = G.glyphFromAlias item.alias
+    label = if item.name == "" then item.alias else item.name
+  in
+    HH.div
+      [ style "display:flex;align-items:center;gap:7px;padding:4px 6px;border-radius:5px;background:#e7e3d6" ]
+      [ -- star toggle (the go-to tier)
+        HH.span
+          [ HE.onClick \_ -> StarFrom w item.slot
+          , HP.attr (H.AttrName "title") (if item.starred then "unstar" else "star (go-to)")
+          , style $ "cursor:pointer;font-size:12px;line-height:1;color:" <> (if item.starred then "#c9a23a" else "#c2beb0") ]
+          [ HH.text (if item.starred then "★" else "☆") ]
+      , -- glyph + label → recall
+        HH.span
+          [ HE.onClick \_ -> RecallFrom w item.slot
+          , style "display:flex;align-items:center;gap:8px;cursor:pointer;flex:1 1 auto" ]
+          [ HH.span [ style "display:inline-flex;align-items:center;gap:3px" ] [ faIcon g.first, faIcon g.second ]
+          , HH.span [ style "font-family:'SF Mono',Menlo,monospace;font-size:9px;color:#4a463b" ] [ HH.text label ]
+          ]
+      , -- delete
+        HH.span
+          [ HE.onClick \_ -> DeleteFrom w item.slot
+          , HP.attr (H.AttrName "title") "delete"
+          , style "cursor:pointer;color:#b0a898;font-size:11px;line-height:1" ]
+          [ HH.text "✕" ]
+      ]
+
+-- ─────────────────────────  Scene grid (Ableton-like)  ─────────────────────────
+-- The rig-wide arrangement grid on the TIDAL page: rows = scenes, columns = the
+-- live machines, cells = glyphs. Launching a row recalls its tuple across
+-- machines (content only). Built on the same preset banks + glyph aliases the
+-- chips use, so the grid IS a pictographic score. See docs/DESIGN-scene-modal.md.
+
+-- The machine columns, aligned with Scenes.sceneMachines.
+sceneColLabels :: Array String
+sceneColLabels = [ "ODO", "BAL", "SEL", "VET" ]
+
+sceneGridPanel :: forall m. RState -> H.ComponentHTML RAction Slots m
+sceneGridPanel st =
+  HH.div_
+    [ HH.div [ style "display:flex;justify-content:flex-end;margin-bottom:12px" ]
+        [ sceneTransport st ]
+    , if null st.scenes
+        then HH.div [ style "font-size:11px;color:#9a8a6a;font-style:italic;padding:6px 2px" ]
+               [ HH.text "No scenes yet — get the rig sounding how you want, then ‘+ scene from rig’ banks the whole tuple." ]
+        else HH.div_ ( [ sceneHeaderRow ] <> mapWithIndex (sceneRow st) st.scenes )
+    ]
+
+-- The transport strip: the fast build gesture + the auto-advance controls.
+sceneTransport :: forall m. RState -> H.ComponentHTML RAction Slots m
+sceneTransport st =
+  HH.div [ style "display:flex;align-items:center;gap:12px" ]
+    [ HH.span
+        [ HE.onClick \_ -> AddSceneFromRig
+        , HP.title "snapshot every machine's current glyph into a new scene"
+        , style $ "cursor:pointer;padding:4px 11px;border:1px solid #c9a23a;border-radius:5px;background:#fbf3df;"
+            <> "font-size:10px;letter-spacing:0.06em;text-transform:uppercase;color:#7a5c00" ]
+        [ HH.text "+ scene from rig" ]
+    , HH.span [ style "font-size:9px;letter-spacing:0.08em;text-transform:uppercase;color:#9a8a6a" ] [ HH.text "bars/scene" ]
+    , HH.input
+        [ HP.value (show st.sceneBars)
+        , HE.onValueInput SetSceneBars
+        , style "width:40px;font-family:'SF Mono',Menlo,monospace;font-size:11px;padding:2px 5px;border-radius:4px;border:1px solid #d8cdb2;background:#fbf8f0;text-align:center;color:#3a3222" ]
+    , HH.span
+        [ HE.onClick \_ -> ToggleSceneRun
+        , style $ "cursor:pointer;padding:4px 12px;border-radius:5px;font-size:10px;letter-spacing:0.06em;text-transform:uppercase;"
+            <> (if st.sceneRun then "background:linear-gradient(#b8975a,#a8863f);color:#231c08;border:1px solid #8a6a20"
+                else "background:#eee7d6;color:#6a5c3a;border:1px solid #cbbf9e") ]
+        [ HH.text (if st.sceneRun then "❚❚ stop" else "▸ run") ]
+    ]
+
+-- The machine-label header, aligned to the cell columns below.
+sceneHeaderRow :: forall m. H.ComponentHTML RAction Slots m
+sceneHeaderRow =
+  HH.div [ style "display:flex;align-items:center;gap:8px;padding-bottom:3px" ]
+    ( [ HH.div [ style "flex:0 0 30px" ] []
+      , HH.div [ style "flex:0 0 118px" ] []
+      ]
+        <> map (\lbl -> HH.div [ style "flex:0 0 64px;text-align:center;font-size:9px;letter-spacing:0.12em;color:#9a8a6a" ] [ HH.text lbl ]) sceneColLabels
+        <> [ HH.div [ style "flex:0 0 22px" ] [] ]
+    )
+
+-- One scene row: launch caret + name field + the machine cells + delete.
+sceneRow :: forall m. RState -> Int -> Scenes.Scene -> H.ComponentHTML RAction Slots m
+sceneRow st i sc =
+  let playing = st.scenePos == i
+  in HH.div
+      [ style $ "display:flex;align-items:center;gap:8px;padding:4px 0;border-top:1px solid #00000010"
+          <> (if playing then ";background:#faf3df" else "") ]
+      ( [ HH.span
+            [ HE.onClick \_ -> LaunchScene i
+            , HP.title "launch scene (recall the tuple)"
+            , style $ "flex:0 0 30px;text-align:center;cursor:pointer;font-size:13px;color:"
+                <> (if playing then "#b8860b" else "#a2916a") ]
+            [ HH.text "▲" ]
+        , HH.input
+            [ HP.value (fromMaybe "" sc.name)
+            , HP.placeholder ("scene " <> show (i + 1))
+            , HE.onValueInput (SetSceneName i)
+            , style "flex:0 0 118px;padding:3px 7px;border:1px solid #d8cdb2;border-radius:4px;background:#fbf8f0;font-family:Georgia,serif;font-size:11px;color:#3a3222" ]
+        ]
+          <> mapWithIndex (sceneCellView i) sc.cells
+          <> [ HH.span
+                 [ HE.onClick \_ -> DeleteScene i
+                 , HP.title "delete scene"
+                 , style "flex:0 0 22px;text-align:center;cursor:pointer;color:#b0a898;font-size:11px" ]
+                 [ HH.text "✕" ] ]
+      )
+
+-- One cell: the machine's chosen glyph (or a leave-as-is dash), click to edit.
+sceneCellView :: forall m. Int -> Int -> Scenes.SceneCell -> H.ComponentHTML RAction Slots m
+sceneCellView sceneIx machineIx mAlias =
+  HH.div
+    [ HE.onClick \_ -> OpenCellPick sceneIx machineIx
+    , HP.title "pick a glyph for this machine (or clear = leave as-is)"
+    , style "flex:0 0 64px;height:30px;display:flex;align-items:center;justify-content:center;cursor:pointer;border-radius:5px;background:#ffffff66;border:1px solid #00000012" ]
+    ( case mAlias of
+        Nothing -> [ HH.span [ style "color:#c8bd9e;font-size:14px;line-height:1" ] [ HH.text "—" ] ]
+        Just alias ->
+          let g = G.glyphFromAlias alias
+          in [ HH.span [ style "display:inline-flex;align-items:center;gap:2px" ] [ faIcon g.first, faIcon g.second ] ]
+    )
+
+-- The per-cell bank picker (floating): assign one of the machine's banked glyphs
+-- to the clicked cell, or clear it back to leave-as-is. Snapshot of the bank at
+-- open time (via AskBank), starred glyphs first — same idiom as the recall menu.
+sceneCellPickPanel :: forall m. RState -> H.ComponentHTML RAction Slots m
+sceneCellPickPanel st = case st.scenePick of
+  Nothing -> HH.text ""
+  Just p ->
+    HH.div
+      [ style $ "position:fixed;top:80px;left:50%;transform:translateX(-50%);z-index:70;box-sizing:border-box;"
+          <> "background:#efece1;border:1px solid #a8a392;border-radius:8px;padding:8px;min-width:180px;max-height:70vh;overflow-y:auto;"
+          <> "box-shadow:0 8px 24px #00000038;display:flex;flex-direction:column;gap:3px;font-family:Georgia,serif" ]
+      ( [ HH.div
+            [ style "display:flex;align-items:center;justify-content:space-between;gap:12px;padding:2px 6px 5px" ]
+            [ HH.span [ style "font-size:8px;letter-spacing:0.12em;color:#8a8676;text-transform:uppercase" ]
+                [ HH.text ("Set " <> fromMaybe "cell" (sceneColLabels !! p.machine)) ]
+            , HH.span
+                [ HE.onClick \_ -> CloseCellPick
+                , style "cursor:pointer;color:#8a8676;font-size:11px;line-height:1" ]
+                [ HH.text "✕" ]
+            ]
+        , -- leave-as-is (clear)
+          HH.div
+            [ HE.onClick \_ -> SetSceneCell p.scene p.machine Nothing
+            , style "display:flex;align-items:center;gap:8px;padding:4px 6px;border-radius:5px;cursor:pointer;background:#e7e3d6" ]
+            [ HH.span [ style "color:#a8a08c;font-size:13px;width:34px;text-align:center" ] [ HH.text "—" ]
+            , HH.span [ style "font-family:'SF Mono',Menlo,monospace;font-size:9px;color:#7a746a" ] [ HH.text "leave as-is" ] ]
+        ]
+          <>
+            ( if null p.items then
+                [ HH.div [ style "padding:4px 8px;font-size:9px;color:#a09a88;font-style:italic" ]
+                    [ HH.text "no presets on this machine yet" ] ]
+              else map (scenePickRow p.scene p.machine) (filter _.starred p.items <> filter (not <<< _.starred) p.items)
+            )
+      )
+
+scenePickRow :: forall m. Int -> Int -> MenuItem -> H.ComponentHTML RAction Slots m
+scenePickRow sceneIx machineIx item =
+  let
+    g = G.glyphFromAlias item.alias
+    label = if item.name == "" then item.alias else item.name
+  in
+    HH.div
+      [ HE.onClick \_ -> SetSceneCell sceneIx machineIx (Just item.alias)
+      , style "display:flex;align-items:center;gap:8px;padding:4px 6px;border-radius:5px;cursor:pointer;background:#e7e3d6" ]
+      [ HH.span [ style $ "font-size:11px;width:12px;color:" <> (if item.starred then "#c9a23a" else "#d8d2c2") ] [ HH.text (if item.starred then "★" else "") ]
+      , HH.span [ style "display:inline-flex;align-items:center;gap:3px" ] [ faIcon g.first, faIcon g.second ]
+      , HH.span [ style "font-family:'SF Mono',Menlo,monospace;font-size:9px;color:#4a463b" ] [ HH.text label ]
+      ]
+
+-- A clear, non-blocking status pill shown when the Amphora store (:3024) is
+-- unreachable: the app degrades to "no favourites" rather than hanging, and this
+-- tells the user why (start Amphora to restore load/save of favourites).
+amphoraOfflinePill :: forall m. H.ComponentHTML RAction Slots m
+amphoraOfflinePill =
+  HH.span
+    [ HP.attr (H.AttrName "title") "Amphora artefact store (:3024) is not reachable — start it to load and save favourites"
+    , style $ "flex:0 0 auto;display:flex;align-items:center;gap:6px;padding:3px 10px;border-radius:5px;white-space:nowrap;"
+        <> "background:#f6e9cf;border:1px solid #d8b24a;color:#7a5c00;"
+        <> "font-family:'SF Mono',Menlo,monospace;font-size:9px;letter-spacing:0.03em" ]
+    [ HH.text "⚠ No favorites — Amphora backend not running" ]
 
 -- The instrument switcher: one segmented control. Odo/Bal/Sel/Vet are armable
 -- (dot + name); Suf/Ste/Tid are plain (no arm dot — rig-only prototypes / the
@@ -839,7 +1952,8 @@ switcher st =
     , armSeg st Vet "VETULA"
     , seg "SUFFLAMEN" (st.which == Suf) (Pick Suf)
     , seg "STELLATUS" (st.which == Ste) (Pick Ste)
-    , seg "TIDAL" (st.which == Tid) (Pick Tid)
+    -- TIDAL is no longer a tab — its five surfaces are the ⌘1..⌘5 overlays now
+    -- (see `modalOverlay`). The nav is just the machines.
     ]
 
 whichName :: Which -> String
@@ -869,9 +1983,12 @@ armSeg :: forall m. RState -> Which -> String -> H.ComponentHTML RAction Slots m
 armSeg st w label =
   let active = st.which == w
       isArmed = Set.member w st.armed
-      bg = if active then "linear-gradient(#c8a86a,#b8975a)" else "linear-gradient(#e9e5d9,#dcd8c9)"
+      bg = if active
+             then if st.captureFlash then "linear-gradient(#dcecc4,#b6d491)"  -- capture pulse
+                  else "linear-gradient(#c8a86a,#b8975a)"
+             else "linear-gradient(#e9e5d9,#dcd8c9)"
   in HH.div
-      [ style ("display:flex;align-items:center;background:" <> bg) ]
+      [ style ("display:flex;align-items:center;transition:background 240ms ease;background:" <> bg) ]
       [ HH.span
           [ HE.onClick \_ -> ArmTab w
           , style $ "padding:6px 3px 6px 9px;cursor:pointer;font-size:9px;line-height:1;"
@@ -882,7 +1999,70 @@ armSeg st w label =
           , style $ "padding:6px 13px 6px 5px;cursor:pointer;font-size:11px;letter-spacing:0.12em;"
               <> "text-transform:uppercase;color:" <> (if active then "#1c1a12" else "#5a564b") ]
           [ HH.text label ]
+      -- the machine's identity glyph (icons coloured by content) — the six-machine
+      -- status board. Clicking it opens the recall menu. Odonus + Balistes + Selene +
+      -- Vetula report one; Suf/Ste are Nothing (blank, not clickable) — prototypes.
+      , case chipOf st w of
+          Nothing -> HH.text ""
+          Just _ -> HH.span
+            [ HE.onClick \_ -> OpenChipMenu w
+            , HP.attr (H.AttrName "title") "recall a preset"
+            , style "display:inline-flex;align-items:center;cursor:pointer" ]
+            [ chipIcons (chipOf st w) ]
       ]
+
+-- The chip view for a machine, from the shell's status-board state. Balistes is
+-- the only live reporter for now; every other machine is empty until it gains the
+-- glyph substrate (docs/DESIGN-scene-modal.md).
+chipOf :: RState -> Which -> Maybe G.ChipView
+chipOf st = case _ of
+  Odo -> st.odoChip
+  Bal -> st.balChip
+  Sel -> st.selChip
+  Vet -> st.vetChip
+  _ -> Nothing
+
+-- The CAPTURE hotkey — the same key on every pane. Modifier-free `c`, ignored while
+-- a text field is focused (so it never fires mid-typing). Easy to rebind here.
+captureKey :: String
+captureKey = "c"
+
+keyToAction :: E.Event -> Maybe RAction
+keyToAction e = case KE.fromEvent e of
+  Just ke
+    -- ⌥1..⌥5 (Option/Alt + digit) open the overlays. This deliberately AVOIDS
+    -- ⌘-number, which Chrome steals for tab switching (and ⌘⇧3/4/5, which macOS
+    -- steals for screenshots). ⌥+digit has no tab/OS binding on any platform. We
+    -- still preventDefault synchronously so Option doesn't insert its glyph.
+    | KE.altKey ke
+    , Just m <- modalForDigit (KE.code ke) ->
+        case unsafePerformEffect (E.preventDefault e) of
+          _ -> Just (OpenModal m)
+    | KE.key ke == "Escape" -> Just CloseModal
+    | KE.key ke == captureKey
+    , not (KE.ctrlKey ke || KE.metaKey ke || KE.altKey ke)
+    , not (targetIsField e) -> Just CaptureKey
+  _ -> Nothing
+
+-- The ⌘-number → overlay map (also the source of truth for the labels shown on
+-- the modals). `Nothing` for any other digit/key.
+-- Keyed on the physical `code` ("Digit1"…), NOT `key`, so the modifier (⌥ on
+-- macOS mangles the character: ⌥1 = "¡") never breaks the match.
+modalForDigit :: String -> Maybe ModalId
+modalForDigit = case _ of
+  "Digit1" -> Just MRouting
+  "Digit2" -> Just MSceneSeq
+  "Digit3" -> Just MTidalSeq
+  "Digit4" -> Just MSource
+  "Digit5" -> Just MPresets
+  _ -> Nothing
+
+-- True when the event originated in a text input / textarea, so the hotkey yields
+-- to typing (the eDSL source drawer, pattern-name fields, the channel-map inputs).
+targetIsField :: E.Event -> Boolean
+targetIsField e = case E.target e of
+  Just t -> isJust (HInput.fromEventTarget t) || isJust (HTextArea.fromEventTarget t)
+  Nothing -> false
 
 -- The SOLO⟷ATLANTIS authority toggle. Each mode carries its own colour so the
 -- active authority reads at a glance: SOLO warm/gold (a standalone instrument),
