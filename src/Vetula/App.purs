@@ -3788,7 +3788,10 @@ surfaceFillCss = "max-width: none; touch-action: none; width: 100%; height: 100%
 render :: forall m. MonadAff m => State -> H.ComponentHTML Action Slots m
 render st =
   HH.div
-    [ HP.style ("position: relative; width: 100%; height: calc(100vh - 118px); min-height: 620px; overflow: hidden; border-radius: 8px; background: " <> canvasBg <> ";") ]
+    -- Pushed down by one nav-height (`--tf-bar`) so the stage clears the AUDITION
+    -- bar now docked under the shell nav; the old bottom voice bar is gone, so the
+    -- stage fills to the window bottom (freed lower strip → future MIDI-flow chyron).
+    [ HP.style ("position: relative; margin-top: var(--tf-bar); width: 100%; height: calc(100vh - 88px); min-height: 620px; overflow: hidden; border-radius: 8px; background: " <> canvasBg <> ";") ]
     [ HH.div [ HP.style "position: absolute; inset: 0;" ] [ surface st ]
     -- Three FLOATING controls (docs/DESIGN-vetula-progression-building.md), each
     -- owning one Harmonia layer: A = harmonic context (Key + palette + geometry),
@@ -3810,10 +3813,9 @@ render st =
         , growBar st
         , subGroup ("Progression · " <> countLabel (length (pathSteps st)) "step") (progressionPanel st)
         ]
-    -- the one-line bottom voice bar (four fixed lanes), fixed to the window edge.
-    -- (Old control C — the tall voices card — was deleted once the bar reached
-    -- parity; its routing controls move to the routing modal.)
-    , voiceBar st
+    -- The AUDITION bar (chyron) now docks under the shell nav (top). The old bottom
+    -- voice bar (four mini-notation lanes) was removed — the Perform surface
+    -- supersedes it — and the freed bottom is reserved for a future MIDI-flow chyron.
     , chyronBar st
     , HH.div
         [ HP.style "position: absolute; bottom: 44px; left: 50%; transform: translateX(-50%); z-index: 5;" ]
@@ -3830,13 +3832,13 @@ render st =
 chyronBar :: forall m. State -> H.ComponentHTML Action Slots m
 chyronBar st =
   HH.div
-    [ HP.style ( "position: fixed; bottom: 30px; left: 0; right: 0; z-index: 39; box-sizing: border-box; "
+    [ HP.style ( "position: fixed; top: var(--tf-bar); left: 0; right: 0; z-index: 39; box-sizing: border-box; "
         <> "display: flex; gap: 10px; align-items: center; padding: 3px 12px; min-height: 44px; overflow: hidden; "
         -- shift-click is a gesture here (→ tank / lift), so kill the browser's
         -- shift-click text selection across the bar. user-select inherits to chips.
         <> "user-select: none; -webkit-user-select: none; "
         <> "font-family: Georgia, serif; background: linear-gradient(#efe9d8,#e7e0cb); "
-        <> "border-top: 1px solid #0000000f; box-shadow: 0 -1px 3px #0000000d;" ) ]
+        <> "border-bottom: 1px solid #0000000f; box-shadow: 0 1px 3px #0000000d;" ) ]
     [ HH.div
         [ HP.style "flex: 0 0 auto; display: flex; align-items: center; gap: 6px;" ]
         ( [ -- record-arm toggle: ● red = capturing, ○ = paused (still audible)
