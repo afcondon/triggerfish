@@ -592,12 +592,15 @@ type State =
   -- session, oldest→newest. Phase 1 = the ticker; Phase 2 adds interaction.
   -- See DESIGN-vetula-chyron-redesign.
   , chyron :: Array ChyronEvent
-  -- Chyron interaction (Phase 2). `hoveredChyron` = the chip index under the
-  -- pointer (space auditions it, no re-log). `chyronSel` = the selected span:
-  -- lo==hi is a pending single endpoint, a second click completes the span, a
-  -- further click resets.
+  -- Chyron interaction. `hoveredChyron` = the chip index under the pointer (space
+  -- auditions it, no re-log). `chyronSel` = the current selection, Mac text-editing
+  -- semantics: a plain click drops a fresh single-chord selection (`lo==hi`) and
+  -- sets the `anchor`; a shift-click extends the range from that fixed anchor
+  -- (anchor stays put, the clicked chip becomes the moving end). `lo`/`hi` are the
+  -- sorted span endpoints the render/save/play all read; `anchor` is the fixed end
+  -- a subsequent shift-click re-extends from.
   , hoveredChyron :: Maybe Int
-  , chyronSel :: Maybe { lo :: Int, hi :: Int }
+  , chyronSel :: Maybe { lo :: Int, hi :: Int, anchor :: Int }
   -- Saved sequences: pinned 2-glyph tokens on the left of the chyron. Saving a
   -- selection compresses its live chips into one of these (reclaiming space).
   , chyronSaved :: Array SavedSeq
@@ -2086,24 +2089,21 @@ handleAction = case _ of
   -- span → reset). Shift-click LIFTS: for now, catch the chord into the tank
   -- (Phase 2b will special-case a shift-click INSIDE the span to lift the whole
   -- selection as a named progression).
+  -- Chyron selection, Mac text-editing semantics. Plain click drops a fresh
+  -- single-chord selection whose `anchor` is that chord; shift-click extends the
+  -- range from the fixed anchor (a shift-click with no prior selection is just a
+  -- plain click). This is the collector-and-editor's select gesture — it no longer
+  -- catches to the tank (the tank is being retired; you explore from the selection
+  -- itself, DESIGN-tank-overhaul.md §§3–4).
   ChyronClick i shift -> do
     st <- H.get
     case index st.chyron i of
       Nothing -> pure unit
-      Just ev
-        | shift -> do
-            let sorted = sort ev.notes
-                foot = fromMaybe 0 (head sorted)
-                spec = { id: SpecimenId st.nextSpecId
-                       , voicing: drop 1 sorted
-                       , bass: foot
-                       , label: ev.label
-                       , provenance: Imported   -- lifted from the audition trace
-                       , anchor: Free
-                       }
-            H.modify_ _ { tank = st.tank <> [ spec ], nextSpecId = st.nextSpecId + 1 }
-        | otherwise ->
-            H.modify_ _ { chyronSel = Just (nextSel st.chyronSel i) }
+      Just _ ->
+        let sel = case st.chyronSel of
+              Just s | shift -> { lo: min s.anchor i, hi: max s.anchor i, anchor: s.anchor }
+              _ -> { lo: i, hi: i, anchor: i }
+        in H.modify_ _ { chyronSel = Just sel }
 
   -- Delete one audition (indices shift, so drop any selection/hover to stay safe).
   DeleteChyron i -> H.modify_ \st ->
@@ -2862,16 +2862,6 @@ logChyron label notes pcs anchor = do
     let lab = if label == "" then joinWith " " (map noteName (sort pcs)) else label
         ev = { label: lab, notes, pcs, at: now, anchor }
     H.modify_ \s -> s { chyron = takeEnd chyronCap (s.chyron <> [ ev ]) }
-
--- | The chyron selection state machine: a click at index i starts a fresh single
--- | endpoint, completes a span from a pending endpoint (lo==hi), or resets from a
--- | complete span.
-nextSel :: Maybe { lo :: Int, hi :: Int } -> Int -> { lo :: Int, hi :: Int }
-nextSel msel i = case msel of
-  Nothing -> { lo: i, hi: i }
-  Just s
-    | s.lo == s.hi -> { lo: min s.lo i, hi: max s.lo i }
-    | otherwise -> { lo: i, hi: i }
 
 -- | Schedule notes on the preview channel WITHOUT logging to the chyron — for
 -- | re-auditioning a chip already in the trace (no feedback loop).
@@ -3843,8 +3833,9 @@ chyronBar st =
   HH.div
     [ HP.style ( "position: fixed; top: var(--tf-bar); left: 0; right: 0; z-index: 39; box-sizing: border-box; "
         <> "display: flex; gap: 10px; align-items: center; padding: 3px 12px; min-height: 44px; overflow: hidden; "
-        -- shift-click is a gesture here (→ tank / lift), so kill the browser's
-        -- shift-click text selection across the bar. user-select inherits to chips.
+        -- shift-click is a selection gesture here (extend the range), so kill the
+        -- browser's own shift-click text selection across the bar. user-select
+        -- inherits to the chips.
         <> "user-select: none; -webkit-user-select: none; "
         <> "font-family: Georgia, serif; background: linear-gradient(#efe9d8,#e7e0cb); "
         <> "border-bottom: 1px solid #0000000f; box-shadow: 0 1px 3px #0000000d;" ) ]
@@ -3918,8 +3909,8 @@ chyronBar st =
           [ HH.text "×" ]
       ]
   -- one chip = the chord's mini stave-glyph (same as the Tank), name-free. Hover
-  -- + space auditions it; click builds the selection span; shift-click lifts it
-  -- to the tank. In-span chips wear a warm wash; the span's endpoints a gold rim.
+  -- + space auditions it; click selects this one chord; shift-click extends the
+  -- range from the anchor. In-span chips wear a warm wash; the endpoints a gold rim.
   chyronChip i ev =
     let inSel = case st.chyronSel of
                   Just sel -> i >= sel.lo && i <= sel.hi
