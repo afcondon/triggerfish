@@ -759,6 +759,8 @@ data Action
   | PerfPickup Int         -- pick up saved token i for placement (toggle)
   | PerfDropBox Int        -- place the held token/fx onto box i
   | PerfClearBox Int       -- empty box i (stop its loop)
+  | PerfAddBox             -- append a new empty player on the next free MIDI channel
+  | PerfRemoveBox Int      -- delete player i outright (not just empty it)
   | PerfDragOver DragEvent -- allow HTML5 drop onto a box (preventDefault)
   | PerfPickFx PerfFx      -- pick up an fx from the palette for placement (toggle)
   | PerfFxNudge Int Int Int -- nudge box b's stack layer i by delta
@@ -2208,6 +2210,19 @@ handleAction = case _ of
   PerfClearBox b -> H.modify_ \st ->
     st { perfBoxes = mapWithIndex (\j box -> if j == b then box { seq = Nothing } else box) st.perfBoxes }
 
+  -- Append a fresh empty player on the lowest free MIDI channel (1..16), so the
+  -- Perform surface is a growable palette of voices rather than a fixed four.
+  PerfAddBox -> H.modify_ \st ->
+    let used = map _.channel st.perfBoxes
+        free = fromMaybe (length st.perfBoxes + 1) (find (\c -> not (elem c used)) (range 1 16))
+    in st { perfBoxes = st.perfBoxes <>
+              [ { channel: free, label: "P" <> show free, seq: Nothing, stack: [], seqText: "", muted: false, term: TMidi } ] }
+
+  -- Delete a player outright (distinct from PerfClearBox, which only empties its
+  -- token). Its channel frees for the next add.
+  PerfRemoveBox b -> H.modify_ \st ->
+    st { perfBoxes = fromMaybe st.perfBoxes (deleteAt b st.perfBoxes) }
+
   PerfDragOver ev -> liftEffect (preventDefault (DE.toEvent ev))
 
   PerfPickFx fx -> H.modify_ \st ->
@@ -3124,6 +3139,20 @@ printPipeline box =
   in if s == "" && length layers == 0 then ""
      else if s == "" then "# " <> joinWith " # " layers
      else joinWith " # " ([ s ] <> layers)
+
+-- | The pipeline printed one segment per LINE — the head sequence, then each `# layer`
+-- | on its own line. Display-only, for the voice-card textarea: it parses back
+-- | identically (`parsePipeline` splits on `#` and trims each segment, so the newlines
+-- | are harmless), but keeps a many-layer card NARROW instead of running the whole
+-- | pipeline off one line. The reconciliation invariant still holds through
+-- | `parsePipeline`; this is purely how the text is laid out for the eye.
+printPipelineLines :: PerfBox -> String
+printPipelineLines box =
+  let s = trim box.seqText
+      layers = map (\l -> "# " <> printLayer l) box.stack
+  in if s == "" && length layers == 0 then ""
+     else if s == "" then joinWith "\n" layers
+     else joinWith "\n" ([ s ] <> layers)
 
 -- whitespace tokens of a segment (drops empty tokens from runs of spaces).
 tokensOf :: String -> Array String
@@ -4484,7 +4513,11 @@ performSurface :: forall m. State -> H.ComponentHTML Action Slots m
 performSurface st =
   HH.div
     [ HP.style "position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 26px; padding: 40px;" ]
-    [ HH.div
+    -- FX palette floated to the top of the surface (holding pattern — its final home
+    -- and framing, "training wheels for Tidal" vs "starter-pack suggestions", is a
+    -- parked design question). AC, 2026-08-03.
+    [ fxPalette st
+    , HH.div
         [ HP.style "font-size: 12px; letter-spacing: 0.14em; text-transform: uppercase; color: #9a7a2a; text-align: center; max-width: 520px; line-height: 1.6;" ]
         [ HH.text $ case st.perfHeldFx of
             Just fx -> "layer in hand (" <> fxLabel fx <> ") — click a player to add it to its stack"
@@ -4521,13 +4554,23 @@ performSurface st =
             Just m -> HH.span [ HP.style "font-size: 11px; color: #7a6a3a; font-family: ui-monospace, monospace;" ] [ HH.text m ]
             Nothing -> HH.text ""
         ]
-    , fxPalette st
     , HH.div
-        [ HP.style "display: flex; gap: 18px; flex-wrap: wrap; justify-content: center; align-items: flex-start; max-width: 940px;" ]
-        (mapWithIndex (perfBox st) st.perfBoxes)
+        [ HP.style "display: flex; gap: 18px; flex-wrap: wrap; justify-content: center; align-items: flex-start; max-width: 1180px;" ]
+        (mapWithIndex (perfBox st) st.perfBoxes <> [ addPlayerTile ])
     , perfEditModal st
     , perfRecallModal st
     ]
+  where
+  -- a dashed ＋ tile sitting inline with the cards: the Perform surface is a
+  -- growable palette of voices, one per MIDI channel (1..16), not a fixed four.
+  addPlayerTile =
+    HH.button
+      [ HP.style "width: 208px; min-height: 118px; border: 2px dashed #d8ceb4; background: transparent; border-radius: 10px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px; cursor: pointer; color: #b0a684;"
+      , HP.title "add a player on the next free MIDI channel"
+      , HP.enabled (length st.perfBoxes < 16)
+      , HE.onClick \_ -> PerfAddBox ]
+      [ HH.div [ HP.style "font-size: 30px; line-height: 1;" ] [ HH.text "＋" ]
+      , HH.div [ HP.style "font-size: 10px; letter-spacing: 0.1em; text-transform: uppercase;" ] [ HH.text "add player" ] ]
 
 -- | The sequence-editor modal — a roomier surface for the text hatch than the
 -- | inline field, with a mini-notation guide and clickable examples in place. Edits
@@ -4553,12 +4596,13 @@ perfEditModal st = case st.perfEditBox >>= \i -> map (Tuple i) (index st.perfBox
                   , HE.onClick \_ -> PerfCloseEdit ]
                   [ HH.text "×" ]
               ]
-          , HH.input
-              [ HP.style ("width: 100%; box-sizing: border-box; border: 1px solid "
+          , HH.textarea
+              [ HP.style ("width: 100%; box-sizing: border-box; resize: vertical; field-sizing: content; border: 1px solid "
                            <> (if boxUsesSeq box then "#b8860b" else "#cdbb8c")
-                           <> "; background: #fff; color: #3a3a3a; border-radius: 6px; padding: 9px 12px; font-size: 15px; font-family: ui-monospace, monospace;")
-              , HP.value (printPipeline box)
-              , HP.attr (AttrName "placeholder") "0 1 2 3 # arp up 4"
+                           <> "; background: #fff; color: #3a3a3a; border-radius: 6px; padding: 9px 12px; font-size: 15px; line-height: 1.6; font-family: ui-monospace, monospace;")
+              , HP.rows 2
+              , HP.value (printPipelineLines box)
+              , HP.attr (AttrName "placeholder") "0 1 2 3\n# arp up 4"
               , HE.onValueChange \s -> PerfSetPipeline i s ]
           , HH.div [ HP.style "font-size: 11px; color: #9a8a5a; margin: 8px 0 16px;" ]
               [ HH.text "One cycle = one bar; numbers index the token's chords (out-of-range = rest). Type freely, click away to apply." ]
@@ -4688,13 +4732,14 @@ perfBox st i box =
                 then HH.div [ HP.style "font-size: 9px; letter-spacing: 0.06em; text-transform: uppercase; color: #a05a3a;" ]
                        [ HH.text "✕ rig only" ]
                 else HH.text ""
-            , if filled
-                then HH.button
-                       [ HP.style "position: absolute; top: 4px; right: 7px; border: none; background: transparent; color: #b06a5a; font-size: 15px; line-height: 1; cursor: pointer;"
-                       , HP.title "clear this player"
-                       , HE.onClick \e -> PerfStopClick e (PerfClearBox i) ]
-                       [ HH.text "×" ]
-                else HH.text "" ]
+            -- corner ×: on a FILLED card it clears the token (keep the player); on an
+            -- EMPTY card it removes the player outright. So clearing twice, or × on a
+            -- bare card, deletes it — no separate control, no accidental one-click loss.
+            , HH.button
+                [ HP.style "position: absolute; top: 4px; right: 7px; border: none; background: transparent; color: #b06a5a; font-size: 15px; line-height: 1; cursor: pointer;"
+                , HP.title (if filled then "clear this player's token" else "remove this player")
+                , HE.onClick \e -> PerfStopClick e (if filled then PerfClearBox i else PerfRemoveBox i) ]
+                [ HH.text "×" ] ]
        )
   where
   ghost = boxGhosted st.authority box
@@ -4702,20 +4747,29 @@ perfBox st i box =
   -- = one bar). Empty = default one-chord-per-beat. Border lights when it's driving.
   seqRow =
     HH.div
-      [ HP.style "display: flex; align-items: center; width: 100%; gap: 3px;" ]
-      [ HH.input
-          [ HP.style ("flex: 1 1 auto; min-width: 0; box-sizing: border-box; border: 1px solid "
+      [ HP.style "display: flex; align-items: flex-start; width: 100%; gap: 3px;" ]
+      [ HH.textarea
+          -- `field-sizing: content` (Chrome 123+, and the rig is Chrome) grows the
+          -- textarea to fit its lines — one line for a bare sequence, more as layers
+          -- stack — so the WHOLE pipeline is visible without a fixed height or a
+          -- horizontal run-off. `rows 1` is the floor. `resize: none` keeps the card
+          -- tidy; long single layers soft-wrap rather than widening the card.
+          [ HP.style ("flex: 1 1 auto; min-width: 0; box-sizing: border-box; resize: none; field-sizing: content; overflow: hidden; border: 1px solid "
                        <> (if boxUsesSeq box then "#b8860b" else "#dcd2b4")
-                       <> "; background: #fbfaf4; color: #6a5a2a; border-radius: 4px; padding: 2px 6px; font-size: 11px; font-family: ui-monospace, monospace;")
-          , HP.value (printPipeline box)
-          , HP.attr (AttrName "placeholder") "0 1 2 3 # arp up 4"
-          , HP.title "the box pipeline as text (two views of one thing — edit here or the chips below): a mini-notation sequence (cycle = 1 bar) then # layers, e.g. 0 1 2 3 # voice open # arp up 4"
-          -- commit on CHANGE (blur / enter), not on every keystroke: binding the live
-          -- value back via `HP.value` each input snaps the caret to the end and blocks
-          -- editing. `onValueChange` leaves the field uncontrolled while you type, then
-          -- commits — so you can freely edit the pipeline and hear it on blur. The value
-          -- is DERIVED (`printPipeline`), so chip edits re-render it and text edits parse
-          -- back into the structured box — the round-trip's single reconciliation point.
+                       <> "; background: #fbfaf4; color: #6a5a2a; border-radius: 4px; padding: 2px 6px; font-size: 11px; line-height: 1.5; font-family: ui-monospace, monospace;")
+          , HP.rows 1
+          -- DERIVED, line-broken on `#`: the head sequence then each layer on its own
+          -- line (the round-trip's display projection). Chip edits re-render it; text
+          -- edits parse back through `parsePipeline` (which trims each `#` segment, so
+          -- the newlines are harmless) — the single reconciliation point is unchanged.
+          , HP.value (printPipelineLines box)
+          , HP.attr (AttrName "placeholder") "0 1 2 3\n# arp up 4"
+          , HP.title "the box pipeline as text (two views of one thing — edit here or the chips below): a mini-notation sequence (cycle = 1 bar) then # layers, one per line, e.g. 0 1 2 3 / # voice open / # arp up 4"
+          -- commit on CHANGE (blur), not on every keystroke: binding the live value
+          -- back via `HP.value` each input would fight the caret. `onValueChange`
+          -- leaves the field uncontrolled while you type (Enter adds a line), then
+          -- commits on blur — edit the whole multi-line pipeline, hear it when you
+          -- click away.
           , HE.onValueChange \s -> PerfSetPipeline i s
           -- stop a focus-click bubbling to the box's drop handler, without a re-render.
           , HE.onClick \e -> PerfStopClick e PerfNop ]
