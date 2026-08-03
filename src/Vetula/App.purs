@@ -2106,7 +2106,7 @@ handleAction = case _ of
   SaveChyronSel -> do
     st <- H.get
     case st.chyronSel of
-      Just sel | sel.hi > sel.lo -> do
+      Just sel -> do
         let evs = mapMaybe (\ix -> index st.chyron ix) (range sel.lo sel.hi)
             saved = { events: evs, glyph: glyphOf (seqContent evs) }
             keep = mapMaybe (\(Tuple ix e) -> if ix < sel.lo || ix > sel.hi then Just e else Nothing)
@@ -3875,13 +3875,16 @@ chyronBar st =
               [ HP.style "font-size: 10px; letter-spacing: 0.16em; text-transform: uppercase; color: #8a7d5a;" ]
               [ HH.text "audition" ] ]
           -- ⏎ save appears only while a completed span is selected
+          -- ⏎ save (bundle) shows for ANY selection — single chord or span — so the
+          -- rebundle path is reliably available while editing a checked-out
+          -- progression (not just when a multi-chord span happens to be selected).
           <> ( case st.chyronSel of
-                 Just sel | sel.hi > sel.lo ->
+                 Just sel ->
                    [ HH.button
                        [ HP.style "border: 1px solid #b8860b; background: #fbf6ea; color: #7a5c00; font-size: 11px; line-height: 1; cursor: pointer; padding: 2px 6px; border-radius: 3px;"
-                       , HP.title "save selection as a glyph token (⏎)"
+                       , HP.title "bundle the selected chord(s) into a glyph token (⏎)"
                        , HE.onClick \_ -> SaveChyronSel ]
-                       [ HH.text "⏎ save" ] ]
+                       [ HH.text ("⏎ bundle " <> show (sel.hi - sel.lo + 1)) ] ]
                  _ -> [] )
           <> ( if length st.chyron == 0 then []
                else [ HH.button
@@ -3953,31 +3956,38 @@ chyronBar st =
         bg = if inSel then "#efe6c8" else "#faf7ee"
         brd = if isEnd then "#b8860b" else if inSel then "#cdbb8c" else "#d8ceb4"
         pcNames = joinWith " " (map noteName (sort ev.pcs))
-        -- a delete × surfaces on hover (its own element, NOT the select target)
+        -- a delete × surfaces on hover (its own element, above the drag handle so it
+        -- stays clickable). Bigger hit target than before.
         delX = if hov
           then [ HH.button
-                   [ HP.style "position: absolute; top: -1px; right: -1px; z-index: 2; border: none; background: #faf7ee; color: #b06a5a; font-size: 11px; line-height: 1; cursor: pointer; padding: 0 2px; border-radius: 6px;"
+                   [ HP.style "position: absolute; top: -4px; right: -4px; z-index: 3; border: 1px solid #e4d9be; background: #faf7ee; color: #b06a5a; font-size: 12px; line-height: 1; cursor: pointer; padding: 0 3px; border-radius: 8px;"
                    , HP.title "delete this audition"
                    , HE.onClick \_ -> DeleteChyron i ]
                    [ HH.text "×" ] ]
           else []
     in HH.span
+        -- the whole chip is a DROP target for reorder; the inner glyph is the drag
+        -- HANDLE. The container is deliberately NOT draggable — a draggable container
+        -- swallows child-button clicks, which made the corner × unresponsive.
         [ HP.style ("position: relative; flex: 0 0 auto; white-space: nowrap; border: 1px solid " <> brd
-                     <> "; background: " <> bg <> "; border-radius: 3px; padding: 0 1px; cursor: grab; line-height: 0; opacity: "
+                     <> "; background: " <> bg <> "; border-radius: 3px; padding: 0 1px; line-height: 0; opacity: "
                      <> (if dragging then "0.4" else "1") <> ";")
         , HP.title (ev.label <> (if pcNames == "" then "" else " · " <> pcNames))
-        , HP.draggable true
-        , HE.onDragStart \_ -> ChyronDragStart i
         , HE.onDragOver PerfDragOver
         , HE.onDrop \_ -> ChyronDropOn i
-        , HE.onDragEnd \_ -> ChyronDragEnd
         , HE.onMouseEnter \_ -> HoverChyron (Just i)
         , HE.onMouseLeave \_ -> HoverChyron Nothing ]
         ( delX <>
-          [ SE.svg
-              [ SA.viewBox (-18.0) (-22.0) 36.0 44.0, SA.width 30.0, SA.height 38.0
-              , HE.onClick \e -> ChyronClick i (ME.shiftKey e) ]
-              (chordGlyph [] 0.0 0.0 ev.notes) ]
+          [ HH.div
+              [ HP.style "cursor: grab; line-height: 0;"
+              , HP.draggable true
+              , HE.onDragStart \_ -> ChyronDragStart i
+              , HE.onDragEnd \_ -> ChyronDragEnd ]
+              [ SE.svg
+                  [ SA.viewBox (-18.0) (-22.0) 36.0 44.0, SA.width 30.0, SA.height 38.0
+                  , HE.onClick \e -> ChyronClick i (ME.shiftKey e) ]
+                  (chordGlyph [] 0.0 0.0 ev.notes) ]
+          ]
         )
 
 -- | The Tonnetz-stack HUD in the tank card (2026-07-31): shown only while a stack
