@@ -399,11 +399,20 @@ type VoicingCycle =
 -- | `notes` for exact replay, `at` (ms, `dateNow`) for the timing axis that a
 -- | later lift can quantise or drop. The trace is what a progression gets LIFTED
 -- | from retroactively, replacing build-a-progression-up-front.
+-- |
+-- | `anchor` carries the chord's *harmonic reading* (`Harmonia.Anchor`) — the one
+-- | thing the raw notes cannot reconstruct: where the chord sits in a scale. This
+-- | is what Explore needs to bloom the *right* neighbourhood around a captured
+-- | chord (a progression can span scales, so the reading is per-chord, never
+-- | per-buffer). `notes` already serves as the voicing (`bass : voicing`), so the
+-- | anchor is the only enrichment the event needs over its notes. A chord minted
+-- | with no reading (recall from a bare note-list) carries `Free`.
 type ChyronEvent =
-  { pcs   :: Array Int
-  , notes :: Array Int
-  , label :: String
-  , at    :: Number
+  { pcs    :: Array Int
+  , notes  :: Array Int
+  , label  :: String
+  , at     :: Number
+  , anchor :: Anchor
   }
 
 -- | Cap on the rolling chyron buffer — oldest events fall off the left.
@@ -2842,8 +2851,8 @@ playId pid = do
 -- | events falling off past `chyronCap`. Called from the single-chord audition
 -- | choke-points below, unconditionally — the trace records intent, so a muted
 -- | audition (no `midiOut`) still lands here. See DESIGN-vetula-chyron-redesign.
-logChyron :: forall o m. MonadAff m => String -> Array Int -> Array Int -> H.HalogenM State Action Slots o m Unit
-logChyron label notes pcs = do
+logChyron :: forall o m. MonadAff m => String -> Array Int -> Array Int -> Anchor -> H.HalogenM State Action Slots o m Unit
+logChyron label notes pcs anchor = do
   st <- H.get
   -- record-arm: disarmed → the audition still sounded, it just isn't captured.
   when st.chyronArmed do
@@ -2851,7 +2860,7 @@ logChyron label notes pcs = do
     -- never log a blank chip: fall back to the pitch-class names if a call site
     -- has no label (e.g. an off-net triad before it's named).
     let lab = if label == "" then joinWith " " (map noteName (sort pcs)) else label
-        ev = { label: lab, notes, pcs, at: now }
+        ev = { label: lab, notes, pcs, at: now, anchor }
     H.modify_ \s -> s { chyron = takeEnd chyronCap (s.chyron <> [ ev ]) }
 
 -- | The chyron selection state machine: a click at index i starts a fresh single
@@ -3201,7 +3210,7 @@ playChord c = do
   for_ st.midiOut \out ->
     liftEffect $ for_ notes \n ->
       Midi.scheduleNote out { channel: st.previewChan, note: n, velocity: 92, delayMs: 0.0, durMs: 900.0 }
-  logChyron c.label notes (nub (map (\x -> mod x 12) notes))
+  logChyron c.label notes (nub (map (\x -> mod x 12) notes)) c.anchor
 
 -- | Audition a tank specimen: sound its notes on the preview channel (no state
 -- | change) and log it to the chyron. Same shape as `playChord`, but reads a
@@ -3213,7 +3222,7 @@ playSpecimen s = do
   for_ st.midiOut \out ->
     liftEffect $ for_ notes \n ->
       Midi.scheduleNote out { channel: st.previewChan, note: n, velocity: 92, delayMs: 0.0, durMs: 900.0 }
-  logChyron s.label notes (nub (map (\x -> mod x 12) notes))
+  logChyron s.label notes (nub (map (\x -> mod x 12) notes)) s.anchor
 
 -- | In-place transpose of a tank specimen by `n` semitones — the capo move. Bass
 -- | and every upper voice shift arithmetically (absolute MIDI), and the label is
@@ -4366,7 +4375,10 @@ mkSavedSeq chords =
   , glyph: glyphOf (joinWith " " (map (joinWith "," <<< map show) chords))
   }
   where
-  evt i notes = { pcs: map (\n -> mod n 12) notes, notes, label: show (i + 1), at: toNumber i }
+  -- `Free`: a recalled note-list carries no scale reading (the source grammar
+  -- stores notes only). Re-deriving an anchor from pcs+key is the §7 open
+  -- decision; until then a recalled chord explores as an unlocated pitch-bag.
+  evt i notes = { pcs: map (\n -> mod n 12) notes, notes, label: show (i + 1), at: toNumber i, anchor: Free }
 
 -- | Reconstruct the live Perform boxes from a parsed scene document (the inverse
 -- | of `map boxSpec perfBoxes` at save): one box per voice, on its channel, with
