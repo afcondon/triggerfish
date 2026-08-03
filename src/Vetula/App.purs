@@ -1876,11 +1876,22 @@ handleAction = case _ of
   -- Parse a stored scene payload (the `vetulaScene { … }` record) back into a
   -- document and reconstruct the surface's boxes. Lenient: a payload that yields
   -- no voices is left as a note rather than blanking the surface.
+  -- Load a scene onto the Perform surface AND surface its progressions in the
+  -- chyron: each named source becomes a saved 2-glyph token (its content glyph),
+  -- so a recalled scene's chord sets are right there to replay or unbundle for
+  -- editing — closing the save→recall→edit loop (DESIGN-tank-overhaul.md §6). One
+  -- token per distinct source preserves the multi-source separation (a voice's
+  -- substitution-sibling or different-key set stays its own token). The saved
+  -- region belongs to the loaded document, so it REPLACES what was there; the live
+  -- capture buffer is left untouched.
   PerfLoadScene payload -> do
-    let boxes = boxesFromDoc (parsePerform payload)
+    let doc = parsePerform payload
+        boxes = boxesFromDoc doc
+        tokens = map (\s -> mkSavedSeq s.chords) doc.sources
     if length boxes == 0
       then H.modify_ _ { perfRecallOpen = false, publishMsg = Just "✗ couldn't read that scene" }
-      else H.modify_ _ { perfBoxes = boxes, perfRecallOpen = false, publishMsg = Just "scene loaded" }
+      else H.modify_ _ { perfBoxes = boxes, chyronSaved = tokens
+                       , perfRecallOpen = false, publishMsg = Just "scene loaded" }
 
   AddVoice -> H.modify_ \s ->
     s { voices = s.voices <> [ defaultVoice s.nextVoiceId (mod s.nextVoiceId 4) (rendOf s.nextVoiceId) (length (perfChords s)) ]
@@ -5533,11 +5544,39 @@ genCenter i =
   , y: -120.0 + toNumber (i / 3) * 250.0
   }
 
--- | The Generate lens — each tank chord as a SEED with a ring of voice-led
--- | relatives bloomed around it (reusing `generateCandidates`, the same engine the
--- | Lab pick-mode uses). "shake" re-rolls: a different adventure + a rotated crop
--- | of the ranked relatives. Hover a relative to preview, click to audition,
--- | shift-click to catch it back into the tank — closing the catch→grow→catch loop.
+-- | A chyron audition lifted into a SEED specimen for Explore. Carries the event's
+-- | real harmonic reading (`anchor`, enriched in step 1) so `specToNode` blooms the
+-- | RIGHT neighbourhood per chord — a selection can span scales, so the reading must
+-- | travel with each seed, never the buffer (DESIGN-tank-overhaul.md §§1, 4). `notes`
+-- | is `bass : voicing`, so the foot is the low note and the rest is the voicing.
+specFromEvent :: Int -> ChyronEvent -> Specimen
+specFromEvent i ev =
+  let sorted = sort ev.notes
+  in { id: SpecimenId i
+     , voicing: drop 1 sorted
+     , bass: fromMaybe 0 (head sorted)
+     , label: ev.label
+     , provenance: Imported     -- lifted from the audition trace
+     , anchor: ev.anchor
+     }
+
+-- | The seeds Explore blooms around: the chyron SELECTION when there is one (each
+-- | selected chord seeds its own neighbourhood), else the tail of the tape as a
+-- | convenience so Explore is never blank. Capped at 6 rings to keep the layout
+-- | sane (mirrors the old `take 6` over the tank).
+chyronSeeds :: State -> Array Specimen
+chyronSeeds st =
+  let evs = case st.chyronSel of
+        Just sel -> mapMaybe (\ix -> index st.chyron ix) (range sel.lo sel.hi)
+        Nothing  -> takeEnd 6 st.chyron
+  in mapWithIndex specFromEvent (take 6 evs)
+
+-- | The Generate lens — each SEED (now a chyron-selection chord, formerly a tank
+-- | specimen) with a ring of voice-led relatives bloomed around it (reusing
+-- | `generateCandidates`, the same engine the Lab pick-mode uses). "shake" re-rolls:
+-- | a different adventure + a rotated crop of the ranked relatives. Hover a relative
+-- | to preview, click to audition — which appends it to the chyron, growing the
+-- | buffer (DESIGN-tank-overhaul.md §4).
 generativeSurface :: forall m. State -> H.ComponentHTML Action Slots m
 generativeSurface st =
   let vb = geoView st
@@ -5550,15 +5589,16 @@ generativeSurface st =
         , HE.onWheel \we -> ZoomAt (WE.toEvent we) (WE.deltaY we)
         , HE.onMouseDown (PanStart <<< ME.toEvent)
         ] <> geoPanAttrs st )
-      ( if length st.tank == 0
+      ( let seeds = chyronSeeds st
+        in if length seeds == 0
           then
             [ SE.text
                 [ SA.x 0.0, SA.y 0.0, HP.attr (AttrName "text-anchor") "middle"
                 , HP.style "font-size: 15px; fill: #b8b8b8; -webkit-user-select: none; user-select: none;"
                 ]
-                [ HH.text "catch chords into the tank, then grow relatives here — press shake ⟳" ]
+                [ HH.text "audition chords — they land in the chyron; select some, then grow relatives here — shake ⟳" ]
             ]
-          else concat (mapWithIndex (genCluster st) (take 6 st.tank))
+          else concat (mapWithIndex (genCluster st) seeds)
       )
 
 -- | One seed's constellation: the seed glyph at the centre, its relatives ringed
@@ -5568,7 +5608,12 @@ genCluster :: forall m. State -> Int -> Specimen -> Array (H.ComponentHTML Actio
 genCluster st i spec =
   let key = st.key
       center = genCenter i
-      seedN = specToNode (9000 + i) key spec
+      -- name the seed from its own pitches (quality-aware: minor gets its "m"),
+      -- not the captured audition label — some lens paths label a minor triad with
+      -- just its bare root, which reads fine for C major but wrong for F minor. The
+      -- relatives are already named by the generator.
+      seedBase = specToNode (9000 + i) key spec
+      seedN = seedBase { label = chordTag seedBase }
       adv = toNumber (mod st.genRoll 5) * 0.2
       rollRot = toNumber st.genRoll * 0.37
       full = generateCandidates Append [ seedN ] key adv 0
