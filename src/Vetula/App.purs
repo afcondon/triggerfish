@@ -3815,7 +3815,7 @@ render st =
     -- Pushed down by the nav (`--tf-bar`) + the 42px CONTEXT bar + the 44px AUDITION
     -- chyron, so the stage clears both top strips; the old bottom voice bar is gone,
     -- so it fills to the window bottom (freed lower strip → future MIDI-flow chyron).
-    [ HP.style ("position: relative; margin-top: calc(var(--tf-bar) + 42px); width: 100%; height: calc(100vh - 130px); min-height: 620px; overflow: hidden; border-radius: 8px; background: " <> canvasBg <> ";") ]
+    [ HP.style ("position: relative; margin-top: calc(var(--tf-bar) + 44px); width: 100%; height: calc(100vh - 132px); min-height: 620px; overflow: hidden; border-radius: 8px; background: " <> canvasBg <> ";") ]
     [ HH.div [ HP.style "position: absolute; inset: 0;" ] [ surface st ]
     -- CONTEXT is now a docked control bar between the nav and the chyron (the last
     -- floating overlay is gone, reclaiming the whole left column): key · scale ·
@@ -3846,7 +3846,7 @@ render st =
 chyronBar :: forall m. State -> H.ComponentHTML Action Slots m
 chyronBar st =
   HH.div
-    [ HP.style ( "position: fixed; top: calc(var(--tf-bar) + 42px); left: 0; right: 0; z-index: 39; box-sizing: border-box; "
+    [ HP.style ( "position: fixed; top: calc(var(--tf-bar) + 44px); left: 0; right: 0; z-index: 39; box-sizing: border-box; "
         <> "display: flex; gap: 10px; align-items: center; padding: 3px 12px; min-height: 44px; overflow: hidden; "
         -- shift-click is a selection gesture here (extend the range), so kill the
         -- browser's own shift-click text selection across the bar. user-select
@@ -4170,43 +4170,73 @@ contextBar :: forall m. MonadAff m => State -> H.ComponentHTML Action Slots m
 contextBar st =
   HH.div
     [ HP.style ( "position: fixed; top: var(--tf-bar); left: 0; right: 0; z-index: 40; box-sizing: border-box; "
-        <> "display: flex; align-items: flex-end; flex-wrap: nowrap; gap: 16px; padding: 3px 12px 5px; min-height: 42px; overflow: visible; "
+        <> "display: flex; align-items: center; flex-wrap: nowrap; gap: 10px; padding: 0 12px; height: 44px; overflow: visible; "
         <> "background: linear-gradient(#f3eee0,#ece5d0); border-bottom: 1px solid #0000000f; box-shadow: 0 1px 3px #0000000d;" ) ]
-    ( [ field "KEY"
-          [ HH.slot (Proxy :: _ "keySelect") unit Select.component
-              ((Select.defaultInput keyOptions) { selected = Just (show st.key.tonic), placeholder = "Key" })
-              \(Select.Selected v) -> SelectKey v ]
-      , field "SCALE"
-          [ HH.slot (Proxy :: _ "scaleSelect") unit Select.component
-              ((Select.cascadingInput modeGroups) { selected = Just (currentModeValue st.key.mode), searchable = true })
-              \(Select.Selected v) -> SelectScale v ]
+    -- Labels dropped (the controls speak for themselves); subtle dividers group
+    -- key/scale · palettes · lens instead. (AC, 2026-08-03.)
+    ( [ HH.slot (Proxy :: _ "keySelect") unit Select.component
+          ((Select.defaultInput keyOptions) { selected = Just (show st.key.tonic), placeholder = "Key" })
+          \(Select.Selected v) -> SelectKey v
+      , HH.slot (Proxy :: _ "scaleSelect") unit Select.component
+          ((Select.cascadingInput modeGroups) { selected = Just (currentModeValue st.key.mode), searchable = true })
+          \(Select.Selected v) -> SelectScale v
       ]
         <> familyField
-        <> [ field "PALETTES"
-               [ HH.div [ HP.style "display: flex; flex-wrap: nowrap; gap: 4px;" ] (map layerChip allColorLayers) ]
-           ]
+        <> [ divider ]
+        <> [ HH.div [ HP.style "display: flex; flex-wrap: nowrap; gap: 4px;" ] (map layerChip allColorLayers) ]
         <> borrowField
-        <> [ field "LENS" [ lensBar st ] ]
+        <> [ divider ]
+        -- LENS as `Browse <viewtype> | Perform` (AC): the geometric views are the
+        -- Browse cluster, Perform sits apart past a hairline. (The `data View =
+        -- Browse Viewtype | Perform` model refactor is a separate follow-up.)
+        <> [ HH.div [ HP.style "display: flex; align-items: center; gap: 6px;" ]
+               ( map lensChip geometryLenses
+                 <> [ HH.div [ HP.style "width: 1px; height: 16px; background: #0000001a; margin: 0 3px;" ] [] ]
+                 <> [ lensChip LensPerform ] ) ]
+        <> resetChip
         <> [ HH.div
-               [ HP.style "margin-left: auto; display: flex; align-items: center; gap: 8px; padding-bottom: 2px;" ]
+               [ HP.style "margin-left: auto; display: flex; align-items: center; gap: 8px;" ]
                [ midiChip st.midiName
                , HH.button [ HP.style helpBtnStyle, HP.title "keys & help", HE.onClick \_ -> ToggleHelp ] [ HH.text "ⓘ" ] ]
            ]
     )
   where
+  -- a way back to the fitted view (scroll to zoom · drag to pan), once it's moved.
+  resetChip =
+    if st.viewZoom /= 1.0 || st.viewCx /= 0.0 || st.viewCy /= 0.0 then
+      [ HH.button
+          [ HP.style "border: 1px solid #dcdcdc; background: #fafafa; color: #6a6a6a; cursor: pointer; padding: 3px 10px; border-radius: 4px; font-size: 12px; white-space: nowrap;"
+          , HP.title "reset the view · scroll to zoom · drag to pan"
+          , HE.onClick \_ -> ResetView ]
+          [ HH.text "reset view" ] ]
+    else []
+  -- a hairline group separator.
+  divider = HH.div [ HP.style "width: 1px; height: 22px; background: #00000016;" ] []
+  -- one lens chip (viewtype or Perform). Active = filled dark.
+  lensChip l =
+    let active = st.lens == l
+    in HH.button
+        [ HP.style ("border: 1px solid " <> (if active then "#1a1a1a" else "#dcdcdc")
+                     <> "; background: " <> (if active then "#1a1a1a" else "#fafafa")
+                     <> "; color: " <> (if active then "#ffffff" else "#6a6a6a")
+                     <> "; cursor: pointer; padding: 3px 10px; border-radius: 4px; font-size: 12px; white-space: nowrap;")
+        , HE.onClick \_ -> SetLens l ]
+        [ HH.text (lensLabel l) ]
   -- the borrow-scale picker only appears when the BORROWED color layer is
   -- engaged — it is that layer's source, meaningless otherwise (AC, 2026-07-31).
+  -- Kept with a small inline label (unlike key/scale) since it appears
+  -- contextually — a bare dropdown popping in would be a mystery.
   borrowField =
     if Set.member LayerBorrowed st.colorLayers then
-      [ field "BORROW"
+      [ inlineField "borrow"
           [ HH.slot (Proxy :: _ "borrowSelect") unit Select.component
               ((Select.cascadingInput borrowGroups) { selected = Just (fromMaybe "off" st.borrowMode), searchable = true })
               \(Select.Selected v) -> BorrowFrom v ]
       ]
     else []
   labelStyle = "font-size: 10px; color: #9a9a9a; letter-spacing: 0.1em; text-transform: uppercase;"
-  field lbl controls =
-    HH.div [ HP.style "display: flex; flex-direction: column; gap: 4px;" ]
+  inlineField lbl controls =
+    HH.div [ HP.style "display: flex; align-items: center; gap: 5px;" ]
       ([ HH.span [ HP.style labelStyle ] [ HH.text lbl ] ] <> controls)
   -- the palette chips are now SHOW/HIDE toggles for the color-overlay layers
   -- (2026-07-31 redesign), not pool-injecting mode buttons. Each carries a
@@ -4232,7 +4262,7 @@ contextBar st =
   familyField = case st.focusedFamily >>= (\sid -> find (\c -> c.id == sid) st.chords) of
     Just seed ->
       let famMode = (fromMaybe st.key (Map.lookup seed.id st.familyScale)).mode
-      in [ field ("FAMILY " <> noteName seed.root)
+      in [ inlineField ("family " <> noteName seed.root)
              [ HH.slot (Proxy :: _ "familyScaleSelect") unit Select.component
                  ((Select.cascadingInput modeGroups) { selected = Just (currentModeValue famMode), searchable = true })
                  \(Select.Selected v) -> ReflavourFamily v ] ]
