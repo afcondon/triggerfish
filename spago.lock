@@ -707,7 +707,7 @@
       "binnacle": {
         "path": "../binnacle"
       },
-      "halogen-widgets": "0.2.0",
+      "halogen-widgets": "0.3.0",
       "harmonia": "0.2.0",
       "reef": {
         "path": "../../reef"
@@ -1230,14 +1230,15 @@
     },
     "halogen-widgets": {
       "type": "registry",
-      "version": "0.2.0",
-      "integrity": "sha256-GAipE7ui4nVR1GbmWv8/Yuk8OvE0S54FWTHTMI2zdPU=",
+      "version": "0.3.0",
+      "integrity": "sha256-w/Lajf4W+tTf5En8ElW+dJUvKL1JPfKm7ToXDtPYbMA=",
       "dependencies": [
         "aff",
         "arrays",
         "datetime",
         "dom-indexed",
         "effect",
+        "foldable-traversable",
         "halogen",
         "halogen-subscriptions",
         "integers",

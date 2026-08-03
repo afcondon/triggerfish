@@ -113,6 +113,7 @@ import Vetula.Lepidoptera (PerfDoc, VoiceSpec, docFromVoices, parsePerform, prin
 import Vetula.Clipboard (copyText)
 import Binnacle.Midi as Midi
 import Halogen.Widgets.Select as Select
+import Halogen.Widgets.MultiSelect as MultiSelect
 import Halogen.Widgets.Modal as Modal
 import Hylograph.ForceEngine.Halogen (toHalogenEmitter)
 import Hylograph.Simulation
@@ -252,6 +253,10 @@ layerLabel = case _ of
   LayerButler -> "Butler"
   LayerStock -> "Stock"
 
+-- | Inverse of `layerLabel` — the palettes multiselect hands back these strings.
+layerFromLabel :: String -> Maybe ColorLayer
+layerFromLabel s = find (\l -> layerLabel l == s) allColorLayers
+
 -- | Each layer's own distinct hue — a legend, NOT the tonnetz outside-distance
 -- | ramp (AC decision 3, 2026-07-31). Diatonic is a quiet base ink; the color
 -- | sets each get a saturated, legible hue that reads on parchment.
@@ -368,6 +373,7 @@ type Slots =
   , scaleSelect :: Select.Slot Unit
   , familyScaleSelect :: Select.Slot Unit
   , borrowSelect :: Select.Slot Unit
+  , paletteSelect :: MultiSelect.Slot Unit
   )
 
 -- | An in-progress octave-drag of one voice on the left-hand pitch ladder.
@@ -667,6 +673,7 @@ data Action
   | SlashBass Int          -- set the revoiced chord's bass to a pitch class (slash chord)
   | DropSet String         -- toggle an exterior signpost set (McMullen …)
   | ToggleLayer ColorLayer -- toggle a color-overlay layer on/off (2026-07-31)
+  | SetLayers (Array String) -- set the active layers from the palettes multiselect
   | StackTriad Int (Array Int) Boolean -- alt-click a Tonnetz triad: add/remove it from the stack
   | CommitStack            -- catch the accumulated Tonnetz stack to the tank as one Anchor
   | ClearStack             -- discard the Tonnetz stack
@@ -1589,6 +1596,10 @@ handleAction = case _ of
       s { colorLayers =
             if Set.member l s.colorLayers then Set.delete l s.colorLayers
             else Set.insert l s.colorLayers }
+
+  -- The palettes MultiSelect hands back the full new selection as value strings
+  -- (each a `layerLabel`); rebuild the layer Set from them.
+  SetLayers vs -> H.modify_ _ { colorLayers = Set.fromFoldable (mapMaybe layerFromLabel vs) }
 
   -- modal interchange: borrow the chosen parallel mode's chromatic chords (or
   -- "off" to clear). Always replaces the previous interchange set, so the picker
@@ -4116,7 +4127,7 @@ contextBar st =
     -- Labels dropped (the controls speak for themselves); subtle dividers group
     -- key/scale · palettes · lens instead. (AC, 2026-08-03.)
     ( [ HH.slot (Proxy :: _ "keySelect") unit Select.component
-          ((Select.defaultInput keyOptions) { selected = Just (show st.key.tonic), placeholder = "Key" })
+          ((Select.defaultInput keyOptions) { selected = Just (show st.key.tonic), placeholder = "Key", minWidth = Just "72px" })
           \(Select.Selected v) -> SelectKey v
       , HH.slot (Proxy :: _ "scaleSelect") unit Select.component
           ((Select.cascadingInput modeGroups) { selected = Just (currentModeValue st.key.mode), searchable = true })
@@ -4124,7 +4135,10 @@ contextBar st =
       ]
         <> familyField
         <> [ divider ]
-        <> [ HH.div [ HP.style "display: flex; flex-wrap: nowrap; gap: 4px;" ] (map layerChip allColorLayers) ]
+        <> [ HH.slot (Proxy :: _ "paletteSelect") unit MultiSelect.component
+               ((MultiSelect.defaultInput paletteOptions)
+                  { selected = activeLayerLabels, placeholder = "palettes", maxLabels = 3, minWidth = Just "128px" })
+               \(MultiSelect.SelectedMany vs) -> SetLayers vs ]
         <> borrowField
         <> [ divider ]
         -- View as `Browse <viewtype> | Perform`: the four browse projections
@@ -4189,25 +4203,11 @@ contextBar st =
   inlineField lbl controls =
     HH.div [ HP.style "display: flex; align-items: center; gap: 5px;" ]
       ([ HH.span [ HP.style labelStyle ] [ HH.text lbl ] ] <> controls)
-  -- the palette chips are now SHOW/HIDE toggles for the color-overlay layers
-  -- (2026-07-31 redesign), not pool-injecting mode buttons. Each carries a
-  -- swatch in the layer's own hue; active = the swatch fills + hue-tinted chip.
-  layerChip l =
-    let on = Set.member l st.colorLayers
-        hue = layerHue l
-    in HH.button
-         [ HP.style ("display: inline-flex; align-items: center; gap: 6px; border: 1px solid "
-                      <> (if on then hue else "#dcdcdc")
-                      <> "; background: " <> (if on then "#fafafa" else "#fafafa")
-                      <> "; color: " <> (if on then hue else "#9a9a9a")
-                      <> "; cursor: pointer; padding: 3px 9px; border-radius: 4px; font-size: 12px;")
-         , HP.title (if on then "hide the " <> layerLabel l <> " layer" else "show the " <> layerLabel l <> " layer")
-         , HE.onClick \_ -> ToggleLayer l ]
-         [ HH.span
-             [ HP.style ("width: 9px; height: 9px; border-radius: 2px; border: 1px solid " <> hue
-                          <> "; background: " <> (if on then hue else "transparent") <> ";") ]
-             []
-         , HH.text (layerLabel l) ]
+  -- the color-overlay layers are now a compact MultiSelect (was a row of
+  -- swatch chips): one option per layer, the active set controlled from
+  -- `colorLayers` and written back via `SetLayers`.
+  paletteOptions = map (\l -> { value: layerLabel l, label: layerLabel l }) allColorLayers
+  activeLayerLabels = map layerLabel (filter (\l -> Set.member l st.colorLayers) allColorLayers)
   -- a contextual scale picker for the focused family (click a keyboard key to
   -- focus one) — this is what lets two families hold different modes at once.
   familyField = case st.focusedFamily >>= (\sid -> find (\c -> c.id == sid) st.chords) of
