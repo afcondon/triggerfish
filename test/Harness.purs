@@ -20,7 +20,7 @@ import Triggerfish.Odonus.Model as M
 import Triggerfish.Odonus.Marbles as Marbles
 import Triggerfish.Odonus.Gen as Gen
 import Triggerfish.Odonus.Grid.Types (GenKind(..), GenSource, genDefaultAmt, genDefaultRate, genKinds)
-import Vetula.Perform.Types (ArpDir(..), PerfFx(..), PerfTerm(..), VoiceShape(..), When(..), mkLayer)
+import Vetula.Perform.Types (ArpDir(..), PatternArg(..), PerfFx(..), PerfTerm(..), When(..), mkLayer)
 import Vetula.Lepidoptera (PerfDoc, parsePerform, performSource, printAsRecord, roundTrips)
 
 type Sim = { odo :: M.Odonus, seed :: Marbles.Seed }
@@ -127,11 +127,11 @@ lepDoc =
       ]
   , voices:
       [ { channel: 1, source: Just "A", seqText: "0 1 2 3"
-        , stack: [ mkLayer (Voice Open), mkLayer (Strum 14) ], term: TMidi, muted: false }
+        , stack: [ mkLayer (Voice (Lit "open")), mkLayer (Strum 14) ], term: TMidi, muted: false }
       , { channel: 2, source: Just "B", seqText: "0 1 2 3"
         , stack: [ (mkLayer (Arpg ArpUp 4)) { when = Every 4 } ], term: TMidi, muted: false }
       , { channel: 5, source: Nothing, seqText: ""
-        , stack: [ mkLayer (Transpose 12) ], term: TRig, muted: false }
+        , stack: [ mkLayer (Transpose (Lit "12")) ], term: TRig, muted: false }
       ]
   }
 

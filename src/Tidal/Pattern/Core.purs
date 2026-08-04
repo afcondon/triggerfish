@@ -26,6 +26,7 @@ module Tidal.Pattern.Core
     -- * Transformations
   , arpeggiate
   , arpWith
+  , withSampledArg
   , segment
   , compress
   , zoom
@@ -456,6 +457,25 @@ arpWith sel ip pat = pattern \(State st) ->
   pick ns = case _ of
     Analog _ -> Nothing
     Digital je -> map (\v -> Digital (je { value = [ v ] })) (sel ns je.value)
+
+-- | Transform each event's value by an ARGUMENT sampled from a second pattern at that
+-- | event's onset. For every event of `pat`, `argp` is queried within the event's part
+-- | and its first atom taken (or `""` when the arg is a rest there); `f atom value`
+-- | produces the new value. This is how a verb takes a pattern-valued argument
+-- | (`transpose "0 7 <5 3>"`): the result keeps `pat`'s structure (the chords), and the
+-- | arg is sampled per chord — so patterning the chords AND the arg interlock (the
+-- | fractal). `f "" v` must yield the verb's default (a rest in the arg = no-op).
+withSampledArg :: forall a. (String -> a -> a) -> Pattern String -> Pattern a -> Pattern a
+withSampledArg f argp pat = pattern \(State st) ->
+  map (go st) (query pat (State st))
+  where
+  go st = case _ of
+    Analog e -> Analog e
+    Digital e ->
+      let s = case Array.head (query argp (State (st { arc = e.part }))) of
+                Just ae -> eventValue ae
+                Nothing -> ""
+      in Digital (e { value = f s e.value })
 
 -- | Segment a pattern into n equal events per cycle
 -- |

@@ -27,11 +27,12 @@ import Data.Maybe (Maybe(..))
 -- | the value (Slow/Fast = `slow`/`fast`). Voice/Select (Harmonia) + more land next;
 -- | arp/strum are the terminal REALISATION, not layers (they explode chord→time).
 data PerfFx
-  = Transpose Int    -- ± semitones
-  | Octave Int       -- ± octaves
+  = Transpose PatternArg  -- ± semitones (`transpose 7`, `transpose "0 7 <5 3>"`)
+  | Octave PatternArg     -- ± octaves (`oct -1`, `oct "<0 1>"`)
   | Slow Int         -- stretch the pattern over N cycles (`slow N`); N ≥ 1
   | Fast Int         -- compress the pattern into 1/N of a cycle (`fast N`); N ≥ 1
-  | Voice VoiceShape -- re-voice each chord (Harmonia VoicingStrategy)
+  | Voice PatternArg -- re-voice each chord; arg interprets to a VoiceShape (`voice open`,
+                     -- `voice "<open drop2>"`)
   | Select PerfSel   -- thin each chord to some of its voices (Harmonia takeVoicing)
   | Arpg ArpDir Int  -- explode chord→time: `rate` steps per bar, walked in a
                      -- direction (up/down/updown), cycling the chord's notes. The
@@ -75,10 +76,40 @@ data VoiceShape = Open | Rootless | Drop2 | Drop24 | Quartal | Cluster
 derive instance eqVoiceShape :: Eq VoiceShape
 
 -- | Voice selection — keep the low or high N voices of each chord (Harmonia
--- | `Selector`). `Low 1` = a bass line; `High 1` = a melody line.
-data PerfSel = Low Int | High Int
+-- | `Selector`). `Low "1"` = a bass line; `High "1"` = a melody line. The count is a
+-- | `PatternArg` so it can vary (`top "1 2"`, `bottom "<1 2>"`).
+data PerfSel = Low PatternArg | High PatternArg
 
 derive instance eqPerfSel :: Eq PerfSel
+
+-- | A verb's ARGUMENT — decision B (uniform string PatternArg). Either a bare literal
+-- | (`7`, `open`, `up`) or a quoted mini-notation pattern (`"0 7 <5 3>"`). Both carry
+-- | their source text; the verb interprets the sampled atom at apply-time
+-- | (`Int.fromString`, `parseVoiceShape`, …), invalid → the verb's default
+-- | (Selene-lenient). This IS `Macro.purs`'s domain-agnostic string-arg model, which is
+-- | what lets micro and macro converge on one grammar. `Lit` prints bare, `Pat` quoted.
+data PatternArg = Lit String | Pat String
+
+derive instance eqPatternArg :: Eq PatternArg
+
+-- | The source text of an arg (quotes already stripped).
+argSrc :: PatternArg -> String
+argSrc = case _ of
+  Lit s -> s
+  Pat s -> s
+
+-- | Canonical text: a literal bare, a pattern quoted (round-trips through `parseLayer`).
+printArg :: PatternArg -> String
+printArg = case _ of
+  Lit s -> s
+  Pat s -> "\"" <> s <> "\""
+
+-- | A compact chip glyph: a literal shown bare, a pattern wrapped in ⟨…⟩ so the eye
+-- | reads "this arg is patterned" without the quote noise.
+glyphArg :: PatternArg -> String
+glyphArg = case _ of
+  Lit s -> s
+  Pat s -> "⟨" <> s <> "⟩"
 
 -- | The "WHEN" clause on a layer — the flat form of Tidal's conditional combinators
 -- | (`every` / `sometimesBy` / `within`). Rather than a layer that WRAPS a sub-stack,

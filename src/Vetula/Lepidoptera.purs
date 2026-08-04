@@ -57,10 +57,11 @@ import Data.Array (drop, filter, find, index, length, mapMaybe, mapWithIndex, nu
 import Data.Foldable (foldl)
 import Data.Int as Int
 import Data.Maybe (Maybe(..), fromMaybe)
-import Data.String (Pattern(..), stripPrefix)
+import Data.String (Pattern(..), contains, stripPrefix)
 import Data.String.Common (joinWith, split, trim)
-import Triggerfish.Macro (Arg(..), Form(..), parseLane, tokenize)
-import Vetula.Perform.Types (ArpDir(..), Layer, PerfFx(..), PerfSel(..), PerfTerm(..), VoiceShape(..), When(..), mkLayer, parseVoiceShape, printArpDir, printVoiceShape, termShort)
+import Triggerfish.Macro (Arg, Form(..), parseLane, tokenize)
+import Triggerfish.Macro (Arg(..)) as M
+import Vetula.Perform.Types (ArpDir(..), Layer, PatternArg(..), PerfFx(..), PerfSel(..), PerfTerm(..), When(..), mkLayer, printArg, printArpDir, termShort)
 import Vetula.Tidal (parseProgression, tidalNoteName)
 
 -- | A named chord set the voices reference. `chords` are note-lists in *stored
@@ -125,13 +126,13 @@ whenDir = case _ of
 -- | (a leading '+' breaks `Int.fromString`).
 fxDir :: PerfFx -> String
 fxDir = case _ of
-  Transpose n -> "transpose " <> show n
-  Octave n -> "oct " <> show n
+  Transpose arg -> "transpose " <> printArg arg
+  Octave arg -> "oct " <> printArg arg
   Slow n -> "slow " <> show (max 1 n)
   Fast n -> "fast " <> show (max 1 n)
-  Voice shape -> "voice " <> printVoiceShape shape
-  Select (High n) -> "top " <> show n
-  Select (Low n) -> "bottom " <> show n
+  Voice arg -> "voice " <> printArg arg
+  Select (High arg) -> "top " <> printArg arg
+  Select (Low arg) -> "bottom " <> printArg arg
   Arpg dir r -> "arp" <> printArpDir dir <> " " <> show r
   ArpP src -> "arp " <> quote src   -- the figure is quoted so its spaces survive as one arg
   Strum ms -> "strum " <> show ms
@@ -265,16 +266,16 @@ setLastWhen w stack =
 
 fxOfVerb :: String -> String -> Maybe PerfFx
 fxOfVerb verb arg = case verb of
-  "transpose" -> Just (Transpose (clamp (-24) 24 (argInt 0 arg)))
-  "trans" -> Just (Transpose (clamp (-24) 24 (argInt 0 arg)))
-  "oct" -> Just (Octave (clamp (-4) 4 (argInt 0 arg)))
-  "octave" -> Just (Octave (clamp (-4) 4 (argInt 0 arg)))
-  "8ve" -> Just (Octave (clamp (-4) 4 (argInt 0 arg)))
+  "transpose" -> Just (Transpose (mkArgL arg))
+  "trans" -> Just (Transpose (mkArgL arg))
+  "oct" -> Just (Octave (mkArgL arg))
+  "octave" -> Just (Octave (mkArgL arg))
+  "8ve" -> Just (Octave (mkArgL arg))
   "slow" -> Just (Slow (max 1 (argInt 4 arg)))
   "fast" -> Just (Fast (max 1 (argInt 2 arg)))
-  "voice" -> Just (Voice (fromMaybe Open (parseVoiceShape arg)))
-  "top" -> Just (Select (High (clamp 1 6 (argInt 1 arg))))
-  "bottom" -> Just (Select (Low (clamp 1 6 (argInt 1 arg))))
+  "voice" -> Just (Voice (mkArgL arg))
+  "top" -> Just (Select (High (mkArgL arg)))
+  "bottom" -> Just (Select (Low (mkArgL arg)))
   "arp" -> Just (ArpP arg)   -- explicit index figure (dir-less); Macro un-quotes the arg
   "arpup" -> Just (Arpg ArpUp (clamp 1 16 (argInt 4 arg)))
   "arpdown" -> Just (Arpg ArpDown (clamp 1 16 (argInt 4 arg)))
@@ -290,8 +291,19 @@ parseTerm = case _ of
 
 argStr :: Arg -> String
 argStr = case _ of
-  Lit s -> s
-  AltArg xs -> fromMaybe "" (xs !! 0)
+  M.Lit s -> s
+  M.AltArg xs -> fromMaybe "" (xs !! 0)
+
+-- | Reconstruct a `PatternArg` from an already-un-quoted Macro arg. Macro dropped the
+-- | quotes, so we can't see them; heuristically, an arg carrying a space or any
+-- | mini-notation punctuation is a pattern, anything else a bare literal. (The LIVE
+-- | text hatch keeps quotes and is exact; this is the document layer's best effort.)
+mkArgL :: String -> PatternArg
+mkArgL s = if patterned then Pat s else Lit s
+  where
+  patterned = contains (Pattern " ") s
+    || contains (Pattern "<") s || contains (Pattern "[") s
+    || contains (Pattern "~") s || contains (Pattern "*") s || contains (Pattern "(") s
 
 -- | One integer token, lenient: strip a leading '+' (which `fromString` rejects),
 -- | fall back to `def` on anything non-numeric.

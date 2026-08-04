@@ -30,7 +30,7 @@ import Effect.Timer (setInterval)
 import Data.Nullable (Nullable, null)
 import Data.Set (Set)
 import Data.Set as Set
-import Data.String (Pattern(..), contains, stripPrefix)
+import Data.String (Pattern(..), contains, stripPrefix, stripSuffix)
 import Data.String.CodeUnits as SCU
 import Data.String.Common (joinWith, split, toLower, trim)
 import Data.Tuple (Tuple(..), fst, snd)
@@ -82,6 +82,10 @@ import Vetula.Perform.Types
   , ArpDir(..)
   , VoiceShape(..)
   , PerfSel(..)
+  , PatternArg(..)
+  , argSrc
+  , printArg
+  , glyphArg
   , When(..)
   , Layer
   , PerfTerm(..)
@@ -100,7 +104,7 @@ import Vetula.Perform.Types
   , printVoiceShape
   , parseVoiceShape
   )
-import Tidal.Pattern.Core (arpeggiate, arpWith, fast, slow, every)
+import Tidal.Pattern.Core (arpeggiate, arpWith, withSampledArg, fast, slow, every)
 import Tidal.Pattern.Mini (parseMiniPattern)
 import Tidal.Pattern.Types (Arc(..), eventPart, eventValue, eventWhole, isDigital, mkArc, mkState, query)
 import Tidal.Pattern.Types (Pattern, Event) as PT
@@ -3049,12 +3053,17 @@ dropFxInto src tb mpos boxes =
 -- | polymorphic in the value, so they compose with the pitch layers at the same type.
 applyFx :: PerfFx -> PT.Pattern (Array Int) -> PT.Pattern (Array Int)
 applyFx = case _ of
-  Transpose k -> map (map (_ + k))
-  Octave k -> map (map (_ + 12 * k))
+  -- value verbs sample their PatternArg per chord (`withSampledArg`): the arg is a
+  -- mini-notation, so `transpose "0 7 <5 3>"` shifts differently per chord and per
+  -- cycle. A literal (`transpose 7`) is the degenerate constant pattern. Invalid/empty
+  -- sampled atom → the verb's default (0 / Open / keep-1), Selene-lenient.
+  Transpose arg -> withSampledArg (\s -> map (_ + tokInt 0 s)) (argEval arg)
+  Octave arg -> withSampledArg (\s -> map (_ + 12 * tokInt 0 s)) (argEval arg)
   Slow n -> slow (Rat.fromInt (max 1 n))
   Fast n -> fast (Rat.fromInt (max 1 n))
-  Voice shape -> map (revoice (voiceStrategy shape))
-  Select sel -> map (revoice (takeVoicing (selSelector sel)))
+  Voice arg -> withSampledArg (\s -> revoice (voiceStrategy (shapeOf s))) (argEval arg)
+  Select (Low arg) -> withSampledArg (\s -> revoice (takeVoicing (TakeLow (selInt s)))) (argEval arg)
+  Select (High arg) -> withSampledArg (\s -> revoice (takeVoicing (TakeHigh (selInt s)))) (argEval arg)
   -- arp IS a pattern transform: it explodes each chord into singleton-note events
   -- spread across that chord's OWN whole (`arpeggiate`), so it composes with
   -- slow/fast — `slow 8 # arp up 4` unfolds the arp over eight bars. Pre-`map` the
@@ -3091,6 +3100,22 @@ arpSelect ns tok = case fromString (trim tok) of
          let i = ((idx `mod` m) + m) `mod` m   -- 0..m-1 (Euclidean, handles idx < 0)
              oct = (idx - i) / m               -- floor division → octave displacement
          in (\v -> v + 12 * oct) <$> index sorted i
+
+-- | A verb argument as a `Pattern String`: its mini-notation source parsed, falling
+-- | back to the raw source as a constant pattern when it won't parse (so a literal
+-- | like `open` or `7`, and any typo, still samples to itself — the verb then
+-- | interprets it and defaults if need be).
+argEval :: PatternArg -> PT.Pattern String
+argEval arg = case parseMiniPattern (argSrc arg) of
+  Right p -> p
+  Left _ -> pure (argSrc arg)
+
+-- | Interpret a sampled atom as a VoiceShape (default Open) / a Low-High count (1..6).
+shapeOf :: String -> VoiceShape
+shapeOf s = fromMaybe Open (parseVoiceShape (trim s))
+
+selInt :: String -> Int
+selInt s = clamp 1 6 (tokInt 1 s)
 
 -- | The chord→time REALISATION a box's stack asks for at the SINK. Arp is no longer
 -- | here — it's a pattern transform now (`applyFx`/`arpeggiate`), so by schedule time
@@ -3129,21 +3154,16 @@ voiceStrategy = case _ of
   Quartal -> quartal
   Cluster -> cluster
 
-selSelector :: PerfSel -> Selector
-selSelector = case _ of
-  Low n -> TakeLow n
-  High n -> TakeHigh n
-
 -- | A short chip label for a stack layer.
 fxLabel :: PerfFx -> String
 fxLabel = case _ of
-  Transpose n -> "transpose " <> showSigned n
-  Octave n -> "8ve " <> showSigned n
+  Transpose arg -> "transpose " <> glyphArg arg
+  Octave arg -> "8ve " <> glyphArg arg
   Slow n -> "slow ×" <> show (max 1 n)
   Fast n -> "fast ×" <> show (max 1 n)
-  Voice shape -> "voice " <> voiceShapeName shape
-  Select (Low n) -> "bottom " <> show n
-  Select (High n) -> "top " <> show n
+  Voice arg -> "voice " <> glyphArg arg
+  Select (Low arg) -> "bottom " <> glyphArg arg
+  Select (High arg) -> "top " <> glyphArg arg
   Arpg dir r -> "arp " <> arpDirGlyph dir <> " ×" <> show r
   ArpP src -> "arp " <> src
   Strum ms -> "strum " <> show ms <> "ms"
@@ -3157,20 +3177,36 @@ voiceShapeName = case _ of
   Quartal -> "quartal"
   Cluster -> "cluster"
 
--- | Nudge a layer's parameter by `d` (the chip's − / + controls), clamped. Voice
--- | cycles through the shapes; Select nudges the voice count (min 1).
+-- | Nudge a layer's parameter by `d` (the chip's − / + controls), clamped. A LITERAL
+-- | arg nudges (transpose/oct/select the number, voice the shape); a PATTERN arg is
+-- | left untouched — you edit a figure in the text hatch, per the two-views rule.
 fxNudge :: Int -> PerfFx -> PerfFx
 fxNudge d = case _ of
-  Transpose n -> Transpose (clamp (-24) 24 (n + d))
-  Octave n -> Octave (clamp (-4) 4 (n + d))
+  Transpose arg -> Transpose (nudgeIntArg (-24) 24 d arg)
+  Octave arg -> Octave (nudgeIntArg (-4) 4 d arg)
   Slow n -> Slow (max 1 (n + d))
   Fast n -> Fast (max 1 (n + d))
-  Voice shape -> Voice (cycleVoiceShape d shape)
-  Select (Low n) -> Select (Low (clamp 1 6 (n + d)))
-  Select (High n) -> Select (High (clamp 1 6 (n + d)))
+  Voice arg -> Voice (cycleShapeArg d arg)
+  Select (Low arg) -> Select (Low (nudgeIntArg 1 6 d arg))
+  Select (High arg) -> Select (High (nudgeIntArg 1 6 d arg))
   Arpg dir r -> Arpg dir (clamp 1 16 (r + d))     -- nudge the steps-per-bar
   ArpP src -> ArpP src                            -- the figure is edited in the text hatch
   Strum ms -> Strum (clamp 0 80 (ms + d))
+
+-- | Nudge a literal-integer arg within [lo,hi]; a pattern (or non-numeric literal) is
+-- | left as-is (edit it in the text hatch).
+nudgeIntArg :: Int -> Int -> Int -> PatternArg -> PatternArg
+nudgeIntArg lo hi d = case _ of
+  Lit s -> case fromString (fromMaybe s (stripPrefix (Pattern "+") s)) of
+    Just n -> Lit (show (clamp lo hi (n + d)))
+    Nothing -> Lit s
+  Pat s -> Pat s
+
+-- | Cycle a literal voice-shape arg through the shapes; a pattern is left as-is.
+cycleShapeArg :: Int -> PatternArg -> PatternArg
+cycleShapeArg d = case _ of
+  Lit s -> Lit (printVoiceShape (cycleVoiceShape d (fromMaybe Open (parseVoiceShape (trim s)))))
+  Pat s -> Pat s
 
 -- | The layer's ALTERNATE control (the second param when it has one): arp cycles
 -- | its direction; everything else is unchanged.
@@ -3206,13 +3242,13 @@ showSigned n = if n >= 0 then "+" <> show n else show n
 
 printPerfFx :: PerfFx -> String
 printPerfFx = case _ of
-  Transpose n -> "transpose " <> show n
-  Octave n -> "oct " <> show n
+  Transpose arg -> "transpose " <> printArg arg
+  Octave arg -> "oct " <> printArg arg
   Slow n -> "slow " <> show (max 1 n)
   Fast n -> "fast " <> show (max 1 n)
-  Voice shape -> "voice " <> printVoiceShape shape
-  Select (High n) -> "top " <> show n
-  Select (Low n) -> "bottom " <> show n
+  Voice arg -> "voice " <> printArg arg
+  Select (High arg) -> "top " <> printArg arg
+  Select (Low arg) -> "bottom " <> printArg arg
   Arpg dir r -> "arp " <> printArpDir dir <> " " <> show r
   ArpP src -> "arp \"" <> src <> "\""
   Strum ms -> "strum " <> show ms
@@ -3251,14 +3287,28 @@ printPipelineLines box =
 tokensOf :: String -> Array String
 tokensOf = filter (_ /= "") <<< split (Pattern " ") <<< trim
 
--- like `tokensOf`, but a "double-quoted span" stays ONE token (quotes stripped, inner
--- spaces kept) — so `arp "0 1 2"` tokenizes to ["arp","0 1 2"], letting a pattern-
--- valued arg carry spaces. Split on the quote char: odd-indexed pieces are inside
--- quotes (verbatim), even-indexed pieces split on spaces as usual.
+-- like `tokensOf`, but a "double-quoted span" stays ONE token WITH its quotes kept —
+-- so `transpose "0 7"` tokenizes to ["transpose","\"0 7\""], letting a pattern-valued
+-- arg carry spaces AND letting `mkArg` tell a quoted pattern from a bare literal. Split
+-- on the quote char: odd-indexed pieces are inside quotes (re-wrapped), even-indexed
+-- pieces split on spaces as usual.
 tokensQ :: String -> Array String
 tokensQ s =
-  concat (mapWithIndex (\i p -> if i `mod` 2 == 1 then [ p ] else tokensOf p)
+  concat (mapWithIndex (\i p -> if i `mod` 2 == 1 then [ "\"" <> p <> "\"" ] else tokensOf p)
                        (split (Pattern "\"") s))
+
+-- strip surrounding double quotes if present.
+unquoteTok :: String -> Maybe String
+unquoteTok t = stripPrefix (Pattern "\"") t >>= stripSuffix (Pattern "\"")
+
+unq :: String -> String
+unq t = fromMaybe t (unquoteTok t)
+
+-- a token → a PatternArg: quoted span → `Pat` (a pattern), bare → `Lit` (a literal).
+mkArg :: String -> PatternArg
+mkArg t = case unquoteTok t of
+  Just inner -> Pat inner
+  Nothing -> Lit t
 
 -- the arp DIRECTION keywords (vs. an index figure like "0 1 2").
 isArpDir :: String -> Boolean
@@ -3274,25 +3324,26 @@ parsePerfFx toks = case head toks of
   Nothing -> Nothing
   Just kw ->
     let args = drop 1 toks
-        a0 d = tokInt d (fromMaybe "" (head args))
+        -- slot 0 as a PatternArg, defaulting to a bare literal `d` when absent.
+        arg0 d = mkArg (fromMaybe d (head args))
         a1 d = tokInt d (fromMaybe "" (index args 1))
     in case toLower kw of
-         "transpose" -> Just (Transpose (clamp (-24) 24 (a0 0)))
-         "trans" -> Just (Transpose (clamp (-24) 24 (a0 0)))
-         "oct" -> Just (Octave (clamp (-4) 4 (a0 0)))
-         "octave" -> Just (Octave (clamp (-4) 4 (a0 0)))
-         "8ve" -> Just (Octave (clamp (-4) 4 (a0 0)))
-         "slow" -> Just (Slow (max 1 (a0 4)))
-         "fast" -> Just (Fast (max 1 (a0 2)))
-         "voice" -> Just (Voice (fromMaybe Open (head args >>= parseVoiceShape)))
-         "top" -> Just (Select (High (clamp 1 6 (a0 1))))
-         "bottom" -> Just (Select (Low (clamp 1 6 (a0 1))))
+         "transpose" -> Just (Transpose (arg0 "0"))
+         "trans" -> Just (Transpose (arg0 "0"))
+         "oct" -> Just (Octave (arg0 "0"))
+         "octave" -> Just (Octave (arg0 "0"))
+         "8ve" -> Just (Octave (arg0 "0"))
+         "slow" -> Just (Slow (max 1 (tokInt 4 (fromMaybe "" (head args)))))
+         "fast" -> Just (Fast (max 1 (tokInt 2 (fromMaybe "" (head args)))))
+         "voice" -> Just (Voice (arg0 "open"))
+         "top" -> Just (Select (High (arg0 "1")))
+         "bottom" -> Just (Select (Low (arg0 "1")))
          "arp" -> case head args of
            Nothing -> Just (Arpg ArpUp 4)
            Just d
              | isArpDir d -> Just (Arpg (parseArpDir (toLower d)) (clamp 1 16 (a1 4)))
-             | otherwise -> Just (ArpP (joinWith " " args))
-         "strum" -> Just (Strum (clamp 0 80 (a0 14)))
+             | otherwise -> Just (ArpP (unq (joinWith " " args)))
+         "strum" -> Just (Strum (clamp 0 80 (tokInt 14 (fromMaybe "" (head args)))))
          _ -> Nothing
 
 parseLayer :: String -> Maybe Layer
@@ -4779,6 +4830,7 @@ perfEditModal st = case st.perfEditBox >>= \i -> map (Tuple i) (index st.perfBox
     ]
   layerGuide =
     [ Tuple "# transpose 5" "shift every chord ±semitones"
+    , Tuple "# transpose \"0 7 <5 3>\"" "any arg can be a pattern — sampled per chord/cycle"
     , Tuple "# oct -1" "shift ±octaves"
     , Tuple "# slow 4" "unfold over N bars — the harmonic-progression verb"
     , Tuple "# fast 2" "pack into 1/N of a bar"
@@ -4797,7 +4849,7 @@ fxPalette st =
   HH.div
     [ HP.style "display: flex; align-items: center; gap: 8px;" ]
     ( [ HH.span [ HP.style "font-size: 10px; letter-spacing: 0.12em; text-transform: uppercase; color: #b0a684;" ] [ HH.text "fx" ] ]
-        <> map paletteChip [ Transpose 0, Octave (-1), Slow 4, Fast 2, Voice Open, Select (High 1), Select (Low 1), Arpg ArpUp 4, Strum 14 ]
+        <> map paletteChip [ Transpose (Lit "0"), Octave (Lit "-1"), Slow 4, Fast 2, Voice (Lit "open"), Select (High (Lit "1")), Select (Low (Lit "1")), Arpg ArpUp 4, Strum 14 ]
     )
   where
   paletteChip fx =

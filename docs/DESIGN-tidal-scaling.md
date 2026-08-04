@@ -249,17 +249,22 @@ resolving against a loaded form.
    with continuous phase — **`slow` composes on top of the existing one-bar scheduling; no
    bar-grid change, no cap.** The old `−8..8` clamp on `Rate` was arbitrary.
 
-## 7. Execution sequence (proposed — not started)
+## 7. Execution sequence
 
-0. **`slow` / `fast` as first-class time verbs** (§2.4) — the quick, felt win, independent of
-   the pattern-arg work. Promote `slow N` / `fast N`, retire `rate` (clean break, no scenes to
-   keep — §2.4.2), no cap (decision 7), check the bar-grid. Can land first.
-1. **Quote-aware `parseLayer`** + a `PatternArg` type; printer round-trips literal vs quoted.
-   Reconciliation invariant re-proved. *No behaviour change yet (all args still literals).*
-2. **`applyLayer` samples the arg pattern per cycle** — the first live pattern-arg
-   (`transpose "0 7"`). Verify by ear.
-3. **Uniform string args + positional slots** (`voice <open drop2>`, `arp <up down> 4`) —
-   decision 3 / §4.4.
+0. ✅ **`slow` / `fast` as first-class time verbs** (§2.4). Done — `slow N`/`fast N` replace
+   signed `rate`, clean break, no cap. Plus (unplanned, but on-theme): arp rebuilt as a
+   genuine pattern transform (`arpeggiate`) + onset-guarded sink so it composes with `slow`.
+1. ✅ **Quote-aware `parseLayer`** + a `PatternArg` type (`Lit`/`Pat`); printer round-trips
+   literal vs quoted (`tokensQ` keeps quotes, `mkArg`, `printArg`). Reconciliation invariant
+   holds (test harness green).
+2. ✅ **`applyLayer` samples the arg pattern per cycle** — `withSampledArg` (engine); the
+   value verbs (`transpose`, `oct`, `voice`, `top`, `bottom`) now take pattern args
+   (`transpose "0 7 <5 3>"`), sampled at each chord's onset. Arp also has `arp "0 1 2"` (its
+   own `arpWith`, since it explodes time). *Still literal-only: `slow`/`fast` and arp's
+   dir/rate slots — pattern-valued time verbs are semantically fiddlier, deferred.*
+3. ◐ **Uniform string args + positional slots** — value verbs done (each one `PatternArg`);
+   the multi-slot case (`arp <up down> <4 8>`) still pending (arp keeps the `Arpg` dir+rate
+   form alongside the `ArpP` figure). Decision 3 / §4.4.
 4. **Explicit extensible gate** (§4.5) — `every N` / `prob P` built-ins, predicate slot open.
 5. **Chip view for pattern args** — the compact glyph + text-hatch pairing.
 6. **Converge micro and macro** — factor the shared `verb + pattern-arg` core so
