@@ -237,3 +237,71 @@ line. The text is always the truth; any surviving chrome is a projection of it.
 
 The recursion is the feature: get the primitives right (small grammar, right objects) and
 the same language aimed one level up *is* the composition tool.
+
+## 11. The recording axis — self-sampling the jam (added 2026-08-04, AC)
+
+A second capability, **orthogonal** to the text canvas but feeding it: everything the rig
+captures today is a **process** (an Odonus preset, a Vetula environment, a beat) — recall
+re-runs it, it may vary. The rig is **all-synth, no sampler.** Self-sampling adds the other
+kind of fragment — a **recording**: the actual notes that came out, frozen, deterministic on
+replay. AC: "self-sampling the jamming is a really good way to find and make music."
+
+**Not a new machine — two small halves** (AC is rightly loath to add a machine; a recording
+is a tape head, not an instrument):
+
+- **Capture = a stream-tap + markers, machine-agnostic.** Mark a span, freeze the events
+  that flowed by. Tapping the *output* stream captures ANY machine with one facility (rides
+  the transport/scheduler, which already emits timed events). AC: Odonus playback likely
+  **already has marking/looping**; **naming/saving is the gap**.
+- **Playback = a new *source type* on the Vetula Perform surface.** A Perform box is already
+  "a note-source on a channel, transformed by a stack, sent to a terminal." Make the source
+  **polymorphic**: harmonic progression *or* captured phrase. Everything reuses — the
+  transform stack (you can `transpose` / `slow` / `arp` / `every`-gate a loop!), terminal,
+  mute, card. The Perform surface generalises from "harmonic voice cards" to "**note-source
+  cards**" — no new machine, no violence to Vetula's harmonic core (Perform was always the
+  output layer).
+
+**The source type gates the terminal set** (a rule that falls out for free). The terminals
+are three *kinds* of destination: **→ midi** = sound here (WebMIDI / Continuo VST), **→ rig**
+= sound on the rig (CV/gate/ES-9, ghosts in Solo), **→ odo** = *not sound* — it *conditions
+Odonus* (feeds it a harmonic frame). So a **harmonic** source can go all three; a **phrase**
+source can only go **→ midi / → rig** (a frozen foreground gesture isn't harmony, so → odo is
+nonsensical). Edge: a captured *harmonic* bed (Vetula pads) does carry harmony and could → odo
+— but the clean default is "phrases are foreground, midi/rig only."
+
+**Visual language — a voice now has two semantic facets, both wanting encoding** (Swiss
+idiom: mark + type, not decoration):
+- *what it sources* — the **card body**: chord-stack glyphs (harmony) vs a thin waveform/loop
+  baseline (a recording), so the reading is instant.
+- *where it sends* — the **terminal**: → odo as a routing **edge into a machine** (not an
+  output), → rig owning the **ghost state** (greyed in Solo) as its identity, → midi the
+  plain sound-here baseline. (AC: "we could do more to make MIDI/Odo/Rig visually distinct
+  already" — true independent of phrases; folds into the Perform-layout pass, task #18.)
+
+**Unifies with the canvas:** a captured phrase is just another **named library fragment** —
+`player: "that-lush-riff"`, or a Vetula box sourced from a phrase. The assembly grammar (§3–4)
+already names fragments; a loop is one more kind (glyph identity #1, Tank #19 generalised from
+caught *chords* to caught *fragments*, Amphora save).
+
+**A middle path for later (lovely, not v1):** feed a captured phrase *through* the live
+harmonic frame and re-quantise it to the current scale — **capture the gesture/contour, let
+the pitches follow the harmony.** Recorded rhythm, live harmony. A genuinely new instrument.
+
+## 12. Sequencing decision — recording axis before Rung 0 (2026-08-04, AC)
+
+Macro-tidal is **PARKED** — *this note is the plan*, no stub implementation. Reason: **Rung 0
+built today would be a third preset-gatherer duplicating the scene grid (#11) + the lanes
+(#12)** — its unique novelty (loops, structure) doesn't exist yet, so it would spend effort on
+the overlap. **Build the recording axis first**: it *produces* the loop-fragments that make a
+text canvas worth having, and one returns to Rung 0 better-informed by having played with
+loops.
+
+Build order (fastest to a captured loop **playing back, validated by ear**):
+1. **Odonus — naming/saving** on top of its existing marking/looping (shortest path to a
+   captured fragment existing at all).
+2. **The phrase source-type in a Perform voice** — so the captured loop *sounds* (→ midi/rig).
+   Closes the loop: capture → fragment → sound.
+3. **Vetula — scrolling playback + marking/looping/naming** — bring the same apparatus to
+   Vetula once Odonus proves the shape.
+
+The visual-language pass (§11) rides alongside #18, off the critical path.
