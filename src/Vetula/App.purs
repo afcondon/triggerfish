@@ -100,10 +100,10 @@ import Vetula.Perform.Types
   , printVoiceShape
   , parseVoiceShape
   )
-import Tidal.Pattern.Core (fast, slow, every)
+import Tidal.Pattern.Core (arpeggiate, fast, slow, every)
 import Tidal.Pattern.Mini (parseMiniPattern)
-import Tidal.Pattern.Types (Arc(..), eventValue, eventWhole, isDigital, mkArc, mkState, query)
-import Tidal.Pattern.Types (Pattern) as PT
+import Tidal.Pattern.Types (Arc(..), eventPart, eventValue, eventWhole, isDigital, mkArc, mkState, query)
+import Tidal.Pattern.Types (Pattern, Event) as PT
 import Data.Rational as Rat
 import Data.Either (Either(..))
 import Reef.Vetula.Protocol (encodePerf) as RV
@@ -3055,22 +3055,25 @@ applyFx = case _ of
   Fast n -> fast (Rat.fromInt (max 1 n))
   Voice shape -> map (revoice (voiceStrategy shape))
   Select sel -> map (revoice (takeVoicing (selSelector sel)))
-  -- arp/strum don't change the chord PATTERN — they explode each chord across
-  -- time at the terminal (see `boxRealise`/`scheduleBox`), at a fixed rate. They
-  -- sit in the stack as config-carrying layers; their timing applies at the sink.
-  Arpg _ _ -> identity
+  -- arp IS a pattern transform: it explodes each chord into singleton-note events
+  -- spread across that chord's OWN whole (`arpeggiate`), so it composes with
+  -- slow/fast — `slow 8 # arp up 4` unfolds the arp over eight bars. Pre-`map` the
+  -- notes into the direction's order, then arpeggiate cycles through them.
+  Arpg dir rate -> arpeggiate rate <<< map (arpOrder dir)
+  -- strum stays a sink ornament (a fast ms onset stagger at the chord's onset — it
+  -- rolls a block chord, it doesn't stretch), so it's identity in the pattern.
   Strum _ -> identity
 
--- | The chord→time REALISATION a box's stack asks for — the last arp/strum layer
--- | wins, else a plain block chord. Applied at schedule time (not in the pattern),
--- | at a FIXED per-note rate so dense chords don't rush.
-data Realise = RBlock | RArp ArpDir Int | RStrum Int
+-- | The chord→time REALISATION a box's stack asks for at the SINK. Arp is no longer
+-- | here — it's a pattern transform now (`applyFx`/`arpeggiate`), so by schedule time
+-- | its notes are already singleton events. Only strum stays a sink ornament (a fast
+-- | ms onset stagger); everything else is a plain block chord struck on its onset.
+data Realise = RBlock | RStrum Int
 
 boxRealise :: Array Layer -> Realise
 boxRealise = foldl pick RBlock <<< map _.fx
   where
   pick acc = case _ of
-    Arpg dir r -> RArp dir r
     Strum ms -> RStrum ms
     _ -> acc
 
@@ -3294,36 +3297,41 @@ boxPattern box = foldl (\p lyr -> applyLayer lyr p) base box.stack
       let chords = map _.notes s.events
       in fromMaybe (fromChords chords) (seqPattern chords box.seqText)
 
--- | Query a box's pattern over this beat-cycle `b` and schedule every chord-event
--- | it yields on the box's channel, positioned by the event's arc within the beat.
--- | The stack's realisation (`boxRealise`) spreads each chord's notes across TIME:
--- | Block = all together; Arp = a FIXED step per note (beatMs / rate — density
--- | doesn't change the speed); Strum = a small fixed ms onset stagger. `fast`/
--- | `rate` subdivide the beat orthogonally (they change the chord pattern upstream).
+-- | Query a box's pattern over this cycle `c` and schedule every chord-event it
+-- | yields on the box's channel, positioned by the event's arc within the cycle.
+-- | ONSET-GUARDED: only events whose whole STARTS in this query are struck, so a
+-- | chord held across many cycles by `slow` is played once and sustained — not
+-- | re-struck every bar (its continuation fragments have no onset here). Arp already
+-- | exploded into singleton-note onset-events upstream (`arpeggiate`), so those just
+-- | flow through the block path, each on its own onset. `boxRealise` only picks the
+-- | sink ornament: Block = all notes together, held for the slot; Strum = a fast ms
+-- | onset stagger. `slow`/`fast` stretch the slot orthogonally (upstream, in-pattern).
 scheduleBox :: Midi.MidiOut -> Int -> Number -> Number -> Number -> PerfBox -> Effect Unit
-scheduleBox out c cycleMs beatMs baseDelayMs box =
+scheduleBox out c cycleMs _beatMs baseDelayMs box =
   let realise = boxRealise box.stack
   in for_ (query (boxPattern box) (mkState (mkArc (Rat.fromInt c) (Rat.fromInt (c + 1))))) \ev ->
-       when (isDigital ev) $
-         for_ (eventWhole ev) \(Arc w) ->
+       for_ (onsetWhole ev) \(Arc w) ->
            let startMs = baseDelayMs + Rat.toNumber (w.start - Rat.fromInt c) * cycleMs
                slotMs = max 20.0 (Rat.toNumber (w.stop - w.start) * cycleMs)
-               notes = case realise of
-                 RArp dir _ -> arpOrder dir (eventValue ev)
-                 _ -> eventValue ev
-               -- fixed per-note step (ms): arp = one note per (beat / rate);
-               -- strum = a small fixed stagger; block = 0 (all together).
+               notes = eventValue ev
+               -- per-note onset step (ms): strum = a small fixed stagger; block = 0.
                stepMs = case realise of
-                 RArp _ rate -> beatMs / toNumber (max 1 rate)
                  RStrum ms -> toNumber ms
                  RBlock -> 0.0
-               noteDur = case realise of
-                 RArp _ rate -> max 20.0 (beatMs / toNumber (max 1 rate) * 0.9)
-                 _ -> max 20.0 (slotMs * 0.9)
+               noteDur = max 20.0 (slotMs * 0.9)
            in for_ (mapWithIndex Tuple notes) \(Tuple k note) ->
                 Midi.scheduleNote out
                   { channel: box.channel, note, velocity: 90
                   , delayMs: startMs + toNumber k * stepMs, durMs: noteDur }
+
+-- | A digital event's whole, but ONLY when its onset falls in this query (whole start
+-- | == part start). Analog events and mid-sustain continuation fragments give Nothing,
+-- | so the scheduler strikes each event exactly once, on its onset.
+onsetWhole :: forall a. PT.Event a -> Maybe Arc
+onsetWhole ev = do
+  wa@(Arc w) <- eventWhole ev
+  let Arc p = eventPart ev
+  if w.start == p.start then Just wa else Nothing
 
 -- | Send a chord's notes to the MIDI bus (no state change) and log it to the chyron.
 playChord :: forall o m. MonadAff m => ChordNode -> H.HalogenM State Action Slots o m Unit
@@ -4728,7 +4736,7 @@ perfEditModal st = case st.perfEditBox >>= \i -> map (Tuple i) (index st.perfBox
     , Tuple "# fast 2" "pack into 1/N of a bar"
     , Tuple "# voice open" "re-voice: open/rootless/drop2/drop24/quartal/cluster"
     , Tuple "# top 1 · # bottom 1" "keep the top / bottom N voices"
-    , Tuple "# arp up 4" "arpeggiate: up/down/updown, notes per beat"
+    , Tuple "# arp up 4" "arpeggiate: up/down/updown, steps per bar (spreads under slow)"
     , Tuple "# strum 14" "strum — ms between notes"
     , Tuple "… every 4" "apply a layer only every N cycles"
     ]

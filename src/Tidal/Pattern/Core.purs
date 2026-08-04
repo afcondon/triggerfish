@@ -24,6 +24,7 @@ module Tidal.Pattern.Core
   , append
   , fastAppend
     -- * Transformations
+  , arpeggiate
   , segment
   , compress
   , zoom
@@ -393,6 +394,46 @@ fastAppend a b = fastCat [a, b]
 -------------------------------------------------------------------------------
 -- Transformations
 -------------------------------------------------------------------------------
+
+-- | Arpeggiate: explode each event's ARRAY value across that event's OWN whole.
+-- | An event carrying `[a, b, c]` over arc `w` becomes singleton `[a]`, `[b]`, `[c]`,
+-- | `[a]`… events — `rate` steps per cycle of `w`, cycling the array — each occupying
+-- | an equal slice of `w`. Because the slices are cut from the event's own whole this
+-- | composes with `slow`/`fast` for free: stretch the chord and its arp stretches with
+-- | it, so `slow 8 (arpeggiate 2 p)` unfolds the arp over eight cycles. Only events
+-- | whose ONSET falls in the query are emitted, so a multi-cycle chord schedules each
+-- | note exactly once, at its moment — no per-cycle re-trigger. Empty arrays vanish;
+-- | analog events pass through untouched. Ordering (up/down/updown) is the caller's
+-- | job: pre-`map` the array into the order you want, then arpeggiate cycles through it.
+arpeggiate :: forall a. Int -> Pattern (Array a) -> Pattern (Array a)
+arpeggiate rate pat = pattern \(State st) ->
+  let Arc q = st.arc
+  in Array.concatMap (burst q) (query pat (State st))
+  where
+  burst q = case _ of
+    Analog e -> [ Analog e ]
+    Digital e ->
+      let Arc w = e.whole
+          notes = e.value
+          m = Array.length notes
+          d = w.stop - w.start
+          n = max 1 (Int.round (toNumber d * Int.toNumber rate))
+          sd = d / fromInt n
+      in if m == 0 then []
+         else Array.mapMaybe (step q w.start notes m sd) (Array.range 0 (n - 1))
+  step q ws notes m sd j =
+    let onset = ws + fromInt j * sd
+        stop = onset + sd
+    in if onset >= q.start && onset < q.stop
+       then map
+              (\note -> Digital
+                 { context: emptyContext
+                 , whole: Arc { start: onset, stop }
+                 , part: Arc { start: onset, stop: min stop q.stop }
+                 , value: [ note ]
+                 })
+              (Array.index notes (mod j m))
+       else Nothing
 
 -- | Segment a pattern into n equal events per cycle
 -- |
