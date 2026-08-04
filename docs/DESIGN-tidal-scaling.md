@@ -150,7 +150,14 @@ trailing-peel disappears; the tokenizer's only job is quote-aware splitting. Tha
 whole grammar cost of pattern args; everything downstream (evaluate the pattern per cycle,
 feed the verb) reuses `src/Tidal`.
 
-### 4.4 One uniform `PatternArg`, positional slots (decision 3, RESOLVED → B)
+### 4.4 One uniform `PatternArg`, positional slots (decision 3, RESOLVED → B, CONFIRMED)
+
+*Confirmed with AC 2026-08-04 after a side-by-side: the surface syntax is identical under
+typed-slots (A) and uniform-string (B); B wins on live leniency (bad token → default, not a
+dropped layer), one parse path, and literal micro==macro (it IS the `Macro.purs` arg model).
+A's only real edge — typed editor affordances — is recovered by letting a verb declare its
+slot KINDS for the UI only, not for parsing.*
+
 
 Verbs take different arg *types* — `transpose`→Int, `voice`→Shape, `arp`→Dir+Int. To make
 them all patternable without a type per verb, **one `PatternArg` = a mini-notation pattern
@@ -235,10 +242,12 @@ resolving against a loaded form.
    language can be small and still very expressive." Every added verb must earn its chip
    (`slow` earns it on sight).
 7. **`slow`'s ceiling — no cap (but no BigInt).** `slow N` is unbounded within a plain `Int`
-   (AC: "no cap at all, but we're not going to need BigInt"). Open sub-question that stays
-   open: whether a multi-bar box needs `boxUsesSeq` / the bar-grid (`scheduleBox`) to know its
-   true length, or `slow` composes cleanly on top of one-bar scheduling — settle when step 0
-   is built.
+   (AC: "no cap at all, but we're not going to need BigInt"). Sub-question **SETTLED**
+   (2026-08-04, by reading the scheduler): `scheduleBox` queries `boxPattern` one cycle at a
+   time over `[c, c+1)`, with `c` the *absolute* bar count (`tick.index / 16`). The engine's
+   `slow`/`fast` map arcs correctly, so a `slow 64` pattern samples cleanly across 64 bars
+   with continuous phase — **`slow` composes on top of the existing one-bar scheduling; no
+   bar-grid change, no cap.** The old `−8..8` clamp on `Rate` was arbitrary.
 
 ## 7. Execution sequence (proposed — not started)
 
