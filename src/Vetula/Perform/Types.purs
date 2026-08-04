@@ -33,9 +33,14 @@ data PerfFx
   | Fast Int         -- compress the pattern into 1/N of a cycle (`fast N`); N ≥ 1
   | Voice VoiceShape -- re-voice each chord (Harmonia VoicingStrategy)
   | Select PerfSel   -- thin each chord to some of its voices (Harmonia takeVoicing)
-  | Arpg ArpDir Int  -- explode chord→time at a FIXED rate (notes per beat), a
-                     -- direction; block = no arp. Rate-driven, so dense chords
-                     -- don't rush (each note the same length regardless of count).
+  | Arpg ArpDir Int  -- explode chord→time: `rate` steps per bar, walked in a
+                     -- direction (up/down/updown), cycling the chord's notes. The
+                     -- friendly form — a direction toggle and a rate nudge.
+  | ArpP String      -- explode chord→time from an explicit INDEX FIGURE: a
+                     -- mini-notation of positions into the chord (0 = lowest),
+                     -- octave-wrapping past the top. The power form — rests,
+                     -- subdivision, alternation, euclid all live here (`arp "0 1 2"`,
+                     -- `arp "0 ~ <2 3>"`). Parsed + interpreted at apply-time.
   | Strum Int        -- explode chord→time as a fast onset stagger (ms per note)
 
 derive instance eqPerfFx :: Eq PerfFx

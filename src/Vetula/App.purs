@@ -100,7 +100,7 @@ import Vetula.Perform.Types
   , printVoiceShape
   , parseVoiceShape
   )
-import Tidal.Pattern.Core (arpeggiate, fast, slow, every)
+import Tidal.Pattern.Core (arpeggiate, arpWith, fast, slow, every)
 import Tidal.Pattern.Mini (parseMiniPattern)
 import Tidal.Pattern.Types (Arc(..), eventPart, eventValue, eventWhole, isDigital, mkArc, mkState, query)
 import Tidal.Pattern.Types (Pattern, Event) as PT
@@ -3060,9 +3060,37 @@ applyFx = case _ of
   -- slow/fast — `slow 8 # arp up 4` unfolds the arp over eight bars. Pre-`map` the
   -- notes into the direction's order, then arpeggiate cycles through them.
   Arpg dir rate -> arpeggiate rate <<< map (arpOrder dir)
+  -- the power arp: an explicit index figure over the chord (0 = lowest voice),
+  -- octave-wrapping past the top (`arpSelect`). The figure is a mini-notation, so
+  -- rests/subdivision/alternation/euclid all compose — and it stretches under slow
+  -- like everything else (`arpWith` keeps each figure-step's arc).
+  ArpP src -> arpWith arpSelect (idxPattern src)
   -- strum stays a sink ornament (a fast ms onset stagger at the chord's onset — it
   -- rolls a block chord, it doesn't stretch), so it's identity in the pattern.
   Strum _ -> identity
+
+-- | The index-figure of an `ArpP` layer as a `Pattern String` of positions. Lenient:
+-- | an unparseable figure falls back to a steady root (`"0"`), Selene-style.
+idxPattern :: String -> PT.Pattern String
+idxPattern src = case parseMiniPattern src of
+  Right p -> p
+  Left _ -> pure "0"
+
+-- | Select a note from a chord by a figure step: parse the token as an index into the
+-- | chord's notes SORTED low→high (0 = lowest), wrapping up/down an octave past the
+-- | ends (index `n` on an `n`-note chord = the root an octave up). A non-numeric token
+-- | (or an empty chord) selects nothing — a rest.
+arpSelect :: Array Int -> String -> Maybe Int
+arpSelect ns tok = case fromString (trim tok) of
+  Nothing -> Nothing
+  Just idx ->
+    let sorted = sort ns
+        m = length sorted
+    in if m == 0 then Nothing
+       else
+         let i = ((idx `mod` m) + m) `mod` m   -- 0..m-1 (Euclidean, handles idx < 0)
+             oct = (idx - i) / m               -- floor division → octave displacement
+         in (\v -> v + 12 * oct) <$> index sorted i
 
 -- | The chord→time REALISATION a box's stack asks for at the SINK. Arp is no longer
 -- | here — it's a pattern transform now (`applyFx`/`arpeggiate`), so by schedule time
@@ -3117,6 +3145,7 @@ fxLabel = case _ of
   Select (Low n) -> "bottom " <> show n
   Select (High n) -> "top " <> show n
   Arpg dir r -> "arp " <> arpDirGlyph dir <> " ×" <> show r
+  ArpP src -> "arp " <> src
   Strum ms -> "strum " <> show ms <> "ms"
 
 voiceShapeName :: VoiceShape -> String
@@ -3139,7 +3168,8 @@ fxNudge d = case _ of
   Voice shape -> Voice (cycleVoiceShape d shape)
   Select (Low n) -> Select (Low (clamp 1 6 (n + d)))
   Select (High n) -> Select (High (clamp 1 6 (n + d)))
-  Arpg dir r -> Arpg dir (clamp 1 16 (r + d))     -- nudge the fixed rate (notes/beat)
+  Arpg dir r -> Arpg dir (clamp 1 16 (r + d))     -- nudge the steps-per-bar
+  ArpP src -> ArpP src                            -- the figure is edited in the text hatch
   Strum ms -> Strum (clamp 0 80 (ms + d))
 
 -- | The layer's ALTERNATE control (the second param when it has one): arp cycles
@@ -3184,6 +3214,7 @@ printPerfFx = case _ of
   Select (High n) -> "top " <> show n
   Select (Low n) -> "bottom " <> show n
   Arpg dir r -> "arp " <> printArpDir dir <> " " <> show r
+  ArpP src -> "arp \"" <> src <> "\""
   Strum ms -> "strum " <> show ms
 
 printWhen :: When -> String
@@ -3220,6 +3251,19 @@ printPipelineLines box =
 tokensOf :: String -> Array String
 tokensOf = filter (_ /= "") <<< split (Pattern " ") <<< trim
 
+-- like `tokensOf`, but a "double-quoted span" stays ONE token (quotes stripped, inner
+-- spaces kept) — so `arp "0 1 2"` tokenizes to ["arp","0 1 2"], letting a pattern-
+-- valued arg carry spaces. Split on the quote char: odd-indexed pieces are inside
+-- quotes (verbatim), even-indexed pieces split on spaces as usual.
+tokensQ :: String -> Array String
+tokensQ s =
+  concat (mapWithIndex (\i p -> if i `mod` 2 == 1 then [ p ] else tokensOf p)
+                       (split (Pattern "\"") s))
+
+-- the arp DIRECTION keywords (vs. an index figure like "0 1 2").
+isArpDir :: String -> Boolean
+isArpDir d = elem (toLower d) [ "up", "down", "updown" ]
+
 -- one integer token, lenient: strips a leading '+' (which `fromString` rejects),
 -- falls back to `def` on anything non-numeric.
 tokInt :: Int -> String -> Int
@@ -3243,13 +3287,17 @@ parsePerfFx toks = case head toks of
          "voice" -> Just (Voice (fromMaybe Open (head args >>= parseVoiceShape)))
          "top" -> Just (Select (High (clamp 1 6 (a0 1))))
          "bottom" -> Just (Select (Low (clamp 1 6 (a0 1))))
-         "arp" -> Just (Arpg (parseArpDir (fromMaybe "up" (head args))) (clamp 1 16 (a1 4)))
+         "arp" -> case head args of
+           Nothing -> Just (Arpg ArpUp 4)
+           Just d
+             | isArpDir d -> Just (Arpg (parseArpDir (toLower d)) (clamp 1 16 (a1 4)))
+             | otherwise -> Just (ArpP (joinWith " " args))
          "strum" -> Just (Strum (clamp 0 80 (a0 14)))
          _ -> Nothing
 
 parseLayer :: String -> Maybe Layer
 parseLayer seg =
-  let toks = tokensOf seg
+  let toks = tokensQ seg
       n = length toks
       -- peel a trailing `every N` (only when the last token is actually a number)
       everyClause = do
@@ -4737,6 +4785,7 @@ perfEditModal st = case st.perfEditBox >>= \i -> map (Tuple i) (index st.perfBox
     , Tuple "# voice open" "re-voice: open/rootless/drop2/drop24/quartal/cluster"
     , Tuple "# top 1 · # bottom 1" "keep the top / bottom N voices"
     , Tuple "# arp up 4" "arpeggiate: up/down/updown, steps per bar (spreads under slow)"
+    , Tuple "# arp \"0 1 2 3\"" "arp an index figure: 0 = lowest, wraps up an 8ve; rests/<alt>/euclid ok"
     , Tuple "# strum 14" "strum — ms between notes"
     , Tuple "… every 4" "apply a layer only every N cycles"
     ]

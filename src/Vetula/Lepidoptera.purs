@@ -133,6 +133,7 @@ fxDir = case _ of
   Select (High n) -> "top " <> show n
   Select (Low n) -> "bottom " <> show n
   Arpg dir r -> "arp" <> printArpDir dir <> " " <> show r
+  ArpP src -> "arp " <> quote src   -- the figure is quoted so its spaces survive as one arg
   Strum ms -> "strum " <> show ms
 
 quote :: String -> String
@@ -274,6 +275,7 @@ fxOfVerb verb arg = case verb of
   "voice" -> Just (Voice (fromMaybe Open (parseVoiceShape arg)))
   "top" -> Just (Select (High (clamp 1 6 (argInt 1 arg))))
   "bottom" -> Just (Select (Low (clamp 1 6 (argInt 1 arg))))
+  "arp" -> Just (ArpP arg)   -- explicit index figure (dir-less); Macro un-quotes the arg
   "arpup" -> Just (Arpg ArpUp (clamp 1 16 (argInt 4 arg)))
   "arpdown" -> Just (Arpg ArpDown (clamp 1 16 (argInt 4 arg)))
   "arpupdown" -> Just (Arpg ArpUpDown (clamp 1 16 (argInt 4 arg)))

@@ -25,6 +25,7 @@ module Tidal.Pattern.Core
   , fastAppend
     -- * Transformations
   , arpeggiate
+  , arpWith
   , segment
   , compress
   , zoom
@@ -434,6 +435,27 @@ arpeggiate rate pat = pattern \(State st) ->
                  })
               (Array.index notes (mod j m))
        else Nothing
+
+-- | Arpeggiate with an explicit INDEX FIGURE. Where `arpeggiate` walks a chord's
+-- | notes in their given order, this drives the arp from a second pattern `ip` of
+-- | *selectors* `b`: for each chord event, `ip` is queried WITHIN that chord's own
+-- | active slot, and each of its steps picks a note via `sel chord step`. So the
+-- | figure is cycle-aligned and repeats once per cycle of the chord — under `slow 8`
+-- | the harmony holds while the figure keeps ticking each bar. `sel` returns Nothing
+-- | for a step that selects nothing (a rest); the caller owns index conventions
+-- | (sorting, octave-wrap past the top). Composes with slow/fast for free, same as
+-- | `arpeggiate`, because every emitted event keeps the figure-step's own arc.
+arpWith :: forall a b. (Array a -> b -> Maybe a) -> Pattern b -> Pattern (Array a) -> Pattern (Array a)
+arpWith sel ip pat = pattern \(State st) ->
+  Array.concatMap
+    (case _ of
+        Analog e -> [ Analog e ]
+        Digital e -> Array.mapMaybe (pick e.value) (query ip (State (st { arc = e.part }))))
+    (query pat (State st))
+  where
+  pick ns = case _ of
+    Analog _ -> Nothing
+    Digital je -> map (\v -> Digital (je { value = [ v ] })) (sel ns je.value)
 
 -- | Segment a pattern into n equal events per cycle
 -- |
