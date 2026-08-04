@@ -18,7 +18,7 @@ module Vetula.App where
 
 import Prelude
 
-import Data.Array (concat, concatMap, deleteAt, drop, elem, elemIndex, filter, find, findIndex, head, index, insertAt, last, length, mapMaybe, mapWithIndex, modifyAt, nub, nubByEq, range, replicate, sort, take, takeEnd, updateAt, (!!))
+import Data.Array (concat, concatMap, deleteAt, drop, elem, elemIndex, filter, find, findIndex, head, index, insertAt, last, length, mapMaybe, mapWithIndex, modifyAt, nub, nubByEq, range, replicate, snoc, sort, take, takeEnd, unsnoc, updateAt, (!!))
 import Data.Foldable (all, any, foldl, foldr, for_, maximum, minimum, sum)
 import Data.Traversable (traverse)
 import Data.Int (fromString, round, toNumber)
@@ -3282,7 +3282,13 @@ printPipeline box =
 printPipelineLines :: PerfBox -> String
 printPipelineLines box =
   let s = trim box.seqText
-      layers = map (\l -> "# " <> printLayer l) box.stack
+      -- a gated layer prints on TWO lines — the verb, then its gate as its own `# …`
+      -- line — matching how the eye reads the card (each `#` line one modifier). It
+      -- re-attaches on parse (`parseBareGate`), so the round-trip is stable.
+      layerLines l = [ "# " <> printPerfFx l.fx ] <> case printWhen l.when of
+                       "" -> []
+                       g -> [ "#" <> g ]
+      layers = concatMap layerLines box.stack
   in if s == "" && length layers == 0 then ""
      else if s == "" then joinWith "\n" layers
      else joinWith "\n" ([ s ] <> layers)
@@ -3378,8 +3384,30 @@ parsePipeline :: String -> { seqText :: String, stack :: Array Layer }
 parsePipeline txt =
   let segs = split (Pattern "#") txt
   in { seqText: trim (fromMaybe "" (head segs))
-     , stack: mapMaybe parseLayer (drop 1 segs)
+     , stack: foldl addSeg [] (drop 1 segs)
      }
+  where
+  -- a `#` segment is either a verb layer (append it) or a BARE gate with no verb —
+  -- in which case attach it to the layer above, so `# arp "0 1 2"` / `# prob 0.4` on
+  -- separate lines works (the gate is a suffix on a layer, not a layer of its own).
+  addSeg stack seg = case parseLayer seg of
+    Just lyr -> snoc stack lyr
+    Nothing -> case parseBareGate seg of
+      Just w -> attachWhen w stack
+      Nothing -> stack
+
+-- | Attach a gate to the last layer in the stack (a bare `# prob 0.4` line modifies
+-- | the layer above it). No preceding layer → the gate is dropped (nothing to gate).
+attachWhen :: When -> Array Layer -> Array Layer
+attachWhen w stack = case unsnoc stack of
+  Just { init: i, last: l } -> snoc i (l { when = w })
+  Nothing -> stack
+
+-- | A segment that is ONLY a gate clause (`every 4`, `prob 0.3`, `afterbar 8`).
+parseBareGate :: String -> Maybe When
+parseBareGate seg = case tokensQ seg of
+  [ kw, val ] -> parseGate kw val
+  _ -> Nothing
 
 -- | The `Pattern (Array Int)` a Perform box realises this cycle: its saved sequence
 -- | as a looping chord pattern (one chord per beat-cycle), with the box's function
