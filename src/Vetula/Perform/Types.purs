@@ -115,7 +115,15 @@ glyphArg = case _ of
 -- | (`every` / `sometimesBy` / `within`). Rather than a layer that WRAPS a sub-stack,
 -- | each layer carries a condition for when it applies, implemented with Tidal's own
 -- | cycle-aware combinators. Prototype: `Always` or `Every n` (via `every`).
-data When = Always | Every Int
+-- | The gate is an EXPLICIT, named clause (never an implicit peel — §4.5): absent by
+-- | default, and when present always written out (`every 4`, `prob 0.3`, `afterbar 16`).
+-- | A small ADT for now — each a pure `cycle → Bool` predicate resolved in `applyLayer`;
+-- | the open predicate-registry / world-context dream (fullMoon) is the next refinement.
+data When
+  = Always            -- every cycle (no gate)
+  | Every Int         -- each N-th cycle (Tidal's `every`)
+  | Prob Number       -- a P-fraction of cycles, deterministic per-cycle hash (0..1)
+  | AfterBar Int      -- only from bar N onward — a build-up / entrance gate
 
 derive instance eqWhen :: Eq When
 
@@ -123,6 +131,8 @@ whenLabel :: When -> String
 whenLabel = case _ of
   Always -> "∀"
   Every n -> "e" <> show n
+  Prob p -> "p" <> show p
+  AfterBar n -> "▸" <> show n
 
 cycleWhen :: When -> When
 cycleWhen = case _ of
@@ -130,7 +140,9 @@ cycleWhen = case _ of
   Every 2 -> Every 3
   Every 3 -> Every 4
   Every 4 -> Every 8
-  Every _ -> Always
+  Every _ -> Prob 0.5
+  Prob _ -> AfterBar 8
+  AfterBar _ -> Always
 
 -- | A stack entry: a function `fx` plus the `when` clause gating it per cycle.
 type Layer = { fx :: PerfFx, when :: When }

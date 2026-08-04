@@ -104,7 +104,7 @@ import Vetula.Perform.Types
   , printVoiceShape
   , parseVoiceShape
   )
-import Tidal.Pattern.Core (arpeggiate, arpWith, withSampledArg, fast, slow, every)
+import Tidal.Pattern.Core (arpeggiate, arpWith, withSampledArg, fast, slow, every, whenCycle, cycleRand)
 import Tidal.Pattern.Mini (parseMiniPattern)
 import Tidal.Pattern.Types (Arc(..), eventPart, eventValue, eventWhole, isDigital, mkArc, mkState, query)
 import Tidal.Pattern.Types (Pattern, Event) as PT
@@ -3138,6 +3138,8 @@ applyLayer :: Layer -> PT.Pattern (Array Int) -> PT.Pattern (Array Int)
 applyLayer { fx, when: w } = case w of
   Always -> applyFx fx
   Every n -> every n (applyFx fx)
+  Prob p -> whenCycle (\c -> cycleRand c < p) (applyFx fx)   -- a P-fraction of cycles
+  AfterBar n -> whenCycle (\c -> c >= n) (applyFx fx)        -- only from bar n onward
 
 -- | Run a Harmonia `Voicing -> Voicing` over one chord's notes. The notes are
 -- | sorted low→high first so the strategies and Low/High selectors read voices
@@ -3257,6 +3259,8 @@ printWhen :: When -> String
 printWhen = case _ of
   Always -> ""
   Every n -> " every " <> show n
+  Prob p -> " prob " <> show p
+  AfterBar n -> " afterbar " <> show n
 
 printLayer :: Layer -> String
 printLayer lyr = printPerfFx lyr.fx <> printWhen lyr.when
@@ -3350,14 +3354,25 @@ parseLayer :: String -> Maybe Layer
 parseLayer seg =
   let toks = tokensQ seg
       n = length toks
-      -- peel a trailing `every N` (only when the last token is actually a number)
-      everyClause = do
+      -- peel a trailing GATE clause (an explicit named keyword + value): `every 4`,
+      -- `prob 0.3`, `afterbar 16`. Only the recognised keywords peel, so a verb whose
+      -- last two tokens aren't a gate keeps them (value args are single/quoted tokens).
+      gateClause = do
         kw <- index toks (n - 2)
-        num <- index toks (n - 1) >>= fromString
-        if kw == "every" then Just num else Nothing
-      body = maybe toks (\_ -> take (n - 2) toks) everyClause
-      w = maybe Always Every everyClause
+        val <- index toks (n - 1)
+        parseGate kw val
+      body = maybe toks (\_ -> take (n - 2) toks) gateClause
+      w = fromMaybe Always gateClause
   in map (\fx -> { fx, when: w }) (parsePerfFx body)
+
+-- | An explicit gate clause `<keyword> <value>` → a `When`. Unrecognised keyword →
+-- | Nothing (so it isn't peeled and stays part of the verb's args).
+parseGate :: String -> String -> Maybe When
+parseGate kw val = case toLower kw of
+  "every" -> Every <$> fromString val
+  "prob" -> Prob <$> Number.fromString val
+  "afterbar" -> AfterBar <$> fromString val
+  _ -> Nothing
 
 parsePipeline :: String -> { seqText :: String, stack :: Array Layer }
 parsePipeline txt =
@@ -4839,7 +4854,9 @@ perfEditModal st = case st.perfEditBox >>= \i -> map (Tuple i) (index st.perfBox
     , Tuple "# arp up 4" "arpeggiate: up/down/updown, steps per bar (spreads under slow)"
     , Tuple "# arp \"0 1 2 3\"" "arp an index figure: 0 = lowest, wraps up an 8ve; rests/<alt>/euclid ok"
     , Tuple "# strum 14" "strum — ms between notes"
-    , Tuple "… every 4" "apply a layer only every N cycles"
+    , Tuple "… every 4" "gate: apply the layer only every N cycles"
+    , Tuple "… prob 0.3" "gate: apply it on ~30% of cycles (random)"
+    , Tuple "… afterbar 16" "gate: apply it only from bar N onward (a build-up)"
     ]
 
 -- | The FX palette: click a layer to pick it up, then click a player box to append

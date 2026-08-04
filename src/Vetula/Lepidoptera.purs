@@ -56,6 +56,7 @@ import Prelude
 import Data.Array (drop, filter, find, index, length, mapMaybe, mapWithIndex, null, snoc, updateAt, (!!))
 import Data.Foldable (foldl)
 import Data.Int as Int
+import Data.Number as Number
 import Data.Maybe (Maybe(..), fromMaybe)
 import Data.String (Pattern(..), contains, stripPrefix)
 import Data.String.Common (joinWith, split, trim)
@@ -120,6 +121,8 @@ whenDir :: When -> Array String
 whenDir = case _ of
   Always -> []
   Every n -> [ "every " <> show n ]
+  Prob p -> [ "prob " <> show p ]
+  AfterBar n -> [ "afterbar " <> show n ]
 
 -- | The single-arg mod vocabulary. Arp's direction is FUSED into the verb so the
 -- | mod stays `verb arg` (Macro's grammar is strictly one arg). Use plain `show`
@@ -251,6 +254,8 @@ foldMods = foldl step { stack: [], term: TMidi, muted: false }
     let arg = argStr m.arg
     in case m.verb of
          "every" -> acc { stack = setLastWhen (Every (max 1 (argInt 2 arg))) acc.stack }
+         "prob" -> acc { stack = setLastWhen (Prob (argNum 0.5 arg)) acc.stack }
+         "afterbar" -> acc { stack = setLastWhen (AfterBar (max 0 (argInt 8 arg))) acc.stack }
          "out" -> acc { term = parseTerm arg }
          "mute" -> acc { muted = true }
          _ -> case fxOfVerb m.verb arg of
@@ -309,6 +314,10 @@ mkArgL s = if patterned then Pat s else Lit s
 -- | fall back to `def` on anything non-numeric.
 argInt :: Int -> String -> Int
 argInt def s = fromMaybe def (Int.fromString (fromMaybe s (stripPrefix (Pattern "+") s)))
+
+-- | One number token (for `prob`), lenient.
+argNum :: Number -> String -> Number
+argNum def s = fromMaybe def (Number.fromString s)
 
 -- ============================================================================
 -- Build a document from live voices. Takes a NEUTRAL spec (raw chords, not a

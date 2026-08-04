@@ -265,7 +265,11 @@ resolving against a loaded form.
 3. ◐ **Uniform string args + positional slots** — value verbs done (each one `PatternArg`);
    the multi-slot case (`arp <up down> <4 8>`) still pending (arp keeps the `Arpg` dir+rate
    form alongside the `ArpP` figure). Decision 3 / §4.4.
-4. **Explicit extensible gate** (§4.5) — `every N` / `prob P` built-ins, predicate slot open.
+4. ◐ **Explicit extensible gate** (§4.5) — done as a small ADT: `every N`, `prob P`
+   (deterministic per-cycle hash), `afterbar N` (build-up), each a pure `cycle → Bool`
+   via the engine's `whenCycle`/`cycleRand`. The gate is an explicit trailing named
+   clause (safe now args are quoted). *Still ahead: the OPEN predicate registry / world
+   context (fullMoon) — needs a `Context` threaded to `applyLayer`.*
 5. **Chip view for pattern args** — the compact glyph + text-hatch pairing.
 6. **Converge micro and macro** — factor the shared `verb + pattern-arg` core so
    `Triggerfish.Macro` and the Vetula pipeline share one evaluator; Vetula becomes a macro

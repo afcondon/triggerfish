@@ -32,6 +32,8 @@ module Tidal.Pattern.Core
   , zoom
   , every
   , whenMod
+  , whenCycle
+  , cycleRand
   , iter
   , iter'
   , linger
@@ -662,6 +664,29 @@ whenMod n pred f pat = pattern \(State st) ->
   in Array.concatMap processOneCycle cycleArcs
   where
     floorInt t = Int.floor (toNumber t)
+
+-- | Apply a function on the cycles where an ARBITRARY predicate over the absolute
+-- | cycle number holds. The general gate: `every n` is `whenCycle (\c -> mod c n == 0)`,
+-- | a build-up is `whenCycle (\c -> c >= 16)`, a probabilistic gate is
+-- | `whenCycle (\c -> cycleRand c < p)`. Like `whenMod` but the predicate sees the
+-- | absolute cycle (not cycle-mod-n), so it can express one-shot and threshold gates.
+whenCycle :: forall a. (Int -> Boolean) -> (Pattern a -> Pattern a) -> Pattern a -> Pattern a
+whenCycle pred f pat = pattern \(State st) ->
+  Array.concatMap
+    (\cycleArc ->
+       let cyc = Int.floor (toNumber (sam (arcStart cycleArc)))
+           p = if pred cyc then f pat else pat
+       in query p (State st { arc = cycleArc }))
+    (splitArcByCycles st.arc)
+
+-- | A deterministic pseudo-random value in [0,1) keyed on a cycle number — the classic
+-- | hashed-sine. Deterministic (no `Math.random`, which the runtime blocks and which
+-- | would break resumability): the same cycle always yields the same value, so a
+-- | `prob` gate is stable across re-queries within a bar and reproducible across runs.
+cycleRand :: Int -> Number
+cycleRand c =
+  let v = sin (Int.toNumber c * 12.9898 + 78.233) * 43758.5453
+  in v - floor v
 
 -- | Iterate through a pattern
 -- |
