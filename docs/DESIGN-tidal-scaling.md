@@ -271,9 +271,18 @@ resolving against a loaded form.
    clause (safe now args are quoted). *Still ahead: the OPEN predicate registry / world
    context (fullMoon) — needs a `Context` threaded to `applyLayer`.*
 5. **Chip view for pattern args** — the compact glyph + text-hatch pairing.
-6. **Converge micro and macro** — factor the shared `verb + pattern-arg` core so
+6. ◐ **Converge micro and macro** — factor the shared `verb + pattern-arg` core so
    `Triggerfish.Macro` and the Vetula pipeline share one evaluator; Vetula becomes a macro
-   instrument.
+   instrument. *Structural half done (2026-08-04):* `Triggerfish.PatternArg` now owns the ONE
+   arg type (`Lit`/`Pat`), the quote+angle-aware tokenizer, `printArg`/`glyphArg`/`mkArg`, and
+   the macro-scale per-cycle `sampleArg` (verbatim Macro's old `resolveArg`). `Macro.Arg`
+   collapsed onto it (`AltArg <a b>` → `Pat "<a b>"`, multi-word alternatives preserved);
+   Vetula's card, the Lepidoptera document, and the arrangement lane now parse ONE grammar —
+   `voice <open drop2>` / `transpose "0 7"` round-trip through `Macro.parseLane`. No behaviour
+   change (round-trip tests green; the macro `sampleArg` path is byte-identical). Vetula's
+   per-event Tidal-depth projection (`argEval`) stays App-side so `Macro` keeps no engine dep.
+   *Behavioural half still ahead:* macro-lane verbs (`# transpose`, `# voice`) actually driving
+   Vetula state — needs new component queries + a Vetula verb interpreter.
 7. **Macro frontier** — modal sequencer (#9), deferred grammar (`@` / `*` / multi-lane),
    per-instrument verb tables. Lands on the unified foundation.
 8. **The song level (§9)** — sections as named macro-states, a song lane over section names.

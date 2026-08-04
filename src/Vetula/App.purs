@@ -30,7 +30,7 @@ import Effect.Timer (setInterval)
 import Data.Nullable (Nullable, null)
 import Data.Set (Set)
 import Data.Set as Set
-import Data.String (Pattern(..), contains, stripPrefix, stripSuffix)
+import Data.String (Pattern(..), contains, stripPrefix)
 import Data.String.CodeUnits as SCU
 import Data.String.Common (joinWith, split, toLower, trim)
 import Data.Tuple (Tuple(..), fst, snd)
@@ -82,10 +82,6 @@ import Vetula.Perform.Types
   , ArpDir(..)
   , VoiceShape(..)
   , PerfSel(..)
-  , PatternArg(..)
-  , argSrc
-  , printArg
-  , glyphArg
   , When(..)
   , Layer
   , PerfTerm(..)
@@ -104,6 +100,7 @@ import Vetula.Perform.Types
   , printVoiceShape
   , parseVoiceShape
   )
+import Triggerfish.PatternArg (PatternArg(..), argSrc, printArg, glyphArg, mkArg, tokenize, unq)
 import Tidal.Pattern.Core (arpeggiate, arpWith, withSampledArg, fast, slow, every, whenCycle, cycleRand)
 import Tidal.Pattern.Mini (parseMiniPattern)
 import Tidal.Pattern.Types (Arc(..), eventPart, eventValue, eventWhole, isDigital, mkArc, mkState, query)
@@ -3295,33 +3292,6 @@ printPipelineLines box =
      else if s == "" then joinWith "\n" layers
      else joinWith "\n" ([ s ] <> layers)
 
--- whitespace tokens of a segment (drops empty tokens from runs of spaces).
-tokensOf :: String -> Array String
-tokensOf = filter (_ /= "") <<< split (Pattern " ") <<< trim
-
--- like `tokensOf`, but a "double-quoted span" stays ONE token WITH its quotes kept —
--- so `transpose "0 7"` tokenizes to ["transpose","\"0 7\""], letting a pattern-valued
--- arg carry spaces AND letting `mkArg` tell a quoted pattern from a bare literal. Split
--- on the quote char: odd-indexed pieces are inside quotes (re-wrapped), even-indexed
--- pieces split on spaces as usual.
-tokensQ :: String -> Array String
-tokensQ s =
-  concat (mapWithIndex (\i p -> if i `mod` 2 == 1 then [ "\"" <> p <> "\"" ] else tokensOf p)
-                       (split (Pattern "\"") s))
-
--- strip surrounding double quotes if present.
-unquoteTok :: String -> Maybe String
-unquoteTok t = stripPrefix (Pattern "\"") t >>= stripSuffix (Pattern "\"")
-
-unq :: String -> String
-unq t = fromMaybe t (unquoteTok t)
-
--- a token → a PatternArg: quoted span → `Pat` (a pattern), bare → `Lit` (a literal).
-mkArg :: String -> PatternArg
-mkArg t = case unquoteTok t of
-  Just inner -> Pat inner
-  Nothing -> Lit t
-
 -- the arp DIRECTION keywords (vs. an index figure like "0 1 2").
 isArpDir :: String -> Boolean
 isArpDir d = elem (toLower d) [ "up", "down", "updown" ]
@@ -3360,7 +3330,7 @@ parsePerfFx toks = case head toks of
 
 parseLayer :: String -> Maybe Layer
 parseLayer seg =
-  let g = peelGate (tokensQ seg)
+  let g = peelGate (tokenize seg)
   in map (\fx -> { fx, when: g.when }) (parsePerfFx g.body)
 
 -- | Peel a trailing GATE clause off a layer's tokens, returning the gate and the
@@ -3421,7 +3391,7 @@ attachWhen w stack = case unsnoc stack of
 -- | verb left after peeling. Used to attach a bare `# prob 0.4` line to the layer above.
 parseBareGate :: String -> Maybe When
 parseBareGate seg =
-  let g = peelGate (tokensQ seg)
+  let g = peelGate (tokenize seg)
   in if length g.body == 0 then (case g.when of
                                    Always -> Nothing
                                    w -> Just w)

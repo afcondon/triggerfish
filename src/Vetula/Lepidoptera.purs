@@ -60,9 +60,9 @@ import Data.Number as Number
 import Data.Maybe (Maybe(..), fromMaybe)
 import Data.String (Pattern(..), contains, stripPrefix)
 import Data.String.Common (joinWith, split, trim)
-import Triggerfish.Macro (Arg, Form(..), parseLane, tokenize)
-import Triggerfish.Macro (Arg(..)) as M
-import Vetula.Perform.Types (ArpDir(..), Layer, PatternArg(..), PerfFx(..), PerfSel(..), PerfTerm(..), When(..), mkLayer, printArg, printArpDir, termShort)
+import Triggerfish.Macro (Form(..), parseLane, tokenize)
+import Triggerfish.PatternArg (PatternArg(..), argSrc, printArg)
+import Vetula.Perform.Types (ArpDir(..), Layer, PerfFx(..), PerfSel(..), PerfTerm(..), When(..), mkLayer, printArpDir, termShort)
 import Vetula.Tidal (parseProgression, tidalNoteName)
 
 -- | A named chord set the voices reference. `chords` are note-lists in *stored
@@ -235,7 +235,7 @@ firstStepHead laneStr = case parseLane laneStr of
     Just step -> formHead step.form
     Nothing -> ""
 
-firstStepMods :: String -> Array { verb :: String, arg :: Arg }
+firstStepMods :: String -> Array { verb :: String, arg :: PatternArg }
 firstStepMods laneStr = case (parseLane laneStr) !! 0 of
   Just step -> step.mods
   Nothing -> []
@@ -249,11 +249,11 @@ formHead = case _ of
 -- | Fold the step's mods into (stack, term, muted). `every` binds to the layer
 -- | most recently pushed; `out`/`mute` set the terminal/mute; a recognised fx
 -- | verb pushes a layer; anything else drops (lenient).
-foldMods :: Array { verb :: String, arg :: Arg } -> { stack :: Array Layer, term :: PerfTerm, muted :: Boolean }
+foldMods :: Array { verb :: String, arg :: PatternArg } -> { stack :: Array Layer, term :: PerfTerm, muted :: Boolean }
 foldMods = foldl step { stack: [], term: TMidi, muted: false }
   where
   step acc m =
-    let arg = argStr m.arg
+    let arg = argSrc m.arg
     in case m.verb of
          "every" -> acc { stack = setLastWhen (Every (max 1 (argInt 2 arg))) acc.stack }
          "prob" -> acc { stack = setLastWhen (Prob (argNum 0.5 arg)) acc.stack }
@@ -297,15 +297,12 @@ parseTerm = case _ of
   "odo" -> TOdo
   _ -> TMidi
 
-argStr :: Arg -> String
-argStr = case _ of
-  M.Lit s -> s
-  M.AltArg xs -> fromMaybe "" (xs !! 0)
-
--- | Reconstruct a `PatternArg` from an already-un-quoted Macro arg. Macro dropped the
--- | quotes, so we can't see them; heuristically, an arg carrying a space or any
--- | mini-notation punctuation is a pattern, anything else a bare literal. (The LIVE
--- | text hatch keeps quotes and is exact; this is the document layer's best effort.)
+-- | Reconstruct a `PatternArg` from a Macro arg's SOURCE string. `firstStepMods` now
+-- | yields a real `PatternArg` (`Triggerfish.Macro` shares the type), but the doc-layer
+-- | fold flattens everything to a source string first (`argSrc`) and re-derives the
+-- | literal/pattern split here: an arg carrying a space or mini-notation punctuation is
+-- | a pattern, anything else a bare literal. (The LIVE text hatch keeps quotes and is
+-- | exact; this is the document layer's best effort.)
 mkArgL :: String -> PatternArg
 mkArgL s = if patterned then Pat s else Lit s
   where

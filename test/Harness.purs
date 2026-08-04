@@ -20,7 +20,8 @@ import Triggerfish.Odonus.Model as M
 import Triggerfish.Odonus.Marbles as Marbles
 import Triggerfish.Odonus.Gen as Gen
 import Triggerfish.Odonus.Grid.Types (GenKind(..), GenSource, genDefaultAmt, genDefaultRate, genKinds)
-import Vetula.Perform.Types (ArpDir(..), PatternArg(..), PerfFx(..), PerfTerm(..), When(..), mkLayer)
+import Vetula.Perform.Types (ArpDir(..), PerfFx(..), PerfTerm(..), When(..), mkLayer)
+import Triggerfish.PatternArg (PatternArg(..))
 import Vetula.Lepidoptera (PerfDoc, parsePerform, performSource, printAsRecord, roundTrips)
 
 type Sim = { odo :: M.Odonus, seed :: Marbles.Seed }
@@ -127,7 +128,10 @@ lepDoc =
       ]
   , voices:
       [ { channel: 1, source: Just "A", seqText: "0 1 2 3"
-        , stack: [ mkLayer (Voice (Lit "open")), mkLayer (Strum 14) ], term: TMidi, muted: false }
+        -- pattern-valued args exercise the shared `Triggerfish.PatternArg` round-trip:
+        -- a quoted mini-notation (`transpose "0 7"`) and an unquoted angle-alternation
+        -- (`voice <open drop2>`, printed bare). Both must survive print∘parse.
+        , stack: [ mkLayer (Transpose (Pat "0 7")), mkLayer (Voice (Pat "<open drop2>")), mkLayer (Strum 14) ], term: TMidi, muted: false }
       , { channel: 2, source: Just "B", seqText: "0 1 2 3"
         , stack: [ (mkLayer (Arpg ArpUp 4)) { when = Every 4 } ], term: TMidi, muted: false }
       , { channel: 5, source: Nothing, seqText: ""

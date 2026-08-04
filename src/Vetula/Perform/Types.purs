@@ -19,6 +19,7 @@ import Prelude
 
 import Data.Array (reverse)
 import Data.Maybe (Maybe(..))
+import Triggerfish.PatternArg (PatternArg)
 
 -- | A function-stack LAYER on a Perform box — a uniform `Pattern (Array Int) ->
 -- | Pattern (Array Int)` endomorphism (see `applyFx`), so any layer drags anywhere
@@ -82,34 +83,11 @@ data PerfSel = Low PatternArg | High PatternArg
 
 derive instance eqPerfSel :: Eq PerfSel
 
--- | A verb's ARGUMENT — decision B (uniform string PatternArg). Either a bare literal
--- | (`7`, `open`, `up`) or a quoted mini-notation pattern (`"0 7 <5 3>"`). Both carry
--- | their source text; the verb interprets the sampled atom at apply-time
--- | (`Int.fromString`, `parseVoiceShape`, …), invalid → the verb's default
--- | (Selene-lenient). This IS `Macro.purs`'s domain-agnostic string-arg model, which is
--- | what lets micro and macro converge on one grammar. `Lit` prints bare, `Pat` quoted.
-data PatternArg = Lit String | Pat String
-
-derive instance eqPatternArg :: Eq PatternArg
-
--- | The source text of an arg (quotes already stripped).
-argSrc :: PatternArg -> String
-argSrc = case _ of
-  Lit s -> s
-  Pat s -> s
-
--- | Canonical text: a literal bare, a pattern quoted (round-trips through `parseLayer`).
-printArg :: PatternArg -> String
-printArg = case _ of
-  Lit s -> s
-  Pat s -> "\"" <> s <> "\""
-
--- | A compact chip glyph: a literal shown bare, a pattern wrapped in ⟨…⟩ so the eye
--- | reads "this arg is patterned" without the quote noise.
-glyphArg :: PatternArg -> String
-glyphArg = case _ of
-  Lit s -> s
-  Pat s -> "⟨" <> s <> "⟩"
+-- | The verb ARGUMENT type (`PatternArg`), its tokenizer, printer and per-cycle
+-- | sampler now live in `Triggerfish.PatternArg` — the shared verb-arg vocabulary both
+-- | the Vetula card (micro) and the `Triggerfish.Macro` lane (macro) parse. This module
+-- | re-uses the type in the `PerfFx`/`PerfSel` constructors above; callers that want
+-- | `PatternArg`/`printArg`/`glyphArg`/`argSrc` import them from `Triggerfish.PatternArg`.
 
 -- | The "WHEN" clause on a layer — the flat form of Tidal's conditional combinators
 -- | (`every` / `sometimesBy` / `within`). Rather than a layer that WRAPS a sub-stack,

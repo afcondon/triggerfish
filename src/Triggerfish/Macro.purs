@@ -26,13 +26,12 @@
 -- | verb for the target instrument. Weights (`@`), replication (`*`) and the
 -- | other lanes come later. The parser is one-level (no nested `<>`).
 module Triggerfish.Macro
-  ( Form(..)
-  , Arg(..)
+  ( module ReExport
+  , Form(..)
   , Mod
   , Step
   , Cell(..)
   , ResolvedMod
-  , tokenize
   , parseLane
   , resolveStep
   , laneFormNames
@@ -41,11 +40,12 @@ module Triggerfish.Macro
 
 import Prelude
 
-import Data.Array (concatMap, filter, foldl, index, length, snoc, uncons)
-import Data.Maybe (Maybe(..), fromMaybe)
+import Data.Array (concatMap, filter, index, length, uncons)
+import Data.Maybe (Maybe(..))
 import Data.String (Pattern(..), contains)
-import Data.String.CodeUnits (singleton, stripPrefix, stripSuffix, toCharArray)
 import Data.String.Common (joinWith)
+import Triggerfish.PatternArg (PatternArg(..), tokenize) as ReExport
+import Triggerfish.PatternArg (PatternArg(..), mkArg, printArg, sampleArg, stripAngle, tokenize, unq, unquote)
 
 -- Which form a step plays.
 data Form
@@ -55,13 +55,11 @@ data Form
 
 derive instance Eq Form
 
--- A modifier argument: a literal, or a per-cycle alternation of literals.
-data Arg = Lit String | AltArg (Array String)
-
-derive instance Eq Arg
-
--- One `# verb arg` modifier (an unresolved transform).
-type Mod = { verb :: String, arg :: Arg }
+-- One `# verb arg` modifier (an unresolved transform). The argument is a shared
+-- `PatternArg` (`Triggerfish.PatternArg`) — the same arg type the Vetula card uses,
+-- so both scales parse one grammar. A bare `Lit`, or a `Pat` (a `<…>` alternation, or
+-- a quoted multi-word / mini-notation source).
+type Mod = { verb :: String, arg :: PatternArg }
 
 -- A step: which form, plus its transform stack.
 type Step = { form :: Form, mods :: Array Mod }
@@ -74,25 +72,6 @@ type ResolvedMod = { verb :: String, arg :: String }
 data Cell = Quiet | Load String (Array ResolvedMod)
 
 derive instance Eq Cell
-
--- Split a lane string into a flat token stream. `<…>` groups and `"…"` quoted
--- names stay intact (their internal whitespace does not break a token); a bare
--- `#` (space-delimited) becomes its own token. Quotes are preserved in the raw
--- token; the form/arg parsers strip them.
-tokenize :: String -> Array String
-tokenize s = (flush final).out
-  where
-  final = foldl step { out: [], cur: "", depth: 0, quoted: false } (toCharArray s)
-  flush acc = if acc.cur == "" then acc else acc { out = snoc acc.out acc.cur, cur = "" }
-  step acc ch =
-    if acc.quoted then
-      if ch == '"' then acc { cur = acc.cur <> "\"", quoted = false }
-      else acc { cur = acc.cur <> singleton ch }
-    else if ch == '"' then acc { cur = acc.cur <> "\"", quoted = true }
-    else if (ch == ' ' || ch == '\n' || ch == '\t') && acc.depth == 0 then flush acc
-    else if ch == '<' then acc { cur = acc.cur <> "<", depth = acc.depth + 1 }
-    else if ch == '>' then acc { cur = acc.cur <> ">", depth = if acc.depth > 0 then acc.depth - 1 else 0 }
-    else acc { cur = acc.cur <> singleton ch }
 
 -- Parse a lane into ordered steps. Grammar: `step := form (# verb arg)*`.
 parseLane :: String -> Array Step
@@ -113,7 +92,7 @@ collectMods toks = case uncons toks of
     Just { head: verb, tail: afterVerb } -> case uncons afterVerb of
       Just { head: argTok, tail: afterArg } ->
         let r = collectMods afterArg
-        in r { mods = [ { verb, arg: parseArg argTok } ] <> r.mods }
+        in r { mods = [ { verb, arg: mkArg argTok } ] <> r.mods }
       Nothing -> { mods: [ { verb, arg: Lit "" } ], rest: [] }  -- `# verb` (no arg)
     Nothing -> { mods: [], rest: [] }  -- trailing `#`
   _ -> { mods: [], rest: toks }
@@ -126,27 +105,6 @@ parseForm t = case unquote t of
     else case stripAngle t of
       Just inner -> FAlt (map unq (tokenize inner))
       Nothing -> FName t
-
-parseArg :: String -> Arg
-parseArg t = case stripAngle t of
-  Just inner -> AltArg (map unq (tokenize inner))
-  Nothing -> Lit (unq t)
-
--- Strip surrounding quotes if present, else return as-is.
-unq :: String -> String
-unq x = fromMaybe x (unquote x)
-
--- `<inner>` → `Just inner`, otherwise `Nothing`.
-stripAngle :: String -> Maybe String
-stripAngle t = case stripPrefix (Pattern "<") t of
-  Just rest -> stripSuffix (Pattern ">") rest
-  Nothing -> Nothing
-
--- `"name"` → `Just name` (surrounding double quotes removed), else `Nothing`.
-unquote :: String -> Maybe String
-unquote t = case stripPrefix (Pattern "\"") t of
-  Just rest -> stripSuffix (Pattern "\"") rest
-  Nothing -> Nothing
 
 -- Resolve a step at `stepIdx` (reduced mod the step count) on macro-cycle
 -- `cycleIdx`. Alternation of forms and of modifier args both pick by the cycle.
@@ -168,13 +126,7 @@ resolveForm form cycleIdx = case form of
       Nothing -> Nothing
 
 resolveMod :: Int -> Mod -> ResolvedMod
-resolveMod cycleIdx m = { verb: m.verb, arg: resolveArg m.arg cycleIdx }
-
-resolveArg :: Arg -> Int -> String
-resolveArg arg cycleIdx = case arg of
-  Lit s -> s
-  AltArg xs ->
-    if length xs == 0 then "" else fromMaybe "" (index xs (cycleIdx `mod` length xs))
+resolveMod cycleIdx m = { verb: m.verb, arg: sampleArg cycleIdx m.arg }
 
 -- Every FORM name referenced (for unknown-name checking / the palette). Modifier
 -- args are excluded — they are not library forms.
@@ -194,8 +146,5 @@ stepLabel step = formLabel step.form <> joinWith "" (map modLabel step.mods)
     FName n -> quoteIfSpace n
     FRest -> "~"
     FAlt inner -> "<" <> joinWith " " (map quoteIfSpace inner) <> ">"
-  modLabel m = " # " <> m.verb <> " " <> argLabel m.arg
-  argLabel = case _ of
-    Lit s -> quoteIfSpace s
-    AltArg xs -> "<" <> joinWith " " (map quoteIfSpace xs) <> ">"
+  modLabel m = " # " <> m.verb <> " " <> printArg m.arg
   quoteIfSpace s = if contains (Pattern " ") s then "\"" <> s <> "\"" else s
