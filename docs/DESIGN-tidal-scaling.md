@@ -1,16 +1,17 @@
-# Scaling up Tidal — one grammar at two scales (micro voices, macro arrangement)
+# Scaling up Tidal — one grammar at three scales (micro voices, macro arrangement, song)
 
-*Design note, 2026-08-03. Converged with AC over a design conversation. Companion to
+*Design note, 2026-08-03; decisions resolved with AC 2026-08-04. Companion to
 `DESIGN-tank-overhaul.md`. Frames how much of TidalCycles Vetula's Perform cards can
-hold, and how the answer points at unifying them with the shell's `Triggerfish.Macro`
-arrangement layer. No code yet — this is the grammar we converge on before building.*
+hold, how the answer unifies them with the shell's `Triggerfish.Macro` arrangement layer,
+and how the same grammar recurses one level further into **song structure**. No code yet —
+this is the grammar we converge on before building.*
 
 ---
 
 ## 1. The finding that drives everything
 
-Triggerfish already runs Tidal at **two scales**, and they are converging on the *same
-grammar*:
+Triggerfish already runs Tidal at **multiple scales**, and they are converging on the *same
+grammar* — a mini-notation of atoms, then `# verb arg` layers:
 
 - **Micro — the Vetula Perform card.** A pattern over **chord-indices within one voice**,
   transformed by a stack of harmonic verbs:
@@ -19,10 +20,15 @@ grammar*:
   across the whole rig**, transformed by per-instrument verbs:
   `"contemplative" # scale <"F# lydian" "G major">`. Atoms are *forms*; verbs are
   *whatever each instrument decides they mean*.
+- **Song — the macro layer recursing (§9).** A lane over **named sections** — each section
+  a saved macro-state — so `verse chorus bridge verse pre-chorus chorus chorus outro` is the
+  *same* grammar one scale up. Atoms are *sections*; the level above Tidal that makes it
+  usable for composed music (AC's decision 5).
 
-Both are the **same shape**: a mini-notation of atoms, then `# verb arg` layers. This is
-why "how much Tidal can we hold?" has one answer instead of fifty — the ceiling is a
-property of the shared grammar, not of either surface.
+Same shape at every scale. This is why "how much Tidal can we hold?" has one answer instead
+of fifty — the ceiling is a property of the shared grammar, not of any one surface, and the
+grammar is **self-similar**: expressivity comes from *fractal* patterns (patterns of
+patterns of patterns), not from a growing pile of verbs.
 
 ## 2. Where the headroom actually is (the micro ceiling)
 
@@ -82,10 +88,13 @@ Three consequences for the grammar:
 2. **Rename/retire our `rate`.** In real Tidal `rate` is **sample playback speed** (a pitch
    control), *not* time-stretch — our signed `rate` collides with that meaning. Time belongs
    to `slow`/`fast`; if a pitch/speed control is wanted later it can take the `rate` name
-   honestly. (Migration: keep parsing `rate -n`/`rate n` as `slow`/`fast` for old scenes.)
+   honestly. **We can make a clean break: there are no saved scenes to preserve** (AC,
+   2026-08-04), so `rate` can just become `slow`/`fast` outright. *If* a transitional
+   `rate ±n → slow/fast` alias is kept for a while, it carries a `-- TEMPORARY: rate is
+   changing, do not depend on this` comment so it isn't mistaken for the real grammar.
 3. **The range must go large.** `slow` wants to reach **8 · 16 · 32 · 64** bars, not cap at
    8. The one-bar cycle is the *sequence*'s home; `slow` is precisely how a progression
-   stops being a one-bar loop and becomes an arc. (Open decision 6.7: does `slow`'s cap come
+   stops being a one-bar loop and becomes an arc. (decision 7: does `slow`'s cap come
    off entirely, and does `boxUsesSeq`/the bar-grid need to know a box is multi-bar?)
 
 `slow` is also a clean early win: it is a *time* transform on the whole box, independent of
@@ -111,13 +120,17 @@ divergent dialect.
 
 ### 4.1 A layer is `verb arg? gate?`
 
-- **verb** — an existing keyword: `transpose · oct · rate · voice · top · bottom · arp ·
-  strum` (micro); `scale · fast · bass · …` (macro, per-instrument).
-- **arg** — either a **literal** (today's `7`, `open`, `up 4`) **or a quoted pattern**
-  (`"0 7 <5 3>"`). Quoting is how a multi-token / alternating arg stays one field — the
-  same device `Macro.purs` uses to quote multi-word form names.
-- **gate** — the existing `every N` clause, kept as a post-hoc `When`. (Open question 6.2:
-  whether `every` should itself become a combinator with a pattern arg.)
+- **verb** — a keyword: `transpose · oct · slow · fast · voice · top · bottom · arp · strum`
+  (micro; `slow`/`fast` replace the old signed `rate`, §2.4); `scale · bass · …` (macro,
+  per-instrument).
+- **arg(s)** — a verb has **N positional slots** (`transpose` 1, `arp` 2), each slot a
+  **literal** (`7`, `open`, `up`) **or a quoted pattern** (`"0 7 <5 3>"`). See §4.4 for how
+  slots + patterns coexist. Quoting is how a multi-token / alternating arg stays one field —
+  the same device `Macro.purs` uses to quote multi-word form names.
+- **gate** — an **explicit, named** clause over an **extensible predicate vocabulary** (see
+  §4.5 / decision 2). *Not* an implicit trailing peel: AC's queasiness about magic
+  `every N` (§4.3) is right — a gate is absent by default and, when present, always written
+  out, so the parser never has to guess where the arg ends and the gate begins.
 
 ### 4.2 Canonical text (round-trip)
 
@@ -132,9 +145,47 @@ reconciliation invariant is unchanged in spirit:
 
 `parseLayer` currently tokenizes on spaces and peels a trailing `every N` off the last two
 tokens. A quoted pattern arg contains spaces and `<>`, so the tokenizer must treat a
-`"…"`-delimited span as a single token **before** peeling `every`. Quote-aware tokenizing
-is the whole grammar cost of pattern args; everything downstream (evaluate the pattern per
-cycle, feed the verb) reuses `src/Tidal`.
+`"…"`-delimited span as a single token. With the gate made **explicit** (§4.5) the fragile
+trailing-peel disappears; the tokenizer's only job is quote-aware splitting. That is the
+whole grammar cost of pattern args; everything downstream (evaluate the pattern per cycle,
+feed the verb) reuses `src/Tidal`.
+
+### 4.4 One uniform `PatternArg`, positional slots (decision 3, RESOLVED → B)
+
+Verbs take different arg *types* — `transpose`→Int, `voice`→Shape, `arp`→Dir+Int. To make
+them all patternable without a type per verb, **one `PatternArg` = a mini-notation pattern
+over string atoms**, and each verb **interprets** the sampled string at apply-time
+(`parseVoiceShape "open"`, `fromString "7"`, `parseArpDir "up"`; invalid → the verb's
+default, Selene-lenient). `voice <open drop2>` and `transpose "0 7"` then parse *identically*
+— which is exactly `Macro.purs`'s domain-agnostic string-arg model, so micro and macro
+become **literally the same code**.
+
+Multi-arg verbs use **positional slots**, each its own `PatternArg`:
+`arp <up down> <4 8>` (direction pattern, rate pattern). A verb declares its slot count; the
+tokenizer fills slots left-to-right, a `"…"`/`<…>` span counting as one slot. This keeps
+`arp <up down> 4` unambiguous (slot 1 patterned, slot 2 literal).
+
+*Cost of B:* a bad token defaults instead of failing at parse time. For a live instrument
+that is the right trade (you hear the default, fix it, move on) and it matches the existing
+lenient parsers. *Decision 1* (thin `PatternArg` wrapper vs reusing the engine `Pattern`)
+rides on top of this and is provisional — collapse to the engine type if the wrapper fights
+it.
+
+### 4.5 The gate as an explicit, extensible predicate (decision 2, RESOLVED)
+
+The gate is a **named clause with an open predicate vocabulary**, never an implicit peel:
+
+- trivial built-ins: `every N` (each N-th cycle), `prob P` (probability), the default is *no
+  gate*;
+- open to real predicates over the transport/world — `fullMoon`, `afterBar 16`,
+  `everyOtherChorus` — resolved as small PureScript functions `Context -> Cycle -> Boolean`.
+
+The guardrail (AC): **this must not tax the simple language.** A layer with no gate reads
+exactly as today; the predicate slot only appears when you write it. So the ambient-piece
+dream ("plays differently on the full moon") is reachable *without* making `# arp up 4` one
+character more complex. Syntactic shape TBD (a leading marker like `? fullMoon`, or a
+keyworded ` when fullMoon`) — pick whatever keeps the gate visually distinct from the value
+args so §4.3's tokenizer stays trivial.
 
 ## 5. What each level needs
 
@@ -157,47 +208,58 @@ interpretation** (the parser is deliberately domain-agnostic — each instrument
 its verbs mean). Vetula becoming a macro instrument = its verbs (`scale`, voicing moves)
 resolving against a loaded form.
 
-## 6. Open decisions (converge before building)
+## 6. Decisions (resolved with AC, 2026-08-04)
 
-1. **Arg representation.** Reuse `src/Tidal`'s `Pattern` type for args directly, or a thin
-   `PatternArg = Lit … | Pat …` that lazily parses? (Leaning: thin wrapper, parse once,
-   sample per cycle — keeps `applyLayer` pure and the round-trip cheap.)
-2. **`every` vs pattern-gate.** Keep `When = Always | Every n` as a separate clause, or fold
-   gating into a pattern arg (`sometimesBy`, boolean patterns)? (Leaning: keep `every` — it
-   reads, and it is orthogonal to the value pattern.)
-3. **Shape-valued patterns.** `voice <open drop2>` and `arp <up down>` want the arg pattern
-   to range over *shape tokens*, not ints. One `PatternArg` over strings, verb-interpreted?
-4. **Quoting rule.** Always-quote pattern args (`transpose "7"` even when scalar) or
-   quote-only-when-needed (bare `7`, quoted `"0 7"`)? (Leaning: quote-only-when-needed for
-   readability; printer decides by whether the arg is a single literal.)
-5. **How far to chase Tidal.** Ship pattern-args first (§2.2); treat the verb-breadth set
-   (§2.3: `rev` / `off` / `iter` / …) as a later, à-la-carte slice.
-6. **Complexity budget.** The text hatch grows in *depth* (richer args), not *width* (a
-   wall of verbs) — this is the `learn-the-chrome ≈ learn-Tidal` guardrail from
-   `inherited-crafting-moler`. Every added verb must earn a chip. (`slow` earns its chip on
-   sight — §2.4.)
-7. **`slow`'s ceiling and the bar grid** (§2.4). Does `slow N` cap at all, or reach
-   arbitrarily large (32/64 bars)? And does a multi-bar box need `boxUsesSeq` / the
-   bar-vs-beat grid (`scheduleBox`) to know its true length, or does `slow` compose cleanly
-   on top of the existing one-bar scheduling? This is the one place `slow` touches more than
-   a verb table.
+1. **Arg representation — thin wrapper, provisionally.** A thin `PatternArg = Lit … | Pat …`,
+   parsed once, sampled per cycle (keeps `applyLayer` pure, round-trip cheap). AC: "could be
+   premature optimisation" — so treat it as provisional; if the wrapper fights `src/Tidal`'s
+   `Pattern`, collapse onto the engine type. Rides on top of decision 3.
+2. **Gate — explicit and extensible (§4.5).** Not folded into the value pattern, not an
+   implicit peel: a named clause over an open predicate vocabulary (`every N`, `prob P`, and
+   real PureScript predicates like `fullMoon`). AC wants the expressivity (ambient pieces
+   that play differently on the full moon) **but not at the cost of the simple language** —
+   so a gate is absent by default and always explicit when present.
+3. **Shape-valued patterns — one uniform string `PatternArg` (§4.4).** `voice <open drop2>`
+   and `transpose "0 7"` parse identically; the verb interprets the sampled string, invalid →
+   default. Multi-arg verbs use positional slots. This *is* the `Macro.purs` model, so it
+   makes micro == macro literal.
+4. **Quoting — quote-only-when-needed.** Bare `7`, quoted `"0 7"`. The printer decides by
+   whether a slot is a single literal.
+5. **How far to chase Tidal — both, in order.** Pattern-args (depth) first; the verb-breadth
+   set (§2.3) as a later à-la-carte slice. **And keep going up:** the real target is the
+   *level above Tidal* — a song's structure as tidy as
+   `verse chorus bridge verse pre-chorus chorus chorus outro` (§9). Composed music, not just
+   loops.
+6. **Complexity budget — small language, right primitives.** Depth (richer args) not width
+   (a wall of verbs); `learn-the-chrome ≈ learn-Tidal`. AC: "if the primitives are right the
+   language can be small and still very expressive." Every added verb must earn its chip
+   (`slow` earns it on sight).
+7. **`slow`'s ceiling — no cap (but no BigInt).** `slow N` is unbounded within a plain `Int`
+   (AC: "no cap at all, but we're not going to need BigInt"). Open sub-question that stays
+   open: whether a multi-bar box needs `boxUsesSeq` / the bar-grid (`scheduleBox`) to know its
+   true length, or `slow` composes cleanly on top of one-bar scheduling — settle when step 0
+   is built.
 
 ## 7. Execution sequence (proposed — not started)
 
 0. **`slow` / `fast` as first-class time verbs** (§2.4) — the quick, felt win, independent of
-   the pattern-arg work. Promote `slow N` / `fast N`, migrate old `rate ±n`, lift the range
-   for multi-bar arcs, check the bar-grid (decision 6.7). Can land first.
+   the pattern-arg work. Promote `slow N` / `fast N`, retire `rate` (clean break, no scenes to
+   keep — §2.4.2), no cap (decision 7), check the bar-grid. Can land first.
 1. **Quote-aware `parseLayer`** + a `PatternArg` type; printer round-trips literal vs quoted.
    Reconciliation invariant re-proved. *No behaviour change yet (all args still literals).*
 2. **`applyLayer` samples the arg pattern per cycle** — the first live pattern-arg
    (`transpose "0 7"`). Verify by ear.
-3. **Shape-valued args** (`voice <open drop2>`, `arp <up down>`) — decision 6.3.
-4. **Chip view for pattern args** — the compact glyph + text-hatch pairing.
-5. **Converge micro and macro** — factor the shared `verb + pattern-arg` core so
+3. **Uniform string args + positional slots** (`voice <open drop2>`, `arp <up down> 4`) —
+   decision 3 / §4.4.
+4. **Explicit extensible gate** (§4.5) — `every N` / `prob P` built-ins, predicate slot open.
+5. **Chip view for pattern args** — the compact glyph + text-hatch pairing.
+6. **Converge micro and macro** — factor the shared `verb + pattern-arg` core so
    `Triggerfish.Macro` and the Vetula pipeline share one evaluator; Vetula becomes a macro
    instrument.
-6. **Macro frontier** — modal sequencer (#9), deferred grammar (`@` / `*` / multi-lane),
+7. **Macro frontier** — modal sequencer (#9), deferred grammar (`@` / `*` / multi-lane),
    per-instrument verb tables. Lands on the unified foundation.
+8. **The song level (§9)** — sections as named macro-states, a song lane over section names.
+   The level above Tidal; reachable once the macro frontier stands.
 
 ## 8. What this is NOT
 
@@ -207,3 +269,36 @@ resolving against a loaded form.
   the one text pipeline.
 - Not the macro sequencer itself — that is task #9, which this note sets the foundation for
   but does not do.
+
+## 9. The level above Tidal — songs as macro-of-macro (AC's decision 5)
+
+The goal beyond loops: **composed music**, where a whole song's structure is as tidy as
+
+    verse chorus bridge verse pre-chorus chorus chorus outro
+
+The architecture already contains this — it is the macro layer **recursing one scale**, no
+new mechanism:
+
+- A **section** (verse, chorus, bridge) is a **named macro-state**: a saved bundle of the
+  per-instrument lanes across the whole rig (close to what a "scene" already is in the scene
+  grid, #11). Give it a name.
+- A **song** is a **macro lane whose atoms are section names**, read by the *same*
+  `atoms # verb arg` grammar: `verse chorus bridge …`.
+
+Because it is the same grammar, song forms inherit **all of mini-notation for free**:
+
+    verse chorus!2 bridge          -- chorus twice
+    <verse chorus> outro           -- alternate the opener each pass
+    intro [verse chorus] outro     -- verse+chorus share a span
+
+…and the layer verbs apply at song scale too — `# key <C G>` to lift a section, `# slow 2`
+to stretch one. Three scales — notes, forms, sections — **one self-similar language**. This
+is the payoff of getting the primitives right (decision 6): the small grammar, aimed one
+level up, *is* a composition tool.
+
+**What it needs** (later — after the macro frontier, §7.7): a way to **name and save a
+macro-state as a section** (likely folds into the scene grid / the between-sessions modal,
+#16), and a **song lane** surface (one lane above the per-instrument lanes). Verbs at this
+scale (`key`, `repeat`, `slow`) are a small per-section interpreter — the same domain-agnostic
+`(verb, arg)` resolution `Macro.purs` already yields. No new engine; the recursion is the
+feature.
