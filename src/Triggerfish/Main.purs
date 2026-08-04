@@ -2034,7 +2034,12 @@ keyToAction e = case KE.fromEvent e of
     -- ⌘-number, which Chrome steals for tab switching (and ⌘⇧3/4/5, which macOS
     -- steals for screenshots). ⌥+digit has no tab/OS binding on any platform. We
     -- still preventDefault synchronously so Option doesn't insert its glyph.
+    -- NB: `not (targetIsField e)` is load-bearing, not just tidy. On a UK/Irish Mac
+    -- keyboard `#` IS ⌥3, so without this guard typing a `#` in a Tidal pattern box
+    -- opens modal #3 (MTidalSeq) and preventDefault eats the character. Yield to the
+    -- field: only open an overlay when focus isn't in a text input/textarea.
     | KE.altKey ke
+    , not (targetIsField e)
     , Just m <- modalForDigit (KE.code ke) ->
         case unsafePerformEffect (E.preventDefault e) of
           _ -> Just (OpenModal m)
