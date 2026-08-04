@@ -121,9 +121,12 @@ glyphArg = case _ of
 -- | the open predicate-registry / world-context dream (fullMoon) is the next refinement.
 data When
   = Always            -- every cycle (no gate)
-  | Every Int         -- each N-th cycle (Tidal's `every`)
+  | Every Int         -- each N-th cycle (Tidal's `every`: cycle mod N == 0)
   | Prob Number       -- a P-fraction of cycles, deterministic per-cycle hash (0..1)
   | AfterBar Int      -- only from bar N onward — a build-up / entrance gate
+  | Whenmod Int Int   -- Tidal's `whenmod n r`: apply when (cycle mod n) >= r. The
+                      -- general cycle gate — subsumes `every` and its complement
+                      -- (`whenmod 8 1` = every cycle EXCEPT every 8th).
 
 derive instance eqWhen :: Eq When
 
@@ -133,6 +136,7 @@ whenLabel = case _ of
   Every n -> "e" <> show n
   Prob p -> "p" <> show p
   AfterBar n -> "▸" <> show n
+  Whenmod n r -> "m" <> show n <> "≥" <> show r
 
 cycleWhen :: When -> When
 cycleWhen = case _ of
@@ -142,7 +146,8 @@ cycleWhen = case _ of
   Every 4 -> Every 8
   Every _ -> Prob 0.5
   Prob _ -> AfterBar 8
-  AfterBar _ -> Always
+  AfterBar _ -> Whenmod 8 1
+  Whenmod _ _ -> Always
 
 -- | A stack entry: a function `fx` plus the `when` clause gating it per cycle.
 type Layer = { fx :: PerfFx, when :: When }

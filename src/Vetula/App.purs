@@ -3140,6 +3140,7 @@ applyLayer { fx, when: w } = case w of
   Every n -> every n (applyFx fx)
   Prob p -> whenCycle (\c -> cycleRand c < p) (applyFx fx)   -- a P-fraction of cycles
   AfterBar n -> whenCycle (\c -> c >= n) (applyFx fx)        -- only from bar n onward
+  Whenmod n r -> whenCycle (\c -> mod c n >= r) (applyFx fx) -- Tidal's whenmod n r
 
 -- | Run a Harmonia `Voicing -> Voicing` over one chord's notes. The notes are
 -- | sorted low→high first so the strategies and Low/High selectors read voices
@@ -3261,6 +3262,7 @@ printWhen = case _ of
   Every n -> " every " <> show n
   Prob p -> " prob " <> show p
   AfterBar n -> " afterbar " <> show n
+  Whenmod n r -> " whenmod " <> show n <> " " <> show r
 
 printLayer :: Layer -> String
 printLayer lyr = printPerfFx lyr.fx <> printWhen lyr.when
@@ -3358,23 +3360,35 @@ parsePerfFx toks = case head toks of
 
 parseLayer :: String -> Maybe Layer
 parseLayer seg =
-  let toks = tokensQ seg
-      n = length toks
-      -- peel a trailing GATE clause (an explicit named keyword + value): `every 4`,
-      -- `prob 0.3`, `afterbar 16`. Only the recognised keywords peel, so a verb whose
-      -- last two tokens aren't a gate keeps them (value args are single/quoted tokens).
-      gateClause = do
+  let g = peelGate (tokensQ seg)
+  in map (\fx -> { fx, when: g.when }) (parsePerfFx g.body)
+
+-- | Peel a trailing GATE clause off a layer's tokens, returning the gate and the
+-- | remaining verb `body`. Two-arg `whenmod n r` (three tokens) is tried first, then
+-- | the one-arg gates `every`/`prob`/`afterbar` (two tokens). No recognised gate →
+-- | `Always`, body unchanged. Only recognised keywords peel, so a verb whose trailing
+-- | tokens aren't a gate keeps them (value args are single/quoted tokens).
+peelGate :: Array String -> { when :: When, body :: Array String }
+peelGate toks =
+  let n = length toks
+      two = do
+        kw <- index toks (n - 3)
+        a <- index toks (n - 2) >>= fromString
+        b <- index toks (n - 1) >>= fromString
+        if toLower kw == "whenmod" then Just (Whenmod a b) else Nothing
+      one = do
         kw <- index toks (n - 2)
         val <- index toks (n - 1)
-        parseGate kw val
-      body = maybe toks (\_ -> take (n - 2) toks) gateClause
-      w = fromMaybe Always gateClause
-  in map (\fx -> { fx, when: w }) (parsePerfFx body)
+        parseGate1 kw val
+  in case two of
+       Just w -> { when: w, body: take (n - 3) toks }
+       Nothing -> case one of
+         Just w -> { when: w, body: take (n - 2) toks }
+         Nothing -> { when: Always, body: toks }
 
--- | An explicit gate clause `<keyword> <value>` → a `When`. Unrecognised keyword →
--- | Nothing (so it isn't peeled and stays part of the verb's args).
-parseGate :: String -> String -> Maybe When
-parseGate kw val = case toLower kw of
+-- | A one-arg gate clause `<keyword> <value>` → a `When`. Unrecognised → Nothing.
+parseGate1 :: String -> String -> Maybe When
+parseGate1 kw val = case toLower kw of
   "every" -> Every <$> fromString val
   "prob" -> Prob <$> Number.fromString val
   "afterbar" -> AfterBar <$> fromString val
@@ -3403,11 +3417,15 @@ attachWhen w stack = case unsnoc stack of
   Just { init: i, last: l } -> snoc i (l { when = w })
   Nothing -> stack
 
--- | A segment that is ONLY a gate clause (`every 4`, `prob 0.3`, `afterbar 8`).
+-- | A segment that is ONLY a gate clause (`every 4`, `prob 0.3`, `whenmod 8 1`) — no
+-- | verb left after peeling. Used to attach a bare `# prob 0.4` line to the layer above.
 parseBareGate :: String -> Maybe When
-parseBareGate seg = case tokensQ seg of
-  [ kw, val ] -> parseGate kw val
-  _ -> Nothing
+parseBareGate seg =
+  let g = peelGate (tokensQ seg)
+  in if length g.body == 0 then (case g.when of
+                                   Always -> Nothing
+                                   w -> Just w)
+     else Nothing
 
 -- | The `Pattern (Array Int)` a Perform box realises this cycle: its saved sequence
 -- | as a looping chord pattern (one chord per beat-cycle), with the box's function
@@ -4885,6 +4903,7 @@ perfEditModal st = case st.perfEditBox >>= \i -> map (Tuple i) (index st.perfBox
     , Tuple "… every 4" "gate: apply the layer only every N cycles"
     , Tuple "… prob 0.3" "gate: apply it on ~30% of cycles (random)"
     , Tuple "… afterbar 16" "gate: apply it only from bar N onward (a build-up)"
+    , Tuple "… whenmod 8 1" "gate: apply when (cycle mod n) ≥ r — e.g. every cycle but every 8th"
     ]
 
 -- | The FX palette: click a layer to pick it up, then click a player box to append

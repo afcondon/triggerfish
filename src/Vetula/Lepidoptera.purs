@@ -123,6 +123,8 @@ whenDir = case _ of
   Every n -> [ "every " <> show n ]
   Prob p -> [ "prob " <> show p ]
   AfterBar n -> [ "afterbar " <> show n ]
+  -- two args → one quoted token, since Macro's grammar is strictly one arg per mod.
+  Whenmod n r -> [ "whenmod " <> quote (show n <> " " <> show r) ]
 
 -- | The single-arg mod vocabulary. Arp's direction is FUSED into the verb so the
 -- | mod stays `verb arg` (Macro's grammar is strictly one arg). Use plain `show`
@@ -256,6 +258,7 @@ foldMods = foldl step { stack: [], term: TMidi, muted: false }
          "every" -> acc { stack = setLastWhen (Every (max 1 (argInt 2 arg))) acc.stack }
          "prob" -> acc { stack = setLastWhen (Prob (argNum 0.5 arg)) acc.stack }
          "afterbar" -> acc { stack = setLastWhen (AfterBar (max 0 (argInt 8 arg))) acc.stack }
+         "whenmod" -> acc { stack = setLastWhen (whenmodOf arg) acc.stack }
          "out" -> acc { term = parseTerm arg }
          "mute" -> acc { muted = true }
          _ -> case fxOfVerb m.verb arg of
@@ -318,6 +321,12 @@ argInt def s = fromMaybe def (Int.fromString (fromMaybe s (stripPrefix (Pattern 
 -- | One number token (for `prob`), lenient.
 argNum :: Number -> String -> Number
 argNum def s = fromMaybe def (Number.fromString s)
+
+-- | `whenmod`'s two ints, packed into one quoted arg ("8 1") by `whenDir`. Lenient.
+whenmodOf :: String -> When
+whenmodOf s = case filter (_ /= "") (split (Pattern " ") (trim s)) of
+  [ a, b ] -> Whenmod (argInt 8 a) (argInt 1 b)
+  _ -> Whenmod 8 1
 
 -- ============================================================================
 -- Build a document from live voices. Takes a NEUTRAL spec (raw chords, not a
