@@ -127,7 +127,8 @@ fxDir :: PerfFx -> String
 fxDir = case _ of
   Transpose n -> "transpose " <> show n
   Octave n -> "oct " <> show n
-  Rate n -> "rate " <> show n
+  Slow n -> "slow " <> show (max 1 n)
+  Fast n -> "fast " <> show (max 1 n)
   Voice shape -> "voice " <> printVoiceShape shape
   Select (High n) -> "top " <> show n
   Select (Low n) -> "bottom " <> show n
@@ -268,7 +269,8 @@ fxOfVerb verb arg = case verb of
   "oct" -> Just (Octave (clamp (-4) 4 (argInt 0 arg)))
   "octave" -> Just (Octave (clamp (-4) 4 (argInt 0 arg)))
   "8ve" -> Just (Octave (clamp (-4) 4 (argInt 0 arg)))
-  "rate" -> Just (Rate (clamp (-8) 8 (argInt 2 arg)))
+  "slow" -> Just (Slow (max 1 (argInt 4 arg)))
+  "fast" -> Just (Fast (max 1 (argInt 2 arg)))
   "voice" -> Just (Voice (fromMaybe Open (parseVoiceShape arg)))
   "top" -> Just (Select (High (clamp 1 6 (argInt 1 arg))))
   "bottom" -> Just (Select (Low (clamp 1 6 (argInt 1 arg))))

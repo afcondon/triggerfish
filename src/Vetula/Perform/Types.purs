@@ -7,6 +7,12 @@
 -- | Everything here is pure (Prelude + `Data.Array.reverse` only): the layer/fx
 -- | algebra, the terminal sink, and the canonical ASCII vocabulary the document
 -- | round-trip prints and parses (NOT the glyph labels, which are lossy display).
+-- |
+-- | Time verbs are `Slow`/`Fast` (Tidal's own names), NOT a signed `rate`: real
+-- | Tidal `rate` means sample-playback speed, a name collision we refuse. `slow N`
+-- | is the most-wanted verb — harmonic progressions usually want to unfold over
+-- | many bars (conditioning Odonus, ambient arpeggios), and `slow 64` composes
+-- | cleanly on the per-cycle scheduler (see `scheduleBox`). No cap on N.
 module Vetula.Perform.Types where
 
 import Prelude
@@ -18,12 +24,13 @@ import Data.Maybe (Maybe(..))
 -- | Pattern (Array Int)` endomorphism (see `applyFx`), so any layer drags anywhere
 -- | in the stack or between boxes. Two families under one type: pitch-shapers that
 -- | `map` over each chord (Transpose · Octave) and Tidal combinators polymorphic in
--- | the value (Rate = `fast`/`slow`). Voice/Select (Harmonia) + more land next;
+-- | the value (Slow/Fast = `slow`/`fast`). Voice/Select (Harmonia) + more land next;
 -- | arp/strum are the terminal REALISATION, not layers (they explode chord→time).
 data PerfFx
   = Transpose Int    -- ± semitones
   | Octave Int       -- ± octaves
-  | Rate Int         -- speed: n>0 `fast n`, n<0 `slow (-n)`, 0 = identity
+  | Slow Int         -- stretch the pattern over N cycles (`slow N`); N ≥ 1
+  | Fast Int         -- compress the pattern into 1/N of a cycle (`fast N`); N ≥ 1
   | Voice VoiceShape -- re-voice each chord (Harmonia VoicingStrategy)
   | Select PerfSel   -- thin each chord to some of its voices (Harmonia takeVoicing)
   | Arpg ArpDir Int  -- explode chord→time at a FIXED rate (notes per beat), a

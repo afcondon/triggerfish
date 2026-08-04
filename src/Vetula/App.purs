@@ -3045,16 +3045,14 @@ dropFxInto src tb mpos boxes =
   adjustStack bi f = mapWithIndex (\j bx -> if j == bi then bx { stack = f bx.stack } else bx)
 
 -- | One function-stack layer as a `Pattern (Array Int)` endomorphism. Pitch-shapers
--- | `map` over each chord's notes; Tidal combinators (`Rate`) are polymorphic in
--- | the value, so they compose with the pitch layers at the same type.
+-- | `map` over each chord's notes; Tidal time combinators (`slow`/`fast`) are
+-- | polymorphic in the value, so they compose with the pitch layers at the same type.
 applyFx :: PerfFx -> PT.Pattern (Array Int) -> PT.Pattern (Array Int)
 applyFx = case _ of
   Transpose k -> map (map (_ + k))
   Octave k -> map (map (_ + 12 * k))
-  Rate n
-    | n > 0 -> fast (Rat.fromInt n)
-    | n < 0 -> slow (Rat.fromInt (-n))
-    | otherwise -> identity
+  Slow n -> slow (Rat.fromInt (max 1 n))
+  Fast n -> fast (Rat.fromInt (max 1 n))
   Voice shape -> map (revoice (voiceStrategy shape))
   Select sel -> map (revoice (takeVoicing (selSelector sel)))
   -- arp/strum don't change the chord PATTERN — they explode each chord across
@@ -3110,10 +3108,8 @@ fxLabel :: PerfFx -> String
 fxLabel = case _ of
   Transpose n -> "transpose " <> showSigned n
   Octave n -> "8ve " <> showSigned n
-  Rate n
-    | n > 0 -> "rate ×" <> show n
-    | n < 0 -> "rate ÷" <> show (-n)
-    | otherwise -> "rate ×1"
+  Slow n -> "slow ×" <> show (max 1 n)
+  Fast n -> "fast ×" <> show (max 1 n)
   Voice shape -> "voice " <> voiceShapeName shape
   Select (Low n) -> "bottom " <> show n
   Select (High n) -> "top " <> show n
@@ -3135,7 +3131,8 @@ fxNudge :: Int -> PerfFx -> PerfFx
 fxNudge d = case _ of
   Transpose n -> Transpose (clamp (-24) 24 (n + d))
   Octave n -> Octave (clamp (-4) 4 (n + d))
-  Rate n -> Rate (clamp (-8) 8 (n + d))
+  Slow n -> Slow (max 1 (n + d))
+  Fast n -> Fast (max 1 (n + d))
   Voice shape -> Voice (cycleVoiceShape d shape)
   Select (Low n) -> Select (Low (clamp 1 6 (n + d)))
   Select (High n) -> Select (High (clamp 1 6 (n + d)))
@@ -3178,7 +3175,8 @@ printPerfFx :: PerfFx -> String
 printPerfFx = case _ of
   Transpose n -> "transpose " <> show n
   Octave n -> "oct " <> show n
-  Rate n -> "rate " <> show n
+  Slow n -> "slow " <> show (max 1 n)
+  Fast n -> "fast " <> show (max 1 n)
   Voice shape -> "voice " <> printVoiceShape shape
   Select (High n) -> "top " <> show n
   Select (Low n) -> "bottom " <> show n
@@ -3237,7 +3235,8 @@ parsePerfFx toks = case head toks of
          "oct" -> Just (Octave (clamp (-4) 4 (a0 0)))
          "octave" -> Just (Octave (clamp (-4) 4 (a0 0)))
          "8ve" -> Just (Octave (clamp (-4) 4 (a0 0)))
-         "rate" -> Just (Rate (clamp (-8) 8 (a0 2)))
+         "slow" -> Just (Slow (max 1 (a0 4)))
+         "fast" -> Just (Fast (max 1 (a0 2)))
          "voice" -> Just (Voice (fromMaybe Open (head args >>= parseVoiceShape)))
          "top" -> Just (Select (High (clamp 1 6 (a0 1))))
          "bottom" -> Just (Select (Low (clamp 1 6 (a0 1))))
@@ -4725,7 +4724,8 @@ perfEditModal st = case st.perfEditBox >>= \i -> map (Tuple i) (index st.perfBox
   layerGuide =
     [ Tuple "# transpose 5" "shift every chord ±semitones"
     , Tuple "# oct -1" "shift ±octaves"
-    , Tuple "# rate 2" "loop faster (negative = slower)"
+    , Tuple "# slow 4" "unfold over N bars — the harmonic-progression verb"
+    , Tuple "# fast 2" "pack into 1/N of a bar"
     , Tuple "# voice open" "re-voice: open/rootless/drop2/drop24/quartal/cluster"
     , Tuple "# top 1 · # bottom 1" "keep the top / bottom N voices"
     , Tuple "# arp up 4" "arpeggiate: up/down/updown, notes per beat"
@@ -4740,7 +4740,7 @@ fxPalette st =
   HH.div
     [ HP.style "display: flex; align-items: center; gap: 8px;" ]
     ( [ HH.span [ HP.style "font-size: 10px; letter-spacing: 0.12em; text-transform: uppercase; color: #b0a684;" ] [ HH.text "fx" ] ]
-        <> map paletteChip [ Transpose 0, Octave (-1), Rate 2, Voice Open, Select (High 1), Select (Low 1), Arpg ArpUp 4, Strum 14 ]
+        <> map paletteChip [ Transpose 0, Octave (-1), Slow 4, Fast 2, Voice Open, Select (High 1), Select (Low 1), Arpg ArpUp 4, Strum 14 ]
     )
   where
   paletteChip fx =
