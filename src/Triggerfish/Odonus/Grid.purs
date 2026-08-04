@@ -258,7 +258,7 @@ handleAction a = do
 persistAll :: forall o m. MonadAff m => H.HalogenM State Action Slots o m Unit
 persistAll = do
   s <- H.get
-  liftEffect (Store.saveAll { live: patchText s, scenes: s.scenes, presets: s.presets })
+  liftEffect (Store.saveAll { live: patchText s, scenes: s.scenes, presets: s.presets, clips: s.clips })
 
 -- | An Amphora library item as a local scene (payload = the scene's eDSL text).
 amphoraScene :: Amphora.LibItem -> { name :: String, text :: String }
@@ -318,7 +318,7 @@ dispatch = case _ of
     -- Lepidoptera text; unparseable / absent storage falls back to defaults).
     msaved <- liftEffect Store.loadAll
     for_ msaved \sv -> do
-      H.modify_ _ { scenes = sv.scenes, presets = sv.presets }
+      H.modify_ _ { scenes = sv.scenes, presets = sv.presets, clips = sv.clips }
       H.modify_ (loadText sv.live)
     -- Merge the shared Amphora scene library over the local one (by name), in the
     -- BACKGROUND: awaiting it blocked Initialize (hence all queries to Odonus) until
