@@ -8,14 +8,10 @@ module Triggerfish.Odonus.Grid.Types
   , DragState
   , PendingInput
   , Scene
-  , Chunk
-  , Mark
-  , RegionEdge(..)
-  , RegionDrag
   , replayTimelineId
-  , Logbook
-  , PlayState
-  , PlaySource(..)
+  -- Chunk / Mark / RegionEdge / RegionDrag / Logbook / PlayState / PlaySource
+  -- now come from Capture.Types (#28), re-exported via the module below.
+  , module Triggerfish.Capture.Types
   , module Triggerfish.Clips
   , module Reef.Gen
   , genLabel
@@ -40,6 +36,10 @@ import Reef.Input as RI
 import Triggerfish.Odonus.Model as M
 import Triggerfish.Odonus.Marbles as Marbles
 import Triggerfish.Clips (NoteEvent, MidiClip)
+-- The always-on capture types (logbook / marks / loop regions / replay play-state)
+-- are now machine-agnostic in `Triggerfish.Capture.Types` (#28); imported here and
+-- re-exported below so every Odonus view module reaches them unchanged.
+import Triggerfish.Capture.Types (Chunk, Mark, RegionEdge(..), RegionDrag, PlaySource(..), PlayState, Logbook)
 import Triggerfish.Preset (Preset)
 import Triggerfish.Glyph (ChipView)
 import Triggerfish.Transport (Sounding)
@@ -139,26 +139,8 @@ type PendingInput = { step :: Int, input :: RI.Input }
 -- | from this module (via `module Triggerfish.Clips` above), so existing importers
 -- | are unchanged.
 
--- | A REPLAY loop in progress (#151, R2b): the region bounds in recording time,
--- | which mark it came from, the perf-clock instant the NEXT loop iteration
--- | should be scheduled at, and the 0..1 playhead position for the view.
--- | What the REPLAY loop is currently playing: a region around a mark on the
--- | timeline, or a captured clip. The scheduler is source-agnostic (it reads the
--- | rebased `events`); the source only decides what the view highlights.
-data PlaySource = FromRegion Int | FromClip Int
-
-derive instance eqPlaySource :: Eq PlaySource
-
-type PlayState =
-  { source :: PlaySource
-  , events :: Array NoteEvent  -- the loop's notes, rebased to [0, lenMicros)
-  , lenMicros :: Number        -- loop length; the notes repeat every lenMicros
-  , fromMicros :: Number       -- region bounds on the timeline (FromRegion playhead only)
-  , toMicros :: Number
-  , loopStartMs :: Number      -- perf-now ms that the loop's phase-0 aligns to
-  , scheduledUntilMs :: Number  -- watermark: notes are queued up to this perf-now ms
-  , playheadFrac :: Number
-  }
+-- | `PlaySource` / `PlayState` (what a REPLAY loop is playing + its scheduling
+-- | watermark) moved to `Triggerfish.Capture.Types` (#28) and are re-exported here.
 
 -- | A captured performance clip is now `Triggerfish.Clips.MidiClip` (recording axis
 -- | #27): the same self-contained, rebased-to-zero note buffer, promoted to a
@@ -174,46 +156,9 @@ type PlayState =
 -- | Lossless: the A3 round-trip is byte-stable.
 type Scene = { name :: String, text :: String }
 
--- | One frozen span of the always-on logbook: a chunk of captured notes with
--- | its time bounds. Chunking keeps the live append O(current chunk) instead of
--- | O(whole session), and makes retention a matter of dropping whole chunks.
-type Chunk = { fromMicros :: Number, toMicros :: Number, events :: Array NoteEvent }
-
--- | A flagged good bit: WHEN it happened (wall clock + the absolute Link `beat`),
--- | the loop window `from`/`to` (recording micros — bar-aligned at capture, then
--- | freely draggable/resizable), and the Odonus `patch` (Lepidoptera text) live
--- | at that instant. So a mark carries the notes that came out (via its span in
--- | the note stream), an editable loop region, and the machine state that made it.
-type Mark = { atMicros :: Number, beat :: Number, from :: Number, to :: Number, patch :: String }
-
--- | Which part of a loop region a drag grabbed: its left edge (move the start),
--- | right edge (move the end), or body (slide the whole window).
-data RegionEdge = EdgeFrom | EdgeTo | EdgeBody
-
-derive instance eqRegionEdge :: Eq RegionEdge
-
--- | A region drag in progress. `grabMicros` is the pointer position (in recording
--- | micros) where the grab began; `moved` distinguishes a resize/slide from a bare
--- | click (a click on the body starts playback instead).
-type RegionDrag =
-  { markIdx :: Int, edge :: RegionEdge, grabMicros :: Number
-  , startFrom :: Number, startTo :: Number, moved :: Boolean
-  }
-
--- | The always-on performance logbook (#151): the scope's note stream WITHOUT
--- | the ~8s prune, so what actually happened survives. The rig is always
--- | capturing — no arm. `live` is the growing current chunk (newest-first, like
--- | `notes`); once it fills, it freezes into `chunks` (newest-first) and a new
--- | live chunk starts. `marks` are wall-clock instants the performer tapped to
--- | flag a good bit — the seam to lift a span into a scene later. Retention: on
--- | each freeze, chunks older than the window are dropped UNLESS a mark falls
--- | within them ("the recent past plus anything I flagged"). Frontend-only.
-type Logbook =
-  { live :: Array NoteEvent    -- current growing chunk, newest-first
-  , liveFrom :: Number         -- wall-clock start of the live chunk
-  , chunks :: Array Chunk      -- frozen chunks, newest-first
-  , marks :: Array Mark        -- flagged good bits (instant + patch), newest-first
-  }
+-- | `Chunk` / `Mark` / `RegionEdge` / `RegionDrag` / `Logbook` (the always-on
+-- | capture types) moved to `Triggerfish.Capture.Types` (#28) and are re-exported
+-- | here, so every Odonus view module reaches them by their historical names.
 
 -- | The display strings for each gen source — UI-only, so they stay here (the
 -- | descriptor type `GenKind` itself, and the engine, live in `Reef.Gen`).
