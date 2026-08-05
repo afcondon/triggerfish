@@ -114,7 +114,11 @@ import Triggerfish.Clips (MidiClip, NoteEvent, headCount)
 import Triggerfish.Clips.Store as ClipStore
 import Data.Either (Either(..))
 import Reef.Vetula.Protocol (encodePerf) as RV
-import Binnacle.Time (dateNow)
+import Binnacle.Time (dateNow, perfNow)
+import Effect.Ref as Ref
+import Triggerfish.Capture.Logbook as Logbook
+import Triggerfish.Capture.Types (Orientation(..), PlaySource(..))
+import Triggerfish.Capture.View (CaptureState, capturePanel)
 import Vetula.Tidal (progressionSource, parseProgression)
 import Vetula.Lepidoptera (PerfDoc, VoiceSpec, docFromVoices, parsePerform, printAsRecord)
 import Vetula.Clipboard (copyText)
@@ -696,6 +700,10 @@ type State =
   -- whose picker is open (Nothing = closed).
   , clipLibrary :: Array MidiClip
   , perfPhrasePick :: Maybe Int
+  -- The always-on capture logbook (#28): every note the voices/boxes emit is tapped
+  -- in PerfTick and appended here (the "player piano" roll), reviewed in the
+  -- bottom-third vertical tracker and lifted into the shared clip library.
+  , capture :: CaptureState
   }
 
 -- | Which floating control a fold toggle targets.
@@ -843,6 +851,13 @@ data Action
   | ClipAudition MidiClip  -- play a library clip once, faithfully (own channels/vel/gate)
   | ClipRename String String -- rename library clip by id (commit on blur), persist
   | ClipDelete String      -- remove library clip by id, persist
+  -- Capture band (#28): the always-on player-piano roll in the lower third.
+  | CaptureMark            -- flag "the last couple of bars" as a good bit
+  | CaptureRegionSelect Int -- click a gold band → show its lift card
+  | CaptureStopSel         -- dismiss the lift card
+  | CaptureSaveClip Int    -- lift region i out into the shared clip library
+  | CaptureToggleContext   -- show/hide the region's harmonic context
+  | CaptureClear           -- purge the capture logbook
   | PerfNop                -- no-op (used to stop a click bubbling without a re-render)
   | PerfToggleMute Int     -- silence/unsilence box b's pipeline
   | PerfDragStart PerfDragSrc -- begin an HTML5 drag of a palette/box layer
@@ -1028,6 +1043,7 @@ component = H.mkComponent
       , perfMenuOpen: false
       , clipLibrary: []
       , perfPhrasePick: Nothing
+      , capture: { logbook: Logbook.emptyLog, playing: Nothing, regionDrag: Nothing, contextOpen: false }
       }
   , render
   , eval: H.mkEval H.defaultEval
@@ -2421,6 +2437,58 @@ handleAction = case _ of
     H.modify_ _ { clipLibrary = lib' }
     liftEffect (ClipStore.saveClips lib')
 
+  -- Capture band (#28). Mark flags the last two bars (the roll runs newest-at-top,
+  -- so a mark drops a default region back over what you just played). Selecting a
+  -- band shows the lift card; saveClip materializes the region and appends it to the
+  -- shared library with source "vetula". No in-surface audition — you hear the lifted
+  -- clip in the library modal (or attached into a voice).
+  CaptureMark -> do
+    nowMs <- liftEffect perfNow
+    st <- H.get
+    let atMic = nowMs * 1000.0
+        barMic = 60.0e6 / (if st.clockTempo > 1.0 then st.clockTempo else 120.0) * 4.0
+        mark = { atMicros: atMic, beat: 0.0, from: atMic - 2.0 * barMic, to: atMic, patch: "" }
+    H.modify_ \s -> s { capture = s.capture { logbook = Logbook.pushMark mark s.capture.logbook } }
+
+  CaptureRegionSelect i -> H.modify_ \s -> case s.capture.logbook.marks !! i of
+    Just m -> s { capture = s.capture { playing = Just
+                    { source: FromRegion i, events: [], lenMicros: m.to - m.from
+                    , fromMicros: m.from, toMicros: m.to, loopStartMs: 0.0
+                    , scheduledUntilMs: 0.0, playheadFrac: 0.0 } } }
+    Nothing -> s
+
+  CaptureStopSel -> H.modify_ \s -> s { capture = s.capture { playing = Nothing } }
+
+  CaptureToggleContext -> H.modify_ \s -> s { capture = s.capture { contextOpen = not s.capture.contextOpen } }
+
+  CaptureClear -> H.modify_ \s -> s { capture = s.capture { logbook = Logbook.emptyLog, playing = Nothing, contextOpen = false } }
+
+  CaptureSaveClip i -> do
+    st <- H.get
+    for_ (st.capture.logbook.marks !! i) \m -> do
+      nowMs <- liftEffect perfNow
+      let evs = Logbook.materializeRegion m.from m.to st.capture.logbook
+          clip =
+            { id: "vetula-" <> show m.atMicros
+            , events: evs
+            , lenMicros: m.to - m.from
+            , heads: headCount evs
+            , capturedMicros: nowMs * 1000.0
+            , source: "vetula"
+            , name: "vetula clip"
+            , tags: [ "vetula" ]
+            , notes: ""
+            , bpm: Just st.clockTempo
+            , key: Nothing
+            , context: Nothing
+            }
+      -- reload → prepend → save the whole library, so a clip Odonus wrote this
+      -- session isn't clobbered (clipLibrary may be stale).
+      existing <- liftEffect ClipStore.loadClips
+      let lib' = [ clip ] <> existing
+      liftEffect (ClipStore.saveClips lib')
+      H.modify_ _ { clipLibrary = lib', capture = st.capture { playing = Nothing } }
+
   PerfNop -> pure unit
 
   -- Starting a drag abandons any click-to-place hold, so the two gestures can't
@@ -2601,6 +2669,13 @@ handleAction = case _ of
       tempo <- case st.binnacle of
         Just bin -> liftEffect (_.tempo <$> Clock.read (Binnacle.clock bin))
         Nothing -> pure (toNumber st.tempo)
+      -- Capture tap (#28): a wall-clock base for this tick + a Ref the emit sites
+      -- prepend to (newest-first). Every voice/box note tapped this tick lands here,
+      -- then folds into the always-on logbook below — the "player piano" roll.
+      nowMs <- liftEffect perfNow
+      capRef <- liftEffect (Ref.new ([] :: Array NoteEvent))
+      let rec r = Ref.modify_ (\xs -> [ { pitch: r.pitch, headIdx: r.headIdx
+                    , fireUnixMicros: (nowMs + r.delayMs) * 1000.0, vel: r.vel, gateMs: r.gateMs } ] <> xs) capRef
       let reefChords = map toReefChord (perfChords st)
           pulseMs = 60000.0 / tempo / 4.0
           -- ATLANTIS (audible=false): keep advancing each voice's read-head so the
@@ -2608,7 +2683,7 @@ handleAction = case _ of
           -- pane), but pass no MIDI-out so nothing sounds locally — the rig's brush
           -- is the sound. SOLO: emit as normal.
           mout = if st.authority == Local then st.midiOut else Nothing
-      voices' <- liftEffect $ traverse (stepVoice mout st.routing reefChords tick.index pulseMs tick.delayMs) st.voices
+      voices' <- liftEffect $ traverse (stepVoice mout st.routing reefChords tick.index pulseMs tick.delayMs rec) st.voices
       -- PERFORM boxes: query each filled box's `Pattern` for the current cycle and
       -- schedule the notes it yields (block together; arp/`fast` subdivide). A box
       -- with a text-hatch sequence plays on the BAR grid (mini-notation cycle = one
@@ -2629,11 +2704,15 @@ handleAction = case _ of
                   cyc = if boxUsesSeq box then tick.index / 16 else tick.index / 4
                   slotMs = if boxUsesSeq box then barMs else beatMs
               in when onGrid do
-                   r <- try (scheduleBox out cyc slotMs beatMs tick.delayMs box)
+                   r <- try (scheduleBox out cyc slotMs beatMs tick.delayMs rec box)
                    case r of
                      Left err -> Console.error ("perf box P" <> show box.channel <> " schedule threw: " <> message err)
                      Right _ -> pure unit
-      H.modify_ _ { pulse = tick.index, voices = voices', clockTempo = tempo, tempo = round tempo }
+      -- Fold this tick's tapped notes into the always-on capture logbook (#28).
+      fresh <- liftEffect (Ref.read capRef)
+      H.modify_ \st2 -> st2
+        { pulse = tick.index, voices = voices', clockTempo = tempo, tempo = round tempo
+        , capture = st2.capture { logbook = Logbook.logAppend (nowMs * 1000.0) fresh st2.capture.logbook } }
 
   -- parse the (possibly edited) Tidal source into note-lists, rebuild them as a
   -- fresh progression of imported chords, and point the path at them. The
@@ -2987,8 +3066,8 @@ brushMsg st =
 -- | CONSTRUCTION (block / arp / strum all gated notes; strum's ties come out as one
 -- | long gate). A → odo voice sounds no MIDI, it just advances its read-head so the
 -- | shell can poll its chord. `held` is retired — gated notes end themselves.
-stepVoice :: Maybe Midi.MidiOut -> Map String Int -> Array RV.VChord -> Int -> Number -> Number -> Voice -> Effect Voice
-stepVoice mout routing reefChords pulse pulseMs baseDelayMs v =
+stepVoice :: Maybe Midi.MidiOut -> Map String Int -> Array RV.VChord -> Int -> Number -> Number -> (EmitRec -> Effect Unit) -> Voice -> Effect Voice
+stepVoice mout routing reefChords pulse pulseMs baseDelayMs rec v =
   let rv = toReefVoice routing v
       clock = voiceClock (length reefChords) v
       cur = fromMaybe v.cursor (RV.cursorAtClock clock v.phase pulse)
@@ -3006,10 +3085,14 @@ stepVoice mout routing reefChords pulse pulseMs baseDelayMs v =
     ToOdonus -> pure v { cursor = cur }
     ToMidi -> do
       for_ mout \out ->
-        for_ emit \e ->
+        for_ emit \e -> do
           Midi.scheduleNote out
             { channel: Routing.toWire (midiChannelFor routing v), note: e.note, velocity: e.velocity
             , delayMs: baseDelayMs, durMs: e.durPulses * pulseMs }
+          -- tap: record the emitted note for the capture logbook (#28). headIdx = the
+          -- voice's (1-based) channel, so the tracker colours by voice.
+          rec { pitch: e.note, headIdx: midiChannelFor routing v, delayMs: baseDelayMs
+              , vel: e.velocity, gateMs: e.durPulses * pulseMs }
       pure v { cursor = cur, held = [] }
 
 -- | The chord index a voice's read-head is on at this pulse (Nothing if its loop
@@ -3587,8 +3670,13 @@ boxPattern box = foldl (\p lyr -> applyLayer lyr p) base box.stack
 -- | flow through the block path, each on its own onset. `boxRealise` only picks the
 -- | sink ornament: Block = all notes together, held for the slot; Strum = a fast ms
 -- | onset stagger. `slow`/`fast` stretch the slot orthogonally (upstream, in-pattern).
-scheduleBox :: Midi.MidiOut -> Int -> Number -> Number -> Number -> PerfBox -> Effect Unit
-scheduleBox out c cycleMs _beatMs baseDelayMs box =
+-- | One tapped emitted note, in the shape the emit sites can build cheaply: the
+-- | capture closure (PerfTick) stamps `fireUnixMicros` from the tick's wall clock +
+-- | `delayMs` and prepends it to the logbook (#28).
+type EmitRec = { pitch :: Int, headIdx :: Int, delayMs :: Number, vel :: Int, gateMs :: Number }
+
+scheduleBox :: Midi.MidiOut -> Int -> Number -> Number -> Number -> (EmitRec -> Effect Unit) -> PerfBox -> Effect Unit
+scheduleBox out c cycleMs _beatMs baseDelayMs rec box =
   case box.phrase of
     -- ORIGINAL channel mode (#27b): faithful multi-channel playback — each active
     -- source head on its OWN channel (headIdx → the clip's original channel), no chord
@@ -3599,14 +3687,15 @@ scheduleBox out c cycleMs _beatMs baseDelayMs box =
         when (not (elem h ph.mutedHeads)) $
           schedulePat out (Routing.odonusHeadChannel h) c cycleMs baseDelayMs RBlock
             (phrasePatternFrom ph.clip.lenMicros (phraseBars ph.clip)
-              (filter (\e -> e.headIdx == h) ph.clip.events))
-    _ -> schedulePat out box.channel c cycleMs baseDelayMs (boxRealise box.stack) (boxPattern box)
+              (filter (\e -> e.headIdx == h) ph.clip.events)) rec
+    _ -> schedulePat out box.channel c cycleMs baseDelayMs (boxRealise box.stack) (boxPattern box) rec
 
 -- | Schedule one `Pattern (Array Int)` on one channel over cycle `c` — the shared core
 -- | of `scheduleBox` (single channel = chord box / flattened phrase; per head = ORIGINAL
--- | phrase). Onset-guarded and realisation-aware exactly as before.
-schedulePat :: Midi.MidiOut -> Int -> Int -> Number -> Number -> Realise -> PT.Pattern (Array Int) -> Effect Unit
-schedulePat out channel c cycleMs baseDelayMs realise pat =
+-- | phrase). Onset-guarded and realisation-aware exactly as before, plus a `rec` tap for
+-- | the capture logbook (#28) alongside each emitted note.
+schedulePat :: Midi.MidiOut -> Int -> Int -> Number -> Number -> Realise -> PT.Pattern (Array Int) -> (EmitRec -> Effect Unit) -> Effect Unit
+schedulePat out channel c cycleMs baseDelayMs realise pat rec =
   for_ (query pat (mkState (mkArc (Rat.fromInt c) (Rat.fromInt (c + 1))))) \ev ->
     for_ (onsetWhole ev) \(Arc w) ->
         let startMs = baseDelayMs + Rat.toNumber (w.start - Rat.fromInt c) * cycleMs
@@ -3617,10 +3706,10 @@ schedulePat out channel c cycleMs baseDelayMs realise pat =
               RStrum ms -> toNumber ms
               RBlock -> 0.0
             noteDur = max 20.0 (slotMs * 0.9)
-        in for_ (mapWithIndex Tuple notes) \(Tuple k note) ->
-             Midi.scheduleNote out
-               { channel, note, velocity: 90
-               , delayMs: startMs + toNumber k * stepMs, durMs: noteDur }
+        in for_ (mapWithIndex Tuple notes) \(Tuple k note) -> do
+             let d = startMs + toNumber k * stepMs
+             Midi.scheduleNote out { channel, note, velocity: 90, delayMs: d, durMs: noteDur }
+             rec { pitch: note, headIdx: channel, delayMs: d, vel: 90, gateMs: noteDur }
 
 -- | A digital event's whole, but ONLY when its onset falls in this query (whole start
 -- | == part start). Analog events and mid-sustain continuation fragments give Nothing,
@@ -4939,10 +5028,67 @@ perfRecallModal st =
       , HE.onClick \_ -> PerfLoadScene item.payload ]
       [ HH.text item.name ]
 
+-- | The always-on capture band (#28): the lower third of the Perform surface, a
+-- | VERTICAL player-piano roll of every note the voices/boxes have emitted (newest
+-- | at top). A small toolbar (◆ mark · note count · clear) rides above the shared
+-- | `capturePanel`. Marking flags the last couple of bars; clicking the gold band
+-- | shows a card to lift that span into the shared clip library (source "vetula").
+captureBand :: forall m. State -> H.ComponentHTML Action Slots m
+captureBand st =
+  -- Full-bleed like Odonus's capture surface: negative margins cancel the
+  -- performSurface's 30px/28px padding so it reaches the left/right/bottom edges,
+  -- while margin-top:auto still pins it to the lower third.
+  HH.div
+    [ HP.style "margin: auto -28px -30px -28px; height: 34vh; min-height: 200px; display: flex; flex-direction: column; background: #0b0a07; border-top: 1px solid #2a281f;" ]
+    [ HH.div
+        [ HP.style "display: flex; align-items: center; gap: 12px; padding: 6px 14px;" ]
+        [ HH.span [ HP.style "font-size: 10px; letter-spacing: 0.14em; text-transform: uppercase; color: #8a8272;" ] [ HH.text "capture" ]
+        , HH.button
+            [ HP.style "border: 1px solid #e8c14a55; background: #ffffff10; color: #e8c14a; cursor: pointer; padding: 3px 12px; border-radius: 5px; font-size: 11px; font-family: Georgia, serif;"
+            , HP.title "flag the last couple of bars as a good bit"
+            , HE.onClick \_ -> CaptureMark ]
+            [ HH.text "◆ mark" ]
+        , HH.span [ HP.style "font-size: 10px; color: #ffffff55; font-family: 'SF Mono', Menlo, monospace;" ]
+            [ HH.text (show (Logbook.noteCount st.capture.logbook) <> " notes · " <> show (length st.capture.logbook.marks) <> " marks") ]
+        , HH.button
+            [ HP.style "margin-left: auto; border: 1px solid #ffffff1a; background: transparent; color: #ffffff44; cursor: pointer; padding: 3px 10px; border-radius: 5px; font-size: 10px; font-family: Georgia, serif;"
+            , HP.title "clear the capture roll"
+            , HE.onClick \_ -> CaptureClear ]
+            [ HH.text "clear" ]
+        ]
+    , HH.div
+        [ HP.style "flex: 1 1 auto; min-height: 0; position: relative; overflow: hidden;" ]
+        [ capturePanel captureWiring st.capture ]
+    ]
+  where
+  captureWiring =
+    { orientation: Vertical
+    , timelineId: "vetula-capture-timeline"
+    , headColor: captureHeadColor
+    , contextSummary: \_ -> Nothing
+    , regionDown: \i _ _ _ -> CaptureRegionSelect i
+    , stopPlay: CaptureStopSel
+    , saveClip: CaptureSaveClip
+    , saveScene: Nothing
+    , toggleContext: CaptureToggleContext
+    }
+
+-- | Colour a captured note by its source channel/voice (up to six distinct hues).
+captureHeadColor :: Int -> String
+captureHeadColor h = case h `mod` 6 of
+  0 -> "#2f5fb0"
+  1 -> "#b0492f"
+  2 -> "#2f8a5c"
+  3 -> "#b07a2f"
+  4 -> "#6a4a8a"
+  _ -> "#2f7d8a"
+
 performSurface :: forall m. State -> H.ComponentHTML Action Slots m
 performSurface st =
   HH.div
-    [ HP.style "position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 26px; padding: 40px;" ]
+    -- Voices sit at the TOP (justify-content: flex-start), so the lower third of
+    -- the surface is free for the capture/tracker band (#28b). AC, 2026-08-05.
+    [ HP.style "position: absolute; inset: 0; display: flex; flex-direction: column; align-items: stretch; justify-content: flex-start; gap: 22px; padding: 30px 28px;" ]
     -- FX palette floated to the top of the surface (holding pattern — its final home
     -- and framing, "training wheels for Tidal" vs "starter-pack suggestions", is a
     -- parked design question). AC, 2026-08-03.
@@ -4951,8 +5097,9 @@ performSurface st =
     -- palette and its players.
     [ fxPalette st
     , HH.div
-        [ HP.style "display: flex; gap: 18px; flex-wrap: wrap; justify-content: center; align-items: flex-start; max-width: 1180px;" ]
+        [ HP.style "display: flex; gap: 18px; flex-wrap: wrap; justify-content: space-between; align-items: flex-start; width: 100%;" ]
         (mapWithIndex (perfBox st) st.perfBoxes <> [ addPlayerTile ])
+    , captureBand st
     , perfEditModal st
     , perfPhrasePickModal st
     , perfRecallModal st

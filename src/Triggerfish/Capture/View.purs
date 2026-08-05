@@ -104,11 +104,22 @@ pitchCoord o pitch =
        Horizontal -> tlH * (1.0 - norm)
        Vertical -> tlW * norm
 
--- | Position along the TIME axis, in viewBox units, for a 0..1 fraction.
+-- | Position along the TIME axis, in viewBox units, for a 0..1 fraction (0 =
+-- | earliest note, 1 = newest). Horizontal → X, earliest at left. Vertical →
+-- | Y, NEWEST AT TOP (AC's call): frac 1 maps to Y 0, so the newest notes ride the
+-- | top edge and the roll ages downward.
 timeCoord :: Orientation -> Number -> Number
 timeCoord o frac = case o of
   Horizontal -> frac * tlW
-  Vertical -> frac * tlH
+  Vertical -> (1.0 - frac) * tlH
+
+-- | Position along the TIME axis as a PERCENT (0..100) for HTML overlays — same
+-- | convention as `timeCoord` (Horizontal → % from left; Vertical → % from top,
+-- | newest at top). Region bands/handles/playhead all place through this.
+axisPos :: Orientation -> Number -> Number
+axisPos o frac = case o of
+  Horizontal -> frac * 100.0
+  Vertical -> (1.0 - frac) * 100.0
 
 -- ── the surface ──────────────────────────────────────────────────────────────
 
@@ -131,8 +142,8 @@ capturePanel w cap =
             tMin = foldl (\a e -> min a e.fireUnixMicros) 1.0e18 events
             tMax = foldl (\a e -> max a e.fireUnixMicros) 0.0 events
             span = max 1.0 (tMax - tMin)
-            fracOf t = (t - tMin) / span     -- 0..1 along the time axis
-            pctOf t = fracOf t * 100.0       -- percent, for HTML overlays
+            fracOf t = (t - tMin) / span              -- 0..1 along the time axis
+            posOf t = axisPos w.orientation (fracOf t)  -- percent from the axis origin
           in
             [ svgEl "svg"
                 [ svgAttr "width" "100%", svgAttr "height" "100%"
@@ -141,10 +152,10 @@ capturePanel w cap =
                 , style "position:absolute;inset:0" ]
                 (map (noteDot w fracOf) (decimate events) <> map (markLine w fracOf) lb.marks)
             ]
-              <> concat (mapWithIndex (regionBand w pctOf cap.playing) lb.marks)
-              <> playhead w pctOf cap.playing
+              <> concat (mapWithIndex (regionBand w posOf cap.playing) lb.marks)
+              <> playhead w posOf cap.playing
               <> [ caption (length events) (length lb.marks) ]
-              <> controlCard w pctOf cap
+              <> controlCard w posOf cap
       )
 
 -- | Keep at most `maxDraw` notes by taking every stride-th one.
@@ -190,18 +201,20 @@ markLine w fracOf m =
 -- | Horizontal → a vertical strip spanning the height; Vertical → a horizontal strip
 -- | spanning the width.
 regionBand :: forall action slots m. CaptureWiring action -> (Number -> Number) -> Maybe PlayState -> Int -> Mark -> Array (H.ComponentHTML action slots m)
-regionBand w pctOf playing i m =
-  let a = pctOf m.from
-      b = pctOf m.to
-      len = max 0.3 (b - a)
+regionBand w posOf playing i m =
+  let pf = posOf m.from
+      pt = posOf m.to
+      -- the band spans between the two endpoints; which is smaller flips with the
+      -- axis direction (Vertical is newest-at-top), so take min/abs and it's generic.
+      start = min pf pt
+      len = max 0.3 (abs (pt - pf))
       active = case playing of
         Just p -> p.source == FromRegion i
         Nothing -> false
-      -- band box + edge grip axis differ by orientation.
       bandStyle = case w.orientation of
-        Horizontal -> "top:0;bottom:0;left:" <> show a <> "%;width:" <> show len <> "%;cursor:grab;"
+        Horizontal -> "top:0;bottom:0;left:" <> show start <> "%;width:" <> show len <> "%;cursor:grab;"
           <> "border-left:1px solid #e8c14a66;border-right:1px solid #e8c14a66;"
-        Vertical -> "left:0;right:0;top:" <> show a <> "%;height:" <> show len <> "%;cursor:grab;"
+        Vertical -> "left:0;right:0;top:" <> show start <> "%;height:" <> show len <> "%;cursor:grab;"
           <> "border-top:1px solid #e8c14a66;border-bottom:1px solid #e8c14a66;"
   in
     [ HH.div
@@ -210,9 +223,13 @@ regionBand w pctOf playing i m =
             <> "background:rgba(232,193,74," <> (if active then "0.22" else "0.10") <> ")"
             <> (if active then ";box-shadow:inset 0 0 0 1px #e8c14a" else "") ]
         []
-    , edgeHandle w i EdgeFrom a
-    , edgeHandle w i EdgeTo b
+    , edgeHandle w i EdgeFrom pf
+    , edgeHandle w i EdgeTo pt
     ]
+
+-- | Absolute value on `Number` (Data.Ord.abs is fine but avoids an extra import).
+abs :: Number -> Number
+abs n = if n < 0.0 then -n else n
 
 -- | A thin resize grip at a region edge (percent along the time axis), on top of the
 -- | body. `ew-resize` for Horizontal, `ns-resize` for Vertical.
@@ -229,9 +246,9 @@ edgeHandle w i edge pct =
 -- | The moving loop playhead while replaying a REGION (a saved clip isn't on the
 -- | timeline). A line perpendicular to the time axis, moving along it.
 playhead :: forall action slots m. CaptureWiring action -> (Number -> Number) -> Maybe PlayState -> Array (H.ComponentHTML action slots m)
-playhead w pctOf = case _ of
+playhead w posOf = case _ of
   Just p | FromRegion _ <- p.source ->
-    let pos = pctOf (p.fromMicros + p.playheadFrac * (p.toMicros - p.fromMicros))
+    let pos = posOf (p.fromMicros + p.playheadFrac * (p.toMicros - p.fromMicros))
         headStyle = case w.orientation of
           Horizontal -> "top:0;bottom:0;left:" <> show pos <> "%;width:2px;"
           Vertical -> "left:0;right:0;top:" <> show pos <> "%;height:2px;"
@@ -244,7 +261,7 @@ playhead w pctOf = case _ of
 -- | scene, and the harmonic context to jam over. When nothing plays it's just the
 -- | hint. Anchors near the region's start along the time axis.
 controlCard :: forall action slots m. CaptureWiring action -> (Number -> Number) -> CaptureState -> Array (H.ComponentHTML action slots m)
-controlCard w pctOf cap = case cap.playing of
+controlCard w posOf cap = case cap.playing of
   Nothing ->
     [ HH.div
         [ style "position:absolute;bottom:9px;right:12px;font-family:Georgia,serif;font-size:10px;color:#ffffff44" ]
@@ -256,12 +273,13 @@ controlCard w pctOf cap = case cap.playing of
       Nothing -> []
       Just m ->
         let
-          a = pctOf m.from
-          b = pctOf m.to
-          -- anchor along the time axis, flipping past the midpoint so it never runs off.
+          pf = posOf m.from
+          pt = posOf m.to
+          start = min pf pt   -- top/left edge of the band, whichever way the axis runs
+          -- anchor near the band's start, flipping past the midpoint so it never runs off.
           anchor = case w.orientation of
-            Horizontal -> if a < 55.0 then "top:6px;left:" <> show a <> "%" else "top:6px;right:" <> show (100.0 - b) <> "%"
-            Vertical -> if a < 55.0 then "left:8px;top:calc(" <> show a <> "% + 4px)" else "left:8px;bottom:calc(" <> show (100.0 - b) <> "% + 4px)"
+            Horizontal -> if start < 55.0 then "top:6px;left:" <> show start <> "%" else "top:6px;right:" <> show (100.0 - max pf pt) <> "%"
+            Vertical -> if start < 70.0 then "left:8px;top:calc(" <> show start <> "% + 4px)" else "left:8px;bottom:calc(" <> show (100.0 - max pf pt) <> "% + 4px)"
         in
           [ HH.div
               [ style $ "position:absolute;" <> anchor <> ";z-index:7;min-width:150px;"

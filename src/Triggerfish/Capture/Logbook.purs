@@ -21,11 +21,12 @@ module Triggerfish.Capture.Logbook
   , snapMicrosToBeat
   , retentionMicros
   , chunkSize
+  , materializeRegion
   ) where
 
 import Prelude
 
-import Data.Array (any, deleteAt, filter, length, null, (:))
+import Data.Array (any, concatMap, deleteAt, filter, length, null, (:))
 import Data.Foldable (sum)
 import Data.Int (floor, round, toNumber)
 import Data.Maybe (fromMaybe)
@@ -108,3 +109,13 @@ deleteMark i lb = lb { marks = fromMaybe lb.marks (deleteAt i lb.marks) }
 -- | Total captured notes across the live chunk and all frozen chunks.
 noteCount :: Logbook -> Int
 noteCount lb = length lb.live + sum (map (length <<< _.events) lb.chunks)
+
+-- | The notes inside a loop region `[from, to]`, rebased so the region starts at
+-- | zero (`fireUnixMicros - from`) — a self-contained clip buffer ready for the
+-- | shared library. Reads the FULL logbook (live + all chunks), not the decimated
+-- | view.
+materializeRegion :: Number -> Number -> Logbook -> Array NoteEvent
+materializeRegion from to lb =
+  map (\e -> e { fireUnixMicros = e.fireUnixMicros - from })
+    (filter (\e -> e.fireUnixMicros >= from && e.fireUnixMicros <= to)
+      (lb.live <> concatMap _.events lb.chunks))
