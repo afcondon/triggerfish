@@ -1,7 +1,9 @@
 -- | `Triggerfish.Capture.View` — the machine-agnostic capture/replay surface (#28,
--- | docs/DESIGN-capture-surface.md). One renderer, two orientations: `Horizontal`
--- | lays time along X (Odonus, as it always has), `Vertical` lays time down Y
--- | (Vetula tracker / piano-roll). Same data, same gestures, different axis.
+-- | docs/DESIGN-capture-surface.md). One renderer, three orientations: `Horizontal`
+-- | lays time along X oldest-first (Odonus), `HorizontalOutward` reverses it so the
+-- | newest note enters at the left and ages rightward (Vetula, whose surface sits to
+-- | the right of its voices), `Vertical` lays time down Y. Same data, same gestures,
+-- | different projection — see `Capture.Types.Orientation`.
 -- |
 -- | Pure and POLYMORPHIC in the host's `action`: the view never imports a machine's
 -- | Action type (that would be a cycle, and machine-specific). Instead the host
@@ -95,30 +97,33 @@ clampI lo hi v = if v < lo then lo else if v > hi then hi else v
 
 -- ── coordinate projections (the only orientation-aware code) ─────────────────
 
--- | Position along the PITCH axis, in viewBox units. Horizontal → Y (high at top);
--- | Vertical → X (low at left, high at right).
+-- | Position along the PITCH axis, in viewBox units. Either horizontal orientation
+-- | → Y (high at top); Vertical → X (low at left, high at right).
 pitchCoord :: Orientation -> Int -> Number
 pitchCoord o pitch =
   let norm = (toNumber (clampI 24 96 pitch) - 24.0) / 72.0
   in case o of
-       Horizontal -> tlH * (1.0 - norm)
        Vertical -> tlW * norm
+       _ -> tlH * (1.0 - norm)
 
 -- | Position along the TIME axis, in viewBox units, for a 0..1 fraction (0 =
--- | earliest note, 1 = newest). Horizontal → X, earliest at left. Vertical →
--- | Y, NEWEST AT TOP (AC's call): frac 1 maps to Y 0, so the newest notes ride the
--- | top edge and the roll ages downward.
+-- | earliest note, 1 = newest). Horizontal → X, earliest at left. HorizontalOutward
+-- | → X flipped, NEWEST AT LEFT so the roll ages away from the voices. Vertical →
+-- | Y, NEWEST AT TOP (AC's call): frac 1 maps to Y 0, ageing downward.
 timeCoord :: Orientation -> Number -> Number
 timeCoord o frac = case o of
   Horizontal -> frac * tlW
+  HorizontalOutward -> (1.0 - frac) * tlW
   Vertical -> (1.0 - frac) * tlH
 
 -- | Position along the TIME axis as a PERCENT (0..100) for HTML overlays — same
--- | convention as `timeCoord` (Horizontal → % from left; Vertical → % from top,
--- | newest at top). Region bands/handles/playhead all place through this.
+-- | convention as `timeCoord` (Horizontal → % from left, oldest first;
+-- | HorizontalOutward → % from left, NEWEST first; Vertical → % from top, newest at
+-- | top). Region bands/handles/playhead all place through this.
 axisPos :: Orientation -> Number -> Number
 axisPos o frac = case o of
   Horizontal -> frac * 100.0
+  HorizontalOutward -> (1.0 - frac) * 100.0
   Vertical -> (1.0 - frac) * 100.0
 
 -- ── the surface ──────────────────────────────────────────────────────────────
@@ -172,10 +177,10 @@ noteDot :: forall action slots m. CaptureWiring action -> (Number -> Number) -> 
 noteDot w fracOf e =
   let t = timeCoord w.orientation (fracOf e.fireUnixMicros)
       p = pitchCoord w.orientation e.pitch
-      -- (x,y,width,height): time on X for Horizontal, on Y for Vertical.
+      -- (x,y,width,height): time on X for either horizontal, on Y for Vertical.
       coords = case w.orientation of
-        Horizontal -> { x: t, y: p, ww: "2", hh: "3" }
         Vertical -> { x: p, y: t, ww: "3", hh: "2" }
+        _ -> { x: t, y: p, ww: "2", hh: "3" }
   in svgEl "rect"
     [ svgAttr "x" (show coords.x), svgAttr "y" (show coords.y)
     , svgAttr "width" coords.ww, svgAttr "height" coords.hh, svgAttr "rx" "1"
@@ -187,8 +192,8 @@ markLine :: forall action slots m. CaptureWiring action -> (Number -> Number) ->
 markLine w fracOf m =
   let t = timeCoord w.orientation (fracOf m.atMicros)
       coords = case w.orientation of
-        Horizontal -> { x: show t, y: "0", ww: "1.5", hh: show tlH }
         Vertical -> { x: "0", y: show t, ww: show tlW, hh: "1.5" }
+        _ -> { x: show t, y: "0", ww: "1.5", hh: show tlH }
   in svgEl "rect"
     [ svgAttr "x" coords.x, svgAttr "y" coords.y
     , svgAttr "width" coords.ww, svgAttr "height" coords.hh
@@ -198,24 +203,25 @@ markLine w fracOf m =
 -- | A loop region — the gold band [from,to] as HTML overlays. Body (grab to slide,
 -- | click to play) and two edge handles (grab to resize) are SIBLINGS so an edge
 -- | grab doesn't also fire the body's mousedown. Brighter while it's the one playing.
--- | Horizontal → a vertical strip spanning the height; Vertical → a horizontal strip
+-- | Either horizontal → a vertical strip spanning the height; Vertical → a horizontal strip
 -- | spanning the width.
 regionBand :: forall action slots m. CaptureWiring action -> (Number -> Number) -> Maybe PlayState -> Int -> Mark -> Array (H.ComponentHTML action slots m)
 regionBand w posOf playing i m =
   let pf = posOf m.from
       pt = posOf m.to
       -- the band spans between the two endpoints; which is smaller flips with the
-      -- axis direction (Vertical is newest-at-top), so take min/abs and it's generic.
+      -- axis direction (Vertical and HorizontalOutward both run newest-first), so
+      -- take min/abs and the band placement is generic.
       start = min pf pt
       len = max 0.3 (abs (pt - pf))
       active = case playing of
         Just p -> p.source == FromRegion i
         Nothing -> false
       bandStyle = case w.orientation of
-        Horizontal -> "top:0;bottom:0;left:" <> show start <> "%;width:" <> show len <> "%;cursor:grab;"
-          <> "border-left:1px solid #e8c14a66;border-right:1px solid #e8c14a66;"
         Vertical -> "left:0;right:0;top:" <> show start <> "%;height:" <> show len <> "%;cursor:grab;"
           <> "border-top:1px solid #e8c14a66;border-bottom:1px solid #e8c14a66;"
+        _ -> "top:0;bottom:0;left:" <> show start <> "%;width:" <> show len <> "%;cursor:grab;"
+          <> "border-left:1px solid #e8c14a66;border-right:1px solid #e8c14a66;"
   in
     [ HH.div
         [ HE.onMouseDown \me -> w.regionDown i EdgeBody (ME.clientX me) (ME.clientY me)
@@ -232,12 +238,12 @@ abs :: Number -> Number
 abs n = if n < 0.0 then -n else n
 
 -- | A thin resize grip at a region edge (percent along the time axis), on top of the
--- | body. `ew-resize` for Horizontal, `ns-resize` for Vertical.
+-- | body. `ew-resize` for either horizontal, `ns-resize` for Vertical.
 edgeHandle :: forall action slots m. CaptureWiring action -> Int -> RegionEdge -> Number -> H.ComponentHTML action slots m
 edgeHandle w i edge pct =
   let gripStyle = case w.orientation of
-        Horizontal -> "top:0;bottom:0;left:calc(" <> show pct <> "% - 4px);width:8px;cursor:ew-resize;"
         Vertical -> "left:0;right:0;top:calc(" <> show pct <> "% - 4px);height:8px;cursor:ns-resize;"
+        _ -> "top:0;bottom:0;left:calc(" <> show pct <> "% - 4px);width:8px;cursor:ew-resize;"
   in HH.div
     [ HE.onMouseDown \me -> w.regionDown i edge (ME.clientX me) (ME.clientY me)
     , style $ "position:absolute;" <> gripStyle <> "background:rgba(232,193,74,0.4)" ]
@@ -250,8 +256,8 @@ playhead w posOf = case _ of
   Just p | FromRegion _ <- p.source ->
     let pos = posOf (p.fromMicros + p.playheadFrac * (p.toMicros - p.fromMicros))
         headStyle = case w.orientation of
-          Horizontal -> "top:0;bottom:0;left:" <> show pos <> "%;width:2px;"
           Vertical -> "left:0;right:0;top:" <> show pos <> "%;height:2px;"
+          _ -> "top:0;bottom:0;left:" <> show pos <> "%;width:2px;"
     in [ HH.div
            [ style $ "position:absolute;" <> headStyle <> "background:#ffffff;opacity:0.85;pointer-events:none" ]
            [] ]
@@ -278,8 +284,8 @@ controlCard w posOf cap = case cap.playing of
           start = min pf pt   -- top/left edge of the band, whichever way the axis runs
           -- anchor near the band's start, flipping past the midpoint so it never runs off.
           anchor = case w.orientation of
-            Horizontal -> if start < 55.0 then "top:6px;left:" <> show start <> "%" else "top:6px;right:" <> show (100.0 - max pf pt) <> "%"
             Vertical -> if start < 70.0 then "left:8px;top:calc(" <> show start <> "% + 4px)" else "left:8px;bottom:calc(" <> show (100.0 - max pf pt) <> "% + 4px)"
+            _ -> if start < 55.0 then "top:6px;left:" <> show start <> "%" else "top:6px;right:" <> show (100.0 - max pf pt) <> "%"
         in
           [ HH.div
               [ style $ "position:absolute;" <> anchor <> ";z-index:7;min-width:150px;"

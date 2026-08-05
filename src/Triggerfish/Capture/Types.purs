@@ -89,8 +89,19 @@ type Logbook =
   }
 
 -- | How a capture surface lays time out. The one axis-aware parameter of the shared
--- | view: `Horizontal` = time → X (Odonus, as now), `Vertical` = time → Y (Vetula
--- | tracker / piano-roll down the screen). Same data + gestures, different axis.
-data Orientation = Horizontal | Vertical
+-- | view — same data, same gestures, different projection.
+-- |
+-- |   * `Horizontal` — time → X, OLDEST at left (Odonus, as it always has).
+-- |   * `HorizontalOutward` — time → X REVERSED: the newest note enters at the LEFT
+-- |     edge and ages rightward. Vetula's surface sits to the RIGHT of its voices,
+-- |     so notes appear to flow OUT of the voice that played them (AC, 2026-08-05).
+-- |   * `Vertical` — time → Y, newest at top. Built for the Vetula tracker; unused
+-- |     since Vetula went horizontal, kept for the true-tracker refinement the
+-- |     design note still parks (docs/DESIGN-capture-surface.md).
+-- |
+-- | The two horizontal variants share ALL their geometry (strip shape, resize
+-- | cursors, card anchoring) — they differ only in `timeCoord`/`axisPos`, which is
+-- | why the view matches `Vertical` explicitly and lets `_` carry the rest.
+data Orientation = Horizontal | HorizontalOutward | Vertical
 
 derive instance eqOrientation :: Eq Orientation

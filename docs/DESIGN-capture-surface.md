@@ -99,10 +99,47 @@ site. (No need to nest Odonus's fields — the adapter is five lines and keeps t
 working component untouched.) Vetula/Balistes add a `capture :: CaptureState`
 sub-record and their own wiring.
 
+## Two renderers, not one (2026-08-05)
+
+A capture surface is really **two** views, and conflating them was a bug:
+
+| | `Capture.River` | `Capture.View.capturePanel` |
+|---|---|---|
+| time scale | CONSTANT (`pxPerMs = 0.05`, ~7.6 s across) | fit-to-session (`tMin`..`tMax` squeezed into the box) |
+| motion | notes flow at a fixed speed, fading over 7 s | rescales on every new note — the picture lurches |
+| note mark | 9×5 rounded rect in a fixed 380×520 viewBox | 2×3 rect in a viewBox stretched to an ever-growing span → slivers |
+| redraw | a 33 ms frame timer | whenever host state changes |
+| right for | **LIVE** | **REPLAY** (whole take at once, to pick a phrase out of it) |
+
+Odonus always had both — the scope (river) and the replay surface. Vetula's #28b
+band was built on `capturePanel` alone and used it in both modes, which is why
+AC saw it as "jerky and slow… notes very much smaller" next to Odonus's scope:
+it was the wrong renderer for the live case, not a styling difference.
+
+`Capture.River` was generalised out of `Odonus.View.Scope` (now a thin adapter
+over it) with one parameter, `Flow`: `FlowLeft` emits at the right edge and ages
+leftward (Odonus); `FlowRight` emits at the left edge and ages rightward (Vetula,
+whose river sits right of the voices, so notes flow *out of* the voice that
+played them). The background gradient brightens toward the emit edge either way.
+Hosts need a frame clock (`nowMicros`) and a pruned recent-note array; Vetula's
+tick is guarded to the Perform surface in LIVE so a 30 fps redraw never runs
+while you're on the tonnetz.
+
 ## Orientation
 
 The only axis-aware code is the coordinate mapping and the region bands. Factor
 two projections behind `Orientation`:
+
+> **SUPERSEDED for Vetula, 2026-08-05.** After playing the vertical tracker in
+> anger AC concluded it "compromises Vetula too much" — the vertical axis reads
+> well on its own but eats the width the voices need. Vetula now uses a THIRD
+> orientation, `HorizontalOutward`: time on X but REVERSED, newest note at the
+> left edge, ageing rightward, on a surface that sits to the RIGHT of the voices
+> — so notes appear to flow *out of* the voice that played them. Differentiation
+> from Odonus is now POSITION (side strip vs full-width) and time DIRECTION, not
+> axis. The `Vertical` projection stays in `Capture.Types` unused, for the
+> true-tracker refinement parked below. The table below documents the original
+> two-way split.
 
 | | Horizontal (Odonus, as now) | Vertical (Vetula tracker) |
 |---|---|---|
@@ -172,10 +209,31 @@ source badge (#33) already colours all three.
   visually + behaviourally identical **except** the strip is gone and clips appear
   in the library modal instead. This is the load-bearing refactor; the working
   Odonus is the oracle.
-- **#28-lib — promote the library modal to shell-level**, browse/manage vs attach
-  modes; add a "library" entry point to Odonus REPLAY (so a just-captured clip is
-  reachable). Can land in parallel with #28a.
-- **#28b — Vetula vertical capture.** Add `capture :: CaptureState`, the `PerfTick`
+- **#28-lib — promote the library modal to shell-level** — **DONE 2026-08-05.**
+  `Triggerfish.Clips.View.libraryPanel` is one action-polymorphic renderer (the
+  `CaptureWiring` idiom) with a `LibraryWiring` whose `attach` field selects the
+  mode: `Nothing` = browse/manage, `Just` = the ＋ attach column. Two hosts —
+  the shell's **⌥6 modal** (`MClips`, browse/manage, opens with a fresh
+  `loadClips`) and Vetula's phrase picker (attach). The shell requests its OWN
+  Web MIDI out at Init so ▶ audition works from anywhere; a clip plays on the
+  channels it was CAPTURED on, deliberately not through a machine's audition
+  dest. Rename/delete touch the library only — an attached voice keeps its
+  snapshot copy. **Still open:** the in-surface "library" button on a REPLAY
+  surface. `OpenClipLibrary` exists on the shell and does the right thing, but
+  nothing raises it yet — it needs a `CaptureWiring.openLibrary` field plus an
+  Output message per machine. ⌥6 works from every machine meanwhile.
+- **#28b — Vetula capture.** (Landed vertical; re-cut to `HorizontalOutward` +
+  a LIVE/REPLAY switch on 2026-08-05 — see the superseded note above. LIVE puts
+  the roll in a third-width strip right of the voices; REPLAY gives it the whole
+  surface. Region PREVIEW landed the
+  same day: `driveCaptureReplay` is Odonus's windowed `driveReplay` ported onto
+  Vetula's new frame clock — click a gold band and it loops, on the channels it
+  was captured on, through `st.midiOut` so ⌥1 AuditionOff silences it. Stop /
+  leave REPLAY / clear / lift all `hushCapture`, which sends all-notes-off on
+  just the region's own channels rather than all 16, so a preview can't cut
+  voices that are still performing. Known wrinkle: switching Vetula to a Browse
+  surface while a region loops leaves it looping — audible, not silent-stuck,
+  and the same behaviour Odonus has.)  Original scope: Add `capture :: CaptureState`, the `PerfTick`
   note-harvest tap, a REPLAY surface wired `Vertical`, mark/region/lift. By-ear +
   by-eye: capture a Vetula phrase, see it as a vertical tracker, lift → library →
   attach it back into a box (closes the loop through #27).
@@ -186,8 +244,9 @@ source badge (#33) already colours all three.
 
 ## Open questions (decide by build/ear, not up front)
 
-- Vertical time direction: newest at **top** (matches Odonus newest-on-right) or
-  **bottom** (tracker convention scrolls downward)? Try both in #28b.
+- ~~Vertical time direction: newest at **top** or **bottom**?~~ — **MOOT**: Vetula
+  left the vertical projection entirely (see the superseded note). The question
+  returns only if the true-tracker refinement is ever built.
 - ~~Whether Vetula capture is a full tab or a modal~~ — **DECIDED (AC): full
   surface, exactly like Odonus's LIVE/REPLAY switch.** A tab, not a modal over the
   Perform surface. Reinforces the always-on-harvest framing above: it's a

@@ -21,7 +21,7 @@ import Prelude
 import Data.Array (concat, concatMap, deleteAt, drop, elem, elemIndex, filter, find, findIndex, head, index, insertAt, last, length, mapMaybe, mapWithIndex, modifyAt, nub, nubByEq, range, replicate, snoc, sort, take, takeEnd, unsnoc, updateAt, (!!))
 import Data.Foldable (all, any, foldl, foldr, for_, maximum, minimum, sum)
 import Data.Traversable (traverse)
-import Data.Int (fromString, round, toNumber)
+import Data.Int (ceil, floor, fromString, round, toNumber)
 import Data.Number as Number
 import Data.Map (Map)
 import Data.Map as Map
@@ -112,12 +112,14 @@ import Data.Rational as Rat
 import Data.Rational ((%))
 import Triggerfish.Clips (MidiClip, NoteEvent, headCount)
 import Triggerfish.Clips.Store as ClipStore
+import Triggerfish.Clips.View as ClipsView
 import Data.Either (Either(..))
 import Reef.Vetula.Protocol (encodePerf) as RV
 import Binnacle.Time (dateNow, perfNow)
 import Effect.Ref as Ref
 import Triggerfish.Capture.Logbook as Logbook
 import Triggerfish.Capture.Types (Orientation(..), PlaySource(..))
+import Triggerfish.Capture.River (Flow(..), riverPanel, windowMicros) as River
 import Triggerfish.Capture.View (CaptureState, capturePanel)
 import Vetula.Tidal (progressionSource, parseProgression)
 import Vetula.Lepidoptera (PerfDoc, VoiceSpec, docFromVoices, parsePerform, printAsRecord)
@@ -701,10 +703,28 @@ type State =
   , clipLibrary :: Array MidiClip
   , perfPhrasePick :: Maybe Int
   -- The always-on capture logbook (#28): every note the voices/boxes emit is tapped
-  -- in PerfTick and appended here (the "player piano" roll), reviewed in the
-  -- bottom-third vertical tracker and lifted into the shared clip library.
+  -- in PerfTick and appended here (the "player piano" roll), reviewed on the
+  -- capture surface and lifted into the shared clip library. `captureView` is the
+  -- LIVE/REPLAY switch (Odonus's affordance, AC 2026-08-05): LIVE keeps the roll as
+  -- a narrow strip beside the voices, REPLAY gives it the whole surface so there's
+  -- room to cherry-pick a phrase.
   , capture :: CaptureState
+  , captureView :: CaptureView
+  -- The LIVE river's two reads (`Capture.River`): the current instant, advanced by
+  -- a 33ms frame timer so the roll FLOWS rather than jumping a 16th at a time, and
+  -- the recent notes it draws — pruned to the river's fade span each frame. The
+  -- logbook keeps everything; this is just the window that's on screen.
+  , nowMicros :: Number
+  , riverNotes :: Array NoteEvent
   }
+
+-- | Vetula's LIVE/REPLAY switch — the same two-mode affordance Odonus has, but the
+-- | modes differ in LAYOUT rather than content: `CapLive` puts the capture roll in a
+-- | third-width strip to the right of the voices, `CapReplay` hands it the whole
+-- | surface. Same surface, same gestures, more room.
+data CaptureView = CapLive | CapReplay
+
+derive instance eqCaptureView :: Eq CaptureView
 
 -- | Which floating control a fold toggle targets.
 data VPanel = VCtx | VProg
@@ -858,6 +878,8 @@ data Action
   | CaptureSaveClip Int    -- lift region i out into the shared clip library
   | CaptureToggleContext   -- show/hide the region's harmonic context
   | CaptureClear           -- purge the capture logbook
+  | SetCaptureView CaptureView -- the LIVE/REPLAY switch
+  | CaptureFrame           -- 33ms tick: advance the river's clock, prune its window
   | PerfNop                -- no-op (used to stop a click bubbling without a re-render)
   | PerfToggleMute Int     -- silence/unsilence box b's pipeline
   | PerfDragStart PerfDragSrc -- begin an HTML5 drag of a palette/box layer
@@ -1044,6 +1066,9 @@ component = H.mkComponent
       , clipLibrary: []
       , perfPhrasePick: Nothing
       , capture: { logbook: Logbook.emptyLog, playing: Nothing, regionDrag: Nothing, contextOpen: false }
+      , captureView: CapLive
+      , nowMicros: 0.0
+      , riverNotes: []
       }
   , render
   , eval: H.mkEval H.defaultEval
@@ -1436,6 +1461,12 @@ handleAction = case _ of
     { emitter: capE, listener: capL } <- liftEffect HS.create
     _ <- H.subscribe capE
     _ <- liftEffect $ setInterval 1800 (HS.notify capL AutoCapture)
+    -- The LIVE river's animation clock (33ms ≈ 30fps, the same cadence Odonus's
+    -- scope runs at). The handler no-ops off the Perform surface, so this costs
+    -- nothing while you're on the tonnetz.
+    { emitter: frameE, listener: frameL } <- liftEffect HS.create
+    _ <- H.subscribe frameE
+    _ <- liftEffect $ setInterval 33 (HS.notify frameL CaptureFrame)
     H.modify_ _ { binnacle = Just bin }
     -- Restore the persisted library (auto-capture stack) from localStorage. capSeq
     -- continues past the restored count so new ◦ autonames don't collide.
@@ -2450,18 +2481,52 @@ handleAction = case _ of
         mark = { atMicros: atMic, beat: 0.0, from: atMic - 2.0 * barMic, to: atMic, patch: "" }
     H.modify_ \s -> s { capture = s.capture { logbook = Logbook.pushMark mark s.capture.logbook } }
 
-  CaptureRegionSelect i -> H.modify_ \s -> case s.capture.logbook.marks !! i of
-    Just m -> s { capture = s.capture { playing = Just
-                    { source: FromRegion i, events: [], lenMicros: m.to - m.from
-                    , fromMicros: m.from, toMicros: m.to, loopStartMs: 0.0
-                    , scheduledUntilMs: 0.0, playheadFrac: 0.0 } } }
-    Nothing -> s
+  -- Click a gold band → LOOP it (Odonus's affordance). Materialise the region's
+  -- notes rebased to [0, len) and stamp the loop clock; `driveCaptureReplay` queues
+  -- them a frame at a time from there. The watermark starts a hair before the
+  -- origin so a phase-0 note isn't lost on the strict `>` boundary of frame one.
+  CaptureRegionSelect i -> do
+    st <- H.get
+    for_ (st.capture.logbook.marks !! i) \m -> do
+      nowMs <- liftEffect perfNow
+      H.modify_ \s -> s { capture = s.capture { playing = Just
+        { source: FromRegion i
+        , events: Logbook.materializeRegion m.from m.to s.capture.logbook
+        , lenMicros: m.to - m.from
+        , fromMicros: m.from, toMicros: m.to
+        , loopStartMs: nowMs, scheduledUntilMs: nowMs - 1.0, playheadFrac: 0.0 } } }
 
-  CaptureStopSel -> H.modify_ \s -> s { capture = s.capture { playing = Nothing } }
+  CaptureStopSel -> do
+    hushCapture
+    H.modify_ \s -> s { capture = s.capture { playing = Nothing } }
 
   CaptureToggleContext -> H.modify_ \s -> s { capture = s.capture { contextOpen = not s.capture.contextOpen } }
 
-  CaptureClear -> H.modify_ \s -> s { capture = s.capture { logbook = Logbook.emptyLog, playing = Nothing, contextOpen = false } }
+  CaptureClear -> do
+    hushCapture
+    H.modify_ \s -> s { capture = s.capture { logbook = Logbook.emptyLog, playing = Nothing, contextOpen = false } }
+
+  -- Leaving REPLAY drops the selected region and its context card: the lift card is
+  -- a REPLAY affordance, and a stale one hanging over the strip in LIVE reads as if
+  -- something were still armed.
+  -- The river's animation tick. Guarded to the Perform surface in LIVE: this fires
+  -- ~30×/s and Vetula's render is not cheap, so it must not run while you're on the
+  -- tonnetz or reviewing in REPLAY (neither reads `nowMicros`).
+  CaptureFrame -> do
+    st <- H.get
+    when (st.view == Perform && st.captureView == CapLive) do
+      nowMs <- liftEffect perfNow
+      let now = nowMs * 1000.0
+      H.modify_ _ { nowMicros = now
+                  , riverNotes = filter (\n -> (now - n.fireUnixMicros) < River.windowMicros) st.riverNotes }
+    -- The REPLAY loop rides the same frame clock; it no-ops when nothing is looping.
+    driveCaptureReplay
+
+  SetCaptureView v -> do
+    when (v == CapLive) hushCapture
+    H.modify_ \s -> s
+      { captureView = v
+      , capture = if v == CapReplay then s.capture else s.capture { playing = Nothing, contextOpen = false } }
 
   CaptureSaveClip i -> do
     st <- H.get
@@ -2487,6 +2552,8 @@ handleAction = case _ of
       existing <- liftEffect ClipStore.loadClips
       let lib' = [ clip ] <> existing
       liftEffect (ClipStore.saveClips lib')
+      -- lifting ends the preview: hush before dropping it, or the lookahead rings on
+      hushCapture
       H.modify_ _ { clipLibrary = lib', capture = st.capture { playing = Nothing } }
 
   PerfNop -> pure unit
@@ -2712,7 +2779,9 @@ handleAction = case _ of
       fresh <- liftEffect (Ref.read capRef)
       H.modify_ \st2 -> st2
         { pulse = tick.index, voices = voices', clockTempo = tempo, tempo = round tempo
-        , capture = st2.capture { logbook = Logbook.logAppend (nowMs * 1000.0) fresh st2.capture.logbook } }
+        , capture = st2.capture { logbook = Logbook.logAppend (nowMs * 1000.0) fresh st2.capture.logbook }
+        -- the river draws the same notes over a short window; CaptureFrame prunes it
+        , riverNotes = fresh <> st2.riverNotes }
 
   -- parse the (possibly edited) Tidal source into note-lists, rebuild them as a
   -- fresh progression of imported chords, and point the path at them. The
@@ -3747,6 +3816,60 @@ playSpecimen s = do
 -- | playback), with its recorded velocity + gate, staggered by its rebased onset. No
 -- | tempo re-map and no transform stack: this is "hear the recording as recorded",
 -- | routed through whatever output the shell has Vetula pointed at (Continuo / IAC).
+-- | How far ahead the REPLAY loop queues notes. One frame's worth plus slack: a
+-- | stop leaves at most this much already in WebMIDI's queue.
+replayLookaheadMs :: Number
+replayLookaheadMs = 120.0
+
+-- | REPLAY loop driver — a WINDOWED scheduler run each frame, ported from Odonus's
+-- | `driveReplay` (#151 R2b). It queues only the notes falling in the short window
+-- | ahead of the watermark, never a whole loop iteration, so stopping is nearly
+-- | instant rather than letting a full queued loop ring out. Each note is a
+-- | self-contained `scheduleNoteAtMs` (auto note-off). Also advances the 0..1
+-- | playhead the capture surface draws. No-op when nothing is looping.
+-- |
+-- | Notes sound on the channels they were CAPTURED on (`odonusHeadChannel headIdx`),
+-- | the same convention as the clip-library audition, and through `st.midiOut` — so
+-- | an ⌥1 AuditionOff silences a region preview too.
+driveCaptureReplay :: forall o m. MonadAff m => H.HalogenM State Action Slots o m Unit
+driveCaptureReplay = do
+  st <- H.get
+  for_ st.capture.playing \ps -> do
+    nowMs <- liftEffect perfNow
+    let loopLenMs = max 1.0 (ps.lenMicros / 1000.0)
+        horizon = nowMs + replayLookaheadMs
+    -- Each event sits at phase `off` in the loop, so it sounds at
+    -- loopStartMs + off + k·loopLenMs; take the first k past the watermark and
+    -- queue it if it lands inside this frame's window (≤ one hit per event).
+    for_ st.midiOut \out -> liftEffect $ for_ ps.events \e -> do
+      let off = e.fireUnixMicros / 1000.0
+          k = ceil ((ps.scheduledUntilMs - ps.loopStartMs - off) / loopLenMs)
+          atMs = ps.loopStartMs + off + toNumber k * loopLenMs
+      when (atMs > ps.scheduledUntilMs && atMs <= horizon) $
+        Midi.scheduleNoteAtMs out
+          { channel: Routing.toWire (Routing.odonusHeadChannel e.headIdx)
+          , note: e.pitch, velocity: e.vel, atMs, durMs: e.gateMs }
+    H.modify_ \s -> case s.capture.playing of
+      Just p ->
+        let elapsed = nowMs - p.loopStartMs
+            frac = (elapsed - toNumber (floor (elapsed / loopLenMs)) * loopLenMs) / loopLenMs
+        in s { capture = s.capture { playing = Just p
+                 { scheduledUntilMs = max p.scheduledUntilMs horizon
+                 , playheadFrac = max 0.0 (min 1.0 frac) } } }
+      Nothing -> s
+
+-- | All-notes-off on exactly the channels the looping region uses — cuts anything
+-- | the lookahead already queued, so stopping (or leaving REPLAY) is silent at once.
+-- | Scoped to the region's own channels rather than all 16, so a preview can't
+-- | interrupt voices that are still performing.
+hushCapture :: forall o m. MonadAff m => H.HalogenM State Action Slots o m Unit
+hushCapture = do
+  st <- H.get
+  for_ st.capture.playing \ps ->
+    for_ st.midiOut \out -> liftEffect $
+      for_ (nub (map (\e -> Routing.odonusHeadChannel e.headIdx) ps.events)) \ch ->
+        Midi.sendCC out { channel: Routing.toWire ch, controller: 123, value: 0 }
+
 auditionClip :: forall o m. MonadAff m => MidiClip -> H.HalogenM State Action Slots o m Unit
 auditionClip clip = do
   st <- H.get
@@ -5033,36 +5156,71 @@ perfRecallModal st =
 -- | at top). A small toolbar (◆ mark · note count · clear) rides above the shared
 -- | `capturePanel`. Marking flags the last couple of bars; clicking the gold band
 -- | shows a card to lift that span into the shared clip library (source "vetula").
-captureBand :: forall m. State -> H.ComponentHTML Action Slots m
-captureBand st =
-  -- Full-bleed like Odonus's capture surface: negative margins cancel the
-  -- performSurface's 30px/28px padding so it reaches the left/right/bottom edges,
-  -- while margin-top:auto still pins it to the lower third.
+-- | The LIVE/REPLAY switch, sitting where Odonus's does (top-right of the surface).
+-- | LIVE keeps the roll beside the voices; REPLAY hands it the whole surface.
+captureModeBar :: forall m. State -> H.ComponentHTML Action Slots m
+captureModeBar st =
   HH.div
-    [ HP.style "margin: auto -28px -30px -28px; height: 34vh; min-height: 200px; display: flex; flex-direction: column; background: #0b0a07; border-top: 1px solid #2a281f;" ]
-    [ HH.div
-        [ HP.style "display: flex; align-items: center; gap: 12px; padding: 6px 14px;" ]
-        [ HH.span [ HP.style "font-size: 10px; letter-spacing: 0.14em; text-transform: uppercase; color: #8a8272;" ] [ HH.text "capture" ]
-        , HH.button
-            [ HP.style "border: 1px solid #e8c14a55; background: #ffffff10; color: #e8c14a; cursor: pointer; padding: 3px 12px; border-radius: 5px; font-size: 11px; font-family: Georgia, serif;"
-            , HP.title "flag the last couple of bars as a good bit"
-            , HE.onClick \_ -> CaptureMark ]
-            [ HH.text "◆ mark" ]
-        , HH.span [ HP.style "font-size: 10px; color: #ffffff55; font-family: 'SF Mono', Menlo, monospace;" ]
-            [ HH.text (show (Logbook.noteCount st.capture.logbook) <> " notes · " <> show (length st.capture.logbook.marks) <> " marks") ]
-        , HH.button
-            [ HP.style "margin-left: auto; border: 1px solid #ffffff1a; background: transparent; color: #ffffff44; cursor: pointer; padding: 3px 10px; border-radius: 5px; font-size: 10px; font-family: Georgia, serif;"
-            , HP.title "clear the capture roll"
-            , HE.onClick \_ -> CaptureClear ]
-            [ HH.text "clear" ]
-        ]
-    , HH.div
-        [ HP.style "flex: 1 1 auto; min-height: 0; position: relative; overflow: hidden;" ]
-        [ capturePanel captureWiring st.capture ]
+    [ HP.style "position: absolute; top: 8px; right: 12px; z-index: 6; display: flex; gap: 2px; padding: 2px; border-radius: 8px; background: #00000014; border: 1px solid #00000014;" ]
+    [ tab CapLive "LIVE", tab CapReplay "REPLAY" ]
+  where
+  tab v label =
+    let on = st.captureView == v
+    in HH.button
+        [ HE.onClick \_ -> SetCaptureView v
+        , HP.title (case v of
+            CapLive -> "perform: voices, with the capture roll alongside"
+            CapReplay -> "review: the whole surface for cherry-picking a phrase")
+        , HP.style $ "padding: 3px 11px; border-radius: 6px; cursor: pointer; border: none; font-family: Georgia, serif; font-size: 10px; letter-spacing: 0.08em; "
+            <> (if on then "background: #3a352a; color: #f2eee2; font-weight: 600;"
+                      else "background: transparent; color: #8a8272;") ]
+        [ HH.text label ]
+
+-- | The roll's own header — ◆ mark, the running counts, and clear. Shared by both
+-- | layouts, so the gesture doesn't move when you switch modes.
+captureHeader :: forall m. State -> H.ComponentHTML Action Slots m
+captureHeader st =
+  HH.div
+    [ HP.style "display: flex; align-items: center; gap: 10px; padding: 6px 14px; flex: 0 0 auto;" ]
+    [ HH.span [ HP.style "font-size: 10px; letter-spacing: 0.14em; text-transform: uppercase; color: #8a8272;" ] [ HH.text "capture" ]
+    , HH.button
+        [ HP.style "border: 1px solid #e8c14a55; background: #ffffff10; color: #e8c14a; cursor: pointer; padding: 3px 12px; border-radius: 5px; font-size: 11px; font-family: Georgia, serif;"
+        , HP.title "flag the last couple of bars as a good bit"
+        , HE.onClick \_ -> CaptureMark ]
+        [ HH.text "◆ mark" ]
+    , HH.span [ HP.style "font-size: 10px; color: #ffffff55; font-family: 'SF Mono', Menlo, monospace;" ]
+        [ HH.text (show (Logbook.noteCount st.capture.logbook) <> " notes · " <> show (length st.capture.logbook.marks) <> " marks") ]
+    , HH.button
+        [ HP.style "margin-left: auto; border: 1px solid #ffffff1a; background: transparent; color: #ffffff44; cursor: pointer; padding: 3px 10px; border-radius: 5px; font-size: 10px; font-family: Georgia, serif;"
+        , HP.title "clear the capture roll"
+        , HE.onClick \_ -> CaptureClear ]
+        [ HH.text "clear" ]
     ]
+
+-- | The LIVE roll: `Capture.River`, flowing RIGHT — notes are emitted at the strip's
+-- | left edge, next to the voice that played them, and age away from the voices at a
+-- | constant speed. A river, NOT the whole-session fit: the fit renderer rescales on
+-- | every new note (the roll lurches) and squeezes its marks toward slivers as the
+-- | take grows. That renderer is right for REPLAY and wrong here.
+riverPane :: forall m. State -> H.ComponentHTML Action Slots m
+riverPane st =
+  HH.div
+    [ HP.style "flex: 1 1 auto; min-height: 0; position: relative; overflow: hidden;" ]
+    [ River.riverPanel
+        { flow: River.FlowRight, headColor: captureHeadColor }
+        { nowMicros: st.nowMicros, notes: st.riverNotes, marks: st.capture.logbook.marks }
+    ]
+
+-- | The REPLAY roll — the shared whole-session surface, wired outward-horizontal so
+-- | it reads the same way round as the live river.
+capturePane :: forall m. State -> H.ComponentHTML Action Slots m
+capturePane st =
+  HH.div
+    [ HP.style "flex: 1 1 auto; min-height: 0; position: relative; overflow: hidden;" ]
+    [ capturePanel captureWiring st.capture ]
   where
   captureWiring =
-    { orientation: Vertical
+    { orientation: HorizontalOutward
     , timelineId: "vetula-capture-timeline"
     , headColor: captureHeadColor
     , contextSummary: \_ -> Nothing
@@ -5083,28 +5241,58 @@ captureHeadColor h = case h `mod` 6 of
   4 -> "#6a4a8a"
   _ -> "#2f7d8a"
 
+-- | The Perform surface. Two layouts behind one LIVE/REPLAY switch (AC, 2026-08-05):
+-- |
+-- |   * `CapLive` — voices in the left two thirds, the capture roll as a narrow
+-- |     strip down the right third. Notes enter the strip at ITS left edge, next to
+-- |     the voice that played them, and age rightward (`HorizontalOutward`).
+-- |   * `CapReplay` — the roll takes the whole surface, so a phrase is big enough to
+-- |     pick out and lift.
+-- |
+-- | This replaced the full-bleed VERTICAL tracker band of #28b: the vertical axis
+-- | read well on its own but cost Vetula too much of its voices. Differentiation
+-- | from Odonus is now POSITION (a side strip vs a full-width surface) and time
+-- | DIRECTION (outward from the voices vs oldest-first), not the axis.
 performSurface :: forall m. State -> H.ComponentHTML Action Slots m
 performSurface st =
   HH.div
-    -- Voices sit at the TOP (justify-content: flex-start), so the lower third of
-    -- the surface is free for the capture/tracker band (#28b). AC, 2026-08-05.
     [ HP.style "position: absolute; inset: 0; display: flex; flex-direction: column; align-items: stretch; justify-content: flex-start; gap: 22px; padding: 30px 28px;" ]
-    -- FX palette floated to the top of the surface (holding pattern — its final home
-    -- and framing, "training wheels for Tidal" vs "starter-pack suggestions", is a
-    -- parked design question). AC, 2026-08-03.
-    -- The scene/session controls (save · new session · scenes · the 3-glyph badge)
-    -- moved to the secondary nav's session menu (⋯). The surface is now just the
-    -- palette and its players.
-    [ fxPalette st
-    , HH.div
-        [ HP.style "display: flex; gap: 18px; flex-wrap: wrap; justify-content: space-between; align-items: flex-start; width: 100%;" ]
-        (mapWithIndex (perfBox st) st.perfBoxes <> [ addPlayerTile ])
-    , captureBand st
-    , perfEditModal st
-    , perfPhrasePickModal st
-    , perfRecallModal st
-    ]
+    ( [ captureModeBar st ]
+        <> body
+        <> [ perfEditModal st, perfPhrasePickModal st, perfRecallModal st ]
+    )
   where
+  body = case st.captureView of
+    CapReplay ->
+      -- Full-bleed: the negative margins cancel the surface's own padding so the
+      -- roll reaches all four edges, exactly as Odonus's REPLAY does.
+      [ HH.div
+          [ HP.style "flex: 1 1 auto; min-height: 0; margin: 0 -28px -30px -28px; display: flex; flex-direction: column; background: #0b0a07; border-top: 1px solid #2a281f;" ]
+          [ captureHeader st, capturePane st ]
+      ]
+    CapLive ->
+      [ HH.div
+          [ HP.style "flex: 1 1 auto; min-height: 0; display: flex; align-items: stretch; gap: 18px; width: 100%;" ]
+          [ HH.div
+              -- the voices: two thirds, and they scroll on their own if they outgrow it
+              [ HP.style "flex: 2 1 0; min-width: 0; display: flex; flex-direction: column; gap: 22px; overflow-y: auto;" ]
+              -- FX palette floated to the top of the surface (holding pattern — its final
+              -- home and framing, "training wheels for Tidal" vs "starter-pack
+              -- suggestions", is a parked design question). AC, 2026-08-03.
+              -- The scene/session controls (save · new session · scenes · the 3-glyph
+              -- badge) live in the secondary nav's session menu (⋯).
+              [ fxPalette st
+              , HH.div
+                  [ HP.style "display: flex; gap: 18px; flex-wrap: wrap; justify-content: flex-start; align-items: flex-start; width: 100%;" ]
+                  (mapWithIndex (perfBox st) st.perfBoxes <> [ addPlayerTile ])
+              ]
+          , HH.div
+              -- the roll: one third, full height, bleeding to the right/bottom edges
+              [ HP.style "flex: 1 1 0; min-width: 0; margin: 0 -28px -30px 0; display: flex; flex-direction: column; background: #0b0a07; border-left: 1px solid #2a281f; border-top: 1px solid #2a281f;" ]
+              [ captureHeader st, riverPane st ]
+          ]
+      ]
+
   -- a dashed ＋ tile sitting inline with the cards: the Perform surface is a
   -- growable palette of voices, one per MIDI channel (1..16), not a fixed four.
   addPlayerTile =
@@ -5121,9 +5309,14 @@ performSurface st =
 -- | box `perfEditBox`'s `seqText` directly (same `PerfSetSeq` path, committed on
 -- | blur). Examples drop straight into the field; the guide makes the notation
 -- | learnable where you use it (the complexity-budget point).
--- | The phrase picker (#27): choose a captured clip from the shared library to attach
--- | to a box as its source. Naming is a mug's game, so each row also shows the key and
--- | note count. Clicking a clip attaches a self-contained COPY (`PerfAttachPhrase`).
+-- | The phrase picker (#27/#28-lib): the SHARED clip-library surface
+-- | (`Clips.View.libraryPanel`, also the shell's ⌥6 modal) in its attach mode —
+-- | same rows, plus an ＋ column that lands a self-contained COPY of the clip on
+-- | box `perfPhrasePick` as its source. Only the wiring lives here now; the rows
+-- | themselves are the one renderer both entry points share.
+-- |
+-- | The controls don't need `PerfStopClick`: the panel div below already stops the
+-- | click before it reaches the backdrop, so a button inside can't close the modal.
 perfPhrasePickModal :: forall m. State -> H.ComponentHTML Action Slots m
 perfPhrasePickModal st = case st.perfPhrasePick of
   Nothing -> HH.text ""
@@ -5134,72 +5327,21 @@ perfPhrasePickModal st = case st.perfPhrasePick of
       [ HH.div
           [ HP.style "background: #fbf9f2; border: 1px solid #cdbb8c; border-radius: 10px; padding: 18px 20px; max-width: 460px; width: 100%; max-height: 70vh; overflow-y: auto; box-shadow: 0 10px 40px rgba(0,0,0,0.25);"
           , HE.onClick \e -> PerfStopClick e PerfNop ]
-          ( [ HH.div [ HP.style "display: flex; align-items: baseline; gap: 8px; margin-bottom: 4px;" ]
-                [ HH.div [ HP.style "font-size: 13px; letter-spacing: 0.04em; text-transform: uppercase; color: #7a5c00;" ]
-                    [ HH.text "clip library" ]
-                , HH.div [ HP.style "font-size: 11px; color: #b0a684;" ]
-                    [ HH.text (show (length st.clipLibrary) <> " clip" <> (if length st.clipLibrary == 1 then "" else "s") <> " · shared across machines") ]
-                ]
-            , HH.div [ HP.style "font-size: 11px; color: #a89a70; margin-bottom: 12px;" ]
-                [ HH.text ("▶ audition · rename inline · × delete · ＋ attach to P"
-                    <> show (maybe (i + 1) _.channel (index st.perfBoxes i))
-                    <> " (a self-contained copy; the transform stack still applies)") ]
-            ]
-            <> (if length st.clipLibrary == 0
-                  then [ HH.div [ HP.style "font-size: 12px; color: #b0a684; padding: 14px 0;" ]
-                           [ HH.text "No clips yet. Capture one in Odonus REPLAY (◆ mark → loop → ⧉ clip)." ] ]
-                  else map (clipRow i) st.clipLibrary)
-            <> [ HH.button
-                   [ HP.style "margin-top: 12px; border: 1px solid #dcd2b4; background: #faf6ea; color: #8a7a4a; cursor: pointer; padding: 4px 12px; border-radius: 4px; font-size: 11px;"
-                   , HE.onClick \_ -> PerfClosePhrasePick ]
-                   [ HH.text "cancel" ] ]
-          )
+          [ ClipsView.libraryPanel
+              { audition: ClipAudition
+              , rename: ClipRename
+              , delete: ClipDelete
+              , attach: Just
+                  { label: "P" <> show (maybe (i + 1) _.channel (index st.perfBoxes i))
+                  , onAttach: PerfAttachPhrase i }
+              }
+              st.clipLibrary
+          , HH.button
+              [ HP.style "margin-top: 12px; border: 1px solid #dcd2b4; background: #faf6ea; color: #8a7a4a; cursor: pointer; padding: 4px 12px; border-radius: 4px; font-size: 11px;"
+              , HE.onClick \_ -> PerfClosePhrasePick ]
+              [ HH.text "cancel" ]
+          ]
       ]
-  where
-  -- One library row: a source badge, an inline-editable name (rename on blur), the
-  -- computed/stored metadata, then the three controls (audition / attach / delete). A
-  -- div, not a button, so the name <input> and the control buttons nest legally.
-  clipRow i c =
-    HH.div
-      [ HP.style "display: flex; align-items: center; gap: 8px; width: 100%; border: 1px solid #e0d6bc; background: #fdfbf5; padding: 6px 8px; border-radius: 6px; margin-bottom: 5px; font-size: 12px;" ]
-      [ sourceBadge c.source
-      , HH.input
-          [ HP.value c.name
-          , HP.placeholder "unnamed"
-          , HP.title "rename this clip in the shared library"
-          , HP.style "flex: 1 1 auto; min-width: 0; border: none; border-bottom: 1px dashed #d8cba0; background: transparent; color: #5a4a2a; font-size: 12px; padding: 1px 2px;"
-          , HE.onValueChange (ClipRename c.id) ]
-      , metaSpan (fromMaybe "" c.key)
-      , metaSpan (joinWith " " (map ("#" <> _) c.tags))
-      , metaSpan (show (headCount c.events) <> "ch")
-      , metaSpan (show (length c.events) <> "n")
-      , iconBtn "#6a4a8a" "▶" "audition this clip (own channels · velocity · gate)" (ClipAudition c)
-      , iconBtn "#2f7d5a" "＋" "attach a copy as this voice's source" (PerfAttachPhrase i c)
-      , iconBtn "#a44" "×" "delete this clip from the shared library" (ClipDelete c.id)
-      ]
-
-  -- Which machine captured the clip, as a coloured pill.
-  sourceBadge src =
-    let col = case src of
-          "odonus" -> "#2f7d8a"
-          "vetula" -> "#6a4a8a"
-          "balistes" -> "#8a5a2a"
-          _ -> "#9a9070"
-    in HH.span
-      [ HP.style ("font-size: 9px; letter-spacing: 0.04em; text-transform: uppercase; color: #fff; background: " <> col <> "; padding: 1px 5px; border-radius: 3px; white-space: nowrap;")
-      , HP.title ("captured in " <> src) ]
-      [ HH.text src ]
-
-  metaSpan t =
-    if t == "" then HH.text ""
-    else HH.span [ HP.style "font-size: 10px; color: #a89a70; white-space: nowrap;" ] [ HH.text t ]
-
-  iconBtn col glyph tip act =
-    HH.button
-      [ HP.style ("border: 1px solid #dcd2b4; background: #faf6ea; color: " <> col <> "; cursor: pointer; padding: 2px 6px; border-radius: 4px; font-size: 12px; line-height: 1; white-space: nowrap;")
-      , HP.title tip
-      , HE.onClick \e -> PerfStopClick e act ]
-      [ HH.text glyph ]
 
 perfEditModal :: forall m. State -> H.ComponentHTML Action Slots m
 perfEditModal st = case st.perfEditBox >>= \i -> map (Tuple i) (index st.perfBoxes i) of

@@ -57,6 +57,7 @@ import Web.HTML.HTMLTextAreaElement as HTextArea
 import Web.UIEvent.KeyboardEvent as KE
 import Web.UIEvent.KeyboardEvent.EventTypes as KET
 import Binnacle.Audio (armAudioKeepAlive)
+import Binnacle.Midi as Midi
 import Binnacle.Time (dateNow)
 import Triggerfish.Odonus.Grid as Odonus
 import Triggerfish.Balistes.Component as Balistes
@@ -74,6 +75,9 @@ import Triggerfish.Scenes as Scenes
 import Triggerfish.Scenes.Store as ScenesStore
 import Triggerfish.Macro.Store as MacroStore
 import Triggerfish.Midi.Routing as Routing
+import Triggerfish.Clips (MidiClip)
+import Triggerfish.Clips.Store as ClipStore
+import Triggerfish.Clips.View as ClipsView
 import Triggerfish.Amphora as Amphora
 import Triggerfish.Macro (Cell(Quiet, Load), Form(..), Step, ResolvedMod, parseLane, resolveStep, stepLabel)
 import Triggerfish.Scale (rootNames, scaleTypes)
@@ -101,6 +105,7 @@ data ModalId
   | MTidalSeq    -- ⌥3 the macro-tidal lanes (Tidal-like sequencing)
   | MSource      -- ⌥4 the raw Tidal-source aggregate
   | MPresets     -- ⌥5 the workbench (saved setups)
+  | MClips       -- ⌥6 the shared MIDI clip library (browse/manage, any machine)
 
 derive instance eqModalId :: Eq ModalId
 
@@ -132,6 +137,13 @@ data RAction
   | SelChipChanged (Maybe G.ChipView)  -- Selene's identity-chip view, for the status board
   | OdoChipChanged (Maybe G.ChipView)  -- Odonus's identity-chip view, for the status board
   | CaptureKey                 -- the global CAPTURE hotkey → bank a preset on the active machine
+  -- The shell-level clip library (⌥6, #28-lib). The shell owns its own MIDI out
+  -- so a clip can be auditioned from anywhere, not only from a Vetula box.
+  | ShellMidiReady (Maybe Midi.MidiOut)
+  | OpenClipLibrary            -- a machine's REPLAY surface asking for the library
+  | ClipAudition MidiClip      -- ▶ play a library clip once, on its own channels
+  | ClipRename String String   -- rename by id (commit on blur), persist
+  | ClipDelete String          -- remove by id, persist
   | OpenChipMenu Which         -- click a status-board glyph → open (or close) its recall menu
   | CloseChipMenu
   | RecallFrom Which Int        -- recall bank slot i on machine w, then close the menu
@@ -242,6 +254,11 @@ type RState =
   -- set of → midi voice names in use, polled from Vetula so the page can list them.
   , routing :: Map String Int
   , vetulaNames :: Array String
+  -- The shared MIDI clip library (⌥6). Loaded fresh whenever the modal opens —
+  -- any machine may have appended to the store since — and the shell's own MIDI
+  -- out, requested once at Init, so ▶ audition works from the shell.
+  , clipLibrary :: Array MidiClip
+  , shellMidi :: Maybe Midi.MidiOut
   -- Selene's live source, stashed on every routing-modal refresh. The doc IS
   -- the routing authority (destination header tokens carry the Target), so the
   -- modal's cascade menus parse it, edit it, and push it back via PutSource —
@@ -336,6 +353,12 @@ _ste = Proxy
 _selTarget :: Proxy "selTarget"
 _selTarget = Proxy
 
+-- The Web MIDI output port the rig listens on (an IAC bus into Ableton / the
+-- hardware). Each machine opens its own handle on the same port; the shell opens
+-- one too, for the ⌥6 clip library's ▶ audition.
+midiPortName :: String
+midiPortName = "IAC"
+
 root :: forall q i o m. MonadAff m => H.Component q i o m
 root =
   H.mkComponent
@@ -346,6 +369,7 @@ root =
         , auditionCh: Map.empty                     -- per-machine channel; lookup defaults to 5
 
         , library: [], importText: "", importMsg: ""
+        , clipLibrary: [], shellMidi: Nothing
         , picked: Nothing, sourceOpen: false, digOpen: false, goTo: [], previewing: []
         , mode: Solo, harm: { durs: [], active: -1, chord: "" }
         , brushSent: "", brushPrev: ""
@@ -395,6 +419,16 @@ handleAction = case _ of
     -- Guarded so it never fires while typing in a text field.
     target <- liftEffect $ Window.toEventTarget <$> window
     _ <- H.subscribe $ eventListener KET.keydown target keyToAction
+    -- The shell's own Web MIDI out, for auditioning clips from the ⌥6 library
+    -- (#28-lib). Independent of any machine's port handle, and of the per-machine
+    -- audition dest: a clip plays back on the channels it was CAPTURED on.
+    { emitter: midiE, listener: midiL } <- liftEffect HS.create
+    _ <- H.subscribe midiE
+    liftEffect $ Midi.requestAccess \maccess -> case maccess of
+      Just access -> do
+        mout <- Midi.findOutput access midiPortName
+        HS.notify midiL (ShellMidiReady mout)
+      Nothing -> HS.notify midiL (ShellMidiReady Nothing)
     handleAction SyncTick
     -- One source of truth: push each machine its derived Sounding (all Silent now —
     -- nothing armed). Arm/mode changes re-derive and re-push; the instruments
@@ -414,8 +448,47 @@ handleAction = case _ of
       MRouting -> refreshTidal
       MSource -> refreshTidal
       MPresets -> refreshTidal *> refreshLibrary *> fetchGoTo
+      -- Any machine may have appended since we last looked, so re-read the store.
+      MClips -> do
+        cs <- liftEffect ClipStore.loadClips
+        H.modify_ _ { clipLibrary = cs }
       _ -> pure unit
   CloseModal -> H.modify_ _ { modal = Nothing }
+
+  ShellMidiReady mout -> H.modify_ _ { shellMidi = mout }
+
+  -- A machine's REPLAY surface asking for the library — the same overlay the ⌥6
+  -- hotkey opens, so a just-captured clip is one click away from where it was cut.
+  OpenClipLibrary -> handleAction (OpenModal MClips)
+
+  -- Play a library clip once, faithfully: its OWN source channels, recorded
+  -- velocity and gate. Deliberately not routed through a machine's audition dest —
+  -- a clip isn't any machine's voice, and the channels it was captured on are the
+  -- ones that make it sound like what you recorded.
+  ClipAudition clip -> do
+    st <- H.get
+    for_ st.shellMidi \out ->
+      liftEffect $ for_ clip.events \e ->
+        Midi.scheduleNote out
+          { channel: Routing.odonusHeadChannel e.headIdx
+          , note: e.pitch
+          , velocity: e.vel
+          , delayMs: e.fireUnixMicros / 1000.0
+          , durMs: e.gateMs }
+
+  -- Rename/delete touch the LIBRARY only: a clip already attached to a Vetula
+  -- voice holds its own snapshot copy and is unaffected.
+  ClipRename cid newName -> do
+    st <- H.get
+    let lib = map (\c -> if c.id == cid then c { name = newName } else c) st.clipLibrary
+    H.modify_ _ { clipLibrary = lib }
+    liftEffect $ ClipStore.saveClips lib
+
+  ClipDelete cid -> do
+    st <- H.get
+    let lib = filter (\c -> c.id /= cid) st.clipLibrary
+    H.modify_ _ { clipLibrary = lib }
+    liftEffect $ ClipStore.saveClips lib
 
   -- Master ▶/■ = arm ALL / disarm ALL: arm every machine if none is armed, else
   -- disarm every machine. The button label is `anyArmed`. pushAll re-derives each
@@ -1176,6 +1249,10 @@ modalBody st = case _ of
   MSceneSeq -> sceneGridPanel st
   MTidalSeq -> macroPanel st
   MSource -> sourceDrawer st
+  MClips -> ClipsView.libraryPanel
+    { audition: ClipAudition, rename: ClipRename, delete: ClipDelete
+    , attach: Nothing }   -- browse/manage: attaching is a Vetula-box gesture
+    st.clipLibrary
   MPresets -> HH.div_
     [ workbenchHeader st
     , HH.div [ style "display:flex;gap:26px;align-items:flex-start" ]
@@ -1191,6 +1268,7 @@ modalTitle = case _ of
   MTidalSeq -> "Sequencing — tidal"
   MSource -> "Tidal source"
   MPresets -> "Presets — workbench"
+  MClips -> "Clips — library"
 
 modalHotkey :: ModalId -> String
 modalHotkey = case _ of
@@ -1199,6 +1277,7 @@ modalHotkey = case _ of
   MTidalSeq -> "⌥3"
   MSource -> "⌥4"
   MPresets -> "⌥5"
+  MClips -> "⌥6"
 
 -- A mounted-but-maybe-hidden pane. `display:none` keeps the component alive
 -- (and its scheduler/MIDI running) while removing it from layout. `extra` adds
@@ -2060,6 +2139,7 @@ modalForDigit = case _ of
   "Digit3" -> Just MTidalSeq
   "Digit4" -> Just MSource
   "Digit5" -> Just MPresets
+  "Digit6" -> Just MClips
   _ -> Nothing
 
 -- True when the event originated in a text input / textarea, so the hotkey yields
