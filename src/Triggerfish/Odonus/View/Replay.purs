@@ -246,8 +246,16 @@ clipChip playing i c =
           [ HE.onClick \_ -> if playingThis then StopPlay else PlayClip i
           , style $ "cursor:pointer;font-size:11px;color:" <> (if playingThis then "#e8c14a" else "#cdb98a") ]
           [ HH.text (if playingThis then "■" else "▶") ]
-      , HH.span [ style "font-family:Georgia,serif;font-size:10px;color:#e8e4d8;white-space:nowrap" ]
-          [ HH.text c.name ]
+      -- Rename in place: commits on blur (RenameClip → persist). The bound value
+      -- is `c.name`, which ticks/frames never touch, so the field stays put while
+      -- typing. A faint underline signals it's editable, not static text.
+      , HH.input
+          [ HP.value c.name
+          , HE.onValueChange (RenameClip i)
+          , HP.title "rename this clip"
+          , style $ "font-family:Georgia,serif;font-size:10px;color:#e8e4d8;white-space:nowrap;"
+              <> "background:transparent;border:none;border-bottom:1px solid #ffffff1f;"
+              <> "width:104px;padding:0 0 1px 0;outline:none" ]
       , HH.span [ style "font-family:'SF Mono',Menlo,monospace;font-size:8px;color:#ffffff44" ]
           [ HH.text (show (length c.events) <> "n") ]
       , HH.span

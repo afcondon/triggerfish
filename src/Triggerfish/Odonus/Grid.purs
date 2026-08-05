@@ -705,6 +705,10 @@ dispatch = case _ of
       in s { clips = [ clip ] <> s.clips }
     Nothing -> s
   PlayClip i -> startClip i
+  -- Rename a captured clip in place (commits on blur). Persists via the
+  -- handleAction catch-all, so the new name survives reload with the harvest.
+  RenameClip i nm -> H.modify_ \s ->
+    s { clips = fromMaybe s.clips (modifyAt i (_ { name = nm }) s.clips) }
   DeleteClip i -> do
     hushReplayVoices
     H.modify_ \s -> s { clips = fromMaybe s.clips (deleteAt i s.clips)

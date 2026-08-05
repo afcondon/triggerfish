@@ -428,6 +428,7 @@ data Action
   | SaveMarkScene Int       -- promote a mark's captured patch into the SCENES list
   | SaveMarkClip Int        -- lift a mark's region out as a captured clip (#151, R2d)
   | PlayClip Int            -- audition a captured clip (loops, like a region)
+  | RenameClip Int String   -- rename a captured clip (commits on blur; persists)
   | DeleteClip Int          -- drop a captured clip
   | ToggleContext           -- REPLAY card: show/hide the active mark's harmonic context
   | SetStepDiv Int
