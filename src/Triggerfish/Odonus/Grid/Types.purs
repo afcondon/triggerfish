@@ -6,7 +6,6 @@ module Triggerfish.Odonus.Grid.Types
   , targetRange
   , applyTarget
   , DragState
-  , NoteEvent
   , PendingInput
   , Scene
   , Chunk
@@ -17,7 +16,7 @@ module Triggerfish.Odonus.Grid.Types
   , Logbook
   , PlayState
   , PlaySource(..)
-  , Clip
+  , module Triggerfish.Clips
   , module Reef.Gen
   , genLabel
   , genSub
@@ -40,6 +39,7 @@ import Halogen.Widgets.Select as Select
 import Reef.Input as RI
 import Triggerfish.Odonus.Model as M
 import Triggerfish.Odonus.Marbles as Marbles
+import Triggerfish.Clips (NoteEvent, MidiClip)
 import Triggerfish.Preset (Preset)
 import Triggerfish.Glyph (ChipView)
 import Triggerfish.Transport (Sounding)
@@ -134,12 +134,10 @@ type DragState = { target :: KnobTarget, startY :: Int, startVal :: Int, curVal 
 -- | never flams. The Step loop drains entries whose `step` has arrived.
 type PendingInput = { step :: Int, input :: RI.Input }
 
--- | One emitted note in the scrolling monitor / logbook. `fireUnixMicros` is the
--- | wall-clock instant it sounds; the river positions it by how long ago that was
--- | (so the visual onset lands exactly on the audio onset). `vel`/`gateMs` are
--- | carried so REPLAY (#151) can re-emit the note faithfully — velocity dynamics
--- | and note length are part of "the good bit". The scope ignores them.
-type NoteEvent = { pitch :: Int, headIdx :: Int, fireUnixMicros :: Number, vel :: Int, gateMs :: Number }
+-- | `NoteEvent` (one emitted note in the scrolling monitor / logbook / clip) now
+-- | lives in `Triggerfish.Clips` — the one shared definition — and is re-exported
+-- | from this module (via `module Triggerfish.Clips` above), so existing importers
+-- | are unchanged.
 
 -- | A REPLAY loop in progress (#151, R2b): the region bounds in recording time,
 -- | which mark it came from, the perf-clock instant the NEXT loop iteration
@@ -162,17 +160,11 @@ type PlayState =
   , playheadFrac :: Number
   }
 
--- | A captured performance clip (#151, R2d): a span of the logbook lifted out as
--- | a self-contained, replayable artefact — its notes copied and rebased to zero
--- | (so it survives the buffer reset and can be scheduled anywhere), its length,
--- | and the Odonus patch that made it (harmonic context / promote-to-scene). The
--- | durable harvest, as against the ephemeral logbook it came from.
-type Clip =
-  { name :: String
-  , events :: Array NoteEvent  -- rebased to [0, lenMicros)
-  , lenMicros :: Number
-  , patch :: String            -- the Odonus patch (Lepidoptera text) at capture
-  }
+-- | A captured performance clip is now `Triggerfish.Clips.MidiClip` (recording axis
+-- | #27): the same self-contained, rebased-to-zero note buffer, promoted to a
+-- | machine-agnostic library type with room for metadata (tags/notes/bpm/key). The
+-- | old `patch` field became `MidiClip.context`. Persisted in the SHARED clip store
+-- | (`Triggerfish.Clips.Store`), not the Odonus envelope.
 
 -- | A saved whole-Odonus setting under a name — the recallable PRESET and the
 -- | unit of composition (sequencing scenes builds flowing fugues with key
@@ -322,7 +314,7 @@ type State =
   , playing :: Maybe PlayState    -- a REPLAY loop in flight (Nothing = not replaying)
   , regionDrag :: Maybe RegionDrag  -- a loop-region resize/slide in progress
   , contextOpen :: Boolean          -- REPLAY control card: harmonic-context panel open
-  , clips :: Array Clip             -- captured performance clips (#151, R2d), newest-first
+  , clips :: Array MidiClip         -- captured clips (shared library, #27), newest-first
   , twisterField :: TwisterField    -- which cell attribute the Twister's rotaries drive (bank 1)
   , binnacle :: Maybe Binnacle
   , nowMicros :: Number

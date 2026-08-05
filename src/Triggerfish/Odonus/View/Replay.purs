@@ -20,7 +20,7 @@ import Halogen.HTML as HH
 import Halogen.HTML.Events as HE
 import Halogen.HTML.Properties as HP
 import Web.UIEvent.MouseEvent as ME
-import Triggerfish.Odonus.Grid.Types (Action(..), Clip, Mark, NoteEvent, OdonusView(..), PlaySource(..), PlayState, RegionEdge(..), Slots, State, replayTimelineId)
+import Triggerfish.Odonus.Grid.Types (Action(..), MidiClip, Mark, NoteEvent, OdonusView(..), PlaySource(..), PlayState, RegionEdge(..), Slots, State, replayTimelineId)
 import Triggerfish.Odonus.Patch (harmonicSummary)
 import Triggerfish.Odonus.Grid.Widgets (clampI, headColor, style, svgAttr, svgEl)
 
@@ -231,7 +231,7 @@ clipStrip s =
              else mapWithIndex (clipChip s.playing) s.clips ) )
 
 -- | One captured clip chip: play/stop toggle, name, note count, delete.
-clipChip :: forall m. Maybe PlayState -> Int -> Clip -> H.ComponentHTML Action Slots m
+clipChip :: forall m. Maybe PlayState -> Int -> MidiClip -> H.ComponentHTML Action Slots m
 clipChip playing i c =
   let
     playingThis = case playing of

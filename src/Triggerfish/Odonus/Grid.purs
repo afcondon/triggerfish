@@ -58,6 +58,8 @@ import Triggerfish.Odonus.View.Grid (gridPanel)
 import Triggerfish.Odonus.View.Replay (replayPanel, modeBar)
 import Triggerfish.Odonus.Patch (capturePatch, harmonicSummary, loadText, patchText, recallText, recallGestureText)
 import Triggerfish.Odonus.Store as Store
+import Triggerfish.Clips as Clips
+import Triggerfish.Clips.Store as ClipStore
 import Triggerfish.Amphora as Amphora
 import Triggerfish.Glyph as G
 import Triggerfish.Preset (indexOfContent, presetAlias)
@@ -258,7 +260,14 @@ handleAction a = do
 persistAll :: forall o m. MonadAff m => H.HalogenM State Action Slots o m Unit
 persistAll = do
   s <- H.get
-  liftEffect (Store.saveAll { live: patchText s, scenes: s.scenes, presets: s.presets, clips: s.clips })
+  liftEffect (Store.saveAll { live: patchText s, scenes: s.scenes, presets: s.presets })
+
+-- | Persist the captured clip harvest to the SHARED library store (#27) — separate
+-- | from the Odonus patch envelope, so a clip is pickable in Vetula and beyond.
+persistClips :: forall o m. MonadAff m => H.HalogenM State Action Slots o m Unit
+persistClips = do
+  s <- H.get
+  liftEffect (ClipStore.saveClips s.clips)
 
 -- | An Amphora library item as a local scene (payload = the scene's eDSL text).
 amphoraScene :: Amphora.LibItem -> { name :: String, text :: String }
@@ -318,8 +327,11 @@ dispatch = case _ of
     -- Lepidoptera text; unparseable / absent storage falls back to defaults).
     msaved <- liftEffect Store.loadAll
     for_ msaved \sv -> do
-      H.modify_ _ { scenes = sv.scenes, presets = sv.presets, clips = sv.clips }
+      H.modify_ _ { scenes = sv.scenes, presets = sv.presets }
       H.modify_ (loadText sv.live)
+    -- Restore the shared MIDI clip library (#27) — captured anywhere, pickable here.
+    savedClips <- liftEffect ClipStore.loadClips
+    H.modify_ _ { clips = savedClips }
     -- Merge the shared Amphora scene library over the local one (by name), in the
     -- BACKGROUND: awaiting it blocked Initialize (hence all queries to Odonus) until
     -- the ~30s offline timeout. The store being offline is not fatal — keep local.
@@ -692,29 +704,49 @@ dispatch = case _ of
                  Nothing -> "loop " <> show (i + 1)
       in s { scenes = s.scenes <> [ { name: nm, text: m.patch } ] }
     Nothing -> s
-  -- Lift a mark's region out as a captured clip (#151, R2d): copy its notes,
-  -- rebased to zero, plus the patch that made them — a self-contained artefact
-  -- that survives the buffer reset. In-session for now (persistence = big-think).
-  SaveMarkClip i -> H.modify_ \s -> case s.logbook.marks !! i of
-    Just m ->
-      let nm = case harmonicSummary m.patch of
+  -- Lift a mark's region out as a captured clip (#27): copy its notes, rebased to
+  -- zero, into a shared-library `MidiClip` with metadata populated cheaply from the
+  -- capturing patch (key/scale → tags/key/context, tempo → bpm, machine → source).
+  -- Full fidelity is preserved (headIdx/vel/gate); lossy projections are deferred to
+  -- playback. Persisted to the SHARED store, so it's pickable in Vetula and beyond.
+  SaveMarkClip i -> do
+    st <- H.get
+    for_ (st.logbook.marks !! i) \m -> do
+      let hsum = harmonicSummary m.patch
+          nm = case hsum of
                  Just h -> "clip · " <> h.root <> " " <> h.scale
-                 Nothing -> "clip " <> show (length s.clips + 1)
-          clip = { name: nm, events: materializeRegion m.from m.to s.logbook
-                 , lenMicros: m.to - m.from, patch: m.patch }
-      in s { clips = [ clip ] <> s.clips }
-    Nothing -> s
+                 Nothing -> "clip " <> show (length st.clips + 1)
+          evs = materializeRegion m.from m.to st.logbook
+          clip =
+            { id: "odonus-" <> show m.atMicros
+            , events: evs
+            , lenMicros: m.to - m.from
+            , heads: Clips.headCount evs
+            , capturedMicros: st.nowMicros
+            , source: "odonus"
+            , name: nm
+            , tags: case hsum of
+                Just h -> [ "odonus", h.root, h.scale ]
+                Nothing -> [ "odonus" ]
+            , notes: ""
+            , bpm: Just st.clockTempo
+            , key: map (\h -> h.root <> " " <> h.scale) hsum
+            , context: Just m.patch
+            }
+      H.modify_ \s -> s { clips = [ clip ] <> s.clips }
+      persistClips
   PlayClip i -> startClip i
-  -- Rename a captured clip in place (commits on blur). Persists via the
-  -- handleAction catch-all, so the new name survives reload with the harvest.
-  RenameClip i nm -> H.modify_ \s ->
-    s { clips = fromMaybe s.clips (modifyAt i (_ { name = nm }) s.clips) }
+  -- Rename a captured clip in place (commits on blur); persist to the shared store.
+  RenameClip i nm -> do
+    H.modify_ \s -> s { clips = fromMaybe s.clips (modifyAt i (_ { name = nm }) s.clips) }
+    persistClips
   DeleteClip i -> do
     hushReplayVoices
     H.modify_ \s -> s { clips = fromMaybe s.clips (deleteAt i s.clips)
                       , playing = case s.playing of
                           Just p | p.source == FromClip i -> Nothing
                           _ -> s.playing }
+    persistClips
   ToggleContext -> H.modify_ \s -> s { contextOpen = not s.contextOpen }
   -- STEP LENGTH is a transport/clock param, not a SimState edit, so it rides its
   -- own `reef-steplen` verb (not the tick-tagged input path): apply locally, then
