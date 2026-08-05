@@ -110,7 +110,7 @@ import Tidal.Pattern.Types (Arc(..), eventPart, eventValue, eventWhole, isDigita
 import Tidal.Pattern.Types (Pattern, Event) as PT
 import Data.Rational as Rat
 import Data.Rational ((%))
-import Triggerfish.Clips (MidiClip, NoteEvent)
+import Triggerfish.Clips (MidiClip, NoteEvent, headCount)
 import Triggerfish.Clips.Store as ClipStore
 import Data.Either (Either(..))
 import Reef.Vetula.Protocol (encodePerf) as RV
@@ -838,6 +838,11 @@ data Action
   | PerfDetachPhrase Int   -- drop box b's phrase source (back to chords)
   | PerfPhraseMode Int ChannelMode -- box b: flatten-to-channel vs original-source-channels
   | PerfPhraseMuteHead Int Int     -- box b: toggle mute of source head h in the phrase
+  -- Clip-library management (#33), operating on the SHARED store rather than a box: an
+  -- attached box holds a self-contained copy, so rename/delete here never touch a voice.
+  | ClipAudition MidiClip  -- play a library clip once, faithfully (own channels/vel/gate)
+  | ClipRename String String -- rename library clip by id (commit on blur), persist
+  | ClipDelete String      -- remove library clip by id, persist
   | PerfNop                -- no-op (used to stop a click bubbling without a re-render)
   | PerfToggleMute Int     -- silence/unsilence box b's pipeline
   | PerfDragStart PerfDragSrc -- begin an HTML5 drag of a palette/box layer
@@ -2398,6 +2403,24 @@ handleAction = case _ of
              else box)
          st.perfBoxes }
 
+  -- Clip-library management (#33). These write the WHOLE library back to the shared
+  -- store (clipLibrary was loaded fresh when the picker opened, so it's authoritative).
+  -- Attached box copies are snapshots and untouched — a renamed/deleted clip keeps
+  -- sounding in any voice it was already dropped into.
+  ClipAudition clip -> auditionClip clip
+
+  ClipRename cid newName -> do
+    st <- H.get
+    let lib' = map (\c -> if c.id == cid then c { name = newName } else c) st.clipLibrary
+    H.modify_ _ { clipLibrary = lib' }
+    liftEffect (ClipStore.saveClips lib')
+
+  ClipDelete cid -> do
+    st <- H.get
+    let lib' = filter (\c -> c.id /= cid) st.clipLibrary
+    H.modify_ _ { clipLibrary = lib' }
+    liftEffect (ClipStore.saveClips lib')
+
   PerfNop -> pure unit
 
   -- Starting a drag abandons any click-to-place hold, so the two gestures can't
@@ -3629,6 +3652,23 @@ playSpecimen s = do
     liftEffect $ for_ notes \n ->
       Midi.scheduleNote out { channel: st.previewChan, note: n, velocity: 92, delayMs: 0.0, durMs: 900.0 }
   logChyron s.label notes (nub (map (\x -> mod x 12) notes)) s.anchor
+
+-- | Audition a library clip (#33): replay its captured events once, FAITHFULLY — each
+-- | note on its own source channel (`odonusHeadChannel headIdx`, matching ORIGINAL-mode
+-- | playback), with its recorded velocity + gate, staggered by its rebased onset. No
+-- | tempo re-map and no transform stack: this is "hear the recording as recorded",
+-- | routed through whatever output the shell has Vetula pointed at (Continuo / IAC).
+auditionClip :: forall o m. MonadAff m => MidiClip -> H.HalogenM State Action Slots o m Unit
+auditionClip clip = do
+  st <- H.get
+  for_ st.midiOut \out ->
+    liftEffect $ for_ clip.events \e ->
+      Midi.scheduleNote out
+        { channel: Routing.odonusHeadChannel e.headIdx
+        , note: e.pitch
+        , velocity: e.vel
+        , delayMs: e.fireUnixMicros / 1000.0
+        , durMs: e.gateMs }
 
 -- | In-place transpose of a tank specimen by `n` semitones — the capo move. Bass
 -- | and every upper voice shift arithmetically (absolute MIDI), and the label is
@@ -4947,10 +4987,16 @@ perfPhrasePickModal st = case st.perfPhrasePick of
       [ HH.div
           [ HP.style "background: #fbf9f2; border: 1px solid #cdbb8c; border-radius: 10px; padding: 18px 20px; max-width: 460px; width: 100%; max-height: 70vh; overflow-y: auto; box-shadow: 0 10px 40px rgba(0,0,0,0.25);"
           , HE.onClick \e -> PerfStopClick e PerfNop ]
-          ( [ HH.div [ HP.style "font-size: 13px; letter-spacing: 0.04em; text-transform: uppercase; color: #7a5c00; margin-bottom: 4px;" ]
-                [ HH.text ("attach a phrase to P" <> show (maybe (i + 1) _.channel (index st.perfBoxes i))) ]
+          ( [ HH.div [ HP.style "display: flex; align-items: baseline; gap: 8px; margin-bottom: 4px;" ]
+                [ HH.div [ HP.style "font-size: 13px; letter-spacing: 0.04em; text-transform: uppercase; color: #7a5c00;" ]
+                    [ HH.text "clip library" ]
+                , HH.div [ HP.style "font-size: 11px; color: #b0a684;" ]
+                    [ HH.text (show (length st.clipLibrary) <> " clip" <> (if length st.clipLibrary == 1 then "" else "s") <> " · shared across machines") ]
+                ]
             , HH.div [ HP.style "font-size: 11px; color: #a89a70; margin-bottom: 12px;" ]
-                [ HH.text "a captured MIDI clip becomes this voice's source — the transform stack still applies" ]
+                [ HH.text ("▶ audition · rename inline · × delete · ＋ attach to P"
+                    <> show (maybe (i + 1) _.channel (index st.perfBoxes i))
+                    <> " (a self-contained copy; the transform stack still applies)") ]
             ]
             <> (if length st.clipLibrary == 0
                   then [ HH.div [ HP.style "font-size: 12px; color: #b0a684; padding: 14px 0;" ]
@@ -4963,16 +5009,50 @@ perfPhrasePickModal st = case st.perfPhrasePick of
           )
       ]
   where
+  -- One library row: a source badge, an inline-editable name (rename on blur), the
+  -- computed/stored metadata, then the three controls (audition / attach / delete). A
+  -- div, not a button, so the name <input> and the control buttons nest legally.
   clipRow i c =
-    HH.button
-      [ HP.style "display: flex; align-items: center; gap: 10px; width: 100%; text-align: left; border: 1px solid #e0d6bc; background: #fdfbf5; color: #5a4a2a; cursor: pointer; padding: 7px 10px; border-radius: 6px; margin-bottom: 5px; font-size: 12px;"
-      , HP.title "attach this clip as the voice's source"
-      , HE.onClick \_ -> PerfAttachPhrase i c ]
-      [ HH.span [ HP.style "font-size: 14px; color: #6a4a8a;" ] [ HH.text "♪" ]
-      , HH.span [ HP.style "flex: 1 1 auto; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;" ] [ HH.text c.name ]
-      , HH.span [ HP.style "font-size: 10px; color: #a89a70;" ] [ HH.text (fromMaybe "" c.key) ]
-      , HH.span [ HP.style "font-size: 10px; color: #b0a684;" ] [ HH.text (show (length c.events) <> "n") ]
+    HH.div
+      [ HP.style "display: flex; align-items: center; gap: 8px; width: 100%; border: 1px solid #e0d6bc; background: #fdfbf5; padding: 6px 8px; border-radius: 6px; margin-bottom: 5px; font-size: 12px;" ]
+      [ sourceBadge c.source
+      , HH.input
+          [ HP.value c.name
+          , HP.placeholder "unnamed"
+          , HP.title "rename this clip in the shared library"
+          , HP.style "flex: 1 1 auto; min-width: 0; border: none; border-bottom: 1px dashed #d8cba0; background: transparent; color: #5a4a2a; font-size: 12px; padding: 1px 2px;"
+          , HE.onValueChange (ClipRename c.id) ]
+      , metaSpan (fromMaybe "" c.key)
+      , metaSpan (joinWith " " (map ("#" <> _) c.tags))
+      , metaSpan (show (headCount c.events) <> "ch")
+      , metaSpan (show (length c.events) <> "n")
+      , iconBtn "#6a4a8a" "▶" "audition this clip (own channels · velocity · gate)" (ClipAudition c)
+      , iconBtn "#2f7d5a" "＋" "attach a copy as this voice's source" (PerfAttachPhrase i c)
+      , iconBtn "#a44" "×" "delete this clip from the shared library" (ClipDelete c.id)
       ]
+
+  -- Which machine captured the clip, as a coloured pill.
+  sourceBadge src =
+    let col = case src of
+          "odonus" -> "#2f7d8a"
+          "vetula" -> "#6a4a8a"
+          "balistes" -> "#8a5a2a"
+          _ -> "#9a9070"
+    in HH.span
+      [ HP.style ("font-size: 9px; letter-spacing: 0.04em; text-transform: uppercase; color: #fff; background: " <> col <> "; padding: 1px 5px; border-radius: 3px; white-space: nowrap;")
+      , HP.title ("captured in " <> src) ]
+      [ HH.text src ]
+
+  metaSpan t =
+    if t == "" then HH.text ""
+    else HH.span [ HP.style "font-size: 10px; color: #a89a70; white-space: nowrap;" ] [ HH.text t ]
+
+  iconBtn col glyph tip act =
+    HH.button
+      [ HP.style ("border: 1px solid #dcd2b4; background: #faf6ea; color: " <> col <> "; cursor: pointer; padding: 2px 6px; border-radius: 4px; font-size: 12px; line-height: 1; white-space: nowrap;")
+      , HP.title tip
+      , HE.onClick \e -> PerfStopClick e act ]
+      [ HH.text glyph ]
 
 perfEditModal :: forall m. State -> H.ComponentHTML Action Slots m
 perfEditModal st = case st.perfEditBox >>= \i -> map (Tuple i) (index st.perfBoxes i) of
