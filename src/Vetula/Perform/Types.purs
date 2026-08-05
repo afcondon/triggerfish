@@ -20,6 +20,7 @@ import Prelude
 import Data.Array (reverse)
 import Data.Maybe (Maybe(..))
 import Triggerfish.PatternArg (PatternArg)
+import Triggerfish.Clips (MidiClip)
 
 -- | A function-stack LAYER on a Perform box — a uniform `Pattern (Array Int) ->
 -- | Pattern (Array Int)` endomorphism (see `applyFx`), so any layer drags anywhere
@@ -126,6 +127,33 @@ cycleWhen = case _ of
   Prob _ -> AfterBar 8
   AfterBar _ -> Whenmod 8 1
   Whenmod _ _ -> Always
+
+-- | How a captured multi-channel phrase maps to output when it's a box's source
+-- | (recording axis #27, docs/DESIGN-midi-clip-library.md). `Flatten` collapses all
+-- | sounding source heads onto the box's single channel and runs the full transform
+-- | stack — "as a Vetula voice". `Original` keeps each note on its source channel and
+-- | plays faithfully — "as a MIDI clip" (no chord stack; #27b-2). No channel re-map.
+data ChannelMode = Flatten | Original
+
+derive instance eqChannelMode :: Eq ChannelMode
+
+channelModeLabel :: ChannelMode -> String
+channelModeLabel = case _ of
+  Flatten -> "flatten"
+  Original -> "orig ch"
+
+-- | A captured phrase attached to a Perform box as its source (in place of a chord
+-- | progression). Holds a self-contained COPY of the library clip (small data;
+-- | survives the clip being renamed/deleted), the source heads currently muted from
+-- | the recording (a live performance control; [] = all sounding), and the channel
+-- | mode. Phrase boxes route → midi/rig only (→ odo is meaningless for a frozen
+-- | gesture), and are skipped by the eDSL text round-trip (a recording is data, not
+-- | structure) — they persist via the record/scene form.
+type PhraseAttach =
+  { clip :: MidiClip
+  , mutedHeads :: Array Int
+  , channelMode :: ChannelMode
+  }
 
 -- | A stack entry: a function `fx` plus the `when` clause gating it per cycle.
 type Layer = { fx :: PerfFx, when :: When }

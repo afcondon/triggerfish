@@ -1,8 +1,14 @@
 -- | `Triggerfish.Clips.Store` — localStorage persistence for the SHARED MIDI clip
 -- | library (recording axis #27). Machine-agnostic: every capturing machine
 -- | (Odonus now, Vetula at #28, later others) reads/writes this one store, so a
--- | clip captured anywhere is pickable everywhere. Mirrors the Odonus/Selene store
--- | FFI pattern (best-effort JSON envelope; swallows quota / private-mode errors).
+-- | clip captured anywhere is pickable everywhere.
+-- |
+-- | ⚠️ PureScript `Maybe` does NOT survive `JSON.stringify`/`parse` — `Just`/`Nothing`
+-- | rely on constructor identity that a plain JSON round-trip destroys, so a decoded
+-- | `Maybe` field fails its pattern match at read time. The on-disk shape therefore
+-- | uses `Nullable` for `MidiClip`'s optional fields (bpm/key/context) — `null` ⇔
+-- | `Nothing`, a bare value ⇔ `Just` — converting at the boundary. (Same reason the
+-- | Odonus store flattens a preset's `Maybe name` to `""`.)
 module Triggerfish.Clips.Store
   ( saveClips
   , loadClips
@@ -10,28 +16,98 @@ module Triggerfish.Clips.Store
 
 import Prelude
 
-import Data.Maybe (fromMaybe)
-import Data.Nullable (Nullable, toMaybe)
+import Data.Array (null)
+import Data.Maybe (Maybe(..))
+import Data.Nullable (Nullable, toMaybe, toNullable)
 import Effect (Effect)
-import Triggerfish.Clips (MidiClip)
+import Triggerfish.Clips (MidiClip, NoteEvent)
 
--- v1: the shared library. `MidiClip` is all-concrete, so it JSON round-trips
--- directly — the envelope is just a `{ clips }` wrapper for forward headroom.
+-- v2: optional fields stored as Nullable so they round-trip through JSON. (v1 stored
+-- them as PureScript `Maybe`, which corrupts on read — migrated below.)
 storeKey :: String
-storeKey = "triggerfish.clips.v1"
+storeKey = "triggerfish.clips.v2"
 
-type Envelope = { clips :: Array MidiClip }
+v1Key :: String
+v1Key = "triggerfish.clips.v1"
+
+-- | The JSON-safe on-disk clip: `MidiClip` with its `Maybe` fields as `Nullable`.
+type StoredClip =
+  { id :: String
+  , events :: Array NoteEvent
+  , lenMicros :: Number
+  , heads :: Int
+  , capturedMicros :: Number
+  , source :: String
+  , name :: String
+  , tags :: Array String
+  , notes :: String
+  , bpm :: Nullable Number
+  , key :: Nullable String
+  , context :: Nullable String
+  }
+
+type Envelope = { clips :: Array StoredClip }
+
+-- | The salvageable subset of a v1 clip: every JSON-SAFE field (all but the three
+-- | corrupt `Maybe`s). Reading v1 through this drops the malformed metadata but keeps
+-- | the notes + name intact — a clip's music survives the format fix.
+type V1Clip =
+  { id :: String
+  , events :: Array NoteEvent
+  , lenMicros :: Number
+  , heads :: Int
+  , capturedMicros :: Number
+  , source :: String
+  , name :: String
+  , tags :: Array String
+  , notes :: String
+  }
+
+type V1Envelope = { clips :: Array V1Clip }
 
 foreign import _save :: String -> String -> Effect Unit
 foreign import _load :: forall a. String -> Effect (Nullable a)
 foreign import _stringify :: forall a. a -> String
 
--- | Persist the whole library (best-effort).
-saveClips :: Array MidiClip -> Effect Unit
-saveClips cs = _save storeKey (_stringify ({ clips: cs } :: Envelope))
+toStored :: MidiClip -> StoredClip
+toStored c =
+  { id: c.id, events: c.events, lenMicros: c.lenMicros, heads: c.heads
+  , capturedMicros: c.capturedMicros, source: c.source, name: c.name
+  , tags: c.tags, notes: c.notes
+  , bpm: toNullable c.bpm, key: toNullable c.key, context: toNullable c.context }
 
--- | Load the library; an absent / unparseable store yields an empty library.
+fromStored :: StoredClip -> MidiClip
+fromStored s =
+  { id: s.id, events: s.events, lenMicros: s.lenMicros, heads: s.heads
+  , capturedMicros: s.capturedMicros, source: s.source, name: s.name
+  , tags: s.tags, notes: s.notes
+  , bpm: toMaybe s.bpm, key: toMaybe s.key, context: toMaybe s.context }
+
+-- | Salvage a v1 clip: keep its notes/name, reset the corrupt metadata to absent.
+fromV1 :: V1Clip -> MidiClip
+fromV1 v =
+  { id: v.id, events: v.events, lenMicros: v.lenMicros, heads: v.heads
+  , capturedMicros: v.capturedMicros, source: v.source, name: v.name
+  , tags: v.tags, notes: v.notes
+  , bpm: Nothing, key: Nothing, context: Nothing }
+
+-- | Persist the whole library (best-effort — the FFI swallows quota/private-mode).
+saveClips :: Array MidiClip -> Effect Unit
+saveClips cs = _save storeKey (_stringify ({ clips: map toStored cs } :: Envelope))
+
+-- | Load the library. Prefers v2; if absent, salvages a v1 store (dropping its
+-- | corrupt metadata) and rewrites it as v2 so the migration happens once. An
+-- | absent/unparseable store yields an empty library.
 loadClips :: Effect (Array MidiClip)
 loadClips = do
-  m <- _load storeKey
-  pure (fromMaybe [] (map _.clips (toMaybe (m :: Nullable Envelope))))
+  m2 <- _load storeKey
+  case toMaybe (m2 :: Nullable Envelope) of
+    Just env -> pure (map fromStored env.clips)
+    Nothing -> do
+      m1 <- _load v1Key
+      case toMaybe (m1 :: Nullable V1Envelope) of
+        Just env1 -> do
+          let salvaged = map fromV1 env1.clips
+          _ <- if null salvaged then pure unit else saveClips salvaged
+          pure salvaged
+        Nothing -> pure []

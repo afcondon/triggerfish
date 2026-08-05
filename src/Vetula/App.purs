@@ -37,6 +37,7 @@ import Data.Tuple (Tuple(..), fst, snd)
 import Effect (Effect)
 import Effect.Random (randomInt)
 import Effect.Class.Console as Console
+import Effect.Exception (try, message)
 import Effect.Aff (attempt)
 import Effect.Aff.Class (class MonadAff, liftAff)
 import Effect.Class (liftEffect)
@@ -80,6 +81,8 @@ import Vetula.Realise (fromChords)
 import Vetula.Perform.Types
   ( PerfFx(..)
   , ArpDir(..)
+  , PhraseAttach
+  , ChannelMode(..)
   , VoiceShape(..)
   , PerfSel(..)
   , When(..)
@@ -101,11 +104,14 @@ import Vetula.Perform.Types
   , parseVoiceShape
   )
 import Triggerfish.PatternArg (PatternArg(..), argSrc, printArg, glyphArg, mkArg, tokenize, unq)
-import Tidal.Pattern.Core (arpeggiate, arpWith, withSampledArg, fast, slow, every, whenCycle, cycleRand)
+import Tidal.Pattern.Core (arpeggiate, arpWith, withSampledArg, compress, stack, fast, slow, every, whenCycle, cycleRand)
 import Tidal.Pattern.Mini (parseMiniPattern)
 import Tidal.Pattern.Types (Arc(..), eventPart, eventValue, eventWhole, isDigital, mkArc, mkState, query)
 import Tidal.Pattern.Types (Pattern, Event) as PT
 import Data.Rational as Rat
+import Data.Rational ((%))
+import Triggerfish.Clips (MidiClip, NoteEvent)
+import Triggerfish.Clips.Store as ClipStore
 import Data.Either (Either(..))
 import Reef.Vetula.Protocol (encodePerf) as RV
 import Binnacle.Time (dateNow)
@@ -493,6 +499,9 @@ type PerfBox =
                           -- chord indices (cycle = 1 bar). "" = default (one/beat).
   , muted   :: Boolean    -- silence this pipeline without tearing it down
   , term    :: PerfTerm   -- the terminal sink: → midi | → odo | → rig
+  , phrase  :: Maybe PhraseAttach  -- a captured phrase as the source (#27), in place of
+                                   -- chords; when present it drives `base` and the box
+                                   -- plays on the bar grid. Nothing = chord-sourced.
   }
 
 -- | A box is GHOSTED when its terminal can't sound in the current authority — a
@@ -682,6 +691,11 @@ type State =
   -- session badge) — session + scene + chyron housekeeping, moved off the Perform
   -- header. (AC, 2026-08-03.)
   , perfMenuOpen :: Boolean
+  -- The shared MIDI clip library (#27), loaded from `Triggerfish.Clips.Store` in
+  -- Initialize — the pool the phrase picker offers. `perfPhrasePick` is the box index
+  -- whose picker is open (Nothing = closed).
+  , clipLibrary :: Array MidiClip
+  , perfPhrasePick :: Maybe Int
   }
 
 -- | Which floating control a fold toggle targets.
@@ -818,6 +832,12 @@ data Action
   | PerfSetPipeline Int String -- edit box b's WHOLE pipeline text (seq # layers)
   | PerfOpenEdit Int       -- open the sequence editor modal for box b
   | PerfCloseEdit          -- close the sequence editor modal
+  | PerfOpenPhrasePick Int -- open the clip-library picker for box b (#27)
+  | PerfClosePhrasePick    -- close the phrase picker
+  | PerfAttachPhrase Int MidiClip -- attach a clip (copy) as box b's phrase source
+  | PerfDetachPhrase Int   -- drop box b's phrase source (back to chords)
+  | PerfPhraseMode Int ChannelMode -- box b: flatten-to-channel vs original-source-channels
+  | PerfPhraseMuteHead Int Int     -- box b: toggle mute of source head h in the phrase
   | PerfNop                -- no-op (used to stop a click bubbling without a re-render)
   | PerfToggleMute Int     -- silence/unsilence box b's pipeline
   | PerfDragStart PerfDragSrc -- begin an HTML5 drag of a palette/box layer
@@ -991,7 +1011,7 @@ component = H.mkComponent
       , chyronArmed: true
       -- four player boxes on MIDI ch 1-4 (Odonus I-IV in AC's routing); a token
       -- dropped on one loops there while the transport plays.
-      , perfBoxes: map (\n -> { channel: n, label: "P" <> show n, seq: Nothing, stack: [], seqText: "", muted: false, term: TMidi }) (range 1 4)
+      , perfBoxes: map (\n -> { channel: n, label: "P" <> show n, seq: Nothing, stack: [], seqText: "", muted: false, term: TMidi, phrase: Nothing }) (range 1 4)
       , perfHeld: Nothing
       , perfHeldFx: Nothing
       , perfDrag: Nothing
@@ -1001,6 +1021,8 @@ component = H.mkComponent
       , perfScenes: []
       , perfRecallOpen: false
       , perfMenuOpen: false
+      , clipLibrary: []
+      , perfPhrasePick: Nothing
       }
   , render
   , eval: H.mkEval H.defaultEval
@@ -1398,6 +1420,9 @@ handleAction = case _ of
     -- continues past the restored count so new ◦ autonames don't collide.
     msaved <- liftEffect Store.loadLibrary
     for_ msaved \sv -> H.modify_ _ { library = sv.library, capSeq = length sv.library, presets = sv.presets }
+    -- Load the shared MIDI clip library (#27) — the pool the phrase picker offers.
+    savedClips <- liftEffect ClipStore.loadClips
+    H.modify_ _ { clipLibrary = savedClips }
     -- Resume the persisted Perform session (a reload must NOT start a new session);
     -- mint one only on the very first launch. `perfSession` then rides every save.
     msess <- liftEffect Store.loadSession
@@ -2276,7 +2301,7 @@ handleAction = case _ of
     let used = map _.channel st.perfBoxes
         free = fromMaybe (length st.perfBoxes + 1) (find (\c -> not (elem c used)) (range 1 16))
     in st { perfBoxes = st.perfBoxes <>
-              [ { channel: free, label: "P" <> show free, seq: Nothing, stack: [], seqText: "", muted: false, term: TMidi } ] }
+              [ { channel: free, label: "P" <> show free, seq: Nothing, stack: [], seqText: "", muted: false, term: TMidi, phrase: Nothing } ] }
 
   -- Delete a player outright (distinct from PerfClearBox, which only empties its
   -- token). Its channel frees for the next add.
@@ -2333,6 +2358,45 @@ handleAction = case _ of
   PerfOpenEdit b -> H.modify_ _ { perfEditBox = Just b }
 
   PerfCloseEdit -> H.modify_ _ { perfEditBox = Nothing }
+
+  -- Phrase picker (#27): open/close the clip library, attach a chosen clip as a box's
+  -- source (a self-contained copy), or detach back to chords. Attaching coerces a → odo
+  -- terminal to → midi, since a frozen phrase can only sound (midi/rig), not condition.
+  -- re-read the shared clip library when opening the picker, so a clip captured in
+  -- Odonus this session shows up without a reload.
+  PerfOpenPhrasePick b -> do
+    clips <- liftEffect ClipStore.loadClips
+    H.modify_ _ { perfPhrasePick = Just b, clipLibrary = clips }
+
+  PerfClosePhrasePick -> H.modify_ _ { perfPhrasePick = Nothing }
+
+  PerfAttachPhrase b clip -> H.modify_ \st ->
+    st { perfBoxes = mapWithIndex (\j box ->
+           if j == b
+             then box { phrase = Just { clip, mutedHeads: [], channelMode: Flatten }
+                      , term = if box.term == TOdo then TMidi else box.term }
+             else box)
+         st.perfBoxes
+       , perfPhrasePick = Nothing }
+
+  PerfDetachPhrase b -> H.modify_ \st ->
+    st { perfBoxes = mapWithIndex (\j box ->
+           if j == b then box { phrase = Nothing } else box)
+         st.perfBoxes }
+
+  PerfPhraseMode b mode -> H.modify_ \st ->
+    st { perfBoxes = mapWithIndex (\j box ->
+           if j == b then box { phrase = map (_ { channelMode = mode }) box.phrase } else box)
+         st.perfBoxes }
+
+  -- toggle source head `h` in box `b`'s phrase mute mask (silence it from the recording).
+  PerfPhraseMuteHead b h -> H.modify_ \st ->
+    st { perfBoxes = mapWithIndex (\j box ->
+           if j == b
+             then box { phrase = map (\ph -> ph { mutedHeads =
+                          if elem h ph.mutedHeads then filter (_ /= h) ph.mutedHeads else [ h ] <> ph.mutedHeads }) box.phrase }
+             else box)
+         st.perfBoxes }
 
   PerfNop -> pure unit
 
@@ -2531,13 +2595,21 @@ handleAction = case _ of
           barMs = pulseMs * 16.0
       for_ mout \out -> liftEffect $
         for_ st.perfBoxes \box ->
-          for_ box.seq \_ ->
+          -- a box sounds if it has a source: a chord token (`seq`) OR a captured
+          -- phrase (#27). Phrase boxes have no `seq`, so gate on either.
+          when (isJust box.seq || isJust box.phrase) $
             when (not box.muted && box.term == TMidi) $
-              if boxUsesSeq box
-                then when (tick.index `mod` 16 == 0) $
-                       scheduleBox out (tick.index / 16) barMs beatMs tick.delayMs box
-                else when (tick.index `mod` 4 == 0) $
-                       scheduleBox out (tick.index / 4) beatMs beatMs tick.delayMs box
+              -- each box's scheduling is isolated: a throw in one box (e.g. a malformed
+              -- phrase) must not silence the others, so catch + log rather than abort
+              -- the whole per-tick loop.
+              let onGrid = if boxUsesSeq box then tick.index `mod` 16 == 0 else tick.index `mod` 4 == 0
+                  cyc = if boxUsesSeq box then tick.index / 16 else tick.index / 4
+                  slotMs = if boxUsesSeq box then barMs else beatMs
+              in when onGrid do
+                   r <- try (scheduleBox out cyc slotMs beatMs tick.delayMs box)
+                   case r of
+                     Left err -> Console.error ("perf box P" <> show box.channel <> " schedule threw: " <> message err)
+                     Right _ -> pure unit
       H.modify_ _ { pulse = tick.index, voices = voices', clockTempo = tempo, tempo = round tempo }
 
   -- parse the (possibly edited) Tidal source into note-lists, rebuild them as a
@@ -3411,21 +3483,77 @@ seqPattern chords txt
       Left _ -> Nothing
       Right idxPat -> Just (map (\s -> fromMaybe [] (fromString (trim s) >>= index chords)) idxPat)
 
--- | Whether a box plays on the BAR grid (a valid text-hatch sequence) rather than
--- | the default per-beat grid.
+-- | Whether a box plays on the BAR grid (a valid text-hatch sequence, or a phrase
+-- | source — a phrase always spans one bar) rather than the default per-beat grid.
 boxUsesSeq :: PerfBox -> Boolean
-boxUsesSeq box = case box.seq of
-  Just s -> isJust (seqPattern (map _.notes s.events) box.seqText)
-  Nothing -> false
+boxUsesSeq box = case box.phrase of
+  Just _ -> true
+  Nothing -> case box.seq of
+    Just s -> isJust (seqPattern (map _.notes s.events) box.seqText)
+    Nothing -> false
+
+-- | The PPQ grid a captured phrase is re-quantized onto within one cycle. 96 is
+-- | fine enough that onset nuance survives while positions stay exact rationals.
+phrasePpq :: Int
+phrasePpq = 96
+
+-- | How many BARS a clip spans — so a multi-bar phrase plays over that many cycles
+-- | (`slow`) instead of being crammed into one bar (which sounds 2× fast for the
+-- | default 2-bar loop). Derived from the capture tempo when known (bar = 4 beats =
+-- | 240e6 µs / bpm); salvaged clips that lost their tempo fall back to the 2-bar
+-- | default loop window. Rounded — captured loops are bar-aligned.
+phraseBars :: MidiClip -> Int
+phraseBars c = case c.bpm of
+  Just b | b > 1.0 -> max 1 (round (c.lenMicros * b / 240.0e6))
+  _ -> 2
+
+-- | A captured phrase → `Pattern (Array Int)` in FLATTEN mode (#27): each note's
+-- | absolute onset (rebased to [0, lenMicros)) is re-quantized to the PPQ grid within
+-- | ONE cycle — so it RE-TEMPOS to the current clock — simultaneous onsets group into
+-- | a chord, and each chord is held to the next onset (legato). Muted source heads
+-- | drop out first. The box's transform stack then folds over this exactly as over a
+-- | chord progression, so transpose / voice / arp / slow all apply. Velocity/gate drop
+-- | at this seam (as they do for chord voices); Original channel mode is #27b-2.
+-- | Build a `Pattern (Array Int)` from a set of note events over a clip of `len`
+-- | micros, spread across `bars` cycles. Used both for the FLATTEN whole-clip pattern
+-- | and, in ORIGINAL mode, per source head.
+phrasePatternFrom :: Number -> Int -> Array NoteEvent -> PT.Pattern (Array Int)
+phrasePatternFrom len bars evs =
+  let stepOf e = clamp 0 (phrasePpq - 1) (round (e.fireUnixMicros / max 1.0 len * toNumber phrasePpq))
+      grouped = foldl (\m e -> Map.insertWith (<>) (stepOf e) [ e.pitch ] m) Map.empty evs
+      steps = (Map.toUnfoldable grouped) :: Array (Tuple Int (Array Int))
+      slotEnd idx s = case steps !! (idx + 1) of
+        Just (Tuple s2 _) -> max (s + 1) s2   -- hold to the next onset (legato)
+        Nothing -> phrasePpq                   -- last chord holds to the cycle end
+      arcs = mapWithIndex
+        (\idx (Tuple s pitches) -> compress (s % phrasePpq) (slotEnd idx s % phrasePpq) (pure (nub pitches)))
+        steps
+  -- spread the one-cycle layout over the clip's true bar count, so it plays at the
+  -- captured speed (re-tempo'd to the current clock) and loops every `bars`.
+  in slow (Rat.fromInt bars) (stack arcs)
+
+-- | The clip's events with muted source heads removed (a live performance control).
+phraseActiveEvents :: PhraseAttach -> Array NoteEvent
+phraseActiveEvents ph = filter (\e -> not (elem e.headIdx ph.mutedHeads)) ph.clip.events
+
+-- | Distinct source heads present in the clip, ascending (drives the mute-mask UI).
+phraseClipHeads :: PhraseAttach -> Array Int
+phraseClipHeads ph = sort (nub (map _.headIdx ph.clip.events))
+
+-- | The FLATTEN-mode pattern: all sounding heads collapsed into one chord stream.
+phrasePattern :: PhraseAttach -> PT.Pattern (Array Int)
+phrasePattern ph = phrasePatternFrom ph.clip.lenMicros (phraseBars ph.clip) (phraseActiveEvents ph)
 
 boxPattern :: PerfBox -> PT.Pattern (Array Int)
 boxPattern box = foldl (\p lyr -> applyLayer lyr p) base box.stack
   where
-  base = case box.seq of
-    Nothing -> fromChords []
-    Just s ->
-      let chords = map _.notes s.events
-      in fromMaybe (fromChords chords) (seqPattern chords box.seqText)
+  base = case box.phrase of
+    Just ph -> phrasePattern ph
+    Nothing -> case box.seq of
+      Nothing -> fromChords []
+      Just s ->
+        let chords = map _.notes s.events
+        in fromMaybe (fromChords chords) (seqPattern chords box.seqText)
 
 -- | Query a box's pattern over this cycle `c` and schedule every chord-event it
 -- | yields on the box's channel, positioned by the event's arc within the cycle.
@@ -3438,21 +3566,38 @@ boxPattern box = foldl (\p lyr -> applyLayer lyr p) base box.stack
 -- | onset stagger. `slow`/`fast` stretch the slot orthogonally (upstream, in-pattern).
 scheduleBox :: Midi.MidiOut -> Int -> Number -> Number -> Number -> PerfBox -> Effect Unit
 scheduleBox out c cycleMs _beatMs baseDelayMs box =
-  let realise = boxRealise box.stack
-  in for_ (query (boxPattern box) (mkState (mkArc (Rat.fromInt c) (Rat.fromInt (c + 1))))) \ev ->
-       for_ (onsetWhole ev) \(Arc w) ->
-           let startMs = baseDelayMs + Rat.toNumber (w.start - Rat.fromInt c) * cycleMs
-               slotMs = max 20.0 (Rat.toNumber (w.stop - w.start) * cycleMs)
-               notes = eventValue ev
-               -- per-note onset step (ms): strum = a small fixed stagger; block = 0.
-               stepMs = case realise of
-                 RStrum ms -> toNumber ms
-                 RBlock -> 0.0
-               noteDur = max 20.0 (slotMs * 0.9)
-           in for_ (mapWithIndex Tuple notes) \(Tuple k note) ->
-                Midi.scheduleNote out
-                  { channel: box.channel, note, velocity: 90
-                  , delayMs: startMs + toNumber k * stepMs, durMs: noteDur }
+  case box.phrase of
+    -- ORIGINAL channel mode (#27b): faithful multi-channel playback — each active
+    -- source head on its OWN channel (headIdx → the clip's original channel), no chord
+    -- stack (a recording plays back as recorded). FLATTEN + all chord boxes fall
+    -- through to the single-channel path below.
+    Just ph | ph.channelMode == Original ->
+      for_ (phraseClipHeads ph) \h ->
+        when (not (elem h ph.mutedHeads)) $
+          schedulePat out (Routing.odonusHeadChannel h) c cycleMs baseDelayMs RBlock
+            (phrasePatternFrom ph.clip.lenMicros (phraseBars ph.clip)
+              (filter (\e -> e.headIdx == h) ph.clip.events))
+    _ -> schedulePat out box.channel c cycleMs baseDelayMs (boxRealise box.stack) (boxPattern box)
+
+-- | Schedule one `Pattern (Array Int)` on one channel over cycle `c` — the shared core
+-- | of `scheduleBox` (single channel = chord box / flattened phrase; per head = ORIGINAL
+-- | phrase). Onset-guarded and realisation-aware exactly as before.
+schedulePat :: Midi.MidiOut -> Int -> Int -> Number -> Number -> Realise -> PT.Pattern (Array Int) -> Effect Unit
+schedulePat out channel c cycleMs baseDelayMs realise pat =
+  for_ (query pat (mkState (mkArc (Rat.fromInt c) (Rat.fromInt (c + 1))))) \ev ->
+    for_ (onsetWhole ev) \(Arc w) ->
+        let startMs = baseDelayMs + Rat.toNumber (w.start - Rat.fromInt c) * cycleMs
+            slotMs = max 20.0 (Rat.toNumber (w.stop - w.start) * cycleMs)
+            notes = eventValue ev
+            -- per-note onset step (ms): strum = a small fixed stagger; block = 0.
+            stepMs = case realise of
+              RStrum ms -> toNumber ms
+              RBlock -> 0.0
+            noteDur = max 20.0 (slotMs * 0.9)
+        in for_ (mapWithIndex Tuple notes) \(Tuple k note) ->
+             Midi.scheduleNote out
+               { channel, note, velocity: 90
+               , delayMs: startMs + toNumber k * stepMs, durMs: noteDur }
 
 -- | A digital event's whole, but ONLY when its onset falls in this query (whole start
 -- | == part start). Analog events and mid-sustain continuation fragments give Nothing,
@@ -4695,6 +4840,7 @@ boxesFromDoc doc = map voiceToBox doc.voices
        , seqText: v.seqText
        , muted: v.muted
        , term: v.term
+       , phrase: Nothing   -- phrase boxes aren't carried in the eDSL doc (#27)
        }
 
 -- | A live Perform box → the neutral `VoiceSpec` the Lepidoptera serialiser takes
@@ -4768,6 +4914,7 @@ performSurface st =
         [ HP.style "display: flex; gap: 18px; flex-wrap: wrap; justify-content: center; align-items: flex-start; max-width: 1180px;" ]
         (mapWithIndex (perfBox st) st.perfBoxes <> [ addPlayerTile ])
     , perfEditModal st
+    , perfPhrasePickModal st
     , perfRecallModal st
     ]
   where
@@ -4787,6 +4934,46 @@ performSurface st =
 -- | box `perfEditBox`'s `seqText` directly (same `PerfSetSeq` path, committed on
 -- | blur). Examples drop straight into the field; the guide makes the notation
 -- | learnable where you use it (the complexity-budget point).
+-- | The phrase picker (#27): choose a captured clip from the shared library to attach
+-- | to a box as its source. Naming is a mug's game, so each row also shows the key and
+-- | note count. Clicking a clip attaches a self-contained COPY (`PerfAttachPhrase`).
+perfPhrasePickModal :: forall m. State -> H.ComponentHTML Action Slots m
+perfPhrasePickModal st = case st.perfPhrasePick of
+  Nothing -> HH.text ""
+  Just i ->
+    HH.div
+      [ HP.style "position: fixed; inset: 0; background: rgba(20,20,20,0.32); z-index: 60; display: flex; align-items: center; justify-content: center; padding: 40px;"
+      , HE.onClick \_ -> PerfClosePhrasePick ]
+      [ HH.div
+          [ HP.style "background: #fbf9f2; border: 1px solid #cdbb8c; border-radius: 10px; padding: 18px 20px; max-width: 460px; width: 100%; max-height: 70vh; overflow-y: auto; box-shadow: 0 10px 40px rgba(0,0,0,0.25);"
+          , HE.onClick \e -> PerfStopClick e PerfNop ]
+          ( [ HH.div [ HP.style "font-size: 13px; letter-spacing: 0.04em; text-transform: uppercase; color: #7a5c00; margin-bottom: 4px;" ]
+                [ HH.text ("attach a phrase to P" <> show (maybe (i + 1) _.channel (index st.perfBoxes i))) ]
+            , HH.div [ HP.style "font-size: 11px; color: #a89a70; margin-bottom: 12px;" ]
+                [ HH.text "a captured MIDI clip becomes this voice's source — the transform stack still applies" ]
+            ]
+            <> (if length st.clipLibrary == 0
+                  then [ HH.div [ HP.style "font-size: 12px; color: #b0a684; padding: 14px 0;" ]
+                           [ HH.text "No clips yet. Capture one in Odonus REPLAY (◆ mark → loop → ⧉ clip)." ] ]
+                  else map (clipRow i) st.clipLibrary)
+            <> [ HH.button
+                   [ HP.style "margin-top: 12px; border: 1px solid #dcd2b4; background: #faf6ea; color: #8a7a4a; cursor: pointer; padding: 4px 12px; border-radius: 4px; font-size: 11px;"
+                   , HE.onClick \_ -> PerfClosePhrasePick ]
+                   [ HH.text "cancel" ] ]
+          )
+      ]
+  where
+  clipRow i c =
+    HH.button
+      [ HP.style "display: flex; align-items: center; gap: 10px; width: 100%; text-align: left; border: 1px solid #e0d6bc; background: #fdfbf5; color: #5a4a2a; cursor: pointer; padding: 7px 10px; border-radius: 6px; margin-bottom: 5px; font-size: 12px;"
+      , HP.title "attach this clip as the voice's source"
+      , HE.onClick \_ -> PerfAttachPhrase i c ]
+      [ HH.span [ HP.style "font-size: 14px; color: #6a4a8a;" ] [ HH.text "♪" ]
+      , HH.span [ HP.style "flex: 1 1 auto; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;" ] [ HH.text c.name ]
+      , HH.span [ HP.style "font-size: 10px; color: #a89a70;" ] [ HH.text (fromMaybe "" c.key) ]
+      , HH.span [ HP.style "font-size: 10px; color: #b0a684;" ] [ HH.text (show (length c.events) <> "n") ]
+      ]
+
 perfEditModal :: forall m. State -> H.ComponentHTML Action Slots m
 perfEditModal st = case st.perfEditBox >>= \i -> map (Tuple i) (index st.perfBoxes i) of
   Nothing -> HH.text ""
@@ -4931,19 +5118,46 @@ perfBox st i box =
                  , HP.title (if box.muted then "muted — click to play" else "playing — click to mute")
                  , HE.onClick \e -> PerfStopClick e (PerfToggleMute i) ]
                  [ HH.text (if box.muted then "muted" else "on") ]
+             , if isJust box.phrase then HH.text "" else
+                 HH.button
+                   [ HP.style "border: 1px solid #d0c4e0; background: #f6f1fb; color: #6a4a8a; cursor: pointer; padding: 1px 8px; border-radius: 3px; font-size: 9px; letter-spacing: 0.06em; text-transform: uppercase;"
+                   , HP.title "attach a captured phrase from the clip library"
+                   , HE.onClick \e -> PerfStopClick e (PerfOpenPhrasePick i) ]
+                   [ HH.text "♪ phrase" ]
              ]
-         , case box.seq of
-             Just s ->
-               HH.div [ HP.style "display: flex; align-items: center; gap: 6px; font-size: 22px; color: #7a5c00; margin: 2px 0;" ]
-                 [ faIcon s.glyph.first, faIcon s.glyph.second ]
-             Nothing ->
-               HH.div [ HP.style "font-size: 28px; color: #d8ceb4; line-height: 1; margin: 2px 0;" ] [ HH.text "＋" ]
+         -- the SOURCE row: a captured phrase (distinct, violet) takes precedence over
+         -- the chord token's glyph; ＋ when the box is empty.
+         , case box.phrase of
+             Just ph ->
+               HH.div [ HP.style "display: flex; align-items: center; gap: 6px; font-size: 12px; color: #5a3a7a; margin: 2px 0; max-width: 100%;" ]
+                 [ HH.span [ HP.style "font-size: 15px;" ] [ HH.text "♪" ]
+                 , HH.span [ HP.style "white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 120px;" ] [ HH.text ph.clip.name ]
+                 , HH.span [ HP.style "font-size: 9px; color: #a89ac0;" ] [ HH.text (show (length ph.clip.events) <> "n") ]
+                 , HH.button
+                     [ HP.style "border: none; background: transparent; color: #b06a5a; font-size: 13px; line-height: 1; cursor: pointer; padding: 0 2px;"
+                     , HP.title "detach the phrase (back to chords)"
+                     , HE.onClick \e -> PerfStopClick e (PerfDetachPhrase i) ]
+                     [ HH.text "×" ] ]
+             Nothing -> case box.seq of
+               Just s ->
+                 HH.div [ HP.style "display: flex; align-items: center; gap: 6px; font-size: 22px; color: #7a5c00; margin: 2px 0;" ]
+                   [ faIcon s.glyph.first, faIcon s.glyph.second ]
+               Nothing ->
+                 HH.div [ HP.style "font-size: 28px; color: #d8ceb4; line-height: 1; margin: 2px 0;" ] [ HH.text "＋" ]
          ]
-         <> [ seqRow ]
+         -- phrase controls: flatten/original channel mode + per-source-head mute chips.
+         <> (case box.phrase of
+               Just ph -> [ phraseControlsRow ph ]
+               Nothing -> [])
+         -- the seq/text-hatch row is inert for a phrase box (its source is the phrase,
+         -- not chord indices), so hide it; the stack chips below still apply.
+         <> (if isJust box.phrase then [] else [ seqRow ])
          <> stackRows
          -- the terminal SINK — a midi · odo · rig pill row (the fold's cap)
          <> [ HH.div [ HP.style "display: inline-flex; border: 1px solid #dcd2b4; border-radius: 3px; overflow: hidden; margin-top: 2px;" ]
-                (map termBtn [ TMidi, TOdo, TRig ])
+                -- a phrase can only SOUND (→ midi/rig); → odo (harmonic conditioning) is
+                -- meaningless for a frozen foreground gesture, so it's dropped here.
+                (map termBtn (if isJust box.phrase then [ TMidi, TRig ] else [ TMidi, TOdo, TRig ]))
             , if ghost
                 then HH.div [ HP.style "font-size: 9px; letter-spacing: 0.06em; text-transform: uppercase; color: #a05a3a;" ]
                        [ HH.text "✕ rig only" ]
@@ -4959,6 +5173,35 @@ perfBox st i box =
        )
   where
   ghost = boxGhosted st.authority box
+  -- phrase (#27b): flatten vs original-channels toggle + per-source-head mute chips.
+  -- `flatten` collapses to this voice's channel (full stack); `orig ch` plays each head
+  -- on its own channel (faithful, no stack). Head chips silence a head from the recording.
+  phraseControlsRow ph =
+    let modeBtn m label =
+          HH.button
+            [ HP.style ("border: 1px solid " <> (if ph.channelMode == m then "#8a6ac0" else "#d0c4e0")
+                         <> "; background: " <> (if ph.channelMode == m then "#e8def7" else "#faf7ff")
+                         <> "; color: #5a3a7a; cursor: pointer; padding: 0 6px; border-radius: 3px; font-size: 9px;")
+            , HP.title "flatten to this voice's channel (with the stack), or keep the clip's original per-head channels"
+            , HE.onClick \e -> PerfStopClick e (PerfPhraseMode i m) ]
+            [ HH.text label ]
+        headChip h =
+          let muted = elem h ph.mutedHeads
+          in HH.button
+               [ HP.style ("border: 1px solid #d0c4e0; background: " <> (if muted then "#eeeaf2" else "#faf7ff")
+                            <> "; color: " <> (if muted then "#bbb2c8" else "#5a3a7a")
+                            <> (if muted then "; text-decoration: line-through" else "")
+                            <> "; cursor: pointer; padding: 0 5px; border-radius: 3px; font-size: 9px;")
+               , HP.title ("source head " <> show (h + 1) <> " — click to mute/unmute in the recording")
+               , HE.onClick \e -> PerfStopClick e (PerfPhraseMuteHead i h) ]
+               [ HH.text (show (h + 1)) ]
+    in HH.div
+         [ HP.style "display: flex; align-items: center; gap: 4px; flex-wrap: wrap; width: 100%;" ]
+         ( [ modeBtn Flatten "flat", modeBtn Original "orig ch" ]
+           <> (if length (phraseClipHeads ph) > 1
+                 then [ HH.span [ HP.style "font-size: 8px; color: #a89ac0; margin: 0 1px;" ] [ HH.text "heads" ] ]
+                      <> map headChip (phraseClipHeads ph)
+                 else []) )
   -- the TEXT HATCH: a mini-notation sequence over the token's chord indices (cycle
   -- = one bar). Empty = default one-chord-per-beat. Border lights when it's driving.
   seqRow =
