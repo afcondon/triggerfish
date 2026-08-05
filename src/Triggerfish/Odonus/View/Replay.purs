@@ -1,44 +1,45 @@
--- | REPLAY tab (#151, R2a) — a read-only overview of the whole logbook laid out
--- | on one horizontal timeline: every retained note as a small mark, the flagged
--- | "good bits" as gold lines, and a default loop window (one bar, from the live
--- | tempo) drawn around each mark. This is the surface the playback + resizable
--- | clip editing (R2b/R2c) will grow on; for now it just shows what's captured.
+-- | REPLAY tab — Odonus's adapter over the machine-agnostic capture surface
+-- | (`Triggerfish.Capture.View`, #28). All the drawing (timeline, marks, loop
+-- | regions, playhead, control card) now lives in the shared view; this module just
+-- | wires Odonus's `State`/`Action` to it in the `Horizontal` orientation and reads
+-- | Odonus-specific bits (voice colour, harmonic context) into the wiring.
 -- |
--- | The `modeBar` (LIVE / REPLAY) floats over the surface so switching never
--- | disturbs the live panels' full-height layout.
+-- | The old on-surface CLIPS strip is gone (#28): ⧉ clip lifts a region straight
+-- | into the shared library, and clips are played/managed in the library modal.
+-- |
+-- | `modeBar` (the LIVE / REPLAY switch) stays here — it's Odonus's own `OdonusView`.
 module Triggerfish.Odonus.View.Replay (replayPanel, modeBar) where
 
 import Prelude
 
-import Data.Array (concat, concatMap, length, mapWithIndex, null, (!!))
-import Data.Foldable (foldl)
-import Data.Int (toNumber)
 import Data.Maybe (Maybe(..))
-import Data.String.Common (joinWith)
 import Halogen as H
 import Halogen.HTML as HH
 import Halogen.HTML.Events as HE
-import Halogen.HTML.Properties as HP
-import Web.UIEvent.MouseEvent as ME
-import Triggerfish.Odonus.Grid.Types (Action(..), MidiClip, Mark, NoteEvent, OdonusView(..), PlaySource(..), PlayState, RegionEdge(..), Slots, State, replayTimelineId)
+import Triggerfish.Capture.Types (Orientation(..))
+import Triggerfish.Capture.View (capturePanel)
+import Triggerfish.Odonus.Grid.Types (Action(..), OdonusView(..), Slots, State, replayTimelineId)
+import Triggerfish.Odonus.Grid.Widgets (headColor, style)
 import Triggerfish.Odonus.Patch (harmonicSummary)
-import Triggerfish.Odonus.Grid.Widgets (clampI, headColor, style, svgAttr, svgEl)
 
--- viewBox units — the timeline's internal coordinate space (stretched to fit).
-tlW :: Number
-tlW = 1000.0
-
-tlH :: Number
-tlH = 520.0
-
--- | Cap how many note rects we draw at the whole-recording zoom: a long session
--- | is ~100k notes, far too many DOM nodes. Decimating to an overview keeps the
--- | shape without the cost (playback/clip editing read the FULL buffer, not this).
-maxDraw :: Int
-maxDraw = 3000
-
-pitchToY :: Int -> Number
-pitchToY pitch = tlH * (1.0 - (toNumber (clampI 24 96 pitch) - 24.0) / 72.0)
+-- | The whole-recording capture surface, laid out horizontally (time → X).
+replayPanel :: forall m. State -> H.ComponentHTML Action Slots m
+replayPanel s = capturePanel wiring cap
+  where
+  cap =
+    { logbook: s.logbook, playing: s.playing
+    , regionDrag: s.regionDrag, contextOpen: s.contextOpen }
+  wiring =
+    { orientation: Horizontal
+    , timelineId: replayTimelineId
+    , headColor
+    , contextSummary: harmonicSummary
+    , regionDown: RegionDown
+    , stopPlay: StopPlay
+    , saveClip: SaveMarkClip
+    , saveScene: Just SaveMarkScene
+    , toggleContext: ToggleContext
+    }
 
 -- | The floating LIVE / REPLAY switch, top-right of the Odonus surface.
 modeBar :: forall m. State -> H.ComponentHTML Action Slots m
@@ -57,251 +58,3 @@ modeBar s =
             <> (if on then "background:#efece1;color:#2b2822;font-weight:600"
                       else "background:transparent;color:#e8e4d8aa") ]
         [ HH.text label ]
-
--- | The whole-recording timeline surface.
-replayPanel :: forall m. State -> H.ComponentHTML Action Slots m
-replayPanel s =
-  let
-    lb = s.logbook
-    events = lb.live <> concatMap _.events lb.chunks
-  in
-    HH.div
-      [ style "height:100%;display:flex;flex-direction:column" ]
-      [ HH.div
-       [ HP.id replayTimelineId
-       , style $ "flex:1;min-height:0;position:relative;overflow:hidden;"
-           <> "background:radial-gradient(140% 120% at 50% 40%,#15140f,#0b0a07)" ]
-       ( if null events then [ emptyState ]
-        else
-          let
-            -- The timeline spans the actual recording — earliest to LATEST
-            -- captured note — NOT the live `now`, so it stops stretching the
-            -- moment capture stops (while capturing, the last note ≈ now anyway).
-            tMin = foldl (\a e -> min a e.fireUnixMicros) 1.0e18 events
-            tMax = foldl (\a e -> max a e.fireUnixMicros) 0.0 events
-            span = max 1.0 (tMax - tMin)
-            xOf t = (t - tMin) / span * tlW      -- svg viewBox units (0..tlW)
-            pctOf t = (t - tMin) / span * 100.0  -- percent, for HTML overlays
-          in
-            [ svgEl "svg"
-                [ svgAttr "width" "100%", svgAttr "height" "100%"
-                , svgAttr "viewBox" ("0 0 " <> show tlW <> " " <> show tlH)
-                , svgAttr "preserveAspectRatio" "none"
-                , style "position:absolute;inset:0" ]
-                (map (noteDot xOf) (decimate events) <> map (markLine xOf) lb.marks)
-            ]
-              <> concat (mapWithIndex (regionBand pctOf s.playing) lb.marks)
-              <> playhead pctOf s.playing
-              <> [ caption (length events) (length lb.marks) ]
-              <> controlCard pctOf s
-       )
-      , clipStrip s
-      ]
-
--- | Keep at most `maxDraw` notes by taking every stride-th one — enough for the
--- | overview shape.
-decimate :: Array NoteEvent -> Array NoteEvent
-decimate es =
-  let n = length es
-  in if n <= maxDraw then es
-     else let stride = 1 + n / maxDraw
-          in map _.value (filterStride stride (mapWithIndex (\i e -> { i, value: e }) es))
-  where
-  filterStride k = filterA (\r -> r.i `mod` k == 0)
-  filterA p xs = foldl (\acc x -> if p x then acc <> [ x ] else acc) [] xs
-
-noteDot :: forall m. (Number -> Number) -> NoteEvent -> H.ComponentHTML Action Slots m
-noteDot xOf e =
-  svgEl "rect"
-    [ svgAttr "x" (show (xOf e.fireUnixMicros)), svgAttr "y" (show (pitchToY e.pitch))
-    , svgAttr "width" "2", svgAttr "height" "3", svgAttr "rx" "1"
-    , svgAttr "fill" (headColor e.headIdx), svgAttr "opacity" "0.72"
-    ] []
-
--- | A loop region — the gold band [from,to] stored on the mark, as HTML overlays
--- | over the svg. The body (grab to slide, click to play) and two edge handles
--- | (grab to resize) are SIBLINGS, not nested, so an edge grab doesn't also fire
--- | the body's mousedown. Brighter while it's the one playing.
-regionBand :: forall m. (Number -> Number) -> Maybe PlayState -> Int -> Mark -> Array (H.ComponentHTML Action Slots m)
-regionBand pctOf playing i m =
-  let l = pctOf m.from
-      r = pctOf m.to
-      w = max 0.3 (r - l)
-      active = case playing of
-        Just p -> p.source == FromRegion i
-        Nothing -> false
-  in
-    [ HH.div
-        [ HE.onMouseDown \me -> RegionDown i EdgeBody (ME.clientX me) (ME.clientY me)
-        , style $ "position:absolute;top:0;bottom:0;left:" <> show l <> "%;width:" <> show w <> "%;"
-            <> "cursor:grab;border-left:1px solid #e8c14a66;border-right:1px solid #e8c14a66;"
-            <> "background:rgba(232,193,74," <> (if active then "0.22" else "0.10") <> ")"
-            <> (if active then ";box-shadow:inset 0 0 0 1px #e8c14a" else "") ]
-        []
-    , edgeHandle i EdgeFrom l
-    , edgeHandle i EdgeTo r
-    ]
-
--- | A thin resize grip at a region edge (percent x), on top of the body.
-edgeHandle :: forall m. Int -> RegionEdge -> Number -> H.ComponentHTML Action Slots m
-edgeHandle i edge xPct =
-  HH.div
-    [ HE.onMouseDown \me -> RegionDown i edge (ME.clientX me) (ME.clientY me)
-    , style $ "position:absolute;top:0;bottom:0;left:calc(" <> show xPct <> "% - 4px);width:8px;"
-        <> "cursor:ew-resize;background:rgba(232,193,74,0.4)" ]
-    []
-
--- | The moving loop playhead, shown while replaying a REGION (a clip isn't on
--- | the timeline, so it has no playhead here — the clip strip shows its own).
-playhead :: forall m. (Number -> Number) -> Maybe PlayState -> Array (H.ComponentHTML Action Slots m)
-playhead pctOf = case _ of
-  Just p | FromRegion _ <- p.source ->
-    let x = pctOf (p.fromMicros + p.playheadFrac * (p.toMicros - p.fromMicros))
-    in [ HH.div
-           [ style $ "position:absolute;top:0;bottom:0;left:" <> show x <> "%;width:2px;"
-               <> "background:#ffffff;opacity:0.85;pointer-events:none" ]
-           [] ]
-  _ -> []
-
--- | The control card: a small floating panel pinned to the TOP of the active
--- | (playing) loop region, the home for everything you'd do with a good bit —
--- | stop, save it as a chainable scene, read its harmonic context to jam over,
--- | and (soon) lift it into a named clip. When nothing's playing it's just the
--- | "click a band" hint. Anchors to the region's left edge, flipping to a right
--- | anchor past mid-timeline so it never runs off-screen.
-controlCard :: forall m. (Number -> Number) -> State -> Array (H.ComponentHTML Action Slots m)
-controlCard pctOf s = case s.playing of
-  Nothing ->
-    [ HH.div
-        [ style $ "position:absolute;bottom:9px;right:12px;font-family:Georgia,serif;font-size:10px;color:#ffffff44" ]
-        [ HH.text "click a gold band to loop it" ]
-    ]
-  Just p -> case p.source of
-    FromClip _ -> []   -- a playing clip is driven from the clip strip, not the card
-    FromRegion i -> case s.logbook.marks !! i of
-      Nothing -> []
-      Just m ->
-        let
-          l = pctOf m.from
-          r = pctOf m.to
-          anchor = if l < 55.0 then "left:" <> show l <> "%" else "right:" <> show (100.0 - r) <> "%"
-        in
-          [ HH.div
-              [ style $ "position:absolute;top:6px;" <> anchor <> ";z-index:7;min-width:150px;"
-                  <> "border-radius:9px;padding:7px 8px;background:#151310ee;border:1px solid #e8c14a55;"
-                  <> "box-shadow:0 4px 14px #00000066" ]
-              ( [ HH.div [ style $ "font-family:'SF Mono',Menlo,monospace;font-size:8px;letter-spacing:0.1em;"
-                      <> "color:#e8c14a;margin-bottom:6px" ]
-                    [ HH.text ("LOOPING · MARK " <> show (i + 1)) ]
-                , HH.div [ style "display:flex;gap:4px;flex-wrap:wrap" ]
-                    [ cardBtn StopPlay "#e8c14a" "stop the loop" "■ stop"
-                    , cardBtn (SaveMarkClip i) "#cdb98a" "lift this loop out as a captured clip" "⧉ clip"
-                    , cardBtn (SaveMarkScene i) "#cdb98a" "save this good bit into the SCENES list" "⛭ scene"
-                    , cardBtn ToggleContext (if s.contextOpen then "#e8c14a" else "#cdb98a")
-                        "show the key & chord to jam over" "♫ context"
-                    ]
-                ]
-                <> (if s.contextOpen then [ contextPanel m ] else [])
-              )
-          ]
-
--- | A card action button — Georgia, tinted, transparent.
-cardBtn :: forall m. Action -> String -> String -> String -> H.ComponentHTML Action Slots m
-cardBtn act fg titleTxt label =
-  HH.button
-    [ HE.onClick \_ -> act
-    , HP.title titleTxt
-    , style $ "padding:3px 8px;border-radius:6px;cursor:pointer;border:1px solid #ffffff1a;"
-        <> "background:#ffffff10;font-family:Georgia,serif;font-size:10px;color:" <> fg ]
-    [ HH.text label ]
-
--- | The CLIPS strip along the bottom of the REPLAY screen: every captured clip
--- | as a chip you can audition (▶ / ■, same instant-stop loop as a region) or
--- | drop (×). The durable harvest, sitting under the ephemeral timeline.
-clipStrip :: forall m. State -> H.ComponentHTML Action Slots m
-clipStrip s =
-  HH.div
-    [ style $ "flex:0 0 auto;display:flex;align-items:center;gap:6px;padding:7px 10px;overflow-x:auto;"
-        <> "background:#0e0d0a;border-top:1px solid #ffffff12;min-height:34px" ]
-    ( [ HH.span [ style "font-family:'SF Mono',Menlo,monospace;font-size:8px;letter-spacing:0.1em;color:#ffffff40;flex:0 0 auto" ]
-          [ HH.text "CLIPS" ] ]
-      <> ( if null s.clips
-             then [ HH.span [ style "font-family:Georgia,serif;font-size:9px;color:#ffffff33" ]
-                      [ HH.text "loop a good bit, then ⧉ clip on its card to keep it here" ] ]
-             else mapWithIndex (clipChip s.playing) s.clips ) )
-
--- | One captured clip chip: play/stop toggle, name, note count, delete.
-clipChip :: forall m. Maybe PlayState -> Int -> MidiClip -> H.ComponentHTML Action Slots m
-clipChip playing i c =
-  let
-    playingThis = case playing of
-      Just p -> p.source == FromClip i
-      Nothing -> false
-  in
-    HH.div
-      [ style $ "flex:0 0 auto;display:flex;align-items:center;gap:6px;padding:4px 8px;border-radius:7px;"
-          <> "background:" <> (if playingThis then "#e8c14a22" else "#ffffff0e")
-          <> ";border:1px solid " <> (if playingThis then "#e8c14a66" else "#ffffff14") ]
-      [ HH.span
-          [ HE.onClick \_ -> if playingThis then StopPlay else PlayClip i
-          , style $ "cursor:pointer;font-size:11px;color:" <> (if playingThis then "#e8c14a" else "#cdb98a") ]
-          [ HH.text (if playingThis then "■" else "▶") ]
-      -- Rename in place: commits on blur (RenameClip → persist). The bound value
-      -- is `c.name`, which ticks/frames never touch, so the field stays put while
-      -- typing. A faint underline signals it's editable, not static text.
-      , HH.input
-          [ HP.value c.name
-          , HE.onValueChange (RenameClip i)
-          , HP.title "rename this clip"
-          , style $ "font-family:Georgia,serif;font-size:10px;color:#e8e4d8;white-space:nowrap;"
-              <> "background:transparent;border:none;border-bottom:1px solid #ffffff1f;"
-              <> "width:104px;padding:0 0 1px 0;outline:none" ]
-      , HH.span [ style "font-family:'SF Mono',Menlo,monospace;font-size:8px;color:#ffffff44" ]
-          [ HH.text (show (length c.events) <> "n") ]
-      , HH.span
-          [ HE.onClick \_ -> DeleteClip i
-          , style "cursor:pointer;font-family:Georgia,serif;font-size:11px;color:#a06048;padding:0 2px" ]
-          [ HH.text "×" ]
-      ]
-
--- | The harmonic context of the looped mark, reconstructed from its stored
--- | patch: key (root + scale), the sounding chord if the overlay's on, and the
--- | scale's notes — what a guitarist reads to jam over the section.
-contextPanel :: forall m. Mark -> H.ComponentHTML Action Slots m
-contextPanel m =
-  HH.div [ style "margin-top:7px;padding-top:6px;border-top:1px solid #ffffff14" ]
-    ( case harmonicSummary m.patch of
-        Nothing -> [ HH.div [ ctxStyle "#ffffff44" ] [ HH.text "harmony unavailable" ] ]
-        Just h ->
-          [ HH.div [ style "font-family:Georgia,serif;font-size:13px;color:#f0ead8;margin-bottom:3px" ]
-              [ HH.text (h.root <> " " <> h.scale) ]
-          ]
-            <> (case h.chord of
-                  Just c -> [ HH.div [ ctxStyle "#e8c14a" ] [ HH.text ("chord · " <> c) ] ]
-                  Nothing -> [ HH.div [ ctxStyle "#8a8578" ] [ HH.text "no chord colour" ] ])
-            <> [ HH.div [ ctxStyle "#b7b09c" ] [ HH.text (joinWith " " h.notes) ] ]
-    )
-  where
-  ctxStyle col = style $ "font-family:'SF Mono',Menlo,monospace;font-size:10px;margin-top:2px;color:" <> col
-
-markLine :: forall m. (Number -> Number) -> Mark -> H.ComponentHTML Action Slots m
-markLine xOf m =
-  svgEl "rect"
-    [ svgAttr "x" (show (xOf m.atMicros)), svgAttr "y" "0"
-    , svgAttr "width" "1.5", svgAttr "height" (show tlH)
-    , svgAttr "fill" "#e8c14a", svgAttr "opacity" "0.65"
-    ] []
-
-caption :: forall m. Int -> Int -> H.ComponentHTML Action Slots m
-caption notes marks =
-  HH.div
-    [ style $ "position:absolute;bottom:10px;left:12px;font-family:'SF Mono',Menlo,monospace;"
-        <> "font-size:9px;color:#ffffff44" ]
-    [ HH.text (show notes <> " notes · " <> show marks <> " marks · whole session") ]
-
-emptyState :: forall m. H.ComponentHTML Action Slots m
-emptyState =
-  HH.div
-    [ style $ "position:absolute;inset:0;display:flex;align-items:center;justify-content:center;"
-        <> "font-family:Georgia,serif;font-size:13px;color:#ffffff3a;text-align:center;padding:0 40px" ]
-    [ HH.text "Nothing captured yet. Play in LIVE, tap ◆ mark on the good bits, then come back here." ]
