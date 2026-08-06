@@ -7,7 +7,7 @@
 -- | RATCHET), each a generator row over its 4×4 grid — one label serving both the
 -- | generator controls and the grid. VELOCITY has a grid but no generator, so its
 -- | card is grid-only. The NOTES source + its grid moved to the NOTES pane.
-module Triggerfish.Odonus.View.Generate (generatePanel) where
+module Triggerfish.Odonus.View.Generate (generatePanel, cellParamsPanel) where
 
 import Prelude
 
@@ -15,6 +15,7 @@ import Data.Array (mapWithIndex)
 import Halogen.HTML as HH
 import Halogen.HTML.Events as HE
 import Triggerfish.Odonus.Grid.Types (Action(..), GenKind(..), KnobTarget(..), Slots, State)
+import Triggerfish.Odonus.View.Grid (transportRow)
 import Triggerfish.Odonus.Grid.Widgets (cellChrome, genRow, panelShell, style)
 import Triggerfish.Odonus.Model as M
 import Triggerfish.Ui.Knob (knob)
@@ -22,17 +23,31 @@ import Triggerfish.Ui.Knob (knob)
 generatePanel :: forall m. State -> HH.ComponentHTML Action Slots m
 generatePanel s =
   panelShell s.collapsed "PARAMETERS" "sources · grids" "flex:0 1 300px;min-width:min-content"
-    ( [ freezeToggle s ]
+    ( [ transportRow s, freezeToggle s ]
         <> map (topRow s) [ GHeads, GTransp, GPattern, GSpeed ]
         <>
         [ paramCard s GGate    (toggleGrid "#e0a32e" _.gate ToggleGate s.odo)
         , paramCard s GSkip    (toggleGrid "#c0563f" _.skip ToggleSkip s.odo)
         , paramCard s GGlide   (toggleGrid "#4f9d69" _.glide ToggleGlide s.odo)
-        , paramCard s GLen     (perCellKnobGrid "#7d8a93" 1 8 8 CellDur _.dur s.odo)
-        , paramCard s GRatchet (perCellKnobGrid "#9d6b8a" 1 8 8 CellRatchet _.ratchet s.odo)
-        , paramCard s GVel     (perCellKnobGrid "#8a9d6b" 1 127 0 CellVel _.vel s.odo)
         ]
     )
+
+-- | The PER-CELL pane — LEN / RATCHET / VELOCITY, the three knob-grid parameters
+-- | (as against PARAMETERS' toggle grids). Split out of `generatePanel` and moved
+-- | into the column the KEY pane used to hold (AC, 2026-08-06): KEY's context +
+-- | scenes moved up to Odonus's secondary nav, and PARAMETERS had grown long
+-- | enough to need a scrollbar while its neighbour sat half empty. Same cards,
+-- | same actions — only the column changed.
+cellParamsPanel :: forall m. State -> HH.ComponentHTML Action Slots m
+cellParamsPanel s =
+  -- No subtitle: "len · ratchet · velocity" wrapped the header onto two lines and
+  -- cost the column the vertical space its third knob grid needed — and each card
+  -- below is already labelled LEN / RATCHET / VELOCITY (AC, 2026-08-06).
+  panelShell s.collapsed "PER CELL" "" "flex:0 1 290px;min-width:min-content"
+    [ paramCard s GLen     (perCellKnobGrid "#7d8a93" 1 8 8 CellDur _.dur s.odo)
+    , paramCard s GRatchet (perCellKnobGrid "#9d6b8a" 1 8 8 CellRatchet _.ratchet s.odo)
+    , paramCard s GVel     (perCellKnobGrid "#8a9d6b" 1 127 0 CellVel _.vel s.odo)
+    ]
 
 -- | The freeze toggle — pauses ALL generation WITHOUT touching the config, so a
 -- | liked moment holds still long enough to hear, extend, or save it before the

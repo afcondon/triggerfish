@@ -52,10 +52,10 @@ import Triggerfish.Transport (Sounding(..))
 import Triggerfish.Odonus.Grid.Widgets (clampI, style)
 import Triggerfish.Odonus.Logbook as Logbook
 import Triggerfish.Odonus.View.Scope (scopePanel)
-import Triggerfish.Odonus.View.Key (quantizerPanel)
 import Triggerfish.Odonus.View.Playheads (playheadsPanel)
 import Triggerfish.Odonus.View.Grid (gridPanel)
-import Triggerfish.Odonus.View.Replay (replayPanel, modeBar)
+import Triggerfish.Odonus.View.Replay (replayPanel)
+import Triggerfish.Odonus.View.Nav (navBar)
 import Triggerfish.Odonus.Patch (capturePatch, harmonicSummary, loadText, patchText, recallText, recallGestureText)
 import Triggerfish.Odonus.Store as Store
 import Triggerfish.Clips as Clips
@@ -66,7 +66,7 @@ import Triggerfish.Preset (indexOfContent, presetAlias)
 import Triggerfish.Odonus.Lepidoptera (parsePatch, printPatch)
 import Triggerfish.SourceQuery (Query(..))
 import Triggerfish.Midi.Routing as Routing
-import Triggerfish.Odonus.View.Generate (generatePanel)
+import Triggerfish.Odonus.View.Generate (generatePanel, cellParamsPanel)
 import Triggerfish.Odonus.View.Scenes (sceneName)
 
 -- | The upward message to the shell: Odonus's identity-chip view (or `Nothing` when
@@ -79,7 +79,7 @@ component =
   H.mkComponent
     { initialState: \_ ->
         { odo: M.defaultOdonus, sounding: Silent, dragging: Nothing, dragSub: Nothing
-        , notes: [], logbook: Logbook.emptyLog, view: VLive, playing: Nothing, regionDrag: Nothing, contextOpen: false, clips: [], twisterField: FNote, binnacle: Nothing, nowMicros: 0.0
+        , notes: [], logbook: Logbook.emptyLog, view: VPanels, navScenes: false, playing: Nothing, regionDrag: Nothing, contextOpen: false, clips: [], twisterField: FNote, binnacle: Nothing, nowMicros: 0.0
         , midiOut: Nothing, midiName: "…", clockTempo: 120.0, clockLocked: false
         , clockBeat: 0.0, clockBar: 0, anchorCount: 0
         , scenes: [], sceneNameInput: "", publishMsg: Nothing
@@ -629,21 +629,23 @@ dispatch = case _ of
     in s { logbook = Logbook.pushMark m s.logbook }
   DeleteMark i -> H.modify_ \s -> s { logbook = Logbook.deleteMark i s.logbook }
   ClearLog -> H.modify_ \s -> s { logbook = Logbook.emptyLog }
-  -- Leaving REPLAY stops any running loop (otherwise it keeps sounding on a
-  -- screen with no visible stop control) AND wipes the logbook: the replay
-  -- buffer is a scratchpad, so each REPLAY visit reviews "the take since I last
-  -- left" and leaving clears the slate. Saved scenes are already copied out and
-  -- survive; unsaved marks + captured notes are intentionally ephemeral.
+  -- Resizing the surface is NOT a transport or session action (AC, 2026-08-06).
+  -- It used to be: leaving REPLAY wiped the logbook, on the theory that the buffer
+  -- was a per-visit scratchpad. But the generator never stopped, ◆ mark should work
+  -- either way, and silently discarding the take on a VIEW change is exactly the
+  -- incoherence the rename fixes. The logbook now survives; only the region PREVIEW
+  -- stops, because its stop control lives on the surface being collapsed.
   SetView v -> do
     st <- H.get
-    when (st.view == VReplay && v == VLive) hushReplayVoices
-    H.modify_ \s ->
-      let leavingReplay = s.view == VReplay && v == VLive
-      in s { view = v
-           , playing = if v == VReplay then s.playing else Nothing
-           , regionDrag = if v == VReplay then s.regionDrag else Nothing
-           , contextOpen = if v == VReplay then s.contextOpen else false
-           , logbook = if leavingReplay then Logbook.emptyLog else s.logbook }
+    when (st.view == VFull && v == VPanels) hushReplayVoices
+    H.modify_ \s -> s
+      { view = v
+      , playing = if v == VFull then s.playing else Nothing
+      , regionDrag = if v == VFull then s.regionDrag else Nothing
+      , contextOpen = if v == VFull then s.contextOpen else false
+      }
+
+  ToggleSceneMenu -> H.modify_ \s -> s { navScenes = not s.navScenes }
   -- REPLAY (#151, R2b): start looping the one-bar region around mark i. The Frame
   -- loop (driveReplay) schedules each iteration; StopPlay ends it.
   PlayRegion i -> startRegion i
@@ -1406,19 +1408,19 @@ render s =
     [ style $ "position:fixed;top:var(--tf-bar);left:0;right:0;bottom:0;overflow:hidden;"
         <> "user-select:none;-webkit-user-select:none;"
         <> "background:#b7b1a0;font-family:Georgia,serif" ]
-    [ modeBar s
+    [ navBar s
     , case s.view of
         -- KEY carries the SCENES song machinery in one merged column (#139); it now
         -- sits at the RHS so the working order reads Scope · Playheads · Odonus ·
         -- Generate · Key (the source/song settings live to the right of the grid).
-        VLive ->
+        VPanels ->
           HH.div
             [ style "height:100%;display:flex;align-items:stretch;overflow-x:auto;overflow-y:hidden" ]
             [ scopePanel s
             , playheadsPanel s
             , gridPanel s
             , generatePanel s
-            , quantizerPanel s
+            , cellParamsPanel s
             ]
-        VReplay -> replayPanel s
+        VFull -> replayPanel s
     ]

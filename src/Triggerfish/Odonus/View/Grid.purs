@@ -4,7 +4,10 @@
 -- | glide, length, ratchet, velocity) moved to the PARAMETERS pane, each beside
 -- | its own generator. The transport chrome (step length, groove, status,
 -- | nameplate) stays here for now.
-module Triggerfish.Odonus.View.Grid (gridPanel) where
+-- `statusBar` is exported but unhosted: the CLOCK/BEAT/ANCHORS/MIDI/TWISTER
+-- diagnostics came off the foot of NOTES on 2026-08-06 and want a home of their
+-- own (a status line in the shell, or Odonus's nav). Kept ready rather than lost.
+module Triggerfish.Odonus.View.Grid (gridPanel, transportRow, statusBar) where
 
 import Prelude
 
@@ -46,12 +49,12 @@ gridPanel s =
     , readout s
     , rollGrid
     , HH.div [ style "margin-top:12px" ] [ noteField s.odo ]
-    , HH.div [ style "display:flex;align-items:flex-end;gap:10px;margin-top:12px" ]
-        [ HH.div [ style "flex:1" ] [ clockRow s ]
-        , feelBlock s
-        ]
-    , controls s
-    , statusBar s
+    -- STEP LENGTH + GATE/SWING/HUMAN moved to the top of PARAMETERS (AC,
+    -- 2026-08-06) — they're global transport/feel, not part of the note field, and
+    -- NOTES had outgrown its column. The hint row and the CLOCK/BEAT/ANCHORS/MIDI
+    -- status bar went with them, deleted: the hint is learned-once, and the status
+    -- facts are diagnostics that want a home of their own rather than the foot of
+    -- the pitch pane. `statusBar` is kept below, unused, for that resurfacing.
     , nameplate s
     ]
 
@@ -143,6 +146,16 @@ gateBlock odo =
         [ HH.text (show odo.gatePct <> "%") ]
     ]
 
+-- | STEP LENGTH + the groove knobs as one row — the global transport/feel block,
+-- | hosted at the top of PARAMETERS since 2026-08-06 (it used to sit at the foot of
+-- | NOTES, which had run out of column).
+transportRow :: forall m. State -> H.ComponentHTML Action Slots m
+transportRow s =
+  HH.div [ style "display:flex;align-items:flex-end;gap:10px;margin-bottom:14px" ]
+    [ HH.div [ style "flex:1" ] [ clockRow s ]
+    , feelBlock s
+    ]
+
 -- | Global step length — what a 1× head plays. Buttons map to the clock
 -- | divider (1=whole … 1/16=fast); per-head SPD multiplies from here.
 clockRow :: forall m. State -> H.ComponentHTML Action Slots m
@@ -222,15 +235,6 @@ midiName :: Int -> String
 midiName n =
   let names = [ "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B" ]
   in fromMaybe "?" (names !! (n `mod` 12)) <> show ((n `div` 12) - 1)
-
-controls :: forall m. State -> H.ComponentHTML Action Slots m
-controls _ =
-  -- The ARM toggle now lives on the tab in the top switcher (the ▶/❚❚ dot); this
-  -- row keeps only its hint.
-  HH.div [ style "display:flex;gap:8px;align-items:center;margin-top:14px" ]
-    [ HH.span [ style $ engrave <> ";font-size:8px;color:#888273" ]
-        [ HH.text "click a thumbnail to change a head's pattern" ]
-    ]
 
 nameplate :: forall m. State -> H.ComponentHTML Action Slots m
 nameplate s =

@@ -218,7 +218,13 @@ derive instance eqSourceTag :: Eq SourceTag
 -- | Which surface the Odonus instrument shows: the LIVE performance panels, or
 -- | the REPLAY editor over the logbook (#151). A tab within Odonus — replay
 -- | reviews Odonus's own capture, and lives where that data + the emit path are.
-data OdonusView = VLive | VReplay
+-- | What Odonus's surface is showing. Renamed from `VLive | VReplay` on 2026-08-06
+-- | (AC): those names claimed a TRANSPORT distinction the toggle never made — the
+-- | live generator keeps running either way, which is the point when you're
+-- | listening for a bit worth lifting. It was only ever a view size. `VPanels` =
+-- | the instrument (scope + playheads + grid + params); `VFull` = the capture
+-- | surface given the whole window. ◆ mark works in BOTH.
+data OdonusView = VPanels | VFull
 
 derive instance eqOdonusView :: Eq OdonusView
 
@@ -255,7 +261,8 @@ type State =
   , dragSub :: Maybe H.SubscriptionId
   , notes :: Array NoteEvent
   , logbook :: Logbook            -- always-on performance capture (#151)
-  , view :: OdonusView            -- LIVE panels vs the REPLAY editor over the logbook
+  , view :: OdonusView            -- the instrument panels vs the full-window capture surface
+  , navScenes :: Boolean          -- Odonus's secondary-nav scene menu open?
   , playing :: Maybe PlayState    -- a REPLAY loop in flight (Nothing = not replaying)
   , regionDrag :: Maybe RegionDrag  -- a loop-region resize/slide in progress
   , contextOpen :: Boolean          -- REPLAY control card: harmonic-context panel open
@@ -356,7 +363,8 @@ data Action
   | MarkNow                 -- flag "a good bit" at the current instant (logbook)
   | DeleteMark Int          -- drop a flagged instant
   | ClearLog                -- purge the whole logbook manually
-  | SetView OdonusView      -- switch the Odonus surface (LIVE / REPLAY)
+  | SetView OdonusView      -- resize the Odonus surface (panels / full capture)
+  | ToggleSceneMenu         -- secondary nav: open/close the scene menu
   | PlayRegion Int          -- start looping the region around mark i (REPLAY)
   | StopPlay                -- stop the REPLAY loop
   | RegionDown Int RegionEdge Int Int  -- grab a region: markIdx, edge, clientX, clientY

@@ -14,11 +14,12 @@ import Data.String.Common (joinWith)
 import Halogen as H
 import Halogen.HTML as HH
 import Halogen.HTML.Events as HE
+import Halogen.HTML.Properties as HP
 import Triggerfish.Odonus.Model as M
 import Triggerfish.Odonus.Grid.Types (Action(..), KnobTarget(..), Slots, State)
 import Triggerfish.Odonus.Grid.Widgets
   ( engrave, headColor, miniKnob, panelShell, roman, signed
-  , stepBtn, style, svgAttr, svgEl )
+  , style, svgAttr, svgEl )
 
 playheadsPanel :: forall m. State -> H.ComponentHTML Action Slots m
 playheadsPanel s =
@@ -32,9 +33,14 @@ playheadsPanel s =
 
 -- | PHASING — the Reichian macros over all four heads at once. UNISON collapses
 -- | to unison phase; FAN spreads the offsets into a static canon (0, n, 2n, 3n);
--- | STAGGER ramps the loop lengths for metric phasing (Clapping-Music drift);
--- | PHASE ± rotates the whole canon a step. FAN/STAGGER read back from head II,
--- | so they round-trip the gesture and reflect the live spread.
+-- | STAGGER ramps the loop lengths for metric phasing (Clapping-Music drift).
+-- | FAN/STAGGER read back from head II, so they round-trip the gesture and reflect
+-- | the live spread.
+-- |
+-- | PHASE ‹ › (rotate the whole canon a step) was dropped 2026-08-06 (AC): it
+-- | overlapped FAN, which already authors the offsets, and the block was costing
+-- | vertical space the panel didn't have. UNISON shrank from a full-width bar into
+-- | the slot PHASE vacated, so the section is one row instead of three.
 phasingBlock :: forall m. M.Odonus -> H.ComponentHTML Action Slots m
 phasingBlock odo =
   let
@@ -48,19 +54,18 @@ phasingBlock odo =
     HH.div [ style "margin-bottom:12px" ]
       [ HH.span [ style $ engrave <> ";font-size:9px;opacity:0.85;display:block;margin-bottom:5px" ]
           [ HH.text "PHASING" ]
-      , HH.button
-          [ HE.onClick \_ -> UnifyHeads
-          , style $ "width:100%;padding:6px;margin-bottom:8px;border:1px solid #a8a392;border-radius:7px;cursor:pointer;"
-              <> "background:linear-gradient(#efece1,#ddd9cb);font-family:Georgia,serif;font-size:11px;color:#3f3c33" ]
-          [ HH.text "≡ Unison · all heads = I" ]
       , HH.div [ style "display:flex;align-items:flex-end;justify-content:space-between;gap:8px" ]
           [ miniKnob FanOff fanN "#6f7f88" "FAN" (show fanN)
           , miniKnob StaggerLen stagN "#6f7f88" "STAGGER" (show stagN)
           , miniKnob HeadSpread spreadN "#6f7f88" "SPREAD" (show spreadN)
           , HH.div [ style "display:flex;flex-direction:column;align-items:center;width:52px" ]
-              [ HH.span [ style $ engrave <> ";font-size:8px;margin-bottom:3px" ] [ HH.text "PHASE" ]
-              , HH.div [ style "display:flex;gap:5px" ]
-                  [ stepBtn "‹" (PhaseShift (-1)), stepBtn "›" (PhaseShift 1) ]
+              [ HH.span [ style $ engrave <> ";font-size:8px;margin-bottom:3px" ] [ HH.text "UNISON" ]
+              , HH.button
+                  [ HE.onClick \_ -> UnifyHeads
+                  , HP.title "collapse every head to unison — all heads = I"
+                  , style $ "width:44px;padding:7px 0;border:1px solid #a8a392;border-radius:7px;cursor:pointer;"
+                      <> "background:linear-gradient(#efece1,#ddd9cb);font-family:Georgia,serif;font-size:13px;color:#3f3c33" ]
+                  [ HH.text "≡" ]
               ]
           ]
       ]
