@@ -106,6 +106,9 @@ handleQuery = case _ of
     s <- H.get
     pure (Just (reply (Source.headerText s.bal)))
   PutSource _ next -> pure (Just next)   -- shell never rewrites Balistes's kit
+  -- No stage axis yet, so URL routing to this machine stops at the machine
+  -- segment (`#balistes`). When it grows one, parse the segments here.
+  SetStagePath _ next -> pure (Just next)
   AskClock reply -> do
     s <- H.get
     pure (Just (reply { tempo: s.clockTempo, locked: s.clockLocked }))

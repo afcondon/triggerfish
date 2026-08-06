@@ -18,7 +18,9 @@ module Triggerfish.Odonus.Grid.Types
   , genSub
   , marblesPadId
   , SourceTag(..)
-  , OdonusView(..)
+  , Stage(..)
+  , stagePath
+  , stageFromPath
   , TwisterField(..)
   , twisterFieldLabel
   , State
@@ -29,7 +31,7 @@ module Triggerfish.Odonus.Grid.Types
 import Prelude
 
 import Data.Array (length)
-import Data.Maybe (Maybe)
+import Data.Maybe (Maybe(..))
 import Halogen as H
 import Halogen.Widgets.Select as Select
 import Reef.Input as RI
@@ -215,18 +217,41 @@ data SourceTag = SScale | SVetula
 
 derive instance eqSourceTag :: Eq SourceTag
 
--- | Which surface the Odonus instrument shows: the LIVE performance panels, or
--- | the REPLAY editor over the logbook (#151). A tab within Odonus — replay
--- | reviews Odonus's own capture, and lives where that data + the emit path are.
--- | What Odonus's surface is showing. Renamed from `VLive | VReplay` on 2026-08-06
--- | (AC): those names claimed a TRANSPORT distinction the toggle never made — the
--- | live generator keeps running either way, which is the point when you're
--- | listening for a bit worth lifting. It was only ever a view size. `VPanels` =
--- | the instrument (scope + playheads + grid + params); `VFull` = the capture
--- | surface given the whole window. ◆ mark works in BOTH.
-data OdonusView = VPanels | VFull
+-- | **Odonus's STAGE** — the same mode axis Vetula has (`Vetula.App.Stage`),
+-- | minus Hunt: Vetula is the harmonic authority, so Odonus has nothing to hunt.
+-- | Two stages, and the names are shared across both machines deliberately.
+-- |
+-- |   * `Perform` — the instrument: scope · playheads · grid · generate · params.
+-- |   * `Review` — the capture surface given the whole window, where a phrase is
+-- |     big enough to pick out and lift into the clip library.
+-- |
+-- | A stage is what you're LOOKING AT, not what's running: the generator keeps
+-- | generating in both, which is the whole point when you're listening for a bit
+-- | worth lifting. The transport lives in the shell's top nav.
+-- |
+-- | This was `VPanels | VFull` (and `VLive | VReplay` before that). `VFull` was
+-- | honest about being a size and so gave the surface no NAME — which is why the
+-- | toggle read as `⛶ full` while Vetula called the same thing REPLAY. Naming it
+-- | REVIEW on both machines fixes that: a verb, in the same mood as PERFORM, for
+-- | a surface you go to in order to work, not to read an archive.
+data Stage = Perform | Review
 
-derive instance eqOdonusView :: Eq OdonusView
+derive instance eqStage :: Eq Stage
+
+-- | The URL segments for a stage (`Triggerfish.Route`). Odonus owns this
+-- | vocabulary; the shell carries the segments opaquely.
+stagePath :: Stage -> Array String
+stagePath = case _ of
+  Perform -> [ "perform" ]
+  Review -> [ "review" ]
+
+-- | The inverse. `Nothing` for anything unrecognised, so a stale or hand-typed
+-- | URL switches machine and leaves the stage alone rather than guessing.
+stageFromPath :: Array String -> Maybe Stage
+stageFromPath = case _ of
+  [ "perform" ] -> Just Perform
+  [ "review" ] -> Just Review
+  _ -> Nothing
 
 -- | Which grid the MidiFighter Twister's 16 rotaries currently drive (bank 1). A
 -- | PUSH switch selects it (row 1 = the four cell VALUE grids, row 2 = the three
@@ -261,7 +286,7 @@ type State =
   , dragSub :: Maybe H.SubscriptionId
   , notes :: Array NoteEvent
   , logbook :: Logbook            -- always-on performance capture (#151)
-  , view :: OdonusView            -- the instrument panels vs the full-window capture surface
+  , stage :: Stage                -- Perform (the instrument) | Review (the capture surface)
   , navScenes :: Boolean          -- Odonus's secondary-nav scene menu open?
   , playing :: Maybe PlayState    -- a REPLAY loop in flight (Nothing = not replaying)
   , regionDrag :: Maybe RegionDrag  -- a loop-region resize/slide in progress
@@ -363,7 +388,7 @@ data Action
   | MarkNow                 -- flag "a good bit" at the current instant (logbook)
   | DeleteMark Int          -- drop a flagged instant
   | ClearLog                -- purge the whole logbook manually
-  | SetView OdonusView      -- resize the Odonus surface (panels / full capture)
+  | SetStage Stage          -- switch stage: Perform (instrument) | Review (capture)
   | ToggleSceneMenu         -- secondary nav: open/close the scene menu
   | PlayRegion Int          -- start looping the region around mark i (REPLAY)
   | StopPlay                -- stop the REPLAY loop

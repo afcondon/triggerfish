@@ -45,7 +45,7 @@ import Web.HTML (window)
 import Web.HTML.Window as Window
 import Web.UIEvent.MouseEvent as ME
 import Triggerfish.Odonus.Grid.Types
-  ( Action(..), GenKind(..), KnobTarget(..), SourceTag(..), OdonusView(..), RegionEdge(..), PlaySource(..), TwisterField(..), Logbook, NoteEvent, Slots, State, applyTarget, genDefaultAmt, genDefaultRate, genKinds, genLabel
+  ( Action(..), GenKind(..), KnobTarget(..), SourceTag(..), Stage(..), stagePath, stageFromPath, RegionEdge(..), PlaySource(..), TwisterField(..), Logbook, NoteEvent, Slots, State, applyTarget, genDefaultAmt, genDefaultRate, genKinds, genLabel
   , marblesPadId, rateMax, replayTimelineId, setAmt, setRate, targetRange )
 import Triggerfish.Scale (scaleTypes)
 import Triggerfish.Transport (Sounding(..))
@@ -72,14 +72,17 @@ import Triggerfish.Odonus.View.Scenes (sceneName)
 -- | The upward message to the shell: Odonus's identity-chip view (or `Nothing` when
 -- | nothing is parked), for the six-machine status board. Raised from the Frame loop
 -- | only when the view changes (see `chipViewOf`). Mirrors Balistes/Selene's Output.
-data Output = IdentityChanged (Maybe G.ChipView)
+-- | `StageChanged` carries the new stage's URL segments so the shell can write
+-- | the hash. Push, not poll — the shell would otherwise have to interrogate
+-- | every machine on a timer to notice a mode change it didn't cause.
+data Output = IdentityChanged (Maybe G.ChipView) | StageChanged (Array String)
 
 component :: forall i m. MonadAff m => H.Component Query i Output m
 component =
   H.mkComponent
     { initialState: \_ ->
         { odo: M.defaultOdonus, sounding: Silent, dragging: Nothing, dragSub: Nothing
-        , notes: [], logbook: Logbook.emptyLog, view: VPanels, navScenes: false, playing: Nothing, regionDrag: Nothing, contextOpen: false, clips: [], twisterField: FNote, binnacle: Nothing, nowMicros: 0.0
+        , notes: [], logbook: Logbook.emptyLog, stage: Perform, navScenes: false, playing: Nothing, regionDrag: Nothing, contextOpen: false, clips: [], twisterField: FNote, binnacle: Nothing, nowMicros: 0.0
         , midiOut: Nothing, midiName: "…", clockTempo: 120.0, clockLocked: false
         , clockBeat: 0.0, clockBar: 0, anchorCount: 0
         , scenes: [], sceneNameInput: "", publishMsg: Nothing
@@ -106,6 +109,14 @@ handleQuery = case _ of
     s <- H.get
     pure (Just (reply (patchText s)))
   PutSource _ next -> pure (Just next)   -- shell never rewrites Odonus's patch
+  -- Routed in from the URL. Goes through `handleAction SetStage` rather than
+  -- writing `stage` directly, so arriving by link gets the same hush/clear
+  -- treatment as clicking the tab — a URL must not be a laxer path into a stage.
+  SetStagePath segs next -> do
+    s <- H.get
+    for_ (stageFromPath segs) \stg ->
+      when (stg /= s.stage) (handleAction (SetStage stg))
+    pure (Just next)
   AskClock reply -> do
     s <- H.get
     pure (Just (reply { tempo: s.clockTempo, locked: s.clockLocked }))
@@ -285,6 +296,12 @@ mergeScenesByName current incoming =
 dispatch :: forall m. MonadAff m => Action -> H.HalogenM State Action Slots Output m Unit
 dispatch = case _ of
   Initialize -> do
+    -- Announce the opening stage so the shell can write a COMPLETE URL from a cold
+    -- start (`#{slug}/{stage}`, not the bare `#{slug}`). Without this the address
+    -- bar under-specifies until you touch a stage tab — still a valid route, since
+    -- an empty stage path means "leave the stage alone", but not a link that
+    -- reopens what you were actually looking at.
+    H.gets _.stage >>= \stg -> H.raise (StageChanged (stagePath stg))
     -- Connect to the rig. Binnacle's clock free-runs at 120 until the
     -- Link anchor arrives, then phase-locks — so Triggerfish runs solo
     -- without the rig, and joins the ensemble the moment it's up.
@@ -635,14 +652,15 @@ dispatch = case _ of
   -- either way, and silently discarding the take on a VIEW change is exactly the
   -- incoherence the rename fixes. The logbook now survives; only the region PREVIEW
   -- stops, because its stop control lives on the surface being collapsed.
-  SetView v -> do
+  SetStage v -> do
     st <- H.get
-    when (st.view == VFull && v == VPanels) hushReplayVoices
+    when (st.stage == Review && v == Perform) hushReplayVoices
+    H.raise (StageChanged (stagePath v))
     H.modify_ \s -> s
-      { view = v
-      , playing = if v == VFull then s.playing else Nothing
-      , regionDrag = if v == VFull then s.regionDrag else Nothing
-      , contextOpen = if v == VFull then s.contextOpen else false
+      { stage = v
+      , playing = if v == Review then s.playing else Nothing
+      , regionDrag = if v == Review then s.regionDrag else Nothing
+      , contextOpen = if v == Review then s.contextOpen else false
       }
 
   ToggleSceneMenu -> H.modify_ \s -> s { navScenes = not s.navScenes }
@@ -1403,17 +1421,17 @@ render :: forall m. MonadAff m => State -> H.ComponentHTML Action Slots m
 render s =
   HH.div
     -- The whole surface is non-selectable: knob drags and toggle/matrix clicks
-    -- never start a text selection. The container is a positioning context for
-    -- the floating LIVE/REPLAY mode bar; content fills it at full height.
+    -- never start a text selection. Content fills it at full height; the stage
+    -- switch is in the nav (`stageTabs`), not floating over the surface.
     [ style $ "position:fixed;top:var(--tf-bar);left:0;right:0;bottom:0;overflow:hidden;"
         <> "user-select:none;-webkit-user-select:none;"
         <> "background:#b7b1a0;font-family:Georgia,serif" ]
     [ navBar s
-    , case s.view of
+    , case s.stage of
         -- KEY carries the SCENES song machinery in one merged column (#139); it now
         -- sits at the RHS so the working order reads Scope · Playheads · Odonus ·
         -- Generate · Key (the source/song settings live to the right of the grid).
-        VPanels ->
+        Perform ->
           HH.div
             [ style "height:100%;display:flex;align-items:stretch;overflow-x:auto;overflow-y:hidden" ]
             [ scopePanel s
@@ -1422,5 +1440,5 @@ render s =
             , generatePanel s
             , cellParamsPanel s
             ]
-        VFull -> replayPanel s
+        Review -> replayPanel s
     ]

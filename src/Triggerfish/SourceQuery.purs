@@ -45,6 +45,12 @@ import Triggerfish.Transport (Sounding)
 
 data Query a
   = AskSource (String -> a)
+  -- URL routing (`Triggerfish.Route`): "adopt the stage named by these path
+  -- segments". The shell carries the segments opaquely — each machine owns its
+  -- own stage vocabulary and parses them itself. A machine with no stage axis
+  -- (Balistes, Selene today) no-ops; unrecognised segments are IGNORED rather
+  -- than guessed at, so a stale link switches machine and leaves the stage alone.
+  | SetStagePath (Array String) a
   -- The write mirror of `AskSource`: "replace your active source with this
   -- string, verbatim". Lets a second surface (the routing modal's Selene
   -- column) edit the same document the machine's own tab shows — the doc is the

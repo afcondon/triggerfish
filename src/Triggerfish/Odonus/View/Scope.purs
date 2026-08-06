@@ -10,14 +10,11 @@ module Triggerfish.Odonus.View.Scope (scopePanel) where
 
 import Prelude
 
-import Data.Array (length)
 import Halogen as H
 import Halogen.HTML as HH
-import Halogen.HTML.Events as HE
 import Triggerfish.Capture.River (Flow(..), riverPanel)
-import Triggerfish.Odonus.Grid.Types (Action(..), Slots, State)
+import Triggerfish.Odonus.Grid.Types (Action, Slots, State)
 import Triggerfish.Odonus.Grid.Widgets (headColor, style)
-import Triggerfish.Odonus.Logbook (noteCount)
 
 -- | The scope — the hero panel on the far left, full height, flex-grow. The river
 -- | fills it; the logbook readout floats on top.
@@ -28,27 +25,23 @@ scopePanel s =
     [ riverPanel
         { flow: FlowLeft, headColor }
         { nowMicros: s.nowMicros, notes: s.notes, marks: s.logbook.marks }
-    , logbookOverlay s
+    , loggingDot
     ]
 
--- | The always-on logbook readout + mark button, floated top-left over the
--- | river. There's no arm — the rig is always capturing; the "● logging" dot
--- | just confirms it. "◆ mark" flags the current instant (a gold line on the
--- | river); the count shows captured notes and flags this session.
-logbookOverlay :: forall m. State -> H.ComponentHTML Action Slots m
-logbookOverlay s =
+-- | The "● logging" dot, floated top-left over the river. There's no arm — the
+-- | rig is always capturing — so this just confirms it.
+-- |
+-- | It used to carry ◆ mark and the note/mark counts too, duplicating the nav's
+-- | copy of both with identical numbers. The nav won: mark belongs to PERFORM and
+-- | REVIEW alike, and a control shared by two stages belongs to the chrome rather
+-- | than to either surface. What's left is the one thing that is genuinely about
+-- | this river rather than about the session.
+loggingDot :: forall m. H.ComponentHTML Action Slots m
+loggingDot =
   HH.div
-    [ style $ "position:absolute;top:10px;left:10px;display:flex;align-items:center;gap:9px;"
-        <> "padding:5px 9px;border-radius:8px;background:#ffffff0d;backdrop-filter:blur(2px);"
+    [ style $ "position:absolute;top:10px;left:10px;display:flex;align-items:center;gap:5px;"
+        <> "padding:4px 9px;border-radius:8px;background:#ffffff0d;backdrop-filter:blur(2px);"
         <> "border:1px solid #ffffff14;font-family:'SF Mono',Menlo,monospace;font-size:9px;color:#c9c4b4" ]
-    [ HH.span [ style "display:flex;align-items:center;gap:4px" ]
-        [ HH.span [ style "width:7px;height:7px;border-radius:50%;background:#c65a4a;box-shadow:0 0 5px #c65a4a" ] []
-        , HH.text "logging" ]
-    , HH.span [ style "opacity:0.7" ]
-        [ HH.text (show (noteCount s.logbook) <> " notes · " <> show (length s.logbook.marks) <> " ◆") ]
-    , HH.button
-        [ HE.onClick \_ -> MarkNow
-        , style $ "padding:2px 9px;border-radius:6px;cursor:pointer;font-family:Georgia,serif;font-size:10px;"
-            <> "color:#e8c14a;border:1px solid #e8c14a55;background:#e8c14a1a" ]
-        [ HH.text "◆ mark" ]
+    [ HH.span [ style "width:7px;height:7px;border-radius:50%;background:#c65a4a;box-shadow:0 0 5px #c65a4a" ] []
+    , HH.text "logging"
     ]

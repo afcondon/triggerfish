@@ -169,6 +169,9 @@ handleQuery = case _ of
     pure (Just next)
   -- Selene has no clock of its own (it ignores SyncFree); answer the default so
   -- the shell's BPM poll stays total.
+  -- No stage axis yet, so URL routing to this machine stops at the machine
+  -- segment (`#selene`). When it grows one, parse the segments here.
+  SetStagePath _ next -> pure (Just next)
   AskClock reply -> pure (Just (reply { tempo: 120.0, locked: false }))
   SyncFree startMicros tempo next -> do
     s <- H.get

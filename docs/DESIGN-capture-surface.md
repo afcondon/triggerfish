@@ -231,9 +231,10 @@ source badge (#33) already colours all three.
   was captured on, through `st.midiOut` so ⌥1 AuditionOff silences it. Stop /
   leave REPLAY / clear / lift all `hushCapture`, which sends all-notes-off on
   just the region's own channels rather than all 16, so a preview can't cut
-  voices that are still performing. Known wrinkle: switching Vetula to a Browse
-  surface while a region loops leaves it looping — audible, not silent-stuck,
-  and the same behaviour Odonus has.)  Original scope: Add `capture :: CaptureState`, the `PerfTick`
+  voices that are still performing. ~~Known wrinkle: switching Vetula to a Browse
+  surface while a region loops leaves it looping.~~ **FIXED 2026-08-06** by the
+  Stage collapse — `SetStage` absorbed `SetCaptureView`, so leaving REVIEW by any
+  route hushes the preview. See docs/DESIGN-stages.md.)  Original scope: Add `capture :: CaptureState`, the `PerfTick`
   note-harvest tap, a REPLAY surface wired `Vertical`, mark/region/lift. By-ear +
   by-eye: capture a Vetula phrase, see it as a vertical tracker, lift → library →
   attach it back into a box (closes the loop through #27).
@@ -248,8 +249,10 @@ source badge (#33) already colours all three.
   left the vertical projection entirely (see the superseded note). The question
   returns only if the true-tracker refinement is ever built.
 - ~~Whether Vetula capture is a full tab or a modal~~ — **DECIDED (AC): full
-  surface, exactly like Odonus's LIVE/REPLAY switch.** A tab, not a modal over the
-  Perform surface. Reinforces the always-on-harvest framing above: it's a
+  surface.** A tab, not a modal over the Perform surface. Since 2026-08-06 it is
+  a first-class STAGE on both machines — `Review`, peer to `Perform` rather than
+  a flag inside it (docs/DESIGN-stages.md), and the LIVE/REPLAY switch it used to
+  hang off is gone in favour of the stage tabs. Reinforces the always-on-harvest framing above: it's a
   first-class review surface, not a transient popover.
 - Does `Mark.patch` (the machine's Lepidoptera at capture) generalise cleanly to
   Vetula/Balistes state text? It should (all three serialise to eDSL), but confirm

@@ -29,6 +29,7 @@ import Data.Set (Set)
 import Data.Set as Set
 import Data.Map (Map)
 import Data.Map as Map
+import Triggerfish.Route as Route
 import Data.Int as Int
 import Data.String as String
 import Data.String.Common (joinWith)
@@ -37,7 +38,7 @@ import Effect (Effect)
 import Effect.Unsafe (unsafePerformEffect)
 import Effect.Aff (attempt, delay)
 import Effect.Aff.Class (class MonadAff, liftAff)
-import Effect.Class (liftEffect)
+import Effect.Class (class MonadEffect, liftEffect)
 import Data.Time.Duration (Milliseconds(..))
 import Effect.Timer (setInterval)
 import Halogen as H
@@ -133,6 +134,12 @@ data RAction
   | PreviewEntry LibRow        -- workbench: load + Local-audition a setup (rig untouched)
   | StopPreview                -- workbench: end the preview, restore its sounding
   | VetulaArmed Boolean        -- Vetula's self-arm/disarm EVENT (replaces the poll)
+  -- URL routing (`Triggerfish.Route`). `StageChanged` is a machine telling us it
+  -- moved so we can rewrite the hash; `HashChanged` is the user pasting or
+  -- editing a URL. The two never chase each other: hash writes go through
+  -- `history.replaceState`, which emits no `hashchange`.
+  | StageChanged Which (Array String)
+  | HashChanged String
   | BalChipChanged (Maybe G.ChipView)  -- Balistes' identity-chip view, for the status board
   | SelChipChanged (Maybe G.ChipView)  -- Selene's identity-chip view, for the status board
   | OdoChipChanged (Maybe G.ChipView)  -- Odonus's identity-chip view, for the status board
@@ -300,6 +307,11 @@ type RState =
   -- true once an Amphora fetch has failed (store unreachable) — drives the shell's
   -- "no favourites / backend not running" banner. Probed once on Init.
   , amphoraDown :: Boolean
+  -- URL routing: each machine's last-known stage path, keyed by machine slug. The
+  -- shell keeps it so switching away and back restores the full URL rather than
+  -- dropping to the bare `#vetula` — the machines hold their own stage, this is
+  -- only the shell's copy for printing. Machines with no stage axis never appear.
+  , stagePaths :: Map String (Array String)
   -- the status-board chip's recall menu: which machine's bank is open + its slots
   -- (each an alias the shell renders via glyphFromAlias). Nothing = closed. Fetched
   -- on open (AskBank), so it's a snapshot of the bank at click time.
@@ -368,7 +380,7 @@ root =
         , audition: Map.singleton Vet ADContinuo   -- Vetula auditions via Continuo by default
         , auditionCh: Map.empty                     -- per-machine channel; lookup defaults to 5
 
-        , library: [], importText: "", importMsg: ""
+        , library: [], importText: "", importMsg: "", stagePaths: Map.empty
         , clipLibrary: [], shellMidi: Nothing
         , picked: Nothing, sourceOpen: false, digOpen: false, goTo: [], previewing: []
         , mode: Solo, harm: { durs: [], active: -1, chord: "" }
@@ -414,6 +426,23 @@ handleAction = case _ of
     for_ mmac \sv -> H.modify_ _
       { macroLanes = Map.fromFoldable (mapMaybe (\e -> (\w -> Tuple w e.text) <$> whichFromLane e.machine) sv.lanes)
       , macroBars = if sv.bars >= 1 then sv.bars else 4 }
+    -- URL routing. Read the fragment ONCE at startup — a deep link like
+    -- `#vetula/review` opens straight onto that surface — then listen for changes
+    -- the user makes (a pasted link, an edited address bar). Our own writes go via
+    -- `history.replaceState` and emit no `hashchange`, so this can never hear the
+    -- app's own output.
+    --
+    -- Deliberately AFTER the machines are slotted but the stage push is forked, so
+    -- a still-initialising Vetula can't stall startup. A hash naming no known
+    -- machine is ignored and the app opens where it normally would.
+    hash0 <- liftEffect Route.readHash
+    _ <- liftEffect $ Route.onHashChange (HS.notify listener <<< HashChanged)
+    -- No link: write the URL for wherever the app opens anyway, so the address bar
+    -- is copyable from a cold start. Read `which` rather than naming a machine
+    -- here — the default pane is initialState's business, not routing's.
+    if hash0 == ""
+      then H.gets _.which >>= syncHash
+      else handleAction (HashChanged hash0)
     -- The global CAPTURE hotkey: one window-level keydown listener (the "same key
     -- on every pane" binding) → CaptureKey, which routes to the active machine.
     -- Guarded so it never fires while typing in a text field.
@@ -565,10 +594,40 @@ handleAction = case _ of
   -- Opening TIDAL pulls a fresh aggregate + library; the modules keep playing.
   Pick Tid -> do
     H.modify_ _ { which = Tid }
+    syncHash Tid
     refreshTidal
     refreshLibrary
     fetchGoTo
-  Pick w -> H.modify_ _ { which = w }
+  -- Changing machine rewrites the hash, keeping the machine's own stage segments
+  -- if we know them (`stagePaths`), so `#vetula/review` survives a trip to Odonus
+  -- and back.
+  Pick w -> do
+    H.modify_ _ { which = w }
+    syncHash w
+
+  -- A machine moved stage. Remember its path (so `Pick` can restore it later) and
+  -- rewrite the hash if that machine is the one on screen — a background machine
+  -- changing stage must not hijack the URL.
+  StageChanged w segs -> do
+    H.modify_ \s -> s { stagePaths = Map.insert (Route.machineSlug w) segs s.stagePaths }
+    st <- H.get
+    when (st.which == w) (syncHash w)
+
+  -- The user pasted or edited a URL. Switch machine, then hand the remaining
+  -- segments to that machine to parse. Forked for the same reason the other child
+  -- queries are: a still-initialising Vetula must not stall the shell's queue.
+  HashChanged raw -> case Route.parse raw of
+    -- Unparseable: naming no machine we know. Stay put — a bad link must not throw
+    -- you somewhere arbitrary mid-performance — but rewrite the URL to where you
+    -- actually are, so the address bar is never describing a place you aren't.
+    Nothing -> H.gets _.which >>= syncHash
+    Just r -> do
+      let w = Route.machineOf r
+          segs = Route.stageOf r
+      H.modify_ _ { which = w }
+      unless (null segs) do
+        H.modify_ \s -> s { stagePaths = Map.insert (Route.machineSlug w) segs s.stagePaths }
+        void $ H.fork $ void $ queryStagePath w segs
   RefreshTidal -> refreshTidal *> refreshLibrary *> fetchGoTo
   CopyTidal -> H.gets _.tidalDoc >>= (liftEffect <<< copyText)
   -- A5 manager: load a saved entry into its instrument, and switch to it so the
@@ -576,6 +635,7 @@ handleAction = case _ of
   LoadFromLib w i -> do
     _ <- queryLoad w i
     H.modify_ _ { which = w }
+    syncHash w
   CopyEntry txt -> liftEffect (copyText txt)
   SetImportText t -> H.modify_ _ { importText = t }
   -- Route the paste box to one instrument; it accepts iff the text is one of its
@@ -1150,6 +1210,26 @@ fetchGoTo = do
 isStarred :: RState -> LibRow -> Boolean
 isStarred st r = any (\g -> g.payload == r.text) st.goTo
 
+-- Push a stage path into a machine (URL → machine). Machines with no stage axis
+-- answer the query and no-op; Suf/Ste/Tid aren't queryable at all.
+queryStagePath :: forall o m. Which -> Array String -> H.HalogenM RState RAction Slots o m (Maybe Unit)
+queryStagePath w segs = case w of
+  Odo -> H.query _odo unit (SQ.SetStagePath segs unit)
+  Bal -> H.query _bal unit (SQ.SetStagePath segs unit)
+  Sel -> H.query _sel unit (SQ.SetStagePath segs unit)
+  Vet -> H.query _vet unit (Vetula.SetStagePath segs unit)
+  Tid -> pure Nothing
+  Suf -> pure Nothing
+  Ste -> pure Nothing
+
+-- Write the address bar to match `w` and its remembered stage path. The ONE place
+-- the hash is written, so there is exactly one direction of flow: state → URL.
+syncHash :: forall o m. MonadEffect m => Which -> H.HalogenM RState RAction Slots o m Unit
+syncHash w = do
+  st <- H.get
+  let segs = fromMaybe [] (Map.lookup (Route.machineSlug w) st.stagePaths)
+  liftEffect (Route.writeHash (Route.print (Route.routeOf w segs)))
+
 -- Dispatch a LoadEntry / ImportText to the right slot (the two query types — the
 -- shared SourceQuery and Vetula's own — agree on these constructors' shapes).
 queryLoad :: forall o m. Which -> Int -> H.HalogenM RState RAction Slots o m (Maybe Unit)
@@ -1184,13 +1264,17 @@ render st =
     -- machine instruments inset their own root below the bar (position:fixed
     -- top:var(--tf-bar)); the in-flow Vetula pane is padded down to clear it.
     , pane (st.which == Odo) ""
-        (HH.slot _odo unit Odonus.component unit (\(Odonus.IdentityChanged cv) -> OdoChipChanged cv))
+        (HH.slot _odo unit Odonus.component unit case _ of
+            Odonus.IdentityChanged cv -> OdoChipChanged cv
+            Odonus.StageChanged segs -> StageChanged Odo segs)
     , pane (st.which == Bal) ""
         (HH.slot _bal unit Balistes.component unit (\(Balistes.IdentityChanged cv) -> BalChipChanged cv))
     , pane (st.which == Sel) ""
         (HH.slot _sel unit Selene.component unit (\(Selene.IdentityChanged cv) -> SelChipChanged cv))
     , pane (st.which == Vet) "padding-top:var(--tf-bar)"
-        (HH.slot _vet unit Vetula.component unit (\(Vetula.ArmChanged on) -> VetulaArmed on))
+        (HH.slot _vet unit Vetula.component unit case _ of
+            Vetula.ArmChanged on -> VetulaArmed on
+            Vetula.StageChanged segs -> StageChanged Vet segs)
     , pane (st.which == Suf) "" (HH.slot_ _suf unit Sufflamen.component unit)
     , pane (st.which == Ste) "" (HH.slot_ _ste unit Stellatus.component unit)
     , modalOverlay st
@@ -1738,40 +1822,36 @@ barBtn label act =
         <> "background:linear-gradient(#f3ecd9,#e9e0c6)" ]
     [ HH.text label ]
 
--- The shared shell bar: one fixed strip across every tab — master transport
--- (left), the rack/instrument nameplate (centred), the switcher (right). It
--- reserves `--tf-bar` of height so no instrument's own top content collides
--- with it, and gives the rack one identity over both the machine and oracle
--- aesthetics underneath.
+-- The shared shell bar: one fixed strip across every tab. It reserves `--tf-bar`
+-- of height so no instrument's own top content collides with it, and gives the
+-- rack one identity over both the machine and oracle aesthetics underneath.
+--
+-- Left-to-right (AC, 2026-08-06): **wordmark · transport · tabs — gap — readout ·
+-- authority**. The ordering is a locality argument, not decoration:
+--
+--   * PLAY and BPM are the controls you hit most and from any pane, so they sit
+--     hard left with the wordmark rather than at the far end of a 2000px bar.
+--     Getting to the transport used to be a full-width traverse from whatever
+--     you were touching in the instrument.
+--   * the tabs follow, so switching machine and starting/stopping it are the
+--     same short mouse move.
+--   * the pitch set and SOLO⟷ATLANTIS go right. Both are read-mostly — you
+--     glance at the progression, and the authority toggle is a per-session
+--     setting — so they can afford the distance.
+--
+-- Everything is a flat flex row with NO absolute positioning, so nothing can
+-- overlap a tab. (The old absolute-centred chrome's empty 96px chord-slot used
+-- to park over ODONUS and swallow its click; flex makes that impossible.)
 shellBar :: forall m. RState -> H.ComponentHTML RAction Slots m
 shellBar st =
   HH.div
     [ style $ "position:fixed;top:0;left:0;right:0;height:var(--tf-bar);z-index:50;box-sizing:border-box;"
-        <> "display:flex;align-items:center;justify-content:space-between;gap:16px;padding:0 12px;overflow:hidden;"
+        <> "display:flex;align-items:center;gap:16px;padding:0 12px;overflow:hidden;"
         <> "background:linear-gradient(#d4cfc0,#c2bcab);border-bottom:1px solid #00000026;"
         <> "box-shadow:0 1px 4px #00000018;font-family:Georgia,serif" ]
-    -- LEFT: wordmark + the instrument switcher. Everything in this bar is a flat
-    -- flex row with NO absolute positioning — so nothing can overlap a tab. (The
-    -- old absolute-centered chrome's empty 96px chord-slot used to park over ODONUS
-    -- and swallow its click; a flex layout makes that impossible by construction.)
-    [ HH.div
-        [ style "display:flex;align-items:center;gap:16px;flex:0 0 auto" ]
-        [ HH.span
-            [ style "font-size:11px;letter-spacing:0.22em;text-transform:uppercase;color:#4a463b" ]
-            [ HH.text "Triggerfish" ]
-        , switcher st
-        ]
-    -- MIDDLE: the SOLO⟷ATLANTIS authority toggle + the live harmonic-context glyph.
-    -- Shrinkable + clipped, so a long progression compresses here rather than
-    -- pushing into its neighbours.
-    , HH.div
-        [ style "display:flex;align-items:center;gap:16px;flex:0 1 auto;min-width:0;overflow:hidden" ]
-        ( [ modeToggle st ]
-            <> (if st.amphoraDown then [ amphoraOfflinePill ] else [])
-            <> [ harmStrip st ] )
-    -- RIGHT: the system BPM (reclaimed space where TIDAL used to sit) + the
-    -- master transport (arm-all / stop-all).
-    , bpmControl st
+    [ HH.span
+        [ style "flex:0 0 auto;font-size:11px;letter-spacing:0.22em;text-transform:uppercase;color:#4a463b" ]
+        [ HH.text "Triggerfish" ]
     , HH.button
         [ HE.onClick \_ -> ToggleMaster
         , style $ "flex:0 0 auto;padding:6px 18px;border:1px solid #00000033;border-radius:6px;cursor:pointer;"
@@ -1779,6 +1859,18 @@ shellBar st =
             <> "color:" <> (if anyArmed st.armed then "#fbeae7" else "#1c1a12")
             <> ";background:" <> (if anyArmed st.armed then "linear-gradient(#b23b28,#9a3120)" else "linear-gradient(#c8a86a,#b8975a)") ]
         [ HH.text (if anyArmed st.armed then "■ STOP" else "▶ PLAY") ]
+    , bpmControl st
+    , switcher st
+    -- The gap. Everything after it is right-aligned; everything before it stays
+    -- packed against the wordmark whatever the window width.
+    , HH.div [ style "flex:1 1 auto;min-width:8px" ] []
+    -- Shrinkable + clipped, so a long progression compresses here rather than
+    -- pushing into its neighbours.
+    , HH.div
+        [ style "display:flex;align-items:center;gap:16px;flex:0 1 auto;min-width:0;overflow:hidden" ]
+        ( (if st.amphoraDown then [ amphoraOfflinePill ] else [])
+            <> [ harmStrip st ] )
+    , modeToggle st
     ]
 
 -- The system-tempo control in the nav. Link-locked: a read-only readout of the
@@ -2155,7 +2247,7 @@ targetIsField e = case E.target e of
 modeToggle :: forall m. RState -> H.ComponentHTML RAction Slots m
 modeToggle st =
   HH.div
-    [ style $ "display:flex;border:1px solid #00000033;border-radius:5px;overflow:hidden;"
+    [ style $ "display:flex;flex:0 0 auto;border:1px solid #00000033;border-radius:5px;overflow:hidden;"
         <> "box-shadow:0 1px 2px #00000022" ]
     [ modeSeg "SOLO" (st.mode == Solo) "#1c1a12" "linear-gradient(#c8a86a,#b8975a)" (SetMode Solo)
     , modeSeg "ATLANTIS" (st.mode == Atlantis) "#eaf3fa" "linear-gradient(#3a6b8a,#2d5670)" (SetMode Atlantis)

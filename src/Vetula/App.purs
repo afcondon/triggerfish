@@ -153,22 +153,11 @@ rigUrl = "ws://127.0.0.1:3012/ws"
 gridCfg :: Scheduler.GridConfig
 gridCfg = { stepBeats: 0.25, lookaheadMs: 120.0, tickMs: 25 }
 
--- | Slice 4c: the surface's width-focus. Hunt = the lattice pool is dominant (you're
--- | finding chords); Rail = the progression rail is dominant (you're playing voices).
--- | (`Rail` renamed from `Perform` — that name now belongs to the top-level `View`.)
--- | Nothing mounts/unmounts — focus only biases which column gets the width. Largely
--- | vestigial now that Perform is its own View; kept until the rail UI is retired.
-data Focus = Hunt | Rail
-
-derive instance eqFocus :: Eq Focus
-
--- | Slice 4b: which rail section is expanded. The rail is an accordion — one section
--- | open at a time — over the three rail objects: the Progression (what), the Library
--- | (saved progressions), and the Voices (how it's performed).
-data RailSection = SecProgression | SecLibrary | SecVoices
-
-derive instance eqRailSection :: Eq RailSection
-derive instance ordRailSection :: Ord RailSection
+-- `Focus` (Hunt/Rail width-bias) and `RailSection` (the rail accordion) were
+-- deleted 2026-08-06 with the Stage collapse. Both had outlived the rail UI:
+-- `focus` was still being written but never read, `railOpen` was initialised and
+-- toggled with no renderer left to observe it, and `poolSpine`/`focusTab` were
+-- defined but never called. `Hunt` is now a Stage constructor.
 
 -- | The LEFT accordion (the reclaimed top bar): Setup (key/scale/family/borrow/
 -- | palettes/connection), Tank (caught chords), Lens (view choice). Multi-open.
@@ -202,24 +191,47 @@ derive instance ordLeftSection :: Ord LeftSection
 -- | each one (the "shake the etch-a-sketch, put chords back in, grow what relates"
 -- | idea). Catch a relative and it feeds the tank — the compositional loop closes.
 -- |
--- | `LensPerform` is the PERFORM surface (docs/DESIGN-vetula-chyron-redesign §Perform):
--- | not another projection of the pool but a live rig — a row of player BOXES, one
--- | per output, onto which you drop saved sequence-tokens; each box loops its token
--- | while the transport plays. The function stack + non-MIDI sinks land on top later.
--- | The Stage is one of two MODES, and this is the crux of the model (AC,
--- | 2026-08-03): `Perform` is a genuinely different activity (the box surface, its
--- | own interaction loop), while the geometric views are all the SAME activity —
--- | *browsing* harmonic space — seen through different projections. So it is not a
--- | flat list of peers but `Browse <viewtype> | Perform`. Adding a browse
--- | projection is one `Viewtype` constructor + one `surface` branch; Perform stays
--- | untouched. (Keyboard / pad-grid retired — subsumed by the interactive fifths.)
+-- | (Keyboard / pad-grid retired — subsumed by the interactive fifths.)
 data Viewtype = Fifths | Tonnetz | Lattice | Explore
 
 derive instance eqViewtype :: Eq Viewtype
 
-data View = Browse Viewtype | Perform
+-- | **The STAGE — Vetula's one mode axis** (AC, 2026-08-06).
+-- |
+-- | Three stages, in the order material flows through them:
+-- |
+-- |   HUNT ──→ PERFORM ──→ REVIEW ──┐
+-- |    ↑   harmonic material        │
+-- |    └── voiced into notes ───────┘
+-- |             lifted into clips
+-- |
+-- |   * `Hunt lens` — hunt harmonic space through one of four projections
+-- |     (fifths / tonnetz / lattice / explore). Produces the tank and the
+-- |     progression. Adding a projection is still one `Viewtype` constructor and
+-- |     one `surface` branch; the other stages stay untouched.
+-- |   * `Perform` — player boxes voicing that material live, with the capture
+-- |     river alongside. Produces notes.
+-- |   * `Review` — the whole-session capture roll, for cherry-picking a phrase
+-- |     into the clip library. Produces clips.
+-- |
+-- | **Why one type and not two.** This replaced `View = Browse Viewtype | Perform`
+-- | plus a separate `captureView :: CapLive | CapReplay` flag nested inside
+-- | Perform. The type said "two modes, one with a layout switch"; the player
+-- | counted three (AC: "vetula is complex because it has three forms"). When the
+-- | user's count and the type's count disagree, the type is wrong. The flat
+-- | version also killed the dishonest lens dropdown, which used to display
+-- | `browseOr lastBrowse view` — a *remembered* projection presented as the
+-- | current one, because it had nowhere truthful to stand while Perform was up.
+-- |
+-- | **A stage is what you are LOOKING AT, not what is running.** The transport is
+-- | orthogonal and lives in the shell's top nav: voices keep sounding while you
+-- | hunt chords, the generator keeps generating while you review. Top nav owns
+-- | what's running; the machine's secondary nav owns what you're looking at.
+-- | Odonus has the same axis minus Hunt (Vetula is the harmonic authority, so
+-- | Odonus has nothing to hunt) — see `Triggerfish.Odonus.Grid.Types.Stage`.
+data Stage = Hunt Viewtype | Perform | Review
 
-derive instance eqView :: Eq View
+derive instance eqStage :: Eq Stage
 
 viewtypeLabel :: Viewtype -> String
 viewtypeLabel = case _ of
@@ -232,9 +244,9 @@ viewtypeLabel = case _ of
 viewtypes :: Array Viewtype
 viewtypes = [ Fifths, Tonnetz, Lattice, Explore ]
 
--- | The four BROWSE projections as a nav dropdown: a stable string `value` ↔
--- | `Viewtype`, with a readable menu `label`. Perform is NOT here — it is a mode
--- | apart (its own button beside the dropdown). (AC, 2026-08-03.)
+-- | The four HUNT projections as the dropdown hanging off the HUNT tab: a stable
+-- | string `value` ↔ `Viewtype`, with a readable menu `label`. Perform and Review
+-- | are NOT here — they're peer stages, not projections.
 viewtypeValue :: Viewtype -> String
 viewtypeValue = case _ of
   Fifths -> "fifths"
@@ -260,11 +272,39 @@ viewtypeMenuLabel = case _ of
 browseOptions :: Array { value :: String, label :: String }
 browseOptions = map (\vt -> { value: viewtypeValue vt, label: viewtypeMenuLabel vt }) viewtypes
 
--- | The browse projection a View names, or `fallback` when it's Perform.
-browseOr :: Viewtype -> View -> Viewtype
-browseOr fallback = case _ of
-  Browse vt -> vt
-  Perform -> fallback
+-- | The projection a Stage names, or `fallback` when it isn't Hunt. Feeds
+-- | `lastLens`, so leaving Hunt and coming back returns to the same projection.
+huntOr :: Viewtype -> Stage -> Viewtype
+huntOr fallback = case _ of
+  Hunt vt -> vt
+  _ -> fallback
+
+-- | Is this stage Hunt (in any projection)? The stage tab's active test.
+isHunt :: Stage -> Boolean
+isHunt = case _ of
+  Hunt _ -> true
+  _ -> false
+
+-- | The URL segments for a stage: `["hunt","tonnetz"]`, `["perform"]`,
+-- | `["review"]`. Vetula owns this vocabulary — `Triggerfish.Route` carries the
+-- | segments opaquely and never learns what a stage is.
+stagePath :: Stage -> Array String
+stagePath = case _ of
+  Hunt vt -> [ "hunt", viewtypeValue vt ]
+  Perform -> [ "perform" ]
+  Review -> [ "review" ]
+
+-- | The inverse. `Nothing` for anything unrecognised, so a stale or hand-typed
+-- | URL leaves the app where it is rather than dumping it somewhere arbitrary.
+-- | A bare `["hunt"]` (no projection) is legal and lands on `lastLens`, which is
+-- | why the caller passes it in.
+stageFromPath :: Viewtype -> Array String -> Maybe Stage
+stageFromPath fallbackLens segs = case segs of
+  [ "perform" ] -> Just Perform
+  [ "review" ] -> Just Review
+  [ "hunt" ] -> Just (Hunt fallbackLens)
+  [ "hunt", vt ] -> Just (Hunt (viewtypeFromValue vt))
+  _ -> Nothing
 
 -- | Where Vetula's chord/path AUDITION goes, chosen in the shell's routing modal
 -- | (2026-08-01): Off (muted), Continuo (the piano+strings VST preview via the
@@ -522,8 +562,6 @@ type State =
   -- Vetula is the single harmonic authority — this is what pitched voices quantise
   -- to when no chord is firing.
   , restScale :: Maybe { root :: Int, offsets :: Array Int }
-  , focus :: Focus                     -- Slice 4c: Hunt (lattice-dominant) vs Perform (rail-dominant)
-  , railOpen :: Set RailSection        -- Slice 4b: which rail accordion sections are open (multi)
   , leftOpen :: Set LeftSection        -- which LEFT accordion sections are open (multi)
   , chords :: Array ChordNode          -- the model (pin, provenance, layout targets)
   , nodes :: Array VNode               -- live positions from the simulation
@@ -632,9 +670,8 @@ type State =
   -- it here; the tank persists until cleared and will feed the Stage + Sequences.
   , tank :: Array Specimen
   , nextSpecId :: Int             -- running number for minting SpecimenIds
-  , view :: View                  -- which Stage mode/projection is showing
-  , lastBrowse :: Viewtype        -- the browse projection to return to from Perform
-                                  -- (Perform is a mode apart — its own nav button)
+  , stage :: Stage                -- Hunt <projection> | Perform | Review — see `Stage`
+  , lastLens :: Viewtype          -- the Hunt projection to return to from Perform/Review
   -- Geometric-lens viewport (CoF / Tonnetz): pan centre + zoom, applied as the
   -- surface's viewBox. Wheel zooms toward the cursor; drag pans; reset re-fits.
   , viewCx :: Number
@@ -702,13 +739,11 @@ type State =
   , clipLibrary :: Array MidiClip
   , perfPhrasePick :: Maybe Int
   -- The always-on capture logbook (#28): every note the voices/boxes emit is tapped
-  -- in PerfTick and appended here (the "player piano" roll), reviewed on the
-  -- capture surface and lifted into the shared clip library. `captureView` is the
-  -- LIVE/REPLAY switch (Odonus's affordance, AC 2026-08-05): LIVE keeps the roll as
-  -- a narrow strip beside the voices, REPLAY gives it the whole surface so there's
-  -- room to cherry-pick a phrase.
+  -- in PerfTick and appended here (the "player piano" roll), shown live beside the
+  -- voices in PERFORM and given the whole surface in REVIEW, where a phrase is
+  -- lifted into the shared clip library. Which of those you see is `stage`; there
+  -- is no second flag (the old `captureView` folded into `Stage`).
   , capture :: CaptureState
-  , captureView :: CaptureView
   -- The LIVE river's two reads (`Capture.River`): the current instant, advanced by
   -- a 33ms frame timer so the roll FLOWS rather than jumping a 16th at a time, and
   -- the recent notes it draws — pruned to the river's fade span each frame. The
@@ -716,14 +751,6 @@ type State =
   , nowMicros :: Number
   , riverNotes :: Array NoteEvent
   }
-
--- | Vetula's LIVE/REPLAY switch — the same two-mode affordance Odonus has, but the
--- | modes differ in LAYOUT rather than content: `CapLive` puts the capture roll in a
--- | third-width strip to the right of the voices, `CapReplay` hands it the whole
--- | surface. Same surface, same gestures, more room.
-data CaptureView = CapLive | CapReplay
-
-derive instance eqCaptureView :: Eq CaptureView
 
 -- | Which floating control a fold toggle targets.
 data VPanel = VCtx | VProg
@@ -737,8 +764,6 @@ data Action
   | Hover (Maybe Int)
   | HoverTriad (Maybe { root :: Int, pcs :: Array Int })  -- Tonnetz: hover a triad for space-preview
   | HoverSpec (Maybe SpecimenId)  -- hover a tank specimen for space-preview
-  | SetFocus Focus         -- Slice 4c: switch the surface width-focus (Hunt / Perform)
-  | ToggleRailSection RailSection  -- Slice 4b: open/close a rail accordion section
   | ToggleLeftSection LeftSection  -- open/close a left accordion section
   | Key String Boolean     -- key, shift held
   | SelectKey String
@@ -877,7 +902,6 @@ data Action
   | CaptureSaveClip Int    -- lift region i out into the shared clip library
   | CaptureToggleContext   -- show/hide the region's harmonic context
   | CaptureClear           -- purge the capture logbook
-  | SetCaptureView CaptureView -- the LIVE/REPLAY switch
   | CaptureFrame           -- 33ms tick: advance the river's clock, prune its window
   | PerfNop                -- no-op (used to stop a click bubbling without a re-render)
   | PerfToggleMute Int     -- silence/unsilence box b's pipeline
@@ -891,7 +915,7 @@ data Action
   | PanEnd                 -- geometric lens: end the pan drag
   | ResetView              -- geometric lens: re-fit (zoom 1, centred)
   | ShakeGenerate          -- Generate lens: re-roll the tank-seeded relatives
-  | SetView View           -- switch the Stage mode/projection
+  | SetStage Stage         -- switch stage: Hunt <projection> | Perform | Review
   | TransposeSpec SpecimenId Int -- Slice E: shift one tank specimen by n semitones (in place)
   | CapoTank Int           -- Slice E: shift the WHOLE tank by n semitones (a capo)
 
@@ -901,6 +925,10 @@ data Action
 -- | Triggerfish) so the standalone app — which never queries it — still builds.
 data SourceQuery a
   = AskSource (String -> a)
+  -- URL routing: adopt the stage named by these path segments (see `stagePath`).
+  -- Unrecognised segments are ignored rather than guessed at, so a stale link
+  -- switches machine and leaves the stage alone.
+  | SetStagePath (Array String) a
   | AskChords (Array (Array Int) -> a)
   | AskVoiceChords (Array { id :: Int, pcs :: Array Int } -> a)  -- live per-Odonus-voice chord
   | AskHarmonic ({ durs :: Array Int, active :: Int, chord :: String } -> a)  -- nav harmonic strip: voice-0 dwell schedule + live playhead + the active chord's notes
@@ -957,15 +985,16 @@ data SourceQuery a
 -- event lets it update membership directly — replacing the old per-tick poll of
 -- every instrument's effective sounding. Odo/Bal/Sel never self-disarm, so only
 -- Vetula needs an output.
-data Output = ArmChanged Boolean
+-- | `StageChanged` carries the new stage's URL segments so the shell can write
+-- | the hash. Push, not poll: the shell would otherwise have to interrogate every
+-- | machine on a timer to notice a mode change it didn't cause.
+data Output = ArmChanged Boolean | StageChanged (Array String)
 
 component :: forall i m. MonadAff m => H.Component SourceQuery i Output m
 component = H.mkComponent
   { initialState: \_ ->
       { key: cMajorKey
       , restScale: Nothing
-      , focus: Hunt
-      , railOpen: Set.fromFoldable [ SecProgression, SecLibrary, SecVoices ]
       , leftOpen: Set.fromFoldable [ SecSetup, SecTank, SecLens ]
       , chords: []
       , nodes: []
@@ -1036,8 +1065,8 @@ component = H.mkComponent
       , nextSpecId: 0
       , seedChord: Map.empty
       , presets: [], identity: Nothing
-      , view: Browse Tonnetz  -- default: the tonal net shows the scale's shape best
-      , lastBrowse: Tonnetz
+      , stage: Hunt Tonnetz   -- default: the tonal net shows the scale's shape best
+      , lastLens: Tonnetz
       , viewCx: 0.0
       , viewCy: 0.0
       , viewZoom: 1.0
@@ -1065,7 +1094,6 @@ component = H.mkComponent
       , clipLibrary: []
       , perfPhrasePick: Nothing
       , capture: { logbook: Logbook.emptyLog, playing: Nothing, regionDrag: Nothing, contextOpen: false }
-      , captureView: CapLive
       , nowMicros: 0.0
       , riverNotes: []
       }
@@ -1081,6 +1109,15 @@ handleQuery = case _ of
   AskSource reply -> do
     s <- H.get
     pure (Just (reply (currentSource s)))
+  -- Routed in from the URL. Goes through `handleAction SetStage` rather than
+  -- writing `stage` directly, so a link into REVIEW gets the same hush/clear
+  -- treatment as clicking the tab — arriving by URL must not be a second, laxer
+  -- path into a stage.
+  SetStagePath segs next -> do
+    s <- H.get
+    for_ (stageFromPath s.lastLens segs) \stg ->
+      when (stg /= s.stage) (handleAction (SetStage stg))
+    pure (Just next)
   AskChords reply -> do
     s <- H.get
     pure (Just (reply (progressionPCs s)))
@@ -1493,6 +1530,12 @@ connectMidi = do
 handleAction :: forall m. MonadAff m => Action -> H.HalogenM State Action Slots Output m Unit
 handleAction = case _ of
   Initialize -> do
+    -- Announce the opening stage so the shell can write a COMPLETE URL from a cold
+    -- start (`#{slug}/{stage}`, not the bare `#{slug}`). Without this the address
+    -- bar under-specifies until you touch a stage tab — still a valid route, since
+    -- an empty stage path means "leave the stage alone", but not a link that
+    -- reopens what you were actually looking at.
+    H.gets _.stage >>= \stg -> H.raise (StageChanged (stagePath stg))
     -- MIDI out. NB modern Chrome only shows the Web-MIDI permission prompt in
     -- response to a USER GESTURE, so this page-load request often resolves to
     -- "no Web-MIDI" the first time — clicking the MIDI chip (→ RetryMidi) re-runs
@@ -1605,14 +1648,6 @@ handleAction = case _ of
   HoverSpec ms -> H.modify_ _ { hoveredSpec = ms, hoveredId = Nothing, hoveredTriad = Nothing }
 
   -- Slice 4c: hand-override the width-focus (the Hunt/Perform toggle, the pool spine).
-  -- No surface rebuild — the lattice sim keeps running; we only change which column
-  -- gets the width.
-  SetFocus f -> H.modify_ _ { focus = f }
-
-  -- Toggle a rail accordion section (independent — several may be open at once).
-  ToggleRailSection sec -> H.modify_ \s ->
-    s { railOpen = if Set.member sec s.railOpen then Set.delete sec s.railOpen else Set.insert sec s.railOpen }
-
   ToggleLeftSection sec -> H.modify_ \s ->
     s { leftOpen = if Set.member sec s.leftOpen then Set.delete sec s.leftOpen else Set.insert sec s.leftOpen }
 
@@ -1853,7 +1888,7 @@ handleAction = case _ of
   -- STARTS a fresh path instead of extending this one (the Nothing branch of
   -- PathPick then opens a new capture session). The visible twin of the `c` key —
   -- discoverable, and it works with a text field focused (where `c` is swallowed).
-  ClearPath -> H.modify_ _ { path = [], focus = Hunt }
+  ClearPath -> H.modify_ _ { path = [] }
 
   PlayStep pid -> playId pid
 
@@ -1994,7 +2029,7 @@ handleAction = case _ of
     st <- H.get
     when (length (pathSteps st) > 0) (captureSteps st)
     stopClock
-    H.modify_ _ { path = [], perfName = Nothing, focus = Hunt, voices = [], playing = false }
+    H.modify_ _ { path = [], perfName = Nothing, voices = [], playing = false }
     -- Unloading self-disarms; tell the shell so it drops Vetula from `armed`.
     when st.armed (H.raise (ArmChanged false))
 
@@ -2567,23 +2602,17 @@ handleAction = case _ of
   -- a REPLAY affordance, and a stale one hanging over the strip in LIVE reads as if
   -- something were still armed.
   -- The river's animation tick. Guarded to the Perform surface in LIVE: this fires
-  -- ~30×/s and Vetula's render is not cheap, so it must not run while you're on the
-  -- tonnetz or reviewing in REPLAY (neither reads `nowMicros`).
+  -- ~30×/s and Vetula's render is not cheap, so it must not run while you're
+  -- hunting or reviewing (neither stage reads `nowMicros`).
   CaptureFrame -> do
     st <- H.get
-    when (st.view == Perform && st.captureView == CapLive) do
+    when (st.stage == Perform) do
       nowMs <- liftEffect perfNow
       let now = nowMs * 1000.0
       H.modify_ _ { nowMicros = now
                   , riverNotes = filter (\n -> (now - n.fireUnixMicros) < River.windowMicros) st.riverNotes }
     -- The REPLAY loop rides the same frame clock; it no-ops when nothing is looping.
     driveCaptureReplay
-
-  SetCaptureView v -> do
-    when (v == CapLive) hushCapture
-    H.modify_ \s -> s
-      { captureView = v
-      , capture = if v == CapReplay then s.capture else s.capture { playing = Nothing, contextOpen = false } }
 
   CaptureSaveClip i -> do
     st <- H.get
@@ -2683,12 +2712,20 @@ handleAction = case _ of
 
   ShakeGenerate -> H.modify_ \s -> s { genRoll = s.genRoll + 1 }
 
-  SetView v -> H.modify_ \st -> st
-    { view = v
-    , lastBrowse = browseOr st.lastBrowse v
-    , hoveredId = Nothing, hoveredTriad = Nothing
-    , viewCx = 0.0, viewCy = 0.0, viewZoom = 1.0, panning = Nothing, panMoved = false
-    }
+  -- The one mode switch. Absorbed the old `SetCaptureView`, so leaving REVIEW by
+  -- ANY route — Perform, or off to Hunt — hushes the region preview and drops the
+  -- lift card. Under the old split you could escape a looping preview sideways
+  -- into Browse and it would keep ringing.
+  SetStage v -> do
+    when (v /= Review) hushCapture
+    H.raise (StageChanged (stagePath v))
+    H.modify_ \st -> st
+      { stage = v
+      , lastLens = huntOr st.lastLens v
+      , hoveredId = Nothing, hoveredTriad = Nothing
+      , viewCx = 0.0, viewCy = 0.0, viewZoom = 1.0, panning = Nothing, panMoved = false
+      , capture = if v == Review then st.capture else st.capture { playing = Nothing, contextOpen = false }
+      }
 
   -- Slice E — transpose. In-place shift of a specimen's absolute-MIDI voicing +
   -- bass (arithmetic, since everything is absolute MIDI), relabelled to the new
@@ -4780,18 +4817,6 @@ subGroup label body =
 countLabel :: Int -> String -> String
 countLabel n noun = show n <> " " <> noun <> (if n == 1 then "" else "s")
 
--- | The collapsed pool (Perform mode): a thin clickable spine that expands the lattice
--- | again — the always-available "back to hunt" gesture.
-poolSpine :: forall m. H.ComponentHTML Action Slots m
-poolSpine =
-  HH.div
-    [ HP.style "flex: 0 0 42px; align-self: stretch; min-height: 460px; border: 1px solid #ededed; border-radius: 6px; background: #fafafa; cursor: pointer; display: flex; flex-direction: column; align-items: center; padding: 12px 0; gap: 12px;"
-    , HP.title "expand the lattice — hunt for chords"
-    , HE.onClick \_ -> SetFocus Hunt ]
-    [ HH.span [ HP.style "font-size: 15px; color: #7a7a7a;" ] [ HH.text "▸" ]
-    , HH.span [ HP.style "writing-mode: vertical-rl; font-size: 11px; letter-spacing: 0.14em; text-transform: uppercase; color: #b0b0b0;" ] [ HH.text "pool" ]
-    ]
-
 -- | The CONTEXT bar — a thin control strip docked between the top nav and the
 -- | AUDITION chyron (Tank-overhaul follow-on: kills the last floating overlay,
 -- | reclaiming the whole left column). Horizontal: key · scale · [family] ·
@@ -4799,56 +4824,122 @@ poolSpine =
 -- | fields keep their little labels stacked over each control, so it reads as a
 -- | labelled toolbar. Dropdowns open DOWN over the surface (z above the chyron),
 -- | so the bar must not clip overflow.
+-- | The STAGE TABS — Vetula's one mode control, hard left in the secondary nav
+-- | so it sits directly under the shell's transport. Three peers, in the order
+-- | material flows through them; see `Stage`.
+-- |
+-- | HUNT returns to `lastLens`, so the projection you were last using is where
+-- | you land — the tab is the stage, the dropdown beside it (a Hunt control) is
+-- | the projection.
+stageTabs :: forall m. State -> H.ComponentHTML Action Slots m
+stageTabs st =
+  HH.div
+    [ HP.style "display: flex; flex: 0 0 auto; border: 1px solid #00000026; border-radius: 6px; overflow: hidden; box-shadow: 0 1px 2px #0000001a;" ]
+    [ tab (isHunt st.stage) (Hunt st.lastLens) "HUNT" "hunt harmonic space — catch chords into the tank"
+    , tab (st.stage == Perform) Perform "PERFORM" "play the voices, with the capture river alongside"
+    , tab (st.stage == Review) Review "REVIEW" "the whole take — cherry-pick a phrase into the clip library"
+    ]
+  where
+  tab active target label tip =
+    HH.button
+      [ HP.title tip
+      , HE.onClick \_ -> SetStage target
+      , HP.style ("padding: 5px 14px; border: none; cursor: pointer; font-family: Georgia, serif; font-size: 11px; letter-spacing: 0.12em; "
+                   <> (if active then "background: linear-gradient(#c8a86a,#b8975a); color: #1c1a12; font-weight: 600;"
+                                 else "background: linear-gradient(#e9e5d9,#dcd8c9); color: #5a564b;")) ]
+      [ HH.text label ]
+
 contextBar :: forall m. MonadAff m => State -> H.ComponentHTML Action Slots m
 contextBar st =
   HH.div
     [ HP.style ( "position: fixed; top: var(--tf-bar); left: 0; right: 0; z-index: 40; box-sizing: border-box; "
         <> "display: flex; align-items: center; flex-wrap: nowrap; gap: 10px; padding: 0 12px; height: 44px; overflow: visible; "
         <> "background: linear-gradient(#f3eee0,#ece5d0); border-bottom: 1px solid #0000000f; box-shadow: 0 1px 3px #0000000d;" ) ]
-    -- Labels dropped (the controls speak for themselves); subtle dividers group
-    -- key/scale · palettes · lens instead. (AC, 2026-08-03.)
-    -- Session/scene menu at the far left (was the Perform header's control row),
-    -- then key/scale · palettes · view. Labels dropped; subtle dividers group.
-    ( [ sessionMenu, divider
-      , HH.slot (Proxy :: _ "keySelect") unit Select.component
-          ((Select.defaultInput keyOptions) { selected = Just (show st.key.tonic), placeholder = "Key", minWidth = Just "72px" })
-          \(Select.Selected v) -> SelectKey v
-      , HH.slot (Proxy :: _ "scaleSelect") unit Select.component
-          ((Select.cascadingInput modeGroups) { selected = Just (currentModeValue st.key.mode), searchable = true })
-          \(Select.Selected v) -> SelectScale v
-      ]
-        <> familyField
-        <> [ divider ]
-        <> [ HH.slot (Proxy :: _ "paletteSelect") unit MultiSelect.component
-               ((MultiSelect.defaultInput paletteOptions)
-                  { selected = activeLayerLabels, placeholder = "palettes", maxLabels = 3, minWidth = Just "128px" })
-               \(MultiSelect.SelectedMany vs) -> SetLayers vs ]
-        <> borrowField
-        <> [ divider ]
-        -- View: the four browse projections as a dropdown, shake ⟳ beside it
-        -- (Explore-only), then a hairline and Perform as its OWN button — Perform is
-        -- a mode apart, not a fifth projection. The dropdown shows the current (or
-        -- last) browse projection even while Perform is active, so it's the way back.
-        <> [ HH.div [ HP.style "display: flex; align-items: center; gap: 6px;" ]
-               ( [ HH.slot (Proxy :: _ "viewSelect") unit Select.component
-                     ((Select.defaultInput browseOptions)
-                        { selected = Just (viewtypeValue (browseOr st.lastBrowse st.view))
-                        , minWidth = Just "116px" })
-                     \(Select.Selected v) -> SetView (Browse (viewtypeFromValue v)) ]
-                 <> shakeChip
-                 <> [ HH.div [ HP.style "width: 1px; height: 16px; background: #0000001a; margin: 0 3px;" ] [] ]
-                 <> [ performButton ] ) ]
-        <> resetChip
-        <> [ HH.div
-               [ HP.style "margin-left: auto; display: flex; align-items: center; gap: 8px;" ]
-               [ case st.publishMsg of
-                   Just m -> HH.span [ HP.style "font-size: 11px; color: #7a6a3a; font-family: ui-monospace, monospace;" ] [ HH.text m ]
-                   Nothing -> HH.text ""
-               , midiChip st.midiName
-               , HH.button [ HP.style helpBtnStyle, HP.title "keys & help", HE.onClick \_ -> ToggleHelp ] [ HH.text "ⓘ" ] ]
+    -- LEFT: the stage tabs, then ONLY the controls that mean something in the
+    -- stage you're in. RIGHT: the housekeeping and the harmonic authority.
+    --
+    -- The old bar was one flat row of ten slots regardless of mode, of which six
+    -- (family · palettes · borrow · lens · shake · reset) were Hunt-only — lit and
+    -- clickable while you performed, meaning nothing. Meanwhile the one control
+    -- that WAS live in Perform, the capture switch, wasn't in the bar at all: it
+    -- floated absolutely-positioned over the surface, because the bar had no
+    -- notion of stage to hang it on. Exactly inverted.
+    --
+    -- Two groups never move — the tabs (far left, beside the shell's transport)
+    -- and key/scale (far right, under the shell's pitch set, which they feed).
+    -- Only the middle-left group changes with the stage, so it's one contiguous
+    -- region you learn to expect rather than a row that rearranges under you.
+    ( [ stageTabs st ]
+        <> stageControls
+        <> [ HH.div [ HP.style "flex: 1 1 auto; min-width: 8px;" ] [] ]
+        <> [ case st.publishMsg of
+               Just m -> HH.span [ HP.style "font-size: 11px; color: #7a6a3a; font-family: ui-monospace, monospace;" ] [ HH.text m ]
+               Nothing -> HH.text ""
+           , sessionMenu
+           , divider
+           ]
+        -- The harmonic column: Vetula's key and scale are the SOURCE of the pitch
+        -- set in the shell's top nav and of Odonus's inherited-context readout, so
+        -- all three stack in the same place on the right. Editable here, read-only
+        -- in the two bars that display it.
+        <> [ HH.slot (Proxy :: _ "keySelect") unit Select.component
+               ((Select.defaultInput keyOptions) { selected = Just (show st.key.tonic), placeholder = "Key", minWidth = Just "72px" })
+               \(Select.Selected v) -> SelectKey v
+           , HH.slot (Proxy :: _ "scaleSelect") unit Select.component
+               ((Select.cascadingInput modeGroups) { selected = Just (currentModeValue st.key.mode), searchable = true })
+               \(Select.Selected v) -> SelectScale v
+           , divider
+           , midiChip st.midiName
+           , HH.button [ HP.style helpBtnStyle, HP.title "keys & help", HE.onClick \_ -> ToggleHelp ] [ HH.text "ⓘ" ]
            ]
     )
   where
+  -- The stage-specific group. HUNT gets its projection picker and the pool
+  -- controls; PERFORM and REVIEW share the capture controls, deliberately
+  -- identical and in the same place, so ◆ mark doesn't move when you change
+  -- stage to look at what you just marked.
+  stageControls = case st.stage of
+    Hunt _ -> huntControls
+    Perform -> captureControls
+    Review -> captureControls
+
+  -- The projection picker is a HUNT control, so it exists only while hunting.
+  -- It used to sit in the bar permanently, displaying `browseOr lastBrowse view`
+  -- — a *remembered* projection presented as the current one, because with
+  -- Perform up there was no honest value for it to show. Now it never lies.
+  huntControls =
+    [ HH.slot (Proxy :: _ "viewSelect") unit Select.component
+        ((Select.defaultInput browseOptions)
+           { selected = Just (viewtypeValue (huntOr st.lastLens st.stage)), minWidth = Just "116px" })
+        \(Select.Selected v) -> SetStage (Hunt (viewtypeFromValue v)) ]
+      <> shakeChip
+      <> familyField
+      <> [ divider ]
+      <> [ HH.slot (Proxy :: _ "paletteSelect") unit MultiSelect.component
+             ((MultiSelect.defaultInput paletteOptions)
+                { selected = activeLayerLabels, placeholder = "palettes", maxLabels = 3, minWidth = Just "128px" })
+             \(MultiSelect.SelectedMany vs) -> SetLayers vs ]
+      <> borrowField
+      <> resetChip
+
+  -- ◆ mark · the running counts · clear. Lifted out of the roll's own header:
+  -- they're shared by PERFORM and REVIEW, and a control that belongs to two
+  -- stages belongs to the chrome, not to either surface. Same slot as Odonus's.
+  captureControls =
+    [ HH.button
+        [ HP.style "border: 1px solid #d8c98a; background: #fdf7e4; color: #8a6a10; cursor: pointer; padding: 3px 12px; border-radius: 5px; font-size: 11px; font-family: Georgia, serif;"
+        , HP.title "flag the last couple of bars as a good bit"
+        , HE.onClick \_ -> CaptureMark ]
+        [ HH.text "◆ mark" ]
+    , HH.span [ HP.style "font-size: 10px; color: #9a9482; font-family: 'SF Mono', Menlo, monospace;" ]
+        [ HH.text (show (Logbook.noteCount st.capture.logbook) <> " notes · " <> show (length st.capture.logbook.marks) <> " ◆") ]
+    , HH.button
+        [ HP.style "border: 1px solid #e2ddcc; background: transparent; color: #a09a88; cursor: pointer; padding: 3px 10px; border-radius: 5px; font-size: 10px; font-family: Georgia, serif;"
+        , HP.title "clear the capture roll"
+        , HE.onClick \_ -> CaptureClear ]
+        [ HH.text "clear" ]
+    ]
+
   -- a way back to the fitted view (scroll to zoom · drag to pan), once it's moved.
   resetChip =
     if st.viewZoom /= 1.0 || st.viewCx /= 0.0 || st.viewCy /= 0.0 then
@@ -4909,19 +5000,9 @@ contextBar st =
   -- dark when active; a toggle, so clicking it while in Perform returns to the last
   -- browse view (a guaranteed way back, since re-picking the dropdown's current
   -- value wouldn't fire).
-  performButton =
-    let active = st.view == Perform
-    in HH.button
-         [ HP.style ("border: 1px solid " <> (if active then "#1a1a1a" else "#dcdcdc")
-                      <> "; background: " <> (if active then "#1a1a1a" else "#fafafa")
-                      <> "; color: " <> (if active then "#ffffff" else "#6a6a6a")
-                      <> "; cursor: pointer; padding: 3px 12px; border-radius: 4px; font-size: 12px; white-space: nowrap;")
-         , HP.title (if active then "leave Perform — back to the browse view" else "Perform — loop the players")
-         , HE.onClick \_ -> SetView (if active then Browse st.lastBrowse else Perform) ]
-         [ HH.text "perform" ]
   -- shake re-rolls Explore's relatives; only meaningful while Explore is showing.
   shakeChip =
-    if st.view == Browse Explore then
+    if st.stage == Hunt Explore then
       [ HH.button
           [ HP.style "border: 1px solid #cdbb8c; background: #fbf6ea; color: #7a5c00; cursor: pointer; padding: 3px 10px; border-radius: 4px; font-size: 12px; white-space: nowrap;"
           , HP.title "re-roll the relatives around each seed"
@@ -5050,20 +5131,6 @@ capoBtn n glyph tip =
     , HE.onClick \_ -> CapoTank n ]
     [ HH.text glyph ]
 
--- | Slice 4c: the Hunt/Perform width-focus toggle — a segmented control that replaces
--- | the old Lab/Performance tabs. Auto-flips on the path emptiness edge; this is the
--- | manual override.
-focusTab :: forall m. State -> Focus -> String -> H.ComponentHTML Action Slots m
-focusTab st f label =
-  HH.button
-    [ HP.style (btnStyle (st.focus == f)), HE.onClick \_ -> SetFocus f ]
-    [ HH.text label ]
-  where
-  btnStyle isActive =
-    "border: none; background: none; cursor: pointer; padding: 4px 10px; font-size: 13px; "
-      <> if isActive then "color: #1a1a1a; border-bottom: 2px solid #1a1a1a; font-weight: 600;"
-                     else "color: #9a9a9a; border-bottom: 2px solid transparent;"
-
 helpText :: String
 helpText =
   "One triad per scale degree. Click a piano key to focus that root — a beam lights its column. Stack notes on the focused chord: number keys 2–7 add an interval that many steps up (3 = a third, so 3·3·3 climbs a seventh; 2·4 makes a sus2), e adds the next third (e·e = seventh), s drops the suspensions; press l to explode its whole lattice at once (l again to collapse). The McMullen button drops a curated signpost palette and BORROW pulls chromatic chords from a parallel mode (modal interchange) — chords the scale-pure lattice can't reach, floating up over their own roots and shaded warmer the further outside the chosen scale they sit. Hover any chord + space to hear it. Hover a chord and press v to REVOICE it — a modal with its pitch ladder (drag a note by octaves, ⌥ to double), Tab to cycle voicings, ↑↓ to nudge a voice, f to keep one, and a slash row to re-foot the bass; Esc closes. Click any chord — triads included — to grow the progression on the right: same family bridges by the shortest single-note walk (gold); a chord in another family leaps across as an interconnector (dashed violet). Chromatic keys summon borrowed roots (modulation). On the right: click a step to hear it (shift-click one or two to offer chords to add), then Tab / Shift-Tab cycles its voicings, ↑/↓ nudges a clicked voice, drag a note to move it by octaves (⌥-drag to double it); ▶ plays the whole thing, c clears it. The Tidal source tracks it live — copy to save, paste + Load to work on a saved one again. “save → library” stores it in the progression library for later recall."
@@ -5097,12 +5164,13 @@ helpOverlay st =
 surface :: forall m. State -> H.ComponentHTML Action Slots m
 surface st
   | length st.genSel > 0 && length st.candidates > 0 = pickSurface st
-  | otherwise = case st.view of
+  | otherwise = case st.stage of
       Perform -> performSurface st
-      Browse Fifths -> circleFifthsSurface st
-      Browse Tonnetz -> tonnetzSurface st
-      Browse Lattice -> latticesSurface st
-      Browse Explore -> generativeSurface st
+      Review -> reviewSurface st
+      Hunt Fifths -> circleFifthsSurface st
+      Hunt Tonnetz -> tonnetzSurface st
+      Hunt Lattice -> latticesSurface st
+      Hunt Explore -> generativeSurface st
 
 -- | The PERFORM surface — a row of player BOXES, one per output. Shift-click (or
 -- | drag) a saved token in the chyron to pick it up, then click (or drop it onto)
@@ -5208,51 +5276,12 @@ perfRecallModal st =
       , HE.onClick \_ -> PerfLoadScene item.payload ]
       [ HH.text item.name ]
 
--- | The always-on capture band (#28): the lower third of the Perform surface, a
--- | VERTICAL player-piano roll of every note the voices/boxes have emitted (newest
--- | at top). A small toolbar (◆ mark · note count · clear) rides above the shared
--- | `capturePanel`. Marking flags the last couple of bars; clicking the gold band
--- | shows a card to lift that span into the shared clip library (source "vetula").
--- | The LIVE/REPLAY switch, sitting where Odonus's does (top-right of the surface).
--- | LIVE keeps the roll beside the voices; REPLAY hands it the whole surface.
-captureModeBar :: forall m. State -> H.ComponentHTML Action Slots m
-captureModeBar st =
-  HH.div
-    [ HP.style "position: absolute; top: 8px; right: 12px; z-index: 6; display: flex; gap: 2px; padding: 2px; border-radius: 8px; background: #00000014; border: 1px solid #00000014;" ]
-    [ tab CapLive "LIVE", tab CapReplay "REPLAY" ]
-  where
-  tab v label =
-    let on = st.captureView == v
-    in HH.button
-        [ HE.onClick \_ -> SetCaptureView v
-        , HP.title (case v of
-            CapLive -> "perform: voices, with the capture roll alongside"
-            CapReplay -> "review: the whole surface for cherry-picking a phrase")
-        , HP.style $ "padding: 3px 11px; border-radius: 6px; cursor: pointer; border: none; font-family: Georgia, serif; font-size: 10px; letter-spacing: 0.08em; "
-            <> (if on then "background: #3a352a; color: #f2eee2; font-weight: 600;"
-                      else "background: transparent; color: #8a8272;") ]
-        [ HH.text label ]
-
--- | The roll's own header — ◆ mark, the running counts, and clear. Shared by both
--- | layouts, so the gesture doesn't move when you switch modes.
-captureHeader :: forall m. State -> H.ComponentHTML Action Slots m
-captureHeader st =
-  HH.div
-    [ HP.style "display: flex; align-items: center; gap: 10px; padding: 6px 14px; flex: 0 0 auto;" ]
-    [ HH.span [ HP.style "font-size: 10px; letter-spacing: 0.14em; text-transform: uppercase; color: #8a8272;" ] [ HH.text "capture" ]
-    , HH.button
-        [ HP.style "border: 1px solid #e8c14a55; background: #ffffff10; color: #e8c14a; cursor: pointer; padding: 3px 12px; border-radius: 5px; font-size: 11px; font-family: Georgia, serif;"
-        , HP.title "flag the last couple of bars as a good bit"
-        , HE.onClick \_ -> CaptureMark ]
-        [ HH.text "◆ mark" ]
-    , HH.span [ HP.style "font-size: 10px; color: #ffffff55; font-family: 'SF Mono', Menlo, monospace;" ]
-        [ HH.text (show (Logbook.noteCount st.capture.logbook) <> " notes · " <> show (length st.capture.logbook.marks) <> " marks") ]
-    , HH.button
-        [ HP.style "margin-left: auto; border: 1px solid #ffffff1a; background: transparent; color: #ffffff44; cursor: pointer; padding: 3px 10px; border-radius: 5px; font-size: 10px; font-family: Georgia, serif;"
-        , HP.title "clear the capture roll"
-        , HE.onClick \_ -> CaptureClear ]
-        [ HH.text "clear" ]
-    ]
+-- The LIVE/REPLAY switch that used to float here (absolute, top-right of the
+-- surface) is gone: it was the mode control for a mode the type didn't admit,
+-- with nowhere in the chrome to stand. It's now the PERFORM/REVIEW stage tabs in
+-- `stageTabs`. The roll's own header went the same way — ◆ mark, the counts and
+-- clear are STAGE CONTROLS, so they live in the nav beside the tabs, in the same
+-- slot Odonus puts them (`captureControls`).
 
 -- | The LIVE roll: `Capture.River`, flowing RIGHT — notes are emitted at the strip's
 -- | left edge, next to the voice that played them, and age away from the voices at a
@@ -5298,13 +5327,23 @@ captureHeadColor h = case h `mod` 6 of
   4 -> "#6a4a8a"
   _ -> "#2f7d8a"
 
--- | The Perform surface. Two layouts behind one LIVE/REPLAY switch (AC, 2026-08-05):
--- |
--- |   * `CapLive` — voices in the left two thirds, the capture roll as a narrow
--- |     strip down the right third. Notes enter the strip at ITS left edge, next to
--- |     the voice that played them, and age rightward (`HorizontalOutward`).
--- |   * `CapReplay` — the roll takes the whole surface, so a phrase is big enough to
--- |     pick out and lift.
+-- | The REVIEW surface — the whole-session roll, full bleed. The negative margins
+-- | cancel the surface's own padding so it reaches all four edges, exactly as
+-- | Odonus's does. Its controls (◆ mark · counts · clear) are in the nav, not
+-- | here: they're shared with PERFORM, so putting them on the surface would move
+-- | them under you every time you changed stage.
+reviewSurface :: forall m. State -> H.ComponentHTML Action Slots m
+reviewSurface st =
+  HH.div
+    [ HP.style "position: absolute; inset: 0; display: flex; flex-direction: column; align-items: stretch; padding: 30px 28px;" ]
+    [ HH.div
+        [ HP.style "flex: 1 1 auto; min-height: 0; margin: 0 -28px -30px -28px; display: flex; flex-direction: column; background: #0b0a07; border-top: 1px solid #2a281f;" ]
+        [ capturePane st ]
+    ]
+
+-- | The PERFORM surface: voices in the left two thirds, the capture river as a
+-- | narrow strip down the right third. Notes enter the strip at ITS left edge,
+-- | next to the voice that played them, and age rightward (`HorizontalOutward`).
 -- |
 -- | This replaced the full-bleed VERTICAL tracker band of #28b: the vertical axis
 -- | read well on its own but cost Vetula too much of its voices. Differentiation
@@ -5314,20 +5353,9 @@ performSurface :: forall m. State -> H.ComponentHTML Action Slots m
 performSurface st =
   HH.div
     [ HP.style "position: absolute; inset: 0; display: flex; flex-direction: column; align-items: stretch; justify-content: flex-start; gap: 22px; padding: 30px 28px;" ]
-    ( [ captureModeBar st ]
-        <> body
-        <> [ perfEditModal st, perfPhrasePickModal st, perfRecallModal st ]
-    )
+    ( body <> [ perfEditModal st, perfPhrasePickModal st, perfRecallModal st ] )
   where
-  body = case st.captureView of
-    CapReplay ->
-      -- Full-bleed: the negative margins cancel the surface's own padding so the
-      -- roll reaches all four edges, exactly as Odonus's REPLAY does.
-      [ HH.div
-          [ HP.style "flex: 1 1 auto; min-height: 0; margin: 0 -28px -30px -28px; display: flex; flex-direction: column; background: #0b0a07; border-top: 1px solid #2a281f;" ]
-          [ captureHeader st, capturePane st ]
-      ]
-    CapLive ->
+  body =
       [ HH.div
           [ HP.style "flex: 1 1 auto; min-height: 0; display: flex; align-items: stretch; gap: 18px; width: 100%;" ]
           [ HH.div
@@ -5346,7 +5374,7 @@ performSurface st =
           , HH.div
               -- the roll: one third, full height, bleeding to the right/bottom edges
               [ HP.style "flex: 1 1 0; min-width: 0; margin: 0 -28px -30px 0; display: flex; flex-direction: column; background: #0b0a07; border-left: 1px solid #2a281f; border-top: 1px solid #2a281f;" ]
-              [ captureHeader st, riverPane st ]
+              [ riverPane st ]
           ]
       ]
 
