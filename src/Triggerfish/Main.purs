@@ -140,6 +140,7 @@ data RAction
   -- `history.replaceState`, which emits no `hashchange`.
   | StageChanged Which (Array String)
   | HashChanged String
+  | PushLane                   -- mirror Balistes' macro lane + readout into the machine
   | BalChipChanged (Maybe G.ChipView)  -- Balistes' identity-chip view, for the status board
   | SelChipChanged (Maybe G.ChipView)  -- Selene's identity-chip view, for the status board
   | OdoChipChanged (Maybe G.ChipView)  -- Odonus's identity-chip view, for the status board
@@ -426,6 +427,9 @@ handleAction = case _ of
     for_ mmac \sv -> H.modify_ _
       { macroLanes = Map.fromFoldable (mapMaybe (\e -> (\w -> Tuple w e.text) <$> whichFromLane e.machine) sv.lanes)
       , macroBars = if sv.bars >= 1 then sv.bars else 4 }
+    -- Hand the restored lane to Balistes; without this its ASSEMBLE panel opens
+    -- empty on a reload even though the lane persisted.
+    handleAction PushLane
     -- URL routing. Read the fragment ONCE at startup — a deep link like
     -- `#vetula/review` opens straight onto that surface — then listen for changes
     -- the user makes (a pasted link, an edited address bar). Our own writes go via
@@ -750,6 +754,10 @@ handleAction = case _ of
   SetLaneText w t -> do
     H.modify_ \s -> s { macroLanes = Map.insert w t s.macroLanes }
     persistMacro
+    -- Echo straight back down so an edit made on the TIDAL page shows in
+    -- Balistes' ASSEMBLE panel without waiting for the next macro tick. Balistes
+    -- drops it when it matches, so echoing its OWN edit costs nothing.
+    when (w == Bal) (handleAction PushLane)
     -- `:`-completion: if the trailing token is a `:prefix`, open a scoped popup of
     -- that machine's bank glyphs whose alias matches; otherwise close it.
     case String.stripPrefix (String.Pattern ":") (trailingToken t) of
@@ -783,6 +791,16 @@ handleAction = case _ of
   -- free-run epoch; when it crosses a boundary, resolve + apply EACH machine's lane
   -- at its own token count (so lanes of different lengths phase polymetrically).
   -- Rig-locked timing (reading the Link anchor) is a later slice — this drives Solo.
+  -- Mirror Balistes' arrangement lane down to it, so its ASSEMBLE panel shows
+  -- what the rack-wide TIDAL page shows. Rides the macro tick because that's when
+  -- the readout changes; Balistes drops a push equal to what it already has, so
+  -- this cannot fight the caret while you type there.
+  PushLane -> do
+    st <- H.get
+    void $ H.query _bal unit
+      (SQ.PutLane (fromMaybe "" (Map.lookup Bal st.macroLanes))
+                  (fromMaybe "" (Map.lookup Bal st.macroReadout)) unit)
+
   MacroTick -> do
     st <- H.get
     when (st.macroOn && st.macroBars > 0) do
@@ -797,6 +815,7 @@ handleAction = case _ of
           let toks = parseLane (fromMaybe "" (Map.lookup w st.macroLanes))
               n = length toks
           when (n > 0) (applyLaneCell w (resolveStep toks (stepGlobal `mod` n) (stepGlobal `div` n)))
+    handleAction PushLane
   -- Scene grid (Ableton-like). Snapshot the rig: read every machine's CURRENT chip
   -- glyph (the alias it's parked on) into a new scene row. A machine with no chip
   -- (nothing captured) contributes a leave-as-is cell. The capture-hotkey ethos at
@@ -1268,7 +1287,9 @@ render st =
             Odonus.IdentityChanged cv -> OdoChipChanged cv
             Odonus.StageChanged segs -> StageChanged Odo segs)
     , pane (st.which == Bal) ""
-        (HH.slot _bal unit Balistes.component unit (\(Balistes.IdentityChanged cv) -> BalChipChanged cv))
+        (HH.slot _bal unit Balistes.component unit case _ of
+            Balistes.IdentityChanged cv -> BalChipChanged cv
+            Balistes.LaneEdited t -> SetLaneText Bal t)
     , pane (st.which == Sel) ""
         (HH.slot _sel unit Selene.component unit (\(Selene.IdentityChanged cv) -> SelChipChanged cv))
     , pane (st.which == Vet) "padding-top:var(--tf-bar)"

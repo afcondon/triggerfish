@@ -1,10 +1,11 @@
--- | Triggerfish.Balistes.View.Grids — the MUTABLE (MI-Grids morph engine) tab:
+-- | Triggerfish.Balistes.View.Grids — the GRIDS (MI-Grids morph engine) tab:
 -- | the CONTROL column (the X/Y STYLE pad + density/push/groove knobs) and the
 -- | live 3×32 interpolation heatmap, plus the snapshot-bank + sequence pane below
 -- | it. Pure renderers over `State`.
 module Triggerfish.Balistes.View.Grids
-  ( controlsPanel
-  , gridsBody
+  ( padSvg
+  , heatSvg
+  , knobStack
   ) where
 
 import Prelude
@@ -16,27 +17,21 @@ import Data.Int.Bits (shr)
 import Halogen as H
 import Halogen.HTML as HH
 import Web.UIEvent.MouseEvent as ME
-import Triggerfish.Odonus.Grid.Widgets (engrave, style, svgAttr, svgEl)
+import Triggerfish.Odonus.Grid.Widgets (style, svgAttr, svgEl)
 import Reef.Balistes.Tables as T
 import Triggerfish.Balistes.Model as M
 import Triggerfish.Transport (Sounding(..))
 import Triggerfish.Balistes.Types (Action(..), DragKind(..), KnobTarget(..), NoteRef(..), State, padId)
 import Triggerfish.Balistes.Widgets
-  ( panel, knobRow, bigKnob, flatBtn, svgMouse, noteTag, instColor, ohColor, concatMap' )
+  ( knobRow, bigKnob, flatBtn, svgMouse, noteTag, instColor, ohColor, concatMap' )
 
-controlsPanel :: forall m. State -> H.ComponentHTML Action () m
-controlsPanel s =
-  panel "CONTROL" "flex:0 0 300px"
-    [ HH.div [ style "display:flex;justify-content:center" ]
-        [ HH.div [ style "width:252px;height:252px" ] [ padSvg s ] ]
-    , HH.div [ style "display:flex;justify-content:space-between;margin:2px 6px 8px" ]
-        [ HH.span [ style $ engrave <> ";font-size:9px" ] [ HH.text ("X " <> show s.bal.x) ]
-        , HH.span [ style $ engrave <> ";font-size:9px" ] [ HH.text ("Y " <> show s.bal.y) ]
-        ]
-    , HH.div [ style "height:1px;background:#00000018;margin-bottom:10px" ] []
-    -- Knobs as compact rows (BD·SD·HH across), so the freed vertical space goes
-    -- to the snapshot sequencer below.
-    , knobRow "DENSITY"
+-- The knob block for the GRIDS band: density / push / groove, stacked. Was the
+-- body of the old CONTROL panel, minus the pad (now a sibling in the band) and
+-- minus the help text (the band has no room for prose, and the ⓘ has it).
+knobStack :: forall m. State -> H.ComponentHTML Action () m
+knobStack s =
+  HH.div [ style "display:flex;flex-direction:column;gap:2px;flex:0 0 250px" ]
+    [ knobRow "DENSITY"
         [ bigKnob (KDens 0) (instColor 0) "BD" s.bal
         , bigKnob (KDens 1) (instColor 1) "SD" s.bal
         , bigKnob (KDens 2) (instColor 2) "HH" s.bal
@@ -49,11 +44,9 @@ controlsPanel s =
     , knobRow "GROOVE"
         [ bigKnob KRand "#6a6657" "RAND" s.bal
         , bigKnob KOpen ohColor "OPEN" s.bal
-        , HH.div [ style "display:flex;flex-direction:column;gap:5px;width:60px;align-self:center" ]
+        , HH.div [ style "display:flex;flex-direction:column;gap:5px;width:58px;align-self:center" ]
             [ flatBtn "DILLA" DillaPreset, flatBtn "FLAT" FlatGroove ]
         ]
-    , HH.div [ style $ engrave <> ";font-size:8px;opacity:0.5;line-height:1.5;margin-top:6px" ]
-        [ HH.text "OPEN turns the loudest HH hits into open hats (teal) — choke + ring. Drag any heatmap cell up/down to ratchet it." ]
     ]
 
 padSvg :: forall m. State -> H.ComponentHTML Action () m
@@ -114,16 +107,6 @@ crosshair cx cy =
       [ svgAttr "cx" (show cx), svgAttr "cy" (show cy), svgAttr "r" "7"
       , svgAttr "fill" "#1c1a12", svgAttr "stroke" "#efece1", svgAttr "stroke-width" "2" ] []
   ]
-
--- The Grids pattern: the live interpolation heatmap. (The snapshot bank +
--- sequence moved to the persistent right-hand rail, present in all three tabs.)
-gridsBody :: forall m. State -> H.ComponentHTML Action () m
-gridsBody s =
-  HH.div_
-    [ HH.div [ style "width:100%;max-width:640px;margin:0 auto" ] [ heatSvg s ]
-    , HH.div [ style $ engrave <> ";font-size:8px;opacity:0.5;margin-top:10px;line-height:1.6;max-width:640px" ]
-        [ HH.text "THE 3 MORPH-ENGINE VOICES (BD · SD · HH). FAINT = THE INTERPOLATED LANDSCAPE THE X/Y CURSOR SELECTS; SOLID = WHAT FIRES AT THIS DENSITY. DRAG A CELL UP/DOWN TO RATCHET IT." ]
-    ]
 
 heatSvg :: forall m. State -> H.ComponentHTML Action () m
 heatSvg s =
@@ -232,7 +215,12 @@ heatSvg s =
   in
     svgEl "svg"
       [ svgAttr "viewBox" ("0 0 " <> show w <> " " <> show h)
-      , svgAttr "width" "100%", svgAttr "style" "display:block;max-height:90vh" ]
+      -- Same cap as the RYTM grid (see Fixed.fixedSvg): bound the height, let
+      -- `meet` letterbox, so the heatmap can take the band's width without the
+      -- rows growing to match.
+      , svgAttr "width" "100%"
+      , svgAttr "preserveAspectRatio" "xMidYMid meet"
+      , svgAttr "style" "display:block;max-height:170px" ]
       ( visuals <> beatLines
           <> map laneDivider (range 1 (nLanes - 1))
           <> [ playhead ] <> concatMap rowLabel (range 0 (nLanes - 1)) <> targets )

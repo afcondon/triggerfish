@@ -51,6 +51,12 @@ data Query a
   -- (Balistes, Selene today) no-ops; unrecognised segments are IGNORED rather
   -- than guessed at, so a stale link switches machine and leaves the stage alone.
   | SetStagePath (Array String) a
+  -- macro-tidal: push this machine's arrangement lane down, so a machine can
+  -- show and edit its own lane in place instead of only on the rack-wide TIDAL
+  -- page. `text` is the lane source, `readout` its live current-token label.
+  -- The machine raises its edits back up; the shell stays the owner (the lane is
+  -- rack state, persisted with the others), so this is a mirror, not a handoff.
+  | PutLane String String a
   -- The write mirror of `AskSource`: "replace your active source with this
   -- string, verbatim". Lets a second surface (the routing modal's Selene
   -- column) edit the same document the machine's own tab shows — the doc is the

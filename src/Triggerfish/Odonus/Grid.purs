@@ -109,6 +109,8 @@ handleQuery = case _ of
     s <- H.get
     pure (Just (reply (patchText s)))
   PutSource _ next -> pure (Just next)   -- shell never rewrites Odonus's patch
+  -- No in-machine lane view yet; the rack-wide TIDAL page still owns this one.
+  PutLane _ _ next -> pure (Just next)
   -- Routed in from the URL. Goes through `handleAction SetStage` rather than
   -- writing `stage` directly, so arriving by link gets the same hush/clear
   -- treatment as clicking the tab — a URL must not be a laxer path into a stage.

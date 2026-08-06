@@ -20,6 +20,7 @@ module Triggerfish.Balistes.Types
   , State
   , Action(..)
   , activePattern
+  , selectedPattern
   , rigUrl
   , gridCfg
   , stepsPerBar
@@ -145,6 +146,13 @@ type State =
   -- EDIT mode for a fixed rhythm: reveal all 16 lanes (greyed where empty) so
   -- you can add voices; cells are click-to-toggle either way.
   , editing :: Boolean
+  , presetsOpen :: Boolean       -- the rhythm-library / snapshot-bank modal
+  -- macro-tidal: this machine's arrangement lane, MIRRORED from the shell (which
+  -- owns and persists it). Edits raise back up; the shell pushes changes down.
+  , lane :: String
+  , laneReadout :: String        -- the lane's live current-token label
+  , fixedSel :: Int              -- the SELECTED RYTM rhythm (see `selectedPattern`);
+                                 -- independent of whether RYTM is the live brain
   -- the cell the NOTE inspector is editing (lane, step) on the active rhythm.
   , selected :: Maybe { lane :: Int, step :: Int }
   -- the POLYTRIG jack rack (SELENE DRUMS tab) — browser-only, no reef path.
@@ -155,6 +163,17 @@ type State =
 
 data Action
   = Initialize
+  -- The preset modal: the rhythm library (was a 14-chip wall on the surface) and
+  -- the snapshot bank (was reachable only from the shell's status-board chip
+  -- menu, i.e. not from inside Balistes at all). Recall/star/delete mirror the
+  -- shell's `RecallSlot`/`StarSlot`/`DeleteSlot` queries at the local altitude.
+  | SetLane String            -- edit this machine's macro-tidal arrangement lane
+  | InsertLaneToken String    -- append a pattern name to the lane (click-to-assemble)
+  | OpenPresets
+  | ClosePresets
+  | RecallPreset Int
+  | StarPreset Int
+  | DeletePreset Int
   | Step Scheduler.Tick
   | Frame
   | MidiReady (Maybe Midi.MidiOut) String
@@ -188,15 +207,30 @@ data Action
   | RemoveRoute Int            -- drop route line i
   | NoOp
 
--- | The fixed rhythm currently in view on the GRIDS tab: the ephemeral
+-- | The fixed rhythm currently in view on the RYTM tab: the ephemeral
 -- | `scratchFixed` (a recalled snapshot, played read-only) if set, else the
--- | library entry the `AFixed` index points at. `Nothing` off the GRIDS tab.
+-- | library entry the `AFixed` index points at. `Nothing` off the RYTM tab.
+-- | What is SOUNDING: the rhythm the RYTM brain plays, or `Nothing` when RYTM
+-- | isn't the live brain. Read by `Step` and the rig push — output questions.
 activePattern :: State -> Maybe P.FixedPattern
 activePattern s = case s.active of
   AFixed i -> case s.scratchFixed of
     Just p -> Just p
     Nothing -> s.library !! i
   _ -> Nothing
+
+-- | What you are LOOKING AT and EDITING in the RYTM band — independent of which
+-- | brain is live, because all three bands are on screen at once and a ghosted
+-- | band stays editable (you build the next beat while the current one plays).
+-- |
+-- | This is the split that `Active` used to blur: `AFixed i` meant both "RYTM is
+-- | the sounding brain" AND "rhythm i is selected", so with GRIDS live there
+-- | was no selected rhythm at all and the RYTM band rendered empty. `fixedSel`
+-- | holds the selection; `active` holds only the output choice.
+selectedPattern :: State -> Maybe P.FixedPattern
+selectedPattern s = case s.scratchFixed of
+  Just p -> Just p
+  Nothing -> s.library !! s.fixedSel
 
 -- ---------------------------------------------------------------------------
 -- Constants

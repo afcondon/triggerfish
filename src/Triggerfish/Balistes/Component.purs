@@ -21,8 +21,10 @@ import Prelude
 import Data.Array (deleteAt, filter, findIndex, length, mapWithIndex, modifyAt, null, range, (!!))
 import Data.Foldable (any, foldl, for_)
 import Data.Int (floor, round, toNumber)
-import Data.Maybe (Maybe(..), fromMaybe, isNothing, maybe)
+import Data.Maybe (Maybe(..), fromMaybe, isJust, isNothing, maybe)
 import Data.String.Common (joinWith)
+import Data.String (contains) as String
+import Data.String.Pattern (Pattern(..)) as String
 import Data.String.CodeUnits (take)
 import Effect (Effect)
 import Data.Either (Either(..))
@@ -33,6 +35,7 @@ import Effect.Timer (setInterval)
 import Halogen as H
 import Halogen.HTML as HH
 import Halogen.HTML.Events as HE
+import Halogen.HTML.Properties as HP
 import Halogen.Subscription as HS
 import Binnacle as Binnacle
 import Binnacle.Clock as Clock
@@ -47,16 +50,17 @@ import Triggerfish.Balistes.Model as M
 import Triggerfish.Balistes.Pattern as P
 import Triggerfish.Balistes.Types
   ( KnobTarget(..), targetRange, applyKnob, Active(..)
-  , NoteRef(..), DragKind(..), State, Action(..), activePattern, rigUrl, gridCfg
+  , NoteRef(..), DragKind(..), State, Action(..), activePattern, selectedPattern, rigUrl, gridCfg
   , midiPortName, drumChannel, cycleSteps, editVel, flashWindow
   , padId, eqTrigName, jackNoteOf )
 import Triggerfish.Balistes.TriSnapshot (TriSnapshot(..), printTri, parseTri)
 import Triggerfish.Glyph as G
-import Triggerfish.Preset (indexOfContent, presetAlias)
-import Triggerfish.Balistes.Widgets (flatBtn, instColor, panel, readout)
-import Triggerfish.Balistes.View.Trig (trigBody, trigInfoPanel)
-import Triggerfish.Balistes.View.Fixed (fixedBody, inspectorPanel, patternSwitcher)
-import Triggerfish.Balistes.View.Grids (controlsPanel, gridsBody)
+import Triggerfish.GlyphView (faIcon)
+import Triggerfish.Preset (Preset, indexOfContent, presetAlias)
+import Triggerfish.Balistes.Widgets (armBtn, instColor)
+import Triggerfish.Balistes.View.Trig (routeStrip, trigJacks)
+import Triggerfish.Balistes.View.Fixed (cellStrip, fixedSvg, patternChips)
+import Triggerfish.Balistes.View.Grids (heatSvg, knobStack, padSvg)
 import Triggerfish.Balistes.Source as Source
 import Triggerfish.Balistes.Store as Store
 import Triggerfish.Balistes.Remote as Remote
@@ -76,7 +80,12 @@ import Web.UIEvent.MouseEvent as ME
 -- | The upward message to the shell: Balistes' identity-chip view (or `Nothing`
 -- | when nothing is parked), for the six-machine status board. Raised from the
 -- | Frame loop only when the view changes (see `chipViewOf`).
-data Output = IdentityChanged (Maybe G.ChipView)
+data Output
+  = IdentityChanged (Maybe G.ChipView)
+  -- The arrangement lane was edited here. The shell owns and persists it, so we
+  -- report rather than store: it lands in `macroLanes` and is mirrored straight
+  -- back down, which is also what keeps the rack-wide TIDAL page in step.
+  | LaneEdited String
 
 component :: forall i m. MonadAff m => H.Component Query i Output m
 component =
@@ -89,7 +98,7 @@ component =
         , nowMicros: 0.0, dragging: Nothing, dragSub: Nothing
         , presets: []
         , identity: Nothing, lastChip: Nothing
-        , active: AGrids, library: P.bundledPatterns, editing: false, selected: Nothing
+        , active: AGrids, library: P.bundledPatterns, editing: false, presetsOpen: false, fixedSel: 0, lane: "", laneReadout: "", selected: Nothing
         , scratchFixed: Nothing
         , trig: M.defaultTrig, publishMsg: Nothing }
     , render
@@ -106,6 +115,12 @@ handleQuery = case _ of
     s <- H.get
     pure (Just (reply (Source.headerText s.bal)))
   PutSource _ next -> pure (Just next)   -- shell never rewrites Balistes's kit
+  -- The lane mirror. Guarded on inequality so the round-trip of our OWN edit is a
+  -- no-op: without it, every push would rewrite the field the user is typing in
+  -- and the caret would jump to the end on each tick.
+  PutLane t r next -> do
+    H.modify_ \s -> s { lane = if t == s.lane then s.lane else t, laneReadout = r }
+    pure (Just next)
   -- No stage axis yet, so URL routing to this machine stops at the machine
   -- segment (`#balistes`). When it grows one, parse the segments here.
   SetStagePath _ next -> pure (Just next)
@@ -177,7 +192,7 @@ handleQuery = case _ of
 -- | by content (identical state ⇒ identical glyph): if it's already banked, just
 -- | re-park `identity` on it; otherwise append an anonymous preset. Either way the
 -- | chip shows the glyph held, and we persist. No-op only if the active brain has
--- | nothing to capture (an empty GRIDS tab).
+-- | nothing to capture (an empty RYTM tab).
 captureNow :: forall m. MonadAff m => H.HalogenM State Action () Output m Unit
 captureNow = do
   s <- H.get
@@ -408,6 +423,30 @@ handleAction = case _ of
     H.modify_ _ { dragging = Nothing, dragSub = Nothing }
     persistLib   -- a note drag (NFixed) may have edited the library
 
+  SetLane t -> do
+    H.modify_ _ { lane = t }
+    H.raise (LaneEdited t)
+  -- Click-to-assemble: append a pattern's name to the lane. Names with spaces are
+  -- quoted, which is what the macro-tidal grammar wants ("quoted names" — Amphora
+  -- labels routinely contain spaces, and `lo house 110` is three atoms unquoted).
+  InsertLaneToken name -> do
+    st <- H.get
+    let tok = if String.contains (String.Pattern " ") name then "\"" <> name <> "\"" else name
+        joined = (if st.lane == "" then "" else st.lane <> " ") <> tok
+    H.modify_ _ { lane = joined }
+    H.raise (LaneEdited joined)
+
+  OpenPresets -> H.modify_ _ { presetsOpen = true }
+  ClosePresets -> H.modify_ _ { presetsOpen = false }
+  -- Recall closes the modal: you picked a thing, you want to see it land on the
+  -- bands. Star and delete leave it open — those are curation, done in batches.
+  RecallPreset i -> do
+    recallPreset i
+    H.modify_ _ { presetsOpen = false }
+  StarPreset i ->
+    H.modify_ \s -> s { presets = fromMaybe s.presets (modifyAt i (\p -> p { starred = not p.starred }) s.presets) }
+  DeletePreset i -> H.modify_ (deletePresetAt i)
+
   DillaPreset -> H.modify_ \s -> s { bal = M.dillaPush s.bal }
   FlatGroove -> H.modify_ \s -> s { bal = M.flatPush s.bal }
   -- switching pattern just changes which branch the next Step takes; hits are
@@ -416,8 +455,16 @@ handleAction = case _ of
   -- rig follow the selection too (a fixed pattern swaps in place; Grids re-hands-off).
   SelectPattern a -> do
     -- a deliberate tab / library selection clears any ephemeral recalled snapshot,
-    -- returning the GRIDS tab to its library index.
-    H.modify_ _ { active = a, scratchFixed = Nothing, publishMsg = Nothing }
+    -- returning the RYTM tab to its library index.
+    -- Picking the RYTM brain also fixes the SELECTION, so `fixedSel` and the
+    -- output agree whenever RYTM is live. Choosing another brain leaves
+    -- `fixedSel` alone — the RYTM band keeps showing (and editing) its rhythm
+    -- while ghosted.
+    H.modify_ \s -> s
+      { active = a, scratchFixed = Nothing, publishMsg = Nothing
+      , fixedSel = case a of
+          AFixed i -> i
+          _ -> s.fixedSel }
     st <- H.get
     when (st.sounding == Rig) case a of
       AFixed _ -> repushFixed
@@ -429,15 +476,14 @@ handleAction = case _ of
   -- Edits are disabled on an ephemeral recalled snapshot (scratchFixed) — a
   -- frozen artefact plays read-only; the library is never mutated behind it.
   CellClick lane step shift -> do
-    H.modify_ \s -> case s.active of
-      AFixed i | isNothing s.scratchFixed ->
-        if shift then s
-          { library = modLibAt i (P.modifyCell lane step (const P.emptyCell)) s.library
-          , selected = if s.selected == Just { lane, step } then Nothing else s.selected }
-        else s
-          { library = modLibAt i (\p -> if P.firesAt p lane step then p else P.modifyCell lane step (const (P.hitCell editVel)) p) s.library
-          , selected = Just { lane, step } }
-      _ -> s
+    H.modify_ \s ->
+      if isJust s.scratchFixed then s
+      else if shift then s
+        { library = modLibAt s.fixedSel (P.modifyCell lane step (const P.emptyCell)) s.library
+        , selected = if s.selected == Just { lane, step } then Nothing else s.selected }
+      else s
+        { library = modLibAt s.fixedSel (\p -> if P.firesAt p lane step then p else P.modifyCell lane step (const (P.hitCell editVel)) p) s.library
+        , selected = Just { lane, step } }
     persistLib
   SetCellVel d -> do
     H.modify_ (modSelectedCell \c -> c { vel = clampI 1 127 (c.vel + d) })
@@ -452,22 +498,22 @@ handleAction = case _ of
     H.modify_ (modSelectedCell \c -> c { cond = P.cycleCond c.cond })
     persistLib
   ClearSelected -> do
-    H.modify_ \s -> case s.active, s.selected of
-      AFixed i, Just { lane, step } | isNothing s.scratchFixed ->
-        s { library = modLibAt i (P.modifyCell lane step (const P.emptyCell)) s.library, selected = Nothing }
-      _, _ -> s
+    H.modify_ \s -> case s.selected of
+      Just { lane, step } | isNothing s.scratchFixed ->
+        s { library = modLibAt s.fixedSel (P.modifyCell lane step (const P.emptyCell)) s.library, selected = Nothing }
+      _ -> s
     persistLib
   -- a fresh empty rhythm, selected and opened in EDIT so all 16 lanes show.
   NewPattern -> do
     H.modify_ \s ->
       let n = length s.library
           p = P.emptyPattern ("pattern " <> show (n + 1)) 32
-      in s { library = s.library <> [ p ], active = AFixed n, editing = true, selected = Nothing }
+      in s { library = s.library <> [ p ], active = AFixed n, fixedSel = n, editing = true, selected = Nothing }
     persistLib
   SetPatternName name -> do
-    H.modify_ \s -> case s.active of
-      AFixed i | isNothing s.scratchFixed -> s { library = modLibAt i (_ { name = name }) s.library }
-      _ -> s
+    H.modify_ \s ->
+      if isJust s.scratchFixed then s
+      else s { library = modLibAt s.fixedSel (_ { name = name }) s.library }
     persistLib
   -- Write-back to Amphora: publish the active fixed rhythm to the store (content
   -- + label + balistes-grid favourite), so a pattern built in the app persists
@@ -475,16 +521,16 @@ handleAction = case _ of
   -- unchanged pattern is a no-op dedup.
   PublishActive -> do
     st <- H.get
-    case st.active of
-      AFixed _ -> case activePattern st of
-        Just pat -> do
-          H.modify_ _ { publishMsg = Just "publishing…" }
-          res <- liftAff (attempt (Remote.publishPattern pat))
-          H.modify_ _ { publishMsg = Just case res of
-            Right hash -> "✓ published · " <> take 8 hash
-            Left _ -> "✗ publish failed (store offline?)" }
-        Nothing -> pure unit
-      _ -> H.modify_ _ { publishMsg = Just "select a GRIDS rhythm first" }
+    -- Publishes the SELECTED rhythm, not the sounding one: the RYTM band is
+    -- editable while ghosted, so publishing must follow what you were editing.
+    case selectedPattern st of
+      Just pat -> do
+        H.modify_ _ { publishMsg = Just "publishing…" }
+        res <- liftAff (attempt (Remote.publishPattern pat))
+        H.modify_ _ { publishMsg = Just case res of
+          Right hash -> "✓ published · " <> take 8 hash
+          Left _ -> "✗ publish failed (store offline?)" }
+      Nothing -> pure unit
   PushBalistes -> do
     -- Lockstep HANDOFF: project the frontend Balistes state to a BalSim (the shared
     -- serializable subset), encode with the reef codec, and push it phase-aligned to
@@ -594,9 +640,9 @@ pushHandoff st =
       ("balistes-sim-at " <> show st.nextModelStep <> " 0.25 " <> encodeBalSim (balSimOf st.bal))
 
 -- | Capture the CURRENTLY ACTIVE brain's playing-state into a `TriSnapshot`, so one
--- | bank sequences Mutable / Grids / Tidal intermingled. Stores the whole artefact
+-- | bank sequences Grids / Rytm / Tidal intermingled. Stores the whole artefact
 -- | (not a reference), so a snapshot survives library edits and can be pushed to the
--- | rig verbatim. `Nothing` only if a GRIDS tab has no pattern in view.
+-- | rig verbatim. `Nothing` only if a RYTM tab has no pattern in view.
 captureTri :: State -> Maybe TriSnapshot
 captureTri s = case s.active of
   AGrids -> Just (TSGrids (M.captureSnapshot s.bal))
@@ -606,7 +652,7 @@ captureTri s = case s.active of
 -- | Restore a `TriSnapshot`: switch the active tab to its brain, restore that
 -- | brain's state, and — when rig-authoritative — push the matching handoff so the
 -- | rig follows. The rig side re-modes in place on any of balistes-sim-at / -fixed /
--- | -trig, so a mid-sequence Mutable→Tidal→Grids march is just three pushes, no gap.
+-- | -trig, so a mid-sequence Grids→Tidal→Rytm march is just three pushes, no gap.
 -- | `TSFixed` restores EPHEMERALLY (scratchFixed), never touching the library. Does
 -- | NOT set `identity` — the caller (`recallPreset`) parks it on the preset's text.
 recallSnap :: forall o m. MonadAff m => TriSnapshot -> H.HalogenM State Action () o m Unit
@@ -752,10 +798,10 @@ mergeByName current incoming =
 
 -- | Apply a function to the selected cell of the active fixed rhythm.
 modSelectedCell :: (P.Cell -> P.Cell) -> State -> State
-modSelectedCell f s = case s.active, s.selected of
-  AFixed i, Just { lane, step } | isNothing s.scratchFixed ->
-    s { library = modLibAt i (P.modifyCell lane step f) s.library }
-  _, _ -> s
+modSelectedCell f s = case s.selected of
+  Just { lane, step } | isNothing s.scratchFixed ->
+    s { library = modLibAt s.fixedSel (P.modifyCell lane step f) s.library }
+  _ -> s
 
 -- ---------------------------------------------------------------------------
 -- Timers / drag plumbing (mirrors Odonus)
@@ -785,67 +831,330 @@ setupDrag =
 -- render
 -- ---------------------------------------------------------------------------
 
+-- | **The three brains, all on screen at once** (AC, 2026-08-06).
+-- |
+-- | Balistes runs three drum brains — GRIDS (the MI-Grids morph engine), RYTM
+-- | (user rhythms) and TIDAL (the POLYTRIG jack rack) — and exactly ONE of them
+-- | sounds: `Step` fires `case st.active of` to ch10, and `repushFixed` hands off
+-- | the same way. `active` is an OUTPUT selector.
+-- |
+-- | It used to be presented as a tab bar, which is a navigation control. That
+-- | hid the mutual exclusivity behind a metaphor that denies it — three tabs read
+-- | as three separate tools you visit, not one output you choose. And it cost
+-- | three full-screen layouts to show three things that each used a fraction of
+-- | the width.
+-- |
+-- | So: one surface, three horizontal BANDS, the two that aren't sounding
+-- | GHOSTED. The ghost is the honest rendering of `active` — you can see all
+-- | three states at once and which one is live, and switching is a click on the
+-- | band itself rather than a trip through a tab.
+-- |
+-- | Ghosted bands stay FULLY INTERACTIVE (no `pointer-events:none`): editing a
+-- | pattern before you switch to it is exactly the move you want mid-set. The
+-- | dimming says "not sounding", not "not available".
+-- |
+-- | What paid for the space: the 196px BALISTES transport column (its readouts
+-- | are now inline in the nav, and TEMPO duplicated the shell's BPM), the three
+-- | per-brain help-text columns (NOTE, ROUTES, and the transport's prose — all
+-- | static), and the 14-chip rhythm library wall (now the preset modal).
 render :: forall m. State -> H.ComponentHTML Action () m
 render s =
   HH.div
     [ style $ "position:fixed;top:var(--tf-bar);left:0;right:0;bottom:0;display:flex;flex-direction:column;"
         <> "user-select:none;-webkit-user-select:none;background:#b7b1a0;font-family:Georgia,serif" ]
-    -- One of three drum-brains at a time, chosen by the tab bar. Each tab is
-    -- self-contained: its own CONTROL column (middle) + its own PATTERN surface
-    -- (right). Three drum models — MUTABLE (the MI-Grids morph engine, AGrids),
-    -- GRIDS (user rhythms, AFixed), TIDAL (the relocated POLYTRIG rack, ASelene).
-    -- All → ch10.
-    [ tabBar s
+    [ navBar s
+    -- Bands left, ASSEMBLE right. Un-stretching the bands to ~2/3 costs them
+    -- nothing — the RYTM grid's aspect is ~7.4:1, so a narrower band makes it
+    -- SHORTER, not cramped — and buys a full-height column for putting the
+    -- patterns together.
     , HH.div
-        [ style "flex:1 1 auto;min-height:0;display:flex;align-items:stretch;overflow-x:auto;overflow-y:hidden" ]
-        ( [ transportPanel s ]
-            <> (case s.active of
-                  AGrids -> [ controlsPanel s ]
-                  AFixed _ -> [ inspectorPanel s ]
-                  ASelene -> [ trigInfoPanel s ])
-            <> [ patternPanel s ]
-            -- (The per-machine ARRANGE rail was stripped 2026-07-30: capture is the
-            -- `c` hotkey, recall/star/delete live on the status-board chip's menu, and
-            -- the rig-wide scene grid + macro-tidal lanes own sequencing.)
-          )
+        [ style "flex:1 1 auto;min-height:0;display:flex;align-items:stretch" ]
+        [ HH.div
+            [ style "flex:1 1 auto;min-width:0;overflow-y:auto;display:flex;flex-direction:column;gap:10px;padding:10px 14px 14px" ]
+            [ mutableBand s, gridsBand s, tidalBand s ]
+        , assemblePanel s
+        ]
+    , presetModal s
     ]
 
--- The drum-brain tab bar. The active tab is a projection of `active`'s constructor;
--- clicking a tab swaps the brain (GRIDS remembers the last-selected rhythm, or
--- falls to the first). All three brains output on ch 10.
-tabBar :: forall m. State -> H.ComponentHTML Action () m
-tabBar s =
+-- | **ASSEMBLE** — Balistes' view onto its own macro-tidal arrangement lane.
+-- |
+-- | Deliberately NOT a new chaining mechanism. The rack already has an
+-- | arrangement language (docs/DESIGN-macro-tidal.md): one lane per machine,
+-- | `step := form (# verb arg)*`, with `~` rests, `<a b c>` per-cycle
+-- | alternation, quoted names and transform stacks. It runs on the shell's macro
+-- | clock and the doc names "Balistes beats" as a form type. A private Balistes
+-- | chainer would have been a second, weaker sequencer that didn't compose with
+-- | the other machines' lanes.
+-- |
+-- | What this adds is REACH: the lane was only editable on the rack-wide TIDAL
+-- | page, so assembling beats meant leaving the beats. Here the pattern names are
+-- | click-to-insert next to the grid that makes them.
+assemblePanel :: forall m. State -> H.ComponentHTML Action () m
+assemblePanel s =
   HH.div
-    [ style $ "flex:0 0 auto;display:flex;gap:2px;padding:0 14px;background:#cfcabb;"
-        <> "border-bottom:1px solid #b3ae9c;box-shadow:0 1px 3px #00000010" ]
-    -- Display names (the constructors keep their build-time identifiers):
-    -- MUTABLE = the MI-Grids morph engine (AGrids), GRIDS = user rhythms (AFixed),
-    -- TIDAL = the POLYTRIG jack rack (ASelene).
-    [ tabBtn "MUTABLE" (isGrids s.active) (Just (SelectPattern AGrids))
-    , tabBtn "GRIDS" (isFixed s.active) (Just (SelectPattern (AFixed (fixedIx s.active))))
-    , tabBtn "TIDAL" (isSelene s.active) (Just (SelectPattern ASelene))
+    [ style $ "flex:0 0 340px;min-width:0;height:100%;box-sizing:border-box;overflow-y:auto;"
+        <> "background:linear-gradient(#dcd8c9,#cfcabb);border-left:1px solid #b3ae9c;padding:14px 14px 16px" ]
+    [ HH.div [ style $ engrave <> ";font-size:12px;letter-spacing:0.16em;color:#3f3c33;border-bottom:1px solid #00000018;padding-bottom:6px;margin-bottom:10px" ]
+        [ HH.text "ASSEMBLE" ]
+    , HH.textarea
+        [ HP.value s.lane
+        , HE.onValueInput SetLane
+        , HP.placeholder "\"lo house 110\" <\"trap 140\" ~> # dilla"
+        , style $ "width:100%;box-sizing:border-box;height:78px;resize:vertical;padding:7px 9px;"
+            <> "border:1px solid #a8a392;border-radius:6px;background:#f3f1e8;"
+            <> "font-family:'SF Mono',Menlo,monospace;font-size:11px;line-height:1.5;color:#1c1a12" ]
+    , HH.div [ style $ engrave <> ";font-size:8px;opacity:0.6;margin:7px 0 12px;line-height:1.6" ]
+        [ HH.text ("NOW: " <> (if s.laneReadout == "" then "—" else s.laneReadout)) ]
+    , HH.div [ style $ engrave <> ";font-size:9px;color:#8a8676;border-bottom:1px solid #00000014;padding-bottom:4px;margin-bottom:8px" ]
+        [ HH.text "RHYTHMS" ]
+    , HH.div [ style "display:flex;gap:5px;flex-wrap:wrap;margin-bottom:12px" ]
+        (map (\pat -> laneToken pat.name) s.library)
+    , HH.div [ style $ engrave <> ";font-size:9px;color:#8a8676;border-bottom:1px solid #00000014;padding-bottom:4px;margin-bottom:8px" ]
+        [ HH.text "STRUCTURE" ]
+    , HH.div [ style "display:flex;gap:5px;flex-wrap:wrap" ]
+        (map laneToken [ "~", "<", ">", "# dilla", "# flat" ])
+    , HH.div [ style $ engrave <> ";font-size:8px;opacity:0.5;margin-top:12px;line-height:1.7" ]
+        [ HH.text "SPACE-SEPARATED STEPS DIVIDE THE MACRO-CYCLE. ~ RESTS. <a b> TAKES A DIFFERENT ONE EACH CYCLE. RUN IT FROM THE TIDAL PAGE." ]
     ]
-  where
-  isGrids = case _ of AGrids -> true
-                      _ -> false
-  isFixed = case _ of AFixed _ -> true
-                      _ -> false
-  isSelene = case _ of ASelene -> true
-                       _ -> false
-  fixedIx = case _ of AFixed i -> i
-                      _ -> 0
 
-tabBtn :: forall m. String -> Boolean -> Maybe Action -> H.ComponentHTML Action () m
-tabBtn label active mact =
+-- One click-to-insert token.
+laneToken :: forall m. String -> H.ComponentHTML Action () m
+laneToken name =
   HH.button
-    ( [ style $ "padding:9px 20px;border:none;background:none;border-bottom:3px solid "
-          <> (if active then "#b8975a" else "transparent") <> ";"
-          <> "font-family:Georgia,serif;font-size:12px;letter-spacing:0.1em;"
-          <> "cursor:" <> (maybe "default" (const "pointer") mact) <> ";"
-          <> (if active then "color:#1c1a12"
-              else maybe "color:#9a9484" (const "color:#3f3c33") mact) ]
-        <> maybe [] (\act -> [ HE.onClick \_ -> act ]) mact )
-    [ HH.text (label <> maybe "  ·soon" (const "") mact) ]
+    [ HE.onClick \_ -> InsertLaneToken name
+    , HP.title ("append to the lane: " <> name)
+    , style $ "padding:3px 9px;border:1px solid #a8a392;border-radius:5px;cursor:pointer;"
+        <> "font-family:'SF Mono',Menlo,monospace;font-size:10px;color:#3f3c33;background:#f3f1e8" ]
+    [ HH.text name ]
+
+-- The secondary nav, same shape as Vetula's and Odonus's: controls hard left
+-- under the shell's transport, status right. No stage tabs — Balistes has one
+-- surface, and what used to be its tabs is now the ghosting on the bands.
+navBar :: forall m. State -> H.ComponentHTML Action () m
+navBar s =
+  HH.div
+    [ style $ "flex:0 0 auto;display:flex;align-items:center;gap:10px;padding:5px 14px;"
+        <> "background:linear-gradient(#cdc7b6,#c4bead);border-bottom:1px solid #00000014" ]
+    ( [ navBtn "RESET" ResetPat
+      , navBtn "DICE" Dice
+      , navBtn "presets…" OpenPresets
+      , HH.div [ style "flex:1 1 auto;min-width:8px" ] []
+      , lampRow s
+      , navDivider
+      , navReadout (show (round s.clockTempo) <> " bpm" <> (if s.clockLocked then " ⛓" else ""))
+      , navReadout ("bar " <> show s.clockBar <> " · " <> pad2 (s.playStep + 1) <> "/32")
+      , navReadout ("ch " <> show (drumChannel + 1))
+      , navReadout s.midiName
+      ] )
+
+navBtn :: forall m. String -> Action -> H.ComponentHTML Action () m
+navBtn label act =
+  HH.button
+    [ HE.onClick \_ -> act
+    , style $ "flex:0 0 auto;padding:3px 12px;border:1px solid #00000022;border-radius:6px;cursor:pointer;"
+        <> "font-family:Georgia,serif;font-size:11px;color:#3f3c33;background:#efece1" ]
+    [ HH.text label ]
+
+navDivider :: forall m. H.ComponentHTML Action () m
+navDivider = HH.div [ style "width:1px;height:18px;background:#00000018" ] []
+
+navReadout :: forall m. String -> H.ComponentHTML Action () m
+navReadout txt =
+  HH.span [ style "font-family:'SF Mono',Menlo,monospace;font-size:9px;color:#5a5648;white-space:nowrap" ]
+    [ HH.text txt ]
+
+-- ---------------------------------------------------------------------------
+-- The bands
+-- ---------------------------------------------------------------------------
+
+-- One brain's band: a header (name · live dot · that brain's own inline
+-- controls) over its body, ghosted when it isn't the sounding brain. Clicking
+-- the header makes it live.
+band
+  :: forall m
+   . State
+  -> Active
+  -> String
+  -> Array (H.ComponentHTML Action () m)
+  -> H.ComponentHTML Action () m
+  -> H.ComponentHTML Action () m
+band s target label extras body =
+  let live = sameBrain s.active target
+  in HH.div
+      [ style $ "flex:0 0 auto;border-radius:9px;border:1px solid " <> (if live then "#00000026" else "#00000012")
+          <> ";background:" <> (if live then "linear-gradient(#dcd8c9,#d2cdbe)" else "#00000008")
+          <> ";padding:8px 12px 10px;transition:opacity 120ms ease;"
+          <> (if live then "" else "opacity:0.45") ]
+      [ HH.div [ style "display:flex;align-items:center;gap:12px;margin-bottom:7px;flex-wrap:wrap" ]
+          ( [ HH.button
+                [ HE.onClick \_ -> SelectPattern target
+                , HP.title (if live then "sounding on ch10" else "make this the sounding brain")
+                , style $ "display:flex;align-items:center;gap:7px;border:none;background:none;cursor:pointer;padding:0;"
+                    <> engrave <> ";font-size:12px;letter-spacing:0.14em;color:#3f3c33" ]
+                [ HH.span
+                    [ style $ "width:8px;height:8px;border-radius:50%;"
+                        <> (if live then "background:#b8975a;box-shadow:0 0 6px #b8975a" else "background:#00000022") ]
+                    []
+                , HH.text label
+                ]
+            ] <> extras )
+      , body
+      ]
+
+-- `Active` carries the RYTM index, so a plain `==` would say a band isn't live
+-- merely because a different rhythm is selected. Compare the BRAIN.
+sameBrain :: Active -> Active -> Boolean
+sameBrain a b = case a, b of
+  AGrids, AGrids -> true
+  AFixed _, AFixed _ -> true
+  ASelene, ASelene -> true
+  _, _ -> false
+
+mutableBand :: forall m. State -> H.ComponentHTML Action () m
+mutableBand s =
+  band s AGrids "GRIDS" [ xyReadout ]
+    ( HH.div [ style "display:flex;align-items:flex-start;gap:16px" ]
+        [ HH.div [ style "flex:0 0 200px;height:200px" ] [ padSvg s ]
+        , knobStack s
+        , HH.div [ style "flex:1 1 auto;min-width:0" ] [ heatSvg s ]
+        ] )
+  where
+  xyReadout =
+    HH.span [ style $ engrave <> ";font-size:8px;opacity:0.6" ]
+      [ HH.text ("X " <> show s.bal.x <> " · Y " <> show s.bal.y) ]
+
+gridsBand :: forall m. State -> H.ComponentHTML Action () m
+gridsBand s =
+  band s (AFixed s.fixedSel) "RYTM" extras
+    ( case selectedPattern s of
+        Nothing -> HH.div [ style $ engrave <> ";font-size:9px;opacity:0.5" ] [ HH.text "NO RHYTHM SELECTED — OPEN PRESETS." ]
+        Just pat -> HH.div [ style "width:100%" ] [ fixedSvg s s.fixedSel pat ] )
+  where
+  extras =
+    [ HH.input
+        [ HP.value (maybe "" _.name (selectedPattern s))
+        , HE.onValueInput SetPatternName
+        , style $ "padding:3px 8px;border:1px solid #a8a392;border-radius:5px;background:#f3f1e8;"
+            <> "font-family:Georgia,serif;font-size:12px;color:#1c1a12;width:130px" ]
+    , armBtn (if s.editing then "● EDITING" else "EDIT") s.editing ToggleEdit
+    , armBtn "PUBLISH ⚱" false PublishActive
+    , case s.publishMsg of
+        Just msg -> HH.span [ style $ engrave <> ";font-size:8px;color:#2f6a4a" ] [ HH.text msg ]
+        Nothing -> HH.text ""
+    , cellStrip s
+    ]
+
+tidalBand :: forall m. State -> H.ComponentHTML Action () m
+tidalBand s =
+  band s ASelene "TIDAL" [ routeStrip s ] (trigJacks s)
+
+-- ---------------------------------------------------------------------------
+-- The preset modal
+-- ---------------------------------------------------------------------------
+
+-- | Two collections, deliberately kept apart (they are NOT the same thing and
+-- | merging them would lose a distinction the rest of the rack relies on):
+-- |
+-- |   * **RHYTHMS** — `library :: Array FixedPattern`, the named user rhythms
+-- |     that the RYTM brain plays. Amphora-merged, shared across the rig.
+-- |   * **SNAPSHOTS** — `presets :: Array Preset`, whole-machine captures with
+-- |     content-derived 2-glyph aliases (identical state ⇒ identical glyph).
+-- |     These carry WHICH BRAIN was live, so recalling one can change the band
+-- |     you're on. Previously reachable only from the shell's status-board chip
+-- |     menu — i.e. not from inside Balistes at all.
+presetModal :: forall m. State -> H.ComponentHTML Action () m
+presetModal s =
+  if not s.presetsOpen then HH.text ""
+  else
+    -- Backdrop and panel are SIBLINGS, not nested: a click-outside-to-close
+    -- backdrop wrapped around the panel would need the panel to stop propagation,
+    -- which needs an Effect-carrying no-op action. Siblings get the same
+    -- behaviour with no plumbing — the panel simply isn't inside the catcher.
+    HH.div [ style "position:fixed;inset:0;z-index:60" ]
+      [ HH.div
+          [ style "position:absolute;inset:0;background:#00000055"
+          , HE.onClick \_ -> ClosePresets ]
+          []
+      , HH.div
+          [ style $ "position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);"
+              <> "width:660px;max-width:92vw;max-height:82vh;overflow-y:auto;border-radius:10px;"
+              <> "background:linear-gradient(#f6f2e8,#efe9db);border:1px solid #a8a392;"
+              <> "box-shadow:0 14px 48px #00000044;padding:20px 24px" ]
+          [ HH.div [ style "display:flex;align-items:baseline;justify-content:space-between;margin-bottom:14px" ]
+              [ HH.span [ style $ engrave <> ";font-size:13px;letter-spacing:0.16em;color:#3f3c33" ] [ HH.text "PRESETS" ]
+              , HH.button
+                  [ HE.onClick \_ -> ClosePresets
+                  , style "border:none;background:none;color:#8a8676;font-size:16px;cursor:pointer;line-height:1" ]
+                  [ HH.text "✕" ]
+              ]
+          , modalSection "RHYTHMS" "named user rhythms — what the RYTM brain plays" (patternChips s)
+          , modalSection "SNAPSHOTS" "whole-machine captures, glyphed by content — recalling one may change the live brain" (snapshotChips s)
+          ]
+      ]
+
+modalSection :: forall m. String -> String -> H.ComponentHTML Action () m -> H.ComponentHTML Action () m
+modalSection label blurb body =
+  HH.div [ style "margin-bottom:18px" ]
+    [ HH.div [ style $ engrave <> ";font-size:9px;color:#8a8676;border-bottom:1px solid #00000014;padding-bottom:4px;margin-bottom:9px" ]
+        [ HH.text label ]
+    , HH.div [ style $ engrave <> ";font-size:8px;opacity:0.6;margin-bottom:9px" ] [ HH.text blurb ]
+    , body
+    ]
+
+-- The banked snapshots as their glyph pairs + names. Recall / star / delete are
+-- the same three verbs the shell's chip menu offers, now available in-machine.
+snapshotChips :: forall m. State -> H.ComponentHTML Action () m
+snapshotChips s =
+  if null s.presets
+    then HH.div [ style $ engrave <> ";font-size:9px;opacity:0.5" ]
+           [ HH.text "NOTHING BANKED YET — THE `c` HOTKEY CAPTURES THE LIVE STATE." ]
+    else HH.div [ style "display:flex;flex-direction:column;gap:4px" ]
+           (mapWithIndex snapshotRow s.presets)
+
+snapshotRow :: forall m. Int -> Preset -> H.ComponentHTML Action () m
+snapshotRow i p =
+  let g = G.glyphFromAlias (presetAlias p)
+  in HH.div
+      [ style "display:flex;align-items:center;gap:9px;padding:4px 8px;border-radius:6px;background:#00000008" ]
+      [ HH.span
+          [ HE.onClick \_ -> StarPreset i
+          , HP.title (if p.starred then "unstar" else "star (go-to)")
+          , style $ "cursor:pointer;font-size:12px;color:" <> (if p.starred then "#c9a23a" else "#c2beb0") ]
+          [ HH.text (if p.starred then "★" else "☆") ]
+      , HH.span
+          [ HE.onClick \_ -> RecallPreset i
+          , style "display:flex;align-items:center;gap:8px;cursor:pointer;flex:1 1 auto" ]
+          [ HH.span [ style "display:inline-flex;align-items:center;gap:3px" ] [ faIcon g.first, faIcon g.second ]
+          , HH.span [ style "font-family:'SF Mono',Menlo,monospace;font-size:10px;color:#4a463b" ]
+              [ HH.text (fromMaybe (presetAlias p) p.name) ]
+          ]
+      , HH.span
+          [ HE.onClick \_ -> DeletePreset i
+          , HP.title "delete"
+          , style "cursor:pointer;color:#b0a898;font-size:11px" ]
+          [ HH.text "✕" ]
+      ]
+
+-- Three pilot lamps that glow on a recent hit (bright = accented).
+lampRow :: forall m. State -> H.ComponentHTML Action () m
+lampRow s =
+  HH.div [ style "display:flex;gap:8px;align-items:center" ]
+    (map lamp [ 0, 1, 2 ])
+  where
+  lamp inst =
+    let
+      hits = filter (\f -> f.inst == inst && (s.nowMicros - f.fireUnixMicros) < flashWindow) s.flash
+      on = not (null hits)
+      accent = any _.accent hits
+      col = instColor inst
+      fill = if on then col else "#8c887a"
+      glow = if on then ";box-shadow:0 0 8px " <> col <> (if accent then "" else "aa") else ""
+    in
+      HH.div [ style $ "width:11px;height:11px;border-radius:50%;border:1px solid #00000033;background:" <> fill <> glow ] []
+
+pad2 :: Int -> String
+pad2 n = if n < 10 then "0" <> show n else show n
 
 -- The identity-chip view Balistes reports to the shell's six-machine status board:
 -- the glyph of the parked identity + whether the live state has diverged from it
@@ -857,82 +1166,7 @@ chipViewOf s = case s.identity of
   Nothing -> Nothing
   Just text -> Just { glyph: G.glyphOf text, diverged: (printTri <$> captureTri s) /= Just text }
 
--- ---------------------------------------------------------------------------
--- Transport panel
--- ---------------------------------------------------------------------------
 
-transportPanel :: forall m. State -> H.ComponentHTML Action () m
-transportPanel s =
-  let
-    chLine = case s.active of
-      AGrids -> show (drumChannel + 1) <> "  ·  "
-        <> joinWith " / " (map (\l -> show (M.noteOf l s.bal)) [ 0, 1, 2 ])
-      AFixed _ -> show (drumChannel + 1) <> "  ·  "
-        <> case activePattern s of
-             Just p -> show (length (P.usedLanes p)) <> " voices"
-             Nothing -> "—"
-      ASelene -> show (drumChannel + 1) <> "  ·  "
-        <> show (length s.trig.jacks) <> " jacks"
-    helpText = case s.active of
-      AGrids -> "DRAG THE STYLE PAD TO MORPH THE KIT BETWEEN THE 25 NODES. DENSITY SETS HOW MANY HITS; RANDOMNESS NUDGES OFF-GRID EACH PATTERN."
-      AFixed _ -> "A FIXED STARTER RHYTHM IS PLAYING. PICK ANOTHER FROM THE BANK, OR THE MUTABLE TAB FOR THE LIVE MORPH ENGINE."
-      ASelene -> "POLYTRIG: EIGHT NAMED JACKS, EACH WITH ITS OWN MINI-NOTATION PATTERN, PLUS LANE-SPANNING ROUTES (\"bd sn cp sn\") THAT FIRE JACKS BY NAME. ALL → CH 10."
-  in
-  panel "BALISTES" "flex:0 0 196px"
-    [ HH.div [ style "display:flex;flex-direction:column;gap:12px;margin-top:4px" ]
-        -- ARM now lives on the tab dot in the top switcher; RESET / DICE stay.
-        [ HH.div [ style "display:flex;gap:8px" ]
-            [ flatBtn "RESET" ResetPat
-            , flatBtn "DICE" Dice
-            ]
-        -- Control-surface Phase 2/refinement: no per-pane push OR hush — ATLANTIS
-        -- hands off automatically; the global "Hush rig" lives in the top nav.
-        , lampRow s
-        , readout "TEMPO" (show (round s.clockTempo) <> " bpm" <> (if s.clockLocked then " ⛓" else " ·"))
-        , readout "BAR" (show s.clockBar <> "  ·  step " <> pad2 (s.playStep + 1) <> "/32")
-        , readout "MIDI" s.midiName
-        , readout "CH" chLine
-        , HH.div [ style $ engrave <> ";font-size:8px;opacity:0.6;margin-top:6px;line-height:1.5" ]
-            [ HH.text helpText ]
-        ]
-    ]
-
--- Three pilot lamps that glow on a recent hit (bright = accented).
-lampRow :: forall m. State -> H.ComponentHTML Action () m
-lampRow s =
-  HH.div [ style "display:flex;gap:10px;justify-content:center;margin:6px 0" ]
-    (map lamp [ 0, 1, 2 ])
-  where
-  lamp inst =
-    let
-      hits = filter (\f -> f.inst == inst && (s.nowMicros - f.fireUnixMicros) < flashWindow) s.flash
-      on = not (null hits)
-      accent = any _.accent hits
-      col = instColor inst
-      fill = if on then col else "#8c887a"
-      glow = if on then ";box-shadow:0 0 9px " <> col <> (if accent then "" else "aa") else ""
-    in
-      HH.div [ style "display:flex;flex-direction:column;align-items:center;gap:3px" ]
-        [ HH.div [ style $ "width:18px;height:18px;border-radius:50%;border:1px solid #00000033;background:" <> fill <> glow ] []
-        , HH.span [ style $ engrave <> ";font-size:8px" ] [ HH.text (M.instName inst) ]
-        ]
-
-pad2 :: Int -> String
-pad2 n = if n < 10 then "0" <> show n else show n
-
-patternPanel :: forall m. State -> H.ComponentHTML Action () m
-patternPanel s =
-  panel "PATTERN" "flex:1 1 480px;min-width:380px"
-    ( (case s.active of
-         AGrids -> []
-         AFixed _ -> [ patternSwitcher s ]
-         ASelene -> [])
-        <> [ case s.active of
-               AGrids -> gridsBody s
-               AFixed i -> case activePattern s of
-                 Just pat -> fixedBody s i pat
-                 Nothing -> HH.text "—"
-               ASelene -> trigBody s ] )
 
 
 

@@ -3,8 +3,8 @@
 -- | column). Relocated from Selene — every jack lands on the drums MIDI channel;
 -- | CV/gate targets stay on Selene. Pure renderers over `State`.
 module Triggerfish.Balistes.View.Trig
-  ( trigInfoPanel
-  , trigBody
+  ( routeStrip
+  , trigJacks
   ) where
 
 import Prelude
@@ -15,28 +15,27 @@ import Halogen as H
 import Halogen.HTML as HH
 import Halogen.HTML.Events as HE
 import Halogen.HTML.Properties as HP
-import Triggerfish.Odonus.Grid.Widgets (engrave, style)
+import Triggerfish.Odonus.Grid.Widgets (style)
 import Triggerfish.Tidal.Lane as Lane
 import Triggerfish.Balistes.Model as M
 import Triggerfish.Balistes.Types (Action(..), State)
-import Triggerfish.Balistes.Widgets (panel, stepBtn)
+import Triggerfish.Balistes.Widgets (stepBtn)
 
 -- The middle column for the SELENE DRUMS tab: the lane-spanning ROUTES editor
 -- (each route is a mini-notation string whose atoms fire jacks by name), plus a
 -- short legend. Jacks live in the PATTERN column to the right.
-trigInfoPanel :: forall m. State -> H.ComponentHTML Action () m
-trigInfoPanel s =
-  panel "ROUTES" "flex:0 0 260px"
-    [ HH.div [ style $ engrave <> ";font-size:8px;opacity:0.55;line-height:1.6;margin-bottom:12px" ]
-        [ HH.text "A ROUTE IS A PATTERN WHOSE ATOMS FIRE JACKS BY NAME — \"bd sn cp sn\". IT STACKS WITH EACH JACK'S OWN SOURCE." ]
-    , HH.div [ style "display:flex;flex-direction:column;gap:8px" ]
-        (mapWithIndex routeLine s.trig.routes)
-    , HH.button
-        [ HE.onClick \_ -> AddRoute
-        , style $ "margin-top:10px;padding:6px 13px;border:1px dashed #a8a392;border-radius:6px;cursor:pointer;"
-            <> "font-family:Georgia,serif;font-size:12px;color:#6a6657;background:#00000006;align-self:flex-start" ]
-        [ HH.text "+ ROUTE" ]
-    ]
+-- The routes, as a HORIZONTAL strip riding in the TIDAL band header. Was a 260px
+-- ROUTES column whose top third was a paragraph explaining what a route is; the
+-- explanation is in the ⓘ help now and the fields are where the jacks are.
+routeStrip :: forall m. State -> H.ComponentHTML Action () m
+routeStrip s =
+  HH.div [ style "display:flex;align-items:center;gap:6px;flex-wrap:wrap" ]
+    ( mapWithIndex routeLine s.trig.routes
+        <> [ HH.button
+               [ HE.onClick \_ -> AddRoute
+               , style $ "padding:3px 10px;border:1px dashed #a8a392;border-radius:5px;cursor:pointer;"
+                   <> "font-family:Georgia,serif;font-size:10px;color:#6a6657;background:#00000006" ]
+               [ HH.text "+ route" ] ] )
 
 -- One editable route line: a text field + a remove button.
 routeLine :: forall m. Int -> String -> H.ComponentHTML Action () m
@@ -55,18 +54,14 @@ routeLine i src =
         [ HH.text "×" ]
     ]
 
--- The PATTERN column for the SELENE DRUMS tab: the eight named jacks as a grid.
--- Each jack shows its name (editable), MIDI note (drag-free steppers), source
--- pattern (editable), and a linear step figure lit at the source's onsets.
-trigBody :: forall m. State -> H.ComponentHTML Action () m
-trigBody s =
-  HH.div_
-    [ HH.div
-        [ style "display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;max-width:640px" ]
-        (mapWithIndex trigJackCell s.trig.jacks)
-    , HH.div [ style $ engrave <> ";font-size:8px;opacity:0.5;margin-top:12px;line-height:1.6;max-width:640px" ]
-        [ HH.text "EACH JACK: A NAME (WHAT ROUTES ADDRESS), A MIDI NOTE, AND AN OPTIONAL SOURCE PATTERN. LEAVE THE SOURCE BLANK TO DRIVE A JACK FROM ROUTES ALONE. RELOCATED FROM SELENE — CV/GATE TARGETS STAY ON SELENE." ]
-    ]
+-- The eight named jacks, FOUR across and two down (was two across and four down,
+-- which needed a tall narrow column). Each card keeps its width; they just
+-- re-flow, so the band is ~170px tall instead of ~390.
+trigJacks :: forall m. State -> H.ComponentHTML Action () m
+trigJacks s =
+  HH.div
+    [ style "display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px;width:100%" ]
+    (mapWithIndex trigJackCell s.trig.jacks)
 
 -- One POLYTRIG jack: name + note steppers on top, a source input, then a step
 -- figure following the source's meter (faint "↳ route" when the source is empty).

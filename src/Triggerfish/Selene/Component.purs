@@ -172,6 +172,8 @@ handleQuery = case _ of
   -- No stage axis yet, so URL routing to this machine stops at the machine
   -- segment (`#selene`). When it grows one, parse the segments here.
   SetStagePath _ next -> pure (Just next)
+  -- No in-machine lane view yet; the rack-wide TIDAL page still owns this one.
+  PutLane _ _ next -> pure (Just next)
   AskClock reply -> pure (Just (reply { tempo: 120.0, locked: false }))
   SyncFree startMicros tempo next -> do
     s <- H.get
