@@ -72,6 +72,6 @@ workspace:
     # cascade menu). Now the registry release `halogen-widgets` (namespace
     # Halogen.Widgets.*), migrated 2026-07-31 off the old path-dep
     # hylograph-halogen-ui v0.1 (Hylograph.Halogen.UI.*).
-    halogen-widgets: 0.3.0
+    halogen-widgets: 0.3.1
   packageSet:
     registry: 77.13.1
