@@ -95,7 +95,6 @@ import Vetula.Perform.Types
   , arpOrder
   , whenLabel
   , cycleWhen
-  , termLabel
   , termShort
   , termRigOnly
   , printArpDir
@@ -1107,9 +1106,15 @@ handleQuery = case _ of
         active = fromMaybe (-1) (mv >>= cursorAt cs s.pulse)
         -- The active chord's notes, bass-up as note names (unique pitch classes in
         -- voicing order) — the compact echo of the progression row's pitch ladder.
+        -- With NO arranged progression the strip used to go blank, even while a box
+        -- was plainly sounding chords; it now falls back to the harmonic-context
+        -- voice (the `→ odo` box), in the SAME precedence `harmonicContext` uses —
+        -- so the nav readout and what Odonus is quantising to can't disagree.
         chord = case cs !! active of
           Just c -> joinWith " " (map noteName (nub (map (\x -> mod x 12) (playNotes c))))
-          Nothing -> ""
+          Nothing -> case odoBoxPcs s of
+            Just pcs | length pcs > 0 -> joinWith " " (map noteName pcs)
+            _ -> ""
     pure (Just (reply { durs, active, chord }))
   -- The exact rig payload string the progression would push (Vetula has no
   -- incremental path, so this whole string IS the wire). The shell diffs it each
@@ -1241,20 +1246,48 @@ handleQuery = case _ of
 -- |   1. an explicit `# scale` override (the user deliberately imposed a scale);
 -- |   2. a loaded progression → its ACTIVE chord's pitch classes (current chord
 -- |      when playing, else the sounding/first chord) — chord-quantise, not scale;
--- |   3. otherwise → the lens scale (`st.key`), which re-quantises live as the user
+-- |   3. else the `→ odo` PERFORM BOXES' current block chord — the same rule one
+-- |      step out: what's actually being conducted at Odonus right now IS the set,
+-- |      whether it came from an arranged progression or a box sequence;
+-- |   4. otherwise → the lens scale (`st.key`), which re-quantises live as the user
 -- |      changes the scale they're browsing.
 -- |
--- | (Free-auditioning arbitrary chords with no progression falls into case 3 — the
--- | lens scale — which we accept: unrelated chords can't relate to Odonus. A future
--- | "clever layer" could look at the whole progression holistically — leading
--- | tones, Harmonia-driven expansion — to widen case 2 past bare arpeggiation.)
+-- | (Free-auditioning arbitrary chords with no progression and no `→ odo` box falls
+-- | into case 4 — the lens scale — which we accept: unrelated chords can't relate to
+-- | Odonus. A future "clever layer" could look at the whole progression holistically
+-- | — leading tones, Harmonia-driven expansion — to widen case 2 past bare
+-- | arpeggiation.)
+-- |
+-- | Case 3 added 2026-08-06. The `→ odo` terminal (Perform slice 4, 2026-08-02) fed
+-- | `perfBoxOdoFeed` → `AskVoiceChords`, but that poll had been retired three weeks
+-- | earlier by the ONE-set unification (9b99022, 2026-07-11) — so the terminal had
+-- | never done anything but silence its box. Rather than revive the per-voice
+-- | overlay (two paths into Odonus that can disagree, exactly what the unification
+-- | removed), the ONE set now knows about box-sourced chords too.
 harmonicContext :: State -> { root :: Int, offsets :: Array Int }
 harmonicContext st = case st.restScale of
   Just rs -> rs
   Nothing -> case activeChordPcs st of
     Just pcs | length pcs > 0 -> pcsToSet pcs
-    _ -> { root: mod st.key.tonic 12
-         , offsets: map (\pc -> mod (pc - st.key.tonic + 12) 12) (scaleSet st.key) }
+    _ -> case odoBoxPcs st of
+      Just pcs | length pcs > 0 -> pcsToSet pcs
+      _ -> { root: mod st.key.tonic 12
+           , offsets: map (\pc -> mod (pc - st.key.tonic + 12) 12) (scaleSet st.key) }
+
+-- | What the HARMONIC-CONTEXT VOICE is sounding right now — case 3 of
+-- | `harmonicContext`. That's the single box on the `→ odo` terminal: `PerfSetTerm`
+-- | keeps the terminal exclusive, so there is one conductor or none, never a blend.
+-- | (AC's rule, 2026-08-06: a per-voice feed makes no sense, but ONE voice standing
+-- | for the harmonic context does — it's the same call `harmonicVoice` already makes
+-- | for the nav chyron.) `head` is belt-and-braces for state predating exclusivity.
+-- |
+-- | Reads `perfBoxOdoFeed`, which queries each box's OWN pattern — so unlike case 2
+-- | it works with no arranged progression, which is the whole point.
+-- |
+-- | NB `perfBoxOdoFeed` requires `isJust box.seq`, so a box playing a captured PHRASE
+-- | doesn't conduct — a recorded phrase has no single block chord to quantise to.
+odoBoxPcs :: State -> Maybe (Array Int)
+odoBoxPcs st = _.pcs <$> head (perfBoxOdoFeed st)
 
 -- | The active chord of a loaded progression as pitch classes: the chord under the
 -- | playhead when playing, else the sounding chord, else the first — `Nothing` when
@@ -1323,17 +1356,35 @@ perfBoxOdoFeed st =
   mapMaybe
     (\box ->
        if box.term == TOdo && not box.muted && isJust box.seq && not (boxGhosted st.authority box)
-         then case boxCurrentChord box (st.pulse / 4) of
+         then case boxCurrentChord box st.pulse of
                 Just notes | length notes > 0 -> Just { id: box.channel, pcs: nub (map (\x -> mod x 12) notes) }
                 _ -> Nothing
          else Nothing)
     st.perfBoxes
 
--- | The chord a box is sounding at beat-cycle `b` — the first digital event of its
--- | folded pattern over that cycle (the block chord Odonus would quantise).
+-- | The chord a box is sounding AT `pulse` — the digital event under the PLAYHEAD.
+-- |
+-- | Was: the first digital event of a whole cycle `[b, b+1)`, with `b` a beat index.
+-- | That is constant for a given pattern — `head` of a full-cycle query always
+-- | returns the pattern's FIRST chord — so a box on `→ odo` conducted one frozen
+-- | chord for ever while its MIDI plainly moved. Latent since Perform slice 4
+-- | (2026-08-02): nothing consumed the feed until `harmonicContext` case 3 did
+-- | (2026-08-06), which is when it became visible. Fixed 2026-08-06.
+-- |
+-- | A seq box's pattern cycles once per BAR — `PerfTick` schedules it on
+-- | `tick.index mod 16 == 0` — so pulse p sits at cycle position p/16, and we ask
+-- | for the one-pulse window there rather than the whole bar.
 boxCurrentChord :: PerfBox -> Int -> Maybe (Array Int)
-boxCurrentChord box b =
-  eventValue <$> head (filter isDigital (query (boxPattern box) (mkState (mkArc (Rat.fromInt b) (Rat.fromInt (b + 1))))))
+boxCurrentChord box pulse =
+  let p = max 0 pulse
+      pos = p % pulsesPerBar
+      nxt = (p + 1) % pulsesPerBar
+  in eventValue <$> head (filter isDigital (query (boxPattern box) (mkState (mkArc pos nxt))))
+
+-- | Scheduler pulses in one bar: the 16th-note grid `PerfTick` runs on, and one
+-- | full cycle of a box's mini-notation sequence.
+pulsesPerBar :: Int
+pulsesPerBar = 16
 
 -- ---------------------------------------------------------------------------
 -- Force layout
@@ -2390,9 +2441,15 @@ handleAction = case _ of
            if j == b then box { muted = not box.muted } else box)
          st.perfBoxes }
 
+  -- `→ odo` is EXCLUSIVE (AC, 2026-08-06): exactly one box may conduct Odonus's
+  -- quantiser at a time — the harmonic-context voice. Promoting one demotes any
+  -- other to `→ midi`, so there is never an ambiguous "which chord is THE context"
+  -- and the ONE-set model has one unambiguous source. Any other terminal is free.
   PerfSetTerm b t -> H.modify_ \st ->
     st { perfBoxes = mapWithIndex (\j box ->
-           if j == b then box { term = t } else box)
+           if j == b then box { term = t }
+           else if t == TOdo && box.term == TOdo then box { term = TMidi }
+           else box)
          st.perfBoxes }
 
   PerfSetSeq b txt -> H.modify_ \st ->
@@ -5660,6 +5717,13 @@ perfBox st i box =
       [ HH.text glyph ]
   -- one segment of the midi · odo · rig terminal selector; the active sink filled,
   -- rig tinted when it would be ghosted (rig-only outside Atlantis).
+  -- `→ odo` is the harmonic-context voice: exclusive, and it conducts Odonus's
+  -- quantiser rather than emitting MIDI of its own.
+  termTip t = case t of
+    TOdo -> "→ odo · conduct Odonus's quantiser with this box's chord (only one box at a time)"
+    TMidi -> "→ midi · emit this box on its own MIDI channel"
+    TRig -> "→ rig · hand this box to the rig"
+
   termBtn t =
     let active = box.term == t
         rigCol = t == TRig && ghost
@@ -5667,7 +5731,7 @@ perfBox st i box =
          [ HP.style ("border: none; cursor: pointer; padding: 1px 8px; font-size: 9px; letter-spacing: 0.04em; text-transform: uppercase; background: "
                       <> (if active then "#8a7a4a" else "#faf6ea")
                       <> "; color: " <> (if active then "#ffffff" else if rigCol then "#a05a3a" else "#8a7a4a") <> ";")
-         , HP.title ("sink " <> termLabel t)
+         , HP.title (termTip t)
          , HE.onClick \e -> PerfStopClick e (PerfSetTerm i t) ]
          [ HH.text (termShort t) ]
 
