@@ -90,8 +90,8 @@ targetRange = case _ of
   HeadTransp _ -> { lo: -24, hi: 24 }
   HeadOffset _ -> { lo: 0, hi: 15 }
   HeadLen _ -> { lo: 1, hi: 16 }
-  HeadDiv _ -> { lo: 0, hi: 16 }
-  HeadEStep _ -> { lo: 1, hi: 16 }
+  HeadDiv _ -> { lo: 0, hi: M.maxEsteps }
+  HeadEStep _ -> { lo: 1, hi: M.maxEsteps }
   Spread -> { lo: 1, hi: 12 }
   GateLen -> { lo: 10, hi: 200 }
   SwingAmt -> { lo: 0, hi: 60 }
@@ -373,6 +373,7 @@ data Action
   | NudgeHeadPulses Int Int  -- head, ±delta (k) — relative Euclid edit
   | NudgeHeadSteps Int Int   -- head, ±delta (n) — relative Euclid edit
   | SelectEuclid Int         -- click a voice's Euclid ring: select it for arrow-key editing
+  | DeselectEuclid Int       -- that ring lost focus (a click anywhere else): drop the selection
   | EuclidKey KeyboardEvent  -- a keystroke on the focused ring; arrows nudge k / n
   | UnifyHeads
   | PhaseShift Int          -- Reichian PHASE ±: rotate the whole canon

@@ -190,11 +190,20 @@ defaultChrome =
   }
 
 -- | The selection contract: is this the selected ring, what to raise on click,
--- | and what to raise on a keystroke while it holds focus.
+-- | what to raise on a keystroke while it holds focus, and what to raise when it
+-- | loses focus.
+-- |
+-- | `onBlur` is not optional dressing — without it a selection is sticky, and a
+-- | ring that stays lit after you have clicked away is lying about where the
+-- | arrow keys will land. Clicking any non-focusable part of the page moves
+-- | focus to the body and fires it. Clicking a DIFFERENT ring is safe: the DOM
+-- | fires blur on mousedown and click on mouseup, so the deselect always
+-- | precedes the new select and the final state is the ring you hit.
 type Select i =
   { selected :: Boolean
   , onSelect :: i
   , onKey :: KeyboardEvent -> i
+  , onBlur :: i
   }
 
 -- ---------------------------------------------------------------------------
@@ -265,6 +274,7 @@ cell st chrome sel playhead e =
     [ HP.tabIndex 0
     , HE.onClick \_ -> sel.onSelect
     , HE.onKeyDown sel.onKey
+    , HE.onBlur \_ -> sel.onBlur
     , HP.attr (HH.AttrName "style") $
         "width:" <> show (round st.size) <> "px;flex:0 0 auto;padding:4px;border-radius:7px;"
           <> "display:flex;flex-direction:column;align-items:center;cursor:pointer;outline:none;"

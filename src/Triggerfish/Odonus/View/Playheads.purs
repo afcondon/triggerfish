@@ -105,13 +105,12 @@ headBank s =
   HH.div [ style "display:flex;flex-direction:column;gap:8px" ]
     (mapWithIndex (headStrip s) s.odo.heads)
 
--- | Odonus's Euclid limits. Sixteen, and not by taste: `Reef.Odonus.stepHead`
--- | clamps `esteps` to 1..16 as it runs, so a wider ring here would draw steps
--- | the engine never plays — and the engine is shared with the BEAM, where the
--- | conformance suite pins the behaviour. Raise it in reef first, on both
--- | runtimes, and this follows.
+-- | Odonus's Euclid limits — taken from the engine, not chosen here.
+-- | `Reef.Odonus` clamps `esteps` to `maxEsteps` as it runs, so a wider ring
+-- | would draw steps that never sound. Reading the constant rather than copying
+-- | the number keeps the picture and the engine in lockstep by construction.
 euclidBounds :: Euclid.Bounds
-euclidBounds = Euclid.boundedBy 16
+euclidBounds = Euclid.boundedBy M.maxEsteps
 
 headStrip :: forall m. State -> Int -> M.Head -> H.ComponentHTML Action Slots m
 headStrip s h hd =
@@ -149,6 +148,7 @@ euclidCell s h hd col =
     { selected: s.selEuclid == Just h
     , onSelect: SelectEuclid h
     , onKey: EuclidKey
+    , onBlur: DeselectEuclid h
     }
     (Just hd.seqPos)
     { beats: hd.pulses, steps: hd.esteps }

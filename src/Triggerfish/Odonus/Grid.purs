@@ -584,6 +584,12 @@ dispatch = case _ of
   -- now the shared one). Selecting is local-only — it changes what you're pointing
   -- at, not what the rig plays, so it never goes near the lockstep queue.
   SelectEuclid h -> H.modify_ \s -> s { selEuclid = Just h }
+  -- The ring lost focus — a click anywhere outside it, which should read as
+  -- "nothing is selected" rather than leaving a lit ring that no longer takes the
+  -- arrow keys. Guarded on the head index so a late blur from the ring you just
+  -- LEFT can't clear the ring you just arrived at.
+  DeselectEuclid h -> H.modify_ \s ->
+    if s.selEuclid == Just h then s { selEuclid = Nothing } else s
   -- An arrow on the focused ring. The shared widget turns the keystroke into ONE
   -- signed axis edit, which then rides the existing relative inputs — so a burst of
   -- arrow presses accumulates correctly while the edits are buffered for the rig,
