@@ -61,6 +61,7 @@ import Triggerfish.Balistes.Widgets (armBtn, instColor)
 import Triggerfish.Balistes.View.Trig (routeStrip, trigJacks)
 import Triggerfish.Balistes.View.Fixed (cellStrip, fixedSvg, patternChips)
 import Triggerfish.Balistes.View.Grids (heatSvg, knobStack, padSvg)
+import Triggerfish.Macro (Form(..), parseLane)
 import Triggerfish.Balistes.Source as Source
 import Triggerfish.Balistes.Store as Store
 import Triggerfish.Balistes.Remote as Remote
@@ -423,6 +424,21 @@ handleAction = case _ of
     H.modify_ _ { dragging = Nothing, dragSub = Nothing }
     persistLib   -- a note drag (NFixed) may have edited the library
 
+  BankNow -> captureNow
+  -- Bank the named brain, whether or not it is the sounding one — the glyph you
+  -- click lives in that brain's own band, so it must bank what THAT band shows.
+  BankBrain target -> do
+    s <- H.get
+    case printTri <$> triOf s target of
+      Nothing -> pure unit
+      Just text -> do
+        when (isNothing (indexOfContent text s.presets)) $
+          H.modify_ \st -> st { presets = st.presets <> [ { content: text, name: Nothing, starred: false } ] }
+        -- `identity` is the parked identity of the SOUNDING brain, so only move it
+        -- when we banked that one; banking a ghosted band must not claim the chip.
+        when (sameBrain s.active target) (H.modify_ _ { identity = Just text })
+        persist
+
   SetLane t -> do
     H.modify_ _ { lane = t }
     H.raise (LaneEdited t)
@@ -644,9 +660,18 @@ pushHandoff st =
 -- | (not a reference), so a snapshot survives library edits and can be pushed to the
 -- | rig verbatim. `Nothing` only if a RYTM tab has no pattern in view.
 captureTri :: State -> Maybe TriSnapshot
-captureTri s = case s.active of
+captureTri s = triOf s s.active
+
+-- | A named brain's snapshot, INDEPENDENT of which one is sounding. Every band
+-- | shows its own live glyph, so all three must be hashable at once.
+-- |
+-- | Only possible since the `activePattern`/`selectedPattern` split: RYTM's state
+-- | used to be readable solely when RYTM was the live brain (`AFixed i` carried
+-- | both "sounding" and "selected"), so a ghosted RYTM band had nothing to hash.
+triOf :: State -> Active -> Maybe TriSnapshot
+triOf s = case _ of
   AGrids -> Just (TSGrids (M.captureSnapshot s.bal))
-  AFixed _ -> TSFixed <$> activePattern s
+  AFixed _ -> TSFixed <$> selectedPattern s
   ASelene -> Just (TSTrig s.trig)
 
 -- | Restore a `TriSnapshot`: switch the active tab to its brain, restore that
@@ -904,19 +929,79 @@ assemblePanel s =
         , style $ "width:100%;box-sizing:border-box;height:78px;resize:vertical;padding:7px 9px;"
             <> "border:1px solid #a8a392;border-radius:6px;background:#f3f1e8;"
             <> "font-family:'SF Mono',Menlo,monospace;font-size:11px;line-height:1.5;color:#1c1a12" ]
+    , laneScore s
     , HH.div [ style $ engrave <> ";font-size:8px;opacity:0.6;margin:7px 0 12px;line-height:1.6" ]
         [ HH.text ("NOW: " <> (if s.laneReadout == "" then "—" else s.laneReadout)) ]
     , HH.div [ style $ engrave <> ";font-size:9px;color:#8a8676;border-bottom:1px solid #00000014;padding-bottom:4px;margin-bottom:8px" ]
-        [ HH.text "RHYTHMS" ]
+        [ HH.text "SNAPSHOTS" ]
     , HH.div [ style "display:flex;gap:5px;flex-wrap:wrap;margin-bottom:12px" ]
-        (map (\pat -> laneToken pat.name) s.library)
+        (if null s.presets
+           then [ HH.span [ style $ engrave <> ";font-size:8px;opacity:0.5" ] [ HH.text "NOTHING BANKED YET" ] ]
+           else map presetToken s.presets)
     , HH.div [ style $ engrave <> ";font-size:9px;color:#8a8676;border-bottom:1px solid #00000014;padding-bottom:4px;margin-bottom:8px" ]
         [ HH.text "STRUCTURE" ]
     , HH.div [ style "display:flex;gap:5px;flex-wrap:wrap" ]
         (map laneToken [ "~", "<", ">", "# dilla", "# flat" ])
     , HH.div [ style $ engrave <> ";font-size:8px;opacity:0.5;margin-top:12px;line-height:1.7" ]
-        [ HH.text "SPACE-SEPARATED STEPS DIVIDE THE MACRO-CYCLE. ~ RESTS. <a b> TAKES A DIFFERENT ONE EACH CYCLE. RUN IT FROM THE TIDAL PAGE." ]
+        [ HH.text "STEPS DIVIDE THE MACRO-CYCLE. ~ RESTS. <a b> TAKES A DIFFERENT ONE EACH CYCLE. ATOMS ARE BANKED SNAPSHOTS — BANK A STATE (◆ TOP LEFT) TO MAKE IT SEQUENCEABLE. RUN IT FROM THE TIDAL PAGE." ]
     ]
+
+-- | The lane rendered as a SCORE — each step's alias drawn as its glyph pair
+-- | rather than its three-word name.
+-- |
+-- | This is the answer to "I want to write `<0 2> 1`" without paying for it in
+-- | stability (AC, 2026-08-06). Slot numbers would be terse but renumber on every
+-- | delete, silently changing what a saved arrangement plays; glyph aliases are
+-- | content-derived, so identical state always yields the identical name. Keeping
+-- | aliases as the SOURCE and drawing them as glyphs gets the glanceable score
+-- | without the hazard — the text stays verbose, the reading does not.
+laneScore :: forall m. State -> H.ComponentHTML Action () m
+laneScore s =
+  let steps = parseLane s.lane
+  in if null steps then HH.text ""
+     else HH.div
+       [ style "display:flex;align-items:center;gap:9px;flex-wrap:wrap;margin-top:9px;padding:7px 9px;border-radius:6px;background:#00000008" ]
+       (map stepGlyphs steps)
+  where
+  stepGlyphs step = case step.form of
+    FRest -> HH.span [ style "font-family:'SF Mono',Menlo,monospace;font-size:12px;color:#a09a88" ] [ HH.text "~" ]
+    FName n -> aliasGlyphs n
+    -- an alternation reads as its members inside angle brackets, so the shape of
+    -- `<a b> c` survives into the score.
+    FAlt inner ->
+      HH.span [ style "display:inline-flex;align-items:center;gap:5px" ]
+        ( [ bracket "⟨" ] <> map aliasGlyphs inner <> [ bracket "⟩" ] )
+  bracket t = HH.span [ style "font-family:'SF Mono',Menlo,monospace;font-size:12px;color:#a09a88" ] [ HH.text t ]
+  -- An atom only resolves if it matches a BANKED snapshot's alias (`recallAlias`
+  -- matches the bank, nothing else). Anything else — a rhythm's name, a typo, a
+  -- snapshot since deleted — is drawn as its raw text with a `?`, because the
+  -- alternative is what bit us: a token that silently renders as blank glyphs and
+  -- is silently skipped at play time.
+  aliasGlyphs a =
+    if a == "~" then bracket "~"
+    else if any (\p -> presetAlias p == a) s.presets then
+      let g = G.glyphFromAlias a
+      in HH.span [ HP.title a, style "display:inline-flex;align-items:center;gap:2px" ]
+           [ faIcon g.first, faIcon g.second ]
+    else
+      HH.span
+        [ HP.title (a <> " — not a banked snapshot, so this step will not resolve")
+        , style "font-family:'SF Mono',Menlo,monospace;font-size:10px;color:#a8562f;white-space:nowrap" ]
+        [ HH.text (a <> " ?") ]
+
+-- One banked snapshot as a click-to-insert glyph pair. Inserting writes the ALIAS
+-- (quoted) into the lane — the stable, content-derived name — while what you click
+-- and read is the glyph.
+presetToken :: forall m. Preset -> H.ComponentHTML Action () m
+presetToken p =
+  let alias = presetAlias p
+      g = G.glyphFromAlias alias
+  in HH.button
+      [ HE.onClick \_ -> InsertLaneToken alias
+      , HP.title (fromMaybe alias p.name <> " — append to the lane")
+      , style $ "display:flex;align-items:center;gap:3px;padding:3px 8px;border:1px solid #a8a392;"
+          <> "border-radius:5px;cursor:pointer;background:#f3f1e8" ]
+      [ faIcon g.first, faIcon g.second ]
 
 -- One click-to-insert token.
 laneToken :: forall m. String -> H.ComponentHTML Action () m
@@ -947,6 +1032,36 @@ navBar s =
       , navReadout ("ch " <> show (drumChannel + 1))
       , navReadout s.midiName
       ] )
+
+-- | **One live glyph per BAND, three visible at all times** (AC, 2026-08-07).
+-- |
+-- | Each band shows the content glyph of ITS OWN brain — recomputed every render
+-- | from `triOf`, so identical state always shows the identical pair. Position
+-- | carries the machine: a badge letter would say the same thing in less legible
+-- | ink, and you learn `🚚☂️ = Grids` by having banked it in the Grids band.
+-- |
+-- | Gold = this exact content is not banked; grey = it is. Click banks it, so the
+-- | glyph is the name the thing WILL have, shown before you commit to it — the
+-- | gesture is recognition rather than naming. Works on a ghosted band: building
+-- | the next beat while the current one plays is the point of showing all three.
+bandGlyph :: forall m. State -> Active -> H.ComponentHTML Action () m
+bandGlyph s target = case printTri <$> triOf s target of
+  Nothing -> HH.text ""
+  Just text ->
+    let g = G.glyphOf text
+        banked = isJust (indexOfContent text s.presets)
+    in HH.button
+        [ HE.onClick \_ -> BankBrain target
+        , HP.title (if banked then "this exact state is banked under this glyph"
+                              else "unsaved — click to bank this state under its glyph")
+        , style $ "display:flex;align-items:center;gap:5px;padding:2px 8px;border-radius:5px;cursor:pointer;"
+            <> "font-family:Georgia,serif;font-size:10px;"
+            <> (if banked then "border:1px solid #00000018;background:#00000006;color:#8a8676"
+                          else "border:1px solid #c9a23a;background:#fbf3df;color:#7a5c00") ]
+        [ HH.span [ style "display:inline-flex;align-items:center;gap:3px" ]
+            [ faIcon g.first, faIcon g.second ]
+        , HH.text (if banked then "banked" else "bank")
+        ]
 
 navBtn :: forall m. String -> Action -> H.ComponentHTML Action () m
 navBtn label act =
@@ -998,6 +1113,7 @@ band s target label extras body =
                     []
                 , HH.text label
                 ]
+            , bandGlyph s target
             ] <> extras )
       , body
       ]

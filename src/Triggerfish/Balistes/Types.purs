@@ -167,6 +167,8 @@ data Action
   -- the snapshot bank (was reachable only from the shell's status-board chip
   -- menu, i.e. not from inside Balistes at all). Recall/star/delete mirror the
   -- shell's `RecallSlot`/`StarSlot`/`DeleteSlot` queries at the local altitude.
+  | BankNow                   -- bank the live state under its content glyph (the `c` hotkey, as a click)
+  | BankBrain Active          -- bank ONE brain's state, sounding or not (its band's glyph)
   | SetLane String            -- edit this machine's macro-tidal arrangement lane
   | InsertLaneToken String    -- append a pattern name to the lane (click-to-assemble)
   | OpenPresets
