@@ -73,6 +73,48 @@ Confirmed on the rig — playhead advances silently in Atlantis, and stop works.
 
 ---
 
+## Fixed later the same day
+
+### #12 — The rig link dies after 30 minutes and nothing notices — FIXED
+
+Found when AC returned after an hour away to a rig that was playing and would
+not answer Triggerfish at all, PANIC included. The same symptom as most mornings.
+
+purerl-tidal's cowboy handler sets `idle_timeout => 1800000` (`Handler.erl:28`),
+and cowboy counts idle from the last frame it RECEIVED — the anchors it streams
+to the browser do not reset it, only traffic the other way does. So a browser
+left untouched for half an hour is hung up on. Overnight blows past it every time.
+
+What made it invisible rather than merely annoying:
+
+  * `Binnacle.purs` had `onClose: pure unit` — the close handler did nothing at
+    all. No reconnect, no flag, no notice.
+  * `Transport.js`'s `send` is `if (ws.readyState === 1) ws.send(msg)` — a send
+    on a closed socket is a silent no-op.
+
+So the UI went on looking alive while controlling nothing, which is this
+document's opening theme in its purest form: a positive signal returned for
+something that did not happen. It also explains why a BEAM restart had been
+costing a tab reload all day — every socket died with it and none came back.
+
+**Fixed** in three layers:
+
+  * `Socket` became a DURABLE HANDLE owning a mutable inner WebSocket, re-dialling
+    with exponential backoff to a 15s cap. `Socket` is an opaque foreign type, so
+    this took zero call-site changes and every machine on Binnacle gets it.
+    `onOpen` runs on every successful connect, so `clock-subscribe` is re-sent and
+    the clock returns by itself.
+  * A keepalive: `state` every 10 minutes against the 30-minute timeout, so the
+    drop should not happen at all. Reconnect makes it survivable; the keepalive
+    means the reconnect window is not where the PANIC press lands.
+  * `Transport.isConnected`, polled on SyncTick and drawn as a red tilted
+    DISCONNECTED stamp across the SOLO/ATLANTIS toggle — in both modes, since
+    every rig verb rides that socket and someone flipping INTO Atlantis should see
+    the link is dead before handing over authority.
+
+Sends are still silent no-ops while down. The gap is now seconds and visible
+rather than permanent and invisible.
+
 ## Open
 
 ### #1 — Four of six voice trees are unstoppable and invisible — THE BIG ONE

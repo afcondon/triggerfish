@@ -14,6 +14,7 @@ module Triggerfish.Balistes.Types
   , knobValue
   , applyKnob
   , Active(..)
+  , ClickMode(..)
   , NoteRef(..)
   , DragKind(..)
   , Drag
@@ -89,6 +90,20 @@ data Active = AGrids | AFixed Int | ASelene
 
 derive instance eqActive :: Eq Active
 
+-- | What clicking a beat's 2-glyph DOES. AC's ask (2026-08-07), the same shape as
+-- | Vetula's HUNT/PERFORM: one visible switch, one gesture, two intents.
+-- |
+-- |   Audition — play it now. You are jamming, hunting for what works.
+-- |   Assemble — append its token to the lane. You are writing, and the glyphs
+-- |              are your alphabet.
+-- |
+-- | Before this, the ASSEMBLE chips only ever appended, so there was no way to
+-- | hear a banked beat without leaving the surface for the preset modal — which
+-- | covers the bands you are trying to listen to. See docs/DESIGN-balistes-beds.md.
+data ClickMode = Audition | Assemble
+
+derive instance eqClickMode :: Eq ClickMode
+
 -- | Which MIDI note a note-drag edits: a Grids lane (0..3) or a fixed-pattern
 -- | lane (`NFixed patternIx lane`).
 data NoteRef = NGrids Int | NFixed Int Int
@@ -153,6 +168,14 @@ type State =
   -- Bank filter: `Nothing` shows every brain's entries, `Just b` narrows to one.
   -- Presentation only — the collection stays whole (the point of the fold).
   , bankFilter :: Maybe Brain
+  -- What a beat-glyph click means. Not persisted: it is a posture you are in for
+  -- the next few minutes, not a preference (cf. Transport.Store, which persists
+  -- the authority mode and nothing about what was playing).
+  , clickMode :: ClickMode
+  -- The lane EDITOR modal: a full-size surface for writing the tidal expression
+  -- of a combined beat, with the notation guide beside it. The ASSEMBLE panel's
+  -- inline box stays for quick edits; this is where you compose.
+  , laneEditOpen :: Boolean
   -- macro-tidal: this machine's arrangement lane, MIRRORED from the shell (which
   -- owns and persists it). Edits raise back up; the shell pushes changes down.
   , lane :: String
@@ -189,6 +212,9 @@ data Action
   -- anonymous, matching the Store's "empty name = anonymous".
   | RenamePreset Int String
   | SetBankFilter (Maybe Brain)  -- narrow the bank list to one brain (Nothing = all)
+  | SetClickMode ClickMode       -- audition-vs-assemble: what clicking a beat does
+  | OpenLaneEdit                 -- open the lane-expression editor
+  | CloseLaneEdit
   -- Save one bank entry to Amphora, any brain. The generalisation of
   -- PublishActive, which could only ever save a RYTM rhythm because the store
   -- write-back was wired to the RYTM-only `library`.

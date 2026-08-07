@@ -9,7 +9,7 @@ module Triggerfish.Balistes.View.Fixed
 
 import Prelude
 
-import Data.Array (concatMap, length, mapWithIndex, range, (!!))
+import Data.Array (concatMap, length, range, (!!))
 import Data.Foldable (any)
 import Data.Int (toNumber)
 import Data.Maybe (Maybe(..), fromMaybe)
@@ -20,7 +20,7 @@ import Web.UIEvent.MouseEvent as ME
 import Triggerfish.Odonus.Grid.Widgets (engrave, style, svgAttr, svgEl)
 import Triggerfish.Balistes.Pattern as P
 import Triggerfish.Transport (Sounding(..))
-import Triggerfish.Balistes.Types (Action(..), Active(..), NoteRef(..), State, activePattern)
+import Triggerfish.Balistes.Types (Action(..), NoteRef(..), State, activePattern)
 import Triggerfish.Balistes.Widgets
   ( stepBtn, svgMouse, svgRect, noteTag, laneColor, concatMap' )
 

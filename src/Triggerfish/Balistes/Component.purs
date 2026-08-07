@@ -18,8 +18,8 @@ module Triggerfish.Balistes.Component (component, Output(..)) where
 
 import Prelude
 
-import Data.Array (deleteAt, filter, find, findIndex, length, mapWithIndex, modifyAt, null, range, sortWith, (!!))
-import Data.Tuple (Tuple(..), fst)
+import Data.Array (concatMap, deleteAt, filter, find, length, mapWithIndex, modifyAt, null, range, sortWith, (!!))
+import Data.Tuple (Tuple(..), fst, snd)
 import Data.Foldable (any, foldl, for_)
 import Data.Int (floor, round, toNumber)
 import Data.Maybe (Maybe(..), fromMaybe, isJust, isNothing, maybe)
@@ -51,7 +51,7 @@ import Reef.Balistes.Trig as Trig
 import Triggerfish.Balistes.Model as M
 import Triggerfish.Balistes.Pattern as P
 import Triggerfish.Balistes.Types
-  ( KnobTarget(..), targetRange, applyKnob, Active(..)
+  ( KnobTarget(..), targetRange, applyKnob, Active(..), ClickMode(..)
   , NoteRef(..), DragKind(..), State, Action(..), activePattern, selectedPattern, patternAt, rhythmEntries, rigUrl, gridCfg
   , midiPortName, drumChannel, cycleSteps, editVel, flashWindow
   , padId, eqTrigName, jackNoteOf )
@@ -101,7 +101,7 @@ component =
         , nowMicros: 0.0, dragging: Nothing, dragSub: Nothing
         , presets: []
         , identity: Nothing, lastChip: Nothing
-        , active: AGrids, editing: false, presetsOpen: false, bankFilter: Nothing, fixedSel: 0, lane: "", laneReadout: "", selected: Nothing
+        , active: AGrids, editing: false, presetsOpen: false, bankFilter: Nothing, clickMode: Assemble, laneEditOpen: false, fixedSel: 0, lane: "", laneReadout: "", selected: Nothing
         , scratchFixed: Nothing
         , trig: M.defaultTrig, publishMsg: Nothing }
     , render
@@ -633,6 +633,9 @@ handleAction = case _ of
   -- preference worth restoring, and a filter that survives a reload is a good way
   -- to conclude your patterns have vanished.
   SetBankFilter mb -> H.modify_ _ { bankFilter = mb }
+  SetClickMode m -> H.modify_ _ { clickMode = m }
+  OpenLaneEdit -> H.modify_ _ { laneEditOpen = true }
+  CloseLaneEdit -> H.modify_ _ { laneEditOpen = false }
   NoOp -> pure unit
 
 -- | Project the frontend Balistes record onto the shared `BalSim` — the lockstep
@@ -980,6 +983,7 @@ render s =
         , assemblePanel s
         ]
     , presetModal s
+    , laneEditModal s
     ]
 
 -- | **ASSEMBLE** — Balistes' view onto its own macro-tidal arrangement lane.
@@ -1000,8 +1004,16 @@ assemblePanel s =
   HH.div
     [ style $ "flex:0 0 340px;min-width:0;height:100%;box-sizing:border-box;overflow-y:auto;"
         <> "background:linear-gradient(#dcd8c9,#cfcabb);border-left:1px solid #b3ae9c;padding:14px 14px 16px" ]
-    [ HH.div [ style $ engrave <> ";font-size:12px;letter-spacing:0.16em;color:#3f3c33;border-bottom:1px solid #00000018;padding-bottom:6px;margin-bottom:10px" ]
-        [ HH.text "ASSEMBLE" ]
+    [ HH.div [ style "display:flex;align-items:baseline;justify-content:space-between;border-bottom:1px solid #00000018;padding-bottom:6px;margin-bottom:10px" ]
+        [ HH.span [ style $ engrave <> ";font-size:12px;letter-spacing:0.16em;color:#3f3c33" ]
+            [ HH.text "ASSEMBLE" ]
+        , HH.button
+            [ HE.onClick \_ -> OpenLaneEdit
+            , HP.title "write the expression, with the notation guide"
+            , style $ engrave <> ";font-size:8px;letter-spacing:0.1em;padding:2px 8px;border-radius:5px;"
+                <> "border:1px solid #00000022;color:#6a6657;background:transparent;cursor:pointer" ]
+            [ HH.text "EDIT…" ]
+        ]
     , HH.textarea
         [ HP.value s.lane
         , HE.onValueInput SetLane
@@ -1012,12 +1024,14 @@ assemblePanel s =
     , laneScore s
     , HH.div [ style $ engrave <> ";font-size:8px;opacity:0.6;margin:7px 0 12px;line-height:1.6" ]
         [ HH.text ("NOW: " <> (if s.laneReadout == "" then "—" else s.laneReadout)) ]
-    , HH.div [ style $ engrave <> ";font-size:9px;color:#8a8676;border-bottom:1px solid #00000014;padding-bottom:4px;margin-bottom:8px" ]
-        [ HH.text "SNAPSHOTS" ]
+    , HH.div [ style "display:flex;align-items:center;justify-content:space-between;border-bottom:1px solid #00000014;padding-bottom:4px;margin-bottom:8px" ]
+        [ HH.span [ style $ engrave <> ";font-size:9px;color:#8a8676" ] [ HH.text "BEATS" ]
+        , clickModeSwitch s
+        ]
     , HH.div [ style "display:flex;gap:5px;flex-wrap:wrap;margin-bottom:12px" ]
         (if null s.presets
            then [ HH.span [ style $ engrave <> ";font-size:8px;opacity:0.5" ] [ HH.text "NOTHING BANKED YET" ] ]
-           else map presetToken s.presets)
+           else mapWithIndex (presetToken s) s.presets)
     , HH.div [ style $ engrave <> ";font-size:9px;color:#8a8676;border-bottom:1px solid #00000014;padding-bottom:4px;margin-bottom:8px" ]
         [ HH.text "STRUCTURE" ]
     , HH.div [ style "display:flex;gap:5px;flex-wrap:wrap" ]
@@ -1072,16 +1086,48 @@ laneScore s =
 -- One banked snapshot as a click-to-insert glyph pair. Inserting writes the ALIAS
 -- (quoted) into the lane — the stable, content-derived name — while what you click
 -- and read is the glyph.
-presetToken :: forall m. Preset -> H.ComponentHTML Action () m
-presetToken p =
+-- | One banked beat as its 2-glyph. What clicking does depends on `clickMode`:
+-- | AUDITION plays it (select a rhythm, recall another brain's capture — the same
+-- | split the bank list uses), ASSEMBLE appends its token to the lane.
+-- |
+-- | The index is the bank position, which is what selection and recall address.
+presetToken :: forall m. State -> Int -> Preset -> H.ComponentHTML Action () m
+presetToken s i p =
   let alias = presetAlias p
       g = G.glyphFromAlias alias
+      auditioning = s.clickMode == Audition
+      act = if auditioning
+              then (if isRhythm p then SelectPattern (AFixed i) else RecallPreset i)
+              else InsertLaneToken alias
   in HH.button
-      [ HE.onClick \_ -> InsertLaneToken alias
-      , HP.title (fromMaybe alias p.name <> " — append to the lane")
+      [ HE.onClick \_ -> act
+      , HP.title (fromMaybe alias p.name
+          <> (if auditioning then " — play it" else " — append to the lane"))
       , style $ "display:flex;align-items:center;gap:3px;padding:3px 8px;border:1px solid #a8a392;"
           <> "border-radius:5px;cursor:pointer;background:#f3f1e8" ]
       [ faIcon g.first, faIcon g.second ]
+
+-- | AUDITION / ASSEMBLE. The Vetula HUNT/PERFORM shape: one switch saying what
+-- | the gesture below it means, so you can jam on the banked beats to find what
+-- | works and then write with the same clicks — without leaving the surface for
+-- | the preset modal, which covers the bands you are listening to.
+clickModeSwitch :: forall m. State -> H.ComponentHTML Action () m
+clickModeSwitch s =
+  HH.div [ style "display:flex;gap:0;align-items:center" ]
+    [ seg Audition "AUDITION", seg Assemble "ASSEMBLE" ]
+  where
+  seg m label =
+    let on = s.clickMode == m
+    in HH.button
+         [ HE.onClick \_ -> SetClickMode m
+         , HP.title (case m of
+             Audition -> "clicking a beat plays it"
+             Assemble -> "clicking a beat appends it to the lane")
+         , style $ engrave <> ";font-size:8px;letter-spacing:0.1em;padding:2px 7px;cursor:pointer;"
+             <> "border:1px solid " <> (if on then "#6f6a5c" else "#00000018")
+             <> ";color:" <> (if on then "#2f2c25" else "#8a8676")
+             <> ";background:" <> (if on then "#00000012" else "transparent") ]
+         [ HH.text label ]
 
 -- One click-to-insert token.
 laneToken :: forall m. String -> H.ComponentHTML Action () m
@@ -1263,6 +1309,104 @@ tidalBand s =
 -- |     These carry WHICH BRAIN was live, so recalling one can change the band
 -- |     you're on. Previously reachable only from the shell's status-board chip
 -- |     menu — i.e. not from inside Balistes at all.
+-- | The lane EDITOR — a full-size surface for writing the tidal expression of a
+-- | combined beat, with the notation guide right there. Same shape as Vetula's
+-- | sequence editor (`Vetula.App.perfEditModal`): title, the expression, a live
+-- | reading of it, click-to-use examples, and the grammar beside the field so the
+-- | notation is learnable where it is used rather than in a doc.
+-- |
+-- | The ASSEMBLE panel keeps its inline box for quick edits; this is where you
+-- | compose. Both write the same `lane`, so there is one source of truth and no
+-- | commit step — `SetLane` already raises `LaneEdited` to the shell, which owns
+-- | and persists it.
+-- |
+-- | Backdrop and panel are SIBLINGS, matching `presetModal` below: nesting would
+-- | need the panel to stop click propagation, which needs an Effect-carrying
+-- | no-op action. Siblings get the same behaviour with no plumbing.
+laneEditModal :: forall m. State -> H.ComponentHTML Action () m
+laneEditModal s =
+  if not s.laneEditOpen then HH.text ""
+  else
+    HH.div [ style "position:fixed;inset:0;z-index:60" ]
+      [ HH.div
+          [ style "position:absolute;inset:0;background:#00000055"
+          , HE.onClick \_ -> CloseLaneEdit ]
+          []
+      , HH.div
+          [ style $ "position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);"
+              <> "width:720px;max-width:94vw;max-height:86vh;overflow-y:auto;border-radius:10px;"
+              <> "background:linear-gradient(#f6f2e8,#efe9db);border:1px solid #a8a392;"
+              <> "box-shadow:0 14px 48px #00000044;padding:20px 24px" ]
+          [ HH.div [ style "display:flex;align-items:baseline;justify-content:space-between;margin-bottom:14px" ]
+              [ HH.span [ style $ engrave <> ";font-size:13px;letter-spacing:0.16em;color:#3f3c33" ]
+                  [ HH.text "BEAT EXPRESSION" ]
+              , HH.button
+                  [ HE.onClick \_ -> CloseLaneEdit
+                  , style "border:none;background:none;color:#8a8676;font-size:16px;cursor:pointer;line-height:1" ]
+                  [ HH.text "✕" ]
+              ]
+          , HH.textarea
+              [ HP.value s.lane
+              , HE.onValueInput SetLane
+              , HP.placeholder "\"lo house 110\" <\"trap 140\" ~> # dilla"
+              , style $ "width:100%;box-sizing:border-box;height:120px;resize:vertical;padding:9px 11px;"
+                  <> "border:1px solid #a8a392;border-radius:6px;background:#f3f1e8;"
+                  <> "font-family:\'SF Mono\',Menlo,monospace;font-size:13px;line-height:1.6;color:#1c1a12" ]
+          -- The same score the panel draws, so what you are typing is read back as
+          -- glyphs immediately — an unresolvable atom shows as `name ?` rather
+          -- than silently doing nothing at play time.
+          , laneScore s
+          , HH.div [ style $ engrave <> ";font-size:8px;opacity:0.6;margin:9px 0 14px;line-height:1.6" ]
+              [ HH.text ("NOW: " <> (if s.laneReadout == "" then "—" else s.laneReadout)) ]
+          , modalSection "BEATS" "click to append — every banked beat, all three machines"
+              (HH.div [ style "display:flex;gap:5px;flex-wrap:wrap" ]
+                (if null s.presets
+                   then [ HH.span [ style $ engrave <> ";font-size:8px;opacity:0.5" ] [ HH.text "NOTHING BANKED YET" ] ]
+                   else mapWithIndex (\i p -> presetToken (s { clickMode = Assemble }) i p) s.presets))
+          , modalSection "STRUCTURE" "rests, alternation, transform stacks"
+              (HH.div [ style "display:flex;gap:5px;flex-wrap:wrap" ]
+                (map laneToken [ "~", "<", ">", "# dilla", "# flat" ]))
+          , modalSection "EXAMPLES" "click to replace the expression"
+              (HH.div [ style "display:flex;gap:5px;flex-wrap:wrap" ]
+                (map exampleChip laneExamples))
+          , modalSection "NOTATION" "one step per token; steps divide the macro-cycle"
+              (HH.div [ style "display:grid;grid-template-columns:auto 1fr;gap:4px 14px;font-size:11px;color:#55503f" ]
+                (concatMap guideRow laneGuide))
+          ]
+      ]
+  where
+  exampleChip ex =
+    HH.button
+      [ HE.onClick \_ -> SetLane (fst ex)
+      , HP.title (snd ex)
+      , style $ "padding:3px 9px;border:1px solid #a8a392;border-radius:5px;cursor:pointer;"
+          <> "font-family:\'SF Mono\',Menlo,monospace;font-size:10px;color:#3f3c33;background:#f3f1e8" ]
+      [ HH.text (fst ex) ]
+  guideRow g =
+    [ HH.span [ style "font-family:\'SF Mono\',Menlo,monospace;color:#3f3c33" ] [ HH.text (fst g) ]
+    , HH.span [] [ HH.text (snd g) ]
+    ]
+
+-- | Worked expressions, in the order you would meet them. The fourth is AC\'s
+-- | motivating example — four bars of one beat, a bar of another, a fill every
+-- | other cycle — which the grammar already expresses at bars-per-step 1.
+laneExamples :: Array (Tuple String String)
+laneExamples =
+  [ Tuple "a b" "two beats, one per step"
+  , Tuple "a ~ b ~" "with rests between them"
+  , Tuple "<a b> c" "alternates a and b on successive cycles"
+  , Tuple "a a a a b <~ c>" "four of a, then b, then c every other cycle"
+  , Tuple "a # dilla" "a, with the dilla push applied"
+  ]
+
+laneGuide :: Array (Tuple String String)
+laneGuide =
+  [ Tuple "name" "a banked beat, by its glyph alias (click one above)"
+  , Tuple "~" "a rest — the machine goes quiet for that step"
+  , Tuple "<a b>" "alternation: a different member each cycle"
+  , Tuple "# verb" "a transform applied to the step (# dilla, # flat, # scale)"
+  ]
+
 presetModal :: forall m. State -> H.ComponentHTML Action () m
 presetModal s =
   if not s.presetsOpen then HH.text ""

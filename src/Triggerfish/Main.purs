@@ -257,6 +257,9 @@ type RState =
   -- the state that makes you reach for it, and it has to reach voices the
   -- frontend holds no handle on at all (see RIG-ISSUES-2026-08-07 #1).
   , rig :: Maybe Binnacle.Binnacle
+  -- Is the shell's rig socket live? Polled on SyncTick. All the sockets dial the
+  -- same URL and drop together, so the shell's stands for the lot.
+  , rigConnected :: Boolean
   -- Vetula auto-resync (ATLANTIS): the shell polls Vetula's rig payload and, when
   -- it settles on a new value, re-pushes (SetSounding Rig re-voices) — so the
   -- progression re-voices live with no manual button. `brushSent` = last value
@@ -395,7 +398,7 @@ root =
         , clipLibrary: [], shellMidi: Nothing
         , picked: Nothing, sourceOpen: false, digOpen: false, goTo: [], previewing: []
         , mode: Solo, harm: { durs: [], active: -1, chord: "" }
-        , rig: Nothing
+        , rig: Nothing, rigConnected: false
         , brushSent: "", brushPrev: ""
         , armed: Set.empty
         , routing: Map.empty
@@ -595,7 +598,17 @@ handleAction = case _ of
   -- (ArmTab / ToggleMaster) and by Vetula's self-disarm EVENT (VetulaArmed). Odo/
   -- Bal/Sel never self-disarm, so nothing needs observing. Sounding is now purely
   -- one-directional (shell state → instruments) — no two-way binding to fight.
-  SyncTick -> void $ H.fork pushFree
+  SyncTick -> do
+    -- Poll the rig link alongside the free-run push. Before this a dead socket
+    -- was invisible: `Transport.send` no-ops when the connection is down, so
+    -- every control went on looking like it worked — PANIC included — while the
+    -- rig played on untouched. That is what an hour away from the desk produced.
+    st <- H.get
+    ok <- case st.rig of
+      Nothing -> pure false
+      Just bin -> liftEffect $ Transport.isConnected (Binnacle.socket bin)
+    when (ok /= st.rigConnected) (H.modify_ _ { rigConnected = ok })
+    void $ H.fork pushFree
 
   -- The nav BPM field (free-run only; read-only while Link-locked). Set the
   -- shell's baseline and re-broadcast it to every machine.
@@ -2322,13 +2335,45 @@ targetIsField e = case E.target e of
 -- The SOLO⟷ATLANTIS authority toggle. Each mode carries its own colour so the
 -- active authority reads at a glance: SOLO warm/gold (a standalone instrument),
 -- ATLANTIS deep sea-blue (the rig is the sound). Clicking a segment sets that mode.
+-- | The authority switch, with a DISCONNECTED stamp across it when the rig link
+-- | is down — a rubber stamp over the thing it invalidates, so a dead link is
+-- | read rather than deduced.
+-- |
+-- | It is drawn whatever the mode, not only in Atlantis: PANIC and every rig verb
+-- | travel the same socket, so a broken link matters in Solo too — and someone
+-- | flipping to Atlantis deserves to see the link is dead BEFORE they hand the
+-- | rig authority rather than after.
+-- |
+-- | `pointer-events:none` so the stamp never blocks the buttons under it: the
+-- | first thing you do when you see it may well be to flip modes.
 modeToggle :: forall m. RState -> H.ComponentHTML RAction Slots m
 modeToggle st =
   HH.div
-    [ style $ "display:flex;flex:0 0 auto;border:1px solid #00000033;border-radius:5px;overflow:hidden;"
-        <> "box-shadow:0 1px 2px #00000022" ]
-    [ modeSeg "SOLO" (st.mode == Solo) "#1c1a12" "linear-gradient(#c8a86a,#b8975a)" (SetMode Solo)
-    , modeSeg "ATLANTIS" (st.mode == Atlantis) "#eaf3fa" "linear-gradient(#3a6b8a,#2d5670)" (SetMode Atlantis)
+    [ style "position:relative;flex:0 0 auto" ]
+    [ HH.div
+        [ style $ "display:flex;border:1px solid #00000033;border-radius:5px;overflow:hidden;"
+            <> "box-shadow:0 1px 2px #00000022"
+            <> (if st.rigConnected then "" else ";opacity:0.45") ]
+        [ modeSeg "SOLO" (st.mode == Solo) "#1c1a12" "linear-gradient(#c8a86a,#b8975a)" (SetMode Solo)
+        , modeSeg "ATLANTIS" (st.mode == Atlantis) "#eaf3fa" "linear-gradient(#3a6b8a,#2d5670)" (SetMode Atlantis)
+        ]
+    , if st.rigConnected then HH.text "" else disconnectedStamp
+    ]
+
+-- | The stamp: red, tilted, letter-spaced, ruled above and below like something
+-- | pressed onto the panel in ink.
+disconnectedStamp :: forall m. H.ComponentHTML RAction Slots m
+disconnectedStamp =
+  HH.div
+    [ HP.title "no WebSocket to the rig — reconnecting"
+    , style $ "position:absolute;inset:0;display:flex;align-items:center;justify-content:center;"
+        <> "pointer-events:none;transform:rotate(-9deg)" ]
+    [ HH.span
+        [ style $ "font-size:9px;letter-spacing:0.14em;text-transform:uppercase;white-space:nowrap;"
+            <> "font-family:Georgia,serif;font-weight:bold;color:#b23b28;"
+            <> "border-top:1.5px solid #b23b28;border-bottom:1.5px solid #b23b28;padding:1px 5px;"
+            <> "background:#f6f2e8cc" ]
+        [ HH.text "disconnected" ]
     ]
 
 modeSeg :: forall m. String -> Boolean -> String -> String -> RAction -> H.ComponentHTML RAction Slots m
