@@ -1,15 +1,35 @@
 -- | Triggerfish.Balistes.Store — localStorage persistence for the Balistes
--- | artefact: the fixed-rhythm library **and** the unified PRESET bank. Everything
--- | saves/loads from this one surface; the per-tab panels hold no storage.
+-- | artefact: ONE bank holding every brain's artefacts. The per-tab panels hold
+-- | no storage of their own.
 -- |
--- | Each preset's `content` is already eDSL / compact TEXT (a brain-tagged `printTri`
--- | for a Balistes snapshot) — the Lepidoptera "save the rendering" rule; `name` and
--- | `starred` are small envelope metadata. A library entry is one `printPattern`.
--- | The JSON here is only the local envelope holding those texts. Mirrors Selene.
+-- | Each entry's `content` is canonical TEXT — a brain-tagged `printTri` — per the
+-- | Lepidoptera "save the rendering, not bespoke structure" rule. `name` and
+-- | `starred` are envelope metadata. The JSON here is only the local wrapper
+-- | holding those texts. Mirrors Selene.
 -- |
--- | (The per-machine SEQUENCE — `sequence`/`seqBars` — was dropped 2026-07-30 when
--- | the rig-wide scene grid + macro-tidal lanes subsumed it. Old v4 saves still
--- | carry those fields; they're simply ignored on decode.)
+-- | **v5: the rhythm library folded into the bank.** Until v4 there were two
+-- | parallel collections — `library` (RYTM rhythms: named, editable, publishable)
+-- | and `presets` (snapshots of any brain: anonymous, glyphed). Everything RYTM
+-- | could do and the other two brains could not came from that split. Now there is
+-- | one collection and a rhythm is simply an entry whose content parses to
+-- | `TSFixed`. See docs/DESIGN-balistes-bank-coherence.md.
+-- |
+-- | **The name lives in exactly one place: `name` here.** A rhythm's canonical
+-- | text embeds its name (`balistesPattern "lo house 110" 32 …`), so folding
+-- | naively would give every rhythm two names that drift apart on rename. Instead
+-- | the stored content is NAME-STRIPPED (`balistesPattern "" 32 …`) and the name
+-- | is injected back when a pattern is handed out — to the editor, to Amphora, to
+-- | Calypso. Two things follow, both improvements:
+-- |
+-- |   * The glyph fingerprints the SOUND. Renaming no longer changes the content
+-- |     hash, so "identical state ⇒ identical glyph" is finally true for rhythms
+-- |     as the bank always claimed it was.
+-- |   * There is one rename path for all three brains.
+-- |
+-- | Verified against all 14 published rhythms: parse → strip → print → parse →
+-- | re-inject reproduces the original text byte-for-byte.
+-- | (`rhythmContent` / `rhythmOfContent` live in `Triggerfish.Balistes.TriSnapshot`
+-- | with the rest of the brain-tag vocabulary; import them from there.)
 module Triggerfish.Balistes.Store
   ( Saved
   , save
@@ -22,83 +42,78 @@ import Data.Array (mapMaybe)
 import Data.Maybe (Maybe(..), fromMaybe)
 import Data.Nullable (Nullable, toMaybe)
 import Effect (Effect)
-import Triggerfish.Balistes.Lepidoptera (parsePattern, printPattern)
-import Triggerfish.Balistes.Pattern (FixedPattern)
+import Triggerfish.Balistes.Lepidoptera (parsePattern)
+import Triggerfish.Balistes.TriSnapshot (rhythmContent, rhythmOfContent)
 import Triggerfish.Preset (Preset)
 
--- | What a session restores: the library + the PRESET bank (unified list).
-type Saved =
-  { library :: Array FixedPattern
-  , presets :: Array Preset
-  }
+-- | What a session restores: the one bank.
+type Saved = { presets :: Array Preset }
 
--- | The on-disk shape (v4): library as texts, presets as { content, name, starred }
--- | (empty `name` = anonymous). `content` is the preset's canonical text verbatim.
+-- | The on-disk shape (v5): one list of { content, name, starred }. Empty `name`
+-- | = anonymous (a capture rather than a promoted artefact).
 type Envelope =
+  { presets :: Array { content :: String, name :: String, starred :: Boolean } }
+
+-- | v4 — the two-collection shape this replaces.
+type EnvelopeV4 =
   { library :: Array String
   , presets :: Array { content :: String, name :: String, starred :: Boolean }
   }
 
--- | v3's on-disk shape — a fixed bank of `printTri` texts (`""` = empty slot).
--- | Migrated to the unified preset list when v4 is absent.
-type EnvelopeV3 =
-  { library :: Array String
-  , bank :: Array String
-  }
-
--- v4: the fixed Maybe-bank became a growing unified preset list (name + starred).
 storeKey :: String
-storeKey = "triggerfish.balistes.v4"
+storeKey = "triggerfish.balistes.v5"
 
-legacyBankKey :: String
-legacyBankKey = "triggerfish.balistes.v3"
-
--- v2 stored the library alone as an `Array String`; recovered if v3/v4 absent.
-legacyLibraryKey :: String
-legacyLibraryKey = "triggerfish.balistes.library.v2"
+-- Deliberately still read, never written. A v5 store that turns out wrong can be
+-- diagnosed against the untouched v4 payload sitting beside it.
+legacyV4Key :: String
+legacyV4Key = "triggerfish.balistes.v4"
 
 foreign import _save :: String -> String -> Effect Unit
 foreign import _load :: forall a. String -> Effect (Nullable a)
 foreign import _stringify :: forall a. a -> String
 
--- | Persist the artefact (best-effort — the FFI swallows quota / private-mode
--- | errors), each payload rendered to its canonical text.
+-- ---------------------------------------------------------------------------
+-- Persist
+-- ---------------------------------------------------------------------------
+
+-- | Persist the bank (best-effort — the FFI swallows quota / private-mode).
 save :: Saved -> Effect Unit
 save s = _save storeKey (_stringify env)
   where
   env :: Envelope
-  env =
-    { library: map printPattern s.library
-    , presets: map (\p -> { content: p.content, name: fromMaybe "" p.name, starred: p.starred }) s.presets
-    }
+  env = { presets: map encodeOne s.presets }
 
--- | Load the artefact. Prefers v4; migrates a v3 fixed-bank store (each non-empty
--- | slot → an anonymous preset), else a v2 library-only store. `Nothing` → the
--- | bundled fallback. Unparseable library entries are dropped, never fatal.
+encodeOne :: Preset -> { content :: String, name :: String, starred :: Boolean }
+encodeOne p = { content: p.content, name: fromMaybe "" p.name, starred: p.starred }
+
+decodeOne :: { content :: String, name :: String, starred :: Boolean } -> Preset
+decodeOne e = { content: e.content, name: if e.name == "" then Nothing else Just e.name, starred: e.starred }
+
+-- | Load the bank. Prefers v5; otherwise migrates v4's rhythm library.
+-- |
+-- | The migration keeps RHYTHMS ONLY and drops v4's old snapshot bank — sanctioned
+-- | by AC (2026-08-07), who is about to enter a lot of new material and did not
+-- | want the fold held hostage to preserving scratch captures. **v4 is read, never
+-- | written**, so its payload survives beside the v5 store and a bad fold is
+-- | recoverable by hand rather than gone.
 load :: Effect (Maybe Saved)
 load = do
   mEnv <- _load storeKey
   case toMaybe (mEnv :: Nullable Envelope) of
-    Just env -> pure (Just (decode env))
+    Just env -> pure (Just { presets: map decodeOne env.presets })
     Nothing -> do
-      mV3 <- _load legacyBankKey
-      case toMaybe (mV3 :: Nullable EnvelopeV3) of
-        Just v3 -> pure (Just (decodeV3 v3))
-        Nothing -> do
-          mLib <- _load legacyLibraryKey
-          pure $ toMaybe (mLib :: Nullable (Array String)) <#> \texts ->
-            { library: mapMaybe parsePattern texts, presets: [] }
+      mV4 <- _load legacyV4Key
+      pure $ toMaybe (mV4 :: Nullable EnvelopeV4) <#> \v4 ->
+        { presets: mapMaybe migrateRhythm v4.library }
 
-decode :: Envelope -> Saved
-decode env =
-  { library: mapMaybe parsePattern env.library
-  , presets: map (\e -> { content: e.content, name: if e.name == "" then Nothing else Just e.name, starred: e.starred }) env.presets
+-- | One v4 library text → one named bank entry. The name is lifted OUT of the
+-- | text and into the envelope, leaving name-stripped content, so the fold
+-- | establishes the single-source-of-truth invariant rather than inheriting the
+-- | duplication. Unparseable entries are dropped — they were already being
+-- | dropped by v4's own `mapMaybe parsePattern` on every load.
+migrateRhythm :: String -> Maybe Preset
+migrateRhythm text = parsePattern text <#> \p ->
+  { content: rhythmContent p
+  , name: if p.name == "" then Nothing else Just p.name
+  , starred: false
   }
-
-decodeV3 :: EnvelopeV3 -> Saved
-decodeV3 v3 =
-  { library: mapMaybe parsePattern v3.library
-  , presets: map (\t -> { content: t, name: Nothing, starred: false }) (filter (_ /= "") v3.bank)
-  }
-  where
-  filter p = mapMaybe \x -> if p x then Just x else Nothing

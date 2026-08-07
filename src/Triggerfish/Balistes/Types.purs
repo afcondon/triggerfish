@@ -21,6 +21,8 @@ module Triggerfish.Balistes.Types
   , Action(..)
   , activePattern
   , selectedPattern
+  , patternAt
+  , rhythmEntries
   , rigUrl
   , gridCfg
   , stepsPerBar
@@ -36,9 +38,10 @@ module Triggerfish.Balistes.Types
 
 import Prelude
 
-import Data.Array ((!!))
-import Data.Maybe (Maybe(..), maybe)
+import Data.Array (mapMaybe, mapWithIndex, (!!))
+import Data.Maybe (Maybe(..), fromMaybe, maybe)
 import Data.String.Common (toLower)
+import Data.Tuple (Tuple(..))
 import Binnacle as Binnacle
 import Binnacle.Midi as Midi
 import Binnacle.Scheduler as Scheduler
@@ -48,6 +51,7 @@ import Triggerfish.Balistes.Model as M
 import Triggerfish.Balistes.Pattern as P
 import Triggerfish.Glyph as G
 import Triggerfish.Preset (Preset)
+import Triggerfish.Balistes.TriSnapshot (Brain, rhythmOfContent)
 import Triggerfish.Midi.Routing as Routing
 import Triggerfish.Transport (Sounding)
 
@@ -137,7 +141,6 @@ type State =
   , lastChip :: Maybe G.ChipView
   -- the pattern family: which one is playing, and the fixed-rhythm library.
   , active :: Active
-  , library :: Array P.FixedPattern
   -- an EPHEMERAL fixed rhythm played from a recalled `TSFixed` snapshot: when
   -- `Just`, it overrides the `AFixed` library index (played read-only), so
   -- recalling a snapshot never mutates the library. Cleared on any deliberate
@@ -146,7 +149,10 @@ type State =
   -- EDIT mode for a fixed rhythm: reveal all 16 lanes (greyed where empty) so
   -- you can add voices; cells are click-to-toggle either way.
   , editing :: Boolean
-  , presetsOpen :: Boolean       -- the rhythm-library / snapshot-bank modal
+  , presetsOpen :: Boolean       -- the bank modal
+  -- Bank filter: `Nothing` shows every brain's entries, `Just b` narrows to one.
+  -- Presentation only — the collection stays whole (the point of the fold).
+  , bankFilter :: Maybe Brain
   -- macro-tidal: this machine's arrangement lane, MIRRORED from the shell (which
   -- owns and persists it). Edits raise back up; the shell pushes changes down.
   , lane :: String
@@ -176,6 +182,17 @@ data Action
   | RecallPreset Int
   | StarPreset Int
   | DeletePreset Int
+  -- Name a banked snapshot. NOT merely cosmetic: naming is PROMOTION — an
+  -- anonymous, glyph-identified capture becomes a curated artefact (see
+  -- `Triggerfish.Preset.presetLabel`, "the name if promoted, else the glyph
+  -- alias", and docs/DESIGN-balistes-bank-coherence.md). Blank clears back to
+  -- anonymous, matching the Store's "empty name = anonymous".
+  | RenamePreset Int String
+  | SetBankFilter (Maybe Brain)  -- narrow the bank list to one brain (Nothing = all)
+  -- Save one bank entry to Amphora, any brain. The generalisation of
+  -- PublishActive, which could only ever save a RYTM rhythm because the store
+  -- write-back was wired to the RYTM-only `library`.
+  | SavePreset Int
   | Step Scheduler.Tick
   | Frame
   | MidiReady (Maybe Midi.MidiOut) String
@@ -218,7 +235,7 @@ activePattern :: State -> Maybe P.FixedPattern
 activePattern s = case s.active of
   AFixed i -> case s.scratchFixed of
     Just p -> Just p
-    Nothing -> s.library !! i
+    Nothing -> patternAt s i
   _ -> Nothing
 
 -- | What you are LOOKING AT and EDITING in the RYTM band — independent of which
@@ -232,7 +249,27 @@ activePattern s = case s.active of
 selectedPattern :: State -> Maybe P.FixedPattern
 selectedPattern s = case s.scratchFixed of
   Just p -> Just p
-  Nothing -> s.library !! s.fixedSel
+  Nothing -> patternAt s s.fixedSel
+
+-- | The rhythm held in bank entry `i`, with its envelope name injected — the
+-- | single-source-of-truth seam (bank content is name-stripped; see
+-- | `TriSnapshot.rhythmContent`). `Nothing` when the entry belongs to another
+-- | brain, does not parse, or is out of range. That last case is new and real:
+-- | `fixedSel` now indexes the WHOLE bank, so it can point at a Grids or Tidal
+-- | entry, which the old `Array FixedPattern` could not represent.
+patternAt :: State -> Int -> Maybe P.FixedPattern
+patternAt s i = case s.presets !! i of
+  Nothing -> Nothing
+  Just p -> rhythmOfContent (fromMaybe "" p.name) p.content
+
+-- | Every bank entry that is a rhythm, paired with its ORIGINAL bank index —
+-- | which is what selection and edits address. Filtering without carrying the
+-- | index through would renumber every rhythm and point edits at the wrong entry.
+rhythmEntries :: State -> Array (Tuple Int P.FixedPattern)
+rhythmEntries s =
+  mapMaybe
+    (\(Tuple i p) -> Tuple i <$> rhythmOfContent (fromMaybe "" p.name) p.content)
+    (mapWithIndex Tuple s.presets)
 
 -- ---------------------------------------------------------------------------
 -- Constants

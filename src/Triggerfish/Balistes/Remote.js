@@ -94,3 +94,62 @@ export const publishPatternImpl =
       .then((hash) => onSuccess(hash)())
       .catch(fail);
   };
+
+// publishSnapshotImpl(payload)(name)(brain)(source)(onError)(onSuccess)()
+//
+// The BANK's write-back, as opposed to publishPatternImpl above which is the
+// RYTM library's. Same content → label → favourite shape, but a different kind
+// and a different collection, because the payloads are not interchangeable:
+//
+//   balistes-pattern / balistes-grid  — Lepidoptera FixedPattern text. fetchLibrary
+//                                       parses EVERY payload in that collection with
+//                                       parsePattern and silently drops failures, so
+//                                       a Grids point posted there would vanish on
+//                                       next load rather than error.
+//   balistes-snapshot / balistes-bank — printTri text for ANY brain (M/G/T tagged),
+//                                       read back with parseTri.
+//
+// The two paths merge when the library folds into the bank (slice 5 of
+// docs/DESIGN-balistes-bank-coherence.md); until then balistes-grid stays the
+// rhythm path, untouched.
+//
+// `brain` is the DISPLAY letter (G/R/T) and rides along as a tag so the store can
+// be filtered by machine without parsing every payload. NB it is not the leading
+// character of the payload — those are the frozen M/G/T wire tags, where stored
+// "G" means RYTM. See Triggerfish.Balistes.TriSnapshot.
+export const publishSnapshotImpl =
+  (payload) => (name) => (brain) => (source) => (onError) => (onSuccess) => () => {
+    const base = amphoraBase();
+    const COLLECTION = "balistes-bank";
+    const fail = (e) => onError(e instanceof Error ? e : new Error(String(e)))();
+
+    const j = (method, path, body) =>
+      fetch(base + path, {
+        method,
+        headers: { "Content-Type": "application/json" },
+        body: body === undefined ? undefined : JSON.stringify(body),
+      }).then(async (r) => {
+        if (!r.ok) throw new Error(method + " " + path + " → HTTP " + r.status + ": " + (await r.text()));
+        return r.json();
+      });
+
+    (async () => {
+      const { hash } = await j("POST", "/content", { kind: "balistes-snapshot", payload });
+
+      // Content-addressed, so saving the same state twice collapses to one row.
+      // The label is guarded the same way: re-saving under the same name is a
+      // no-op, but the same content CAN carry several names over time.
+      const labels = await j("GET", "/labels?hash=" + hash);
+      if (!labels.some((l) => l.name === name)) {
+        await j("POST", "/labels", { contentHash: hash, name, source, tags: ["brain:" + brain] });
+      }
+
+      const favs = await j("GET", "/favorites?collection=" + COLLECTION);
+      if (!favs.some((f) => f.contentHash === hash)) {
+        await j("POST", "/favorites", { contentHash: hash, collection: COLLECTION });
+      }
+      return hash;
+    })()
+      .then((hash) => onSuccess(hash)())
+      .catch(fail);
+  };

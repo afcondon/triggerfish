@@ -5,7 +5,6 @@
 module Triggerfish.Balistes.View.Fixed
   ( fixedSvg
   , cellStrip
-  , patternChips
   ) where
 
 import Prelude
@@ -23,7 +22,7 @@ import Triggerfish.Balistes.Pattern as P
 import Triggerfish.Transport (Sounding(..))
 import Triggerfish.Balistes.Types (Action(..), Active(..), NoteRef(..), State, activePattern)
 import Triggerfish.Balistes.Widgets
-  ( stepBtn, chip, newChip, svgMouse, svgRect, noteTag, laneColor, concatMap' )
+  ( stepBtn, svgMouse, svgRect, noteTag, laneColor, concatMap' )
 
 -- The per-cell editor, as a HORIZONTAL strip that rides in the RYTM band header
 -- and appears only while a cell is selected. Was a whole 240px NOTE column that
@@ -70,15 +69,6 @@ paramCell label val dec inc =
 condDisplay :: P.TrigCond -> String
 condDisplay P.CAlways = "ALWAYS"
 condDisplay c = P.condLabel c
-
--- The user-rhythm library as chips. Moved off the surface into the preset modal
--- (it was a 14-chip wall eating the top of the pattern pane); the band header
--- now shows only the CURRENT rhythm's name, and the modal is where you switch.
-patternChips :: forall m. State -> H.ComponentHTML Action () m
-patternChips s =
-  HH.div [ style "display:flex;gap:6px;flex-wrap:wrap" ]
-    ( mapWithIndex (\i pat -> chip pat.name (s.active == AFixed i) (SelectPattern (AFixed i))) s.library
-        <> [ newChip ] )
 
 -- The fixed-rhythm step grid: one row per used lane (kit name + GM note),
 -- velocity as cell intensity, playhead sweeping the steps.

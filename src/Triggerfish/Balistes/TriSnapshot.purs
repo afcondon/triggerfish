@@ -21,6 +21,8 @@ module Triggerfish.Balistes.TriSnapshot
   , describeTri
   , printTri
   , parseTri
+  , rhythmContent
+  , rhythmOfContent
   ) where
 
 import Prelude
@@ -167,3 +169,35 @@ parseTrig body =
 -- Split on spaces, dropping the empty runs a leading/collapsed space would make.
 words :: String -> Array String
 words = filter (_ /= "") <<< split (Pattern " ")
+
+-- ---------------------------------------------------------------------------
+-- The rhythm name seam
+-- ---------------------------------------------------------------------------
+--
+-- A rhythm's canonical text embeds its name (`balistesPattern "lo house 110" 32`),
+-- but the BANK carries names in its envelope. Storing both would give one rhythm
+-- two names that drift on rename, so bank content is NAME-STRIPPED and the name is
+-- injected back whenever a pattern is handed out — to the editor, to Amphora, to
+-- Calypso. The envelope name is the single source of truth.
+--
+-- Two consequences, both wanted: the glyph fingerprints the SOUND (renaming no
+-- longer changes the content hash, so "identical state => identical glyph" is at
+-- last true for rhythms as the bank always claimed), and there is one rename path
+-- for all three brains.
+--
+-- Verified against all 14 published rhythms: parse -> strip -> print -> parse ->
+-- re-inject reproduces the original text byte-for-byte.
+
+-- | A rhythm's bank content: the `TSFixed` wire tag plus its name-stripped text.
+-- | NB the tag is the frozen `G`, which means RYTM, not GRIDS (see printTri).
+rhythmContent :: FixedPattern -> String
+rhythmContent p = "G\n" <> printPattern (p { name = "" })
+
+-- | Recover a rhythm from bank content with `name` injected from the envelope.
+-- | `Nothing` when the content belongs to another brain or does not parse. Uses
+-- | the same tag-line-then-payload split as `parseTri`, so the two agree.
+rhythmOfContent :: String -> String -> Maybe FixedPattern
+rhythmOfContent name content = case uncons (split (Pattern "\n") content) of
+  Just { head, tail } | trim head == "G" ->
+    (\p -> p { name = name }) <$> parsePattern (joinWith "\n" tail)
+  _ -> Nothing
