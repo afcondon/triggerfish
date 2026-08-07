@@ -4585,11 +4585,13 @@ render st =
 -- | edge by exactly what the river occupies. Two numbers here would drift into
 -- | either a covered control or a seam of paper beside the river.
 -- |
--- | 360px is bounded from above by the CONTEXT bar, whose non-flexible content
--- | measures ~1111px: much wider and the bar's right-hand group (key · scale ·
--- | continuo · help) starts to overflow rather than compress.
+-- | Bounded from above by the CONTEXT bar, whose non-flexible content measures
+-- | ~1111px of a 1512 viewport — and MORE whenever the transient `publishMsg`
+-- | ("scene loaded") is showing, which is exactly what caught the first attempt
+-- | at 360px. 330px leaves room for that message; the message itself now
+-- | ellipsises rather than pushing, so the bar has two defences instead of one.
 riverWidth :: String
-riverWidth = "360px"
+riverWidth = "330px"
 
 -- | How far the docked bars pull their right edge in. Perform is the only stage
 -- | with a river, so it is the only stage that squashes.
@@ -4868,8 +4870,13 @@ stageTabs st =
 contextBar :: forall m. MonadAff m => State -> H.ComponentHTML Action Slots m
 contextBar st =
   HH.div
+    -- `white-space: nowrap` INHERITS, so one declaration here stops every chip in
+    -- the bar breaking its own label across two lines. `flex-wrap: nowrap` alone
+    -- was not enough: it keeps the items on one row, but each item still shrinks
+    -- and wraps its text inside itself — which is what put "scene loaded",
+    -- "horse-bell-bomb" and "continuo ✓" on two lines and grew the bar.
     [ HP.style ( "position: fixed; top: var(--tf-bar); left: 0; right: " <> barRightInset st <> "; z-index: 40; box-sizing: border-box; "
-        <> "display: flex; align-items: center; flex-wrap: nowrap; gap: 10px; padding: 0 12px; height: 44px; overflow: visible; "
+        <> "display: flex; align-items: center; flex-wrap: nowrap; white-space: nowrap; gap: 10px; padding: 0 12px; height: 44px; overflow: visible; "
         <> "background: linear-gradient(#f3eee0,#ece5d0); border-bottom: 1px solid #0000000f; box-shadow: 0 1px 3px #0000000d;" ) ]
     -- LEFT: the stage tabs, then ONLY the controls that mean something in the
     -- stage you're in. RIGHT: the housekeeping and the harmonic authority.
@@ -4888,8 +4895,15 @@ contextBar st =
     ( [ stageTabs st ]
         <> stageControls
         <> [ HH.div [ HP.style "flex: 1 1 auto; min-width: 8px;" ] [] ]
+        -- The one item allowed to give ground. It's transient status, so when the
+        -- bar is tight it should ellipsis rather than push the controls — which is
+        -- what it was doing: "scene loaded" appearing was enough to overflow the
+        -- squashed Perform bar.
         <> [ case st.publishMsg of
-               Just m -> HH.span [ HP.style "font-size: 11px; color: #7a6a3a; font-family: ui-monospace, monospace;" ] [ HH.text m ]
+               Just m -> HH.span
+                 [ HP.style ( "font-size: 11px; color: #7a6a3a; font-family: ui-monospace, monospace; "
+                     <> "flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis;" ) ]
+                 [ HH.text m ]
                Nothing -> HH.text ""
            , sessionMenu
            , divider
