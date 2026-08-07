@@ -257,7 +257,13 @@ handleAction = case _ of
 
   Step tick -> do
     st <- H.get
-    when (st.sounding == Local) case st.active of
+    -- Atlantis keeps the schedulers RUNNING and mutes only the emit — see
+    -- Triggerfish.Transport: "the frontend is muted but keeps its schedulers
+    -- running (lockstep animation)". Gating the whole handler on Local stopped
+    -- the model dead in Atlantis, so the playhead froze and `bal` never
+    -- advanced alongside the BEAM voice it is supposed to co-simulate.
+    let audible = st.sounding == Local
+    case st.active of
       -- A fixed rhythm: derive the step from the tick (no internal navigator),
       -- then emit each used lane's hit verbatim at its kit note + velocity. Reads
       -- `activePattern` so an ephemeral recalled snapshot (scratchFixed) plays too.
@@ -265,7 +271,7 @@ handleAction = case _ of
         Nothing -> pure unit
         Just pat -> do
           let stepMs = 0.25 * 60000.0 / max 30.0 st.clockTempo
-          for_ st.midiOut \out -> liftEffect $
+          when audible $ for_ st.midiOut \out -> liftEffect $
             -- the SHARED fixed-rhythm render (Reef.Balistes.Fixed.renderFixed) — the
             -- exact code the BEAM voice runs, keyed off the same absolute step, so a
             -- pushed fixed rhythm plays in lockstep. The frontend projects its rich
@@ -289,7 +295,7 @@ handleAction = case _ of
           playedStep = bal0.step
           r = M.tick bal0
           stepMs = 0.25 * 60000.0 / max 30.0 st.clockTempo
-        for_ st.midiOut \out -> liftEffect $
+        when audible $ for_ st.midiOut \out -> liftEffect $
           -- the three Grids voices (step-quantised, firmware-faithful), resolved by
           -- the SHARED render decision (Reef.Balistes.Sim.renderStep) — the exact
           -- code the BEAM balistes voice runs. A firing HH that clears the OPEN
@@ -320,7 +326,7 @@ handleAction = case _ of
           step = tick.index `mod` cycleSteps
           stepMs = 0.25 * 60000.0 / max 30.0 st.clockTempo
           fires = Trig.renderTrigStep (resolveTrigKit st.trig) tick.index cycleSteps
-        for_ st.midiOut \out -> liftEffect $
+        when audible $ for_ st.midiOut \out -> liftEffect $
           for_ fires \f ->
             Midi.scheduleNote out
               { channel: drumChannel, note: f.note, velocity: Trig.trigVelocity

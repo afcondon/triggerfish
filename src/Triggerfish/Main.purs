@@ -57,9 +57,11 @@ import Web.HTML.HTMLInputElement as HInput
 import Web.HTML.HTMLTextAreaElement as HTextArea
 import Web.UIEvent.KeyboardEvent as KE
 import Web.UIEvent.KeyboardEvent.EventTypes as KET
+import Binnacle as Binnacle
 import Binnacle.Audio (armAudioKeepAlive)
 import Binnacle.Midi as Midi
 import Binnacle.Time (dateNow)
+import Binnacle.Transport as Transport
 import Triggerfish.Odonus.Grid as Odonus
 import Triggerfish.Balistes.Component as Balistes
 import Triggerfish.Selene.Component as Selene
@@ -75,6 +77,7 @@ import Triggerfish.GlyphView (chipIcons, faIcon)
 import Triggerfish.Scenes as Scenes
 import Triggerfish.Scenes.Store as ScenesStore
 import Triggerfish.Macro.Store as MacroStore
+import Triggerfish.Transport.Store as TransportStore
 import Triggerfish.Midi.Routing as Routing
 import Triggerfish.Clips (MidiClip)
 import Triggerfish.Clips.Store as ClipStore
@@ -118,6 +121,7 @@ data RAction
   | CycleAudition Which              -- routing modal: cycle a machine's audition dest None→Continuo→Midi
   | SetAuditionCh Which String       -- routing modal: set a machine's audition MIDI channel
   | SetMode Mode                -- flip the SOLO⟷ATLANTIS authority
+  | Panic                       -- nav: `hush` the rig — kill every voice, including orphans
   | ArmTab Which                -- toggle one instrument's ARM from the switcher dot
   | JumpVetula Int              -- nav strip: jump Vetula's progression to a chord (live)
   | LoadFromLib Which Int       -- A5: make a saved entry active in its instrument
@@ -247,6 +251,12 @@ type RState =
   -- current playhead (-1 = none). Rendered as a glyph visible in every pane.
   , mode :: Mode
   , harm :: { durs :: Array Int, active :: Int, chord :: String }
+  -- The SHELL's own rig connection, used only for rig-wide commands that belong
+  -- to no single machine — PANIC (`hush`) is the first. Deliberately not routed
+  -- through a machine's socket: panic must work when the machines are in exactly
+  -- the state that makes you reach for it, and it has to reach voices the
+  -- frontend holds no handle on at all (see RIG-ISSUES-2026-08-07 #1).
+  , rig :: Maybe Binnacle.Binnacle
   -- Vetula auto-resync (ATLANTIS): the shell polls Vetula's rig payload and, when
   -- it settles on a new value, re-pushes (SetSounding Rig re-voices) — so the
   -- progression re-voices live with no manual button. `brushSent` = last value
@@ -385,6 +395,7 @@ root =
         , clipLibrary: [], shellMidi: Nothing
         , picked: Nothing, sourceOpen: false, digOpen: false, goTo: [], previewing: []
         , mode: Solo, harm: { durs: [], active: -1, chord: "" }
+        , rig: Nothing
         , brushSent: "", brushPrev: ""
         , armed: Set.empty
         , routing: Map.empty
@@ -418,6 +429,16 @@ handleAction = case _ of
     -- The scene clock: same ~8×/s bar-boundary poll for the Ableton-like grid's
     -- auto-advance (SceneTick is a no-op while the grid isn't running).
     _ <- liftEffect $ setInterval 120 (HS.notify listener SceneTick)
+    -- The shell's own rig socket, for rig-wide commands (PANIC). Opened here so
+    -- it is live regardless of which machines are mounted or healthy.
+    rigBin <- liftEffect $ Binnacle.connect { url: rigUrl, tempo: 120.0 }
+    H.modify_ _ { rig = Just rigBin }
+    -- Restore the authority mode (Solo ⟷ Atlantis). Same discipline as the
+    -- stores below: the user's CHOICE persists, what was playing does not —
+    -- `armed` stays empty, so restoring Atlantis is silent until something is
+    -- published. Absent/unknown tag keeps the Solo default from initialState.
+    mmode <- liftEffect TransportStore.load
+    for_ mmode \m -> H.modify_ _ { mode = m }
     -- Restore the saved scene grid (rig-wide). Playback is NOT restored (sceneRun
     -- stays false) — a reload never auto-plays, mirroring the machines.
     msc <- liftEffect ScenesStore.load
@@ -536,6 +557,26 @@ handleAction = case _ of
   -- unarmed stay Silent. No manual handoff/hush ordering to get wrong.
   SetMode m -> do
     H.modify_ _ { mode = m }
+    -- Remember the authority across reloads. A webapp defaulting to Solo is
+    -- right in isolation but wrong for a member of the Atlantis fleet: a
+    -- reload silently re-routed everything into the browser and the rig
+    -- looked dead. Only the mode is persisted — never `armed`.
+    liftEffect $ TransportStore.save m
+    pushAll
+  -- PANIC. Distinct from ■ STOP, which disarms what the SHELL knows about: this
+  -- tells the RIG to kill every voice it is running, including ones the frontend
+  -- holds no handle on. That distinction is the whole point — a voice orphaned by
+  -- a reload, a mode flip, or a machine that lost its socket is unreachable by
+  -- any per-machine control, and until now was unreachable by anything short of
+  -- restarting the BEAM (RIG-ISSUES-2026-08-07 #1).
+  --
+  -- Fire-and-forget: no reply is awaited, because the case where you press this
+  -- is the case where you least want it to block on a sick connection. Also
+  -- disarms locally, so the UI does not keep claiming things are running.
+  Panic -> do
+    st <- H.get
+    for_ st.rig \bin -> liftEffect $ Transport.send (Binnacle.socket bin) "hush"
+    H.modify_ _ { armed = Set.empty }
     pushAll
   -- The switcher's per-tab play/pause dot: toggle just this machine's arm, then
   -- push its (re-derived) Sounding.
@@ -1892,7 +1933,23 @@ shellBar st =
         ( (if st.amphoraDown then [ amphoraOfflinePill ] else [])
             <> [ harmStrip st ] )
     , modeToggle st
+    , panicButton
     ]
+
+-- PANIC — the rig-wide kill. Deliberately NOT beside ■ STOP: they do different
+-- things (STOP disarms what the shell knows about; this kills everything the rig
+-- is running, orphans included), and a panic control sitting next to a button you
+-- press every few minutes is a mis-click waiting to happen. Outlined rather than
+-- filled so it reads as an emergency affordance and not a transport control.
+panicButton :: forall m. H.ComponentHTML RAction Slots m
+panicButton =
+  HH.button
+    [ HE.onClick \_ -> Panic
+    , HP.title "Silence the rig — kills every voice, including ones this UI can't see"
+    , style $ "flex:0 0 auto;margin-left:10px;padding:6px 14px;border-radius:6px;cursor:pointer;"
+        <> "font-size:11px;letter-spacing:0.16em;text-transform:uppercase;"
+        <> "border:1px solid #9a3120;color:#9a3120;background:transparent;" ]
+    [ HH.text "PANIC" ]
 
 -- The system-tempo control in the nav. Link-locked: a read-only readout of the
 -- live rig tempo with a ⛓ badge (the rig anchor is boss). Free-run: an editable
@@ -2325,3 +2382,10 @@ harmChip active i d =
 
 style :: forall r i. String -> HP.IProp r i
 style = HP.attr (H.AttrName "style")
+
+-- The rig WebSocket. Same endpoint the machine components each connect to; the
+-- shell opens its own so PANIC does not depend on any of them being alive.
+-- (Sixth copy of this constant in the tree — worth collapsing to one shared
+-- definition at some point, but not while chasing a rig bug.)
+rigUrl :: String
+rigUrl = "ws://127.0.0.1:3012/ws"
