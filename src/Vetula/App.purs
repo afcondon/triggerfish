@@ -4580,10 +4580,26 @@ render st =
 -- | newest pinned at the right; older events clip off the left as the row fills
 -- | (one notch per new chord). Phase 1 is read-only — a running trace of what you
 -- | played; Phases 2–3 add span-selection, lift-to-progression, and timing verbs.
+-- | The PERFORM river's width. ONE constant, read by the river column and by both
+-- | docked bars, because the whole arrangement is the bars inseting their right
+-- | edge by exactly what the river occupies. Two numbers here would drift into
+-- | either a covered control or a seam of paper beside the river.
+-- |
+-- | 360px is bounded from above by the CONTEXT bar, whose non-flexible content
+-- | measures ~1111px: much wider and the bar's right-hand group (key · scale ·
+-- | continuo · help) starts to overflow rather than compress.
+riverWidth :: String
+riverWidth = "360px"
+
+-- | How far the docked bars pull their right edge in. Perform is the only stage
+-- | with a river, so it is the only stage that squashes.
+barRightInset :: State -> String
+barRightInset st = if st.stage == Perform then riverWidth else "0"
+
 chyronBar :: forall m. State -> H.ComponentHTML Action Slots m
 chyronBar st =
   HH.div
-    [ HP.style ( "position: fixed; top: calc(var(--tf-bar) + 44px); left: 0; right: 0; z-index: 39; box-sizing: border-box; "
+    [ HP.style ( "position: fixed; top: calc(var(--tf-bar) + 44px); left: 0; right: " <> barRightInset st <> "; z-index: 39; box-sizing: border-box; "
         <> "display: flex; gap: 10px; align-items: center; padding: 3px 12px; min-height: 44px; overflow: hidden; "
         -- shift-click is a selection gesture here (extend the range), so kill the
         -- browser's own shift-click text selection across the bar. user-select
@@ -4852,7 +4868,7 @@ stageTabs st =
 contextBar :: forall m. MonadAff m => State -> H.ComponentHTML Action Slots m
 contextBar st =
   HH.div
-    [ HP.style ( "position: fixed; top: var(--tf-bar); left: 0; right: 0; z-index: 40; box-sizing: border-box; "
+    [ HP.style ( "position: fixed; top: var(--tf-bar); left: 0; right: " <> barRightInset st <> "; z-index: 40; box-sizing: border-box; "
         <> "display: flex; align-items: center; flex-wrap: nowrap; gap: 10px; padding: 0 12px; height: 44px; overflow: visible; "
         <> "background: linear-gradient(#f3eee0,#ece5d0); border-bottom: 1px solid #0000000f; box-shadow: 0 1px 3px #0000000d;" ) ]
     -- LEFT: the stage tabs, then ONLY the controls that mean something in the
@@ -5288,6 +5304,26 @@ perfRecallModal st =
 -- | constant speed. A river, NOT the whole-session fit: the fit renderer rescales on
 -- | every new note (the roll lurches) and squeezes its marks toward slivers as the
 -- | take grows. That renderer is right for REPLAY and wrong here.
+-- | The river as a FIXED column running from the shell nav to the window bottom,
+-- | mirroring Odonus's full-height capture surface. It used to be a flex sibling
+-- | of the voices inside the padded stage, which left a 30px seam of paper between
+-- | it and the bars above — the padding was doing its job, but the river is not
+-- | stage content and should not be inset by the stage's margin.
+-- |
+-- | The two docked bars inset their right edge by `riverWidth` instead, so nothing
+-- | is covered: the CONTEXT and AUDITION bars squash leftward and the river owns
+-- | its column outright.
+-- |
+-- | z-index sits BELOW both bars deliberately. If the CONTEXT bar's content ever
+-- | outgrows the squashed width, it overflows visibly over the river rather than
+-- | being silently painted under it — a visible bug beats an unclickable control.
+riverColumn :: forall m. State -> H.ComponentHTML Action Slots m
+riverColumn st =
+  HH.div
+    [ HP.style ( "position: fixed; top: var(--tf-bar); right: 0; bottom: 0; width: " <> riverWidth <> "; "
+        <> "z-index: 38; display: flex; flex-direction: column; background: #0b0a07; border-left: 1px solid #2a281f;" ) ]
+    [ riverPane st ]
+
 riverPane :: forall m. State -> H.ComponentHTML Action Slots m
 riverPane st =
   HH.div
@@ -5352,29 +5388,25 @@ reviewSurface st =
 performSurface :: forall m. State -> H.ComponentHTML Action Slots m
 performSurface st =
   HH.div
-    [ HP.style "position: absolute; inset: 0; display: flex; flex-direction: column; align-items: stretch; justify-content: flex-start; gap: 22px; padding: 30px 28px;" ]
-    ( body <> [ perfEditModal st, perfPhrasePickModal st, perfRecallModal st ] )
+    [ HP.style ( "position: absolute; inset: 0; display: flex; flex-direction: column; align-items: stretch; "
+        <> "justify-content: flex-start; gap: 22px; padding: 30px 28px; padding-right: calc(" <> riverWidth <> " + 28px);" ) ]
+    ( body <> [ riverColumn st, perfEditModal st, perfPhrasePickModal st, perfRecallModal st ] )
   where
   body =
       [ HH.div
-          [ HP.style "flex: 1 1 auto; min-height: 0; display: flex; align-items: stretch; gap: 18px; width: 100%;" ]
-          [ HH.div
-              -- the voices: two thirds, and they scroll on their own if they outgrow it
-              [ HP.style "flex: 2 1 0; min-width: 0; display: flex; flex-direction: column; gap: 22px; overflow-y: auto;" ]
-              -- FX palette floated to the top of the surface (holding pattern — its final
-              -- home and framing, "training wheels for Tidal" vs "starter-pack
-              -- suggestions", is a parked design question). AC, 2026-08-03.
-              -- The scene/session controls (save · new session · scenes · the 3-glyph
-              -- badge) live in the secondary nav's session menu (⋯).
-              [ fxPalette st
-              , HH.div
-                  [ HP.style "display: flex; gap: 18px; flex-wrap: wrap; justify-content: flex-start; align-items: flex-start; width: 100%;" ]
-                  (mapWithIndex (perfBox st) st.perfBoxes <> [ addPlayerTile ])
-              ]
+          -- the voices now take the full surface; the river is no longer a flex
+          -- sibling but a fixed column, so the padding-right above is what keeps
+          -- the cards clear of it.
+          [ HP.style "flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; gap: 22px; width: 100%; overflow-y: auto;" ]
+          -- FX palette floated to the top of the surface (holding pattern — its final
+          -- home and framing, "training wheels for Tidal" vs "starter-pack
+          -- suggestions", is a parked design question). AC, 2026-08-03.
+          -- The scene/session controls (save · new session · scenes · the 3-glyph
+          -- badge) live in the secondary nav's session menu (⋯).
+          [ fxPalette st
           , HH.div
-              -- the roll: one third, full height, bleeding to the right/bottom edges
-              [ HP.style "flex: 1 1 0; min-width: 0; margin: 0 -28px -30px 0; display: flex; flex-direction: column; background: #0b0a07; border-left: 1px solid #2a281f; border-top: 1px solid #2a281f;" ]
-              [ riverPane st ]
+              [ HP.style "display: flex; gap: 18px; flex-wrap: wrap; justify-content: flex-start; align-items: flex-start; width: 100%;" ]
+              (mapWithIndex (perfBox st) st.perfBoxes <> [ addPlayerTile ])
           ]
       ]
 
