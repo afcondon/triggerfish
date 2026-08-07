@@ -1,20 +1,20 @@
 -- | PLAYHEADS panel — the extracted Fugue-Machine head bank: the 16-combination
 -- | head-activation matrix and the four head strips (mute, pattern thumbnail,
 -- | direction / speed / interval / offset / length knobs).
-module Triggerfish.Odonus.View.Playheads (playheadsPanel) where
+module Triggerfish.Odonus.View.Playheads (playheadsPanel, euclidBounds) where
 
 import Prelude
 
 import Data.Array (findIndex, mapWithIndex, range, (!!))
 import Data.Int (round, toNumber)
 import Data.Int.Bits (and, shr)
-import Data.Maybe (fromMaybe, maybe)
-import Data.Number (cos, pi, sin) as Num
+import Data.Maybe (Maybe(..), fromMaybe, maybe)
 import Data.String.Common (joinWith)
 import Halogen as H
 import Halogen.HTML as HH
 import Halogen.HTML.Events as HE
 import Halogen.HTML.Properties as HP
+import Triggerfish.Ui.Euclid as Euclid
 import Triggerfish.Odonus.Model as M
 import Triggerfish.Odonus.Grid.Types (Action(..), KnobTarget(..), Slots, State)
 import Triggerfish.Odonus.Grid.Widgets
@@ -103,10 +103,18 @@ comboBar on h =
 headBank :: forall m. State -> H.ComponentHTML Action Slots m
 headBank s =
   HH.div [ style "display:flex;flex-direction:column;gap:8px" ]
-    (mapWithIndex headStrip s.odo.heads)
+    (mapWithIndex (headStrip s) s.odo.heads)
 
-headStrip :: forall m. Int -> M.Head -> H.ComponentHTML Action Slots m
-headStrip h hd =
+-- | Odonus's Euclid limits. Sixteen, and not by taste: `Reef.Odonus.stepHead`
+-- | clamps `esteps` to 1..16 as it runs, so a wider ring here would draw steps
+-- | the engine never plays — and the engine is shared with the BEAM, where the
+-- | conformance suite pins the behaviour. Raise it in reef first, on both
+-- | runtimes, and this follows.
+euclidBounds :: Euclid.Bounds
+euclidBounds = Euclid.boundedBy 16
+
+headStrip :: forall m. State -> Int -> M.Head -> H.ComponentHTML Action Slots m
+headStrip s h hd =
   let
     col = headColor h
     dim = if hd.mute then "opacity:0.42;" else ""
@@ -125,72 +133,41 @@ headStrip h hd =
               [ patBlock h pat col hd.seqPos
               , dirRadio h hd.direction col
               ]
-          , euclidCell h hd col
+          , euclidCell s h hd col
           , miniKnob (HeadTransp h) hd.transp col "INT" (signed hd.transp)
           ]
       ]
 
--- | The head's Euclidean gate E(pulses, steps) as a Selene-style dot ring — n dots
--- | around the circle, the k pulses filled, the live step ringed, "k/n" at centre —
--- | with four corner clickers: top nudges pulses (k−/k+), bottom nudges steps (n−/n+).
--- | The model clamps (pulses 0..16, steps 1..16), so the clickers can't run past.
-euclidCell :: forall m. Int -> M.Head -> String -> H.ComponentHTML Action Slots m
-euclidCell h hd col =
-  HH.div [ style "position:relative;width:82px;height:82px;flex:0 0 auto" ]
-    [ euclidRing 82.0 hd.pulses hd.esteps hd.seqPos col
-    , cornerBtn "top:0;left:0" "k−" (NudgeHeadPulses h (-1))
-    , cornerBtn "top:0;right:0" "k+" (NudgeHeadPulses h 1)
-    , cornerBtn "bottom:0;left:0" "n−" (NudgeHeadSteps h (-1))
-    , cornerBtn "bottom:0;right:0" "n+" (NudgeHeadSteps h 1)
-    ]
+-- | The head's Euclidean gate E(pulses, steps), drawn by the shared control
+-- | (`Triggerfish.Ui.Euclid`) — the same instrument as Selene's POLYEUCLID slots.
+-- | Click selects the ring, arrows then edit it: ←/→ steps (n), ↑/↓ pulses (k),
+-- | shift for a four-step stride. This replaced four corner ± clickers, which
+-- | were four targets for what is really two axes.
+euclidCell :: forall m. State -> Int -> M.Head -> String -> H.ComponentHTML Action Slots m
+euclidCell s h hd col =
+  Euclid.cell (euclidStyle col) euclidChrome
+    { selected: s.selEuclid == Just h
+    , onSelect: SelectEuclid h
+    , onKey: EuclidKey
+    }
+    (Just hd.seqPos)
+    { beats: hd.pulses, steps: hd.esteps }
 
--- | The dot ring itself. Consistent with Selene's Euclid rings: dots evenly round
--- | the circle (12 o'clock = step 0, clockwise), filled where E(k,n) pulses, the
--- | current playhead step outlined in ink.
-euclidRing :: forall m. Number -> Int -> Int -> Int -> String -> H.ComponentHTML Action Slots m
-euclidRing sz k n seqPos col =
-  let
-    c = sz / 2.0
-    r = c - 12.0
-    steps = max 1 n
-    cur = seqPos `mod` steps
-    r2 x = toNumber (round (x * 100.0)) / 100.0
-    dotFor i =
-      let
-        ang = (toNumber i / toNumber steps) * 2.0 * Num.pi - Num.pi / 2.0
-        on = M.euclidHit k n i
-        live = i == cur
-      in
-        svgEl "circle"
-          [ svgAttr "cx" (show (r2 (c + r * Num.cos ang)))
-          , svgAttr "cy" (show (r2 (c + r * Num.sin ang)))
-          , svgAttr "r" (if on then "4.0" else "2.6")
-          , svgAttr "fill" (if on then col else "none")
-          , svgAttr "stroke" (if live then "#3f3c33" else col)
-          , svgAttr "stroke-width" (if live then "1.6" else (if on then "0" else "1")) ] []
-  in
-    svgEl "svg"
-      [ svgAttr "viewBox" ("0 0 " <> show sz <> " " <> show sz)
-      , svgAttr "width" (show sz), svgAttr "height" (show sz), svgAttr "style" "display:block" ]
-      ( map dotFor (range 0 (steps - 1))
-          <>
-            [ svgEl "text"
-                [ svgAttr "x" (show c), svgAttr "y" (show (c + 4.0)), svgAttr "text-anchor" "middle"
-                , svgAttr "fill" "#3f3c33", svgAttr "font-family" "'SF Mono',Menlo,monospace"
-                , svgAttr "font-size" "15" ]
-                [ HH.text (show (min k n) <> "/" <> show n) ]
-            ]
-      )
+-- | Odonus's dressing for the shared ring: the voice's own colour, the live step
+-- | outlined in ink, sized to the voice strip.
+euclidStyle :: String -> Euclid.Style
+euclidStyle col = Euclid.defaultStyle
+  { size = 82.0, inset = 12.0, dotOn = 4.0, dotOff = 2.6
+  , fill = col, ink = "#3f3c33", fontSize = 15.0, stretch = false
+  }
 
--- | A small absolutely-positioned +/− clicker sitting in one corner of the ring box.
-cornerBtn :: forall m. String -> String -> Action -> H.ComponentHTML Action Slots m
-cornerBtn pos label act =
-  HH.button
-    [ HE.onClick \_ -> act
-    , style $ "position:absolute;" <> pos <> ";width:17px;height:14px;padding:0;cursor:pointer;"
-        <> "border:1px solid #a8a392;border-radius:4px;background:linear-gradient(#efece1,#ddd9cb);"
-        <> "font-family:'SF Mono',Menlo,monospace;font-size:8px;line-height:1;color:#5a564b" ]
-    [ HH.text label ]
+-- | The selection box, tuned for the `#cbc6b6` voice strip rather than Selene's
+-- | white slot row.
+euclidChrome :: Euclid.Chrome
+euclidChrome =
+  { idle: "background:transparent;border:1px solid transparent;"
+  , active: "background:#ffffff44;border:1px solid #3f3c33;"
+  }
 
 -- | SPEED as a single wide radio row across the top of the strip: every ratio in
 -- | M.speedTable as a chip, the live one lit. flex-wrap so adding dotted values

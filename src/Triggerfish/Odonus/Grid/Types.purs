@@ -34,6 +34,7 @@ import Data.Array (length)
 import Data.Maybe (Maybe(..))
 import Halogen as H
 import Halogen.Widgets.Select as Select
+import Web.UIEvent.KeyboardEvent (KeyboardEvent)
 import Reef.Input as RI
 import Triggerfish.Odonus.Model as M
 import Triggerfish.Odonus.Marbles as Marbles
@@ -287,6 +288,10 @@ type State =
   , notes :: Array NoteEvent
   , logbook :: Logbook            -- always-on performance capture (#151)
   , stage :: Stage                -- Perform (the instrument) | Review (the capture surface)
+  , selEuclid :: Maybe Int        -- which voice's Euclid ring is selected for arrow-key
+                                  -- editing (`Triggerfish.Ui.Euclid`); Nothing = none.
+                                  -- Selection-before-editing, as in Selene: the ring is
+                                  -- read at a glance and changed deliberately.
   , navScenes :: Boolean          -- Odonus's secondary-nav scene menu open?
   , playing :: Maybe PlayState    -- a REPLAY loop in flight (Nothing = not replaying)
   , regionDrag :: Maybe RegionDrag  -- a loop-region resize/slide in progress
@@ -365,8 +370,10 @@ data Action
   | CyclePattern Int
   | SetHeadDir Int Int      -- head, direction (0 fwd / 1 back / 2 pend) — radio
   | SetHeadSpeed Int Int    -- head, speedIx — two-row speed radio
-  | NudgeHeadPulses Int Int  -- head, ±delta (k) — Euclidean-circle corner clicker (relative)
-  | NudgeHeadSteps Int Int   -- head, ±delta (n) — Euclidean-circle corner clicker (relative)
+  | NudgeHeadPulses Int Int  -- head, ±delta (k) — relative Euclid edit
+  | NudgeHeadSteps Int Int   -- head, ±delta (n) — relative Euclid edit
+  | SelectEuclid Int         -- click a voice's Euclid ring: select it for arrow-key editing
+  | EuclidKey KeyboardEvent  -- a keystroke on the focused ring; arrows nudge k / n
   | UnifyHeads
   | PhaseShift Int          -- Reichian PHASE ±: rotate the whole canon
   | CycleScaleType Int

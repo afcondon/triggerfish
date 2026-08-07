@@ -25,7 +25,6 @@ import Web.Event.Event (preventDefault)
 import Data.Int (round, toNumber)
 import Data.Map (Map)
 import Data.Map as Map
-import Data.Number (cos, pi, sin) as Num
 import Data.String as Str
 import Data.String.Common (joinWith)
 import Effect.Aff (attempt)
@@ -45,6 +44,8 @@ import Binnacle.Midi as Midi
 import Binnacle.Scheduler as Scheduler
 import Binnacle.Transport as Transport
 import Triggerfish.Odonus.Grid.Widgets (engrave, style, svgAttr, svgEl)
+import Triggerfish.Ui.Euclid (Nudge(..))
+import Triggerfish.Ui.Euclid as Euclid
 import Triggerfish.Selene.Model as M
 import Triggerfish.Selene.Source as Source
 import Triggerfish.Selene.Store as Store
@@ -503,16 +504,13 @@ ink = "#2b2922"
 -- Direct-manipulation slot editing (mouse-select + arrow-key nudge)
 -- ---------------------------------------------------------------------------
 
--- | Arrow direction. The convention: →/↑ increase, ←/↓ decrease.
-data NudgeDir = NLeft | NRight | NUp | NDown
+-- | Arrow direction. The convention: →/↑ increase, ←/↓ decrease. Defined once,
+-- | in `Triggerfish.Ui.Euclid` — the Euclid rings are the shared control, and the
+-- | other three slot kinds ride the same key vocabulary rather than a parallel one.
+type NudgeDir = Euclid.Nudge
 
 dirOf :: String -> Maybe NudgeDir
-dirOf = case _ of
-  "ArrowLeft" -> Just NLeft
-  "ArrowRight" -> Just NRight
-  "ArrowUp" -> Just NUp
-  "ArrowDown" -> Just NDown
-  _ -> Nothing
+dirOf = Euclid.dirOf
 
 -- | The generator kind of destination `d` (for the LFO re-click-to-cycle rule).
 kindAt :: Int -> State -> Maybe M.GenKind
@@ -555,16 +553,17 @@ nudgeLfo dir shift sl = case dir of
   rStep = if shift then 1.0 else 0.1
   aStep = if shift then 0.5 else 0.05
 
--- Euclid: ←/→ n (steps), ↑/↓ k (beats); beats stay clamped inside steps.
+-- Euclid: ←/→ n (steps), ↑/↓ k (beats) — the shared widget's arithmetic, applied
+-- to the slot's own two fields. Selene's ceiling is generous: the polysignal
+-- generator takes the ring as a period, so a long cycle is a legitimate patch
+-- rather than an unreadable picture.
+euclidBounds :: Euclid.Bounds
+euclidBounds = Euclid.boundedBy 64
+
 nudgeEuclid :: NudgeDir -> Boolean -> M.EuclidSlot -> M.EuclidSlot
-nudgeEuclid dir shift sl = case dir of
-  NRight -> retab (sl.steps + st)
-  NLeft -> retab (sl.steps - st)
-  NUp -> sl { beats = clamp 0 sl.steps (sl.beats + st) }
-  NDown -> sl { beats = clamp 0 sl.steps (sl.beats - st) }
-  where
-  st = if shift then 4 else 1
-  retab n = let ns = clamp 1 32 n in sl { steps = ns, beats = clamp 0 ns sl.beats }
+nudgeEuclid dir shift sl =
+  let e = Euclid.nudge euclidBounds dir shift { beats: sl.beats, steps: sl.steps }
+  in sl { beats = e.beats, steps = e.steps }
 
 -- Clock: ←/→ walk a slow→fast ladder that runs through DIVISION (below ×1, via
 -- a longer base) as well as multiplication; ↑/↓ pulse width %. Shift = coarse.
@@ -928,40 +927,16 @@ lfoShapeHint sl =
 -- --- POLYEUCLID: a ring of step-dots with k / n in the centre ----------------
 
 euclidInner :: forall m. M.EuclidSlot -> Array (H.ComponentHTML Action Slots m)
-euclidInner sl = [ ringFigure 64.0 sl.beats sl.steps ]
+euclidInner sl = [ Euclid.ring euclidStyle Nothing { beats: sl.beats, steps: sl.steps } ]
 
--- | The Euclidean ring — a dot per step, filled on a pulse, k/n in the centre.
--- | Drawn for every POLYEUCLID slot (structure-driven viz).
-ringFigure :: forall m. Number -> Int -> Int -> H.ComponentHTML Action Slots m
-ringFigure sz k n =
-  let
-    c = sz / 2.0
-    r = c - 8.0
-    bits = M.euclidBits { beats: k, steps: n, rate: 0, accentRate: 0 }
-    nb = length bits
-    dotFor i on =
-      let
-        ang = (toNumber i / toNumber (max 1 nb)) * 2.0 * pi - pi / 2.0
-        dx = c + r * cos ang
-        dy = c + r * sin ang
-        rad = if on then 3.4 else 2.0
-      in
-        svgEl "circle"
-          [ svgAttr "cx" (show (round2 dx)), svgAttr "cy" (show (round2 dy)), svgAttr "r" (show rad)
-          , svgAttr "fill" (if on then accent else "none")
-          , svgAttr "stroke" accent, svgAttr "stroke-width" (if on then "0" else "1") ] []
-  in
-    svgEl "svg"
-      [ svgAttr "viewBox" ("0 0 " <> show sz <> " " <> show sz), svgAttr "width" "100%"
-      , svgAttr "height" (show sz), svgAttr "style" "display:block" ]
-      ( mapWithIndex dotFor bits
-          <> [ svgEl "text"
-                 [ svgAttr "x" (show c), svgAttr "y" (show (c + 4.0)), svgAttr "text-anchor" "middle"
-                 , svgAttr "fill" ink, svgAttr "font-family" "'SF Mono',Menlo,monospace"
-                 , svgAttr "font-size" "13" ]
-                 [ HH.text (show k <> "/" <> show n) ]
-             ]
-      )
+-- | Selene's dressing for the shared ring: steel-blue dots, no playhead (a
+-- | polysignal Euclid is a shape handed to the daemon, not a thing this pane
+-- | clocks), sized to sit in the 70px slot cell.
+euclidStyle :: Euclid.Style
+euclidStyle = Euclid.defaultStyle
+  { size = 64.0, inset = 8.0, dotOn = 3.4, dotOff = 2.0
+  , fill = accent, ink = ink, fontSize = 13.0
+  }
 
 -- --- POLYCLOCK: a list of division numbers -----------------------------------
 
@@ -1011,15 +986,6 @@ sourcePanel s =
 -- ---------------------------------------------------------------------------
 -- helpers
 -- ---------------------------------------------------------------------------
-
-pi :: Number
-pi = Num.pi
-
-cos :: Number -> Number
-cos = Num.cos
-
-sin :: Number -> Number
-sin = Num.sin
 
 abs :: Number -> Number
 abs x = if x < 0.0 then -x else x

@@ -39,10 +39,11 @@ import Binnacle.Transport as Transport
 import Reef.Input as RI
 import Reef.PitchSet (PitchSet(..))
 import Reef.Protocol (encodeSim, encodeTagged)
-import Web.Event.Event (EventType(..))
+import Web.Event.Event (EventType(..), preventDefault)
 import Web.Event.EventTarget (addEventListener, eventListener, removeEventListener)
 import Web.HTML (window)
 import Web.HTML.Window as Window
+import Web.UIEvent.KeyboardEvent as KE
 import Web.UIEvent.MouseEvent as ME
 import Triggerfish.Odonus.Grid.Types
   ( Action(..), GenKind(..), KnobTarget(..), SourceTag(..), Stage(..), stagePath, stageFromPath, RegionEdge(..), PlaySource(..), TwisterField(..), Logbook, NoteEvent, Slots, State, applyTarget, genDefaultAmt, genDefaultRate, genKinds, genLabel
@@ -53,6 +54,8 @@ import Triggerfish.Odonus.Grid.Widgets (clampI, style)
 import Triggerfish.Odonus.Logbook as Logbook
 import Triggerfish.Odonus.View.Scope (scopePanel)
 import Triggerfish.Odonus.View.Playheads (playheadsPanel)
+import Triggerfish.Odonus.View.Playheads as Playheads
+import Triggerfish.Ui.Euclid as Euclid
 import Triggerfish.Odonus.View.Grid (gridPanel)
 import Triggerfish.Odonus.View.Replay (replayPanel)
 import Triggerfish.Odonus.View.Nav (navBar)
@@ -82,7 +85,7 @@ component =
   H.mkComponent
     { initialState: \_ ->
         { odo: M.defaultOdonus, sounding: Silent, dragging: Nothing, dragSub: Nothing
-        , notes: [], logbook: Logbook.emptyLog, stage: Perform, navScenes: false, playing: Nothing, regionDrag: Nothing, contextOpen: false, clips: [], twisterField: FNote, binnacle: Nothing, nowMicros: 0.0
+        , notes: [], logbook: Logbook.emptyLog, stage: Perform, selEuclid: Nothing, navScenes: false, playing: Nothing, regionDrag: Nothing, contextOpen: false, clips: [], twisterField: FNote, binnacle: Nothing, nowMicros: 0.0
         , midiOut: Nothing, midiName: "…", clockTempo: 120.0, clockLocked: false
         , clockBeat: 0.0, clockBar: 0, anchorCount: 0
         , scenes: [], sceneNameInput: "", publishMsg: Nothing
@@ -577,6 +580,25 @@ dispatch = case _ of
   -- buffered for the rig (an absolute current±1 would re-read the stale value).
   NudgeHeadPulses h d -> enqueue (RI.NudgeHeadPulses h d)
   NudgeHeadSteps h d -> enqueue (RI.NudgeHeadEuclidSteps h d)
+  -- Click a voice's Euclid ring to select it; arrows then edit it (Selene's idiom,
+  -- now the shared one). Selecting is local-only — it changes what you're pointing
+  -- at, not what the rig plays, so it never goes near the lockstep queue.
+  SelectEuclid h -> H.modify_ \s -> s { selEuclid = Just h }
+  -- An arrow on the focused ring. The shared widget turns the keystroke into ONE
+  -- signed axis edit, which then rides the existing relative inputs — so a burst of
+  -- arrow presses accumulates correctly while the edits are buffered for the rig,
+  -- exactly as the corner clickers did.
+  EuclidKey ev -> do
+    s <- H.get
+    for_ s.selEuclid \h ->
+      for_ (Euclid.dirOf (KE.key ev)) \dir ->
+        for_ (s.odo.heads !! h) \hd -> do
+          liftEffect (preventDefault (KE.toEvent ev))
+          let cur = { beats: hd.pulses, steps: hd.esteps }
+              d = Euclid.stepOf Playheads.euclidBounds dir (KE.shiftKey ev) cur
+          when (d.amount /= 0) $ enqueue $ case d.axis of
+            Euclid.Beats -> RI.NudgeHeadPulses h d.amount
+            Euclid.Steps -> RI.NudgeHeadEuclidSteps h d.amount
   UnifyHeads -> enqueue RI.UnifyHeads
   PhaseShift d -> enqueue (RI.NudgeOffsets d)
   CycleScaleType dir -> enqueue (RI.CycleScaleType dir)
