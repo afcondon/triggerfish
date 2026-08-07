@@ -5373,7 +5373,11 @@ reviewSurface st =
   HH.div
     [ HP.style "position: absolute; inset: 0; display: flex; flex-direction: column; align-items: stretch; padding: 30px 28px;" ]
     [ HH.div
-        [ HP.style "flex: 1 1 auto; min-height: 0; margin: 0 -28px -30px -28px; display: flex; flex-direction: column; background: #0b0a07; border-top: 1px solid #2a281f;" ]
+        -- Bleeds on all four sides, the top included: the capture surface is the
+        -- whole stage here, not something laid out within it, so the stage's
+        -- padding-top would only show as a seam of paper under the AUDITION bar.
+        -- Same reasoning as Perform's river column.
+        [ HP.style "flex: 1 1 auto; min-height: 0; margin: -30px -28px -30px -28px; display: flex; flex-direction: column; background: #0b0a07; border-top: 1px solid #2a281f;" ]
         [ capturePane st ]
     ]
 
