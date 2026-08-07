@@ -4908,22 +4908,52 @@ contextBar st =
            , sessionMenu
            , divider
            ]
-        -- The harmonic column: Vetula's key and scale are the SOURCE of the pitch
-        -- set in the shell's top nav and of Odonus's inherited-context readout, so
-        -- all three stack in the same place on the right. Editable here, read-only
-        -- in the two bars that display it.
-        <> [ HH.slot (Proxy :: _ "keySelect") unit Select.component
-               ((Select.defaultInput keyOptions) { selected = Just (show st.key.tonic), placeholder = "Key", minWidth = Just "72px" })
-               \(Select.Selected v) -> SelectKey v
-           , HH.slot (Proxy :: _ "scaleSelect") unit Select.component
-               ((Select.cascadingInput modeGroups) { selected = Just (currentModeValue st.key.mode), searchable = true })
-               \(Select.Selected v) -> SelectScale v
-           , divider
-           , midiChip st.midiName
+        -- The harmonic column — HUNT ONLY. Vetula's key and scale are the source of
+        -- the pitch set in the shell's top nav and of Odonus's inherited-context
+        -- readout, so the VALUE still travels everywhere; it is the CONTROL that
+        -- has no business in Perform or Review.
+        --
+        -- Removed from those two stages 2026-08-07 (AC), for three reasons that
+        -- turn out to be one:
+        --
+        --   * The chord sets are deliberately free — borrowed chords, and
+        --     progressions assembled across incompatible scales. A performance
+        --     built that way is not "in a key", so offering to change its key
+        --     asks a question the material cannot answer.
+        --   * A global mode switch is un-Tidal. Transposition belongs in the
+        --     pattern language, as a function over voices, not as an ambient
+        --     setting the whole surface sits inside.
+        --   * It moved the music without moving its identity. `transposeChord`
+        --     keeps the chord id, a token's glyph is frozen at save time from its
+        --     own event content, and the boxes read that snapshot while `buildPerf`
+        --     sends the rig the live (transposed) path — so one glyph could name
+        --     two different chord sets, differently on Solo and on Atlantis.
+        --
+        -- That last one is the real indictment: Solo and Atlantis are supposed to
+        -- be the same computation with the same result, and a stage-level key was
+        -- a lever that could quietly break that equivalence.
+        --
+        -- What may replace it: a Tidal-style transposition over all voices, or a
+        -- transposition MAPPED over selected ones. Both are pattern functions, so
+        -- both keep the identity honest. Neither is built.
+        <> (if isHunt st.stage then harmonicColumn else [])
+        <> [ midiChip st.midiName
            , HH.button [ HP.style helpBtnStyle, HP.title "keys & help", HE.onClick \_ -> ToggleHelp ] [ HH.text "ⓘ" ]
            ]
     )
   where
+  -- Key · scale · divider. Only mounted in Hunt (see the note at the call site),
+  -- so the Select children only exist where they can mean something.
+  harmonicColumn =
+    [ HH.slot (Proxy :: _ "keySelect") unit Select.component
+        ((Select.defaultInput keyOptions) { selected = Just (show st.key.tonic), placeholder = "Key", minWidth = Just "72px" })
+        \(Select.Selected v) -> SelectKey v
+    , HH.slot (Proxy :: _ "scaleSelect") unit Select.component
+        ((Select.cascadingInput modeGroups) { selected = Just (currentModeValue st.key.mode), searchable = true })
+        \(Select.Selected v) -> SelectScale v
+    , divider
+    ]
+
   -- The stage-specific group. HUNT gets its projection picker and the pool
   -- controls; PERFORM and REVIEW share the capture controls, deliberately
   -- identical and in the same place, so ◆ mark doesn't move when you change
