@@ -22,13 +22,13 @@ module Triggerfish.Odonus.View.Nav (navBar) where
 
 import Prelude
 
-import Data.Array (length, null)
+import Data.Array (concatMap, length, null)
 import Halogen as H
 import Halogen.HTML as HH
 import Halogen.HTML.Events as HE
 import Halogen.HTML.Properties as HP
 import Triggerfish.Odonus.Grid.Types (Action(..), Stage(..), Slots, State)
-import Triggerfish.Odonus.Grid.Widgets (style)
+import Triggerfish.Odonus.Grid.Widgets (engrave, style)
 import Triggerfish.Odonus.Logbook (noteCount)
 import Triggerfish.Odonus.View.Key (contextStrip)
 import Triggerfish.Odonus.View.Scenes (sceneMenuBody)
@@ -42,11 +42,27 @@ navBar s =
     ( [ stageTabs s ]
         <> captureControls s
         <> [ HH.div [ style "flex:1 1 auto;min-width:8px" ] []
+           , voiceCfgBtn s
+           , divider
            , sceneMenu s
            , divider
            , contextStrip s
            ]
     )
+
+-- | Open VOICE ROUTING. Shows a count when any head drives an envelope, so the
+-- | fact that notes are also firing FH-2 envelopes is visible from the nav rather
+-- | than only discoverable by opening the modal.
+voiceCfgBtn :: forall m. State -> H.ComponentHTML Action Slots m
+voiceCfgBtn s =
+  let n = length (concatMap _.envs s.voices)
+  in HH.button
+       [ HE.onClick \_ -> OpenVoiceCfg
+       , HP.title "voice routing — which FH-2 envelopes each head fires"
+       , style $ engrave <> ";font-size:8px;letter-spacing:0.1em;padding:3px 9px;border-radius:5px;"
+           <> "cursor:pointer;border:1px solid #00000026;color:#3f3c33;"
+           <> "background:linear-gradient(#e9e5d9,#dcd8c9)" ]
+       [ HH.text (if n == 0 then "VOICES" else "VOICES \x00b7 " <> show n) ]
 
 divider :: forall m. H.ComponentHTML Action Slots m
 divider = HH.div [ style "width:1px;height:20px;background:#00000018" ] []

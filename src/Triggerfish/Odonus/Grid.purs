@@ -9,7 +9,7 @@ module Triggerfish.Odonus.Grid (component, Output(..)) where
 
 import Prelude
 
-import Data.Array (any, concatMap, deleteAt, elem, filter, find, findIndex, head, length, mapWithIndex, modifyAt, null, range, replicate, updateAt, (!!))
+import Data.Array (any, concatMap, deleteAt, elem, filter, find, findIndex, head, length, mapWithIndex, modifyAt, null, range, replicate, snoc, sort, updateAt, (!!))
 import Data.Foldable (foldl, for_)
 import Data.FoldableWithIndex (forWithIndex_)
 import Data.Int (ceil, floor, round, toNumber)
@@ -25,6 +25,8 @@ import Data.String.CodeUnits (take)
 import Effect.Timer (setInterval)
 import Halogen as H
 import Halogen.HTML as HH
+import Halogen.HTML.Events as HE
+import Halogen.HTML.Properties as HP
 import Halogen.Subscription as HS
 import Triggerfish.Odonus.Model as M
 import Triggerfish.Odonus.Marbles as Marbles
@@ -47,10 +49,11 @@ import Web.UIEvent.KeyboardEvent as KE
 import Web.UIEvent.MouseEvent as ME
 import Triggerfish.Odonus.Grid.Types
   ( Action(..), GenKind(..), KnobTarget(..), SourceTag(..), Stage(..), stagePath, stageFromPath, RegionEdge(..), PlaySource(..), TwisterField(..), Logbook, NoteEvent, Slots, State, applyTarget, genDefaultAmt, genDefaultRate, genKinds, genLabel
-  , marblesPadId, rateMax, replayTimelineId, setAmt, setRate, targetRange )
+  , marblesPadId, rateMax, replayTimelineId, setAmt, setRate, targetRange
+  , VoiceCfg, defaultVoiceCfg, extraEnvChannels )
 import Triggerfish.Scale (scaleTypes)
 import Triggerfish.Transport (Sounding(..))
-import Triggerfish.Odonus.Grid.Widgets (clampI, style)
+import Triggerfish.Odonus.Grid.Widgets (clampI, engrave, style)
 import Triggerfish.Odonus.Logbook as Logbook
 import Triggerfish.Odonus.View.Scope (scopePanel)
 import Triggerfish.Odonus.View.Playheads (playheadsPanel)
@@ -85,6 +88,7 @@ component =
   H.mkComponent
     { initialState: \_ ->
         { odo: M.defaultOdonus, sounding: Silent, dragging: Nothing, dragSub: Nothing
+        , voices: map defaultVoiceCfg (range 0 3), voiceCfgOpen: false
         , notes: [], logbook: Logbook.emptyLog, stage: Perform, selEuclid: Nothing, navScenes: false, playing: Nothing, regionDrag: Nothing, contextOpen: false, clips: [], twisterField: FNote, binnacle: Nothing, nowMicros: 0.0
         , midiOut: Nothing, midiName: "…", clockTempo: 120.0, clockLocked: false
         , clockBeat: 0.0, clockBar: 0, anchorCount: 0
@@ -440,6 +444,7 @@ dispatch = case _ of
         -- gated notes whose length scales with tempo.
         for_ st.midiOut \out -> liftEffect $ for_ firedV \fv ->
           emitNote out emitAtMs (gateMsFor fv.f) fv.v (prevOf fv.f.headIdx) fv.f
+            (envChannelsFor st fv.f.headIdx)
       let
         -- A glide note stays held (its pitch); a gated note auto-ends.
         nextNote f = if f.glide then Just f.pitch else Nothing
@@ -932,6 +937,19 @@ dispatch = case _ of
     for_ st.binnacle \bin ->
       liftEffect $ Transport.send (Binnacle.socket bin) "hush"
 
+  OpenVoiceCfg -> H.modify_ _ { voiceCfgOpen = true }
+  CloseVoiceCfg -> H.modify_ _ { voiceCfgOpen = false }
+  -- Toggle one envelope slot on one head. A head with NO envelopes is legitimate
+  -- (it is a plain gated voice), so this does not force at least one.
+  ToggleHeadEnv headIdx slot -> H.modify_ \st -> st
+    { voices = fromMaybe st.voices
+        (modifyAt headIdx
+          (\v -> v { envs = if elem slot v.envs
+                              then filter (_ /= slot) v.envs
+                              else sort (snoc v.envs slot) })
+          st.voices)
+    }
+
 -- | REPLAY loop driver (#151, R2b), run each Frame. A WINDOWED scheduler: each
 -- | frame it queues only the notes falling in the short lookahead window ahead of
 -- | the scheduling watermark — NOT a whole loop iteration at once. So StopPlay
@@ -1242,8 +1260,16 @@ gridCfg = { stepBeats: 0.25, lookaheadMs: 180.0, tickMs: 25 }
 -- | timestamp so Web MIDI fires it on the beat regardless of how long the Halogen
 -- | pipeline took to reach here — this is what keeps the frontend monitor locked to
 -- | the backend rather than trailing it by the render latency.
-emitNote :: Midi.MidiOut -> Number -> Number -> Int -> Maybe Int -> M.Fired -> Effect Unit
-emitNote out atMs gateMs vel prev f =
+-- | The extra channels this head's note must also land on to fire its envelopes.
+-- | Empty in the common case, where the head's own channel already is its
+-- | envelope's (head N on channel N, envelope N listening on channel N).
+envChannelsFor :: State -> Int -> Array Int
+envChannelsFor st headIdx = case st.voices !! headIdx of
+  Nothing -> []
+  Just cfg -> extraEnvChannels headIdx cfg
+
+emitNote :: Midi.MidiOut -> Number -> Number -> Int -> Maybe Int -> M.Fired -> Array Int -> Effect Unit
+emitNote out atMs gateMs vel prev f envChans =
   -- The head's fixed channel, canonical 1..4 → WebMIDI 0..3 at this one boundary.
   let h = Routing.toWire (Routing.odonusHeadChannel f.headIdx)
       p = f.pitch
@@ -1262,7 +1288,24 @@ emitNote out atMs gateMs vel prev f =
                Midi.scheduleNoteAtMs out
                  { channel: h, note: p, velocity: vel
                  , atMs: atMs + toNumber k * sub, durMs: sub * 0.85 }
-  in case prev, f.glide of
+      -- Fire each additionally-assigned FH-2 polyenv envelope. An envelope is
+      -- addressed by MIDI channel (envelope N listens on channel N), so "this head
+      -- also drives envelopes 3 and 5" is literally "send this note on 3 and 5" —
+      -- the VCO/VCF/FX case falling out rather than needing a mechanism.
+      --
+      -- Carries the SAME velocity, which is the whole point: velDepth makes the
+      -- FH-2 scale the envelope by it, and that is the only per-note expression
+      -- this path can offer (the shape itself is config and cannot change per
+      -- note). Same duration as the musical note, so a sustaining envelope tracks
+      -- the gate rather than running on its own length.
+      --
+      -- Ratchets are deliberately NOT subdivided here: a retriggered envelope per
+      -- ratchet would be a different musical decision, and this fires the shape
+      -- once for the note as played.
+      envNotes = for_ envChans \c ->
+        Midi.scheduleNoteAtMs out
+          { channel: Routing.toWire c, note: p, velocity: vel, atMs, durMs: gateMs }
+  in envNotes *> case prev, f.glide of
     Just q, true | q == p -> pure unit                         -- tie
     Just q, true -> do                                          -- slide
       portaOn
@@ -1471,4 +1514,72 @@ render s =
             , cellParamsPanel s
             ]
         Review -> replayPanel s
+    , voiceCfgModal s
     ]
+
+-- | VOICE ROUTING — which FH-2 polyenv envelopes each head fires.
+-- |
+-- | A modal rather than a column on the grid, because this is a property of the
+-- | HEAD, not of a cell: sixteen cells x four heads x eight envelopes is a
+-- | surface nobody would use, and the head bank is only four rows.
+-- |
+-- | Backdrop and panel are siblings (the Balistes idiom) so click-outside closes
+-- | without needing the panel to stop propagation.
+voiceCfgModal :: forall m. State -> H.ComponentHTML Action Slots m
+voiceCfgModal s =
+  if not s.voiceCfgOpen then HH.text ""
+  else
+    HH.div [ style "position:fixed;inset:0;z-index:60" ]
+      [ HH.div
+          [ style "position:absolute;inset:0;background:#00000055"
+          , HE.onClick \_ -> CloseVoiceCfg ]
+          []
+      , HH.div
+          [ style $ "position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);"
+              <> "width:520px;max-width:92vw;max-height:82vh;overflow-y:auto;border-radius:10px;"
+              <> "background:linear-gradient(#f6f2e8,#efe9db);border:1px solid #a8a392;"
+              <> "box-shadow:0 14px 48px #00000044;padding:20px 24px" ]
+          [ HH.div [ style "display:flex;align-items:baseline;justify-content:space-between;margin-bottom:6px" ]
+              [ HH.span [ style $ engrave <> ";font-size:13px;letter-spacing:0.16em;color:#3f3c33" ]
+                  [ HH.text "VOICE ROUTING" ]
+              , HH.button
+                  [ HE.onClick \_ -> CloseVoiceCfg
+                  , style "border:none;background:none;color:#8a8676;font-size:16px;cursor:pointer;line-height:1" ]
+                  [ HH.text "\x2715" ]
+              ]
+          , HH.div [ style $ engrave <> ";font-size:8px;opacity:0.6;margin-bottom:14px;line-height:1.7" ]
+              [ HH.text ("EACH HEAD FIRES THE FH-2 POLYENV ENVELOPES TICKED BELOW. "
+                  <> "AN ENVELOPE IS ADDRESSED BY MIDI CHANNEL \x2014 ENVELOPE N LISTENS ON CHANNEL N \x2014 "
+                  <> "SO A HEAD CAN DRIVE SEVERAL (VCO / VCF / FX) FROM ONE NOTE. "
+                  <> "VELOCITY SCALES THE ENVELOPE VIA VELDEPTH.") ]
+          , HH.div [ style "display:flex;flex-direction:column;gap:7px" ]
+              (mapWithIndex headRow s.voices)
+          ]
+      ]
+  where
+  headRow i cfg =
+    HH.div [ style "display:flex;align-items:center;gap:10px" ]
+      [ HH.span
+          [ style $ engrave <> ";font-size:9px;width:56px;flex:0 0 auto;color:#3f3c33" ]
+          [ HH.text ("HEAD " <> show (i + 1)) ]
+      , HH.span
+          [ style $ engrave <> ";font-size:8px;opacity:0.5;width:40px;flex:0 0 auto" ]
+          [ HH.text ("ch " <> show (i + 1)) ]
+      , HH.div [ style "display:flex;gap:3px" ]
+          (map (envPip i cfg) (range 1 8))
+      ]
+  envPip i cfg slot =
+    let on = elem slot cfg.envs
+        own = slot == i + 1
+    in HH.button
+         [ HE.onClick \_ -> ToggleHeadEnv i slot
+         , HP.title (if own
+             then "envelope " <> show slot <> " \x2014 this head's own channel, fired by its note"
+             else "envelope " <> show slot)
+         , style $ "width:26px;height:22px;border-radius:4px;cursor:pointer;"
+             <> "font-family:'SF Mono',Menlo,monospace;font-size:10px;"
+             <> "border:1px " <> (if own then "dashed" else "solid") <> " "
+             <> (if on then "#6f6a5c" else "#00000020")
+             <> ";color:" <> (if on then "#2f2c25" else "#a09a88")
+             <> ";background:" <> (if on then "#c8a86a" else "transparent") ]
+         [ HH.text (show slot) ]

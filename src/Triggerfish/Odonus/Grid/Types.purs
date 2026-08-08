@@ -2,7 +2,10 @@
 -- | component State, and the Action set. Held low in the module DAG so every
 -- | view module can refer to them without a cycle.
 module Triggerfish.Odonus.Grid.Types
-  ( KnobTarget(..)
+  ( VoiceCfg
+  , defaultVoiceCfg
+  , extraEnvChannels
+  , KnobTarget(..)
   , targetRange
   , applyTarget
   , DragState
@@ -29,6 +32,8 @@ module Triggerfish.Odonus.Grid.Types
   ) where
 
 import Prelude
+
+import Data.Array as Array
 
 import Data.Array (length)
 import Data.Maybe (Maybe(..))
@@ -283,6 +288,9 @@ type State =
   , sounding :: Sounding     -- the ONE transport value (control-surface MISU refactor):
                              -- Silent = stopped, Local = play local Web-MIDI, Rig = rig
                              -- authoritative (muted locally). Replaces running/master/audible.
+  -- Per-head rig routing (4 entries) + whether its config modal is open.
+  , voices :: Array VoiceCfg
+  , voiceCfgOpen :: Boolean
   , dragging :: Maybe DragState
   , dragSub :: Maybe H.SubscriptionId
   , notes :: Array NoteEvent
@@ -354,6 +362,26 @@ type State =
   , identity :: Maybe String
   , lastChip :: Maybe ChipView
   }
+
+-- | Per-head rig routing: which FH-2 polyenv envelopes this head fires.
+-- |
+-- | Deliberately NOT part of `Reef.Odonus.Head`. That record is the musical model
+-- | that co-simulates between browser and BEAM, and routing is rig-facing
+-- | PLACEMENT — putting it there would drag it through the wire protocol and the
+-- | BEAM decoder to no purpose. Same split as the bank's name-vs-content work: the
+-- | artefact holds the musical fact, the envelope holds the placement.
+-- |
+-- | `envs` are polyenv SLOTS, 1..8. A slot is addressed by MIDI channel — envelope
+-- | N listens on channel N — so firing several envelopes from one note is just
+-- | sending that note on several channels. That is the VCO/VCF/FX case, and it
+-- | falls out rather than needing a mechanism.
+-- |
+-- | A head whose own channel is in `envs` needs no extra send: its musical note
+-- | already fires that envelope. `extraEnvChannels` is what works that out.
+type VoiceCfg = { envs :: Array Int }
+
+defaultVoiceCfg :: Int -> VoiceCfg
+defaultVoiceCfg headIdx = { envs: [ headIdx + 1 ] }
 
 data Action
   = Initialize
@@ -428,6 +456,17 @@ data Action
   | HushRig                    -- send `hush` over the rig WS (stops the reef voice
                                -- the push started, plus everything else on the rig)
   | TwisterMsg Int Int Int     -- a raw MIDI message from the MidiFighter Twister
+  -- VOICE config: which FH-2 polyenv envelopes each head fires.
+  | OpenVoiceCfg
+  | CloseVoiceCfg
+  | ToggleHeadEnv Int Int      -- head index, envelope slot (1..8)
                                -- (status, data1, data2). Bank 1: encoders 0..15 map
                                -- 1:1 onto the 16 cells — rotate sets the cell note
                                -- (absolute), push toggles SKIP. Decoded in the handler.
+
+-- | The channels a head must ALSO send its note on to fire its envelopes —
+-- | everything in `envs` except its own channel, which the musical note already
+-- | covers. Canonical 1..16; the caller converts at the WebMIDI boundary.
+extraEnvChannels :: Int -> VoiceCfg -> Array Int
+extraEnvChannels headIdx cfg =
+  Array.filter (_ /= headIdx + 1) (Array.nub cfg.envs)
