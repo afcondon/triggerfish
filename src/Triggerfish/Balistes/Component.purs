@@ -116,6 +116,9 @@ component =
 -- | doc — or adopt the rack's shared free-run baseline.
 handleQuery :: forall m a. MonadAff m => Query a -> H.HalogenM State Action () Output m (Maybe a)
 handleQuery = case _ of
+  SetRouting t k -> do
+    H.modify_ _ { routing = t }
+    pure (Just k)
   AskSource reply -> do
     s <- H.get
     pure (Just (reply (Source.headerText s.bal)))

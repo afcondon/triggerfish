@@ -158,6 +158,11 @@ component =
 
 handleQuery :: forall m a. MonadAff m => Query a -> H.HalogenM State Action Slots Output m (Maybe a)
 handleQuery = case _ of
+  -- Selene doesn't emit notes: it PUBLISHES config to the daemons, and where a
+  -- polysignal lands is its own doc's target. So the note-routing table is not
+  -- its business — but folding Selene's targets into the same table is step 4b
+  -- of docs/DESIGN-routing.md, at which point this stops being a no-op.
+  SetRouting _ k -> pure (Just k)
   AskSource reply -> do
     s <- H.get
     pure (Just (reply (currentDoc s)))

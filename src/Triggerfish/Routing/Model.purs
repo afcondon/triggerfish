@@ -46,6 +46,10 @@ module Triggerfish.Routing.Model
   , legsFor
   , liveLegsFor
   , setLegs
+  , modifyLeg
+  , removeLeg
+  , addLeg
+  , setDestField
   , Reach(..)
   , Ports
   , reachOf
@@ -65,6 +69,7 @@ import Prelude
 
 import Data.Array (concatMap, filter, find, findIndex, length, mapMaybe, mapWithIndex, nub, snoc, (!!))
 import Data.Maybe (Maybe(..), fromMaybe, isJust, maybe)
+import Data.Tuple (Tuple(..), snd)
 import Data.String (Pattern(..), contains)
 
 -- ---------------------------------------------------------------------------
@@ -258,6 +263,44 @@ setLegs :: Source -> Array Leg -> Table -> Table
 setLegs src legs tbl = case findIndex (\r -> r.source == src) tbl of
   Just i -> mapWithIndex (\j r -> if j == i then r { legs = legs } else r) tbl
   Nothing -> snoc tbl { source: src, legs }
+
+-- | Edit one leg in place. Out-of-range index is a no-op rather than an error:
+-- | the editor and the table can race a render, and dropping a stale click is
+-- | better than throwing under the player.
+modifyLeg :: Source -> Int -> (Leg -> Leg) -> Table -> Table
+modifyLeg src i f tbl = setLegs src (mapWithIndex (\j l -> if j == i then f l else l) (legsFor tbl src)) tbl
+
+removeLeg :: Source -> Int -> Table -> Table
+removeLeg src i tbl = setLegs src (mapWithIndex Tuple (legsFor tbl src) # filter (\(Tuple j _) -> j /= i) # map snd) tbl
+
+addLeg :: Source -> Destination -> Table -> Table
+addLeg src d tbl = setLegs src (snoc (legsFor tbl src) { dest: d, offsetMs: 0.0, on: true }) tbl
+
+-- | Set one numeric field of a destination, by name, clamped to what the hardware
+-- | actually has. Clamping here rather than in the UI means a typed value can
+-- | never address a jack that isn't there — the editor is a wire like any other.
+setDestField :: String -> Int -> Destination -> Destination
+setDestField field v = case _ of
+  DMidi d -> case field of
+    "channel" -> DMidi d { channel = clamp 1 16 v }
+    _ -> DMidi d
+  DFh2Env d -> case field of
+    "slot" -> DFh2Env d { slot = clamp 1 8 v }
+    _ -> DFh2Env d
+  DFh2Gate d -> case field of
+    "note" -> DFh2Gate d { note = clamp 0 127 v }
+    "jack" -> DFh2Gate d { jack = clamp 1 8 v }
+    _ -> DFh2Gate d
+  DEs9Gate d -> case field of
+    "block" -> DEs9Gate d { block = clamp 0 7 v }
+    "jack" -> DEs9Gate d { jack = clamp 1 8 v }
+    _ -> DEs9Gate d
+  DEs9Cv d -> case field of
+    "bus" -> DEs9Cv d { bus = clamp 1 16 v }
+    _ -> DEs9Cv d
+  DContinuo d -> case field of
+    "channel" -> DContinuo d { channel = clamp 1 16 v }
+    _ -> DContinuo d
 
 -- ---------------------------------------------------------------------------
 -- Reachability — can this leg actually emit, right now?

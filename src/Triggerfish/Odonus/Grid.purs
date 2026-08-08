@@ -113,6 +113,9 @@ component =
 -- | free-run baseline so all modules share a downbeat with no rig.
 handleQuery :: forall m a. MonadAff m => Query a -> H.HalogenM State Action Slots Output m (Maybe a)
 handleQuery = case _ of
+  SetRouting t k -> do
+    H.modify_ _ { routing = t }
+    pure (Just k)
   AskSource reply -> do
     s <- H.get
     pure (Just (reply (patchText s)))

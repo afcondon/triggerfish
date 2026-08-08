@@ -41,6 +41,7 @@
 -- | a STRUCTURAL record, so the two query types need share no nominal type.)
 module Triggerfish.SourceQuery (Query(..)) where
 
+import Triggerfish.Routing.Model (Table)
 import Triggerfish.Transport (Sounding)
 
 data Query a
@@ -100,6 +101,14 @@ data Query a
   -- renders each via glyphFromAlias; `name` "" = anonymous), "recall slot i", and
   -- the curate verbs — toggle a star, delete a preset. Machines without a bank
   -- answer [] / ignore.
+  -- The unified ROUTING TABLE (docs/DESIGN-routing.md). The shell owns it — it
+  -- is rack-wide, spans machines, and persists — and pushes it down here on load
+  -- and after every edit in the ⌥1 router. A machine stores it and resolves its
+  -- own legs at emit time.
+  --
+  -- Pushed rather than each machine reading the store, so an edit takes effect on
+  -- the next note instead of the next reload, and so there is exactly one writer.
+  | SetRouting Table a
   | AskBank (Array { slot :: Int, alias :: String, name :: String, starred :: Boolean } -> a)
   | RecallSlot Int a
   | StarSlot Int a

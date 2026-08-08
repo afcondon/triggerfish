@@ -19,7 +19,7 @@ module Triggerfish.Main where
 
 import Prelude
 
-import Data.Array (any, deleteAt, filter, find, findIndex, last, length, mapMaybe, mapWithIndex, modifyAt, null, replicate, uncons, unsnoc, (!!))
+import Data.Array (any, deleteAt, elem, filter, find, findIndex, head, last, length, mapMaybe, mapWithIndex, modifyAt, null, replicate, uncons, unsnoc, (..), (:), (!!))
 import Data.FoldableWithIndex (forWithIndex_)
 import Data.Foldable (for_)
 import Data.Either (Either(..))
@@ -31,6 +31,7 @@ import Data.Map (Map)
 import Data.Map as Map
 import Triggerfish.Route as Route
 import Data.Int as Int
+import Data.Number as Number
 import Data.String as String
 import Data.String.Common (joinWith)
 import Data.Tuple (Tuple(..))
@@ -71,6 +72,9 @@ import Triggerfish.Rig (defaultRig, targetGroups)
 import Halogen.Widgets.Select as Select
 import Triggerfish.Sufflamen.Component as Sufflamen
 import Triggerfish.Stellatus.Component as Stellatus
+import Triggerfish.Balistes.Pattern as P
+import Triggerfish.Routing.Model as RM
+import Triggerfish.Routing.Store as RStore
 import Triggerfish.SourceQuery as SQ
 import Triggerfish.Glyph as G
 import Triggerfish.GlyphView (chipIcons, faIcon)
@@ -129,6 +133,15 @@ data RAction
   | SetImportText String
   | ImportInto Which            -- route the paste box to one instrument's library
   | SetBinding String String    -- Tidal-page channel map: bind a Vetula voice name → channel
+  -- The ⌥1 router. Every routing edit is one of these five; each ends in
+  -- `editRoute`, so persisting and pushing to the machines happen in one place.
+  | SetPorts (Array String)
+  | RtToggleLeg RM.Source Int
+  | RtRemoveLeg RM.Source Int
+  | RtAddLeg RM.Source String          -- destination KIND token
+  | RtSetField RM.Source Int String String   -- leg, field name, typed value
+  | RtSetOffset RM.Source Int String
+  | RtSetPort RM.Source Int String
   | SetSeleneTarget Int String  -- routing modal: re-target Selene destination i to a wire (nested menu)
   | PickEntry LibRow            -- workbench: put a shelf entry on the bench
   | ToggleSource               -- workbench: slide the raw-source drawer open/shut
@@ -273,6 +286,17 @@ type RState =
   -- MIDI routing (Tidal-page channel map). `routing` is the shell-owned name →
   -- canonical-channel table, pushed to Vetula (SetRouting); `vetulaNames` is the
   -- set of → midi voice names in use, polled from Vetula so the page can list them.
+  -- The unified routing table (docs/DESIGN-routing.md). Shell-owned because it
+  -- is rack-wide: one surface answers "where does this go" for every machine,
+  -- and one writer persists it. Pushed to the machines via SQ.SetRouting.
+  , routingTable :: RM.Table
+  -- MIDI output port names, for the router's reachability column and its port
+  -- picker. The shell opens MIDI only to ENUMERATE — the machines do the
+  -- emitting — so a port listed here is one a route can actually name.
+  , routingPorts :: Array String
+  -- Vetula's name→channel binds. Superseded by `routingTable`'s SVetulaVoice
+  -- rows; kept until Vetula is folded in (step 4c of the design note), since it
+  -- speaks its own query type rather than the shared one.
   , routing :: Map String Int
   , vetulaNames :: Array String
   -- The shared MIDI clip library (⌥6). Loaded fresh whenever the modal opens —
@@ -401,6 +425,8 @@ root =
         , rig: Nothing, rigConnected: false
         , brushSent: "", brushPrev: ""
         , armed: Set.empty
+        , routingTable: RM.defaultTable
+        , routingPorts: []
         , routing: Map.empty
         , vetulaNames: [], seleneDoc: ""
         , modal: Nothing
@@ -436,6 +462,21 @@ handleAction = case _ of
     -- it is live regardless of which machines are mounted or healthy.
     rigBin <- liftEffect $ Binnacle.connect { url: rigUrl, tempo: 120.0 }
     H.modify_ _ { rig = Just rigBin }
+    -- Restore the routing table before anything can play. Same discipline as
+    -- the mode below: a route is the user's CHOICE about where output goes, which
+    -- nothing on the backend can contradict, so it persists.
+    mtbl <- liftEffect RStore.load
+    for_ mtbl \t -> H.modify_ _ { routingTable = t }
+    -- Enumerate MIDI outputs for the router's reachability column. The shell
+    -- never emits; it only needs to know which port NAMES exist so it can show a
+    -- route pointing at an absent one as dead rather than as merely quiet.
+    { emitter: portsE, listener: portsL } <- liftEffect HS.create
+    _ <- H.subscribe portsE
+    liftEffect $ Midi.requestAccess \maccess -> case maccess of
+      Just access -> do
+        ns <- Midi.outputNames access
+        HS.notify portsL (SetPorts ns)
+      Nothing -> HS.notify portsL (SetPorts [])
     -- Restore the authority mode (Solo ⟷ Atlantis). Same discipline as the
     -- stores below: the user's CHOICE persists, what was playing does not —
     -- `armed` stays empty, so restoring Atlantis is silent until something is
@@ -710,6 +751,30 @@ handleAction = case _ of
       refreshLibrary
   -- Tidal-page channel map: bind a Vetula voice name → channel (blank/invalid = unbind,
   -- back to the default). Update the shell table, then push it to Vetula.
+  SetPorts ns -> H.modify_ _ { routingPorts = ns }
+  RtToggleLeg src i -> do
+    st <- H.get
+    editRoute src (RM.legsFor (RM.modifyLeg src i (\l -> l { on = not l.on }) st.routingTable) src)
+  RtRemoveLeg src i -> do
+    st <- H.get
+    editRoute src (RM.legsFor (RM.removeLeg src i st.routingTable) src)
+  RtAddLeg src kind -> do
+    st <- H.get
+    for_ (newDest st src kind) \d ->
+      editRoute src (RM.legsFor (RM.addLeg src d st.routingTable) src)
+  RtSetField src i field v -> case Int.fromString v of
+    Nothing -> pure unit      -- mid-typing / cleared: leave the model alone
+    Just n -> do
+      st <- H.get
+      editRoute src (RM.legsFor (RM.modifyLeg src i (\l -> l { dest = RM.setDestField field n l.dest }) st.routingTable) src)
+  RtSetPort src i port -> do
+    st <- H.get
+    editRoute src (RM.legsFor (RM.modifyLeg src i (\l -> l { dest = setPort port l.dest }) st.routingTable) src)
+  RtSetOffset src i v -> case Number.fromString v of
+    Nothing -> pure unit
+    Just n -> do
+      st <- H.get
+      editRoute src (RM.legsFor (RM.modifyLeg src i (\l -> l { offsetMs = n }) st.routingTable) src)
   SetBinding name v -> do
     case Int.fromString v of
       Just ch | ch >= 1 && ch <= 16 -> H.modify_ \st -> st { routing = Map.insert name ch st.routing }
@@ -1236,6 +1301,27 @@ pushRouting = do
   let binds = map (\(Tuple name ch) -> { name, ch }) (Map.toUnfoldable routing)
   void $ H.query _vet unit (Vetula.SetRouting binds unit)
 
+-- | Push the unified table to every machine that emits notes, and persist it.
+-- |
+-- | Persist AND push, in that order, so a reload and the next note agree. The
+-- | machines cold-start from the same store, so the push is what makes an edit
+-- | audible immediately rather than on the next reload.
+pushRoutingTable :: forall o m. MonadAff m => H.HalogenM RState RAction Slots o m Unit
+pushRoutingTable = do
+  t <- H.gets _.routingTable
+  liftEffect $ RStore.save t
+  void $ H.query _odo unit (SQ.SetRouting t unit)
+  void $ H.query _bal unit (SQ.SetRouting t unit)
+  void $ H.query _sel unit (SQ.SetRouting t unit)
+
+-- | Replace one source's legs, then persist + push. Every routing edit goes
+-- | through here, so there is one place where an edit becomes durable and one
+-- | place where it reaches the machines.
+editRoute :: forall o m. MonadAff m => RM.Source -> Array RM.Leg -> H.HalogenM RState RAction Slots o m Unit
+editRoute src legs = do
+  H.modify_ \st -> st { routingTable = RM.setLegs src legs st.routingTable }
+  pushRoutingTable
+
 assemble :: Array (Tuple String (Maybe String)) -> String
 assemble = joinWith "\n\n\n" <<< map section
   where
@@ -1478,27 +1564,175 @@ workbenchHeader st =
 -- Vetula carry real routing (Vetula's named voices are editable); Selene needs a
 -- multi-type control (ES-9 / FH-2 / MIDI) that two-way-syncs with its Tidal
 -- source — a placeholder for now; Sufflamen/Stellatus are placeholders too.
+-- | Repoint a MIDI destination at another port. Only `DMidi` has a choosable
+-- | port: the FH-2 and ES-9 kinds name their device by construction, which is
+-- | the whole reason they are separate constructors.
+setPort :: String -> RM.Destination -> RM.Destination
+setPort port = case _ of
+  RM.DMidi d -> RM.DMidi d { port = port }
+  other -> other
+
+-- | A freshly-added destination of the given kind, with sensible starting values
+-- | for THIS source. A new FH-2 gate on a drum lane starts on that lane's own
+-- | canonKit note, because the note is the selector the MCV matches — starting it
+-- | at 0 would add a leg that silently never fires.
+newDest :: RState -> RM.Source -> String -> Maybe RM.Destination
+newDest st src = case _ of
+  "midi" -> Just (RM.DMidi { port: firstPort, channel: 1 })
+  "fh2env" -> Just (RM.DFh2Env { slot: 1 })
+  "fh2gate" -> Just (RM.DFh2Gate { note: laneNote, jack: 1 })
+  "es9gate" -> Just (RM.DEs9Gate { block: 0, jack: 1 })
+  "es9cv" -> Just (RM.DEs9Cv { bus: 1 })
+  "continuo" -> Just (RM.DContinuo { channel: 1 })
+  _ -> Nothing
+  where
+  firstPort = fromMaybe "IAC" (head st.routingPorts)
+  laneNote = case src of
+    RM.SDrumLane i -> P.laneNote i
+    _ -> 36
+
+-- | The ROUTER (⌥1): every source in the rack, the destinations it fans out to,
+-- | and whether each can currently be reached.
+-- |
+-- | This replaces a table of fixed labels. The facts it shows used to live in six
+-- | places — two hardcoded port names in Odonus, a channel constant in Balistes,
+-- | three functions in Midi.Routing, the shell's own map, and a KIT table in
+-- | another repo — so no surface could answer "where does this go", and two of
+-- | them were wrong in ways nothing could see.
 channelMapPanel :: forall m. MonadAff m => RState -> H.ComponentHTML RAction Slots m
 channelMapPanel st =
   HH.div_
-    [ HH.div [ style "display:flex;gap:24px;align-items:flex-start" ]
-        [ machineCol "Odonus" odonusRows
-        , machineCol "Balistes" [ fixedEntry "kit" ("ch " <> show Routing.drumsChannel) ]
-        , machineCol "Selene" seleneRows
-        , machineCol "Vetula" vetulaRows
-        , machineCol "Sufflamen" [ tbd ]
-        , machineCol "Stellatus" [ tbd ]
+    [ HH.div [ style "display:flex;gap:28px;align-items:flex-start;flex-wrap:wrap" ]
+        [ machineCol "Odonus" (map (routeRow <<< RM.SOdonusHead) (0 .. 3))
+        , machineCol "Balistes · kit" (map (routeRow <<< RM.SDrumLane) (0 .. 15))
+        , HH.div [ style "flex:0 0 auto;display:flex;flex-direction:column;gap:18px" ]
+            [ machineCol "Selene" seleneRows
+            , machineCol "Vetula" vetulaRows
+            ]
         ]
-    -- Per-machine AUDITION destination, below the columns: each machine cycles
-    -- None → Continuo → MIDI (click), and MIDI reveals its channel. Only Vetula
-    -- is wired to act today; the rest store the choice. (Replaces the old single
-    -- "audition preview → ch" row.)
+    , claimsPanel
     , HH.div [ style "display:flex;align-items:center;gap:20px;margin-top:24px;flex-wrap:wrap" ]
         ( [ HH.span [ style "font-size:11px;letter-spacing:0.06em;color:#6a655a" ] [ HH.text "audition →" ] ]
             <> map auditionControl auditionMachines )
     ]
   where
-  -- one machine's audition control: a click-to-cycle pill + (in MIDI mode) a channel.
+  ports = { found: st.routingPorts, rigUp: st.rigConnected }
+
+  -- One source: its name, then a line per destination it fans out to.
+  routeRow src =
+    let legs = RM.legsFor st.routingTable src
+    in HH.div [ style "display:flex;flex-direction:column;gap:2px;margin-bottom:7px" ]
+         ( [ HH.div [ style "display:flex;align-items:baseline;gap:8px" ]
+               [ HH.span [ style "font-size:12px;color:#2a271e;min-width:96px" ]
+                   [ HH.text (rowLabel src) ]
+               , addControl src
+               ]
+           ] <> mapWithIndex (legRow src) legs )
+
+  -- Drum lanes read better as their kit name + note than as an index.
+  rowLabel = case _ of
+    RM.SDrumLane i -> P.laneName i <> "  " <> show (P.laneNote i)
+    other -> RM.sourceLabel other
+
+  -- A leg: on/off, what it is, its editable numbers, its trim, and whether it can
+  -- actually be reached. The reach column is the point of the whole panel — a
+  -- route to a port that isn't there makes exactly as much sound as no route.
+  legRow src i leg =
+    let reach = RM.reachOf ports leg.dest
+        dead = reach /= RM.Reachable
+        dim = if leg.on then "1" else "0.4"
+    in HH.div
+         [ style $ "display:flex;align-items:center;gap:5px;margin-left:14px;opacity:" <> dim ]
+         ( [ HH.span
+               [ HE.onClick \_ -> RtToggleLeg src i
+               , HP.title (if leg.on then "mute this destination (keeps it)" else "unmute")
+               , style $ "cursor:pointer;font-size:11px;width:14px;color:" <> (if leg.on then "#3a6a4a" else "#a09a88") ]
+               [ HH.text (if leg.on then "●" else "○") ]
+           , HH.span [ style "font-size:10px;color:#6a6558;width:52px" ] [ HH.text (kindOf leg.dest) ]
+           ] <> destFields src i leg.dest <>
+           [ numBox 40 (fmtOffset leg.offsetMs) (RtSetOffset src i) "ms trim — the flam killer when doubling"
+           , HH.span
+               [ HE.onClick \_ -> RtRemoveLeg src i
+               , HP.title "remove this destination"
+               , style "cursor:pointer;color:#b09a86;font-size:11px;padding:0 3px" ]
+               [ HH.text "\x2715" ]
+           , HH.span
+               [ style $ "font-size:9px;font-family:'SF Mono',Menlo,monospace;"
+                   <> (if dead then "color:#b0492f" else "color:#7a9a7a") ]
+               [ HH.text (if dead then RM.reachNote reach else "ok") ]
+           ] )
+
+  kindOf = case _ of
+    RM.DMidi _ -> "midi"
+    RM.DFh2Env _ -> "fh2 env"
+    RM.DFh2Gate _ -> "fh2 gate"
+    RM.DEs9Gate _ -> "es9 gate"
+    RM.DEs9Cv _ -> "es9 cv"
+    RM.DContinuo _ -> "continuo"
+
+  -- The editable numbers of a destination, which differ per device because the
+  -- devices differ. An FH-2 gate shows BOTH its selector note and its jack, since
+  -- neither is meaningful without the other.
+  destFields src i = case _ of
+    RM.DMidi d ->
+      [ portSelect src i d.port
+      , numBox 30 (show d.channel) (RtSetField src i "channel") "MIDI channel 1-16" ]
+    RM.DFh2Env d -> [ numBox 30 (show d.slot) (RtSetField src i "slot") "polyenv slot 1-8" ]
+    RM.DFh2Gate d ->
+      [ numBox 34 (show d.note) (RtSetField src i "note") "note the trigger MCV matches on"
+      , numBox 30 (show d.jack) (RtSetField src i "jack") "FHX-8GT jack 1-8" ]
+    RM.DEs9Gate d ->
+      [ numBox 26 (show d.block) (RtSetField src i "block") "gate block"
+      , numBox 26 (show d.jack) (RtSetField src i "jack") "jack 1-8" ]
+    RM.DEs9Cv d -> [ numBox 30 (show d.bus) (RtSetField src i "bus") "CV bus" ]
+    RM.DContinuo d -> [ numBox 30 (show d.channel) (RtSetField src i "channel") "channel 1-16" ]
+
+  -- Only ports that EXIST are offerable, so a route can't be typed at a device
+  -- that isn't plugged in. (An already-routed name that has since vanished stays
+  -- selected and shows dead, rather than being silently rewritten.)
+  portSelect src i cur =
+    HH.select
+      [ HE.onValueChange (RtSetPort src i)
+      , style "font-size:10px;max-width:118px;padding:1px 2px;border-radius:3px;border:1px solid #cdbb96;background:#fffdf8" ]
+      (map (\n -> HH.option [ HP.value n, HP.selected (n == cur) ] [ HH.text n ])
+        (if elem cur st.routingPorts then st.routingPorts else cur : st.routingPorts))
+
+  numBox w v f tip =
+    HH.input
+      [ HP.value v, HE.onValueInput f, HP.title tip
+      , style $ "width:" <> show w <> "px;font-family:'SF Mono',Menlo,monospace;font-size:10px;"
+          <> "padding:1px 3px;border-radius:3px;border:1px solid #cdbb96;background:#fffdf8;text-align:center" ]
+
+  fmtOffset n = if n == 0.0 then "0" else show n
+
+  addControl src =
+    HH.select
+      [ HE.onValueChange (RtAddLeg src)
+      , style "font-size:10px;padding:1px 3px;border-radius:3px;border:1px solid #d8cdb8;background:#faf7f0;color:#6a655a" ]
+      ( [ HH.option [ HP.value "", HP.selected true ] [ HH.text "+ add" ] ]
+          <> map (\(Tuple v l) -> HH.option [ HP.value v ] [ HH.text l ])
+               [ Tuple "midi" "MIDI", Tuple "fh2env" "FH-2 envelope", Tuple "fh2gate" "FH-2 gate"
+               , Tuple "es9gate" "ES-9 gate", Tuple "es9cv" "ES-9 CV", Tuple "continuo" "continuo" ] )
+
+  -- What the table SPENDS, and anything spent twice. Reported, not enforced:
+  -- the daemons own admission (es9-daemon's capability/overlap checks,
+  -- fh2-config's PortClaim), and a second opinion computed here would be a second
+  -- thing to drift. Showing it means a collision is seen, not heard.
+  claimsPanel =
+    let cs = RM.claims st.routingTable
+        bad = RM.conflicts st.routingTable
+    in HH.div [ style "margin-top:22px;border-top:1px solid #00000014;padding-top:12px" ]
+         ( [ HH.div [ style "font-size:11px;letter-spacing:0.14em;text-transform:uppercase;color:#5a564b;margin-bottom:6px" ]
+               [ HH.text ("hardware claimed · " <> show (length cs)) ] ]
+             <> (if null bad then []
+                 else [ HH.div [ style "font-size:11px;color:#b0492f;margin-bottom:5px" ]
+                          [ HH.text ("⚠ " <> show (length bad) <> " slot(s) claimed twice: "
+                              <> joinWith ", " (map (\c -> RM.deviceLabel c.device <> " " <> c.slot) bad)) ] ])
+             <> [ HH.div [ style "font-size:10px;font-family:'SF Mono',Menlo,monospace;color:#7a7568;line-height:1.6" ]
+                    [ HH.text (joinWith "   ·   "
+                        (map (\c -> RM.deviceLabel c.device <> " " <> c.slot
+                                <> " → " <> joinWith "+" (map RM.sourceLabel c.by)) cs)) ] ] )
+
   auditionControl m =
     let dest = fromMaybe ADNone (Map.lookup m.w st.audition)
         ch = fromMaybe 5 (Map.lookup m.w st.auditionCh)
@@ -1523,17 +1757,9 @@ channelMapPanel st =
                , HE.onClick \_ -> CycleAudition m.w ]
                [ HH.text (auditionLabel dest) ]
            ] <> chanField )
-  romans = [ "I", "II", "III", "IV" ]
-  odonusRows =
-    mapWithIndex
-      (\h r -> fixedEntry r ("ch " <> show (Routing.odonusHeadChannel h)))
-      romans
-  vetulaRows =
-    [ fixedEntry "(default)" ("ch " <> show Routing.vetulaDefaultChannel) ]
-      <> map nameEntry st.vetulaNames
-  -- One row per declared Selene destination (polysignal group): its kind on the
-  -- left, a nested ES-9/FH-2/MIDI cascade menu on the right, bounded to the
-  -- known-good targets of the current rig. Editing pushes back to the Selene tab.
+
+  vetulaRows = map nameEntry st.vetulaNames
+
   seleneRows =
     let dests = (SelSrc.parseRack st.seleneDoc).destinations
     in if null dests
@@ -1549,20 +1775,10 @@ channelMapPanel st =
           (\(Select.Selected wire) -> SetSeleneTarget i wire) ]
 
   machineCol name rows =
-    -- Content-sized, not equal-flex: Selene's cascade selects have a 180px floor,
-    -- so equal columns would let them spill into their neighbour. Each column
-    -- takes exactly the width it needs; the row left-aligns them with a gap.
-    HH.div [ style "flex:0 0 auto;display:flex;flex-direction:column;gap:5px" ]
-      ( [ HH.div [ style "font-size:11px;letter-spacing:0.14em;text-transform:uppercase;color:#5a564b;margin-bottom:4px" ] [ HH.text name ] ]
-          <> rows )
+    HH.div [ style "flex:0 0 auto;display:flex;flex-direction:column;gap:3px;max-height:56vh;overflow-y:auto" ]
+      ( [ HH.div [ style "font-size:11px;letter-spacing:0.14em;text-transform:uppercase;color:#5a564b;margin-bottom:4px;position:sticky;top:0;background:#e8e3d5;padding:2px 0" ]
+            [ HH.text name ] ] <> rows )
 
-  fixedEntry label val =
-    HH.div [ style "display:flex;align-items:baseline;justify-content:space-between;gap:8px;font-size:12px" ]
-      [ HH.span [ style "color:#2a271e" ] [ HH.text label ]
-      , HH.span [ style "color:#7a6a3a;font-family:'SF Mono',Menlo,monospace;font-size:11px" ] [ HH.text val ]
-      ]
-
-  -- Editable: a named Vetula voice → its bound channel (blank = the ch5 default).
   nameEntry nm =
     HH.div [ style "display:flex;align-items:baseline;justify-content:space-between;gap:8px;font-size:12px" ]
       [ HH.span [ style "color:#2a271e" ] [ HH.text nm ]
@@ -1574,7 +1790,6 @@ channelMapPanel st =
       ]
 
   note t = HH.div [ style "font-size:10px;color:#b0a690;font-style:italic;line-height:1.4" ] [ HH.text t ]
-  tbd = HH.div [ style "font-size:11px;color:#b8b0a0;font-style:italic" ] [ HH.text "— TBD —" ]
 
 -- macro-tidal — the Tidal-like sequencer: one mini-notation LANE per machine, over
 -- glyph ALIASES ("owl-bomb star-ambulance ~"). Space-separated tokens divide the
