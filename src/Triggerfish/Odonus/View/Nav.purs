@@ -23,6 +23,7 @@ module Triggerfish.Odonus.View.Nav (navBar) where
 import Prelude
 
 import Data.Array (concatMap, length, null)
+import Data.Maybe (isNothing)
 import Halogen as H
 import Halogen.HTML as HH
 import Halogen.HTML.Events as HE
@@ -53,16 +54,28 @@ navBar s =
 -- | Open VOICE ROUTING. Shows a count when any head drives an envelope, so the
 -- | fact that notes are also firing FH-2 envelopes is visible from the nav rather
 -- | than only discoverable by opening the modal.
+-- |
+-- | And it goes RED when envelopes are assigned but the FH-2 port was not found.
+-- | Envelopes go to a different device from the notes, so the failure is silent
+-- | by construction — the sequence plays, Ableton sounds, and nothing at all
+-- | reaches the modular. This button is the nearest surface to the decision, so
+-- | it is where the missing destination gets said out loud.
 voiceCfgBtn :: forall m. State -> H.ComponentHTML Action Slots m
 voiceCfgBtn s =
   let n = length (concatMap _.envs s.voices)
+      broken = n > 0 && isNothing s.envOut
   in HH.button
        [ HE.onClick \_ -> OpenVoiceCfg
-       , HP.title "voice routing — which FH-2 envelopes each head fires"
+       , HP.title (if broken
+           then "no FH-2 MIDI port found — the ticked envelopes are going nowhere"
+           else "voice routing — which FH-2 envelopes each head fires")
        , style $ engrave <> ";font-size:8px;letter-spacing:0.1em;padding:3px 9px;border-radius:5px;"
-           <> "cursor:pointer;border:1px solid #00000026;color:#3f3c33;"
-           <> "background:linear-gradient(#e9e5d9,#dcd8c9)" ]
-       [ HH.text (if n == 0 then "VOICES" else "VOICES \x00b7 " <> show n) ]
+           <> "cursor:pointer;"
+           <> (if broken
+                 then "border:1px solid #b0492f;color:#8c2f1c;background:#b0492f22"
+                 else "border:1px solid #00000026;color:#3f3c33;background:linear-gradient(#e9e5d9,#dcd8c9)") ]
+       [ HH.text (if broken then "VOICES \x00b7 NO FH-2"
+                  else if n == 0 then "VOICES" else "VOICES \x00b7 " <> show n) ]
 
 divider :: forall m. H.ComponentHTML Action Slots m
 divider = HH.div [ style "width:1px;height:20px;background:#00000018" ] []

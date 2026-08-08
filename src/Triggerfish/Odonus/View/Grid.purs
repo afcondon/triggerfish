@@ -11,9 +11,9 @@ module Triggerfish.Odonus.View.Grid (gridPanel, transportRow, statusBar) where
 
 import Prelude
 
-import Data.Foldable (maximum)
+import Data.Foldable (any, maximum)
 import Data.Int (floor, round)
-import Data.Maybe (fromMaybe)
+import Data.Maybe (fromMaybe, isJust)
 import Halogen as H
 import Halogen.HTML as HH
 import Halogen.HTML.Events as HE
@@ -23,10 +23,11 @@ import Triggerfish.Odonus.Model as M
 import Triggerfish.Ui.Knob (knob)
 import Triggerfish.Odonus.Marbles (betaWeights)
 import Triggerfish.Odonus.Grid.Types
-  ( Action(..), GenKind(..), KnobTarget(..), Slots, State, marblesPadId, twisterFieldLabel )
+  ( Action(..), GenKind(..), KnobTarget(..), Slots, State, defaultVoiceCfg, envChannels, marblesPadId
+  , twisterFieldLabel )
 import Triggerfish.Odonus.Grid.Widgets
   ( cellChrome, engrave, genRow, labelledRow, miniKnob, octLabel, panelShell, style, tabBtn )
-import Data.Array (length, mapWithIndex, (!!))
+import Data.Array (length, mapWithIndex, null, (!!), (..))
 
 gridPanel :: forall m. State -> H.ComponentHTML Action Slots m
 gridPanel s =
@@ -172,6 +173,14 @@ oneDp x =
   let n = round (x * 10.0)
   in show (n `div` 10) <> "." <> show (n `mod` 10)
 
+-- | Whether every MIDI port this patch depends on was found. Envelopes only
+-- | count against it once a head asks for one — see `statusBar`.
+midiPortsOk :: State -> Boolean
+midiPortsOk s =
+  let wantsEnv = any (\i -> not (null (envChannels (fromMaybe (defaultVoiceCfg i) (s.voices !! i)))))
+                     (0 .. (length s.voices - 1))
+  in isJust s.midiOut && (not wantsEnv || isJust s.envOut)
+
 statusBar :: forall m. State -> H.ComponentHTML Action Slots m
 statusBar s =
   HH.div [ style $ engrave <> ";font-size:8px;margin-top:10px;display:flex;gap:14px;color:#6a6456" ]
@@ -182,7 +191,13 @@ statusBar s =
     , HH.span [] [ HH.text $ "BEAT " <> show (floor s.clockBeat) ]
       -- ANCHORS climbs iff the rig is actually feeding us (the diagnostic).
     , HH.span [] [ HH.text $ "ANCHORS " <> show s.anchorCount ]
-    , HH.span [] [ HH.text $ "MIDI " <> s.midiName ]
+      -- Red when a port we ACTUALLY NEED is absent: the note port always, the
+      -- FH-2 port only once some head has envelopes assigned. Colouring a missing
+      -- FH-2 red when nobody is using it would be noise; leaving it grey when a
+      -- head is trying to fire envelopes through it is the silent failure this
+      -- whole seam exists to avoid.
+    , HH.span [ style $ "color:" <> (if midiPortsOk s then "#6a6456" else "#b0492f") ]
+        [ HH.text $ "MIDI " <> s.midiName ]
       -- MidiFighter Twister (bank 1): which cell grid the rotaries drive now.
     , HH.span [ style "color:#2f6a8a" ]
         [ HH.text $ "TWISTER ▸ " <> twisterFieldLabel s.twisterField ]

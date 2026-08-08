@@ -4,7 +4,7 @@
 module Triggerfish.Odonus.Grid.Types
   ( VoiceCfg
   , defaultVoiceCfg
-  , extraEnvChannels
+  , envChannels
   , KnobTarget(..)
   , targetRange
   , applyTarget
@@ -309,6 +309,13 @@ type State =
   , binnacle :: Maybe Binnacle
   , nowMicros :: Number
   , midiOut :: Maybe Midi.MidiOut
+  -- A SECOND output, for the FH-2. A head's musical note goes to `midiOut` (the
+  -- IAC bus into Ableton); its envelope triggers go here, because polyenv lives
+  -- on the FH-2's own port. One source, two devices — see docs/DESIGN-routing.md.
+  -- `Nothing` means the port was not found, which MUST be visible: an unfound
+  -- port that merely stops emitting is the silent-failure shape this rig keeps
+  -- being bitten by. `midiName` carries the status text for all three ports.
+  , envOut :: Maybe Midi.MidiOut
   , midiName :: String
   , clockTempo :: Number
   , clockLocked :: Boolean
@@ -376,8 +383,15 @@ type State =
 -- | sending that note on several channels. That is the VCO/VCF/FX case, and it
 -- | falls out rather than needing a mechanism.
 -- |
--- | A head whose own channel is in `envs` needs no extra send: its musical note
--- | already fires that envelope. `extraEnvChannels` is what works that out.
+-- | Every ticked slot is sent EXPLICITLY, including the head's own number.
+-- |
+-- | It briefly looked as though a head whose own channel was in `envs` needed no
+-- | extra send — its note is already on that channel, so envelope N would fire
+-- | for free. That was only ever true while notes and envelopes shared one MIDI
+-- | port, and they no longer do: a head's note goes to the IAC bus (Ableton) and
+-- | its envelopes to the FH-2's own port. Same channel NUMBER, different device,
+-- | so the coincidence is gone and eliding the send would silently fire nothing
+-- | in the default configuration.
 type VoiceCfg = { envs :: Array Int }
 
 defaultVoiceCfg :: Int -> VoiceCfg
@@ -387,7 +401,8 @@ data Action
   = Initialize
   | Step Scheduler.Tick
   | Frame
-  | MidiReady (Maybe Midi.MidiOut) String
+  -- note-out, envelope-out (FH-2), status line
+  | MidiReady (Maybe Midi.MidiOut) (Maybe Midi.MidiOut) String
   | ToggleGlide Int
   | ToggleGate Int
   | ToggleSkip Int
@@ -464,9 +479,9 @@ data Action
                                -- 1:1 onto the 16 cells — rotate sets the cell note
                                -- (absolute), push toggles SKIP. Decoded in the handler.
 
--- | The channels a head must ALSO send its note on to fire its envelopes —
--- | everything in `envs` except its own channel, which the musical note already
--- | covers. Canonical 1..16; the caller converts at the WebMIDI boundary.
-extraEnvChannels :: Int -> VoiceCfg -> Array Int
-extraEnvChannels headIdx cfg =
-  Array.filter (_ /= headIdx + 1) (Array.nub cfg.envs)
+-- | The FH-2 channels this head's note must be repeated on to fire its
+-- | envelopes — every ticked slot, deduped. Canonical 1..16; the caller converts
+-- | at the WebMIDI boundary. It does NOT depend on the head index: see `VoiceCfg`
+-- | for why the head's own channel is no longer a free ride.
+envChannels :: VoiceCfg -> Array Int
+envChannels cfg = Array.nub cfg.envs
