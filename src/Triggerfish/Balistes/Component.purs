@@ -50,6 +50,8 @@ import Reef.Balistes.Fixed as RF
 import Reef.Balistes.Trig as Trig
 import Triggerfish.Balistes.Model as M
 import Triggerfish.Balistes.Pattern as P
+import Triggerfish.Routing.Model as RM
+import Triggerfish.Routing.Out as RO
 import Triggerfish.Balistes.Types
   ( KnobTarget(..), targetRange, applyKnob, Active(..), ClickMode(..)
   , NoteRef(..), DragKind(..), State, Action(..), activePattern, selectedPattern, patternAt, rhythmEntries, rigUrl, gridCfg
@@ -96,7 +98,7 @@ component =
     { initialState: \_ ->
         { bal: M.defaultBalistes
         , sounding: Silent, playStep: 0, nextModelStep: 0, pending: [], flash: []
-        , binnacle: Nothing, midiOut: Nothing, midiName: "…"
+        , binnacle: Nothing, outs: [], routing: RM.defaultTable, midiName: "…"
         , clockTempo: 120.0, clockLocked: false, clockBeat: 0.0, clockBar: 0, anchorCount: 0
         , nowMicros: 0.0, dragging: Nothing, dragSub: Nothing
         , presets: []
@@ -230,13 +232,15 @@ handleAction = case _ of
     _ <- H.subscribe midiE
     liftEffect $ Midi.requestAccess \maccess -> case maccess of
       Just access -> do
-        mout <- Midi.findOutput access midiPortName
+        outs <- RO.openAll access
         names <- Midi.outputNames access
-        let nm = case mout of
-              Just _ -> midiPortName <> " ✓"
-              Nothing -> "no '" <> midiPortName <> "' — ports: " <> joinWith ", " names
-        HS.notify midiL (MidiReady mout nm)
-      Nothing -> HS.notify midiL (MidiReady Nothing "unavailable")
+        -- The status line no longer names ONE port, because routing no longer
+        -- has one: which ports matter is now a property of the table, so the
+        -- "is anything missing" judgement is made in the view against
+        -- `st.routing` (see `routingHealth`). Here we only record what exists.
+        let nm = show (length names) <> " ports"
+        HS.notify midiL (MidiReady outs nm)
+      Nothing -> HS.notify midiL (MidiReady [] "unavailable")
     -- restore the saved artefact: the rhythm library AND the ARRANGE rail (bank +
     -- Falls back to the bundled patterns / empty bank.
     msaved <- liftEffect Store.load
@@ -271,13 +275,13 @@ handleAction = case _ of
         Nothing -> pure unit
         Just pat -> do
           let stepMs = 0.25 * 60000.0 / max 30.0 st.clockTempo
-          when audible $ for_ st.midiOut \out -> liftEffect $
+          when audible $ liftEffect $
             -- the SHARED fixed-rhythm render (Reef.Balistes.Fixed.renderFixed) — the
             -- exact code the BEAM voice runs, keyed off the same absolute step, so a
             -- pushed fixed rhythm plays in lockstep. The frontend projects its rich
             -- pattern onto the wire-flat reef pattern (fixedOf).
             for_ (RF.renderFixed (fixedOf pat) tick.index) \e ->
-              emitHit out drumChannel stepMs
+              emitHit st.outs st.routing stepMs
                 (max 0.0 (tick.delayMs + toNumber e.pushMs))
                 e.note e.durMs e.velocity e.ratchet
           H.modify_ _ { playStep = tick.index `mod` pat.steps }
@@ -295,7 +299,7 @@ handleAction = case _ of
           playedStep = bal0.step
           r = M.tick bal0
           stepMs = 0.25 * 60000.0 / max 30.0 st.clockTempo
-        when audible $ for_ st.midiOut \out -> liftEffect $
+        when audible $ liftEffect $
           -- the three Grids voices (step-quantised, firmware-faithful), resolved by
           -- the SHARED render decision (Reef.Balistes.Sim.renderStep) — the exact
           -- code the BEAM balistes voice runs. A firing HH that clears the OPEN
@@ -303,7 +307,7 @@ handleAction = case _ of
           -- + per-voice Dilla push come back on each event. The runtime only
           -- schedules the result — front and rig can't diverge on the decision.
           for_ (Sim.renderStep bal0 playedStep r.fired) \e ->
-            emitHit out drumChannel stepMs
+            emitHit st.outs st.routing stepMs
               (max 0.0 (tick.delayMs + toNumber e.pushMs))
               e.note e.durMs e.velocity e.ratchet
         let
@@ -326,10 +330,10 @@ handleAction = case _ of
           step = tick.index `mod` cycleSteps
           stepMs = 0.25 * 60000.0 / max 30.0 st.clockTempo
           fires = Trig.renderTrigStep (resolveTrigKit st.trig) tick.index cycleSteps
-        when audible $ for_ st.midiOut \out -> liftEffect $
+        when audible $ liftEffect $
           for_ fires \f ->
-            Midi.scheduleNote out
-              { channel: drumChannel, note: f.note, velocity: Trig.trigVelocity
+            void $ RO.fanNote st.outs st.routing (laneSourceOf f.note)
+              { note: f.note, velocity: Trig.trigVelocity
               , delayMs: tick.delayMs + f.frac * stepMs, durMs: Trig.trigGateMs }
         H.modify_ _ { playStep = step }
 
@@ -357,7 +361,7 @@ handleAction = case _ of
       H.modify_ _ { lastChip = cv }
       H.raise (IdentityChanged cv)
 
-  MidiReady mout nm -> H.modify_ _ { midiOut = mout, midiName = nm }
+  MidiReady outs nm -> H.modify_ _ { outs = outs, midiName = nm }
 
   -- Reset shifts the model step (jump to 0), so it's DEFERRED-ON-BOTH: enqueued +
   -- broadcast tagged for a near-future step, applied by the drain here and by the
@@ -845,18 +849,48 @@ repushFixed = do
 -- | Emit one already-resolved hit: schedule `note` at `delay0` for `durMs`, or —
 -- | when the cell is ratcheted (n > 1) — explode it into n evenly-spaced
 -- | retriggers at flat velocity. Push/ratchet/open are resolved by the caller.
+-- | The routing source for a drum note. Lanes are `canonKit` positions, so the
+-- | note IS the lane identity — which is why all three brains share one table.
+-- |
+-- | A note outside `canonKit` (the Tidal rack can name one) has no row of its
+-- | own, so it borrows lane 0's. That is not arbitrary: gate legs select BY note,
+-- | so an unknown note could never fire one anyway, while MIDI legs carry the
+-- | note through unchanged — which reproduces exactly the old behaviour of
+-- | "everything goes out the kit's MIDI destination".
+-- | What the nav shows instead of a channel number: how many drum lanes are
+-- | routed somewhere, and — loudly — how many have a leg whose port is missing.
+-- |
+-- | A leg pointing at an absent port is the silent failure this rig keeps
+-- | producing: the sequence plays, the meters move, and one destination is dead.
+-- | Counting them is cheap and turns it into something you can read.
+routingHealth :: State -> String
+routingHealth s =
+  let ports = RO.portNames s.outs
+      lanes = map RM.SDrumLane (range 0 15)
+      legsOf src = RM.liveLegsFor s.routing src
+      broken = length (filter (\l -> RM.reachOf { found: ports, rigUp: true } l.dest /= RM.Reachable)
+                        (concatMap legsOf lanes))
+      routed = length (filter (\src -> not (null (legsOf src))) lanes)
+  in if broken > 0
+       then show routed <> " lanes · " <> show broken <> " UNREACHABLE"
+       else show routed <> " lanes routed"
+
+laneSourceOf :: Int -> RM.Source
+laneSourceOf note = RM.SDrumLane (fromMaybe 0 (P.laneFromNote note))
+
 emitHit
-  :: Midi.MidiOut -> Int -> Number -> Number -> Int -> Number -> Int -> Int -> Effect Unit
-emitHit out channel stepMs delay0 note durMs velocity n =
+  :: RO.Outs -> RM.Table -> Number -> Number -> Int -> Number -> Int -> Int -> Effect Unit
+emitHit outs tbl stepMs delay0 note durMs velocity n =
   if n <= 1 then
-    Midi.scheduleNote out
-      { channel, note, velocity, delayMs: delay0, durMs }
+    void $ RO.fanNote outs tbl src { note, velocity, delayMs: delay0, durMs }
   else
     let sub = stepMs / toNumber n
     in for_ (range 0 (n - 1)) \k ->
-         Midi.scheduleNote out
-           { channel, note, velocity
+         void $ RO.fanNote outs tbl src
+           { note, velocity
            , delayMs: delay0 + toNumber k * sub, durMs: sub * 0.9 }
+  where
+  src = laneSourceOf note
 
 -- | Apply a function to library pattern `i` (no-op if out of range).
 -- | Apply `f` to the rhythm in bank entry `i` and write it back.
@@ -1155,7 +1189,7 @@ navBar s =
       , navDivider
       , navReadout (show (round s.clockTempo) <> " bpm" <> (if s.clockLocked then " ⛓" else ""))
       , navReadout ("bar " <> show s.clockBar <> " · " <> pad2 (s.playStep + 1) <> "/32")
-      , navReadout ("ch " <> show (drumChannel + 1))
+      , navReadout (routingHealth s)
       , navReadout s.midiName
       ] )
 

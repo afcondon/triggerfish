@@ -50,7 +50,7 @@ import Web.UIEvent.MouseEvent as ME
 import Triggerfish.Odonus.Grid.Types
   ( Action(..), GenKind(..), KnobTarget(..), SourceTag(..), Stage(..), stagePath, stageFromPath, RegionEdge(..), PlaySource(..), TwisterField(..), Logbook, NoteEvent, Slots, State, applyTarget, genDefaultAmt, genDefaultRate, genKinds, genLabel
   , marblesPadId, rateMax, replayTimelineId, setAmt, setRate, targetRange
-  , VoiceCfg, defaultVoiceCfg, envChannels )
+   )
 import Triggerfish.Scale (scaleTypes)
 import Triggerfish.Transport (Sounding(..))
 import Triggerfish.Odonus.Grid.Widgets (clampI, engrave, style)
@@ -63,7 +63,6 @@ import Triggerfish.Odonus.View.Grid (gridPanel)
 import Triggerfish.Odonus.View.Replay (replayPanel)
 import Triggerfish.Odonus.View.Nav (navBar)
 import Triggerfish.Odonus.Patch (capturePatch, harmonicSummary, loadText, patchText, recallText, recallGestureText)
-import Triggerfish.Odonus.RouteStore as RouteStore
 import Triggerfish.Odonus.Store as Store
 import Triggerfish.Clips as Clips
 import Triggerfish.Clips.Store as ClipStore
@@ -72,7 +71,9 @@ import Triggerfish.Glyph as G
 import Triggerfish.Preset (indexOfContent, presetAlias)
 import Triggerfish.Odonus.Lepidoptera (parsePatch, printPatch)
 import Triggerfish.SourceQuery (Query(..))
-import Triggerfish.Midi.Routing as Routing
+import Triggerfish.Routing.Model as RM
+import Triggerfish.Routing.Out as RO
+import Triggerfish.Routing.Store as RStore
 import Triggerfish.Odonus.View.Generate (generatePanel, cellParamsPanel)
 import Triggerfish.Odonus.View.Scenes (sceneName)
 
@@ -89,9 +90,8 @@ component =
   H.mkComponent
     { initialState: \_ ->
         { odo: M.defaultOdonus, sounding: Silent, dragging: Nothing, dragSub: Nothing
-        , voices: map defaultVoiceCfg (range 0 3), voiceCfgOpen: false
         , notes: [], logbook: Logbook.emptyLog, stage: Perform, selEuclid: Nothing, navScenes: false, playing: Nothing, regionDrag: Nothing, contextOpen: false, clips: [], twisterField: FNote, binnacle: Nothing, nowMicros: 0.0
-        , midiOut: Nothing, envOut: Nothing, midiName: "…", clockTempo: 120.0, clockLocked: false
+        , outs: [], routing: RM.defaultTable, midiName: "…", clockTempo: 120.0, clockLocked: false
         , clockBeat: 0.0, clockBar: 0, anchorCount: 0
         , scenes: [], sceneNameInput: "", publishMsg: Nothing
         , stepDiv: 1, headNote: [ Nothing, Nothing, Nothing, Nothing ]
@@ -164,7 +164,7 @@ handleQuery = case _ of
     st <- H.get
     let wasLocal = st.sounding == Local
         nowLocal = s == Local
-    when (wasLocal && not nowLocal) $ liftEffect $ silenceHeld st.midiOut st.headNote
+    when (wasLocal && not nowLocal) $ liftEffect $ silenceHeld st.outs st.routing st.headNote
     H.modify_ \s' -> s'
       { sounding = s
       , headNote = if wasLocal && not nowLocal then map (const Nothing) s'.headNote else s'.headNote }
@@ -271,7 +271,7 @@ handleAction a = do
     Frame -> pure unit
     Step _ -> pure unit
     DragMove _ -> pure unit
-    MidiReady _ _ _ -> pure unit
+    MidiReady _ _ -> pure unit
     Initialize -> pure unit
     SetSceneName _ -> pure unit   -- per-keystroke; nothing authoring changed yet
     PublishScene _ -> pure unit   -- a network write; no local authoring changed
@@ -329,13 +329,9 @@ dispatch = case _ of
     _ <- H.subscribe midiE
     liftEffect $ Midi.requestAccess \maccess -> case maccess of
       Just access -> do
-        mout <- Midi.findOutput access midiPortName
-        -- Second output: the FH-2's own port, where polyenv envelopes listen.
-        -- Deliberately NOT falling back to `mout` when absent — envelope notes
-        -- landing on the IAC bus would trigger Ableton synths instead, which is
-        -- worse than silence and harder to diagnose. Missing → no envelopes, and
-        -- the status line says which port is missing.
-        menv <- Midi.findOutput access envPortName
+        -- EVERY output port, because the routing table may name any of them —
+        -- so adding a destination in the router works with no MIDI re-init.
+        outs <- RO.openAll access
         names <- Midi.outputNames access
         -- Control surface IN (MidiFighter Twister, bank 1): route every incoming
         -- message through the SAME Action pipeline the trackpad uses, so a
@@ -344,20 +340,17 @@ dispatch = case _ of
         -- in/out port status into one line so a name-match miss is visible, not silent.
         minput <- Midi.findInput access twisterInputName
         innames <- Midi.inputNames access
-        let outNm = case mout of
-              Just _ -> midiPortName <> " ✓"
-              Nothing -> "no '" <> midiPortName <> "' (" <> joinWith ", " names <> ")"
-            envNm = case menv of
-              Just _ -> envPortName <> " ✓"
-              Nothing -> "no '" <> envPortName <> "' — envelopes off"
-            twNm = case minput of
+        -- WHICH ports matter is now a property of the routing table, so the
+        -- "is anything missing" judgement moved to the view (`midiPortsOk`),
+        -- against the actual routes. This line records only what exists.
+        let twNm = case minput of
               Just _ -> twisterInputName <> " ✓"
               Nothing -> "no '" <> twisterInputName <> "' in: " <> joinWith ", " innames
-            nm = outNm <> " · " <> envNm <> " · " <> twNm
-        HS.notify midiL (MidiReady mout menv nm)
+            nm = show (length names) <> " ports · " <> twNm
+        HS.notify midiL (MidiReady outs nm)
         for_ minput \inp -> void $ Midi.onMessage inp \m ->
           HS.notify midiL (TwisterMsg m.status m.data1 m.data2)
-      Nothing -> HS.notify midiL (MidiReady Nothing Nothing "unavailable")
+      Nothing -> HS.notify midiL (MidiReady [] "unavailable")
     H.modify_ _ { binnacle = Just bin }
     -- Restore the saved scene library + the live working patch (each is
     -- Lepidoptera text; unparseable / absent storage falls back to defaults).
@@ -365,13 +358,11 @@ dispatch = case _ of
     for_ msaved \sv -> do
       H.modify_ _ { scenes = sv.scenes, presets = sv.presets }
       H.modify_ (loadText sv.live)
-    -- Restore the per-head envelope routing. Kept OUT of the patch store above:
-    -- that carries the musical artefact, this is rig placement (see RouteStore).
-    -- A stored array of the wrong length is tolerated — pad from the defaults —
-    -- so changing the head count never strands the file.
-    mroute <- liftEffect RouteStore.load
-    for_ mroute \vs -> H.modify_ \st ->
-      st { voices = mapWithIndex (\i d -> fromMaybe d (vs !! i)) st.voices }
+    -- Cold-start read of the routing table. The shell OWNS it and pushes it
+    -- down via SetRouting; this only covers the window before its first
+    -- broadcast, so a solo-mounted Odonus is routed from the first tick.
+    mroute <- liftEffect RStore.load
+    for_ mroute \t -> H.modify_ _ { routing = t }
     -- Restore the shared MIDI clip library (#27) — captured anywhere, pickable here.
     savedClips <- liftEffect ClipStore.loadClips
     H.modify_ _ { clips = savedClips }
@@ -453,15 +444,15 @@ dispatch = case _ of
       -- (silently) but does NOT emit — replay owns the MIDI out (#151, R2b).
       when (st.sounding == Local && isNothing st.playing) do
         -- Silence any voice the generator muted this step.
-        for_ st.midiOut \out -> liftEffect $ for_ newlyMuted \h -> case join (st.headNote !! h) of
-          Just n -> Midi.noteOffAt out { channel: h, note: n, delayMs: 0.0 }
+        liftEffect $ for_ newlyMuted \h -> case join (st.headNote !! h) of
+          Just n -> noteOffEverywhere st.outs st.routing h n
           Nothing -> pure unit
         -- Emit MIDI with per-head legato: glide cells HOLD until the next note
         -- (tie if same pitch, portamento-slide if different); non-glide cells are
         -- gated notes whose length scales with tempo.
-        for_ st.midiOut \out -> liftEffect $ for_ firedV \fv ->
-          emitNote out st.envOut emitAtMs (gateMsFor fv.f) fv.v (prevOf fv.f.headIdx) fv.f
-            (envChannelsFor st fv.f.headIdx)
+        liftEffect $ for_ firedV \fv ->
+          emitNote st.outs st.routing fv.f.headIdx emitAtMs (gateMsFor fv.f) fv.v
+            (prevOf fv.f.headIdx) fv.f
       let
         -- A glide note stays held (its pitch); a gated note auto-ends.
         nextNote f = if f.glide then Just f.pitch else Nothing
@@ -535,7 +526,7 @@ dispatch = case _ of
     when (cv /= s2.lastChip) do
       H.modify_ _ { lastChip = cv }
       H.raise (IdentityChanged cv)
-  MidiReady mout menv nm -> H.modify_ _ { midiOut = mout, envOut = menv, midiName = nm }
+  MidiReady outs nm -> H.modify_ _ { outs = outs, midiName = nm }
   -- MidiFighter Twister, bank 1: the 16 encoders map 1:1 onto the 16 cells.
   -- ROTATE (absolute CC on the rotate channel) sets the ACTIVE grid's field for that
   -- cell — scaled from 0..127 into the field's range and pushed through the SAME
@@ -954,23 +945,6 @@ dispatch = case _ of
     for_ st.binnacle \bin ->
       liftEffect $ Transport.send (Binnacle.socket bin) "hush"
 
-  OpenVoiceCfg -> H.modify_ _ { voiceCfgOpen = true }
-  CloseVoiceCfg -> H.modify_ _ { voiceCfgOpen = false }
-  -- Toggle one envelope slot on one head. A head with NO envelopes is legitimate
-  -- (it is a plain gated voice), so this does not force at least one.
-  ToggleHeadEnv headIdx slot -> do
-    H.modify_ \st -> st
-      { voices = fromMaybe st.voices
-          (modifyAt headIdx
-            (\v -> v { envs = if elem slot v.envs
-                                then filter (_ /= slot) v.envs
-                                else sort (snoc v.envs slot) })
-            st.voices)
-      }
-    -- Persist on every toggle rather than on modal close: the modal closes by
-    -- click-outside as often as by the ✕, so there is no single exit to hang it on.
-    st <- H.get
-    liftEffect $ RouteStore.save st.voices
 
 -- | REPLAY loop driver (#151, R2b), run each Frame. A WINDOWED scheduler: each
 -- | frame it queues only the notes falling in the short lookahead window ahead of
@@ -994,15 +968,16 @@ driveReplay = do
       -- (its rebased time) sounds at loopStartMs + off + k·loopLenMs; pick the
       -- first k past the watermark. Windows are one frame wide (≪ a loop), so ≤
       -- one hit per event. `ps.events` are rebased to [0, lenMicros).
-      for_ st.midiOut \out -> liftEffect $ for_ ps.events \e -> do
+      liftEffect $ for_ ps.events \e -> do
         let
           off = e.fireUnixMicros / 1000.0
           k = ceil ((ps.scheduledUntilMs - ps.loopStartMs - off) / loopLenMs)
           atMs = ps.loopStartMs + off + toNumber k * loopLenMs
+        -- REPLAY fans out exactly as live play does, so a looped phrase drives
+        -- the same envelopes and doubles the same way the take did.
         when (atMs > ps.scheduledUntilMs && atMs <= horizon) $
-          Midi.scheduleNoteAtMs out
-            { channel: Routing.toWire (Routing.odonusHeadChannel e.headIdx)
-            , note: e.pitch, velocity: e.vel, atMs, durMs: e.gateMs }
+          void $ RO.fanNoteAt st.outs st.routing (RM.SOdonusHead e.headIdx)
+            { note: e.pitch, velocity: e.vel, atMs, durMs: e.gateMs }
       H.modify_ \s -> case s.playing of
         Just p ->
           let
@@ -1017,9 +992,12 @@ driveReplay = do
 hushReplayVoices :: forall o m. MonadAff m => H.HalogenM State Action Slots o m Unit
 hushReplayVoices = do
   st <- H.get
-  for_ st.midiOut \out -> liftEffect $ for_ (range 0 3) \h ->
-    Midi.sendCC out
-      { channel: Routing.toWire (Routing.odonusHeadChannel h), controller: 123, value: 0 }
+  -- CC 123 on every channel any head is routed to. A hush that reached only the
+  -- port a head used to hardcode would leave its other legs ringing.
+  liftEffect $ for_ (range 0 3) \h ->
+    for_ (RO.resolveLegs st.outs st.routing (RM.SOdonusHead h)) \r -> case r.wire, r.out of
+      Just w, Just o -> Midi.sendCC o { channel: w.channel - 1, controller: 123, value: 0 }
+      _, _ -> pure unit
 
 -- | Start looping the region stored on mark `i` (shared by PlayRegion and a bare
 -- | click at the end of a region drag).
@@ -1282,73 +1260,75 @@ gridCfg = { stepBeats: 0.25, lookaheadMs: 180.0, tickMs: 25 }
 -- | timestamp so Web MIDI fires it on the beat regardless of how long the Halogen
 -- | pipeline took to reach here — this is what keeps the frontend monitor locked to
 -- | the backend rather than trailing it by the render latency.
--- | The FH-2 channels this head's note is repeated on, to fire its envelopes.
-envChannelsFor :: State -> Int -> Array Int
-envChannelsFor st headIdx = case st.voices !! headIdx of
-  Nothing -> []
-  Just cfg -> envChannels cfg
+emitNote
+  :: RO.Outs -> RM.Table -> Int -> Number -> Number -> Int -> Maybe Int -> M.Fired
+  -> Effect Unit
+emitNote outs tbl headIdx atMs gateMs vel prev f =
+  for_ (RO.resolveLegs outs tbl (RM.SOdonusHead headIdx)) \r ->
+    case r.wire, r.out of
+      Just w, Just o
+        | RM.carriesLine r.leg.dest -> line o (w.channel - 1) (atMs + r.leg.offsetMs)
+        | otherwise -> trigger o (w.channel - 1) (fromMaybe p w.noteOverride) (atMs + r.leg.offsetMs)
+      _, _ -> pure unit
+  where
+  p = f.pitch
+  -- A TRIGGER leg (an FH-2 envelope or gate): fired once, at the note's velocity
+  -- and for its gate length, so a sustaining envelope tracks the gate rather than
+  -- running on its own. Velocity is carried because `velDepth` is the ONLY
+  -- per-note expression this path has — the shape itself is config.
+  --
+  -- Ratchets are deliberately not subdivided here: retriggering an envelope once
+  -- per ratchet is a different musical decision from the one the grid recorded.
+  trigger o ch note t =
+    Midi.scheduleNoteAtMs o { channel: ch, note, velocity: vel, atMs: t, durMs: gateMs }
+  -- A LINE leg: the full legato state machine (tie / slide / gated + ratchet).
+  line o ch t =
+    let portaOn = do
+          Midi.sendCC o { channel: ch, controller: 65, value: 127 }
+          Midi.sendCC o { channel: ch, controller: 5, value: 40 }
+        portaOff = Midi.sendCC o { channel: ch, controller: 65, value: 0 }
+        rat = if f.ratchet < 1 then 1 else f.ratchet
+        ratchetNote =
+          if rat <= 1 then Midi.scheduleNoteAtMs o { channel: ch, note: p, velocity: vel, atMs: t, durMs: gateMs }
+          else
+            let sub = gateMs / toNumber rat
+            in for_ (range 0 (rat - 1)) \k ->
+                 Midi.scheduleNoteAtMs o
+                   { channel: ch, note: p, velocity: vel
+                   , atMs: t + toNumber k * sub, durMs: sub * 0.85 }
+    in case prev, f.glide of
+      Just q, true | q == p -> pure unit                         -- tie
+      Just q, true -> do                                          -- slide
+        portaOn
+        Midi.noteOnAtMs o { channel: ch, note: p, velocity: vel, atMs: t }
+        Midi.noteOffAtMs o { channel: ch, note: q, atMs: t + 60.0 }
+      Just q, false -> do                                         -- gated, end held
+        Midi.noteOffAtMs o { channel: ch, note: q, atMs: t }
+        portaOff
+        ratchetNote
+      Nothing, true -> do                                         -- start held
+        portaOff
+        Midi.noteOnAtMs o { channel: ch, note: p, velocity: vel, atMs: t }
+      Nothing, false -> do                                        -- gated
+        portaOff
+        ratchetNote
 
-emitNote :: Midi.MidiOut -> Maybe Midi.MidiOut -> Number -> Number -> Int -> Maybe Int -> M.Fired -> Array Int -> Effect Unit
-emitNote out envO atMs gateMs vel prev f envChans =
-  -- The head's fixed channel, canonical 1..4 → WebMIDI 0..3 at this one boundary.
-  let h = Routing.toWire (Routing.odonusHeadChannel f.headIdx)
-      p = f.pitch
-      portaOn = do
-        Midi.sendCC out { channel: h, controller: 65, value: 127 }
-        Midi.sendCC out { channel: h, controller: 5, value: 40 }
-      portaOff = Midi.sendCC out { channel: h, controller: 65, value: 0 }
-      -- Subdivide the gate window into `ratchet` evenly-spaced hits; each hit
-      -- sustains 85% of its slot so the retriggers stay articulate.
-      rat = if f.ratchet < 1 then 1 else f.ratchet
-      ratchetNote =
-        if rat <= 1 then Midi.scheduleNoteAtMs out { channel: h, note: p, velocity: vel, atMs, durMs: gateMs }
-        else
-          let sub = gateMs / toNumber rat
-          in for_ (range 0 (rat - 1)) \k ->
-               Midi.scheduleNoteAtMs out
-                 { channel: h, note: p, velocity: vel
-                 , atMs: atMs + toNumber k * sub, durMs: sub * 0.85 }
-      -- Fire each assigned FH-2 polyenv envelope, on the FH-2's OWN port — this
-      -- is the second destination of a single source (docs/DESIGN-routing.md).
-      -- An envelope is addressed by MIDI channel (envelope N listens on channel
-      -- N), so "this head also drives envelopes 3 and 5" is literally "send this
-      -- note on 3 and 5" — the VCO/VCF/FX case falling out rather than needing a
-      -- mechanism. No FH-2 port → no envelopes; the status line carries the why.
-      --
-      -- Carries the SAME velocity, which is the whole point: velDepth makes the
-      -- FH-2 scale the envelope by it, and that is the only per-note expression
-      -- this path can offer (the shape itself is config and cannot change per
-      -- note). Same duration as the musical note, so a sustaining envelope tracks
-      -- the gate rather than running on its own length.
-      --
-      -- Ratchets are deliberately NOT subdivided here: a retriggered envelope per
-      -- ratchet would be a different musical decision, and this fires the shape
-      -- once for the note as played.
-      envNotes = for_ envO \eo -> for_ envChans \c ->
-        Midi.scheduleNoteAtMs eo
-          { channel: Routing.toWire c, note: p, velocity: vel, atMs, durMs: gateMs }
-  in envNotes *> case prev, f.glide of
-    Just q, true | q == p -> pure unit                         -- tie
-    Just q, true -> do                                          -- slide
-      portaOn
-      Midi.noteOnAtMs out { channel: h, note: p, velocity: vel, atMs }
-      Midi.noteOffAtMs out { channel: h, note: q, atMs: atMs + 60.0 }
-    Just q, false -> do                                         -- gated, end held
-      Midi.noteOffAtMs out { channel: h, note: q, atMs }
-      portaOff
-      ratchetNote
-    Nothing, true -> do                                         -- start held
-      portaOff
-      Midi.noteOnAtMs out { channel: h, note: p, velocity: vel, atMs }
-    Nothing, false -> do                                        -- gated
-      portaOff
-      ratchetNote
+-- | Note-off one head's held note on EVERY leg it was started on.
+noteOffEverywhere :: RO.Outs -> RM.Table -> Int -> Int -> Effect Unit
+noteOffEverywhere outs tbl h n =
+  for_ (RO.resolveLegs outs tbl (RM.SOdonusHead h)) \r -> case r.wire, r.out of
+    Just w, Just o -> Midi.noteOffAt o { channel: w.channel - 1, note: n, delayMs: 0.0 }
+    _, _ -> pure unit
 
 -- | Note-off every held note (e.g. on Stop) and clear the held-note table.
-silenceHeld :: Maybe Midi.MidiOut -> Array (Maybe Int) -> Effect Unit
-silenceHeld mout held = for_ mout \out ->
+-- | Routed, like the note-ons: a held note must be released on every leg it was
+-- | started on. Releasing only the port a head used to hardcode would leave a
+-- | second destination droning — the shape "stopping doesn't stop anything" is
+-- | made of.
+silenceHeld :: RO.Outs -> RM.Table -> Array (Maybe Int) -> Effect Unit
+silenceHeld outs tbl held =
   forWithIndex_ held \h mn -> case mn of
-    Just n -> Midi.noteOffAt out { channel: Routing.toWire (Routing.odonusHeadChannel h), note: n, delayMs: 0.0 }
+    Just n -> noteOffEverywhere outs tbl h n
     Nothing -> pure unit
 
 -- | MIDI output port (substring match). On macOS enable the IAC Driver in
@@ -1546,83 +1526,4 @@ render s =
             , cellParamsPanel s
             ]
         Review -> replayPanel s
-    , voiceCfgModal s
     ]
-
--- | VOICE ROUTING — which FH-2 polyenv envelopes each head fires.
--- |
--- | A modal rather than a column on the grid, because this is a property of the
--- | HEAD, not of a cell: sixteen cells x four heads x eight envelopes is a
--- | surface nobody would use, and the head bank is only four rows.
--- |
--- | Backdrop and panel are siblings (the Balistes idiom) so click-outside closes
--- | without needing the panel to stop propagation.
-voiceCfgModal :: forall m. State -> H.ComponentHTML Action Slots m
-voiceCfgModal s =
-  if not s.voiceCfgOpen then HH.text ""
-  else
-    HH.div [ style "position:fixed;inset:0;z-index:60" ]
-      [ HH.div
-          [ style "position:absolute;inset:0;background:#00000055"
-          , HE.onClick \_ -> CloseVoiceCfg ]
-          []
-      , HH.div
-          [ style $ "position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);"
-              <> "width:520px;max-width:92vw;max-height:82vh;overflow-y:auto;border-radius:10px;"
-              <> "background:linear-gradient(#f6f2e8,#efe9db);border:1px solid #a8a392;"
-              <> "box-shadow:0 14px 48px #00000044;padding:20px 24px" ]
-          [ HH.div [ style "display:flex;align-items:baseline;justify-content:space-between;margin-bottom:6px" ]
-              [ HH.span [ style $ engrave <> ";font-size:13px;letter-spacing:0.16em;color:#3f3c33" ]
-                  [ HH.text "VOICE ROUTING" ]
-              , HH.button
-                  [ HE.onClick \_ -> CloseVoiceCfg
-                  , style "border:none;background:none;color:#8a8676;font-size:16px;cursor:pointer;line-height:1" ]
-                  [ HH.text "\x2715" ]
-              ]
-          , HH.div [ style $ engrave <> ";font-size:8px;opacity:0.6;margin-bottom:8px;line-height:1.7" ]
-              [ HH.text ("EACH HEAD FIRES THE FH-2 POLYENV ENVELOPES TICKED BELOW. "
-                  <> "AN ENVELOPE IS ADDRESSED BY MIDI CHANNEL ON THE FH-2'S OWN PORT \x2014 "
-                  <> "ENVELOPE N LISTENS ON CHANNEL N \x2014 SO A HEAD CAN DRIVE SEVERAL "
-                  <> "(VCO / VCF / FX) FROM ONE NOTE. VELOCITY SCALES THE ENVELOPE VIA VELDEPTH.") ]
-            -- The destination, stated. A head's note and its envelopes go to
-            -- DIFFERENT devices, so "it plays but nothing moves" has two quite
-            -- different causes and the port is the one you cannot hear.
-          , HH.div [ style $ "font-family:'SF Mono',Menlo,monospace;font-size:9px;margin-bottom:14px;"
-                <> "padding:5px 8px;border-radius:5px;"
-                <> (case s.envOut of
-                      Just _ -> "color:#2f6a4a;background:#2f8a5c18"
-                      Nothing -> "color:#8c2f1c;background:#b0492f18") ]
-              [ HH.text (case s.envOut of
-                  Just _ -> "notes \x2192 " <> midiPortName <> "   \x00b7   envelopes \x2192 " <> envPortName
-                  Nothing -> "no '" <> envPortName <> "' MIDI port \x2014 envelopes are going nowhere") ]
-          , HH.div [ style "display:flex;flex-direction:column;gap:7px" ]
-              (mapWithIndex headRow s.voices)
-          ]
-      ]
-  where
-  headRow i cfg =
-    HH.div [ style "display:flex;align-items:center;gap:10px" ]
-      [ HH.span
-          [ style $ engrave <> ";font-size:9px;width:56px;flex:0 0 auto;color:#3f3c33" ]
-          [ HH.text ("HEAD " <> show (i + 1)) ]
-      , HH.span
-          [ style $ engrave <> ";font-size:8px;opacity:0.5;width:40px;flex:0 0 auto" ]
-          [ HH.text ("ch " <> show (i + 1)) ]
-      , HH.div [ style "display:flex;gap:3px" ]
-          (map (envPip i cfg) (range 1 8))
-      ]
-  envPip i cfg slot =
-    let on = elem slot cfg.envs
-        own = slot == i + 1
-    in HH.button
-         [ HE.onClick \_ -> ToggleHeadEnv i slot
-         , HP.title (if own
-             then "envelope " <> show slot <> " \x2014 this head's own number"
-             else "envelope " <> show slot)
-         , style $ "width:26px;height:22px;border-radius:4px;cursor:pointer;"
-             <> "font-family:'SF Mono',Menlo,monospace;font-size:10px;"
-             <> "border:1px " <> (if own then "dashed" else "solid") <> " "
-             <> (if on then "#6f6a5c" else "#00000020")
-             <> ";color:" <> (if on then "#2f2c25" else "#a09a88")
-             <> ";background:" <> (if on then "#c8a86a" else "transparent") ]
-         [ HH.text (show slot) ]

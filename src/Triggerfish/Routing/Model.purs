@@ -50,18 +50,20 @@ module Triggerfish.Routing.Model
   , Ports
   , reachOf
   , reachNote
+  , unreachable
   , Claim
   , claims
   , conflicts
   , Wire
   , wireOf
+  , carriesLine
   , fh2Port
   , fh2GateChannel
   ) where
 
 import Prelude
 
-import Data.Array (concatMap, filter, find, findIndex, length, mapWithIndex, nub, snoc, (!!))
+import Data.Array (concatMap, filter, find, findIndex, length, mapMaybe, mapWithIndex, nub, snoc, (!!))
 import Data.Maybe (Maybe(..), fromMaybe, isJust, maybe)
 import Data.String (Pattern(..), contains)
 
@@ -299,6 +301,20 @@ reachOf ports = case _ of
   -- router's idea of "found" cannot disagree with the emit path's.
   portReach p = if isJust (find (contains (Pattern p)) ports.found) then Reachable else NoPort p
 
+-- | Every live leg of a source that cannot currently emit, with the reason.
+-- |
+-- | The one function every surface should ask before rendering a source as
+-- | healthy. `Midi.findOutput` returning `Nothing` produces silence, and silence
+-- | is indistinguishable from a musical decision — so "nothing came out" has to
+-- | be derivable from state rather than inferred by the player.
+unreachable :: Ports -> Table -> Source -> Array { dest :: Destination, why :: Reach }
+unreachable ports tbl src =
+  mapMaybe check (liveLegsFor tbl src)
+  where
+  check l = case reachOf ports l.dest of
+    Reachable -> Nothing
+    why -> Just { dest: l.dest, why }
+
 reachNote :: Reach -> String
 reachNote = case _ of
   Reachable -> ""
@@ -340,6 +356,24 @@ type Wire =
   , channel :: Int          -- canonical 1..16
   , noteOverride :: Maybe Int
   }
+
+-- | Whether this destination carries a musical LINE — something for which
+-- | legato, portamento, ties and ratchets are meaningful — as opposed to a
+-- | TRIGGER, which is fired once and has no pitch continuity to preserve.
+-- |
+-- | An FH-2 envelope or gate is a trigger: sliding into it means nothing, and
+-- | retriggering it per ratchet would be a different musical decision from the
+-- | one the player made in the note grid. A MIDI or continuo destination is a
+-- | line. Odonus branches on this so its expressive logic runs where it applies
+-- | and nowhere else.
+carriesLine :: Destination -> Boolean
+carriesLine = case _ of
+  DMidi _ -> true
+  DContinuo _ -> true
+  DFh2Env _ -> false
+  DFh2Gate _ -> false
+  DEs9Gate _ -> false
+  DEs9Cv _ -> true      -- a pitch CV bus is a line; glide is exactly what it wants
 
 wireOf :: Destination -> Maybe Wire
 wireOf = case _ of

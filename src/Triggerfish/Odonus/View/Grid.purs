@@ -11,9 +11,9 @@ module Triggerfish.Odonus.View.Grid (gridPanel, transportRow, statusBar) where
 
 import Prelude
 
-import Data.Foldable (any, maximum)
+import Data.Foldable (all, maximum)
 import Data.Int (floor, round)
-import Data.Maybe (fromMaybe, isJust)
+import Data.Maybe (fromMaybe)
 import Halogen as H
 import Halogen.HTML as HH
 import Halogen.HTML.Events as HE
@@ -23,8 +23,9 @@ import Triggerfish.Odonus.Model as M
 import Triggerfish.Ui.Knob (knob)
 import Triggerfish.Odonus.Marbles (betaWeights)
 import Triggerfish.Odonus.Grid.Types
-  ( Action(..), GenKind(..), KnobTarget(..), Slots, State, defaultVoiceCfg, envChannels, marblesPadId
-  , twisterFieldLabel )
+  ( Action(..), GenKind(..), KnobTarget(..), Slots, State, marblesPadId, twisterFieldLabel )
+import Triggerfish.Routing.Model as RM
+import Triggerfish.Routing.Out as RO
 import Triggerfish.Odonus.Grid.Widgets
   ( cellChrome, engrave, genRow, labelledRow, miniKnob, octLabel, panelShell, style, tabBtn )
 import Data.Array (length, mapWithIndex, null, (!!), (..))
@@ -173,13 +174,13 @@ oneDp x =
   let n = round (x * 10.0)
   in show (n `div` 10) <> "." <> show (n `mod` 10)
 
--- | Whether every MIDI port this patch depends on was found. Envelopes only
--- | count against it once a head asks for one — see `statusBar`.
+-- | Whether every destination the four heads are ROUTED to can currently be
+-- | reached. Asks the routing table rather than testing named ports, so adding a
+-- | destination automatically brings it under the same check.
 midiPortsOk :: State -> Boolean
 midiPortsOk s =
-  let wantsEnv = any (\i -> not (null (envChannels (fromMaybe (defaultVoiceCfg i) (s.voices !! i)))))
-                     (0 .. (length s.voices - 1))
-  in isJust s.midiOut && (not wantsEnv || isJust s.envOut)
+  let ports = { found: RO.portNames s.outs, rigUp: true }
+  in all (\h -> null (RM.unreachable ports s.routing (RM.SOdonusHead h))) (0 .. 3)
 
 statusBar :: forall m. State -> H.ComponentHTML Action Slots m
 statusBar s =

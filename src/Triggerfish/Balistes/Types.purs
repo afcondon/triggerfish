@@ -45,6 +45,8 @@ import Data.String.Common (toLower)
 import Data.Tuple (Tuple(..))
 import Binnacle as Binnacle
 import Binnacle.Midi as Midi
+import Triggerfish.Routing.Model as RM
+import Triggerfish.Routing.Out as RO
 import Binnacle.Scheduler as Scheduler
 import Halogen as H
 import Reef.Balistes.Input as RBI
@@ -129,7 +131,11 @@ type State =
   , pending :: Array { step :: Int, input :: RBI.BInput }
   , flash :: Array Flash
   , binnacle :: Maybe Binnacle.Binnacle
-  , midiOut :: Maybe Midi.MidiOut
+  -- Every MIDI output port, not one: the routing table may name any of them, so
+  -- the emit path resolves per leg rather than holding a single handle. See
+  -- Triggerfish.Routing.Out.
+  , outs :: RO.Outs
+  , routing :: RM.Table
   , midiName :: String
   , clockTempo :: Number
   , clockLocked :: Boolean
@@ -221,7 +227,7 @@ data Action
   | SavePreset Int
   | Step Scheduler.Tick
   | Frame
-  | MidiReady (Maybe Midi.MidiOut) String
+  | MidiReady RO.Outs String
   | ResetPat
   | Dice
   | PadAt Int Int Int          -- clientX clientY buttons

@@ -2,10 +2,7 @@
 -- | component State, and the Action set. Held low in the module DAG so every
 -- | view module can refer to them without a cycle.
 module Triggerfish.Odonus.Grid.Types
-  ( VoiceCfg
-  , defaultVoiceCfg
-  , envChannels
-  , KnobTarget(..)
+  ( KnobTarget(..)
   , targetRange
   , applyTarget
   , DragState
@@ -60,6 +57,10 @@ import Reef.Gen
   , periodOf, toggleGen, setRate, setAmt )
 import Binnacle (Binnacle)
 import Binnacle.Midi as Midi
+import Triggerfish.Routing.Model as RM
+import Triggerfish.Routing.Out as RO
+import Triggerfish.Routing.Model as RM
+import Triggerfish.Routing.Out as RO
 import Binnacle.Scheduler as Scheduler
 
 data KnobTarget
@@ -289,8 +290,6 @@ type State =
                              -- Silent = stopped, Local = play local Web-MIDI, Rig = rig
                              -- authoritative (muted locally). Replaces running/master/audible.
   -- Per-head rig routing (4 entries) + whether its config modal is open.
-  , voices :: Array VoiceCfg
-  , voiceCfgOpen :: Boolean
   , dragging :: Maybe DragState
   , dragSub :: Maybe H.SubscriptionId
   , notes :: Array NoteEvent
@@ -308,14 +307,13 @@ type State =
   , twisterField :: TwisterField    -- which cell attribute the Twister's rotaries drive (bank 1)
   , binnacle :: Maybe Binnacle
   , nowMicros :: Number
-  , midiOut :: Maybe Midi.MidiOut
-  -- A SECOND output, for the FH-2. A head's musical note goes to `midiOut` (the
-  -- IAC bus into Ableton); its envelope triggers go here, because polyenv lives
-  -- on the FH-2's own port. One source, two devices — see docs/DESIGN-routing.md.
-  -- `Nothing` means the port was not found, which MUST be visible: an unfound
-  -- port that merely stops emitting is the silent-failure shape this rig keeps
-  -- being bitten by. `midiName` carries the status text for all three ports.
-  , envOut :: Maybe Midi.MidiOut
+  -- Every MIDI output port, plus the routing table saying which of them each
+  -- head uses. Replaces the pair of hardcoded handles (IAC + FH-2) that shipped
+  -- earlier today: routing is DATA now, resolved per leg at emit time, so a head
+  -- can fan out to any number of destinations on any number of devices.
+  -- See Triggerfish.Routing.Model.
+  , outs :: RO.Outs
+  , routing :: RM.Table
   , midiName :: String
   , clockTempo :: Number
   , clockLocked :: Boolean
@@ -370,39 +368,12 @@ type State =
   , lastChip :: Maybe ChipView
   }
 
--- | Per-head rig routing: which FH-2 polyenv envelopes this head fires.
--- |
--- | Deliberately NOT part of `Reef.Odonus.Head`. That record is the musical model
--- | that co-simulates between browser and BEAM, and routing is rig-facing
--- | PLACEMENT — putting it there would drag it through the wire protocol and the
--- | BEAM decoder to no purpose. Same split as the bank's name-vs-content work: the
--- | artefact holds the musical fact, the envelope holds the placement.
--- |
--- | `envs` are polyenv SLOTS, 1..8. A slot is addressed by MIDI channel — envelope
--- | N listens on channel N — so firing several envelopes from one note is just
--- | sending that note on several channels. That is the VCO/VCF/FX case, and it
--- | falls out rather than needing a mechanism.
--- |
--- | Every ticked slot is sent EXPLICITLY, including the head's own number.
--- |
--- | It briefly looked as though a head whose own channel was in `envs` needed no
--- | extra send — its note is already on that channel, so envelope N would fire
--- | for free. That was only ever true while notes and envelopes shared one MIDI
--- | port, and they no longer do: a head's note goes to the IAC bus (Ableton) and
--- | its envelopes to the FH-2's own port. Same channel NUMBER, different device,
--- | so the coincidence is gone and eliding the send would silently fire nothing
--- | in the default configuration.
-type VoiceCfg = { envs :: Array Int }
-
-defaultVoiceCfg :: Int -> VoiceCfg
-defaultVoiceCfg headIdx = { envs: [ headIdx + 1 ] }
-
 data Action
   = Initialize
   | Step Scheduler.Tick
   | Frame
-  -- note-out, envelope-out (FH-2), status line
-  | MidiReady (Maybe Midi.MidiOut) (Maybe Midi.MidiOut) String
+  -- every output port, status line
+  | MidiReady RO.Outs String
   | ToggleGlide Int
   | ToggleGate Int
   | ToggleSkip Int
@@ -472,16 +443,8 @@ data Action
                                -- the push started, plus everything else on the rig)
   | TwisterMsg Int Int Int     -- a raw MIDI message from the MidiFighter Twister
   -- VOICE config: which FH-2 polyenv envelopes each head fires.
-  | OpenVoiceCfg
-  | CloseVoiceCfg
-  | ToggleHeadEnv Int Int      -- head index, envelope slot (1..8)
                                -- (status, data1, data2). Bank 1: encoders 0..15 map
                                -- 1:1 onto the 16 cells — rotate sets the cell note
                                -- (absolute), push toggles SKIP. Decoded in the handler.
 
--- | The FH-2 channels this head's note must be repeated on to fire its
--- | envelopes — every ticked slot, deduped. Canonical 1..16; the caller converts
--- | at the WebMIDI boundary. It does NOT depend on the head index: see `VoiceCfg`
--- | for why the head's own channel is no longer a free ride.
-envChannels :: VoiceCfg -> Array Int
-envChannels cfg = Array.nub cfg.envs
+
