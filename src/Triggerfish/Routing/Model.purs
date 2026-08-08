@@ -454,13 +454,25 @@ claims tbl = map collect (nub (map _.slot spent))
   where
   spent = concatMap legsOf tbl
   legsOf r = concatMap (slotOf r.source) (filter _.on r.legs)
+  -- Both FH-2 kinds are expressed as the MCV they consume, NOT as what they are
+  -- called, because that is the hardware they actually contend for.
+  --
+  -- polyenv allocates MCV 0..7, envelope N on MCV N-1, whose output lands at jack
+  -- N (`base = jack - 1`, the env-only quirk). The drum breakout's note-filtered
+  -- triggers use MCV 0..3 for jacks 1..4. So BOTH are `mcv = jack - 1`, and an
+  -- FH-2 envelope on slot 3 and an FH-2 gate on jack 3 are the same MCV driving
+  -- the same jack — mutually exclusive, whichever was applied last winning.
+  --
+  -- Naming them differently ("env 3" vs "mcv → jack 3") hid that: the router
+  -- reported zero conflicts for a default table with four of them.
   slotOf src leg = case leg.dest of
-    DFh2Env d -> [ { device: DevFh2, slot: "env " <> show d.slot, by: [ src ] } ]
-    DFh2Gate d -> [ { device: DevFh2, slot: "mcv → jack " <> show d.jack, by: [ src ] } ]
+    DFh2Env d -> [ { device: DevFh2, slot: mcvSlot d.slot, by: [ src ] } ]
+    DFh2Gate d -> [ { device: DevFh2, slot: mcvSlot d.jack, by: [ src ] } ]
     DEs9Gate d -> [ { device: DevEs9, slot: "GT " <> show d.block <> " jack " <> show d.jack, by: [ src ] } ]
     DEs9Cv d -> [ { device: DevEs9, slot: "CV bus " <> show d.bus, by: [ src ] } ]
     DMidi _ -> []
     DContinuo _ -> []
+  mcvSlot jack = "MCV " <> show (jack - 1) <> " → jack " <> show jack
   collect s =
     let here = filter (\c -> c.slot == s) spent
     in { device: fromMaybe DevFh2 (map _.device (here !! 0))
