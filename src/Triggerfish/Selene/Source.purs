@@ -52,14 +52,18 @@ printRack sel =
   legend =
     joinWith "\n"
       [ "-- SELENE · edit the numbers; the rack follows."
-      , "-- <kind> <target> opens a group of 8 · one slot per line · -- mutes a slot." ]
+      , "-- <kind> <target> [range] opens a group of 8 · one slot per line · -- mutes a slot."
+      , "-- range is optional (unipolar5v / unipolar8v / bipolar5v …); omitted = the rig's default for that kind." ]
 
 -- | One destination: a `<kind> <target>` header then eight tagged slots.
 printDest :: M.Destination -> String
 printDest d =
-  (kindKeyword d.bank <> " " <> M.targetWire d.target) <> "\n"
+  (kindKeyword d.bank <> " " <> M.targetWire d.target <> rangeTok) <> "\n"
     <> joinWith "\n" (mapWithIndex slotLine (bankSlots d.bank))
   where
+  -- Printed only when the user pinned one, so an unpinned block round-trips
+  -- byte-identically and a plain header stays a plain header.
+  rangeTok = maybe "" (\r -> " " <> M.rangeToWire r) d.range
   slotLine i row = "  " <> row <> "   -- " <> show (i + 1)
   bankSlots = case _ of
     M.GLfo slots -> map lfoLine slots
@@ -82,14 +86,16 @@ envLine :: M.EnvSlot -> String
 envLine sl =
   "a " <> show sl.attack <> " d " <> show sl.decay
     <> " s " <> show sl.sustain <> " r " <> show sl.release
-    <> opt "depth" sl.depth 127
-    <> opt "vel" sl.velDepth 96
-    <> opt "time" sl.timeRange 2
-    <> opt "rnd" sl.randomDepth 0
-    <> opt "ashape" sl.attackShape 64
-    <> opt "dshape" sl.decayShape 64
-    <> opt "rshape" sl.releaseShape 64
+    <> opt "depth" sl.depth M.defaultEnvSlot.depth
+    <> opt "vel" sl.velDepth M.defaultEnvSlot.velDepth
+    <> opt "time" sl.timeRange M.defaultEnvSlot.timeRange
+    <> opt "rnd" sl.randomDepth M.defaultEnvSlot.randomDepth
+    <> opt "ashape" sl.attackShape M.defaultEnvSlot.attackShape
+    <> opt "dshape" sl.decayShape M.defaultEnvSlot.decayShape
+    <> opt "rshape" sl.releaseShape M.defaultEnvSlot.releaseShape
   where
+  -- Elided against the SAME base `parseEnv` folds onto (`M.defaultEnvSlot`).
+  -- These were literals, and drifted from the parser's — see that definition.
   opt k v def = if v == def then "" else " " <> k <> " " <> show v
 
 lfoLine :: M.ModSlot -> String
@@ -129,6 +135,7 @@ type PState =
   , open :: Maybe
       { target :: M.Target
       , kind :: M.GenKind
+      , range :: Maybe M.OutputRange
       , rows :: Array (Maybe String)
       }
   }
@@ -146,7 +153,7 @@ parseRack doc =
     in
       if t == "" then closeBlock st
       else case headerOf t of
-        Just hdr -> (closeBlock st) { open = Just { target: hdr.target, kind: hdr.kind, rows: [] } }
+        Just hdr -> (closeBlock st) { open = Just { target: hdr.target, kind: hdr.kind, range: hdr.range, rows: [] } }
         Nothing -> case st.open of
           Just blk -> st { open = Just (addLine blk t) }
           Nothing -> st   -- a stray line outside any block: ignore
@@ -173,7 +180,7 @@ closeBlock st = case st.open of
   Nothing -> st
   Just blk ->
     let bank = buildBank blk.kind (fitTo M.slotCount blk.rows)
-    in { dests: snoc st.dests { target: blk.target, range: M.Bipolar5V, bank }, open: Nothing }
+    in { dests: snoc st.dests { target: blk.target, range: blk.range, bank }, open: Nothing }
 
 -- Pad/truncate the row list to n (missing positions are muted → silent).
 fitTo :: Int -> Array (Maybe String) -> Array (Maybe String)
@@ -192,12 +199,17 @@ buildBank kind rows = case kind of
 -- ---------------------------------------------------------------------------
 
 -- A block header — exactly `<kind> <target>`.
-headerOf :: String -> Maybe { kind :: M.GenKind, target :: M.Target }
+-- | `<kind> <target>` with an optional trailing output range. An unrecognised
+-- | third token is NOT silently dropped — the whole line stops being a header, so
+-- | a typo shows up as a missing block rather than as a range that quietly isn't
+-- | the one you typed.
+headerOf :: String -> Maybe { kind :: M.GenKind, target :: M.Target, range :: Maybe M.OutputRange }
 headerOf t = case words t of
   [] -> Nothing
   toks -> case toks !! 0 >>= kindOf of
     Just k -> case toks of
-      [ _, tgt ] -> Just { kind: k, target: parseTarget tgt }
+      [ _, tgt ] -> Just { kind: k, target: parseTarget tgt, range: Nothing }
+      [ _, tgt, rng ] -> map (\r -> { kind: k, target: parseTarget tgt, range: Just r }) (M.rangeOfWire rng)
       _ -> Nothing
     Nothing -> Nothing
 
@@ -320,7 +332,7 @@ parseClock s =
 -- Every field is a `key value` pair, so the parser is one fold over pairs and
 -- an unknown key is ignored rather than shifting everything after it.
 parseEnv :: String -> M.EnvSlot
-parseEnv str = foldl apply silentEnv (keyVals (words str))
+parseEnv str = foldl apply M.defaultEnvSlot (keyVals (words str))
   where
   apply sl kv = case kv.key of
     "a" -> sl { attack = b kv.val }

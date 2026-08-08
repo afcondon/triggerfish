@@ -32,6 +32,7 @@ module Triggerfish.Selene.Model
   , OutputRange(..)
   , rangeLabel
   , rangeToWire
+  , rangeOfWire
   , ClockBase(..)
   , clockBaseToWire
   , clockBaseLabel
@@ -41,6 +42,7 @@ module Triggerfish.Selene.Model
   , EuclidSlot
   , PresetNoteSlot
   , EnvSlot
+  , defaultEnvSlot
   , slotCount
   , euclidBits
   , noteName
@@ -54,7 +56,7 @@ import Prelude
 
 import Data.Array (deleteAt, elemIndex, length, mapWithIndex, range, snoc, (!!))
 import Data.Int as Int
-import Data.Maybe (fromMaybe)
+import Data.Maybe (Maybe(..), fromMaybe)
 import Data.Number (log, pi, sin) as N
 
 -- ---------------------------------------------------------------------------
@@ -191,6 +193,28 @@ type EnvSlot =
   , releaseShape :: Int
   }
 
+-- | The base an envelope line is READ ONTO and WRITTEN AGAINST — one value, so
+-- | the two can't disagree.
+-- |
+-- | They did. `envLine` elided a field when it matched the musical default
+-- | (depth 127, vel 96), while `parseEnv` folded onto the SILENT slot (depth 0,
+-- | vel 64). So a full-depth velocity-sensitive envelope printed as bare ADSR
+-- | and came back with depth 0 — an envelope that fires and moves nothing — and
+-- | with velocity response switched off. Both of the things the FH-2 envelope
+-- | work is about, lost on the first round-trip through the text surface, which
+-- | is the surface Selene edits through.
+-- |
+-- | Distinct from `silentEnv` in Source.purs, which is what a MUTED row means:
+-- | there, depth 0 is the point. An envelope has no true "off" (depth is not on
+-- | the wire), so "muted" has to be spelled as "moves nothing".
+defaultEnvSlot :: EnvSlot
+defaultEnvSlot =
+  { attack: 0, decay: 0, sustain: 0, release: 0
+  , depth: 127, velDepth: 96, timeRange: 2
+  , randomDepth: 0
+  , attackShape: 64, decayShape: 64, releaseShape: 64
+  }
+
 -- ---------------------------------------------------------------------------
 -- Output target — where a destination's eight outputs physically land
 -- ---------------------------------------------------------------------------
@@ -271,6 +295,17 @@ rangeToWire = case _ of
   Unipolar5V -> "unipolar5v"
   Unipolar8V -> "unipolar8v"
 
+-- | Inverse of `rangeToWire` — the text surface and the wire share one spelling
+-- | rather than growing a second, prettier one to keep in step.
+rangeOfWire :: String -> Maybe OutputRange
+rangeOfWire = case _ of
+  "unipolar10v" -> Just Unipolar10V
+  "bipolar5v" -> Just Bipolar5V
+  "unipolar1v" -> Just Unipolar1V
+  "unipolar5v" -> Just Unipolar5V
+  "unipolar8v" -> Just Unipolar8V
+  _ -> Nothing
+
 rangeLabel :: OutputRange -> String
 rangeLabel = case _ of
   Unipolar10V -> "0–10V"
@@ -340,11 +375,28 @@ clockBaseBeats = case _ of
 -- The rack
 -- ---------------------------------------------------------------------------
 
--- | A destination: a typed eight-slot bank bound to a physical target, with its
--- | own output range (relevant to the CV kinds; gates ignore it).
+-- | A destination: a typed eight-slot bank bound to a physical target, with an
+-- | OPTIONAL output range.
+-- |
+-- | `Nothing` means "don't pin one — let the FH-2 daemon's per-family policy
+-- | decide", and that is the normal case. The policy already exists in exactly
+-- | one place (`FH2.PolyBank.familyDefaultRange`: gate families and polyenv are
+-- | unipolar +5V, LFO and random stay bipolar), so restating it here would be a
+-- | second copy to drift.
+-- |
+-- | It used to be a required field hardcoded to `Bipolar5V` at all five
+-- | construction sites, which silently OVERRODE that policy — the field is only
+-- | consulted when present. Harmless while the only FH-2 destination was an LFO
+-- | (bipolar is right for an LFO) and invisible on ES-9 targets (the range is an
+-- | FH-2 jack setting). Envelopes were the first family to expose it: they came
+-- | up bipolar and idled at -5V, which is the "all-blue" reading on the FH-2's
+-- | display, and the same symptom fh2-config recorded on-rig on 2026-05-13.
+-- |
+-- | `Just r` is the user pinning it deliberately — e.g. `env fh2_0 unipolar8v`
+-- | for more envelope headroom than the +5V default.
 type Destination =
   { target :: Target
-  , range :: OutputRange
+  , range :: Maybe OutputRange
   , bank :: GenBank
   }
 
@@ -356,10 +408,10 @@ type Selene = { destinations :: Array Destination }
 defaultSelene :: Selene
 defaultSelene =
   { destinations:
-      [ { target: ES9Main, range: Bipolar5V, bank: freshBank KLfo }
-      , { target: ES9Gt 0, range: Bipolar5V, bank: freshBank KEuclid }
-      , { target: ES9Gt 1, range: Bipolar5V, bank: freshBank KClock }
-      , { target: Midi 1, range: Bipolar5V, bank: freshBank KNote }
+      [ { target: ES9Main, range: Nothing, bank: freshBank KLfo }
+      , { target: ES9Gt 0, range: Nothing, bank: freshBank KEuclid }
+      , { target: ES9Gt 1, range: Nothing, bank: freshBank KClock }
+      , { target: Midi 1, range: Nothing, bank: freshBank KNote }
       ]
   }
 
@@ -410,7 +462,7 @@ freshBank = case _ of
 
 addDestination :: GenKind -> Selene -> Selene
 addDestination kind s =
-  s { destinations = snoc s.destinations { target: defaultTargetFor kind, range: Bipolar5V, bank: freshBank kind } }
+  s { destinations = snoc s.destinations { target: defaultTargetFor kind, range: Nothing, bank: freshBank kind } }
 
 removeDestination :: Int -> Selene -> Selene
 removeDestination i s = s { destinations = fromMaybe s.destinations (deleteAt i s.destinations) }

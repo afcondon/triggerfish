@@ -62,7 +62,11 @@ destinationEnvelope d = do
   let
     bank = sb.bank
     family = familyOf d.bank
-    range = M.rangeToWire d.range
+    -- `Nothing` must OMIT the key, not send null: the daemon reads it with
+    -- `optStringField`, which tests for presence and would reject a null. A
+    -- `Maybe` field writes `undefined`, and JSON.stringify drops those keys —
+    -- verified against the actual emitted JSON, not assumed.
+    range = map M.rangeToWire d.range
     alias = "selene:" <> sb.socket <> ":" <> bank
     json = case d.bank of
       M.GLfo slots ->
