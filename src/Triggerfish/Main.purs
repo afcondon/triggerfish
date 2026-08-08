@@ -21,7 +21,7 @@ import Prelude
 
 import Data.Array (any, deleteAt, elem, filter, find, findIndex, head, last, length, mapMaybe, mapWithIndex, modifyAt, null, replicate, uncons, unsnoc, (..), (:), (!!))
 import Data.FoldableWithIndex (forWithIndex_)
-import Data.Foldable (for_)
+import Data.Foldable (for_, maximum, minimum, sum)
 import Data.Either (Either(..))
 import Data.Maybe (Maybe(..), fromMaybe, isJust, maybe)
 import Data.Const (Const)
@@ -74,6 +74,7 @@ import Triggerfish.Sufflamen.Component as Sufflamen
 import Triggerfish.Stellatus.Component as Stellatus
 import Triggerfish.Balistes.Pattern as P
 import Triggerfish.Routing.Model as RM
+import Triggerfish.Routing.Monitor as Mon
 import Triggerfish.Routing.Store as RStore
 import Triggerfish.SourceQuery as SQ
 import Triggerfish.Glyph as G
@@ -136,12 +137,15 @@ data RAction
   -- The ⌥1 router. Every routing edit is one of these five; each ends in
   -- `editRoute`, so persisting and pushing to the machines happen in one place.
   | SetPorts (Array String)
+  | MonTick
+  | MonClear
   | RtToggleLeg RM.Source Int
   | RtRemoveLeg RM.Source Int
   | RtAddLeg RM.Source String          -- destination KIND token
   | RtSetField RM.Source Int String String   -- leg, field name, typed value
   | RtSetOffset RM.Source Int String
   | RtSetPort RM.Source Int String
+  | RtResetTable
   | SetSeleneTarget Int String  -- routing modal: re-target Selene destination i to a wire (nested menu)
   | PickEntry LibRow            -- workbench: put a shelf entry on the bench
   | ToggleSource               -- workbench: slide the raw-source drawer open/shut
@@ -294,6 +298,9 @@ type RState =
   -- picker. The shell opens MIDI only to ENUMERATE — the machines do the
   -- emitting — so a port listed here is one a route can actually name.
   , routingPorts :: Array String
+  -- Observed MIDI traffic (Routing.Monitor). Refreshed only while the router is
+  -- open — the tap runs always, reading it costs nothing when nobody is looking.
+  , midiTraffic :: Array Mon.Row
   -- Vetula's name→channel binds. Superseded by `routingTable`'s SVetulaVoice
   -- rows; kept until Vetula is folded in (step 4c of the design note), since it
   -- speaks its own query type rather than the shared one.
@@ -427,6 +434,7 @@ root =
         , armed: Set.empty
         , routingTable: RM.defaultTable
         , routingPorts: []
+        , midiTraffic: []
         , routing: Map.empty
         , vetulaNames: [], seleneDoc: ""
         , modal: Nothing
@@ -467,6 +475,10 @@ handleAction = case _ of
     -- nothing on the backend can contradict, so it persists.
     mtbl <- liftEffect RStore.load
     for_ mtbl \t -> H.modify_ _ { routingTable = t }
+    -- Tap MIDI out before anything can play, so the router's activity column
+    -- covers the whole session rather than starting when it is first opened.
+    liftEffect Mon.install
+    _ <- liftEffect $ setInterval 500 (HS.notify listener MonTick)
     -- Enumerate MIDI outputs for the router's reachability column. The shell
     -- never emits; it only needs to know which port NAMES exist so it can show a
     -- route pointing at an absent one as dead rather than as merely quiet.
@@ -752,6 +764,17 @@ handleAction = case _ of
   -- Tidal-page channel map: bind a Vetula voice name → channel (blank/invalid = unbind,
   -- back to the default). Update the shell table, then push it to Vetula.
   SetPorts ns -> H.modify_ _ { routingPorts = ns }
+  -- Only read the tap when the router is on screen. The tap itself is always on:
+  -- traffic that happened before you opened the panel is exactly what you want to
+  -- see when you open it.
+  MonTick -> do
+    m <- H.gets _.modal
+    when (m == Just MRouting) do
+      rows <- liftEffect Mon.read
+      H.modify_ _ { midiTraffic = rows }
+  MonClear -> do
+    liftEffect Mon.clear
+    H.modify_ _ { midiTraffic = [] }
   RtToggleLeg src i -> do
     st <- H.get
     editRoute src (RM.legsFor (RM.modifyLeg src i (\l -> l { on = not l.on }) st.routingTable) src)
@@ -767,6 +790,12 @@ handleAction = case _ of
     Just n -> do
       st <- H.get
       editRoute src (RM.legsFor (RM.modifyLeg src i (\l -> l { dest = RM.setDestField field n l.dest }) st.routingTable) src)
+  -- Escape hatch. Routing is now the thing standing between the player and any
+  -- sound at all, so there has to be a way back to a known-good table without
+  -- reaching for devtools.
+  RtResetTable -> do
+    H.modify_ _ { routingTable = RM.defaultTable }
+    pushRoutingTable
   RtSetPort src i port -> do
     st <- H.get
     editRoute src (RM.legsFor (RM.modifyLeg src i (\l -> l { dest = setPort port l.dest }) st.routingTable) src)
@@ -1611,6 +1640,7 @@ channelMapPanel st =
             ]
         ]
     , claimsPanel
+    , trafficPanel
     , HH.div [ style "display:flex;align-items:center;gap:20px;margin-top:24px;flex-wrap:wrap" ]
         ( [ HH.span [ style "font-size:11px;letter-spacing:0.06em;color:#6a655a" ] [ HH.text "audition →" ] ]
             <> map auditionControl auditionMachines )
@@ -1648,7 +1678,7 @@ channelMapPanel st =
                , HP.title (if leg.on then "mute this destination (keeps it)" else "unmute")
                , style $ "cursor:pointer;font-size:11px;width:14px;color:" <> (if leg.on then "#3a6a4a" else "#a09a88") ]
                [ HH.text (if leg.on then "●" else "○") ]
-           , HH.span [ style "font-size:10px;color:#6a6558;width:52px" ] [ HH.text (kindOf leg.dest) ]
+           , HH.span [ style "font-size:10px;color:#6a6558;width:52px" ] [ HH.text (destKind leg.dest) ]
            ] <> destFields src i leg.dest <>
            [ numBox 40 (fmtOffset leg.offsetMs) (RtSetOffset src i) "ms trim — the flam killer when doubling"
            , HH.span
@@ -1660,9 +1690,42 @@ channelMapPanel st =
                [ style $ "font-size:9px;font-family:'SF Mono',Menlo,monospace;"
                    <> (if dead then "color:#b0492f" else "color:#7a9a7a") ]
                [ HH.text (if dead then RM.reachNote reach else "ok") ]
+           , legActivity leg
            ] )
 
-  kindOf = case _ of
+  -- What this leg has actually CARRIED, from the WebMIDI tap. The reach column
+  -- says the destination could be reached; this says notes went there. They fail
+  -- independently — a route can be perfectly reachable and never used because the
+  -- machine isn't arming, and that reads identically from the rack.
+  legActivity leg = case RM.wireOf leg.dest of
+    Nothing -> HH.span [ style "font-size:9px;color:#b0a690" ] [ HH.text "—" ]
+    Just w ->
+      let rows = filter (Mon.matches w) st.midiTraffic
+          n = sum (map _.hits rows)
+          offs = sum (map _.offs rows)
+          recent = any (\r -> r.agoMs < 2000.0) rows
+          vlo = fromMaybe 0 (minimum (map _.velMin rows))
+          vhi = fromMaybe 0 (maximum (map _.velMax rows))
+          -- Notes started but never ended. A few in flight is normal (the last
+          -- note is still sounding); a growing gap means note-offs aren't being
+          -- sent, which at the rack reads as an envelope that never comes back
+          -- down — the same symptom as a sustain problem, different cause.
+          stuck = n - offs > 2
+      in HH.span
+           [ HP.title (if n == 0 then "no notes observed on this destination"
+               else show n <> " on / " <> show offs <> " off · velocity "
+                    <> show vlo <> "-" <> show vhi
+                    <> (if vlo == vhi then " (NOT varying)" else " (varying)")
+                    <> (if stuck then " · NOTES LEFT HANGING" else ""))
+           , style $ "font-size:9px;font-family:'SF Mono',Menlo,monospace;"
+               <> (if stuck then "color:#b0492f"
+                   else if recent then "color:#2f8a5c"
+                   else if n > 0 then "color:#9a9284" else "color:#cdc4b2") ]
+           [ HH.text (if n == 0 then "·"
+               else (if recent then "\x25cf " else "") <> show n <> "/" <> show offs
+                    <> (if vlo /= vhi then " v" <> show vlo <> "-" <> show vhi else " v" <> show vhi)) ]
+
+  destKind = case _ of
     RM.DMidi _ -> "midi"
     RM.DFh2Env _ -> "fh2 env"
     RM.DFh2Gate _ -> "fh2 gate"
@@ -1732,6 +1795,44 @@ channelMapPanel st =
                     [ HH.text (joinWith "   ·   "
                         (map (\c -> RM.deviceLabel c.device <> " " <> c.slot
                                 <> " → " <> joinWith "+" (map RM.sourceLabel c.by)) cs)) ] ] )
+
+  -- Traffic no live route explains. The most valuable rows on this panel: a
+  -- machine emitting outside the router, a stale route still firing, or another
+  -- client holding the port. All three are invisible otherwise, and the last one
+  -- has cost this rig entire evenings ("something is sending it MIDI but i can't
+  -- see what").
+  trafficPanel =
+    let orphans = Mon.unaccounted st.midiTraffic st.routingTable allSources
+        total = sum (map _.hits st.midiTraffic)
+    in HH.div [ style "margin-top:18px;border-top:1px solid #00000014;padding-top:12px" ]
+         ( [ HH.div [ style "display:flex;align-items:baseline;gap:10px;margin-bottom:6px" ]
+               [ HH.span [ style "font-size:11px;letter-spacing:0.14em;text-transform:uppercase;color:#5a564b" ]
+                   [ HH.text ("observed traffic · " <> show total <> " notes") ]
+               , HH.span
+                   [ HE.onClick \_ -> MonClear
+                   , style "cursor:pointer;font-size:10px;color:#8a8676;text-decoration:underline" ]
+                   [ HH.text "reset counts" ]
+               , HH.span
+                   [ HE.onClick \_ -> RtResetTable
+                   , HP.title "discard all routing edits and return to the shipped default table"
+                   , style "cursor:pointer;font-size:10px;color:#a08676;text-decoration:underline" ]
+                   [ HH.text "restore default routing" ]
+               ] ]
+             <> (if null orphans then
+                   [ HH.div [ style "font-size:10px;color:#7a9a7a;font-style:italic" ]
+                       [ HH.text "every observed note is explained by a route above." ] ]
+                 else
+                   [ HH.div [ style "font-size:11px;color:#b0492f;margin-bottom:4px" ]
+                       [ HH.text ("⚠ " <> show (length orphans) <> " destination(s) receiving notes that NO route explains:") ]
+                   , HH.div [ style "font-size:10px;font-family:'SF Mono',Menlo,monospace;color:#8c2f1c;line-height:1.6" ]
+                       [ HH.text (joinWith "   ·   "
+                           (map (\r -> r.port <> " ch" <> show r.channel <> " n" <> show r.note
+                                   <> " ×" <> show r.hits) orphans)) ] ]) )
+
+  allSources =
+    map RM.SOdonusHead (0 .. 3)
+      <> map RM.SDrumLane (0 .. 15)
+      <> map RM.SVetulaVoice ("" : st.vetulaNames)
 
   auditionControl m =
     let dest = fromMaybe ADNone (Map.lookup m.w st.audition)
