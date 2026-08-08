@@ -219,6 +219,14 @@ persists. What is currently *playing* through that route does not.
    runtimes use — AC has confirmed the 12 was debugging residue and the Ableton
    session can be reconfigured.
 
+## The other projection
+
+`DESIGN-routing-backward.md` covers the **output-backward** view — the same table
+read from the jack rather than from the source. Written after this one landed,
+because building this made the gap obvious: contention only exists on the output
+side, so every conflict is invisible here by construction, and the jack is the
+only place a conflict can actually be resolved.
+
 ## Watch for
 
 - **A missing MIDI port must be visible.** `findOutput` returning `Nothing`
