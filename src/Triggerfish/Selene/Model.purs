@@ -10,8 +10,7 @@
 -- |
 -- | Slot field names are copied verbatim from `Tidal.Selene` (purerl-tidal) so
 -- | this ports onto the BEAM cell + the es9-daemon `apply-polysignal` wire
--- | shape. (`Tidal.Selene` also has a fifth family, the ADSR `EnvSlot`/polyenv,
--- | left for later.)
+-- | shape. All five families are exposed, polyenv included (2026-08-08).
 module Triggerfish.Selene.Model
   ( Selene
   , defaultSelene
@@ -41,6 +40,7 @@ module Triggerfish.Selene.Model
   , ClockSlot
   , EuclidSlot
   , PresetNoteSlot
+  , EnvSlot
   , slotCount
   , euclidBits
   , noteName
@@ -61,16 +61,18 @@ import Data.Number (log, pi, sin) as N
 -- Generator kinds + their eight-slot banks
 -- ---------------------------------------------------------------------------
 
--- | The shipping polysignal families — all CV/gate sources. (A sixth, polyenv,
--- | is deferred; the mini-notation trigger lane that used to live here as
--- | `KTrig` was relocated to Balistes' TIDAL tab, so Selene is now purely the
--- | ES-9 / FH-2 CV+gate rack.)
-data GenKind = KLfo | KEuclid | KClock | KNote
+-- | The shipping polysignal families. All CV/gate sources — the mini-notation
+-- | trigger lane that used to live here as `KTrig` was relocated to Balistes'
+-- | TIDAL tab, so Selene is purely the ES-9 / FH-2 rack.
+-- |
+-- | `KEnv` (polyenv) was deferred until 2026-08-08. Both daemons had supported
+-- | the family all along; only this UI was missing.
+data GenKind = KLfo | KEuclid | KClock | KNote | KEnv
 
 derive instance Eq GenKind
 
 allKinds :: Array GenKind
-allKinds = [ KLfo, KEuclid, KClock, KNote ]
+allKinds = [ KLfo, KEuclid, KClock, KNote, KEnv ]
 
 kindLabel :: GenKind -> String
 kindLabel = case _ of
@@ -78,6 +80,7 @@ kindLabel = case _ of
   KEuclid -> "POLYEUCLID"
   KClock -> "POLYCLOCK"
   KNote -> "POLYNOTE"
+  KEnv -> "POLYENV"
 
 -- | An eight-slot bank, typed by its generator. The kind is implied by the
 -- | constructor (mirrors `Tidal.Selene`'s `Selene s` sum).
@@ -86,6 +89,7 @@ data GenBank
   | GEuclid (Array EuclidSlot)
   | GClock (Array ClockSlot)
   | GNote (Array PresetNoteSlot)
+  | GEnv (Array EnvSlot)
 
 bankKind :: GenBank -> GenKind
 bankKind = case _ of
@@ -93,6 +97,7 @@ bankKind = case _ of
   GEuclid _ -> KEuclid
   GClock _ -> KClock
   GNote _ -> KNote
+  GEnv _ -> KEnv
 
 -- | The eight slots of an octo bank.
 slotCount :: Int
@@ -138,6 +143,52 @@ type EuclidSlot =
 -- | POLYPRESETNOTE: a static V/oct pitch, one held MIDI note per slot.
 type PresetNoteSlot =
   { note :: Int
+  }
+
+-- | POLYENV: one MCV-bound ADSR per slot, fired by a MIDI note on the slot's own
+-- | channel (envelope N listens on channel N+1 — channels 1..8). Envelope-only:
+-- | the MCV emits no gate and no pitch CV, so a note that triggers it has to
+-- | carry pitch on a DIFFERENT MCV if you want one.
+-- |
+-- | Continuous output, so CV-capable banks only — `BankGt` is rejected by the
+-- | layout solver, and the daemon answers `capability mismatch` if you try.
+-- |
+-- | **These fields are exactly the wire contract, not the whole slot.** The
+-- | daemon's `decodeEnvSlot` calls `assertKnownKeys`, which REJECTS an unknown
+-- | field outright, so this record matches its allow-list rather than the fuller
+-- | `PolyEnv.Slot` on the far side.
+-- |
+-- | `velDepth` is the one that earns its place: bipolar, 64 = no effect, and it
+-- | is how MIDI velocity scales the envelope. **It is the only per-note
+-- | expression this path can offer** — the shape is config and cannot change per
+-- | note — so with it a melodic line has dynamics, and without it every note
+-- | comes out identical. Odonus already carries a per-cell velocity, so this
+-- | costs no new UI there. (Note it varies the envelope's DEPTH, not its time:
+-- | you get loud-and-quiet, not long-and-short.)
+-- |
+-- | `timeRange` is the firmware's 200ms…50s bucket, and is NOT the wire's
+-- | `range`, which is the output VOLTAGE range. Per-slot, so the eight envelopes
+-- | can sit at different time scales — per voice, still not per note.
+-- |
+-- | All three of `depth` / `velDepth` / `timeRange` were plumbed to the hardware
+-- | and merely unreachable over the wire until 2026-08-08; `FH2.PolyBank` now
+-- | accepts them.
+-- |
+-- | Omitting per-slot output `range` here deliberately: the destination's
+-- | `outputRange` already covers it, and a second place to set the same thing is
+-- | the kind of duplication this codebase has spent the week removing.
+type EnvSlot =
+  { attack :: Int
+  , decay :: Int
+  , sustain :: Int
+  , release :: Int
+  , depth :: Int
+  , velDepth :: Int
+  , timeRange :: Int
+  , randomDepth :: Int
+  , attackShape :: Int
+  , decayShape :: Int
+  , releaseShape :: Int
   }
 
 -- ---------------------------------------------------------------------------
@@ -195,6 +246,9 @@ defaultTargetFor = case _ of
   KNote -> ES9Cv 0
   KEuclid -> ES9Gt 0
   KClock -> ES9Gt 1
+  -- Envelopes are CV, so never a gate bank. Defaults to the FH-2 because that is
+  -- where the ADSR generator with curve shapes lives.
+  KEnv -> FH2 0
 
 -- ---------------------------------------------------------------------------
 -- Output range + clock bases
@@ -317,6 +371,7 @@ freshBank = case _ of
   KEuclid -> GEuclid (map euclidSlot ixs)
   KClock -> GClock (map clockSlot ixs)
   KNote -> GNote (map noteSlot ixs)
+  KEnv -> GEnv (map envSlot ixs)
   where
   ixs = range 0 (slotCount - 1)
   -- eight sines, phase-spread over the cycle (a travelling wave)
@@ -334,6 +389,20 @@ freshBank = case _ of
   -- C2 G2 C3 D3 E3 G3 C4 E4 — a Cadd9 voicing climbing the bank
   noteSlot i = { note: fromMaybe 60 (chord !! i) }
   chord = [ 36, 43, 48, 50, 52, 55, 60, 64 ]
+  -- Eight envelopes walking from plucked to swelling: attack climbs, decay
+  -- lengthens, sustain comes up. Reads as one gesture across the bank, which is
+  -- the whole point of a "poly" default.
+  envSlot i =
+    { attack: i * 16
+    , decay: 30 + i * 12
+    , sustain: i * 14
+    , release: 20 + i * 13
+    -- velDepth 96 (>64) so velocity opens the envelope from the off: the whole
+    -- point of exposing it is that Odonus's per-cell VEL should do something.
+    , depth: 127, velDepth: 96, timeRange: 2
+    , randomDepth: 0
+    , attackShape: 64, decayShape: 64, releaseShape: 64
+    }
 
 -- ---------------------------------------------------------------------------
 -- Destination edits

@@ -540,6 +540,7 @@ nudgeSlot dir shift j = case _ of
   M.GEuclid xs -> M.GEuclid (overAt j (nudgeEuclid dir shift) xs)
   M.GClock xs -> M.GClock (overAt j (nudgeClock dir shift) xs)
   M.GNote xs -> M.GNote (overAt j (nudgeNote dir shift) xs)
+  M.GEnv xs -> M.GEnv (overAt j (nudgeEnv dir shift) xs)
 
 -- LFO: ←/→ wavelength (→ stretches the wave = lower Hz, matching the eye),
 -- ↑/↓ amplitude of the active shape. Shift = ×10 step.
@@ -616,6 +617,19 @@ clockRatioLabel sl =
   in if r >= 1.0 then "×" <> show (round r) else "÷" <> show (round (1.0 / r))
 
 -- Note: arrows = ±semitone; SHIFT = ±octave (any direction; ↑/→ up, ↓/← down).
+-- Envelope: ←/→ DECAY (how long the shape lasts), ↑/↓ ATTACK (pluck vs swell).
+-- Those two axes span the musically useful space; sustain, release, the curve
+-- shapes and the depths keep their defaults and are editable from the source
+-- pane. Deliberately not four axes on two keys.
+nudgeEnv :: NudgeDir -> Boolean -> M.EnvSlot -> M.EnvSlot
+nudgeEnv dir shift sl = case dir of
+  NRight -> sl { decay = clamp 0 127 (sl.decay + d) }
+  NLeft -> sl { decay = clamp 0 127 (sl.decay - d) }
+  NUp -> sl { attack = clamp 0 127 (sl.attack + d) }
+  NDown -> sl { attack = clamp 0 127 (sl.attack - d) }
+  where
+  d = if shift then 16 else 4
+
 nudgeNote :: NudgeDir -> Boolean -> M.PresetNoteSlot -> M.PresetNoteSlot
 nudgeNote dir shift sl =
   let d = if shift then 12 else 1
@@ -866,6 +880,7 @@ slotViews d sel = case _ of
   M.GEuclid slots -> mapWithIndex (cellFor d sel 70.0 euclidInner) slots
   M.GClock slots -> mapWithIndex (cellFor d sel 58.0 clockInner) slots
   M.GNote slots -> mapWithIndex (cellFor d sel 58.0 noteInner) slots
+  M.GEnv slots -> mapWithIndex (cellFor d sel 90.0 envInner) slots
 
 -- | Wrap one slot's inner drawing in the focusable, selectable cell.
 cellFor :: forall m a. Int -> Maybe Sel -> Number -> (a -> Array (H.ComponentHTML Action Slots m)) -> Int -> a -> H.ComponentHTML Action Slots m
@@ -955,6 +970,47 @@ noteInner sl =
       [ HH.text (M.noteName sl.note) ]
   , cellCaption ("midi " <> show sl.note)
   ]
+
+-- --- POLYENV: the shape itself ----------------------------------------------
+
+-- | Draw the envelope rather than name it. Eight of these side by side is the
+-- | bank's whole story — you read plucked-to-swelling across the row without
+-- | parsing a single number, which is what the other four visuals do for their
+-- | kinds.
+-- |
+-- | A schematic, not a simulation: A/D/R are drawn as proportions of the cell
+-- | width and S as a height, so the picture tracks the bytes without pretending
+-- | to know the firmware's time buckets.
+envInner :: forall m. M.EnvSlot -> Array (H.ComponentHTML Action Slots m)
+envInner sl =
+  [ svgEl "svg"
+      [ svgAttr "viewBox" "0 0 100 44", svgAttr "width" "100%", svgAttr "height" "44" ]
+      [ svgEl "polyline"
+          [ svgAttr "points" pts
+          , svgAttr "fill" "none"
+          , svgAttr "stroke" ink
+          , svgAttr "stroke-width" "2"
+          , svgAttr "stroke-linejoin" "round"
+          , svgAttr "stroke-linecap" "round" ] []
+      ]
+  , cellCaption ("a" <> show sl.attack <> " d" <> show sl.decay
+                  <> " s" <> show sl.sustain <> " r" <> show sl.release)
+  ]
+  where
+  -- Widths as fractions of the 100-unit box, leaving the tail for release.
+  f v = toNumber v / 127.0
+  aW = 6.0 + f sl.attack * 34.0
+  dW = 6.0 + f sl.decay * 30.0
+  rW = 6.0 + f sl.release * 24.0
+  sY = 40.0 - f sl.sustain * 36.0        -- svg y is inverted: high sustain = low y
+  holdX = min 94.0 (aW + dW + 12.0)
+  pts = joinWith " "
+    [ "0,40"
+    , show aW <> ",4"
+    , show (aW + dW) <> "," <> show sY
+    , show holdX <> "," <> show sY
+    , show (min 100.0 (holdX + rW)) <> ",40"
+    ]
 
 -- ---------------------------------------------------------------------------
 -- Cell chrome

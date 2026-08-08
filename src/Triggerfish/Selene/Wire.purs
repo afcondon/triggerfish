@@ -51,6 +51,7 @@ familyOf = case _ of
   M.GClock _ -> "polyclock"
   M.GEuclid _ -> "polyeuclid"
   M.GNote _ -> "polypresetnote"
+  M.GEnv _ -> "polyenv"
 
 -- | Encode one destination into a `SeleneApply`, or Nothing when its target isn't
 -- | a modular bank. The alias is stable per (socket, bank) so a re-push replaces
@@ -69,6 +70,9 @@ destinationEnvelope d = do
       M.GEuclid slots ->
         writeJSON { bank, family, alias, outputRange: range, slots }
       M.GNote slots ->
+        writeJSON { bank, family, alias, outputRange: range, slots }
+      -- Flat 0..127 bytes, field names already matching the daemon's record.
+      M.GEnv slots ->
         writeJSON { bank, family, alias, outputRange: range, slots }
       -- clock `base` is an ADT; the daemon wants the wire token string.
       M.GClock slots ->

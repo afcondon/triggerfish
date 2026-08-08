@@ -66,6 +66,7 @@ printDest d =
     M.GEuclid slots -> map euclidLine slots
     M.GClock slots -> map clockLine slots
     M.GNote slots -> map noteLine slots
+    M.GEnv slots -> map envLine slots
 
 kindKeyword :: M.GenBank -> String
 kindKeyword = case _ of
@@ -73,6 +74,23 @@ kindKeyword = case _ of
   M.GEuclid _ -> "euclid"
   M.GClock _ -> "clock"
   M.GNote _ -> "note"
+  M.GEnv _ -> "env"
+
+-- ADSR always; the rest only when moved off its default, so a plain envelope
+-- reads as four numbers and a shaped one shows exactly what was changed.
+envLine :: M.EnvSlot -> String
+envLine sl =
+  "a " <> show sl.attack <> " d " <> show sl.decay
+    <> " s " <> show sl.sustain <> " r " <> show sl.release
+    <> opt "depth" sl.depth 127
+    <> opt "vel" sl.velDepth 96
+    <> opt "time" sl.timeRange 2
+    <> opt "rnd" sl.randomDepth 0
+    <> opt "ashape" sl.attackShape 64
+    <> opt "dshape" sl.decayShape 64
+    <> opt "rshape" sl.releaseShape 64
+  where
+  opt k v def = if v == def then "" else " " <> k <> " " <> show v
 
 lfoLine :: M.ModSlot -> String
 lfoLine sl =
@@ -167,6 +185,7 @@ buildBank kind rows = case kind of
   M.KEuclid -> M.GEuclid (map (maybe silentEuclid parseEuclid) rows)
   M.KClock -> M.GClock (map (maybe silentClock parseClock) rows)
   M.KNote -> M.GNote (map (maybe silentNote parseNote) rows)
+  M.KEnv -> M.GEnv (map (maybe silentEnv parseEnv) rows)
 
 -- ---------------------------------------------------------------------------
 -- Header
@@ -188,6 +207,7 @@ kindOf = case _ of
   "euclid" -> Just M.KEuclid
   "clock" -> Just M.KClock
   "note" -> Just M.KNote
+  "env" -> Just M.KEnv
   _ -> Nothing
 
 parseTarget :: String -> M.Target
@@ -218,6 +238,18 @@ silentClock = { base: M.ClockQuarter, multiplier: 1, pulseWidth: 0, phase: 0 }
 
 silentNote :: M.PresetNoteSlot
 silentNote = { note: 0 }
+
+-- Silent is `depth 0` — the envelope still fires, it just moves nothing. There is
+-- no "off" for an envelope the way pulseWidth 0 mutes a clock.
+silentEnv :: M.EnvSlot
+-- No true "off" for an envelope — depth is not on the wire — so silent is the
+-- shortest possible shape rather than a muted one.
+silentEnv =
+  { attack: 0, decay: 0, sustain: 0, release: 0
+  , depth: 0, velDepth: 64, timeRange: 2
+  , randomDepth: 0
+  , attackShape: 64, decayShape: 64, releaseShape: 64
+  }
 
 -- lfo  <rate> @<phase> [lvl v] [sin a] [sqr a] [tri a] [saw a] [rnd a] [nse a]
 parseLfo :: String -> M.ModSlot
@@ -283,6 +315,34 @@ parseClock s =
   ph = firstJust (map (\tk -> intMaybe =<< Str.stripPrefix (Str.Pattern "ph") tk) toks)
 
 -- note <name-or-midi>
+-- env  a <n> d <n> s <n> r <n> [depth n] [vel n] [time n] [rnd n]
+--                                [ashape n] [dshape n] [rshape n]
+-- Every field is a `key value` pair, so the parser is one fold over pairs and
+-- an unknown key is ignored rather than shifting everything after it.
+parseEnv :: String -> M.EnvSlot
+parseEnv str = foldl apply silentEnv (keyVals (words str))
+  where
+  apply sl kv = case kv.key of
+    "a" -> sl { attack = b kv.val }
+    "d" -> sl { decay = b kv.val }
+    "s" -> sl { sustain = b kv.val }
+    "r" -> sl { release = b kv.val }
+    "depth" -> sl { depth = b kv.val }
+    "vel" -> sl { velDepth = b kv.val }
+    "time" -> sl { timeRange = b kv.val }
+    "rnd" -> sl { randomDepth = b kv.val }
+    "ashape" -> sl { attackShape = b kv.val }
+    "dshape" -> sl { decayShape = b kv.val }
+    "rshape" -> sl { releaseShape = b kv.val }
+    _ -> sl
+  b v = M.clampI 0 127 (fromMaybe 0 (Int.fromString v))
+
+-- Adjacent tokens as key/value pairs; a trailing odd token is dropped.
+keyVals :: Array String -> Array { key :: String, val :: String }
+keyVals toks = case toks !! 0, toks !! 1 of
+  Just k, Just v -> [ { key: k, val: v } ] <> keyVals (drop 2 toks)
+  _, _ -> []
+
 parseNote :: String -> M.PresetNoteSlot
 parseNote s = { note: M.clampI 0 127 (fromMaybe 60 (noteToken (fromMaybe "" (words s !! 0)))) }
 
