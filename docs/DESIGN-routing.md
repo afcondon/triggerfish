@@ -93,6 +93,65 @@ the envelopes" a config edit rather than a refactor.
   pitch. So `Fhx8Gt { note :: Int, jack :: Int }` beside `MidiDest`, and the
   router owns both halves of the pair — which is the point, since they are only
   correct relative to each other.
+
+### Drum lanes are the multi-destination case, not a variant of it
+
+> "the router can choose to send drum beats as MIDI notes to FH2 and/or as MIDI
+> notes to Ableton or other midi target and/or as gates on the ES9 […] given how
+> common it is to double up kicks and stuff, i'd say we'd want each drum channel
+> […] to be multi-destination enabled via a full router like we've just built for
+> Odonus' voices"
+
+Right, and it needs no new mechanism: `Source → Set Destination` is already the
+model, and doubling a kick is the same shape as Odonus's head sending a note to
+IAC and a trigger to the FH-2. Three points where the detail matters.
+
+**Route per `canonKit` lane, not per brain.** All three brains are already laid
+against the same 16-lane `canonKit` (`Balistes/Pattern.purs`) — Grids lights 3 of
+those lanes, Rytm and the Tidal rack light more. So the routing table is **16
+rows, shared**, and the "3 in Grids but 16 in Rytm" difference disappears: it is
+a property of what the brain *plays*, not of where a lane *goes*. A kick routed
+to jack 1 stays routed to jack 1 when you switch brains, which is what you want
+anyway — the patch cable didn't move.
+
+That also settles where the table lives: on the machine, hanging off `canonKit`,
+not on any brain's snapshot.
+
+**Fan-out is free on MIDI and scarce on gates, and the router must say so.**
+A MIDI destination costs nothing — a note number on a channel, no hardware to
+claim. Both gate paths are contended, and contended *with the other machines*:
+
+| path | capacity | already spoken for |
+|---|---|---|
+| FH-2 trigger MCV | 16 MCVs total | polyenv takes 8 when in use; drum breakout takes 4 |
+| ES-9 ES-5 gate | 8 | Selene's euclid / clock banks |
+| ES-9 CV bus | 16 buses, 8 ESX CV | Selene, `reef_voice` pitch |
+
+So "16 drum lanes as gates" is not a thing that can be enabled, and a router that
+offers it as a checkbox is lying. But the accounting already exists — es9-daemon
+has capability + overlap checks with `!` eviction, and fh2-config has `PortClaim`.
+**The router surfaces those claims; it must not compute its own second opinion.**
+Same rule as the output-range policy: one owner, and it is the daemon.
+
+**The hazard is the flam, and it is specific to the thing being asked for.**
+Doubling a kick is the single most latency-sensitive gesture on this rig — 5 ms
+between two kicks is audible as a flam, and the paths are not the same length:
+
+- FH-2 gate: browser → WebMIDI → FH-2
+- ES-9 gate: browser → rig WS → es9-daemon → CoreAudio buffer
+- Ableton: browser → WebMIDI → IAC → Live's own input buffer
+- and in Atlantis none of the above — the BEAM emits instead
+
+These have different, already-documented, chain-specific offsets. So a
+destination needs a **per-destination offset in ms**, and the calibration tables
+DeepStar already stores are where its default should come from. Without that,
+the feature works perfectly and sounds wrong, which is the worst outcome
+available — and the user will reasonably blame the drums, not the router.
+
+This is also the first hard argument for the routing table being **shared with
+the BEAM** rather than browser-only, since Atlantis mode has to make the same
+fan-out with its own offsets. Not step 2's problem, but it should not be designed
+out of reach.
 - **Selene** — unchanged. Its cascade is already the shape everything else is
   growing towards.
 - **Vetula** — named voices already edit a channel; they gain a port so
