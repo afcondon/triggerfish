@@ -54,6 +54,7 @@ so this is not an Odonus quirk.
 Source        = { machine :: Which, sub :: Maybe String }   -- head I, voice "pad", kit
 Destination   = MidiDest  { port :: String, channel :: Int }
               | Fh2Env    { slots :: Array Int }            -- polyenv 1..8
+              | Fhx8Gt    { note :: Int, jack :: Int }      -- note-filtered trigger MCV
               | Es9Cv     { pitchBus :: Int, trigBus :: Maybe Int }
               | Continuo  { channel :: Int }
               | ClaimNone                                    -- declared, unrouted
@@ -71,6 +72,27 @@ the envelopes" a config edit rather than a refactor.
   modal currently owns. Later an `Es9Cv` for the calibrated pitch route that
   `reef_voice` already runs.
 - **Balistes** — `kit` gains the same treatment; ch 10 stops being a constant.
+
+  And it should be **one row per drum lane, not one row for the kit**. The
+  assignment that actually matters on this rig is *which drum fires which
+  FHX-8GT jack*, and today that lives as a hardcoded four-row table in
+  `fh2-config/scripts/apply-drum-breakout.mjs`:
+
+  ```
+  BD note 36 → jack 1     HH note 42 → jack 3
+  SD note 38 → jack 2     CP note 39 → jack 4
+  ```
+
+  — a constant, in another repo, applied out-of-band by a script, which per
+  issue #6 never re-applies when the daemon bounces. That is the same fact the
+  router exists to hold, in the worst possible place for it. Moving a drum to a
+  different gate is currently a code edit; it should be a row.
+
+  Note this is a **different destination kind** from Odonus's: the drum's note
+  number is a *selector* the FH-2's note-filtered trigger MCVs match on, not a
+  pitch. So `Fhx8Gt { note :: Int, jack :: Int }` beside `MidiDest`, and the
+  router owns both halves of the pair — which is the point, since they are only
+  correct relative to each other.
 - **Selene** — unchanged. Its cascade is already the shape everything else is
   growing towards.
 - **Vetula** — named voices already edit a channel; they gain a port so
@@ -103,12 +125,29 @@ persists. What is currently *playing* through that route does not.
 
 ## Sequencing
 
-1. **Multi-destination for Odonus heads.** The narrow slice that unblocks the
-   test: a head's musical note keeps going to its MIDI port, and its envelope
-   trigger goes to the FH-2 port. Needs Odonus to open a second WebMIDI output —
-   and to SHOW whether it found the FH-2 port, because a missing port is exactly
-   the silent-failure shape this repo keeps being bitten by (`Midi.findOutput`
-   returning `Nothing` currently just means nothing happens).
+1. ~~**Multi-destination for Odonus heads.**~~ **DONE 2026-08-08** (`639b30d`).
+   A head's musical note keeps going to its MIDI port; its envelope trigger goes
+   to the FH-2's own port, matched on `"FH-2"`. No fallback to the note port when
+   absent — envelope notes on the IAC bus would trigger Ableton synths, worse
+   than silence. A missing port is shown: the VOICES nav button goes red with
+   `NO FH-2` when envelopes are assigned but the port isn't there, and the modal
+   states both destinations.
+
+   Two things this turned up that the note didn't predict:
+
+   - `extraEnvChannels` elided the head's own channel on the grounds that its
+     note already fired that envelope. Only true while notes and envelopes shared
+     a port. Now `envChannels`, and it elides nothing.
+   - **Selene was overriding the FH-2's own output-range policy**, so envelopes
+     came up bipolar and idled at -5V. `FH2.PolyBank.familyDefaultRange` already
+     owns that policy and is consulted only when `outputRange` is absent;
+     Selene sent it unconditionally, hardcoded to `Bipolar5V`. Fixed by Selene
+     stating no opinion (`range :: Maybe OutputRange`, default `Nothing`) rather
+     than by copying the policy across. A range can be pinned per block with an
+     optional header token — `env fh2_0 unipolar8v`.
+
+   Still unheard: whether velocity actually changes an envelope. That is the
+   next thing to do at the rig, not more code.
 2. **Make the Odonus and Balistes rows editable** — port and channel, reusing
    Selene's cascade rather than inventing a control.
 3. **Fold the envelope pips into the Odonus rows**; delete the VOICES modal and
