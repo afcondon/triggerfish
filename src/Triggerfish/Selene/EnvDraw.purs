@@ -110,15 +110,20 @@ figure box sl =
 
   dur = durationMs sl
 
-  -- Horizontal extent is log-scaled duration. The span is ~8 ms to ~150 s — a
-  -- ratio of nearly 20000 — so a linear axis would collapse every percussive
-  -- shape to a hairline. Floored at 0.18 so the shortest is still a shape and
-  -- not a tick.
+  -- Horizontal extent is log-scaled duration: the span reaches ~150 s from ~8 ms,
+  -- so a linear axis would collapse every percussive shape to a hairline.
+  -- Floored so the shortest is still a shape rather than a tick.
   extent =
     let lo' = log 8.0
-        hi' = log 150000.0
+        -- Top of the scale is 30s, not the theoretical 150s maximum. Mapping the
+        -- full possible range spent more than half the visual width on shapes
+        -- longer than two seconds, which are rare — so everything percussive,
+        -- which is most of what gets used, was crushed into the first fifth.
+        -- Anything past 30s simply pins at full width; there is nothing to
+        -- distinguish up there anyway.
+        hi' = log 30000.0
         t = (log dur - lo') / (hi' - lo')
-    in usableW * min 1.0 (max 0.18 t)
+    in usableW * min 1.0 (max 0.2 t)
 
   -- Stage widths in proportion to their times, plus a hold segment so a
   -- sustaining envelope reads as sustaining. A pure gate (a=d=r=0, s=127)
