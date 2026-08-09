@@ -104,7 +104,7 @@ cellMaskOf src =
     map (\cell -> any (\o -> bucket m o == cell) ons) (range 0 (m - 1))
 
 bucket :: Int -> Number -> Int
-bucket m o = clampI 0 (m - 1) (Int.floor (o * Int.toNumber m))
+bucket m o = clamp 0 (m - 1) (Int.floor (o * Int.toNumber m))
 
 -- ---------------------------------------------------------------------------
 -- Structure detection — is this source a pure Euclid?  (for ring rendering)
@@ -149,9 +149,6 @@ namedOnset e = case eventWhole e of
 -- ---------------------------------------------------------------------------
 -- helpers
 -- ---------------------------------------------------------------------------
-
-clampI :: Int -> Int -> Int -> Int
-clampI lo hi v = if v < lo then lo else if v > hi then hi else v
 
 uniqSort :: Array Number -> Array Number
 uniqSort = nub <<< sort

@@ -41,7 +41,8 @@ import Halogen.HTML.Events as HE
 import Halogen.Subscription as HS
 import Triggerfish.Ui.Knob (knob)
 import Triggerfish.Ui.Pointer (padNorm)
-import Triggerfish.Odonus.Grid.Widgets (style, svgEl, svgAttr, engrave, clampI)
+import Triggerfish.Odonus.Grid.Widgets (style, engrave)
+import Halogen.Widgets.Svg (svgAttr, svgEl)
 import Unsafe.Coerce (unsafeCoerce)
 import Web.Event.Event (EventType(..))
 import Web.UIEvent.MouseEvent (MouseEvent)
@@ -249,7 +250,7 @@ handleAction = case _ of
 
   SelectVoice v -> H.modify_ _ { sel = v }
 
-  StepChop d -> H.modify_ \st -> st { chopN = clampI 1 32 (st.chopN + d), phase = 0.0 }
+  StepChop d -> H.modify_ \st -> st { chopN = clamp 1 32 (st.chopN + d), phase = 0.0 }
 
   SetMode m -> H.modify_ _ { mode = m, phase = 0.0 }
 
@@ -540,7 +541,7 @@ arcLayer st order =
 currentStep :: State -> Array Cell -> Int
 currentStep st order =
   let s = length order
-  in if s == 0 then 0 else clampI 0 (s - 1) (floor (st.phase * toNumber s))
+  in if s == 0 then 0 else clamp 0 (s - 1) (floor (st.phase * toNumber s))
 
 cursorLayer :: forall m. State -> Array Cell -> Array (H.ComponentHTML Action () m)
 cursorLayer st order =
@@ -548,7 +549,7 @@ cursorLayer st order =
   in if s == 0 then []
      else
        let stepF = st.phase * toNumber s
-           step = clampI 0 (s - 1) (floor stepF)
+           step = clamp 0 (s - 1) (floor stepF)
            local = stepF - toNumber step
        in case order !! step of
             Nothing -> []

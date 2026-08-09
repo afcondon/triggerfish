@@ -59,6 +59,7 @@ import Halogen.HTML as HH
 import Halogen.HTML.Events as HE
 import Halogen.HTML.Properties as HP
 import Web.UIEvent.KeyboardEvent (KeyboardEvent)
+import Halogen.Widgets.Svg (svgAttr, svgEl)
 
 -- ---------------------------------------------------------------------------
 -- The value
@@ -209,12 +210,6 @@ type Select i =
 -- ---------------------------------------------------------------------------
 -- Drawing
 -- ---------------------------------------------------------------------------
-
-svgEl :: forall w i. String -> Array (HH.IProp () i) -> Array (HH.HTML w i) -> HH.HTML w i
-svgEl name = HH.elementNS (HH.Namespace "http://www.w3.org/2000/svg") (HH.ElemName name)
-
-svgAttr :: forall r i. String -> String -> HH.IProp r i
-svgAttr n v = HP.attr (HH.AttrName n) v
 
 r2 :: Number -> Number
 r2 x = toNumber (round (x * 100.0)) / 100.0

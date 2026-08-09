@@ -17,13 +17,14 @@ import Data.Int.Bits (shr)
 import Halogen as H
 import Halogen.HTML as HH
 import Web.UIEvent.MouseEvent as ME
-import Triggerfish.Odonus.Grid.Widgets (style, svgAttr, svgEl)
+import Triggerfish.Odonus.Grid.Widgets (style)
+import Halogen.Widgets.Svg (svgAttr, svgEl, svgOn)
 import Reef.Balistes.Tables as T
 import Triggerfish.Balistes.Model as M
 import Triggerfish.Transport (Sounding(..))
 import Triggerfish.Balistes.Types (Action(..), DragKind(..), KnobTarget(..), NoteRef(..), State, padId)
 import Triggerfish.Balistes.Widgets
-  ( knobRow, bigKnob, flatBtn, svgMouse, noteTag, instColor, ohColor, concatMap' )
+  ( knobRow, bigKnob, flatBtn, noteTag, instColor, ohColor, concatMap' )
 
 -- The knob block for the GRIDS band: density / push / groove, stacked. Was the
 -- body of the old CONTROL panel, minus the pad (now a sibling in the band) and
@@ -81,9 +82,9 @@ padSvg s =
     svgEl "svg"
       [ svgAttr "viewBox" "-8 -8 272 272", svgAttr "width" "100%", svgAttr "height" "100%"
       , svgAttr "id" padId
-      , svgMouse "mousedown" \e -> PadAt (ME.clientX e) (ME.clientY e) (ME.buttons e)
-      , svgMouse "mousemove" \e -> PadAt (ME.clientX e) (ME.clientY e) (ME.buttons e)
-      , svgMouse "mouseup" \_ -> PadRelease
+      , svgOn "mousedown" \e -> PadAt (ME.clientX e) (ME.clientY e) (ME.buttons e)
+      , svgOn "mousemove" \e -> PadAt (ME.clientX e) (ME.clientY e) (ME.buttons e)
+      , svgOn "mouseup" \_ -> PadRelease
       , svgAttr "style" "display:block;cursor:crosshair;touch-action:none"
       ]
       ( [ svgEl "rect"
@@ -177,7 +178,7 @@ heatSvg s =
           [ svgAttr "x" (show x), svgAttr "y" (show y)
           , svgAttr "width" (show (colW - 1.0)), svgAttr "height" (show (rowH - 1.0))
           , svgAttr "fill" "rgba(0,0,0,0)", svgAttr "style" "cursor:ns-resize;pointer-events:all"
-          , svgMouse "mousedown" \_ -> StartDrag (DCell lane step) (M.ratchetAt b lane step) ] []
+          , svgOn "mousedown" \_ -> StartDrag (DCell lane step) (M.ratchetAt b lane step) ] []
     playhead =
       svgEl "rect"
         [ svgAttr "x" (show (colX s.playStep)), svgAttr "y" "0"

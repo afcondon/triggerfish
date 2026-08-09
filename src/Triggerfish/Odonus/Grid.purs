@@ -53,7 +53,7 @@ import Triggerfish.Odonus.Grid.Types
    )
 import Triggerfish.Scale (scaleTypes)
 import Triggerfish.Transport (Sounding(..))
-import Triggerfish.Odonus.Grid.Widgets (clampI, engrave, style)
+import Triggerfish.Odonus.Grid.Widgets (engrave, style)
 import Triggerfish.Odonus.Logbook as Logbook
 import Triggerfish.Odonus.View.Scope (scopePanel)
 import Triggerfish.Odonus.View.Playheads (playheadsPanel)
@@ -436,7 +436,7 @@ dispatch = case _ of
         velStep acc f =
           let { u, seed } = Marbles.nextRand acc.seed
               hum = round ((u - 0.5) * 2.0 * toNumber st.velHumanize)
-              v = clampI 1 127 (f.vel + accent + hum)
+              v = clamp 1 127 (f.vel + accent + hum)
           in { items: acc.items <> [ { f, v } ], seed }
         velied = foldl velStep { items: [], seed: g.seed } r.fired
         firedV = velied.items
@@ -839,7 +839,7 @@ dispatch = case _ of
                     CellNote _ -> { lo: 0, hi: M.knobMax }
                     _ -> targetRange drag.target
               delta = round (toNumber (drag.startY - clientY) * toNumber (r.hi - r.lo) / 140.0)
-              newVal = clampI r.lo r.hi (drag.startVal + delta)
+              newVal = clamp r.lo r.hi (drag.startVal + delta)
             -- Apply locally for responsive knob feel; remember the live value so
             -- DragEnd can broadcast the settled value to the rig (lockstep P4c).
             case drag.target of

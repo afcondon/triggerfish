@@ -35,6 +35,7 @@ import Halogen.HTML as HH
 import Halogen.HTML.Properties as HP
 import Triggerfish.Capture.Types (Mark)
 import Triggerfish.Clips (NoteEvent)
+import Halogen.Widgets.Svg (svgAttr, svgEl)
 
 -- | Which way the river runs. `FlowLeft` = emitted at the RIGHT edge, ageing
 -- | leftward (Odonus). `FlowRight` = emitted at the LEFT edge, ageing rightward
@@ -93,19 +94,10 @@ xAt flow elapsedMs = case flow of
   FlowRight -> emitEdge FlowRight + elapsedMs * pxPerMs
 
 pitchToY :: Int -> Number
-pitchToY pitch = riverH * (1.0 - (toNumber (clampI 24 96 pitch) - 24.0) / 72.0)
-
-clampI :: Int -> Int -> Int -> Int
-clampI lo hi n = if n < lo then lo else if n > hi then hi else n
+pitchToY pitch = riverH * (1.0 - (toNumber (clamp 24 96 pitch) - 24.0) / 72.0)
 
 style :: forall r i. String -> HP.IProp r i
 style = HP.attr (HH.AttrName "style")
-
-svgEl :: forall w i. String -> Array (HH.IProp () i) -> Array (HH.HTML w i) -> HH.HTML w i
-svgEl name = HH.elementNS (HH.Namespace "http://www.w3.org/2000/svg") (HH.ElemName name)
-
-svgAttr :: forall r i. String -> String -> HH.IProp r i
-svgAttr k = HP.attr (HH.AttrName k)
 
 -- | The river: octave guides (HTML, so the labels aren't stretched by
 -- | `preserveAspectRatio=none`), then the notes and marks in one stretched SVG.

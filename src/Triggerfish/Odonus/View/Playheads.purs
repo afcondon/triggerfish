@@ -17,9 +17,8 @@ import Halogen.HTML.Properties as HP
 import Triggerfish.Ui.Euclid as Euclid
 import Triggerfish.Odonus.Model as M
 import Triggerfish.Odonus.Grid.Types (Action(..), KnobTarget(..), Slots, State)
-import Triggerfish.Odonus.Grid.Widgets
-  ( engrave, headColor, miniKnob, panelShell, roman, signed
-  , style, svgAttr, svgEl )
+import Triggerfish.Odonus.Grid.Widgets (engrave, headColor, miniKnob, panelShell, roman, signed, style)
+import Halogen.Widgets.Svg (svgAttr, svgEl)
 
 playheadsPanel :: forall m. State -> H.ComponentHTML Action Slots m
 playheadsPanel s =

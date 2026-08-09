@@ -34,6 +34,7 @@ import Halogen.HTML.Properties as HP
 import Web.UIEvent.MouseEvent as ME
 import Triggerfish.Capture.Types (Logbook, Mark, Orientation(..), PlaySource(..), PlayState, RegionDrag, RegionEdge(..))
 import Triggerfish.Clips (NoteEvent)
+import Halogen.Widgets.Svg (svgAttr, svgEl)
 
 -- | The capture sub-state every machine holds: the always-on logbook, a replay loop
 -- | in flight (if any), a region drag in progress, and whether the harmonic-context
@@ -86,22 +87,13 @@ maxDraw = 3000
 style :: forall r i. String -> HP.IProp r i
 style = HP.attr (H.AttrName "style")
 
-svgEl :: forall w i. String -> Array (HH.IProp () i) -> Array (HH.HTML w i) -> HH.HTML w i
-svgEl name = HH.elementNS (HH.Namespace "http://www.w3.org/2000/svg") (HH.ElemName name)
-
-svgAttr :: forall r i. String -> String -> HH.IProp r i
-svgAttr n v = HP.attr (HH.AttrName n) v
-
-clampI :: Int -> Int -> Int -> Int
-clampI lo hi v = if v < lo then lo else if v > hi then hi else v
-
 -- ── coordinate projections (the only orientation-aware code) ─────────────────
 
 -- | Position along the PITCH axis, in viewBox units. Either horizontal orientation
 -- | → Y (high at top); Vertical → X (low at left, high at right).
 pitchCoord :: Orientation -> Int -> Number
 pitchCoord o pitch =
-  let norm = (toNumber (clampI 24 96 pitch) - 24.0) / 72.0
+  let norm = (toNumber (clamp 24 96 pitch) - 24.0) / 72.0
   in case o of
        Vertical -> tlW * norm
        _ -> tlH * (1.0 - norm)

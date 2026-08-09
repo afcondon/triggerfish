@@ -1,6 +1,6 @@
 -- | Triggerfish.Balistes.Widgets — the Balistes-shared HTML toolkit: the pale
 -- | Hainbach panel, the button/readout/stepper primitives, the big knob, the SVG
--- | helpers (`svgMouse`/`svgRect`/`noteTag`) and the voice colours. Every
+-- | helpers (`svgRect`/`noteTag`) and the voice colours. Every
 -- | `Balistes.View.*` module and `Balistes.Snapshot` render from these, so the
 -- | look stays consistent and the view modules stay small.
 -- |
@@ -18,7 +18,6 @@ module Triggerfish.Balistes.Widgets
   , newChip
   , knobRow
   , bigKnob
-  , svgMouse
   , svgRect
   , noteTag
   , concatMap'
@@ -33,10 +32,8 @@ import Data.Array (concatMap)
 import Halogen as H
 import Halogen.HTML as HH
 import Halogen.HTML.Events as HE
-import Unsafe.Coerce (unsafeCoerce)
-import Web.Event.Event (EventType(..))
-import Web.UIEvent.MouseEvent as ME
-import Triggerfish.Odonus.Grid.Widgets (engrave, style, svgAttr, svgEl)
+import Triggerfish.Odonus.Grid.Widgets (engrave, style)
+import Halogen.Widgets.Svg (svgAttr, svgEl, svgOn)
 import Triggerfish.Ui.Knob (knob)
 import Triggerfish.Balistes.Model as M
 import Triggerfish.Balistes.Types (Action(..), DragKind(..), KnobTarget, NoteRef, knobValue, targetRange)
@@ -133,11 +130,6 @@ bigKnob target color label b =
           [ HH.text (show v) ]
       ]
 
--- An SVG mouse handler (the `svgEl` row is `()`, so the typed HE.onMouse* props
--- don't fit; coerce the MouseEvent decode like Ui.Knob's mousedown handler).
-svgMouse :: forall r i. String -> (ME.MouseEvent -> i) -> HH.IProp r i
-svgMouse name f = HE.handler (EventType name) (unsafeCoerce f)
-
 -- A filled, rounded SVG rect — the cell primitive shared by the fixed grid.
 svgRect :: forall w i. Number -> Number -> Number -> Number -> String -> Number -> HH.HTML w i
 svgRect x0 y0 wid hgt c op =
@@ -155,7 +147,7 @@ noteTag x y ref n =
     , svgAttr "fill" "#3f3c33", svgAttr "fill-opacity" "0.7"
     , svgAttr "font-size" "8.5", svgAttr "font-family" "'SF Mono',Menlo,monospace"
     , svgAttr "style" "cursor:ns-resize"
-    , svgMouse "mousedown" \_ -> StartDrag (DNote ref) n ]
+    , svgOn "mousedown" \_ -> StartDrag (DNote ref) n ]
     [ HH.text ("♪" <> show n) ]
 
 -- Flipped concatMap so the call sites read `range … `concatMap'` \i -> …`.

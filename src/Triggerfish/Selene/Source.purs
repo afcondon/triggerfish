@@ -360,7 +360,7 @@ parseEnv str = foldl apply M.defaultEnvSlot (keyVals (words str))
     "dshape" -> sl { decayShape = b kv.val }
     "rshape" -> sl { releaseShape = b kv.val }
     _ -> sl
-  b v = M.clampI 0 127 (fromMaybe 0 (Int.fromString v))
+  b v = clamp 0 127 (fromMaybe 0 (Int.fromString v))
 
 -- Adjacent tokens as key/value pairs; a trailing odd token is dropped.
 keyVals :: Array String -> Array { key :: String, val :: String }
@@ -369,7 +369,7 @@ keyVals toks = case toks !! 0, toks !! 1 of
   _, _ -> []
 
 parseNote :: String -> M.PresetNoteSlot
-parseNote s = { note: M.clampI 0 127 (fromMaybe 60 (noteToken (fromMaybe "" (words s !! 0)))) }
+parseNote s = { note: clamp 0 127 (fromMaybe 60 (noteToken (fromMaybe "" (words s !! 0)))) }
 
 
 noteToken :: String -> Maybe Int

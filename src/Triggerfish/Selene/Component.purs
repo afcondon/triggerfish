@@ -44,7 +44,8 @@ import Binnacle.Clock as Clock
 import Binnacle.Midi as Midi
 import Binnacle.Scheduler as Scheduler
 import Binnacle.Transport as Transport
-import Triggerfish.Odonus.Grid.Widgets (engrave, style, svgAttr, svgEl, svgOn)
+import Triggerfish.Odonus.Grid.Widgets (engrave, style)
+import Halogen.Widgets.Svg (svgAttr, svgEl, svgOn)
 import Triggerfish.Ui.Euclid (Nudge(..))
 import Triggerfish.Ui.Euclid as Euclid
 import Triggerfish.Selene.EnvDraw as Draw

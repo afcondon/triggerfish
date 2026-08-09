@@ -707,7 +707,9 @@
       "binnacle": {
         "path": "../binnacle"
       },
-      "halogen-widgets": "0.3.1",
+      "halogen-widgets": {
+        "path": "../../../purescript-halogen-widgets"
+      },
       "harmonia": "0.2.0",
       "reef": {
         "path": "../../reef"
@@ -1229,9 +1231,8 @@
       ]
     },
     "halogen-widgets": {
-      "type": "registry",
-      "version": "0.3.1",
-      "integrity": "sha256-bzaFEhI0AcVpKgc7qkDewbeqhhP0kdf4wuCRkhbzv/M=",
+      "type": "local",
+      "path": "../../../purescript-halogen-widgets",
       "dependencies": [
         "aff",
         "arrays",

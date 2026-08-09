@@ -43,7 +43,8 @@ import Halogen.Subscription as HS
 import Reef.Stellatus.Engine (Emit, Scene, Slot, walk) as SE
 import Reef.Stellatus.Engine (GlitchRule) as SEG
 import Reef.Stellatus.Protocol (encodeScene) as SP
-import Triggerfish.Odonus.Grid.Widgets (style, svgEl, svgAttr, engrave)
+import Triggerfish.Odonus.Grid.Widgets (style, engrave)
+import Halogen.Widgets.Svg (svgAttr, svgEl)
 import Triggerfish.Stellatus.Lang (Arc, ArcParams, GlitchEffect(..), GlitchRule, JumpSpec, KitEntry, Mode(..), buildParams, parseScene)
 import Triggerfish.Stellatus.Onsets as Onsets
 

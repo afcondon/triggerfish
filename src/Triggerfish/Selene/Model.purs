@@ -48,7 +48,6 @@ module Triggerfish.Selene.Model
   , noteName
   , lfoValue
   , lfoCyclesShown
-  , clampI
   , clampNum
   ) where
 
@@ -436,7 +435,7 @@ freshBank = case _ of
   -- a spread of classic Euclidean rhythms over 8 or 16 steps
   euclidSlot i =
     let steps = if i < 4 then 8 else 16
-        beats = clampI 1 steps (3 + (i `mod` 5))
+        beats = clamp 1 steps (3 + (i `mod` 5))
     in { beats, steps, rate: 4, accentRate: 0 }
   -- C2 G2 C3 D3 E3 G3 C4 E4 — a Cadd9 voicing climbing the bank
   noteSlot i = { note: fromMaybe 60 (chord !! i) }
@@ -520,9 +519,6 @@ lfoValue sl u =
     sawW = 2.0 * frac - 1.0
   in
     sl.level + sl.sin * sinW + sl.sqr * sqrW + sl.tri * triW + sl.saw * sawW
-
-clampI :: Int -> Int -> Int -> Int
-clampI lo hi v = if v < lo then lo else if v > hi then hi else v
 
 clampNum :: Number -> Number -> Number -> Number
 clampNum lo hi v = if v < lo then lo else if v > hi then hi else v

@@ -39,7 +39,6 @@ module Triggerfish.Balistes.Model
   , snapshotCount
   , captureSnapshot
   , applySnapshot
-  , clampI
   , TrigBank
   , TrigSlot
   , defaultTrig
@@ -207,7 +206,7 @@ noteOf = Sim.noteOf
 
 -- | Set a lane's MIDI note (clamped to 0..127).
 setNote :: Inst -> Int -> Balistes -> Balistes
-setNote inst n b = b { notes = fromMaybe b.notes (updateAt inst (clampI 0 127 n) b.notes) }
+setNote inst n b = b { notes = fromMaybe b.notes (updateAt inst (clamp 0 127 n) b.notes) }
 
 -- | The three Grids lanes are 0=BD, 1=SD, 2=HH.
 instName :: Inst -> String
@@ -220,9 +219,6 @@ instName inst = case inst of
 -- Authoring overlay (Triggerfish extension)
 -- ---------------------------------------------------------------------------
 
-clampI :: Int -> Int -> Int -> Int
-clampI = Sim.clampI
-
 -- | The ratchet count for a grid slot (inst, step), >= 1. 1 = a single hit.
 -- | Delegated to the shared sim (note the arg order flips: Sim takes inst/step/b).
 ratchetAt :: Balistes -> Inst -> Int -> Int
@@ -231,7 +227,7 @@ ratchetAt b inst step = Sim.ratchetAt inst step b
 -- | Set the ratchet count for a slot (clamped 1..8). Drag a heatmap cell.
 setRatchetAt :: Inst -> Int -> Int -> Balistes -> Balistes
 setRatchetAt inst step v b =
-  b { ratchet = fromMaybe b.ratchet (updateAt (inst * 32 + step) (clampI 1 8 v) b.ratchet) }
+  b { ratchet = fromMaybe b.ratchet (updateAt (inst * 32 + step) (clamp 1 8 v) b.ratchet) }
 
 -- | Wipe the Grids lanes' ratchets (the whole 96-slot overlay) back to single
 -- | hits. Called when the X/Y cursor moves: Grids ratchets decorate the
@@ -244,7 +240,7 @@ pushOf :: Inst -> Balistes -> Int
 pushOf = Sim.pushOf
 
 setPush :: Inst -> Int -> Balistes -> Balistes
-setPush inst v b = b { push = fromMaybe b.push (updateAt inst (clampI (-50) 50 v) b.push) }
+setPush inst v b = b { push = fromMaybe b.push (updateAt inst (clamp (-50) 50 v) b.push) }
 
 -- | The classic Dilla feel: snare a touch late, hats (closed + open) a touch
 -- | early, kick on the grid. A one-tap groove preset.
@@ -263,7 +259,7 @@ openOf :: Balistes -> Int
 openOf b = b.open
 
 setOpen :: Int -> Balistes -> Balistes
-setOpen v b = b { open = clampI 0 255 v }
+setOpen v b = b { open = clamp 0 255 v }
 
 -- | Does the HH voice fire OPEN at this step? The open boundary is `255 - open`,
 -- | so it descends from above the landscape (nothing opens at 0) down through
@@ -351,7 +347,7 @@ setJackName i nm tb =
 -- | Set a jack's MIDI note (clamped 0..127).
 setJackNote :: Int -> Int -> TrigBank -> TrigBank
 setJackNote i n tb =
-  tb { jacks = fromMaybe tb.jacks (modifyAt i (_ { note = clampI 0 127 n }) tb.jacks) }
+  tb { jacks = fromMaybe tb.jacks (modifyAt i (_ { note = clamp 0 127 n }) tb.jacks) }
 
 -- | Edit a route line.
 setRoute :: Int -> String -> TrigBank -> TrigBank

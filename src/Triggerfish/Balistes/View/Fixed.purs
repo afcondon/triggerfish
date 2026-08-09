@@ -17,12 +17,13 @@ import Halogen as H
 import Halogen.HTML as HH
 import Halogen.HTML.Events as HE
 import Web.UIEvent.MouseEvent as ME
-import Triggerfish.Odonus.Grid.Widgets (engrave, style, svgAttr, svgEl)
+import Triggerfish.Odonus.Grid.Widgets (engrave, style)
+import Halogen.Widgets.Svg (svgAttr, svgEl, svgOn)
 import Triggerfish.Balistes.Pattern as P
 import Triggerfish.Transport (Sounding(..))
 import Triggerfish.Balistes.Types (Action(..), NoteRef(..), State, activePattern)
 import Triggerfish.Balistes.Widgets
-  ( stepBtn, svgMouse, svgRect, noteTag, laneColor, concatMap' )
+  ( stepBtn, svgRect, noteTag, laneColor, concatMap' )
 
 -- The per-cell editor, as a HORIZONTAL strip that rides in the RYTM band header
 -- and appears only while a cell is selected. Was a whole 240px NOTE column that
@@ -134,7 +135,7 @@ fixedSvg s idx pat =
                [ svgAttr "x" (show x), svgAttr "y" (show y)
                , svgAttr "width" (show (colW - 1.0)), svgAttr "height" (show (rowH - 1.0))
                , svgAttr "fill" "rgba(0,0,0,0)", svgAttr "style" "cursor:pointer;pointer-events:all"
-               , svgMouse "click" \e -> CellClick lane step (ME.shiftKey e) ] [] ]
+               , svgOn "click" \e -> CellClick lane step (ME.shiftKey e) ] [] ]
     laneAt row = fromMaybe 0 (lanes !! row)
     cells = concatMap (\row -> rowVisuals row (laneAt row)) (range 0 (nLanes - 1))
     targets = concatMap (\row -> rowTargets row (laneAt row)) (range 0 (nLanes - 1))

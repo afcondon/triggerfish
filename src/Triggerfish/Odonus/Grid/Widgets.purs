@@ -1,14 +1,14 @@
 -- | Shared view helpers used by two or more Odonus panels: the `style`
--- | attribute helper, the `engrave` style string, SVG constructors, the
--- | `panelShell` chrome, button/row primitives, the per-cell `cellChrome`,
--- | and the small formatting helpers. Held below the panel modules in the DAG.
+-- | attribute helper, the `engrave` style string, the `panelShell` chrome,
+-- | button/row primitives, the per-cell `cellChrome`, and the small formatting
+-- | helpers. Held below the panel modules in the DAG.
+-- |
+-- | `svgEl` / `svgAttr` / `svgOn` used to live here too, and were re-exported to
+-- | half the app. They are `Halogen.Widgets.Svg` now — they were never Odonus's,
+-- | and five other modules had grown their own copies.
 module Triggerfish.Odonus.Grid.Widgets
   ( style
-  , svgEl
-  , svgAttr
-  , svgOn
   , engrave
-  , clampI
   , headColor
   , roman
   , dirName
@@ -29,11 +29,6 @@ module Triggerfish.Odonus.Grid.Widgets
 
 import Prelude
 
-import Halogen.HTML.Events as HE
-import Unsafe.Coerce (unsafeCoerce)
-import Web.Event.Event (EventType(..))
-import Web.UIEvent.MouseEvent as ME
-
 import Data.Array (elem, find, findIndex, (!!))
 import Data.Maybe (Maybe(..), fromMaybe, maybe)
 import Halogen as H
@@ -47,23 +42,6 @@ import Triggerfish.Odonus.Grid.Types
 
 style :: forall r i. String -> HP.IProp r i
 style = HP.attr (H.AttrName "style")
-
-svgEl :: forall w i. String -> Array (HH.IProp () i) -> Array (HH.HTML w i) -> HH.HTML w i
-svgEl name = HH.elementNS (HH.Namespace "http://www.w3.org/2000/svg") (HH.ElemName name)
-
-svgAttr :: forall r i. String -> String -> HH.IProp r i
-svgAttr n v = HP.attr (HH.AttrName n) v
-
--- | A mouse handler that fits `svgEl`'s closed property row.
--- |
--- | `svgEl` is typed `Array (HH.IProp () i)` — no known properties — because SVG
--- | elements share no attribute row with HTML ones. Halogen's `HE.onMouseDown`
--- | carries `( onMouseDown :: MouseEvent | r )` and so will not fit. The coercion
--- | is the same one `Triggerfish.Ui.Knob.svgOnDown` already does; this is the
--- | general form so the next SVG surface that needs a pointer does not invent a
--- | third copy.
-svgOn :: forall r i. String -> (ME.MouseEvent -> i) -> HH.IProp r i
-svgOn name f = HE.handler (EventType name) (unsafeCoerce f)
 
 headColor :: Int -> String
 headColor h = case h `mod` 4 of
@@ -93,9 +71,6 @@ signed n = if n > 0 then "+" <> show n else show n
 
 engrave :: String
 engrave = "font-family:Georgia,'Times New Roman',serif;letter-spacing:0.12em;text-transform:uppercase;color:#5a564b"
-
-clampI :: Int -> Int -> Int -> Int
-clampI lo hi v = if v < lo then lo else if v > hi then hi else v
 
 -- | A pale Hainbach control panel: engraved header + body, full viewport height.
 -- | A pale Hainbach control panel. Collapsible: its header is the toggle

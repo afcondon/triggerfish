@@ -72,6 +72,9 @@ workspace:
     # cascade menu). Now the registry release `halogen-widgets` (namespace
     # Halogen.Widgets.*), migrated 2026-07-31 off the old path-dep
     # hylograph-halogen-ui v0.1 (Hylograph.Halogen.UI.*).
-    halogen-widgets: 0.3.1
+    # TEMPORARY local override while the Svg/Euclid coalescence is tested.
+    # Back this out to `halogen-widgets: 0.4.0` before committing.
+    halogen-widgets:
+      path: ../../../purescript-halogen-widgets
   packageSet:
     registry: 77.13.1

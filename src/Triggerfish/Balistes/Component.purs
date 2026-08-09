@@ -75,7 +75,7 @@ import Triggerfish.Transport (Sounding(..))
 import Triggerfish.Tidal.Lane as Lane
 import Reef.Balistes.Sim as Sim
 import Triggerfish.Ui.Pointer as Pointer
-import Triggerfish.Odonus.Grid.Widgets (clampI, engrave, style)
+import Triggerfish.Odonus.Grid.Widgets (engrave, style)
 import Web.Event.Event (EventType(..))
 import Web.Event.EventTarget (addEventListener, eventListener, removeEventListener)
 import Web.HTML (window)
@@ -413,13 +413,13 @@ handleAction = case _ of
               DKnob target ->
                 let r = targetRange target
                     delta = round (toNumber dist * toNumber (r.hi - r.lo) / 200.0)
-                    newVal = clampI r.lo r.hi (d.startVal + delta)
+                    newVal = clamp r.lo r.hi (d.startVal + delta)
                 in H.modify_ \s -> s { bal = applyKnob target newVal s.bal }
               DCell inst step ->
-                let newVal = clampI 1 8 (d.startVal + round (toNumber dist / 22.0))
+                let newVal = clamp 1 8 (d.startVal + round (toNumber dist / 22.0))
                 in H.modify_ \s -> s { bal = M.setRatchetAt inst step newVal s.bal }
               DNote ref ->
-                let newVal = clampI 0 127 (d.startVal + round (toNumber dist / 7.0))
+                let newVal = clamp 0 127 (d.startVal + round (toNumber dist / 7.0))
                 in H.modify_ \s -> case ref of
                      NGrids lane -> s { bal = M.setNote lane newVal s.bal }
                      NFixed i lane -> modRhythmAt i (P.setNoteAt lane newVal) s
@@ -546,13 +546,13 @@ handleAction = case _ of
         { selected = Just { lane, step } }
     persistLib
   SetCellVel d -> do
-    H.modify_ (modSelectedCell \c -> c { vel = clampI 1 127 (c.vel + d) })
+    H.modify_ (modSelectedCell \c -> c { vel = clamp 1 127 (c.vel + d) })
     persistLib
   SetCellProb d -> do
-    H.modify_ (modSelectedCell \c -> c { prob = clampI 0 100 (c.prob + d) })
+    H.modify_ (modSelectedCell \c -> c { prob = clamp 0 100 (c.prob + d) })
     persistLib
   SetCellRatchet d -> do
-    H.modify_ (modSelectedCell \c -> c { ratchet = clampI 1 8 (c.ratchet + d) })
+    H.modify_ (modSelectedCell \c -> c { ratchet = clamp 1 8 (c.ratchet + d) })
     persistLib
   CycleCellCond -> do
     H.modify_ (modSelectedCell \c -> c { cond = P.cycleCond c.cond })
