@@ -6,6 +6,7 @@ module Triggerfish.Odonus.Grid.Widgets
   ( style
   , svgEl
   , svgAttr
+  , svgOn
   , engrave
   , clampI
   , headColor
@@ -28,6 +29,11 @@ module Triggerfish.Odonus.Grid.Widgets
 
 import Prelude
 
+import Halogen.HTML.Events as HE
+import Unsafe.Coerce (unsafeCoerce)
+import Web.Event.Event (EventType(..))
+import Web.UIEvent.MouseEvent as ME
+
 import Data.Array (elem, find, findIndex, (!!))
 import Data.Maybe (Maybe(..), fromMaybe, maybe)
 import Halogen as H
@@ -47,6 +53,17 @@ svgEl name = HH.elementNS (HH.Namespace "http://www.w3.org/2000/svg") (HH.ElemNa
 
 svgAttr :: forall r i. String -> String -> HH.IProp r i
 svgAttr n v = HP.attr (HH.AttrName n) v
+
+-- | A mouse handler that fits `svgEl`'s closed property row.
+-- |
+-- | `svgEl` is typed `Array (HH.IProp () i)` — no known properties — because SVG
+-- | elements share no attribute row with HTML ones. Halogen's `HE.onMouseDown`
+-- | carries `( onMouseDown :: MouseEvent | r )` and so will not fit. The coercion
+-- | is the same one `Triggerfish.Ui.Knob.svgOnDown` already does; this is the
+-- | general form so the next SVG surface that needs a pointer does not invent a
+-- | third copy.
+svgOn :: forall r i. String -> (ME.MouseEvent -> i) -> HH.IProp r i
+svgOn name f = HE.handler (EventType name) (unsafeCoerce f)
 
 headColor :: Int -> String
 headColor h = case h `mod` 4 of

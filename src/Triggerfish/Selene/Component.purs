@@ -19,6 +19,7 @@ import Prelude
 import Data.Array (any, deleteAt, drop, filter, findIndex, length, mapMaybe, mapWithIndex, modifyAt, null, range, (!!))
 import Data.Foldable (for_, foldl, foldr)
 import Data.Tuple (Tuple(..), fst, snd)
+import Web.UIEvent.MouseEvent as ME
 import Web.UIEvent.KeyboardEvent (KeyboardEvent)
 import Web.UIEvent.KeyboardEvent as KE
 import Web.Event.Event (preventDefault)
@@ -43,7 +44,7 @@ import Binnacle.Clock as Clock
 import Binnacle.Midi as Midi
 import Binnacle.Scheduler as Scheduler
 import Binnacle.Transport as Transport
-import Triggerfish.Odonus.Grid.Widgets (engrave, style, svgAttr, svgEl)
+import Triggerfish.Odonus.Grid.Widgets (engrave, style, svgAttr, svgEl, svgOn)
 import Triggerfish.Ui.Euclid (Nudge(..))
 import Triggerfish.Ui.Euclid as Euclid
 import Triggerfish.Selene.EnvDraw as Draw
@@ -118,6 +119,29 @@ type State =
   -- than derived from the slot so that cycling still walks the list once the
   -- shape has been tweaked away from any library entry.
   , envPick :: Int
+  -- An in-progress breakpoint drag. Delta-based from the grab point rather than
+  -- absolute-position based: the curve's horizontal EXTENT is a log function of
+  -- its own duration, so an absolute mapping would move the geometry under the
+  -- cursor as you dragged it — a feedback loop. Deltas have no such loop, and
+  -- with the sensitivity below the handle tracks the pointer closely enough to
+  -- read as direct.
+  , envDrag :: Maybe EnvDrag
+  }
+
+-- | Which breakpoint of the drawn envelope is being dragged. Three handles, two
+-- | axes, four parameters — and no vocabulary to learn, which is the whole
+-- | argument for replacing the letter shortcuts with this.
+data EnvHandle
+  = HPeak      -- x: attack
+  | HCorner    -- x: decay, y: sustain
+  | HTail      -- x: release
+
+derive instance eqEnvHandle :: Eq EnvHandle
+
+type EnvDrag =
+  { handle :: EnvHandle
+  , x0 :: Int, y0 :: Int
+  , a0 :: Int, d0 :: Int, s0 :: Int, r0 :: Int
   }
 
 -- | The envelope field the arrows edit. Ordered as the ADSR reading order, then
@@ -176,6 +200,8 @@ data Action
   | SeleneReply String        -- a raw `selene-reply …` frame from the rig
   | PublishRack               -- publish the active rack to the Amphora store (selene-rack)
   | PickStarter Int           -- apply library shape i to the selected envelope slot
+  | EnvGrab EnvHandle Int Int -- mousedown on a breakpoint (handle, clientX, clientY)
+  | EnvDragMove Int Int Int Boolean -- mousemove over the editing cell (x, y, buttons, shift)
 
 -- | The upward message to the shell: Selene's identity-chip view (or `Nothing` when
 -- | nothing is parked), for the six-machine status board. Raised from the Frame loop
@@ -199,6 +225,7 @@ component =
           , selected: Nothing
           , envParam: EPDecay
           , envPick: 0
+          , envDrag: Nothing
           }
     , render
     , eval: H.mkEval H.defaultEval
@@ -471,6 +498,32 @@ handleAction = case _ of
       for_ (Lib.starterAt i) \lib -> do
         H.modify_ _ { envPick = i }
         editDest dest (onBank (setEnvSlot slot lib.slot))
+  EnvGrab h x y -> do
+    st <- H.get
+    for_ st.selected \{ dest, slot } ->
+      for_ (envSlotAt st dest slot) \sl ->
+        H.modify_ _ { envDrag = Just
+          { handle: h, x0: x, y0: y
+          , a0: sl.attack, d0: sl.decay, s0: sl.sustain, r0: sl.release } }
+  -- Buttons released ends the drag. Tracked on move rather than with a
+  -- document-level mouseup listener, the same way Odonus's XY pad does it: one
+  -- handler, no subscription to leak, and releasing outside the cell still ends
+  -- it because the next move that arrives reports no buttons held.
+  EnvDragMove x y buttons shift -> do
+    st <- H.get
+    if buttons == 0 then H.modify_ _ { envDrag = Nothing }
+    else for_ st.envDrag \dg -> for_ st.selected \{ dest, slot } -> do
+      let dx = x - dg.x0
+          dy = y - dg.y0
+          -- The drawing box is 96px wide and ~34 tall above the baseline;
+          -- mapping that span onto the full 0..127 range makes a pixel worth
+          -- ~1.3 units, so the handle sits about under the pointer. Shift
+          -- quarters the sensitivity for placing an exact value.
+          k = if shift then 4 else 1
+          sx v = clamp 0 127 (v + (dx * 127) / (96 * k))
+          sy v = clamp 0 127 (v - (dy * 127) / (34 * k))
+      editDest dest (onBank (overEnvAt slot (applyDrag dg.handle { sx, sy } dg)))
+
   SelectRack i -> do
     H.modify_ \s ->
       let doc = fromMaybe "" (map _.doc (s.library !! i))
@@ -628,6 +681,33 @@ nudgeSlot ep dir shift j = case _ of
   M.GClock xs -> M.GClock (overAt j (nudgeClock dir shift) xs)
   M.GNote xs -> M.GNote (overAt j (nudgeNote dir shift) xs)
   M.GEnv xs -> M.GEnv (overAt j (nudgeEnv ep dir shift) xs)
+
+-- | The envelope slot at (destination, slot), if that destination is one.
+envSlotAt :: State -> Int -> Int -> Maybe M.EnvSlot
+envSlotAt st dest slot = case map _.bank (st.sel.destinations !! dest) of
+  Just (M.GEnv xs) -> xs !! slot
+  _ -> Nothing
+
+-- | Modify one slot of an envelope bank.
+overEnvAt :: Int -> (M.EnvSlot -> M.EnvSlot) -> M.GenBank -> M.GenBank
+overEnvAt j f = case _ of
+  M.GEnv xs -> M.GEnv (overAt j f xs)
+  other -> other
+
+-- | Apply a drag to the slot, from the values captured when the handle was
+-- | grabbed. Reading from `dg` rather than from the live slot is what makes the
+-- | gesture absolute: the result depends only on how far you have moved, so
+-- | dragging back to where you started restores exactly what you had.
+applyDrag
+  :: EnvHandle
+  -> { sx :: Int -> Int, sy :: Int -> Int }
+  -> EnvDrag
+  -> M.EnvSlot
+  -> M.EnvSlot
+applyDrag h f dg sl = case h of
+  HPeak -> sl { attack = f.sx dg.a0 }
+  HCorner -> sl { decay = f.sx dg.d0, sustain = f.sy dg.s0 }
+  HTail -> sl { release = f.sx dg.r0 }
 
 -- | Replace one slot of an envelope bank outright (library pick).
 setEnvSlot :: Int -> M.EnvSlot -> M.GenBank -> M.GenBank
@@ -861,7 +941,11 @@ starterCell :: forall m. State -> Int -> Lib.Starter -> H.ComponentHTML Action S
 starterCell s i st =
   HH.div
     [ HE.onClick \_ -> PickStarter i
-    , HP.title (st.name <> " \x2014 " <> durLabel (Draw.durationMs st.slot))
+    , HP.title (st.name <> " \x2014 " <> durLabel (Draw.durationMs st.slot)
+        <> " on the " <> timeLabel st.slot.timeRange <> " scale"
+        <> (if st.slot.velDepth == 64 then " \x00b7 no velocity response"
+            else " \x00b7 vel " <> show st.slot.velDepth)
+        <> (if st.slot.depth < 64 then " \x00b7 INVERTED" else ""))
     , style $ "width:104px;flex:0 0 auto;padding:4px 4px 2px;border-radius:6px;cursor:pointer;"
         <> ( if current then "background:#ffffffcc;border:2px solid #1a1a1a;"
              else "background:#ffffff55;border:1px solid #00000010;padding:5px 5px 3px;" ) ]
@@ -1056,7 +1140,7 @@ slotViews ep d sel = case _ of
   M.GEuclid slots -> mapWithIndex (cellFor d sel 70.0 euclidInner) slots
   M.GClock slots -> mapWithIndex (cellFor d sel 58.0 clockInner) slots
   M.GNote slots -> mapWithIndex (cellFor d sel 58.0 noteInner) slots
-  M.GEnv slots -> mapWithIndex (cellFor d sel 90.0 (envInner ep)) slots
+  M.GEnv slots -> mapWithIndex (\j sl -> slotCell d j (sel == Just { dest: d, slot: j }) 90.0 (envInner (sel == Just { dest: d, slot: j }) ep sl)) slots
 
 -- | Wrap one slot's inner drawing in the focusable, selectable cell.
 cellFor :: forall m a. Int -> Maybe Sel -> Number -> (a -> Array (H.ComponentHTML Action Slots m)) -> Int -> a -> H.ComponentHTML Action Slots m
@@ -1183,9 +1267,9 @@ timeLabel = case _ of
   6 -> "20s"
   _ -> "50s"
 
-envInner :: forall m. EnvParam -> M.EnvSlot -> Array (H.ComponentHTML Action Slots m)
-envInner ep sl =
-  [ envSvg { w: 100.0, h: 44.0 } sl
+envInner :: forall m. Boolean -> EnvParam -> M.EnvSlot -> Array (H.ComponentHTML Action Slots m)
+envInner isSel ep sl =
+  [ envSvgWith isSel { w: 100.0, h: 44.0 } sl
   -- The caption carries what the drawing cannot: the four ADSR numbers for
   -- precision, the LIVE parameter and its value (without which the key scheme is
   -- invisible and you would be adjusting a field you cannot see), and the
@@ -1205,15 +1289,44 @@ envInner ep sl =
 -- | wall. Geometry comes from `EnvDraw`; this only turns points into SVG, so the
 -- | two surfaces cannot drift into disagreeing about what a shape looks like.
 envSvg :: forall m. { w :: Number, h :: Number } -> M.EnvSlot -> H.ComponentHTML Action Slots m
-envSvg box sl =
+envSvg = envSvgWith false
+
+-- | The drawing, with breakpoint handles when this is the cell being edited.
+-- |
+-- | Handles only on the selected cell: three per envelope across eight slots
+-- | would be twenty-four dots competing with the shapes they are meant to let
+-- | you read.
+envSvgWith :: forall m. Boolean -> { w :: Number, h :: Number } -> M.EnvSlot -> H.ComponentHTML Action Slots m
+envSvgWith isSel box sl =
   svgEl "svg"
-    [ svgAttr "viewBox" ("0 0 " <> show box.w <> " " <> show box.h)
-    , svgAttr "width" "100%", svgAttr "height" (show box.h) ]
+    ( [ svgAttr "viewBox" ("0 0 " <> show box.w <> " " <> show box.h)
+      , svgAttr "width" "100%", svgAttr "height" (show box.h) ]
+        <> ( if isSel
+               then [ svgOn "mousemove" \e -> EnvDragMove (ME.clientX e) (ME.clientY e) (ME.buttons e) (ME.shiftKey e) ]
+               else [] ) )
     ( baselineRule
         <> band
         <> [ line fig.hi 2.0 "1" ]
-        <> (if fig.hasBand then [ line fig.lo 1.0 "0.5" ] else []) )
+        <> (if fig.hasBand then [ line fig.lo 1.0 "0.5" ] else [])
+        <> (if isSel then handles else []) )
   where
+  -- Grab points, at the three breakpoints of the drawn curve. `hi` is the
+  -- velocity-127 outline, which is the one the numbers actually describe.
+  handles =
+    [ grip HPeak (fig.hi !! 1)
+    , grip HCorner (fig.hi !! 2)
+    , grip HTail (fig.hi !! 4)
+    ]
+  grip h mp = case mp of
+    Nothing -> svgEl "g" [] []
+    Just pt ->
+      svgEl "circle"
+        [ svgAttr "cx" (show pt.x), svgAttr "cy" (show pt.y), svgAttr "r" "3.4"
+        , svgAttr "fill" "#fffdf8", svgAttr "stroke" "#1a1a1a", svgAttr "stroke-width" "1.4"
+        , svgAttr "cursor" (case h of
+            HCorner -> "move"
+            _ -> "ew-resize")
+        , svgOn "mousedown" \e -> EnvGrab h (ME.clientX e) (ME.clientY e) ] []
   fig = Draw.figure box sl
   pts ps = joinWith " " (map (\p -> show p.x <> "," <> show p.y) ps)
   line ps wdt op =
