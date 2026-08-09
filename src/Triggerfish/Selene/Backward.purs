@@ -124,13 +124,13 @@ conflicted = filter (\r -> length r.claimedBy > 1)
 -- | wants the rows to have settled first.
 panel :: forall w i. Array Row -> HH.HTML w i
 panel rs =
-  HH.div [ sty "display:flex;flex-direction:column;gap:14px" ]
+  HH.div [ sty "display:flex;flex-wrap:wrap;gap:14px 26px;align-items:flex-start" ]
     (map block (banksOf rs))
   where
   banksOf xs = nub (map (\r -> r.output.device <> "/" <> r.output.bank) xs)
 
   block b =
-    HH.div_
+    HH.div [ sty "flex:1 1 300px;min-width:280px;max-width:420px" ]
       [ HH.div
           [ sty $ engrave <> ";font-size:10px;padding-bottom:3px;margin-bottom:5px;"
               <> "border-bottom:1px solid #00000018" ]

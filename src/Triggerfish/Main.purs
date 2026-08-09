@@ -148,6 +148,7 @@ data RAction
   | RtSetOffset RM.Source Int String
   | RtSetPort RM.Source Int String
   | RtResetTable
+  | RtSetView RouterView
   | SetSeleneTarget Int String  -- routing modal: re-target Selene destination i to a wire (nested menu)
   | PickEntry LibRow            -- workbench: put a shelf entry on the bench
   | ToggleSource               -- workbench: slide the raw-source drawer open/shut
@@ -237,6 +238,14 @@ toAuditionSel = case _ of
   ADContinuo -> Vetula.AuditionContinuo
   ADMidi -> Vetula.AuditionMidi
 
+-- | Which way the ⌥1 router is being read. Two projections of one table, not two
+-- | modes — see `docs/DESIGN-routing-backward.md`. Forward is right while editing
+-- | a machine (it lives in the machine's own frame); backward is right while
+-- | patching or diagnosing.
+data RouterView = BySource | ByJack
+
+derive instance eqRouterView :: Eq RouterView
+
 type RState =
   { which :: Which, tidalDoc :: String, freeT0 :: Number
   , modal :: Maybe ModalId          -- the open hotkey overlay (⌘1..⌘5), or Nothing
@@ -247,6 +256,7 @@ type RState =
   , bpm :: Int
   , liveTempo :: Number
   , linkLocked :: Boolean
+  , routerView :: RouterView
   , previewCh :: Int                -- Vetula's audition channel (canonical 1..16), shown in the routing modal
   -- Per-machine audition destination + its MIDI channel (routing modal cycle).
   -- `audition` lookup defaults to ADNone; `auditionCh` defaults to 5.
@@ -423,7 +433,8 @@ root =
   H.mkComponent
     { initialState: \_ ->
         { which: Bal, tidalDoc: "", freeT0: 0.0
-        , bpm: 120, liveTempo: 120.0, linkLocked: false, previewCh: 5
+        , bpm: 120, liveTempo: 120.0, linkLocked: false
+        , routerView: BySource, previewCh: 5
         , audition: Map.singleton Vet ADContinuo   -- Vetula auditions via Continuo by default
         , auditionCh: Map.empty                     -- per-machine channel; lookup defaults to 5
 
@@ -795,6 +806,8 @@ handleAction = case _ of
   -- Escape hatch. Routing is now the thing standing between the player and any
   -- sound at all, so there has to be a way back to a known-good table without
   -- reaching for devtools.
+  RtSetView v -> H.modify_ _ { routerView = v }
+
   RtResetTable -> do
     H.modify_ _ { routingTable = RM.defaultTable }
     pushRoutingTable
@@ -1633,22 +1646,46 @@ newDest st src = case _ of
 channelMapPanel :: forall m. MonadAff m => RState -> H.ComponentHTML RAction Slots m
 channelMapPanel st =
   HH.div_
-    [ HH.div [ style "display:flex;gap:28px;align-items:flex-start;flex-wrap:wrap" ]
-        [ machineCol "Odonus" (map (routeRow <<< RM.SOdonusHead) (0 .. 3))
-        , machineCol "Balistes · kit" (map (routeRow <<< RM.SDrumLane) (0 .. 15))
-        , HH.div [ style "flex:0 0 auto;display:flex;flex-direction:column;gap:18px" ]
-            [ machineCol "Selene" seleneRows
-            , machineCol "Vetula" vetulaRows
+    ( [ viewTabs ] <>
+        case st.routerView of
+          BySource ->
+            [ HH.div [ style "display:flex;gap:28px;align-items:flex-start;flex-wrap:wrap" ]
+                [ machineCol "Odonus" (map (routeRow <<< RM.SOdonusHead) (0 .. 3))
+                , machineCol "Balistes · kit" (map (routeRow <<< RM.SDrumLane) (0 .. 15))
+                , HH.div [ style "flex:0 0 auto;display:flex;flex-direction:column;gap:18px" ]
+                    [ machineCol "Selene" seleneRows
+                    , machineCol "Vetula" vetulaRows
+                    ]
+                ]
+            , claimsPanel
+            , trafficPanel
+            , HH.div [ style "display:flex;align-items:center;gap:20px;margin-top:24px;flex-wrap:wrap" ]
+                ( [ HH.span [ style "font-size:11px;letter-spacing:0.06em;color:#6a655a" ] [ HH.text "audition →" ] ]
+                    <> map auditionControl auditionMachines )
             ]
-        ]
-    , claimsPanel
-    , backwardPanel
-    , trafficPanel
-    , HH.div [ style "display:flex;align-items:center;gap:20px;margin-top:24px;flex-wrap:wrap" ]
-        ( [ HH.span [ style "font-size:11px;letter-spacing:0.06em;color:#6a655a" ] [ HH.text "audition →" ] ]
-            <> map auditionControl auditionMachines )
-    ]
+          ByJack -> [ backwardPanel ] )
   where
+  -- Two projections of one table, so a tab rather than a second overlay: the
+  -- backward view is a full-width table of its own and was overflowing when
+  -- stacked under the forward one.
+  viewTabs =
+    HH.div [ style "display:flex;gap:2px;margin-bottom:18px" ]
+      [ tab BySource "by source" "where does this machine come out?"
+      , tab ByJack "from the jack" "what is driving this output, and is anything?"
+      ]
+
+  tab v label hint =
+    HH.button
+      [ HE.onClick \_ -> RtSetView v
+      , HP.title hint
+      , style $ "padding:5px 14px;border:1px solid #a8a392;cursor:pointer;"
+          <> "font-family:Georgia,serif;font-size:10px;letter-spacing:0.1em;"
+          <> "text-transform:uppercase;"
+          <> (if st.routerView == v
+                then "color:#1c1a12;background:linear-gradient(#c8a86a,#b8975a)"
+                else "color:#3f3c33;background:linear-gradient(#efece1,#ddd9cb)") ]
+      [ HH.text label ]
+
   ports = { found: st.routingPorts, rigUp: st.rigConnected }
 
   -- One source: its name, then a line per destination it fans out to.
