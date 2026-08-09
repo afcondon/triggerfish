@@ -62,6 +62,7 @@ import Halogen.HTML.Properties as HP
 import Triggerfish.Rig (RigConfig, rigOutputs)
 import Triggerfish.Routing.Model as RM
 import Triggerfish.Routing.Monitor as Mon
+import Triggerfish.Selene.Manifest as Man
 import Triggerfish.Selene.Layout (Assignment, Layout, Output, outputKey)
 import Triggerfish.Selene.Layout as Layout
 
@@ -75,7 +76,16 @@ type Traffic = { hits :: Int, offs :: Int, recent :: Boolean }
 -- | wanted the jack, leaving you to hunt for it the next time you wonder why
 -- | that voice is silent. Absence is unreadable; a ghost is readable — it says
 -- | "this was decided" rather than "this never existed".
-type Claimant = { label :: String, kind :: String, on :: Boolean }
+type Claimant =
+  { label :: String
+  , kind :: String
+  , on :: Boolean
+  -- | Whether anything still exists to honour this claim. A muted claimant and a
+  -- | claimant whose source is gone both look like "not driving this jack", and
+  -- | they are entirely different facts: one is a decision, the other is a
+  -- | leftover. See `Selene.Manifest`.
+  , standing :: Man.Standing
+  }
 
 type Row =
   { output :: Output
@@ -91,8 +101,8 @@ type Row =
   }
 
 -- | One row per physical output the rig has — claimed or not.
-rows :: RigConfig -> Layout -> RM.Table -> Array Mon.Row -> Array Row
-rows cfg lay tbl obs = map build (rigOutputs cfg)
+rows :: RigConfig -> Layout -> Array Man.Manifest -> Number -> RM.Table -> Array Mon.Row -> Array Row
+rows cfg lay mans now tbl obs = map build (rigOutputs cfg)
   where
   -- Every live leg, paired with the jack it lands on. Legs that are not a jack
   -- at all (MIDI, continuo) simply never match a row, which is right: a channel
@@ -118,7 +128,11 @@ rows cfg lay tbl obs = map build (rigOutputs cfg)
     in
       { output: o
       , claimedBy: nub (map (\p ->
-          { label: RM.sourceLabel p.source, kind: RM.destShortLabel p.dest, on: p.on }) here)
+          { label: RM.sourceLabel p.source
+          , kind: RM.destShortLabel p.dest
+          , on: p.on
+          , standing: Man.standingOf now mans (RM.sourceKey p.source)
+          }) here)
       , layout: Layout.assignmentAt lay o
       , vco: do
           a <- Layout.assignmentAt lay o
@@ -220,11 +234,25 @@ panel probs rs =
   one c =
     HH.span
       [ sty (if c.on then "" else "opacity:0.4;text-decoration:line-through")
-      , HP.title (if c.on then c.kind else c.kind <> " — muted, so it is not driving this jack") ]
-      [ HH.text c.label
-      , HH.span [ sty "color:#8a8474;font-size:9px;text-decoration:none" ]
-          [ HH.text ("  " <> c.kind) ]
-      ]
+      , HP.title ((if c.on then c.kind else c.kind <> " — muted, so it is not driving this jack")
+            <> "  ·  " <> Man.standingNote c.standing) ]
+      ( [ HH.text c.label
+        , HH.span [ sty "color:#8a8474;font-size:9px;text-decoration:none" ]
+            [ HH.text ("  " <> c.kind) ]
+        ] <> orphan c )
+
+  -- A claim nobody stands behind. Marked, not hidden: it is holding a jack, and
+  -- the reason you cannot find the machine is that there is no longer one.
+  orphan c = case c.standing of
+    Man.Unknown ->
+      [ HH.span [ sty "color:#b0492f;font-size:9px;text-decoration:none"
+                , HP.title "no app declares this source — a leftover row holding a jack" ]
+          [ HH.text "  ✗ orphaned" ] ]
+    Man.Stale app _ ->
+      [ HH.span [ sty "color:#a8762f;font-size:9px;text-decoration:none"
+                , HP.title (Man.standingNote c.standing) ]
+          [ HH.text ("  ◌ " <> app <> " not responding") ] ]
+    Man.Live _ -> []
 
   -- Declared and observed fail independently, so a claimed jack with no traffic
   -- is said out loud rather than left blank — that is a real and common fault

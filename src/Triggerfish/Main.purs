@@ -71,6 +71,7 @@ import Triggerfish.Selene.Model as SelM
 import Triggerfish.Rig (defaultRig, targetGroups)
 import Triggerfish.Selene.Backward as Bwd
 import Triggerfish.Selene.Layout as Layout
+import Triggerfish.Selene.Manifest as Man
 import Halogen.Widgets.Select as Select
 import Triggerfish.Sufflamen.Component as Sufflamen
 import Triggerfish.Stellatus.Component as Stellatus
@@ -317,6 +318,12 @@ type RState =
   -- rows; kept until Vetula is folded in (step 4c of the design note), since it
   -- speaks its own query type rather than the shared one.
   , routing :: Map String Int
+  -- Who declares what, and when we last heard it. Refreshed with the traffic
+  -- poll while the router is open, so a source that goes away stops being
+  -- declared and its leftover routing rows show as orphaned rather than as
+  -- claims nobody can find the machine for.
+  , manifests :: Array Man.Manifest
+  , manifestAt :: Number
   , vetulaNames :: Array String
   -- The shared MIDI clip library (⌥6). Loaded fresh whenever the modal opens —
   -- any machine may have appended to the store since — and the shell's own MIDI
@@ -434,7 +441,7 @@ root =
     { initialState: \_ ->
         { which: Bal, tidalDoc: "", freeT0: 0.0
         , bpm: 120, liveTempo: 120.0, linkLocked: false
-        , routerView: BySource, previewCh: 5
+        , routerView: BySource, manifests: [], manifestAt: 0.0, previewCh: 5
         , audition: Map.singleton Vet ADContinuo   -- Vetula auditions via Continuo by default
         , auditionCh: Map.empty                     -- per-machine channel; lookup defaults to 5
 
@@ -784,7 +791,20 @@ handleAction = case _ of
     m <- H.gets _.modal
     when (m == Just MRouting) do
       rows <- liftEffect Mon.read
-      H.modify_ _ { midiTraffic = rows }
+      now <- liftEffect Man.nowMs
+      st <- H.get
+      let mine = Man.triggerfishManifest
+            { vetulaNames: st.vetulaNames
+            -- The kind keyword is the only stable name a Selene destination
+            -- has. NOT verified as the alias `SSeleneBank` is keyed by —
+            -- nothing in the app constructs one, they are only ever parsed back
+            -- from the store — so if a stored row disagrees it will read as
+            -- orphaned, which for a leftover row is arguably the right answer.
+            , seleneAliases: map (\d -> SelSrc.kindKeyword d.bank)
+                (SelSrc.parseRack st.seleneDoc).destinations
+            , seenAt: now
+            }
+      H.modify_ _ { midiTraffic = rows, manifests = [ mine ], manifestAt = now }
   MonClear -> do
     liftEffect Mon.clear
     H.modify_ _ { midiTraffic = [] }
@@ -1807,7 +1827,8 @@ channelMapPanel st =
   -- a finding. Today it is `Layout.defaultLayout` — the drum breakout, the one
   -- configuration we can state truthfully — rather than anything editable.
   backwardPanel =
-    let rs = Bwd.rows defaultRig Layout.defaultLayout st.routingTable st.midiTraffic
+    let rs = Bwd.rows defaultRig Layout.defaultLayout st.manifests st.manifestAt
+                 st.routingTable st.midiTraffic
         bad = Bwd.conflicted rs
     in HH.div [ style "margin-top:26px" ]
          [ HH.div
