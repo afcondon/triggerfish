@@ -111,6 +111,88 @@ That also inverts the add flow usefully: the forward view adds a destination to 
 source, the backward view assigns a source to a destination. Same edit, and the
 one that fits depends on which you are holding fixed.
 
+## The loopback view — show the ports, driven by the daemons
+
+> "we should add a loopback destination for all the ports so that you can open
+> the modal and see the 5 groups of 8 ports and the colours that should be on
+> them (approximately) being driven by the exact same daemons that are driving
+> the ES9 and FH2. […] there's a big difference between the ES9 whose output we
+> can directly show and the FH2 where we would be impersonating the FH2 and that
+> runs the risk of modelling IT wrong leading to more confusion. but we could at
+> least show what we're expecting to be output."
+
+This is the backward view with a live signal column, and the caveat AC raises
+is the thing that decides whether it helps or hurts.
+
+**Five groups of eight is already the model.** `Rig.defaultRig` says ES-9 main
+(8) + two gate blocks (16) + one CV block (8), FH-2 two banks (16). The row set
+falls straight out of it.
+
+### Three provenances, and they must not look alike
+
+The critical distinction, which is AC's caveat generalised:
+
+| class | source | what it means |
+|---|---|---|
+| **observed, authoritative** | es9-daemon | it *generates* the signal (polylfo / polyclock / polyeuclid run inside it), so it knows the instantaneous value. Ask and it tells you. |
+| **observed, at the wire** | the WebMIDI tap (`Routing.Monitor`) | notes actually sent. Not the voltage, but a true observation of traffic. |
+| **predicted** | FH-2 | the hardware generates from a config we pushed. We know the CONFIG. We do not know the output, and computing one means reimplementing the FH-2's envelope engine. |
+
+**A predicted display that looks like an observed one is the exact failure this
+whole effort exists to remove.** A panel showing a confident FH-2 envelope while
+the module is powered down would be worse than no panel — it is the "rig reports
+healthy while a load-bearing thing is dead" shape, rebuilt deliberately and in
+colour.
+
+So provenance is a **required visual channel**, not a nicety: observed values
+solid, predicted values ghosted/hatched and labelled *expected*. If only one
+thing survives from this section, it is that.
+
+### Liveness is separate from prediction, and cheap
+
+This morning (2026-08-09) makes the case. The modular was switched off; the
+FH-2's USB port still enumerated; the router happily showed every FH-2 route as
+`ok`. `Reach = Reachable` only ever meant "a port with that name exists".
+
+But the daemons can answer better:
+
+- **fh2-daemon `device-status`** — a SysEx round trip. It answered `OK device-ok
+  firmware=v2.0.0` with the rig on, and timed out with it off. That is a true
+  liveness test and it costs one socket call.
+- **es9-daemon** already knows its generator state and its claims.
+
+So the backward view gets a **liveness row per device**, polled, and a dead
+device greys its whole block. That is worth building *before* any signal
+rendering: it would have saved this morning outright, and it is a few lines.
+
+### What to show per class
+
+- **ES-9** — ask the daemon. Real values, solid. This is the part with no
+  modelling risk at all, and on its own it justifies the view.
+- **MIDI** — the tap already gives on/off counts, velocity range and recency per
+  destination. Solid.
+- **FH-2** — show the **config**, not a simulated waveform: "env 1: A0 D30 S0
+  R20, time 200ms, bipolar ±5V, velDepth 96". A little ADSR *sketch* drawn from
+  those numbers is fine and useful, provided it is unmistakably a diagram of the
+  settings rather than a scope trace. Never claim a value.
+
+That last line is the honest reading of AC's "we could at least show what we're
+expecting to be output" — the expectation is worth showing precisely because
+comparing it against the rack is how you find the disagreement. It just has to
+be labelled as an expectation.
+
+### Why this is the right shape for the backward view
+
+The forward view asks "where does this go". The backward view as first sketched
+asks "what claims this jack". The loopback column adds "and what is on it right
+now" — which is the question you are actually holding when you put a probe on a
+jack, and the one that closes the loop between the routing table, the daemons and
+the rack.
+
+It also makes a whole class of bug self-evident: a jack with a claimant, a live
+device, and no signal is a different fault from a jack with no claimant, and both
+are different from a jack whose device is dark.
+
 ## Encoding — the other half of AC's note
 
 > "we should colour code the MIDI, FH2, ES9 output paths and Gate/CV so that the
@@ -121,6 +203,7 @@ Right, and the trap is that these are **two independent axes**, not one:
 
 - **device** — MIDI / FH-2 / ES-9 / continuo
 - **signal kind** — note / gate / CV / envelope
+- **provenance** — observed / predicted / dead (see the loopback section)
 
 Colour alone would conflate them, and the conflation is exactly the confusion
 worth removing: "FH-2 gate" and "ES-9 gate" are the same *kind* on different
@@ -128,9 +211,11 @@ worth removing: "FH-2 gate" and "ES-9 gate" are the same *kind* on different
 kinds — and, as tonight proved, the same MCV.
 
 So: **colour carries device** (it is the coarser grouping, and the backward view
-already blocks rows by device), and **signal kind is carried by form** — a glyph,
-a rule weight, a cell shape. Redundant encoding on the row grouping is fine;
-overloading one channel with two variables is not.
+already blocks rows by device), **signal kind is carried by form** — a glyph, a
+rule weight, a cell shape — and **provenance by fill**: solid for observed,
+hatched or outlined for predicted, greyed for a device that is not answering.
+Redundant encoding on the row grouping is fine; overloading one channel with two
+variables is not.
 
 Palette should follow the house style — restrained, Swiss, hue doing categorical
 work rather than decorative work, and it must survive being the only thing
@@ -151,6 +236,10 @@ its claimants.
 
 ## Sequencing
 
+0. **Device liveness first.** Poll `device-status` on fh2-daemon and the
+   equivalent on es9-daemon; grey a dark device's block and downgrade its routes
+   from `ok` to unknown. Cheapest item here and it would have saved a confused
+   morning on 2026-08-09.
 1. **Render the backward table read-only**, from `Rig` × `claims` × monitor. This
    alone would have caught the MCV collision, and it is nearly free — every input
    already exists.
@@ -162,6 +251,8 @@ its claimants.
    design it against a real populated table, not a mock.
 5. **Patch notes** — free text per jack, persisted with the routing table. Small,
    and probably the feature that gets used most.
+6. **The loopback column** — ES-9 live values from the daemon, FH-2 config sketch
+   marked as expected, MIDI traffic from the tap. Provenance encoded in fill.
 
 ## Watch for
 
