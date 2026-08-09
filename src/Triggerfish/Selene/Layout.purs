@@ -54,6 +54,7 @@ module Triggerfish.Selene.Layout
   , toJson
   , fromJson
   , drumTrigVerbs
+  , odonusCvRoute
   , defaultLayout
   , drumBreakout
   ) where
@@ -66,6 +67,7 @@ import Data.Int as Int
 import Data.Map (Map)
 import Data.Map as Map
 import Data.Maybe (Maybe(..), isNothing)
+import Data.Nullable (toNullable)
 import Data.String (Pattern(..), split)
 import Data.String.Common (joinWith)
 import Data.Traversable (traverse)
@@ -138,6 +140,18 @@ type Group =
   -- | Empty when it does not apply or is not known — the drumkit macro lets the
   -- | daemon allocate, and guessing would be worse than saying nothing.
   , mcvs :: Array Int
+  -- | The module this group drives, by its **Amphora `vco-calibrations` label**
+  -- | — `saich-1`, `cursus-iteritas-percido`. Distinct from `target`, which is a
+  -- | human note: this one is a JOIN KEY, and it is what makes a pitch output
+  -- | correctable. An analogue VCO does not track 1 V/oct (the Tona measured
+  -- | 1.007 → 1.030 across its range), so the correction table is the difference
+  -- | between an intended pitch and one that lands true.
+  -- |
+  -- | The correction has to live upstream of the CV: the FH-2 self-calibrates its
+  -- | DACs and exposes no software trim, and the ES-9 is a plain DAC. So the
+  -- | store is keyed by destination VCO, and this is where a layout says which
+  -- | VCO a jack reaches.
+  , vco :: Maybe String
   , selectors :: Array Int
   , target :: Maybe String   -- ^ intended module; free text now, a reference later
   }
@@ -331,6 +345,7 @@ type WireGroup =
   , allocation :: String
   , channel :: Int
   , mcvs :: Array Int
+  , vco :: Maybe String
   , selectors :: Array Int
   , target :: Maybe String
   }
@@ -357,6 +372,7 @@ toJson lay = writeJSON wire
     , allocation: allocationKey grp.allocation
     , channel: grp.channel
     , mcvs: grp.mcvs
+    , vco: grp.vco
     , selectors: grp.selectors
     , target: grp.target
     }
@@ -377,6 +393,7 @@ fromJson s = case readJSON s of
       , allocation
       , channel: wg.channel
       , mcvs: wg.mcvs
+      , vco: wg.vco
       , selectors: wg.selectors
       , target: wg.target
       }
@@ -419,6 +436,46 @@ drumTrigVerbs lay grp = case groupNamed lay grp of
     [ r ] -> Just r.output
     _ -> Nothing
 
+-- | Compile a group back to an `odonus_cv` route — the map that currently lives
+-- | hand-edited in `purerl_tidal.app.src` and requires a restart to change.
+-- |
+-- | That map is a **seventh home for placement**, and its own comment makes the
+-- | routing table's argument for it: *"which VCO is on which bus is a fact about
+-- | the RIG PATCH, not the music"*. Quite so — which is why it belongs in the
+-- | layout, which did not exist when it was written. `CALIBRATION.md` already
+-- | wants this: *"optionally source the odonus_cv map from Amphora at voice start
+-- | for live re-patch without a restart."*
+-- |
+-- | The head is a parameter rather than a field, because a layout carries no
+-- | sources. That is the binding, and it belongs elsewhere.
+-- |
+-- | Emits JSON rather than an Erlang term: the term is what this replaces, and
+-- | Amphora is the stated destination.
+odonusCvRoute :: Layout -> String -> Int -> Either String String
+odonusCvRoute lay grp head = case groupNamed lay grp of
+  Nothing -> Left ("no group '" <> grp <> "' in layout '" <> lay.name <> "'")
+  Just g -> case g.vco of
+    Nothing -> Left ("group '" <> grp <> "' has no vco label; a pitch route needs a"
+                      <> " calibration table to correct with")
+    Just label -> do
+      pitch <- busOf "pitch"
+      pure (writeJSON
+        { head
+        , pitch_bus: pitch
+        , trig_bus: toNullable (busOfMay "gate")
+        , label
+        })
+  where
+  busOf role = case busOfMay role of
+    Just b -> Right b
+    Nothing -> Left ("group '" <> grp <> "' has no " <> role <> " output on the ES-9")
+  -- es9-daemon addresses the panel as buses 8..15, so jack N is bus N + 7 and
+  -- slot N is bus N + 8. The inverse of `Routing.Model.outputOf`.
+  busOfMay role = case filter (\r -> r.role == role && r.output.device == "es9"
+                                    && r.output.bank == "main") (voiceOutputs lay grp 0) of
+    [ r ] -> Just (r.output.slot + 8)
+    _ -> Nothing
+
 -- ---------------------------------------------------------------------------
 -- The rig as it stands
 -- ---------------------------------------------------------------------------
@@ -438,8 +495,8 @@ drumTrigVerbs lay grp = case groupNamed lay grp of
 defaultLayout :: Layout
 defaultLayout =
   { name: "drum breakout + polyenv"
-  , groups: [ kit ] <> map envGroup (0 .. 7)
-  , outputs: Map.fromFoldable (kitOuts <> envOuts)
+  , groups: [ kit, cip ] <> map envGroup (0 .. 7)
+  , outputs: Map.fromFoldable (kitOuts <> cipOuts <> envOuts)
   }
   where
   kit =
@@ -448,12 +505,32 @@ defaultLayout =
     , allocation: Indexed
     , channel: 10
     , mcvs: 0 .. 3
+    , vco: Nothing                    -- gates carry no pitch, so nothing to correct
     , selectors: [ 36, 38, 42, 39 ]   -- BD SD HH CP, matching canonKit
     , target: Just "QuadDrum"
     }
   kitOuts = map (\i -> Tuple { device: "fh2", bank: "gt0", slot: i }
                               { group: "kit", voice: i, role: "gate" })
                 (0 .. 3)
+
+  -- The ES-9 CV voice `reef_voice` actually plays today, from `purerl_tidal`'s
+  -- `odonus_cv` env: head 0 to CIP's pitch on out 1 (bus 8) and a trigger firing
+  -- its Percido envelope on out 2 (bus 9). No MCV — this is the ES-9, driven by
+  -- OSC from the BEAM, so `mcvs` is empty and it contends with nothing above.
+  cip =
+    { name: "cip"
+    , voices: 1
+    , allocation: Mono
+    , channel: 0                      -- not MIDI-addressed; the BEAM emits /cv
+    , mcvs: []
+    , vco: Just "cursus-iteritas-percido"
+    , selectors: []
+    , target: Just "Cursus Iteritas Percido"
+    }
+  cipOuts =
+    [ Tuple { device: "es9", bank: "main", slot: 0 } { group: "cip", voice: 0, role: "pitch" }
+    , Tuple { device: "es9", bank: "main", slot: 1 } { group: "cip", voice: 0, role: "gate" }
+    ]
 
   -- One envelope-only, single-voice MCV each, listening on channel = slot + 1,
   -- output at panel jack `base + 1`. Straight from `FH2.Modes.PolyEnv`'s header;
@@ -464,6 +541,7 @@ defaultLayout =
     , allocation: Mono
     , channel: i + 1
     , mcvs: [ i ]
+    , vco: Nothing
     , selectors: []
     , target: Nothing
     }

@@ -71,6 +71,12 @@ type Row =
   , claimedBy :: Array String        -- ^ source labels; more than one is a conflict
   , kinds :: Array String            -- ^ what kind of signal each claimant sends
   , layout :: Maybe Assignment       -- ^ what the rig is configured to receive
+  -- | The VCO this jack reaches, by its Amphora `vco-calibrations` label. Only
+  -- | meaningful on a `pitch` output, and its absence there is a real finding: an
+  -- | uncorrected analogue VCO does not track 1 V/oct (the Tona measured 1.007
+  -- | rising to 1.030 across its range), so an uncalibrated pitch jack plays
+  -- | progressively out of tune with everything else rather than obviously wrong.
+  , vco :: Maybe String
   , traffic :: Maybe Traffic
   }
 
@@ -101,6 +107,10 @@ rows cfg lay tbl obs = map build (rigOutputs cfg)
       , claimedBy: nub (map (\p -> RM.sourceLabel p.source) here)
       , kinds: nub (map (\p -> RM.destShortLabel p.dest) here)
       , layout: Layout.assignmentAt lay o
+      , vco: do
+          a <- Layout.assignmentAt lay o
+          g <- Layout.groupNamed lay a.group
+          if a.role == "pitch" then g.vco else Nothing
       , traffic:
           if null wires then Nothing
           else Just
@@ -174,7 +184,8 @@ panel probs rs =
       [ HH.span [ sty mono ] [ HH.text (show (r.output.slot + 1)) ]
       , claim r
       , HH.span [ sty $ mono <> ";font-size:9px;color:#6a6558" ]
-          [ HH.text (maybe "" (\a -> a.group <> " v" <> show a.voice <> " · " <> a.role) r.layout) ]
+          ( [ HH.text (maybe "" (\a -> a.group <> " v" <> show a.voice <> " · " <> a.role) r.layout) ]
+              <> calib r )
       , traffic r
       ]
 
@@ -209,6 +220,16 @@ panel probs rs =
                     else if t.recent then "#2f8a5c" else "#9a9284")
             , HP.title (show t.hits <> " on / " <> show t.offs <> " off") ]
             [ HH.text ((if t.recent then "● " else "") <> show t.hits) ]
+
+  -- A pitch jack says which VCO it is corrected for; one with no table says so,
+  -- because uncalibrated reads as drifting-out-of-tune rather than as broken.
+  calib r = case r.layout of
+    Just a | a.role == "pitch" -> case r.vco of
+      Just v -> [ HH.span [ sty "color:#2f8a5c" ] [ HH.text ("  ✓ " <> v) ] ]
+      Nothing -> [ HH.span [ sty "color:#b0492f"
+                           , HP.title "no calibration table — this VCO will drift sharp or flat across its range" ]
+                     [ HH.text "  uncalibrated" ] ]
+    _ -> []
 
   free r = null r.claimedBy && isNothing r.layout
   mono = "font-family:'SF Mono',Menlo,monospace"

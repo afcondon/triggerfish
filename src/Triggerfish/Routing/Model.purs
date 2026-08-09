@@ -456,7 +456,17 @@ outputOf = case _ of
   DFh2Env d -> Just { device: "fh2", bank: "main", slot: d.slot - 1 }
   DFh2Gate d -> Just { device: "fh2", bank: "gt0", slot: d.jack - 1 }
   DEs9Gate d -> Just { device: "es9", bank: "gt" <> show d.block, slot: d.jack - 1 }
-  DEs9Cv d -> Just { device: "es9", bank: "cv0", slot: d.bus - 1 }
+  -- es9-daemon's `/cv <bus>`: buses 8..15 ARE the ES-9's eight panel jacks, so
+  -- bus 8 is panel jack 1. Confirmed twice — `reference_es9_channel_mapping` and
+  -- DeepStar's CALIBRATION.md bus map ("bus 8 drives the Tona on ES-9 output 1"),
+  -- and used live by `reef_voice`'s odonus_cv routes (pitch_bus 8 = out 1).
+  --
+  -- Anything outside 8..15 is an expander bus whose map we have not established;
+  -- it gets its own bank name rather than being folded into the panel, so a wrong
+  -- guess shows up as an unknown bank instead of silently colliding with jack 1.
+  DEs9Cv d
+    | d.bus >= 8 && d.bus <= 15 -> Just { device: "es9", bank: "main", slot: d.bus - 8 }
+    | otherwise -> Just { device: "es9", bank: "cv?", slot: d.bus }
   DMidi _ -> Nothing
   DContinuo _ -> Nothing
 
