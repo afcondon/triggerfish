@@ -247,9 +247,22 @@ its claimants.
    equivalent on es9-daemon; grey a dark device's block and downgrade its routes
    from `ok` to unknown. Cheapest item here and it would have saved a confused
    morning on 2026-08-09.
-1. **Render the backward table read-only**, from `Rig` × `claims` × monitor. This
-   alone would have caught the MCV collision, and it is nearly free — every input
-   already exists.
+1. **Render the backward table read-only**, from `Rig` × `claims` × monitor.
+   Nearly free — every input already exists.
+
+   > **Correction, 2026-08-09, on building it.** An earlier draft claimed this
+   > "alone would have caught the MCV collision". It would not, and the reason
+   > matters: **an MCV is not a jack.** The collision is between two MCVs, whose
+   > *outputs* are on different hardware (FH-2 panel vs FHX-8GT), so a
+   > jack-indexed table shows two happy uncontended rows. Built and checked: the
+   > backward view reports zero conflicts for exactly that configuration, and it
+   > is the MCV claim in `Routing.Model.claims` that catches it.
+   >
+   > The principle was stated too narrowly. It is **read from the contended
+   > RESOURCE**, and a jack is only one kind of resource. So the view eventually
+   > wants a second block for non-jack resources — MCVs, and whatever else turns
+   > out to be scarce — rather than a jack table alone. Until then `claimsPanel`
+   > stays; step 2 below (delete it) is **not** yet safe.
 2. **Move the claims summary into it** and delete it from the forward panel. One
    home for output-indexed facts.
 3. **Make it editable**: assign / unassign a source at the jack, which is the

@@ -69,6 +69,8 @@ import Triggerfish.Selene.Component as Selene
 import Triggerfish.Selene.Source as SelSrc
 import Triggerfish.Selene.Model as SelM
 import Triggerfish.Rig (defaultRig, targetGroups)
+import Triggerfish.Selene.Backward as Bwd
+import Triggerfish.Selene.Layout as Layout
 import Halogen.Widgets.Select as Select
 import Triggerfish.Sufflamen.Component as Sufflamen
 import Triggerfish.Stellatus.Component as Stellatus
@@ -1640,6 +1642,7 @@ channelMapPanel st =
             ]
         ]
     , claimsPanel
+    , backwardPanel
     , trafficPanel
     , HH.div [ style "display:flex;align-items:center;gap:20px;margin-top:24px;flex-wrap:wrap" ]
         ( [ HH.span [ style "font-size:11px;letter-spacing:0.06em;color:#6a655a" ] [ HH.text "audition →" ] ]
@@ -1756,6 +1759,32 @@ channelMapPanel st =
   -- the daemons own admission (es9-daemon's capability/overlap checks,
   -- fh2-config's PortClaim), and a second opinion computed here would be a second
   -- thing to drift. Showing it means a collision is seen, not heard.
+  -- The same table read from the JACK. Contention only exists on the output
+  -- side, so every conflict above is invisible by construction — you would have
+  -- to hold four rows in your head and notice two naming the same hardware. And
+  -- free jacks, which the forward view cannot express at all, are just the rows
+  -- with nothing in them.
+  --
+  -- The LAYOUT column is what the rig is configured to receive; it is declared
+  -- independently of the routing table, so the two columns disagreeing is itself
+  -- a finding. Today it is `Layout.defaultLayout` — the drum breakout, the one
+  -- configuration we can state truthfully — rather than anything editable.
+  backwardPanel =
+    let rs = Bwd.rows defaultRig Layout.defaultLayout st.routingTable st.midiTraffic
+        bad = Bwd.conflicted rs
+    in HH.div [ style "margin-top:26px" ]
+         [ HH.div
+             [ style $ "font-family:Georgia,serif;letter-spacing:0.12em;"
+                 <> "text-transform:uppercase;color:#5a564b;font-size:11px;"
+                 <> "margin-bottom:10px;display:flex;gap:12px;align-items:baseline" ]
+             [ HH.text "from the jack"
+             , HH.span [ style "font-size:9px;letter-spacing:0.04em;color:#8a8474" ]
+                 [ HH.text (show (length rs) <> " outputs"
+                     <> (if length bad == 0 then "" else " · " <> show (length bad) <> " contended")) ]
+             ]
+         , Bwd.panel rs
+         ]
+
   claimsPanel =
     let cs = RM.claims st.routingTable
         bad = RM.conflicts st.routingTable

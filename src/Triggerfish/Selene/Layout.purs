@@ -43,6 +43,7 @@ module Triggerfish.Selene.Layout
   , allocationKey
   , parseAllocation
   , groupNamed
+  , assignmentAt
   , voiceOutputs
   , capabilities
   , assignedOutputs
@@ -182,6 +183,11 @@ groupNamed :: Layout -> String -> Maybe Group
 groupNamed lay nm = do
   i <- findIndex (\g -> g.name == nm) lay.groups
   lay.groups !! i
+
+-- | What, if anything, this output is configured to carry. The whole point of
+-- | keying by output: this is a lookup, not a search.
+assignmentAt :: Layout -> Output -> Maybe Assignment
+assignmentAt lay o = Map.lookup o lay.outputs
 
 -- | The outputs serving one voice of one group, with the role each carries.
 voiceOutputs :: Layout -> String -> Int -> Array { role :: Role, output :: Output }

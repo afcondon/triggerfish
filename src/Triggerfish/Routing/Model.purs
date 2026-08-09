@@ -60,6 +60,7 @@ module Triggerfish.Routing.Model
   , conflicts
   , Wire
   , wireOf
+  , outputOf
   , carriesLine
   , fh2Port
   , fh2GateChannel
@@ -71,6 +72,8 @@ import Data.Array (concatMap, filter, find, findIndex, length, mapMaybe, mapWith
 import Data.Maybe (Maybe(..), fromMaybe, isJust, maybe)
 import Data.Tuple (Tuple(..), snd)
 import Data.String (Pattern(..), contains)
+
+import Triggerfish.Selene.Layout (Output, outputKey)
 
 -- ---------------------------------------------------------------------------
 -- Sources
@@ -437,6 +440,27 @@ wireOf = case _ of
 -- | One occupied hardware slot, and who occupies it.
 type Claim = { device :: Device, slot :: String, by :: Array Source }
 
+-- | The PHYSICAL OUTPUT a destination lands on, in `Selene.Layout`'s address
+-- | vocabulary (device / bank / 0-based slot), or `Nothing` for destinations that
+-- | are not a jack at all.
+-- |
+-- | This is the structured form of what `claims` renders as prose, and both use
+-- | it, so the output-backward view and the conflict report cannot disagree about
+-- | where something lands.
+-- |
+-- | Note the two FH-2 kinds go to DIFFERENT banks — an envelope to the FH-2's own
+-- | panel, a trigger out the FHX-8GT — which is the distinction that was collapsed
+-- | and had to be fixed on the rack.
+outputOf :: Destination -> Maybe Output
+outputOf = case _ of
+  DFh2Env d -> Just { device: "fh2", bank: "main", slot: d.slot - 1 }
+  DFh2Gate d -> Just { device: "fh2", bank: "gt0", slot: d.jack - 1 }
+  DEs9Gate d -> Just { device: "es9", bank: "gt" <> show d.block, slot: d.jack - 1 }
+  DEs9Cv d -> Just { device: "es9", bank: "cv0", slot: d.bus - 1 }
+  DMidi _ -> Nothing
+  DContinuo _ -> Nothing
+
+
 -- | Every hardware slot the table spends, grouped so the same slot claimed twice
 -- | shows both claimants.
 -- |
@@ -475,18 +499,18 @@ claims tbl = map collect (nub (map _.slot spent))
   -- the output claim catches two legs aimed at one jack, which the MCV claim
   -- cannot see because they would be on different MCVs.
   slotOf src leg = case leg.dest of
-    DFh2Env d ->
-      [ { device: DevFh2, slot: mcvSlot (d.slot - 1), by: [ src ] }
-      , { device: DevFh2, slot: "FH-2 jack " <> show d.slot, by: [ src ] }
-      ]
-    DFh2Gate d ->
-      [ { device: DevFh2, slot: mcvSlot (d.jack - 1), by: [ src ] }
-      , { device: DevFh2, slot: "FHX-8GT jack " <> show d.jack, by: [ src ] }
-      ]
-    DEs9Gate d -> [ { device: DevEs9, slot: "GT " <> show d.block <> " jack " <> show d.jack, by: [ src ] } ]
-    DEs9Cv d -> [ { device: DevEs9, slot: "CV bus " <> show d.bus, by: [ src ] } ]
+    DFh2Env d -> [ { device: DevFh2, slot: mcvSlot (d.slot - 1), by: [ src ] } ] <> jack leg
+    DFh2Gate d -> [ { device: DevFh2, slot: mcvSlot (d.jack - 1), by: [ src ] } ] <> jack leg
+    DEs9Gate _ -> jack leg
+    DEs9Cv _ -> jack leg
     DMidi _ -> []
     DContinuo _ -> []
+    where
+    -- The output half, from the one structured definition, so this and the
+    -- backward view cannot drift about where a destination lands.
+    jack lg = case outputOf lg.dest of
+      Nothing -> []
+      Just o -> [ { device: destDevice lg.dest, slot: outputKey o, by: [ src ] } ]
 
   -- The MCV a drum trigger uses is `jack - 1` only because the breakout table
   -- happens to pair slot 0..3 with jack 1..4. That table says "EDIT HERE to
