@@ -184,8 +184,10 @@ says how they are partitioned and what each group means: some number of
 monophonic parts, or one part with N voices and an allocation policy, or a bank
 of independent triggers. You pick a layout; you do not set per-jack properties.
 
-A **layout** is a *total partition* of the rig's outputs into named **voice
-groups**, each carrying:
+A **layout** assigns the rig's outputs to named **voice groups** — injectively,
+so no output serves two groups, though outputs may be left free (see "The
+representation" below, which corrects a loose "total partition" used in an
+earlier draft). Each group carries:
 
 - a **capability set** — `{gate, pitch}`, `{gate}`, `{gate, pitch, mod}`, …
 - an **allocation mode** — mono, or poly-with-N-voices and a stealing policy
@@ -229,6 +231,150 @@ a two-character display. **Ours must be user-definable**, since the rack changes
 whenever a module is bought. So take the concept — a named, total partition into
 voice groups — and not the fixed list. The same relationship Balistes has to
 Grids and Odonus has to René: steal the control model, reimplement the mechanism.
+
+### The representation
+
+**The hinge is one decision: key the layout by OUTPUT, not by group.** Everything
+else follows.
+
+Write it group-first — a list of voice groups, each naming the outputs it uses —
+and you can say the same jack twice. Two groups fighting over one output is
+precisely the state the whole exercise exists to prevent, and it would be back,
+detectable only by a validation pass. Key it by output and **an output cannot
+appear twice, because it is the key**. In the wire format it is literally a JSON
+object key.
+
+That inverts which errors are possible, in the right direction:
+
+| state | group-first | output-first |
+|---|---|---|
+| one output claimed by two groups | representable — must be checked | **impossible** |
+| two outputs serving one voice-role | representable | representable — and *harmless*, it is a mult |
+
+The remaining incoherence is the benign one.
+
+#### Correction to the language above
+
+This document has been calling a layout a "total partition". It is not, and the
+loose word hides something the backward view depends on: **outputs may be
+unassigned, and that is a first-class answer.** "Which jacks are free?" is a
+question asked constantly while patching. The real invariant is *injectivity* —
+every output is claimed by **at most** one voice-role slot — not coverage.
+
+#### The types
+
+```purescript
+-- | Where a signal physically comes out. Bank + slot rather than an absolute
+-- | jack number, because that is the vocabulary both devices already use and
+-- | exactly what `apply-drumkit` consumes. FH-2: main / cv0..cv6 / gt0..gt7.
+type Output = { device :: String, bank :: String, slot :: Int }
+
+-- | What an output carries for its voice. An OPEN vocabulary — "gate", "pitch",
+-- | "mod", "accent", "slide", "level", "timbre" — because a 303 and a Plaits do
+-- | not agree on a fixed set and never will.
+type Role = String
+
+-- | Which voice of which group an output serves. The VALUE side of the map.
+type Assignment = { group :: String, voice :: Int, role :: Role }
+
+-- | Given a note from the bound source, which voice plays it?
+data Allocation
+  = Mono              -- always voice 0
+  | Poly Policy       -- the engine picks
+  | Indexed           -- the SOURCE's own lane index picks (a kit / trigger bank)
+
+data Policy = Cyclic | Lowest | Highest | Unison
+
+type Group =
+  { name :: String
+  , voices :: Int
+  , allocation :: Allocation
+  , channel :: Int           -- the MIDI channel this group's MCVs listen on
+  , target :: Maybe String   -- intended module; free text now, a reference later
+  }
+
+type Layout =
+  { name :: String
+  , groups :: Array Group
+  , outputs :: Map Output Assignment     -- injective by construction
+  }
+```
+
+`Mono` is not `Poly` with one voice: the distinction is *who chooses*. Mono has
+no choice to make, `Poly` hands it to the engine, `Indexed` hands it to the
+source. That trichotomy is the whole of Yarns' mode list, and it covers Odonus
+(four `Mono` groups), Vetula (one `Poly`), and Balistes (one `Indexed` of
+sixteen).
+
+#### The wire format
+
+```json
+{ "name": "plaits-bass + kit",
+  "groups": {
+    "bass": { "voices": 1, "allocation": "mono", "channel": 5,
+              "target": "Plaits" },
+    "kit":  { "voices": 4, "allocation": "indexed", "channel": 10,
+              "target": "QuadDrum" }
+  },
+  "outputs": {
+    "fh2/gt0/7":  { "group": "bass", "voice": 0, "role": "gate"  },
+    "fh2/main/7": { "group": "bass", "voice": 0, "role": "pitch" },
+    "fh2/gt0/0":  { "group": "kit",  "voice": 0, "role": "gate"  },
+    "fh2/gt0/1":  { "group": "kit",  "voice": 1, "role": "gate"  },
+    "fh2/gt0/2":  { "group": "kit",  "voice": 2, "role": "gate"  },
+    "fh2/gt0/3":  { "group": "kit",  "voice": 3, "role": "gate"  }
+  }
+}
+```
+
+#### What is still checked, because it is not unrepresentable
+
+Making overlap impossible does not make everything impossible. A validation pass
+still owes:
+
+- every `group` named in `outputs` exists;
+- every `voice` index is `< group.voices`;
+- a group's voices are not **ragged** — voice 2 having a `mod` that voice 1
+  lacks is almost certainly a mistake, and the group's capability set is
+  meaningless if they differ;
+- **channel collisions** between groups — two groups listening on one channel
+  both respond to the same notes, which is occasionally deliberate layering and
+  usually a mistake. Report, do not block: the same rule `claims` follows.
+
+#### Layout versus binding — and why the channel lives in the layout
+
+A **layout is rig-side**: how the hardware is configured to *receive*. It carries
+no sources, which is what makes it portable, shareable and worth collecting —
+the same principle as an envelope shape carrying no range and no jack.
+
+A **binding is session state**: `source → group`. Odonus head I drives `bass`.
+
+The MIDI channel belongs to the **layout**, not the binding, because the MCV is
+what listens on it — it is a fact about how the rig is configured, not about who
+is playing. That placement is what keeps the FH-2 config derivable from the
+layout **alone**, so a layout can be applied before any source is bound to it.
+
+#### The convergence worth noticing
+
+`outputs` is a map from physical output to who claims it. **That is exactly the
+output-backward view's row set.** The backward table is not a view *over* the
+layout, it *is* the layout, rendered.
+
+So step 1 and step 6 of the sequencing are the same work approached from
+different ends — which is a strong reason to settle this representation now, and
+then build the backward view as its read-only renderer rather than as a separate
+thing that will later have to be reconciled.
+
+#### Two open questions, deliberately not settled
+
+- **Do MIDI targets get groups?** Today MIDI destinations are plain routing legs,
+  and `DESIGN-routing-backward.md` argues they should stay separate because a
+  channel is not scarce the way a jack is. But "all sixteen drums to MIDI ch10"
+  is a real case that a layout would express neatly. Leaving layouts to describe
+  *the modular* and MIDI to remain plain legs is the bounded choice; revisit if
+  the asymmetry actually hurts, not before.
+- **When does `target` stop being a string?** It becomes a reference to a module
+  input surface once there are enough of them to see the shape. Not yet.
 
 ### What the two sections below become
 
