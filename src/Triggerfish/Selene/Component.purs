@@ -1306,17 +1306,16 @@ envSvgWith isSel box sl =
                then [ svgOn "mousemove" \e -> EnvDragMove (ME.clientX e) (ME.clientY e) (ME.buttons e) (ME.shiftKey e) ]
                else [] ) )
     ( baselineRule
-        <> band
-        <> [ line fig.hi 2.0 "1" ]
-        <> (if fig.hasBand then [ line fig.lo 1.0 "0.5" ] else [])
+        <> [ line fig.curve 2.0 "1" ]
+        <> velSpike
         <> (if isSel then handles else []) )
   where
-  -- Grab points, at the three breakpoints of the drawn curve. `hi` is the
-  -- velocity-127 outline, which is the one the numbers actually describe.
+  -- Grab points, at the three breakpoints of the drawn curve, which is the
+  -- velocity-127 outline — the one the numbers actually describe.
   handles =
-    [ grip HPeak (fig.hi !! 1)
-    , grip HCorner (fig.hi !! 2)
-    , grip HTail (fig.hi !! 4)
+    [ grip HPeak (fig.curve !! 1)
+    , grip HCorner (fig.curve !! 2)
+    , grip HTail (fig.curve !! 4)
     ]
   grip h mp = case mp of
     Nothing -> svgEl "g" [] []
@@ -1339,16 +1338,36 @@ envSvgWith isSel box sl =
       , svgAttr "stroke-opacity" op
       , svgAttr "stroke-linejoin" "round"
       , svgAttr "stroke-linecap" "round" ] []
-  -- The velocity band: the same shape at velocity 127 and at 1, filled between.
-  -- Its WIDTH is how much velocity does — a static envelope has none at all.
-  band =
-    if fig.hasBand
-      then [ svgEl "polygon"
-               [ svgAttr "points" (pts fig.band)
-               , svgAttr "fill" fig.ink
-               , svgAttr "fill-opacity" "0.18"
-               , svgAttr "stroke" "none" ] [] ]
-      else []
+  -- The velocity spike: a bar hanging from the peak whose LENGTH is how much
+  -- velocity moves it. A static envelope has no bar at all.
+  --
+  -- Green, and the only saturated colour on the cell. Everything else here is the
+  -- pale Hainbach range, including the time-bucket ramp the curve is drawn in,
+  -- so a mark in that family reads as more of the same and is lost the moment it
+  -- gets short — which is exactly when it matters, since a small bar is a real
+  -- reading and not an absence. The colour is doing no encoding work; it is
+  -- there to separate one channel from the rest.
+  --
+  -- Red was the first try and was the wrong end of the wheel: the time ramp runs
+  -- amber → deep brown, so a red bar sits close in hue to whatever it crosses and
+  -- the contrast collapses on the darkest, slowest buckets. Green is opposite
+  -- that ramp, so it separates equally well against all eight.
+  --
+  -- Drawn LAST, over the curve. A zero-attack shape puts the peak hard against
+  -- the left edge, which makes the bar exactly collinear with the vertical
+  -- attack stroke — so whichever is drawn second is the one you see, and it has
+  -- to be this one. (`fall` is the case that proved it: drawn underneath, the
+  -- bar vanished completely behind the attack.)
+  velSpike = case fig.vel of
+    Nothing -> []
+    Just v ->
+      [ svgEl "line"
+          [ svgAttr "x1" (show v.x), svgAttr "x2" (show v.x)
+          , svgAttr "y1" (show v.from), svgAttr "y2" (show v.to)
+          , svgAttr "stroke" "mediumseagreen"
+          , svgAttr "stroke-width" "3"
+          , svgAttr "stroke-opacity" "0.9"
+          , svgAttr "stroke-linecap" "round" ] [] ]
   -- Zero volts, drawn faintly, because an inverted envelope goes BELOW it and
   -- without the rule there is nothing to read "below" against.
   baselineRule =

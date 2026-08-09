@@ -11,10 +11,23 @@
 -- |   * DEPTH is the curve's height; a depth of 64 is flat, because a depth of
 -- |     64 genuinely does nothing
 -- |   * INVERSION (depth < 64) draws BELOW the baseline, which is what it does
--- |   * VELOCITY RESPONSE is a band: the same shape at velocity 1 and at 127,
--- |     with the area between them filled. A static envelope is a single line; a
--- |     fully velocity-scaled one is a wide band. So you read not just "does
--- |     velocity do something" but how much
+-- |   * VELOCITY RESPONSE is a spike at the peak: a vertical mark spanning the
+-- |     peak's range, from where a velocity-1 note lands to where a velocity-127
+-- |     one does. A static envelope has no spike at all; a fully velocity-scaled
+-- |     one has a tall one. So you read not just "does velocity do something" but
+-- |     how much
+-- |
+-- |     (This replaced a filled BAND between the velocity-1 and velocity-127
+-- |     outlines. The band was honest in the channel it intended — its height at
+-- |     the peak was exactly the velocity range — but you perceive a filled
+-- |     shape by its AREA, and area is width × height, so a band's apparent
+-- |     strength was confounded with the envelope's duration. `ramp` and `knock`
+-- |     carry the same `vel 96` and had the same 29px separation at the peak,
+-- |     but ramp's band was 94px wide and knock's 13.6px, so one read as
+-- |     velocity-sensitive and the other as static. Worst exactly where it
+-- |     mattered most: percussive shapes are the most velocity-sensitive
+-- |     musically and the narrowest on screen. A one-dimensional mark for a
+-- |     one-dimensional quantity has no width to be confounded by.)
 -- |   * DURATION is the curve's horizontal extent, log-scaled — a click occupies
 -- |     a fifth of its cell, a drone fills it
 -- |
@@ -22,6 +35,7 @@
 -- | extent rather than carrying anything on its own.
 module Triggerfish.Selene.EnvDraw
   ( Pt
+  , Spike
   , Figure
   , figure
   , durationMs
@@ -31,9 +45,9 @@ module Triggerfish.Selene.EnvDraw
 
 import Prelude
 
-import Data.Array ((!!), reverse)
+import Data.Array ((!!))
 import Data.Int (toNumber)
-import Data.Maybe (fromMaybe)
+import Data.Maybe (Maybe(..), fromMaybe)
 import Data.Number (log)
 import Data.Ord (abs)
 
@@ -41,14 +55,30 @@ import Triggerfish.Selene.Model (EnvSlot)
 
 type Pt = { x :: Number, y :: Number }
 
+-- | The velocity mark: a bar HANGING FROM THE PEAK, whose length is how far
+-- | velocity moves that peak — the gap between where a velocity-1 note lands and
+-- | where a velocity-127 one does. `from` is the peak itself, `to` the far end.
+-- |
+-- | For the ordinary response (`velDepth > 64`) this is geometrically exact: a
+-- | quiet note really does peak that far below a loud one, so the bar covers the
+-- | interval the peak actually occupies.
+-- |
+-- | For an INVERSE response (`velDepth < 64`) it is a magnitude rather than a
+-- | picture — the bar still hangs down, though the quiet peak is really *above*
+-- | the loud one. There is nowhere to draw it truthfully: a full-depth curve
+-- | already reaches the top of the box, and an inverse response asks for up to
+-- | twice full depth, so `soft` would need to reach 12 px above a 44 px cell and
+-- | `velDepth 0` would need 30. Buying that headroom means drawing every normal
+-- | envelope at half height to flatter the rarest case. So direction is the
+-- | thing this mark does not carry; the numbers under the cell do.
+type Spike = { x :: Number, from :: Number, to :: Number }
+
 type Figure =
-  { hi :: Array Pt        -- the shape at velocity 127
-  , lo :: Array Pt        -- the shape at velocity 1
-  , band :: Array Pt      -- closed polygon between them (empty when velDepth is 64)
+  { curve :: Array Pt     -- the shape at velocity 127 — what the numbers describe
+  , vel :: Maybe Spike    -- Nothing when velDepth is 64, i.e. velocity does nothing
   , baseline :: Number    -- y of zero volts, in box coordinates
   , ink :: String         -- time-bucket colour
   , durationMs :: Number
-  , hasBand :: Boolean
   }
 
 -- | The firmware's eight time buckets, in ms of full-scale.
@@ -76,13 +106,11 @@ timeInk n = fromMaybe "#7d4f20"
 -- | Build the figure inside a `w × h` box.
 figure :: { w :: Number, h :: Number } -> EnvSlot -> Figure
 figure box sl =
-  { hi: curve hiScale
-  , lo: curve loScale
-  , band: if hasBand then curve hiScale <> reverse (curve loScale) else []
+  { curve: shapeAt hiScale
+  , vel: if hasVel then Just spike else Nothing
   , baseline
   , ink: timeInk sl.timeRange
   , durationMs: dur
-  , hasBand
   }
   where
   pad = 3.0
@@ -99,14 +127,36 @@ figure box sl =
   -- `depth` is an ATTENUVERTER: 64 is zero, above is positive, below inverts.
   amp = (toNumber sl.depth - 64.0) / 63.0
 
-  -- `velDepth` likewise: 64 means velocity does nothing, so the two curves
-  -- coincide and there is no band to draw. Above 64, low velocity shrinks the
-  -- envelope; below 64 the response inverts and low velocity makes it LARGER,
-  -- which is why `lo` can legitimately sit outside `hi`.
+  -- `velDepth` likewise: 64 means velocity does nothing, so a quiet note and a
+  -- loud one land in the same place and there is no spike to draw. Above 64, low
+  -- velocity shrinks the envelope; below 64 the response inverts and low
+  -- velocity makes it LARGER, which is why `quiet` can legitimately sit outside
+  -- the curve rather than inside it.
   velK = (toNumber sl.velDepth - 64.0) / 63.0
   hiScale = 1.0
   loScale = 1.0 - velK
-  hasBand = abs velK > 0.01
+  hasVel = abs velK > 0.01
+
+  -- The velocity bar runs from the peak to where a velocity-1 note puts it. That
+  -- is a real position, so draw it there whenever it fits — which covers every
+  -- ordinary response, and also the INVERTED envelopes, whose quiet peak is less
+  -- negative and therefore sits back toward the baseline rather than further
+  -- from it. ("Hang it downward" is wrong for those: it points away from where
+  -- the peak actually moves, and runs off the bottom of the box.)
+  --
+  -- It fails to fit in exactly one situation: an inverse response on a
+  -- deep positive envelope, where the quiet peak exceeds full depth and there is
+  -- no headroom above a curve already touching the top. Then, and only then, the
+  -- bar is mirrored about the peak — same length, opposite side, guaranteed to
+  -- fit because the mirror points back toward the baseline. See `Spike`.
+  spike =
+    let peakY = yFor hiScale
+        quietY = yFor loScale
+        fits = quietY >= pad && quietY <= box.h - pad
+    in { x: x1
+       , from: peakY
+       , to: if fits then quietY else peakY + abs (quietY - peakY)
+       }
 
   dur = durationMs sl
 
@@ -145,7 +195,7 @@ figure box sl =
     let v = amp * lvl
     in if v >= 0.0 then baseline - v * upH else baseline - v * downH
 
-  curve k =
+  shapeAt k =
     let peak = yFor (1.0 * k)
         sus = yFor ((toNumber sl.sustain / 127.0) * k)
     in [ { x: x0, y: baseline }
