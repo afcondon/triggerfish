@@ -87,8 +87,21 @@ envLine sl =
   "a " <> show sl.attack <> " d " <> show sl.decay
     <> " s " <> show sl.sustain <> " r " <> show sl.release
     <> opt "depth" sl.depth M.defaultEnvSlot.depth
-    <> opt "vel" sl.velDepth M.defaultEnvSlot.velDepth
-    <> opt "time" sl.timeRange M.defaultEnvSlot.timeRange
+    -- `vel` and `time` are printed ALWAYS, not elided at their defaults, because
+    -- their defaults are musically ACTIVE — which is not true of the others.
+    --
+    -- The elision rule is "hide it when it says nothing", and that only holds
+    -- when the default IS the inert value. `depth` 127 is the normal full-scale
+    -- case and its inert value is 64, so eliding it says nothing. But `vel` 96
+    -- is a real velocity response (inert is 64), and `time` 2 is a 1s scale that
+    -- decides whether a shape reads as a click or a swell. Eliding those hid two
+    -- live facts: the drawing shows a velocity band and a colour while the text
+    -- stayed silent, which is the two surfaces disagreeing about what matters.
+    --
+    -- Additive only: the parser still defaults an absent key, so older docs
+    -- parse unchanged and simply print fuller from now on.
+    <> " vel " <> show sl.velDepth
+    <> " time " <> show sl.timeRange
     <> opt "rnd" sl.randomDepth M.defaultEnvSlot.randomDepth
     <> opt "ashape" sl.attackShape M.defaultEnvSlot.attackShape
     <> opt "dshape" sl.decayShape M.defaultEnvSlot.decayShape
