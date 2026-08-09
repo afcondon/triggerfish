@@ -21,7 +21,7 @@ import Prelude
 
 import Data.Array (any, deleteAt, elem, filter, find, findIndex, head, last, length, mapMaybe, mapWithIndex, modifyAt, null, replicate, uncons, unsnoc, (..), (:), (!!))
 import Data.FoldableWithIndex (forWithIndex_)
-import Data.Foldable (for_, maximum, minimum, sum)
+import Data.Foldable (for_, sum)
 import Data.Either (Either(..))
 import Data.Maybe (Maybe(..), fromMaybe, isJust, maybe)
 import Data.Const (Const)
@@ -1690,40 +1690,15 @@ channelMapPanel st =
                [ style $ "font-size:9px;font-family:'SF Mono',Menlo,monospace;"
                    <> (if dead then "color:#b0492f" else "color:#7a9a7a") ]
                [ HH.text (if dead then RM.reachNote reach else "ok") ]
-           , legActivity leg
            ] )
 
-  -- What this leg has actually CARRIED, from the WebMIDI tap. The reach column
-  -- says the destination could be reached; this says notes went there. They fail
-  -- independently — a route can be perfectly reachable and never used because the
-  -- machine isn't arming, and that reads identically from the rack.
-  legActivity leg = case RM.wireOf leg.dest of
-    Nothing -> HH.span [ style "font-size:9px;color:#b0a690" ] [ HH.text "—" ]
-    Just w ->
-      let rows = filter (Mon.matches w) st.midiTraffic
-          n = sum (map _.hits rows)
-          offs = sum (map _.offs rows)
-          recent = any (\r -> r.agoMs < 2000.0) rows
-          vlo = fromMaybe 0 (minimum (map _.velMin rows))
-          vhi = fromMaybe 0 (maximum (map _.velMax rows))
-          -- Notes started but never ended. A few in flight is normal (the last
-          -- note is still sounding); a growing gap means note-offs aren't being
-          -- sent, which at the rack reads as an envelope that never comes back
-          -- down — the same symptom as a sustain problem, different cause.
-          stuck = n - offs > 2
-      in HH.span
-           [ HP.title (if n == 0 then "no notes observed on this destination"
-               else show n <> " on / " <> show offs <> " off · velocity "
-                    <> show vlo <> "-" <> show vhi
-                    <> (if vlo == vhi then " (NOT varying)" else " (varying)")
-                    <> (if stuck then " · NOTES LEFT HANGING" else ""))
-           , style $ "font-size:9px;font-family:'SF Mono',Menlo,monospace;"
-               <> (if stuck then "color:#b0492f"
-                   else if recent then "color:#2f8a5c"
-                   else if n > 0 then "color:#9a9284" else "color:#cdc4b2") ]
-           [ HH.text (if n == 0 then "·"
-               else (if recent then "\x25cf " else "") <> show n <> "/" <> show offs
-                    <> (if vlo /= vhi then " v" <> show vlo <> "-" <> show vhi else " v" <> show vhi)) ]
+  -- The per-leg traffic readout that used to sit here ("320/320 v78-127") is
+  -- gone: its width varied with the counts, so a busy row grew past the column
+  -- and forced the whole panel to scroll sideways. The observation is still
+  -- collected — `Routing.Monitor` is untouched and `trafficPanel` below still
+  -- reports the totals and, more importantly, the UNACCOUNTED traffic. Per-jack
+  -- traffic belongs in the output-backward view, which has a column for it and
+  -- a fixed row width to put it in (see docs/DESIGN-routing-backward.md).
 
   destKind = case _ of
     RM.DMidi _ -> "midi"

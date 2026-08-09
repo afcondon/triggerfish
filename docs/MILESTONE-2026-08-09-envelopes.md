@@ -101,11 +101,20 @@ someone else's format. "We haven't decoded it" is not "it is unused."**
 
 ## Two rig facts that cost time
 
-**polyenv and the drum breakout are the same hardware.** Both are
-`mcv = jack - 1`, so FH-2 envelope N and FH-2 gate jack N are one MCV. Mutually
-exclusive, last writer wins — publishing a polyenv silently takes the drum gates
-away. The router now reports this; it had been reporting zero conflicts for a
-default table containing four.
+**polyenv and the drum breakout share MCVs — but not jacks.** Both are
+`mcv = jack - 1`, so FH-2 envelope N and drum trigger N are one MCV: mutually
+exclusive, last writer wins, and publishing a polyenv silently takes the drum
+gates away. The router now reports this; it had been reporting zero conflicts for
+a default table containing four.
+
+*Corrected 2026-08-09 (later):* this section originally added "…driving the same
+jack", which is wrong and shipped as a bug. A drum trigger is routed out the
+**FHX-8GT** (`output = jack + 64`), precisely so the FH-2's CV-capable main jacks
+stay free — `apply-drum-breakout.mjs` says so in its header. Only the MCV is
+contended; the outputs are different hardware. `claims` now issues both a MCV
+claim and an output claim per FH-2 leg, because they catch different collisions:
+the MCV catches polyenv-vs-drums, the output catches two legs aimed at one jack
+on *different* MCVs, which the MCV claim cannot see.
 
 **A port that enumerates is not a live device.** With the modular switched off
 the FH-2's USB port still appears, so every FH-2 route read `ok`. `Reachable`
