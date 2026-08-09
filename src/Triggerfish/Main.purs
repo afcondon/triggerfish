@@ -1819,7 +1819,7 @@ channelMapPanel st =
                  [ HH.text (show (length rs) <> " outputs"
                      <> (if length bad == 0 then "" else " · " <> show (length bad) <> " contended")) ]
              ]
-         , Bwd.panel rs
+         , Bwd.panel (Layout.validate Layout.defaultLayout) rs
          ]
 
   claimsPanel =

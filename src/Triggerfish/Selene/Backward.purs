@@ -122,12 +122,31 @@ conflicted = filter (\r -> length r.claimedBy > 1)
 -- | Read-only. Editing at the jack — assigning and unassigning a source at the
 -- | point of contention — is the gesture that motivated the whole view, but it
 -- | wants the rows to have settled first.
-panel :: forall w i. Array Row -> HH.HTML w i
-panel rs =
-  HH.div [ sty "display:flex;flex-wrap:wrap;gap:14px 26px;align-items:flex-start" ]
-    (map block (banksOf rs))
+panel :: forall w i. Array Layout.Problem -> Array Row -> HH.HTML w i
+panel probs rs =
+  HH.div_
+    [ resources
+    , HH.div [ sty "display:flex;flex-wrap:wrap;gap:14px 26px;align-items:flex-start" ]
+        (map block (banksOf rs))
+    ]
   where
   banksOf xs = nub (map (\r -> r.output.device <> "/" <> r.output.bank) xs)
+
+  -- Contention on things that are NOT jacks — MCVs, above all. The jack table
+  -- below is structurally blind to these: two MCVs can collide while their
+  -- outputs sit on different hardware, which is precisely the FH-2 case that
+  -- had to be found by reading allocation code. So it goes at the top, where
+  -- the table cannot quietly imply everything is fine.
+  resources =
+    if null probs then HH.div_ []
+    else
+      HH.div
+        [ sty $ "margin-bottom:18px;padding:9px 12px;border-left:3px solid #b0492f;"
+            <> "background:#b0492f11;display:flex;flex-direction:column;gap:3px" ]
+        ( [ HH.div [ sty $ engrave <> ";font-size:9px;color:#b0492f;margin-bottom:2px" ]
+              [ HH.text "contended resources — not visible in the table below" ] ]
+            <> map (\p -> HH.div [ sty "font-size:10px;color:#7a3a28;line-height:1.45" ]
+                            [ HH.text (Layout.problemNote p) ]) probs )
 
   block b =
     HH.div [ sty "flex:1 1 300px;min-width:280px;max-width:420px" ]

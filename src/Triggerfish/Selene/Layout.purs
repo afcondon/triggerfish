@@ -55,11 +55,12 @@ module Triggerfish.Selene.Layout
   , fromJson
   , drumTrigVerbs
   , defaultLayout
+  , drumBreakout
   ) where
 
 import Prelude
 
-import Data.Array (catMaybes, filter, findIndex, length, mapMaybe, nub, sort, (!!), (..))
+import Data.Array (catMaybes, elem, filter, findIndex, length, mapMaybe, nub, sort, (!!), (..))
 import Data.Either (Either(..))
 import Data.Int as Int
 import Data.Map (Map)
@@ -128,6 +129,15 @@ type Group =
   , voices :: Int
   , allocation :: Allocation
   , channel :: Int
+  -- | The MCV slots this group consumes. **The contended resource is the MCV,
+  -- | not the jack** — polyenv takes 0..7 (one per envelope, channel = slot + 1)
+  -- | while the drum breakout takes 0..3, and their OUTPUTS are on different
+  -- | hardware entirely, so nothing jack-indexed can see the collision. That was
+  -- | learned the hard way; it is why this field exists rather than being derived.
+  -- |
+  -- | Empty when it does not apply or is not known — the drumkit macro lets the
+  -- | daemon allocate, and guessing would be worse than saying nothing.
+  , mcvs :: Array Int
   , selectors :: Array Int
   , target :: Maybe String   -- ^ intended module; free text now, a reference later
   }
@@ -222,6 +232,7 @@ data Problem
   | UnwiredVoice String Int
   | SelectorCount String Int Int
   | ChannelCollision Int (Array String)
+  | McvCollision Int (Array String)
 
 problemNote :: Problem -> String
 problemNote = case _ of
@@ -244,13 +255,17 @@ problemNote = case _ of
   ChannelCollision ch gs ->
     "channel " <> show ch <> " is listened on by " <> joinWith " and " gs
       <> " — both will respond to the same notes"
+  McvCollision n gs ->
+    "MCV " <> show n <> " is wanted by " <> joinWith " and " gs
+      <> " — mutually exclusive, last applied wins, and their jacks are on"
+      <> " different hardware so nothing jack-indexed can see it"
 
 -- | All problems, in no particular order. **Reports; does not block.** The
 -- | daemons already own admission (es9-daemon has capability and overlap checks,
 -- | fh2-config has `PortClaim`), and a second opinion computed here would be a
 -- | second thing to drift — the standing lesson of the output-range bug.
 validate :: Layout -> Array Problem
-validate lay = dangling <> ragged <> selectors <> channels
+validate lay = dangling <> ragged <> selectors <> channels <> mcvs
   where
   pairs = Map.toUnfoldable lay.outputs :: Array (Tuple Output Assignment)
 
@@ -295,6 +310,13 @@ validate lay = dangling <> ragged <> selectors <> channels
       let named = map _.name (filter (\g -> g.channel == ch) lay.groups)
       in if length named > 1 then Just (ChannelCollision ch named) else Nothing
 
+  -- The check a jack-indexed view cannot do. See `Group.mcvs`.
+  mcvs = mapMaybe check (nub (lay.groups >>= _.mcvs))
+    where
+    check n =
+      let named = map _.name (filter (\g -> elem n g.mcvs) lay.groups)
+      in if length named > 1 then Just (McvCollision n named) else Nothing
+
 -- ---------------------------------------------------------------------------
 -- JSON — the interchange format
 -- ---------------------------------------------------------------------------
@@ -308,6 +330,7 @@ type WireGroup =
   { voices :: Int
   , allocation :: String
   , channel :: Int
+  , mcvs :: Array Int
   , selectors :: Array Int
   , target :: Maybe String
   }
@@ -333,6 +356,7 @@ toJson lay = writeJSON wire
     { voices: grp.voices
     , allocation: allocationKey grp.allocation
     , channel: grp.channel
+    , mcvs: grp.mcvs
     , selectors: grp.selectors
     , target: grp.target
     }
@@ -352,6 +376,7 @@ fromJson s = case readJSON s of
       , voices: wg.voices
       , allocation
       , channel: wg.channel
+      , mcvs: wg.mcvs
       , selectors: wg.selectors
       , target: wg.target
       }
@@ -398,27 +423,59 @@ drumTrigVerbs lay grp = case groupNamed lay grp of
 -- The rig as it stands
 -- ---------------------------------------------------------------------------
 
--- | The current FH-2 drum breakout, expressed as a layout. This is the same
--- | configuration `apply-drum-breakout.mjs` applies — slots 0..3, notes
--- | 36/38/42/39, FHX-8GT jacks 1..4, channel 10 — and `drumTrigVerbs` on it
--- | should reproduce that script's verbs exactly.
+-- | The rig as the routing table currently implies it: the FH-2 drum breakout
+-- | AND the polyenv bank.
 -- |
--- | Deliberately small. It is a starting point to edit and a fixture to test
--- | against, not a claim about how the rig should be patched.
+-- | **This layout does not validate, and that is the point.** polyenv takes MCV
+-- | 0..7 (one envelope per slot, channel = slot + 1) and the drum breakout takes
+-- | MCV 0..3, so four MCVs are wanted twice. They are mutually exclusive on the
+-- | hardware — publishing a polyenv silently takes the drum gates away — and that
+-- | is exactly the fact that cost a morning. The outputs do not collide (main
+-- | panel versus FHX-8GT), so nothing jack-indexed can see it; `validate` can.
+-- |
+-- | Describing only one of them would make the layout validate and make it a
+-- | worse description of what the routing table is asking for.
 defaultLayout :: Layout
 defaultLayout =
-  { name: "drum breakout"
-  , groups:
-      [ { name: "kit"
-        , voices: 4
-        , allocation: Indexed
-        , channel: 10
-        , selectors: [ 36, 38, 42, 39 ]   -- BD SD HH CP, matching canonKit
-        , target: Just "QuadDrum"
-        }
-      ]
-  , outputs: Map.fromFoldable
-      (map (\i -> Tuple { device: "fh2", bank: "gt0", slot: i }
-                        { group: "kit", voice: i, role: "gate" })
-           (0 .. 3))
+  { name: "drum breakout + polyenv"
+  , groups: [ kit ] <> map envGroup (0 .. 7)
+  , outputs: Map.fromFoldable (kitOuts <> envOuts)
+  }
+  where
+  kit =
+    { name: "kit"
+    , voices: 4
+    , allocation: Indexed
+    , channel: 10
+    , mcvs: 0 .. 3
+    , selectors: [ 36, 38, 42, 39 ]   -- BD SD HH CP, matching canonKit
+    , target: Just "QuadDrum"
+    }
+  kitOuts = map (\i -> Tuple { device: "fh2", bank: "gt0", slot: i }
+                              { group: "kit", voice: i, role: "gate" })
+                (0 .. 3)
+
+  -- One envelope-only, single-voice MCV each, listening on channel = slot + 1,
+  -- output at panel jack `base + 1`. Straight from `FH2.Modes.PolyEnv`'s header;
+  -- `Mono` because there is one voice and nothing to allocate.
+  envGroup i =
+    { name: "env" <> show (i + 1)
+    , voices: 1
+    , allocation: Mono
+    , channel: i + 1
+    , mcvs: [ i ]
+    , selectors: []
+    , target: Nothing
+    }
+  envOuts = map (\i -> Tuple { device: "fh2", bank: "main", slot: i }
+                              { group: "env" <> show (i + 1), voice: 0, role: "env" })
+                (0 .. 7)
+
+-- | Just the drum breakout — the subset that can actually be applied alongside
+-- | nothing else, and the fixture `drumTrigVerbs` is checked against.
+drumBreakout :: Layout
+drumBreakout = defaultLayout
+  { name = "drum breakout"
+  , groups = filter (\g -> g.name == "kit") defaultLayout.groups
+  , outputs = Map.filter (\a -> a.group == "kit") defaultLayout.outputs
   }
