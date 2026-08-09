@@ -46,6 +46,7 @@ import Binnacle.Transport as Transport
 import Triggerfish.Odonus.Grid.Widgets (engrave, style, svgAttr, svgEl)
 import Triggerfish.Ui.Euclid (Nudge(..))
 import Triggerfish.Ui.Euclid as Euclid
+import Triggerfish.Selene.EnvDraw as Draw
 import Triggerfish.Selene.EnvLibrary as Lib
 import Triggerfish.Selene.Model as M
 import Triggerfish.Selene.Source as Source
@@ -174,6 +175,7 @@ data Action
   | ApplyToRig                -- push every modular destination to its daemon
   | SeleneReply String        -- a raw `selene-reply …` frame from the rig
   | PublishRack               -- publish the active rack to the Amphora store (selene-rack)
+  | PickStarter Int           -- apply library shape i to the selected envelope slot
 
 -- | The upward message to the shell: Selene's identity-chip view (or `Nothing` when
 -- | nothing is parked), for the six-machine status board. Raised from the Frame loop
@@ -460,6 +462,15 @@ handleAction = case _ of
                   H.modify_ _ { envParam = cycleParam (dir == NUp) s.envParam }
                 _, _ ->
                   editDest dest (onBank (nudgeSlot s.envParam dir (KE.shiftKey ev) slot))
+  -- Click a shape on the library wall: it becomes the selected slot. Keeps
+  -- `envPick` in step so `[` / `]` carry on from where you clicked rather than
+  -- jumping back to wherever the cursor had drifted to.
+  PickStarter i -> do
+    st <- H.get
+    for_ st.selected \{ dest, slot } ->
+      for_ (Lib.starterAt i) \lib -> do
+        H.modify_ _ { envPick = i }
+        editDest dest (onBank (setEnvSlot slot lib.slot))
   SelectRack i -> do
     H.modify_ \s ->
       let doc = fromMaybe "" (map _.doc (s.library !! i))
@@ -816,8 +827,63 @@ rackPanel s =
   panel "SELENE · DESTINATIONS" "flex:1 1 auto;min-width:0"
     ( [ rackBar s, transportStrip s ]
         <> mapWithIndex (destinationRow s.envParam s.selected) s.sel.destinations
+        <> envLibraryWall s
         <> [ addBar, footNote ]
     )
+
+-- | The STARTER WALL: every library shape drawn, shown only while an envelope
+-- | slot is selected.
+-- |
+-- | Small multiples, which is the house idiom (Odonus's parameter-major grids)
+-- | and the thing Zadar's two-encoders-and-an-OLED could never do: an envelope
+-- | is SELF-DESCRIBING, so a wall of drawn curves needs no labels, no category
+-- | names and no legend. You recognise the one you want the way you recognise a
+-- | face. Names are kept underneath only as a handle for talking about them.
+-- |
+-- | Contextual rather than permanent: it is a lot of ink, and it is only ever
+-- | relevant when there is a slot for a pick to land in.
+envLibraryWall :: forall m. State -> Array (H.ComponentHTML Action Slots m)
+envLibraryWall s =
+  case s.selected of
+    Just { dest } | isEnvSlot s dest ->
+      [ HH.div
+          [ style $ "margin-top:14px;padding:12px 12px 10px;border-radius:8px;"
+              <> "background:#00000006;border:1px solid #00000012" ]
+          [ HH.div [ style $ engrave <> ";font-size:9px;opacity:0.55;margin-bottom:9px" ]
+              [ HH.text "STARTER SHAPES \x00b7 CLICK TO APPLY \x00b7 [ ] TO WALK \x00b7 EXTENT AND COLOUR ARE TIME; BAND IS VELOCITY" ]
+          , HH.div [ style "display:flex;flex-wrap:wrap;gap:7px" ]
+              (mapWithIndex (starterCell s) Lib.starters)
+          ]
+      ]
+    _ -> []
+
+starterCell :: forall m. State -> Int -> Lib.Starter -> H.ComponentHTML Action Slots m
+starterCell s i st =
+  HH.div
+    [ HE.onClick \_ -> PickStarter i
+    , HP.title (st.name <> " \x2014 " <> durLabel (Draw.durationMs st.slot))
+    , style $ "width:104px;flex:0 0 auto;padding:4px 4px 2px;border-radius:6px;cursor:pointer;"
+        <> ( if current then "background:#ffffffcc;border:2px solid #1a1a1a;"
+             else "background:#ffffff55;border:1px solid #00000010;padding:5px 5px 3px;" ) ]
+    [ envSvg { w: 96.0, h: 40.0 } st.slot
+    , HH.div
+        [ style $ engrave <> ";font-size:8px;opacity:0.6;text-align:center;letter-spacing:0.06em" ]
+        [ HH.text st.name ]
+    ]
+  where
+  -- Highlighted when the SELECTED slot currently holds exactly this shape, so
+  -- the wall shows where you are, not just where you could go.
+  current = case s.selected of
+    Just { dest, slot } -> case map _.bank (s.sel.destinations !! dest) of
+      Just (M.GEnv xs) -> (xs !! slot) == Just st.slot
+      _ -> false
+    Nothing -> false
+
+-- | Duration in units a player reads, for the hover title.
+durLabel :: Number -> String
+durLabel ms =
+  if ms < 1000.0 then show (round ms) <> "ms"
+  else show (toNumber (round (ms / 100.0)) / 10.0) <> "s"
 
 -- The rack library: named racks (each a saved eDSL doc), the active one brass +
 -- editable. Persists to localStorage; a rack's `doc` is its transferable form.
@@ -1119,44 +1185,63 @@ timeLabel = case _ of
 
 envInner :: forall m. EnvParam -> M.EnvSlot -> Array (H.ComponentHTML Action Slots m)
 envInner ep sl =
-  [ svgEl "svg"
-      [ svgAttr "viewBox" "0 0 100 44", svgAttr "width" "100%", svgAttr "height" "44" ]
-      [ svgEl "polyline"
-          [ svgAttr "points" pts
-          , svgAttr "fill" "none"
-          , svgAttr "stroke" ink
-          , svgAttr "stroke-width" "2"
-          , svgAttr "stroke-linejoin" "round"
-          , svgAttr "stroke-linecap" "round" ] []
-      ]
-  -- The caption carries the four ADSR numbers, then the LIVE parameter and its
-  -- value — without which the letter/arrow scheme is invisible and you would be
-  -- adjusting a field you cannot see. The library name shows only while the
-  -- shape is still exactly a starter; once tweaked it is an unnamed shape that
-  -- began there, and saying otherwise would be a small lie that compounds.
+  [ envSvg { w: 100.0, h: 44.0 } sl
+  -- The caption carries what the drawing cannot: the four ADSR numbers for
+  -- precision, the LIVE parameter and its value (without which the key scheme is
+  -- invisible and you would be adjusting a field you cannot see), and the
+  -- library name — but only while the shape is still exactly a starter. Once
+  -- tweaked it is an unnamed shape that began there, and saying otherwise would
+  -- be a small lie that compounds. The time bucket is NOT repeated here: the
+  -- drawing already carries it twice, as extent and as colour.
   , cellCaption ("a" <> show sl.attack <> " d" <> show sl.decay
                   <> " s" <> show sl.sustain <> " r" <> show sl.release
                   <> "  \x00b7  " <> envParamLabel ep <> " " <> show (paramValue ep sl)
                   <> (case Lib.nameOf sl of
                         Just n -> "  \x00b7  " <> n
-                        Nothing -> "")
-                  <> "  \x00b7  " <> timeLabel sl.timeRange)
+                        Nothing -> ""))
   ]
+
+-- | The one drawing of an envelope, shared by the in-rack slot and the library
+-- | wall. Geometry comes from `EnvDraw`; this only turns points into SVG, so the
+-- | two surfaces cannot drift into disagreeing about what a shape looks like.
+envSvg :: forall m. { w :: Number, h :: Number } -> M.EnvSlot -> H.ComponentHTML Action Slots m
+envSvg box sl =
+  svgEl "svg"
+    [ svgAttr "viewBox" ("0 0 " <> show box.w <> " " <> show box.h)
+    , svgAttr "width" "100%", svgAttr "height" (show box.h) ]
+    ( baselineRule
+        <> band
+        <> [ line fig.hi 2.0 "1" ]
+        <> (if fig.hasBand then [ line fig.lo 1.0 "0.5" ] else []) )
   where
-  -- Widths as fractions of the 100-unit box, leaving the tail for release.
-  f v = toNumber v / 127.0
-  aW = 6.0 + f sl.attack * 34.0
-  dW = 6.0 + f sl.decay * 30.0
-  rW = 6.0 + f sl.release * 24.0
-  sY = 40.0 - f sl.sustain * 36.0        -- svg y is inverted: high sustain = low y
-  holdX = min 94.0 (aW + dW + 12.0)
-  pts = joinWith " "
-    [ "0,40"
-    , show aW <> ",4"
-    , show (aW + dW) <> "," <> show sY
-    , show holdX <> "," <> show sY
-    , show (min 100.0 (holdX + rW)) <> ",40"
-    ]
+  fig = Draw.figure box sl
+  pts ps = joinWith " " (map (\p -> show p.x <> "," <> show p.y) ps)
+  line ps wdt op =
+    svgEl "polyline"
+      [ svgAttr "points" (pts ps)
+      , svgAttr "fill" "none"
+      , svgAttr "stroke" fig.ink
+      , svgAttr "stroke-width" (show wdt)
+      , svgAttr "stroke-opacity" op
+      , svgAttr "stroke-linejoin" "round"
+      , svgAttr "stroke-linecap" "round" ] []
+  -- The velocity band: the same shape at velocity 127 and at 1, filled between.
+  -- Its WIDTH is how much velocity does — a static envelope has none at all.
+  band =
+    if fig.hasBand
+      then [ svgEl "polygon"
+               [ svgAttr "points" (pts fig.band)
+               , svgAttr "fill" fig.ink
+               , svgAttr "fill-opacity" "0.18"
+               , svgAttr "stroke" "none" ] [] ]
+      else []
+  -- Zero volts, drawn faintly, because an inverted envelope goes BELOW it and
+  -- without the rule there is nothing to read "below" against.
+  baselineRule =
+    [ svgEl "line"
+        [ svgAttr "x1" "0", svgAttr "x2" (show box.w)
+        , svgAttr "y1" (show fig.baseline), svgAttr "y2" (show fig.baseline)
+        , svgAttr "stroke" "#00000018", svgAttr "stroke-width" "1" ] [] ]
 
 -- ---------------------------------------------------------------------------
 -- Cell chrome
