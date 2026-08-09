@@ -142,7 +142,13 @@ panel rs =
 
   row r =
     HH.div
-      [ HP.title (outputKey r.output)
+      -- Both numbers, because they disagree by one and each is right in its own
+      -- frame: the row is the JACK, which the FH-2 manual numbers from 1, while
+      -- the address carries the SLOT, which `apply-drumkit` numbers from 0.
+      -- Showing only the address next to a 1-based row number reads as a
+      -- contradiction — and this is the exact off-by-one that already shipped
+      -- once today.
+      [ HP.title ("jack " <> show (r.output.slot + 1) <> "  ·  " <> outputKey r.output)
       , sty $ "display:grid;grid-template-columns:34px 1fr 96px 62px;gap:8px;"
           <> "align-items:baseline;padding:2px 0;font-size:11px;"
           <> (if free r then "opacity:0.45" else "") ]
