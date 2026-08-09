@@ -43,6 +43,7 @@
 -- | Selene's API rather than being faked here.
 module Triggerfish.Selene.Backward
   ( Row
+  , Claimant
   , Traffic
   , rows
   , conflicted
@@ -51,7 +52,7 @@ module Triggerfish.Selene.Backward
 
 import Prelude
 
-import Data.Array (any, filter, length, null, nub, sortWith)
+import Data.Array (any, filter, intersperse, length, null, nub, sortWith)
 import Data.Foldable (sum)
 import Data.Maybe (Maybe(..), isNothing, maybe)
 import Data.String.Common (joinWith)
@@ -66,10 +67,19 @@ import Triggerfish.Selene.Layout as Layout
 
 type Traffic = { hits :: Int, offs :: Int, recent :: Boolean }
 
+-- | One claimant of an output. `on` is the routing table's mute flag, and
+-- | carrying muted claimants here rather than dropping them is deliberate.
+-- |
+-- | **Muting is how a clash gets resolved, so a muted claim has to stay
+-- | visible.** Delete the losing leg and you lose the record of which machine
+-- | wanted the jack, leaving you to hunt for it the next time you wonder why
+-- | that voice is silent. Absence is unreadable; a ghost is readable — it says
+-- | "this was decided" rather than "this never existed".
+type Claimant = { label :: String, kind :: String, on :: Boolean }
+
 type Row =
   { output :: Output
-  , claimedBy :: Array String        -- ^ source labels; more than one is a conflict
-  , kinds :: Array String            -- ^ what kind of signal each claimant sends
+  , claimedBy :: Array Claimant      -- ^ more than one LIVE claimant is a conflict
   , layout :: Maybe Assignment       -- ^ what the rig is configured to receive
   -- | The VCO this jack reaches, by its Amphora `vco-calibrations` label. Only
   -- | meaningful on a `pitch` output, and its absence there is a real finding: an
@@ -87,25 +97,28 @@ rows cfg lay tbl obs = map build (rigOutputs cfg)
   -- Every live leg, paired with the jack it lands on. Legs that are not a jack
   -- at all (MIDI, continuo) simply never match a row, which is right: a channel
   -- is not scarce the way a jack is and does not belong in this table.
+  -- Muted legs are INCLUDED — see `Claimant`. They are excluded from the
+  -- conflict count and from traffic (a muted leg emits nothing), but they still
+  -- render, because they are the memory of a decision.
   placed = do
     route <- tbl
-    leg <- filter _.on route.legs
+    leg <- route.legs
     case RM.outputOf leg.dest of
       Nothing -> []
-      Just o -> [ { output: o, source: route.source, dest: leg.dest } ]
+      Just o -> [ { output: o, source: route.source, dest: leg.dest, on: leg.on } ]
 
   build o =
     let here = filter (\p -> p.output == o) placed
         wires = do
-          p <- here
+          p <- filter _.on here
           case RM.wireOf p.dest of
             Nothing -> []
             Just w -> [ w ]
         seen = filter (\r -> any (\w -> Mon.matches w r) wires) obs
     in
       { output: o
-      , claimedBy: nub (map (\p -> RM.sourceLabel p.source) here)
-      , kinds: nub (map (\p -> RM.destShortLabel p.dest) here)
+      , claimedBy: nub (map (\p ->
+          { label: RM.sourceLabel p.source, kind: RM.destShortLabel p.dest, on: p.on }) here)
       , layout: Layout.assignmentAt lay o
       , vco: do
           a <- Layout.assignmentAt lay o
@@ -122,8 +135,10 @@ rows cfg lay tbl obs = map build (rigOutputs cfg)
 
 -- | Rows wanted by more than one source. Worth showing, not blocking: two
 -- | sources on one jack is usually a mistake and occasionally a deliberate OR.
+-- | Only LIVE claimants contend. A muted one has already lost the argument and
+-- | is being kept as a note-to-self, not as a competitor.
 conflicted :: Array Row -> Array Row
-conflicted = filter (\r -> length r.claimedBy > 1)
+conflicted = filter (\r -> length (filter _.on r.claimedBy) > 1)
 
 -- ---------------------------------------------------------------------------
 -- The view
@@ -189,19 +204,27 @@ panel probs rs =
       , traffic r
       ]
 
-  -- A conflict is the one thing here that must not be quiet.
-  claim r
-    | null r.claimedBy =
-        HH.span [ sty "color:#a79f86;font-size:10px" ] [ HH.text "—" ]
-    | length r.claimedBy > 1 =
-        HH.span [ sty "color:#b0492f;font-weight:600" ]
-          [ HH.text (joinWith "  ·  " r.claimedBy <> "  ⚠") ]
-    | otherwise =
-        HH.span [ sty "color:#3f3c33" ]
-          [ HH.text (joinWith "  ·  " r.claimedBy)
-          , HH.span [ sty "color:#8a8474;font-size:9px" ]
-              [ HH.text ("  " <> joinWith " " r.kinds) ]
-          ]
+  -- A conflict is the one thing here that must not be quiet. A muted claimant is
+  -- struck through and dimmed rather than hidden: it is what remains of a
+  -- decision, and it is the answer to "which machine used to have this?"
+  claim r =
+    let live = filter _.on r.claimedBy
+    in if null r.claimedBy
+      then HH.span [ sty "color:#a79f86;font-size:10px" ] [ HH.text "—" ]
+      else HH.span
+             [ sty (if length live > 1 then "color:#b0492f;font-weight:600" else "color:#3f3c33") ]
+             ( intersperse (HH.span [ sty "color:#a79f86" ] [ HH.text "  ·  " ])
+                 (map one r.claimedBy)
+                 <> (if length live > 1 then [ HH.text "  ⚠" ] else []) )
+
+  one c =
+    HH.span
+      [ sty (if c.on then "" else "opacity:0.4;text-decoration:line-through")
+      , HP.title (if c.on then c.kind else c.kind <> " — muted, so it is not driving this jack") ]
+      [ HH.text c.label
+      , HH.span [ sty "color:#8a8474;font-size:9px;text-decoration:none" ]
+          [ HH.text ("  " <> c.kind) ]
+      ]
 
   -- Declared and observed fail independently, so a claimed jack with no traffic
   -- is said out loud rather than left blank — that is a real and common fault
@@ -231,7 +254,7 @@ panel probs rs =
                      [ HH.text "  uncalibrated" ] ]
     _ -> []
 
-  free r = null r.claimedBy && isNothing r.layout
+  free r = null (filter _.on r.claimedBy) && isNothing r.layout
   mono = "font-family:'SF Mono',Menlo,monospace"
   engrave = "font-family:Georgia,serif;letter-spacing:0.12em;text-transform:uppercase;color:#5a564b"
 
