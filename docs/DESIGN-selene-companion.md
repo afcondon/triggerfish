@@ -169,7 +169,80 @@ layout exactly: *"the gate jack is on the FHX-8GT (jacks 65..128) and the pitch
 jack is on the main panel (1..8)."* The voice abstraction is not being imposed on
 the hardware; it is being read off it.
 
+## Layouts — the Yarns move
+
+> "i like the way Mutable Instruments' Yarns simply has modes for monophonic vs
+> polyphonic, maybe there's something to apply from that?"
+
+**This supersedes the next two sections rather than sitting beside them.** Banks
+and bindings, recipes, and the polyphony field turn out to be one concept seen
+from three sides, and Yarns is what makes that visible.
+
+The thing Yarns gets right is not the mono/poly switch. It is that **you never
+configure a jack.** The hardware is a fixed set of CV/gate pairs, and a *layout*
+says how they are partitioned and what each group means: some number of
+monophonic parts, or one part with N voices and an allocation policy, or a bank
+of independent triggers. You pick a layout; you do not set per-jack properties.
+
+A **layout** is a *total partition* of the rig's outputs into named **voice
+groups**, each carrying:
+
+- a **capability set** — `{gate, pitch}`, `{gate}`, `{gate, pitch, mod}`, …
+- an **allocation mode** — mono, or poly-with-N-voices and a stealing policy
+  (cyclic / lowest / highest / unison, the Yarns vocabulary)
+
+### Why this is better than a `voices` field on `Destination`
+
+**Incoherence becomes unrepresentable.** A `voices :: Int` on a destination
+admits two overlapping voice groups, or a 4-voice group whose stride walks into a
+jack somebody else claimed. A total partition cannot express either. That is a
+much stronger guarantee than a `claims` check reporting the collision afterwards
+— it is the difference between preventing and noticing.
+
+**It names the useful configurations rather than the space.** Nobody wants to
+configure voice-stealing; they want "four mono parts" or "one four-voice part".
+The set of genuinely useful partitions is small — the same finding as the
+envelope library, where curating for coverage beat building a parameter editor.
+
+**A layout IS a recipe.** "QuadDrum as four voices of gate+pitch+mod" is a
+partition of twelve outputs into four voice groups. So the recipe library and the
+layout vocabulary are the same thing, and recipes stay Amphora artefacts with the
+usual promotion idiom.
+
+**It covers all three of Triggerfish's shapes with one vocabulary** — Odonus is
+four mono groups, Vetula is one poly group, Balistes is a trigger bank. Yarns has
+a mode for each because those are the three things a MIDI-to-CV box is ever asked
+to do.
+
+### The compile target already exists
+
+`apply-drumkit` takes a list of voices with `gateBank`/`gateSlot` and
+`pitchBank`/`pitchSlot` and configures the MCVs accordingly. **A Selene layout is
+an `apply-drumkit` envelope in editable form.** So layouts need no new backend —
+and this is the sharpest argument yet for device configuration living in Selene,
+because a layout that cannot be pushed as SysEx is just a drawing.
+
+### Where we depart from Yarns
+
+Its layouts are a closed enum burned into firmware, because it has four pairs and
+a two-character display. **Ours must be user-definable**, since the rack changes
+whenever a module is bought. So take the concept — a named, total partition into
+voice groups — and not the fixed list. The same relationship Balistes has to
+Grids and Odonus has to René: steal the control model, reimplement the mechanism.
+
+### What the two sections below become
+
+They are kept because their *reasoning* still holds, but read them as history:
+
+- **Banks and bindings** — a bank of voices is a layout; a binding is assigning a
+  source to a voice group. The `PerLane`/`Shared` distinction dissolves, because
+  a trigger bank and a poly group are just two allocation modes.
+- **The `resolve` discipline survives unchanged** and matters more: layouts are
+  now the compression, and nothing downstream may know they exist.
+
 ## Banks and bindings — the bulk-routing problem
+
+*(Superseded by Layouts above; kept for the reasoning.)*
 
 > "how tedious it would be to change the routing of all 16 channels of Balistes
 > from MIDI to FH2… whatever we choose should be hardware independent (if user
@@ -351,6 +424,8 @@ present-tense bug in a shipped machine rather than a future requirement.** Desig
 it in before recipes become stored artefacts, or the migration is data as well as
 code.
 
+**The answer is layouts, not a field** — see "Layouts — the Yarns move" below.
+
 Note also that Vetula wears two hats here, and they should not be conflated: it
 is a **polyphonic source** (it emits chords) *and* a **supplier of harmonic
 context** (other machines read its key and chord). Only the first needs voice
@@ -477,7 +552,10 @@ ever happens.
 5. **Promote labels to references**, once fifteen or twenty exist and their real
    shape is visible. The backward-view doc's own warning applies to itself here:
    design the encoding against a real populated table, not a mock.
-6. **Banks and bindings**, then recipes as Amphora artefacts.
+6. **Layouts** — a total partition of the rig's outputs into voice groups, with
+   allocation modes. This is the polyphony fix, the bulk-routing fix and the
+   recipe format all at once, and it compiles to an `apply-drumkit` envelope.
+   Recipes are then just named layouts in Amphora.
 7. **Faceplates**, whenever. Pure reference data, zero coupling, and the biggest
    single payoff for having a whole window instead of a modal.
 
@@ -501,9 +579,14 @@ ever happens.
   silently overrides it.
 - **Faceplate scans are the fun part and the least valuable.** They are also the
   easiest to spend a weekend on. Sequence them last on purpose.
-- **Polyphony is a `Destination` change.** Retrofitting `voices`/allocation after
-  recipes are artefacts in Amphora means migrating stored data. Design it in
-  before step 6 even if nothing uses it yet.
+- **Polyphony changes the shape of the table, not just a field.** Once layouts
+  are the unit, retrofitting them after recipes are artefacts in Amphora means
+  migrating stored data. Settle the layout representation before anything is
+  published to the library, even if nothing uses allocation modes yet.
+- **A layout must stay a TOTAL partition.** The guarantee is what makes
+  overlapping voice groups unrepresentable; the moment a jack can belong to two
+  groups, or to none while still being addressable, it degrades to a `voices`
+  field with extra steps.
 - **Multi-machine is a claim system, and claim systems fail closed badly.** If
   Selene is unreachable, a machine that cannot confirm its claim must still play
   — degrade to "assume I own what I owned last time", never to silence. The
