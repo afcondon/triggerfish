@@ -331,14 +331,30 @@ A Tidal editor is the sharpest available test, because Triggerfish's fixed
 machines hide assumptions it breaks immediately. Five things fall out, four of
 them real gaps in the model as designed above.
 
-**1. Polyphony and voice allocation.** Odonus heads are monophonic by
-construction — one cursor, one note. A Tidal `d1` playing a chord is not. So a
-destination must be able to say *"I am an N-voice group; allocate across me"*,
-and `Destination` has no field for it. The hardware already does: `McvSpec`
-carries `voices :: Int` and `stride :: Int`, so one FH-2 MCV can voice-steal
-across a run of outputs. **This is the biggest thing a Tidal editor needs that
-Triggerfish never asks for, and it is much cheaper to design in now than to
-retrofit once recipes exist.**
+**1. Polyphony and voice allocation — and this one is not hypothetical.** Odonus
+heads are monophonic by construction (one cursor, one note), which is why the
+gap has stayed invisible. But **Vetula plays chords**, and Vetula ships today.
+The reason it has never bitten is that its default leg is
+`DMidi { port: "IAC", channel: 5 }` — and on MIDI, polyphony is free. A channel
+carries a chord without anyone having to think about it.
+
+**The gap appears exactly at the CV boundary, which is where Selene lives.** The
+moment a Vetula voice is pointed at the modular, something has to decide which
+of N jacks each note of the chord takes, and `Destination` has no way to express
+that a group of outputs is one polyphonic destination. A Tidal `d1` playing a
+chord is the same problem arriving from a different direction.
+
+The hardware is ready and we are not: `McvSpec` carries `voices :: Int` and
+`stride :: Int`, so a single FH-2 MCV already voice-steals across a run of
+outputs. So this is a modelling gap, not a rig limitation — **and it is a
+present-tense bug in a shipped machine rather than a future requirement.** Design
+it in before recipes become stored artefacts, or the migration is data as well as
+code.
+
+Note also that Vetula wears two hats here, and they should not be conflated: it
+is a **polyphonic source** (it emits chords) *and* a **supplier of harmonic
+context** (other machines read its key and chord). Only the first needs voice
+allocation; the second is the distribution problem handled below.
 
 **2. The capability vocabulary must be open.** A 303 voice is `{gate, pitch,
 accent, slide}`; Plaits is `{gate, pitch, level, timbre, morph, harmonics}`. So
