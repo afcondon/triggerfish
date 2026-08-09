@@ -114,6 +114,23 @@ verb stops it).
    saved Odonus scene — and if they travel, they are envelope metadata, not part
    of the pattern.
 
+## Where this went
+
+Landed 2026-08-08/09: the FH-2 polyenv path, routed through the unified router
+(`DESIGN-routing.md`), plus a starter library and per-field keyboard editing in
+Selene. Two findings worth carrying forward:
+
+- **polyenv wants `bipolar5v`.** `depth` is an attenuverter (64 = zero, <64
+  inverts), so its rest sits at the CENTRE of the output window — only the
+  bipolar window puts that at 0V. On any unipolar range the envelope pulses on a
+  DC pedestal and never closes. Fixed in `familyDefaultRange`.
+- **5V is the ceiling** for a single MCV, confirmed against the manual: the
+  usable swing is half the window span. Headroom needs either two MCVs summed on
+  one jack (the output stage is a mixer — UNTESTED) or the ES-9.
+
+The control surface beyond this is `DESIGN-envelope-machine.md` — what to take
+from Zadar, Tides and Ceis.
+
 ## Watch for
 
 - **`set-envelope-with-ccs`'s CC block is computed, not configurable** (`70 + 4v`).
