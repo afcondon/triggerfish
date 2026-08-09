@@ -320,6 +320,129 @@ the DAW's transport, so any recorder can follow. That also makes it testable wit
 no DAW at all: the passes are correct if the boundaries land where they should,
 which the monitor can already observe.
 
+## Requirements from the other applications
+
+> "could we make Selene work with something that was very much more traditional
+> TidalCycles? like say we made a super simple Tidal live-coding editor… Clearly
+> we could also make much simpler apps like 'just Grids' or 'a 303 bass clone'
+> too"
+
+A Tidal editor is the sharpest available test, because Triggerfish's fixed
+machines hide assumptions it breaks immediately. Five things fall out, four of
+them real gaps in the model as designed above.
+
+**1. Polyphony and voice allocation.** Odonus heads are monophonic by
+construction — one cursor, one note. A Tidal `d1` playing a chord is not. So a
+destination must be able to say *"I am an N-voice group; allocate across me"*,
+and `Destination` has no field for it. The hardware already does: `McvSpec`
+carries `voices :: Int` and `stride :: Int`, so one FH-2 MCV can voice-steal
+across a run of outputs. **This is the biggest thing a Tidal editor needs that
+Triggerfish never asks for, and it is much cheaper to design in now than to
+retrofit once recipes exist.**
+
+**2. The capability vocabulary must be open.** A 303 voice is `{gate, pitch,
+accent, slide}`; Plaits is `{gate, pitch, level, timbre, morph, harmonics}`. So
+`requires :: Set String`, never a closed `data Capability` — consistent with what
+the four-layer destination family already settled on. The 303 adds a wrinkle
+worth not flattening: *slide* is portamento, a property of how the destination
+**behaves**, not of the note. Some roles are "how", not "what".
+
+**3. Manifests are live, not declared at load.** Tidal's `p "bassline" $ …`
+creates named sources at runtime. So an app republishes as it goes, and the table
+must **tolerate sources that vanish rather than garbage-collecting their
+routing** — the name will come back tomorrow and should find its jack still
+assigned. Half-true already, since `sourceKey` is a wire format and a missing key
+falls back to default.
+
+**4. The contract is JSON, not a PureScript module.** This decides whether Selene
+is reusable or merely Triggerfish's sidecar. A "traditional Tidal editor" might
+be Calypso, or vim plus tidal-cli, or purerl-tidal itself — which emits from
+Erlang on the BEAM, not WebMIDI. If reading the table requires importing
+`Routing.Model`, then "any app" means "any Halogen app". **Selene serves the
+table over HTTP as plain JSON and has no opinion about who emits.**
+
+**5. Inline pattern params select the SOURCE, never the destination.** Tidal can
+express routing in the pattern text — `# orbit 3`, `# midichan 5` — which
+competes directly with an external table. That is the two-truths failure this
+whole effort exists to remove. The rule: `# orbit 3` is an *identity* claim,
+meaning "this event comes from orbit 3", and Selene alone decides where orbit 3
+lands. It preserves single-truth and matches how SuperDirt users already think,
+since an orbit is a bus you route rather than a destination in itself.
+
+### The leverage, stated plainly
+
+"Just Grids" is a manifest of three lanes and nothing else — no FH-2 knowledge,
+no MCV allocation, no rig model. **Selene turns "make a sequencer for my modular"
+from a rig-integration problem into a pattern-generation problem.** A
+single-purpose app becomes a weekend project instead of a subsystem that has to
+learn the hardware. That is a larger argument for the split than any amount of
+tidiness.
+
+### Non-goal: controls to parameters
+
+Selene routes **emissions to physical outputs**. It must refuse to route
+**controls to parameters** — the Twister sending CC 5 to Odonus's spread knob is
+the controller layer, it belongs with the music app, and its lifetime is a
+performance rather than a patch. Letting it in makes Selene "everything about the
+rig", which is unbounded and will eventually swallow the machines it was
+extracted from.
+
+## Decomposition and multi-machine jamming
+
+> "decomposing the Triggerfish app could be very cool given that we have Link via
+> link-spike — one way i could see this working is to have them separate but
+> another would be to have the machines EXCLUSIVE to somebodies computer (just
+> disabling in all the others) making any configuration of live jamming possible
+> tho Vetula harmonic context to a remote app would be a challenge."
+
+Once machines are separable and the rig knowledge lives elsewhere, the machines
+can live on **different computers**, sharing tempo and phase over Ableton Link
+(`link-spike`, UDP 20808). Any allocation of machines to players becomes
+possible.
+
+**Exclusivity is a claim, and claims already exist.** es9-daemon has capability
+and overlap checks with `!` eviction; fh2-config has `PortClaim`;
+`Routing.Model.claims` reports output contention. Machine ownership is the same
+shape one level up, on the **source** side rather than the destination side:
+
+> **the manifest becomes a claim.** An app publishes "I claim `odonus.head.0..3`";
+> Selene grants it, or refuses because another machine holds it. A refused
+> machine renders disabled rather than absent, so everyone can see who has it.
+
+That falls out of machinery already designed rather than being new, which is
+some evidence it is the right framing.
+
+### The Vetula problem, and how to dodge it
+
+Vetula supplies **harmonic context** — key, chord, scale — that other machines
+read when deciding notes. Split across computers, Odonus needs Vetula's context
+*at note time*. That is not cold data, so it cannot ride on Selene, and Link
+carries tempo and phase only, not arbitrary payloads.
+
+**The dodge: distribute the progression, not the chord.** If the harmony is a
+progression on a timeline, every machine can derive the current chord *locally*
+from Link's phase. The cold thing (the progression) is shared through the usual
+channels; the hot thing (which chord is now) becomes a local computation that
+needs no network at all — and is therefore exactly as tight as Link's phase lock,
+which is already good enough to trigger with.
+
+**This is the same trick as the routing table**: move the hot thing to a local
+derivation of a cold thing. It is also the same trick as the pass-list idea
+above, which advances on Link phase rather than on a message.
+
+It does not cover everything. A **live-played** Vetula — someone changing chords
+by hand, ad hoc — is genuinely hot and needs a real-time channel. purerl-tidal's
+live-control bus (ETS-backed, `set-control` → `live "name"`) is the obvious
+carrier, since it already exists and already crosses process boundaries. So:
+
+| harmony mode | distribution |
+|---|---|
+| scheduled progression | derive locally from Link phase — free, no network |
+| live-played | live-control bus, and accept the latency |
+
+Worth designing the scheduled case first: it is free, it covers most jamming, and
+having it working sets the bar the live case has to justify itself against.
+
 ## Sequencing
 
 The ordering matters because the early steps are useful whether or not the split
@@ -362,3 +485,10 @@ ever happens.
   silently overrides it.
 - **Faceplate scans are the fun part and the least valuable.** They are also the
   easiest to spend a weekend on. Sequence them last on purpose.
+- **Polyphony is a `Destination` change.** Retrofitting `voices`/allocation after
+  recipes are artefacts in Amphora means migrating stored data. Design it in
+  before step 6 even if nothing uses it yet.
+- **Multi-machine is a claim system, and claim systems fail closed badly.** If
+  Selene is unreachable, a machine that cannot confirm its claim must still play
+  — degrade to "assume I own what I owned last time", never to silence. The
+  cold-data principle again: stale is fine, absent is not.
