@@ -236,6 +236,13 @@ its claimants.
 
 ## Sequencing
 
+> **Superseded in part — see `DESIGN-selene-companion.md` (2026-08-09).** Step 0
+> below is wrong: Triggerfish has no path to the daemons at all. `device-status`
+> lives on `~/.fh2/control.sock`, a browser cannot open a Unix socket, and the
+> only rig channel here is the BEAM WebSocket on `:3012`. Liveness needs a
+> server-side proxy, which is one of the arguments for extracting Selene as a
+> companion app with its own API. **Build step 1 first**; it needs nothing new.
+
 0. **Device liveness first.** Poll `device-status` on fh2-daemon and the
    equivalent on es9-daemon; grey a dark device's block and downgrade its routes
    from `ok` to unknown. Cheapest item here and it would have saved a confused
