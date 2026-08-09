@@ -16,7 +16,7 @@ module Triggerfish.Selene.Component (component, Output(..)) where
 
 import Prelude
 
-import Data.Array (any, deleteAt, drop, filter, length, mapMaybe, mapWithIndex, modifyAt, null, range, (!!))
+import Data.Array (any, deleteAt, drop, filter, findIndex, length, mapMaybe, mapWithIndex, modifyAt, null, range, (!!))
 import Data.Foldable (for_, foldl, foldr)
 import Data.Tuple (Tuple(..), fst, snd)
 import Web.UIEvent.KeyboardEvent (KeyboardEvent)
@@ -46,6 +46,7 @@ import Binnacle.Transport as Transport
 import Triggerfish.Odonus.Grid.Widgets (engrave, style, svgAttr, svgEl)
 import Triggerfish.Ui.Euclid (Nudge(..))
 import Triggerfish.Ui.Euclid as Euclid
+import Triggerfish.Selene.EnvLibrary as Lib
 import Triggerfish.Selene.Model as M
 import Triggerfish.Selene.Source as Source
 import Triggerfish.Selene.Store as Store
@@ -107,7 +108,51 @@ type State =
   -- or Nothing. Clicking a drawn slot selects it (a black box); arrow keys then
   -- edit it in place. The SOURCE pane stays the read/compare surface.
   , selected :: Maybe Sel
+  -- Which field of an envelope the arrow keys drive. A letter jumps to one
+  -- (`a` `d` `s` `r` `t` `p` `v`); up/down cycle. Held on the component rather
+  -- than per-slot so the choice survives moving between slots — you are usually
+  -- adjusting the SAME parameter across several envelopes.
+  , envParam :: EnvParam
+  -- Cursor into `EnvLibrary.starters`, advanced by `[` / `]`. Stateful rather
+  -- than derived from the slot so that cycling still walks the list once the
+  -- shape has been tweaked away from any library entry.
+  , envPick :: Int
   }
+
+-- | The envelope field the arrows edit. Ordered as the ADSR reading order, then
+-- | the three that shape the whole envelope rather than one stage.
+data EnvParam = EPAttack | EPDecay | EPSustain | EPRelease | EPTime | EPDepth | EPVel
+
+derive instance eqEnvParam :: Eq EnvParam
+
+envParamLabel :: EnvParam -> String
+envParamLabel = case _ of
+  EPAttack -> "attack"
+  EPDecay -> "decay"
+  EPSustain -> "sustain"
+  EPRelease -> "release"
+  EPTime -> "time"
+  EPDepth -> "depth"
+  EPVel -> "vel"
+
+envParamOrder :: Array EnvParam
+envParamOrder = [ EPAttack, EPDecay, EPSustain, EPRelease, EPTime, EPDepth, EPVel ]
+
+-- | The letter that jumps to each parameter. Deliberately plain letters with
+-- | SHIFT as the only modifier anywhere in this scheme: on a Mac, option-a is
+-- | `å`, option-s is `ß`, option-d is `∂`, so an alt-based scheme would fight
+-- | the keyboard and need preventDefault everywhere — the same class of trap as
+-- | `#` being option-3 on a UK layout (see `keyToAction` in the shell).
+envParamForKey :: String -> Maybe EnvParam
+envParamForKey = case _ of
+  "a" -> Just EPAttack
+  "d" -> Just EPDecay
+  "s" -> Just EPSustain
+  "r" -> Just EPRelease
+  "t" -> Just EPTime
+  "p" -> Just EPDepth
+  "v" -> Just EPVel
+  _ -> Nothing
 
 -- | Which drawn slot the direct-manipulation editor is aimed at.
 type Sel = { dest :: Int, slot :: Int }
@@ -150,6 +195,8 @@ component =
           , publishMsg: Nothing
           , presets: [], identity: Nothing, lastChip: Nothing
           , selected: Nothing
+          , envParam: EPDecay
+          , envPick: 0
           }
     , render
     , eval: H.mkEval H.defaultEval
@@ -385,10 +432,34 @@ handleAction = case _ of
   -- keys (typed note/clock entry) are a later increment; ignored for now.
   SlotKeyDown ev -> do
     s <- H.get
-    for_ s.selected \{ dest, slot } ->
-      for_ (dirOf (KE.key ev)) \dir -> do
-        liftEffect (preventDefault (KE.toEvent ev))
-        editDest dest (onBank (nudgeSlot dir (KE.shiftKey ev) slot))
+    let k = KE.key ev
+        lower = Str.toLower k
+    for_ s.selected \{ dest, slot } -> case unit of
+      _
+        -- A letter aims the arrows at one envelope field. Harmless on the other
+        -- kinds, which ignore `envParam` entirely.
+        | Just p <- envParamForKey lower -> do
+            liftEffect (preventDefault (KE.toEvent ev))
+            H.modify_ _ { envParam = p }
+        -- `[` / `]` walk the curated starter library on this slot. The list is
+        -- ordered percussive → sustained → swell → inverted, so flicking through
+        -- it is itself a continuum rather than a bag of presets.
+        | k == "[" || k == "]" -> do
+            liftEffect (preventDefault (KE.toEvent ev))
+            let i = s.envPick + (if k == "]" then 1 else -1)
+            H.modify_ _ { envPick = i }
+            for_ (Lib.starterAt i) \st ->
+              editDest dest (onBank (setEnvSlot slot st.slot))
+        | otherwise ->
+            for_ (dirOf k) \dir -> do
+              liftEffect (preventDefault (KE.toEvent ev))
+              case dir, s.selected of
+                -- Up/down cycle WHICH field the arrows drive, for envelopes only;
+                -- every other kind keeps its existing two-axis nudge.
+                _, _ | isEnvSlot s dest, dir == NUp || dir == NDown ->
+                  H.modify_ _ { envParam = cycleParam (dir == NUp) s.envParam }
+                _, _ ->
+                  editDest dest (onBank (nudgeSlot s.envParam dir (KE.shiftKey ev) slot))
   SelectRack i -> do
     H.modify_ \s ->
       let doc = fromMaybe "" (map _.doc (s.library !! i))
@@ -539,13 +610,32 @@ overAt :: forall a. Int -> (a -> a) -> Array a -> Array a
 overAt j f xs = fromMaybe xs (modifyAt j f xs)
 
 -- | Nudge slot `j` of a bank by one arrow step; the field it moves is per-kind.
-nudgeSlot :: NudgeDir -> Boolean -> Int -> M.GenBank -> M.GenBank
-nudgeSlot dir shift j = case _ of
+nudgeSlot :: EnvParam -> NudgeDir -> Boolean -> Int -> M.GenBank -> M.GenBank
+nudgeSlot ep dir shift j = case _ of
   M.GLfo xs -> M.GLfo (overAt j (nudgeLfo dir shift) xs)
   M.GEuclid xs -> M.GEuclid (overAt j (nudgeEuclid dir shift) xs)
   M.GClock xs -> M.GClock (overAt j (nudgeClock dir shift) xs)
   M.GNote xs -> M.GNote (overAt j (nudgeNote dir shift) xs)
-  M.GEnv xs -> M.GEnv (overAt j (nudgeEnv dir shift) xs)
+  M.GEnv xs -> M.GEnv (overAt j (nudgeEnv ep dir shift) xs)
+
+-- | Replace one slot of an envelope bank outright (library pick).
+setEnvSlot :: Int -> M.EnvSlot -> M.GenBank -> M.GenBank
+setEnvSlot j sl = case _ of
+  M.GEnv xs -> M.GEnv (overAt j (const sl) xs)
+  other -> other
+
+cycleParam :: Boolean -> EnvParam -> EnvParam
+cycleParam up p =
+  let n = length envParamOrder
+      i = fromMaybe 0 (findIndex (_ == p) envParamOrder)
+      j = (((if up then i - 1 else i + 1) `mod` n) + n) `mod` n
+  in fromMaybe p (envParamOrder !! j)
+
+-- | Whether the selected destination's bank is an envelope bank.
+isEnvSlot :: State -> Int -> Boolean
+isEnvSlot s dest = case map _.bank (s.sel.destinations !! dest) of
+  Just (M.GEnv _) -> true
+  _ -> false
 
 -- LFO: ←/→ wavelength (→ stretches the wave = lower Hz, matching the eye),
 -- ↑/↓ amplitude of the active shape. Shift = ×10 step.
@@ -622,18 +712,33 @@ clockRatioLabel sl =
   in if r >= 1.0 then "×" <> show (round r) else "÷" <> show (round (1.0 / r))
 
 -- Note: arrows = ±semitone; SHIFT = ±octave (any direction; ↑/→ up, ↓/← down).
--- Envelope: ←/→ DECAY (how long the shape lasts), ↑/↓ ATTACK (pluck vs swell).
--- Those two axes span the musically useful space; sustain, release, the curve
--- shapes and the depths keep their defaults and are editable from the source
--- pane. Deliberately not four axes on two keys.
-nudgeEnv :: NudgeDir -> Boolean -> M.EnvSlot -> M.EnvSlot
-nudgeEnv dir shift sl = case dir of
-  NRight -> sl { decay = clamp 0 127 (sl.decay + d) }
-  NLeft -> sl { decay = clamp 0 127 (sl.decay - d) }
-  NUp -> sl { attack = clamp 0 127 (sl.attack + d) }
-  NDown -> sl { attack = clamp 0 127 (sl.attack - d) }
+-- | Envelope: ←/→ move the SELECTED field; ↑/↓ change which field that is.
+-- |
+-- | This replaces the old fixed two-axis scheme (←/→ decay, ↑/↓ attack), which
+-- | could only ever reach two of the eleven fields. One axis of adjustment plus
+-- | one axis of selection reaches all of them without spending a key per field,
+-- | and `a`/`d`/`s`/`r`/`t`/`p`/`v` jump straight to the common ones. `a` then
+-- | ←/→ is exactly the old ↑/↓.
+-- |
+-- | `timeRange` steps by 1 because it is a 0..7 bucket index, not a 0..127
+-- | value — a shared step size would make it unusable in one direction and
+-- | pointless in the other.
+nudgeEnv :: EnvParam -> NudgeDir -> Boolean -> M.EnvSlot -> M.EnvSlot
+nudgeEnv ep dir shift sl = case ep of
+  EPAttack -> sl { attack = bump sl.attack }
+  EPDecay -> sl { decay = bump sl.decay }
+  EPSustain -> sl { sustain = bump sl.sustain }
+  EPRelease -> sl { release = bump sl.release }
+  EPDepth -> sl { depth = bump sl.depth }
+  EPVel -> sl { velDepth = bump sl.velDepth }
+  EPTime -> sl { timeRange = clamp 0 7 (sl.timeRange + sign) }
   where
+  sign = case dir of
+    NRight -> 1
+    NUp -> 1
+    _ -> -1
   d = if shift then 16 else 4
+  bump v = clamp 0 127 (v + sign * d)
 
 nudgeNote :: NudgeDir -> Boolean -> M.PresetNoteSlot -> M.PresetNoteSlot
 nudgeNote dir shift sl =
@@ -710,7 +815,7 @@ rackPanel :: forall m. MonadAff m => State -> H.ComponentHTML Action Slots m
 rackPanel s =
   panel "SELENE · DESTINATIONS" "flex:1 1 auto;min-width:0"
     ( [ rackBar s, transportStrip s ]
-        <> mapWithIndex (destinationRow s.selected) s.sel.destinations
+        <> mapWithIndex (destinationRow s.envParam s.selected) s.sel.destinations
         <> [ addBar, footNote ]
     )
 
@@ -843,13 +948,13 @@ footNote =
     [ HH.text "EACH DESTINATION = 8 SIGNALS → 8 JACKS. EDIT THE NUMBERS — AND RE-PATCH / REMOVE BLOCKS — IN THE SOURCE PANE. -- MUTES A SLOT." ]
 
 -- One destination: a target/header strip on the left, eight visualised slots.
-destinationRow :: forall m. MonadAff m => Maybe Sel -> Int -> M.Destination -> H.ComponentHTML Action Slots m
-destinationRow sel i d =
+destinationRow :: forall m. MonadAff m => EnvParam -> Maybe Sel -> Int -> M.Destination -> H.ComponentHTML Action Slots m
+destinationRow ep sel i d =
   HH.div
     [ style $ "display:flex;align-items:stretch;gap:12px;padding:11px 12px;margin-bottom:10px;border-radius:8px;"
         <> "background:#00000008;border:1px solid #00000012" ]
     [ destHeader i d
-    , HH.div [ style (slotWrap d.bank) ] (slotViews i sel d.bank)
+    , HH.div [ style (slotWrap d.bank) ] (slotViews ep i sel d.bank)
     ]
 
 -- | The slot layout: the CV/gate kinds flow eight-across. (POLYTRIG's 4×2
@@ -879,13 +984,13 @@ destHeader i d =
 -- Each slot is drawn inside a focusable cell: clicking selects it (a black box);
 -- arrow keys then nudge it. `slotViews` threads the destination index + current
 -- selection so each cell knows whether it's the selected one and what to fire.
-slotViews :: forall m. Int -> Maybe Sel -> M.GenBank -> Array (H.ComponentHTML Action Slots m)
-slotViews d sel = case _ of
+slotViews :: forall m. EnvParam -> Int -> Maybe Sel -> M.GenBank -> Array (H.ComponentHTML Action Slots m)
+slotViews ep d sel = case _ of
   M.GLfo slots -> mapWithIndex (cellFor d sel 90.0 lfoInner) slots
   M.GEuclid slots -> mapWithIndex (cellFor d sel 70.0 euclidInner) slots
   M.GClock slots -> mapWithIndex (cellFor d sel 58.0 clockInner) slots
   M.GNote slots -> mapWithIndex (cellFor d sel 58.0 noteInner) slots
-  M.GEnv slots -> mapWithIndex (cellFor d sel 90.0 envInner) slots
+  M.GEnv slots -> mapWithIndex (cellFor d sel 90.0 (envInner ep)) slots
 
 -- | Wrap one slot's inner drawing in the focusable, selectable cell.
 cellFor :: forall m a. Int -> Maybe Sel -> Number -> (a -> Array (H.ComponentHTML Action Slots m)) -> Int -> a -> H.ComponentHTML Action Slots m
@@ -986,8 +1091,34 @@ noteInner sl =
 -- | A schematic, not a simulation: A/D/R are drawn as proportions of the cell
 -- | width and S as a height, so the picture tracks the bytes without pretending
 -- | to know the firmware's time buckets.
-envInner :: forall m. M.EnvSlot -> Array (H.ComponentHTML Action Slots m)
-envInner sl =
+-- | The value of the currently-selected field, for the cell caption.
+paramValue :: EnvParam -> M.EnvSlot -> Int
+paramValue ep sl = case ep of
+  EPAttack -> sl.attack
+  EPDecay -> sl.decay
+  EPSustain -> sl.sustain
+  EPRelease -> sl.release
+  EPTime -> sl.timeRange
+  EPDepth -> sl.depth
+  EPVel -> sl.velDepth
+
+-- | The firmware's time bucket in the units a player thinks in. Shown always,
+-- | because it is the single biggest determinant of whether a shape reads as
+-- | snappy: the same a/d/s/r at bucket 0 and bucket 4 are a click and a swell,
+-- | and nothing else on the cell would tell you which one you have.
+timeLabel :: Int -> String
+timeLabel = case _ of
+  0 -> "200ms"
+  1 -> "500ms"
+  2 -> "1s"
+  3 -> "2s"
+  4 -> "5s"
+  5 -> "10s"
+  6 -> "20s"
+  _ -> "50s"
+
+envInner :: forall m. EnvParam -> M.EnvSlot -> Array (H.ComponentHTML Action Slots m)
+envInner ep sl =
   [ svgEl "svg"
       [ svgAttr "viewBox" "0 0 100 44", svgAttr "width" "100%", svgAttr "height" "44" ]
       [ svgEl "polyline"
@@ -998,8 +1129,18 @@ envInner sl =
           , svgAttr "stroke-linejoin" "round"
           , svgAttr "stroke-linecap" "round" ] []
       ]
+  -- The caption carries the four ADSR numbers, then the LIVE parameter and its
+  -- value — without which the letter/arrow scheme is invisible and you would be
+  -- adjusting a field you cannot see. The library name shows only while the
+  -- shape is still exactly a starter; once tweaked it is an unnamed shape that
+  -- began there, and saying otherwise would be a small lie that compounds.
   , cellCaption ("a" <> show sl.attack <> " d" <> show sl.decay
-                  <> " s" <> show sl.sustain <> " r" <> show sl.release)
+                  <> " s" <> show sl.sustain <> " r" <> show sl.release
+                  <> "  \x00b7  " <> envParamLabel ep <> " " <> show (paramValue ep sl)
+                  <> (case Lib.nameOf sl of
+                        Just n -> "  \x00b7  " <> n
+                        Nothing -> "")
+                  <> "  \x00b7  " <> timeLabel sl.timeRange)
   ]
   where
   -- Widths as fractions of the 100-unit box, leaving the tail for release.
