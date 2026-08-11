@@ -42,6 +42,11 @@ import Triggerfish.Amphora (LibItem)
 type Rig =
   { inst :: Instrument
   , voiceBuses :: Array Int
+  , gateBuses :: Array Int
+  -- ^ Per-voice gate buses, same indexing. Required for a `PerVoiceGate`
+  -- instrument and empty for any other, since `Reef.Voices` only emits `Gate`
+  -- for that capability. A `PerVoiceGate` rig with no gate buses is a
+  -- configuration error, not a runtime one — see `saichRig` for the shape.
   , mixBus :: Int
   , tables :: Array (Maybe Table)
   }
@@ -56,6 +61,9 @@ saichRig :: Array (Maybe Table) -> Rig
 saichRig tables =
   { inst: saich
   , voiceBuses: [ 8, 9, 10, 11 ]
+  -- The Saich silences by voice count, not by gate, so it has none. Its
+  -- oscillators cannot be gated at all — that is why the mix CV exists.
+  , gateBuses: []
   , mixBus: 12
   , tables
   }
@@ -98,6 +106,10 @@ emitOne sock rig nowMs e = case e.action of
       Nothing -> pure unit
       Just bus ->
         cvOut sock { bus, value: normalise (voltsFor rig voice note) }
+  Gate voice on ->
+    case index rig.gateBuses voice of
+      Nothing -> pure unit
+      Just bus -> cvOut sock { bus, value: normalise (if on then gateVolts else 0.0) }
   Mix _ volts ->
     let lagSec = max 0.0 (e.atMs - nowMs) / 1000.0
     in cvSlew sock { bus: rig.mixBus, value: normalise volts, lagSec }
@@ -117,6 +129,11 @@ voltsFor rig voice note =
   case fromMaybe Nothing (index rig.tables voice) of
     Just t -> realiseNote t (toNumber note)
     Nothing -> nominalVolts note
+
+-- | Eurorack gates are nominally +5 V; anything above about 2 V reads high on
+-- | every module here, so 5 is the safe convention rather than a measured value.
+gateVolts :: Number
+gateVolts = 5.0
 
 -- | es9-daemon takes −1.0..+1.0 as ±10 V.
 normalise :: Number -> Number
