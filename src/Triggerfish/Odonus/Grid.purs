@@ -29,6 +29,8 @@ import Halogen.HTML.Events as HE
 import Halogen.HTML.Properties as HP
 import Halogen.Subscription as HS
 import Triggerfish.Odonus.Model as M
+import Triggerfish.Poly as Poly
+import Reef.Voices as RV
 import Triggerfish.Odonus.Marbles as Marbles
 import Triggerfish.Odonus.Gen as Gen
 import Triggerfish.Ui.Pointer as Pointer
@@ -95,6 +97,11 @@ component =
         , clockBeat: 0.0, clockBar: 0, anchorCount: 0
         , scenes: [], sceneNameInput: "", publishMsg: Nothing
         , stepDiv: 1, headNote: [ Nothing, Nothing, Nothing, Nothing ]
+        -- No tables yet: fetched from Amphora on Initialize. Until then the
+        -- allocator still works, it just drives uncorrected volts.
+        , polyRig: Poly.saichRig [ Nothing, Nothing, Nothing, Nothing ]
+        , polyVoices: RV.empty RV.saich
+        , polyNote: Just "calibration tables not loaded"
         , swing: 0.0, velHumanize: 12
         , gen: map (\k -> { kind: k, on: false, rate: genDefaultRate k, amt: genDefaultAmt k }) genKinds
         , genSpread: 0.5, genBias: 0.5, genSeed: Marbles.seedFrom 1, genFrozen: false, pending: [], nextModelStep: 0
@@ -378,6 +385,26 @@ dispatch = case _ of
         Right items | not (null items) ->
           H.modify_ \s -> s { scenes = mergeScenesByName s.scenes (map amphoraScene items) }
         _ -> pure unit
+    -- Calibration tables for any poly instrument, likewise in the background and
+    -- likewise non-fatal. Missing tables are LOUD rather than silent: without
+    -- them the four Saich voices differ by up to 16 cents at the same voltage,
+    -- so a note migrating between oscillators shifts pitch — which is precisely
+    -- the artefact voice allocation is meant not to introduce.
+    void $ H.fork do
+      calRes <- liftAff (attempt (Amphora.fetchCollection "vco-calibrations"))
+      case calRes of
+        Left _ ->
+          H.modify_ _ { polyNote = Just "Amphora unreachable — poly voices uncorrected" }
+        Right items -> do
+          let labels = [ "saich-1", "saich-2", "saich-3", "saich-4" ]
+              tables = Poly.tablesFor labels items
+              missing = length (filter isNothing tables)
+          H.modify_ _
+            { polyRig = Poly.saichRig tables
+            , polyNote =
+                if missing == 0 then Nothing
+                else Just (show missing <> " of 4 Saïch tables missing — those voices uncorrected")
+            }
   Step tick -> do
     st <- H.get
     -- Global step divider: the scheduler ticks on a fine 1/16 grid; advance the
@@ -456,6 +483,25 @@ dispatch = case _ of
         liftEffect $ for_ firedV \fv ->
           emitNote st.outs st.routing fv.f.headIdx emitAtMs (gateMsFor fv.f) fv.v
             (prevOf fv.f.headIdx) fv.f
+
+      -- Poly instruments are driven separately from the MIDI fan-out, because
+      -- the allocator is STATEFUL and shared: several heads routed to one Saich
+      -- are competing for the same four oscillators, so they cannot each be
+      -- handled independently the way a MIDI leg can. One pass, one state.
+      when (st.sounding == Local && isNothing st.playing) do
+        for_ st.binnacle \bin -> do
+          let sock = Binnacle.socket bin
+              -- Retire notes whose gate has elapsed FIRST, so a note arriving
+              -- this step can take a voice that just freed up rather than being
+              -- dropped as overflow against a stale picture.
+              expired = RV.expireAt emitAtMs st.polyVoices
+              polyNotes = filter (\fv -> headGoesPoly st.routing fv.f.headIdx) firedV
+              stepPoly acc fv =
+                let r = RV.noteOn emitAtMs fv.f.pitch (gateMsFor fv.f) acc.voices
+                in { voices: r.voices, emits: acc.emits <> r.emits }
+              played = foldl stepPoly { voices: expired.voices, emits: expired.emits } polyNotes
+          liftEffect $ Poly.emitAll sock st.polyRig emitAtMs played.emits
+          H.modify_ _ { polyVoices = played.voices }
       let
         -- A glide note stays held (its pitch); a gated note auto-ends.
         nextNote f = if f.glide then Just f.pitch else Nothing
@@ -1530,3 +1576,14 @@ render s =
             ]
         Review -> replayPanel s
     ]
+
+-- | Whether this head has a live poly leg. A head can route to MIDI and to a
+-- | poly instrument at once — that is the point of fan-out — so this is a
+-- | filter on the poly pass, not an alternative to the MIDI one.
+headGoesPoly :: RM.Table -> Int -> Boolean
+headGoesPoly tbl h =
+  any isPoly (filter _.on (RM.legsFor tbl (RM.SOdonusHead h)))
+  where
+  isPoly lg = case lg.dest of
+    RM.DPoly _ -> true
+    _ -> false

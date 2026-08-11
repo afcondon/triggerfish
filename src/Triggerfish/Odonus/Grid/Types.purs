@@ -39,6 +39,8 @@ import Halogen.Widgets.Select as Select
 import Web.UIEvent.KeyboardEvent (KeyboardEvent)
 import Reef.Input as RI
 import Triggerfish.Odonus.Model as M
+import Triggerfish.Poly as Poly
+import Reef.Voices as RV
 import Triggerfish.Odonus.Marbles as Marbles
 import Triggerfish.Clips (NoteEvent, MidiClip)
 -- The always-on capture types (logbook / marks / loop regions / replay play-state)
@@ -325,6 +327,14 @@ type State =
   , publishMsg :: Maybe String  -- transient status from a publish-scene-to-Amphora click
   , stepDiv :: Int          -- global clock divider (1=1/16 .. 16=whole note)
   , headNote :: Array (Maybe Int)  -- the held/sounding MIDI note per head (4)
+  -- Voice allocation for any DPoly leg. `polyRig` is where the instrument
+  -- reaches and how to correct its pitch — its tables are fetched from Amphora
+  -- at startup, and are all Nothing until they arrive, which plays at nominal
+  -- 1 V/oct rather than refusing. `polyVoices` is the allocator's live state:
+  -- which oscillator is holding what, and until when.
+  , polyRig :: Poly.Rig
+  , polyVoices :: RV.Voices
+  , polyNote :: Maybe String  -- why poly is degraded, if it is
   , swing :: Number          -- groove: fraction of a step that off-beats lag (0..0.6)
   , velHumanize :: Int       -- velocity jitter range ± (0 = dead-flat)
   , gen :: Array GenSource    -- the randomisation matrix — one source per aspect
