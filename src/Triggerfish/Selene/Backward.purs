@@ -113,9 +113,8 @@ rows cfg lay mans now tbl obs = map build (rigOutputs cfg)
   placed = do
     route <- tbl
     leg <- route.legs
-    case RM.outputOf leg.dest of
-      Nothing -> []
-      Just o -> [ { output: o, source: route.source, dest: leg.dest, on: leg.on } ]
+    o <- RM.outputsOf leg.dest
+    pure { output: o, source: route.source, dest: leg.dest, on: leg.on }
 
   build o =
     let here = filter (\p -> p.output == o) placed

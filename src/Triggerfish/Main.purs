@@ -1647,6 +1647,7 @@ newDest st src = case _ of
   "fh2gate" -> Just (RM.DFh2Gate { note: laneNote, jack: 1 })
   "es9gate" -> Just (RM.DEs9Gate { block: 0, jack: 1 })
   "es9cv" -> Just (RM.DEs9Cv { bus: 1 })
+  "poly-saich" -> Just (RM.DPoly { inst: RM.Saich })
   "continuo" -> Just (RM.DContinuo { channel: 1 })
   _ -> Nothing
   where
@@ -1766,6 +1767,7 @@ channelMapPanel st =
     RM.DFh2Gate _ -> "fh2 gate"
     RM.DEs9Gate _ -> "es9 gate"
     RM.DEs9Cv _ -> "es9 cv"
+    RM.DPoly _ -> "poly"
     RM.DContinuo _ -> "continuo"
 
   -- The editable numbers of a destination, which differ per device because the
@@ -1783,6 +1785,7 @@ channelMapPanel st =
       [ numBox 26 (show d.block) (RtSetField src i "block") "gate block"
       , numBox 26 (show d.jack) (RtSetField src i "jack") "jack 1-8" ]
     RM.DEs9Cv d -> [ numBox 30 (show d.bus) (RtSetField src i "bus") "CV bus" ]
+    RM.DPoly d -> [ HH.span [ HP.class_ (HH.ClassName "rt-fixed") ] [ HH.text (RM.destLabel (RM.DPoly d)) ] ]
     RM.DContinuo d -> [ numBox 30 (show d.channel) (RtSetField src i "channel") "channel 1-16" ]
 
   -- Only ports that EXIST are offerable, so a route can't be typed at a device
@@ -1810,7 +1813,8 @@ channelMapPanel st =
       ( [ HH.option [ HP.value "", HP.selected true ] [ HH.text "+ add" ] ]
           <> map (\(Tuple v l) -> HH.option [ HP.value v ] [ HH.text l ])
                [ Tuple "midi" "MIDI", Tuple "fh2env" "FH-2 envelope", Tuple "fh2gate" "FH-2 gate"
-               , Tuple "es9gate" "ES-9 gate", Tuple "es9cv" "ES-9 CV", Tuple "continuo" "continuo" ] )
+               , Tuple "es9gate" "ES-9 gate", Tuple "es9cv" "ES-9 CV"
+               , Tuple "poly-saich" "Saïch (poly)", Tuple "continuo" "continuo" ] )
 
   -- What the table SPENDS, and anything spent twice. Reported, not enforced:
   -- the daemons own admission (es9-daemon's capability/overlap checks,

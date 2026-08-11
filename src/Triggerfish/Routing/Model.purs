@@ -34,6 +34,9 @@ module Triggerfish.Routing.Model
   , sourceLabel
   , sourceKey
   , Destination(..)
+  , InstrumentId(..)
+  , instrumentLabel
+  , polyJacks
   , destLabel
   , destShortLabel
   , destDevice
@@ -60,7 +63,7 @@ module Triggerfish.Routing.Model
   , conflicts
   , Wire
   , wireOf
-  , outputOf
+  , outputsOf
   , carriesLine
   , fh2Port
   , fh2GateChannel
@@ -72,6 +75,7 @@ import Data.Array (concatMap, filter, find, findIndex, length, mapMaybe, mapWith
 import Data.Maybe (Maybe(..), fromMaybe, isJust, maybe)
 import Data.Tuple (Tuple(..), snd)
 import Data.String (Pattern(..), contains)
+import Data.String.Common (joinWith)
 
 import Triggerfish.Selene.Layout (Output, outputKey)
 
@@ -145,8 +149,44 @@ data Destination
   -- | The `continuo` MIDI port, kept separate from `DMidi` because it is a fixed
   -- | rig fixture rather than a port you pick.
   | DContinuo { channel :: Int }
+  -- | A POLYPHONIC INSTRUMENT, whose voices are allocated at play time.
+  -- |
+  -- | Every other constructor here names a WIRE — this note always goes to that
+  -- | channel, that bus, that jack. A shared-output instrument cannot be said
+  -- | that way: on a Saïch, which of four oscillators sounds a note depends on
+  -- | which are already busy, so the destination is the instrument and the
+  -- | allocator picks the wire. `Reef.Voices` holds that decision; the jacks it
+  -- | picks between are `polyJacks`.
+  -- |
+  -- | `DEs9Cv` is the degenerate case of this — a one-voice instrument with no
+  -- | way to silence itself is exactly a plain CV bus — and the two are worth
+  -- | collapsing eventually, but not in the change that introduces this one.
+  | DPoly { inst :: InstrumentId }
 
 derive instance eqDestination :: Eq Destination
+
+-- | A polyphonic instrument the rig knows how to drive. An ADT rather than a
+-- | string so a typo is a build error instead of a route that silently never
+-- | sounds.
+data InstrumentId = Saich
+
+derive instance eqInstrumentId :: Eq InstrumentId
+
+instrumentLabel :: InstrumentId -> String
+instrumentLabel = case _ of
+  Saich -> "Saïch"
+
+-- | Which es9-daemon buses an instrument occupies: one per voice, plus the one
+-- | that controls how many are audible.
+-- |
+-- | Lives here rather than beside the driving code because it is ROUTING — what
+-- | is patched where — and because the claims report has to know an instrument
+-- | speaks for five jacks, not one.
+polyJacks :: InstrumentId -> { voiceBuses :: Array Int, mixBus :: Int }
+polyJacks = case _ of
+  -- Patched 2026-08-11: voices on ES-9 panel jacks 1-4, mix CV on jack 5.
+  -- es9-daemon bus = panel jack + 7.
+  Saich -> { voiceBuses: [ 8, 9, 10, 11 ], mixBus: 12 }
 
 -- | The physical thing a destination lands on. Capacity is per-device, so this
 -- | is what `claims` groups by.
@@ -169,6 +209,7 @@ destDevice = case _ of
   DEs9Gate _ -> DevEs9
   DEs9Cv _ -> DevEs9
   DContinuo _ -> DevContinuo
+  DPoly _ -> DevEs9
 
 destLabel :: Destination -> String
 destLabel = case _ of
@@ -177,6 +218,11 @@ destLabel = case _ of
   DFh2Gate d -> "FH-2 gate → FHX-8GT jack " <> show d.jack <> " (note " <> show d.note <> ")"
   DEs9Gate d -> "ES-9 GT " <> show d.block <> " jack " <> show d.jack
   DEs9Cv d -> "ES-9 CV bus " <> show d.bus
+  DPoly d ->
+    let js = polyJacks d.inst
+    in instrumentLabel d.inst <> " (" <> show (length js.voiceBuses)
+         <> " voices, ES-9 buses " <> joinWith "/" (map show js.voiceBuses)
+         <> ", mix " <> show js.mixBus <> ")"
   DContinuo d -> "continuo ch " <> show d.channel
 
 -- | For the table cells, where the column already says which machine it is.
@@ -187,6 +233,7 @@ destShortLabel = case _ of
   DFh2Gate d -> "8gt " <> show d.jack
   DEs9Gate d -> "GT" <> show d.block <> "/" <> show d.jack
   DEs9Cv d -> "cv " <> show d.bus
+  DPoly d -> instrumentLabel d.inst
   DContinuo d -> "cont " <> show d.channel
 
 -- ---------------------------------------------------------------------------
@@ -304,6 +351,10 @@ setDestField field v = case _ of
   DContinuo d -> case field of
     "channel" -> DContinuo d { channel = clamp 1 16 v }
     _ -> DContinuo d
+  -- A polyphonic instrument has no numeric field to nudge: WHICH jack a note
+  -- reaches is the allocator's decision, and the set it chooses between is a
+  -- property of how the module is patched, not of this route.
+  DPoly d -> DPoly d
 
 -- ---------------------------------------------------------------------------
 -- Reachability — can this leg actually emit, right now?
@@ -341,6 +392,9 @@ reachOf ports = case _ of
   -- browser cannot speak. Solo mode reaches them only via the rig WS.
   DEs9Gate _ -> if ports.rigUp then Reachable else NeedsRig
   DEs9Cv _ -> if ports.rigUp then Reachable else NeedsRig
+  -- Same route as any other ES-9 CV: the allocator runs in the browser, but the
+  -- voltages it decides on still travel over the rig WS to es9-daemon.
+  DPoly _ -> if ports.rigUp then Reachable else NeedsRig
   DContinuo _ -> portReach "continuo"
   where
   -- Substring, matching `Binnacle.Midi.findOutput`'s `indexOf` semantics, so the
@@ -420,6 +474,11 @@ carriesLine = case _ of
   DFh2Gate _ -> false
   DEs9Gate _ -> false
   DEs9Cv _ -> true      -- a pitch CV bus is a line; glide is exactly what it wants
+  -- Also a line: its voices are pitched and legato within a voice is meaningful.
+  -- The subtlety is that a note MIGRATING between voices must not glide — the
+  -- arriving oscillator would audibly slide in from whatever it held before — so
+  -- `Triggerfish.Poly` emits migration pitches un-slewed regardless of this.
+  DPoly _ -> true
 
 wireOf :: Destination -> Maybe Wire
 wireOf = case _ of
@@ -432,6 +491,9 @@ wireOf = case _ of
   DContinuo d -> Just { port: "continuo", channel: d.channel, noteOverride: Nothing }
   DEs9Gate _ -> Nothing
   DEs9Cv _ -> Nothing
+  -- Not a MIDI wire, and not one wire at all: the allocator chooses among
+  -- several per note. `Triggerfish.Poly` drives it instead.
+  DPoly _ -> Nothing
 
 -- ---------------------------------------------------------------------------
 -- Claims — what is spoken for, and by whom
@@ -451,24 +513,34 @@ type Claim = { device :: Device, slot :: String, by :: Array Source }
 -- | Note the two FH-2 kinds go to DIFFERENT banks — an envelope to the FH-2's own
 -- | panel, a trigger out the FHX-8GT — which is the distinction that was collapsed
 -- | and had to be fixed on the rack.
-outputOf :: Destination -> Maybe Output
-outputOf = case _ of
-  DFh2Env d -> Just { device: "fh2", bank: "main", slot: d.slot - 1 }
-  DFh2Gate d -> Just { device: "fh2", bank: "gt0", slot: d.jack - 1 }
-  DEs9Gate d -> Just { device: "es9", bank: "gt" <> show d.block, slot: d.jack - 1 }
-  -- es9-daemon's `/cv <bus>`: buses 8..15 ARE the ES-9's eight panel jacks, so
-  -- bus 8 is panel jack 1. Confirmed twice — `reference_es9_channel_mapping` and
-  -- DeepStar's CALIBRATION.md bus map ("bus 8 drives the Tona on ES-9 output 1"),
-  -- and used live by `reef_voice`'s odonus_cv routes (pitch_bus 8 = out 1).
-  --
-  -- Anything outside 8..15 is an expander bus whose map we have not established;
-  -- it gets its own bank name rather than being folded into the panel, so a wrong
-  -- guess shows up as an unknown bank instead of silently colliding with jack 1.
-  DEs9Cv d
-    | d.bus >= 8 && d.bus <= 15 -> Just { device: "es9", bank: "main", slot: d.bus - 8 }
-    | otherwise -> Just { device: "es9", bank: "cv?", slot: d.bus }
-  DMidi _ -> Nothing
-  DContinuo _ -> Nothing
+outputsOf :: Destination -> Array Output
+outputsOf = case _ of
+  DFh2Env d -> [ { device: "fh2", bank: "main", slot: d.slot - 1 } ]
+  DFh2Gate d -> [ { device: "fh2", bank: "gt0", slot: d.jack - 1 } ]
+  DEs9Gate d -> [ { device: "es9", bank: "gt" <> show d.block, slot: d.jack - 1 } ]
+  DEs9Cv d -> [ es9CvOutput d.bus ]
+  -- A polyphonic instrument spends EVERY jack it can allocate onto, plus the one
+  -- that decides how many are audible. Reporting only one would under-report the
+  -- spend, and the failure that hides is the quiet one: something else claiming
+  -- voice 3's bus while the allocator still believes it owns it.
+  DPoly d ->
+    let js = polyJacks d.inst
+    in map es9CvOutput (snoc js.voiceBuses js.mixBus)
+  DMidi _ -> []
+  DContinuo _ -> []
+
+-- | es9-daemon's `/cv <bus>`: buses 8..15 ARE the ES-9's eight panel jacks, so
+-- | bus 8 is panel jack 1. Confirmed twice — `reference_es9_channel_mapping` and
+-- | DeepStar's CALIBRATION.md bus map ("bus 8 drives the Tona on ES-9 output 1"),
+-- | and used live by `reef_voice`'s odonus_cv routes (pitch_bus 8 = out 1).
+-- |
+-- | Anything outside 8..15 is an expander bus whose map we have not established;
+-- | it gets its own bank name rather than being folded into the panel, so a wrong
+-- | guess shows up as an unknown bank instead of silently colliding with jack 1.
+es9CvOutput :: Int -> Output
+es9CvOutput bus
+  | bus >= 8 && bus <= 15 = { device: "es9", bank: "main", slot: bus - 8 }
+  | otherwise = { device: "es9", bank: "cv?", slot: bus }
 
 
 -- | Every hardware slot the table spends, grouped so the same slot claimed twice
@@ -513,14 +585,14 @@ claims tbl = map collect (nub (map _.slot spent))
     DFh2Gate d -> [ { device: DevFh2, slot: mcvSlot (d.jack - 1), by: [ src ] } ] <> jack leg
     DEs9Gate _ -> jack leg
     DEs9Cv _ -> jack leg
+    DPoly _ -> jack leg
     DMidi _ -> []
     DContinuo _ -> []
     where
     -- The output half, from the one structured definition, so this and the
     -- backward view cannot drift about where a destination lands.
-    jack lg = case outputOf lg.dest of
-      Nothing -> []
-      Just o -> [ { device: destDevice lg.dest, slot: outputKey o, by: [ src ] } ]
+    jack lg = map (\o -> { device: destDevice lg.dest, slot: outputKey o, by: [ src ] })
+      (outputsOf lg.dest)
 
   -- The MCV a drum trigger uses is `jack - 1` only because the breakout table
   -- happens to pair slot 0..3 with jack 1..4. That table says "EDIT HERE to

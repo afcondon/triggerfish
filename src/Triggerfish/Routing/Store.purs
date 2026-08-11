@@ -29,7 +29,7 @@ import Data.String (Pattern(..), split, joinWith)
 import Data.String as Str
 import Effect (Effect)
 
-import Triggerfish.Routing.Model (Destination(..), Leg, Route, Source(..), Table, sourceKey)
+import Triggerfish.Routing.Model (Destination(..), InstrumentId(..), Leg, Route, Source(..), Table, sourceKey)
 
 -- | The on-disk shape. Sources and destinations are flat strings so that a row
 -- | this build doesn't understand can be dropped individually, rather than
@@ -77,7 +77,21 @@ destStr = case _ of
   DFh2Gate d -> "fh2gate:" <> show d.note <> "|" <> show d.jack
   DEs9Gate d -> "es9gate:" <> show d.block <> "|" <> show d.jack
   DEs9Cv d -> "es9cv:" <> show d.bus
+  -- Only the instrument's NAME is stored. Which jacks it occupies is a fact
+  -- about how the rack is patched, not about this preference, and baking the
+  -- buses in here would let a saved route go on claiming jacks the module no
+  -- longer uses. `Routing.Model.polyJacks` is the one place that knows.
+  DPoly d -> "poly:" <> instKey d.inst
   DContinuo d -> "continuo:" <> show d.channel
+
+instKey :: InstrumentId -> String
+instKey = case _ of
+  Saich -> "saich"
+
+instOf :: String -> Maybe InstrumentId
+instOf = case _ of
+  "saich" -> Just Saich
+  _ -> Nothing
 
 destOf :: String -> Maybe Destination
 destOf s = case Str.indexOf (Pattern ":") s of
@@ -96,6 +110,7 @@ destOf s = case Str.indexOf (Pattern ":") s of
       "fh2gate", [ n, j ] -> (\note jack -> DFh2Gate { note, jack }) <$> inRange 0 127 n <*> inRange 1 8 j
       "es9gate", [ b, j ] -> (\block jack -> DEs9Gate { block, jack }) <$> inRange 0 7 b <*> inRange 1 8 j
       "es9cv", [ n ] -> (\bus -> DEs9Cv { bus }) <$> inRange 1 16 n
+      "poly", [ n ] -> (\inst -> DPoly { inst }) <$> instOf n
       "continuo", [ c ] -> (\channel -> DContinuo { channel }) <$> inRange 1 16 c
       _, _ -> Nothing
   where
