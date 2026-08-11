@@ -87,10 +87,12 @@ destStr = case _ of
 instKey :: InstrumentId -> String
 instKey = case _ of
   Saich -> "saich"
+  Rings -> "rings"
 
 instOf :: String -> Maybe InstrumentId
 instOf = case _ of
   "saich" -> Just Saich
+  "rings" -> Just Rings
   _ -> Nothing
 
 destOf :: String -> Maybe Destination

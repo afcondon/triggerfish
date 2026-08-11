@@ -24,6 +24,7 @@ module Triggerfish.Odonus.Grid.Types
   , TwisterField(..)
   , twisterFieldLabel
   , State
+  , PolyInst
   , Action(..)
   , Slots
   ) where
@@ -286,6 +287,20 @@ twisterFieldLabel = case _ of
   FGlide -> "GLIDE"
   FMacro -> "MACRO"
 
+-- | One polyphonic instrument the rack can drive, and the allocator state that
+-- | belongs to it.
+-- |
+-- | Separate states rather than one, because the instruments do not share
+-- | anything: a note on Rings takes no oscillator away from the Saïch. What IS
+-- | shared is per-instrument — several Odonus heads routed to the same module
+-- | compete for its voices — which is why the state hangs off the instrument
+-- | and not off the route.
+type PolyInst =
+  { inst :: RM.InstrumentId
+  , rig :: Poly.Rig
+  , voices :: RV.Voices
+  }
+
 type State =
   { odo :: M.Odonus
   , sounding :: Sounding     -- the ONE transport value (control-surface MISU refactor):
@@ -327,13 +342,13 @@ type State =
   , publishMsg :: Maybe String  -- transient status from a publish-scene-to-Amphora click
   , stepDiv :: Int          -- global clock divider (1=1/16 .. 16=whole note)
   , headNote :: Array (Maybe Int)  -- the held/sounding MIDI note per head (4)
-  -- Voice allocation for any DPoly leg. `polyRig` is where the instrument
-  -- reaches and how to correct its pitch — its tables are fetched from Amphora
-  -- at startup, and are all Nothing until they arrive, which plays at nominal
-  -- 1 V/oct rather than refusing. `polyVoices` is the allocator's live state:
-  -- which oscillator is holding what, and until when.
-  , polyRig :: Poly.Rig
-  , polyVoices :: RV.Voices
+  -- Voice allocation for any DPoly leg — one entry per instrument the rack can
+  -- drive, because two of them are two independent allocators: a note on Rings
+  -- takes nothing away from the Saïch. `rig` is where the instrument reaches
+  -- and how to correct its pitch (tables fetched from Amphora at startup, all
+  -- Nothing until they arrive, which plays at nominal 1 V/oct rather than
+  -- refusing); `voices` is that allocator's live state.
+  , polys :: Array PolyInst
   , polyNote :: Maybe String  -- why poly is degraded, if it is
   , swing :: Number          -- groove: fraction of a step that off-beats lag (0..0.6)
   , velHumanize :: Int       -- velocity jitter range ± (0 = dead-flat)

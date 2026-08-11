@@ -168,25 +168,34 @@ derive instance eqDestination :: Eq Destination
 -- | A polyphonic instrument the rig knows how to drive. An ADT rather than a
 -- | string so a typo is a build error instead of a route that silently never
 -- | sounds.
-data InstrumentId = Saich
+data InstrumentId = Saich | Rings
 
 derive instance eqInstrumentId :: Eq InstrumentId
 
 instrumentLabel :: InstrumentId -> String
 instrumentLabel = case _ of
   Saich -> "Saïch"
+  Rings -> "Rings"
 
--- | Which es9-daemon buses an instrument occupies: one per voice, plus the one
--- | that controls how many are audible.
+-- | Which es9-daemon buses an instrument occupies: one per voice it exposes,
+-- | plus the single control jack that makes a note audible.
+-- |
+-- | Both shapes here are "n pitch jacks and one control jack", but the control
+-- | jack means opposite things — the Saïch's says how many voices reach the
+-- | output, Rings' says take the pitch on the bus NOW — so `ctrlLabel` carries
+-- | which, for anything that has to name it.
 -- |
 -- | Lives here rather than beside the driving code because it is ROUTING — what
 -- | is patched where — and because the claims report has to know an instrument
 -- | speaks for five jacks, not one.
-polyJacks :: InstrumentId -> { voiceBuses :: Array Int, mixBus :: Int }
+polyJacks :: InstrumentId -> { voiceBuses :: Array Int, ctrlBus :: Int, ctrlLabel :: String }
 polyJacks = case _ of
   -- Patched 2026-08-11: voices on ES-9 panel jacks 1-4, mix CV on jack 5.
   -- es9-daemon bus = panel jack + 7.
-  Saich -> { voiceBuses: [ 8, 9, 10, 11 ], mixBus: 12 }
+  Saich -> { voiceBuses: [ 8, 9, 10, 11 ], ctrlBus: 12, ctrlLabel: "mix" }
+  -- Rings allocates internally, so however many voices it holds it presents ONE
+  -- pitch input — panel jack 6 — and one STRUM, jack 7.
+  Rings -> { voiceBuses: [ 13 ], ctrlBus: 14, ctrlLabel: "strum" }
 
 -- | The physical thing a destination lands on. Capacity is per-device, so this
 -- | is what `claims` groups by.
@@ -224,7 +233,7 @@ destLabel = case _ of
          <> (if d.sortByPitch then " · lowest note on voice 1" else "")
          <> " (" <> show (length js.voiceBuses)
          <> " voices, ES-9 buses " <> joinWith "/" (map show js.voiceBuses)
-         <> ", mix " <> show js.mixBus <> ")"
+         <> ", " <> js.ctrlLabel <> " " <> show js.ctrlBus <> ")"
   DContinuo d -> "continuo ch " <> show d.channel
 
 -- | For the table cells, where the column already says which machine it is.
@@ -527,7 +536,7 @@ outputsOf = case _ of
   -- voice 3's bus while the allocator still believes it owns it.
   DPoly d ->
     let js = polyJacks d.inst
-    in map es9CvOutput (snoc js.voiceBuses js.mixBus)
+    in map es9CvOutput (snoc js.voiceBuses js.ctrlBus)
   DMidi _ -> []
   DContinuo _ -> []
 

@@ -1649,6 +1649,8 @@ newDest st src = case _ of
   "es9cv" -> Just (RM.DEs9Cv { bus: 1 })
   "poly-saich" -> Just (RM.DPoly { inst: RM.Saich, sortByPitch: false })
   "poly-saich-sorted" -> Just (RM.DPoly { inst: RM.Saich, sortByPitch: true })
+  -- No sorted variant: Rings has one pitch bus, so there is no seating to sort.
+  "poly-rings" -> Just (RM.DPoly { inst: RM.Rings, sortByPitch: false })
   "continuo" -> Just (RM.DContinuo { channel: 1 })
   _ -> Nothing
   where
@@ -1817,6 +1819,7 @@ channelMapPanel st =
                , Tuple "es9gate" "ES-9 gate", Tuple "es9cv" "ES-9 CV"
                , Tuple "poly-saich" "Saïch (poly)"
                , Tuple "poly-saich-sorted" "Saïch (poly, bass on voice 1)"
+               , Tuple "poly-rings" "Rings (poly mode)"
                , Tuple "continuo" "continuo" ] )
 
   -- What the table SPENDS, and anything spent twice. Reported, not enforced:

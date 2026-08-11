@@ -1,5 +1,5 @@
--- | Driving a POLYPHONIC MODULAR INSTRUMENT — one whose voices share an output
--- | and a voice-count control — from a stream of notes.
+-- | Driving a POLYPHONIC MODULAR INSTRUMENT — one that sounds several notes
+-- | through a single set of jacks — from a stream of notes.
 -- |
 -- | `Triggerfish.Midi.Routing.Destination` enumerates wires: `ToMidi 3`,
 -- | `ToEs9 8`. That works when a source maps to a fixed destination, and it
@@ -15,6 +15,7 @@
 module Triggerfish.Poly
   ( Rig
   , saichRig
+  , ringsRig
   , tablesFor
   , withOrder
   , emitAll
@@ -24,15 +25,17 @@ import Prelude
 
 import Data.Array (findMap, index)
 import Data.Foldable (traverse_)
-import Data.Int (toNumber)
+import Data.Int (round, toNumber)
 import Data.Maybe (Maybe(..), fromMaybe)
 import Effect (Effect)
-import Binnacle.Output (cvOut, cvSlew)
+import Effect.Timer (setTimeout)
+import Binnacle.Output (cvOut, cvSlew, fireAt)
 import Binnacle.Transport (Socket)
 import Reef.Calibration (Table, realiseNote)
-import Reef.Voices (Action(..), Emit, Instrument, saich)
+import Reef.Voices (Action(..), Emit, Instrument, Silencing(..), rings, saich)
 import Reef.Voices as RV
 import Triggerfish.Amphora (LibItem)
+import Triggerfish.Routing.Model (InstrumentId(..), polyJacks)
 
 -- | Where an instrument's voices actually reach, and how to correct them.
 -- |
@@ -49,7 +52,11 @@ type Rig =
   -- instrument and empty for any other, since `Reef.Voices` only emits `Gate`
   -- for that capability. A `PerVoiceGate` rig with no gate buses is a
   -- configuration error, not a runtime one — see `saichRig` for the shape.
-  , mixBus :: Int
+  , ctrlBus :: Int
+  -- ^ The one jack that makes a note audible, whatever the instrument means by
+  -- that: the Saïch's voice-count CV, Rings' STRUM. Which it is follows from
+  -- `inst.silencing`, so this stays a single field rather than a sum whose
+  -- constructor would have to be kept in step with it.
   , tables :: Array (Maybe Table)
   }
 
@@ -61,20 +68,49 @@ type Rig =
 -- | here — see `tablesFor`.
 saichRig :: Array (Maybe Table) -> Rig
 saichRig tables =
-  { inst: saich
-  , voiceBuses: [ 8, 9, 10, 11 ]
-  -- The Saich silences by voice count, not by gate, so it has none. Its
-  -- oscillators cannot be gated at all — that is why the mix CV exists.
-  , gateBuses: []
-  , mixBus: 12
-  , tables
-  }
+  let js = polyJacks Saich
+  in
+    { inst: saich
+    , voiceBuses: js.voiceBuses
+    -- The Saich silences by voice count, not by gate, so it has none. Its
+    -- oscillators cannot be gated at all — that is why the mix CV exists.
+    , gateBuses: []
+    , ctrlBus: js.ctrlBus
+    , tables
+    }
+
+-- | Rings in polyphonic mode: ONE pitch jack and one STRUM, because it holds its
+-- | own voices and we never address them.
+-- |
+-- | One table, not four, and that is the whole difference calibration makes
+-- | here — the Saïch's four oscillators disagree with EACH OTHER by 16 cents, so
+-- | a migrating note shifts pitch without per-voice correction. Rings has no
+-- | such spread to correct, only its own CV input's error, which every note
+-- | shares.
+ringsRig :: Array (Maybe Table) -> Rig
+ringsRig tables =
+  let js = polyJacks Rings
+  in
+    { inst: rings
+    , voiceBuses: js.voiceBuses
+    , gateBuses: []
+    , ctrlBus: js.ctrlBus
+    , tables
+    }
 
 -- | Set how voices are seated. The allocator is shared by every route into an
 -- | instrument, so this is a property of the instrument in use rather than of
 -- | one route — the caller reconciles the routes and states one answer.
+-- |
+-- | Ignored by an instrument that allocates for itself: it has one bus and its
+-- | voices are not addressable from here, so there is no seating to order.
+-- | Silently, because the request comes from a saved routing rather than from a
+-- | control anyone can see — the picker never offers it — and dropping a leg
+-- | over it would be a worse answer than playing the notes.
 withOrder :: RV.Order -> Rig -> Rig
-withOrder o rig = rig { inst = rig.inst { order = o } }
+withOrder o rig = case rig.inst.silencing of
+  SelfAllocating _ -> rig
+  _ -> rig { inst = rig.inst { order = o } }
 
 -- | Pick each voice's calibration table out of an Amphora `vco-calibrations`
 -- | fetch, by label.
@@ -113,14 +149,43 @@ emitOne sock rig nowMs e = case e.action of
     case index rig.voiceBuses voice of
       Nothing -> pure unit
       Just bus ->
-        cvOut sock { bus, value: normalise (voltsFor rig voice note) }
+        deferBy (e.atMs - nowMs) $
+          cvOut sock { bus, value: normalise (voltsFor rig voice note) }
   Gate voice on ->
     case index rig.gateBuses voice of
       Nothing -> pure unit
       Just bus -> cvOut sock { bus, value: normalise (if on then gateVolts else 0.0) }
   Mix _ volts ->
     let lagSec = max 0.0 (e.atMs - nowMs) / 1000.0
-    in cvSlew sock { bus: rig.mixBus, value: normalise volts, lagSec }
+    in cvSlew sock { bus: rig.ctrlBus, value: normalise volts, lagSec }
+  Trigger _ durMs -> case rig.inst.silencing of
+    -- Deferred to its PITCH's moment, not its own, and given the settle as
+    -- `fire-at`'s delay. That is what keeps the guarantee: the browser's timer
+    -- can be several milliseconds late, and if the trigger were scheduled
+    -- sample-accurately while its pitch waited on `setTimeout`, a late pitch
+    -- would let the trigger sample the PREVIOUS note. Sending both in one tick
+    -- and letting es9-daemon hold the gap makes the jitter common to the pair.
+    --
+    -- Same delay as the pitch's `setTimeout`, registered after it, so it goes
+    -- second — JS fires equal deadlines in registration order.
+    SelfAllocating sa ->
+      deferBy (e.atMs - sa.settleMs - nowMs) $
+        fireAt sock
+          { bus: rig.ctrlBus
+          , value: normalise gateVolts
+          , durMs
+          , delayMs: sa.settleMs
+          }
+    _ -> pure unit
+
+-- | Run an effect `ms` from now, or immediately if that is already past.
+-- |
+-- | A millisecond of slop counts as now: `setTimeout 0` still costs a turn of
+-- | the event loop, and nothing here is improved by taking one.
+deferBy :: Number -> Effect Unit -> Effect Unit
+deferBy ms act
+  | ms <= 1.0 = act
+  | otherwise = void (setTimeout (round ms) act)
 
 -- | Send a batch in order. Order is load-bearing: `Reef.Voices` puts every
 -- | pitch change before the voice-count change that fades a voice out, so that

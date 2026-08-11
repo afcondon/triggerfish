@@ -50,7 +50,7 @@ import Web.HTML.Window as Window
 import Web.UIEvent.KeyboardEvent as KE
 import Web.UIEvent.MouseEvent as ME
 import Triggerfish.Odonus.Grid.Types
-  ( Action(..), GenKind(..), KnobTarget(..), SourceTag(..), Stage(..), stagePath, stageFromPath, RegionEdge(..), PlaySource(..), TwisterField(..), Logbook, NoteEvent, Slots, State, applyTarget, genDefaultAmt, genDefaultRate, genKinds, genLabel
+  ( Action(..), GenKind(..), KnobTarget(..), SourceTag(..), Stage(..), stagePath, stageFromPath, RegionEdge(..), PlaySource(..), TwisterField(..), Logbook, NoteEvent, PolyInst, Slots, State, applyTarget, genDefaultAmt, genDefaultRate, genKinds, genLabel
   , marblesPadId, rateMax, replayTimelineId, setAmt, setRate, targetRange
    )
 import Triggerfish.Scale (scaleTypes)
@@ -99,8 +99,7 @@ component =
         , stepDiv: 1, headNote: [ Nothing, Nothing, Nothing, Nothing ]
         -- No tables yet: fetched from Amphora on Initialize. Until then the
         -- allocator still works, it just drives uncorrected volts.
-        , polyRig: Poly.saichRig [ Nothing, Nothing, Nothing, Nothing ]
-        , polyVoices: RV.empty RV.saich
+        , polys: polyInit []
         , polyNote: Just "calibration tables not loaded"
         , swing: 0.0, velHumanize: 12
         , gen: map (\k -> { kind: k, on: false, rate: genDefaultRate k, amt: genDefaultAmt k }) genKinds
@@ -176,13 +175,16 @@ handleQuery = case _ of
         nowLocal = s == Local
     when (wasLocal && not nowLocal) do
       liftEffect $ silenceHeld st.outs st.routing st.headNote
-      -- And the poly instrument, which `silenceHeld` cannot reach: its notes are
-      -- not MIDI and its oscillators never stop, so a transport that merely
-      -- stops ticking leaves the last chord droning for ever.
+      -- And the poly instruments, which `silenceHeld` cannot reach: their notes
+      -- are not MIDI and the Saïch's oscillators never stop, so a transport that
+      -- merely stops ticking leaves the last chord droning for ever. (Rings
+      -- returns nothing here and rings out on its own decay, which is the
+      -- difference between having a note-off and not.)
       for_ st.binnacle \bin -> do
-        let off = RV.allOff 0.0 st.polyVoices
-        liftEffect $ Poly.emitAll (Binnacle.socket bin) st.polyRig 0.0 off.emits
-        H.modify_ _ { polyVoices = off.voices }
+        let stopped = map (\p -> { p, r: RV.allOff 0.0 p.voices }) st.polys
+        liftEffect $ for_ stopped \s ->
+          Poly.emitAll (Binnacle.socket bin) s.p.rig 0.0 s.r.emits
+        H.modify_ _ { polys = map (\s -> s.p { voices = s.r.voices }) stopped }
     H.modify_ \s' -> s'
       { sounding = s
       , headNote = if wasLocal && not nowLocal then map (const Nothing) s'.headNote else s'.headNote }
@@ -404,14 +406,15 @@ dispatch = case _ of
         Left _ ->
           H.modify_ _ { polyNote = Just "Amphora unreachable — poly voices uncorrected" }
         Right items -> do
-          let labels = [ "saich-1", "saich-2", "saich-3", "saich-4" ]
-              tables = Poly.tablesFor labels items
-              missing = length (filter isNothing tables)
+          let polys = polyInit items
+              missing = concatMap (\p -> filter isNothing p.rig.tables) polys
+              wanted = length (concatMap (\p -> p.rig.tables) polys)
           H.modify_ _
-            { polyRig = Poly.saichRig tables
+            { polys = polys
             , polyNote =
-                if missing == 0 then Nothing
-                else Just (show missing <> " of 4 Saïch tables missing — those voices uncorrected")
+                if null missing then Nothing
+                else Just (show (length missing) <> " of " <> show wanted
+                  <> " poly calibration tables missing — those voices uncorrected")
             }
   Step tick -> do
     -- Note-offs must not wait for the next MODEL step. A gate shorter than a
@@ -422,10 +425,11 @@ dispatch = case _ of
     stTick <- H.get
     when (stTick.sounding == Local && isNothing stTick.playing) do
       for_ stTick.binnacle \bin -> do
-        let r = RV.expireAt tick.firePerfMs stTick.polyVoices
-        unless (null r.emits) do
-          liftEffect $ Poly.emitAll (Binnacle.socket bin) stTick.polyRig tick.firePerfMs r.emits
-          H.modify_ _ { polyVoices = r.voices }
+        let stepped = map (\p -> { p, r: RV.expireAt tick.firePerfMs p.voices }) stTick.polys
+        unless (null (concatMap (\s -> s.r.emits) stepped)) do
+          liftEffect $ for_ stepped \s ->
+            Poly.emitAll (Binnacle.socket bin) s.p.rig tick.firePerfMs s.r.emits
+          H.modify_ _ { polys = map (\s -> s.p { voices = s.r.voices }) stepped }
     st <- H.get
     -- Global step divider: the scheduler ticks on a fine 1/16 grid; advance the
     -- model only every stepDiv ticks, so STEP LENGTH sets what a 1× head plays.
@@ -505,27 +509,20 @@ dispatch = case _ of
             (prevOf fv.f.headIdx) fv.f
 
       -- Poly instruments are driven separately from the MIDI fan-out, because
-      -- the allocator is STATEFUL and shared: several heads routed to one Saich
+      -- an allocator is STATEFUL and shared: several heads routed to one Saich
       -- are competing for the same four oscillators, so they cannot each be
-      -- handled independently the way a MIDI leg can. One pass, one state.
+      -- handled independently the way a MIDI leg can. One pass per INSTRUMENT —
+      -- two instruments share nothing, so they get a state each.
       when (st.sounding == Local && isNothing st.playing) do
         for_ st.binnacle \bin -> do
           let sock = Binnacle.socket bin
-              -- Retire notes whose gate has elapsed FIRST, so a note arriving
-              -- this step can take a voice that just freed up rather than being
-              -- dropped as overflow against a stale picture.
-              -- Re-read the seating policy from the table each step so toggling
-              -- it in the router takes effect without a reload.
-              seated = st.polyVoices
-                { inst = (Poly.withOrder (polyOrder st.routing) st.polyRig).inst }
-              expired = RV.expireAt emitAtMs seated
-              polyNotes = filter (\fv -> headGoesPoly st.routing fv.f.headIdx) firedV
-              stepPoly acc fv =
-                let r = RV.noteOn emitAtMs fv.f.pitch (gateMsFor fv.f) acc.voices
-                in { voices: r.voices, emits: acc.emits <> r.emits }
-              played = foldl stepPoly { voices: expired.voices, emits: expired.emits } polyNotes
-          liftEffect $ Poly.emitAll sock st.polyRig emitAtMs played.emits
-          H.modify_ _ { polyVoices = played.voices }
+              polyNotes = map
+                (\fv -> { headIdx: fv.f.headIdx, pitch: fv.f.pitch, gateMs: gateMsFor fv.f })
+                firedV
+              played = map (playPoly st.routing polyNotes emitAtMs) st.polys
+          liftEffect $ for_ played \p ->
+            Poly.emitAll sock p.poly.rig emitAtMs p.emits
+          H.modify_ _ { polys = map _.poly played }
       let
         -- A glide note stays held (its pitch); a gated note auto-ends.
         nextNote f = if f.glide then Just f.pitch else Nothing
@@ -1601,28 +1598,74 @@ render s =
         Review -> replayPanel s
     ]
 
--- | Whether this head has a live poly leg. A head can route to MIDI and to a
--- | poly instrument at once — that is the point of fan-out — so this is a
--- | filter on the poly pass, not an alternative to the MIDI one.
-headGoesPoly :: RM.Table -> Int -> Boolean
-headGoesPoly tbl h =
-  any isPoly (filter _.on (RM.legsFor tbl (RM.SOdonusHead h)))
+-- | Every polyphonic instrument the rack can drive, with whichever calibration
+-- | tables the Amphora fetch turned up.
+-- |
+-- | The one place that says which instruments exist, which labels correct them,
+-- | and — via `Poly.saichRig` / `Poly.ringsRig` — where they are patched. Called
+-- | with `[]` before the fetch returns, which yields the same instruments
+-- | playing uncorrected rather than no instruments at all.
+polyInit :: Array Amphora.LibItem -> Array PolyInst
+polyInit items =
+  [ { inst: RM.Saich
+    , rig: Poly.saichRig (Poly.tablesFor [ "saich-1", "saich-2", "saich-3", "saich-4" ] items)
+    , voices: RV.empty RV.saich
+    }
+  -- One table, because Rings presents one pitch input however many voices it
+  -- holds. Its correction is its CV input's own error, which every note shares.
+  , { inst: RM.Rings
+    , rig: Poly.ringsRig (Poly.tablesFor [ "rings-1" ] items)
+    , voices: RV.empty RV.rings
+    }
+  ]
+
+-- | Run one step's notes through ONE instrument's allocator.
+-- |
+-- | Retires elapsed notes FIRST, so a note arriving this step can take a voice
+-- | that just freed up rather than being dropped as overflow against a stale
+-- | picture. The seating policy is re-read from the routing table each step, so
+-- | toggling it in the router takes effect without a reload.
+playPoly
+  :: RM.Table
+  -> Array { headIdx :: Int, pitch :: Int, gateMs :: Number }
+  -> Number
+  -> PolyInst
+  -> { poly :: PolyInst, emits :: Array RV.Emit }
+playPoly tbl notes atMs p =
+  let
+    seated = p.voices { inst = (Poly.withOrder (polyOrder tbl p.inst) p.rig).inst }
+    expired = RV.expireAt atMs seated
+    mine = filter (\n -> headGoesPoly tbl p.inst n.headIdx) notes
+    step acc n =
+      let r = RV.noteOn atMs n.pitch n.gateMs acc.voices
+      in { voices: r.voices, emits: acc.emits <> r.emits }
+    played = foldl step { voices: expired.voices, emits: expired.emits } mine
+  in
+    { poly: p { voices = played.voices }, emits: played.emits }
+
+-- | Whether this head has a live leg into THIS instrument. A head can route to
+-- | MIDI and to a poly instrument at once — that is the point of fan-out — so
+-- | this is a filter on the poly pass, not an alternative to the MIDI one, and
+-- | it is per-instrument because two of them allocate independently.
+headGoesPoly :: RM.Table -> RM.InstrumentId -> Int -> Boolean
+headGoesPoly tbl inst h =
+  any isMine (filter _.on (RM.legsFor tbl (RM.SOdonusHead h)))
   where
-  isPoly lg = case lg.dest of
-    RM.DPoly _ -> true
+  isMine lg = case lg.dest of
+    RM.DPoly d -> d.inst == inst
     _ -> false
 
--- | How the shared allocator should seat notes, reconciled across every route
--- | into it.
+-- | How one instrument's allocator should seat notes, reconciled across every
+-- | route into it.
 -- |
 -- | ANY live leg asking for pitch order wins. The allocator has one state that
--- | all routes share, so they cannot each have their own answer — and a
--- | disjunction is the only reconciliation that does not depend on which route
--- | you happen to read first.
-polyOrder :: RM.Table -> RV.Order
-polyOrder tbl =
+-- | all routes into that instrument share, so they cannot each have their own
+-- | answer — and a disjunction is the only reconciliation that does not depend
+-- | on which route you happen to read first.
+polyOrder :: RM.Table -> RM.InstrumentId -> RV.Order
+polyOrder tbl inst =
   if any wants (concatMap _.legs tbl) then RV.ByPitch else RV.Arrival
   where
   wants lg = lg.on && case lg.dest of
-    RM.DPoly d -> d.sortByPitch
+    RM.DPoly d -> d.inst == inst && d.sortByPitch
     _ -> false
