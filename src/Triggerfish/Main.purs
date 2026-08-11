@@ -1647,7 +1647,8 @@ newDest st src = case _ of
   "fh2gate" -> Just (RM.DFh2Gate { note: laneNote, jack: 1 })
   "es9gate" -> Just (RM.DEs9Gate { block: 0, jack: 1 })
   "es9cv" -> Just (RM.DEs9Cv { bus: 1 })
-  "poly-saich" -> Just (RM.DPoly { inst: RM.Saich })
+  "poly-saich" -> Just (RM.DPoly { inst: RM.Saich, sortByPitch: false })
+  "poly-saich-sorted" -> Just (RM.DPoly { inst: RM.Saich, sortByPitch: true })
   "continuo" -> Just (RM.DContinuo { channel: 1 })
   _ -> Nothing
   where
@@ -1814,7 +1815,9 @@ channelMapPanel st =
           <> map (\(Tuple v l) -> HH.option [ HP.value v ] [ HH.text l ])
                [ Tuple "midi" "MIDI", Tuple "fh2env" "FH-2 envelope", Tuple "fh2gate" "FH-2 gate"
                , Tuple "es9gate" "ES-9 gate", Tuple "es9cv" "ES-9 CV"
-               , Tuple "poly-saich" "Saïch (poly)", Tuple "continuo" "continuo" ] )
+               , Tuple "poly-saich" "Saïch (poly)"
+               , Tuple "poly-saich-sorted" "Saïch (poly, bass on voice 1)"
+               , Tuple "continuo" "continuo" ] )
 
   -- What the table SPENDS, and anything spent twice. Reported, not enforced:
   -- the daemons own admission (es9-daemon's capability/overlap checks,

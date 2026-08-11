@@ -16,6 +16,7 @@ module Triggerfish.Poly
   ( Rig
   , saichRig
   , tablesFor
+  , withOrder
   , emitAll
   ) where
 
@@ -30,6 +31,7 @@ import Binnacle.Output (cvOut, cvSlew)
 import Binnacle.Transport (Socket)
 import Reef.Calibration (Table, realiseNote)
 import Reef.Voices (Action(..), Emit, Instrument, saich)
+import Reef.Voices as RV
 import Triggerfish.Amphora (LibItem)
 
 -- | Where an instrument's voices actually reach, and how to correct them.
@@ -67,6 +69,12 @@ saichRig tables =
   , mixBus: 12
   , tables
   }
+
+-- | Set how voices are seated. The allocator is shared by every route into an
+-- | instrument, so this is a property of the instrument in use rather than of
+-- | one route — the caller reconciles the routes and states one answer.
+withOrder :: RV.Order -> Rig -> Rig
+withOrder o rig = rig { inst = rig.inst { order = o } }
 
 -- | Pick each voice's calibration table out of an Amphora `vco-calibrations`
 -- | fetch, by label.

@@ -161,7 +161,7 @@ data Destination
   -- | `DEs9Cv` is the degenerate case of this — a one-voice instrument with no
   -- | way to silence itself is exactly a plain CV bus — and the two are worth
   -- | collapsing eventually, but not in the change that introduces this one.
-  | DPoly { inst :: InstrumentId }
+  | DPoly { inst :: InstrumentId, sortByPitch :: Boolean }
 
 derive instance eqDestination :: Eq Destination
 
@@ -220,7 +220,9 @@ destLabel = case _ of
   DEs9Cv d -> "ES-9 CV bus " <> show d.bus
   DPoly d ->
     let js = polyJacks d.inst
-    in instrumentLabel d.inst <> " (" <> show (length js.voiceBuses)
+    in instrumentLabel d.inst
+         <> (if d.sortByPitch then " · lowest note on voice 1" else "")
+         <> " (" <> show (length js.voiceBuses)
          <> " voices, ES-9 buses " <> joinWith "/" (map show js.voiceBuses)
          <> ", mix " <> show js.mixBus <> ")"
   DContinuo d -> "continuo ch " <> show d.channel
@@ -233,7 +235,7 @@ destShortLabel = case _ of
   DFh2Gate d -> "8gt " <> show d.jack
   DEs9Gate d -> "GT" <> show d.block <> "/" <> show d.jack
   DEs9Cv d -> "cv " <> show d.bus
-  DPoly d -> instrumentLabel d.inst
+  DPoly d -> instrumentLabel d.inst <> (if d.sortByPitch then " ↓" else "")
   DContinuo d -> "cont " <> show d.channel
 
 -- ---------------------------------------------------------------------------

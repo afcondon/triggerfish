@@ -81,7 +81,7 @@ destStr = case _ of
   -- about how the rack is patched, not about this preference, and baking the
   -- buses in here would let a saved route go on claiming jacks the module no
   -- longer uses. `Routing.Model.polyJacks` is the one place that knows.
-  DPoly d -> "poly:" <> instKey d.inst
+  DPoly d -> "poly:" <> instKey d.inst <> "|" <> (if d.sortByPitch then "1" else "0")
   DContinuo d -> "continuo:" <> show d.channel
 
 instKey :: InstrumentId -> String
@@ -110,7 +110,10 @@ destOf s = case Str.indexOf (Pattern ":") s of
       "fh2gate", [ n, j ] -> (\note jack -> DFh2Gate { note, jack }) <$> inRange 0 127 n <*> inRange 1 8 j
       "es9gate", [ b, j ] -> (\block jack -> DEs9Gate { block, jack }) <$> inRange 0 7 b <*> inRange 1 8 j
       "es9cv", [ n ] -> (\bus -> DEs9Cv { bus }) <$> inRange 1 16 n
-      "poly", [ n ] -> (\inst -> DPoly { inst }) <$> instOf n
+      -- The one-part form predates the sort flag; read it as unsorted rather
+      -- than dropping the leg, so an older saved routing still plays.
+      "poly", [ n ] -> (\inst -> DPoly { inst, sortByPitch: false }) <$> instOf n
+      "poly", [ n, f ] -> (\inst -> DPoly { inst, sortByPitch: f == "1" }) <$> instOf n
       "continuo", [ c ] -> (\channel -> DContinuo { channel }) <$> inRange 1 16 c
       _, _ -> Nothing
   where

@@ -514,7 +514,11 @@ dispatch = case _ of
               -- Retire notes whose gate has elapsed FIRST, so a note arriving
               -- this step can take a voice that just freed up rather than being
               -- dropped as overflow against a stale picture.
-              expired = RV.expireAt emitAtMs st.polyVoices
+              -- Re-read the seating policy from the table each step so toggling
+              -- it in the router takes effect without a reload.
+              seated = st.polyVoices
+                { inst = (Poly.withOrder (polyOrder st.routing) st.polyRig).inst }
+              expired = RV.expireAt emitAtMs seated
               polyNotes = filter (\fv -> headGoesPoly st.routing fv.f.headIdx) firedV
               stepPoly acc fv =
                 let r = RV.noteOn emitAtMs fv.f.pitch (gateMsFor fv.f) acc.voices
@@ -1606,4 +1610,19 @@ headGoesPoly tbl h =
   where
   isPoly lg = case lg.dest of
     RM.DPoly _ -> true
+    _ -> false
+
+-- | How the shared allocator should seat notes, reconciled across every route
+-- | into it.
+-- |
+-- | ANY live leg asking for pitch order wins. The allocator has one state that
+-- | all routes share, so they cannot each have their own answer — and a
+-- | disjunction is the only reconciliation that does not depend on which route
+-- | you happen to read first.
+polyOrder :: RM.Table -> RV.Order
+polyOrder tbl =
+  if any wants (concatMap _.legs tbl) then RV.ByPitch else RV.Arrival
+  where
+  wants lg = lg.on && case lg.dest of
+    RM.DPoly d -> d.sortByPitch
     _ -> false
