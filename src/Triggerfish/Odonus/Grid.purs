@@ -174,7 +174,15 @@ handleQuery = case _ of
     st <- H.get
     let wasLocal = st.sounding == Local
         nowLocal = s == Local
-    when (wasLocal && not nowLocal) $ liftEffect $ silenceHeld st.outs st.routing st.headNote
+    when (wasLocal && not nowLocal) do
+      liftEffect $ silenceHeld st.outs st.routing st.headNote
+      -- And the poly instrument, which `silenceHeld` cannot reach: its notes are
+      -- not MIDI and its oscillators never stop, so a transport that merely
+      -- stops ticking leaves the last chord droning for ever.
+      for_ st.binnacle \bin -> do
+        let off = RV.allOff 0.0 st.polyVoices
+        liftEffect $ Poly.emitAll (Binnacle.socket bin) st.polyRig 0.0 off.emits
+        H.modify_ _ { polyVoices = off.voices }
     H.modify_ \s' -> s'
       { sounding = s
       , headNote = if wasLocal && not nowLocal then map (const Nothing) s'.headNote else s'.headNote }
@@ -406,6 +414,18 @@ dispatch = case _ of
                 else Just (show missing <> " of 4 Saïch tables missing — those voices uncorrected")
             }
   Step tick -> do
+    -- Note-offs must not wait for the next MODEL step. A gate shorter than a
+    -- step would otherwise sound until something replaced it, so gate length
+    -- would have no audible effect at all — and with `stepDiv` above 1 the
+    -- error is several beats. Retire on every scheduler tick, the finest grid
+    -- this component sees.
+    stTick <- H.get
+    when (stTick.sounding == Local && isNothing stTick.playing) do
+      for_ stTick.binnacle \bin -> do
+        let r = RV.expireAt tick.firePerfMs stTick.polyVoices
+        unless (null r.emits) do
+          liftEffect $ Poly.emitAll (Binnacle.socket bin) stTick.polyRig tick.firePerfMs r.emits
+          H.modify_ _ { polyVoices = r.voices }
     st <- H.get
     -- Global step divider: the scheduler ticks on a fine 1/16 grid; advance the
     -- model only every stepDiv ticks, so STEP LENGTH sets what a 1× head plays.
