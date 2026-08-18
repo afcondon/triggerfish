@@ -61,6 +61,21 @@ var coreBanks = [
 // and an empty array for one that doesn't, which both satisfies that filter and
 // drops any bank not installed (rather than failing the whole load on it).
 var coreFolders = coreBanks.collect { |b| (sampleDir +/+ b ++ "/").pathMatch }.flatten;
+// --- takes recorded on the guitar (ITAJARA_TAKES_DIR) -------------------------
+// Itajara writes each take as a directory of one WAV per layer, so a take IS a
+// sample bank and its layers ARE the bank's indices: `sound "mytake"` plays
+// layer 0, `n 1` plays layer 1. Nothing had to be invented for that — it falls
+// out of both tools agreeing that a folder of files is a named, indexed set.
+//
+// Which means a take's DIRECTORY NAME is the name you type in a pattern. Name
+// takes accordingly.
+//
+// Loaded in every sample set, including `core`: these are a handful of files
+// the player deliberately made, not a 217-bank library, and a take you recorded
+// two minutes ago being silent because the rig booted `core` would be the least
+// explicable silence on the rig.
+var takesDir = "ITAJARA_TAKES_DIR".getenv ? ("HOME".getenv +/+ ".itajara/takes");
+var takeFolders = (takesDir +/+ "*/").pathMatch;
 
 s.reboot {
 	// Server options (only applied on reboot).
@@ -121,6 +136,16 @@ s.reboot {
 			});
 		};
 		s.sync;
+		// Takes, in every sample set — see takeFolders above. Read properly even
+		// when the library is lazy: doNotReadYet loses the first hit of a sample,
+		// and the first hit of a take you just recorded is the one being listened
+		// for.
+		if(takeFolders.notEmpty, {
+			~dirt.soundLibrary.doNotReadYet = false;
+			("STELLATUS-SUPERDIRT takes = " ++ takeFolders.size ++ " from " ++ takesDir).postln;
+			~dirt.loadSoundFiles(takeFolders);
+			s.sync;
+		});
 		~dirt.start(port, 0 ! 12);        // 12 orbits, all to channel 0
 		SuperDirt.default = ~dirt;
 		("STELLATUS-SUPERDIRT READY on port " ++ port).postln;
