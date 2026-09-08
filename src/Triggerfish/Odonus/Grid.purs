@@ -9,7 +9,7 @@ module Triggerfish.Odonus.Grid (component, Output(..)) where
 
 import Prelude
 
-import Data.Array (any, concatMap, deleteAt, elem, filter, find, findIndex, head, length, mapWithIndex, modifyAt, null, range, replicate, snoc, sort, updateAt, (!!))
+import Data.Array (any, concatMap, deleteAt, elem, filter, find, findIndex, head, length, mapMaybe, mapWithIndex, modifyAt, null, partition, range, replicate, snoc, sort, updateAt, (!!))
 import Data.Foldable (foldl, for_)
 import Data.FoldableWithIndex (forWithIndex_)
 import Data.Int (ceil, floor, round, toNumber)
@@ -42,6 +42,8 @@ import Binnacle.Time as Time
 import Binnacle.Transport as Transport
 import Reef.Input as RI
 import Reef.PitchSet (PitchSet(..))
+import Reef.Rample as Rample
+import Effect.Console as Console
 import Reef.Protocol (encodeSim, encodeTagged)
 import Web.Event.Event (EventType(..), preventDefault)
 import Web.Event.EventTarget (addEventListener, eventListener, removeEventListener)
@@ -100,6 +102,7 @@ component =
         -- No tables yet: fetched from Amphora on Initialize. Until then the
         -- allocator still works, it just drives uncorrected volts.
         , polys: polyInit []
+        , rampleVoices: RV.empty RV.rample
         , polyNote: Just "calibration tables not loaded"
         , swing: 0.0, velHumanize: 12
         , gen: map (\k -> { kind: k, on: false, rate: genDefaultRate k, amt: genDefaultAmt k }) genKinds
@@ -185,6 +188,10 @@ handleQuery = case _ of
         liftEffect $ for_ stopped \s ->
           Poly.emitAll (Binnacle.socket bin) s.p.rig 0.0 s.r.emits
         H.modify_ _ { polys = map (\s -> s.p { voices = s.r.voices }) stopped }
+      -- Nothing to silence — a struck slice rings out on its own — but the
+      -- allocator must forget what it thinks is sounding, or the first notes
+      -- after a restart would steal voices that are long finished.
+      H.modify_ _ { rampleVoices = RV.empty RV.rample }
     H.modify_ \s' -> s'
       { sounding = s
       , headNote = if wasLocal && not nowLocal then map (const Nothing) s'.headNote else s'.headNote }
@@ -523,6 +530,24 @@ dispatch = case _ of
           liftEffect $ for_ played \p ->
             Poly.emitAll sock p.poly.rig emitAtMs p.emits
           H.modify_ _ { polys = map _.poly played }
+
+      -- The Rample as ONE instrument, its four voices allocated. Outside the
+      -- `binnacle` block above because this one needs no ES-9 socket: the
+      -- allocator's decisions leave as MIDI like any other note.
+      when (st.sounding == Local && isNothing st.playing) do
+        for_ (ramplePolyOf st.routing) \cfg -> do
+          let rampleNotes = map
+                (\fv -> { headIdx: fv.f.headIdx, pitch: fv.f.pitch
+                        , gateMs: gateMsFor fv.f, vel: fv.v })
+                firedV
+              rr = playRample cfg st.routing rampleNotes emitAtMs st.rampleVoices
+          liftEffect do
+            emitRample st.outs cfg rr.emits
+            for_ rr.refused \pitch ->
+              Console.warn $ "[rample] dropped note " <> show pitch
+                <> ": outside the card (" <> show cfg.pitchOfSlot0 <> ".."
+                <> show (cfg.pitchOfSlot0 + cfg.slots - 1) <> ")"
+          H.modify_ _ { rampleVoices = rr.voices }
       let
         -- A glide note stays held (its pitch); a gated note auto-ends.
         nextNote f = if f.glide then Just f.pitch else Nothing
@@ -1337,6 +1362,9 @@ emitNote outs tbl headIdx atMs gateMs vel prev f =
   for_ (RO.resolveLegs outs tbl (RM.SOdonusHead headIdx)) \r ->
     case r.wire, r.out of
       Just w, Just o
+        -- Checked BEFORE `carriesLine`, because a Rample is neither a line nor
+        -- an ordinary trigger: its pitch does not travel in the note at all.
+        | Just rp <- w.rample -> rample o (w.channel - 1) rp (atMs + r.leg.offsetMs)
         | RM.carriesLine r.leg.dest -> line o (w.channel - 1) (atMs + r.leg.offsetMs)
         | otherwise -> trigger o (w.channel - 1) (fromMaybe p w.noteOverride) (atMs + r.leg.offsetMs)
       _, _ -> pure unit
@@ -1351,6 +1379,49 @@ emitNote outs tbl headIdx atMs gateMs vel prev f =
   -- per ratchet is a different musical decision from the one the grid recorded.
   trigger o ch note t =
     Midi.scheduleNoteAtMs o { channel: ch, note, velocity: vel, atMs: t, durMs: gateMs }
+  -- A RAMPLE leg: the pitch becomes a start-point CC ahead of the note, and the
+  -- note is only the trigger. `Reef.Rample` owns the arithmetic — the same
+  -- module purerl-tidal's sink calls — so the browser and the BEAM cannot
+  -- disagree about which slice a pitch is.
+  --
+  -- A pitch the card does not hold is DROPPED, not clamped: a silently
+  -- transposed note is harder to notice than a missing one.
+  --
+  -- Unlike an envelope, ratchets ARE subdivided here. Retriggering a sample is
+  -- exactly what a ratchet means on a sample player, and it costs one extra
+  -- note per hit, not one extra CC — the slice does not change between them.
+  -- A tie is honoured for the same reason it is on a line: the player asked for
+  -- the slice to keep ringing.
+  rample o ch rp t =
+    let held = case prev, f.glide of
+          Just q, true | q == p -> true
+          _, _ -> false
+        layer = { velocity: Nothing, slots: rp.slots
+                , pitchOfSlot0: Just rp.pitchOfSlot0, slotPitches: Nothing }
+        rat = if f.ratchet < 1 then 1 else f.ratchet
+        sub' = gateMs / toNumber rat
+    in if held then pure unit
+       else case Rample.slotFor layer p of
+         -- SAID, not swallowed. A pitch the card does not hold is dropped
+         -- rather than transposed, and a drop nobody reports is indistinguishable
+         -- from the module declining to retrigger — which is the exact
+         -- confusion this warning exists to end.
+         Nothing ->
+           Console.warn $ "[rample] v" <> show rp.voice <> " dropped note " <> show p
+             <> ": outside the card (" <> show rp.pitchOfSlot0 <> ".."
+             <> show (rp.pitchOfSlot0 + rp.slots - 1) <> ")"
+         Just slot -> do
+           Midi.sendCCAtMs o
+             { channel: ch
+             , controller: Rample.startCC rp.voice
+             , value: Rample.ccForSlot slot rp.slots
+             , atMs: t - toNumber rp.settleMs
+             }
+           for_ (range 0 (rat - 1)) \k ->
+             Midi.scheduleNoteAtMs o
+               { channel: ch, note: rp.trigger, velocity: vel
+               , atMs: t + toNumber k * sub'
+               , durMs: if rat <= 1 then gateMs else sub' * 0.85 }
   -- A LINE leg: the full legato state machine (tie / slide / gated + ratchet).
   line o ch t =
     let portaOn = do
@@ -1387,7 +1458,14 @@ emitNote outs tbl headIdx atMs gateMs vel prev f =
 noteOffEverywhere :: RO.Outs -> RM.Table -> Int -> Int -> Effect Unit
 noteOffEverywhere outs tbl h n =
   for_ (RO.resolveLegs outs tbl (RM.SOdonusHead h)) \r -> case r.wire, r.out of
-    Just w, Just o -> Midi.noteOffAt o { channel: w.channel - 1, note: n, delayMs: 0.0 }
+    Just w, Just o ->
+      -- A Rample's note is its TRIGGER, never the pitch. Sending the pitch here
+      -- would be a note-off for a note that was never started, and leave the
+      -- trigger that WAS started still held.
+      let note = case w.rample of
+            Just rp -> rp.trigger
+            Nothing -> n
+      in Midi.noteOffAt o { channel: w.channel - 1, note, delayMs: 0.0 }
     _, _ -> pure unit
 
 -- | Note-off every held note (e.g. on Stop) and clear the held-note table.
@@ -1654,6 +1732,122 @@ headGoesPoly tbl inst h =
   isMine lg = case lg.dest of
     RM.DPoly d -> d.inst == inst
     _ -> false
+
+-- ---------------------------------------------------------------------------
+-- The Rample as ONE instrument
+-- ---------------------------------------------------------------------------
+
+-- | The Rample's settle, taken from the profile that measured it rather than
+-- | restated here — 40 ms between the start-point CC and the trigger.
+rampleSettleMs :: Number
+rampleSettleMs = case RV.rample.silencing of
+  RV.PerVoiceStrike ps -> ps.settleMs
+  _ -> 40.0
+
+type RampleCfg =
+  { port :: String
+  , channel :: Int
+  , triggers :: Array Int
+  , slots :: Int
+  , pitchOfSlot0 :: Int
+  }
+
+-- | The Rample-as-instrument route, if the table has a live one.
+-- |
+-- | There is ONE allocator, so there is one configuration: if two legs
+-- | disagreed they could not each be right, and the first live one winning is
+-- | at least a rule. Same reconciliation argument as `polyOrder`.
+ramplePolyOf :: RM.Table -> Maybe RampleCfg
+ramplePolyOf tbl = head (mapMaybe pick (filter _.on (concatMap _.legs tbl)))
+  where
+  pick lg = case lg.dest of
+    RM.DRamplePoly d -> Just d
+    _ -> Nothing
+
+-- | The card's layout as `Reef.Rample` wants it. A chromatic run from
+-- | `pitchOfSlot0`; a card in some other order would carry `slotPitches`.
+rampleLayer :: RampleCfg -> Rample.Layer
+rampleLayer d =
+  { velocity: Nothing, slots: d.slots
+  , pitchOfSlot0: Just d.pitchOfSlot0, slotPitches: Nothing }
+
+-- | Whether this head has a live leg into the Rample-as-instrument. A head can
+-- | route here AND to plain MIDI at once, so this filters the Rample pass
+-- | rather than replacing the MIDI one.
+headGoesRamplePoly :: RM.Table -> Int -> Boolean
+headGoesRamplePoly tbl h =
+  any isMine (filter _.on (RM.legsFor tbl (RM.SOdonusHead h)))
+  where
+  isMine lg = case lg.dest of
+    RM.DRamplePoly _ -> true
+    _ -> false
+
+-- | Hand this step's notes to the allocator and report what it decided.
+-- |
+-- | Notes the card cannot play are refused BEFORE allocation, not after: a
+-- | pitch with no slice must not consume a voice, and it must not be allowed to
+-- | reach the trigger half on its own — a trigger whose start-point CC was
+-- | dropped plays the PREVIOUS slice, which is a wrong note rather than a
+-- | missing one.
+-- |
+-- | `Reef.Voices` emits `Pitch` at the moment it is given and `Trigger` a
+-- | settle later, so the pass runs a settle EARLY to land the trigger on the
+-- | beat. Velocity is carried alongside because `RV.Emit` has no room for it
+-- | and the Rample needs it: velocity is what picks the dynamic layer.
+playRample
+  :: RampleCfg
+  -> RM.Table
+  -> Array { headIdx :: Int, pitch :: Int, gateMs :: Number, vel :: Int }
+  -> Number
+  -> RV.Voices
+  -> { voices :: RV.Voices
+     , emits :: Array { emit :: RV.Emit, vel :: Int, gateMs :: Number }
+     , refused :: Array Int
+     }
+playRample cfg tbl notes atMs v0 =
+  let
+    mine = filter (\n -> headGoesRamplePoly tbl n.headIdx) notes
+    split = partition (\n -> isJust (Rample.slotFor (rampleLayer cfg) n.pitch)) mine
+    -- Emits nothing for a struck instrument: a sample rings out on its own
+    -- envelope, so this only frees slots for allocation.
+    start = atMs - rampleSettleMs
+    -- Expire at the same instant we allocate at, not at `atMs`: freeing a slot
+    -- 40 ms early would let a voice be stolen a beat before it was due.
+    expired = RV.expireAt start v0
+    step acc n =
+      let r = RV.noteOn start n.pitch n.gateMs acc.voices
+      in { voices: r.voices
+         , emits: acc.emits <> map (\e -> { emit: e, vel: n.vel, gateMs: n.gateMs }) r.emits
+         }
+    played = foldl step { voices: expired.voices, emits: [] } split.yes
+  in
+    { voices: played.voices, emits: played.emits, refused: map _.pitch split.no }
+
+-- | Render the allocator's decisions as the two messages a Rample hears.
+emitRample
+  :: RO.Outs -> RampleCfg
+  -> Array { emit :: RV.Emit, vel :: Int, gateMs :: Number }
+  -> Effect Unit
+emitRample outs cfg es = case RO.outFor outs cfg.port of
+  Nothing -> pure unit
+  Just o -> for_ es \x -> case x.emit.action of
+    -- The allocator counts voices from 0; the Rample's panel counts from 1.
+    RV.Pitch i pitch -> case Rample.slotFor (rampleLayer cfg) pitch of
+      Nothing -> pure unit   -- refused upstream; unreachable
+      Just slot -> Midi.sendCCAtMs o
+        { channel: cfg.channel - 1
+        , controller: Rample.startCC (i + 1)
+        , value: Rample.ccForSlot slot cfg.slots
+        , atMs: x.emit.atMs
+        }
+    RV.Trigger i _ -> case cfg.triggers !! i of
+      Nothing -> pure unit
+      Just n -> Midi.scheduleNoteAtMs o
+        { channel: cfg.channel - 1, note: n, velocity: x.vel
+        , atMs: x.emit.atMs, durMs: x.gateMs
+        }
+    -- A struck instrument emits nothing else: no gate to close, no mix to move.
+    _ -> pure unit
 
 -- | How one instrument's allocator should seat notes, reconciled across every
 -- | route into it.

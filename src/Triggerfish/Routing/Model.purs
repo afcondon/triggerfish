@@ -62,6 +62,7 @@ module Triggerfish.Routing.Model
   , claims
   , conflicts
   , Wire
+  , RampleWire
   , wireOf
   , outputsOf
   , carriesLine
@@ -71,7 +72,7 @@ module Triggerfish.Routing.Model
 
 import Prelude
 
-import Data.Array (concatMap, filter, find, findIndex, length, mapMaybe, mapWithIndex, nub, snoc, (!!))
+import Data.Array (concatMap, filter, find, findIndex, length, mapMaybe, mapWithIndex, nub, snoc, updateAt, (!!))
 import Data.Maybe (Maybe(..), fromMaybe, isJust, maybe)
 import Data.Tuple (Tuple(..), snd)
 import Data.String (Pattern(..), contains)
@@ -149,6 +150,55 @@ data Destination
   -- | The `continuo` MIDI port, kept separate from `DMidi` because it is a fixed
   -- | rig fixture rather than a port you pick.
   | DContinuo { channel :: Int }
+  -- | A Squarp Rample voice playing a SLICED card, where a pitch is not a note.
+  -- |
+  -- | Every other MIDI destination here sends the pitch it is handed. This one
+  -- | cannot. A note reaching a Rample selects a voice and a layer, never a
+  -- | pitch, so a melody sent to it as notes arrives as rhythm with the tune
+  -- | thrown away. Pitch on this module is the START POINT — which slice of a
+  -- | concatenated sample to play — so one event becomes two messages in a
+  -- | fixed order: `CC(voice * 10 + 4)` naming the slice, then the trigger note
+  -- | `settleMs` later. That order is load-bearing. A trigger arriving first
+  -- | plays the PREVIOUS slice, which sounds like a wrong note rather than like
+  -- | a fault, and so is the kind of bug you chase in the music instead of in
+  -- | the code.
+  -- |
+  -- | `slots` and `pitchOfSlot0` are facts about the CARD, not about the
+  -- | module: they come from the `_msm/index.json` that `msm kit build` writes
+  -- | when it compiles one. The defaults describe the piano at bank P0
+  -- | (SLICER /64, slice 0 = C2 = 36).
+  -- |
+  -- | Four voices are four legs on ONE port and ONE channel differing only in
+  -- | `voice` — NOT four channels, which is the natural guess and is wrong.
+  | DRample
+      { port :: String
+      , channel :: Int
+      , voice :: Int           -- 1..4
+      , trigger :: Int         -- the SP note that fires this voice
+      , slots :: Int           -- the card's SLICER division
+      , pitchOfSlot0 :: Int    -- MIDI note of slice 0
+      , settleMs :: Int        -- how far AHEAD of the note the CC must land
+      }
+  -- | The WHOLE Rample as one polyphonic instrument, its four voices allocated
+  -- | at play time.
+  -- |
+  -- | `DRample` names a wire — this note always fires that voice. This cannot be
+  -- | said that way, for the same reason `DPoly` cannot: which voice sounds a
+  -- | note depends on which are already ringing. A Rample voice is monophonic
+  -- | and a struck slice rings until something takes the voice back, so ONE
+  -- | voice playing a sustaining instrument cuts every note with the next.
+  -- | Four interchangeable voices ARE the polyphony.
+  -- |
+  -- | `Reef.Voices.rample` holds the decision (round-robin, steal the
+  -- | longest-idle, leave holes) and its measured 40 ms settle; the triggers are
+  -- | the card's `SETTINGS > SPx` notes in voice order.
+  | DRamplePoly
+      { port :: String
+      , channel :: Int
+      , triggers :: Array Int   -- SPx note per voice, voice order
+      , slots :: Int
+      , pitchOfSlot0 :: Int
+      }
   -- | A POLYPHONIC INSTRUMENT, whose voices are allocated at play time.
   -- |
   -- | Every other constructor here names a WIRE — this note always goes to that
@@ -218,6 +268,8 @@ destDevice = case _ of
   DEs9Gate _ -> DevEs9
   DEs9Cv _ -> DevEs9
   DContinuo _ -> DevContinuo
+  DRample d -> DevMidi d.port
+  DRamplePoly d -> DevMidi d.port
   DPoly _ -> DevEs9
 
 destLabel :: Destination -> String
@@ -235,6 +287,15 @@ destLabel = case _ of
          <> " voices, ES-9 buses " <> joinWith "/" (map show js.voiceBuses)
          <> ", " <> js.ctrlLabel <> " " <> show js.ctrlBus <> ")"
   DContinuo d -> "continuo ch " <> show d.channel
+  DRample d ->
+    d.port <> " ch " <> show d.channel <> " · Rample voice " <> show d.voice
+      <> " (note " <> show d.trigger <> ", slice of " <> show d.slots
+      <> " from " <> show d.pitchOfSlot0 <> ", CC " <> show (d.voice * 10 + 4)
+      <> " " <> show d.settleMs <> "ms early)"
+  DRamplePoly d ->
+    d.port <> " ch " <> show d.channel <> " · Rample, 4 voices allocated"
+      <> " (notes " <> joinWith "/" (map show d.triggers)
+      <> ", slice of " <> show d.slots <> " from " <> show d.pitchOfSlot0 <> ")"
 
 -- | For the table cells, where the column already says which machine it is.
 destShortLabel :: Destination -> String
@@ -246,6 +307,8 @@ destShortLabel = case _ of
   DEs9Cv d -> "cv " <> show d.bus
   DPoly d -> instrumentLabel d.inst <> (if d.sortByPitch then " ↓" else "")
   DContinuo d -> "cont " <> show d.channel
+  DRample d -> "ramp v" <> show d.voice
+  DRamplePoly _ -> "Rample x4"
 
 -- ---------------------------------------------------------------------------
 -- The table
@@ -362,6 +425,25 @@ setDestField field v = case _ of
   DContinuo d -> case field of
     "channel" -> DContinuo d { channel = clamp 1 16 v }
     _ -> DContinuo d
+  DRample d -> case field of
+    "channel" -> DRample d { channel = clamp 1 16 v }
+    "voice" -> DRample d { voice = clamp 1 4 v }
+    "trigger" -> DRample d { trigger = clamp 0 127 v }
+    "slots" -> DRample d { slots = clamp 1 128 v }
+    "pitchOfSlot0" -> DRample d { pitchOfSlot0 = clamp 0 127 v }
+    "settleMs" -> DRample d { settleMs = clamp 0 500 v }
+    _ -> DRample d
+  DRamplePoly d -> case field of
+    "channel" -> DRamplePoly d { channel = clamp 1 16 v }
+    "slots" -> DRamplePoly d { slots = clamp 1 128 v }
+    "pitchOfSlot0" -> DRamplePoly d { pitchOfSlot0 = clamp 0 127 v }
+    "trig1" -> setTrig 0
+    "trig2" -> setTrig 1
+    "trig3" -> setTrig 2
+    "trig4" -> setTrig 3
+    _ -> DRamplePoly d
+    where
+    setTrig i = DRamplePoly d { triggers = fromMaybe d.triggers (updateAt i (clamp 0 127 v) d.triggers) }
   -- A polyphonic instrument has no numeric field to nudge: WHICH jack a note
   -- reaches is the allocator's decision, and the set it chooses between is a
   -- property of how the module is patched, not of this route.
@@ -407,6 +489,8 @@ reachOf ports = case _ of
   -- voltages it decides on still travel over the rig WS to es9-daemon.
   DPoly _ -> if ports.rigUp then Reachable else NeedsRig
   DContinuo _ -> portReach "continuo"
+  DRample d -> portReach d.port
+  DRamplePoly d -> portReach d.port
   where
   -- Substring, matching `Binnacle.Midi.findOutput`'s `indexOf` semantics, so the
   -- router's idea of "found" cannot disagree with the emit path's.
@@ -466,6 +550,22 @@ type Wire =
   { port :: String
   , channel :: Int          -- canonical 1..16
   , noteOverride :: Maybe Int
+  -- `Just` only for a Rample, whose pitch does not travel in the note. Carried
+  -- on the wire rather than handled by a separate emit path so that a Rample
+  -- leg keeps every property of an ordinary one — per-leg offset, mute,
+  -- reachability, fan-out — and no caller has to special-case it.
+  , rample :: Maybe RampleWire
+  }
+
+-- | What a Rample needs in order to hear a pitch: the arithmetic lives in
+-- | `Reef.Rample`, and these are its inputs. Same module the purerl-tidal sink
+-- | calls, so the browser and the BEAM cannot drift about which slice a G4 is.
+type RampleWire =
+  { voice :: Int
+  , trigger :: Int
+  , slots :: Int
+  , pitchOfSlot0 :: Int
+  , settleMs :: Int
   }
 
 -- | Whether this destination carries a musical LINE — something for which
@@ -481,6 +581,13 @@ carriesLine :: Destination -> Boolean
 carriesLine = case _ of
   DMidi _ -> true
   DContinuo _ -> true
+  -- A TRIGGER, despite being pitched. Each note is a fresh start-point CC and a
+  -- fresh strike of a slice; there is no continuous pitch to slide along, so
+  -- legato and portamento have nothing to act on. Saying `true` here would let
+  -- Odonus tie notes together and suppress exactly the retriggers that ARE the
+  -- notes.
+  DRample _ -> false
+  DRamplePoly _ -> false
   DFh2Env _ -> false
   DFh2Gate _ -> false
   DEs9Gate _ -> false
@@ -493,18 +600,32 @@ carriesLine = case _ of
 
 wireOf :: Destination -> Maybe Wire
 wireOf = case _ of
-  DMidi d -> Just { port: d.port, channel: d.channel, noteOverride: Nothing }
-  DFh2Env d -> Just { port: fh2Port, channel: d.slot, noteOverride: Nothing }
+  DMidi d -> Just { port: d.port, channel: d.channel, noteOverride: Nothing, rample: Nothing }
+  DFh2Env d -> Just { port: fh2Port, channel: d.slot, noteOverride: Nothing, rample: Nothing }
   -- The jack is not addressed here: it is baked into the MCV by fh2-config, and
   -- what selects it from this side is the NOTE. That asymmetry is the reason
   -- `DFh2Gate` carries both halves — see its comment.
-  DFh2Gate d -> Just { port: fh2Port, channel: fh2GateChannel, noteOverride: Just d.note }
-  DContinuo d -> Just { port: "continuo", channel: d.channel, noteOverride: Nothing }
+  DFh2Gate d -> Just { port: fh2Port, channel: fh2GateChannel, noteOverride: Just d.note, rample: Nothing }
+  DContinuo d -> Just { port: "continuo", channel: d.channel, noteOverride: Nothing, rample: Nothing }
+  -- The trigger note is the note, always; the PITCH becomes a CC, and the emit
+  -- path reads it off `rample` rather than from `note`.
+  DRample d -> Just
+    { port: d.port
+    , channel: d.channel
+    , noteOverride: Just d.trigger
+    , rample: Just
+        { voice: d.voice, trigger: d.trigger, slots: d.slots
+        , pitchOfSlot0: d.pitchOfSlot0, settleMs: d.settleMs
+        }
+    }
   DEs9Gate _ -> Nothing
   DEs9Cv _ -> Nothing
   -- Not a MIDI wire, and not one wire at all: the allocator chooses among
   -- several per note. `Triggerfish.Poly` drives it instead.
   DPoly _ -> Nothing
+  -- Not one wire either: the allocator picks a voice per note, so this is
+  -- driven by the Rample pass rather than the per-leg fan-out.
+  DRamplePoly _ -> Nothing
 
 -- ---------------------------------------------------------------------------
 -- Claims — what is spoken for, and by whom
@@ -539,6 +660,8 @@ outputsOf = case _ of
     in map es9CvOutput (snoc js.voiceBuses js.ctrlBus)
   DMidi _ -> []
   DContinuo _ -> []
+  DRample _ -> []
+  DRamplePoly _ -> []
 
 -- | es9-daemon's `/cv <bus>`: buses 8..15 ARE the ES-9's eight panel jacks, so
 -- | bus 8 is panel jack 1. Confirmed twice — `reference_es9_channel_mapping` and
@@ -599,6 +722,8 @@ claims tbl = map collect (nub (map _.slot spent))
     DPoly _ -> jack leg
     DMidi _ -> []
     DContinuo _ -> []
+    DRample _ -> []
+    DRamplePoly _ -> []
     where
     -- The output half, from the one structured definition, so this and the
     -- backward view cannot drift about where a destination lands.

@@ -19,7 +19,7 @@ module Triggerfish.Main where
 
 import Prelude
 
-import Data.Array (any, deleteAt, elem, filter, find, findIndex, head, last, length, mapMaybe, mapWithIndex, modifyAt, null, replicate, uncons, unsnoc, (..), (:), (!!))
+import Data.Array (any, deleteAt, elem, filter, find, findIndex, head, last, length, mapMaybe, mapWithIndex, modifyAt, null, replicate, take, uncons, unsnoc, (..), (:), (!!))
 import Data.FoldableWithIndex (forWithIndex_)
 import Data.Foldable (for_, sum)
 import Data.Either (Either(..))
@@ -1631,10 +1631,26 @@ workbenchHeader st =
 -- | Repoint a MIDI destination at another port. Only `DMidi` has a choosable
 -- | port: the FH-2 and ES-9 kinds name their device by construction, which is
 -- | the whole reason they are separate constructors.
+-- | Re-point a destination that HAS a port.
+-- |
+-- | Exhaustive on purpose. This was `other -> other`, and the day a second
+-- | port-carrying destination arrived (the Rample) that catch-all swallowed
+-- | every attempt to change its port in silence — the select snapped back to
+-- | the value the leg was created with and nothing said why. A destination
+-- | added later must fail to compile here rather than fail quietly there.
 setPort :: String -> RM.Destination -> RM.Destination
 setPort port = case _ of
   RM.DMidi d -> RM.DMidi d { port = port }
-  other -> other
+  RM.DRample d -> RM.DRample d { port = port }
+  RM.DRamplePoly d -> RM.DRamplePoly d { port = port }
+  -- No port of their own: the FH-2 and continuo are fixed rig fixtures reached
+  -- by name, and the ES-9 kinds are not MIDI at all.
+  d@(RM.DFh2Env _) -> d
+  d@(RM.DFh2Gate _) -> d
+  d@(RM.DEs9Gate _) -> d
+  d@(RM.DEs9Cv _) -> d
+  d@(RM.DPoly _) -> d
+  d@(RM.DContinuo _) -> d
 
 -- | A freshly-added destination of the given kind, with sensible starting values
 -- | for THIS source. A new FH-2 gate on a drum lane starts on that lane's own
@@ -1652,9 +1668,26 @@ newDest st src = case _ of
   -- No sorted variant: Rings has one pitch bus, so there is no seating to sort.
   "poly-rings" -> Just (RM.DPoly { inst: RM.Rings, sortByPitch: false })
   "continuo" -> Just (RM.DContinuo { channel: 1 })
+  -- One entry per voice rather than one entry plus a voice field, because the
+  -- trigger note is NOT derivable from the voice in general — it is whatever
+  -- the module's SETTINGS > SPx say — and offering the four the card is set up
+  -- for beats making the player look them up. Defaults describe the piano at
+  -- P0: SLICER /64, slice 0 = C2, SP1-4 = 60..63, 40 ms settle (measured).
+  "rample-1" -> Just (rample 1 60)
+  "rample-2" -> Just (rample 2 61)
+  "rample-3" -> Just (rample 3 62)
+  "rample-4" -> Just (rample 4 63)
+  -- The whole module as one instrument: one leg per HEAD, not per voice, and
+  -- the allocator decides which voice sounds each note.
+  "rample-poly" -> Just (RM.DRamplePoly
+    { port: firstPort, channel: 1, triggers: [ 60, 61, 62, 63 ]
+    , slots: 64, pitchOfSlot0: 36 })
   _ -> Nothing
   where
   firstPort = fromMaybe "IAC" (head st.routingPorts)
+  rample voice trigger = RM.DRample
+    { port: firstPort, channel: 1, voice, trigger
+    , slots: 64, pitchOfSlot0: 36, settleMs: 40 }
   laneNote = case src of
     RM.SDrumLane i -> P.laneNote i
     _ -> 36
@@ -1772,6 +1805,8 @@ channelMapPanel st =
     RM.DEs9Cv _ -> "es9 cv"
     RM.DPoly _ -> "poly"
     RM.DContinuo _ -> "continuo"
+    RM.DRample d -> "rample v" <> show d.voice
+    RM.DRamplePoly _ -> "rample x4"
 
   -- The editable numbers of a destination, which differ per device because the
   -- devices differ. An FH-2 gate shows BOTH its selector note and its jack, since
@@ -1790,6 +1825,27 @@ channelMapPanel st =
     RM.DEs9Cv d -> [ numBox 30 (show d.bus) (RtSetField src i "bus") "CV bus" ]
     RM.DPoly d -> [ HH.span [ HP.class_ (HH.ClassName "rt-fixed") ] [ HH.text (RM.destLabel (RM.DPoly d)) ] ]
     RM.DContinuo d -> [ numBox 30 (show d.channel) (RtSetField src i "channel") "channel 1-16" ]
+    -- The card's own facts are editable because they belong to the CARD, not to
+    -- the module: another card sliced differently plays from the same route.
+    RM.DRample d ->
+      [ portSelect src i d.port
+      , numBox 26 (show d.channel) (RtSetField src i "channel") "MIDI channel 1-16"
+      , numBox 26 (show d.voice) (RtSetField src i "voice") "Rample voice 1-4"
+      , numBox 30 (show d.trigger) (RtSetField src i "trigger") "trigger note (SETTINGS > SPx)"
+      , numBox 30 (show d.slots) (RtSetField src i "slots") "SLICER division of the card"
+      , numBox 30 (show d.pitchOfSlot0) (RtSetField src i "pitchOfSlot0") "MIDI note of slice 0"
+      , numBox 26 (show d.settleMs) (RtSetField src i "settleMs") "ms the start-point CC leads the note" ]
+    -- No settle box: the allocator's own measured 40 ms governs the whole
+    -- module, so it belongs to `Reef.Voices.rample`, not to this route.
+    RM.DRamplePoly d ->
+      [ portSelect src i d.port
+      , numBox 26 (show d.channel) (RtSetField src i "channel") "MIDI channel 1-16"
+      , numBox 30 (show d.slots) (RtSetField src i "slots") "SLICER division of the card"
+      , numBox 30 (show d.pitchOfSlot0) (RtSetField src i "pitchOfSlot0") "MIDI note of slice 0"
+      ] <> mapWithIndex
+        (\k t -> numBox 26 (show t) (RtSetField src i ("trig" <> show (k + 1)))
+                  ("voice " <> show (k + 1) <> " trigger note (SETTINGS > SP" <> show (k + 1) <> ")"))
+        (take 4 (d.triggers <> [ 60, 61, 62, 63 ]))
 
   -- Only ports that EXIST are offerable, so a route can't be typed at a device
   -- that isn't plugged in. (An already-routed name that has since vanished stays
@@ -1820,7 +1876,12 @@ channelMapPanel st =
                , Tuple "poly-saich" "Saïch (poly)"
                , Tuple "poly-saich-sorted" "Saïch (poly, bass on voice 1)"
                , Tuple "poly-rings" "Rings (poly mode)"
-               , Tuple "continuo" "continuo" ] )
+               , Tuple "continuo" "continuo"
+               , Tuple "rample-1" "Rample voice 1"
+               , Tuple "rample-2" "Rample voice 2"
+               , Tuple "rample-3" "Rample voice 3"
+               , Tuple "rample-4" "Rample voice 4"
+               , Tuple "rample-poly" "Rample (4 voices, allocated)" ] )
 
   -- What the table SPENDS, and anything spent twice. Reported, not enforced:
   -- the daemons own admission (es9-daemon's capability/overlap checks,

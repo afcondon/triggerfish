@@ -21,7 +21,7 @@ module Triggerfish.Routing.Store
 
 import Prelude
 
-import Data.Array (mapMaybe, unsnoc)
+import Data.Array (drop, mapMaybe, take, unsnoc)
 import Data.Int as Int
 import Data.Maybe (Maybe(..))
 import Data.Nullable (Nullable, toMaybe)
@@ -83,6 +83,21 @@ destStr = case _ of
   -- longer uses. `Routing.Model.polyJacks` is the one place that knows.
   DPoly d -> "poly:" <> instKey d.inst <> "|" <> (if d.sortByPitch then "1" else "0")
   DContinuo d -> "continuo:" <> show d.channel
+  -- Port LAST, because a port name may itself contain "|" (the reason `midi`
+  -- has to rejoin); with every fixed field ahead of it the tail is the port
+  -- whatever it contains.
+  DRample d ->
+    "rample:" <> joinWith "|"
+      [ show d.channel, show d.voice, show d.trigger, show d.slots
+      , show d.pitchOfSlot0, show d.settleMs, d.port
+      ]
+  -- Same rule: every fixed field first, the port as the tail.
+  DRamplePoly d ->
+    "ramplepoly:" <> joinWith "|"
+      ( [ show d.channel, show d.slots, show d.pitchOfSlot0 ]
+          <> map show (take 4 (d.triggers <> [ 60, 61, 62, 63 ]))
+          <> [ d.port ]
+      )
 
 instKey :: InstrumentId -> String
 instKey = case _ of
@@ -117,6 +132,35 @@ destOf s = case Str.indexOf (Pattern ":") s of
       "poly", [ n ] -> (\inst -> DPoly { inst, sortByPitch: false }) <$> instOf n
       "poly", [ n, f ] -> (\inst -> DPoly { inst, sortByPitch: f == "1" }) <$> instOf n
       "continuo", [ c ] -> (\channel -> DContinuo { channel }) <$> inRange 1 16 c
+      "rample", _ -> case take 6 parts of
+        [ c, v, t, sl, p0, st ] ->
+          case joinWith "|" (drop 6 parts) of
+            "" -> Nothing
+            port ->
+              (\channel voice trigger slots pitchOfSlot0 settleMs ->
+                  DRample { port, channel, voice, trigger, slots, pitchOfSlot0, settleMs })
+                <$> inRange 1 16 c
+                <*> inRange 1 4 v
+                <*> inRange 0 127 t
+                <*> inRange 1 128 sl
+                <*> inRange 0 127 p0
+                <*> inRange 0 500 st
+        _ -> Nothing
+      "ramplepoly", _ -> case take 7 parts of
+        [ c, sl, p0, t1, t2, t3, t4 ] ->
+          case joinWith "|" (drop 7 parts) of
+            "" -> Nothing
+            port ->
+              (\channel slots pitchOfSlot0 a b c' d' ->
+                  DRamplePoly { port, channel, slots, pitchOfSlot0, triggers: [ a, b, c', d' ] })
+                <$> inRange 1 16 c
+                <*> inRange 1 128 sl
+                <*> inRange 0 127 p0
+                <*> inRange 0 127 t1
+                <*> inRange 0 127 t2
+                <*> inRange 0 127 t3
+                <*> inRange 0 127 t4
+        _ -> Nothing
       _, _ -> Nothing
   where
   inRange lo hi t = case Int.fromString t of

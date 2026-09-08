@@ -349,6 +349,10 @@ type State =
   -- Nothing until they arrive, which plays at nominal 1 V/oct rather than
   -- refusing); `voices` is that allocator's live state.
   , polys :: Array PolyInst
+  -- The Rample's ONE allocator. Not in `polys` because that array is keyed by
+  -- `RM.InstrumentId` and driven over the ES-9 socket; the Rample is reached by
+  -- MIDI and has no rig entry. Same shape of state, different wire.
+  , rampleVoices :: RV.Voices
   , polyNote :: Maybe String  -- why poly is degraded, if it is
   , swing :: Number          -- groove: fraction of a step that off-beats lag (0..0.6)
   , velHumanize :: Int       -- velocity jitter range ± (0 = dead-flat)

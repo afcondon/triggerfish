@@ -36,12 +36,14 @@ import Prelude
 
 import Data.Array (find, mapMaybe)
 import Data.Foldable (sum)
+import Data.Int as Int
 import Data.Maybe (Maybe(..), fromMaybe)
 import Data.String (Pattern(..), contains)
 import Data.Traversable (traverse)
 import Effect (Effect)
 
 import Binnacle.Midi as Midi
+import Reef.Rample as Rample
 import Triggerfish.Routing.Model (Leg, Source, Table, Wire, liveLegsFor, wireOf)
 
 -- | Every MIDI output port, by name. Built once when MIDI access arrives.
@@ -97,14 +99,52 @@ fanNoteAt outs tbl src ev =
   where
   send r = case r.wire, r.out of
     Just w, Just o -> do
-      Midi.scheduleNoteAtMs o
-        { channel: w.channel - 1
-        , note: fromMaybe ev.note w.noteOverride
-        , velocity: ev.velocity
-        , atMs: ev.atMs + r.leg.offsetMs
-        , durMs: ev.durMs
-        }
-      pure 1
+      let atMs = ev.atMs + r.leg.offsetMs
+      case w.rample of
+        -- The ordinary case: the pitch IS the note.
+        Nothing -> do
+          Midi.scheduleNoteAtMs o
+            { channel: w.channel - 1
+            , note: fromMaybe ev.note w.noteOverride
+            , velocity: ev.velocity
+            , atMs
+            , durMs: ev.durMs
+            }
+          pure 1
+        -- The Rample case: the pitch is a slice, so it goes ahead of the note
+        -- as a CC and the note is only the trigger. A pitch the card does not
+        -- hold is REFUSED rather than clamped — a silently transposed note is
+        -- harder to notice than a missing one, and the leg reports 0 emitted
+        -- so the monitor can say so.
+        Just rp ->
+          -- `Reef.Rample` in the browser and `Reef.Rample` on the BEAM are the
+          -- same module, so the two runtimes cannot disagree about which slice
+          -- a G4 is. A chromatic run is the `pitchOfSlot0` case; a card laid
+          -- out in some other order (a kalimba in tine order) would supply
+          -- `slotPitches` instead, which is why this asks reef rather than
+          -- subtracting here.
+          case Rample.slotFor
+                 { velocity: Nothing
+                 , slots: rp.slots
+                 , pitchOfSlot0: Just rp.pitchOfSlot0
+                 , slotPitches: Nothing
+                 } ev.note of
+            Nothing -> pure 0
+            Just slot -> do
+              Midi.sendCCAtMs o
+                { channel: w.channel - 1
+                , controller: Rample.startCC rp.voice
+                , value: Rample.ccForSlot slot rp.slots
+                , atMs: atMs - Int.toNumber rp.settleMs
+                }
+              Midi.scheduleNoteAtMs o
+                { channel: w.channel - 1
+                , note: rp.trigger
+                , velocity: ev.velocity
+                , atMs
+                , durMs: ev.durMs
+                }
+              pure 1
     _, _ -> pure 0
 
 -- | Delay-relative variant, for the emit paths that think in "ms from now".
