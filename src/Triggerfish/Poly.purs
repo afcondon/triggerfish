@@ -177,6 +177,13 @@ emitOne sock rig nowMs e = case e.action of
           , delayMs: sa.settleMs
           }
     _ -> pure unit
+  -- PRE-EXISTING GAP, made explicit rather than left to a catch-all: `Rig` has
+  -- no decay bus, so the browser has nowhere to put this. `Reef.Voices` emits
+  -- `Decay` only for a profile carrying a `DecayMap` (today: Rings), so a Rings
+  -- note played from the browser is currently un-shaped where the same note
+  -- from the BEAM is shaped. Giving `Rig` a `decayBus :: Maybe Int` is the fix;
+  -- it is a routing change, not this one.
+  Decay _ _ -> pure unit
 
 -- | Run an effect `ms` from now, or immediately if that is already past.
 -- |
