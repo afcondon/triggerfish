@@ -76,9 +76,9 @@ var coreFolders = coreBanks.collect { |b| (sampleDir +/+ b ++ "/").pathMatch }.f
 // explicable silence on the rig.
 var takesDir = "ITAJARA_TAKES_DIR".getenv ? ("HOME".getenv +/+ ".itajara/takes");
 var takeFolders = (takesDir +/+ "*/").pathMatch;
-// --- swept sample sets (WORKSHOP_SETS_DIR) -----------------------------------
-// The Workshop cuts a take into a SET — a folder of numbered WAVs plus a
-// `set.json` saying what each one meant — under ~/.itajara/workshop/samples.
+// --- swept sample sets (QUADRAT_SETS_DIR) ------------------------------------
+// Quadrat cuts a take into a SET — a folder of numbered WAVs plus a `set.json`
+// saying what each one meant — under ~/.itajara/quadrat/samples.
 //
 // **Nothing had to be built to make those playable here.** A folder of files is
 // a named, indexed set at both ends, so `s "morphtest6" # n 3` is the fourth
@@ -103,7 +103,7 @@ var takeFolders = (takesDir +/+ "*/").pathMatch;
 // A set's DIRECTORY NAME is the name you type. Loaded after the core banks and
 // before nothing, so a set called `bd` REPLACES the bank called `bd` — name
 // sets for what they are and the collision does not arise.
-var setsDir = "WORKSHOP_SETS_DIR".getenv ? ("HOME".getenv +/+ ".itajara/workshop/samples");
+var setsDir = "QUADRAT_SETS_DIR".getenv ? ("HOME".getenv +/+ ".itajara/quadrat/samples");
 var setFolders = (setsDir +/+ "*/").pathMatch;
 
 s.reboot {
