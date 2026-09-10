@@ -76,6 +76,35 @@ var coreFolders = coreBanks.collect { |b| (sampleDir +/+ b ++ "/").pathMatch }.f
 // explicable silence on the rig.
 var takesDir = "ITAJARA_TAKES_DIR".getenv ? ("HOME".getenv +/+ ".itajara/takes");
 var takeFolders = (takesDir +/+ "*/").pathMatch;
+// --- swept sample sets (WORKSHOP_SETS_DIR) -----------------------------------
+// The Workshop cuts a take into a SET — a folder of numbered WAVs plus a
+// `set.json` saying what each one meant — under ~/.itajara/workshop/samples.
+//
+// **Nothing had to be built to make those playable here.** A folder of files is
+// a named, indexed set at both ends, so `s "morphtest6" # n 3` is the fourth
+// sample and that is the whole of the SuperDirt "encoding". Which is the point
+// of loading them: SuperDirt is the destination with NO constraints, and it is
+// the honest test of a model built against the Rample, where twelve layers, the
+// eight SLICER divisions and 16-bit mono are all hard.
+//
+// Two things make it work rather than nearly work, and both were checked
+// against SuperDirt's own source rather than assumed:
+//
+//   `set.json` is IGNORED, not misread. DirtSoundLibrary.readSoundFile filters
+//   on extension (wav/aif/aiff/aifc) and returns nil for anything else, and
+//   loadSoundFilePaths only adds a buffer when it is non-nil. So the
+//   description sitting in the folder does not shift a single index — which it
+//   would have done silently, and which is the reason to check rather than hope.
+//
+//   The files are `<set>-01.wav`, ZERO-PADDED, and loadSoundFileFolder sorts.
+//   Unpadded, the tenth sample would sort between the first and the second and
+//   every n past it would name the wrong audio.
+//
+// A set's DIRECTORY NAME is the name you type. Loaded after the core banks and
+// before nothing, so a set called `bd` REPLACES the bank called `bd` — name
+// sets for what they are and the collision does not arise.
+var setsDir = "WORKSHOP_SETS_DIR".getenv ? ("HOME".getenv +/+ ".itajara/workshop/samples");
+var setFolders = (setsDir +/+ "*/").pathMatch;
 
 s.reboot {
 	// Server options (only applied on reboot).
@@ -144,6 +173,15 @@ s.reboot {
 			~dirt.soundLibrary.doNotReadYet = false;
 			("STELLATUS-SUPERDIRT takes = " ++ takeFolders.size ++ " from " ++ takesDir).postln;
 			~dirt.loadSoundFiles(takeFolders);
+			s.sync;
+		});
+		// Swept sets, in every sample set, and read properly for the same
+		// reason takes are: a set you cut two minutes ago being silent on its
+		// first hit would be the least explicable silence on the rig.
+		if(setFolders.notEmpty, {
+			~dirt.soundLibrary.doNotReadYet = false;
+			("STELLATUS-SUPERDIRT sets = " ++ setFolders.size ++ " from " ++ setsDir).postln;
+			~dirt.loadSoundFiles(setFolders);
 			s.sync;
 		});
 		~dirt.start(port, 0 ! 12);        // 12 orbits, all to channel 0
