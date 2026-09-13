@@ -31,6 +31,7 @@ module Triggerfish.Glyph
   , deckSize
   , Glyph
   , glyphOf
+  , chordGlyph
   , glyphFromAlias
   , sessionAliasOf
   , ChipView
@@ -122,6 +123,26 @@ type ChipView = Rebus.ChipView
 -- | this is Rebus's already-canonical entry point rather than `rebusOf`.
 glyphOf :: String -> Glyph
 glyphOf = Rebus.rebusOfText
+
+-- | **The glyph of a chord sequence**, and the one that another program can
+-- | arrive at independently.
+-- |
+-- | A progression's identity is its CHORDS. Not its rendered source, which
+-- | carries a key label and comments that are context rather than content —
+-- | two presets of the same voicings in differently-labelled keys are the same
+-- | progression, and used to wear different pictures. Not its pitch classes
+-- | either, which throw away the register that makes a voicing a voicing.
+-- |
+-- | `Rebus.chordsOf` is the shared normal form: each chord sorted, because the
+-- | order notes are listed in is an accident of how they were read — bass-first
+-- | from a voicing here, finger order from a MIDI capture in Quadrat — and the
+-- | progression's own order left alone, because backwards is a different piece.
+-- |
+-- | That is the whole contract. Quadrat's sampler mints a chord set's rebus the
+-- | same way, so a progression caught there and one saved here wear the same
+-- | icons, and neither app needs to know the other exists for that to hold.
+chordGlyph :: Array (Array Int) -> Glyph
+chordGlyph = Rebus.rebusOf <<< Rebus.chordsOf
 
 -- | Recover a glyph from its alias (`"cow-ambulance"`) — for rendering a token a
 -- | macro-pattern already carries.

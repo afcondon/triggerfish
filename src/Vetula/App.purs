@@ -68,9 +68,12 @@ import Binnacle.Scheduler as Scheduler
 import Binnacle.Transport as Transport
 import Triggerfish.Transport (Sounding(..))
 import Triggerfish.Midi.Routing as Routing
-import Triggerfish.Glyph (ChipView, Glyph, glyphOf, sessionAliasOf)
+import Triggerfish.Glyph (ChipView, Glyph, sessionAliasOf)
+-- Qualified: `chordGlyph` is also the name of this module's lattice-node
+-- renderer, which draws a chord and has nothing to do with identity.
+import Triggerfish.Glyph as TGlyph
 import Triggerfish.GlyphView (faIcon, faIcons)
-import Triggerfish.Preset (Preset, indexOfContent, presetAlias)
+import Triggerfish.Preset (Preset, indexOfContent)
 import Vetula.Store as Store
 import Triggerfish.Amphora as Amphora
 import Vetula.Tank (Specimen, SpecimenId(..), Provenance(..), specNotes)
@@ -1244,7 +1247,7 @@ handleQuery = case _ of
   -- optional name + star flag; recall / star / delete a chosen preset.
   AskBank reply -> do
     s <- H.get
-    pure (Just (reply (mapWithIndex (\i p -> { slot: i, alias: presetAlias p, name: fromMaybe "" p.name, starred: p.starred }) s.presets)))
+    pure (Just (reply (mapWithIndex (\i p -> { slot: i, alias: (progGlyph p.content).alias, name: fromMaybe "" p.name, starred: p.starred }) s.presets)))
   RecallSlot i next -> do
     recallPreset i
     pure (Just next)
@@ -2352,7 +2355,7 @@ handleAction = case _ of
     case st.chyronSel of
       Just sel -> do
         let evs = mapMaybe (\ix -> index st.chyron ix) (range sel.lo sel.hi)
-            saved = { events: evs, glyph: glyphOf (seqContent evs) }
+            saved = { events: evs, glyph: TGlyph.chordGlyph (map _.notes evs) }
             keep = mapMaybe (\(Tuple ix e) -> if ix < sel.lo || ix > sel.hi then Just e else Nothing)
                      (mapWithIndex Tuple st.chyron)
         H.modify_ _ { chyronSaved = st.chyronSaved <> [ saved ], chyron = keep
@@ -3097,7 +3100,7 @@ recallPreset i = do
 chipViewOf :: State -> Maybe ChipView
 chipViewOf s = case s.identity of
   Nothing -> Nothing
-  Just text -> Just { glyph: glyphOf text, diverged: currentSource s /= text }
+  Just text -> Just { glyph: progGlyph text, diverged: currentSource s /= text }
 
 -- | An Amphora library item as a local progression entry. The Tidal source is
 -- | the payload; the keyLabel is recovered from a `key:` tag (if present) and
@@ -3334,10 +3337,24 @@ auditionNotesNoLog notes = do
     liftEffect $ for_ notes \n ->
       Midi.scheduleNote out { channel: st.previewChan, note: n, velocity: 92, delayMs: 0.0, durMs: 900.0 }
 
--- | Canonical content of a sequence — the ordered pc-sets (duplicates KEPT, so a
--- | strum reads as its own token), hashed by `glyphOf` to a stable 2-glyph pair.
-seqContent :: Array ChyronEvent -> String
-seqContent evs = joinWith " " (map (\e -> joinWith "," (map show (sort e.pcs))) evs)
+-- | **Every chord identity in Vetula, through one function.**
+-- |
+-- | There used to be three: the rendered Tidal source (presets, the parked
+-- | chip), the ordered pitch-class sets (a saved chyron sequence), and a
+-- | hand-written copy of Rebus's chord wire format (a recalled scene). Three
+-- | formats meant the same progression wore three different pictures depending
+-- | on which door it came in by — before any question of agreeing with another
+-- | application.
+-- |
+-- | Now all of them go to `Triggerfish.Glyph.chordGlyph`, over the absolute
+-- | MIDI of the chords. Source text is dropped because a key label and a
+-- | comment are context, not content; pitch classes are dropped because
+-- | register is exactly what a voicing IS.
+-- |
+-- | The comments are dropped by `parseProgression` already, so this is safe to
+-- | run over a source that has been hand-edited in the source box.
+progGlyph :: String -> Glyph
+progGlyph = TGlyph.chordGlyph <<< parseProgression
 
 -- | Play a list of captured events back with their ORIGINAL timing (inter-onset
 -- | gaps from each `at`), each chord as a BLOCK (all notes together — no per-note
@@ -5252,7 +5269,7 @@ mintSession = do
 mkSavedSeq :: Array (Array Int) -> SavedSeq
 mkSavedSeq chords =
   { events: mapWithIndex evt chords
-  , glyph: glyphOf (joinWith " " (map (joinWith "," <<< map show) chords))
+  , glyph: TGlyph.chordGlyph chords
   }
   where
   -- `Free`: a recalled note-list carries no scale reading (the source grammar
