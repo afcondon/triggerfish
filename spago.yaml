@@ -8,6 +8,7 @@ package:
   dependencies:
     - prelude
     - harmonia
+    - rebus
     - reef
     - effect
     - aff
@@ -66,6 +67,12 @@ workspace:
     # git-tag once reef is published, like harmonia.
     reef:
       path: ../../reef
+    # The glyph substrate, extracted 2026-09-13 so Quadrat can mint the SAME
+    # identities from the same content. Path-dep during dev; it is deliberately
+    # tiny and registry-shaped, so it can be published the moment a second repo
+    # actually depends on it.
+    rebus:
+      path: ../../../code-typography/rebus
     binnacle:
       path: ../binnacle
     # Shared widget library (Vetula's Select/Modal + the Selene routing

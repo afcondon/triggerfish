@@ -1,31 +1,24 @@
--- | `Triggerfish.Glyph` — the **glyph substrate**: a deterministic map from a
--- | captured state's canonical eDSL text to a memorable pictographic identity.
--- | The resolution to the fast-vs-named preset tension (see
--- | `docs/DESIGN-scene-modal.md`): every capture gets an auto glyph — identity
--- | WITHOUT a name — so anonymous captures are recallable and sequenceable with
--- | zero flow-break, and naming becomes a later, optional promotion.
+-- | `Triggerfish.Glyph` — Triggerfish's window onto **Rebus**, plus the six
+-- | machines.
 -- |
--- | A glyph is an ORDERED PAIR of **coloured icons** — "red cow, blue star":
+-- | The glyph substrate — the deterministic map from a captured state's canonical
+-- | eDSL text to an ordered pair of coloured icons, and the alias that spells it —
+-- | moved out to its own library on 2026-09-13
+-- | (`code-typography/rebus`, `import Rebus`). It left because a second consumer
+-- | appeared: Quadrat names sample sets the same way, and two programs that must
+-- | draw the SAME picture for the same content cannot each keep their own copy of
+-- | the deck and the hash. Rebus's `Canonical` class and its golden corpus are
+-- | what hold them to it.
 -- |
--- |   • **content → icon shapes.** A content hash of the canonical text picks an
--- |     ordered pair from a fixed icon deck (`glyphOf`). Identical states hash to
--- |     the same pair (free dedup); a real edit avalanches to a visibly different
--- |     pair. Pairs, not singles: ~64 icons give ~4000 ordered pairs, and an
--- |     absurd pair ("cow-ambulance", "star-bomb") is far more memorable than a
--- |     lone icon — real bizarre-imagery mnemonics.
--- |   • **icon name → colour.** Each icon carries a colour derived from its OWN
--- |     name, so `cow` is always red and `star` always blue: the pair reads as
--- |     "red cow, blue star", and it renders identically whether drawn live or
--- |     reconstructed from the typed `alias` in the pictographic mirror. Colour is
--- |     a memorability accent, not extra identity (the shape pair is the identity).
+-- | What stayed here is what is actually Triggerfish's: the six machines, their
+-- | labels, their two-letter tags and their accent hues. A machine is not a
+-- | general idea, and Rebus has no business knowing about Odonus.
 -- |
--- | Machine identity is NOT colour anymore (colour belongs to the content). In a
--- | mixed sequencer lane a preset carries a two-letter `machineTag` (Od/Ba/Se/Ve/
--- | Su/St); in the tab-bar board the machine is already obvious from its segment.
--- |
--- | PURE and shared across all six machines — no rendering (the view maps `icon`
--- | → a FontAwesome class and applies `color`) and no state. The `alias`
--- | (`"cow-ambulance"`) is the typeable form used by the `:`+Tab completion.
+-- | The names below are the ones the rest of Triggerfish already calls
+-- | (`glyphOf`, `glyphFromAlias`, `sessionAliasOf`), so this module is a thin
+-- | rename over Rebus rather than a layer. New code can `import Rebus` directly —
+-- | and chord content in particular now has a `Rebus.Chords` instance carrying
+-- | the exact serialisation `Vetula.App` hand-builds.
 module Triggerfish.Glyph
   ( Machine(..)
   , allMachines
@@ -45,13 +38,8 @@ module Triggerfish.Glyph
 
 import Prelude
 
-import Data.Array (elem, index, length)
-import Data.Char (toCharCode)
-import Data.Foldable (foldl)
-import Data.Maybe (fromMaybe)
-import Data.String.CodeUnits (toCharArray)
-import Data.String.Common (joinWith, split)
-import Data.String.Pattern (Pattern(..))
+import Data.Array (length)
+import Rebus as Rebus
 
 -- ---------------------------------------------------------------------------
 -- Machines — the six instrument panels.
@@ -104,147 +92,50 @@ hueOf = case _ of
   Stellatus -> "hsl(188, 60%, 26%)" -- teal
 
 -- ---------------------------------------------------------------------------
--- The icon deck — memorable, concrete nouns that each have a FontAwesome free
--- SOLID glyph of the same name (the view builds `fa-solid fa-<icon>`).
--- Order is FIXED and APPEND-ONLY: an index is a persisted identity, so
--- reordering or removing an entry would silently remap every stored glyph.
+-- Rebus, under Triggerfish's names.
 -- ---------------------------------------------------------------------------
 
-deck :: Array String
-deck =
-  [ "bomb", "star", "moon", "sun", "cloud", "bolt", "fire", "leaf"
-  , "tree", "feather", "fish", "frog", "crow", "dove", "cat", "dog"
-  , "horse", "hippo", "dragon", "spider", "bug", "ghost", "skull", "heart"
-  , "anchor", "bell", "key", "lock", "gem", "crown", "cube", "dice"
-  , "flask", "rocket", "bicycle", "car", "plane", "ship", "truck", "bus"
-  , "tractor", "compass", "map", "book", "guitar", "drum", "music", "umbrella"
-  , "snowflake", "mountain", "tornado", "meteor", "atom", "brain", "eye", "cow"
-  , "ambulance", "hammer", "wrench", "gear", "seedling", "spa", "plug", "bath"
-  ]
-
-deckSize :: Int
-deckSize = length deck
-
--- | The per-icon colour palette. Distinguishable, mid-dark so a small icon reads
--- | on the light/gold tab bar. Spaced around the wheel; FontAwesome solid inherits
--- | CSS `color`, so a colour is a one-property tint at the view layer.
-palette :: Array String
-palette =
-  [ "hsl(0, 62%, 44%)"    -- red
-  , "hsl(28, 72%, 42%)"   -- orange
-  , "hsl(45, 80%, 36%)"   -- ochre
-  , "hsl(142, 55%, 32%)"  -- green
-  , "hsl(188, 62%, 32%)"  -- teal
-  , "hsl(214, 62%, 44%)"  -- blue
-  , "hsl(262, 44%, 50%)"  -- violet
-  , "hsl(322, 52%, 46%)"  -- magenta
-  ]
-
-paletteSize :: Int
-paletteSize = length palette
-
--- ---------------------------------------------------------------------------
--- The glyph — an ordered pair of coloured icons plus its typeable alias.
--- ---------------------------------------------------------------------------
-
--- | One rendered element of a glyph: a FontAwesome icon name + its CSS colour.
-type GlyphIcon =
-  { icon :: String
-  , color :: String
-  }
+-- | One rendered element of a glyph: an icon name + its CSS colour. The view
+-- | turns the name into `fa-solid fa-<icon>`; Rebus itself draws nothing.
+type GlyphIcon = Rebus.GlyphIcon
 
 -- | A captured state's identity: two coloured icons (the picture) + the
 -- | hyphen-joined `alias` (`"cow-ambulance"`), the single mini-notation token the
 -- | `:`+Tab completion inserts.
-type Glyph =
-  { first :: GlyphIcon
-  , second :: GlyphIcon
-  , alias :: String
-  }
+type Glyph = Rebus.Glyph
 
 -- | What a machine reports up to the shell's six-machine status board: its parked
 -- | glyph and whether the live state has diverged from it (`true` → render ghosted
 -- | + MOD, `false` → solid/held). A machine with no parked identity reports
 -- | `Nothing` (empty), so `Maybe ChipView` is the full per-machine chip state.
-type ChipView =
-  { glyph :: Glyph
-  , diverged :: Boolean
-  }
+type ChipView = Rebus.ChipView
 
--- | The glyph for a canonical text (e.g. a `TriSnapshot`'s `printTri`). Two
--- | independent hashes pick an ordered SHAPE pair (second bumped off the first so
--- | the two icons always differ); each icon's colour follows its name.
+-- | The glyph for a canonical text (e.g. a `TriSnapshot`'s `printTri`).
+-- | Triggerfish always hands over text it has already printed canonically, so
+-- | this is Rebus's already-canonical entry point rather than `rebusOf`.
 glyphOf :: String -> Glyph
-glyphOf text =
-  let
-    i1 = hashWith 5381 33 text `mod` deckSize
-    i2raw = hashWith 7919 37 text `mod` deckSize
-    i2 = if i2raw == i1 then (i2raw + 1) `mod` deckSize else i2raw
-  in
-    glyphFor (entryAt i1) (entryAt i2)
+glyphOf = Rebus.rebusOfText
 
 -- | Recover a glyph from its alias (`"cow-ambulance"`) — for rendering a token a
--- | macro-pattern already carries. Because colour follows the icon NAME, the
--- | result is identical to the live `glyphOf` render of the same pair.
+-- | macro-pattern already carries.
 glyphFromAlias :: String -> Glyph
-glyphFromAlias alias = case split (Pattern "-") alias of
-  [ a, b ] -> glyphFor a b
-  _ -> glyphFor alias alias
+glyphFromAlias = Rebus.rebusFromAlias
 
--- | A SESSION's identity alias: three DISTINCT deck icons picked from a seed,
--- | hyphen-joined (`"cat-rocket-anchor"`). Deliberately a TRIPLE (chord tokens are
--- | pairs) and rendered MONOCHROME by the view (chord tokens are coloured), so a
--- | session container never reads as a chord token. Seed-driven, NOT content-
--- | hashed: a session is a container, so it should not dedup or be reproducible
--- | from content — the seed is minted once (Effect) and only the alias persists;
--- | the icons recover from `split "-"`, exactly like `glyphFromAlias`.
+-- | A SESSION's identity alias: three distinct deck icons from a seed
+-- | (`"cat-rocket-anchor"`), rendered MONOCHROME by the view so a container never
+-- | reads as a chord token.
 sessionAliasOf :: Int -> String
-sessionAliasOf seed =
-  let
-    s = show seed
-    i1 = hashWith 5381 33 s `mod` deckSize
-    i2 = avoid [ i1 ] (hashWith 7919 37 s `mod` deckSize)
-    i3 = avoid [ i1, i2 ] (hashWith 104729 41 s `mod` deckSize)
-  in
-    joinWith "-" (map entryAt [ i1, i2, i3 ])
-  where
-  avoid used x = if elem x used then avoid used ((x + 1) `mod` deckSize) else x
+sessionAliasOf = Rebus.sessionAliasOf
 
--- ---------------------------------------------------------------------------
--- Internals
--- ---------------------------------------------------------------------------
+-- | The icon deck. Order is an identity, so this is Rebus's fixed, append-only
+-- | `defaultDeck` — Triggerfish has no deck of its own and must not grow one, or
+-- | it stops agreeing with Quadrat.
+deck :: Array String
+deck = Rebus.deckIcons Rebus.defaultDeck
 
--- Build a coloured pair from two icon names: each icon's colour is a hash of its
--- own name; the second is bumped off the first so a pair shows two colours.
-glyphFor :: String -> String -> Glyph
-glyphFor n1 n2 =
-  let
-    c1 = colorIdx n1
-    c2raw = colorIdx n2
-    c2 = if c2raw == c1 then (c2raw + 1) `mod` paletteSize else c2raw
-  in
-    { first: { icon: n1, color: colorAt c1 }
-    , second: { icon: n2, color: colorAt c2 }
-    , alias: n1 <> "-" <> n2
-    }
+deckSize :: Int
+deckSize = length deck
 
-colorIdx :: String -> Int
-colorIdx name = hashWith 2749 31 name `mod` paletteSize
-
-colorAt :: Int -> String
-colorAt i = fromMaybe "#5a564b" (index palette i)
-
--- A bounded, deterministic string hash (djb2-family, reduced each step to stay
--- inside Int's safe range regardless of length). `seed`/`mult` vary to get
--- weakly-independent hashes from one text.
-hashWith :: Int -> Int -> String -> Int
-hashWith seed mult text =
-  abs (foldl step seed (toCharArray text))
-  where
-  step h c = (h * mult + toCharCode c) `mod` 1000003
-  abs x = if x < 0 then -x else x
-
--- A deck index → its icon name; a name not in the deck falls back to itself so a
--- hand-typed / promoted alias still renders.
-entryAt :: Int -> String
-entryAt i = fromMaybe "star" (index deck i)
+-- | The per-icon colour palette — an accent, not part of the identity.
+palette :: Array String
+palette = Rebus.paletteColors Rebus.defaultPalette

@@ -37,6 +37,7 @@
             "prelude",
             "random",
             "rationals",
+            "rebus",
             "reef",
             "simple-json",
             "strings",
@@ -711,6 +712,9 @@
         "path": "../../../purescript-halogen-widgets"
       },
       "harmonia": "0.2.0",
+      "rebus": {
+        "path": "../../../code-typography/rebus"
+      },
       "reef": {
         "path": "../../reef"
       }
@@ -1713,6 +1717,16 @@
         "integers",
         "js-bigints",
         "prelude"
+      ]
+    },
+    "rebus": {
+      "type": "local",
+      "path": "../../../code-typography/rebus",
+      "dependencies": [
+        "arrays",
+        "maybe",
+        "prelude",
+        "strings"
       ]
     },
     "record": {
