@@ -2,7 +2,7 @@
 -- | machines.
 -- |
 -- | The glyph substrate — the deterministic map from a captured state's canonical
--- | eDSL text to an ordered pair of coloured icons, and the alias that spells it —
+-- | eDSL text to an ordered run of coloured icons, and the alias that spells it —
 -- | moved out to its own library on 2026-09-13
 -- | (`code-typography/rebus`, `import Rebus`). It left because a second consumer
 -- | appeared: Quadrat names sample sets the same way, and two programs that must
@@ -99,9 +99,16 @@ hueOf = case _ of
 -- | turns the name into `fa-solid fa-<icon>`; Rebus itself draws nothing.
 type GlyphIcon = Rebus.GlyphIcon
 
--- | A captured state's identity: two coloured icons (the picture) + the
+-- | A captured state's identity: its coloured icons (the picture) + the
 -- | hyphen-joined `alias` (`"cow-ambulance"`), the single mini-notation token the
 -- | `:`+Tab completion inserts.
+-- |
+-- | Rebus mints these at any width from one to five, and `Glyph.icons` is an
+-- | array for that reason. Triggerfish stays at TWO, and that is a persisted-data
+-- | fact rather than a preference: every alias already saved in a preset, a scene
+-- | or a macro pattern is a pair, so widening `glyphOf` would re-identify all of
+-- | them. A machine that one day needs to tell apart more than a few thousand
+-- | things should say so with `Rebus.rebusOfTextWidth` and own the migration.
 type Glyph = Rebus.Glyph
 
 -- | What a machine reports up to the shell's six-machine status board: its parked

@@ -23,7 +23,6 @@ import Data.Tuple (Tuple(..), fst, snd)
 import Data.Foldable (any, foldl, for_)
 import Data.Int (floor, round, toNumber)
 import Data.Maybe (Maybe(..), fromMaybe, isJust, isNothing, maybe)
-import Data.String.Common (joinWith)
 import Data.String (contains) as String
 import Data.String.Common (trim) as String
 import Data.String.Pattern (Pattern(..)) as String
@@ -55,11 +54,11 @@ import Triggerfish.Routing.Out as RO
 import Triggerfish.Balistes.Types
   ( KnobTarget(..), targetRange, applyKnob, Active(..), ClickMode(..)
   , NoteRef(..), DragKind(..), State, Action(..), activePattern, selectedPattern, patternAt, rhythmEntries, rigUrl, gridCfg
-  , midiPortName, drumChannel, cycleSteps, editVel, flashWindow
+  , cycleSteps, editVel, flashWindow
   , padId, eqTrigName, jackNoteOf )
 import Triggerfish.Balistes.TriSnapshot (Brain(..), TriSnapshot(..), brainBadge, brainLabel, brainOf, printTri, parseTri, rhythmContent, rhythmOfContent)
 import Triggerfish.Glyph as G
-import Triggerfish.GlyphView (faIcon)
+import Triggerfish.GlyphView (faIcons)
 import Triggerfish.Preset (Preset, indexOfContent, presetAlias, presetLabel)
 import Triggerfish.Balistes.Widgets (armBtn, instColor)
 import Triggerfish.Balistes.View.Trig (routeStrip, trigJacks)
@@ -1113,7 +1112,7 @@ laneScore s =
     else if any (\p -> presetAlias p == a) s.presets then
       let g = G.glyphFromAlias a
       in HH.span [ HP.title a, style "display:inline-flex;align-items:center;gap:2px" ]
-           [ faIcon g.first, faIcon g.second ]
+           (faIcons g)
     else
       HH.span
         [ HP.title (a <> " — not a banked snapshot, so this step will not resolve")
@@ -1142,7 +1141,7 @@ presetToken s i p =
           <> (if auditioning then " — play it" else " — append to the lane"))
       , style $ "display:flex;align-items:center;gap:3px;padding:3px 8px;border:1px solid #a8a392;"
           <> "border-radius:5px;cursor:pointer;background:#f3f1e8" ]
-      [ faIcon g.first, faIcon g.second ]
+      (faIcons g)
 
 -- | AUDITION / ASSEMBLE. The Vetula HUNT/PERFORM shape: one switch saying what
 -- | the gesture below it means, so you can jam on the banked beats to find what
@@ -1222,7 +1221,7 @@ bandGlyph s target = case printTri <$> triOf s target of
             <> (if banked then "border:1px solid #00000018;background:#00000006;color:#8a8676"
                           else "border:1px solid #c9a23a;background:#fbf3df;color:#7a5c00") ]
         [ HH.span [ style "display:inline-flex;align-items:center;gap:3px" ]
-            [ faIcon g.first, faIcon g.second ]
+            (faIcons g)
         , HH.text (if banked then "banked" else "bank")
         ]
 
@@ -1583,7 +1582,7 @@ snapshotRow i p =
           , HP.title (if isRhythm p then "select for editing" else "recall")
           , style "display:flex;align-items:center;gap:8px;cursor:pointer;flex:0 0 auto" ]
           [ brainTag p
-          , HH.span [ style "display:inline-flex;align-items:center;gap:3px" ] [ faIcon g.first, faIcon g.second ]
+          , HH.span [ style "display:inline-flex;align-items:center;gap:3px" ] (faIcons g)
           ]
       -- Placeholder is the glyph alias, so an unnamed capture shows the very
       -- label it is going by — the field reads as "this is its name until you

@@ -69,7 +69,7 @@ import Binnacle.Transport as Transport
 import Triggerfish.Transport (Sounding(..))
 import Triggerfish.Midi.Routing as Routing
 import Triggerfish.Glyph (ChipView, Glyph, glyphOf, sessionAliasOf)
-import Triggerfish.GlyphView (faIcon)
+import Triggerfish.GlyphView (faIcon, faIcons)
 import Triggerfish.Preset (Preset, indexOfContent, presetAlias)
 import Vetula.Store as Store
 import Triggerfish.Amphora as Amphora
@@ -4675,7 +4675,7 @@ chyronBar st =
       [ HH.span
           [ HP.style "display: inline-flex; align-items: center; gap: 3px; cursor: pointer;"
           , HE.onClick \e -> if ME.shiftKey e then PerfPickup i else PlaySaved i ]
-          [ faIcon s.glyph.first, faIcon s.glyph.second ]
+          (faIcons s.glyph)
       , HH.button
           [ HP.style "position: absolute; top: -5px; left: -3px; z-index: 2; border: 1px solid #cdbb8c; background: #f6efdc; color: #7a5c00; font-size: 10px; line-height: 1; cursor: pointer; padding: 0 3px; border-radius: 8px;"
           , HP.title "check out to the buffer to edit — the token leaves the shelf; ⏎ save re-bundles a new one"
@@ -5675,7 +5675,7 @@ perfBox st i box =
              Nothing -> case box.seq of
                Just s ->
                  HH.div [ HP.style "display: flex; align-items: center; gap: 6px; font-size: 22px; color: #7a5c00; margin: 2px 0;" ]
-                   [ faIcon s.glyph.first, faIcon s.glyph.second ]
+                   (faIcons s.glyph)
                Nothing ->
                  HH.div [ HP.style "font-size: 28px; color: #d8ceb4; line-height: 1; margin: 2px 0;" ] [ HH.text "＋" ]
          ]

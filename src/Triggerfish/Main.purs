@@ -81,7 +81,7 @@ import Triggerfish.Routing.Monitor as Mon
 import Triggerfish.Routing.Store as RStore
 import Triggerfish.SourceQuery as SQ
 import Triggerfish.Glyph as G
-import Triggerfish.GlyphView (chipIcons, faIcon)
+import Triggerfish.GlyphView (chipIcons, faIcons)
 import Triggerfish.Scenes as Scenes
 import Triggerfish.Scenes.Store as ScenesStore
 import Triggerfish.Macro.Store as MacroStore
@@ -2119,7 +2119,7 @@ completionItem w item =
       , HP.attr (H.AttrName "title") item.alias
       , style $ "display:inline-flex;align-items:center;gap:4px;cursor:pointer;padding:2px 8px;border-radius:11px;"
           <> "border:1px solid #cbd8c4;background:#ffffff" ]
-      [ HH.span [ style "display:inline-flex;align-items:center;gap:2px" ] [ faIcon g.first, faIcon g.second ]
+      [ HH.span [ style "display:inline-flex;align-items:center;gap:2px" ] (faIcons g)
       , HH.span [ style "font-family:'SF Mono',Menlo,monospace;font-size:9px;color:#4a5a4a" ] [ HH.text item.alias ] ]
 
 -- The lowercase Tidal-style lane tag for a machine.
@@ -2148,7 +2148,7 @@ laneStepChip curStep i step =
     ( case step.form of
         FName alias ->
           let g = G.glyphFromAlias alias
-          in [ HH.span [ style "display:inline-flex;align-items:center;gap:2px" ] [ faIcon g.first, faIcon g.second ]
+          in [ HH.span [ style "display:inline-flex;align-items:center;gap:2px" ] (faIcons g)
              , HH.span [ style "font-size:10px;color:#5a6a5a" ] [ HH.text alias ] ]
         FRest -> [ HH.span [ style "color:#9aaa9a" ] [ HH.text "~" ] ]
         FAlt _ -> [ HH.text (stepLabel step) ] )
@@ -2481,7 +2481,7 @@ recallRow w item =
         HH.span
           [ HE.onClick \_ -> RecallFrom w item.slot
           , style "display:flex;align-items:center;gap:8px;cursor:pointer;flex:1 1 auto" ]
-          [ HH.span [ style "display:inline-flex;align-items:center;gap:3px" ] [ faIcon g.first, faIcon g.second ]
+          [ HH.span [ style "display:inline-flex;align-items:center;gap:3px" ] (faIcons g)
           , HH.span [ style "font-family:'SF Mono',Menlo,monospace;font-size:9px;color:#4a463b" ] [ HH.text label ]
           ]
       , -- delete
@@ -2585,7 +2585,7 @@ sceneCellView sceneIx machineIx mAlias =
         Nothing -> [ HH.span [ style "color:#c8bd9e;font-size:14px;line-height:1" ] [ HH.text "—" ] ]
         Just alias ->
           let g = G.glyphFromAlias alias
-          in [ HH.span [ style "display:inline-flex;align-items:center;gap:2px" ] [ faIcon g.first, faIcon g.second ] ]
+          in [ HH.span [ style "display:inline-flex;align-items:center;gap:2px" ] (faIcons g) ]
     )
 
 -- The per-cell bank picker (floating): assign one of the machine's banked glyphs
@@ -2633,7 +2633,7 @@ scenePickRow sceneIx machineIx item =
       [ HE.onClick \_ -> SetSceneCell sceneIx machineIx (Just item.alias)
       , style "display:flex;align-items:center;gap:8px;padding:4px 6px;border-radius:5px;cursor:pointer;background:#e7e3d6" ]
       [ HH.span [ style $ "font-size:11px;width:12px;color:" <> (if item.starred then "#c9a23a" else "#d8d2c2") ] [ HH.text (if item.starred then "★" else "") ]
-      , HH.span [ style "display:inline-flex;align-items:center;gap:3px" ] [ faIcon g.first, faIcon g.second ]
+      , HH.span [ style "display:inline-flex;align-items:center;gap:3px" ] (faIcons g)
       , HH.span [ style "font-family:'SF Mono',Menlo,monospace;font-size:9px;color:#4a463b" ] [ HH.text label ]
       ]
 
