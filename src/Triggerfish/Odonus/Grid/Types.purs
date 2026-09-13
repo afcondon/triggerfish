@@ -408,6 +408,7 @@ data Action
   | ToggleSkip Int
   | SetAllNotes Int
   | SeedMelody              -- fill cells with a random in-harmony melodic line
+  | StampForm Int           -- lay a named figure (Odonus.Forms) into the note field
   | ToggleHeadMute Int
   | SetHeadMask Int
   | CyclePattern Int

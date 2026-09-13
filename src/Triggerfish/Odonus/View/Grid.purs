@@ -22,6 +22,7 @@ import Web.UIEvent.MouseEvent as ME
 import Triggerfish.Odonus.Model as M
 import Triggerfish.Ui.Knob (knob)
 import Triggerfish.Odonus.Marbles (betaWeights)
+import Triggerfish.Odonus.Forms (formLibrary)
 import Triggerfish.Odonus.Grid.Types
   ( Action(..), GenKind(..), KnobTarget(..), Slots, State, marblesPadId, twisterFieldLabel )
 import Triggerfish.Routing.Model as RM
@@ -50,6 +51,7 @@ gridPanel s =
     , xyPad s
     , readout s
     , rollGrid
+    , formShelf
     , HH.div [ style "margin-top:12px" ] [ noteField s.odo ]
     -- STEP LENGTH + GATE/SWING/HUMAN moved to the top of PARAMETERS (AC,
     -- 2026-08-06) — they're global transport/feel, not part of the note field, and
@@ -119,6 +121,19 @@ rollGrid =
     , tabBtn "MID" false (SetAllNotes (M.knobMax `div` 2))
     , tabBtn "MELODY" false SeedMelody
     , tabBtn "⟳ ROLL" false MarblesRoll
+    ]
+
+-- | FORM shelf — the known lines, beside MELODY's random one. Each button lays
+-- | a named figure (`Triggerfish.Odonus.Forms`) into the note field as scale
+-- | degrees, tiled to 16 and written in head I's reading order, so UP sounds
+-- | like up whatever pattern that head walks. Nothing is "selected": a form is a
+-- | one-shot stamp on the cells, which you are then free to edit.
+formShelf :: forall m. H.ComponentHTML Action Slots m
+formShelf =
+  HH.div [ style "margin-top:10px" ]
+    [ HH.div [ style $ engrave <> ";font-size:9px;margin-bottom:4px" ] [ HH.text "FORM" ]
+    , HH.div [ style "display:grid;grid-template-columns:repeat(3,1fr);gap:4px" ]
+        (mapWithIndex (\i f -> tabBtn f.name false (StampForm i)) formLibrary)
     ]
 
 -- ---------------------------------------------------------------------------

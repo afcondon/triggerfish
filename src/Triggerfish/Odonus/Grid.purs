@@ -33,6 +33,7 @@ import Triggerfish.Poly as Poly
 import Reef.Voices as RV
 import Triggerfish.Odonus.Marbles as Marbles
 import Triggerfish.Odonus.Gen as Gen
+import Triggerfish.Odonus.Forms as Forms
 import Triggerfish.Ui.Pointer as Pointer
 import Binnacle as Binnacle
 import Binnacle.Clock as Clock
@@ -670,6 +671,13 @@ dispatch = case _ of
   -- a step apart the two PRNGs would desync permanently. (Reef.Gen.seedMelody
   -- ignores its harmony-PC arg, so RI.SeedMelody == the old inline call.)
   SeedMelody -> enqueue RI.SeedMelody
+  -- A FORM is a KNOWN line where MELODY is a random one, so it needs no PRNG:
+  -- the figure is resolved against the live model here and travels as one
+  -- absolute `SetNotes`, which replays identically on the rig without the
+  -- BEAM having to carry the library.
+  StampForm ix -> do
+    st <- H.get
+    enqueue (RI.SetNotes (Forms.stampForm ix st.odo))
   -- LOCKSTEP (P4c): head mute + activation-matrix are DEFERRED, not applied now —
   -- enqueued for a near-future step and broadcast to the rig so both runtimes flip
   -- the head on the same step (no flam through the edit). The note-off + held-slot
