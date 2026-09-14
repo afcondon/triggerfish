@@ -87,6 +87,7 @@ paletteNode nid root entry =
   , parentId: Nothing
   , root
   , bassPc: root
+  , bassOct: 3
   , pcs: nub (map (\iv -> mod (root + iv) 12) entry.intervals)
   , voicing: map (\iv -> 48 + root + iv) entry.intervals
   , kind: Seed

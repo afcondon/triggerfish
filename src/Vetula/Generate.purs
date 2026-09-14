@@ -130,7 +130,7 @@ generateCandidates mode anchors key adventure startId =
 
       build p pos =
         let bp = mod (fromMaybe 60 (head p.midi)) 12
-        in { id: startId + p.i, parentId: Nothing, root: p.s.c.root, bassPc: bp
+        in { id: startId + p.i, parentId: Nothing, root: p.s.c.root, bassPc: bp, bassOct: 3
            , pcs: nub p.s.c.pcs, voicing: drop 1 p.midi, kind: Voiced
            , label: noteName p.s.c.root <> p.s.c.sfx, pinned: false, outside: p.s.outside
            , targetX: pos.x, targetY: pos.y, isCentre: false, anchor: Free }

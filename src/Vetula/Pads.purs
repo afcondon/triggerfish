@@ -206,6 +206,7 @@ nodeOf scl nid v =
     , parentId: Nothing
     , root: mod v.root 12
     , bassPc: mod (fromMaybe v.root (head midi)) 12
+    , bassOct: 3
     , pcs: ps
     , voicing: drop 1 midi
     , kind: Voiced

@@ -144,7 +144,7 @@ import Vetula.Banks (butlerChords, stockChords)
 import Vetula.Pads as Pads
 import Vetula.Spread (applyToNode, ghostRows, invertNode, spreadOfNode, toneAt)
 import Harmonia.OpenVoicing (at, dropAt, setTone, sounds) as OV
-import Vetula.Harmony (ChordNode, Family(..), Kind(..), blackKeyPcs, diatonicTriads, generate, interchangeChords, keyX, keyboard, latticeChild, latticeFamily, mcmullenChords, noteName, place, placeOutside, playNotes, scaleSet, suspendSet, triadNode, triadOn, voicingCandidates, whiteKeyPcs)
+import Vetula.Harmony (ChordNode, Family(..), Kind(..), bassMidi, blackKeyPcs, octaveShift, diatonicTriads, generate, interchangeChords, keyX, keyboard, latticeChild, latticeFamily, mcmullenChords, noteName, place, placeOutside, playNotes, scaleSet, suspendSet, triadNode, triadOn, voicingCandidates, whiteKeyPcs)
 
 midiPortName :: String
 midiPortName = "IAC"
@@ -938,6 +938,7 @@ data Action
   | HoverPad (Maybe ChordNode)  -- Banks lens: hover a pad (highlight + exact preview)
   | DropTone Event Int Int Int  -- silence chord `id`'s tone `i` at octave `k` (shift-click a note)
   | RollBass Int           -- roll the revoiced chord's bass to the next/previous chord tone
+  | ShiftOctave Int        -- move the revoiced chord bodily up/down an octave
   | PlaceTone Event Int Int Int -- put chord `id`'s tone `i` at octave `k` (click a ghost)
   | SetStage Stage         -- switch stage: Hunt <projection> | Perform | Review
   | TransposeSpec SpecimenId Int -- Slice E: shift one tank specimen by n semitones (in place)
@@ -1793,10 +1794,35 @@ handleAction = case _ of
   -- it the active chord so Tab / arrows / drag / f all target it inside the modal.
   OpenRevoice -> do
     st <- H.get
-    let target = case st.hoveredId of
-          Just hid | any (\c -> c.id == hid) st.chords -> Just hid
-          _ -> st.sounding
-    for_ target \cid -> H.modify_ _ { revoicing = Just cid, sounding = Just cid }
+    -- What to revoice, most direct first: the pad under the pointer (Banks),
+    -- then the pool bubble under it, then whatever is sounding.
+    let candidate = case st.hoveredNode of
+          Just c -> Just c
+          Nothing -> case st.hoveredId >>= \hid -> find (\c -> c.id == hid) st.chords of
+            Just c -> Just c
+            Nothing -> st.sounding >>= \sid -> find (\c -> c.id == sid) st.chords
+    for_ candidate \c ->
+      -- **Every lens but Explore recomputes its chords on each render**, so most
+      -- of what you can click — a lattice member, a colour-layer chord, a Banks
+      -- pad — is not in `st.chords` and has no id the modal can hold. Addressing
+      -- the modal by pool id therefore meant `v` silently fell back to the last
+      -- SOUNDING pool chord, which from a cold start is the home chord: the
+      -- modal looked like it always opened C.
+      --
+      -- So catch it. A chord you have decided to revoice is one you are working
+      -- on, and the pool is the hunting ground. Matched on CONTENT first, so
+      -- re-opening the same chord reuses its entry instead of piling up twins.
+      case find (\d -> d.bassPc == c.bassPc && d.bassOct == c.bassOct && d.voicing == c.voicing) st.chords of
+        Just existing -> H.modify_ _ { revoicing = Just existing.id, sounding = Just existing.id, selected = Nothing }
+        Nothing -> do
+          let caught = place st.key c (c { id = st.nextId, isCentre = false, pinned = false })
+          applyChords (st.chords <> [ caught ])
+          H.modify_ _
+            { nextId = st.nextId + 1
+            , revoicing = Just caught.id
+            , sounding = Just caught.id
+            , selected = Nothing
+            }
 
   CloseRevoice -> H.modify_ _ { revoicing = Nothing }
 
@@ -1813,6 +1839,16 @@ handleAction = case _ of
         let chords' = map (\d -> if d.id == cid then invertNode dir c else d) st.chords
         applyChords chords'
         for_ (find (\d -> d.id == cid) chords') playChord
+
+  -- Bass AND uppers together. Shifting only the uppers spreads a chord; it does
+  -- not transpose it, which is why this needed `bassOct` to exist first.
+  ShiftOctave d -> do
+    st <- H.get
+    for_ st.revoicing \cid ->
+      for_ (find (\c -> c.id == cid) st.chords) \c -> do
+        let chords' = map (\e -> if e.id == cid then octaveShift d c else e) st.chords
+        applyChords chords'
+        for_ (find (\e -> e.id == cid) chords') playChord
 
   SlashBass pc -> do
     st <- H.get
@@ -2359,7 +2395,7 @@ handleAction = case _ of
             node = triadNode root allPcs label
             spec = { id: SpecimenId st.nextSpecId
                    , voicing: node.voicing
-                   , bass: node.bassPc + 36
+                   , bass: bassMidi node
                    , label: node.label
                    , provenance: FromLens (groupLabel st.key)
                    , anchor: node.anchor
@@ -4113,7 +4149,7 @@ specToNode :: Int -> Key -> Specimen -> ChordNode
 specToNode newId key s =
   let pcs = nub (map (\n -> mod n 12) ([ s.bass ] <> s.voicing))
       base =
-        { id: newId, parentId: Nothing, root: mod s.bass 12, bassPc: mod s.bass 12
+        { id: newId, parentId: Nothing, root: mod s.bass 12, bassPc: mod s.bass 12, bassOct: s.bass / 12
         , pcs, voicing: s.voicing, kind: Seed, label: s.label, pinned: false
         , outside: 0, targetX: 0.0, targetY: 0.0, isCentre: true
         , anchor: s.anchor }   -- carry the tank reading back onto the surface
@@ -7075,7 +7111,8 @@ importChord :: Int -> Array Int -> ChordNode
 importChord nid notes =
   let sorted = sort notes
       bp = mod (fromMaybe 60 (head sorted)) 12
-  in { id: nid, parentId: Nothing, root: bp, bassPc: bp
+      bo = fromMaybe 60 (head sorted) / 12
+  in { id: nid, parentId: Nothing, root: bp, bassPc: bp, bassOct: bo
      , pcs: nub (map (\m -> mod m 12) sorted)
      , voicing: drop 1 sorted
      , kind: Voiced, label: noteName bp
@@ -7653,8 +7690,10 @@ revoiceModal st =
                <> mapWithIndex (slashBtn c.bassPc) tones )
        , HH.div
            [ HP.style "display: flex; gap: 6px; justify-content: center; margin-top: 10px;" ]
-           [ rvBtn "⟲ invert" "roll the bass down to the previous chord tone" (RollBass (-1))
-           , rvBtn "invert ⟳" "roll the bass up to the next chord tone" (RollBass 1)
+           [ rvBtn "8ve ▼" "the whole chord down an octave, bass included" (ShiftOctave (-1))
+           , rvBtn "⟲ invert" "roll the lowest voice down — the previous inversion" (RollBass (-1))
+           , rvBtn "invert ⟳" "roll the lowest voice up — the next inversion" (RollBass 1)
+           , rvBtn "8ve ▲" "the whole chord up an octave, bass included" (ShiftOctave 1)
            ]
        , HH.div [ HP.style "margin-top: 8px; font-size: 11px; color: #9a9a9a; text-align: center;" ]
            [ HH.text "Tab voicings · ↑↓ nudge · drag = 8ve · ⌥ doubles · ⇧ drops a note · f keep · Esc" ]

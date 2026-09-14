@@ -26,6 +26,8 @@ module Vetula.Harmony
   , place
   , placeOutside
   , playNotes
+  , bassMidi
+  , octaveShift
   , noteName
   , scaleSet
   , keyX
@@ -59,6 +61,13 @@ type ChordNode =
   , parentId :: Maybe Int  -- the chord this was generated from (Nothing for seeds)
   , root :: Int           -- pitch class — the key it sits over + extension anchor
   , bassPc :: Int         -- bass pitch class — for inversions + grounding
+  -- The octave the bass sounds in. This used to be the constant 36 baked into
+  -- `playNotes`, which meant a chord could not be moved in register at all:
+  -- the uppers could be shifted and the bass stayed nailed to C2, so a
+  -- whole-chord octave was not expressible and an inversion that turned all
+  -- the way round left its bass three octaves below the notes it belonged to.
+  -- 3 reproduces the old pitch exactly (pc + 12*3 = pc + 36).
+  , bassOct :: Int
   , pcs :: Array Int      -- absolute pitch classes of the chord's content
   , voicing :: Array Int  -- uppers as ascending MIDI (no grounding bass)
   , kind :: Kind
@@ -74,7 +83,21 @@ type ChordNode =
   }
 
 playNotes :: ChordNode -> Array Int
-playNotes c = [ c.bassPc + 36 ] <> c.voicing
+playNotes c = [ bassMidi c ] <> c.voicing
+
+-- | Where the bass actually sounds. One place, so nothing re-derives it from
+-- | `bassPc` and a remembered constant.
+bassMidi :: ChordNode -> Int
+bassMidi c = mod c.bassPc 12 + 12 * c.bassOct
+
+-- | Move a whole chord in register — bass and uppers together, which is the
+-- | point: shifting only the uppers spreads the chord, it does not transpose
+-- | it. Clamped so a chord cannot be driven off the ladder.
+octaveShift :: Int -> ChordNode -> ChordNode
+octaveShift d c =
+  let oct = clamp 1 6 (c.bassOct + d)
+      moved = oct - c.bassOct
+  in c { bassOct = oct, voicing = map (_ + 12 * moved) c.voicing }
 
 -- ---------------------------------------------------------------------------
 -- Seeds — the McMullen palette
@@ -91,6 +114,7 @@ fromDegree key i dc =
      , parentId: Nothing
      , root: r
      , bassPc: chordBass key dc
+     , bassOct: 3
      , pcs
      , voicing: voicingMidi (closeVoicing { centre: 4 } (Chord pcs))
      , kind: Seed
@@ -114,6 +138,7 @@ borrowedChords key = mapWithIndex mk moves
        , parentId: Nothing
        , root: nr
        , bassPc: nr
+     , bassOct: 3
        , pcs: ps
        , voicing: voicingMidi (closeVoicing { centre: 4 } (Chord ps))
        , kind: Borrowed
@@ -152,6 +177,7 @@ triadAt s n i =
      , parentId: Nothing
      , root
      , bassPc: root
+     , bassOct: 3
      , pcs
      , voicing: voicingMidi (closeVoicing { centre: 4 } (Chord pcs))
      , kind: Seed
@@ -172,6 +198,7 @@ triadNode root rawPcs label =
      , parentId: Nothing
      , root
      , bassPc: root
+     , bassOct: 3
      , pcs
      , voicing: voicingMidi (closeVoicing { centre: 4 } (Chord pcs))
      , kind: Seed
@@ -208,6 +235,7 @@ latticeFamily key seed =
            , parentId: Nothing
            , root: seed.root
            , bassPc: seed.root
+     , bassOct: 3
            , pcs
            , voicing: voicingMidi (closeVoicing { centre: 4 } (Chord pcs))
            , kind: Extended
@@ -258,6 +286,7 @@ latticeChild key seed rawPcs =
          , parentId: Nothing
          , root: seed.root
          , bassPc: seed.root
+     , bassOct: 3
          , pcs
          , voicing: voicingMidi (closeVoicing { centre: 4 } (Chord pcs))
          , kind: Extended
