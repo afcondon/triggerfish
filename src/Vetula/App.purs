@@ -142,7 +142,7 @@ import Vetula.Between (bridgeNotes, maxBridge)
 import Harmonia.Graded (transpose) as Graded
 import Vetula.Banks (butlerChords, stockChords)
 import Vetula.Pads as Pads
-import Vetula.Spread (applyToNode, spreadOfNode, toneAt, toneRows)
+import Vetula.Spread (applyToNode, ghostRows, invertNode, spreadOfNode, toneAt)
 import Harmonia.OpenVoicing (at, dropAt, setTone, sounds) as OV
 import Vetula.Harmony (ChordNode, Family(..), Kind(..), blackKeyPcs, diatonicTriads, generate, interchangeChords, keyX, keyboard, latticeChild, latticeFamily, mcmullenChords, noteName, place, placeOutside, playNotes, scaleSet, suspendSet, triadNode, triadOn, voicingCandidates, whiteKeyPcs)
 
@@ -1802,14 +1802,15 @@ handleAction = case _ of
 
   -- a slash chord: set the revoiced chord's bass to a chosen pitch class (same
   -- upper notes, different foundation) — a voicing decision, kept in the modal.
-  -- Inversion as a single gesture. The slash row already re-foots the chord on
-  -- any named tone; this walks the same cycle without having to know which tone
-  -- comes next, which is what "try the inversions" actually means.
+  -- Inversion as a single gesture, and a REAL one: the lowest voice rolls up an
+  -- octave (or the highest down) and the bass follows it. Re-footing alone —
+  -- what the slash row does — leaves C·E·G over E, which is a slash chord and
+  -- not a first inversion. The upper structure has to move.
   RollBass dir -> do
     st <- H.get
     for_ st.revoicing \cid ->
       for_ (find (\c -> c.id == cid) st.chords) \c -> do
-        let chords' = map (\d -> if d.id == cid then d { bassPc = rotateBass dir c } else d) st.chords
+        let chords' = map (\d -> if d.id == cid then invertNode dir c else d) st.chords
         applyChords chords'
         for_ (find (\d -> d.id == cid) chords') playChord
 
@@ -2372,7 +2373,18 @@ handleAction = case _ of
   AuditionNode c -> do
     st <- H.get
     if st.panMoved then H.modify_ _ { panMoved = false }
-    else playChord c
+    else do
+      -- Make it the ACTIVE chord, so `v` opens what you just clicked. Without
+      -- this, `sounding` was only ever set by `playId` (the pool-bubble path),
+      -- so auditioning from any other lens left `v` pointing at whatever chord
+      -- was last opened — it reads as the modal being stuck.
+      --
+      -- Guarded on pool membership because the modal edits `st.chords`: a Banks
+      -- pad or a generated candidate is not in there, and claiming it as
+      -- `sounding` would point the ladder at a chord it cannot find.
+      when (any (\d -> d.id == c.id) st.chords) $
+        H.modify_ _ { sounding = Just c.id, selected = Nothing }
+      playChord c
 
 
   -- Chyron: remember which chip the pointer is over so space auditions it.
@@ -7272,7 +7284,7 @@ progressionRow st i c =
                       ]
                     Nothing -> [])
           )
-          (map octLine [ 36, 48, 60, 72, 84 ] <> mapWithIndex dot (playNotes c) <> concatMap ghost (toneRows c))
+          (map octLine [ 36, 48, 60, 72, 84 ] <> mapWithIndex dot (playNotes c) <> concatMap ghost (ghostRows c))
       , HH.span [ HP.style "flex: 0 0 26px; font-size: 10px; color: #b0b0b0;" ] [ HH.text c.label ]
       ]
 
@@ -7505,7 +7517,7 @@ ladderView msel msound = grid <> octs <> dots
     ]
   dots = case msound of
     Nothing -> []
-    Just c -> mapWithIndex (dot c.id) (playNotes c) <> concatMap (ghost c.id) (toneRows c)
+    Just c -> mapWithIndex (dot c.id) (playNotes c) <> concatMap (ghost c.id) (ghostRows c)
   -- A tone that is not played still gets a mark, at the position it would
   -- return to. Without it there is nothing to click, which is the whole reason
   -- omission has never been reachable here.

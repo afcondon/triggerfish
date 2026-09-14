@@ -38,6 +38,8 @@ module Vetula.Spread
   , applyToNode
   , ToneRow
   , toneRows
+  , ghostRows
+  , invertNode
   , toneIxOfPc
   , toneAt
   , favKey
@@ -45,7 +47,8 @@ module Vetula.Spread
 
 import Prelude
 
-import Data.Array (drop, findIndex, head, index, length, mapWithIndex, nub, sort)
+import Data.Array (cons, drop, filter, findIndex, head, index, length, mapWithIndex, nub, nubByEq, snoc, sort, uncons, unsnoc)
+import Data.Foldable (elem)
 import Data.Maybe (Maybe(..), fromMaybe)
 import Harmonia.Chord (Chord(..))
 import Harmonia.OpenVoicing (Open, Place, Rooted, Spread, applySpread, baseStack, defaults, omit, spreadOf)
@@ -118,6 +121,51 @@ toneRows c =
 -- | other.
 toneIxOfPc :: ChordNode -> Int -> Maybe Int
 toneIxOfPc c pc = findIndex (\r -> r.pc == mod pc 12) (toneRows c)
+
+-- | **The tones that are genuinely not heard** — the only ones that should be
+-- | drawn as ghosts.
+-- |
+-- | Not simply "the rows with an empty `Place`", and the difference is a real
+-- | bug. `minTones` pads the stack so a DOUBLED tone has somewhere to live, and
+-- | that padding gives one pitch class two positions. `spreadOf`'s matching is
+-- | greedy — every copy is credited to the lowest position of its pitch class —
+-- | so the padded position ends up permanently empty and drew a full column of
+-- | ghosts for a note that was sounding two rows below.
+-- |
+-- | The rule that fixes it is also the truer statement of what a ghost means:
+-- | **this pitch class is not in the chord at all.** Measured against the
+-- | voicing's uppers rather than `playNotes`, because the pinned bass sounding
+-- | a pitch class should not stop you putting that tone back above it.
+ghostRows :: ChordNode -> Array ToneRow
+ghostRows c =
+  nubByEq (\a b -> a.pc == b.pc)
+    (filter (\r -> not (elem r.pc heard)) (toneRows c))
+  where
+  heard = map (\m -> mod m 12) c.voicing
+
+-- | **A real inversion: roll the lowest voice up an octave (or the highest
+-- | down), and let the bass follow.**
+-- |
+-- | Distinct from `rotateBass`, which re-foots the chord WITHOUT touching the
+-- | upper structure — that is a slash chord, and a useful thing, but it is not
+-- | an inversion: C·E·G over E is still C·E·G. A first inversion is E·G·C, and
+-- | getting there means moving the C.
+invertNode :: Int -> ChordNode -> ChordNode
+invertNode dir c =
+  if dir > 0 then case uncons ns of
+    Just { head: lo, tail: rest } -> refoot (snoc rest (lo + 12))
+    Nothing -> c
+  else case unsnoc ns of
+    Just { init: rest, last: hi } -> refoot (cons (hi - 12) rest)
+    Nothing -> c
+  where
+  ns = sort c.voicing
+  -- the bass is the new lowest voice: an inversion is named for what is at the
+  -- bottom, so leaving `bassPc` behind would sound the old inversion under the
+  -- new one.
+  refoot xs =
+    let sorted = sort xs
+    in c { voicing = sorted, bassPc = mod (fromMaybe c.bassPc (head sorted)) 12 }
 
 -- | **Which tone, and which of its copies, a sounding note is.**
 -- |
