@@ -39,7 +39,7 @@ module Vetula.Harmony
 import Prelude
 
 import Data.Array (elemIndex, filter, length, mapWithIndex, nub, sort, (!!), (:))
-import Data.Foldable (any, elem, foldr, maximum)
+import Data.Foldable (any, elem, foldr, maximum, minimum)
 import Data.Int (toNumber)
 import Data.Maybe (Maybe(..), fromMaybe, maybe)
 import Data.Tuple (Tuple(..))
@@ -92,12 +92,23 @@ bassMidi c = mod c.bassPc 12 + 12 * c.bassOct
 
 -- | Move a whole chord in register — bass and uppers together, which is the
 -- | point: shifting only the uppers spreads the chord, it does not transpose
--- | it. Clamped so a chord cannot be driven off the ladder.
+-- | it.
+-- |
+-- | **Bounded by the sounding range, not by `bassOct`.** Clamping the bass
+-- | octave number was the obvious thing and was wrong: inversions raise the
+-- | bass, so a few of them drove `bassOct` into the clamp and the control then
+-- | did NOTHING — silently, because a clamped shift moves the uppers by the
+-- | same zero. Measured at 7 of 186 chords after three inversions. What
+-- | actually needs bounding is where the notes end up, so that is what is
+-- | tested, and a shift that would leave the range is refused whole rather than
+-- | applied by halves.
 octaveShift :: Int -> ChordNode -> ChordNode
 octaveShift d c =
-  let oct = clamp 1 6 (c.bassOct + d)
-      moved = oct - c.bassOct
-  in c { bassOct = oct, voicing = map (_ + 12 * moved) c.voicing }
+  let ns = playNotes c
+      lo = fromMaybe 60 (minimum ns) + 12 * d
+      hi = fromMaybe 60 (maximum ns) + 12 * d
+  in if lo >= 12 && hi <= 120 then c { bassOct = c.bassOct + d, voicing = map (_ + 12 * d) c.voicing }
+     else c
 
 -- ---------------------------------------------------------------------------
 -- Seeds — the McMullen palette

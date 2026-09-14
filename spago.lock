@@ -51,7 +51,9 @@
           ]
         },
         "test": {
-          "dependencies": []
+          "dependencies": [
+            "assert"
+          ]
         }
       }
     },
@@ -763,6 +765,16 @@
         "tuples",
         "unfoldable",
         "unsafe-coerce"
+      ]
+    },
+    "assert": {
+      "type": "registry",
+      "version": "6.0.0",
+      "integrity": "sha256-hCZ1J8/71nQiRwsSV2j7iicppScOegBFZrLI6sPf9F8=",
+      "dependencies": [
+        "console",
+        "effect",
+        "prelude"
       ]
     },
     "bifunctors": {

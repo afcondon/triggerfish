@@ -53,7 +53,7 @@ import Data.Maybe (Maybe(..), fromMaybe)
 import Harmonia.Chord (Chord(..))
 import Harmonia.OpenVoicing (Open, Place, Rooted, Spread, applySpread, baseStack, defaults, omit, spreadOf)
 import Harmonia.Voicing (Voicing(..), voicingMidi)
-import Vetula.Harmony (ChordNode, playNotes)
+import Vetula.Harmony (ChordNode, bassMidi, playNotes)
 
 -- | The frame this chord's voicing is read in: the stack rooted on the chord's
 -- | own bass, in the octave that bass actually occupies. `reach` is generous
@@ -133,23 +133,43 @@ toneIxOfPc c pc = findIndex (\r -> r.pc == mod pc 12) (toneRows c)
 -- | ghosts for a note that was sounding two rows below.
 -- |
 -- | The rule that fixes it is also the truer statement of what a ghost means:
--- | **this pitch class is not in the chord at all.** Measured against the
--- | voicing's uppers rather than `playNotes`, because the pinned bass sounding
--- | a pitch class should not stop you putting that tone back above it.
+-- | **this pitch class is not sounding anywhere.** Measured against
+-- | `playNotes`, the bass included — an earlier version looked only at the
+-- | uppers, reasoning that a pinned bass should not stop you putting the tone
+-- | back above it. That was wrong twice over: a chord whose root lives only in
+-- | the bass (which is every `openVoicing` chord) then offered a ghost for a
+-- | note you could plainly hear, and after an inversion it did so for whichever
+-- | tone had just become the bass. Doubling a tone is what `doubleTone` is for;
+-- | a ghost is for a tone that is GONE.
 ghostRows :: ChordNode -> Array ToneRow
 ghostRows c =
   nubByEq (\a b -> a.pc == b.pc)
     (filter (\r -> not (elem r.pc heard)) (toneRows c))
   where
-  heard = map (\m -> mod m 12) c.voicing
+  heard = map (\m -> mod m 12) (playNotes c)
 
--- | **A real inversion: roll the lowest voice up an octave (or the highest
--- | down), and let the bass follow.**
+-- | **A real inversion: the lowest sounding note up an octave (or the highest
+-- | down), and the bass is whatever is lowest afterwards.**
 -- |
--- | Distinct from `rotateBass`, which re-foots the chord WITHOUT touching the
--- | upper structure — that is a slash chord, and a useful thing, but it is not
--- | an inversion: C·E·G over E is still C·E·G. A first inversion is E·G·C, and
--- | getting there means moving the C.
+-- | Two things this must NOT be, both of which it has been:
+-- |
+-- |   * `rotateBass`, which re-foots the chord without touching the upper
+-- |     structure. C·E·G over E is a slash chord; a first inversion is E·G·C.
+-- |   * a rotation of `voicing` alone. The uppers are not the chord — a voicing
+-- |     from `openVoicing` has its root in the BASS and often nowhere else, so
+-- |     rotating the uppers of `CM7` (36·55·71·76) makes G the bass and deletes
+-- |     the C. Measured: 62 of 186 chords lost a pitch class that way.
+-- |
+-- | So it works over `playNotes`, and the bass is re-read from the result. That
+-- | also settles the register: `bassOct` follows the new lowest note, so a full
+-- | turn of the inversions carries the bass up with the chord instead of
+-- | stranding it two octaves below.
+-- |
+-- | ⟲ and ⟳ are not exact inverses on a widely-spaced chord, and cannot be:
+-- | "lowest up" and "highest down" only undo each other when the note that
+-- | moved up lands on top, which is true in close position and not otherwise.
+-- | They preserve the chord's content in both directions, which is the property
+-- | that matters.
 invertNode :: Int -> ChordNode -> ChordNode
 invertNode dir c =
   if dir > 0 then case uncons ns of
@@ -159,13 +179,11 @@ invertNode dir c =
     Just { init: rest, last: hi } -> refoot (cons (hi - 12) rest)
     Nothing -> c
   where
-  ns = sort c.voicing
-  -- the bass is the new lowest voice: an inversion is named for what is at the
-  -- bottom, so leaving `bassPc` behind would sound the old inversion under the
-  -- new one.
+  ns = sort (playNotes c)
   refoot xs =
     let sorted = sort xs
-    in c { voicing = sorted, bassPc = mod (fromMaybe c.bassPc (head sorted)) 12 }
+        b = fromMaybe (bassMidi c) (head sorted)
+    in c { bassPc = mod b 12, bassOct = b / 12, voicing = drop 1 sorted }
 
 -- | **Which tone, and which of its copies, a sounding note is.**
 -- |

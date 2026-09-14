@@ -16,6 +16,7 @@ import Data.String (Pattern(..))
 import Data.String.Common (joinWith, split)
 import Effect (Effect)
 import Effect.Console (log)
+import Test.RevoiceSpec (runRevoiceTests)
 import Triggerfish.Odonus.Model as M
 import Triggerfish.Odonus.Marbles as Marbles
 import Triggerfish.Odonus.Gen as Gen
@@ -145,6 +146,9 @@ yn b = if b then "✓ PASS" else "✗ FAIL"
 main :: Effect Unit
 main = do
   log "════ Triggerfish sampling harness ════"
+  -- Assertion suites first: these FAIL the run, where the sampling stats below
+  -- only report.
+  runRevoiceTests
   log ("steps per scenario: " <> show n <> "\n")
 
   -- A. Chord quantiser: NOTES churning every step, chord overlay on. EVERY

@@ -57,7 +57,8 @@ package:
     platform: browser
   test:
     main: Triggerfish.Harness
-    dependencies: []
+    dependencies:
+      - assert     # the revoicing transform laws (test/RevoiceSpec.purs)
 workspace:
   extraPackages:
     # The theory layer. PATH-DEP during development of the Progressions-family
