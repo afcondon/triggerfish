@@ -140,7 +140,8 @@ import Harmonia.Voicing (Voicing(..), Selector(..), voicingMidi, takeVoicing, op
 import Harmonia.Chord (Key, Mode(..), cMajorKey, chordRoot)
 import Vetula.Between (bridgeNotes, maxBridge)
 import Harmonia.Graded (transpose) as Graded
-import Vetula.Palette (butlerChords, stockChords)
+import Vetula.Banks (butlerChords, stockChords)
+import Vetula.Pads as Pads
 import Vetula.Harmony (ChordNode, Family(..), Kind(..), blackKeyPcs, diatonicTriads, generate, interchangeChords, keyX, keyboard, latticeChild, latticeFamily, mcmullenChords, noteName, place, placeOutside, playNotes, scaleSet, suspendSet, triadNode, triadOn, voicingCandidates, whiteKeyPcs)
 
 midiPortName :: String
@@ -195,7 +196,7 @@ derive instance ordLeftSection :: Ord LeftSection
 -- | idea). Catch a relative and it feeds the tank — the compositional loop closes.
 -- |
 -- | (Keyboard / pad-grid retired — subsumed by the interactive fifths.)
-data Viewtype = Fifths | Tonnetz | Lattice | Explore
+data Viewtype = Fifths | Tonnetz | Lattice | Explore | Pads
 
 derive instance eqViewtype :: Eq Viewtype
 
@@ -242,10 +243,11 @@ viewtypeLabel = case _ of
   Tonnetz -> "tonnetz"
   Lattice -> "voice-leading lattice"
   Explore -> "explore"
+  Pads -> "banks"
 
 -- | The browse projections, in bar order.
 viewtypes :: Array Viewtype
-viewtypes = [ Fifths, Tonnetz, Lattice, Explore ]
+viewtypes = [ Fifths, Tonnetz, Lattice, Explore, Pads ]
 
 -- | The four HUNT projections as the dropdown hanging off the HUNT tab: a stable
 -- | string `value` ↔ `Viewtype`, with a readable menu `label`. Perform and Review
@@ -256,6 +258,7 @@ viewtypeValue = case _ of
   Tonnetz -> "tonnetz"
   Lattice -> "lattice"
   Explore -> "explore"
+  Pads -> "pads"
 
 viewtypeFromValue :: String -> Viewtype
 viewtypeFromValue = case _ of
@@ -263,6 +266,7 @@ viewtypeFromValue = case _ of
   "tonnetz" -> Tonnetz
   "lattice" -> Lattice
   "explore" -> Explore
+  "pads" -> Pads
   _ -> Tonnetz
 
 viewtypeMenuLabel :: Viewtype -> String
@@ -271,6 +275,7 @@ viewtypeMenuLabel = case _ of
   Tonnetz -> "tonnetz"
   Lattice -> "voice-leading lattice"
   Explore -> "explore"
+  Pads -> "banks (freedom × complexity)"
 
 browseOptions :: Array { value :: String, label :: String }
 browseOptions = map (\vt -> { value: viewtypeValue vt, label: viewtypeMenuLabel vt }) viewtypes
@@ -683,6 +688,15 @@ type State =
   , panning :: Maybe { ux :: Number, uy :: Number }  -- grabbed anchor point in user-space
   , panMoved :: Boolean            -- a real drag happened → swallow the ensuing click
   , genRoll :: Int                 -- Generate lens: the "shake" counter (re-rolls relatives)
+  -- Banks lens: the shuffle number. ONE Int regenerates all nine banks, because
+  -- each is a `Harmonia.Progression.Spec` whose seed is fanned out from this.
+  , padRoll :: Int
+  -- The hovered PAD, carried whole. `hoveredTriad` would be enough to highlight
+  -- it, but not to preview it: that path re-voices from pitch classes, and a
+  -- pad's open voicing (bass pinned to the root, contour smoothed against its
+  -- neighbours in the bank) is exactly what must NOT be thrown away — space and
+  -- click have to sound the same chord.
+  , hoveredNode :: Maybe ChordNode
   -- Tank model (Slice B): the staged seeds. Clicking a tank specimen injects it
   -- into the pool as a centre chord (`seedChord` maps the specimen → its pool
   -- chord id) and blooms its neighbours around it; clicking again unstages it.
@@ -918,6 +932,8 @@ data Action
   | PanEnd                 -- geometric lens: end the pan drag
   | ResetView              -- geometric lens: re-fit (zoom 1, centred)
   | ShakeGenerate          -- Generate lens: re-roll the tank-seeded relatives
+  | ShufflePads            -- Banks lens: re-walk all nine banks
+  | HoverPad (Maybe ChordNode)  -- Banks lens: hover a pad (highlight + exact preview)
   | SetStage Stage         -- switch stage: Hunt <projection> | Perform | Review
   | TransposeSpec SpecimenId Int -- Slice E: shift one tank specimen by n semitones (in place)
   | CapoTank Int           -- Slice E: shift the WHOLE tank by n semitones (a capo)
@@ -1076,6 +1092,8 @@ component = H.mkComponent
       , panning: Nothing
       , panMoved: false
       , genRoll: 0
+      , padRoll: 0
+      , hoveredNode: Nothing
       , chyron: []
       , hoveredChyron: Nothing
       , chyronSel: Nothing
@@ -1645,10 +1663,18 @@ handleAction = case _ of
 
   HoverTriad mt -> H.modify_ _ { hoveredTriad = mt }
 
+  -- A pad sets BOTH: the triad hover drives the glyph highlighting every lens
+  -- shares, the node drives the preview, which needs the voicing the triad
+  -- reading has already discarded.
+  HoverPad mc -> H.modify_ _
+    { hoveredNode = mc
+    , hoveredTriad = map (\c -> { root: c.root, pcs: c.pcs }) mc
+    }
+
   -- entering a tank tile sets the hovered specimen (space previews it); leaving
   -- clears it. Also clears any surface hover so space can't fall back to a stale
   -- pool bubble while the pointer is over the tank.
-  HoverSpec ms -> H.modify_ _ { hoveredSpec = ms, hoveredId = Nothing, hoveredTriad = Nothing }
+  HoverSpec ms -> H.modify_ _ { hoveredSpec = ms, hoveredId = Nothing, hoveredTriad = Nothing, hoveredNode = Nothing }
 
   -- Slice 4c: hand-override the width-focus (the Hunt/Perform toggle, the pool spine).
   ToggleLeftSection sec -> H.modify_ \s ->
@@ -2714,6 +2740,8 @@ handleAction = case _ of
   ResetView -> H.modify_ _ { viewCx = 0.0, viewCy = 0.0, viewZoom = 1.0, panning = Nothing, panMoved = false }
 
   ShakeGenerate -> H.modify_ \s -> s { genRoll = s.genRoll + 1 }
+
+  ShufflePads -> H.modify_ \s -> s { padRoll = s.padRoll + 1 }
 
   -- The one mode switch. Absorbed the old `SetCaptureView`, so leaving REVIEW by
   -- ANY route — Perform, or off to Hunt — hushes the region preview and drops the
@@ -4108,6 +4136,9 @@ playHoveredOrSounding = do
       -- pointer over a tank tile: preview that frozen specimen straight from its
       -- own voicing (no state change), so you can explore the tank by ear too.
       Just sid | Just spec <- find (\sp -> sp.id == sid) st.tank -> playSpecimen spec
+      -- Banks: a pad carries its own open voicing, so play it VERBATIM. This has
+      -- to come before the triad branch below, which would re-voice it close.
+      _ | Just c <- st.hoveredNode -> playChord c
       _ -> case st.hoveredTriad of
         -- Tonnetz: a hovered triangle has no pool id, so preview it straight from its
         -- root + pitch classes (no state change, like the candidate preview below).
@@ -5078,14 +5109,18 @@ contextBar st =
   -- browse view (a guaranteed way back, since re-picking the dropdown's current
   -- value wouldn't fire).
   -- shake re-rolls Explore's relatives; only meaningful while Explore is showing.
-  shakeChip =
-    if st.stage == Hunt Explore then
-      [ HH.button
-          [ HP.style "border: 1px solid #cdbb8c; background: #fbf6ea; color: #7a5c00; cursor: pointer; padding: 3px 10px; border-radius: 4px; font-size: 12px; white-space: nowrap;"
-          , HP.title "re-roll the relatives around each seed"
-          , HE.onClick \_ -> ShakeGenerate ]
-          [ HH.text "shake ⟳" ] ]
-    else []
+  -- The Banks lens borrows the same chip with its own verb: there it re-walks
+  -- all nine banks from a fresh number.
+  shakeChip = case st.stage of
+    Hunt Explore -> [ rollChip "shake ⟳" "re-roll the relatives around each seed" ShakeGenerate ]
+    Hunt Pads -> [ rollChip "shuffle ⟳" "re-walk all nine banks from a new seed" ShufflePads ]
+    _ -> []
+  rollChip label tip act =
+    HH.button
+      [ HP.style "border: 1px solid #cdbb8c; background: #fbf6ea; color: #7a5c00; cursor: pointer; padding: 3px 10px; border-radius: 4px; font-size: 12px; white-space: nowrap;"
+      , HP.title tip
+      , HE.onClick \_ -> act ]
+      [ HH.text label ]
   -- the borrow-scale picker only appears when the BORROWED color layer is
   -- engaged — it is that layer's source, meaningless otherwise (AC, 2026-07-31).
   -- Kept with a small inline label (unlike key/scale) since it appears
@@ -5248,6 +5283,7 @@ surface st
       Hunt Tonnetz -> tonnetzSurface st
       Hunt Lattice -> latticesSurface st
       Hunt Explore -> generativeSurface st
+      Hunt Pads -> padsSurface st
 
 -- | The PERFORM surface — a row of player BOXES, one per output. Shift-click (or
 -- | drag) a saved token in the chyron to pick it up, then click (or drop it onto)
@@ -6705,6 +6741,105 @@ genCluster st i spec =
   in spokes
        <> concatMap (\p -> genGlyph st.hoveredTriad p.cx p.cy 11.0 false p.c) placed
        <> genGlyph st.hoveredTriad center.x center.y 15.0 true seedN
+
+-- ---------------------------------------------------------------------------
+-- The BANKS lens — the chord space as nine banks of sixteen
+-- ---------------------------------------------------------------------------
+
+-- | **The Banks lens** — `Vetula.Pads` rendered as a labelled 3×3 of 4×4 pads.
+-- |
+-- | The other four Hunt lenses are geometric: a chord's position is COMPUTED
+-- | from its pitch content and redrawn as the selection moves. This one is a
+-- | table, and deliberately so — a chord's position is its address in the
+-- | generator's two axes, fixed for the session. Rows are how far from home the
+-- | walk may roam, columns are how richly it may colour, and the axes are
+-- | labelled once at the edges rather than nine times in the cells.
+-- |
+-- | HTML rather than SVG: this is a grid of buttons, so CSS grid does the
+-- | layout that the geometric lenses need a viewBox and trigonometry for. The
+-- | only SVG is the chromatic-circle glyph inside each pad, which keeps the
+-- | pads speaking Vetula's visual language rather than becoming a chord chart.
+padsSurface :: forall m. State -> H.ComponentHTML Action Slots m
+padsSurface st =
+  let cells = Pads.grid st.key st.padRoll
+      bankAt r c = filter (\x -> x.reach == r && x.colour == c) cells
+  in HH.div
+      -- `vetula-surface` is load-bearing, not cosmetic: `surfaceHidden` finds the
+      -- surface by this class and reports "hidden" when the selector matches
+      -- nothing, which stands the WHOLE keyboard down. Every other lens gets it
+      -- free by being an `SE.svg`; an HTML surface has to say it.
+      [ HP.class_ (cn "vetula-surface")
+      , HP.style "position: absolute; inset: 0; overflow: auto; padding: 16px 22px 26px;" ]
+      [ HH.div
+          [ HP.style "font-size: 11px; color: #a09880; letter-spacing: 0.04em; margin-bottom: 10px; -webkit-user-select: none; user-select: none;" ]
+          [ HH.text ("144 chords of a 480-chord vocabulary · rows roam further from "
+                      <> noteName (mod st.key.tonic 12)
+                      <> ", columns colour more richly · each bank is one seeded walk, so any row of four is already a progression") ]
+      , HH.div
+          [ HP.style "display: grid; grid-template-columns: 62px repeat(3, minmax(0, 1fr)); gap: 10px 12px; align-items: start;" ]
+          ( [ HH.div [] [] ]
+              <> map padColHead Pads.colours
+              <> concatMap
+                   (\r -> [ padRowHead r ] <> map (\c -> padBank st (bankAt r c)) Pads.colours)
+                   Pads.reaches
+          )
+      ]
+
+-- | A column header — the complexity axis, named once.
+padColHead :: forall m. Pads.Colour -> H.ComponentHTML Action Slots m
+padColHead c =
+  HH.div
+    [ HP.style "font-size: 11px; color: #7a7360; letter-spacing: 0.08em; text-transform: uppercase; padding-bottom: 2px; border-bottom: 1px solid #e6dfcc; -webkit-user-select: none; user-select: none;" ]
+    [ HH.text (Pads.colourLabel c) ]
+
+-- | A row header — the freedom axis, named once. Rotated would be prettier and
+-- | less readable; three short words do not need the space.
+padRowHead :: forall m. Pads.Reach -> H.ComponentHTML Action Slots m
+padRowHead r =
+  HH.div
+    [ HP.style "font-size: 11px; color: #7a7360; letter-spacing: 0.08em; text-transform: uppercase; padding-top: 14px; text-align: right; -webkit-user-select: none; user-select: none;" ]
+    [ HH.text (Pads.reachLabel r) ]
+
+-- | One bank: sixteen pads, four across. Takes an array because the lookup that
+-- | finds it is a filter — an empty one renders as nothing rather than throwing.
+padBank :: forall m. State -> Array Pads.Cell -> H.ComponentHTML Action Slots m
+padBank st cs = case head cs of
+  Nothing -> HH.div [] []
+  Just cell ->
+    HH.div
+      [ HP.style "display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 4px; background: #fbf8f0; border: 1px solid #ece5d2; border-radius: 5px; padding: 6px;" ]
+      (map (padButton st) cell.chords)
+
+-- | One pad. Click auditions it, which is also what puts it in the chyron — so
+-- | this lens feeds the same buffer as every other, and everything downstream
+-- | (Continuo, the Odonus quantiser, a Quadrat sample set) is already wired.
+padButton :: forall m. State -> ChordNode -> H.ComponentHTML Action Slots m
+padButton st c =
+  HH.button
+    [ HP.style ("display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 1px; "
+                 <> "border: 1px solid " <> (if padLit st c then "#cdbb8c" else "#eee7d6") <> "; "
+                 <> "background: " <> (if padLit st c then "#fdf6e4" else "#ffffff") <> "; "
+                 <> "border-radius: 4px; padding: 5px 2px 4px; cursor: pointer; min-width: 0;")
+    , HP.title (c.label <> " — " <> show (playNotes c))
+    , HE.onMouseEnter \_ -> HoverPad (Just c)
+    , HE.onMouseLeave \_ -> HoverPad Nothing
+    , HE.onClick \_ -> AuditionNode c
+    ]
+    [ SE.svg
+        [ SA.viewBox (-15.0) (-15.0) 30.0 30.0, SA.width 30.0, SA.height 30.0 ]
+        (pcPolygon (hiFor st.hoveredTriad c.pcs) c.root c.pcs 0.0 0.0 12.0)
+    , HH.div
+        [ HP.style "font-size: 10px; color: #6a6250; line-height: 1.1; text-align: center; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%; -webkit-user-select: none; user-select: none;" ]
+        [ HH.text c.label ]
+    ]
+
+-- | A pad lights when its pitch-class set matches whatever is hovered anywhere
+-- | in the app — so hovering one pad shows you every other bank holding the
+-- | same chord, which is how the nesting between cells becomes visible.
+padLit :: State -> ChordNode -> Boolean
+padLit st c = case st.hoveredTriad of
+  Nothing -> false
+  Just h -> sort (nub (map (\p -> mod p 12) h.pcs)) == sort (nub (map (\p -> mod p 12) c.pcs))
 
 -- | A generative glyph: the chromatic-circle polygon, a name below, and a
 -- | transparent hit target. The seed wears a gold ring and only auditions; a

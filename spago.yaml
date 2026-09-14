@@ -60,9 +60,12 @@ package:
     dependencies: []
 workspace:
   extraPackages:
-    # Published library, from the registry (clean 0.2.0 manifest; the old broken
-    # 0.1.0 over-long-description entry is gone from the index).
-    harmonia: 0.2.0
+    # The theory layer. PATH-DEP during development of the Progressions-family
+    # generator (Palette / Freedom / Walk / OpenVoicing / Progression, added
+    # 2026-09-14) — those modules are not in the published 0.2.0. Back to
+    # `harmonia: 0.3.0` once it is cut, the same way reef will go.
+    harmonia:
+      path: ../../harmonia
     # Portable virtual-module engines (Phase 1: Odonus). Path-dep during dev;
     # git-tag once reef is published, like harmonia.
     reef:

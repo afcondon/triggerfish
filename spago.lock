@@ -711,7 +711,9 @@
       "halogen-widgets": {
         "path": "../../../purescript-halogen-widgets"
       },
-      "harmonia": "0.2.0",
+      "harmonia": {
+        "path": "../../harmonia"
+      },
       "rebus": {
         "path": "../../../code-typography/rebus"
       },
@@ -1259,12 +1261,12 @@
       ]
     },
     "harmonia": {
-      "type": "registry",
-      "version": "0.2.0",
-      "integrity": "sha256-25mnON4NIYuoNDtcCb/9DO1joR7fazKxnECW2iOxITc=",
+      "type": "local",
+      "path": "../../harmonia",
       "dependencies": [
         "arrays",
         "foldable-traversable",
+        "integers",
         "maybe",
         "prelude",
         "tuples"

@@ -1,4 +1,4 @@
--- | `Vetula.Palette` — curated chord palettes, ported verbatim from the
+-- | `Vetula.Banks` — curated chord banks, ported verbatim from the
 -- | lylepmills Plaits alt-firmware chord banks (`plaits/dsp/chords/chord_bank`).
 -- |
 -- | These are **curated voicings**, not theory — so they live here in the app,
@@ -16,10 +16,15 @@
 -- | (`Freq=KEY, Harmonics=SCALE POSITION`) — so it lives in harmonia as
 -- | `mcmullenYellow` (real `DegreeChord`s), not here.
 -- |
+-- | **Renamed from `Vetula.Palette` (2026-09-14)** to clear the way for
+-- | `Harmonia.Palette`, which is a different thing with the same word: this is
+-- | a bank of CURATED VOICINGS lifted from a firmware table, that is a chord
+-- | VOCABULARY graded by complexity. Both are now imported by `Vetula.App`.
+-- |
 -- | Rooted on a note, each entry becomes a `ChordNode` for the pool; `anchor` is
 -- | `Free` for now (a root+quality voicing has no fixed scale reading — grade is
 -- | a per-view, on-placement concern we colour later).
-module Vetula.Palette
+module Vetula.Banks
   ( PaletteEntry
   , butlerPalette
   , stockPalette
