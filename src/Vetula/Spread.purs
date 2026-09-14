@@ -39,6 +39,7 @@ module Vetula.Spread
   , ToneRow
   , toneRows
   , toneIxOfPc
+  , toneAt
   , favKey
   ) where
 
@@ -117,6 +118,19 @@ toneRows c =
 -- | other.
 toneIxOfPc :: ChordNode -> Int -> Maybe Int
 toneIxOfPc c pc = findIndex (\r -> r.pc == mod pc 12) (toneRows c)
+
+-- | **Which tone, and which of its copies, a sounding note is.**
+-- |
+-- | `toneIxOfPc` names the tone; this also names the OCTAVE within it, which is
+-- | what any gesture aimed at a single note needs. A doubled tone is one tone
+-- | heard twice — one `Place` holding two octaves — so a click that only knows
+-- | the tone cannot help acting on both copies.
+toneAt :: ChordNode -> Int -> Maybe { ix :: Int, oct :: Int }
+toneAt c m = case findIndex (\r -> r.pc == mod m 12) rows of
+  Nothing -> Nothing
+  Just i -> map (\r -> { ix: i, oct: (m - r.base) / 12 }) (index rows i)
+  where
+  rows = toneRows c
 
 -- | Favourites key. A kept SPREAD applies to any chord, so it is filed by tone
 -- | COUNT rather than by note-set — which is the whole reason for keeping one.

@@ -36,7 +36,13 @@
     .ladder-oct { stroke: #d4d4d4; stroke-width: 0.8; }
     .ladder-label { font-size: 10px; fill: #9a9a9a; text-anchor: end;
                     font-family: -apple-system, "Helvetica Neue", Arial, sans-serif; }
-    .ladder-dot { stroke: #ffffff; stroke-width: 1; }
+    .ladder-dot { fill: var(--pc-hue); stroke: #ffffff; stroke-width: 1; }
+    /* A tone that is NOT played: the same hue, hollow. White fill rather than
+       `fill: none` so the whole disc is a click target — on `none` only the
+       1.4px stroke takes the pointer, which is unhittable in practice. */
+    .ladder-dot--off { fill: #ffffff; stroke: var(--pc-hue); stroke-width: 1.4;
+                       stroke-dasharray: 2.5 2; opacity: 0.55; cursor: pointer; }
+    .ladder-dot--off:hover { opacity: 1; stroke-width: 2; stroke-dasharray: none; }
     .ladder-dot--drag { cursor: ns-resize; }
     .ladder-dot--drag:hover { stroke: #1a1a1a; stroke-width: 1.5; }
     .ladder-dot--sel { stroke: #1a1a1a; stroke-width: 2.5; }
@@ -68,18 +74,18 @@
     /* One muted hue per chromatic tone (pitch class) — a voice keeps its colour
        through octave-drag / re-sort / doubling because colour follows the TONE,
        not the array slot. 12 tones, 12 colours (works until microtonality). */
-    .ladder-dot--0  { fill: hsl(0,45%,44%); }    /* C  */
-    .ladder-dot--1  { fill: hsl(30,46%,44%); }   /* C# */
-    .ladder-dot--2  { fill: hsl(52,44%,40%); }   /* D  */
-    .ladder-dot--3  { fill: hsl(90,40%,38%); }   /* D# */
-    .ladder-dot--4  { fill: hsl(122,38%,38%); }  /* E  */
-    .ladder-dot--5  { fill: hsl(154,40%,37%); }  /* F  */
-    .ladder-dot--6  { fill: hsl(184,44%,38%); }  /* F# */
-    .ladder-dot--7  { fill: hsl(210,46%,46%); }  /* G  */
-    .ladder-dot--8  { fill: hsl(238,36%,52%); }  /* G# */
-    .ladder-dot--9  { fill: hsl(270,32%,50%); }  /* A  */
-    .ladder-dot--10 { fill: hsl(300,36%,46%); }  /* A# */
-    .ladder-dot--11 { fill: hsl(330,44%,48%); }  /* B  */
+    .ladder-dot--0  { --pc-hue: hsl(0,45%,44%); }/* C  */
+    .ladder-dot--1  { --pc-hue: hsl(30,46%,44%); }/* C# */
+    .ladder-dot--2  { --pc-hue: hsl(52,44%,40%); }/* D  */
+    .ladder-dot--3  { --pc-hue: hsl(90,40%,38%); }/* D# */
+    .ladder-dot--4  { --pc-hue: hsl(122,38%,38%); }/* E  */
+    .ladder-dot--5  { --pc-hue: hsl(154,40%,37%); }/* F  */
+    .ladder-dot--6  { --pc-hue: hsl(184,44%,38%); }/* F# */
+    .ladder-dot--7  { --pc-hue: hsl(210,46%,46%); }/* G  */
+    .ladder-dot--8  { --pc-hue: hsl(238,36%,52%); }/* G# */
+    .ladder-dot--9  { --pc-hue: hsl(270,32%,50%); }/* A  */
+    .ladder-dot--10 { --pc-hue: hsl(300,36%,46%); }/* A# */
+    .ladder-dot--11 { --pc-hue: hsl(330,44%,48%); }/* B  */
     /* the bass keeps its tone colour but wears a dark rim so the foot reads at a glance */
     .ladder-dot--bass { stroke: #1a1a1a; stroke-width: 1.5; }
 

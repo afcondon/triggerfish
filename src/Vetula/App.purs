@@ -142,8 +142,8 @@ import Vetula.Between (bridgeNotes, maxBridge)
 import Harmonia.Graded (transpose) as Graded
 import Vetula.Banks (butlerChords, stockChords)
 import Vetula.Pads as Pads
-import Vetula.Spread (applyToNode, spreadOfNode, toneIxOfPc, toneRows)
-import Harmonia.OpenVoicing (sounds, toggleTone) as OV
+import Vetula.Spread (applyToNode, spreadOfNode, toneAt, toneRows)
+import Harmonia.OpenVoicing (at, dropAt, setTone, sounds) as OV
 import Vetula.Harmony (ChordNode, Family(..), Kind(..), blackKeyPcs, diatonicTriads, generate, interchangeChords, keyX, keyboard, latticeChild, latticeFamily, mcmullenChords, noteName, place, placeOutside, playNotes, scaleSet, suspendSet, triadNode, triadOn, voicingCandidates, whiteKeyPcs)
 
 midiPortName :: String
@@ -936,7 +936,9 @@ data Action
   | ShakeGenerate          -- Generate lens: re-roll the tank-seeded relatives
   | ShufflePads            -- Banks lens: re-walk all nine banks
   | HoverPad (Maybe ChordNode)  -- Banks lens: hover a pad (highlight + exact preview)
-  | ToggleTone Event Int Int  -- silence / restore chord `id`'s tone `i` (the ladder's greyed note)
+  | DropTone Event Int Int Int  -- silence chord `id`'s tone `i` at octave `k` (shift-click a note)
+  | RollBass Int           -- roll the revoiced chord's bass to the next/previous chord tone
+  | PlaceTone Event Int Int Int -- put chord `id`'s tone `i` at octave `k` (click a ghost)
   | SetStage Stage         -- switch stage: Hunt <projection> | Perform | Review
   | TransposeSpec SpecimenId Int -- Slice E: shift one tank specimen by n semitones (in place)
   | CapoTank Int           -- Slice E: shift the WHOLE tank by n semitones (a capo)
@@ -1800,6 +1802,17 @@ handleAction = case _ of
 
   -- a slash chord: set the revoiced chord's bass to a chosen pitch class (same
   -- upper notes, different foundation) — a voicing decision, kept in the modal.
+  -- Inversion as a single gesture. The slash row already re-foots the chord on
+  -- any named tone; this walks the same cycle without having to know which tone
+  -- comes next, which is what "try the inversions" actually means.
+  RollBass dir -> do
+    st <- H.get
+    for_ st.revoicing \cid ->
+      for_ (find (\c -> c.id == cid) st.chords) \c -> do
+        let chords' = map (\d -> if d.id == cid then d { bassPc = rotateBass dir c } else d) st.chords
+        applyChords chords'
+        for_ (find (\d -> d.id == cid) chords') playChord
+
   SlashBass pc -> do
     st <- H.get
     for_ st.revoicing \cid -> do
@@ -1913,14 +1926,27 @@ handleAction = case _ of
   -- omitting genuinely discards that: `Place []` holds no octave. The ghost is
   -- therefore drawn at the position it will return to, so the gesture is honest
   -- rather than surprising.
-  ToggleTone ev cid i -> do
+  DropTone ev cid i k -> do
     -- A progression row handles its own click (play / arm pick mode), and this
     -- gesture lives on a dot INSIDE that row — so it has to be stopped here, or
     -- dropping a note would also select the step.
     liftEffect (stopPropagation ev)
     st <- H.get
     for_ (find (\c -> c.id == cid) st.chords) \c -> do
-      let c' = applyToNode c (OV.toggleTone i (spreadOfNode c))
+      let c' = applyToNode c (OV.dropAt i k (spreadOfNode c))
+          chords' = map (\d -> if d.id == cid then c' else d) st.chords
+      applyChords chords'
+      H.modify_ _ { sounding = Just cid }
+      playChord c'
+
+  -- Restore an omitted tone AT THE OCTAVE CLICKED. The ghosts stand at every
+  -- octave the tone could occupy, so bringing a dropped note back where you
+  -- want it is one gesture rather than restore-then-drag.
+  PlaceTone ev cid i k -> do
+    liftEffect (stopPropagation ev)
+    st <- H.get
+    for_ (find (\c -> c.id == cid) st.chords) \c -> do
+      let c' = applyToNode c (OV.setTone i (OV.at k) (spreadOfNode c))
           chords' = map (\d -> if d.id == cid then c' else d) st.chords
       applyChords chords'
       H.modify_ _ { sounding = Just cid }
@@ -7214,19 +7240,18 @@ progressionRow st i c =
         , if j == 0 then HE.onMouseDown \_ -> SelectVoice c.id BassVoice
           else HE.onMouseDown \ev ->
                  if ME.shiftKey ev
-                   then maybe (SelectVoice c.id (UpperVoice (j - 1))) (ToggleTone (ME.toEvent ev) c.id) (toneIxOfPc c m)
+                   then maybe (SelectVoice c.id (UpperVoice (j - 1))) (\tn -> DropTone (ME.toEvent ev) c.id tn.ix tn.oct) (toneAt c m)
                    else DragStart (ME.altKey ev) true c.id (j - 1) m
         ]
       -- the omitted tones, clickable back on at the position they would return to
       ghost r =
         if OV.sounds r.place then []
-        else
-          [ SE.circle
-              [ SA.cx (prowPitchX r.base), SA.cy cy, SA.r 4.5
-              , HP.style "fill: none; stroke: #c8c2b2; stroke-width: 1.2; stroke-dasharray: 2 2; cursor: pointer;"
-              , HE.onClick \ev -> ToggleTone (ME.toEvent ev) c.id r.ix
-              ]
-          ]
+        else map (\k ->
+          SE.circle
+            [ SA.cx (prowPitchX (r.base + 12 * k)), SA.cy cy, SA.r 4.5
+            , SA.class_ (cn ("ladder-dot--off ladder-dot--" <> show r.pc))
+            , HE.onClick \ev -> PlaceTone (ME.toEvent ev) c.id r.ix k
+            ]) (ghostOctaves r.base)
   in HH.div
       [ HP.style ("display: flex; align-items: center; gap: 8px; padding: 0 2px; border-radius: 3px; cursor: pointer; "
           <> (if picked then "background: #e7eef4; box-shadow: inset 0 0 0 1px #9bb8d4;"
@@ -7484,15 +7509,20 @@ ladderView msel msound = grid <> octs <> dots
   -- A tone that is not played still gets a mark, at the position it would
   -- return to. Without it there is nothing to click, which is the whole reason
   -- omission has never been reachable here.
+  -- One ghost per octave the tone could occupy, not just its lowest: the
+  -- stack position is the LOWEST place a tone can sit, so every other option is
+  -- above it, and offering them all turns restore-then-drag into one click.
+  -- They stay legible because a ghost wears its tone's own hue (the same
+  -- pitch-class colour the solid dots use), so an interleaved column of two
+  -- dropped tones still reads as two.
   ghost cid r =
     if OV.sounds r.place then []
-    else
-      [ SE.circle
-          [ SA.cx dotX, SA.cy (midiToY r.base), SA.r 6.5
-          , SA.class_ (cn ("ladder-dot ladder-dot--off ladder-dot--" <> show r.pc))
-          , HP.style "fill: none; stroke: #c8c2b2; stroke-width: 1.5; stroke-dasharray: 2 2; cursor: pointer;"
-          , HE.onClick \ev -> ToggleTone (ME.toEvent ev) cid r.ix
-          ]
+    else map (ghostAt cid r) (ghostOctaves r.base)
+  ghostAt cid r k =
+    SE.circle
+      [ SA.cx dotX, SA.cy (midiToY (r.base + 12 * k)), SA.r 6.5
+      , SA.class_ (cn ("ladder-dot--off ladder-dot--" <> show r.pc))
+      , HE.onClick \ev -> PlaceTone (ME.toEvent ev) cid r.ix k
       ]
   -- index 0 is the bass: click selects it, arrows rotate it through chord tones.
   -- uppers (≥1) octave-drag or click-then-arrow; the voicing index is i-1.
@@ -7514,11 +7544,17 @@ ladderView msel msound = grid <> octs <> dots
       , if i == 0 then HE.onMouseDown \_ -> SelectVoice cid BassVoice
         else HE.onMouseDown \ev ->
                if ME.shiftKey ev
-                 then maybe (SelectVoice cid (UpperVoice (i - 1))) (ToggleTone (ME.toEvent ev) cid) (toneIxOfPc' msound m)
+                 then maybe (SelectVoice cid (UpperVoice (i - 1))) (\tn -> DropTone (ME.toEvent ev) cid tn.ix tn.oct) (msound >>= \c -> toneAt c m)
                  else DragStart (ME.altKey ev) false cid (i - 1) m
       ]
     )
-  toneIxOfPc' mc m = mc >>= \c -> toneIxOfPc c m
+
+-- | The octaves a dropped tone could return at — from its stack position (the
+-- | lowest it can sit) up to the top of the drawn ladder. Bounded by what is
+-- | visible rather than by `reach`, because an option you cannot see is not an
+-- | option.
+ghostOctaves :: Int -> Array Int
+ghostOctaves base = filter (\k -> base + 12 * k <= 84) (range 0 3)
 
 -- | The favoured-voicings strip above the ladder: one swatch per kept voicing of
 -- | the sounding chord's note-set, each a vertical bar showing that voicing's
@@ -7603,9 +7639,21 @@ revoiceModal st =
                <> ladderView st.selected (Just c)
                <> [ SE.text [ SA.x (-447.0), SA.y 250.0, SA.class_ (cn "rv-bass-label") ] [ HH.text "bass /" ] ]
                <> mapWithIndex (slashBtn c.bassPc) tones )
-       , HH.div [ HP.style "margin-top: 10px; font-size: 11px; color: #9a9a9a; text-align: center;" ]
+       , HH.div
+           [ HP.style "display: flex; gap: 6px; justify-content: center; margin-top: 10px;" ]
+           [ rvBtn "⟲ invert" "roll the bass down to the previous chord tone" (RollBass (-1))
+           , rvBtn "invert ⟳" "roll the bass up to the next chord tone" (RollBass 1)
+           ]
+       , HH.div [ HP.style "margin-top: 8px; font-size: 11px; color: #9a9a9a; text-align: center;" ]
            [ HH.text "Tab voicings · ↑↓ nudge · drag = 8ve · ⌥ doubles · ⇧ drops a note · f keep · Esc" ]
        ]
+  rvBtn label tip act =
+    HH.button
+      [ HP.style ("border: 1px solid #d8d8d8; background: #fafafa; color: #4a4a4a; cursor: pointer; "
+                   <> "padding: 3px 12px; border-radius: 3px; font-size: 12px;")
+      , HP.title tip
+      , HE.onClick \_ -> act ]
+      [ HH.text label ]
   slashBtn activeBass i pc =
     let w = 27.0
         x0 = -408.0 + toNumber i * (w + 2.0)
