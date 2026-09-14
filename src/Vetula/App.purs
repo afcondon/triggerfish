@@ -142,6 +142,8 @@ import Vetula.Between (bridgeNotes, maxBridge)
 import Harmonia.Graded (transpose) as Graded
 import Vetula.Banks (butlerChords, stockChords)
 import Vetula.Pads as Pads
+import Vetula.Spread (applyToNode, spreadOfNode, toneIxOfPc, toneRows)
+import Harmonia.OpenVoicing (sounds, toggleTone) as OV
 import Vetula.Harmony (ChordNode, Family(..), Kind(..), blackKeyPcs, diatonicTriads, generate, interchangeChords, keyX, keyboard, latticeChild, latticeFamily, mcmullenChords, noteName, place, placeOutside, playNotes, scaleSet, suspendSet, triadNode, triadOn, voicingCandidates, whiteKeyPcs)
 
 midiPortName :: String
@@ -934,6 +936,7 @@ data Action
   | ShakeGenerate          -- Generate lens: re-roll the tank-seeded relatives
   | ShufflePads            -- Banks lens: re-walk all nine banks
   | HoverPad (Maybe ChordNode)  -- Banks lens: hover a pad (highlight + exact preview)
+  | ToggleTone Event Int Int  -- silence / restore chord `id`'s tone `i` (the ladder's greyed note)
   | SetStage Stage         -- switch stage: Hunt <projection> | Perform | Review
   | TransposeSpec SpecimenId Int -- Slice E: shift one tank specimen by n semitones (in place)
   | CapoTank Int           -- Slice E: shift the WHOLE tank by n semitones (a capo)
@@ -1901,6 +1904,27 @@ handleAction = case _ of
 
   SelectVoice cid sel ->
     H.modify_ _ { sounding = Just cid, selected = Just sel }
+
+  -- Omission — the axis the ladder never had, and the one that makes the five- and
+  -- six-note chords of the Banks lens playable. Shift-click a note to drop it,
+  -- click its ghost to bring it back.
+  --
+  -- A restored tone returns to its STACK POSITION, not to where it was, because
+  -- omitting genuinely discards that: `Place []` holds no octave. The ghost is
+  -- therefore drawn at the position it will return to, so the gesture is honest
+  -- rather than surprising.
+  ToggleTone ev cid i -> do
+    -- A progression row handles its own click (play / arm pick mode), and this
+    -- gesture lives on a dot INSIDE that row — so it has to be stopped here, or
+    -- dropping a note would also select the step.
+    liftEffect (stopPropagation ev)
+    st <- H.get
+    for_ (find (\c -> c.id == cid) st.chords) \c -> do
+      let c' = applyToNode c (OV.toggleTone i (spreadOfNode c))
+          chords' = map (\d -> if d.id == cid then c' else d) st.chords
+      applyChords chords'
+      H.modify_ _ { sounding = Just cid }
+      playChord c'
 
   ToggleFavorite -> toggleFavorite
 
@@ -7188,8 +7212,21 @@ progressionRow st i c =
                          <> (if j == 0 then " ladder-dot--bass" else " ladder-dot--drag")
                          <> (if selHere j then " ladder-dot--sel" else "")))
         , if j == 0 then HE.onMouseDown \_ -> SelectVoice c.id BassVoice
-                    else HE.onMouseDown \ev -> DragStart (ME.altKey ev) true c.id (j - 1) m
+          else HE.onMouseDown \ev ->
+                 if ME.shiftKey ev
+                   then maybe (SelectVoice c.id (UpperVoice (j - 1))) (ToggleTone (ME.toEvent ev) c.id) (toneIxOfPc c m)
+                   else DragStart (ME.altKey ev) true c.id (j - 1) m
         ]
+      -- the omitted tones, clickable back on at the position they would return to
+      ghost r =
+        if OV.sounds r.place then []
+        else
+          [ SE.circle
+              [ SA.cx (prowPitchX r.base), SA.cy cy, SA.r 4.5
+              , HP.style "fill: none; stroke: #c8c2b2; stroke-width: 1.2; stroke-dasharray: 2 2; cursor: pointer;"
+              , HE.onClick \ev -> ToggleTone (ME.toEvent ev) c.id r.ix
+              ]
+          ]
   in HH.div
       [ HP.style ("display: flex; align-items: center; gap: 8px; padding: 0 2px; border-radius: 3px; cursor: pointer; "
           <> (if picked then "background: #e7eef4; box-shadow: inset 0 0 0 1px #9bb8d4;"
@@ -7210,7 +7247,7 @@ progressionRow st i c =
                       ]
                     Nothing -> [])
           )
-          (map octLine [ 36, 48, 60, 72, 84 ] <> mapWithIndex dot (playNotes c))
+          (map octLine [ 36, 48, 60, 72, 84 ] <> mapWithIndex dot (playNotes c) <> concatMap ghost (toneRows c))
       , HH.span [ HP.style "flex: 0 0 26px; font-size: 10px; color: #b0b0b0;" ] [ HH.text c.label ]
       ]
 
@@ -7443,7 +7480,20 @@ ladderView msel msound = grid <> octs <> dots
     ]
   dots = case msound of
     Nothing -> []
-    Just c -> mapWithIndex (dot c.id) (playNotes c)
+    Just c -> mapWithIndex (dot c.id) (playNotes c) <> concatMap (ghost c.id) (toneRows c)
+  -- A tone that is not played still gets a mark, at the position it would
+  -- return to. Without it there is nothing to click, which is the whole reason
+  -- omission has never been reachable here.
+  ghost cid r =
+    if OV.sounds r.place then []
+    else
+      [ SE.circle
+          [ SA.cx dotX, SA.cy (midiToY r.base), SA.r 6.5
+          , SA.class_ (cn ("ladder-dot ladder-dot--off ladder-dot--" <> show r.pc))
+          , HP.style "fill: none; stroke: #c8c2b2; stroke-width: 1.5; stroke-dasharray: 2 2; cursor: pointer;"
+          , HE.onClick \ev -> ToggleTone (ME.toEvent ev) cid r.ix
+          ]
+      ]
   -- index 0 is the bass: click selects it, arrows rotate it through chord tones.
   -- uppers (≥1) octave-drag or click-then-arrow; the voicing index is i-1.
   selHere i = case msel of
@@ -7459,10 +7509,16 @@ ladderView msel msound = grid <> octs <> dots
       , SA.class_ (cn ("ladder-dot ladder-dot--" <> show (mod m 12)
                        <> (if i == 0 then " ladder-dot--bass" else " ladder-dot--drag")
                        <> (if selHere i then " ladder-dot--sel" else "")))
+      -- shift-click omits the tone; plain drag is unchanged. The bass is not a
+      -- tone the spread can reach, so it is never omittable.
       , if i == 0 then HE.onMouseDown \_ -> SelectVoice cid BassVoice
-                  else HE.onMouseDown \ev -> DragStart (ME.altKey ev) false cid (i - 1) m
+        else HE.onMouseDown \ev ->
+               if ME.shiftKey ev
+                 then maybe (SelectVoice cid (UpperVoice (i - 1))) (ToggleTone (ME.toEvent ev) cid) (toneIxOfPc' msound m)
+                 else DragStart (ME.altKey ev) false cid (i - 1) m
       ]
     )
+  toneIxOfPc' mc m = mc >>= \c -> toneIxOfPc c m
 
 -- | The favoured-voicings strip above the ladder: one swatch per kept voicing of
 -- | the sounding chord's note-set, each a vertical bar showing that voicing's
@@ -7548,7 +7604,7 @@ revoiceModal st =
                <> [ SE.text [ SA.x (-447.0), SA.y 250.0, SA.class_ (cn "rv-bass-label") ] [ HH.text "bass /" ] ]
                <> mapWithIndex (slashBtn c.bassPc) tones )
        , HH.div [ HP.style "margin-top: 10px; font-size: 11px; color: #9a9a9a; text-align: center;" ]
-           [ HH.text "Tab voicings · ↑↓ nudge · drag = 8ve · ⌥ doubles · f keep · Esc" ]
+           [ HH.text "Tab voicings · ↑↓ nudge · drag = 8ve · ⌥ doubles · ⇧ drops a note · f keep · Esc" ]
        ]
   slashBtn activeBass i pc =
     let w = 27.0
