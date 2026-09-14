@@ -94,14 +94,13 @@ bassMidi c = mod c.bassPc 12 + 12 * c.bassOct
 -- | point: shifting only the uppers spreads the chord, it does not transpose
 -- | it.
 -- |
--- | **Bounded by the sounding range, not by `bassOct`.** Clamping the bass
--- | octave number was the obvious thing and was wrong: inversions raise the
--- | bass, so a few of them drove `bassOct` into the clamp and the control then
--- | did NOTHING — silently, because a clamped shift moves the uppers by the
--- | same zero. Measured at 7 of 186 chords after three inversions. What
--- | actually needs bounding is where the notes end up, so that is what is
--- | tested, and a shift that would leave the range is refused whole rather than
--- | applied by halves.
+-- | The transform itself is `Harmonia.Voicing.transposeOctaves`; what is here is
+-- | the POLICY, which is rightly the app's: a shift that would carry the chord
+-- | off the ladder is refused whole rather than applied by halves. Bounding the
+-- | bass octave instead was the first attempt and it failed silently — a few
+-- | inversions drove the bass into the clamp and the control then did nothing
+-- | at all, moving the uppers by the same zero. What needs bounding is where the
+-- | notes END UP.
 octaveShift :: Int -> ChordNode -> ChordNode
 octaveShift d c =
   let ns = playNotes c

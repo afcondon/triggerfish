@@ -49,12 +49,13 @@ module Vetula.Spread
 
 import Prelude
 
-import Data.Array (cons, deleteBy, drop, filter, find, findIndex, head, index, length, mapWithIndex, nub, nubByEq, snoc, sort, uncons, unsnoc)
-import Data.Foldable (any, elem)
+import Data.Array (drop, filter, findIndex, head, index, length, mapWithIndex, nub, nubByEq, sort)
+import Data.Foldable (elem)
 import Data.Maybe (Maybe(..), fromMaybe)
 import Harmonia.Chord (Chord(..))
 import Harmonia.OpenVoicing (Open, Place, Rooted, Spread, applySpread, baseStack, defaults, omit, spreadOf)
 import Harmonia.Voicing (Voicing(..), voicingMidi)
+import Harmonia.Voicing as V
 import Vetula.Harmony (ChordNode, bassMidi, playNotes)
 
 -- | The frame this chord's voicing is read in: the stack rooted on the chord's
@@ -163,99 +164,40 @@ ghostRows c =
   where
   heard = map (\m -> mod m 12) (playNotes c)
 
--- | **A real inversion: the lowest sounding note up an octave (or the highest
--- | down), and the bass is whatever is lowest afterwards.**
+-- | **A `ChordNode` as a plain voicing, and back.**
 -- |
--- | Two things this must NOT be, both of which it has been:
--- |
--- |   * `rotateBass`, which re-foots the chord without touching the upper
--- |     structure. C·E·G over E is a slash chord; a first inversion is E·G·C.
--- |   * a rotation of `voicing` alone. The uppers are not the chord — a voicing
--- |     from `openVoicing` has its root in the BASS and often nowhere else, so
--- |     rotating the uppers of `CM7` (36·55·71·76) makes G the bass and deletes
--- |     the C. Measured: 62 of 186 chords lost a pitch class that way.
--- |
--- | So it works over `playNotes`, and the bass is re-read from the result. That
--- | also settles the register: `bassOct` follows the new lowest note, so a full
--- | turn of the inversions carries the bass up with the chord instead of
--- | stranding it two octaves below.
--- |
--- | ⟲ and ⟳ are not exact inverses on a widely-spaced chord, and cannot be:
--- | "lowest up" and "highest down" only undo each other when the note that
--- | moved up lands on top, which is true in close position and not otherwise.
--- | They preserve the chord's content in both directions, which is the property
--- | that matters.
-invertNode :: Int -> ChordNode -> ChordNode
-invertNode dir c =
-  if dir > 0 then case uncons ns of
-    Just { head: lo, tail: rest } -> refoot (snoc rest (lo + 12))
-    Nothing -> c
-  else case unsnoc ns of
-    Just { init: rest, last: hi } -> refoot (cons (hi - 12) rest)
-    Nothing -> c
-  where
-  ns = sort (playNotes c)
-  refoot xs =
-    let sorted = sort xs
-        b = fromMaybe (bassMidi c) (head sorted)
-    in c { bassPc = mod b 12, bassOct = b / 12, voicing = drop 1 sorted }
+-- | The repositioning transforms live in `Harmonia.Voicing`, where they know
+-- | only pitch — which is the right place for them, since every bug they ever
+-- | had was a musical bug rather than a plumbing one. What is left here is the
+-- | plumbing: a `ChordNode` splits its bass into `bassPc` + `bassOct` with the
+-- | rest as `voicing`, and a `Voicing` is simply the notes. These two functions
+-- | are that split, in each direction, and every transform below is the same
+-- | three lines because of it.
+toVoicing :: ChordNode -> Voicing
+toVoicing c = Voicing (sort (playNotes c))
 
--- | The sounding chord tone `dir` steps around from the current bass — the
--- | cycle the ⟲/⟳ bass controls walk.
--- |
--- | **Sounding**, not merely present in `pcs`. An omitted tone has no copy to
--- | trade with, so re-footing onto it could only preserve the chord's content by
--- | growing it. Leaving it out of the cycle is the honest fix: you cannot put a
--- | note in the bass that you have just chosen not to play.
+-- | Rebuild the node around a transformed voicing: the lowest note becomes the
+-- | bass, in the octave it actually lands in, and the rest are the uppers.
+fromVoicing :: ChordNode -> Voicing -> ChordNode
+fromVoicing c v =
+  let ns = sort (voicingMidi v)
+      b = fromMaybe (bassMidi c) (head ns)
+  in c { bassPc = mod b 12, bassOct = b / 12, voicing = drop 1 ns }
+
+-- | The sounding chord tone `dir` steps around from the current bass.
 nextBassTone :: Int -> ChordNode -> Int
-nextBassTone dir c =
-  let tones = sort (nub (map (\m -> mod m 12) (playNotes c)))
-      n = length tones
-  in case findIndex (_ == mod c.bassPc 12) tones of
-       Just i | n > 0 -> fromMaybe c.bassPc (index tones (mod (i + dir + n) n))
-       _ -> c.bassPc
+nextBassTone dir = V.nextBassTone dir <<< toVoicing
 
--- | **Re-foot the chord on another of its sounding tones, changing neither the
--- | note count nor the pitch-class content.**
--- |
--- | The naive version — assign `bassPc` and stop — silently DELETES a pitch
--- | class. A voicing from `openVoicing` keeps its root in the bass and often
--- | nowhere else, so re-footing `CM7` (36·55·71·76) onto G left G·B·E with no C
--- | anywhere. Untested until now, because it lived inline in the component where
--- | no test could reach it.
--- |
--- | Count is the constraint that shapes the fix. `playNotes` is
--- | `[bass] <> voicing`, so the count is `1 + length voicing` and the uppers
--- | must come out the same length as they went in. Two cases, and the
--- | distinction is exactly whether the outgoing bass tone still has a home:
--- |
--- |   * **the old bass tone also sounds above** — then simply re-foot. The new
--- |     bass tone doubles (bass and upper), nothing is lost, nothing is added.
--- |   * **it does not** — then trade: the new bass tone gives up its lowest
--- |     upper copy, and the outgoing tone takes that copy's place at the nearest
--- |     octave. One out, one in.
+-- | Invert — the lowest voice up an octave, or the highest down.
+invertNode :: Int -> ChordNode -> ChordNode
+invertNode dir c = fromVoicing c (V.invert dir (toVoicing c))
+
+-- | Put one of the chord's sounding tones underneath, keeping the voicing above
+-- | it — a slash chord. Straight through to `Harmonia.Voicing.slash`; the
+-- | ⟲/⟳ INVERT buttons go through `invertNode` instead, which rotates the
+-- | structure. Two controls, two operations, and the difference is audible.
 refootNode :: Int -> ChordNode -> ChordNode
-refootNode pc c
-  | mod pc 12 == mod c.bassPc 12 = c
-  | otherwise =
-      let
-        oldPc = mod c.bassPc 12
-        ups = sort c.voicing
-      in
-        if any (\m -> mod m 12 == oldPc) ups then c { bassPc = mod pc 12 }
-        else case find (\m -> mod m 12 == mod pc 12) ups of
-          Nothing -> c { bassPc = mod pc 12 }
-          Just v ->
-            c { bassPc = mod pc 12
-              , voicing = sort (cons (nearestOctaveOf oldPc v) (deleteBy (==) v ups))
-              }
-
--- | The octave of `pc` closest to `near`.
-nearestOctaveOf :: Int -> Int -> Int
-nearestOctaveOf pc near =
-  let up = near + mod (mod pc 12 - mod near 12 + 12) 12
-      down = up - 12
-  in if near - down <= up - near then down else up
+refootNode pc c = fromVoicing c (V.slash pc (toVoicing c))
 
 -- | **Which tone, and which of its copies, a sounding note is.**
 -- |
