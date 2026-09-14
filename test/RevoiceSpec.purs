@@ -24,12 +24,12 @@ import Data.Maybe (Maybe(..), fromMaybe)
 import Effect (Effect)
 import Effect.Console (log)
 import Harmonia.Chord (Key, Mode(..))
-import Harmonia.OpenVoicing (at, doubleTone, dropAt, octaves, sounds, toggleTone) as OV
+import Harmonia.OpenVoicing (at, doubleTone, dropAt, octaves, setTone, toggleTone) as OV
 import Test.Assert (assertTrue')
 import Vetula.Banks (butlerChords)
 import Vetula.Harmony (ChordNode, bassMidi, diatonicTriads, mcmullenChords, octaveShift, playNotes)
 import Vetula.Pads as Pads
-import Vetula.Spread (applyToNode, ghostRows, invertNode, openFor, spreadOfNode, toneRows)
+import Vetula.Spread (applyToNode, ghostRows, invertNode, nextBassTone, openFor, refootNode, spreadOfNode, toneRows)
 
 cMajor :: Key
 cMajor = { tonic: 0, mode: Ionian }
@@ -159,5 +159,68 @@ runRevoiceTests = do
   law "the bass survives every edit"
     (\c -> let d = applyToNode c (OV.toggleTone 0 (spreadOfNode c))
            in head (playNotes d) == head (playNotes c))
+
+  -- ── Note count ─────────────────────────────────────────────────────────
+  -- AC: the transforms that REPOSITION a chord must all be note-count
+  -- preserving, and the ones that add or remove a note must do so by an exact
+  -- amount. Stated together, because "the chord quietly gained or lost a note"
+  -- is the failure they share and the one you notice last — it does not look
+  -- wrong on the ladder, it just sounds thinner.
+  law "invert up preserves the note count"
+    (\c -> length (playNotes (invertNode 1 c)) == length (playNotes c))
+  law "invert down preserves the note count"
+    (\c -> length (playNotes (invertNode (-1) c)) == length (playNotes c))
+  law "8ve shift preserves the note count"
+    (\c -> length (playNotes (octaveShift 1 c)) == length (playNotes c))
+  law "reading a voicing back preserves the note count"
+    (\c -> length (playNotes (applyToNode c (spreadOfNode c))) == length (playNotes c))
+
+  -- ── Bass substitution ──────────────────────────────────────────────────
+  -- Untested until now, because it lived inline in the component where nothing
+  -- could reach it.
+  law "re-footing preserves the note count"
+    (\c -> length (playNotes (refootNode (nextBassTone 1 c) c)) == length (playNotes c))
+  law "re-footing preserves pitch-class content"
+    (\c -> pcsOf (playNotes (refootNode (nextBassTone 1 c) c)) == pcsOf (playNotes c))
+  law "re-footing puts the named tone in the bass"
+    (\c -> let pc = nextBassTone 1 c in (refootNode pc c).bassPc == pc)
+  law "re-footing onto the current bass changes nothing"
+    (\c -> playNotes (refootNode c.bassPc c) == playNotes c)
+  law "re-footing onto every chord tone in turn preserves the count"
+    (\c -> all (\pc -> length (playNotes (refootNode pc c)) == length (playNotes c))
+             (pcsOf (playNotes c)))
+  law "re-footing onto every chord tone in turn preserves the content"
+    (\c -> all (\pc -> pcsOf (playNotes (refootNode pc c)) == pcsOf (playNotes c))
+             (pcsOf (playNotes c)))
+  law "the bass is still the lowest note after re-footing"
+    (\c -> let d = refootNode (nextBassTone 1 c) c
+           in head (sort (playNotes d)) == Just (bassMidi d))
+
+  -- ── Adding and removing, by an exact amount ────────────────────────────
+  law "doubling a tone adds exactly one note"
+    (\c -> length (playNotes (applyToNode c (OV.doubleTone (openFor c) 0 (spreadOfNode c))))
+             == length (playNotes c) + 1)
+  law "omitting a tone removes exactly the copies it had"
+    (\c -> case Array.head (toneRows c) of
+        Nothing -> true
+        Just r ->
+          length (playNotes (applyToNode c (OV.toggleTone 0 (spreadOfNode c))))
+            == length (playNotes c) - length (OV.octaves r.place))
+  -- Guarded on a ghost actually being offered. Where omitting a tone leaves its
+  -- pitch class still sounding — Butler's `oct` bank is pure octaves of one
+  -- note — no ghost is drawn and the UI has no way to ask for the restore, so
+  -- there is nothing here to assert.
+  law "restoring an offered ghost adds exactly one note"
+    (\c -> let d = applyToNode c (OV.toggleTone 0 (spreadOfNode c))
+           in length (ghostRows d) == 0
+              || length (playNotes (applyToNode d (OV.setTone 0 (OV.at 0) (spreadOfNode d))))
+                   == length (playNotes d) + 1)
+  law "dropping one copy removes exactly one note"
+    (\c -> case Array.head (toneRows c) of
+        Nothing -> true
+        Just r -> case Array.head (sort (OV.octaves r.place)) of
+          Nothing -> true
+          Just k -> length (playNotes (applyToNode c (OV.dropAt 0 k (spreadOfNode c))))
+                      == length (playNotes c) - 1)
 
   log "  ✓ revoicing laws"

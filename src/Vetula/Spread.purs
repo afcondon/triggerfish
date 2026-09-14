@@ -40,6 +40,8 @@ module Vetula.Spread
   , toneRows
   , ghostRows
   , invertNode
+  , refootNode
+  , nextBassTone
   , toneIxOfPc
   , toneAt
   , favKey
@@ -47,8 +49,8 @@ module Vetula.Spread
 
 import Prelude
 
-import Data.Array (cons, drop, filter, findIndex, head, index, length, mapWithIndex, nub, nubByEq, snoc, sort, uncons, unsnoc)
-import Data.Foldable (elem)
+import Data.Array (cons, deleteBy, drop, filter, find, findIndex, head, index, length, mapWithIndex, nub, nubByEq, snoc, sort, uncons, unsnoc)
+import Data.Foldable (any, elem)
 import Data.Maybe (Maybe(..), fromMaybe)
 import Harmonia.Chord (Chord(..))
 import Harmonia.OpenVoicing (Open, Place, Rooted, Spread, applySpread, baseStack, defaults, omit, spreadOf)
@@ -60,20 +62,33 @@ import Vetula.Harmony (ChordNode, bassMidi, playNotes)
 -- | because these voicings were not necessarily made by `openVoicing` and may
 -- | already be wider than its own enumeration allows.
 -- |
--- | **`minTones` is the note count, not the tone count**, and the difference is
--- | load-bearing. `tonesOf` pads a short chord with extra roots, and those pads
--- | are what give a DOUBLED tone somewhere to live: in `C` voiced 36·60·64·67
--- | the upper C is a second root, and with only three stack positions (36·40·43)
--- | it belongs to none of them and is silently dropped. One row per sounding
--- | note guarantees every note a home. Measured: 0 of 7 diatonic triads
--- | round-tripped before this, all of them after.
+-- | **The stack must be tall enough for every note AND every tone**, and
+-- | getting `minTones` wrong breaks things in two different directions.
+-- |
+-- | Too short for the NOTES and a doubled tone has nowhere to live: `tonesOf`
+-- | pads a short chord with extra roots, and those pads are what host the second
+-- | copy. In `C` voiced 36·60·64·67 the upper C is a second root, and with only
+-- | three stack positions it belongs to none of them and is dropped. (Measured:
+-- | 0 of 7 diatonic triads round-tripped before this was raised to the note
+-- | count.)
+-- |
+-- | Too short for the TONES and omitting a note corrupts a different one. The
+-- | note count shrinks when you drop a tone, which takes a padded position away
+-- | with it — so omitting the E from that same C left the upper C with no
+-- | position of its own, and it vanished on the next read. 120 of 186 chords
+-- | failed that way.
+-- |
+-- | So it is the larger of the two. `distinct + 1` gives every pitch class a
+-- | position ABOVE the pinned bass, which is what an omitted tone needs in order
+-- | to have a ghost row to come back at.
 openFor :: ChordNode -> Open
 openFor c =
   let notes = playNotes c
       bass = fromMaybe 36 (head notes)
+      distinct = length (nub (map (\p -> mod p 12) c.pcs))
   in defaults
        { octave = bass / 12 - 1
-       , minTones = length notes
+       , minTones = max (length notes) (distinct + 1)
        , reach = 4
        }
 
@@ -184,6 +199,63 @@ invertNode dir c =
     let sorted = sort xs
         b = fromMaybe (bassMidi c) (head sorted)
     in c { bassPc = mod b 12, bassOct = b / 12, voicing = drop 1 sorted }
+
+-- | The sounding chord tone `dir` steps around from the current bass — the
+-- | cycle the ⟲/⟳ bass controls walk.
+-- |
+-- | **Sounding**, not merely present in `pcs`. An omitted tone has no copy to
+-- | trade with, so re-footing onto it could only preserve the chord's content by
+-- | growing it. Leaving it out of the cycle is the honest fix: you cannot put a
+-- | note in the bass that you have just chosen not to play.
+nextBassTone :: Int -> ChordNode -> Int
+nextBassTone dir c =
+  let tones = sort (nub (map (\m -> mod m 12) (playNotes c)))
+      n = length tones
+  in case findIndex (_ == mod c.bassPc 12) tones of
+       Just i | n > 0 -> fromMaybe c.bassPc (index tones (mod (i + dir + n) n))
+       _ -> c.bassPc
+
+-- | **Re-foot the chord on another of its sounding tones, changing neither the
+-- | note count nor the pitch-class content.**
+-- |
+-- | The naive version — assign `bassPc` and stop — silently DELETES a pitch
+-- | class. A voicing from `openVoicing` keeps its root in the bass and often
+-- | nowhere else, so re-footing `CM7` (36·55·71·76) onto G left G·B·E with no C
+-- | anywhere. Untested until now, because it lived inline in the component where
+-- | no test could reach it.
+-- |
+-- | Count is the constraint that shapes the fix. `playNotes` is
+-- | `[bass] <> voicing`, so the count is `1 + length voicing` and the uppers
+-- | must come out the same length as they went in. Two cases, and the
+-- | distinction is exactly whether the outgoing bass tone still has a home:
+-- |
+-- |   * **the old bass tone also sounds above** — then simply re-foot. The new
+-- |     bass tone doubles (bass and upper), nothing is lost, nothing is added.
+-- |   * **it does not** — then trade: the new bass tone gives up its lowest
+-- |     upper copy, and the outgoing tone takes that copy's place at the nearest
+-- |     octave. One out, one in.
+refootNode :: Int -> ChordNode -> ChordNode
+refootNode pc c
+  | mod pc 12 == mod c.bassPc 12 = c
+  | otherwise =
+      let
+        oldPc = mod c.bassPc 12
+        ups = sort c.voicing
+      in
+        if any (\m -> mod m 12 == oldPc) ups then c { bassPc = mod pc 12 }
+        else case find (\m -> mod m 12 == mod pc 12) ups of
+          Nothing -> c { bassPc = mod pc 12 }
+          Just v ->
+            c { bassPc = mod pc 12
+              , voicing = sort (cons (nearestOctaveOf oldPc v) (deleteBy (==) v ups))
+              }
+
+-- | The octave of `pc` closest to `near`.
+nearestOctaveOf :: Int -> Int -> Int
+nearestOctaveOf pc near =
+  let up = near + mod (mod pc 12 - mod near 12 + 12) 12
+      down = up - 12
+  in if near - down <= up - near then down else up
 
 -- | **Which tone, and which of its copies, a sounding note is.**
 -- |

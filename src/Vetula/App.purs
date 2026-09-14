@@ -142,7 +142,7 @@ import Vetula.Between (bridgeNotes, maxBridge)
 import Harmonia.Graded (transpose) as Graded
 import Vetula.Banks (butlerChords, stockChords)
 import Vetula.Pads as Pads
-import Vetula.Spread (applyToNode, ghostRows, invertNode, spreadOfNode, toneAt)
+import Vetula.Spread (applyToNode, ghostRows, invertNode, nextBassTone, refootNode, spreadOfNode, toneAt)
 import Harmonia.OpenVoicing (at, dropAt, setTone, sounds) as OV
 import Vetula.Harmony (ChordNode, Family(..), Kind(..), bassMidi, blackKeyPcs, octaveShift, diatonicTriads, generate, interchangeChords, keyX, keyboard, latticeChild, latticeFamily, mcmullenChords, noteName, place, placeOutside, playNotes, scaleSet, suspendSet, triadNode, triadOn, voicingCandidates, whiteKeyPcs)
 
@@ -1853,7 +1853,7 @@ handleAction = case _ of
   SlashBass pc -> do
     st <- H.get
     for_ st.revoicing \cid -> do
-      let chords' = map (\c -> if c.id == cid then c { bassPc = pc } else c) st.chords
+      let chords' = map (\c -> if c.id == cid then refootNode pc c else c) st.chords
       applyChords chords'
       for_ (find (\c -> c.id == cid) chords') playChord
 
@@ -4212,7 +4212,7 @@ nudgeSelected dir = do
         let c' = case sel of
               UpperVoice ix ->
                 c { voicing = fromMaybe c.voicing (modifyAt ix (\m -> clamp 24 96 (m + 12 * dir)) c.voicing) }
-              BassVoice -> c { bassPc = rotateBass dir c }
+              BassVoice -> refootNode (nextBassTone dir c) c
             chords' = map (\d -> if d.id == sid then c' else d) st.chords
         applyChords chords'
         playChord c'
@@ -4308,16 +4308,6 @@ toggleFavorite = do
 -- | actual notes (and survive key changes) rather than a transient node id.
 pcsKey :: ChordNode -> String
 pcsKey c = show (sort (nub c.pcs))
-
--- | The next chord tone (cyclically) above/below the current bass — limited to
--- | pitch classes already in the chord.
-rotateBass :: Int -> ChordNode -> Int
-rotateBass dir c =
-  let tones = sort (nub c.pcs)
-      n = length tones
-  in case elemIndex c.bassPc tones of
-       Just i | n > 0 -> fromMaybe c.bassPc (index tones (mod (i + dir + n) n))
-       _ -> c.bassPc
 
 -- | Spawn a family of children of the hovered chord and ENTER them into the
 -- | graph without disturbing what's already there. The focus (the reference
@@ -7667,7 +7657,9 @@ revoiceModal st =
   -- their exact coordinates and svgYFromEvent (reads currentTarget's own viewBox) keeps
   -- the drag math (205 − y)/9.8 correct. Backdrop, title and × are the widget's job now.
   revoiceBody c =
-    let tones = sort (nub c.pcs)
+    -- SOUNDING tones only: you cannot foot the chord on a note you have just
+    -- chosen not to play, and `refootNode` has nothing to trade with if you try.
+    let tones = sort (nub (map (\m -> mod m 12) (playNotes c)))
     in [ SE.svg
            ( [ SA.viewBox (-455.0) (-303.0) 290.0 565.0
              , SA.class_ (cn "rv-svg")
