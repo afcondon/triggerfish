@@ -22,11 +22,13 @@ module Vetula.Rehearsal
   , size
   , around
   , allAround
+  , allPaths
   ) where
 
 import Prelude
 
-import Data.Array (catMaybes, deleteAt, drop, filter, find, findIndex, head, index, nub, sort, take, zipWith)
+import Data.Array (catMaybes, deleteAt, drop, filter, find, findIndex, head, index, length, nub, range, snoc, sort, sortBy, take, zipWith)
+import Data.Foldable (foldl)
 import Data.Maybe (Maybe(..), fromMaybe, maybe)
 import Data.String.CodeUnits as String
 
@@ -205,3 +207,39 @@ allAround cap slots idx c =
   optionsAt k = case index slots k of
     Nothing -> [ [] ]
     Just sl -> map (\o -> [ o ]) sl.options
+
+-- | **Every path through the lattice, smoothest first.**
+-- |
+-- | The pull dial plays ONE path and re-rolls; this lays them all out. They are
+-- | different questions — the dial is for finding something you did not expect,
+-- | this is for choosing once you know roughly what you want — and the ordering
+-- | is what makes it usable: the top of the list is the progression that moves
+-- | least, the bottom is the one that leaps, and everything in between is a
+-- | trade you can hear.
+-- |
+-- | `Nothing` when the lattice is too large to lay out. That is not a failure to
+-- | handle but a thing to say: five slots of four is 1024 readings, which is not
+-- | a list anyone chooses from. Settling a slot or two collapses it, which makes
+-- | this view the reason to settle rather than a casualty of not having.
+allPaths :: Int -> Int -> Array Slot -> Maybe (Array { ixs :: Array Int, motion :: Int })
+allPaths limit cap slots
+  | size slots > limit = Nothing
+  | otherwise =
+      Just (take cap (sortBy (comparing _.motion) (map score (combos slots))))
+  where
+  -- A settled slot contributes its one index, so settling narrows the list in
+  -- exactly the way the player expects.
+  combos = foldl step [ [] ]
+  step acc sl = do
+    prefix <- acc
+    j <- case sl.locked of
+      Just k -> [ k ]
+      Nothing -> range 0 (length sl.options - 1)
+    pure (snoc prefix j)
+
+  score ixs =
+    { ixs
+    , motion: HT.pathMotion
+        (map (\c -> Voicing (playNotes c))
+          (catMaybes (zipWith (\sl j -> index sl.options j) slots ixs)))
+    }
