@@ -19,7 +19,7 @@ import Prelude
 
 import Data.Array (all, concatMap, filter, head, last, length, nub, sort, (..))
 import Data.Array as Array
-import Data.Foldable (elem, for_)
+import Data.Foldable (elem, foldl, for_)
 import Data.Maybe (Maybe(..), fromMaybe)
 import Effect (Effect)
 import Effect.Console (log)
@@ -45,6 +45,11 @@ corpus =
 
 pcsOf :: Array Int -> Array Int
 pcsOf = sort <<< nub <<< map (\m -> mod m 12)
+
+-- | How many notes you actually HEAR: distinct sounding pitches, so two voices
+-- | on one pitch count once.
+heardCount :: ChordNode -> Int
+heardCount = length <<< nub <<< playNotes
 
 -- | Check a law over the whole corpus, naming the first chord that breaks it.
 law :: String -> (ChordNode -> Boolean) -> Effect Unit
@@ -174,6 +179,26 @@ runRevoiceTests = do
     (\c -> length (playNotes (octaveShift 1 c)) == length (playNotes c))
   law "reading a voicing back preserves the note count"
     (\c -> length (playNotes (applyToNode c (spreadOfNode c))) == length (playNotes c))
+
+  -- ── Heard notes, not array entries (2026-09-15) ────────────────────────
+  -- The counts above are blind to a UNISON: `invert` moves one entry and can
+  -- land it on a pitch the chord is already sounding, so the array stays four
+  -- long and you hear three. Harmonia measured it at 108 of 960 voicings on a
+  -- full rotation before `freeOctave` fixed it; these are the same law on the
+  -- chords actually in the app. Deliberate doubling still passes — the test is
+  -- that a transform may not INVENT a unison, not that unisons are illegal.
+  law "invert up invents no unison"
+    (\c -> heardCount (invertNode 1 c) == heardCount c)
+  law "invert down invents no unison"
+    (\c -> heardCount (invertNode (-1) c) == heardCount c)
+  law "a full rotation invents no unison"
+    (\c -> let n = length (playNotes c)
+               rotated = foldl (\d _ -> invertNode 1 d) c (1 .. n)
+           in heardCount rotated == heardCount c)
+  law "an octave shift invents no unison"
+    (\c -> heardCount (octaveShift 1 c) == heardCount c)
+  law "re-footing onto every chord tone invents no unison"
+    (\c -> all (\pc -> heardCount (refootNode pc c) == heardCount c) (pcsOf (playNotes c)))
 
   -- ── Bass substitution ──────────────────────────────────────────────────
   -- Untested until now, because it lived inline in the component where nothing
