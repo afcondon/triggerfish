@@ -28,6 +28,7 @@
 module Triggerfish.Clips.Share
   ( shareCollection
   , shareSpec
+  , phraseSpec
   ) where
 
 import Prelude
@@ -36,8 +37,9 @@ import Data.Array (catMaybes)
 import Data.Maybe (Maybe(..))
 
 import Triggerfish.Amphora (PublishSpec)
-import Triggerfish.Clips (MidiClip)
+import Triggerfish.Clips (MidiClip, onsetGroups)
 import Triggerfish.Clips.Codec (encode)
+import Triggerfish.Glyph (chordGlyph)
 
 -- | Machine-agnostic on purpose: Odonus's marked phrases and Vetula's settled
 -- | paths land in the same place, and a reader picks by the `source:` tag rather
@@ -66,3 +68,31 @@ shareSpec clip extra =
              ]
         <> clip.tags
   }
+
+-- | **A captured clip, declared as a phrase.**
+-- |
+-- | The one thing a sampler must be told that a clip does not say: whether this
+-- | is a set of ALTERNATIVES or a piece of MUSIC. A progression minted in
+-- | Rehearse is four chords to be sampled one each, and their spacing is
+-- | arbitrary — the sampler is free to leave whatever room a decay needs. A
+-- | phrase marked in Review is one thing whose rhythm IS the material, so a
+-- | sampler that spaces it to suit itself has recorded something else.
+-- |
+-- | Hence two kinds, and they divide differently at the far end: chord hits
+-- | become one sample each at their own declared boundaries; a phrase is one
+-- | sample, kept whole, and it is the MODULE that slices it.
+-- |
+-- | ## The gates here are observed
+-- |
+-- | A minted progression's `gateMs` is invented — 700 ms because that is what
+-- | the Rehearse pass auditions at — and Quadrat rightly ignores it in favour
+-- | of a hold you can argue with. A captured clip's gates came off the engine
+-- | that played them, so they are a fact about the phrase and have to survive.
+-- |
+-- | `MidiClip` cannot tell the two apart — both are just numbers in a field —
+-- | so the KIND carries it. Nothing else needs to: a phrase is played as a note
+-- | stream at its own times and a progression as a held strike, and those are
+-- | the only two readings there are.
+phraseSpec :: MidiClip -> PublishSpec
+phraseSpec clip =
+  shareSpec clip { kind: "phrase", glyph: (chordGlyph (map _.notes (onsetGroups clip.events))).alias }

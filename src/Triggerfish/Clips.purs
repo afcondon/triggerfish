@@ -12,12 +12,15 @@ module Triggerfish.Clips
   ( NoteEvent
   , MidiClip
   , headCount
+  , Group
+  , onsetGroups
   ) where
 
 import Prelude
 
-import Data.Array (length, nub)
-import Data.Maybe (Maybe)
+import Data.Array (filter, length, nub, sort)
+import Data.Foldable (maximum)
+import Data.Maybe (Maybe, fromMaybe)
 
 -- | One emitted note in a scrolling monitor / logbook / clip. `fireUnixMicros` is
 -- | the wall-clock instant it sounded (rebased to [0, lenMicros) inside a clip);
@@ -54,3 +57,30 @@ type MidiClip =
 -- | the count the phrase-voice mute mask ranges over.
 headCount :: Array NoteEvent -> Int
 headCount = length <<< nub <<< map _.headIdx
+
+-- | **Notes sharing an instant, as one strike.**
+-- |
+-- | The same grouping Quadrat does on overheard MIDI, except that these times
+-- | were DECLARED by whatever played them — so where a detector guesses with a
+-- | 50 ms window about a human hand, this is exact about a machine. Equality on
+-- | the onset, not a window: a machine that fired four notes together wrote one
+-- | number four times.
+-- |
+-- | A CAPTURED clip groups into mostly-singletons, and that is not a failure of
+-- | the grouping — a phrase really is one note after another. The shape is the
+-- | same either way, which is why one function serves a progression and a
+-- | phrase alike.
+type Group = { at :: Number, notes :: Array Int, gate :: Number }
+
+onsetGroups :: Array NoteEvent -> Array Group
+onsetGroups evs = map grp (sort (nub (map _.fireUnixMicros evs)))
+  where
+  grp at =
+    let here = filter (\e -> e.fireUnixMicros == at) evs
+    in { at
+       , notes: sort (map _.pitch here)
+       -- The LONGEST gate in the group: a strike is over when its last voice
+       -- is, and a shorter inner voice is a detail of the voicing rather than
+       -- of the strike.
+       , gate: fromMaybe 0.0 (maximum (map _.gateMs here))
+       }

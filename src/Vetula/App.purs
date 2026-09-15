@@ -994,6 +994,7 @@ data Action
   | ClipAudition MidiClip  -- play a library clip once, faithfully (own channels/vel/gate)
   | ClipRename String String -- rename library clip by id (commit on blur), persist
   | ClipDelete String      -- remove library clip by id, persist
+  | ClipShare MidiClip     -- ◴ declare a captured clip to Quadrat, as a phrase
   -- Capture band (#28): the always-on player-piano roll in the lower third.
   | CaptureMark            -- flag "the last couple of bars" as a good bit
   | CaptureRegionSelect Int -- click a gold band → show its lift card
@@ -2808,6 +2809,17 @@ handleAction = case _ of
     let lib' = filter (\c -> c.id /= cid) st.clipLibrary
     H.modify_ _ { clipLibrary = lib' }
     liftEffect (ClipStore.saveClips lib')
+
+  -- The shelf's ◴ declares a PROGRESSION — chords that are alternatives to each
+  -- other, one sample each. This one declares a PHRASE: a marked region whose
+  -- rhythm is the material, sampled whole. Same store, same collection, and the
+  -- kind is what tells the sampler which it is holding.
+  ClipShare clip -> do
+    H.modify_ _ { publishMsg = Just "sending to Quadrat…" }
+    res <- liftAff (attempt (Amphora.publish (Share.phraseSpec clip)))
+    H.modify_ _ { publishMsg = Just case res of
+        Right hash -> "✓ for Quadrat · " <> SCU.take 8 hash
+        Left _ -> "✗ send failed (store offline?)" }
 
   -- Capture band (#28). Mark flags the last two bars (the roll runs newest-at-top,
   -- so a mark drops a default region back over what you just played). Selecting a
@@ -6203,6 +6215,7 @@ perfPhrasePickModal st = case st.perfPhrasePick of
               , attach: Just
                   { label: "P" <> show (maybe (i + 1) _.channel (index st.perfBoxes i))
                   , onAttach: PerfAttachPhrase i }
+              , share: Just { onShare: ClipShare, msg: fromMaybe "" st.publishMsg }
               }
               st.clipLibrary
           , HH.button

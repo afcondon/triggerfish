@@ -88,6 +88,7 @@ import Triggerfish.Macro.Store as MacroStore
 import Triggerfish.Transport.Store as TransportStore
 import Triggerfish.Midi.Routing as Routing
 import Triggerfish.Clips (MidiClip)
+import Triggerfish.Clips.Share as ClipShare
 import Triggerfish.Clips.Store as ClipStore
 import Triggerfish.Clips.View as ClipsView
 import Triggerfish.Amphora as Amphora
@@ -177,6 +178,7 @@ data RAction
   | ClipAudition MidiClip      -- ▶ play a library clip once, on its own channels
   | ClipRename String String   -- rename by id (commit on blur), persist
   | ClipDelete String          -- remove by id, persist
+  | ClipShare MidiClip         -- ◴ declare to Quadrat, as a phrase
   | OpenChipMenu Which         -- click a status-board glyph → open (or close) its recall menu
   | CloseChipMenu
   | RecallFrom Which Int        -- recall bank slot i on machine w, then close the menu
@@ -329,6 +331,10 @@ type RState =
   -- any machine may have appended to the store since — and the shell's own MIDI
   -- out, requested once at Init, so ▶ audition works from the shell.
   , clipLibrary :: Array MidiClip
+  -- How the last ◴ went. One line, in the panel that has the button, cleared by
+  -- the next attempt — a publish either lands or it does not, and an old "✓"
+  -- beside a failed one is worse than nothing.
+  , clipShareMsg :: String
   , shellMidi :: Maybe Midi.MidiOut
   -- Selene's live source, stashed on every routing-modal refresh. The doc IS
   -- the routing authority (destination header tokens carry the Target), so the
@@ -446,7 +452,7 @@ root =
         , auditionCh: Map.empty                     -- per-machine channel; lookup defaults to 5
 
         , library: [], importText: "", importMsg: "", stagePaths: Map.empty
-        , clipLibrary: [], shellMidi: Nothing
+        , clipLibrary: [], clipShareMsg: "", shellMidi: Nothing
         , picked: Nothing, sourceOpen: false, digOpen: false, goTo: [], previewing: []
         , mode: Solo, harm: { durs: [], active: -1, chord: "" }
         , rig: Nothing, rigConnected: false
@@ -619,6 +625,21 @@ handleAction = case _ of
     let lib = filter (\c -> c.id /= cid) st.clipLibrary
     H.modify_ _ { clipLibrary = lib }
     liftEffect $ ClipStore.saveClips lib
+
+  -- **Declare a captured clip to the sampler.** Not a MIDI route: Quadrat is a
+  -- different origin, and it learns the notes by being TOLD — which is exact
+  -- where listening to the wire is a detector's best guess.
+  --
+  -- Always a PHRASE, because that is what a marked region is. The Rehearse
+  -- shelf's ◴ publishes chord hits, which are alternatives to each other and
+  -- get a sample each; this one is a piece of music whose rhythm is the
+  -- material, and it comes back as one sample kept whole.
+  ClipShare clip -> do
+    H.modify_ _ { clipShareMsg = "sending to Quadrat…" }
+    res <- liftAff (attempt (Amphora.publish (ClipShare.phraseSpec clip)))
+    H.modify_ _ { clipShareMsg = case res of
+        Right hash -> "✓ for Quadrat · " <> String.take 8 hash
+        Left _ -> "✗ send failed (store offline?)" }
 
   -- Master ▶/■ = arm ALL / disarm ALL: arm every machine if none is armed, else
   -- disarm every machine. The button label is `anyArmed`. pushAll re-derives each
@@ -1560,7 +1581,8 @@ modalBody st = case _ of
   MSource -> sourceDrawer st
   MClips -> ClipsView.libraryPanel
     { audition: ClipAudition, rename: ClipRename, delete: ClipDelete
-    , attach: Nothing }   -- browse/manage: attaching is a Vetula-box gesture
+    , attach: Nothing     -- browse/manage: attaching is a Vetula-box gesture
+    , share: Just { onShare: ClipShare, msg: st.clipShareMsg } }
     st.clipLibrary
   MPresets -> HH.div_
     [ workbenchHeader st
