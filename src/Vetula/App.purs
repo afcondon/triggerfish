@@ -142,6 +142,8 @@ import Vetula.Between (bridgeNotes, maxBridge)
 import Harmonia.Graded (transpose) as Graded
 import Vetula.Banks (butlerChords, stockChords)
 import Vetula.Pads as Pads
+import Harmonia.Vary as HV
+import Vetula.Vary as Vary
 import Vetula.Spread (applyToNode, ghostRows, invertNode, nextBassTone, refootNode, spreadOfNode, toneAt)
 import Harmonia.OpenVoicing (at, dropAt, setTone, sounds) as OV
 import Vetula.Harmony (ChordNode, Family(..), Kind(..), bassMidi, blackKeyPcs, octaveShift, diatonicTriads, generate, interchangeChords, keyX, keyboard, latticeChild, latticeFamily, mcmullenChords, noteName, place, placeOutside, playNotes, scaleSet, suspendSet, triadNode, triadOn, voicingCandidates, whiteKeyPcs)
@@ -198,7 +200,7 @@ derive instance ordLeftSection :: Ord LeftSection
 -- | idea). Catch a relative and it feeds the tank — the compositional loop closes.
 -- |
 -- | (Keyboard / pad-grid retired — subsumed by the interactive fifths.)
-data Viewtype = Fifths | Tonnetz | Lattice | Explore | Pads
+data Viewtype = Fifths | Tonnetz | Lattice | Explore | Pads | Vary
 
 derive instance eqViewtype :: Eq Viewtype
 
@@ -246,10 +248,11 @@ viewtypeLabel = case _ of
   Lattice -> "voice-leading lattice"
   Explore -> "explore"
   Pads -> "banks"
+  Vary -> "vary"
 
 -- | The browse projections, in bar order.
 viewtypes :: Array Viewtype
-viewtypes = [ Fifths, Tonnetz, Lattice, Explore, Pads ]
+viewtypes = [ Fifths, Tonnetz, Lattice, Explore, Pads, Vary ]
 
 -- | The four HUNT projections as the dropdown hanging off the HUNT tab: a stable
 -- | string `value` ↔ `Viewtype`, with a readable menu `label`. Perform and Review
@@ -261,6 +264,7 @@ viewtypeValue = case _ of
   Lattice -> "lattice"
   Explore -> "explore"
   Pads -> "pads"
+  Vary -> "vary"
 
 viewtypeFromValue :: String -> Viewtype
 viewtypeFromValue = case _ of
@@ -269,6 +273,7 @@ viewtypeFromValue = case _ of
   "lattice" -> Lattice
   "explore" -> Explore
   "pads" -> Pads
+  "vary" -> Vary
   _ -> Tonnetz
 
 viewtypeMenuLabel :: Viewtype -> String
@@ -278,6 +283,7 @@ viewtypeMenuLabel = case _ of
   Lattice -> "voice-leading lattice"
   Explore -> "explore"
   Pads -> "banks (freedom × complexity)"
+  Vary -> "vary a chord (drift × density)"
 
 browseOptions :: Array { value :: String, label :: String }
 browseOptions = map (\vt -> { value: viewtypeValue vt, label: viewtypeMenuLabel vt }) viewtypes
@@ -693,6 +699,10 @@ type State =
   -- Banks lens: the shuffle number. ONE Int regenerates all nine banks, because
   -- each is a `Harmonia.Progression.Spec` whose seed is fanned out from this.
   , padRoll :: Int
+  , varyRoll :: Int
+  -- The chord the Vary lens is working on. `Nothing` falls back to whatever is
+  -- sounding, so the lens is never empty for no reason.
+  , varying :: Maybe ChordNode
   -- The hovered PAD, carried whole. `hoveredTriad` would be enough to highlight
   -- it, but not to preview it: that path re-voices from pitch classes, and a
   -- pad's open voicing (bass pinned to the root, contour smoothed against its
@@ -937,6 +947,8 @@ data Action
   | ShufflePads            -- Banks lens: re-walk all nine banks
   | HoverPad (Maybe ChordNode)  -- Banks lens: hover a pad (highlight + exact preview)
   | DropTone Event Int Int Int  -- silence chord `id`'s tone `i` at octave `k` (shift-click a note)
+  | ShuffleVary            -- re-draw all nine cells of the Vary lens from a new seed
+  | OpenVary ChordNode     -- send a chord to the Vary lens and go there
   | RollBass Int           -- roll the revoiced chord's bass to the next/previous chord tone
   | ShiftOctave Int        -- move the revoiced chord bodily up/down an octave
   | PlaceTone Event Int Int Int -- put chord `id`'s tone `i` at octave `k` (click a ghost)
@@ -1099,6 +1111,8 @@ component = H.mkComponent
       , panMoved: false
       , genRoll: 0
       , padRoll: 0
+      , varyRoll: 0
+      , varying: Nothing
       , hoveredNode: Nothing
       , chyron: []
       , hoveredChyron: Nothing
@@ -2840,6 +2854,14 @@ handleAction = case _ of
   ShakeGenerate -> H.modify_ \s -> s { genRoll = s.genRoll + 1 }
 
   ShufflePads -> H.modify_ \s -> s { padRoll = s.padRoll + 1 }
+
+  ShuffleVary -> H.modify_ \s -> s { varyRoll = s.varyRoll + 1 }
+
+  -- Opening the lens closes the revoice modal: they are two views of the same
+  -- question at different magnifications, and both up at once is just clutter.
+  OpenVary c -> do
+    H.modify_ \s -> s { varying = Just c, revoicing = Nothing, stage = Hunt Vary, lastLens = Vary }
+    playChord c
 
   -- The one mode switch. Absorbed the old `SetCaptureView`, so leaving REVIEW by
   -- ANY route — Perform, or off to Hunt — hushes the region preview and drops the
@@ -5202,6 +5224,7 @@ contextBar st =
   shakeChip = case st.stage of
     Hunt Explore -> [ rollChip "shake ⟳" "re-roll the relatives around each seed" ShakeGenerate ]
     Hunt Pads -> [ rollChip "shuffle ⟳" "re-walk all nine banks from a new seed" ShufflePads ]
+    Hunt Vary -> [ rollChip "shuffle ⟳" "re-draw all nine cells from a new seed" ShuffleVary ]
     _ -> []
   rollChip label tip act =
     HH.button
@@ -5372,6 +5395,7 @@ surface st
       Hunt Lattice -> latticesSurface st
       Hunt Explore -> generativeSurface st
       Hunt Pads -> padsSurface st
+      Hunt Vary -> varySurface st
 
 -- | The PERFORM surface — a row of player BOXES, one per output. Shift-click (or
 -- | drag) a saved token in the chyron to pick it up, then click (or drop it onto)
@@ -6929,6 +6953,92 @@ padLit st c = case st.hoveredTriad of
   Nothing -> false
   Just h -> sort (nub (map (\p -> mod p 12) h.pcs)) == sort (nub (map (\p -> mod p 12) c.pcs))
 
+-- | **The VARY surface — the Banks widget pointed at one chord.**
+-- |
+-- | Rows are drift (how far the content may travel, revoicing → substitution),
+-- | columns are density (how widely it may be spread and doubled). Pads, banks,
+-- | shuffle and hover-lighting are all the Banks lens's, unchanged: this is the
+-- | same gesture asking a different question, which is the whole argument for
+-- | building it this way rather than as its own screen.
+varySurface :: forall m. State -> H.ComponentHTML Action Slots m
+varySurface st = case varySource st of
+  Nothing ->
+    HH.div
+      [ HP.class_ (cn "vetula-surface")
+      , HP.style "position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; padding: 24px;" ]
+      [ HH.div
+          [ HP.style "font-size: 12px; color: #a09880; text-align: center; max-width: 380px; line-height: 1.6;" ]
+          [ HH.text "Nothing to vary yet. Play a chord in any lens — or open one for revoicing and press "
+          , HH.span [ HP.style "color: #6a6250;" ] [ HH.text "vary ⋯" ]
+          , HH.text " — and its neighbourhood appears here."
+          ]
+      ]
+  Just src ->
+    let cells = Vary.grid st.key src st.varyRoll
+        cellAt d dn = filter (\x -> x.drift == d && x.density == dn) cells
+    in HH.div
+        -- `vetula-surface` is load-bearing, not cosmetic — see `padsSurface`.
+        [ HP.class_ (cn "vetula-surface")
+        , HP.style "position: absolute; inset: 0; overflow: auto; padding: 16px 22px 26px;" ]
+        [ HH.div
+            [ HP.style "font-size: 11px; color: #a09880; letter-spacing: 0.04em; margin-bottom: 10px; -webkit-user-select: none; user-select: none;" ]
+            [ HH.text "varying "
+            , HH.span [ HP.style "color: #6a6250; font-weight: 500;" ] [ HH.text src.label ]
+            , HH.text (" · " <> show (playNotes src)
+                        <> " · rows let the notes themselves drift, columns spread and double them")
+            ]
+        , HH.div
+            [ HP.style "display: grid; grid-template-columns: 62px repeat(3, minmax(0, 1fr)); gap: 10px 12px; align-items: start;" ]
+            ( [ HH.div [] [] ]
+                <> map varyColHead HV.densities
+                <> concatMap
+                     (\d -> [ varyRowHead d ] <> map (\dn -> varyBank st (cellAt d dn)) HV.densities)
+                     HV.drifts
+            )
+        ]
+
+-- | The chord under the lens: the one explicitly sent here, else whatever is
+-- | sounding. Falling back means the lens is never blank merely because you
+-- | arrived by the dropdown rather than by the button.
+varySource :: State -> Maybe ChordNode
+varySource st = case st.varying of
+  Just c -> Just c
+  Nothing -> st.sounding >>= \sid -> find (\c -> c.id == sid) st.chords
+
+varyColHead :: forall m. HV.Density -> H.ComponentHTML Action Slots m
+varyColHead dn =
+  HH.div
+    [ HP.style "font-size: 11px; color: #7a7360; letter-spacing: 0.08em; text-transform: uppercase; padding-bottom: 2px; border-bottom: 1px solid #e6dfcc; -webkit-user-select: none; user-select: none;"
+    , HP.title (HV.densityBlurb dn) ]
+    [ HH.text (HV.densityLabel dn) ]
+
+varyRowHead :: forall m. HV.Drift -> H.ComponentHTML Action Slots m
+varyRowHead d =
+  HH.div
+    [ HP.style "font-size: 11px; color: #7a7360; letter-spacing: 0.08em; text-transform: uppercase; padding-top: 14px; text-align: right; -webkit-user-select: none; user-select: none;"
+    , HP.title (HV.driftBlurb d) ]
+    [ HH.text (HV.driftLabel d) ]
+
+-- | One cell. A cell holding fewer than sixteen has been EXHAUSTED, not
+-- | truncated — near the chord the neighbourhood is genuinely small — so the
+-- | count is shown rather than padded out with repeats.
+varyBank :: forall m. State -> Array Vary.Cell -> H.ComponentHTML Action Slots m
+varyBank st cs = case head cs of
+  Nothing -> HH.div [] []
+  Just cell ->
+    HH.div
+      [ HP.style "background: #fbf8f0; border: 1px solid #ece5d2; border-radius: 5px; padding: 6px;" ]
+      [ HH.div
+          [ HP.style "display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 4px;" ]
+          (map (padButton st) cell.chords)
+      , if length cell.chords >= Vary.varyRows * Vary.varyCols then HH.text ""
+        else HH.div
+               [ HP.style "font-size: 9px; color: #b3aa92; text-align: right; padding-top: 4px; -webkit-user-select: none; user-select: none;"
+               , HP.title "every distinct voicing this cell holds — the neighbourhood is exhausted" ]
+               [ HH.text (show (length cell.chords) <> " — all there is") ]
+      ]
+
+
 -- | A generative glyph: the chromatic-circle polygon, a name below, and a
 -- | transparent hit target. The seed wears a gold ring and only auditions; a
 -- | relative auditions on click and catches on shift-click. `mh` (the hovered
@@ -7686,6 +7796,7 @@ revoiceModal st =
            , rvBtn "⟲ invert" "roll the lowest voice down — the previous inversion" (RollBass (-1))
            , rvBtn "invert ⟳" "roll the lowest voice up — the next inversion" (RollBass 1)
            , rvBtn "8ve ▲" "the whole chord up an octave, bass included" (ShiftOctave 1)
+           , rvBtn "vary ⋯" "open this chord's whole neighbourhood — drift × density" (OpenVary c)
            ]
        , HH.div [ HP.style "margin-top: 8px; font-size: 11px; color: #9a9a9a; text-align: center;" ]
            [ HH.text "Tab voicings · ↑↓ nudge · drag = 8ve · ⌥ doubles · ⇧ drops a note · f keep · Esc" ]

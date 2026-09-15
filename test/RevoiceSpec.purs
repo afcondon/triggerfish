@@ -24,11 +24,13 @@ import Data.Maybe (Maybe(..), fromMaybe)
 import Effect (Effect)
 import Effect.Console (log)
 import Harmonia.Chord (Key, Mode(..))
+import Harmonia.Vary as HV
 import Harmonia.OpenVoicing (at, doubleTone, dropAt, octaves, setTone, toggleTone) as OV
 import Test.Assert (assertTrue')
 import Vetula.Banks (butlerChords)
 import Vetula.Harmony (ChordNode, bassMidi, diatonicTriads, mcmullenChords, octaveShift, playNotes)
 import Vetula.Pads as Pads
+import Vetula.Vary as Vary
 import Vetula.Spread (applyToNode, ghostRows, invertNode, nextBassTone, openFor, refootNode, spreadOfNode, toneRows)
 
 cMajor :: Key
@@ -52,6 +54,29 @@ heardCount :: ChordNode -> Int
 heardCount = length <<< nub <<< playNotes
 
 -- | Check a law over the whole corpus, naming the first chord that breaks it.
+-- | **The Vary grid, built once.**
+-- |
+-- | Every candidate costs a recogniser pass, so building a grid per law per
+-- | chord put this suite into the minutes — 200,000 recognitions for eight
+-- | properties. Built once over a sample of the corpus instead: the laws are
+-- | about the node conversion, which does not get truer for being run on all
+-- | 186 sources.
+varyCorpus :: Array { src :: ChordNode, cells :: Array Vary.Cell }
+varyCorpus =
+  map (\c -> { src: c, cells: Vary.grid cMajor c 1 })
+    (Array.filter (_.keep) (Array.mapWithIndex (\i c -> { keep: mod i 8 == 0, node: c }) corpus)
+      # map _.node)
+
+allIn :: { src :: ChordNode, cells :: Array Vary.Cell } -> (ChordNode -> Boolean) -> Boolean
+allIn g p = all (\cell -> all p cell.chords) g.cells
+
+varyLaw :: String -> ({ src :: ChordNode, cells :: Array Vary.Cell } -> Boolean) -> Effect Unit
+varyLaw name holds = do
+  let bad = filter (not <<< holds) varyCorpus
+  for_ (head bad) \g -> log ("      first failure: " <> g.src.label <> " " <> show (playNotes g.src))
+  assertTrue' (name <> " (" <> show (length bad) <> " of " <> show (length varyCorpus) <> " failed)")
+    (length bad == 0)
+
 law :: String -> (ChordNode -> Boolean) -> Effect Unit
 law name holds = do
   let bad = filter (not <<< holds) corpus
@@ -220,6 +245,34 @@ runRevoiceTests = do
   law "the bass is still the lowest note after re-footing"
     (\c -> let d = refootNode (nextBassTone 1 c) c
            in head (sort (playNotes d)) == Just (bassMidi d))
+
+  -- ── The Vary lens ──────────────────────────────────────────────────────
+  -- The grid generates nodes rather than voicings, and the node conversion is
+  -- exactly where this codebase has put its feet wrong before: a bass split off
+  -- into its own two fields, a `drop 1` that has to agree with a `head`. So the
+  -- laws are about the seam, not about the music — Harmonia's own spec covers
+  -- what the candidates mean.
+  varyLaw "a varied node has no two voices on one pitch"
+    (\g -> allIn g (\d -> sort (playNotes d) == sort (nub (playNotes d))))
+  varyLaw "a varied node's bass is its lowest note"
+    (\g -> allIn g (\d -> head (sort (playNotes d)) == Just (bassMidi d)))
+  varyLaw "a varied node sounds the pitch classes it claims"
+    (\g -> allIn g (\d -> pcsOf (playNotes d) == sort (nub d.pcs)))
+  varyLaw "a varied node is playable"
+    (\g -> allIn g (\d -> all (\m -> m >= 12 && m <= 120) (playNotes d)))
+  varyLaw "a varied node knows where it came from"
+    (\g -> allIn g (\d -> d.parentId == Just g.src.id))
+  varyLaw "a varied node is named"
+    (\g -> allIn g (\d -> d.label /= ""))
+  varyLaw "the held row really is the same chord"
+    (\g -> all (\cell -> cell.drift /= HV.Held
+                        || all (\d -> sort (nub d.pcs) == sort (nub (map (\p -> mod p 12) g.src.pcs)))
+                             cell.chords)
+             g.cells)
+  varyLaw "no cell repeats a voicing"
+    (\g -> all (\cell -> let vs = map (sort <<< playNotes) cell.chords
+                        in length (nub vs) == length vs)
+             g.cells)
 
   -- ── Adding and removing, by an exact amount ────────────────────────────
   law "doubling a tone adds exactly one note"
