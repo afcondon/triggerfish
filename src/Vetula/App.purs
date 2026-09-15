@@ -2596,7 +2596,7 @@ handleAction = case _ of
             saved = { events: evs, glyph: TGlyph.chordGlyph (map _.notes evs), pattern: "" }
             keep = mapMaybe (\(Tuple ix e) -> if ix < sel.lo || ix > sel.hi then Just e else Nothing)
                      (mapWithIndex Tuple st.chyron)
-        H.modify_ _ { chyronSaved = st.chyronSaved <> [ saved ], chyron = keep
+        H.modify_ _ { chyronSaved = shelve saved st.chyronSaved, chyron = keep
                     , chyronSel = Nothing, hoveredChyron = Nothing }
       _ -> pure unit
 
@@ -4387,8 +4387,30 @@ mintToken chords pattern = do
                         , label: show (i + 1), at: toNumber i, anchor: Free })
               chords
       tok = { events: evs, glyph: TGlyph.chordGlyph chords, pattern }
-  H.modify_ \s -> s { chyronSaved = s.chyronSaved <> [ tok ]
-                    , publishMsg = Just ("⏎ kept · " <> show (length chords) <> " chords") }
+  st <- H.get
+  if any (sameToken tok) st.chyronSaved
+    then H.modify_ _ { publishMsg = Just "already on the shelf" }
+    else H.modify_ \s -> s { chyronSaved = shelve tok s.chyronSaved
+                           , perfHeld = Nothing
+                           , publishMsg = Just ("⏎ kept · " <> show (length chords) <> " chords") }
+
+-- | **Two tokens are the same progression when they sound the same.**
+-- |
+-- | Content, not glyph: the glyph is DERIVED from the content, so equal glyphs
+-- | almost always mean equal chords — but "almost always" is the wrong standard
+-- | for deciding whether to throw one away.
+-- |
+-- | The pattern counts. The same bag of chords read as one pass and read as an
+-- | alternating lattice are different progressions that happen to be built from
+-- | the same material, and collapsing them would lose the more interesting one.
+sameToken :: SavedSeq -> SavedSeq -> Boolean
+sameToken a b = map _.notes a.events == map _.notes b.events && a.pattern == b.pattern
+
+-- | Append, and collapse any duplicates already on the shelf. Keeping a pass
+-- | identical to the progression you took up used to mint a second, identical
+-- | rebus — two tokens you cannot tell apart, because there is nothing to tell.
+shelve :: SavedSeq -> Array SavedSeq -> Array SavedSeq
+shelve tok existing = nubByEq sameToken (existing <> [ tok ])
 
 -- | The chords a path names, in order.
 pathChords :: State -> Array Int -> Array ChordNode
