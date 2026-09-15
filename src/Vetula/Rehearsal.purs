@@ -23,12 +23,14 @@ module Vetula.Rehearsal
   , around
   , allAround
   , allPaths
+  , handOff
   ) where
 
 import Prelude
 
-import Data.Array (catMaybes, deleteAt, drop, filter, find, findIndex, head, index, length, nub, range, snoc, sort, sortBy, take, zipWith)
+import Data.Array (catMaybes, concatMap, deleteAt, drop, elemIndex, filter, find, findIndex, head, index, length, nub, range, snoc, sort, sortBy, take, zipWith)
 import Data.Foldable (foldl)
+import Data.String.Common (joinWith)
 import Data.Maybe (Maybe(..), fromMaybe, maybe)
 import Data.String.CodeUnits as String
 
@@ -243,3 +245,41 @@ allPaths limit cap slots
         (map (\c -> Voicing (playNotes c))
           (catMaybes (zipWith (\sl j -> index sl.options j) slots ixs)))
     }
+
+-- | **A rehearsal as material plus a sequence — the shape a Perform box takes.**
+-- |
+-- | A box holds a bag of chords and a mini-notation pattern indexing into it, so
+-- | a rehearsal maps onto it exactly: the chords are every DISTINCT chord any
+-- | path uses, and the pattern is the path. Nothing is flattened away.
+-- |
+-- | And because the pattern is mini-notation, a slot with alternatives is just
+-- | `<3 4 5>` — Tidal's "one per cycle" is what an unsettled slot IS, and the
+-- | vendored parser has had it all along (`TPat_Polyrhythm`, grammar rule
+-- | `'<' sequence (',' sequence)* '>'`). So the lattice hands over whole; the
+-- | rig picks a path per cycle rather than us picking one now.
+-- |
+-- | Two shapes, which are the two things worth keeping:
+-- |
+-- |   * `[p]` — one path. The pattern is plain: `"0 1 2 3"`.
+-- |   * `[p, q, …]` — a shortlist. Each becomes a bracketed group inside one
+-- |     alternation, `"<[0 1 2 3] [0 1 4 3]>"`, so a whole reading is chosen per
+-- |     cycle rather than each slot wandering independently. That difference
+-- |     matters: independent slots produce crossings you never approved.
+-- |
+-- | Passing the WHOLE lattice (every slot's options, per-slot alternation) is
+-- | the third shape and falls out of `handOff` given every path — but it is the
+-- | caller's decision to make, not this function's.
+handOff :: Array Slot -> Array (Array Int) -> { chords :: Array (Array Int), pattern :: String }
+handOff slots paths =
+  { chords: bag
+  , pattern: case map render paths of
+      [ one ] -> one
+      many -> "<" <> joinWith " " (map (\g -> "[" <> g <> "]") many) <> ">"
+  }
+  where
+  -- Every distinct chord any path uses, in first-seen order — so a box's bag is
+  -- as small as the material actually requires.
+  bag = nub (concatMap notesOf paths)
+  notesOf ixs = catMaybes (zipWith (\sl j -> map playNotes (index sl.options j)) slots ixs)
+  render ixs = joinWith " " (map slotIx (notesOf ixs))
+  slotIx ns = show (fromMaybe 0 (elemIndex ns bag))

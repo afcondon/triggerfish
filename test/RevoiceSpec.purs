@@ -17,10 +17,12 @@ module Test.RevoiceSpec (runRevoiceTests) where
 
 import Prelude
 
-import Data.Array (all, concatMap, drop, filter, head, index, last, length, nub, sort, take, (..))
+import Data.Array (all, catMaybes, concatMap, drop, filter, head, index, last, length, nub, sort, take, (..))
 import Data.Array as Array
 import Data.Foldable (elem, foldl, for_)
+import Data.Int (fromString)
 import Data.Maybe (Maybe(..), fromMaybe)
+import Data.String (Pattern(..), contains, split)
 import Effect (Effect)
 import Effect.Console (log)
 import Harmonia.Chord (Key, Mode(..))
@@ -384,6 +386,36 @@ runRevoiceTests = do
   slotLaw "a sweep never exceeds its cap"
     (\g -> let sls = [ g.sl, g.sl, g.sl ]
            in length (RH.allAround 8 sls 1 g.src) <= 8)
+
+  -- ── The hand-off ───────────────────────────────────────────────────────
+  -- A box reads `chords !! i` for every index in the pattern, so an index that
+  -- points at the wrong chord is a progression that plays wrong and looks fine.
+  slotLaw "the hand-off bag holds every chord the readings use, once"
+    (\g -> let sls = [ g.sl, g.sl, g.sl ]
+               p = [ 0, 1, 0 ]
+               h = RH.handOff sls [ p ]
+           in h.chords == nub h.chords
+              && all (\j -> elem (fromMaybe [] (map playNotes (index g.sl.options j))) h.chords) p)
+  slotLaw "one reading hands off as a plain sequence"
+    (\g -> let sls = [ g.sl, g.sl ]
+               h = RH.handOff sls [ [ 0, 0 ] ]
+           in not (contains (Pattern "<") h.pattern))
+  slotLaw "a shortlist hands off as one alternation of whole readings"
+    (\g -> length g.sl.options < 2
+           || let sls = [ g.sl, g.sl ]
+                  h = RH.handOff sls [ [ 0, 0 ], [ 1, 1 ] ]
+              in contains (Pattern "<") h.pattern && contains (Pattern "[") h.pattern)
+  -- The round trip that matters: read the pattern's indices back through the
+  -- bag and you must get the chords the path actually named.
+  slotLaw "a handed-off reading resolves to the chords it came from"
+    (\g -> length g.sl.options < 2
+           || let sls = [ g.sl, g.sl, g.sl ]
+                  p = [ 1, 0, 1 ]
+                  h = RH.handOff sls [ p ]
+                  wanted = catMaybes (map (\j -> map playNotes (index g.sl.options j)) p)
+                  got = catMaybes (map (\t -> fromString t >>= index h.chords)
+                                     (split (Pattern " ") h.pattern))
+              in got == wanted)
 
   -- ── Adding and removing, by an exact amount ────────────────────────────
   law "doubling a tone adds exactly one note"

@@ -548,6 +548,13 @@ chyronCap = 128
 type SavedSeq =
   { events :: Array ChyronEvent
   , glyph :: Glyph
+  -- | The mini-notation sequence over this token's own chord indices, or `""`
+  -- | for the default one-a-beat reading. Carried on the TOKEN so a hand-off
+  -- | from Rehearse arrives self-describing: a shortlist of approved readings is
+  -- | `"<[0 1 2 3] [0 1 4 3]>"`, and a whole lattice is `"0 1 <3 4 5> 2"`.
+  -- | `PerfDropBox` copies it into the box's `seqText`, which a scene already
+  -- | persists — so the pattern survives from here to a saved scene.
+  , pattern :: String
   }
 
 
@@ -1025,6 +1032,9 @@ data Action
   | ShowPaths              -- lay out every way through the chords, smoothest first
   | HearPath (Array Int)   -- hear one of them
   | MarkPath (Array Int)   -- approve (or un-approve) one of them
+  | KeepPass               -- mint the current pass onto the shelf as a progression
+  | KeepMarked             -- mint the marked shortlist as ONE alternating token
+  | KeepLattice            -- mint the whole lattice, each slot alternating
   | SettleSlot Int Int     -- lock slot i to option j (or unlock if already it)
   | SettlePass             -- lock every slot to what this pass chose
   | LoosenAll              -- unlock every slot
@@ -2583,7 +2593,7 @@ handleAction = case _ of
     case st.chyronSel of
       Just sel -> do
         let evs = mapMaybe (\ix -> index st.chyron ix) (range sel.lo sel.hi)
-            saved = { events: evs, glyph: TGlyph.chordGlyph (map _.notes evs) }
+            saved = { events: evs, glyph: TGlyph.chordGlyph (map _.notes evs), pattern: "" }
             keep = mapMaybe (\(Tuple ix e) -> if ix < sel.lo || ix > sel.hi then Just e else Nothing)
                      (mapWithIndex Tuple st.chyron)
         H.modify_ _ { chyronSaved = st.chyronSaved <> [ saved ], chyron = keep
@@ -2655,8 +2665,14 @@ handleAction = case _ of
           , perfHeldFx = Nothing
           }
         Nothing -> case st.perfHeld >>= index st.chyronSaved of
-          Just s -> H.modify_ _
-            { perfBoxes = mapWithIndex (\j box -> if j == b then box { seq = Just s } else box) st.perfBoxes
+          -- A token that names its own reading brings it with it; one that does
+          -- not leaves whatever the box was already doing alone.
+          Just sq -> H.modify_ _
+            { perfBoxes = mapWithIndex
+                (\j box -> if j /= b then box
+                           else box { seq = Just sq
+                                    , seqText = if sq.pattern == "" then box.seqText else sq.pattern })
+                st.perfBoxes
             , perfHeld = Nothing
             }
           Nothing -> pure unit
@@ -2968,6 +2984,30 @@ handleAction = case _ of
       Nothing -> keepFreely c
 
   ForgetKept i -> H.modify_ \s -> s { kept = fromMaybe s.kept (deleteAt i s.kept) }
+
+  -- ── The hand-off ──────────────────────────────────────────────────────
+  -- Everything leaves Rehearse the same way: as a token on the shelf. From
+  -- there the app already knows what to do — drag it to a Perform box, and the
+  -- box loops it on the transport and feeds Odonus if its terminal is → odo.
+  -- Building a second route would have meant a second looping mechanism and a
+  -- second thing that can be stale.
+  --
+  -- A settled pass mints a NEW token rather than replacing the one you took up:
+  -- its chords differ, so its rebus differs, so it IS a different progression.
+  -- Check out, edit, check in — the shape `Unbundle` already uses.
+  KeepPass -> do
+    st <- H.get
+    mintFromRehearsal [ passIxs st ]
+
+  KeepMarked -> do
+    st <- H.get
+    mintFromRehearsal (map _.ixs (markedRows st))
+
+  -- Every slot's options at once, each slot alternating independently. The
+  -- generative shape: the rig walks the space per cycle instead of us choosing.
+  KeepLattice -> do
+    st <- H.get
+    mintLattice st.rehearsal
 
   -- ── REHEARSE ──────────────────────────────────────────────────────────
   -- Take up a saved progression: one slot per chord, its own voicing as option
@@ -4306,6 +4346,49 @@ phraseGap = 2800.0
 -- | Eight keeps it inside the span of a musical decision.
 sweepCap :: Int
 sweepCap = 8
+
+-- | **Mint a token from a set of paths and put it on the shelf.**
+-- |
+-- | One path gives a plain sequence; several give one alternation over whole
+-- | bracketed readings, so a cycle picks a progression you approved rather than
+-- | crossing slots independently into one you never heard.
+-- |
+-- | The token's `events` are the DISTINCT chords the readings use, which is what
+-- | a box's bag is, and its glyph is content-derived — so a settled pass gets a
+-- | different rebus from the one you took up, because it is a different
+-- | progression. That is the lineage, not a collision.
+mintFromRehearsal
+  :: forall o m. MonadAff m
+  => Array (Array Int) -> H.HalogenM State Action Slots o m Unit
+mintFromRehearsal paths = do
+  st <- H.get
+  when (length paths > 0 && length st.rehearsal > 0) do
+    let h = RH.handOff st.rehearsal paths
+    mintToken h.chords h.pattern
+
+-- | The whole lattice: every slot's options, each slot alternating on its own.
+-- | The generative shape — the rig walks the space per cycle instead of us
+-- | choosing a reading now.
+mintLattice :: forall o m. MonadAff m => Array Slot -> H.HalogenM State Action Slots o m Unit
+mintLattice slots = when (length slots > 0) do
+  let bag = nub (concatMap (\sl -> map playNotes sl.options) slots)
+      ixOf ns = show (fromMaybe 0 (elemIndex ns bag))
+      slotTxt sl = case map ixOf (map playNotes sl.options) of
+        [ one ] -> one
+        many -> "<" <> joinWith " " many <> ">"
+  mintToken bag (joinWith " " (map slotTxt slots))
+
+mintToken
+  :: forall o m. MonadAff m
+  => Array (Array Int) -> String -> H.HalogenM State Action Slots o m Unit
+mintToken chords pattern = do
+  let evs = mapWithIndex
+              (\i ns -> { pcs: nub (map (\n -> mod n 12) ns), notes: ns
+                        , label: show (i + 1), at: toNumber i, anchor: Free })
+              chords
+      tok = { events: evs, glyph: TGlyph.chordGlyph chords, pattern }
+  H.modify_ \s -> s { chyronSaved = s.chyronSaved <> [ tok ]
+                    , publishMsg = Just ("⏎ kept · " <> show (length chords) <> " chords") }
 
 -- | The chords a path names, in order.
 pathChords :: State -> Array Int -> Array ChordNode
@@ -5773,6 +5856,9 @@ mkSavedSeq :: Array (Array Int) -> SavedSeq
 mkSavedSeq chords =
   { events: mapWithIndex evt chords
   , glyph: TGlyph.chordGlyph chords
+  -- A scene stores a box's `seqText` in its own right, so a recalled token
+  -- needs none of its own.
+  , pattern: ""
   }
   where
   -- `Free`: a recalled note-list carries no scale reading (the source grammar
@@ -7356,6 +7442,12 @@ rehearsalBody st =
                , paneDivider
                , paneBtn (st.pane == Just PanePaths) "paths"
                    "lay out every way through these chords, smoothest first" ShowPaths
+               , paneDivider
+               , paneBtn false "keep ⏎"
+                   "put this pass on the shelf as a progression — drag it to a Perform box from there" KeepPass
+               , paneBtn false "keep all ⇶"
+                   "put the WHOLE lattice on the shelf: each slot alternates, so the rig walks the space per cycle"
+                   KeepLattice
                , HH.div [ HP.style "flex: 1 1 auto;" ] []
                , HH.span
                    [ HP.style "font-size: 11px; color: #b3aa92; -webkit-user-select: none; user-select: none;" ]
@@ -7400,6 +7492,12 @@ pathsPanel st =
             , HH.text ("every way through these chords, least motion first · click to hear one · ★ marks one to keep"
                         <> (if length st.marked == 0 then "" else " · " <> show (length st.marked) <> " marked"))
             , HH.div [ HP.style "flex: 1 1 auto;" ] []
+            , if length (markedRows st) == 0 then HH.text ""
+              else HH.button
+                     [ HP.style "border: 1px solid #b8975a; background: #f2e7c6; color: #5a564b; font-size: 11px; padding: 2px 10px; border-radius: 3px; cursor: pointer;"
+                     , HP.title "put the marked readings on the shelf as ONE token — a cycle picks between them"
+                     , HE.onClick \_ -> KeepMarked ]
+                     [ HH.text ("keep " <> show (length (markedRows st)) <> " marked ⏎") ]
             , HH.button
                 [ HP.style "border: none; background: none; color: #b3aa92; font-size: 11px; cursor: pointer; padding: 0;"
                 , HE.onClick \_ -> ShowPaths ]
