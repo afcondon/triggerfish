@@ -20,12 +20,15 @@ module Vetula.Rehearsal
   , chords
   , motion
   , size
+  , around
+  , allAround
   ) where
 
 import Prelude
 
-import Data.Array (catMaybes, deleteAt, drop, filter, find, findIndex, head, index, nub, sort, zipWith)
+import Data.Array (catMaybes, deleteAt, drop, filter, find, findIndex, head, index, nub, sort, take, zipWith)
 import Data.Maybe (Maybe(..), fromMaybe, maybe)
+import Data.String.CodeUnits as String
 
 import Harmonia.Anchor (Anchor)
 import Harmonia.Recognise as R
@@ -68,7 +71,13 @@ nodeFromEvent ev =
     ps = sort (nub (map (\n -> mod n 12) ns))
     cand = R.best (R.observeWithBass (mod b 12) ps)
     root = maybe (mod b 12) R.candidateRoot cand
-    lab = if ev.label /= "" then ev.label else maybe "" R.candidateName cand
+    -- A capture's own label is preferred where it says something — it knows the
+    -- spelling the chord was MEANT to have, which the recogniser can only guess
+    -- at. But a scene recalled through `mkSavedSeq` carries "1", "2", "3" as
+    -- labels, and a progression of numbered boxes beside variations called
+    -- `Dm(add9)/E` was telling you least about the chords you started from.
+    -- A label with no note letter in it is a position, not a name.
+    lab = if named ev.label then ev.label else maybe ev.label R.candidateName cand
   in
     (triadNode root ps lab)
       { bassPc = mod b 12, bassOct = b / 12, voicing = drop 1 ns, anchor = ev.anchor }
@@ -155,3 +164,44 @@ motion pull roll slots = HT.pathMotion (map (\c -> Voicing (playNotes c)) (chord
 -- | How many progressions the lattice holds: the product of the slot widths.
 size :: Array Slot -> Int
 size = HT.size <<< map _.options
+
+-- | Does this label name a chord, or is it just a position? Anything starting
+-- | with a note letter is a name; "1" and "" are not.
+named :: String -> Boolean
+named lab = case String.uncons lab of
+  Just { head: c } -> c >= 'A' && c <= 'G'
+  Nothing -> false
+
+-- | **The chord before, this one, and the chord after.**
+-- |
+-- | Auditioning a substitute alone answers the wrong question. A chord is not
+-- | good or bad; it is good or bad *there*, between the two chords it has to
+-- | live with — which is why a piano player trying a substitution plays three
+-- | chords, never one. The neighbours come from the current pass, so what you
+-- | hear is the progression as it actually stands.
+around :: HT.Pull -> Int -> Array Slot -> Int -> ChordNode -> Array ChordNode
+around pull roll slots i c =
+  let played = chords pull roll slots
+  in catMaybes [ index played (i - 1), Just c, index played (i + 1) ]
+
+-- | **Every way the neighbours could go, with this chord in the middle.**
+-- |
+-- | The step past `around`, and AC's: if the chord before and the chord after
+-- | have alternatives of their own, then whether THIS one works is a question
+-- | about all of them at once. So play the lot — every combination of the
+-- | neighbours' options with this chord fixed in the middle.
+-- |
+-- | Capped, because the product runs away: six options either side is
+-- | thirty-six phrases, which is two minutes of listening and nobody is
+-- | comparing the first to the last. The cap keeps it inside the span of a
+-- | musical decision.
+allAround :: Int -> Array Slot -> Int -> ChordNode -> Array (Array ChordNode)
+allAround cap slots idx c =
+  take cap do
+    before <- optionsAt (idx - 1)
+    after <- optionsAt (idx + 1)
+    pure (before <> [ c ] <> after)
+  where
+  optionsAt k = case index slots k of
+    Nothing -> [ [] ]
+    Just sl -> map (\o -> [ o ]) sl.options

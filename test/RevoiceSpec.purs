@@ -17,7 +17,7 @@ module Test.RevoiceSpec (runRevoiceTests) where
 
 import Prelude
 
-import Data.Array (all, concatMap, filter, head, index, last, length, nub, sort, take, (..))
+import Data.Array (all, concatMap, drop, filter, head, index, last, length, nub, sort, take, (..))
 import Data.Array as Array
 import Data.Foldable (elem, foldl, for_)
 import Data.Maybe (Maybe(..), fromMaybe)
@@ -64,10 +64,7 @@ heardCount = length <<< nub <<< playNotes
 -- | about the node conversion, which does not get truer for being run on all
 -- | 186 sources.
 varyCorpus :: Array { src :: ChordNode, cells :: Array Vary.Cell }
-varyCorpus =
-  map (\c -> { src: c, cells: Vary.grid cMajor c 1 })
-    (Array.filter (_.keep) (Array.mapWithIndex (\i c -> { keep: mod i 8 == 0, node: c }) corpus)
-      # map _.node)
+varyCorpus = map (\c -> { src: c, cells: Vary.grid cMajor c 1 }) (everyEighth corpus)
 
 allIn :: { src :: ChordNode, cells :: Array Vary.Cell } -> (ChordNode -> Boolean) -> Boolean
 allIn g p = all (\cell -> all p cell.chords) g.cells
@@ -83,17 +80,46 @@ varyLaw name holds = do
 slotOf :: ChordNode -> RH.Slot
 slotOf c = RH.slotFrom [] { notes: playNotes c, label: c.label, anchor: c.anchor }
 
--- | Four variations of the chord, none of them the chord itself, so a stocked
--- | slot has real alternatives to settle on and to drop out from under.
-freshFor :: ChordNode -> Array ChordNode
-freshFor c =
-  take 3
-    (filter (\v -> sort (playNotes v) /= sort (playNotes c))
-      (concatMap _.chords (Vary.grid cMajor c 1)))
+-- | **The stocked slots, built ONCE.**
+-- |
+-- | Each one costs a whole `Vary.grid` — nine cells, up to 128 draws apiece,
+-- | a chord-recogniser pass per candidate. Written as a FUNCTION and mentioned
+-- | nine times across the laws, that was ~1,674 grids and a quarter of a million
+-- | recognitions for laws that need two dozen; PureScript memoises a top-level
+-- | value but not a call, so every mention rebuilt the lot. The same mistake as
+-- | `varyCorpus` above, made twice in one afternoon and worth the comment.
+-- |
+-- | Sampled every eighth chord for the same reason: these are laws about slot
+-- | EDITING, which does not get truer for running on all 186 sources.
+slotCorpus :: Array { src :: ChordNode, sl :: RH.Slot, spare :: Array ChordNode }
+slotCorpus = map build (everyEighth corpus)
+  where
+  build c =
+    let vs = freshFor c
+    in { src: c
+       , sl: Array.foldl (flip RH.toggleOption) (slotOf c) (take 3 vs)
+         -- One variation held BACK, so "keep then un-keep" can be tested as a
+         -- real round trip. Toggling something already in the slot is
+         -- remove-then-append, which preserves the set but not the order — a
+         -- different claim, and tested as one below.
+       , spare: take 1 (drop 3 vs)
+       }
+  -- Variations from ONE cell rather than the whole nine — the laws care that a
+  -- slot has alternatives, not which ones.
+  freshFor c =
+    take 4
+      (filter (\v -> sort (playNotes v) /= sort (playNotes c))
+        (concatMap _.chords (take 1 (Vary.grid cMajor c 1))))
 
--- | A slot of four: the chord as written plus three variations.
-stocked :: ChordNode -> RH.Slot
-stocked c = foldl (flip RH.toggleOption) (slotOf c) (freshFor c)
+everyEighth :: forall a. Array a -> Array a
+everyEighth xs = map _.v (filter (\e -> mod e.i 8 == 0) (Array.mapWithIndex (\i v -> { i, v }) xs))
+
+slotLaw :: String -> ({ src :: ChordNode, sl :: RH.Slot, spare :: Array ChordNode } -> Boolean) -> Effect Unit
+slotLaw name holds = do
+  let bad = filter (not <<< holds) slotCorpus
+  for_ (head bad) \g -> log ("      first failure: " <> g.src.label <> " " <> show (playNotes g.src))
+  assertTrue' (name <> " (" <> show (length bad) <> " of " <> show (length slotCorpus) <> " failed)")
+    (length bad == 0)
 
 law :: String -> (ChordNode -> Boolean) -> Effect Unit
 law name holds = do
@@ -296,59 +322,68 @@ runRevoiceTests = do
   -- Settling is not deleting, and dropping an option must not move what a
   -- settled slot is settled ON. Both are bugs you would notice three chords
   -- later and blame on the wrong thing, so they are laws.
-  law "a slot is never empty and starts unsettled"
-    (\c -> let sl = slotOf c in length sl.options >= 1 && sl.locked == Nothing)
-  law "option zero is the chord as written"
-    (\c -> playNotes (fromMaybe c (head (slotOf c).options)) == sort (playNotes c))
-  law "keeping a variation adds exactly one option"
-    (\c -> all (\v -> length (RH.toggleOption v (slotOf c)).options == length (slotOf c).options + 1)
-             (freshFor c))
-  law "keeping then un-keeping is the identity"
-    (\c -> all (\v -> map playNotes (RH.toggleOption v (RH.toggleOption v (slotOf c))).options
-                        == map playNotes (slotOf c).options)
-             (freshFor c))
-  law "keeping the chord as written changes nothing"
-    (\c -> let sl = slotOf c
-           in all (\o -> map playNotes (RH.toggleOption o sl).options == map playNotes sl.options)
-                (take 1 sl.options))
-  law "option zero cannot be dropped"
-    (\c -> let sl = stocked c in map playNotes (RH.dropOptionAt 0 sl).options == map playNotes sl.options)
+  slotLaw "a slot is never empty and starts unsettled"
+    (\g -> let sl = slotOf g.src in length sl.options >= 1 && sl.locked == Nothing)
+  slotLaw "option zero is the chord as written"
+    (\g -> map playNotes (head g.sl.options) == Just (sort (playNotes g.src)))
+  slotLaw "keeping a new variation then un-keeping it is the identity"
+    (\g -> all (\v -> map playNotes (RH.toggleOption v (RH.toggleOption v g.sl)).options
+                        == map playNotes g.sl.options)
+             g.spare)
+  -- The other direction is a weaker claim, and deliberately so: dropping an
+  -- option and putting it back appends it, so the SET returns and the order
+  -- does not. Worth pinning as a set law rather than pretending to an identity
+  -- the code does not have and the interface does not need.
+  slotLaw "un-keeping then re-keeping restores the same options"
+    (\g -> all (\v -> sort (map playNotes (RH.toggleOption v (RH.toggleOption v g.sl)).options)
+                        == sort (map playNotes g.sl.options))
+             (drop 1 g.sl.options))
+  slotLaw "keeping the chord as written changes nothing"
+    (\g -> all (\o -> map playNotes (RH.toggleOption o g.sl).options == map playNotes g.sl.options)
+             (take 1 g.sl.options))
+  slotLaw "option zero cannot be dropped"
+    (\g -> map playNotes (RH.dropOptionAt 0 g.sl).options == map playNotes g.sl.options)
   -- Width-aware, because a slot is not guaranteed four options: `C oct`
   -- (36·48·60, one pitch class over three octaves) has almost no distinct
-  -- variations, and the first version of these laws settled on options it did not
-  -- have. The corpus keeps that chord precisely because it is degenerate.
-  law "dropping BELOW a settled option keeps it settled on the same chord"
-    (\c -> let sl0 = stocked c
-               top = length sl0.options - 1
-           in length sl0.options < 3
-              || let sl = sl0 { locked = Just top }
+  -- variations, and the first version of these laws settled on options it did
+  -- not have. The corpus keeps that chord precisely because it is degenerate.
+  slotLaw "dropping BELOW a settled option keeps it settled on the same chord"
+    (\g -> let top = length g.sl.options - 1
+           in length g.sl.options < 3
+              || let sl = g.sl { locked = Just top }
                      sl' = RH.dropOptionAt 1 sl
                  in (sl'.locked >>= index sl'.options >>> map playNotes)
                       == (sl.locked >>= index sl.options >>> map playNotes))
-  law "dropping ABOVE a settled option leaves it alone"
-    (\c -> let sl = stocked c
-           in length sl.options < 3
-              || (RH.dropOptionAt (length sl.options - 1) (sl { locked = Just 1 })).locked == Just 1)
-  law "dropping the settled option unsettles the slot"
-    (\c -> let sl = stocked c
-           in length sl.options < 2
-              || (RH.dropOptionAt 1 (sl { locked = Just 1 })).locked == Nothing)
-  law "a settled slot offers the lattice exactly one voicing"
-    (\c -> let sl = stocked c
-           in all (\k -> map length (RH.lattice [ sl { locked = Just k } ]) == [ 1 ])
-                (0 .. (length sl.options - 1)))
-  law "a settled slot is what the pass plays, at every pull"
-    (\c -> let sl = stocked c
-               top = length sl.options - 1
-           in all (\p -> all (\r -> RH.chosen p r [ sl { locked = Just top } ] == [ top ]) (1 .. 8))
+  slotLaw "dropping ABOVE a settled option leaves it alone"
+    (\g -> length g.sl.options < 3
+           || (RH.dropOptionAt (length g.sl.options - 1) (g.sl { locked = Just 1 })).locked == Just 1)
+  slotLaw "dropping the settled option unsettles the slot"
+    (\g -> length g.sl.options < 2
+           || (RH.dropOptionAt 1 (g.sl { locked = Just 1 })).locked == Nothing)
+  slotLaw "a settled slot offers the lattice exactly one voicing"
+    (\g -> all (\k -> map length (RH.lattice [ g.sl { locked = Just k } ]) == [ 1 ])
+             (0 .. (length g.sl.options - 1)))
+  slotLaw "a settled slot is what the pass plays, at every pull"
+    (\g -> let top = length g.sl.options - 1
+           in all (\p -> all (\r -> RH.chosen p r [ g.sl { locked = Just top } ] == [ top ]) (1 .. 8))
                 HT.pulls)
-  law "a pass chooses a real option for every slot"
-    (\c -> let sl = stocked c
-               n = length sl.options
-           in all (\p -> all (\r -> all (\j -> j >= 0 && j < n) (RH.chosen p r [ sl, sl, sl ])) (1 .. 8))
+  slotLaw "a pass chooses a real option for every slot"
+    (\g -> let n = length g.sl.options
+           in all (\p -> all (\r -> all (\j -> j >= 0 && j < n) (RH.chosen p r [ g.sl, g.sl, g.sl ]))
+                          (1 .. 8))
                 HT.pulls)
-  law "the lattice is the product of the slot widths"
-    (\c -> let n = length (stocked c).options in RH.size [ stocked c, stocked c ] == n * n)
+  slotLaw "the lattice is the product of the slot widths"
+    (\g -> let n = length g.sl.options in RH.size [ g.sl, g.sl ] == n * n)
+  -- The chord before, this one, and the chord after — never more, never fewer,
+  -- whatever the slot's position in the progression.
+  slotLaw "an in-place audition is three chords, or fewer only at the ends"
+    (\g -> let sls = [ g.sl, g.sl, g.sl ]
+           in all (\k -> length (RH.around HT.Mid 1 sls k (fromMaybe g.src (head g.sl.options)))
+                           == (if k == 0 || k == 2 then 2 else 3))
+                (0 .. 2))
+  slotLaw "a sweep never exceeds its cap"
+    (\g -> let sls = [ g.sl, g.sl, g.sl ]
+           in length (RH.allAround 8 sls 1 g.src) <= 8)
 
   -- ── Adding and removing, by an exact amount ────────────────────────────
   law "doubling a tone adds exactly one note"

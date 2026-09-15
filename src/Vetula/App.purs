@@ -738,7 +738,11 @@ type State =
   -- taken up yet, and the stage offers the saved tokens to start from.
   , rehearsal :: Array Slot
   , rehearseRoll :: Int       -- the seed of the current pass; a pass is an address
+  , rehearsalFrom :: Maybe Int -- which saved token is up, so the shelf can show it
   , pull :: HT.Pull           -- how hard the previous chord pulls on the next choice
+  -- Whether clicking a variation auditions it ALONE or in its place in the
+  -- progression. On by default: alone is the question nobody is asking.
+  , inContext :: Boolean
   -- Which rehearsal slot an excursion to the Vary lens came from, so what you
   -- keep there lands in the slot that sent you and Escape has somewhere to go.
   , varyReturn :: Maybe Int
@@ -1000,6 +1004,9 @@ data Action
   | PlayPass               -- hear the current pass
   | SetPull HT.Pull        -- loose / mid / smooth
   | HearOption Int Int     -- hear slot i's option j (without capturing)
+  | HearAround Int ChordNode   -- hear it BETWEEN its neighbours, as the pass stands
+  | SweepAround Int ChordNode  -- hear it against every way the neighbours could go
+  | ToggleInContext        -- whether a variation auditions alone or in its place
   | SettleSlot Int Int     -- lock slot i to option j (or unlock if already it)
   | SettlePass             -- lock every slot to what this pass chose
   | LoosenAll              -- unlock every slot
@@ -1173,7 +1180,9 @@ component = H.mkComponent
       , kept: []
       , rehearsal: []
       , rehearseRoll: 0
+      , rehearsalFrom: Nothing
       , pull: HT.Mid
+      , inContext: true
       , varyReturn: Nothing
       , varying: Nothing
       , hoveredNode: Nothing
@@ -2934,7 +2943,7 @@ handleAction = case _ of
   -- what you asked it.
   KeepVariation c -> do
     st <- H.get
-    case st.varyReturn of
+    case slotForKeep st of
       Just i -> do
         H.modify_ \s -> s { rehearsal = modifyIx i (RH.toggleOption c) s.rehearsal }
         playChordQuiet c
@@ -2950,9 +2959,10 @@ handleAction = case _ of
     st <- H.get
     for_ (index st.chyronSaved i) \sq -> do
       let slots = map (RH.slotFrom st.kept) sq.events
-      H.modify_ _ { rehearsal = slots, rehearseRoll = 0, stage = Rehearse, varyReturn = Nothing }
+      H.modify_ _ { rehearsal = slots, rehearseRoll = 0, stage = Rehearse
+                  , rehearsalFrom = Just i, varyReturn = Nothing }
 
-  DropRehearsal -> H.modify_ _ { rehearsal = [], varyReturn = Nothing }
+  DropRehearsal -> H.modify_ _ { rehearsal = [], varyReturn = Nothing, rehearsalFrom = Nothing }
 
   RollPass -> do
     H.modify_ \s -> s { rehearseRoll = s.rehearseRoll + 1 }
@@ -2968,7 +2978,25 @@ handleAction = case _ of
 
   HearOption i j -> do
     st <- H.get
-    for_ (index st.rehearsal i >>= \sl -> index sl.options j) playChordQuiet
+    for_ (index st.rehearsal i >>= \sl -> index sl.options j) \c ->
+      if st.inContext then handleAction (HearAround i c) else playChordQuiet c
+
+  -- A chord is not good or bad, it is good or bad THERE. Three chords, which is
+  -- what a player trying a substitution actually plays.
+  HearAround i c -> do
+    st <- H.get
+    playEvents (spaced 0.0 (RH.around st.pull st.rehearseRoll st.rehearsal i c))
+
+  -- And if the neighbours have alternatives of their own, whether this one
+  -- works is a question about all of them at once. A gap between phrases, so
+  -- you can hear where one reading ends and the next begins.
+  SweepAround i c -> do
+    st <- H.get
+    let phrases = RH.allAround sweepCap st.rehearsal i c
+        laid = mapWithIndex (\k ph -> spaced (toNumber k * phraseGap) ph) phrases
+    playEvents (concat laid)
+
+  ToggleInContext -> H.modify_ \s -> s { inContext = not s.inContext }
 
   -- Toggling, so the same click settles and unsettles.
   SettleSlot i j -> do
@@ -2996,11 +3024,16 @@ handleAction = case _ of
              other -> other
          }) s.rehearsal }
 
+  -- Opens the grid UNDERNEATH the progression rather than navigating to it.
+  -- AC: there is plenty of room, and scrolling down a little to find a chord is
+  -- fine — where losing sight of the progression you are varying is not, since
+  -- what you keep only makes sense against the chords either side of it.
+  -- Clicking the same slot again closes the panel.
   VaryFromSlot i -> do
     st <- H.get
-    for_ (index st.rehearsal i >>= \sl -> index sl.options 0) \base -> do
-      H.modify_ _ { varying = Just base, varyReturn = Just i, revoicing = Nothing
-                  , stage = Hunt Vary, lastLens = Vary }
+    if st.varyReturn == Just i then H.modify_ _ { varyReturn = Nothing }
+    else for_ (index st.rehearsal i >>= \sl -> index sl.options 0) \base -> do
+      H.modify_ _ { varying = Just base, varyReturn = Just i, revoicing = Nothing }
       playChordQuiet base
 
   BackToRehearsal -> H.modify_ _ { stage = Rehearse, varyReturn = Nothing }
@@ -4218,9 +4251,25 @@ passChords st = RH.chords st.pull st.rehearseRoll st.rehearsal
 -- | The pass as playable events, evenly spaced. Timing is not the point here —
 -- | Perform owns that — so one chord a beat is enough to hear the joins.
 passEvents :: State -> Array ChyronEvent
-passEvents st = mapWithIndex ev (passChords st)
+passEvents st = spaced 0.0 (passChords st)
+
+-- | Chords laid out one a beat from `t0`, as playable events. `playEvents`
+-- | rebases on the FIRST event, so every phrase in a sweep must be laid on one
+-- | shared clock rather than each starting at zero.
+spaced :: Number -> Array ChordNode -> Array ChyronEvent
+spaced t0 cs = mapWithIndex ev cs
   where
-  ev i c = { pcs: c.pcs, notes: playNotes c, label: c.label, at: toNumber i * 700.0, anchor: c.anchor }
+  ev i c = { pcs: c.pcs, notes: playNotes c, label: c.label, at: t0 + toNumber i * 700.0, anchor: c.anchor }
+
+-- | Three chords and a breath, so one reading is audibly separate from the next.
+phraseGap :: Number
+phraseGap = 2800.0
+
+-- | How many readings a sweep will play. Six options either side is thirty-six
+-- | phrases — near two minutes, and nobody is comparing the first to the last.
+-- | Eight keeps it inside the span of a musical decision.
+sweepCap :: Int
+sweepCap = 8
 
 passMotion :: State -> Int
 passMotion st = RH.motion st.pull st.rehearseRoll st.rehearsal
@@ -5033,20 +5082,30 @@ chyronBar st =
   -- the live stave-glyphs, so "named unit" reads at a glance). Click the icons to
   -- replay it with timing; ✎ unbundles it back into the buffer to edit; × deletes.
   -- Tooltip carries the chord names.
+  -- On REHEARSE the rebus is how you choose what to work on: click takes it up.
+  -- These glyphs already ARE the shelf of saved progressions, so the stage does
+  -- not draw a second row of them — that was the same set twice in one window.
   savedToken i s =
     let held = st.perfHeld == Just i
+        upNow = st.stage == Rehearse && st.rehearsalFrom == Just i && length st.rehearsal > 0
+        lit = held || upNow
     in HH.span
       [ HP.style ("position: relative; flex: 0 0 auto; display: inline-flex; align-items: center; gap: 3px; border: 1px solid "
-                   <> (if held then "#b8860b" else "#cdbb8c")
-                   <> "; background: " <> (if held then "#fbf1d6" else "#f6efdc")
-                   <> "; box-shadow: " <> (if held then "0 0 0 2px #f1e2b4" else "none")
+                   <> (if lit then "#b8860b" else "#cdbb8c")
+                   <> "; background: " <> (if lit then "#fbf1d6" else "#f6efdc")
+                   <> "; box-shadow: " <> (if lit then "0 0 0 2px #f1e2b4" else "none")
                    <> "; border-radius: 4px; padding: 3px 6px; line-height: 1;")
       , HP.draggable true
       , HE.onDragStart \_ -> PerfPickup i
-      , HP.title ("saved · " <> joinWith " " (map _.label s.events) <> " · click plays · ✎ unbundles to the buffer · shift-click / drag → a Perform box") ]
+      , HP.title ("saved · " <> joinWith " " (map _.label s.events)
+                   <> (if st.stage == Rehearse then " · click takes it up to rehearse" else " · click plays")
+                   <> " · ✎ unbundles to the buffer · shift-click / drag → a Perform box") ]
       [ HH.span
           [ HP.style "display: inline-flex; align-items: center; gap: 3px; cursor: pointer;"
-          , HE.onClick \e -> if ME.shiftKey e then PerfPickup i else PlaySaved i ]
+          , HE.onClick \e ->
+              if ME.shiftKey e then PerfPickup i
+              else if st.stage == Rehearse then TakeUp i
+              else PlaySaved i ]
           (faIcons s.glyph)
       , HH.button
           [ HP.style "position: absolute; top: -5px; left: -3px; z-index: 2; border: 1px solid #cdbb8c; background: #f6efdc; color: #7a5c00; font-size: 10px; line-height: 1; cursor: pointer; padding: 0 3px; border-radius: 8px;"
@@ -5333,34 +5392,11 @@ contextBar st =
   -- stage to look at what you just marked.
   stageControls = case st.stage of
     Hunt _ -> huntControls
-    Rehearse -> rehearseControls
+    -- Rehearse's controls live in its own pane: they are about the progression
+    -- in front of you, not about the app's mode.
+    Rehearse -> []
     Perform -> captureControls
     Review -> captureControls
-
-  -- The pull dial and the pass controls, live only while rehearsing. A settled
-  -- progression still shows them: settling is reversible, which is the point.
-  rehearseControls
-    | length st.rehearsal == 0 = []
-    | otherwise =
-        [ rollChip "play ▶" "hear this pass" PlayPass
-        , rollChip "pass ⟳" "draw a new pass through the lattice" RollPass
-        , divider
-        ]
-          <> map pullChip HT.pulls
-          <> [ divider
-             , rollChip "settle" "lock every slot to what this pass chose — the alternatives stay" SettlePass
-             , rollChip "loosen" "unlock every slot" LoosenAll
-             ]
-
-  pullChip p =
-    HH.button
-      [ HP.title (HT.pullBlurb p)
-      , HE.onClick \_ -> SetPull p
-      , HP.style ("border: 1px solid " <> (if st.pull == p then "#b8975a" else "#00000026")
-                   <> "; background: " <> (if st.pull == p then "linear-gradient(#c8a86a,#b8975a)" else "#faf7ee")
-                   <> "; color: " <> (if st.pull == p then "#1c1a12" else "#5a564b")
-                   <> "; font-size: 11px; padding: 3px 9px; border-radius: 3px; cursor: pointer;") ]
-      [ HH.text (HT.pullLabel p) ]
 
   -- The projection picker is a HUNT control, so it exists only while hunting.
   -- It used to sit in the bar permanently, displaying `browseOr lastBrowse view`
@@ -7122,7 +7158,7 @@ padsSurface st =
       -- surface by this class and reports "hidden" when the selector matches
       -- nothing, which stands the WHOLE keyboard down. Every other lens gets it
       -- free by being an `SE.svg`; an HTML surface has to say it.
-      [ HP.class_ (cn "vetula-surface")
+      [ HP.class_ (cn "vetula-surface vetula-surface--wide")
       , HP.style "position: absolute; inset: 0; overflow: auto; padding: 16px 22px 26px;" ]
       [ HH.div
           [ HP.style "font-size: 11px; color: #a09880; letter-spacing: 0.04em; margin-bottom: 10px; -webkit-user-select: none; user-select: none;" ]
@@ -7205,57 +7241,116 @@ padLit st c = case st.hoveredTriad of
 -- | sixty-four progressions, and what you want is not to pick one but to keep
 -- | running them until one of them is obviously right.
 rehearseSurface :: forall m. State -> H.ComponentHTML Action Slots m
-rehearseSurface st
-  | length st.rehearsal == 0 = takeUpSurface st
-  | otherwise =
-      let ixs = passIxs st
-      in HH.div
-          [ HP.class_ (cn "vetula-surface")
-          , HP.style "position: absolute; inset: 0; overflow: auto; padding: 16px 22px 26px;" ]
-          [ HH.div
-              [ HP.style "font-size: 11px; color: #a09880; letter-spacing: 0.04em; margin-bottom: 12px; display: flex; gap: 14px; align-items: baseline; -webkit-user-select: none; user-select: none;" ]
-              [ HH.span []
-                  [ HH.text (show (length st.rehearsal) <> " chords · "
-                              <> show (RH.size st.rehearsal) <> " progressions in the lattice") ]
-              , HH.span [ HP.style "color: #b3aa92;" ]
-                  [ HH.text ("pass " <> show st.rehearseRoll <> " · motion at the joins " <> show (passMotion st)) ]
-              , HH.button
-                  [ HP.style "border: none; background: none; color: #b3aa92; font-size: 11px; cursor: pointer; padding: 0;"
-                  , HP.title "put this progression down — the kept variations survive it"
-                  , HE.onClick \_ -> DropRehearsal ]
-                  [ HH.text "put down" ]
-              ]
-          , HH.div
-              [ HP.style "display: flex; gap: 10px; align-items: flex-start; overflow-x: auto; padding-bottom: 6px;" ]
-              (mapWithIndex (slotColumn st ixs) st.rehearsal)
-          ]
-
--- | Nothing taken up yet: offer the saved progressions. Deliberately the only
--- | way in, so Rehearse never shows a half-state assembled from whatever the
--- | chyron happened to be holding.
-takeUpSurface :: forall m. State -> H.ComponentHTML Action Slots m
-takeUpSurface st =
+rehearseSurface st =
   HH.div
-    [ HP.class_ (cn "vetula-surface")
-    , HP.style "position: absolute; inset: 0; overflow: auto; padding: 28px 22px; display: flex; flex-direction: column; align-items: center; gap: 16px;" ]
+    [ HP.class_ (cn "vetula-surface vetula-surface--wide")
+    , HP.style "position: absolute; inset: 0; overflow: auto; padding: 14px 22px 26px;" ]
+    (if length st.rehearsal == 0 then [ nothingTakenUp st ] else rehearsalBody st)
+
+-- | Nothing in hand. The rebus glyphs on the AUDITION bar are the shelf — this
+-- | stage had its own row of them for a day, which was the same set of
+-- | progressions drawn twice in one window.
+nothingTakenUp :: forall m. State -> H.ComponentHTML Action Slots m
+nothingTakenUp st =
+  HH.div
+    [ HP.style "font-size: 12px; color: #a09880; line-height: 1.6; max-width: 480px; padding-top: 20px;" ]
+    [ HH.text (if length st.chyronSaved == 0
+                 then "Nothing saved yet — hunt a progression and ⏎ it onto the shelf, then click its rebus above."
+                 else "Click a progression's rebus on the audition bar above and every chord in it becomes a slot you can give alternatives to.") ]
+
+-- | The controls, the readout, the slots, and — when a slot is being varied —
+-- | the grid underneath. The controls live HERE rather than in the context bar:
+-- | they are about the progression in front of you, not about the app's mode,
+-- | and the bar is for things true of the whole instrument.
+rehearsalBody :: forall m. State -> Array (H.ComponentHTML Action Slots m)
+rehearsalBody st =
+  let ixs = passIxs st
+  in
     [ HH.div
-        [ HP.style "font-size: 12px; color: #a09880; text-align: center; max-width: 420px; line-height: 1.6;" ]
-        [ HH.text "Take up a saved progression and every chord in it becomes a slot you can give alternatives to." ]
-    , if length st.chyronSaved == 0
-        then HH.div
-               [ HP.style "font-size: 11px; color: #b3aa92;" ]
-               [ HH.text "Nothing saved yet — hunt a progression and ⏎ it onto the shelf first." ]
-        else HH.div
-               [ HP.style "display: flex; flex-wrap: wrap; gap: 8px; justify-content: center; max-width: 560px;" ]
-               (mapWithIndex takeUpChip st.chyronSaved)
+        [ HP.style "display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 12px;" ]
+        ( [ paneBtn true "play ▶" "hear this pass" PlayPass
+          , paneBtn false "pass ⟳" "draw a new pass through the lattice" RollPass
+          , paneDivider
+          ]
+            <> map (pullBtn st) HT.pulls
+            <> [ paneDivider
+               , paneBtn false "settle" "lock every slot to what this pass chose — the alternatives stay" SettlePass
+               , paneBtn false "loosen" "unlock every slot" LoosenAll
+               , HH.div [ HP.style "flex: 1 1 auto;" ] []
+               , HH.span
+                   [ HP.style "font-size: 11px; color: #b3aa92; -webkit-user-select: none; user-select: none;" ]
+                   [ HH.text (show (length st.rehearsal) <> " chords · " <> show (RH.size st.rehearsal)
+                               <> " progressions · pass " <> show st.rehearseRoll
+                               <> " · motion " <> show (passMotion st)) ]
+               , HH.button
+                   [ HP.style "border: none; background: none; color: #b3aa92; font-size: 11px; cursor: pointer; padding: 0;"
+                   , HP.title "put this progression down — the kept variations survive it"
+                   , HE.onClick \_ -> DropRehearsal ]
+                   [ HH.text "put down" ]
+               ]
+        )
+    , HH.div
+        [ HP.style "display: flex; gap: 10px; align-items: flex-start; flex-wrap: wrap;" ]
+        (mapWithIndex (slotColumn st ixs) st.rehearsal)
     ]
-  where
-  takeUpChip i sq =
-    HH.button
-      [ HP.style "border: 1px solid #ece5d2; background: #fbf8f0; border-radius: 4px; padding: 6px 12px; font-size: 11px; color: #6a6250; cursor: pointer;"
-      , HP.title (show (length sq.events) <> " chords")
-      , HE.onClick \_ -> TakeUp i ]
-      [ HH.text (joinWith " " (map _.label sq.events)) ]
+      <> varyPanel st
+
+-- | The Vary grid, opened UNDER the progression rather than in place of it.
+varyPanel :: forall m. State -> Array (H.ComponentHTML Action Slots m)
+varyPanel st = case st.varyReturn of
+  Nothing -> []
+  Just i -> case index st.rehearsal i >>= \sl -> head sl.options of
+    Nothing -> []
+    Just src ->
+      [ HH.div
+          [ HP.style "margin-top: 22px; border-top: 1px solid #e6dfcc; padding-top: 14px;" ]
+          ( [ HH.div
+                [ HP.style "display: flex; align-items: baseline; gap: 10px; margin-bottom: 10px; font-size: 11px; color: #a09880; letter-spacing: 0.04em; -webkit-user-select: none; user-select: none;" ]
+                [ HH.span [ HP.style "color: #6a6250; font-weight: 500;" ]
+                    [ HH.text ("slot " <> show (i + 1) <> " · " <> src.label) ]
+                , HH.text "rows let the notes drift, columns spread and double them · shift-click keeps · ⌥-click sweeps the neighbours"
+                , HH.div [ HP.style "flex: 1 1 auto;" ] []
+                , HH.button
+                    [ HP.style ("border: 1px solid " <> (if st.inContext then "#b8975a" else "#ddd5c0")
+                                 <> "; background: " <> (if st.inContext then "#f2e7c6" else "#fdfbf5")
+                                 <> "; color: #5a564b; font-size: 11px; padding: 2px 10px; border-radius: 3px; cursor: pointer;")
+                    , HP.title "play the chord before and the chord after as well — a substitute is only good in its place"
+                    , HE.onClick \_ -> ToggleInContext ]
+                    [ HH.text (if st.inContext then "in place ✓" else "in place") ]
+                , HH.button
+                    [ HP.style "border: none; background: none; color: #b3aa92; font-size: 11px; cursor: pointer; padding: 0;"
+                    , HP.title "close the grid"
+                    , HE.onClick \_ -> VaryFromSlot i ]
+                    [ HH.text "close" ]
+                ]
+            ]
+              <> varyGridFor st src
+          )
+      ]
+
+paneBtn :: forall m. Boolean -> String -> String -> Action -> H.ComponentHTML Action Slots m
+paneBtn strong label tip act =
+  HH.button
+    [ HP.title tip
+    , HE.onClick \_ -> act
+    , HP.style ("border: 1px solid " <> (if strong then "#b8975a" else "#ddd5c0")
+                 <> "; background: " <> (if strong then "#f2e7c6" else "#fdfbf5")
+                 <> "; color: #5a564b; font-size: 12px; padding: 4px 12px; border-radius: 3px; cursor: pointer;") ]
+    [ HH.text label ]
+
+paneDivider :: forall m. H.ComponentHTML Action Slots m
+paneDivider = HH.span [ HP.style "width: 1px; height: 18px; background: #e6dfcc;" ] []
+
+pullBtn :: forall m. State -> HT.Pull -> H.ComponentHTML Action Slots m
+pullBtn st p =
+  HH.button
+    [ HP.title (HT.pullBlurb p)
+    , HE.onClick \_ -> SetPull p
+    , HP.style ("border: 1px solid " <> (if st.pull == p then "#b8975a" else "#ddd5c0")
+                 <> "; background: " <> (if st.pull == p then "linear-gradient(#c8a86a,#b8975a)" else "#fdfbf5")
+                 <> "; color: " <> (if st.pull == p then "#1c1a12" else "#5a564b")
+                 <> "; font-size: 12px; padding: 4px 12px; border-radius: 3px; cursor: pointer;") ]
+    [ HH.text (HT.pullLabel p) ]
 
 -- | One slot: the chord's name, an excursion button, and its options beneath.
 slotColumn :: forall m. State -> Array Int -> Int -> Slot -> H.ComponentHTML Action Slots m
@@ -7263,14 +7358,13 @@ slotColumn st ixs i sl =
   let playing = fromMaybe 0 (index ixs i)
   in HH.div
       [ HP.style "flex: 0 0 auto; min-width: 116px; background: #fbf8f0; border: 1px solid #ece5d2; border-radius: 5px; padding: 8px 8px 6px;" ]
+      -- No slot number: the position is implicit in the row, and a numeral beside
+      -- a chord name reads as part of the name.
       ( [ HH.div
-            [ HP.style "display: flex; align-items: baseline; justify-content: space-between; gap: 6px; margin-bottom: 6px;" ]
-            [ HH.span
-                [ HP.style "font-size: 11px; color: #7a7360; letter-spacing: 0.06em; text-transform: uppercase; -webkit-user-select: none; user-select: none;" ]
-                [ HH.text (show (i + 1)) ]
-            , HH.button
+            [ HP.style "display: flex; align-items: baseline; justify-content: flex-end; gap: 6px; margin-bottom: 6px;" ]
+            [ HH.button
                 [ HP.style "border: none; background: none; color: #a09880; font-size: 11px; cursor: pointer; padding: 0;"
-                , HP.title "go and find variations for this chord, then come back"
+                , HP.title "open this chord's variations below"
                 , HE.onClick \_ -> VaryFromSlot i ]
                 [ HH.text "vary ⋯" ]
             ]
@@ -7321,7 +7415,7 @@ varySurface :: forall m. State -> H.ComponentHTML Action Slots m
 varySurface st = case varySource st of
   Nothing ->
     HH.div
-      [ HP.class_ (cn "vetula-surface")
+      [ HP.class_ (cn "vetula-surface vetula-surface--wide")
       , HP.style "position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; padding: 24px;" ]
       [ HH.div
           [ HP.style "font-size: 12px; color: #a09880; text-align: center; max-width: 380px; line-height: 1.6;" ]
@@ -7331,13 +7425,11 @@ varySurface st = case varySource st of
           ]
       ]
   Just src ->
-    let cells = Vary.grid st.key src st.varyRoll
-        cellAt d dn = filter (\x -> x.drift == d && x.density == dn) cells
-    in HH.div
+    HH.div
         -- `vetula-surface` is load-bearing, not cosmetic — see `padsSurface`.
-        [ HP.class_ (cn "vetula-surface")
+        [ HP.class_ (cn "vetula-surface vetula-surface--wide")
         , HP.style "position: absolute; inset: 0; overflow: auto; padding: 16px 22px 26px;" ]
-        [ HH.div
+        ( [ HH.div
             [ HP.style "font-size: 11px; color: #a09880; letter-spacing: 0.04em; margin-bottom: 10px; -webkit-user-select: none; user-select: none;" ]
             [ HH.text "varying "
             , HH.span [ HP.style "color: #6a6250; font-weight: 500;" ] [ HH.text src.label ]
@@ -7358,16 +7450,29 @@ varySurface st = case varySource st of
                     [ HP.style "color: #b3aa92; margin-left: 8px;" ]
                     [ HH.text "shift-click keeps into that slot" ]
                 ]
-        , HH.div
-            [ HP.style "display: grid; grid-template-columns: 62px repeat(3, minmax(0, 1fr)); gap: 10px 12px; align-items: start;" ]
-            ( [ HH.div [] [] ]
-                <> map varyColHead HV.densities
-                <> concatMap
-                     (\d -> [ varyRowHead d ] <> map (\dn -> varyBank st (cellAt d dn)) HV.densities)
-                     HV.drifts
-            )
-        , keptTray st
         ]
+          <> varyGridFor st src
+          <> [ keptTray st ]
+        )
+
+-- | **The nine cells themselves**, shared by the standalone lens and the panel
+-- | that opens under a rehearsal slot. Identical either way on purpose: the two
+-- | places are the same tool at different distances from the music, and a grid
+-- | that behaved differently inline would be a second thing to learn.
+varyGridFor :: forall m. State -> ChordNode -> Array (H.ComponentHTML Action Slots m)
+varyGridFor st src =
+  let cells = Vary.grid st.key src st.varyRoll
+      cellAt d dn = filter (\x -> x.drift == d && x.density == dn) cells
+  in
+    [ HH.div
+        [ HP.style "display: grid; grid-template-columns: 62px repeat(3, minmax(0, 1fr)); gap: 10px 12px; align-items: start;" ]
+        ( [ HH.div [] [] ]
+            <> map varyColHead HV.densities
+            <> concatMap
+                 (\d -> [ varyRowHead d ] <> map (\dn -> varyBank st (cellAt d dn)) HV.densities)
+                 HV.drifts
+        )
+    ]
 
 -- | The chord under the lens: the one explicitly sent here, else whatever is
 -- | sounding. Falling back means the lens is never blank merely because you
@@ -7393,21 +7498,75 @@ varyPad st c =
                    <> (if mine then " · kept (shift-click to drop)" else " · shift-click to keep"))
       , HE.onMouseEnter \_ -> HoverPad (Just c)
       , HE.onMouseLeave \_ -> HoverPad Nothing
-      , HE.onClick \e -> if ME.shiftKey e then KeepVariation c else VaryAudition c
+      , HE.onClick \e ->
+          if ME.shiftKey e then KeepVariation c
+          else case st.varyReturn of
+            Just i | ME.altKey e -> SweepAround i c
+            Just i | st.inContext -> HearAround i c
+            _ -> VaryAudition c
       ]
       [ SE.svg
           [ SA.viewBox (-15.0) (-15.0) 30.0 30.0, SA.width 30.0, SA.height 30.0 ]
-          (pcPolygon (hiFor st.hoveredTriad c.pcs) c.root c.pcs 0.0 0.0 12.0)
+          (registerStrip c)
       , HH.div
           [ HP.style "font-size: 10px; color: #6a6250; line-height: 1.1; text-align: center; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%; -webkit-user-select: none; user-select: none;" ]
           [ HH.text c.label ]
       ]
 
+-- | **A chord as REGISTER, not as content.**
+-- |
+-- | The Banks pad wears a chromatic-circle polygon, which is right there — that
+-- | lens varies which chord you are looking at, so the shape differs pad to pad.
+-- | In the Vary grid it is the wrong glyph twice over: down the `held` row every
+-- | pad has the SAME pitch classes, so sixteen identical polygons say nothing,
+-- | and the thing actually being varied — where the notes sit and how far apart
+-- | — is precisely what a polygon throws away.
+-- |
+-- | So: one dot per sounding note, up a register axis, coloured by pitch class
+-- | off the same twelve-hue table the ladder uses. Colour carries the content
+-- | (the `drift` rows), height carries the spacing (the `density` columns), and
+-- | the glyph therefore shows both axes of the grid it sits in. It also stops
+-- | the lens looking like Banks, which it was never doing on purpose.
+registerStrip :: forall m. ChordNode -> Array (H.ComponentHTML Action Slots m)
+registerStrip c =
+  [ SE.line
+      [ SA.x1 0.0, SA.y1 (-13.5), SA.x2 0.0, SA.y2 13.5
+      , HP.style "stroke: #e6dfcc; stroke-width: 1;" ]
+  -- Middle C, so a register can be read rather than only compared.
+  , SE.line
+      [ SA.x1 (-4.0), SA.y1 (yFor 60), SA.x2 4.0, SA.y2 (yFor 60)
+      , HP.style "stroke: #ece5d2; stroke-width: 1;" ]
+  ]
+    <> map dot (sort (nub (playNotes c)))
+  where
+  -- C1 to C7 across the glyph: wider than any voicing the app makes, so nothing
+  -- ever clips and two pads are always on the same scale.
+  yFor m = 13.0 - (toNumber (clamp 24 96 m) - 24.0) * 26.0 / 72.0
+  dot m =
+    SE.circle
+      [ SA.cx 0.0, SA.cy (yFor m), SA.r 2.0
+      , SA.class_ (cn ("ladder-dot ladder-dot--" <> show (mod m 12)))
+      , HP.style "pointer-events: none;" ]
+
+-- | **Which rehearsal slot a keep belongs to, if any.**
+-- |
+-- | The open panel first, then — for the case where you reached the Vary lens
+-- | some other way while a rehearsal happens to be up — the slot whose chord
+-- | this actually IS. Keyed by notes, the same key the free-standing tray uses,
+-- | so a keep lands in the progression however you got to the grid. Without the
+-- | second case a keep made from the lens dropdown silently went to the tray and
+-- | never reached the slot it plainly belonged to.
+slotForKeep :: State -> Maybe Int
+slotForKeep st = case st.varyReturn of
+  Just i -> Just i
+  Nothing -> varySource st >>= \src ->
+    findIndex (\sl -> map playNotes (head sl.options) == Just (playNotes src)) st.rehearsal
+
 -- | Is this variation already kept? During an EXCURSION that means the slot
 -- | that sent us; otherwise the free-standing tray. Same question, two places
 -- | the answer can live, and the ring on the pad has to tell the truth in both.
 isKept :: State -> ChordNode -> Boolean
-isKept st c = case st.varyReturn of
+isKept st c = case slotForKeep st of
   Just i -> case index st.rehearsal i of
     Just sl -> any (\o -> playNotes o == playNotes c) (drop 1 sl.options)
     Nothing -> false
@@ -7427,7 +7586,12 @@ keptTray st
   | length st.kept == 0 = HH.text ""
   | otherwise =
       HH.div
-        [ HP.style "margin-top: 18px; border-top: 1px solid #ece5d2; padding-top: 10px;" ]
+        -- Sticky rather than in flow: the tray is the RECORD of what you are
+        -- doing, and it was landing below the fold of a nine-cell grid, which
+        -- meant the count you were building was the one thing you could not see.
+        [ HP.style ("position: sticky; bottom: 0; margin-top: 18px; border-top: 1px solid #ece5d2; "
+                     <> "padding: 10px 0 2px; background: linear-gradient(180deg, #ffffffd9, #ffffff); "
+                     <> "backdrop-filter: blur(2px);") ]
         [ HH.div
             [ HP.style "font-size: 11px; color: #a09880; letter-spacing: 0.04em; margin-bottom: 8px; -webkit-user-select: none; user-select: none;" ]
             [ HH.text ("kept · " <> show (length st.kept)
