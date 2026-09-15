@@ -18,7 +18,7 @@ module Vetula.App where
 
 import Prelude
 
-import Data.Array (concat, concatMap, deleteAt, drop, elem, elemIndex, filter, find, findIndex, head, index, insertAt, last, length, mapMaybe, mapWithIndex, modifyAt, nub, nubByEq, range, replicate, snoc, sort, take, takeEnd, unsnoc, updateAt, (!!))
+import Data.Array (catMaybes, concat, concatMap, deleteAt, drop, elem, elemIndex, filter, find, findIndex, head, index, insertAt, last, length, mapMaybe, mapWithIndex, modifyAt, nub, nubByEq, range, replicate, snoc, sort, take, takeEnd, unsnoc, updateAt, zipWith, (!!))
 import Data.Foldable (all, any, foldl, foldr, for_, maximum, minimum, sum)
 import Data.Traversable (traverse)
 import Data.Int (ceil, floor, fromString, round, toNumber)
@@ -142,7 +142,11 @@ import Vetula.Between (bridgeNotes, maxBridge)
 import Harmonia.Graded (transpose) as Graded
 import Vetula.Banks (butlerChords, stockChords)
 import Vetula.Pads as Pads
+import Harmonia.Walk (seed) as W
+import Harmonia.Trellis as HT
 import Harmonia.Vary as HV
+import Vetula.Rehearsal (Slot)
+import Vetula.Rehearsal as RH
 import Vetula.Vary as Vary
 import Vetula.Spread (applyToNode, ghostRows, invertNode, nextBassTone, refootNode, spreadOfNode, toneAt)
 import Harmonia.OpenVoicing (at, dropAt, setTone, sounds) as OV
@@ -237,7 +241,7 @@ derive instance eqViewtype :: Eq Viewtype
 -- | what's running; the machine's secondary nav owns what you're looking at.
 -- | Odonus has the same axis minus Hunt (Vetula is the harmonic authority, so
 -- | Odonus has nothing to hunt) — see `Triggerfish.Odonus.Grid.Types.Stage`.
-data Stage = Hunt Viewtype | Perform | Review
+data Stage = Hunt Viewtype | Rehearse | Perform | Review
 
 derive instance eqStage :: Eq Stage
 
@@ -307,6 +311,7 @@ isHunt = case _ of
 stagePath :: Stage -> Array String
 stagePath = case _ of
   Hunt vt -> [ "hunt", viewtypeValue vt ]
+  Rehearse -> [ "rehearse" ]
   Perform -> [ "perform" ]
   Review -> [ "review" ]
 
@@ -318,6 +323,7 @@ stageFromPath :: Viewtype -> Array String -> Maybe Stage
 stageFromPath fallbackLens segs = case segs of
   [ "perform" ] -> Just Perform
   [ "review" ] -> Just Review
+  [ "rehearse" ] -> Just Rehearse
   [ "hunt" ] -> Just (Hunt fallbackLens)
   [ "hunt", vt ] -> Just (Hunt (viewtypeFromValue vt))
   _ -> Nothing
@@ -728,6 +734,14 @@ type State =
   , padRoll :: Int
   , varyRoll :: Int
   , kept :: Array KeptFor
+  -- REHEARSE: a progression with alternatives at each slot. Empty = nothing
+  -- taken up yet, and the stage offers the saved tokens to start from.
+  , rehearsal :: Array Slot
+  , rehearseRoll :: Int       -- the seed of the current pass; a pass is an address
+  , pull :: HT.Pull           -- how hard the previous chord pulls on the next choice
+  -- Which rehearsal slot an excursion to the Vary lens came from, so what you
+  -- keep there lands in the slot that sent you and Escape has somewhere to go.
+  , varyReturn :: Maybe Int
   -- The chord the Vary lens is working on. `Nothing` falls back to whatever is
   -- sounding, so the lens is never empty for no reason.
   , varying :: Maybe ChordNode
@@ -979,6 +993,19 @@ data Action
   | VaryAudition ChordNode -- hear a variation WITHOUT capturing it to the chyron
   | KeepVariation ChordNode -- shift-click: keep (or un-keep) a variation for this chord
   | ForgetKept Int         -- drop a whole chord's kept set
+  -- REHEARSE
+  | TakeUp Int             -- build a rehearsal from saved token i
+  | DropRehearsal          -- put the whole rehearsal down
+  | RollPass               -- draw a new pass through the lattice
+  | PlayPass               -- hear the current pass
+  | SetPull HT.Pull        -- loose / mid / smooth
+  | HearOption Int Int     -- hear slot i's option j (without capturing)
+  | SettleSlot Int Int     -- lock slot i to option j (or unlock if already it)
+  | SettlePass             -- lock every slot to what this pass chose
+  | LoosenAll              -- unlock every slot
+  | DropOption Int Int     -- remove slot i's option j (never option zero)
+  | VaryFromSlot Int       -- excurse to the Vary lens on slot i's base chord
+  | BackToRehearsal        -- return from that excursion
   | OpenVary ChordNode     -- send a chord to the Vary lens and go there
   | RollBass Int           -- roll the revoiced chord's bass to the next/previous chord tone
   | ShiftOctave Int        -- move the revoiced chord bodily up/down an octave
@@ -1144,6 +1171,10 @@ component = H.mkComponent
       , padRoll: 0
       , varyRoll: 0
       , kept: []
+      , rehearsal: []
+      , rehearseRoll: 0
+      , pull: HT.Mid
+      , varyReturn: Nothing
       , varying: Nothing
       , hoveredNode: Nothing
       , chyron: []
@@ -2896,31 +2927,90 @@ handleAction = case _ of
 
   -- Shift-click TOGGLES: the same gesture keeps and un-keeps, so a mistake
   -- costs the same as the choice did.
+  --
+  -- In an EXCURSION the keep belongs to the SLOT that sent us, not to the
+  -- free-standing tray: you went looking on behalf of a chord in a progression,
+  -- and making you carry the result back by hand would be the tool forgetting
+  -- what you asked it.
   KeepVariation c -> do
     st <- H.get
-    for_ (varySource st) \src -> do
-      let key = playNotes src
-          alreadyKept e = e.notes == key
-          held o = playNotes o == playNotes c
-          toggle e =
-            if not (alreadyKept e) then e
-            else e { options = if any held e.options
-                                 then filter (not <<< held) e.options
-                                 else e.options <> [ c ] }
-      if any alreadyKept st.kept
-        -- A slot whose variations have all been dropped is back to just its
-        -- source, which is no slot at all — so it leaves rather than lingering
-        -- as a one-option row that can never vary.
-        then H.modify_ \s -> s { kept = filter (\e -> length e.options > 1) (map toggle s.kept) }
-        else H.modify_ \s -> s { kept = s.kept <> [ { notes: key, label: src.label, options: [ src, c ] } ] }
-      playChordQuiet c
+    case st.varyReturn of
+      Just i -> do
+        H.modify_ \s -> s { rehearsal = modifyIx i (RH.toggleOption c) s.rehearsal }
+        playChordQuiet c
+      Nothing -> keepFreely c
 
   ForgetKept i -> H.modify_ \s -> s { kept = fromMaybe s.kept (deleteAt i s.kept) }
+
+  -- ── REHEARSE ──────────────────────────────────────────────────────────
+  -- Take up a saved progression: one slot per chord, its own voicing as option
+  -- zero, and any variations already kept for that exact chord folded in — which
+  -- is why `kept` is keyed by notes and not by id.
+  TakeUp i -> do
+    st <- H.get
+    for_ (index st.chyronSaved i) \sq -> do
+      let slots = map (RH.slotFrom st.kept) sq.events
+      H.modify_ _ { rehearsal = slots, rehearseRoll = 0, stage = Rehearse, varyReturn = Nothing }
+
+  DropRehearsal -> H.modify_ _ { rehearsal = [], varyReturn = Nothing }
+
+  RollPass -> do
+    H.modify_ \s -> s { rehearseRoll = s.rehearseRoll + 1 }
+    handleAction PlayPass
+
+  PlayPass -> do
+    st <- H.get
+    playEvents (passEvents st)
+
+  SetPull p -> do
+    H.modify_ _ { pull = p }
+    handleAction PlayPass
+
+  HearOption i j -> do
+    st <- H.get
+    for_ (index st.rehearsal i >>= \sl -> index sl.options j) playChordQuiet
+
+  -- Toggling, so the same click settles and unsettles.
+  SettleSlot i j -> do
+    H.modify_ \s -> s { rehearsal = modifyIx i (\sl ->
+      sl { locked = if sl.locked == Just j then Nothing else Just j }) s.rehearsal }
+    st <- H.get
+    for_ (index st.rehearsal i >>= \sl -> index sl.options j) playChordQuiet
+
+  -- Settle the WHOLE pass: the converging gesture. You heard it, you keep it,
+  -- and every alternative is still there when you unlock.
+  SettlePass -> H.modify_ \s ->
+    s { rehearsal = zipWith (\sl j -> sl { locked = Just j }) s.rehearsal (passIxs s) }
+
+  LoosenAll -> H.modify_ \s -> s { rehearsal = map (_ { locked = Nothing }) s.rehearsal }
+
+  -- Option zero is the progression's own chord and is not removable: a slot has
+  -- to be able to play what was written.
+  DropOption i j -> H.modify_ \s ->
+    if j == 0 then s
+    else s { rehearsal = modifyIx i (\sl ->
+      sl { options = fromMaybe sl.options (deleteAt j sl.options)
+         , locked = case sl.locked of
+             Just k | k == j -> Nothing
+             Just k | k > j -> Just (k - 1)
+             other -> other
+         }) s.rehearsal }
+
+  VaryFromSlot i -> do
+    st <- H.get
+    for_ (index st.rehearsal i >>= \sl -> index sl.options 0) \base -> do
+      H.modify_ _ { varying = Just base, varyReturn = Just i, revoicing = Nothing
+                  , stage = Hunt Vary, lastLens = Vary }
+      playChordQuiet base
+
+  BackToRehearsal -> H.modify_ _ { stage = Rehearse, varyReturn = Nothing }
 
   -- Opening the lens closes the revoice modal: they are two views of the same
   -- question at different magnifications, and both up at once is just clutter.
   OpenVary c -> do
-    H.modify_ \s -> s { varying = Just c, revoicing = Nothing, stage = Hunt Vary, lastLens = Vary }
+    H.modify_ \s -> s { varying = Just c, revoicing = Nothing, stage = Hunt Vary, lastLens = Vary
+                      -- A fresh excursion from a chord is not a return trip.
+                      , varyReturn = Nothing }
     playChord c
 
   -- The one mode switch. Absorbed the old `SetCaptureView`, so leaving REVIEW by
@@ -2936,6 +3026,10 @@ handleAction = case _ of
       , hoveredId = Nothing, hoveredTriad = Nothing
       , viewCx = 0.0, viewCy = 0.0, viewZoom = 1.0, panning = Nothing, panMoved = false
       , capture = if v == Review then st.capture else st.capture { playing = Nothing, contextOpen = false }
+      -- An excursion is a round trip between two places. Navigating anywhere
+      -- ELSE ends it, or a later free visit to the Vary lens would quietly post
+      -- its keeps into a slot you had stopped thinking about.
+      , varyReturn = if v == Rehearse || v == Hunt Vary then st.varyReturn else Nothing
       }
 
   -- Slice E — transpose. In-place shift of a specimen's absolute-MIDI voicing +
@@ -4109,6 +4203,49 @@ onsetWhole ev = do
   if w.start == p.start then Just wa else Nothing
 
 -- | Send a chord's notes to the MIDI bus (no state change) and log it to the chyron.
+-- | Replace one element of an array, leaving it alone if the index is out.
+modifyIx :: forall a. Int -> (a -> a) -> Array a -> Array a
+modifyIx i f xs = fromMaybe xs (modifyAt i f xs)
+
+-- | The pass, read off state. `Vetula.Rehearsal` owns the computation; these are
+-- | only the three readings the view and the transport ask for.
+passIxs :: State -> Array Int
+passIxs st = RH.chosen st.pull st.rehearseRoll st.rehearsal
+
+passChords :: State -> Array ChordNode
+passChords st = RH.chords st.pull st.rehearseRoll st.rehearsal
+
+-- | The pass as playable events, evenly spaced. Timing is not the point here —
+-- | Perform owns that — so one chord a beat is enough to hear the joins.
+passEvents :: State -> Array ChyronEvent
+passEvents st = mapWithIndex ev (passChords st)
+  where
+  ev i c = { pcs: c.pcs, notes: playNotes c, label: c.label, at: toNumber i * 700.0, anchor: c.anchor }
+
+passMotion :: State -> Int
+passMotion st = RH.motion st.pull st.rehearseRoll st.rehearsal
+
+-- | Keep a variation in the free-standing tray (no excursion in flight).
+keepFreely :: forall o m. MonadAff m => ChordNode -> H.HalogenM State Action Slots o m Unit
+keepFreely c = do
+  st <- H.get
+  for_ (varySource st) \src -> do
+    let key = playNotes src
+        alreadyKept e = e.notes == key
+        held o = playNotes o == playNotes c
+        toggle e =
+          if not (alreadyKept e) then e
+          else e { options = if any held e.options
+                               then filter (not <<< held) e.options
+                               else e.options <> [ c ] }
+    if any alreadyKept st.kept
+      -- A slot whose variations have all been dropped is back to just its
+      -- source, which is no slot at all — so it leaves rather than lingering
+      -- as a one-option row that can never vary.
+      then H.modify_ \s -> s { kept = filter (\e -> length e.options > 1) (map toggle s.kept) }
+      else H.modify_ \s -> s { kept = s.kept <> [ { notes: key, label: src.label, options: [ src, c ] } ] }
+    playChordQuiet c
+
 -- | **Sound a chord without capturing it.**
 -- |
 -- | `playChord` is an audition choke-point and logs to the chyron, which is
@@ -5089,6 +5226,7 @@ stageTabs st =
   HH.div
     [ HP.style "display: flex; flex: 0 0 auto; border: 1px solid #00000026; border-radius: 6px; overflow: hidden; box-shadow: 0 1px 2px #0000001a;" ]
     [ tab (isHunt st.stage) (Hunt st.lastLens) "HUNT" "hunt harmonic space — catch chords into the tank"
+    , tab (st.stage == Rehearse) Rehearse "REHEARSE" "a progression with alternatives at every chord — run it until it settles"
     , tab (st.stage == Perform) Perform "PERFORM" "play the voices, with the capture river alongside"
     , tab (st.stage == Review) Review "REVIEW" "the whole take — cherry-pick a phrase into the clip library"
     ]
@@ -5195,8 +5333,34 @@ contextBar st =
   -- stage to look at what you just marked.
   stageControls = case st.stage of
     Hunt _ -> huntControls
+    Rehearse -> rehearseControls
     Perform -> captureControls
     Review -> captureControls
+
+  -- The pull dial and the pass controls, live only while rehearsing. A settled
+  -- progression still shows them: settling is reversible, which is the point.
+  rehearseControls
+    | length st.rehearsal == 0 = []
+    | otherwise =
+        [ rollChip "play ▶" "hear this pass" PlayPass
+        , rollChip "pass ⟳" "draw a new pass through the lattice" RollPass
+        , divider
+        ]
+          <> map pullChip HT.pulls
+          <> [ divider
+             , rollChip "settle" "lock every slot to what this pass chose — the alternatives stay" SettlePass
+             , rollChip "loosen" "unlock every slot" LoosenAll
+             ]
+
+  pullChip p =
+    HH.button
+      [ HP.title (HT.pullBlurb p)
+      , HE.onClick \_ -> SetPull p
+      , HP.style ("border: 1px solid " <> (if st.pull == p then "#b8975a" else "#00000026")
+                   <> "; background: " <> (if st.pull == p then "linear-gradient(#c8a86a,#b8975a)" else "#faf7ee")
+                   <> "; color: " <> (if st.pull == p then "#1c1a12" else "#5a564b")
+                   <> "; font-size: 11px; padding: 3px 9px; border-radius: 3px; cursor: pointer;") ]
+      [ HH.text (HT.pullLabel p) ]
 
   -- The projection picker is a HUNT control, so it exists only while hunting.
   -- It used to sit in the bar permanently, displaying `browseOr lastBrowse view`
@@ -5466,6 +5630,7 @@ surface st
   | length st.genSel > 0 && length st.candidates > 0 = pickSurface st
   | otherwise = case st.stage of
       Perform -> performSurface st
+      Rehearse -> rehearseSurface st
       Review -> reviewSurface st
       Hunt Fifths -> circleFifthsSurface st
       Hunt Tonnetz -> tonnetzSurface st
@@ -7030,6 +7195,121 @@ padLit st c = case st.hoveredTriad of
   Nothing -> false
   Just h -> sort (nub (map (\p -> mod p 12) h.pcs)) == sort (nub (map (\p -> mod p 12) c.pcs))
 
+-- | **The REHEARSE surface — a progression with alternatives at every chord.**
+-- |
+-- | A column per slot, its options stacked beneath it. The pass the transport
+-- | would play is highlighted; a settled slot wears a pin and stops moving.
+-- |
+-- | The whole stage exists because a progression stops being a list the moment
+-- | its chords have alternatives: four options at each of three chords is
+-- | sixty-four progressions, and what you want is not to pick one but to keep
+-- | running them until one of them is obviously right.
+rehearseSurface :: forall m. State -> H.ComponentHTML Action Slots m
+rehearseSurface st
+  | length st.rehearsal == 0 = takeUpSurface st
+  | otherwise =
+      let ixs = passIxs st
+      in HH.div
+          [ HP.class_ (cn "vetula-surface")
+          , HP.style "position: absolute; inset: 0; overflow: auto; padding: 16px 22px 26px;" ]
+          [ HH.div
+              [ HP.style "font-size: 11px; color: #a09880; letter-spacing: 0.04em; margin-bottom: 12px; display: flex; gap: 14px; align-items: baseline; -webkit-user-select: none; user-select: none;" ]
+              [ HH.span []
+                  [ HH.text (show (length st.rehearsal) <> " chords · "
+                              <> show (RH.size st.rehearsal) <> " progressions in the lattice") ]
+              , HH.span [ HP.style "color: #b3aa92;" ]
+                  [ HH.text ("pass " <> show st.rehearseRoll <> " · motion at the joins " <> show (passMotion st)) ]
+              , HH.button
+                  [ HP.style "border: none; background: none; color: #b3aa92; font-size: 11px; cursor: pointer; padding: 0;"
+                  , HP.title "put this progression down — the kept variations survive it"
+                  , HE.onClick \_ -> DropRehearsal ]
+                  [ HH.text "put down" ]
+              ]
+          , HH.div
+              [ HP.style "display: flex; gap: 10px; align-items: flex-start; overflow-x: auto; padding-bottom: 6px;" ]
+              (mapWithIndex (slotColumn st ixs) st.rehearsal)
+          ]
+
+-- | Nothing taken up yet: offer the saved progressions. Deliberately the only
+-- | way in, so Rehearse never shows a half-state assembled from whatever the
+-- | chyron happened to be holding.
+takeUpSurface :: forall m. State -> H.ComponentHTML Action Slots m
+takeUpSurface st =
+  HH.div
+    [ HP.class_ (cn "vetula-surface")
+    , HP.style "position: absolute; inset: 0; overflow: auto; padding: 28px 22px; display: flex; flex-direction: column; align-items: center; gap: 16px;" ]
+    [ HH.div
+        [ HP.style "font-size: 12px; color: #a09880; text-align: center; max-width: 420px; line-height: 1.6;" ]
+        [ HH.text "Take up a saved progression and every chord in it becomes a slot you can give alternatives to." ]
+    , if length st.chyronSaved == 0
+        then HH.div
+               [ HP.style "font-size: 11px; color: #b3aa92;" ]
+               [ HH.text "Nothing saved yet — hunt a progression and ⏎ it onto the shelf first." ]
+        else HH.div
+               [ HP.style "display: flex; flex-wrap: wrap; gap: 8px; justify-content: center; max-width: 560px;" ]
+               (mapWithIndex takeUpChip st.chyronSaved)
+    ]
+  where
+  takeUpChip i sq =
+    HH.button
+      [ HP.style "border: 1px solid #ece5d2; background: #fbf8f0; border-radius: 4px; padding: 6px 12px; font-size: 11px; color: #6a6250; cursor: pointer;"
+      , HP.title (show (length sq.events) <> " chords")
+      , HE.onClick \_ -> TakeUp i ]
+      [ HH.text (joinWith " " (map _.label sq.events)) ]
+
+-- | One slot: the chord's name, an excursion button, and its options beneath.
+slotColumn :: forall m. State -> Array Int -> Int -> Slot -> H.ComponentHTML Action Slots m
+slotColumn st ixs i sl =
+  let playing = fromMaybe 0 (index ixs i)
+  in HH.div
+      [ HP.style "flex: 0 0 auto; min-width: 116px; background: #fbf8f0; border: 1px solid #ece5d2; border-radius: 5px; padding: 8px 8px 6px;" ]
+      ( [ HH.div
+            [ HP.style "display: flex; align-items: baseline; justify-content: space-between; gap: 6px; margin-bottom: 6px;" ]
+            [ HH.span
+                [ HP.style "font-size: 11px; color: #7a7360; letter-spacing: 0.06em; text-transform: uppercase; -webkit-user-select: none; user-select: none;" ]
+                [ HH.text (show (i + 1)) ]
+            , HH.button
+                [ HP.style "border: none; background: none; color: #a09880; font-size: 11px; cursor: pointer; padding: 0;"
+                , HP.title "go and find variations for this chord, then come back"
+                , HE.onClick \_ -> VaryFromSlot i ]
+                [ HH.text "vary ⋯" ]
+            ]
+        ]
+          <> mapWithIndex (optionRow st i sl playing) sl.options
+      )
+
+-- | One option. Click hears it; the ✓ settles the slot on it; the × drops it
+-- | (never option zero, which is the chord the progression actually said).
+optionRow :: forall m. State -> Int -> Slot -> Int -> Int -> ChordNode -> H.ComponentHTML Action Slots m
+optionRow st i sl playing j c =
+  let
+    settled = sl.locked == Just j
+    live = j == playing
+    bg = if settled then "#f2e7c6" else if live then "#fdf6e4" else "#ffffff"
+    brd = if settled then "#b8975a" else if live then "#cdbb8c" else "#eee7d6"
+  in
+    HH.div
+      [ HP.style ("display: flex; align-items: center; gap: 4px; border: 1px solid " <> brd
+                   <> "; background: " <> bg <> "; border-radius: 3px; padding: 3px 4px 3px 6px; margin-bottom: 3px;") ]
+      [ HH.button
+          [ HP.style "flex: 1 1 auto; min-width: 0; border: none; background: none; text-align: left; font-size: 11px; color: #6a6250; cursor: pointer; padding: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;"
+          , HP.title (show (playNotes c) <> (if j == 0 then " — as written" else ""))
+          , HE.onClick \_ -> HearOption i j ]
+          [ HH.text c.label ]
+      , HH.button
+          [ HP.style ("border: none; background: none; font-size: 10px; cursor: pointer; padding: 0 2px; color: "
+                       <> (if settled then "#8d7a4a" else "#cbc2aa"))
+          , HP.title (if settled then "unsettle this slot" else "settle the slot on this one")
+          , HE.onClick \_ -> SettleSlot i j ]
+          [ HH.text (if settled then "◉" else "○") ]
+      , if j == 0 then HH.text ""
+        else HH.button
+               [ HP.style "border: none; background: none; color: #cbc2aa; font-size: 11px; cursor: pointer; padding: 0 2px;"
+               , HP.title "drop this variation"
+               , HE.onClick \_ -> DropOption i j ]
+               [ HH.text "×" ]
+      ]
+
 -- | **The VARY surface — the Banks widget pointed at one chord.**
 -- |
 -- | Rows are drift (how far the content may travel, revoicing → substitution),
@@ -7064,6 +7344,20 @@ varySurface st = case varySource st of
             , HH.text (" · " <> show (playNotes src)
                         <> " · rows let the notes themselves drift, columns spread and double them")
             ]
+        , case st.varyReturn of
+            Nothing -> HH.text ""
+            Just i ->
+              HH.div
+                [ HP.style "margin-bottom: 10px; font-size: 11px;" ]
+                [ HH.button
+                    [ HP.style "border: 1px solid #b8975a; background: #f2e7c6; color: #6a6250; border-radius: 3px; padding: 3px 10px; cursor: pointer; font-size: 11px;"
+                    , HP.title "back to the progression — what you kept is already in the slot"
+                    , HE.onClick \_ -> BackToRehearsal ]
+                    [ HH.text ("← rehearsal · slot " <> show (i + 1)) ]
+                , HH.span
+                    [ HP.style "color: #b3aa92; margin-left: 8px;" ]
+                    [ HH.text "shift-click keeps into that slot" ]
+                ]
         , HH.div
             [ HP.style "display: grid; grid-template-columns: 62px repeat(3, minmax(0, 1fr)); gap: 10px 12px; align-items: start;" ]
             ( [ HH.div [] [] ]
@@ -7109,12 +7403,18 @@ varyPad st c =
           [ HH.text c.label ]
       ]
 
--- | Is this variation already in the kept set for the chord under the lens?
+-- | Is this variation already kept? During an EXCURSION that means the slot
+-- | that sent us; otherwise the free-standing tray. Same question, two places
+-- | the answer can live, and the ring on the pad has to tell the truth in both.
 isKept :: State -> ChordNode -> Boolean
-isKept st c = case varySource st of
-  Nothing -> false
-  Just src ->
-    any (\e -> e.notes == playNotes src && any (\o -> playNotes o == playNotes c) e.options) st.kept
+isKept st c = case st.varyReturn of
+  Just i -> case index st.rehearsal i of
+    Just sl -> any (\o -> playNotes o == playNotes c) (drop 1 sl.options)
+    Nothing -> false
+  Nothing -> case varySource st of
+    Nothing -> false
+    Just src ->
+      any (\e -> e.notes == playNotes src && any (\o -> playNotes o == playNotes c) e.options) st.kept
 
 -- | **What you have kept, and how big a space it makes.**
 -- |
