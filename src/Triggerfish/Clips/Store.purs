@@ -3,12 +3,9 @@
 -- | (Odonus now, Vetula at #28, later others) reads/writes this one store, so a
 -- | clip captured anywhere is pickable everywhere.
 -- |
--- | ⚠️ PureScript `Maybe` does NOT survive `JSON.stringify`/`parse` — `Just`/`Nothing`
--- | rely on constructor identity that a plain JSON round-trip destroys, so a decoded
--- | `Maybe` field fails its pattern match at read time. The on-disk shape therefore
--- | uses `Nullable` for `MidiClip`'s optional fields (bpm/key/context) — `null` ⇔
--- | `Nothing`, a bare value ⇔ `Just` — converting at the boundary. (Same reason the
--- | Odonus store flattens a preset's `Maybe name` to `""`.)
+-- | The `Maybe`-does-not-survive-JSON conversion lives in `Clips.Codec` now, so
+-- | one definition serves this store and the Amphora publish that carries a clip
+-- | off this origin entirely.
 module Triggerfish.Clips.Store
   ( saveClips
   , loadClips
@@ -18,9 +15,10 @@ import Prelude
 
 import Data.Array (null)
 import Data.Maybe (Maybe(..))
-import Data.Nullable (Nullable, toMaybe, toNullable)
+import Data.Nullable (Nullable, toMaybe)
 import Effect (Effect)
 import Triggerfish.Clips (MidiClip, NoteEvent)
+import Triggerfish.Clips.Codec (StoredClip, fromStored, toStored)
 
 -- v2: optional fields stored as Nullable so they round-trip through JSON. (v1 stored
 -- them as PureScript `Maybe`, which corrupts on read — migrated below.)
@@ -29,22 +27,6 @@ storeKey = "triggerfish.clips.v2"
 
 v1Key :: String
 v1Key = "triggerfish.clips.v1"
-
--- | The JSON-safe on-disk clip: `MidiClip` with its `Maybe` fields as `Nullable`.
-type StoredClip =
-  { id :: String
-  , events :: Array NoteEvent
-  , lenMicros :: Number
-  , heads :: Int
-  , capturedMicros :: Number
-  , source :: String
-  , name :: String
-  , tags :: Array String
-  , notes :: String
-  , bpm :: Nullable Number
-  , key :: Nullable String
-  , context :: Nullable String
-  }
 
 type Envelope = { clips :: Array StoredClip }
 
@@ -68,20 +50,6 @@ type V1Envelope = { clips :: Array V1Clip }
 foreign import _save :: String -> String -> Effect Unit
 foreign import _load :: forall a. String -> Effect (Nullable a)
 foreign import _stringify :: forall a. a -> String
-
-toStored :: MidiClip -> StoredClip
-toStored c =
-  { id: c.id, events: c.events, lenMicros: c.lenMicros, heads: c.heads
-  , capturedMicros: c.capturedMicros, source: c.source, name: c.name
-  , tags: c.tags, notes: c.notes
-  , bpm: toNullable c.bpm, key: toNullable c.key, context: toNullable c.context }
-
-fromStored :: StoredClip -> MidiClip
-fromStored s =
-  { id: s.id, events: s.events, lenMicros: s.lenMicros, heads: s.heads
-  , capturedMicros: s.capturedMicros, source: s.source, name: s.name
-  , tags: s.tags, notes: s.notes
-  , bpm: toMaybe s.bpm, key: toMaybe s.key, context: toMaybe s.context }
 
 -- | Salvage a v1 clip: keep its notes/name, reset the corrupt metadata to absent.
 fromV1 :: V1Clip -> MidiClip

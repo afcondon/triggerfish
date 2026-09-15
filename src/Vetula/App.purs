@@ -71,6 +71,7 @@ import Triggerfish.Midi.Routing as Routing
 import Triggerfish.Glyph (ChipView, Glyph, sessionAliasOf)
 -- Qualified: `chordGlyph` is also the name of this module's lattice-node
 -- renderer, which draws a chord and has nothing to do with identity.
+import Triggerfish.Clips.Share as Share
 import Triggerfish.Glyph as TGlyph
 import Triggerfish.GlyphView (faIcon, faIcons)
 import Triggerfish.Preset (Preset, indexOfContent)
@@ -1035,6 +1036,7 @@ data Action
   | KeepPass               -- mint the current pass onto the shelf as a progression
   | KeepMarked             -- mint the marked shortlist as ONE alternating token
   | KeepLattice            -- mint the whole lattice, each slot alternating
+  | ToQuadrat Int          -- publish shelf token i as a clip for Quadrat to sample
   | SettleSlot Int Int     -- lock slot i to option j (or unlock if already it)
   | SettlePass             -- lock every slot to what this pass chose
   | LoosenAll              -- unlock every slot
@@ -2985,6 +2987,30 @@ handleAction = case _ of
 
   ForgetKept i -> H.modify_ \s -> s { kept = fromMaybe s.kept (deleteAt i s.kept) }
 
+  -- **Declare a progression to the sampler.** One path, never a lattice: you
+  -- can only name what you sampled if you know which reading played, and a
+  -- lattice deliberately plays a different one each cycle. A token carrying an
+  -- alternating pattern is refused rather than silently flattened — flattening
+  -- would hand over a reading nobody chose.
+  ToQuadrat i -> do
+    st <- H.get
+    case index st.chyronSaved i of
+      Nothing -> pure unit
+      Just sq
+        | sq.pattern /= "" && contains (Pattern "<") sq.pattern ->
+            H.modify_ _ { publishMsg = Just "✗ that one alternates — settle a single path first" }
+        | otherwise -> do
+            now <- liftEffect dateNow
+            let clip = clipOfSeq st sq now
+                spec = Share.shareSpec clip
+                         { kind: "chord-hits", glyph: sq.glyph.alias }
+            H.modify_ _ { publishMsg = Just "sending to Quadrat…" }
+            res <- liftAff (attempt (Amphora.publish spec))
+            case res of
+              Right hash -> H.modify_ _
+                { publishMsg = Just ("✓ for Quadrat · " <> SCU.take 8 hash) }
+              Left _ -> H.modify_ _ { publishMsg = Just "✗ send failed (store offline?)" }
+
   -- ── The hand-off ──────────────────────────────────────────────────────
   -- Everything leaves Rehearse the same way: as a token on the shelf. From
   -- there the app already knows what to do — drag it to a Perform box, and the
@@ -4347,6 +4373,48 @@ phraseGap = 2800.0
 sweepCap :: Int
 sweepCap = 8
 
+-- | **A shelf token as a clip.**
+-- |
+-- | One `NoteEvent` per note of every chord, at the chord's own onset — which is
+-- | the whole point: a sampler reading these times knows where each chord starts
+-- | exactly, so its division is a fact rather than a detector's opinion. Notes of
+-- | one chord share an onset, which is the cluster Quadrat looks for; declared,
+-- | that cluster is exact.
+-- |
+-- | `heads: 1` — a progression is one voice's worth of material however many
+-- | notes a chord has. `bpm` is left absent: the clip carries times, and what
+-- | tempo they are read at belongs to whatever plays it.
+clipOfSeq :: State -> SavedSeq -> Number -> MidiClip
+clipOfSeq st sq now =
+  -- SECONDS, not millis. `round` targets a 32-bit Int and epoch millis
+  -- (1.79e12) saturate it at 2147483647 — so every clip minted from the same
+  -- rebus got the identical id, which is the one field that must not collide.
+  -- Seconds (1.79e9) fit until 2038, and Amphora content-addresses anyway, so a
+  -- genuine duplicate dedupes on its hash rather than on this.
+  { id: "vetula-" <> sq.glyph.alias <> "-" <> show (round (now / 1000.0))
+  , events: concat (mapWithIndex evs sq.events)
+  , lenMicros: toNumber (length sq.events) * chordMicros
+  , heads: 1
+  , capturedMicros: now
+  , source: "vetula"
+  , name: sq.glyph.alias
+  , tags: [ "progression" ]
+  , notes: ""
+  , bpm: Nothing
+  , key: Just (noteName (mod st.key.tonic 12) <> " " <> show st.key.mode)
+  , context: Nothing
+  }
+  where
+  evs i ev =
+    map (\n -> { pitch: n, headIdx: 0, fireUnixMicros: toNumber i * chordMicros
+                , vel: 92, gateMs: 700.0 })
+      ev.notes
+
+-- | One chord a beat, in micros. The same 700 ms the pass auditions at, so what
+-- | a sampler is told matches what you heard when you chose it.
+chordMicros :: Number
+chordMicros = 700000.0
+
 -- | **Mint a token from a set of paths and put it on the shelf.**
 -- |
 -- | One path gives a plain sequence; several give one alternation over whole
@@ -5294,6 +5362,14 @@ chyronBar st =
           , HP.title "check out to the buffer to edit — the token leaves the shelf; ⏎ save re-bundles a new one"
           , HE.onClick \_ -> Unbundle i ]
           [ HH.text "✎" ]
+      -- Declare this progression to the sampler. Not a MIDI route: Quadrat is a
+      -- different origin and learns the chords by being TOLD, which is exact
+      -- where listening to the wire is a detector's best guess.
+      , HH.button
+          [ HP.style "position: absolute; bottom: -5px; left: -3px; z-index: 2; border: 1px solid #cdbb8c; background: #f6efdc; color: #4a6a3a; font-size: 9px; line-height: 1; cursor: pointer; padding: 0 3px; border-radius: 8px;"
+          , HP.title "send to Quadrat to sample — the chords, their times and this rebus"
+          , HE.onClick \_ -> ToQuadrat i ]
+          [ HH.text "◴" ]
       , HH.button
           [ HP.style "position: absolute; top: -5px; right: -3px; z-index: 2; border: 1px solid #cdbb8c; background: #f6efdc; color: #b06a5a; font-size: 10px; line-height: 1; cursor: pointer; padding: 0 3px; border-radius: 8px;"
           , HP.title "delete this saved sequence"
