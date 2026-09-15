@@ -546,6 +546,33 @@ type SavedSeq =
   }
 
 
+-- | **Variations KEPT for one chord** — the selection pool the Vary lens feeds.
+-- |
+-- | Browsing a nine-cell grid is not composing, so a Vary pad sounds without
+-- | touching the chyron; shift-click is what says *keep this one*. The kept set
+-- | is therefore small and deliberate, where the trace would have been 144 near
+-- | identical chords deep after a minute of listening.
+-- |
+-- | Keyed by the source chord's exact NOTES rather than its id. Every lens but
+-- | Explore recomputes its chords on each render, so an id is good only until
+-- | the next frame; the notes are what the chord actually is, so a kept set
+-- | survives leaving the lens and coming back to the same chord.
+type KeptFor =
+  { notes :: Array Int         -- the source chord, exactly as voiced
+  , label :: String
+  , options :: Array ChordNode -- what this slot may sound; option ZERO is the
+                               -- source chord itself
+  }
+
+-- | **The source chord is option zero, always.**
+-- |
+-- | Keeping it inside the set rather than beside it makes every later question
+-- | uniform: locking to the original is not a special case, a slot with nothing
+-- | kept is a one-element set that multiplies to 1 rather than 0, and forgetting
+-- | every variation leaves a well-formed slot instead of a hole. It also says
+-- | the true thing — when the progression runs, the chord you started with is a
+-- | legitimate choice unless you have decided otherwise.
+
 -- | A PERFORM box: one persistent player slot on the Perform surface, bound to a
 -- | MIDI channel. A dropped token LOOPS through its function `stack` (folded over
 -- | the chord pattern) while the transport plays, out its terminal `term`. Empty or
@@ -700,6 +727,7 @@ type State =
   -- each is a `Harmonia.Progression.Spec` whose seed is fanned out from this.
   , padRoll :: Int
   , varyRoll :: Int
+  , kept :: Array KeptFor
   -- The chord the Vary lens is working on. `Nothing` falls back to whatever is
   -- sounding, so the lens is never empty for no reason.
   , varying :: Maybe ChordNode
@@ -948,6 +976,9 @@ data Action
   | HoverPad (Maybe ChordNode)  -- Banks lens: hover a pad (highlight + exact preview)
   | DropTone Event Int Int Int  -- silence chord `id`'s tone `i` at octave `k` (shift-click a note)
   | ShuffleVary            -- re-draw all nine cells of the Vary lens from a new seed
+  | VaryAudition ChordNode -- hear a variation WITHOUT capturing it to the chyron
+  | KeepVariation ChordNode -- shift-click: keep (or un-keep) a variation for this chord
+  | ForgetKept Int         -- drop a whole chord's kept set
   | OpenVary ChordNode     -- send a chord to the Vary lens and go there
   | RollBass Int           -- roll the revoiced chord's bass to the next/previous chord tone
   | ShiftOctave Int        -- move the revoiced chord bodily up/down an octave
@@ -1112,6 +1143,7 @@ component = H.mkComponent
       , genRoll: 0
       , padRoll: 0
       , varyRoll: 0
+      , kept: []
       , varying: Nothing
       , hoveredNode: Nothing
       , chyron: []
@@ -2857,6 +2889,34 @@ handleAction = case _ of
 
   ShuffleVary -> H.modify_ \s -> s { varyRoll = s.varyRoll + 1 }
 
+  -- Sounds, does not capture. The chyron is what a progression gets lifted
+  -- from, and a browse through 144 variations of one chord would bury the
+  -- trace in things you were only listening to.
+  VaryAudition c -> playChordQuiet c
+
+  -- Shift-click TOGGLES: the same gesture keeps and un-keeps, so a mistake
+  -- costs the same as the choice did.
+  KeepVariation c -> do
+    st <- H.get
+    for_ (varySource st) \src -> do
+      let key = playNotes src
+          alreadyKept e = e.notes == key
+          held o = playNotes o == playNotes c
+          toggle e =
+            if not (alreadyKept e) then e
+            else e { options = if any held e.options
+                                 then filter (not <<< held) e.options
+                                 else e.options <> [ c ] }
+      if any alreadyKept st.kept
+        -- A slot whose variations have all been dropped is back to just its
+        -- source, which is no slot at all — so it leaves rather than lingering
+        -- as a one-option row that can never vary.
+        then H.modify_ \s -> s { kept = filter (\e -> length e.options > 1) (map toggle s.kept) }
+        else H.modify_ \s -> s { kept = s.kept <> [ { notes: key, label: src.label, options: [ src, c ] } ] }
+      playChordQuiet c
+
+  ForgetKept i -> H.modify_ \s -> s { kept = fromMaybe s.kept (deleteAt i s.kept) }
+
   -- Opening the lens closes the revoice modal: they are two views of the same
   -- question at different magnifications, and both up at once is just clutter.
   OpenVary c -> do
@@ -4049,6 +4109,23 @@ onsetWhole ev = do
   if w.start == p.start then Just wa else Nothing
 
 -- | Send a chord's notes to the MIDI bus (no state change) and log it to the chyron.
+-- | **Sound a chord without capturing it.**
+-- |
+-- | `playChord` is an audition choke-point and logs to the chyron, which is
+-- | right when every click is a compositional act. It is wrong while browsing a
+-- | grid of variations on ONE chord: the trace would fill with near-twins and
+-- | the progression you meant to lift out of it would be unfindable. So the
+-- | Vary lens sounds through here and captures only what you shift-click.
+-- |
+-- | Not `chyronArmed` — that is the user's own record switch, and a lens
+-- | silently flipping it would be a worse surprise than the pollution.
+playChordQuiet :: forall o m. MonadAff m => ChordNode -> H.HalogenM State Action Slots o m Unit
+playChordQuiet c = do
+  st <- H.get
+  for_ st.midiOut \out ->
+    liftEffect $ for_ (playNotes c) \n ->
+      Midi.scheduleNote out { channel: st.previewChan, note: n, velocity: 92, delayMs: 0.0, durMs: 900.0 }
+
 playChord :: forall o m. MonadAff m => ChordNode -> H.HalogenM State Action Slots o m Unit
 playChord c = do
   st <- H.get
@@ -6995,6 +7072,7 @@ varySurface st = case varySource st of
                      (\d -> [ varyRowHead d ] <> map (\dn -> varyBank st (cellAt d dn)) HV.densities)
                      HV.drifts
             )
+        , keptTray st
         ]
 
 -- | The chord under the lens: the one explicitly sent here, else whatever is
@@ -7004,6 +7082,80 @@ varySource :: State -> Maybe ChordNode
 varySource st = case st.varying of
   Just c -> Just c
   Nothing -> st.sounding >>= \sid -> find (\c -> c.id == sid) st.chords
+
+-- | One variation pad. Click HEARS it (and nothing else); shift-click KEEPS it.
+-- | A kept pad wears a filled ring, so the nine cells double as the record of
+-- | what you have chosen out of them.
+varyPad :: forall m. State -> ChordNode -> H.ComponentHTML Action Slots m
+varyPad st c =
+  let mine = isKept st c
+  in HH.button
+      [ HP.style ("display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 1px; "
+                   <> "border: 1px solid " <> (if mine then "#8d7a4a" else if padLit st c then "#cdbb8c" else "#eee7d6") <> "; "
+                   <> (if mine then "box-shadow: inset 0 0 0 1px #8d7a4a; " else "")
+                   <> "background: " <> (if mine then "#f6efd9" else if padLit st c then "#fdf6e4" else "#ffffff") <> "; "
+                   <> "border-radius: 4px; padding: 5px 2px 4px; cursor: pointer; min-width: 0;")
+      , HP.title (c.label <> " — " <> show (playNotes c)
+                   <> (if mine then " · kept (shift-click to drop)" else " · shift-click to keep"))
+      , HE.onMouseEnter \_ -> HoverPad (Just c)
+      , HE.onMouseLeave \_ -> HoverPad Nothing
+      , HE.onClick \e -> if ME.shiftKey e then KeepVariation c else VaryAudition c
+      ]
+      [ SE.svg
+          [ SA.viewBox (-15.0) (-15.0) 30.0 30.0, SA.width 30.0, SA.height 30.0 ]
+          (pcPolygon (hiFor st.hoveredTriad c.pcs) c.root c.pcs 0.0 0.0 12.0)
+      , HH.div
+          [ HP.style "font-size: 10px; color: #6a6250; line-height: 1.1; text-align: center; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%; -webkit-user-select: none; user-select: none;" ]
+          [ HH.text c.label ]
+      ]
+
+-- | Is this variation already in the kept set for the chord under the lens?
+isKept :: State -> ChordNode -> Boolean
+isKept st c = case varySource st of
+  Nothing -> false
+  Just src ->
+    any (\e -> e.notes == playNotes src && any (\o -> playNotes o == playNotes c) e.options) st.kept
+
+-- | **What you have kept, and how big a space it makes.**
+-- |
+-- | The product is the point: four variations on each of three chords is
+-- | sixty-four progressions, and the number is worth showing because it is the
+-- | thing you are actually building. One chord with variations is a choice; three
+-- | is a space.
+keptTray :: forall m. State -> H.ComponentHTML Action Slots m
+keptTray st
+  | length st.kept == 0 = HH.text ""
+  | otherwise =
+      HH.div
+        [ HP.style "margin-top: 18px; border-top: 1px solid #ece5d2; padding-top: 10px;" ]
+        [ HH.div
+            [ HP.style "font-size: 11px; color: #a09880; letter-spacing: 0.04em; margin-bottom: 8px; -webkit-user-select: none; user-select: none;" ]
+            [ HH.text ("kept · " <> show (length st.kept)
+                        <> (if length st.kept == 1 then " chord · " else " chords · ")
+                        <> show (keptSpace st) <> " progressions in the space"
+                        <> " · each count includes the original") ]
+        , HH.div
+            [ HP.style "display: flex; flex-wrap: wrap; gap: 8px;" ]
+            (mapWithIndex keptChip st.kept)
+        ]
+
+-- | How many distinct progressions the kept sets describe: the product of the
+-- | per-chord option counts.
+keptSpace :: State -> Int
+keptSpace st = foldl (\n e -> n * max 1 (length e.options)) 1 st.kept
+
+keptChip :: forall m. Int -> KeptFor -> H.ComponentHTML Action Slots m
+keptChip i e =
+  HH.div
+    [ HP.style "display: flex; align-items: center; gap: 6px; border: 1px solid #ece5d2; background: #fbf8f0; border-radius: 4px; padding: 4px 6px 4px 8px; font-size: 11px; color: #6a6250;" ]
+    [ HH.span [ HP.style "font-weight: 500;" ] [ HH.text e.label ]
+    , HH.span [ HP.style "color: #a09880;" ] [ HH.text (show (length e.options) <> "×") ]
+    , HH.button
+        [ HP.style "border: none; background: none; color: #b3aa92; cursor: pointer; font-size: 12px; line-height: 1; padding: 0 2px;"
+        , HP.title "forget every variation kept for this chord"
+        , HE.onClick \_ -> ForgetKept i ]
+        [ HH.text "×" ]
+    ]
 
 varyColHead :: forall m. HV.Density -> H.ComponentHTML Action Slots m
 varyColHead dn =
@@ -7030,7 +7182,7 @@ varyBank st cs = case head cs of
       [ HP.style "background: #fbf8f0; border: 1px solid #ece5d2; border-radius: 5px; padding: 6px;" ]
       [ HH.div
           [ HP.style "display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 4px;" ]
-          (map (padButton st) cell.chords)
+          (map (varyPad st) cell.chords)
       , if length cell.chords >= Vary.varyRows * Vary.varyCols then HH.text ""
         else HH.div
                [ HP.style "font-size: 9px; color: #b3aa92; text-align: right; padding-top: 4px; -webkit-user-select: none; user-select: none;"
