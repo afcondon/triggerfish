@@ -1,8 +1,8 @@
 # Conspicillum — the grain cloud as a pattern
 
 **Status:** Design sketch, 2026-09-22. The seventh Triggerfish instrument.
-**C0, C1, C2, C3 and C5 are done** (2026-09-22). Only C4, the surface,
-remains — and C5 landing first means it now has something to draw. C1's headline: density
+**C0, C1, C2, C3, C5 and the emit path are done** (2026-09-22) — the cloud
+sounds. Only C4, the surface, remains, and it now has something to draw. C1's headline: density
 is not a constraint, and the caution below about measuring before drawing the
 surface has been discharged — see §C1.
 
@@ -764,6 +764,76 @@ and rank the other second — so the scorer hears a sixth.
 And the two columns that matter most for trust: the smear never exceeds 149,
 the empty hit is 0 throughout. If either ever climbs, the instrument has
 started preferring its broken material.
+
+## The emit path — `reef_conspicillum_voice`
+
+*Built 2026-09-22, after C5, because three green goldens still made no sound.*
+
+BEAM-authoritative and Link-locked, like `reef_stellatus_voice`: the browser
+pushes one scene and becomes a pure visualizer. `conspicillum-scene <json>`
+over the rig WebSocket runs or live-swaps it; `conspicillum-stop` silences it,
+and `hush` reaches it (it is the densest `/dirt/play` emitter on the rig, so
+missing it would have been the worst kind of stuck note).
+
+**The unit is a cycle, not a step**, and that is the whole structural
+difference from Stellatus. Stellatus precomputes a finite walk and indexes it
+by step; a cloud is cycle-addressed, so the voice computes a whole cycle's
+grains in ONE `cycleOf` call the moment that cycle enters the lookahead
+horizon, then places each grain at its own fraction of the cycle. A scene
+swap therefore lands on a cycle boundary, which is what makes an edit sound
+deliberate rather than like a glitch.
+
+One timetagged bundle per grain, down one long-lived socket — the path C1
+measured at 12,800 grains/sec. Explicitly **not** `Tidal/OSC.erl`'s
+`sendDirtAfter`, which spawns a process and opens a fresh UDP socket per
+event.
+
+`s` is the set name and `n` the index, because a Quadrat set's directory IS a
+SuperDirt bank — zero-padded, sorted, already loaded by `superdirt-daemon.scd`
+at boot. Nothing had to be built for that. `sustain` is sent explicitly rather
+than left to SuperDirt's delta-derived default, which would make a dense
+cloud's grains shorter than a sparse one's.
+
+### The material, and what it actually contains
+
+`audio/conspicillum-scene.py` builds a scene from a real set and pushes it.
+
+The working corpus is **anchor-car** (`chord-hits-0916-185508`, 15 hits) and
+**leaf-cloud** (`chord-hits-0915-232247`, 24 hits) — both entirely clean, no
+empty or smeared rows. Those are rebus aliases; note that `0915-230332`
+carries the *same chords* through a different patch and so shares the
+leaf-cloud alias (Marginalia 289 note 687).
+
+**These are not common-practice sets.** Read off their recorded notes they sit
+around E / B / F# / G and are full of minor-major sevenths, augmenteds and
+half-diminisheds. Asking them for a D minor returns nothing — correctly, and
+the surface will have to make an honest-empty result look different from a
+broken one, because they are easy to confuse.
+
+Asking anchor-car for a B minor, which it does have:
+
+```
+n= 1  fit 1.000  bass B   [2,6,11]       exact, root position
+n= 3  fit 0.662  bass B   [2,6,10,11]    Bm(maj7)
+n=14  fit 0.600  bass B   [2,5,11]       B dim — the F natural clashes
+n= 8  fit 0.476  bass G   [2,6,7,9,11]   contains all of Bm, but is a G chord
+n= 6  fit 0.352  bass F#  [2,6,10]       F#aug
+n= 5  fit 0.068  bass F#  [1,3,6,10]     nothing in common
+```
+
+The instructive row is n=8. It contains **all three** Bm tones, and still
+loses to n=14, which is missing the fifth — because n=8 has a G in the bass
+and two foreign tones while n=14 sits in root position on B. Preferring the
+root-position B chord over a G chord that happens to contain those notes is
+the musically right call, and it is the bass bonus earning its keep.
+
+### A note for the surface
+
+A sample with no recorded notes is kept in the corpus rather than filtered
+out, because `index` IS the SuperDirt `n`: dropping a row would renumber every
+sample after it and the cloud would play different audio than it named. The
+harmonic cut removes such samples at selection time instead, where it can say
+why.
 
 ## Out of scope — do not let these ride along
 
