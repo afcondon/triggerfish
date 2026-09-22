@@ -168,6 +168,10 @@
 <footer>
   <button class="go" id="play">Play</button>
   <button class="alt" id="stop">Stop</button>
+  <label style="display:flex;gap:6px;align-items:center;font-size:12px;color:var(--mute)">
+    <input type="checkbox" id="live" checked style="width:auto">
+    live — push edits while playing
+  </label>
   <span class="status" id="status">—</span>
 </footer>
 
@@ -374,6 +378,8 @@ function render() {
 
   document.getElementById("json").textContent =
     corpus ? JSON.stringify(scene(), null, 1) : "waiting for conspicillum-corpora.json\u2026";
+
+  livePush();
 }
 
 // ── wiring ──────────────────────────────────────────────────────────────────
@@ -381,12 +387,33 @@ document.querySelectorAll("input,select").forEach(el => {
   el.addEventListener("input", render);
   el.addEventListener("change", render);
 });
-document.getElementById("addrule").onclick = () => addRule();
-document.getElementById("play").onclick = () => {
+// ── live edits ──────────────────────────────────────────────────────────────
+// The engine treats a second push as a SWAP: `last_cycle` survives, so the new
+// scene is used from the next cycle on and time never restarts. So pushing
+// while dragging is not a restart, it is exactly Tidal's "evaluate again".
+//
+// It is also pointless to push faster than the engine reads: a cycle is 2s at
+// 120bpm, and the scene is only consulted when the next cycle enters the
+// lookahead horizon. A trailing debounce keeps the wire quiet and still
+// guarantees the value you let go on is the value that lands.
+let playing = false, pushTimer = null;
+const PUSH_MS = 120;
+
+function push() {
   if (!corpus) { document.getElementById("status").textContent = "no corpus loaded"; return; }
   send("conspicillum-scene " + JSON.stringify(scene()));
+}
+function livePush() {
+  if (!playing || !document.getElementById("live").checked) return;
+  clearTimeout(pushTimer);
+  pushTimer = setTimeout(push, PUSH_MS);
+}
+
+document.getElementById("addrule").onclick = () => addRule();
+document.getElementById("play").onclick = () => { playing = true; push(); };
+document.getElementById("stop").onclick = () => {
+  playing = false; clearTimeout(pushTimer); send("conspicillum-stop");
 };
-document.getElementById("stop").onclick = () => send("conspicillum-stop");
 
 connect();
 addRule({ when:1, everyN:3, everyK:0, chance:0.5, op:0, amount:-1 });
