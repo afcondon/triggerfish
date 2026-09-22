@@ -15,7 +15,11 @@ export SUPERDIRT_PORT="${SUPERDIRT_PORT:-57135}"
 # values (project 227 note #398). This `:-` fallback covers manual/standalone
 # launches. Override by exporting SUPERDIRT_DEVICE; set to empty to hear SuperDirt
 # on the system default output directly.
-export SUPERDIRT_DEVICE="${SUPERDIRT_DEVICE:-BlackHole 2ch}"
+# `-` and not `:-`: an EMPTY value must mean "the system default output",
+# which is what the line above has always claimed and never did. With `:-`
+# an explicit SUPERDIRT_DEVICE="" fell through to BlackHole, so the one
+# documented way to hear SuperDirt directly was the one that did not work.
+export SUPERDIRT_DEVICE="${SUPERDIRT_DEVICE-BlackHole 2ch}"
 # Which sample banks to load: core (default) | full | lazy. See the header of
 # superdirt-daemon.scd for what each costs. `core` exists because loading all
 # 217 Dirt-Samples banks was ~935 MB — the rig's largest single memory holder.
