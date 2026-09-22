@@ -835,6 +835,41 @@ sample after it and the cloud would play different audio than it named. The
 harmonic cut removes such samples at selection time instead, where it can say
 why.
 
+## The SuperDirt effects, and which of them are per-GRAIN
+
+*Surveyed 2026-09-22, from the installed quark, in answer to "do we have access
+to the reverb, delay, shred, distortion type features?"*
+
+Yes to all of it, and **none of it is wired**. `encode_dirt_play` sends a fixed
+thirteen parameters and pins `orbit` to 0, so a Conspicillum grain currently
+reaches no effect at all.
+
+What the installed SuperDirt actually offers splits in two, and the split is
+the whole design point:
+
+| | |
+|---|---|
+| **per-event → per-GRAIN** | `shape` (distortion), `crush` (bitcrush), `coarse` (decimate — the "shred"), `lpf`, `hpf`, `bpf`, `vowel`, `pshift`, `tremolo`, `phaser`, `grenvelo` |
+| **per-orbit (one chain)** | `dirt_reverb` (`room`, `size`, `dry`), `dirt_delay` (`delaytime`, `delayfeedback`, `lock`), `dirt_leslie` |
+
+**The prize is not reverb.** It is that the left-hand column is addressable per
+grain, and `Op` is an append-only enum that stops at 4. `Every 5 0 → crush 4`
+is the same argument as `Every 3 0 → speed -1`: a bitcrushed grain every fifth,
+which no hardware granulator can express because there a grain has no identity
+to count. `pshift` is worth calling out separately — it transposes
+*independently of `speed`*, so a grain can be moved in pitch without being moved
+in time, which is the one thing a tape-speed read head structurally cannot do.
+
+And `orbit` is itself an event parameter. `Every 4 0 → orbit 1` drops every
+fourth grain into a different global chain, which turns §Open questions' "is a
+grain cloud one orbit or many?" from a question about voice allocation into a
+figure you can hear. Orbits are fixed at boot (12) and the rest of the rig wants
+them, so this is a budget, not a free axis.
+
+The reach is three places and append-only at every one: `Emit` (reef),
+`encode_dirt_play` (erl), and new `Op` constructors from 5 up. Nothing already
+on the wire changes meaning.
+
 ## Out of scope — do not let these ride along
 
 - **No sample editing.** msm owns the library; Quadrat owns manufacture.
