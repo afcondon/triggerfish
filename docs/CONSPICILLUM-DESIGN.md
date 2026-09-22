@@ -1,8 +1,8 @@
 # Conspicillum — the grain cloud as a pattern
 
 **Status:** Design sketch, 2026-09-22. The seventh Triggerfish instrument.
-**C0, C1, C2 and C3 are done** (2026-09-22); C4 (the surface) and C5
-(harmonic grains) unbuilt. C1's headline: density
+**C0, C1, C2, C3 and C5 are done** (2026-09-22). Only C4, the surface,
+remains — and C5 landing first means it now has something to draw. C1's headline: density
 is not a constraint, and the caution below about measuring before drawing the
 surface has been discharged — see §C1.
 
@@ -522,8 +522,12 @@ drift is only ever visual, exactly as Sufflamen decided.
 - **C4 — the surface.** Spots on near-black: the corpus as a scatter over two
   chosen axes, the active query as a region, grains as sparks where they fall.
   The picture is the query — Hylograph thesis, applied to a sample corpus.
-- **C5 — harmonic grains.** `notes` + harmonia + Vetula's live chord. Shared
-  with Stellatus S3; build it once, in reef.
+- **C5 — harmonic grains. DONE 2026-09-22.** `Reef.Conspicillum.Harmonic`,
+  and a third query axis beside the measured and intentional ones. Golden:
+  `conformance/conspicillum-harmonic-golden.txt` — a ii-V-i scored over REAL
+  chord hits. See §C5. (The Vetula wiring — feeding it the *live* chord rather
+  than a written progression — is the remaining piece, and is a handful of
+  lines once there is a surface to hang it on.)
 
 ## C2 — the selector, built
 
@@ -680,6 +684,86 @@ fewer grains than onsets, which is the truth. "Your filter excluded
 everything" and "you asked for a sparse cloud" must not look the same on the
 surface. The seed still advances for a dropped grain, so narrowing a query
 does not reshuffle the grains that do survive.
+
+## C5 — a progression realised onto recorded voicings
+
+*Done 2026-09-22. `Reef.Conspicillum.Harmonic`, golden over real chord hits,
+node == erl. This is the thing the instrument was proposed for.*
+
+harmonia knows what chord is wanted. A Quadrat chord-hits set knows the
+**actual MIDI notes that were struck** to make each sample. So a progression
+can be realised onto recorded material rather than transposed onto one sample
+— and nothing else in the stack can do it, because nothing else recorded what
+it sampled.
+
+### A third axis, orthogonal on purpose
+
+A clause and a weighting ask about a property *of* the sample. A harmonic
+constraint asks about the **relation** between the sample and something
+outside it — the chord currently wanted. So it is not an `Axis`, and forcing
+it to be one would have been the wrong shape. It carries its own hard cut
+(`minFit`) and soft lean (`strength`), mirroring the pairing the numeric axes
+use, and its lean **multiplies into** theirs so "mostly the bright ones AND
+mostly the ones that voice this chord" composes.
+
+It is also the one lean that is *not* normalised across survivors: `fit` is
+already absolute on [0,1] with a meaning, and re-scaling it against whatever
+else happened to survive would destroy exactly the information it carries.
+
+### The trap harmonia had already documented
+
+`Harmonia.Chord.realize` returns `Chord (nub (sort pcs))` — **sorted**, so the
+root is not element 0 and cannot be recovered from the set. Harmonia says so
+itself, in `chordRoot`'s docstring: it exists so callers can "LABEL it by its
+root rather than by the lowest pitch-class of a sorted voicing". Taking
+`pcs[0]` would silently weight a first-inversion chord as though its third
+were its root, and every decision downstream would tilt. A `Target` therefore
+carries `root` and `bass` explicitly.
+
+### The data is dirty, and that shaped the scoring
+
+Measured across the sets on 2026-09-22: of **136 chord hits, 105 carry a clean
+note set, 24 carry none at all, and 7 are smears of ten or more pitch
+classes** — a stuck-note artefact of the capture. The clean material is
+concentrated in the later sets (`0914-085121`, `0915-230332`, `0915-232247`
+and `0916-185508` are entirely clean); the 0912 sets and three 4-sample sets
+from 0915 are where the damage is.
+
+**A twelve-pitch-class smear covers every chord perfectly.** On coverage alone
+it wins every selection, every time, and the instrument reliably chooses its
+worst material. So the foreign-note penalty is not a refinement — it is what
+makes the ranking usable at all, and it is the same parsimony
+`Harmonia.Recognise` describes when it normalises the fit by template weight
+but deliberately not the extras.
+
+The penalty is **squared**, and that is load-bearing rather than taste:
+un-squared, a smear scores about 0.32 against a D-minor target and beats an
+unrelated real chord (Gm(maj7), ~0.25). Squaring is one multiply, exact on
+both runtimes, and puts the smear below everything real. A hit with no notes
+scores **zero rather than abstaining**, because a scorer treating "I don't
+know" as "no objection" would rank exactly those 24 first.
+
+### What the golden shows
+
+A ii-V-i in D minor over a corpus of real hits — Gm(maj7), Em, two clusters,
+Fm, A major, D minor, Dm6, plus one smear and one empty:
+
+```
+            Gm△7   Em  clus   Fm  clus    A    Dm   Dm6 SMEAR EMPTY
+Em7b5  |  502  456  187    0   69  123  126  103  149    0
+A7     |  117  312   59    0  208  863  151  135  149    0
+Dm     |  140    0  362  251    0   80 1000  902  110    0
+Dm6    |  144  102  289  202   45   80  918 1000  149    0
+```
+
+**The same corpus ranks differently under each chord, and the musically right
+sample wins every time.** Em7b5 takes the Gm(maj7), which shares three of its
+four tones. A7 takes the A major by a mile. Dm and Dm6 each take themselves
+and rank the other second — so the scorer hears a sixth.
+
+And the two columns that matter most for trust: the smear never exceeds 149,
+the empty hit is 0 throughout. If either ever climbs, the instrument has
+started preferring its broken material.
 
 ## Out of scope — do not let these ride along
 
