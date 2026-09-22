@@ -372,7 +372,8 @@ function render() {
     `${os.length} grains/cycle · at 120 bpm that is ${(os.length/2).toFixed(1)}/sec`
     + ` · ${(os.length*sus).toFixed(1)} concurrent`;
 
-  document.getElementById("json").textContent = JSON.stringify(scene(), null, 1);
+  document.getElementById("json").textContent =
+    corpus ? JSON.stringify(scene(), null, 1) : "waiting for conspicillum-corpora.json\u2026";
 }
 
 // ── wiring ──────────────────────────────────────────────────────────────────
@@ -381,13 +382,18 @@ document.querySelectorAll("input,select").forEach(el => {
   el.addEventListener("change", render);
 });
 document.getElementById("addrule").onclick = () => addRule();
-document.getElementById("play").onclick = () =>
+document.getElementById("play").onclick = () => {
+  if (!corpus) { document.getElementById("status").textContent = "no corpus loaded"; return; }
   send("conspicillum-scene " + JSON.stringify(scene()));
+};
 document.getElementById("stop").onclick = () => send("conspicillum-stop");
 
-addRule({ when:1, everyN:3, everyK:0, chance:0.5, op:0, amount:-1 });
-load().then(render);
 connect();
+addRule({ when:1, everyN:3, everyK:0, chance:0.5, op:0, amount:-1 });
+load().then(render).catch(err => {
+  document.getElementById("status").textContent =
+    "could not load conspicillum-corpora.json \u2014 run audio/build-corpora.py (" + err.message + ")";
+});
 </script>
 </body>
 </html>
