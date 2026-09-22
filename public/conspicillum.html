@@ -1,0 +1,393 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Conspicillum — pump</title>
+<style>
+  :root {
+    --ink:#111; --mute:#767676; --line:#e2e2e2; --panel:#fff; --bg:#fafafa;
+    --accent:#b4331a; --accent-soft:#f6e8e4; --grid:16px;
+  }
+  * { box-sizing:border-box; }
+  html,body { margin:0; background:var(--bg); color:var(--ink);
+    font:13px/1.45 -apple-system,BlinkMacSystemFont,"Helvetica Neue",Arial,sans-serif; }
+  body { padding:28px 32px 96px; }
+
+  h1 { font-size:20px; font-weight:600; letter-spacing:-0.01em; margin:0; }
+  .sub { color:var(--mute); font-size:12px; margin:4px 0 0; }
+  header { display:flex; align-items:baseline; gap:16px; flex-wrap:wrap;
+    border-bottom:1px solid var(--line); padding-bottom:14px; margin-bottom:24px; }
+  header .spacer { flex:1; }
+
+  .dot { width:8px; height:8px; border-radius:50%; background:#ccc;
+    display:inline-block; margin-right:6px; vertical-align:middle; }
+  .dot.on { background:#2e7d32; } .dot.err { background:var(--accent); }
+  #wsline { font-size:12px; color:var(--mute); }
+
+  .cols { display:grid; grid-template-columns:repeat(auto-fit,minmax(272px,1fr));
+    gap:20px; align-items:start; }
+  .panel { background:var(--panel); border:1px solid var(--line); padding:16px 18px 18px; }
+  .panel > h2 { font-size:11px; font-weight:700; text-transform:uppercase;
+    letter-spacing:0.09em; color:var(--mute); margin:0 0 3px; }
+  .panel > .why { font-size:11px; color:var(--mute); margin:0 0 14px;
+    padding-bottom:10px; border-bottom:1px solid var(--line); }
+
+  .row { display:grid; grid-template-columns:78px 1fr 52px; align-items:center;
+    gap:10px; margin-bottom:9px; }
+  .row label { font-size:11px; color:var(--mute); }
+  .row output { font-variant-numeric:tabular-nums; text-align:right; font-size:12px; }
+  input[type=range] { width:100%; accent-color:var(--accent); }
+  select, input[type=number], input[type=text] { font:inherit; padding:4px 6px;
+    border:1px solid var(--line); background:#fff; color:var(--ink); width:100%; }
+  .full { display:block; width:100%; margin-bottom:10px; }
+  .full > span { display:block; font-size:11px; color:var(--mute); margin-bottom:4px; }
+
+  .samples { max-height:250px; overflow:auto; border:1px solid var(--line); }
+  .samp { display:grid; grid-template-columns:30px 1fr auto; gap:8px; padding:5px 8px;
+    cursor:pointer; border-bottom:1px solid #f0f0f0; font-size:12px; }
+  .samp:last-child { border-bottom:0; }
+  .samp:hover { background:#f6f6f6; }
+  .samp.sel { background:var(--accent-soft); }
+  .samp .n { color:var(--mute); font-variant-numeric:tabular-nums; }
+  .samp .chord { font-weight:600; }
+  .samp .meta { color:var(--mute); font-variant-numeric:tabular-nums; font-size:11px; }
+
+  .rule { display:grid; grid-template-columns:1fr 46px 46px 1fr 60px 24px;
+    gap:6px; align-items:center; margin-bottom:7px; }
+  .rule select, .rule input { padding:3px 5px; font-size:12px; }
+  .rule .kill { border:1px solid var(--line); background:#fff; cursor:pointer;
+    color:var(--mute); padding:3px 0; }
+  .hint { font-size:11px; color:var(--mute); margin-top:10px; }
+
+  button.go { font:inherit; font-weight:600; padding:9px 22px; cursor:pointer;
+    border:1px solid var(--ink); background:var(--ink); color:#fff; }
+  button.alt { border:1px solid var(--line); background:#fff; color:var(--ink);
+    font:inherit; padding:9px 18px; cursor:pointer; }
+  button:disabled { opacity:.4; cursor:default; }
+
+  footer { position:fixed; left:0; right:0; bottom:0; background:#fff;
+    border-top:1px solid var(--line); padding:12px 32px;
+    display:flex; gap:12px; align-items:center; }
+  footer .status { color:var(--mute); font-size:12px; flex:1; }
+
+  details { margin-top:20px; }
+  summary { cursor:pointer; font-size:11px; text-transform:uppercase;
+    letter-spacing:0.09em; color:var(--mute); font-weight:700; }
+  pre { background:#fff; border:1px solid var(--line); padding:12px;
+    overflow:auto; font-size:11px; line-height:1.4; max-height:300px; }
+  svg { display:block; width:100%; height:38px; margin:2px 0 6px; }
+</style>
+</head>
+<body>
+
+<header>
+  <div>
+    <h1>Conspicillum</h1>
+    <p class="sub">A pump, not the surface. Every parameter the engine takes, as a form.</p>
+  </div>
+  <div class="spacer"></div>
+  <div id="wsline"><span class="dot" id="wsdot"></span><span id="wstext">connecting…</span></div>
+</header>
+
+<div class="cols">
+
+  <section class="panel">
+    <h2>Source</h2>
+    <p class="why">What the grains are cut from. <b>Whole corpus</b> is the
+      Borderlands move — every grain re-picks, so one cloud spans many samples.</p>
+    <label class="full"><span>Quadrat set</span><select id="set"></select></label>
+    <label class="full" style="display:flex;gap:7px;align-items:center;margin-bottom:12px">
+      <input type="checkbox" id="whole" style="width:auto">
+      <span style="margin:0">use the whole corpus, not one sample</span>
+    </label>
+    <div class="samples" id="samples"></div>
+    <p class="hint" id="srcnote"></p>
+  </section>
+
+  <section class="panel">
+    <h2>Grain</h2>
+    <p class="why">Where in the source each grain is taken, and how long it is.
+      <b>spray</b> randomises the position per grain — 0 is a fixed read head.</p>
+    <div class="row"><label>sustain</label><input type="range" id="sustain" min="0.01" max="0.6" step="0.005" value="0.12"><output id="o_sustain"></output></div>
+    <div class="row"><label>position</label><input type="range" id="position" min="0" max="1" step="0.005" value="0.35"><output id="o_position"></output></div>
+    <div class="row"><label>spray</label><input type="range" id="spray" min="0" max="1" step="0.005" value="0.5"><output id="o_spray"></output></div>
+    <p class="hint">A grain's window must be as long in the source as
+      <i>sustain</i> is in time, or it is transposed. The engine handles that.</p>
+  </section>
+
+  <section class="panel">
+    <h2>Onsets</h2>
+    <p class="why">A cloud is a <i>pattern</i>: these are cycle positions, and
+      each one is a grain with an ordinal. Density is free to ~12,800/sec.</p>
+    <label class="full"><span>shape</span>
+      <select id="onmode">
+        <option value="even">even — n per cycle</option>
+        <option value="euclid">euclid(k, n)</option>
+        <option value="manual">manual list</option>
+      </select></label>
+    <div class="row" id="r_count"><label>grains</label><input type="range" id="count" min="1" max="64" step="1" value="16"><output id="o_count"></output></div>
+    <div class="row" id="r_k" hidden><label>k (hits)</label><input type="range" id="ek" min="1" max="32" step="1" value="5"><output id="o_ek"></output></div>
+    <div class="row" id="r_n" hidden><label>n (steps)</label><input type="range" id="en" min="2" max="32" step="1" value="16"><output id="o_en"></output></div>
+    <label class="full" id="r_man" hidden><span>positions, 0..1, comma separated</span>
+      <input type="text" id="manual" value="0, 0.25, 0.5, 0.75"></label>
+    <svg id="cyc" viewBox="0 0 400 38" preserveAspectRatio="none"></svg>
+    <p class="hint" id="onnote"></p>
+  </section>
+
+  <section class="panel">
+    <h2>Voice</h2>
+    <p class="why">The base values every grain gets, before rules.
+      <b>accelerate</b> is a ratio: end speed = speed × (1 + accelerate).</p>
+    <div class="row"><label>speed</label><input type="range" id="speed" min="-2" max="3" step="0.01" value="1"><output id="o_speed"></output></div>
+    <div class="row"><label>gain</label><input type="range" id="gain" min="0" max="1.5" step="0.01" value="0.85"><output id="o_gain"></output></div>
+    <div class="row"><label>pan</label><input type="range" id="pan" min="0" max="1" step="0.01" value="0.5"><output id="o_pan"></output></div>
+    <div class="row"><label>accelerate</label><input type="range" id="accel" min="-1" max="2" step="0.01" value="0"><output id="o_accel"></output></div>
+    <div class="row"><label>seed</label><input type="number" id="seed" value="12345" style="grid-column:2/4"></div>
+  </section>
+
+  <section class="panel" style="grid-column:1/-1">
+    <h2>Rules — the part no granulator has</h2>
+    <p class="why">A grain is an event, so it has an ordinal, so you can count
+      it. <i>Every 3 0</i> costs one Int and is unavailable to Arbhar, Morphagene
+      and Borderlands alike: there, a grain has no identity to count.</p>
+    <div id="rules"></div>
+    <button class="alt" id="addrule" style="padding:5px 12px;font-size:12px">+ rule</button>
+    <p class="hint">op <b>length</b> scales that grain's sustain; <b>speed</b> −1
+      is the reversed grain. <i>chance</i> re-rolls per grain from the cycle seed,
+      so a cycle is reproducible and cycle 400 is directly addressable.</p>
+  </section>
+
+</div>
+
+<details>
+  <summary>Scene, as it goes on the wire</summary>
+  <pre id="json"></pre>
+</details>
+
+<footer>
+  <button class="go" id="play">Play</button>
+  <button class="alt" id="stop">Stop</button>
+  <span class="status" id="status">—</span>
+</footer>
+
+<script>
+// ── the wire ────────────────────────────────────────────────────────────────
+// purerl-tidal's WebSocket takes prefixed text frames. The whole cloud is one
+// push: reef_conspicillum_voice computes a cycle at a time from the seed, so
+// there is nothing to stream.
+const WS_URL = "ws://" + (location.hostname || "localhost") + ":3012/ws";
+let ws = null, wsReady = false;
+
+function connect() {
+  ws = new WebSocket(WS_URL);
+  ws.onopen  = () => { wsReady = true;  mark("on", "connected " + WS_URL); };
+  ws.onclose = () => { wsReady = false; mark("", "disconnected — retrying"); setTimeout(connect, 2000); };
+  ws.onerror = () => { wsReady = false; mark("err", "cannot reach " + WS_URL); };
+  ws.onmessage = (e) => { document.getElementById("status").textContent = e.data; };
+}
+function mark(cls, text) {
+  document.getElementById("wsdot").className = "dot " + cls;
+  document.getElementById("wstext").textContent = text;
+}
+function send(frame) {
+  if (!wsReady) { document.getElementById("status").textContent = "not connected"; return; }
+  ws.send(frame);
+}
+
+// ── corpora ─────────────────────────────────────────────────────────────────
+let SETS = [], corpus = null, chosen = 0;
+
+const PCN = ["C","C#","D","D#","E","F","F#","G","G#","A","A#","B"];
+// Enough of a labeller to make choosing a chord hit a musical act rather than
+// picking a row number. Deliberately shallow: it names the common shapes and
+// says "…" for the rest instead of guessing.
+const SHAPES = [
+  [[0,4,7],""], [[0,3,7],"m"], [[0,3,6],"dim"], [[0,4,8],"aug"],
+  [[0,4,7,11],"maj7"], [[0,4,7,10],"7"], [[0,3,7,10],"m7"],
+  [[0,3,7,11],"m(maj7)"], [[0,3,6,10],"m7b5"], [[0,3,6,9],"dim7"],
+  [[0,4,7,9],"6"], [[0,3,7,9],"m6"], [[0,5,7],"sus4"], [[0,2,7],"sus2"],
+];
+function label(notes) {
+  if (!notes || !notes.length) return "—";
+  const pcs = [...new Set(notes.map(n => ((n % 12) + 12) % 12))].sort((a,b)=>a-b);
+  const bass = ((Math.min(...notes) % 12) + 12) % 12;
+  for (const root of pcs) {
+    const iv = pcs.map(p => (p - root + 12) % 12).sort((a,b)=>a-b).join(",");
+    for (const [shape, name] of SHAPES) {
+      if (shape.join(",") === iv)
+        return PCN[root] + name + (bass !== root ? "/" + PCN[bass] : "");
+    }
+  }
+  return pcs.map(p => PCN[p]).join(" ") + " …";
+}
+
+async function load() {
+  const r = await fetch("conspicillum-corpora.json");
+  SETS = (await r.json()).sets;
+  const sel = document.getElementById("set");
+  sel.innerHTML = SETS.map((s,i) =>
+    `<option value="${i}">${s.name} — ${s.samples.length}</option>`).join("");
+  // anchor-car is the working set; open on it rather than on whatever sorts first.
+  const pref = SETS.findIndex(s => s.name === "chord-hits-0916-185508");
+  sel.value = String(pref >= 0 ? pref : 0);
+  sel.onchange = () => { pickSet(+sel.value); render(); };
+  pickSet(+sel.value);
+  render();
+}
+
+function pickSet(i) {
+  corpus = SETS[i];
+  chosen = 0;
+  const box = document.getElementById("samples");
+  box.innerHTML = corpus.samples.map(s => `
+    <div class="samp" data-n="${s.index}">
+      <span class="n">${s.index}</span>
+      <span class="chord">${label(s.notes)}</span>
+      <span class="meta">${s.secs.toFixed(1)}s · zcr ${Math.round(s.zcr)}</span>
+    </div>`).join("");
+  box.querySelectorAll(".samp").forEach(el =>
+    el.onclick = () => { chosen = +el.dataset.n; render(); });
+  const withNotes = corpus.samples.filter(s => s.notes.length).length;
+  const dim = corpus.samples[0].cell.length;
+  const params = corpus.samples[0].params.map(p => p.name);
+  document.getElementById("srcnote").textContent =
+    `${withNotes}/${corpus.samples.length} carry recorded notes · cell dim ${dim}`
+    + (params.length ? ` · params ${params.join(", ")}` : " · no named params");
+}
+
+// ── onsets ──────────────────────────────────────────────────────────────────
+function euclid(k, n) {
+  // Bjorklund by the cheap route: the standard "spread k over n" rounding.
+  // Good enough for a pump; if euclid earns a place in the real surface it
+  // should come from reef, where the engines already live.
+  const out = [];
+  for (let i = 0; i < n; i++) if (Math.floor(i * k / n) !== Math.floor((i - 1) * k / n)) out.push(i / n);
+  return out;
+}
+function onsets() {
+  const mode = document.getElementById("onmode").value;
+  if (mode === "even") {
+    const c = +document.getElementById("count").value;
+    return Array.from({length: c}, (_, i) => i / c);
+  }
+  if (mode === "euclid") {
+    return euclid(+document.getElementById("ek").value, +document.getElementById("en").value);
+  }
+  return document.getElementById("manual").value.split(",")
+    .map(s => parseFloat(s.trim())).filter(x => !isNaN(x) && x >= 0 && x < 1)
+    .sort((a,b) => a-b);
+}
+
+// ── rules ───────────────────────────────────────────────────────────────────
+const OPS = ["speed","gain","length","pan","accelerate"];
+let rules = [];
+function addRule(r) {
+  rules.push(r || { when:1, everyN:3, everyK:0, chance:0.5, op:0, amount:-1 });
+  drawRules(); render();
+}
+function drawRules() {
+  const box = document.getElementById("rules");
+  box.innerHTML = rules.map((r, i) => `
+    <div class="rule" data-i="${i}">
+      <select class="w">
+        <option value="0"${r.when===0?" selected":""}>always</option>
+        <option value="1"${r.when===1?" selected":""}>every</option>
+        <option value="2"${r.when===2?" selected":""}>chance</option>
+      </select>
+      <input class="n" type="number" value="${r.everyN}" ${r.when!==1?"disabled":""} title="n">
+      <input class="k" type="number" value="${r.everyK}" ${r.when!==1?"disabled":""} title="k">
+      <input class="c" type="number" step="0.05" min="0" max="1" value="${r.chance}" ${r.when!==2?"disabled":""} title="probability">
+      <select class="op">${OPS.map((o,j)=>`<option value="${j}"${r.op===j?" selected":""}>${o}</option>`).join("")}</select>
+      <input class="a" type="number" step="0.05" value="${r.amount}" title="amount">
+      <button class="kill" title="remove">×</button>
+    </div>`).join("");
+  box.querySelectorAll(".rule").forEach(el => {
+    const i = +el.dataset.i;
+    const read = () => {
+      rules[i] = {
+        when: +el.querySelector(".w").value,
+        everyN: +el.querySelector(".n").value,
+        everyK: +el.querySelector(".k").value,
+        chance: +el.querySelector(".c").value,
+        op: +el.querySelector(".op").value,
+        amount: +el.querySelector(".a").value,
+      };
+      drawRules(); render();
+    };
+    el.querySelectorAll("select,input").forEach(x => x.onchange = read);
+    el.querySelector(".kill").onclick = () => { rules.splice(i,1); drawRules(); render(); };
+  });
+}
+
+// ── the scene ───────────────────────────────────────────────────────────────
+function scene() {
+  const whole = document.getElementById("whole").checked;
+  // One sample is a corpus of one — and it keeps its ORIGINAL index, because
+  // index IS the SuperDirt `n`. Renumbering would play different audio than
+  // it named.
+  const samples = whole ? corpus.samples
+                        : corpus.samples.filter(s => s.index === chosen);
+  return {
+    corpus: { name: corpus.name, samples },
+    query: { clauses: [], weighting: [], harmonic: [] },
+    spec: {
+      onsets: onsets(),
+      cloud: {
+        sustain: +document.getElementById("sustain").value,
+        position: +document.getElementById("position").value,
+        spray: +document.getElementById("spray").value,
+      },
+      rules,
+      speed: +document.getElementById("speed").value,
+      gain: +document.getElementById("gain").value,
+      pan: +document.getElementById("pan").value,
+      accelerate: +document.getElementById("accel").value,
+    },
+    seed: +document.getElementById("seed").value,
+  };
+}
+
+// ── render ──────────────────────────────────────────────────────────────────
+function render() {
+  for (const id of ["sustain","position","spray","speed","gain","pan","accel","count","ek","en"]) {
+    const el = document.getElementById(id), out = document.getElementById("o_" + id);
+    if (el && out) out.textContent = (+el.value).toFixed(id === "count" || id === "ek" || id === "en" ? 0 : 2);
+  }
+  const mode = document.getElementById("onmode").value;
+  document.getElementById("r_count").hidden = mode !== "even";
+  document.getElementById("r_k").hidden = mode !== "euclid";
+  document.getElementById("r_n").hidden = mode !== "euclid";
+  document.getElementById("r_man").hidden = mode !== "manual";
+
+  document.querySelectorAll(".samp").forEach(el =>
+    el.classList.toggle("sel", +el.dataset.n === chosen));
+
+  const os = onsets(), sus = +document.getElementById("sustain").value;
+  document.getElementById("cyc").innerHTML =
+    `<rect x="0" y="0" width="400" height="38" fill="#fff" stroke="#e2e2e2"/>`
+    + os.map(p => `<rect x="${(p*400).toFixed(1)}" y="8" width="${Math.max(1.2, sus*400).toFixed(1)}" height="22" fill="#b4331a" opacity="0.5"/>`).join("")
+    + os.map(p => `<line x1="${(p*400).toFixed(1)}" y1="4" x2="${(p*400).toFixed(1)}" y2="34" stroke="#111" stroke-width="1"/>`).join("");
+  document.getElementById("onnote").textContent =
+    `${os.length} grains/cycle · at 120 bpm that is ${(os.length/2).toFixed(1)}/sec`
+    + ` · ${(os.length*sus).toFixed(1)} concurrent`;
+
+  document.getElementById("json").textContent = JSON.stringify(scene(), null, 1);
+}
+
+// ── wiring ──────────────────────────────────────────────────────────────────
+document.querySelectorAll("input,select").forEach(el => {
+  el.addEventListener("input", render);
+  el.addEventListener("change", render);
+});
+document.getElementById("addrule").onclick = () => addRule();
+document.getElementById("play").onclick = () =>
+  send("conspicillum-scene " + JSON.stringify(scene()));
+document.getElementById("stop").onclick = () => send("conspicillum-stop");
+
+addRule({ when:1, everyN:3, everyK:0, chance:0.5, op:0, amount:-1 });
+load().then(render);
+connect();
+</script>
+</body>
+</html>
