@@ -44,7 +44,7 @@
   .full > span { display:block; font-size:11px; color:var(--mute); margin-bottom:4px; }
 
   .samples { max-height:250px; overflow:auto; border:1px solid var(--line); }
-  .samp { display:grid; grid-template-columns:30px 1fr auto; gap:8px; padding:5px 8px;
+  .samp { display:grid; grid-template-columns:30px 1fr auto 34px; gap:8px; padding:5px 8px;
     cursor:pointer; border-bottom:1px solid #f0f0f0; font-size:12px; }
   .samp:last-child { border-bottom:0; }
   .samp:hover { background:#f6f6f6; }
@@ -77,6 +77,23 @@
   pre { background:#fff; border:1px solid var(--line); padding:12px;
     overflow:auto; font-size:11px; line-height:1.4; max-height:300px; }
   svg { display:block; width:100%; height:38px; margin:2px 0 6px; }
+
+  .presetbar { display:flex; flex-wrap:wrap; gap:7px; }
+  .preset { border:1px solid var(--line); background:#fff; cursor:pointer;
+    font:inherit; font-size:12px; padding:6px 11px; text-align:left; }
+  .preset:hover { border-color:var(--ink); }
+  .preset.on { background:var(--ink); color:#fff; border-color:var(--ink); }
+  .preset .tag { font-size:10px; text-transform:uppercase; letter-spacing:0.07em;
+    color:var(--accent); margin-left:6px; font-weight:700; }
+  .preset.on .tag { color:#ffb9a6; }
+
+  /* A sample's fit against the chord currently wanted. Display only -- the
+     engine does the real selection; this is the same arithmetic ported so the
+     page can SHOW why a cloud is thin. */
+  .samp .fit { font-variant-numeric:tabular-nums; font-size:11px; width:34px;
+    text-align:right; }
+  .samp.out { opacity:0.33; }
+  .cycle { font-variant-numeric:tabular-nums; }
 </style>
 </head>
 <body>
@@ -89,6 +106,13 @@
   <div class="spacer"></div>
   <div id="wsline"><span class="dot" id="wsdot"></span><span id="wstext">connecting…</span></div>
 </header>
+
+<section class="panel" style="margin-bottom:20px">
+  <h2>Presets</h2>
+  <p class="why">Mash these. The ones marked <b>prog</b> advance a chord per
+    cycle, so the corpus is re-ranked under your hands while it plays.</p>
+  <div id="presets" class="presetbar"></div>
+</section>
 
 <div class="cols">
 
@@ -103,6 +127,7 @@
     </label>
     <div class="samples" id="samples"></div>
     <p class="hint" id="srcnote"></p>
+    <p class="hint" id="harmnote"></p>
   </section>
 
   <section class="panel">
@@ -185,10 +210,21 @@ let ws = null, wsReady = false;
 
 function connect() {
   ws = new WebSocket(WS_URL);
-  ws.onopen  = () => { wsReady = true;  mark("on", "connected " + WS_URL); };
+  ws.onopen  = () => {
+    wsReady = true; mark("on", "connected " + WS_URL);
+    ws.send("clock-subscribe");   // opt-in; Calypso on the same port is unaffected
+  };
   ws.onclose = () => { wsReady = false; mark("", "disconnected — retrying"); setTimeout(connect, 2000); };
   ws.onerror = () => { wsReady = false; mark("err", "cannot reach " + WS_URL); };
-  ws.onmessage = (e) => { document.getElementById("status").textContent = e.data; };
+  ws.onmessage = (e) => {
+    // `anchor <unixMicros> <beat> <tempo> <quantum>` -- the rig's real cycle.
+    if (typeof e.data === "string" && e.data.startsWith("anchor ")) {
+      const [, u, b, t, q] = e.data.split(/\s+/);
+      anchor = { unixUs: +u, beat: +b, tempo: +t, quantum: +q, at: Date.now() };
+      return;
+    }
+    document.getElementById("status").textContent = e.data;
+  };
 }
 function mark(cls, text) {
   document.getElementById("wsdot").className = "dot " + cls;
@@ -226,6 +262,74 @@ function label(notes) {
   return pcs.map(p => PCN[p]).join(" ") + " …";
 }
 
+// ── chords ──────────────────────────────────────────────────────────────────
+// Named for what these two sets ACTUALLY contain. They sit around E / B / F#
+// and are full of minor-majors, augmenteds and half-diminisheds, so a
+// common-practice ii-V-i in C would return nothing -- correctly, and
+// uselessly. Every progression below was scored against the material before
+// it was written down; none of them goes empty.
+const T = (pcs, root, bass) => ({ pcs, root, bass });
+const CHORDS = {
+  "Em(maj7)": T([4,7,11,3],4,4),   "Bm":        T([11,2,6],11,11),
+  "F#m7b5":   T([6,9,0,4],6,6),    "Em7b5":     T([4,7,10,2],4,4),
+  "F#m":      T([6,9,1],6,6),      "Bdim":      T([11,2,5],11,11),
+  "Bm(maj7)": T([11,2,6,10],11,11),"Daug":      T([2,6,10],2,6),
+  "E":        T([4,8,11],4,4),     "B7":        T([11,3,6,9],11,11),
+  "C#dim":    T([1,4,7],1,1),      "F#dim":     T([6,9,0],6,6),
+  "F#m(maj7)":T([6,9,1,5],6,6),    "D":         T([2,6,9],2,2),
+  "D#m":      T([3,6,10],3,3),     "G":         T([7,11,2],7,7),
+};
+
+// Reef.Conspicillum.Harmonic.fit, ported for DISPLAY ONLY. The engine does the
+// real selection from the PureScript; this exists so the page can say WHY a
+// cloud is thin instead of just being thin. If the two ever disagree, the
+// PureScript is right and this is the bug.
+const IW = {0:1,3:1,4:1,6:0.9,8:0.8,10:0.7,11:0.7,7:0.25};
+const iw = (n) => IW[((n % 12) + 12) % 12] ?? 0.5;
+const fcost = (d) => d === 1 ? 1.0 : d === 2 ? 0.35 : 0.6;
+function fitOf(t, notes) {
+  if (!notes || !notes.length || !t) return 0;
+  const samp = [...new Set(notes.map(n => ((n % 12) + 12) % 12))];
+  const wanted = t.pcs.reduce((a,pc) => a + iw(pc - t.root), 0);
+  const got = t.pcs.reduce((a,pc) => a + (samp.includes(pc) ? iw(pc - t.root) : 0), 0);
+  const cov = wanted > 0 ? got / wanted : 0;
+  const dist = (pc) => Math.min(...t.pcs.map(q => Math.min((pc-q+12)%12, (q-pc+12)%12)));
+  const frn = samp.reduce((a,pc) => a + (t.pcs.includes(pc) ? 0 : fcost(dist(pc))), 0);
+  const room = t.pcs.length;
+  const ratio = frn <= 0 ? 1 : room / (room + frn);
+  const bpc = ((Math.min(...notes) % 12) + 12) % 12;
+  const bb = bpc === t.bass ? 0.10 : t.pcs.includes(bpc) ? 0.04 : 0;
+  return Math.max(0, Math.min(1, cov * ratio * ratio + bb));
+}
+
+// ── the query, and the progression that drives it ───────────────────────────
+// A scene carries ONE harmonic target. A progression is therefore not a scene
+// property -- it is the surface pushing a new scene per cycle, which the engine
+// swaps on the boundary. That is the Vetula join the design doc left open, and
+// it turns out to need no engine change at all.
+let Q = { clauses: [], weighting: null, harmonic: null };
+let prog = [], progAt = -1;
+
+function targetNow() {
+  if (prog.length) return CHORDS[prog[((currentCycle() % prog.length) + prog.length) % prog.length]];
+  return Q.harmonic ? Q.harmonic.target : null;
+}
+
+// ── the clock ───────────────────────────────────────────────────────────────
+// `clock-subscribe` gets `anchor <unixMicros> <beat> <tempo> <quantum>` from
+// link-spike, and beat/4 is the cycle the voice is computing -- so a chord
+// change lands on the same boundary the engine swaps on. With no anchor the
+// page free-runs at 120bpm and says so, because a progression drifting against
+// a rig that IS clocked would be the least explicable fault here.
+let anchor = null, t0 = Date.now();
+function currentCycle() {
+  if (anchor) {
+    const beat = anchor.beat + (Date.now()*1000 - anchor.unixUs) * anchor.tempo / 60e6;
+    return Math.floor(beat / 4);
+  }
+  return Math.floor((Date.now() - t0) / 2000);
+}
+
 async function load() {
   const r = await fetch("conspicillum-corpora.json");
   SETS = (await r.json()).sets;
@@ -249,6 +353,7 @@ function pickSet(i) {
       <span class="n">${s.index}</span>
       <span class="chord">${label(s.notes)}</span>
       <span class="meta">${s.secs.toFixed(1)}s · zcr ${Math.round(s.zcr)}</span>
+      <span class="fit"></span>
     </div>`).join("");
   box.querySelectorAll(".samp").forEach(el =>
     el.onclick = () => { chosen = +el.dataset.n; render(); });
@@ -334,7 +439,13 @@ function scene() {
                         : corpus.samples.filter(s => s.index === chosen);
   return {
     corpus: { name: corpus.name, samples },
-    query: { clauses: [], weighting: [], harmonic: [] },
+    query: {
+      clauses: Q.clauses,
+      weighting: Q.weighting ? [Q.weighting] : [],
+      // At most one, per the wire contract -- and the progression, when one is
+      // running, overrides whatever single target the preset carried.
+      harmonic: harmonicNow(),
+    },
     spec: {
       onsets: onsets(),
       cloud: {
@@ -352,6 +463,13 @@ function scene() {
   };
 }
 
+function harmonicNow() {
+  const t = targetNow();
+  if (!t) return [];
+  const h = Q.harmonic || { minFit: 0.5, strength: 0.9 };
+  return [{ target: t, minFit: h.minFit, strength: h.strength }];
+}
+
 // ── render ──────────────────────────────────────────────────────────────────
 function render() {
   for (const id of ["sustain","position","spray","speed","gain","pan","accel","count","ek","en"]) {
@@ -366,6 +484,24 @@ function render() {
 
   document.querySelectorAll(".samp").forEach(el =>
     el.classList.toggle("sel", +el.dataset.n === chosen));
+
+  // The honest-empty problem, answered the cheap way: show every sample's fit
+  // and dim the ones this chord excludes, so a thin cloud reads as
+  // "harmonically starved" rather than "broken".
+  const tgt = targetNow(), minFit = (Q.harmonic || {}).minFit ?? 0.5;
+  let surv = 0;
+  if (corpus) document.querySelectorAll(".samp").forEach(el => {
+    const g = corpus.samples.find(x => x.index === +el.dataset.n);
+    const f = tgt ? fitOf(tgt, g.notes) : null;
+    if (f !== null && f >= minFit) surv++;
+    el.querySelector(".fit").textContent = f === null ? "" : f.toFixed(2);
+    el.classList.toggle("out", f !== null && f < minFit);
+  });
+  const nameOf = (t) => Object.keys(CHORDS).find(k => CHORDS[k] === t) || "?";
+  document.getElementById("harmnote").textContent = !tgt ? "no harmonic constraint"
+    : (prog.length ? `prog ${prog.join(" \u2192 ")} \u2014 now ` : "chord ")
+      + `${nameOf(tgt)} \u00b7 ${surv} of ${corpus ? corpus.samples.length : 0} admitted`
+      + (surv === 0 ? " \u2014 silent, and correctly so" : "");
 
   const os = onsets(), sus = +document.getElementById("sustain").value;
   document.getElementById("cyc").innerHTML =
@@ -409,6 +545,155 @@ function livePush() {
   pushTimer = setTimeout(push, PUSH_MS);
 }
 
+// ── presets ─────────────────────────────────────────────────────────────────
+// Each is a whole position, not a delta: set, material, grain, onsets, voice,
+// rules and query, so mashing one never leaves a stray value from the last.
+// `prog` presets were scored against the material first -- every chord in every
+// progression below has at least one sample that answers it.
+const LC = "chord-hits-0915-232247";   // leaf-cloud, 24 hits, E / F# major-ish
+const AC = "chord-hits-0916-185508";   // anchor-car, 15 hits, E / B minor-ish
+const DR = "drum-hits-0912-121546";    // the 4x12 transect, 48 cells
+
+const PRESETS = [
+{ name:"Single hit", blurb:"one sample, fixed read head \u2014 the Morphagene gesture",
+  set:AC, n:0, whole:false, cloud:{sustain:0.14,position:0.35,spray:0},
+  on:{mode:"even",count:8}, v:{speed:1,gain:0.9,pan:0.5,accel:0}, rules:[], q:{} },
+
+{ name:"Read head walk", blurb:"long grains, no spray \u2014 drag position",
+  set:AC, n:0, whole:false, cloud:{sustain:0.4,position:0.1,spray:0.02},
+  on:{mode:"even",count:4}, v:{speed:1,gain:0.95,pan:0.5,accel:0}, rules:[], q:{} },
+
+{ name:"Cloud", blurb:"whole corpus, full spray \u2014 the Borderlands move",
+  set:LC, n:0, whole:true, cloud:{sustain:0.07,position:0.5,spray:1},
+  on:{mode:"even",count:32}, v:{speed:1,gain:0.55,pan:0.5,accel:0}, rules:[], q:{} },
+
+{ name:"Every third backwards", blurb:"the figure no granulator can express",
+  set:AC, n:0, whole:true, cloud:{sustain:0.12,position:0.4,spray:0.6},
+  on:{mode:"even",count:16}, v:{speed:1,gain:0.8,pan:0.5,accel:0},
+  rules:[{when:1,everyN:3,everyK:0,chance:0.5,op:0,amount:-1}], q:{} },
+
+{ name:"Stutter cascade", blurb:"euclid 7/16, every other grain clipped short",
+  set:LC, n:0, whole:true, cloud:{sustain:0.05,position:0.45,spray:0.35},
+  on:{mode:"euclid",k:7,n:16}, v:{speed:1,gain:0.9,pan:0.5,accel:0.4},
+  rules:[{when:1,everyN:2,everyK:0,chance:0.5,op:2,amount:0.35},
+         {when:1,everyN:4,everyK:1,chance:0.5,op:0,amount:2}], q:{} },
+
+{ name:"Chance rain", blurb:"re-rolled from the cycle seed \u2014 never twice the same",
+  set:LC, n:0, whole:true, cloud:{sustain:0.06,position:0.5,spray:0.9},
+  on:{mode:"even",count:24}, v:{speed:1,gain:0.6,pan:0.5,accel:0},
+  rules:[{when:2,everyN:0,everyK:0,chance:0.35,op:3,amount:0.95},
+         {when:2,everyN:0,everyK:0,chance:0.25,op:0,amount:-1},
+         {when:2,everyN:0,everyK:0,chance:0.2,op:1,amount:0.25}], q:{} },
+
+{ name:"Only the bright", blurb:"a hard cut on zcr \u2014 filter, not weighting",
+  set:LC, n:0, whole:true, cloud:{sustain:0.1,position:0.4,spray:0.7},
+  on:{mode:"even",count:20}, v:{speed:1,gain:0.75,pan:0.5,accel:0}, rules:[],
+  q:{ clauses:[{axis:{kind:2,at:0,param:""},cmp:2,value:900}] } },
+
+{ name:"Mostly the long ones", blurb:"a soft lean on decay \u2014 weighting, not filter",
+  set:LC, n:0, whole:true, cloud:{sustain:0.18,position:0.3,spray:0.8},
+  on:{mode:"even",count:12}, v:{speed:1,gain:0.8,pan:0.5,accel:0}, rules:[],
+  q:{ weighting:{axis:{kind:4,at:0,param:""},toward:0,strength:0.9} } },
+
+{ name:"Deep drone", blurb:"quarter speed, half-second grains",
+  set:AC, n:14, whole:false, cloud:{sustain:0.5,position:0.2,spray:0.15},
+  on:{mode:"even",count:4}, v:{speed:0.25,gain:1.0,pan:0.5,accel:0}, rules:[], q:{} },
+
+{ name:"Transect sweep", blurb:"the 4\u00d712 drum grid, straight through",
+  set:DR, n:0, whole:true, cloud:{sustain:0.09,position:0.15,spray:0.25},
+  on:{mode:"euclid",k:9,n:16}, v:{speed:1,gain:0.7,pan:0.5,accel:0},
+  rules:[{when:1,everyN:4,everyK:2,chance:0.5,op:0,amount:-1}], q:{} },
+
+// ── the progressions ──────────────────────────────────────────────────────
+{ name:"ii \u2013 V \u2013 I in E", tag:"prog", blurb:"leaf-cloud answers all three exactly",
+  set:LC, n:0, whole:true, cloud:{sustain:0.11,position:0.4,spray:0.6},
+  on:{mode:"even",count:16}, v:{speed:1,gain:0.8,pan:0.5,accel:0}, rules:[],
+  q:{ harmonic:{minFit:0.5,strength:0.95} },
+  prog:["F#m(maj7)","B7","E","E"] },
+
+{ name:"Chromatic descent", tag:"prog", blurb:"Bm \u2192 Bm(maj7) \u2192 Bdim \u2192 F#m",
+  set:AC, n:0, whole:true, cloud:{sustain:0.15,position:0.35,spray:0.5},
+  on:{mode:"even",count:12}, v:{speed:1,gain:0.85,pan:0.5,accel:0}, rules:[],
+  q:{ harmonic:{minFit:0.5,strength:0.95} },
+  prog:["Bm","Bm(maj7)","Bdim","F#m"] },
+
+{ name:"Diminished drift", tag:"prog", blurb:"chord per cycle, chance on top",
+  set:LC, n:0, whole:true, cloud:{sustain:0.08,position:0.45,spray:0.85},
+  on:{mode:"euclid",k:11,n:16}, v:{speed:1,gain:0.7,pan:0.5,accel:0.15},
+  rules:[{when:2,everyN:0,everyK:0,chance:0.3,op:3,amount:0.9},
+         {when:1,everyN:5,everyK:0,chance:0.5,op:0,amount:-1}],
+  q:{ harmonic:{minFit:0.5,strength:0.95} },
+  prog:["C#dim","F#dim","D#m","B7"] },
+
+{ name:"Everything at once", tag:"prog", blurb:"progression + euclid + chance + reversal",
+  set:LC, n:0, whole:true, cloud:{sustain:0.06,position:0.5,spray:1},
+  on:{mode:"euclid",k:13,n:32}, v:{speed:1,gain:0.55,pan:0.5,accel:0.5},
+  rules:[{when:1,everyN:3,everyK:0,chance:0.5,op:0,amount:-1},
+         {when:2,everyN:0,everyK:0,chance:0.4,op:3,amount:0.95},
+         {when:1,everyN:7,everyK:2,chance:0.5,op:2,amount:0.3},
+         {when:2,everyN:0,everyK:0,chance:0.2,op:4,amount:1.5}],
+  q:{ harmonic:{minFit:0.45,strength:0.95} },
+  prog:["E","D","Bm","E","F#m(maj7)","B7","E","E"] },
+];
+
+function applyPreset(i) {
+  const P = PRESETS[i];
+  const sel = document.getElementById("set");
+  const at = [...sel.options].findIndex(o => o.text.startsWith(P.set));
+  if (at >= 0 && +sel.value !== at) { sel.value = String(at); pickSet(at); }
+  chosen = P.n;
+  document.getElementById("whole").checked = !!P.whole;
+
+  document.getElementById("sustain").value = P.cloud.sustain;
+  document.getElementById("position").value = P.cloud.position;
+  document.getElementById("spray").value = P.cloud.spray;
+
+  document.getElementById("onmode").value = P.on.mode;
+  if (P.on.mode === "even") document.getElementById("count").value = P.on.count;
+  if (P.on.mode === "euclid") {
+    document.getElementById("ek").value = P.on.k;
+    document.getElementById("en").value = P.on.n;
+  }
+
+  document.getElementById("speed").value = P.v.speed;
+  document.getElementById("gain").value  = P.v.gain;
+  document.getElementById("pan").value   = P.v.pan;
+  document.getElementById("accel").value = P.v.accel;
+
+  rules = JSON.parse(JSON.stringify(P.rules || []));
+  Q = { clauses: (P.q && P.q.clauses) || [],
+        weighting: (P.q && P.q.weighting) || null,
+        harmonic: (P.q && P.q.harmonic) ? { ...P.q.harmonic, target: null } : null };
+  prog = P.prog ? P.prog.slice() : [];
+  progAt = -1;
+
+  document.querySelectorAll(".preset").forEach((el, j) => el.classList.toggle("on", j === i));
+  drawRules();
+  render();
+  if (playing) push();           // a mash lands immediately, not on the debounce
+}
+
+function drawPresets() {
+  document.getElementById("presets").innerHTML = PRESETS.map((P, i) =>
+    `<button class="preset" data-i="${i}" title="${P.blurb}">${P.name}` +
+    (P.tag ? `<span class="tag">${P.tag}</span>` : "") + `</button>`).join("");
+  document.querySelectorAll(".preset").forEach(el =>
+    el.onclick = () => applyPreset(+el.dataset.i));
+}
+
+// ── the progression driver ──────────────────────────────────────────────────
+// One push per CHORD CHANGE, not per cycle: the engine only needs the scene
+// when the chord it carries is different, and a push it would compute the same
+// answer from is wasted work on both sides.
+setInterval(() => {
+  if (!playing || prog.length < 2) return;
+  const at = ((currentCycle() % prog.length) + prog.length) % prog.length;
+  if (at === progAt) return;
+  progAt = at;
+  push();
+  render();
+}, 80);
+
 document.getElementById("addrule").onclick = () => addRule();
 document.getElementById("play").onclick = () => { playing = true; push(); };
 document.getElementById("stop").onclick = () => {
@@ -416,6 +701,7 @@ document.getElementById("stop").onclick = () => {
 };
 
 connect();
+drawPresets();
 addRule({ when:1, everyN:3, everyK:0, chance:0.5, op:0, amount:-1 });
 load().then(render).catch(err => {
   document.getElementById("status").textContent =
