@@ -1,7 +1,7 @@
 # Conspicillum — the grain cloud as a pattern
 
 **Status:** Design sketch, 2026-09-22. The seventh Triggerfish instrument.
-**C0 and C1 are done** (2026-09-22); C2 onward unbuilt. C1's headline: density
+**C0, C1 and C2 are done** (2026-09-22); C3 onward unbuilt. C1's headline: density
 is not a constraint, and the caution below about measuring before drawing the
 surface has been discharged — see §C1.
 
@@ -508,9 +508,12 @@ drift is only ever visual, exactly as Sufflamen decided.
   Clean to 12,800 grains/sec (2.03 synths each; 3.06 with the envelope, still
   clean); breaks at ~25,600 on scsynth DSP CPU, not on nodes and not on
   sclang. Density is not a constraint — see §C1.
-- **C2 — the selector, in reef.** Corpus loading from `set.json`, a query
-  language over measured + intentional axes, deterministic grain choice from
-  a seed. Conformance-tested node↔BEAM. Headless.
+- **C2 — the selector, in reef. DONE 2026-09-22.**
+  `Reef.Conspicillum.Corpus` (filter, weight, seeded draw, grain-window
+  placement) and `Reef.Conspicillum.Protocol` (one-push scene, the three
+  closed ADTs projected to ints per the Vetula convention). Golden:
+  `conformance/conspicillum-golden.txt`, 64 draws, **node == erl
+  byte-identical**. See §C2.
 - **C3 — the cloud as a pattern.** Density from mini-notation; the combinators
   in §What this has. This is where it stops being a granular module.
 - **C4 — the surface.** Spots on near-black: the corpus as a scatter over two
@@ -518,6 +521,56 @@ drift is only ever visual, exactly as Sufflamen decided.
   The picture is the query — Hylograph thesis, applied to a sample corpus.
 - **C5 — harmonic grains.** `notes` + harmonia + Vetula's live chord. Shared
   with Stellatus S3; build it once, in reef.
+
+## C2 — the selector, built
+
+*Done 2026-09-22. `Reef.Conspicillum.Corpus` + `.Protocol`, the golden in
+`reef/conformance/conspicillum-golden.txt`, a section in `cross-runtime.sh`.
+Whole reef suite green, and **node == erl byte-identical over 64 draws**.*
+
+**Filter, then weight** — because they are different gestures. A clause is a
+hard cut and decides what is in the cloud at all; a weighting is a soft lean
+and decides what the cloud is mostly made of. "Only the bright ones" and
+"mostly the bright ones" are different instruments and both are wanted.
+
+An `Axis` addresses either family uniformly: `APeak ARms AZcr ATilt ADecay
+ASecs` for the measured, `ACell k` and `AParam name` for the intentional.
+
+**A sample that cannot answer an axis is excluded, not defaulted.** A `cell`
+too short, a parameter it never carried. Defaulting a missing measurement to
+zero would quietly place that sample at one end of every axis it happens to
+lack — so the golden corpus contains two deficient samples on purpose, and
+one of them (no `harm` parameter) is excluded by a clause it cannot even be
+tested against.
+
+**The lean is normalised across the survivors, not against any absolute
+scale.** `zcr` in Hz and `decay` in seconds share no range, and "the bright
+end" only ever means bright relative to this corpus. Consequence the surface
+should show: narrowing the filter re-normalises the lean, so the same
+weighting over fewer survivors is a *sharper* distinction, not a weaker one.
+
+**Determinism.** Every operation in the select path is `+ - * /` and
+comparison — all correctly rounded by IEEE 754 and therefore identical on V8
+and the BEAM. Deliberately **no `pow`**, unlike `Reef.Gen`'s Beta weights,
+whose last-ULP risk `betaProbe` exists to watch. The weighting curve is
+linear for exactly that reason: a sharper curve would be a nicer instrument
+and a worse guarantee.
+
+**The window is the part that would have been silently wrong.** SuperDirt
+sweeps `begin`→`end` over `sustain`, so a grain's window must be as long in
+the source as the grain is in time or it is transposed — consistently, in a
+way that sounds like a decision rather than a bug. The golden pins it: every
+draw's `end - begin` is exactly `sustain / secs` for whatever sample it landed
+in (12500 for a 4.0 s sample, 6250 for an 8.0 s one), so a cloud drawing
+across samples of different lengths stays in tune with itself.
+
+Rendered as scaled integers, not Numbers: `show` on a Number is a formatting
+decision the two runtimes do not owe each other, and the golden has to compare
+arithmetic. Same reasoning as `betaProbe`.
+
+**Left for C5 on purpose:** `Grainable` carries `notes` and nothing reads it.
+Pitch is neither a measured nor an intentional axis, and the harmonia/Vetula
+join is its own step.
 
 ## Out of scope — do not let these ride along
 
