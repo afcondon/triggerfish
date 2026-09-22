@@ -1,7 +1,8 @@
 # Conspicillum — the grain cloud as a pattern
 
 **Status:** Design sketch, 2026-09-22. The seventh Triggerfish instrument.
-**C0, C1 and C2 are done** (2026-09-22); C3 onward unbuilt. C1's headline: density
+**C0, C1, C2 and C3 are done** (2026-09-22); C4 (the surface) and C5
+(harmonic grains) unbuilt. C1's headline: density
 is not a constraint, and the caution below about measuring before drawing the
 surface has been discharged — see §C1.
 
@@ -514,8 +515,10 @@ drift is only ever visual, exactly as Sufflamen decided.
   closed ADTs projected to ints per the Vetula convention). Golden:
   `conformance/conspicillum-golden.txt`, 64 draws, **node == erl
   byte-identical**. See §C2.
-- **C3 — the cloud as a pattern.** Density from mini-notation; the combinators
-  in §What this has. This is where it stops being a granular module.
+- **C3 — the cloud as a pattern. DONE 2026-09-22.**
+  `Reef.Conspicillum.Cloud`: onsets to placed, transformed grains, with
+  `Every n k` counted across cycles and a seeded `Chance` beside it. Golden:
+  `conformance/conspicillum-cloud-golden.txt`. See §C3.
 - **C4 — the surface.** Spots on near-black: the corpus as a scatter over two
   chosen axes, the active query as a region, grains as sparks where they fall.
   The picture is the query — Hylograph thesis, applied to a sample corpus.
@@ -571,6 +574,112 @@ arithmetic. Same reasoning as `betaProbe`.
 **Left for C5 on purpose:** `Grainable` carries `notes` and nothing reads it.
 Pitch is neither a measured nor an intentional axis, and the harmonia/Vetula
 join is its own step.
+
+## C3 — the cloud as a pattern, built
+
+*Done 2026-09-22. `Reef.Conspicillum.Cloud`, golden over four cycles, node ==
+erl. This is the step where it stops being a granular module.*
+
+**A cloud is a pattern, so a grain has an ordinal.** Density is a list of
+onsets — the mini-notation the player typed, already resolved — so grain 7 is
+a thing that exists and can be spoken about. `Every 3 0` is `every 3` over
+grains, and it costs one Int. Arbhar cannot express it at any price, because
+no grain there has a name.
+
+**Onsets, not mini-notation.** The parser lives in purerl-tidal, which depends
+on reef and not the other way round; pulling it down here to chase a string
+would be the tail wagging the dog. The house pattern is Stellatus's — the
+frontend resolves its text to a determined scene and pushes once — and
+`Triggerfish.Tidal.Lane.onsetsOf` already returns exactly these fractional
+times. Nothing new was needed.
+
+### Cycle-addressed, where Stellatus loops — and why
+
+`Stellatus.Engine.walk` precomputes a finite walk and repeats it, threading
+the seed left to right. Right for a ring of a dozen slots; wrong here.
+
+A cloud of hundreds of grains a cycle would need a very long precomputed array
+before the repeat stopped being audible, and a cloud that repeats exactly is
+heard as a loop in a way a drum pattern is not.
+
+The deciding reason is the visualizer. Conspicillum's browser side recomputes
+what the rig is sounding rather than being told, so it must be able to ask for
+**cycle 400 directly**, without simulating the 399 before it. A threaded seed
+would make cycle 400 alone differ from cycle 400 reached by playing, and the
+picture would be quietly wrong exactly when the player dropped into a set
+already running. So each cycle's seed is *derived* from the base seed and the
+cycle number — which is also Tidal's own model, where a pattern is a function
+from a time arc to the events in it.
+
+The derivation is two rounds of `Reef.Bits.xorshift32`, the one bit primitive
+this package owns FFI for because it is proven bit-identical on V8 and the
+BEAM. **Both inputs are reduced below 10^6 before they are added**, which is
+not fussiness: PureScript's `Int` is 32-bit under JS and arbitrary-precision
+under purerl, so an overflowing add is precisely the silent cross-runtime
+divergence reef exists to prevent.
+
+### What the golden pins
+
+Cycles 0, 1, 2 — then **7, out of order**. Eight onsets against a period of
+three, so the reversed grains land on ordinals:
+
+```
+cycle 0   indices 0, 3, 6    ordinals  0,  3,  6
+cycle 1   indices 1, 4, 7    ordinals  9, 12, 15
+cycle 2   indices 2, 5       ordinals 18, 21
+cycle 7   indices 1, 4, 7    ordinals 57, 60, 63
+```
+
+Every one a multiple of three. **The figure walks** rather than restarting each
+bar — and cycle 7, computed without its predecessors, lands on the correct
+ordinals for its position. A per-cycle reset would restart the figure at index
+0 every bar, which is both wrong and entirely silent.
+
+### The bug the conformance pair caught, and how
+
+Worth recording because it is the case these goldens exist for, and because
+the *pair* of them did the diagnosis.
+
+`cycleSeed` first derived its value by feeding a raw `xorshift32` state
+straight to `seedFrom`. `conspicillumCloudRun` then diverged on **every one of
+its 32 lines** under Erlang — while `conspicillumRun`, the C2 selector golden,
+stayed byte-identical.
+
+That pairing localised it almost completely before a line of code was read.
+Same corpus, same query, same selector, same grain-window arithmetic — so the
+filter, the weighting and `grainAt` were all fine. And within the diverging
+output the `at` and `speed` columns still matched, so placement and the rules
+were fine too. Only *which sample* and *where in it* differed. Those are a
+pure function of the seed. It could only be `cycleSeed`.
+
+The cause is written on the tin of the thing I misused. `Reef.Bits`'s own
+docstring says callers take the low byte via `and 0xFF`, "sign-agnostic, so
+JS's signed and the BEAM's unsigned representation of the same bits agree" —
+and `Balistes.Engine.randByte` is the idiom, chaining the raw state but only
+ever using `s \`and\` 0xFF` as a value. A xorshift state is signed-32 under JS
+and masked unsigned-32 on the BEAM: the *bits* agree, so chaining steps is
+safe, but the *number* does not, and `seedFrom` reduces modulo a constant.
+
+Fixed by taking three chained low bytes into 24 bits. The lesson generalises
+past this function: **in reef, a bit-level state may be passed on but must
+never be used as a number.**
+
+### One rule about draw order
+
+A `Chance` rule draws **unconditionally**, before anything is decided. The
+tempting optimisation is to skip the draw when an earlier rule already settled
+the grain — and it would make every later rule's draws depend on how the
+earlier ones happened to land, so the cycle would stop being reproducible from
+its scene. Fixed draw order is the whole guarantee and it is easy to lose by
+being clever.
+
+### And a grain with no sample is dropped
+
+If the query admits nothing, that onset produces no grain — the cloud has
+fewer grains than onsets, which is the truth. "Your filter excluded
+everything" and "you asked for a sparse cloud" must not look the same on the
+surface. The seed still advances for a dropped grain, so narrowing a query
+does not reshuffle the grains that do survive.
 
 ## Out of scope — do not let these ride along
 
