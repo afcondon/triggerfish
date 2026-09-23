@@ -139,7 +139,7 @@
     <h2>Grain</h2>
     <p class="why">Where in the source each grain is taken, and how long it is.
       <b>spray</b> randomises the position per grain — 0 is a fixed read head.</p>
-    <div class="row"><label>sustain</label><input type="range" id="sustain" min="0.01" max="0.6" step="0.005" value="0.12"><output id="o_sustain"></output></div>
+    <div class="row"><label>sustain</label><input type="range" id="sustain" min="0.01" max="2" step="0.005" value="0.12"><output id="o_sustain"></output></div>
     <div class="row"><label>position</label><input type="range" id="position" min="0" max="1" step="0.005" value="0.04"><output id="o_position"></output></div>
     <div class="row"><label>spray</label><input type="range" id="spray" min="0" max="1" step="0.005" value="0.5"><output id="o_spray"></output></div>
     <p class="hint">A grain's window must be as long in the source as
@@ -199,8 +199,30 @@
       addressable by a rule above. <b>Zero is off</b>: the encoder drops it and
       no synth is made, so a dry cloud costs what it always did. <b>pshift</b>
       is the one to try first — it transposes without changing the grain's
-      length, which a tape-speed read head structurally cannot do.</p>
+      length, which a tape-speed read head structurally cannot do.<br>
+      <b>The resonator's tail stops when the grain does</b>, because SuperDirt
+      frees the event group after <i>sustain</i>. So ring it by opening the
+      gate wide and letting <b>gr env</b> make the grain short: a long
+      <i>sustain</i> with <i>gr tilt</i> near 0 is a percussive burst of sample
+      and then the resonator singing out the window — which is how a struck
+      instrument behaves.</p>
     <div class="fxgrid" id="fxgrid"></div>
+    <p class="hint" style="margin-top:14px;padding-top:12px;border-top:1px solid var(--line)">
+      <b>rsn follow</b> tunes the resonator from the chord the query is asking
+      for, so a progression re-tunes it on the same boundary it re-ranks the
+      corpus. <i>chord tones</i> writes one rule per tone, so consecutive
+      grains pluck up the chord. The <b>rsn pitch</b> slider then chooses the
+      register — its octave is kept, its pitch class replaced.<br>
+      It retunes <i>whichever</i> resonator is engaged, the chain's included,
+      and it never switches one on: a preset that rings the chain and leaves
+      the per-grain one off keeps it off.</p>
+    <label class="full" style="max-width:280px"><span>rsn follow</span>
+      <select id="rsnfollow">
+        <option value="off">off — use the slider</option>
+        <option value="root">chord root</option>
+        <option value="bass">chord bass</option>
+        <option value="tones">chord tones, one per grain</option>
+      </select></label>
   </section>
 
   <section class="panel" style="grid-column:1/-1">
@@ -208,7 +230,11 @@
     <p class="why">One reverb, one delay, one leslie for the whole cloud — not
       per grain, and so not rule-addressable. These are sent with every grain
       because SuperDirt's global effects only ever resume: a reverb once told
-      <i>room</i> keeps going until something tells it <b>room 0</b>.</p>
+      <i>room</i> keeps going until something tells it <b>room 0</b>.
+      <b>rsn send</b> is the resonator that <i>rings</i> — the per-grain one
+      above has its tail cut when its grain ends, because SuperDirt frees the
+      whole event group after <i>sustain</i>. Here the cloud is the exciter and
+      one body does the singing.</p>
     <div class="fxgrid" id="chgrid"></div>
   </section>
 
@@ -423,7 +449,10 @@ function onsets() {
 // name would not fail a decode, it would silently turn one figure into another.
 const OPS = ["speed","gain","length","pan","accelerate",
              "shape","crush","coarse","lpf","hpf","bpf","res",
-             "vowel","pshift","tremolo","phaser"];
+             "vowel","pshift","tremolo","phaser",
+             "genv","gtilt","gplat","atk","hold","rel","curve",
+             "rsnpitch","rsndecay","rsnbright","rsnmix","rsnmodel"];
+const OP_RSNPITCH = OPS.indexOf("rsnpitch");
 let rules = [];
 function addRule(r) {
   rules.push(r || { when:1, everyN:3, everyK:0, chance:0.5, op:0, amount:-1 });
@@ -484,11 +513,46 @@ const FX_CTRL = [
   { id:"vowel",    lab:"vowel",    min:0, max:5,     step:1,    def:0,
     fmt:(v) => VOWELS[v] || "off" },
   { id:"pshift",   lab:"pshift",   min:0, max:3,     step:0.01, def:0 },
-  { id:"tremolo",  lab:"trem Hz",  min:0, max:20,    step:0.1,  def:0, dp:1 },
+  { id:"tremolo",  lab:"trem Hz",  min:0, max:60,    step:0.1,  def:0, dp:1 },
+  //   ^ up to 60 rather than a sane LFO 20, because the useful setting here
+  //   is `N / sustain` -- N lobes inside the grain's own length -- and on a
+  //   50 ms grain even three lobes is 60 Hz. Past ~30 it stops being tremolo
+  //   and becomes ring modulation, which is also worth having.
   { id:"tremdepth",lab:"trem dep", min:0, max:1,     step:0.01, def:0.5, gate:"tremolo" },
   { id:"phaser",   lab:"phase Hz", min:0, max:10,    step:0.05, def:0 },
   { id:"phdepth",  lab:"phase dep",min:0, max:1,     step:0.01, def:0.5, gate:"phaser" },
+  // The grain's ENVELOPE — not its window. `genv` is the switch because
+  // grenvelo's own gate is `tilt`, and tilt 0 (peak at the very start) is the
+  // most useful value there is, so zero-is-off cannot live on the shape.
+  { id:"genv",     lab:"gr env",   min:0, max:1,     step:1,    def:0,
+    fmt:(v) => v >= 0.5 ? "on" : "off" },
+  { id:"gtilt",    lab:"gr tilt",  min:0, max:1,     step:0.01, def:0.25,
+    gate:"genv", shape:true },
+  { id:"gplat",    lab:"gr plat",  min:0, max:1,     step:0.01, def:0.3,
+    gate:"genv", shape:true },
+  { id:"atk",      lab:"attack",   min:0, max:0.5,   step:0.005,def:0, dp:3 },
+  { id:"hold",     lab:"hold",     min:0, max:0.5,   step:0.005,def:0, dp:3,
+    gate:["atk","rel"], shape:true },
+  { id:"rel",      lab:"release",  min:0, max:1,     step:0.01, def:0 },
+  { id:"curve",    lab:"curve",    min:-8,max:8,     step:0.5,  def:0, dp:1,
+    gate:["genv","atk","rel"], shape:true },
+  // The RESONATOR, which is ours rather than SuperDirt's — see
+  // audio/superdirt-daemon.scd. The only effect here that does not colour the
+  // grain: it makes the grain the exciter, so the pitch is rsnpitch's and the
+  // timbre is the recording's.
+  { id:"rsnpitch", lab:"rsn pitch",min:0, max:96,    step:1,    def:0,
+    fmt:(v) => v > 0 ? noteName(v) : "off" },
+  { id:"rsndecay", lab:"rsn decay",min:0, max:6,     step:0.05, def:1.5,
+    gate:"rsnpitch" },
+  { id:"rsnbright",lab:"rsn bright",min:0.3,max:0.99,step:0.01, def:0.7,
+    gate:"rsnpitch" },
+  { id:"rsnmix",   lab:"rsn mix",  min:0, max:1,     step:0.01, def:1,
+    gate:"rsnpitch", shape:true },
+  { id:"rsnmodel", lab:"rsn model",min:0, max:1,     step:1,    def:0,
+    gate:"rsnpitch", shape:true,
+    fmt:(v) => v >= 0.5 ? "pluck" : "klank" },
 ];
+const noteName = (m) => PCN[((m % 12) + 12) % 12] + (Math.floor(m / 12) - 1);
 // `size`, `lrate` and `lsize` are SHAPES and keep SuperDirt's own defaults; the
 // AMOUNTS (room, delay, leslie) are what hold the chain silent at rest — which
 // is exactly why they carry a `gate`: a shape at 0.4 is not "doing something"
@@ -506,6 +570,17 @@ const CH_CTRL = [
   { id:"leslie",       lab:"leslie",   min:0, max:1,   step:0.01, def:0 },
   { id:"lrate",        lab:"les rate", min:0, max:20,  step:0.1,  def:6.7, dp:1, gate:"leslie" },
   { id:"lsize",        lab:"les size", min:0, max:1,   step:0.01, def:0.3, gate:"leslie" },
+  // The resonator that RINGS. The per-grain one in the panel above has its
+  // tail cut at the end of the grain -- SuperDirt frees the whole event group
+  // after `sustain` -- so this is the one that decays freely, and the whole
+  // cloud excites one body rather than each grain its own.
+  { id:"grsn",         lab:"rsn send", min:0, max:1,   step:0.01, def:0 },
+  { id:"grsnpitch",    lab:"rsn pitch",min:0, max:96,  step:1,    def:45,
+    gate:"grsn", shape:true, fmt:(v) => noteName(v) },
+  { id:"grsndecay",    lab:"rsn decay",min:0, max:12,  step:0.1,  def:3, dp:1,
+    gate:"grsn" },
+  { id:"grsnbright",   lab:"rsn bright",min:0.3,max:0.99,step:0.01,def:0.85,
+    gate:"grsn" },
 ];
 
 function fxRow(pre, c) {
@@ -560,18 +635,83 @@ function scene() {
         position: +document.getElementById("position").value,
         spray: +document.getElementById("spray").value,
       },
-      rules,
+      rules: rulesNow(),
       speed: +document.getElementById("speed").value,
       gain: +document.getElementById("gain").value,
       pan: +document.getElementById("pan").value,
       accelerate: +document.getElementById("accel").value,
-      fx: readGroup(FX_CTRL, "fx_"),
-      chain: Object.assign(
-        { orbit: +document.getElementById("ch_orbit").value },
-        readGroup(CH_CTRL, "ch_")),
+      fx: fxNow(),
+      chain: chainNow(),
     },
     seed: +document.getElementById("seed").value,
   };
+}
+
+// ── tuning the resonator from the chord ─────────────────────────────────────
+// The resonator is the one effect that has a PITCH, and the instrument already
+// knows which one it wants: `targetNow()` is the chord the query is filtering
+// on. So the two can be joined with no engine support at all — the progression
+// driver re-pushes on a chord change, and the resonator re-tunes on the same
+// boundary the corpus is re-ranked.
+//
+// What this buys is the answer to C4's harmonic-starvation problem. The
+// material is narrow; some chords admit nothing and the cloud goes silent. A
+// resonator tuned to the chord and excited by a grain that does NOT contain it
+// plays the chord anyway, in whatever timbre the corpus could offer.
+//
+// The slider keeps its job: its OCTAVE is the register, its pitch class is
+// replaced. So you choose where the resonator sits and the chord chooses what.
+function followMode() {
+  const el = document.getElementById("rsnfollow");
+  return el ? el.value : "off";
+}
+function rsnBase() {
+  const v = +document.getElementById("fx_rsnpitch").value;
+  return Math.floor((v > 0 ? v : 48) / 12) * 12;
+}
+// Which pitch class the chord wants. A single body can only have one, so
+// `tones` — which is a per-grain idea — falls back to the root for the chain.
+function followPc(t, m, perGrain) {
+  if (m === "bass") return t.bass;
+  if (m === "root") return t.root;
+  return perGrain ? (t.pcs[0] ?? t.root) : t.root;
+}
+function fxNow() {
+  const fx = readGroup(FX_CTRL, "fx_");
+  const t = targetNow(), m = followMode();
+  // Follow RETUNES a resonator; it does not switch one on. A preset that
+  // leaves the per-grain resonator off and rings the chain instead — which is
+  // the only way to get a long decay — must not have a second one started
+  // underneath it just because follow is set.
+  if (!t || m === "off" || fx.rsnpitch <= 0) return fx;
+  fx.rsnpitch = Math.floor(fx.rsnpitch / 12) * 12 + followPc(t, m, true);
+  return fx;
+}
+// The chain's resonator follows too, and this is the one that matters: it is
+// the one that RINGS, so a progression whose body stayed on one pitch would
+// drone against every chord but the first. Found by reading the scene rather
+// than by listening — `Answer the chord` was pinned to A while its chords
+// moved Bm -> Bm(maj7) -> Bdim -> F#m.
+function chainNow() {
+  const ch = Object.assign(
+    { orbit: +document.getElementById("ch_orbit").value },
+    readGroup(CH_CTRL, "ch_"));
+  const t = targetNow(), m = followMode();
+  if (!t || m === "off" || ch.grsn <= 0) return ch;
+  ch.grsnpitch = Math.floor(ch.grsnpitch / 12) * 12 + followPc(t, m, false);
+  return ch;
+}
+function rulesNow() {
+  const t = targetNow();
+  if (!t || followMode() !== "tones" || !t.pcs.length) return rules;
+  const base = rsnBase();
+  // Generated, not stored: they are a function of the chord, and the chord
+  // changes under the player's hands. Appending rather than replacing means a
+  // hand-written rsnpitch rule still wins, since later rules apply last.
+  return rules.concat(t.pcs.map((pc, i) => ({
+    when: 1, everyN: t.pcs.length, everyK: i, chance: 0.5,
+    op: OP_RSNPITCH, amount: base + pc,
+  })));
 }
 
 function harmonicNow() {
@@ -594,7 +734,7 @@ function render() {
   // A rule can engage an effect the base slider leaves at zero — the Formant
   // choir's vowels arrive entirely from rules — so `res` would read cold while
   // being the thing shaping them. The gate has to see the rules too.
-  const ruleOn = new Set(rules.filter(r => r.amount > 0).map(r => OPS[r.op]));
+  const ruleOn = new Set(rulesNow().filter(r => r.amount > 0).map(r => OPS[r.op]));
   for (const [list, pre] of [[FX_CTRL,"fx_"], [CH_CTRL,"ch_"]]) {
     for (const c of list) {
       const v = +document.getElementById(pre + c.id).value;
@@ -605,7 +745,12 @@ function render() {
       // exceptions — this control is above zero AND something it depends on
       // is too, where `gate` names the dependency and defaults to itself.
       const g = c.gate ? [].concat(c.gate) : [c.id];
-      const live = v > 0 && g.some(id =>
+      // `shape:true` marks a control whose OWN zero is meaningful — a tilt of
+      // 0 is a percussive envelope, a curve of 0 is linear, a mix of 0 is
+      // fully dry. Those are hot whenever the amount they ride on is, and
+      // requiring them to be non-zero would mark the most useful setting each
+      // of them has as "not doing anything".
+      const live = (c.shape || v > 0) && g.some(id =>
         +document.getElementById(pre + id).value > 0
         || (pre === "fx_" && ruleOn.has(id)));
       document.getElementById("r_" + pre + c.id).classList.toggle("hot", live);
@@ -816,6 +961,92 @@ const PRESETS = [
   fx:{tremolo:6.5,tremdepth:0.85,lpf:2600,res:0.25},
   chain:{room:0.55,size:0.85,dry:0.2}, q:{} },
 
+// ── envelopes and the resonator ───────────────────────────────────────────
+// Op numbers continue: 16 genv, 17 gtilt, 18 gplat, 19 atk, 20 hold, 21 rel,
+// 22 curve, 23 rsnpitch, 24 rsndecay, 25 rsnbright, 26 rsnmix, 27 rsnmodel.
+
+// A LONG sustain in all of these, and a percussive `gr env` inside it. The
+// gate is what keeps the resonator alive -- SuperDirt frees the event group
+// after `sustain` -- and the envelope is what makes the grain short. A short
+// excitation inside a long window is how a struck instrument behaves, and
+// getting it the other way round (short sustain, long rsndecay) is the one
+// mistake this effect invites: it sounds like a filtered click and nothing
+// says why.
+
+{ name:"Struck bar", tag:"rsn", blurb:"a ringing bank \u2014 high partials die first",
+  set:AC, n:0, whole:true, cloud:{sustain:1.6,position:0.02,spray:0.25},
+  on:{mode:"even",count:4}, v:{speed:1,gain:0.75,pan:0.5,accel:0}, rules:[],
+  fx:{genv:1,gtilt:0.015,gplat:0.02,curve:-4,
+      rsnpitch:52,rsndecay:1.5,rsnbright:0.9,rsnmix:0.85,rsnmodel:0},
+  chain:{room:0.4,size:0.8,dry:0.2}, q:{} },
+
+{ name:"Dull thud", tag:"rsn", blurb:"the same bank with the highs taken out",
+  set:AC, n:0, whole:true, cloud:{sustain:0.7,position:0.02,spray:0.2},
+  on:{mode:"euclid",k:5,n:16}, v:{speed:1,gain:0.85,pan:0.5,accel:0}, rules:[],
+  fx:{genv:1,gtilt:0.01,gplat:0.02,curve:-4,
+      rsnpitch:40,rsndecay:1.2,rsnbright:0.38,rsnmix:0.9,rsnmodel:0},
+  chain:{room:0.2}, q:{} },
+
+{ name:"Plucked chord", tag:"rsn", blurb:"Karplus-Strong, strung with the grain \u2014 one chord tone per grain",
+  set:AC, n:0, whole:true, cloud:{sustain:1.4,position:0.02,spray:0.15},
+  on:{mode:"even",count:6}, v:{speed:1,gain:0.8,pan:0.5,accel:0}, rules:[],
+  fx:{genv:1,gtilt:0.01,gplat:0.02,curve:-4,
+      rsnpitch:48,rsndecay:1.3,rsnbright:0.82,rsnmix:0.95,rsnmodel:1},
+  follow:"tones",
+  chain:{room:0.35,size:0.7,delay:0.2,delaytime:0.25,delayfeedback:0.45,lock:1},
+  q:{ harmonic:{minFit:0.4,strength:0.9} },
+  prog:["F#m(maj7)","B7","E","E"] },
+
+{ name:"Answer the chord", tag:"rsn", blurb:"a filter the material often fails \u2014 the resonator carries the harmony",
+  // minFit 0.75 is deliberately punishing: anchor-car admits almost nothing at
+  // that threshold, so on most bars the corpus is nearly silent. The GLOBAL
+  // resonator is tuned to the chord regardless and rings freely, so the
+  // harmony is there whether or not the material could answer it. Starvation
+  // as a timbre rather than as silence -- which is the only answer C4 has
+  // found to its own harmonic-narrowness problem.
+  set:AC, n:0, whole:true, cloud:{sustain:0.5,position:0.02,spray:0.3},
+  on:{mode:"even",count:10}, v:{speed:1,gain:0.9,pan:0.5,accel:0}, rules:[],
+  fx:{genv:1,gtilt:0.02,gplat:0.05,curve:-4},
+  follow:"root",
+  chain:{room:0.55,size:0.9,dry:0.25,
+         grsn:0.85,grsnpitch:45,grsndecay:5.5,grsnbright:0.88},
+  q:{ harmonic:{minFit:0.75,strength:0.98} },
+  prog:["Bm","Bm(maj7)","Bdim","F#m"] },
+
+{ name:"One body, many strikes", tag:"rsn", blurb:"the global resonator \u2014 the cloud is the exciter, nothing is per grain",
+  set:DR, n:0, whole:true, cloud:{sustain:0.05,position:0.05,spray:0.4},
+  on:{mode:"euclid",k:9,n:16}, v:{speed:1,gain:0.6,pan:0.5,accel:0}, rules:[],
+  fx:{}, chain:{grsn:0.9,grsnpitch:38,grsndecay:8,grsnbright:0.92,
+                room:0.3,size:0.7}, q:{} },
+
+{ name:"Reverse swell", tag:"env", blurb:"tilt 0.92 \u2014 every grain arrives backwards",
+  set:LC, n:0, whole:true, cloud:{sustain:0.35,position:0.2,spray:0.55},
+  on:{mode:"even",count:5}, v:{speed:1,gain:0.8,pan:0.5,accel:0}, rules:[],
+  fx:{genv:1,gtilt:0.92,gplat:0.05,curve:-3,lpf:4200,res:0.2},
+  chain:{room:0.65,size:0.9,dry:0.2}, q:{} },
+
+{ name:"Burst grains", tag:"env", blurb:"tremolo at 6 cycles per grain \u2014 a multi-lobe envelope from an effect wired for something else",
+  // tremolorate = N / sustain. sustain 0.25, N 6 -> 24 Hz. No new code: the
+  // shape falls out of a rate expressed against the grain's own length.
+  set:LC, n:0, whole:true, cloud:{sustain:0.25,position:0.15,spray:0.4},
+  on:{mode:"even",count:6}, v:{speed:1,gain:0.85,pan:0.5,accel:0},
+  rules:[{when:1,everyN:3,everyK:1,chance:0.5,op:14,amount:40}],
+  fx:{tremolo:24,tremdepth:1,genv:1,gtilt:0.3,gplat:0.4},
+  chain:{room:0.3,size:0.6}, q:{} },
+
+{ name:"Struck every fourth", tag:"rsn", blurb:"the resonator as a RULE \u2014 three dry grains, then a rung one",
+  // sustain 0.9 is the GATE, not the grain: `gr env` clips the sample to a
+  // burst and the rest of the window is the string. Set sustain short here
+  // and the rung grains become clicks -- the trap this effect invites.
+  set:LC, n:0, whole:true, cloud:{sustain:0.9,position:0.03,spray:0.5},
+  on:{mode:"even",count:8}, v:{speed:1,gain:0.7,pan:0.5,accel:0},
+  rules:[{when:1,everyN:4,everyK:0,chance:0.5,op:23,amount:57},
+         {when:1,everyN:8,everyK:4,chance:0.5,op:23,amount:64},
+         {when:2,everyN:0,everyK:0,chance:0.3,op:3,amount:0.9}],
+  fx:{genv:1,gtilt:0.02,gplat:0.03,curve:-4,
+      rsndecay:0.85,rsnbright:0.86,rsnmix:0.8,rsnmodel:1},
+  chain:{room:0.4,size:0.75}, q:{} },
+
 // ── the progressions ──────────────────────────────────────────────────────
 { name:"ii \u2013 V \u2013 I in E", tag:"prog", blurb:"leaf-cloud answers all three exactly",
   set:LC, n:0, whole:true, cloud:{sustain:0.11,position:0.4,spray:0.6},
@@ -887,6 +1118,7 @@ function applyPreset(i) {
   // control's own default rather than to the previous value, which is the
   // whole reason the defaults live in the control table.
   setGroup(FX_CTRL, "fx_", P.fx);
+  document.getElementById("rsnfollow").value = P.follow || "off";
   document.getElementById("ch_orbit").value = (P.chain && P.chain.orbit) || 0;
   setGroup(CH_CTRL, "ch_", P.chain);
 

@@ -184,9 +184,166 @@ s.reboot {
 			~dirt.loadSoundFiles(setFolders);
 			s.sync;
 		});
+		// --- Conspicillum resonator ------------------------------------------
+		//
+		// SuperDirt ships no resonator, and this is the demonstration that its
+		// effect list is not a fixed menu: a SynthDef plus `~dirt.addModule`
+		// puts one on exactly the same footing as `crush`, addressable per
+		// grain by a `Reef.Conspicillum.Cloud` rule.
+		//
+		// WHY a resonator and not another filter. Every other per-event effect
+		// colours the grain. A resonator makes the grain the EXCITER of
+		// something else, so the pitch comes from the resonator and the timbre
+		// from the recording — which is what "a tone derived from the sample"
+		// means. And because a Conspicillum corpus carries the MIDI notes that
+		// were really struck, the resonator can be tuned to the chord we are
+		// TARGETING while excited by a grain that does not contain it: a chord
+		// the material cannot answer stops being silence and becomes the chord,
+		// in whatever timbre the material could offer.
+		//
+		// THE TAIL IS BOUNDED BY THE GRAIN, and this is the constraint that
+		// shapes how the module is used. `dirt_gate` carries
+		// `doneAction: 14` — free the surrounding group and every node in it —
+		// after `sustain + fadeTime`. A per-event synth therefore CANNOT
+		// outlive its grain, so a 2.5 s ring on a 90 ms grain is 90 ms of ring
+		// and sounds like a filtered click. Nothing errors; it just does not
+		// do what you asked.
+		//
+		// The way to use it is to open the gate wide and let the ENVELOPE make
+		// the grain short: a long `sustain` with `grenvelo` tilt near 0 gives a
+		// percussive burst of sample followed by the resonator singing for the
+		// rest of the window. Which is, as it happens, exactly how a struck
+		// instrument behaves — a short excitation and a long decay. See
+		// `dirt_rsn_global` below for the version that rings freely.
+		//
+		// Two models, because they fail differently and both are wanted:
+		//
+		//   klank  a bank of ringing filters on the harmonic series, each
+		//          partial with its OWN decay time. High partials dying faster
+		//          than low ones is the signature of anything struck or
+		//          plucked, and it is the thing no granular module on the
+		//          comparison list has, because none of them has a resonator to
+		//          put it in. Metallic, bell-like, expensive.
+		//   pluck  Karplus-Strong. The delay line is FILLED with the grain at
+		//          onset, so the string is literally strung with a slice of the
+		//          chord and then allowed to decay. Cheaper, and the more
+		//          string-like of the two.
+		//
+		// Both run the resonator in MONO and spread the result. A stereo
+		// DynKlank is two banks for a difference nobody can hear on material
+		// this short, and the cost of this module is the one real cost among
+		// the effects — measure before assuming C1's 12,800 grains/sec survives.
+		[1, 2].do { |nc|
+			SynthDef("dirt_rsn_klank" ++ nc, { |out, rsnpitch = 60, rsndecay = 1.5,
+					rsnbright = 0.7, rsnmix = 1|
+				var parts = 10;
+				var dry = In.ar(out, nc);
+				var mono = if(nc > 1) { Mix.ar(dry) / nc } { dry };
+				var f0 = rsnpitch.midicps;
+				// Partial k rings for decay * bright^(k-1). bright -> 1 is a
+				// bar that keeps its highs; bright -> 0.3 is a dull thud.
+				var wet = DynKlank.ar(`[
+						(1..parts) * f0,
+						(1..parts).collect { |k| 1 / k },
+						(1..parts).collect { |k| rsndecay * rsnbright.pow(k - 1) }
+					], mono * 0.08);
+				// A ringing bank fed continuously WILL run away. Soft-clip
+				// rather than limit: a limiter would duck the whole grain.
+				wet = LeakDC.ar(wet).tanh;
+				ReplaceOut.ar(out, XFade2.ar(dry, if(nc > 1) { wet ! nc } { wet },
+					rsnmix * 2 - 1));
+			}, [\ir, \ir, \ir, \ir, \ir]).add;
+
+			SynthDef("dirt_rsn_pluck" ++ nc, { |out, rsnpitch = 60, rsndecay = 1.5,
+					rsnbright = 0.7, rsnmix = 1|
+				var dry = In.ar(out, nc);
+				var mono = if(nc > 1) { Mix.ar(dry) / nc } { dry };
+				// One impulse at grain onset: Pluck fills the delay line from
+				// its input at that moment, which is how the grain becomes the
+				// string rather than merely feeding it.
+				var wet = Pluck.ar(mono, Impulse.ar(0), 0.05,
+					(1 / rsnpitch.midicps).clip(0.00002, 0.05),
+					rsndecay, (1 - rsnbright) * 0.5);
+				wet = LeakDC.ar(wet);
+				ReplaceOut.ar(out, XFade2.ar(dry, if(nc > 1) { wet ! nc } { wet },
+					rsnmix * 2 - 1));
+			}, [\ir, \ir, \ir, \ir, \ir]).add;
+		};
+		s.sync;
+
 		~dirt.start(port, 0 ! 12);        // 12 orbits, all to channel 0
+
+		// Added AFTER start, so it lands at the end of ~dirt.modules and runs
+		// last in the chain: the resonator rings whatever the other effects
+		// already did to the grain, which is the right way round — a bitcrush
+		// after a resonator eats the resonance.
+		//
+		// Gated on `rsnpitch`, per SuperDirt's own convention that a per-event
+		// module runs only when its parameter is PRESENT. rsnpitch is a MIDI
+		// note, so 0 is 8.2 Hz and safely unusable — which lets the encoder use
+		// zero-is-off here as it does everywhere else.
+		~dirt.addModule('conspicillum_resonator', { |dirtEvent|
+			var defName = if(~rsnmodel.notNil and: { ~rsnmodel > 0.5 })
+				{ "dirt_rsn_pluck" } { "dirt_rsn_klank" };
+			dirtEvent.sendSynth(defName ++ ~dirt.numChannels, [
+				rsnpitch: ~rsnpitch,
+				rsndecay: ~rsndecay ? 1.5,
+				rsnbright: ~rsnbright ? 0.7,
+				rsnmix: ~rsnmix ? 1.0,
+				out: ~out
+			])
+		}, { ~rsnpitch.notNil });
+
+		// --- the resonator that can actually ring --------------------------
+		//
+		// A per-orbit GlobalDirtEffect, so it lives for the life of the orbit
+		// and its decay is bounded by nothing. The whole cloud excites ONE
+		// resonant body — many grains striking one string, which is both far
+		// cheaper than a bank per grain and the more physical of the two.
+		//
+		// It is a parallel SEND, like dirt_reverb: read the orbit's dry bus,
+		// ring, write the effect bus. `grsn` is the send amount and behaves
+		// like `room` — the chain's zero is what turns it off, because a
+		// global effect only ever resumes.
+		[1, 2].do { |nc|
+			SynthDef("dirt_rsn_global" ++ nc, { |dryBus, effectBus, gate = 1,
+					grsn = 0, grsnpitch = 45, grsndecay = 3, grsnbright = 0.85|
+				var parts = 12;
+				var in = In.ar(dryBus, nc).asArray.sum
+					* grsn.lag(LFNoise1.kr(1).range(0.01, 0.02)) * 0.05;
+				var f0 = grsnpitch.midicps;
+				var snd = DynKlank.ar(`[
+						(1..parts) * f0,
+						(1..parts).collect { |k| 1 / k },
+						(1..parts).collect { |k| grsndecay * grsnbright.pow(k - 1) }
+					], in);
+				snd = LeakDC.ar(snd).tanh;
+				snd = snd * EnvGen.kr(Env.asr, gate, doneAction: 2);
+				// Twelve ringing filters are not free to leave running, and a
+				// silent orbit should cost nothing. Same grace the stock
+				// globals give themselves.
+				DirtPause.ar(snd, graceTime: 4);
+				Out.ar(effectBus, if(nc > 1) { snd ! nc } { snd });
+			}, [\ir, \ir]).add;
+		};
+		s.sync;
+
+		// Inserted before dirt_monitor, which must stay last because it is the
+		// output routing and the limiter. `globalEffects_` is a plain setter
+		// and `initNodeTree` releases and replays the lot, so this is the
+		// supported way in rather than a reach through the back.
+		~dirt.orbits.do { |orbit|
+			var fx = orbit.globalEffects;
+			orbit.globalEffects = fx.copyRange(0, fx.size - 2)
+				++ [ GlobalDirtEffect(\dirt_rsn_global,
+						[\grsn, \grsnpitch, \grsndecay, \grsnbright]) ]
+				++ [ fx.last ];
+			orbit.initNodeTree;
+		};
+
 		SuperDirt.default = ~dirt;
-		("STELLATUS-SUPERDIRT READY on port " ++ port).postln;
+		("STELLATUS-SUPERDIRT READY on port " ++ port
+			++ " (+ conspicillum_resonator, dirt_rsn_global)").postln;
 	};
 
 	s.latency = 0.3;

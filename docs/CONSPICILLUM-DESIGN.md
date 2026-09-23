@@ -1092,6 +1092,69 @@ resonator it produces the chord — in the timbre of whatever the corpus *could*
 offer. The instrument degrades into a different colour instead of into nothing,
 and "your filter excluded everything" stops being a dead end.
 
+### Built 2026-09-23 — and the constraint that reshaped it
+
+Both envelopes are wired (`genv`/`gtilt`/`gplat`, `atk`/`hold`/`rel`, shared
+`curve`) and so is a resonator, as `conspicillum_resonator` in
+`audio/superdirt-daemon.scd` — the first proof that SuperDirt's effect list is
+ours to extend. Two models: `klank` (a `DynKlank` bank on the harmonic series
+with per-partial decay) and `pluck` (`Pluck`, whose delay line is *filled with
+the grain* at onset, so the string is strung with a slice of the chord).
+
+**Then the measurement said something the design had not accounted for: a
+per-grain resonator cannot ring.** `dirt_gate` carries `doneAction: 14` — free
+the surrounding group and every node in it — after `sustain + fadeTime`, and a
+per-event synth cannot outlive that. A 2.5 s decay on a 90 ms grain is 90 ms of
+decay and sounds like a filtered click. Nothing errors. The module runs, the
+synth is made, and it is simply cut off.
+
+That is not a bug to fix, it is the shape of the thing, and two good answers
+fall out of it.
+
+**One: separate the gate from the grain.** `sustain` is the gate; `grenvelo` is
+the grain. A *long* `sustain` with `gtilt` near 0 gives a percussive burst of
+sample followed by the resonator singing out the rest of the window — which is
+exactly how a struck instrument behaves, a short excitation and a long decay.
+So the two effects that looked independent turn out to be a pair, and the pump
+opens `sustain` to 2 s for it. Getting this backwards (short `sustain`, long
+`rsndecay`) is the one mistake this effect invites, and nothing says why, so
+both the panel and the preset comments say it.
+
+**Two: put a resonator in the chain, where things are allowed to ring.**
+`dirt_rsn_global` is a `GlobalDirtEffect` — a parallel send off the orbit's dry
+bus, like the reverb — so it lives for the life of the orbit and its decay is
+bounded by nothing. The whole cloud excites **one** body. This is the version
+the "cheap variant" paragraph below predicted, and it turns out to be the
+*primary* one rather than the fallback: many grains striking one string is what
+actually happens when you play an instrument, and it is the only form in which
+a long decay is available at all.
+
+Inserting it needed no patching of the quark: `DirtOrbit`'s `globalEffects_` is
+a plain setter and `initNodeTree` releases and replays the lot, so the new
+effect goes in before `dirt_monitor` (which must stay last — it is the output
+routing and the limiter) and the orbit is re-initialised.
+
+**And the chord join is live.** The pump's `rsn follow` reads `targetNow()` —
+the chord the query is already filtering on — and tunes the resonator from it:
+`root`, `bass`, or `tones`, the last writing one `Every n k` rule per chord tone
+so consecutive grains pluck up the chord. The slider keeps its octave and the
+chord replaces its pitch class. No engine support was needed: the progression
+driver already re-pushes on a chord change, so the resonator re-tunes on the
+same boundary the corpus is re-ranked. The *Answer the chord* preset is the
+demonstration — `minFit` 0.75, which anchor-car almost never meets, so the
+corpus is nearly silent and the harmony is carried by the resonator. Starvation
+as a timbre rather than as silence.
+
+Two faults in that join were caught by **reading the pushed scene rather than
+by listening**, and neither would have announced itself. `follow` was setting
+the per-grain resonator's pitch unconditionally, so it *switched on* a
+resonator that a preset had deliberately left off in favour of the chain's —
+two bodies ringing where one was wanted. And it never retuned the chain's
+resonator at all, so *Answer the chord* sat on A through a progression that
+went Bm → Bm(maj7) → Bdim → F#m: the one resonator that actually rings was the
+one not following the chord. Follow now retunes whichever resonator is engaged,
+each keeping its own octave, and switches none on.
+
 ### What it will cost, and the cheap variant
 
 This is the **first effect that will actually cost something.** C1 measured
