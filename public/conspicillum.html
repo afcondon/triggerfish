@@ -976,6 +976,35 @@ const PRESETS = [
       atk:0.055,hold:0.11,rel:0.05,curve:-2},
   chain:{room:0.55,size:0.85,dry:0.2}, q:{} },
 
+{ name:"Attack wave", tag:"env", blurb:"a six-step triangle over the ATTACK, indexed by grain ordinal \u2014 an LFO that cannot drift",
+  // "Modulating the attack with an LFO" — built out of what already exists,
+  // to hear whether it earns an engine change.
+  //
+  // Six `Every 6 k` rules are a six-step triangle over `atk`: 0.004 (a click)
+  // up to 0.18 (a swell) and back. There is no oscillator anywhere. The wave
+  // is indexed by the grain's ORDINAL, which is the thing no hardware
+  // granulator has — Arbhar's grain-size CV is indexed by TIME and drifts
+  // against whatever else is running; this cannot drift, ever, because it is
+  // counting the same grains the pattern is.
+  //
+  // And it WALKS: 23 onsets a cycle against a period of 6 means the wave lands
+  // on different grains each bar and repeats only every 6 cycles. Exactly the
+  // property `Every 3 0` pins in the conformance golden, put to a new use.
+  //
+  // Crude at six steps. If it is worth more than six steps it is worth a
+  // modulator field on `Rule` — see CONSPICILLUM-DESIGN.md.
+  set:"burroughs-junky", n:0, whole:false,
+  cloud:{sustain:1.2,position:0.3,spray:0.35},
+  on:{mode:"euclid",k:23,n:29}, v:{speed:1,gain:0.9,pan:0.5,accel:0},
+  rules:[{when:1,everyN:6,everyK:0,chance:0.5,op:19,amount:0.004},
+         {when:1,everyN:6,everyK:1,chance:0.5,op:19,amount:0.03},
+         {when:1,everyN:6,everyK:2,chance:0.5,op:19,amount:0.09},
+         {when:1,everyN:6,everyK:3,chance:0.5,op:19,amount:0.18},
+         {when:1,everyN:6,everyK:4,chance:0.5,op:19,amount:0.09},
+         {when:1,everyN:6,everyK:5,chance:0.5,op:19,amount:0.03}],
+  fx:{coarse:7,lpf:7100,res:0.25,atk:0.03,hold:0.11,rel:0.05,curve:-2},
+  chain:{room:0.55,size:0.85,dry:0.2}, q:{} },
+
 // ── the effects ───────────────────────────────────────────────────────────
 // Op numbers, for reading the rules below: 0 speed, 1 gain, 2 length, 3 pan,
 // 4 accelerate, 5 shape, 6 crush, 7 coarse, 8 lpf, 9 hpf, 10 bpf, 11 res,

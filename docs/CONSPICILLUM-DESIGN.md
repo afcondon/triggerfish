@@ -1171,6 +1171,76 @@ So there are two shapes, and both are worth having:
   physical of the two: many grains striking one string is what actually happens
   when you play an instrument.
 
+## Modulating a parameter — and what it should be indexed by
+
+*Raised 2026-09-23, out of the `Speeding` preset: "modulating the Attack with
+an LFO would probably be an interesting effect then?"*
+
+Yes — but "LFO" is the wrong word for what belongs here, and the difference is
+the whole instrument.
+
+**There is no general modulator in reef.** `Reef.Gen` looks like one and is
+not: it mutates persistent *Odonus model state* — reroll a cell's note, drift a
+length, walk the playhead combination — a slow drift over a stored model.
+Conspicillum has no stored model. `cycleOf` is a pure function of (scene,
+cycle), which is what lets the browser draw cycle 400 without simulating the
+399 before it. **Any modulator here must be a pure function of something the
+grain already carries**, or that property is gone.
+
+Which leaves four candidates, and they are four different instruments:
+
+| indexed by | drifts against the pattern? | available today |
+|---|---|---|
+| **ordinal** — a wave over grain *number* | **never** | yes, as `Every` steps |
+| **cycle** — one value per bar | no | yes, the page can push it |
+| **time** — a true LFO at N Hz | yes, unless cycle-locked | no |
+| **chance** — a seeded draw per grain | n/a | yes, `Chance p` |
+
+**The ordinal one is the one no hardware granulator can offer.** Arbhar's
+grain-size CV is indexed by *time*: it drifts against whatever else is running,
+and that drift is the texture. A wave indexed by grain ordinal cannot drift,
+ever, because it is counting the same grains the pattern is — and it needs a
+grain to have a name, which is the one thing this engine has and they do not.
+
+`Every n k` is already its square-wave case, and stacking rules is already its
+stepped case. The `Attack wave` preset is six `Every 6 k` rules making a
+six-step triangle over `atk`, from 0.004 (a click) to 0.18 (a swell) and back.
+Measured on the engine, 8 onsets against a period of 6:
+
+```
+cycle 0 atk: 0.004 0.030 0.090 0.180 0.090 0.030 0.004 0.030
+cycle 1 atk: 0.090 0.180 0.090 0.030 0.004 0.030 0.090 0.180
+cycle 2 atk: 0.090 0.030 0.004 0.030 0.090 0.180 0.090 0.030
+```
+
+It **walks** — the same property `Every 3 0` pins in the conformance golden,
+put to a use it was not built for. At 23 onsets a cycle the figure repeats only
+every six bars.
+
+### If six steps is not enough
+
+Then it is a **modulator field on `Rule`**, not a new `Op`:
+
+```purescript
+type Rule = { when :: When, op :: Op, mod :: Maybe Modulator }
+type Modulator = { period :: Int, phase :: Int, depth :: Number, shape :: Shape }
+```
+
+`Op` stays the target selector and the modulator computes the amount from the
+ordinal `applies` is already handed. Cycle-addressability survives untouched.
+The cost is a `WireRule` change and a regeneration of the Conspicillum goldens
+— contained, and append-only in the same way the effects were.
+
+**And the shape must be piecewise-linear, not sinusoidal.** `Reef.Numeric.pow`
+is described in the conformance script as "the one transcendental in the
+engine", guarded by its own golden (`betaProbe`) precisely because IEEE 754
+does not mandate a correctly-rounded `pow` and V8 and the BEAM could disagree.
+Adding `sin` would be a second such hazard, in the *hot* path, for a shape
+nobody can distinguish from a triangle once it is modulating an attack time.
+Triangle, ramp, square and a small lookup table are exact integer and dyadic
+arithmetic, hence provably identical on both runtimes. This is a case where the
+cheap option is also the correct one.
+
 ## Open questions
 
 - Does the selector query language want to be mini-notation, a predicate
