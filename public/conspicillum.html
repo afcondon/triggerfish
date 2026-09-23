@@ -955,6 +955,27 @@ const PRESETS = [
   chain:{room:0.29,size:0.83,dry:0.2,grsnpitch:46,grsndecay:5.7,grsnbright:0.9},
   q:{} },
 
+{ name:"Brion Gysin Speeding", tag:"found", blurb:"23 bursts a bar, each sounding for a seventh of the slot it sits in",
+  // Found at the rig 2026-09-23, and it is the gate/envelope split used the
+  // other way round. The resonator presets open a long gate so a long tail has
+  // room to ring; this opens a long gate — 1.545 s — and then lets the ASR
+  // envelope sound for 0.215 s of it, so SIX SEVENTHS of every slot is
+  // silence. Twenty-three of those a bar is about five seconds of audible
+  // speech crammed into two, arriving as bursts rather than as a wash.
+  //
+  // `tremolo` 6.5 at depth 0.85 then chops what is left, and `coarse` 7 gives
+  // it the grain of a bad transfer. Nothing here is reversed or transposed:
+  // the sense of speed is entirely the density and the envelope.
+  //
+  // Everything in this one is engaged — the first found preset with no dial
+  // left doing nothing.
+  set:"burroughs-junky", n:0, whole:false,
+  cloud:{sustain:1.545,position:0.3,spray:0.25},
+  on:{mode:"euclid",k:23,n:29}, v:{speed:1,gain:0.9,pan:0.5,accel:0}, rules:[],
+  fx:{coarse:7,lpf:7100,res:0.25,tremolo:6.5,tremdepth:0.85,
+      atk:0.055,hold:0.11,rel:0.05,curve:-2},
+  chain:{room:0.55,size:0.85,dry:0.2}, q:{} },
+
 // ── the effects ───────────────────────────────────────────────────────────
 // Op numbers, for reading the rules below: 0 speed, 1 gain, 2 length, 3 pan,
 // 4 accelerate, 5 shape, 6 crush, 7 coarse, 8 lpf, 9 hpf, 10 bpf, 11 res,
