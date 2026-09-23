@@ -953,16 +953,160 @@ a small peak envelope (64 or 128 points) per sample and store it. Cheap to
 add, and it is the single change that would most improve the pump.
 
 **Arbhar and Morphagene generate grains differently, and we have only one of
-them.** Arbhar sprays grains of a *chosen size* around a position: size and
-position are independent, which is what `Cloud { sustain, position, spray }`
-models. Morphagene's window is defined by *splice boundaries* — the size IS a
+them.** Enumerated properly below, because it turns out to be one axis rather
+than a list of module behaviours.
+
+*(An earlier draft of this paragraph said Morphagene's grain size "is a
 consequence of where you are, because the material is divided rather than
-scanned. We model only the first. A third exists too: size derived from the
-material's own structure (onset to next onset, or decay time), which Quadrat
-measures already and nothing reads. Worth enumerating the modes properly and
-making the grain-window rule a **choice** rather than the one hardcoded
-formula — it is probably the deepest of the three ideas here, because it
-changes what a corpus is *for*.
+scanned". That is wrong: Gene Size is a continuous control like Arbhar's. The
+real difference is stated below and is more useful.)*
+
+### What is a grain's length measured against?
+
+| | measured against | so grain length is a property of |
+|---|---|---|
+| Arbhar, Clouds, Beads, Nebulae | absolute time (ms, under CV) | the **instrument** |
+| Morphagene | a fraction of the current **splice** | the **material** |
+| *structure-derived* (we have none) | a fraction of a **measured** property | what the material **did** |
+| *whole-unit* | the entire sample | — not granular; a sampler |
+
+Morphagene is **two-level**: the reel is marked into splices, and a gene is a
+window `[slide, slide + geneSize]` *within the current splice*. Gene Size is
+continuous, but it is relative — one knob position is a different absolute
+length on every splice, so the material's own division modulates the grain.
+
+**We are at the top row, and the second row is one line away.**
+`Corpus.grainAt` computes `w = sustain / secs`: you hand it seconds and it
+divides by the sample length to get the window. Morphagene's behaviour is the
+same line with the division on the other side. Expressed as a fraction, a cloud
+drawing from an 11.3 s chord hit and a 0.4 s drum hit would get proportional
+grains from each with no further work.
+
+**A Quadrat set is already a marked tape, and we do not use it as one.** The
+set directory *is* the splice list and `n` *is* the splice selector — so we
+already have Morphagene's outer level, and then we do Arbhar's spray *inside*
+it. Neither module does both. The part that is genuinely ours is that the two
+levels can be driven by different things: **harmonic fit picks the gene, spray
+picks within it.** Morphagene picks a splice with a knob; we pick one by asking
+which recorded voicing answers the chord.
+
+**And `position` was hiding an instrument.** With anchor-car sample 0 — 11.33 s
+long, measured decay 5.07 s — the default `sustain` of 0.12 s is **one per cent
+of a chord hit**, and `position` 0.35 put it about four seconds in: deep in the
+tail, no transient, every grain a sustained wash. At `position` near 0 every
+grain is the chord being *struck*. Same code, same material, two completely
+different instruments, and until the default moved there was no way to find the
+boundary except by dragging blind. That is the waveform idea (above) earning
+its place.
+
+So the grain-window rule should be a **choice**, not the one hardcoded formula:
+roughly `Sprayed` (today), `Relative` (Morphagene), `Struck { frac }` (anchored
+at the attack, length a fraction of measured `decay`), `Whole`. Note what the
+last one does when onsets are *sparse*: one or two grains a cycle, each an
+entire hit, with the progression driver changing the harmonic target every
+bar — the cloud becomes a chord instrument playing a different **recorded
+voicing** per chord. That is about five lines from here and has never been
+tried.
+
+### Where the other granulators sit
+
+**Clouds** and **Beads** are the top row with a better envelope. Beads is the
+closest of any of them to us: its density is a *probability per grain* rather
+than a rate, which is exactly our `Chance` rule — we go further only because a
+grain has an ordinal, which also gives us `Every`. What both have and we do not
+is **spectral** freezing and smearing, a different engine entirely, and one
+SuperDirt does not hand us.
+
+**Borderlands** is the interesting one, and not for the grain rule. You place
+sound rectangles on a canvas and place clouds on top of them; a cloud grains
+from whatever it overlaps. **Its selection is geometric where ours is
+semantic** — a filter over measurements plus harmonic fit. Same job from
+opposite ends, and theirs is direct manipulation where ours is a form, which is
+the sharpest available argument about what C4 should actually look like. Its
+multiplicity is not an engine change for us at all: several independent
+generators is N `reef_conspicillum_voice` processes, each with its own query
+and spec. That is a supervisor question, not a cloud question.
+
+## Grain envelopes, and the resonator we do not have
+
+*Raised 2026-09-23: "applying really interesting envelopes to the grains,
+especially in combination with a resonator to get tones derived from the
+sample — could we use simulated pluck harmonics?"*
+
+### Envelopes: more of this is already reachable than I said
+
+**Correction to the effects section above, which excluded `grenvelo` on the
+grounds that "`Cloud` already owns the grain window".** That conflated two
+different things. The *window* says which audio a grain is cut from; the
+*envelope* says how that audio fades in and out. They are orthogonal, and
+SuperDirt exposes both per event:
+
+- `grenvelo` — `tilt` (where the peak sits, so 0.9 is a reverse swell),
+  `plat` (plateau width, so a grain can be a burst rather than a bump),
+  `curve` (exponential against linear).
+- `envelope` — `attack`, `hold`, `release`, `curve`, gated on attack *or*
+  release being present.
+
+Both should be wired; they are the same append-only `Op` pattern as the eleven
+already done, and `grenvelo` in particular is the difference between a cloud of
+bumps and a cloud of *articulated* events.
+
+One shape is reachable **today with no code at all**: set `tremolorate` to
+`N / sustain` and the grain pulses N times inside its own length. A multi-lobe
+grain, out of an effect that was wired for something else.
+
+### The resonator: the menu is not fixed, because we own the boot file
+
+Core SuperDirt has no resonator. `dirt_vowel`'s formant bank is the nearest
+thing and it is not general. But `audio/superdirt-daemon.scd` is **ours** —
+`~dirt.start(port, 0 ! 12)` is a line we wrote — so `~dirt.addModule` plus a
+`SynthDef` adds a per-event effect on exactly the same footing as `crush`. The
+eleven we wired are what *shipped*, not what is *possible*.
+
+What to build it from, all in core SuperCollider:
+
+- **`Pluck`** — Karplus-Strong. Excite a delay line with the grain and get a
+  plucked string whose pitch is the delay time. Literally the thing asked for.
+- **`DynKlank`** — a bank of ringing filters at given frequencies, amplitudes
+  and **per-partial decay times**. This is the one that matters, and the reason
+  is the per-partial decay: high partials dying faster than low ones is the
+  single most characteristic property of anything struck or plucked, and *not
+  one granulator on the comparison list has it*, because none of them has a
+  resonator to put it in.
+- `Ringz` / `Formlet` / `CombL` for the cheaper single-band cases.
+
+The tone then comes from the resonator and the *colour* from the grain — which
+is exactly "tones derived from the sample": the recorded chord stops being the
+note and becomes the exciter.
+
+### The join that makes it ours: we already know the notes
+
+A corpus carries `notes :: Array Int` — the MIDI notes really struck — and C5
+already re-ranks the whole corpus per chord. So the resonator can be **tuned to
+the chord being targeted while excited by a grain that does not contain it.**
+
+That directly attacks the problem C4 found and has no other answer for: the
+material is harmonically narrow, E admits 0 of anchor-car's 15 hits, and a
+chord the corpus cannot answer currently produces *silence*. With a tuned
+resonator it produces the chord — in the timbre of whatever the corpus *could*
+offer. The instrument degrades into a different colour instead of into nothing,
+and "your filter excluded everything" stops being a dead end.
+
+### What it will cost, and the cheap variant
+
+This is the **first effect that will actually cost something.** C1 measured
+12,800 grains/sec by the bundle route with DSP headroom to ~25,600; a DynKlank
+of eight partials per grain at 100–200 grains/sec is a different order of UGen
+count, and the ceiling will move. Measure before believing it is free.
+
+So there are two shapes, and both are worth having:
+
+- **per grain** — every grain is its own struck note. Expensive, and the one
+  that makes a cloud into an ensemble.
+- **per orbit**, as a `GlobalDirtEffect` in the chain we just built — the whole
+  cloud excites **one** resonant body. Far cheaper, and arguably the more
+  physical of the two: many grains striking one string is what actually happens
+  when you play an instrument.
 
 ## Open questions
 
