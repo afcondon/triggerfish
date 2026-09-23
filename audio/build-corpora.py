@@ -12,6 +12,7 @@ renumber every sample after it and the cloud would play different audio than
 it named.
 """
 
+import glob
 import json, os, sys
 
 SETS = os.path.expanduser("~/.itajara/quadrat/samples")
@@ -38,9 +39,18 @@ def corpus(name):
 
 def main():
     sets = []
+    orphans = []
     for nm in sorted(os.listdir(SETS)):
         p = os.path.join(SETS, nm, "set.json")
         if not os.path.exists(p):
+            # A directory of audio with no set.json is not nothing — it is a
+            # take that never became a set, and it is INVISIBLE to the surface
+            # while looking perfectly present on disk. Saying so costs one line
+            # and is the difference between "that set isn't in the dropdown"
+            # being a mystery and being a fact.
+            wavs = len(glob.glob(os.path.join(SETS, nm, "*.wav")))
+            if wavs:
+                orphans.append((nm, wavs))
             continue
         try:
             c = corpus(nm)
@@ -48,6 +58,7 @@ def main():
             print(f"  skipped {nm}: {e}", file=sys.stderr)
             continue
         if not c["samples"]:
+            print(f"  skipped {nm}: set.json lists no samples", file=sys.stderr)
             continue
         sets.append(c)
         n = len(c["samples"])
@@ -57,6 +68,11 @@ def main():
 
     out = os.path.normpath(OUT)
     json.dump({"sets": sets}, open(out, "w"))
+    if orphans:
+        print("\naudio with no set.json — present on disk, absent from the surface:")
+        for nm, n in orphans:
+            print(f"  {nm:<36}{n} wav{'s' if n != 1 else ''}")
+
     print(f"\nwritten: {out}  ({os.path.getsize(out)} bytes, {len(sets)} sets)")
 
 
