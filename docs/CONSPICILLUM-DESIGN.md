@@ -840,9 +840,12 @@ why.
 *Surveyed 2026-09-22, from the installed quark, in answer to "do we have access
 to the reverb, delay, shred, distortion type features?"*
 
-Yes to all of it, and **none of it is wired**. `encode_dirt_play` sends a fixed
-thirteen parameters and pins `orbit` to 0, so a Conspicillum grain currently
-reaches no effect at all.
+Yes to all of it. **Wired 2026-09-23**; what follows is the survey that decided
+the shape, and the "how it was done" section after it records what the wiring
+turned out to cost.
+
+*(Before that date: `encode_dirt_play` sent a fixed thirteen parameters and
+pinned `orbit` to 0, so a grain reached no effect at all.)*
 
 What the installed SuperDirt actually offers splits in two, and the split is
 the whole design point:
@@ -870,6 +873,51 @@ The reach is three places and append-only at every one: `Emit` (reef),
 `encode_dirt_play` (erl), and new `Op` constructors from 5 up. Nothing already
 on the wire changes meaning.
 
+### How it was wired, and the two rules that fell out
+
+Built 2026-09-23. `Op` runs to 15 (`shape crush coarse lpf hpf bpf res vowel
+pshift tremolo phaser`), all **absolute** rather than multiplicative — you
+cannot multiply into an effect that is off, so a rule reads "engage this on the
+grains I select". `Spec` gained `fx :: Fx` and `chain :: Chain`; `Emit` carries
+both; the three cross-runtime goldens stayed byte-identical on every column
+they already pinned, and the new ones agree node-vs-BEAM.
+
+**Zero is off, for every per-event effect — and this is forced, not chosen.**
+Every per-event module in SuperDirt's `core-modules.scd` is gated on its
+parameter being **present in the event** (`{ ~cutoff.notNil }`), never on its
+value. So there is no neutral number: an `lpf` of 0 is a filter at 0 Hz, which
+is silence, not "no filter". The encoder must omit the key, and zero is what
+tells it to — out of musical range for a cutoff, a rate, a bit depth and a
+pitch ratio alike, so it can carry "absent" without colliding with anything a
+player might mean. The consequence worth keeping: a dry cloud encodes exactly
+the thirteen parameters it always did and instantiates no synth, so C1's
+measured 12,800 grains/sec ceiling is untouched.
+
+**The per-ORBIT chain follows the opposite rule, and must be sent always.**
+`GlobalDirtEffect:set/1` keeps state across events and only ever *resumes*,
+never pauses. A reverb once told `room 0.6` keeps reverberating for the life of
+the orbit; ceasing to send `room` does not stop it, sending `room 0` does. So
+the whole chain rides on every grain — which costs nothing, because the effect
+diffs each parameter against its own state and emits OSC only on a change. Had
+we omitted zeros here for symmetry with `Fx`, "dry" would have become
+unreachable the moment anything had been wet: a bug audible only as "the reverb
+won't go away", and attributed to anything but the encoder.
+
+Two smaller findings. `vowel` rides as an **index** 1..5 rather than a string,
+so a rule's payload stays one Number — and it works at all only because sclang
+decodes OSC string arguments as **Symbols**, which is what `~dirt.vowels` is
+keyed by; an actual String would miss every entry and silently do nothing. And
+one `res` knob reaches two SuperDirt keys (`resonance`, `hresonance`), because
+three resonance knobs would be three knobs nobody turns.
+
+**Left out deliberately:** `grenvelo` (it is a grain-envelope shape keyed on
+`tilt`/`plat`, and `Cloud` already owns the grain window — two things shaping
+one envelope from different layers is a fight, not a feature), and per-grain
+`orbit`. The second is the interesting one: a rule that moved single grains
+between orbits would drag the chain settings with them and configure both
+chains identically, which is the opposite of the point. Reaching a *second*
+chain needs a second `Chain` in the spec, not an `Op`.
+
 ## Out of scope — do not let these ride along
 
 - **No sample editing.** msm owns the library; Quadrat owns manufacture.
@@ -879,6 +927,42 @@ on the wire changes meaning.
   would quietly turn it back into Sufflamen.
 - **No hardware lowering.** The Arbhar/Morphagene CV cards are Rhinecanthus's
   problem, in a different doc.
+
+## C4 surface — ideas banked from the pump
+
+*Raised 2026-09-23, playing the pump. Recorded rather than built: the pump is
+scaffolding and these are arguments about what the real surface should be.*
+
+**Two euclids, one per side.** The rig already has euclidean widgets (Balistes,
+`polyeuclid`); the pump grows its own cheap one. Reuse them instead — and make
+it **two**, one per stereo side, in three modes: locked together, free, or
+*alternating* locked (the same pattern, offset so the sides trade). That makes
+`pan` a property of *which pattern a grain came from* rather than a slider, and
+it is a shape the current single `onsets` array cannot express at all: the spec
+would need onsets to carry a side, or two onset lists. Worth doing, and it is a
+protocol change, not a UI one.
+
+**Position needs a waveform behind it.** A chord hit is eleven seconds of short
+attack and very long tail, so `position` 0.35 is deep in the decay and the
+default should be the *start*. But the real fix is not a better default — it is
+that a position slider over an unseen eleven seconds is a guess. A small
+waveform under the control, with the read head and the spray width drawn on it,
+turns the guess into aiming. **This needs data we do not currently bake:**
+`build-corpora.py` copies measurements, not audio, so it would have to compute
+a small peak envelope (64 or 128 points) per sample and store it. Cheap to
+add, and it is the single change that would most improve the pump.
+
+**Arbhar and Morphagene generate grains differently, and we have only one of
+them.** Arbhar sprays grains of a *chosen size* around a position: size and
+position are independent, which is what `Cloud { sustain, position, spray }`
+models. Morphagene's window is defined by *splice boundaries* — the size IS a
+consequence of where you are, because the material is divided rather than
+scanned. We model only the first. A third exists too: size derived from the
+material's own structure (onset to next onset, or decay time), which Quadrat
+measures already and nothing reads. Worth enumerating the modes properly and
+making the grain-window rule a **choice** rather than the one hardcoded
+formula — it is probably the deepest of the three ideas here, because it
+changes what a corpus is *for*.
 
 ## Open questions
 

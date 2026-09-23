@@ -78,6 +78,11 @@
     overflow:auto; font-size:11px; line-height:1.4; max-height:300px; }
   svg { display:block; width:100%; height:38px; margin:2px 0 6px; }
 
+  .fxgrid { display:grid; grid-template-columns:repeat(auto-fit,minmax(224px,1fr));
+    gap:4px 22px; }
+  .fxgrid .row { grid-template-columns:70px 1fr 52px; margin-bottom:6px; }
+  .fxgrid .row.hot label { color:var(--accent); font-weight:600; }
+
   .presetbar { display:flex; flex-wrap:wrap; gap:7px; }
   .preset { border:1px solid var(--line); background:#fff; cursor:pointer;
     font:inherit; font-size:12px; padding:6px 11px; text-align:left; }
@@ -135,10 +140,13 @@
     <p class="why">Where in the source each grain is taken, and how long it is.
       <b>spray</b> randomises the position per grain — 0 is a fixed read head.</p>
     <div class="row"><label>sustain</label><input type="range" id="sustain" min="0.01" max="0.6" step="0.005" value="0.12"><output id="o_sustain"></output></div>
-    <div class="row"><label>position</label><input type="range" id="position" min="0" max="1" step="0.005" value="0.35"><output id="o_position"></output></div>
+    <div class="row"><label>position</label><input type="range" id="position" min="0" max="1" step="0.005" value="0.04"><output id="o_position"></output></div>
     <div class="row"><label>spray</label><input type="range" id="spray" min="0" max="1" step="0.005" value="0.5"><output id="o_spray"></output></div>
     <p class="hint">A grain's window must be as long in the source as
-      <i>sustain</i> is in time, or it is transposed. The engine handles that.</p>
+      <i>sustain</i> is in time, or it is transposed. The engine handles that.
+      Opens near <b>0</b> because a chord hit is a short attack and a very long
+      tail — a slider over eleven unseen seconds is a guess, and the fix is a
+      waveform behind it, not a better default.</p>
   </section>
 
   <section class="panel">
@@ -180,7 +188,28 @@
     <button class="alt" id="addrule" style="padding:5px 12px;font-size:12px">+ rule</button>
     <p class="hint">op <b>length</b> scales that grain's sustain; <b>speed</b> −1
       is the reversed grain. <i>chance</i> re-rolls per grain from the cycle seed,
-      so a cycle is reproducible and cycle 400 is directly addressable.</p>
+      so a cycle is reproducible and cycle 400 is directly addressable.
+      Ops from <b>shape</b> down are the effects, and they are absolute: a rule
+      <i>engages</i> an effect on the grains it selects.</p>
+  </section>
+
+  <section class="panel" style="grid-column:1/-1">
+    <h2>Effects — per GRAIN</h2>
+    <p class="why">These are SuperDirt's per-event modules, and every one is
+      addressable by a rule above. <b>Zero is off</b>: the encoder drops it and
+      no synth is made, so a dry cloud costs what it always did. <b>pshift</b>
+      is the one to try first — it transposes without changing the grain's
+      length, which a tape-speed read head structurally cannot do.</p>
+    <div class="fxgrid" id="fxgrid"></div>
+  </section>
+
+  <section class="panel" style="grid-column:1/-1">
+    <h2>Chain — per ORBIT</h2>
+    <p class="why">One reverb, one delay, one leslie for the whole cloud — not
+      per grain, and so not rule-addressable. These are sent with every grain
+      because SuperDirt's global effects only ever resume: a reverb once told
+      <i>room</i> keeps going until something tells it <b>room 0</b>.</p>
+    <div class="fxgrid" id="chgrid"></div>
   </section>
 
 </div>
@@ -389,7 +418,12 @@ function onsets() {
 }
 
 // ── rules ───────────────────────────────────────────────────────────────────
-const OPS = ["speed","gain","length","pan","accelerate"];
+// EXACTLY Reef.Conspicillum.Protocol.opToWire's numbering, in order. The index
+// in this array IS the wire int, so this list is append-only too: inserting a
+// name would not fail a decode, it would silently turn one figure into another.
+const OPS = ["speed","gain","length","pan","accelerate",
+             "shape","crush","coarse","lpf","hpf","bpf","res",
+             "vowel","pshift","tremolo","phaser"];
 let rules = [];
 function addRule(r) {
   rules.push(r || { when:1, everyN:3, everyK:0, chance:0.5, op:0, amount:-1 });
@@ -429,6 +463,79 @@ function drawRules() {
   });
 }
 
+// ── effects, as a table ─────────────────────────────────────────────────────
+// Twenty-four sliders written out by hand would be twenty-four chances to get
+// an id wrong, and the ranges are the only interesting part. So the controls
+// are generated from this, and `scene()` reads the same list back — one place
+// to add an effect when SuperDirt grows one.
+//
+// `def` is the value a preset that says nothing about this effect resets to,
+// which is what stops a mashed preset inheriting a stray reverb from the last.
+const VOWELS = ["off","a","e","i","o","u"];
+const FX_CTRL = [
+  { id:"shape",    lab:"shape",    min:0, max:0.99,  step:0.01, def:0 },
+  { id:"crush",    lab:"crush",    min:0, max:16,    step:0.25, def:0 },
+  { id:"coarse",   lab:"coarse",   min:0, max:32,    step:1,    def:0 },
+  { id:"lpf",      lab:"lpf Hz",   min:0, max:12000, step:50,   def:0, dp:0 },
+  { id:"hpf",      lab:"hpf Hz",   min:0, max:6000,  step:25,   def:0, dp:0 },
+  { id:"bpf",      lab:"bpf Hz",   min:0, max:8000,  step:25,   def:0, dp:0 },
+  { id:"res",      lab:"res",      min:0, max:0.9,   step:0.01, def:0,
+    gate:["lpf","hpf","vowel"] },
+  { id:"vowel",    lab:"vowel",    min:0, max:5,     step:1,    def:0,
+    fmt:(v) => VOWELS[v] || "off" },
+  { id:"pshift",   lab:"pshift",   min:0, max:3,     step:0.01, def:0 },
+  { id:"tremolo",  lab:"trem Hz",  min:0, max:20,    step:0.1,  def:0, dp:1 },
+  { id:"tremdepth",lab:"trem dep", min:0, max:1,     step:0.01, def:0.5, gate:"tremolo" },
+  { id:"phaser",   lab:"phase Hz", min:0, max:10,    step:0.05, def:0 },
+  { id:"phdepth",  lab:"phase dep",min:0, max:1,     step:0.01, def:0.5, gate:"phaser" },
+];
+// `size`, `lrate` and `lsize` are SHAPES and keep SuperDirt's own defaults; the
+// AMOUNTS (room, delay, leslie) are what hold the chain silent at rest — which
+// is exactly why they carry a `gate`: a shape at 0.4 is not "doing something"
+// when its amount is zero, and a row that says otherwise is a readout that
+// lies. `gate` names the control (or controls) that actually decide.
+const CH_CTRL = [
+  { id:"room",         lab:"room",     min:0, max:1,   step:0.01, def:0 },
+  { id:"size",         lab:"size",     min:0, max:1,   step:0.01, def:0.4, gate:"room" },
+  { id:"dry",          lab:"dry",      min:0, max:1,   step:0.01, def:0, gate:"room" },
+  { id:"delay",        lab:"delay",    min:0, max:1,   step:0.01, def:0 },
+  { id:"delaytime",    lab:"dly time", min:0, max:2,   step:0.005,def:0.25, dp:3, gate:"delay" },
+  { id:"delayfeedback",lab:"dly fb",   min:0, max:0.98,step:0.01, def:0.4, gate:"delay" },
+  { id:"lock",         lab:"lock",     min:0, max:1,   step:1,    def:0, gate:"delay",
+    fmt:(v) => v >= 0.5 ? "cycle" : "secs" },
+  { id:"leslie",       lab:"leslie",   min:0, max:1,   step:0.01, def:0 },
+  { id:"lrate",        lab:"les rate", min:0, max:20,  step:0.1,  def:6.7, dp:1, gate:"leslie" },
+  { id:"lsize",        lab:"les size", min:0, max:1,   step:0.01, def:0.3, gate:"leslie" },
+];
+
+function fxRow(pre, c) {
+  return `<div class="row" id="r_${pre}${c.id}">`
+    + `<label>${c.lab}</label>`
+    + `<input type="range" id="${pre}${c.id}" min="${c.min}" max="${c.max}"`
+    + ` step="${c.step}" value="${c.def}">`
+    + `<output id="o_${pre}${c.id}"></output></div>`;
+}
+function buildFx() {
+  document.getElementById("fxgrid").innerHTML =
+    FX_CTRL.map(c => fxRow("fx_", c)).join("");
+  document.getElementById("chgrid").innerHTML =
+    `<div class="row"><label>orbit</label>`
+    + `<input type="number" id="ch_orbit" min="0" max="11" step="1" value="0"`
+    + ` style="grid-column:2/4"></div>`
+    + CH_CTRL.map(c => fxRow("ch_", c)).join("");
+}
+buildFx();
+
+const readGroup = (list, pre) => Object.fromEntries(
+  list.map(c => [c.id, +document.getElementById(pre + c.id).value]));
+
+function setGroup(list, pre, from) {
+  list.forEach(c => {
+    const v = (from && from[c.id] !== undefined) ? from[c.id] : c.def;
+    document.getElementById(pre + c.id).value = v;
+  });
+}
+
 // ── the scene ───────────────────────────────────────────────────────────────
 function scene() {
   const whole = document.getElementById("whole").checked;
@@ -458,6 +565,10 @@ function scene() {
       gain: +document.getElementById("gain").value,
       pan: +document.getElementById("pan").value,
       accelerate: +document.getElementById("accel").value,
+      fx: readGroup(FX_CTRL, "fx_"),
+      chain: Object.assign(
+        { orbit: +document.getElementById("ch_orbit").value },
+        readGroup(CH_CTRL, "ch_")),
     },
     seed: +document.getElementById("seed").value,
   };
@@ -475,6 +586,30 @@ function render() {
   for (const id of ["sustain","position","spray","speed","gain","pan","accel","count","ek","en"]) {
     const el = document.getElementById(id), out = document.getElementById("o_" + id);
     if (el && out) out.textContent = (+el.value).toFixed(id === "count" || id === "ek" || id === "en" ? 0 : 2);
+  }
+  // The effect readouts, plus the one thing this page can say that a pile of
+  // sliders cannot: WHICH of them are actually doing anything. Zero is off, so
+  // "off" is a fact the row can show rather than a number you have to know the
+  // convention to read.
+  // A rule can engage an effect the base slider leaves at zero — the Formant
+  // choir's vowels arrive entirely from rules — so `res` would read cold while
+  // being the thing shaping them. The gate has to see the rules too.
+  const ruleOn = new Set(rules.filter(r => r.amount > 0).map(r => OPS[r.op]));
+  for (const [list, pre] of [[FX_CTRL,"fx_"], [CH_CTRL,"ch_"]]) {
+    for (const c of list) {
+      const v = +document.getElementById(pre + c.id).value;
+      document.getElementById("o_" + pre + c.id).textContent =
+        c.fmt ? c.fmt(v) : v.toFixed(c.dp === undefined ? 2 : c.dp);
+      // Hot means ENGAGED, not merely non-zero: a depth, a room size or a
+      // resonance is inert until the amount it rides on is up. One rule, no
+      // exceptions — this control is above zero AND something it depends on
+      // is too, where `gate` names the dependency and defaults to itself.
+      const g = c.gate ? [].concat(c.gate) : [c.id];
+      const live = v > 0 && g.some(id =>
+        +document.getElementById(pre + id).value > 0
+        || (pre === "fx_" && ruleOn.has(id)));
+      document.getElementById("r_" + pre + c.id).classList.toggle("hot", live);
+    }
   }
   const mode = document.getElementById("onmode").value;
   document.getElementById("r_count").hidden = mode !== "even";
@@ -604,6 +739,83 @@ const PRESETS = [
   on:{mode:"euclid",k:9,n:16}, v:{speed:1,gain:0.7,pan:0.5,accel:0},
   rules:[{when:1,everyN:4,everyK:2,chance:0.5,op:0,amount:-1}], q:{} },
 
+// ── the effects ───────────────────────────────────────────────────────────
+// Op numbers, for reading the rules below: 0 speed, 1 gain, 2 length, 3 pan,
+// 4 accelerate, 5 shape, 6 crush, 7 coarse, 8 lpf, 9 hpf, 10 bpf, 11 res,
+// 12 vowel, 13 pshift, 14 tremolo, 15 phaser.
+
+{ name:"Crushed every fifth", tag:"fx", blurb:"the headline \u2014 one grain in five, bitcrushed",
+  set:AC, n:0, whole:true, cloud:{sustain:0.11,position:0.4,spray:0.55},
+  on:{mode:"even",count:20}, v:{speed:1,gain:0.8,pan:0.5,accel:0},
+  rules:[{when:1,everyN:5,everyK:0,chance:0.5,op:6,amount:3}],
+  fx:{}, chain:{room:0.25,size:0.5}, q:{} },
+
+{ name:"Pitch shadow", tag:"fx", blurb:"a fifth up and an octave down, in the SAME time",
+  set:AC, n:0, whole:true, cloud:{sustain:0.16,position:0.35,spray:0.45},
+  on:{mode:"even",count:12}, v:{speed:1,gain:0.8,pan:0.5,accel:0},
+  // pshift is the one speed cannot do: these grains are transposed and still
+  // exactly as long as their neighbours.
+  rules:[{when:1,everyN:3,everyK:0,chance:0.5,op:13,amount:1.5},
+         {when:1,everyN:7,everyK:2,chance:0.5,op:13,amount:0.5}],
+  fx:{}, chain:{room:0.35,size:0.6}, q:{} },
+
+{ name:"Formant choir", tag:"fx", blurb:"a, i, o, u \u2014 one vowel per grain, in rotation",
+  set:LC, n:0, whole:true, cloud:{sustain:0.22,position:0.4,spray:0.5},
+  on:{mode:"even",count:8}, v:{speed:1,gain:0.85,pan:0.5,accel:0},
+  rules:[{when:1,everyN:4,everyK:0,chance:0.5,op:12,amount:1},
+         {when:1,everyN:4,everyK:1,chance:0.5,op:12,amount:3},
+         {when:1,everyN:4,everyK:2,chance:0.5,op:12,amount:4},
+         {when:1,everyN:4,everyK:3,chance:0.5,op:12,amount:5}],
+  fx:{res:0.45}, chain:{room:0.5,size:0.75,dry:0.15}, q:{} },
+
+{ name:"Cathedral", tag:"fx", blurb:"four long grains a cycle into a very large room",
+  set:AC, n:0, whole:true, cloud:{sustain:0.45,position:0.25,spray:0.3},
+  on:{mode:"even",count:4}, v:{speed:1,gain:0.75,pan:0.5,accel:0}, rules:[],
+  fx:{lpf:3500,res:0.1}, chain:{room:0.85,size:0.95,dry:0.25}, q:{} },
+
+{ name:"Dub chamber", tag:"fx", blurb:"delay LOCKED to the cycle, so it stays in time",
+  set:AC, n:0, whole:true, cloud:{sustain:0.09,position:0.4,spray:0.6},
+  on:{mode:"euclid",k:5,n:16}, v:{speed:1,gain:0.8,pan:0.5,accel:0},
+  rules:[{when:2,everyN:0,everyK:0,chance:0.4,op:3,amount:0.92},
+         {when:1,everyN:4,everyK:2,chance:0.5,op:9,amount:900}],
+  fx:{}, chain:{delay:0.6,delaytime:0.375,delayfeedback:0.72,lock:1,room:0.2}, q:{} },
+
+{ name:"Shredder", tag:"fx", blurb:"decimate, crush and distort \u2014 all three at once",
+  set:DR, n:0, whole:true, cloud:{sustain:0.05,position:0.1,spray:0.4},
+  on:{mode:"euclid",k:11,n:16}, v:{speed:1,gain:0.55,pan:0.5,accel:0.2},
+  rules:[{when:1,everyN:3,everyK:1,chance:0.5,op:7,amount:12},
+         {when:2,everyN:0,everyK:0,chance:0.3,op:0,amount:-1}],
+  fx:{shape:0.65,crush:3,lpf:6000,res:0.2}, chain:{room:0.15}, q:{} },
+
+{ name:"Filter rain", tag:"fx", blurb:"every grain lands in a different band",
+  set:LC, n:0, whole:true, cloud:{sustain:0.07,position:0.5,spray:0.95},
+  on:{mode:"even",count:28}, v:{speed:1,gain:0.65,pan:0.5,accel:0},
+  // Three chance rules on ONE field. Later ones win where they overlap, so the
+  // band a grain gets is itself a draw from the cycle seed -- reproducible, and
+  // gone the moment you change the seed.
+  rules:[{when:2,everyN:0,everyK:0,chance:0.4,op:10,amount:400},
+         {when:2,everyN:0,everyK:0,chance:0.3,op:10,amount:1400},
+         {when:2,everyN:0,everyK:0,chance:0.25,op:10,amount:4200},
+         {when:2,everyN:0,everyK:0,chance:0.5,op:3,amount:0.85}],
+  fx:{res:0.35}, chain:{room:0.45,size:0.8,delay:0.25,delaytime:0.125,delayfeedback:0.5,lock:1}, q:{} },
+
+{ name:"Leslie drift", tag:"fx", blurb:"rotary on the chain, phaser on every third grain",
+  set:LC, n:0, whole:true, cloud:{sustain:0.2,position:0.35,spray:0.4},
+  on:{mode:"even",count:6}, v:{speed:1,gain:0.85,pan:0.5,accel:0},
+  rules:[{when:1,everyN:3,everyK:0,chance:0.5,op:15,amount:0.4}],
+  fx:{phdepth:0.8}, chain:{leslie:0.75,lrate:5.2,lsize:0.4,room:0.3}, q:{} },
+
+{ name:"Tape saturation", tag:"fx", blurb:"soft clip and a lid \u2014 nothing per grain at all",
+  set:AC, n:0, whole:true, cloud:{sustain:0.13,position:0.35,spray:0.5},
+  on:{mode:"even",count:16}, v:{speed:1,gain:0.7,pan:0.5,accel:0}, rules:[],
+  fx:{shape:0.45,lpf:5200,res:0.15}, chain:{room:0.2,size:0.5}, q:{} },
+
+{ name:"Tremolo bed", tag:"fx", blurb:"long grains, amplitude-chopped under the cloud",
+  set:LC, n:0, whole:true, cloud:{sustain:0.5,position:0.3,spray:0.25},
+  on:{mode:"even",count:3}, v:{speed:0.5,gain:0.9,pan:0.5,accel:0}, rules:[],
+  fx:{tremolo:6.5,tremdepth:0.85,lpf:2600,res:0.25},
+  chain:{room:0.55,size:0.85,dry:0.2}, q:{} },
+
 // ── the progressions ──────────────────────────────────────────────────────
 { name:"ii \u2013 V \u2013 I in E", tag:"prog", blurb:"leaf-cloud answers all three exactly",
   set:LC, n:0, whole:true, cloud:{sustain:0.11,position:0.4,spray:0.6},
@@ -624,6 +836,16 @@ const PRESETS = [
          {when:1,everyN:5,everyK:0,chance:0.5,op:0,amount:-1}],
   q:{ harmonic:{minFit:0.5,strength:0.95} },
   prog:["C#dim","F#dim","D#m","B7"] },
+
+{ name:"Wet progression", tag:"prog", blurb:"a chord a cycle, through the whole chain",
+  set:LC, n:0, whole:true, cloud:{sustain:0.14,position:0.4,spray:0.6},
+  on:{mode:"even",count:14}, v:{speed:1,gain:0.75,pan:0.5,accel:0},
+  rules:[{when:1,everyN:5,everyK:0,chance:0.5,op:13,amount:2},
+         {when:2,everyN:0,everyK:0,chance:0.25,op:6,amount:4}],
+  fx:{lpf:7000,res:0.2},
+  chain:{room:0.6,size:0.85,dry:0.15,delay:0.3,delaytime:0.25,delayfeedback:0.55,lock:1},
+  q:{ harmonic:{minFit:0.5,strength:0.95} },
+  prog:["F#m(maj7)","B7","E","E"] },
 
 { name:"Everything at once", tag:"prog", blurb:"progression + euclid + chance + reversal",
   set:LC, n:0, whole:true, cloud:{sustain:0.06,position:0.5,spray:1},
@@ -659,6 +881,14 @@ function applyPreset(i) {
   document.getElementById("gain").value  = P.v.gain;
   document.getElementById("pan").value   = P.v.pan;
   document.getElementById("accel").value = P.v.accel;
+
+  // Every control, every time — a preset that says nothing about reverb means
+  // DRY, not "whatever the last one left on". `setGroup` falls back to each
+  // control's own default rather than to the previous value, which is the
+  // whole reason the defaults live in the control table.
+  setGroup(FX_CTRL, "fx_", P.fx);
+  document.getElementById("ch_orbit").value = (P.chain && P.chain.orbit) || 0;
+  setGroup(CH_CTRL, "ch_", P.chain);
 
   rules = JSON.parse(JSON.stringify(P.rules || []));
   Q = { clauses: (P.q && P.q.clauses) || [],
