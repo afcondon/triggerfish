@@ -911,6 +911,23 @@ const PRESETS = [
          delayfeedback:0.4,leslie:0.23,lrate:10.4,lsize:0.09},
   q:{} },
 
+{ name:"Brion Gysin cut-ups", tag:"found", blurb:"one two-second splice per bar, swelling in backwards, out of a 116-second tape",
+  // Found at the rig 2026-09-23, playing the Burroughs reel, and it is the
+  // continuum arriving by itself: ONE grain a cycle, two seconds long, against
+  // a two-second bar. That is not granular at all -- it is a tape splice per
+  // bar, taken from somewhere in 116 seconds of speech and never twice the
+  // same place. Which is the cut-up method with the scissors automated.
+  //
+  // `gtilt` 0.92 is why it works. Every splice swells in BACKWARDS, so the
+  // consonant that would announce a hard edit is under the swell, and the
+  // joins stop sounding like edits. A speech recording cut on the beat with a
+  // percussive envelope would be obviously chopped; this is not.
+  set:"burroughs-junky", n:0, whole:true,
+  cloud:{sustain:2,position:0.2,spray:0.55},
+  on:{mode:"even",count:1}, v:{speed:1,gain:0.8,pan:0.5,accel:0}, rules:[],
+  fx:{lpf:4200,res:0.2,genv:1,gtilt:0.92,gplat:0.05,curve:-3},
+  chain:{room:0.65,size:0.9,dry:0.2}, q:{} },
+
 // ── the effects ───────────────────────────────────────────────────────────
 // Op numbers, for reading the rules below: 0 speed, 1 gain, 2 length, 3 pan,
 // 4 accelerate, 5 shape, 6 crush, 7 coarse, 8 lpf, 9 hpf, 10 bpf, 11 res,
