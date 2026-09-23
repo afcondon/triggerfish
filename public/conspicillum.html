@@ -245,6 +245,15 @@
   <pre id="json"></pre>
 </details>
 
+<details id="presetbox">
+  <summary>This position, as a preset</summary>
+  <p class="hint">Paste into <code>PRESETS</code> in this file. Everything the
+    page knows and the scene does not — the progression, the follow mode, which
+    single sample, the manual onsets — which is why reading the pushed scene
+    back is not enough to keep a position you liked.</p>
+  <pre id="presetout"></pre>
+</details>
+
 <footer>
   <button class="go" id="play">Play</button>
   <button class="alt" id="stop">Stop</button>
@@ -252,6 +261,7 @@
     <input type="checkbox" id="live" checked style="width:auto">
     live — push edits while playing
   </label>
+  <button class="alt" id="keep" title="write this position out as a PRESETS entry">Keep as preset</button>
   <span class="status" id="status">—</span>
 </footer>
 
@@ -884,6 +894,23 @@ const PRESETS = [
   on:{mode:"euclid",k:9,n:16}, v:{speed:1,gain:0.7,pan:0.5,accel:0},
   rules:[{when:1,everyN:4,everyK:2,chance:0.5,op:0,amount:-1}], q:{} },
 
+// ── found at the rig ──────────────────────────────────────────────────────
+// Made by hand on 2026-09-23, the first evening any of this was audible.
+// Kept because it is not a position any of the written presets would have
+// reached: ONE sample rather than a corpus, read from the very start so every
+// grain carries the chord's attack, grains longer than a second so they
+// overlap into a sustain rather than a texture, and the whole thing through a
+// mild saturation into a slow leslie. The written presets all reach for the
+// cloud; this one reaches for the instrument.
+{ name:"Andrew's chord", tag:"found", blurb:"one hit, long grains from the attack, saturated into a slow leslie",
+  set:AC, n:0, whole:false, cloud:{sustain:1.62,position:0,spray:0.185},
+  on:{mode:"manual",manual:"0, 0.25, 0.5, 0.75"},
+  v:{speed:1,gain:1.02,pan:0.5,accel:0}, rules:[],
+  fx:{shape:0.45,lpf:5500},
+  chain:{room:0.37,size:0.47,dry:0.29,delay:0.22,delaytime:0.31,
+         delayfeedback:0.4,leslie:0.23,lrate:10.4,lsize:0.09},
+  q:{} },
+
 // ── the effects ───────────────────────────────────────────────────────────
 // Op numbers, for reading the rules below: 0 speed, 1 gain, 2 length, 3 pan,
 // 4 accelerate, 5 shape, 6 crush, 7 coarse, 8 lpf, 9 hpf, 10 bpf, 11 res,
@@ -1107,6 +1134,10 @@ function applyPreset(i) {
     document.getElementById("ek").value = P.on.k;
     document.getElementById("en").value = P.on.n;
   }
+  // The onset TEXT, not the resolved onsets. A preset that stored the resolved
+  // list would come back as an unreadable row of decimals and could not be
+  // edited as the thing it was typed as.
+  if (P.on.mode === "manual") document.getElementById("manual").value = P.on.manual;
 
   document.getElementById("speed").value = P.v.speed;
   document.getElementById("gain").value  = P.v.gain;
@@ -1135,6 +1166,76 @@ function applyPreset(i) {
   if (playing) push();           // a mash lands immediately, not on the debounce
 }
 
+// ── keeping a position ──────────────────────────────────────────────────────
+// A found position is the whole point of a pump, and until this existed the
+// only way to keep one was to read it out of the console by hand — which lost
+// the manual onsets the first time it was tried, because the scene on the wire
+// carries RESOLVED onsets and not the text they came from.
+//
+// So this serialises what the PAGE knows, not what the wire carries: the
+// progression, the follow mode, which single sample, and the onset text. In
+// the same shape as the literals above, so it pastes straight in.
+function asPreset(name) {
+  const g = (id) => document.getElementById(id);
+  const mode = g("onmode").value;
+  const on = { mode };
+  if (mode === "even") on.count = +g("count").value;
+  if (mode === "euclid") { on.k = +g("ek").value; on.n = +g("en").value; }
+  if (mode === "manual") on.manual = g("manual").value;
+
+  // Only the effects that are OFF their default, so a preset reads as what it
+  // does rather than as twenty-five numbers. `setGroup` fills the rest back in.
+  const trim = (list, pre) => {
+    const out = {};
+    for (const c of list) {
+      const v = +g(pre + c.id).value;
+      if (v !== c.def) out[c.id] = v;
+    }
+    return out;
+  };
+  const chain = trim(CH_CTRL, "ch_");
+  if (+g("ch_orbit").value !== 0) chain.orbit = +g("ch_orbit").value;
+
+  const P = {
+    name: name || "Untitled",
+    blurb: "",
+    set: corpus ? corpus.name : "",
+    n: chosen,
+    whole: g("whole").checked,
+    cloud: { sustain: +g("sustain").value, position: +g("position").value,
+             spray: +g("spray").value },
+    on,
+    v: { speed: +g("speed").value, gain: +g("gain").value,
+         pan: +g("pan").value, accel: +g("accel").value },
+    rules,
+    fx: trim(FX_CTRL, "fx_"),
+    chain,
+    q: { clauses: Q.clauses,
+         weighting: Q.weighting || undefined,
+         harmonic: Q.harmonic
+           ? { minFit: Q.harmonic.minFit, strength: Q.harmonic.strength }
+           : undefined },
+  };
+  if (followMode() !== "off") P.follow = followMode();
+  if (prog.length) P.prog = prog.slice();
+  if (+g("seed").value !== 12345) P.seed = +g("seed").value;
+
+  // JSON.stringify would quote every key; these literals do not, and a preset
+  // you have to reformat before pasting is a preset you do not keep.
+  const lit = (v) => {
+    if (Array.isArray(v)) return "[" + v.map(lit).join(",") + "]";
+    if (v && typeof v === "object")
+      return "{" + Object.entries(v).filter(([, x]) => x !== undefined)
+        .map(([k, x]) => k + ":" + lit(x)).join(",") + "}";
+    if (typeof v === "string") return JSON.stringify(v);
+    if (typeof v === "boolean") return String(v);
+    return String(+v.toFixed(4));
+  };
+  return Object.entries(P).filter(([, x]) => x !== undefined)
+    .map(([k, v]) => "  " + k + ": " + lit(v)).join(",\n")
+    .replace(/^  name/, "{ name");
+}
+
 function drawPresets() {
   document.getElementById("presets").innerHTML = PRESETS.map((P, i) =>
     `<button class="preset" data-i="${i}" title="${P.blurb}">${P.name}` +
@@ -1155,6 +1256,21 @@ setInterval(() => {
   push();
   render();
 }, 80);
+
+document.getElementById("keep").onclick = () => {
+  const name = prompt("Name this position", "Untitled") || "Untitled";
+  const text = asPreset(name) + " },\n";
+  document.getElementById("presetout").textContent = text;
+  document.getElementById("presetbox").open = true;
+  document.getElementById("presetbox").scrollIntoView({ behavior: "smooth" });
+  // Clipboard can be refused (no gesture, no permission, an insecure origin),
+  // and a button that silently copies nothing is worse than one that does not
+  // try. The text is on the page either way, which is the part that matters.
+  if (navigator.clipboard) navigator.clipboard.writeText(text).then(
+    () => { document.getElementById("status").textContent = "preset copied \u2014 and shown below"; },
+    () => { document.getElementById("status").textContent = "preset shown below (clipboard refused)"; });
+  else document.getElementById("status").textContent = "preset shown below";
+};
 
 document.getElementById("addrule").onclick = () => addRule();
 document.getElementById("play").onclick = () => { playing = true; push(); };
