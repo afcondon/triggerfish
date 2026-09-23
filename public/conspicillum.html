@@ -126,9 +126,13 @@
     <p class="why">What the grains are cut from. <b>Whole corpus</b> is the
       Borderlands move — every grain re-picks, so one cloud spans many samples.</p>
     <label class="full"><span>Quadrat set</span><select id="set"></select></label>
-    <label class="full" style="display:flex;gap:7px;align-items:center;margin-bottom:12px">
+    <label class="full" style="display:flex;gap:7px;align-items:center;margin-bottom:6px">
       <input type="checkbox" id="whole" style="width:auto">
       <span style="margin:0">use the whole corpus, not one sample</span>
+    </label>
+    <label class="full" style="display:flex;gap:7px;align-items:center;margin-bottom:12px">
+      <input type="checkbox" id="keepsrc" style="width:auto">
+      <span style="margin:0">keep this source when a preset is mashed</span>
     </label>
     <div class="samples" id="samples"></div>
     <p class="hint" id="srcnote"></p>
@@ -928,6 +932,29 @@ const PRESETS = [
   fx:{lpf:4200,res:0.2,genv:1,gtilt:0.92,gplat:0.05,curve:-3},
   chain:{room:0.65,size:0.9,dry:0.2}, q:{} },
 
+{ name:"Brion Gysin Daleks", tag:"found", blurb:"reversed at a tenth speed, crushed, then pitched back up \u2014 the voice only pshift can make",
+  // Found at the rig 2026-09-23. `speed` -0.1 reads the tape backwards at a
+  // tenth of a rate, which drops it three octaves and turns two seconds of
+  // gate into a fifth of a second of source; `pshift` 1.82 then lifts it most
+  // of an octave WITHOUT putting any of that time back. That combination is
+  // unavailable to any tape-speed read head, because there pitch and rate are
+  // the same knob. The crush and the decimation do the rest.
+  //
+  // KEPT AS PLAYED, and seven of these values do nothing: gtilt, gplat and
+  // curve are gated on `genv`, phdepth on `phaser`, and grsnpitch/grsndecay/
+  // grsnbright on `grsn` -- all three amounts are 0. They are left in because
+  // they are where the dials were left, and gtilt 0.95 is within a hair of the
+  // 0.92 that makes the cut-ups preset work, so `genv:1` is one character away
+  // from a backwards swell on this too. Likewise `grsn` for the resonator,
+  // which is already tuned to A#2 and waiting.
+  set:"burroughs-junky", n:0, whole:true,
+  cloud:{sustain:2,position:0.2,spray:0.55},
+  on:{mode:"euclid",k:5,n:16}, v:{speed:-0.1,gain:0.8,pan:0.5,accel:0}, rules:[],
+  fx:{crush:5.5,coarse:15,lpf:6850,res:0.47,pshift:1.82,phdepth:0.31,
+      gtilt:0.95,gplat:0.08,curve:-2.5},
+  chain:{room:0.29,size:0.83,dry:0.2,grsnpitch:46,grsndecay:5.7,grsnbright:0.9},
+  q:{} },
+
 // ── the effects ───────────────────────────────────────────────────────────
 // Op numbers, for reading the rules below: 0 speed, 1 gain, 2 length, 3 pan,
 // 4 accelerate, 5 shape, 6 crush, 7 coarse, 8 lpf, 9 hpf, 10 bpf, 11 res,
@@ -1135,11 +1162,19 @@ const PRESETS = [
 
 function applyPreset(i) {
   const P = PRESETS[i];
-  const sel = document.getElementById("set");
-  const at = [...sel.options].findIndex(o => o.text.startsWith(P.set));
-  if (at >= 0 && +sel.value !== at) { sel.value = String(at); pickSet(at); }
-  chosen = P.n;
-  document.getElementById("whole").checked = !!P.whole;
+  // **Hold the material still and let the treatment change.** A preset is a
+  // whole position INCLUDING what it is made of, which is right for mashing
+  // through them and wrong the moment you are exploring one piece of material:
+  // every press yanks you back to the set the preset was written against, and
+  // you cannot hear what it would do to the thing in front of you. So the
+  // source is the one part a switch can pin.
+  if (!document.getElementById("keepsrc").checked) {
+    const sel = document.getElementById("set");
+    const at = [...sel.options].findIndex(o => o.text.startsWith(P.set));
+    if (at >= 0 && +sel.value !== at) { sel.value = String(at); pickSet(at); }
+    chosen = P.n;
+    document.getElementById("whole").checked = !!P.whole;
+  }
 
   document.getElementById("sustain").value = P.cloud.sustain;
   document.getElementById("position").value = P.cloud.position;
@@ -1253,6 +1288,32 @@ function asPreset(name) {
     .replace(/^  name/, "{ name");
 }
 
+// **Which controls are set but doing nothing.**
+//
+// The hot markers say this a row at a time, and that turns out not to be
+// enough: a position kept at the rig came back with SEVEN values whose amount
+// knob was at zero — three grain-envelope shapes, a phaser depth, and a whole
+// resonator, tuned and silent. The dials had been moved and the sound had not
+// changed, which is a thing you can do for a long time without noticing, and a
+// preset that records them reads like a preset that uses them.
+//
+// So the keep panel says so. It does NOT drop them: where a dial was left is
+// worth keeping, and `genv:1` is then one character from turning three of them
+// on at once.
+function inertIn(list, pre) {
+  const out = [];
+  const ruleOn = new Set(rulesNow().filter(r => r.amount > 0).map(r => OPS[r.op]));
+  for (const c of list) {
+    const v = +document.getElementById(pre + c.id).value;
+    if (v === c.def) continue;                    // not set, so not a surprise
+    const g = c.gate ? [].concat(c.gate) : [c.id];
+    const live = g.some(id => +document.getElementById(pre + id).value > 0
+                              || (pre === "fx_" && ruleOn.has(id)));
+    if (!live) out.push({ lab: c.lab, need: g.join(" or ") });
+  }
+  return out;
+}
+
 function drawPresets() {
   document.getElementById("presets").innerHTML = PRESETS.map((P, i) =>
     `<button class="preset" data-i="${i}" title="${P.blurb}">${P.name}` +
@@ -1276,7 +1337,13 @@ setInterval(() => {
 
 document.getElementById("keep").onclick = () => {
   const name = prompt("Name this position", "Untitled") || "Untitled";
-  const text = asPreset(name) + " },\n";
+  const dead = inertIn(FX_CTRL, "fx_").concat(inertIn(CH_CTRL, "ch_"));
+  const warn = dead.length
+    ? "// " + dead.length + " value" + (dead.length === 1 ? "" : "s")
+      + " below do nothing as set \u2014 the amount they ride on is 0:\n"
+      + dead.map(d => "//   " + d.lab + "  (needs " + d.need + ")").join("\n") + "\n"
+    : "";
+  const text = warn + asPreset(name) + " },\n";
   document.getElementById("presetout").textContent = text;
   document.getElementById("presetbox").open = true;
   document.getElementById("presetbox").scrollIntoView({ behavior: "smooth" });
