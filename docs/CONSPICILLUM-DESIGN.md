@@ -1290,6 +1290,43 @@ Sector solves this by stretching. Here it is one division
 does the tape follow the clock (pitch shifts with tempo), or does the clock
 follow the tape?
 
+### Replacing Stellatus with it — and the one thing Stellatus got right
+
+*2026-09-24: Andrew wants to replace the existing Stellatus with something more
+original, and this may be it. The first test material exists: a Future Drummer
+beat captured on the bar with `cq-1`/`cbars` (takes `bars-0924-2203xx`), which
+has to be kept as a set, Whole divider, to become a SuperDirt bank.*
+
+Stellatus (`Reef.Stellatus.Engine`) is already a Sector: a ring of slots, one
+step of a WALK per tick, glitch rules on speed, and a JUMP adjacency table. The
+correction it forces on the table above is about **jumps**.
+
+**There are two kinds of jump, and only one of them is pure in the ordinal.**
+
+- **Displacement.** This grain plays slice `ordinal + j`, and the next grain is
+  back on its own sixteenth. That is `OpSlice j`: stateless, cycle-addressable,
+  and what "repeat" is too. The tape is never moved; one grain looks elsewhere.
+- **Relocation.** The playhead *moves* to slice `j` and carries on reading from
+  there. Every later grain depends on every earlier jump, which is state. It
+  is the one that sounds like Sector, because the break re-lays itself in a new
+  order rather than stuttering over a fixed one.
+
+Stellatus handles relocation by **precomputing a fixed-length walk** (`walkLen`)
+and indexing it by step, and that is why it can stay deterministic and
+conformance-held. Conspicillum's `cycleOf` cannot follow a playhead across
+cycles without giving up "cycle 400 without simulating 399".
+
+The middle road, which may be the musical one anyway: **relocation that resets
+on the bar**. Within a cycle the playhead walks and jumps (a fold over 16
+grains, pure given the cycle's seed); at every bar line it returns to slice 0.
+That is a breakdown that always comes home. It keeps `cycleOf` a pure function
+of (scene, cycle), and it is also how a drummer thinks about a fill. A
+breakdown that never returns would be the precomputed walk again.
+
+And Tidal first, per the direction above: `slice 16 "0 .. 15"` is displacement
+throughout; whether Tidal can express relocation without a stateful pattern is
+the first question to try at the REPL.
+
 ## Open questions
 
 - Does the selector query language want to be mini-notation, a predicate
