@@ -1241,6 +1241,55 @@ Triangle, ramp, square and a small lookup table are exact integer and dyadic
 arithmetic, hence provably identical on both runtimes. This is a case where the
 cheap option is also the correct one.
 
+## A tape of sixteenths that breaks down — Sector, read as a grain sampler
+
+*Raised 2026-09-24: "take a couple of bars of beats and play them as a series
+of 1/16th note grains but then allow it to break down: some grains repeating,
+some backwards, jumps in the tape, accelerations and speed changes."*
+
+Sector is a constrained grain sampler, and the constraint is what makes it
+musical: **the grains are the bar's own sixteenths, in order, until they are
+not.** Unbroken, it plays the loop back unchanged. Every departure is heard as
+a departure because the identity is always there to depart from. A spray
+granulator has no identity playback to break.
+
+Nearly all of this is already in the engine. The plan:
+
+| Sector move | here | status |
+|---|---|---|
+| the material | a Quadrat `bars` take, kept whole (`Kind.Bars n`) | exists |
+| a grain per sixteenth | 16 onsets per bar, all on | exists |
+| grain = one sixteenth of the tape | window as a **fraction of the sample**, the `Relative` mode above: `w = 1/16` per bar | one line in `grainAt` |
+| play in order | `position = ordinal / 16` (mod the bar count) | **missing: position is not an `Op`** |
+| backwards | `OpSpeed (-1.0)`, via SuperDirt's negative `speed` inside `begin/end` | exists (not yet heard at grain scale) |
+| speed change | `OpSpeed` | exists |
+| acceleration | `OpAccelerate` | exists |
+| repeat | play slice `ordinal - 1` (or `- k`) again | needs the slice op |
+| jump in the tape | play slice `ordinal + j` | needs the slice op |
+
+So **the one new thing is a slice op**: `OpSlice Int`, an offset from the
+grain's own sixteenth, taken mod the slice count. Repeat is `OpSlice (-1)` and
+a jump is `OpSlice j`. Both are **pure functions of the ordinal**. Sector's
+"repeat" looks stateful ("play what just played"), but on a tape read in
+order, "what just played" *is* `ordinal - 1`. That keeps `cycleOf` pure and
+cycle-addressable, and the conformance story unchanged: append `OpSlice` at
+wire int 28, add one rule to `conspicillumSpec`, regenerate one golden.
+
+**How it breaks down over time.** `Chance p` rules give the per-grain
+departures. The *breakdown* is `p` growing across cycles, and that is the
+cycle-indexed row of the modulation table: one value per bar, pushed by the
+page. A preset could ramp it (order, then fraying, then chaos, then back to
+order) with no engine change.
+
+**One real question: tempo.** A bar of beats has a length; the rig has a
+Link tempo. With a grain per sixteenth, `sustain` must equal one sixteenth *at
+the current tempo*, and the tape's sixteenth is `secs / 16n`. When the two
+disagree, `speed` must make up the difference, or the grains gap or overlap.
+Sector solves this by stretching. Here it is one division
+(`speed = (secs / 16n) / sixteenthAtTempo`), but it has to be *decided*:
+does the tape follow the clock (pitch shifts with tempo), or does the clock
+follow the tape?
+
 ## Open questions
 
 - Does the selector query language want to be mini-notation, a predicate
