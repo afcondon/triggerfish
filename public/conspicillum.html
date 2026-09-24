@@ -976,6 +976,38 @@ const PRESETS = [
       atk:0.055,hold:0.11,rel:0.05,curve:-2},
   chain:{room:0.55,size:0.85,dry:0.2}, q:{} },
 
+{ name:"Polychord pairs", tag:"poly", blurb:"two plain triads struck at once every other bar \u2014 a walk through the set's pairings",
+  // Asked for 2026-09-24, on the first set recorded as PLAIN triads (Vetula ->
+  // Quadrat -> piano on the iPad, widely spaced): "occasional combination hits
+  // of two of the samples at once, stepping through many polychord
+  // combinations".
+  //
+  // No engine change. Manual onsets are not de-duplicated, so "0, 0" is two
+  // grains at the same instant, and every grain draws its sample
+  // independently -- so the pair is a fresh pairing each time it sounds,
+  // walking the set's 11 x 11 pairings on the cycle seed. `whole` plus a
+  // `sustain` longer than any sample means the window is the whole sample
+  // (w clamps at 1): chords, not grains.
+  //
+  // Three onsets a cycle, so a grain's ordinal is cycle*3 + slot, and `Every`
+  // with a period of 6 addresses one slot on alternate bars:
+  //   even bars: the pair alone on the downbeat (slot 2 silenced), ringing
+  //   odd bars:  two single triads, downbeat and half (slot 1 silenced)
+  // Plain, plain, POLY, repeat -- so each polychord arrives after two of the
+  // triads it is made from, and the ear has the parts before the sum.
+  // The two halves of a pair are panned apart so they stay separable.
+  //
+  // One chord in eleven is struck twice (samples 5 and 12 are both G), and a
+  // pair can draw the same chord twice -- that is a plain triad, doubled.
+  set:"chord-hits-0924-171929", n:0, whole:true,
+  cloud:{sustain:2.6,position:0,spray:0},
+  on:{mode:"manual",manual:"0, 0, 0.5"}, v:{speed:1,gain:0.75,pan:0.5,accel:0},
+  rules:[{when:1,everyN:6,everyK:2,chance:0.5,op:1,amount:0},
+         {when:1,everyN:6,everyK:4,chance:0.5,op:1,amount:0},
+         {when:1,everyN:3,everyK:0,chance:0.5,op:3,amount:0.3},
+         {when:1,everyN:3,everyK:1,chance:0.5,op:3,amount:0.7}],
+  fx:{}, chain:{room:0.3,size:0.7,dry:0.1}, q:{} },
+
 { name:"Attack wave", tag:"env", blurb:"a six-step triangle over the ATTACK, indexed by grain ordinal \u2014 an LFO that cannot drift",
   // "Modulating the attack with an LFO" — built out of what already exists,
   // to hear whether it earns an engine change.
