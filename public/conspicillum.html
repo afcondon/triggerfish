@@ -459,7 +459,7 @@ async function load() {
   SETS = (await r.json()).sets;
   const sel = document.getElementById("set");
   sel.innerHTML = SETS.map((s,i) =>
-    `<option value="${i}">${s.name} — ${s.samples.length}</option>`).join("");
+    `<option value="${i}">${s.name} — ${s.tape ? s.tape.bars + " bar tape" : s.samples.length}</option>`).join("");
   // anchor-car is the working set; open on it rather than on whatever sorts first.
   const pref = SETS.findIndex(s => s.name === "chord-hits-0916-185508");
   sel.value = String(pref >= 0 ? pref : 0);
@@ -471,6 +471,22 @@ async function load() {
 function pickSet(i) {
   corpus = SETS[i];
   chosen = 0;
+  // A tape says how to play it: follow the tape, one grain a sixteenth at its
+  // own tempo, its bars and its swing. Presets set their own after this.
+  if (corpus.tape) {
+    const t = corpus.tape;
+    document.getElementById("whole").checked = true;
+    document.getElementById("follow").value = 1;
+    document.getElementById("onmode").value = "even";
+    document.getElementById("count").value = 16;
+    document.getElementById("sustain").value = (60 / t.bpm / 4).toFixed(4);
+    document.getElementById("tbars").value = t.bars;
+    document.getElementById("torder").value = "";
+    document.getElementById("swtape").value = t.swing ?? 0.5;
+    document.getElementById("swplay").value = t.swing ?? 0.5;
+    document.getElementById("position").value = 0;
+    document.getElementById("spray").value = 0;
+  }
   const box = document.getElementById("samples");
   box.innerHTML = corpus.samples.map(s => `
     <div class="samp" data-n="${s.index}">

@@ -120,6 +120,13 @@ var takeFolders = (takesDir +/+ "*/").pathMatch;
 // sets for what they are and the collision does not arise.
 var setsDir = "QUADRAT_SETS_DIR".getenv ? ("HOME".getenv +/+ ".itajara/quadrat/samples");
 var setFolders = (setsDir +/+ "*/").pathMatch;
+// --- tapes (QUADRAT_TAPES_DIR) ------------------------------------------------
+// A tape is a kept take projected WHOLE (audio/project-tape.py): one sample,
+// linked, not cut, plus what it means as a tape (tempo, bars, swing, hit
+// scores). Named <take>-tape, because a set is named after its take and sets
+// load after takes, so a bank called <take> would be the cuts. Loaded last.
+var tapesDir = "QUADRAT_TAPES_DIR".getenv ? ("HOME".getenv +/+ ".itajara/quadrat/tapes");
+var tapeFolders = (tapesDir +/+ "*/").pathMatch;
 
 s.reboot {
 	// Server options (only applied on reboot).
@@ -198,6 +205,10 @@ s.reboot {
 			("STELLATUS-SUPERDIRT sets = " ++ setFolders.size ++ " from " ++ setsDir).postln;
 			~dirt.loadSoundFiles(setFolders);
 			s.sync;
+		});
+		if(tapeFolders.notEmpty, {
+			("STELLATUS-SUPERDIRT tapes = " ++ tapeFolders.size ++ " from " ++ tapesDir).postln;
+			~dirt.loadSoundFiles(tapeFolders);
 		});
 		// --- Conspicillum resonator ------------------------------------------
 		//

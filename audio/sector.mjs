@@ -56,6 +56,9 @@ function onsetsOf(on) {
     .sort((a, b) => a - b);
 }
 
+// A projected tape (project-tape.py) says how many bars it is.
+const tapeOf = (name) => (SETS.find(s => s.name === name) || {}).tape || {};
+
 const noWalk = { jump: 0, hold: 0, home: 0, grid: 16, reach: 0 };
 // "~ ~ 5?0.4 ~ 2" -> Sector's per-step table; the token count is the grid.
 function stepsOf(text) {
@@ -122,7 +125,7 @@ function tape() {
       walk: whole ? noWalk : { jump: o.jump ?? 0, hold: o.hold ?? 0, home: o.home ?? 0,
                                grid: o.grid ?? 16, reach: o.reach ?? 0 },
       swing: { tape: o.tape ?? 0.5, play: o.play ?? 0.5, grid: o.swgrid ?? 16 },
-      tape: { bars: o.bars ?? 1, order: o.order ?? [] },
+      tape: { bars: o.bars ?? tapeOf(o.set ?? "fd-beat-bar").bars ?? 1, order: o.order ?? [] },
       steps: stepsOf(o.steps),
       rules,
       speed: o.speed ?? 1, gain: o.gain ?? 1, pan: 0.5, accelerate: 0,

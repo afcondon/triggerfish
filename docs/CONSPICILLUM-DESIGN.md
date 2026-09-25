@@ -1568,6 +1568,37 @@ by tag. A knob is a view onto the real control, so the full panel stays the
 truth. This is the first shape of a module-sized UI: a preset is a patch,
 and the knobs are its front panel.
 
+### Built 2026-09-25 (late): the tape projection — save decoupled from "convert for"
+
+*Andrew: "maybe we retain maximum flexibility if we decouple 'save' from
+'convert for'".* Quadrat already kept the unsplit take
+(`~/.itajara/takes/<name>/`) and each sample's `start`/`end` in it. What it
+lacked was any projection other than the cuts, and any record of tempo.
+
+- `audio/project-tape.py <take>` (or `--all`) projects a kept take WHOLE as a
+  tape. It writes `~/.itajara/quadrat/tapes/<name>-tape/`: the audio linked,
+  never cut or copied, plus a `set.json` with msm measurements, decay and hit
+  scores for every sixteenth.
+- The tape's meaning is written beside the take in `takes/<name>/tape.json`:
+  bpm, beats, bars, swing, and where the tempo came from.
+- The `-tape` suffix matters. A set is named after its take, and sets load
+  after takes, so a tape bank named `<take>` would be replaced by the cuts.
+- SuperDirt loads `QUADRAT_TAPES_DIR`, and `build-corpora.py` lists tapes
+  with their meaning. Choosing a tape on the page sets follow 1, 16 grains a
+  bar, a sixteenth at the tape's tempo, its bars and its swing.
+- **Quadrat now records the tempo.** Keeping a bars take sends
+  `tape { bpm: Link tempo, beats, bars }`, and the server writes
+  `tape.json` (`bpmFrom: "link"`). Older takes are projected at 120 marked
+  `assumed`, or at a declared `--bpm`.
+- Verified: the take behind `bars-0924-220301`, which Quadrat had cut into 16
+  attack-aligned pieces, plays as a tape at r = 0.994 against its unsplit
+  recording.
+
+Next along this line: move "for …" out of Quadrat's save sentence into a
+**Send to** row of projections (Rample layers, slices or grid; SuperDirt
+cuts; tape; Arbhar; Morphagene), each showing its own objections, so one
+kept take can be all of them.
+
 ## Open questions
 
 - Does the selector query language want to be mini-notation, a predicate

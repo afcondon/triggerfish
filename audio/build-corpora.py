@@ -16,12 +16,15 @@ import glob
 import json, os, sys
 
 SETS = os.path.expanduser("~/.itajara/quadrat/samples")
+# Tapes (project-tape.py): kept takes projected whole, set.json-shaped, with the
+# tape's meaning under "tape". Listed after the sets.
+TAPES = os.path.expanduser("~/.itajara/quadrat/tapes")
 OUT = os.path.join(os.path.dirname(__file__), "..", "public",
                    "conspicillum-corpora.json")
 
 
-def corpus(name):
-    d = json.load(open(os.path.join(SETS, name, "set.json")))
+def corpus(name, root=SETS):
+    d = json.load(open(os.path.join(root, name, "set.json")))
     samples = []
     for i, s in enumerate(d.get("samples") or []):
         samples.append({
@@ -36,7 +39,12 @@ def corpus(name):
             # score-hits.py's kick/snare/hat per slice; empty = never scored.
             "hits": {k: (s.get("hits") or {}).get(k, []) for k in ("kick", "snare", "hat")},
         })
-    return {"name": name, "samples": samples}
+    c = {"name": name, "samples": samples}
+    # A tape carries what it means as one — bars, tempo, swing — so the page
+    # can set itself up to play it; the scene sent to the rig never sees it.
+    if d.get("tape"):
+        c["tape"] = d["tape"]
+    return c
 
 
 def main():
@@ -67,6 +75,14 @@ def main():
         withnotes = sum(1 for s in c["samples"] if s["notes"])
         dim = len(c["samples"][0]["cell"])
         print(f"  {nm:34s} {n:3d} samples, {withnotes:3d} with notes, cell dim {dim}")
+
+    if os.path.isdir(TAPES):
+        for nm in sorted(os.listdir(TAPES)):
+            if os.path.exists(os.path.join(TAPES, nm, "set.json")):
+                c = corpus(nm, TAPES)
+                sets.append(c)
+                t = c.get("tape", {})
+                print(f"  {nm:34s} tape: {t.get('bars')} bars at {t.get('bpm')} bpm")
 
     out = os.path.normpath(OUT)
     json.dump({"sets": sets}, open(out, "w"))
