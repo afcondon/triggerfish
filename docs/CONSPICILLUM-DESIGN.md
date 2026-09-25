@@ -1533,6 +1533,41 @@ kept" and "…, broken" are the before/after of the Sector problem.
 (`set.json.swing`) when `score-hits` is told it; estimating it from the
 offbeats' lateness is the natural next step.
 
+### Built 2026-09-25 (night): harmony as a break, permutations, Sector's step table
+
+**Harmony as a break.** The tape engine does not care what is on the tape.
+`prog-g-2bar` is G–Em–Csus2–D, one chord a half bar, struck 3+3+2, laid
+sample-exact from the plain-triads set. Played as 16 grains a bar it matches
+the loop at r = 0.999 on the rig. Chopping sustained chords at sixteenths
+needed no change of warp: the crossfaded grains are continuous.
+
+**Longer tapes and permutations** (`Spec.tape { bars, order }`). A tape can be
+several cycles long; each cycle reads its own bar, and `order` re-lays the
+bars by cycle (`0 1 1 0` is four-bar form from a two-bar loop). The walk,
+swing and the step table all act within the bar being read.
+
+**Sector's per-step jump table** (`Spec.steps { grid, to, p }`, page notation
+`~ ~ 5?0.4 ~ 2`). Step k relocates the head to `to !! k` with probability
+`p !! k` and carries on from there. It is applied after the walk, so it can
+move even the downbeat, and it draws from its own stream. With every target
+certain, it is a permutation: `2 3 0 1` swaps the halves of every bar.
+"Chords swapped" (G–Em becomes Em–G) matched its reference at r = 0.996.
+
+Per-step *mod* tables are still expressed as `Every 16 k` rules. A table
+view of them is a UI question, not an engine one.
+
+**Pinned:** unit tests for bar reading, order and a certain permutation; the
+cross-runtime `conspicillumPermuteRun` golden (two-bar tape, order
+`[0,1,1,0]`, certain and uncertain steps, walk holds), identical on node and
+the BEAM.
+
+**Fewer controls: the Perform panel.** Each preset may declare `knobs`: 2–4
+existing controls under musical names ("chaos", "repeat", "swing",
+"space"), drawn under the preset bar. Presets without their own get defaults
+by tag. A knob is a view onto the real control, so the full panel stays the
+truth. This is the first shape of a module-sized UI: a preset is a patch,
+and the knobs are its front panel.
+
 ## Open questions
 
 - Does the selector query language want to be mini-notation, a predicate

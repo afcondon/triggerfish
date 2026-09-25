@@ -53,6 +53,11 @@
   .samp .chord { font-weight:600; }
   .samp .meta { color:var(--mute); font-variant-numeric:tabular-nums; font-size:11px; }
 
+  .perform { display:grid; grid-template-columns:repeat(auto-fill,minmax(220px,1fr));
+    gap:10px 24px; margin-top:14px; padding-top:12px; border-top:1px solid var(--line); }
+  .perform:empty { display:none; }
+  .perform .knob { display:grid; grid-template-columns:90px 1fr 44px; align-items:center; gap:8px; }
+  .perform .knob label { font-weight:600; }
   .rule { display:grid; grid-template-columns:1fr 62px 40px 52px 1fr 54px 1.2fr 24px;
     gap:6px; align-items:center; margin-bottom:7px; }
   .rule select, .rule input { padding:3px 5px; font-size:12px; }
@@ -117,6 +122,7 @@
   <p class="why">Mash these. The ones marked <b>prog</b> advance a chord per
     cycle, so the corpus is re-ranked under your hands while it plays.</p>
   <div id="presets" class="presetbar"></div>
+  <div id="perform" class="perform"></div>
 </section>
 
 <div class="cols">
@@ -157,6 +163,15 @@
     <div class="row"><label>grid</label><select id="wgrid">
       <option value="32">32nds</option><option value="16">16ths</option><option value="8">8ths</option>
       <option value="4">beats</option><option value="2">halves</option></select></div>
+    <div class="row"><label>tape bars</label><input type="number" id="tbars" min="1" max="16" step="1" value="1"></div>
+    <div class="row"><label>bar order</label><input type="text" id="torder" placeholder="0 1 1 0" value=""></div>
+    <div class="row"><label>step table</label><input type="text" id="tsteps" placeholder="~ ~ 5?0.4 ~ 2 ~ ~ 7?0.3" value=""></div>
+    <p class="hint">A <b>tape</b> can be several bars; each cycle reads the next,
+      or the bar <b>order</b> says which (a permutation of the phrase). The
+      <b>step table</b> is Sector's per-step jumps: one token per step, so the
+      count is the grid; <code>~</code> stays, <code>5</code> always jumps to step
+      5 and carries on from there, <code>5?0.4</code> does so with probability
+      0.4. <code>2 3 0 1</code> swaps the halves of every bar.</p>
     <div class="row"><label>tape swing</label><input type="range" id="swtape" min="0.5" max="0.75" step="0.01" value="0.5"><output id="o_swtape"></output></div>
     <div class="row"><label>play swing</label><input type="range" id="swplay" min="0.5" max="0.75" step="0.01" value="0.5"><output id="o_swplay"></output></div>
     <div class="row"><label>swing on</label><select id="swgrid">
@@ -711,6 +726,8 @@ function scene() {
         spray: +document.getElementById("spray").value,
         follow: +document.getElementById("follow").value,
       },
+      tape: tapeNow(),
+      steps: stepsNow(),
       swing: {
         tape: +document.getElementById("swtape").value,
         play: +document.getElementById("swplay").value,
@@ -800,6 +817,57 @@ function sendChain(orbit) {
 function sendsNow() {
   return [ { chain: sendChain(10), level: +document.getElementById("sendA").value },
            { chain: sendChain(11), level: +document.getElementById("sendB").value } ];
+}
+
+function tapeNow() {
+  const order = document.getElementById("torder").value.split(/[\s,]+/)
+    .map(x => parseInt(x)).filter(x => !isNaN(x));
+  return { bars: Math.max(1, +document.getElementById("tbars").value || 1), order };
+}
+// "~ ~ 5?0.4 ~ 2" -> grid 5, to [-1,-1,5,-1,2], p [1,1,0.4,1,1]
+function stepsNow() {
+  const toks = document.getElementById("tsteps").value.trim().split(/\s+/).filter(Boolean);
+  if (!toks.length) return { grid: 16, to: [], p: [] };
+  const to = [], p = [];
+  for (const t of toks) {
+    const [a, b] = t.split("?");
+    const n = parseInt(a);
+    to.push(isNaN(n) ? -1 : n);
+    p.push(b !== undefined && !isNaN(parseFloat(b)) ? parseFloat(b) : 1);
+  }
+  return { grid: toks.length, to, p };
+}
+
+// ── perform: a few knobs per preset ─────────────────────────────────────────
+// The page has a hundred controls; a preset names the three or four that are
+// worth playing, with a musical label, and they are drawn here. Each knob is
+// a view onto an existing control, so the full panel below stays the truth
+// and a knob turned here is a slider moved there.
+const DEFAULT_KNOBS = {
+  sector: [["wjump","chaos"],["whold","repeat"],["follow","tape rate"],["sendA","throw"]],
+  fix:    [["wjump","chaos"],["sustain","grain"],["sendA","throw"]],
+  dub:    [["sendA","send A"],["sendB","send B"],["wjump","chaos"]],
+  swing:  [["swplay","swing"],["wjump","chaos"],["whold","repeat"]],
+  harm:   [["wjump","chaos"],["swplay","swing"],["sendB","space"]],
+};
+let knobsFor = [];
+function drawPerform(P) {
+  const box = document.getElementById("perform");
+  const ks = (P && (P.knobs || DEFAULT_KNOBS[P.tag])) || [];
+  knobsFor = ks.map(k => Array.isArray(k) ? { id: k[0], label: k[1] } : k)
+               .filter(k => document.getElementById(k.id));
+  box.innerHTML = knobsFor.map((k, i) => {
+    const src = document.getElementById(k.id);
+    return `<div class="knob"><label>${k.label}</label>
+      <input type="range" data-k="${i}" min="${k.min ?? src.min}" max="${k.max ?? src.max}"
+             step="${src.step || 0.01}" value="${src.value}"><output>${(+src.value).toFixed(2)}</output></div>`;
+  }).join("");
+  box.querySelectorAll("input").forEach(el => el.oninput = () => {
+    const k = knobsFor[+el.dataset.k], src = document.getElementById(k.id);
+    src.value = el.value;
+    el.nextElementSibling.textContent = (+el.value).toFixed(2);
+    src.dispatchEvent(new Event("input", { bubbles: true }));
+  });
 }
 
 function rulesNow() {
@@ -1324,6 +1392,49 @@ const PRESETS = [
   set:"fd-beat-bar-swung", n:0, whole:true, cloud:{sustain:0.125,position:0,spray:0,follow:1}, swing:{tape:0.62,play:0.5,grid:16},
   on:{mode:"even",count:16}, v:{speed:1,gain:1,pan:0.5,accel:0},
   rules:[], fx:{}, chain:{}, q:{} },
+// ── harmony as a break ──────────────────────────────────────────────────────
+// prog-g-2bar: G - Em - Csus2 - D, one chord a half bar, struck 3+3+2 like a
+// pianist comping, laid from the plain-triads set. A TWO-bar tape (tape.bars),
+// so each cycle reads its own bar; `order` permutes the bars and `steps` is
+// Sector's per-step jump table, one token per step ("~" stays, "5?0.4" jumps
+// to step 5 with probability 0.4). knobs are the Perform panel's.
+{ name:"Progression as tape", tag:"harm", blurb:"the comping loop as 16 grains a bar \u2014 should sound like the loop",
+  set:"prog-g-2bar", n:0, whole:true, cloud:{sustain:0.125,position:0,spray:0,follow:1}, tape:{bars:2,order:[]}, knobs:[["follow","tape rate"],["swplay","swing"],["sendB","space"]], sends:{a:0.8,b:0.8},
+  on:{mode:"even",count:16}, v:{speed:1,gain:1.6,pan:0.5,accel:0},
+  rules:[], fx:{}, chain:{}, q:{} },
+{ name:"Chords swapped", tag:"harm", blurb:"each bar's two chords traded: G-Em becomes Em-G, Csus2-D becomes D-Csus2",
+  set:"prog-g-2bar", n:0, whole:true, cloud:{sustain:0.125,position:0,spray:0,follow:1}, tape:{bars:2,order:[]}, steps:"2 3 0 1", knobs:[["wjump","chaos"],["swplay","swing"],["sendB","space"]], sends:{a:0.8,b:0.8},
+  on:{mode:"even",count:16}, v:{speed:1,gain:1.6,pan:0.5,accel:0},
+  rules:[], fx:{}, chain:{}, q:{} },
+{ name:"Bar order 0 1 1 0", tag:"harm", blurb:"the phrase re-laid a bar at a time: four-bar form from a two-bar loop",
+  set:"prog-g-2bar", n:0, whole:true, cloud:{sustain:0.125,position:0,spray:0,follow:1}, tape:{bars:2,order:[0,1,1,0]}, sends:{a:0.8,b:0.8},
+  on:{mode:"even",count:16}, v:{speed:1,gain:1.6,pan:0.5,accel:0},
+  rules:[], fx:{}, chain:{}, q:{} },
+{ name:"Harmonic Sector", tag:"harm", blurb:"Sector's step table on the eighths: some steps jump, some only sometimes",
+  set:"prog-g-2bar", n:0, whole:true, cloud:{sustain:0.125,position:0,spray:0,follow:1}, tape:{bars:2,order:[]}, steps:"~ ~ 5?0.4 ~ 2?0.35 ~ ~ 7?0.25", walk:{jump:0,hold:0.1,home:0,grid:8,reach:0}, knobs:[["whold","repeat"],["wjump","chaos"],["sendB","space"]], sends:{a:0.8,b:0.8},
+  on:{mode:"even",count:16}, v:{speed:1,gain:1.6,pan:0.5,accel:0},
+  rules:[], fx:{}, chain:{}, q:{} },
+{ name:"Chord hops", tag:"harm", blurb:"the walk on the half-bar grid: whole chords swapped in and out, home every bar",
+  set:"prog-g-2bar", n:0, whole:true, cloud:{sustain:0.125,position:0,spray:0,follow:1}, tape:{bars:2,order:[]}, walk:{jump:0.35,hold:0,home:0.2,grid:2,reach:0}, knobs:[["wjump","chaos"],["whome","home"],["sendB","space"]], sends:{a:0.8,b:0.8},
+  on:{mode:"even",count:16}, v:{speed:1,gain:1.6,pan:0.5,accel:0},
+  rules:[], fx:{}, chain:{}, q:{} },
+{ name:"Comping stutter", tag:"harm", blurb:"the chord re-struck as a roll now and then",
+  set:"prog-g-2bar", n:0, whole:true, cloud:{sustain:0.125,position:0,spray:0,follow:1}, tape:{bars:2,order:[]}, knobs:[["wjump","chaos"],["whold","repeat"],["sendA","throw"]], sends:{a:0.8,b:0.8},
+  on:{mode:"even",count:16}, v:{speed:1,gain:1.6,pan:0.5,accel:0},
+  rules:[{when:2,everyN:0,everyK:0,chance:0.12,op:29,amount:3}], fx:{}, chain:{}, q:{} },
+{ name:"Swung comping", tag:"harm", blurb:"the straight comping loop at 62% swing",
+  set:"prog-g-2bar", n:0, whole:true, cloud:{sustain:0.125,position:0,spray:0,follow:1}, tape:{bars:2,order:[]}, swing:{tape:0.5,play:0.62,grid:16}, knobs:[["swplay","swing"],["wjump","chaos"],["sendB","space"]], sends:{a:0.8,b:0.8},
+  on:{mode:"even",count:16}, v:{speed:1,gain:1.6,pan:0.5,accel:0},
+  rules:[], fx:{}, chain:{}, q:{} },
+{ name:"Stabs to the room", tag:"harm", blurb:"every downbeat chord into send B \u2014 put a reverb on it",
+  set:"prog-g-2bar", n:0, whole:true, cloud:{sustain:0.125,position:0,spray:0,follow:1}, tape:{bars:2,order:[]}, knobs:[["sendB","space"],["wjump","chaos"],["swplay","swing"]], sends:{a:0.8,b:0.8},
+  on:{mode:"even",count:16}, v:{speed:1,gain:1.6,pan:0.5,accel:0},
+  rules:[{when:1,everyN:8,everyK:0,chance:0.5,op:30,amount:2}], fx:{}, chain:{}, q:{} },
+{ name:"Progression breakdown", tag:"harm", blurb:"hops, holds, a reversed chord, a roll \u2014 the Breakdown on harmony",
+  set:"prog-g-2bar", n:0, whole:true, cloud:{sustain:0.125,position:0,spray:0,follow:1}, tape:{bars:2,order:[]}, walk:{jump:0.2,hold:0.12,home:0.1,grid:8,reach:3}, knobs:[["wjump","chaos"],["whold","repeat"],["sendB","space"]], sends:{a:0.8,b:0.8},
+  on:{mode:"even",count:16}, v:{speed:1,gain:1.6,pan:0.5,accel:0},
+  rules:[{when:2,everyN:0,everyK:0,chance:0.08,op:0,amount:-1},
+         {when:1,everyN:16,everyK:14,chance:0.5,op:29,amount:3}], fx:{}, chain:{}, q:{} },
 { name:"Attack wave", tag:"env", blurb:"a six-step triangle over the ATTACK, indexed by grain ordinal \u2014 an LFO that cannot drift",
   // "Modulating the attack with an LFO" — built out of what already exists,
   // to hear whether it earns an engine change.
@@ -1580,6 +1691,10 @@ function applyPreset(i) {
   document.getElementById("follow").value = P.cloud.follow ?? 0;
   document.getElementById("sendA").value = (P.sends && P.sends.a) ?? 0.8;
   document.getElementById("sendB").value = (P.sends && P.sends.b) ?? 0.8;
+  const TP = P.tape || {};
+  document.getElementById("tbars").value = TP.bars ?? 1;
+  document.getElementById("torder").value = (TP.order || []).join(" ");
+  document.getElementById("tsteps").value = P.steps || "";
   const SW = P.swing || {};
   document.getElementById("swtape").value = SW.tape ?? 0.5;
   document.getElementById("swplay").value = SW.play ?? 0.5;
@@ -1626,6 +1741,7 @@ function applyPreset(i) {
   progAt = -1;
 
   document.querySelectorAll(".preset").forEach((el, j) => el.classList.toggle("on", j === i));
+  drawPerform(P);
   drawRules();
   render();
   if (playing) push();           // a mash lands immediately, not on the debounce
@@ -1671,6 +1787,7 @@ function asPreset(name) {
              spray: +g("spray").value, follow: +g("follow").value },
     sends: { a: +g("sendA").value, b: +g("sendB").value },
     swing: { tape: +g("swtape").value, play: +g("swplay").value, grid: +g("swgrid").value },
+    tape: tapeNow(), steps: g("tsteps").value.trim(),
     walk: { jump: +g("wjump").value, hold: +g("whold").value, home: +g("whome").value,
             grid: +g("wgrid").value, reach: +g("wreach").value },
     on,
