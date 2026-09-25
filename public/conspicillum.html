@@ -155,9 +155,9 @@
     <div class="row"><label>hold</label><input type="range" id="whold" min="0" max="1" step="0.01" value="0"><output id="o_whold"></output></div>
     <div class="row"><label>home</label><input type="range" id="whome" min="0" max="1" step="0.01" value="0"><output id="o_whome"></output></div>
     <div class="row"><label>grid</label><select id="wgrid">
-      <option value="16">16ths</option><option value="8">8ths</option>
+      <option value="32">32nds</option><option value="16">16ths</option><option value="8">8ths</option>
       <option value="4">beats</option><option value="2">halves</option></select></div>
-    <div class="row"><label>reach</label><input type="range" id="wreach" min="0" max="8" step="1" value="0"><output id="o_wreach"></output></div>
+    <div class="row"><label>reach</label><input type="range" id="wreach" min="0" max="16" step="1" value="0"><output id="o_wreach"></output></div>
     <p class="hint">The <b>walk</b> moves a following head and lets it carry on
       from where it lands, so a jump re-lays the rest of the bar rather than
       swapping one grain. Per grain: <b>home</b> returns to the tape, <b>hold</b>
@@ -761,6 +761,22 @@ function harmonicNow() {
   const h = Q.harmonic || { minFit: 0.5, strength: 0.9 };
   return [{ target: t, minFit: h.minFit, strength: h.strength }];
 }
+
+// Reach is counted in grid steps, so its ceiling is the grid: 32 for 32nds,
+// 4 for beats. Changing the grid rescales a reach you had set, so "half the
+// bar away" stays half the bar away rather than snapping to the new maximum.
+function fitReach(prevGrid) {
+  const g = +document.getElementById("wgrid").value;
+  const r = document.getElementById("wreach");
+  if (prevGrid && prevGrid !== g) r.value = Math.round(+r.value * g / prevGrid);
+  r.max = String(g);
+  if (+r.value > g) r.value = String(g);
+}
+let lastGrid = 16;
+document.addEventListener("DOMContentLoaded", () => {
+  const sel = document.getElementById("wgrid");
+  sel.addEventListener("change", () => { fitReach(lastGrid); lastGrid = +sel.value; render(); livePush(); });
+});
 
 // ── render ──────────────────────────────────────────────────────────────────
 function render() {
@@ -1386,7 +1402,9 @@ function applyPreset(i) {
   document.getElementById("whold").value = W.hold ?? 0;
   document.getElementById("whome").value = W.home ?? 0;
   document.getElementById("wgrid").value = String(W.grid ?? 16);
+  document.getElementById("wreach").max = String(W.grid ?? 16);
   document.getElementById("wreach").value = W.reach ?? 0;
+  lastGrid = W.grid ?? 16;
 
   document.getElementById("onmode").value = P.on.mode;
   if (P.on.mode === "even") document.getElementById("count").value = P.on.count;
