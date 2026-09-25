@@ -1327,6 +1327,36 @@ And Tidal first, per the direction above: `slice 16 "0 .. 15"` is displacement
 throughout; whether Tidal can express relocation without a stateful pattern is
 the first question to try at the REPL.
 
+### The experiment, as briefed 2026-09-25
+
+Reproduce Stellatus/Sector with the grain engine, in the Conspicillum page or a
+throwaway test page. Three bars to clear, in order:
+
+1. **Table stakes: solid beat reproduction.** `fd-beat-bar` (Future Drummer, one
+   bar, 120 bpm, stereo 48 kHz, exactly 96000 frames, captured on the grid with
+   `cq-1`/`cbars1`) played as 16 grains, one per sixteenth, in order, should be
+   indistinguishable from the bar played whole. No clicks at the joins, no drift
+   against Link over minutes.
+2. **MVP: flipping beats with the grain controls.** Re-ordering slices
+   (displacement and bar-reset relocation), reverse, speed, repeat.
+3. **End goal:** dragging beats (tape slow-down), stuttering, clouds of grains
+   around the playhead, single-beat delays, and whatever else the engine makes
+   cheap once the identity is solid.
+
+**What stands in the way, as of today:**
+- `grainAt` has ONE position for the whole cloud (`begin = position * room +
+  jitter`), so grain `i` cannot be sent to sixteenth `i`. In-order playback needs
+  position per grain: a slice op, or position derived from the onset (`at`)
+  itself. The second is interesting: `position = at` makes the cloud read the
+  tape at the rate the bar plays, which is the identity with no new op at all.
+- The grain window is absolute seconds (`sustain`); a sixteenth of this bar is
+  0.125 s. That is fine at a fixed tempo, and it is exactly the tempo question
+  above once Link moves.
+- purerl-tidal has **no `slice`/`splice`/`chop`**, so the Tidal-first baseline
+  (`slice 16 "0 .. 15" $ s "fd-beat-bar"`) needs those added first.
+- Also on disk: `bars-0924-220301`, the same bar cut at attacks into 16 uneven
+  mono pieces. Useful as `n "0 .. 15"`, but not equal sixteenths.
+
 ## Open questions
 
 - Does the selector query language want to be mini-notation, a predicate
