@@ -1357,6 +1357,78 @@ throwaway test page. Three bars to clear, in order:
 - Also on disk: `bars-0924-220301`, the same bar cut at attacks into 16 uneven
   mono pieces. Useful as `n "0 .. 15"`, but not equal sixteenths.
 
+### Built 2026-09-25: the tape, the walk, and a library of departures
+
+**The identity.** `Cloud.follow` (0 = the scanning granulator as before; 1 =
+each grain reads the tape at its own place in the cycle) makes in-order
+playback the default rather than a special op. Sixteen grains of
+`fd-beat-bar` match the source bar at -52.0 dB against -52.1 dB for the bar
+played whole: every slice lands at lag 0, with no drift. Below 1 the head
+drags, above 1 it skips, and -1 reads the bar backwards. Once the head
+follows, `position` becomes a wrapped offset: 0.25 is a one-beat delay.
+
+**The joins.** SuperDirt fades every grain over 1 ms (`DirtEvent.sc`,
+`dirt_gate`'s `\sin` envelope), so butted slices met in a 1 ms hole on every
+sixteenth, an 8 Hz flutter. The purerl-tidal voice now starts each grain one
+fade early, reading one fade earlier, so neighbouring fades overlap and sum
+to one. This lives in the voice, not reef, because it is a fact about
+SuperDirt and wall time. It reads the rate off window ÷ sustain, which is why
+**every op that shortens a grain must shorten its window too** (`OpLength`,
+`OpRatchet`). Left full-width, the window put every ratchet 3 ms early, and
+the rig caught it.
+
+**Displacement: two ops.**
+- `OpShift x` (wire 28) moves one grain's read head by x of the tape, wrapped.
+  `-1/16` is a repeat, `+0.25` a beat ahead. With duplicated onsets and a
+  gain rule it is also a beat echo (the "Beat echo" preset).
+- `OpRatchet n` (wire 29) makes a grain into n repeats of its own head inside
+  its slot. It is the one place a cycle emits more grains than it has onsets.
+  The repeats have no ordinals, so no rule can address them.
+
+**Relocation: the walk** (`Spec.walk`, `Reef.Conspicillum.Cloud.Walk`). This is
+the Stellatus move, reset on the bar as the brief proposed. For each grain
+one die decides among three bands, in this order:
+- `home`: return to the tape;
+- `hold`: read the last grain's place again, a repeat that the tape then
+  catches up from;
+- `jump`: relocate to one of `grid` places (16ths, 8ths, beats, halves), at
+  most `reach` steps away, and carry on reading from there.
+
+The downbeat is always the tape's own, so a breakdown always comes home and
+`cycleOf` stays a pure function of (scene, cycle). The walk draws from its own
+per-cycle stream (`cycleSeed (base + 500009) cyc`), so a scene that does not
+walk is draw-for-draw what it was.
+
+**Held to it:**
+- `Reef.Conformance.conspicillumSectorRun` covers walk, shift and ratchet over
+  cycles 0, 1, 2 and 7 (out of order). It runs through the wire first, is
+  identical on node and the BEAM, and is frozen in
+  `conformance/conspicillum-sector-golden.txt`.
+- On the rig, captured with sox and matched against bars rendered from reef's
+  own prediction: Breakdown 0.99+ per bar, Relocate 1.000/0.997/0.984,
+  Reverse bar 0.998, Drag 0.996, and a ratchet's four repeats each at
+  r = 1.000, lag 0.
+
+**The library** (page presets tagged `sector`, all on `fd-beat-bar`): Tape,
+Repeat, Relocate, Eighth hops, Fill, Stutter, Beat echo, Drag, Half-speed tape,
+Double time, Reverse bar, Tape sag, Cloud at the head, Breakdown.
+`audio/sector.mjs preset <name>` pushes any of them from a shell. It reads the
+presets out of the page, so there is one copy.
+
+**Still open:**
+- **The tempo question** above is undecided. Every sector preset's `sustain`
+  of 0.125 s is a sixteenth *at 120 bpm*. At another Link tempo the slices gap
+  or overlap until we decide whether the tape follows the clock or the clock
+  follows the tape. That is a musical choice, so it is left to Andrew.
+- **A breakdown over time**: `p` ramping across bars, order → fraying → chaos
+  → order. It needs the cycle-indexed modulation row, not engine work.
+- **Tidal first**: purerl-tidal still has no `slice`/`splice`. The walk is the
+  part Tidal cannot say without state, so it is the first thing to take to the
+  REPL once those exist.
+- **Replacing Stellatus**: the walk covers Stellatus's jump table in spirit
+  (weighted adjacency becomes grid + reach), but not its per-slot names or
+  per-arc verbs. Decide whether those are wanted before retiring it.
+
 ## Open questions
 
 - Does the selector query language want to be mini-notation, a predicate

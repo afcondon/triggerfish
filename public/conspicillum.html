@@ -146,11 +146,24 @@
     <div class="row"><label>sustain</label><input type="range" id="sustain" min="0.01" max="2" step="0.005" value="0.12"><output id="o_sustain"></output></div>
     <div class="row"><label>position</label><input type="range" id="position" min="0" max="1" step="0.005" value="0.04"><output id="o_position"></output></div>
     <div class="row"><label>spray</label><input type="range" id="spray" min="0" max="1" step="0.005" value="0.5"><output id="o_spray"></output></div>
-    <div class="row"><label>follow</label><input type="range" id="follow" min="0" max="2" step="0.005" value="0"><output id="o_follow"></output></div>
+    <div class="row"><label>follow</label><input type="range" id="follow" min="-1" max="2" step="0.005" value="0"><output id="o_follow"></output></div>
     <p class="hint"><b>follow</b> makes the read head track each grain's place in
       the bar: at <b>1</b> sixteen grains of a one-bar take play it back in order,
       and <i>position</i> becomes a wrapped offset (0.25 = a beat late). Below 1
-      the head drags; above, it skips.</p>
+      the head drags; above, it skips; <b>-1</b> reads the bar backwards.</p>
+    <div class="row"><label>jump</label><input type="range" id="wjump" min="0" max="1" step="0.01" value="0"><output id="o_wjump"></output></div>
+    <div class="row"><label>hold</label><input type="range" id="whold" min="0" max="1" step="0.01" value="0"><output id="o_whold"></output></div>
+    <div class="row"><label>home</label><input type="range" id="whome" min="0" max="1" step="0.01" value="0"><output id="o_whome"></output></div>
+    <div class="row"><label>grid</label><select id="wgrid">
+      <option value="16">16ths</option><option value="8">8ths</option>
+      <option value="4">beats</option><option value="2">halves</option></select></div>
+    <div class="row"><label>reach</label><input type="range" id="wreach" min="0" max="8" step="1" value="0"><output id="o_wreach"></output></div>
+    <p class="hint">The <b>walk</b> moves a following head and lets it carry on
+      from where it lands, so a jump re-lays the rest of the bar rather than
+      swapping one grain. Per grain: <b>home</b> returns to the tape, <b>hold</b>
+      reads the last grain's place again (a repeat), <b>jump</b> lands on the
+      <b>grid</b>, at most <b>reach</b> steps away (0 = anywhere). Every bar
+      starts on the tape, so a breakdown always comes home.</p>
     <p class="hint">A grain's window must be as long in the source as
       <i>sustain</i> is in time, or it is transposed. The engine handles that.
       Opens near <b>0</b> because a chord hit is a short attack and a very long
@@ -471,7 +484,7 @@ const OPS = ["speed","gain","length","pan","accelerate",
              "vowel","pshift","tremolo","phaser",
              "genv","gtilt","gplat","atk","hold","rel","curve",
              "rsnpitch","rsndecay","rsnbright","rsnmix","rsnmodel",
-             "shift"];
+             "shift","ratchet"];
 const OP_RSNPITCH = OPS.indexOf("rsnpitch");
 let rules = [];
 function addRule(r) {
@@ -656,6 +669,13 @@ function scene() {
         spray: +document.getElementById("spray").value,
         follow: +document.getElementById("follow").value,
       },
+      walk: {
+        jump: +document.getElementById("wjump").value,
+        hold: +document.getElementById("whold").value,
+        home: +document.getElementById("whome").value,
+        grid: +document.getElementById("wgrid").value,
+        reach: +document.getElementById("wreach").value,
+      },
       rules: rulesNow(),
       speed: +document.getElementById("speed").value,
       gain: +document.getElementById("gain").value,
@@ -744,9 +764,9 @@ function harmonicNow() {
 
 // ── render ──────────────────────────────────────────────────────────────────
 function render() {
-  for (const id of ["sustain","position","spray","follow","speed","gain","pan","accel","count","ek","en"]) {
+  for (const id of ["sustain","position","spray","follow","wjump","whold","whome","wreach","speed","gain","pan","accel","count","ek","en"]) {
     const el = document.getElementById(id), out = document.getElementById("o_" + id);
-    if (el && out) out.textContent = (+el.value).toFixed(id === "count" || id === "ek" || id === "en" ? 0 : 2);
+    if (el && out) out.textContent = (+el.value).toFixed(id === "count" || id === "ek" || id === "en" || id === "wreach" ? 0 : 2);
   }
   // The effect readouts, plus the one thing this page can say that a pile of
   // sliders cannot: WHICH of them are actually doing anything. Zero is off, so
@@ -1015,6 +1035,98 @@ const PRESETS = [
          {when:1,everyN:3,everyK:1,chance:0.5,op:3,amount:0.7}],
   fx:{}, chain:{room:0.3,size:0.7,dry:0.1}, q:{} },
 
+// ── Sector: a bar of beats as a tape that breaks down ───────────────────────
+// All on fd-beat-bar (Future Drummer, one bar at 120 bpm, captured on the bar
+// line). Every one is 16 grains of a sixteenth that FOLLOW the tape, so the
+// unbroken case is the bar itself, measured identical to it at -52 dB; each
+// preset is a way of departing from that. `sustain` 0.125 is a sixteenth AT
+// 120 BPM: at another Link tempo the slices gap or overlap until the tape
+// learns the clock (see CONSPICILLUM-DESIGN.md, "the tempo question").
+// op 28 is shift (a jump for one grain), 29 ratchet (n repeats in one slot).
+{ name:"Tape", tag:"sector", blurb:"the bar as sixteen grains, in order \u2014 should sound exactly like the loop",
+  set:"fd-beat-bar", n:0, whole:true, cloud:{sustain:0.125,position:0,spray:0,follow:1}, 
+  on:{mode:"even",count:16}, v:{speed:1,gain:1,pan:0.5,accel:0},
+  rules:[],
+  fx:{}, chain:{}, q:{} },
+{ name:"Repeat", tag:"sector", blurb:"the head sometimes doesn't advance: a sixteenth again, and the tape catches up",
+  set:"fd-beat-bar", n:0, whole:true, cloud:{sustain:0.125,position:0,spray:0,follow:1}, walk:{jump:0,hold:0.14,home:0,grid:16,reach:0}, 
+  on:{mode:"even",count:16}, v:{speed:1,gain:1,pan:0.5,accel:0},
+  rules:[],
+  fx:{}, chain:{}, q:{} },
+{ name:"Relocate", tag:"sector", blurb:"the head jumps anywhere and carries on from there \u2014 the bar re-laid, home at every downbeat",
+  set:"fd-beat-bar", n:0, whole:true, cloud:{sustain:0.125,position:0,spray:0,follow:1}, walk:{jump:0.22,hold:0,home:0.06,grid:16,reach:0}, 
+  on:{mode:"even",count:16}, v:{speed:1,gain:1,pan:0.5,accel:0},
+  rules:[],
+  fx:{}, chain:{}, q:{} },
+{ name:"Eighth hops", tag:"sector", blurb:"short hops on the eighth-note grid, often back to the tape",
+  set:"fd-beat-bar", n:0, whole:true, cloud:{sustain:0.125,position:0,spray:0,follow:1}, walk:{jump:0.25,hold:0,home:0.3,grid:8,reach:2}, 
+  on:{mode:"even",count:16}, v:{speed:1,gain:1,pan:0.5,accel:0},
+  rules:[],
+  fx:{}, chain:{}, q:{} },
+{ name:"Fill", tag:"sector", blurb:"plain for a bar, then a ratcheted fill into the next downbeat",
+  set:"fd-beat-bar", n:0, whole:true, cloud:{sustain:0.125,position:0,spray:0,follow:1}, walk:{jump:0,hold:0,home:0,grid:16,reach:0}, 
+  on:{mode:"even",count:16}, v:{speed:1,gain:1,pan:0.5,accel:0},
+  rules:[{when:1,everyN:32,everyK:24,chance:0.5,op:28,amount:-0.125},
+         {when:1,everyN:32,everyK:26,chance:0.5,op:28,amount:-0.25},
+         {when:1,everyN:32,everyK:28,chance:0.5,op:29,amount:2},
+         {when:1,everyN:32,everyK:29,chance:0.5,op:29,amount:3},
+         {when:1,everyN:32,everyK:30,chance:0.5,op:29,amount:4},
+         {when:1,everyN:32,everyK:31,chance:0.5,op:29,amount:6},
+         {when:1,everyN:32,everyK:31,chance:0.5,op:1,amount:0.8}],
+  fx:{}, chain:{}, q:{} },
+{ name:"Stutter", tag:"sector", blurb:"one grain in seven rolls into four; one in nine holds",
+  set:"fd-beat-bar", n:0, whole:true, cloud:{sustain:0.125,position:0,spray:0,follow:1}, walk:{jump:0,hold:0.11,home:0,grid:16,reach:0}, 
+  on:{mode:"even",count:16}, v:{speed:1,gain:1,pan:0.5,accel:0},
+  rules:[{when:2,everyN:0,everyK:0,chance:0.14,op:29,amount:4}],
+  fx:{}, chain:{}, q:{} },
+{ name:"Beat echo", tag:"sector", blurb:"every sixteenth twice: itself, and a quieter copy from a beat earlier, panned right",
+  set:"fd-beat-bar", n:0, whole:true, cloud:{sustain:0.125,position:0,spray:0,follow:1}, 
+  on:{mode:"manual",manual:"0, 0, 0.0625, 0.0625, 0.125, 0.125, 0.1875, 0.1875, 0.25, 0.25, 0.3125, 0.3125, 0.375, 0.375, 0.4375, 0.4375, 0.5, 0.5, 0.5625, 0.5625, 0.625, 0.625, 0.6875, 0.6875, 0.75, 0.75, 0.8125, 0.8125, 0.875, 0.875, 0.9375, 0.9375"}, v:{speed:1,gain:1,pan:0.5,accel:0},
+  rules:[{when:1,everyN:2,everyK:1,chance:0.5,op:28,amount:-0.25},
+         {when:1,everyN:2,everyK:1,chance:0.5,op:1,amount:0.45},
+         {when:1,everyN:2,everyK:1,chance:0.5,op:3,amount:0.85}],
+  fx:{}, chain:{}, q:{} },
+{ name:"Drag", tag:"sector", blurb:"the head at half rate: each sixteenth heard twice over, pitch untouched \u2014 half-time",
+  set:"fd-beat-bar", n:0, whole:true, cloud:{sustain:0.125,position:0,spray:0,follow:0.5}, 
+  on:{mode:"even",count:16}, v:{speed:1,gain:1,pan:0.5,accel:0},
+  rules:[],
+  fx:{}, chain:{}, q:{} },
+{ name:"Half-speed tape", tag:"sector", blurb:"the tape really slowed: half rate AND half speed, an octave down",
+  set:"fd-beat-bar", n:0, whole:true, cloud:{sustain:0.125,position:0,spray:0,follow:0.5}, 
+  on:{mode:"even",count:16}, v:{speed:0.5,gain:1,pan:0.5,accel:0},
+  rules:[],
+  fx:{}, chain:{}, q:{} },
+{ name:"Double time", tag:"sector", blurb:"the head at twice the rate: the bar twice a bar, every other sixteenth",
+  set:"fd-beat-bar", n:0, whole:true, cloud:{sustain:0.125,position:0,spray:0,follow:2}, 
+  on:{mode:"even",count:16}, v:{speed:1,gain:1,pan:0.5,accel:0},
+  rules:[],
+  fx:{}, chain:{}, q:{} },
+{ name:"Reverse bar", tag:"sector", blurb:"the tape backwards: slices in reverse order, each played backwards",
+  set:"fd-beat-bar", n:0, whole:true, cloud:{sustain:0.125,position:-0.0625,spray:0,follow:-1}, 
+  on:{mode:"even",count:16}, v:{speed:-1,gain:1,pan:0.5,accel:0},
+  rules:[],
+  fx:{}, chain:{}, q:{} },
+{ name:"Tape sag", tag:"sector", blurb:"the last beat slows, grain by grain, like a tape running down",
+  set:"fd-beat-bar", n:0, whole:true, cloud:{sustain:0.125,position:0,spray:0,follow:1}, 
+  on:{mode:"even",count:16}, v:{speed:1,gain:1,pan:0.5,accel:0},
+  rules:[{when:1,everyN:16,everyK:12,chance:0.5,op:0,amount:0.8},
+         {when:1,everyN:16,everyK:13,chance:0.5,op:0,amount:0.62},
+         {when:1,everyN:16,everyK:14,chance:0.5,op:0,amount:0.45},
+         {when:1,everyN:16,everyK:15,chance:0.5,op:0,amount:0.3}],
+  fx:{}, chain:{}, q:{} },
+{ name:"Cloud at the head", tag:"sector", blurb:"48 short grains sprayed round a moving head \u2014 the beat smeared, still in time",
+  set:"fd-beat-bar", n:0, whole:true, cloud:{sustain:0.09,position:0,spray:0.035,follow:1}, 
+  on:{mode:"even",count:48}, v:{speed:1,gain:0.6,pan:0.5,accel:0},
+  rules:[{when:2,everyN:0,everyK:0,chance:0.5,op:3,amount:0.25},
+         {when:2,everyN:0,everyK:0,chance:0.5,op:3,amount:0.75}],
+  fx:{}, chain:{}, q:{} },
+{ name:"Breakdown", tag:"sector", blurb:"hops, holds, reversals and a roll \u2014 the Sector move, coming home every bar",
+  set:"fd-beat-bar", n:0, whole:true, cloud:{sustain:0.125,position:0,spray:0,follow:1}, walk:{jump:0.2,hold:0.12,home:0.1,grid:8,reach:3}, 
+  on:{mode:"even",count:16}, v:{speed:1,gain:1,pan:0.5,accel:0},
+  rules:[{when:1,everyN:16,everyK:14,chance:0.5,op:29,amount:3},
+         {when:2,everyN:0,everyK:0,chance:0.1,op:0,amount:-1},
+         {when:2,everyN:0,everyK:0,chance:0.06,op:0,amount:0.5}],
+  fx:{}, chain:{}, q:{} },
 { name:"Attack wave", tag:"env", blurb:"a six-step triangle over the ATTACK, indexed by grain ordinal \u2014 an LFO that cannot drift",
   // "Modulating the attack with an LFO" — built out of what already exists,
   // to hear whether it earns an engine change.
@@ -1269,6 +1381,12 @@ function applyPreset(i) {
   document.getElementById("position").value = P.cloud.position;
   document.getElementById("spray").value = P.cloud.spray;
   document.getElementById("follow").value = P.cloud.follow ?? 0;
+  const W = P.walk || {};
+  document.getElementById("wjump").value = W.jump ?? 0;
+  document.getElementById("whold").value = W.hold ?? 0;
+  document.getElementById("whome").value = W.home ?? 0;
+  document.getElementById("wgrid").value = String(W.grid ?? 16);
+  document.getElementById("wreach").value = W.reach ?? 0;
 
   document.getElementById("onmode").value = P.on.mode;
   if (P.on.mode === "even") document.getElementById("count").value = P.on.count;
@@ -1346,6 +1464,8 @@ function asPreset(name) {
     whole: g("whole").checked,
     cloud: { sustain: +g("sustain").value, position: +g("position").value,
              spray: +g("spray").value, follow: +g("follow").value },
+    walk: { jump: +g("wjump").value, hold: +g("whold").value, home: +g("whome").value,
+            grid: +g("wgrid").value, reach: +g("wreach").value },
     on,
     v: { speed: +g("speed").value, gain: +g("gain").value,
          pan: +g("pan").value, accel: +g("accel").value },
