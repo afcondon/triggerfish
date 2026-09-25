@@ -210,6 +210,18 @@ s.reboot {
 			("STELLATUS-SUPERDIRT tapes = " ++ tapeFolders.size ++ " from " ++ tapesDir).postln;
 			~dirt.loadSoundFiles(tapeFolders);
 		});
+
+		// **Load one bank now, without a restart.** Quadrat's "Send to · tape"
+		// projects a kept take into tapesDir and then says `/quadrat/load
+		// <folder>`; the folder's name is the bank. Freed first, so projecting
+		// the same take again replaces the bank instead of appending to it.
+		OSCdef(\quadratLoad, { |msg|
+			var dir = msg[1].asString.standardizePath.withTrailingSlash;
+			var name = dir.withoutTrailingSlash.basename.asSymbol;
+			~dirt.soundLibrary.freeSoundFiles([name]);
+			~dirt.loadSoundFiles([dir]);
+			("STELLATUS-SUPERDIRT loaded " ++ name).postln;
+		}, '/quadrat/load', recvPort: port).fix;
 		// --- Conspicillum resonator ------------------------------------------
 		//
 		// SuperDirt ships no resonator, and this is the demonstration that its
