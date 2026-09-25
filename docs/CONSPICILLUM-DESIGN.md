@@ -1429,6 +1429,50 @@ presets out of the page, so there is one copy.
   (weighted adjacency becomes grid + reach), but not its per-slot names or
   per-arc verbs. Decide whether those are wanted before retiring it.
 
+### Built 2026-09-25 (later): `fix` and control patterns
+
+Two Tidal ideas, both still pure functions of the scene and the cycle, and
+both held by `conspicillumFixRun` on node and the BEAM.
+
+**Select by what a grain reads: Tidal's `fix`.** `When = Hit Kind threshold`
+(wire `when` 3). It fires when the slice under the grain's read head scores at
+least the threshold as kick, snare or hat. The scores are read *after the walk*,
+so a head that jumps onto the snare slice pitch-shifts like a snare, and a kick
+that holds still steps the bassline. The scores come from
+`audio/score-hits.py`: four band energies (30–150 Hz, 150–1000, 1500–6000,
+7000–16000) over each slice's first 50 ms, and three formulas. They are
+written into the set's `set.json` as `hits` and carried to the corpus by
+`build-corpora.py`.
+
+**How reliable is it?** On `fd-beat-bar`:
+- The four kicks score 1.00 and nothing else scores above 0.15 as kick.
+- Three slices score as snare (2, 7, 13). Two of those are identical mid-band
+  hits, perhaps a clap or a tom; no drummer would call them all snare.
+- The one clear hat (15) scores 1.00.
+- The kicks' click scores 0.23 as hat.
+
+So it is scores, not labels, and the threshold is the dial: 0.5 is "clearly a
+snare", 0.1 makes half the bar a snare. **The errors are playable** (the
+"Creative errors" preset is built on them). The method is not a drum
+transcriber and should not be mistaken for one; a take with a busier mix
+will blur more.
+
+**Amounts as sequences: Tidal's control patterns.** A rule's `values`
+replaces its amount, stepping in one of two ways:
+- `PerHit`: one value per firing, restarting every bar (`"36 36 43 39"`);
+- `PerBar`: one value per cycle (`"<36 36 39 31>"`).
+
+The page's rule editor takes Tidal's own notation in a text field. With the
+per-grain resonator, which is gated on `rsnpitch`, this lets the kick drum
+play a bassline. On the rig the kick rings measured C2 C2 G2 D#2 for
+`36 36 43 39` (43.06 and 38.94 measured). The C2s read a semitone sharp
+because this kick's body sits near D2, which is worth knowing when choosing
+a key.
+
+Presets tagged `fix`: Every 4th downbeat back, Snare up a fifth, Kick
+bassline, Kick bassline per bar, Snare roll build, Hat ping-pong, Creative
+errors, Fix under the walk.
+
 ## Open questions
 
 - Does the selector query language want to be mini-notation, a predicate

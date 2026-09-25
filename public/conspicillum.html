@@ -53,7 +53,7 @@
   .samp .chord { font-weight:600; }
   .samp .meta { color:var(--mute); font-variant-numeric:tabular-nums; font-size:11px; }
 
-  .rule { display:grid; grid-template-columns:1fr 46px 46px 1fr 60px 24px;
+  .rule { display:grid; grid-template-columns:1fr 62px 40px 52px 1fr 54px 1.2fr 24px;
     gap:6px; align-items:center; margin-bottom:7px; }
   .rule select, .rule input { padding:3px 5px; font-size:12px; }
   .rule .kill { border:1px solid var(--line); background:#fff; cursor:pointer;
@@ -491,6 +491,17 @@ function addRule(r) {
   rules.push(r || { when:1, everyN:3, everyK:0, chance:0.5, op:0, amount:-1 });
   drawRules(); render();
 }
+// Tidal's two ways of laying a list over time, in its own notation:
+// "36 36 39 31" is one value per firing, restarting every bar; "<36 36 39 31>"
+// is one value per bar. Empty means the rule's amount, as before.
+const HIT_KINDS = ["kick", "snare", "hat"];
+function parseValues(text) {
+  const perBar = text.startsWith("<");
+  const values = text.replace(/[<>]/g, " ").split(/[\s,]+/)
+    .map(parseFloat).filter(x => !isNaN(x));
+  return { values, step: perBar ? 1 : 0, valtext: values.length ? text : "" };
+}
+
 function drawRules() {
   const box = document.getElementById("rules");
   box.innerHTML = rules.map((r, i) => `
@@ -499,24 +510,33 @@ function drawRules() {
         <option value="0"${r.when===0?" selected":""}>always</option>
         <option value="1"${r.when===1?" selected":""}>every</option>
         <option value="2"${r.when===2?" selected":""}>chance</option>
+        <option value="3"${r.when===3?" selected":""}>hit</option>
       </select>
-      <input class="n" type="number" value="${r.everyN}" ${r.when!==1?"disabled":""} title="n">
+      ${r.when===3
+        ? `<select class="kind" title="what the grain reads">${HIT_KINDS.map((h,j)=>`<option value="${j}"${r.everyN===j?" selected":""}>${h}</option>`).join("")}</select>`
+        : `<input class="n" type="number" value="${r.everyN}" ${r.when!==1?"disabled":""} title="n">`}
       <input class="k" type="number" value="${r.everyK}" ${r.when!==1?"disabled":""} title="k">
-      <input class="c" type="number" step="0.05" min="0" max="1" value="${r.chance}" ${r.when!==2?"disabled":""} title="probability">
+      <input class="c" type="number" step="0.05" min="0" max="1" value="${r.chance}" ${r.when<2?"disabled":""} title="${r.when===3?"threshold: lower catches more, and makes more 'mistakes'":"probability"}">
       <select class="op">${OPS.map((o,j)=>`<option value="${j}"${r.op===j?" selected":""}>${o}</option>`).join("")}</select>
-      <input class="a" type="number" step="0.05" value="${r.amount}" title="amount">
+      <input class="a" type="number" step="0.05" value="${r.amount}" title="amount" ${r.valtext?"disabled":""}>
+      <input class="vals" type="text" value="${r.valtext||""}" placeholder="values" title="a sequence instead of the amount: '36 36 39 31' steps per hit in the bar, '<36 36 39 31>' one per bar">
       <button class="kill" title="remove">×</button>
     </div>`).join("");
   box.querySelectorAll(".rule").forEach(el => {
     const i = +el.dataset.i;
     const read = () => {
+      const when = +el.querySelector(".w").value;
+      const kind = el.querySelector(".kind"), n = el.querySelector(".n");
+      const valtext = el.querySelector(".vals").value.trim();
       rules[i] = {
-        when: +el.querySelector(".w").value,
-        everyN: +el.querySelector(".n").value,
+        when,
+        // A hit rule keeps its kind where the wire does, in everyN.
+        everyN: when === 3 ? (kind ? +kind.value : 1) : (n ? +n.value : 3),
         everyK: +el.querySelector(".k").value,
         chance: +el.querySelector(".c").value,
         op: +el.querySelector(".op").value,
         amount: +el.querySelector(".a").value,
+        ...parseValues(valtext),
       };
       drawRules(); render();
     };
@@ -744,14 +764,17 @@ function chainNow() {
 }
 function rulesNow() {
   const t = targetNow();
-  if (!t || followMode() !== "tones" || !t.pcs.length) return rules;
+  // Full width on the wire: every rule carries a sequence, empty or not.
+  const wire = (r) => ({ when: r.when, everyN: r.everyN, everyK: r.everyK, chance: r.chance,
+                         op: r.op, amount: r.amount, values: r.values || [], step: r.step || 0 });
+  if (!t || followMode() !== "tones" || !t.pcs.length) return rules.map(wire);
   const base = rsnBase();
   // Generated, not stored: they are a function of the chord, and the chord
   // changes under the player's hands. Appending rather than replacing means a
   // hand-written rsnpitch rule still wins, since later rules apply last.
-  return rules.concat(t.pcs.map((pc, i) => ({
+  return rules.map(wire).concat(t.pcs.map((pc, i) => ({
     when: 1, everyN: t.pcs.length, everyK: i, chance: 0.5,
-    op: OP_RSNPITCH, amount: base + pc,
+    op: OP_RSNPITCH, amount: base + pc, values: [], step: 0,
   })));
 }
 
@@ -791,7 +814,7 @@ function render() {
   // A rule can engage an effect the base slider leaves at zero — the Formant
   // choir's vowels arrive entirely from rules — so `res` would read cold while
   // being the thing shaping them. The gate has to see the rules too.
-  const ruleOn = new Set(rulesNow().filter(r => r.amount > 0).map(r => OPS[r.op]));
+  const ruleOn = new Set(rulesNow().filter(r => r.amount > 0 || (r.values || []).some(v => v > 0)).map(r => OPS[r.op]));
   for (const [list, pre] of [[FX_CTRL,"fx_"], [CH_CTRL,"ch_"]]) {
     for (const c of list) {
       const v = +document.getElementById(pre + c.id).value;
@@ -1143,6 +1166,55 @@ const PRESETS = [
          {when:2,everyN:0,everyK:0,chance:0.1,op:0,amount:-1},
          {when:2,everyN:0,everyK:0,chance:0.06,op:0,amount:0.5}],
   fx:{}, chain:{}, q:{} },
+// ── fix: rules that select by what a grain READS ────────────────────────────
+// Tidal's `fix`: `when:3` is a hit rule, kind in everyN (0 kick, 1 snare,
+// 2 hat) and threshold in chance, read from audio/score-hits.py's scores at
+// the slice under the read head, so they follow the walk. `values` is a
+// control pattern: step 0 is one value per firing ("a b c"), step 1 one per
+// bar ("<a b c>"); valtext is how the rule editor shows it.
+{ name:"Every 4th downbeat back", tag:"fix", blurb:"ordinals count across bars, so every 64th grain is the downbeat of every fourth bar",
+  set:"fd-beat-bar", n:0, whole:true, cloud:{sustain:0.125,position:0,spray:0,follow:1}, 
+  on:{mode:"even",count:16}, v:{speed:1,gain:1,pan:0.5,accel:0},
+  rules:[{when:1,everyN:64,everyK:0,chance:0.5,op:0,amount:-1}],
+  fx:{}, chain:{}, q:{} },
+{ name:"Snare up a fifth", tag:"fix", blurb:"only what scores as snare is pitch-shifted \u2014 fix (# pshift 1.5) snare",
+  set:"fd-beat-bar", n:0, whole:true, cloud:{sustain:0.125,position:0,spray:0,follow:1}, 
+  on:{mode:"even",count:16}, v:{speed:1,gain:1,pan:0.5,accel:0},
+  rules:[{when:3,everyN:1,everyK:0,chance:0.5,op:13,amount:1.5}],
+  fx:{}, chain:{}, q:{} },
+{ name:"Kick bassline", tag:"fix", blurb:"each kick rings a resonator tuned from a sequence \u2014 the kick drum plays the bass",
+  set:"fd-beat-bar", n:0, whole:true, cloud:{sustain:0.125,position:0,spray:0,follow:1}, 
+  on:{mode:"even",count:16}, v:{speed:1,gain:1,pan:0.5,accel:0},
+  rules:[{when:3,everyN:0,everyK:0,chance:0.5,op:23,amount:0,values:[36,36,43,39],step:0,valtext:"36 36 43 39"}],
+  fx:{rsndecay:0.9,rsnbright:0.35,rsnmix:0.75}, chain:{}, q:{} },
+{ name:"Kick bassline, per bar", tag:"fix", blurb:"one note a bar, <36 36 39 31> \u2014 four bars of root motion",
+  set:"fd-beat-bar", n:0, whole:true, cloud:{sustain:0.125,position:0,spray:0,follow:1}, 
+  on:{mode:"even",count:16}, v:{speed:1,gain:1,pan:0.5,accel:0},
+  rules:[{when:3,everyN:0,everyK:0,chance:0.5,op:23,amount:0,values:[36,36,39,31],step:1,valtext:"<36 36 39 31>"}],
+  fx:{rsndecay:1.4,rsnbright:0.3,rsnmix:0.8}, chain:{}, q:{} },
+{ name:"Snare roll build", tag:"fix", blurb:"the snare ratchets 1, 2, 3, 4 across four bars, <1 2 3 4>",
+  set:"fd-beat-bar", n:0, whole:true, cloud:{sustain:0.125,position:0,spray:0,follow:1}, 
+  on:{mode:"even",count:16}, v:{speed:1,gain:1,pan:0.5,accel:0},
+  rules:[{when:3,everyN:1,everyK:0,chance:0.5,op:29,amount:0,values:[1,2,3,4],step:1,valtext:"<1 2 3 4>"}],
+  fx:{}, chain:{}, q:{} },
+{ name:"Hat ping-pong", tag:"fix", blurb:"hats alternate left and right; at 0.2 the kicks' click counts as hat too",
+  set:"fd-beat-bar", n:0, whole:true, cloud:{sustain:0.125,position:0,spray:0,follow:1}, 
+  on:{mode:"even",count:16}, v:{speed:1,gain:1,pan:0.5,accel:0},
+  rules:[{when:3,everyN:2,everyK:0,chance:0.2,op:3,amount:0,values:[0.1,0.9],step:0,valtext:"0.1 0.9"}],
+  fx:{}, chain:{}, q:{} },
+{ name:"Creative errors", tag:"fix", blurb:"thresholds low enough to be wrong: half the bar is 'snare', crushed and dropped an octave",
+  set:"fd-beat-bar", n:0, whole:true, cloud:{sustain:0.125,position:0,spray:0,follow:1}, 
+  on:{mode:"even",count:16}, v:{speed:1,gain:1,pan:0.5,accel:0},
+  rules:[{when:3,everyN:1,everyK:0,chance:0.1,op:13,amount:0.5},
+         {when:3,everyN:2,everyK:0,chance:0.15,op:6,amount:5}],
+  fx:{}, chain:{}, q:{} },
+{ name:"Fix under the walk", tag:"fix", blurb:"the Breakdown walk, with snare and kick rules that follow whatever the head lands on",
+  set:"fd-beat-bar", n:0, whole:true, cloud:{sustain:0.125,position:0,spray:0,follow:1}, walk:{jump:0.2,hold:0.12,home:0.1,grid:8,reach:3}, 
+  on:{mode:"even",count:16}, v:{speed:1,gain:1,pan:0.5,accel:0},
+  rules:[{when:3,everyN:1,everyK:0,chance:0.5,op:13,amount:1.5},
+         {when:3,everyN:0,everyK:0,chance:0.5,op:23,amount:0,values:[36,43,39,34],step:0,valtext:"36 43 39 34"},
+         {when:3,everyN:2,everyK:0,chance:0.5,op:29,amount:3}],
+  fx:{rsndecay:0.8,rsnbright:0.35,rsnmix:0.7}, chain:{}, q:{} },
 { name:"Attack wave", tag:"env", blurb:"a six-step triangle over the ATTACK, indexed by grain ordinal \u2014 an LFO that cannot drift",
   // "Modulating the attack with an LFO" — built out of what already exists,
   // to hear whether it earns an engine change.
@@ -1530,7 +1602,7 @@ function asPreset(name) {
 // on at once.
 function inertIn(list, pre) {
   const out = [];
-  const ruleOn = new Set(rulesNow().filter(r => r.amount > 0).map(r => OPS[r.op]));
+  const ruleOn = new Set(rulesNow().filter(r => r.amount > 0 || (r.values || []).some(v => v > 0)).map(r => OPS[r.op]));
   for (const c of list) {
     const v = +document.getElementById(pre + c.id).value;
     if (v === c.def) continue;                    // not set, so not a surprise

@@ -65,6 +65,8 @@ def corpus_of(name):
             "params": [{"name": m["name"], "level": m["level"]}
                        for m in (s.get("means") or [])],
             "notes": s.get("notes") or [],
+            # score-hits.py's kick/snare/hat per slice; empty = never scored.
+            "hits": {k: (s.get("hits") or {}).get(k, []) for k in ("kick", "snare", "hat")},
         })
     return {"name": name, "samples": samples}
 
