@@ -146,6 +146,11 @@
     <div class="row"><label>sustain</label><input type="range" id="sustain" min="0.01" max="2" step="0.005" value="0.12"><output id="o_sustain"></output></div>
     <div class="row"><label>position</label><input type="range" id="position" min="0" max="1" step="0.005" value="0.04"><output id="o_position"></output></div>
     <div class="row"><label>spray</label><input type="range" id="spray" min="0" max="1" step="0.005" value="0.5"><output id="o_spray"></output></div>
+    <div class="row"><label>follow</label><input type="range" id="follow" min="0" max="2" step="0.005" value="0"><output id="o_follow"></output></div>
+    <p class="hint"><b>follow</b> makes the read head track each grain's place in
+      the bar: at <b>1</b> sixteen grains of a one-bar take play it back in order,
+      and <i>position</i> becomes a wrapped offset (0.25 = a beat late). Below 1
+      the head drags; above, it skips.</p>
     <p class="hint">A grain's window must be as long in the source as
       <i>sustain</i> is in time, or it is transposed. The engine handles that.
       Opens near <b>0</b> because a chord hit is a short attack and a very long
@@ -465,7 +470,8 @@ const OPS = ["speed","gain","length","pan","accelerate",
              "shape","crush","coarse","lpf","hpf","bpf","res",
              "vowel","pshift","tremolo","phaser",
              "genv","gtilt","gplat","atk","hold","rel","curve",
-             "rsnpitch","rsndecay","rsnbright","rsnmix","rsnmodel"];
+             "rsnpitch","rsndecay","rsnbright","rsnmix","rsnmodel",
+             "shift"];
 const OP_RSNPITCH = OPS.indexOf("rsnpitch");
 let rules = [];
 function addRule(r) {
@@ -648,6 +654,7 @@ function scene() {
         sustain: +document.getElementById("sustain").value,
         position: +document.getElementById("position").value,
         spray: +document.getElementById("spray").value,
+        follow: +document.getElementById("follow").value,
       },
       rules: rulesNow(),
       speed: +document.getElementById("speed").value,
@@ -737,7 +744,7 @@ function harmonicNow() {
 
 // ── render ──────────────────────────────────────────────────────────────────
 function render() {
-  for (const id of ["sustain","position","spray","speed","gain","pan","accel","count","ek","en"]) {
+  for (const id of ["sustain","position","spray","follow","speed","gain","pan","accel","count","ek","en"]) {
     const el = document.getElementById(id), out = document.getElementById("o_" + id);
     if (el && out) out.textContent = (+el.value).toFixed(id === "count" || id === "ek" || id === "en" ? 0 : 2);
   }
@@ -1261,6 +1268,7 @@ function applyPreset(i) {
   document.getElementById("sustain").value = P.cloud.sustain;
   document.getElementById("position").value = P.cloud.position;
   document.getElementById("spray").value = P.cloud.spray;
+  document.getElementById("follow").value = P.cloud.follow ?? 0;
 
   document.getElementById("onmode").value = P.on.mode;
   if (P.on.mode === "even") document.getElementById("count").value = P.on.count;
@@ -1337,7 +1345,7 @@ function asPreset(name) {
     n: chosen,
     whole: g("whole").checked,
     cloud: { sustain: +g("sustain").value, position: +g("position").value,
-             spray: +g("spray").value },
+             spray: +g("spray").value, follow: +g("follow").value },
     on,
     v: { speed: +g("speed").value, gain: +g("gain").value,
          pan: +g("pan").value, accel: +g("accel").value },
