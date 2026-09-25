@@ -2,6 +2,7 @@
 
     python3 score-hits.py fd-beat-bar              # sixteenths at 120 bpm
     python3 score-hits.py some-set --slices 32     # or say how many
+    python3 score-hits.py swung-set --swing 0.62   # cut on a swung grid
 
 Writes `hits: {kick, snare, hat, slices, method}` into every sample of
 ~/.itajara/quadrat/samples/<set>/set.json, and prints the table so the
@@ -42,12 +43,23 @@ def norm(v):
     return [x / m if m > 0 else 0.0 for x in v]
 
 
-def score(x, slices):
-    size = len(x) / slices
+def swung(k, slices, m):
+    """Where slice k starts on a grid swung to m (0.5 straight), as a
+    fraction: the same warp as Reef.Conspicillum.Cloud.swingWarp, pairs of
+    slices. So a swung tape is measured from each offbeat's late hit, and the
+    scores line up with the slices Conspicillum reads."""
+    q = k / 2.0
+    p, f = divmod(q, 1.0)
+    f2 = f * 2 * m if f < 0.5 else m + (f - 0.5) * 2 * (1 - m)
+    return (p + f2) * 2.0 / slices
+
+
+def score(x, slices, m=0.5):
     head = int(0.05 * SR)
     rows = []
     for k in range(slices):
-        a = int(round(k * size))
+        a = int(round(swung(k, slices, m) * len(x)))
+        size = len(x) / slices
         seg = x[a:a + min(head, int(size))]
         if len(seg) < 64:
             seg = np.pad(seg, (0, 64 - len(seg)))
@@ -67,6 +79,8 @@ def main():
     ap.add_argument("--slices", type=int, default=0,
                     help="slices per sample (default: sixteenths at --bpm)")
     ap.add_argument("--bpm", type=float, default=120.0)
+    ap.add_argument("--swing", type=float, default=0.5,
+                    help="the take's own swing, 0.5 straight (recorded in set.json)")
     a = ap.parse_args()
     d = os.path.join(SETS, a.set)
     sj = json.load(open(os.path.join(d, "set.json")))
@@ -74,8 +88,8 @@ def main():
         x = mono(os.path.join(d, s["file"]))
         secs = len(x) / SR
         n = a.slices or max(1, round(secs / (60.0 / a.bpm / 4)))
-        h = score(x, n)
-        s["hits"] = {**h, "slices": n, "method": METHOD}
+        h = score(x, n, a.swing)
+        s["hits"] = {**h, "slices": n, "method": METHOD, "swing": a.swing}
         print(f"{s['file']}: {n} slices")
         print("   k  kick snare  hat")
         for k in range(n):
@@ -83,6 +97,7 @@ def main():
             best = h[tag][k]
             print(f"  {k:2d}  {h['kick'][k]:.2f}  {h['snare'][k]:.2f}  {h['hat'][k]:.2f}"
                   + (f"   {tag}" if best >= 0.5 else ""))
+    sj["swing"] = a.swing
     json.dump(sj, open(os.path.join(d, "set.json"), "w"), indent=2)
     print(f"written: {os.path.join(d, 'set.json')}")
 

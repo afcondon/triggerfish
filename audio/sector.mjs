@@ -3,6 +3,7 @@
 //   node sector.mjs whole                 fd-beat-bar as one grain (the reference)
 //   node sector.mjs tape                  16 sixteenths that follow the tape: identical
 //   node sector.mjs tape jump=0.2 grid=8 reach=3 hold=0.1 home=0.1
+//   node sector.mjs tape play=0.62               swing a straight tape (tape= is its own swing)
 //   node sector.mjs tape position=0.25 rules='[[16,5,"shift",-0.0625],["p",0.2,"speed",-1]]'
 //   node sector.mjs tape rules='[["snare",0.5,"pshift",1.5],["kick",0.5,"rsnpitch",{"bar":[36,36,39,31]}]]'
 //   node sector.mjs list                  the page's presets
@@ -70,6 +71,7 @@ function fromPreset(P) {
       onsets: onsetsOf(P.on),
       cloud: { follow: 0, ...P.cloud },
       walk: { ...noWalk, ...(P.walk || {}) },
+      swing: { tape: 0.5, play: 0.5, grid: 16, ...(P.swing || {}) },
       rules: (P.rules || []).map(r => ({ when: r.when, everyN: r.everyN, everyK: r.everyK,
         chance: r.chance, op: r.op, amount: r.amount, values: r.values || [], step: r.step || 0 })),
       speed: P.v.speed, gain: P.v.gain, pan: P.v.pan, accelerate: P.v.accel,
@@ -108,6 +110,7 @@ function tape() {
                        spray: o.spray ?? 0, follow: o.follow ?? 1 },
       walk: whole ? noWalk : { jump: o.jump ?? 0, hold: o.hold ?? 0, home: o.home ?? 0,
                                grid: o.grid ?? 16, reach: o.reach ?? 0 },
+      swing: { tape: o.tape ?? 0.5, play: o.play ?? 0.5, grid: o.swgrid ?? 16 },
       rules,
       speed: o.speed ?? 1, gain: o.gain ?? 1, pan: 0.5, accelerate: 0,
       fx: noFx, chain: noChain, sends: sends(o.sendA, o.sendB),

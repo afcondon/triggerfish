@@ -157,6 +157,15 @@
     <div class="row"><label>grid</label><select id="wgrid">
       <option value="32">32nds</option><option value="16">16ths</option><option value="8">8ths</option>
       <option value="4">beats</option><option value="2">halves</option></select></div>
+    <div class="row"><label>tape swing</label><input type="range" id="swtape" min="0.5" max="0.75" step="0.01" value="0.5"><output id="o_swtape"></output></div>
+    <div class="row"><label>play swing</label><input type="range" id="swplay" min="0.5" max="0.75" step="0.01" value="0.5"><output id="o_swplay"></output></div>
+    <div class="row"><label>swing on</label><select id="swgrid">
+      <option value="16">16ths</option><option value="8">8ths</option></select></div>
+    <p class="hint"><b>Swing</b> as a percentage of the pair: 0.50 straight,
+      0.66 triplet, 0.75 dotted. <b>tape swing</b> is how the recording was
+      played, so slices are cut on its hits and a swapped slice keeps its feel;
+      <b>play swing</b> is where grains land. Equal: the tape as it was. Tape
+      0.50, play 0.62: swing a straight break.</p>
     <div class="row"><label>reach</label><input type="range" id="wreach" min="0" max="16" step="1" value="0"><output id="o_wreach"></output></div>
     <p class="hint">The <b>walk</b> moves a following head and lets it carry on
       from where it lands, so a jump re-lays the rest of the bar rather than
@@ -702,6 +711,11 @@ function scene() {
         spray: +document.getElementById("spray").value,
         follow: +document.getElementById("follow").value,
       },
+      swing: {
+        tape: +document.getElementById("swtape").value,
+        play: +document.getElementById("swplay").value,
+        grid: +document.getElementById("swgrid").value,
+      },
       walk: {
         jump: +document.getElementById("wjump").value,
         hold: +document.getElementById("whold").value,
@@ -829,7 +843,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
 // ── render ──────────────────────────────────────────────────────────────────
 function render() {
-  for (const id of ["sendA","sendB","sustain","position","spray","follow","wjump","whold","whome","wreach","speed","gain","pan","accel","count","ek","en"]) {
+  for (const id of ["swtape","swplay","sendA","sendB","sustain","position","spray","follow","wjump","whold","whome","wreach","speed","gain","pan","accel","count","ek","en"]) {
     const el = document.getElementById(id), out = document.getElementById("o_" + id);
     if (el && out) out.textContent = (+el.value).toFixed(id === "count" || id === "ek" || id === "en" || id === "wreach" ? 0 : 2);
   }
@@ -1279,6 +1293,37 @@ const PRESETS = [
          {when:2,everyN:0,everyK:0,chance:0.08,op:30,amount:2},
          {when:3,everyN:1,everyK:0,chance:0.5,op:13,amount:0.75}],
   fx:{}, chain:{}, q:{} },
+// ── swing: tape swing (where slices are cut) and play swing (where they land)
+// fd-beat-bar-swung is fd-beat-bar played at 0.62 by this engine and recorded
+// back, so its tape swing is known exactly: the demo material for "keep it".
+{ name:"Swing it", tag:"swing", blurb:"a straight break played at 62%: offbeat sixteenths land late",
+  set:"fd-beat-bar", n:0, whole:true, cloud:{sustain:0.125,position:0,spray:0,follow:1}, swing:{tape:0.5,play:0.62,grid:16},
+  on:{mode:"even",count:16}, v:{speed:1,gain:1,pan:0.5,accel:0},
+  rules:[], fx:{}, chain:{}, q:{} },
+{ name:"Heavy shuffle", tag:"swing", blurb:"68%, near triplet \u2014 the short offbeats get clipped, which is the feel",
+  set:"fd-beat-bar", n:0, whole:true, cloud:{sustain:0.125,position:0,spray:0,follow:1}, swing:{tape:0.5,play:0.68,grid:16},
+  on:{mode:"even",count:16}, v:{speed:1,gain:1,pan:0.5,accel:0},
+  rules:[], fx:{}, chain:{}, q:{} },
+{ name:"Eighth swing", tag:"swing", blurb:"swing on 8ths instead of 16ths: the and-of-each-beat moves",
+  set:"fd-beat-bar", n:0, whole:true, cloud:{sustain:0.125,position:0,spray:0,follow:1}, swing:{tape:0.5,play:0.6,grid:8},
+  on:{mode:"even",count:16}, v:{speed:1,gain:1,pan:0.5,accel:0},
+  rules:[], fx:{}, chain:{}, q:{} },
+{ name:"Swung tape, as it was", tag:"swing", blurb:"a swung break with its swing declared: the tape back exactly",
+  set:"fd-beat-bar-swung", n:0, whole:true, cloud:{sustain:0.125,position:0,spray:0,follow:1}, swing:{tape:0.62,play:0.62,grid:16},
+  on:{mode:"even",count:16}, v:{speed:1,gain:1,pan:0.5,accel:0},
+  rules:[], fx:{}, chain:{}, q:{} },
+{ name:"Swung breakdown, kept", tag:"swing", blurb:"the Breakdown walk on a swung break, slices cut on ITS grid: the swing survives the chopping",
+  set:"fd-beat-bar-swung", n:0, whole:true, cloud:{sustain:0.125,position:0,spray:0,follow:1}, walk:{jump:0.2,hold:0.12,home:0.1,grid:8,reach:3}, swing:{tape:0.62,play:0.62,grid:16},
+  on:{mode:"even",count:16}, v:{speed:1,gain:1,pan:0.5,accel:0},
+  rules:[], fx:{}, chain:{}, q:{} },
+{ name:"Swung breakdown, broken", tag:"swing", blurb:"the same, told the tape is straight: offbeat slices land on downbeats late \u2014 the Sector problem",
+  set:"fd-beat-bar-swung", n:0, whole:true, cloud:{sustain:0.125,position:0,spray:0,follow:1}, walk:{jump:0.2,hold:0.12,home:0.1,grid:8,reach:3}, swing:{tape:0.5,play:0.5,grid:16},
+  on:{mode:"even",count:16}, v:{speed:1,gain:1,pan:0.5,accel:0},
+  rules:[], fx:{}, chain:{}, q:{} },
+{ name:"Straighten it", tag:"swing", blurb:"the swung break played straight: cut on its swing, landed on the grid",
+  set:"fd-beat-bar-swung", n:0, whole:true, cloud:{sustain:0.125,position:0,spray:0,follow:1}, swing:{tape:0.62,play:0.5,grid:16},
+  on:{mode:"even",count:16}, v:{speed:1,gain:1,pan:0.5,accel:0},
+  rules:[], fx:{}, chain:{}, q:{} },
 { name:"Attack wave", tag:"env", blurb:"a six-step triangle over the ATTACK, indexed by grain ordinal \u2014 an LFO that cannot drift",
   // "Modulating the attack with an LFO" — built out of what already exists,
   // to hear whether it earns an engine change.
@@ -1535,6 +1580,10 @@ function applyPreset(i) {
   document.getElementById("follow").value = P.cloud.follow ?? 0;
   document.getElementById("sendA").value = (P.sends && P.sends.a) ?? 0.8;
   document.getElementById("sendB").value = (P.sends && P.sends.b) ?? 0.8;
+  const SW = P.swing || {};
+  document.getElementById("swtape").value = SW.tape ?? 0.5;
+  document.getElementById("swplay").value = SW.play ?? 0.5;
+  document.getElementById("swgrid").value = String(SW.grid ?? 16);
   const W = P.walk || {};
   document.getElementById("wjump").value = W.jump ?? 0;
   document.getElementById("whold").value = W.hold ?? 0;
@@ -1621,6 +1670,7 @@ function asPreset(name) {
     cloud: { sustain: +g("sustain").value, position: +g("position").value,
              spray: +g("spray").value, follow: +g("follow").value },
     sends: { a: +g("sendA").value, b: +g("sendB").value },
+    swing: { tape: +g("swtape").value, play: +g("swplay").value, grid: +g("swgrid").value },
     walk: { jump: +g("wjump").value, hold: +g("whold").value, home: +g("whome").value,
             grid: +g("wgrid").value, reach: +g("wreach").value },
     on,

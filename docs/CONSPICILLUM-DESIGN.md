@@ -1501,6 +1501,38 @@ in Ableton:
 Presets tagged `dub`: Snare to the return, Throw the last hit, Hats to the
 room, Random throws, Echo out every 4th bar, Dub breakdown.
 
+### Built 2026-09-25 (evening): swing, kept and given
+
+Sector cuts a break into equal slices, so it cannot keep swing. A swung
+offbeat moved onto a downbeat arrives late, and nothing can add swing
+either. Here a tape knows two swings (`Spec.swing`), each as a swing
+percentage on a 16th or 8th grid:
+- **`tape`**: how the recording was played. Slices are cut on it, so slice i
+  starts on its own hit.
+- **`play`**: where grains land.
+
+Equal values reproduce the tape. Tape 0.5 with play above 0.5 swings a
+straight break; the reverse straightens a swung one. Each grain lasts the
+shorter of its slot and its slice, cutting short rather than leaking the
+next transient (Ableton's Beats-mode choice). Onsets are warped last, after
+ratchet and sends, so a roll subdivides the swung slot.
+
+Checked on the rig with `fd-beat-bar-swung`, which is `fd-beat-bar` played at
+62% by this engine and recorded back:
+- Tape = play = 0.62 reproduces it at r = 1.000.
+- Straightening it (tape 0.62, play 0.5) recovers the original straight bar
+  at r = 0.999.
+- `score-hits.py --swing 0.62` cuts on the swung grid, and its scores come out
+  identical to the straight take's: the swung cut lands on every hit.
+
+Pinned by unit tests (identity, slot lengths, onsets) and in the cross-runtime
+Sector golden (tape 0.6, play 0.55). Presets tagged `swing`. "Swung breakdown,
+kept" and "…, broken" are the before/after of the Sector problem.
+
+**Open:** the tape's swing is declared, not measured. The set records it
+(`set.json.swing`) when `score-hits` is told it; estimating it from the
+offbeats' lateness is the natural next step.
+
 ## Open questions
 
 - Does the selector query language want to be mini-notation, a predicate
