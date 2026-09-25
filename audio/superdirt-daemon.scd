@@ -27,6 +27,21 @@ var port = ("SUPERDIRT_PORT".getenv ? "57135").asInteger;
 // mix / record). BlackHole 2ch is full-duplex, so one device string covers I/O.
 var dev = "SUPERDIRT_DEVICE".getenv;
 
+// --- output pairs for send buses (SUPERDIRT_OUTPUTS) --------------------------
+// How many output channels scsynth opens on the device. 2 (default) is the old
+// behaviour: every orbit on 1/2. With a device that has more — BlackHole 16ch —
+// the Conspicillum SEND orbits get their own pairs, so Ableton can take each as
+// a return track and put a real reverb or delay on it:
+//
+//   orbits 0-9   -> outputs 1/2   (the main mix, as always)
+//   orbit 10     -> outputs 3/4   (send A)  when SUPERDIRT_OUTPUTS >= 4
+//   orbit 11     -> outputs 5/6   (send B)  when SUPERDIRT_OUTPUTS >= 6
+//
+// A send in Conspicillum is a COPY of the grain at a send level (OpSend), so
+// the return in Ableton wants to be 100% wet: the dry grain is already on 1/2.
+var outs = ("SUPERDIRT_OUTPUTS".getenv ? "2").asInteger.max(2);
+var orbitOuts = (0 ! 10) ++ [ if(outs >= 4) { 2 } { 0 }, if(outs >= 6) { 4 } { 0 } ];
+
 // --- which samples to load (SUPERDIRT_SAMPLES) -------------------------------
 // Loading all 217 Dirt-Samples banks costs ~935 MB of scsynth footprint (394 MB
 // on disk, ~2x that as float32 buffers). That was the rig's single largest
@@ -133,7 +148,7 @@ s.reboot {
 	s.options.memSize = 8192 * 16;
 	s.options.numWireBufs = 2048;
 	s.options.maxNodes = 1024 * 4;
-	s.options.numOutputBusChannels = 2;
+	s.options.numOutputBusChannels = outs;
 	s.options.numInputBusChannels = 2;
 	if((dev.notNil) and: { dev != "" }, {
 		s.options.device = dev;
@@ -271,7 +286,8 @@ s.reboot {
 		};
 		s.sync;
 
-		~dirt.start(port, 0 ! 12);        // 12 orbits, all to channel 0
+		~dirt.start(port, orbitOuts);     // 12 orbits; 10 and 11 are the sends, see SUPERDIRT_OUTPUTS
+		("STELLATUS-SUPERDIRT outputs = " ++ outs ++ ", orbit outs = " ++ orbitOuts).postln;
 
 		// Added AFTER start, so it lands at the end of ~dirt.modules and runs
 		// last in the chain: the resonator rings whatever the other effects

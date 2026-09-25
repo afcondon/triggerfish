@@ -20,7 +20,7 @@ const { noFx, noChain } = await import(here("../../../reef/output/Reef.Conspicil
 
 const OPS = ["speed","gain","length","pan","accelerate","shape","crush","coarse","lpf","hpf","bpf","res",
   "vowel","pshift","tremolo","phaser","genv","gtilt","gplat","atk","hold","rel","curve",
-  "rsnpitch","rsndecay","rsnbright","rsnmix","rsnmodel","shift","ratchet"];
+  "rsnpitch","rsndecay","rsnbright","rsnmix","rsnmodel","shift","ratchet","send"];
 
 const [mode = "tape", ...kv] = process.argv.slice(2);
 const o = Object.fromEntries(kv.filter(s => s.includes("=")).map(s => {
@@ -55,6 +55,11 @@ function onsetsOf(on) {
 }
 
 const noWalk = { jump: 0, hold: 0, home: 0, grid: 16, reach: 0 };
+// Send A is orbit 10 (outputs 3/4), send B orbit 11 (5/6): dry chains, so the
+// effect can be an Ableton return. See superdirt-daemon.scd, SUPERDIRT_OUTPUTS.
+const sends = (a = 0.8, b = 0.8) => [
+  { chain: { ...noChain, orbit: 10 }, level: a },
+  { chain: { ...noChain, orbit: 11 }, level: b }];
 const noQuery = { clauses: [], weighting: [], harmonic: [] };
 
 function fromPreset(P) {
@@ -70,6 +75,7 @@ function fromPreset(P) {
       speed: P.v.speed, gain: P.v.gain, pan: P.v.pan, accelerate: P.v.accel,
       fx: { ...noFx, ...(P.fx || {}) },
       chain: { ...noChain, ...(P.chain || {}) },
+      sends: sends(P.sends && P.sends.a, P.sends && P.sends.b),
     },
     seed: o.seed ?? 1,
   };
@@ -104,7 +110,7 @@ function tape() {
                                grid: o.grid ?? 16, reach: o.reach ?? 0 },
       rules,
       speed: o.speed ?? 1, gain: o.gain ?? 1, pan: 0.5, accelerate: 0,
-      fx: noFx, chain: noChain,
+      fx: noFx, chain: noChain, sends: sends(o.sendA, o.sendB),
     },
     seed: o.seed ?? 1,
   };

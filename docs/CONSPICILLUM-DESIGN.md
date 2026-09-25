@@ -1473,6 +1473,34 @@ Presets tagged `fix`: Every 4th downbeat back, Snare up a fifth, Kick
 bassline, Kick bassline per bar, Snare roll build, Hat ping-pong, Creative
 errors, Fix under the walk.
 
+### Built 2026-09-25 (later still): per-grain sends, for a return in Ableton
+
+*"like a dub producer might flick a slider to send a snare thru the delay"*
+
+SuperDirt's reverb and delay are **per orbit**, and an orbit is effectively a
+mixer channel. The delay reads the orbit's whole dry bus, and an event's
+`delay` sets the level of the entire orbit's delay (the last event to arrive
+wins). So there is no per-grain send inside SuperDirt. What does exist: each
+orbit can have its own output pair (`~dirt.start(port, [outs…])`).
+
+So a **send is a copy of the grain on another orbit**, and the effect lives
+in Ableton:
+- `Spec.sends :: Array { chain, level }` defines the send buses. `OpSend n`
+  (wire 30) copies the grain onto send n's chain at `gain × level`. The
+  original still plays in the main mix, so the return should be 100% wet.
+  The copy is made after ratchet, so a roll sends every repeat.
+- The page sets up send A on orbit 10 and send B on orbit 11, both dry.
+- `superdirt-daemon.scd` reads `SUPERDIRT_OUTPUTS`. At 2 (the default,
+  unchanged) every orbit goes to 1/2. At 4 or more, orbit 10 comes out on 3/4;
+  at 6, orbit 11 comes out on 5/6. This needs a device with the channels
+  (BlackHole 16ch) and the Atlantis compose's `SUPERDIRT_DEVICE` pointed at it.
+- Pinned in `conspicillumFixRun` (a snare sounds twice: orbit 0 at full gain,
+  orbit 10 at the send level). On the rig at 2 outputs, a level-1.0 send on
+  the last sixteenth measured +5.9 dB there and nothing elsewhere.
+
+Presets tagged `dub`: Snare to the return, Throw the last hit, Hats to the
+room, Random throws, Echo out every 4th bar, Dub breakdown.
+
 ## Open questions
 
 - Does the selector query language want to be mini-notation, a predicate

@@ -260,6 +260,19 @@
     <div class="fxgrid" id="chgrid"></div>
   </section>
 
+  <section>
+    <h2>Sends</h2>
+    <p class="hint">A <b>send</b> rule copies the grains it selects to a send
+      bus at that bus's level; the grain still plays in the main mix. Each send
+      is its own SuperDirt channel (orbit 10, 11) and comes out on its own
+      output pair, <b>3/4</b> and <b>5/6</b>, when SuperDirt runs on a device
+      with the channels (BlackHole 16ch, <code>SUPERDIRT_OUTPUTS=6</code>).
+      In Ableton, make a track per pair with the reverb or delay on it at 100%
+      wet: that is the return. On a 2-channel device the copies land on 1/2.</p>
+    <div class="row"><label>send A</label><input type="range" id="sendA" min="0" max="1" step="0.01" value="0.8"><output id="o_sendA"></output></div>
+    <div class="row"><label>send B</label><input type="range" id="sendB" min="0" max="1" step="0.01" value="0.8"><output id="o_sendB"></output></div>
+  </section>
+
 </div>
 
 <details>
@@ -484,7 +497,7 @@ const OPS = ["speed","gain","length","pan","accelerate",
              "vowel","pshift","tremolo","phaser",
              "genv","gtilt","gplat","atk","hold","rel","curve",
              "rsnpitch","rsndecay","rsnbright","rsnmix","rsnmodel",
-             "shift","ratchet"];
+             "shift","ratchet","send"];
 const OP_RSNPITCH = OPS.indexOf("rsnpitch");
 let rules = [];
 function addRule(r) {
@@ -703,6 +716,7 @@ function scene() {
       accelerate: +document.getElementById("accel").value,
       fx: fxNow(),
       chain: chainNow(),
+      sends: sendsNow(),
     },
     seed: +document.getElementById("seed").value,
   };
@@ -762,6 +776,18 @@ function chainNow() {
   ch.grsnpitch = Math.floor(ch.grsnpitch / 12) * 12 + followPc(t, m, false);
   return ch;
 }
+// The send buses: dry chains on their own orbits, so the effect can live in
+// Ableton. Full width, like the main chain, with SuperDirt's own defaults.
+function sendChain(orbit) {
+  return { orbit, room: 0, size: 0.4, dry: 0, delay: 0, delaytime: 0.25, delayfeedback: 0.4,
+           lock: 0, leslie: 0, lrate: 6.7, lsize: 0.3,
+           grsn: 0, grsnpitch: 45, grsndecay: 3, grsnbright: 0.85 };
+}
+function sendsNow() {
+  return [ { chain: sendChain(10), level: +document.getElementById("sendA").value },
+           { chain: sendChain(11), level: +document.getElementById("sendB").value } ];
+}
+
 function rulesNow() {
   const t = targetNow();
   // Full width on the wire: every rule carries a sequence, empty or not.
@@ -803,7 +829,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
 // ── render ──────────────────────────────────────────────────────────────────
 function render() {
-  for (const id of ["sustain","position","spray","follow","wjump","whold","whome","wreach","speed","gain","pan","accel","count","ek","en"]) {
+  for (const id of ["sendA","sendB","sustain","position","spray","follow","wjump","whold","whome","wreach","speed","gain","pan","accel","count","ek","en"]) {
     const el = document.getElementById(id), out = document.getElementById("o_" + id);
     if (el && out) out.textContent = (+el.value).toFixed(id === "count" || id === "ek" || id === "en" || id === "wreach" ? 0 : 2);
   }
@@ -1215,6 +1241,44 @@ const PRESETS = [
          {when:3,everyN:0,everyK:0,chance:0.5,op:23,amount:0,values:[36,43,39,34],step:0,valtext:"36 43 39 34"},
          {when:3,everyN:2,everyK:0,chance:0.5,op:29,amount:3}],
   fx:{rsndecay:0.8,rsnbright:0.35,rsnmix:0.7}, chain:{}, q:{} },
+// ── dub: per-grain sends ─────────────────────────────────────────────────────
+// op 30 is send: a copy of the grain at the send's level on orbit 10 (send A,
+// outputs 3/4) or 11 (send B, outputs 5/6), for a 100%-wet return in Ableton.
+{ name:"Snare to the return", tag:"dub", blurb:"every snare flicked into send A \u2014 put a delay on 3/4",
+  set:"fd-beat-bar", n:0, whole:true, cloud:{sustain:0.125,position:0,spray:0,follow:1},  sends:{a:0.8,b:0.8},
+  on:{mode:"even",count:16}, v:{speed:1,gain:1,pan:0.5,accel:0},
+  rules:[{when:3,everyN:1,everyK:0,chance:0.5,op:30,amount:1}],
+  fx:{}, chain:{}, q:{} },
+{ name:"Throw the last hit", tag:"dub", blurb:"the last sixteenth of every bar into send A, loud",
+  set:"fd-beat-bar", n:0, whole:true, cloud:{sustain:0.125,position:0,spray:0,follow:1},  sends:{a:1,b:0.8},
+  on:{mode:"even",count:16}, v:{speed:1,gain:1,pan:0.5,accel:0},
+  rules:[{when:1,everyN:16,everyK:15,chance:0.5,op:30,amount:1}],
+  fx:{}, chain:{}, q:{} },
+{ name:"Hats to the room", tag:"dub", blurb:"hats into send B \u2014 put a reverb on 5/6",
+  set:"fd-beat-bar", n:0, whole:true, cloud:{sustain:0.125,position:0,spray:0,follow:1},  sends:{a:0.8,b:0.8},
+  on:{mode:"even",count:16}, v:{speed:1,gain:1,pan:0.5,accel:0},
+  rules:[{when:3,everyN:2,everyK:0,chance:0.3,op:30,amount:2}],
+  fx:{}, chain:{}, q:{} },
+{ name:"Random throws", tag:"dub", blurb:"now and then a grain goes to A, or B, alternating",
+  set:"fd-beat-bar", n:0, whole:true, cloud:{sustain:0.125,position:0,spray:0,follow:1},  sends:{a:0.9,b:0.9},
+  on:{mode:"even",count:16}, v:{speed:1,gain:1,pan:0.5,accel:0},
+  rules:[{when:2,everyN:0,everyK:0,chance:0.1,op:30,amount:0,values:[1,2],step:0,valtext:"1 2"}],
+  fx:{}, chain:{}, q:{} },
+{ name:"Echo out every 4th bar", tag:"dub", blurb:"the whole last beat of every fourth bar thrown into A",
+  set:"fd-beat-bar", n:0, whole:true, cloud:{sustain:0.125,position:0,spray:0,follow:1},  sends:{a:1,b:0.8},
+  on:{mode:"even",count:16}, v:{speed:1,gain:1,pan:0.5,accel:0},
+  rules:[{when:1,everyN:64,everyK:60,chance:0.5,op:30,amount:1},
+         {when:1,everyN:64,everyK:61,chance:0.5,op:30,amount:1},
+         {when:1,everyN:64,everyK:62,chance:0.5,op:30,amount:1},
+         {when:1,everyN:64,everyK:63,chance:0.5,op:30,amount:1}],
+  fx:{}, chain:{}, q:{} },
+{ name:"Dub breakdown", tag:"dub", blurb:"the Breakdown walk, snares to A and the odd jump-landing to B",
+  set:"fd-beat-bar", n:0, whole:true, cloud:{sustain:0.125,position:0,spray:0,follow:1}, walk:{jump:0.2,hold:0.12,home:0.1,grid:8,reach:3},  sends:{a:0.8,b:0.8},
+  on:{mode:"even",count:16}, v:{speed:1,gain:1,pan:0.5,accel:0},
+  rules:[{when:3,everyN:1,everyK:0,chance:0.5,op:30,amount:1},
+         {when:2,everyN:0,everyK:0,chance:0.08,op:30,amount:2},
+         {when:3,everyN:1,everyK:0,chance:0.5,op:13,amount:0.75}],
+  fx:{}, chain:{}, q:{} },
 { name:"Attack wave", tag:"env", blurb:"a six-step triangle over the ATTACK, indexed by grain ordinal \u2014 an LFO that cannot drift",
   // "Modulating the attack with an LFO" — built out of what already exists,
   // to hear whether it earns an engine change.
@@ -1469,6 +1533,8 @@ function applyPreset(i) {
   document.getElementById("position").value = P.cloud.position;
   document.getElementById("spray").value = P.cloud.spray;
   document.getElementById("follow").value = P.cloud.follow ?? 0;
+  document.getElementById("sendA").value = (P.sends && P.sends.a) ?? 0.8;
+  document.getElementById("sendB").value = (P.sends && P.sends.b) ?? 0.8;
   const W = P.walk || {};
   document.getElementById("wjump").value = W.jump ?? 0;
   document.getElementById("whold").value = W.hold ?? 0;
@@ -1554,6 +1620,7 @@ function asPreset(name) {
     whole: g("whole").checked,
     cloud: { sustain: +g("sustain").value, position: +g("position").value,
              spray: +g("spray").value, follow: +g("follow").value },
+    sends: { a: +g("sendA").value, b: +g("sendB").value },
     walk: { jump: +g("wjump").value, hold: +g("whold").value, home: +g("whome").value,
             grid: +g("wgrid").value, reach: +g("wreach").value },
     on,
