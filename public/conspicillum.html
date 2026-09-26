@@ -165,6 +165,7 @@
       <option value="4">beats</option><option value="2">halves</option></select></div>
     <div class="row"><label>tape bars</label><input type="number" id="tbars" min="1" max="16" step="1" value="1"></div>
     <div class="row"><label>bar order</label><input type="text" id="torder" placeholder="0 1 1 0" value=""></div>
+    <div class="row"><label>bar samples</label><input type="text" id="tsamples" placeholder="4 7 5 0" value=""></div>
     <div class="row"><label>step table</label><input type="text" id="tsteps" placeholder="~ ~ 5?0.4 ~ 2 ~ ~ 7?0.3" value=""></div>
     <p class="hint">A <b>tape</b> can be several bars; each cycle reads the next,
       or the bar <b>order</b> says which (a permutation of the phrase). The
@@ -482,6 +483,7 @@ function pickSet(i) {
     document.getElementById("sustain").value = (60 / t.bpm / 4).toFixed(4);
     document.getElementById("tbars").value = t.bars;
     document.getElementById("torder").value = "";
+    document.getElementById("tsamples").value = "";
     document.getElementById("swtape").value = t.swing ?? 0.5;
     document.getElementById("swplay").value = t.swing ?? 0.5;
     document.getElementById("position").value = 0;
@@ -838,7 +840,12 @@ function sendsNow() {
 function tapeNow() {
   const order = document.getElementById("torder").value.split(/[\s,]+/)
     .map(x => parseInt(x)).filter(x => !isNaN(x));
-  return { bars: Math.max(1, +document.getElementById("tbars").value || 1), order };
+  // A virtual tape: bar k IS sample k of this list, so a set of separate
+  // chord hits plays as a progression nobody rendered. "<4 7 5 0>" and
+  // "4 7 5 0" read the same: one sample a bar is what the brackets mean.
+  const samples = document.getElementById("tsamples").value.replace(/[<>\[\]]/g, " ")
+    .split(/[\s,]+/).map(x => parseInt(x)).filter(x => !isNaN(x));
+  return { bars: Math.max(1, +document.getElementById("tbars").value || 1), order, samples };
 }
 // "~ ~ 5?0.4 ~ 2" -> grid 5, to [-1,-1,5,-1,2], p [1,1,0.4,1,1]
 function stepsNow() {
@@ -1414,6 +1421,23 @@ const PRESETS = [
 // so each cycle reads its own bar; `order` permutes the bars and `steps` is
 // Sector's per-step jump table, one token per step ("~" stays, "5?0.4" jumps
 // to step 5 with probability 0.4). knobs are the Perform panel's.
+// chord-hits-0924-171929: twelve separate chord hits, ~2.5 s each. Named as a
+// VIRTUAL tape (tape.samples, a sample per bar) they are a progression that
+// was never rendered: 4 7 5 0 is G Em Csus2 D, 8 0 4 7 is Am7 D G Em. Each
+// hit is read whole across its bar, so its 2.5 s squeezes into 2 s by where
+// the grains read, not by speed: the pitch holds. Edit "bar samples" live.
+{ name:"Progression from hits", tag:"harm", blurb:"four separate chord hits as a I\u2013vi\u2013IV\u2013V in G, one a bar \u2014 nothing rendered",
+  set:"chord-hits-0924-171929", n:4, whole:true, cloud:{sustain:0.125,position:0,spray:0,follow:1}, tape:{bars:4,order:[],samples:[4,7,5,0]}, knobs:[["follow","tape rate"],["swplay","swing"],["sendB","space"]], sends:{a:0.8,b:0.8},
+  on:{mode:"even",count:16}, v:{speed:1,gain:1.0,pan:0.5,accel:0},
+  rules:[], fx:{}, chain:{}, q:{} },
+{ name:"ii\u2013V\u2013I\u2013vi from hits", tag:"harm", blurb:"the same hits re-chosen: Am7 D G Em, a turnaround",
+  set:"chord-hits-0924-171929", n:8, whole:true, cloud:{sustain:0.125,position:0,spray:0,follow:1}, tape:{bars:4,order:[],samples:[8,0,4,7]}, knobs:[["wjump","chaos"],["swplay","swing"],["sendB","space"]], sends:{a:0.8,b:0.8},
+  on:{mode:"even",count:16}, v:{speed:1,gain:1.0,pan:0.5,accel:0},
+  rules:[], fx:{}, chain:{}, q:{} },
+{ name:"Hits, Sector'd", tag:"harm", blurb:"the I\u2013vi\u2013IV\u2013V with the walk on the eighths and a stutter now and then",
+  set:"chord-hits-0924-171929", n:4, whole:true, cloud:{sustain:0.125,position:0,spray:0,follow:1}, tape:{bars:4,order:[],samples:[4,7,5,0]}, walk:{jump:0.25,hold:0.15,home:0.2,grid:8,reach:3}, knobs:[["wjump","chaos"],["whold","repeat"],["sendA","throw"]], sends:{a:0.8,b:0.8},
+  on:{mode:"even",count:16}, v:{speed:1,gain:1.0,pan:0.5,accel:0},
+  rules:[{when:2,everyN:0,everyK:0,chance:0.1,op:29,amount:3}], fx:{}, chain:{}, q:{} },
 { name:"Progression as tape", tag:"harm", blurb:"the comping loop as 16 grains a bar \u2014 should sound like the loop",
   set:"prog-g-2bar", n:0, whole:true, cloud:{sustain:0.125,position:0,spray:0,follow:1}, tape:{bars:2,order:[]}, knobs:[["follow","tape rate"],["swplay","swing"],["sendB","space"]], sends:{a:0.8,b:0.8},
   on:{mode:"even",count:16}, v:{speed:1,gain:1.6,pan:0.5,accel:0},
@@ -1710,6 +1734,7 @@ function applyPreset(i) {
   const TP = P.tape || {};
   document.getElementById("tbars").value = TP.bars ?? 1;
   document.getElementById("torder").value = (TP.order || []).join(" ");
+  document.getElementById("tsamples").value = (TP.samples || []).join(" ");
   document.getElementById("tsteps").value = P.steps || "";
   const SW = P.swing || {};
   document.getElementById("swtape").value = SW.tape ?? 0.5;

@@ -5,6 +5,7 @@
 //   node sector.mjs tape jump=0.2 grid=8 reach=3 hold=0.1 home=0.1
 //   node sector.mjs tape play=0.62               swing a straight tape (tape= is its own swing)
 //   node sector.mjs tape set='"prog-g-2bar"' bars=2 order='[0,1,1,0]' steps='"2 3 0 1"'
+//   node sector.mjs tape set='"chord-hits-0924-171929"' samples='[4,7,5,0]'   a virtual tape: a hit per bar
 //   node sector.mjs tape position=0.25 rules='[[16,5,"shift",-0.0625],["p",0.2,"speed",-1]]'
 //   node sector.mjs tape rules='[["snare",0.5,"pshift",1.5],["kick",0.5,"rsnpitch",{"bar":[36,36,39,31]}]]'
 //   node sector.mjs list                  the page's presets
@@ -84,7 +85,7 @@ function fromPreset(P) {
       cloud: { follow: 0, ...P.cloud },
       walk: { ...noWalk, ...(P.walk || {}) },
       swing: { tape: 0.5, play: 0.5, grid: 16, ...(P.swing || {}) },
-      tape: { bars: 1, order: [], ...(P.tape || {}) },
+      tape: { bars: 1, order: [], samples: [], ...(P.tape || {}) },
       steps: stepsOf(P.steps),
       rules: (P.rules || []).map(r => ({ when: r.when, everyN: r.everyN, everyK: r.everyK,
         chance: r.chance, op: r.op, amount: r.amount, values: r.values || [], step: r.step || 0 })),
@@ -125,7 +126,7 @@ function tape() {
       walk: whole ? noWalk : { jump: o.jump ?? 0, hold: o.hold ?? 0, home: o.home ?? 0,
                                grid: o.grid ?? 16, reach: o.reach ?? 0 },
       swing: { tape: o.tape ?? 0.5, play: o.play ?? 0.5, grid: o.swgrid ?? 16 },
-      tape: { bars: o.bars ?? tapeOf(o.set ?? "fd-beat-bar").bars ?? 1, order: o.order ?? [] },
+      tape: { bars: o.bars ?? tapeOf(o.set ?? "fd-beat-bar").bars ?? 1, order: o.order ?? [], samples: o.samples ?? [] },
       steps: stepsOf(o.steps),
       rules,
       speed: o.speed ?? 1, gain: o.gain ?? 1, pan: 0.5, accelerate: 0,

@@ -1623,3 +1623,28 @@ events; make it one, choose its material by querying a corpus that Quadrat
 has already measured and coordinatised, and the instrument does four things
 no hardware granulator can — address individual grains, glide pitch inside
 one, stretch without transposing, and pick grains by what they sound like.
+
+## Built 2026-09-26: virtual tapes
+
+A tape can be made of **separate samples, one per bar**: `tape.samples` names,
+per bar, which corpus sample that bar is (by index), and the tape's length is
+the list's. So twelve chord hits cut by Quadrat are a progression nobody
+rendered: `4 7 5 0` from `chord-hits-0924-171929` is G–Em–Csus2–D, `8 0 4 7`
+is Am7–D–G–Em. The page's **bar samples** field takes it (`<4 7 5 0>` reads
+the same), live; `order` still permutes the bars; the CLI takes
+`samples='[4,7,5,0]'`.
+
+Each bar reads its sample whole across the cycle, so a 2.5 s hit in a 2 s bar
+is squeezed by where the grains read rather than by speed: the pitch holds.
+That is granular time-compression for free, the first step towards the
+warping question (tempo, below), and it is audible as a slight skip inside
+the decay rather than as chipmunking.
+
+In reef: `Tape = { bars, order, samples }`; the pick still draws and is
+overruled, so every other grain's seed is unchanged; a bar naming no sample
+drops (conformance 17, `conspicillumVirtualRun`). Measured on the rig by
+labelling each quarter-second of a capture with its nearest chord sample by
+chroma: `7×8 5×8 0×8 4×8 7 5`, a bar each, in order (4 and 11 are the same
+G voicing and alternate). Presets: *Progression from hits*,
+*ii–V–I–vi from hits*, *Hits, Sector'd* (gain 1.0: the hits peak at 0.67,
+not the rendered loop's 0.41, and clipped at 1.6).
