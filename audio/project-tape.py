@@ -51,6 +51,7 @@ hits = load("scorehits", "score-hits.py")     # kick/snare/hat per slice
 
 
 def project(name, bpm, bpm_from, beats, swing, bars_arg):
+    swing_from = "declared" if swing is not None else None
     tdir = os.path.join(TAKES, name)
     take = json.load(open(os.path.join(tdir, "take.json")))
     # What the take already says about itself wins over an assumption: Quadrat
@@ -63,7 +64,8 @@ def project(name, bpm, bpm_from, beats, swing, bars_arg):
             bpm, bpm_from = float(k["bpm"]), k["bpmFrom"]
             beats = int(k.get("beats", beats))
             bars_arg = bars_arg or int(k.get("bars", 0))
-            swing = k.get("swing", swing) if swing == 0.5 else swing
+            if swing is None and k.get("swingFrom") in ("declared", "measured"):
+                swing, swing_from = k.get("swing", 0.5), k["swingFrom"]
     layers = take.get("layers") or []
     if len(layers) != 1:
         print(f"  skip {name}: {len(layers)} layers — a tape is one take, mix it first")
@@ -77,8 +79,18 @@ def project(name, bpm, bpm_from, beats, swing, bars_arg):
         print(f"  note {name}: {secs:.3f} s is {raw:.2f} bars at {bpm:g} bpm — "
               f"not bar-length; read as {bars}")
 
+    x = hits.mono(src)
+    slices = bars * beats * 4
+    # Swing nobody declared is MEASURED, from where the offbeats land; a take
+    # with no groove to measure (chords, a comping figure) is said to be
+    # straight by assumption, and the file says which.
+    if swing is None:
+        est, n = hits.estimate_swing(x, slices)
+        swing, swing_from = (est, "measured") if est is not None else (0.5, "assumed")
+        print(f"  swing {name}: {swing:g} ({swing_from}, {n} offbeats)")
+
     meaning = {"version": 1, "bpm": bpm, "bpmFrom": bpm_from, "beats": beats,
-               "bars": bars, "swing": swing, "secs": secs}
+               "bars": bars, "swing": swing, "swingFrom": swing_from, "secs": secs}
 
     out = os.path.join(TAPES, f"{name}-tape")
     os.makedirs(out, exist_ok=True)
@@ -95,8 +107,6 @@ def project(name, bpm, bpm_from, beats, swing, bars_arg):
     env, _ = makeset.envelope(src, 4000)
     dec = makeset.decays(env, secs, region)[0]
 
-    x = hits.mono(src)
-    slices = bars * beats * 4
     h = hits.score(x, slices, swing)
 
     doc = {
@@ -129,7 +139,8 @@ def main():
     ap.add_argument("--bpm", type=float)
     ap.add_argument("--beats", type=int, default=4)
     ap.add_argument("--bars", type=int, default=0)
-    ap.add_argument("--swing", type=float, default=0.5)
+    ap.add_argument("--swing", type=float, default=None,
+                    help="the take's swing, 0.5 straight; measured from its offbeats if not said")
     ap.add_argument("--all-bars", action="store_true",
                     help="every take whose set was kept as `bars`")
     ap.add_argument("--all", action="store_true",

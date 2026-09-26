@@ -1648,3 +1648,31 @@ chroma: `7×8 5×8 0×8 4×8 7 5`, a bar each, in order (4 and 11 are the same
 G voicing and alternate). Presets: *Progression from hits*,
 *ii–V–I–vi from hits*, *Hits, Sector'd* (gain 1.0: the hits peak at 0.67,
 not the rendered loop's 0.41, and clipped at 1.6).
+
+## Built 2026-09-26: warp, and measured swing
+
+**Warp** answers "the tempo question" above. `Spec.warp = { ratio, mode }`:
+ratio is the rig's tempo over the tape's, and the mode is Ableton's choice.
+
+| mode | speed | sustain | window | sounds like |
+|---|---|---|---|---|
+| repitch | ×r | ÷r | as is | varispeed: groove exact, pitch moves |
+| gap | 1 | ÷max(1,r) | ÷max(1,r) | Beats: each slice as it was, space after it when slower |
+| leak | 1 | ÷r | ÷r (≤ file end) | Beats reading on into the next slice |
+
+The ratio is a number in the scene, not a clock the engine reads, so a cycle
+stays pure: the page computes it from its Link anchor and re-pushes when the
+tempo moves; the CLI reads the anchor before sending (`warp=repitch`).
+Measured at 96 bpm on fd-beat-bar against three references rendered from the
+source: each capture matches its own mode best (repitch 0.987, gap 0.993,
+leak 0.994; the off-diagonal 0.35–0.76). Conformance 18 pins the numbers.
+
+**Swing is measured** when a tape is projected and nobody declared it:
+`score-hits.estimate_swing` takes the strongest onset between 45% and 80% of
+each pair of sixteenths and uses the strength-weighted median. A groove
+agrees with itself, so it abstains when the votes spread (interquartile >
+0.04). Measured: fd-beat-bar 0.50 (spread 0.000), fd-beat-bar-swung 0.62
+(0.005); the 3+3+2 comping loop (0.06) and a take of chord strikes (0.19)
+abstain and are recorded as `swingFrom: "assumed"`. A first version dated
+every onset ~10 ms early (its FFT looked ahead of its frame) and read the two
+loops as 0.44 and 0.54: the window is centred now.

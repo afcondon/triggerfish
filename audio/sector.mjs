@@ -8,6 +8,7 @@
 //   node sector.mjs tape set='"chord-hits-0924-171929"' samples='[4,7,5,0]'   a virtual tape: a hit per bar
 //   node sector.mjs tape position=0.25 rules='[[16,5,"shift",-0.0625],["p",0.2,"speed",-1]]'
 //   node sector.mjs tape rules='[["snare",0.5,"pshift",1.5],["kick",0.5,"rsnpitch",{"bar":[36,36,39,31]}]]'
+//   node sector.mjs preset "Progression as tape" warp='"repitch"'   at the rig's tempo: repitch|gap|leak
 //   node sector.mjs list                  the page's presets
 //   node sector.mjs preset Breakdown      a page preset, exactly as its button pushes it
 //   node sector.mjs stop
@@ -93,6 +94,7 @@ function fromPreset(P) {
       fx: { ...noFx, ...(P.fx || {}) },
       chain: { ...noChain, ...(P.chain || {}) },
       sends: sends(P.sends && P.sends.a, P.sends && P.sends.b),
+      warp: { ratio: 1, mode: 1 },
     },
     seed: o.seed ?? 1,
   };
@@ -131,6 +133,7 @@ function tape() {
       rules,
       speed: o.speed ?? 1, gain: o.gain ?? 1, pan: 0.5, accelerate: 0,
       fx: noFx, chain: noChain, sends: sends(o.sendA, o.sendB),
+      warp: { ratio: 1, mode: 1 },
     },
     seed: o.seed ?? 1,
   };
@@ -141,15 +144,38 @@ if (mode === "list") {
   process.exit(0);
 }
 
-let frame;
-if (mode === "stop") frame = "conspicillum-stop";
-else if (mode === "preset") {
+// **The tape's tempo against the rig's.** A tape knows its own bpm (tape.json,
+// via the corpus; 120 for everything made before tapes recorded it) and Link
+// knows the rig's, so the ratio is only known here, at send time. The mode is
+// the preset's, or warp=, or gap: at ratio 1 all three are the same.
+const WARP = { repitch: 0, gap: 1, leak: 2 };
+let scene = null, setName = "fd-beat-bar", warpMode = o.warp ?? "gap";
+if (mode === "preset") {
   const name = process.argv.slice(3).filter(s => !s.includes("=")).join(" ");
   const P = presets().find(p => p.name.toLowerCase() === name.toLowerCase());
   if (!P) { console.error(`no preset "${name}" — try: node sector.mjs list`); process.exit(1); }
-  frame = "conspicillum-scene " + JSON.stringify(fromPreset(P));
-} else frame = "conspicillum-scene " + JSON.stringify(tape());
+  scene = fromPreset(P); setName = P.set; warpMode = o.warp ?? P.warp ?? "gap";
+} else if (mode !== "stop") { scene = tape(); setName = o.set ?? "fd-beat-bar"; }
+if (!(warpMode in WARP)) { console.error(`warp is repitch, gap or leak, not ${warpMode}`); process.exit(1); }
+const tapeBpm = o.tapebpm ?? tapeOf(setName).bpm ?? 120;
 
 const ws = new WebSocket("ws://localhost:3012/ws");
-ws.onmessage = (e) => { if (!String(e.data).startsWith("anchor")) console.log("<", String(e.data).slice(0, 200)); };
-ws.onopen = () => { ws.send(frame); setTimeout(() => ws.close(), 600); };
+let sent = false;
+const send = (rig) => {
+  if (sent) return; sent = true;
+  if (!scene) ws.send("conspicillum-stop");
+  else {
+    const ratio = rig ? rig / tapeBpm : 1;
+    scene.spec.warp = { ratio, mode: WARP[warpMode] };
+    if (Math.abs(ratio - 1) > 1e-6)
+      console.log(`tape ${tapeBpm} bpm at the rig's ${rig.toFixed(2)}: ×${ratio.toFixed(4)}, ${warpMode}`);
+    ws.send("conspicillum-scene " + JSON.stringify(scene));
+  }
+  setTimeout(() => ws.close(), 600);
+};
+ws.onmessage = (e) => {
+  const s = String(e.data);
+  if (s.startsWith("anchor ")) return send(+s.split(/\s+/)[3]);
+  console.log("<", s.slice(0, 200));
+};
+ws.onopen = () => { ws.send("clock-subscribe"); setTimeout(() => send(null), 1500); };

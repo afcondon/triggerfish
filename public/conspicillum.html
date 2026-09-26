@@ -166,6 +166,13 @@
     <div class="row"><label>tape bars</label><input type="number" id="tbars" min="1" max="16" step="1" value="1"></div>
     <div class="row"><label>bar order</label><input type="text" id="torder" placeholder="0 1 1 0" value=""></div>
     <div class="row"><label>bar samples</label><input type="text" id="tsamples" placeholder="4 7 5 0" value=""></div>
+    <div class="row"><label>warp</label><select id="warp">
+      <option value="1">gap</option><option value="0">repitch</option><option value="2">leak</option></select><output id="o_warp"></output></div>
+    <p class="hint"><b>warp</b> is for the rig at another tempo than the tape
+      (Link against the tape's own): <b>repitch</b> is varispeed, the groove
+      exact and the pitch moved; <b>gap</b> keeps each slice as it was, with
+      space after it when slower; <b>leak</b> lets each slice read on into the
+      next to fill its slot.</p>
     <div class="row"><label>step table</label><input type="text" id="tsteps" placeholder="~ ~ 5?0.4 ~ 2 ~ ~ 7?0.3" value=""></div>
     <p class="hint">A <b>tape</b> can be several bars; each cycle reads the next,
       or the bar <b>order</b> says which (a permutation of the phrase). The
@@ -345,7 +352,12 @@ function connect() {
     // `anchor <unixMicros> <beat> <tempo> <quantum>` -- the rig's real cycle.
     if (typeof e.data === "string" && e.data.startsWith("anchor ")) {
       const [, u, b, t, q] = e.data.split(/\s+/);
+      const was = anchor && anchor.tempo;
       anchor = { unixUs: +u, beat: +b, tempo: +t, quantum: +q, at: Date.now() };
+      // A tempo change moves the warp ratio, which lives in the scene: say it
+      // again, so the tape keeps its place in the new bar.
+      if (was && Math.abs(was - anchor.tempo) > 0.01) { showWarp(); livePush(); }
+      else if (!was) showWarp();
       return;
     }
     document.getElementById("status").textContent = e.data;
@@ -746,6 +758,7 @@ function scene() {
       },
       tape: tapeNow(),
       steps: stepsNow(),
+      warp: warpNow(),
       swing: {
         tape: +document.getElementById("swtape").value,
         play: +document.getElementById("swplay").value,
@@ -847,6 +860,21 @@ function tapeNow() {
     .split(/[\s,]+/).map(x => parseInt(x)).filter(x => !isNaN(x));
   return { bars: Math.max(1, +document.getElementById("tbars").value || 1), order, samples };
 }
+// **The tape's tempo against the rig's.** The tape says its own (tape.json,
+// through the corpus); everything recorded before tapes did was 120. The mode
+// is Ableton's: gap and leak keep the pitch (Beats, without and with reading
+// on), repitch keeps the groove and moves the pitch.
+function tapeBpm() { return (corpus && corpus.tape && corpus.tape.bpm) || 120; }
+function warpNow() {
+  const ratio = anchor && anchor.tempo > 0 ? anchor.tempo / tapeBpm() : 1;
+  return { ratio, mode: +document.getElementById("warp").value };
+}
+function showWarp() {
+  const w = warpNow(), out = document.getElementById("o_warp");
+  if (out) out.textContent = Math.abs(w.ratio - 1) < 1e-4 ? "at its own tempo"
+    : `tape ${tapeBpm()} \u2192 ${(tapeBpm() * w.ratio).toFixed(1)} bpm, \u00d7${w.ratio.toFixed(3)}`;
+}
+const WARP_MODE = { repitch: 0, gap: 1, leak: 2 };
 // "~ ~ 5?0.4 ~ 2" -> grid 5, to [-1,-1,5,-1,2], p [1,1,0.4,1,1]
 function stepsNow() {
   const toks = document.getElementById("tsteps").value.trim().split(/\s+/).filter(Boolean);
@@ -934,6 +962,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
 // ── render ──────────────────────────────────────────────────────────────────
 function render() {
+  showWarp();
   for (const id of ["swtape","swplay","sendA","sendB","sustain","position","spray","follow","wjump","whold","whome","wreach","speed","gain","pan","accel","count","ek","en"]) {
     const el = document.getElementById(id), out = document.getElementById("o_" + id);
     if (el && out) out.textContent = (+el.value).toFixed(id === "count" || id === "ek" || id === "en" || id === "wreach" ? 0 : 2);
@@ -1735,6 +1764,7 @@ function applyPreset(i) {
   document.getElementById("tbars").value = TP.bars ?? 1;
   document.getElementById("torder").value = (TP.order || []).join(" ");
   document.getElementById("tsamples").value = (TP.samples || []).join(" ");
+  document.getElementById("warp").value = WARP_MODE[P.warp || "gap"];
   document.getElementById("tsteps").value = P.steps || "";
   const SW = P.swing || {};
   document.getElementById("swtape").value = SW.tape ?? 0.5;
@@ -1829,6 +1859,7 @@ function asPreset(name) {
     sends: { a: +g("sendA").value, b: +g("sendB").value },
     swing: { tape: +g("swtape").value, play: +g("swplay").value, grid: +g("swgrid").value },
     tape: tapeNow(), steps: g("tsteps").value.trim(),
+    warp: Object.keys(WARP_MODE).find(k => WARP_MODE[k] === +g("warp").value),
     walk: { jump: +g("wjump").value, hold: +g("whold").value, home: +g("whome").value,
             grid: +g("wgrid").value, reach: +g("wreach").value },
     on,
