@@ -64,6 +64,11 @@
   .rule .kill { border:1px solid var(--line); background:#fff; cursor:pointer;
     color:var(--mute); padding:3px 0; }
   .hint { font-size:11px; color:var(--mute); margin-top:10px; }
+  .line { width:100%; box-sizing:border-box; font:13px/1.5 ui-monospace, Menlo, monospace;
+          border:1px solid var(--line); background:var(--bg); padding:8px 10px; resize:vertical;
+          min-height:3.2em; margin-top:12px; }
+  .line:focus { outline:none; border-color:var(--ink); background:#fff; }
+  .lineerr { font-size:11px; color:#b3261e; min-height:1.2em; margin-top:4px; }
 
   button.go { font:inherit; font-weight:600; padding:9px 22px; cursor:pointer;
     border:1px solid var(--ink); background:var(--ink); color:#fff; }
@@ -123,6 +128,9 @@
     cycle, so the corpus is re-ranked under your hands while it plays.</p>
   <div id="presets" class="presetbar"></div>
   <div id="perform" class="perform"></div>
+  <textarea id="line" class="line" spellcheck="false" rows="2"
+    title="the scene as one line \u2014 edit it and press Enter (Shift+Enter for a new line)"></textarea>
+  <div id="lineerr" class="lineerr"></div>
 </section>
 
 <div class="cols">
@@ -963,6 +971,7 @@ document.addEventListener("DOMContentLoaded", () => {
 // ── render ──────────────────────────────────────────────────────────────────
 function render() {
   showWarp();
+  showLine();
   for (const id of ["swtape","swplay","sendA","sendB","sustain","position","spray","follow","wjump","whold","whome","wreach","speed","gain","pan","accel","count","ek","en"]) {
     const el = document.getElementById(id), out = document.getElementById("o_" + id);
     if (el && out) out.textContent = (+el.value).toFixed(id === "count" || id === "ek" || id === "en" || id === "wreach" ? 0 : 2);
@@ -1738,17 +1747,76 @@ const PRESETS = [
   prog:["E","D","Bm","E","F#m(maj7)","B7","E","E"] },
 ];
 
-function applyPreset(i) {
-  const P = PRESETS[i];
+// ── the line ────────────────────────────────────────────────────────────────
+// The scene as one Tidal-style line (reef's Reef.Conspicillum.Notation,
+// bundled as notation.js by audio/build-notation.sh). It follows the controls
+// while you are not in it; edit it and press Enter, and the controls follow
+// the line. A line carries the set, spec and seed, not the query or the warp
+// ratio (the rig's tempo), so a prog preset's chords stay where they were.
+let NOTATION = null;
+import("./notation.js").then(m => { NOTATION = m; showLine(); })
+  .catch(e => { document.getElementById("lineerr").textContent = "notation.js: " + e.message; });
+
+function showLine() {
+  const box = document.getElementById("line");
+  if (!NOTATION || !corpus || document.activeElement === box) return;
+  const d = NOTATION.decodeScene(JSON.stringify(scene()));
+  if (!NOTATION.isRight(d)) return;
+  const whole = document.getElementById("whole").checked;
+  box.value = NOTATION.print({ set: corpus.name, seed: d.value0.seed, spec: d.value0.spec,
+    n: whole ? NOTATION.Nothing.value : NOTATION.Just.create(chosen) });
+}
+
+function lineToPreset(l) {
+  // Through the wire codec, so the preset is made of the same plain numbers
+  // the page's own presets are.
+  const base = NOTATION.decodeScene(JSON.stringify({ corpus: { name: "", samples: [] },
+    query: { clauses: [], weighting: [], harmonic: [] }, spec: scene().spec, seed: 1 })).value0;
+  const w = JSON.parse(NOTATION.encodeScene({ ...base, spec: l.spec, seed: l.seed })).spec;
+  const n = w.onsets.length;
+  const even = w.onsets.every((x, k) => Math.abs(x - k / n) < 1e-9);
+  const stepsText = w.steps.to.map((t, k) => (t < 0 ? "~" : String(t))
+    + ((w.steps.p[k] ?? 1) === 1 ? "" : "?" + w.steps.p[k])).join(" ");
+  const whole = NOTATION.isNothing(l.n);
+  return {
+    name: "line", set: l.set, n: whole ? 0 : l.n.value0, whole,
+    cloud: w.cloud, walk: w.walk, swing: w.swing, tape: w.tape, steps: stepsText,
+    warp: ["repitch", "gap", "leak"][w.warp.mode] || "gap",
+    on: even ? { mode: "even", count: n } : { mode: "manual", manual: w.onsets.join(",") },
+    v: { speed: w.speed, gain: w.gain, pan: w.pan, accel: w.accelerate },
+    rules: w.rules, fx: w.fx, chain: w.chain,
+    sends: { a: (w.sends[0] || {}).level ?? 0.8, b: (w.sends[1] || {}).level ?? 0.8 },
+    q: { clauses: Q.clauses, weighting: Q.weighting, harmonic: Q.harmonic },
+  };
+}
+
+document.getElementById("line").addEventListener("keydown", (e) => {
+  if (e.key !== "Enter" || e.shiftKey || !NOTATION) return;
+  e.preventDefault();
+  const err = document.getElementById("lineerr");
+  const r = NOTATION.parse(e.target.value);
+  if (!NOTATION.isRight(r)) { err.textContent = r.value0; return; }
+  const l = r.value0;
+  if (!SETS.some(s => s.name === l.set)) { err.textContent = `no set called "${l.set}"`; return; }
+  err.textContent = "";
+  applyP(lineToPreset(l), -1, true);
+  e.target.blur();
+  showLine();
+});
+
+function applyPreset(i) { applyP(PRESETS[i], i); }
+
+function applyP(P, i = -1, force = false) {
   // **Hold the material still and let the treatment change.** A preset is a
   // whole position INCLUDING what it is made of, which is right for mashing
   // through them and wrong the moment you are exploring one piece of material:
   // every press yanks you back to the set the preset was written against, and
   // you cannot hear what it would do to the thing in front of you. So the
   // source is the one part a switch can pin.
-  if (!document.getElementById("keepsrc").checked) {
+  if (force || !document.getElementById("keepsrc").checked) {
     const sel = document.getElementById("set");
-    const at = [...sel.options].findIndex(o => o.text.startsWith(P.set));
+    // By exact name: `startsWith` sent fd-beat-bar to fd-beat-bar-swung.
+    const at = SETS.findIndex(s => s.name === P.set);
     if (at >= 0 && +sel.value !== at) { sel.value = String(at); pickSet(at); }
     chosen = P.n;
     document.getElementById("whole").checked = !!P.whole;

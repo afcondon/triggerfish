@@ -9,6 +9,8 @@
 //   node sector.mjs tape position=0.25 rules='[[16,5,"shift",-0.0625],["p",0.2,"speed",-1]]'
 //   node sector.mjs tape rules='[["snare",0.5,"pshift",1.5],["kick",0.5,"rsnpitch",{"bar":[36,36,39,31]}]]'
 //   node sector.mjs preset "Progression as tape" warp='"repitch"'   at the rig's tempo: repitch|gap|leak
+//   node sector.mjs line 's "fd-beat-bar" # walk 0.2 0.1 0.1 # grid 8 # fix snare 0.5 (pshift 1.5)'
+//   node sector.mjs print "Dub breakdown"   a preset as its line
 //   node sector.mjs list                  the page's presets
 //   node sector.mjs preset Breakdown      a page preset, exactly as its button pushes it
 //   node sector.mjs stop
@@ -21,84 +23,13 @@
 import { readFileSync } from "node:fs";
 const here = (p) => new URL(p, import.meta.url);
 const { noFx, noChain } = await import(here("../../../reef/output/Reef.Conspicillum.Cloud/index.js").href);
-
-const OPS = ["speed","gain","length","pan","accelerate","shape","crush","coarse","lpf","hpf","bpf","res",
-  "vowel","pshift","tremolo","phaser","genv","gtilt","gplat","atk","hold","rel","curve",
-  "rsnpitch","rsndecay","rsnbright","rsnmix","rsnmodel","shift","ratchet","send"];
+import { OPS, SETS, corpusOf, presets, onsetsOf, tapeOf, noWalk, stepsOf, sends, noQuery, fromPreset } from "./scenes.mjs";
 
 const [mode = "tape", ...kv] = process.argv.slice(2);
 const o = Object.fromEntries(kv.filter(s => s.includes("=")).map(s => {
   const [k, v] = s.split("="); return [k, JSON.parse(v)];
 }));
 
-const SETS = JSON.parse(readFileSync(here("../public/conspicillum-corpora.json"))).sets;
-const corpusOf = (name, whole, n) => {
-  const set = SETS.find(s => s.name === name);
-  if (!set) throw new Error(`no corpus ${name} — rebuild with audio/build-corpora.py`);
-  return { name, samples: whole ? set.samples : set.samples.filter(s => s.index === n) };
-};
-
-function presets() {
-  const h = readFileSync(here("../public/conspicillum.html"), "utf8");
-  const start = h.indexOf("const LC = ");
-  const open = h.indexOf("const PRESETS = [", start);
-  const close = h.indexOf("\n];", open);
-  return new Function(h.slice(start, close + 3) + "\nreturn PRESETS;")();
-}
-
-function onsetsOf(on) {
-  if (on.mode === "even") return Array.from({ length: on.count }, (_, i) => i / on.count);
-  if (on.mode === "euclid") {
-    const out = [];
-    for (let i = 0; i < on.n; i++)
-      if (Math.floor(i * on.k / on.n) !== Math.floor((i - 1) * on.k / on.n)) out.push(i / on.n);
-    return out;
-  }
-  return on.manual.split(",").map(s => parseFloat(s)).filter(x => !isNaN(x) && x >= 0 && x < 1)
-    .sort((a, b) => a - b);
-}
-
-// A projected tape (project-tape.py) says how many bars it is.
-const tapeOf = (name) => (SETS.find(s => s.name === name) || {}).tape || {};
-
-const noWalk = { jump: 0, hold: 0, home: 0, grid: 16, reach: 0 };
-// "~ ~ 5?0.4 ~ 2" -> Sector's per-step table; the token count is the grid.
-function stepsOf(text) {
-  const toks = (text || "").trim().split(/\s+/).filter(Boolean);
-  if (!toks.length) return { grid: 16, to: [], p: [] };
-  return { grid: toks.length,
-           to: toks.map(t => { const n = parseInt(t.split("?")[0]); return isNaN(n) ? -1 : n; }),
-           p: toks.map(t => { const q = parseFloat(t.split("?")[1]); return isNaN(q) ? 1 : q; }) };
-}
-// Send A is orbit 10 (outputs 3/4), send B orbit 11 (5/6): dry chains, so the
-// effect can be an Ableton return. See superdirt-daemon.scd, SUPERDIRT_OUTPUTS.
-const sends = (a = 0.8, b = 0.8) => [
-  { chain: { ...noChain, orbit: 10 }, level: a },
-  { chain: { ...noChain, orbit: 11 }, level: b }];
-const noQuery = { clauses: [], weighting: [], harmonic: [] };
-
-function fromPreset(P) {
-  return {
-    corpus: corpusOf(P.set, !!P.whole, P.n),
-    query: { clauses: (P.q && P.q.clauses) || [], weighting: (P.q && P.q.weighting) ? [P.q.weighting] : [], harmonic: [] },
-    spec: {
-      onsets: onsetsOf(P.on),
-      cloud: { follow: 0, ...P.cloud },
-      walk: { ...noWalk, ...(P.walk || {}) },
-      swing: { tape: 0.5, play: 0.5, grid: 16, ...(P.swing || {}) },
-      tape: { bars: 1, order: [], samples: [], ...(P.tape || {}) },
-      steps: stepsOf(P.steps),
-      rules: (P.rules || []).map(r => ({ when: r.when, everyN: r.everyN, everyK: r.everyK,
-        chance: r.chance, op: r.op, amount: r.amount, values: r.values || [], step: r.step || 0 })),
-      speed: P.v.speed, gain: P.v.gain, pan: P.v.pan, accelerate: P.v.accel,
-      fx: { ...noFx, ...(P.fx || {}) },
-      chain: { ...noChain, ...(P.chain || {}) },
-      sends: sends(P.sends && P.sends.a, P.sends && P.sends.b),
-      warp: { ratio: 1, mode: 1 },
-    },
-    seed: o.seed ?? 1,
-  };
-}
 
 function tape() {
   const count = o.count ?? 16;
@@ -154,8 +85,37 @@ if (mode === "preset") {
   const name = process.argv.slice(3).filter(s => !s.includes("=")).join(" ");
   const P = presets().find(p => p.name.toLowerCase() === name.toLowerCase());
   if (!P) { console.error(`no preset "${name}" — try: node sector.mjs list`); process.exit(1); }
-  scene = fromPreset(P); setName = P.set; warpMode = o.warp ?? P.warp ?? "gap";
+  scene = fromPreset(P, o.seed ?? 1); setName = P.set; warpMode = o.warp ?? P.warp ?? "gap";
 } else if (mode !== "stop") { scene = tape(); setName = o.set ?? "fd-beat-bar"; }
+// **A line** (reef's Reef.Conspicillum.Notation): parsed here, made a scene
+// through the wire codec, the corpus looked up by the set it names.
+if (mode === "line" || mode === "print") {
+  const R = "../../../reef/output/";
+  const N = await import(here(R + "Reef.Conspicillum.Notation/index.js").href);
+  const C = await import(here(R + "Reef.Conspicillum.Protocol/index.js").href);
+  const { Right } = await import(here(R + "Data.Either/index.js").href);
+  const { Nothing, Just } = await import(here(R + "Data.Maybe/index.js").href);
+  const text = process.argv.slice(3).filter(s => !/^[a-z]+=/.test(s)).join(" ");
+  if (mode === "print") {
+    const P = presets().find(p => p.name.toLowerCase() === text.toLowerCase());
+    if (!P) { console.error(`no preset "${text}"`); process.exit(1); }
+    const sc = fromPreset(P);
+    sc.spec.warp = { ratio: 1, mode: WARP[P.warp || "gap"] };
+    const d = C.decodeScene(JSON.stringify(sc)).value0;
+    console.log(N.print({ set: P.set, n: P.whole ? Nothing.value : Just.create(P.n), seed: d.seed, spec: d.spec }));
+    process.exit(0);
+  }
+  const r = N.parse(text);
+  if (!(r instanceof Right)) { console.error("line: " + r.value0); process.exit(1); }
+  const l = r.value0;
+  const whole = l.n instanceof Nothing;
+  const stub = C.decodeScene(JSON.stringify({ corpus: { name: "", samples: [] }, query: noQuery,
+    spec: fromPreset(presets()[0]).spec, seed: 1 })).value0;
+  const wire = JSON.parse(C.encodeScene({ ...stub, spec: l.spec, seed: l.seed }));
+  wire.corpus = corpusOf(l.set, whole, whole ? 0 : l.n.value0);
+  scene = wire; setName = l.set;
+  warpMode = ["repitch", "gap", "leak"][wire.spec.warp.mode];
+}
 if (!(warpMode in WARP)) { console.error(`warp is repitch, gap or leak, not ${warpMode}`); process.exit(1); }
 const tapeBpm = o.tapebpm ?? tapeOf(setName).bpm ?? 120;
 

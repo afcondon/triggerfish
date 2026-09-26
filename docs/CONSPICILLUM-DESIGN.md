@@ -1676,3 +1676,36 @@ agrees with itself, so it abstains when the votes spread (interquartile >
 abstain and are recorded as `swingFrom: "assumed"`. A first version dated
 every onset ~10 ms early (its FFT looked ahead of its frame) and read the two
 loops as 0.44 and 0.54: the window is centred now.
+
+## Built 2026-09-26: the scene as one line
+
+A scene can be written, and is shown, as one Tidal-style line
+(`Reef.Conspicillum.Notation` in reef, so it is one parser for every
+consumer and both runtimes):
+
+```
+s "fd-beat-bar" # walk 0.2 0.12 0.1 # grid 8 # reach 3 # fix snare 0.5 (send 1) # sometimesBy 0.08 (send 2) # fix snare 0.5 (pshift 0.75)
+s "chord-hits-0924-171929" # samples "<4 7 5 0>" # warp repitch
+```
+
+Terms are separated by `#`; anything unsaid is the default, which is Sector's
+(16 grains a bar following the tape). `print` is canonical and omits
+defaults, so every preset has exactly one line: `node audio/sector.mjs print
+"<preset>"`. The vocabulary is in the module header. A line carries the set,
+spec and seed; not the query (a prog preset's chords), nor the warp ratio,
+which is the rig's tempo at the moment of playing.
+
+- **Page**: a line box under the presets follows the controls; edit it and
+  press Enter and the controls follow the line (a line always switches the
+  set). The page loads `public/notation.js`, a minified bundle rebuilt by
+  `audio/build-notation.sh`; because minifying renames classes, the page asks
+  the bundle's `isRight`/`isNothing` and never `constructor.name`.
+- **CLI**: `node audio/sector.mjs line '<line>'` plays it.
+- **Checked**: `audio/notation-check.mjs` sends all 86 presets through
+  preset → line → scene and compares on the wire (86 of 86; a mutation test
+  fails 80). Conformance 19 parses and prints on node and Erlang. Numbers are
+  printed from integers to six places, because `show` on the BEAM gives
+  `6.19999999999999995559e-01`.
+
+`audio/scenes.mjs` now holds the preset → scene code the CLI used to keep to
+itself, so the CLI, the round-trip and whatever comes next share it.
