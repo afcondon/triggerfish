@@ -24,6 +24,19 @@ export function presets() {
   return new Function(h.slice(start, close + 3) + "\nreturn PRESETS;")();
 }
 
+// The chords the progressions are written in, read from the page like the presets.
+export const CHORDS = (() => {
+  const h = readFileSync(here("../public/conspicillum.html"), "utf8");
+  const a = h.indexOf("const T = (pcs"), b = h.indexOf("\n};", a);
+  return new Function(h.slice(a, b + 3) + "\nreturn CHORDS;")();
+})();
+const FOLLOW_WIRE = { off: 0, root: 1, bass: 2, tones: 3 };
+export function progressionOf(P) {
+  if (!P.prog) return { chords: [], minimumFit: 0.5, strength: 0.9, follow: 0 };
+  const h = (P.q && P.q.harmonic) || { minFit: 0.5, strength: 0.9 };
+  return { chords: P.prog.map(n => CHORDS[n]), minimumFit: h.minFit, strength: h.strength, follow: FOLLOW_WIRE[P.follow] || 0 };
+}
+
 export function onsetsOf(on) {
   if (on.mode === "even") return Array.from({ length: on.count }, (_, i) => i / on.count);
   if (on.mode === "euclid") {
@@ -73,6 +86,7 @@ export function fromPreset(P, seed = 1) {
       chain: { ...noChain, ...(P.chain || {}) },
       sends: sends(P.sends && P.sends.a, P.sends && P.sends.b),
       warp: { ratio: 1, mode: 1 },
+      progression: progressionOf(P),
     },
     seed,
   };

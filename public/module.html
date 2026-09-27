@@ -265,7 +265,7 @@ function beatNow() {
 }
 
 // ── what the workshop knows, read out of it ───────────────────────────────
-let SETS = [], PRESETS = [], DEFAULT_KNOBS = {}, FX_CTRL = [], CH_CTRL = [];
+let SETS = [], PRESETS = [], DEFAULT_KNOBS = {}, FX_CTRL = [], CH_CTRL = [], CHORDS = {};
 async function loadWorkshop() {
   const h = await (await fetch("conspicillum.html")).text();
   // `to` marks the end; only its `keep` leading characters are code.
@@ -276,6 +276,7 @@ async function loadWorkshop() {
   };
   PRESETS = slice("const LC = ", "\n];", "PRESETS");
   DEFAULT_KNOBS = slice("const DEFAULT_KNOBS = {", "\n};", "DEFAULT_KNOBS");
+  CHORDS = slice("const T = (pcs", "\n};", "CHORDS");
   const ctl = slice("const VOWELS = ", "\n];\n\nfunction fxRow", "{ FX_CTRL, CH_CTRL }",
     'const PCN = ["C","C#","D","D#","E","F","F#","G","G#","A","A#","B"];\n', 3);
   FX_CTRL = ctl.FX_CTRL; CH_CTRL = ctl.CH_CTRL;
@@ -323,9 +324,8 @@ function wireOf(p) {
   const bpm = (set.tape && set.tape.bpm) || 120;
   return {
     corpus: { name: p.set, samples: p.whole ? set.samples : set.samples.filter(s => s.index === p.n) },
-    // The chord progression is the workshop's driver, pushing a scene per
-    // chord; the module does not run one yet, so a harmonic preset plays
-    // without its target.
+    // A progression goes to the engine whole (Spec.progression), which
+    // changes chord on the cycle itself; the query carries no target.
     query: { clauses: (p.q && p.q.clauses) || [], weighting: (p.q && p.q.weighting) ? [p.q.weighting] : [], harmonic: [] },
     spec: {
       onsets: onsetsOf(p.on),
@@ -342,6 +342,10 @@ function wireOf(p) {
       chain: { ...N.noChain, ...defOf(CH_CTRL), orbit: 0, ...(p.chain || {}) },
       sends: [{ chain: { ...N.noChain, orbit: 10 }, level: (p.sends && p.sends.a) ?? 0.8 },
               { chain: { ...N.noChain, orbit: 11 }, level: (p.sends && p.sends.b) ?? 0.8 }],
+      progression: p.prog
+        ? { chords: p.prog.map(n => CHORDS[n]), minimumFit: ((p.q && p.q.harmonic) || {}).minFit ?? 0.5,
+            strength: ((p.q && p.q.harmonic) || {}).strength ?? 0.9, follow: { root: 1, bass: 2, tones: 3 }[p.follow] || 0 }
+        : { chords: [], minimumFit: 0.5, strength: 0.9, follow: 0 },
     },
     seed: p.seed ?? 12345,
   };
@@ -553,7 +557,8 @@ function sentenceHTML(p) {
   if (ch.length) out.push(`The whole cloud goes through ${ch.map(k => `${pspec("chain." + k.id).lab} ${num("chain." + k.id)}`).join(", ")}.`);
 
   out.push(`It throws ${num("sends.a")} to A and ${num("sends.b")} to B, at gain ${num("v.gain")}.`);
-  if (p.prog) out.push(`<span class="note">Its chord progression (${p.prog.join(" → ")}) runs only in the workshop for now.</span>`);
+  if (p.prog) out.push(`Its chord changes each cycle: <code>${esc(p.prog.join(" → "))}</code>`
+    + ({ root: ", and the resonators follow its root", bass: ", and the resonators follow its bass", tones: ", and the resonators play its tones" }[p.follow] || "") + ".");
   if (sceneErr) out.push(`<span class="note">The engine refused this scene: ${esc(sceneErr)}</span>`);
   return out.map(x => x.startsWith("<table") ? x : `<p>${x}</p>`).join("");
 }
@@ -926,7 +931,7 @@ function drawBanks() {
   document.getElementById("banks").innerHTML = order.map(t => `<div class="bank"><h3>${BANKS[t] || t}</h3>`
     + PRESETS.map((p, i) => [p, i]).filter(([p]) => (p.tag || "") === t).map(([p, i]) =>
       `<button data-i="${i}" title="${esc(p.blurb || "")}"${setOf(p) ? "" : " disabled"}>${esc(p.name)}`
-      + (p.prog ? `<span class="approx" title="its progression runs in the workshop only">≈</span>` : "") + `</button>`).join("")
+      + `</button>`).join("")
     + `</div>`).join("");
   document.querySelectorAll(".bank button").forEach(b => b.onclick = () => recall(+b.dataset.i));
 }

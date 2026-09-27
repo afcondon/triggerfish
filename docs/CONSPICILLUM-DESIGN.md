@@ -1841,3 +1841,25 @@ Next:
 - **Step 4:** the Halogen and Hylograph app, on these types.
 - **Also:** the workshop and the JS module prototype should read presets from
   reef instead of their own literals.
+
+### Step 2 done (2026-09-27): the engine plays chord progressions
+
+`Spec.progression` (reef b304e28) holds the chords, `minimumFit`, `strength`,
+and `follow`, which says whether the resonators retune to root, bass or chord
+tones. `cycleOf` picks cycle c's chord itself and retunes the resonators, so a
+scene is still a pure function of (scene, cycle) and **no page keeps time**:
+- a hidden tab no longer stops the chords changing;
+- the workshop sends the progression once, where it used to push a scene per
+  chord;
+- the module plays the progression presets properly (the ≈ is gone).
+
+The line carries it: `chords "<Bm Bm(maj7) Bdim F#m>" # fit 0.75 0.98 # tune
+root`. So a preset is now its line, query and knobs.
+
+`conspicillumProgressionRun` checks that every cycle equals the scene the
+workshop used to push for that chord. Every existing engine golden is
+unchanged.
+
+The chord table is `Harmonic.namedChords`, the 16 chords the presets use. A
+chord outside it cannot be written in a line yet. Parsing chord symbols through
+harmonia is the way to lift that.

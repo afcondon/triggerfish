@@ -787,6 +787,7 @@ function scene() {
       fx: fxNow(),
       chain: chainNow(),
       sends: sendsNow(),
+      progression: progressionNow(),
     },
     seed: +document.getElementById("seed").value,
   };
@@ -828,7 +829,7 @@ function fxNow() {
   // leaves the per-grain resonator off and rings the chain instead — which is
   // the only way to get a long decay — must not have a second one started
   // underneath it just because follow is set.
-  if (!t || m === "off" || fx.rsnpitch <= 0) return fx;
+  if (!t || m === "off" || fx.rsnpitch <= 0 || prog.length) return fx;   // the engine retunes under a progression
   fx.rsnpitch = Math.floor(fx.rsnpitch / 12) * 12 + followPc(t, m, true);
   return fx;
 }
@@ -842,7 +843,7 @@ function chainNow() {
     { orbit: +document.getElementById("ch_orbit").value },
     readGroup(CH_CTRL, "ch_"));
   const t = targetNow(), m = followMode();
-  if (!t || m === "off" || ch.grsn <= 0) return ch;
+  if (!t || m === "off" || ch.grsn <= 0 || prog.length) return ch;
   ch.grsnpitch = Math.floor(ch.grsnpitch / 12) * 12 + followPc(t, m, false);
   return ch;
 }
@@ -934,7 +935,7 @@ function rulesNow() {
   // Full width on the wire: every rule carries a sequence, empty or not.
   const wire = (r) => ({ when: r.when, everyN: r.everyN, everyK: r.everyK, chance: r.chance,
                          op: r.op, amount: r.amount, values: r.values || [], step: r.step || 0 });
-  if (!t || followMode() !== "tones" || !t.pcs.length) return rules.map(wire);
+  if (!t || followMode() !== "tones" || !t.pcs.length || prog.length) return rules.map(wire);
   const base = rsnBase();
   // Generated, not stored: they are a function of the chord, and the chord
   // changes under the player's hands. Appending rather than replacing means a
@@ -945,7 +946,23 @@ function rulesNow() {
   })));
 }
 
+// **The progression is the engine's now** (reef `Spec.progression`, since
+// 2026-09-27). It picks each cycle's chord and retunes the resonators itself,
+// so the page sends the whole progression once instead of a scene per chord,
+// and a hidden tab no longer stops the chords changing.
+const FOLLOW_WIRE = { off: 0, root: 1, bass: 2, tones: 3 };
+function progressionNow() {
+  if (!prog.length) return { chords: [], minimumFit: 0.5, strength: 0.9, follow: 0 };
+  const h = Q.harmonic || { minFit: 0.5, strength: 0.9 };
+  return { chords: prog.map(n => CHORDS[n]), minimumFit: h.minFit, strength: h.strength,
+           follow: FOLLOW_WIRE[followMode()] || 0 };
+}
+const chordNameOf = (c) => Object.keys(CHORDS).find(k => CHORDS[k].root === c.root && CHORDS[k].bass === c.bass
+  && CHORDS[k].pcs.join() === c.pcs.join());
+
 function harmonicNow() {
+  // A running progression is the engine's to apply (Spec.progression).
+  if (prog.length) return [];
   const t = targetNow();
   if (!t) return [];
   const h = Q.harmonic || { minFit: 0.5, strength: 0.9 };
@@ -1778,6 +1795,7 @@ function lineToPreset(l) {
   const stepsText = w.steps.to.map((t, k) => (t < 0 ? "~" : String(t))
     + ((w.steps.p[k] ?? 1) === 1 ? "" : "?" + w.steps.p[k])).join(" ");
   const whole = NOTATION.isNothing(l.n);
+  const names = w.progression.chords.map(chordNameOf).filter(Boolean);
   return {
     name: "line", set: l.set, n: whole ? 0 : l.n.value0, whole,
     cloud: w.cloud, walk: w.walk, swing: w.swing, tape: w.tape, steps: stepsText,
@@ -1786,7 +1804,10 @@ function lineToPreset(l) {
     v: { speed: w.speed, gain: w.gain, pan: w.pan, accel: w.accelerate },
     rules: w.rules, fx: w.fx, chain: w.chain,
     sends: { a: (w.sends[0] || {}).level ?? 0.8, b: (w.sends[1] || {}).level ?? 0.8 },
-    q: { clauses: Q.clauses, weighting: Q.weighting, harmonic: Q.harmonic },
+    q: { clauses: Q.clauses, weighting: Q.weighting,
+         harmonic: names.length ? { minFit: w.progression.minimumFit, strength: w.progression.strength } : Q.harmonic },
+    prog: names.length ? names : undefined,
+    follow: ["off", "root", "bass", "tones"][w.progression.follow] || "off",
   };
 }
 
@@ -2005,8 +2026,7 @@ setInterval(() => {
   const at = ((currentCycle() % prog.length) + prog.length) % prog.length;
   if (at === progAt) return;
   progAt = at;
-  push();
-  render();
+  render();      // display only: the engine changes chord itself
 }, 80);
 
 document.getElementById("keep").onclick = () => {
