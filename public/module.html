@@ -1,0 +1,830 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Conspicillum Module</title>
+<!--
+  The module: Conspicillum as an instrument rather than a workshop.
+
+  Two views of one scene, bound to one state:
+    THE CIRCLE   (Sector's) the bar as a ring of time, the tape as a ring
+                 inside it, and a thread from where each grain PLAYS to where
+                 it READS. Drawn by reef's own `cycleOf` — the engine's plan for
+                 this very cycle, not a lookalike — so what you see is what the
+                 rig is about to play.
+    THE SENTENCE (Quadrat's) the scene said in words, with its numbers
+                 draggable. The line under the panel is the same scene in its
+                 machine form; the sentence is the human form.
+  A preset names three or four knobs; they are the sentence's superscripted
+  numbers, and turning one moves the other.
+
+  Presets are read out of conspicillum.html, as audio/scenes.mjs does, so there
+  is one copy. The workshop stays the place where everything is reachable.
+-->
+<style>
+:root {
+  --paper:#fafaf8; --ink:#141414; --mid:#6d6d69; --faint:#c7c6c0; --hair:#e3e2dc;
+  --panel:#f2f1ec; --panel-edge:#d4d3cc; --accent:#c8371e; --accent-soft:rgba(200,55,30,.10);
+  --sans:"Helvetica Neue",Helvetica,Arial,sans-serif; --mono:"SF Mono",Menlo,Consolas,monospace;
+}
+* { box-sizing:border-box; }
+body { margin:0; background:var(--paper); color:var(--ink); font:14px/1.45 var(--sans); }
+
+header.top { display:flex; align-items:baseline; gap:18px; padding:16px 28px; border-bottom:1px solid var(--hair); }
+header.top h1 { font-size:15px; font-weight:700; margin:0; }
+header.top .sub { color:var(--mid); }
+header.top .sp { flex:1; }
+header.top a { color:var(--ink); text-decoration:none; border-bottom:1px solid var(--faint); }
+.conn { color:var(--mid); font-variant-numeric:tabular-nums; }
+.conn .dot { display:inline-block; width:7px; height:7px; border-radius:50%; background:var(--faint); margin-right:6px; vertical-align:1px; }
+.conn .dot.on { background:#2e8a4f; } .conn .dot.err { background:var(--accent); }
+
+main.stage { display:grid; grid-template-columns:200px 860px; gap:40px; padding:28px; justify-content:center; align-items:start; }
+
+/* ── the bank list: the host page, not the module ─────────────────────── */
+aside.banks { font-size:12.5px; max-height:calc(100vh - 110px); overflow:auto; padding-right:6px; }
+.bank h3 { font-size:10px; letter-spacing:.14em; text-transform:uppercase; color:var(--mid); margin:16px 0 4px 6px; font-weight:600; }
+.bank:first-child h3 { margin-top:0; }
+.bank button { display:block; width:100%; text-align:left; border:0; background:none; padding:3px 6px; font:inherit; color:var(--ink); cursor:pointer; border-radius:2px; }
+.bank button:hover { background:var(--hair); }
+.bank button.on { background:var(--ink); color:#fff; }
+.bank button .approx { color:var(--mid); margin-left:5px; }
+.bank button.on .approx { color:#bbb; }
+.bank button:disabled { color:var(--faint); cursor:default; }
+
+/* ── the panel ─────────────────────────────────────────────────────────── */
+.panel { position:relative; background:var(--panel); border:1px solid var(--panel-edge); border-radius:3px;
+         box-shadow:0 1px 0 #fff inset, 0 12px 32px rgba(0,0,0,.07); padding:20px 30px 18px; }
+.screw { position:absolute; width:10px; height:10px; border-radius:50%; background:#dddcd6; border:1px solid #c3c2bb; }
+.screw::after { content:""; position:absolute; left:1px; right:1px; top:3.5px; height:1px; background:#b3b2ab; transform:rotate(35deg); }
+.screw.tl { left:10px; top:10px; } .screw.tr { right:10px; top:10px; }
+.screw.bl { left:10px; bottom:10px; } .screw.br { right:10px; bottom:10px; }
+
+.ptop { display:flex; align-items:baseline; gap:12px; padding:0 8px 12px; border-bottom:1px solid var(--panel-edge); }
+.brand { font-weight:700; letter-spacing:.2em; font-size:11px; }
+.ptop .bankname { font-size:10px; letter-spacing:.16em; text-transform:uppercase; color:var(--mid); }
+.ptop .sp { flex:1; }
+.ptop .tempo { font-size:11px; color:var(--mid); font-variant-numeric:tabular-nums; }
+
+.pbody { display:grid; grid-template-columns:420px 1fr; gap:26px; padding:14px 0 6px; }
+#circle { width:420px; height:420px; display:block; touch-action:none; }
+
+.display { display:grid; grid-template-columns:auto 1fr auto; align-items:center; gap:8px; }
+.display button { border:1px solid var(--panel-edge); background:#fbfbf9; width:26px; height:26px; border-radius:50%;
+                  font:13px var(--sans); cursor:pointer; color:var(--ink); }
+.display button:hover { border-color:var(--ink); }
+.pname { font-size:22px; font-weight:700; letter-spacing:-.01em; line-height:1.15; }
+.blurb { color:var(--mid); font-size:12.5px; margin:4px 0 0 34px; min-height:1.4em; }
+.edited { margin:2px 0 0 34px; font-size:11px; color:var(--accent); min-height:1.3em; }
+.edited button { border:0; background:none; font:inherit; color:var(--ink); text-decoration:underline; cursor:pointer; padding:0 0 0 6px; }
+
+/* ── the sentence ──────────────────────────────────────────────────────── */
+.sentence { font-size:16.5px; line-height:1.62; margin:16px 0 0; max-width:34em; }
+.sentence p { margin:0 0 .55em; }
+.sentence .set { font-family:var(--mono); font-size:13px; }
+.sentence code { font-family:var(--mono); font-size:12.5px; background:#fff; border:1px solid var(--hair); padding:0 4px; border-radius:2px; }
+.num { font-variant-numeric:tabular-nums; border-bottom:1px dotted var(--ink); cursor:ew-resize; padding:0 1px;
+       user-select:none; -webkit-user-select:none; outline:none; }
+.num:hover, .num:focus, .num.hl { background:var(--accent-soft); }
+.num.bound { font-weight:700; border-bottom:1.5px solid var(--accent); }
+.sentence sup, .klab sup { color:var(--accent); font-size:9.5px; font-weight:700; margin-left:1px; }
+.sentence .note { color:var(--mid); font-size:13px; }
+
+/* ── the knob row ──────────────────────────────────────────────────────── */
+.pbottom { display:flex; align-items:flex-end; gap:22px; padding:14px 8px 4px; border-top:1px solid var(--panel-edge); }
+.knob { width:78px; text-align:center; cursor:ns-resize; user-select:none; -webkit-user-select:none; touch-action:none; }
+.knob svg { display:block; margin:0 auto; }
+.knob .kt { fill:none; stroke:var(--faint); stroke-width:3; }
+.knob .kv { fill:none; stroke:var(--accent); stroke-width:3; }
+.knob .kb { fill:#fdfdfc; stroke:var(--ink); stroke-width:1.5; }
+.knob .ki { stroke:var(--ink); stroke-width:2.2; stroke-linecap:round; }
+.knob.hl .kb { fill:#fff3ef; }
+.klab { font-size:10px; letter-spacing:.12em; text-transform:uppercase; margin-top:2px; }
+.kval { font-size:11.5px; color:var(--mid); font-variant-numeric:tabular-nums; }
+.pbottom .sp { flex:1; }
+.play { border:1.5px solid var(--ink); background:#fdfdfc; border-radius:22px; height:40px; padding:0 18px; font:600 12px var(--sans);
+        letter-spacing:.12em; text-transform:uppercase; cursor:pointer; margin-bottom:14px; }
+.play.on { background:var(--ink); color:#fff; }
+.jacks { display:flex; gap:12px; margin-bottom:10px; }
+.jack { text-align:center; font-size:9.5px; letter-spacing:.12em; color:var(--mid); }
+.jack i { display:block; width:22px; height:22px; border-radius:50%; border:1.5px solid var(--ink); margin:0 auto 3px;
+          background:radial-gradient(circle, #222 0 5px, #e9e8e3 5.5px); }
+
+/* ── the circle ────────────────────────────────────────────────────────── */
+.band { fill:none; stroke:#e6e5df; }
+.tick { stroke:var(--mid); stroke-width:1; }
+.tick.beat { stroke:var(--ink); stroke-width:1.6; }
+.blabel { font:10px var(--sans); fill:var(--mid); text-anchor:middle; dominant-baseline:middle; }
+.slabel { font:9px var(--sans); fill:var(--mid); text-anchor:middle; dominant-baseline:middle; }
+.sec { stroke:var(--ink); stroke-width:1; }
+.gr .ga, .gr .ta { fill:none; stroke:var(--ink); stroke-opacity:.26; }
+.gr .th { stroke:var(--ink); stroke-opacity:.30; stroke-width:.7; }
+.gr.rev .th { stroke-dasharray:3 2; }
+.gr.on .ga, .gr.on .ta { stroke:var(--accent); stroke-opacity:1; }
+.gr.on .th { stroke:var(--accent); stroke-opacity:1; stroke-width:1.4; }
+.hand { stroke:var(--accent); stroke-width:1.4; }
+.head { fill:var(--accent); }
+.idle .hand, .idle .head { stroke:var(--mid); fill:var(--mid); }
+.idle .gr.on .ga, .idle .gr.on .ta { stroke:var(--ink); stroke-opacity:.8; }
+.idle .gr.on .th { stroke:var(--ink); }
+.ctext { font:600 22px var(--sans); fill:var(--ink); text-anchor:middle; font-variant-numeric:tabular-nums; }
+.csub { font:10px var(--sans); fill:var(--mid); text-anchor:middle; letter-spacing:.12em; text-transform:uppercase; }
+.ringname { font:9px var(--sans); fill:var(--mid); letter-spacing:.14em; text-transform:uppercase; }
+
+/* ── the line: the machine form, under the panel ──────────────────────── */
+.machine { margin-top:18px; }
+.machine label { font-size:10px; letter-spacing:.14em; text-transform:uppercase; color:var(--mid); }
+.machine textarea { display:block; width:100%; margin-top:5px; font:12px/1.5 var(--mono); border:1px solid var(--hair); background:#fff;
+                    padding:8px 10px; resize:vertical; min-height:3.6em; color:var(--ink); }
+.machine .err { color:var(--accent); font-size:12px; min-height:1.3em; margin-top:3px; }
+.machine .hint { color:var(--mid); font-size:12px; }
+
+@media (max-width: 1180px) {
+  main.stage { grid-template-columns:1fr; padding:16px; }
+  aside.banks { max-height:none; display:flex; flex-wrap:wrap; gap:0 18px; }
+  .panel { width:auto; }
+}
+@media (max-width: 760px) {
+  .pbody { grid-template-columns:1fr; }
+  #circle { width:100%; height:auto; }
+  .pbottom { flex-wrap:wrap; }
+}
+</style>
+</head>
+<body>
+<header class="top">
+  <h1>Conspicillum</h1><span class="sub">module prototype</span>
+  <span class="sp"></span>
+  <a href="conspicillum.html">the workshop</a>
+  <span class="conn"><span class="dot" id="wsdot"></span><span id="wstext">connecting…</span></span>
+</header>
+
+<main class="stage">
+  <aside class="banks" id="banks"></aside>
+  <div>
+    <section class="panel">
+      <i class="screw tl"></i><i class="screw tr"></i><i class="screw bl"></i><i class="screw br"></i>
+      <div class="ptop">
+        <span class="brand">CONSPICILLUM</span>
+        <span class="bankname" id="bankname"></span>
+        <span class="sp"></span>
+        <span class="tempo" id="tempo"></span>
+      </div>
+      <div class="pbody">
+        <svg id="circle" viewBox="0 0 400 400"></svg>
+        <div>
+          <div class="display">
+            <button id="prev" title="previous preset (←)">‹</button>
+            <div class="pname" id="pname">—</div>
+            <button id="next" title="next preset (→)">›</button>
+          </div>
+          <div class="blurb" id="blurb"></div>
+          <div class="edited" id="edited"></div>
+          <div class="sentence" id="sentence"></div>
+        </div>
+      </div>
+      <div class="pbottom">
+        <div id="knobs" style="display:flex; gap:14px"></div>
+        <span class="sp"></span>
+        <button class="play" id="play" title="space">Play</button>
+        <div class="jacks">
+          <div class="jack"><i></i>OUT</div>
+          <div class="jack"><i id="jackA"></i>A</div>
+          <div class="jack"><i id="jackB"></i>B</div>
+        </div>
+      </div>
+    </section>
+    <section class="machine">
+      <label for="line">the line</label>
+      <textarea id="line" spellcheck="false" rows="2"></textarea>
+      <div class="err" id="lineerr"></div>
+      <div class="hint">The same scene in its machine form. Edit and press Enter to play it. Drag any underlined number in the sentence;
+        shift drags finely. The circle is the engine's own plan for this cycle: outer ring the bar, inner ring the tape, a thread from where
+        each grain plays to where it reads.</div>
+    </section>
+  </div>
+</main>
+
+<script type="module">
+import * as N from "./notation.js";
+
+// ── the wire and the clock (as the workshop) ──────────────────────────────
+const WS_URL = "ws://" + (location.hostname || "localhost") + ":3012/ws";
+let ws = null, wsReady = false, anchor = null;
+const t0 = Date.now();
+function connect() {
+  ws = new WebSocket(WS_URL);
+  ws.onopen = () => { wsReady = true; mark("on", "rig"); ws.send("clock-subscribe"); };
+  ws.onclose = () => { wsReady = false; mark("", "no rig — retrying"); setTimeout(connect, 2000); };
+  ws.onerror = () => { wsReady = false; mark("err", "cannot reach " + WS_URL); };
+  ws.onmessage = (e) => {
+    if (typeof e.data !== "string" || !e.data.startsWith("anchor ")) return;
+    const [, u, b, t, q] = e.data.split(/\s+/);
+    const was = anchor && anchor.tempo;
+    anchor = { unixUs: +u, beat: +b, tempo: +t, quantum: +q };
+    // The warp ratio lives in the scene: a new tempo is a new scene.
+    if (!was || Math.abs(was - anchor.tempo) > 0.01) { rescene(); livePush(); }
+  };
+}
+function mark(cls, text) {
+  document.getElementById("wsdot").className = "dot " + cls;
+  document.getElementById("wstext").textContent = text;
+}
+const tempo = () => (anchor && anchor.tempo > 0 ? anchor.tempo : 120);
+function beatNow() {
+  if (anchor) return anchor.beat + (Date.now() * 1000 - anchor.unixUs) * anchor.tempo / 60e6;
+  return (Date.now() - t0) / 500;
+}
+
+// ── what the workshop knows, read out of it ───────────────────────────────
+let SETS = [], PRESETS = [], DEFAULT_KNOBS = {}, FX_CTRL = [], CH_CTRL = [];
+async function loadWorkshop() {
+  const h = await (await fetch("conspicillum.html")).text();
+  // `to` marks the end; only its `keep` leading characters are code.
+  const slice = (from, to, ret, pre = "", keep = to.length) => {
+    const a = h.indexOf(from), b = h.indexOf(to, a);
+    if (a < 0 || b < 0) throw new Error("conspicillum.html has no " + from);
+    return new Function(pre + h.slice(a, b + keep) + "\nreturn " + ret + ";")();
+  };
+  PRESETS = slice("const LC = ", "\n];", "PRESETS");
+  DEFAULT_KNOBS = slice("const DEFAULT_KNOBS = {", "\n};", "DEFAULT_KNOBS");
+  const ctl = slice("const VOWELS = ", "\n];\n\nfunction fxRow", "{ FX_CTRL, CH_CTRL }",
+    'const PCN = ["C","C#","D","D#","E","F","F#","G","G#","A","A#","B"];\n', 3);
+  FX_CTRL = ctl.FX_CTRL; CH_CTRL = ctl.CH_CTRL;
+  SETS = (await (await fetch("conspicillum-corpora.json")).json()).sets;
+}
+
+// EXACTLY Reef.Conspicillum.Protocol.opToWire's order (see the workshop).
+const OPS = ["speed","gain","length","pan","accelerate","shape","crush","coarse","lpf","hpf","bpf","res",
+  "vowel","pshift","tremolo","phaser","genv","gtilt","gplat","atk","hold","rel","curve",
+  "rsnpitch","rsndecay","rsnbright","rsnmix","rsnmodel","shift","ratchet","send"];
+const HIT = ["kick", "snare", "hat"];
+const WARP_MODE = { repitch: 0, gap: 1, leak: 2 };
+const BANKS = { sector:"Sector", fix:"Fix", dub:"Dub", swing:"Swing", harm:"Harmony", env:"Envelope",
+  fx:"Effects", rsn:"Resonator", prog:"Progression", found:"Found", poly:"Poly", "":"Early" };
+
+// ── the working state: one preset-shaped object ───────────────────────────
+// A preset recalled is copied; everything the panel does edits the copy, and
+// the scene, the circle, the sentence and the line are all functions of it.
+let at = -1, P = null, ORIG = null, playing = false;
+let wire = null, scene = null, sceneErr = "";
+
+const setOf = (p) => SETS.find(s => s.name === p.set);
+const noWalk = { jump: 0, hold: 0, home: 0, grid: 16, reach: 0 };
+function onsetsOf(on) {
+  if (on.mode === "even") return Array.from({ length: on.count }, (_, i) => i / on.count);
+  if (on.mode === "euclid") {
+    const out = [];
+    for (let i = 0; i < on.n; i++)
+      if (Math.floor(i * on.k / on.n) !== Math.floor((i - 1) * on.k / on.n)) out.push(i / on.n);
+    return out;
+  }
+  return String(on.manual).split(",").map(parseFloat).filter(x => !isNaN(x) && x >= 0 && x < 1).sort((a, b) => a - b);
+}
+function stepsOf(text) {
+  const toks = (text || "").trim().split(/\s+/).filter(Boolean);
+  if (!toks.length) return { grid: 16, to: [], p: [] };
+  return { grid: toks.length,
+           to: toks.map(t => { const n = parseInt(t.split("?")[0]); return isNaN(n) ? -1 : n; }),
+           p: toks.map(t => { const q = parseFloat(t.split("?")[1]); return isNaN(q) ? 1 : q; }) };
+}
+const defOf = (list) => Object.fromEntries(list.map(c => [c.id, c.def]));
+
+function wireOf(p) {
+  const set = setOf(p);
+  const bpm = (set.tape && set.tape.bpm) || 120;
+  return {
+    corpus: { name: p.set, samples: p.whole ? set.samples : set.samples.filter(s => s.index === p.n) },
+    // The chord progression is the workshop's driver, pushing a scene per
+    // chord; the module does not run one yet, so a harmonic preset plays
+    // without its target.
+    query: { clauses: (p.q && p.q.clauses) || [], weighting: (p.q && p.q.weighting) ? [p.q.weighting] : [], harmonic: [] },
+    spec: {
+      onsets: onsetsOf(p.on),
+      cloud: { sustain: 0.12, position: 0, spray: 0, follow: 0, ...p.cloud },
+      walk: { ...noWalk, ...(p.walk || {}) },
+      swing: { tape: 0.5, play: 0.5, grid: 16, ...(p.swing || {}) },
+      tape: { bars: 1, order: [], samples: [], ...(p.tape || {}) },
+      steps: stepsOf(p.steps),
+      warp: { ratio: tempo() / bpm, mode: WARP_MODE[p.warp || "gap"] },
+      rules: (p.rules || []).map(r => ({ when: r.when, everyN: r.everyN, everyK: r.everyK, chance: r.chance,
+        op: r.op, amount: r.amount, values: r.values || [], step: r.step || 0 })),
+      speed: p.v.speed, gain: p.v.gain, pan: p.v.pan, accelerate: p.v.accel,
+      fx: { ...N.noFx, ...defOf(FX_CTRL), ...(p.fx || {}) },
+      chain: { ...N.noChain, ...defOf(CH_CTRL), orbit: 0, ...(p.chain || {}) },
+      sends: [{ chain: { ...N.noChain, orbit: 10 }, level: (p.sends && p.sends.a) ?? 0.8 },
+              { chain: { ...N.noChain, orbit: 11 }, level: (p.sends && p.sends.b) ?? 0.8 }],
+    },
+    seed: p.seed ?? 12345,
+  };
+}
+function rescene() {
+  if (!P) return;
+  wire = wireOf(P);
+  const d = N.decodeScene(JSON.stringify(wire));
+  if (N.isRight(d)) { scene = d.value0; sceneErr = ""; }
+  else { scene = null; sceneErr = String(d.value0); }
+  shownCycle = null;          // the circle recomputes on the next frame
+  showLine();
+}
+
+// ── parameters: where a number lives, its range, how it reads ─────────────
+const pct = (v) => Math.round(v * 100) + "%";
+const two = (v) => (+v).toFixed(2);
+const int = (v) => String(Math.round(v));
+const times = (v) => (+v).toFixed(2) + "×";
+const secs = (v) => v < 1 ? Math.round(v * 1000) + " ms" : (+v).toFixed(2) + " s";
+const panFmt = (v) => Math.abs(v - 0.5) < 0.005 ? "centre" : v < 0.5 ? Math.round((0.5 - v) * 200) + "% left" : Math.round((v - 0.5) * 200) + "% right";
+const PSPEC = {
+  "cloud.sustain":  { min: 0.01, max: 2, step: 0.005, curve: "exp", fmt: secs, def: 0.12 },
+  "cloud.position": { min: 0, max: 1, step: 0.005, fmt: pct, def: 0 },
+  "cloud.spray":    { min: 0, max: 1, step: 0.005, fmt: pct, def: 0 },
+  "cloud.follow":   { min: -1, max: 2, step: 0.01, fmt: times, def: 0 },
+  "walk.jump":      { min: 0, max: 1, step: 0.01, fmt: pct, def: 0 },
+  "walk.hold":      { min: 0, max: 1, step: 0.01, fmt: pct, def: 0 },
+  "walk.home":      { min: 0, max: 1, step: 0.01, fmt: pct, def: 0 },
+  "walk.reach":     { min: 0, max: 16, step: 1, fmt: int, def: 0 },
+  "swing.play":     { min: 0.5, max: 0.75, step: 0.01, fmt: (v) => v < 0.505 ? "straight" : two(v), def: 0.5 },
+  "swing.tape":     { min: 0.5, max: 0.75, step: 0.01, fmt: two, def: 0.5 },
+  "sends.a":        { min: 0, max: 1, step: 0.01, fmt: two, def: 0.8 },
+  "sends.b":        { min: 0, max: 1, step: 0.01, fmt: two, def: 0.8 },
+  "v.speed":        { min: -2, max: 3, step: 0.01, fmt: times, def: 1 },
+  "v.gain":         { min: 0, max: 1.5, step: 0.01, fmt: two, def: 0.85 },
+  "v.pan":          { min: 0, max: 1, step: 0.01, fmt: panFmt, def: 0.5 },
+  "v.accel":        { min: -2, max: 2, step: 0.01, fmt: two, def: 0 },
+  "on.count":       { min: 1, max: 64, step: 1, fmt: int, def: 16 },
+  "on.k":           { min: 1, max: 32, step: 1, fmt: int, def: 5 },
+  "on.n":           { min: 2, max: 32, step: 1, fmt: int, def: 16 },
+  "seed":           { min: 1, max: 99999, step: 1, fmt: int, def: 12345 },
+};
+function pspec(path) {
+  if (PSPEC[path]) return PSPEC[path];
+  const [g, id] = path.split(".");
+  const c = (g === "fx" ? FX_CTRL : g === "chain" ? CH_CTRL : []).find(c => c.id === id);
+  if (!c) return null;
+  const dp = c.dp === undefined ? 2 : c.dp;
+  return { min: c.min, max: c.max, step: c.step, def: c.def,
+           fmt: c.fmt || ((v) => (+v).toFixed(dp) + (c.lab.endsWith(" Hz") ? " Hz" : "")), lab: c.lab.replace(/ Hz$/, "") };
+}
+function get(p, path) {
+  let o = p;
+  for (const k of path.split(".")) { if (o == null) break; o = o[k]; }
+  if (o !== undefined && o !== null) return +o;
+  const s = pspec(path);
+  return s ? s.def : 0;
+}
+function put(p, path, v) {
+  const ks = path.split("."), last = ks.pop();
+  let o = p;
+  for (const k of ks) { if (o[k] == null || typeof o[k] !== "object") o[k] = {}; o = o[k]; }
+  o[last] = v;
+}
+const toU = (s, v) => s.curve === "exp" ? Math.log(v / s.min) / Math.log(s.max / s.min) : (v - s.min) / (s.max - s.min);
+const fromU = (s, u) => {
+  u = Math.max(0, Math.min(1, u));
+  const v = s.curve === "exp" ? s.min * Math.pow(s.max / s.min, u) : s.min + u * (s.max - s.min);
+  return Math.max(s.min, Math.min(s.max, Math.round(v / s.step) * s.step));
+};
+const fmtOf = (path) => { const s = pspec(path); return s ? s.fmt(get(P, path)) : String(get(P, path)); };
+
+// ── the knobs a preset names ──────────────────────────────────────────────
+const KNOB_PATH = { sustain: "cloud.sustain", position: "cloud.position", spray: "cloud.spray", follow: "cloud.follow",
+  wjump: "walk.jump", whold: "walk.hold", whome: "walk.home", wreach: "walk.reach",
+  swplay: "swing.play", swtape: "swing.tape", sendA: "sends.a", sendB: "sends.b",
+  speed: "v.speed", gain: "v.gain", pan: "v.pan", accel: "v.accel", count: "on.count" };
+const knobPath = (id) => KNOB_PATH[id] || (id.startsWith("fx_") ? "fx." + id.slice(3) : id.startsWith("ch_") ? "chain." + id.slice(3) : null);
+let KNOBS = [];
+function knobsOf(p) {
+  const set = setOf(p);
+  const fallback = set && set.tape && (p.cloud.follow ?? 0) !== 0
+    ? [["follow", "tape rate"], ["wjump", "chaos"], ["whold", "repeat"], ["sendB", "space"]]
+    : [["sustain", "grain"], ["position", "position"], ["spray", "spray"], ["sendB", "space"]];
+  const ks = p.knobs || DEFAULT_KNOBS[p.tag] || fallback;
+  return ks.map(k => Array.isArray(k) ? { id: k[0], label: k[1] } : k)
+    .map(k => ({ ...k, path: knobPath(k.id) }))
+    .filter(k => k.path && pspec(k.path) && !(k.path === "on.count" && p.on.mode !== "even"))
+    .slice(0, 4);
+}
+const knobIx = (path) => KNOBS.findIndex(k => k.path === path);
+
+// ── the sentence ──────────────────────────────────────────────────────────
+// Words first, numbers where they matter. A clause appears when it is doing
+// something OR when a knob is bound to it — a knob whose number you cannot see
+// would be the one control on the panel with no readout.
+const ORD = ["", "", "other", "third", "fourth", "fifth", "sixth", "seventh", "eighth"];
+const ordinal = (n) => ORD[n] || (n + (n % 10 === 1 && n !== 11 ? "st" : n % 10 === 2 && n !== 12 ? "nd" : n % 10 === 3 && n !== 13 ? "rd" : "th"));
+const nth = (n) => n === 1 ? "first" : n === 2 ? "second" : ordinal(n);
+function num(path) {
+  const k = knobIx(path);
+  return `<span class="num${k >= 0 ? " bound" : ""}" data-path="${path}" tabindex="0">${fmtOf(path)}</span>`
+    + (k >= 0 ? `<sup>${k + 1}</sup>` : "");
+}
+const shows = (path, cond) => cond || knobIx(path) >= 0;
+const esc = (s) => String(s).replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
+
+function ruleWords(r) {
+  const op = OPS[r.op] || "op " + r.op;
+  const amt = r.values && r.values.length
+    ? (r.step ? "<" + r.values.join(" ") + ">" : "“" + r.values.join(" ") + "”")
+    : String(+(+r.amount).toFixed(3));
+  let who;
+  if (r.when === 0) who = "every grain";
+  else if (r.when === 1) who = r.everyN <= 1 ? "every grain"
+    : `every ${ordinal(r.everyN)} grain` + (r.everyK ? `, counting from the ${nth(r.everyK + 1)},` : "");
+  else if (r.when === 2) who = `${Math.round(r.chance * 100)}% of grains, at random,`;
+  else who = `grains that read like a ${HIT[r.everyN] || "hit"}`;
+  const verb = who.startsWith("every") ? "gets" : "get";
+  const how = r.values && r.values.length ? (r.step ? " (one a bar)" : " (one a hit)") : "";
+  return `${who[0].toUpperCase() + who.slice(1)} ${verb} <code>${esc(op)} ${esc(amt)}</code>${how}.`;
+}
+
+function sentenceHTML(p) {
+  const set = setOf(p), T = p.tape || {}, c = p.cloud;
+  const follow = c.follow ?? 0;
+  const setName = `<span class="set">${esc(p.set)}</span>`;
+  const out = [];
+  let s = "";
+
+  // what it is made of
+  if (T.samples && T.samples.length && p.whole)
+    s = `Play hits <code>${T.samples.join(" ")}</code> of ${setName} as a progression, one a bar`;
+  else if (p.whole && set.samples.length === 1 && (set.tape || follow !== 0)) {
+    const bars = T.bars || (set.tape && set.tape.bars) || 1;
+    s = `Read ${setName} as a ${bars === 1 ? "one" : bars}-bar tape` + (set.tape ? ` at ${set.tape.bpm} bpm` : "");
+  }
+  else if (p.whole && set.samples.length === 1)
+    s = `Take the one sample in ${setName}`;
+  else if (p.whole)
+    s = `Scatter grains from all ${set.samples.length} samples of ${setName}`;
+  else
+    s = `Take sample ${p.n} of ${setName}`;
+
+  // when grains fall, and how long each is
+  if (p.on.mode === "even") s += `: ${num("on.count")} grains a bar`;
+  else if (p.on.mode === "euclid") s += `: ${num("on.k")} grains spread over ${num("on.n")} steps`;
+  else s += `: ${onsetsOf(p.on).length} grains at hand-placed times`;
+  s += `, each ${num("cloud.sustain")} long.`;
+  out.push(s);
+
+  // where they read
+  s = follow !== 0
+    ? `The read head moves with the tape at ${num("cloud.follow")} its pace`
+    : `The read head stays ${num("cloud.position")} of the way in`;
+  if (follow !== 0 && shows("cloud.position", (c.position ?? 0) > 0)) s += `, from ${num("cloud.position")} in`;
+  if (shows("cloud.spray", (c.spray ?? 0) > 0)) s += `, sprayed across ${num("cloud.spray")}`;
+  out.push(s + ".");
+
+  // the walk
+  const W = p.walk || {};
+  if (shows("walk.jump", (W.jump ?? 0) > 0) || shows("walk.hold", (W.hold ?? 0) > 0)) {
+    s = `It jumps somewhere else ${num("walk.jump")} of the time`;
+    if (shows("walk.reach", (W.reach ?? 0) > 0)) s += `, never more than ${num("walk.reach")} steps away`;
+    if (shows("walk.hold", (W.hold ?? 0) > 0)) s += `, and repeats a step ${num("walk.hold")} of the time`;
+    if (shows("walk.home", (W.home ?? 0) > 0)) s += `, drifting home ${num("walk.home")}`;
+    out.push(s + ".");
+  }
+  if (T.order && T.order.length) out.push(`The bars play in the order <code>${T.order.join(" ")}</code>.`);
+  if (p.steps && p.steps.trim()) out.push(`A step table sends steps elsewhere: <code>${esc(p.steps.trim())}</code>.`);
+
+  // the swing
+  const SW = p.swing || {};
+  if (shows("swing.play", (SW.play ?? 0.5) !== (SW.tape ?? 0.5))) {
+    out.push((SW.tape ?? 0.5) !== 0.5
+      ? `Its own swing of ${num("swing.tape")} is played at ${num("swing.play")}.`
+      : `Its swing is ${num("swing.play")}.`);
+  }
+
+  // the voice
+  const v = [];
+  if (shows("v.speed", p.v.speed !== 1)) v.push(`at ${num("v.speed")} speed`);
+  if (shows("v.accel", (p.v.accel ?? 0) !== 0)) v.push(`gliding by ${num("v.accel")}`);
+  if (shows("v.pan", (p.v.pan ?? 0.5) !== 0.5)) v.push(`panned ${num("v.pan")}`);
+  if (v.length) out.push(`Played ${v.join(", ")}.`);
+
+  // the rules
+  for (const r of p.rules || []) out.push(ruleWords(r));
+
+  // the grain's own effects, then the cloud's
+  const fx = FX_CTRL.filter(k => shows("fx." + k.id, (p.fx || {})[k.id] !== undefined && p.fx[k.id] !== k.def));
+  if (fx.length) out.push(`Each grain goes through ${fx.map(k => `${pspec("fx." + k.id).lab} ${num("fx." + k.id)}`).join(", ")}.`);
+  const ch = CH_CTRL.filter(k => shows("chain." + k.id, (p.chain || {})[k.id] !== undefined && p.chain[k.id] !== k.def));
+  if (ch.length) out.push(`The whole cloud goes through ${ch.map(k => `${pspec("chain." + k.id).lab} ${num("chain." + k.id)}`).join(", ")}.`);
+
+  out.push(`It throws ${num("sends.a")} to A and ${num("sends.b")} to B, at gain ${num("v.gain")}.`);
+  if (p.prog) out.push(`<span class="note">Its chord progression (${p.prog.join(" → ")}) runs only in the workshop for now.</span>`);
+  if (sceneErr) out.push(`<span class="note">The engine refused this scene: ${esc(sceneErr)}</span>`);
+  return out.map(x => `<p>${x}</p>`).join("");
+}
+
+// ── drawing the panel ─────────────────────────────────────────────────────
+function drawSentence() {
+  const box = document.getElementById("sentence");
+  box.innerHTML = sentenceHTML(P);
+  box.querySelectorAll(".num").forEach(el => scrubbable(el, el.dataset.path, "x"));
+}
+function knobSVG(u) {
+  const pt = (r, deg) => { const a = (deg - 90) * Math.PI / 180; return [32 + r * Math.cos(a), 32 + r * Math.sin(a)]; };
+  const arcD = (r, d0, d1) => {
+    const [x0, y0] = pt(r, d0), [x1, y1] = pt(r, d1);
+    return `M${x0.toFixed(2)},${y0.toFixed(2)} A${r},${r} 0 ${d1 - d0 > 180 ? 1 : 0} 1 ${x1.toFixed(2)},${y1.toFixed(2)}`;
+  };
+  const d = -135 + 270 * Math.max(0, Math.min(1, u));
+  const [ax, ay] = pt(7, d), [bx, by] = pt(18, d);
+  return `<svg viewBox="0 0 64 64" width="60" height="60"><path class="kt" d="${arcD(28, -135, 135)}"/>`
+    + (d > -134.5 ? `<path class="kv" d="${arcD(28, -135, d)}"/>` : "")
+    + `<circle class="kb" cx="32" cy="32" r="21"/><line class="ki" x1="${ax}" y1="${ay}" x2="${bx}" y2="${by}"/></svg>`;
+}
+function drawKnobs() {
+  const box = document.getElementById("knobs");
+  box.innerHTML = KNOBS.map((k, i) => `<div class="knob" data-path="${k.path}" title="drag up/down; double-click for the preset's value">
+      <div class="kbody">${knobSVG(toU(pspec(k.path), get(P, k.path)))}</div>
+      <div class="klab">${esc(k.label)}<sup>${i + 1}</sup></div><div class="kval">${fmtOf(k.path)}</div></div>`).join("");
+  box.querySelectorAll(".knob").forEach(el => {
+    scrubbable(el, el.dataset.path, "y");
+    el.ondblclick = () => setParam(el.dataset.path, get(ORIG, el.dataset.path), true);
+  });
+}
+// The cheap redraw, while a number is under the pointer: replacing the
+// sentence would take the element being dragged away with it.
+function refresh(path) {
+  document.querySelectorAll(`.num[data-path="${path}"]`).forEach(el => el.textContent = fmtOf(path));
+  document.querySelectorAll(`.knob[data-path="${path}"]`).forEach(el => {
+    el.querySelector(".kbody").innerHTML = knobSVG(toU(pspec(path), get(P, path)));
+    el.querySelector(".kval").textContent = fmtOf(path);
+  });
+  drawChrome();
+}
+function drawChrome() {
+  const bankOf = (p) => BANKS[p.tag || ""] || p.tag;
+  document.getElementById("pname").textContent = P.name;
+  document.getElementById("blurb").textContent = P.blurb || "";
+  document.getElementById("bankname").textContent = at >= 0 ? bankOf(P) + " · " + (at + 1) + "/" + PRESETS.length : "from the line";
+  const edited = JSON.stringify(P) !== JSON.stringify(ORIG);
+  const ed = document.getElementById("edited");
+  ed.innerHTML = edited ? `edited<button id="revert">revert</button>` : "";
+  if (edited) document.getElementById("revert").onclick = () => recall(at >= 0 ? at : null, ORIG);
+  document.getElementById("jackA").style.boxShadow = `0 0 0 ${(get(P, "sends.a") * 3).toFixed(1)}px var(--accent-soft)`;
+  document.getElementById("jackB").style.boxShadow = `0 0 0 ${(get(P, "sends.b") * 3).toFixed(1)}px var(--accent-soft)`;
+  document.querySelectorAll(".bank button").forEach(b => b.classList.toggle("on", +b.dataset.i === at));
+}
+function drawAll() { KNOBS = knobsOf(P); drawSentence(); drawKnobs(); drawChrome(); }
+
+// ── dragging a number: the sentence and the knobs share one gesture ───────
+function scrubbable(el, path, axis) {
+  el.addEventListener("pointerdown", (e) => {
+    const s = pspec(path);
+    if (!s || e.button !== 0) return;
+    e.preventDefault();
+    el.setPointerCapture(e.pointerId);
+    const u0 = toU(s, get(P, path)), x0 = e.clientX, y0 = e.clientY;
+    hl(path, true);
+    const move = (m) => {
+      const d = axis === "y" ? (y0 - m.clientY) : (m.clientX - x0);
+      setParam(path, fromU(s, u0 + d / (m.shiftKey ? 900 : 180)));
+    };
+    const up = () => {
+      el.removeEventListener("pointermove", move);
+      el.removeEventListener("pointerup", up);
+      el.removeEventListener("pointercancel", up);
+      hl(path, false);
+      drawSentence();        // now clauses may come and go
+    };
+    el.addEventListener("pointermove", move);
+    el.addEventListener("pointerup", up);
+    el.addEventListener("pointercancel", up);
+  });
+  el.addEventListener("keydown", (e) => {
+    const s = pspec(path);
+    if (!s || (e.key !== "ArrowUp" && e.key !== "ArrowDown")) return;
+    e.preventDefault(); e.stopPropagation();
+    const du = (e.key === "ArrowUp" ? 1 : -1) * (e.shiftKey ? 0.1 : 0.01);
+    setParam(path, fromU(s, toU(s, get(P, path)) + du));
+  });
+  el.addEventListener("mouseenter", () => hl(path, true));
+  el.addEventListener("mouseleave", () => hl(path, false));
+}
+function hl(path, on) {
+  document.querySelectorAll(`[data-path="${path}"]`).forEach(x => x.classList.toggle("hl", on));
+}
+function setParam(path, v, redraw = false) {
+  if (path === "on.k") v = Math.min(v, get(P, "on.n"));
+  if (path === "on.n") put(P, "on.k", Math.min(get(P, "on.k"), v));
+  put(P, path, v);
+  rescene();
+  refresh(path);
+  if (redraw) drawSentence();
+  livePush();
+}
+
+// ── the circle ────────────────────────────────────────────────────────────
+// Outer ring: the bar, clockwise from the top, 16 steps. Inner ring: the
+// material — a tape's bars, or a corpus laid end to end, one sector a sample.
+// Each grain is an arc where it plays, an arc where it reads, and a thread
+// between. A tape followed straight is a wheel of spokes; a walk crosses it.
+const C = 200, RO = 184, RG = 168, RT = 96;
+let GR = [], shownCycle = null, ringMap = null;
+const pol = (r, u) => { const a = u * 2 * Math.PI - Math.PI / 2; return [C + r * Math.cos(a), C + r * Math.sin(a)]; };
+const f2 = (x) => x.toFixed(2);
+function arc(r, u0, u1) {
+  const len = Math.max(0.0015, Math.min(u1 - u0, 0.9995));
+  const [x0, y0] = pol(r, u0), [x1, y1] = pol(r, u0 + len);
+  return `M${f2(x0)},${f2(y0)} A${r},${r} 0 ${len > 0.5 ? 1 : 0} 1 ${f2(x1)},${f2(y1)}`;
+}
+// Where on the inner ring a grain's read position sits.
+function ringOf(p) {
+  const set = setOf(p), T = p.tape || {};
+  if (T.samples && T.samples.length && p.whole) {
+    const keys = T.samples;
+    return { sectors: keys.length, labels: keys.map(String), name: "hits, a bar each",
+             pos: (n, x) => { const i = keys.indexOf(n); return (Math.max(0, i) + x) / keys.length; } };
+  }
+  const samples = p.whole ? set.samples : set.samples.filter(s => s.index === p.n);
+  if (samples.length === 1) {
+    const bars = T.bars || (set.tape && set.tape.bars) || 1;
+    const tapeish = set.tape || (p.cloud.follow ?? 0) !== 0;
+    return { sectors: bars, labels: bars > 1 ? Array.from({ length: bars }, (_, i) => String(i + 1)) : [],
+             name: tapeish ? "the tape" : "sample " + samples[0].index, pos: (n, x) => x };
+  }
+  const keys = samples.map(s => s.index);
+  return { sectors: keys.length, labels: keys.length <= 24 ? keys.map(String) : [], name: keys.length + " samples",
+           pos: (n, x) => { const i = keys.indexOf(n); return (Math.max(0, i) + x) / keys.length; } };
+}
+function drawCircle(cyc) {
+  const svg = document.getElementById("circle");
+  let emits = [];
+  if (scene) {
+    try { emits = N.cycleOf(scene.corpus)(scene.query)(scene.spec)(scene.seed)(cyc); }
+    catch (e) { sceneErr = String(e); }
+  }
+  // Send copies, where the engine makes them, are the same grain on another orbit.
+  const orbit = (P.chain && P.chain.orbit) || 0;
+  emits = emits.filter(e => e.chain.orbit === orbit);
+  ringMap = ringOf(P);
+  const cycSecs = 240 / tempo();
+  let h = "";
+  h += `<circle class="band" cx="${C}" cy="${C}" r="${RG}" stroke-width="10"/>`;
+  h += `<circle class="band" cx="${C}" cy="${C}" r="${RT}" stroke-width="10"/>`;
+  for (let i = 0; i < 16; i++) {
+    const beat = i % 4 === 0, [x0, y0] = pol(RO - (beat ? 7 : 4), i / 16), [x1, y1] = pol(RO + 2, i / 16);
+    h += `<line class="tick${beat ? " beat" : ""}" x1="${f2(x0)}" y1="${f2(y0)}" x2="${f2(x1)}" y2="${f2(y1)}"/>`;
+  }
+  for (let b = 0; b < 4; b++) { const [x, y] = pol(RO + 10, b / 4 + 0.018); h += `<text class="blabel" x="${f2(x)}" y="${f2(y)}">${b + 1}</text>`; }
+  const S = ringMap.sectors;
+  for (let k = 0; k < S; k++) {
+    const [x0, y0] = pol(RT - 7, k / S), [x1, y1] = pol(RT + 7, k / S);
+    if (S > 1) h += `<line class="sec" x1="${f2(x0)}" y1="${f2(y0)}" x2="${f2(x1)}" y2="${f2(y1)}"/>`;
+    if (ringMap.labels[k] !== undefined) { const [x, y] = pol(RT - 17, (k + 0.5) / S); h += `<text class="slabel" x="${f2(x)}" y="${f2(y)}">${ringMap.labels[k]}</text>`; }
+  }
+  GR = emits.map((e, i) => {
+    const len = Math.max(0.004, e.sustain / cycSecs);
+    const t0 = ringMap.pos(e.n, Math.min(1, e.begin)), t1 = ringMap.pos(e.n, Math.min(1, e.end));
+    const [ax, ay] = pol(RG - 6, e.at), [bx, by] = pol(RT + 6, t0);
+    const w = (1.5 + 8 * Math.min(1, e.gain)).toFixed(1);
+    h += `<g class="gr${e.speed < 0 ? " rev" : ""}" id="g${i}">`
+      + `<path class="ga" d="${arc(RG, e.at, e.at + len)}" stroke-width="${w}"/>`
+      + `<line class="th" x1="${f2(ax)}" y1="${f2(ay)}" x2="${f2(bx)}" y2="${f2(by)}"/>`
+      + `<path class="ta" d="${arc(RT, t0, Math.max(t1, t0 + 0.002))}" stroke-width="${w}"/></g>`;
+    return { at: e.at, len, t0, t1: Math.max(t1, t0), on: false };
+  });
+  h += `<line class="hand" id="hand" x1="${C}" y1="${C}" x2="${C}" y2="${C - RO}"/>`;
+  h += `<circle class="head" id="head" r="3.5" cx="-10" cy="-10"/>`;
+  const set = setOf(P), T = P.tape || {};
+  const bars = (T.samples && T.samples.length && P.whole) ? T.samples.length
+    : P.whole && set.samples.length === 1 ? (T.bars || (set.tape && set.tape.bars) || 1) : 0;
+  h += bars > 1
+    ? `<text class="ctext" x="${C}" y="${C + 4}">${((cyc % bars) + bars) % bars + 1} / ${bars}</text><text class="csub" x="${C}" y="${C + 22}">bar</text>`
+    : `<text class="ctext" x="${C}" y="${C + 4}">${emits.length}</text><text class="csub" x="${C}" y="${C + 22}">grains</text>`;
+  h += `<text class="csub" x="${C}" y="${C - 22}" style="font-size:9px">cycle ${cyc}</text>`;
+  h += `<text class="ringname" x="${C}" y="${C + RT - 22}" text-anchor="middle">${esc(ringMap.name)}</text>`;
+  svg.innerHTML = h;
+  GR.forEach((g, i) => g.el = document.getElementById("g" + i));
+}
+function frame() {
+  if (P) {
+    const beat = beatNow(), cyc = Math.floor(beat / 4), ph = beat / 4 - cyc;
+    if (cyc !== shownCycle) { shownCycle = cyc; drawCircle(cyc); }
+    const [hx, hy] = pol(RO, ph);
+    const hand = document.getElementById("hand");
+    if (hand) { hand.setAttribute("x2", f2(hx)); hand.setAttribute("y2", f2(hy)); }
+    let head = null;
+    for (const g of GR) {
+      const on = ph >= g.at && ph < g.at + g.len;
+      if (on !== g.on) { g.on = on; g.el.classList.toggle("on", on); }
+      if (on) head = g.t0 + (g.t1 - g.t0) * ((ph - g.at) / g.len);
+    }
+    const hd = document.getElementById("head");
+    if (hd) { const [x, y] = head === null ? [-10, -10] : pol(RT, head); hd.setAttribute("cx", f2(x)); hd.setAttribute("cy", f2(y)); }
+    document.getElementById("circle").classList.toggle("idle", !playing);
+    document.getElementById("tempo").textContent = tempo().toFixed(1) + " bpm" + (anchor ? "" : " (free)");
+  }
+  requestAnimationFrame(frame);
+}
+
+// ── the line ──────────────────────────────────────────────────────────────
+function showLine() {
+  const box = document.getElementById("line");
+  if (!scene || document.activeElement === box) return;
+  box.value = N.print({ set: P.set, seed: scene.seed, spec: scene.spec,
+                        n: P.whole ? N.Nothing.value : N.Just.create(P.n) });
+}
+function lineToPreset(l) {
+  const w = JSON.parse(N.encodeScene({ ...scene, spec: l.spec, seed: l.seed })).spec;
+  const n = w.onsets.length;
+  const even = w.onsets.every((x, k) => Math.abs(x - k / n) < 1e-9);
+  const whole = N.isNothing(l.n);
+  return {
+    name: "From the line", blurb: "", tag: P.tag, knobs: P.knobs, set: l.set, n: whole ? 0 : l.n.value0, whole,
+    cloud: w.cloud, walk: w.walk, swing: w.swing, tape: w.tape,
+    steps: w.steps.to.map((t, k) => (t < 0 ? "~" : String(t)) + ((w.steps.p[k] ?? 1) === 1 ? "" : "?" + w.steps.p[k])).join(" "),
+    warp: ["repitch", "gap", "leak"][w.warp.mode] || "gap",
+    on: even ? { mode: "even", count: n } : { mode: "manual", manual: w.onsets.join(",") },
+    v: { speed: w.speed, gain: w.gain, pan: w.pan, accel: w.accelerate },
+    rules: w.rules, fx: w.fx, chain: w.chain, seed: l.seed,
+    sends: { a: (w.sends[0] || {}).level ?? 0.8, b: (w.sends[1] || {}).level ?? 0.8 },
+    q: P.q,
+  };
+}
+document.getElementById("line").addEventListener("keydown", (e) => {
+  e.stopPropagation();
+  if (e.key !== "Enter" || e.shiftKey) return;
+  e.preventDefault();
+  const err = document.getElementById("lineerr");
+  const r = N.parse(e.target.value);
+  if (!N.isRight(r)) { err.textContent = r.value0; return; }
+  if (!SETS.some(s => s.name === r.value0.set)) { err.textContent = `no set called "${r.value0.set}"`; return; }
+  err.textContent = "";
+  const p = lineToPreset(r.value0);
+  e.target.blur();
+  recall(null, p);
+});
+
+// ── presets, play ─────────────────────────────────────────────────────────
+function recall(i, p) {
+  at = i === null ? -1 : i;
+  P = JSON.parse(JSON.stringify(p || PRESETS[i]));
+  ORIG = JSON.parse(JSON.stringify(P));
+  rescene();
+  drawAll();
+  if (playing) push();          // a recall lands now, not on the debounce
+  try { if (at >= 0) localStorage.setItem("conspicillum-module-at", String(at)); } catch (_) {}
+}
+function step(d) {
+  let i = at;
+  for (let tries = 0; tries < PRESETS.length; tries++) {
+    i = ((i + d) % PRESETS.length + PRESETS.length) % PRESETS.length;
+    if (setOf(PRESETS[i])) return recall(i);
+  }
+}
+function drawBanks() {
+  const order = [];
+  PRESETS.forEach((p, i) => { const t = p.tag || ""; if (!order.includes(t)) order.push(t); });
+  document.getElementById("banks").innerHTML = order.map(t => `<div class="bank"><h3>${BANKS[t] || t}</h3>`
+    + PRESETS.map((p, i) => [p, i]).filter(([p]) => (p.tag || "") === t).map(([p, i]) =>
+      `<button data-i="${i}" title="${esc(p.blurb || "")}"${setOf(p) ? "" : " disabled"}>${esc(p.name)}`
+      + (p.prog ? `<span class="approx" title="its progression runs in the workshop only">≈</span>` : "") + `</button>`).join("")
+    + `</div>`).join("");
+  document.querySelectorAll(".bank button").forEach(b => b.onclick = () => recall(+b.dataset.i));
+}
+
+let pushTimer = null;
+function push() {
+  if (!wsReady || !wire) return;
+  ws.send("conspicillum-scene " + JSON.stringify(wire));
+}
+function livePush() {
+  if (!playing) return;
+  clearTimeout(pushTimer);
+  pushTimer = setTimeout(push, 120);
+}
+function toggle() {
+  playing = !playing;
+  const b = document.getElementById("play");
+  b.classList.toggle("on", playing);
+  b.textContent = playing ? "Stop" : "Play";
+  if (playing) push(); else { clearTimeout(pushTimer); if (wsReady) ws.send("conspicillum-stop"); }
+}
+document.getElementById("play").onclick = toggle;
+document.getElementById("prev").onclick = () => step(-1);
+document.getElementById("next").onclick = () => step(1);
+document.addEventListener("keydown", (e) => {
+  if (e.target.tagName === "TEXTAREA" || e.metaKey || e.ctrlKey) return;
+  if (e.key === "ArrowLeft") { e.preventDefault(); step(-1); }
+  if (e.key === "ArrowRight") { e.preventDefault(); step(1); }
+  if (e.key === " ") { e.preventDefault(); toggle(); }
+});
+
+connect();
+loadWorkshop().then(() => {
+  drawBanks();
+  let i = 0;
+  try { i = +(localStorage.getItem("conspicillum-module-at") || 0); } catch (_) {}
+  if (!PRESETS[i] || !setOf(PRESETS[i])) i = Math.max(0, PRESETS.findIndex(p => p.tag === "sector" && setOf(p)));
+  recall(i);
+  requestAnimationFrame(frame);
+}).catch(e => {
+  document.getElementById("sentence").innerHTML = `<p class="note">Could not read the workshop: ${esc(e.message)}</p>`;
+});
+</script>
+</body>
+</html>

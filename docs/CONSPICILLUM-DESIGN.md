@@ -1727,3 +1727,43 @@ Andrew's direction for the prototype, to run with and then iterate on:
   splitting into blocks of layers or slices, or wrapping around the circle.
   (They fit Quadrat's projections too: a take becoming a Rample card, a reel,
   a QuadDrum folder.)
+
+### Prototype 1 (2026-09-27): `public/module.html`
+
+A plain-JS page, so the design can be reshaped quickly. It is served at
+`:3023/module.html`.
+
+- **The circle** is drawn by reef's own `cycleOf`, now also exported by
+  `public/notation.js` (`audio/build-notation.sh`), for the cycle the rig is on.
+  - The outer ring is the bar: 16 steps, clockwise from the top.
+  - The inner ring is the material: a tape's bars, or a corpus laid end to end
+    with one sector per sample.
+  - Each grain is an arc where it plays, an arc where it reads, and a thread
+    between them. A tape followed straight draws a wheel of spokes, and a walk
+    crosses it.
+  - The grain under the Link-locked hand lights, and a dot rides the read
+    position.
+- **The sentence** says the scene in words.
+  - Every number in it can be dragged (shift drags finely).
+  - A preset's knobs are its superscripted numbers: turning one moves the other.
+  - A clause shows when it is doing something, or when a knob is bound to it.
+- **The line** sits under the panel: the machine form, editable, applied with
+  Enter.
+- **Presets, knob lists and effect ranges** are sliced out of
+  `conspicillum.html`, as `scenes.mjs` does, so there is one copy.
+  - All 86 decode and draw.
+  - Chord progressions do not run here yet (they are marked ≈ in the list).
+
+### After the design settles: PureScript
+
+The prototype is disposable. Once the design holds, the module becomes a
+typed Halogen app in triggerfish, with solid engineering:
+
+- the scene as reef's own types (`Spec`, `Emit`), not a preset-shaped JS
+  object;
+- presets as a typed module, not text sliced out of an HTML page;
+- the sentence as a typed clause list, each number a lens onto the spec, with
+  its range beside it;
+- the circle as a pure function of `Array Emit`.
+
+The workshop page follows the same path in time.
