@@ -122,7 +122,8 @@ aside.banks { font-size:12.5px; max-height:calc(100vh - 110px); overflow:auto; p
 .idle .hand { stroke:var(--mid); stroke-dasharray:3 3; }
 .cloudaxis { stroke:#e2e1db; stroke-width:1; }
 .cloudlab { font:8.5px var(--sans); fill:#a8a7a1; letter-spacing:.08em; }
-.pt { stroke-width:1.4; }
+.pt { stroke:#fff; stroke-width:1.2; }
+.pt.rev { fill:#fff; stroke-width:2.4; }
 
 /* ── the strip: the material ───────────────────────────────────────────── */
 .stripwrap { padding:8px 8px 4px; border-top:1px solid var(--panel-edge); }
@@ -754,7 +755,10 @@ function drawCircle(cyc) {
   h += `<line class="cloudaxis" x1="${C - RC + 16}" y1="${C}" x2="${C + RC - 16}" y2="${C}"/>`
     + `<line class="cloudaxis" x1="${C}" y1="${C - RC + 16}" x2="${C}" y2="${C + RC - 16}"/>`
     + `<text class="cloudlab" x="${C - RC + 18}" y="${C - 4}">L</text><text class="cloudlab" x="${C + RC - 24}" y="${C - 4}">R</text>`
-    + `<text class="cloudlab" x="${C + 4}" y="${C - RC + 26}">faster</text><text class="cloudlab" x="${C + 4}" y="${C + RC - 20}">slower</text>`;
+    + `<text class="cloudlab" x="${C + 4}" y="${C - RC + 26}">faster</text><text class="cloudlab" x="${C + 4}" y="${C + RC - 20}">slower</text>`
+    + `<circle cx="${C - 40}" cy="${C + 58}" r="4" fill="#9a9994" stroke="#fff"/><text class="cloudlab" x="${C - 32}" y="${C + 61}">forwards</text>`
+    + `<circle cx="${C - 40}" cy="${C + 72}" r="3.6" fill="#fff" stroke="#9a9994" stroke-width="2"/><text class="cloudlab" x="${C - 32}" y="${C + 75}">backwards</text>`
+    + `<text class="cloudlab" x="${C - 44}" y="${C + 89}">size is loudness</text>`;
   GR = emits.map((e, i) => {
     const len = Math.max(0.004, e.sustain / cycSecs);
     const nxt = emits.find(o => o.at > e.at + 1e-9);
@@ -801,16 +805,22 @@ function spawn(g) {
   const e = g.e, cloud = document.getElementById("cloud");
   if (!cloud) return;
   const sp = Math.max(0.25, Math.min(4, Math.abs(e.speed) || 1));
-  const x = C + (Math.max(0, Math.min(1, e.pan)) - 0.5) * 2 * (RC - 26) + (Math.random() - 0.5) * 8;
-  const y = C - Math.log2(sp) * 40 + (Math.random() - 0.5) * 8;
-  const r = 3 + 7 * Math.min(1.2, e.gain);
+  const tx = C + (Math.max(0, Math.min(1, e.pan)) - 0.5) * 2 * (RC - 26);
+  const ty = C - Math.log2(sp) * 40;
+  const r = 3 + 6 * Math.min(1.2, e.gain);
+  // Grains landing on one spot fan out on a sunflower spiral rather than
+  // stacking: the i-th live dot near here goes out by sqrt(i), turned by the
+  // golden angle. So a pile-up reads as a cluster whose size is its count.
+  const near = DOTS.filter(d => Math.hypot(d.tx - tx, d.ty - ty) < 4).length;
+  const rad = near ? 2 * r * 0.62 * Math.sqrt(near) : 0, ang = near * 2.39996;
+  const x = tx + rad * Math.cos(ang), y = ty + rad * Math.sin(ang);
   const el = document.createElementNS("http://www.w3.org/2000/svg", "circle");
-  el.setAttribute("class", "pt");
+  el.setAttribute("class", e.speed < 0 ? "pt rev" : "pt");
   el.setAttribute("cx", f2(x)); el.setAttribute("cy", f2(y)); el.setAttribute("r", f2(r));
-  el.setAttribute("fill", e.speed < 0 ? "none" : g.col);
-  el.setAttribute("stroke", g.col);
+  // Filled with where it reads; a reversed grain is a ring in that colour.
+  if (e.speed < 0) el.setAttribute("stroke", g.col); else el.setAttribute("fill", g.col);
   cloud.appendChild(el);
-  DOTS.push({ el, r, born: performance.now(), life: Math.max(140, e.sustain * 1000) });
+  DOTS.push({ el, r, tx, ty, born: performance.now(), life: Math.max(140, e.sustain * 1000) });
   if (DOTS.length > 160) DOTS.shift().el.remove();
 }
 
