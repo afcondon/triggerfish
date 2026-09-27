@@ -1863,3 +1863,20 @@ unchanged.
 The chord table is `Harmonic.namedChords`, the 16 chords the presets use. A
 chord outside it cannot be written in a line yet. Parsing chord symbols through
 harmonia is the way to lift that.
+
+### Step 3 done (2026-09-27): the reference, generated
+
+`reef/docs/CONSPICILLUM-REFERENCE.md` (reef 64ef0fc) is written by
+`Reef.Conspicillum.Reference` from the typed catalogue. It covers:
+- every parameter, with its line term, range and taper, neutral value, what
+  engages it, and what it does;
+- the rule vocabulary;
+- the chord table;
+- all 86 presets, with their lines and knobs.
+
+Cross-runtime prints it on node and on the BEAM and diffs both against the
+committed file, so the docs cannot drift from the instrument. After changing
+a parameter, a chord or a preset, regenerate it with
+`node tools/conspicillum-reference.mjs`.
+
+Next is step 4: the module as a Halogen and Hylograph app, in its own repo.
