@@ -122,8 +122,9 @@ aside.banks { font-size:12.5px; max-height:calc(100vh - 110px); overflow:auto; p
 .idle .hand { stroke:var(--mid); stroke-dasharray:3 3; }
 .cloudaxis { stroke:#e2e1db; stroke-width:1; }
 .cloudlab { font:8.5px var(--sans); fill:#a8a7a1; letter-spacing:.08em; }
-.pt { stroke:#fff; stroke-width:1.2; }
-.pt.rev { fill:#fff; stroke-width:2.4; }
+.pt { stroke-width:1.2; }
+.key { display:flex; flex-wrap:wrap; gap:4px 14px; justify-content:center; font-size:10.5px; color:var(--mid); margin-top:2px; }
+.key svg { vertical-align:-2px; margin-right:4px; }
 
 /* ── the strip: the material ───────────────────────────────────────────── */
 .stripwrap { padding:8px 8px 4px; border-top:1px solid var(--panel-edge); }
@@ -186,7 +187,15 @@ table.rules td.amt { font-family:var(--mono); font-size:12px; font-variant-numer
         <span class="tempo" id="tempo"></span>
       </div>
       <div class="pbody">
-        <svg id="circle" viewBox="0 0 400 400"></svg>
+        <div>
+          <svg id="circle" viewBox="0 0 400 400"></svg>
+          <div class="key">
+            <span><svg width="11" height="11"><circle cx="5.5" cy="5.5" r="4.5" fill="#8f8e89"/></svg>forwards</span>
+            <span><svg width="11" height="11"><circle cx="5.5" cy="5.5" r="4" fill="#8f8e89" fill-opacity=".22" stroke="#8f8e89" stroke-width="2"/></svg>backwards</span>
+            <span>size is loudness</span>
+            <span>colour is where it reads</span>
+          </div>
+        </div>
         <div>
           <div class="display">
             <button id="prev" title="previous preset (←)">‹</button>
@@ -755,10 +764,7 @@ function drawCircle(cyc) {
   h += `<line class="cloudaxis" x1="${C - RC + 16}" y1="${C}" x2="${C + RC - 16}" y2="${C}"/>`
     + `<line class="cloudaxis" x1="${C}" y1="${C - RC + 16}" x2="${C}" y2="${C + RC - 16}"/>`
     + `<text class="cloudlab" x="${C - RC + 18}" y="${C - 4}">L</text><text class="cloudlab" x="${C + RC - 24}" y="${C - 4}">R</text>`
-    + `<text class="cloudlab" x="${C + 4}" y="${C - RC + 26}">faster</text><text class="cloudlab" x="${C + 4}" y="${C + RC - 20}">slower</text>`
-    + `<circle cx="${C - 40}" cy="${C + 58}" r="4" fill="#9a9994" stroke="#fff"/><text class="cloudlab" x="${C - 32}" y="${C + 61}">forwards</text>`
-    + `<circle cx="${C - 40}" cy="${C + 72}" r="3.6" fill="#fff" stroke="#9a9994" stroke-width="2"/><text class="cloudlab" x="${C - 32}" y="${C + 75}">backwards</text>`
-    + `<text class="cloudlab" x="${C - 44}" y="${C + 89}">size is loudness</text>`;
+    + `<text class="cloudlab" x="${C + 4}" y="${C - RC + 26}">faster</text><text class="cloudlab" x="${C + 4}" y="${C + RC - 20}">slower</text>`;
   GR = emits.map((e, i) => {
     const len = Math.max(0.004, e.sustain / cycSecs);
     const nxt = emits.find(o => o.at > e.at + 1e-9);
@@ -815,10 +821,14 @@ function spawn(g) {
   const rad = near ? 2 * r * 0.62 * Math.sqrt(near) : 0, ang = near * 2.39996;
   const x = tx + rad * Math.cos(ang), y = ty + rad * Math.sin(ang);
   const el = document.createElementNS("http://www.w3.org/2000/svg", "circle");
-  el.setAttribute("class", e.speed < 0 ? "pt rev" : "pt");
+  el.setAttribute("class", "pt");
   el.setAttribute("cx", f2(x)); el.setAttribute("cy", f2(y)); el.setAttribute("r", f2(r));
   // Filled with where it reads; a reversed grain is a ring in that colour.
-  if (e.speed < 0) el.setAttribute("stroke", g.col); else el.setAttribute("fill", g.col);
+  // As a style, not attributes: a stylesheet rule beats a presentation
+  // attribute, and one did — the rings came out white.
+  el.setAttribute("style", e.speed < 0
+    ? `fill:${g.col};fill-opacity:.22;stroke:${g.col};stroke-width:2.6`
+    : `fill:${g.col};stroke:#fff`);
   cloud.appendChild(el);
   DOTS.push({ el, r, tx, ty, born: performance.now(), life: Math.max(140, e.sustain * 1000) });
   if (DOTS.length > 160) DOTS.shift().el.remove();
