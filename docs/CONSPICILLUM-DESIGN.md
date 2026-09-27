@@ -1767,3 +1767,42 @@ typed Halogen app in triggerfish, with solid engineering:
 - the circle as a pure function of `Array Emit`.
 
 The workshop page follows the same path in time.
+
+### Prototype 2 (2026-09-27): three scales, and colour as the key
+
+Andrew's reading of prototype 1: it looks good, and it is hard to read, like a
+fancy Swiss watch. In grammar-of-graphics terms, it went wrong in three ways:
+
+- **Two positions in one mark.** A thread's two ends are two positions on two
+  concentric polar scales, one for time and one for material, so reading it
+  means decoding both.
+- **One ring, two meanings.** The inner ring meant a tape's bars in one preset
+  and a corpus in another, and it looked the same either way.
+- **Colour spent on emphasis.** The one channel that could have linked the two
+  views carried nothing but highlight.
+
+Prototype 2 gives each thing its own scale:
+
+| view | data | position | mark | colour |
+|---|---|---|---|---|
+| strip (linear) | the material: samples, or a tape's bars | x = place in the material | a box per segment (log-duration widths, as in Quadrat) | place in the material |
+| ring (time) | this cycle's grains (`cycleOf`) | angle = when in the bar | a wedge while the grain sounds, clipped at the next onset | where that grain reads |
+| cloud (centre) | grains as they fire | x = pan, y = log₂ speed | a dot fading over the grain's length | the same; size = gain; hollow = reversed |
+
+Colour has one meaning across the whole panel: **where in the material.**
+
+- With **one segment**, the hue sweeps along it. A straight tape is a rainbow
+  round the ring, a jump is a break in the gradient, a repeat is one colour
+  twice, and reverse is the gradient running backwards (reversed wedges are
+  also hatched).
+- With **several segments**, each gets its own hue, and lightness gives the
+  place within it, as in Quadrat's rainbow row.
+
+The strip shows where this cycle reads (ticks) and the read head now. Rules
+are a table (which grains · what · by) instead of sentences.
+
+**Still open:**
+- For pitched corpora, whether colour should be Quadrat's pitch-class hue
+  instead of position.
+- Waveforms in the strip (needs peaks in the corpora).
+- The parked animations.

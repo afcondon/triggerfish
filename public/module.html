@@ -111,26 +111,38 @@ aside.banks { font-size:12.5px; max-height:calc(100vh - 110px); overflow:auto; p
 .jack i { display:block; width:22px; height:22px; border-radius:50%; border:1.5px solid var(--ink); margin:0 auto 3px;
           background:radial-gradient(circle, #222 0 5px, #e9e8e3 5.5px); }
 
-/* ── the circle ────────────────────────────────────────────────────────── */
-.band { fill:none; stroke:#e6e5df; }
+/* ── the ring: time ───────────────────────────────────────────────────── */
 .tick { stroke:var(--mid); stroke-width:1; }
 .tick.beat { stroke:var(--ink); stroke-width:1.6; }
 .blabel { font:10px var(--sans); fill:var(--mid); text-anchor:middle; dominant-baseline:middle; }
-.slabel { font:9px var(--sans); fill:var(--mid); text-anchor:middle; dominant-baseline:middle; }
-.sec { stroke:var(--ink); stroke-width:1; }
-.gr .ga, .gr .ta { fill:none; stroke:var(--ink); stroke-opacity:.26; }
-.gr .th { stroke:var(--ink); stroke-opacity:.30; stroke-width:.7; }
-.gr.rev .th { stroke-dasharray:3 2; }
-.gr.on .ga, .gr.on .ta { stroke:var(--accent); stroke-opacity:1; }
-.gr.on .th { stroke:var(--accent); stroke-opacity:1; stroke-width:1.4; }
-.hand { stroke:var(--accent); stroke-width:1.4; }
-.head { fill:var(--accent); }
-.idle .hand, .idle .head { stroke:var(--mid); fill:var(--mid); }
-.idle .gr.on .ga, .idle .gr.on .ta { stroke:var(--ink); stroke-opacity:.8; }
-.idle .gr.on .th { stroke:var(--ink); }
-.ctext { font:600 22px var(--sans); fill:var(--ink); text-anchor:middle; font-variant-numeric:tabular-nums; }
-.csub { font:10px var(--sans); fill:var(--mid); text-anchor:middle; letter-spacing:.12em; text-transform:uppercase; }
-.ringname { font:9px var(--sans); fill:var(--mid); letter-spacing:.14em; text-transform:uppercase; }
+.slotband { fill:none; stroke:#e7e6e0; }
+.wd { stroke:#fff; stroke-width:.8; }
+.gr.on .wd { stroke:var(--ink); stroke-width:2.2; }
+.hand { stroke:var(--ink); stroke-width:1.2; }
+.idle .hand { stroke:var(--mid); stroke-dasharray:3 3; }
+.cloudaxis { stroke:#e2e1db; stroke-width:1; }
+.cloudlab { font:8.5px var(--sans); fill:#a8a7a1; letter-spacing:.08em; }
+.pt { stroke-width:1.4; }
+
+/* ── the strip: the material ───────────────────────────────────────────── */
+.stripwrap { padding:8px 8px 4px; border-top:1px solid var(--panel-edge); }
+.striplab { font-size:10px; letter-spacing:.14em; text-transform:uppercase; color:var(--mid); display:flex; gap:12px; }
+.striplab b { color:var(--ink); font-weight:600; letter-spacing:.06em; text-transform:none; font-size:11.5px; }
+.striplab .sp { flex:1; }
+#strip { width:100%; height:64px; display:block; margin-top:4px; }
+.seg { stroke:none; }
+.seg.on { stroke:var(--ink); stroke-width:2; }
+.seglab { font:9.5px var(--sans); fill:var(--mid); text-anchor:middle; }
+.rtick { fill:var(--ink); opacity:.45; }
+.rhead { stroke:var(--ink); stroke-width:2; }
+.idle .rhead { stroke:var(--mid); }
+
+/* ── rules as a table ──────────────────────────────────────────────────── */
+table.rules { border-collapse:collapse; font-size:12.5px; margin:4px 0 10px; }
+table.rules th { font-size:9.5px; letter-spacing:.12em; text-transform:uppercase; color:var(--mid); font-weight:600; text-align:left; padding:0 14px 3px 0; border-bottom:1px solid var(--panel-edge); }
+table.rules td { padding:3px 14px 3px 0; border-bottom:1px solid var(--hair); vertical-align:top; }
+table.rules td.op { font-family:var(--mono); font-size:12px; }
+table.rules td.amt { font-family:var(--mono); font-size:12px; font-variant-numeric:tabular-nums; }
 
 /* ── the line: the machine form, under the panel ──────────────────────── */
 .machine { margin-top:18px; }
@@ -183,6 +195,10 @@ aside.banks { font-size:12.5px; max-height:calc(100vh - 110px); overflow:auto; p
           <div class="edited" id="edited"></div>
           <div class="sentence" id="sentence"></div>
         </div>
+      </div>
+      <div class="stripwrap">
+        <div class="striplab"><span id="matname">the material</span><b id="setname"></b><span class="sp"></span><span id="matnote"></span></div>
+        <svg id="strip" viewBox="0 0 800 64" preserveAspectRatio="none"></svg>
       </div>
       <div class="pbottom">
         <div id="knobs" style="display:flex; gap:14px"></div>
@@ -325,6 +341,8 @@ function rescene() {
   const d = N.decodeScene(JSON.stringify(wire));
   if (N.isRight(d)) { scene = d.value0; sceneErr = ""; }
   else { scene = null; sceneErr = String(d.value0); }
+  MAT = materialOf(P);
+  drawStrip();
   shownCycle = null;          // the circle recomputes on the next frame
   showLine();
 }
@@ -423,6 +441,17 @@ function num(path) {
 const shows = (path, cond) => cond || knobIx(path) >= 0;
 const esc = (s) => String(s).replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
 
+function ruleRow(r) {
+  const op = OPS[r.op] || "op " + r.op;
+  const amt = r.values && r.values.length
+    ? r.values.join(" ") + (r.step ? " (a bar each)" : " (a hit each)")
+    : String(+(+r.amount).toFixed(3));
+  const who = r.when === 0 ? "all"
+    : r.when === 1 ? (r.everyN <= 1 ? "all" : `every ${ordinal(r.everyN)}` + (r.everyK ? `, from the ${nth(r.everyK + 1)}` : ""))
+    : r.when === 2 ? `${Math.round(r.chance * 100)}%, at random`
+    : `${HIT[r.everyN] || "hit"}-like`;
+  return `<tr><td>${esc(who)}</td><td class="op">${esc(op)}</td><td class="amt">${esc(amt)}</td></tr>`;
+}
 function ruleWords(r) {
   const op = OPS[r.op] || "op " + r.op;
   const amt = r.values && r.values.length
@@ -503,7 +532,8 @@ function sentenceHTML(p) {
   if (v.length) out.push(`Played ${v.join(", ")}.`);
 
   // the rules
-  for (const r of p.rules || []) out.push(ruleWords(r));
+  if ((p.rules || []).length) out.push(`<table class="rules"><tr><th>which grains</th><th>what</th><th>by</th></tr>`
+    + p.rules.map(ruleRow).join("") + `</table>`);
 
   // the grain's own effects, then the cloud's
   const fx = FX_CTRL.filter(k => shows("fx." + k.id, (p.fx || {})[k.id] !== undefined && p.fx[k.id] !== k.def));
@@ -514,7 +544,7 @@ function sentenceHTML(p) {
   out.push(`It throws ${num("sends.a")} to A and ${num("sends.b")} to B, at gain ${num("v.gain")}.`);
   if (p.prog) out.push(`<span class="note">Its chord progression (${p.prog.join(" → ")}) runs only in the workshop for now.</span>`);
   if (sceneErr) out.push(`<span class="note">The engine refused this scene: ${esc(sceneErr)}</span>`);
-  return out.map(x => `<p>${x}</p>`).join("");
+  return out.map(x => x.startsWith("<table") ? x : `<p>${x}</p>`).join("");
 }
 
 // ── drawing the panel ─────────────────────────────────────────────────────
@@ -617,38 +647,83 @@ function setParam(path, v, redraw = false) {
   livePush();
 }
 
-// ── the circle ────────────────────────────────────────────────────────────
-// Outer ring: the bar, clockwise from the top, 16 steps. Inner ring: the
-// material — a tape's bars, or a corpus laid end to end, one sector a sample.
-// Each grain is an arc where it plays, an arc where it reads, and a thread
-// between. A tape followed straight is a wheel of spokes; a walk crosses it.
-const C = 200, RO = 184, RG = 168, RT = 96;
-let GR = [], shownCycle = null, ringMap = null;
-const pol = (r, u) => { const a = u * 2 * Math.PI - Math.PI / 2; return [C + r * Math.cos(a), C + r * Math.sin(a)]; };
-const f2 = (x) => x.toFixed(2);
-function arc(r, u0, u1) {
-  const len = Math.max(0.0015, Math.min(u1 - u0, 0.9995));
-  const [x0, y0] = pol(r, u0), [x1, y1] = pol(r, u0 + len);
-  return `M${f2(x0)},${f2(y0)} A${r},${r} 0 ${len > 0.5 ? 1 : 0} 1 ${f2(x1)},${f2(y1)}`;
-}
-// Where on the inner ring a grain's read position sits.
-function ringOf(p) {
+// ── the material: one scale for "where in the sound" ─────────────────────
+// The strip draws it; the ring and the cloud borrow its colours. So colour
+// has exactly one meaning on the panel — WHERE IN THE MATERIAL — and a wedge
+// on the ring is the colour of the part of the tape it plays.
+//
+// One segment (a one-bar tape, a single hit): the hue sweeps along it, so a
+// tape played straight is a rainbow round the ring, a jump is a break in the
+// gradient, a repeat is a colour twice, reverse is the gradient backwards.
+// Several (bars, a corpus): a hue per segment, lightness for where in it —
+// Quadrat's rainbow row of samples.
+let MAT = null;
+function materialOf(p) {
   const set = setOf(p), T = p.tape || {};
+  let segs, locate, name, note = "";
   if (T.samples && T.samples.length && p.whole) {
     const keys = T.samples;
-    return { sectors: keys.length, labels: keys.map(String), name: "hits, a bar each",
-             pos: (n, x) => { const i = keys.indexOf(n); return (Math.max(0, i) + x) / keys.length; } };
+    segs = keys.map(n => ({ label: String(n), w: 1 }));
+    locate = (n, x) => ({ k: Math.max(0, keys.indexOf(n)), f: x });
+    name = "hits, one a bar"; note = keys.length + " bars";
+  } else {
+    const samples = p.whole ? set.samples : set.samples.filter(s => s.index === p.n);
+    if (samples.length === 1) {
+      const bars = T.bars || (set.tape && set.tape.bars) || 1;
+      const tapeish = set.tape || (p.cloud.follow ?? 0) !== 0;
+      segs = Array.from({ length: bars }, (_, k) => ({ label: bars > 1 ? String(k + 1) : "", w: 1 }));
+      locate = (n, x) => { const y = Math.min(0.99999, Math.max(0, x)) * bars, k = Math.floor(y); return { k, f: y - k }; };
+      name = tapeish ? "the tape" : "sample " + samples[0].index;
+      note = (bars > 1 ? bars + " bars" : "") + (set.tape ? ` at ${set.tape.bpm} bpm` : "") + ` · ${samples[0].secs.toFixed(2)} s`;
+    } else {
+      const keys = samples.map(s => s.index);
+      // Widths as Quadrat draws them: log of the duration, so a hit is
+      // visibly shorter than a chord.
+      segs = samples.map(s => ({ label: String(s.index), w: Math.log(Math.max(0.05, s.secs) / 0.025) }));
+      locate = (n, x) => ({ k: Math.max(0, keys.indexOf(n)), f: Math.min(1, Math.max(0, x)) });
+      name = "the corpus"; note = samples.length + " samples";
+    }
   }
-  const samples = p.whole ? set.samples : set.samples.filter(s => s.index === p.n);
-  if (samples.length === 1) {
-    const bars = T.bars || (set.tape && set.tape.bars) || 1;
-    const tapeish = set.tape || (p.cloud.follow ?? 0) !== 0;
-    return { sectors: bars, labels: bars > 1 ? Array.from({ length: bars }, (_, i) => String(i + 1)) : [],
-             name: tapeish ? "the tape" : "sample " + samples[0].index, pos: (n, x) => x };
-  }
-  const keys = samples.map(s => s.index);
-  return { sectors: keys.length, labels: keys.length <= 24 ? keys.map(String) : [], name: keys.length + " samples",
-           pos: (n, x) => { const i = keys.indexOf(n); return (Math.max(0, i) + x) / keys.length; } };
+  const tot = segs.reduce((a, g) => a + g.w, 0);
+  let acc = 0;
+  segs.forEach(g => { g.x0 = acc / tot; acc += g.w; g.x1 = acc / tot; });
+  const S = segs.length;
+  const colour = (k, f) => S === 1 ? `hsl(${Math.round(f * 300)} 62% 52%)`
+    : `hsl(${Math.round(k * 360 / S)} 55% ${Math.round(70 - f * 28)}%)`;
+  return { segs, S, locate, colour, name, note, x: (k, f) => segs[k].x0 + f * (segs[k].x1 - segs[k].x0) };
+}
+
+// ── the strip ─────────────────────────────────────────────────────────────
+const SX = (x) => 8 + x * 784;
+function drawStrip() {
+  const M = MAT, svg = document.getElementById("strip");
+  let d = "<defs>", h = "";
+  M.segs.forEach((g, k) => {
+    d += `<linearGradient id="sg${k}">` + [0, 0.25, 0.5, 0.75, 1].map(f =>
+      `<stop offset="${f}" stop-color="${M.colour(k, f)}"/>`).join("") + `</linearGradient>`;
+    const gap = M.S > 1 ? Math.min(2, (g.x1 - g.x0) * 784 * 0.15) : 0;
+    h += `<rect class="seg" id="sg-${k}" x="${f2(SX(g.x0))}" y="8" width="${f2(Math.max(1, (g.x1 - g.x0) * 784 - gap))}" height="30" fill="url(#sg${k})"/>`;
+    if (g.label && M.S <= 32) h += `<text class="seglab" x="${f2(SX((g.x0 + g.x1) / 2))}" y="60">${esc(g.label)}</text>`;
+  });
+  h += `<g id="rticks"></g><line class="rhead" id="rhead" x1="-9" y1="3" x2="-9" y2="46"/>`;
+  svg.innerHTML = d + "</defs>" + h;
+  document.getElementById("matname").textContent = M.name;
+  document.getElementById("setname").textContent = P.set;
+  document.getElementById("matnote").textContent = M.note;
+}
+
+// ── the ring: time ────────────────────────────────────────────────────────
+// Clockwise from the top, 16 steps. A grain is a wedge from its onset for as
+// long as it sounds (to the next onset at most, so a dense cloud tiles rather
+// than piles up), filled with the colour of where it reads. Silence is a gap.
+const C = 200, RW0 = 136, RW1 = 174, RO = 184, RC = 124;
+let GR = [], shownCycle = null;
+const pol = (r, u) => { const a = u * 2 * Math.PI - Math.PI / 2; return [C + r * Math.cos(a), C + r * Math.sin(a)]; };
+const f2 = (x) => x.toFixed(2);
+function wedge(r0, r1, u0, u1) {
+  const len = Math.max(0.002, Math.min(u1 - u0, 0.9995)), large = len > 0.5 ? 1 : 0;
+  const [a, b] = pol(r1, u0), [c, d] = pol(r1, u0 + len), [e, f] = pol(r0, u0 + len), [g, h] = pol(r0, u0);
+  return `M${f2(a)},${f2(b)} A${r1},${r1} 0 ${large} 1 ${f2(c)},${f2(d)} L${f2(e)},${f2(f)} A${r0},${r0} 0 ${large} 0 ${f2(g)},${f2(h)} Z`;
 }
 function drawCircle(cyc) {
   const svg = document.getElementById("circle");
@@ -657,66 +732,91 @@ function drawCircle(cyc) {
     try { emits = N.cycleOf(scene.corpus)(scene.query)(scene.spec)(scene.seed)(cyc); }
     catch (e) { sceneErr = String(e); }
   }
-  // Send copies, where the engine makes them, are the same grain on another orbit.
   const orbit = (P.chain && P.chain.orbit) || 0;
-  emits = emits.filter(e => e.chain.orbit === orbit);
-  ringMap = ringOf(P);
+  emits = emits.filter(e => e.chain.orbit === orbit).slice().sort((a, b) => a.at - b.at);
   const cycSecs = 240 / tempo();
-  let h = "";
-  h += `<circle class="band" cx="${C}" cy="${C}" r="${RG}" stroke-width="10"/>`;
-  h += `<circle class="band" cx="${C}" cy="${C}" r="${RT}" stroke-width="10"/>`;
+  let h = `<defs><pattern id="hatch" width="5" height="5" patternUnits="userSpaceOnUse" patternTransform="rotate(45)">`
+    + `<line x1="0" y1="0" x2="0" y2="5" stroke="#fff" stroke-width="1.6"/></pattern></defs>`;
+  h += `<circle class="slotband" cx="${C}" cy="${C}" r="${(RW0 + RW1) / 2}" stroke-width="${RW1 - RW0}"/>`;
   for (let i = 0; i < 16; i++) {
-    const beat = i % 4 === 0, [x0, y0] = pol(RO - (beat ? 7 : 4), i / 16), [x1, y1] = pol(RO + 2, i / 16);
+    const beat = i % 4 === 0, [x0, y0] = pol(RO - (beat ? 5 : 2), i / 16), [x1, y1] = pol(RO + 4, i / 16);
     h += `<line class="tick${beat ? " beat" : ""}" x1="${f2(x0)}" y1="${f2(y0)}" x2="${f2(x1)}" y2="${f2(y1)}"/>`;
   }
-  for (let b = 0; b < 4; b++) { const [x, y] = pol(RO + 10, b / 4 + 0.018); h += `<text class="blabel" x="${f2(x)}" y="${f2(y)}">${b + 1}</text>`; }
-  const S = ringMap.sectors;
-  for (let k = 0; k < S; k++) {
-    const [x0, y0] = pol(RT - 7, k / S), [x1, y1] = pol(RT + 7, k / S);
-    if (S > 1) h += `<line class="sec" x1="${f2(x0)}" y1="${f2(y0)}" x2="${f2(x1)}" y2="${f2(y1)}"/>`;
-    if (ringMap.labels[k] !== undefined) { const [x, y] = pol(RT - 17, (k + 0.5) / S); h += `<text class="slabel" x="${f2(x)}" y="${f2(y)}">${ringMap.labels[k]}</text>`; }
-  }
+  for (let b = 0; b < 4; b++) { const [x, y] = pol(RO + 11, b / 4 + 0.02); h += `<text class="blabel" x="${f2(x)}" y="${f2(y)}">${b + 1}</text>`; }
+  // The cloud's axes: pan across, speed up (a doubling per 40 px).
+  h += `<line class="cloudaxis" x1="${C - RC + 16}" y1="${C}" x2="${C + RC - 16}" y2="${C}"/>`
+    + `<line class="cloudaxis" x1="${C}" y1="${C - RC + 16}" x2="${C}" y2="${C + RC - 16}"/>`
+    + `<text class="cloudlab" x="${C - RC + 18}" y="${C - 4}">L</text><text class="cloudlab" x="${C + RC - 24}" y="${C - 4}">R</text>`
+    + `<text class="cloudlab" x="${C + 4}" y="${C - RC + 26}">faster</text><text class="cloudlab" x="${C + 4}" y="${C + RC - 20}">slower</text>`;
   GR = emits.map((e, i) => {
     const len = Math.max(0.004, e.sustain / cycSecs);
-    const t0 = ringMap.pos(e.n, Math.min(1, e.begin)), t1 = ringMap.pos(e.n, Math.min(1, e.end));
-    const [ax, ay] = pol(RG - 6, e.at), [bx, by] = pol(RT + 6, t0);
-    const w = (1.5 + 8 * Math.min(1, e.gain)).toFixed(1);
-    h += `<g class="gr${e.speed < 0 ? " rev" : ""}" id="g${i}">`
-      + `<path class="ga" d="${arc(RG, e.at, e.at + len)}" stroke-width="${w}"/>`
-      + `<line class="th" x1="${f2(ax)}" y1="${f2(ay)}" x2="${f2(bx)}" y2="${f2(by)}"/>`
-      + `<path class="ta" d="${arc(RT, t0, Math.max(t1, t0 + 0.002))}" stroke-width="${w}"/></g>`;
-    return { at: e.at, len, t0, t1: Math.max(t1, t0), on: false };
+    const nxt = emits.find(o => o.at > e.at + 1e-9);
+    const u1 = Math.min(e.at + len, nxt ? nxt.at : 1);
+    const a = MAT.locate(e.n, e.begin), z = MAT.locate(e.n, e.end);
+    const col = MAT.colour(a.k, a.f);
+    h += `<g class="gr" id="g${i}"><path class="wd" d="${wedge(RW0, RW1, e.at, u1)}" fill="${col}"/>`
+      + (e.speed < 0 ? `<path d="${wedge(RW0, RW1, e.at, u1)}" fill="url(#hatch)"/>` : "") + `</g>`;
+    return { e, at: e.at, len, u1, col, x0: MAT.x(a.k, a.f), x1: MAT.x(z.k, z.f), k: a.k, on: false };
   });
-  h += `<line class="hand" id="hand" x1="${C}" y1="${C}" x2="${C}" y2="${C - RO}"/>`;
-  h += `<circle class="head" id="head" r="3.5" cx="-10" cy="-10"/>`;
-  const set = setOf(P), T = P.tape || {};
-  const bars = (T.samples && T.samples.length && P.whole) ? T.samples.length
-    : P.whole && set.samples.length === 1 ? (T.bars || (set.tape && set.tape.bars) || 1) : 0;
-  h += bars > 1
-    ? `<text class="ctext" x="${C}" y="${C + 4}">${((cyc % bars) + bars) % bars + 1} / ${bars}</text><text class="csub" x="${C}" y="${C + 22}">bar</text>`
-    : `<text class="ctext" x="${C}" y="${C + 4}">${emits.length}</text><text class="csub" x="${C}" y="${C + 22}">grains</text>`;
-  h += `<text class="csub" x="${C}" y="${C - 22}" style="font-size:9px">cycle ${cyc}</text>`;
-  h += `<text class="ringname" x="${C}" y="${C + RT - 22}" text-anchor="middle">${esc(ringMap.name)}</text>`;
+  h += `<g id="cloud"></g><line class="hand" id="hand" x1="${C}" y1="${C - RW0 + 4}" x2="${C}" y2="${C - RO - 2}"/>`;
   svg.innerHTML = h;
   GR.forEach((g, i) => g.el = document.getElementById("g" + i));
+  // Where this cycle reads, under the strip.
+  const ticks = document.getElementById("rticks");
+  if (ticks) ticks.innerHTML = GR.map(g => `<rect class="rtick" x="${f2(SX(g.x0) - 0.75)}" y="40" width="1.5" height="4"/>`).join("");
+  const bars = MAT.S > 1 && MAT.name !== "the corpus" ? MAT.S : 0;
+  cycleNote = `cycle ${cyc}` + (bars ? ` · bar ${((cyc % bars) + bars) % bars + 1}/${bars}` : "");
 }
+
+// ── the cloud: grains as they fire ────────────────────────────────────────
+// A dot where the grain lands in pan and speed, in the colour of where it
+// reads, as big as it is loud, fading over its own length. Hollow when it
+// plays backwards. Rules that move pan or speed show up here and nowhere else.
+let DOTS = [], cycleNote = "";
+function spawn(g) {
+  const e = g.e, cloud = document.getElementById("cloud");
+  if (!cloud) return;
+  const sp = Math.max(0.25, Math.min(4, Math.abs(e.speed) || 1));
+  const x = C + (Math.max(0, Math.min(1, e.pan)) - 0.5) * 2 * (RC - 26) + (Math.random() - 0.5) * 8;
+  const y = C - Math.log2(sp) * 40 + (Math.random() - 0.5) * 8;
+  const r = 3 + 7 * Math.min(1.2, e.gain);
+  const el = document.createElementNS("http://www.w3.org/2000/svg", "circle");
+  el.setAttribute("class", "pt");
+  el.setAttribute("cx", f2(x)); el.setAttribute("cy", f2(y)); el.setAttribute("r", f2(r));
+  el.setAttribute("fill", e.speed < 0 ? "none" : g.col);
+  el.setAttribute("stroke", g.col);
+  cloud.appendChild(el);
+  DOTS.push({ el, r, born: performance.now(), life: Math.max(140, e.sustain * 1000) });
+  if (DOTS.length > 160) DOTS.shift().el.remove();
+}
+
 function frame() {
   if (P) {
     const beat = beatNow(), cyc = Math.floor(beat / 4), ph = beat / 4 - cyc;
-    if (cyc !== shownCycle) { shownCycle = cyc; drawCircle(cyc); }
-    const [hx, hy] = pol(RO, ph);
+    if (cyc !== shownCycle) { shownCycle = cyc; DOTS.forEach(d => d.el.remove()); DOTS = []; drawCircle(cyc); }
+    const [hx, hy] = pol(RO + 2, ph), [ix, iy] = pol(RW0 - 4, ph);
     const hand = document.getElementById("hand");
-    if (hand) { hand.setAttribute("x2", f2(hx)); hand.setAttribute("y2", f2(hy)); }
-    let head = null;
+    if (hand) { hand.setAttribute("x1", f2(ix)); hand.setAttribute("y1", f2(iy)); hand.setAttribute("x2", f2(hx)); hand.setAttribute("y2", f2(hy)); }
+    let head = null, seg = -1;
     for (const g of GR) {
-      const on = ph >= g.at && ph < g.at + g.len;
-      if (on !== g.on) { g.on = on; g.el.classList.toggle("on", on); }
-      if (on) head = g.t0 + (g.t1 - g.t0) * ((ph - g.at) / g.len);
+      const on = ph >= g.at && ph < g.u1;
+      if (on !== g.on) { g.on = on; g.el.classList.toggle("on", on); if (on) spawn(g); }
+      if (on) { head = g.x0 + (g.x1 - g.x0) * Math.min(1, (ph - g.at) / g.len); seg = g.k; }
     }
-    const hd = document.getElementById("head");
-    if (hd) { const [x, y] = head === null ? [-10, -10] : pol(RT, head); hd.setAttribute("cx", f2(x)); hd.setAttribute("cy", f2(y)); }
+    const now = performance.now();
+    DOTS = DOTS.filter(d => {
+      const a = (now - d.born) / d.life;
+      if (a >= 1) { d.el.remove(); return false; }
+      d.el.setAttribute("opacity", f2(1 - a));
+      d.el.setAttribute("r", f2(d.r * (1 + 0.5 * a)));
+      return true;
+    });
+    const rh = document.getElementById("rhead");
+    if (rh) { const x = head === null ? -9 : SX(head); rh.setAttribute("x1", f2(x)); rh.setAttribute("x2", f2(x)); }
+    document.querySelectorAll(".seg").forEach((el, k) => el.classList.toggle("on", k === seg));
     document.getElementById("circle").classList.toggle("idle", !playing);
-    document.getElementById("tempo").textContent = tempo().toFixed(1) + " bpm" + (anchor ? "" : " (free)");
+    document.getElementById("strip").classList.toggle("idle", !playing);
+    document.getElementById("tempo").textContent = cycleNote + " · " + tempo().toFixed(1) + " bpm" + (anchor ? "" : " (free)");
   }
   requestAnimationFrame(frame);
 }
