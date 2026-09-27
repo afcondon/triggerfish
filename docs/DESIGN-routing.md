@@ -152,6 +152,14 @@ This is also the first hard argument for the routing table being **shared with
 the BEAM** rather than browser-only, since Atlantis mode has to make the same
 fan-out with its own offsets. Not step 2's problem, but it should not be designed
 out of reach.
+
+**Done for the drum lanes (2026-09-27).** The browser resolves its drum rows into
+`Reef.Routing.DrumRouting` (whole port names, the note each leg sends, the trim,
+a Rample voice) and pushes it with `balistes-routing`; `reef_balistes_voice` keeps
+it and sends every hit through `Reef.Routing.drumSends`, which is also what the
+browser's own drum emit now calls. `routingRun` in reef's cross-runtime
+conformance holds the two to one answer. The Odonus heads and Vetula voices are
+still browser-only; the ES-9 kinds stay out until the browser can reach them.
 - **Selene** — unchanged. Its cascade is already the shape everything else is
   growing towards.
 - **Vetula** — named voices already edit a channel; they gain a port so

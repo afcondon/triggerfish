@@ -248,8 +248,8 @@ data Action
   | NewPattern                 -- append a fresh empty rhythm + select it
   | SetPatternName String      -- rename the active rhythm
   | PublishActive              -- publish the active rhythm to Amphora (persist + share)
-  | PushBalistes               -- lockstep handoff: push BalSim to the rig (ch 11)
-  -- POLYTRIG (SELENE DRUMS tab) editor — browser-only, no rig sync.
+  | PushBalistes               -- lockstep handoff: the routing table, then the brain's state, to the rig
+  -- POLYTRIG (TIDAL tab) editor. Every edit re-pushes the resolved kit (`balistes-trig`).
   | SetJackSource Int String   -- jack i's per-jack pattern
   | SetJackName Int String     -- jack i's route-addressable name
   | SetJackNote Int Int        -- nudge jack i's MIDI note

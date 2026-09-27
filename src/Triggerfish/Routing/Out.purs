@@ -30,21 +30,25 @@ module Triggerfish.Routing.Out
   , resolveLegs
   , fanNote
   , fanNoteAt
+  , drumRouting
+  , sendAll
   ) where
 
 import Prelude
 
-import Data.Array (find, mapMaybe)
+import Data.Array (find, mapMaybe, mapWithIndex)
 import Data.Foldable (sum)
 import Data.Int as Int
-import Data.Maybe (Maybe(..), fromMaybe)
+import Data.Maybe (Maybe(..), fromMaybe, maybe)
 import Data.String (Pattern(..), contains)
 import Data.Traversable (traverse)
 import Effect (Effect)
 
 import Binnacle.Midi as Midi
+import Binnacle.Time (perfNow)
 import Reef.Rample as Rample
-import Triggerfish.Routing.Model (Leg, Source, Table, Wire, liveLegsFor, wireOf)
+import Reef.Routing as RR
+import Triggerfish.Routing.Model (Leg, Source(..), Table, Wire, liveLegsFor, wireOf)
 
 -- | Every MIDI output port, by name. Built once when MIDI access arrives.
 type Outs = Array { name :: String, out :: Midi.MidiOut }
@@ -168,3 +172,47 @@ fanNote outs tbl src ev =
         }
       pure 1
     _, _ -> pure 0
+
+-- | The drum lanes as `Reef.Routing` carries them, for the rig and for the
+-- | browser's own drum emit alike: every live leg that is a MIDI wire on a port
+-- | that exists, by its whole name. The needle is resolved HERE, by the same
+-- | substring rule as `outFor`, because the rig matches names exactly: pushing
+-- | "IAC" would reach nothing there.
+-- |
+-- | A leg the browser cannot emit (the ES-9 kinds) or whose port is absent is
+-- | left out, so the rig plays exactly what the browser would.
+drumRouting :: Outs -> Table -> Array Int -> RR.DrumRouting
+drumRouting outs tbl notes =
+  { notes, lanes: mapWithIndex (\lane _ -> mapMaybe resolve (liveLegsFor tbl (SDrumLane lane))) notes }
+  where
+  resolve leg = do
+    w <- wireOf leg.dest
+    found <- find (\r -> contains (Pattern w.port) r.name) outs
+    pure
+      { port: found.name
+      , channel: w.channel
+      , note: fromMaybe (-1) w.noteOverride
+      , offsetMs: leg.offsetMs
+      , rample: maybe [] (\r -> [ { voice: r.voice, slots: r.slots, pitchOfSlot0: r.pitchOfSlot0, settleMs: r.settleMs } ]) w.rample
+      }
+
+-- | Send what `Reef.Routing` decided, each `atMs` from now. Returns how many
+-- | notes went out.
+sendAll :: Outs -> Array RR.Send -> Effect Int
+sendAll outs sends = do
+  now <- perfNow
+  map sum (traverse (one now) sends)
+  where
+  byName name = map _.out (find (\r -> r.name == name) outs)
+  one now = case _ of
+    RR.Note n -> case byName n.port of
+      Nothing -> pure 0
+      Just o -> do
+        Midi.scheduleNoteAtMs o
+          { channel: n.channel - 1, note: n.note, velocity: n.velocity, atMs: now + n.atMs, durMs: n.durMs }
+        pure 1
+    RR.Control c -> case byName c.port of
+      Nothing -> pure 0
+      Just o -> do
+        Midi.sendCCAtMs o { channel: c.channel - 1, controller: c.controller, value: c.value, atMs: now + c.atMs }
+        pure 0

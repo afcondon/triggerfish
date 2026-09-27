@@ -51,6 +51,7 @@ import Triggerfish.Balistes.Model as M
 import Triggerfish.Balistes.Pattern as P
 import Triggerfish.Routing.Model as RM
 import Triggerfish.Routing.Out as RO
+import Reef.Routing as RR
 import Triggerfish.Balistes.Types
   ( KnobTarget(..), targetRange, applyKnob, Active(..), ClickMode(..)
   , NoteRef(..), DragKind(..), State, Action(..), activePattern, selectedPattern, patternAt, rhythmEntries, rigUrl, gridCfg
@@ -117,6 +118,7 @@ handleQuery :: forall m a. MonadAff m => Query a -> H.HalogenM State Action () O
 handleQuery = case _ of
   SetRouting t k -> do
     H.modify_ _ { routing = t }
+    pushRouting
     pure (Just k)
   AskSource reply -> do
     s <- H.get
@@ -283,7 +285,7 @@ handleAction = case _ of
             -- pushed fixed rhythm plays in lockstep. The frontend projects its rich
             -- pattern onto the wire-flat reef pattern (fixedOf).
             for_ (RF.renderFixed (fixedOf pat) tick.index) \e ->
-              emitHit st.outs st.routing stepMs
+              emitHit st.outs (drumsOf st) stepMs
                 (max 0.0 (tick.delayMs + toNumber e.pushMs))
                 e.note e.durMs e.velocity e.ratchet
           H.modify_ _ { playStep = tick.index `mod` pat.steps }
@@ -309,7 +311,7 @@ handleAction = case _ of
           -- + per-voice Dilla push come back on each event. The runtime only
           -- schedules the result — front and rig can't diverge on the decision.
           for_ (Sim.renderStep bal0 playedStep r.fired) \e ->
-            emitHit st.outs st.routing stepMs
+            emitHit st.outs (drumsOf st) stepMs
               (max 0.0 (tick.delayMs + toNumber e.pushMs))
               e.note e.durMs e.velocity e.ratchet
         let
@@ -334,9 +336,9 @@ handleAction = case _ of
           fires = Trig.renderTrigStep (resolveTrigKit st.trig) tick.index cycleSteps
         when audible $ liftEffect $
           for_ fires \f ->
-            void $ RO.fanNote st.outs st.routing (laneSourceOf f.note)
+            void $ RO.sendAll st.outs (RR.drumSends (drumsOf st)
               { note: f.note, velocity: Trig.trigVelocity
-              , delayMs: tick.delayMs + f.frac * stepMs, durMs: Trig.trigGateMs }
+              , atMs: tick.delayMs + f.frac * stepMs, durMs: Trig.trigGateMs })
         H.modify_ _ { playStep = step }
 
   Frame -> do
@@ -363,7 +365,9 @@ handleAction = case _ of
       H.modify_ _ { lastChip = cv }
       H.raise (IdentityChanged cv)
 
-  MidiReady outs nm -> H.modify_ _ { outs = outs, midiName = nm }
+  MidiReady outs nm -> do
+    H.modify_ _ { outs = outs, midiName = nm }
+    pushRouting
 
   -- Reset shifts the model step (jump to 0), so it's DEFERRED-ON-BOTH: enqueued +
   -- broadcast tagged for a near-future step, applied by the drain here and by the
@@ -595,11 +599,14 @@ handleAction = case _ of
           Left _ -> "✗ publish failed (store offline?)" }
       Nothing -> pure unit
   PushBalistes -> do
+    -- The routing table first, so the handoff's first hit already goes where
+    -- the table says.
+    pushRouting
     -- Lockstep HANDOFF: project the frontend Balistes state to a BalSim (the shared
     -- serializable subset), encode with the reef codec, and push it phase-aligned to
     -- the rig. reef_balistes_voice decodes with the SAME codec (decodeBalSim) and runs
     -- the SAME stepBal + renderStep, holding the pushed state until absolute step
-    -- nextModelStep so the browser (ch 10) and the rig (ch 11) play it on the same
+    -- nextModelStep so the browser and the rig, through one routing table, play it on the same
     -- step — no handoff flam. The Balistes grid is fixed 1/16 → stepBeats 0.25.
     st <- H.get
     case st.active of
@@ -614,8 +621,8 @@ handleAction = case _ of
       -- both runtimes read the same Link step, the fixed-rhythm discipline).
       ASelene -> pushTrig
   -- POLYTRIG editor — state edits; re-push the resolved kit so live jack/route
-  -- edits reach the rig voice in place (a no-op in Local/Silent). Browser-only
-  -- persistence: the rack isn't saved to localStorage (unlike the fixed library).
+  -- edits reach the rig voice in place (a no-op in Local/Silent). The rack in hand
+  -- is not saved by itself; keeping it as a preset (a TSTrig snapshot) saves it.
   SetJackSource i src -> do
     H.modify_ \s -> s { trig = M.setJackSource i src s.trig }
     pushTrig
@@ -848,17 +855,6 @@ repushFixed = do
     AGrids -> pure unit
     ASelene -> pure unit
 
--- | Emit one already-resolved hit: schedule `note` at `delay0` for `durMs`, or —
--- | when the cell is ratcheted (n > 1) — explode it into n evenly-spaced
--- | retriggers at flat velocity. Push/ratchet/open are resolved by the caller.
--- | The routing source for a drum note. Lanes are `canonKit` positions, so the
--- | note IS the lane identity — which is why all three brains share one table.
--- |
--- | A note outside `canonKit` (the Tidal rack can name one) has no row of its
--- | own, so it borrows lane 0's. That is not arbitrary: gate legs select BY note,
--- | so an unknown note could never fire one anyway, while MIDI legs carry the
--- | note through unchanged — which reproduces exactly the old behaviour of
--- | "everything goes out the kit's MIDI destination".
 -- | What the nav shows instead of a channel number: how many drum lanes are
 -- | routed somewhere, and — loudly — how many have a leg whose port is missing.
 -- |
@@ -877,22 +873,40 @@ routingHealth s =
        then show routed <> " lanes · " <> show broken <> " UNREACHABLE"
        else show routed <> " lanes routed"
 
-laneSourceOf :: Int -> RM.Source
-laneSourceOf note = RM.SDrumLane (fromMaybe 0 (P.laneFromNote note))
+-- | The note that names each drum lane: `canonKit` in order. Lanes are kit
+-- | positions, so the note IS the lane, which is why all three brains share
+-- | one table.
+kitNotes :: Array Int
+kitNotes = map _.note P.canonKit
 
+-- | The routing table as this machine plays it, and as the rig is told to:
+-- | `Reef.Routing`'s form, resolved against the ports that exist.
+drumsOf :: State -> RR.DrumRouting
+drumsOf st = RO.drumRouting st.outs st.routing kitNotes
+
+-- | Tell the rig the routing table, when it is the rig that sounds. Not before
+-- | MIDI access arrives: with no ports known every leg resolves to nothing,
+-- | and pushing that would silence the rig.
+pushRouting :: forall o m. MonadAff m => H.HalogenM State Action () o m Unit
+pushRouting = do
+  st <- H.get
+  when (st.sounding == Rig && not (null st.outs)) $ for_ st.binnacle \bin ->
+    liftEffect $ Transport.send (Binnacle.socket bin) ("balistes-routing " <> RR.encodeDrumRouting (drumsOf st))
+
+-- | Emit one already-resolved hit down its lane's legs, `delay0` from now for
+-- | `durMs`, or, when the cell is ratcheted (n > 1), as n evenly-spaced
+-- | retriggers at flat velocity. Push/ratchet/open are resolved by the caller;
+-- | where it goes is `Reef.Routing.drumSends`, the function the rig voice calls.
 emitHit
-  :: RO.Outs -> RM.Table -> Number -> Number -> Int -> Number -> Int -> Int -> Effect Unit
-emitHit outs tbl stepMs delay0 note durMs velocity n =
+  :: RO.Outs -> RR.DrumRouting -> Number -> Number -> Int -> Number -> Int -> Int -> Effect Unit
+emitHit outs drums stepMs delay0 note durMs velocity n =
   if n <= 1 then
-    void $ RO.fanNote outs tbl src { note, velocity, delayMs: delay0, durMs }
+    void $ RO.sendAll outs (RR.drumSends drums { note, velocity, atMs: delay0, durMs })
   else
     let sub = stepMs / toNumber n
     in for_ (range 0 (n - 1)) \k ->
-         void $ RO.fanNote outs tbl src
-           { note, velocity
-           , delayMs: delay0 + toNumber k * sub, durMs: sub * 0.9 }
-  where
-  src = laneSourceOf note
+         void $ RO.sendAll outs (RR.drumSends drums
+           { note, velocity, atMs: delay0 + toNumber k * sub, durMs: sub * 0.9 })
 
 -- | Apply a function to library pattern `i` (no-op if out of range).
 -- | Apply `f` to the rhythm in bank entry `i` and write it back.

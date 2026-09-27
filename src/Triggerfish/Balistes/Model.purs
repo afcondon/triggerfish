@@ -291,7 +291,7 @@ applySnapshot s b =
     , randomness = s.randomness, open = s.open, push = s.push }
 
 -- ---------------------------------------------------------------------------
--- POLYTRIG — the third Balistes drum-brain (relocated from Selene, browser-only)
+-- POLYTRIG — the third Balistes drum-brain (relocated from Selene; the rig plays it via `balistes-trig`)
 -- ---------------------------------------------------------------------------
 
 -- | A POLYTRIG jack: one named output. `name` is the atom a route addresses
