@@ -1806,3 +1806,38 @@ are a table (which grains · what · by) instead of sentences.
   instead of position.
 - Waveforms in the strip (needs peaks in the corpora).
 - The parked animations.
+
+### Step 1 done (2026-09-27): the control layer, typed, in reef
+
+The module's API is PureScript now, and every name is a whole word. Each
+module is held node == erl by its own conformance run (cross-runtime 51 OK):
+
+- `Reef.Conspicillum.Parameter`: every playable number as a closed type
+  (`GrainLength`, `WalkJump`, `GrainEffect LowPassCutoff`,
+  `CloudEffect SharedResonatorSend`, `SendLevel SendA`, …). Each has a
+  description with label, section, range, step, taper, unit, neutral value,
+  what engages it, and a sentence about it.
+  - `read`, `write` and `set` are a total getter and setter on `Spec`.
+  - `normalise` and `denormalise` follow the taper, and `format` prints the
+    value.
+  - `engaged` asks "is it doing anything", with rules included.
+  - `opParameter` says which parameter a rule moves.
+  - `identifier` gives a stable name for files and MIDI maps.
+- `Reef.Conspicillum.Decimal`: numbers printed from integers, so they read the
+  same on both runtimes.
+- `Reef.Conspicillum.Preset` and `.Presets`: all 86 presets as data, and now
+  the source of truth. Each is its canonical line, plus the query, a typed
+  chord progression, and knobs as `Parameter`s. They were generated once from
+  the workshop by `audio/generate-presets.mjs`.
+- `Reef.Conspicillum.Display`: the material, segments, colour rule, wedges and
+  lanes, as pure data.
+- `Reef.Conspicillum.Sentence`: the scene as typed fragments with `Value
+  Parameter` holes, plus the rules as rows.
+
+Next:
+- **Step 2:** the chord progression moves into the engine as a scene field, so
+  no page keeps time.
+- **Step 3:** a parameter reference generated from `describe`.
+- **Step 4:** the Halogen and Hylograph app, on these types.
+- **Also:** the workshop and the JS module prototype should read presets from
+  reef instead of their own literals.
