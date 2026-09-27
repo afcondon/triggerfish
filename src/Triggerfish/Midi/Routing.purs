@@ -35,7 +35,7 @@ data Destination
   = ToMidi Int      -- canonical MIDI channel 1..16
   | ToEs9 Int       -- ES-9 CV/gate bus (1-indexed)
   | ToFh2 Int       -- FH-2 output (1-indexed)
-  | ToOsc String    -- named OSC target (Stellatus / Sufflamen)
+  | ToOsc String    -- named OSC target (Sufflamen)
 
 derive instance eqDestination :: Eq Destination
 

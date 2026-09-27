@@ -1,7 +1,7 @@
-// Stellatus SuperDirt daemon — headless boot for the Triggerfish rig.
+// The rig's SuperDirt daemon — headless boot.
 //
 // Boots scsynth + SuperDirt with no IDE, loads the Dirt-Samples quark, and
-// listens for /dirt/play OSC from the Stellatus bridge (audio/stellatus-bridge.mjs).
+// listens for /dirt/play OSC from purerl-tidal's voices (Conspicillum's grain cloud).
 //
 // Port comes from the environment (SUPERDIRT_PORT), defaulting to 57135 — NOT
 // 57120, which es9-daemon owns on the MBP (see docs/SUFFLAMEN-DESIGN.md
@@ -60,7 +60,7 @@ var orbitOuts = (0 ! 10) ++ [ if(outs >= 4) { 2 } { 0 }, if(outs >= 6) { 4 } { 0
 //                    and returns before the buffer is ready: you lose that one
 //                    note. Fine for browsing, NOT for a take.
 //
-// Stellatus' KIT field (`name = sample:index`) accepts any Dirt-Samples folder,
+// A scene's `s` can name any Dirt-Samples folder,
 // so under `core` a name outside this list resolves to nothing and stays silent.
 // Add it here — or boot `full`/`lazy` — if you go looking further afield.
 var sampleSet = ("SUPERDIRT_SAMPLES".getenv ? "core").toLower;

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Boot the headless SuperDirt daemon for Stellatus.
+# Boot the rig's headless SuperDirt daemon.
 #
 # Port-from-env (SUPERDIRT_PORT, default 57135 — NOT 57120, which es9-daemon
 # owns). Drain-on-signal: trap TERM/INT and tear the whole process group down,

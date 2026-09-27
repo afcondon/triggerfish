@@ -1,73 +1,36 @@
-# Stellatus audio path — SuperDirt via the OSC bridge
+# The rig's SuperDirt
 
-Stellatus is **rig-only** (no browser audio, by design).
-
-> **STATUS (2026-07-06): the shipping BEAM path has LANDED.** Stellatus now runs
-> BEAM-authoritative: the browser pushes a `stellatus-scene <json>` over the rig
-> WebSocket and `reef_stellatus_voice` (purerl-tidal) generates + emits
-> `/dirt/play` to SuperDirt, Link-locked and OSC-bundle-timetagged. The browser
-> is a pure visualizer. **`stellatus-bridge.mjs` below is now RETIRED** — it was
-> the dev-audition scaffold (browser → HTTP → bridge → UDP OSC → SuperDirt), kept
-> here only for reference. `superdirt-daemon.scd` / `boot-superdirt.sh` are still
-> live: SuperDirt itself is the sound engine either way.
-
-For the record, the retired dev-audition route was:
-**browser → HTTP → bridge → UDP OSC → SuperDirt**. Two small daemons, both
-Bosun-ready.
+SuperDirt is the rig's sample engine. It is played BEAM-authoritatively: a page
+pushes a whole scene over the rig WebSocket, and a purerl-tidal voice emits
+`/dirt/play` to SuperDirt, Link-locked and OSC-bundle-timetagged. The browser
+only draws.
 
 ```
-  Stellatus (browser)          stellatus-bridge.mjs         superdirt-daemon.scd
-  ┌──────────────────┐  POST   ┌───────────────────┐  OSC   ┌──────────────────┐
-  │ ◉ SEND  → fire() │ ──────► │ :57130 /play      │ ─────► │ SuperDirt :57135 │
-  │ per fired slice  │  JSON   │  → /dirt/play      │  UDP   │  scsynth + samples│
-  └──────────────────┘         └───────────────────┘        └──────────────────┘
+  Conspicillum (browser)    purerl-tidal :3012                 SuperDirt :57120
+  ┌────────────────────┐    ┌──────────────────────────┐  OSC  ┌──────────────────┐
+  │ conspicillum-scene │ ─► │ reef_conspicillum_voice  │ ────► │ scsynth + samples│
+  │ (one push a change)│ WS │ cycleOf, per cycle       │  UDP  │ BlackHole 16ch   │
+  └────────────────────┘    └──────────────────────────┘       └──────────────────┘
 ```
 
-## Boot (two terminals, or background them)
+Its outputs, with `SUPERDIRT_DEVICE=BlackHole` and `SUPERDIRT_OUTPUTS=6`, are
+1/2 dry, 3/4 send A (orbit 10), 5/6 send B (orbit 11); they are heard through
+Ableton.
 
-**1 — SuperDirt** (boots scsynth, loads Dirt-Samples; ~10-20s; grabs the default
-audio output). Wait for `STELLATUS-SUPERDIRT READY on port 57135`:
-
-```sh
-cd .../triggerfish
-./audio/boot-superdirt.sh
-# or:  SUPERDIRT_PORT=57135 /Applications/SuperCollider.app/Contents/MacOS/sclang audio/superdirt-daemon.scd
-```
-
-**2 — the bridge** (no audio, no deps — node built-ins only):
-
-```sh
-node audio/stellatus-bridge.mjs
-# GET http://127.0.0.1:57130/health  → { ok, sent, superdirt }
-```
-
-**3 — in the browser**: open STELLATUS, hit **▶ RUN** then **◉ SEND**. Each slice
-the walk lands on POSTs one `/dirt/play` (s, n, begin, end, speed, gain, orbit,
-cps). Edit the `place`/`slice` line and it re-places live; `⟳ SHAKE` re-rolls the
-warps + walk.
-
-Ports: SuperDirt on **57135** (NOT 57120 — es9-daemon owns that on the MBP),
-bridge intake on **57130**. Override via `SUPERDIRT_PORT` / `BRIDGE_PORT`.
-
-## Verify the pipe without the browser
-
-```sh
-node audio/stellatus-bridge.mjs --selftest          # dumps the OSC bytes for one hit
-curl -X POST 127.0.0.1:57130/play -H 'Content-Type: application/json' \
-  -d '{"s":"808bd","n":3,"speed":1,"begin":0,"end":1,"gain":1,"orbit":0,"cps":0.5}'
-# → you should hear an 808 kick if SuperDirt is up
-```
+`superdirt-daemon.scd` and `boot-superdirt.sh` boot it headless; Bosun
+supervises it in the Atlantis group (`superdirt`, stage 0). Stellatus, the ring
+re-sequencer that first played SuperDirt from here, and its HTTP-to-OSC dev
+bridge were retired on 2026-09-27; Conspicillum replaced them.
 
 ## Bosun / Quartermaster — what's ready and the gaps
 
-Both daemons already satisfy the `bosun-daemon` skill's contract:
+The SuperDirt daemon already satisfies the `bosun-daemon` skill's contract:
 
-- **port-from-env** — `SUPERDIRT_PORT`, `BRIDGE_PORT`.
-- **readiness** — SuperDirt prints READY + binds UDP (`lsof -nP -iUDP:57135`);
-  the bridge answers `GET /health`.
+- **port-from-env** — `SUPERDIRT_PORT`.
+- **readiness** — SuperDirt prints READY + binds UDP (`lsof -nP -iUDP:57120`).
 - **drain-on-signal** — `boot-superdirt.sh` traps TERM/INT and kills the process
-  group (so scsynth doesn't orphan); the bridge closes cleanly on SIGTERM.
-- **prebuilt artifact** — no build step; the bridge has no dependencies.
+  group (so scsynth doesn't orphan).
+- **prebuilt artifact** — no build step.
 
 **Documented gaps (for a future Bosun/Quartermaster levelling pass):**
 
@@ -77,7 +40,6 @@ Both daemons already satisfy the `bosun-daemon` skill's contract:
    `ShapedSteer/bosun/registry/fleet.json` (the single source of truth,
    denormalised from Marginalia by the chair-server; `resolvePort` / `writeFleet`
    already live in `chair-server/src/Bosun/ChairServer/IO.purs`). Every consumer
-   — the `.scd` (via env), the bridge (via env), the browser (its bridge URL) —
    then reads its port from that allocation instead of a literal. Current state
    is a **stopgap hardcode** (I picked 57135 after finding link-spike on 57122).
    **Two concrete gaps:** (a) no clean "request-a-port-and-record-it" call is
@@ -100,8 +62,7 @@ Both daemons already satisfy the `bosun-daemon` skill's contract:
    `/state`, NOT from fleet.json** — so no fleet.json row is needed to *see* it (the
    earlier assumption here was wrong; fleet.json is the `bosun serve` router's
    registry). A Marginalia/fleet row is still worth adding for documentation +
-   port-collision-avoidance, but it isn't what makes the node appear. The dev
-   `stellatus-bridge` is retired and needs no row.
+   port-collision-avoidance, but it isn't what makes the node appear.
 2. **Quartermaster host pre-flight** doesn't yet check for SuperCollider /
    Dirt-Samples / the SuperDirt+Vowel quarks. Add a `verify` check:
    `sclang` present, `~/Library/Application Support/SuperCollider/downloaded-quarks/{SuperDirt,Dirt-Samples}`

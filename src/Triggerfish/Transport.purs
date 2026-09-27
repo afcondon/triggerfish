@@ -35,7 +35,7 @@ import Data.Set as Set
 -- rig-only SuperDirt instrument — present as a tab but not yet transport-wired
 -- (the D1 visualizer prototype; arm/emit arrive with routing gates C & B), so it
 -- behaves like Tid here: never armed, no local rig voice.
-data Which = Odo | Bal | Sel | Vet | Tid | Suf | Ste
+data Which = Odo | Bal | Sel | Vet | Tid | Suf
 
 derive instance Eq Which
 derive instance Ord Which
@@ -69,7 +69,6 @@ hasRigVoice = case _ of
   Sel -> false
   Tid -> false
   Suf -> false   -- rig-only at heart, but not transport-wired in the D1 prototype
-  Ste -> false   -- likewise: the Stellatus ring is a pure visualizer for now
 
 -- The whole authority model in one function. `previewing` is the set of machines
 -- being auditioned from the workbench: a preview forces Local (audition in place,

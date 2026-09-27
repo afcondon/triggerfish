@@ -74,7 +74,6 @@ import Triggerfish.Selene.Layout as Layout
 import Triggerfish.Selene.Manifest as Man
 import Halogen.Widgets.Select as Select
 import Triggerfish.Sufflamen.Component as Sufflamen
-import Triggerfish.Stellatus.Component as Stellatus
 import Triggerfish.Balistes.Pattern as P
 import Triggerfish.Routing.Model as RM
 import Triggerfish.Routing.Monitor as Mon
@@ -227,7 +226,7 @@ derive instance eqAuditionDest :: Eq AuditionDest
 auditionMachines :: Array { w :: Which, label :: String }
 auditionMachines =
   [ { w: Odo, label: "Odonus" }, { w: Bal, label: "Balistes" }, { w: Sel, label: "Selene" }
-  , { w: Vet, label: "Vetula" }, { w: Suf, label: "Sufflamen" }, { w: Ste, label: "Stellatus" } ]
+  , { w: Vet, label: "Vetula" }, { w: Suf, label: "Sufflamen" } ]
 
 auditionLabel :: AuditionDest -> String
 auditionLabel = case _ of
@@ -363,7 +362,7 @@ type RState =
   -- the six-machine status board: each machine's identity-chip view. Odonus /
   -- Balistes / Selene PUSH theirs via Output (change-gated from their Frame loop);
   -- Vetula has no continuous frame loop, so the shell PULLS its chip in PollVetula
-  -- (AskChip) and parks it in `vetChip`. Suf/Ste report Nothing (prototypes).
+  -- (AskChip) and parks it in `vetChip`. Suf reports Nothing (prototypes).
   , balChip :: Maybe G.ChipView
   , selChip :: Maybe G.ChipView
   , odoChip :: Maybe G.ChipView
@@ -429,8 +428,6 @@ _vet = Proxy
 _suf :: Proxy "suf"
 _suf = Proxy
 
-_ste :: Proxy "ste"
-_ste = Proxy
 
 _selTarget :: Proxy "selTarget"
 _selTarget = Proxy
@@ -1249,7 +1246,6 @@ querySounding w s = case w of
   Vet -> H.query _vet unit (Vetula.SetSounding s unit)
   Tid -> pure Nothing
   Suf -> pure Nothing
-  Ste -> pure Nothing
 
 -- Re-derive and push every machine's Sounding (on arm-all / mode flip / init).
 pushAll :: forall o m. MonadAff m => H.HalogenM RState RAction Slots o m Unit
@@ -1455,7 +1451,7 @@ isStarred :: RState -> LibRow -> Boolean
 isStarred st r = any (\g -> g.payload == r.text) st.goTo
 
 -- Push a stage path into a machine (URL → machine). Machines with no stage axis
--- answer the query and no-op; Suf/Ste/Tid aren't queryable at all.
+-- answer the query and no-op; Suf/Tid aren't queryable at all.
 queryStagePath :: forall o m. Which -> Array String -> H.HalogenM RState RAction Slots o m (Maybe Unit)
 queryStagePath w segs = case w of
   Odo -> H.query _odo unit (SQ.SetStagePath segs unit)
@@ -1464,7 +1460,6 @@ queryStagePath w segs = case w of
   Vet -> H.query _vet unit (Vetula.SetStagePath segs unit)
   Tid -> pure Nothing
   Suf -> pure Nothing
-  Ste -> pure Nothing
 
 -- Write the address bar to match `w` and its remembered stage path. The ONE place
 -- the hash is written, so there is exactly one direction of flow: state → URL.
@@ -1484,7 +1479,6 @@ queryLoad w i = case w of
   Vet -> H.query _vet unit (Vetula.LoadEntry i unit)
   Tid -> pure Nothing
   Suf -> pure Nothing
-  Ste -> pure Nothing
 
 queryImport :: forall o m. Which -> String -> H.HalogenM RState RAction Slots o m (Maybe Boolean)
 queryImport w txt = case w of
@@ -1494,7 +1488,6 @@ queryImport w txt = case w of
   Vet -> H.query _vet unit (Vetula.ImportText txt identity)
   Tid -> pure Nothing
   Suf -> pure Nothing
-  Ste -> pure Nothing
 
 render :: forall m. MonadAff m => RState -> H.ComponentHTML RAction Slots m
 render st =
@@ -1522,7 +1515,6 @@ render st =
             Vetula.ArmChanged on -> VetulaArmed on
             Vetula.StageChanged segs -> StageChanged Vet segs)
     , pane (st.which == Suf) "" (HH.slot_ _suf unit Sufflamen.component unit)
-    , pane (st.which == Ste) "" (HH.slot_ _ste unit Stellatus.component unit)
     , modalOverlay st
     ]
 
@@ -1649,7 +1641,7 @@ workbenchHeader st =
 -- machine name over its own little stack of destination rows. Odonus/Balistes/
 -- Vetula carry real routing (Vetula's named voices are editable); Selene needs a
 -- multi-type control (ES-9 / FH-2 / MIDI) that two-way-syncs with its Tidal
--- source — a placeholder for now; Sufflamen/Stellatus are placeholders too.
+-- source — a placeholder for now; Sufflamen is a placeholder too.
 -- | Repoint a MIDI destination at another port. Only `DMidi` has a choosable
 -- | port: the FH-2 and ES-9 kinds name their device by construction, which is
 -- | the whole reason they are separate constructors.
@@ -2672,7 +2664,7 @@ amphoraOfflinePill =
     [ HH.text "⚠ No favorites — Amphora backend not running" ]
 
 -- The instrument switcher: one segmented control. Odo/Bal/Sel/Vet are armable
--- (dot + name); Suf/Ste/Tid are plain (no arm dot — rig-only prototypes / the
+-- (dot + name); Suf/Tid are plain (no arm dot — rig-only prototypes / the
 -- read-only aggregate).
 switcher :: forall m. RState -> H.ComponentHTML RAction Slots m
 switcher st =
@@ -2684,7 +2676,6 @@ switcher st =
     , armSeg st Sel "SELENE"
     , armSeg st Vet "VETULA"
     , seg "SUFFLAMEN" (st.which == Suf) (Pick Suf)
-    , seg "STELLATUS" (st.which == Ste) (Pick Ste)
     -- TIDAL is no longer a tab — its five surfaces are the ⌘1..⌘5 overlays now
     -- (see `modalOverlay`). The nav is just the machines.
     ]
@@ -2697,7 +2688,6 @@ whichName = case _ of
   Vet -> "Vetula"
   Tid -> "Tidal"
   Suf -> "Sufflamen"
-  Ste -> "Stellatus"
 
 seg :: forall m. String -> Boolean -> RAction -> H.ComponentHTML RAction Slots m
 seg label active act =
@@ -2734,7 +2724,7 @@ armSeg st w label =
           [ HH.text label ]
       -- the machine's identity glyph (icons coloured by content) — the six-machine
       -- status board. Clicking it opens the recall menu. Odonus + Balistes + Selene +
-      -- Vetula report one; Suf/Ste are Nothing (blank, not clickable) — prototypes.
+      -- Vetula report one; Suf is Nothing (blank, not clickable) — prototypes.
       , case chipOf st w of
           Nothing -> HH.text ""
           Just _ -> HH.span

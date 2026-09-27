@@ -27,7 +27,7 @@
 // for — which is the same silent-failure shape as everything else in C0.
 //
 // IT SENDS TIMETAGGED BUNDLES ON ONE SOCKET, deliberately: that is the
-// `reef_stellatus_voice.erl` technique, and it is the path a real cloud would
+// `reef_stellatus_voice.erl` technique (Stellatus, since retired; reef_conspicillum_voice.erl keeps it), and it is the path a real cloud would
 // take. The generic `Tidal/OSC.erl sendDirtAfter` path — plain message, one
 // spawned process and one fresh UDP socket PER EVENT — is not measured here
 // because no cloud should ever use it. See the design doc, finding 3.
@@ -92,7 +92,7 @@ function encodeMsg(addr, params) {
 
 // Bundle one message at an absolute wall time. SuperDirt's sclang side honours
 // the timetag and schedules the sound there, so sending ahead lands it on time
-// instead of late-on-receipt. Same NTP arithmetic as reef_stellatus_voice.erl.
+// instead of late-on-receipt. Same NTP arithmetic as reef_conspicillum_voice.erl.
 function bundle(whenUnixMs, msg) {
   const secs = Math.floor(whenUnixMs / 1000) + NTP_EPOCH_OFFSET;
   const frac = Math.floor(((whenUnixMs % 1000) / 1000) * 4294967296);

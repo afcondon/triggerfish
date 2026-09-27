@@ -43,7 +43,7 @@ type Scene =
   }
 
 -- | The machines a scene spans, in column order. The four live (banked) machines;
--- | Sufflamen/Stellatus join when they gain preset banks.
+-- | Sufflamen joins when it gains preset banks.
 sceneMachines :: Array Which
 sceneMachines = [ Odo, Bal, Sel, Vet ]
 

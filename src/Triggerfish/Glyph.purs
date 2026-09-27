@@ -52,12 +52,11 @@ data Machine
   | Selene
   | Vetula
   | Sufflamen
-  | Stellatus
 
 derive instance eqMachine :: Eq Machine
 
 allMachines :: Array Machine
-allMachines = [ Odonus, Balistes, Selene, Vetula, Sufflamen, Stellatus ]
+allMachines = [ Odonus, Balistes, Selene, Vetula, Sufflamen ]
 
 machineLabel :: Machine -> String
 machineLabel = case _ of
@@ -66,11 +65,10 @@ machineLabel = case _ of
   Selene -> "SELENE"
   Vetula -> "VETULA"
   Sufflamen -> "SUFFLAMEN"
-  Stellatus -> "STELLATUS"
 
 -- | The two-letter machine tag for a mixed sequencer lane, where colour now
--- | encodes content rather than machine. Selene / Sufflamen / Stellatus stay
--- | distinct as Se / Su / St.
+-- | encodes content rather than machine. Selene and Sufflamen stay
+-- | distinct as Se and Su.
 machineTag :: Machine -> String
 machineTag = case _ of
   Odonus -> "Od"
@@ -78,7 +76,6 @@ machineTag = case _ of
   Selene -> "Se"
   Vetula -> "Ve"
   Sufflamen -> "Su"
-  Stellatus -> "St"
 
 -- | A per-machine accent hue, kept for chrome that still wants to colour BY
 -- | machine (e.g. a tag badge). No longer used to tint glyph icons — those are
@@ -90,7 +87,6 @@ hueOf = case _ of
   Selene -> "hsl(270, 42%, 40%)" -- violet
   Vetula -> "hsl(32, 75%, 34%)" -- amber
   Sufflamen -> "hsl(0, 58%, 40%)" -- red
-  Stellatus -> "hsl(188, 60%, 26%)" -- teal
 
 -- ---------------------------------------------------------------------------
 -- Rebus, under Triggerfish's names.

@@ -1946,5 +1946,9 @@ query, knobs), and every view is a function of it. It keeps time by Binnacle's
 clock and pushes `conspicillum-scene` to purerl-tidal. The ring's wedges and the
 knobs' arcs are `Hylograph.Shape.Arc`. A preset is linked as `#n`.
 
+**Stellatus retired** (2026-09-27): the tab, `Reef.Stellatus`, its conformance
+run, `reef_stellatus_voice` and its verbs, and the dev bridge. Conspicillum does
+everything it did. The mentions of it above are the record of how we got here.
+
 This page, `module.html`, stays as the prototype. Its `?model=reef` A/B is
 what licensed the port.

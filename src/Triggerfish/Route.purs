@@ -67,7 +67,6 @@ machineSlug = case _ of
   Vet -> "vetula"
   Tid -> "tidal"
   Suf -> "sufflamen"
-  Ste -> "stellatus"
 
 machineFromSlug :: String -> Maybe Which
 machineFromSlug s = case toLower (trim s) of
@@ -77,7 +76,6 @@ machineFromSlug s = case toLower (trim s) of
   "vetula" -> Just Vet
   "tidal" -> Just Tid
   "sufflamen" -> Just Suf
-  "stellatus" -> Just Ste
   _ -> Nothing
 
 -- | `Route → "vetula/hunt/tonnetz"` (no leading `#` — `writeHash` adds it).
