@@ -1709,3 +1709,21 @@ which is the rig's tempo at the moment of playing.
 
 `audio/scenes.mjs` now holds the preset → scene code the CLI used to keep to
 itself, so the CLI, the round-trip and whatever comes next share it.
+
+## Next: the module UI (brief, 2026-09-27)
+
+Andrew's direction for the prototype, to run with and then iterate on:
+
+- **Two ideas together: the circle and the sentence.** Sector's *circle* is
+  the bar as a ring of steps, with the read head going round it: where a grain
+  plays against where it reads. Quadrat's *sentence* (Bret Victor-ish) says,
+  in words, what the thing is doing, and its words are controls. The line
+  (Notation) is the machine form of the sentence; the UI's sentence should be
+  the human form, with its numbers draggable.
+- **Presets plus a few knobs per preset**, not the whole control surface. The
+  full page stays as the workshop; this is the instrument.
+- Module-sized: something that could be a eurorack panel.
+- Later, not in the first prototype: data-vis animations of a waveform
+  splitting into blocks of layers or slices, or wrapping around the circle.
+  (They fit Quadrat's projections too: a take becoming a Rample card, a reel,
+  a QuadDrum folder.)
