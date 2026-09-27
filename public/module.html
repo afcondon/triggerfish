@@ -36,6 +36,9 @@ header.top h1 { font-size:15px; font-weight:700; margin:0; }
 header.top .sub { color:var(--mid); }
 header.top .sp { flex:1; }
 header.top a { color:var(--ink); text-decoration:none; border-bottom:1px solid var(--faint); }
+.modelswitch { font-size:12px; color:var(--mid); }
+.modelswitch a { margin-left:6px; }
+.modelswitch b { color:var(--ink); background:var(--accent-soft); padding:1px 6px; border-radius:2px; margin-left:6px; }
 .conn { color:var(--mid); font-variant-numeric:tabular-nums; }
 .conn .dot { display:inline-block; width:7px; height:7px; border-radius:50%; background:var(--faint); margin-right:6px; vertical-align:1px; }
 .conn .dot.on { background:#2e8a4f; } .conn .dot.err { background:var(--accent); }
@@ -171,6 +174,7 @@ table.rules td.amt { font-family:var(--mono); font-size:12px; font-variant-numer
 <header class="top">
   <h1>Conspicillum</h1><span class="sub">module prototype</span>
   <span class="sp"></span>
+  <span class="modelswitch" id="modelswitch"></span>
   <a href="conspicillum.html">the workshop</a>
   <span class="conn"><span class="dot" id="wsdot"></span><span id="wstext">connecting…</span></span>
 </header>
@@ -237,6 +241,14 @@ table.rules td.amt { font-family:var(--mono); font-size:12px; font-variant-numer
 import * as N from "./notation.js";
 
 // ── the wire and the clock (as the workshop) ──────────────────────────────
+// **Which model.** `?model=reef` swaps the prototype's JS model for reef's
+// typed one: the presets, the material and colours, the wedges and lanes, the
+// sentence, and the parameters' ranges and readouts. The drawing, the knobs,
+// the clock and the wire are the same code either way, so what differs on
+// screen is the model and nothing else. See audio/model-ab.mjs for the same
+// comparison made headless.
+const REEF = new URLSearchParams(location.search || "").get("model") === "reef";
+
 const WS_URL = "ws://" + (location.hostname || "localhost") + ":3012/ws";
 let ws = null, wsReady = false, anchor = null;
 const t0 = Date.now();
@@ -281,6 +293,7 @@ async function loadWorkshop() {
     'const PCN = ["C","C#","D","D#","E","F","F#","G","G#","A","A#","B"];\n', 3);
   FX_CTRL = ctl.FX_CTRL; CH_CTRL = ctl.CH_CTRL;
   SETS = (await (await fetch("conspicillum-corpora.json")).json()).sets;
+  if (REEF) PRESETS = (await import("./reef-presets.js")).presetsFromReef(N, CHORDS);
 }
 
 // EXACTLY Reef.Conspicillum.Protocol.opToWire's order (see the workshop).
@@ -391,7 +404,29 @@ const PSPEC = {
   "on.n":           { min: 2, max: 32, step: 1, fmt: int, def: 16 },
   "seed":           { min: 1, max: 99999, step: 1, fmt: int, def: 12345 },
 };
+// reef's catalogue, addressed by this page's paths.
+const PARAMETER_PATH = { grainLength: "cloud.sustain", readPosition: "cloud.position", spray: "cloud.spray",
+  tapeFollow: "cloud.follow", walkJump: "walk.jump", walkHold: "walk.hold", walkHome: "walk.home",
+  walkReach: "walk.reach", playSwing: "swing.play", tapeSwing: "swing.tape", speed: "v.speed", gain: "v.gain",
+  pan: "v.pan", accelerate: "v.accel", sendLevelA: "sends.a", sendLevelB: "sends.b" };
+const pathOfParameter = (p) => {
+  const id = N.identifier(p);
+  return PARAMETER_PATH[id] || (id.startsWith("grain.") ? "fx." + N.notationTerm(p) : "chain." + N.notationTerm(p));
+};
+let parameterAt = null;
+const parameterOfPath = (path) => {
+  if (!parameterAt) parameterAt = new Map(N.allParameters.map(p => [pathOfParameter(p), p]));
+  return parameterAt.get(path);
+};
+function reefSpec(path) {
+  const p = parameterOfPath(path);
+  if (!p) return null;
+  const d = N.describe(p);
+  return { min: d.low, max: d.high, step: d.step, curve: d.taper instanceof N.Exponential ? "exp" : "lin",
+           def: d.neutral, fmt: (v) => N.format(p)(v), lab: d.label };
+}
 function pspec(path) {
+  if (REEF) { const r = reefSpec(path); if (r) return r; }
   if (PSPEC[path]) return PSPEC[path];
   const [g, id] = path.split(".");
   const c = (g === "fx" ? FX_CTRL : g === "chain" ? CH_CTRL : []).find(c => c.id === id);
@@ -564,9 +599,28 @@ function sentenceHTML(p) {
 }
 
 // ── drawing the panel ─────────────────────────────────────────────────────
+// reef's sentence: typed fragments, rendered here. A `Value` is the same
+// draggable number the prototype draws, addressed by the same path.
+function reefSentenceHTML(p) {
+  if (!MAT || !MAT.reef) return sentenceHTML(p);
+  const knobs = KNOBS.map(k => parameterOfPath(k.path)).filter(Boolean);
+  const said = N.sentences({ line: MAT.line, material: MAT.reef, knobs });
+  const fragment = (f) =>
+    f instanceof N.Words ? esc(f.value0)
+    : f instanceof N.Value ? num(pathOfParameter(f.value0))
+    : f instanceof N.SetName ? `<span class="set">${esc(f.value0)}</span>`
+    : f instanceof N.Code ? `<code>${esc(f.value0)}</code>`
+    : `<span class="note">${esc(f.value0)}</span>`;
+  const rows = N.ruleRows(MAT.line.spec.rules);
+  return said.map(sentence => `<p>${sentence.map(fragment).join("")}</p>`).join("")
+    + (rows.length ? `<table class="rules"><tr><th>which grains</th><th>what</th><th>by</th></tr>`
+        + rows.map(r => `<tr><td>${esc(r.which)}</td><td class="op">${esc(r.what)}</td><td class="amt">${esc(r.amount)}</td></tr>`).join("")
+        + `</table>` : "")
+    + (sceneErr ? `<p class="note">The engine refused this scene: ${esc(sceneErr)}</p>` : "");
+}
 function drawSentence() {
   const box = document.getElementById("sentence");
-  box.innerHTML = sentenceHTML(P);
+  box.innerHTML = REEF ? reefSentenceHTML(P) : sentenceHTML(P);
   box.querySelectorAll(".num").forEach(el => scrubbable(el, el.dataset.path, "x"));
 }
 function knobSVG(u) {
@@ -674,7 +728,20 @@ function setParam(path, v, redraw = false) {
 // Several (bars, a corpus): a hue per segment, lightness for where in it —
 // Quadrat's rainbow row of samples.
 let MAT = null;
-function materialOf(p) {
+function materialOf(p) { return REEF && scene ? reefMaterialOf(p) : prototypeMaterialOf(p); }
+function reefMaterialOf(p) {
+  const set = setOf(p);
+  const line = { set: p.set, n: p.whole ? N.Nothing.value : N.Just.create(p.n), seed: scene.seed, spec: scene.spec };
+  const m = N.materialOf({ line, samples: set.samples.map(s => ({ index: s.index, seconds: s.secs })),
+    tape: set.tape ? N.Just.create({ bars: set.tape.bars, bpm: set.tape.bpm }) : N.Nothing.value });
+  const segs = N.segments(m).map(g => ({ label: g.label, x0: g.from, x1: g.to }));
+  const name = N.materialName(m);
+  return { reef: m, line, segs, S: segs.length, name, note: prototypeMaterialOf(p).note, many: name.endsWith(" samples"),
+    locate: (n, x) => { const l = N.locate(m)(n)(x); return { k: l.segment, f: l.within }; },
+    colour: (k, f) => N.colourCss(N.colourAt(m)({ segment: k, within: f, along: 0 })),
+    x: (k, f) => segs[k].x0 + f * (segs[k].x1 - segs[k].x0) };
+}
+function prototypeMaterialOf(p) {
   const set = setOf(p), T = p.tape || {};
   let segs, locate, name, note = "";
   if (T.samples && T.samples.length && p.whole) {
@@ -706,7 +773,7 @@ function materialOf(p) {
   const S = segs.length;
   const colour = (k, f) => S === 1 ? `hsl(${Math.round(f * 300)} 62% 52%)`
     : `hsl(${Math.round(k * 360 / S)} 55% ${Math.round(70 - f * 28)}%)`;
-  return { segs, S, locate, colour, name, note, x: (k, f) => segs[k].x0 + f * (segs[k].x1 - segs[k].x0) };
+  return { segs, S, locate, colour, name, note, many: name === "the corpus", x: (k, f) => segs[k].x0 + f * (segs[k].x1 - segs[k].x0) };
 }
 
 // ── the strip ─────────────────────────────────────────────────────────────
@@ -770,10 +837,11 @@ function drawCircle(cyc) {
     + `<line class="cloudaxis" x1="${C}" y1="${C - RC + 16}" x2="${C}" y2="${C + RC - 16}"/>`
     + `<text class="cloudlab" x="${C - RC + 18}" y="${C - 4}">L</text><text class="cloudlab" x="${C + RC - 24}" y="${C - 4}">R</text>`
     + `<text class="cloudlab" x="${C + 4}" y="${C - RC + 26}">faster</text><text class="cloudlab" x="${C + 4}" y="${C + RC - 20}">slower</text>`;
+  const reefWedges = REEF ? N.wedges({ cycleSeconds: cycSecs, orbit })(emits) : null;
   GR = emits.map((e, i) => {
     const len = Math.max(0.004, e.sustain / cycSecs);
     const nxt = emits.find(o => o.at > e.at + 1e-9);
-    const u1 = Math.min(e.at + len, nxt ? nxt.at : 1);
+    const u1 = reefWedges ? reefWedges[i].to : Math.min(e.at + len, nxt ? nxt.at : 1);
     const a = MAT.locate(e.n, e.begin), z = MAT.locate(e.n, e.end);
     const col = MAT.colour(a.k, a.f);
     h += `<g class="gr" id="g${i}"><path class="wd" d="${wedge(RW0, RW1, e.at, u1)}" fill="${col}"/>`
@@ -786,7 +854,10 @@ function drawCircle(cyc) {
   // Where this cycle reads: one bar per grain, in lanes. The height only
   // grows within a preset, so the panel does not twitch cycle to cycle.
   const ends = [], MINW = 2 / 784;
-  GR.slice().sort((a, b) => a.x0 - b.x0 || a.at - b.at).forEach(g => {
+  if (REEF) {
+    const ls = N.lanes(MINW)(GR.map(g => ({ from: g.x0, to: g.x1 })));
+    GR.forEach((g, i) => { g.lane = ls[i]; ends[ls[i]] = 1; });
+  } else GR.slice().sort((a, b) => a.x0 - b.x0 || a.at - b.at).forEach(g => {
     let l = ends.findIndex(x => x <= g.x0 + 1e-9);
     if (l < 0) { l = ends.length; ends.push(0); }
     ends[l] = Math.max(g.x1, g.x0 + MINW);      // touching spans share a lane
@@ -803,7 +874,7 @@ function drawCircle(cyc) {
     strip.style.height = H + "px";
     document.getElementById("rhead").setAttribute("y2", String(H - 2));
   }
-  const bars = MAT.S > 1 && MAT.name !== "the corpus" ? MAT.S : 0;
+  const bars = MAT.S > 1 && !MAT.many ? MAT.S : 0;
   cycleNote = `cycle ${cyc}` + (bars ? ` · bar ${((cyc % bars) + bars) % bars + 1}/${bars}` : "");
 }
 
@@ -963,6 +1034,9 @@ document.addEventListener("keydown", (e) => {
   if (e.key === " ") { e.preventDefault(); toggle(); }
 });
 
+document.getElementById("modelswitch").innerHTML = REEF
+  ? `model <a href="?">prototype</a><b>reef</b>`
+  : `model <b>prototype</b><a href="?model=reef">reef</a>`;
 connect();
 loadWorkshop().then(() => {
   drawBanks();

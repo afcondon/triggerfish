@@ -25,10 +25,11 @@ const N = await import(here("../public/notation.js").href);
 const SETS = JSON.parse(readFileSync(PUBLIC + "conspicillum-corpora.json", "utf8")).sets;
 
 // ── A: the prototype, out of its page ──────────────────────────────────────
-function loadPrototype() {
+function loadPrototype(search = "") {
   const html = readFileSync(PUBLIC + "module.html", "utf8");
   let js = html.split('<script type="module">')[1].split("</script>")[0];
-  js = js.replace('import * as N from "./notation.js";', `import * as N from ${JSON.stringify(PUBLIC + "notation.js")};`);
+  js = js.replace('import * as N from "./notation.js";', `import * as N from ${JSON.stringify(PUBLIC + "notation.js")};`)
+    .replace('import("./reef-presets.js")', `import(${JSON.stringify(PUBLIC + "reef-presets.js")})`);
   const stub = `
 import { readFileSync } from "node:fs";
 const mk = () => ({ innerHTML: "", textContent: "", value: "", style: {}, dataset: {},
@@ -37,7 +38,7 @@ const mk = () => ({ innerHTML: "", textContent: "", value: "", style: {}, datase
 const els = {};
 globalThis.document = { getElementById: (id) => els[id] || (els[id] = mk()), createElementNS: () => mk(),
   querySelectorAll: () => [], addEventListener() {}, activeElement: null };
-globalThis.location = { hostname: "localhost" };
+globalThis.location = { hostname: "localhost", search: ${JSON.stringify(search)} };
 globalThis.WebSocket = class { send() {} };
 globalThis.localStorage = { getItem() { return null; }, setItem() {} };
 globalThis.requestAnimationFrame = () => {};
@@ -46,8 +47,8 @@ globalThis.fetch = async (f) => ({ text: async () => readFileSync(${JSON.stringi
 `;
   const tail = `
 export const ready = new Promise(r => { const t = setInterval(() => { if (PRESETS.length && SETS.length && P) { clearInterval(t); r(); } }, 10); });
-export const prototype = { recall, drawCircle, sentenceHTML, ruleRow,
-  state: () => ({ P, PRESETS, MAT, GR, KNOBS, wire, sceneErr }) };
+export const prototype = { recall, drawCircle, sentenceHTML, reefSentenceHTML, ruleRow,
+  state: () => ({ P, PRESETS, MAT, GR, KNOBS, wire, sceneErr, REEF }) };
 `;
   const dir = mkdtempSync(join(tmpdir(), "model-ab-"));
   const file = join(dir, "prototype.mjs");
@@ -180,6 +181,44 @@ B.forEach((o, i) => {
       tally("colour", a.col === N.colourCss(N.colourAt(material)(at)), `${name} c${c} g${k}: A ${a.col} B ${N.colourCss(N.colourAt(material)(at))}`);
       tally("lane", a.lane === ls[k], `${name} c${c} g${k}: A ${a.lane} B ${ls[k]}`);
     }
+  }
+});
+
+// ── the page with ?model=reef ──────────────────────────────────────────────
+// The same page, switched to reef's model, must show exactly what reef says:
+// its presets, its sentences and rule rows, its wedges, colours and lanes.
+const R = await loadPrototype("?model=reef");
+await R.ready;
+const page = R.prototype;
+tally("page(reef) switched", page.state().REEF === true, "the switch did not take");
+B.forEach((o, i) => {
+  const name = o.name;
+  page.recall(i);
+  const s = page.state();
+  tally("page(reef) preset", s.P.name === name && s.P.line === o.line, `${i}: ${s.P.name} vs ${name}`);
+  tally("page(reef) scene", lineOfWire(s.wire, s.P.set, s.P.whole, s.P.n) === o.line,
+    `${name}\n      page ${lineOfWire(s.wire, s.P.set, s.P.whole, s.P.n)}\n      reef ${o.line}`);
+  const set = SETS.find(x => x.name === o.set);
+  const line = N.parse(o.line).value0;
+  const material = N.materialOf({ line, samples: set.samples.map(x => ({ index: x.index, seconds: x.secs })),
+    tape: set.tape ? N.Just.create({ bars: set.tape.bars, bpm: set.tape.bpm }) : N.Nothing.value });
+  const knobs = o.knobs.map(k => N.fromIdentifier(k.parameter).value0);
+  const shown = text(page.reefSentenceHTML(s.P));
+  const said = N.plainText(line.spec)(N.sentences({ line, material, knobs }));
+  tally("page(reef) sentence", shown === said, `${name}\n      page ${shown}\n      reef ${said}`);
+  const d = N.decodeScene(JSON.stringify({
+    corpus: { name: o.set, samples: o.whole ? set.samples : set.samples.filter(x => x.index === o.sample) },
+    query: o.query, spec: o.spec, seed: o.seed })).value0;
+  for (const c of CYCLES) {
+    page.drawCircle(c);
+    const GR = page.state().GR;
+    const ws = N.wedges({ cycleSeconds: 2, orbit: (o.spec.chain && o.spec.chain.orbit) || 0 })(N.cycleOf(d.corpus)(d.query)(d.spec)(d.seed)(c));
+    const spans = ws.map(w => ({ from: N.locate(material)(w.emit.n)(w.emit.begin).along, to: N.locate(material)(w.emit.n)(w.emit.end).along }));
+    const ls = N.lanes(2 / 784)(spans);
+    const same = GR.length === ws.length && GR.every((g, k) => close(g.u1, ws[k].to) && g.lane === ls[k]
+      && close(g.x0, spans[k].from) && close(g.x1, spans[k].to)
+      && g.col === N.colourCss(N.colourAt(material)(N.locate(material)(ws[k].emit.n)(ws[k].emit.begin))));
+    tally("page(reef) drawing", same, `${name} c${c}`);
   }
 });
 

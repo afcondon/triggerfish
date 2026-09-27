@@ -19,8 +19,8 @@ export { cycleOf, noFx, noChain } from "$reef/output/Reef.Conspicillum.Cloud/ind
 // reef's model of the module, for the A/B against the JS prototype
 // (audio/model-ab.mjs, and module.html?model=reef): what it draws and says.
 export { materialOf, materialName, segments, locate, colourAt, colourCss, wedges, lanes } from "$reef/output/Reef.Conspicillum.Display/index.js";
-export { sentences, plainText, ruleRows } from "$reef/output/Reef.Conspicillum.Sentence/index.js";
-export { describe, format, read, set, normalise, denormalise, identifier, fromIdentifier, allParameters, engaged } from "$reef/output/Reef.Conspicillum.Parameter/index.js";
+export { sentences, plainText, ruleRows, Words, Value, SetName, Code, Aside } from "$reef/output/Reef.Conspicillum.Sentence/index.js";
+export { describe, format, read, set, normalise, denormalise, identifier, fromIdentifier, notationTerm, allParameters, engaged, Exponential } from "$reef/output/Reef.Conspicillum.Parameter/index.js";
 // The presets, from reef (the only copy): as plain wire data, for reef-presets.js.
 import { presets as resolvedPresets } from "$reef/output/Reef.Conspicillum.Presets/index.js";
 import { presetOnWire } from "$reef/output/Reef.Conspicillum.Preset/index.js";

@@ -1880,3 +1880,30 @@ a parameter, a chord or a preset, regenerate it with
 `node tools/conspicillum-reference.mjs`.
 
 Next is step 4: the module as a Halogen and Hylograph app, in its own repo.
+
+### A/B: the prototype's model against reef's (2026-09-27)
+
+This checks that the typed layer matches the prototype before any Halogen is
+built. It holds the rendering still and swaps only the model:
+
+- **Headless:** `node audio/model-ab.mjs` (`--all` for every difference).
+  - It lifts the prototype's own functions out of `module.html` and runs them
+    beside reef's (through the bundle), over 86 presets × 4 cycles.
+  - It compares the scene, every grain, material, segments, wedges, read
+    spans, colours, lanes, sentences and rule rows.
+  - Wording differences are tallied as word-level substitutions, so renames
+    collapse to one list and anything structural stands out.
+  - It then loads the page again with `?model=reef` and checks that it shows
+    exactly reef's model.
+- **By eye and ear:** `module.html` is the prototype, and
+  `module.html?model=reef` is reef's model with the same drawing code. The
+  header switches between them.
+
+Results so far:
+- **Identical in both:** the scenes sent, all 5029 grains, wedges, reads,
+  colours and lanes.
+- **Different by design:** the wording, now the catalogue's labels and units
+  ("low-pass 800 Hz", "delay time 310 ms", "90% right", "×" on multiplying
+  rules). Material names say "24 samples" where the prototype said "the
+  corpus".
+- **One bug, found and fixed in reef:** ordinals past eighth read "32th".
