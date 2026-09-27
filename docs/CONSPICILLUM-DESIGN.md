@@ -1926,5 +1926,25 @@ The proposal:
 **Needs:** per-sample peak envelopes in `conspicillum-corpora.json`, a few
 hundred points each, from `build-corpora.py`.
 
-**Held until** Andrew has finished auditioning both models, the prototype and
-`?model=reef`.
+**Built** (2026-09-27), in the Halogen app rather than this prototype:
+- `build-corpora.py` writes each sample's peak envelope: |x| per bin, 0..255
+  of full scale, about 100 bins a second (64 to 800).
+- The strip has the envelope under the colour boxes, each box showing its
+  stretch of sound, with the lanes below.
+- The loupe shows the segment last read, with each grain's read window. A
+  moving read head (a tape) is shown its whole bar. A standing one is zoomed
+  to the band a grain may start in (reef's `grainAt`: position of the room,
+  ± half the spray, plus the grain's length), twice over and at least 250 ms.
+  So "Single hit" shows at once that its grains read near-silence, 35% into a
+  chord whose sound is in its first quarter.
+
+## Step 4: the module as its own app
+
+`music/live-coding/conspicillum` (Marginalia 296), served on :3011 in the
+Atlantis group. It is Halogen on reef's types: the state is a `Preset` (line,
+query, knobs), and every view is a function of it. It keeps time by Binnacle's
+clock and pushes `conspicillum-scene` to purerl-tidal. The ring's wedges and the
+knobs' arcs are `Hylograph.Shape.Arc`. A preset is linked as `#n`.
+
+This page, `module.html`, stays as the prototype. Its `?model=reef` A/B is
+what licensed the port.
