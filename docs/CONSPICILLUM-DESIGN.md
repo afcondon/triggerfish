@@ -1907,3 +1907,24 @@ Results so far:
   rules). Material names say "24 samples" where the prototype said "the
   corpus".
 - **One bug, found and fixed in reef:** ordinals past eighth read "32th".
+
+### Next: the waveform under the strip (Andrew, 2026-09-27, once it was audible)
+
+Position is one number to the algorithm and several things to the ear. On a
+progression tape it picks a chord; inside a single hit it picks attack or
+tail. The panel has to show which, and only the sound itself can.
+
+The proposal:
+- **Overview:** a thin amplitude envelope under the colour strip, aligned to
+  it, with the read-span lanes under that. Each lane bar then sits under the
+  stretch of sound it reads.
+- **Loupe:** the segment being read, at full width, with the read position as
+  a marker, spray as a shaded range around it, and the grain length as the
+  width of a window. That lines up the position and length knobs with the
+  sound.
+
+**Needs:** per-sample peak envelopes in `conspicillum-corpora.json`, a few
+hundred points each, from `build-corpora.py`.
+
+**Held until** Andrew has finished auditioning both models, the prototype and
+`?model=reef`.
