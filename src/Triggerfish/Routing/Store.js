@@ -19,3 +19,11 @@ export const _load = (key) => () => {
 };
 
 export const _stringify = (x) => JSON.stringify(x);
+
+// A `storage` event fires in every OTHER tab of this origin when one writes the
+// key: how an edit in one page's router reaches another page's machines.
+export const _onChange = (key) => (callback) => () => {
+  window.addEventListener("storage", (e) => {
+    if (e.key === key) callback();
+  });
+};

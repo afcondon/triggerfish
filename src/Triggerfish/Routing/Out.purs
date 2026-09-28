@@ -32,6 +32,7 @@ module Triggerfish.Routing.Out
   , fanNoteAt
   , drumRouting
   , drumsOrbit
+  , auditionLine
   , sendAll
   ) where
 
@@ -49,6 +50,7 @@ import Binnacle.Midi as Midi
 import Binnacle.Time (perfNow)
 import Reef.Rample as Rample
 import Reef.Routing as RR
+import Simple.JSON (writeJSON)
 import Triggerfish.Routing.Model (Destination(..), Leg, Source(..), Table, Wire, liveLegsFor, wireOf)
 
 -- | Every MIDI output port, by name. Built once when MIDI access arrives.
@@ -215,6 +217,18 @@ drumRouting outs tbl notes =
 -- | apart from Conspicillum's 0 and its sends 10 and 11, on the main outputs.
 drumsOrbit :: Int
 drumsOrbit = 1
+
+-- | The rig line that plays a sample destination once, now, as it is set: the
+-- | router's ▶. Other destinations have nothing to audition this way.
+auditionLine :: Destination -> Maybe String
+auditionLine = case _ of
+  DSample d -> Just $ "dirt-play " <> writeJSON
+    { s: d.set, n: d.n
+    , begin: Int.toNumber d.begin / 100.0, end: Int.toNumber d.end / 100.0
+    , speed: if d.reverse then -1.0 else 1.0, gain: Int.toNumber d.gain / 100.0
+    , orbit: drumsOrbit
+    }
+  _ -> Nothing
 
 -- | Send what `Reef.Routing` decided, each `atMs` from now. Returns how many
 -- | notes went out. A `Play` is the rig's to send; the browser has no OSC.

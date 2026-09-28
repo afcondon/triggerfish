@@ -7,9 +7,11 @@
 -- |
 -- |   * the transport: Solo or Atlantis, and play/stop, pushed down as the one
 -- |     derived `Sounding`;
--- |   * the routing table: loaded from the store and pushed down. The page is
--- |     served from the same origin as Triggerfish, so it shares the store, and a
--- |     `storage` event carries edits made in Triggerfish's router here live;
+-- |   * the routing table: loaded from the store, edited in this page's own
+-- |     router (the drum lanes only; ⌥1, as in Triggerfish), saved, and pushed
+-- |     down. The page is served from the same origin as Triggerfish, so the two
+-- |     share one store, and a `storage` event carries an edit made in either
+-- |     router to the other live;
 -- |   * the free-run clock baseline and tempo (Solo; Link overrides it on the rig);
 -- |   * the preset chip, and the CAPTURE key (`c`).
 -- |
@@ -23,14 +25,16 @@ import Prelude
 
 import Binnacle as Binnacle
 import Binnacle.Audio (armAudioKeepAlive)
+import Binnacle.Midi as Midi
 import Binnacle.Time (dateNow)
 import Binnacle.Transport as Transport
+import Data.Array ((..))
 import Data.Foldable (for_)
 import Data.Int as Int
 import Data.Maybe (Maybe(..), isJust)
 import Data.Set as Set
 import Effect (Effect)
-import Effect.Aff.Class (class MonadAff)
+import Effect.Aff.Class (class MonadAff, liftAff)
 import Effect.Class (liftEffect)
 import Halogen as H
 import Halogen.Aff as HA
@@ -43,7 +47,13 @@ import Halogen.VDom.Driver (runUI)
 import Triggerfish.Balistes.Component as Balistes
 import Triggerfish.Glyph (ChipView)
 import Triggerfish.GlyphView (chipIcons)
+import Triggerfish.Routing.Edit as RE
+import Triggerfish.Routing.Model as RM
+import Triggerfish.Routing.Out as RO
 import Triggerfish.Routing.Store as RStore
+import Triggerfish.Routing.View as RV
+import Triggerfish.SampleSets (SampleSet)
+import Triggerfish.SampleSets as SampleSets
 import Triggerfish.SourceQuery as SQ
 import Triggerfish.Transport (Mode(..), Which(..), soundingOf)
 import Triggerfish.Transport.Store as TransportStore
@@ -56,9 +66,7 @@ import Web.HTML.HTMLTextAreaElement as HTextArea
 import Web.HTML.Window as Window
 import Web.UIEvent.KeyboardEvent as KE
 import Web.UIEvent.KeyboardEvent.EventTypes as KET
-
--- | Calls back whenever another tab of this origin writes `key`.
-foreign import onStorage :: String -> Effect Unit -> Effect Unit
+import Effect.Timer (setInterval)
 
 main :: Effect Unit
 main = HA.runHalogenAff do
@@ -73,6 +81,11 @@ type State =
   , freeT0 :: Number
   , chip :: Maybe ChipView
   , rig :: Maybe Binnacle.Binnacle
+  , rigUp :: Boolean
+  , table :: RM.Table
+  , ports :: Array String
+  , sampleSets :: Array SampleSet
+  , routerOpen :: Boolean
   }
 
 data Action
@@ -87,6 +100,12 @@ data Action
   | Key E.Event
   -- A macro-lane edit. The lanes are the dashboard's; this page has none.
   | LaneEdited
+  | ToggleRouter
+  | Edit RE.Edit
+  | Audition RM.Destination
+  | ResetRouting
+  | SetPorts (Array String)
+  | Tick
 
 type Slots = (bal :: H.Slot SQ.Query Balistes.Output Unit)
 
@@ -96,7 +115,8 @@ _bal = Proxy
 root :: forall q i o m. MonadAff m => H.Component q i o m
 root = H.mkComponent
   { initialState: \_ ->
-      { mode: Solo, playing: false, bpm: 120, freeT0: 0.0, chip: Nothing, rig: Nothing }
+      { mode: Solo, playing: false, bpm: 120, freeT0: 0.0, chip: Nothing, rig: Nothing
+      , rigUp: false, table: RM.defaultTable, ports: [], sampleSets: [], routerOpen: false }
   , render
   , eval: H.mkEval H.defaultEval { handleAction = handleAction, initialize = Just Init }
   }
@@ -113,7 +133,16 @@ handleAction = case _ of
     for_ mmode \m -> H.modify_ _ { mode = m }
     { emitter, listener } <- liftEffect HS.create
     _ <- H.subscribe emitter
-    liftEffect $ onStorage RStore.storeKey (HS.notify listener RoutingChanged)
+    liftEffect $ RStore.onChange (HS.notify listener RoutingChanged)
+    -- The port names, for the router's reach column and its port menus. Balistes
+    -- asks for MIDI itself to play; this is only to know what exists.
+    liftEffect $ Midi.requestAccess case _ of
+      Just access -> Midi.outputNames access >>= HS.notify listener <<< SetPorts
+      Nothing -> HS.notify listener (SetPorts [])
+    _ <- liftEffect $ setInterval 1500 (HS.notify listener Tick)
+    void $ H.fork do
+      sets <- liftAff SampleSets.load
+      H.modify_ _ { sampleSets = sets }
     target <- liftEffect $ Window.toEventTarget <$> window
     _ <- H.subscribe $ eventListener KET.keydown target (Just <<< Key)
     handleAction RoutingChanged
@@ -137,16 +166,55 @@ handleAction = case _ of
     pushSounding
   RoutingChanged -> do
     mtbl <- liftEffect RStore.load
-    for_ mtbl \t -> void $ H.query _bal unit (SQ.SetRouting t unit)
+    for_ mtbl \t -> do
+      H.modify_ _ { table = t }
+      void $ H.query _bal unit (SQ.SetRouting t unit)
+  -- An edit here is saved first, so the store, Balistes and an open Triggerfish
+  -- (through its storage event) all agree on the next note.
+  Edit e -> do
+    st <- H.get
+    for_ (RE.apply { ports: st.ports, sampleSets: st.sampleSets } e st.table) keepTable
+  ResetRouting -> do
+    st <- H.get
+    keepTable (RE.resetSources drumLanes st.table)
+  Audition dest -> do
+    st <- H.get
+    for_ (RO.auditionLine dest) \line ->
+      for_ st.rig \bin -> liftEffect $ Transport.send (Binnacle.socket bin) line
+  ToggleRouter -> H.modify_ \s -> s { routerOpen = not s.routerOpen }
+  SetPorts ns -> H.modify_ _ { ports = ns }
+  -- The rig link, polled as the Triggerfish shell polls it: what a rig-only leg
+  -- can reach depends on it.
+  Tick -> do
+    st <- H.get
+    ok <- case st.rig of
+      Nothing -> pure false
+      Just bin -> liftEffect $ Transport.isConnected (Binnacle.socket bin)
+    when (ok /= st.rigUp) (H.modify_ _ { rigUp = ok })
   ChipChanged cv -> H.modify_ _ { chip = cv }
   LaneEdited -> pure unit
-  Key e -> for_ (KE.fromEvent e) \ke ->
-    unless (targetIsField e || KE.metaKey ke || KE.ctrlKey ke || KE.altKey ke) case KE.key ke of
+  Key e -> for_ (KE.fromEvent e) \ke -> unless (targetIsField e || KE.metaKey ke || KE.ctrlKey ke) do
+    -- ⌥1 by the key's position, as in Triggerfish: on a Mac, Option+1 types "¡".
+    if KE.altKey ke then
+      when (KE.code ke == "Digit1") do
+        liftEffect $ E.preventDefault e
+        handleAction ToggleRouter
+    else case KE.key ke of
       "c" -> handleAction Capture
       " " -> do
         liftEffect $ E.preventDefault e
         handleAction TogglePlay
       _ -> pure unit
+
+keepTable :: forall o m. MonadAff m => RM.Table -> H.HalogenM State Action Slots o m Unit
+keepTable t = do
+  liftEffect $ RStore.save t
+  H.modify_ _ { table = t }
+  void $ H.query _bal unit (SQ.SetRouting t unit)
+
+-- | The sources this page routes: Balistes' sixteen kit lanes.
+drumLanes :: Array RM.Source
+drumLanes = map RM.SDrumLane (0 .. 15)
 
 -- | Balistes' one `Sounding`, derived exactly as the Triggerfish shell derives it:
 -- | playing is being armed, and the mode says who makes the sound.
@@ -170,6 +238,7 @@ render :: forall m. MonadAff m => State -> H.ComponentHTML Action Slots m
 render st =
   HH.div [ style "min-height:100vh;background:#fafafa" ]
     [ bar st
+    , if st.routerOpen then router st else HH.text ""
     , HH.slot _bal unit Balistes.component unit case _ of
         Balistes.IdentityChanged cv -> ChipChanged cv
         Balistes.LaneEdited _ -> LaneEdited
@@ -199,9 +268,7 @@ bar st =
     , button "Capture (c)" Capture
     , HH.span [ style "display:flex;align-items:center;min-width:40px" ] [ chipIcons st.chip ]
     , HH.span [ style "flex:1" ] []
-    , HH.a
-        [ HP.href "index.html", style (engrave <> ";font-size:10px;color:#5a564b") ]
-        [ HH.text "Routing: in Triggerfish (⌥1)" ]
+    , button (if st.routerOpen then "Close routing" else "Routing (⌥1)") ToggleRouter
     , button "Panic" Panic
     ]
   where
@@ -221,6 +288,30 @@ bar st =
           <> "background:linear-gradient(#f4f1e8,#e2ddcf)"
       ]
       [ HH.text label ]
+
+-- | The drum lanes' routes, drawn by the same rows as Triggerfish's ⌥1 router.
+router :: forall m. State -> H.ComponentHTML Action Slots m
+router st =
+  HH.div
+    [ style "padding:14px 16px 6px;border-bottom:1px solid #00000018;background:#f3f0e7" ]
+    [ HH.div [ style "display:flex;align-items:baseline;gap:14px;margin-bottom:10px" ]
+        [ HH.span [ style (engrave <> ";font-size:11px") ] [ HH.text "Routing · Balistes kit" ]
+        , HH.span [ style "font-size:10px;color:#8a8474" ]
+            [ HH.text "shared with Triggerfish's router; sample legs sound in Atlantis only" ]
+        , HH.span
+            [ HE.onClick \_ -> ResetRouting
+            , HP.title "return the sixteen kit lanes to the shipped defaults; other machines' routes are left alone"
+            , style "cursor:pointer;font-size:10px;color:#a08676;text-decoration:underline" ]
+            [ HH.text "restore default kit routing" ]
+        ]
+    , HH.div
+        [ style "display:grid;grid-template-columns:repeat(auto-fill,minmax(420px,1fr));gap:4px 28px;max-height:56vh;overflow-y:auto" ]
+        (map (RV.sourceRows env) drumLanes)
+    ]
+  where
+  env =
+    { table: st.table, ports: st.ports, rigUp: st.rigUp, sampleSets: st.sampleSets
+    , onEdit: Edit, onAudition: Audition }
 
 rigUrl :: String
 rigUrl = "ws://127.0.0.1:3012/ws"

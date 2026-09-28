@@ -19,8 +19,7 @@ module Triggerfish.Main where
 
 import Prelude
 
-import Data.Array (any, deleteAt, elem, filter, find, findIndex, head, last, length, mapMaybe, mapWithIndex, modifyAt, null, replicate, take, uncons, unsnoc, (..), (:), (!!))
-import Control.Alt ((<|>))
+import Data.Array (any, deleteAt, filter, find, findIndex, last, length, mapMaybe, mapWithIndex, modifyAt, null, replicate, uncons, unsnoc, (..), (:), (!!))
 import Data.FoldableWithIndex (forWithIndex_)
 import Data.Foldable (for_, sum)
 import Data.Either (Either(..))
@@ -32,7 +31,6 @@ import Data.Map (Map)
 import Data.Map as Map
 import Triggerfish.Route as Route
 import Data.Int as Int
-import Data.Number as Number
 import Data.String as String
 import Data.String.Common (joinWith)
 import Data.Tuple (Tuple(..))
@@ -42,7 +40,6 @@ import Effect.Aff (attempt, delay)
 import Effect.Aff.Class (class MonadAff, liftAff)
 import Triggerfish.SampleSets as SampleSets
 import Triggerfish.Routing.Out as RO
-import Simple.JSON (writeJSON)
 import Effect.Class (class MonadEffect, liftEffect)
 import Data.Time.Duration (Milliseconds(..))
 import Effect.Timer (setInterval)
@@ -78,10 +75,11 @@ import Triggerfish.Selene.Layout as Layout
 import Triggerfish.Selene.Manifest as Man
 import Halogen.Widgets.Select as Select
 import Triggerfish.Sufflamen.Component as Sufflamen
-import Triggerfish.Balistes.Pattern as P
 import Triggerfish.Routing.Model as RM
 import Triggerfish.Routing.Monitor as Mon
 import Triggerfish.Routing.Store as RStore
+import Triggerfish.Routing.Edit as RE
+import Triggerfish.Routing.View as RV
 import Triggerfish.SourceQuery as SQ
 import Triggerfish.Glyph as G
 import Triggerfish.GlyphView (chipIcons, faIcons)
@@ -142,18 +140,14 @@ data RAction
   | SetImportText String
   | ImportInto Which            -- route the paste box to one instrument's library
   | SetBinding String String    -- Tidal-page channel map: bind a Vetula voice name → channel
-  -- The ⌥1 router. Every routing edit is one of these five; each ends in
-  -- `editRoute`, so persisting and pushing to the machines happen in one place.
+  -- The ⌥1 router. Every change to the table is one `RtEdit`, applied by
+  -- `Triggerfish.Routing.Edit` and then persisted and pushed in one place.
+  -- Another tab of this origin (Balistes on its own page) saved the table.
+  | RoutingStored
   | SetPorts (Array String)
   | MonTick
   | MonClear
-  | RtToggleLeg RM.Source Int
-  | RtRemoveLeg RM.Source Int
-  | RtAddLeg RM.Source String          -- destination KIND token
-  | RtSetField RM.Source Int String String   -- leg, field name, typed value
-  | RtSetOffset RM.Source Int String
-  | RtSetPort RM.Source Int String
-  | RtSetSampleSet RM.Source Int String
+  | RtEdit RE.Edit                   -- any change to the table (Triggerfish.Routing.Edit)
   | RtAudition RM.Destination
   | RtResetTable
   | RtSetView RouterView
@@ -510,6 +504,7 @@ handleAction = case _ of
     -- nothing on the backend can contradict, so it persists.
     mtbl <- liftEffect RStore.load
     for_ mtbl \t -> H.modify_ _ { routingTable = t }
+    liftEffect $ RStore.onChange (HS.notify listener RoutingStored)
     -- Tap MIDI out before anything can play, so the router's activity column
     -- covers the whole session rather than starting when it is first opened.
     liftEffect Mon.install
@@ -813,6 +808,13 @@ handleAction = case _ of
       refreshLibrary
   -- Tidal-page channel map: bind a Vetula voice name → channel (blank/invalid = unbind,
   -- back to the default). Update the shell table, then push it to Vetula.
+  -- Adopt and push, without saving: the table is already in the store, and
+  -- saving it back is how two pages would end up overwriting each other.
+  RoutingStored -> do
+    mtbl <- liftEffect RStore.load
+    for_ mtbl \t -> do
+      H.modify_ _ { routingTable = t }
+      pushTableToMachines
   SetPorts ns -> H.modify_ _ { routingPorts = ns }
   -- Only read the tap when the router is on screen. The tap itself is always on:
   -- traffic that happened before you opened the panel is exactly what you want to
@@ -838,21 +840,11 @@ handleAction = case _ of
   MonClear -> do
     liftEffect Mon.clear
     H.modify_ _ { midiTraffic = [] }
-  RtToggleLeg src i -> do
+  RtEdit e -> do
     st <- H.get
-    editRoute src (RM.legsFor (RM.modifyLeg src i (\l -> l { on = not l.on }) st.routingTable) src)
-  RtRemoveLeg src i -> do
-    st <- H.get
-    editRoute src (RM.legsFor (RM.removeLeg src i st.routingTable) src)
-  RtAddLeg src kind -> do
-    st <- H.get
-    for_ (newDest st src kind) \d ->
-      editRoute src (RM.legsFor (RM.addLeg src d st.routingTable) src)
-  RtSetField src i field v -> case Int.fromString v of
-    Nothing -> pure unit      -- mid-typing / cleared: leave the model alone
-    Just n -> do
-      st <- H.get
-      editRoute src (RM.legsFor (RM.modifyLeg src i (\l -> l { dest = RM.setDestField field n l.dest }) st.routingTable) src)
+    for_ (RE.apply { ports: st.routingPorts, sampleSets: st.sampleSets } e st.routingTable) \t -> do
+      H.modify_ _ { routingTable = t }
+      pushRoutingTable
   -- Escape hatch. Routing is now the thing standing between the player and any
   -- sound at all, so there has to be a way back to a known-good table without
   -- reaching for devtools.
@@ -861,32 +853,11 @@ handleAction = case _ of
   RtResetTable -> do
     H.modify_ _ { routingTable = RM.defaultTable }
     pushRoutingTable
-  RtSetPort src i port -> do
-    st <- H.get
-    editRoute src (RM.legsFor (RM.modifyLeg src i (\l -> l { dest = setPort port l.dest }) st.routingTable) src)
-  RtSetSampleSet src i set -> do
-    st <- H.get
-    let
-      choose = case _ of
-        RM.DSample d -> RM.DSample d { set = set, n = 0 }
-        d -> d
-    editRoute src (RM.legsFor (RM.modifyLeg src i (\l -> l { dest = choose l.dest }) st.routingTable) src)
   -- Hear a sample destination now, through the rig's SuperDirt, as it is set.
-  RtAudition dest -> case dest of
-    RM.DSample d -> do
-      st <- H.get
-      for_ st.rig \bin -> liftEffect $ Transport.send (Binnacle.socket bin) $ "dirt-play " <> writeJSON
-        { s: d.set, n: d.n
-        , begin: Int.toNumber d.begin / 100.0, end: Int.toNumber d.end / 100.0
-        , speed: if d.reverse then -1.0 else 1.0, gain: Int.toNumber d.gain / 100.0
-        , orbit: RO.drumsOrbit
-        }
-    _ -> pure unit
-  RtSetOffset src i v -> case Number.fromString v of
-    Nothing -> pure unit
-    Just n -> do
-      st <- H.get
-      editRoute src (RM.legsFor (RM.modifyLeg src i (\l -> l { offsetMs = n }) st.routingTable) src)
+  RtAudition dest -> do
+    st <- H.get
+    for_ (RO.auditionLine dest) \line ->
+      for_ st.rig \bin -> liftEffect $ Transport.send (Binnacle.socket bin) line
   SetBinding name v -> do
     case Int.fromString v of
       Just ch | ch >= 1 && ch <= 16 -> H.modify_ \st -> st { routing = Map.insert name ch st.routing }
@@ -1421,17 +1392,14 @@ pushRoutingTable :: forall o m. MonadAff m => H.HalogenM RState RAction Slots o 
 pushRoutingTable = do
   t <- H.gets _.routingTable
   liftEffect $ RStore.save t
+  pushTableToMachines
+
+pushTableToMachines :: forall o m. MonadAff m => H.HalogenM RState RAction Slots o m Unit
+pushTableToMachines = do
+  t <- H.gets _.routingTable
   void $ H.query _odo unit (SQ.SetRouting t unit)
   void $ H.query _bal unit (SQ.SetRouting t unit)
   void $ H.query _sel unit (SQ.SetRouting t unit)
-
--- | Replace one source's legs, then persist + push. Every routing edit goes
--- | through here, so there is one place where an edit becomes durable and one
--- | place where it reaches the machines.
-editRoute :: forall o m. MonadAff m => RM.Source -> Array RM.Leg -> H.HalogenM RState RAction Slots o m Unit
-editRoute src legs = do
-  H.modify_ \st -> st { routingTable = RM.setLegs src legs st.routingTable }
-  pushRoutingTable
 
 assemble :: Array (Tuple String (Maybe String)) -> String
 assemble = joinWith "\n\n\n" <<< map section
@@ -1682,65 +1650,6 @@ workbenchHeader st =
 -- | every attempt to change its port in silence — the select snapped back to
 -- | the value the leg was created with and nothing said why. A destination
 -- | added later must fail to compile here rather than fail quietly there.
-setPort :: String -> RM.Destination -> RM.Destination
-setPort port = case _ of
-  RM.DMidi d -> RM.DMidi d { port = port }
-  RM.DRample d -> RM.DRample d { port = port }
-  RM.DRamplePoly d -> RM.DRamplePoly d { port = port }
-  -- No port of their own: the FH-2 and continuo are fixed rig fixtures reached
-  -- by name, and the ES-9 kinds are not MIDI at all.
-  d@(RM.DFh2Env _) -> d
-  d@(RM.DFh2Gate _) -> d
-  d@(RM.DEs9Gate _) -> d
-  d@(RM.DEs9Cv _) -> d
-  d@(RM.DPoly _) -> d
-  d@(RM.DContinuo _) -> d
-  d@(RM.DSample _) -> d
-
--- | A freshly-added destination of the given kind, with sensible starting values
--- | for THIS source. A new FH-2 gate on a drum lane starts on that lane's own
--- | canonKit note, because the note is the selector the MCV matches — starting it
--- | at 0 would add a leg that silently never fires.
-newDest :: RState -> RM.Source -> String -> Maybe RM.Destination
-newDest st src = case _ of
-  "midi" -> Just (RM.DMidi { port: firstPort, channel: 1 })
-  "fh2env" -> Just (RM.DFh2Env { slot: 1 })
-  "fh2gate" -> Just (RM.DFh2Gate { note: laneNote, jack: 1 })
-  "es9gate" -> Just (RM.DEs9Gate { block: 0, jack: 1 })
-  "es9cv" -> Just (RM.DEs9Cv { bus: 1 })
-  "poly-saich" -> Just (RM.DPoly { inst: RM.Saich, sortByPitch: false })
-  "poly-saich-sorted" -> Just (RM.DPoly { inst: RM.Saich, sortByPitch: true })
-  -- No sorted variant: Rings has one pitch bus, so there is no seating to sort.
-  "poly-rings" -> Just (RM.DPoly { inst: RM.Rings, sortByPitch: false })
-  "continuo" -> Just (RM.DContinuo { channel: 1 })
-  -- A drum set first, if there is one, since this is most often a drum lane.
-  "sample" -> Just (RM.DSample
-    { set: maybe "" _.name (find (\x -> String.contains (String.Pattern "drum") x.name) st.sampleSets <|> head st.sampleSets)
-    , n: 0, begin: 0, end: 100, reverse: false, gain: 100, chop: 1 })
-  -- One entry per voice rather than one entry plus a voice field, because the
-  -- trigger note is NOT derivable from the voice in general — it is whatever
-  -- the module's SETTINGS > SPx say — and offering the four the card is set up
-  -- for beats making the player look them up. Defaults describe the piano at
-  -- P0: SLICER /64, slice 0 = C2, SP1-4 = 60..63, 40 ms settle (measured).
-  "rample-1" -> Just (rample 1 60)
-  "rample-2" -> Just (rample 2 61)
-  "rample-3" -> Just (rample 3 62)
-  "rample-4" -> Just (rample 4 63)
-  -- The whole module as one instrument: one leg per HEAD, not per voice, and
-  -- the allocator decides which voice sounds each note.
-  "rample-poly" -> Just (RM.DRamplePoly
-    { port: firstPort, channel: 1, triggers: [ 60, 61, 62, 63 ]
-    , slots: 64, pitchOfSlot0: 36 })
-  _ -> Nothing
-  where
-  firstPort = fromMaybe "IAC" (head st.routingPorts)
-  rample voice trigger = RM.DRample
-    { port: firstPort, channel: 1, voice, trigger
-    , slots: 64, pitchOfSlot0: 36, settleMs: 40 }
-  laneNote = case src of
-    RM.SDrumLane i -> P.laneNote i
-    _ -> 36
-
 -- | The ROUTER (⌥1): every source in the rack, the destinations it fans out to,
 -- | and whether each can currently be reached.
 -- |
@@ -1792,175 +1701,9 @@ channelMapPanel st =
                 else "color:#3f3c33;background:linear-gradient(#efece1,#ddd9cb)") ]
       [ HH.text label ]
 
-  ports = { found: st.routingPorts, rigUp: st.rigConnected }
-
-  -- One source: its name, then a line per destination it fans out to.
-  routeRow src =
-    let legs = RM.legsFor st.routingTable src
-    in HH.div [ style "display:flex;flex-direction:column;gap:2px;margin-bottom:7px" ]
-         ( [ HH.div [ style "display:flex;align-items:baseline;gap:8px" ]
-               [ HH.span [ style "font-size:12px;color:#2a271e;min-width:96px" ]
-                   [ HH.text (rowLabel src) ]
-               , addControl src
-               ]
-           ] <> mapWithIndex (legRow src) legs )
-
-  -- Drum lanes read better as their kit name + note than as an index.
-  rowLabel = case _ of
-    RM.SDrumLane i -> P.laneName i <> "  " <> show (P.laneNote i)
-    other -> RM.sourceLabel other
-
-  -- A leg: on/off, what it is, its editable numbers, its trim, and whether it can
-  -- actually be reached. The reach column is the point of the whole panel — a
-  -- route to a port that isn't there makes exactly as much sound as no route.
-  legRow src i leg =
-    let reach = RM.reachOf ports leg.dest
-        dead = reach /= RM.Reachable
-        dim = if leg.on then "1" else "0.4"
-    in HH.div
-         [ style $ "display:flex;align-items:center;gap:5px;margin-left:14px;opacity:" <> dim ]
-         ( [ HH.span
-               [ HE.onClick \_ -> RtToggleLeg src i
-               , HP.title (if leg.on then "mute this destination (keeps it)" else "unmute")
-               , style $ "cursor:pointer;font-size:11px;width:14px;color:" <> (if leg.on then "#3a6a4a" else "#a09a88") ]
-               [ HH.text (if leg.on then "●" else "○") ]
-           , HH.span [ style "font-size:10px;color:#6a6558;width:52px" ] [ HH.text (destKind leg.dest) ]
-           ] <> destFields src i leg.dest <>
-           [ numBox 40 (fmtOffset leg.offsetMs) (RtSetOffset src i) "ms trim — the flam killer when doubling"
-           , HH.span
-               [ HE.onClick \_ -> RtRemoveLeg src i
-               , HP.title "remove this destination"
-               , style "cursor:pointer;color:#b09a86;font-size:11px;padding:0 3px" ]
-               [ HH.text "\x2715" ]
-           , HH.span
-               [ style $ "font-size:9px;font-family:'SF Mono',Menlo,monospace;"
-                   <> (if dead then "color:#b0492f" else "color:#7a9a7a") ]
-               [ HH.text (if dead then RM.reachNote reach else "ok") ]
-           ] )
-
-  -- The per-leg traffic readout that used to sit here ("320/320 v78-127") is
-  -- gone: its width varied with the counts, so a busy row grew past the column
-  -- and forced the whole panel to scroll sideways. The observation is still
-  -- collected — `Routing.Monitor` is untouched and `trafficPanel` below still
-  -- reports the totals and, more importantly, the UNACCOUNTED traffic. Per-jack
-  -- traffic belongs in the output-backward view, which has a column for it and
-  -- a fixed row width to put it in (see docs/DESIGN-routing-backward.md).
-
-  destKind = case _ of
-    RM.DMidi _ -> "midi"
-    RM.DFh2Env _ -> "fh2 env"
-    RM.DFh2Gate _ -> "fh2 gate"
-    RM.DEs9Gate _ -> "es9 gate"
-    RM.DEs9Cv _ -> "es9 cv"
-    RM.DPoly _ -> "poly"
-    RM.DContinuo _ -> "continuo"
-    RM.DRample d -> "rample v" <> show d.voice
-    RM.DRamplePoly _ -> "rample x4"
-    RM.DSample _ -> "sample"
-
-  -- The editable numbers of a destination, which differ per device because the
-  -- devices differ. An FH-2 gate shows BOTH its selector note and its jack, since
-  -- neither is meaningful without the other.
-  destFields src i = case _ of
-    RM.DMidi d ->
-      [ portSelect src i d.port
-      , numBox 30 (show d.channel) (RtSetField src i "channel") "MIDI channel 1-16" ]
-    RM.DFh2Env d -> [ numBox 30 (show d.slot) (RtSetField src i "slot") "polyenv slot 1-8" ]
-    RM.DFh2Gate d ->
-      [ numBox 34 (show d.note) (RtSetField src i "note") "note the trigger MCV matches on"
-      , numBox 30 (show d.jack) (RtSetField src i "jack") "FHX-8GT jack 1-8" ]
-    RM.DEs9Gate d ->
-      [ numBox 26 (show d.block) (RtSetField src i "block") "gate block"
-      , numBox 26 (show d.jack) (RtSetField src i "jack") "jack 1-8" ]
-    RM.DEs9Cv d -> [ numBox 30 (show d.bus) (RtSetField src i "bus") "CV bus" ]
-    RM.DPoly d -> [ HH.span [ HP.class_ (HH.ClassName "rt-fixed") ] [ HH.text (RM.destLabel (RM.DPoly d)) ] ]
-    RM.DContinuo d -> [ numBox 30 (show d.channel) (RtSetField src i "channel") "channel 1-16" ]
-    -- Played by SuperDirt on the rig, so it sounds in Rig mode only.
-    RM.DSample d ->
-      [ setSelect src i d.set
-      , numBox 26 (show d.n) (RtSetField src i "n") ("sample in the set, 0-" <> show (samplesIn d.set - 1))
-      , numBox 26 (show d.begin) (RtSetField src i "begin") "window start, % of the sample"
-      , numBox 26 (show d.end) (RtSetField src i "end") "window end, % of the sample"
-      , HH.span
-          [ HE.onClick \_ -> RtSetField src i "reverse" (if d.reverse then "0" else "1")
-          , HP.title "play the window backwards"
-          , style $ "cursor:pointer;font-size:10px;padding:0 3px;color:" <> (if d.reverse then "#3a6a4a" else "#a09a88") ]
-          [ HH.text "rev" ]
-      , numBox 30 (show d.gain) (RtSetField src i "gain") "gain, %"
-      , numBox 22 (show d.chop) (RtSetField src i "chop") "chop: slices of the window across the step, 1-16"
-      , HH.span
-          [ HE.onClick \_ -> RtAudition (RM.DSample d)
-          , HP.title "hear it now (through the rig)"
-          , style "cursor:pointer;font-size:11px;color:#3a6a4a;padding:0 3px" ]
-          [ HH.text "\x25B6" ]
-      ]
-    -- The card's own facts are editable because they belong to the CARD, not to
-    -- the module: another card sliced differently plays from the same route.
-    RM.DRample d ->
-      [ portSelect src i d.port
-      , numBox 26 (show d.channel) (RtSetField src i "channel") "MIDI channel 1-16"
-      , numBox 26 (show d.voice) (RtSetField src i "voice") "Rample voice 1-4"
-      , numBox 30 (show d.trigger) (RtSetField src i "trigger") "trigger note (SETTINGS > SPx)"
-      , numBox 30 (show d.slots) (RtSetField src i "slots") "SLICER division of the card"
-      , numBox 30 (show d.pitchOfSlot0) (RtSetField src i "pitchOfSlot0") "MIDI note of slice 0"
-      , numBox 26 (show d.settleMs) (RtSetField src i "settleMs") "ms the start-point CC leads the note" ]
-    -- No settle box: the allocator's own measured 40 ms governs the whole
-    -- module, so it belongs to `Reef.Voices.rample`, not to this route.
-    RM.DRamplePoly d ->
-      [ portSelect src i d.port
-      , numBox 26 (show d.channel) (RtSetField src i "channel") "MIDI channel 1-16"
-      , numBox 30 (show d.slots) (RtSetField src i "slots") "SLICER division of the card"
-      , numBox 30 (show d.pitchOfSlot0) (RtSetField src i "pitchOfSlot0") "MIDI note of slice 0"
-      ] <> mapWithIndex
-        (\k t -> numBox 26 (show t) (RtSetField src i ("trig" <> show (k + 1)))
-                  ("voice " <> show (k + 1) <> " trigger note (SETTINGS > SP" <> show (k + 1) <> ")"))
-        (take 4 (d.triggers <> [ 60, 61, 62, 63 ]))
-
-  -- Only ports that EXIST are offerable, so a route can't be typed at a device
-  -- that isn't plugged in. (An already-routed name that has since vanished stays
-  -- selected and shows dead, rather than being silently rewritten.)
-  portSelect src i cur =
-    HH.select
-      [ HE.onValueChange (RtSetPort src i)
-      , style "font-size:10px;max-width:118px;padding:1px 2px;border-radius:3px;border:1px solid #cdbb96;background:#fffdf8" ]
-      (map (\n -> HH.option [ HP.value n, HP.selected (n == cur) ] [ HH.text n ])
-        (if elem cur st.routingPorts then st.routingPorts else cur : st.routingPorts))
-
-  setSelect src i cur =
-    HH.select
-      [ HE.onValueChange (RtSetSampleSet src i)
-      , style "font-size:10px;max-width:150px;padding:1px 2px;border-radius:3px;border:1px solid #cdbb96;background:#fffdf8" ]
-      (map (\x -> HH.option [ HP.value x.name, HP.selected (x.name == cur) ] [ HH.text x.name ])
-        (if any (\x -> x.name == cur) st.sampleSets then st.sampleSets else { name: cur, samples: 0 } : st.sampleSets))
-
-  samplesIn set = maybe 0 _.samples (find (\x -> x.name == set) st.sampleSets)
-
-  numBox w v f tip =
-    HH.input
-      [ HP.value v, HE.onValueInput f, HP.title tip
-      , style $ "width:" <> show w <> "px;font-family:'SF Mono',Menlo,monospace;font-size:10px;"
-          <> "padding:1px 3px;border-radius:3px;border:1px solid #cdbb96;background:#fffdf8;text-align:center" ]
-
-  fmtOffset n = if n == 0.0 then "0" else show n
-
-  addControl src =
-    HH.select
-      [ HE.onValueChange (RtAddLeg src)
-      , style "font-size:10px;padding:1px 3px;border-radius:3px;border:1px solid #d8cdb8;background:#faf7f0;color:#6a655a" ]
-      ( [ HH.option [ HP.value "", HP.selected true ] [ HH.text "+ add" ] ]
-          <> map (\(Tuple v l) -> HH.option [ HP.value v ] [ HH.text l ])
-               [ Tuple "midi" "MIDI", Tuple "fh2env" "FH-2 envelope", Tuple "fh2gate" "FH-2 gate"
-               , Tuple "es9gate" "ES-9 gate", Tuple "es9cv" "ES-9 CV"
-               , Tuple "poly-saich" "Saïch (poly)"
-               , Tuple "poly-saich-sorted" "Saïch (poly, bass on voice 1)"
-               , Tuple "poly-rings" "Rings (poly mode)"
-               , Tuple "continuo" "continuo"
-               , Tuple "rample-1" "Rample voice 1"
-               , Tuple "rample-2" "Rample voice 2"
-               , Tuple "rample-3" "Rample voice 3"
-               , Tuple "rample-4" "Rample voice 4"
-               , Tuple "rample-poly" "Rample (4 voices, allocated)"
-               , Tuple "sample" "Sample (SuperDirt, Rig mode)" ] )
+  routeRow = RV.sourceRows
+    { table: st.routingTable, ports: st.routingPorts, rigUp: st.rigConnected
+    , sampleSets: st.sampleSets, onEdit: RtEdit, onAudition: RtAudition }
 
   -- What the table SPENDS, and anything spent twice. Reported, not enforced:
   -- the daemons own admission (es9-daemon's capability/overlap checks,

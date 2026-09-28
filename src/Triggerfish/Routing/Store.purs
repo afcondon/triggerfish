@@ -17,7 +17,7 @@
 module Triggerfish.Routing.Store
   ( save
   , load
-  , storeKey
+  , onChange
   ) where
 
 import Prelude
@@ -45,6 +45,13 @@ storeKey = "triggerfish.routing.v1"
 foreign import _save :: String -> String -> Effect Unit
 foreign import _load :: forall a. String -> Effect (Nullable a)
 foreign import _stringify :: forall a. a -> String
+foreign import _onChange :: String -> Effect Unit -> Effect Unit
+
+-- | Run `callback` whenever ANOTHER tab of this origin saves the table, so two
+-- | pages with routers (Triggerfish, Balistes on its own) never hold different
+-- | tables, and neither saves a stale one over the other's edit.
+onChange :: Effect Unit -> Effect Unit
+onChange = _onChange storeKey
 
 -- ---------------------------------------------------------------------------
 -- Source codec — mirrors `Model.sourceKey`, which is the canonical spelling
