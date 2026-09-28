@@ -20,6 +20,7 @@ module Triggerfish.Main where
 import Prelude
 
 import Data.Array (any, deleteAt, elem, filter, find, findIndex, head, last, length, mapMaybe, mapWithIndex, modifyAt, null, replicate, take, uncons, unsnoc, (..), (:), (!!))
+import Control.Alt ((<|>))
 import Data.FoldableWithIndex (forWithIndex_)
 import Data.Foldable (for_, sum)
 import Data.Either (Either(..))
@@ -39,6 +40,9 @@ import Effect (Effect)
 import Effect.Unsafe (unsafePerformEffect)
 import Effect.Aff (attempt, delay)
 import Effect.Aff.Class (class MonadAff, liftAff)
+import Triggerfish.SampleSets as SampleSets
+import Triggerfish.Routing.Out as RO
+import Simple.JSON (writeJSON)
 import Effect.Class (class MonadEffect, liftEffect)
 import Data.Time.Duration (Milliseconds(..))
 import Effect.Timer (setInterval)
@@ -148,6 +152,8 @@ data RAction
   | RtSetField RM.Source Int String String   -- leg, field name, typed value
   | RtSetOffset RM.Source Int String
   | RtSetPort RM.Source Int String
+  | RtSetSampleSet RM.Source Int String
+  | RtAudition RM.Destination
   | RtResetTable
   | RtSetView RouterView
   | SetSeleneTarget Int String  -- routing modal: re-target Selene destination i to a wire (nested menu)
@@ -312,6 +318,8 @@ type RState =
   -- picker. The shell opens MIDI only to ENUMERATE — the machines do the
   -- emitting — so a port listed here is one a route can actually name.
   , routingPorts :: Array String
+  -- The Quadrat sets SuperDirt has loaded, for a sample destination to choose from.
+  , sampleSets :: Array SampleSets.SampleSet
   -- Observed MIDI traffic (Routing.Monitor). Refreshed only while the router is
   -- open — the tap runs always, reading it costs nothing when nobody is looking.
   , midiTraffic :: Array Mon.Row
@@ -457,6 +465,7 @@ root =
         , armed: Set.empty
         , routingTable: RM.defaultTable
         , routingPorts: []
+        , sampleSets: []
         , midiTraffic: []
         , routing: Map.empty
         , vetulaNames: [], seleneDoc: ""
@@ -475,6 +484,9 @@ handleAction = case _ of
   -- slow timer so every (mounted, possibly late-initialised) module shares the
   -- same downbeat. Idempotent; a no-op on any module currently Link-locked.
   Init -> do
+    void $ H.fork do
+      sets <- liftAff SampleSets.load
+      H.modify_ _ { sampleSets = sets }
     now <- liftEffect dateNow
     H.modify_ _ { freeT0 = now * 1000.0 }
     { emitter, listener } <- liftEffect HS.create
@@ -852,6 +864,24 @@ handleAction = case _ of
   RtSetPort src i port -> do
     st <- H.get
     editRoute src (RM.legsFor (RM.modifyLeg src i (\l -> l { dest = setPort port l.dest }) st.routingTable) src)
+  RtSetSampleSet src i set -> do
+    st <- H.get
+    let
+      choose = case _ of
+        RM.DSample d -> RM.DSample d { set = set, n = 0 }
+        d -> d
+    editRoute src (RM.legsFor (RM.modifyLeg src i (\l -> l { dest = choose l.dest }) st.routingTable) src)
+  -- Hear a sample destination now, through the rig's SuperDirt, as it is set.
+  RtAudition dest -> case dest of
+    RM.DSample d -> do
+      st <- H.get
+      for_ st.rig \bin -> liftEffect $ Transport.send (Binnacle.socket bin) $ "dirt-play " <> writeJSON
+        { s: d.set, n: d.n
+        , begin: Int.toNumber d.begin / 100.0, end: Int.toNumber d.end / 100.0
+        , speed: if d.reverse then -1.0 else 1.0, gain: Int.toNumber d.gain / 100.0
+        , orbit: RO.drumsOrbit
+        }
+    _ -> pure unit
   RtSetOffset src i v -> case Number.fromString v of
     Nothing -> pure unit
     Just n -> do
@@ -1665,6 +1695,7 @@ setPort port = case _ of
   d@(RM.DEs9Cv _) -> d
   d@(RM.DPoly _) -> d
   d@(RM.DContinuo _) -> d
+  d@(RM.DSample _) -> d
 
 -- | A freshly-added destination of the given kind, with sensible starting values
 -- | for THIS source. A new FH-2 gate on a drum lane starts on that lane's own
@@ -1682,6 +1713,10 @@ newDest st src = case _ of
   -- No sorted variant: Rings has one pitch bus, so there is no seating to sort.
   "poly-rings" -> Just (RM.DPoly { inst: RM.Rings, sortByPitch: false })
   "continuo" -> Just (RM.DContinuo { channel: 1 })
+  -- A drum set first, if there is one, since this is most often a drum lane.
+  "sample" -> Just (RM.DSample
+    { set: maybe "" _.name (find (\x -> String.contains (String.Pattern "drum") x.name) st.sampleSets <|> head st.sampleSets)
+    , n: 0, begin: 0, end: 100, reverse: false, gain: 100, chop: 1 })
   -- One entry per voice rather than one entry plus a voice field, because the
   -- trigger note is NOT derivable from the voice in general — it is whatever
   -- the module's SETTINGS > SPx say — and offering the four the card is set up
@@ -1821,6 +1856,7 @@ channelMapPanel st =
     RM.DContinuo _ -> "continuo"
     RM.DRample d -> "rample v" <> show d.voice
     RM.DRamplePoly _ -> "rample x4"
+    RM.DSample _ -> "sample"
 
   -- The editable numbers of a destination, which differ per device because the
   -- devices differ. An FH-2 gate shows BOTH its selector note and its jack, since
@@ -1839,6 +1875,25 @@ channelMapPanel st =
     RM.DEs9Cv d -> [ numBox 30 (show d.bus) (RtSetField src i "bus") "CV bus" ]
     RM.DPoly d -> [ HH.span [ HP.class_ (HH.ClassName "rt-fixed") ] [ HH.text (RM.destLabel (RM.DPoly d)) ] ]
     RM.DContinuo d -> [ numBox 30 (show d.channel) (RtSetField src i "channel") "channel 1-16" ]
+    -- Played by SuperDirt on the rig, so it sounds in Rig mode only.
+    RM.DSample d ->
+      [ setSelect src i d.set
+      , numBox 26 (show d.n) (RtSetField src i "n") ("sample in the set, 0-" <> show (samplesIn d.set - 1))
+      , numBox 26 (show d.begin) (RtSetField src i "begin") "window start, % of the sample"
+      , numBox 26 (show d.end) (RtSetField src i "end") "window end, % of the sample"
+      , HH.span
+          [ HE.onClick \_ -> RtSetField src i "reverse" (if d.reverse then "0" else "1")
+          , HP.title "play the window backwards"
+          , style $ "cursor:pointer;font-size:10px;padding:0 3px;color:" <> (if d.reverse then "#3a6a4a" else "#a09a88") ]
+          [ HH.text "rev" ]
+      , numBox 30 (show d.gain) (RtSetField src i "gain") "gain, %"
+      , numBox 22 (show d.chop) (RtSetField src i "chop") "chop: slices of the window across the step, 1-16"
+      , HH.span
+          [ HE.onClick \_ -> RtAudition (RM.DSample d)
+          , HP.title "hear it now (through the rig)"
+          , style "cursor:pointer;font-size:11px;color:#3a6a4a;padding:0 3px" ]
+          [ HH.text "\x25B6" ]
+      ]
     -- The card's own facts are editable because they belong to the CARD, not to
     -- the module: another card sliced differently plays from the same route.
     RM.DRample d ->
@@ -1871,6 +1926,15 @@ channelMapPanel st =
       (map (\n -> HH.option [ HP.value n, HP.selected (n == cur) ] [ HH.text n ])
         (if elem cur st.routingPorts then st.routingPorts else cur : st.routingPorts))
 
+  setSelect src i cur =
+    HH.select
+      [ HE.onValueChange (RtSetSampleSet src i)
+      , style "font-size:10px;max-width:150px;padding:1px 2px;border-radius:3px;border:1px solid #cdbb96;background:#fffdf8" ]
+      (map (\x -> HH.option [ HP.value x.name, HP.selected (x.name == cur) ] [ HH.text x.name ])
+        (if any (\x -> x.name == cur) st.sampleSets then st.sampleSets else { name: cur, samples: 0 } : st.sampleSets))
+
+  samplesIn set = maybe 0 _.samples (find (\x -> x.name == set) st.sampleSets)
+
   numBox w v f tip =
     HH.input
       [ HP.value v, HE.onValueInput f, HP.title tip
@@ -1895,7 +1959,8 @@ channelMapPanel st =
                , Tuple "rample-2" "Rample voice 2"
                , Tuple "rample-3" "Rample voice 3"
                , Tuple "rample-4" "Rample voice 4"
-               , Tuple "rample-poly" "Rample (4 voices, allocated)" ] )
+               , Tuple "rample-poly" "Rample (4 voices, allocated)"
+               , Tuple "sample" "Sample (SuperDirt, Rig mode)" ] )
 
   -- What the table SPENDS, and anything spent twice. Reported, not enforced:
   -- the daemons own admission (es9-daemon's capability/overlap checks,

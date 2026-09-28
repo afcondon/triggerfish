@@ -338,7 +338,7 @@ handleAction = case _ of
           for_ fires \f ->
             void $ RO.sendAll st.outs (RR.drumSends (drumsOf st)
               { note: f.note, velocity: Trig.trigVelocity
-              , atMs: tick.delayMs + f.frac * stepMs, durMs: Trig.trigGateMs })
+              , atMs: tick.delayMs + f.frac * stepMs, durMs: Trig.trigGateMs, stepMs })
         H.modify_ _ { playStep = step }
 
   Frame -> do
@@ -901,12 +901,12 @@ emitHit
   :: RO.Outs -> RR.DrumRouting -> Number -> Number -> Int -> Number -> Int -> Int -> Effect Unit
 emitHit outs drums stepMs delay0 note durMs velocity n =
   if n <= 1 then
-    void $ RO.sendAll outs (RR.drumSends drums { note, velocity, atMs: delay0, durMs })
+    void $ RO.sendAll outs (RR.drumSends drums { note, velocity, atMs: delay0, durMs, stepMs })
   else
     let sub = stepMs / toNumber n
     in for_ (range 0 (n - 1)) \k ->
          void $ RO.sendAll outs (RR.drumSends drums
-           { note, velocity, atMs: delay0 + toNumber k * sub, durMs: sub * 0.9 })
+           { note, velocity, atMs: delay0 + toNumber k * sub, durMs: sub * 0.9, stepMs: sub })
 
 -- | Apply a function to library pattern `i` (no-op if out of range).
 -- | Apply `f` to the rhythm in bank entry `i` and write it back.

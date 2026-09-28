@@ -212,6 +212,21 @@ data Destination
   -- | way to silence itself is exactly a plain CV bus — and the two are worth
   -- | collapsing eventually, but not in the change that introduces this one.
   | DPoly { inst :: InstrumentId, sortByPitch :: Boolean }
+  -- | A SAMPLE, played by SuperDirt on the rig: sample `n` of the Quadrat set
+  -- | `set` (a set's directory is a SuperDirt bank), its splice window as
+  -- | percentages, reverse, gain in percent, and `chop`, which plays the window
+  -- | as that many slices across the step. Rig mode only: a browser cannot send
+  -- | OSC, so in Local mode the lane plays its other legs and not this one.
+  -- | Integers throughout, because the editor and the store deal in them.
+  | DSample
+      { set :: String
+      , n :: Int
+      , begin :: Int
+      , end :: Int
+      , reverse :: Boolean
+      , gain :: Int
+      , chop :: Int
+      }
 
 derive instance eqDestination :: Eq Destination
 
@@ -249,7 +264,7 @@ polyJacks = case _ of
 
 -- | The physical thing a destination lands on. Capacity is per-device, so this
 -- | is what `claims` groups by.
-data Device = DevMidi String | DevFh2 | DevEs9 | DevContinuo
+data Device = DevMidi String | DevFh2 | DevEs9 | DevContinuo | DevSuperDirt
 
 derive instance eqDevice :: Eq Device
 
@@ -259,6 +274,7 @@ deviceLabel = case _ of
   DevFh2 -> "FH-2"
   DevEs9 -> "ES-9"
   DevContinuo -> "continuo"
+  DevSuperDirt -> "SuperDirt"
 
 destDevice :: Destination -> Device
 destDevice = case _ of
@@ -271,6 +287,7 @@ destDevice = case _ of
   DRample d -> DevMidi d.port
   DRamplePoly d -> DevMidi d.port
   DPoly _ -> DevEs9
+  DSample _ -> DevSuperDirt
 
 destLabel :: Destination -> String
 destLabel = case _ of
@@ -292,6 +309,11 @@ destLabel = case _ of
       <> " (note " <> show d.trigger <> ", slice of " <> show d.slots
       <> " from " <> show d.pitchOfSlot0 <> ", CC " <> show (d.voice * 10 + 4)
       <> " " <> show d.settleMs <> "ms early)"
+  DSample d ->
+    "SuperDirt " <> d.set <> ":" <> show d.n <> " " <> show d.begin <> "–" <> show d.end <> "%"
+      <> (if d.reverse then " reversed" else "")
+      <> (if d.chop > 1 then " chop " <> show d.chop else "")
+      <> " gain " <> show d.gain <> "% (Rig mode)"
   DRamplePoly d ->
     d.port <> " ch " <> show d.channel <> " · Rample, 4 voices allocated"
       <> " (notes " <> joinWith "/" (map show d.triggers)
@@ -309,6 +331,7 @@ destShortLabel = case _ of
   DContinuo d -> "cont " <> show d.channel
   DRample d -> "ramp v" <> show d.voice
   DRamplePoly _ -> "Rample x4"
+  DSample d -> d.set <> ":" <> show d.n
 
 -- ---------------------------------------------------------------------------
 -- The table
@@ -448,6 +471,15 @@ setDestField field v = case _ of
   -- reaches is the allocator's decision, and the set it chooses between is a
   -- property of how the module is patched, not of this route.
   DPoly d -> DPoly d
+  -- The window keeps at least one percent, so it never plays nothing.
+  DSample d -> case field of
+    "n" -> DSample d { n = clamp 0 999 v }
+    "begin" -> DSample d { begin = clamp 0 (d.end - 1) v }
+    "end" -> DSample d { end = clamp (d.begin + 1) 100 v }
+    "reverse" -> DSample d { reverse = v /= 0 }
+    "gain" -> DSample d { gain = clamp 0 200 v }
+    "chop" -> DSample d { chop = clamp 1 16 v }
+    _ -> DSample d
 
 -- ---------------------------------------------------------------------------
 -- Reachability — can this leg actually emit, right now?
@@ -489,6 +521,8 @@ reachOf ports = case _ of
   -- stayed silent with the router saying all was well (2026-09-28).
   DEs9Gate _ -> NotBuilt
   DEs9Cv _ -> NotBuilt
+  -- Played by the rig voice, so only through the rig.
+  DSample _ -> if ports.rigUp then Reachable else NeedsRig
   -- Same route as any other ES-9 CV: the allocator runs in the browser, but the
   -- voltages it decides on still travel over the rig WS to es9-daemon.
   DPoly _ -> if ports.rigUp then Reachable else NeedsRig
@@ -602,6 +636,8 @@ carriesLine = case _ of
   -- arriving oscillator would audibly slide in from whatever it held before — so
   -- `Triggerfish.Poly` emits migration pitches un-slewed regardless of this.
   DPoly _ -> true
+  -- One strike of a sample: nothing to slide along.
+  DSample _ -> false
 
 wireOf :: Destination -> Maybe Wire
 wireOf = case _ of
@@ -631,6 +667,8 @@ wireOf = case _ of
   -- Not one wire either: the allocator picks a voice per note, so this is
   -- driven by the Rample pass rather than the per-leg fan-out.
   DRamplePoly _ -> Nothing
+  -- Not MIDI: a /dirt/play from the rig (`Reef.Routing`'s voice legs).
+  DSample _ -> Nothing
 
 -- ---------------------------------------------------------------------------
 -- Claims — what is spoken for, and by whom
@@ -667,6 +705,7 @@ outputsOf = case _ of
   DContinuo _ -> []
   DRample _ -> []
   DRamplePoly _ -> []
+  DSample _ -> []
 
 -- | es9-daemon's `/cv <bus>`: buses 8..15 ARE the ES-9's eight panel jacks, so
 -- | bus 8 is panel jack 1. Confirmed twice — `reference_es9_channel_mapping` and
@@ -729,6 +768,7 @@ claims tbl = map collect (nub (map _.slot spent))
     DContinuo _ -> []
     DRample _ -> []
     DRamplePoly _ -> []
+    DSample _ -> []
     where
     -- The output half, from the one structured definition, so this and the
     -- backward view cannot drift about where a destination lands.

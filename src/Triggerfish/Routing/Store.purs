@@ -91,6 +91,12 @@ destStr = case _ of
       [ show d.channel, show d.voice, show d.trigger, show d.slots
       , show d.pitchOfSlot0, show d.settleMs, d.port
       ]
+  -- The set name last, like a port: every fixed field first.
+  DSample d ->
+    "sample:" <> joinWith "|"
+      [ show d.n, show d.begin, show d.end, if d.reverse then "1" else "0"
+      , show d.gain, show d.chop, d.set
+      ]
   -- Same rule: every fixed field first, the port as the tail.
   DRamplePoly d ->
     "ramplepoly:" <> joinWith "|"
@@ -160,6 +166,19 @@ destOf s = case Str.indexOf (Pattern ":") s of
                 <*> inRange 0 127 t2
                 <*> inRange 0 127 t3
                 <*> inRange 0 127 t4
+        _ -> Nothing
+      "sample", _ -> case take 6 parts of
+        [ n, b, e, r, g, c ] ->
+          case joinWith "|" (drop 6 parts) of
+            "" -> Nothing
+            set ->
+              (\n' begin end reverse gain chop -> DSample { set, n: n', begin, end, reverse: reverse /= 0, gain, chop })
+                <$> inRange 0 999 n
+                <*> inRange 0 99 b
+                <*> inRange 1 100 e
+                <*> inRange 0 1 r
+                <*> inRange 0 200 g
+                <*> inRange 1 16 c
         _ -> Nothing
       _, _ -> Nothing
   where

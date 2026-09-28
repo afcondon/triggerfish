@@ -31,6 +31,7 @@ module Triggerfish.Routing.Out
   , fanNote
   , fanNoteAt
   , drumRouting
+  , drumsOrbit
   , sendAll
   ) where
 
@@ -48,7 +49,7 @@ import Binnacle.Midi as Midi
 import Binnacle.Time (perfNow)
 import Reef.Rample as Rample
 import Reef.Routing as RR
-import Triggerfish.Routing.Model (Leg, Source(..), Table, Wire, liveLegsFor, wireOf)
+import Triggerfish.Routing.Model (Destination(..), Leg, Source(..), Table, Wire, liveLegsFor, wireOf)
 
 -- | Every MIDI output port, by name. Built once when MIDI access arrives.
 type Outs = Array { name :: String, out :: Midi.MidiOut }
@@ -179,12 +180,26 @@ fanNote outs tbl src ev =
 -- | substring rule as `outFor`, because the rig matches names exactly: pushing
 -- | "IAC" would reach nothing there.
 -- |
--- | A leg the browser cannot emit (the ES-9 kinds) or whose port is absent is
--- | left out, so the rig plays exactly what the browser would.
+-- | A MIDI leg the browser cannot emit (the ES-9 kinds) or whose port is
+-- | absent is left out, so the rig plays exactly what the browser would. A
+-- | sample leg goes in as a voice: only the rig plays those, in Rig mode.
 drumRouting :: Outs -> Table -> Array Int -> RR.DrumRouting
 drumRouting outs tbl notes =
-  { notes, lanes: mapWithIndex (\lane _ -> mapMaybe resolve (liveLegsFor tbl (SDrumLane lane))) notes }
+  { notes
+  , lanes: mapWithIndex (\lane _ -> mapMaybe resolve (legsOf lane)) notes
+  , voices: mapWithIndex (\lane _ -> mapMaybe voice (legsOf lane)) notes
+  }
   where
+  legsOf lane = liveLegsFor tbl (SDrumLane lane)
+  voice leg = case leg.dest of
+    DSample d -> Just
+      { s: d.set, n: d.n
+      , begin: Int.toNumber d.begin / 100.0, end: Int.toNumber d.end / 100.0
+      , speed: if d.reverse then -1.0 else 1.0
+      , gain: Int.toNumber d.gain / 100.0
+      , orbit: drumsOrbit, chop: d.chop, offsetMs: leg.offsetMs
+      }
+    _ -> Nothing
   resolve leg = do
     w <- wireOf leg.dest
     found <- find (\r -> contains (Pattern w.port) r.name) outs
@@ -196,8 +211,13 @@ drumRouting outs tbl notes =
       , rample: maybe [] (\r -> [ { voice: r.voice, slots: r.slots, pitchOfSlot0: r.pitchOfSlot0, settleMs: r.settleMs } ]) w.rample
       }
 
+-- | The SuperDirt orbit drum voices play on: an effects chain of their own,
+-- | apart from Conspicillum's 0 and its sends 10 and 11, on the main outputs.
+drumsOrbit :: Int
+drumsOrbit = 1
+
 -- | Send what `Reef.Routing` decided, each `atMs` from now. Returns how many
--- | notes went out.
+-- | notes went out. A `Play` is the rig's to send; the browser has no OSC.
 sendAll :: Outs -> Array RR.Send -> Effect Int
 sendAll outs sends = do
   now <- perfNow
@@ -216,3 +236,4 @@ sendAll outs sends = do
       Just o -> do
         Midi.sendCCAtMs o { channel: c.channel - 1, controller: c.controller, value: c.value, atMs: now + c.atMs }
         pure 0
+    RR.Play _ -> pure 0
