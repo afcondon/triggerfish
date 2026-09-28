@@ -535,18 +535,22 @@ handleAction = case _ of
       AGrids -> pushHandoff st
       ASelene -> pushTrig   -- push the resolved POLYTRIG kit to the rig voice
   ToggleEdit -> H.modify_ \s -> s { editing = not s.editing }
-  -- click selects a cell for the NOTE inspector, creating a hit at the default
-  -- velocity if the cell was empty; shift-click clears it.
-  -- Edits are disabled on an ephemeral recalled snapshot (scratchFixed) — a
-  -- frozen artefact plays read-only; the library is never mutated behind it.
+  -- A click on an empty cell adds a hit at the default velocity and selects it
+  -- for the NOTE inspector; on a lit cell it selects it; on the SELECTED lit
+  -- cell it clears it. Shift-click clears any cell. On a recalled snapshot the
+  -- first edit makes an editable copy (`thawed`) rather than doing nothing.
   CellClick lane step shift -> do
-    H.modify_ \s ->
-      if isJust s.scratchFixed then s
-      else if shift then
-        (modRhythmAt s.fixedSel (P.modifyCell lane step (const P.emptyCell)) s)
-          { selected = if s.selected == Just { lane, step } then Nothing else s.selected }
-      else (modRhythmAt s.fixedSel (\p -> if P.firesAt p lane step then p else P.modifyCell lane step (const (P.hitCell editVel)) p) s)
-        { selected = Just { lane, step } }
+    H.modify_ \s0 ->
+      let
+        s = thawed s0
+        here = Just { lane, step }
+        lit = maybe false (\p -> P.firesAt p lane step) (selectedPattern s)
+        clear = modRhythmAt s.fixedSel (P.modifyCell lane step (const P.emptyCell)) s
+      in
+        if shift then clear { selected = if s.selected == here then Nothing else s.selected }
+        else if lit && s.selected == here then clear { selected = Nothing }
+        else (modRhythmAt s.fixedSel (\p -> if P.firesAt p lane step then p else P.modifyCell lane step (const (P.hitCell editVel)) p) s)
+          { selected = here }
     persistLib
   SetCellVel d -> do
     H.modify_ (modSelectedCell \c -> c { vel = clamp 1 127 (c.vel + d) })
@@ -578,9 +582,7 @@ handleAction = case _ of
   -- re-prints the content name-stripped, so the two can never disagree — and the
   -- glyph, being a fingerprint of the sound alone, does not move when you rename.
   SetPatternName name -> do
-    H.modify_ \s ->
-      if isJust s.scratchFixed then s
-      else modRhythmAt s.fixedSel (_ { name = name }) s
+    H.modify_ \s -> let t = thawed s in modRhythmAt t.fixedSel (_ { name = name }) t
     persistLib
   -- Write-back to Amphora: publish the active fixed rhythm to the store (content
   -- + label + balistes-grid favourite), so a pattern built in the app persists
@@ -955,6 +957,22 @@ mergeRhythmsByName s incoming =
   in s.presets <> map presetOfRhythm (filter (\p -> not (any (_ == p.name) known)) incoming)
 
 -- | Apply a function to the selected cell of the active fixed rhythm.
+-- | A recalled rhythm plays as a frozen snapshot (`scratchFixed`), so the banked
+-- | preset it came from is never changed behind your back. Editing it used to
+-- | do nothing at all, silently. Now the first edit makes it a library rhythm of
+-- | its own, named as the recalled one plus " (edited)", selected and sounding,
+-- | and the edit lands on that.
+thawed :: State -> State
+thawed s = case s.scratchFixed of
+  Nothing -> s
+  Just pat ->
+    let
+      n = length s.presets
+      copy = pat { name = (if pat.name == "" then "rhythm" else pat.name) <> " (edited)" }
+    in
+      s { presets = s.presets <> [ presetOfRhythm copy ]
+        , active = AFixed n, fixedSel = n, scratchFixed = Nothing, selected = Nothing }
+
 modSelectedCell :: (P.Cell -> P.Cell) -> State -> State
 modSelectedCell f s = case s.selected of
   Just { lane, step } | isNothing s.scratchFixed ->
