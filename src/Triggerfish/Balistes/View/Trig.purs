@@ -15,7 +15,7 @@ import Halogen as H
 import Halogen.HTML as HH
 import Halogen.HTML.Events as HE
 import Halogen.HTML.Properties as HP
-import Triggerfish.Odonus.Grid.Widgets (style)
+import Triggerfish.Ui.Style (style)
 import Triggerfish.Tidal.Lane as Lane
 import Triggerfish.Balistes.Model as M
 import Triggerfish.Balistes.Types (Action(..), State)

@@ -35,6 +35,7 @@ import Web.UIEvent.MouseEvent as ME
 import Triggerfish.Capture.Types (Logbook, Mark, Orientation(..), PlaySource(..), PlayState, RegionDrag, RegionEdge(..))
 import Triggerfish.Clips (NoteEvent)
 import Halogen.Widgets.Svg (svgAttr, svgEl)
+import Triggerfish.Ui.Style (style)
 
 -- | The capture sub-state every machine holds: the always-on logbook, a replay loop
 -- | in flight (if any), a region drag in progress, and whether the harmonic-context
@@ -82,10 +83,6 @@ tlH = 520.0
 maxDraw :: Int
 maxDraw = 3000
 
--- ── tiny generic helpers (duplicated from Odonus.Grid.Widgets so this stays a
--- ── leaf module, not a dependant of Odonus) ──────────────────────────────────
-style :: forall r i. String -> HP.IProp r i
-style = HP.attr (H.AttrName "style")
 
 -- ── coordinate projections (the only orientation-aware code) ─────────────────
 

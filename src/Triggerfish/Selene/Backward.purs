@@ -65,6 +65,7 @@ import Triggerfish.Routing.Monitor as Mon
 import Triggerfish.Selene.Manifest as Man
 import Triggerfish.Selene.Layout (Assignment, Layout, Output, outputKey)
 import Triggerfish.Selene.Layout as Layout
+import Triggerfish.Ui.Style (style)
 
 type Traffic = { hits :: Int, offs :: Int, recent :: Boolean }
 
@@ -164,7 +165,7 @@ panel :: forall w i. Array Layout.Problem -> Array Row -> HH.HTML w i
 panel probs rs =
   HH.div_
     [ resources
-    , HH.div [ sty "display:flex;flex-wrap:wrap;gap:14px 26px;align-items:flex-start" ]
+    , HH.div [ style "display:flex;flex-wrap:wrap;gap:14px 26px;align-items:flex-start" ]
         (map block (banksOf rs))
     ]
   where
@@ -179,20 +180,20 @@ panel probs rs =
     if null probs then HH.div_ []
     else
       HH.div
-        [ sty $ "margin-bottom:18px;padding:9px 12px;border-left:3px solid #b0492f;"
+        [ style $ "margin-bottom:18px;padding:9px 12px;border-left:3px solid #b0492f;"
             <> "background:#b0492f11;display:flex;flex-direction:column;gap:3px" ]
-        ( [ HH.div [ sty $ engrave <> ";font-size:9px;color:#b0492f;margin-bottom:2px" ]
+        ( [ HH.div [ style $ engrave <> ";font-size:9px;color:#b0492f;margin-bottom:2px" ]
               [ HH.text "contended resources — not visible in the table below" ] ]
-            <> map (\p -> HH.div [ sty "font-size:10px;color:#7a3a28;line-height:1.45" ]
+            <> map (\p -> HH.div [ style "font-size:10px;color:#7a3a28;line-height:1.45" ]
                             [ HH.text (Layout.problemNote p) ]) probs )
 
   block b =
-    HH.div [ sty "flex:1 1 300px;min-width:280px;max-width:420px" ]
+    HH.div [ style "flex:1 1 300px;min-width:280px;max-width:420px" ]
       [ HH.div
-          [ sty $ engrave <> ";font-size:10px;padding-bottom:3px;margin-bottom:5px;"
+          [ style $ engrave <> ";font-size:10px;padding-bottom:3px;margin-bottom:5px;"
               <> "border-bottom:1px solid #00000018" ]
           [ HH.text b ]
-      , HH.div [ sty "display:flex;flex-direction:column" ]
+      , HH.div [ style "display:flex;flex-direction:column" ]
           (map row (sortWith (\r -> r.output.slot)
                       (filter (\r -> r.output.device <> "/" <> r.output.bank == b) rs)))
       ]
@@ -206,12 +207,12 @@ panel probs rs =
       -- contradiction — and this is the exact off-by-one that already shipped
       -- once today.
       [ HP.title ("jack " <> show (r.output.slot + 1) <> "  ·  " <> outputKey r.output)
-      , sty $ "display:grid;grid-template-columns:34px 1fr 96px 62px;gap:8px;"
+      , style $ "display:grid;grid-template-columns:34px 1fr 96px 62px;gap:8px;"
           <> "align-items:baseline;padding:2px 0;font-size:11px;"
           <> (if free r then "opacity:0.45" else "") ]
-      [ HH.span [ sty mono ] [ HH.text (show (r.output.slot + 1)) ]
+      [ HH.span [ style mono ] [ HH.text (show (r.output.slot + 1)) ]
       , claim r
-      , HH.span [ sty $ mono <> ";font-size:9px;color:#6a6558" ]
+      , HH.span [ style $ mono <> ";font-size:9px;color:#6a6558" ]
           ( [ HH.text (maybe "" (\a -> a.group <> " v" <> show a.voice <> " · " <> a.role) r.layout) ]
               <> calib r )
       , traffic r
@@ -223,20 +224,20 @@ panel probs rs =
   claim r =
     let live = filter _.on r.claimedBy
     in if null r.claimedBy
-      then HH.span [ sty "color:#a79f86;font-size:10px" ] [ HH.text "—" ]
+      then HH.span [ style "color:#a79f86;font-size:10px" ] [ HH.text "—" ]
       else HH.span
-             [ sty (if length live > 1 then "color:#b0492f;font-weight:600" else "color:#3f3c33") ]
-             ( intersperse (HH.span [ sty "color:#a79f86" ] [ HH.text "  ·  " ])
+             [ style (if length live > 1 then "color:#b0492f;font-weight:600" else "color:#3f3c33") ]
+             ( intersperse (HH.span [ style "color:#a79f86" ] [ HH.text "  ·  " ])
                  (map one r.claimedBy)
                  <> (if length live > 1 then [ HH.text "  ⚠" ] else []) )
 
   one c =
     HH.span
-      [ sty (if c.on then "" else "opacity:0.4;text-decoration:line-through")
+      [ style (if c.on then "" else "opacity:0.4;text-decoration:line-through")
       , HP.title ((if c.on then c.kind else c.kind <> " — muted, so it is not driving this jack")
             <> "  ·  " <> Man.standingNote c.standing) ]
       ( [ HH.text c.label
-        , HH.span [ sty "color:#8a8474;font-size:9px;text-decoration:none" ]
+        , HH.span [ style "color:#8a8474;font-size:9px;text-decoration:none" ]
             [ HH.text ("  " <> c.kind) ]
         ] <> orphan c )
 
@@ -244,11 +245,11 @@ panel probs rs =
   -- the reason you cannot find the machine is that there is no longer one.
   orphan c = case c.standing of
     Man.Unknown ->
-      [ HH.span [ sty "color:#b0492f;font-size:9px;text-decoration:none"
+      [ HH.span [ style "color:#b0492f;font-size:9px;text-decoration:none"
                 , HP.title "no app declares this source — a leftover row holding a jack" ]
           [ HH.text "  ✗ orphaned" ] ]
     Man.Stale app _ ->
-      [ HH.span [ sty "color:#a8762f;font-size:9px;text-decoration:none"
+      [ HH.span [ style "color:#a8762f;font-size:9px;text-decoration:none"
                 , HP.title (Man.standingNote c.standing) ]
           [ HH.text ("  ◌ " <> app <> " not responding") ] ]
     Man.Live _ -> []
@@ -260,12 +261,12 @@ panel probs rs =
     Nothing -> HH.span_ []
     Just t
       | t.hits == 0 ->
-          HH.span [ sty $ mono <> ";font-size:9px;color:#b0a690"
+          HH.span [ style $ mono <> ";font-size:9px;color:#b0a690"
                   , HP.title "claimed, but no notes have gone there" ]
             [ HH.text "silent" ]
       | otherwise ->
           HH.span
-            [ sty $ mono <> ";font-size:9px;color:"
+            [ style $ mono <> ";font-size:9px;color:"
                 <> (if t.hits - t.offs > 2 then "#b0492f"
                     else if t.recent then "#2f8a5c" else "#9a9284")
             , HP.title (show t.hits <> " on / " <> show t.offs <> " off") ]
@@ -275,8 +276,8 @@ panel probs rs =
   -- because uncalibrated reads as drifting-out-of-tune rather than as broken.
   calib r = case r.layout of
     Just a | a.role == "pitch" -> case r.vco of
-      Just v -> [ HH.span [ sty "color:#2f8a5c" ] [ HH.text ("  ✓ " <> v) ] ]
-      Nothing -> [ HH.span [ sty "color:#b0492f"
+      Just v -> [ HH.span [ style "color:#2f8a5c" ] [ HH.text ("  ✓ " <> v) ] ]
+      Nothing -> [ HH.span [ style "color:#b0492f"
                            , HP.title "no calibration table — this VCO will drift sharp or flat across its range" ]
                      [ HH.text "  uncalibrated" ] ]
     _ -> []
@@ -285,10 +286,3 @@ panel probs rs =
   mono = "font-family:'SF Mono',Menlo,monospace"
   engrave = "font-family:Georgia,serif;letter-spacing:0.12em;text-transform:uppercase;color:#5a564b"
 
--- | Local rather than imported from `Odonus.Grid.Widgets`, which is where the
--- | app's `style` currently lives: Selene must not depend on Odonus, and this is
--- | precisely the primitive the `Triggerfish.Ui.Style` extraction is meant to
--- | give a neutral home. Needs its own signature — inside a `where` it is
--- | monomorphised to one property row and every other use fails to unify.
-sty :: forall r i. String -> HH.IProp r i
-sty = HP.attr (HH.AttrName "style")

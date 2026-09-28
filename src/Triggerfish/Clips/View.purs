@@ -37,6 +37,7 @@ import Halogen.HTML as HH
 import Halogen.HTML.Events as HE
 import Halogen.HTML.Properties as HP
 import Triggerfish.Clips (MidiClip, headCount)
+import Triggerfish.Ui.Style (style)
 
 -- | The attach column: which voice the ＋ lands on (`label` is shown in the legend,
 -- | e.g. "P3") and the constructor that takes the clip.
@@ -57,8 +58,6 @@ type LibraryWiring action =
 -- | in a different panel from its cause is a status line nobody reads.
 type ShareOut action = { onShare :: MidiClip -> action, msg :: String }
 
-style :: forall r i. String -> HP.IProp r i
-style = HP.attr (HH.AttrName "style")
 
 -- | The whole library surface: a count line, a legend of what the controls do, then
 -- | one row per clip (newest first — the store conses on capture).

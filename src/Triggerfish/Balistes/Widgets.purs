@@ -32,7 +32,7 @@ import Data.Array (concatMap)
 import Halogen as H
 import Halogen.HTML as HH
 import Halogen.HTML.Events as HE
-import Triggerfish.Odonus.Grid.Widgets (engrave, style)
+import Triggerfish.Ui.Style (engrave, style)
 import Halogen.Widgets.Svg (svgAttr, svgEl, svgOn)
 import Triggerfish.Ui.Knob (knob)
 import Triggerfish.Balistes.Model as M

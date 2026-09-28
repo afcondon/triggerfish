@@ -100,6 +100,7 @@ import Triggerfish.Scale (rootNames, scaleTypes)
 import Vetula.App as Vetula
 import Vetula.Clipboard (copyText)
 import Triggerfish.Transport (Which(..), Mode(..), Sounding(..), soundingOf, anyArmed, allMachines)
+import Triggerfish.Ui.Style (style)
 
 main :: Effect Unit
 main = HA.runHalogenAff do
@@ -415,7 +416,6 @@ type Slots =
   , sel :: H.Slot SQ.Query Selene.Output Unit
   , vet :: H.Slot Vetula.SourceQuery Vetula.Output Unit
   , suf :: H.Slot (Const Void) Void Unit
-  , ste :: H.Slot (Const Void) Void Unit
   -- One cascade-menu per Selene destination in the routing modal, keyed by
   -- destination index — the nested ES-9/FH-2/MIDI target picker.
   , selTarget :: Select.Slot Int
@@ -2951,8 +2951,6 @@ harmChip active i d =
       , style $ "cursor:pointer;color:" <> (if i == active then "#b23b28" else "#4a463b") ]
       [ HH.text ((if i == active then "●" else "○") <> joinWith "" (replicate (d - 1) "‑")) ]
 
-style :: forall r i. String -> HP.IProp r i
-style = HP.attr (H.AttrName "style")
 
 -- The rig WebSocket. Same endpoint the machine components each connect to; the
 -- shell opens its own so PANIC does not depend on any of them being alive.

@@ -41,7 +41,7 @@ import Halogen.HTML.Events as HE
 import Halogen.Subscription as HS
 import Triggerfish.Ui.Knob (knob)
 import Triggerfish.Ui.Pointer (padNorm)
-import Triggerfish.Odonus.Grid.Widgets (style, engrave)
+import Triggerfish.Ui.Style (style, engrave)
 import Halogen.Widgets.Svg (svgAttr, svgEl)
 import Unsafe.Coerce (unsafeCoerce)
 import Web.Event.Event (EventType(..))

@@ -17,7 +17,7 @@ import Halogen as H
 import Halogen.HTML as HH
 import Halogen.HTML.Events as HE
 import Web.UIEvent.MouseEvent as ME
-import Triggerfish.Odonus.Grid.Widgets (engrave, style)
+import Triggerfish.Ui.Style (engrave, style)
 import Halogen.Widgets.Svg (svgAttr, svgEl, svgOn)
 import Triggerfish.Balistes.Pattern as P
 import Triggerfish.Transport (Sounding(..))

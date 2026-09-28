@@ -17,9 +17,8 @@ import Halogen as H
 import Halogen.HTML as HH
 import Halogen.HTML.Properties as HP
 import Triggerfish.Glyph (ChipView, Glyph, GlyphIcon)
+import Triggerfish.Ui.Style (style)
 
-style :: forall r i. String -> HP.IProp r i
-style = HP.attr (H.AttrName "style")
 
 -- | One FontAwesome solid glyph-icon, tinted its own colour.
 faIcon :: forall w i. GlyphIcon -> HH.HTML w i

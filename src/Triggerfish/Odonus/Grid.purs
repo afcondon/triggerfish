@@ -148,25 +148,6 @@ handleQuery = case _ of
     for_ s.binnacle \bin ->
       liftEffect (Clock.setFreeBaseline (Binnacle.clock bin) { startMicros, tempo })
     pure (Just next)
-  -- The Vetula bridge: drive the chord quantiser from Vetula's progression.
-  FeedChords pcs next -> do
-    H.modify_ \s -> s { odo = M.setChordFeed pcs s.odo }
-    pure (Just next)
-  -- The LIVE Vetula→Odonus follow bridge: store the latest poll of Odonus-bound
-  -- voice chords, then re-derive the followed chord (a no-op overlay if nothing
-  -- is followed or the followed voice has gone away).
-  FeedVoiceChords vcs next -> do
-    H.modify_ \s ->
-      let
-        -- Vetula is the sole harmonic authority now: Odonus ALWAYS follows the feed
-        -- (auto-adopting the first Odonus-bound voice), so a firing chord colours the
-        -- output on top of the resting scale with no source radio to set. An empty
-        -- feed leaves `follow` Nothing → the overlay off → just the scale.
-        s1 = s { voiceChords = vcs, source = SVetula }
-        s2 = s1 { follow = keepOrFirst s1.follow vcs }
-      in
-        recomputeFollow s2
-    pure (Just next)
   -- The ONE transport query (control-surface MISU refactor). The shell pushes this
   -- machine's derived `Sounding`; we edge-detect and act:
   --   * leaving Local  → note-off held local voices (the scheduler keeps ticking).

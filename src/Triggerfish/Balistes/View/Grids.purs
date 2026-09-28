@@ -17,7 +17,7 @@ import Data.Int.Bits (shr)
 import Halogen as H
 import Halogen.HTML as HH
 import Web.UIEvent.MouseEvent as ME
-import Triggerfish.Odonus.Grid.Widgets (style)
+import Triggerfish.Ui.Style (style)
 import Halogen.Widgets.Svg (svgAttr, svgEl, svgOn)
 import Reef.Balistes.Tables as T
 import Triggerfish.Balistes.Model as M

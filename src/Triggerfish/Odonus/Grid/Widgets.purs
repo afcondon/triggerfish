@@ -7,8 +7,7 @@
 -- | half the app. They are `Halogen.Widgets.Svg` now — they were never Odonus's,
 -- | and five other modules had grown their own copies.
 module Triggerfish.Odonus.Grid.Widgets
-  ( style
-  , engrave
+  ( module Triggerfish.Ui.Style
   , headColor
   , roman
   , dirName
@@ -34,14 +33,11 @@ import Data.Maybe (Maybe(..), fromMaybe, maybe)
 import Halogen as H
 import Halogen.HTML as HH
 import Halogen.HTML.Events as HE
-import Halogen.HTML.Properties as HP
 import Triggerfish.Odonus.Model as M
 import Triggerfish.Ui.Knob (knob)
+import Triggerfish.Ui.Style (engrave, style)
 import Triggerfish.Odonus.Grid.Types
   ( Action(..), KnobTarget(..), Slots, State, GenKind, targetRange, genLabel, genSub, periodOf )
-
-style :: forall r i. String -> HP.IProp r i
-style = HP.attr (H.AttrName "style")
 
 headColor :: Int -> String
 headColor h = case h `mod` 4 of
@@ -68,9 +64,6 @@ speedRatio ix = maybe "1.0" show (M.speedTable !! ix) <> "×"
 
 signed :: Int -> String
 signed n = if n > 0 then "+" <> show n else show n
-
-engrave :: String
-engrave = "font-family:Georgia,'Times New Roman',serif;letter-spacing:0.12em;text-transform:uppercase;color:#5a564b"
 
 -- | A pale Hainbach control panel: engraved header + body, full viewport height.
 -- | A pale Hainbach control panel. Collapsible: its header is the toggle

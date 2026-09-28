@@ -1062,8 +1062,6 @@ data SourceQuery a
   -- Unrecognised segments are ignored rather than guessed at, so a stale link
   -- switches machine and leaves the stage alone.
   | SetStagePath (Array String) a
-  | AskChords (Array (Array Int) -> a)
-  | AskVoiceChords (Array { id :: Int, pcs :: Array Int } -> a)  -- live per-Odonus-voice chord
   | AskHarmonic ({ durs :: Array Int, active :: Int, chord :: String } -> a)  -- nav harmonic strip: voice-0 dwell schedule + live playhead + the active chord's notes
   | AskBrushSig (String -> a)   -- the current rig payload string; the shell diffs it to auto-re-push on change
   -- Live jump: re-anchor every voice so chord `i` reads NOW (from the nav strip).
@@ -1262,15 +1260,6 @@ handleQuery = case _ of
     for_ (stageFromPath s.lastLens segs) \stg ->
       when (stg /= s.stage) (handleAction (SetStage stg))
     pure (Just next)
-  AskChords reply -> do
-    s <- H.get
-    pure (Just (reply (progressionPCs s)))
-  -- The live Odonus follow bridge: each ToOdonus voice's CURRENT block chord,
-  -- keyed by the voice's channel field (reused as the Odonus id). The shell polls
-  -- this ~100ms and feeds it to Odonus's quantiser.
-  AskVoiceChords reply -> do
-    s <- H.get
-    pure (Just (reply (voiceChordFeed s)))
   -- The nav harmonic-context strip: the AUTHORITATIVE voice's dwell schedule padded to
   -- the progression length (bars-per-chord; 0 = a skip), and the live playhead — the
   -- chord index that voice's read-head sits on at the current pulse (-1 = none). The
@@ -1497,11 +1486,6 @@ pcsToSet pcs = case sort (nub (map (\x -> mod x 12) pcs)) of
     Just r -> { root: r, offsets: map (_ - r) sorted }
     Nothing -> { root: 0, offsets: [ 0 ] }
 
--- | The current path as one PC set per step (each chord's absolute pitch
--- | classes) — what Odonus's quantiser snaps to when fed from Vetula.
-progressionPCs :: State -> Array (Array Int)
-progressionPCs st = mapMaybe (\pid -> _.pcs <$> find (\c -> c.id == pid) st.chords) st.path
-
 -- | The single voice (if any) whose read-head may honestly stand for "the" harmonic
 -- | context in the top bar. An Odonus-feeding voice wins outright — it conducts the
 -- | quantiser, so it IS the harmonic reading regardless of what the MIDI heads are
@@ -1514,19 +1498,6 @@ harmonicVoice st =
     Nothing -> case st.voices of
       [ v ] -> Just v
       _ -> Nothing
-
--- | Each Odonus-bound voice's CURRENT block chord as pitch classes, keyed by its
--- | channel (reused as the Odonus id). The shell polls this ~100ms and feeds it
--- | to Odonus's follow selector. A ToMidi voice contributes nothing.
-voiceChordFeed :: State -> Array { id :: Int, pcs :: Array Int }
-voiceChordFeed st =
-  let chords = perfChords st
-      voices = mapMaybe
-        (\v -> if v.dest == ToOdonus
-                 then (\c -> { id: v.channel, pcs: c.pcs }) <$> index chords v.cursor
-                 else Nothing)
-        st.voices
-  in voices <> perfBoxOdoFeed st
 
 -- | Perform boxes whose terminal is `→ odo` contribute their CURRENT block chord
 -- | to the Odonus feed (keyed by the box's channel, reused as the Odonus id) — the

@@ -44,7 +44,7 @@ import Binnacle.Clock as Clock
 import Binnacle.Midi as Midi
 import Binnacle.Scheduler as Scheduler
 import Binnacle.Transport as Transport
-import Triggerfish.Odonus.Grid.Widgets (engrave, style)
+import Triggerfish.Ui.Style (engrave, style)
 import Halogen.Widgets.Svg (svgAttr, svgEl, svgOn)
 import Triggerfish.Ui.Euclid (Nudge(..))
 import Triggerfish.Ui.Euclid as Euclid
@@ -263,8 +263,6 @@ handleQuery = case _ of
     for_ s.binnacle \bin ->
       liftEffect (Clock.setFreeBaseline (Binnacle.clock bin) { startMicros, tempo })
     pure (Just next)
-  FeedChords _ next -> pure (Just next)
-  FeedVoiceChords _ next -> pure (Just next)   -- no chord quantiser
   -- The ONE transport query (control-surface MISU refactor). Selene has no rig
   -- voice, so it's only ever Silent or Local (the shell never sends Rig); no held
   -- notes to silence. Emission gates on `sounding == Local`.

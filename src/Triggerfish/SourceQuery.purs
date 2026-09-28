@@ -18,12 +18,6 @@
 -- |     false`) but its scheduler/animation KEEPS RUNNING (lockstep co-sim). This
 -- |     is orthogonal to `master`: master is the transport (playing at all),
 -- |     audible is who makes the sound (local vs rig).
--- |   * `FeedVoiceChords` — the LIVE Vetula→Odonus follow bridge. The shell polls
--- |     Vetula ~100ms for each Odonus-bound performance voice's current block
--- |     chord (`{ id, pcs }`, where `id` is the voice's channel reused as an
--- |     Odonus id) and pushes the set here; Odonus's KEY pane selects one (or
--- |     zero) to snap its output to. Modules without a chord quantiser ignore it.
--- |
 -- |   * `AskLibrary` — "hand me your saved presets as `{name, text}`", where
 -- |     `text` is each entry rendered to its Lepidoptera eDSL (the transferable
 -- |     form). The TIDAL page's cross-instrument LIBRARY MANAGER (A5) gathers
@@ -70,8 +64,6 @@ data Query a
   -- present, so the shell's free-run baseline is overridden). Clock-less machines
   -- answer their last-known / default.
   | AskClock ({ tempo :: Number, locked :: Boolean } -> a)
-  | FeedChords (Array (Array Int)) a
-  | FeedVoiceChords (Array { id :: Int, pcs :: Array Int }) a
   -- The ONE transport query (control-surface MISU refactor — see
   -- docs/DESIGN-transport-misu.md). It replaces the old scatter of SetMaster /
   -- SetAudible / SetArm / SyncToRig / StopRig: the shell derives each machine's

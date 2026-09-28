@@ -32,10 +32,10 @@ import Data.Array (concatMap, filter)
 import Data.Int (toNumber)
 import Halogen as H
 import Halogen.HTML as HH
-import Halogen.HTML.Properties as HP
 import Triggerfish.Capture.Types (Mark)
 import Triggerfish.Clips (NoteEvent)
 import Halogen.Widgets.Svg (svgAttr, svgEl)
+import Triggerfish.Ui.Style (style)
 
 -- | Which way the river runs. `FlowLeft` = emitted at the RIGHT edge, ageing
 -- | leftward (Odonus). `FlowRight` = emitted at the LEFT edge, ageing rightward
@@ -96,8 +96,6 @@ xAt flow elapsedMs = case flow of
 pitchToY :: Int -> Number
 pitchToY pitch = riverH * (1.0 - (toNumber (clamp 24 96 pitch) - 24.0) / 72.0)
 
-style :: forall r i. String -> HP.IProp r i
-style = HP.attr (HH.AttrName "style")
 
 -- | The river: octave guides (HTML, so the labels aren't stretched by
 -- | `preserveAspectRatio=none`), then the notes and marks in one stretched SVG.

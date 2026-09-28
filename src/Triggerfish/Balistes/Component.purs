@@ -75,7 +75,7 @@ import Triggerfish.Transport (Sounding(..))
 import Triggerfish.Tidal.Lane as Lane
 import Reef.Balistes.Sim as Sim
 import Triggerfish.Ui.Pointer as Pointer
-import Triggerfish.Odonus.Grid.Widgets (engrave, style)
+import Triggerfish.Ui.Style (engrave, style)
 import Web.Event.Event (EventType(..))
 import Web.Event.EventTarget (addEventListener, eventListener, removeEventListener)
 import Web.HTML (window)
@@ -141,8 +141,6 @@ handleQuery = case _ of
     for_ s.binnacle \bin ->
       liftEffect (Clock.setFreeBaseline (Binnacle.clock bin) { startMicros, tempo })
     pure (Just next)
-  FeedChords _ next -> pure (Just next)   -- a drum machine; no chord quantiser
-  FeedVoiceChords _ next -> pure (Just next)   -- ditto
   -- The ONE transport query (control-surface MISU refactor). The shell pushes this
   -- machine's derived `Sounding`; drum hits are one-shots so there's nothing to
   -- note-off — we only act on the rig edges: entering Rig hands off (re-issuing Rig
