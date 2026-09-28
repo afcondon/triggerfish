@@ -17,6 +17,7 @@
 module Triggerfish.Routing.Store
   ( save
   , load
+  , storeKey
   ) where
 
 import Prelude
