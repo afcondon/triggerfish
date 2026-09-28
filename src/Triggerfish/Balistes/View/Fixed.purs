@@ -26,18 +26,20 @@ import Triggerfish.Balistes.Widgets
   ( stepBtn, svgRect, noteTag, laneColor, concatMap' )
 
 -- The per-cell editor, as a HORIZONTAL strip that rides in the RYTM band header
--- and appears only while a cell is selected. Was a whole 240px NOTE column that
+-- and fills only while a cell is selected. Was a whole 240px NOTE column that
 -- stood there permanently showing "CLICK A CELL IN THE GRID TO INSPECT IT" — a
 -- fifth of the width spent on a hint. Same edits, no standing cost.
+--
+-- The row is ALWAYS there, one fixed height, blank when nothing is selected, and
+-- never wraps. Appearing on select and vanishing on clear moved the grid under
+-- the pointer: select a hit and the grid dropped a row, clear it and it jumped
+-- back, so the next click landed on a different cell.
 cellStrip :: forall m. State -> H.ComponentHTML Action () m
-cellStrip s = case s.selected of
-  Nothing -> HH.text ""
-  Just sel -> case activePattern s of
-    Nothing -> HH.text ""
-    Just pat ->
+cellStrip s = HH.div [ style stripRow ] case s.selected >>= \sel -> map { sel, pat: _ } (activePattern s) of
+  Nothing -> []
+  Just { sel, pat } ->
       let c = P.cellAt pat sel.lane sel.step
-      in HH.div [ style "display:flex;align-items:center;gap:12px;flex-wrap:wrap" ]
-           [ HH.span [ style $ "font-family:Georgia,serif;font-size:12px;font-weight:bold;color:" <> laneColor sel.lane ]
+      in   [ HH.span [ style $ "font-family:Georgia,serif;font-size:12px;font-weight:bold;color:" <> laneColor sel.lane ]
                [ HH.text (P.laneName sel.lane) ]
            , HH.span [ style $ engrave <> ";font-size:8px;opacity:0.6" ]
                [ HH.text ("STEP " <> show (sel.step + 1) <> " · ♪" <> show (P.noteOf pat sel.lane)) ]
@@ -55,6 +57,12 @@ cellStrip s = case s.selected of
                    <> "font-family:Georgia,serif;font-size:10px;color:#8a3120;background:#efece1" ]
                [ HH.text "× clear" ]
            ]
+
+-- `flex: 0 0 100%`: it sits in the band header, which wraps, and a blank strip
+-- has no width, so without it the blank row would fold up onto the header's
+-- first line and the bounce would be back.
+stripRow :: String
+stripRow = "flex:0 0 100%;display:flex;align-items:center;gap:12px;flex-wrap:nowrap;height:32px;overflow-x:auto;overflow-y:hidden;white-space:nowrap"
 
 -- One inline parameter: label, − stepper, value, + stepper.
 paramCell :: forall m. String -> String -> Action -> Action -> H.ComponentHTML Action () m
