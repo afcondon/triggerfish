@@ -463,6 +463,7 @@ data Reach
   = Reachable
   | NoPort String   -- named port absent from WebMIDI
   | NeedsRig        -- only emittable through the rig WS (browsers can't send UDP)
+  | NotBuilt        -- a destination the table can name that nothing sends to yet
 
 derive instance eqReach :: Eq Reach
 
@@ -482,9 +483,12 @@ reachOf ports = case _ of
   DFh2Env _ -> portReach fh2Port
   DFh2Gate _ -> portReach fh2Port
   -- The ES-9 CV/gate generators live in es9-daemon behind OSC over UDP, which a
-  -- browser cannot speak. Solo mode reaches them only via the rig WS.
-  DEs9Gate _ -> if ports.rigUp then Reachable else NeedsRig
-  DEs9Cv _ -> if ports.rigUp then Reachable else NeedsRig
+  -- browser cannot speak, so these would have to go through the rig. But no
+  -- code, browser or rig, sends a leg of either kind yet: they used to read
+  -- Reachable whenever the rig was up, and a drum lane routed to an ES-9 gate
+  -- stayed silent with the router saying all was well (2026-09-28).
+  DEs9Gate _ -> NotBuilt
+  DEs9Cv _ -> NotBuilt
   -- Same route as any other ES-9 CV: the allocator runs in the browser, but the
   -- voltages it decides on still travel over the rig WS to es9-daemon.
   DPoly _ -> if ports.rigUp then Reachable else NeedsRig
@@ -515,6 +519,7 @@ reachNote = case _ of
   Reachable -> ""
   NoPort p -> "no '" <> p <> "' port"
   NeedsRig -> "needs the rig"
+  NotBuilt -> "nothing sends here yet"
 
 -- ---------------------------------------------------------------------------
 -- Lowering — every reachable destination is a note on a port
