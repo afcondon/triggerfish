@@ -41,6 +41,8 @@ import Effect.Aff.Class (class MonadAff, liftAff)
 import Triggerfish.SampleSets as SampleSets
 import Triggerfish.Routing.Out as RO
 import Effect.Class (class MonadEffect, liftEffect)
+import Effect.Ref (Ref)
+import Effect.Ref as Ref
 import Data.Time.Duration (Milliseconds(..))
 import Effect.Timer (setInterval)
 import Halogen as H
@@ -362,8 +364,9 @@ type RState =
   -- "key registered" cue (the hotkey needs page focus; the pulse tells you it got it).
   , captureFlash :: Boolean
   -- single-flight guard for the 100ms Vetula poll, so it can't pile up queries
-  -- against a still-initialising Vetula (see PollVetula).
-  , pollBusy :: Boolean
+  -- against a still-initialising Vetula (see PollVetula). A Ref, not state: it is
+  -- bookkeeping, never drawn, and writing state re-renders the shell.
+  , pollBusy :: Maybe (Ref Boolean)
   -- true once an Amphora fetch has failed (store unreachable) — drives the shell's
   -- "no favourites / backend not running" banner. Probed once on Init.
   , amphoraDown :: Boolean
@@ -441,7 +444,7 @@ root =
         , modal: Nothing
         , macroLanes: Map.empty, macroReadout: Map.empty, macroBars: 4, macroOn: false, macroStep: -1, laneComplete: Nothing
         , ctxScaleKey: "", odoChip: Nothing, vetChip: Nothing, captureFlash: false
-        , pollBusy: false, amphoraDown: false, chipMenu: Nothing
+        , pollBusy: Nothing, amphoraDown: false, chipMenu: Nothing
         , scenes: [], sceneRun: false, scenePos: -1, sceneBars: 4, sceneStep: -1, scenePick: Nothing }
     , render
     , eval: H.mkEval H.defaultEval { handleAction = handleAction, initialize = Just Init }
@@ -1021,21 +1024,32 @@ handleAction = case _ of
   -- keydowns/clicks didn't register until Vetula was ready — the CAPTURE-hotkey
   -- "dead for a minute" bug. The fork frees the queue; the guard stops the poll
   -- piling up ~one query per 100ms against the not-yet-ready child.
+  -- Every write below is guarded on a change: each H.modify_ re-renders the shell,
+  -- and this runs ten times a second whether or not anything moved. Unguarded,
+  -- it was up to seventy renders a second at idle.
   PollVetula -> do
-    busy <- H.gets _.pollBusy
+    gate <- H.gets _.pollBusy >>= case _ of
+      Just r -> pure r
+      Nothing -> do
+        r <- liftEffect (Ref.new false)
+        H.modify_ _ { pollBusy = Just r }
+        pure r
+    busy <- liftEffect (Ref.read gate)
     unless busy do
-      H.modify_ _ { pollBusy = true }
+      liftEffect (Ref.write true gate)
       void $ H.fork do
         -- Pull Vetula's progression + playhead for the nav harmonic-context strip.
         mharm <- H.query _vet unit (Vetula.AskHarmonic identity)
-        case mharm of
-          Just h -> H.modify_ _ { harm = h }
-          Nothing -> pure unit
+        for_ mharm \h -> do
+          prev <- H.gets _.harm
+          when (h /= prev) (H.modify_ _ { harm = h })
         -- Pull Vetula's identity chip for the status board (Vetula has no continuous
         -- frame loop to push it, so it rides this existing 100ms poll). `Nothing` (no
         -- answer) leaves the last chip; an answer of Nothing clears it (nothing parked).
         mchip <- H.query _vet unit (Vetula.AskChip identity)
-        for_ mchip \cv -> H.modify_ _ { vetChip = cv }
+        for_ mchip \cv -> do
+          prev <- H.gets _.vetChip
+          when (cv /= prev) (H.modify_ _ { vetChip = cv })
         -- Harmonic authority: pull Vetula's resting context scale and, when it CHANGES,
         -- install it as Odonus's pitchSet (RI.SetPitchSet, lockstep-safe). Vetula owns
         -- the scale; Odonus follows. Deduped so the 100ms poll doesn't flood the input.
@@ -1049,10 +1063,15 @@ handleAction = case _ of
         -- The system-tempo readout: pull one machine's live clock (Odonus, always
         -- mounted) for the nav BPM display + the Link-locked read-only gate.
         mclk <- H.query _odo unit (SQ.AskClock identity)
-        for_ mclk \c -> H.modify_ _ { liveTempo = c.tempo, linkLocked = c.locked }
+        for_ mclk \c -> do
+          st <- H.get
+          when (c.tempo /= st.liveTempo || c.locked /= st.linkLocked) $
+            H.modify_ _ { liveTempo = c.tempo, linkLocked = c.locked }
         -- Vetula's audition channel for the routing modal's preview-ch field.
         mpc <- H.query _vet unit (Vetula.AskPreviewChan identity)
-        for_ mpc \pc -> H.modify_ _ { previewCh = pc }
+        for_ mpc \pc -> do
+          prev <- H.gets _.previewCh
+          when (pc /= prev) (H.modify_ _ { previewCh = pc })
         -- Vetula auto-resync (ATLANTIS only): Vetula has no incremental rig path, so the
         -- shell diffs its payload and re-pushes on a SETTLED change (payload stable for
         -- one poll AND different from what was last sent). A drag coalesces into one push
@@ -1066,8 +1085,8 @@ handleAction = case _ of
           when (soundingOf st.mode st.armed (previewSet st) Vet == Rig && sig == st.brushPrev && sig /= st.brushSent) do
             _ <- H.query _vet unit (Vetula.SetSounding Rig unit)
             H.modify_ _ { brushSent = sig }
-          H.modify_ _ { brushPrev = sig }
-        H.modify_ _ { pollBusy = false }
+          when (sig /= st.brushPrev) (H.modify_ _ { brushPrev = sig })
+        liftEffect (Ref.write false gate)
 
 -- Push one machine its DERIVED Sounding (soundingOf mode armed). The instrument
 -- edge-detects the transition itself: local-mute on leaving Local, rig handoff on

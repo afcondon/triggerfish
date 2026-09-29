@@ -345,7 +345,18 @@ handleAction = case _ of
       Just bin -> do
         now <- liftEffect $ Clock.unixMicrosNow (Binnacle.clock bin)
         r <- liftEffect $ Clock.read (Binnacle.clock bin)
-        H.modify_ \s -> s
+        -- Write only when something drawn or read has moved. Every write
+        -- re-renders the whole panel, and at 30 a second, stopped, that was most
+        -- of this page's idle CPU. What is drawn: the rounded tempo, the lock,
+        -- the bar, and the flashes (which fade against `nowMicros`); what is read:
+        -- the tempo (step length) and the step (`soundingStep`, the tag on a
+        -- synced gesture), so the beat is stored whenever its step changes and
+        -- the tag is exactly as current as before.
+        let moved = r.tempo /= st.clockTempo || r.locked /= st.clockLocked
+              || r.bar /= st.clockBar || r.anchorCount /= st.anchorCount
+              || floor (r.beat / 0.25) /= soundingStep st
+              || not (null st.flash)
+        when moved $ H.modify_ \s -> s
           { nowMicros = now
           , clockTempo = r.tempo
           , clockLocked = r.locked
