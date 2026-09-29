@@ -1678,7 +1678,10 @@ channelMapPanel st =
         case st.routerView of
           BySource ->
             [ HH.div [ style "display:flex;gap:28px;align-items:flex-start;flex-wrap:wrap" ]
-                [ machineCol "Odonus" (map (routeRow <<< RM.SOdonusHead) (0 .. 3))
+                [ -- The ledger takes the whole row and scrolls inside it when narrow: sized
+                -- to its content, as the other columns are, it ran out of the sheet.
+                  HH.div [ style "flex:1 1 100%;min-width:0" ]
+                    [ machineCol "Odonus" [ routeRows (map RM.SOdonusHead (0 .. 3)) ] ]
                 -- The kit lanes are routed on Balistes' own page, which shares this
                 -- table (and follows an edit here live).
                 , machineCol "Balistes · kit"
@@ -1724,7 +1727,7 @@ channelMapPanel st =
                 else "color:#3f3c33;background:linear-gradient(#efece1,#ddd9cb)") ]
       [ HH.text label ]
 
-  routeRow = RV.sourceRows
+  routeRows = RV.sourceRows
     { table: st.routingTable, ports: st.routingPorts, rigUp: st.rigConnected
     , sampleSets: st.sampleSets, onEdit: RtEdit, onAudition: RtAudition }
 

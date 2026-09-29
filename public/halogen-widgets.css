@@ -1,0 +1,286 @@
+/* halogen-widgets.css — the theme variables the widgets read.
+ *
+ * The widgets carry baked-in light-mode fallbacks, so they look right with NO
+ * stylesheet at all. Include this file (or just define the --hw-* variables
+ * yourself) to enable theming — most usefully, dark mode.
+ *
+ *   <link rel="stylesheet" href="halogen-widgets.css">
+ *
+ * Dark mode is automatic from the OS (prefers-color-scheme) unless an explicit
+ * theme is chosen by setting data-theme="light" | "dark" on a host element
+ * (commonly <html>).
+ */
+
+:root {
+  --hw-ink:            #2b2b2b;
+  --hw-ink-soft:       #7a7a7a;
+  --hw-faint:          #a9a49a;
+  --hw-line:           rgba(0, 0, 0, 0.09);
+  --hw-surface:        #ffffff;
+  --hw-surface-alt:    #f4f3f0;
+  --hw-accent:         #2f5fb0;
+  --hw-danger:         #b0492f;
+  --hw-warn:           #b07a2f;
+  --hw-ok:             #2f8a5c;
+  --hw-track-off:      #c9c6bd;
+  --hw-control-border: #cfcabb;
+  --hw-knob:           #ffffff;
+  --hw-shadow:         rgba(0, 0, 0, 0.13);
+  --hw-backdrop:       rgba(0, 0, 0, 0.40);
+  --hw-page-bg:        #faf9f6;
+}
+
+/* Dark values, shared by the OS-preference path and the explicit opt-in. */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --hw-ink:            #e8e6e0;
+    --hw-ink-soft:       #9a958a;
+    --hw-faint:          #5f5b53;
+    --hw-line:           rgba(255, 255, 255, 0.13);
+    --hw-surface:        #232220;
+    --hw-surface-alt:    #2c2a27;
+    --hw-accent:         #6ea0e8;
+    --hw-danger:         #e08a72;
+    --hw-warn:           #d6a85c;
+    --hw-ok:             #6fbf8c;
+    --hw-track-off:      #4a4843;
+    --hw-control-border: #45423c;
+    --hw-knob:           #d8d5cd;
+    --hw-shadow:         rgba(0, 0, 0, 0.50);
+    --hw-backdrop:       rgba(0, 0, 0, 0.60);
+    --hw-page-bg:        #1a1917;
+  }
+}
+
+[data-theme="dark"] {
+  --hw-ink:            #e8e6e0;
+  --hw-ink-soft:       #9a958a;
+  --hw-faint:          #5f5b53;
+  --hw-line:           rgba(255, 255, 255, 0.13);
+  --hw-surface:        #232220;
+  --hw-surface-alt:    #2c2a27;
+  --hw-accent:         #6ea0e8;
+  --hw-danger:         #e08a72;
+  --hw-warn:           #d6a85c;
+  --hw-ok:             #6fbf8c;
+  --hw-track-off:      #4a4843;
+  --hw-control-border: #45423c;
+  --hw-knob:           #d8d5cd;
+  --hw-shadow:         rgba(0, 0, 0, 0.50);
+  --hw-backdrop:       rgba(0, 0, 0, 0.60);
+  --hw-page-bg:        #1a1917;
+}
+
+/* Honour the OS "reduce motion" preference even when a consumer has opted a
+ * widget into `Motion`. The widgets emit their transitions inline, so this
+ * override needs `!important` to win. Covers the accordion chevron rotation and
+ * the `Accordion.body` height reveal. */
+@media (prefers-reduced-motion: reduce) {
+  .hg-accordion__chevron,
+  .hg-accordion-body {
+    transition: none !important;
+  }
+}
+
+/* "hylograph" — an opinionated Swiss/International-Typographic theme: warm
+ * paper, near-black ink, a single vermilion accent, hairline rules, crisp
+ * corners, Helvetica. Everything Bootstrap isn't. Opt in explicitly. */
+[data-theme="hylograph"] {
+  --hw-ink:            #16140f;
+  --hw-ink-soft:       #6b6457;
+  --hw-faint:          #b3ab9a;
+  --hw-line:           rgba(22, 20, 15, 0.18);
+  --hw-surface:        #fbfaf5;
+  --hw-surface-alt:    #efebdf;
+  --hw-accent:         #d6442b;
+  --hw-danger:         #a82c1a;
+  --hw-warn:           #b07a2f;
+  --hw-ok:             #3f7a4f;
+  --hw-track-off:      #d7d1c2;
+  --hw-control-border: rgba(22, 20, 15, 0.28);
+  --hw-knob:           #fbfaf5;
+  --hw-shadow:         rgba(22, 20, 15, 0.10);
+  --hw-backdrop:       rgba(22, 20, 15, 0.55);
+  --hw-page-bg:        #f1ede2;
+  --hw-radius:         2px;
+  --hw-font:           'Helvetica Neue', Helvetica, 'Inter', Arial, sans-serif;
+}
+
+
+/* ─────────────────────────────────────────────────────────────────────────
+ * Quiet forms (Halogen.Widgets.Quiet) and the ledger (Halogen.Widgets.Ledger).
+ *
+ * A value is text until touched: a dotted hairline under it on hover, a solid
+ * one in the accent colour on focus. Selects show their caret only on hover and
+ * focus. Row tools appear only where the pointer is. These reveals cannot be
+ * inline styles, which is why these two modules need this stylesheet.
+ *
+ * Fonts: labels, kinds and faults use --hw-mono if the page defines one.
+ * ───────────────────────────────────────────────────────────────────────── */
+
+.hw-quiet-input,
+.hw-quiet-select,
+.hw-quiet-toggle {
+  font: inherit;
+  color: inherit;
+  background: transparent;
+  border: 0;
+  border-bottom: 1px solid transparent;
+  border-radius: 0;
+  margin: 0;
+  padding: 0 1px;
+  font-variant-numeric: tabular-nums;
+}
+.hw-quiet-input { min-width: 0; }
+.hw-quiet-input.hw-quiet-end { text-align: right; }
+.hw-quiet-input:hover:not(:disabled),
+.hw-quiet-select:hover,
+.hw-quiet-toggle:hover { border-bottom: 1px dotted var(--hw-faint, #a9a49a); }
+.hw-quiet-input:focus,
+.hw-quiet-select:focus,
+.hw-quiet-toggle:focus-visible { outline: none; border-bottom: 1px solid var(--hw-accent, #2f5fb0); }
+.hw-quiet-input:disabled { cursor: default; }
+
+.hw-quiet-select {
+  appearance: none;
+  -webkit-appearance: none;
+  cursor: pointer;
+  max-width: 100%;
+  padding-right: 12px;
+  text-overflow: ellipsis;
+  /* The caret: two faint half-squares, drawn at size 0 until hover or focus. */
+  background:
+    linear-gradient(45deg, transparent 50%, var(--hw-faint, #a9a49a) 50%) right 4px center / 0 0 no-repeat,
+    linear-gradient(-45deg, transparent 50%, var(--hw-faint, #a9a49a) 50%) right 0 center / 0 0 no-repeat;
+}
+.hw-quiet-select:hover,
+.hw-quiet-select:focus { background-size: 4px 4px; }
+.hw-quiet-select option,
+.hw-quiet-choose option { color: var(--hw-ink, #2b2b2b); background: var(--hw-surface, #fff); }
+
+.hw-quiet-toggle { cursor: pointer; }
+.hw-quiet-toggle[aria-pressed="false"] { color: var(--hw-faint, #a9a49a); }
+
+/* A faint "+ add" line that opens a choice. */
+.hw-quiet-choose {
+  appearance: none;
+  -webkit-appearance: none;
+  border: 0;
+  background: none;
+  padding: 0;
+  margin: 0;
+  cursor: pointer;
+  font: 400 11px var(--hw-mono, 'SF Mono', Menlo, monospace);
+  letter-spacing: .02em;
+  color: var(--hw-faint, #a9a49a);
+}
+.hw-quiet-choose:hover,
+.hw-quiet-choose:focus-visible { color: var(--hw-accent, #2f5fb0); outline: none; }
+
+/* The mark: swatch, name in its hue, kind in muted mono. Filled is on. */
+.hw-quiet-mark {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 7px;
+  border: 0;
+  background: none;
+  padding: 0;
+  margin: 0;
+  cursor: pointer;
+  font: inherit;
+  color: var(--hw-mark, var(--hw-ink, #2b2b2b));
+  text-align: left;
+}
+.hw-quiet-mark__swatch {
+  width: 4px;
+  height: 1.05em;
+  align-self: center;
+  flex: none;
+  background: var(--hw-mark, currentColor);
+  border: 1.5px solid var(--hw-mark, currentColor);
+}
+.hw-quiet-mark__name { font-weight: 650; font-size: 13px; }
+.hw-quiet-mark__detail { font: 400 11px var(--hw-mono, 'SF Mono', Menlo, monospace); color: var(--hw-ink-soft, #7a7a7a); }
+.hw-quiet-mark[aria-pressed="false"] .hw-quiet-mark__swatch { background: transparent; }
+.hw-quiet-mark[aria-pressed="false"] .hw-quiet-mark__name { color: var(--hw-faint, #a9a49a); font-weight: 500; }
+.hw-quiet-mark:focus-visible { outline: 2px solid var(--hw-accent, #2f5fb0); outline-offset: 2px; }
+
+.hw-quiet-labelled { display: inline-flex; align-items: baseline; gap: 5px; white-space: nowrap; }
+.hw-quiet-label {
+  font: 500 9.5px var(--hw-mono, 'SF Mono', Menlo, monospace);
+  letter-spacing: .08em;
+  text-transform: uppercase;
+  color: var(--hw-ink-soft, #7a7a7a);
+}
+.hw-quiet-note { color: var(--hw-ink-soft, #7a7a7a); font-size: 11.5px; }
+.hw-quiet-fault {
+  font: 400 11px var(--hw-mono, 'SF Mono', Menlo, monospace);
+  color: var(--hw-danger, #b0492f);
+  white-space: nowrap;
+}
+
+/* Row tools: present to the keyboard, visible only where the pointer is. */
+.hw-quiet-tool {
+  opacity: 0;
+  border: 0;
+  background: none;
+  padding: 0 0 0 8px;
+  margin: 0;
+  cursor: pointer;
+  font: 13px var(--hw-font, system-ui, sans-serif);
+  line-height: 1;
+  color: var(--hw-ink-soft, #7a7a7a);
+}
+.hw-ledger-row:hover .hw-quiet-tool,
+.hw-quiet-host:hover .hw-quiet-tool,
+.hw-quiet-tool:focus-visible { opacity: 1; }
+.hw-quiet-tool:hover { color: var(--hw-accent, #2f5fb0); }
+.hw-quiet-tool:focus-visible { outline: 2px solid var(--hw-accent, #2f5fb0); outline-offset: 1px; }
+@media (hover: none) { .hw-quiet-tool { opacity: 1; } }
+
+/* The key: each category in its hue, with its count. */
+.hw-quiet-key { display: flex; flex-wrap: wrap; gap: 4px 16px; margin: 0 0 14px; font-size: 12.5px; }
+.hw-quiet-key__entry { display: inline-flex; align-items: center; gap: 6px; color: var(--hw-mark, var(--hw-ink, #2b2b2b)); font-weight: 600; }
+.hw-quiet-key__swatch { width: 4px; height: 12px; background: var(--hw-mark, currentColor); }
+.hw-quiet-key__count { font: 400 11px var(--hw-mono, 'SF Mono', Menlo, monospace); color: var(--hw-ink-soft, #7a7a7a); }
+
+/* ── The ledger ── */
+.hw-ledger-scroll { overflow-x: auto; max-width: 100%; }
+.hw-ledger {
+  --hw-ledger-gap: 14px;
+  display: grid;
+  column-gap: var(--hw-ledger-gap);
+  align-items: baseline;
+  font-variant-numeric: tabular-nums;
+}
+/* One continuous hairline under the heads: every head sits on the row's bottom,
+ * empty ones hold a no-break space so they have a line box, and each rule runs
+ * on across the column gap to meet the next. */
+.hw-ledger-head {
+  align-self: end;
+  font: 500 9.5px var(--hw-mono, 'SF Mono', Menlo, monospace);
+  letter-spacing: .1em;
+  text-transform: uppercase;
+  color: var(--hw-ink-soft, #7a7a7a);
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--hw-line, rgba(0,0,0,.09));
+  margin-bottom: 4px;
+  margin-right: calc(-1 * var(--hw-ledger-gap));
+  padding-right: var(--hw-ledger-gap);
+}
+.hw-ledger-head:empty::before { content: "\00a0"; }
+.hw-ledger-head--last { margin-right: 0; padding-right: 0; }
+.hw-ledger-end { text-align: right; }
+.hw-ledger-heading { grid-column: 1 / -1; }
+.hw-ledger-row { display: contents; }
+.hw-ledger-row > .hw-ledger-cell { padding-block: 3px; min-width: 0; }
+.hw-ledger-row--first > .hw-ledger-cell { padding-top: 12px; }
+.hw-ledger-row--off > .hw-ledger-cell { color: var(--hw-faint, #a9a49a); }
+.hw-ledger-add { padding: 2px 0 6px; }
+.hw-ledger-values { display: flex; flex-wrap: wrap; gap: 2px 16px; align-items: baseline; }
+.hw-ledger-name { font-weight: 600; }
+.hw-ledger-name__sub {
+  display: block;
+  font: 400 10.5px var(--hw-mono, 'SF Mono', Menlo, monospace);
+  color: var(--hw-ink-soft, #7a7a7a);
+}

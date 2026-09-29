@@ -11,12 +11,41 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@62..125,400..800&family=IBM+Plex+Mono:wght@400;500&family=Syne:wght@800&family=Cormorant:ital,wght@1,700&family=Big+Shoulders+Stencil+Display:wght@800&family=Michroma&family=Instrument+Serif:ital@1&family=Major+Mono+Display&display=swap">
+  <!-- The widget library's stylesheet: the quiet controls and the ledger the
+       routing table is drawn with. A copy of
+       purescript-halogen-widgets/css/halogen-widgets.css; after changing the
+       library, copy it again (cp ../../../purescript-halogen-widgets/css/halogen-widgets.css public/). -->
+  <link rel="stylesheet" href="halogen-widgets.css">
   <style>
     :root {
-      --ground: #f1f6f6; --plate: #ffffff; --ink: #0f2530; --muted: #54707a;
+      --ground: #f1f6f6; --plate: #ffffff; --ink: #0f2530; --muted: #54707a; --faint: #a9bcc1;
       --rule: #cddbde; --reef: #0e5a73; --live: #2e9e6a; --alarm: #b3261e;
+      /* Destination families: the routing ledger's marks and key. */
+      --f-midi: #13807b; --f-cv: #a8327a; --f-rample: #c05a12; --f-sample: #5a55b8; --f-continuo: #8a5a2b;
       --display: "Archivo", "Helvetica Neue", Arial, sans-serif;
       --mono: "IBM Plex Mono", ui-monospace, Menlo, monospace;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root:not([data-theme="light"]) {
+        color-scheme: dark;
+        --ground: #0a1a21; --plate: #10252e; --ink: #e2eef0; --muted: #8fa9b1; --faint: #4f6d77;
+        --rule: #22404b; --reef: #6cc3dc; --live: #4cc38a; --alarm: #f2837a;
+        --f-midi: #4cc5bd; --f-cv: #e87bbd; --f-rample: #f0955a; --f-sample: #a9a4f2; --f-continuo: #d2a06d;
+      }
+    }
+    :root[data-theme="dark"] {
+      color-scheme: dark;
+      --ground: #0a1a21; --plate: #10252e; --ink: #e2eef0; --muted: #8fa9b1; --faint: #4f6d77;
+      --rule: #22404b; --reef: #6cc3dc; --live: #4cc38a; --alarm: #f2837a;
+      --f-midi: #4cc5bd; --f-cv: #e87bbd; --f-rample: #f0955a; --f-sample: #a9a4f2; --f-continuo: #d2a06d;
+    }
+    /* The library reads --hw-*; point them at this page's tokens, which carry
+       their own dark values. The :not() matches the specificity of the
+       library's own dark rule, so this, coming later, wins in both themes. */
+    :root:not([data-theme="-"]) {
+      --hw-ink: var(--ink); --hw-ink-soft: var(--muted); --hw-faint: var(--faint);
+      --hw-line: var(--rule); --hw-accent: var(--reef); --hw-danger: var(--alarm);
+      --hw-surface: var(--plate); --hw-mono: var(--mono); --hw-font: var(--display);
     }
     * { box-sizing: border-box; }
     html, body { margin: 0; background: var(--ground); color: var(--ink); font: 14px/1.5 var(--display); }
@@ -79,12 +108,14 @@
     .routing { background: var(--plate); border: 1px solid var(--rule); padding: 16px 18px; min-width: 0; }
     .sectionhead { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 16px; padding-bottom: 10px; border-bottom: 1px solid var(--ink); margin-bottom: 8px; }
     .sectionhead h2 { margin: 0; font-size: 13px; font-weight: 700; letter-spacing: .12em; text-transform: uppercase; }
-    .group { padding: 12px 0 6px; border-bottom: 1px solid var(--rule); }
-    .grouphead { display: flex; align-items: center; gap: 10px; margin: 0 0 10px; color: var(--field); font-weight: 400; }
+    /* A machine's nameplate heads its group in the routing ledger. Space, not
+       a rule, separates the groups. */
+    .grouphead { display: flex; align-items: center; gap: 10px; margin: 0; padding: 18px 0 2px; color: var(--field); font-weight: 400; }
     .grouphead .roundel { background: #fff; box-shadow: 0 0 0 2px var(--field); }
     .grouphead .wordmark { font-size: 18px; }
     .grouphead .w-selene { font-size: 12px; }
-    .rows { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 420px), 1fr)); gap: 2px 28px; }
+    .grouphead .note { margin-left: 8px; }
+    .routing .hw-quiet-key { margin-top: 14px; }
   </style>
 </head>
 <body>

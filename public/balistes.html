@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" data-theme="light">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -8,6 +8,15 @@
        out unchanged (src/Triggerfish/Balistes/Main.purs). Served beside
        index.html so the two share one origin, and so one routing store. -->
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
+  <!-- The widget library's stylesheet (a copy of
+       purescript-halogen-widgets/css/halogen-widgets.css): the quiet controls and
+       the ledger the router is drawn with. data-theme="light" on <html> keeps the
+       library light, since this page is. -->
+  <link rel="stylesheet" href="halogen-widgets.css">
+  <style>
+    /* Destination families: the router's marks and key. */
+    :root { --f-midi: #13807b; --f-cv: #a8327a; --f-rample: #c05a12; --f-sample: #5a55b8; --f-continuo: #8a5a2b; }
+  </style>
   <style>
     html, body { margin: 0; background: #fafafa; }
     /* The height of the page's fixed bar, which Balistes' panel sits below (as in index.html). */

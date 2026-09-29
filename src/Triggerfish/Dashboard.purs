@@ -349,12 +349,17 @@ routing st =
         [ HH.h2_ [ HH.text "Routing" ]
         , HH.span [ cls "note" ] [ HH.text "Every source and where it goes. Changes save at once and reach every open page." ]
         ]
-    , group "odonus" "Odonus" (map RM.SOdonusHead (0 .. 3))
-    , group "vetula" "Vetula" vetulaVoices
-    , group "balistes" "Balistes" (map RM.SDrumLane (0 .. 15))
-    , group "selene" "Selene" seleneBanks
+    , RV.key env (odonusHeads <> vetulaVoices <> drumLanes <> seleneBanks)
+    , RV.groupedRows env
+        [ group "odonus" "Odonus" odonusHeads
+        , group "vetula" "Vetula" vetulaVoices
+        , group "balistes" "Balistes" drumLanes
+        , group "selene" "Selene" seleneBanks
+        ]
     ]
   where
+  odonusHeads = map RM.SOdonusHead (0 .. 3)
+  drumLanes = map RM.SDrumLane (0 .. 15)
   env =
     { table: st.table, ports: st.ports, rigUp: st.rigUp, sampleSets: st.sampleSets
     , onEdit: Edit, onAudition: Audition }
@@ -367,15 +372,18 @@ routing st =
   isSelene = case _ of
     RM.SSeleneBank _ -> true
     _ -> false
+  -- The machine's nameplate heads its group, on the ledger's own grid, so every
+  -- machine's legs share one set of columns.
   group slot name srcs =
-    HH.div [ cls ("group m-" <> slot) ]
-      [ HH.h3 [ cls "grouphead" ]
-          [ HH.span [ cls "roundel small" ] [ fish slot ]
-          , HH.span [ cls ("wordmark w-" <> slot) ] [ HH.text name ]
-          ]
-      , if null srcs then HH.p [ cls "note" ] [ HH.text "No sources yet: they appear when the machine first routes one." ]
-        else HH.div [ cls "rows" ] (map (RV.sourceRows env) srcs)
-      ]
+    { heading:
+        HH.h3 [ cls ("grouphead m-" <> slot) ]
+          ( [ HH.span [ cls "roundel small" ] [ fish slot ]
+            , HH.span [ cls ("wordmark w-" <> slot) ] [ HH.text name ]
+            ]
+              <> (if null srcs then [ HH.span [ cls "note" ] [ HH.text "No sources yet: they appear when the machine first routes one." ] ] else [])
+          )
+    , sources: srcs
+    }
 
 cls :: forall r i. String -> HP.IProp (class :: String | r) i
 cls = HP.class_ <<< H.ClassName

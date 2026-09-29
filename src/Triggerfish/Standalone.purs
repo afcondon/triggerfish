@@ -420,9 +420,8 @@ router r st =
             , style "cursor:pointer;font-size:10px;color:#a08676;text-decoration:underline" ]
             [ HH.text r.restoreLabel ]
         ]
-    , HH.div
-        [ style "display:grid;grid-template-columns:repeat(auto-fill,minmax(420px,1fr));gap:4px 28px" ]
-        (map (RV.sourceRows env) r.sources)
+    , RV.key env r.sources
+    , RV.sourceRows env r.sources
     ]
   where
   env =
