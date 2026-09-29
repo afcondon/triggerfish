@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Selene rack</title>
+  <!-- The Selene rack on its own page: the same component Triggerfish mounted, lifted
+       out unchanged (src/Triggerfish/Selene/Main.purs). Served beside
+       index.html so the two share one origin, and so one routing store. -->
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
+  <style>
+    html, body { margin: 0; background: #fafafa; }
+    /* The height of the page's fixed bar, which the machine panel sits below (as in index.html). */
+    :root { --tf-bar: 44px; }
+  </style>
+</head>
+<body>
+  <!-- Per-load cache-bust, as in index.html: static-httpd sends no Cache-Control. -->
+  <script>document.write('<script src="selene.js?v=' + Date.now() + '"><\/script>');</script>
+</body>
+</html>
