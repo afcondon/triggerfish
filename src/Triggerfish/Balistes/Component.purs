@@ -149,6 +149,13 @@ handleQuery = case _ of
     st <- H.get
     when (st.sounding == Rig && s /= Rig) $
       for_ st.binnacle \bin -> liftEffect $ Transport.send (Binnacle.socket bin) "balistes-stop"
+    -- Leaving Silent: the Grids model did not advance while stopped, so put it on
+    -- the step the clock is at now, as if it had. Its step is the absolute step
+    -- mod 32; only the perturbation draws (one per wrap) differ from a model that
+    -- kept running, and a rig handoff sends the whole model, so both sides agree.
+    when (st.sounding == Silent && s /= Silent) do
+      now <- currentStep
+      H.modify_ \t -> t { bal = t.bal { step = now `mod` 32 }, nextModelStep = now }
     H.modify_ _ { sounding = s }
     when (s == Rig) (handleAction PushBalistes)
     pure (Just next)
@@ -268,8 +275,13 @@ handleAction = case _ of
     -- running (lockstep animation)". Gating the whole handler on Local stopped
     -- the model dead in Atlantis, so the playhead froze and `bal` never
     -- advanced alongside the BEAM voice it is supposed to co-simulate.
+    --
+    -- Silent is different: nothing plays anywhere, so there is nothing to
+    -- co-simulate, and a step here would only re-render three bands to move a
+    -- playhead nobody is listening to. Balistes does no per-step work while
+    -- stopped; `SetSounding` realigns the Grids model to the clock when it starts.
     let audible = st.sounding == Local
-    case st.active of
+    unless (st.sounding == Silent) case st.active of
       -- A fixed rhythm: derive the step from the tick (no internal navigator),
       -- then emit each used lane's hit verbatim at its kit note + velocity. Reads
       -- `activePattern` so an ephemeral recalled snapshot (scratchFixed) plays too.
@@ -349,12 +361,10 @@ handleAction = case _ of
         -- re-renders the whole panel, and at 30 a second, stopped, that was most
         -- of this page's idle CPU. What is drawn: the rounded tempo, the lock,
         -- the bar, and the flashes (which fade against `nowMicros`); what is read:
-        -- the tempo (step length) and the step (`soundingStep`, the tag on a
-        -- synced gesture), so the beat is stored whenever its step changes and
-        -- the tag is exactly as current as before.
+        -- the tempo (step length). The step is read from the clock where it is
+        -- needed (`currentStep`).
         let moved = r.tempo /= st.clockTempo || r.locked /= st.clockLocked
               || r.bar /= st.clockBar || r.anchorCount /= st.anchorCount
-              || floor (r.beat / 0.25) /= soundingStep st
               || not (null st.flash)
         when moved $ H.modify_ \s -> s
           { nowMicros = now
@@ -443,9 +453,7 @@ handleAction = case _ of
     -- BInput. reef_balistes_voice applies it (via the shared reef applyBInput) on the
     -- tagged model step, so the rig follows the edit. Absolute idempotent setters, so
     -- replaying the settled value lands the rig exactly where the drag settled.
-    when (st.sounding == Rig) $ for_ (st.dragging >>= \d -> dragToBInput d.kind st.bal) \input ->
-      for_ st.binnacle \bin ->
-        liftEffect $ Transport.send (Binnacle.socket bin) (balInputMsg st input)
+    for_ (st.dragging >>= \d -> dragToBInput d.kind st.bal) broadcastBInput
     H.modify_ _ { dragging = Nothing, dragSub = Nothing }
     persistLib   -- a note drag (NFixed) may have edited the library
 
@@ -670,7 +678,7 @@ balSimOf b =
   , randomness: b.randomness, step: b.step, perts: b.perts, rng: b.rng
   , notes: b.notes, open: b.open, push: b.push, ratchet: b.ratchet }
 
--- | Steps to defer a synced gesture: tagged for soundingStep + this. It must clear
+-- | Steps to defer a synced gesture: tagged for currentStep + this. It must clear
 -- | the rig voice's 200ms scheduling lookahead (~1.6 steps @120bpm) BY A MARGIN, plus
 -- | the frontend's own ~120ms lookahead and clock-read staleness — otherwise the rig
 -- | has already committed the tagged step and applies the gesture a step LATE. That's
@@ -682,14 +690,22 @@ inputBufferSteps = 4
 
 -- | The current sounding model step from the shared Link beat (Balistes grid is
 -- | fixed 1/16 → 0.25 beats/step). Matches reef_balistes_voice's trunc(beat/0.25).
-soundingStep :: State -> Int
-soundingStep s = floor (s.clockBeat / 0.25)
+-- | Read from the clock when it is needed rather than kept in state: keeping it
+-- | current meant writing state, and so re-rendering, eight times a second.
+currentStep :: forall o m. MonadAff m => H.HalogenM State Action () o m Int
+currentStep = do
+  st <- H.get
+  case st.binnacle of
+    Just bin -> do
+      r <- liftEffect $ Clock.read (Binnacle.clock bin)
+      pure (floor (r.beat / 0.25))
+    Nothing -> pure (floor (st.clockBeat / 0.25))
 
--- | Format a tick-tagged BInput for the wire, tagged a few steps ahead so the rig
--- | applies it on the same model step the frontend is heading toward.
-balInputMsg :: State -> RBI.BInput -> String
-balInputMsg s input =
-  "balistes-input " <> encodeBTagged { tick: soundingStep s + inputBufferSteps, input }
+-- | Format a tick-tagged BInput for the wire, tagged a few steps ahead of `step`
+-- | so the rig applies it on the same model step the frontend is heading toward.
+balInputMsg :: Int -> RBI.BInput -> String
+balInputMsg step input =
+  "balistes-input " <> encodeBTagged { tick: step + inputBufferSteps, input }
 
 -- | Broadcast a settled gesture to the rig as a tick-tagged BInput (no-op if no rig
 -- | is connected). The frontend has already applied it locally; the rig applies it
@@ -697,9 +713,10 @@ balInputMsg s input =
 broadcastBInput :: forall o m. MonadAff m => RBI.BInput -> H.HalogenM State Action () o m Unit
 broadcastBInput input = do
   st <- H.get
+  now <- currentStep
   -- Rig-send only in ATLANTIS (onRig = not audible); SOLO is silent to the rig.
   when (st.sounding == Rig) $ for_ st.binnacle \bin ->
-    liftEffect $ Transport.send (Binnacle.socket bin) (balInputMsg st input)
+    liftEffect $ Transport.send (Binnacle.socket bin) (balInputMsg now input)
 
 -- | Project the frontend's rich FixedPattern onto the wire-flat reef pattern: drop
 -- | the name/kit metadata and flatten each cell's TrigCond to condX/condY (CAlways →
@@ -814,11 +831,12 @@ pushTrig = do
 enqueueBInput :: forall o m. MonadAff m => RBI.BInput -> H.HalogenM State Action () o m Unit
 enqueueBInput input = do
   st <- H.get
-  let tag = soundingStep st + inputBufferSteps
+  now <- currentStep
+  let tag = now + inputBufferSteps
   -- Local always applies (SOLO plays it); rig-send only in ATLANTIS.
   H.modify_ \s -> s { pending = s.pending <> [ { step: tag, input } ] }
   when (st.sounding == Rig) $ for_ st.binnacle \bin ->
-    liftEffect $ Transport.send (Binnacle.socket bin) (balInputMsg st input)
+    liftEffect $ Transport.send (Binnacle.socket bin) (balInputMsg now input)
 
 -- | Map a settled drag to the BInput that reproduces it on the rig. The four knob
 -- | kinds, grid notes and ratchets sync; a fixed-rhythm note edit (NFixed) is
