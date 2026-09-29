@@ -12,7 +12,7 @@ module Triggerfish.Scenes.Store
 
 import Prelude
 
-import Data.Array (deleteAt, length)
+import Data.Array (catMaybes, head, last, length)
 import Data.Maybe (Maybe(..), fromMaybe)
 import Data.Nullable (Nullable, toMaybe)
 import Effect (Effect)
@@ -25,12 +25,10 @@ type Saved = { scenes :: Array Scene }
 -- | `name` a string, `""` = unnamed.
 type Envelope = { scenes :: Array { name :: String, cells :: Array String } }
 
--- | v2 has three columns (Odonus, Selene, Vetula). v1 had four, Balistes second.
+-- | v3 has two columns (Odonus, Vetula). v2 had three (Odonus, Selene, Vetula);
+-- | v1 four (Odonus, Balistes, Selene, Vetula).
 storeKey :: String
-storeKey = "triggerfish.scenes.v2"
-
-legacyKey :: String
-legacyKey = "triggerfish.scenes.v1"
+storeKey = "triggerfish.scenes.v3"
 
 foreign import _save :: String -> String -> Effect Unit
 foreign import _load :: forall a. String -> Effect (Nullable a)
@@ -47,22 +45,28 @@ save s = _save storeKey (_stringify env)
     , cells: map (fromMaybe "") sc.cells
     }
 
--- | Load the grid, or `Nothing` if absent / unparseable. A grid saved only under
--- | v1 is read with each scene's Balistes cell (column 1) dropped, so the other
--- | machines keep their presets; it is written back as v2 on the next save, and
--- | v1 is left as it was.
+-- | Load the grid, or `Nothing` if absent / unparseable. A grid saved under an
+-- | older key is read with the departed machines' cells dropped, so Odonus and
+-- | Vetula keep their presets; it is written back as v3 on the next save, and the
+-- | older key is left as it was.
 load :: Effect (Maybe Saved)
 load = do
-  mEnv <- toMaybe <$> (_load storeKey :: Effect (Nullable Envelope))
-  case mEnv of
-    Just env -> pure (Just (decode identity env))
-    Nothing -> do
-      mOld <- toMaybe <$> (_load legacyKey :: Effect (Nullable Envelope))
-      pure (decode dropBalistes <$> mOld)
+  v3 <- older storeKey
+  v2 <- older "triggerfish.scenes.v2"
+  v1 <- older "triggerfish.scenes.v1"
+  pure case v3, v2, v1 of
+    Just env, _, _ -> Just (decode (keep 2) env)
+    _, Just env, _ -> Just (decode (keep 3) env)
+    _, _, Just env -> Just (decode (keep 4) env)
+    _, _, _ -> Nothing
   where
+  older key = toMaybe <$> (_load key :: Effect (Nullable Envelope))
   decode f env = { scenes: map (decodeScene <<< f) env.scenes }
-  dropBalistes e =
-    if length e.cells == 4 then e { cells = fromMaybe e.cells (deleteAt 1 e.cells) } else e
+  -- Odonus is always the first column and Vetula the last, so a grid of `n`
+  -- columns keeps those two. A scene of any other width is kept as it is.
+  keep n e =
+    if n == 2 || length e.cells /= n then e
+    else e { cells = catMaybes [ head e.cells, last e.cells ] }
   decodeScene e =
     { name: if e.name == "" then Nothing else Just e.name
     , cells: map (\a -> if a == "" then Nothing else Just a) e.cells

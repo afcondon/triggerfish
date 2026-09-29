@@ -94,6 +94,7 @@ localAudible = case _ of
 anyArmed :: Set Which -> Boolean
 anyArmed = not <<< Set.isEmpty
 
--- The four playable machines (Tid excluded) — the arm-all target.
+-- The machines the Triggerfish page plays — the arm-all target. Balistes and the
+-- Selene rack play on pages of their own since 2026-09-29.
 allMachines :: Set Which
-allMachines = Set.fromFoldable [ Odo, Bal, Sel, Vet ]
+allMachines = Set.fromFoldable [ Odo, Vet ]

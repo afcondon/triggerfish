@@ -65,14 +65,10 @@ import Binnacle.Midi as Midi
 import Binnacle.Time (dateNow)
 import Binnacle.Transport as Transport
 import Triggerfish.Odonus.Grid as Odonus
-import Triggerfish.Selene.Component as Selene
-import Triggerfish.Selene.Source as SelSrc
-import Triggerfish.Selene.Model as SelM
-import Triggerfish.Rig (defaultRig, targetGroups)
+import Triggerfish.Rig (defaultRig)
 import Triggerfish.Selene.Backward as Bwd
 import Triggerfish.Selene.Layout as Layout
 import Triggerfish.Selene.Manifest as Man
-import Halogen.Widgets.Select as Select
 import Triggerfish.Sufflamen.Component as Sufflamen
 import Triggerfish.Routing.Model as RM
 import Triggerfish.Routing.Monitor as Mon
@@ -150,7 +146,6 @@ data RAction
   | RtAudition RM.Destination
   | RtResetTable
   | RtSetView RouterView
-  | SetSeleneTarget Int String  -- routing modal: re-target Selene destination i to a wire (nested menu)
   | PickEntry LibRow            -- workbench: put a shelf entry on the bench
   | ToggleSource               -- workbench: slide the raw-source drawer open/shut
   | ToggleDig                  -- workbench: expand/collapse the full archive
@@ -165,7 +160,6 @@ data RAction
   -- `history.replaceState`, which emits no `hashchange`.
   | StageChanged Which (Array String)
   | HashChanged String
-  | SelChipChanged (Maybe G.ChipView)  -- Selene's identity-chip view, for the status board
   | OdoChipChanged (Maybe G.ChipView)  -- Odonus's identity-chip view, for the status board
   | CaptureKey                 -- the global CAPTURE hotkey → bank a preset on the active machine
   -- The shell-level clip library (⌥6, #28-lib). The shell owns its own MIDI out
@@ -223,7 +217,7 @@ derive instance eqAuditionDest :: Eq AuditionDest
 -- | Machines shown with an audition control in the routing modal, in column order.
 auditionMachines :: Array { w :: Which, label :: String }
 auditionMachines =
-  [ { w: Odo, label: "Odonus" }, { w: Sel, label: "Selene" }
+  [ { w: Odo, label: "Odonus" }
   , { w: Vet, label: "Vetula" }, { w: Suf, label: "Sufflamen" } ]
 
 auditionLabel :: AuditionDest -> String
@@ -339,7 +333,6 @@ type RState =
   -- the routing authority (destination header tokens carry the Target), so the
   -- modal's cascade menus parse it, edit it, and push it back via PutSource —
   -- keeping the modal and the Selene tab in sync through the one document.
-  , seleneDoc :: String
   -- macro-tidal — the Tidal-like sequencer (docs/DESIGN-scene-modal.md): one
   -- mini-notation LANE per machine, over glyph ALIASES (`"owl-bomb star-ambulance
   -- ~"`). Each lane resolves against its machine's preset bank (recall by alias),
@@ -363,7 +356,6 @@ type RState =
   -- Balistes / Selene PUSH theirs via Output (change-gated from their Frame loop);
   -- Vetula has no continuous frame loop, so the shell PULLS its chip in PollVetula
   -- (AskChip) and parks it in `vetChip`. Suf reports Nothing (prototypes).
-  , selChip :: Maybe G.ChipView
   , odoChip :: Maybe G.ChipView
   , vetChip :: Maybe G.ChipView
   -- brief true after the CAPTURE hotkey fires, so the active tab pulses — a visible
@@ -402,19 +394,12 @@ type MenuItem = { slot :: Int, alias :: String, name :: String, starred :: Boole
 
 type Slots =
   ( odo :: H.Slot SQ.Query Odonus.Output Unit
-  , sel :: H.Slot SQ.Query Selene.Output Unit
   , vet :: H.Slot Vetula.SourceQuery Vetula.Output Unit
   , suf :: H.Slot (Const Void) Void Unit
-  -- One cascade-menu per Selene destination in the routing modal, keyed by
-  -- destination index — the nested ES-9/FH-2/MIDI target picker.
-  , selTarget :: Select.Slot Int
   )
 
 _odo :: Proxy "odo"
 _odo = Proxy
-
-_sel :: Proxy "sel"
-_sel = Proxy
 
 _vet :: Proxy "vet"
 _vet = Proxy
@@ -423,8 +408,6 @@ _suf :: Proxy "suf"
 _suf = Proxy
 
 
-_selTarget :: Proxy "selTarget"
-_selTarget = Proxy
 
 -- The Web MIDI output port the rig listens on (an IAC bus into Ableton / the
 -- hardware). Each machine opens its own handle on the same port; the shell opens
@@ -454,10 +437,10 @@ root =
         , sampleSets: []
         , midiTraffic: []
         , routing: Map.empty
-        , vetulaNames: [], seleneDoc: ""
+        , vetulaNames: []
         , modal: Nothing
         , macroLanes: Map.empty, macroReadout: Map.empty, macroBars: 4, macroOn: false, macroStep: -1, laneComplete: Nothing
-        , ctxScaleKey: "", selChip: Nothing, odoChip: Nothing, vetChip: Nothing, captureFlash: false
+        , ctxScaleKey: "", odoChip: Nothing, vetChip: Nothing, captureFlash: false
         , pollBusy: false, amphoraDown: false, chipMenu: Nothing
         , scenes: [], sceneRun: false, scenePos: -1, sceneBars: 4, sceneStep: -1, scenePick: Nothing }
     , render
@@ -682,8 +665,8 @@ handleAction = case _ of
   -- means keydowns/clicks don't register until every child is ready — the CAPTURE
   -- hotkey "dead for a minute" bug. The queries land whenever the children answer.
   -- No armed-reconcile poll here anymore: `armed` is written only by the user
-  -- (ArmTab / ToggleMaster) and by Vetula's self-disarm EVENT (VetulaArmed). Odo
-  -- and Sel never self-disarm, so nothing needs observing. Sounding is now purely
+  -- (ArmTab / ToggleMaster) and by Vetula's self-disarm EVENT (VetulaArmed). Odonus
+  -- never self-disarms, so nothing needs observing. Sounding is now purely
   -- one-directional (shell state → instruments) — no two-way binding to fight.
   SyncTick -> do
     -- Poll the rig link alongside the free-run push. Before this a dead socket
@@ -816,13 +799,9 @@ handleAction = case _ of
       st <- H.get
       let mine = Man.triggerfishManifest
             { vetulaNames: st.vetulaNames
-            -- The kind keyword is the only stable name a Selene destination
-            -- has. NOT verified as the alias `SSeleneBank` is keyed by —
-            -- nothing in the app constructs one, they are only ever parsed back
-            -- from the store — so if a stored row disagrees it will read as
-            -- orphaned, which for a leftover row is arguably the right answer.
-            , seleneAliases: map (\d -> SelSrc.kindKeyword d.bank)
-                (SelSrc.parseRack st.seleneDoc).destinations
+            -- The Selene rack plays on its own page (selene.html), so this page
+            -- emits nothing on a Selene bank's behalf.
+            , seleneAliases: []
             , seenAt: now
             }
       H.modify_ _ { midiTraffic = rows, manifests = [ mine ], manifestAt = now }
@@ -852,21 +831,6 @@ handleAction = case _ of
       Just ch | ch >= 1 && ch <= 16 -> H.modify_ \st -> st { routing = Map.insert name ch st.routing }
       _ -> H.modify_ \st -> st { routing = Map.delete name st.routing }
     pushRouting
-  -- Re-target one Selene destination from its cascade menu. Round-trips through
-  -- Selene's own source: pull the live doc, retarget destination i, reprint,
-  -- push back via PutSource (the write mirror of AskSource). The Selene tab and
-  -- this modal both read that same doc, so they stay in lockstep.
-  SetSeleneTarget i wire -> do
-    ms <- H.query _sel unit (SQ.AskSource identity)
-    for_ ms \doc -> do
-      let rack = SelSrc.parseRack doc
-          rack' = rack
-            { destinations = mapWithIndex
-                (\j d -> if j == i then d { target = SelSrc.parseTarget wire } else d)
-                rack.destinations }
-          doc' = SelSrc.printRack rack'
-      void $ H.query _sel unit (SQ.PutSource doc' unit)
-      H.modify_ _ { seleneDoc = doc' }
   -- Workbench: put a shelf entry on the bench (or clear it if re-clicked).
   PickEntry r -> H.modify_ \st ->
     st { picked = if isPicked st.picked r then Nothing else Just r }
@@ -902,7 +866,6 @@ handleAction = case _ of
     pushSounding Vet
   -- Balistes pushed a new identity-chip view (capture / recall / divergence) — park it
   -- for the status board. Cheap: Balistes only raises this when the view changed.
-  SelChipChanged cv -> H.modify_ _ { selChip = cv }
   OdoChipChanged cv -> H.modify_ _ { odoChip = cv }
   -- The CAPTURE hotkey: tell the active machine to bank its current state as a
   -- preset. Only the SQ.Query machines answer; Balistes is the only live one so far.
@@ -919,7 +882,6 @@ handleAction = case _ of
     w <- H.gets _.which
     void $ H.fork case w of
       Odo -> void $ H.query _odo unit (SQ.Capture unit)
-      Sel -> void $ H.query _sel unit (SQ.Capture unit)
       Vet -> void $ H.query _vet unit (Vetula.Capture unit)
       _ -> pure unit
   -- Click a status-board glyph: toggle its recall menu. On open, snapshot the
@@ -1216,21 +1178,20 @@ querySounding :: forall o m. Which -> Sounding -> H.HalogenM RState RAction Slot
 querySounding w s = case w of
   Odo -> H.query _odo unit (SQ.SetSounding s unit)
   Bal -> pure Nothing   -- on its own page (balistes.html) since 2026-09-29
-  Sel -> H.query _sel unit (SQ.SetSounding s unit)
+  Sel -> pure Nothing   -- on its own page (selene.html) since 2026-09-29
   Vet -> H.query _vet unit (Vetula.SetSounding s unit)
   Tid -> pure Nothing
   Suf -> pure Nothing
 
 -- Re-derive and push every machine's Sounding (on arm-all / mode flip / init).
 pushAll :: forall o m. MonadAff m => H.HalogenM RState RAction Slots o m Unit
-pushAll = for_ [ Odo, Sel, Vet ] pushSounding
+pushAll = for_ [ Odo, Vet ] pushSounding
 
 -- Ask a machine for its bank (recall menu contents). Only the SQ.Query machines
 -- answer; Balistes is the only one with real presets so far.
 queryBank :: forall o m. Which -> H.HalogenM RState RAction Slots o m (Maybe (Array MenuItem))
 queryBank = case _ of
   Odo -> H.query _odo unit (SQ.AskBank identity)
-  Sel -> H.query _sel unit (SQ.AskBank identity)
   Vet -> H.query _vet unit (Vetula.AskBank identity)
   _ -> pure Nothing
 
@@ -1238,7 +1199,6 @@ queryBank = case _ of
 queryRecall :: forall o m. Which -> Int -> H.HalogenM RState RAction Slots o m (Maybe Unit)
 queryRecall w i = case w of
   Odo -> H.query _odo unit (SQ.RecallSlot i unit)
-  Sel -> H.query _sel unit (SQ.RecallSlot i unit)
   Vet -> H.query _vet unit (Vetula.RecallSlot i unit)
   _ -> pure Nothing
 
@@ -1246,14 +1206,12 @@ queryRecall w i = case w of
 queryStar :: forall o m. Which -> Int -> H.HalogenM RState RAction Slots o m (Maybe Unit)
 queryStar w i = case w of
   Odo -> H.query _odo unit (SQ.StarSlot i unit)
-  Sel -> H.query _sel unit (SQ.StarSlot i unit)
   Vet -> H.query _vet unit (Vetula.StarSlot i unit)
   _ -> pure Nothing
 
 queryDelete :: forall o m. Which -> Int -> H.HalogenM RState RAction Slots o m (Maybe Unit)
 queryDelete w i = case w of
   Odo -> H.query _odo unit (SQ.DeleteSlot i unit)
-  Sel -> H.query _sel unit (SQ.DeleteSlot i unit)
   Vet -> H.query _vet unit (Vetula.DeleteSlot i unit)
   _ -> pure Nothing
 
@@ -1317,12 +1275,10 @@ replaceTrailingToken cur alias =
 refreshTidal :: forall o m. H.HalogenM RState RAction Slots o m Unit
 refreshTidal = do
   o <- H.query _odo unit (SQ.AskSource identity)
-  s <- H.query _sel unit (SQ.AskSource identity)
   v <- H.query _vet unit (Vetula.AskSource identity)
   H.modify_ _
     { tidalDoc = assemble
-        [ Tuple "ODONUS" o, Tuple "SELENE" s, Tuple "VETULA" v ]
-    , seleneDoc = fromMaybe "" s }
+        [ Tuple "ODONUS" o, Tuple "VETULA" v ] }
   -- Refresh the channel-map: which → midi voice names are in use, and re-push the
   -- current bindings so Vetula stays in sync when the page reopens.
   mnames <- H.query _vet unit (Vetula.AskVoiceNames identity)
@@ -1340,7 +1296,6 @@ pushFree = do
   let t0 = st.freeT0
       tempo = Int.toNumber st.bpm
   _ <- H.query _odo unit (SQ.SyncFree t0 tempo unit)
-  _ <- H.query _sel unit (SQ.SyncFree t0 tempo unit)
   _ <- H.query _vet unit (Vetula.SyncFree t0 tempo unit)
   pure unit
 
@@ -1365,7 +1320,6 @@ pushTableToMachines :: forall o m. MonadAff m => H.HalogenM RState RAction Slots
 pushTableToMachines = do
   t <- H.gets _.routingTable
   void $ H.query _odo unit (SQ.SetRouting t unit)
-  void $ H.query _sel unit (SQ.SetRouting t unit)
 
 assemble :: Array (Tuple String (Maybe String)) -> String
 assemble = joinWith "\n\n\n" <<< map section
@@ -1378,9 +1332,8 @@ assemble = joinWith "\n\n\n" <<< map section
 refreshLibrary :: forall o m. H.HalogenM RState RAction Slots o m Unit
 refreshLibrary = do
   o <- H.query _odo unit (SQ.AskLibrary identity)
-  s <- H.query _sel unit (SQ.AskLibrary identity)
   v <- H.query _vet unit (Vetula.AskLibrary identity)
-  H.modify_ _ { library = rows Odo o <> rows Sel s <> rows Vet v }
+  H.modify_ _ { library = rows Odo o <> rows Vet v }
   where
   rows w m = mapWithIndex (\i e -> { inst: w, idx: i, name: e.name, text: e.text }) (fromMaybe [] m)
 
@@ -1419,7 +1372,7 @@ queryStagePath :: forall o m. Which -> Array String -> H.HalogenM RState RAction
 queryStagePath w segs = case w of
   Odo -> H.query _odo unit (SQ.SetStagePath segs unit)
   Bal -> pure Nothing
-  Sel -> H.query _sel unit (SQ.SetStagePath segs unit)
+  Sel -> pure Nothing
   Vet -> H.query _vet unit (Vetula.SetStagePath segs unit)
   Tid -> pure Nothing
   Suf -> pure Nothing
@@ -1438,7 +1391,7 @@ queryLoad :: forall o m. Which -> Int -> H.HalogenM RState RAction Slots o m (Ma
 queryLoad w i = case w of
   Odo -> H.query _odo unit (SQ.LoadEntry i unit)
   Bal -> pure Nothing
-  Sel -> H.query _sel unit (SQ.LoadEntry i unit)
+  Sel -> pure Nothing
   Vet -> H.query _vet unit (Vetula.LoadEntry i unit)
   Tid -> pure Nothing
   Suf -> pure Nothing
@@ -1447,7 +1400,7 @@ queryImport :: forall o m. Which -> String -> H.HalogenM RState RAction Slots o 
 queryImport w txt = case w of
   Odo -> H.query _odo unit (SQ.ImportText txt identity)
   Bal -> pure Nothing
-  Sel -> H.query _sel unit (SQ.ImportText txt identity)
+  Sel -> pure Nothing
   Vet -> H.query _vet unit (Vetula.ImportText txt identity)
   Tid -> pure Nothing
   Suf -> pure Nothing
@@ -1467,8 +1420,6 @@ render st =
         (HH.slot _odo unit Odonus.component unit case _ of
             Odonus.IdentityChanged cv -> OdoChipChanged cv
             Odonus.StageChanged segs -> StageChanged Odo segs)
-    , pane (st.which == Sel) ""
-        (HH.slot _sel unit Selene.component unit (\(Selene.IdentityChanged cv) -> SelChipChanged cv))
     , pane (st.which == Vet) "padding-top:var(--tf-bar)"
         (HH.slot _vet unit Vetula.component unit case _ of
             Vetula.ArmChanged on -> VetulaArmed on
@@ -1635,7 +1586,11 @@ channelMapPanel st =
                         , style "font-size:11px;color:#5a564b" ]
                         [ HH.text "on its own page ↗" ] ]
                 , HH.div [ style "flex:0 0 auto;display:flex;flex-direction:column;gap:18px" ]
-                    [ machineCol "Selene" seleneRows
+                    [ machineCol "Selene"
+                        [ HH.a
+                            [ HP.href "selene.html", HP.target "_blank"
+                            , style "font-size:11px;color:#5a564b" ]
+                            [ HH.text "on its own page ↗ (targets are set in the rack)" ] ]
                     , machineCol "Vetula" vetulaRows
                     ]
                 ]
@@ -1783,20 +1738,6 @@ channelMapPanel st =
 
   vetulaRows = map nameEntry st.vetulaNames
 
-  seleneRows =
-    let dests = (SelSrc.parseRack st.seleneDoc).destinations
-    in if null dests
-         then [ note "declare a polysignal in the Selene tab" ]
-         else mapWithIndex seleneEntry dests
-
-  seleneEntry i d =
-    HH.div [ style "display:flex;align-items:center;justify-content:space-between;gap:8px;font-size:12px" ]
-      [ HH.span [ style "color:#2a271e" ] [ HH.text (SelSrc.kindKeyword d.bank) ]
-      , HH.slot _selTarget i Select.component
-          ((Select.cascadingInput (targetGroups defaultRig))
-             { selected = Just (SelM.targetWire d.target), placeholder = "route" })
-          (\(Select.Selected wire) -> SetSeleneTarget i wire) ]
-
   machineCol name rows =
     HH.div [ style "flex:0 0 auto;display:flex;flex-direction:column;gap:3px;max-height:56vh;overflow-y:auto" ]
       ( [ HH.div [ style "font-size:11px;letter-spacing:0.14em;text-transform:uppercase;color:#5a564b;margin-bottom:4px;position:sticky;top:0;background:#e8e3d5;padding:2px 0" ]
@@ -1812,7 +1753,6 @@ channelMapPanel st =
           , style "width:38px;font-family:'SF Mono',Menlo,monospace;font-size:11px;padding:2px 4px;border-radius:4px;border:1px solid #cdbb96;background:#fffdf8;text-align:center" ]
       ]
 
-  note t = HH.div [ style "font-size:10px;color:#b0a690;font-style:italic;line-height:1.4" ] [ HH.text t ]
 
 -- macro-tidal — the Tidal-like sequencer: one mini-notation LANE per machine, over
 -- glyph ALIASES ("owl-bomb star-ambulance ~"). Space-separated tokens divide the
@@ -1965,7 +1905,7 @@ shelfPanel st =
       else if null st.library
         then HH.div [ style "color:#8a8576;font-size:12px;font-style:italic;margin-bottom:14px" ]
                [ HH.text "(refresh to gather each instrument's saved setups)" ]
-        else HH.div_ (map (groupSection st) [ Odo, Sel, Vet ])
+        else HH.div_ (map (groupSection st) [ Odo, Vet ])
     , importBox st
     ]
 
@@ -2099,7 +2039,6 @@ importBox st =
         [ style "display:flex;align-items:center;gap:7px;margin-top:8px" ]
         [ HH.span [ style "font-size:10px;letter-spacing:0.1em;text-transform:uppercase;color:#7a7363" ] [ HH.text "import →" ]
         , barBtn "Odonus" (ImportInto Odo)
-        , barBtn "Selene" (ImportInto Sel)
         , barBtn "Vetula" (ImportInto Vet)
         , if st.importMsg == "" then HH.text ""
           else HH.span [ style "font-size:11px;color:#5a4a22;margin-left:4px" ] [ HH.text st.importMsg ]
@@ -2453,7 +2392,12 @@ switcher st =
         , style $ "padding:6px 14px;cursor:pointer;font-size:11px;letter-spacing:0.12em;text-decoration:none;"
             <> "text-transform:uppercase;color:#5a564b;background:linear-gradient(#e9e5d9,#dcd8c9)" ]
         [ HH.text "Balistes ↗" ]
-    , armSeg st Sel "SELENE"
+    , HH.a
+        [ HP.href "selene.html", HP.target "_blank"
+        , HP.title "The Selene rack runs on its own page"
+        , style $ "padding:6px 14px;cursor:pointer;font-size:11px;letter-spacing:0.12em;text-decoration:none;"
+            <> "text-transform:uppercase;color:#5a564b;background:linear-gradient(#e9e5d9,#dcd8c9)" ]
+        [ HH.text "Selene ↗" ]
     , armSeg st Vet "VETULA"
     , seg "SUFFLAMEN" (st.which == Suf) (Pick Suf)
     -- TIDAL is no longer a tab — its five surfaces are the ⌘1..⌘5 overlays now
@@ -2521,7 +2465,7 @@ chipOf :: RState -> Which -> Maybe G.ChipView
 chipOf st = case _ of
   Odo -> st.odoChip
   Bal -> Nothing
-  Sel -> st.selChip
+  Sel -> Nothing
   Vet -> st.vetChip
   _ -> Nothing
 

@@ -74,7 +74,8 @@ machineFromSlug s = case toLower (trim s) of
   -- Balistes has its own page (balistes.html), so an old link to it here is
   -- ignored rather than opening an empty pane.
   "balistes" -> Nothing
-  "selene" -> Just Sel
+  -- The Selene rack has its own page too (selene.html).
+  "selene" -> Nothing
   "vetula" -> Just Vet
   "tidal" -> Just Tid
   "sufflamen" -> Just Suf

@@ -42,11 +42,12 @@ type Scene =
   , cells :: Array SceneCell
   }
 
--- | The machines a scene spans, in column order. Balistes left for its own page
--- | on 2026-09-29, taking its column with it (`Scenes.Store` drops it from a
--- | grid saved before then); it rejoins through the stage, not this page.
+-- | The machines a scene spans, in column order. Balistes and the Selene rack
+-- | left for pages of their own on 2026-09-29, taking their columns with them
+-- | (`Scenes.Store` drops them from a grid saved before then); they rejoin
+-- | through the stage, not this page.
 sceneMachines :: Array Which
-sceneMachines = [ Odo, Sel, Vet ]
+sceneMachines = [ Odo, Vet ]
 
 -- | A blank scene — every machine left-as-is.
 emptyScene :: Scene
