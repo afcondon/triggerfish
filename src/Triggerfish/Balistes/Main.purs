@@ -236,6 +236,10 @@ targetIsField e = case E.target e of
 
 render :: forall m. MonadAff m => State -> H.ComponentHTML Action Slots m
 render st =
+  -- Balistes' panel is `position:fixed; top:var(--tf-bar)`: it expects a shell
+  -- bar pinned in the `--tf-bar` it reserves (balistes.html sets it, as
+  -- index.html does). A bar in the flow instead sits UNDER the panel, drawn but
+  -- unclickable.
   HH.div [ style "min-height:100vh;background:#fafafa" ]
     [ bar st
     , if st.routerOpen then router st else HH.text ""
@@ -247,8 +251,9 @@ render st =
 bar :: forall m. State -> H.ComponentHTML Action Slots m
 bar st =
   HH.div
-    [ style $ "display:flex;align-items:center;gap:14px;padding:8px 16px;"
-        <> "border-bottom:1px solid #00000018;background:linear-gradient(#f1eee5,#e6e2d6)" ]
+    [ style $ "position:fixed;top:0;left:0;right:0;height:var(--tf-bar);z-index:50;box-sizing:border-box;"
+        <> "display:flex;align-items:center;gap:14px;padding:0 16px;overflow:hidden;"
+        <> "border-bottom:1px solid #00000026;background:linear-gradient(#f1eee5,#e6e2d6)" ]
     [ HH.span [ style (engrave <> ";font-size:11px") ] [ HH.text "Triggerfish · Model Balistes" ]
     , HH.div
         [ style "display:flex;border:1px solid #00000033;border-radius:5px;overflow:hidden" ]
@@ -293,7 +298,9 @@ bar st =
 router :: forall m. State -> H.ComponentHTML Action Slots m
 router st =
   HH.div
-    [ style "padding:14px 16px 6px;border-bottom:1px solid #00000018;background:#f3f0e7" ]
+    [ style $ "position:fixed;top:var(--tf-bar);left:0;right:0;z-index:45;max-height:75vh;overflow-y:auto;"
+        <> "box-sizing:border-box;padding:14px 16px 10px;background:#f3f0e7;"
+        <> "border-bottom:1px solid #00000026;box-shadow:0 6px 18px #00000022" ]
     [ HH.div [ style "display:flex;align-items:baseline;gap:14px;margin-bottom:10px" ]
         [ HH.span [ style (engrave <> ";font-size:11px") ] [ HH.text "Routing · Balistes kit" ]
         , HH.span [ style "font-size:10px;color:#8a8474" ]
@@ -305,7 +312,7 @@ router st =
             [ HH.text "restore default kit routing" ]
         ]
     , HH.div
-        [ style "display:grid;grid-template-columns:repeat(auto-fill,minmax(420px,1fr));gap:4px 28px;max-height:56vh;overflow-y:auto" ]
+        [ style "display:grid;grid-template-columns:repeat(auto-fill,minmax(420px,1fr));gap:4px 28px" ]
         (map (RV.sourceRows env) drumLanes)
     ]
   where
