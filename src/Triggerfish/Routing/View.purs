@@ -43,7 +43,10 @@ type Env i =
 -- | One source: its name, then a line per destination it fans out to.
 sourceRows :: forall w i. Env i -> RM.Source -> HH.HTML w i
 sourceRows env src =
-  HH.div [ style "display:flex;flex-direction:column;gap:2px;margin-bottom:7px" ]
+  -- `min-width:0` and a wrapping leg keep a long leg (a sample leg has nine
+  -- controls) inside its own column. Overflowing, it ran under the next column,
+  -- which then took its clicks: the ✕ of a sample leg could not be reached.
+  HH.div [ style "display:flex;flex-direction:column;gap:2px;margin-bottom:7px;min-width:0" ]
     ( [ HH.div [ style "display:flex;align-items:baseline;gap:8px" ]
           [ HH.span [ style "font-size:12px;color:#2a271e;min-width:96px" ]
               [ HH.text (rowLabel src) ]
@@ -66,7 +69,7 @@ legRow env src i leg =
       dead = reach /= RM.Reachable
       dim = if leg.on then "1" else "0.4"
   in HH.div
-       [ style $ "display:flex;align-items:center;gap:5px;margin-left:14px;opacity:" <> dim ]
+       [ style $ "display:flex;flex-wrap:wrap;align-items:center;gap:5px;margin-left:14px;opacity:" <> dim ]
        ( [ HH.span
              [ HE.onClick \_ -> env.onEdit (ToggleLeg src i)
              , HP.title (if leg.on then "mute this destination (keeps it)" else "unmute")
