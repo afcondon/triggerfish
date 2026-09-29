@@ -275,6 +275,16 @@ chipViewOf s = case s.identity of
 -- | DragEnd is NOT excluded, so a knob edit persists once it settles.
 handleAction :: forall m. MonadAff m => Action -> H.HalogenM State Action Slots Output m Unit
 handleAction a = do
+  -- The frame tick keeps the clock in state only while something drawn needs it
+  -- (see Frame), so anything else that reads it (a tap's debounce, a logbook
+  -- mark, a capture, a gesture's tag) gets it fresh first. Not the ticks
+  -- themselves, and not a drag in flight, which writes state on every move.
+  case a of
+    Frame -> pure unit
+    Step _ -> pure unit
+    DragMove _ -> pure unit
+    Initialize -> pure unit
+    _ -> freshClock
   dispatch a
   case a of
     Frame -> pure unit
@@ -585,7 +595,20 @@ dispatch = case _ of
         r <- liftEffect $ Clock.read (Binnacle.clock bin)
         -- Scene SEQUENCING moved to the macro-tidal Tidal page; Odonus just tracks
         -- the clock here (scenes are captured/recalled, not auto-chained).
-        H.modify_ \s -> s
+        --
+        -- Written only while something drawn needs it: every write re-renders the
+        -- whole grid, and at 30 a second, idle, that was most of this page's CPU.
+        -- What is drawn from the clock: the tempo, the lock, the bar, the BEAT
+        -- readout, and the river, which moves only while a note or a mark is still
+        -- inside its window. REPLAY runs from here, so it keeps the clock current
+        -- too. Other readers take it fresh (`freshClock`, in handleAction).
+        let inWindow at = now - at < windowMicros || st.nowMicros - at < windowMicros
+            moved = r.tempo /= st.clockTempo || r.locked /= st.clockLocked
+              || r.bar /= st.clockBar || r.anchorCount /= st.anchorCount
+              || floor r.beat /= floor st.clockBeat
+              || not (null st.notes) || isJust st.playing
+              || any (inWindow <<< _.atMicros) st.logbook.marks
+        when moved $ H.modify_ \s -> s
           { nowMicros = now
           , clockTempo = r.tempo
           , clockLocked = r.locked
@@ -1070,6 +1093,16 @@ driveReplay = do
           in s { playing = Just p { scheduledUntilMs = max p.scheduledUntilMs horizon
                                   , playheadFrac = max 0.0 (min 1.0 frac) } }
         Nothing -> s
+
+-- | Bring the clock in state up to now, for an action that reads it. The frame
+-- | tick no longer keeps it current while nothing drawn needs it.
+freshClock :: forall o m. MonadAff m => H.HalogenM State Action Slots o m Unit
+freshClock = do
+  st <- H.get
+  for_ st.binnacle \bin -> do
+    now <- liftEffect $ Clock.unixMicrosNow (Binnacle.clock bin)
+    r <- liftEffect $ Clock.read (Binnacle.clock bin)
+    H.modify_ _ { nowMicros = now, clockTempo = r.tempo, clockLocked = r.locked, clockBeat = r.beat, clockBar = r.bar }
 
 -- | All-notes-off (CC 123) on the four Odonus head channels — cuts any note the
 -- | REPLAY loop left ringing, so StopPlay / leaving REPLAY is instantly silent.
