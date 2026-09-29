@@ -46,6 +46,8 @@ module Triggerfish.Routing.Model
   , Route
   , Table
   , defaultTable
+  , defaultTableFor
+  , defaultPort
   , legsFor
   , liveLegsFor
   , setLegs
@@ -72,7 +74,8 @@ module Triggerfish.Routing.Model
 
 import Prelude
 
-import Data.Array (concatMap, filter, find, findIndex, length, mapMaybe, mapWithIndex, nub, snoc, updateAt, (!!))
+import Control.Alt ((<|>))
+import Data.Array (concatMap, filter, find, findIndex, head, length, mapMaybe, mapWithIndex, nub, snoc, updateAt, (!!))
 import Data.Maybe (Maybe(..), fromMaybe, isJust, maybe)
 import Data.Tuple (Tuple(..), snd)
 import Data.String (Pattern(..), contains)
@@ -360,21 +363,40 @@ type Route = { source :: Source, legs :: Array Leg }
 
 type Table = Array Route
 
+-- | The MIDI port a default table sends to, given the ports that exist: the IAC
+-- | bus if there is one (the rig's Ableton template listens there), otherwise
+-- | the first output. `""` when none are known yet, which port matching reads
+-- | as "the first output there is" (a name matches by substring).
+-- |
+-- | Not "IAC" by fiat: on a machine without it switched on, or on Windows, a
+-- | default that names IAC reaches nothing. See `docs/kb/plans/dashboard.md`,
+-- | "Zero install".
+defaultPort :: Array String -> String
+defaultPort ports = fromMaybe "" (find (contains (Pattern "IAC")) ports <|> head ports)
+
+-- | The default table before any port is known: every MIDI leg on `""`, the
+-- | first output. A page replaces it with `defaultTableFor` its ports, once, at
+-- | first run, and saves that, so the choice is made once and shown.
+defaultTable :: Table
+defaultTable = defaultTableFor []
+
 -- | The default table == the standard Ableton project template, plus the FH-2
--- | envelope and drum-gate bindings the rig is actually patched for.
+-- | envelope and drum-gate bindings the rig is actually patched for, with its
+-- | MIDI legs on `defaultPort` of these ports.
 -- |
--- | Odonus heads: note to the IAC bus on channels 1..4, envelope N to the FH-2.
--- | This is what shipped on 2026-08-08 as hardcoded constants; it is data now.
+-- | Odonus heads: note to the MIDI port on channels 1..4, envelope N to the
+-- | FH-2. This is what shipped on 2026-08-08 as hardcoded constants; it is data
+-- | now.
 -- |
--- | Drum lanes: all sixteen to GM channel 10 on the IAC bus, which is what
+-- | Drum lanes: all sixteen to GM channel 10 on the MIDI port, which is what
 -- | Balistes has always done. The first four ALSO drive FHX-8GT jacks 1..4, which
 -- | reproduces `apply-drum-breakout.mjs`'s `KIT` table — the same four rows, now
 -- | somewhere a player can change them.
-defaultTable :: Table
-defaultTable =
+defaultTableFor :: Array String -> Table
+defaultTableFor ports =
   odonus <> drums <> [ { source: SVetulaVoice "", legs: [ midiLeg iac 5 ] } ]
   where
-  iac = "IAC"
+  iac = defaultPort ports
   midiLeg port ch = { dest: DMidi { port, channel: ch }, offsetMs: 0.0, on: true }
   envLeg slot = { dest: DFh2Env { slot }, offsetMs: 0.0, on: true }
   gateLeg note jack = { dest: DFh2Gate { note, jack }, offsetMs: 0.0, on: true }

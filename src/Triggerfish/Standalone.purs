@@ -38,7 +38,7 @@ import Binnacle.Time (dateNow)
 import Binnacle.Transport as Transport
 import Data.Foldable (for_)
 import Data.Int as Int
-import Data.Maybe (Maybe(..), isJust)
+import Data.Maybe (Maybe(..), isJust, isNothing)
 import Data.Set as Set
 import Effect (Effect)
 import Effect.Aff (Aff)
@@ -213,13 +213,15 @@ handleAction cfg = case _ of
     for_ (RE.apply { ports: st.ports, sampleSets: st.sampleSets } e st.table) keepTable
   ResetRouting -> for_ cfg.router \r -> do
     st <- H.get
-    keepTable (RE.resetSources r.sources st.table)
+    keepTable (RE.resetSources st.ports r.sources st.table)
   Audition dest -> do
     st <- H.get
     for_ (RO.auditionLine dest) \line ->
       for_ st.rig \bin -> liftEffect $ Transport.send (Binnacle.socket bin) line
   ToggleRouter -> for_ cfg.router \_ -> H.modify_ \s -> s { routerOpen = not s.routerOpen }
-  SetPorts ns -> H.modify_ _ { ports = ns }
+  SetPorts ns -> do
+    H.modify_ _ { ports = ns }
+    firstRun ns
   -- The rig link, polled as the Triggerfish shell polls it: what a rig-only leg
   -- can reach depends on it.
   Tick -> do
@@ -246,6 +248,14 @@ handleAction cfg = case _ of
         liftEffect $ E.preventDefault e
         handleAction cfg TogglePlay
       _ -> pure unit
+
+-- | At first run, with nothing stored, the default table is made for the ports
+-- | this machine has and saved, so the choice is made once and shown in the
+-- | router rather than left to whichever port happens to come first later.
+firstRun :: forall o o'. Array String -> M o o' Unit
+firstRun ports = do
+  stored <- liftEffect RStore.load
+  when (isNothing stored) (keepTable (RM.defaultTableFor ports))
 
 keepTable :: forall o o'. RM.Table -> M o o' Unit
 keepTable t = do

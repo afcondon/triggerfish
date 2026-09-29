@@ -23,7 +23,7 @@ import Data.Array (any, deleteAt, filter, find, findIndex, last, length, mapMayb
 import Data.FoldableWithIndex (forWithIndex_)
 import Data.Foldable (for_, sum)
 import Data.Either (Either(..))
-import Data.Maybe (Maybe(..), fromMaybe, isJust, maybe)
+import Data.Maybe (Maybe(..), fromMaybe, isJust, isNothing, maybe)
 import Data.Const (Const)
 import Data.Set (Set)
 import Data.Set as Set
@@ -797,7 +797,14 @@ handleAction = case _ of
     for_ mtbl \t -> do
       H.modify_ _ { routingTable = t }
       pushTableToMachines
-  SetPorts ns -> H.modify_ _ { routingPorts = ns }
+  -- At first run, with nothing stored, the default table is made for the ports
+  -- this machine has and saved: chosen once, and shown in the router.
+  SetPorts ns -> do
+    H.modify_ _ { routingPorts = ns }
+    stored <- liftEffect RStore.load
+    when (isNothing stored) do
+      H.modify_ _ { routingTable = RM.defaultTableFor ns }
+      pushRoutingTable
   -- Only read the tap when the router is on screen. The tap itself is always on:
   -- traffic that happened before you opened the panel is exactly what you want to
   -- see when you open it.
@@ -829,7 +836,7 @@ handleAction = case _ of
   RtSetView v -> H.modify_ _ { routerView = v }
 
   RtResetTable -> do
-    H.modify_ _ { routingTable = RM.defaultTable }
+    H.modify_ \s -> s { routingTable = RM.defaultTableFor s.routingPorts }
     pushRoutingTable
   -- Hear a sample destination now, through the rig's SuperDirt, as it is set.
   RtAudition dest -> do

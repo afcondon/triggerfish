@@ -61,10 +61,12 @@ apply ctx edit tbl = case edit of
     RM.DSample d -> RM.DSample d { set = set, n = 0 }
     d -> d
 
--- | These sources back to the shipped defaults, leaving every other source as it
--- | is: a page that shows one machine's routes restores only those.
-resetSources :: Array RM.Source -> RM.Table -> RM.Table
-resetSources srcs tbl = foldl (\t src -> RM.setLegs src (RM.legsFor RM.defaultTable src) t) tbl srcs
+-- | These sources back to the shipped defaults for these ports, leaving every
+-- | other source as it is: a page that shows one machine's routes restores only
+-- | those.
+resetSources :: Array String -> Array RM.Source -> RM.Table -> RM.Table
+resetSources ports srcs tbl =
+  foldl (\t src -> RM.setLegs src (RM.legsFor (RM.defaultTableFor ports) src) t) tbl srcs
 
 setPort :: String -> RM.Destination -> RM.Destination
 setPort port = case _ of
@@ -117,7 +119,7 @@ newDest ctx src = case _ of
     , slots: 64, pitchOfSlot0: 36 })
   _ -> Nothing
   where
-  firstPort = fromMaybe "IAC" (head ctx.ports)
+  firstPort = RM.defaultPort ctx.ports
   rample voice trigger = RM.DRample
     { port: firstPort, channel: 1, voice, trigger
     , slots: 64, pitchOfSlot0: 36, settleMs: 40 }
