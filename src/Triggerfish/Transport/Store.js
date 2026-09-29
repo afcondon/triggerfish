@@ -19,3 +19,9 @@ export const _load = (key) => () => {
 };
 
 export const _stringify = (x) => JSON.stringify(x);
+
+export const _onChange = (key) => (callback) => () => {
+  window.addEventListener("storage", (e) => {
+    if (e.key === key) callback();
+  });
+};

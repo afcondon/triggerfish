@@ -23,6 +23,7 @@ module Triggerfish.Transport.Store
   ( Saved
   , save
   , load
+  , onChange
   ) where
 
 import Prelude
@@ -44,6 +45,12 @@ storeKey = "triggerfish.transport.v1"
 foreign import _save :: String -> String -> Effect Unit
 foreign import _load :: forall a. String -> Effect (Nullable a)
 foreign import _stringify :: forall a. a -> String
+foreign import _onChange :: String -> Effect Unit -> Effect Unit
+
+-- | Run `callback` whenever ANOTHER tab of this origin saves the mode, so the
+-- | dashboard's Solo/Atlantis switch reaches every machine's page.
+onChange :: Effect Unit -> Effect Unit
+onChange = _onChange storeKey
 
 toTag :: Mode -> String
 toTag = case _ of

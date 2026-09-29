@@ -15,7 +15,10 @@
 -- |   * the free-run clock baseline and tempo (Solo; Link overrides it on the rig);
 -- |   * the preset chip, and the CAPTURE key (`c`);
 -- |   * the machine's stage slot: its chip and whether it sounds, recorded on
--- |     the rig whenever either changes (`Triggerfish.Stage`), for the dashboard.
+-- |     the rig whenever either changes (`Triggerfish.Stage`), for the dashboard;
+-- |   * the tab bus (`Triggerfish.TabBus`): the same state announced to the
+-- |     dashboard tab to tab, and its play, stop and Panic obeyed. The mode
+-- |     follows the dashboard's switch through the store.
 -- |
 -- | What spans machines (scenes, macro lanes, the library manager) belongs to the
 -- | dashboard to come, not here.
@@ -38,7 +41,7 @@ import Binnacle.Time (dateNow)
 import Binnacle.Transport as Transport
 import Data.Foldable (for_)
 import Data.Int as Int
-import Data.Maybe (Maybe(..), isJust, isNothing)
+import Data.Maybe (Maybe(..), isJust, isNothing, maybe)
 import Data.Set as Set
 import Effect (Effect)
 import Effect.Aff (Aff)
@@ -64,6 +67,7 @@ import Triggerfish.SampleSets (SampleSet)
 import Triggerfish.SampleSets as SampleSets
 import Triggerfish.SourceQuery as SQ
 import Triggerfish.Stage as Stage
+import Triggerfish.TabBus as Bus
 import Triggerfish.Transport (Mode(..), Sounding(..), Which, soundingOf)
 import Triggerfish.Transport.Store as TransportStore
 import Triggerfish.Ui.Style (engrave, style)
@@ -121,6 +125,7 @@ type State =
   -- The last stage-put sent, so an unchanged slot sends nothing; cleared when
   -- the rig goes away, so a reconnect records it again.
   , staged :: Maybe String
+  , bus :: Maybe Bus.Bus
   }
 
 data Action o
@@ -139,6 +144,8 @@ data Action o
   | ResetRouting
   | SetPorts (Array String)
   | Tick
+  | FromBus Bus.Msg
+  | ModeStored
 
 type Slots o = (machine :: H.Slot SQ.Query o Unit)
 
@@ -150,7 +157,7 @@ root cfg = H.mkComponent
   { initialState: \_ ->
       { mode: Solo, playing: false, bpm: 120, freeT0: 0.0, chip: Nothing, rig: Nothing
       , rigUp: false, table: RM.defaultTable, ports: [], sampleSets: [], routerOpen: false
-      , staged: Nothing }
+      , staged: Nothing, bus: Nothing }
   , render: render cfg
   , eval: H.mkEval H.defaultEval { handleAction = handleAction cfg, initialize = Just Init }
   }
@@ -170,6 +177,10 @@ handleAction cfg = case _ of
     { emitter, listener } <- liftEffect HS.create
     _ <- H.subscribe emitter
     liftEffect $ RStore.onChange (HS.notify listener RoutingChanged)
+    liftEffect $ TransportStore.onChange (HS.notify listener ModeStored)
+    bus <- liftEffect Bus.open
+    H.modify_ _ { bus = Just bus }
+    liftEffect $ Bus.onMessage bus (HS.notify listener <<< FromBus)
     -- The port names, for the router's reach column and its port menus. The
     -- machine asks for MIDI itself to play; this is only to know what exists.
     for_ cfg.router \_ -> do
@@ -231,11 +242,33 @@ handleAction cfg = case _ of
       Just bin -> liftEffect $ Transport.isConnected (Binnacle.socket bin)
     when (ok /= st.rigUp) (H.modify_ _ { rigUp = ok, staged = Nothing })
     publishStage cfg
+    announce cfg
+  -- The dashboard's commands, for this machine or for all.
+  FromBus msg -> do
+    st <- H.get
+    let mine m = Stage.slotOf cfg.which == Just m
+    case msg of
+      Bus.Play m | mine m && not st.playing -> handleAction cfg TogglePlay
+      Bus.Stop m | mine m && st.playing -> handleAction cfg TogglePlay
+      -- The dashboard hushes the rig itself; here only the local transport stops.
+      Bus.Panic -> do
+        H.modify_ _ { playing = false }
+        pushSounding cfg
+      Bus.Hello -> announce cfg
+      _ -> pure unit
+  -- Another tab (the dashboard) changed the mode.
+  ModeStored -> do
+    mmode <- liftEffect TransportStore.load
+    st <- H.get
+    for_ mmode \m -> when (m /= st.mode) do
+      H.modify_ _ { mode = m }
+      pushSounding cfg
   -- Only the chip is this shell's business; a machine's other outputs (Balistes'
   -- macro-lane edits) belong to the dashboard.
   FromMachine out -> for_ (cfg.chipOf out) \cv -> do
     H.modify_ _ { chip = cv }
     publishStage cfg
+    announce cfg
   Key e -> for_ (KE.fromEvent e) \ke -> unless (targetIsField e || KE.metaKey ke || KE.ctrlKey ke) do
     -- ⌥1 by the key's position, as in Triggerfish: on a Mac, Option+1 types "¡".
     if KE.altKey ke then
@@ -270,6 +303,7 @@ pushSounding cfg = do
   st <- H.get
   void $ H.query _machine unit (SQ.SetSounding (sounding cfg st) unit)
   publishStage cfg
+  announce cfg
 
 sounding :: forall o. Config o -> State -> Sounding
 sounding cfg st =
@@ -285,6 +319,20 @@ publishStage cfg = do
     when (st.staged /= Just line) do
       liftEffect $ Transport.send (Binnacle.socket bin) line
       H.modify_ _ { staged = Just line }
+
+-- | Tell the dashboard, tab to tab, what this machine has loaded and whether it
+-- | sounds. Sent on every change and on every tick, so silence means the tab
+-- | has gone.
+announce :: forall o o'. Config o -> M o o' Unit
+announce cfg = do
+  st <- H.get
+  for_ (Stage.slotOf cfg.which) \slot -> for_ st.bus \bus ->
+    liftEffect $ Bus.post bus $ Bus.State
+      { machine: slot
+      , alias: map _.glyph.alias st.chip
+      , edited: maybe false _.diverged st.chip
+      , playing: sounding cfg st /= Silent
+      }
 
 pushFree :: forall o o'. M o o' Unit
 pushFree = do

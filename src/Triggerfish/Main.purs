@@ -79,6 +79,7 @@ import Triggerfish.Routing.Edit as RE
 import Triggerfish.Routing.View as RV
 import Triggerfish.SourceQuery as SQ
 import Triggerfish.Stage as Stage
+import Triggerfish.TabBus as Bus
 import Triggerfish.Glyph as G
 import Triggerfish.GlyphView (chipIcons, faIcons)
 import Triggerfish.Scenes as Scenes
@@ -142,6 +143,8 @@ data RAction
   -- `Triggerfish.Routing.Edit` and then persisted and pushed in one place.
   -- Another tab of this origin (Balistes on its own page) saved the table.
   | RoutingStored
+  | FromBus Bus.Msg             -- the dashboard, tab to tab (Triggerfish.TabBus)
+  | ModeStored                  -- another tab changed the Solo/Atlantis mode
   | SetPorts (Array String)
   | MonTick
   | MonClear
@@ -290,6 +293,8 @@ type RState =
   -- slot sends nothing; cleared when the rig goes away, so a reconnect records
   -- every slot again.
   , staged :: Map Which String
+  -- The tab bus to the dashboard (`Triggerfish.TabBus`).
+  , bus :: Maybe Bus.Bus
   -- Vetula auto-resync (ATLANTIS): the shell polls Vetula's rig payload and, when
   -- it settles on a new value, re-pushes (SetSounding Rig re-voices) — so the
   -- progression re-voices live with no manual button. `brushSent` = last value
@@ -437,7 +442,7 @@ root =
         , clipLibrary: [], clipShareMsg: "", shellMidi: Nothing
         , picked: Nothing, sourceOpen: false, digOpen: false, goTo: [], previewing: []
         , mode: Solo, harm: { durs: [], active: -1, chord: "" }
-        , rig: Nothing, rigConnected: false, staged: Map.empty
+        , rig: Nothing, rigConnected: false, staged: Map.empty, bus: Nothing
         , brushSent: "", brushPrev: ""
         , armed: Set.empty
         , routingTable: RM.defaultTable
@@ -508,6 +513,11 @@ handleAction = case _ of
     -- published. Absent/unknown tag keeps the Solo default from initialState.
     mmode <- liftEffect TransportStore.load
     for_ mmode \m -> H.modify_ _ { mode = m }
+    -- The dashboard: follow its mode switch, obey its commands, announce state.
+    liftEffect $ TransportStore.onChange (HS.notify listener ModeStored)
+    bus <- liftEffect Bus.open
+    H.modify_ _ { bus = Just bus }
+    liftEffect $ Bus.onMessage bus (HS.notify listener <<< FromBus)
     -- Restore the saved scene grid (rig-wide). Playback is NOT restored (sceneRun
     -- stays false) — a reload never auto-plays, mirroring the machines.
     msc <- liftEffect ScenesStore.load
@@ -665,6 +675,26 @@ handleAction = case _ of
     a <- H.gets _.armed
     H.modify_ _ { armed = if Set.member w a then Set.delete w a else Set.insert w a }
     pushSounding w
+  -- The dashboard's commands. Play and stop are this page's own arm toggle; Panic
+  -- only disarms, since the dashboard hushes the rig itself.
+  FromBus msg -> do
+    a <- H.gets _.armed
+    let
+      mine m = find (\w -> Stage.slotOf w == Just m) [ Odo, Vet ]
+    case msg of
+      Bus.Play m -> for_ (mine m) \w -> unless (Set.member w a) (handleAction (ArmTab w))
+      Bus.Stop m -> for_ (mine m) \w -> when (Set.member w a) (handleAction (ArmTab w))
+      Bus.Panic -> do
+        H.modify_ _ { armed = Set.empty }
+        pushAll
+      Bus.Hello -> announce Odo *> announce Vet
+      Bus.State _ -> pure unit
+  ModeStored -> do
+    mmode <- liftEffect TransportStore.load
+    cur <- H.gets _.mode
+    for_ mmode \m -> when (m /= cur) do
+      H.modify_ _ { mode = m }
+      pushAll
   -- Nav harmonic strip: jump Vetula's progression to a chord live. Playing → the
   -- ensemble advances there; stopped → the → odo feed moves, re-quantising Odonus.
   JumpVetula i -> void $ H.query _vet unit (Vetula.JumpChord i unit)
@@ -688,6 +718,8 @@ handleAction = case _ of
     when (ok /= st.rigConnected) (H.modify_ _ { rigConnected = ok, staged = Map.empty })
     publishStage Odo
     publishStage Vet
+    announce Odo
+    announce Vet
     void $ H.fork pushFree
 
   -- The nav BPM field (free-run only; read-only while Link-locked). Set the
@@ -886,6 +918,7 @@ handleAction = case _ of
   OdoChipChanged cv -> do
     H.modify_ _ { odoChip = cv }
     publishStage Odo
+    announce Odo
   -- The CAPTURE hotkey: tell the active machine to bank its current state as a
   -- preset. Only the SQ.Query machines answer; Balistes is the only live one so far.
   CaptureKey -> do
@@ -1068,6 +1101,7 @@ handleAction = case _ of
           when (cv /= prev) do
             H.modify_ _ { vetChip = cv }
             publishStage Vet
+            announce Vet
         -- Harmonic authority: pull Vetula's resting context scale and, when it CHANGES,
         -- install it as Odonus's pitchSet (RI.SetPitchSet, lockstep-safe). Vetula owns
         -- the scale; Odonus follows. Deduped so the 100ms poll doesn't flood the input.
@@ -1116,6 +1150,21 @@ pushSounding w = do
   st <- H.get
   void $ querySounding w (soundingOf st.mode st.armed (previewSet st) w)
   publishStage w
+  announce w
+
+-- Tell the dashboard, tab to tab, what machine `w` has loaded and whether it
+-- sounds. Sent on every change and on every SyncTick, so silence means the tab
+-- has gone.
+announce :: forall o m. MonadAff m => Which -> H.HalogenM RState RAction Slots o m Unit
+announce w = do
+  st <- H.get
+  for_ (Stage.slotOf w) \slot -> for_ st.bus \bus ->
+    liftEffect $ Bus.post bus $ Bus.State
+      { machine: slot
+      , alias: map _.glyph.alias (chipOf st w)
+      , edited: maybe false _.diverged (chipOf st w)
+      , playing: soundingOf st.mode st.armed (previewSet st) w /= Silent
+      }
 
 -- Record machine `w`'s chip and whether it sounds on the rig's stage
 -- (`Triggerfish.Stage`), if the rig is there and something changed. The
