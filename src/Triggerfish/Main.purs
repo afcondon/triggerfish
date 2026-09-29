@@ -65,7 +65,6 @@ import Binnacle.Midi as Midi
 import Binnacle.Time (dateNow)
 import Binnacle.Transport as Transport
 import Triggerfish.Odonus.Grid as Odonus
-import Triggerfish.Balistes.Component as Balistes
 import Triggerfish.Selene.Component as Selene
 import Triggerfish.Selene.Source as SelSrc
 import Triggerfish.Selene.Model as SelM
@@ -166,8 +165,6 @@ data RAction
   -- `history.replaceState`, which emits no `hashchange`.
   | StageChanged Which (Array String)
   | HashChanged String
-  | PushLane                   -- mirror Balistes' macro lane + readout into the machine
-  | BalChipChanged (Maybe G.ChipView)  -- Balistes' identity-chip view, for the status board
   | SelChipChanged (Maybe G.ChipView)  -- Selene's identity-chip view, for the status board
   | OdoChipChanged (Maybe G.ChipView)  -- Odonus's identity-chip view, for the status board
   | CaptureKey                 -- the global CAPTURE hotkey → bank a preset on the active machine
@@ -226,7 +223,7 @@ derive instance eqAuditionDest :: Eq AuditionDest
 -- | Machines shown with an audition control in the routing modal, in column order.
 auditionMachines :: Array { w :: Which, label :: String }
 auditionMachines =
-  [ { w: Odo, label: "Odonus" }, { w: Bal, label: "Balistes" }, { w: Sel, label: "Selene" }
+  [ { w: Odo, label: "Odonus" }, { w: Sel, label: "Selene" }
   , { w: Vet, label: "Vetula" }, { w: Suf, label: "Sufflamen" } ]
 
 auditionLabel :: AuditionDest -> String
@@ -366,7 +363,6 @@ type RState =
   -- Balistes / Selene PUSH theirs via Output (change-gated from their Frame loop);
   -- Vetula has no continuous frame loop, so the shell PULLS its chip in PollVetula
   -- (AskChip) and parks it in `vetChip`. Suf reports Nothing (prototypes).
-  , balChip :: Maybe G.ChipView
   , selChip :: Maybe G.ChipView
   , odoChip :: Maybe G.ChipView
   , vetChip :: Maybe G.ChipView
@@ -406,7 +402,6 @@ type MenuItem = { slot :: Int, alias :: String, name :: String, starred :: Boole
 
 type Slots =
   ( odo :: H.Slot SQ.Query Odonus.Output Unit
-  , bal :: H.Slot SQ.Query Balistes.Output Unit
   , sel :: H.Slot SQ.Query Selene.Output Unit
   , vet :: H.Slot Vetula.SourceQuery Vetula.Output Unit
   , suf :: H.Slot (Const Void) Void Unit
@@ -417,9 +412,6 @@ type Slots =
 
 _odo :: Proxy "odo"
 _odo = Proxy
-
-_bal :: Proxy "bal"
-_bal = Proxy
 
 _sel :: Proxy "sel"
 _sel = Proxy
@@ -444,7 +436,7 @@ root :: forall q i o m. MonadAff m => H.Component q i o m
 root =
   H.mkComponent
     { initialState: \_ ->
-        { which: Bal, tidalDoc: "", freeT0: 0.0
+        { which: Odo, tidalDoc: "", freeT0: 0.0
         , bpm: 120, liveTempo: 120.0, linkLocked: false
         , routerView: BySource, manifests: [], manifestAt: 0.0, previewCh: 5
         , audition: Map.singleton Vet ADContinuo   -- Vetula auditions via Continuo by default
@@ -465,7 +457,7 @@ root =
         , vetulaNames: [], seleneDoc: ""
         , modal: Nothing
         , macroLanes: Map.empty, macroReadout: Map.empty, macroBars: 4, macroOn: false, macroStep: -1, laneComplete: Nothing
-        , ctxScaleKey: "", balChip: Nothing, selChip: Nothing, odoChip: Nothing, vetChip: Nothing, captureFlash: false
+        , ctxScaleKey: "", selChip: Nothing, odoChip: Nothing, vetChip: Nothing, captureFlash: false
         , pollBusy: false, amphoraDown: false, chipMenu: Nothing
         , scenes: [], sceneRun: false, scenePos: -1, sceneBars: 4, sceneStep: -1, scenePick: Nothing }
     , render
@@ -534,9 +526,6 @@ handleAction = case _ of
     for_ mmac \sv -> H.modify_ _
       { macroLanes = Map.fromFoldable (mapMaybe (\e -> (\w -> Tuple w e.text) <$> whichFromLane e.machine) sv.lanes)
       , macroBars = if sv.bars >= 1 then sv.bars else 4 }
-    -- Hand the restored lane to Balistes; without this its ASSEMBLE panel opens
-    -- empty on a reload even though the lane persisted.
-    handleAction PushLane
     -- URL routing. Read the fragment ONCE at startup — a deep link like
     -- `#vetula/review` opens straight onto that surface — then listen for changes
     -- the user makes (a pasted link, an edited address bar). Our own writes go via
@@ -693,8 +682,8 @@ handleAction = case _ of
   -- means keydowns/clicks don't register until every child is ready — the CAPTURE
   -- hotkey "dead for a minute" bug. The queries land whenever the children answer.
   -- No armed-reconcile poll here anymore: `armed` is written only by the user
-  -- (ArmTab / ToggleMaster) and by Vetula's self-disarm EVENT (VetulaArmed). Odo/
-  -- Bal/Sel never self-disarm, so nothing needs observing. Sounding is now purely
+  -- (ArmTab / ToggleMaster) and by Vetula's self-disarm EVENT (VetulaArmed). Odo
+  -- and Sel never self-disarm, so nothing needs observing. Sounding is now purely
   -- one-directional (shell state → instruments) — no two-way binding to fight.
   SyncTick -> do
     -- Poll the rig link alongside the free-run push. Before this a dead socket
@@ -913,7 +902,6 @@ handleAction = case _ of
     pushSounding Vet
   -- Balistes pushed a new identity-chip view (capture / recall / divergence) — park it
   -- for the status board. Cheap: Balistes only raises this when the view changed.
-  BalChipChanged cv -> H.modify_ _ { balChip = cv }
   SelChipChanged cv -> H.modify_ _ { selChip = cv }
   OdoChipChanged cv -> H.modify_ _ { odoChip = cv }
   -- The CAPTURE hotkey: tell the active machine to bank its current state as a
@@ -931,7 +919,6 @@ handleAction = case _ of
     w <- H.gets _.which
     void $ H.fork case w of
       Odo -> void $ H.query _odo unit (SQ.Capture unit)
-      Bal -> void $ H.query _bal unit (SQ.Capture unit)
       Sel -> void $ H.query _sel unit (SQ.Capture unit)
       Vet -> void $ H.query _vet unit (Vetula.Capture unit)
       _ -> pure unit
@@ -956,10 +943,6 @@ handleAction = case _ of
   SetLaneText w t -> do
     H.modify_ \s -> s { macroLanes = Map.insert w t s.macroLanes }
     persistMacro
-    -- Echo straight back down so an edit made on the TIDAL page shows in
-    -- Balistes' ASSEMBLE panel without waiting for the next macro tick. Balistes
-    -- drops it when it matches, so echoing its OWN edit costs nothing.
-    when (w == Bal) (handleAction PushLane)
     -- `:`-completion: if the trailing token is a `:prefix`, open a scoped popup of
     -- that machine's bank glyphs whose alias matches; otherwise close it.
     case String.stripPrefix (String.Pattern ":") (trailingToken t) of
@@ -993,15 +976,6 @@ handleAction = case _ of
   -- free-run epoch; when it crosses a boundary, resolve + apply EACH machine's lane
   -- at its own token count (so lanes of different lengths phase polymetrically).
   -- Rig-locked timing (reading the Link anchor) is a later slice — this drives Solo.
-  -- Mirror Balistes' arrangement lane down to it, so its ASSEMBLE panel shows
-  -- what the rack-wide TIDAL page shows. Rides the macro tick because that's when
-  -- the readout changes; Balistes drops a push equal to what it already has, so
-  -- this cannot fight the caret while you type there.
-  PushLane -> do
-    st <- H.get
-    void $ H.query _bal unit
-      (SQ.PutLane (fromMaybe "" (Map.lookup Bal st.macroLanes))
-                  (fromMaybe "" (Map.lookup Bal st.macroReadout)) unit)
 
   MacroTick -> do
     st <- H.get
@@ -1017,7 +991,6 @@ handleAction = case _ of
           let toks = parseLane (fromMaybe "" (Map.lookup w st.macroLanes))
               n = length toks
           when (n > 0) (applyLaneCell w (resolveStep toks (stepGlobal `mod` n) (stepGlobal `div` n)))
-    handleAction PushLane
   -- Scene grid (Ableton-like). Snapshot the rig: read every machine's CURRENT chip
   -- glyph (the alias it's parked on) into a new scene row. A machine with no chip
   -- (nothing captured) contributes a leave-as-is cell. The capture-hotkey ethos at
@@ -1242,7 +1215,7 @@ isPreviewing st r = any (sameRow r) st.previewing
 querySounding :: forall o m. Which -> Sounding -> H.HalogenM RState RAction Slots o m (Maybe Unit)
 querySounding w s = case w of
   Odo -> H.query _odo unit (SQ.SetSounding s unit)
-  Bal -> H.query _bal unit (SQ.SetSounding s unit)
+  Bal -> pure Nothing   -- on its own page (balistes.html) since 2026-09-29
   Sel -> H.query _sel unit (SQ.SetSounding s unit)
   Vet -> H.query _vet unit (Vetula.SetSounding s unit)
   Tid -> pure Nothing
@@ -1250,14 +1223,13 @@ querySounding w s = case w of
 
 -- Re-derive and push every machine's Sounding (on arm-all / mode flip / init).
 pushAll :: forall o m. MonadAff m => H.HalogenM RState RAction Slots o m Unit
-pushAll = for_ [ Odo, Bal, Sel, Vet ] pushSounding
+pushAll = for_ [ Odo, Sel, Vet ] pushSounding
 
 -- Ask a machine for its bank (recall menu contents). Only the SQ.Query machines
 -- answer; Balistes is the only one with real presets so far.
 queryBank :: forall o m. Which -> H.HalogenM RState RAction Slots o m (Maybe (Array MenuItem))
 queryBank = case _ of
   Odo -> H.query _odo unit (SQ.AskBank identity)
-  Bal -> H.query _bal unit (SQ.AskBank identity)
   Sel -> H.query _sel unit (SQ.AskBank identity)
   Vet -> H.query _vet unit (Vetula.AskBank identity)
   _ -> pure Nothing
@@ -1266,7 +1238,6 @@ queryBank = case _ of
 queryRecall :: forall o m. Which -> Int -> H.HalogenM RState RAction Slots o m (Maybe Unit)
 queryRecall w i = case w of
   Odo -> H.query _odo unit (SQ.RecallSlot i unit)
-  Bal -> H.query _bal unit (SQ.RecallSlot i unit)
   Sel -> H.query _sel unit (SQ.RecallSlot i unit)
   Vet -> H.query _vet unit (Vetula.RecallSlot i unit)
   _ -> pure Nothing
@@ -1275,7 +1246,6 @@ queryRecall w i = case w of
 queryStar :: forall o m. Which -> Int -> H.HalogenM RState RAction Slots o m (Maybe Unit)
 queryStar w i = case w of
   Odo -> H.query _odo unit (SQ.StarSlot i unit)
-  Bal -> H.query _bal unit (SQ.StarSlot i unit)
   Sel -> H.query _sel unit (SQ.StarSlot i unit)
   Vet -> H.query _vet unit (Vetula.StarSlot i unit)
   _ -> pure Nothing
@@ -1283,7 +1253,6 @@ queryStar w i = case w of
 queryDelete :: forall o m. Which -> Int -> H.HalogenM RState RAction Slots o m (Maybe Unit)
 queryDelete w i = case w of
   Odo -> H.query _odo unit (SQ.DeleteSlot i unit)
-  Bal -> H.query _bal unit (SQ.DeleteSlot i unit)
   Sel -> H.query _sel unit (SQ.DeleteSlot i unit)
   Vet -> H.query _vet unit (Vetula.DeleteSlot i unit)
   _ -> pure Nothing
@@ -1348,12 +1317,11 @@ replaceTrailingToken cur alias =
 refreshTidal :: forall o m. H.HalogenM RState RAction Slots o m Unit
 refreshTidal = do
   o <- H.query _odo unit (SQ.AskSource identity)
-  b <- H.query _bal unit (SQ.AskSource identity)
   s <- H.query _sel unit (SQ.AskSource identity)
   v <- H.query _vet unit (Vetula.AskSource identity)
   H.modify_ _
     { tidalDoc = assemble
-        [ Tuple "ODONUS" o, Tuple "BALISTES" b, Tuple "SELENE" s, Tuple "VETULA" v ]
+        [ Tuple "ODONUS" o, Tuple "SELENE" s, Tuple "VETULA" v ]
     , seleneDoc = fromMaybe "" s }
   -- Refresh the channel-map: which → midi voice names are in use, and re-push the
   -- current bindings so Vetula stays in sync when the page reopens.
@@ -1372,7 +1340,6 @@ pushFree = do
   let t0 = st.freeT0
       tempo = Int.toNumber st.bpm
   _ <- H.query _odo unit (SQ.SyncFree t0 tempo unit)
-  _ <- H.query _bal unit (SQ.SyncFree t0 tempo unit)
   _ <- H.query _sel unit (SQ.SyncFree t0 tempo unit)
   _ <- H.query _vet unit (Vetula.SyncFree t0 tempo unit)
   pure unit
@@ -1398,7 +1365,6 @@ pushTableToMachines :: forall o m. MonadAff m => H.HalogenM RState RAction Slots
 pushTableToMachines = do
   t <- H.gets _.routingTable
   void $ H.query _odo unit (SQ.SetRouting t unit)
-  void $ H.query _bal unit (SQ.SetRouting t unit)
   void $ H.query _sel unit (SQ.SetRouting t unit)
 
 assemble :: Array (Tuple String (Maybe String)) -> String
@@ -1412,10 +1378,9 @@ assemble = joinWith "\n\n\n" <<< map section
 refreshLibrary :: forall o m. H.HalogenM RState RAction Slots o m Unit
 refreshLibrary = do
   o <- H.query _odo unit (SQ.AskLibrary identity)
-  b <- H.query _bal unit (SQ.AskLibrary identity)
   s <- H.query _sel unit (SQ.AskLibrary identity)
   v <- H.query _vet unit (Vetula.AskLibrary identity)
-  H.modify_ _ { library = rows Odo o <> rows Bal b <> rows Sel s <> rows Vet v }
+  H.modify_ _ { library = rows Odo o <> rows Sel s <> rows Vet v }
   where
   rows w m = mapWithIndex (\i e -> { inst: w, idx: i, name: e.name, text: e.text }) (fromMaybe [] m)
 
@@ -1453,7 +1418,7 @@ isStarred st r = any (\g -> g.payload == r.text) st.goTo
 queryStagePath :: forall o m. Which -> Array String -> H.HalogenM RState RAction Slots o m (Maybe Unit)
 queryStagePath w segs = case w of
   Odo -> H.query _odo unit (SQ.SetStagePath segs unit)
-  Bal -> H.query _bal unit (SQ.SetStagePath segs unit)
+  Bal -> pure Nothing
   Sel -> H.query _sel unit (SQ.SetStagePath segs unit)
   Vet -> H.query _vet unit (Vetula.SetStagePath segs unit)
   Tid -> pure Nothing
@@ -1472,7 +1437,7 @@ syncHash w = do
 queryLoad :: forall o m. Which -> Int -> H.HalogenM RState RAction Slots o m (Maybe Unit)
 queryLoad w i = case w of
   Odo -> H.query _odo unit (SQ.LoadEntry i unit)
-  Bal -> H.query _bal unit (SQ.LoadEntry i unit)
+  Bal -> pure Nothing
   Sel -> H.query _sel unit (SQ.LoadEntry i unit)
   Vet -> H.query _vet unit (Vetula.LoadEntry i unit)
   Tid -> pure Nothing
@@ -1481,7 +1446,7 @@ queryLoad w i = case w of
 queryImport :: forall o m. Which -> String -> H.HalogenM RState RAction Slots o m (Maybe Boolean)
 queryImport w txt = case w of
   Odo -> H.query _odo unit (SQ.ImportText txt identity)
-  Bal -> H.query _bal unit (SQ.ImportText txt identity)
+  Bal -> pure Nothing
   Sel -> H.query _sel unit (SQ.ImportText txt identity)
   Vet -> H.query _vet unit (Vetula.ImportText txt identity)
   Tid -> pure Nothing
@@ -1502,10 +1467,6 @@ render st =
         (HH.slot _odo unit Odonus.component unit case _ of
             Odonus.IdentityChanged cv -> OdoChipChanged cv
             Odonus.StageChanged segs -> StageChanged Odo segs)
-    , pane (st.which == Bal) ""
-        (HH.slot _bal unit Balistes.component unit case _ of
-            Balistes.IdentityChanged cv -> BalChipChanged cv
-            Balistes.LaneEdited t -> SetLaneText Bal t)
     , pane (st.which == Sel) ""
         (HH.slot _sel unit Selene.component unit (\(Selene.IdentityChanged cv) -> SelChipChanged cv))
     , pane (st.which == Vet) "padding-top:var(--tf-bar)"
@@ -1666,7 +1627,13 @@ channelMapPanel st =
           BySource ->
             [ HH.div [ style "display:flex;gap:28px;align-items:flex-start;flex-wrap:wrap" ]
                 [ machineCol "Odonus" (map (routeRow <<< RM.SOdonusHead) (0 .. 3))
-                , machineCol "Balistes · kit" (map (routeRow <<< RM.SDrumLane) (0 .. 15))
+                -- The kit lanes are routed on Balistes' own page, which shares this
+                -- table (and follows an edit here live).
+                , machineCol "Balistes · kit"
+                    [ HH.a
+                        [ HP.href "balistes.html", HP.target "_blank"
+                        , style "font-size:11px;color:#5a564b" ]
+                        [ HH.text "on its own page ↗" ] ]
                 , HH.div [ style "flex:0 0 auto;display:flex;flex-direction:column;gap:18px" ]
                     [ machineCol "Selene" seleneRows
                     , machineCol "Vetula" vetulaRows
@@ -1998,7 +1965,7 @@ shelfPanel st =
       else if null st.library
         then HH.div [ style "color:#8a8576;font-size:12px;font-style:italic;margin-bottom:14px" ]
                [ HH.text "(refresh to gather each instrument's saved setups)" ]
-        else HH.div_ (map (groupSection st) [ Odo, Bal, Sel, Vet ])
+        else HH.div_ (map (groupSection st) [ Odo, Sel, Vet ])
     , importBox st
     ]
 
@@ -2132,7 +2099,6 @@ importBox st =
         [ style "display:flex;align-items:center;gap:7px;margin-top:8px" ]
         [ HH.span [ style "font-size:10px;letter-spacing:0.1em;text-transform:uppercase;color:#7a7363" ] [ HH.text "import →" ]
         , barBtn "Odonus" (ImportInto Odo)
-        , barBtn "Balistes" (ImportInto Bal)
         , barBtn "Selene" (ImportInto Sel)
         , barBtn "Vetula" (ImportInto Vet)
         , if st.importMsg == "" then HH.text ""
@@ -2480,7 +2446,13 @@ switcher st =
     [ style $ "display:flex;gap:0;flex:0 0 auto;border:1px solid #00000033;border-radius:6px;overflow:hidden;"
         <> "box-shadow:0 1px 3px #00000022" ]
     [ armSeg st Odo "ODONUS"
-    , armSeg st Bal "BALISTES"
+    -- Balistes plays on its own page now; the tab is a link to it.
+    , HH.a
+        [ HP.href "balistes.html", HP.target "_blank"
+        , HP.title "Balistes runs on its own page"
+        , style $ "padding:6px 14px;cursor:pointer;font-size:11px;letter-spacing:0.12em;text-decoration:none;"
+            <> "text-transform:uppercase;color:#5a564b;background:linear-gradient(#e9e5d9,#dcd8c9)" ]
+        [ HH.text "Balistes ↗" ]
     , armSeg st Sel "SELENE"
     , armSeg st Vet "VETULA"
     , seg "SUFFLAMEN" (st.which == Suf) (Pick Suf)
@@ -2548,7 +2520,7 @@ armSeg st w label =
 chipOf :: RState -> Which -> Maybe G.ChipView
 chipOf st = case _ of
   Odo -> st.odoChip
-  Bal -> st.balChip
+  Bal -> Nothing
   Sel -> st.selChip
   Vet -> st.vetChip
   _ -> Nothing

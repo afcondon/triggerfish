@@ -42,10 +42,11 @@ type Scene =
   , cells :: Array SceneCell
   }
 
--- | The machines a scene spans, in column order. The four live (banked) machines;
--- | Sufflamen joins when it gains preset banks.
+-- | The machines a scene spans, in column order. Balistes left for its own page
+-- | on 2026-09-29, taking its column with it (`Scenes.Store` drops it from a
+-- | grid saved before then); it rejoins through the stage, not this page.
 sceneMachines :: Array Which
-sceneMachines = [ Odo, Bal, Sel, Vet ]
+sceneMachines = [ Odo, Sel, Vet ]
 
 -- | A blank scene — every machine left-as-is.
 emptyScene :: Scene

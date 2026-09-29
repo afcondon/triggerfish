@@ -71,7 +71,9 @@ machineSlug = case _ of
 machineFromSlug :: String -> Maybe Which
 machineFromSlug s = case toLower (trim s) of
   "odonus" -> Just Odo
-  "balistes" -> Just Bal
+  -- Balistes has its own page (balistes.html), so an old link to it here is
+  -- ignored rather than opening an empty pane.
+  "balistes" -> Nothing
   "selene" -> Just Sel
   "vetula" -> Just Vet
   "tidal" -> Just Tid
