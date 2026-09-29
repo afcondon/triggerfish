@@ -13,7 +13,9 @@
 -- |     Triggerfish), saved, and pushed down. The pages share one origin, so one
 -- |     store, and each follows the others' edits live (`Routing.Store.onChange`);
 -- |   * the free-run clock baseline and tempo (Solo; Link overrides it on the rig);
--- |   * the preset chip, and the CAPTURE key (`c`).
+-- |   * the preset chip, and the CAPTURE key (`c`);
+-- |   * the machine's stage slot: its chip and whether it sounds, recorded on
+-- |     the rig whenever either changes (`Triggerfish.Stage`), for the dashboard.
 -- |
 -- | What spans machines (scenes, macro lanes, the library manager) belongs to the
 -- | dashboard to come, not here.
@@ -61,7 +63,8 @@ import Triggerfish.Routing.View as RV
 import Triggerfish.SampleSets (SampleSet)
 import Triggerfish.SampleSets as SampleSets
 import Triggerfish.SourceQuery as SQ
-import Triggerfish.Transport (Mode(..), Which, soundingOf)
+import Triggerfish.Stage as Stage
+import Triggerfish.Transport (Mode(..), Sounding(..), Which, soundingOf)
 import Triggerfish.Transport.Store as TransportStore
 import Triggerfish.Ui.Style (engrave, style)
 import Type.Proxy (Proxy(..))
@@ -115,6 +118,9 @@ type State =
   , ports :: Array String
   , sampleSets :: Array SampleSet
   , routerOpen :: Boolean
+  -- The last stage-put sent, so an unchanged slot sends nothing; cleared when
+  -- the rig goes away, so a reconnect records it again.
+  , staged :: Maybe String
   }
 
 data Action o
@@ -143,7 +149,8 @@ root :: forall q i o' o. Config o -> H.Component q i o' Aff
 root cfg = H.mkComponent
   { initialState: \_ ->
       { mode: Solo, playing: false, bpm: 120, freeT0: 0.0, chip: Nothing, rig: Nothing
-      , rigUp: false, table: RM.defaultTable, ports: [], sampleSets: [], routerOpen: false }
+      , rigUp: false, table: RM.defaultTable, ports: [], sampleSets: [], routerOpen: false
+      , staged: Nothing }
   , render: render cfg
   , eval: H.mkEval H.defaultEval { handleAction = handleAction cfg, initialize = Just Init }
   }
@@ -220,10 +227,13 @@ handleAction cfg = case _ of
     ok <- case st.rig of
       Nothing -> pure false
       Just bin -> liftEffect $ Transport.isConnected (Binnacle.socket bin)
-    when (ok /= st.rigUp) (H.modify_ _ { rigUp = ok })
+    when (ok /= st.rigUp) (H.modify_ _ { rigUp = ok, staged = Nothing })
+    publishStage cfg
   -- Only the chip is this shell's business; a machine's other outputs (Balistes'
   -- macro-lane edits) belong to the dashboard.
-  FromMachine out -> for_ (cfg.chipOf out) \cv -> H.modify_ _ { chip = cv }
+  FromMachine out -> for_ (cfg.chipOf out) \cv -> do
+    H.modify_ _ { chip = cv }
+    publishStage cfg
   Key e -> for_ (KE.fromEvent e) \ke -> unless (targetIsField e || KE.metaKey ke || KE.ctrlKey ke) do
     -- ⌥1 by the key's position, as in Triggerfish: on a Mac, Option+1 types "¡".
     if KE.altKey ke then
@@ -248,8 +258,23 @@ keepTable t = do
 pushSounding :: forall o o'. Config o -> M o o' Unit
 pushSounding cfg = do
   st <- H.get
-  let armed = if st.playing then Set.singleton cfg.which else Set.empty
-  void $ H.query _machine unit (SQ.SetSounding (soundingOf st.mode armed Set.empty cfg.which) unit)
+  void $ H.query _machine unit (SQ.SetSounding (sounding cfg st) unit)
+  publishStage cfg
+
+sounding :: forall o. Config o -> State -> Sounding
+sounding cfg st =
+  soundingOf st.mode (if st.playing then Set.singleton cfg.which else Set.empty) Set.empty cfg.which
+
+-- | Record the machine's chip and whether it sounds on the rig's stage, if the
+-- | rig is there and something changed.
+publishStage :: forall o o'. Config o -> M o o' Unit
+publishStage cfg = do
+  st <- H.get
+  for_ (Stage.slotOf cfg.which) \slot -> for_ st.rig \bin -> when st.rigUp do
+    let line = Stage.putLine slot st.chip (sounding cfg st /= Silent)
+    when (st.staged /= Just line) do
+      liftEffect $ Transport.send (Binnacle.socket bin) line
+      H.modify_ _ { staged = Just line }
 
 pushFree :: forall o o'. M o o' Unit
 pushFree = do

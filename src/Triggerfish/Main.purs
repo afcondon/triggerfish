@@ -78,6 +78,7 @@ import Triggerfish.Routing.Store as RStore
 import Triggerfish.Routing.Edit as RE
 import Triggerfish.Routing.View as RV
 import Triggerfish.SourceQuery as SQ
+import Triggerfish.Stage as Stage
 import Triggerfish.Glyph as G
 import Triggerfish.GlyphView (chipIcons, faIcons)
 import Triggerfish.Scenes as Scenes
@@ -285,6 +286,10 @@ type RState =
   -- Is the shell's rig socket live? Polled on SyncTick. All the sockets dial the
   -- same URL and drop together, so the shell's stands for the lot.
   , rigConnected :: Boolean
+  -- The last stage-put sent per machine (`Triggerfish.Stage`), so an unchanged
+  -- slot sends nothing; cleared when the rig goes away, so a reconnect records
+  -- every slot again.
+  , staged :: Map Which String
   -- Vetula auto-resync (ATLANTIS): the shell polls Vetula's rig payload and, when
   -- it settles on a new value, re-pushes (SetSounding Rig re-voices) — so the
   -- progression re-voices live with no manual button. `brushSent` = last value
@@ -432,7 +437,7 @@ root =
         , clipLibrary: [], clipShareMsg: "", shellMidi: Nothing
         , picked: Nothing, sourceOpen: false, digOpen: false, goTo: [], previewing: []
         , mode: Solo, harm: { durs: [], active: -1, chord: "" }
-        , rig: Nothing, rigConnected: false
+        , rig: Nothing, rigConnected: false, staged: Map.empty
         , brushSent: "", brushPrev: ""
         , armed: Set.empty
         , routingTable: RM.defaultTable
@@ -680,7 +685,9 @@ handleAction = case _ of
     ok <- case st.rig of
       Nothing -> pure false
       Just bin -> liftEffect $ Transport.isConnected (Binnacle.socket bin)
-    when (ok /= st.rigConnected) (H.modify_ _ { rigConnected = ok })
+    when (ok /= st.rigConnected) (H.modify_ _ { rigConnected = ok, staged = Map.empty })
+    publishStage Odo
+    publishStage Vet
     void $ H.fork pushFree
 
   -- The nav BPM field (free-run only; read-only while Link-locked). Set the
@@ -869,7 +876,9 @@ handleAction = case _ of
     pushSounding Vet
   -- Balistes pushed a new identity-chip view (capture / recall / divergence) — park it
   -- for the status board. Cheap: Balistes only raises this when the view changed.
-  OdoChipChanged cv -> H.modify_ _ { odoChip = cv }
+  OdoChipChanged cv -> do
+    H.modify_ _ { odoChip = cv }
+    publishStage Odo
   -- The CAPTURE hotkey: tell the active machine to bank its current state as a
   -- preset. Only the SQ.Query machines answer; Balistes is the only live one so far.
   CaptureKey -> do
@@ -1049,7 +1058,9 @@ handleAction = case _ of
         mchip <- H.query _vet unit (Vetula.AskChip identity)
         for_ mchip \cv -> do
           prev <- H.gets _.vetChip
-          when (cv /= prev) (H.modify_ _ { vetChip = cv })
+          when (cv /= prev) do
+            H.modify_ _ { vetChip = cv }
+            publishStage Vet
         -- Harmonic authority: pull Vetula's resting context scale and, when it CHANGES,
         -- install it as Odonus's pitchSet (RI.SetPitchSet, lockstep-safe). Vetula owns
         -- the scale; Odonus follows. Deduped so the 100ms poll doesn't flood the input.
@@ -1097,6 +1108,21 @@ pushSounding :: forall o m. MonadAff m => Which -> H.HalogenM RState RAction Slo
 pushSounding w = do
   st <- H.get
   void $ querySounding w (soundingOf st.mode st.armed (previewSet st) w)
+  publishStage w
+
+-- Record machine `w`'s chip and whether it sounds on the rig's stage
+-- (`Triggerfish.Stage`), if the rig is there and something changed. The
+-- dashboard reads it; this shell does not.
+publishStage :: forall o m. MonadAff m => Which -> H.HalogenM RState RAction Slots o m Unit
+publishStage w = do
+  st <- H.get
+  for_ (Stage.slotOf w) \slot -> for_ st.rig \bin -> when st.rigConnected do
+    let
+      playing = soundingOf st.mode st.armed (previewSet st) w /= Silent
+      line = Stage.putLine slot (chipOf st w) playing
+    when (Map.lookup w st.staged /= Just line) do
+      liftEffect $ Transport.send (Binnacle.socket bin) line
+      H.modify_ \s -> s { staged = Map.insert w line s.staged }
 
 -- macro-tidal: enact one resolved lane step on machine `w`. A glyph-alias token
 -- recalls that preset (by alias, from the machine's bank) and ARMS the machine so
