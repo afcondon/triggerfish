@@ -29,7 +29,7 @@ import Data.Array (filter, find, length, nubEq, null, (..))
 import Data.Foldable (for_)
 import Data.Map (Map)
 import Data.Map as Map
-import Data.Maybe (Maybe(..), fromMaybe, maybe)
+import Data.Maybe (Maybe(..), fromMaybe, isNothing, maybe)
 import Data.Traversable (traverse)
 import Data.Number.Format (fixed, toStringWith)
 import Effect.Aff (Aff)
@@ -204,7 +204,15 @@ handleAction = case _ of
     mtbl <- liftEffect RStore.load
     for_ mtbl \t -> H.modify_ _ { table = t }
 
-  SetPorts ns -> H.modify_ _ { ports = ns }
+  -- At first run, with nothing stored, the default table is made for the ports
+  -- this machine has and saved, as every other page with a router does.
+  SetPorts ns -> do
+    H.modify_ _ { ports = ns }
+    stored <- liftEffect RStore.load
+    when (isNothing stored) do
+      let t = RM.defaultTableFor ns
+      liftEffect $ RStore.save t
+      H.modify_ _ { table = t }
 
   -- An edit is saved, and every page with a machine that reads the table picks
   -- it up through its storage listener.
