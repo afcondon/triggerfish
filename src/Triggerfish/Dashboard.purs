@@ -280,7 +280,7 @@ render st =
     , HH.main [ cls "body" ]
         [ case st.view of
             MachinesView ->
-              HH.section [ cls "machines", HP.attr (AttrName "aria-label") "Machines" ]
+              HH.section [ cls "machines", HP.attr (AttrName "aria-label") "Triggerfish machines" ]
                 (map (card st) machines)
             RoutingView -> routing st
         ]
@@ -290,31 +290,40 @@ topBar :: forall m. State -> H.ComponentHTML Action () m
 topBar st =
   HH.header [ cls "top" ]
     [ HH.div [ cls "row" ]
-        [ HH.span [ cls "brand" ] [ HH.text "Atlantis" ]
+        ( [ HH.span [ cls "brand" ] [ HH.text "Triggerfish" ]
         , HH.nav [ cls "tabs", HP.attr (AttrName "aria-label") "Views" ]
-            [ tab MachinesView "" "Machines", tab RoutingView "#routing" "Routing" ]
+            [ tab MachinesView "" "Triggerfish", tab RoutingView "#routing" "Routing" ]
         , HH.div [ cls "seg", HP.attr (AttrName "role") "group", HP.attr (AttrName "aria-label") "Mode" ]
             [ seg "Solo" Solo, seg "Atlantis" Atlantis ]
         , HH.button [ cls "btn", HE.onClick \_ -> StopAll, HP.disabled (not anyPlaying) ] [ HH.text "■ Stop all" ]
-        , HH.span [ cls "tempo" ]
-            [ HH.span [ cls "num" ] [ HH.text (toStringWith (fixed 1) st.tempo) ]
-            , HH.text " bpm"
-            ]
-        , lamp st.locked (if st.locked then "Link" else "free-running")
-        , HH.span [ cls "spacer" ] []
-        , HH.button [ cls "btn panic", HE.onClick \_ -> Panic ] [ HH.text "Panic" ]
         ]
+          -- The rig's tempo and Link only mean something in Atlantis. In Solo each
+          -- page keeps its own tempo, so the dashboard has none to show.
+          <> atlantisOnly
+            [ HH.span [ cls "tempo" ]
+                [ HH.span [ cls "num" ] [ HH.text (toStringWith (fixed 1) st.tempo) ]
+                , HH.text " bpm"
+                ]
+            , lamp st.locked (if st.locked then "Link" else "free-running")
+            ]
+          <> [ HH.span [ cls "spacer" ] []
+             , HH.button [ cls "btn panic", HE.onClick \_ -> Panic ] [ HH.text "Panic" ]
+             ]
+        )
     , HH.div [ cls "row status" ]
-        [ lamp st.rigUp (if st.rigUp then "rig connected" else "no rig")
-        , lamp (not (null st.ports)) (portsNote st.ports)
+        ( atlantisOnly [ lamp st.rigUp (if st.rigUp then "rig connected" else "no rig") ]
+        <> [ lamp (not (null st.ports)) (portsNote st.ports)
         , HH.span [ cls "note" ]
             [ HH.text case st.mode of
                 Solo -> "Solo: each page plays through MIDI on this computer."
                 Atlantis -> "Atlantis: the rig plays; pages send it what to play."
             ]
-        ]
+        ])
     ]
   where
+  -- Progressive disclosure: the rig's instruments appear only when the rig is in
+  -- use. Solo shows what a newcomer with a browser and a synth needs, no more.
+  atlantisOnly xs = if st.mode == Atlantis then xs else []
   anyPlaying = not (null (filter (playing st) machines))
   -- A plain link: the browser moves the hash and keeps history; the page follows
   -- through its hashchange listener.
