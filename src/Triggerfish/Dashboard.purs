@@ -290,9 +290,14 @@ topBar :: forall m. State -> H.ComponentHTML Action () m
 topBar st =
   HH.header [ cls "top" ]
     [ HH.div [ cls "row" ]
-        ( [ HH.span [ cls "brand" ] [ HH.text "Triggerfish" ]
+        -- The brand is the way home (the landing); the tabs are the other views.
+        ( [ HH.a
+              ( [ cls "brand", HP.href "#", HP.title "Triggerfish: home" ]
+                  <> (if st.view == MachinesView then [ HP.attr (AttrName "aria-current") "page" ] else [])
+              )
+              [ HH.text "Triggerfish" ]
         , HH.nav [ cls "tabs", HP.attr (AttrName "aria-label") "Views" ]
-            [ tab MachinesView "" "Triggerfish", tab RoutingView "#routing" "Routing" ]
+            [ tab RoutingView "#routing" "Routing" ]
         , HH.div [ cls "seg", HP.attr (AttrName "role") "group", HP.attr (AttrName "aria-label") "Mode" ]
             [ seg "Solo" Solo, seg "Atlantis" Atlantis ]
         , HH.button [ cls "btn", HE.onClick \_ -> StopAll, HP.disabled (not anyPlaying) ] [ HH.text "■ Stop all" ]
