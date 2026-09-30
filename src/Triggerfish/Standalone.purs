@@ -56,6 +56,7 @@ import Halogen.HTML.Properties as HP
 import Halogen.Query.Event (eventListener)
 import Halogen.Subscription as HS
 import Halogen.VDom.Driver (runUI)
+import Triggerfish.Fish as Fish
 import Triggerfish.Glyph (ChipView)
 import Triggerfish.GlyphView (chipIcons)
 import Triggerfish.Routing.Edit as RE
@@ -108,6 +109,7 @@ run :: forall o. Config o -> Effect Unit
 run cfg = HA.runHalogenAff do
   liftEffect armAudioKeepAlive
   body <- HA.awaitBody
+  liftEffect Fish.install
   void $ runUI (root cfg) unit body
 
 type State =

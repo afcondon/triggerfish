@@ -15,9 +15,7 @@
 -- | `--f-midi`, `--f-cv`, `--f-rample`, `--f-sample`, `--f-continuo`.
 module Triggerfish.Routing.View
   ( Env
-  , Group
   , sourceRows
-  , groupedRows
   , key
   , destKind
   ) where
@@ -27,9 +25,11 @@ import Prelude
 import Data.Array (concatMap, filter, length, mapWithIndex, null)
 import Data.Maybe (Maybe(..), maybe)
 import Halogen.HTML as HH
+import Halogen.HTML.Properties as HP
 import Halogen.Widgets.Ledger as L
 import Halogen.Widgets.Quiet as Q
 import Triggerfish.Balistes.Pattern as P
+import Triggerfish.Fish as Fish
 import Triggerfish.Routing.Edit (Edit(..))
 import Triggerfish.Routing.Kinds as K
 import Triggerfish.Routing.Model as RM
@@ -50,18 +50,9 @@ type Env i =
   , onAudition :: RM.Destination -> i
   }
 
--- | A group of sources under a heading (the dashboard's machine nameplates).
-type Group w i = { heading :: HH.HTML w i, sources :: Array RM.Source }
-
 -- | These sources as one ledger, with no headings.
 sourceRows :: forall w i. Env i -> Array RM.Source -> HH.HTML w i
 sourceRows env srcs = L.ledger layout (concatMap (rowsFor env) srcs)
-
--- | Groups of sources as one ledger, each group under its heading, so every
--- | group's rows sit on the same columns.
-groupedRows :: forall w i. Env i -> Array (Group w i) -> HH.HTML w i
-groupedRows env groups =
-  L.ledger layout (concatMap (\g -> [ L.Heading g.heading ] <> concatMap (rowsFor env) g.sources) groups)
 
 -- | The key to the destination marks: each family, with how many legs of these
 -- | sources reach it.
@@ -81,7 +72,7 @@ key env srcs =
 layout :: L.LedgerConfig
 layout =
   { columns:
-      [ { head: "Source", track: "7.5em", align: Q.Start }
+      [ { head: "Source", track: "9.5em", align: Q.Start }
       , { head: "Destination", track: "11.5em", align: Q.Start }
       , { head: "Port", track: "11em", align: Q.Start }
       , { head: "Ch", track: "3.2em", align: Q.End }
@@ -104,9 +95,20 @@ rowsFor env src =
   where
   legs = RM.legsFor env.table src
 
--- | A source's name, and what it is, on its first row.
+-- | A source's name, and what it is, on its first row, after its machine's fish.
+-- | The fish makes every row name its machine, so the table needs no group
+-- | headings and can later be sorted by any column. (A page that has not
+-- | installed the fish sprite shows only the name.)
 sourceName :: forall w i. RM.Source -> HH.HTML w i
-sourceName src = L.name case src of
+sourceName src =
+  HH.span [ HP.style "display:inline-flex;align-items:baseline;gap:8px" ]
+    [ HH.span [ HP.style "flex:none;width:22px;align-self:center;display:inline-flex" ]
+        [ Fish.icon "tf-fish-row" (Fish.ofSource src) ]
+    , nameOf src
+    ]
+
+nameOf :: forall w i. RM.Source -> HH.HTML w i
+nameOf src = L.name case src of
   RM.SOdonusHead h -> { name: RM.sourceLabel src, sub: "head " <> show (h + 1) }
   RM.SDrumLane i -> { name: P.laneName i, sub: "drum lane · " <> show (P.laneNote i) }
   RM.SVetulaVoice "" -> { name: "Vetula", sub: "default voice" }

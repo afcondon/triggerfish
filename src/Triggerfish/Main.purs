@@ -78,6 +78,7 @@ import Triggerfish.Routing.Store as RStore
 import Triggerfish.Routing.Edit as RE
 import Triggerfish.Routing.View as RV
 import Triggerfish.SourceQuery as SQ
+import Triggerfish.Fish as Fish
 import Triggerfish.Stage as Stage
 import Triggerfish.TabBus as Bus
 import Triggerfish.Glyph as G
@@ -103,6 +104,7 @@ main :: Effect Unit
 main = HA.runHalogenAff do
   liftEffect armAudioKeepAlive   -- keep the tab audible so background play survives
   body <- HA.awaitBody
+  liftEffect Fish.install        -- the machines' fish, for the router's rows
   void $ runUI root unit body
 
 -- `Which`, `Mode`, and the `Sounding` authority model now live in the pure

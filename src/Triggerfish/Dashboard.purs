@@ -14,6 +14,10 @@
 -- |
 -- | Each machine keeps its nameplate from the identity study: its own colour,
 -- | face and fish. Everything else is standard, and styled by `dashboard.html`.
+-- |
+-- | Two views so far, each at its own address: the machines (`#`, the landing)
+-- | and routing (`#routing`), so the table is not the first thing seen. More are
+-- | planned (process management, documentation); see the plan.
 module Triggerfish.Dashboard
   ( component
   ) where
@@ -38,12 +42,14 @@ import Effect.Class (liftEffect)
 import Effect.Timer (setInterval)
 import Halogen as H
 import Halogen.HTML as HH
-import Halogen.HTML.Core (AttrName(..), ElemName(..), Namespace(..))
+import Halogen.HTML.Core (AttrName(..))
 import Halogen.HTML.Events as HE
 import Halogen.HTML.Properties as HP
 import Halogen.Subscription as HS
 import Triggerfish.Glyph as G
+import Triggerfish.Fish as Fish
 import Triggerfish.GlyphView (chipIcons)
+import Triggerfish.Route as Route
 import Triggerfish.Routing.Edit as RE
 import Triggerfish.Routing.Model as RM
 import Triggerfish.Routing.Out as RO
@@ -83,8 +89,20 @@ openWindowMs = 4500.0
 
 type Heard = { state :: Bus.MachineState, at :: Number }
 
+-- | The page's views. Each is a real link (`#routing`), so the back button and
+-- | bookmarks work.
+data View = MachinesView | RoutingView
+
+derive instance Eq View
+
+viewOf :: String -> View
+viewOf = case _ of
+  "routing" -> RoutingView
+  _ -> MachinesView
+
 type State =
   { mode :: Mode
+  , view :: View
   , now :: Number
   , heard :: Map String Heard
   , rig :: Maybe Binnacle.Binnacle
@@ -110,11 +128,12 @@ data Action
   | SetPorts (Array String)
   | Edit RE.Edit
   | Audition RM.Destination
+  | ShowView View
 
 component :: forall q i o. H.Component q i o Aff
 component = H.mkComponent
   { initialState: \_ ->
-      { mode: Solo, now: 0.0, heard: Map.empty, rig: Nothing, rigUp: false
+      { mode: Solo, view: MachinesView, now: 0.0, heard: Map.empty, rig: Nothing, rigUp: false
       , tempo: 120.0, locked: false, bus: Nothing
       , table: RM.defaultTable, ports: [], sampleSets: [] }
   , render
@@ -126,8 +145,12 @@ type M o = H.HalogenM State Action () o Aff
 handleAction :: forall o. Action -> M o Unit
 handleAction = case _ of
   Init -> do
+    liftEffect Fish.install
     { emitter, listener } <- liftEffect HS.create
     _ <- H.subscribe emitter
+    hash <- liftEffect Route.readHash
+    H.modify_ _ { view = viewOf hash }
+    liftEffect $ Route.onHashChange (HS.notify listener <<< ShowView <<< viewOf)
     mmode <- liftEffect TransportStore.load
     for_ mmode \m -> H.modify_ _ { mode = m }
     liftEffect $ TransportStore.onChange (HS.notify listener ModeStored)
@@ -222,6 +245,8 @@ handleAction = case _ of
       liftEffect $ RStore.save t
       H.modify_ _ { table = t }
 
+  ShowView v -> H.modify_ _ { view = v }
+
   Audition dest -> do
     st <- H.get
     for_ (RO.auditionLine dest) \line ->
@@ -252,10 +277,12 @@ render :: forall m. State -> H.ComponentHTML Action () m
 render st =
   HH.div [ cls "dash" ]
     [ topBar st
-    , HH.div [ cls "body" ]
-        [ HH.section [ cls "machines", HP.attr (AttrName "aria-label") "Machines" ]
-            (map (card st) machines)
-        , routing st
+    , HH.main [ cls "body" ]
+        [ case st.view of
+            MachinesView ->
+              HH.section [ cls "machines", HP.attr (AttrName "aria-label") "Machines" ]
+                (map (card st) machines)
+            RoutingView -> routing st
         ]
     ]
 
@@ -264,6 +291,8 @@ topBar st =
   HH.header [ cls "top" ]
     [ HH.div [ cls "row" ]
         [ HH.span [ cls "brand" ] [ HH.text "Atlantis" ]
+        , HH.nav [ cls "tabs", HP.attr (AttrName "aria-label") "Views" ]
+            [ tab MachinesView "" "Machines", tab RoutingView "#routing" "Routing" ]
         , HH.div [ cls "seg", HP.attr (AttrName "role") "group", HP.attr (AttrName "aria-label") "Mode" ]
             [ seg "Solo" Solo, seg "Atlantis" Atlantis ]
         , HH.button [ cls "btn", HE.onClick \_ -> StopAll, HP.disabled (not anyPlaying) ] [ HH.text "■ Stop all" ]
@@ -287,6 +316,16 @@ topBar st =
     ]
   where
   anyPlaying = not (null (filter (playing st) machines))
+  -- A plain link: the browser moves the hash and keeps history; the page follows
+  -- through its hashchange listener.
+  tab v href label =
+    HH.a
+      ( [ cls ("tab" <> if st.view == v then " on" else "")
+        , HP.href (if href == "" then "#" else href)
+        ]
+          <> (if st.view == v then [ HP.attr (AttrName "aria-current") "page" ] else [])
+      )
+      [ HH.text label ]
   seg label m =
     HH.button
       [ cls (if st.mode == m then "on" else "")
@@ -307,7 +346,7 @@ card :: forall m. State -> Machine -> H.ComponentHTML Action () m
 card st m =
   HH.article [ cls ("card m-" <> m.slot <> if open then "" else " closed") ]
     [ HH.a [ cls "nameplate", HP.href m.href, HP.target m.target, HP.title ("Open " <> m.name) ]
-        [ HH.span [ cls "roundel" ] [ fish m.slot ]
+        [ HH.span [ cls "roundel" ] [ Fish.icon "ico" m.slot ]
         , HH.span [ cls ("wordmark w-" <> m.slot) ] [ HH.text m.name ]
         ]
     , HH.div [ cls "controls" ]
@@ -339,17 +378,8 @@ card st m =
     Nothing -> HH.span [ cls "chip empty" ] [ HH.text "no preset" ]
   edited = fromMaybe false (map _.state.edited heard)
 
--- | The machine's fish, from the symbols `dashboard.html` carries.
-fish :: forall w i. String -> HH.HTML w i
-fish slot =
-  HH.elementNS svgNS (ElemName "svg")
-    [ HP.attr (AttrName "viewBox") "0 0 200 120", HP.attr (AttrName "class") "ico", HP.attr (AttrName "aria-hidden") "true" ]
-    [ HH.elementNS svgNS (ElemName "use") [ HP.attr (AttrName "href") ("#sp-" <> slot) ] [] ]
-  where
-  svgNS = Namespace "http://www.w3.org/2000/svg"
-
--- | The whole table, grouped by machine, each source drawn by the same rows as
--- | every other router.
+-- | The whole table, one ledger, each source drawn by the same rows as every
+-- | other router.
 routing :: forall m. State -> H.ComponentHTML Action () m
 routing st =
   HH.section [ cls "routing", HP.attr (AttrName "aria-label") "Routing" ]
@@ -357,15 +387,13 @@ routing st =
         [ HH.h2_ [ HH.text "Routing" ]
         , HH.span [ cls "note" ] [ HH.text "Every source and where it goes. Changes save at once and reach every open page." ]
         ]
-    , RV.key env (odonusHeads <> vetulaVoices <> drumLanes <> seleneBanks)
-    , RV.groupedRows env
-        [ group "odonus" "Odonus" odonusHeads
-        , group "vetula" "Vetula" vetulaVoices
-        , group "balistes" "Balistes" drumLanes
-        , group "selene" "Selene" seleneBanks
-        ]
+    , RV.key env allSources
+    , RV.sourceRows env allSources
     ]
   where
+  -- Each row names its machine with its fish, so there are no group headings;
+  -- the order is the machines' order.
+  allSources = odonusHeads <> vetulaVoices <> drumLanes <> seleneBanks
   odonusHeads = map RM.SOdonusHead (0 .. 3)
   drumLanes = map RM.SDrumLane (0 .. 15)
   env =
@@ -380,18 +408,6 @@ routing st =
   isSelene = case _ of
     RM.SSeleneBank _ -> true
     _ -> false
-  -- The machine's nameplate heads its group, on the ledger's own grid, so every
-  -- machine's legs share one set of columns.
-  group slot name srcs =
-    { heading:
-        HH.h3 [ cls ("grouphead m-" <> slot) ]
-          ( [ HH.span [ cls "roundel small" ] [ fish slot ]
-            , HH.span [ cls ("wordmark w-" <> slot) ] [ HH.text name ]
-            ]
-              <> (if null srcs then [ HH.span [ cls "note" ] [ HH.text "No sources yet: they appear when the machine first routes one." ] ] else [])
-          )
-    , sources: srcs
-    }
 
 cls :: forall r i. String -> HP.IProp (class :: String | r) i
 cls = HP.class_ <<< H.ClassName
