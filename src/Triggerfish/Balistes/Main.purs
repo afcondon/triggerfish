@@ -28,4 +28,6 @@ main = Standalone.run
       , sources: map RM.SDrumLane (0 .. 15)
       , restoreLabel: "restore default kit routing"
       }
+  , armOf: const Nothing
+  , follow: const Nothing
   }

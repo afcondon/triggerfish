@@ -80,8 +80,8 @@ type Machine =
 
 machines :: Array Machine
 machines =
-  [ { slot: "odonus", name: "Odonus", href: "/#odonus", target: "atlantis-triggerfish", onBus: true }
-  , { slot: "vetula", name: "Vetula", href: "/#vetula", target: "atlantis-triggerfish", onBus: true }
+  [ { slot: "odonus", name: "Odonus", href: "/odonus.html", target: "atlantis-odonus", onBus: true }
+  , { slot: "vetula", name: "Vetula", href: "/vetula.html", target: "atlantis-vetula", onBus: true }
   , { slot: "balistes", name: "Balistes", href: "/balistes.html", target: "atlantis-balistes", onBus: true }
   , { slot: "selene", name: "Selene", href: "/selene.html", target: "atlantis-selene", onBus: true }
   , { slot: "conspicillum", name: "Conspicillum", href: "/conspicillum/", target: "atlantis-conspicillum", onBus: false }

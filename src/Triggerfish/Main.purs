@@ -693,6 +693,8 @@ handleAction = case _ of
       Bus.Hello -> announce Odo *> announce Vet
       Bus.State _ -> pure unit
       Bus.Bye _ -> pure unit
+      -- This page holds Vetula itself, so it has the scale already.
+      Bus.Scale _ -> pure unit
   ModeStored -> do
     mmode <- liftEffect TransportStore.load
     cur <- H.gets _.mode

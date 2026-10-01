@@ -1,0 +1,189 @@
+<!doctype html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Odonus</title>
+  <!-- Glyph substrate (docs/DESIGN-scene-modal.md): identity chips render
+       FontAwesome solid icons, tinted per-machine via CSS color. CDN for now;
+       vendor locally before relying on this rig offline. -->
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
+  <!-- The widget library's stylesheet (a copy of
+       purescript-halogen-widgets/css/halogen-widgets.css): the quiet controls and
+       the ledger the router is drawn with. data-theme="light" on <html> keeps the
+       library light, since this page is. -->
+  <link rel="stylesheet" href="halogen-widgets.css">
+  <style>
+    /* Destination families: the router's marks and key. */
+    :root { --f-midi: #13807b; --f-cv: #a8327a; --f-rample: #c05a12; --f-sample: #5a55b8; --f-continuo: #8a5a2b; }
+  </style>
+
+  <style>
+    html, body { margin: 0; background: #fafafa; }
+
+    /* The shared shell bar's height — the single source of truth every
+       instrument insets below (machine roots via top/height calc, the
+       in-flow Vetula + TIDAL via padding). */
+    :root { --tf-bar: 44px; }
+
+    /* ───────── Vetula (the 4th instrument) surface styles ─────────
+       Ported from the standalone Vetula index.html. Scoped to its own
+       surface where it would otherwise be page-global, so the other
+       instruments are untouched. */
+
+    /* shift-click is a selection gesture on the Vetula surface, not text-select */
+    .vetula-surface { -webkit-user-select: none; user-select: none; }
+    /* …but source/name fields stay selectable for manual copy */
+    .vetula-surface textarea, .vetula-surface input { -webkit-user-select: text; user-select: text; }
+
+    /* Force surface */
+    .vetula-surface { display: block; width: 100%; height: auto;
+                      max-width: 880px; margin: 0 auto; background: #fafafa; }
+
+    /* The 880 cap above exists for the SVG lenses, whose viewBox is 880 wide.
+       The HTML surfaces (banks, vary, rehearse) carry `.vetula-surface` only
+       because `surfaceHidden` finds the surface by that class — and inherited a
+       centred column they were never designed for. This opts them back out. */
+    .vetula-surface--wide { max-width: none; margin: 0; background: transparent; }
+
+    /* Left-hand pitch ladder (the sounding chord) */
+    .ladder-line { stroke: #ededed; stroke-width: 0.5; }
+    .ladder-oct { stroke: #d4d4d4; stroke-width: 0.8; }
+    .ladder-label { font-size: 10px; fill: #9a9a9a; text-anchor: end;
+                    font-family: -apple-system, "Helvetica Neue", Arial, sans-serif; }
+    .ladder-dot { fill: var(--pc-hue); stroke: #ffffff; stroke-width: 1; }
+    /* A tone that is NOT played: the same hue, hollow. White fill rather than
+       `fill: none` so the whole disc is a click target — on `none` only the
+       1.4px stroke takes the pointer, which is unhittable in practice. */
+    .ladder-dot--off { fill: #ffffff; stroke: var(--pc-hue); stroke-width: 1.4;
+                       stroke-dasharray: 2.5 2; opacity: 0.55; cursor: pointer; }
+    .ladder-dot--off:hover { opacity: 1; stroke-width: 2; stroke-dasharray: none; }
+    .ladder-dot--drag { cursor: ns-resize; }
+    .ladder-dot--drag:hover { stroke: #1a1a1a; stroke-width: 1.5; }
+    .ladder-dot--sel { stroke: #1a1a1a; stroke-width: 2.5; }
+
+    /* Progression panel — horizontal note-rows (RHS of the Lattice) */
+    .prow-oct { stroke: #ededed; stroke-width: 1; }
+
+    /* Pick mode — the generated candidate cloud */
+    .pick-title { text-anchor: middle; font-size: 12px; fill: #9a9a9a;
+                  letter-spacing: 0.04em; pointer-events: none;
+                  font-family: -apple-system, "Helvetica Neue", Arial, sans-serif; }
+    .cand { cursor: pointer; }
+    .cand .vn-disc { transition: stroke 120ms ease, stroke-width 120ms ease; }
+    .cand:hover .vn-disc { stroke: #1a1a1a; stroke-width: 2.5; }
+    .anchor-ring { fill: none; stroke: #3f5f8a; stroke-width: 2.5; opacity: 0.9; pointer-events: none; }
+    .cand-label { text-anchor: middle; font-size: 10px; fill: #6a6a6a; pointer-events: none;
+                  font-family: -apple-system, "Helvetica Neue", Arial, sans-serif; }
+
+    /* Favoured-voicings strip (above the ladder) */
+    .vstrip-hint { font-size: 9px; fill: #c4c4c4; text-anchor: middle; pointer-events: none;
+                   font-family: -apple-system, "Helvetica Neue", Arial, sans-serif; }
+    .vstrip-sw { cursor: pointer; }
+    .vstrip-bg { fill: #f2f2f2; stroke: #e2e2e2; stroke-width: 0.6; rx: 2px;
+                 transition: fill 100ms ease, stroke 100ms ease; }
+    .vstrip-sw:hover .vstrip-bg { stroke: #b0b0b0; }
+    .vstrip-sw--active .vstrip-bg { fill: #eef4ee; stroke: #4f5f4f; stroke-width: 1.2; }
+    .vstrip-span { stroke: #9a9a9a; stroke-width: 2; stroke-linecap: round; pointer-events: none; }
+    .vstrip-sw--active .vstrip-span { stroke: #2a3a2a; }
+    /* One muted hue per chromatic tone (pitch class) — a voice keeps its colour
+       through octave-drag / re-sort / doubling because colour follows the TONE,
+       not the array slot. 12 tones, 12 colours (works until microtonality). */
+    .ladder-dot--0  { --pc-hue: hsl(0,45%,44%); }/* C  */
+    .ladder-dot--1  { --pc-hue: hsl(30,46%,44%); }/* C# */
+    .ladder-dot--2  { --pc-hue: hsl(52,44%,40%); }/* D  */
+    .ladder-dot--3  { --pc-hue: hsl(90,40%,38%); }/* D# */
+    .ladder-dot--4  { --pc-hue: hsl(122,38%,38%); }/* E  */
+    .ladder-dot--5  { --pc-hue: hsl(154,40%,37%); }/* F  */
+    .ladder-dot--6  { --pc-hue: hsl(184,44%,38%); }/* F# */
+    .ladder-dot--7  { --pc-hue: hsl(210,46%,46%); }/* G  */
+    .ladder-dot--8  { --pc-hue: hsl(238,36%,52%); }/* G# */
+    .ladder-dot--9  { --pc-hue: hsl(270,32%,50%); }/* A  */
+    .ladder-dot--10 { --pc-hue: hsl(300,36%,46%); }/* A# */
+    .ladder-dot--11 { --pc-hue: hsl(330,44%,48%); }/* B  */
+    /* the bass keeps its tone colour but wears a dark rim so the foot reads at a glance */
+    .ladder-dot--bass { stroke: #1a1a1a; stroke-width: 1.5; }
+
+    /* The imaginary piano keyboard — click a key to summon a family on that root */
+    .pkey { cursor: pointer; }
+    .pkey--w { fill: #ffffff; stroke: #dcdcdc; stroke-width: 0.8; }
+    .pkey--b { fill: #2a2a2a; stroke: #2a2a2a; }
+    .pkey--w.pkey--in { fill: #eef4ee; }   /* white key in the scale */
+    .pkey--b.pkey--in { fill: #4f5f4f; }   /* black key in the scale */
+    .pkey-label { text-anchor: middle; font-size: 9px; fill: #b0b0b0;
+                  pointer-events: none;
+                  font-family: -apple-system, "Helvetica Neue", Arial, sans-serif; }
+
+    /* Lineage links (generated chord → its parent) */
+    .vn-link { stroke: #d6d6d6; stroke-width: 1; opacity: 0.7; }
+    /* Lattice Hasse-web edges — fainter, since there are many */
+    .lattice-link { stroke: #dadada; stroke-width: 0.6; opacity: 0.5; }
+
+    /* Chord nodes. Disc fill = outside-ness (d0 in-scale … d4 furthest out);
+       the soft aura behind = how spread the voicing is; the notation thumbnail
+       rides on top. The disc is the hit/hover/pin target. */
+    .vn { cursor: pointer; }
+    .vn-aura { fill: #9aa0a8; opacity: 0.10; pointer-events: none; }
+    .vn-disc { stroke-width: 1.5;
+               transition: stroke 120ms ease, stroke-width 120ms ease; }
+    .vn--d0 .vn-disc { fill: #eef2f4; stroke: #c2cace; }
+    .vn--d1 .vn-disc { fill: #f4efe6; stroke: #cdbb96; }
+    .vn--d2 .vn-disc { fill: #f7e4d3; stroke: #d59b63; }
+    .vn--d3 .vn-disc { fill: #f3d3c5; stroke: #cb6c41; }
+    .vn--d4 .vn-disc { fill: #eebfb7; stroke: #b23b28; }
+    .vn--centre .vn-disc { stroke: #1a1a1a; stroke-width: 2.5; }
+    .vn:hover .vn-disc { stroke: #1a1a1a; stroke-width: 2.5; }
+
+    /* Lattice family rim — coloured by the family's root (stroke set inline) */
+    .vn-ring { fill: none; stroke-width: 2.5; opacity: 0.85; pointer-events: none; }
+
+    .path-ring { fill: none; stroke: #b8860b; stroke-width: 2.5; pointer-events: none; }
+    .path-badge { fill: #b8860b; stroke: #ffffff; stroke-width: 1; pointer-events: none; }
+    .path-num { fill: #ffffff; font-size: 8px; font-weight: 700; text-anchor: middle;
+                pointer-events: none; font-family: -apple-system, "Helvetica Neue", Arial, sans-serif; }
+
+    /* Notation thumbnail (non-interactive so the disc keeps the pointer) */
+    .staff-line { stroke: #c4c4c4; stroke-width: 0.5; pointer-events: none; }
+    .notehead { fill: #1a1a1a; pointer-events: none; }
+    .notehead--out { fill: #c0392b; pointer-events: none; }
+    .shelf-line { stroke: #d8b24a; stroke-width: 0.5; stroke-dasharray: 3 4; opacity: 0.5; pointer-events: none; }
+    .shelf-label { fill: #b08a2a; font-size: 9px; letter-spacing: 0.08em; pointer-events: none; }
+    .accidental { fill: #1a1a1a; font-size: 8px; text-anchor: middle;
+                  pointer-events: none;
+                  font-family: -apple-system, "Helvetica Neue", Arial, sans-serif; }
+
+    /* Collected marker (chord is in the current key's pack on the right) */
+    .vn-pin { fill: #b8860b; stroke: #ffffff; stroke-width: 1; pointer-events: none; }
+
+    /* Collection panel group titles */
+    .coll-title { font-size: 11px; fill: #6a6a6a; letter-spacing: 0.02em;
+                  font-family: -apple-system, "Helvetica Neue", Arial, sans-serif; }
+
+    /* Revoice slash-chord bass row (the modal chrome itself moved to the shared modal) */
+    .rv-bass-label { fill: #9a9a9a; font-size: 9px; letter-spacing: 0.06em; pointer-events: none;
+                     text-transform: uppercase;
+                     font-family: -apple-system, "Helvetica Neue", Arial, sans-serif; }
+    .rv-slash { cursor: pointer; }
+    .rv-slash-bg { fill: #fafafa; stroke: #dcdcdc; stroke-width: 0.8; rx: 3px; }
+    .rv-slash:hover .rv-slash-bg { stroke: #b8860b; }
+    .rv-slash--active .rv-slash-bg { fill: #fbf3df; stroke: #c9a23a; }
+    .rv-slash-tx { fill: #5a5a5a; font-size: 10px; text-anchor: middle; pointer-events: none;
+                   font-family: -apple-system, "Helvetica Neue", Arial, sans-serif; }
+    .rv-slash--active .rv-slash-tx { fill: #7a5c00; }
+
+    /* Axis labels */
+    .axis-label { text-anchor: middle; dominant-baseline: middle;
+                  font-size: 11px; fill: #c4c4c4; letter-spacing: 0.08em;
+                  text-transform: uppercase; pointer-events: none;
+                  font-family: -apple-system, "Helvetica Neue", Arial, sans-serif; }
+  </style>
+</head>
+<body>
+  <!-- Dev cache-bust: static-httpd sends no Cache-Control, so a normal (even
+       "forced") reload kept serving a stale bundle after each rebuild. Appending
+       a per-load version query forces the browser to fetch the current bundle
+       every time. Written at parse time (end of body), so mount timing is
+       unchanged. -->
+  <script>document.write('<script src="odonus.js?v=' + Date.now() + '"><\/script>');</script>
+</body>
+</html>

@@ -58,6 +58,10 @@ data Msg
   -- | slows a background tab's timers to once a minute, so a quiet tab is
   -- | usually still there.
   | Bye String
+  -- | Vetula's harmonic context, which Odonus quantises to: a root pitch class
+  -- | and the scale's intervals. Sent by Vetula's page when it changes and in
+  -- | answer to `Hello`. The one piece of music that passes between machines.
+  | Scale { root :: Int, offsets :: Array Int }
 
 -- | The wire shape: a tag and whichever fields it needs.
 type Wire =
@@ -66,6 +70,8 @@ type Wire =
   , alias :: Nullable String
   , edited :: Boolean
   , playing :: Boolean
+  , root :: Nullable Int
+  , offsets :: Nullable (Array Int)
   }
 
 open :: Effect Bus
@@ -89,9 +95,10 @@ encode = writeJSON <<< case _ of
   Panic -> wire "panic" Nothing Nothing false false
   Hello -> wire "hello" Nothing Nothing false false
   Bye m -> wire "bye" (Just m) Nothing false false
+  Scale sc -> (wire "scale" Nothing Nothing false false) { root = toNullable (Just sc.root), offsets = toNullable (Just sc.offsets) }
   where
   wire t machine alias edited playing =
-    { t, machine: toNullable machine, alias: toNullable alias, edited, playing } :: Wire
+    { t, machine: toNullable machine, alias: toNullable alias, edited, playing, root: toNullable Nothing, offsets: toNullable Nothing } :: Wire
 
 decode :: String -> Maybe Msg
 decode text = do
@@ -103,6 +110,10 @@ decode text = do
     "panic", _ -> Just Panic
     "hello", _ -> Just Hello
     "bye", Just m -> Just (Bye m)
+    "scale", _ -> do
+      root <- toMaybe w.root
+      offsets <- toMaybe w.offsets
+      Just (Scale { root, offsets })
     _, _ -> Nothing
 
 -- | Say `Bye` for each of these machines when the page goes away (closed,

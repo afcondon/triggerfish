@@ -87,13 +87,19 @@ import Web.UIEvent.KeyboardEvent.EventTypes as KET
 -- | - `nameplate`: the engraved name at the left of the bar;
 -- | - `chipOf`: the preset chip, when an output carries one;
 -- | - `router`: the sources this page routes, or `Nothing` for a machine that
--- |   does not read the routing table.
+-- |   does not read the routing table;
+-- | - `armOf`: the machine armed or disarmed itself (Vetula's own play, stop
+-- |   and unload), which the shell's transport follows;
+-- | - `follow`: what the machine does with a message from another tab (Odonus
+-- |   takes Vetula's scale as its pitch set).
 type Config o =
   { which :: Which
   , nameplate :: String
   , component :: H.Component SQ.Query Unit o Aff
   , chipOf :: o -> Maybe (Maybe ChipView)
   , router :: Maybe Router
+  , armOf :: o -> Maybe Boolean
+  , follow :: Bus.Msg -> Maybe (SQ.Query Unit)
   }
 
 -- | A page's router: its title, the sources it shows, and what they are called
@@ -184,6 +190,9 @@ handleAction cfg = case _ of
     H.modify_ _ { bus = Just bus }
     liftEffect $ Bus.onMessage bus (HS.notify listener <<< FromBus)
     liftEffect $ Bus.sayGoodbye bus (maybe [] pure (Stage.slotOf cfg.which))
+    -- Ask the other pages to say where they are, so a follower (Odonus) has
+    -- what it follows (Vetula's scale) without waiting for it to change.
+    liftEffect $ Bus.post bus Bus.Hello
     -- The port names, for the router's reach column and its port menus. The
     -- machine asks for MIDI itself to play; this is only to know what exists.
     for_ cfg.router \_ -> do
@@ -258,7 +267,7 @@ handleAction cfg = case _ of
         H.modify_ _ { playing = false }
         pushSounding cfg
       Bus.Hello -> announce cfg
-      _ -> pure unit
+      other -> for_ (cfg.follow other) \q -> void $ H.query _machine unit q
   -- Another tab (the dashboard) changed the mode.
   ModeStored -> do
     mmode <- liftEffect TransportStore.load
@@ -268,10 +277,18 @@ handleAction cfg = case _ of
       pushSounding cfg
   -- Only the chip is this shell's business; a machine's other outputs (Balistes'
   -- macro-lane edits) belong to the dashboard.
-  FromMachine out -> for_ (cfg.chipOf out) \cv -> do
-    H.modify_ _ { chip = cv }
-    publishStage cfg
-    announce cfg
+  FromMachine out -> do
+    for_ (cfg.chipOf out) \cv -> do
+      H.modify_ _ { chip = cv }
+      publishStage cfg
+      announce cfg
+    -- The machine armed or disarmed itself: the transport follows it, and the
+    -- sounding it derives goes back down, as the Triggerfish shell does.
+    for_ (cfg.armOf out) \on -> do
+      st <- H.get
+      when (on /= st.playing) do
+        H.modify_ _ { playing = on }
+        pushSounding cfg
   Key e -> for_ (KE.fromEvent e) \ke -> unless (targetIsField e || KE.metaKey ke || KE.ctrlKey ke) do
     -- ⌥1 by the key's position, as in Triggerfish: on a Mac, Option+1 types "¡".
     if KE.altKey ke then

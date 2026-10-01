@@ -14,3 +14,5 @@ public/selene.js
 .direnv/
 .psc-ide-port
 __pycache__/
+public/odonus.js
+public/vetula.js

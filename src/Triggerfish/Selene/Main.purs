@@ -23,4 +23,6 @@ main = Standalone.run
   , component: Selene.component
   , chipOf: \(Selene.IdentityChanged cv) -> Just cv
   , router: Nothing
+  , armOf: const Nothing
+  , follow: const Nothing
   }
