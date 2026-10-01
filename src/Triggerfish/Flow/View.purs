@@ -184,21 +184,25 @@ chart on hot live f
       cy = mid sn
       tx = sn.x1 + 8.0
       icon = case nd.id of
-        "engine" -> [ use "ic-kraken" tx (cy - 20.0) 30.0 30.0 ]
+        "engine" -> [ use "ic-kraken" tx (cy - 34.0) 64.0 64.0 ]
         "ears" -> [ use "ic-ears" tx (cy - 18.0) 34.0 34.0 ]
         _ -> []
-      -- An icon stands left of its label, so it never climbs into the
-      -- column heads when its node is short.
+      -- The kraken is drawn large, beside its label rather than above it (so
+      -- it never climbs into the column heads). It says "the rig's engine"
+      -- itself, so that line goes, and the label stays clear of the next
+      -- column's even with all seven columns showing.
       lx = case nd.id of
         "ears" -> tx + 40.0
-        "engine" -> tx + 36.0
+        "engine" -> tx + 68.0
         _ -> tx
+      sub
+        | nd.id == "engine" = []
+        | otherwise = [ label "sub" lx (cy + 11.0) "start" (nd.note <> " · " <> show (round' sn.value)) ]
     in
       svg "g" [ attr "class" "node" ]
         ( [ bar sn ] <> icon <>
-            [ label "name" lx (cy - 2.0) "start" nd.name
-            , label "sub" lx (cy + 11.0) "start" (nd.note <> " · " <> show (round' sn.value))
-            ]
+            [ label "name" lx (cy - 2.0) "start" nd.name ]
+            <> sub
             <> rigLamp nd.id lx cy
         )
 
@@ -206,8 +210,8 @@ chart on hot live f
   -- The rig's link, on the rig: a lamp under purerl-tidal's label.
   rigLamp id x cy
     | id == "engine" =
-        [ svg "circle" [ attr "class" (if live.rigUp then "lamp-on" else "lamp-off"), attr "cx" (n (x + 4.0)), attr "cy" (n (cy + 24.0)), attr "r" "4" ] []
-        , label "sub" (x + 13.0) (cy + 27.0) "start" (if live.rigUp then "connected" else "not connected")
+        [ svg "circle" [ attr "class" (if live.rigUp then "lamp-on" else "lamp-off"), attr "cx" (n (x + 4.0)), attr "cy" (n (cy + 10.0)), attr "r" "4" ] []
+        , label "sub" (x + 13.0) (cy + 13.0) "start" (if live.rigUp then "connected" else "not connected")
         ]
     | otherwise = []
   -- The sample sets sound whenever anything does.
