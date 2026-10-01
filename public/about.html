@@ -41,30 +41,28 @@
     .fish { --fine: none; }
 
     /* ---------- Masthead: fish, the squid, the headphones ---------- */
-    .mast { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 5.2fr) minmax(0, 1fr); align-items: center; gap: 0 12px; }
-    .squid { display: block; width: 100%; height: auto; mix-blend-mode: multiply; filter: contrast(1.08); }
-    .shoal { display: grid; grid-template-columns: 1fr 1fr; gap: 10px 8px; justify-items: center; align-self: center; }
-    .shoal svg { width: 100%; max-width: 72px; height: auto; aspect-ratio: 200 / 120; transform: scaleX(-1); }
-    .shoal svg:nth-child(even) { margin-top: 18px; }
-    .phones { display: grid; justify-items: center; }
-    .phones svg { width: 76%; max-width: 104px; height: auto; aspect-ratio: 1; }
-    .endcap { margin-top: 8px; font: italic 400 12.5px/1.25 var(--serif); color: var(--soft); text-align: center; }
-    @media (max-width: 720px) {
-      .mast { grid-template-columns: minmax(0, 1fr) minmax(0, 3.6fr) minmax(0, .8fr); gap: 0 6px; }
-      .shoal { gap: 4px 3px; }
-      .shoal svg:nth-child(even) { margin-top: 8px; }
-      .endcap { font-size: 10.5px; }
-    }
-
-    .plate { display: grid; grid-template-columns: minmax(150px, 1fr) auto minmax(150px, 1fr); align-items: center; gap: 24px; margin-top: 4px; }
+    .shoal { display: grid; grid-template-columns: 1fr 1fr; gap: 6px 8px; justify-items: center; }
+    .shoal svg { width: 100%; max-width: 62px; height: auto; aspect-ratio: 200 / 120; transform: scaleX(-1); }
+    .shoal svg:nth-child(even) { margin-top: 12px; }
+    .phones { display: block; width: 64%; max-width: 86px; height: auto; aspect-ratio: 1; margin: 6px auto 0; }
+    .endcap { margin-top: 6px; font: italic 400 12.5px/1.25 var(--serif); color: var(--soft); text-align: center; }
+    .plate { display: grid; grid-template-columns: minmax(150px, 1fr) auto minmax(150px, 1fr); align-items: stretch; gap: 24px; margin-top: 18px; }
+    /* Verrill's squid lies faintly behind the nameplate, streaming left to
+       right as the sound does, from the fish's box to the headphones'. */
+    .title { position: relative; display: grid; place-items: center; padding: 22px 0; }
+    .squid { position: absolute; inset: 0 -5%; width: 110%; height: 100%; object-fit: cover; object-position: 50% 50%;
+      opacity: .3; mix-blend-mode: multiply; pointer-events: none; }
+    .nameplate { position: relative; }
     .nameplate { margin: 0; font: 400 clamp(46px, 7.2vw, 100px)/1 var(--black); text-align: center; letter-spacing: .005em; white-space: nowrap; }
-    .ear { border: 1px solid var(--ink); padding: 8px 11px; font: 400 13px/1.35 var(--serif); max-width: 200px; }
+    .ear { border: 1px solid var(--ink); padding: 10px 12px 8px; width: 100%; max-width: 190px; box-sizing: border-box; display: flex; flex-direction: column; justify-content: center; }
     .ear b { display: block; font: 700 10.5px/1.3 var(--sans); letter-spacing: .14em; text-transform: uppercase; margin-bottom: 3px; }
     .ear.l { justify-self: start; } .ear.r { justify-self: end; }
     .motto { margin: 6px 0 12px; text-align: center; font: italic 400 clamp(16px, 1.9vw, 21px)/1.3 var(--head); }
     @media (max-width: 900px) {
-      .plate { grid-template-columns: 1fr; gap: 0; }
-      .ear { display: none; }
+      .plate { grid-template-columns: minmax(0, 1fr) minmax(0, 3.2fr) minmax(0, 1fr); gap: 8px; }
+      .ear { padding: 6px 5px 5px; }
+      .shoal { gap: 3px 3px; } .shoal svg:nth-child(even) { margin-top: 6px; }
+      .endcap { font-size: 10px; }
       .nameplate { white-space: normal; font-size: clamp(40px, 12.6vw, 96px); }
     }
 
@@ -417,8 +415,8 @@
 
   <!-- ===================== Masthead ===================== -->
   <header>
-    <div class="mast">
-      <div>
+    <div class="plate">
+      <div class="ear l">
         <div class="shoal" role="img" aria-label="The machines' fish: Odonus, Vetula, Balistes, Selene, Conspicillum and Quadrat">
           <svg class="fish" viewBox="0 0 200 120"><use href="#sp-odonus"/></svg>
           <svg class="fish" viewBox="0 0 200 120"><use href="#sp-vetula"/></svg>
@@ -429,18 +427,14 @@
         </div>
         <div class="endcap">where sound starts</div>
       </div>
-      <img class="squid" src="img/verrill-architeuthis-1882.webp" width="1800" height="865"
-           alt="A. E. Verrill's 1882 engraving of a giant squid, Architeuthis, its body on the left and its arms streaming to the right">
-      <div class="phones">
-        <svg class="ico" viewBox="0 0 48 48" role="img" aria-label="Headphones"><use href="#ic-ears"/></svg>
+      <div class="title">
+        <img class="squid" src="img/verrill-architeuthis-1882.webp" width="1800" height="865" alt="">
+        <h1 class="nameplate">The Atlantis Gazette</h1>
+      </div>
+      <div class="ear r">
+        <svg class="phones" viewBox="0 0 48 48" role="img" aria-label="Headphones"><use href="#ic-ears"/></svg>
         <div class="endcap">where it ends up</div>
       </div>
-    </div>
-
-    <div class="plate">
-      <div class="ear l"><b>Late edition</b>Odonus and Vetula now have a page each; Vetula's harmony crosses to Odonus on the tab bus.</div>
-      <h1 class="nameplate">The Atlantis Gazette</h1>
-      <div class="ear r"><b>Inside</b>Who's who on the reef, the two ways to play, and how to read the chart.</div>
     </div>
     <p class="motto">Applying the Unix philosophy to music since 2026</p>
 
