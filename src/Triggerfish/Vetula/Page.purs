@@ -28,7 +28,7 @@ import Halogen.HTML as HH
 import Halogen.Subscription as HS
 import Triggerfish.Glyph (ChipView)
 import Triggerfish.SourceQuery as SQ
-import Triggerfish.TabBus as Bus
+import Binnacle.TabBus as Bus
 import Triggerfish.Transport (Sounding(..))
 import Type.Proxy (Proxy(..))
 import Vetula.App as Vetula

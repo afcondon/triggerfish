@@ -80,7 +80,7 @@ import Triggerfish.Routing.View as RV
 import Triggerfish.SourceQuery as SQ
 import Triggerfish.Fish as Fish
 import Triggerfish.Stage as Stage
-import Triggerfish.TabBus as Bus
+import Binnacle.TabBus as Bus
 import Triggerfish.Glyph as G
 import Triggerfish.GlyphView (chipIcons, faIcons)
 import Triggerfish.Scenes as Scenes
@@ -145,7 +145,7 @@ data RAction
   -- `Triggerfish.Routing.Edit` and then persisted and pushed in one place.
   -- Another tab of this origin (Balistes on its own page) saved the table.
   | RoutingStored
-  | FromBus Bus.Msg             -- the dashboard, tab to tab (Triggerfish.TabBus)
+  | FromBus Bus.Msg             -- the dashboard, tab to tab (Binnacle.TabBus)
   | ModeStored                  -- another tab changed the Solo/Atlantis mode
   | SetPorts (Array String)
   | MonTick
@@ -295,7 +295,7 @@ type RState =
   -- slot sends nothing; cleared when the rig goes away, so a reconnect records
   -- every slot again.
   , staged :: Map Which String
-  -- The tab bus to the dashboard (`Triggerfish.TabBus`).
+  -- The tab bus to the dashboard (`Binnacle.TabBus`).
   , bus :: Maybe Bus.Bus
   -- Vetula auto-resync (ATLANTIS): the shell polls Vetula's rig payload and, when
   -- it settles on a new value, re-pushes (SetSounding Rig re-voices) — so the

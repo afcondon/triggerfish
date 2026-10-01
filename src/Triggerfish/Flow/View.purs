@@ -184,10 +184,15 @@ chart on hot live f
       cy = mid sn
       tx = sn.x1 + 8.0
       icon = case nd.id of
-        "engine" -> [ use "ic-kraken" tx (cy - 64.0) 44.0 44.0 ]
+        "engine" -> [ use "ic-kraken" tx (cy - 20.0) 30.0 30.0 ]
         "ears" -> [ use "ic-ears" tx (cy - 18.0) 34.0 34.0 ]
         _ -> []
-      lx = if nd.id == "ears" then tx + 40.0 else tx
+      -- An icon stands left of its label, so it never climbs into the
+      -- column heads when its node is short.
+      lx = case nd.id of
+        "ears" -> tx + 40.0
+        "engine" -> tx + 36.0
+        _ -> tx
     in
       svg "g" [ attr "class" "node" ]
         ( [ bar sn ] <> icon <>

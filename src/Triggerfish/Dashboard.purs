@@ -8,7 +8,7 @@
 -- |   * **routing** (2a): the whole table, every source, in one place;
 -- |   * **status and stage** (3a, 4a): the rig link, and each machine's preset.
 -- |
--- | It reaches the machines' pages over the tab bus (`Triggerfish.TabBus`), which
+-- | It reaches the machines' pages over the tab bus (`Binnacle.TabBus`), which
 -- | needs no rig, and the mode through the shared store. It has its own rig socket
 -- | for the clock, Panic and auditioning a leg. It plays nothing itself.
 -- |
@@ -63,29 +63,29 @@ import Triggerfish.Routing.Store as RStore
 import Triggerfish.Routing.View as RV
 import Triggerfish.SampleSets (SampleSet)
 import Triggerfish.SampleSets as SampleSets
-import Triggerfish.TabBus as Bus
+import Binnacle.TabBus as Bus
 import Triggerfish.Transport (Mode(..))
 import Triggerfish.Transport.Store as TransportStore
 
 -- | A machine as the dashboard knows it: its slot, its nameplate, and where its
--- | page is. `onBus` is false for the pages not yet on the tab bus, which the
--- | dashboard can open but not see or drive.
+-- | page is. `playable` is false for Quadrat, whose "playing" is a capture
+-- | being armed: the dashboard shows it but must not start a take or cut one.
 type Machine =
   { slot :: String
   , name :: String
   , href :: String
   , target :: String
-  , onBus :: Boolean
+  , playable :: Boolean
   }
 
 machines :: Array Machine
 machines =
-  [ { slot: "odonus", name: "Odonus", href: "/odonus.html", target: "atlantis-odonus", onBus: true }
-  , { slot: "vetula", name: "Vetula", href: "/vetula.html", target: "atlantis-vetula", onBus: true }
-  , { slot: "balistes", name: "Balistes", href: "/balistes.html", target: "atlantis-balistes", onBus: true }
-  , { slot: "selene", name: "Selene", href: "/selene.html", target: "atlantis-selene", onBus: true }
-  , { slot: "conspicillum", name: "Conspicillum", href: "/conspicillum/", target: "atlantis-conspicillum", onBus: false }
-  , { slot: "quadrat", name: "quadrat", href: "/quadrat.html", target: "atlantis-quadrat", onBus: false }
+  [ { slot: "odonus", name: "Odonus", href: "/odonus.html", target: "atlantis-odonus", playable: true }
+  , { slot: "vetula", name: "Vetula", href: "/vetula.html", target: "atlantis-vetula", playable: true }
+  , { slot: "balistes", name: "Balistes", href: "/balistes.html", target: "atlantis-balistes", playable: true }
+  , { slot: "selene", name: "Selene", href: "/selene.html", target: "atlantis-selene", playable: true }
+  , { slot: "conspicillum", name: "Conspicillum", href: "/conspicillum/", target: "atlantis-conspicillum", playable: true }
+  , { slot: "quadrat", name: "Quadrat", href: "/quadrat.html", target: "atlantis-quadrat", playable: false }
   ]
 
 -- | A tab that has not been heard from for this long is taken to be closed.
@@ -312,8 +312,7 @@ render st =
 
 -- | The signal-flow chart: what the open pages drive, by the path the mode
 -- | gives them. Conspicillum and Quadrat route themselves rather than through
--- | the table, so their routes are stated here; they appear once their pages
--- | are on the tab bus.
+-- | the table, so their routes are stated here.
 flowChart :: forall m. State -> H.ComponentHTML Action () m
 flowChart st =
   HH.section [ cls "flow", HP.attr (AttrName "aria-label") "Where it all goes" ]
@@ -419,7 +418,7 @@ machineBar st =
       | open = " open"
       | otherwise = " closed"
     fish
-      | open && m.onBus =
+      | open && m.playable =
           HH.button
             [ cls "fishplay"
             , HP.title ((if isPlaying then "Stop " else "Play ") <> m.name)
@@ -428,7 +427,13 @@ machineBar st =
             , HE.onClick \_ -> Command m.slot (not isPlaying)
             ]
             [ Fish.icon "ico" m.slot ]
-      | otherwise = HH.span [ cls "fishplay off", HP.attr (AttrName "aria-hidden") "true" ] [ Fish.icon "ico" m.slot ]
+      | otherwise =
+          HH.span
+            [ cls "fishplay off"
+            , HP.title (if isPlaying then m.name <> ": recording" else m.name)
+            , HP.attr (AttrName "aria-hidden") "true"
+            ]
+            [ Fish.icon "ico" m.slot ]
     name
       | open = HH.span [ cls ("wordmark w-" <> m.slot) ] [ HH.text m.name ]
       | otherwise =

@@ -16,7 +16,7 @@
 -- |   * the preset chip, and the CAPTURE key (`c`);
 -- |   * the machine's stage slot: its chip and whether it sounds, recorded on
 -- |     the rig whenever either changes (`Triggerfish.Stage`), for the dashboard;
--- |   * the tab bus (`Triggerfish.TabBus`): the same state announced to the
+-- |   * the tab bus (`Binnacle.TabBus`): the same state announced to the
 -- |     dashboard tab to tab, and its play, stop and Panic obeyed. The mode
 -- |     follows the dashboard's switch through the store.
 -- |
@@ -68,7 +68,7 @@ import Triggerfish.SampleSets (SampleSet)
 import Triggerfish.SampleSets as SampleSets
 import Triggerfish.SourceQuery as SQ
 import Triggerfish.Stage as Stage
-import Triggerfish.TabBus as Bus
+import Binnacle.TabBus as Bus
 import Triggerfish.Transport (Mode(..), Sounding(..), Which, soundingOf)
 import Triggerfish.Transport.Store as TransportStore
 import Triggerfish.Ui.Style (engrave, style)

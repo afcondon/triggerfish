@@ -17,7 +17,7 @@ import Triggerfish.Odonus.Grid as Odonus
 import Triggerfish.Routing.Model as RM
 import Triggerfish.SourceQuery as SQ
 import Triggerfish.Standalone as Standalone
-import Triggerfish.TabBus as Bus
+import Binnacle.TabBus as Bus
 import Triggerfish.Transport (Which(..))
 
 main :: Effect Unit
