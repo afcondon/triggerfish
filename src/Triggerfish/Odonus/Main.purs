@@ -2,8 +2,8 @@
 -- | (`Triggerfish.Standalone`). Its router shows the four heads.
 -- |
 -- | It quantises to Vetula's harmonic context, which arrives from Vetula's
--- | page over the tab bus (`Bus.Scale`); with Vetula closed, Odonus keeps its
--- | own scale.
+-- | page over the tab bus (`Bus.Scale`: a scale, and the chords as a Tidal
+-- | pattern); with Vetula closed, Odonus keeps its own scale.
 -- |
 -- | Bundle: `spago bundle --module Triggerfish.Odonus.Main --outfile public/odonus.js`.
 module Triggerfish.Odonus.Main (main) where
@@ -36,6 +36,6 @@ main = Standalone.run
       }
   , armOf: const Nothing
   , follow: case _ of
-      Bus.Scale sc -> Just (SQ.SetContextPitchSet sc.root sc.offsets unit)
+      Bus.Scale sc -> Just (SQ.SetContextPitchSet sc.root sc.offsets sc.harmony unit)
       _ -> Nothing
   }

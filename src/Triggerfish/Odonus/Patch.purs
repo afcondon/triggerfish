@@ -17,10 +17,9 @@ module Triggerfish.Odonus.Patch
 
 import Prelude
 
-import Data.Array (find, (!!))
-import Data.Maybe (Maybe(..), isJust)
-import Data.String.Common (joinWith)
-import Triggerfish.Odonus.Grid.Types (GenSource, SourceTag(..), State, genKinds, genDefaultRate, genDefaultAmt)
+import Data.Array (find)
+import Data.Maybe (Maybe(..))
+import Triggerfish.Odonus.Grid.Types (GenSource, State, genKinds, genDefaultRate, genDefaultAmt)
 import Triggerfish.Odonus.Lepidoptera (OdonusPatch, printPatch, parsePatch)
 import Triggerfish.Odonus.Model as M
 import Triggerfish.Scale as Scale
@@ -31,7 +30,6 @@ capturePatch :: State -> OdonusPatch
 capturePatch s =
   { name: "live"
   , odo: s.odo
-  , follow: s.follow
   , gen: s.gen
   , genSpread: s.genSpread
   , genBias: s.genBias
@@ -45,8 +43,6 @@ capturePatch s =
 applyPatch :: OdonusPatch -> State -> State
 applyPatch p s = s
   { odo = p.odo
-  , follow = p.follow
-  , source = deriveSource p.follow p.odo.chord.on
   , gen = reconcileGen p.gen
   , genSpread = p.genSpread
   , genBias = p.genBias
@@ -68,12 +64,6 @@ reconcileGen loaded =
     Just g -> g
     Nothing -> { kind: k, on: false, rate: genDefaultRate k, amt: genDefaultAmt k }
 
--- | The source intent a loaded patch implies (it isn't serialised separately):
--- | a follow → Vetula; else Scale.
-deriveSource :: Maybe Int -> Boolean -> SourceTag
-deriveSource follow _ =
-  if isJust follow then SVetula else SScale
-
 -- | The live patch rendered to eDSL text — the shell's `AskSource` answer and
 -- | the form a scene is saved in.
 patchText :: State -> String
@@ -90,12 +80,12 @@ recallText txt s = case parsePatch txt of
 
 -- | Recall a scene's GESTURE into the CURRENT harmonic context (#150): apply
 -- | the saved cells / playheads / register transforms / gen matrix / feel, but
--- | KEEP the live harmony — root, scale, distribution, any Vetula pitchSet, the
--- | chord overlay, and whether we're following a voice. Because cell notes are
+-- | KEEP the live harmony — root, scale, distribution, any Vetula pitchSet, and
+-- | the harmony pattern. Because cell notes are
 -- | scale degrees, the saved riff re-voices through whatever key or progression
 -- | is sounding now: the same lick in the current key. Playhead phase carries
 -- | across (as `recallText`). The gen matrix / marbles / swing / stepDiv ARE
--- | part of the gesture, so they come from the scene; `follow`/`source` do not.
+-- | part of the gesture, so they come from the scene; the harmony does not.
 -- | Unparseable text → no-op.
 recallGestureText :: String -> State -> State
 recallGestureText txt s = case parsePatch txt of
@@ -120,11 +110,11 @@ loadText txt s = case parsePatch txt of
 -- | The harmonic reading of a captured patch, for the REPLAY card's "show
 -- | harmonic context" — what a guitarist needs to jam over a looped good bit:
 -- | the key (root + auto-named scale), the scale's pitches as note names, and
--- | the current chord (as note names) when the chord overlay is driving.
+-- | the harmony pattern when one is set.
 type HarmonicContext =
   { root :: String          -- e.g. "D"
   , scale :: String         -- auto-recognised scale name, e.g. "dorian"
-  , chord :: Maybe String   -- the sounding chord as note names, if the overlay is on
+  , chord :: Maybe String   -- the harmony pattern (`<c'maj7 a'min7>/2`), if one is set
   , notes :: Array String   -- the scale's pitch classes as note names
   }
 
@@ -135,11 +125,10 @@ harmonicSummary txt = case parsePatch txt of
   Just p ->
     let
       odo = p.odo
-      chordPcs = if odo.chord.on then odo.chord.feed !! odo.chord.ix else Nothing
     in
       Just
         { root: Scale.rootName odo.rootPc
         , scale: M.scaleTypeName odo
-        , chord: map (joinWith " " <<< map Scale.rootName) chordPcs
+        , chord: odo.harmony
         , notes: map Scale.rootName (Scale.pitchClassesOf (M.scaleOf odo))
         }

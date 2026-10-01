@@ -56,7 +56,7 @@ import Web.HTML.Window as Window
 import Web.UIEvent.KeyboardEvent as KE
 import Web.UIEvent.MouseEvent as ME
 import Triggerfish.Odonus.Grid.Types
-  ( Action(..), GenKind(..), KnobTarget(..), SourceTag(..), Stage(..), stagePath, stageFromPath, RegionEdge(..), PlaySource(..), TwisterField(..), Logbook, NoteEvent, PolyInst, Slots, State, applyTarget, genDefaultAmt, genDefaultRate, genKinds, genLabel
+  ( Action(..), GenKind(..), KnobTarget(..), Stage(..), stagePath, stageFromPath, RegionEdge(..), PlaySource(..), TwisterField(..), Logbook, NoteEvent, PolyInst, Slots, State, applyTarget, genDefaultAmt, genDefaultRate, genKinds, genLabel
   , marblesPadId, rateMax, replayTimelineId, setAmt, setRate, targetRange
    )
 import Triggerfish.Scale (scaleTypes)
@@ -115,7 +115,7 @@ component =
         -- one-stop view of the whole setup; Odonus's own eDSL pane is for
         -- when you want to inspect just this module.
         , collapsed: [ "SOURCE" ], lastTap: "", lastTapMicros: 0.0
-        , voiceChords: [], follow: Nothing, source: SScale, reconciled: false
+        , vetulaHarmony: Nothing, reconciled: false
         , presets: [], identity: Nothing, lastChip: Nothing }
     , render
     , eval: H.mkEval H.defaultEval
@@ -209,8 +209,13 @@ handleQuery = case _ of
   -- polled from Vetula as Odonus's pitchSet (the injected-realize seam). Rides the
   -- lockstep-safe RI.SetPitchSet input so the BEAM voice stays in sync. Odonus no
   -- longer owns a scale — it follows whatever Vetula supplies.
-  SetContextPitchSet root offsets next -> do
+  SetContextPitchSet root offsets harmony next -> do
     enqueue (RI.SetPitchSet (PitchSet { offsets, root: 48 + root, period: Just 12 }))
+    st <- H.get
+    let ours = st.odo.harmony == st.vetulaHarmony
+    when (harmony /= st.vetulaHarmony && (isJust harmony || ours)) do
+      enqueue (RI.SetHarmony harmony)
+    H.modify_ _ { vetulaHarmony = harmony }
     pure (Just next)
   -- The shell's CAPTURE hotkey: bank the live patch as a preset and park identity
   -- on it (the chip shows the freshly-minted glyph, held). See captureNow.
@@ -468,9 +473,7 @@ dispatch = case _ of
         g = Gen.runGen
               { gen: sim0.gen, spread: sim0.spread, bias: sim0.bias
               , odo: sim0.odo, seed: sim0.seed, frozen: sim0.frozen }
-        -- The chord progression advances on its own clock, before the heads read,
-        -- so the new chord is what this step's notes quantize to.
-        o1 = if g.odo.chord.on then M.tickChord g.odo else g.odo
+        o1 = g.odo
         -- Heads the generator just silenced (HEADS source) get a note-off below,
         -- so a glide note can't stick on a voice that's now muted.
         muteOf o h = maybe true _.mute (o.heads !! h)
@@ -767,20 +770,6 @@ dispatch = case _ of
         tgt = fromMaybe cur (findIndex (\n -> n == name) names)
     when (tgt /= cur) $ enqueue (RI.CycleScaleType (tgt - cur))
   ToggleDist -> enqueue RI.ToggleDistribution
-  ToggleChord -> H.modify_ \s ->
-    if tapBounced "chord" s then s else (markTap "chord" s) { odo = M.toggleChord s.odo }
-  -- The KEY pane's pitch-source radio — an explicit `source` intent. Scale =
-  -- overlay off; Vetula = follow a voice. Selecting Vetula always sticks (even with
-  -- no voice yet): it adopts the first bound voice if available, else stays
-  -- selected-but-inactive (recomputeFollow leaves the overlay off; the sub-section
-  -- shows it waiting).
-  SetSource SScale -> H.modify_ \s ->
-    s { source = SScale, follow = Nothing, odo = s.odo { chord = s.odo.chord { on = false } } }
-  SetSource SVetula -> H.modify_ \s ->
-    recomputeFollow (s { source = SVetula, follow = keepOrFirst s.follow s.voiceChords })
-  -- Pick a voice to follow, or "free" (Nothing = stay on Vetula but unfollowed →
-  -- inactive). recomputeFollow turns the overlay on/off accordingly.
-  SetFollow mfid -> H.modify_ \s -> recomputeFollow (s { follow = mfid })
   -- Quantizer gestures — deferred + broadcast (lockstep P4c).
   SetRoot pc -> enqueue (RI.SetRoot pc)
   SetOctave n -> enqueue (RI.SetOctaveShift n)
@@ -1358,25 +1347,6 @@ stepBeatsOf s = gridCfg.stepBeats * toNumber s.stepDiv
 -- | clears it with margin. Fast tempi (≳160bpm) would want a larger buffer.
 inputBufferSteps :: Int
 inputBufferSteps = 2
-
--- | Re-derive the chord overlay from the follow selection + last poll. A followed
--- | voice's chord becomes a one-element feed (overlay on; a vanished voice clears
--- | it). With no follow, the overlay is owned by the chosen source: Vetula
--- | selected-but-unfollowed is INACTIVE (overlay off — it's waiting for a voice);
--- | Scale (off) / Chord (on) keep theirs, so the 100ms poll can't clobber them.
-recomputeFollow :: State -> State
-recomputeFollow s = case s.follow of
-  Just fid -> s { odo = M.followChord (_.pcs <$> find (\vc -> vc.id == fid) s.voiceChords) s.odo }
-  Nothing -> case s.source of
-    SVetula -> s { odo = s.odo { chord = s.odo.chord { on = false } } }
-    _ -> s
-
--- | Keep the current followed voice if it still exists, else adopt the first
--- | bound voice (or none) — used to auto-track a voice for the Vetula source.
-keepOrFirst :: Maybe Int -> Array { id :: Int, pcs :: Array Int } -> Maybe Int
-keepOrFirst cur vcs = case cur of
-  Just fid | any (\vc -> vc.id == fid) vcs -> Just fid
-  _ -> map _.id (head vcs)
 
 -- | The rig WebSocket (purerl-tidal). Binnacle subscribes to the Link
 -- | anchor here and relays gates/CV to es9-daemon.

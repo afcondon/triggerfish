@@ -17,7 +17,6 @@ module Triggerfish.Odonus.Grid.Types
   , genLabel
   , genSub
   , marblesPadId
-  , SourceTag(..)
   , Stage(..)
   , stagePath
   , stageFromPath
@@ -220,13 +219,6 @@ replayTimelineId = "tf-replay-timeline"
 -- | one-line addition here rather than a tree-wide retype.
 type Slots = ( scaleSelect :: Select.Slot Unit )
 
--- | Which pitch source drives the quantizer — the KEY pane's top-level choice.
--- | `SScale` snaps to the scale; `SVetula` to a followed Vetula voice. Derived
--- | from `chord.on` + `follow` (`Triggerfish.Odonus.Patch.sourceOf`).
-data SourceTag = SScale | SVetula
-
-derive instance eqSourceTag :: Eq SourceTag
-
 -- | **Odonus's STAGE** — the same mode axis Vetula has (`Vetula.App.Stage`),
 -- | minus Hunt: Vetula is the harmonic authority, so Odonus has nothing to hunt.
 -- | Two stages, and the names are shared across both machines deliberately.
@@ -370,16 +362,10 @@ type State =
   , collapsed :: Array String  -- panel labels currently collapsed (accordion)
   , lastTap :: String          -- last toggle target (debounce the double-dispatch)
   , lastTapMicros :: Number
-  -- The live Vetula→Odonus follow bridge. `voiceChords` is the latest poll of
-  -- the shell (each Odonus-bound Vetula voice's current block chord, keyed by id);
-  -- `follow` selects one of those ids (or none), whose chord the quantiser snaps to.
-  , voiceChords :: Array { id :: Int, pcs :: Array Int }
-  , follow :: Maybe Int
-  -- The chosen pitch SOURCE (the KEY pane radio). An explicit intent, NOT derived
-  -- from the overlay state — so "Vetula selected but no signal yet" is a real,
-  -- selectable state (the sub-section then shows it's waiting). `chord.on` still
-  -- tracks whether a live chord is actually driving the snap.
-  , source :: SourceTag
+  -- The harmony pattern Vetula last set (SetContextPitchSet). Vetula may replace
+  -- it or, having none to give, clear it; it never clears a harmony someone
+  -- else set (an `odonus $ harmony` line from Limulus). Last writer wins.
+  , vetulaHarmony :: Maybe String
   -- One-shot connect-time rig reconcile: false until the first Frame fires a
   -- `hush` to the rig (clears any voices orphaned by a PREVIOUS session's push —
   -- a reload starts with nothing armed, so the rig should start silent, and the
@@ -425,9 +411,6 @@ data Action
   | CycleScaleType Int
   | PickScale String          -- jump to a named preset scale (the Select widget)
   | ToggleDist
-  | ToggleChord
-  | SetSource SourceTag       -- pick the quantizer's pitch source (KEY pane)
-  | SetFollow (Maybe Int)    -- follow a Vetula Odonus-bound voice by id (Nothing = free)
   | SetRoot Int
   | SetOctave Int
   | SetDegShift Int

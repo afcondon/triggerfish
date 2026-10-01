@@ -37,7 +37,7 @@ data Output
   = Chip (Maybe ChipView)
   | Armed Boolean
 
-type Ctx = { root :: Int, offsets :: Array Int }
+type Ctx = { root :: Int, offsets :: Array Int, harmony :: Maybe String }
 
 type State =
   { bus :: Maybe Bus.Bus
@@ -159,5 +159,5 @@ handleQuery = case _ of
   SQ.PutLane _ _ _ -> pure Nothing
   SQ.PutSource _ _ -> pure Nothing
   SQ.AskClock _ -> pure Nothing
-  SQ.SetContextPitchSet _ _ _ -> pure Nothing
+  SQ.SetContextPitchSet _ _ _ _ -> pure Nothing
   SQ.SetRouting _ _ -> pure Nothing

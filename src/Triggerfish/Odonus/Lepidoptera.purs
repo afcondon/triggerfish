@@ -9,10 +9,12 @@
 -- | spread/bias, swing, velocity-humanise and the step divider all live on the
 -- | component State, and they're part of what you authored — so the unit here is
 -- | an `OdonusPatch`, captured from State. Runtime fields (playhead cursor /
--- | seqPos / accumulator / pendStep, the chord clock's ix / phase, the PRNG
--- | seed) are NOT serialised — they reset on load. The harmony is rendered as
--- | the single `quantize :: PitchSource` (scale | chords | vetula), the
--- | reframe's contract; see `Triggerfish.Odonus.PitchSource`.
+-- | seqPos / accumulator / pendStep, the sampled chord, the PRNG seed) are NOT
+-- | serialised — they reset on load. The harmony is rendered as the single
+-- | `quantize :: PitchSource` (scale | harmony "PATTERN"); see
+-- | `Triggerfish.Odonus.PitchSource`. Patches from before 2026-10-01 may say
+-- | `chords pcs [...] every N` (read as the pattern meaning the same) or
+-- | `vetula N` (read as scale: Vetula now sets the harmony itself).
 -- |
 -- | `odonusPatch "<name>" { … }` is valid-shaped `Tidal.*` eDSL, so a patch
 -- | drops into Calypso and ships to purerl-tidal like every other Lepidoptera
@@ -28,7 +30,7 @@ module Triggerfish.Odonus.Lepidoptera
 import Prelude
 
 import Control.Alt ((<|>))
-import Data.Array (fromFoldable, mapWithIndex, range, (!!))
+import Data.Array (fromFoldable, length, mapWithIndex, range, (!!))
 import Data.Array (find, findIndex) as Array
 import Data.Either (hush)
 import Data.Foldable (minimumBy)
@@ -46,15 +48,14 @@ import Parsing.String.Basic (intDecimal, number, skipSpaces)
 import Triggerfish.Odonus.Grid.Types (GenKind(..), GenSource, genKinds)
 import Triggerfish.Odonus.Model as M
 import Triggerfish.Odonus.PitchSource (PitchSource(..), applyPitchSource, pitchSourceFrom)
+import Reef.Vetula.Harmony (clockHarmony) as RH
 import Triggerfish.Scale (Distribution(..), rootName, rootNames) as Scale
 
 -- | The authored slice of the Odonus component: the model core plus the
 -- | State-side fields that are part of the patch (not transport / runtime).
--- | `follow` is the live Vetula voice id (folded into `quantize` on print).
 type OdonusPatch =
   { name :: String
   , odo :: M.Odonus
-  , follow :: Maybe Int
   , gen :: Array GenSource
   , genSpread :: Number
   , genBias :: Number
@@ -84,7 +85,7 @@ printPatch p =
       , "  , octave: " <> show o.octaveShift
       , "  , scalarTransp: " <> show o.degShift
       , "  , gate: " <> show o.gatePct
-      , "  , quantize: " <> printSource (pitchSourceFrom o p.follow)
+      , "  , quantize: " <> printSource (pitchSourceFrom o)
       , "  , swing: " <> pct p.swing
       , "  , velHumanize: " <> show p.velHumanize
       , "  , stepDiv: " <> show p.stepDiv
@@ -118,11 +119,7 @@ printGen g =
 printSource :: PitchSource -> String
 printSource = case _ of
   PScale -> "scale"
-  PChordsPCs sets per ->
-    "chords pcs [ " <> joinWith ", " (map intArr sets) <> " ] every " <> show per
-  PVetula fid -> "vetula " <> show fid
-  where
-  intArr xs = "[ " <> joinWith ", " (map show xs) <> " ]"
+  PHarmony h -> "harmony " <> show h
 
 -- ---------------------------------------------------------------------------
 -- Parse
@@ -171,9 +168,9 @@ patchP = do
       { rootPc = root, scaleIvls = ivls, dist = dist
       , octaveShift = octave, degShift = scalarT, gatePct = gatePct
       , cells = cells, heads = heads }
-    applied = applyPitchSource quant baseOdo
+    applied = applyPitchSource (quant stepDiv) baseOdo
   pure
-    { name, odo: applied.odo, follow: applied.follow
+    { name, odo: applied
     , gen, genSpread: toNumber spread / 100.0, genBias: toNumber bias / 100.0
     , swing: toNumber swing / 100.0, velHumanize: velH, stepDiv }
   where
@@ -205,18 +202,28 @@ marblesVal = do
   _ <- sym "}"
   pure (Tuple sp bi)
 
-sourceVal :: Parser PitchSource
-sourceVal = PC.try scaleSrc <|> PC.try chordsSrc <|> vetulaSrc
+-- | A source, given the patch's `stepDiv` (a legacy chord clock counted model
+-- | steps; its pattern counts pulses, `stepDiv` to the step).
+sourceVal :: Parser (Int -> PitchSource)
+sourceVal = PC.try scaleSrc <|> PC.try harmonySrc <|> PC.try chordsSrc <|> vetulaSrc
   where
-  scaleSrc = PScale <$ sym "scale"
-  vetulaSrc = sym "vetula" *> (PVetula <$> intL)
+  scaleSrc = const PScale <$ sym "scale"
+  harmonySrc = sym "harmony" *> (const <<< PHarmony <$> strL)
+  -- retired 2026-10-01: Vetula sets the harmony itself now
+  vetulaSrc = sym "vetula" *> (const PScale <$ intL)
+  -- retired 2026-10-01: the chord clock, as the pattern that means the same
   chordsSrc = sym "chords" *> pcs
   pcs = do
     _ <- sym "pcs"
     sets <- fromFoldable <$> bracketed (PC.sepBy intArray (sym ","))
     _ <- sym "every"
     per <- intL
-    pure (PChordsPCs sets per)
+    pure \stepDiv ->
+      let
+        len = max 1 per * max 1 stepDiv
+        clock = { segs: mapWithIndex (\i _ -> { ix: i, start: i * len, len }) sets, loopLen: len * length sets }
+      in
+        maybe PScale PHarmony (RH.clockHarmony sets clock 0)
 
 headsArray :: Parser (Array M.Head)
 headsArray = fromFoldable <$> bracketed (PC.sepBy headP (sym ","))

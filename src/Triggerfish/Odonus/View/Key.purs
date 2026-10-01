@@ -4,6 +4,10 @@
 -- | chord from a progression, or the `→ odo` box's chord). This shows that
 -- | inherited context; to change it you set the scale in Vetula or via `# scale`.
 -- |
+-- | Since 2026-10-01 the chords arrive as a Tidal pattern, the harmony
+-- | (`odonus $ harmony "..."`, set by Vetula or typed in Limulus): the strip
+-- | shows the pattern beside the scale, and rings the chord it gives this step.
+-- |
 -- | Was the KEY *panel* — a whole right-hand column carrying this plus SCENES plus
 -- | LOGBOOK. Retired 2026-08-06 (AC): the column cost a fifth of the width while
 -- | PARAMETERS next to it needed a scrollbar. This is now a compact strip in
@@ -14,6 +18,7 @@ module Triggerfish.Odonus.View.Key (contextStrip) where
 import Prelude
 
 import Data.Array (elem, range)
+import Data.Maybe (Maybe(..))
 import Halogen as H
 import Halogen.HTML as HH
 import Reef.PitchSet (PitchSet(..))
@@ -30,15 +35,23 @@ contextStrip s =
   let ctx = contextInfo s.odo
   in HH.div
     [ style "display:flex;align-items:center;gap:10px;min-width:0" ]
-    [ HH.span [ style $ engrave <> ";font-size:8px;color:#7a6a3a;white-space:nowrap" ]
+    $ [ HH.span [ style $ engrave <> ";font-size:8px;color:#7a6a3a;white-space:nowrap" ]
         [ HH.text "◀ Vetula" ]
     , HH.span
         [ style "font-family:Georgia,serif;font-size:13px;color:#2a271e;white-space:nowrap"
         , HH.attr (HH.AttrName "title")
             "Vetula owns the harmonic context — the active chord of a progression, the → odo box's chord, or the browsed scale" ]
         [ HH.text (Scale.rootName ctx.rootPc <> " " <> ctx.name) ]
-    , pcKeyboardRO ctx.rootPc ctx.pcs
+    , pcKeyboardRO ctx.rootPc ctx.pcs (M.currentChordPCs s.odo)
     ]
+    <> case s.odo.harmony of
+      Nothing -> []
+      Just h ->
+        [ HH.span
+            [ style "font-family:'SF Mono',Menlo,monospace;font-size:11px;color:#2a271e;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:260px"
+            , HH.attr (HH.AttrName "title") ("harmony \"" <> h <> "\" — a Tidal pattern; the ringed keys are the chord it gives now") ]
+            [ HH.text ("harmony \"" <> h <> "\"") ]
+        ]
 
 -- | Extract the display facts from the effective pitch set. `root` is a MIDI note;
 -- | its pitch class is the scale root, and each interval mapped over it gives the
@@ -54,21 +67,25 @@ contextInfo odo = case M.effectivePitchSet odo of
 -- | A 12-key chromatic strip, non-interactive: in-context pitch classes lit, the
 -- | root accented. Sized for the nav bar rather than a panel — fixed key width, so
 -- | it doesn't stretch across whatever room the nav happens to have.
-pcKeyboardRO :: forall m. Int -> Array Int -> H.ComponentHTML Action Slots m
-pcKeyboardRO rootPc lit =
+pcKeyboardRO :: forall m. Int -> Array Int -> Array Int -> H.ComponentHTML Action Slots m
+pcKeyboardRO rootPc lit chord =
   HH.div [ style "display:flex;gap:2px" ]
-    (map (pcKeyRO rootPc lit) (range 0 11))
+    (map (pcKeyRO rootPc lit chord) (range 0 11))
 
-pcKeyRO :: forall m. Int -> Array Int -> Int -> H.ComponentHTML Action Slots m
-pcKeyRO rootPc lit pc =
+-- | One key: lit if in the scale, the root accented, ringed if in the chord the
+-- | harmony gives this step.
+pcKeyRO :: forall m. Int -> Array Int -> Array Int -> Int -> H.ComponentHTML Action Slots m
+pcKeyRO rootPc lit chord pc =
   let
     on = elem pc lit
+    ringed = elem pc chord
     isRoot = pc == rootPc
     bg = if isRoot then "#b5832b" else if on then "#8a9b6e" else "#bdb8a7"
     fg = if isRoot || on then "#1c1a12" else "#7d7868"
   in
     HH.div
-      [ style $ "width:17px;height:20px;border-radius:3px;border:1px solid #00000018;background:" <> bg
+      [ style $ "width:17px;height:20px;border-radius:3px;box-sizing:border-box;border:"
+          <> (if ringed then "2px solid #2a271e" else "1px solid #00000018") <> ";background:" <> bg
           <> ";display:flex;align-items:flex-end;justify-content:center;padding-bottom:1px" ]
       [ HH.span [ style $ "font-family:'SF Mono',Menlo,monospace;font-size:7px;color:" <> fg ]
           [ HH.text (Scale.rootName pc) ] ]

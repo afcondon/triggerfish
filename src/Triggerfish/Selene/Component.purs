@@ -292,7 +292,7 @@ handleQuery = case _ of
     persist
     pure (Just (reply true))
   -- No quantiser — the rig's harmonic context doesn't apply to Selene.
-  SetContextPitchSet _ _ next -> pure (Just next)
+  SetContextPitchSet _ _ _ next -> pure (Just next)
   -- The shell's CAPTURE hotkey: bank the active rack's doc as a preset and park
   -- identity on it (the chip shows the freshly-minted glyph, held). See captureNow.
   Capture next -> do

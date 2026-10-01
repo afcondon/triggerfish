@@ -178,7 +178,7 @@ handleQuery = case _ of
       pure (Just (reply true))
     Nothing -> pure (Just (reply false))
   -- No pitch quantiser — the rig's harmonic context doesn't apply to Balistes.
-  SetContextPitchSet _ _ next -> pure (Just next)
+  SetContextPitchSet _ _ _ next -> pure (Just next)
   -- The shell's CAPTURE hotkey: bank the current playing-state and park identity
   -- on it (the chip shows the freshly-minted glyph, held). See captureNow.
   Capture next -> do

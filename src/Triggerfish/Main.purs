@@ -1108,16 +1108,18 @@ handleAction = case _ of
             H.modify_ _ { vetChip = cv }
             publishStage Vet
             announce Vet
-        -- Harmonic authority: pull Vetula's resting context scale and, when it CHANGES,
-        -- install it as Odonus's pitchSet (RI.SetPitchSet, lockstep-safe). Vetula owns
-        -- the scale; Odonus follows. Deduped so the 100ms poll doesn't flood the input.
+        -- Harmonic authority: pull Vetula's context — its scale and the chords it is
+        -- conducting, as a Tidal pattern — and, when it CHANGES, install both on
+        -- Odonus (RI.SetPitchSet, RI.SetHarmony; lockstep-safe). The pattern carries
+        -- the chord timing, so this poll only sees a new pattern, never a chord
+        -- change. Vetula owns the harmony; Odonus follows. Deduped on change.
         mctx <- H.query _vet unit (Vetula.AskContextScale identity)
         for_ mctx \ctx -> do
-          let key = show ctx.root <> ":" <> show ctx.offsets
+          let key = show ctx.root <> ":" <> show ctx.offsets <> ":" <> show ctx.harmony
           prev <- H.gets _.ctxScaleKey
           when (key /= prev) do
             H.modify_ _ { ctxScaleKey = key }
-            void $ H.query _odo unit (SQ.SetContextPitchSet ctx.root ctx.offsets unit)
+            void $ H.query _odo unit (SQ.SetContextPitchSet ctx.root ctx.offsets ctx.harmony unit)
         -- The system-tempo readout: pull one machine's live clock (Odonus, always
         -- mounted) for the nav BPM display + the Link-locked read-only gate.
         mclk <- H.query _odo unit (SQ.AskClock identity)

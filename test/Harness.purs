@@ -11,12 +11,13 @@ import Prelude
 import Data.Array (elem, filter, length)
 import Data.Foldable (foldl)
 import Data.Int (round, toNumber)
-import Data.Maybe (Maybe(..))
+import Data.Maybe (Maybe(..), isJust)
 import Data.String (Pattern(..))
 import Data.String.Common (joinWith, split)
 import Effect (Effect)
 import Effect.Console (log)
 import Test.FlowSpec (runFlowTests)
+import Test.HarmonySpec (runHarmonyTests)
 import Test.RevoiceSpec (runRevoiceTests)
 import Triggerfish.Odonus.Model as M
 import Triggerfish.Odonus.Marbles as Marbles
@@ -54,7 +55,7 @@ advance
   -> { next :: Sim, o1 :: M.Odonus, fired :: Array M.Fired }
 advance gen spread bias st =
   let g = Gen.runGen { gen, spread, bias, odo: st.odo, seed: st.seed, frozen: false }
-      o1 = if g.odo.chord.on then M.tickChord g.odo else g.odo
+      o1 = g.odo
       r = M.stepEmit o1
   in { next: { odo: r.odo, seed: g.seed }, o1, fired: r.fired }
 
@@ -65,8 +66,9 @@ update s o1 fired =
       ratched = length (filter (\c -> c.ratchet > 1) o1.cells)
       active = length (filter (not <<< _.mute) o1.heads)
       pcs = M.currentChordPCs o1
-      hits = if o1.chord.on then length (filter (\f -> elem (mod f.pitch 12) pcs) fired) else 0
-      seen = if o1.chord.on then length fired else 0
+      on = isJust o1.chord
+      hits = if on then length (filter (\f -> elem (mod f.pitch 12) pcs) fired) else 0
+      seen = if on then length fired else 0
       pitches = map _.pitch fired
   in s
        { steps = s.steps + 1
@@ -151,11 +153,12 @@ main = do
   -- only report.
   runRevoiceTests
   runFlowTests
+  runHarmonyTests
   log ("steps per scenario: " <> show n <> "\n")
 
   -- A. Chord quantiser: NOTES churning every step, chord overlay on. EVERY
   --    emitted note must be a tone of the current chord (across octaves).
-  let a = simulate n (oneSource GNotes 0 100) 0.5 0.5 (M.toggleChord allVoices) (Marbles.seedFrom 11)
+  let a = simulate n (oneSource GNotes 0 100) 0.5 0.5 (M.followChord (Just [ 0, 4, 7 ]) allVoices) (Marbles.seedFrom 11)
   log "A. CHORD ADHERENCE  (NOTES max, chord on)"
   log ("   fired notes:        " <> show a.fired)
   log ("   on-chord:           " <> pct a.chordHits a.chordSeen <> "   (want 100%)")
@@ -188,7 +191,7 @@ main = do
   log ("   depth 100%: mean " <> mean1 f2.ratchetOn f2.steps <> " ratcheted\n")
 
   -- E. Kitchen sink: everything on at defaults, chord on.
-  let e = simulate n allOn 0.5 0.5 (M.toggleChord allVoices) (Marbles.seedFrom 55)
+  let e = simulate n allOn 0.5 0.5 (M.followChord (Just [ 0, 4, 7 ]) allVoices) (Marbles.seedFrom 55)
   log "E. KITCHEN SINK  (all sources on, chord on)"
   log ("   fired notes:        " <> show e.fired)
   log ("   on-chord:           " <> pct e.chordHits e.chordSeen)

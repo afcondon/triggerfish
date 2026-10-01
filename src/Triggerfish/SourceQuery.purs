@@ -35,6 +35,7 @@
 -- | a STRUCTURAL record, so the two query types need share no nominal type.)
 module Triggerfish.SourceQuery (Query(..)) where
 
+import Data.Maybe (Maybe)
 import Triggerfish.Routing.Model (Table)
 import Triggerfish.Transport (Sounding)
 
@@ -81,10 +82,11 @@ data Query a
   | LoadEntry Int a
   | ImportText String (Boolean -> a)
   -- macro-tidal harmonic authority: install the rig's resting harmonic context
-  -- (root pc + intervals) as the pitch-quantisation set. Pushed by the shell from
-  -- Vetula (the single harmonic authority); Odonus realises through it. Instruments
-  -- with no quantiser ignore it.
-  | SetContextPitchSet Int (Array Int) a
+  -- (root pc + intervals) as the pitch-quantisation set, and the chords as a
+  -- Tidal note pattern (`odonus $ harmony "..."`; Nothing for none). Pushed by
+  -- the shell from Vetula (the single harmonic authority); Odonus realises
+  -- through it. Instruments with no quantiser ignore it.
+  | SetContextPitchSet Int (Array Int) (Maybe String) a
   -- The shell's CAPTURE hotkey (same key on every pane): "bank your current
   -- playing-state as a preset (mint its glyph) and park your identity on it".
   -- Routed to the active machine. Machines without a capture/glyph notion ignore it.

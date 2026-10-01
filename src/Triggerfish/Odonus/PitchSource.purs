@@ -1,19 +1,13 @@
--- | Triggerfish.Odonus.PitchSource — the single pluggable pitch source the
--- | quantization reframe describes: Odonus snaps its chromatic knob-values to
--- | ONE source, which is either a plain scale, a static chord progression, or a
--- | live Vetula voice. A scale is just the constant-set degenerate case of "a
--- | sequence of allowed pitch-sets"; Vetula yields borrowed/out-of-scale tones
--- | and key changes that are taken AS-IS (no re-snap).
+-- | Triggerfish.Odonus.PitchSource — what Odonus's output snaps to past its
+-- | scale, as the Lepidoptera format speaks it: the scale alone, or a harmony,
+-- | a Tidal note pattern (`odonus $ harmony "<c'maj7 a'min7>/2"`) that the host
+-- | samples each step (`Reef.Odonus.followHarmony`).
 -- |
--- | Today this type is a **print/parse intermediary**: it is *derived* from the
--- | model's chord overlay (`Odonus.chord`) plus the live Vetula follow id (which
--- | lives on the component State), and `applyPitchSource` writes back into those
--- | same fields. Promoting it to the model's stored truth — and collapsing
--- | `renderCell`'s scale-then-chord double snap into the one source-keyed snap —
--- | is a deliberate, audio-sensitive follow-up, kept out of the format work so
--- | the eDSL contract can land without changing how the running grid sounds.
--- | Because the Lepidoptera grammar speaks `PitchSource`, that later promotion
--- | won't touch the format.
+-- | Until 2026-10-01 the second case was a fed chord progression with its own
+-- | period clock (`chords pcs [...] every N`) or a followed Vetula voice
+-- | (`vetula N`). Both are what a harmony pattern now says, so both retired;
+-- | the format still reads them (`Lepidoptera`), as the pattern that means the
+-- | same, and as the scale.
 module Triggerfish.Odonus.PitchSource
   ( PitchSource(..)
   , pitchSourceFrom
@@ -25,35 +19,20 @@ import Prelude
 import Data.Maybe (Maybe(..))
 import Triggerfish.Odonus.Model as M
 
--- | The active source driving the final pitch snap.
 data PitchSource
-  = PScale                                 -- snap to the scale (the `scale:` line)
-  | PChordsPCs (Array (Array Int)) Int     -- explicit PC sets (absolute), period
-  | PVetula Int                            -- follow Vetula voice <id> (live feed)
+  = PScale            -- snap to the scale (the `scale:` line)
+  | PHarmony String   -- snap to the chord a Tidal note pattern gives, step by step
 
 derive instance eqPitchSource :: Eq PitchSource
 
--- | Read the active source from the model's harmony fields + the follow id. A
--- | live Vetula follow wins (it overrides the fed progression each poll); with the
--- | overlay on it's the explicit (absolute) PC-set progression in the feed, and
--- | with the overlay off it's the plain scale.
-pitchSourceFrom :: M.Odonus -> Maybe Int -> PitchSource
-pitchSourceFrom o = case _ of
-  Just fid -> PVetula fid
-  Nothing ->
-    if not o.chord.on then PScale
-    else PChordsPCs o.chord.feed o.chord.period
+pitchSourceFrom :: M.Odonus -> PitchSource
+pitchSourceFrom o = case o.harmony of
+  Nothing -> PScale
+  Just h -> PHarmony h
 
--- | Install a source onto the model, returning the new `odo` plus the follow id
--- | the State should adopt. The live Vetula poll fills `chord.feed` every tick,
--- | so `PVetula` just arms the overlay and sets the follow; the scale and static
--- | cases clear the follow so no live poll overwrites them.
-applyPitchSource :: PitchSource -> M.Odonus -> { odo :: M.Odonus, follow :: Maybe Int }
+-- | Install a source. The chord itself follows on the next step, when the
+-- | host samples the pattern.
+applyPitchSource :: PitchSource -> M.Odonus -> M.Odonus
 applyPitchSource src o = case src of
-  PScale ->
-    { odo: o { chord = o.chord { on = false, feed = [], ix = 0, phase = 0 } }, follow: Nothing }
-  PChordsPCs sets per ->
-    { odo: o { chord = o.chord { on = true, feed = sets, period = per, ix = 0, phase = 0 } }
-    , follow: Nothing }
-  PVetula fid ->
-    { odo: o { chord = o.chord { on = true, ix = 0, phase = 0 } }, follow: Just fid }
+  PScale -> o { harmony = Nothing, chord = Nothing }
+  PHarmony h -> o { harmony = Just h }
