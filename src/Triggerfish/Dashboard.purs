@@ -347,7 +347,9 @@ topBar st =
               )
               [ HH.text "Triggerfish" ]
         , HH.nav [ cls "tabs", HP.attr (AttrName "aria-label") "Views" ]
-            [ tab RoutingView "#routing" "Routing" ]
+            [ tab RoutingView "#routing" "Routing"
+            , HH.a [ cls "tab", HP.href "/about.html", HP.target "atlantis-about" ] [ HH.text "About" ]
+            ]
         , HH.span [ cls "spacer" ] []
         , HH.button [ cls "btn panic", HE.onClick \_ -> Panic ] [ HH.text "Panic" ]
         ]

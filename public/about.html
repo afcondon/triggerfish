@@ -1,0 +1,744 @@
+<!doctype html>
+<html lang="en-GB">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>The Atlantis Gazette</title>
+  <meta name="description" content="About Triggerfish and the Atlantis music rig: small programs joined by plain wires.">
+  <!-- The About page for Triggerfish and the Atlantis rig, as a newspaper front
+       page. Plain static HTML, no script. The fish are the sprite from
+       src/Triggerfish/Fish.js, copied inline (keep the two in step by hand).
+       The masthead engraving and its credit are in img/. -->
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 48 48%27%3E%3Cpath d=%27M8,30 C8,14 16,6 24,6 C32,6 40,14 40,30%27 fill=%27none%27 stroke=%27%2316181a%27 stroke-width=%274%27/%3E%3Crect x=%274%27 y=%2727%27 width=%2710%27 height=%2716%27 rx=%273%27 fill=%27%2316181a%27/%3E%3Crect x=%2734%27 y=%2727%27 width=%2710%27 height=%2716%27 rx=%273%27 fill=%27%2316181a%27/%3E%3C/svg%3E">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=UnifrakturMaguntia&family=Playfair+Display:ital,wght@0,700;0,900;1,400;1,700&family=Source+Serif+4:ital,opsz,wght@0,8..60,400;0,8..60,600;1,8..60,400&family=Archivo:wdth,wght@62..125,400..800&family=IBM+Plex+Mono:wght@400;500&family=Syne:wght@800&family=Cormorant:ital,wght@1,700&family=Big+Shoulders+Stencil+Display:wght@800&family=Michroma&family=Instrument+Serif:ital@1&family=Major+Mono+Display&display=swap">
+  <style>
+    :root {
+      color-scheme: light;
+      --paper: #f7f3ea; --ink: #16181a; --soft: #4a4e52; --faint: #8b8f92;
+      --rule: #c9c3b6; --reef: #0e5a73; --gold: #c99a1e;
+      /* The sprite's creatures read these. */
+      --kraken: #8a3a50; --kraken-deep: #5e2234; --kraken-pupil: #2a0f18;
+      /* The chart's signals, as on the dashboard. */
+      --s-notes: #7f9098; --s-socket: #7c5cc4; --s-midi: #13807b; --s-osc: #c08a12;
+      --s-cv: #a8327a; --s-audio: #2f6fae; --s-samples: #8a5a2b;
+      --serif: "Source Serif 4", Georgia, "Times New Roman", serif;
+      --head: "Playfair Display", Georgia, serif;
+      --sans: "Archivo", "Helvetica Neue", Arial, sans-serif;
+      --mono: "IBM Plex Mono", ui-monospace, Menlo, monospace;
+      --black: "UnifrakturMaguntia", "Old English Text MT", serif;
+    }
+    * { box-sizing: border-box; }
+    html { -webkit-text-size-adjust: 100%; }
+    body { margin: 0; background: var(--paper); color: var(--ink); font: 400 16.5px/1.52 var(--serif); font-optical-sizing: auto; }
+    a { color: inherit; text-decoration-thickness: 1px; text-underline-offset: 2px; }
+    a:hover { color: var(--reef); }
+    a:focus-visible { outline: 2px solid var(--reef); outline-offset: 2px; }
+    .sheet { max-width: 1280px; margin: 0 auto; padding: 22px 32px 48px; }
+    @media (max-width: 720px) { .sheet { padding: 14px 16px 36px; } body { font-size: 16px; } }
+    svg.ico { display: block; }
+    .fish { --fine: none; }
+
+    /* ---------- Masthead: fish, the squid, the headphones ---------- */
+    .mast { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 5.2fr) minmax(0, 1fr); align-items: center; gap: 0 12px; }
+    .squid { display: block; width: 100%; height: auto; mix-blend-mode: multiply; filter: contrast(1.08); }
+    .shoal { display: grid; grid-template-columns: 1fr 1fr; gap: 10px 8px; justify-items: center; align-self: center; }
+    .shoal svg { width: 100%; max-width: 72px; height: auto; aspect-ratio: 200 / 120; transform: scaleX(-1); }
+    .shoal svg:nth-child(even) { margin-top: 18px; }
+    .phones { display: grid; justify-items: center; }
+    .phones svg { width: 76%; max-width: 104px; height: auto; aspect-ratio: 1; }
+    .endcap { margin-top: 8px; font: italic 400 12.5px/1.25 var(--serif); color: var(--soft); text-align: center; }
+    @media (max-width: 720px) {
+      .mast { grid-template-columns: minmax(0, 1fr) minmax(0, 3.6fr) minmax(0, .8fr); gap: 0 6px; }
+      .shoal { gap: 4px 3px; }
+      .shoal svg:nth-child(even) { margin-top: 8px; }
+      .endcap { font-size: 10.5px; }
+    }
+
+    .plate { display: grid; grid-template-columns: minmax(150px, 1fr) auto minmax(150px, 1fr); align-items: center; gap: 24px; margin-top: 4px; }
+    .nameplate { margin: 0; font: 400 clamp(46px, 7.2vw, 100px)/1 var(--black); text-align: center; letter-spacing: .005em; white-space: nowrap; }
+    .ear { border: 1px solid var(--ink); padding: 8px 11px; font: 400 13px/1.35 var(--serif); max-width: 200px; }
+    .ear b { display: block; font: 700 10.5px/1.3 var(--sans); letter-spacing: .14em; text-transform: uppercase; margin-bottom: 3px; }
+    .ear.l { justify-self: start; } .ear.r { justify-self: end; }
+    .motto { margin: 6px 0 12px; text-align: center; font: italic 400 clamp(16px, 1.9vw, 21px)/1.3 var(--head); }
+    @media (max-width: 900px) {
+      .plate { grid-template-columns: 1fr; gap: 0; }
+      .ear { display: none; }
+      .nameplate { white-space: normal; font-size: clamp(40px, 12.6vw, 96px); }
+    }
+
+    .edition { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 2px 18px; border-top: 3px double var(--ink); border-bottom: 1px solid var(--ink); padding: 6px 2px; font: 600 11px/1.4 var(--sans); letter-spacing: .14em; text-transform: uppercase; }
+    .edition span:nth-child(2) { font-weight: 400; }
+    @media (max-width: 720px) { .edition { justify-content: center; font-size: 10px; } .edition .opt { display: none; } }
+
+    /* ---------- The front page grid ---------- */
+    .banner { margin: 18px 0 4px; text-align: center; font: 900 clamp(30px, 5.4vw, 70px)/1.0 var(--head); letter-spacing: -.012em; text-wrap: balance; }
+    .bannerdeck { margin: 8px auto 18px; max-width: 54em; text-align: center; font: italic 400 clamp(17px, 1.8vw, 21px)/1.4 var(--head); color: var(--soft); text-wrap: balance; }
+    .front { display: grid; grid-template-columns: repeat(12, minmax(0, 1fr)); gap: 0 26px; border-top: 1px solid var(--ink); padding-top: 16px; }
+    .front > * { min-width: 0; }
+    .lead { grid-column: span 6; }
+    .second { grid-column: span 3; border-left: 1px solid var(--rule); padding-left: 26px; }
+    .rail { grid-column: span 3; border-left: 1px solid var(--rule); padding-left: 26px; }
+    @media (max-width: 1120px) {
+      .lead { grid-column: span 12; border-bottom: 1px solid var(--rule); padding-bottom: 14px; margin-bottom: 16px; }
+      .second { grid-column: span 7; border-left: 0; padding-left: 0; }
+      .rail { grid-column: span 5; }
+    }
+    @media (max-width: 720px) {
+      .second, .rail { grid-column: span 12; border-left: 0; padding-left: 0; }
+      .rail { border-top: 1px solid var(--ink); margin-top: 18px; padding-top: 14px; }
+    }
+
+    .kicker { font: 700 11px/1.3 var(--sans); letter-spacing: .16em; text-transform: uppercase; color: var(--reef); margin: 0 0 6px; }
+    h2.hl { margin: 0 0 8px; font: 900 clamp(26px, 2.6vw, 36px)/1.06 var(--head); letter-spacing: -.005em; text-wrap: balance; }
+    h2.hl.md { font-size: clamp(22px, 2vw, 27px); }
+    .deck { margin: 0 0 12px; font: italic 400 17.5px/1.38 var(--head); color: var(--soft); }
+    .byline { font: 600 10.5px/1.3 var(--sans); letter-spacing: .14em; text-transform: uppercase; color: var(--soft); margin: 0 0 12px; padding-bottom: 8px; border-bottom: 1px solid var(--rule); }
+    .copy p { margin: 0 0 .75em; text-align: justify; hyphens: auto; -webkit-hyphens: auto; }
+    .copy p.drop::first-letter { float: left; font: 900 4.1em/.82 var(--head); padding: .06em .08em 0 0; }
+    .cols2 { columns: 2; column-gap: 26px; column-rule: 1px solid var(--rule); }
+    .cols3 { columns: 3; column-gap: 26px; column-rule: 1px solid var(--rule); }
+    @media (max-width: 1120px) { .cols3 { columns: 2; } }
+    @media (max-width: 720px) { .cols2, .cols3 { columns: 1; } }
+    @media (max-width: 520px) { .copy p, .who p, .brief p { text-align: left; } }
+    .copy code, .mono { font: 400 .86em var(--mono); }
+    .copy em { font-style: italic; }
+
+    blockquote.pull { break-inside: avoid; margin: 6px 0 14px; padding: 10px 0; border-top: 2px solid var(--ink); border-bottom: 1px solid var(--ink); font: italic 400 19px/1.34 var(--head); text-align: left; }
+    blockquote.pull cite { display: block; margin-top: 6px; font: 400 11px/1.4 var(--sans); font-style: normal; letter-spacing: .1em; text-transform: uppercase; color: var(--soft); }
+
+    /* A wire, typeset: a path of hops with the signal on each. */
+    .chain { break-inside: avoid; margin: 4px 0 12px; padding: 8px 0 8px 10px; border-left: 3px solid var(--rule); font: 400 13px/1.7 var(--mono); }
+    .chain .t { display: block; font: 700 10.5px/1.3 var(--sans); letter-spacing: .14em; text-transform: uppercase; color: var(--soft); margin-bottom: 2px; }
+    .chain i { font-style: normal; font-size: 11px; padding: 0 3px; border-radius: 2px; color: #fff; white-space: nowrap; }
+    .sig-notes { background: var(--s-notes); } .sig-socket { background: var(--s-socket); } .sig-midi { background: var(--s-midi); }
+    .sig-osc { background: var(--s-osc); } .sig-cv { background: var(--s-cv); } .sig-audio { background: var(--s-audio); } .sig-samples { background: var(--s-samples); }
+
+    table.wires { width: 100%; margin-top: 12px; border-collapse: collapse; font-size: 14.5px; line-height: 1.4; }
+    table.wires caption { caption-side: top; text-align: left; padding: 0 0 6px; font: 800 12px/1.3 var(--sans); letter-spacing: .16em; text-transform: uppercase; }
+    table.wires th { width: 9.5em; text-align: left; vertical-align: top; padding: 7px 14px 7px 0; font: 700 16px/1.3 var(--head); }
+    table.wires td { padding: 7px 0; vertical-align: top; }
+    table.wires tr { border-bottom: 1px solid var(--rule); }
+    table.wires tr:first-child { border-top: 2px solid var(--ink); }
+    @media (max-width: 520px) { table.wires th { width: 6.6em; font-size: 15px; } }
+    /* The rail: index, soundings, news in brief. */
+    .box { border-top: 3px solid var(--ink); padding-top: 8px; margin-bottom: 22px; }
+    .box h3 { margin: 0 0 8px; font: 800 12px/1.3 var(--sans); letter-spacing: .16em; text-transform: uppercase; }
+    .index { list-style: none; margin: 0; padding: 0; }
+    .index li { display: flex; align-items: center; gap: 10px; padding: 6px 0; border-bottom: 1px dotted var(--rule); }
+    .index svg { flex: none; width: 34px; height: 21px; transform: scaleX(-1); }
+    .index a { font: 700 17px/1.2 var(--head); text-decoration: none; }
+    .index a:hover { text-decoration: underline; }
+    .index .lead-in { flex: 1; border-bottom: 1px dotted var(--faint); align-self: end; margin-bottom: 5px; min-width: 8px; }
+    .index .where { font: 400 11.5px var(--mono); color: var(--soft); }
+    .index .what { display: block; font: italic 400 13.5px/1.25 var(--serif); color: var(--soft); }
+    .soundings { width: 100%; border-collapse: collapse; font-size: 14px; line-height: 1.35; }
+    .soundings th { text-align: left; vertical-align: top; padding: 6px 10px 6px 0; font: 700 10.5px/1.5 var(--sans); letter-spacing: .12em; text-transform: uppercase; white-space: nowrap; }
+    .soundings td { padding: 6px 0; vertical-align: top; }
+    .soundings tr + tr { border-top: 1px dotted var(--rule); }
+    .soundings .fath { display: block; font: 400 11px var(--mono); color: var(--soft); }
+    .brief p { margin: 0 0 .6em; font-size: 14.5px; line-height: 1.42; text-align: justify; hyphens: auto; -webkit-hyphens: auto; }
+    .brief p b { font: 700 1em var(--head); }
+    .small { font-size: 13px; color: var(--soft); }
+
+    /* ---------- Section heads across the page ---------- */
+    .section { margin-top: 30px; border-top: 3px double var(--ink); padding-top: 12px; }
+    .section > .kicker { text-align: center; }
+    .section > h2.hl { text-align: center; font-size: clamp(28px, 3.4vw, 44px); }
+    .section > .deck { text-align: center; max-width: 46em; margin-inline: auto; }
+
+    /* ---------- The cast ---------- */
+    .castgroup { margin-top: 14px; }
+    .castgroup > h3 { display: flex; align-items: center; gap: 12px; margin: 0 0 4px; font: 800 11px/1.3 var(--sans); letter-spacing: .18em; text-transform: uppercase; }
+    .castgroup > h3::before, .castgroup > h3::after { content: ""; flex: 1; border-top: 1px solid var(--ink); }
+    .cast { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 268px), 1fr)); gap: 0 26px; }
+    .who { padding: 12px 0 14px; border-bottom: 1px solid var(--rule); }
+    .who header { display: flex; align-items: center; gap: 10px; min-height: 46px; margin-bottom: 4px; }
+    .who header svg { flex: none; width: 58px; height: 36px; }
+    .who header svg.flip { transform: scaleX(-1); }
+    .who header svg.sq { width: 40px; height: 40px; margin-inline: 9px; }
+    .who .nm { font: 700 22px/1.05 var(--head); }
+    .who .sp { display: block; font: italic 400 13px/1.3 var(--serif); color: var(--soft); margin-top: 2px; }
+    .who p { margin: 0; font-size: 15px; line-height: 1.45; text-align: justify; hyphens: auto; -webkit-hyphens: auto; }
+    .who .go { font: 400 11.5px var(--mono); color: var(--soft); white-space: nowrap; }
+    .who.keeper { grid-column: 1 / -1; display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 3fr); gap: 0 26px; align-items: center; border-bottom: 0; border-top: 1px solid var(--rule); margin-top: -1px; }
+    .who.keeper header { margin: 0; }
+    .who.keeper p { max-width: 46em; }
+    @media (max-width: 720px) { .who.keeper { display: block; border-top: 0; margin-top: 0; } .who.keeper header { margin-bottom: 4px; } }
+    .nocreature { flex: none; width: 58px; height: 36px; display: grid; place-items: center; font: 700 10px/1 var(--mono); color: var(--faint); border: 1px dashed var(--rule); border-radius: 50%; }
+    /* The machines' nameplate faces, as on the dashboard. */
+    .w-odonus { font: 800 21px/1 "Syne", var(--sans); letter-spacing: -.01em; color: #1f3f94; }
+    .w-vetula { font: italic 700 27px/1 "Cormorant", Georgia, serif; color: #8a6510; }
+    .w-balistes { font: 800 25px/1 "Big Shoulders Stencil Display", var(--sans); letter-spacing: .06em; text-transform: uppercase; color: #35604a; }
+    .w-selene { font: 400 14px/1 "Michroma", var(--sans); letter-spacing: .2em; text-transform: uppercase; color: #4f3f7f; }
+    .w-conspicillum { font: italic 400 25px/1 "Instrument Serif", Georgia, serif; color: #16161a; }
+    .w-quadrat { font: 400 18px/1 "Major Mono Display", var(--mono); letter-spacing: .04em; color: #b4461b; }
+
+    /* ---------- The chart feature ---------- */
+    .feature { display: grid; grid-template-columns: minmax(0, 5fr) minmax(0, 7fr); gap: 0 30px; margin-top: 14px; }
+    .feature > * { min-width: 0; }
+    .feature .figs { border-left: 1px solid var(--rule); padding-left: 30px; }
+    @media (max-width: 960px) { .feature { grid-template-columns: 1fr; } .feature .figs { border-left: 0; padding-left: 0; border-top: 1px solid var(--rule); padding-top: 14px; margin-top: 6px; } }
+    figure { margin: 0 0 18px; }
+    figure svg.chart { display: block; width: 100%; min-width: 520px; height: auto; }
+    .scroller { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+    figcaption { margin-top: 6px; font: italic 400 13.5px/1.4 var(--serif); color: var(--soft); }
+    figcaption b { font: 700 10.5px/1.3 var(--sans); font-style: normal; letter-spacing: .14em; text-transform: uppercase; color: var(--ink); margin-right: 6px; }
+    svg.chart .colhead { font: 500 10px var(--mono); letter-spacing: .12em; text-transform: uppercase; fill: var(--soft); }
+    svg.chart .colrule { stroke: var(--rule); stroke-width: 1; }
+    svg.chart .bar { fill: var(--ink); }
+    svg.chart .nm { font: 600 13.5px var(--sans); fill: var(--ink); }
+    svg.chart .sub { font: 400 10.5px var(--mono); fill: var(--soft); }
+    svg.chart .rib { opacity: .55; }
+    svg.chart .beatlabel { font: 400 11px var(--mono); fill: var(--soft); }
+    svg.chart .arc { fill: none; stroke: var(--gold); stroke-width: 2; stroke-linecap: round; opacity: .5; }
+    svg.chart .mark { fill: var(--gold); }
+    @media (prefers-reduced-motion: no-preference) {
+      svg.chart .mark { animation: pulse .5s ease-out infinite; transform-box: fill-box; transform-origin: center; }
+      svg.chart .arc { animation: broadcast .5s ease-out infinite; }
+      svg.chart .arc.a2 { animation-delay: .06s; } svg.chart .arc.a3 { animation-delay: .12s; }
+    }
+    @keyframes pulse { 0% { opacity: 1; transform: scale(1.35); } 60%, 100% { opacity: .5; transform: scale(1); } }
+    @keyframes broadcast { 0% { opacity: .9; } 70%, 100% { opacity: .2; } }
+    .key { display: flex; flex-wrap: wrap; gap: 4px 14px; margin: 4px 0 16px; font: 600 12px/1.4 var(--sans); }
+    .key span { display: inline-flex; align-items: center; gap: 6px; }
+    .key i { width: 18px; height: 5px; }
+
+    /* ---------- Below the fold ---------- */
+    .bottom { display: grid; grid-template-columns: minmax(0, 7fr) minmax(0, 5fr); gap: 0 30px; margin-top: 30px; border-top: 3px double var(--ink); padding-top: 12px; }
+    .bottom > * { min-width: 0; }
+    .bottom .colophon { border-left: 1px solid var(--rule); padding-left: 30px; }
+    @media (max-width: 860px) { .bottom { grid-template-columns: 1fr; } .bottom .colophon { border-left: 0; padding-left: 0; border-top: 1px solid var(--ink); padding-top: 12px; margin-top: 10px; } }
+    dl.also { margin: 0; columns: 2; column-gap: 26px; column-rule: 1px solid var(--rule); }
+    @media (max-width: 720px) { dl.also { columns: 1; } }
+    dl.also div { break-inside: avoid; padding: 0 0 10px; }
+    dl.also dt { font: 700 16px/1.2 var(--head); }
+    dl.also dd { margin: 2px 0 0; font-size: 14.5px; line-height: 1.42; }
+    .colophon p { margin: 0 0 .6em; font-size: 13.5px; line-height: 1.45; }
+    .colophon h3, .bottom h3 { margin: 0 0 8px; font: 800 12px/1.3 var(--sans); letter-spacing: .16em; text-transform: uppercase; }
+    .finis { margin-top: 26px; text-align: center; font: 400 22px/1 var(--black); color: var(--soft); }
+  </style>
+</head>
+<body>
+<!-- The fish sprite, copied verbatim from src/Triggerfish/Fish.js (SPRITE). -->
+<svg id="tf-fish" width="0" height="0" style="position:absolute" aria-hidden="true">
+  <defs>
+    <path id="p-body" d="M14,63 C20,50 40,30 72,26 C100,22 124,32 142,46 L158,56 L158,70 L142,80 C124,94 100,104 72,100 C44,96 22,78 14,66 Z"/>
+    <path id="p-dorsal" d="M100,27 C116,12 138,18 150,43 L141,46 C130,36 116,31 100,31 Z"/>
+    <path id="p-anal" d="M100,99 C116,112 138,106 150,83 L141,80 C130,90 116,95 100,95 Z"/>
+    <path id="p-spine" d="M63,29 L69,4 L76,27 Z M79,26 L82,15 L85,25 Z"/>
+    <path id="p-pectoral" d="M72,62 C82,54 92,58 90,67 C84,70 77,69 72,62 Z"/>
+    <path id="t-crescent" d="M156,57 C168,46 180,36 192,30 C182,50 182,76 192,96 C180,90 168,80 156,69 Z"/>
+    <path id="t-lyre" d="M156,57 C170,44 184,24 198,10 C176,44 176,82 198,116 C184,102 170,82 156,69 Z"/>
+    <path id="t-round" d="M156,57 L180,46 C188,56 188,70 180,80 L156,69 Z"/>
+    <clipPath id="c-body"><use href="#p-body"/></clipPath>
+    <clipPath id="c-moon"><path d="M24,74 L52,16 C92,10 132,32 152,56 L164,58 L164,68 L152,70 C132,94 92,110 52,106 Z"/></clipPath>
+
+    <linearGradient id="g-odonus" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#23306f"/><stop offset=".6" stop-color="#2447a0"/><stop offset="1" stop-color="#1c2f78"/>
+    </linearGradient>
+    <linearGradient id="g-vetula" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#a88a2c"/><stop offset=".45" stop-color="#b99a3a"/><stop offset=".62" stop-color="#7f8d86"/><stop offset="1" stop-color="#5d7b98"/>
+    </linearGradient>
+    <linearGradient id="g-balistes" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#7d846a"/><stop offset="1" stop-color="#a3a88f"/>
+    </linearGradient>
+    <linearGradient id="g-moon" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#eef1f4"/><stop offset=".5" stop-color="#c3cad3"/><stop offset=".78" stop-color="#a99bc6"/><stop offset="1" stop-color="#8d98a8"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Odonus niger: blue-black, pale-edged fins, red teeth, the lyre tail. -->
+  <symbol id="sp-odonus" viewBox="0 0 200 120">
+    <use href="#t-lyre" fill="#1d2c6c" stroke="#8fb4f0" stroke-width="2" style="display:var(--fine,inline)"/>
+    <use href="#t-lyre" fill="#1d2c6c"/>
+    <use href="#p-dorsal" fill="#26378a"/>
+    <use href="#p-anal" fill="#26378a"/>
+    <g style="display:var(--fine,inline)" fill="none" stroke="#8fb4f0" stroke-width="1.6">
+      <path d="M104,28 C118,16 136,20 148,42"/><path d="M104,98 C118,110 136,106 148,84"/>
+    </g>
+    <use href="#p-spine" fill="#1d2c6c"/>
+    <use href="#p-body" fill="url(#g-odonus)"/>
+    <g clip-path="url(#c-body)" style="display:var(--detail,inline)">
+      <path d="M40,30 C60,50 64,80 46,100" fill="none" stroke="#3b5cc0" stroke-width="7" opacity=".35"/>
+    </g>
+    <use href="#p-pectoral" fill="#2d3f94"/>
+    <path d="M65,54 C61,60 61,68 65,74" fill="none" stroke="#12194a" stroke-width="1.5" style="display:var(--detail,inline)"/>
+    <path d="M13,60 L20,62 L14,64 Z M14,65 L20,66 L15,69 Z" fill="#d6352b"/>
+    <circle cx="56" cy="45" r="6" fill="#0c1233"/><circle cx="56" cy="45" r="2.6" fill="#8fb4f0"/>
+  </symbol>
+
+  <!-- Balistes vetula: gold over blue-grey, two blue face lines, dark lines round the eye. -->
+  <symbol id="sp-vetula" viewBox="0 0 200 120">
+    <use href="#t-lyre" fill="#8a7a3c"/>
+    <path d="M196,12 C200,6 202,2 204,-2 M196,114 C200,120 202,124 204,128" stroke="#2fa3d6" stroke-width="1.6" fill="none" style="display:var(--fine,inline)"/>
+    <use href="#p-dorsal" fill="#9a8a3e"/>
+    <use href="#p-anal" fill="#6f8aa0"/>
+    <g style="display:var(--fine,inline)" fill="none" stroke="#2fa3d6" stroke-width="1.4">
+      <path d="M104,28 C118,16 136,20 148,42"/><path d="M104,98 C118,110 136,106 148,84"/>
+      <path d="M160,58 C172,50 184,34 196,14"/><path d="M160,68 C172,76 184,92 196,112"/>
+    </g>
+    <use href="#p-spine" fill="#7c6c2c"/>
+    <use href="#p-body" fill="url(#g-vetula)"/>
+    <g clip-path="url(#c-body)" fill="none" stroke-linecap="round">
+      <path d="M14,70 C38,78 60,80 86,74" stroke="#2fa3d6" stroke-width="4"/>
+      <path d="M18,78 C40,90 66,92 94,84" stroke="#2fa3d6" stroke-width="3.2" style="display:var(--detail,inline)"/>
+      <g stroke="#3b3320" stroke-width="1.4" style="display:var(--detail,inline)">
+        <path d="M49,36 L44,30"/><path d="M56,36 L56,29"/><path d="M63,37 L68,31"/><path d="M47,51 L41,55"/><path d="M65,51 L71,55"/>
+      </g>
+    </g>
+    <use href="#p-pectoral" fill="#9aa8a6"/>
+    <path d="M65,54 C61,60 61,68 65,74" fill="none" stroke="#4a4526" stroke-width="1.5" style="display:var(--detail,inline)"/>
+    <circle cx="56" cy="45" r="6" fill="#2d2716"/><circle cx="56" cy="45" r="2.6" fill="#d8c27a"/>
+  </symbol>
+
+  <!-- Balistes capriscus: olive-grey with darker saddles and blue dots. -->
+  <symbol id="sp-balistes" viewBox="0 0 200 120">
+    <use href="#t-crescent" fill="#6e755e"/>
+    <use href="#p-dorsal" fill="#737a62"/>
+    <use href="#p-anal" fill="#858b72"/>
+    <use href="#p-spine" fill="#5d6450"/>
+    <use href="#p-body" fill="url(#g-balistes)"/>
+    <g clip-path="url(#c-body)">
+      <path d="M78,20 L96,20 L90,58 L74,58 Z" fill="#5c634d" opacity=".55"/>
+      <path d="M106,20 L124,26 L114,60 L100,58 Z" fill="#5c634d" opacity=".45" style="display:var(--detail,inline)"/>
+      <path d="M132,30 L146,42 L134,62 L122,60 Z" fill="#5c634d" opacity=".4" style="display:var(--detail,inline)"/>
+      <g fill="#7fa6c4" style="display:var(--fine,inline)">
+        <circle cx="84" cy="38" r="1.6"/><circle cx="96" cy="44" r="1.6"/><circle cx="110" cy="36" r="1.6"/><circle cx="122" cy="46" r="1.6"/><circle cx="104" cy="52" r="1.6"/><circle cx="90" cy="54" r="1.6"/><circle cx="134" cy="52" r="1.6"/>
+      </g>
+    </g>
+    <use href="#p-pectoral" fill="#6e755e"/>
+    <path d="M65,54 C61,60 61,68 65,74" fill="none" stroke="#4d5340" stroke-width="1.5" style="display:var(--detail,inline)"/>
+    <circle cx="56" cy="45" r="6" fill="#2a2e22"/><circle cx="56" cy="45" r="2.6" fill="#c7cdb1"/>
+  </symbol>
+
+  <!-- Balistoides conspicillum, reduced: black, three white spots, a yellow mouth. -->
+  <symbol id="sp-conspicillum" viewBox="0 0 200 120">
+    <use href="#t-round" fill="#17171b"/>
+    <use href="#p-dorsal" fill="#1d1d22"/>
+    <use href="#p-anal" fill="#1d1d22"/>
+    <use href="#p-spine" fill="#17171b"/>
+    <use href="#p-body" fill="#17171b"/>
+    <g clip-path="url(#c-body)" fill="#f2f2ee">
+      <circle cx="74" cy="94" r="11"/><circle cx="102" cy="97" r="12"/><circle cx="130" cy="86" r="11"/>
+    </g>
+    <path d="M10,59 C15,56 21,59 22,64 C21,69 15,72 10,69 Z" fill="#e6c02e"/>
+    <circle cx="56" cy="45" r="6" fill="#0a0a0c"/><circle cx="56" cy="45" r="2.6" fill="#e6c02e"/>
+  </symbol>
+
+  <!-- Quadrat: a boxfish (Ostracion). A near-square body whose shell is a grid of plates. -->
+  <symbol id="sp-quadrat" viewBox="0 0 200 120">
+    <path d="M148,58 C162,42 180,40 188,46 C183,58 183,68 188,80 C180,86 162,84 148,68 Z" fill="#a8471f"/>
+    <path d="M110,20 C116,6 130,6 136,20 Z M110,100 C116,114 130,114 136,100 Z" fill="#a8471f"/>
+    <rect x="38" y="18" width="112" height="84" rx="18" fill="#c4592b"/>
+    <clipPath id="c-box"><rect x="38" y="18" width="112" height="84" rx="18"/></clipPath>
+    <g clip-path="url(#c-box)">
+      <path d="M66,18 V102 M94,18 V102 M122,18 V102 M38,46 H150 M38,74 H150" stroke="#f3d3bd" stroke-width="3" style="display:var(--detail,inline)"/>
+      <g fill="#f3d3bd" style="display:var(--fine,inline)">
+        <circle cx="80" cy="32" r="3"/><circle cx="108" cy="32" r="3"/><circle cx="136" cy="32" r="3"/>
+        <circle cx="80" cy="60" r="3"/><circle cx="108" cy="60" r="3"/><circle cx="136" cy="60" r="3"/>
+        <circle cx="52" cy="88" r="3"/><circle cx="80" cy="88" r="3"/><circle cx="108" cy="88" r="3"/><circle cx="136" cy="88" r="3"/>
+      </g>
+    </g>
+    <path d="M84,64 C92,58 100,62 98,70 C92,72 87,70 84,64 Z" fill="#8f3a17"/>
+    <ellipse cx="33" cy="70" rx="7" ry="5.5" fill="#8f3a17"/>
+    <circle cx="58" cy="40" r="8" fill="#2a1409"/><circle cx="58" cy="40" r="3.4" fill="#f3d3bd"/>
+  </symbol>
+
+  <!-- Sufflamen bridled: brown, a pale bridle line from the mouth, retired. -->
+  <symbol id="sp-sufflamen" viewBox="0 0 200 120">
+    <use href="#t-round" fill="#6a4c33"/>
+    <path d="M180,46 C188,56 188,70 180,80" fill="none" stroke="#efe2c6" stroke-width="2" style="display:var(--detail,inline)"/>
+    <use href="#p-dorsal" fill="#6f5036"/>
+    <use href="#p-anal" fill="#6f5036"/>
+    <use href="#p-spine" fill="#5c412b"/>
+    <use href="#p-body" fill="#7b5b3e"/>
+    <g clip-path="url(#c-body)">
+      <path d="M16,67 C34,70 50,70 68,62" fill="none" stroke="#efe2c6" stroke-width="3.2" stroke-linecap="round"/>
+      <path d="M40,94 C70,100 110,96 140,82" fill="none" stroke="#5c412b" stroke-width="8" opacity=".5" style="display:var(--detail,inline)"/>
+    </g>
+    <use href="#p-pectoral" fill="#6a4c33"/>
+    <circle cx="56" cy="45" r="6" fill="#2a1d12"/><circle cx="56" cy="45" r="2.6" fill="#e0c79a"/>
+  </symbol>
+
+  <!-- Selene vomer, the lookdown: another family. Steep forehead, silver, long fin filaments. -->
+  <symbol id="sp-selene" viewBox="0 0 200 120">
+    <path d="M160,58 L192,34 L178,63 L192,92 L160,68 Z" fill="#aab3bf"/>
+    <g fill="none" stroke="#8d7fb4" stroke-width="1.6" stroke-linecap="round" style="display:var(--fine,inline)">
+      <path d="M86,14 C96,-2 122,-6 150,2"/><path d="M88,110 C100,122 126,124 150,118"/>
+    </g>
+    <path d="M24,74 L52,16 C92,10 132,32 152,56 L164,58 L164,68 L152,70 C132,94 92,110 52,106 Z" fill="url(#g-moon)"/>
+    <g clip-path="url(#c-moon)" style="display:var(--detail,inline)">
+      <path d="M40,40 C80,60 120,60 160,50" fill="none" stroke="#ffffff" stroke-width="10" opacity=".45"/>
+    </g>
+    <path d="M80,72 C88,66 96,68 96,74 C90,78 84,78 80,72 Z" fill="#b8b0d4"/>
+    <circle cx="50" cy="70" r="5.5" fill="#3a3550"/><circle cx="50" cy="70" r="2.3" fill="#e6e2f4"/>
+  </symbol>
+  <symbol id="ic-kraken" viewBox="12 16 77 77">
+  <path d="M46.2,54.1C44.8,51.6 42.8,49.3 41.3,46.8C39.7,44.2 37.6,42 35.5,39.5C33.5,37.1 30.6,35.3 27.5,33.9C24.4,32.6 20.6,33 17.6,34.8C14.6,36.7 13.8,41.3 15.9,44A0.8,0.8 0 0 1 17.1,43.1C15.6,41.2 17,38.4 19,37.1C21,35.9 23.7,36.5 26,37.5C28.3,38.5 29.9,40.7 31.6,42.8C33.4,44.9 34.4,47.6 35.9,50C37.3,52.5 38.3,55.3 39.8,57.9ZM60.2,57.9C61.7,55.3 62.7,52.5 64.1,50C65.6,47.6 66.6,44.9 68.4,42.8C70.1,40.7 71.7,38.5 74,37.5C76.3,36.5 79,35.9 81,37.1C83,38.4 84.4,41.2 82.9,43.1A0.8,0.8 0 0 1 84.1,44C86.2,41.3 85.4,36.7 82.4,34.8C79.4,33 75.6,32.6 72.5,33.9C69.4,35.3 66.5,37.1 64.5,39.5C62.4,42 60.3,44.2 58.7,46.8C57.2,49.3 55.2,51.6 53.8,54.1ZM44,56.4C41.3,55.7 38.6,55.6 35.8,55.1C33.1,54.5 30.3,54.7 27.3,54.6C24.4,54.6 21.5,55.5 18.7,56.7C15.9,58 13.8,60.7 12.8,63.7C11.8,66.7 13.6,70.3 16.4,71.6A0.8,0.8 0 0 1 17.1,70.3C15.1,69.3 14.7,66.6 15.4,64.5C16,62.5 18.2,61.2 20.2,60.3C22.3,59.4 24.8,59.7 27.2,59.7C29.7,59.8 32.1,60.7 34.6,61.2C37.1,61.7 39.5,62.9 42,63.6ZM58,63.6C60.5,62.9 62.9,61.7 65.4,61.2C67.9,60.7 70.3,59.8 72.8,59.7C75.2,59.7 77.7,59.4 79.8,60.3C81.8,61.2 84,62.5 84.6,64.5C85.3,66.6 84.9,69.3 82.9,70.3A0.8,0.8 0 0 1 83.6,71.6C86.4,70.3 88.2,66.7 87.2,63.7C86.2,60.7 84.1,58 81.3,56.7C78.5,55.5 75.6,54.6 72.7,54.6C69.7,54.7 66.9,54.5 64.2,55.1C61.4,55.6 58.7,55.7 56,56.4Z" style="fill:var(--kraken-deep,#5e2234)"/>
+  <g style="fill:var(--kraken,#8a3a50)"><path d="M40.8,58.8C38.9,60.7 37.6,63.1 35.7,64.9C33.8,66.8 32.5,69.1 30.5,70.6C28.6,72.1 26.9,73.9 24.7,74.6C22.5,75.3 20.1,76 18.2,75.1C16.2,74.2 14.1,72.5 14.4,70.2A0.8,0.8 0 0 1 12.9,70C12.5,73.1 14,76.6 16.9,77.9C19.8,79.2 23.1,79.8 26,78.9C29,78 31.9,77.1 34.2,75.3C36.5,73.6 39,72.2 40.9,70.3C42.9,68.4 45.3,67.1 47.2,65.2ZM52.8,65.2C54.7,67.1 57.1,68.4 59.1,70.3C61,72.2 63.5,73.6 65.8,75.3C68.1,77.1 71,78 74,78.9C76.9,79.8 80.2,79.2 83.1,77.9C86,76.6 87.5,73.1 87.1,70A0.8,0.8 0 0 1 85.6,70.2C85.9,72.5 83.8,74.2 81.8,75.1C79.9,76 77.5,75.3 75.3,74.6C73.1,73.9 71.4,72.1 69.5,70.6C67.5,69.1 66.2,66.8 64.3,64.9C62.4,63.1 61.1,60.7 59.2,58.8ZM42.8,62.6C42.6,64.7 43,66.9 42.8,68.9C42.5,71 42.9,73.1 42.4,74.9C41.9,76.7 41.8,78.7 40.7,80.1C39.7,81.5 38.6,83.1 36.9,83.4C35.3,83.6 33.2,83.5 32.4,82A0.8,0.8 0 0 1 31.1,82.7C32.3,84.9 34.9,86.7 37.4,86.2C40,85.8 42.6,84.7 44.2,82.7C45.7,80.7 47.3,78.7 47.9,76.4C48.5,74.1 49.5,72 49.8,69.8C50.1,67.6 51,65.6 51.2,63.4ZM48.8,63.4C49,65.6 49.9,67.6 50.2,69.8C50.5,72 51.5,74.1 52.1,76.4C52.7,78.7 54.3,80.7 55.8,82.7C57.4,84.7 60,85.8 62.6,86.2C65.1,86.7 67.7,84.9 68.9,82.7A0.8,0.8 0 0 1 67.6,82C66.8,83.5 64.7,83.6 63.1,83.4C61.4,83.1 60.3,81.5 59.3,80.1C58.2,78.7 58.1,76.7 57.6,74.9C57.1,73.1 57.5,71 57.2,68.9C57,66.9 57.4,64.7 57.2,62.6Z"/><path d="M50,22 C61,22 66,34 64,46 C63,54 60,58 60,62 C60,68 40,68 40,62 C40,58 37,54 36,46 C34,34 39,22 50,22 Z"/></g>
+  <circle cx="42.6" cy="56" r="3" fill="#f3d36b"/><rect x="40.6" y="55.3" width="4" height="1.4" rx=".7" style="fill:var(--kraken-pupil,#2a0f18)"/>
+  <circle cx="57.4" cy="56" r="3" fill="#f3d36b"/><rect x="55.4" y="55.3" width="4" height="1.4" rx=".7" style="fill:var(--kraken-pupil,#2a0f18)"/>
+</symbol>
+  <symbol id="ic-lantern" viewBox="0 0 60 36">
+    <path d="M6,18 C14,6 38,4 48,14 L58,6 L56,18 L58,30 L48,22 C38,32 14,30 6,18 Z" fill="#9fb0b8"/>
+    <circle cx="16" cy="16" r="3.4" fill="#f6d86b"/><circle cx="28" cy="22" r="1.6" fill="#f6d86b"/><circle cx="36" cy="22" r="1.6" fill="#f6d86b"/>
+  </symbol>
+  <symbol id="ic-grouper" viewBox="0 0 70 40">
+    <path d="M4,20 C14,4 46,2 56,14 L68,6 L66,20 L68,34 L56,26 C46,38 14,36 4,20 Z" fill="#6a5a3c"/>
+    <circle cx="14" cy="17" r="2.6" fill="#1c160c"/>
+  </symbol>
+  <symbol id="ic-ears" viewBox="0 0 48 48">
+    <path d="M8,30 C8,14 16,6 24,6 C32,6 40,14 40,30" fill="none" style="stroke:var(--ink,#0f2530)" stroke-width="3.4"/>
+    <rect x="4" y="27" width="10" height="16" rx="3" style="fill:var(--ink,#0f2530)"/><rect x="34" y="27" width="10" height="16" rx="3" style="fill:var(--ink,#0f2530)"/>
+  </symbol>
+</svg>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <!-- Two creatures the app does not draw yet, for this page only. -->
+  <symbol id="ab-lighthouse" viewBox="0 0 48 48">
+    <path d="M18,11 L3,6 M18,13 L2,13 M18,15 L3,20 M30,11 L45,6 M30,13 L46,13 M30,15 L45,20" stroke="#c99a1e" stroke-width="1.6" stroke-linecap="round"/>
+    <path d="M18,7 L24,2 L30,7 Z" fill="#16181a"/>
+    <rect x="19" y="8" width="10" height="9" fill="#f2d16b" stroke="#16181a" stroke-width="1.4"/>
+    <path d="M17,18 L31,18 L34,44 L14,44 Z" fill="#fbf8f1" stroke="#16181a" stroke-width="1.4" stroke-linejoin="round"/>
+    <path d="M16.3,24 L31.7,24 L32.4,30 L15.6,30 Z M15,36 L33,36 L33.6,41 L14.4,41 Z" fill="#b3261e"/>
+    <path d="M8,44.5 H40" stroke="#16181a" stroke-width="1.6"/>
+  </symbol>
+  <symbol id="ab-boat" viewBox="0 0 48 48">
+    <path d="M24,5 V33" stroke="#16181a" stroke-width="1.6"/>
+    <path d="M25.5,7 L38,32 L25.5,32 Z" fill="#c9982c"/>
+    <path d="M22.5,11 L11,32 L22.5,32 Z" fill="#efe6d2" stroke="#16181a" stroke-width="1.2" stroke-linejoin="round"/>
+    <path d="M5,34 H43 L37.5,41 H10.5 Z" fill="#8a3a50"/>
+    <path d="M2,45 q4,-3 8,0 t8,0 t8,0 t8,0 t8,0" fill="none" stroke="#0e5a73" stroke-width="1.6"/>
+  </symbol>
+</svg>
+
+<div class="sheet">
+
+  <!-- ===================== Masthead ===================== -->
+  <header>
+    <div class="mast">
+      <div>
+        <div class="shoal" role="img" aria-label="The machines' fish: Odonus, Vetula, Balistes, Selene, Conspicillum and Quadrat">
+          <svg class="fish" viewBox="0 0 200 120"><use href="#sp-odonus"/></svg>
+          <svg class="fish" viewBox="0 0 200 120"><use href="#sp-vetula"/></svg>
+          <svg class="fish" viewBox="0 0 200 120"><use href="#sp-balistes"/></svg>
+          <svg class="fish" viewBox="0 0 200 120"><use href="#sp-selene"/></svg>
+          <svg class="fish" viewBox="0 0 200 120"><use href="#sp-conspicillum"/></svg>
+          <svg class="fish" viewBox="0 0 200 120"><use href="#sp-quadrat"/></svg>
+        </div>
+        <div class="endcap">where sound starts</div>
+      </div>
+      <img class="squid" src="img/verrill-architeuthis-1882.webp" width="1800" height="865"
+           alt="A. E. Verrill's 1882 engraving of a giant squid, Architeuthis, its body on the left and its arms streaming to the right">
+      <div class="phones">
+        <svg class="ico" viewBox="0 0 48 48" role="img" aria-label="Headphones"><use href="#ic-ears"/></svg>
+        <div class="endcap">where it ends up</div>
+      </div>
+    </div>
+
+    <div class="plate">
+      <div class="ear l"><b>Late edition</b>Odonus and Vetula now have a page each; Vetula's harmony crosses to Odonus on the tab bus.</div>
+      <h1 class="nameplate">The Atlantis Gazette</h1>
+      <div class="ear r"><b>Inside</b>Who's who on the reef, the two ways to play, and how to read the chart.</div>
+    </div>
+    <p class="motto">Applying the Unix philosophy to music since 2026</p>
+
+    <div class="edition">
+      <span>Vol. I &middot; No. 1</span>
+      <span>Thursday, 1 October 2026</span>
+      <span class="opt">Triggerfish &amp; the Atlantis rig</span>
+      <span>Price: one browser</span>
+    </div>
+  </header>
+
+  <!-- ===================== Front page ===================== -->
+  <main>
+    <h2 class="banner">Small Programs, Plain Wires</h2>
+    <p class="bannerdeck">Nothing here is one big app. Each machine is a web page that does one thing, and they talk the way Unix programs do: over simple, published protocols that anything else can join.</p>
+
+    <div class="front">
+
+      <article class="lead">
+        <p class="kicker">The idea</p>
+        <h2 class="hl">A rig built like a shell pipeline</h2>
+        <p class="deck">Melody, harmony, drums and control signals are separate machines. What joins them is not a framework but a handful of wires.</p>
+        <p class="byline">From the reef &middot; Triggerfish and Atlantis</p>
+        <div class="copy cols2">
+          <p class="drop">Triggerfish is a set of musical machines, each living in its own browser tab. Odonus writes melodic figures, Vetula grows harmony, Balistes plays drums, and Selene makes control signals for a modular synthesiser. None of them knows how the others work inside. What they share are wires: MIDI to reach instruments, OSC between the programs that run the rig, a WebSocket to reach the rig's engine, and a BroadcastChannel so that pages can hear one another.</p>
+          <blockquote class="pull">&ldquo;Write programs that do one thing and do it well. Write programs to work together.&rdquo;<cite>Doug McIlroy, as summarised by Peter H. Salus</cite></blockquote>
+          <p>That is the Unix idea, moved from text to sound. A pipe in a shell carries text; these wires carry notes, clocks and control voltages. Because each piece does one thing, each can be understood, replaced or simply left out. Someone new can open one page and play Ableton with it. Someone with a eurorack case can add the small programs that reach it. Nothing in between is needed until it is wanted.</p>
+          <p>Every machine is a web page, and every page is served from one origin, <span class="mono">localhost:3023</span>. So the pages share the routing table and the mode through the browser's own storage, and talk on a tab bus. The dashboard is one more page on that bus: it shows which machines are open, starts and stops them, sets the mode for all of them at once, and is the home of the whole routing table. Close it, and each machine still plays on its own.</p>
+          <p>The same discipline runs underneath. The sequencer engines are written once, in PureScript, and compiled twice: to JavaScript for the page and to Erlang for the rig, with conformance tests holding the two to the same behaviour. A pattern does not change its mind when it moves from the browser to the rig.</p>
+        </div>
+        <table class="wires">
+          <caption>The wires, at a glance</caption>
+          <tr><th>MIDI</th><td>Notes and controllers, to instruments. From the page by Web MIDI in Solo; from link-spike by CoreMIDI in Atlantis.</td></tr>
+          <tr><th>The rig socket</th><td>A WebSocket from each page to purerl-tidal: notes to play, and the stage, the rig's record of what each machine is playing.</td></tr>
+          <tr><th>OSC</th><td>Between the rig's own programs: purerl-tidal to link-spike, SuperDirt and es9-daemon, and the beat back from link-spike.</td></tr>
+          <tr><th>The tab bus</th><td>A BroadcastChannel between pages of one origin: which machines are open; play, stop and panic; Vetula's scale for Odonus.</td></tr>
+          <tr><th>Ableton Link</th><td>Tempo and phase, shared over the local network with anything else that speaks Link.</td></tr>
+        </table>
+      </article>
+
+      <article class="second">
+        <p class="kicker">Two ways to play</p>
+        <h2 class="hl md">Solo or Atlantis: who plays the notes?</h2>
+        <p class="deck">One switch, on the dashboard, sets it for every page.</p>
+        <div class="copy">
+          <p><strong>In Solo, the page plays.</strong> Each machine sends MIDI itself, through the browser's Web MIDI, to whatever port the routing table names. The base case is one sequencer into Ableton. It needs a Chromium browser and a MIDI port (on a Mac, the IAC bus, switched on in Audio MIDI Setup), and nothing else installed. Each page keeps its own time.</p>
+          <div class="chain"><span class="t">Solo</span>Odonus <i class="sig-notes">notes</i> page <i class="sig-midi">MIDI</i> IAC <i class="sig-midi">MIDI</i> Ableton <i class="sig-audio">audio</i> ears</div>
+          <p><strong>In Atlantis, the rig plays.</strong> Odonus, Vetula and Balistes hand their notes over the rig socket to purerl-tidal, the rig's engine. It schedules them and passes each one, stamped with its time, to link-spike, which delivers it through CoreMIDI on Ableton Link's beat. So the rig shares one tempo and phase with every other Link peer. The same engine sends samples to SuperDirt and control voltages to the modular through es9-daemon.</p>
+          <div class="chain"><span class="t">Atlantis</span>Odonus <i class="sig-notes">notes</i> page <i class="sig-socket">rig socket</i> purerl-tidal <i class="sig-osc">OSC</i> link-spike <i class="sig-midi">MIDI</i> Ableton <i class="sig-audio">audio</i> ears</div>
+          <p>Selene and Quadrat are not played by the rig. Selene sets up the modular's signals, which then run on the hardware; Quadrat drives its instrument through the Friends server and records through Itajara.</p>
+        </div>
+      </article>
+
+      <aside class="rail">
+        <section class="box">
+          <h3>In this issue</h3>
+          <ul class="index">
+            <li><svg class="ico" viewBox="0 0 48 48" style="transform:none;width:21px;margin-inline:6px 7px"><use href="#ic-ears"/></svg><span><a href="dashboard.html">Dashboard</a><span class="what">the chart; transport; routing</span></span></li>
+            <li><svg class="fish" viewBox="0 0 200 120"><use href="#sp-odonus"/></svg><span><a href="odonus.html">Odonus</a><span class="what">melody, four playheads</span></span></li>
+            <li><svg class="fish" viewBox="0 0 200 120"><use href="#sp-vetula"/></svg><span><a href="vetula.html">Vetula</a><span class="what">harmony, grown by ear</span></span></li>
+            <li><svg class="fish" viewBox="0 0 200 120"><use href="#sp-balistes"/></svg><span><a href="balistes.html">Balistes</a><span class="what">drums</span></span></li>
+            <li><svg class="fish" viewBox="0 0 200 120"><use href="#sp-selene"/></svg><span><a href="selene.html">Selene</a><span class="what">signals for the modular</span></span></li>
+            <li><svg class="fish" viewBox="0 0 200 120"><use href="#sp-conspicillum"/></svg><span><a href="/conspicillum/">Conspicillum</a><span class="what">the sample loupe</span></span></li>
+            <li><svg class="fish" viewBox="0 0 200 120"><use href="#sp-quadrat"/></svg><span><a href="/quadrat.html">Quadrat</a><span class="what">samples an instrument</span></span></li>
+          </ul>
+        </section>
+
+        <section class="box">
+          <h3>Soundings</h3>
+          <table class="soundings">
+            <tr><th>Surface</th><td>A Chromium browser and a MIDI port. Odonus, Vetula and Balistes into Ableton, or any synth.</td></tr>
+            <tr><th>The trunk</th><td>link-spike and purerl-tidal. The rig plays, on Link's beat. Every rig path needs both.</td></tr>
+            <tr><th>Branches</th><td>Each independent of the others:
+              <span class="fath">SuperDirt &middot; samples</span>
+              <span class="fath">ES-9 &middot; Selene's ES-9 banks</span>
+              <span class="fath">FH-2 &middot; gates, envelopes</span>
+              <span class="fath">Itajara &middot; Quadrat's takes</span>
+              <span class="fath">Continuo &middot; a piano</span></td></tr>
+          </table>
+          <p class="small" style="margin:6px 0 0">How deep you need to go depends on what you want to reach. It is a branching tree, not a ladder.</p>
+        </section>
+
+        <section class="box brief">
+          <h3>News in brief</h3>
+          <p><b>Chart goes live.</b> The dashboard's home is now the signal-flow chart, drawn from the routing table and the open pages rather than from example data.</p>
+          <p><b>Kraken redrawn.</b> purerl-tidal has a new kraken, after Montfort's.</p>
+          <p><b>Squid changes jobs.</b> Verrill's giant squid, tried as a watermark under the chart, was found to clash with the live ribbons. It has found work on this masthead.</p>
+        </section>
+      </aside>
+    </div>
+
+    <!-- ===================== The cast ===================== -->
+    <section class="section" id="cast">
+      <p class="kicker">The cast</p>
+      <h2 class="hl">Who's Who on the Reef</h2>
+      <p class="deck">Each machine is drawn as a fish beside its name; the processes of the rig are creatures of deeper water.</p>
+
+      <div class="castgroup">
+        <h3>The Triggerfish machines</h3>
+        <div class="cast">
+          <article class="who">
+            <header><svg class="fish flip" viewBox="0 0 200 120"><use href="#sp-odonus"/></svg><div><span class="w-odonus">Odonus</span><span class="sp">Odonus niger, the red-toothed triggerfish</span></div></header>
+            <p>A harmelodic step sequencer. Sixteen cells are read by four playheads, each taking its own path through them, and the result is held to a scale, to chords, or to Vetula's progression. It can generate its own material. <a class="go" href="odonus.html">odonus.html</a></p>
+          </article>
+          <article class="who">
+            <header><svg class="fish flip" viewBox="0 0 200 120"><use href="#sp-vetula"/></svg><div><span class="w-vetula">Vetula</span><span class="sp">Balistes vetula, the queen triggerfish</span></div></header>
+            <p>Grows harmony by ear: a palette of chords that you widen by revoicing, inverting, suspending and extending. Its progression crosses the tab bus and becomes Odonus's scale. <a class="go" href="vetula.html">vetula.html</a></p>
+          </article>
+          <article class="who">
+            <header><svg class="fish flip" viewBox="0 0 200 120"><use href="#sp-balistes"/></svg><div><span class="w-balistes">Balistes</span><span class="sp">Balistes capriscus, the grey triggerfish</span></div></header>
+            <p>Drums, three ways: a port of Mutable Instruments' Grids, for morphing between drum maps; a library of patterns programmed step by step; and lanes of Tidal mini-notation. Snapshots taken from any of the three are sequenced as a song. <a class="go" href="balistes.html">balistes.html</a></p>
+          </article>
+          <article class="who">
+            <header><svg class="fish flip" viewBox="0 0 200 120"><use href="#sp-selene"/></svg><div><span class="w-selene">Selene</span><span class="sp">Selene vomer, the lookdown</span></div></header>
+            <p>Polysignals for the modular: LFOs, clocks, Euclidean rhythms and notes, eight to a destination, set up for the ES-9 and FH-2 interfaces. <a class="go" href="selene.html">selene.html</a></p>
+          </article>
+        </div>
+      </div>
+
+      <div class="castgroup">
+        <h3>Beside them</h3>
+        <div class="cast">
+          <article class="who">
+            <header><svg class="fish flip" viewBox="0 0 200 120"><use href="#sp-conspicillum"/></svg><div><span class="w-conspicillum">Conspicillum</span><span class="sp">Balistoides conspicillum, the clown triggerfish</span></div></header>
+            <p>The sample loupe. Look closely at a collection of samples (waveform, loupe, laboratory, library, shelf) and play it, through SuperDirt. <a class="go" href="/conspicillum/">/conspicillum/</a></p>
+          </article>
+          <article class="who">
+            <header><svg class="fish flip" viewBox="0 0 200 120"><use href="#sp-quadrat"/></svg><div><span class="w-quadrat">Quadrat</span><span class="sp">a boxfish, square in body and name</span></div></header>
+            <p>Samples an instrument at chosen points. Curves over its parameters trace a path through it; the rig plays every point into one take, which Quadrat divides by its own schedule, measures, and keeps as a set. A set is already a SuperDirt bank. Named for the square frame a field survey lays down. <a class="go" href="/quadrat.html">/quadrat.html</a></p>
+          </article>
+          <article class="who">
+            <header><svg class="ico" viewBox="0 0 70 40" style="width:58px;height:34px"><use href="#ic-grouper"/></svg><div><span class="nm">Itajara</span><span class="sp">the goliath grouper</span></div></header>
+            <p>The looper engine: a Rust daemon that records, overdubs in layers, undoes, and keeps time with Link. The pedalboard app and Friends of Itajara play it; Quadrat records its takes through it.</p>
+          </article>
+          <article class="who">
+            <header><svg class="ico sq" viewBox="0 0 48 48"><use href="#ab-boat"/></svg><div><span class="nm">Calypso</span><span class="sp">the boat</span></div></header>
+            <p>The live-coding editor for purerl-tidal: cells of code, each compiled and loaded into the running rig. Due to be rebuilt from scratch, keeping its look and its tarot.</p>
+          </article>
+        </div>
+      </div>
+
+      <div class="castgroup">
+        <h3>The rig</h3>
+        <div class="cast">
+          <article class="who">
+            <header><svg class="ico sq" viewBox="12 16 77 77"><use href="#ic-kraken"/></svg><div><span class="nm">purerl-tidal</span><span class="sp">the kraken</span></div></header>
+            <p>TidalCycles, ported to PureScript and run on Erlang's virtual machine. The rig's engine: the pages reach it over the rig socket, it schedules every voice under its own supervisor, and its arms reach link-spike, SuperDirt and es9-daemon.</p>
+          </article>
+          <article class="who">
+            <header><svg class="ico" viewBox="0 0 60 36" style="width:58px;height:35px"><use href="#ic-lantern"/></svg><div><span class="nm">link-spike</span><span class="sp">Punctatum, the lanternfish</span></div></header>
+            <p>Ableton Link, in Rust: the beat. It shares tempo and phase with purerl-tidal and es9-daemon, and delivers the rig's MIDI through CoreMIDI at the time each note was stamped with. Link runs with or without Ableton.</p>
+          </article>
+          <article class="who">
+            <header><span class="nocreature" title="No creature yet">CV</span><div><span class="nm">es9-daemon</span><span class="sp">CV over audio</span></div></header>
+            <p>A Rust program that opens the Expert Sleepers ES-9 as an audio device and drives its sixteen buses as control voltages and gates. The ES-9 is DC-coupled, so an audio signal can hold a voltage steady.</p>
+          </article>
+          <article class="who">
+            <header><span class="nocreature" title="No creature yet">S</span><div><span class="nm">SuperDirt</span><span class="sp">plays samples</span></div></header>
+            <p>The sample player of the TidalCycles world, running in SuperCollider. purerl-tidal sends it OSC; it plays Conspicillum's collections and Quadrat's sets.</p>
+          </article>
+          <article class="who keeper">
+            <header><svg class="ico sq" viewBox="0 0 48 48"><use href="#ab-lighthouse"/></svg><div><span class="nm">Bosun</span><span class="sp">the lighthouse</span></div></header>
+            <p>Keeps the processes running. It brings a group of daemons up and restarts whatever crashes; for Atlantis it holds the rig ready, to be raised deliberately from Bosun's Chair.</p>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <!-- ===================== The chart ===================== -->
+    <section class="section" id="chart">
+      <p class="kicker">The dashboard</p>
+      <h2 class="hl">Follow a Note to Your Ears</h2>
+      <p class="deck">The dashboard opens on one chart. It is the map of the rig, the state of the rig, and the explanation of the rig, all at once.</p>
+
+      <div class="feature">
+        <div class="copy">
+          <p class="drop">The chart is a Sankey diagram, read left to right. Every stream starts at a machine and passes through the page, the engine, the rig's outputs, an interface and an instrument, to end at your ears. Columns with nothing in them close up.</p>
+          <p><strong>Colour is the signal on each hop:</strong> note events, the rig socket, MIDI, OSC, CV and gates, audio, samples. It changes wherever the signal changes form, so the colours are the architecture.</p>
+          <p><strong>Width is the number of streams,</strong> meaning distinct wires, not rows of the routing table. Sixteen drum lanes all sent to channel 10 are one stream; four Odonus playheads on four channels are four.</p>
+          <p><strong>Only what you use is drawn.</strong> Nothing on the chart is chosen for it: it is read from the routing table, the MIDI ports that exist, and the pages that are open. One sequencer playing Ableton in Solo is five nodes in a line. The whole rig, with the modular and the samples, is drawn only when the whole rig is in use.</p>
+          <p><strong>link-spike is not a hop.</strong> It broadcasts the beat from above the chart, and gold marks pulse on everything it times.</p>
+          <p>Hover over a machine to light its streams; click it to split it into its voices. A missing port is still drawn, with only the hop into it marked in red, and a stopped machine is shown ghosted.</p>
+        </div>
+
+        <div class="figs">
+          <div class="key" aria-label="Signal colours">
+            <span style="color:var(--s-notes)"><i style="background:currentColor"></i>note events</span>
+            <span style="color:var(--s-socket)"><i style="background:currentColor"></i>rig socket</span>
+            <span style="color:var(--s-midi)"><i style="background:currentColor"></i>MIDI</span>
+            <span style="color:var(--s-osc)"><i style="background:currentColor"></i>OSC</span>
+            <span style="color:var(--s-cv)"><i style="background:currentColor"></i>CV / gate</span>
+            <span style="color:var(--s-audio)"><i style="background:currentColor"></i>audio</span>
+            <span style="color:var(--s-samples)"><i style="background:currentColor"></i>samples</span>
+          </div>
+
+          <figure>
+            <div class="scroller"><svg class="chart" viewBox="0 0 600 168" role="img" aria-label="Solo: Odonus, then the browser, then the IAC MIDI port, then Ableton, then your ears">
+              <g class="colrules">
+                <line class="colrule" x1="0" y1="26" x2="600" y2="26"/>
+              </g>
+              <text class="colhead" x="70" y="18" text-anchor="middle">Machine</text>
+              <text class="colhead" x="190" y="18" text-anchor="middle">Page</text>
+              <text class="colhead" x="310" y="18" text-anchor="middle">Interface</text>
+              <text class="colhead" x="430" y="18" text-anchor="middle">Instrument</text>
+              <text class="colhead" x="550" y="18" text-anchor="middle">Heard</text>
+              <!-- ribbons -->
+              <rect class="rib" x="74" y="70" width="112" height="22" fill="var(--s-notes)"/>
+              <rect class="rib" x="194" y="70" width="112" height="22" fill="var(--s-midi)"/>
+              <rect class="rib" x="314" y="70" width="112" height="22" fill="var(--s-midi)"/>
+              <rect class="rib" x="434" y="70" width="112" height="22" fill="var(--s-audio)"/>
+              <!-- nodes -->
+              <rect class="bar" x="66" y="64" width="8" height="34"/>
+              <rect class="bar" x="186" y="64" width="8" height="34"/>
+              <rect class="bar" x="306" y="64" width="8" height="34"/>
+              <rect class="bar" x="426" y="64" width="8" height="34"/>
+              <rect class="bar" x="546" y="64" width="8" height="34"/>
+              <svg x="44" y="34" width="52" height="31" viewBox="0 0 200 120" class="fish"><g transform="translate(200 0) scale(-1 1)"><use href="#sp-odonus"/></g></svg>
+              <svg x="535" y="32" width="30" height="30" viewBox="0 0 48 48"><use href="#ic-ears"/></svg>
+              <text class="nm" x="70" y="118" text-anchor="middle">Odonus</text><text class="sub" x="70" y="133" text-anchor="middle">harmelodic ideas</text>
+              <text class="nm" x="190" y="118" text-anchor="middle">Browser</text><text class="sub" x="190" y="133" text-anchor="middle">every machine</text><text class="sub" x="190" y="146" text-anchor="middle">is a page</text>
+              <text class="nm" x="310" y="118" text-anchor="middle">IAC</text><text class="sub" x="310" y="133" text-anchor="middle">MIDI port</text>
+              <text class="nm" x="430" y="118" text-anchor="middle">Ableton</text><text class="sub" x="430" y="133" text-anchor="middle">instruments</text><text class="sub" x="430" y="146" text-anchor="middle">and effects</text>
+              <text class="nm" x="550" y="118" text-anchor="middle">Your ears</text><text class="sub" x="550" y="133" text-anchor="middle">headphones</text>
+            </svg></div>
+            <figcaption><b>Solo</b>The base case: one sequencer into Ableton, five nodes in a line. Schematic, after the dashboard's chart.</figcaption>
+          </figure>
+
+          <figure>
+            <div class="scroller"><svg class="chart" viewBox="0 0 600 196" role="img" aria-label="Atlantis: Odonus, the browser, purerl-tidal, the IAC MIDI port, Ableton, your ears, with link-spike broadcasting the beat to purerl-tidal and the port">
+              <!-- link-spike, above the flow -->
+              <svg x="283" y="4" width="40" height="24" viewBox="0 0 60 36"><use href="#ic-lantern"/></svg>
+              <text class="beatlabel" x="329" y="20">link-spike &middot; the beat</text>
+              <path class="arc a1" d="M293,32 q10,9 20,0"/>
+              <path class="arc a2" d="M283,34 q20,15 40,0"/>
+              <path class="arc a3" d="M273,36 q30,21 60,0"/>
+              <line class="colrule" x1="0" y1="72" x2="600" y2="72"/>
+              <text class="colhead" x="58" y="64" text-anchor="middle">Machine</text>
+              <text class="colhead" x="156" y="64" text-anchor="middle">Page</text>
+              <text class="colhead" x="254" y="64" text-anchor="middle">Engine</text>
+              <text class="colhead" x="352" y="64" text-anchor="middle">Interface</text>
+              <text class="colhead" x="450" y="64" text-anchor="middle">Instrument</text>
+              <text class="colhead" x="548" y="64" text-anchor="middle">Heard</text>
+              <!-- ribbons -->
+              <rect class="rib" x="62" y="104" width="90" height="22" fill="var(--s-notes)"/>
+              <rect class="rib" x="160" y="104" width="90" height="22" fill="var(--s-socket)"/>
+              <rect class="rib" x="258" y="104" width="90" height="22" fill="var(--s-midi)"/>
+              <rect class="rib" x="356" y="104" width="90" height="22" fill="var(--s-midi)"/>
+              <rect class="rib" x="454" y="104" width="90" height="22" fill="var(--s-audio)"/>
+              <!-- nodes -->
+              <rect class="bar" x="54" y="98" width="8" height="34"/>
+              <rect class="bar" x="152" y="98" width="8" height="34"/>
+              <rect class="bar" x="250" y="98" width="8" height="34"/>
+              <rect class="bar" x="348" y="98" width="8" height="34"/>
+              <rect class="bar" x="446" y="98" width="8" height="34"/>
+              <rect class="bar" x="544" y="98" width="8" height="34"/>
+              <!-- on the beat: purerl-tidal and the port it sends to -->
+              <circle class="mark" cx="254" cy="90" r="3.6"/>
+              <circle class="mark" cx="352" cy="90" r="3.6"/>
+              <svg x="34" y="70" width="48" height="29" viewBox="0 0 200 120" class="fish"><g transform="translate(200 0) scale(-1 1)"><use href="#sp-odonus"/></g></svg>
+              <svg x="533" y="72" width="30" height="26" viewBox="0 0 48 48"><use href="#ic-ears"/></svg>
+              <svg x="262" y="76" width="30" height="30" viewBox="12 16 77 77"><use href="#ic-kraken"/></svg>
+              <text class="nm" x="58" y="152" text-anchor="middle">Odonus</text>
+              <text class="nm" x="156" y="152" text-anchor="middle">Browser</text>
+              <text class="nm" x="254" y="152" text-anchor="middle">purerl-tidal</text><text class="sub" x="254" y="167" text-anchor="middle">the rig's engine</text>
+              <text class="nm" x="352" y="152" text-anchor="middle">IAC</text><text class="sub" x="352" y="167" text-anchor="middle">MIDI port</text>
+              <text class="nm" x="450" y="152" text-anchor="middle">Ableton</text>
+              <text class="nm" x="548" y="152" text-anchor="middle">Your ears</text>
+            </svg></div>
+            <figcaption><b>Atlantis</b>The same sequencer, played by the rig. The notes leave the page on the rig socket, purerl-tidal sends the MIDI (link-spike carries it to the port, on the beat), and gold marks show what the beat times.</figcaption>
+          </figure>
+        </div>
+      </div>
+    </section>
+
+    <!-- ===================== Below the fold ===================== -->
+    <div class="bottom">
+      <section>
+        <h3>Also in the water</h3>
+        <dl class="also">
+          <div><dt>Amphora</dt><dd>The artefact store: content addressed, so every revision stays reachable. Optional everywhere; pages fall back to the browser's own storage.</dd></div>
+          <div><dt>Continuo</dt><dd>A headless host for one instrument plugin, playing incoming MIDI to the speakers. Point it at a grand piano and the rig has a piano.</dd></div>
+          <div><dt>Binnacle</dt><dd>What a page needs to play in time with the rig: a clock that locks to Link, a lookahead scheduler, and the tab bus.</dd></div>
+          <div><dt>Reef &amp; Harmonia</dt><dd>The engines, written once and compiled to both JavaScript and Erlang; and beneath them the theory: chords, scales, voicings and voice leading.</dd></div>
+          <div><dt>DeepStar</dt><dd>The rig doctor: checks what code is actually running, and runs the calibrations the modular needs.</dd></div>
+          <div><dt>Friends of Itajara</dt><dd>An open-source looper for someone with one sample-playing module and no pedalboard. Quadrat lives in the same repository.</dd></div>
+        </dl>
+      </section>
+      <section class="colophon">
+        <h3>Colophon</h3>
+        <p><em>The Atlantis Gazette</em> is the About page of Triggerfish, served with the machines at <span class="mono">localhost:3023/about.html</span>. It is plain HTML, with no script.</p>
+        <p><strong>Masthead.</strong> A. E. Verrill, <em>Architeuthis dux</em> (syn. <em>A. princeps</em>), 1882, from his work on the giant squids in the <em>Transactions of the Connecticut Academy of Arts and Sciences</em>. Public domain, via <a href="https://commons.wikimedia.org/wiki/File:Architeuthis_dux_Verrill_1882.jpg">Wikimedia Commons</a>; the credit is kept beside the image in <span class="mono">img/CREDITS.md</span>.</p>
+        <p><strong>The fish</strong> are the app's own, from the identity study, and each machine's name is set in its nameplate face: <span style="font-family:Syne;font-weight:800">Syne</span>, <span style="font-family:Cormorant;font-style:italic;font-weight:700">Cormorant</span>, <span style="font-family:'Big Shoulders Stencil Display';font-weight:800">Big Shoulders Stencil</span>, <span style="font-family:Michroma;font-size:.85em">Michroma</span>, <span style="font-family:'Instrument Serif';font-style:italic">Instrument Serif</span> and <span style="font-family:'Major Mono Display'">Major Mono</span>.</p>
+        <p><strong>Type.</strong> Nameplate in UnifrakturMaguntia; headlines in Playfair Display; text in Source Serif 4; labels in Archivo, the app's own face.</p>
+        <p><strong>Licence.</strong> Every Atlantis machine is to be open source: MIT throughout, except link-spike, which is GPLv2+ by way of Ableton Link.</p>
+      </section>
+    </div>
+    <p class="finis">&#x2766;</p>
+  </main>
+</div>
+</body>
+</html>
