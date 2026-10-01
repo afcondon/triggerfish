@@ -29,7 +29,7 @@ import Binnacle.Clock as Clock
 import Binnacle.Midi as Midi
 import Binnacle.Time (dateNow)
 import Binnacle.Transport as Transport
-import Data.Array (filter, find, length, nubEq, null, (..))
+import Data.Array (elem, filter, find, length, nubEq, null, (..))
 import Data.Foldable (for_)
 import Data.Map (Map)
 import Data.Map as Map
@@ -48,6 +48,8 @@ import Halogen.HTML.Properties as HP
 import Halogen.Subscription as HS
 import Triggerfish.Glyph as G
 import Triggerfish.Fish as Fish
+import Triggerfish.Flow as Flow
+import Triggerfish.Flow.View as FlowView
 import Triggerfish.GlyphView (chipIcons)
 import Triggerfish.Route as Route
 import Triggerfish.Routing.Edit as RE
@@ -113,6 +115,8 @@ type State =
   , table :: RM.Table
   , ports :: Array String
   , sampleSets :: Array SampleSet
+  , hot :: Maybe String      -- the machine hovered on the chart
+  , voices :: Array String   -- machines the chart draws as their voices
   }
 
 data Action
@@ -129,13 +133,15 @@ data Action
   | Edit RE.Edit
   | Audition RM.Destination
   | ShowView View
+  | Hover (Maybe String)
+  | ToggleVoices String
 
 component :: forall q i o. H.Component q i o Aff
 component = H.mkComponent
   { initialState: \_ ->
       { mode: Solo, view: MachinesView, now: 0.0, heard: Map.empty, rig: Nothing, rigUp: false
       , tempo: 120.0, locked: false, bus: Nothing
-      , table: RM.defaultTable, ports: [], sampleSets: [] }
+      , table: RM.defaultTable, ports: [], sampleSets: [], hot: Nothing, voices: [] }
   , render
   , eval: H.mkEval H.defaultEval { handleAction = handleAction, initialize = Just Init }
   }
@@ -247,6 +253,10 @@ handleAction = case _ of
 
   ShowView v -> H.modify_ _ { view = v }
 
+  Hover m -> H.modify_ _ { hot = m }
+
+  ToggleVoices m -> H.modify_ \x -> x { voices = if m `elem` x.voices then filter (_ /= m) x.voices else x.voices <> [ m ] }
+
   Audition dest -> do
     st <- H.get
     for_ (RO.auditionLine dest) \line ->
@@ -280,10 +290,40 @@ render st =
     , HH.main [ cls "body" ]
         [ case st.view of
             MachinesView ->
-              HH.section [ cls "machines", HP.attr (AttrName "aria-label") "Triggerfish machines" ]
-                (map (card st) machines)
+              HH.div_
+                [ flowChart st
+                , HH.section [ cls "machines", HP.attr (AttrName "aria-label") "Triggerfish machines" ]
+                    (map (card st) machines)
+                ]
             RoutingView -> routing st
         ]
+    ]
+
+-- | The signal-flow chart: what the open pages drive, by the path the mode
+-- | gives them. Conspicillum and Quadrat route themselves rather than through
+-- | the table, so their routes are stated here; they appear once their pages
+-- | are on the tab bus.
+flowChart :: forall m. State -> H.ComponentHTML Action () m
+flowChart st =
+  HH.section [ cls "flow", HP.attr (AttrName "aria-label") "Where it all goes" ]
+    [ HH.div [ cls "flow-chart" ]
+        [ FlowView.chart { hover: Hover, pick: ToggleVoices } st.hot
+            ( Flow.flow
+                { mode: st.mode
+                , table: st.table
+                , ports: { found: st.ports, rigUp: st.rigUp }
+                , machines: map _.slot (filter (isOpen st) machines)
+                , open: st.voices
+                , extras
+                }
+            )
+        ]
+    , FlowView.key
+    ]
+  where
+  extras =
+    [ { machine: "conspicillum", dest: RM.DSample { set: "", n: 0, begin: 0, end: 100, reverse: false, gain: 100, chop: 1 }, via: Nothing }
+    , { machine: "quadrat", dest: RM.DEs9Cv { bus: 1 }, via: Just "foi" }
     ]
 
 topBar :: forall m. State -> H.ComponentHTML Action () m

@@ -1,4 +1,6 @@
-// The machines' fish: one SVG sprite of <symbol>s, added to the page once, so
+// The machines' fish, and the signal-flow chart's other creatures (the kraken
+// for purerl-tidal, the lanternfish for link-spike, the grouper for Itajara)
+// and its headphones: one SVG sprite of <symbol>s, added to the page once, so
 // any page can draw a machine's fish with <use href="#sp-<slot>">. Drawn in the
 // identity study (docs/kb/plans/assets/reef-specimens.html).
 const SPRITE = `<svg id="tf-fish" width="0" height="0" style="position:absolute" aria-hidden="true">
@@ -153,6 +155,25 @@ const SPRITE = `<svg id="tf-fish" width="0" height="0" style="position:absolute"
     </g>
     <path d="M80,72 C88,66 96,68 96,74 C90,78 84,78 80,72 Z" fill="#b8b0d4"/>
     <circle cx="50" cy="70" r="5.5" fill="#3a3550"/><circle cx="50" cy="70" r="2.3" fill="#e6e2f4"/>
+  </symbol>
+  <symbol id="ic-kraken" viewBox="0 0 60 60">
+    <path d="M30,2 C12,6 10,28 22,34 C26,36 34,36 38,34 C50,28 48,6 30,2 Z" style="fill:var(--kraken,#8a3a50)"/>
+    <circle cx="25" cy="26" r="3" fill="#f3d36b"/><circle cx="35" cy="26" r="3" fill="#f3d36b"/>
+    <g style="stroke:var(--kraken,#8a3a50)" stroke-width="3.2" fill="none" stroke-linecap="round">
+      <path d="M22,34 C16,42 10,44 6,54"/><path d="M26,35 C24,46 20,50 20,58"/><path d="M34,35 C36,46 40,50 40,58"/><path d="M38,34 C44,42 50,44 54,54"/>
+    </g>
+  </symbol>
+  <symbol id="ic-lantern" viewBox="0 0 60 36">
+    <path d="M6,18 C14,6 38,4 48,14 L58,6 L56,18 L58,30 L48,22 C38,32 14,30 6,18 Z" fill="#9fb0b8"/>
+    <circle cx="16" cy="16" r="3.4" fill="#f6d86b"/><circle cx="28" cy="22" r="1.6" fill="#f6d86b"/><circle cx="36" cy="22" r="1.6" fill="#f6d86b"/>
+  </symbol>
+  <symbol id="ic-grouper" viewBox="0 0 70 40">
+    <path d="M4,20 C14,4 46,2 56,14 L68,6 L66,20 L68,34 L56,26 C46,38 14,36 4,20 Z" fill="#6a5a3c"/>
+    <circle cx="14" cy="17" r="2.6" fill="#1c160c"/>
+  </symbol>
+  <symbol id="ic-ears" viewBox="0 0 48 48">
+    <path d="M8,30 C8,14 16,6 24,6 C32,6 40,14 40,30" fill="none" style="stroke:var(--ink,#0f2530)" stroke-width="3.4"/>
+    <rect x="4" y="27" width="10" height="16" rx="3" style="fill:var(--ink,#0f2530)"/><rect x="34" y="27" width="10" height="16" rx="3" style="fill:var(--ink,#0f2530)"/>
   </symbol>
 </svg>`;
 

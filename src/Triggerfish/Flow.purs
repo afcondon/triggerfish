@@ -49,7 +49,7 @@ import Prelude
 
 import Data.Array (catMaybes, concatMap, elem, filter, findIndex, foldl, length, mapMaybe, nub, nubByEq, sortWith)
 import Data.Array as Array
-import Data.Maybe (Maybe(..), fromMaybe, maybe)
+import Data.Maybe (Maybe(..), fromMaybe, isJust, maybe)
 import Data.String (Pattern(..), contains, stripPrefix)
 import Data.Tuple (Tuple(..))
 import Triggerfish.Routing.Model (Destination(..), Ports, Reach(..), Source(..), Table, instrumentLabel, reachOf, sourceKey, sourceLabel)
@@ -144,7 +144,9 @@ rigPlays m = m `elem` [ "odonus", "vetula", "balistes" ]
 type Hop = { from :: String, to :: String, signal :: Signal }
 
 -- | One stream: who emits it, which wire it is, and the path it takes.
-type Stream = { machine :: String, unit :: String, wire :: String, hops :: Array Hop, broken :: Boolean }
+-- | `brokenAt` names the node it cannot reach (a port that is not there), so
+-- | only the hop into it is marked, not the whole way from the machine.
+type Stream = { machine :: String, unit :: String, wire :: String, hops :: Array Hop, brokenAt :: Maybe String }
 
 -- | The wire a destination drives. Two legs on one wire are one stream.
 wireOf :: Destination -> String
@@ -226,7 +228,9 @@ flow inp = { nodes, links }
     # mapMaybe \e -> stream e.machine ("m:" <> e.machine) e.via e.dest
 
   stream m unit via dest = pathOf inp.mode m via dest <#> \hops ->
-    { machine: m, unit, wire: wireOf dest, hops, broken: isNoPort (reachOf inp.ports dest) }
+    { machine: m, unit, wire: wireOf dest, hops
+    , brokenAt: if isNoPort (reachOf inp.ports dest) then _.iface <$> midiEnds dest else Nothing
+    }
 
   streams :: Array Stream
   streams = nubByEq (\a b -> a.unit == b.unit && a.wire == b.wire) (tableStreams <> extraStreams)
@@ -242,7 +246,7 @@ flow inp = { nodes, links }
         [ { from: "sets", to: "d-dirt", signal: Samples, machine: "sets", streams: sampleStreams, broken: 0 } ]
     | otherwise = []
 
-  links = merge (concatMap (\s -> hopsOf s <#> \h -> { hop: h, machine: s.machine, broken: s.broken }) streams) <> setsLinks
+  links = merge (concatMap (\s -> hopsOf s <#> \h -> { hop: h, machine: s.machine, broken: s.brokenAt == Just h.to }) streams) <> setsLinks
 
   merge = foldl add []
     where
@@ -319,6 +323,8 @@ nodeRank nd = Tuple nd.column (Tuple at nd.name)
   where
   at = case nd.machine of
     Just m -> fromMaybe 99 (findIndex (\x -> x.slot == m) machineNames)
+    -- A named port heads its column: it is where most streams go.
+    Nothing | isJust (stripPrefix (Pattern "port:") nd.id) -> -1
     Nothing -> fromMaybe 99 (findIndex (\x -> x.id == nd.id) fixed)
 
 -- | Packed column numbers: the columns in use, numbered left to right. In

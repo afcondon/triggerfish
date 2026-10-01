@@ -47,6 +47,7 @@ package:
     - web-dom
     - halogen-svg-elems
     - halogen-widgets
+    - hylograph-layout
     - hylograph-simulation
     - hylograph-simulation-halogen
     - hylograph-selection
@@ -87,5 +88,13 @@ workspace:
     # Back this out to `halogen-widgets: 0.4.0` before committing.
     halogen-widgets:
       path: ../../../purescript-halogen-widgets
+    # The signal-flow chart's Sankey. PATH-DEP on the `sankey-fixed-columns`
+    # branch (nodeLayer, nodeSort), which is not in any published release;
+    # back to the registry once it is cut. hylograph-layout's own main pins
+    # hylograph-graph by path for the same reason, so that comes along too.
+    hylograph-layout:
+      path: ../../../purescript-hylograph-libs/purescript-hylograph-layout
+    hylograph-graph:
+      path: ../../../purescript-hylograph-libs/purescript-hylograph-graph
   packageSet:
     registry: 77.13.1

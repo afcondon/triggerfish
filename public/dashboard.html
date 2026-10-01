@@ -117,6 +117,34 @@
     /* A machine's nameplate heads its group in the routing ledger. Space, not
        a rule, separates the groups. */
     .routing .hw-quiet-key { margin-top: 14px; }
+    /* The signal-flow chart (Triggerfish.Flow.View). */
+    :root { --s-notes: #7f9098; --s-socket: #7c5cc4; --s-midi: #13807b; --s-osc: #c08a12; --s-cv: #a8327a; --s-audio: #2f6fae; --s-samples: #8a5a2b; --s-http: #9a8fb0; --kraken: #8a3a50; }
+    @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --s-notes: #9fb0b8; --s-socket: #ab93f0; --s-midi: #4cc5bd; --s-osc: #eab94f; --s-cv: #e87bbd; --s-audio: #7fb8e0; --s-samples: #d2a06d; --s-http: #b9aed0; --kraken: #c26a82; } }
+    :root[data-theme="dark"] { --s-notes: #9fb0b8; --s-socket: #ab93f0; --s-midi: #4cc5bd; --s-osc: #eab94f; --s-cv: #e87bbd; --s-audio: #7fb8e0; --s-samples: #d2a06d; --s-http: #b9aed0; --kraken: #c26a82; }
+    .flow { margin-bottom: 24px; }
+    .flow-chart { overflow-x: auto; background: var(--plate); border: 1px solid var(--rule); padding: 8px 0; }
+    .flow-empty { margin: 0; padding: 28px 20px; color: var(--muted); }
+    svg.flows { display: block; width: 100%; min-width: 1150px; height: auto; }
+    svg.flows .colhead { font: 500 9.5px var(--mono); letter-spacing: .14em; text-transform: uppercase; fill: var(--muted); }
+    svg.flows .colrule { stroke: var(--rule); stroke-width: 1; }
+    svg.flows .name { font: 600 13px var(--display); fill: var(--ink); }
+    svg.flows .sub { font: 400 10px var(--mono); fill: var(--muted); }
+    svg.flows .node text { paint-order: stroke; stroke: var(--plate); stroke-width: 3px; stroke-linejoin: round; }
+    svg.flows .bar { fill: var(--ink); }
+    svg.flows .link { fill-opacity: .45; transition: fill-opacity .2s; }
+    svg.flows.hovering .link { fill-opacity: .07; }
+    svg.flows.hovering .link.hot { fill-opacity: .9; }
+    svg.flows .link.broken { stroke: var(--alarm); stroke-width: 1.2; stroke-dasharray: 4 3; }
+    svg.flows .pick { cursor: pointer; outline: none; }
+    svg.flows .pick:focus-visible .bar { fill: var(--reef); }
+    .s-notes { fill: var(--s-notes); color: var(--s-notes); } .s-socket { fill: var(--s-socket); color: var(--s-socket); }
+    .s-midi { fill: var(--s-midi); color: var(--s-midi); } .s-osc { fill: var(--s-osc); color: var(--s-osc); }
+    .s-http { fill: var(--s-http); color: var(--s-http); } .s-cv { fill: var(--s-cv); color: var(--s-cv); }
+    .s-audio { fill: var(--s-audio); color: var(--s-audio); } .s-samples { fill: var(--s-samples); color: var(--s-samples); }
+    .flow-key { display: flex; flex-wrap: wrap; gap: 4px 14px; margin-top: 8px; font-size: 12px; font-weight: 600; }
+    .flow-key .sig { display: inline-flex; align-items: center; gap: 6px; }
+    .flow-key .sig i { width: 16px; height: 4px; background: currentColor; }
+    @media (prefers-reduced-motion: reduce) { svg.flows .link { transition: none; } }
   </style>
 </head>
 <body>

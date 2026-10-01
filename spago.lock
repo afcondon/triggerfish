@@ -22,6 +22,7 @@
             "halogen-widgets",
             "harmonia",
             "hylograph-d3-kernel",
+            "hylograph-layout",
             "hylograph-selection",
             "hylograph-simulation",
             "hylograph-simulation-halogen",
@@ -716,6 +717,12 @@
       "harmonia": {
         "path": "../../harmonia"
       },
+      "hylograph-graph": {
+        "path": "../../../purescript-hylograph-libs/purescript-hylograph-graph"
+      },
+      "hylograph-layout": {
+        "path": "../../../purescript-hylograph-libs/purescript-hylograph-layout"
+      },
       "rebus": {
         "path": "../../../code-typography/rebus"
       },
@@ -1305,9 +1312,8 @@
       ]
     },
     "hylograph-graph": {
-      "type": "registry",
-      "version": "0.3.0",
-      "integrity": "sha256-/0tXvvkDmwJ9VxFprJeE8QZB0Pyv6Aon362lhUWbP/I=",
+      "type": "local",
+      "path": "../../../purescript-hylograph-libs/purescript-hylograph-graph",
       "dependencies": [
         "arrays",
         "either",
@@ -1320,6 +1326,28 @@
         "numbers",
         "ordered-collections",
         "prelude",
+        "tree-rose",
+        "tuples"
+      ]
+    },
+    "hylograph-layout": {
+      "type": "local",
+      "path": "../../../purescript-hylograph-libs/purescript-hylograph-layout",
+      "dependencies": [
+        "arrays",
+        "either",
+        "foldable-traversable",
+        "foreign",
+        "free",
+        "hylograph-graph",
+        "integers",
+        "lists",
+        "maybe",
+        "numbers",
+        "ordered-collections",
+        "prelude",
+        "strings",
+        "transformers",
         "tree-rose",
         "tuples"
       ]
@@ -1764,8 +1792,10 @@
         "harmonia",
         "integers",
         "maybe",
+        "numbers",
         "prelude",
-        "simple-json"
+        "simple-json",
+        "strings"
       ]
     },
     "refs": {

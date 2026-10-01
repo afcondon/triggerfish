@@ -75,8 +75,10 @@ runFlowTests = do
     )
 
   let noFh2 = flow base { ports = { found: [ "IAC Driver Tidal" ], rigUp: false } }
-  check "a missing port is drawn, and counted broken"
-    ((find (\l -> l.to == "fh2") noFh2.links <#> _.broken) == Just 4)
+  check "a missing port is drawn, and only the hop into it is broken"
+    ( (find (\l -> l.to == "fh2") noFh2.links <#> _.broken) == Just 4
+        && all (\l -> l.broken == 0) (filter (\l -> l.to /= "fh2") noFh2.links)
+    )
 
   check "a machine whose page is closed is not drawn"
     (length (flow base { machines = [] }).nodes == 0)

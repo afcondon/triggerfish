@@ -1,0 +1,197 @@
+-- | `Triggerfish.Flow.View` — the signal-flow chart, drawn.
+-- |
+-- | `Triggerfish.Flow` decides what is on the chart; hylograph-layout's Sankey
+-- | decides where it goes, with the columns and the order within each column
+-- | held fixed (`nodeLayer`, `nodeSort`), so the chart holds still as machines
+-- | open and close; this draws it. Width is streams, colour is the signal on
+-- | each hop, and a machine is drawn with its fish.
+module Triggerfish.Flow.View
+  ( Handlers
+  , chart
+  , key
+  ) where
+
+import Prelude
+
+import Data.Array (filter, foldl, mapMaybe, nub, (!!))
+import Data.Array as Array
+import Data.Int (fromNumber, toNumber)
+import Data.Map as Map
+import Data.Maybe (Maybe(..), fromMaybe, maybe)
+import Data.Number as Number
+import Data.Tuple.Nested ((/\))
+import Data.Number.Format (fixed, toStringWith)
+import Data.Ord (comparing)
+import DataViz.Layout.Sankey.Compute (computeLayoutWithConfig)
+import DataViz.Layout.Sankey.Path (generateLinkPath)
+import DataViz.Layout.Sankey.Types (LinkID(..), defaultSankeyConfig)
+import Halogen.HTML as HH
+import Halogen.HTML.Core (AttrName(..), ElemName(..), Namespace(..))
+import Halogen.HTML.Events as HE
+import Halogen.HTML.Properties as HP
+import Triggerfish.Flow (Column(..), Flow, Link, Node, Signal(..), columnTitle, layerOf, nodeRank, signalLabel)
+
+-- | What the chart reports: a machine hovered (or left), and a machine picked.
+type Handlers i = { hover :: Maybe String -> i, pick :: String -> i }
+
+width :: Number
+width = 1500.0
+
+-- Room on the left for the fish and the machines' names, and on the right for
+-- the last column's labels.
+left :: Number
+left = 230.0
+
+right :: Number
+right = 1320.0
+
+-- | The chart's height follows the number of streams, so one sequencer playing
+-- | Ableton is a modest line and not one fat ribbon.
+heightOf :: Flow -> Number
+heightOf f = clampN 250.0 720.0 (130.0 + toNumber streams * 11.0 + toNumber rows * 22.0)
+  where
+  streams = foldl (+) 0 (map _.streams (filter (\l -> l.to == "browser") f.links))
+  rows = foldl max 1 (map (\c -> Array.length (filter (\n -> n.column == c) f.nodes)) (nub (map _.column f.nodes)))
+  clampN lo hi x = max lo (min hi x)
+
+chart :: forall w i. Handlers i -> Maybe String -> Flow -> HH.HTML w i
+chart on hot f
+  | Array.null f.links =
+      HH.p [ HP.class_ (HH.ClassName "flow-empty") ]
+        [ HH.text "Nothing is playing anywhere yet. Open a machine and the chart shows where it goes." ]
+  | otherwise =
+      svg "svg"
+        [ attr "viewBox" ("0 0 " <> n width <> " " <> n h)
+        , attr "class" ("flows" <> if hot == Nothing then "" else " hovering")
+        , attr "role" "img"
+        , attr "aria-label" "Where each machine's output goes: through the browser or the rig, through interfaces and instruments, to your ears"
+        ]
+        ( heads <> [ rule ] <> map link laid.links <> map node laid.nodes )
+  where
+  h = heightOf f
+  byId = Map.fromFoldable (map (\x -> x.id /\ x) f.nodes)
+  ours sn = Map.lookup sn.name byId
+  rankOf sn = map nodeRank (ours sn)
+  laid = computeLayoutWithConfig
+    (map (\l -> { s: l.from, t: l.to, v: toNumber l.streams }) f.links)
+    (defaultSankeyConfig width h)
+      { nodeWidth = 5.0
+      , nodePadding = 20.0
+      , extent = { x0: left, y0: 48.0, x1: right, y1: h - 40.0 }
+      , nodeLayer = layerOf f
+      , nodeSort = Just (comparing rankOf)
+      }
+
+  heads = mapMaybe colHead (nub (map _.column f.nodes))
+  colHead c = do
+    x <- if c == Machines then Just 20.0 else
+      Array.head (mapMaybe (\sn -> ours sn >>= \nd -> if nd.column == c then Just sn.x0 else Nothing) laid.nodes)
+    pure $ svg "text" [ attr "class" "colhead", attr "x" (n x), attr "y" "24" ] [ HH.text (columnTitle c) ]
+  rule = svg "line" [ attr "class" "colrule", attr "x1" "20", attr "x2" (n (width - 20.0)), attr "y1" "32", attr "y2" "32" ] []
+
+  link sl =
+    let
+      ours' = f.links !! (unwrap' sl.index)
+      cls = maybe "" (\l -> sigClass l.signal <> (if Just l.machine == hot then " hot" else "") <> (if l.broken > 0 then " broken" else "")) ours'
+    in
+      svg "path" [ attr "class" ("link " <> cls), attr "d" (generateLinkPath laid.nodes sl) ]
+        (maybe [] (\l -> [ svg "title" [] [ HH.text (linkTitle l) ] ]) ours')
+
+  linkTitle l =
+    l.from <> " → " <> l.to <> " · " <> signalLabel l.signal <> " · " <> plural l.streams "stream"
+      <> (if l.broken > 0 then " · " <> show l.broken <> " with no port" else "")
+
+  node sn = case ours sn of
+    Nothing -> svg "g" [] []
+    Just nd -> case nd.machine of
+      Just m -> machineNode sn nd m
+      Nothing -> placeNode sn nd
+
+  bar sn = svg "rect"
+    [ attr "class" "bar", attr "x" (n sn.x0), attr "y" (n sn.y0)
+    , attr "width" (n (sn.x1 - sn.x0)), attr "height" (n (max 2.0 (sn.y1 - sn.y0)))
+    ] []
+
+  mid sn = (sn.y0 + sn.y1) / 2.0
+
+  machineNode sn nd m =
+    let cy = mid sn
+    in
+      svg "g"
+        [ attr "class" "node pick", attr "tabindex" "0", attr "role" "button"
+        , attr "aria-label" (nd.name <> ", " <> plural (round' sn.value) "stream")
+        , HE.onMouseEnter \_ -> on.hover (Just m)
+        , HE.onMouseLeave \_ -> on.hover Nothing
+        , HE.onFocus \_ -> on.hover (Just m)
+        , HE.onBlur \_ -> on.hover Nothing
+        , HE.onClick \_ -> on.pick m
+        ]
+        [ bar sn
+        , use ("sp-" <> m) 23.0 (cy - 16.0) 54.0 32.0
+        , label "name" (sn.x0 - 10.0) (cy - 2.0) "end" nd.name
+        , label "sub" (sn.x0 - 10.0) (cy + 11.0) "end" (plural (round' sn.value) "stream")
+        ]
+
+  placeNode sn nd =
+    let
+      cy = mid sn
+      tx = sn.x1 + 8.0
+      icon = case nd.id of
+        "engine" -> [ use "ic-kraken" tx (cy - 64.0) 44.0 44.0 ]
+        "linkspike" -> [ use "ic-lantern" tx (cy - 40.0) 40.0 24.0 ]
+        "ears" -> [ use "ic-ears" tx (cy - 18.0) 34.0 34.0 ]
+        _ -> []
+      lx = if nd.id == "ears" then tx + 40.0 else tx
+    in
+      svg "g" [ attr "class" "node" ]
+        ( [ bar sn ] <> icon <>
+            [ label "name" lx (cy - 2.0) "start" nd.name
+            , label "sub" lx (cy + 11.0) "start" (nd.note <> " · " <> show (round' sn.value))
+            ]
+        )
+
+  unwrap' (LinkID i) = i
+
+-- | The signals, as a key under the chart.
+key :: forall w i. HH.HTML w i
+key =
+  HH.div [ HP.class_ (HH.ClassName "flow-key") ]
+    ( [ Notes, Socket, Midi, Osc, Http, Cv, Audio, Samples ] <#> \s ->
+        HH.span [ HP.class_ (HH.ClassName ("sig " <> sigClass s)) ] [ HH.i_ [], HH.text (signalLabel s) ]
+    )
+
+sigClass :: Signal -> String
+sigClass = case _ of
+  Notes -> "s-notes"
+  Socket -> "s-socket"
+  Midi -> "s-midi"
+  Osc -> "s-osc"
+  Http -> "s-http"
+  Cv -> "s-cv"
+  Audio -> "s-audio"
+  Samples -> "s-samples"
+
+-- ---------------------------------------------------------------------------
+-- SVG
+-- ---------------------------------------------------------------------------
+
+svg :: forall r w i. String -> Array (HP.IProp r i) -> Array (HH.HTML w i) -> HH.HTML w i
+svg name = HH.elementNS (Namespace "http://www.w3.org/2000/svg") (ElemName name)
+
+attr :: forall r i. String -> String -> HP.IProp r i
+attr k = HP.attr (AttrName k)
+
+use :: forall w i. String -> Number -> Number -> Number -> Number -> HH.HTML w i
+use id x y w h' = svg "use" [ attr "href" ("#" <> id), attr "x" (n x), attr "y" (n y), attr "width" (n w), attr "height" (n h') ] []
+
+label :: forall w i. String -> Number -> Number -> String -> String -> HH.HTML w i
+label cls x y anchor s = svg "text" [ attr "class" cls, attr "x" (n x), attr "y" (n y), attr "text-anchor" anchor ] [ HH.text s ]
+
+n :: Number -> String
+n = toStringWith (fixed 1)
+
+round' :: Number -> Int
+round' x = fromMaybe 0 (fromNumber (Number.round x))
+
+plural :: Int -> String -> String
+plural k word = show k <> " " <> word <> (if k == 1 then "" else "s")
