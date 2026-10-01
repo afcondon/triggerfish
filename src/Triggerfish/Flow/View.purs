@@ -21,7 +21,6 @@ import Data.Maybe (Maybe(..), fromMaybe, maybe)
 import Data.Number as Number
 import Data.Tuple.Nested ((/\))
 import Data.Number.Format (fixed, toStringWith)
-import Data.Ord (comparing)
 import DataViz.Layout.Sankey.Compute (computeLayoutWithConfig)
 import DataViz.Layout.Sankey.Path (generateLinkPath)
 import DataViz.Layout.Sankey.Types (LinkID(..), defaultSankeyConfig)
@@ -29,7 +28,7 @@ import Halogen.HTML as HH
 import Halogen.HTML.Core (AttrName(..), ElemName(..), Namespace(..))
 import Halogen.HTML.Events as HE
 import Halogen.HTML.Properties as HP
-import Triggerfish.Flow (Column(..), Flow, Link, Node, Signal(..), columnTitle, layerOf, nodeRank, signalLabel)
+import Triggerfish.Flow (Column(..), Flow, Signal(..), columnTitle, layerOf, nodeRank, signalLabel)
 
 -- | What the chart reports: a machine hovered (or left), and a machine picked.
 type Handlers i = { hover :: Maybe String -> i, pick :: String -> i }
@@ -51,7 +50,7 @@ heightOf :: Flow -> Number
 heightOf f = clampN 250.0 720.0 (130.0 + toNumber streams * 11.0 + toNumber rows * 22.0)
   where
   streams = foldl (+) 0 (map _.streams (filter (\l -> l.to == "browser") f.links))
-  rows = foldl max 1 (map (\c -> Array.length (filter (\n -> n.column == c) f.nodes)) (nub (map _.column f.nodes)))
+  rows = foldl max 1 (map (\c -> Array.length (filter (\nd -> nd.column == c) f.nodes)) (nub (map _.column f.nodes)))
   clampN lo hi x = max lo (min hi x)
 
 chart :: forall w i. Handlers i -> Maybe String -> Flow -> HH.HTML w i
@@ -115,7 +114,9 @@ chart on hot f
   mid sn = (sn.y0 + sn.y1) / 2.0
 
   machineNode sn nd m =
-    let cy = mid sn
+    let
+      cy = mid sn
+      reach = max 10.0 (min 22.0 ((sn.y1 - sn.y0) / 2.0 + 6.0))
     in
       svg "g"
         [ attr "class" "node pick", attr "tabindex" "0", attr "role" "button"
@@ -126,7 +127,10 @@ chart on hot f
         , HE.onBlur \_ -> on.hover Nothing
         , HE.onClick \_ -> on.pick m
         ]
-        [ bar sn
+        -- A group catches the pointer only over what it paints, so the gap
+        -- between the fish and the name needs something to land on.
+        [ svg "rect" [ attr "class" "hit", attr "x" "10", attr "y" (n (cy - reach)), attr "width" (n (sn.x0 - 10.0)), attr "height" (n (2.0 * reach)) ] []
+        , bar sn
         , use ("sp-" <> m) 23.0 (cy - 16.0) 54.0 32.0
         , label "name" (sn.x0 - 10.0) (cy - 2.0) "end" nd.name
         , label "sub" (sn.x0 - 10.0) (cy + 11.0) "end" (plural (round' sn.value) "stream")
