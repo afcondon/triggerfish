@@ -143,7 +143,8 @@
     svg.flows.resting .node text { fill-opacity: .7; }
 
     /* The machine bar: each machine's nameplate, its fish its play button. */
-    .mbar { display: flex; gap: 6px; padding: 0 20px 10px; overflow-x: auto; }
+    .mbar { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 18px; padding: 0 20px 10px; }
+    .mitems { display: flex; flex-wrap: wrap; gap: 6px; }
     .mitem { flex: none; display: flex; align-items: center; gap: 9px; padding: 4px 12px 4px 4px; background: var(--field); color: var(--letter); }
     .mitem.closed { filter: saturate(.3); opacity: .72; }
     .mitem .wordmark { color: inherit; text-decoration: none; white-space: nowrap; }
