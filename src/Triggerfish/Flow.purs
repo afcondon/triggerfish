@@ -1,0 +1,331 @@
+-- | `Triggerfish.Flow` — the signal-flow chart's data: every way a machine's
+-- | output travels to the ears, read from the routing table rather than drawn.
+-- |
+-- | The chart is the landing page, the rig's dashboard and the explanation at
+-- | once (`docs/kb/plans/dashboard.md`, "One chart, three jobs"), and that only
+-- | works if **what you are not using is not drawn**. Nothing here is chosen:
+-- | the machines are the ones whose pages are open, the destinations are the
+-- | table's live legs, and the mode decides which path each leg takes. One
+-- | sequencer playing Ableton in Solo comes out as five nodes in a line.
+-- |
+-- | ## The path is the architecture
+-- |
+-- | Every machine is a page, so every stream starts in the browser. What
+-- | happens next depends on who plays:
+-- |
+-- | - **The page plays** (Solo, and the machines the rig does not play): MIDI
+-- |   leaves the browser through Web MIDI, straight to its port.
+-- | - **The rig plays** (Atlantis, for Odonus, Vetula and Balistes): the page
+-- |   sends notes over the rig socket to purerl-tidal, which hands MIDI to
+-- |   link-spike as OSC (`/midi/note/at`) for timestamped CoreMIDI delivery.
+-- |
+-- | Samples and the ES-9 are always reached through the rig, so in Solo they
+-- | are not drawn: a leg that cannot sound has no path, which is the point.
+-- |
+-- | ## Width is streams, not legs
+-- |
+-- | A link's value is the number of distinct WIRES it carries, not of table
+-- | rows. Sixteen drum lanes all sending notes to one port on channel 10 are
+-- | one stream; four Odonus heads on channels 1–4 are four. So a machine is as
+-- | wide as the number of things it actually drives, which is what a reader
+-- | wants the width to mean.
+module Triggerfish.Flow
+  ( Column(..)
+  , columnTitle
+  , Signal(..)
+  , signalLabel
+  , Node
+  , Link
+  , Flow
+  , Inputs
+  , Extra
+  , flow
+  , layerOf
+  , nodeRank
+  , machineOf
+  ) where
+
+import Prelude
+
+import Data.Array (catMaybes, concatMap, elem, filter, findIndex, foldl, length, mapMaybe, nub, nubByEq, sortWith)
+import Data.Array as Array
+import Data.Maybe (Maybe(..), fromMaybe, maybe)
+import Data.String (Pattern(..), contains, stripPrefix)
+import Data.Tuple (Tuple(..))
+import Triggerfish.Routing.Model (Destination(..), Ports, Reach(..), Source(..), Table, instrumentLabel, reachOf, sourceKey, sourceLabel)
+import Triggerfish.Transport (Mode(..))
+
+-- ---------------------------------------------------------------------------
+-- Columns and signals
+-- ---------------------------------------------------------------------------
+
+-- | Where a node stands, left to right. Fixed, so the chart reads the same in
+-- | every configuration; columns with nothing in them are packed away by
+-- | `layerOf`.
+data Column = Machines | Page | Engine | RigOut | Interface | Instrument | Heard
+
+derive instance Eq Column
+derive instance Ord Column
+
+columnTitle :: Column -> String
+columnTitle = case _ of
+  Machines -> "Machine"
+  Page -> "Page"
+  Engine -> "Engine"
+  RigOut -> "Rig out"
+  Interface -> "Interface"
+  Instrument -> "Instrument"
+  Heard -> "Heard"
+
+-- | What is travelling on a link. The colour changes where the signal changes
+-- | form, which is the architecture made visible.
+data Signal = Notes | Socket | Midi | Osc | Http | Cv | Audio | Samples
+
+derive instance Eq Signal
+
+signalLabel :: Signal -> String
+signalLabel = case _ of
+  Notes -> "note events"
+  Socket -> "rig socket"
+  Midi -> "MIDI"
+  Osc -> "OSC"
+  Http -> "HTTP"
+  Cv -> "CV / gate"
+  Audio -> "audio"
+  Samples -> "samples"
+
+-- ---------------------------------------------------------------------------
+-- The chart's data
+-- ---------------------------------------------------------------------------
+
+-- | `machine` is set on a machine's own node (or a voice's, when opened), so
+-- | the view can draw its fish and link to its page.
+type Node = { id :: String, column :: Column, name :: String, note :: String, machine :: Maybe String }
+
+-- | One hop of one machine's streams, merged across that machine's sources.
+-- | `broken` counts the streams on it whose port is missing: they are drawn,
+-- | because the table says they should sound, and the view marks them.
+type Link = { from :: String, to :: String, signal :: Signal, machine :: String, streams :: Int, broken :: Int }
+
+type Flow = { nodes :: Array Node, links :: Array Link }
+
+-- | A route that is not in the routing table: Conspicillum and Quadrat drive
+-- | their destinations themselves. `via` is set when the page reaches it
+-- | through a server of its own rather than through the rig (Quadrat's CV goes
+-- | through the Friends server's `/api/cv`).
+type Extra = { machine :: String, dest :: Destination, via :: Maybe String }
+
+type Inputs =
+  { mode :: Mode
+  , table :: Table
+  , ports :: Ports
+  , machines :: Array String   -- whose pages are open
+  , open :: Array String       -- machines drawn as their separate voices
+  , extras :: Array Extra
+  }
+
+-- | The machine a source belongs to, by its slot name.
+machineOf :: Source -> String
+machineOf = case _ of
+  SOdonusHead _ -> "odonus"
+  SDrumLane _ -> "balistes"
+  SVetulaVoice _ -> "vetula"
+  SSeleneBank _ -> "selene"
+
+-- | The machines purerl-tidal plays in Atlantis. Selene and Quadrat stay in
+-- | the browser; Conspicillum's samples go through the rig regardless.
+rigPlays :: String -> Boolean
+rigPlays m = m `elem` [ "odonus", "vetula", "balistes" ]
+
+-- ---------------------------------------------------------------------------
+-- From a leg to a path
+-- ---------------------------------------------------------------------------
+
+type Hop = { from :: String, to :: String, signal :: Signal }
+
+-- | One stream: who emits it, which wire it is, and the path it takes.
+type Stream = { machine :: String, unit :: String, wire :: String, hops :: Array Hop, broken :: Boolean }
+
+-- | The wire a destination drives. Two legs on one wire are one stream.
+wireOf :: Destination -> String
+wireOf = case _ of
+  DMidi d -> "midi:" <> d.port <> ":" <> show d.channel
+  DFh2Env d -> "fh2env:" <> show d.slot
+  DFh2Gate d -> "fh2gate:" <> show d.jack
+  DEs9Gate d -> "es9gate:" <> show d.block <> ":" <> show d.jack
+  DEs9Cv d -> "es9cv:" <> show d.bus
+  DContinuo d -> "continuo:" <> show d.channel
+  DRample d -> "rample:" <> d.port <> ":" <> show d.channel <> ":" <> show d.voice
+  DRamplePoly d -> "rample:" <> d.port <> ":" <> show d.channel
+  DPoly d -> "poly:" <> instrumentLabel d.inst
+  DSample _ -> "dirt"
+
+-- | The interface a MIDI-borne destination leaves by, and the instrument at
+-- | the far end of it. A port nobody has named an instrument for is its own
+-- | instrument, by name, rather than a guess.
+type Ends = { iface :: String, inst :: String, last :: Signal }
+
+midiEnds :: Destination -> Maybe Ends
+midiEnds = case _ of
+  DMidi d -> Just (portEnds d.port)
+  DFh2Env _ -> Just { iface: "fh2", inst: "modular", last: Cv }
+  DFh2Gate _ -> Just { iface: "fh2", inst: "modular", last: Cv }
+  DContinuo _ -> Just { iface: "continuo", inst: "piano", last: Midi }
+  DRample d -> Just { iface: "port:" <> d.port, inst: "rample", last: Midi }
+  DRamplePoly d -> Just { iface: "port:" <> d.port, inst: "rample", last: Midi }
+  _ -> Nothing
+  where
+  portEnds p
+    | contains (Pattern "IAC") p = { iface: "port:" <> p, inst: "ableton", last: Midi }
+    | otherwise = { iface: "port:" <> p, inst: "inst:" <> p, last: Midi }
+
+-- | The path one leg takes, or `Nothing` when it cannot sound in this mode
+-- | (or when nothing sends to it yet).
+pathOf :: Mode -> String -> Maybe String -> Destination -> Maybe (Array Hop)
+pathOf mode m via dest = case midiEnds dest of
+  Just e ->
+    Just $ head <> [ hop e.iface e.inst e.last, hop e.inst "ears" Audio ]
+    where
+    head
+      | atlantis && rigPlays m =
+          [ hop "browser" "engine" Socket, hop "engine" "linkspike" Osc, hop "linkspike" e.iface Midi ]
+      | otherwise = [ hop "browser" e.iface Midi ]
+  Nothing -> case dest of
+    DSample _ | atlantis ->
+      Just [ hop "browser" "engine" Socket, hop "engine" "d-dirt" Osc, hop "d-dirt" "ears" Audio ]
+    DPoly _ | atlantis -> Just (toEs9 relay)
+    -- Nothing sends a plain ES-9 leg from the table yet (`reachOf` says
+    -- `NotBuilt`); Quadrat's own CV, through the Friends server, is built.
+    DEs9Cv _ | atlantis, Just _ <- via -> Just (toEs9 relay)
+    DEs9Gate _ | atlantis, Just _ <- via -> Just (toEs9 relay)
+    _ -> Nothing
+  where
+  atlantis = mode == Atlantis
+  hop from to signal = { from, to, signal }
+  relay = case via of
+    Just v -> [ hop "browser" v Http, hop v "d-es9" Osc ]
+    Nothing -> [ hop "browser" "engine" Socket, hop "engine" "d-es9" Osc ]
+  toEs9 r = r <> [ hop "d-es9" "es9" Cv, hop "es9" "modular" Cv, hop "modular" "ears" Audio ]
+
+-- ---------------------------------------------------------------------------
+-- The flow
+-- ---------------------------------------------------------------------------
+
+flow :: Inputs -> Flow
+flow inp = { nodes, links }
+  where
+  shown m = m `elem` inp.machines
+  unitOf m src = if m `elem` inp.open then "src:" <> sourceKey src else "m:" <> m
+
+  tableStreams = inp.table # concatMap \r ->
+    let m = machineOf r.source
+    in if not (shown m) then []
+       else r.legs # filter _.on # mapMaybe (stream m (unitOf m r.source) Nothing <<< _.dest)
+
+  extraStreams = inp.extras # filter (shown <<< _.machine)
+    # mapMaybe \e -> stream e.machine ("m:" <> e.machine) e.via e.dest
+
+  stream m unit via dest = pathOf inp.mode m via dest <#> \hops ->
+    { machine: m, unit, wire: wireOf dest, hops, broken: isNoPort (reachOf inp.ports dest) }
+
+  streams :: Array Stream
+  streams = nubByEq (\a b -> a.unit == b.unit && a.wire == b.wire) (tableStreams <> extraStreams)
+
+  -- The first hop of every stream is its unit into the page.
+  hopsOf s = [ { from: s.unit, to: "browser", signal: Notes } ] <> s.hops
+
+  -- Sample sets feed SuperDirt whenever anything plays a sample: the material
+  -- is part of the path even though no machine sends it.
+  sampleStreams = length (filter (\s -> s.wire == "dirt") streams)
+  setsLinks
+    | sampleStreams > 0 =
+        [ { from: "sets", to: "d-dirt", signal: Samples, machine: "sets", streams: sampleStreams, broken: 0 } ]
+    | otherwise = []
+
+  links = merge (concatMap (\s -> hopsOf s <#> \h -> { hop: h, machine: s.machine, broken: s.broken }) streams) <> setsLinks
+
+  merge = foldl add []
+    where
+    add acc x = case findIndex (same x) acc of
+      Just i -> fromMaybe acc (Array.modifyAt i (\l -> l { streams = l.streams + 1, broken = l.broken + fromBool x.broken }) acc)
+      Nothing -> Array.snoc acc { from: x.hop.from, to: x.hop.to, signal: x.hop.signal, machine: x.machine, streams: 1, broken: fromBool x.broken }
+    same x l = l.from == x.hop.from && l.to == x.hop.to && l.signal == x.hop.signal && l.machine == x.machine
+    fromBool b = if b then 1 else 0
+
+  ids = nub (concatMap (\l -> [ l.from, l.to ]) links)
+  units = nubByEq (\a b -> a.unit == b.unit) streams
+  nodes = sortWith nodeRank (catMaybes (map (nodeOf units inp.table) ids))
+
+isNoPort :: Reach -> Boolean
+isNoPort = case _ of
+  NoPort _ -> true
+  _ -> false
+
+-- | The fixed nodes, in their reading order within each column.
+fixed :: Array Node
+fixed =
+  [ n "browser" Page "Browser" "every machine is a page"
+  , n "engine" Engine "purerl-tidal" "the rig's engine"
+  , n "foi" Engine "Friends server" "Quadrat's CV relay"
+  , n "sets" Engine "Sample sets" "Quadrat · Amphora"
+  , n "linkspike" RigOut "link-spike" "the beat · the rig's MIDI out"
+  , n "d-es9" RigOut "es9-daemon" "CV over audio"
+  , n "d-dirt" RigOut "SuperDirt" "plays samples"
+  , n "continuo" Interface "continuo" "a MIDI port, hosted"
+  , n "fh2" Interface "FH-2" "MIDI to CV and gates"
+  , n "es9" Interface "ES-9" "audio to CV"
+  , n "ableton" Instrument "Ableton" "instruments and effects"
+  , n "piano" Instrument "Piano" "in Continuo"
+  , n "rample" Instrument "Rample" "four sample voices"
+  , n "modular" Instrument "The modular" "CV and gates"
+  , n "ears" Heard "Your ears" "headphones · monitors"
+  ]
+  where
+  n id column name note = { id, column, name, note, machine: Nothing }
+
+machineNames :: Array { slot :: String, name :: String, note :: String }
+machineNames =
+  [ { slot: "odonus", name: "Odonus", note: "harmelodic ideas" }
+  , { slot: "vetula", name: "Vetula", note: "progressions" }
+  , { slot: "balistes", name: "Balistes", note: "drums" }
+  , { slot: "selene", name: "Selene", note: "polysignals" }
+  , { slot: "conspicillum", name: "Conspicillum", note: "sample loupe" }
+  , { slot: "quadrat", name: "Quadrat", note: "sampling" }
+  ]
+
+nodeOf :: Array Stream -> Table -> String -> Maybe Node
+nodeOf units table id = case Array.find (\x -> x.id == id) fixed of
+  Just f -> Just f
+  Nothing
+    | Just p <- strip "port:" -> Just { id, column: Interface, name: p, note: "MIDI port", machine: Nothing }
+    | Just p <- strip "inst:" -> Just { id, column: Instrument, name: p, note: "on its port", machine: Nothing }
+    | Just m <- strip "m:" -> Just (machineNode m)
+    | Just k <- strip "src:" -> (Array.find (\u -> u.unit == id) units) <#> \u ->
+        { id, column: Machines, name: maybe k sourceLabel (sourceOf k), note: "", machine: Just u.machine }
+    | otherwise -> Nothing
+  where
+  strip pre = stripPrefix (Pattern pre) id
+  sourceOf k = _.source <$> Array.find (\r -> sourceKey r.source == k) table
+  machineNode m = case Array.find (\x -> x.slot == m) machineNames of
+    Just x -> { id, column: Machines, name: x.name, note: x.note, machine: Just m }
+    Nothing -> { id, column: Machines, name: m, note: "", machine: Just m }
+
+-- | A node's place in reading order: machines in the dashboard's order,
+-- | everything else in `fixed`'s, named ports and instruments after the fixed
+-- | ones in their column. For the layout's `nodeSort`, so the chart holds
+-- | still as nodes come and go.
+nodeRank :: Node -> Tuple Column (Tuple Int String)
+nodeRank nd = Tuple nd.column (Tuple at nd.name)
+  where
+  at = case nd.machine of
+    Just m -> fromMaybe 99 (findIndex (\x -> x.slot == m) machineNames)
+    Nothing -> fromMaybe 99 (findIndex (\x -> x.id == nd.id) fixed)
+
+-- | Packed column numbers: the columns in use, numbered left to right. In
+-- | Solo there is no rig, so its columns close up rather than leave a gap.
+layerOf :: Flow -> String -> Maybe Int
+layerOf f id = do
+  nd <- Array.find (\x -> x.id == id) f.nodes
+  findIndex (_ == nd.column) present
+  where
+  present = Array.sort (nub (map _.column f.nodes))

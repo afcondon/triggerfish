@@ -16,6 +16,7 @@ import Data.String (Pattern(..))
 import Data.String.Common (joinWith, split)
 import Effect (Effect)
 import Effect.Console (log)
+import Test.FlowSpec (runFlowTests)
 import Test.RevoiceSpec (runRevoiceTests)
 import Triggerfish.Odonus.Model as M
 import Triggerfish.Odonus.Marbles as Marbles
@@ -149,6 +150,7 @@ main = do
   -- Assertion suites first: these FAIL the run, where the sampling stats below
   -- only report.
   runRevoiceTests
+  runFlowTests
   log ("steps per scenario: " <> show n <> "\n")
 
   -- A. Chord quantiser: NOTES churning every step, chord overlay on. EVERY
