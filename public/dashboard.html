@@ -137,6 +137,16 @@
     svg.flows .pick { cursor: pointer; outline: none; }
     svg.flows .hit { fill: transparent; }
     svg.flows .lamp-on { fill: var(--live); } svg.flows .lamp-off { fill: var(--alarm); }
+    /* link-spike, above the flow: the beat, broadcast. One pulse per beat at
+       the rig's tempo (the phase is not yet the Link clock's). */
+    svg.flows .beat .arc { fill: none; stroke: #d4a82a; stroke-width: 2; stroke-linecap: round; opacity: .25; animation: broadcast var(--beat, .5s) ease-out infinite; }
+    svg.flows .beat .arc.a2 { animation-delay: calc(var(--beat, .5s) * .12); }
+    svg.flows .beat .arc.a3 { animation-delay: calc(var(--beat, .5s) * .24); }
+    svg.flows .beatlabel { font: 400 10px var(--mono); fill: var(--muted); }
+    svg.flows .beatmark { fill: #d4a82a; animation: pulse var(--beat, .5s) ease-out infinite; transform-box: fill-box; transform-origin: center; }
+    @keyframes broadcast { 0% { opacity: .9; } 70%, 100% { opacity: .18; } }
+    @keyframes pulse { 0% { opacity: 1; transform: scale(1.35); } 60%, 100% { opacity: .45; transform: scale(1); } }
+    @media (prefers-reduced-motion: reduce) { svg.flows .beat .arc, svg.flows .beatmark { animation: none; opacity: .8; } }
     svg.flows .link.idle { fill-opacity: .16; }
     svg.flows.hovering .link.idle.hot { fill-opacity: .5; }
     svg.flows.resting .bar { opacity: .45; }

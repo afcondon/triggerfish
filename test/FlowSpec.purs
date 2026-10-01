@@ -13,7 +13,7 @@ import Data.Maybe (Maybe(..))
 import Effect (Effect)
 import Effect.Console (log)
 import Test.Assert (assert')
-import Triggerfish.Flow (Inputs, Signal(..), flow, layerOf)
+import Triggerfish.Flow (Inputs, Signal(..), flow, layerOf, onTheBeat)
 import Triggerfish.Routing.Model (Destination(..), Source(..), Table, defaultTableFor)
 import Triggerfish.Transport (Mode(..))
 
@@ -58,7 +58,9 @@ runFlowTests = do
 
   let rig = flow base { mode = Atlantis, table = odonusToAbleton }
   check "in Atlantis the page hands the rig its notes"
-    (map _.id rig.nodes == [ "m:odonus", "browser", "engine", "linkspike", "port:IAC Driver Tidal", "ableton", "ears" ])
+    (map _.id rig.nodes == [ "m:odonus", "browser", "engine", "port:IAC Driver Tidal", "ableton", "ears" ])
+  check "the rig times purerl-tidal and the ports it sends to; Solo has no beat"
+    (onTheBeat rig == [ "engine", "port:IAC Driver Tidal" ] && onTheBeat one == [])
   check "purerl-tidal stands one column deeper than the page"
     (layerOf rig "browser" == Just 1 && layerOf rig "engine" == Just 2)
   check "Solo closes up the rig's columns"

@@ -16,8 +16,13 @@
 -- | - **The page plays** (Solo, and the machines the rig does not play): MIDI
 -- |   leaves the browser through Web MIDI, straight to its port.
 -- | - **The rig plays** (Atlantis, for Odonus, Vetula and Balistes): the page
--- |   sends notes over the rig socket to purerl-tidal, which hands MIDI to
--- |   link-spike as OSC (`/midi/note/at`) for timestamped CoreMIDI delivery.
+-- |   sends notes over the rig socket to purerl-tidal, which sends the MIDI.
+-- |
+-- | link-spike is not a node. It does carry the rig's MIDI (purerl-tidal hands
+-- | it `/midi/note/at` over OSC for timestamped CoreMIDI delivery), but what it
+-- | means to a reader is the beat: Link, broadcast to everything the rig
+-- | times. So the chart draws it above the flow, reaching the nodes in
+-- | `onTheBeat`, rather than as one more hop in it.
 -- |
 -- | Samples and the ES-9 are always reached through the rig, so in Solo they
 -- | are not drawn: a leg that cannot sound has no path, which is the point.
@@ -41,6 +46,7 @@ module Triggerfish.Flow
   , Extra
   , flow
   , layerOf
+  , onTheBeat
   , nodeRank
   , machineOf
   ) where
@@ -190,7 +196,7 @@ pathOf mode m via dest = case midiEnds dest of
     where
     head
       | atlantis && rigPlays m =
-          [ hop "browser" "engine" Socket, hop "engine" "linkspike" Osc, hop "linkspike" e.iface Midi ]
+          [ hop "browser" "engine" Socket, hop "engine" e.iface Midi ]
       | otherwise = [ hop "browser" e.iface Midi ]
   Nothing -> case dest of
     DSample _ | atlantis ->
@@ -272,7 +278,6 @@ fixed =
   , n "engine" Engine "purerl-tidal" "the rig's engine"
   , n "foi" Engine "Friends server" "Quadrat's CV relay"
   , n "sets" Engine "Sample sets" "Quadrat · Amphora"
-  , n "linkspike" RigOut "link-spike" "the beat · the rig's MIDI out"
   , n "d-es9" RigOut "es9-daemon" "CV over audio"
   , n "d-dirt" RigOut "SuperDirt" "plays samples"
   , n "continuo" Interface "continuo" "a MIDI port, hosted"
@@ -335,3 +340,14 @@ layerOf f id = do
   findIndex (_ == nd.column) present
   where
   present = Array.sort (nub (map _.column f.nodes))
+
+-- | The nodes the rig times to Link's beat: purerl-tidal, its daemons, and
+-- | every port it sends MIDI to (through link-spike, timestamped). Empty in
+-- | Solo, where each page keeps its own time.
+onTheBeat :: Flow -> Array String
+onTheBeat f = nub (concatMap rig f.links)
+  where
+  rig l
+    | l.from == "engine" = [ "engine", l.to ]
+    | l.from == "d-es9" || l.from == "d-dirt" = [ l.from ]
+    | otherwise = []

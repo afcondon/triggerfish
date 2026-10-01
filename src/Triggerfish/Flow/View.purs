@@ -29,7 +29,7 @@ import Halogen.HTML as HH
 import Halogen.HTML.Core (AttrName(..), ElemName(..), Namespace(..))
 import Halogen.HTML.Events as HE
 import Halogen.HTML.Properties as HP
-import Triggerfish.Flow (Column(..), Flow, Signal(..), columnTitle, layerOf, nodeRank, signalLabel)
+import Triggerfish.Flow (Column(..), Flow, Signal(..), columnTitle, layerOf, nodeRank, onTheBeat, signalLabel)
 
 -- | What the chart reports: a machine hovered (or left), and a machine picked.
 type Handlers i = { hover :: Maybe String -> i, pick :: String -> i }
@@ -58,8 +58,8 @@ heightOf f = clampN 250.0 720.0 (130.0 + toNumber streams * 11.0 + toNumber rows
 -- | sounding now; the rest are drawn ghosted rather than dropped, since an
 -- | open page that is stopped is still part of the picture, and when nothing
 -- | plays the whole chart rests. `rigUp` is whether the page reaches
--- | purerl-tidal, shown on the kraken.
-type Live = { playing :: Array String, rigUp :: Boolean }
+-- | purerl-tidal, shown on the kraken. `tempo` sets the beat's pulse.
+type Live = { playing :: Array String, rigUp :: Boolean, tempo :: Number }
 
 chart :: forall w i. Handlers i -> Maybe String -> Live -> Flow -> HH.HTML w i
 chart on hot live f
@@ -70,12 +70,17 @@ chart on hot live f
       svg "svg"
         [ attr "viewBox" ("0 0 " <> n width <> " " <> n h)
         , attr "class" ("flows" <> (if hot == Nothing then "" else " hovering") <> (if Array.null live.playing then " resting" else ""))
+        , attr "style" ("--beat: " <> n (60.0 / max 20.0 live.tempo) <> "s")
         , attr "role" "img"
         , attr "aria-label" "Where each machine's output goes: through the browser or the rig, through interfaces and instruments, to your ears"
         ]
-        ( heads <> [ rule ] <> map link laid.links <> map node laid.nodes )
+        ( beatBand <> heads <> [ rule ] <> map link laid.links <> map node laid.nodes <> beatMarks )
   where
-  h = heightOf f
+  -- In Atlantis, link-spike stands above the flow: the beat, broadcast to
+  -- everything the rig times, rather than one more hop in it.
+  beat = onTheBeat f
+  band = if Array.null beat then 0.0 else 58.0
+  h = heightOf f + band
   byId = Map.fromFoldable (map (\x -> x.id /\ x) f.nodes)
   ours sn = Map.lookup sn.name byId
   rankOf sn = map nodeRank (ours sn)
@@ -84,7 +89,7 @@ chart on hot live f
     (defaultSankeyConfig width h)
       { nodeWidth = 5.0
       , nodePadding = 20.0
-      , extent = { x0: left, y0: 48.0, x1: right, y1: h - 40.0 }
+      , extent = { x0: left, y0: 48.0 + band, x1: right, y1: h - 40.0 }
       , nodeLayer = layerOf f
       , nodeSort = Just (comparing rankOf)
       }
@@ -93,8 +98,38 @@ chart on hot live f
   colHead c = do
     x <- if c == Machines then Just 20.0 else
       Array.head (mapMaybe (\sn -> ours sn >>= \nd -> if nd.column == c then Just sn.x0 else Nothing) laid.nodes)
-    pure $ svg "text" [ attr "class" "colhead", attr "x" (n x), attr "y" "24" ] [ HH.text (columnTitle c) ]
-  rule = svg "line" [ attr "class" "colrule", attr "x1" "20", attr "x2" (n (width - 20.0)), attr "y1" "32", attr "y2" "32" ] []
+    pure $ svg "text" [ attr "class" "colhead", attr "x" (n x), attr "y" (n (24.0 + band)) ] [ HH.text (columnTitle c) ]
+  rule = svg "line" [ attr "class" "colrule", attr "x1" "20", attr "x2" (n (width - 20.0)), attr "y1" (n (32.0 + band)), attr "y2" (n (32.0 + band)) ] []
+
+  -- The lanternfish between broadcast arcs, and a gold mark pulsing on every
+  -- node it times.
+  beatBand
+    | Array.null beat = []
+    | otherwise =
+        let cx = (left + right) / 2.0
+        in
+          [ svg "g" [ attr "class" "beat" ]
+              ( arcs cx (-1.0) <> arcs cx 1.0 <>
+                  [ use "ic-lantern" (cx - 26.0) 8.0 52.0 31.0
+                  , label "beatlabel" cx 52.0 "middle" "link-spike · the beat"
+                  ]
+              )
+          ]
+  arcs cx dir = [ 1.0, 2.0, 3.0 ] <#> \k ->
+    let
+      r = 30.0 + 9.0 * k
+      x0 = cx + dir * (24.0 + 8.0 * k)
+      x1 = x0
+    in
+      svg "path"
+        [ attr "class" ("arc a" <> show (round' k))
+        , attr "d" ("M" <> n x0 <> "," <> n (23.0 - r * 0.42) <> " A" <> n r <> "," <> n r <> " 0 0 " <> (if dir > 0.0 then "1" else "0") <> " " <> n x1 <> "," <> n (23.0 + r * 0.42))
+        ] []
+  beatMarks = laid.nodes # mapMaybe \sn ->
+    if sn.name `Array.elem` beat
+      then Just $ svg "circle" [ attr "class" "beatmark", attr "cx" (n (sn.x0 + 2.5)), attr "cy" (n (sn.y0 - 6.0)), attr "r" "3.4" ]
+        [ svg "title" [] [ HH.text "on the beat: timed by link-spike" ] ]
+      else Nothing
 
   link sl =
     let
@@ -150,7 +185,6 @@ chart on hot live f
       tx = sn.x1 + 8.0
       icon = case nd.id of
         "engine" -> [ use "ic-kraken" tx (cy - 64.0) 44.0 44.0 ]
-        "linkspike" -> [ use "ic-lantern" tx (cy - 40.0) 40.0 24.0 ]
         "ears" -> [ use "ic-ears" tx (cy - 18.0) 34.0 34.0 ]
         _ -> []
       lx = if nd.id == "ears" then tx + 40.0 else tx
