@@ -138,7 +138,6 @@ type State =
 
 data Action o
   = Init
-  | SetMode Mode
   | TogglePlay
   | SetBpm String
   | Capture
@@ -207,10 +206,6 @@ handleAction cfg = case _ of
     _ <- H.subscribe $ eventListener KET.keydown target (Just <<< Key)
     handleAction cfg RoutingChanged
     pushFree
-    pushSounding cfg
-  SetMode m -> do
-    H.modify_ _ { mode = m }
-    liftEffect $ TransportStore.save m
     pushSounding cfg
   TogglePlay -> do
     H.modify_ \s -> s { playing = not s.playing }
@@ -381,12 +376,12 @@ bar cfg st =
         <> "display:flex;align-items:center;gap:14px;padding:0 16px;overflow:hidden;"
         <> "border-bottom:1px solid #00000026;background:linear-gradient(#f1eee5,#e6e2d6)" ]
     ( [ HH.span [ style (engrave <> ";font-size:11px") ] [ HH.text cfg.nameplate ]
-      , HH.div
-          [ style "display:flex;border:1px solid #00000033;border-radius:5px;overflow:hidden" ]
-          [ modeSeg "Solo" (st.mode == Solo) "#1c1a12" "linear-gradient(#c8a86a,#b8975a)" Solo
-          , modeSeg "Atlantis" (st.mode == Atlantis) "#eaf3fa" "linear-gradient(#3a6b8a,#2d5670)" Atlantis
-          ]
-      , button (if st.playing then "■ Stop" else "▶ Play") TogglePlay
+      ]
+      -- The mode is rig-wide, set on the dashboard; a page only follows it.
+      -- Solo, the base case, needs no word; in Atlantis a quiet tag says that
+      -- the rig is the one playing.
+      <> (if st.mode == Atlantis then [ atlantisTag ] else [])
+      <> [ button (if st.playing then "■ Stop" else "▶ Play") TogglePlay
       , HH.label [ style (engrave <> ";font-size:10px;display:flex;align-items:center;gap:6px") ]
           [ HH.text "BPM"
           , HH.input
@@ -406,14 +401,13 @@ bar cfg st =
       <> [ button "Panic" Panic ]
     )
   where
-  modeSeg label active onColor onBg m =
-    HH.button
-      [ HE.onClick \_ -> SetMode m
-      , style $ "padding:5px 13px;border:0;cursor:pointer;font-size:10px;letter-spacing:0.16em;"
-          <> "text-transform:uppercase;color:" <> (if active then onColor else "#5a564b")
-          <> ";background:" <> (if active then onBg else "linear-gradient(#e9e5d9,#dcd8c9)")
+  atlantisTag =
+    HH.span
+      [ HP.title "Atlantis: the rig plays; this page sends it what to play. The mode is set on the dashboard."
+      , style $ "padding:3px 9px;border-radius:4px;font-size:10px;letter-spacing:0.16em;"
+          <> "text-transform:uppercase;color:#eaf3fa;background:linear-gradient(#3a6b8a,#2d5670)"
       ]
-      [ HH.text label ]
+      [ HH.text "Atlantis" ]
   button label act =
     HH.button
       [ HE.onClick \_ -> act
