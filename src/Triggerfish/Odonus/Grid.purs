@@ -45,7 +45,8 @@ import Reef.Input as RI
 import Reef.PitchSet (PitchSet(..))
 import Reef.Rample as Rample
 import Effect.Console as Console
-import Reef.Protocol (encodeSim, encodeTagged)
+import Reef.Protocol (decodeTagged, encodeSim, encodeTagged)
+import Data.String (Pattern(..), stripPrefix) as Str
 import Web.Event.Event (EventType(..), preventDefault)
 import Web.Event.EventTarget (addEventListener, eventListener, removeEventListener)
 import Web.HTML (window)
@@ -335,6 +336,12 @@ dispatch = case _ of
     -- Link anchor arrives, then phase-locks — so Triggerfish runs solo
     -- without the rig, and joins the ensemble the moment it's up.
     bin <- liftEffect $ Binnacle.connect { url: rigUrl, tempo: 120.0 }
+    -- Follow the rig: an `odonus` line evaluated elsewhere (Limulus) is applied
+    -- by the BEAM voice, which broadcasts its tick-tagged gestures; queue them
+    -- here like our own so both runtimes apply them on the same step.
+    { emitter: rigE, listener: rigL } <- liftEffect HS.create
+    _ <- H.subscribe rigE
+    liftEffect $ Binnacle.onAppMessage bin (HS.notify rigL <<< RigFrame)
     -- The lookahead scheduler drives both model advance and audio.
     { emitter: stepE, listener: stepL } <- liftEffect HS.create
     _ <- H.subscribe stepE
@@ -627,6 +634,20 @@ dispatch = case _ of
       H.modify_ _ { lastChip = cv }
       H.raise (IdentityChanged cv)
   MidiReady outs nm -> H.modify_ _ { outs = outs, midiName = nm }
+  -- A move made on the rig (`odonus $ ...`, Reef.Move): its gestures arrive
+  -- tagged for the step the BEAM voice applies them on, and join `pending`, as
+  -- `enqueue` does for ours, so the Step loop applies them on that same step and
+  -- the panel shows what is playing. Only while the rig is what's sounding.
+  RigFrame msg -> for_ (Str.stripPrefix (Str.Pattern "reef-input ") msg) \json ->
+    case decodeTagged json of
+      Left _ -> liftEffect $ Console.warn ("Odonus: a reef-input from the rig did not decode: " <> take 120 json)
+      Right t -> do
+        st <- H.get
+        when (st.sounding == Rig) do
+          when (t.tick < st.nextModelStep) $ liftEffect $ Console.warn
+            ("Odonus: a rig move for step " <> show t.tick <> " arrived at step "
+              <> show st.nextModelStep <> "; applied late, so this page may drift from the rig")
+          H.modify_ \s -> s { pending = s.pending <> [ { step: t.tick, input: t.input } ] }
   -- MidiFighter Twister, bank 1: the 16 encoders map 1:1 onto the 16 cells.
   -- ROTATE (absolute CC on the rotate channel) sets the ACTIVE grid's field for that
   -- cell — scaled from 0..127 into the field's range and pushed through the SAME

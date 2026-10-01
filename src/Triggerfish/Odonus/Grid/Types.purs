@@ -401,6 +401,7 @@ data Action
   = Initialize
   | Step Scheduler.Tick
   | Frame
+  | RigFrame String         -- a frame from the rig: an `odonus` move's tagged gestures to follow
   -- every output port, status line
   | MidiReady RO.Outs String
   | ToggleGlide Int
