@@ -121,7 +121,16 @@
     @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --s-notes: #9fb0b8; --s-socket: #ab93f0; --s-midi: #4cc5bd; --s-osc: #eab94f; --s-cv: #e87bbd; --s-audio: #7fb8e0; --s-samples: #d2a06d; --s-http: #b9aed0; --kraken: #c26a82; --kraken-deep: #8e4258; --kraken-pupil: #10252e; } }
     :root[data-theme="dark"] { --s-notes: #9fb0b8; --s-socket: #ab93f0; --s-midi: #4cc5bd; --s-osc: #eab94f; --s-cv: #e87bbd; --s-audio: #7fb8e0; --s-samples: #d2a06d; --s-http: #b9aed0; --kraken: #c26a82; --kraken-deep: #8e4258; --kraken-pupil: #10252e; }
     .flow { margin-bottom: 24px; }
-    .flow-chart { overflow-x: auto; background: var(--plate); border: 1px solid var(--rule); padding: 8px 0; }
+    .flow-chart { position: relative; overflow-x: auto; background: var(--plate); border: 1px solid var(--rule); padding: 8px 0; isolation: isolate; }
+    /* A watermark under the chart: A. E. Verrill's Architeuthis, 1882
+       (Wikimedia Commons, "Architeuthis dux Verrill 1882.jpg", public domain;
+       Trans. Connecticut Acad. Sci. 5). The giant squid streams left to right
+       as the flows do. Very faint, so it never competes with a ribbon. */
+    .flow-chart::before { content: ""; position: absolute; inset: 0; z-index: -1; pointer-events: none;
+      background: url("img/verrill-architeuthis-1882.webp") center 62% / min(1400px, 92%) auto no-repeat;
+      opacity: var(--wm-opacity, .07); }
+    @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .flow-chart::before { filter: invert(1); --wm-opacity: .09; } }
+    :root[data-theme="dark"] .flow-chart::before { filter: invert(1); --wm-opacity: .09; }
     .flow-empty { margin: 0; padding: 28px 20px; color: var(--muted); }
     svg.flows { display: block; width: 100%; min-width: 1150px; height: auto; }
     svg.flows .colhead { font: 500 9.5px var(--mono); letter-spacing: .14em; text-transform: uppercase; fill: var(--muted); }
