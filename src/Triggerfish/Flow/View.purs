@@ -7,6 +7,7 @@
 -- | each hop, and a machine is drawn with its fish.
 module Triggerfish.Flow.View
   ( Handlers
+  , Live
   , chart
   , key
   ) where
@@ -53,18 +54,22 @@ heightOf f = clampN 250.0 720.0 (130.0 + toNumber streams * 11.0 + toNumber rows
   rows = foldl max 1 (map (\c -> Array.length (filter (\nd -> nd.column == c) f.nodes)) (nub (map _.column f.nodes)))
   clampN lo hi x = max lo (min hi x)
 
--- | `playing` names the machines sounding now. The rest are drawn ghosted
--- | rather than dropped: an open page that is stopped is still part of the
--- | picture, and when nothing plays the whole chart rests.
-chart :: forall w i. Handlers i -> Maybe String -> Array String -> Flow -> HH.HTML w i
-chart on hot playing f
+-- | What the chart shows of the moment. `playing` names the machines
+-- | sounding now; the rest are drawn ghosted rather than dropped, since an
+-- | open page that is stopped is still part of the picture, and when nothing
+-- | plays the whole chart rests. `rigUp` is whether the page reaches
+-- | purerl-tidal, shown on the kraken.
+type Live = { playing :: Array String, rigUp :: Boolean }
+
+chart :: forall w i. Handlers i -> Maybe String -> Live -> Flow -> HH.HTML w i
+chart on hot live f
   | Array.null f.links =
       HH.p [ HP.class_ (HH.ClassName "flow-empty") ]
         [ HH.text "Nothing is playing anywhere yet. Open a machine and the chart shows where it goes." ]
   | otherwise =
       svg "svg"
         [ attr "viewBox" ("0 0 " <> n width <> " " <> n h)
-        , attr "class" ("flows" <> (if hot == Nothing then "" else " hovering") <> (if Array.null playing then " resting" else ""))
+        , attr "class" ("flows" <> (if hot == Nothing then "" else " hovering") <> (if Array.null live.playing then " resting" else ""))
         , attr "role" "img"
         , attr "aria-label" "Where each machine's output goes: through the browser or the rig, through interfaces and instruments, to your ears"
         ]
@@ -155,11 +160,19 @@ chart on hot playing f
             [ label "name" lx (cy - 2.0) "start" nd.name
             , label "sub" lx (cy + 11.0) "start" (nd.note <> " · " <> show (round' sn.value))
             ]
+            <> rigLamp nd.id lx cy
         )
 
   unwrap' (LinkID i) = i
+  -- The rig's link, on the rig: a lamp under purerl-tidal's label.
+  rigLamp id x cy
+    | id == "engine" =
+        [ svg "circle" [ attr "class" (if live.rigUp then "lamp-on" else "lamp-off"), attr "cx" (n (x + 4.0)), attr "cy" (n (cy + 24.0)), attr "r" "4" ] []
+        , label "sub" (x + 13.0) (cy + 27.0) "start" (if live.rigUp then "connected" else "not connected")
+        ]
+    | otherwise = []
   -- The sample sets sound whenever anything does.
-  sounding l = l.machine `Array.elem` playing || (l.machine == "sets" && not (Array.null playing))
+  sounding l = l.machine `Array.elem` live.playing || (l.machine == "sets" && not (Array.null live.playing))
 
 -- | The signals, as a key under the chart.
 key :: forall w i. HH.HTML w i

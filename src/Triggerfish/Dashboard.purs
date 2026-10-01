@@ -318,7 +318,7 @@ flowChart :: forall m. State -> H.ComponentHTML Action () m
 flowChart st =
   HH.section [ cls "flow", HP.attr (AttrName "aria-label") "Where it all goes" ]
     [ HH.div [ cls "flow-chart" ]
-        [ FlowView.chart { hover: Hover, pick: ToggleVoices } st.hot (map _.slot (filter (playing st) machines))
+        [ FlowView.chart { hover: Hover, pick: ToggleVoices } st.hot { playing: map _.slot (filter (playing st) machines), rigUp: st.rigUp }
             ( Flow.flow
                 { mode: st.mode
                 , table: st.table
@@ -353,21 +353,9 @@ topBar st =
         , HH.button [ cls "btn panic", HE.onClick \_ -> Panic ] [ HH.text "Panic" ]
         ]
         )
-    , HH.div [ cls "row status" ]
-        ( atlantisOnly [ lamp st.rigUp (if st.rigUp then "rig connected" else "no rig") ]
-        <> [ lamp (not (null st.ports)) (portsNote st.ports)
-        , HH.span [ cls "note" ]
-            [ HH.text case st.mode of
-                Solo -> "Solo: each page plays through MIDI on this computer."
-                Atlantis -> "Atlantis: the rig plays; pages send it what to play."
-            ]
-        ])
     , machineBar st
     ]
   where
-  -- Progressive disclosure: the rig's instruments appear only when the rig is in
-  -- use. Solo shows what a newcomer with a browser and a synth needs, no more.
-  atlantisOnly xs = if st.mode == Atlantis then xs else []
   -- A plain link: the browser moves the hash and keeps history; the page follows
   -- through its hashchange listener.
   tab v href label =
@@ -378,10 +366,6 @@ topBar st =
           <> (if st.view == v then [ HP.attr (AttrName "aria-current") "page" ] else [])
       )
       [ HH.text label ]
-  portsNote ns = case length ns of
-    0 -> "no MIDI outputs"
-    1 -> "1 MIDI output"
-    n -> show n <> " MIDI outputs"
 
 lamp :: forall w i. Boolean -> String -> HH.HTML w i
 lamp on label =
@@ -418,6 +402,9 @@ machineBar st =
     HH.button
       [ cls (if st.mode == m then "on" else "")
       , HP.attr (AttrName "aria-pressed") (if st.mode == m then "true" else "false")
+      , HP.title case m of
+          Solo -> "Solo: each page plays through MIDI on this computer."
+          Atlantis -> "Atlantis: the rig plays; pages send it what to play."
       , HE.onClick \_ -> SetMode m
       ]
       [ HH.text label ]
@@ -467,6 +454,7 @@ routing st =
     [ HH.div [ cls "sectionhead" ]
         [ HH.h2_ [ HH.text "Routing" ]
         , HH.span [ cls "note" ] [ HH.text "Every source and where it goes. Changes save at once and reach every open page." ]
+        , lamp (not (null st.ports)) portsNote
         ]
     , RV.key env allSources
     , RV.sourceRows env allSources
@@ -483,6 +471,10 @@ routing st =
   sources = map _.source st.table
   vetulaVoices = nubEq ([ RM.SVetulaVoice "" ] <> filter isVetula sources)
   seleneBanks = filter isSelene sources
+  portsNote = case length st.ports of
+    0 -> "no MIDI outputs on this computer"
+    1 -> "1 MIDI output on this computer"
+    k -> show k <> " MIDI outputs on this computer"
   isVetula = case _ of
     RM.SVetulaVoice _ -> true
     _ -> false
