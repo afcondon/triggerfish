@@ -520,6 +520,7 @@ handleAction = case _ of
     bus <- liftEffect Bus.open
     H.modify_ _ { bus = Just bus }
     liftEffect $ Bus.onMessage bus (HS.notify listener <<< FromBus)
+    liftEffect $ Bus.sayGoodbye bus (mapMaybe Stage.slotOf [ Odo, Vet ])
     -- Restore the saved scene grid (rig-wide). Playback is NOT restored (sceneRun
     -- stays false) — a reload never auto-plays, mirroring the machines.
     msc <- liftEffect ScenesStore.load
@@ -691,6 +692,7 @@ handleAction = case _ of
         pushAll
       Bus.Hello -> announce Odo *> announce Vet
       Bus.State _ -> pure unit
+      Bus.Bye _ -> pure unit
   ModeStored -> do
     mmode <- liftEffect TransportStore.load
     cur <- H.gets _.mode

@@ -183,6 +183,7 @@ handleAction cfg = case _ of
     bus <- liftEffect Bus.open
     H.modify_ _ { bus = Just bus }
     liftEffect $ Bus.onMessage bus (HS.notify listener <<< FromBus)
+    liftEffect $ Bus.sayGoodbye bus (maybe [] pure (Stage.slotOf cfg.which))
     -- The port names, for the router's reach column and its port menus. The
     -- machine asks for MIDI itself to play; this is only to know what exists.
     for_ cfg.router \_ -> do

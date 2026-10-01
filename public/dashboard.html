@@ -137,6 +137,29 @@
     svg.flows .link.broken { stroke: var(--alarm); stroke-width: 1.2; stroke-dasharray: 4 3; }
     svg.flows .pick { cursor: pointer; outline: none; }
     svg.flows .hit { fill: transparent; }
+    svg.flows .link.idle { fill-opacity: .16; }
+    svg.flows.hovering .link.idle.hot { fill-opacity: .5; }
+    svg.flows.resting .bar { opacity: .45; }
+    svg.flows.resting .node text { fill-opacity: .7; }
+
+    /* The machine bar: each machine's nameplate, its fish its play button. */
+    .mbar { display: flex; gap: 6px; padding: 0 20px 10px; overflow-x: auto; }
+    .mitem { flex: none; display: flex; align-items: center; gap: 9px; padding: 4px 12px 4px 4px; background: var(--field); color: var(--letter); }
+    .mitem.closed { filter: saturate(.3); opacity: .72; }
+    .mitem .wordmark { color: inherit; text-decoration: none; white-space: nowrap; }
+    .mitem a.wordmark:hover { text-decoration: underline; text-underline-offset: 3px; }
+    .mbar .w-odonus { font-size: 15px; } .mbar .w-vetula { font-size: 19px; } .mbar .w-balistes { font-size: 17px; }
+    .mbar .w-selene { font-size: 9.5px; } .mbar .w-conspicillum { font-size: 17px; } .mbar .w-quadrat { font-size: 13px; }
+    .fishplay { flex: none; width: 34px; height: 34px; border-radius: 50%; display: grid; place-items: center; padding: 0; border: 2px solid transparent; background: var(--roundel, #fff); cursor: pointer; }
+    .fishplay .ico { width: 28px; height: 17px; display: block; transform: scaleX(-1); --fine: none; }
+    .fishplay.off { cursor: default; }
+    .fishplay:focus-visible { outline: 2px solid var(--reef); outline-offset: 2px; }
+    .mitem.playing .fishplay { border-color: var(--live); box-shadow: 0 0 0 2px var(--plate); }
+    .mitem.playing .fishplay .ico { animation: swim 1.6s ease-in-out infinite; }
+    @keyframes swim { 0%, 100% { transform: scaleX(-1) translateX(-1.5px); } 50% { transform: scaleX(-1) translateX(1.5px); } }
+    @media (prefers-reduced-motion: reduce) { .mitem.playing .fishplay .ico { animation: none; } }
+    .mitem .alias { display: inline-flex; align-items: center; gap: 5px; font: 400 11px var(--mono); opacity: .85; }
+    .mitem .alias.edited::after { content: "●"; }
     svg.flows .pick:focus-visible .bar { fill: var(--reef); }
     .s-notes { fill: var(--s-notes); color: var(--s-notes); } .s-socket { fill: var(--s-socket); color: var(--s-socket); }
     .s-midi { fill: var(--s-midi); color: var(--s-midi); } .s-osc { fill: var(--s-osc); color: var(--s-osc); }

@@ -21,11 +21,13 @@ module Triggerfish.TabBus
   , open
   , post
   , onMessage
+  , sayGoodbye
   ) where
 
 import Prelude
 
 import Data.Either (hush)
+import Data.Foldable (for_)
 import Data.Maybe (Maybe(..))
 import Data.Nullable (Nullable, toMaybe, toNullable)
 import Effect (Effect)
@@ -36,6 +38,7 @@ foreign import data Bus :: Type
 foreign import _open :: String -> Effect Bus
 foreign import _post :: Bus -> String -> Effect Unit
 foreign import _onMessage :: Bus -> (String -> Effect Unit) -> Effect Unit
+foreign import _onPageHide :: Effect Unit -> Effect Unit
 
 -- | What a machine's page says about its machine.
 type MachineState =
@@ -51,6 +54,10 @@ data Msg
   | Stop String
   | Panic
   | Hello
+  -- | A machine's page is closing. Silence is not enough to tell: a browser
+  -- | slows a background tab's timers to once a minute, so a quiet tab is
+  -- | usually still there.
+  | Bye String
 
 -- | The wire shape: a tag and whichever fields it needs.
 type Wire =
@@ -81,6 +88,7 @@ encode = writeJSON <<< case _ of
   Stop m -> wire "stop" (Just m) Nothing false false
   Panic -> wire "panic" Nothing Nothing false false
   Hello -> wire "hello" Nothing Nothing false false
+  Bye m -> wire "bye" (Just m) Nothing false false
   where
   wire t machine alias edited playing =
     { t, machine: toNullable machine, alias: toNullable alias, edited, playing } :: Wire
@@ -94,4 +102,10 @@ decode text = do
     "stop", Just m -> Just (Stop m)
     "panic", _ -> Just Panic
     "hello", _ -> Just Hello
+    "bye", Just m -> Just (Bye m)
     _, _ -> Nothing
+
+-- | Say `Bye` for each of these machines when the page goes away (closed,
+-- | reloaded or navigated off), so the dashboard knows at once.
+sayGoodbye :: Bus -> Array String -> Effect Unit
+sayGoodbye bus slots = _onPageHide (for_ slots (post bus <<< Bye))

@@ -53,15 +53,18 @@ heightOf f = clampN 250.0 720.0 (130.0 + toNumber streams * 11.0 + toNumber rows
   rows = foldl max 1 (map (\c -> Array.length (filter (\nd -> nd.column == c) f.nodes)) (nub (map _.column f.nodes)))
   clampN lo hi x = max lo (min hi x)
 
-chart :: forall w i. Handlers i -> Maybe String -> Flow -> HH.HTML w i
-chart on hot f
+-- | `playing` names the machines sounding now. The rest are drawn ghosted
+-- | rather than dropped: an open page that is stopped is still part of the
+-- | picture, and when nothing plays the whole chart rests.
+chart :: forall w i. Handlers i -> Maybe String -> Array String -> Flow -> HH.HTML w i
+chart on hot playing f
   | Array.null f.links =
       HH.p [ HP.class_ (HH.ClassName "flow-empty") ]
         [ HH.text "Nothing is playing anywhere yet. Open a machine and the chart shows where it goes." ]
   | otherwise =
       svg "svg"
         [ attr "viewBox" ("0 0 " <> n width <> " " <> n h)
-        , attr "class" ("flows" <> if hot == Nothing then "" else " hovering")
+        , attr "class" ("flows" <> (if hot == Nothing then "" else " hovering") <> (if Array.null playing then " resting" else ""))
         , attr "role" "img"
         , attr "aria-label" "Where each machine's output goes: through the browser or the rig, through interfaces and instruments, to your ears"
         ]
@@ -91,7 +94,7 @@ chart on hot f
   link sl =
     let
       ours' = f.links !! (unwrap' sl.index)
-      cls = maybe "" (\l -> sigClass l.signal <> (if Just l.machine == hot then " hot" else "") <> (if l.broken > 0 then " broken" else "")) ours'
+      cls = maybe "" (\l -> sigClass l.signal <> (if Just l.machine == hot then " hot" else "") <> (if l.broken > 0 then " broken" else "") <> (if sounding l then "" else " idle")) ours'
     in
       svg "path" [ attr "class" ("link " <> cls), attr "d" (generateLinkPath laid.nodes sl) ]
         (maybe [] (\l -> [ svg "title" [] [ HH.text (linkTitle l) ] ]) ours')
@@ -155,6 +158,8 @@ chart on hot f
         )
 
   unwrap' (LinkID i) = i
+  -- The sample sets sound whenever anything does.
+  sounding l = l.machine `Array.elem` playing || (l.machine == "sets" && not (Array.null playing))
 
 -- | The signals, as a key under the chart.
 key :: forall w i. HH.HTML w i

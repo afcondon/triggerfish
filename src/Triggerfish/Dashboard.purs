@@ -36,6 +36,7 @@ import Data.Map as Map
 import Data.Maybe (Maybe(..), fromMaybe, isNothing, maybe)
 import Data.Traversable (traverse)
 import Data.Number.Format (fixed, toStringWith)
+import Effect (Effect)
 import Effect.Aff (Aff)
 import Effect.Aff.Class (liftAff)
 import Effect.Class (liftEffect)
@@ -48,6 +49,9 @@ import Halogen.HTML.Properties as HP
 import Halogen.Subscription as HS
 import Triggerfish.Glyph as G
 import Triggerfish.Fish as Fish
+import Web.Event.Event (preventDefault)
+import Web.UIEvent.MouseEvent (MouseEvent)
+import Web.UIEvent.MouseEvent as ME
 import Triggerfish.Flow as Flow
 import Triggerfish.Flow.View as FlowView
 import Triggerfish.GlyphView (chipIcons)
@@ -84,12 +88,17 @@ machines =
   , { slot: "quadrat", name: "quadrat", href: "/quadrat.html", target: "atlantis-quadrat", onBus: false }
   ]
 
--- | A tab that has not been heard from for this long is taken to be closed. The
--- | shells announce every 1.5 s.
+-- | A tab that has not been heard from for this long is taken to be closed.
+-- | The shells announce every 1.5 s, but a browser slows a background tab's
+-- | timers to once a minute after a few minutes, so silence is a poor sign of
+-- | a closed tab. A closing page says `Bye`; this is only the fallback for one
+-- | that could not (a crash, a killed browser).
 openWindowMs :: Number
-openWindowMs = 4500.0
+openWindowMs = 90000.0
 
 type Heard = { state :: Bus.MachineState, at :: Number }
+
+foreign import openInBackground :: String -> Effect Unit
 
 -- | The page's views. Each is a real link (`#routing`), so the back button and
 -- | bookmarks work.
@@ -134,6 +143,7 @@ data Action
   | Audition RM.Destination
   | ShowView View
   | Hover (Maybe String)
+  | OpenMachine Machine MouseEvent
   | ToggleVoices String
 
 component :: forall q i o. H.Component q i o Aff
@@ -204,6 +214,7 @@ handleAction = case _ of
       if changed
         then H.modify_ \x -> x { heard = Map.insert s.machine { state: s, at: now } x.heard, now = now }
         else H.modify_ \x -> x { heard = Map.insert s.machine { state: s, at: now } x.heard }
+    Bus.Bye slot -> H.modify_ \x -> x { heard = Map.delete slot x.heard }
     _ -> pure unit
 
   ModeStored -> do
@@ -255,6 +266,11 @@ handleAction = case _ of
 
   Hover m -> H.modify_ _ { hot = m }
 
+  -- A machine opens behind the dashboard: the dashboard is where you are.
+  OpenMachine m ev -> do
+    liftEffect $ preventDefault (ME.toEvent ev)
+    liftEffect $ openInBackground m.href
+
   ToggleVoices m -> H.modify_ \x -> x { voices = if m `elem` x.voices then filter (_ /= m) x.voices else x.voices <> [ m ] }
 
   Audition dest -> do
@@ -289,12 +305,7 @@ render st =
     [ topBar st
     , HH.main [ cls "body" ]
         [ case st.view of
-            MachinesView ->
-              HH.div_
-                [ flowChart st
-                , HH.section [ cls "machines", HP.attr (AttrName "aria-label") "Triggerfish machines" ]
-                    (map (card st) machines)
-                ]
+            MachinesView -> flowChart st
             RoutingView -> routing st
         ]
     ]
@@ -307,7 +318,7 @@ flowChart :: forall m. State -> H.ComponentHTML Action () m
 flowChart st =
   HH.section [ cls "flow", HP.attr (AttrName "aria-label") "Where it all goes" ]
     [ HH.div [ cls "flow-chart" ]
-        [ FlowView.chart { hover: Hover, pick: ToggleVoices } st.hot
+        [ FlowView.chart { hover: Hover, pick: ToggleVoices } st.hot (map _.slot (filter (playing st) machines))
             ( Flow.flow
                 { mode: st.mode
                 , table: st.table
@@ -364,6 +375,7 @@ topBar st =
                 Atlantis -> "Atlantis: the rig plays; pages send it what to play."
             ]
         ])
+    , machineBar st
     ]
   where
   -- Progressive disclosure: the rig's instruments appear only when the rig is in
@@ -396,41 +408,52 @@ lamp :: forall w i. Boolean -> String -> HH.HTML w i
 lamp on label =
   HH.span [ cls ("lamp" <> if on then " live" else "") ] [ HH.i_ [], HH.text label ]
 
-card :: forall m. State -> Machine -> H.ComponentHTML Action () m
-card st m =
-  HH.article [ cls ("card m-" <> m.slot <> if open then "" else " closed") ]
-    [ HH.a [ cls "nameplate", HP.href m.href, HP.target m.target, HP.title ("Open " <> m.name) ]
-        [ HH.span [ cls "roundel" ] [ Fish.icon "ico" m.slot ]
-        , HH.span [ cls ("wordmark w-" <> m.slot) ] [ HH.text m.name ]
-        ]
-    , HH.div [ cls "controls" ]
-        ( if not m.onBus then
-            [ HH.span [ cls "note" ] [ HH.text "not on the dashboard yet" ] ]
-          else if not open then
-            [ HH.a [ cls "btn", HP.href m.href, HP.target m.target ] [ HH.text "Open ↗" ] ]
-          else
-            [ HH.button
-                [ cls ("btn" <> if isPlaying then " on" else "")
-                , HE.onClick \_ -> Command m.slot (not isPlaying)
-                ]
-                [ HH.text (if isPlaying then "■ Stop" else "▶ Play") ]
-            , chip
-            ]
-        )
-    , HH.div [ cls "meta" ] [ lamp open (if open then "tab open" else "closed") ]
-    ]
+-- | The machines, as the app's navigation: each one's nameplate, with its fish
+-- | as its play button (turned to face right, the way a play arrow points).
+-- | A closed machine's name opens its page, behind the dashboard; an open
+-- | one's name is only a name, since following a link into a tab that is
+-- | already open would reload it.
+machineBar :: forall m. State -> H.ComponentHTML Action () m
+machineBar st =
+  HH.nav [ cls "mbar", HP.attr (AttrName "aria-label") "Machines" ] (map item machines)
   where
-  open = isOpen st m
-  isPlaying = playing st m
-  heard = Map.lookup m.slot st.heard
-  chip = case heard >>= _.state.alias of
-    Just alias ->
-      HH.span [ cls ("chip" <> if edited then " edited" else "") ]
-        [ chipIcons (Just { glyph: G.glyphFromAlias alias, diverged: edited })
-        , HH.span [ cls "alias" ] [ HH.text alias ]
+  item m =
+    HH.div [ cls ("mitem m-" <> m.slot <> state) ]
+      ( [ fish, name ] <> chip )
+    where
+    open = isOpen st m
+    isPlaying = playing st m
+    state
+      | isPlaying = " playing"
+      | open = " open"
+      | otherwise = " closed"
+    fish
+      | open && m.onBus =
+          HH.button
+            [ cls "fishplay"
+            , HP.title ((if isPlaying then "Stop " else "Play ") <> m.name)
+            , HP.attr (AttrName "aria-label") ((if isPlaying then "Stop " else "Play ") <> m.name)
+            , HP.attr (AttrName "aria-pressed") (if isPlaying then "true" else "false")
+            , HE.onClick \_ -> Command m.slot (not isPlaying)
+            ]
+            [ Fish.icon "ico" m.slot ]
+      | otherwise = HH.span [ cls "fishplay off", HP.attr (AttrName "aria-hidden") "true" ] [ Fish.icon "ico" m.slot ]
+    name
+      | open = HH.span [ cls ("wordmark w-" <> m.slot) ] [ HH.text m.name ]
+      | otherwise =
+          HH.a
+            [ cls ("wordmark w-" <> m.slot), HP.href m.href, HP.title ("Open " <> m.name <> " in a new tab")
+            , HE.onClick (OpenMachine m)
+            ]
+            [ HH.text m.name ]
+    heard = Map.lookup m.slot st.heard
+    chip = case heard >>= _.state.alias of
+      Just alias | open ->
+        [ HH.span [ cls ("alias" <> if edited then " edited" else ""), HP.title "the loaded preset" ]
+            [ chipIcons (Just { glyph: G.glyphFromAlias alias, diverged: edited }), HH.text alias ]
         ]
-    Nothing -> HH.span [ cls "chip empty" ] [ HH.text "no preset" ]
-  edited = fromMaybe false (map _.state.edited heard)
+      _ -> []
+    edited = fromMaybe false (map _.state.edited heard)
 
 -- | The whole table, one ledger, each source drawn by the same rows as every
 -- | other router.
