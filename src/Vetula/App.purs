@@ -107,12 +107,13 @@ import Vetula.Perform.Types
   , parseVoiceShape
   )
 import Triggerfish.PatternArg (PatternArg(..), argSrc, printArg, glyphArg, mkArg, tokenize, unq)
-import Tidal.Pattern.Core (arpeggiate, arpWith, withSampledArg, compress, stack, fast, slow, every, whenCycle, cycleRand)
+import Tidal.Pattern.Core (compress, stack, fast, slow, every, whenCycle)
+import Vetula.Pattern (arpIndexed, arpRate, cycleRand, withSampledArg)
 import Tidal.Pattern.Mini (parseMiniPattern)
 import Tidal.Pattern.Types (Arc(..), eventPart, eventValue, eventWhole, isDigital, mkArc, mkState, query)
 import Tidal.Pattern.Types (Pattern, Event) as PT
-import Data.Rational as Rat
-import Data.Rational ((%))
+import Haskell.Rational as Rat
+import Haskell.Rational ((%))
 import Triggerfish.Clips (MidiClip, NoteEvent, headCount)
 import Triggerfish.Clips.Store as ClipStore
 import Triggerfish.Clips.View as ClipsView
@@ -3843,12 +3844,12 @@ applyFx = case _ of
   -- spread across that chord's OWN whole (`arpeggiate`), so it composes with
   -- slow/fast — `slow 8 # arp up 4` unfolds the arp over eight bars. Pre-`map` the
   -- notes into the direction's order, then arpeggiate cycles through them.
-  Arpg dir rate -> arpeggiate rate <<< map (arpOrder dir)
+  Arpg dir rate -> arpRate rate <<< map (arpOrder dir)
   -- the power arp: an explicit index figure over the chord (0 = lowest voice),
   -- octave-wrapping past the top (`arpSelect`). The figure is a mini-notation, so
   -- rests/subdivision/alternation/euclid all compose — and it stretches under slow
   -- like everything else (`arpWith` keeps each figure-step's arc).
-  ArpP src -> arpWith arpSelect (idxPattern src)
+  ArpP src -> arpIndexed arpSelect (idxPattern src)
   -- strum stays a sink ornament (a fast ms onset stagger at the chord's onset — it
   -- rolls a block chord, it doesn't stretch), so it's identity in the pattern.
   Strum _ -> identity

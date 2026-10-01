@@ -26,7 +26,7 @@ package:
     - js-timers
     - random
     - binnacle
-    # vendored purerl-tidal mini-notation engine (src/Tidal/**)
+    - tidal-engine   # purerl-tidal's engine, one source for the BEAM and JS
     - control
     - either
     - newtype
@@ -80,6 +80,11 @@ workspace:
       path: ../../../code-typography/rebus
     binnacle:
       path: ../binnacle
+    # Tidal's patterns, mini-notation and line language: purerl-tidal's engine
+    # (engine/core), held to Haskell Tidal by its conformance suite on both
+    # JS and the BEAM. Replaced the vendored copy in src/Tidal 2026-10-01.
+    tidal-engine:
+      path: ../purerl-tidal/engine/core
     # Shared widget library (Vetula's Select/Modal + the Selene routing
     # cascade menu). Now the registry release `halogen-widgets` (namespace
     # Halogen.Widgets.*), migrated 2026-07-31 off the old path-dep

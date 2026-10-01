@@ -31,7 +31,7 @@ import Data.Array (concatMap, find, mapMaybe, range, sortBy)
 import Data.Either (Either(..))
 import Data.Int as Int
 import Data.Maybe (Maybe(..), fromMaybe)
-import Data.Rational (Rational, fromInt, toNumber)
+import Haskell.Rational (Rational, fromInt, toNumber)
 import Data.String (joinWith, trim)
 import Data.Tuple (Tuple(..))
 import Reef.Vetula.Perf (PerfClock, Seg, clockOfDurs)

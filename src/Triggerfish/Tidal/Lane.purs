@@ -24,7 +24,7 @@ import Data.Either (Either(..))
 import Data.Foldable (any)
 import Data.Int as Int
 import Data.Maybe (Maybe(..), fromMaybe)
-import Data.Rational as R
+import Haskell.Rational as R
 import Data.String as Str
 import Tidal.AST.Types (Located(..), TPat(..))
 import Tidal.Pattern.Core (queryArc)
@@ -61,14 +61,19 @@ patternMeter = case _ of
   TPat_Polyrhythm _ _ xs -> fromMaybe 1 (patternMeter <$> Array.head xs)
   _ -> 1
 
+-- | A literal argument. Euclid arguments and rates are sequences in Tidal's
+-- | grammar (`bd(3,8)` holds `3` as a one-step sequence), so look through a
+-- | one-element sequence, as the engine's own `constantOf` does.
 litInt :: TPat Int -> Maybe Int
 litInt = case _ of
   TPat_Atom (Located _ i) -> Just i
+  TPat_Seq _ [ single ] -> litInt single
   _ -> Nothing
 
 ratToInt :: TPat R.Rational -> Int
 ratToInt = case _ of
   TPat_Atom (Located _ r) -> max 1 (Int.round (R.toNumber r))
+  TPat_Seq _ [ single ] -> ratToInt single
   _ -> 1
 
 -- ---------------------------------------------------------------------------
@@ -133,10 +138,10 @@ euclidOf src = case parse src of
 
 -- | A routing pattern's events as (atom-name, fractional-onset) pairs over one
 -- | cycle. A jack named `bd` receives the onsets whose name is `bd`; this is how
--- | `"bd sn cp sn"` distributes across the named jacks.
+-- | `"bd sn cp sn"` distributes across the named jacks. In time order.
 namedOnsetsOf :: String -> Array { name :: String, at :: Number }
 namedOnsetsOf src = case parseMiniPattern src of
-  Right pat -> mapMaybe namedOnset (queryArc pat (R.fromInt 0) (R.fromInt 1))
+  Right pat -> Array.sortWith _.at (mapMaybe namedOnset (queryArc pat (R.fromInt 0) (R.fromInt 1)))
   Left _ -> []
 
 namedOnset :: Event String -> Maybe { name :: String, at :: Number }
