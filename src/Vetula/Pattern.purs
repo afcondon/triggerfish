@@ -1,6 +1,6 @@
 -- | **Vetula's own pattern vocabulary**, on the Tidal engine.
 -- |
--- | Not Tidal's functions, so not in the engine (`tidal-engine`), and not
+-- | Not Tidal's functions, so not in the engine (Littorina), and not
 -- | under Tidal's names: `arpRate` and `arpIndexed` were `arpeggiate` and
 -- | `arpWith` in Triggerfish's old vendored copy, but Tidal's `arpeggiate`
 -- | spreads a chord across its event and `arpWith` takes a function on event

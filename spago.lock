@@ -29,6 +29,7 @@
             "integers",
             "js-timers",
             "lists",
+            "littorina",
             "maybe",
             "newtype",
             "nullable",
@@ -43,7 +44,6 @@
             "simple-json",
             "strings",
             "tailrec",
-            "tidal-engine",
             "transformers",
             "tuples",
             "web-dom",
@@ -724,14 +724,14 @@
       "hylograph-layout": {
         "path": "../../../purescript-hylograph-libs/purescript-hylograph-layout"
       },
+      "littorina": {
+        "path": "../../littorina/core"
+      },
       "rebus": {
         "path": "../../../code-typography/rebus"
       },
       "reef": {
         "path": "../../reef"
-      },
-      "tidal-engine": {
-        "path": "../purerl-tidal/engine/core"
       }
     }
   },
@@ -1579,6 +1579,32 @@
         "unfoldable"
       ]
     },
+    "littorina": {
+      "type": "local",
+      "path": "../../littorina/core",
+      "dependencies": [
+        "arrays",
+        "console",
+        "control",
+        "effect",
+        "either",
+        "enums",
+        "exceptions",
+        "foldable-traversable",
+        "integers",
+        "js-bigints",
+        "lists",
+        "maybe",
+        "newtype",
+        "numbers",
+        "ordered-collections",
+        "partial",
+        "prelude",
+        "strings",
+        "tuples",
+        "unicode"
+      ]
+    },
     "maybe": {
       "type": "registry",
       "version": "6.0.0",
@@ -1895,32 +1921,6 @@
         "partial",
         "prelude",
         "refs"
-      ]
-    },
-    "tidal-engine": {
-      "type": "local",
-      "path": "../purerl-tidal/engine/core",
-      "dependencies": [
-        "arrays",
-        "console",
-        "control",
-        "effect",
-        "either",
-        "enums",
-        "exceptions",
-        "foldable-traversable",
-        "integers",
-        "js-bigints",
-        "lists",
-        "maybe",
-        "newtype",
-        "numbers",
-        "ordered-collections",
-        "partial",
-        "prelude",
-        "strings",
-        "tuples",
-        "unicode"
       ]
     },
     "transformers": {
