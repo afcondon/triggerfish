@@ -10,8 +10,12 @@
 -- | Every change is one of the router's own edits (`Routing.Edit`), so the
 -- | matrix and the ledger change the table the same way. An empty cell adds a
 -- | leg with sensible defaults; a filled one opens its details under the grid
--- | (step the value, trim, on/off, remove). What only the ledger has fields for
--- | (a Rample card's slicing, a sample's window) stays there.
+-- | (step the value, trim, on/off, remove).
+-- |
+-- | A destination with settings of its own has a **sheet**, opened from its
+-- | column head, as tapping a node in AUM opens it: a Rample's slicing and each
+-- | voice's trigger; each sample voice's set and window. The grid says where;
+-- | the sheet says what the thing at the end of the wire is set to.
 module Triggerfish.Routing.Matrix
   ( Grid(..)
   , Pick
@@ -34,6 +38,7 @@ import Halogen.HTML.Properties as HP
 import Triggerfish.Balistes.Pattern as P
 import Triggerfish.Routing.Edit (Edit(..))
 import Triggerfish.Routing.Model as RM
+import Triggerfish.SampleSets (SampleSet)
 
 data Grid = Notes | Drums
 
@@ -48,10 +53,14 @@ type Env i =
   -- Vetula's cards' channels: a card's address is its channel, set in its line,
   -- so these rows are shown, not edited here
   , cards :: Array Int
+  , sampleSets :: Array SampleSet
   , pick :: Maybe Pick
   , focus :: Maybe String -- a column to light, when opened from the chart
+  , sheet :: Maybe String -- a column whose settings sheet is open
   , onEdits :: Array Edit -> i
   , onPick :: Maybe Pick -> i
+  , onSheet :: Maybe String -> i
+  , onAudition :: RM.Destination -> i
   , onGrid :: Grid -> i
   , onClose :: i
   }
@@ -126,7 +135,7 @@ columns grid env = Array.sortWith (\c -> fromMaybe 9 (Array.elemIndex c.group gr
   midi p = { key: "midi:" <> p, group: "MIDI ports", name: if p == "" then "no port chosen" else p, sub: if p `Array.elem` env.ports then "" else "not on this computer"
            , fam: "midi", missing: not (p `Array.elem` env.ports), addKind: Just "midi", port: Just p }
   one key group name sub fam addKind = { key, group, name, sub, fam, missing: false, addKind, port: Nothing }
-  rampleCols = map (\p -> { key: "rample:" <> p, group: "Samplers", name: p, sub: "Rample", fam: "rample", missing: not (p `Array.elem` env.ports), addKind: Nothing, port: Just p })
+  rampleCols = map (\p -> { key: "rample:" <> p, group: "Samplers", name: p, sub: (if contains (Pattern "Rample") p then "" else "Rample"), fam: "rample", missing: not (p `Array.elem` env.ports), addKind: Just "rample-1", port: Just p })
                  (filter (contains (Pattern "Rample")) env.ports)
   -- A port with a column of its own kind (the FH-2's envelopes and gates,
   -- Continuo, a Rample) is not offered again as a plain MIDI port; a leg that
@@ -146,7 +155,7 @@ columns grid env = Array.sortWith (\c -> fromMaybe 9 (Array.elemIndex c.group gr
   extra = mapMaybe extraCol (filter (\k -> not (k `Array.elem` known)) used)
   extraCol k = case Array.uncons (splitKey k) of
     Just { head: "midi", tail: [ p ] } -> Just (midi p)
-    Just { head: "rample", tail: [ p ] } -> Just { key: k, group: "Samplers", name: p, sub: "Rample", fam: "rample", missing: not (p `Array.elem` env.ports), addKind: Nothing, port: Just p }
+    Just { head: "rample", tail: [ p ] } -> Just { key: k, group: "Samplers", name: p, sub: (if contains (Pattern "Rample") p then "" else "Rample"), fam: "rample", missing: not (p `Array.elem` env.ports), addKind: Just "rample-1", port: Just p }
     Just { head: "poly", tail: [ i ] } -> Just (one k "Modular" i "poly" "cv" Nothing)
     Just { head: "es9gate" } -> Just (one k "Modular" "ES-9 gates" "" "cv" Nothing)
     Just { head: "fh2env" } -> Just (one k "Modular" "FH-2 envelopes" "" "cv" Nothing)
@@ -225,8 +234,9 @@ view grid env =
       , HH.tbody_ (map row srcs <> if grid == Notes then map cardRow env.cards else [])
       ]
   colHead c =
-    HH.th [ cls ("col" <> (if c.missing then " missing" else "") <> (if env.focus == Just c.key then " focus" else ""))
-          , HP.title (if c.missing then c.name <> " is not on this computer" else c.name) ]
+    HH.th ([ cls ("col" <> (if c.missing then " missing" else "") <> (if env.focus == Just c.key || env.sheet == Just c.key then " focus" else "") <> (if hasSheet c.key then " has-sheet" else ""))
+           , HP.title (if c.missing then c.name <> " is not on this computer" else if hasSheet c.key then c.name <> ": open its settings" else c.name) ]
+           <> (if hasSheet c.key then [ HE.onClick \_ -> env.onSheet (if env.sheet == Just c.key then Nothing else Just c.key) ] else []))
       [ HH.span [ cls "lab" ]
           [ HH.b_ [ HH.text c.name ]
           , HH.small_ [ HH.text (headSub c) ]
@@ -270,7 +280,10 @@ view grid env =
         <> map (\c -> HH.td [ HP.title "a card's channel is set in its line" ]
                   (if isJust (Array.find (_ == c.key) (map (\p -> "midi:" <> p) (filter (contains (Pattern "IAC")) env.ports))) then [ HH.span [ cls "v midi ghost" ] [ HH.text (show ch) ] ] else []))
                cols)
-  details = case env.pick of
+  details = case env.sheet of
+    Just key -> sheet key
+    Nothing -> pickDetails
+  pickDetails = case env.pick of
     Nothing -> HH.p [ cls "matrix-hint" ] [ HH.text "Click an empty cell to send there; a filled one for its details. A Rample's slicing and a sample's window are set in the router on Triggerfish's and Balistes's own pages." ]
     Just pk ->
       let here = legsIn env pk.source pk.col
@@ -301,6 +314,66 @@ view grid env =
   whose = case _ of
     RM.SDrumLane i -> P.laneName i
     src -> RM.sourceLabel src
+  -- ── sheets ────────────────────────────────────────────────────────────────
+  sheet key =
+    let
+      rows = concatMap (\src -> map (\x -> { src, i: x.i, leg: x.leg }) (legsIn env src key)) srcs
+      title = maybe key _.name (find (\c -> c.key == key) cols)
+    in
+      HH.div [ cls "matrix-sheet" ]
+        [ HH.div [ cls "who" ]
+            [ HH.text (title <> (if Str.take 7 key == "rample:" && not (contains (Pattern "Rample") title) then " · Rample" else ""))
+            , HH.button [ cls "sheet-close", HE.onClick \_ -> env.onSheet Nothing ] [ HH.text "done" ]
+            ]
+        , if null rows then HH.p [ cls "matrix-hint" ] [ HH.text "Nothing is routed here yet: add it in the grid, then set it here." ]
+          else if key == "sample" then sampleSheet rows
+          else rampleSheet rows
+        ]
+  rampleSheet rows =
+    HH.div_
+      [ HH.p [ cls "matrix-hint" ] [ HH.text "What the card is set up for: which note fires each voice (SETTINGS > SPx), how the card is sliced, the note of slice 0, and how far ahead the slice control lands." ]
+      , HH.table [ cls "sheet" ]
+          [ HH.thead_ [ HH.tr_ (map (\h -> HH.th_ [ HH.text h ]) [ "", "voice", "trigger", "slices", "slice 0", "settle ms", "ch" ]) ]
+          , HH.tbody_ (map rampleRow rows)
+          ]
+      ]
+  rampleRow r = case r.leg.dest of
+    RM.DRample d ->
+      HH.tr_
+        [ HH.th_ [ HH.text (whose r.src) ]
+        , num r "voice" d.voice, num r "trigger" d.trigger, num r "slots" d.slots
+        , num r "pitchOfSlot0" d.pitchOfSlot0, num r "settleMs" d.settleMs, num r "channel" d.channel ]
+    RM.DRamplePoly d ->
+      HH.tr_
+        [ HH.th_ [ HH.text (whose r.src) ]
+        , HH.td_ [ HH.text "poly" ]
+        , HH.td_ (mapWithIndex (\k t -> numIn r ("trig" <> show (k + 1)) t) d.triggers)
+        , num r "slots" d.slots, num r "pitchOfSlot0" d.pitchOfSlot0, HH.td_ [], num r "channel" d.channel ]
+    _ -> HH.tr_ []
+  sampleSheet rows =
+    HH.table [ cls "sheet" ]
+      [ HH.thead_ [ HH.tr_ (map (\h -> HH.th_ [ HH.text h ]) [ "", "set", "sample", "from %", "to %", "reverse", "gain %", "chop", "" ]) ]
+      , HH.tbody_ (map sampleRow rows)
+      ]
+  sampleRow r = case r.leg.dest of
+    RM.DSample d ->
+      HH.tr_
+        [ HH.th_ [ HH.text (whose r.src) ]
+        , HH.td_
+            [ HH.select [ HE.onValueChange \v -> env.onEdits [ SetSampleSet r.src r.i v ] ]
+                (map (\set -> HH.option [ HP.value set.name, HP.selected (set.name == d.set) ] [ HH.text set.name ])
+                   (if Array.any (\x -> x.name == d.set) env.sampleSets then env.sampleSets else snoc env.sampleSets { name: d.set, samples: 0 }))
+            ]
+        , num r "n" d.n, num r "begin" d.begin, num r "end" d.end
+        , HH.td_ [ HH.input [ HP.type_ HP.InputCheckbox, HP.checked d.reverse, HE.onChecked \b -> env.onEdits [ SetField r.src r.i "reverse" (if b then "1" else "0") ] ] ]
+        , num r "gain" d.gain, num r "chop" d.chop
+        , HH.td_ [ HH.button [ HE.onClick \_ -> env.onAudition r.leg.dest, HP.title "hear it now, through the rig" ] [ HH.text "▶" ] ]
+        ]
+    _ -> HH.tr_ []
+  num r field v = HH.td_ [ numIn r field v ]
+  numIn r field v =
+    HH.input [ cls "num", HP.value (show v), HE.onValueChange \t -> env.onEdits [ SetField r.src r.i field t ] ]
+  hasSheet key = key == "sample" || Str.take 7 key == "rample:"
   isMidi = case _ of
     RM.DMidi _ -> true
     _ -> false

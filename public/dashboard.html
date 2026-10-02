@@ -166,6 +166,17 @@
     .matrix-details .val { font: 500 13px var(--mono); min-width: 2em; text-align: center; }
     .matrix-details input { width: 4em; font: 13px var(--mono); border: none; border-bottom: 1px solid var(--rule); background: transparent; color: var(--ink); }
     .matrix-details .remove { color: var(--alarm); }
+    .matrix-card table.m th.col.has-sheet { cursor: pointer; }
+    .matrix-card table.m th.col.has-sheet .lab b::after { content: " ⚙"; font-weight: 400; color: var(--muted); }
+    .matrix-sheet { margin-top: 12px; border-top: 1px solid var(--rule); padding-top: 10px; font-size: 13px; }
+    .matrix-sheet .who { font-weight: 700; margin-bottom: 4px; display: flex; justify-content: space-between; align-items: baseline; gap: 12px; }
+    .matrix-sheet table.sheet { border-collapse: collapse; font: 13px var(--mono); margin-top: 6px; }
+    .matrix-sheet table.sheet th, .matrix-sheet table.sheet td { padding: 3px 10px 3px 0; border-bottom: 1px solid var(--rule); text-align: left; }
+    .matrix-sheet table.sheet thead th { font: 700 10px var(--display); letter-spacing: .08em; text-transform: uppercase; color: var(--muted); }
+    .matrix-sheet table.sheet tbody th { font: 400 13px var(--display); white-space: nowrap; }
+    .matrix-sheet input.num { width: 3.6em; font: 13px var(--mono); border: none; border-bottom: 1px solid var(--rule); background: transparent; color: var(--ink); }
+    .matrix-sheet input.num:focus { outline: none; border-bottom-color: var(--reef); }
+    .matrix-sheet select { font: 13px var(--mono); color: var(--ink); background: var(--plate); border: 1px solid var(--rule); max-width: 14em; }
     svg.flows .link { cursor: pointer; }
 
     /* The harmony matrix: sources down, Odonus's two inputs across, a dot per route. */

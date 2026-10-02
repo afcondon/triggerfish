@@ -65,6 +65,7 @@ import Triggerfish.Routing.Matrix as Matrix
 import Reef.Route as HarmonyRoute
 import Triggerfish.Routing.Edit as RE
 import Triggerfish.Routing.Model as RM
+import Triggerfish.Routing.Out as RO
 import Triggerfish.Routing.Store as RStore
 import Triggerfish.SampleSets (SampleSet)
 import Triggerfish.SampleSets as SampleSets
@@ -137,6 +138,7 @@ type State =
   , matrix :: Maybe Matrix.Grid
   , pick :: Maybe Matrix.Pick
   , focus :: Maybe String
+  , sheet :: Maybe String
   }
 
 data Action
@@ -163,6 +165,8 @@ data Action
   | OpenMatrix Matrix.Grid (Maybe String)
   | CloseMatrix
   | PickCell (Maybe Matrix.Pick)
+  | OpenSheet (Maybe String)
+  | Audition RM.Destination
   | Edits (Array RE.Edit)
   | ChartLink String String
 
@@ -172,7 +176,7 @@ component = H.mkComponent
       { mode: Solo, now: 0.0, heard: Map.empty, rig: Nothing, rigUp: false
       , tempo: 120.0, locked: false, bus: Nothing
       , table: RM.defaultTable, ports: [], sampleSets: [], hot: Nothing, voices: [], router: Router.initial
-      , matrix: Nothing, pick: Nothing, focus: Nothing }
+      , matrix: Nothing, pick: Nothing, focus: Nothing, sheet: Nothing }
   , render
   , eval: H.mkEval H.defaultEval { handleAction = handleAction, initialize = Just Init }
   }
@@ -310,13 +314,18 @@ handleAction = case _ of
 
   NoOp -> pure unit
 
-  OpenMatrix g focus -> H.modify_ _ { matrix = Just g, focus = focus, pick = Nothing }
+  OpenMatrix g focus -> H.modify_ _ { matrix = Just g, focus = focus, pick = Nothing, sheet = Nothing }
 
   CloseMatrix -> do
-    H.modify_ _ { matrix = Nothing, focus = Nothing, pick = Nothing }
+    H.modify_ _ { matrix = Nothing, focus = Nothing, pick = Nothing, sheet = Nothing }
     liftEffect (Route.writeHash "")
 
-  PickCell p -> H.modify_ _ { pick = p }
+  PickCell p -> H.modify_ _ { pick = p, sheet = Nothing }
+
+  OpenSheet k -> H.modify_ _ { sheet = k, pick = Nothing }
+
+  -- A sample voice's ▶: played once, now, through the rig.
+  Audition dest -> for_ (RO.auditionLine dest) sendRig
 
   -- Several edits as one change: an added leg, then its port and value. Saved,
   -- and every page with a machine that reads the table picks it up through its
@@ -376,9 +385,10 @@ render st =
     , case st.matrix of
         Nothing -> HH.text ""
         Just g -> Matrix.view g
-          { table: st.table, ports: st.ports, cards: cardChannels st.router
-          , pick: st.pick, focus: st.focus
-          , onEdits: Edits, onPick: PickCell, onGrid: \g' -> OpenMatrix g' Nothing, onClose: CloseMatrix }
+          { table: st.table, ports: st.ports, cards: cardChannels st.router, sampleSets: st.sampleSets
+          , pick: st.pick, focus: st.focus, sheet: st.sheet
+          , onEdits: Edits, onPick: PickCell, onSheet: OpenSheet, onAudition: Audition
+          , onGrid: \g' -> OpenMatrix g' Nothing, onClose: CloseMatrix }
     ]
 
 -- | The signal-flow chart: what the open pages drive, by the path the mode
