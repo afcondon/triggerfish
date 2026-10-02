@@ -341,7 +341,7 @@ render st =
     [ topBar st
     , HH.main [ cls "body" ]
         [ case st.view of
-            MachinesView -> flowChart st
+            MachinesView -> HH.div_ [ flowChart st, harmonyPanel st ]
             RoutingView -> routing st
         ]
     ]
@@ -379,6 +379,22 @@ flowChart st =
     case r.source of
       RM.SDrumLane _ -> map _.dest (filter _.on r.legs)
       _ -> []
+
+-- | The harmony matrix, under the chart: it is played, not set and forgotten,
+-- | so it stays in view where the music is watched (docs/kb/plans/matrix-router.md).
+harmonyPanel :: forall m. State -> H.ComponentHTML Action () m
+harmonyPanel st =
+  HH.div [ cls "harmony-panel" ]
+    [ Router.view
+        { toggle: RouterToggle
+        , scalePattern: RouterEdit <<< Router.setScalePattern
+        , scaleRoot: RouterEdit <<< Router.setScaleRoot
+        , harmony: RouterEdit <<< Router.setHarmony
+        , commit: RouterCommit
+        , none: NoOp
+        }
+        st.rigUp st.router
+    ]
 
 topBar :: forall m. State -> H.ComponentHTML Action () m
 topBar st =
@@ -507,16 +523,6 @@ routing st =
         , HH.span [ cls "note" ] [ HH.text "Every source and where it goes. Changes save at once and reach every open page." ]
         , lamp (not (null st.ports)) portsNote
         ]
-    , Router.view
-        { toggle: RouterToggle
-        , scalePattern: RouterEdit <<< Router.setScalePattern
-        , scaleRoot: RouterEdit <<< Router.setScaleRoot
-        , harmony: RouterEdit <<< Router.setHarmony
-        , commit: RouterCommit
-        , none: NoOp
-        }
-        st.rigUp st.router
-    , HH.h2 [ cls "notes-head" ] [ HH.text "Notes" ]
     , RV.key env allSources
     , RV.sourceRows env allSources
     ]
