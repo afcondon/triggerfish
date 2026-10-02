@@ -24,8 +24,10 @@
 -- | times. So the chart draws it above the flow, reaching the nodes in
 -- | `onTheBeat`, rather than as one more hop in it.
 -- |
--- | Samples and the ES-9 are always reached through the rig, so in Solo they
--- | are not drawn: a leg that cannot sound has no path, which is the point.
+-- | Samples and the ES-9 are always reached through the rig. In Solo such a
+-- | leg cannot sound, but it is still drawn, on the path it would take, and
+-- | marked as needing the rig (`waiting`): an open Conspicillum that left the
+-- | chart unchanged read as broken rather than as "switch to Atlantis".
 -- |
 -- | ## Width is streams, not legs
 -- |
@@ -53,13 +55,15 @@ module Triggerfish.Flow
 
 import Prelude
 
-import Data.Array (catMaybes, concatMap, elem, filter, findIndex, foldl, length, mapMaybe, nub, nubByEq, sortWith)
+import Data.Array (all, catMaybes, concatMap, elem, filter, findIndex, foldl, length, mapMaybe, nub, nubByEq, null, sort, sortWith, uncons, (!!))
 import Data.Array as Array
 import Data.Maybe (Maybe(..), fromMaybe, isJust, maybe)
-import Data.String (Pattern(..), contains, stripPrefix)
+import Data.Int as Int
+import Data.String (Pattern(..), contains, joinWith, split, stripPrefix)
 import Data.Tuple (Tuple(..))
 import Triggerfish.Routing.Model (Destination(..), Ports, Reach(..), Source(..), Table, instrumentLabel, reachOf, sourceKey, sourceLabel)
 import Triggerfish.Transport (Mode(..))
+import Reef.Balistes.Kit (canonKit)
 
 -- ---------------------------------------------------------------------------
 -- Columns and signals
@@ -111,7 +115,14 @@ type Node = { id :: String, column :: Column, name :: String, note :: String, ma
 -- | One hop of one machine's streams, merged across that machine's sources.
 -- | `broken` counts the streams on it whose port is missing: they are drawn,
 -- | because the table says they should sound, and the view marks them.
-type Link = { from :: String, to :: String, signal :: Signal, machine :: String, streams :: Int, broken :: Int }
+-- | `wires` says which (`ch 10`, `gate 3`, a sample set) and `notes` which
+-- | drum lanes ride them (`BD 36`), for the hover and the port labels.
+type Link =
+  { from :: String, to :: String, signal :: Signal, machine :: String, streams :: Int, broken :: Int
+  , wires :: Array String, notes :: Array String
+  -- | how many of `streams` would sound only with the rig (in Solo)
+  , waiting :: Int
+  }
 
 type Flow = { nodes :: Array Node, links :: Array Link }
 
@@ -152,7 +163,12 @@ type Hop = { from :: String, to :: String, signal :: Signal }
 -- | One stream: who emits it, which wire it is, and the path it takes.
 -- | `brokenAt` names the node it cannot reach (a port that is not there), so
 -- | only the hop into it is marked, not the whole way from the machine.
-type Stream = { machine :: String, unit :: String, wire :: String, hops :: Array Hop, brokenAt :: Maybe String }
+-- | `detail` is the wire as a reader names it, `notes` the drum lanes on it.
+type Stream =
+  { machine :: String, unit :: String, wire :: String, hops :: Array Hop, brokenAt :: Maybe String
+  , detail :: String, notes :: Array String
+  , needsRig :: Boolean
+  }
 
 -- | The wire a destination drives. Two legs on one wire are one stream.
 wireOf :: Destination -> String
@@ -167,6 +183,47 @@ wireOf = case _ of
   DRamplePoly d -> "rample:" <> d.port <> ":" <> show d.channel
   DPoly d -> "poly:" <> instrumentLabel d.inst
   DSample _ -> "dirt"
+
+-- | The wire as a reader names it, beside its port or interface.
+detailOf :: Destination -> String
+detailOf = case _ of
+  DMidi d -> "ch " <> show d.channel
+  DFh2Env d -> "env " <> show d.slot
+  DFh2Gate d -> "gate " <> show d.jack
+  DEs9Gate d -> "gate " <> show (d.block + 1) <> "." <> show d.jack
+  DEs9Cv d -> "bus " <> show d.bus
+  DContinuo d -> "ch " <> show d.channel
+  DRample d -> "ch " <> show d.channel <> " voice " <> show d.voice
+  DRamplePoly d -> "ch " <> show d.channel
+  DPoly d -> instrumentLabel d.inst
+  DSample d -> if d.set == "" then "samples" else d.set
+
+-- | A drum lane as its name and note (`BD 36`); nothing for other sources.
+notesOf :: Source -> Array String
+notesOf = case _ of
+  SDrumLane i -> maybe [] (\k -> [ k.name <> " " <> show k.note ]) (canonKit !! i)
+  _ -> []
+
+-- | Numbered wires as runs per kind (`ch 1–4, 10 · gate 1–4`), in the order
+-- | the kinds first appear; any other wire (a sample set) as it is.
+compactWires :: Array String -> String
+compactWires ws = joinWith " · " (map one kinds)
+  where
+  numbered w = case split (Pattern " ") w of
+    [ k, v ] | Just n <- Int.fromString v -> Just { k, n }
+    _ -> Nothing
+  kinds = nub (map (\w -> maybe w _.k (numbered w)) ws)
+  one k = case mapMaybe (\w -> numbered w >>= \x -> if x.k == k then Just x.n else Nothing) ws of
+    [] -> k
+    ns -> k <> " " <> joinWith ", " (runs (sort (nub ns)))
+  runs xs = case uncons xs of
+    Nothing -> []
+    Just { head, tail } ->
+      let
+        go lo hi rest = case uncons rest of
+          Just { head: x, tail: more } | x == hi + 1 -> go lo x more
+          _ -> [ if lo == hi then show lo else show lo <> "–" <> show hi ] <> runs rest
+      in go head head tail
 
 -- | The interface a MIDI-borne destination leaves by, and the instrument at
 -- | the far end of it. A port nobody has named an instrument for is its own
@@ -228,43 +285,58 @@ flow inp = { nodes, links }
   tableStreams = inp.table # concatMap \r ->
     let m = machineOf r.source
     in if not (shown m) then []
-       else r.legs # filter _.on # mapMaybe (stream m (unitOf m r.source) Nothing <<< _.dest)
+       else r.legs # filter _.on # mapMaybe (\leg -> stream m (unitOf m r.source) Nothing (notesOf r.source) leg.dest)
 
   extraStreams = inp.extras # filter (shown <<< _.machine)
-    # mapMaybe \e -> stream e.machine ("m:" <> e.machine) e.via e.dest
+    # mapMaybe \e -> stream e.machine ("m:" <> e.machine) e.via [] e.dest
 
-  stream m unit via dest = pathOf inp.mode m via dest <#> \hops ->
-    { machine: m, unit, wire: wireOf dest, hops
-    , brokenAt: if isNoPort (reachOf inp.ports dest) then _.iface <$> midiEnds dest else Nothing
-    }
+  -- A leg with no path in Solo that has one in Atlantis needs the rig: drawn
+  -- on that path, marked waiting.
+  stream m unit via notes dest = case pathOf inp.mode m via dest of
+    Just hops -> Just (mk hops false)
+    Nothing | inp.mode /= Atlantis -> (\hops -> mk hops true) <$> pathOf Atlantis m via dest
+    Nothing -> Nothing
+    where
+    mk hops needsRig =
+      { machine: m, unit, wire: wireOf dest, hops
+      , brokenAt: if isNoPort (reachOf inp.ports dest) then _.iface <$> midiEnds dest else Nothing
+      , detail: detailOf dest, notes, needsRig
+      }
 
+  -- Two legs on one wire from one unit are one stream; the drum lanes riding
+  -- it are gathered, so the hover can say which.
   streams :: Array Stream
-  streams = nubByEq (\a b -> a.unit == b.unit && a.wire == b.wire) (tableStreams <> extraStreams)
+  streams = foldl gather [] (tableStreams <> extraStreams)
+    where
+    gather acc x = case findIndex (\a -> a.unit == x.unit && a.wire == x.wire) acc of
+      Just i -> fromMaybe acc (Array.modifyAt i (\a -> a { notes = a.notes <> x.notes }) acc)
+      Nothing -> Array.snoc acc x
 
   -- The first hop of every stream is its unit into the page.
   hopsOf s = [ { from: s.unit, to: "browser", signal: Notes } ] <> s.hops
 
   -- Sample sets feed SuperDirt whenever anything plays a sample: the material
   -- is part of the path even though no machine sends it.
-  sampleStreams = length (filter (\s -> s.wire == "dirt") streams)
+  sampleUsers = filter (\s -> s.wire == "dirt") streams
+  sampleStreams = length sampleUsers
   setsLinks
     | sampleStreams > 0 =
-        [ { from: "sets", to: "d-dirt", signal: Samples, machine: "sets", streams: sampleStreams, broken: 0 } ]
+        [ { from: "sets", to: "d-dirt", signal: Samples, machine: "sets", streams: sampleStreams, broken: 0, wires: [], notes: [], waiting: if all _.needsRig sampleUsers then sampleStreams else 0 } ]
     | otherwise = []
 
-  links = merge (concatMap (\s -> hopsOf s <#> \h -> { hop: h, machine: s.machine, broken: s.brokenAt == Just h.to }) streams) <> setsLinks
+  links = merge (concatMap (\s -> hopsOf s <#> \h -> { hop: h, machine: s.machine, broken: s.brokenAt == Just h.to, detail: s.detail, notes: s.notes, waiting: s.needsRig }) streams) <> setsLinks
 
   merge = foldl add []
     where
     add acc x = case findIndex (same x) acc of
-      Just i -> fromMaybe acc (Array.modifyAt i (\l -> l { streams = l.streams + 1, broken = l.broken + fromBool x.broken }) acc)
-      Nothing -> Array.snoc acc { from: x.hop.from, to: x.hop.to, signal: x.hop.signal, machine: x.machine, streams: 1, broken: fromBool x.broken }
+      Just i -> fromMaybe acc (Array.modifyAt i (\l -> l { streams = l.streams + 1, broken = l.broken + fromBool x.broken, wires = nub (Array.snoc l.wires x.detail), notes = nub (l.notes <> x.notes), waiting = l.waiting + fromBool x.waiting }) acc)
+      Nothing -> Array.snoc acc { from: x.hop.from, to: x.hop.to, signal: x.hop.signal, machine: x.machine, streams: 1, broken: fromBool x.broken, wires: [ x.detail ], notes: x.notes, waiting: fromBool x.waiting }
     same x l = l.from == x.hop.from && l.to == x.hop.to && l.signal == x.hop.signal && l.machine == x.machine
     fromBool b = if b then 1 else 0
 
   ids = nub (concatMap (\l -> [ l.from, l.to ]) links)
   units = nubByEq (\a b -> a.unit == b.unit) streams
-  nodes = sortWith nodeRank (catMaybes (map (nodeOf units inp.table) ids))
+  nodes = sortWith nodeRank (catMaybes (map (nodeOf units inp.table links) ids))
 
 isNoPort :: Reach -> Boolean
 isNoPort = case _ of
@@ -302,11 +374,11 @@ machineNames =
   , { slot: "quadrat", name: "Quadrat", note: "sampling" }
   ]
 
-nodeOf :: Array Stream -> Table -> String -> Maybe Node
-nodeOf units table id = case Array.find (\x -> x.id == id) fixed of
-  Just f -> Just f
+nodeOf :: Array Stream -> Table -> Array Link -> String -> Maybe Node
+nodeOf units table links id = case Array.find (\x -> x.id == id) fixed of
+  Just f -> Just (withWires f)
   Nothing
-    | Just p <- strip "port:" -> Just { id, column: Interface, name: p, note: "MIDI port", machine: Nothing }
+    | Just p <- strip "port:" -> Just (withWires { id, column: Interface, name: p, note: "MIDI port", machine: Nothing })
     | Just p <- strip "inst:" -> Just { id, column: Instrument, name: p, note: "on its port", machine: Nothing }
     | Just m <- strip "m:" -> Just (machineNode m)
     | Just k <- strip "src:" -> (Array.find (\u -> u.unit == id) units) <#> \u ->
@@ -314,6 +386,13 @@ nodeOf units table id = case Array.find (\x -> x.id == id) fixed of
     | otherwise -> Nothing
   where
   strip pre = stripPrefix (Pattern pre) id
+  -- An interface says which of its wires are in use: a port its channels,
+  -- the FH-2 its gates and envelopes.
+  withWires nd
+    | nd.column == Interface =
+        let ws = concatMap _.wires (filter (\l -> l.to == id) links)
+        in if null ws then nd else nd { note = compactWires ws }
+    | otherwise = nd
   sourceOf k = _.source <$> Array.find (\r -> sourceKey r.source == k) table
   machineNode m = case Array.find (\x -> x.slot == m) machineNames of
     Just x -> { id, column: Machines, name: x.name, note: x.note, machine: Just m }

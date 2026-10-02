@@ -9,7 +9,7 @@ module Test.FlowSpec (runFlowTests) where
 import Prelude
 
 import Data.Array (all, filter, find, length)
-import Data.Maybe (Maybe(..))
+import Data.Maybe (Maybe(..), isJust)
 import Effect (Effect)
 import Effect.Console (log)
 import Test.Assert (assert')
@@ -70,7 +70,13 @@ runFlowTests = do
     sampled = [ { source: SDrumLane 0, legs: [ { dest: DSample { set: "kit", n: 0, begin: 0, end: 100, reverse: false, gain: 100, chop: 1 }, offsetMs: 0.0, on: true } ] } ]
     soloSamples = flow base { machines = [ "balistes" ], table = sampled }
     rigSamples = flow base { mode = Atlantis, machines = [ "balistes" ], table = sampled }
-  check "a sample cannot sound in Solo, so it is not drawn" (length soloSamples.nodes == 0)
+  check "a sample cannot sound in Solo: drawn on the rig's path, every hop waiting"
+    ( isJust (find (\l -> l.to == "d-dirt") soloSamples.links)
+        && all (\l -> l.waiting == l.streams) soloSamples.links
+    )
+  check "in Atlantis nothing waits" (all (\l -> l.waiting == 0) rigSamples.links)
+  check "a port names its channels as runs"
+    (map _.note (find (\nd -> nd.id == "port:IAC Driver Tidal") rig.nodes) == Just "ch 1–4")
   check "in Atlantis a sample goes through SuperDirt, fed by the sample sets"
     ( (find (\l -> l.from == "sets") rigSamples.links <#> _.signal) == Just Samples
         && (find (\l -> l.from == "d-dirt") rigSamples.links <#> _.to) == Just "ears"

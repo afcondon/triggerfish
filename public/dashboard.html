@@ -148,6 +148,9 @@
     @keyframes pulse { 0% { opacity: 1; transform: scale(1.35); } 60%, 100% { opacity: .45; transform: scale(1); } }
     @media (prefers-reduced-motion: reduce) { svg.flows .beat .arc, svg.flows .beatmark { animation: none; opacity: .8; } }
     svg.flows .link.idle { fill-opacity: .16; }
+    /* Would sound only through the rig (Solo): drawn on its path, grey and dashed. */
+    svg.flows .link.waiting { fill: var(--muted); fill-opacity: .12; stroke: var(--muted); stroke-width: 1; stroke-dasharray: 3 3; }
+    svg.flows.hovering .link.waiting.hot { fill-opacity: .3; }
     svg.flows.hovering .link.idle.hot { fill-opacity: .5; }
     svg.flows.resting .bar { opacity: .45; }
     svg.flows.resting .node text { fill-opacity: .7; }

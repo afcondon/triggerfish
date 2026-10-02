@@ -20,6 +20,7 @@ import Data.Int (fromNumber, toNumber)
 import Data.Map as Map
 import Data.Maybe (Maybe(..), fromMaybe, maybe)
 import Data.Number as Number
+import Data.String (joinWith)
 import Data.Tuple.Nested ((/\))
 import Data.Number.Format (fixed, toStringWith)
 import DataViz.Layout.Sankey.Compute (computeLayoutWithConfig)
@@ -134,7 +135,7 @@ chart on hot live f
   link sl =
     let
       ours' = f.links !! (unwrap' sl.index)
-      cls = maybe "" (\l -> sigClass l.signal <> (if Just l.machine == hot then " hot" else "") <> (if l.broken > 0 then " broken" else "") <> (if sounding l then "" else " idle")) ours'
+      cls = maybe "" (\l -> sigClass l.signal <> (if Just l.machine == hot then " hot" else "") <> (if l.broken > 0 then " broken" else "") <> (if waits l then " waiting" else if sounding l then "" else " idle")) ours'
     in
       svg "path" [ attr "class" ("link " <> cls), attr "d" (generateLinkPath laid.nodes sl) ]
         (maybe [] (\l -> [ svg "title" [] [ HH.text (linkTitle l) ] ]) ours')
@@ -142,6 +143,15 @@ chart on hot live f
   linkTitle l =
     l.from <> " → " <> l.to <> " · " <> signalLabel l.signal <> " · " <> plural l.streams "stream"
       <> (if l.broken > 0 then " · " <> show l.broken <> " with no port" else "")
+      <> (if Array.null l.wires then "" else "\n" <> joinWith ", " l.wires)
+      <> (if Array.null l.notes then "" else "\n" <> joinWith ", " l.notes)
+      <> (if waits l then "\nplays only through the rig: switch to Atlantis to hear it" else "")
+
+  waits l = l.waiting > 0 && l.waiting == l.streams
+  -- A machine whose every stream waits for the rig says so under its name.
+  needsAtlantis m =
+    let ls = filter (\l -> l.machine == m) f.links
+    in not (Array.null ls) && Array.all waits ls
 
   node sn = case ours sn of
     Nothing -> svg "g" [] []
@@ -176,7 +186,7 @@ chart on hot live f
         , bar sn
         , use ("sp-" <> m) 23.0 (cy - 16.0) 54.0 32.0
         , label "name" (sn.x0 - 10.0) (cy - 2.0) "end" nd.name
-        , label "sub" (sn.x0 - 10.0) (cy + 11.0) "end" (plural (round' sn.value) "stream")
+        , label "sub" (sn.x0 - 10.0) (cy + 11.0) "end" (if needsAtlantis m then "needs Atlantis" else plural (round' sn.value) "stream")
         ]
 
   placeNode sn nd =
