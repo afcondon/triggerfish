@@ -1,0 +1,172 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Router Matrices</title>
+<!-- A mock-up (2026-10-02), static: the routing as three matrices, AUM-style,
+     from the default routing table. What is shared by a column is said once in
+     its head; a cell carries only what varies (a channel, a jack, a note). -->
+<link href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+:root {
+  --ground: #f1f6f6; --plate: #ffffff; --ink: #0f2530; --muted: #54707a; --faint: #a9bcc1;
+  --rule: #cddbde; --reef: #0e5a73; --live: #2e9e6a; --alarm: #b3261e;
+  --f-midi: #13807b; --f-cv: #a8327a; --f-rample: #c05a12; --f-sample: #5a55b8; --f-continuo: #8a5a2b;
+  --cross: #e6f0f1;
+  --display: "Archivo", "Helvetica Neue", Arial, sans-serif;
+  --mono: "IBM Plex Mono", ui-monospace, Menlo, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --ground: #0a1a21; --plate: #10252e; --ink: #e2eef0; --muted: #8fa9b1; --faint: #4f6d77;
+    --rule: #22404b; --reef: #6cc3dc; --live: #4cc38a; --alarm: #f2837a;
+    --f-midi: #4cc5bd; --f-cv: #e87bbd; --f-rample: #f0955a; --f-sample: #a9a4f2; --f-continuo: #d2a06d;
+    --cross: #15313c;
+  }
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--ground); color: var(--ink); font: 14px/1.4 var(--display); padding: 28px 16px 60px; }
+main { max-width: 1180px; margin: 0 auto; }
+h1 { font-size: 26px; font-weight: 700; margin: 0 0 4px; letter-spacing: -.01em; }
+.lede { color: var(--muted); max-width: 70ch; margin: 0 0 26px; }
+.board { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 520px), 1fr)); gap: 18px; align-items: start; }
+section { background: var(--plate); border: 1px solid var(--rule); padding: 16px 18px 18px; min-width: 0; overflow-x: auto; }
+.head { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; border-bottom: 1px solid var(--ink); padding-bottom: 8px; margin-bottom: 4px; }
+.head h2 { margin: 0; font-size: 13px; font-weight: 700; letter-spacing: .12em; text-transform: uppercase; }
+.head .note { color: var(--muted); font-size: 12.5px; }
+
+table.m { border-collapse: separate; border-spacing: 0; font: 13px var(--mono); }
+table.m th.col { vertical-align: bottom; padding: 0; height: 150px; width: 44px; }
+table.m th.col .lab { writing-mode: vertical-rl; transform: rotate(180deg); white-space: nowrap; padding: 6px 0 8px; display: inline-block; text-align: left; }
+table.m th.col .lab b { font: 600 12.5px var(--display); color: var(--ink); }
+table.m th.col .lab small { display: block; font: 600 10px var(--display); letter-spacing: .08em; text-transform: uppercase; }
+table.m th.col.missing .lab b { color: var(--alarm); text-decoration: line-through; }
+table.m th.col .fam { display: block; height: 3px; margin: 0 6px; }
+table.m th.group { font: 700 10px var(--display); letter-spacing: .1em; text-transform: uppercase; color: var(--muted); text-align: left; padding: 0 0 4px 6px; border-left: 1px solid var(--rule); }
+table.m th.row { text-align: left; font: 400 13px var(--display); padding: 0 14px 0 0; white-space: nowrap; height: 30px; }
+table.m th.row small { color: var(--muted); font: 12px var(--mono); margin-left: 6px; }
+table.m td { width: 44px; height: 30px; text-align: center; border-bottom: 1px solid var(--rule); border-left: 1px solid var(--rule); color: var(--ink); cursor: pointer; }
+table.m td.first { border-left: 1px solid var(--rule); }
+table.m td .v { display: inline-block; min-width: 24px; padding: 1px 4px; border-radius: 3px; color: #fff; font-weight: 500; }
+table.m td .dot { display: inline-block; width: 12px; height: 12px; border-radius: 50%; }
+table.m td.idle { color: var(--faint); }
+table.m tr:hover th.row, table.m td.hcol { background: var(--cross); }
+table.m tr:hover td { background: var(--cross); }
+table.m tr:hover td.hcol { background: color-mix(in srgb, var(--cross) 60%, var(--reef) 12%); }
+.midi { --c: var(--f-midi); } .cv { --c: var(--f-cv); } .rample { --c: var(--f-rample); } .sample { --c: var(--f-sample); } .continuo { --c: var(--f-continuo); }
+.fam, .v, .dot { background: var(--c); }
+.flag { margin: 12px 0 0; font-size: 12.5px; color: var(--alarm); }
+.why { margin-top: 26px; max-width: 78ch; color: var(--muted); }
+.why b { color: var(--ink); }
+.hint { color: var(--muted); font-size: 12.5px; margin: 10px 0 0; }
+</style>
+</head>
+<body>
+<main>
+<h1>Routing, as matrices</h1>
+<p class="lede">A mock-up from the default routing table. Rows say whose, columns say where (named once), and a cell holds only what varies: a channel, an envelope, a jack. Hover a cell for its crosshair; empty columns are places you could send to.</p>
+
+<div class="board">
+
+<section>
+  <div class="head"><h2>Notes</h2><span class="note">melodic and harmonic voices · cell = channel or envelope</span></div>
+  <table class="m" id="notes"></table>
+  <p class="flag">⚠ The table says Odonus plays channels 1–4; the rig actually sends 12–15, hard-coded. A matrix that shows the truth needs the rig to route from it.</p>
+</section>
+
+<section>
+  <div class="head"><h2>Drums</h2><span class="note">hits per lane · cell = jack, voice or sample (• = the lane's own note)</span></div>
+  <table class="m" id="drums"></table>
+</section>
+
+<section>
+  <div class="head"><h2>Harmony</h2><span class="note">what Odonus quantises to · one source per input</span></div>
+  <table class="m" id="harmony"></table>
+</section>
+
+</div>
+
+<div class="why">
+  <p><b>Why three.</b> They differ in grain: a voice is a stream on a channel; a drum lane is a single note among sixteen sharing one channel; harmony is a pitch set over time with one source per input. One grid for all three forces every row to repeat what only differs between kinds.</p>
+  <p><b>What moved out of the grid.</b> Trims (the flam offset on a doubled kick), sample windows, Rample slots: details of one connection, shown when its cell is opened, not printed on every row.</p>
+</div>
+</main>
+
+<script>
+// The default table, as Routing.Model.defaultTableFor gives it.
+const fam = { midi: "midi", fh2env: "cv", fh2gate: "cv", continuo: "continuo", rample: "rample", sample: "sample" };
+
+const noteCols = [
+  { group: "MIDI ports", id: "iac", name: "IAC Driver Tidal", sub: "Ableton", kind: "midi" },
+  { group: "MIDI ports", id: "cont", name: "Continuo", sub: "piano", kind: "continuo" },
+  { group: "Modular", id: "fh2env", name: "FH-2 envelopes", sub: "modular", kind: "fh2env" },
+  { group: "Modular", id: "es9", name: "ES-9 CV", sub: "modular · calibrated", kind: "fh2env" },
+  { group: "Samplers", id: "rample", name: "Rample", sub: "four voices", kind: "rample", missing: true },
+];
+const noteRows = [
+  { name: "Odonus I", cells: { iac: "1", fh2env: "1" } },
+  { name: "Odonus II", cells: { iac: "2", fh2env: "2" } },
+  { name: "Odonus III", cells: { iac: "3", fh2env: "3" } },
+  { name: "Odonus IV", cells: { iac: "4", fh2env: "4" } },
+  { name: "Vetula", sub: "default voice", cells: { iac: "5" } },
+];
+
+const kit = ["BD 36","SD 38","CP 39","RS 37","CH 42","PH 44","OH 46","LT 41","MT 47","HT 50","RD 51","RB 53","CR 49","CW 56","TB 54","SH 70"];
+const gates = { 0: "1", 1: "2", 2: "4", 4: "3" };
+const drumCols = [
+  { group: "MIDI ports", id: "iac10", name: "IAC Driver Tidal · ch 10", sub: "Ableton drum rack", kind: "midi" },
+  { group: "Modular", id: "gates", name: "FH-2 gates", sub: "QuadDrum", kind: "fh2gate" },
+  { group: "Samplers", id: "rample", name: "Rample", sub: "four voices", kind: "rample", missing: true },
+  { group: "Samplers", id: "dirt", name: "Sample voices", sub: "SuperDirt", kind: "sample" },
+];
+const drumRows = kit.map((k, i) => {
+  const [name, note] = k.split(" ");
+  const cells = { iac10: "•" };
+  if (gates[i]) cells.gates = gates[i];
+  return { name, sub: note, cells };
+});
+
+const harmCols = [
+  { group: "Odonus", id: "grid", name: "odonus.grid", sub: "the scale cells read", kind: "midi" },
+  { group: "Odonus", id: "out", name: "odonus.out", sub: "what notes snap to", kind: "midi" },
+];
+const harmRows = [
+  { name: "Vetula key", cells: { grid: "•" } },
+  { name: "Vetula voice 3", cells: { out: "•" } },
+  { name: "Vetula voice 5", cells: {} , noGrid: true },
+  { name: "Scale", sub: "<dorian lydian>/4 d", cells: {} },
+  { name: "Harmony", sub: "<c'maj7 a'min7>/2", cells: {}, noGrid: true },
+];
+
+const esc = (x) => String(x).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+function draw(id, cols, rows) {
+  const t = document.getElementById(id);
+  const groups = [];
+  cols.forEach((c, i) => { if (!groups.length || groups.at(-1).name !== c.group) groups.push({ name: c.group, span: 1 }); else groups.at(-1).span++; });
+  let h = "<thead><tr><th></th>" + groups.map(g => `<th class="group" colspan="${g.span}">${g.name}</th>`).join("") + "</tr>";
+  h += "<tr><th></th>" + cols.map(c =>
+    `<th class="col ${c.missing ? "missing" : ""}" title="${c.missing ? "no such port on this computer" : ""}"><span class="lab"><b>${c.name}</b><small style="color:var(--muted)">${c.sub}</small></span><span class="fam ${fam[c.kind]}"></span></th>`).join("") + "</tr></thead><tbody>";
+  for (const r of rows) {
+    h += `<tr><th class="row">${r.name}${r.sub ? `<small>${esc(r.sub)}</small>` : ""}</th>`;
+    cols.forEach((c, i) => {
+      const v = r.cells[c.id];
+      const blocked = r.noGrid && c.id === "grid";
+      const content = blocked ? "–" : v === "•" ? `<span class="dot ${fam[c.kind]}"></span>` : v ? `<span class="v ${fam[c.kind]}">${v}</span>` : "";
+      h += `<td data-col="${i}" class="${blocked ? "idle" : ""}" title="${r.name} → ${c.name}${v && v !== "•" ? " · " + v : ""}">${content}</td>`;
+    });
+    h += "</tr>";
+  }
+  t.innerHTML = h + "</tbody>";
+  t.addEventListener("mouseover", e => {
+    const td = e.target.closest("td"); t.querySelectorAll(".hcol").forEach(x => x.classList.remove("hcol"));
+    if (td) t.querySelectorAll(`td[data-col="${td.dataset.col}"]`).forEach(x => x.classList.add("hcol"));
+  });
+  t.addEventListener("mouseleave", () => t.querySelectorAll(".hcol").forEach(x => x.classList.remove("hcol")));
+}
+draw("notes", noteCols, noteRows);
+draw("drums", drumCols, drumRows);
+draw("harmony", harmCols, harmRows);
+</script>
+</body>
+</html>
