@@ -1778,7 +1778,10 @@ handleActionCore = case _ of
     unixMs <- liftEffect dateNow
     let offsetUs = (unixMs - perfMs) * 1000.0
         fresh = map (\n -> { pitch: n.pitch, headIdx: n.ch, fireUnixMicros: n.atUs - offsetUs, vel: n.vel, gateMs: n.gateMs }) notes
-    H.modify_ \s -> s { capture = s.capture { logbook = Logbook.logAppend (perfMs * 1000.0) fresh s.capture.logbook } }
+    -- the logbook (Review) and the river (Perform's live strip), as the page's
+    -- own notes go to both
+    H.modify_ \s -> s { capture = s.capture { logbook = Logbook.logAppend (perfMs * 1000.0) fresh s.capture.logbook }
+                      , riverNotes = fresh <> s.riverNotes }
   StageFrameIn msg -> case SC.readFrame msg of
     Nothing -> pure unit
     -- the stage has no cards (a fresh rig): it gets ours
