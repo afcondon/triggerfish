@@ -325,6 +325,17 @@
     <circle cx="56" cy="45" r="6" fill="#0a0a0c"/><circle cx="56" cy="45" r="2.6" fill="#e6c02e"/>
   </symbol>
 
+  <!-- Limulus: a horseshoe crab, from above. Not a fish, and not a machine:
+       the live-coding editor, drawn among them because it plays them. -->
+  <symbol id="sp-limulus" viewBox="0 0 200 120">
+    <path d="M132,57 L197,59 L197,61 L132,63 Z" fill="#4a4127"/>
+    <path d="M90,28 L134,42 L134,78 L90,92 Z" fill="#6a5b33"/>
+    <path d="M98,30 L102,24 L106,33 M112,35 L116,29 L120,38 M98,90 L102,96 L106,87 M112,85 L116,91 L120,82" stroke="#4a4127" stroke-width="3" fill="none"/>
+    <path d="M94,16 C46,12 12,34 12,60 C12,86 46,108 94,104 C88,96 86,88 92,80 L92,40 C86,32 88,24 94,16 Z" fill="#86733f"/>
+    <path d="M24,60 C40,52 66,50 90,54 M24,60 C40,68 66,70 90,66" stroke="#a8925a" stroke-width="3" fill="none" style="display:var(--detail,inline)"/>
+    <ellipse cx="54" cy="36" rx="5" ry="3" fill="#2b2516"/><ellipse cx="54" cy="84" rx="5" ry="3" fill="#2b2516"/>
+  </symbol>
+
   <!-- Quadrat: a boxfish (Ostracion). A near-square body whose shell is a grid of plates. -->
   <symbol id="sp-quadrat" viewBox="0 0 200 120">
     <path d="M148,58 C162,42 180,40 188,46 C183,58 183,68 188,80 C180,86 162,84 148,68 Z" fill="#a8471f"/>
@@ -439,8 +450,8 @@
     <p class="motto">Applying the Unix philosophy to music since 2026</p>
 
     <div class="edition">
-      <span>Vol. I &middot; No. 1</span>
-      <span>Thursday, 1 October 2026</span>
+      <span>Vol. I &middot; No. 2</span>
+      <span>Friday, 2 October 2026</span>
       <span class="opt">Triggerfish &amp; the Atlantis rig</span>
       <span>Price: one browser</span>
     </div>
@@ -462,7 +473,8 @@
           <p class="drop">Triggerfish is a set of musical machines, each living in its own browser tab. Odonus writes melodic figures, Vetula grows harmony, Balistes plays drums, and Selene makes control signals for a modular synthesiser. None of them knows how the others work inside. What they share are wires: MIDI to reach instruments, OSC between the programs that run the rig, a WebSocket to reach the rig's engine, and a BroadcastChannel so that pages can hear one another.</p>
           <blockquote class="pull">&ldquo;Write programs that do one thing and do it well. Write programs to work together.&rdquo;<cite>Doug McIlroy, as summarised by Peter H. Salus</cite></blockquote>
           <p>That is the Unix idea, moved from text to sound. A pipe in a shell carries text; these wires carry notes, clocks and control voltages. Because each piece does one thing, each can be understood, replaced or simply left out. Someone new can open one page and play Ableton with it. Someone with a eurorack case can add the small programs that reach it. Nothing in between is needed until it is wanted.</p>
-          <p>Every machine is a web page, and every page is served from one origin, <span class="mono">localhost:3023</span>. So the pages share the routing table and the mode through the browser's own storage, and talk on a tab bus. The dashboard is one more page on that bus: it shows which machines are open, starts and stops them, sets the mode for all of them at once, and is the home of the whole routing table. Close it, and each machine still plays on its own.</p>
+          <p>Every machine is a web page, and every page is served from one origin, <span class="mono">localhost:3023</span>. So the pages share the routing table and the mode through the browser's own storage, and talk on a tab bus. The dashboard is one more page on that bus: it shows which machines are open, starts and stops them, sets the mode for all of them at once, and holds the routing: three matrices, in the manner of AUM, for the notes, the drums and the harmony. Close it, and each machine still plays on its own.</p>
+          <p>Text is a page like any other. Limulus is one editor in front of Tidal, and the machines answer to it too: <span class="mono">drums $ s "bd*2 sn"</span> plays the drum kit, <span class="mono">odonus $ scale "dorian"</span> moves Odonus, <span class="mono">v3 $ …</span> is a Vetula card and <span class="mono">conspicillum $ …</span> a grain cloud, each also open in its own page and kept in step through the rig.</p>
           <p>The same discipline runs underneath. The sequencer engines are written once, in PureScript, and compiled twice: to JavaScript for the page and to Erlang for the rig, with conformance tests holding the two to the same behaviour. A pattern does not change its mind when it moves from the browser to the rig.</p>
         </div>
         <table class="wires">
@@ -492,13 +504,14 @@
         <section class="box">
           <h3>In this issue</h3>
           <ul class="index">
-            <li><svg class="ico" viewBox="0 0 48 48" style="transform:none;width:21px;margin-inline:6px 7px"><use href="#ic-ears"/></svg><span><a href="dashboard.html">Dashboard</a><span class="what">the chart; transport; routing</span></span></li>
+            <li><svg class="ico" viewBox="0 0 48 48" style="transform:none;width:21px;margin-inline:6px 7px"><use href="#ic-ears"/></svg><span><a href="dashboard.html">Dashboard</a><span class="what">the chart; harmony; routing</span></span></li>
             <li><svg class="fish" viewBox="0 0 200 120"><use href="#sp-odonus"/></svg><span><a href="odonus.html">Odonus</a><span class="what">melody, four playheads</span></span></li>
             <li><svg class="fish" viewBox="0 0 200 120"><use href="#sp-vetula"/></svg><span><a href="vetula.html">Vetula</a><span class="what">harmony, grown by ear</span></span></li>
             <li><svg class="fish" viewBox="0 0 200 120"><use href="#sp-balistes"/></svg><span><a href="balistes.html">Balistes</a><span class="what">drums</span></span></li>
             <li><svg class="fish" viewBox="0 0 200 120"><use href="#sp-selene"/></svg><span><a href="selene.html">Selene</a><span class="what">signals for the modular</span></span></li>
             <li><svg class="fish" viewBox="0 0 200 120"><use href="#sp-conspicillum"/></svg><span><a href="/conspicillum/">Conspicillum</a><span class="what">the sample loupe</span></span></li>
             <li><svg class="fish" viewBox="0 0 200 120"><use href="#sp-quadrat"/></svg><span><a href="/quadrat.html">Quadrat</a><span class="what">samples an instrument</span></span></li>
+            <li><svg class="fish" viewBox="0 0 200 120"><use href="#sp-limulus"/></svg><span><a href="/limulus/">Limulus</a><span class="what">Tidal, by the line</span></span></li>
           </ul>
         </section>
 
@@ -519,8 +532,11 @@
 
         <section class="box brief">
           <h3>News in brief</h3>
-          <p><b>Chart goes live.</b> The dashboard's home is now the signal-flow chart, drawn from the routing table and the open pages rather than from example data.</p>
-          <p><b>Kraken redrawn.</b> Architeuthis has a new kraken, after Montfort's.</p>
+          <p><b>Three new names.</b> The engine, long purerl-tidal, is Architeuthis, after the giant squid it was always drawn as. The beat, link-spike, is Diaphus, a lanternfish. The repository of module specifications takes the name Acropora, a reef coral, so that Selene means the signal page alone.</p>
+          <p><b>Routing as matrices.</b> Routing: Notes and Routing: Drums open from the masthead of the dashboard. What a column shares is printed once, at its head; the cells say only what differs. A gear on a column opens the device itself: a Rample's card, a sample's window.</p>
+          <p><b>Harmony is routed.</b> What Odonus quantises to is a matrix under the chart: its grid reads a scale, its output snaps to a chord or a second scale, fed by Vetula, a scale or a pattern.</p>
+          <p><b>Drums by the line.</b> Balistes retires its Tidal tab; real Tidal now plays the kit from Limulus, down the same routes as Grids and Rhythm.</p>
+          <p><b>Hush means hush.</b> In Limulus it now stops every sound on the rig; each machine takes one of its own.</p>
           <p><b>Squid changes jobs.</b> Verrill's giant squid, tried as a watermark under the chart, was found to clash with the live ribbons. It has found work on this masthead.</p>
         </section>
       </aside>
@@ -545,7 +561,7 @@
           </article>
           <article class="who">
             <header><svg class="fish flip" viewBox="0 0 200 120"><use href="#sp-balistes"/></svg><div><span class="w-balistes">Balistes</span><span class="sp">Balistes capriscus, the grey triggerfish</span></div></header>
-            <p>Drums, three ways: a port of Mutable Instruments' Grids, for morphing between drum maps; a library of patterns programmed step by step; and lanes of Tidal mini-notation. Snapshots taken from any of the three are sequenced as a song. <a class="go" href="balistes.html">balistes.html</a></p>
+            <p>Drums, two ways: a port of Mutable Instruments' Grids, for morphing between drum maps; and a library of patterns programmed step by step. Snapshots of either are sequenced as a song. Real Tidal plays the same kit from Limulus (<span class="mono">drums $ …</span>), down the same routes. <a class="go" href="balistes.html">balistes.html</a></p>
           </article>
           <article class="who">
             <header><svg class="fish flip" viewBox="0 0 200 120"><use href="#sp-selene"/></svg><div><span class="w-selene">Selene</span><span class="sp">Selene vomer, the lookdown</span></div></header>
@@ -570,8 +586,8 @@
             <p>The looper engine: a Rust daemon that records, overdubs in layers, undoes, and keeps time with Link. The pedalboard app and Friends of Itajara play it; Quadrat records its takes through it.</p>
           </article>
           <article class="who">
-            <header><svg class="ico sq" viewBox="0 0 48 48"><use href="#ab-boat"/></svg><div><span class="nm">Calypso</span><span class="sp">the boat</span></div></header>
-            <p>The live-coding editor for Architeuthis: cells of code, each compiled and loaded into the running rig. Due to be rebuilt from scratch, keeping its look and its tarot.</p>
+            <header><svg class="fish flip" viewBox="0 0 200 120"><use href="#sp-limulus"/></svg><div><span class="nm">Limulus</span><span class="sp">Limulus polyphemus, the horseshoe crab</span></div></header>
+            <p>Text in, sound out: one editor in front of Tidal, sending each block to Haskell Tidal or to Architeuthis, to show they are the same. The machines answer to it too, and its cheatsheet lists everything the rig adds to Tidal. Not a fish, and not a machine: the editor that plays them. It took over from Calypso, the boat, now laid up. <a class="go" href="/limulus/">/limulus/</a></p>
           </article>
         </div>
       </div>
@@ -580,12 +596,12 @@
         <h3>The rig</h3>
         <div class="cast">
           <article class="who">
-            <header><svg class="ico sq" viewBox="12 16 77 77"><use href="#ic-kraken"/></svg><div><span class="nm">Architeuthis</span><span class="sp">the kraken</span></div></header>
-            <p>TidalCycles, ported to PureScript and run on Erlang's virtual machine. The rig's engine: the pages reach it over the rig socket, it schedules every voice under its own supervisor, and its arms reach Diaphus, SuperDirt and es9-daemon.</p>
+            <header><svg class="ico sq" viewBox="12 16 77 77"><use href="#ic-kraken"/></svg><div><span class="nm">Architeuthis</span><span class="sp">Architeuthis dux, the giant squid</span></div></header>
+            <p>TidalCycles, ported to PureScript and run on Erlang's virtual machine; once purerl-tidal. The rig's engine: the pages reach it over the rig socket, it schedules every voice under its own supervisor, and its arms reach Diaphus, SuperDirt and es9-daemon.</p>
           </article>
           <article class="who">
-            <header><svg class="ico" viewBox="0 0 60 36" style="width:58px;height:35px"><use href="#ic-lantern"/></svg><div><span class="nm">Diaphus</span><span class="sp">Punctatum, the lanternfish</span></div></header>
-            <p>Ableton Link, in Rust: the beat. It shares tempo and phase with Architeuthis and es9-daemon, and delivers the rig's MIDI through CoreMIDI at the time each note was stamped with. Link runs with or without Ableton.</p>
+            <header><svg class="ico" viewBox="0 0 60 36" style="width:58px;height:35px"><use href="#ic-lantern"/></svg><div><span class="nm">Diaphus</span><span class="sp">Diaphus effulgens, the headlight lanternfish</span></div></header>
+            <p>Ableton Link, in Rust: the beat; once link-spike. It shares tempo and phase with Architeuthis and es9-daemon, and delivers the rig's MIDI through CoreMIDI at the time each note was stamped with. Link runs with or without Ableton.</p>
           </article>
           <article class="who">
             <header><span class="nocreature" title="No creature yet">CV</span><div><span class="nm">es9-daemon</span><span class="sp">CV over audio</span></div></header>
@@ -717,6 +733,8 @@
           <div><dt>Amphora</dt><dd>The artefact store: content addressed, so every revision stays reachable. Optional everywhere; pages fall back to the browser's own storage.</dd></div>
           <div><dt>Continuo</dt><dd>A headless host for one instrument plugin, playing incoming MIDI to the speakers. Point it at a grand piano and the rig has a piano.</dd></div>
           <div><dt>Binnacle</dt><dd>What a page needs to play in time with the rig: a clock that locks to Link, a lookahead scheduler, and the tab bus.</dd></div>
+          <div><dt>Littorina</dt><dd>Tidal's own engine, patterns and mini-notation, as one source for the browser and the rig, held to Haskell Tidal by an oracle. A periwinkle of the intertidal zone.</dd></div>
+          <div><dt>Acropora</dt><dd>What the modular is: the specifications of its modules and interfaces, the rig's layout, and which output can drive which input. A reef coral; it was called Selene until the name went to the signal page alone.</dd></div>
           <div><dt>Reef &amp; Harmonia</dt><dd>The engines, written once and compiled to both JavaScript and Erlang; and beneath them the theory: chords, scales, voicings and voice leading.</dd></div>
           <div><dt>DeepStar</dt><dd>The rig doctor: checks what code is actually running, and runs the calibrations the modular needs.</dd></div>
           <div><dt>Friends of Itajara</dt><dd>An open-source looper for someone with one sample-playing module and no pedalboard. Quadrat lives in the same repository.</dd></div>
@@ -728,7 +746,7 @@
         <p><strong>Masthead.</strong> A. E. Verrill, <em>Architeuthis dux</em> (syn. <em>A. princeps</em>), 1882, from his work on the giant squids in the <em>Transactions of the Connecticut Academy of Arts and Sciences</em>. Public domain, via <a href="https://commons.wikimedia.org/wiki/File:Architeuthis_dux_Verrill_1882.jpg">Wikimedia Commons</a>; the credit is kept beside the image in <span class="mono">img/CREDITS.md</span>.</p>
         <p><strong>The fish</strong> are the app's own, from the identity study, and each machine's name is set in its nameplate face: <span style="font-family:Syne;font-weight:800">Syne</span>, <span style="font-family:Cormorant;font-style:italic;font-weight:700">Cormorant</span>, <span style="font-family:'Big Shoulders Stencil Display';font-weight:800">Big Shoulders Stencil</span>, <span style="font-family:Michroma;font-size:.85em">Michroma</span>, <span style="font-family:'Instrument Serif';font-style:italic">Instrument Serif</span> and <span style="font-family:'Major Mono Display'">Major Mono</span>.</p>
         <p><strong>Type.</strong> Nameplate in UnifrakturMaguntia; headlines in Playfair Display; text in Source Serif 4; labels in Archivo, the app's own face.</p>
-        <p><strong>Licence.</strong> Every Atlantis machine is to be open source: MIT throughout, except Diaphus, which is GPLv2+ by way of Ableton Link.</p>
+        <p><strong>Licence.</strong> Every Atlantis machine is to be open source: MIT throughout, except Littorina and Architeuthis, which are GPL-3.0 as Tidal is, and Diaphus, which is GPLv2+ by way of Ableton Link. Triggerfish is handing the last of its Tidal to the rig, so that it can be MIT.</p>
       </section>
     </div>
     <p class="finis">&#x2766;</p>
