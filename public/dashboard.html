@@ -131,14 +131,18 @@
     .matrix-card .matrix-close { font-size: 18px; line-height: 1; padding: 2px 9px; border: none; }
     .matrix-scroll { overflow-x: auto; }
     .matrix-card table.m { border-collapse: separate; border-spacing: 0; font: 13px var(--mono); }
-    .matrix-card table.m th.col { vertical-align: bottom; padding: 0; height: 150px; width: 44px; }
-    .matrix-card table.m th.col .lab { writing-mode: vertical-rl; transform: rotate(180deg); white-space: nowrap; padding: 6px 0 8px; display: inline-block; text-align: left; }
+    /* Column heads at 45°: each label starts over its column's centre and
+       climbs to the right, a hairline under it leading back down to the column. */
+    .matrix-scroll { padding-right: 150px; }
+    .matrix-card table.m th.col { vertical-align: bottom; padding: 0; height: 128px; width: 44px; position: relative; }
+    .matrix-card table.m th.col .lab { position: absolute; left: 22px; bottom: 9px; transform-origin: 0 100%; transform: rotate(-45deg); white-space: nowrap; text-align: left; padding: 0 6px 1px 2px; border-bottom: 1px solid var(--rule); }
     .matrix-card table.m th.col .lab b { font: 600 12.5px var(--display); color: var(--ink); }
-    .matrix-card table.m th.col .lab small { display: block; font: 600 10px var(--display); letter-spacing: .08em; text-transform: uppercase; color: var(--muted); }
+    .matrix-card table.m th.col .lab small { font: 600 9.5px var(--display); letter-spacing: .08em; text-transform: uppercase; color: var(--muted); margin-left: 6px; }
     .matrix-card table.m th.col.missing .lab b { color: var(--alarm); text-decoration: line-through; }
     .matrix-card table.m th.col.focus .lab b { color: var(--reef); }
+    .matrix-card table.m th.col.focus .lab { border-bottom-color: var(--reef); }
     .matrix-card table.m th.col .fam { display: block; height: 3px; margin: 0 6px; }
-    .matrix-card table.m th.group { font: 700 10px var(--display); letter-spacing: .1em; text-transform: uppercase; color: var(--muted); text-align: left; padding: 0 0 4px 6px; border-left: 1px solid var(--rule); }
+    .matrix-card table.m th.group { font: 700 10px var(--display); letter-spacing: .1em; text-transform: uppercase; color: var(--muted); text-align: left; padding: 0 0 4px 6px; border-left: 1px solid var(--rule); vertical-align: bottom; white-space: nowrap; }
     .matrix-card table.m th.row { text-align: left; font: 400 13px var(--display); padding: 0 14px 0 0; white-space: nowrap; height: 30px; }
     .matrix-card table.m th.row small { color: var(--muted); font: 12px var(--mono); margin-left: 6px; }
     .matrix-card table.m td { width: 44px; height: 30px; text-align: center; border-bottom: 1px solid var(--rule); border-left: 1px solid var(--rule); cursor: pointer; }
@@ -153,7 +157,7 @@
     .matrix-card .midi { background: var(--f-midi); } .matrix-card .cv { background: var(--f-cv); }
     .matrix-card .rample { background: var(--f-rample); } .matrix-card .sample { background: var(--f-sample); }
     .matrix-card .continuo { background: var(--f-continuo); }
-    .matrix-hint { color: var(--muted); font-size: 12.5px; margin: 10px 0 0; }
+    .matrix-hint { color: var(--muted); font-size: 12.5px; margin: 10px 0 0; max-width: 52ch; }
     .matrix-details { margin-top: 12px; border-top: 1px solid var(--rule); padding-top: 10px; font-size: 13px; }
     .matrix-details .who { font-weight: 700; margin-bottom: 6px; }
     .matrix-details .leg { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 6px; }

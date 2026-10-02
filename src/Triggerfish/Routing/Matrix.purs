@@ -128,7 +128,11 @@ columns grid env = Array.sortWith (\c -> fromMaybe 9 (Array.elemIndex c.group gr
   one key group name sub fam addKind = { key, group, name, sub, fam, missing: false, addKind, port: Nothing }
   rampleCols = map (\p -> { key: "rample:" <> p, group: "Samplers", name: p, sub: "Rample", fam: "rample", missing: not (p `Array.elem` env.ports), addKind: Nothing, port: Just p })
                  (filter (contains (Pattern "Rample")) env.ports)
-  fixed = map midi (filter (not <<< contains (Pattern "Rample")) env.ports) <> case grid of
+  -- A port with a column of its own kind (the FH-2's envelopes and gates,
+  -- Continuo, a Rample) is not offered again as a plain MIDI port; a leg that
+  -- does name it plainly still gets its column, among the extras.
+  plain p = not (Array.any (\k -> contains (Pattern k) (Str.toLower p)) [ "rample", "fh-2", "continuo" ])
+  fixed = map midi (filter plain env.ports) <> case grid of
     Notes ->
       [ one "continuo" "Hosted" "Continuo" "piano" "continuo" (Just "continuo")
       , one "fh2env" "Modular" "FH-2 envelopes" "" "cv" (Just "fh2env")
@@ -267,7 +271,7 @@ view grid env =
                   (if isJust (Array.find (_ == c.key) (map (\p -> "midi:" <> p) (filter (contains (Pattern "IAC")) env.ports))) then [ HH.span [ cls "v midi ghost" ] [ HH.text (show ch) ] ] else []))
                cols)
   details = case env.pick of
-    Nothing -> HH.p [ cls "matrix-hint" ] [ HH.text "Click an empty cell to send there; a filled one for its details. The ledger has every field." ]
+    Nothing -> HH.p [ cls "matrix-hint" ] [ HH.text "Click an empty cell to send there; a filled one for its details. A Rample's slicing and a sample's window are set in the router on Triggerfish's and Balistes's own pages." ]
     Just pk ->
       let here = legsIn env pk.source pk.col
       in HH.div [ cls "matrix-details" ]

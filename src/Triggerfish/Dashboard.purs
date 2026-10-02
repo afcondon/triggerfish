@@ -29,7 +29,7 @@ import Binnacle.Clock as Clock
 import Binnacle.Midi as Midi
 import Binnacle.Time (dateNow)
 import Binnacle.Transport as Transport
-import Data.Array (elem, filter, find, foldl, length, nubEq, null, (..))
+import Data.Array (elem, filter, find, foldl, nubEq, null)
 import Data.Array as Array
 import Data.Int as Int
 import Data.String (Pattern(..), stripPrefix)
@@ -65,9 +65,7 @@ import Triggerfish.Routing.Matrix as Matrix
 import Reef.Route as HarmonyRoute
 import Triggerfish.Routing.Edit as RE
 import Triggerfish.Routing.Model as RM
-import Triggerfish.Routing.Out as RO
 import Triggerfish.Routing.Store as RStore
-import Triggerfish.Routing.View as RV
 import Triggerfish.SampleSets (SampleSet)
 import Triggerfish.SampleSets as SampleSets
 import Binnacle.TabBus as Bus
@@ -111,18 +109,17 @@ foreign import openInBackground :: String -> Effect Unit
 
 -- | The page's views. Each is a real link (`#routing`), so the back button and
 -- | bookmarks work.
-data View = MachinesView | RoutingView
-
-derive instance Eq View
-
-viewOf :: String -> View
-viewOf = case _ of
-  "routing" -> RoutingView
-  _ -> MachinesView
+-- | The hash names an open matrix: `#notes`, `#drums` (and the old `#routing`,
+-- | which was the routing page, opens the notes).
+matrixOfHash :: String -> Maybe Matrix.Grid
+matrixOfHash = case _ of
+  "notes" -> Just Matrix.Notes
+  "routing" -> Just Matrix.Notes
+  "drums" -> Just Matrix.Drums
+  _ -> Nothing
 
 type State =
   { mode :: Mode
-  , view :: View
   , now :: Number
   , heard :: Map String Heard
   , rig :: Maybe Binnacle.Binnacle
@@ -153,9 +150,7 @@ data Action
   | Panic
   | RoutingStored
   | SetPorts (Array String)
-  | Edit RE.Edit
-  | Audition RM.Destination
-  | ShowView View
+  | FromHash String
   | Hover (Maybe String)
   | OpenMachine Machine MouseEvent
   | ToggleVoices String
@@ -174,7 +169,7 @@ data Action
 component :: forall q i o. H.Component q i o Aff
 component = H.mkComponent
   { initialState: \_ ->
-      { mode: Solo, view: MachinesView, now: 0.0, heard: Map.empty, rig: Nothing, rigUp: false
+      { mode: Solo, now: 0.0, heard: Map.empty, rig: Nothing, rigUp: false
       , tempo: 120.0, locked: false, bus: Nothing
       , table: RM.defaultTable, ports: [], sampleSets: [], hot: Nothing, voices: [], router: Router.initial
       , matrix: Nothing, pick: Nothing, focus: Nothing }
@@ -191,8 +186,8 @@ handleAction = case _ of
     { emitter, listener } <- liftEffect HS.create
     _ <- H.subscribe emitter
     hash <- liftEffect Route.readHash
-    H.modify_ _ { view = viewOf hash }
-    liftEffect $ Route.onHashChange (HS.notify listener <<< ShowView <<< viewOf)
+    handleAction (FromHash hash)
+    liftEffect $ Route.onHashChange (HS.notify listener <<< FromHash)
     mmode <- liftEffect TransportStore.load
     for_ mmode \m -> H.modify_ _ { mode = m }
     liftEffect $ TransportStore.onChange (HS.notify listener ModeStored)
@@ -284,15 +279,9 @@ handleAction = case _ of
       liftEffect $ RStore.save t
       H.modify_ _ { table = t }
 
-  -- An edit is saved, and every page with a machine that reads the table picks
-  -- it up through its storage listener.
-  Edit e -> do
-    st <- H.get
-    for_ (RE.apply { ports: st.ports, sampleSets: st.sampleSets } e st.table) \t -> do
-      liftEffect $ RStore.save t
-      H.modify_ _ { table = t }
-
-  ShowView v -> H.modify_ _ { view = v }
+  FromHash h -> case matrixOfHash h of
+    Just g -> handleAction (OpenMatrix g Nothing)
+    Nothing -> H.modify_ _ { matrix = Nothing, focus = Nothing, pick = Nothing }
 
   Hover m -> H.modify_ _ { hot = m }
 
@@ -323,11 +312,15 @@ handleAction = case _ of
 
   OpenMatrix g focus -> H.modify_ _ { matrix = Just g, focus = focus, pick = Nothing }
 
-  CloseMatrix -> H.modify_ _ { matrix = Nothing, focus = Nothing, pick = Nothing }
+  CloseMatrix -> do
+    H.modify_ _ { matrix = Nothing, focus = Nothing, pick = Nothing }
+    liftEffect (Route.writeHash "")
 
   PickCell p -> H.modify_ _ { pick = p }
 
-  -- Several edits as one change: an added leg, then its port and value.
+  -- Several edits as one change: an added leg, then its port and value. Saved,
+  -- and every page with a machine that reads the table picks it up through its
+  -- storage listener.
   Edits es -> do
     st <- H.get
     let
@@ -349,10 +342,6 @@ handleAction = case _ of
         | otherwise = Nothing
     handleAction (OpenMatrix grid focus)
 
-  Audition dest -> do
-    st <- H.get
-    for_ (RO.auditionLine dest) \line ->
-      for_ st.rig \bin -> liftEffect $ Transport.send (Binnacle.socket bin) line
   where
   sendRig line = do
     mrig <- H.gets _.rig
@@ -383,10 +372,7 @@ render st =
   HH.div [ cls "dash" ]
     [ topBar st
     , HH.main [ cls "body" ]
-        [ case st.view of
-            MachinesView -> HH.div_ [ flowChart st, harmonyPanel st ]
-            RoutingView -> routing st
-        ]
+        [ flowChart st, harmonyPanel st ]
     , case st.matrix of
         Nothing -> HH.text ""
         Just g -> Matrix.view g
@@ -451,12 +437,11 @@ topBar st =
     [ HH.div [ cls "row" ]
         -- The brand is the way home (the landing); the tabs are the other views.
         ( [ HH.a
-              ( [ cls "brand", HP.href "#", HP.title "Triggerfish: home" ]
-                  <> (if st.view == MachinesView then [ HP.attr (AttrName "aria-current") "page" ] else [])
-              )
+              [ cls "brand", HP.href "#", HP.title "Triggerfish: home", HP.attr (AttrName "aria-current") "page" ]
               [ HH.text "Triggerfish" ]
         , HH.nav [ cls "tabs", HP.attr (AttrName "aria-label") "Views" ]
-            [ tab RoutingView "#routing" "Routing"
+            [ tab Matrix.Notes "#notes" "Routing: Notes"
+            , tab Matrix.Drums "#drums" "Routing: Drums"
             , HH.a [ cls "tab", HP.href "/about.html", HP.target "atlantis-about" ] [ HH.text "About" ]
             ]
         , HH.span [ cls "spacer" ] []
@@ -468,12 +453,10 @@ topBar st =
   where
   -- A plain link: the browser moves the hash and keeps history; the page follows
   -- through its hashchange listener.
-  tab v href label =
+  tab g href label =
     HH.a
-      ( [ cls ("tab" <> if st.view == v then " on" else "")
-        , HP.href (if href == "" then "#" else href)
-        ]
-          <> (if st.view == v then [ HP.attr (AttrName "aria-current") "page" ] else [])
+      ( [ cls ("tab" <> if st.matrix == Just g then " on" else ""), HP.href href ]
+          <> (if st.matrix == Just g then [ HP.attr (AttrName "aria-current") "page" ] else [])
       )
       [ HH.text label ]
 
@@ -564,45 +547,6 @@ machineBar st =
 
 -- | The whole table, one ledger, each source drawn by the same rows as every
 -- | other router.
-routing :: forall m. State -> H.ComponentHTML Action () m
-routing st =
-  HH.section [ cls "routing", HP.attr (AttrName "aria-label") "Routing" ]
-    [ HH.div [ cls "matrix-open" ]
-        [ HH.button [ HE.onClick \_ -> OpenMatrix Matrix.Notes Nothing ] [ HH.text "Notes matrix" ]
-        , HH.button [ HE.onClick \_ -> OpenMatrix Matrix.Drums Nothing ] [ HH.text "Drums matrix" ]
-        , HH.span [ cls "note" ] [ HH.text "or click a link in the chart" ]
-        ]
-    , HH.div [ cls "sectionhead" ]
-        [ HH.h2_ [ HH.text "Routing" ]
-        , HH.span [ cls "note" ] [ HH.text "Every source and where it goes. Changes save at once and reach every open page." ]
-        , lamp (not (null st.ports)) portsNote
-        ]
-    , RV.key env allSources
-    , RV.sourceRows env allSources
-    ]
-  where
-  -- Each row names its machine with its fish, so there are no group headings;
-  -- the order is the machines' order.
-  allSources = odonusHeads <> vetulaVoices <> drumLanes <> seleneBanks
-  odonusHeads = map RM.SOdonusHead (0 .. 3)
-  drumLanes = map RM.SDrumLane (0 .. 15)
-  env =
-    { table: st.table, ports: st.ports, rigUp: st.rigUp, sampleSets: st.sampleSets
-    , onEdit: Edit, onAudition: Audition }
-  sources = map _.source st.table
-  vetulaVoices = nubEq ([ RM.SVetulaVoice "" ] <> filter isVetula sources)
-  seleneBanks = filter isSelene sources
-  portsNote = case length st.ports of
-    0 -> "no MIDI outputs on this computer"
-    1 -> "1 MIDI output on this computer"
-    k -> show k <> " MIDI outputs on this computer"
-  isVetula = case _ of
-    RM.SVetulaVoice _ -> true
-    _ -> false
-  isSelene = case _ of
-    RM.SSeleneBank _ -> true
-    _ -> false
-
 cls :: forall r i. String -> HP.IProp (class :: String | r) i
 cls = HP.class_ <<< H.ClassName
 
