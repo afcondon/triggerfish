@@ -16,6 +16,11 @@
 -- | `chords pcs [...] every N` (read as the pattern meaning the same) or
 -- | `vetula N` (read as scale: Vetula now sets the harmony itself).
 -- |
+-- | The scale prints by Tidal's name when it has one (`scale: D dorian`), else
+-- | as its steps (`scale: C [ 0, 2, 3 ]`); either reads back. A scale pattern
+-- | (Odonus's `scale "..."` move) follows it in quotes: `scale: C minor
+-- | "<dorian mixolydian>/4"`, the named scale being the one it returns to.
+-- |
 -- | `odonusPatch "<name>" { … }` is valid-shaped `Tidal.*` eDSL, so a patch
 -- | drops into Calypso and ships to purerl-tidal like every other Lepidoptera
 -- | value. Print order is canonical and fixed; the parser reads that same order
@@ -31,17 +36,20 @@ import Prelude
 
 import Control.Alt ((<|>))
 import Data.Array (fromFoldable, length, mapWithIndex, range, (!!))
-import Data.Array (find, findIndex) as Array
+import Data.Array (filter, find, findIndex) as Array
 import Data.Either (hush)
 import Data.Foldable (minimumBy)
 import Data.Int (round, toNumber)
-import Data.Maybe (Maybe, fromMaybe, maybe)
+import Data.Maybe (Maybe(..), fromMaybe, maybe)
+import Data.Traversable (traverse)
+import Tidal.Scales as Scales
 import Data.Ord (abs)
 import Data.String.CodeUnits (fromCharArray)
 import Data.String.Common (joinWith, toLower)
 import Data.Tuple (Tuple(..), fst)
 import Parsing (Parser, runParser) as Par
-import Parsing.Combinators (optional, sepBy, try) as PC
+import Parsing (fail) as P
+import Parsing.Combinators (optional, optionMaybe, sepBy, try) as PC
 import Parsing.Combinators.Array (many) as PCA
 import Parsing.String (char, eof, satisfy, string)
 import Parsing.String.Basic (intDecimal, number, skipSpaces)
@@ -77,10 +85,15 @@ printPatch p =
     cellInts f = ints (map f o.cells)
     cellBools f = bools (map f o.cells)
     pct x = show (round (x * 100.0))
+    -- Tidal's name, preferring major and minor to ionian and aeolian
+    scaleText ivls = maybe (ints ivls) fst
+      (Array.find (\(Tuple _ steps) -> steps == map toNumber ivls)
+        (Array.filter (\(Tuple n _) -> n == "major" || n == "minor") Scales.scaleTable <> Scales.scaleTable))
   in
     joinWith "\n"
       [ "odonusPatch " <> show p.name
-      , "  { scale: " <> Scale.rootName o.rootPc <> " " <> ints o.scaleIvls
+      , "  { scale: " <> Scale.rootName o.rootPc <> " " <> scaleText (fromMaybe o.scaleIvls o.scaleHeld)
+          <> maybe "" (\sp -> " " <> show sp) o.scalePattern
       , "  , distribution: " <> show o.dist
       , "  , octave: " <> show o.octaveShift
       , "  , scalarTransp: " <> show o.degShift
@@ -136,7 +149,7 @@ patchP = do
   _ <- sym "odonusPatch"
   name <- strL
   _ <- sym "{"
-  Tuple root ivls <- fld "scale" scaleVal
+  sc <- fld "scale" scaleVal
   dist <- fld "distribution" distVal
   octave <- fld "octave" intL
   scalarT <- fld "scalarTransp" intL
@@ -165,10 +178,10 @@ patchP = do
       )
       (range 0 15)
     baseOdo = M.defaultOdonus
-      { rootPc = root, scaleIvls = ivls, dist = dist
+      { rootPc = sc.root, scaleIvls = sc.ivls, dist = dist
       , octaveShift = octave, degShift = scalarT, gatePct = gatePct
       , cells = cells, heads = heads }
-    applied = applyPitchSource (quant stepDiv) baseOdo
+    applied = M.setScalePattern sc.pattern (applyPitchSource (quant stepDiv) baseOdo)
   pure
     { name, odo: applied
     , gen, genSpread: toNumber spread / 100.0, genBias: toNumber bias / 100.0
@@ -183,8 +196,27 @@ patchP = do
 fld :: forall a. String -> Parser a -> Parser a
 fld k vp = sym k *> sym ":" *> vp <* PC.optional (sym ",")
 
-scaleVal :: Parser (Tuple Int (Array Int))
-scaleVal = Tuple <$> rootP <*> intArray
+-- | A root, a scale as steps or by Tidal's name, and perhaps a pattern.
+scaleVal :: Parser { root :: Int, ivls :: Array Int, pattern :: Maybe String }
+scaleVal = do
+  root <- rootP
+  ivls <- intArray <|> named
+  pattern <- PC.optionMaybe strL
+  pure { root, ivls, pattern }
+  where
+  named = do
+    w <- nameL
+    case Scales.lookupScale w of
+      Just steps | Just ivls <- traverse whole steps -> pure ivls
+      Just _ -> P.fail ("the scale " <> w <> " has steps between semitones")
+      Nothing -> P.fail ("no scale named " <> w)
+  whole x = if toNumber (round x) == x then Just (round x) else Nothing
+  nameL = do
+    c <- satisfy isAlpha
+    cs <- PCA.many (satisfy (\ch -> isAlpha ch || (ch >= '0' && ch <= '9')))
+    ws
+    pure (fromCharArray ([ c ] <> fromFoldable cs))
+  isAlpha ch = (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z')
 
 distVal :: Parser Scale.Distribution
 distVal = (Scale.Natural <$ sym "Natural") <|> (Scale.Equal <$ sym "Equal")

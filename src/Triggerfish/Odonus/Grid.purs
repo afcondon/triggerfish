@@ -32,6 +32,7 @@ import Triggerfish.Odonus.Model as M
 import Triggerfish.Poly as Poly
 import Reef.Voices as RV
 import Tidal.Harmony as Harmony
+import Tidal.Scales as Scales
 import Triggerfish.Odonus.Marbles as Marbles
 import Triggerfish.Odonus.Gen as Gen
 import Triggerfish.Odonus.Forms as Forms
@@ -465,9 +466,12 @@ dispatch = case _ of
         -- if it has one, as Littorina reads it at this step's cycle position
         -- (stepDiv quarter-beats a step, four beats a cycle) — the same call
         -- reef_voice makes on the BEAM.
+        -- The scale pattern (`scale "..."`) is sampled first, as the harmony
+        -- snaps past the scale; reef_voice does the same.
         sim0 = RE.followHarmony (Harmony.harmonySampler (modelStep * st.stepDiv) 16)
-                 (RI.applyInputs (map _.input due)
-                   { odo: st.odo, gen: st.gen, spread: st.genSpread, bias: st.genBias, seed: st.genSeed, frozen: st.genFrozen })
+                 (RE.followScale (Scales.scaleSampler (modelStep * st.stepDiv) 16)
+                   (RI.applyInputs (map _.input due)
+                     { odo: st.odo, gen: st.gen, spread: st.genSpread, bias: st.genBias, seed: st.genSeed, frozen: st.genFrozen }))
         -- The randomisation matrix fires BEFORE the heads read, so any mutated
         -- value is what plays this step. Each source drifts one notch at a time.
         g = Gen.runGen

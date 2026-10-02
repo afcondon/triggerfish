@@ -44,6 +44,14 @@ contextStrip s =
         [ HH.text (Scale.rootName ctx.rootPc <> " " <> ctx.name) ]
     , pcKeyboardRO ctx.rootPc ctx.pcs (M.currentChordPCs s.odo)
     ]
+    <> case s.odo.scalePattern of
+      Nothing -> []
+      Just sp ->
+        [ HH.span
+            [ style "font-family:'SF Mono',Menlo,monospace;font-size:11px;color:#2a271e;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:200px"
+            , HH.attr (HH.AttrName "title") ("scale \"" <> sp <> "\" — Tidal scale names as a pattern; the lit keys are the scale it gives now") ]
+            [ HH.text ("scale \"" <> sp <> "\"") ]
+        ]
     <> case s.odo.harmony of
       Nothing -> []
       Just h ->

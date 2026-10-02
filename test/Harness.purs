@@ -18,6 +18,7 @@ import Effect (Effect)
 import Effect.Console (log)
 import Test.FlowSpec (runFlowTests)
 import Test.HarmonySpec (runHarmonyTests)
+import Test.LepidopteraScaleSpec (runLepidopteraScaleTests)
 import Test.RevoiceSpec (runRevoiceTests)
 import Triggerfish.Odonus.Model as M
 import Triggerfish.Odonus.Marbles as Marbles
@@ -154,6 +155,7 @@ main = do
   runRevoiceTests
   runFlowTests
   runHarmonyTests
+  runLepidopteraScaleTests
   log ("steps per scenario: " <> show n <> "\n")
 
   -- A. Chord quantiser: NOTES churning every step, chord overlay on. EVERY
