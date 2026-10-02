@@ -53,37 +53,17 @@ import Data.Array (any, filter, findIndex, length, modifyAt, range, replicate, u
 import Data.Foldable (foldl)
 import Data.Maybe (Maybe, fromMaybe)
 import Data.Tuple (Tuple(..))
+import Reef.Balistes.Kit as Kit
 
--- | One row of the shared kit: a clear name plus the GM note it sends.
-type KitLane = { name :: String, note :: Int }
+-- | One row of the shared kit. The kit itself lives in reef
+-- | (`Reef.Balistes.Kit`), since the rig names its lanes too.
+type KitLane = Kit.KitLane
 
--- | The canonical 16-lane kit — the shared coordinate system every fixed
--- | rhythm is laid against. Ordered kit-classically top-to-bottom (kick,
--- | snares/claps, hats, toms, cymbals, percussion); notes are GM percussion so
--- | imported MIDI lands on the right lane by number. Samples are swapped freely
--- | downstream (Ableton / SuperDirt / modular) — these notes are just the wire.
 canonKit :: Array KitLane
-canonKit =
-  [ { name: "BD", note: 36 } --  0  bass drum
-  , { name: "SD", note: 38 } --  1  snare
-  , { name: "CP", note: 39 } --  2  hand clap
-  , { name: "RS", note: 37 } --  3  rim / side stick
-  , { name: "CH", note: 42 } --  4  closed hat
-  , { name: "PH", note: 44 } --  5  pedal hat
-  , { name: "OH", note: 46 } --  6  open hat
-  , { name: "LT", note: 41 } --  7  low tom
-  , { name: "MT", note: 47 } --  8  mid tom
-  , { name: "HT", note: 50 } --  9  high tom
-  , { name: "RD", note: 51 } -- 10  ride
-  , { name: "RB", note: 53 } -- 11  ride bell
-  , { name: "CR", note: 49 } -- 12  crash
-  , { name: "CW", note: 56 } -- 13  cowbell
-  , { name: "TB", note: 54 } -- 14  tambourine
-  , { name: "SH", note: 70 } -- 15  shaker / maracas
-  ]
+canonKit = Kit.canonKit
 
 kitSize :: Int
-kitSize = 16
+kitSize = Kit.kitSize
 
 laneName :: Int -> String
 laneName i = fromMaybe "?" (map _.name (canonKit !! i))
