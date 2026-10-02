@@ -20,6 +20,7 @@ module Vetula.StageCards
   , StageFrame(..)
   , readFrame
   , publishLines
+  , readNotes
   ) where
 
 import Prelude
@@ -70,6 +71,11 @@ readFrame msg = case stripPrefix (Pattern "stage-texts ") msg of
     pure (Written n (toMaybe w.text))
   where
   entry (Tuple key v) = (\n -> Tuple n v.text) <$> cardIdOfKey key
+
+-- | The notes the rig played for the cards, `vetula-notes [{pitch, ch, atUs,
+-- | vel, gateMs}]`, at Unix microseconds.
+readNotes :: String -> Maybe (Array { pitch :: Int, ch :: Int, atUs :: Number, vel :: Int, gateMs :: Number })
+readNotes msg = stripPrefix (Pattern "vetula-notes ") msg >>= (hush <<< readJSON)
 
 -- | The lines that bring the stage from `seen` (what it holds, as far as this
 -- | page knows) to `now` (the cards as they are): a write per changed or new

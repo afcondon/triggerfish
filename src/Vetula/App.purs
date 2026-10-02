@@ -1335,7 +1335,11 @@ handleQuery = case _ of
     when (st.authority == Rig && s /= Rig) $
       for_ st.binnacle \bin -> liftEffect $ Transport.send (Binnacle.socket bin) "vetula-stop"
     when (s == Rig) $
-      for_ st.binnacle \bin -> liftEffect $ Transport.send (Binnacle.socket bin) (brushMsg st)
+      for_ st.binnacle \bin -> liftEffect do
+        Transport.send (Binnacle.socket bin) (brushMsg st)
+        -- the cards play on the rig, read from the stage (vetula_cards); the page
+        -- plays them itself only in Local
+        Transport.send (Binnacle.socket bin) "vetula-cards-play"
     pure (Just next)
   -- Report the EFFECTIVE sounding: Silent when self-disarmed (unload) so the shell
   -- drops us from its armed set; otherwise the pushed authority.
@@ -1766,6 +1770,16 @@ handleActionCore = case _ of
       when (i >= 0 && i < length marks) do
         when (st.stage /= Review) (handleAction (SetStage Review))
         handleAction (CaptureRegionSelect i)
+  -- The notes the rig played for the cards (`vetula-notes`, Unix µs): into the
+  -- Review logbook, as the page's own notes go in Local, so marks and loops work.
+  StageFrameIn msg | Just notes <- SC.readNotes msg -> do
+    st <- H.get
+    when (st.authority == Rig) do
+      perfMs <- liftEffect perfNow
+      unixMs <- liftEffect dateNow
+      let offsetUs = (unixMs - perfMs) * 1000.0
+          fresh = map (\n -> { pitch: n.pitch, headIdx: n.ch, fireUnixMicros: n.atUs - offsetUs, vel: n.vel, gateMs: n.gateMs }) notes
+      H.modify_ \s -> s { capture = s.capture { logbook = Logbook.logAppend (perfMs * 1000.0) fresh s.capture.logbook } }
   StageFrameIn msg -> case SC.readFrame msg of
     Nothing -> pure unit
     -- the stage has no cards (a fresh rig): it gets ours
