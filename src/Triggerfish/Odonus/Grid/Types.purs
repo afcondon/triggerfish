@@ -46,7 +46,7 @@ import Triggerfish.Clips (NoteEvent, MidiClip)
 -- The always-on capture types (logbook / marks / loop regions / replay play-state)
 -- are now machine-agnostic in `Triggerfish.Capture.Types` (#28); imported here and
 -- re-exported below so every Odonus view module reaches them unchanged.
-import Triggerfish.Capture.Types (Chunk, Mark, RegionEdge(..), RegionDrag, PlaySource(..), PlayState, Logbook)
+import Triggerfish.Capture.Types (Chunk, Mark, RegionEdge(..), RegionDrag, PlaySource(..), PlayState, Logbook, Zoom)
 import Triggerfish.Preset (Preset)
 import Triggerfish.Glyph (ChipView)
 import Triggerfish.Transport (Sounding)
@@ -312,6 +312,7 @@ type State =
   , playing :: Maybe PlayState    -- a REPLAY loop in flight (Nothing = not replaying)
   , regionDrag :: Maybe RegionDrag  -- a loop-region resize/slide in progress
   , contextOpen :: Boolean          -- REPLAY control card: harmonic-context panel open
+  , zoom :: Zoom                    -- REPLAY: how much of the take the surface shows
   , clips :: Array MidiClip         -- captured clips (shared library, #27), newest-first
   , twisterField :: TwisterField    -- which cell attribute the Twister's rotaries drive (bank 1)
   , binnacle :: Maybe Binnacle
@@ -438,6 +439,7 @@ data Action
   | RenameClip Int String   -- rename a captured clip (commits on blur; persists)
   | DeleteClip Int          -- drop a captured clip
   | ToggleContext           -- REPLAY card: show/hide the active mark's harmonic context
+  | SetZoom Zoom            -- REPLAY: whole / last N / crop to a loop
   | SetStepDiv Int
   | KnobDown KnobTarget Int
   | DragMove Int

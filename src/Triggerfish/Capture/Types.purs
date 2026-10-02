@@ -17,6 +17,7 @@ module Triggerfish.Capture.Types
   , PlayState
   , Logbook
   , Orientation(..)
+  , Zoom(..)
   ) where
 
 import Prelude
@@ -105,3 +106,10 @@ type Logbook =
 data Orientation = Horizontal | HorizontalOutward | Vertical
 
 derive instance eqOrientation :: Eq Orientation
+
+-- | How much of the take the surface shows. `Whole` fits the session, its span
+-- | growing in steps rather than with every note; `Last d` follows the newest
+-- | `d` microseconds; `Window` holds a fixed stretch (a crop to a mark).
+data Zoom = Whole | Last Number | Window { from :: Number, to :: Number }
+
+derive instance eqZoom :: Eq Zoom

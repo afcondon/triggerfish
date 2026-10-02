@@ -124,7 +124,7 @@ import Reef.Vetula.Protocol (encodePerf) as RV
 import Binnacle.Time (dateNow, perfNow)
 import Effect.Ref as Ref
 import Triggerfish.Capture.Logbook as Logbook
-import Triggerfish.Capture.Types (Orientation(..), PlaySource(..))
+import Triggerfish.Capture.Types (Orientation(..), PlaySource(..), Zoom(..))
 import Triggerfish.Capture.River (Flow(..), riverPanel, windowMicros) as River
 import Triggerfish.Capture.View (CaptureState, capturePanel)
 import Vetula.Tidal (progressionSource, parseProgression)
@@ -1019,6 +1019,7 @@ data Action
   | CaptureStopSel         -- dismiss the lift card
   | CaptureSaveClip Int    -- lift region i out into the shared clip library
   | CaptureToggleContext   -- show/hide the region's harmonic context
+  | CaptureZoom Zoom       -- whole / last N / crop to a loop
   | CaptureClear           -- purge the capture logbook
   | CaptureFrame           -- 33ms tick: advance the river's clock, prune its window
   | PerfNop                -- no-op (used to stop a click bubbling without a re-render)
@@ -1255,7 +1256,7 @@ component = H.mkComponent
       , perfMenuOpen: false
       , clipLibrary: []
       , perfPhrasePick: Nothing
-      , capture: { logbook: Logbook.emptyLog, playing: Nothing, regionDrag: Nothing, contextOpen: false }
+      , capture: { logbook: Logbook.emptyLog, playing: Nothing, regionDrag: Nothing, contextOpen: false, zoom: Whole }
       , nowMicros: 0.0
       , riverNotes: []
       }
@@ -3026,6 +3027,7 @@ handleActionCore = case _ of
     H.modify_ \s -> s { capture = s.capture { playing = Nothing } }
 
   CaptureToggleContext -> H.modify_ \s -> s { capture = s.capture { contextOpen = not s.capture.contextOpen } }
+  CaptureZoom z -> H.modify_ \s -> s { capture = s.capture { zoom = z } }
 
   CaptureClear -> do
     hushCapture
@@ -6290,6 +6292,7 @@ capturePane st =
     , saveClip: CaptureSaveClip
     , saveScene: Nothing
     , toggleContext: CaptureToggleContext
+    , setZoom: CaptureZoom
     }
 
 -- | Colour a captured note by its source channel/voice (up to six distinct hues).

@@ -25,7 +25,7 @@ replayPanel s = capturePanel wiring cap
   where
   cap =
     { logbook: s.logbook, playing: s.playing
-    , regionDrag: s.regionDrag, contextOpen: s.contextOpen }
+    , regionDrag: s.regionDrag, contextOpen: s.contextOpen, zoom: s.zoom }
   wiring =
     { orientation: Horizontal
     , timelineId: replayTimelineId
@@ -36,4 +36,5 @@ replayPanel s = capturePanel wiring cap
     , saveClip: SaveMarkClip
     , saveScene: Just SaveMarkScene
     , toggleContext: ToggleContext
+    , setZoom: SetZoom
     }

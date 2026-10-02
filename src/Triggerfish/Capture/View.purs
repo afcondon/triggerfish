@@ -19,12 +19,16 @@ module Triggerfish.Capture.View
   , CaptureWiring
   , ContextSummary
   , capturePanel
+  , bounds
   ) where
 
 import Prelude
 
 import Data.Array (concat, concatMap, filter, foldl, length, mapWithIndex, null, (!!))
+import Data.Array as Array
 import Data.Int (toNumber)
+import Data.Int as Int
+import Data.Tuple (Tuple(..))
 import Data.Maybe (Maybe(..))
 import Data.String.Common (joinWith)
 import Halogen as H
@@ -32,7 +36,7 @@ import Halogen.HTML as HH
 import Halogen.HTML.Events as HE
 import Halogen.HTML.Properties as HP
 import Web.UIEvent.MouseEvent as ME
-import Triggerfish.Capture.Types (Logbook, Mark, Orientation(..), PlaySource(..), PlayState, RegionDrag, RegionEdge(..))
+import Triggerfish.Capture.Types (Logbook, Mark, Orientation(..), PlaySource(..), PlayState, RegionDrag, RegionEdge(..), Zoom(..))
 import Triggerfish.Clips (NoteEvent)
 import Halogen.Widgets.Svg (svgAttr, svgEl)
 import Triggerfish.Ui.Style (style)
@@ -45,6 +49,7 @@ type CaptureState =
   , playing :: Maybe PlayState
   , regionDrag :: Maybe RegionDrag  -- host-owned; the view only reads logbook/playing/context
   , contextOpen :: Boolean
+  , zoom :: Zoom
   }
 
 -- | The harmonic context read off a mark's captured patch — the same shape as
@@ -66,6 +71,7 @@ type CaptureWiring action =
   , saveClip :: Int -> action
   , saveScene :: Maybe (Int -> action)
   , toggleContext :: action
+  , setZoom :: Zoom -> action
   }
 
 -- viewBox units — the timeline's internal coordinate space (stretched to fit). The
@@ -133,22 +139,22 @@ capturePanel w cap =
       ( if null events then [ emptyState ]
         else
           let
-            tMin = foldl (\a e -> min a e.fireUnixMicros) 1.0e18 events
-            tMax = foldl (\a e -> max a e.fireUnixMicros) 0.0 events
-            span = max 1.0 (tMax - tMin)
-            fracOf t = (t - tMin) / span              -- 0..1 along the time axis
+            b = bounds cap.zoom lb
+            fracOf t = (t - b.tMin) / b.span              -- 0..1 along the time axis
             posOf t = axisPos w.orientation (fracOf t)  -- percent from the axis origin
+            -- the notes in view, thinned only after cropping, so a zoom shows them all
+            shown = filter (\e -> e.fireUnixMicros >= b.tMin && e.fireUnixMicros <= b.tMin + b.span) events
           in
             [ svgEl "svg"
                 [ svgAttr "width" "100%", svgAttr "height" "100%"
                 , svgAttr "viewBox" ("0 0 " <> show tlW <> " " <> show tlH)
                 , svgAttr "preserveAspectRatio" "none"
                 , style "position:absolute;inset:0" ]
-                (map (noteDot w fracOf) (decimate events) <> map (markLine w fracOf) lb.marks)
+                (map (noteDot w fracOf) (decimate shown) <> map (markLine w fracOf) lb.marks)
             ]
               <> concat (mapWithIndex (regionBand w posOf cap.playing) lb.marks)
               <> playhead w posOf cap.playing
-              <> [ caption (length events) (length lb.marks) ]
+              <> [ caption (length shown) (length lb.marks) cap.zoom b.span, zoomBar w cap.zoom ]
               <> controlCard w posOf cap
       )
 
@@ -286,6 +292,7 @@ controlCard w posOf cap = case cap.playing of
                 , HH.div [ style "display:flex;gap:4px;flex-wrap:wrap" ]
                     ( [ cardBtn w.stopPlay "#e8c14a" "stop the loop" "■ stop"
                       , cardBtn (w.saveClip i) "#cdb98a" "lift this loop into the shared clip library" "⧉ clip"
+                      , cardBtn (w.setZoom (cropTo m)) "#cdb98a" "zoom the surface to this loop" "⌕ zoom"
                       ]
                       <> (case w.saveScene of
                             Just mk -> [ cardBtn (mk i) "#cdb98a" "save this good bit into the SCENES list" "⛭ scene" ]
@@ -325,12 +332,72 @@ contextPanel w m =
   where
   ctxStyle col = style $ "font-family:'SF Mono',Menlo,monospace;font-size:10px;margin-top:2px;color:" <> col
 
-caption :: forall action slots m. Int -> Int -> H.ComponentHTML action slots m
-caption notes marks =
+caption :: forall action slots m. Int -> Int -> Zoom -> Number -> H.ComponentHTML action slots m
+caption notes marks zoom span =
   HH.div
     [ style $ "position:absolute;bottom:10px;left:12px;font-family:'SF Mono',Menlo,monospace;"
         <> "font-size:9px;color:#ffffff44" ]
-    [ HH.text (show notes <> " notes · " <> show marks <> " marks · whole session") ]
+    [ HH.text (show notes <> " notes · " <> show marks <> " marks · " <> what) ]
+  where
+  what = case zoom of
+    Whole -> "whole session, " <> duration span <> " across"
+    Last d -> "the last " <> duration d
+    Window _ -> duration span <> " cropped"
+
+-- | The span of the surface: where it starts and how long it is, in Unix
+-- | microseconds. Hosts that turn a pointer into a time use this too, so a
+-- | drag lands where it is drawn at any zoom.
+bounds :: Zoom -> Logbook -> { tMin :: Number, span :: Number }
+bounds zoom lb =
+  let
+    events = lb.live <> concatMap _.events lb.chunks
+    first = foldl (\a e -> min a e.fireUnixMicros) 1.0e18 events
+    newest = foldl (\a e -> max a e.fireUnixMicros) 0.0 events
+  in case zoom of
+    Whole -> { tMin: first, span: steppedSpan (newest - first) }
+    Last d -> { tMin: newest - d, span: d }
+    Window w -> { tMin: w.from, span: max 1.0 (w.to - w.from) }
+
+-- | The whole-session span, rounded up to the next of a few lengths, so the
+-- | surface rescales now and then as a take grows, not with every note.
+steppedSpan :: Number -> Number
+steppedSpan raw =
+  let steps = map (_ * 1.0e6) [ 10.0, 30.0, 60.0, 120.0, 300.0, 600.0, 900.0, 1800.0, 3600.0, 7200.0 ]
+  in case Array.find (_ >= raw) steps of
+       Just s -> s
+       Nothing -> max 1.0 raw
+
+-- | A crop to a mark's loop, with half its length either side.
+cropTo :: Mark -> Zoom
+cropTo m =
+  let len = max 1.0e6 (abs (m.to - m.from))
+      lo = min m.from m.to
+      hi = max m.from m.to
+  in Window { from: lo - len * 0.5, to: hi + len * 0.5 }
+
+duration :: Number -> String
+duration us =
+  let secs = Int.round (us / 1.0e6)
+  in if secs < 60 then show secs <> " s"
+     else show (secs / 60) <> " min" <> (if secs `mod` 60 == 0 then "" else " " <> show (secs `mod` 60) <> " s")
+
+-- | Whole · 5 min · 1 min · 20 s, top right; the current one lit.
+zoomBar :: forall action slots m. CaptureWiring action -> Zoom -> H.ComponentHTML action slots m
+zoomBar w zoom =
+  HH.div [ style "position:absolute;top:8px;right:10px;display:flex;gap:3px;z-index:6" ]
+    (map btn [ Tuple "whole" Whole, Tuple "5 min" (Last 300.0e6), Tuple "1 min" (Last 60.0e6), Tuple "20 s" (Last 20.0e6) ]
+      <> case zoom of
+           Window _ -> [ btn (Tuple "cropped" zoom) ]
+           _ -> [])
+  where
+  btn (Tuple label z) =
+    HH.button
+      [ HE.onClick \_ -> w.setZoom z
+      , HP.title (if z == Whole then "fit the whole session" else "show " <> label)
+      , style $ "padding:2px 7px;border-radius:5px;cursor:pointer;border:1px solid #ffffff1a;"
+          <> "font-family:'SF Mono',Menlo,monospace;font-size:9px;"
+          <> (if z == zoom then "background:#e8c14a33;color:#e8c14a" else "background:#ffffff0a;color:#ffffff66") ]
+      [ HH.text label ]
 
 emptyState :: forall action slots m. H.ComponentHTML action slots m
 emptyState =

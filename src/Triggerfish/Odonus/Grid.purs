@@ -28,6 +28,8 @@ import Halogen.HTML as HH
 import Halogen.HTML.Events as HE
 import Halogen.HTML.Properties as HP
 import Halogen.Subscription as HS
+import Triggerfish.Capture.Types (Zoom(..))
+import Triggerfish.Capture.View as CaptureView
 import Triggerfish.Odonus.Model as M
 import Triggerfish.Poly as Poly
 import Reef.Voices as RV
@@ -98,7 +100,7 @@ component =
   H.mkComponent
     { initialState: \_ ->
         { odo: M.defaultOdonus, sounding: Silent, dragging: Nothing, dragSub: Nothing
-        , notes: [], logbook: Logbook.emptyLog, stage: Perform, selEuclid: Nothing, navScenes: false, playing: Nothing, regionDrag: Nothing, contextOpen: false, clips: [], twisterField: FNote, binnacle: Nothing, nowMicros: 0.0
+        , notes: [], logbook: Logbook.emptyLog, stage: Perform, selEuclid: Nothing, navScenes: false, playing: Nothing, regionDrag: Nothing, contextOpen: false, zoom: Whole, clips: [], twisterField: FNote, binnacle: Nothing, nowMicros: 0.0
         , outs: [], routing: RM.defaultTable, midiName: "…", clockTempo: 120.0, clockLocked: false
         , clockBeat: 0.0, clockBar: 0, anchorCount: 0
         , scenes: [], sceneNameInput: "", publishMsg: Nothing
@@ -961,6 +963,7 @@ dispatch = case _ of
                           _ -> s.playing }
     persistClips
   ToggleContext -> H.modify_ \s -> s { contextOpen = not s.contextOpen }
+  SetZoom z -> H.modify_ _ { zoom = z }
   -- STEP LENGTH is a transport/clock param, not a SimState edit, so it rides its
   -- own `reef-steplen` verb (not the tick-tagged input path): apply locally, then
   -- tell the BEAM voice the new model-step length so it steps at the same rate and
@@ -1193,11 +1196,7 @@ startClip i = do
 -- | The timeline's earliest-note origin and total span — the SAME formula the
 -- | Replay view uses to lay notes out, so pointer↔time round-trips exactly.
 timelineBounds :: State -> { tMin :: Number, span :: Number }
-timelineBounds st =
-  let evs = st.logbook.live <> concatMap _.events st.logbook.chunks
-      tMin = foldl (\a e -> min a e.fireUnixMicros) 1.0e18 evs
-      tMax = foldl (\a e -> max a e.fireUnixMicros) 0.0 evs
-  in { tMin, span: max 1.0 (tMax - tMin) }
+timelineBounds st = CaptureView.bounds st.zoom st.logbook
 
 -- | The pointer's recording-time position: its normalised X within the timeline
 -- | element mapped over the timeline span.
