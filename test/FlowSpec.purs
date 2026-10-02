@@ -75,6 +75,16 @@ runFlowTests = do
         && all (\l -> l.waiting == l.streams) soloSamples.links
     )
   check "in Atlantis nothing waits" (all (\l -> l.waiting == 0) rigSamples.links)
+
+  let
+    limulus = flow base
+      { machines = [ "limulus" ], table = []
+      , extras = [ { machine: "limulus", dest: DMidi { port: "IAC Driver Tidal", channel: 10 }, via: Nothing } ]
+      }
+  check "Limulus plays through the rig even in Solo, and nothing waits"
+    ( isJust (find (\l -> l.from == "browser" && l.to == "engine") limulus.links)
+        && all (\l -> l.waiting == 0) limulus.links
+    )
   check "a port names its channels as runs"
     (map _.note (find (\nd -> nd.id == "port:IAC Driver Tidal") rig.nodes) == Just "ch 1–4")
   check "in Atlantis a sample goes through SuperDirt, fed by the sample sets"

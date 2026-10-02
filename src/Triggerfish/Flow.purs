@@ -152,7 +152,12 @@ machineOf = case _ of
 -- | The machines purerl-tidal plays in Atlantis. Selene and Quadrat stay in
 -- | the browser; Conspicillum's samples go through the rig regardless.
 rigPlays :: String -> Boolean
-rigPlays m = m `elem` [ "odonus", "vetula", "balistes" ]
+rigPlays m = m `elem` [ "odonus", "vetula", "balistes", "limulus" ]
+
+-- | Limulus always plays through the rig, whatever the mode: it sends its
+-- | lines to purerl-tidal even when the machines' pages play themselves.
+modeFor :: Mode -> String -> Mode
+modeFor mode m = if m == "limulus" then Atlantis else mode
 
 -- ---------------------------------------------------------------------------
 -- From a leg to a path
@@ -292,7 +297,7 @@ flow inp = { nodes, links }
 
   -- A leg with no path in Solo that has one in Atlantis needs the rig: drawn
   -- on that path, marked waiting.
-  stream m unit via notes dest = case pathOf inp.mode m via dest of
+  stream m unit via notes dest = case pathOf (modeFor inp.mode m) m via dest of
     Just hops -> Just (mk hops false)
     Nothing | inp.mode /= Atlantis -> (\hops -> mk hops true) <$> pathOf Atlantis m via dest
     Nothing -> Nothing
@@ -372,6 +377,7 @@ machineNames =
   , { slot: "selene", name: "Selene", note: "polysignals" }
   , { slot: "conspicillum", name: "Conspicillum", note: "sample loupe" }
   , { slot: "quadrat", name: "Quadrat", note: "sampling" }
+  , { slot: "limulus", name: "Limulus", note: "Tidal, live-coded" }
   ]
 
 nodeOf :: Array Stream -> Table -> Array Link -> String -> Maybe Node

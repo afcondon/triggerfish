@@ -108,6 +108,17 @@ const SPRITE = `<svg id="tf-fish" width="0" height="0" style="position:absolute"
     <circle cx="56" cy="45" r="6" fill="#0a0a0c"/><circle cx="56" cy="45" r="2.6" fill="#e6c02e"/>
   </symbol>
 
+  <!-- Limulus: a horseshoe crab, from above. Not a fish, and not a machine:
+       the live-coding editor, drawn among them because it plays them. -->
+  <symbol id="sp-limulus" viewBox="0 0 200 120">
+    <path d="M132,57 L197,59 L197,61 L132,63 Z" fill="#4a4127"/>
+    <path d="M90,28 L134,42 L134,78 L90,92 Z" fill="#6a5b33"/>
+    <path d="M98,30 L102,24 L106,33 M112,35 L116,29 L120,38 M98,90 L102,96 L106,87 M112,85 L116,91 L120,82" stroke="#4a4127" stroke-width="3" fill="none"/>
+    <path d="M94,16 C46,12 12,34 12,60 C12,86 46,108 94,104 C88,96 86,88 92,80 L92,40 C86,32 88,24 94,16 Z" fill="#86733f"/>
+    <path d="M24,60 C40,52 66,50 90,54 M24,60 C40,68 66,70 90,66" stroke="#a8925a" stroke-width="3" fill="none" style="display:var(--detail,inline)"/>
+    <ellipse cx="54" cy="36" rx="5" ry="3" fill="#2b2516"/><ellipse cx="54" cy="84" rx="5" ry="3" fill="#2b2516"/>
+  </symbol>
+
   <!-- Quadrat: a boxfish (Ostracion). A near-square body whose shell is a grid of plates. -->
   <symbol id="sp-quadrat" viewBox="0 0 200 120">
     <path d="M148,58 C162,42 180,40 188,46 C183,58 183,68 188,80 C180,86 162,84 148,68 Z" fill="#a8471f"/>

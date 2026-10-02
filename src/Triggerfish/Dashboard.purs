@@ -86,6 +86,8 @@ machines =
   , { slot: "selene", name: "Selene", href: "/selene.html", target: "atlantis-selene", playable: true }
   , { slot: "conspicillum", name: "Conspicillum", href: "/conspicillum/", target: "atlantis-conspicillum", playable: true }
   , { slot: "quadrat", name: "Quadrat", href: "/quadrat.html", target: "atlantis-quadrat", playable: false }
+  -- Not a machine but the editor that plays them; it hushes rather than stops.
+  , { slot: "limulus", name: "Limulus", href: "/limulus/", target: "atlantis-limulus", playable: false }
   ]
 
 -- | A tab that has not been heard from for this long is taken to be closed.
@@ -334,7 +336,15 @@ flowChart st =
   extras =
     [ { machine: "conspicillum", dest: RM.DSample { set: "", n: 0, begin: 0, end: 100, reverse: false, gain: 100, chop: 1 }, via: Nothing }
     , { machine: "quadrat", dest: RM.DEs9Cv { bus: 1 }, via: Just "foi" }
-    ]
+    -- Limulus: its Tidal streams to SuperDirt, and `drums $` down the drum
+    -- lanes' own routing.
+    , { machine: "limulus", dest: RM.DSample { set: "d1–d16", n: 0, begin: 0, end: 100, reverse: false, gain: 100, chop: 1 }, via: Nothing }
+    ] <> map (\dest -> { machine: "limulus", dest, via: Nothing }) drumDests
+  drumDests = nubEq do
+    r <- st.table
+    case r.source of
+      RM.SDrumLane _ -> map _.dest (filter _.on r.legs)
+      _ -> []
 
 topBar :: forall m. State -> H.ComponentHTML Action () m
 topBar st =
