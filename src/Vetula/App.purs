@@ -1772,14 +1772,13 @@ handleActionCore = case _ of
         handleAction (CaptureRegionSelect i)
   -- The notes the rig played for the cards (`vetula-notes`, Unix µs): into the
   -- Review logbook, as the page's own notes go in Local, so marks and loops work.
+  -- Logged whatever this page's authority: these notes did sound.
   StageFrameIn msg | Just notes <- SC.readNotes msg -> do
-    st <- H.get
-    when (st.authority == Rig) do
-      perfMs <- liftEffect perfNow
-      unixMs <- liftEffect dateNow
-      let offsetUs = (unixMs - perfMs) * 1000.0
-          fresh = map (\n -> { pitch: n.pitch, headIdx: n.ch, fireUnixMicros: n.atUs - offsetUs, vel: n.vel, gateMs: n.gateMs }) notes
-      H.modify_ \s -> s { capture = s.capture { logbook = Logbook.logAppend (perfMs * 1000.0) fresh s.capture.logbook } }
+    perfMs <- liftEffect perfNow
+    unixMs <- liftEffect dateNow
+    let offsetUs = (unixMs - perfMs) * 1000.0
+        fresh = map (\n -> { pitch: n.pitch, headIdx: n.ch, fireUnixMicros: n.atUs - offsetUs, vel: n.vel, gateMs: n.gateMs }) notes
+    H.modify_ \s -> s { capture = s.capture { logbook = Logbook.logAppend (perfMs * 1000.0) fresh s.capture.logbook } }
   StageFrameIn msg -> case SC.readFrame msg of
     Nothing -> pure unit
     -- the stage has no cards (a fresh rig): it gets ours
