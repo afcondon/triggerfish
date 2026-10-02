@@ -467,9 +467,9 @@
         </div>
         <table class="wires">
           <caption>The wires, at a glance</caption>
-          <tr><th>MIDI</th><td>Notes and controllers, to instruments. From the page by Web MIDI in Solo; from link-spike by CoreMIDI in Atlantis.</td></tr>
-          <tr><th>The rig socket</th><td>A WebSocket from each page to purerl-tidal: notes to play, and the stage, the rig's record of what each machine is playing.</td></tr>
-          <tr><th>OSC</th><td>Between the rig's own programs: purerl-tidal to link-spike, SuperDirt and es9-daemon, and the beat back from link-spike.</td></tr>
+          <tr><th>MIDI</th><td>Notes and controllers, to instruments. From the page by Web MIDI in Solo; from Diaphus by CoreMIDI in Atlantis.</td></tr>
+          <tr><th>The rig socket</th><td>A WebSocket from each page to Architeuthis: notes to play, and the stage, the rig's record of what each machine is playing.</td></tr>
+          <tr><th>OSC</th><td>Between the rig's own programs: Architeuthis to Diaphus, SuperDirt and es9-daemon, and the beat back from Diaphus.</td></tr>
           <tr><th>The tab bus</th><td>A BroadcastChannel between pages of one origin: which machines are open; play, stop and panic; Vetula's scale for Odonus.</td></tr>
           <tr><th>Ableton Link</th><td>Tempo and phase, shared over the local network with anything else that speaks Link.</td></tr>
         </table>
@@ -482,8 +482,8 @@
         <div class="copy">
           <p><strong>In Solo, the page plays.</strong> Each machine sends MIDI itself, through the browser's Web MIDI, to whatever port the routing table names. The base case is one sequencer into Ableton. It needs a Chromium browser and a MIDI port (on a Mac, the IAC bus, switched on in Audio MIDI Setup), and nothing else installed. Each page keeps its own time.</p>
           <div class="chain"><span class="t">Solo</span>Odonus <i class="sig-notes">notes</i> page <i class="sig-midi">MIDI</i> IAC <i class="sig-midi">MIDI</i> Ableton <i class="sig-audio">audio</i> ears</div>
-          <p><strong>In Atlantis, the rig plays.</strong> Odonus, Vetula and Balistes hand their notes over the rig socket to purerl-tidal, the rig's engine. It schedules them and passes each one, stamped with its time, to link-spike, which delivers it through CoreMIDI on Ableton Link's beat. So the rig shares one tempo and phase with every other Link peer. The same engine sends samples to SuperDirt and control voltages to the modular through es9-daemon.</p>
-          <div class="chain"><span class="t">Atlantis</span>Odonus <i class="sig-notes">notes</i> page <i class="sig-socket">rig socket</i> purerl-tidal <i class="sig-osc">OSC</i> link-spike <i class="sig-midi">MIDI</i> Ableton <i class="sig-audio">audio</i> ears</div>
+          <p><strong>In Atlantis, the rig plays.</strong> Odonus, Vetula and Balistes hand their notes over the rig socket to Architeuthis, the rig's engine. It schedules them and passes each one, stamped with its time, to Diaphus, which delivers it through CoreMIDI on Ableton Link's beat. So the rig shares one tempo and phase with every other Link peer. The same engine sends samples to SuperDirt and control voltages to the modular through es9-daemon.</p>
+          <div class="chain"><span class="t">Atlantis</span>Odonus <i class="sig-notes">notes</i> page <i class="sig-socket">rig socket</i> Architeuthis <i class="sig-osc">OSC</i> Diaphus <i class="sig-midi">MIDI</i> Ableton <i class="sig-audio">audio</i> ears</div>
           <p>Selene and Quadrat are not played by the rig. Selene sets up the modular's signals, which then run on the hardware; Quadrat drives its instrument through the Friends server and records through Itajara.</p>
         </div>
       </article>
@@ -506,7 +506,7 @@
           <h3>Soundings</h3>
           <table class="soundings">
             <tr><th>Surface</th><td>A Chromium browser and a MIDI port. Odonus, Vetula and Balistes into Ableton, or any synth.</td></tr>
-            <tr><th>The trunk</th><td>link-spike and purerl-tidal. The rig plays, on Link's beat. Every rig path needs both.</td></tr>
+            <tr><th>The trunk</th><td>Diaphus and Architeuthis. The rig plays, on Link's beat. Every rig path needs both.</td></tr>
             <tr><th>Branches</th><td>Each independent of the others:
               <span class="fath">SuperDirt &middot; samples</span>
               <span class="fath">ES-9 &middot; Selene's ES-9 banks</span>
@@ -520,7 +520,7 @@
         <section class="box brief">
           <h3>News in brief</h3>
           <p><b>Chart goes live.</b> The dashboard's home is now the signal-flow chart, drawn from the routing table and the open pages rather than from example data.</p>
-          <p><b>Kraken redrawn.</b> purerl-tidal has a new kraken, after Montfort's.</p>
+          <p><b>Kraken redrawn.</b> Architeuthis has a new kraken, after Montfort's.</p>
           <p><b>Squid changes jobs.</b> Verrill's giant squid, tried as a watermark under the chart, was found to clash with the live ribbons. It has found work on this masthead.</p>
         </section>
       </aside>
@@ -571,7 +571,7 @@
           </article>
           <article class="who">
             <header><svg class="ico sq" viewBox="0 0 48 48"><use href="#ab-boat"/></svg><div><span class="nm">Calypso</span><span class="sp">the boat</span></div></header>
-            <p>The live-coding editor for purerl-tidal: cells of code, each compiled and loaded into the running rig. Due to be rebuilt from scratch, keeping its look and its tarot.</p>
+            <p>The live-coding editor for Architeuthis: cells of code, each compiled and loaded into the running rig. Due to be rebuilt from scratch, keeping its look and its tarot.</p>
           </article>
         </div>
       </div>
@@ -580,12 +580,12 @@
         <h3>The rig</h3>
         <div class="cast">
           <article class="who">
-            <header><svg class="ico sq" viewBox="12 16 77 77"><use href="#ic-kraken"/></svg><div><span class="nm">purerl-tidal</span><span class="sp">the kraken</span></div></header>
-            <p>TidalCycles, ported to PureScript and run on Erlang's virtual machine. The rig's engine: the pages reach it over the rig socket, it schedules every voice under its own supervisor, and its arms reach link-spike, SuperDirt and es9-daemon.</p>
+            <header><svg class="ico sq" viewBox="12 16 77 77"><use href="#ic-kraken"/></svg><div><span class="nm">Architeuthis</span><span class="sp">the kraken</span></div></header>
+            <p>TidalCycles, ported to PureScript and run on Erlang's virtual machine. The rig's engine: the pages reach it over the rig socket, it schedules every voice under its own supervisor, and its arms reach Diaphus, SuperDirt and es9-daemon.</p>
           </article>
           <article class="who">
-            <header><svg class="ico" viewBox="0 0 60 36" style="width:58px;height:35px"><use href="#ic-lantern"/></svg><div><span class="nm">link-spike</span><span class="sp">Punctatum, the lanternfish</span></div></header>
-            <p>Ableton Link, in Rust: the beat. It shares tempo and phase with purerl-tidal and es9-daemon, and delivers the rig's MIDI through CoreMIDI at the time each note was stamped with. Link runs with or without Ableton.</p>
+            <header><svg class="ico" viewBox="0 0 60 36" style="width:58px;height:35px"><use href="#ic-lantern"/></svg><div><span class="nm">Diaphus</span><span class="sp">Punctatum, the lanternfish</span></div></header>
+            <p>Ableton Link, in Rust: the beat. It shares tempo and phase with Architeuthis and es9-daemon, and delivers the rig's MIDI through CoreMIDI at the time each note was stamped with. Link runs with or without Ableton.</p>
           </article>
           <article class="who">
             <header><span class="nocreature" title="No creature yet">CV</span><div><span class="nm">es9-daemon</span><span class="sp">CV over audio</span></div></header>
@@ -593,7 +593,7 @@
           </article>
           <article class="who">
             <header><span class="nocreature" title="No creature yet">S</span><div><span class="nm">SuperDirt</span><span class="sp">plays samples</span></div></header>
-            <p>The sample player of the TidalCycles world, running in SuperCollider. purerl-tidal sends it OSC; it plays Conspicillum's collections and Quadrat's sets.</p>
+            <p>The sample player of the TidalCycles world, running in SuperCollider. Architeuthis sends it OSC; it plays Conspicillum's collections and Quadrat's sets.</p>
           </article>
           <article class="who keeper">
             <header><svg class="ico sq" viewBox="0 0 48 48"><use href="#ab-lighthouse"/></svg><div><span class="nm">Bosun</span><span class="sp">the lighthouse</span></div></header>
@@ -615,7 +615,7 @@
           <p><strong>Colour is the signal on each hop:</strong> note events, the rig socket, MIDI, OSC, CV and gates, audio, samples. It changes wherever the signal changes form, so the colours are the architecture.</p>
           <p><strong>Width is the number of streams,</strong> meaning distinct wires, not rows of the routing table. Sixteen drum lanes all sent to channel 10 are one stream; four Odonus playheads on four channels are four.</p>
           <p><strong>Only what you use is drawn.</strong> Nothing on the chart is chosen for it: it is read from the routing table, the MIDI ports that exist, and the pages that are open. One sequencer playing Ableton in Solo is five nodes in a line. The whole rig, with the modular and the samples, is drawn only when the whole rig is in use.</p>
-          <p><strong>link-spike is not a hop.</strong> It broadcasts the beat from above the chart, and gold marks pulse on everything it times.</p>
+          <p><strong>Diaphus is not a hop.</strong> It broadcasts the beat from above the chart, and gold marks pulse on everything it times.</p>
           <p>Hover over a machine to light its streams; click it to split it into its voices. A missing port is still drawn, with only the hop into it marked in red, and a stopped machine is shown ghosted.</p>
         </div>
 
@@ -663,10 +663,10 @@
           </figure>
 
           <figure>
-            <div class="scroller"><svg class="chart" viewBox="0 0 600 196" role="img" aria-label="Atlantis: Odonus, the browser, purerl-tidal, the IAC MIDI port, Ableton, your ears, with link-spike broadcasting the beat to purerl-tidal and the port">
-              <!-- link-spike, above the flow -->
+            <div class="scroller"><svg class="chart" viewBox="0 0 600 196" role="img" aria-label="Atlantis: Odonus, the browser, Architeuthis, the IAC MIDI port, Ableton, your ears, with Diaphus broadcasting the beat to Architeuthis and the port">
+              <!-- Diaphus, above the flow -->
               <svg x="283" y="4" width="40" height="24" viewBox="0 0 60 36"><use href="#ic-lantern"/></svg>
-              <text class="beatlabel" x="329" y="20">link-spike &middot; the beat</text>
+              <text class="beatlabel" x="329" y="20">Diaphus &middot; the beat</text>
               <path class="arc a1" d="M293,32 q10,9 20,0"/>
               <path class="arc a2" d="M283,34 q20,15 40,0"/>
               <path class="arc a3" d="M273,36 q30,21 60,0"/>
@@ -690,7 +690,7 @@
               <rect class="bar" x="348" y="98" width="8" height="34"/>
               <rect class="bar" x="446" y="98" width="8" height="34"/>
               <rect class="bar" x="544" y="98" width="8" height="34"/>
-              <!-- on the beat: purerl-tidal and the port it sends to -->
+              <!-- on the beat: Architeuthis and the port it sends to -->
               <circle class="mark" cx="254" cy="90" r="3.6"/>
               <circle class="mark" cx="352" cy="90" r="3.6"/>
               <svg x="34" y="70" width="48" height="29" viewBox="0 0 200 120" class="fish"><g transform="translate(200 0) scale(-1 1)"><use href="#sp-odonus"/></g></svg>
@@ -698,12 +698,12 @@
               <svg x="262" y="76" width="30" height="30" viewBox="12 16 77 77"><use href="#ic-kraken"/></svg>
               <text class="nm" x="58" y="152" text-anchor="middle">Odonus</text>
               <text class="nm" x="156" y="152" text-anchor="middle">Browser</text>
-              <text class="nm" x="254" y="152" text-anchor="middle">purerl-tidal</text><text class="sub" x="254" y="167" text-anchor="middle">the rig's engine</text>
+              <text class="nm" x="254" y="152" text-anchor="middle">Architeuthis</text><text class="sub" x="254" y="167" text-anchor="middle">the rig's engine</text>
               <text class="nm" x="352" y="152" text-anchor="middle">IAC</text><text class="sub" x="352" y="167" text-anchor="middle">MIDI port</text>
               <text class="nm" x="450" y="152" text-anchor="middle">Ableton</text>
               <text class="nm" x="548" y="152" text-anchor="middle">Your ears</text>
             </svg></div>
-            <figcaption><b>Atlantis</b>The same sequencer, played by the rig. The notes leave the page on the rig socket, purerl-tidal sends the MIDI (link-spike carries it to the port, on the beat), and gold marks show what the beat times.</figcaption>
+            <figcaption><b>Atlantis</b>The same sequencer, played by the rig. The notes leave the page on the rig socket, Architeuthis sends the MIDI (Diaphus carries it to the port, on the beat), and gold marks show what the beat times.</figcaption>
           </figure>
         </div>
       </div>
@@ -728,7 +728,7 @@
         <p><strong>Masthead.</strong> A. E. Verrill, <em>Architeuthis dux</em> (syn. <em>A. princeps</em>), 1882, from his work on the giant squids in the <em>Transactions of the Connecticut Academy of Arts and Sciences</em>. Public domain, via <a href="https://commons.wikimedia.org/wiki/File:Architeuthis_dux_Verrill_1882.jpg">Wikimedia Commons</a>; the credit is kept beside the image in <span class="mono">img/CREDITS.md</span>.</p>
         <p><strong>The fish</strong> are the app's own, from the identity study, and each machine's name is set in its nameplate face: <span style="font-family:Syne;font-weight:800">Syne</span>, <span style="font-family:Cormorant;font-style:italic;font-weight:700">Cormorant</span>, <span style="font-family:'Big Shoulders Stencil Display';font-weight:800">Big Shoulders Stencil</span>, <span style="font-family:Michroma;font-size:.85em">Michroma</span>, <span style="font-family:'Instrument Serif';font-style:italic">Instrument Serif</span> and <span style="font-family:'Major Mono Display'">Major Mono</span>.</p>
         <p><strong>Type.</strong> Nameplate in UnifrakturMaguntia; headlines in Playfair Display; text in Source Serif 4; labels in Archivo, the app's own face.</p>
-        <p><strong>Licence.</strong> Every Atlantis machine is to be open source: MIT throughout, except link-spike, which is GPLv2+ by way of Ableton Link.</p>
+        <p><strong>Licence.</strong> Every Atlantis machine is to be open source: MIT throughout, except Diaphus, which is GPLv2+ by way of Ableton Link.</p>
       </section>
     </div>
     <p class="finis">&#x2766;</p>

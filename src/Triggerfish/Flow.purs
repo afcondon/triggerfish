@@ -352,7 +352,7 @@ isNoPort = case _ of
 fixed :: Array Node
 fixed =
   [ n "browser" Page "Browser" "every machine is a page"
-  , n "engine" Engine "purerl-tidal" "the rig's engine"
+  , n "engine" Engine "Architeuthis" "the rig's engine"
   , n "foi" Engine "Friends server" "Quadrat's CV relay"
   , n "sets" Engine "Sample sets" "Quadrat · Amphora"
   , n "d-es9" RigOut "es9-daemon" "CV over audio"
