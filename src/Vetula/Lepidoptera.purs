@@ -49,6 +49,8 @@ module Vetula.Lepidoptera
   , parsePerform
   , docFromVoices
   , roundTrips
+  , printCard
+  , parseCard
   ) where
 
 import Prelude
@@ -57,7 +59,7 @@ import Data.Array (drop, filter, find, index, length, mapMaybe, mapWithIndex, nu
 import Data.Foldable (foldl)
 import Data.Int as Int
 import Data.Number as Number
-import Data.Maybe (Maybe(..), fromMaybe)
+import Data.Maybe (Maybe(..), fromMaybe, maybe)
 import Data.String (Pattern(..), contains, stripPrefix)
 import Data.String.Common (joinWith, split, trim)
 import Triggerfish.Macro (Form(..), parseLane, tokenize)
@@ -341,6 +343,37 @@ type VoiceSpec =
   , stack   :: Array Layer
   , term    :: PerfTerm
   , muted   :: Boolean
+  }
+
+-- | **One card as one line**, the form a card takes on the stage and in
+-- | Limulus (`v3 $ …`, docs/kb/plans/text-on-the-stage.md): a voice line whose
+-- | source is the card's own chords, quoted, where a scene names a shared
+-- | source:
+-- |
+-- |     ch3 "<[c4,e4,g4] [a3,c4,e4]>" "0 1 2 3" # arp up 4
+-- |
+-- | `-` for a card with no chords. It reads with the scene's own line parser,
+-- | the quoted chords landing where a source name would.
+printCard :: VoiceSpec -> String
+printCard spec = printVoice
+  { channel: spec.channel
+  , source: if null spec.chords then Nothing else Just (quote ("<" <> joinWith " " (map bracket spec.chords) <> ">"))
+  , seqText: trim spec.seqText
+  , stack: spec.stack
+  , term: spec.term
+  , muted: spec.muted
+  }
+  where
+  bracket c = "[" <> joinWith "," (map tidalNoteName c) <> "]"
+
+parseCard :: String -> Maybe VoiceSpec
+parseCard line = parseVoiceLine (trim line) <#> \v ->
+  { channel: v.channel
+  , chords: maybe [] parseProgression v.source
+  , seqText: v.seqText
+  , stack: v.stack
+  , term: v.term
+  , muted: v.muted
   }
 
 docFromVoices :: String -> Array VoiceSpec -> PerfDoc

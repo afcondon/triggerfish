@@ -127,7 +127,9 @@ import Triggerfish.Capture.Types (Orientation(..), PlaySource(..))
 import Triggerfish.Capture.River (Flow(..), riverPanel, windowMicros) as River
 import Triggerfish.Capture.View (CaptureState, capturePanel)
 import Vetula.Tidal (progressionSource, parseProgression)
-import Vetula.Lepidoptera (PerfDoc, VoiceSpec, docFromVoices, parsePerform, printAsRecord)
+import Vetula.Lepidoptera (PerfDoc, VoiceSpec, docFromVoices, parseCard, parsePerform, printAsRecord, printCard)
+import Vetula.StageCards as SC
+import Unsafe.Reference (unsafeRefEq)
 import Vetula.Clipboard (copyText)
 import Binnacle.Midi as Midi
 import Halogen.Widgets.Select as Select
@@ -606,7 +608,10 @@ derive instance eqPane :: Eq Pane
 -- | the chord pattern) while the transport plays, out its terminal `term`. Empty or
 -- | muted boxes are silent; a rig-only terminal is silent+ghosted in Solo.
 type PerfBox =
-  { channel :: Int
+  { cardId  :: Int        -- the card's stable number (`v3`): its name on the stage and
+                          -- in Limulus (docs/kb/plans/text-on-the-stage.md); the
+                          -- smallest free, kept when another card is deleted
+  , channel :: Int
   , label   :: String
   , seq     :: Maybe SavedSeq
   , stack   :: Array Layer   -- ordered function layers (fx + when clause); arp/strum
@@ -732,6 +737,9 @@ type State =
   , pulse :: Int                  -- the shared clock's 16th-note grid index (from the scheduler tick)
   , tempo :: Int                  -- BPM display (tracks the live clock; the bpm field nudges the free baseline)
   , binnacle :: Maybe Binnacle.Binnacle  -- the shared transport (free-run → Link-lock), like Odonus/Balistes
+  -- The cards as the rig's stage holds them, as far as this page knows (card id →
+  -- its line); Nothing until the stage has answered a subscribe. See Vetula.StageCards.
+  , stageCards :: Maybe (Map Int String)
   , clockTempo :: Number          -- the clock's live tempo, read each tick (drives note durations)
   , nextVoiceId :: Int
   , routing :: Map String Int   -- name → canonical MIDI channel, pushed from the Tidal page
@@ -974,6 +982,9 @@ data Action
   | PerfClearBox Int       -- empty box i (stop its loop)
   | PerfAddBox             -- append a new empty player on the next free MIDI channel
   | PerfRemoveBox Int      -- delete player i outright (not just empty it)
+  | StageOpen              -- the rig socket (re)connected: subscribe to the cards on the stage
+  | StageFrameIn String    -- a frame from the rig; the stage's card frames are acted on
+  | CardToLimulus Int      -- ask Limulus to show card n (`stage-open vetula/vN`)
   | PerfDragOver DragEvent -- allow HTML5 drop onto a box (preventDefault)
   | PerfPickFx PerfFx      -- pick up an fx from the palette for placement (toggle)
   | PerfFxNudge Int Int Int -- nudge box b's stack layer i by delta
@@ -1189,6 +1200,7 @@ component = H.mkComponent
       , pulse: -1
       , tempo: 120
       , binnacle: Nothing
+      , stageCards: Nothing
       , clockTempo: 120.0
       , nextVoiceId: 4
       -- name → canonical MIDI channel, pushed from the shell's Tidal-page routing
@@ -1225,7 +1237,7 @@ component = H.mkComponent
       , chyronArmed: true
       -- four player boxes on MIDI ch 1-4 (Odonus I-IV in AC's routing); a token
       -- dropped on one loops there while the transport plays.
-      , perfBoxes: map (\n -> { channel: n, label: "P" <> show n, seq: Nothing, stack: [], seqText: "", muted: false, term: TMidi, phrase: Nothing }) (range 1 4)
+      , perfBoxes: map (\n -> { cardId: n, channel: n, label: "P" <> show n, seq: Nothing, stack: [], seqText: "", muted: false, term: TMidi, phrase: Nothing }) (range 1 4)
       , perfHeld: Nothing
       , perfHeldFx: Nothing
       , perfDrag: Nothing
@@ -1698,7 +1710,83 @@ connectMidi = do
         HS.notify midiL (MidiReady mout nm)
 
 handleAction :: forall m. MonadAff m => Action -> H.HalogenM State Action Slots Output m Unit
-handleAction = case _ of
+handleAction a = do
+  before <- H.gets _.perfBoxes
+  handleActionCore a
+  after <- H.gets _.perfBoxes
+  -- the cards changed (any edit, by hand or from the stage): publish what differs
+  unless (unsafeRefEq before after) publishCards
+
+-- | Bring the stage's copy of the cards up to date with the page's.
+publishCards :: forall m. MonadAff m => H.HalogenM State Action Slots Output m Unit
+publishCards = do
+  st <- H.get
+  for_ st.stageCards \seen -> for_ st.binnacle \bin -> do
+    let now = cardTexts st.perfBoxes
+    liftEffect $ for_ (SC.publishLines seen now) (Transport.send (Binnacle.socket bin))
+    H.modify_ _ { stageCards = Just now }
+
+cardTexts :: Array PerfBox -> Map Int String
+cardTexts boxes = Map.fromFoldable (map (\b -> Tuple b.cardId (printCard (boxSpec b))) boxes)
+
+-- | A card read from the stage as a box: the page's own box for that card, if
+-- | it has one, with what the line says; its token kept when the chords match,
+-- | so the glyph survives an edit that did not touch them.
+boxOfCard :: Int -> VoiceSpec -> Maybe PerfBox -> PerfBox
+boxOfCard n spec old =
+  { cardId: n
+  , channel: spec.channel
+  , label: "P" <> show spec.channel
+  , seq: case old >>= _.seq of
+      Just s | map _.notes s.events == spec.chords -> Just s
+      _ -> if length spec.chords == 0 then Nothing else Just (mkSavedSeq spec.chords)
+  , stack: spec.stack
+  , seqText: spec.seqText
+  , muted: spec.muted
+  , term: spec.term
+  , phrase: old >>= _.phrase
+  }
+
+handleActionCore :: forall m. MonadAff m => Action -> H.HalogenM State Action Slots Output m Unit
+handleActionCore = case _ of
+  StageOpen -> do
+    H.modify_ _ { stageCards = Nothing }
+    st <- H.get
+    for_ st.binnacle \bin -> liftEffect $ Transport.send (Binnacle.socket bin) SC.subscribeLine
+  StageFrameIn msg -> case SC.readFrame msg of
+    Nothing -> pure unit
+    -- the stage has no cards (a fresh rig): it gets ours
+    Just (SC.Table table) | Map.isEmpty table -> do
+      H.modify_ _ { stageCards = Just Map.empty }
+      publishCards
+    -- the stage has cards: they are the current ones (another tab, Limulus, or
+    -- this page before a reload); adopt them, in card order
+    Just (SC.Table table) -> do
+      st <- H.get
+      let
+        readable = Map.toUnfoldable table # mapMaybe \(Tuple n text) ->
+          (\spec -> Tuple n (boxOfCard n spec (find (\b -> b.cardId == n) st.perfBoxes))) <$> parseCard text
+      H.modify_ _ { perfBoxes = map snd readable, stageCards = Just table }
+    Just (SC.Written n Nothing) ->
+      H.modify_ \s -> s { perfBoxes = filter (\b -> b.cardId /= n) s.perfBoxes
+                        , stageCards = map (Map.delete n) s.stageCards }
+    Just (SC.Written n (Just text)) -> do
+      st <- H.get
+      H.modify_ _ { stageCards = map (Map.insert n text) st.stageCards }
+      case parseCard text of
+        -- unreadable: refuse it; the publish that follows puts the card back
+        Nothing -> do
+          for_ st.binnacle \bin -> liftEffect $ Transport.send (Binnacle.socket bin)
+            (SC.rejectLine n "Vetula could not read this card (want: chN \"<[c4,e4,g4] …>\" \"0 1 2 3\" # layer …)")
+          publishCards
+        Just spec -> H.modify_ \s -> s
+          { perfBoxes = case find (\b -> b.cardId == n) s.perfBoxes of
+              Just old -> map (\b -> if b.cardId == n then boxOfCard n spec (Just old) else b) s.perfBoxes
+              Nothing -> s.perfBoxes <> [ boxOfCard n spec Nothing ] }
+  CardToLimulus n -> do
+    publishCards
+    st <- H.get
+    for_ st.binnacle \bin -> liftEffect $ Transport.send (Binnacle.socket bin) (SC.openLine n)
   Initialize -> do
     -- Announce the opening stage so the shell can write a COMPLETE URL from a cold
     -- start (`#{slug}/{stage}`, not the bare `#{slug}`). Without this the address
@@ -1732,6 +1820,12 @@ handleAction = case _ of
     _ <- H.subscribe frameE
     _ <- liftEffect $ setInterval 33 (HS.notify frameL CaptureFrame)
     H.modify_ _ { binnacle = Just bin }
+    -- The cards on the rig's stage (docs/kb/plans/text-on-the-stage.md): subscribe
+    -- on every connect, since a rig restart empties the stage.
+    { emitter: stageE, listener: stageL } <- liftEffect HS.create
+    _ <- H.subscribe stageE
+    liftEffect $ Binnacle.onAppMessage bin (HS.notify stageL <<< StageFrameIn)
+    liftEffect $ Binnacle.onOpen bin (HS.notify stageL StageOpen)
     -- Restore the persisted library (auto-capture stack) from localStorage. capSeq
     -- continues past the restored count so new ◦ autonames don't collide.
     msaved <- liftEffect Store.loadLibrary
@@ -2715,7 +2809,7 @@ handleAction = case _ of
     let used = map _.channel st.perfBoxes
         free = fromMaybe (length st.perfBoxes + 1) (find (\c -> not (elem c used)) (range 1 16))
     in st { perfBoxes = st.perfBoxes <>
-              [ { channel: free, label: "P" <> show free, seq: Nothing, stack: [], seqText: "", muted: false, term: TMidi, phrase: Nothing } ] }
+              [ { cardId: freeCardId st.perfBoxes, channel: free, label: "P" <> show free, seq: Nothing, stack: [], seqText: "", muted: false, term: TMidi, phrase: Nothing } ] }
 
   -- Delete a player outright (distinct from PerfClearBox, which only empties its
   -- token). Its channel frees for the next add.
@@ -6007,12 +6101,14 @@ mkSavedSeq chords =
 -- | its source's chords minted back into a `SavedSeq`; a sourceless voice (or an
 -- | unknown source name) gets an empty box. This is what `PerfLoadScene` applies.
 boxesFromDoc :: PerfDoc -> Array PerfBox
-boxesFromDoc doc = map voiceToBox doc.voices
+boxesFromDoc doc = mapWithIndex voiceToBox doc.voices
   where
   chordsOf name = maybe [] _.chords (find (\s -> s.name == name) doc.sources)
-  voiceToBox v =
+  -- a loaded scene numbers its cards 1..n, as a loaded Tidal file reuses d1
+  voiceToBox i v =
     let cs = maybe [] chordsOf v.source
-    in { channel: v.channel
+    in { cardId: i + 1
+       , channel: v.channel
        , label: "P" <> show v.channel
        , seq: if length cs == 0 then Nothing else Just (mkSavedSeq cs)
        , stack: v.stack
@@ -6021,6 +6117,11 @@ boxesFromDoc doc = map voiceToBox doc.voices
        , term: v.term
        , phrase: Nothing   -- phrase boxes aren't carried in the eDSL doc (#27)
        }
+
+-- | The smallest card number no card has.
+freeCardId :: Array PerfBox -> Int
+freeCardId boxes = fromMaybe (length boxes + 1)
+  (find (\n -> not (elem n (map _.cardId boxes))) (range 1 (length boxes + 1)))
 
 -- | A live Perform box → the neutral `VoiceSpec` the Lepidoptera serialiser takes
 -- | (its chords are the token's event notes; empty seq = a sourceless voice).
@@ -6386,7 +6487,12 @@ perfBox st i box =
        ]
        ( [ HH.div [ HP.style "display: flex; align-items: center; gap: 8px;" ]
              [ HH.span [ HP.style "font-size: 10px; letter-spacing: 0.1em; text-transform: uppercase; color: #b0a684;" ]
-                 [ HH.text (box.label <> " · ch " <> show box.channel) ]
+                 [ HH.text ("v" <> show box.cardId <> " · ch " <> show box.channel) ]
+             , HH.button
+                 [ HP.style "border: 1px solid #dcd2b4; background: #faf6ea; color: #8a7a4a; cursor: pointer; padding: 1px 6px; border-radius: 3px; font-size: 10px;"
+                 , HP.title ("show this card in Limulus as a line (v" <> show box.cardId <> " $ …); edits there come back here")
+                 , HE.onClick \e -> PerfStopClick e (CardToLimulus box.cardId) ]
+                 [ HH.text "λ" ]
              , HH.button
                  [ HP.style ("border: 1px solid " <> (if box.muted then "#c8a24a" else "#dcd2b4")
                               <> "; background: " <> (if box.muted then "#f3e6c4" else "#faf6ea")
