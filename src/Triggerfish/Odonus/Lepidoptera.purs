@@ -16,7 +16,7 @@
 -- | `chords pcs [...] every N` (read as the pattern meaning the same) or
 -- | `vetula N` (read as scale: Vetula now sets the harmony itself).
 -- |
--- | The scale prints by Tidal's name when it has one (`scale: D dorian`), else
+-- | The scale prints by name when reef's table has one (`scale: D dorian`), else
 -- | as its steps (`scale: C [ 0, 2, 3 ]`); either reads back. A scale pattern
 -- | (Odonus's `scale "..."` move) follows it in quotes: `scale: C minor
 -- | "<dorian mixolydian>/4"`, the named scale being the one it returns to.
@@ -36,13 +36,11 @@ import Prelude
 
 import Control.Alt ((<|>))
 import Data.Array (fromFoldable, length, mapWithIndex, range, (!!))
-import Data.Array (filter, find, findIndex) as Array
+import Data.Array (find, findIndex) as Array
 import Data.Either (hush)
 import Data.Foldable (minimumBy)
 import Data.Int (round, toNumber)
 import Data.Maybe (Maybe(..), fromMaybe, maybe)
-import Data.Traversable (traverse)
-import Tidal.Scales as Scales
 import Data.Ord (abs)
 import Data.String.CodeUnits (fromCharArray)
 import Data.String.Common (joinWith, toLower)
@@ -57,7 +55,7 @@ import Triggerfish.Odonus.Grid.Types (GenKind(..), GenSource, genKinds)
 import Triggerfish.Odonus.Model as M
 import Triggerfish.Odonus.PitchSource (PitchSource(..), applyPitchSource, pitchSourceFrom)
 import Reef.Vetula.Harmony (clockHarmony) as RH
-import Triggerfish.Scale (Distribution(..), rootName, rootNames) as Scale
+import Triggerfish.Scale (Distribution(..), normaliseIvls, rootName, rootNames, scaleTypes) as Scale
 
 -- | The authored slice of the Odonus component: the model core plus the
 -- | State-side fields that are part of the patch (not transport / runtime).
@@ -85,10 +83,9 @@ printPatch p =
     cellInts f = ints (map f o.cells)
     cellBools f = bools (map f o.cells)
     pct x = show (round (x * 100.0))
-    -- Tidal's name, preferring major and minor to ionian and aeolian
-    scaleText ivls = maybe (ints ivls) fst
-      (Array.find (\(Tuple _ steps) -> steps == map toNumber ivls)
-        (Array.filter (\(Tuple n _) -> n == "major" || n == "minor") Scales.scaleTable <> Scales.scaleTable))
+    -- by name when reef's table has one (Reef.Scale.scaleTypes), else as steps
+    scaleText ivls = maybe (ints ivls) _.name
+      (Array.find (\t -> Scale.normaliseIvls t.intervals == Scale.normaliseIvls ivls) Scale.scaleTypes)
   in
     joinWith "\n"
       [ "odonusPatch " <> show p.name
@@ -206,11 +203,9 @@ scaleVal = do
   where
   named = do
     w <- nameL
-    case Scales.lookupScale w of
-      Just steps | Just ivls <- traverse whole steps -> pure ivls
-      Just _ -> P.fail ("the scale " <> w <> " has steps between semitones")
+    case Array.find (\t -> t.name == w) Scale.scaleTypes of
+      Just t -> pure t.intervals
       Nothing -> P.fail ("no scale named " <> w)
-  whole x = if toNumber (round x) == x then Just (round x) else Nothing
   nameL = do
     c <- satisfy isAlpha
     cs <- PCA.many (satisfy (\ch -> isAlpha ch || (ch >= '0' && ch <= '9')))
