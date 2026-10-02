@@ -29,22 +29,17 @@ module Triggerfish.Balistes.Types
   , stepsPerBar
   , midiPortName
   , drumChannel
-  , cycleSteps
   , editVel
   , flashWindow
   , padId
-  , eqTrigName
-  , jackNoteOf
   ) where
 
 import Prelude
 
 import Data.Array (mapMaybe, mapWithIndex, (!!))
-import Data.Maybe (Maybe(..), fromMaybe, maybe)
-import Data.String.Common (toLower)
+import Data.Maybe (Maybe(..), fromMaybe)
 import Data.Tuple (Tuple(..))
 import Binnacle as Binnacle
-import Triggerfish.LaneShapes as LS
 import Binnacle.Midi as Midi
 import Triggerfish.Routing.Model as RM
 import Triggerfish.Routing.Out as RO
@@ -87,9 +82,8 @@ applyKnob KOpen v = M.setOpen v
 -- | What the panel is currently playing — one drum-brain at a time (the tab
 -- | bar's projection). `AGrids` is the generative MI-Grids morph engine (owns
 -- | the CONTROL column); `AFixed i` is a literal rhythm from the library
--- | (`library !! i`), played verbatim; `ASelene` is the relocated POLYTRIG jack
--- | rack (browser-only) — named jacks + lane-spanning routes, all → ch 10.
-data Active = AGrids | AFixed Int | ASelene
+-- | (`library !! i`), played verbatim.
+data Active = AGrids | AFixed Int
 
 derive instance eqActive :: Eq Active
 
@@ -134,7 +128,6 @@ type State =
   , binnacle :: Maybe Binnacle.Binnacle
   -- The rig's reading of each lane source (POLYTRIG jacks and routes), by
   -- source text: the page reads no Tidal itself (Triggerfish.LaneShapes).
-  , laneShapes :: LS.LaneShapes
   -- Every MIDI output port, not one: the routing table may name any of them, so
   -- the emit path resolves per leg rather than holding a single handle. See
   -- Triggerfish.Routing.Out.
@@ -195,15 +188,12 @@ type State =
   -- the cell the NOTE inspector is editing (lane, step) on the active rhythm.
   , selected :: Maybe { lane :: Int, step :: Int }
   -- the POLYTRIG jack rack (SELENE DRUMS tab) — browser-only, no reef path.
-  , trig :: M.TrigBank
   -- transient status for the "publish to Amphora" action on the active rhythm.
   , publishMsg :: Maybe String
   }
 
 data Action
   = Initialize
-  | RigOpen                 -- the rig socket (re)connected: ask for every lane shape
-  | RigFrameIn String       -- a frame from the rig; `lane-shapes` answers are kept
   -- The preset modal: the rhythm library (was a 14-chip wall on the surface) and
   -- the snapshot bank (was reachable only from the shell's status-board chip
   -- menu, i.e. not from inside Balistes at all). Recall/star/delete mirror the
@@ -255,13 +245,6 @@ data Action
   | SetPatternName String      -- rename the active rhythm
   | PublishActive              -- publish the active rhythm to Amphora (persist + share)
   | PushBalistes               -- lockstep handoff: the routing table, then the brain's state, to the rig
-  -- POLYTRIG (TIDAL tab) editor. Every edit re-pushes the resolved kit (`balistes-trig`).
-  | SetJackSource Int String   -- jack i's per-jack pattern
-  | SetJackName Int String     -- jack i's route-addressable name
-  | SetJackNote Int Int        -- nudge jack i's MIDI note
-  | SetRoute Int String        -- route line i
-  | AddRoute                   -- append an empty route line
-  | RemoveRoute Int            -- drop route line i
   | NoOp
 
 -- | The fixed rhythm currently in view on the RYTM tab: the ephemeral
@@ -332,10 +315,6 @@ midiPortName = "IAC"
 drumChannel :: Int
 drumChannel = Routing.toWire Routing.drumsChannel
 
--- | One Tidal cycle == this many POLYTRIG grid steps (one bar). Matches Selene.
-cycleSteps :: Int
-cycleSteps = 16
-
 -- | Velocity a freshly-clicked fixed-rhythm cell lands at (a firm hit).
 editVel :: Int
 editVel = 98
@@ -346,11 +325,3 @@ flashWindow = 400000.0
 
 padId :: String
 padId = "balistes-pad"
-
--- | Route atoms address jacks case-insensitively (`BD` fires `bd`).
-eqTrigName :: String -> String -> Boolean
-eqTrigName a b = toLower a == toLower b
-
--- | The current MIDI note of POLYTRIG jack `i` (default GM ladder if absent).
-jackNoteOf :: M.TrigBank -> Int -> Int
-jackNoteOf tb i = maybe (36 + i) _.note (tb.jacks !! i)

@@ -43,10 +43,9 @@ import Binnacle.Clock as Clock
 import Binnacle.Midi as Midi
 import Binnacle.Scheduler as Scheduler
 import Binnacle.Transport as Transport
-import Reef.Balistes.Protocol (encodeBalSim, encodeBTagged, encodeFixed, encodeTrigKit)
+import Reef.Balistes.Protocol (encodeBalSim, encodeBTagged, encodeFixed)
 import Reef.Balistes.Input as RBI
 import Reef.Balistes.Fixed as RF
-import Reef.Balistes.Trig as Trig
 import Triggerfish.Balistes.Model as M
 import Triggerfish.Balistes.Pattern as P
 import Triggerfish.Routing.Model as RM
@@ -55,14 +54,13 @@ import Reef.Routing as RR
 import Triggerfish.Balistes.Types
   ( KnobTarget(..), targetRange, applyKnob, Active(..), ClickMode(..)
   , NoteRef(..), DragKind(..), State, Action(..), activePattern, selectedPattern, patternAt, rhythmEntries, rigUrl, gridCfg
-  , cycleSteps, editVel, flashWindow
-  , padId, eqTrigName, jackNoteOf )
+  , editVel, flashWindow
+  , padId )
 import Triggerfish.Balistes.TriSnapshot (Brain(..), TriSnapshot(..), brainBadge, brainLabel, brainOf, printTri, parseTri, rhythmContent, rhythmOfContent)
 import Triggerfish.Glyph as G
 import Triggerfish.GlyphView (faIcons)
 import Triggerfish.Preset (Preset, indexOfContent, presetAlias, presetLabel)
 import Triggerfish.Balistes.Widgets (armBtn, instColor)
-import Triggerfish.Balistes.View.Trig (routeStrip, trigJacks)
 import Triggerfish.Balistes.View.Fixed (cellStrip, fixedSvg)
 import Triggerfish.Balistes.View.Grids (heatSvg, knobStack, padSvg)
 import Triggerfish.Macro (Form(..), parseLane)
@@ -72,9 +70,6 @@ import Triggerfish.Balistes.Remote as Remote
 import Triggerfish.Balistes.Lepidoptera (printPattern, parsePattern)
 import Triggerfish.SourceQuery (Query(..))
 import Triggerfish.Transport (Sounding(..))
-import Data.Map as Map
-import Triggerfish.LaneShapes as LS
-import Unsafe.Reference (unsafeRefEq)
 import Reef.Balistes.Sim as Sim
 import Triggerfish.Ui.Pointer as Pointer
 import Triggerfish.Ui.Style (engrave, style)
@@ -100,14 +95,14 @@ component =
     { initialState: \_ ->
         { bal: M.defaultBalistes
         , sounding: Silent, playStep: 0, nextModelStep: 0, pending: [], flash: []
-        , binnacle: Nothing, laneShapes: Map.empty, outs: [], routing: RM.defaultTable, midiName: "…"
+        , binnacle: Nothing, outs: [], routing: RM.defaultTable, midiName: "…"
         , clockTempo: 120.0, clockLocked: false, clockBeat: 0.0, clockBar: 0, anchorCount: 0
         , nowMicros: 0.0, dragging: Nothing, dragSub: Nothing
         , presets: []
         , identity: Nothing, lastChip: Nothing
         , active: AGrids, editing: false, presetsOpen: false, bankFilter: Nothing, clickMode: Assemble, laneEditOpen: false, fixedSel: 0, lane: "", laneReadout: "", selected: Nothing
         , scratchFixed: Nothing
-        , trig: M.defaultTrig, publishMsg: Nothing }
+        , publishMsg: Nothing }
     , render
     , eval: H.mkEval H.defaultEval
         { handleAction = handleAction, handleQuery = handleQuery, initialize = Just Initialize }
@@ -228,39 +223,11 @@ captureNow = do
 -- ---------------------------------------------------------------------------
 
 handleAction :: forall m. MonadAff m => Action -> H.HalogenM State Action () Output m Unit
-handleAction a = do
-  before <- H.gets _.trig
-  handleActionCore a
-  after <- H.gets _.trig
-  -- the lane sources changed: ask the rig for any it has not answered
-  unless (unsafeRefEq before after) (requestShapes false)
-
--- | Ask the rig for the lane shapes this page lacks (or, `all`, every source,
--- | as after a reconnect).
-requestShapes :: forall m. MonadAff m => Boolean -> H.HalogenM State Action () Output m Unit
-requestShapes all = do
-  st <- H.get
-  let
-    srcs = map _.source st.trig.jacks <> st.trig.routes
-    want = if all then LS.missing Map.empty srcs else LS.missing st.laneShapes srcs
-  when (length want > 0) $ for_ st.binnacle \bin ->
-    liftEffect $ Transport.send (Binnacle.socket bin) (LS.requestLine want)
-
-handleActionCore :: forall m. MonadAff m => Action -> H.HalogenM State Action () Output m Unit
-handleActionCore = case _ of
-  RigOpen -> requestShapes true
-  RigFrameIn msg -> for_ (LS.readShapes msg) \shapes -> do
-    H.modify_ \s -> s { laneShapes = Map.union shapes s.laneShapes }
-    -- the kit the rig plays is built from these: send it again now they are known
-    pushTrig
+handleAction = case _ of
   Initialize -> do
     -- Same rig handshake as Odonus: Binnacle free-runs at 120 until the Link
     -- anchor arrives, then phase-locks, so Balistes plays solo or in ensemble.
     bin <- liftEffect $ Binnacle.connect { url: rigUrl, tempo: 120.0 }
-    { emitter: rigE, listener: rigL } <- liftEffect HS.create
-    _ <- H.subscribe rigE
-    liftEffect $ Binnacle.onAppMessage bin (HS.notify rigL <<< RigFrameIn)
-    liftEffect $ Binnacle.onOpen bin (HS.notify rigL RigOpen)
     { emitter: stepE, listener: stepL } <- liftEffect HS.create
     _ <- H.subscribe stepE
     _ <- liftEffect $ Scheduler.startGrid (Binnacle.clock bin) gridCfg \tick ->
@@ -363,24 +330,6 @@ handleActionCore = case _ of
           , nextModelStep = tick.index + 1
           , pending = keepInputs
           , flash = gridsFlash <> s.flash }
-      -- POLYTRIG: resolve the rack to onset-fractions per jack (own source ∪ route
-      -- atoms addressed to its name), then let the SHARED reef renderer slice out the
-      -- onsets that fall in THIS step's window and their fractional sub-step time —
-      -- the EXACT code reef_balistes_voice runs off the pushed kit, so browser
-      -- (ch 10) and rig co-simulate byte-for-byte. One Tidal cycle == cycleSteps grid
-      -- steps (one bar). Local emits; Rig follows the pushed kit.
-      ASelene -> do
-        let
-          step = tick.index `mod` cycleSteps
-          stepMs = 0.25 * 60000.0 / max 30.0 st.clockTempo
-          fires = Trig.renderTrigStep (resolveTrigKit st.laneShapes st.trig) tick.index cycleSteps
-        when audible $ liftEffect $
-          for_ fires \f ->
-            void $ RO.sendAll st.outs (RR.drumSends (drumsOf st)
-              { note: f.note, velocity: Trig.trigVelocity
-              , atMs: tick.delayMs + f.frac * stepMs, durMs: Trig.trigGateMs, stepMs })
-        H.modify_ _ { playStep = step }
-
   Frame -> do
     st <- H.get
     case st.binnacle of
@@ -580,7 +529,6 @@ handleActionCore = case _ of
     when (st.sounding == Rig) case a of
       AFixed _ -> repushFixed
       AGrids -> pushHandoff st
-      ASelene -> pushTrig   -- push the resolved POLYTRIG kit to the rig voice
   ToggleEdit -> H.modify_ \s -> s { editing = not s.editing }
   -- A click on an empty cell adds a hit at the default velocity and selects it
   -- for the NOTE inspector; on a lit cell it selects it; on the SELECTED lit
@@ -666,30 +614,6 @@ handleActionCore = case _ of
             ("balistes-fixed " <> encodeFixed (fixedOf pat))
       -- Grids: the phase-aligned BalSim handoff.
       AGrids -> pushHandoff st
-      -- POLYTRIG: push the whole resolved kit (stateless, no phase-hold needed —
-      -- both runtimes read the same Link step, the fixed-rhythm discipline).
-      ASelene -> pushTrig
-  -- POLYTRIG editor — state edits; re-push the resolved kit so live jack/route
-  -- edits reach the rig voice in place (a no-op in Local/Silent). The rack in hand
-  -- is not saved by itself; keeping it as a preset (a TSTrig snapshot) saves it.
-  SetJackSource i src -> do
-    H.modify_ \s -> s { trig = M.setJackSource i src s.trig }
-    pushTrig
-  SetJackName i nm -> do
-    H.modify_ \s -> s { trig = M.setJackName i nm s.trig }
-    pushTrig
-  SetJackNote i d -> do
-    H.modify_ \s -> s { trig = M.setJackNote i (jackNoteOf s.trig i + d) s.trig }
-    pushTrig
-  SetRoute i src -> do
-    H.modify_ \s -> s { trig = M.setRoute i src s.trig }
-    pushTrig
-  AddRoute -> do
-    H.modify_ \s -> s { trig = M.addRoute s.trig }
-    pushTrig
-  RemoveRoute i -> do
-    H.modify_ \s -> s { trig = M.removeRoute i s.trig }
-    pushTrig
   -- Purely a view narrowing; nothing to persist and nothing to push. Not saved
   -- across reloads either — which brain you were reading last session is not a
   -- preference worth restoring, and a filter that survives a reload is a good way
@@ -792,12 +716,11 @@ triOf :: State -> Active -> Maybe TriSnapshot
 triOf s = case _ of
   AGrids -> Just (TSGrids (M.captureSnapshot s.bal))
   AFixed _ -> TSFixed <$> selectedPattern s
-  ASelene -> Just (TSTrig s.trig)
 
 -- | Restore a `TriSnapshot`: switch the active tab to its brain, restore that
 -- | brain's state, and — when rig-authoritative — push the matching handoff so the
--- | rig follows. The rig side re-modes in place on any of balistes-sim-at / -fixed /
--- | -trig, so a mid-sequence Grids→Tidal→Rytm march is just three pushes, no gap.
+-- | rig follows. The rig side re-modes in place on balistes-sim-at / -fixed, so a
+-- | mid-sequence Grids→Rytm march is just two pushes, no gap.
 -- | `TSFixed` restores EPHEMERALLY (scratchFixed), never touching the library. Does
 -- | NOT set `identity` — the caller (`recallPreset`) parks it on the preset's text.
 recallSnap :: forall o m. MonadAff m => TriSnapshot -> H.HalogenM State Action () o m Unit
@@ -815,10 +738,6 @@ recallSnap = case _ of
     st2 <- H.get
     when (st2.sounding == Rig) $ for_ st2.binnacle \bin ->
       liftEffect $ Transport.send (Binnacle.socket bin) ("balistes-fixed " <> encodeFixed (fixedOf pat))
-  TSTrig rack -> do
-    H.modify_ _ { active = ASelene, scratchFixed = Nothing, trig = rack }
-    pushTrig
-
 -- | Recall preset `i`: parse its content to a `TriSnapshot`, restore it, and park
 -- | the identity chip on the preset's text (glyph SOLID; ghosts on divergence).
 recallPreset :: forall o m. MonadAff m => Int -> H.HalogenM State Action () o m Unit
@@ -831,28 +750,6 @@ recallPreset i = do
       Just snap -> do
         recallSnap snap
         H.modify_ _ { identity = Just p.content }
-
--- | Resolve a POLYTRIG bank to the wire-flat `Trig.TrigKit` the rig runs: each jack
--- | becomes its MIDI note + the onset fractions it fires at over one cycle (its own
--- | source pattern ∪ the route atoms addressed to its name). The mini-notation parse
--- | happens HERE (reef has no Tidal parser); the shared `renderTrigStep` then slices
--- | these onsets into steps identically on both runtimes. Concatenation order (own
--- | then routed, no dedup) matches the frontend's own playback exactly.
-resolveTrigKit :: LS.LaneShapes -> M.TrigBank -> Trig.TrigKit
-resolveTrigKit shapes tb =
-  map (\jack -> { note: jack.note, onsets: LS.onsetsOf shapes jack.source <> routeOns jack.name }) tb.jacks
-  where
-  routeOns nm = map _.at (filter (\e -> eqTrigName e.name nm) (tb.routes >>= LS.namedOnsetsOf shapes))
-
--- | Push the resolved POLYTRIG kit to the rig voice (`balistes-trig <json>`). Like the
--- | fixed-rhythm push, no phase-hold: a rack is a pure function of the absolute step,
--- | so the rig snaps to the current Link step and agrees. A no-op unless rig-authoritative.
-pushTrig :: forall o m. MonadAff m => H.HalogenM State Action () o m Unit
-pushTrig = do
-  st <- H.get
-  when (st.sounding == Rig) $ for_ st.binnacle \bin ->
-    liftEffect $ Transport.send (Binnacle.socket bin)
-      ("balistes-trig " <> encodeTrigKit (resolveTrigKit st.laneShapes st.trig))
 
 -- | Deferred-on-both: enqueue a gesture locally AND broadcast it, both tagged for the
 -- | same near-future step. The Step-loop drain applies it here, the voice applies it
@@ -912,7 +809,6 @@ repushFixed = do
       for_ st.binnacle \bin ->
         liftEffect $ Transport.send (Binnacle.socket bin) ("balistes-fixed " <> encodeFixed (fixedOf pat))
     AGrids -> pure unit
-    ASelene -> pure unit
 
 -- | What the nav shows instead of a channel number: how many drum lanes are
 -- | routed somewhere, and — loudly — how many have a leg whose port is missing.
@@ -1104,7 +1000,7 @@ render s =
         [ style "flex:1 1 auto;min-height:0;display:flex;align-items:stretch" ]
         [ HH.div
             [ style "flex:1 1 auto;min-width:0;overflow-y:auto;display:flex;flex-direction:column;gap:10px;padding:10px 14px 14px" ]
-            [ mutableBand s, gridsBand s, tidalBand s ]
+            [ mutableBand s, gridsBand s ]
         , assemblePanel s
         ]
     , presetModal s
@@ -1375,7 +1271,6 @@ sameBrain :: Active -> Active -> Boolean
 sameBrain a b = case a, b of
   AGrids, AGrids -> true
   AFixed _, AFixed _ -> true
-  ASelene, ASelene -> true
   _, _ -> false
 
 mutableBand :: forall m. State -> H.ComponentHTML Action () m
@@ -1415,10 +1310,6 @@ gridsBand s =
         Nothing -> HH.text ""
     , cellStrip s
     ]
-
-tidalBand :: forall m. State -> H.ComponentHTML Action () m
-tidalBand s =
-  band s ASelene "TIDAL" [ routeStrip s ] (trigJacks s)
 
 -- ---------------------------------------------------------------------------
 -- The preset modal
@@ -1573,7 +1464,7 @@ bankFilterRow :: forall m. State -> H.ComponentHTML Action () m
 bankFilterRow s =
   HH.div [ style "display:flex;align-items:center;gap:6px;margin-bottom:10px" ]
     ( [ filterBtn Nothing "ALL" ]
-        <> map (\b -> filterBtn (Just b) (brainBadge b)) [ BGrids, BFixed, BTrig ]
+        <> map (\b -> filterBtn (Just b) (brainBadge b)) [ BGrids, BFixed ]
         <> [ HH.div [ style "flex:1 1 auto" ] []
            , HH.button
                [ HE.onClick \_ -> NewPattern

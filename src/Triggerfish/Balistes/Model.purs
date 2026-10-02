@@ -39,21 +39,12 @@ module Triggerfish.Balistes.Model
   , snapshotCount
   , captureSnapshot
   , applySnapshot
-  , TrigBank
-  , TrigSlot
-  , defaultTrig
-  , setJackSource
-  , setJackName
-  , setJackNote
-  , setRoute
-  , addRoute
-  , removeRoute
   ) where
 
 import Prelude
 
-import Data.Array (deleteAt, length, modifyAt, range, replicate, snoc, updateAt, (!!))
-import Data.Maybe (Maybe(..), fromMaybe)
+import Data.Array (replicate, updateAt)
+import Data.Maybe (fromMaybe)
 import Reef.Balistes.Engine (Trigger, freshPerturbations, readDrumMap, clampDensity)
 import Reef.Balistes.Sim as Sim
 
@@ -289,76 +280,3 @@ applySnapshot :: Snapshot -> Balistes -> Balistes
 applySnapshot s b =
   b { x = s.x, y = s.y, densBd = s.densBd, densSd = s.densSd, densHh = s.densHh
     , randomness = s.randomness, open = s.open, push = s.push }
-
--- ---------------------------------------------------------------------------
--- POLYTRIG — the third Balistes drum-brain (relocated from Selene; the rig plays it via `balistes-trig`)
--- ---------------------------------------------------------------------------
-
--- | A POLYTRIG jack: one named output. `name` is the atom a route addresses
--- | (`bd`); `note` is the MIDI note it fires; `source` is an optional per-jack
--- | mini-notation pattern whose onsets are gate times over one cycle. A jack
--- | fires from its own `source` stacked with any route onsets addressed to its
--- | `name`. Copied verbatim from Selene's `TrigSlot` (same field names, so the
--- | shared `Tidal.Lane` engine drives it), minus the CV/gate target apparatus —
--- | on Balistes every jack lands on the drums MIDI channel.
-type TrigSlot =
-  { name :: String
-  , note :: Int
-  , source :: String
-  }
-
--- | A POLYTRIG bank: named output **jacks** plus lane-spanning **routes**. A
--- | route is a mini-notation string whose atoms fire jacks by name
--- | (`"bd sn cp sn"`); both stack at playback.
-type TrigBank =
-  { jacks :: Array TrigSlot
-  , routes :: Array String
-  }
-
--- | Eight named jacks — two carry their own ostinato (hh, oh), the rest are
--- | driven by the lane-spanning route "bd sn cp sn", so the default reads as
--- | real Tidal: named voices + a spanning pattern. Notes are the GM-ish drum
--- | ladder. Same seed as Selene's default trig block.
-defaultTrig :: TrigBank
-defaultTrig =
-  { jacks: map jack (range 0 7)
-  , routes: [ "bd sn cp sn" ]
-  }
-  where
-  jack i =
-    { name: fromMaybe "j" (names !! i)
-    , note: fromMaybe (36 + i) (notes !! i)
-    , source: fromMaybe "" (pats !! i)
-    }
-  names = [ "bd", "sn", "cp", "hh", "oh", "rs", "lt", "ht" ]
-  notes = [ 36, 38, 39, 42, 46, 37, 45, 50 ]
-  pats = [ "", "", "", "x*8", "~ ~ x ~", "", "", "" ]
-
--- | Edit a jack's per-jack source pattern.
-setJackSource :: Int -> String -> TrigBank -> TrigBank
-setJackSource i src tb =
-  tb { jacks = fromMaybe tb.jacks (modifyAt i (_ { source = src }) tb.jacks) }
-
--- | Rename a jack (the atom a route addresses).
-setJackName :: Int -> String -> TrigBank -> TrigBank
-setJackName i nm tb =
-  tb { jacks = fromMaybe tb.jacks (modifyAt i (_ { name = nm }) tb.jacks) }
-
--- | Set a jack's MIDI note (clamped 0..127).
-setJackNote :: Int -> Int -> TrigBank -> TrigBank
-setJackNote i n tb =
-  tb { jacks = fromMaybe tb.jacks (modifyAt i (_ { note = clamp 0 127 n }) tb.jacks) }
-
--- | Edit a route line.
-setRoute :: Int -> String -> TrigBank -> TrigBank
-setRoute i src tb =
-  tb { routes = fromMaybe tb.routes (updateAt i src tb.routes) }
-
--- | Append a fresh (empty) route line.
-addRoute :: TrigBank -> TrigBank
-addRoute tb = tb { routes = snoc tb.routes "" }
-
--- | Drop a route line.
-removeRoute :: Int -> TrigBank -> TrigBank
-removeRoute i tb = tb { routes = fromMaybe tb.routes (deleteAt i tb.routes) }
-
