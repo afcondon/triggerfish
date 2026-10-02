@@ -116,6 +116,54 @@
     /* A machine's nameplate heads its group in the routing ledger. Space, not
        a rule, separates the groups. */
     .routing .hw-quiet-key { margin-top: 14px; }
+    /* The notes and drums matrices: a modal over the dashboard. */
+    .matrix-open { display: flex; gap: 8px; align-items: baseline; margin-bottom: 14px; }
+    .matrix-open button, .matrix-card button { font: 600 12px var(--display); color: var(--ink); background: var(--plate); border: 1px solid var(--rule); padding: 4px 10px; cursor: pointer; }
+    .matrix-open button:hover, .matrix-card button:hover { border-color: var(--reef); }
+    .matrix-modal { position: fixed; inset: 0; z-index: 50; display: flex; align-items: flex-start; justify-content: center; padding: 48px 16px; overflow: auto; }
+    .matrix-backdrop { position: fixed; inset: 0; background: color-mix(in srgb, var(--ink) 28%, transparent); }
+    .matrix-card { position: relative; background: var(--plate); border: 1px solid var(--rule); padding: 14px 18px 18px; max-width: 100%; box-shadow: 0 10px 40px rgba(0,0,0,.18); }
+    .matrix-top { display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid var(--ink); padding-bottom: 8px; margin-bottom: 6px; gap: 16px; }
+    .matrix-switch { display: flex; gap: 0; }
+    .matrix-card .matrix-tab { font: 700 12px var(--display); letter-spacing: .1em; text-transform: uppercase; border-radius: 0; }
+    .matrix-card .matrix-tab + .matrix-tab { border-left: none; }
+    .matrix-card .matrix-tab.on { background: var(--ink); color: var(--plate); border-color: var(--ink); }
+    .matrix-card .matrix-close { font-size: 18px; line-height: 1; padding: 2px 9px; border: none; }
+    .matrix-scroll { overflow-x: auto; }
+    .matrix-card table.m { border-collapse: separate; border-spacing: 0; font: 13px var(--mono); }
+    .matrix-card table.m th.col { vertical-align: bottom; padding: 0; height: 150px; width: 44px; }
+    .matrix-card table.m th.col .lab { writing-mode: vertical-rl; transform: rotate(180deg); white-space: nowrap; padding: 6px 0 8px; display: inline-block; text-align: left; }
+    .matrix-card table.m th.col .lab b { font: 600 12.5px var(--display); color: var(--ink); }
+    .matrix-card table.m th.col .lab small { display: block; font: 600 10px var(--display); letter-spacing: .08em; text-transform: uppercase; color: var(--muted); }
+    .matrix-card table.m th.col.missing .lab b { color: var(--alarm); text-decoration: line-through; }
+    .matrix-card table.m th.col.focus .lab b { color: var(--reef); }
+    .matrix-card table.m th.col .fam { display: block; height: 3px; margin: 0 6px; }
+    .matrix-card table.m th.group { font: 700 10px var(--display); letter-spacing: .1em; text-transform: uppercase; color: var(--muted); text-align: left; padding: 0 0 4px 6px; border-left: 1px solid var(--rule); }
+    .matrix-card table.m th.row { text-align: left; font: 400 13px var(--display); padding: 0 14px 0 0; white-space: nowrap; height: 30px; }
+    .matrix-card table.m th.row small { color: var(--muted); font: 12px var(--mono); margin-left: 6px; }
+    .matrix-card table.m td { width: 44px; height: 30px; text-align: center; border-bottom: 1px solid var(--rule); border-left: 1px solid var(--rule); cursor: pointer; }
+    .matrix-card table.m td.focus { background: color-mix(in srgb, var(--reef) 7%, transparent); }
+    .matrix-card table.m td.picked { outline: 2px solid var(--reef); outline-offset: -2px; }
+    .matrix-card table.m tr:hover td, .matrix-card table.m tr:hover th.row { background: color-mix(in srgb, var(--reef) 6%, transparent); }
+    .matrix-card table.m tr.card th.row, .matrix-card table.m tr.card td { color: var(--muted); cursor: default; }
+    .matrix-card .v { display: inline-block; min-width: 22px; padding: 1px 4px; border-radius: 3px; color: #fff; font-weight: 500; margin: 0 1px; }
+    .matrix-card .dot { display: inline-block; width: 12px; height: 12px; border-radius: 50%; margin: 0 1px; }
+    .matrix-card .off { opacity: .3; }
+    .matrix-card .ghost { opacity: .45; }
+    .matrix-card .midi { background: var(--f-midi); } .matrix-card .cv { background: var(--f-cv); }
+    .matrix-card .rample { background: var(--f-rample); } .matrix-card .sample { background: var(--f-sample); }
+    .matrix-card .continuo { background: var(--f-continuo); }
+    .matrix-hint { color: var(--muted); font-size: 12.5px; margin: 10px 0 0; }
+    .matrix-details { margin-top: 12px; border-top: 1px solid var(--rule); padding-top: 10px; font-size: 13px; }
+    .matrix-details .who { font-weight: 700; margin-bottom: 6px; }
+    .matrix-details .leg { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 6px; }
+    .matrix-details .leg.off { opacity: .55; }
+    .matrix-details .field { color: var(--muted); font: 12px var(--mono); min-width: 4em; }
+    .matrix-details .val { font: 500 13px var(--mono); min-width: 2em; text-align: center; }
+    .matrix-details input { width: 4em; font: 13px var(--mono); border: none; border-bottom: 1px solid var(--rule); background: transparent; color: var(--ink); }
+    .matrix-details .remove { color: var(--alarm); }
+    svg.flows .link { cursor: pointer; }
+
     /* The harmony matrix: sources down, Odonus's two inputs across, a dot per route. */
     .harmony-panel { background: var(--plate); border: 1px solid var(--rule); padding: 16px 18px; margin-bottom: 24px; overflow-x: auto; }
     .router { margin: 0; }

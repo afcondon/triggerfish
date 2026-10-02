@@ -33,7 +33,8 @@ import Halogen.HTML.Properties as HP
 import Triggerfish.Flow (Column(..), Flow, Signal(..), columnTitle, layerOf, nodeRank, onTheBeat, signalLabel)
 
 -- | What the chart reports: a machine hovered (or left), and a machine picked.
-type Handlers i = { hover :: Maybe String -> i, pick :: String -> i }
+-- | `link`: a link clicked, with its machine and the node it runs into.
+type Handlers i = { hover :: Maybe String -> i, pick :: String -> i, link :: String -> String -> i }
 
 width :: Number
 width = 1500.0
@@ -137,7 +138,8 @@ chart on hot live f
       ours' = f.links !! (unwrap' sl.index)
       cls = maybe "" (\l -> sigClass l.signal <> (if Just l.machine == hot then " hot" else "") <> (if l.broken > 0 then " broken" else "") <> (if waits l then " waiting" else if sounding l then "" else " idle")) ours'
     in
-      svg "path" [ attr "class" ("link " <> cls), attr "d" (generateLinkPath laid.nodes sl) ]
+      svg "path" ([ attr "class" ("link " <> cls), attr "d" (generateLinkPath laid.nodes sl) ]
+          <> maybe [] (\l -> [ HE.onClick \_ -> on.link l.machine l.to ]) ours')
         (maybe [] (\l -> [ svg "title" [] [ HH.text (linkTitle l) ] ]) ours')
 
   linkTitle l =

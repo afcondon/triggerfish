@@ -29,7 +29,11 @@ import Binnacle.Clock as Clock
 import Binnacle.Midi as Midi
 import Binnacle.Time (dateNow)
 import Binnacle.Transport as Transport
-import Data.Array (elem, filter, find, length, nubEq, null, (..))
+import Data.Array (elem, filter, find, foldl, length, nubEq, null, (..))
+import Data.Array as Array
+import Data.Int as Int
+import Data.String (Pattern(..), stripPrefix)
+import Data.String as String
 import Data.Foldable (for_)
 import Data.Map (Map)
 import Data.Map as Map
@@ -57,6 +61,7 @@ import Triggerfish.Flow.View as FlowView
 import Triggerfish.GlyphView (chipIcons)
 import Triggerfish.Route as Route
 import Triggerfish.Router as Router
+import Triggerfish.Routing.Matrix as Matrix
 import Reef.Route as HarmonyRoute
 import Triggerfish.Routing.Edit as RE
 import Triggerfish.Routing.Model as RM
@@ -131,6 +136,10 @@ type State =
   , hot :: Maybe String      -- the machine hovered on the chart
   , voices :: Array String   -- machines the chart draws as their voices
   , router :: Router.Router  -- the harmony routes, as the rig's stage holds them
+  -- the notes or drums matrix, when open, its picked cell and lit column
+  , matrix :: Maybe Matrix.Grid
+  , pick :: Maybe Matrix.Pick
+  , focus :: Maybe String
   }
 
 data Action
@@ -156,13 +165,19 @@ data Action
   | RouterEdit (Router.Router -> Router.Router)
   | RouterCommit Router.Line
   | NoOp
+  | OpenMatrix Matrix.Grid (Maybe String)
+  | CloseMatrix
+  | PickCell (Maybe Matrix.Pick)
+  | Edits (Array RE.Edit)
+  | ChartLink String String
 
 component :: forall q i o. H.Component q i o Aff
 component = H.mkComponent
   { initialState: \_ ->
       { mode: Solo, view: MachinesView, now: 0.0, heard: Map.empty, rig: Nothing, rigUp: false
       , tempo: 120.0, locked: false, bus: Nothing
-      , table: RM.defaultTable, ports: [], sampleSets: [], hot: Nothing, voices: [], router: Router.initial }
+      , table: RM.defaultTable, ports: [], sampleSets: [], hot: Nothing, voices: [], router: Router.initial
+      , matrix: Nothing, pick: Nothing, focus: Nothing }
   , render
   , eval: H.mkEval H.defaultEval { handleAction = handleAction, initialize = Just Init }
   }
@@ -306,6 +321,34 @@ handleAction = case _ of
 
   NoOp -> pure unit
 
+  OpenMatrix g focus -> H.modify_ _ { matrix = Just g, focus = focus, pick = Nothing }
+
+  CloseMatrix -> H.modify_ _ { matrix = Nothing, focus = Nothing, pick = Nothing }
+
+  PickCell p -> H.modify_ _ { pick = p }
+
+  -- Several edits as one change: an added leg, then its port and value.
+  Edits es -> do
+    st <- H.get
+    let
+      ctx = { ports: st.ports, sampleSets: st.sampleSets }
+      step t e = fromMaybe t (RE.apply ctx e t)
+      t' = foldl step st.table es
+    liftEffect $ RStore.save t'
+    H.modify_ _ { table = t' }
+
+  -- A link in the chart opens the matrix that edits it, its column lit.
+  ChartLink m to -> when (m `elem` [ "odonus", "balistes", "selene", "limulus" ]) do
+    let
+      grid = if m == "limulus" then Matrix.Drums else Matrix.gridOf m
+      focus
+        | Just p <- stripPrefix (Pattern "port:") to = Just ("midi:" <> p)
+        | to == "fh2" = Just (if grid == Matrix.Drums then "fh2gate" else "fh2env")
+        | to == "continuo" = Just "continuo"
+        | to == "d-dirt" = Just "sample"
+        | otherwise = Nothing
+    handleAction (OpenMatrix grid focus)
+
   Audition dest -> do
     st <- H.get
     for_ (RO.auditionLine dest) \line ->
@@ -344,6 +387,12 @@ render st =
             MachinesView -> HH.div_ [ flowChart st, harmonyPanel st ]
             RoutingView -> routing st
         ]
+    , case st.matrix of
+        Nothing -> HH.text ""
+        Just g -> Matrix.view g
+          { table: st.table, ports: st.ports, cards: cardChannels st.router
+          , pick: st.pick, focus: st.focus
+          , onEdits: Edits, onPick: PickCell, onGrid: \g' -> OpenMatrix g' Nothing, onClose: CloseMatrix }
     ]
 
 -- | The signal-flow chart: what the open pages drive, by the path the mode
@@ -353,7 +402,7 @@ flowChart :: forall m. State -> H.ComponentHTML Action () m
 flowChart st =
   HH.section [ cls "flow", HP.attr (AttrName "aria-label") "Where it all goes" ]
     [ HH.div [ cls "flow-chart" ]
-        [ FlowView.chart { hover: Hover, pick: ToggleVoices } st.hot { playing: map _.slot (filter (playing st) machines), rigUp: st.rigUp, tempo: st.tempo }
+        [ FlowView.chart { hover: Hover, pick: ToggleVoices, link: ChartLink } st.hot { playing: map _.slot (filter (playing st) machines), rigUp: st.rigUp, tempo: st.tempo }
             ( Flow.flow
                 { mode: st.mode
                 , table: st.table
@@ -518,7 +567,12 @@ machineBar st =
 routing :: forall m. State -> H.ComponentHTML Action () m
 routing st =
   HH.section [ cls "routing", HP.attr (AttrName "aria-label") "Routing" ]
-    [ HH.div [ cls "sectionhead" ]
+    [ HH.div [ cls "matrix-open" ]
+        [ HH.button [ HE.onClick \_ -> OpenMatrix Matrix.Notes Nothing ] [ HH.text "Notes matrix" ]
+        , HH.button [ HE.onClick \_ -> OpenMatrix Matrix.Drums Nothing ] [ HH.text "Drums matrix" ]
+        , HH.span [ cls "note" ] [ HH.text "or click a link in the chart" ]
+        ]
+    , HH.div [ cls "sectionhead" ]
         [ HH.h2_ [ HH.text "Routing" ]
         , HH.span [ cls "note" ] [ HH.text "Every source and where it goes. Changes save at once and reach every open page." ]
         , lamp (not (null st.ports)) portsNote
@@ -554,3 +608,9 @@ cls = HP.class_ <<< H.ClassName
 
 rigUrl :: String
 rigUrl = "ws://127.0.0.1:3012/ws"
+
+-- | Vetula's cards' channels, from the stage's cards the router reads.
+cardChannels :: Router.Router -> Array Int
+cardChannels r = Array.sort (Array.nub (Array.mapMaybe channel (Array.fromFoldable (Map.values r.cards))))
+  where
+  channel line = Array.head (String.split (Pattern " ") (String.trim line)) >>= stripPrefix (Pattern "ch") >>= Int.fromString
