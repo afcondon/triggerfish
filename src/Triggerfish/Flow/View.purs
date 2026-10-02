@@ -113,7 +113,7 @@ chart on hot live f
           [ svg "g" [ attr "class" "beat" ]
               ( arcs cx (-1.0) <> arcs cx 1.0 <>
                   [ use "ic-lantern" (cx - 26.0) 8.0 52.0 31.0
-                  , label "beatlabel" cx 52.0 "middle" "link-spike · the beat"
+                  , label "beatlabel" cx 52.0 "middle" "Diaphus · the beat"
                   ]
               )
           ]
@@ -130,7 +130,7 @@ chart on hot live f
   beatMarks = laid.nodes # mapMaybe \sn ->
     if sn.name `Array.elem` beat
       then Just $ svg "circle" [ attr "class" "beatmark", attr "cx" (n (sn.x0 + 2.5)), attr "cy" (n (sn.y0 - 6.0)), attr "r" "3.4" ]
-        [ svg "title" [] [ HH.text "on the beat: timed by link-spike" ] ]
+        [ svg "title" [] [ HH.text "on the beat: timed by Diaphus" ] ]
       else Nothing
 
   link sl =
