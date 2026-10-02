@@ -44,6 +44,7 @@ import Data.Maybe (Maybe(..), fromMaybe, maybe)
 import Data.String.Common (toLower)
 import Data.Tuple (Tuple(..))
 import Binnacle as Binnacle
+import Triggerfish.LaneShapes as LS
 import Binnacle.Midi as Midi
 import Triggerfish.Routing.Model as RM
 import Triggerfish.Routing.Out as RO
@@ -131,6 +132,9 @@ type State =
   , pending :: Array { step :: Int, input :: RBI.BInput }
   , flash :: Array Flash
   , binnacle :: Maybe Binnacle.Binnacle
+  -- The rig's reading of each lane source (POLYTRIG jacks and routes), by
+  -- source text: the page reads no Tidal itself (Triggerfish.LaneShapes).
+  , laneShapes :: LS.LaneShapes
   -- Every MIDI output port, not one: the routing table may name any of them, so
   -- the emit path resolves per leg rather than holding a single handle. See
   -- Triggerfish.Routing.Out.
@@ -198,6 +202,8 @@ type State =
 
 data Action
   = Initialize
+  | RigOpen                 -- the rig socket (re)connected: ask for every lane shape
+  | RigFrameIn String       -- a frame from the rig; `lane-shapes` answers are kept
   -- The preset modal: the rhythm library (was a 14-chip wall on the surface) and
   -- the snapshot bank (was reachable only from the shell's status-board chip
   -- menu, i.e. not from inside Balistes at all). Recall/star/delete mirror the

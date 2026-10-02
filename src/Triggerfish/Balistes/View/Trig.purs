@@ -16,7 +16,7 @@ import Halogen.HTML as HH
 import Halogen.HTML.Events as HE
 import Halogen.HTML.Properties as HP
 import Triggerfish.Ui.Style (style)
-import Triggerfish.Tidal.Lane as Lane
+import Triggerfish.LaneShapes as LS
 import Triggerfish.Balistes.Model as M
 import Triggerfish.Balistes.Types (Action(..), State)
 import Triggerfish.Balistes.Widgets (stepBtn)
@@ -61,12 +61,12 @@ trigJacks :: forall m. State -> H.ComponentHTML Action () m
 trigJacks s =
   HH.div
     [ style "display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px;width:100%" ]
-    (mapWithIndex trigJackCell s.trig.jacks)
+    (mapWithIndex (trigJackCell s.laneShapes) s.trig.jacks)
 
 -- One POLYTRIG jack: name + note steppers on top, a source input, then a step
 -- figure following the source's meter (faint "↳ route" when the source is empty).
-trigJackCell :: forall m. Int -> M.TrigSlot -> H.ComponentHTML Action () m
-trigJackCell i sl =
+trigJackCell :: forall m. LS.LaneShapes -> Int -> M.TrigSlot -> H.ComponentHTML Action () m
+trigJackCell shapes i sl =
   HH.div
     [ style $ "padding:8px 9px;border-radius:7px;background:#ffffff55;border:1px solid #00000012;"
         <> "display:flex;flex-direction:column;gap:6px;min-width:0" ]
@@ -87,16 +87,16 @@ trigJackCell i sl =
         , HE.onValueInput (SetJackSource i)
         , style $ "padding:4px 7px;border:1px solid #a8a392;border-radius:4px;background:#f3f1e8;"
             <> "font-family:'SF Mono',Menlo,monospace;font-size:11px;color:#1c1a12;width:100%;box-sizing:border-box" ]
-    , trigStepFigure sl.source
+    , trigStepFigure shapes sl.source
     ]
 
 -- A linear step row lit at the source's onset cells (HTML so it fills width).
 -- Adapted from Selene's stepFigure; the trig accent is a steel-blue.
-trigStepFigure :: forall m. String -> H.ComponentHTML Action () m
-trigStepFigure src =
+trigStepFigure :: forall m. LS.LaneShapes -> String -> H.ComponentHTML Action () m
+trigStepFigure shapes src =
   let
-    m = Lane.meterOf src
-    mask = Lane.cellMaskOf src
+    m = LS.meterOf shapes src
+    mask = LS.cellMaskOf shapes src
     trigAccent = "#3f6f8a"
     stepDiv k =
       let on = fromMaybe false (mask !! k)

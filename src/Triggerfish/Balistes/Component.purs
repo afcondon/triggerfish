@@ -72,7 +72,9 @@ import Triggerfish.Balistes.Remote as Remote
 import Triggerfish.Balistes.Lepidoptera (printPattern, parsePattern)
 import Triggerfish.SourceQuery (Query(..))
 import Triggerfish.Transport (Sounding(..))
-import Triggerfish.Tidal.Lane as Lane
+import Data.Map as Map
+import Triggerfish.LaneShapes as LS
+import Unsafe.Reference (unsafeRefEq)
 import Reef.Balistes.Sim as Sim
 import Triggerfish.Ui.Pointer as Pointer
 import Triggerfish.Ui.Style (engrave, style)
@@ -98,7 +100,7 @@ component =
     { initialState: \_ ->
         { bal: M.defaultBalistes
         , sounding: Silent, playStep: 0, nextModelStep: 0, pending: [], flash: []
-        , binnacle: Nothing, outs: [], routing: RM.defaultTable, midiName: "…"
+        , binnacle: Nothing, laneShapes: Map.empty, outs: [], routing: RM.defaultTable, midiName: "…"
         , clockTempo: 120.0, clockLocked: false, clockBeat: 0.0, clockBar: 0, anchorCount: 0
         , nowMicros: 0.0, dragging: Nothing, dragSub: Nothing
         , presets: []
@@ -226,11 +228,39 @@ captureNow = do
 -- ---------------------------------------------------------------------------
 
 handleAction :: forall m. MonadAff m => Action -> H.HalogenM State Action () Output m Unit
-handleAction = case _ of
+handleAction a = do
+  before <- H.gets _.trig
+  handleActionCore a
+  after <- H.gets _.trig
+  -- the lane sources changed: ask the rig for any it has not answered
+  unless (unsafeRefEq before after) (requestShapes false)
+
+-- | Ask the rig for the lane shapes this page lacks (or, `all`, every source,
+-- | as after a reconnect).
+requestShapes :: forall m. MonadAff m => Boolean -> H.HalogenM State Action () Output m Unit
+requestShapes all = do
+  st <- H.get
+  let
+    srcs = map _.source st.trig.jacks <> st.trig.routes
+    want = if all then LS.missing Map.empty srcs else LS.missing st.laneShapes srcs
+  when (length want > 0) $ for_ st.binnacle \bin ->
+    liftEffect $ Transport.send (Binnacle.socket bin) (LS.requestLine want)
+
+handleActionCore :: forall m. MonadAff m => Action -> H.HalogenM State Action () Output m Unit
+handleActionCore = case _ of
+  RigOpen -> requestShapes true
+  RigFrameIn msg -> for_ (LS.readShapes msg) \shapes -> do
+    H.modify_ \s -> s { laneShapes = Map.union shapes s.laneShapes }
+    -- the kit the rig plays is built from these: send it again now they are known
+    pushTrig
   Initialize -> do
     -- Same rig handshake as Odonus: Binnacle free-runs at 120 until the Link
     -- anchor arrives, then phase-locks, so Balistes plays solo or in ensemble.
     bin <- liftEffect $ Binnacle.connect { url: rigUrl, tempo: 120.0 }
+    { emitter: rigE, listener: rigL } <- liftEffect HS.create
+    _ <- H.subscribe rigE
+    liftEffect $ Binnacle.onAppMessage bin (HS.notify rigL <<< RigFrameIn)
+    liftEffect $ Binnacle.onOpen bin (HS.notify rigL RigOpen)
     { emitter: stepE, listener: stepL } <- liftEffect HS.create
     _ <- H.subscribe stepE
     _ <- liftEffect $ Scheduler.startGrid (Binnacle.clock bin) gridCfg \tick ->
@@ -343,7 +373,7 @@ handleAction = case _ of
         let
           step = tick.index `mod` cycleSteps
           stepMs = 0.25 * 60000.0 / max 30.0 st.clockTempo
-          fires = Trig.renderTrigStep (resolveTrigKit st.trig) tick.index cycleSteps
+          fires = Trig.renderTrigStep (resolveTrigKit st.laneShapes st.trig) tick.index cycleSteps
         when audible $ liftEffect $
           for_ fires \f ->
             void $ RO.sendAll st.outs (RR.drumSends (drumsOf st)
@@ -808,11 +838,11 @@ recallPreset i = do
 -- | happens HERE (reef has no Tidal parser); the shared `renderTrigStep` then slices
 -- | these onsets into steps identically on both runtimes. Concatenation order (own
 -- | then routed, no dedup) matches the frontend's own playback exactly.
-resolveTrigKit :: M.TrigBank -> Trig.TrigKit
-resolveTrigKit tb =
-  map (\jack -> { note: jack.note, onsets: Lane.onsetsOf jack.source <> routeOns jack.name }) tb.jacks
+resolveTrigKit :: LS.LaneShapes -> M.TrigBank -> Trig.TrigKit
+resolveTrigKit shapes tb =
+  map (\jack -> { note: jack.note, onsets: LS.onsetsOf shapes jack.source <> routeOns jack.name }) tb.jacks
   where
-  routeOns nm = map _.at (filter (\e -> eqTrigName e.name nm) (tb.routes >>= Lane.namedOnsetsOf))
+  routeOns nm = map _.at (filter (\e -> eqTrigName e.name nm) (tb.routes >>= LS.namedOnsetsOf shapes))
 
 -- | Push the resolved POLYTRIG kit to the rig voice (`balistes-trig <json>`). Like the
 -- | fixed-rhythm push, no phase-hold: a rack is a pure function of the absolute step,
@@ -822,7 +852,7 @@ pushTrig = do
   st <- H.get
   when (st.sounding == Rig) $ for_ st.binnacle \bin ->
     liftEffect $ Transport.send (Binnacle.socket bin)
-      ("balistes-trig " <> encodeTrigKit (resolveTrigKit st.trig))
+      ("balistes-trig " <> encodeTrigKit (resolveTrigKit st.laneShapes st.trig))
 
 -- | Deferred-on-both: enqueue a gesture locally AND broadcast it, both tagged for the
 -- | same near-future step. The Step-loop drain applies it here, the voice applies it
