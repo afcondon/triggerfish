@@ -57,11 +57,13 @@ type Env i =
   , pick :: Maybe Pick
   , focus :: Maybe String -- a column to light, when opened from the chart
   , sheet :: Maybe String -- a column whose settings sheet is open
+  , fold :: Boolean -- drum lanes routed alike shown as one row
   , onEdits :: Array Edit -> i
   , onPick :: Maybe Pick -> i
   , onSheet :: Maybe String -> i
   , onAudition :: RM.Destination -> i
   , onGrid :: Grid -> i
+  , onFold :: Boolean -> i
   , onClose :: i
   }
 
@@ -211,6 +213,12 @@ view grid env =
                 [ switch Notes "Notes" "the voices' streams · cell = channel or envelope"
                 , switch Drums "Drums" "each lane's hits · cell = jack or voice; • = the lane's own note"
                 ]
+            , if grid == Drums then
+                HH.label [ cls "matrix-fold", HP.title "show lanes routed exactly alike as one row; a click in it routes them all" ]
+                  [ HH.input [ HP.type_ HP.InputCheckbox, HP.checked env.fold, HE.onChecked env.onFold ]
+                  , HH.text " fold alike"
+                  ]
+              else HH.text ""
             , HH.button [ cls "matrix-close", HE.onClick \_ -> env.onClose, HP.title "Close (Esc)" ] [ HH.text "×" ]
             ]
         , HH.div [ cls "matrix-scroll" ] [ table ]
@@ -219,6 +227,15 @@ view grid env =
     ]
   where
   srcs = sources grid env.table
+  -- rows: one source each, or with folding, every drum lane routed exactly
+  -- alike (same legs in every column) as one row, where the first of them stood
+  rows
+    | grid == Drums && env.fold =
+        Array.foldl (\acc src -> case Array.findIndex (\g -> maybe false (\h -> sig h == sig src) (Array.head g)) acc of
+                       Just k -> fromMaybe acc (Array.modifyAt k (_ `snoc` src) acc)
+                       Nothing -> snoc acc [ src ]) [] srcs
+    | otherwise = map pure srcs
+  sig src = map (\c -> map (\x -> { dest: x.leg.dest, on: x.leg.on, offsetMs: x.leg.offsetMs }) (legsIn env src c.key)) cols
   cols = columns grid env
   switch g label hint =
     HH.button [ cls ("matrix-tab" <> if g == grid then " on" else ""), HE.onClick \_ -> env.onGrid g, HP.title hint ] [ HH.text label ]
@@ -231,7 +248,7 @@ view grid env =
           [ HH.tr_ ([ HH.th_ [] ] <> map (\g -> HH.th [ cls "group", HP.colSpan g.span ] [ HH.text g.name ]) groups)
           , HH.tr_ ([ HH.th_ [] ] <> map colHead cols)
           ]
-      , HH.tbody_ (map row srcs <> if grid == Notes then map cardRow env.cards else [])
+      , HH.tbody_ (map row rows <> if grid == Notes then map cardRow env.cards else [])
       ]
   colHead c =
     HH.th ([ cls ("col" <> (if c.missing then " missing" else "") <> (if env.focus == Just c.key || env.sheet == Just c.key then " focus" else "") <> (if hasSheet c.key then " has-sheet" else ""))
@@ -247,16 +264,18 @@ view grid env =
     Drums, Just ch | Str.take 5 c.key == "midi:" -> joinSub c.sub ("ch " <> show ch)
     _, _ -> c.sub
   joinSub a b = if a == "" then b else a <> " · " <> b
-  row src =
-    HH.tr [ cls (if (_.source <$> env.pick) == Just src then "picked" else "") ]
-      ([ HH.th [ cls "row" ] (rowLabel src) ] <> map (cell src) cols)
-  rowLabel = case _ of
-    RM.SDrumLane i -> [ HH.text (P.laneName i), HH.small_ [ HH.text (show (P.laneNote i)) ] ]
-    src -> [ HH.text (RM.sourceLabel src) ]
-  cell src c =
+  row group =
+    HH.tr [ cls ((if maybe false (\pk -> Array.elem pk.source group) env.pick then "picked" else "") <> (if length group > 1 then " folded" else "")) ]
+      ([ HH.th [ cls "row" ] (rowLabel group) ] <> map (cell group) cols)
+  rowLabel group = case group of
+    [ RM.SDrumLane i ] -> [ HH.text (P.laneName i), HH.small_ [ HH.text (show (P.laneNote i)) ] ]
+    [ src ] -> [ HH.text (RM.sourceLabel src) ]
+    _ -> [ HH.text (Str.joinWith " · " (map whose group)) ]
+  cell group c =
     let
+      src = fromMaybe (RM.SDrumLane 0) (Array.head group)
       here = legsIn env src c.key
-      picked = env.pick == Just { source: src, col: c.key }
+      picked = maybe false (\pk -> pk.col == c.key && Array.elem pk.source group) env.pick
       shared = if grid == Drums then sharedChannel env srcs c.key else Nothing
       mark x =
         let off = if x.leg.on then "" else " off"
@@ -269,7 +288,7 @@ view grid env =
         , HP.title (whose src <> " → " <> c.name)
         , HE.onClick \_ ->
             if not (null here) then env.onPick (if picked then Nothing else Just { source: src, col: c.key })
-            else case addEdits grid src c (length (RM.legsFor env.table src)) of
+            else case concatMap (\s -> addEdits grid s c (length (RM.legsFor env.table s))) group of
               [] -> env.onPick Nothing
               es -> env.onEdits es
         ]

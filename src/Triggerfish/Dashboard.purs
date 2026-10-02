@@ -139,6 +139,7 @@ type State =
   , pick :: Maybe Matrix.Pick
   , focus :: Maybe String
   , sheet :: Maybe String
+  , foldDrums :: Boolean
   }
 
 data Action
@@ -166,6 +167,7 @@ data Action
   | CloseMatrix
   | PickCell (Maybe Matrix.Pick)
   | OpenSheet (Maybe String)
+  | FoldDrums Boolean
   | Audition RM.Destination
   | Edits (Array RE.Edit)
   | ChartLink String String
@@ -176,7 +178,7 @@ component = H.mkComponent
       { mode: Solo, now: 0.0, heard: Map.empty, rig: Nothing, rigUp: false
       , tempo: 120.0, locked: false, bus: Nothing
       , table: RM.defaultTable, ports: [], sampleSets: [], hot: Nothing, voices: [], router: Router.initial
-      , matrix: Nothing, pick: Nothing, focus: Nothing, sheet: Nothing }
+      , matrix: Nothing, pick: Nothing, focus: Nothing, sheet: Nothing, foldDrums: true }
   , render
   , eval: H.mkEval H.defaultEval { handleAction = handleAction, initialize = Just Init }
   }
@@ -323,6 +325,7 @@ handleAction = case _ of
   PickCell p -> H.modify_ _ { pick = p, sheet = Nothing }
 
   OpenSheet k -> H.modify_ _ { sheet = k, pick = Nothing }
+  FoldDrums b -> H.modify_ _ { foldDrums = b, pick = Nothing }
 
   -- A sample voice's ▶: played once, now, through the rig.
   Audition dest -> for_ (RO.auditionLine dest) sendRig
@@ -386,9 +389,9 @@ render st =
         Nothing -> HH.text ""
         Just g -> Matrix.view g
           { table: st.table, ports: st.ports, cards: cardChannels st.router, sampleSets: st.sampleSets
-          , pick: st.pick, focus: st.focus, sheet: st.sheet
+          , pick: st.pick, focus: st.focus, sheet: st.sheet, fold: st.foldDrums
           , onEdits: Edits, onPick: PickCell, onSheet: OpenSheet, onAudition: Audition
-          , onGrid: \g' -> OpenMatrix g' Nothing, onClose: CloseMatrix }
+          , onGrid: \g' -> OpenMatrix g' Nothing, onFold: FoldDrums, onClose: CloseMatrix }
     ]
 
 -- | The signal-flow chart: what the open pages drive, by the path the mode
