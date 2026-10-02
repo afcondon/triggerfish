@@ -32,6 +32,7 @@ module Triggerfish.Routing.Out
   , fanNoteAt
   , drumRouting
   , voiceRouting
+  , vetulaRouting
   , drumsOrbit
   , auditionLine
   , sendAll
@@ -39,7 +40,7 @@ module Triggerfish.Routing.Out
 
 import Prelude
 
-import Data.Array (find, mapMaybe, mapWithIndex)
+import Data.Array (filter, find, mapMaybe, mapWithIndex, range)
 import Data.Foldable (sum)
 import Data.Int as Int
 import Data.Maybe (Maybe(..), fromMaybe, maybe)
@@ -52,7 +53,7 @@ import Binnacle.Time (perfNow)
 import Reef.Rample as Rample
 import Reef.Routing as RR
 import Simple.JSON (writeJSON)
-import Triggerfish.Routing.Model (Destination(..), Leg, Source(..), Table, Wire, liveLegsFor, wireOf)
+import Triggerfish.Routing.Model (Destination(..), Leg, Source(..), Table, Wire, cardLegs, liveLegsFor, wireOf)
 
 -- | Every MIDI output port, by name. Built once when MIDI access arrives.
 type Outs = Array { name :: String, out :: Midi.MidiOut }
@@ -209,11 +210,16 @@ drumRouting outs tbl notes =
 -- | exists, by its whole name; nothing for a kind the browser cannot emit or a
 -- | port that is absent.
 resolveLeg :: Outs -> Leg -> Maybe RR.Leg
-resolveLeg outs leg = do
+resolveLeg outs = resolveLegIn (map _.name outs)
+
+-- | `resolveLeg` given only the ports' names, as a page without MIDI handles
+-- | (the dashboard) knows them.
+resolveLegIn :: Array String -> Leg -> Maybe RR.Leg
+resolveLegIn names leg = do
   w <- wireOf leg.dest
-  found <- find (\r -> contains (Pattern w.port) r.name) outs
+  found <- find (contains (Pattern w.port)) names
   pure
-    { port: found.name
+    { port: found
     , channel: w.channel
     , note: fromMaybe (-1) w.noteOverride
     , offsetMs: leg.offsetMs
@@ -226,6 +232,13 @@ resolveLeg outs leg = do
 -- | polyphonically) are the page's to play and are left out.
 voiceRouting :: Outs -> Table -> Array Source -> RR.VoiceRouting
 voiceRouting outs tbl sources = { voices: map (\src -> mapMaybe (resolveLeg outs) (liveLegsFor tbl src)) sources }
+
+-- | Vetula's sixteen channels as the rig's card player plays them: voice
+-- | `ch - 1` is the card on channel `ch`, down its row's live legs (or its
+-- | channel on the default port, with no row).
+vetulaRouting :: Array String -> Table -> RR.VoiceRouting
+vetulaRouting names tbl =
+  { voices: map (\ch -> mapMaybe (resolveLegIn names) (filter _.on (cardLegs names tbl ch))) (range 1 16) }
 
 -- | The SuperDirt orbit drum voices play on: an effects chain of their own,
 -- | apart from Conspicillum's 0 and its sends 10 and 11, on the main outputs.

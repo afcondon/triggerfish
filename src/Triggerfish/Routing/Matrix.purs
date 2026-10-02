@@ -50,8 +50,8 @@ type Pick = { source :: RM.Source, col :: String }
 type Env i =
   { table :: RM.Table
   , ports :: Array String
-  -- Vetula's cards' channels: a card's address is its channel, set in its line,
-  -- so these rows are shown, not edited here
+  -- Vetula's cards' channels: each card is a row (`RM.cardSource`), routed
+  -- like a head; its address, the channel, is set in its line
   , cards :: Array Int
   , sampleSets :: Array SampleSet
   , pick :: Maybe Pick
@@ -174,7 +174,12 @@ columns grid env = Array.sortWith (\c -> fromMaybe 9 (Array.elemIndex c.group gr
 -- | The legs of a source in a column, with their index among the source's legs.
 legsIn :: forall i. Env i -> RM.Source -> String -> Array { i :: Int, leg :: RM.Leg }
 legsIn env src key =
-  filter (\x -> columnOf env.ports x.leg.dest == key) (mapWithIndex (\i leg -> { i, leg }) (RM.legsFor env.table src))
+  filter (\x -> columnOf env.ports x.leg.dest == key) (mapWithIndex (\i leg -> { i, leg }) legs)
+  where
+  -- a card with no row yet plays its default, so show that
+  legs = case RM.cardChannelOf src of
+    Just ch -> RM.cardLegs env.ports env.table ch
+    Nothing -> RM.legsFor env.table src
 
 -- | A drum MIDI column's shared channel, when every leg in it has the same one.
 sharedChannel :: forall i. Env i -> Array RM.Source -> String -> Maybe Int
@@ -201,7 +206,7 @@ addEdits grid src col n = case col.addKind of
   start = if grid == Drums then 10 else own
   own = case src of
     RM.SOdonusHead h -> h + 1
-    _ -> 1
+    other -> fromMaybe 1 (RM.cardChannelOf other)
 
 view :: forall w i. Grid -> Env i -> HH.HTML w i
 view grid env =
@@ -226,7 +231,7 @@ view grid env =
         ]
     ]
   where
-  srcs = sources grid env.table
+  srcs = sources grid env.table <> (if grid == Notes then map RM.cardSource env.cards else [])
   -- rows: one source each, or with folding, every drum lane routed exactly
   -- alike (same legs in every column) as one row, where the first of them stood
   rows
@@ -248,7 +253,7 @@ view grid env =
           [ HH.tr_ ([ HH.th_ [] ] <> map (\g -> HH.th [ cls "group", HP.colSpan g.span ] [ HH.text g.name ]) groups)
           , HH.tr_ ([ HH.th_ [] ] <> map colHead cols)
           ]
-      , HH.tbody_ (map row rows <> if grid == Notes then map cardRow env.cards else [])
+      , HH.tbody_ (map row rows)
       ]
   colHead c =
     HH.th ([ cls ("col" <> (if c.missing then " missing" else "") <> (if env.focus == Just c.key || env.sheet == Just c.key then " focus" else "") <> (if hasSheet c.key then " has-sheet" else ""))
@@ -293,12 +298,6 @@ view grid env =
               es -> env.onEdits es
         ]
         (map mark here)
-  cardRow ch =
-    HH.tr [ cls "card" ]
-      ([ HH.th [ cls "row" ] [ HH.text ("Vetula ch " <> show ch), HH.small_ [ HH.text "card" ] ] ]
-        <> map (\c -> HH.td [ HP.title "a card's channel is set in its line" ]
-                  (if isJust (Array.find (_ == c.key) (map (\p -> "midi:" <> p) (filter (contains (Pattern "IAC")) env.ports))) then [ HH.span [ cls "v midi ghost" ] [ HH.text (show ch) ] ] else []))
-               cols)
   details = case env.sheet of
     Just key -> sheet key
     Nothing -> pickDetails

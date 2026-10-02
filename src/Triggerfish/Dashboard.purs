@@ -66,6 +66,7 @@ import Reef.Route as HarmonyRoute
 import Triggerfish.Routing.Edit as RE
 import Triggerfish.Routing.Model as RM
 import Triggerfish.Routing.Out as RO
+import Reef.Routing as RR
 import Triggerfish.Routing.Store as RStore
 import Triggerfish.SampleSets (SampleSet)
 import Triggerfish.SampleSets as SampleSets
@@ -140,6 +141,8 @@ type State =
   , focus :: Maybe String
   , sheet :: Maybe String
   , foldDrums :: Boolean
+  -- the Vetula routing last written to the stage (`vetula/routing`)
+  , vetulaSent :: Maybe String
   }
 
 data Action
@@ -178,7 +181,7 @@ component = H.mkComponent
       { mode: Solo, now: 0.0, heard: Map.empty, rig: Nothing, rigUp: false
       , tempo: 120.0, locked: false, bus: Nothing
       , table: RM.defaultTable, ports: [], sampleSets: [], hot: Nothing, voices: [], router: Router.initial
-      , matrix: Nothing, pick: Nothing, focus: Nothing, sheet: Nothing, foldDrums: true }
+      , matrix: Nothing, pick: Nothing, focus: Nothing, sheet: Nothing, foldDrums: true, vetulaSent: Nothing }
   , render
   , eval: H.mkEval H.defaultEval { handleAction = handleAction, initialize = Just Init }
   }
@@ -274,6 +277,7 @@ handleAction = case _ of
   RoutingStored -> do
     mtbl <- liftEffect RStore.load
     for_ mtbl \t -> H.modify_ _ { table = t }
+    syncCards
 
   -- At first run, with nothing stored, the default table is made for the ports
   -- this machine has and saved, as every other page with a router does.
@@ -284,6 +288,7 @@ handleAction = case _ of
       let t = RM.defaultTableFor ns
       liftEffect $ RStore.save t
       H.modify_ _ { table = t }
+    syncCards
 
   FromHash h -> case matrixOfHash h of
     Just g -> handleAction (OpenMatrix g Nothing)
@@ -298,11 +303,15 @@ handleAction = case _ of
 
   ToggleVoices m -> H.modify_ \x -> x { voices = if m `elem` x.voices then filter (_ /= m) x.voices else x.voices <> [ m ] }
 
-  RigOpen -> sendRig Router.subscribeLine
+  RigOpen -> do
+    H.modify_ _ { vetulaSent = Nothing }
+    sendRig Router.subscribeLine
 
   RigFrame msg -> do
     st <- H.get
-    for_ (Router.readFrame msg st.router) \r -> H.modify_ _ { router = r }
+    for_ (Router.readFrame msg st.router) \r -> do
+      H.modify_ _ { router = r }
+      syncCards
 
   RouterToggle line input -> do
     st <- H.get
@@ -341,6 +350,7 @@ handleAction = case _ of
       t' = foldl step st.table es
     liftEffect $ RStore.save t'
     H.modify_ _ { table = t' }
+    syncCards
 
   -- A link in the chart opens the matrix that edits it, its column lit.
   ChartLink m to -> when (m `elem` [ "odonus", "balistes", "selene", "limulus" ]) do
@@ -567,6 +577,24 @@ rigUrl :: String
 rigUrl = "ws://127.0.0.1:3012/ws"
 
 -- | Vetula's cards' channels, from the stage's cards the router reads.
+-- | Vetula's cards in the routing table: a row for each card channel that has
+-- | none (its default, saved), and the rig told where each channel plays, as
+-- | `vetula/routing` on the stage, which its card player reads. Only once the
+-- | ports are known (a leg resolves to a port by name), and only on a change.
+syncCards :: forall o. M o Unit
+syncCards = do
+  st <- H.get
+  unless (Array.null st.ports) do
+    let seeded = RM.seedCards st.ports (cardChannels st.router) st.table
+    when (seeded /= st.table) do
+      liftEffect $ RStore.save seeded
+      H.modify_ _ { table = seeded }
+    st' <- H.get
+    let json = RR.encodeVoiceRouting (RO.vetulaRouting st'.ports st'.table)
+    when (st'.vetulaSent /= Just json) $ for_ st'.rig \bin -> do
+      liftEffect $ Transport.send (Binnacle.socket bin) ("stage-text vetula/routing " <> json)
+      H.modify_ _ { vetulaSent = Just json }
+
 cardChannels :: Router.Router -> Array Int
 cardChannels r = Array.sort (Array.nub (Array.mapMaybe channel (Array.fromFoldable (Map.values r.cards))))
   where

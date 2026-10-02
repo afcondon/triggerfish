@@ -51,6 +51,10 @@ module Triggerfish.Routing.Model
   , legsFor
   , liveLegsFor
   , setLegs
+  , cardSource
+  , cardChannelOf
+  , cardLegs
+  , seedCards
   , modifyLeg
   , removeLeg
   , addLeg
@@ -75,10 +79,11 @@ module Triggerfish.Routing.Model
 import Prelude
 
 import Control.Alt ((<|>))
-import Data.Array (concatMap, filter, find, findIndex, head, length, mapMaybe, mapWithIndex, nub, snoc, updateAt, (!!))
+import Data.Array (concatMap, filter, find, findIndex, foldl, head, length, mapMaybe, mapWithIndex, nub, snoc, updateAt, (!!))
+import Data.Int as Int
 import Data.Maybe (Maybe(..), fromMaybe, isJust, maybe)
 import Data.Tuple (Tuple(..), snd)
-import Data.String (Pattern(..), contains)
+import Data.String (Pattern(..), contains, stripPrefix)
 import Data.String.Common (joinWith)
 
 import Triggerfish.Selene.Layout (Output, outputKey)
@@ -109,6 +114,7 @@ sourceLabel = case _ of
   SOdonusHead h -> "Odonus " <> fromMaybe (show (h + 1)) (romans !! h)
   SDrumLane i -> "Drums " <> show i
   SVetulaVoice "" -> "Vetula (default)"
+  SVetulaVoice nm | Just ch <- stripPrefix (Pattern "ch") nm -> "Vetula ch " <> ch
   SVetulaVoice nm -> "Vetula · " <> nm
   SSeleneBank a -> "Selene · " <> a
   where
@@ -432,6 +438,33 @@ setLegs :: Source -> Array Leg -> Table -> Table
 setLegs src legs tbl = case findIndex (\r -> r.source == src) tbl of
   Just i -> mapWithIndex (\j r -> if j == i then r { legs = legs } else r) tbl
   Nothing -> snoc tbl { source: src, legs }
+
+-- | A Vetula card's row. A card's address is its channel (`ch3` in its line),
+-- | so the row is keyed by it: `vetula.voice.ch3` in the store.
+cardSource :: Int -> Source
+cardSource ch = SVetulaVoice ("ch" <> show ch)
+
+cardChannelOf :: Source -> Maybe Int
+cardChannelOf = case _ of
+  SVetulaVoice nm -> stripPrefix (Pattern "ch") nm >>= Int.fromString
+  _ -> Nothing
+
+-- | Where a card's notes go: its row, or, with none, its own channel on the
+-- | default port, which is what a card played before cards were routed.
+cardLegs :: Array String -> Table -> Int -> Array Leg
+cardLegs ports tbl ch = case find (\r -> r.source == cardSource ch) tbl of
+  Just r -> r.legs
+  Nothing -> cardDefault ports ch
+
+cardDefault :: Array String -> Int -> Array Leg
+cardDefault ports ch = [ { dest: DMidi { port: defaultPort ports, channel: ch }, offsetMs: 0.0, on: true } ]
+
+-- | Give each card channel without a row its default row, so the matrix edits
+-- | a row that already says where the card plays.
+seedCards :: Array String -> Array Int -> Table -> Table
+seedCards ports chs tbl = foldl seed tbl chs
+  where
+  seed t ch = if isJust (find (\r -> r.source == cardSource ch) t) then t else setLegs (cardSource ch) (cardDefault ports ch) t
 
 -- | Edit one leg in place. Out-of-range index is a no-op rather than an error:
 -- | the editor and the table can race a render, and dropping a stale click is
