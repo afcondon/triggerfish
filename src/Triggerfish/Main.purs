@@ -365,7 +365,6 @@ type RState =
   , laneComplete :: Maybe { w :: Which, prefix :: String, items :: Array MenuItem }
   -- Harmonic-authority bridge: the last resting-context scale pushed from Vetula
   -- into Odonus (serialised for dedup, so the 100ms poll only re-pushes on change).
-  , ctxScaleKey :: String
   -- the six-machine status board: each machine's identity-chip view. Odonus /
   -- Balistes / Selene PUSH theirs via Output (change-gated from their Frame loop);
   -- Vetula has no continuous frame loop, so the shell PULLS its chip in PollVetula
@@ -455,7 +454,7 @@ root =
         , vetulaNames: []
         , modal: Nothing
         , macroLanes: Map.empty, macroReadout: Map.empty, macroBars: 4, macroOn: false, macroStep: -1, laneComplete: Nothing
-        , ctxScaleKey: "", odoChip: Nothing, vetChip: Nothing, captureFlash: false
+        , odoChip: Nothing, vetChip: Nothing, captureFlash: false
         , pollBusy: Nothing, amphoraDown: false, chipMenu: Nothing
         , scenes: [], sceneRun: false, scenePos: -1, sceneBars: 4, sceneStep: -1, scenePick: Nothing }
     , render
@@ -1108,18 +1107,9 @@ handleAction = case _ of
             H.modify_ _ { vetChip = cv }
             publishStage Vet
             announce Vet
-        -- Harmonic authority: pull Vetula's context — its scale and the chords it is
-        -- conducting, as a Tidal pattern — and, when it CHANGES, install both on
-        -- Odonus (RI.SetPitchSet, RI.SetHarmony; lockstep-safe). The pattern carries
-        -- the chord timing, so this poll only sees a new pattern, never a chord
-        -- change. Vetula owns the harmony; Odonus follows. Deduped on change.
-        mctx <- H.query _vet unit (Vetula.AskContextScale identity)
-        for_ mctx \ctx -> do
-          let key = show ctx.root <> ":" <> show ctx.offsets <> ":" <> show ctx.harmony
-          prev <- H.gets _.ctxScaleKey
-          when (key /= prev) do
-            H.modify_ _ { ctxScaleKey = key }
-            void $ H.query _odo unit (SQ.SetContextPitchSet ctx.root ctx.offsets ctx.harmony unit)
+        -- (Vetula no longer conducts Odonus from here: what feeds Odonus is the
+        -- router's table, which the rig keeps fed from Vetula's key and cards,
+        -- docs/kb/plans/matrix-router.md slice 4.)
         -- The system-tempo readout: pull one machine's live clock (Odonus, always
         -- mounted) for the nav BPM display + the Link-locked read-only gate.
         mclk <- H.query _odo unit (SQ.AskClock identity)

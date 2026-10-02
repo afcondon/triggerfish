@@ -57,6 +57,9 @@ import Web.UIEvent.KeyboardEvent as KeyboardEvent
 key :: String
 key = "routing/harmony"
 
+keyKey :: String
+keyKey = "vetula/key"
+
 subscribeLine :: String
 subscribeLine = "stage-text-subscribe"
 
@@ -64,6 +67,8 @@ type Router =
   { routes :: Routes
   -- Vetula's cards as the stage holds them (key → line), for its voices
   , cards :: Map String String
+  -- Vetula's key as the stage holds it (`vetula/key`), what `vetula key` feeds
+  , vetulaKey :: Maybe String
   , scalePattern :: String
   , scaleRoot :: String
   , harmony :: String
@@ -73,7 +78,7 @@ type Router =
 
 initial :: Router
 initial =
-  { routes: [], cards: Map.empty
+  { routes: [], cards: Map.empty, vetulaKey: Nothing
   , scalePattern: "major", scaleRoot: "c", harmony: "<c'maj7 a'min7>/2", problem: Nothing }
 
 data Line = RKey | RVoice Int | RScale | RHarmony
@@ -98,13 +103,14 @@ readFrame msg r = case stripPrefix (Pattern "stage-texts ") msg of
     let
       cards = Map.fromFoldable (mapMaybe card (Object.toUnfoldable table))
       routes = fromMaybe [] (Object.lookup key table >>= \t -> hush (Route.parse t.text))
-    pure (withRoutes routes r { cards = cards })
+    pure (withRoutes routes r { cards = cards, vetulaKey = _.text <$> Object.lookup keyKey table })
   Nothing -> case stripPrefix (Pattern "stage-text ") msg of
     Just json -> do
       w :: { key :: String, text :: Nullable String } <- hush (readJSON json)
       case toMaybe w.text of
         _ | w.key == key ->
           pure (withRoutes (fromMaybe [] (toMaybe w.text >>= \t -> hush (Route.parse t))) r { problem = Nothing })
+        t | w.key == keyKey -> pure r { vetulaKey = t }
         Just t | isCard w.key -> pure r { cards = Map.insert w.key t r.cards }
         Nothing | isCard w.key -> pure r { cards = Map.delete w.key r.cards }
         _ -> Nothing
@@ -240,7 +246,10 @@ view on rigUp r =
               []
           ]
   label = case _ of
-    RKey -> [ HH.text "Vetula key" ]
+    RKey ->
+      [ HH.text "Vetula key "
+      , HH.small_ [ HH.text (fromMaybe "(Vetula has not said)" r.vetulaKey) ]
+      ]
     RVoice n -> [ HH.text ("Vetula voice " <> show n) ]
     RScale ->
       [ HH.text "Scale "

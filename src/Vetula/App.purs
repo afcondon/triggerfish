@@ -80,6 +80,7 @@ import Triggerfish.Amphora as Amphora
 import Vetula.Tank (Specimen, SpecimenId(..), Provenance(..), specNotes)
 import Reef.Vetula.Perf (VChord, VVoice, VDest(..), VRenderer(..), PerfClock, cursorAtClock, renderAlphaBlockMidiAt, renderAlphaClockMidiAt) as RV
 import Reef.Vetula.Articulate (VArticulator(..), articulate, articLabel, nextArtic) as RA
+import Reef.Route (printKey) as Route
 import Reef.Vetula.Harmony (Shape(..), chordText, clockHarmony, seqHarmony) as VH
 import Vetula.Playhead (clockFor, defaultPattern, noteClock, patternClock)
 import Vetula.Realise (fromChords)
@@ -741,6 +742,9 @@ type State =
   -- The cards as the rig's stage holds them, as far as this page knows (card id →
   -- its line); Nothing until the stage has answered a subscribe. See Vetula.StageCards.
   , stageCards :: Maybe (Map Int String)
+  -- Vetula's key as last written to the stage (`vetula/key`, Reef.Route.printKey),
+  -- which the router's `vetula key` row feeds Odonus's grid from.
+  , stageKey :: Maybe String
   , clockTempo :: Number          -- the clock's live tempo, read each tick (drives note durations)
   , nextVoiceId :: Int
   , routing :: Map String Int   -- name → canonical MIDI channel, pushed from the Tidal page
@@ -1202,6 +1206,7 @@ component = H.mkComponent
       , tempo: 120
       , binnacle: Nothing
       , stageCards: Nothing
+      , stageKey: Nothing
       , clockTempo: 120.0
       , nextVoiceId: 4
       -- name → canonical MIDI channel, pushed from the shell's Tidal-page routing
@@ -1472,13 +1477,9 @@ handleQuery = case _ of
 -- |
 -- | Under a `# scale` override there is no harmony: the scale is the set.
 harmonicContext :: State -> { root :: Int, offsets :: Array Int, harmony :: Maybe String }
-harmonicContext st = case st.restScale of
-  Just rs -> { root: rs.root, offsets: rs.offsets, harmony: Nothing }
-  Nothing ->
-    { root: mod st.key.tonic 12
-    , offsets: map (\pc -> mod (pc - st.key.tonic + 12) 12) (scaleSet st.key)
-    , harmony: vetulaHarmony st
-    }
+harmonicContext st =
+  let k = contextKey st
+  in { root: k.root, offsets: k.offsets, harmony: if isJust st.restScale then Nothing else vetulaHarmony st }
 
 -- | What Vetula is conducting, as a Tidal note pattern (see `harmonicContext`).
 vetulaHarmony :: State -> Maybe String
@@ -1721,6 +1722,28 @@ handleAction a = do
   after <- H.gets _.perfBoxes
   -- the cards changed (any edit, by hand or from the stage): publish what differs
   unless (unsafeRefEq before after) publishCards
+  publishKey
+
+-- | Write Vetula's key to the stage when it differs from what was last
+-- | written (once the stage has answered, so a reconnect writes it again).
+publishKey :: forall m. MonadAff m => H.HalogenM State Action Slots Output m Unit
+publishKey = do
+  st <- H.get
+  let ctx = contextKey st
+      text = Route.printKey ctx
+  when (isJust st.stageCards && st.stageKey /= Just text) do
+    for_ st.binnacle \bin -> do
+      liftEffect $ Transport.send (Binnacle.socket bin) ("stage-text vetula/key " <> text)
+      H.modify_ _ { stageKey = Just text }
+
+-- | The key Vetula stands in: the resting scale if one is set, else the key.
+contextKey :: State -> { root :: Int, offsets :: Array Int }
+contextKey st = case st.restScale of
+  Just rs -> { root: rs.root, offsets: rs.offsets }
+  Nothing ->
+    { root: mod st.key.tonic 12
+    , offsets: map (\pc -> mod (pc - st.key.tonic + 12) 12) (scaleSet st.key)
+    }
 
 -- | Bring the stage's copy of the cards up to date with the page's.
 publishCards :: forall m. MonadAff m => H.HalogenM State Action Slots Output m Unit
@@ -1755,7 +1778,7 @@ boxOfCard n spec old =
 handleActionCore :: forall m. MonadAff m => Action -> H.HalogenM State Action Slots Output m Unit
 handleActionCore = case _ of
   StageOpen -> do
-    H.modify_ _ { stageCards = Nothing }
+    H.modify_ _ { stageCards = Nothing, stageKey = Nothing }
     st <- H.get
     for_ st.binnacle \bin -> liftEffect $ Transport.send (Binnacle.socket bin) SC.subscribeLine
   -- A Review cue from Limulus (`vetula $ mark`, `vetula $ loop 2`, `loop off`):
@@ -6706,7 +6729,7 @@ perfBox st i box =
   -- `→ odo` is the harmonic-context voice: exclusive, and it conducts Odonus's
   -- quantiser rather than emitting MIDI of its own.
   termTip t = case t of
-    TOdo -> "→ odo · conduct Odonus's quantiser with this box's chord (only one box at a time)"
+    TOdo -> "→ odo · route odonus.out to this card (the router's Vetula voice row): Odonus snaps to its chords; one card at a time"
     TMidi -> "→ midi · emit this box on its own MIDI channel"
     TRig -> "→ rig · hand this box to the rig"
 
