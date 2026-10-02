@@ -129,6 +129,7 @@ import Triggerfish.Capture.View (CaptureState, capturePanel)
 import Vetula.Tidal (progressionSource, parseProgression)
 import Vetula.Lepidoptera (PerfDoc, VoiceSpec, docFromVoices, parseCard, parsePerform, printAsRecord, printCard)
 import Vetula.StageCards as SC
+import Triggerfish.Cue as Cue
 import Unsafe.Reference (unsafeRefEq)
 import Vetula.Clipboard (copyText)
 import Binnacle.Midi as Midi
@@ -1753,6 +1754,18 @@ handleActionCore = case _ of
     H.modify_ _ { stageCards = Nothing }
     st <- H.get
     for_ st.binnacle \bin -> liftEffect $ Transport.send (Binnacle.socket bin) SC.subscribeLine
+  -- A Review cue from Limulus (`vetula $ mark`, `vetula $ loop 2`, `loop off`):
+  -- what the Review surface's own controls do. A loop opens the Review surface.
+  StageFrameIn msg | Just cue <- Cue.readCue "vetula" msg -> case cue of
+    Cue.MarkCue -> handleAction CaptureMark
+    Cue.StopCue -> handleAction CaptureStopSel
+    Cue.LoopCue n -> do
+      st <- H.get
+      let marks = st.capture.logbook.marks
+          i = if n == 0 then length marks - 1 else n - 1
+      when (i >= 0 && i < length marks) do
+        when (st.stage /= Review) (handleAction (SetStage Review))
+        handleAction (CaptureRegionSelect i)
   StageFrameIn msg -> case SC.readFrame msg of
     Nothing -> pure unit
     -- the stage has no cards (a fresh rig): it gets ours

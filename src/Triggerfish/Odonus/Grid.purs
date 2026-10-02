@@ -32,6 +32,7 @@ import Triggerfish.Odonus.Model as M
 import Triggerfish.Poly as Poly
 import Reef.Voices as RV
 import Tidal.Harmony as Harmony
+import Triggerfish.Cue as Cue
 import Tidal.Scales as Scales
 import Triggerfish.Odonus.Marbles as Marbles
 import Triggerfish.Odonus.Gen as Gen
@@ -652,6 +653,17 @@ dispatch = case _ of
   -- tagged for the step the BEAM voice applies them on, and join `pending`, as
   -- `enqueue` does for ours, so the Step loop applies them on that same step and
   -- the panel shows what is playing. Only while the rig is what's sounding.
+  -- A Review cue from Limulus (`odonus $ mark`, `odonus $ loop 2`, `loop off`):
+  -- what the Review surface's own controls do. A loop opens the Review surface.
+  RigFrame msg | Just cue <- Cue.readCue "odonus" msg -> case cue of
+    Cue.MarkCue -> handleAction MarkNow
+    Cue.StopCue -> handleAction StopPlay
+    Cue.LoopCue n -> do
+      st <- H.get
+      let i = if n == 0 then length st.logbook.marks - 1 else n - 1
+      when (i >= 0 && i < length st.logbook.marks) do
+        when (st.stage /= Review) (handleAction (SetStage Review))
+        handleAction (PlayRegion i)
   RigFrame msg -> for_ (Str.stripPrefix (Str.Pattern "reef-input ") msg) \json ->
     case decodeTagged json of
       Left _ -> liftEffect $ Console.warn ("Odonus: a reef-input from the rig did not decode: " <> take 120 json)
