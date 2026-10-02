@@ -390,9 +390,26 @@
   <circle cx="42.6" cy="56" r="3" fill="#f3d36b"/><rect x="40.6" y="55.3" width="4" height="1.4" rx=".7" style="fill:var(--kraken-pupil,#2a0f18)"/>
   <circle cx="57.4" cy="56" r="3" fill="#f3d36b"/><rect x="55.4" y="55.3" width="4" height="1.4" rx=".7" style="fill:var(--kraken-pupil,#2a0f18)"/>
 </symbol>
-  <symbol id="ic-lantern" viewBox="0 0 60 36">
-    <path d="M6,18 C14,6 38,4 48,14 L58,6 L56,18 L58,30 L48,22 C38,32 14,30 6,18 Z" fill="#9fb0b8"/>
-    <circle cx="16" cy="16" r="3.4" fill="#f6d86b"/><circle cx="28" cy="22" r="1.6" fill="#f6d86b"/><circle cx="36" cy="22" r="1.6" fill="#f6d86b"/>
+  <!-- Diaphus's lanternfish, after the public-domain plate of Myctophum
+       punctatum on Wikimedia Commons (Myctophum_punctatum1.jpg), drawn in
+       the plate's own pixels: dark back, silver flank, and the photophores
+       along the belly that give lanternfish their name. -->
+  <symbol id="ic-lantern" viewBox="88 36 1180 344">
+    <linearGradient id="g-lantern" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#3b3122"/><stop offset=".38" stop-color="#6d6650"/><stop offset=".62" stop-color="#b9c0bc"/><stop offset="1" stop-color="#8f9a8f"/>
+    </linearGradient>
+    <g fill="#b9a983">
+      <path d="M492,142 L668,44 C650,80 640,118 642,150 Z"/>
+      <path d="M826,178 C842,166 872,168 900,186 Z"/>
+      <path d="M690,318 L866,368 C900,350 922,326 932,302 Z"/>
+      <path d="M512,334 L612,368 L600,350 Z"/>
+      <path d="M1060,214 C1120,190 1180,160 1246,142 C1200,200 1160,240 1150,262 C1170,300 1210,330 1256,366 C1180,346 1120,306 1060,280 Z"/>
+    </g>
+    <path d="M98,262 C104,226 132,196 176,176 C222,156 300,142 420,138 C560,134 700,150 840,172 C930,186 1000,198 1050,210 C1068,214 1084,220 1090,232 L1090,262 C1084,272 1068,278 1050,282 C1000,290 900,302 800,316 C680,332 560,350 420,354 C330,356 250,350 190,340 C140,330 108,304 98,262 Z" fill="url(#g-lantern)"/>
+    <path d="M214,174 C250,166 300,180 340,198 C362,240 360,300 336,348 C296,354 250,350 220,342 C250,300 252,228 214,174 Z" fill="#c9d6d3" opacity=".75" style="display:var(--detail,inline)"/>
+    <path d="M372,238 C430,252 500,272 552,298 C500,292 430,276 380,256 Z" fill="#cfc7a6" style="display:var(--detail,inline)"/>
+    <g fill="#f6d86b"><circle cx="330" cy="342" r="10"/><circle cx="380" cy="346" r="10"/><circle cx="430" cy="348" r="10"/><circle cx="480" cy="346" r="10"/><circle cx="530" cy="342" r="10"/><circle cx="580" cy="338" r="10"/><circle cx="630" cy="333" r="10"/><circle cx="680" cy="328" r="10"/><circle cx="730" cy="323" r="10"/><circle cx="780" cy="318" r="10"/><circle cx="830" cy="313" r="10"/><circle cx="880" cy="308" r="10"/><circle cx="930" cy="303" r="10"/><circle cx="980" cy="298" r="10"/><circle cx="1030" cy="294" r="10"/><circle cx="420" cy="300" r="10"/><circle cx="600" cy="262" r="10"/><circle cx="805" cy="250" r="10"/><circle cx="300" cy="330" r="10"/><circle cx="250" cy="322" r="10"/></g>
+    <circle cx="178" cy="244" r="46" fill="#e7e2d0"/><circle cx="182" cy="244" r="26" fill="#121212"/><circle cx="174" cy="236" r="7" fill="#ffffff" opacity=".8"/>
   </symbol>
   <symbol id="ic-grouper" viewBox="0 0 70 40">
     <path d="M4,20 C14,4 46,2 56,14 L68,6 L66,20 L68,34 L56,26 C46,38 14,36 4,20 Z" fill="#6a5a3c"/>
@@ -600,7 +617,7 @@
             <p>TidalCycles, ported to PureScript and run on Erlang's virtual machine; once purerl-tidal. The rig's engine: the pages reach it over the rig socket, it schedules every voice under its own supervisor, and its arms reach Diaphus, SuperDirt and es9-daemon.</p>
           </article>
           <article class="who">
-            <header><svg class="ico" viewBox="0 0 60 36" style="width:58px;height:35px"><use href="#ic-lantern"/></svg><div><span class="nm">Diaphus</span><span class="sp">Diaphus effulgens, the headlight lanternfish</span></div></header>
+            <header><svg class="ico" viewBox="0 0 72 22" style="width:72px;height:22px"><use href="#ic-lantern"/></svg><div><span class="nm">Diaphus</span><span class="sp">Diaphus effulgens, the headlight lanternfish</span></div></header>
             <p>Ableton Link, in Rust: the beat; once link-spike. It shares tempo and phase with Architeuthis and es9-daemon, and delivers the rig's MIDI through CoreMIDI at the time each note was stamped with. Link runs with or without Ableton.</p>
           </article>
           <article class="who">
@@ -745,6 +762,7 @@
         <p><em>The Atlantis Gazette</em> is the About page of Triggerfish, served with the machines at <span class="mono">localhost:3023/about.html</span>. It is plain HTML, with no script.</p>
         <p><strong>Masthead.</strong> A. E. Verrill, <em>Architeuthis dux</em> (syn. <em>A. princeps</em>), 1882, from his work on the giant squids in the <em>Transactions of the Connecticut Academy of Arts and Sciences</em>. Public domain, via <a href="https://commons.wikimedia.org/wiki/File:Architeuthis_dux_Verrill_1882.jpg">Wikimedia Commons</a>; the credit is kept beside the image in <span class="mono">img/CREDITS.md</span>.</p>
         <p><strong>The fish</strong> are the app's own, from the identity study, and each machine's name is set in its nameplate face: <span style="font-family:Syne;font-weight:800">Syne</span>, <span style="font-family:Cormorant;font-style:italic;font-weight:700">Cormorant</span>, <span style="font-family:'Big Shoulders Stencil Display';font-weight:800">Big Shoulders Stencil</span>, <span style="font-family:Michroma;font-size:.85em">Michroma</span>, <span style="font-family:'Instrument Serif';font-style:italic">Instrument Serif</span> and <span style="font-family:'Major Mono Display'">Major Mono</span>.</p>
+        <p><strong>The lanternfish</strong> of Diaphus is drawn after a plate of <em>Myctophum punctatum</em>, public domain, via <a href="https://commons.wikimedia.org/wiki/File:Myctophum_punctatum1.jpg">Wikimedia Commons</a>.</p>
         <p><strong>Type.</strong> Nameplate in UnifrakturMaguntia; headlines in Playfair Display; text in Source Serif 4; labels in Archivo, the app's own face.</p>
         <p><strong>Licence.</strong> Every Atlantis machine is to be open source: MIT throughout, except Littorina and Architeuthis, which are GPL-3.0 as Tidal is, and Diaphus, which is GPLv2+ by way of Ableton Link. Triggerfish is handing the last of its Tidal to the rig, so that it can be MIT.</p>
       </section>

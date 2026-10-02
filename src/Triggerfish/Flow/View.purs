@@ -112,7 +112,7 @@ chart on hot live f
         in
           [ svg "g" [ attr "class" "beat" ]
               ( arcs cx (-1.0) <> arcs cx 1.0 <>
-                  [ use "ic-lantern" (cx - 26.0) 8.0 52.0 31.0
+                  [ use "ic-lantern" (cx - 30.0) 14.0 60.0 18.0
                   , label "beatlabel" cx 52.0 "middle" "Diaphus · the beat"
                   ]
               )
