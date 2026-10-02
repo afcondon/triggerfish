@@ -31,6 +31,7 @@ module Triggerfish.Routing.Out
   , fanNote
   , fanNoteAt
   , drumRouting
+  , voiceRouting
   , drumsOrbit
   , auditionLine
   , sendAll
@@ -202,16 +203,29 @@ drumRouting outs tbl notes =
       , orbit: drumsOrbit, chop: d.chop, offsetMs: leg.offsetMs
       }
     _ -> Nothing
-  resolve leg = do
-    w <- wireOf leg.dest
-    found <- find (\r -> contains (Pattern w.port) r.name) outs
-    pure
-      { port: found.name
-      , channel: w.channel
-      , note: fromMaybe (-1) w.noteOverride
-      , offsetMs: leg.offsetMs
-      , rample: maybe [] (\r -> [ { voice: r.voice, slots: r.slots, pitchOfSlot0: r.pitchOfSlot0, settleMs: r.settleMs } ]) w.rample
-      }
+  resolve = resolveLeg outs
+
+-- | One table leg as `Reef.Routing` carries it: a MIDI wire on a port that
+-- | exists, by its whole name; nothing for a kind the browser cannot emit or a
+-- | port that is absent.
+resolveLeg :: Outs -> Leg -> Maybe RR.Leg
+resolveLeg outs leg = do
+  w <- wireOf leg.dest
+  found <- find (\r -> contains (Pattern w.port) r.name) outs
+  pure
+    { port: found.name
+    , channel: w.channel
+    , note: fromMaybe (-1) w.noteOverride
+    , offsetMs: leg.offsetMs
+    , rample: maybe [] (\r -> [ { voice: r.voice, slots: r.slots, pitchOfSlot0: r.pitchOfSlot0, settleMs: r.settleMs } ]) w.rample
+    }
+
+-- | A melodic machine's voices (Odonus's heads, in order) as the rig is told
+-- | to play them: each voice's live MIDI legs, resolved as the drum lanes' are.
+-- | The kinds that allocate across voices (a poly instrument, a Rample played
+-- | polyphonically) are the page's to play and are left out.
+voiceRouting :: Outs -> Table -> Array Source -> RR.VoiceRouting
+voiceRouting outs tbl sources = { voices: map (\src -> mapMaybe (resolveLeg outs) (liveLegsFor tbl src)) sources }
 
 -- | The SuperDirt orbit drum voices play on: an effects chain of their own,
 -- | apart from Conspicillum's 0 and its sends 10 and 11, on the main outputs.

@@ -80,6 +80,7 @@ import Triggerfish.Odonus.Lepidoptera (parsePatch, printPatch)
 import Triggerfish.SourceQuery (Query(..))
 import Triggerfish.Routing.Model as RM
 import Triggerfish.Routing.Out as RO
+import Reef.Routing as RR
 import Triggerfish.Routing.Store as RStore
 import Triggerfish.Odonus.View.Generate (generatePanel, cellParamsPanel)
 import Triggerfish.Odonus.View.Scenes (sceneName)
@@ -127,6 +128,7 @@ handleQuery :: forall m a. MonadAff m => Query a -> H.HalogenM State Action Slot
 handleQuery = case _ of
   SetRouting t k -> do
     H.modify_ _ { routing = t }
+    pushRouting
     pure (Just k)
   AskSource reply -> do
     s <- H.get
@@ -395,6 +397,11 @@ dispatch = case _ of
     -- broadcast, so a solo-mounted Odonus is routed from the first tick.
     mroute <- liftEffect RStore.load
     for_ mroute \t -> H.modify_ _ { routing = t }
+    -- A table saved in another tab (the dashboard's router) reaches a page
+    -- that stands alone through storage; the rig is told at once.
+    { emitter: routeE, listener: routeL } <- liftEffect HS.create
+    _ <- H.subscribe routeE
+    liftEffect $ RStore.onChange (HS.notify routeL RoutingStored)
     -- Restore the shared MIDI clip library (#27) — captured anywhere, pickable here.
     savedClips <- liftEffect ClipStore.loadClips
     H.modify_ _ { clips = savedClips }
@@ -645,7 +652,13 @@ dispatch = case _ of
     when (cv /= s2.lastChip) do
       H.modify_ _ { lastChip = cv }
       H.raise (IdentityChanged cv)
-  MidiReady outs nm -> H.modify_ _ { outs = outs, midiName = nm }
+  MidiReady outs nm -> do
+    H.modify_ _ { outs = outs, midiName = nm }
+    pushRouting
+  RoutingStored -> do
+    mroute <- liftEffect RStore.load
+    for_ mroute \t -> H.modify_ _ { routing = t }
+    pushRouting
   -- A move made on the rig (`odonus $ ...`, Reef.Move): its gestures arrive
   -- tagged for the step the BEAM voice applies them on, and join `pending`, as
   -- `enqueue` does for ours, so the Step loop applies them on that same step and
@@ -1067,6 +1080,8 @@ dispatch = case _ of
     -- so the BEAM must install that same grid to interpret the step index. Setting
     -- step length and hold-step atomically here means NO follow-up `reef-steplen`
     -- (which would reset the voice's last_step and undo the phase alignment).
+    -- where the heads go, before they start: the routing table, resolved
+    pushRouting
     for_ st.binnacle \bin ->
       liftEffect $ Transport.send (Binnacle.socket bin)
         ("reef-sim-at " <> show st.nextModelStep <> " " <> show (stepBeatsOf st) <> " "
@@ -1896,3 +1911,15 @@ polyOrder tbl inst =
   wants lg = lg.on && case lg.dest of
     RM.DPoly d -> d.inst == inst && d.sortByPitch
     _ -> false
+
+-- | Tell the rig where the heads go (`odonus-routing`), when it is the rig
+-- | that sounds: the routing table's legs for heads I-IV, resolved against
+-- | the ports that exist (`Routing.Out.voiceRouting`). Not before MIDI access
+-- | arrives: with no ports known every leg resolves to nothing, and pushing
+-- | that would silence the rig.
+pushRouting :: forall o m. MonadAff m => H.HalogenM State Action Slots o m Unit
+pushRouting = do
+  st <- H.get
+  when (st.sounding == Rig && not (null st.outs)) $ for_ st.binnacle \bin ->
+    liftEffect $ Transport.send (Binnacle.socket bin)
+      ("odonus-routing " <> RR.encodeVoiceRouting (RO.voiceRouting st.outs st.routing (map RM.SOdonusHead [ 0, 1, 2, 3 ])))

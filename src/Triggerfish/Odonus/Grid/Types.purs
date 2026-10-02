@@ -390,6 +390,7 @@ data Action
   | RigFrame String         -- a frame from the rig: an `odonus` move's tagged gestures to follow
   -- every output port, status line
   | MidiReady RO.Outs String
+  | RoutingStored   -- another tab saved the routing table (the dashboard's router)
   | ToggleGlide Int
   | ToggleGate Int
   | ToggleSkip Int
