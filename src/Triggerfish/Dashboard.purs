@@ -56,6 +56,8 @@ import Triggerfish.Flow as Flow
 import Triggerfish.Flow.View as FlowView
 import Triggerfish.GlyphView (chipIcons)
 import Triggerfish.Route as Route
+import Triggerfish.Router as Router
+import Reef.Route as HarmonyRoute
 import Triggerfish.Routing.Edit as RE
 import Triggerfish.Routing.Model as RM
 import Triggerfish.Routing.Out as RO
@@ -128,6 +130,7 @@ type State =
   , sampleSets :: Array SampleSet
   , hot :: Maybe String      -- the machine hovered on the chart
   , voices :: Array String   -- machines the chart draws as their voices
+  , router :: Router.Router  -- the harmony routes, as the rig's stage holds them
   }
 
 data Action
@@ -147,13 +150,19 @@ data Action
   | Hover (Maybe String)
   | OpenMachine Machine MouseEvent
   | ToggleVoices String
+  | RigOpen
+  | RigFrame String
+  | RouterToggle Router.Line HarmonyRoute.Input
+  | RouterEdit (Router.Router -> Router.Router)
+  | RouterCommit Router.Line
+  | NoOp
 
 component :: forall q i o. H.Component q i o Aff
 component = H.mkComponent
   { initialState: \_ ->
       { mode: Solo, view: MachinesView, now: 0.0, heard: Map.empty, rig: Nothing, rigUp: false
       , tempo: 120.0, locked: false, bus: Nothing
-      , table: RM.defaultTable, ports: [], sampleSets: [], hot: Nothing, voices: [] }
+      , table: RM.defaultTable, ports: [], sampleSets: [], hot: Nothing, voices: [], router: Router.initial }
   , render
   , eval: H.mkEval H.defaultEval { handleAction = handleAction, initialize = Just Init }
   }
@@ -176,6 +185,10 @@ handleAction = case _ of
     liftEffect $ RStore.onChange (HS.notify listener RoutingStored)
     rig <- liftEffect $ Binnacle.connect { url: rigUrl, tempo: 120.0 }
     H.modify_ _ { rig = Just rig }
+    -- the stage's text objects: the harmony routes, and Vetula's cards for
+    -- its voices; asked for again whenever the socket (re)opens
+    liftEffect $ Binnacle.onAppMessage rig (HS.notify listener <<< RigFrame)
+    liftEffect $ Binnacle.onOpen rig (HS.notify listener RigOpen)
     bus <- liftEffect Bus.open
     H.modify_ _ { bus = Just bus }
     liftEffect $ Bus.onMessage bus (HS.notify listener <<< FromBus)
@@ -275,11 +288,32 @@ handleAction = case _ of
 
   ToggleVoices m -> H.modify_ \x -> x { voices = if m `elem` x.voices then filter (_ /= m) x.voices else x.voices <> [ m ] }
 
+  RigOpen -> sendRig Router.subscribeLine
+
+  RigFrame msg -> do
+    st <- H.get
+    for_ (Router.readFrame msg st.router) \r -> H.modify_ _ { router = r }
+
+  RouterToggle line input -> do
+    st <- H.get
+    for_ (Router.toggle line input st.router) sendRig
+
+  RouterEdit f -> H.modify_ \x -> x { router = f x.router }
+
+  RouterCommit line -> do
+    st <- H.get
+    for_ (Router.commit line st.router) sendRig
+
+  NoOp -> pure unit
+
   Audition dest -> do
     st <- H.get
     for_ (RO.auditionLine dest) \line ->
       for_ st.rig \bin -> liftEffect $ Transport.send (Binnacle.socket bin) line
   where
+  sendRig line = do
+    mrig <- H.gets _.rig
+    for_ mrig \bin -> liftEffect $ Transport.send (Binnacle.socket bin) line
   post msg = do
     mbus <- H.gets _.bus
     for_ mbus \bus -> liftEffect $ Bus.post bus msg
@@ -473,6 +507,16 @@ routing st =
         , HH.span [ cls "note" ] [ HH.text "Every source and where it goes. Changes save at once and reach every open page." ]
         , lamp (not (null st.ports)) portsNote
         ]
+    , Router.view
+        { toggle: RouterToggle
+        , scalePattern: RouterEdit <<< Router.setScalePattern
+        , scaleRoot: RouterEdit <<< Router.setScaleRoot
+        , harmony: RouterEdit <<< Router.setHarmony
+        , commit: RouterCommit
+        , none: NoOp
+        }
+        st.rigUp st.router
+    , HH.h2 [ cls "notes-head" ] [ HH.text "Notes" ]
     , RV.key env allSources
     , RV.sourceRows env allSources
     ]

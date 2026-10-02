@@ -116,6 +116,24 @@
     /* A machine's nameplate heads its group in the routing ledger. Space, not
        a rule, separates the groups. */
     .routing .hw-quiet-key { margin-top: 14px; }
+    /* The harmony matrix: sources down, Odonus's two inputs across, a dot per route. */
+    .router { margin-bottom: 26px; }
+    .router .matrix { border-collapse: collapse; font: 13px var(--mono); }
+    .router .matrix th, .router .matrix td { padding: 6px 14px 6px 0; border-bottom: 1px solid var(--rule); text-align: left; }
+    .router .matrix thead th { font: 700 11px var(--display); letter-spacing: .1em; text-transform: uppercase; color: var(--muted); border-bottom-color: var(--ink); }
+    .router .matrix th.src { font-weight: 400; white-space: nowrap; }
+    .router .matrix tr.live th.src { color: var(--reef); font-weight: 600; }
+    .router .matrix td.dot { width: 110px; }
+    .router .matrix td.dot button { width: 16px; height: 16px; padding: 0; border-radius: 50%; border: 1.5px solid var(--faint); background: transparent; cursor: pointer; }
+    .router .matrix td.dot button:hover { border-color: var(--reef); }
+    .router .matrix td.dot button.on { background: var(--reef); border-color: var(--reef); }
+    .router .matrix td.dot.none::before { content: "–"; color: var(--rule); }
+    .router .matrix input { font: 13px var(--mono); color: var(--ink); background: transparent; border: none; border-bottom: 1px solid var(--rule); width: 9em; margin-left: 6px; padding: 1px 2px; }
+    .router .matrix input.root { width: 3em; }
+    .router .matrix input.wide { width: 16em; }
+    .router .matrix input:focus { outline: none; border-bottom-color: var(--reef); }
+    .router-problem { color: var(--alarm); font-size: 12.5px; margin: 8px 0 0; }
+    .routing .notes-head { margin: 0 0 6px; font-size: 13px; font-weight: 700; letter-spacing: .12em; text-transform: uppercase; padding-bottom: 10px; border-bottom: 1px solid var(--ink); }
     /* The signal-flow chart (Triggerfish.Flow.View). */
     :root { --s-notes: #7f9098; --s-socket: #7c5cc4; --s-midi: #13807b; --s-osc: #c08a12; --s-cv: #a8327a; --s-audio: #2f6fae; --s-samples: #8a5a2b; --s-http: #9a8fb0; --kraken: #8a3a50; --kraken-deep: #5e2234; --kraken-pupil: #2a0f18; }
     @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --s-notes: #9fb0b8; --s-socket: #ab93f0; --s-midi: #4cc5bd; --s-osc: #eab94f; --s-cv: #e87bbd; --s-audio: #7fb8e0; --s-samples: #d2a06d; --s-http: #b9aed0; --kraken: #c26a82; --kraken-deep: #8e4258; --kraken-pupil: #10252e; } }
