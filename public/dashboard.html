@@ -268,6 +268,22 @@
     .s-midi { fill: var(--s-midi); color: var(--s-midi); } .s-osc { fill: var(--s-osc); color: var(--s-osc); }
     .s-http { fill: var(--s-http); color: var(--s-http); } .s-cv { fill: var(--s-cv); color: var(--s-cv); }
     .s-audio { fill: var(--s-audio); color: var(--s-audio); } .s-samples { fill: var(--s-samples); color: var(--s-samples); }
+    /* control: the page telling the rig what to play, drawn thin and grey */
+    svg.flows .link.control { fill: var(--muted); fill-opacity: .35; }
+    svg.flows.hovering .link.control.hot { fill-opacity: .7; }
+    /* every voice open: one line per channel, so each is quieter */
+    .all-voices svg.flows .link { fill-opacity: .24; }
+    .all-voices svg.flows.hovering .link { fill-opacity: .05; }
+    .all-voices svg.flows.hovering .link.hot { fill-opacity: .8; }
+    /* the rig's loops: a bubble per mark, filled while it loops */
+    svg.flows .bubble circle { fill: var(--plate); stroke: var(--field, var(--ink)); stroke-width: 1.5; }
+    svg.flows .bubble .bn { font: 600 9px var(--mono); fill: var(--field, var(--ink)); }
+    svg.flows .bubble.playing circle { fill: var(--field, var(--ink)); animation: pulse var(--beat, .5s) ease-out infinite; transform-box: fill-box; transform-origin: center; }
+    svg.flows .bubble.playing .bn { fill: var(--letter, var(--plate)); }
+    @media (prefers-reduced-motion: reduce) { svg.flows .bubble.playing circle { animation: none; } }
+    .flow-foot { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 8px 20px; }
+    .flow-switches { display: flex; gap: 14px; font: 400 11px var(--mono); color: var(--muted); }
+    .flow-switch { display: inline-flex; align-items: center; gap: 5px; cursor: pointer; }
     .flow-key { display: flex; flex-wrap: wrap; gap: 4px 14px; margin-top: 8px; font-size: 12px; font-weight: 600; }
     .flow-key .sig { display: inline-flex; align-items: center; gap: 6px; }
     .flow-key .sig i { width: 16px; height: 4px; background: currentColor; }

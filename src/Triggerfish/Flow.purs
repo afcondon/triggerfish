@@ -16,13 +16,19 @@
 -- | - **The page plays** (Solo, and the machines the rig does not play): MIDI
 -- |   leaves the browser through Web MIDI, straight to its port.
 -- | - **The rig plays** (Atlantis, for Odonus, Vetula and Balistes): the page
--- |   sends notes over the rig socket to purerl-tidal, which sends the MIDI.
+-- |   tells Architeuthis what to play (its patch, edits and cues) over the rig
+-- |   socket, and the rig makes the notes. Those links are **control**, drawn
+-- |   thin whatever they carry; the streams start at the engine (AC,
+-- |   2026-10-03: "make the Sankey honest about data flows").
+-- | - **Rig loops** play on the rig whether or not their page is open, so a
+-- |   machine with a loop playing and its page closed is drawn from the engine.
+-- |   The marks themselves are bubbles under the engine (the view's).
 -- |
--- | link-spike is not a node. It does carry the rig's MIDI (purerl-tidal hands
--- | it `/midi/note/at` over OSC for timestamped CoreMIDI delivery), but what it
--- | means to a reader is the beat: Link, broadcast to everything the rig
--- | times. So the chart draws it above the flow, reaching the nodes in
--- | `onTheBeat`, rather than as one more hop in it.
+-- | Diaphus carries the rig's MIDI (Architeuthis hands it `/midi/note/at` over
+-- | OSC for timestamped CoreMIDI delivery), but what it means to a reader is
+-- | the beat: Link, broadcast to everything the rig times. So the chart draws
+-- | it above the flow, reaching the nodes in `onTheBeat`, and puts it on the
+-- | MIDI path only when asked (`relays`), for the documentary view.
 -- |
 -- | Samples and the ES-9 are always reached through the rig. In Solo such a
 -- | leg cannot sound, but it is still drawn, on the path it would take, and
@@ -46,6 +52,7 @@ module Triggerfish.Flow
   , Flow
   , Inputs
   , Extra
+  , RigLoop
   , flow
   , layerOf
   , onTheBeat
@@ -122,9 +129,17 @@ type Link =
   , wires :: Array String, notes :: Array String
   -- | how many of `streams` would sound only with the rig (in Solo)
   , waiting :: Int
+  -- | the page telling the rig what to play (its patch, edits and cues), not
+  -- | the notes themselves: drawn thin, whatever it carries
+  , control :: Boolean
   }
 
-type Flow = { nodes :: Array Node, links :: Array Link }
+-- | `loops`: the rig's marks, for the bubbles on the engine.
+type Flow = { nodes :: Array Node, links :: Array Link, loops :: Array RigLoop }
+
+-- | A mark the rig keeps for a machine (`rig_loops`), and whether a loop is
+-- | playing it. A loop plays on the rig whether or not its page is open.
+type RigLoop = { machine :: String, n :: Int, playing :: Boolean }
 
 -- | A route that is not in the routing table: Conspicillum and Quadrat drive
 -- | their destinations themselves. `via` is set when the page reaches it
@@ -139,6 +154,11 @@ type Inputs =
   , machines :: Array String   -- whose pages are open
   , open :: Array String       -- machines drawn as their separate voices
   , extras :: Array Extra
+  -- | draw the relays a reader rarely needs: Diaphus, which delivers every
+  -- | MIDI note the rig sends, timestamped
+  , relays :: Boolean
+  , loops :: Array RigLoop
+  , rigUp :: Boolean
   }
 
 -- | The machine a source belongs to, by its slot name.
@@ -163,7 +183,7 @@ modeFor mode m = if m == "limulus" then Atlantis else mode
 -- From a leg to a path
 -- ---------------------------------------------------------------------------
 
-type Hop = { from :: String, to :: String, signal :: Signal }
+type Hop = { from :: String, to :: String, signal :: Signal, control :: Boolean }
 
 -- | One stream: who emits it, which wire it is, and the path it takes.
 -- | `brokenAt` names the node it cannot reach (a port that is not there), so
@@ -251,18 +271,18 @@ midiEnds = case _ of
 
 -- | The path one leg takes, or `Nothing` when it cannot sound in this mode
 -- | (or when nothing sends to it yet).
-pathOf :: Mode -> String -> Maybe String -> Destination -> Maybe (Array Hop)
-pathOf mode m via dest = case midiEnds dest of
+pathOf :: Boolean -> Mode -> String -> Maybe String -> Destination -> Maybe (Array Hop)
+pathOf relays mode m via dest = case midiEnds dest of
   Just e ->
     Just $ head <> [ hop e.iface e.inst e.last, hop e.inst "ears" Audio ]
     where
     head
       | atlantis && rigPlays m =
-          [ hop "browser" "engine" Socket, hop "engine" e.iface Midi ]
+          [ ctl "browser" "engine" Socket ] <> rigMidi e.iface
       | otherwise = [ hop "browser" e.iface Midi ]
   Nothing -> case dest of
     DSample _ | atlantis ->
-      Just [ hop "browser" "engine" Socket, hop "engine" "d-dirt" Osc, hop "d-dirt" "ears" Audio ]
+      Just [ ctl "browser" "engine" Socket, hop "engine" "d-dirt" Osc, hop "d-dirt" "ears" Audio ]
     DPoly _ | atlantis -> Just (toEs9 relay)
     -- Nothing sends a plain ES-9 leg from the table yet (`reachOf` says
     -- `NotBuilt`); Quadrat's own CV, through the Friends server, is built.
@@ -271,10 +291,20 @@ pathOf mode m via dest = case midiEnds dest of
     _ -> Nothing
   where
   atlantis = mode == Atlantis
-  hop from to signal = { from, to, signal }
+  hop from to signal = { from, to, signal, control: false }
+  -- The page tells the rig what to play; the rig makes the notes.
+  ctl from to signal = { from, to, signal, control: true }
+  -- The rig's MIDI: handed to Diaphus as OSC for timestamped delivery.
+  rigMidi iface
+    | relays = [ hop "engine" "diaphus" Osc, hop "diaphus" iface Midi ]
+    | otherwise = [ hop "engine" iface Midi ]
   relay = case via of
     Just v -> [ hop "browser" v Http, hop v "d-es9" Osc ]
-    Nothing -> [ hop "browser" "engine" Socket, hop "engine" "d-es9" Osc ]
+    -- a machine the rig plays (Odonus's poly legs) is told; a page that
+    -- times its own CV (Binnacle) sends it, and the rig only relays
+    Nothing
+      | rigPlays m -> [ ctl "browser" "engine" Socket, hop "engine" "d-es9" Osc ]
+      | otherwise -> [ hop "browser" "engine" Socket, hop "engine" "d-es9" Osc ]
   toEs9 r = r <> [ hop "d-es9" "es9" Cv, hop "es9" "modular" Cv, hop "modular" "ears" Audio ]
 
 -- ---------------------------------------------------------------------------
@@ -282,9 +312,13 @@ pathOf mode m via dest = case midiEnds dest of
 -- ---------------------------------------------------------------------------
 
 flow :: Inputs -> Flow
-flow inp = { nodes, links }
+flow inp = { nodes, links, loops: inp.loops }
   where
-  shown m = m `elem` inp.machines
+  pageOpen m = m `elem` inp.machines
+  -- A machine whose page is closed still sounds while the rig plays its
+  -- loops: its streams start at the engine.
+  loopsOnly m = inp.rigUp && not (pageOpen m) && Array.any (\l -> l.machine == m && l.playing) inp.loops
+  shown m = pageOpen m || loopsOnly m
   unitOf m src = if m `elem` inp.open then "src:" <> sourceKey src else "m:" <> m
 
   tableStreams = inp.table # concatMap \r ->
@@ -297,10 +331,12 @@ flow inp = { nodes, links }
 
   -- A leg with no path in Solo that has one in Atlantis needs the rig: drawn
   -- on that path, marked waiting.
-  stream m unit via notes dest = case pathOf (modeFor inp.mode m) m via dest of
-    Just hops -> Just (mk hops false)
-    Nothing | inp.mode /= Atlantis -> (\hops -> mk hops true) <$> pathOf Atlantis m via dest
-    Nothing -> Nothing
+  stream m unit via notes dest =
+    if loopsOnly m then (\hops -> mk (filter (\h -> h.from /= "browser") hops) false) <$> pathOf inp.relays Atlantis m via dest
+    else case pathOf inp.relays (modeFor inp.mode m) m via dest of
+      Just hops -> Just (mk hops false)
+      Nothing | inp.mode /= Atlantis -> (\hops -> mk hops true) <$> pathOf inp.relays Atlantis m via dest
+      Nothing -> Nothing
     where
     mk hops needsRig =
       { machine: m, unit, wire: wireOf dest, hops
@@ -317,8 +353,13 @@ flow inp = { nodes, links }
       Just i -> fromMaybe acc (Array.modifyAt i (\a -> a { notes = a.notes <> x.notes }) acc)
       Nothing -> Array.snoc acc x
 
-  -- The first hop of every stream is its unit into the page.
-  hopsOf s = [ { from: s.unit, to: "browser", signal: Notes } ] <> s.hops
+  -- The first hop of every stream is its unit into the page: control too
+  -- when the page only tells the rig. A stream the rig plays from its loops,
+  -- with the page closed, starts at the engine.
+  hopsOf s
+    | Array.any (\h -> h.from == "browser") s.hops =
+        [ { from: s.unit, to: "browser", signal: Notes, control: Array.any _.control s.hops } ] <> s.hops
+    | otherwise = s.hops
 
   -- Sample sets feed SuperDirt whenever anything plays a sample: the material
   -- is part of the path even though no machine sends it.
@@ -326,7 +367,7 @@ flow inp = { nodes, links }
   sampleStreams = length sampleUsers
   setsLinks
     | sampleStreams > 0 =
-        [ { from: "sets", to: "d-dirt", signal: Samples, machine: "sets", streams: sampleStreams, broken: 0, wires: [], notes: [], waiting: if all _.needsRig sampleUsers then sampleStreams else 0 } ]
+        [ { from: "sets", to: "d-dirt", signal: Samples, machine: "sets", streams: sampleStreams, broken: 0, wires: [], notes: [], waiting: if all _.needsRig sampleUsers then sampleStreams else 0, control: false } ]
     | otherwise = []
 
   links = merge (concatMap (\s -> hopsOf s <#> \h -> { hop: h, machine: s.machine, broken: s.brokenAt == Just h.to, detail: s.detail, notes: s.notes, waiting: s.needsRig }) streams) <> setsLinks
@@ -335,8 +376,8 @@ flow inp = { nodes, links }
     where
     add acc x = case findIndex (same x) acc of
       Just i -> fromMaybe acc (Array.modifyAt i (\l -> l { streams = l.streams + 1, broken = l.broken + fromBool x.broken, wires = nub (Array.snoc l.wires x.detail), notes = nub (l.notes <> x.notes), waiting = l.waiting + fromBool x.waiting }) acc)
-      Nothing -> Array.snoc acc { from: x.hop.from, to: x.hop.to, signal: x.hop.signal, machine: x.machine, streams: 1, broken: fromBool x.broken, wires: [ x.detail ], notes: x.notes, waiting: fromBool x.waiting }
-    same x l = l.from == x.hop.from && l.to == x.hop.to && l.signal == x.hop.signal && l.machine == x.machine
+      Nothing -> Array.snoc acc { from: x.hop.from, to: x.hop.to, signal: x.hop.signal, machine: x.machine, streams: 1, broken: fromBool x.broken, wires: [ x.detail ], notes: x.notes, waiting: fromBool x.waiting, control: x.hop.control }
+    same x l = l.from == x.hop.from && l.to == x.hop.to && l.signal == x.hop.signal && l.machine == x.machine && l.control == x.hop.control
     fromBool b = if b then 1 else 0
 
   ids = nub (concatMap (\l -> [ l.from, l.to ]) links)
@@ -355,6 +396,7 @@ fixed =
   , n "engine" Engine "Architeuthis" "the rig's engine"
   , n "foi" Engine "Friends server" "Quadrat's CV relay"
   , n "sets" Engine "Sample sets" "Quadrat · Amphora"
+  , n "diaphus" RigOut "Diaphus" "MIDI, on the beat"
   , n "d-es9" RigOut "es9-daemon" "CV over audio"
   , n "d-dirt" RigOut "SuperDirt" "plays samples"
   , n "continuo" Interface "continuo" "a MIDI port, hosted"
@@ -434,5 +476,5 @@ onTheBeat f = nub (concatMap rig f.links)
   where
   rig l
     | l.from == "engine" = [ "engine", l.to ]
-    | l.from == "d-es9" || l.from == "d-dirt" = [ l.from ]
+    | l.from == "d-es9" || l.from == "d-dirt" || l.from == "diaphus" = [ l.from ]
     | otherwise = []

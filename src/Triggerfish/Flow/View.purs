@@ -39,6 +39,10 @@ type Handlers i = { hover :: Maybe String -> i, pick :: String -> i, link :: Str
 width :: Number
 width = 1500.0
 
+-- | A control line's width, in streams: thin whatever it carries.
+controlWidth :: Number
+controlWidth = 0.3
+
 -- Room on the left for the fish and the machines' names, and on the right for
 -- the last column's labels.
 left :: Number
@@ -52,7 +56,7 @@ right = 1320.0
 heightOf :: Flow -> Number
 heightOf f = clampN 250.0 720.0 (130.0 + toNumber streams * 11.0 + toNumber rows * 22.0)
   where
-  streams = foldl (+) 0 (map _.streams (filter (\l -> l.to == "browser") f.links))
+  streams = foldl (+) 0 (map _.streams (filter (\l -> l.to == "ears") f.links))
   rows = foldl max 1 (map (\c -> Array.length (filter (\nd -> nd.column == c) f.nodes)) (nub (map _.column f.nodes)))
   clampN lo hi x = max lo (min hi x)
 
@@ -76,7 +80,7 @@ chart on hot live f
         , attr "role" "img"
         , attr "aria-label" "Where each machine's output goes: through the browser or the rig, through interfaces and instruments, to your ears"
         ]
-        ( beatBand <> heads <> [ rule ] <> map link laid.links <> map node laid.nodes <> beatMarks )
+        ( beatBand <> heads <> [ rule ] <> map link laid.links <> map node laid.nodes <> beatMarks <> bubbles )
   where
   -- In Atlantis, link-spike stands above the flow: the beat, broadcast to
   -- everything the rig times, rather than one more hop in it.
@@ -87,7 +91,7 @@ chart on hot live f
   ours sn = Map.lookup sn.name byId
   rankOf sn = map nodeRank (ours sn)
   laid = computeLayoutWithConfig
-    (map (\l -> { s: l.from, t: l.to, v: toNumber l.streams }) f.links)
+    (map (\l -> { s: l.from, t: l.to, v: if l.control then controlWidth else toNumber l.streams }) f.links)
     (defaultSankeyConfig width h)
       { nodeWidth = 5.0
       , nodePadding = 20.0
@@ -136,14 +140,15 @@ chart on hot live f
   link sl =
     let
       ours' = f.links !! (unwrap' sl.index)
-      cls = maybe "" (\l -> sigClass l.signal <> (if Just l.machine == hot then " hot" else "") <> (if l.broken > 0 then " broken" else "") <> (if waits l then " waiting" else if sounding l then "" else " idle")) ours'
+      cls = maybe "" (\l -> sigClass l.signal <> (if l.control then " control" else "") <> (if Just l.machine == hot then " hot" else "") <> (if l.broken > 0 then " broken" else "") <> (if waits l then " waiting" else if sounding l then "" else " idle")) ours'
     in
       svg "path" ([ attr "class" ("link " <> cls), attr "d" (generateLinkPath laid.nodes sl) ]
           <> maybe [] (\l -> [ HE.onClick \_ -> on.link l.machine l.to ]) ours')
         (maybe [] (\l -> [ svg "title" [] [ HH.text (linkTitle l) ] ]) ours')
 
   linkTitle l =
-    l.from <> " → " <> l.to <> " · " <> signalLabel l.signal <> " · " <> plural l.streams "stream"
+    l.from <> " → " <> l.to <> " · " <> signalLabel l.signal
+      <> (if l.control then " · control: the page tells the rig what to play; the rig makes the notes" else " · " <> plural l.streams "stream")
       <> (if l.broken > 0 then " · " <> show l.broken <> " with no port" else "")
       <> (if Array.null l.wires then "" else "\n" <> joinWith ", " l.wires)
       <> (if Array.null l.notes then "" else "\n" <> joinWith ", " l.notes)
@@ -188,7 +193,7 @@ chart on hot live f
         , bar sn
         , use ("sp-" <> m) 23.0 (cy - 16.0) 54.0 32.0
         , label "name" (sn.x0 - 10.0) (cy - 2.0) "end" nd.name
-        , label "sub" (sn.x0 - 10.0) (cy + 11.0) "end" (if needsAtlantis m then "needs Atlantis" else plural (round' sn.value) "stream")
+        , label "sub" (sn.x0 - 10.0) (cy + 11.0) "end" (if needsAtlantis m then "needs Atlantis" else plural (streamsOf m) "stream" <> " · " <> playsWhere m)
         ]
 
   placeNode sn nd =
@@ -226,6 +231,41 @@ chart on hot live f
         , label "sub" (x + 13.0) (cy + 13.0) "start" (if live.rigUp then "connected" else "not connected")
         ]
     | otherwise = []
+  -- A machine's streams, counted where they are heard: its links into the
+  -- page may be control, whose width says nothing.
+  streamsOf m = foldl (+) 0 (map _.streams (filter (\l -> l.machine == m && l.to == "ears") f.links))
+  -- Who makes the notes: the page, or the rig it tells.
+  playsWhere m
+    | Array.any (\l -> l.machine == m && l.control) f.links = "plays on the rig"
+    | Array.any (\l -> l.machine == m && l.from == "engine") f.links = "loops on the rig"
+    | otherwise = "plays here"
+
+  -- The rig's loops, as bubbles under the engine: a row per machine, one
+  -- per mark, numbered as Limulus numbers them, filled while a loop plays it.
+  bubbles = case Array.find (\sn -> sn.name == "engine") laid.nodes of
+    Nothing -> []
+    Just sn ->
+      let
+        rows = nub (map _.machine f.loops)
+        x0 = sn.x1 + 76.0
+        row i m =
+          let
+            y = sn.y1 + 18.0 + toNumber i * 20.0
+            marks = filter (\l -> l.machine == m) f.loops
+          in
+            svg "g" [ attr "class" ("loops m-" <> m) ]
+              ( [ label "sub" (x0 - 8.0) (y + 3.5) "end" (m <> " loops") ]
+                  <> Array.mapWithIndex (\j l -> bubble (x0 + toNumber j * 18.0) y l) marks
+              )
+        bubble x y l =
+          svg "g" [ attr "class" ("bubble" <> (if l.playing then " playing" else "")) ]
+            [ svg "circle" [ attr "cx" (n (x + 7.0)), attr "cy" (n y), attr "r" "7.5" ] []
+            , label "bn" (x + 7.0) (y + 3.5) "middle" (show l.n)
+            , svg "title" [] [ HH.text (m' l <> " mark " <> show l.n <> (if l.playing then ": looping on the rig" else ": kept, not playing") ) ]
+            ]
+        m' l = l.machine
+      in Array.mapWithIndex row rows
+
   -- The sample sets sound whenever anything does.
   sounding l = l.machine `Array.elem` live.playing || (l.machine == "sets" && not (Array.null live.playing))
 

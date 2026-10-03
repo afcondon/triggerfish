@@ -64,6 +64,8 @@ import Web.UIEvent.KeyboardEvent.EventTypes as KET
 import Web.UIEvent.MouseEvent (MouseEvent)
 import Web.UIEvent.MouseEvent as ME
 import Triggerfish.Flow as Flow
+import Triggerfish.Capture.RigLoops as RigLoops
+import Data.Tuple (Tuple(..))
 import Triggerfish.Flow.View as FlowView
 import Triggerfish.GlyphView (chipIcons)
 import Triggerfish.Route as Route
@@ -154,6 +156,12 @@ type State =
   , foldDrums :: Boolean
   -- the Vetula routing last written to the stage (`vetula/routing`)
   , vetulaSent :: Maybe String
+  -- the chart's switches: Diaphus drawn on the rig's MIDI path, and every
+  -- machine opened into its voices
+  , relays :: Boolean
+  , allVoices :: Boolean
+  -- the marks the rig keeps, per machine (`loops` frames), for the bubbles
+  , rigLoops :: Map String (Array RigLoops.RigMark)
   }
 
 data Action
@@ -189,6 +197,8 @@ data Action
   | Audition RM.Destination
   | Edits (Array RE.Edit)
   | ChartLink String String
+  | ShowRelays Boolean
+  | ShowAllVoices Boolean
 
 component :: forall q i o. H.Component q i o Aff
 component = H.mkComponent
@@ -196,7 +206,8 @@ component = H.mkComponent
       { mode: Solo, now: 0.0, heard: Map.empty, rig: Nothing, rigUp: false
       , tempo: 120.0, freeTempo: 120.0, locked: false, bus: Nothing
       , table: RM.defaultTable, ports: [], sampleSets: [], hot: Nothing, voices: [], router: Router.initial
-      , matrix: Nothing, pick: Nothing, focus: Nothing, sheet: Nothing, foldDrums: true, vetulaSent: Nothing }
+      , matrix: Nothing, pick: Nothing, focus: Nothing, sheet: Nothing, foldDrums: true, vetulaSent: Nothing
+      , relays: false, allVoices: false, rigLoops: Map.empty }
   , render
   , eval: H.mkEval H.defaultEval { handleAction = handleAction, initialize = Just Init }
   }
@@ -333,13 +344,21 @@ handleAction = case _ of
     liftEffect $ preventDefault (ME.toEvent ev)
     liftEffect $ openInBackground m.href
 
+  ShowRelays b -> H.modify_ _ { relays = b }
+
+  ShowAllVoices b -> H.modify_ _ { allVoices = b }
+
   ToggleVoices m -> H.modify_ \x -> x { voices = if m `elem` x.voices then filter (_ /= m) x.voices else x.voices <> [ m ] }
 
   RigOpen -> do
     H.modify_ _ { vetulaSent = Nothing }
     sendRig Router.subscribeLine
+    sendRig RigLoops.syncLine
 
   RigFrame msg -> do
+    for_ loopMachines \m -> do
+      for_ (RigLoops.readLoops m msg) \marks -> H.modify_ \x -> x { rigLoops = Map.insert m marks x.rigLoops }
+      when (RigLoops.readClear m msg) (H.modify_ \x -> x { rigLoops = Map.delete m x.rigLoops })
     st <- H.get
     for_ (Router.readFrame msg st.router) \r -> do
       H.modify_ _ { router = r }
@@ -439,24 +458,44 @@ render st =
 -- | The signal-flow chart: what the open pages drive, by the path the mode
 -- | gives them. Conspicillum and Quadrat route themselves rather than through
 -- | the table, so their routes are stated here.
+-- | The machines whose marks the rig keeps.
+loopMachines :: Array String
+loopMachines = [ "odonus", "vetula" ]
+
 flowChart :: forall m. State -> H.ComponentHTML Action () m
 flowChart st =
   HH.section [ cls "flow", HP.attr (AttrName "aria-label") "Where it all goes" ]
-    [ HH.div [ cls "flow-chart" ]
+    [ HH.div [ cls ("flow-chart" <> if st.allVoices then " all-voices" else "") ]
         [ FlowView.chart { hover: Hover, pick: ToggleVoices, link: ChartLink } st.hot { playing: map _.slot (filter (playing st) machines), rigUp: st.rigUp, tempo: st.tempo }
             ( Flow.flow
                 { mode: st.mode
                 , table: st.table
                 , ports: { found: st.ports, rigUp: st.rigUp }
                 , machines: map _.slot (filter (isOpen st) machines)
-                , open: st.voices
+                , open: if st.allVoices then map _.slot machines else st.voices
                 , extras
+                , relays: st.relays
+                , loops: rigLoops
+                , rigUp: st.rigUp
                 }
             )
         ]
-    , FlowView.key
+    , HH.div [ cls "flow-foot" ]
+        [ FlowView.key
+        , HH.div [ cls "flow-switches" ]
+            [ switch "Relays" "Draw Diaphus, which delivers every MIDI note the rig sends." st.relays ShowRelays
+            , switch "Every voice" "Open every machine into its voices: one line per channel, head or lane." st.allVoices ShowAllVoices
+            ]
+        ]
     ]
   where
+  switch label tip on act =
+    HH.label [ cls "flow-switch", HP.title tip ]
+      [ HH.input [ HP.type_ HP.InputCheckbox, HP.checked on, HE.onChecked act ], HH.text label ]
+  rigLoops = do
+    Tuple m marks <- Map.toUnfoldable st.rigLoops
+    mk <- Array.reverse marks
+    pure { machine: m, n: mk.n, playing: mk.playing }
   extras =
     [ { machine: "conspicillum", dest: RM.DSample { set: "", n: 0, begin: 0, end: 100, reverse: false, gain: 100, chop: 1 }, via: Nothing }
     , { machine: "quadrat", dest: RM.DEs9Cv { bus: 1 }, via: Just "foi" }

@@ -8,8 +8,8 @@ module Test.FlowSpec (runFlowTests) where
 
 import Prelude
 
-import Data.Array (all, filter, find, length)
-import Data.Maybe (Maybe(..), isJust)
+import Data.Array (all, filter, find, length, null)
+import Data.Maybe (Maybe(..), isJust, isNothing)
 import Effect (Effect)
 import Effect.Console (log)
 import Test.Assert (assert')
@@ -28,6 +28,9 @@ base =
   , machines: [ "odonus" ]
   , open: []
   , extras: []
+  , relays: false
+  , loops: []
+  , rigUp: true
   }
 
 -- | Odonus on the IAC bus alone: the base case of the reveal.
@@ -57,12 +60,34 @@ runFlowTests = do
     ((find (\l -> l.to == "browser") drums.links <#> _.streams) == Just 5)
 
   let rig = flow base { mode = Atlantis, table = odonusToAbleton }
-  check "in Atlantis the page hands the rig its notes"
+  check "in Atlantis the page tells the rig what to play"
     (map _.id rig.nodes == [ "m:odonus", "browser", "engine", "port:IAC Driver Tidal", "ableton", "ears" ])
   check "the rig times purerl-tidal and the ports it sends to; Solo has no beat"
     (onTheBeat rig == [ "engine", "port:IAC Driver Tidal" ] && onTheBeat one == [])
   check "purerl-tidal stands one column deeper than the page"
     (layerOf rig "browser" == Just 1 && layerOf rig "engine" == Just 2)
+  check "in Atlantis the page's links are control; the notes start at the engine"
+    ( all _.control (filter (\l -> l.to == "browser" || l.to == "engine") rig.links)
+        && all (not <<< _.control) (filter (\l -> l.from == "engine") rig.links)
+        && all (not <<< _.control) one.links
+    )
+
+  let relayed = flow base { mode = Atlantis, table = odonusToAbleton, relays = true }
+  check "with relays drawn, the rig's MIDI goes through Diaphus"
+    ( (find (\l -> l.from == "engine") relayed.links <#> _.to) == Just "diaphus"
+        && (find (\l -> l.from == "diaphus") relayed.links <#> _.signal) == Just Midi
+    )
+
+  let looping = flow base { machines = [], table = odonusToAbleton, loops = [ { machine: "odonus", n: 1, playing: true } ] }
+  check "a loop on the rig sounds with its page closed, from the engine"
+    ( isJust (find (\l -> l.from == "engine" && l.machine == "odonus") looping.links)
+        && isNothing (find (\l -> l.from == "browser" || l.to == "browser") looping.links)
+    )
+  check "a kept mark that is not playing draws no streams"
+    (null (flow base { machines = [], table = odonusToAbleton, loops = [ { machine: "odonus", n: 1, playing: false } ] }).links)
+  check "with the rig down a loop draws nothing"
+    (null (flow base { machines = [], table = odonusToAbleton, rigUp = false, loops = [ { machine: "odonus", n: 1, playing: true } ] }).links)
+
   check "Solo closes up the rig's columns"
     (layerOf one "port:IAC Driver Tidal" == Just 2)
 
