@@ -298,11 +298,13 @@
     svg.flows .stopsign polygon { fill: var(--alarm); } svg.flows .stopsign rect { fill: #fff; }
     svg.flows .loopnode .bar { fill: var(--field, var(--ink)); }
     /* the rig's loops: a bubble per mark, filled while it loops */
-    svg.flows .bubble circle { fill: var(--plate); stroke: var(--field, var(--ink)); stroke-width: 1.5; }
-    svg.flows .bubble .bn { font: 600 9px var(--mono); fill: var(--field, var(--ink)); }
-    svg.flows .bubble.playing circle { fill: var(--field, var(--ink)); animation: pulse var(--beat, .5s) ease-out infinite; transform-box: fill-box; transform-origin: center; }
+    svg.flows .bubble .disc { fill: var(--plate); stroke: var(--field, var(--ink)); stroke-width: 1.5; }
+    svg.flows .bubble .bn { font: 700 10px var(--mono); fill: var(--field, var(--ink)); }
+    svg.flows .bubble.playing .disc { fill: var(--field, var(--ink)); }
     svg.flows .bubble.playing .bn { fill: var(--letter, var(--plate)); }
-    @media (prefers-reduced-motion: reduce) { svg.flows .bubble.playing circle { animation: none; } }
+    svg.flows .bubble .halo { fill: var(--field, var(--ink)); opacity: .35; animation: halo var(--beat, .5s) ease-out infinite; transform-box: fill-box; transform-origin: center; }
+    @keyframes halo { 0% { transform: scale(1); opacity: .45; } 100% { transform: scale(1.9); opacity: 0; } }
+    @media (prefers-reduced-motion: reduce) { svg.flows .bubble .halo { animation: none; opacity: 0; } }
     .flow-foot { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 8px 20px; }
     .flow-switches { display: flex; gap: 14px; font: 400 11px var(--mono); color: var(--muted); }
     .flow-switch { display: inline-flex; align-items: center; gap: 5px; cursor: pointer; }

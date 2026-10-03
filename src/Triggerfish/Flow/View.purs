@@ -222,9 +222,11 @@ chart on hot live f
       svg "g" [ attr "class" ("node loopnode m-" <> l.machine) ] $
         [ bar sn
         , svg "g" [ attr "class" ("bubble" <> if playing then " playing" else "") ]
-            [ svg "circle" [ attr "cx" (n cx), attr "cy" (n cy), attr "r" "9" ] []
+            -- the pulse is a halo behind the bubble, so the number stays solid
+            ( (if playing then [ svg "circle" [ attr "class" "halo", attr "cx" (n cx), attr "cy" (n cy), attr "r" "9" ] [] ] else []) <>
+            [ svg "circle" [ attr "class" "disc", attr "cx" (n cx), attr "cy" (n cy), attr "r" "9" ] []
             , label "bn" cx (cy + 3.5) "middle" nd.name
-            ]
+            ] )
         , svg "title" [] [ HH.text (l.machine <> " mark " <> nd.name <> (if playing then ": looping on the rig" else ": kept on the rig, not playing")
             <> (if silenced l.machine then "\nIt cannot be heard: every path out of the rig for " <> l.machine <> " is broken." else "")) ]
         ] <> (if playing && silenced l.machine then [ stopSign (cx + 18.0) (cy - 9.0) ] else [])
@@ -261,8 +263,11 @@ chart on hot live f
         "ears" -> tx + 40.0
         "engine" -> tx + 68.0
         _ -> tx
+      -- with loops beside it, the page's line is short, so it clears them
       sub
         | nd.id == "engine" = []
+        | nd.id == "browser" && Array.any (\x -> x.column == Loops) f.nodes =
+            [ label "sub" lx (cy + 11.0) "start" (show (round' sn.value)) ]
         | otherwise = [ label "sub" lx (cy + 11.0) "start" (nd.note <> " · " <> show (round' sn.value)) ]
     in
       svg "g" [ attr "class" "node" ]
