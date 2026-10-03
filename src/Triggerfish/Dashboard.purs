@@ -285,6 +285,8 @@ handleAction = case _ of
       openAfter = map _.slot (filter (isOpen st { now = now }) machines)
     when (up /= st.rigUp || tempo /= st.tempo || locked /= st.locked || openBefore /= openAfter || st.now == 0.0)
       (H.modify_ _ { now = now, rigUp = up, tempo = tempo, locked = locked })
+    -- the rig's marks are the rig's: gone with it, sent again when it returns
+    when (st.rigUp && not up) (H.modify_ _ { rigLoops = Map.empty })
 
   -- The tempo, typed here: for every page and, with the rig up, for Link.
   SetTempo v -> for_ (Number.fromString v) setTempo
