@@ -30,6 +30,7 @@ import Halogen.HTML as HH
 import Halogen.HTML.Core (AttrName(..), ElemName(..), Namespace(..))
 import Halogen.HTML.Events as HE
 import Halogen.HTML.Properties as HP
+import Triggerfish.Bosun (Lamp(..))
 import Triggerfish.Flow (Column(..), Flow, Signal(..), columnTitle, layerOf, nodeRank, onTheBeat, signalLabel)
 
 -- | What the chart reports: a machine hovered (or left), and a machine picked.
@@ -65,7 +66,11 @@ heightOf f = clampN 250.0 720.0 (130.0 + toNumber streams * 11.0 + toNumber rows
 -- | open page that is stopped is still part of the picture, and when nothing
 -- | plays the whole chart rests. `rigUp` is whether the page reaches
 -- | purerl-tidal, shown on the kraken. `tempo` sets the beat's pulse.
-type Live = { playing :: Array String, rigUp :: Boolean, tempo :: Number }
+-- | `lamps`: what Bosun says of the daemon behind a node, when it was reached.
+type Live =
+  { playing :: Array String, rigUp :: Boolean, tempo :: Number
+  , lamps :: Array { node :: String, lamp :: Lamp, title :: String }
+  }
 
 chart :: forall w i. Handlers i -> Maybe String -> Live -> Flow -> HH.HTML w i
 chart on hot live f
@@ -118,7 +123,7 @@ chart on hot live f
               ( arcs cx (-1.0) <> arcs cx 1.0 <>
                   [ use "ic-lantern" (cx - 30.0) 14.0 60.0 18.0
                   , label "beatlabel" cx 52.0 "middle" "Diaphus · the beat"
-                  ]
+                  ] <> (if Array.any (\x -> x.id == "diaphus") f.nodes then [] else lampAt "diaphus" (cx + 58.0) 48.5)
               )
           ]
   arcs cx dir = [ 1.0, 2.0, 3.0 ] <#> \k ->
@@ -149,7 +154,7 @@ chart on hot live f
   linkTitle l =
     l.from <> " → " <> l.to <> " · " <> signalLabel l.signal
       <> (if l.control then " · control: the page tells the rig what to play; the rig makes the notes" else " · " <> plural l.streams "stream")
-      <> (if l.broken > 0 then " · " <> show l.broken <> " with no port" else "")
+      <> (if l.broken > 0 then " · " <> show l.broken <> " not reaching " <> l.to else "")
       <> (if Array.null l.wires then "" else "\n" <> joinWith ", " l.wires)
       <> (if Array.null l.notes then "" else "\n" <> joinWith ", " l.notes)
       <> (if waits l then "\nplays only through the rig: switch to Atlantis to hear it" else "")
@@ -217,13 +222,25 @@ chart on hot live f
         | otherwise = [ label "sub" lx (cy + 11.0) "start" (nd.note <> " · " <> show (round' sn.value)) ]
     in
       svg "g" [ attr "class" "node" ]
-        ( [ bar sn ] <> icon <>
+        ( [ bar sn ] <> icon <> daemonLamp nd.id sn <>
             [ label "name" lx (cy - 2.0) "start" nd.name ]
             <> sub
             <> rigLamp nd.id lx cy
         )
 
   unwrap' (LinkID i) = i
+  -- Bosun's word on the daemon behind a node: a lamp under its bar.
+  daemonLamp id sn = lampAt id (sn.x0 + 2.5) (sn.y1 + 8.0)
+  lampAt id x y = case Array.find (\l -> l.node == id) live.lamps of
+    Nothing -> []
+    Just l ->
+      [ svg "circle" [ attr "class" ("dlamp " <> lampClass l.lamp), attr "cx" (n x), attr "cy" (n y), attr "r" "3.5" ]
+          [ svg "title" [] [ HH.text ("Bosun · " <> l.title) ] ]
+      ]
+  lampClass = case _ of
+    Up -> "up"
+    Coming -> "coming"
+    Down -> "down"
   -- The rig's link, on the rig: a lamp under purerl-tidal's label.
   rigLamp id x cy
     | id == "engine" =

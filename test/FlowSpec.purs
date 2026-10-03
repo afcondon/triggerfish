@@ -31,6 +31,7 @@ base =
   , relays: false
   , loops: []
   , rigUp: true
+  , down: []
   }
 
 -- | Odonus on the IAC bus alone: the base case of the reveal.
@@ -87,6 +88,18 @@ runFlowTests = do
     (null (flow base { machines = [], table = odonusToAbleton, loops = [ { machine: "odonus", n: 1, playing: false } ] }).links)
   check "with the rig down a loop draws nothing"
     (null (flow base { machines = [], table = odonusToAbleton, rigUp = false, loops = [ { machine: "odonus", n: 1, playing: true } ] }).links)
+
+  let noDiaphus = flow base { mode = Atlantis, table = odonusToAbleton, down = [ "diaphus" ] }
+  check "with Diaphus down, the rig's MIDI is broken where it leaves the engine"
+    ( (find (\l -> l.from == "engine") noDiaphus.links <#> _.broken) == Just 4
+        && all (\l -> l.broken == 0) (filter (\l -> l.from /= "engine") noDiaphus.links)
+    )
+  check "in Solo, Diaphus down breaks nothing"
+    (all (\l -> l.broken == 0) (flow base { table = odonusToAbleton, down = [ "diaphus" ] }).links)
+  let noDirt = flow base { mode = Atlantis, machines = [ "balistes" ], down = [ "d-dirt" ]
+                         , table = [ { source: SDrumLane 0, legs: [ { dest: DSample { set: "kit", n: 0, begin: 0, end: 100, reverse: false, gain: 100, chop: 1 }, offsetMs: 0.0, on: true } ] } ] }
+  check "with SuperDirt down, a sample stream is broken going into it"
+    ((find (\l -> l.to == "d-dirt" && l.from == "engine") noDirt.links <#> _.broken) == Just 1)
 
   check "Solo closes up the rig's columns"
     (layerOf one "port:IAC Driver Tidal" == Just 2)

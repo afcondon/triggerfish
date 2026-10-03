@@ -159,6 +159,9 @@ type Inputs =
   , relays :: Boolean
   , loops :: Array RigLoop
   , rigUp :: Boolean
+  -- | nodes whose daemon Bosun says is down: a stream through one is broken
+  -- | there. "diaphus" breaks every hop of the rig's MIDI, drawn or not.
+  , down :: Array String
   }
 
 -- | The machine a source belongs to, by its slot name.
@@ -340,9 +343,16 @@ flow inp = { nodes, links, loops: inp.loops }
     where
     mk hops needsRig =
       { machine: m, unit, wire: wireOf dest, hops
-      , brokenAt: if isNoPort (reachOf inp.ports dest) then _.iface <$> midiEnds dest else Nothing
+      , brokenAt: case Array.find dead hops of
+          Just h -> Just h.to
+          Nothing -> if isNoPort (reachOf inp.ports dest) then _.iface <$> midiEnds dest else Nothing
       , detail: detailOf dest, notes, needsRig
       }
+
+  -- A hop into a daemon that is down, or one of the rig's MIDI hops while
+  -- Diaphus, which delivers them, is down.
+  dead h = h.to `elem` inp.down
+    || ("diaphus" `elem` inp.down && h.from == "engine" && h.signal == Midi)
 
   -- Two legs on one wire from one unit are one stream; the drum lanes riding
   -- it are gathered, so the hover can say which.

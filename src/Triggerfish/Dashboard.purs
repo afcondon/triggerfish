@@ -37,7 +37,7 @@ import Data.String as String
 import Data.Foldable (for_)
 import Data.Map (Map)
 import Data.Map as Map
-import Data.Maybe (Maybe(..), fromMaybe, isNothing, maybe)
+import Data.Maybe (Maybe(..), fromMaybe, isJust, isNothing, maybe)
 import Data.Traversable (traverse)
 import Data.Number as Number
 import Data.Number.Format (fixed, toStringWith)
@@ -64,6 +64,7 @@ import Web.UIEvent.KeyboardEvent.EventTypes as KET
 import Web.UIEvent.MouseEvent (MouseEvent)
 import Web.UIEvent.MouseEvent as ME
 import Triggerfish.Flow as Flow
+import Triggerfish.Bosun as Bosun
 import Triggerfish.Capture.RigLoops as RigLoops
 import Data.Tuple (Tuple(..))
 import Triggerfish.Flow.View as FlowView
@@ -162,6 +163,8 @@ type State =
   , allVoices :: Boolean
   -- the marks the rig keeps, per machine (`loops` frames), for the bubbles
   , rigLoops :: Map String (Array RigLoops.RigMark)
+  -- the Atlantis group as Bosun last said, Nothing while out of reach
+  , bosun :: Maybe Bosun.Health
   }
 
 data Action
@@ -198,6 +201,7 @@ data Action
   | Edits (Array RE.Edit)
   | ChartLink String String
   | ShowRelays Boolean
+  | BosunPoll
   | ShowAllVoices Boolean
 
 component :: forall q i o. H.Component q i o Aff
@@ -207,7 +211,7 @@ component = H.mkComponent
       , tempo: 120.0, freeTempo: 120.0, locked: false, bus: Nothing
       , table: RM.defaultTable, ports: [], sampleSets: [], hot: Nothing, voices: [], router: Router.initial
       , matrix: Nothing, pick: Nothing, focus: Nothing, sheet: Nothing, foldDrums: true, vetulaSent: Nothing
-      , relays: false, allVoices: false, rigLoops: Map.empty }
+      , relays: false, allVoices: false, rigLoops: Map.empty, bosun: Nothing }
   , render
   , eval: H.mkEval H.defaultEval { handleAction = handleAction, initialize = Just Init }
   }
@@ -251,6 +255,8 @@ handleAction = case _ of
       H.modify_ _ { sampleSets = sets }
     _ <- liftEffect $ setInterval 1000 (HS.notify listener Tick)
     handleAction Tick
+    _ <- liftEffect $ setInterval 3000 (HS.notify listener BosunPoll)
+    handleAction BosunPoll
 
   -- Once a second: the clock, the rig link, and which tabs have gone quiet.
   -- State is written only when something shown changes.
@@ -345,6 +351,12 @@ handleAction = case _ of
     liftEffect $ openInBackground m.href
 
   ShowRelays b -> H.modify_ _ { relays = b }
+
+  -- Every three seconds: which of the group's daemons are up.
+  BosunPoll -> void $ H.fork do
+    h <- liftAff Bosun.state
+    st <- H.get
+    when (h /= st.bosun) (H.modify_ _ { bosun = h })
 
   ShowAllVoices b -> H.modify_ _ { allVoices = b }
 
@@ -466,7 +478,7 @@ flowChart :: forall m. State -> H.ComponentHTML Action () m
 flowChart st =
   HH.section [ cls "flow", HP.attr (AttrName "aria-label") "Where it all goes" ]
     [ HH.div [ cls ("flow-chart" <> if st.allVoices then " all-voices" else "") ]
-        [ FlowView.chart { hover: Hover, pick: ToggleVoices, link: ChartLink } st.hot { playing: map _.slot (filter (playing st) machines), rigUp: st.rigUp, tempo: st.tempo }
+        [ FlowView.chart { hover: Hover, pick: ToggleVoices, link: ChartLink } st.hot { playing: map _.slot (filter (playing st) machines), rigUp: st.rigUp, tempo: st.tempo, lamps }
             ( Flow.flow
                 { mode: st.mode
                 , table: st.table
@@ -477,6 +489,7 @@ flowChart st =
                 , relays: st.relays
                 , loops: rigLoops
                 , rigUp: st.rigUp
+                , down: downNodes
                 }
             )
         ]
@@ -489,6 +502,13 @@ flowChart st =
         ]
     ]
   where
+  services = maybe [] _.services st.bosun
+  lamps = services # Array.mapMaybe \sv -> Bosun.nodeOf sv.id <#> \node ->
+    { node, lamp: Bosun.lampOf sv
+    , title: sv.id <> ": " <> sv.state <> (if sv.gaveUp then ", gave up" else "")
+        <> (if sv.restarts > 0 then " · " <> show sv.restarts <> " restarts" else "") }
+  downNodes = services # Array.mapMaybe \sv ->
+    if Bosun.lampOf sv == Bosun.Down && Bosun.breaksStreams sv.id then Bosun.nodeOf sv.id else Nothing
   switch label tip on act =
     HH.label [ cls "flow-switch", HP.title tip ]
       [ HH.input [ HP.type_ HP.InputCheckbox, HP.checked on, HE.onChecked act ], HH.text label ]
@@ -540,6 +560,7 @@ topBar st =
             ]
         , HH.span [ cls "spacer" ] []
         , tempoControl st
+        , rigLamp st
         , lamp st.locked (if st.locked then "Link" else "free-running")
         , HH.button [ cls "btn panic", HE.onClick \_ -> Panic ] [ HH.text "Panic" ]
         ]
@@ -573,6 +594,23 @@ tempoControl st =
     , HH.button [ cls "step", HE.onClick \_ -> BumpTempo 1.0, HP.title "tempo +1 (⌥=; with ⇧, +5)" ] [ HH.text "+" ]
     , HH.text " bpm"
     ]
+
+-- | The rig's trunk, Architeuthis and Diaphus: every rig path needs both. Lit
+-- | when this page reaches the rig and Bosun has both running; the title says
+-- | which is missing.
+rigLamp :: forall w i. State -> HH.HTML w i
+rigLamp st =
+  HH.span [ cls ("lamp" <> if up then " live" else ""), HP.title tip ] [ HH.i_ [], HH.text (if up then "rig" else "no rig") ]
+  where
+  trunk = [ "architeuthis", "diaphus" ]
+  services = maybe [] _.services st.bosun
+  missing = filter (\id -> not (Array.any (\sv -> sv.id == id && Bosun.lampOf sv == Bosun.Up) services)) trunk
+  up = st.rigUp && (isNothing st.bosun || null missing)
+  tip
+    | not st.rigUp = "This page does not reach Architeuthis (:3012)."
+    | isNothing st.bosun = "Architeuthis answers. Bosun (:3994) is out of reach, so its daemons are not shown."
+    | null missing = "Architeuthis and Diaphus are running."
+    | otherwise = "Not running under Bosun: " <> String.joinWith ", " missing
 
 lamp :: forall w i. Boolean -> String -> HH.HTML w i
 lamp on label =
