@@ -105,7 +105,7 @@ component =
   H.mkComponent
     { initialState: \_ ->
         { odo: M.defaultOdonus, sounding: Silent, dragging: Nothing, dragSub: Nothing
-        , notes: [], logbook: Logbook.emptyLog, stage: Perform, selEuclid: Nothing, navScenes: false, playing: Nothing, rigLoops: false, regionDrag: Nothing, contextOpen: false, codeOpen: false, zoom: Whole, clips: [], twisterField: FNote, binnacle: Nothing, nowMicros: 0.0
+        , notes: [], logbook: Logbook.emptyLog, stage: Perform, selEuclid: Nothing, navScenes: false, playing: Nothing, rigLoops: false, rigAsked: 0.0, regionDrag: Nothing, contextOpen: false, codeOpen: false, zoom: Whole, clips: [], twisterField: FNote, binnacle: Nothing, nowMicros: 0.0
         , outs: [], routing: RM.defaultTable, midiName: "…", clockTempo: 120.0, clockLocked: false
         , clockBeat: 0.0, clockBar: 0, anchorCount: 0
         , scenes: [], sceneNameInput: "", publishMsg: Nothing
@@ -682,9 +682,14 @@ dispatch = case _ of
         -- promise across a frontend reload.
         when (not st.reconciled) do
           liftEffect $ Transport.send (Binnacle.socket bin) "hush"
-          -- and ask the rig for the marks and loops it keeps (RigLoops)
-          liftEffect $ Transport.send (Binnacle.socket bin) RL.syncLine
           H.modify_ _ { reconciled = true }
+        -- ask the rig for the marks and loops it keeps (RigLoops) until it
+        -- answers: a request sent before the socket opens is lost
+        unless st.rigLoops do
+          ms <- liftEffect Time.perfNow
+          when (ms - st.rigAsked > 2000.0) do
+            liftEffect $ Transport.send (Binnacle.socket bin) RL.syncLine
+            H.modify_ _ { rigAsked = ms }
         now <- liftEffect $ Clock.unixMicrosNow (Binnacle.clock bin)
         r <- liftEffect $ Clock.read (Binnacle.clock bin)
         -- Scene SEQUENCING moved to the macro-tidal Tidal page; Odonus just tracks

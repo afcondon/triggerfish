@@ -315,6 +315,9 @@ type State =
   -- The rig keeps the marks and plays the loops (Capture.RigLoops): true once
   -- it has said so, and from then this page holds no loop of its own.
   , rigLoops :: Boolean
+  -- when it last asked (perf ms): until the rig answers it asks every two
+  -- seconds, since a request sent before the socket opens is lost
+  , rigAsked :: Number
   , regionDrag :: Maybe RegionDrag  -- a loop-region resize/slide in progress
   , contextOpen :: Boolean          -- REPLAY control card: harmonic-context panel open
   , codeOpen :: Boolean             -- REPLAY control card: the mark as code

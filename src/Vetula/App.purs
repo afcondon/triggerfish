@@ -860,6 +860,9 @@ type State =
   -- The rig keeps the marks and plays the loops (Capture.RigLoops): true once
   -- it has said so, and from then this page holds no loop of its own.
   , rigLoops :: Boolean
+  -- when it last asked (perf ms): until the rig answers it asks every two
+  -- seconds, since a request sent before the socket opens is lost
+  , rigAsked :: Number
   -- The LIVE river's two reads (`Capture.River`): the current instant, advanced by
   -- a 33ms frame timer so the roll FLOWS rather than jumping a 16th at a time, and
   -- the recent notes it draws — pruned to the river's fade span each frame. The
@@ -1262,7 +1265,7 @@ component = H.mkComponent
       , clipLibrary: []
       , perfPhrasePick: Nothing
       , capture: { logbook: Logbook.emptyLog, playing: Nothing, regionDrag: Nothing, contextOpen: false, codeOpen: false, zoom: Whole, rig: Nothing }
-      , rigLoops: false
+      , rigLoops: false, rigAsked: 0.0
       , nowMicros: 0.0
       , riverNotes: []
       }
@@ -3026,6 +3029,12 @@ handleActionCore = case _ of
       let now = nowMs * 1000.0
       H.modify_ _ { nowMicros = now
                   , riverNotes = filter (\n -> (now - n.fireUnixMicros) < River.windowMicros) st.riverNotes }
+    -- Ask the rig for its marks and loops until it answers (RigLoops)
+    unless st.rigLoops do
+      ms <- liftEffect perfNow
+      when (ms - st.rigAsked > 2000.0) do
+        rigSend RL.syncLine
+        H.modify_ _ { rigAsked = ms }
     -- The rig's loops' playheads move on Review's clock
     when (st.stage == Review && st.rigLoops && any RL.looping st.capture.logbook.marks) do
       mclock <- vetulaClock
