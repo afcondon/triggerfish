@@ -28,7 +28,7 @@ import Halogen.HTML as HH
 import Halogen.HTML.Events as HE
 import Halogen.HTML.Properties as HP
 import Halogen.Subscription as HS
-import Triggerfish.Capture.Types (Zoom(..))
+import Triggerfish.Capture.Types (Orientation(..), Zoom(..))
 import Triggerfish.Capture.View as CaptureView
 import Triggerfish.Odonus.Model as M
 import Triggerfish.Poly as Poly
@@ -1380,7 +1380,7 @@ startClip i = do
 -- | The timeline's earliest-note origin and total span — the SAME formula the
 -- | Replay view uses to lay notes out, so pointer↔time round-trips exactly.
 timelineBounds :: State -> Axis
-timelineBounds st = CaptureView.bounds st.zoom st.logbook
+timelineBounds st = CaptureView.bounds Horizontal st.zoom st.logbook
 
 -- | The pointer's recording-time position: its normalised X within the timeline
 -- | element mapped over the timeline span.

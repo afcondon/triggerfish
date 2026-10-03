@@ -163,7 +163,7 @@ capturePanel w cap =
       ( if null events then [ emptyState ]
         else
           let
-            b = bounds cap.zoom lb
+            b = bounds w.orientation cap.zoom lb
             fracOf = b.toFrac                           -- 0..1 along the time axis
             posOf t = axisPos w.orientation (fracOf t)  -- percent from the axis origin
             -- the notes in view, thinned only after cropping, so a zoom shows them all
@@ -456,15 +456,21 @@ pointerFrac o p = case o of
 -- | between runs sliced out, Capture.Runs). Hosts that turn a pointer into a
 -- | time use this too (`fromFrac`), so a drag lands where it is drawn at any
 -- | zoom.
-bounds :: Zoom -> Logbook -> Axis
-bounds zoom lb =
+bounds :: Orientation -> Zoom -> Logbook -> Axis
+bounds o zoom lb =
   let
     played = (Runs.axis lb.runs lb.cuts { lo: 0.0, span: 1.0 }).toFrac
     events = lb.live <> concatMap _.events lb.chunks
     first = played (foldl (\a e -> min a e.fireUnixMicros) 1.0e18 events)
     newest = played (foldl (\a e -> max a e.fireUnixMicros) 0.0 events)
   in Runs.axis lb.runs lb.cuts case zoom of
-    Whole -> { lo: first, span: steppedSpan (newest - first) }
+    -- the whole take: the oldest note at the axis's origin, the take growing
+    -- away from it; but where the axis runs newest-first (Vetula's river),
+    -- the newest note at the edge the notes flow out from, as on Perform,
+    -- the take ageing away from it (AC, 2026-10-03)
+    Whole -> case o of
+      HorizontalOutward -> let span = steppedSpan (newest - first) in { lo: newest - span, span }
+      _ -> { lo: first, span: steppedSpan (newest - first) }
     Last d -> { lo: newest - d, span: d }
     Window w -> { lo: played w.from, span: max 1.0 (played w.to - played w.from) }
 

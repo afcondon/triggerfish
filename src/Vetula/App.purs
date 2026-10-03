@@ -3050,7 +3050,7 @@ handleActionCore = case _ of
     st <- H.get
     for_ st.captureDragSub H.unsubscribe
     for_ st.capture.cutSel \sel -> do
-      let span = (CaptureView.bounds st.capture.zoom st.capture.logbook).span
+      let span = (CaptureView.bounds HorizontalOutward st.capture.zoom st.capture.logbook).span
       mclock <- vetulaClock
       for_ mclock \clock -> when (max (sel.to - sel.from) (sel.from - sel.to) > span * 0.003) $
         rigSend (RL.cutLine "vetula" clock sel.from sel.to)
@@ -4869,7 +4869,7 @@ capturePointer :: forall o m. MonadAff m => Int -> Int -> H.HalogenM State Actio
 capturePointer cx cy = do
   st <- H.get
   p <- liftEffect $ Pointer.padNorm "vetula-capture-timeline" cx cy
-  pure ((CaptureView.bounds st.capture.zoom st.capture.logbook).fromFrac (CaptureView.pointerFrac HorizontalOutward p))
+  pure ((CaptureView.bounds HorizontalOutward st.capture.zoom st.capture.logbook).fromFrac (CaptureView.pointerFrac HorizontalOutward p))
 
 -- | A line to the rig, if this page has one.
 rigSend :: forall o m. MonadAff m => String -> H.HalogenM State Action Slots o m Unit
