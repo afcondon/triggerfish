@@ -38,6 +38,8 @@ import Halogen.HTML.Events as HE
 import Halogen.HTML.Properties as HP
 import Web.UIEvent.MouseEvent as ME
 import Triggerfish.Capture.RigLoops (Clock)
+import Triggerfish.Capture.Runs (Axis)
+import Triggerfish.Capture.Runs as Runs
 import Triggerfish.Capture.RigLoops as RL
 import Triggerfish.Capture.Types (Logbook, Mark, Orientation(..), PlaySource(..), PlayState, RegionDrag, RegionEdge(..), Zoom(..))
 import Triggerfish.Clips (NoteEvent)
@@ -154,17 +156,18 @@ capturePanel w cap =
         else
           let
             b = bounds cap.zoom lb
-            fracOf t = (t - b.tMin) / b.span              -- 0..1 along the time axis
+            fracOf = b.toFrac                           -- 0..1 along the time axis
             posOf t = axisPos w.orientation (fracOf t)  -- percent from the axis origin
             -- the notes in view, thinned only after cropping, so a zoom shows them all
-            shown = filter (\e -> e.fireUnixMicros >= b.tMin && e.fireUnixMicros <= b.tMin + b.span) events
+            shown = filter (\e -> let f = fracOf e.fireUnixMicros in f >= 0.0 && f <= 1.0) events
           in
             [ svgEl "svg"
                 [ svgAttr "width" "100%", svgAttr "height" "100%"
                 , svgAttr "viewBox" ("0 0 " <> show tlW <> " " <> show tlH)
                 , svgAttr "preserveAspectRatio" "none"
                 , style "position:absolute;inset:0" ]
-                (map (noteDot w fracOf) (decimate shown) <> map (markLine w fracOf) lb.marks)
+                (map (seamLine w) (filter (\f -> f > 0.0 && f < 1.0) b.seams)
+                  <> map (noteDot w fracOf) (decimate shown) <> map (markLine w fracOf) lb.marks)
             ]
               <> concat (mapWithIndex (regionBand w posOf (activeAt cap)) lb.marks)
               <> playheads w posOf cap
@@ -194,6 +197,20 @@ noteDot w fracOf e =
     [ svgAttr "x" (show coords.x), svgAttr "y" (show coords.y)
     , svgAttr "width" coords.ww, svgAttr "height" coords.hh, svgAttr "rx" "1"
     , svgAttr "fill" (w.headColor e.headIdx), svgAttr "opacity" "0.72"
+    ] []
+
+-- | Where the transport stopped and started again: a faint dashed line, the
+-- | pause between sliced out (Capture.Runs).
+seamLine :: forall action slots m. CaptureWiring action -> Number -> H.ComponentHTML action slots m
+seamLine w f =
+  let t = timeCoord w.orientation f
+      coords = case w.orientation of
+        Vertical -> { x1: "0", y1: show t, x2: show tlW, y2: show t }
+        _ -> { x1: show t, y1: "0", x2: show t, y2: show tlH }
+  in svgEl "line"
+    [ svgAttr "x1" coords.x1, svgAttr "y1" coords.y1, svgAttr "x2" coords.x2, svgAttr "y2" coords.y2
+    , svgAttr "stroke" "#ffffff", svgAttr "stroke-opacity" "0.22", svgAttr "stroke-width" "1"
+    , svgAttr "stroke-dasharray" "4 6", svgAttr "vector-effect" "non-scaling-stroke"
     ] []
 
 -- | A mark: a gold line ACROSS the pitch axis at the mark's time.
@@ -416,19 +433,21 @@ caption notes marks zoom span =
     Last d -> "the last " <> duration d
     Window _ -> duration span <> " cropped"
 
--- | The span of the surface: where it starts and how long it is, in Unix
--- | microseconds. Hosts that turn a pointer into a time use this too, so a
--- | drag lands where it is drawn at any zoom.
-bounds :: Zoom -> Logbook -> { tMin :: Number, span :: Number }
+-- | The surface's time axis: what it shows, over played time (the pauses
+-- | between runs sliced out, Capture.Runs). Hosts that turn a pointer into a
+-- | time use this too (`fromFrac`), so a drag lands where it is drawn at any
+-- | zoom.
+bounds :: Zoom -> Logbook -> Axis
 bounds zoom lb =
   let
+    played = (Runs.axis lb.runs { lo: 0.0, span: 1.0 }).toFrac
     events = lb.live <> concatMap _.events lb.chunks
-    first = foldl (\a e -> min a e.fireUnixMicros) 1.0e18 events
-    newest = foldl (\a e -> max a e.fireUnixMicros) 0.0 events
-  in case zoom of
-    Whole -> { tMin: first, span: steppedSpan (newest - first) }
-    Last d -> { tMin: newest - d, span: d }
-    Window w -> { tMin: w.from, span: max 1.0 (w.to - w.from) }
+    first = played (foldl (\a e -> min a e.fireUnixMicros) 1.0e18 events)
+    newest = played (foldl (\a e -> max a e.fireUnixMicros) 0.0 events)
+  in Runs.axis lb.runs case zoom of
+    Whole -> { lo: first, span: steppedSpan (newest - first) }
+    Last d -> { lo: newest - d, span: d }
+    Window w -> { lo: played w.from, span: max 1.0 (played w.to - played w.from) }
 
 -- | The whole-session span, rounded up to the next of a few lengths, so the
 -- | surface rescales now and then as a take grows, not with every note.

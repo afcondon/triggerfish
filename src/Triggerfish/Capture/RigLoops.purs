@@ -26,6 +26,7 @@ module Triggerfish.Capture.RigLoops
   , focus
   , playheadFrac
   , syncLine
+  , runLine
   , notesLine
   , readNotes
   , seedNotes
@@ -44,7 +45,9 @@ import Data.Int (floor, round)
 import Data.Int as Int
 import Data.Maybe (Maybe(..), fromMaybe, isJust)
 import Data.String (Pattern(..), stripPrefix)
+import Data.Nullable (Nullable, toMaybe)
 import Simple.JSON (readJSON, writeJSON)
+import Triggerfish.Capture.Runs (Run)
 import Triggerfish.Capture.Types (Logbook, Mark)
 import Triggerfish.Clips (NoteEvent)
 
@@ -137,15 +140,22 @@ syncLine = "loops-sync"
 notesLine :: String -> String
 notesLine machine = "loops-notes " <> machine
 
--- | The record buffer from a `loops-notes` frame, as the surface's notes,
--- | newest first, timed by `Clock`.
-readNotes :: String -> Clock -> String -> Maybe (Array NoteEvent)
+-- | The machine's transport started or stopped, for the rig's runs.
+runLine :: String -> Boolean -> String
+runLine machine playing = "loops-run " <> writeJSON { machine, playing }
+
+-- | The record buffer from a `loops-notes` frame, as the surface's notes and
+-- | runs, newest first, timed by `Clock`.
+readNotes :: String -> Clock -> String -> Maybe { notes :: Array NoteEvent, runs :: Array Run }
 readNotes machine c msg = do
   json <- stripPrefix (Pattern "loops-notes ") msg
-  r :: { machine :: String, notes :: Array (Array Number) } <- hush (readJSON json)
+  r :: { machine :: String, notes :: Array (Array Number), runs :: Maybe (Array (Array (Nullable Number))) } <- hush (readJSON json)
   if r.machine /= machine then Nothing
-  else Just (reverse (mapMaybe note r.notes))
+  else Just { notes: reverse (mapMaybe note r.notes), runs: reverse (mapMaybe run (fromMaybe [] r.runs)) }
   where
+  run a = do
+    from <- a !! 0 >>= toMaybe
+    pure { from: microsOf c from, to: microsOf c <$> (a !! 1 >>= toMaybe) }
   note a = do
     beat <- a !! 0
     pitch <- a !! 1
@@ -156,11 +166,12 @@ readNotes machine c msg = do
          , vel: round vel, gateMs: dur * beatMicros c / 1000.0 }
 
 -- | A page that opens after the notes were played takes the rig's record
--- | buffer as its own; one that has notes keeps them.
-seedNotes :: Array NoteEvent -> Logbook -> Logbook
-seedNotes notes lb
-  | null lb.live && null lb.chunks && not (null notes) =
-      lb { live = notes, liveFrom = fromMaybe 0.0 (map _.fireUnixMicros (notes !! 0)) }
+-- | buffer, and its runs, as its own; one that has notes keeps them.
+seedNotes :: { notes :: Array NoteEvent, runs :: Array Run } -> Logbook -> Logbook
+seedNotes r lb
+  | null lb.live && null lb.chunks && not (null r.notes) =
+      lb { live = r.notes, liveFrom = fromMaybe 0.0 (map _.fireUnixMicros (r.notes !! 0))
+         , runs = if null r.runs then lb.runs else r.runs }
   | otherwise = lb
 
 -- | A cue, as Limulus would send it: `tidal odonus $ loop 2`.

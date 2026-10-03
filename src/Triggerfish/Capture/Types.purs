@@ -24,6 +24,7 @@ import Prelude
 
 import Data.Maybe (Maybe)
 
+import Triggerfish.Capture.Runs (Run)
 import Triggerfish.Clips (NoteEvent)
 
 -- | One frozen span of the always-on logbook: a chunk of captured notes with its
@@ -112,6 +113,9 @@ type Logbook =
   , liveFrom :: Number         -- wall-clock start of the live chunk
   , chunks :: Array Chunk      -- frozen chunks, newest-first
   , marks :: Array Mark        -- flagged good bits, newest-first
+  -- the stretches the machine played, newest first (Capture.Runs): the
+  -- surface draws only time inside them
+  , runs :: Array Run
   }
 
 -- | How a capture surface lays time out. The one axis-aware parameter of the shared

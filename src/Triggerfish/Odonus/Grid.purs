@@ -34,6 +34,8 @@ import Triggerfish.Odonus.Model as M
 import Triggerfish.Poly as Poly
 import Reef.Voices as RV
 import Triggerfish.Capture.RigLoops as RL
+import Triggerfish.Capture.Runs (Axis)
+import Triggerfish.Capture.Runs as Runs
 import Triggerfish.Odonus.Marbles as Marbles
 import Triggerfish.Odonus.Gen as Gen
 import Triggerfish.Odonus.Forms as Forms
@@ -683,6 +685,14 @@ dispatch = case _ of
         when (not st.reconciled) do
           liftEffect $ Transport.send (Binnacle.socket bin) "hush"
           H.modify_ _ { reconciled = true }
+        -- A run starts and stops with the transport (Capture.Runs): the
+        -- Review surface draws only time inside runs. The rig keeps them too,
+        -- for a page that opens later.
+        let playingNow = st.sounding /= Silent
+        when (playingNow /= Runs.running st.logbook.runs) do
+          at <- liftEffect $ Clock.unixMicrosNow (Binnacle.clock bin)
+          H.modify_ \s -> s { logbook = s.logbook { runs = (if playingNow then Runs.startRun else Runs.stopRun) at s.logbook.runs } }
+          liftEffect $ Transport.send (Binnacle.socket bin) (RL.runLine "odonus" playingNow)
         -- ask the rig for the marks and loops it keeps (RigLoops): every two
         -- seconds until it answers (a request sent before the socket opens is
         -- lost), then every five, so a page sees a rig that restarted
@@ -749,8 +759,8 @@ dispatch = case _ of
   RigFrame msg | isJust (Str.stripPrefix (Str.Pattern "loops-notes ") msg) -> do
     freshClock
     st <- H.get
-    for_ (RL.readNotes "odonus" (rigClock st) msg) \notes ->
-      H.modify_ \s -> s { logbook = RL.seedNotes notes s.logbook }
+    for_ (RL.readNotes "odonus" (rigClock st) msg) \r ->
+      H.modify_ \s -> s { logbook = RL.seedNotes r s.logbook }
   RigFrame msg | Just rig <- RL.readLoops "odonus" msg -> do
     freshClock
     st <- H.get
@@ -1347,7 +1357,7 @@ startClip i = do
 
 -- | The timeline's earliest-note origin and total span — the SAME formula the
 -- | Replay view uses to lay notes out, so pointer↔time round-trips exactly.
-timelineBounds :: State -> { tMin :: Number, span :: Number }
+timelineBounds :: State -> Axis
 timelineBounds st = CaptureView.bounds st.zoom st.logbook
 
 -- | The pointer's recording-time position: its normalised X within the timeline
@@ -1355,8 +1365,7 @@ timelineBounds st = CaptureView.bounds st.zoom st.logbook
 pointerMicros :: State -> Int -> Int -> Effect Number
 pointerMicros st cx cy = do
   { x } <- Pointer.padNorm replayTimelineId cx cy
-  let b = timelineBounds st
-  pure (b.tMin + x * b.span)
+  pure ((timelineBounds st).fromFrac x)
 
 -- | The captured notes falling inside a [from,to] window, copied out and rebased
 -- | so the earliest is at 0 — a self-contained loop body (the replay scheduler

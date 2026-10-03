@@ -130,6 +130,7 @@ import Vetula.Tidal (progressionSource, parseProgression)
 import Vetula.Lepidoptera (PerfDoc, VoiceSpec, docFromVoices, parseCard, parsePerform, printAsRecord, printCard)
 import Vetula.StageCards as SC
 import Triggerfish.Capture.RigLoops as RL
+import Triggerfish.Capture.Runs as Runs
 import Unsafe.Reference (unsafeRefEq)
 import Vetula.Clipboard (copyText)
 import Binnacle.Midi as Midi
@@ -1734,8 +1735,8 @@ handleActionCore = case _ of
     H.modify_ \s -> s { capture = s.capture { logbook = Logbook.emptyLog, playing = Nothing, contextOpen = false, codeOpen = false } }
   StageFrameIn msg | isJust (stripPrefix (Pattern "loops-notes ") msg) -> do
     mclock <- vetulaClock
-    for_ mclock \clock -> for_ (RL.readNotes "vetula" clock msg) \notes ->
-      H.modify_ \s -> s { capture = s.capture { logbook = RL.seedNotes notes s.capture.logbook } }
+    for_ mclock \clock -> for_ (RL.readNotes "vetula" clock msg) \r ->
+      H.modify_ \s -> s { capture = s.capture { logbook = RL.seedNotes r s.capture.logbook } }
   StageFrameIn msg | Just rig <- RL.readLoops "vetula" msg -> do
     mclock <- vetulaClock
     for_ mclock \clock -> do
@@ -3037,6 +3038,12 @@ handleActionCore = case _ of
       let now = nowMs * 1000.0
       H.modify_ _ { nowMicros = now
                   , riverNotes = filter (\n -> (now - n.fireUnixMicros) < River.windowMicros) st.riverNotes }
+    -- A run starts and stops with the transport (Capture.Runs): the Review
+    -- surface draws only time inside runs. The rig keeps them too.
+    when (st.playing /= Runs.running st.capture.logbook.runs) do
+      nowMs <- liftEffect perfNow
+      H.modify_ \s -> s { capture = s.capture { logbook = s.capture.logbook { runs = (if st.playing then Runs.startRun else Runs.stopRun) (nowMs * 1000.0) s.capture.logbook.runs } } }
+      rigSend (RL.runLine "vetula" st.playing)
     -- Ask the rig for its marks and loops (RigLoops): every two seconds
     -- until it answers, then every five, so a page sees a rig that restarted
     do
