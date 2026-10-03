@@ -39,10 +39,11 @@ import Data.Map (Map)
 import Data.Map as Map
 import Data.Maybe (Maybe(..), fromMaybe, isNothing, maybe)
 import Data.Traversable (traverse)
+import Data.Number as Number
 import Data.Number.Format (fixed, toStringWith)
 import Effect (Effect)
 import Effect.Aff (Aff)
-import Effect.Aff.Class (liftAff)
+import Effect.Aff.Class (class MonadAff, liftAff)
 import Effect.Class (liftEffect)
 import Effect.Timer (setInterval)
 import Halogen as H
@@ -54,6 +55,12 @@ import Halogen.Subscription as HS
 import Triggerfish.Glyph as G
 import Triggerfish.Fish as Fish
 import Web.Event.Event (preventDefault)
+import Halogen.Query.Event (eventListener)
+import Web.HTML (window)
+import Web.HTML.Window as Window
+import Web.UIEvent.KeyboardEvent (KeyboardEvent)
+import Web.UIEvent.KeyboardEvent as KE
+import Web.UIEvent.KeyboardEvent.EventTypes as KET
 import Web.UIEvent.MouseEvent (MouseEvent)
 import Web.UIEvent.MouseEvent as ME
 import Triggerfish.Flow as Flow
@@ -73,6 +80,7 @@ import Triggerfish.SampleSets as SampleSets
 import Binnacle.TabBus as Bus
 import Triggerfish.Transport (Mode(..))
 import Triggerfish.Transport.Store as TransportStore
+import Triggerfish.Tempo as Tempo
 
 -- | A machine as the dashboard knows it: its slot, its nameplate, and where its
 -- | page is. `playable` is false for Quadrat, whose "playing" is a capture
@@ -128,6 +136,8 @@ type State =
   , rigUp :: Boolean
   , tempo :: Number
   , locked :: Boolean
+  -- the free-run tempo (Triggerfish.Tempo), what the pages keep off the rig
+  , freeTempo :: Number
   , bus :: Maybe Bus.Bus
   , table :: RM.Table
   , ports :: Array String
@@ -171,6 +181,10 @@ data Action
   | PickCell (Maybe Matrix.Pick)
   | OpenSheet (Maybe String)
   | FoldDrums Boolean
+  | SetTempo String
+  | BumpTempo Tempo.Bump
+  | TempoStored
+  | KeyDown KeyboardEvent
   | Audition RM.Destination
   | Edits (Array RE.Edit)
   | ChartLink String String
@@ -179,7 +193,7 @@ component :: forall q i o. H.Component q i o Aff
 component = H.mkComponent
   { initialState: \_ ->
       { mode: Solo, now: 0.0, heard: Map.empty, rig: Nothing, rigUp: false
-      , tempo: 120.0, locked: false, bus: Nothing
+      , tempo: 120.0, freeTempo: 120.0, locked: false, bus: Nothing
       , table: RM.defaultTable, ports: [], sampleSets: [], hot: Nothing, voices: [], router: Router.initial
       , matrix: Nothing, pick: Nothing, focus: Nothing, sheet: Nothing, foldDrums: true, vetulaSent: Nothing }
   , render
@@ -202,8 +216,12 @@ handleAction = case _ of
     liftEffect $ TransportStore.onChange (HS.notify listener ModeStored)
     handleAction RoutingStored
     liftEffect $ RStore.onChange (HS.notify listener RoutingStored)
-    rig <- liftEffect $ Binnacle.connect { url: rigUrl, tempo: 120.0 }
-    H.modify_ _ { rig = Just rig }
+    free <- liftEffect $ fromMaybe 120.0 <$> Tempo.load
+    rig <- liftEffect $ Binnacle.connect { url: rigUrl, tempo: free }
+    H.modify_ _ { rig = Just rig, freeTempo = free, tempo = free }
+    liftEffect $ Tempo.onChange (HS.notify listener TempoStored)
+    win <- liftEffect window
+    void $ H.subscribe $ eventListener KET.keydown (Window.toEventTarget win) (map KeyDown <<< KE.fromEvent)
     -- the stage's text objects: the harmony routes, and Vetula's cards for
     -- its voices; asked for again whenever the socket (re)opens
     liftEffect $ Binnacle.onAppMessage rig (HS.notify listener <<< RigFrame)
@@ -232,12 +250,25 @@ handleAction = case _ of
       Just bin -> liftEffect $ Transport.isConnected (Binnacle.socket bin)
     reading <- traverse (\bin -> liftEffect (Clock.read (Binnacle.clock bin))) st.rig
     let
-      tempo = maybe st.tempo _.tempo reading
+      -- Link's tempo once anchored; until then the free run the pages keep
+      tempo = maybe st.freeTempo (\r -> if r.locked then r.tempo else st.freeTempo) reading
       locked = maybe false _.locked reading
       openBefore = map _.slot (filter (isOpen st) machines)
       openAfter = map _.slot (filter (isOpen st { now = now }) machines)
     when (up /= st.rigUp || tempo /= st.tempo || locked /= st.locked || openBefore /= openAfter || st.now == 0.0)
       (H.modify_ _ { now = now, rigUp = up, tempo = tempo, locked = locked })
+
+  -- The tempo, typed here: for every page and, with the rig up, for Link.
+  SetTempo v -> for_ (Number.fromString v) setTempo
+  BumpTempo d -> do
+    st <- H.get
+    setTempo (st.tempo + d)
+  TempoStored -> do
+    mfree <- liftEffect Tempo.load
+    for_ mfree \free -> H.modify_ \s -> s { freeTempo = free, tempo = if s.locked then s.tempo else free }
+  KeyDown ke -> for_ (Tempo.hotkey ke) \d -> do
+    liftEffect $ preventDefault (KE.toEvent ke)
+    handleAction (BumpTempo d)
 
   FromBus msg -> case msg of
     Bus.State s -> do
@@ -468,6 +499,8 @@ topBar st =
             , HH.a [ cls "tab", HP.href "/about.html", HP.target "atlantis-about" ] [ HH.text "About" ]
             ]
         , HH.span [ cls "spacer" ] []
+        , tempoControl st
+        , lamp st.locked (if st.locked then "Link" else "free-running")
         , HH.button [ cls "btn panic", HE.onClick \_ -> Panic ] [ HH.text "Panic" ]
         ]
         )
@@ -483,9 +516,36 @@ topBar st =
       )
       [ HH.text label ]
 
+-- | The one tempo control (Triggerfish.Tempo): Link's tempo once the rig is
+-- | up, else the free run every page keeps. The hotkeys work on every page,
+-- | this one included.
+tempoControl :: forall m. State -> H.ComponentHTML Action () m
+tempoControl st =
+  HH.span [ cls "tempo", HP.title Tempo.hotkeyHelp ]
+    [ HH.button [ cls "step", HE.onClick \_ -> BumpTempo (-1.0), HP.title "tempo −1 (⌥−; with ⇧, −5)" ] [ HH.text "−" ]
+    , HH.input
+        [ cls "num", HP.type_ HP.InputNumber, HP.attr (AttrName "step") "1"
+        , HP.attr (AttrName "min") "20", HP.attr (AttrName "max") "300"
+        , HP.value (Tempo.showTempo st.tempo)
+        , HE.onValueChange SetTempo
+        , HP.attr (AttrName "aria-label") "Tempo, beats a minute"
+        ]
+    , HH.button [ cls "step", HE.onClick \_ -> BumpTempo 1.0, HP.title "tempo +1 (⌥=; with ⇧, +5)" ] [ HH.text "+" ]
+    , HH.text " bpm"
+    ]
+
 lamp :: forall w i. Boolean -> String -> HH.HTML w i
 lamp on label =
   HH.span [ cls ("lamp" <> if on then " live" else "") ] [ HH.i_ [], HH.text label ]
+
+-- | Set the tempo for every page, and for Link if the rig is up; shown at
+-- | once rather than on the next tick.
+setTempo :: forall o m. MonadAff m => Number -> H.HalogenM State Action () o m Unit
+setTempo n = do
+  st <- H.get
+  let bpm = Tempo.clampTempo n
+  for_ st.rig \bin -> liftEffect (Tempo.set bin bpm)
+  H.modify_ _ { tempo = bpm, freeTempo = bpm }
 
 -- | The machines, as the app's navigation: each one's nameplate, with its fish
 -- | as its play button (turned to face right, the way a play arrow points).
@@ -499,20 +559,9 @@ machineBar st =
           [ seg "Solo" Solo, seg "Atlantis" Atlantis ]
       , HH.button [ cls "btn", HE.onClick \_ -> StopAll, HP.disabled (not anyPlaying) ] [ HH.text "■ Stop all" ]
       , HH.nav [ cls "mitems", HP.attr (AttrName "aria-label") "Machines" ] (map item machines)
-      , HH.span [ cls "spacer" ] []
       ]
-        -- The rig's tempo and Link only mean something in Atlantis. In Solo each
-        -- page keeps its own tempo, so the dashboard has none to show.
-        <> atlantisOnly
-          [ HH.span [ cls "tempo" ]
-              [ HH.span [ cls "num" ] [ HH.text (toStringWith (fixed 1) st.tempo) ]
-              , HH.text " bpm"
-              ]
-          , lamp st.locked (if st.locked then "Link" else "free-running")
-          ]
     )
   where
-  atlantisOnly xs = if st.mode == Atlantis then xs else []
   anyPlaying = not (null (filter (playing st) machines))
   seg label m =
     HH.button

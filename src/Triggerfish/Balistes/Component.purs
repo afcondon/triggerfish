@@ -1173,7 +1173,6 @@ navBar s =
       , HH.div [ style "flex:1 1 auto;min-width:8px" ] []
       , lampRow s
       , navDivider
-      , navReadout (show (round s.clockTempo) <> " bpm" <> (if s.clockLocked then " ⛓" else ""))
       , navReadout ("bar " <> show s.clockBar <> " · " <> pad2 (s.playStep + 1) <> "/32")
       , navReadout (routingHealth s)
       , navReadout s.midiName

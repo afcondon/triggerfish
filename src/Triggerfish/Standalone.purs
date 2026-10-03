@@ -40,11 +40,10 @@ import Binnacle.Midi as Midi
 import Binnacle.Time (dateNow)
 import Binnacle.Transport as Transport
 import Data.Foldable (for_)
-import Data.Int as Int
-import Data.Maybe (Maybe(..), isJust, isNothing, maybe)
+import Data.Maybe (Maybe(..), fromMaybe, isJust, isNothing, maybe)
 import Data.Set as Set
 import Effect (Effect)
-import Effect.Aff (Aff)
+import Effect.Aff (Aff, Milliseconds(..), delay)
 import Effect.Aff.Class (liftAff)
 import Effect.Class (liftEffect)
 import Effect.Timer (setInterval)
@@ -69,6 +68,7 @@ import Triggerfish.SampleSets as SampleSets
 import Triggerfish.SourceQuery as SQ
 import Triggerfish.Stage as Stage
 import Binnacle.TabBus as Bus
+import Triggerfish.Tempo as Tempo
 import Triggerfish.Transport (Mode(..), Sounding(..), Which, soundingOf)
 import Triggerfish.Transport.Store as TransportStore
 import Triggerfish.Ui.Style (engrave, style)
@@ -118,7 +118,12 @@ run cfg = HA.runHalogenAff do
 type State =
   { mode :: Mode
   , playing :: Boolean
-  , bpm :: Int
+  -- The free-run tempo (Triggerfish.Tempo): set on the dashboard or by the
+  -- tempo hotkeys, never on a page; the clock follows Link instead once the
+  -- rig's anchor arrives.
+  , bpm :: Number
+  -- The tempo a hotkey just set, shown for a moment, and which press it was.
+  , tempoFlash :: Maybe { bpm :: Number, n :: Int }
   , freeT0 :: Number
   , chip :: Maybe ChipView
   , rig :: Maybe Binnacle.Binnacle
@@ -136,7 +141,9 @@ type State =
 data Action o
   = Init
   | TogglePlay
-  | SetBpm String
+  | TempoStored
+  | BumpTempo Tempo.Bump
+  | EndFlash Int
   | Capture
   | Panic
   | RoutingChanged
@@ -159,7 +166,7 @@ _machine = Proxy
 root :: forall q i o' o. Config o -> H.Component q i o' Aff
 root cfg = H.mkComponent
   { initialState: \_ ->
-      { mode: Solo, playing: false, bpm: 120, freeT0: 0.0, chip: Nothing, rig: Nothing
+      { mode: Solo, playing: false, bpm: 120.0, tempoFlash: Nothing, freeT0: 0.0, chip: Nothing, rig: Nothing
       , rigUp: false, table: RM.defaultTable, ports: [], sampleSets: [], routerOpen: false
       , staged: Nothing, bus: Nothing }
   , render: render cfg
@@ -174,14 +181,16 @@ handleAction cfg = case _ of
     now <- liftEffect dateNow
     H.modify_ _ { freeT0 = now * 1000.0 }
     -- The page's own rig socket, for PANIC, as in the Triggerfish shell.
-    rig <- liftEffect $ Binnacle.connect { url: rigUrl, tempo: 120.0 }
-    H.modify_ _ { rig = Just rig }
+    bpm <- liftEffect $ fromMaybe 120.0 <$> Tempo.load
+    rig <- liftEffect $ Binnacle.connect { url: rigUrl, tempo: bpm }
+    H.modify_ _ { rig = Just rig, bpm = bpm }
     mmode <- liftEffect TransportStore.load
     for_ mmode \m -> H.modify_ _ { mode = m }
     { emitter, listener } <- liftEffect HS.create
     _ <- H.subscribe emitter
     liftEffect $ RStore.onChange (HS.notify listener RoutingChanged)
     liftEffect $ TransportStore.onChange (HS.notify listener ModeStored)
+    liftEffect $ Tempo.onChange (HS.notify listener TempoStored)
     bus <- liftEffect Bus.open
     H.modify_ _ { bus = Just bus }
     liftEffect $ Bus.onMessage bus (HS.notify listener <<< FromBus)
@@ -206,9 +215,27 @@ handleAction cfg = case _ of
   TogglePlay -> do
     H.modify_ \s -> s { playing = not s.playing }
     pushSounding cfg
-  SetBpm v -> for_ (Int.fromString v) \n -> do
-    H.modify_ _ { bpm = clamp 20 999 n }
-    pushFree
+  -- The tempo, set in another tab (the dashboard, or a hotkey there).
+  TempoStored -> do
+    mbpm <- liftEffect Tempo.load
+    for_ mbpm \bpm -> do
+      H.modify_ _ { bpm = bpm }
+      pushFree
+  -- A tempo hotkey: from the tempo the clock is keeping (Link's, once
+  -- anchored), set for every page and the rig; shown for a moment here.
+  BumpTempo d -> do
+    st <- H.get
+    for_ st.rig \bin -> do
+      now <- liftEffect $ Tempo.current bin st.bpm
+      let bpm = Tempo.clampTempo (now + d)
+          n = maybe 1 (\f -> f.n + 1) st.tempoFlash
+      liftEffect $ Tempo.set bin bpm
+      H.modify_ _ { bpm = bpm, tempoFlash = Just { bpm, n } }
+      pushFree
+      void $ H.fork do
+        liftAff $ delay (Milliseconds 1200.0)
+        handleAction cfg (EndFlash n)
+  EndFlash n -> H.modify_ \s -> s { tempoFlash = if map _.n s.tempoFlash == Just n then Nothing else s.tempoFlash }
   Capture -> void $ H.query _machine unit (SQ.Capture unit)
   Panic -> do
     st <- H.get
@@ -282,16 +309,22 @@ handleAction cfg = case _ of
         pushSounding cfg
   Key e -> for_ (KE.fromEvent e) \ke -> unless (targetIsField e || KE.metaKey ke || KE.ctrlKey ke) do
     -- ⌥1 by the key's position, as in Triggerfish: on a Mac, Option+1 types "¡".
-    if KE.altKey ke then
-      when (KE.code ke == "Digit1") do
+    -- The tempo hotkeys likewise (Triggerfish.Tempo.hotkey).
+    case Tempo.hotkey ke of
+      Just d -> do
         liftEffect $ E.preventDefault e
-        handleAction cfg ToggleRouter
-    else case KE.key ke of
-      "c" -> handleAction cfg Capture
-      " " -> do
-        liftEffect $ E.preventDefault e
-        handleAction cfg TogglePlay
-      _ -> pure unit
+        handleAction cfg (BumpTempo d)
+      Nothing
+        | KE.altKey ke ->
+            when (KE.code ke == "Digit1") do
+              liftEffect $ E.preventDefault e
+              handleAction cfg ToggleRouter
+        | otherwise -> case KE.key ke of
+            "c" -> handleAction cfg Capture
+            " " -> do
+              liftEffect $ E.preventDefault e
+              handleAction cfg TogglePlay
+            _ -> pure unit
 
 -- | At first run, with nothing stored, the default table is made for the ports
 -- | this machine has and saved, so the choice is made once and shown in the
@@ -348,7 +381,7 @@ announce cfg = do
 pushFree :: forall o o'. M o o' Unit
 pushFree = do
   st <- H.get
-  void $ H.query _machine unit (SQ.SyncFree st.freeT0 (Int.toNumber st.bpm) unit)
+  void $ H.query _machine unit (SQ.SyncFree st.freeT0 st.bpm unit)
 
 targetIsField :: E.Event -> Boolean
 targetIsField e = case E.target e of
@@ -378,15 +411,6 @@ bar cfg st =
       -- the rig is the one playing.
       <> (if st.mode == Atlantis then [ atlantisTag ] else [])
       <> [ button (if st.playing then "■ Stop" else "▶ Play") TogglePlay
-      , HH.label [ style (engrave <> ";font-size:10px;display:flex;align-items:center;gap:6px") ]
-          [ HH.text "BPM"
-          , HH.input
-              [ HP.type_ HP.InputNumber
-              , HP.value (show st.bpm)
-              , HE.onValueChange SetBpm
-              , style "width:52px;font-size:12px;padding:2px 4px"
-              ]
-          ]
       , button "Capture (c)" Capture
       , HH.span [ style "display:flex;align-items:center;min-width:40px" ] [ chipIcons st.chip ]
       , HH.span [ style "flex:1" ] []
@@ -395,8 +419,20 @@ bar cfg st =
             Just _ -> [ button (if st.routerOpen then "Close routing" else "Routing (⌥1)") ToggleRouter ]
             Nothing -> [])
       <> [ button "Panic" Panic ]
+      <> case st.tempoFlash of
+        Just f -> [ tempoFlash f.bpm ]
+        Nothing -> []
     )
   where
+  -- What a tempo hotkey set, for a moment, where the bar's middle is free.
+  tempoFlash bpm =
+    HH.span
+      [ HP.title Tempo.hotkeyHelp
+      , style $ "position:absolute;left:50%;transform:translateX(-50%);padding:3px 12px;border-radius:4px;"
+          <> "font:13px 'SF Mono',Menlo,monospace;font-variant-numeric:tabular-nums;color:#1c1a12;"
+          <> "background:#fffdf6;border:1px solid #00000033;box-shadow:0 2px 8px #00000022"
+      ]
+      [ HH.text (Tempo.showTempo bpm <> " bpm") ]
   atlantisTag =
     HH.span
       [ HP.title "Atlantis: the rig plays; this page sends it what to play. The mode is set on the dashboard."

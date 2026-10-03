@@ -1028,8 +1028,8 @@ transportStrip s =
     [ style $ "display:flex;align-items:center;gap:14px;margin-bottom:14px;padding:8px 10px;"
         <> "border-radius:7px;background:#00000008;border:1px solid #00000012;flex-wrap:wrap" ]
     -- ARM now lives on the tab dot in the top switcher; this strip keeps the readouts.
-    ( [ stat "TEMPO" (show (round s.clockTempo) <> " bpm" <> (if s.clockLocked then " ⛓" else " ·"))
-      , stat "BAR" (show s.clockBar <> " · step " <> show (s.playStep + 1) <> "/" <> show cycleSteps)
+    -- The tempo is the dashboard's (Triggerfish.Tempo), shown there only.
+    ( [ stat "BAR" (show s.clockBar <> " · step " <> show (s.playStep + 1) <> "/" <> show cycleSteps)
       , stat "MIDI" s.midiName
       , applyButton
       ]

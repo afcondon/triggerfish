@@ -59,7 +59,12 @@
     .seg button { font: 600 11px/1 var(--display); letter-spacing: .12em; text-transform: uppercase; padding: 8px 14px; border: 0; background: transparent; color: var(--ink); cursor: pointer; }
     .seg button.on { background: var(--ink); color: var(--plate); }
     .tempo { font: 400 13px var(--mono); color: var(--muted); }
-    .tempo .num { color: var(--ink); font-size: 18px; font-variant-numeric: tabular-nums; }
+    .tempo { display: inline-flex; align-items: center; gap: 4px; }
+    .tempo .num { color: var(--ink); font: 400 18px var(--mono); font-variant-numeric: tabular-nums; width: 3.4em; text-align: right; border: none; border-bottom: 1px solid var(--rule); background: transparent; padding: 0 2px; -moz-appearance: textfield; }
+    .tempo .num::-webkit-inner-spin-button, .tempo .num::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
+    .tempo .num:focus { outline: none; border-bottom-color: var(--reef); }
+    .tempo .step { font: 400 14px/1 var(--mono); width: 22px; height: 22px; border: 1px solid var(--rule); background: transparent; color: var(--ink); cursor: pointer; padding: 0; }
+    .tempo .step:hover { border-color: var(--ink); }
     .spacer { flex: 1; }
 
     .btn { display: inline-block; font: 600 11px/1 var(--display); letter-spacing: .12em; text-transform: uppercase; color: var(--ink); background: transparent; border: 1px solid var(--ink); padding: 8px 12px; cursor: pointer; text-decoration: none; }
