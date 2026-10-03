@@ -1729,6 +1729,9 @@ handleActionCore = case _ of
   -- and takes its own loop off, since the rig plays them now. A mark it has
   -- not met (made from Limulus, or by ◆ a moment ago) takes Vetula's text
   -- now; one from before this page opened has none to show.
+  StageFrameIn msg | RL.readClear "vetula" msg -> do
+    hushCapture
+    H.modify_ \s -> s { capture = s.capture { logbook = Logbook.emptyLog, playing = Nothing, contextOpen = false, codeOpen = false } }
   StageFrameIn msg | isJust (stripPrefix (Pattern "loops-notes ") msg) -> do
     mclock <- vetulaClock
     for_ mclock \clock -> for_ (RL.readNotes "vetula" clock msg) \notes ->
@@ -1749,7 +1752,7 @@ handleActionCore = case _ of
             m = { atMicros: RL.microsOf clock rm.beat, beat: rm.beat
                 , from: RL.microsOf clock rm.from, to: RL.microsOf clock rm.to
                 , patch: if recent then markText s else "", now: "", sounding: Nothing
-                , rig: [], tempo: clock.tempo, n: rm.n
+                , rig: [], tempo: clock.tempo, n: rm.n, id: rm.id
                 , loop: if rm.playing then rm.start else Nothing }
         H.modify_ _ { capture = s.capture { logbook = s.capture.logbook { marks = RL.insertMark m s.capture.logbook.marks } } }
         when recent $ H.raise (Marked m.atMicros)
@@ -2974,8 +2977,8 @@ handleActionCore = case _ of
     else do
       let atMic = nowMs * 1000.0
           barMic = 60.0e6 / (if st.clockTempo > 1.0 then st.clockTempo else 120.0) * 4.0
-          mark = { atMicros: atMic, beat: 0.0, from: atMic - 2.0 * barMic, to: atMic, patch: markText st, now: "", sounding: Nothing, rig: [], tempo: st.clockTempo, n: RL.nextNumber st.capture.logbook.marks, loop: Nothing }
-      H.modify_ \s -> s { capture = s.capture { logbook = Logbook.pushMark mark s.capture.logbook } }
+          mark = { atMicros: atMic, beat: 0.0, from: atMic - 2.0 * barMic, to: atMic, patch: markText st, now: "", sounding: Nothing, rig: [], tempo: st.clockTempo, n: 0, id: RL.nextId st.capture.logbook.marks, loop: Nothing }
+      H.modify_ \s -> s { capture = s.capture { logbook = let lb = Logbook.pushMark mark s.capture.logbook in lb { marks = RL.renumber lb.marks } } }
       H.raise (Marked atMic)
 
   -- Click a gold band → LOOP it (Odonus's affordance). Materialise the region's
@@ -3012,9 +3015,14 @@ handleActionCore = case _ of
         ("stage-paste vetula/mark " <> markCode "vetula" _.patch m)
   CaptureZoom z -> H.modify_ \s -> s { capture = s.capture { zoom = z } }
 
+  -- With the rig, clear its record buffer too; it says so to every page
+  -- (loops-clear), and this one clears then.
   CaptureClear -> do
-    hushCapture
-    H.modify_ \s -> s { capture = s.capture { logbook = Logbook.emptyLog, playing = Nothing, contextOpen = false } }
+    st <- H.get
+    if st.rigLoops then rigSend (RL.cueLine "vetula" "clear")
+    else do
+      hushCapture
+      H.modify_ \s -> s { capture = s.capture { logbook = Logbook.emptyLog, playing = Nothing, contextOpen = false } }
 
   -- Leaving REPLAY drops the selected region and its context card: the lift card is
   -- a REPLAY affordance, and a stale one hanging over the strip in LIVE reads as if
@@ -3029,10 +3037,11 @@ handleActionCore = case _ of
       let now = nowMs * 1000.0
       H.modify_ _ { nowMicros = now
                   , riverNotes = filter (\n -> (now - n.fireUnixMicros) < River.windowMicros) st.riverNotes }
-    -- Ask the rig for its marks and loops until it answers (RigLoops)
-    unless st.rigLoops do
+    -- Ask the rig for its marks and loops (RigLoops): every two seconds
+    -- until it answers, then every five, so a page sees a rig that restarted
+    do
       ms <- liftEffect perfNow
-      when (ms - st.rigAsked > 2000.0) do
+      when (ms - st.rigAsked > (if st.rigLoops then 5000.0 else 2000.0)) do
         rigSend RL.syncLine
         H.modify_ _ { rigAsked = ms }
     -- The rig's loops' playheads move on Review's clock
@@ -5888,7 +5897,7 @@ contextBar st =
         [ HH.text (show (Logbook.noteCount st.capture.logbook) <> " notes · " <> show (length st.capture.logbook.marks) <> " ◆") ]
     , HH.button
         [ HP.style "border: 1px solid #e2ddcc; background: transparent; color: #a09a88; cursor: pointer; padding: 3px 10px; border-radius: 5px; font-size: 10px; font-family: Georgia, serif;"
-        , HP.title "clear the capture roll"
+        , HP.title "clear the Review surface: its notes, marks and loops (on the rig too: vetula $ clear)"
         , HE.onClick \_ -> CaptureClear ]
         [ HH.text "clear" ]
     ]

@@ -115,6 +115,12 @@ captureControls s =
       [ HH.text "◆ mark" ]
   , HH.span [ style "font-family:'SF Mono',Menlo,monospace;font-size:9px;color:#6a6558;white-space:nowrap" ]
       [ HH.text (show (noteCount s.logbook) <> " notes · " <> show (length s.logbook.marks) <> " ◆") ]
+  , HH.button
+      [ HE.onClick \_ -> ClearLog
+      , HP.title "clear the Review surface: its notes, marks and loops (on the rig too: odonus $ clear)"
+      , style $ "padding:3px 10px;border-radius:6px;cursor:pointer;border:1px solid #00000018;"
+          <> "background:transparent;color:#8a8576;font-size:10px;white-space:nowrap" ]
+      [ HH.text "clear" ]
   ]
 
 -- | Scenes behind a menu: capture and recall are housekeeping, so they shouldn't

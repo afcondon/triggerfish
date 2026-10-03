@@ -683,11 +683,12 @@ dispatch = case _ of
         when (not st.reconciled) do
           liftEffect $ Transport.send (Binnacle.socket bin) "hush"
           H.modify_ _ { reconciled = true }
-        -- ask the rig for the marks and loops it keeps (RigLoops) until it
-        -- answers: a request sent before the socket opens is lost
-        unless st.rigLoops do
+        -- ask the rig for the marks and loops it keeps (RigLoops): every two
+        -- seconds until it answers (a request sent before the socket opens is
+        -- lost), then every five, so a page sees a rig that restarted
+        do
           ms <- liftEffect Time.perfNow
-          when (ms - st.rigAsked > 2000.0) do
+          when (ms - st.rigAsked > (if st.rigLoops then 5000.0 else 2000.0)) do
             liftEffect $ Transport.send (Binnacle.socket bin) RL.syncLine
             H.modify_ _ { rigAsked = ms }
         now <- liftEffect $ Clock.unixMicrosNow (Binnacle.clock bin)
@@ -743,6 +744,8 @@ dispatch = case _ of
   -- and takes its own loop off, since the rig plays them now. A mark it has
   -- not met (made from Limulus, or by ◆ a moment ago) takes what Odonus is
   -- doing now; one from before this page opened has no patch to show.
+  RigFrame msg | RL.readClear "odonus" msg ->
+    H.modify_ _ { logbook = Logbook.emptyLog, playing = Nothing, contextOpen = false, codeOpen = false }
   RigFrame msg | isJust (Str.stripPrefix (Str.Pattern "loops-notes ") msg) -> do
     freshClock
     st <- H.get
@@ -765,7 +768,7 @@ dispatch = case _ of
               , patch: if recent then patchText s else ""
               , now: if recent then nowText s else ""
               , sounding: if recent then Just (soundingOf s) else Nothing
-              , rig: [], tempo: s.clockTempo, n: rm.n
+              , rig: [], tempo: s.clockTempo, n: rm.n, id: rm.id
               , loop: if rm.playing then rm.start else Nothing }
       H.modify_ _ { logbook = s.logbook { marks = RL.insertMark m s.logbook.marks } }
       when recent $ H.raise (Marked m.atMicros)
@@ -952,14 +955,22 @@ dispatch = case _ of
     if s.rigLoops then rigSend (RL.cueLine "odonus" "mark")
     else do
       let rb = Logbook.regionBounds s.clockTempo s.nowMicros s.clockBeat
-          m = { atMicros: s.nowMicros, beat: s.clockBeat, from: rb.from, to: rb.to, patch: patchText s, now: nowText s, sounding: Just (soundingOf s), rig: [], tempo: s.clockTempo, n: RL.nextNumber s.logbook.marks, loop: Nothing }
-      H.modify_ _ { logbook = Logbook.pushMark m s.logbook }
+          m = { atMicros: s.nowMicros, beat: s.clockBeat, from: rb.from, to: rb.to, patch: patchText s, now: nowText s, sounding: Just (soundingOf s), rig: [], tempo: s.clockTempo, n: 0, id: RL.nextId s.logbook.marks, loop: Nothing }
+          lb = Logbook.pushMark m s.logbook
+      H.modify_ _ { logbook = lb { marks = RL.renumber lb.marks } }
       H.raise (Marked m.atMicros)
   DeleteMark i -> do
     s <- H.get
     if s.rigLoops then for_ (s.logbook.marks !! i) \m -> rigSend (RL.deleteLine "odonus" m.n)
-    else H.modify_ _ { logbook = Logbook.deleteMark i s.logbook }
-  ClearLog -> H.modify_ \s -> s { logbook = Logbook.emptyLog }
+    else H.modify_ _ { logbook = let lb = Logbook.deleteMark i s.logbook in lb { marks = RL.renumber lb.marks } }
+  -- With the rig, clear its record buffer too; it says so to every page
+  -- (loops-clear), and this one clears then.
+  ClearLog -> do
+    s <- H.get
+    if s.rigLoops then rigSend (RL.cueLine "odonus" "clear")
+    else do
+      when (isJust s.playing) hushReplayVoices
+      H.modify_ _ { logbook = Logbook.emptyLog, playing = Nothing }
   -- Resizing the surface is NOT a transport or session action (AC, 2026-08-06).
   -- It used to be: leaving REPLAY wiped the logbook, on the theory that the buffer
   -- was a per-visit scratchpad. But the generator never stopped, ◆ mark should work

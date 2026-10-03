@@ -51,9 +51,13 @@ type Mark =
   -- for a machine with no quantiser): what the ♫ context panel shows
   , sounding :: Maybe { root :: Int, scale :: Array Int, chord :: Maybe (Array Int) }
   , tempo :: Number
-  -- its number: from 1, in the order marks are made (the rig numbers them
-  -- when it is there), so `loop 2` always means this mark
+  -- its number: its position among the marks there now, oldest first, so
+  -- the numbers close up after a delete or a clear (AC, 2026-10-03); `loop 2`
+  -- is the second mark
   , n :: Int
+  -- what it is followed by while its number changes: the rig's id for it,
+  -- or with no rig, one the page gives it
+  , id :: Int
   -- the Link beat a loop on the rig began playing it from, while it does
   -- (Capture.RigLoops); Nothing with no rig loop
   , loop :: Maybe Number }

@@ -19,7 +19,9 @@ module Triggerfish.Capture.RigLoops
   , readLoops
   , reconcile
   , insertMark
-  , nextNumber
+  , nextId
+  , renumber
+  , readClear
   , looping
   , focus
   , playheadFrac
@@ -35,7 +37,7 @@ module Triggerfish.Capture.RigLoops
 
 import Prelude
 
-import Data.Array (filter, find, foldl, insertBy, mapMaybe, null, reverse, (!!))
+import Data.Array (filter, find, foldl, insertBy, length, mapMaybe, mapWithIndex, null, reverse, (!!))
 import Data.Either (hush)
 import Data.Foldable (maximum)
 import Data.Int (floor, round)
@@ -46,11 +48,11 @@ import Simple.JSON (readJSON, writeJSON)
 import Triggerfish.Capture.Types (Logbook, Mark)
 import Triggerfish.Clips (NoteEvent)
 
--- | A mark as the rig keeps it: its number, when it was made (Link beat and
+-- | A mark as the rig keeps it: its number (position) and id, when it was made (Link beat and
 -- | Unix µs), its window in beats, and whether a loop plays it (from `start`,
 -- | the downbeat it began on).
 type RigMark =
-  { n :: Int, beat :: Number, us :: Number, from :: Number, to :: Number
+  { n :: Int, id :: Int, beat :: Number, us :: Number, from :: Number, to :: Number
   , originFrom :: Number, originTo :: Number, playing :: Boolean, start :: Maybe Number }
 
 -- | One instant in the surface's microseconds and in Link beats, and the tempo.
@@ -79,21 +81,32 @@ readLoops machine msg = do
 reconcile :: Clock -> Array RigMark -> Array Mark -> { marks :: Array Mark, fresh :: Array RigMark }
 reconcile c rig marks =
   { marks: mapMaybe update marks
-  , fresh: filter (\r -> not (any' (\m -> m.n == r.n) marks)) rig
+  , fresh: filter (\r -> not (any' (\m -> m.id == r.id) marks)) rig
   }
   where
-  update m = find (\r -> r.n == m.n) rig <#> \r ->
-    m { from = microsOf c r.from, to = microsOf c r.to
+  update m = find (\r -> r.id == m.id) rig <#> \r ->
+    m { n = r.n, from = microsOf c r.from, to = microsOf c r.to
       , loop = if r.playing then r.start else Nothing }
   any' p xs = isJust (find p xs)
 
--- | A mark into the surface's list, which runs newest (highest number) first.
+-- | A mark into the surface's list, which runs newest first.
 insertMark :: Mark -> Array Mark -> Array Mark
-insertMark m = insertBy (\a b -> compare b.n a.n) m <<< filter (\o -> o.n /= m.n)
+insertMark m = insertBy (\a b -> compare b.id a.id) m <<< filter (\o -> o.id /= m.id)
 
--- | The number a mark made here, with no rig, takes.
-nextNumber :: Array Mark -> Int
-nextNumber marks = 1 + fromMaybe 0 (maximum (map _.n marks))
+-- | The id a mark made here, with no rig, takes.
+nextId :: Array Mark -> Int
+nextId marks = 1 + fromMaybe 0 (maximum (map _.id marks))
+
+-- | Number marks by position, oldest first, as the rig does: for a page with
+-- | no rig, after a mark is made or deleted. The list runs newest first.
+renumber :: Array Mark -> Array Mark
+renumber marks = mapWithIndex (\i m -> m { n = length marks - i }) marks
+
+-- | Whether a frame says the rig cleared `machine` (`loops-clear`).
+readClear :: String -> String -> Boolean
+readClear machine msg = case stripPrefix (Pattern "loops-clear ") msg >>= (hush <<< readJSON) of
+  Just (r :: { machine :: String }) -> r.machine == machine
+  Nothing -> false
 
 -- | Whether the rig is playing mark `m` as a loop.
 looping :: Mark -> Boolean
