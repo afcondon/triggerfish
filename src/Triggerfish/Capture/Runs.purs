@@ -16,6 +16,7 @@ module Triggerfish.Capture.Runs
   , startRun
   , stopRun
   , axis
+  , offSeams
   ) where
 
 import Prelude
@@ -95,6 +96,25 @@ axis runsNewest cuts w =
                else acc { played = acc.played + len, lastEnd = end r }
         out = foldl step { played: 0.0, at: Nothing, lastEnd: 0.0 } runs
       in fromMaybe (out.lastEnd + (p - out.played)) out.at
+
+-- | A window `[from, to)` (real time) moved off any seam it straddles: a
+-- | loop plays one stretch of real time, so across a seam it would play the
+-- | pause or the cut as silence. It goes to whichever side holds more of it,
+-- | keeping its length.
+offSeams :: Axis -> { from :: Number, to :: Number } -> { from :: Number, to :: Number }
+offSeams ax w = foldl clear w ax.seams
+  where
+  len = w.to - w.from
+  clear acc f =
+    let
+      before = ax.fromFrac f            -- where the earlier side ends
+      -- where the later side starts: a microsecond of played time on, which
+      -- survives rounding at Unix-µs magnitudes (a fixed fraction did not)
+      after = ax.fromFrac (f + 1.0 / ax.span)
+    in
+      if after - before < 1.0 || acc.from >= before || acc.to <= before then acc
+      else if before - acc.from >= len / 2.0 then { from: before - len, to: before }
+      else { from: after, to: after + len }
 
 infinity :: Number
 infinity = 1.0e300

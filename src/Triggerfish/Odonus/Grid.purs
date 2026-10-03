@@ -1037,12 +1037,13 @@ dispatch = case _ of
         let minLen = 60.0e6 / max 30.0 st.clockTempo   -- ≥ one beat
             -- a slide moves along the surface as drawn, so across a seam it
             -- steps over the pause or cut rather than jumping by real time;
-            -- the window keeps its real length, which is the loop's
+            -- the window keeps its real length, which is the loop's, and is
+            -- kept off seams (Runs.offSeams)
             slid = ax.fromFrac (ax.toFrac rd.startFrom + ax.toFrac cur - ax.toFrac rd.grabMicros)
             bounds = case rd.edge of
               EdgeFrom -> { from: min (rd.startTo - minLen) cur, to: rd.startTo }
               EdgeTo -> { from: rd.startFrom, to: max (rd.startFrom + minLen) cur }
-              EdgeBody -> { from: slid, to: slid + (rd.startTo - rd.startFrom) }
+              EdgeBody -> Runs.offSeams ax { from: slid, to: slid + (rd.startTo - rd.startFrom) }
         H.modify_ \s -> Logbook.applyBounds rd.markIdx bounds (s { regionDrag = map (_ { moved = true }) s.regionDrag })
   RegionUp -> do
     st <- H.get
