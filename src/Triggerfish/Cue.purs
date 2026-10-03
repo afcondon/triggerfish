@@ -13,7 +13,6 @@ import Prelude
 
 import Data.Either (hush)
 import Data.Maybe (Maybe(..), fromMaybe)
-import Data.Nullable (Nullable, toMaybe)
 import Data.String (Pattern(..), stripPrefix)
 import Simple.JSON (readJSON)
 import Triggerfish.Capture.Logbook (Reshape(..))
@@ -27,16 +26,18 @@ data Cue = MarkCue | LoopCue Int | StopCue | WindowCue Reshape
 readCue :: String -> String -> Maybe Cue
 readCue slot msg = do
   json <- stripPrefix (Pattern "cue ") msg
-  c :: { slot :: String, cue :: String, n :: Nullable Int, by :: Nullable Number
-       , slide :: Nullable Number, widen :: Nullable Number } <- hush (readJSON json)
+  -- Maybe, not Nullable: simple-json reads a missing key as Nothing only for
+  -- Maybe, and each cue carries only its own fields (`mark` has none)
+  c :: { slot :: String, cue :: String, n :: Maybe Int, by :: Maybe Number
+       , slide :: Maybe Number, widen :: Maybe Number } <- hush (readJSON json)
   if c.slot /= slot then Nothing
   else case c.cue of
     "mark" -> Just MarkCue
-    "loop" -> Just (LoopCue (fromMaybe 0 (toMaybe c.n)))
+    "loop" -> Just (LoopCue (fromMaybe 0 c.n))
     "stop" -> Just StopCue
-    "slide" -> WindowCue <<< Slide <$> toMaybe c.by
-    "widen" -> WindowCue <<< Widen <$> toMaybe c.by
-    "narrow" -> WindowCue <<< Widen <<< negate <$> toMaybe c.by
+    "slide" -> WindowCue <<< Slide <$> c.by
+    "widen" -> WindowCue <<< Widen <$> c.by
+    "narrow" -> WindowCue <<< Widen <<< negate <$> c.by
     -- a pattern's value, from the rig (window_patterns)
-    "place" -> Just (WindowCue (Place { slide: toMaybe c.slide, widen: toMaybe c.widen }))
+    "place" -> Just (WindowCue (Place { slide: c.slide, widen: c.widen }))
     _ -> Nothing
