@@ -112,7 +112,9 @@ nameOf src = L.name case src of
   RM.SOdonusHead h -> { name: RM.sourceLabel src, sub: "head " <> show (h + 1) }
   RM.SDrumLane i -> { name: P.laneName i, sub: "drum lane · " <> show (P.laneNote i) }
   RM.SVetulaVoice "" -> { name: "Vetula", sub: "default voice" }
-  RM.SVetulaVoice nm -> { name: nm, sub: "Vetula voice" }
+  RM.SVetulaVoice nm -> case RM.cardChannelOf src of
+    Just ch -> { name: "Card · ch " <> show ch, sub: "Vetula" }
+    Nothing -> { name: nm, sub: "Vetula voice" }
   RM.SSeleneBank a -> { name: a, sub: "Selene bank" }
 
 -- | A leg: its mark (and switch), port, channel, values, trim, and whether it

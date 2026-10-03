@@ -26,6 +26,7 @@ main = Standalone.run
       { title: "Routing · Balistes kit"
       , note: "shared with Triggerfish's router; sample legs sound in Atlantis only"
       , sources: map RM.SDrumLane (0 .. 15)
+      , cards: false
       , restoreLabel: "restore default kit routing"
       }
   , armOf: const Nothing

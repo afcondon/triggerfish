@@ -40,6 +40,7 @@ import Binnacle.Midi as Midi
 import Binnacle.Time (dateNow)
 import Binnacle.Transport as Transport
 import Data.Foldable (for_)
+import Data.Array (null)
 import Data.Maybe (Maybe(..), fromMaybe, isJust, isNothing, maybe)
 import Data.Set as Set
 import Effect (Effect)
@@ -63,6 +64,8 @@ import Triggerfish.Routing.Model as RM
 import Triggerfish.Routing.Out as RO
 import Triggerfish.Routing.Store as RStore
 import Triggerfish.Routing.View as RV
+import Triggerfish.Routing.VetulaSync as VetulaSync
+import Triggerfish.Router as TR
 import Triggerfish.SampleSets (SampleSet)
 import Triggerfish.SampleSets as SampleSets
 import Triggerfish.SourceQuery as SQ
@@ -100,11 +103,15 @@ type Config o =
   }
 
 -- | A page's router: its title, the sources it shows, and what they are called
--- | in the restore link.
+-- | in the restore link. With `cards`, the sources are Vetula's cards as the
+-- | stage holds them (one row a channel) rather than `sources`, and this page
+-- | keeps their routes on the stage for the rig (Routing.VetulaSync), as the
+-- | dashboard does.
 type Router =
   { title :: String
   , note :: String
   , sources :: Array RM.Source
+  , cards :: Boolean
   , restoreLabel :: String
   }
 
@@ -136,6 +143,10 @@ type State =
   -- the rig goes away, so a reconnect records it again.
   , staged :: Maybe String
   , bus :: Maybe Bus.Bus
+  -- For a cards router: the stage's text objects, and the Vetula routing
+  -- last written to it (`vetula/routing`).
+  , stage :: TR.Router
+  , vetulaSent :: Maybe String
   }
 
 data Action o
@@ -157,6 +168,8 @@ data Action o
   | Tick
   | FromBus Bus.Msg
   | ModeStored
+  | RigOpen
+  | RigFrame String
 
 type Slots o = (machine :: H.Slot SQ.Query o Unit)
 
@@ -168,7 +181,7 @@ root cfg = H.mkComponent
   { initialState: \_ ->
       { mode: Solo, playing: false, bpm: 120.0, tempoFlash: Nothing, freeT0: 0.0, chip: Nothing, rig: Nothing
       , rigUp: false, table: RM.defaultTable, ports: [], sampleSets: [], routerOpen: false
-      , staged: Nothing, bus: Nothing }
+      , staged: Nothing, bus: Nothing, stage: TR.initial, vetulaSent: Nothing }
   , render: render cfg
   , eval: H.mkEval H.defaultEval { handleAction = handleAction cfg, initialize = Just Init }
   }
@@ -188,6 +201,10 @@ handleAction cfg = case _ of
     for_ mmode \m -> H.modify_ _ { mode = m }
     { emitter, listener } <- liftEffect HS.create
     _ <- H.subscribe emitter
+    -- a cards router follows the stage's cards (asked again on each connect)
+    for_ cfg.router \r -> when r.cards do
+      liftEffect $ Binnacle.onAppMessage rig (HS.notify listener <<< RigFrame)
+      liftEffect $ Binnacle.onOpen rig (HS.notify listener RigOpen)
     liftEffect $ RStore.onChange (HS.notify listener RoutingChanged)
     liftEffect $ TransportStore.onChange (HS.notify listener ModeStored)
     liftEffect $ Tempo.onChange (HS.notify listener TempoStored)
@@ -247,14 +264,17 @@ handleAction cfg = case _ of
     for_ mtbl \t -> do
       H.modify_ _ { table = t }
       void $ H.query _machine unit (SQ.SetRouting t unit)
+    syncCards cfg
   -- An edit here is saved first, so the store, the machine and every other open
   -- page (through its storage event) agree on the next note.
   Edit e -> do
     st <- H.get
     for_ (RE.apply { ports: st.ports, sampleSets: st.sampleSets } e st.table) keepTable
+    syncCards cfg
   ResetRouting -> for_ cfg.router \r -> do
     st <- H.get
-    keepTable (RE.resetSources st.ports r.sources st.table)
+    keepTable (RE.resetSources st.ports (sourcesOf r st) st.table)
+    syncCards cfg
   Audition dest -> do
     st <- H.get
     for_ (RO.auditionLine dest) \line ->
@@ -263,6 +283,16 @@ handleAction cfg = case _ of
   SetPorts ns -> do
     H.modify_ _ { ports = ns }
     firstRun ns
+    syncCards cfg
+  RigOpen -> do
+    H.modify_ _ { vetulaSent = Nothing }
+    st <- H.get
+    for_ st.rig \bin -> liftEffect $ Transport.send (Binnacle.socket bin) TR.subscribeLine
+  RigFrame msg -> do
+    st <- H.get
+    for_ (TR.readFrame msg st.stage) \r -> do
+      H.modify_ _ { stage = r }
+      syncCards cfg
   -- The rig link, polled as the Triggerfish shell polls it: what a rig-only leg
   -- can reach depends on it.
   Tick -> do
@@ -325,6 +355,22 @@ handleAction cfg = case _ of
               liftEffect $ E.preventDefault e
               handleAction cfg TogglePlay
             _ -> pure unit
+
+-- | The sources a router shows: its own, or for a cards router, the stage's.
+sourcesOf :: Router -> State -> Array RM.Source
+sourcesOf r st = if r.cards then map RM.cardSource (VetulaSync.cardChannels st.stage) else r.sources
+
+-- | A cards router keeps a row for every card, and the cards' routes on the
+-- | stage, once the ports are known (a card's default leg names one).
+syncCards :: forall o o'. Config o -> M o o' Unit
+syncCards cfg = for_ cfg.router \r -> when r.cards do
+  st <- H.get
+  unless (null st.ports) do
+    let s = VetulaSync.sync st.ports st.stage st.table
+    when (s.table /= st.table) (keepTable s.table)
+    when (st.vetulaSent /= Just s.json) $ for_ st.rig \bin -> do
+      liftEffect $ Transport.send (Binnacle.socket bin) (VetulaSync.stageLine s.json)
+      H.modify_ _ { vetulaSent = Just s.json }
 
 -- | At first run, with nothing stored, the default table is made for the ports
 -- | this machine has and saved, so the choice is made once and shown in the
@@ -466,8 +512,8 @@ router r st =
             , style "cursor:pointer;font-size:10px;color:#a08676;text-decoration:underline" ]
             [ HH.text r.restoreLabel ]
         ]
-    , RV.key env r.sources
-    , RV.sourceRows env r.sources
+    , RV.key env (sourcesOf r st)
+    , RV.sourceRows env (sourcesOf r st)
     ]
   where
   env =

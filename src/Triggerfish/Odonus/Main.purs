@@ -30,6 +30,7 @@ main = Standalone.run
       { title: "Routing · Odonus heads"
       , note: "shared with every page's router"
       , sources: map RM.SOdonusHead (0 .. 3)
+      , cards: false
       , restoreLabel: "restore default head routing"
       }
   , armOf: const Nothing

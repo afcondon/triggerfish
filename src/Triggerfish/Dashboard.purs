@@ -73,6 +73,7 @@ import Reef.Route as HarmonyRoute
 import Triggerfish.Routing.Edit as RE
 import Triggerfish.Routing.Model as RM
 import Triggerfish.Routing.Out as RO
+import Triggerfish.Routing.VetulaSync as VetulaSync
 import Reef.Routing as RR
 import Triggerfish.Routing.Store as RStore
 import Triggerfish.SampleSets (SampleSet)
@@ -429,7 +430,7 @@ render st =
     , case st.matrix of
         Nothing -> HH.text ""
         Just g -> Matrix.view g
-          { table: st.table, ports: st.ports, cards: cardChannels st.router, sampleSets: st.sampleSets
+          { table: st.table, ports: st.ports, cards: VetulaSync.cardChannels st.router, sampleSets: st.sampleSets
           , pick: st.pick, focus: st.focus, sheet: st.sheet, fold: st.foldDrums
           , onEdits: Edits, onPick: PickCell, onSheet: OpenSheet, onAudition: Audition
           , onGrid: \g' -> OpenMatrix g' Nothing, onFold: FoldDrums, onClose: CloseMatrix }
@@ -634,17 +635,10 @@ syncCards :: forall o. M o Unit
 syncCards = do
   st <- H.get
   unless (Array.null st.ports) do
-    let seeded = RM.seedCards st.ports (cardChannels st.router) st.table
-    when (seeded /= st.table) do
-      liftEffect $ RStore.save seeded
-      H.modify_ _ { table = seeded }
-    st' <- H.get
-    let json = RR.encodeVoiceRouting (RO.vetulaRouting st'.ports st'.table)
-    when (st'.vetulaSent /= Just json) $ for_ st'.rig \bin -> do
-      liftEffect $ Transport.send (Binnacle.socket bin) ("stage-text vetula/routing " <> json)
-      H.modify_ _ { vetulaSent = Just json }
-
-cardChannels :: Router.Router -> Array Int
-cardChannels r = Array.sort (Array.nub (Array.mapMaybe channel (Array.fromFoldable (Map.values r.cards))))
-  where
-  channel line = Array.head (String.split (Pattern " ") (String.trim line)) >>= stripPrefix (Pattern "ch") >>= Int.fromString
+    let s = VetulaSync.sync st.ports st.router st.table
+    when (s.table /= st.table) do
+      liftEffect $ RStore.save s.table
+      H.modify_ _ { table = s.table }
+    when (st.vetulaSent /= Just s.json) $ for_ st.rig \bin -> do
+      liftEffect $ Transport.send (Binnacle.socket bin) (VetulaSync.stageLine s.json)
+      H.modify_ _ { vetulaSent = Just s.json }

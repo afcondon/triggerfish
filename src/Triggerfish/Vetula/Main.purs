@@ -3,7 +3,9 @@
 -- | Vetula to the shell and sends its harmonic context out on the tab bus for
 -- | Odonus to follow.
 -- |
--- | No router: Vetula does not read the routing table.
+-- | Its router shows the cards, one row a channel, routed as Odonus's heads
+-- | are; the rig plays them through those routes (`vetula_cards`), so this
+-- | page keeps them on the stage as the dashboard does.
 -- |
 -- | Bundle: `spago bundle --module Triggerfish.Vetula.Main --outfile public/vetula.js`.
 module Triggerfish.Vetula.Main (main) where
@@ -24,7 +26,13 @@ main = Standalone.run
   , chipOf: case _ of
       Page.Chip cv -> Just cv
       Page.Armed _ -> Nothing
-  , router: Nothing
+  , router: Just
+      { title: "Routing · Vetula cards"
+      , note: "shared with every page's router"
+      , sources: []
+      , cards: true
+      , restoreLabel: "restore default card routing"
+      }
   , armOf: case _ of
       Page.Armed on -> Just on
       Page.Chip _ -> Nothing
