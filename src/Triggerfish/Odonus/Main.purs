@@ -24,5 +24,9 @@ main = Standalone.run
   , chipOf: case _ of
       Odonus.IdentityChanged cv -> Just cv
       Odonus.StageChanged _ -> Nothing
+      Odonus.Marked _ -> Nothing
   , armOf: const Nothing
+  , markOf: case _ of
+      Odonus.Marked at -> Just at
+      _ -> Nothing
   }

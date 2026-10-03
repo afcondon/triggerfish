@@ -19,6 +19,7 @@ module Triggerfish.Capture.View
   , CaptureWiring
   , ContextSummary
   , capturePanel
+  , markCode
   , bounds
   ) where
 
@@ -49,6 +50,8 @@ type CaptureState =
   , playing :: Maybe PlayState
   , regionDrag :: Maybe RegionDrag  -- host-owned; the view only reads logbook/playing/context
   , contextOpen :: Boolean
+  -- the looped mark shown as code (`markCode`), with → Limulus
+  , codeOpen :: Boolean
   , zoom :: Zoom
   }
 
@@ -72,6 +75,11 @@ type CaptureWiring action =
   , saveScene :: Maybe (Int -> action)
   , toggleContext :: action
   , setZoom :: Zoom -> action
+  -- the mark as code: this machine's slot (`odonus`), the toggle, and
+  -- handing mark i's code to Limulus
+  , machine :: String
+  , toggleCode :: action
+  , toLimulus :: Int -> action
   }
 
 -- viewBox units — the timeline's internal coordinate space (stretched to fit). The
@@ -298,10 +306,14 @@ controlCard w posOf cap = case cap.playing of
                             Just mk -> [ cardBtn (mk i) "#cdb98a" "save this good bit into the SCENES list" "⛭ scene" ]
                             Nothing -> [])
                       <> [ cardBtn w.toggleContext (if cap.contextOpen then "#e8c14a" else "#cdb98a")
-                             "show the key & chord to jam over" "♫ context" ]
+                             "show the key & chord to jam over" "♫ context"
+                         , cardBtn w.toggleCode (if cap.codeOpen then "#e8c14a" else "#cdb98a")
+                             "this mark as code: every open machine as it was at the mark" "{ } code"
+                         ]
                     )
                 ]
                 <> (if cap.contextOpen then [ contextPanel w m ] else [])
+                <> (if cap.codeOpen then [ codePanel w i m ] else [])
               )
           ]
 
@@ -313,6 +325,31 @@ cardBtn act fg titleTxt label =
     , style $ "padding:3px 8px;border-radius:6px;cursor:pointer;border:1px solid #ffffff1a;"
         <> "background:#ffffff10;font-family:Georgia,serif;font-size:10px;color:" <> fg ]
     [ HH.text label ]
+
+-- | A mark as code: the marking machine first, then each other machine that
+-- | was open, each under a `-- <machine>` line, as Limulus will show it.
+-- | Vetula's cards are Limulus lines already; Odonus's patch is shown as
+-- | Lepidoptera text, which Tidal++ cannot evaluate yet
+-- | (docs/kb/plans/the-deck.md, step 2).
+markCode :: String -> Mark -> String
+markCode machine m =
+  joinWith "\n\n" (map section ([ { machine, text: m.patch } ] <> m.rig))
+  where
+  section r = "-- " <> r.machine <> "\n" <> r.text
+
+codePanel :: forall action slots m. CaptureWiring action -> Int -> Mark -> H.ComponentHTML action slots m
+codePanel w i m =
+  HH.div [ style "margin-top:7px;padding-top:6px;border-top:1px solid #ffffff14;max-width:520px" ]
+    [ HH.pre
+        [ style $ "margin:0 0 6px;max-height:220px;overflow:auto;white-space:pre-wrap;"
+            <> "font-family:'SF Mono',Menlo,monospace;font-size:10px;line-height:1.45;color:#e9e3d0" ]
+        [ HH.text (markCode w.machine m) ]
+    , HH.div [ style "display:flex;gap:6px;align-items:center" ]
+        [ cardBtn (w.toLimulus i) "#e8c14a" "add this to the end of Limulus's buffer" "→ Limulus"
+        , HH.span [ style "font-family:Georgia,serif;font-size:9px;color:#ffffff55" ]
+            [ HH.text (show (1 + length m.rig) <> " machine" <> (if null m.rig then "" else "s")) ]
+        ]
+    ]
 
 -- | The harmonic context of the looped mark, via the host's `contextSummary` read.
 contextPanel :: forall action slots m. CaptureWiring action -> Mark -> H.ComponentHTML action slots m

@@ -96,14 +96,16 @@ import Triggerfish.Odonus.View.Scenes (sceneName)
 -- | `StageChanged` carries the new stage's URL segments so the shell can write
 -- | the hash. Push, not poll — the shell would otherwise have to interrogate
 -- | every machine on a timer to notice a mode change it didn't cause.
-data Output = IdentityChanged (Maybe G.ChipView) | StageChanged (Array String)
+-- | `Marked at`: a mark was made, named by its time, so the shell can gather
+-- | the rest of the rig's state for it.
+data Output = IdentityChanged (Maybe G.ChipView) | StageChanged (Array String) | Marked Number
 
 component :: forall i m. MonadAff m => H.Component Query i Output m
 component =
   H.mkComponent
     { initialState: \_ ->
         { odo: M.defaultOdonus, sounding: Silent, dragging: Nothing, dragSub: Nothing
-        , notes: [], logbook: Logbook.emptyLog, stage: Perform, selEuclid: Nothing, navScenes: false, playing: Nothing, regionDrag: Nothing, contextOpen: false, zoom: Whole, clips: [], twisterField: FNote, binnacle: Nothing, nowMicros: 0.0
+        , notes: [], logbook: Logbook.emptyLog, stage: Perform, selEuclid: Nothing, navScenes: false, playing: Nothing, regionDrag: Nothing, contextOpen: false, codeOpen: false, zoom: Whole, clips: [], twisterField: FNote, binnacle: Nothing, nowMicros: 0.0
         , outs: [], routing: RM.defaultTable, midiName: "…", clockTempo: 120.0, clockLocked: false
         , clockBeat: 0.0, clockBar: 0, anchorCount: 0
         , scenes: [], sceneNameInput: "", publishMsg: Nothing
@@ -136,6 +138,12 @@ handleQuery = case _ of
     H.modify_ _ { routing = t }
     pushRouting
     pure (Just k)
+  AskMarkText reply -> do
+    s <- H.get
+    pure (Just (reply (patchText s)))
+  AddMarkSnapshot at machine text next -> do
+    H.modify_ \s -> s { logbook = Logbook.addSnapshot at { machine, text } s.logbook }
+    pure (Just next)
   AskSource reply -> do
     s <- H.get
     pure (Just (reply (patchText s)))
@@ -891,10 +899,12 @@ dispatch = case _ of
     Nothing -> s
   DeleteScene i -> H.modify_ \s -> s { scenes = fromMaybe s.scenes (deleteAt i s.scenes) }
   -- Performance logbook (#151): flag / drop a good bit, or purge the whole log.
-  MarkNow -> H.modify_ \s ->
+  MarkNow -> do
+    s <- H.get
     let rb = Logbook.regionBounds s.clockTempo s.nowMicros s.clockBeat
-        m = { atMicros: s.nowMicros, beat: s.clockBeat, from: rb.from, to: rb.to, patch: patchText s }
-    in s { logbook = Logbook.pushMark m s.logbook }
+        m = { atMicros: s.nowMicros, beat: s.clockBeat, from: rb.from, to: rb.to, patch: patchText s, rig: [] }
+    H.modify_ _ { logbook = Logbook.pushMark m s.logbook }
+    H.raise (Marked m.atMicros)
   DeleteMark i -> H.modify_ \s -> s { logbook = Logbook.deleteMark i s.logbook }
   ClearLog -> H.modify_ \s -> s { logbook = Logbook.emptyLog }
   -- Resizing the surface is NOT a transport or session action (AC, 2026-08-06).
@@ -1019,6 +1029,12 @@ dispatch = case _ of
                           _ -> s.playing }
     persistClips
   ToggleContext -> H.modify_ \s -> s { contextOpen = not s.contextOpen }
+  ToggleCode -> H.modify_ \s -> s { codeOpen = not s.codeOpen }
+  MarkToLimulus i -> do
+    st <- H.get
+    for_ (st.logbook.marks !! i) \m -> for_ st.binnacle \bin ->
+      liftEffect $ Transport.send (Binnacle.socket bin)
+        ("stage-paste odonus/mark " <> CaptureView.markCode "odonus" m)
   SetZoom z -> H.modify_ _ { zoom = z }
   -- STEP LENGTH is a transport/clock param, not a SimState edit, so it rides its
   -- own `reef-steplen` verb (not the tick-tagged input path): apply locally, then

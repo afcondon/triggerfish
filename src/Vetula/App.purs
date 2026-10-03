@@ -125,7 +125,7 @@ import Effect.Ref as Ref
 import Triggerfish.Capture.Logbook as Logbook
 import Triggerfish.Capture.Types (Orientation(..), PlaySource(..), Zoom(..))
 import Triggerfish.Capture.River (Flow(..), riverPanel, windowMicros) as River
-import Triggerfish.Capture.View (CaptureState, capturePanel)
+import Triggerfish.Capture.View (CaptureState, capturePanel, markCode)
 import Vetula.Tidal (progressionSource, parseProgression)
 import Vetula.Lepidoptera (PerfDoc, VoiceSpec, docFromVoices, parseCard, parsePerform, printAsRecord, printCard)
 import Vetula.StageCards as SC
@@ -1018,6 +1018,8 @@ data Action
   | CaptureStopSel         -- dismiss the lift card
   | CaptureSaveClip Int    -- lift region i out into the shared clip library
   | CaptureToggleContext   -- show/hide the region's harmonic context
+  | CaptureToggleCode      -- show/hide the region's mark as code
+  | CaptureToLimulus Int   -- hand mark i, as code, to Limulus (stage-paste)
   | CaptureZoom Zoom       -- whole / last N / crop to a loop
   | CaptureClear           -- purge the capture logbook
   | CaptureFrame           -- 33ms tick: advance the river's clock, prune its window
@@ -1076,6 +1078,10 @@ data Action
 -- | Triggerfish) so the standalone app — which never queries it — still builds.
 data SourceQuery a
   = AskSource (String -> a)
+  -- A mark made rig-wide (Triggerfish.SourceQuery): Vetula as text for a
+  -- mark (`markText`), and another machine's text for one of its own marks.
+  | AskMarkText (String -> a)
+  | AddMarkSnapshot Number String String a
   -- URL routing: adopt the stage named by these path segments (see `stagePath`).
   -- Unrecognised segments are ignored rather than guessed at, so a stale link
   -- switches machine and leaves the stage alone.
@@ -1132,7 +1138,9 @@ data SourceQuery a
 -- | `StageChanged` carries the new stage's URL segments so the shell can write
 -- | the hash. Push, not poll: the shell would otherwise have to interrogate every
 -- | machine on a timer to notice a mode change it didn't cause.
-data Output = ArmChanged Boolean | StageChanged (Array String)
+-- | `Marked at`: a mark was made in Review, named by its time, so the shell
+-- | can gather the rest of the rig's state for it.
+data Output = ArmChanged Boolean | StageChanged (Array String) | Marked Number
 
 component :: forall i m. MonadAff m => H.Component SourceQuery i Output m
 component = H.mkComponent
@@ -1250,7 +1258,7 @@ component = H.mkComponent
       , perfMenuOpen: false
       , clipLibrary: []
       , perfPhrasePick: Nothing
-      , capture: { logbook: Logbook.emptyLog, playing: Nothing, regionDrag: Nothing, contextOpen: false, zoom: Whole }
+      , capture: { logbook: Logbook.emptyLog, playing: Nothing, regionDrag: Nothing, contextOpen: false, codeOpen: false, zoom: Whole }
       , nowMicros: 0.0
       , riverNotes: []
       }
@@ -1266,6 +1274,12 @@ handleQuery = case _ of
   AskSource reply -> do
     s <- H.get
     pure (Just (reply (currentSource s)))
+  AskMarkText reply -> do
+    s <- H.get
+    pure (Just (reply (markText s)))
+  AddMarkSnapshot at machine text next -> do
+    H.modify_ \s -> s { capture = s.capture { logbook = Logbook.addSnapshot at { machine, text } s.capture.logbook } }
+    pure (Just next)
   -- Routed in from the URL. Goes through `handleAction SetStage` rather than
   -- writing `stage` directly, so a link into REVIEW gets the same hush/clear
   -- treatment as clicking the tab — arriving by URL must not be a second, laxer
@@ -1654,6 +1668,16 @@ contextKey st = case st.restScale of
     { root: mod st.key.tonic 12
     , offsets: map (\pc -> mod (pc - st.key.tonic + 12) 12) (scaleSet st.key)
     }
+
+-- | Vetula as text for a mark: its key, then each card as the line Limulus
+-- | edits (`v3 $ ch3 "…" "…" # …`), so a mark hands Limulus code it can
+-- | evaluate (docs/kb/plans/the-deck.md).
+markText :: State -> String
+markText st =
+  joinWith "\n"
+    ( [ "-- vetula key " <> Route.printKey (contextKey st) ]
+        <> map (\(Tuple n line) -> "v" <> show n <> " $ " <> line) (Map.toUnfoldable (cardTexts st.perfBoxes))
+    )
 
 -- | Bring the stage's copy of the cards up to date with the page's.
 publishCards :: forall m. MonadAff m => H.HalogenM State Action Slots Output m Unit
@@ -2917,8 +2941,9 @@ handleActionCore = case _ of
     st <- H.get
     let atMic = nowMs * 1000.0
         barMic = 60.0e6 / (if st.clockTempo > 1.0 then st.clockTempo else 120.0) * 4.0
-        mark = { atMicros: atMic, beat: 0.0, from: atMic - 2.0 * barMic, to: atMic, patch: "" }
+        mark = { atMicros: atMic, beat: 0.0, from: atMic - 2.0 * barMic, to: atMic, patch: markText st, rig: [] }
     H.modify_ \s -> s { capture = s.capture { logbook = Logbook.pushMark mark s.capture.logbook } }
+    H.raise (Marked atMic)
 
   -- Click a gold band → LOOP it (Odonus's affordance). Materialise the region's
   -- notes rebased to [0, len) and stamp the loop clock; `driveCaptureReplay` queues
@@ -2940,6 +2965,12 @@ handleActionCore = case _ of
     H.modify_ \s -> s { capture = s.capture { playing = Nothing } }
 
   CaptureToggleContext -> H.modify_ \s -> s { capture = s.capture { contextOpen = not s.capture.contextOpen } }
+  CaptureToggleCode -> H.modify_ \s -> s { capture = s.capture { codeOpen = not s.capture.codeOpen } }
+  CaptureToLimulus i -> do
+    st <- H.get
+    for_ (st.capture.logbook.marks !! i) \m -> for_ st.binnacle \bin ->
+      liftEffect $ Transport.send (Binnacle.socket bin)
+        ("stage-paste vetula/mark " <> markCode "vetula" m)
   CaptureZoom z -> H.modify_ \s -> s { capture = s.capture { zoom = z } }
 
   CaptureClear -> do
@@ -6206,6 +6237,9 @@ capturePane st =
     , saveScene: Nothing
     , toggleContext: CaptureToggleContext
     , setZoom: CaptureZoom
+    , machine: "vetula"
+    , toggleCode: CaptureToggleCode
+    , toLimulus: CaptureToLimulus
     }
 
 -- | Colour a captured note by its source channel/voice (up to six distinct hues).

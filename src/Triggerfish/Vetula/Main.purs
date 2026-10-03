@@ -22,7 +22,12 @@ main = Standalone.run
   , chipOf: case _ of
       Page.Chip cv -> Just cv
       Page.Armed _ -> Nothing
+      Page.Marked _ -> Nothing
   , armOf: case _ of
       Page.Armed on -> Just on
       Page.Chip _ -> Nothing
+      Page.Marked _ -> Nothing
+  , markOf: case _ of
+      Page.Marked at -> Just at
+      _ -> Nothing
   }

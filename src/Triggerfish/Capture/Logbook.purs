@@ -15,6 +15,7 @@ module Triggerfish.Capture.Logbook
   ( emptyLog
   , logAppend
   , pushMark
+  , addSnapshot
   , deleteMark
   , noteCount
   , regionBounds
@@ -72,6 +73,15 @@ freeze now lb =
 -- | Push a fully-built mark (instant + beat + region + patch) onto the log.
 pushMark :: Mark -> Logbook -> Logbook
 pushMark m lb = lb { marks = m : lb.marks }
+
+-- | Another machine's text at the mark made at `at`, replacing any it sent
+-- | before.
+addSnapshot :: Number -> { machine :: String, text :: String } -> Logbook -> Logbook
+addSnapshot at snap lb = lb { marks = map add lb.marks }
+  where
+  add m
+    | m.atMicros == at = m { rig = filter (\r -> r.machine /= snap.machine) m.rig <> [ snap ] }
+    | otherwise = m
 
 -- | Beats per bar the rig runs (4/4). The loop window is a whole number of these.
 quantum :: Number

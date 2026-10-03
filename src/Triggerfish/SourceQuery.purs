@@ -40,6 +40,12 @@ import Triggerfish.Transport (Sounding)
 
 data Query a
   = AskSource (String -> a)
+  -- A mark made rig-wide (docs/kb/plans/the-deck.md): this machine as text
+  -- for a mark (Tidal++ where it can be: Vetula's cards as `vN $` lines), and
+  -- another machine's text attached to the mark this machine made at `at`.
+  -- A machine with no answer to the first is asked `AskSource` instead.
+  | AskMarkText (String -> a)
+  | AddMarkSnapshot Number String String a
   -- URL routing (`Triggerfish.Route`): "adopt the stage named by these path
   -- segments". The shell carries the segments opaquely — each machine owns its
   -- own stage vocabulary and parses them itself. A machine with no stage axis

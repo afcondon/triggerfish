@@ -80,13 +80,17 @@ import Web.UIEvent.KeyboardEvent.EventTypes as KET
 -- | - `nameplate`: the engraved name at the left of the bar;
 -- | - `chipOf`: the preset chip, when an output carries one;
 -- | - `armOf`: the machine armed or disarmed itself (Vetula's own play, stop
--- |   and unload), which the shell's transport follows.
+-- |   and unload), which the shell's transport follows;
+-- | - `markOf`: the machine made a mark (named by its time), which the shell
+-- |   makes rig-wide: every other open machine's text at that moment comes
+-- |   back over the tab bus and is kept with it (docs/kb/plans/the-deck.md).
 type Config o =
   { which :: Which
   , nameplate :: String
   , component :: H.Component SQ.Query Unit o Aff
   , chipOf :: o -> Maybe (Maybe ChipView)
   , armOf :: o -> Maybe Boolean
+  , markOf :: o -> Maybe Number
   }
 
 run :: forall o. Config o -> Effect Unit
@@ -231,6 +235,17 @@ handleAction cfg = case _ of
         H.modify_ _ { playing = false }
         pushSounding cfg
       Bus.Hello -> announce cfg
+      -- Another page marked: answer with this machine as text at this moment.
+      Bus.Marked m | not (mine m.by) -> for_ (Stage.slotOf cfg.which) \machine -> do
+        mtext <- H.query _machine unit (SQ.AskMarkText identity)
+        text <- case mtext of
+          Just t -> pure (Just t)
+          Nothing -> H.query _machine unit (SQ.AskSource identity)
+        for_ text \t -> for_ st.bus \bus ->
+          liftEffect $ Bus.post bus (Bus.Snapshot { at: m.at, by: m.by, machine, text: t })
+      -- An answer to a mark this machine made: keep it with the mark.
+      Bus.Snapshot n | mine n.by ->
+        void $ H.query _machine unit (SQ.AddMarkSnapshot n.at n.machine n.text unit)
       _ -> pure unit
   -- Another tab (the dashboard) changed the mode.
   ModeStored -> do
@@ -246,6 +261,11 @@ handleAction cfg = case _ of
       H.modify_ _ { chip = cv }
       publishStage cfg
       announce cfg
+    -- The machine marked: ask every other open page for its machine's text.
+    for_ (cfg.markOf out) \at -> do
+      st <- H.get
+      for_ (Stage.slotOf cfg.which) \by -> for_ st.bus \bus ->
+        liftEffect $ Bus.post bus (Bus.Marked { at, by })
     -- The machine armed or disarmed itself: the transport follows it, and the
     -- sounding it derives goes back down, as the Triggerfish shell does.
     for_ (cfg.armOf out) \on -> do

@@ -23,4 +23,5 @@ main = Standalone.run
   , component: Selene.component
   , chipOf: \(Selene.IdentityChanged cv) -> Just cv
   , armOf: const Nothing
+  , markOf: const Nothing
   }

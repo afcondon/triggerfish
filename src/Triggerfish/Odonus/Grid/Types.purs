@@ -314,6 +314,7 @@ type State =
   , playing :: Maybe PlayState    -- a REPLAY loop in flight (Nothing = not replaying)
   , regionDrag :: Maybe RegionDrag  -- a loop-region resize/slide in progress
   , contextOpen :: Boolean          -- REPLAY control card: harmonic-context panel open
+  , codeOpen :: Boolean             -- REPLAY control card: the mark as code
   , zoom :: Zoom                    -- REPLAY: how much of the take the surface shows
   , clips :: Array MidiClip         -- captured clips (shared library, #27), newest-first
   , twisterField :: TwisterField    -- which cell attribute the Twister's rotaries drive (bank 1)
@@ -447,6 +448,8 @@ data Action
   | RenameClip Int String   -- rename a captured clip (commits on blur; persists)
   | DeleteClip Int          -- drop a captured clip
   | ToggleContext           -- REPLAY card: show/hide the active mark's harmonic context
+  | ToggleCode              -- REPLAY card: show/hide the active mark as code
+  | MarkToLimulus Int       -- hand mark i, as code, to Limulus (stage-paste)
   | SetZoom Zoom            -- REPLAY: whole / last N / crop to a loop
   | SetStepDiv Int
   | KnobDown KnobTarget Int

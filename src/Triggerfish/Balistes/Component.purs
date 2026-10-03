@@ -113,6 +113,9 @@ component =
 -- | doc — or adopt the rack's shared free-run baseline.
 handleQuery :: forall m a. MonadAff m => Query a -> H.HalogenM State Action () Output m (Maybe a)
 handleQuery = case _ of
+  -- No marks here: asked for its text, the shell falls back to AskSource.
+  AskMarkText _ -> pure Nothing
+  AddMarkSnapshot _ _ _ next -> pure (Just next)
   SetRouting t k -> do
     H.modify_ _ { routing = t }
     pushRouting

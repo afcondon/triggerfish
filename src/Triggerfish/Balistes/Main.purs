@@ -21,4 +21,5 @@ main = Standalone.run
       Balistes.IdentityChanged cv -> Just cv
       Balistes.LaneEdited _ -> Nothing
   , armOf: const Nothing
+  , markOf: const Nothing
   }

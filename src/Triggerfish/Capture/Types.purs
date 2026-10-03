@@ -35,7 +35,13 @@ type Chunk = { fromMicros :: Number, toMicros :: Number, events :: Array NoteEve
 -- | (`patch` = its Lepidoptera at that instant). So a mark carries the notes that
 -- | came out (via its span in the note stream), an editable loop region, and the
 -- | machine state that made it.
-type Mark = { atMicros :: Number, beat :: Number, from :: Number, to :: Number, patch :: String }
+-- |
+-- | `rig` is the other open machines as text at the same instant, gathered
+-- | over the tab bus (`Bus.Marked` / `Bus.Snapshot`), so a mark holds the
+-- | whole rig's state, not just its own (docs/kb/plans/the-deck.md).
+type Mark =
+  { atMicros :: Number, beat :: Number, from :: Number, to :: Number, patch :: String
+  , rig :: Array { machine :: String, text :: String } }
 
 -- | Which part of a loop region a drag grabbed: its start edge, end edge, or body
 -- | (slide the whole window). Edge naming is time-relative, not screen-relative, so

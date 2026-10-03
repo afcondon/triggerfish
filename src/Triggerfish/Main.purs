@@ -126,7 +126,8 @@ data ModalId
 derive instance eqModalId :: Eq ModalId
 
 data RAction
-  = Init | SyncTick | PollVetula | Pick Which | RefreshTidal | CopyTidal | ToggleMaster
+  = Unheard                     -- an output this shell has no use for (a mark)
+  | Init | SyncTick | PollVetula | Pick Which | RefreshTidal | CopyTidal | ToggleMaster
   | OpenModal ModalId | CloseModal   -- the hotkey overlays (⌘1..⌘5; Esc closes)
   | SetBpm String                    -- nav system-BPM field (free-run baseline)
   | SetPreviewCh String              -- routing modal: Vetula's audition channel
@@ -463,6 +464,7 @@ root =
 
 handleAction :: forall o m. MonadAff m => RAction -> H.HalogenM RState RAction Slots o m Unit
 handleAction = case _ of
+  Unheard -> pure unit
   -- Pick one shared free-run epoch for the rack, then keep re-asserting it on a
   -- slow timer so every (mounted, possibly late-initialised) module shares the
   -- same downbeat. Idempotent; a no-op on any module currently Link-locked.
@@ -692,8 +694,8 @@ handleAction = case _ of
       Bus.Hello -> announce Odo *> announce Vet
       Bus.State _ -> pure unit
       Bus.Bye _ -> pure unit
-      -- This page holds Vetula itself, so it has the scale already.
-      Bus.Scale _ -> pure unit
+      -- marks between pages are the standalone pages' business
+      _ -> pure unit
   ModeStored -> do
     mmode <- liftEffect TransportStore.load
     cur <- H.gets _.mode
@@ -1518,11 +1520,13 @@ render st =
     , pane (st.which == Odo) ""
         (HH.slot _odo unit Odonus.component unit case _ of
             Odonus.IdentityChanged cv -> OdoChipChanged cv
-            Odonus.StageChanged segs -> StageChanged Odo segs)
+            Odonus.StageChanged segs -> StageChanged Odo segs
+            Odonus.Marked _ -> Unheard)
     , pane (st.which == Vet) "padding-top:var(--tf-bar)"
         (HH.slot _vet unit Vetula.component unit case _ of
             Vetula.ArmChanged on -> VetulaArmed on
-            Vetula.StageChanged segs -> StageChanged Vet segs)
+            Vetula.StageChanged segs -> StageChanged Vet segs
+            Vetula.Marked _ -> Unheard)
     , pane (st.which == Suf) "" (HH.slot_ _suf unit Sufflamen.component unit)
     , modalOverlay st
     ]

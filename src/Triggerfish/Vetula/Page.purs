@@ -34,6 +34,7 @@ import Vetula.App as Vetula
 data Output
   = Chip (Maybe ChipView)
   | Armed Boolean
+  | Marked Number
 
 type State =
   { sounding :: Sounding
@@ -94,6 +95,7 @@ handleAction = case _ of
   FromVetula out -> case out of
     Vetula.ArmChanged on -> H.raise (Armed on)
     Vetula.StageChanged _ -> pure unit
+    Vetula.Marked at -> H.raise (Marked at)
 
 -- | Every write is guarded on a change: this runs ten times a second.
 poll :: M Unit
@@ -120,6 +122,8 @@ poll = do
 handleQuery :: forall a. SQ.Query a -> M (Maybe a)
 handleQuery = case _ of
   SQ.AskSource k -> H.query _vet unit (Vetula.AskSource k)
+  SQ.AskMarkText k -> H.query _vet unit (Vetula.AskMarkText k)
+  SQ.AddMarkSnapshot at m t a -> H.query _vet unit (Vetula.AddMarkSnapshot at m t a)
   SQ.SetStagePath segs a -> H.query _vet unit (Vetula.SetStagePath segs a)
   SQ.SyncFree t0 tempo a -> H.query _vet unit (Vetula.SyncFree t0 tempo a)
   SQ.SetSounding s a -> do

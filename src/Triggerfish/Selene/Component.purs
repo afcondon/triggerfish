@@ -235,6 +235,9 @@ component =
 
 handleQuery :: forall m a. MonadAff m => Query a -> H.HalogenM State Action Slots Output m (Maybe a)
 handleQuery = case _ of
+  -- No marks here: asked for its text, the shell falls back to AskSource.
+  AskMarkText _ -> pure Nothing
+  AddMarkSnapshot _ _ _ next -> pure (Just next)
   -- Selene doesn't emit notes: it PUBLISHES config to the daemons, and where a
   -- polysignal lands is its own doc's target. So the note-routing table is not
   -- its business — but folding Selene's targets into the same table is step 4b
