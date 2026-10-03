@@ -299,7 +299,8 @@
     svg.flows .loopnode .bar { fill: var(--field, var(--ink)); }
     /* the rig's loops: a bubble per mark, filled while it loops */
     svg.flows .bubble .disc { fill: var(--plate); stroke: var(--field, var(--ink)); stroke-width: 1.5; }
-    svg.flows .bubble .bn { font: 700 10px var(--mono); fill: var(--field, var(--ink)); }
+    /* no halo stroke: on a filled disc it swallows the number */
+    svg.flows .bubble .bn { font: 700 10px var(--mono); fill: var(--field, var(--ink)); stroke: none; }
     svg.flows .bubble.playing .disc { fill: var(--field, var(--ink)); }
     svg.flows .bubble.playing .bn { fill: var(--letter, var(--plate)); }
     svg.flows .bubble .halo { fill: var(--field, var(--ink)); opacity: .35; animation: halo var(--beat, .5s) ease-out infinite; transform-box: fill-box; transform-origin: center; }
