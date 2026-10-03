@@ -9,7 +9,7 @@ export const stateImpl = (done) => () => {
       const sup = d.supervision || {};
       const services = Object.keys(d.services).sort().map((id) => {
         const s = sup[id] || {};
-        return { id, state: String(d.services[id]), restarts: s.restarts | 0, gaveUp: !!s.gaveUp };
+        return { id, state: String(d.services[id]), restarts: s.restarts | 0, gaveUp: !!s.gaveUp, since: Number(s.lastTransitionAt) || 0 };
       });
       done({ desired: String(d.desired || ""), phase: String(d.phase || ""), services })();
     })

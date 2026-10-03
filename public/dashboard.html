@@ -268,6 +268,23 @@
     .s-midi { fill: var(--s-midi); color: var(--s-midi); } .s-osc { fill: var(--s-osc); color: var(--s-osc); }
     .s-http { fill: var(--s-http); color: var(--s-http); } .s-cv { fill: var(--s-cv); color: var(--s-cv); }
     .s-audio { fill: var(--s-audio); color: var(--s-audio); } .s-samples { fill: var(--s-samples); color: var(--s-samples); }
+    /* the Atlantis page: the rig's daemons by branch */
+    .atl { max-width: 980px; padding: 8px 0 40px; }
+    .atl-head { display: flex; align-items: baseline; gap: 14px; flex-wrap: wrap; border-bottom: 1px solid var(--rule); padding-bottom: 10px; }
+    .atl-head h2 { margin: 0; font: 700 22px var(--display); }
+    .atl-phase { font: 400 11px var(--mono); color: var(--muted); }
+    .atl-head .spacer { flex: 1; }
+    .atl-confirm { font-size: 13px; display: inline-flex; gap: 8px; align-items: center; }
+    .atl-none { color: var(--muted); max-width: 60ch; }
+    .atl-branch { display: grid; grid-template-columns: 220px 1fr; gap: 16px; padding: 14px 0; border-bottom: 1px solid var(--rule); }
+    .atl-bhead h3 { margin: 0 0 4px; font: 600 14px var(--display); }
+    .atl-serves { font-size: 12px; color: var(--muted); line-height: 1.4; }
+    .atl-row { display: grid; grid-template-columns: 200px 140px 90px 1fr auto; align-items: center; gap: 10px; padding: 3px 0; }
+    .atl-row .lamp { font: 500 12px var(--mono); color: var(--ink); }
+    .atl-state, .atl-restarts, .atl-asked { font: 400 11px var(--mono); color: var(--muted); }
+    .lamp.coming i { background: #d4a82a; } .lamp.dead i { background: var(--alarm); }
+    .btn.small { padding: 2px 10px; font-size: 12px; }
+    @media (max-width: 720px) { .atl-branch { grid-template-columns: 1fr; } .atl-row { grid-template-columns: 1fr auto; } .atl-state, .atl-restarts { display: none; } }
     /* Bosun's lamps on the daemons */
     svg.flows .dlamp.up { fill: var(--live); } svg.flows .dlamp.coming { fill: #d4a82a; } svg.flows .dlamp.down { fill: var(--alarm); }
     /* control: the page telling the rig what to play, drawn thin and grey */

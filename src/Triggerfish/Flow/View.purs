@@ -234,8 +234,11 @@ chart on hot live f
   lampAt id x y = case Array.find (\l -> l.node == id) live.lamps of
     Nothing -> []
     Just l ->
-      [ svg "circle" [ attr "class" ("dlamp " <> lampClass l.lamp), attr "cx" (n x), attr "cy" (n y), attr "r" "3.5" ]
-          [ svg "title" [] [ HH.text ("Bosun · " <> l.title) ] ]
+      -- a link to the Atlantis page, where it can be restarted
+      [ svg "a" [ attr "href" "#atlantis" ]
+          [ svg "circle" [ attr "class" ("dlamp " <> lampClass l.lamp), attr "cx" (n x), attr "cy" (n y), attr "r" "4" ]
+              [ svg "title" [] [ HH.text ("Bosun · " <> l.title <> " · open the Atlantis page") ] ]
+          ]
       ]
   lampClass = case _ of
     Up -> "up"

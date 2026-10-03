@@ -24,7 +24,9 @@ import Data.Nullable (Nullable, toMaybe)
 import Effect (Effect)
 import Effect.Aff (Aff, makeAff, nonCanceler)
 
-type Service = { id :: String, state :: String, restarts :: Int, gaveUp :: Boolean }
+-- | `since`: when it last changed state (Unix ms). A restart that worked moves
+-- | it, or `restarts`; Bosun's "ok" alone does not say a process moved.
+type Service = { id :: String, state :: String, restarts :: Int, gaveUp :: Boolean, since :: Number }
 
 -- | `desired` is the group's own wish (`up` once raised, `down` while held).
 type Health = { desired :: String, phase :: String, services :: Array Service }

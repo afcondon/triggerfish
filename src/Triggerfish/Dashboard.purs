@@ -65,6 +65,7 @@ import Web.UIEvent.MouseEvent (MouseEvent)
 import Web.UIEvent.MouseEvent as ME
 import Triggerfish.Flow as Flow
 import Triggerfish.Bosun as Bosun
+import Triggerfish.Dashboard.Atlantis as Atlantis
 import Triggerfish.Capture.RigLoops as RigLoops
 import Data.Tuple (Tuple(..))
 import Triggerfish.Flow.View as FlowView
@@ -165,6 +166,11 @@ type State =
   , rigLoops :: Map String (Array RigLoops.RigMark)
   -- the Atlantis group as Bosun last said, Nothing while out of reach
   , bosun :: Maybe Bosun.Health
+  -- the Atlantis page (`#atlantis`): open, its restarts asked, and whether
+  -- lowering the rig is waiting on a second press
+  , atlantis :: Boolean
+  , asked :: Array Atlantis.Asked
+  , confirmingDown :: Boolean
   }
 
 data Action
@@ -202,6 +208,9 @@ data Action
   | ChartLink String String
   | ShowRelays Boolean
   | BosunPoll
+  | RigRestart String
+  | RigGroup String
+  | ConfirmDown Boolean
   | ShowAllVoices Boolean
 
 component :: forall q i o. H.Component q i o Aff
@@ -211,7 +220,8 @@ component = H.mkComponent
       , tempo: 120.0, freeTempo: 120.0, locked: false, bus: Nothing
       , table: RM.defaultTable, ports: [], sampleSets: [], hot: Nothing, voices: [], router: Router.initial
       , matrix: Nothing, pick: Nothing, focus: Nothing, sheet: Nothing, foldDrums: true, vetulaSent: Nothing
-      , relays: false, allVoices: false, rigLoops: Map.empty, bosun: Nothing }
+      , relays: false, allVoices: false, rigLoops: Map.empty, bosun: Nothing
+      , atlantis: false, asked: [], confirmingDown: false }
   , render
   , eval: H.mkEval H.defaultEval { handleAction = handleAction, initialize = Just Init }
   }
@@ -306,9 +316,14 @@ handleAction = case _ of
 
   -- The dashboard's switch is the mode for every page: saved, and every page
   -- follows through its storage listener.
+  -- Atlantis asks for the rig: a held group is raised. Solo leaves the rig
+  -- as it is; lowering it is the Atlantis page's, and deliberate.
   SetMode m -> do
     H.modify_ _ { mode = m }
     liftEffect $ TransportStore.save m
+    st <- H.get
+    when (m == Atlantis && maybe false (\h -> h.desired /= "up") st.bosun)
+      (handleAction (RigGroup "up"))
 
   Command slot play -> post (if play then Bus.Play slot else Bus.Stop slot)
 
@@ -339,9 +354,11 @@ handleAction = case _ of
       H.modify_ _ { table = t }
     syncCards
 
-  FromHash h -> case matrixOfHash h of
-    Just g -> handleAction (OpenMatrix g Nothing)
-    Nothing -> H.modify_ _ { matrix = Nothing, focus = Nothing, pick = Nothing }
+  FromHash h -> do
+    H.modify_ _ { atlantis = h == "atlantis", confirmingDown = false }
+    case matrixOfHash h of
+      Just g -> handleAction (OpenMatrix g Nothing)
+      Nothing -> H.modify_ _ { matrix = Nothing, focus = Nothing, pick = Nothing }
 
   Hover m -> H.modify_ _ { hot = m }
 
@@ -355,8 +372,29 @@ handleAction = case _ of
   -- Every three seconds: which of the group's daemons are up.
   BosunPoll -> void $ H.fork do
     h <- liftAff Bosun.state
+    now <- liftEffect dateNow
     st <- H.get
     when (h /= st.bosun) (H.modify_ _ { bosun = h })
+    -- a restart's outcome is judged against the clock
+    unless (null st.asked) (H.modify_ _ { now = now })
+
+  -- Restart one daemon. What happened is read from /state, not the reply.
+  RigRestart id -> do
+    now <- liftEffect dateNow
+    st <- H.get
+    let before = find (\sv -> sv.id == id) (maybe [] _.services st.bosun)
+    H.modify_ _ { now = now, asked = [ { service: id, at: now, before } ] <> filter (\a -> a.service /= id) st.asked }
+    void $ H.fork do
+      _ <- liftAff (Bosun.control "restart" id)
+      handleAction BosunPoll
+
+  RigGroup verb -> do
+    H.modify_ _ { confirmingDown = false }
+    void $ H.fork do
+      _ <- liftAff (Bosun.control verb "")
+      handleAction BosunPoll
+
+  ConfirmDown b -> H.modify_ _ { confirmingDown = b }
 
   ShowAllVoices b -> H.modify_ _ { allVoices = b }
 
@@ -457,7 +495,12 @@ render st =
   HH.div [ cls "dash" ]
     [ topBar st
     , HH.main [ cls "body" ]
-        [ flowChart st, harmonyPanel st ]
+        ( if st.atlantis then
+            [ Atlantis.view { restart: RigRestart, group: RigGroup, confirmDown: ConfirmDown }
+                { now: st.now, health: st.bosun, asked: st.asked, confirmingDown: st.confirmingDown }
+            ]
+          else [ flowChart st, harmonyPanel st ]
+        )
     , case st.matrix of
         Nothing -> HH.text ""
         Just g -> Matrix.view g
@@ -554,10 +597,13 @@ topBar st =
               [ cls "brand", HP.href "#", HP.title "Triggerfish: home", HP.attr (AttrName "aria-current") "page" ]
               [ HH.text "Triggerfish" ]
         , HH.nav [ cls "tabs", HP.attr (AttrName "aria-label") "Views" ]
-            [ tab Matrix.Notes "#notes" "Routing: Notes"
-            , tab Matrix.Drums "#drums" "Routing: Drums"
-            , HH.a [ cls "tab", HP.href "/about.html", HP.target "atlantis-about" ] [ HH.text "About" ]
-            ]
+            ( [ tab Matrix.Notes "#notes" "Routing: Notes"
+              , tab Matrix.Drums "#drums" "Routing: Drums"
+              ]
+                -- the rig's daemons: a tab in Atlantis, where they are needed
+                <> (if st.mode == Atlantis || st.atlantis then [ atlantisTab ] else [])
+                <> [ HH.a [ cls "tab", HP.href "/about.html", HP.target "atlantis-about" ] [ HH.text "About" ] ]
+            )
         , HH.span [ cls "spacer" ] []
         , tempoControl st
         , rigLamp st
@@ -570,6 +616,12 @@ topBar st =
   where
   -- A plain link: the browser moves the hash and keeps history; the page follows
   -- through its hashchange listener.
+  atlantisTab =
+    HH.a
+      ( [ cls ("tab" <> if st.atlantis then " on" else ""), HP.href "#atlantis" ]
+          <> (if st.atlantis then [ HP.attr (AttrName "aria-current") "page" ] else [])
+      )
+      [ HH.text "Atlantis" ]
   tab g href label =
     HH.a
       ( [ cls ("tab" <> if st.matrix == Just g then " on" else ""), HP.href href ]
