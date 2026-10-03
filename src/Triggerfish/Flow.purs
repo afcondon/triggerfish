@@ -343,7 +343,7 @@ flow inp = { nodes, links, loops: inp.loops }
     where
     mk hops needsRig =
       { machine: m, unit, wire: wireOf dest, hops
-      , brokenAt: case Array.find dead hops of
+      , brokenAt: case Array.find dead (if needsRig then [] else hops) of
           Just h -> Just h.to
           Nothing -> if isNoPort (reachOf inp.ports dest) then _.iface <$> midiEnds dest else Nothing
       , detail: detailOf dest, notes, needsRig
@@ -352,6 +352,8 @@ flow inp = { nodes, links, loops: inp.loops }
   -- A hop into a daemon that is down, or one of the rig's MIDI hops while
   -- Diaphus, which delivers them, is down.
   dead h = h.to `elem` inp.down
+    -- the page does not reach the rig at all
+    || (h.to == "engine" && not inp.rigUp)
     || ("diaphus" `elem` inp.down && h.from == "engine" && h.signal == Midi)
 
   -- Two legs on one wire from one unit are one stream; the drum lanes riding

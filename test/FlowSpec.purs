@@ -101,6 +101,15 @@ runFlowTests = do
   check "with SuperDirt down, a sample stream is broken going into it"
     ((find (\l -> l.to == "d-dirt" && l.from == "engine") noDirt.links <#> _.broken) == Just 1)
 
+  let lonely = flow base
+        { machines = [ "limulus" ], table = [], rigUp = false
+        , extras = [ { machine: "limulus", dest: DMidi { port: "IAC Driver Tidal", channel: 10 }, via: Nothing } ] }
+  check "with no rig, Limulus is broken where it reaches for the engine"
+    ((find (\l -> l.to == "engine") lonely.links <#> _.broken) == Just 1)
+  check "with no rig, a stream that waits for Atlantis is waiting, not broken"
+    (all (\l -> l.broken == 0) (flow base { machines = [ "balistes" ], rigUp = false
+        , table = [ { source: SDrumLane 0, legs: [ { dest: DSample { set: "kit", n: 0, begin: 0, end: 100, reverse: false, gain: 100, chop: 1 }, offsetMs: 0.0, on: true } ] } ] }).links)
+
   check "Solo closes up the rig's columns"
     (layerOf one "port:IAC Driver Tidal" == Just 2)
 
