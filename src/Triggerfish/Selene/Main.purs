@@ -1,6 +1,6 @@
 -- | The Selene rack on its own page (`selene.html`), in the standalone shell
--- | (`Triggerfish.Standalone`). No router: each destination's target is set in
--- | the rack itself, and Selene does not read the routing table.
+-- | (`Triggerfish.Standalone`). Each destination's target is set in the rack
+-- | itself; Selene does not read the routing table.
 -- |
 -- | Selene has no rig voice, so it sounds Local in Solo and Atlantis alike: it
 -- | drives the ES-9 and FH-2 from the browser either way.
@@ -22,6 +22,5 @@ main = Standalone.run
   , nameplate: "Triggerfish · Selene rack"
   , component: Selene.component
   , chipOf: \(Selene.IdentityChanged cv) -> Just cv
-  , router: Nothing
   , armOf: const Nothing
   }

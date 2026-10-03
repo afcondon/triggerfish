@@ -90,7 +90,7 @@ data Query a
   -- answer [] / ignore.
   -- The unified ROUTING TABLE (docs/DESIGN-routing.md). The shell owns it — it
   -- is rack-wide, spans machines, and persists — and pushes it down here on load
-  -- and after every edit in the ⌥1 router. A machine stores it and resolves its
+  -- and after every edit (made on the dashboard). A machine stores it and resolves its
   -- own legs at emit time.
   --
   -- Pushed rather than each machine reading the store, so an edit takes effect on

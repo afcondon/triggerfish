@@ -87,7 +87,7 @@ current bin free = do
 type Bump = Number
 
 -- | The tempo hotkeys, the same on every page: ⌥− and ⌥= move it by one, with
--- | ⇧ by five. Read by the key's position, as ⌥1 is, since on a Mac Option
+-- | ⇧ by five. Read by the key's position, since on a Mac Option
 -- | turns `-` into `–`; and with Option held, so a page that plays its keys
 -- | (Vetula) never hears them as notes.
 hotkey :: KeyboardEvent -> Maybe Bump

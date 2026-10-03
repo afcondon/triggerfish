@@ -55,8 +55,8 @@ navBar s =
 
 -- | Where this machine's heads are going, and whether they can get there.
 -- |
--- | Replaces the VOICES button: routing is edited in the shell's router (⌥1)
--- | now, so there is nothing here to open — but the FACT still belongs in view,
+-- | Replaces the VOICES button: routing is edited on the dashboard now, so
+-- | there is nothing here to open — but the FACT still belongs in view,
 -- | because a leg pointing at an absent port produces silence, and silence reads
 -- | as a musical decision. Counting the dead legs turns it into something you can
 -- | see without playing a note.

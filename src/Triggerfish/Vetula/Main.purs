@@ -1,11 +1,7 @@
 -- | Vetula on its own page (`vetula.html`), in the standalone shell
 -- | (`Triggerfish.Standalone`), through `Triggerfish.Vetula.Page`, which fits
--- | Vetula to the shell and sends its harmonic context out on the tab bus for
--- | Odonus to follow.
--- |
--- | Its router shows the cards, one row a channel, routed as Odonus's heads
--- | are; the rig plays them through those routes (`vetula_cards`), so this
--- | page keeps them on the stage as the dashboard does.
+-- | Vetula to the shell. Its cards are routed on the dashboard (the Notes
+-- | matrix), which keeps their routes on the stage for the rig.
 -- |
 -- | Bundle: `spago bundle --module Triggerfish.Vetula.Main --outfile public/vetula.js`.
 module Triggerfish.Vetula.Main (main) where
@@ -26,13 +22,6 @@ main = Standalone.run
   , chipOf: case _ of
       Page.Chip cv -> Just cv
       Page.Armed _ -> Nothing
-  , router: Just
-      { title: "Routing · Vetula cards"
-      , note: "shared with every page's router"
-      , sources: []
-      , cards: true
-      , restoreLabel: "restore default card routing"
-      }
   , armOf: case _ of
       Page.Armed on -> Just on
       Page.Chip _ -> Nothing

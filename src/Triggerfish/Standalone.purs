@@ -8,10 +8,10 @@
 -- |   * the transport: Solo or Atlantis, and play/stop, pushed down as the one
 -- |     derived `Sounding` (`Triggerfish.Transport.soundingOf`, so a machine with
 -- |     no rig voice, like Selene, stays Local in both modes);
--- |   * the routing table, for a machine that reads it: loaded from the store,
--- |     edited in this page's own router (its own sources only; ⌥1, as in
--- |     Triggerfish), saved, and pushed down. The pages share one origin, so one
--- |     store, and each follows the others' edits live (`Routing.Store.onChange`);
+-- |   * the routing table: loaded from the store and pushed down, and again
+-- |     whenever it changes. It is edited only on the dashboard (since
+-- |     2026-10-03: one place to route, as for the tempo); the pages share one
+-- |     origin, so one store, and follow its edits live (`Routing.Store.onChange`);
 -- |   * the free-run clock baseline and tempo (Solo; Link overrides it on the rig);
 -- |   * the preset chip, and the CAPTURE key (`c`);
 -- |   * the machine's stage slot: its chip and whether it sounds, recorded on
@@ -28,7 +28,6 @@
 -- | inside it. A bar in the flow sits UNDER the panel: drawn, but unclickable.
 module Triggerfish.Standalone
   ( Config
-  , Router
   , run
   ) where
 
@@ -36,11 +35,9 @@ import Prelude
 
 import Binnacle as Binnacle
 import Binnacle.Audio (armAudioKeepAlive)
-import Binnacle.Midi as Midi
 import Binnacle.Time (dateNow)
 import Binnacle.Transport as Transport
 import Data.Foldable (for_)
-import Data.Array (null)
 import Data.Maybe (Maybe(..), fromMaybe, isJust, isNothing, maybe)
 import Data.Set as Set
 import Effect (Effect)
@@ -59,15 +56,8 @@ import Halogen.VDom.Driver (runUI)
 import Triggerfish.Fish as Fish
 import Triggerfish.Glyph (ChipView)
 import Triggerfish.GlyphView (chipIcons)
-import Triggerfish.Routing.Edit as RE
 import Triggerfish.Routing.Model as RM
-import Triggerfish.Routing.Out as RO
 import Triggerfish.Routing.Store as RStore
-import Triggerfish.Routing.View as RV
-import Triggerfish.Routing.VetulaSync as VetulaSync
-import Triggerfish.Router as TR
-import Triggerfish.SampleSets (SampleSet)
-import Triggerfish.SampleSets as SampleSets
 import Triggerfish.SourceQuery as SQ
 import Triggerfish.Stage as Stage
 import Binnacle.TabBus as Bus
@@ -89,8 +79,6 @@ import Web.UIEvent.KeyboardEvent.EventTypes as KET
 -- | - `which`: the machine, for the transport's rules;
 -- | - `nameplate`: the engraved name at the left of the bar;
 -- | - `chipOf`: the preset chip, when an output carries one;
--- | - `router`: the sources this page routes, or `Nothing` for a machine that
--- |   does not read the routing table;
 -- | - `armOf`: the machine armed or disarmed itself (Vetula's own play, stop
 -- |   and unload), which the shell's transport follows.
 type Config o =
@@ -98,21 +86,7 @@ type Config o =
   , nameplate :: String
   , component :: H.Component SQ.Query Unit o Aff
   , chipOf :: o -> Maybe (Maybe ChipView)
-  , router :: Maybe Router
   , armOf :: o -> Maybe Boolean
-  }
-
--- | A page's router: its title, the sources it shows, and what they are called
--- | in the restore link. With `cards`, the sources are Vetula's cards as the
--- | stage holds them (one row a channel) rather than `sources`, and this page
--- | keeps their routes on the stage for the rig (Routing.VetulaSync), as the
--- | dashboard does.
-type Router =
-  { title :: String
-  , note :: String
-  , sources :: Array RM.Source
-  , cards :: Boolean
-  , restoreLabel :: String
   }
 
 run :: forall o. Config o -> Effect Unit
@@ -136,17 +110,10 @@ type State =
   , rig :: Maybe Binnacle.Binnacle
   , rigUp :: Boolean
   , table :: RM.Table
-  , ports :: Array String
-  , sampleSets :: Array SampleSet
-  , routerOpen :: Boolean
   -- The last stage-put sent, so an unchanged slot sends nothing; cleared when
   -- the rig goes away, so a reconnect records it again.
   , staged :: Maybe String
   , bus :: Maybe Bus.Bus
-  -- For a cards router: the stage's text objects, and the Vetula routing
-  -- last written to it (`vetula/routing`).
-  , stage :: TR.Router
-  , vetulaSent :: Maybe String
   }
 
 data Action o
@@ -160,16 +127,9 @@ data Action o
   | RoutingChanged
   | FromMachine o
   | Key E.Event
-  | ToggleRouter
-  | Edit RE.Edit
-  | Audition RM.Destination
-  | ResetRouting
-  | SetPorts (Array String)
   | Tick
   | FromBus Bus.Msg
   | ModeStored
-  | RigOpen
-  | RigFrame String
 
 type Slots o = (machine :: H.Slot SQ.Query o Unit)
 
@@ -180,8 +140,7 @@ root :: forall q i o' o. Config o -> H.Component q i o' Aff
 root cfg = H.mkComponent
   { initialState: \_ ->
       { mode: Solo, playing: false, bpm: 120.0, tempoFlash: Nothing, freeT0: 0.0, chip: Nothing, rig: Nothing
-      , rigUp: false, table: RM.defaultTable, ports: [], sampleSets: [], routerOpen: false
-      , staged: Nothing, bus: Nothing, stage: TR.initial, vetulaSent: Nothing }
+      , rigUp: false, table: RM.defaultTable, staged: Nothing, bus: Nothing }
   , render: render cfg
   , eval: H.mkEval H.defaultEval { handleAction = handleAction cfg, initialize = Just Init }
   }
@@ -201,10 +160,6 @@ handleAction cfg = case _ of
     for_ mmode \m -> H.modify_ _ { mode = m }
     { emitter, listener } <- liftEffect HS.create
     _ <- H.subscribe emitter
-    -- a cards router follows the stage's cards (asked again on each connect)
-    for_ cfg.router \r -> when r.cards do
-      liftEffect $ Binnacle.onAppMessage rig (HS.notify listener <<< RigFrame)
-      liftEffect $ Binnacle.onOpen rig (HS.notify listener RigOpen)
     liftEffect $ RStore.onChange (HS.notify listener RoutingChanged)
     liftEffect $ TransportStore.onChange (HS.notify listener ModeStored)
     liftEffect $ Tempo.onChange (HS.notify listener TempoStored)
@@ -214,15 +169,6 @@ handleAction cfg = case _ of
     liftEffect $ Bus.sayGoodbye bus (maybe [] pure (Stage.slotOf cfg.which))
     -- Ask the other pages to say where they are (the dashboard's chips).
     liftEffect $ Bus.post bus Bus.Hello
-    -- The port names, for the router's reach column and its port menus. The
-    -- machine asks for MIDI itself to play; this is only to know what exists.
-    for_ cfg.router \_ -> do
-      liftEffect $ Midi.requestAccess case _ of
-        Just access -> Midi.outputNames access >>= HS.notify listener <<< SetPorts
-        Nothing -> HS.notify listener (SetPorts [])
-      void $ H.fork do
-        sets <- liftAff SampleSets.load
-        H.modify_ _ { sampleSets = sets }
     _ <- liftEffect $ setInterval 1500 (HS.notify listener Tick)
     target <- liftEffect $ Window.toEventTarget <$> window
     _ <- H.subscribe $ eventListener KET.keydown target (Just <<< Key)
@@ -264,37 +210,7 @@ handleAction cfg = case _ of
     for_ mtbl \t -> do
       H.modify_ _ { table = t }
       void $ H.query _machine unit (SQ.SetRouting t unit)
-    syncCards cfg
-  -- An edit here is saved first, so the store, the machine and every other open
-  -- page (through its storage event) agree on the next note.
-  Edit e -> do
-    st <- H.get
-    for_ (RE.apply { ports: st.ports, sampleSets: st.sampleSets } e st.table) keepTable
-    syncCards cfg
-  ResetRouting -> for_ cfg.router \r -> do
-    st <- H.get
-    keepTable (RE.resetSources st.ports (sourcesOf r st) st.table)
-    syncCards cfg
-  Audition dest -> do
-    st <- H.get
-    for_ (RO.auditionLine dest) \line ->
-      for_ st.rig \bin -> liftEffect $ Transport.send (Binnacle.socket bin) line
-  ToggleRouter -> for_ cfg.router \_ -> H.modify_ \s -> s { routerOpen = not s.routerOpen }
-  SetPorts ns -> do
-    H.modify_ _ { ports = ns }
-    firstRun ns
-    syncCards cfg
-  RigOpen -> do
-    H.modify_ _ { vetulaSent = Nothing }
-    st <- H.get
-    for_ st.rig \bin -> liftEffect $ Transport.send (Binnacle.socket bin) TR.subscribeLine
-  RigFrame msg -> do
-    st <- H.get
-    for_ (TR.readFrame msg st.stage) \r -> do
-      H.modify_ _ { stage = r }
-      syncCards cfg
-  -- The rig link, polled as the Triggerfish shell polls it: what a rig-only leg
-  -- can reach depends on it.
+  -- The rig link, polled: the stage slot is recorded only while it is up.
   Tick -> do
     st <- H.get
     ok <- case st.rig of
@@ -338,53 +254,19 @@ handleAction cfg = case _ of
         H.modify_ _ { playing = on }
         pushSounding cfg
   Key e -> for_ (KE.fromEvent e) \ke -> unless (targetIsField e || KE.metaKey ke || KE.ctrlKey ke) do
-    -- ⌥1 by the key's position, as in Triggerfish: on a Mac, Option+1 types "¡".
-    -- The tempo hotkeys likewise (Triggerfish.Tempo.hotkey).
+    -- The tempo hotkeys, by the key's position (Triggerfish.Tempo.hotkey).
     case Tempo.hotkey ke of
       Just d -> do
         liftEffect $ E.preventDefault e
         handleAction cfg (BumpTempo d)
       Nothing
-        | KE.altKey ke ->
-            when (KE.code ke == "Digit1") do
-              liftEffect $ E.preventDefault e
-              handleAction cfg ToggleRouter
+        | KE.altKey ke -> pure unit
         | otherwise -> case KE.key ke of
             "c" -> handleAction cfg Capture
             " " -> do
               liftEffect $ E.preventDefault e
               handleAction cfg TogglePlay
             _ -> pure unit
-
--- | The sources a router shows: its own, or for a cards router, the stage's.
-sourcesOf :: Router -> State -> Array RM.Source
-sourcesOf r st = if r.cards then map RM.cardSource (VetulaSync.cardChannels st.stage) else r.sources
-
--- | A cards router keeps a row for every card, and the cards' routes on the
--- | stage, once the ports are known (a card's default leg names one).
-syncCards :: forall o o'. Config o -> M o o' Unit
-syncCards cfg = for_ cfg.router \r -> when r.cards do
-  st <- H.get
-  unless (null st.ports) do
-    let s = VetulaSync.sync st.ports st.stage st.table
-    when (s.table /= st.table) (keepTable s.table)
-    when (st.vetulaSent /= Just s.json) $ for_ st.rig \bin -> do
-      liftEffect $ Transport.send (Binnacle.socket bin) (VetulaSync.stageLine s.json)
-      H.modify_ _ { vetulaSent = Just s.json }
-
--- | At first run, with nothing stored, the default table is made for the ports
--- | this machine has and saved, so the choice is made once and shown in the
--- | router rather than left to whichever port happens to come first later.
-firstRun :: forall o o'. Array String -> M o o' Unit
-firstRun ports = do
-  stored <- liftEffect RStore.load
-  when (isNothing stored) (keepTable (RM.defaultTableFor ports))
-
-keepTable :: forall o o'. RM.Table -> M o o' Unit
-keepTable t = do
-  liftEffect $ RStore.save t
-  H.modify_ _ { table = t }
-  void $ H.query _machine unit (SQ.SetRouting t unit)
 
 -- | The machine's one `Sounding`, derived exactly as the Triggerfish shell derives
 -- | it: playing is being armed, and the mode says who makes the sound.
@@ -438,9 +320,6 @@ render :: forall o. Config o -> State -> H.ComponentHTML (Action o) (Slots o) Af
 render cfg st =
   HH.div [ style "min-height:100vh;background:#fafafa" ]
     [ bar cfg st
-    , case cfg.router of
-        Just r | st.routerOpen -> router r st
-        _ -> HH.text ""
     , HH.slot _machine unit cfg.component unit FromMachine
     ]
 
@@ -461,9 +340,6 @@ bar cfg st =
       , HH.span [ style "display:flex;align-items:center;min-width:40px" ] [ chipIcons st.chip ]
       , HH.span [ style "flex:1" ] []
       ]
-      <> (case cfg.router of
-            Just _ -> [ button (if st.routerOpen then "Close routing" else "Routing (⌥1)") ToggleRouter ]
-            Nothing -> [])
       <> [ button "Panic" Panic ]
       <> case st.tempoFlash of
         Just f -> [ tempoFlash f.bpm ]
@@ -494,31 +370,6 @@ bar cfg st =
           <> "background:linear-gradient(#f4f1e8,#e2ddcf)"
       ]
       [ HH.text label ]
-
--- | This page's sources, drawn by the same rows as Triggerfish's ⌥1 router, as a
--- | sheet dropped over the machine.
-router :: forall o. Router -> State -> H.ComponentHTML (Action o) (Slots o) Aff
-router r st =
-  HH.div
-    [ style $ "position:fixed;top:var(--tf-bar);left:0;right:0;z-index:45;max-height:75vh;overflow-y:auto;"
-        <> "box-sizing:border-box;padding:14px 16px 10px;background:#f3f0e7;"
-        <> "border-bottom:1px solid #00000026;box-shadow:0 6px 18px #00000022" ]
-    [ HH.div [ style "display:flex;align-items:baseline;gap:14px;margin-bottom:10px" ]
-        [ HH.span [ style (engrave <> ";font-size:11px") ] [ HH.text r.title ]
-        , HH.span [ style "font-size:10px;color:#8a8474" ] [ HH.text r.note ]
-        , HH.span
-            [ HE.onClick \_ -> ResetRouting
-            , HP.title "return these sources to the shipped defaults; other machines' routes are left alone"
-            , style "cursor:pointer;font-size:10px;color:#a08676;text-decoration:underline" ]
-            [ HH.text r.restoreLabel ]
-        ]
-    , RV.key env (sourcesOf r st)
-    , RV.sourceRows env (sourcesOf r st)
-    ]
-  where
-  env =
-    { table: st.table, ports: st.ports, rigUp: st.rigUp, sampleSets: st.sampleSets
-    , onEdit: Edit, onAudition: Audition }
 
 rigUrl :: String
 rigUrl = "ws://127.0.0.1:3012/ws"
