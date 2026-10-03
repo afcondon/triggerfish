@@ -107,7 +107,7 @@ component =
   H.mkComponent
     { initialState: \_ ->
         { odo: M.defaultOdonus, sounding: Silent, dragging: Nothing, dragSub: Nothing
-        , notes: [], logbook: Logbook.emptyLog, stage: Perform, selEuclid: Nothing, navScenes: false, playing: Nothing, rigLoops: false, rigAsked: 0.0, regionDrag: Nothing, contextOpen: false, codeOpen: false, zoom: Whole, clips: [], twisterField: FNote, binnacle: Nothing, nowMicros: 0.0
+        , notes: [], logbook: Logbook.emptyLog, stage: Perform, selEuclid: Nothing, navScenes: false, playing: Nothing, rigLoops: false, rigAsked: 0.0, cutting: false, cutSel: Nothing, regionDrag: Nothing, contextOpen: false, codeOpen: false, zoom: Whole, clips: [], twisterField: FNote, binnacle: Nothing, nowMicros: 0.0
         , outs: [], routing: RM.defaultTable, midiName: "…", clockTempo: 120.0, clockLocked: false
         , clockBeat: 0.0, clockBar: 0, anchorCount: 0
         , scenes: [], sceneNameInput: "", publishMsg: Nothing
@@ -1024,6 +1024,9 @@ dispatch = case _ of
       , dragSub = Just sid }
   RegionMove cx cy -> do
     st <- H.get
+    for_ st.cutSel \_ -> do
+      cur <- liftEffect $ pointerMicros st cx cy
+      H.modify_ \s -> s { cutSel = map (_ { to = cur }) s.cutSel }
     for_ st.regionDrag \rd -> do
       cur <- liftEffect $ pointerMicros st cx cy
       -- A body grab only becomes a slide past a small threshold, so a click (with
@@ -1040,6 +1043,12 @@ dispatch = case _ of
   RegionUp -> do
     st <- H.get
     for_ st.dragSub H.unsubscribe
+    -- a cut's drag ends: the rig cuts the stretch (stopping at marks' windows)
+    -- and sends every page the record buffer again
+    for_ st.cutSel \sel -> do
+      when (abs (sel.to - sel.from) > (timelineBounds st).span * 0.003) $
+        rigSend (RL.cutLine "odonus" (rigClock st) sel.from sel.to)
+      H.modify_ _ { cutting = false, cutSel = Nothing }
     for_ st.regionDrag \rd ->
       case rd.edge, rd.moved of
         -- A bare click on the body plays the region; a resize/slide is finalized
@@ -1052,6 +1061,14 @@ dispatch = case _ of
           -- the rig's window is the one that plays
           when st.rigLoops $ rigSend (RL.windowLine "odonus" (rigClock st) (m { from = snapped.from, to = snapped.to }))
     H.modify_ _ { regionDrag = Nothing, dragSub = Nothing }
+  ArmCut -> H.modify_ \s -> s { cutting = not s.cutting, cutSel = Nothing }
+  CutDown cx cy -> do
+    sid <- setupRegionDrag
+    st <- H.get
+    at <- liftEffect $ pointerMicros st cx cy
+    H.modify_ _ { cutSel = Just { from: at, to: at }, dragSub = Just sid }
+  TrimLog -> rigSend (RL.cueLine "odonus" "trim")
+  UndoLog -> rigSend (RL.cueLine "odonus" "undo")
   -- Promote a captured good bit into the SCENES list: a mark's stored patch IS
   -- a scene's text (same Lepidoptera form), so the loop can graduate into a
   -- chainable, recallable (as-saved / in-key #150) scene. Auto-named by its key.

@@ -10,6 +10,7 @@
 -- | logbook from before runs), the surface draws real time, as it did.
 module Triggerfish.Capture.Runs
   ( Run
+  , Cut
   , Axis
   , running
   , startRun
@@ -19,11 +20,15 @@ module Triggerfish.Capture.Runs
 
 import Prelude
 
-import Data.Array (drop, foldl, head, reverse, uncons, (:))
+import Data.Array (concatMap, drop, foldl, head, reverse, uncons, (:))
 import Data.Foldable (sum)
 import Data.Maybe (Maybe(..), fromMaybe)
 
 type Run = { from :: Number, to :: Maybe Number }
+
+-- | A stretch cut out of the record buffer (on the rig: its notes deleted).
+-- | The surface draws runs less cuts, so a cut leaves a seam as a pause does.
+type Cut = { from :: Number, to :: Number }
 
 -- | Whether the newest run is still going.
 running :: Array Run -> Boolean
@@ -51,16 +56,27 @@ type Axis =
   }
 
 -- | The axis over played time from `lo` to `lo + span` (played µs), for runs
--- | newest first.
-axis :: Array Run -> { lo :: Number, span :: Number } -> Axis
-axis runsNewest w =
+-- | newest first, less the cuts.
+axis :: Array Run -> Array Cut -> { lo :: Number, span :: Number } -> Axis
+axis runsNewest cuts w =
   { toFrac: \t -> (played t - w.lo) / w.span
   , fromFrac: \x -> unplayed (w.lo + x * w.span)
   , span: w.span
   , seams: map (\r -> (played r.from - w.lo) / w.span) (drop 1 runs)
   }
   where
-  runs = reverse runsNewest
+  -- with cuts but no runs (notes the rig played with no page to say when),
+  -- one run from the start of time, so the cuts still show
+  base = case runsNewest, cuts of
+    [], [] -> []
+    [], _ -> [ { from: 0.0, to: Nothing } ]
+    _, _ -> reverse runsNewest
+  runs = foldl (\rs c -> concatMap (less c) rs) base cuts
+  less c r
+    | c.to <= r.from || c.from >= end r = [ r ]
+    | otherwise =
+        (if c.from > r.from then [ { from: r.from, to: Just c.from } ] else [])
+          <> (if c.to < end r then [ { from: c.to, to: r.to } ] else [])
   end r = fromMaybe infinity r.to
   -- played time up to `t`: the time inside runs before it
   played t = case runs of

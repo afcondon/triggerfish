@@ -1029,6 +1029,8 @@ data Action
   | CaptureToLimulus Int   -- hand mark i, as code, to Limulus (stage-paste)
   | CaptureZoom Zoom       -- whole / last N / crop to a loop
   | CaptureClear           -- purge the capture logbook
+  | CaptureTrim            -- cut all but the marks' windows (on the rig)
+  | CaptureUndo            -- put back the last cut or trim (on the rig)
   | CaptureFrame           -- 33ms tick: advance the river's clock, prune its window
   | PerfNop                -- no-op (used to stop a click bubbling without a re-render)
   | PerfToggleMute Int     -- silence/unsilence box b's pipeline
@@ -1265,7 +1267,7 @@ component = H.mkComponent
       , perfMenuOpen: false
       , clipLibrary: []
       , perfPhrasePick: Nothing
-      , capture: { logbook: Logbook.emptyLog, playing: Nothing, regionDrag: Nothing, contextOpen: false, codeOpen: false, zoom: Whole, rig: Nothing }
+      , capture: { logbook: Logbook.emptyLog, playing: Nothing, regionDrag: Nothing, contextOpen: false, codeOpen: false, zoom: Whole, rig: Nothing, cutting: false, cutSel: Nothing }
       , rigLoops: false, rigAsked: 0.0
       , nowMicros: 0.0
       , riverNotes: []
@@ -3016,6 +3018,8 @@ handleActionCore = case _ of
         ("stage-paste vetula/mark " <> markCode "vetula" _.patch m)
   CaptureZoom z -> H.modify_ \s -> s { capture = s.capture { zoom = z } }
 
+  CaptureTrim -> rigSend (RL.cueLine "vetula" "trim")
+  CaptureUndo -> rigSend (RL.cueLine "vetula" "undo")
   -- With the rig, clear its record buffer too; it says so to every page
   -- (loops-clear), and this one clears then.
   CaptureClear -> do
@@ -6327,6 +6331,7 @@ capturePane st =
     , ownCode: _.patch
     , toggleCode: CaptureToggleCode
     , toLimulus: CaptureToLimulus
+    , edits: if st.rigLoops then Just { trim: CaptureTrim, undo: CaptureUndo, cut: Nothing } else Nothing
     }
 
 -- | Colour a captured note by its source channel/voice (up to six distinct hues).

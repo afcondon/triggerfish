@@ -318,6 +318,9 @@ type State =
   -- when it last asked (perf ms): until the rig answers it asks every two
   -- seconds, since a request sent before the socket opens is lost
   , rigAsked :: Number
+  -- ✂ armed, and the stretch being dragged to cut (Capture.View)
+  , cutting :: Boolean
+  , cutSel :: Maybe { from :: Number, to :: Number }
   , regionDrag :: Maybe RegionDrag  -- a loop-region resize/slide in progress
   , contextOpen :: Boolean          -- REPLAY control card: harmonic-context panel open
   , codeOpen :: Boolean             -- REPLAY control card: the mark as code
@@ -450,6 +453,10 @@ data Action
   | RegionDown Int RegionEdge Int Int  -- grab a region: markIdx, edge, clientX, clientY
   | RegionMove Int Int      -- pointer moved during a region drag: clientX, clientY
   | RegionUp                -- release a region drag (click→play, or finalize resize)
+  | ArmCut                  -- ✂: the next drag across the surface selects a stretch to cut
+  | CutDown Int Int         -- the cut's drag starts: clientX, clientY
+  | TrimLog                 -- cut all but the marks' windows (on the rig)
+  | UndoLog                 -- put back the last cut or trim (on the rig)
   | SaveMarkScene Int       -- promote a mark's captured patch into the SCENES list
   | SaveMarkClip Int        -- lift a mark's region out as a captured clip (#151, R2d)
   | PlayClip Int            -- audition a captured clip (loops, like a region)

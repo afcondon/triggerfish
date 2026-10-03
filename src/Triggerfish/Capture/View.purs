@@ -60,6 +60,10 @@ type CaptureState =
   -- the rig keeps the marks and plays the loops (Capture.RigLoops): the
   -- clock to place its loops' playheads by; Nothing when the page does
   , rig :: Maybe Clock
+  -- ✂ armed: a drag across the surface selects a stretch to cut; and the
+  -- stretch being dragged (surface µs)
+  , cutting :: Boolean
+  , cutSel :: Maybe { from :: Number, to :: Number }
   }
 
 -- | The harmonic context read off a mark's captured patch — the same shape as
@@ -88,6 +92,9 @@ type CaptureWiring action =
   , ownCode :: Mark -> String
   , toggleCode :: action
   , toLimulus :: Int -> action
+  -- editing the record buffer, with a rig: trim to the marks, undo the last
+  -- edit, and (a host that can drag) ✂ arm and the drag's start
+  , edits :: Maybe { trim :: action, undo :: action, cut :: Maybe { arm :: action, down :: Int -> Int -> action } }
   }
 
 -- viewBox units — the timeline's internal coordinate space (stretched to fit). The
@@ -171,7 +178,8 @@ capturePanel w cap =
             ]
               <> concat (mapWithIndex (regionBand w posOf (activeAt cap)) lb.marks)
               <> playheads w posOf cap
-              <> [ caption (length shown) (length lb.marks) cap.zoom b.span, zoomBar w cap.zoom ]
+              <> cutBand w posOf cap
+              <> [ caption (length shown) (length lb.marks) cap.zoom b.span, zoomBar w cap ]
               <> controlCard w posOf cap
       )
 
@@ -440,11 +448,11 @@ caption notes marks zoom span =
 bounds :: Zoom -> Logbook -> Axis
 bounds zoom lb =
   let
-    played = (Runs.axis lb.runs { lo: 0.0, span: 1.0 }).toFrac
+    played = (Runs.axis lb.runs lb.cuts { lo: 0.0, span: 1.0 }).toFrac
     events = lb.live <> concatMap _.events lb.chunks
     first = played (foldl (\a e -> min a e.fireUnixMicros) 1.0e18 events)
     newest = played (foldl (\a e -> max a e.fireUnixMicros) 0.0 events)
-  in Runs.axis lb.runs case zoom of
+  in Runs.axis lb.runs lb.cuts case zoom of
     Whole -> { lo: first, span: steppedSpan (newest - first) }
     Last d -> { lo: newest - d, span: d }
     Window w -> { lo: played w.from, span: max 1.0 (played w.to - played w.from) }
@@ -472,15 +480,62 @@ duration us =
   in if secs < 60 then show secs <> " s"
      else show (secs / 60) <> " min" <> (if secs `mod` 60 == 0 then "" else " " <> show (secs `mod` 60) <> " s")
 
--- | Whole · 5 min · 1 min · 20 s, top right; the current one lit.
-zoomBar :: forall action slots m. CaptureWiring action -> Zoom -> H.ComponentHTML action slots m
-zoomBar w zoom =
-  HH.div [ style "position:absolute;top:8px;right:10px;display:flex;gap:3px;z-index:6" ]
+-- | While ✂ is armed, a sheet over the surface takes the drag (so a band
+-- | is not grabbed instead), and the stretch selected shows red.
+cutBand :: forall action slots m. CaptureWiring action -> (Number -> Number) -> CaptureState -> Array (H.ComponentHTML action slots m)
+cutBand w posOf cap = case w.edits >>= _.cut of
+  Just c | cap.cutting ->
+    [ HH.div
+        [ HE.onMouseDown \me -> c.down (ME.clientX me) (ME.clientY me)
+        , style "position:absolute;inset:0;z-index:8;cursor:crosshair;background:rgba(200,60,40,0.04)" ]
+        ( case cap.cutSel of
+            Just sel ->
+              let a = posOf sel.from
+                  b = posOf sel.to
+                  lo = min a b
+                  len = abs (b - a)
+              in [ HH.div
+                     [ style $ "position:absolute;pointer-events:none;background:rgba(200,60,40,0.25);"
+                         <> "border-left:1px solid #d0503a;border-right:1px solid #d0503a;"
+                         <> case w.orientation of
+                              Vertical -> "left:0;right:0;top:" <> show lo <> "%;height:" <> show len <> "%"
+                              _ -> "top:0;bottom:0;left:" <> show lo <> "%;width:" <> show len <> "%" ]
+                     [] ]
+            Nothing ->
+              [ HH.div
+                  [ style "position:absolute;bottom:9px;right:12px;font-family:Georgia,serif;font-size:10px;color:#e0907a" ]
+                  [ HH.text "drag across what to cut; it stops at a mark's window" ] ] )
+    ]
+  _ -> []
+
+-- | Whole · 5 min · 1 min · 20 s, top right; the current one lit. With a rig,
+-- | the edits after them: ✂ cut, trim, undo.
+zoomBar :: forall action slots m. CaptureWiring action -> CaptureState -> H.ComponentHTML action slots m
+zoomBar w cap =
+  HH.div [ style "position:absolute;top:8px;right:10px;display:flex;gap:3px;z-index:9" ]
     (map btn [ Tuple "whole" Whole, Tuple "5 min" (Last 300.0e6), Tuple "1 min" (Last 60.0e6), Tuple "20 s" (Last 20.0e6) ]
-      <> case zoom of
+      <> (case zoom of
            Window _ -> [ btn (Tuple "cropped" zoom) ]
            _ -> [])
+      <> case w.edits of
+           Just e ->
+             [ HH.span [ style "width:8px" ] [] ]
+               <> (case e.cut of
+                     Just c -> [ editBtn c.arm cap.cutting "drag across the surface to cut that stretch out of the record buffer" "✂ cut" ]
+                     Nothing -> [])
+               <> [ editBtn e.trim false "cut everything outside the marks' windows, a bar either side" "trim"
+                  , editBtn e.undo false "put back the last cut or trim" "undo" ]
+           Nothing -> [])
   where
+  zoom = cap.zoom
+  editBtn act lit t label =
+    HH.button
+      [ HE.onClick \_ -> act
+      , HP.title t
+      , style $ "padding:2px 7px;border-radius:5px;cursor:pointer;border:1px solid #ffffff1a;"
+          <> "font-family:'SF Mono',Menlo,monospace;font-size:9px;"
+          <> (if lit then "background:#d0503a44;color:#f0a090" else "background:#ffffff0a;color:#ffffff66") ]
+      [ HH.text label ]
   btn (Tuple label z) =
     HH.button
       [ HE.onClick \_ -> w.setZoom z

@@ -46,7 +46,7 @@ retentionMicros :: Number
 retentionMicros = 90.0 * 60.0 * 1.0e6
 
 emptyLog :: Logbook
-emptyLog = { live: [], liveFrom: 0.0, chunks: [], marks: [], runs: [] }
+emptyLog = { live: [], liveFrom: 0.0, chunks: [], marks: [], runs: [], cuts: [] }
 
 -- | Append this step's fresh notes (newest-first) at wall-clock `now`. Seeds the
 -- | live chunk's start when it was empty; freezes + purges when it fills.

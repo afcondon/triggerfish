@@ -26,7 +26,8 @@ replayPanel s = capturePanel wiring cap
   cap =
     { logbook: s.logbook, playing: s.playing
     , regionDrag: s.regionDrag, contextOpen: s.contextOpen, codeOpen: s.codeOpen, zoom: s.zoom
-    , rig: if s.rigLoops then Just { micros: s.nowMicros, beat: s.clockBeat, tempo: s.clockTempo } else Nothing }
+    , rig: if s.rigLoops then Just { micros: s.nowMicros, beat: s.clockBeat, tempo: s.clockTempo } else Nothing
+    , cutting: s.cutting, cutSel: s.cutSel }
   wiring =
     { orientation: Horizontal
     , timelineId: replayTimelineId
@@ -42,4 +43,5 @@ replayPanel s = capturePanel wiring cap
     , ownCode: \m -> asCode m.patch m.now
     , toggleCode: ToggleCode
     , toLimulus: MarkToLimulus
+    , edits: if s.rigLoops then Just { trim: TrimLog, undo: UndoLog, cut: Just { arm: ArmCut, down: CutDown } } else Nothing
     }

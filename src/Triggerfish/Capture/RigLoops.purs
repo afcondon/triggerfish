@@ -27,6 +27,7 @@ module Triggerfish.Capture.RigLoops
   , playheadFrac
   , syncLine
   , runLine
+  , cutLine
   , notesLine
   , readNotes
   , seedNotes
@@ -47,7 +48,7 @@ import Data.Maybe (Maybe(..), fromMaybe, isJust)
 import Data.String (Pattern(..), stripPrefix)
 import Data.Nullable (Nullable, toMaybe)
 import Simple.JSON (readJSON, writeJSON)
-import Triggerfish.Capture.Runs (Run)
+import Triggerfish.Capture.Runs (Cut, Run)
 import Triggerfish.Capture.Types (Logbook, Mark)
 import Triggerfish.Clips (NoteEvent)
 
@@ -140,19 +141,31 @@ syncLine = "loops-sync"
 notesLine :: String -> String
 notesLine machine = "loops-notes " <> machine
 
+-- | Cut a stretch (the surface's µs) out of the rig's record buffer, in beats.
+cutLine :: String -> Clock -> Number -> Number -> String
+cutLine machine c a b =
+  "loops-cut " <> writeJSON { machine, from: beatOf c (min a b), to: beatOf c (max a b) }
+
 -- | The machine's transport started or stopped, for the rig's runs.
 runLine :: String -> Boolean -> String
 runLine machine playing = "loops-run " <> writeJSON { machine, playing }
 
 -- | The record buffer from a `loops-notes` frame, as the surface's notes and
 -- | runs, newest first, timed by `Clock`.
-readNotes :: String -> Clock -> String -> Maybe { notes :: Array NoteEvent, runs :: Array Run }
+readNotes :: String -> Clock -> String -> Maybe { notes :: Array NoteEvent, runs :: Array Run, cuts :: Array Cut, edited :: Boolean }
 readNotes machine c msg = do
   json <- stripPrefix (Pattern "loops-notes ") msg
-  r :: { machine :: String, notes :: Array (Array Number), runs :: Maybe (Array (Array (Nullable Number))) } <- hush (readJSON json)
+  r :: { machine :: String, notes :: Array (Array Number), runs :: Maybe (Array (Array (Nullable Number)))
+       , cuts :: Maybe (Array (Array Number)), edited :: Maybe Boolean } <- hush (readJSON json)
   if r.machine /= machine then Nothing
-  else Just { notes: reverse (mapMaybe note r.notes), runs: reverse (mapMaybe run (fromMaybe [] r.runs)) }
+  else Just
+    { notes: reverse (mapMaybe note r.notes), runs: reverse (mapMaybe run (fromMaybe [] r.runs))
+    , cuts: mapMaybe cut (fromMaybe [] r.cuts), edited: fromMaybe false r.edited }
   where
+  cut a = do
+    from <- a !! 0
+    to <- a !! 1
+    pure { from: microsOf c from, to: microsOf c to }
   run a = do
     from <- a !! 0 >>= toMaybe
     pure { from: microsOf c from, to: microsOf c <$> (a !! 1 >>= toMaybe) }
@@ -166,12 +179,13 @@ readNotes machine c msg = do
          , vel: round vel, gateMs: dur * beatMicros c / 1000.0 }
 
 -- | A page that opens after the notes were played takes the rig's record
--- | buffer, and its runs, as its own; one that has notes keeps them.
-seedNotes :: { notes :: Array NoteEvent, runs :: Array Run } -> Logbook -> Logbook
+-- | buffer, its runs and cuts, as its own; one that has notes keeps them.
+-- | After a cut, trim or undo (`edited`) every page takes it whole.
+seedNotes :: { notes :: Array NoteEvent, runs :: Array Run, cuts :: Array Cut, edited :: Boolean } -> Logbook -> Logbook
 seedNotes r lb
-  | null lb.live && null lb.chunks && not (null r.notes) =
-      lb { live = r.notes, liveFrom = fromMaybe 0.0 (map _.fireUnixMicros (r.notes !! 0))
-         , runs = if null r.runs then lb.runs else r.runs }
+  | r.edited || (null lb.live && null lb.chunks && not (null r.notes)) =
+      lb { live = r.notes, liveFrom = fromMaybe 0.0 (map _.fireUnixMicros (r.notes !! 0)), chunks = []
+         , runs = if null r.runs then lb.runs else r.runs, cuts = r.cuts }
   | otherwise = lb
 
 -- | A cue, as Limulus would send it: `tidal odonus $ loop 2`.
