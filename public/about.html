@@ -22,7 +22,7 @@
       --kraken: #8a3a50; --kraken-deep: #5e2234; --kraken-pupil: #2a0f18;
       /* The chart's signals, as on the dashboard. */
       --s-notes: #7f9098; --s-socket: #7c5cc4; --s-midi: #13807b; --s-osc: #c08a12;
-      --s-cv: #a8327a; --s-audio: #2f6fae; --s-samples: #8a5a2b;
+      --s-cv: #a8327a; --s-audio: #2f6fae; --s-samples: #8a5a2b; --s-control: #a9b0b4;
       --serif: "Source Serif 4", Georgia, "Times New Roman", serif;
       --head: "Playfair Display", Georgia, serif;
       --sans: "Archivo", "Helvetica Neue", Arial, sans-serif;
@@ -111,7 +111,7 @@
     .chain .t { display: block; font: 700 10.5px/1.3 var(--sans); letter-spacing: .14em; text-transform: uppercase; color: var(--soft); margin-bottom: 2px; }
     .chain i { font-style: normal; font-size: 11px; padding: 0 3px; border-radius: 2px; color: #fff; white-space: nowrap; }
     .sig-notes { background: var(--s-notes); } .sig-socket { background: var(--s-socket); } .sig-midi { background: var(--s-midi); }
-    .sig-osc { background: var(--s-osc); } .sig-cv { background: var(--s-cv); } .sig-audio { background: var(--s-audio); } .sig-samples { background: var(--s-samples); }
+    .sig-osc { background: var(--s-osc); } .sig-cv { background: var(--s-cv); } .sig-audio { background: var(--s-audio); } .sig-samples { background: var(--s-samples); } .sig-control { background: var(--s-control); }
 
     table.wires { width: 100%; margin-top: 12px; border-collapse: collapse; font-size: 14.5px; line-height: 1.4; }
     table.wires caption { caption-side: top; text-align: left; padding: 0 0 6px; font: 800 12px/1.3 var(--sans); letter-spacing: .16em; text-transform: uppercase; }
@@ -467,8 +467,8 @@
     <p class="motto">Applying the Unix philosophy to music since 2026</p>
 
     <div class="edition">
-      <span>Vol. I &middot; No. 2</span>
-      <span>Friday, 2 October 2026</span>
+      <span>Vol. I &middot; No. 3</span>
+      <span>Saturday, 3 October 2026</span>
       <span class="opt">Triggerfish &amp; the Atlantis rig</span>
       <span>Price: one browser</span>
     </div>
@@ -490,17 +490,18 @@
           <p class="drop">Triggerfish is a set of musical machines, each living in its own browser tab. Odonus writes melodic figures, Vetula grows harmony, Balistes plays drums, and Selene makes control signals for a modular synthesiser. None of them knows how the others work inside. What they share are wires: MIDI to reach instruments, OSC between the programs that run the rig, a WebSocket to reach the rig's engine, and a BroadcastChannel so that pages can hear one another.</p>
           <blockquote class="pull">&ldquo;Write programs that do one thing and do it well. Write programs to work together.&rdquo;<cite>Doug McIlroy, as summarised by Peter H. Salus</cite></blockquote>
           <p>That is the Unix idea, moved from text to sound. A pipe in a shell carries text; these wires carry notes, clocks and control voltages. Because each piece does one thing, each can be understood, replaced or simply left out. Someone new can open one page and play Ableton with it. Someone with a eurorack case can add the small programs that reach it. Nothing in between is needed until it is wanted.</p>
-          <p>Every machine is a web page, and every page is served from one origin, <span class="mono">localhost:3023</span>. So the pages share the routing table and the mode through the browser's own storage, and talk on a tab bus. The dashboard is one more page on that bus: it shows which machines are open, starts and stops them, sets the mode for all of them at once, and holds the routing: three matrices, in the manner of AUM, for the notes, the drums and the harmony. Close it, and each machine still plays on its own.</p>
-          <p>Text is a page like any other. Limulus is one editor in front of Tidal, and the machines answer to it too: <span class="mono">drums $ s "bd*2 sn"</span> plays the drum kit, <span class="mono">odonus $ scale "dorian"</span> moves Odonus, <span class="mono">v3 $ …</span> is a Vetula card and <span class="mono">conspicillum $ …</span> a grain cloud, each also open in its own page and kept in step through the rig.</p>
+          <p>Every machine is a web page, and every page is served from one origin, <span class="mono">localhost:3023</span>. So the pages share the routing table and the mode through the browser's own storage, and talk on a tab bus. The dashboard is one more page on that bus: it shows which machines are open, starts and stops them, sets the mode for all of them at once, and holds the routing: three matrices, in the manner of AUM, for the notes, the drums and the harmony. In Atlantis it also keeps the rig: which of its programs are running, and a button to restart any of them. Close it, and each machine still plays on its own.</p>
+          <p>Text is a page like any other. Limulus is one editor in front of Tidal, and the machines answer to it too: <span class="mono">drums $ s "bd*2 sn"</span> plays the drum kit, <span class="mono">odonus $ scale "dorian"</span> moves Odonus, <span class="mono">v3 $ …</span> is a Vetula voice, <span class="mono">conspicillum $ …</span> a grain cloud, and <span class="mono">odonus $ loop 2</span> plays back a stretch of what Odonus played, each also open in its own page and kept in step through the rig.</p>
           <p>The same discipline runs underneath. The sequencer engines are written once, in PureScript, and compiled twice: to JavaScript for the page and to Erlang for the rig, with conformance tests holding the two to the same behaviour. A pattern does not change its mind when it moves from the browser to the rig.</p>
         </div>
         <table class="wires">
           <caption>The wires, at a glance</caption>
           <tr><th>MIDI</th><td>Notes and controllers, to instruments. From the page by Web MIDI in Solo; from Diaphus by CoreMIDI in Atlantis.</td></tr>
-          <tr><th>The rig socket</th><td>A WebSocket from each page to Architeuthis: notes to play, and the stage, the rig's record of what each machine is playing.</td></tr>
+          <tr><th>The rig socket</th><td>A WebSocket from each page to Architeuthis: what to play (a machine's patch, its edits, its cues), its marks and loops, and the stage, the rig's record of what each machine is playing.</td></tr>
           <tr><th>OSC</th><td>Between the rig's own programs: Architeuthis to Diaphus, SuperDirt and es9-daemon, and the beat back from Diaphus.</td></tr>
           <tr><th>The tab bus</th><td>A BroadcastChannel between pages of one origin: which machines are open; play, stop and panic; Vetula's scale for Odonus.</td></tr>
           <tr><th>Ableton Link</th><td>Tempo and phase, shared over the local network with anything else that speaks Link.</td></tr>
+          <tr><th>Bosun's HTTP</th><td>Which of the rig's programs are up, and the requests to restart one or to raise and lower them all. The dashboard reads it every few seconds.</td></tr>
         </table>
       </article>
 
@@ -511,8 +512,9 @@
         <div class="copy">
           <p><strong>In Solo, the page plays.</strong> Each machine sends MIDI itself, through the browser's Web MIDI, to whatever port the routing table names. The base case is one sequencer into Ableton. It needs a Chromium browser and a MIDI port (on a Mac, the IAC bus, switched on in Audio MIDI Setup), and nothing else installed. Each page keeps its own time.</p>
           <div class="chain"><span class="t">Solo</span>Odonus <i class="sig-notes">notes</i> page <i class="sig-midi">MIDI</i> IAC <i class="sig-midi">MIDI</i> Ableton <i class="sig-audio">audio</i> ears</div>
-          <p><strong>In Atlantis, the rig plays.</strong> Odonus, Vetula and Balistes hand their notes over the rig socket to Architeuthis, the rig's engine. It schedules them and passes each one, stamped with its time, to Diaphus, which delivers it through CoreMIDI on Ableton Link's beat. So the rig shares one tempo and phase with every other Link peer. The same engine sends samples to SuperDirt and control voltages to the modular through es9-daemon.</p>
-          <div class="chain"><span class="t">Atlantis</span>Odonus <i class="sig-notes">notes</i> page <i class="sig-socket">rig socket</i> Architeuthis <i class="sig-osc">OSC</i> Diaphus <i class="sig-midi">MIDI</i> Ableton <i class="sig-audio">audio</i> ears</div>
+          <p><strong>In Atlantis, the rig plays.</strong> Odonus, Vetula and Balistes tell Architeuthis, the rig's engine, what to play: their patterns, their edits, their cues, over the rig socket. The engine runs the same sequencer the page would, makes the notes itself, and passes each one, stamped with its time, to Diaphus, which delivers it through CoreMIDI on Ableton Link's beat. So the rig shares one tempo and phase with every other Link peer. The same engine sends samples to SuperDirt and control voltages to the modular through es9-daemon.</p>
+          <div class="chain"><span class="t">Atlantis</span>Odonus <i class="sig-control">control</i> page <i class="sig-control">rig socket</i> Architeuthis <i class="sig-osc">OSC</i> Diaphus <i class="sig-midi">MIDI</i> Ableton <i class="sig-audio">audio</i> ears</div>
+          <p><strong>Loops are the rig's in either mode.</strong> While the rig answers, it keeps each machine's recent playing in a record buffer; a mark sets a window on it, and <span class="mono">loop 2</span> plays that window back on the next downbeat, even with the page closed. Choosing Atlantis also raises the rig if it is being held down; choosing Solo leaves it running.</p>
           <p>Selene and Quadrat are not played by the rig. Selene sets up the modular's signals, which then run on the hardware; Quadrat drives its instrument through the Friends server and records through Itajara.</p>
         </div>
       </article>
@@ -521,7 +523,7 @@
         <section class="box">
           <h3>In this issue</h3>
           <ul class="index">
-            <li><svg class="ico" viewBox="0 0 48 48" style="transform:none;width:21px;margin-inline:6px 7px"><use href="#ic-ears"/></svg><span><a href="dashboard.html">Dashboard</a><span class="what">the chart; harmony; routing</span></span></li>
+            <li><svg class="ico" viewBox="0 0 48 48" style="transform:none;width:21px;margin-inline:6px 7px"><use href="#ic-ears"/></svg><span><a href="dashboard.html">Dashboard</a><span class="what">the chart; routing; the rig</span></span></li>
             <li><svg class="fish" viewBox="0 0 200 120"><use href="#sp-odonus"/></svg><span><a href="odonus.html">Odonus</a><span class="what">melody, four playheads</span></span></li>
             <li><svg class="fish" viewBox="0 0 200 120"><use href="#sp-vetula"/></svg><span><a href="vetula.html">Vetula</a><span class="what">harmony, grown by ear</span></span></li>
             <li><svg class="fish" viewBox="0 0 200 120"><use href="#sp-balistes"/></svg><span><a href="balistes.html">Balistes</a><span class="what">drums</span></span></li>
@@ -549,12 +551,13 @@
 
         <section class="box brief">
           <h3>News in brief</h3>
-          <p><b>Three new names.</b> The engine, long purerl-tidal, is Architeuthis, after the giant squid it was always drawn as. The beat, link-spike, is Diaphus, a lanternfish. The repository of module specifications takes the name Acropora, a reef coral, so that Selene means the signal page alone.</p>
-          <p><b>Routing as matrices.</b> Routing: Notes and Routing: Drums open from the masthead of the dashboard. What a column shares is printed once, at its head; the cells say only what differs. A gear on a column opens the device itself: a Rample's card, a sample's window.</p>
-          <p><b>Harmony is routed.</b> What Odonus quantises to is a matrix under the chart: its grid reads a scale, its output snaps to a chord or a second scale, fed by Vetula, a scale or a pattern.</p>
-          <p><b>Drums by the line.</b> Balistes retires its Tidal tab; real Tidal now plays the kit from Limulus, down the same routes as Grids and Rhythm.</p>
-          <p><b>Hush means hush.</b> In Limulus it now stops every sound on the rig; each machine takes one of its own.</p>
-          <p><b>Squid changes jobs.</b> Verrill's giant squid, tried as a watermark under the chart, was found to clash with the live ribbons. It has found work on this masthead.</p>
+          <p><b>Loops come to the rig.</b> Architeuthis now keeps every note Odonus and Vetula play, for ninety minutes. Press mark and the bar in progress, with the one before it, is held; <span class="mono">loop 2</span> plays mark two on the next downbeat, and <span class="mono">loop "&lt;1 2&gt;"</span> alternates two. Numbers are positions: delete mark one, and two becomes one.</p>
+          <p><b>Stops leave no gap.</b> The review surface draws only time that was played. Stop and start again and the new notes join the old at a dashed seam, as on a tape, and a loop dragged across a seam steps off it.</p>
+          <p><b>Cut, trim and undo.</b> Drag across the surface to delete what is under it; <span class="mono">trim</span> keeps only what lies around the marks; <span class="mono">undo</span> takes either back. A clear button, and <span class="mono">odonus $ clear</span>, start afresh without restarting the rig.</p>
+          <p><b>Notes set the pace.</b> Each of Odonus's playheads can now step on the clock or move on when its note ends, so long notes slow it and short ones hurry it. <span class="mono">odonus $ clock dur</span>.</p>
+          <p><b>The chart tells the truth.</b> A page that only tells the rig what to play is drawn as a grey line, and the coloured streams begin at the engine. Loops are drawn in their own column, and a lamp on each of the rig's programs says whether it is running.</p>
+          <p><b>The rig, from the dashboard.</b> A new Atlantis page lists the rig's programs by what they serve, with a restart for each, and does not report a restart until it has seen one happen.</p>
+          <p><b>One word, one meaning.</b> A vocabulary was settled. Tape is retired: say sample or recording. The ring is the record buffer, harvesting is packaging, Vetula's cards are voices, and whatever makes the sound at the end is an instrument.</p>
         </section>
       </aside>
     </div>
@@ -570,11 +573,11 @@
         <div class="cast">
           <article class="who">
             <header><svg class="fish flip" viewBox="0 0 200 120"><use href="#sp-odonus"/></svg><div><span class="w-odonus">Odonus</span><span class="sp">Odonus niger, the red-toothed triggerfish</span></div></header>
-            <p>A harmelodic step sequencer. Sixteen cells are read by four playheads, each taking its own path through them, and the result is held to a scale, to chords, or to Vetula's progression. It can generate its own material. <a class="go" href="odonus.html">odonus.html</a></p>
+            <p>A harmelodic step sequencer. Sixteen cells are read by four playheads, each taking its own path through them, and the result is held to a scale, to chords, or to Vetula's progression. It can generate its own material, and a playhead can step on the clock or at the pace of its own notes. <a class="go" href="odonus.html">odonus.html</a></p>
           </article>
           <article class="who">
             <header><svg class="fish flip" viewBox="0 0 200 120"><use href="#sp-vetula"/></svg><div><span class="w-vetula">Vetula</span><span class="sp">Balistes vetula, the queen triggerfish</span></div></header>
-            <p>Grows harmony by ear: a palette of chords that you widen by revoicing, inverting, suspending and extending. Its progression crosses the tab bus and becomes Odonus's scale. <a class="go" href="vetula.html">vetula.html</a></p>
+            <p>Grows harmony by ear: a palette of chords that you widen by revoicing, inverting, suspending and extending. Its key, or the chords of one of its voices, can feed Odonus, through the harmony routes on the dashboard. <a class="go" href="vetula.html">vetula.html</a></p>
           </article>
           <article class="who">
             <header><svg class="fish flip" viewBox="0 0 200 120"><use href="#sp-balistes"/></svg><div><span class="w-balistes">Balistes</span><span class="sp">Balistes capriscus, the grey triggerfish</span></div></header>
@@ -592,7 +595,7 @@
         <div class="cast">
           <article class="who">
             <header><svg class="fish flip" viewBox="0 0 200 120"><use href="#sp-conspicillum"/></svg><div><span class="w-conspicillum">Conspicillum</span><span class="sp">Balistoides conspicillum, the clown triggerfish</span></div></header>
-            <p>The sample loupe. Look closely at a collection of samples (waveform, loupe, laboratory, library, shelf) and play it, through SuperDirt. <a class="go" href="/conspicillum/">/conspicillum/</a></p>
+            <p>The sample loupe. Look closely at a collection of samples (waveform, loupe, laboratory, library) and play it, through SuperDirt. <a class="go" href="/conspicillum/">/conspicillum/</a></p>
           </article>
           <article class="who">
             <header><svg class="fish flip" viewBox="0 0 200 120"><use href="#sp-quadrat"/></svg><div><span class="w-quadrat">Quadrat</span><span class="sp">a boxfish, square in body and name</span></div></header>
@@ -604,7 +607,7 @@
           </article>
           <article class="who">
             <header><svg class="fish flip" viewBox="0 0 200 120"><use href="#sp-limulus"/></svg><div><span class="nm">Limulus</span><span class="sp">Limulus polyphemus, the horseshoe crab</span></div></header>
-            <p>Text in, sound out: one editor in front of Tidal, sending each block to Haskell Tidal or to Architeuthis, to show they are the same. The machines answer to it too, and its cheatsheet lists everything the rig adds to Tidal. Not a fish, and not a machine: the editor that plays them. It took over from Calypso, the boat, now laid up. <a class="go" href="/limulus/">/limulus/</a></p>
+            <p>Text in, sound out: one editor in front of Tidal, sending each block to Haskell Tidal or to Architeuthis, to show they are the same. The machines answer to it too, loops and all, and its cheatsheet lists everything the rig adds to Tidal. Not a fish, and not a machine: the editor that plays them. It took over from Calypso, the boat, now laid up. <a class="go" href="/limulus/">/limulus/</a></p>
           </article>
         </div>
       </div>
@@ -614,7 +617,7 @@
         <div class="cast">
           <article class="who">
             <header><svg class="ico sq" viewBox="12 16 77 77"><use href="#ic-kraken"/></svg><div><span class="nm">Architeuthis</span><span class="sp">Architeuthis dux, the giant squid</span></div></header>
-            <p>TidalCycles, ported to PureScript and run on Erlang's virtual machine; once purerl-tidal. The rig's engine: the pages reach it over the rig socket, it schedules every voice under its own supervisor, and its arms reach Diaphus, SuperDirt and es9-daemon.</p>
+            <p>TidalCycles, ported to PureScript and run on Erlang's virtual machine; once purerl-tidal. The rig's engine: the pages reach it over the rig socket, it runs every machine's sequencer under its own supervisor, keeps their record buffers and plays their loops, and its arms reach Diaphus, SuperDirt and es9-daemon.</p>
           </article>
           <article class="who">
             <header><svg class="ico" viewBox="0 0 72 22" style="width:72px;height:22px"><use href="#ic-lantern"/></svg><div><span class="nm">Diaphus</span><span class="sp">Diaphus effulgens, the headlight lanternfish</span></div></header>
@@ -630,7 +633,7 @@
           </article>
           <article class="who keeper">
             <header><svg class="ico sq" viewBox="0 0 48 48"><use href="#ab-lighthouse"/></svg><div><span class="nm">Bosun</span><span class="sp">the lighthouse</span></div></header>
-            <p>Keeps the processes running. It brings a group of daemons up and restarts whatever crashes; for Atlantis it holds the rig ready, to be raised deliberately from Bosun's Chair.</p>
+            <p>Keeps the processes running. It brings a group of daemons up and restarts whatever crashes; for Atlantis it holds the rig ready, to be raised deliberately, from Bosun's Chair or the dashboard's Atlantis page. Its lamps are the ones on the chart.</p>
           </article>
         </div>
       </div>
@@ -644,17 +647,20 @@
 
       <div class="feature">
         <div class="copy">
-          <p class="drop">The chart is a Sankey diagram, read left to right. Every stream starts at a machine and passes through the page, the engine, the rig's outputs, an interface and an instrument, to end at your ears. Columns with nothing in them close up.</p>
+          <p class="drop">The chart is a Sankey diagram, read left to right: machine, page, loop, engine, the rig's outputs, interface, instrument, and your ears. Columns with nothing in them close up. A stream starts where its notes are made: at the page in Solo, at the engine in Atlantis, where the page's own line is grey, because it carries instructions and not notes.</p>
           <p><strong>Colour is the signal on each hop:</strong> note events, the rig socket, MIDI, OSC, CV and gates, audio, samples. It changes wherever the signal changes form, so the colours are the architecture.</p>
           <p><strong>Width is the number of streams,</strong> meaning distinct wires, not rows of the routing table. Sixteen drum lanes all sent to channel 10 are one stream; four Odonus playheads on four channels are four.</p>
           <p><strong>Only what you use is drawn.</strong> Nothing on the chart is chosen for it: it is read from the routing table, the MIDI ports that exist, and the pages that are open. One sequencer playing Ableton in Solo is five nodes in a line. The whole rig, with the modular and the samples, is drawn only when the whole rig is in use.</p>
-          <p><strong>Diaphus is not a hop.</strong> It broadcasts the beat from above the chart, and gold marks pulse on everything it times.</p>
-          <p>Hover over a machine to light its streams; click it to split it into its voices. A missing port is still drawn, with only the hop into it marked in red, and a stopped machine is shown ghosted.</p>
+          <p><strong>Loops have a column of their own.</strong> Each mark is a bubble in its machine's colour, fed a thin line by the machine that recorded it; a playing loop fills, pulses on the beat, and feeds the engine. A loop that nobody can hear wears a stop sign.</p>
+          <p><strong>Diaphus is the beat, above the chart,</strong> and gold marks pulse on everything it times. It does carry every MIDI note the rig sends; a switch, Relays, draws it on that path too.</p>
+          <p><strong>Lamps</strong> under the rig's programs say what Bosun says of them, and a stream through one that is down is drawn broken from there. Click a lamp for the Atlantis page.</p>
+          <p>Hover over a machine to light its streams; click it to split it into its voices, or switch on Every voice for all of them at once. A missing port is still drawn, with only the hop into it marked in red, and a stopped machine is shown ghosted.</p>
         </div>
 
         <div class="figs">
           <div class="key" aria-label="Signal colours">
             <span style="color:var(--s-notes)"><i style="background:currentColor"></i>note events</span>
+            <span style="color:var(--s-control)"><i style="background:currentColor"></i>control</span>
             <span style="color:var(--s-socket)"><i style="background:currentColor"></i>rig socket</span>
             <span style="color:var(--s-midi)"><i style="background:currentColor"></i>MIDI</span>
             <span style="color:var(--s-osc)"><i style="background:currentColor"></i>OSC</span>
@@ -711,8 +717,8 @@
               <text class="colhead" x="450" y="64" text-anchor="middle">Instrument</text>
               <text class="colhead" x="548" y="64" text-anchor="middle">Heard</text>
               <!-- ribbons -->
-              <rect class="rib" x="62" y="104" width="90" height="22" fill="var(--s-notes)"/>
-              <rect class="rib" x="160" y="104" width="90" height="22" fill="var(--s-socket)"/>
+              <rect class="rib" x="62" y="110" width="90" height="10" fill="var(--s-control)"/>
+              <rect class="rib" x="160" y="110" width="90" height="10" fill="var(--s-control)"/>
               <rect class="rib" x="258" y="104" width="90" height="22" fill="var(--s-midi)"/>
               <rect class="rib" x="356" y="104" width="90" height="22" fill="var(--s-midi)"/>
               <rect class="rib" x="454" y="104" width="90" height="22" fill="var(--s-audio)"/>
@@ -736,7 +742,7 @@
               <text class="nm" x="450" y="152" text-anchor="middle">Ableton</text>
               <text class="nm" x="548" y="152" text-anchor="middle">Your ears</text>
             </svg></div>
-            <figcaption><b>Atlantis</b>The same sequencer, played by the rig. The notes leave the page on the rig socket, Architeuthis sends the MIDI (Diaphus carries it to the port, on the beat), and gold marks show what the beat times.</figcaption>
+            <figcaption><b>Atlantis</b>The same sequencer, played by the rig. The page only tells it what to play (the grey line); the notes begin at Architeuthis, which sends the MIDI (Diaphus carries it to the port, on the beat), and gold marks show what the beat times.</figcaption>
           </figure>
         </div>
       </div>
