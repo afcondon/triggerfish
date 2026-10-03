@@ -17,7 +17,7 @@ import Triggerfish.Capture.Types (Orientation(..))
 import Triggerfish.Capture.View (capturePanel)
 import Triggerfish.Odonus.Grid.Types (Action(..), Slots, State, replayTimelineId)
 import Triggerfish.Odonus.Grid.Widgets (headColor)
-import Triggerfish.Odonus.Patch (harmonicSummary)
+import Triggerfish.Odonus.Patch (markContext)
 
 -- | The whole-recording capture surface, laid out horizontally (time → X).
 replayPanel :: forall m. State -> H.ComponentHTML Action Slots m
@@ -30,7 +30,7 @@ replayPanel s = capturePanel wiring cap
     { orientation: Horizontal
     , timelineId: replayTimelineId
     , headColor
-    , contextSummary: harmonicSummary
+    , contextSummary: markContext
     , regionDown: RegionDown
     , stopPlay: StopPlay
     , saveClip: SaveMarkClip

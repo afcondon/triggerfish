@@ -383,6 +383,8 @@ type State =
   , samples :: Samples.Samples
   , sampleAsked :: Maybe { key :: String, from :: Int }
   , lastSample :: Maybe String
+  -- the harmony routes as written (`routing/harmony`), for a mark's context
+  , routesText :: Maybe String
   -- The unified glyph-chip PRESET bank (docs/DESIGN-scene-modal.md): captured live
   -- patches, anonymous or named, freely intermixed — distinct from the named SCENE
   -- library. `identity` is the parked preset's text (the chip glyph; ghosts when the

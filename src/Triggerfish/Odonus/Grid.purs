@@ -74,7 +74,7 @@ import Triggerfish.Ui.Euclid as Euclid
 import Triggerfish.Odonus.View.Grid (gridPanel)
 import Triggerfish.Odonus.View.Replay (replayPanel)
 import Triggerfish.Odonus.View.Nav (navBar)
-import Triggerfish.Odonus.Patch (capturePatch, harmonicSummary, loadText, patchText, recallText, recallGestureText)
+import Triggerfish.Odonus.Patch (capturePatch, harmonicSummary, loadText, markText, nowText, patchText, recallText, recallGestureText, soundingOf)
 import Triggerfish.Odonus.Store as Store
 import Triggerfish.Clips as Clips
 import Triggerfish.Clips.Store as ClipStore
@@ -123,7 +123,7 @@ component =
         -- when you want to inspect just this module.
         , collapsed: [ "SOURCE" ], lastTap: "", lastTapMicros: 0.0
         , reconciled: false, feedsSeen: { grid: Route.Unfed, out: Route.Unfed }
-        , samples: Samples.noSamples, sampleAsked: Nothing, lastSample: Nothing
+        , samples: Samples.noSamples, sampleAsked: Nothing, lastSample: Nothing, routesText: Nothing
         , presets: [], identity: Nothing, lastChip: Nothing }
     , render
     , eval: H.mkEval H.defaultEval
@@ -140,7 +140,7 @@ handleQuery = case _ of
     pure (Just k)
   AskMarkText reply -> do
     s <- H.get
-    pure (Just (reply (patchText s)))
+    pure (Just (reply (markText s)))
   AddMarkSnapshot at machine text next -> do
     H.modify_ \s -> s { logbook = Logbook.addSnapshot at { machine, text } s.logbook }
     pure (Just next)
@@ -314,6 +314,10 @@ handleAction a = do
     Frame -> pure unit
     DragMove _ -> pure unit
     _ -> keepSampled
+
+-- | A stage frame about the harmony routes or what they resolved to.
+stageAbout :: String -> Boolean
+stageAbout msg = isJust (Feeds.readFeeds msg) || isJust (Feeds.readRoutes msg)
 
 -- | Odonus's two patterns as they stand: what a sample reads.
 patternsNow :: State -> Patterns
@@ -735,11 +739,14 @@ dispatch = case _ of
   -- push) Odonus itself, so it takes the same inputs the rig voice would.
   -- The rig's samples of the patterns, asked for by keepSampled.
   RigFrame msg | Just s <- Samples.readSamples msg -> H.modify_ _ { samples = s }
-  RigFrame msg | Just new <- Feeds.readFeeds msg -> do
-    st <- H.get
-    when (st.sounding /= Rig) $
-      for_ (Route.feedInputs st.feedsSeen new) enqueue
-    H.modify_ _ { feedsSeen = new }
+  -- The routes as written come in the same frames; a mark keeps them.
+  RigFrame msg | stageAbout msg -> do
+    for_ (Feeds.readRoutes msg) \r -> H.modify_ _ { routesText = r }
+    for_ (Feeds.readFeeds msg) \new -> do
+      st <- H.get
+      when (st.sounding /= Rig) $
+        for_ (Route.feedInputs st.feedsSeen new) enqueue
+      H.modify_ _ { feedsSeen = new }
   RigFrame msg -> for_ (Str.stripPrefix (Str.Pattern "reef-input ") msg) \json ->
     case decodeTagged json of
       Left _ -> liftEffect $ Console.warn ("Odonus: a reef-input from the rig did not decode: " <> take 120 json)
@@ -902,7 +909,7 @@ dispatch = case _ of
   MarkNow -> do
     s <- H.get
     let rb = Logbook.regionBounds s.clockTempo s.nowMicros s.clockBeat
-        m = { atMicros: s.nowMicros, beat: s.clockBeat, from: rb.from, to: rb.to, patch: patchText s, rig: [] }
+        m = { atMicros: s.nowMicros, beat: s.clockBeat, from: rb.from, to: rb.to, patch: patchText s, now: nowText s, sounding: Just (soundingOf s), rig: [], tempo: s.clockTempo }
     H.modify_ _ { logbook = Logbook.pushMark m s.logbook }
     H.raise (Marked m.atMicros)
   DeleteMark i -> H.modify_ \s -> s { logbook = Logbook.deleteMark i s.logbook }

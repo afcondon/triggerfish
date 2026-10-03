@@ -8,6 +8,10 @@ module Triggerfish.Odonus.Patch
   ( capturePatch
   , applyPatch
   , patchText
+  , markText
+  , nowText
+  , soundingOf
+  , markContext
   , recallText
   , recallGestureText
   , loadText
@@ -18,7 +22,11 @@ module Triggerfish.Odonus.Patch
 import Prelude
 
 import Data.Array (find)
-import Data.Maybe (Maybe(..))
+import Data.Int (round)
+import Data.Maybe (Maybe(..), fromMaybe, maybe)
+import Data.String.Common (joinWith)
+import Reef.PitchSet (PitchSet(..))
+import Reef.Route (Feed(..), Feeds, printFeeds)
 import Triggerfish.Odonus.Grid.Types (GenSource, State, genKinds, genDefaultRate, genDefaultAmt)
 import Triggerfish.Odonus.Lepidoptera (OdonusPatch, printPatch, parsePatch)
 import Triggerfish.Odonus.Model as M
@@ -26,10 +34,16 @@ import Triggerfish.Scale as Scale
 
 -- | The authored slice of State, ready to render / persist. The live patch
 -- | carries the fixed name "live" until the library manager (A5) names entries.
+-- |
+-- | Odonus alone: what the harmony routes are feeding it is context, not its
+-- | own setting (AC, 2026-10-03), so a fed scale pattern or harmony is left
+-- | out and the authored scale shown; a mark keeps the routes and what they
+-- | gave in `nowText`. (A fed key's pitch set and a fed output scale are
+-- | never printed.)
 capturePatch :: State -> OdonusPatch
 capturePatch s =
   { name: "live"
-  , odo: s.odo
+  , odo: ownOdo s.feedsSeen s.odo
   , gen: s.gen
   , genSpread: s.genSpread
   , genBias: s.genBias
@@ -37,6 +51,51 @@ capturePatch s =
   , velHumanize: s.velHumanize
   , stepDiv: s.stepDiv
   }
+
+-- | Odonus with what the routes feed taken out.
+ownOdo :: Feeds -> M.Odonus -> M.Odonus
+ownOdo fs o = unOut (unGrid o)
+  where
+  unGrid x = case fs.grid of
+    FeedScale _ -> M.setScalePattern Nothing x
+    _ -> x
+  unOut x = case fs.out of
+    FeedHarmony _ -> x { harmony = Nothing, chord = Nothing }
+    _ -> x
+
+-- | Odonus as a mark keeps it: the patch, then what was happening
+-- | (docs/kb/plans/the-deck.md).
+markText :: State -> String
+markText s = patchText s <> "\n" <> nowText s
+
+-- | What a patch leaves out, at this instant: where the playheads were and the
+-- | generators' seed (so a moving patch can play on exactly as it was), what
+-- | Odonus was quantising to, and the harmony routes and what they gave.
+nowText :: State -> String
+nowText s =
+  let
+    PitchSet ps = M.effectivePitchSet s.odo
+    ints xs = "[ " <> joinWith ", " (map show xs) <> " ]"
+    phase hd = "{ cursor: " <> show hd.cursor <> ", seqPos: " <> show hd.seqPos
+      <> ", acc: " <> show hd.accumulator <> ", pend: " <> show hd.pendStep
+      <> ", etick: " <> show hd.etick <> " }"
+    quoted t = show t
+  in
+    joinWith "\n"
+      [ "odonusNow"
+      , "  { step: " <> show s.nextModelStep
+      , "  , tempo: " <> show (round s.clockTempo)
+      , "  , seed: " <> show (round s.genSeed)
+      , "  , frozen: " <> (if s.genFrozen then "T" else "F")
+      , "  , phases:"
+      , "      [ " <> joinWith "\n      , " (map phase s.odo.heads) <> " ]"
+      , "  , sounding: { root: " <> Scale.rootName (ps.root `mod` 12)
+          <> ", scale: " <> ints ps.offsets
+          <> ", chord: " <> maybe "none" ints s.odo.chord <> " }"
+      , "  , routes: " <> maybe "none" quoted s.routesText
+      , "  , feeds: " <> (let t = printFeeds s.feedsSeen in if t == "" then "none" else quoted t)
+      , "  }"
+      ]
 
 -- | Load a patch over State: replace the authored fields, leave the transport,
 -- | clock, MIDI, scenes and runtime alone.
@@ -117,6 +176,25 @@ type HarmonicContext =
   , chord :: Maybe String   -- the harmony pattern (`<c'maj7 a'min7>/2`), if one is set
   , notes :: Array String   -- the scale's pitch classes as note names
   }
+
+-- | What Odonus is quantising to now, as pitch classes: the effective scale
+-- | (a fed key, a sampled scale pattern, or the hand-set one) and the chord.
+soundingOf :: State -> { root :: Int, scale :: Array Int, chord :: Maybe (Array Int) }
+soundingOf s =
+  let PitchSet ps = M.effectivePitchSet s.odo
+  in { root: ps.root `mod` 12, scale: ps.offsets, chord: s.odo.chord }
+
+-- | A mark's harmonic context for the ♫ panel: what was sounding at the mark,
+-- | else (a mark from before 2026-10-03) what its patch says.
+markContext :: { patch :: String, sounding :: Maybe { root :: Int, scale :: Array Int, chord :: Maybe (Array Int) } | _ } -> Maybe HarmonicContext
+markContext m = case m.sounding of
+  Just sd -> Just
+    { root: Scale.rootName sd.root
+    , scale: Scale.recogniseScale sd.scale
+    , chord: map (\c -> joinWith " " (map Scale.rootName c)) sd.chord
+    , notes: map (\iv -> Scale.rootName ((sd.root + iv) `mod` 12)) sd.scale
+    }
+  Nothing -> harmonicSummary m.patch
 
 -- | Read the harmony out of a mark's stored patch text. Unparseable → Nothing.
 harmonicSummary :: String -> Maybe HarmonicContext

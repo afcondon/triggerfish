@@ -68,7 +68,7 @@ type CaptureWiring action =
   { orientation :: Orientation
   , timelineId :: String
   , headColor :: Int -> String
-  , contextSummary :: String -> Maybe ContextSummary
+  , contextSummary :: Mark -> Maybe ContextSummary
   , regionDown :: Int -> RegionEdge -> Int -> Int -> action
   , stopPlay :: action
   , saveClip :: Int -> action
@@ -333,7 +333,7 @@ cardBtn act fg titleTxt label =
 -- | (docs/kb/plans/the-deck.md, step 2).
 markCode :: String -> Mark -> String
 markCode machine m =
-  joinWith "\n\n" (map section ([ { machine, text: m.patch } ] <> m.rig))
+  joinWith "\n\n" ([ "-- mark · " <> show (Int.round m.tempo) <> " bpm" ] <> map section ([ { machine, text: m.patch <> (if m.now == "" then "" else "\n" <> m.now) } ] <> m.rig))
   where
   section r = "-- " <> r.machine <> "\n" <> r.text
 
@@ -355,7 +355,7 @@ codePanel w i m =
 contextPanel :: forall action slots m. CaptureWiring action -> Mark -> H.ComponentHTML action slots m
 contextPanel w m =
   HH.div [ style "margin-top:7px;padding-top:6px;border-top:1px solid #ffffff14" ]
-    ( case w.contextSummary m.patch of
+    ( case w.contextSummary m of
         Nothing -> [ HH.div [ ctxStyle "#ffffff44" ] [ HH.text "harmony unavailable" ] ]
         Just h ->
           [ HH.div [ style "font-family:Georgia,serif;font-size:13px;color:#f0ead8;margin-bottom:3px" ]

@@ -22,6 +22,8 @@ module Triggerfish.Capture.Types
 
 import Prelude
 
+import Data.Maybe (Maybe)
+
 import Triggerfish.Clips (NoteEvent)
 
 -- | One frozen span of the always-on logbook: a chunk of captured notes with its
@@ -41,7 +43,14 @@ type Chunk = { fromMicros :: Number, toMicros :: Number, events :: Array NoteEve
 -- | whole rig's state, not just its own (docs/kb/plans/the-deck.md).
 type Mark =
   { atMicros :: Number, beat :: Number, from :: Number, to :: Number, patch :: String
-  , rig :: Array { machine :: String, text :: String } }
+  , rig :: Array { machine :: String, text :: String }
+  -- what the patch leaves out, at the mark (Odonus's `odonusNow`: phases,
+  -- seed, what it was quantising to and why); "" for a machine with none
+  , now :: String
+  -- what it was quantising to at the mark, pitch classes (Odonus; Nothing
+  -- for a machine with no quantiser): what the ♫ context panel shows
+  , sounding :: Maybe { root :: Int, scale :: Array Int, chord :: Maybe (Array Int) }
+  , tempo :: Number }
 
 -- | Which part of a loop region a drag grabbed: its start edge, end edge, or body
 -- | (slide the whole window). Edge naming is time-relative, not screen-relative, so

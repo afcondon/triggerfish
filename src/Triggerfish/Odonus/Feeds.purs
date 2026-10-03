@@ -10,6 +10,8 @@ module Triggerfish.Odonus.Feeds
   ( feedsKey
   , subscribeLine
   , readFeeds
+  , routesKey
+  , readRoutes
   ) where
 
 import Prelude
@@ -25,6 +27,11 @@ import Simple.JSON (readJSON)
 
 feedsKey :: String
 feedsKey = "odonus/feeds"
+
+-- | The harmony routes as written (`Reef.Route`), which a mark keeps beside
+-- | what they resolved to.
+routesKey :: String
+routesKey = "routing/harmony"
 
 subscribeLine :: String
 subscribeLine = "stage-text-subscribe"
@@ -44,3 +51,15 @@ readFeeds msg = case stripPrefix (Pattern "stage-texts ") msg of
   where
   unfed = { grid: Unfed, out: Unfed }
   fromText = maybe unfed (\t -> maybe unfed identity (hush (parseFeeds t)))
+
+-- | The routes' text a rig frame states: from the whole table, or a write of
+-- | `routing/harmony` (`Just Nothing`: none). `Nothing`: says nothing of them.
+readRoutes :: String -> Maybe (Maybe String)
+readRoutes msg = case stripPrefix (Pattern "stage-texts ") msg of
+  Just json -> do
+    table :: Object { text :: String } <- hush (readJSON json)
+    pure (_.text <$> Object.lookup routesKey table)
+  Nothing -> do
+    json <- stripPrefix (Pattern "stage-text ") msg
+    w :: { key :: String, text :: Nullable String } <- hush (readJSON json)
+    if w.key == routesKey then Just (toMaybe w.text) else Nothing

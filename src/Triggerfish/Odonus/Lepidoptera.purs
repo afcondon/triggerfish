@@ -93,6 +93,7 @@ printPatch p =
           <> maybe "" (\sp -> " " <> show sp) o.scalePattern
       , "  , distribution: " <> show o.dist
       , "  , octave: " <> show o.octaveShift
+      , "  , span: " <> show o.span
       , "  , scalarTransp: " <> show o.degShift
       , "  , gate: " <> show o.gatePct
       , "  , quantize: " <> printSource (pitchSourceFrom o)
@@ -149,6 +150,8 @@ patchP = do
   sc <- fld "scale" scaleVal
   dist <- fld "distribution" distVal
   octave <- fld "octave" intL
+  -- added 2026-10-03; a patch from before has none, and takes the default
+  span <- PC.optionMaybe (PC.try (fld "span" intL))
   scalarT <- fld "scalarTransp" intL
   gatePct <- fld "gate" intL
   quant <- fld "quantize" sourceVal
@@ -177,6 +180,7 @@ patchP = do
     baseOdo = M.defaultOdonus
       { rootPc = sc.root, scaleIvls = sc.ivls, dist = dist
       , octaveShift = octave, degShift = scalarT, gatePct = gatePct
+      , span = fromMaybe M.defaultOdonus.span span
       , cells = cells, heads = heads }
     applied = M.setScalePattern sc.pattern (applyPitchSource (quant stepDiv) baseOdo)
   pure
