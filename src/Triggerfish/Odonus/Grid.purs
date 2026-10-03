@@ -1031,14 +1031,18 @@ dispatch = case _ of
       cur <- liftEffect $ pointerMicros st cx cy
       -- A body grab only becomes a slide past a small threshold, so a click (with
       -- a stray pixel of jitter) still plays; edge grabs resize from the first move.
-      let past = abs (cur - rd.grabMicros) > (timelineBounds st).span * 0.005
+      let ax = timelineBounds st
+          past = abs (ax.toFrac cur - ax.toFrac rd.grabMicros) > 0.005
       when (rd.moved || rd.edge /= EdgeBody || past) do
-        let d = cur - rd.grabMicros
-            minLen = 60.0e6 / max 30.0 st.clockTempo   -- ≥ one beat
+        let minLen = 60.0e6 / max 30.0 st.clockTempo   -- ≥ one beat
+            -- a slide moves along the surface as drawn, so across a seam it
+            -- steps over the pause or cut rather than jumping by real time;
+            -- the window keeps its real length, which is the loop's
+            slid = ax.fromFrac (ax.toFrac rd.startFrom + ax.toFrac cur - ax.toFrac rd.grabMicros)
             bounds = case rd.edge of
               EdgeFrom -> { from: min (rd.startTo - minLen) cur, to: rd.startTo }
               EdgeTo -> { from: rd.startFrom, to: max (rd.startFrom + minLen) cur }
-              EdgeBody -> { from: rd.startFrom + d, to: rd.startTo + d }
+              EdgeBody -> { from: slid, to: slid + (rd.startTo - rd.startFrom) }
         H.modify_ \s -> Logbook.applyBounds rd.markIdx bounds (s { regionDrag = map (_ { moved = true }) s.regionDrag })
   RegionUp -> do
     st <- H.get
