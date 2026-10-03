@@ -3050,7 +3050,7 @@ handleActionCore = case _ of
     st <- H.get
     for_ st.captureDragSub H.unsubscribe
     for_ st.capture.cutSel \sel -> do
-      let span = (CaptureView.bounds HorizontalOutward st.capture.zoom st.capture.logbook).span
+      let span = (CaptureView.bounds st.capture.zoom st.capture.logbook).span
       mclock <- vetulaClock
       for_ mclock \clock -> when (max (sel.to - sel.from) (sel.from - sel.to) > span * 0.003) $
         rigSend (RL.cutLine "vetula" clock sel.from sel.to)
@@ -4869,7 +4869,7 @@ capturePointer :: forall o m. MonadAff m => Int -> Int -> H.HalogenM State Actio
 capturePointer cx cy = do
   st <- H.get
   p <- liftEffect $ Pointer.padNorm "vetula-capture-timeline" cx cy
-  pure ((CaptureView.bounds HorizontalOutward st.capture.zoom st.capture.logbook).fromFrac (CaptureView.pointerFrac HorizontalOutward p))
+  pure ((CaptureView.bounds st.capture.zoom st.capture.logbook).fromFrac (CaptureView.pointerFrac Horizontal p))
 
 -- | A line to the rig, if this page has one.
 rigSend :: forall o m. MonadAff m => String -> H.HalogenM State Action Slots o m Unit
@@ -6352,8 +6352,11 @@ riverPane st =
         { nowMicros: st.nowMicros, notes: st.riverNotes, marks: st.capture.logbook.marks }
     ]
 
--- | The REPLAY roll — the shared whole-session surface, wired outward-horizontal so
--- | it reads the same way round as the live river.
+-- | The REPLAY roll — the shared whole-session surface, left to right: the
+-- | oldest notes at the left, now at the right, marks numbered 1, 2, 3 across,
+-- | as on Odonus. The Perform river runs the other way (the newest note at its
+-- | left edge, ageing rightward); Review is the session laid out from its
+-- | start, not that strip slid over (AC's drawing, 2026-10-03).
 capturePane :: forall m. State -> H.ComponentHTML Action Slots m
 capturePane st =
   HH.div
@@ -6361,7 +6364,7 @@ capturePane st =
     [ capturePanel captureWiring st.capture ]
   where
   captureWiring =
-    { orientation: HorizontalOutward
+    { orientation: Horizontal
     , timelineId: "vetula-capture-timeline"
     , headColor: captureHeadColor
     , contextSummary: \_ -> Nothing
