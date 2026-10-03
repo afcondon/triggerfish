@@ -31,7 +31,7 @@ import Halogen.HTML.Core (AttrName(..), ElemName(..), Namespace(..))
 import Halogen.HTML.Events as HE
 import Halogen.HTML.Properties as HP
 import Triggerfish.Bosun (Lamp(..))
-import Triggerfish.Flow (Column(..), Flow, Signal(..), columnTitle, layerOf, loopOf, nodeRank, onTheBeat, signalLabel)
+import Triggerfish.Flow (Column(..), Flow, Link, Signal(..), columnTitle, layerOf, loopOf, nodeRank, onTheBeat, signalLabel)
 
 -- | What the chart reports: a machine hovered (or left), and a machine picked.
 -- | `link`: a link clicked, with its machine and the node it runs into.
@@ -40,9 +40,15 @@ type Handlers i = { hover :: Maybe String -> i, pick :: String -> i, link :: Str
 width :: Number
 width = 1500.0
 
--- | A control line's width, in streams: thin whatever it carries.
-controlWidth :: Number
-controlWidth = 0.3
+-- | A link's drawn width, in streams. Signal is its streams. Control is drawn
+-- | at half its machine's streams (at least one): wide enough to read as the
+-- | way in, grey so it does not read as notes (AC, 2026-10-03: pretty over
+-- | strict here). A recorded line is thin.
+widthOf :: Link -> Number
+widthOf l
+  | l.signal == Recorded = 0.4
+  | l.control = max 1.0 (0.5 * toNumber l.streams)
+  | otherwise = toNumber l.streams
 
 -- Room on the left for the fish and the machines' names, and on the right for
 -- the last column's labels.
@@ -96,7 +102,7 @@ chart on hot live f
   ours sn = Map.lookup sn.name byId
   rankOf sn = map nodeRank (ours sn)
   laid = computeLayoutWithConfig
-    (map (\l -> { s: l.from, t: l.to, v: if l.control then controlWidth else toNumber l.streams }) f.links)
+    (map (\l -> { s: l.from, t: l.to, v: widthOf l }) f.links)
     (defaultSankeyConfig width h)
       { nodeWidth = 5.0
       , nodePadding = 20.0
@@ -201,7 +207,8 @@ chart on hot live f
         , bar sn
         , use ("sp-" <> m) 23.0 (cy - 16.0) 54.0 32.0
         , label "name" (sn.x0 - 10.0) (cy - 2.0) "end" nd.name
-        , label "sub" (sn.x0 - 10.0) (cy + 11.0) "end" (if needsAtlantis m then "needs Atlantis" else plural (streamsOf m) "stream" <> " · " <> playsWhere m)
+        , label "sub" (sn.x0 - 10.0) (cy + 11.0) "end" (if needsAtlantis m then "needs Atlantis" else plural (streamsOf m) "stream")
+        , label "sub where" (sn.x0 - 10.0) (cy + 23.0) "end" (if needsAtlantis m then "" else playsWhere m)
         ]
 
   -- A loop: a bubble in its machine's colour with the mark's number, filled
@@ -212,13 +219,30 @@ chart on hot live f
       playing = nd.note == "playing"
       cx = sn.x1 + 14.0
     in
-      svg "g" [ attr "class" ("node loopnode m-" <> l.machine) ]
+      svg "g" [ attr "class" ("node loopnode m-" <> l.machine) ] $
         [ bar sn
         , svg "g" [ attr "class" ("bubble" <> if playing then " playing" else "") ]
             [ svg "circle" [ attr "cx" (n cx), attr "cy" (n cy), attr "r" "9" ] []
             , label "bn" cx (cy + 3.5) "middle" nd.name
             ]
-        , svg "title" [] [ HH.text (l.machine <> " mark " <> nd.name <> if playing then ": looping on the rig" else ": kept on the rig, not playing") ]
+        , svg "title" [] [ HH.text (l.machine <> " mark " <> nd.name <> (if playing then ": looping on the rig" else ": kept on the rig, not playing")
+            <> (if silenced l.machine then "\nIt cannot be heard: every path out of the rig for " <> l.machine <> " is broken." else "")) ]
+        ] <> (if playing && silenced l.machine then [ stopSign (cx + 18.0) (cy - 9.0) ] else [])
+
+  -- Whether everything the rig sends for a machine is broken: its loops
+  -- play, and nobody hears them.
+  silenced m =
+    let out = filter (\x -> x.machine == m && x.from == "engine" && x.signal /= Recorded) f.links
+    in not (Array.null out) && Array.all (\x -> x.broken > 0) out
+  -- A stop sign: a red octagon with a white bar.
+  stopSign x y =
+    let
+      r = 7.0
+      pts = joinWith " " (map (\k -> let a = (toNumber k + 0.5) * Number.pi / 4.0 in n (x + r + r * Number.cos a) <> "," <> n (y + r + r * Number.sin a)) (Array.range 0 7))
+    in
+      svg "g" [ attr "class" "stopsign" ]
+        [ svg "polygon" [ attr "points" pts ] []
+        , svg "rect" [ attr "x" (n (x + 3.0)), attr "y" (n (y + r - 1.2)), attr "width" (n (2.0 * r - 6.0)), attr "height" "2.4" ] []
         ]
 
   placeNode sn nd =
@@ -276,7 +300,7 @@ chart on hot live f
   streamsOf m = foldl (+) 0 (map _.streams (filter (\l -> l.machine == m && l.to == "ears") f.links))
   -- Who makes the notes: the page, or the rig it tells.
   playsWhere m
-    | Array.any (\l -> l.machine == m && l.control) f.links = "plays on the rig"
+    | Array.any (\l -> l.machine == m && l.control && l.signal /= Recorded) f.links = "plays on the rig"
     | Array.any (\l -> l.machine == m && l.from == "engine") f.links = "loops on the rig"
     | otherwise = "plays here"
 
