@@ -39,6 +39,7 @@ import Halogen.Widgets.Select as Select
 import Web.UIEvent.KeyboardEvent (KeyboardEvent)
 import Reef.Input as RI
 import Reef.Route as Route
+import Triggerfish.Odonus.Samples as Samples
 import Triggerfish.Odonus.Model as M
 import Triggerfish.Poly as Poly
 import Reef.Voices as RV
@@ -375,6 +376,12 @@ type State =
   -- (Triggerfish.Odonus.Feeds): applied here unless the rig is sounding,
   -- whose own moves then arrive as reef-inputs.
   , feedsSeen :: Route.Feeds
+  -- Odonus's patterns sampled by the rig for this page to play itself
+  -- (Triggerfish.Odonus.Samples): what it holds, what it last asked for, and
+  -- the sample last applied (applied only when it changes, as the rig does).
+  , samples :: Samples.Samples
+  , sampleAsked :: Maybe { key :: String, from :: Int }
+  , lastSample :: Maybe String
   -- The unified glyph-chip PRESET bank (docs/DESIGN-scene-modal.md): captured live
   -- patches, anonymous or named, freely intermixed — distinct from the named SCENE
   -- library. `identity` is the parked preset's text (the chip glyph; ghosts when the

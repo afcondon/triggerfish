@@ -47,9 +47,11 @@ import Binnacle.Transport as Transport
 import Reef.Input as RI
 import Reef.Route as Route
 import Triggerfish.Odonus.Feeds as Feeds
+import Triggerfish.Odonus.Samples as Samples
+import Reef.Engine (Patterns)
 import Reef.Rample as Rample
 import Effect.Console as Console
-import Reef.Protocol (decodeTagged, encodeSim, encodeTagged)
+import Reef.Protocol (decodeTagged, encodeInput, encodeSim, encodeTagged)
 import Data.String (Pattern(..), stripPrefix) as Str
 import Web.Event.Event (EventType(..), preventDefault)
 import Web.Event.EventTarget (addEventListener, eventListener, removeEventListener)
@@ -119,6 +121,7 @@ component =
         -- when you want to inspect just this module.
         , collapsed: [ "SOURCE" ], lastTap: "", lastTapMicros: 0.0
         , reconciled: false, feedsSeen: { grid: Route.Unfed, out: Route.Unfed }
+        , samples: Samples.noSamples, sampleAsked: Nothing, lastSample: Nothing
         , presets: [], identity: Nothing, lastChip: Nothing }
     , render
     , eval: H.mkEval H.defaultEval
@@ -183,6 +186,8 @@ handleQuery = case _ of
       H.modify_ _ { rampleVoices = RV.empty RV.rample }
     H.modify_ \s' -> s'
       { sounding = s
+      -- a sample applied before is no guide to what this mode has taken
+      , lastSample = Nothing, sampleAsked = Nothing
       , headNote = if wasLocal && not nowLocal then map (const Nothing) s'.headNote else s'.headNote }
     when (st.sounding == Rig && s /= Rig) $
       for_ st.binnacle \bin -> liftEffect $ Transport.send (Binnacle.socket bin) "reef-stop"
@@ -295,6 +300,48 @@ handleAction a = do
     SetSceneName _ -> pure unit   -- per-keystroke; nothing authoring changed yet
     PublishScene _ -> pure unit   -- a network write; no local authoring changed
     _ -> persistAll
+  -- Off the rig, keep the patterns' samples coming (any action may have
+  -- changed a pattern, and a step may have used up what is held).
+  case a of
+    Frame -> pure unit
+    DragMove _ -> pure unit
+    _ -> keepSampled
+
+-- | Odonus's two patterns as they stand: what a sample reads.
+patternsNow :: State -> Patterns
+patternsNow st = { harmony: st.odo.harmony, scale: st.odo.scalePattern, outScale: st.odo.outScale }
+
+-- | Off the rig, the sample for `step`: the rig's, if held for the patterns
+-- | as they stand; with no patterns, the one that needs no Tidal.
+sampleFor :: State -> Int -> Maybe RI.Input
+sampleFor st step =
+  let p = patternsNow st
+  in if Samples.hasPatterns p then Samples.sampleAt (Samples.keyOf p st.stepDiv) step st.samples
+     else Just (Samples.localSample p)
+
+-- | Off the rig, keep samples of the patterns ahead of the next step: ask the
+-- | rig for the next window when the patterns change or what is held runs
+-- | short. Stopped, take the next step's sample now, so what the page shows
+-- | (the key strip) is what playing would start from.
+keepSampled :: forall o m. MonadAff m => H.HalogenM State Action Slots o m Unit
+keepSampled = do
+  st <- H.get
+  unless (st.sounding == Rig) do
+    let
+      p = patternsNow st
+      key = Samples.keyOf p st.stepDiv
+      step = st.nextModelStep
+      asked = case st.sampleAsked of
+        Just a -> a.key == key && a.from <= step && step + Samples.window.margin < a.from + Samples.window.count
+        Nothing -> false
+    when (Samples.hasPatterns p && not (Samples.reaches key step st.samples) && not asked) do
+      for_ st.binnacle \bin -> liftEffect $ Transport.send (Binnacle.socket bin) (Samples.requestLine p st.stepDiv step)
+      H.modify_ _ { sampleAsked = Just { key, from: step } }
+    when (st.sounding == Silent) $ for_ (sampleFor st step) \i -> do
+      let enc = encodeInput i
+      when (Just enc /= st.lastSample) do
+        enqueue i
+        H.modify_ _ { lastSample = Just enc }
 
 -- | Persist the live working patch + the named scene library.
 persistAll :: forall o m. MonadAff m => H.HalogenM State Action Slots o m Unit
@@ -468,7 +515,14 @@ dispatch = case _ of
         -- (docs/kb/plans/gpl-boundary-review.md): it samples them and sends the
         -- result as a tick-tagged SetSampled among `due`. In Solo nothing reads
         -- them, and Odonus plays its own scale.
-        sim0 = RI.applyInputs (map _.input due)
+        -- Solo: the rig's sample of the patterns for this step, when it
+        -- changed (Triggerfish.Odonus.Samples); in Atlantis it arrives in `due`.
+        sampled = if st.sounding == Local then sampleFor st modelStep else Nothing
+        sampledEnc = encodeInput <$> sampled
+        fresh = case sampled of
+          Just i | sampledEnc /= st.lastSample -> [ i ]
+          _ -> []
+        sim0 = RI.applyInputs (map _.input due <> fresh)
                  { odo: st.odo, gen: st.gen, spread: st.genSpread, bias: st.genBias, seed: st.genSeed, frozen: st.genFrozen }
         -- The randomisation matrix fires BEFORE the heads read, so any mutated
         -- value is what plays this step. Each source drifts one notch at a time.
@@ -591,6 +645,7 @@ dispatch = case _ of
         -- gen gesture was synced this step), and drop the drained pending entries.
         , gen = sim0.gen, genSpread = sim0.spread, genBias = sim0.bias, genFrozen = sim0.frozen
         , pending = stillPending
+        , lastSample = if null fresh then st.lastSample else sampledEnc
         -- LOCKSTEP (P5): the state written back here (odo/gen/genSeed) is exactly
         -- what the NEXT model step will consume, and that step is modelStep + 1. A
         -- Push reads this to stamp the handoff (reef-sim-at), so the BEAM plays the
@@ -670,6 +725,8 @@ dispatch = case _ of
   -- The harmony feeds, resolved on the rig. Playing on the rig, its voice's
   -- moves carry them here as reef-inputs; otherwise this page plays (or will
   -- push) Odonus itself, so it takes the same inputs the rig voice would.
+  -- The rig's samples of the patterns, asked for by keepSampled.
+  RigFrame msg | Just s <- Samples.readSamples msg -> H.modify_ _ { samples = s }
   RigFrame msg | Just new <- Feeds.readFeeds msg -> do
     st <- H.get
     when (st.sounding /= Rig) $
