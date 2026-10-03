@@ -1723,10 +1723,15 @@ handleActionCore = case _ of
     Cue.LoopCue n -> do
       st <- H.get
       let marks = st.capture.logbook.marks
-          i = if n == 0 then length marks - 1 else n - 1
+          i = if n == 0 then 0 else n - 1   -- marks are newest-first: 0 is the latest
       when (i >= 0 && i < length marks) do
         when (st.stage /= Review) (handleAction (SetStage Review))
         handleAction (CaptureRegionSelect i)
+    -- the loop window moved or stretched from Limulus (Vetula's surface has
+    -- no drag, so this is the one way to move one)
+    Cue.WindowCue r -> H.modify_ \s -> case Logbook.windowTarget s.capture of
+      Just t -> s { capture = Logbook.applyBounds t.i (Logbook.reshape s.clockTempo r t.mark) s.capture }
+      Nothing -> s
   -- The notes the rig played for the cards (`vetula-notes`, Unix µs): into the
   -- Review logbook, as the page's own notes go in Local, so marks and loops work.
   -- Logged whatever this page's authority: these notes did sound.

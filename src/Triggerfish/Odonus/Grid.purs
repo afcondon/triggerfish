@@ -732,10 +732,14 @@ dispatch = case _ of
     Cue.StopCue -> handleAction StopPlay
     Cue.LoopCue n -> do
       st <- H.get
-      let i = if n == 0 then length st.logbook.marks - 1 else n - 1
+      let i = if n == 0 then 0 else n - 1   -- marks are newest-first: 0 is the latest
       when (i >= 0 && i < length st.logbook.marks) do
         when (st.stage /= Review) (handleAction (SetStage Review))
         handleAction (PlayRegion i)
+    -- the loop window moved or stretched from Limulus, as a drag would
+    Cue.WindowCue r -> H.modify_ \s -> case Logbook.windowTarget s of
+      Just t -> Logbook.applyBounds t.i (Logbook.reshape s.clockTempo r t.mark) s
+      Nothing -> s
   -- The harmony feeds, resolved on the rig. Playing on the rig, its voice's
   -- moves carry them here as reef-inputs; otherwise this page plays (or will
   -- push) Odonus itself, so it takes the same inputs the rig voice would.
@@ -967,10 +971,7 @@ dispatch = case _ of
               EdgeFrom -> { from: min (rd.startTo - minLen) cur, to: rd.startTo }
               EdgeTo -> { from: rd.startFrom, to: max (rd.startFrom + minLen) cur }
               EdgeBody -> { from: rd.startFrom + d, to: rd.startTo + d }
-        H.modify_ \s ->
-          let s1 = setRegionBounds rd.markIdx bounds s
-              s2 = s1 { regionDrag = map (_ { moved = true }) s1.regionDrag }
-          in syncPlaying rd.markIdx bounds s2
+        H.modify_ \s -> Logbook.applyBounds rd.markIdx bounds (s { regionDrag = map (_ { moved = true }) s.regionDrag })
   RegionUp -> do
     st <- H.get
     for_ st.dragSub H.unsubscribe
@@ -982,7 +983,7 @@ dispatch = case _ of
         _, _ -> for_ (st.logbook.marks !! rd.markIdx) \m ->
           let snapped = { from: Logbook.snapMicrosToBeat st.clockTempo m m.from
                         , to: Logbook.snapMicrosToBeat st.clockTempo m m.to }
-          in H.modify_ \s -> syncPlaying rd.markIdx snapped (setRegionBounds rd.markIdx snapped s)
+          in H.modify_ (Logbook.applyBounds rd.markIdx snapped)
     H.modify_ _ { regionDrag = Nothing, dragSub = Nothing }
   -- Promote a captured good bit into the SCENES list: a mark's stored patch IS
   -- a scene's text (same Lepidoptera form), so the loop can graduate into a
@@ -1286,24 +1287,6 @@ pointerMicros st cx cy = do
   { x } <- Pointer.padNorm replayTimelineId cx cy
   let b = timelineBounds st
   pure (b.tMin + x * b.span)
-
--- | Write a region's bounds onto its mark.
-setRegionBounds :: Int -> { from :: Number, to :: Number } -> State -> State
-setRegionBounds i b s =
-  s { logbook = s.logbook
-        { marks = fromMaybe s.logbook.marks
-            (modifyAt i (\m -> m { from = b.from, to = b.to }) s.logbook.marks) } }
-
--- | If mark `i` is the one currently looping, carry a bounds edit onto the live
--- | loop too (re-materialising its notes), so a resize/slide is heard on the next
--- | iteration.
-syncPlaying :: Int -> { from :: Number, to :: Number } -> State -> State
-syncPlaying i b s = case s.playing of
-  Just p | p.source == FromRegion i ->
-    s { playing = Just p { fromMicros = b.from, toMicros = b.to
-                         , events = materializeRegion b.from b.to s.logbook
-                         , lenMicros = b.to - b.from } }
-  _ -> s
 
 -- | The captured notes falling inside a [from,to] window, copied out and rebased
 -- | so the earliest is at 0 — a self-contained loop body (the replay scheduler
