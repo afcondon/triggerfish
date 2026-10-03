@@ -453,6 +453,7 @@ data Action
   | RegionDown Int RegionEdge Int Int  -- grab a region: markIdx, edge, clientX, clientY
   | RegionMove Int Int      -- pointer moved during a region drag: clientX, clientY
   | RegionUp                -- release a region drag (click→play, or finalize resize)
+  | SetHeadClock Int Int    -- head, 0 its steps | 1 its notes' lengths (lockstep)
   | ArmCut                  -- ✂: the next drag across the surface selects a stretch to cut
   | CutDown Int Int         -- the cut's drag starts: clientX, clientY
   | TrimLog                 -- cut all but the marks' windows (on the rig)

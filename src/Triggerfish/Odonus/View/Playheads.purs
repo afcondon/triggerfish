@@ -131,7 +131,10 @@ headStrip s h hd =
               [ patBlock h pat col hd.seqPos
               , dirRadio h hd.direction col
               ]
-          , euclidCell s h hd col
+          , HH.div [ style "display:flex;flex-direction:column;align-items:center;gap:4px" ]
+              [ HH.div [ style (if hd.clock == 1 then "opacity:0.35" else "") ] [ euclidCell s h hd col ]
+              , clockRadio h hd.clock col
+              ]
           , miniKnob (HeadTransp h) hd.transp col "INT" (signed hd.transp)
           ]
       ]
@@ -205,6 +208,18 @@ dirRadio :: forall m. Int -> Int -> String -> H.ComponentHTML Action Slots m
 dirRadio h cur col =
   HH.div [ style "display:flex;gap:3px;width:54px" ]
     (map (\d -> dirBtn (dirGlyph d) (cur == d) col (SetHeadDir h d)) [ 0, 1, 2 ])
+
+-- | What moves the head on: its steps (the Euclidean ring above), or its
+-- | notes' lengths, holding each cell for that cell's dur (the ring dims, as
+-- | it is not used then).
+clockRadio :: forall m. Int -> Int -> String -> H.ComponentHTML Action Slots m
+clockRadio h cur col =
+  HH.div
+    [ style "display:flex;gap:3px;width:82px"
+    , HP.title "what moves this head on: its steps (the ring), or its notes' lengths (each cell held for its dur)" ]
+    [ dirBtn "steps" (cur == 0) col (SetHeadClock h 0)
+    , dirBtn "notes" (cur == 1) col (SetHeadClock h 1)
+    ]
 
 dirGlyph :: Int -> String
 dirGlyph = case _ of

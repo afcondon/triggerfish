@@ -85,7 +85,7 @@ nowText s =
     , tempo: round s.clockTempo
     , seed: s.genSeed
     , frozen: s.genFrozen
-    , phases: map (\hd -> { cursor: hd.cursor, seqPos: hd.seqPos, accumulator: hd.accumulator, pendStep: hd.pendStep, etick: hd.etick }) s.odo.heads
+    , phases: map (\hd -> { cursor: hd.cursor, seqPos: hd.seqPos, accumulator: hd.accumulator, pendStep: hd.pendStep, etick: hd.etick, hold: hd.hold }) s.odo.heads
     , sounding: soundingOf s
     , routes: s.routesText
     , feeds: let t = printFeeds s.feedsSeen in if t == "" then Nothing else Just t
