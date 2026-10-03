@@ -21,6 +21,7 @@ module Triggerfish.Capture.View
   , capturePanel
   , markCode
   , bounds
+  , pointerFrac
   ) where
 
 import Prelude
@@ -440,6 +441,15 @@ caption notes marks zoom span =
     Whole -> "whole session, " <> duration span <> " across"
     Last d -> "the last " <> duration d
     Window _ -> duration span <> " cropped"
+
+-- | A pointer's place along the time axis, 0..1 as `bounds` reads it, from
+-- | its position in the timeline element (x right, y down): mirrored where
+-- | the axis runs newest-first.
+pointerFrac :: Orientation -> { x :: Number, y :: Number } -> Number
+pointerFrac o p = case o of
+  Horizontal -> p.x
+  HorizontalOutward -> 1.0 - p.x
+  Vertical -> 1.0 - p.y
 
 -- | The surface's time axis: what it shows, over played time (the pauses
 -- | between runs sliced out, Capture.Runs). Hosts that turn a pointer into a

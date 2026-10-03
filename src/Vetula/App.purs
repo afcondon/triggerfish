@@ -53,7 +53,7 @@ import Type.Proxy (Proxy(..))
 import Web.Event.Event (Event, EventType(..), preventDefault, stopPropagation)
 import Web.HTML.Event.DragEvent (DragEvent)
 import Web.HTML.Event.DragEvent as DE
-import Web.Event.EventTarget (addEventListener, eventListener)
+import Web.Event.EventTarget (addEventListener, eventListener, removeEventListener)
 import Web.HTML (window)
 import Web.HTML.Window as Window
 import Web.UIEvent.KeyboardEvent as KE
@@ -126,6 +126,8 @@ import Triggerfish.Capture.Logbook as Logbook
 import Triggerfish.Capture.Types (Orientation(..), PlaySource(..), Zoom(..))
 import Triggerfish.Capture.River (Flow(..), riverPanel, windowMicros) as River
 import Triggerfish.Capture.View (CaptureState, capturePanel, markCode)
+import Triggerfish.Capture.View as CaptureView
+import Triggerfish.Ui.Pointer as Pointer
 import Vetula.Tidal (progressionSource, parseProgression)
 import Vetula.Lepidoptera (PerfDoc, VoiceSpec, docFromVoices, parseCard, parsePerform, printAsRecord, printCard)
 import Vetula.StageCards as SC
@@ -864,6 +866,8 @@ type State =
   -- when it last asked (perf ms): until the rig answers it asks every two
   -- seconds, since a request sent before the socket opens is lost
   , rigAsked :: Number
+  -- the document listeners of a ✂ drag across the Review surface
+  , captureDragSub :: Maybe H.SubscriptionId
   -- The LIVE river's two reads (`Capture.River`): the current instant, advanced by
   -- a 33ms frame timer so the roll FLOWS rather than jumping a 16th at a time, and
   -- the recent notes it draws — pruned to the river's fade span each frame. The
@@ -1029,6 +1033,10 @@ data Action
   | CaptureToLimulus Int   -- hand mark i, as code, to Limulus (stage-paste)
   | CaptureZoom Zoom       -- whole / last N / crop to a loop
   | CaptureClear           -- purge the capture logbook
+  | CaptureCutArm          -- ✂: the next drag across the surface selects a stretch to cut
+  | CaptureCutDown Int Int -- the cut's drag starts: clientX, clientY
+  | CaptureCutMove Int Int -- it moves
+  | CaptureCutUp           -- it ends: the rig cuts the stretch
   | CaptureTrim            -- cut all but the marks' windows (on the rig)
   | CaptureUndo            -- put back the last cut or trim (on the rig)
   | CaptureFrame           -- 33ms tick: advance the river's clock, prune its window
@@ -1268,7 +1276,7 @@ component = H.mkComponent
       , clipLibrary: []
       , perfPhrasePick: Nothing
       , capture: { logbook: Logbook.emptyLog, playing: Nothing, regionDrag: Nothing, contextOpen: false, codeOpen: false, zoom: Whole, rig: Nothing, cutting: false, cutSel: Nothing }
-      , rigLoops: false, rigAsked: 0.0
+      , rigLoops: false, rigAsked: 0.0, captureDragSub: Nothing
       , nowMicros: 0.0
       , riverNotes: []
       }
@@ -3018,6 +3026,35 @@ handleActionCore = case _ of
         ("stage-paste vetula/mark " <> markCode "vetula" _.patch m)
   CaptureZoom z -> H.modify_ \s -> s { capture = s.capture { zoom = z } }
 
+  CaptureCutArm -> H.modify_ \s -> s { capture = s.capture { cutting = not s.capture.cutting, cutSel = Nothing } }
+  CaptureCutDown cx cy -> do
+    sid <- H.subscribe $ HS.makeEmitter \emit -> do
+      moveFn <- eventListener \e -> case ME.fromEvent e of
+        Just me -> emit (CaptureCutMove (ME.clientX me) (ME.clientY me))
+        Nothing -> pure unit
+      upFn <- eventListener \_ -> emit CaptureCutUp
+      target <- Window.toEventTarget <$> window
+      addEventListener (EventType "mousemove") moveFn false target
+      addEventListener (EventType "mouseup") upFn false target
+      pure do
+        removeEventListener (EventType "mousemove") moveFn false target
+        removeEventListener (EventType "mouseup") upFn false target
+    at <- capturePointer cx cy
+    H.modify_ \s -> s { captureDragSub = Just sid, capture = s.capture { cutSel = Just { from: at, to: at } } }
+  CaptureCutMove cx cy -> do
+    at <- capturePointer cx cy
+    H.modify_ \s -> s { capture = s.capture { cutSel = map (_ { to = at }) s.capture.cutSel } }
+  -- the rig cuts the stretch (stopping at marks' windows) and sends every
+  -- page the record buffer again
+  CaptureCutUp -> do
+    st <- H.get
+    for_ st.captureDragSub H.unsubscribe
+    for_ st.capture.cutSel \sel -> do
+      let span = (CaptureView.bounds st.capture.zoom st.capture.logbook).span
+      mclock <- vetulaClock
+      for_ mclock \clock -> when (max (sel.to - sel.from) (sel.from - sel.to) > span * 0.003) $
+        rigSend (RL.cutLine "vetula" clock sel.from sel.to)
+    H.modify_ \s -> s { captureDragSub = Nothing, capture = s.capture { cutting = false, cutSel = Nothing } }
   CaptureTrim -> rigSend (RL.cueLine "vetula" "trim")
   CaptureUndo -> rigSend (RL.cueLine "vetula" "undo")
   -- With the rig, clear its record buffer too; it says so to every page
@@ -4827,6 +4864,13 @@ driveCaptureReplay = do
 -- | the lookahead already queued, so stopping (or leaving REPLAY) is silent at once.
 -- | Scoped to the region's own channels rather than all 16, so a preview can't
 -- | interrupt voices that are still performing.
+-- | Where the pointer is on the Review surface, as a time (the surface's µs).
+capturePointer :: forall o m. MonadAff m => Int -> Int -> H.HalogenM State Action Slots o m Number
+capturePointer cx cy = do
+  st <- H.get
+  p <- liftEffect $ Pointer.padNorm "vetula-capture-timeline" cx cy
+  pure ((CaptureView.bounds st.capture.zoom st.capture.logbook).fromFrac (CaptureView.pointerFrac HorizontalOutward p))
+
 -- | A line to the rig, if this page has one.
 rigSend :: forall o m. MonadAff m => String -> H.HalogenM State Action Slots o m Unit
 rigSend line = do
@@ -6331,7 +6375,7 @@ capturePane st =
     , ownCode: _.patch
     , toggleCode: CaptureToggleCode
     , toLimulus: CaptureToLimulus
-    , edits: if st.rigLoops then Just { trim: CaptureTrim, undo: CaptureUndo, cut: Nothing } else Nothing
+    , edits: if st.rigLoops then Just { trim: CaptureTrim, undo: CaptureUndo, cut: Just { arm: CaptureCutArm, down: CaptureCutDown } } else Nothing
     }
 
 -- | Colour a captured note by its source channel/voice (up to six distinct hues).
@@ -6354,11 +6398,11 @@ reviewSurface st =
   HH.div
     [ HP.style "position: absolute; inset: 0; display: flex; flex-direction: column; align-items: stretch; padding: 30px 28px;" ]
     [ HH.div
-        -- Bleeds on all four sides, the top included: the capture surface is the
-        -- whole stage here, not something laid out within it, so the stage's
-        -- padding-top would only show as a seam of paper under the AUDITION bar.
-        -- Same reasoning as Perform's river column.
-        [ HP.style "flex: 1 1 auto; min-height: 0; margin: -30px -28px -30px -28px; display: flex; flex-direction: column; background: #0b0a07; border-top: 1px solid #2a281f;" ]
+        -- Bleeds on three sides: the capture surface is the whole stage here,
+        -- not something laid out within it. Not the top: the 44px AUDITION
+        -- chyron lies over the stage's top edge, and bled up under it the
+        -- surface's own top row (zoom, ✂ cut, trim, undo) was hidden.
+        [ HP.style "flex: 1 1 auto; min-height: 0; margin: 14px -28px -30px -28px; display: flex; flex-direction: column; background: #0b0a07; border-top: 1px solid #2a281f;" ]
         [ capturePane st ]
     ]
 
