@@ -31,7 +31,7 @@ import Halogen.HTML.Core (AttrName(..), ElemName(..), Namespace(..))
 import Halogen.HTML.Events as HE
 import Halogen.HTML.Properties as HP
 import Triggerfish.Bosun (Lamp(..))
-import Triggerfish.Flow (Column(..), Flow, Signal(..), columnTitle, layerOf, nodeRank, onTheBeat, signalLabel)
+import Triggerfish.Flow (Column(..), Flow, Signal(..), columnTitle, layerOf, loopOf, nodeRank, onTheBeat, signalLabel)
 
 -- | What the chart reports: a machine hovered (or left), and a machine picked.
 -- | `link`: a link clicked, with its machine and the node it runs into.
@@ -85,7 +85,7 @@ chart on hot live f
         , attr "role" "img"
         , attr "aria-label" "Where each machine's output goes: through the browser or the rig, through interfaces and instruments, to your ears"
         ]
-        ( beatBand <> heads <> [ rule ] <> map link laid.links <> map node laid.nodes <> beatMarks <> bubbles )
+        ( beatBand <> heads <> [ rule ] <> map link laid.links <> map node laid.nodes <> beatMarks )
   where
   -- In Atlantis, link-spike stands above the flow: the beat, broadcast to
   -- everything the rig times, rather than one more hop in it.
@@ -153,7 +153,9 @@ chart on hot live f
 
   linkTitle l =
     l.from <> " → " <> l.to <> " · " <> signalLabel l.signal
-      <> (if l.control then " · control: the page tells the rig what to play; the rig makes the notes" else " · " <> plural l.streams "stream")
+      <> (if l.signal == Recorded then " · its notes are kept in the rig's record buffer"
+          else if l.control then " · control: the page tells the rig what to play; the rig makes the notes"
+          else " · " <> plural l.streams "stream")
       <> (if l.broken > 0 then " · " <> show l.broken <> " not reaching " <> l.to else "")
       <> (if Array.null l.wires then "" else "\n" <> joinWith ", " l.wires)
       <> (if Array.null l.notes then "" else "\n" <> joinWith ", " l.notes)
@@ -167,9 +169,10 @@ chart on hot live f
 
   node sn = case ours sn of
     Nothing -> svg "g" [] []
-    Just nd -> case nd.machine of
-      Just m -> machineNode sn nd m
-      Nothing -> placeNode sn nd
+    Just nd -> case nd.machine, loopOf nd.id of
+      Just m, _ -> machineNode sn nd m
+      Nothing, Just l -> loopNode sn nd l
+      Nothing, Nothing -> placeNode sn nd
 
   bar sn = svg "rect"
     [ attr "class" "bar", attr "x" (n sn.x0), attr "y" (n sn.y0)
@@ -199,6 +202,23 @@ chart on hot live f
         , use ("sp-" <> m) 23.0 (cy - 16.0) 54.0 32.0
         , label "name" (sn.x0 - 10.0) (cy - 2.0) "end" nd.name
         , label "sub" (sn.x0 - 10.0) (cy + 11.0) "end" (if needsAtlantis m then "needs Atlantis" else plural (streamsOf m) "stream" <> " · " <> playsWhere m)
+        ]
+
+  -- A loop: a bubble in its machine's colour with the mark's number, filled
+  -- and pulsing while the rig plays it.
+  loopNode sn nd l =
+    let
+      cy = mid sn
+      playing = nd.note == "playing"
+      cx = sn.x1 + 14.0
+    in
+      svg "g" [ attr "class" ("node loopnode m-" <> l.machine) ]
+        [ bar sn
+        , svg "g" [ attr "class" ("bubble" <> if playing then " playing" else "") ]
+            [ svg "circle" [ attr "cx" (n cx), attr "cy" (n cy), attr "r" "9" ] []
+            , label "bn" cx (cy + 3.5) "middle" nd.name
+            ]
+        , svg "title" [] [ HH.text (l.machine <> " mark " <> nd.name <> if playing then ": looping on the rig" else ": kept on the rig, not playing") ]
         ]
 
   placeNode sn nd =
@@ -260,32 +280,6 @@ chart on hot live f
     | Array.any (\l -> l.machine == m && l.from == "engine") f.links = "loops on the rig"
     | otherwise = "plays here"
 
-  -- The rig's loops, as bubbles under the engine: a row per machine, one
-  -- per mark, numbered as Limulus numbers them, filled while a loop plays it.
-  bubbles = case Array.find (\sn -> sn.name == "engine") laid.nodes of
-    Nothing -> []
-    Just sn ->
-      let
-        rows = nub (map _.machine f.loops)
-        x0 = sn.x1 + 76.0
-        row i m =
-          let
-            y = sn.y1 + 18.0 + toNumber i * 20.0
-            marks = filter (\l -> l.machine == m) f.loops
-          in
-            svg "g" [ attr "class" ("loops m-" <> m) ]
-              ( [ label "sub" (x0 - 8.0) (y + 3.5) "end" (m <> " loops") ]
-                  <> Array.mapWithIndex (\j l -> bubble (x0 + toNumber j * 18.0) y l) marks
-              )
-        bubble x y l =
-          svg "g" [ attr "class" ("bubble" <> (if l.playing then " playing" else "")) ]
-            [ svg "circle" [ attr "cx" (n (x + 7.0)), attr "cy" (n y), attr "r" "7.5" ] []
-            , label "bn" (x + 7.0) (y + 3.5) "middle" (show l.n)
-            , svg "title" [] [ HH.text (m' l <> " mark " <> show l.n <> (if l.playing then ": looping on the rig" else ": kept, not playing") ) ]
-            ]
-        m' l = l.machine
-      in Array.mapWithIndex row rows
-
   -- The sample sets sound whenever anything does.
   sounding l = l.machine `Array.elem` live.playing || (l.machine == "sets" && not (Array.null live.playing))
 
@@ -293,7 +287,7 @@ chart on hot live f
 key :: forall w i. HH.HTML w i
 key =
   HH.div [ HP.class_ (HH.ClassName "flow-key") ]
-    ( [ Notes, Socket, Midi, Osc, Http, Cv, Audio, Samples ] <#> \s ->
+    ( [ Notes, Socket, Midi, Osc, Http, Cv, Audio, Samples, Recorded ] <#> \s ->
         HH.span [ HP.class_ (HH.ClassName ("sig " <> sigClass s)) ] [ HH.i_ [], HH.text (signalLabel s) ]
     )
 
@@ -307,6 +301,7 @@ sigClass = case _ of
   Cv -> "s-cv"
   Audio -> "s-audio"
   Samples -> "s-samples"
+  Recorded -> "s-record"
 
 -- ---------------------------------------------------------------------------
 -- SVG

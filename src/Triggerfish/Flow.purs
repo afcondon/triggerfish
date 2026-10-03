@@ -58,6 +58,7 @@ module Triggerfish.Flow
   , onTheBeat
   , nodeRank
   , machineOf
+  , loopOf
   ) where
 
 import Prelude
@@ -79,7 +80,7 @@ import Reef.Balistes.Kit (canonKit)
 -- | Where a node stands, left to right. Fixed, so the chart reads the same in
 -- | every configuration; columns with nothing in them are packed away by
 -- | `layerOf`.
-data Column = Machines | Page | Engine | RigOut | Interface | Instrument | Heard
+data Column = Machines | Page | Loops | Engine | RigOut | Interface | Instrument | Heard
 
 derive instance Eq Column
 derive instance Ord Column
@@ -88,6 +89,7 @@ columnTitle :: Column -> String
 columnTitle = case _ of
   Machines -> "Machine"
   Page -> "Page"
+  Loops -> "Loop"
   Engine -> "Engine"
   RigOut -> "Rig out"
   Interface -> "Interface"
@@ -96,7 +98,7 @@ columnTitle = case _ of
 
 -- | What is travelling on a link. The colour changes where the signal changes
 -- | form, which is the architecture made visible.
-data Signal = Notes | Socket | Midi | Osc | Http | Cv | Audio | Samples
+data Signal = Notes | Socket | Midi | Osc | Http | Cv | Audio | Samples | Recorded
 
 derive instance Eq Signal
 
@@ -110,6 +112,7 @@ signalLabel = case _ of
   Cv -> "CV / gate"
   Audio -> "audio"
   Samples -> "samples"
+  Recorded -> "recorded"
 
 -- ---------------------------------------------------------------------------
 -- The chart's data
@@ -134,8 +137,7 @@ type Link =
   , control :: Boolean
   }
 
--- | `loops`: the rig's marks, for the bubbles on the engine.
-type Flow = { nodes :: Array Node, links :: Array Link, loops :: Array RigLoop }
+type Flow = { nodes :: Array Node, links :: Array Link }
 
 -- | A mark the rig keeps for a machine (`rig_loops`), and whether a loop is
 -- | playing it. A loop plays on the rig whether or not its page is open.
@@ -315,33 +317,42 @@ pathOf relays mode m via dest = case midiEnds dest of
 -- ---------------------------------------------------------------------------
 
 flow :: Inputs -> Flow
-flow inp = { nodes, links, loops: inp.loops }
+flow inp = { nodes, links: links <> loopLinks }
   where
   pageOpen m = m `elem` inp.machines
-  -- A machine whose page is closed still sounds while the rig plays its
-  -- loops: its streams start at the engine.
-  loopsOnly m = inp.rigUp && not (pageOpen m) && Array.any (\l -> l.machine == m && l.playing) inp.loops
-  shown m = pageOpen m || loopsOnly m
+  -- The rig's marks, while the rig is there to keep them.
+  marks m = if inp.rigUp then filter (\l -> l.machine == m) inp.loops else []
+  loopsPlay m = Array.any _.playing (marks m)
+  -- Whether the page's own streams already run through the engine.
+  rigCarries m = pageOpen m && modeFor inp.mode m == Atlantis && rigPlays m
   unitOf m src = if m `elem` inp.open then "src:" <> sourceKey src else "m:" <> m
 
   tableStreams = inp.table # concatMap \r ->
-    let m = machineOf r.source
-    in if not (shown m) then []
-       else r.legs # filter _.on # mapMaybe (\leg -> stream m (unitOf m r.source) Nothing (notesOf r.source) leg.dest)
+    let
+      m = machineOf r.source
+      legs = filter _.on r.legs
+      page = if pageOpen m then mapMaybe (\leg -> stream m (unitOf m r.source) Nothing (notesOf r.source) leg.dest) legs else []
+      -- A loop plays on the rig whatever the page does (or with it closed):
+      -- down the rig's paths, from the engine.
+      fromLoops =
+        if loopsPlay m && not (rigCarries m) then mapMaybe (\leg -> loopStream m (notesOf r.source) leg.dest) legs else []
+    in page <> fromLoops
 
-  extraStreams = inp.extras # filter (shown <<< _.machine)
+  extraStreams = inp.extras # filter (pageOpen <<< _.machine)
     # mapMaybe \e -> stream e.machine ("m:" <> e.machine) e.via [] e.dest
+
+  loopStream m notes dest =
+    (\hops -> mk m ("rig:" <> m) notes dest (filter (\h -> h.from /= "browser") hops) false) <$> pathOf inp.relays Atlantis m Nothing dest
 
   -- A leg with no path in Solo that has one in Atlantis needs the rig: drawn
   -- on that path, marked waiting.
   stream m unit via notes dest =
-    if loopsOnly m then (\hops -> mk (filter (\h -> h.from /= "browser") hops) false) <$> pathOf inp.relays Atlantis m via dest
-    else case pathOf inp.relays (modeFor inp.mode m) m via dest of
-      Just hops -> Just (mk hops false)
-      Nothing | inp.mode /= Atlantis -> (\hops -> mk hops true) <$> pathOf inp.relays Atlantis m via dest
+    case pathOf inp.relays (modeFor inp.mode m) m via dest of
+      Just hops -> Just (mk m unit notes dest hops false)
+      Nothing | inp.mode /= Atlantis -> (\hops -> mk m unit notes dest hops true) <$> pathOf inp.relays Atlantis m via dest
       Nothing -> Nothing
-    where
-    mk hops needsRig =
+
+  mk m unit notes dest hops needsRig =
       { machine: m, unit, wire: wireOf dest, hops
       , brokenAt: case Array.find dead (if needsRig then [] else hops) of
           Just h -> Just h.to
@@ -392,9 +403,37 @@ flow inp = { nodes, links, loops: inp.loops }
     same x l = l.from == x.hop.from && l.to == x.hop.to && l.signal == x.hop.signal && l.machine == x.machine && l.control == x.hop.control
     fromBool b = if b then 1 else 0
 
-  ids = nub (concatMap (\l -> [ l.from, l.to ]) links)
+  -- The loops, between the pages and the engine: each mark fed, thin, by
+  -- what recorded it (the machine, or each of its voices when opened), and a
+  -- playing one feeding the engine with its notes.
+  loopLinks = nub (map _.machine inp.loops) # concatMap \m ->
+    let
+      feeders
+        | not (pageOpen m) = []
+        | m `elem` inp.open = filter (\u -> isJust (stripPrefix (Pattern "src:") u)) (map _.unit (filter (\s -> s.machine == m) streams))
+        | otherwise = [ "m:" <> m ]
+    in
+      marks m # concatMap \l ->
+        let id = loopId m l.n
+        in map (\f -> plain f id Recorded m true) feeders
+             <> (if l.playing then [ plain id "engine" Notes m false ] else [])
+  plain from to signal machine control =
+    { from, to, signal, machine, streams: 1, broken: 0, wires: [], notes: [], waiting: 0, control }
+
+  ids = nub (concatMap (\l -> [ l.from, l.to ]) (links <> loopLinks))
   units = nubByEq (\a b -> a.unit == b.unit) streams
-  nodes = sortWith nodeRank (catMaybes (map (nodeOf units inp.table links) ids))
+  nodes = sortWith nodeRank (catMaybes (map (nodeOf units inp.table inp.loops links) ids))
+
+-- | A loop's node: one per mark, by machine and number.
+loopId :: String -> Int -> String
+loopId m n = "loop:" <> m <> ":" <> show n
+
+loopOf :: String -> Maybe { machine :: String, n :: Int }
+loopOf id = do
+  rest <- stripPrefix (Pattern "loop:") id
+  case split (Pattern ":") rest of
+    [ m, k ] -> Int.fromString k <#> \n -> { machine: m, n }
+    _ -> Nothing
 
 isNoPort :: Reach -> Boolean
 isNoPort = case _ of
@@ -434,10 +473,13 @@ machineNames =
   , { slot: "limulus", name: "Limulus", note: "Tidal, live-coded" }
   ]
 
-nodeOf :: Array Stream -> Table -> Array Link -> String -> Maybe Node
-nodeOf units table links id = case Array.find (\x -> x.id == id) fixed of
+nodeOf :: Array Stream -> Table -> Array RigLoop -> Array Link -> String -> Maybe Node
+nodeOf units table loops links id = case Array.find (\x -> x.id == id) fixed of
   Just f -> Just (withWires f)
   Nothing
+    | Just l <- loopOf id ->
+        let playing = Array.any (\x -> x.machine == l.machine && x.n == l.n && x.playing) loops
+        in Just { id, column: Loops, name: show l.n, note: if playing then "playing" else "kept", machine: Nothing }
     | Just p <- strip "port:" -> Just (withWires { id, column: Interface, name: p, note: "MIDI port", machine: Nothing })
     | Just p <- strip "inst:" -> Just { id, column: Instrument, name: p, note: "on its port", machine: Nothing }
     | Just m <- strip "m:" -> Just (machineNode m)
@@ -467,6 +509,8 @@ nodeRank nd = Tuple nd.column (Tuple at nd.name)
   where
   at = case nd.machine of
     Just m -> fromMaybe 99 (findIndex (\x -> x.slot == m) machineNames)
+    -- loops by machine, then number
+    Nothing | Just l <- loopOf nd.id -> 100 * fromMaybe 99 (findIndex (\x -> x.slot == l.machine) machineNames) + l.n
     -- A named port heads its column: it is where most streams go.
     Nothing | isJust (stripPrefix (Pattern "port:") nd.id) -> -1
     Nothing -> fromMaybe 99 (findIndex (\x -> x.id == nd.id) fixed)

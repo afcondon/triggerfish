@@ -84,6 +84,23 @@ runFlowTests = do
     ( isJust (find (\l -> l.from == "engine" && l.machine == "odonus") looping.links)
         && isNothing (find (\l -> l.from == "browser" || l.to == "browser") looping.links)
     )
+  let looped = flow base { mode = Atlantis, table = odonusToAbleton
+                          , loops = [ { machine: "odonus", n: 1, playing: false }, { machine: "odonus", n: 2, playing: true } ] }
+  check "a loop is a node between the page and the engine"
+    ( layerOf looped "loop:odonus:2" == Just 2 && layerOf looped "engine" == Just 3
+        && layerOf looped "browser" == Just 1
+    )
+  check "every mark is recorded from its machine; only a playing one feeds the engine"
+    ( isJust (find (\l -> l.from == "m:odonus" && l.to == "loop:odonus:1" && l.signal == Recorded) looped.links)
+        && isJust (find (\l -> l.from == "loop:odonus:2" && l.to == "engine") looped.links)
+        && isNothing (find (\l -> l.from == "loop:odonus:1" && l.to == "engine") looped.links)
+    )
+  let soloLoop = flow base { table = odonusToAbleton, loops = [ { machine: "odonus", n: 1, playing: true } ] }
+  check "in Solo the page plays here and a playing loop plays on the rig, both drawn"
+    ( isJust (find (\l -> l.from == "browser" && l.signal == Midi) soloLoop.links)
+        && isJust (find (\l -> l.from == "engine" && l.machine == "odonus") soloLoop.links)
+    )
+
   check "a kept mark that is not playing draws no streams"
     (null (flow base { machines = [], table = odonusToAbleton, loops = [ { machine: "odonus", n: 1, playing: false } ] }).links)
   check "with the rig down a loop draws nothing"
