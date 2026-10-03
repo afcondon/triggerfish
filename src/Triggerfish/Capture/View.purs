@@ -345,7 +345,8 @@ controlCard w posOf cap = case cardMark cap of
           -- anchor near the band's start, flipping past the midpoint so it never runs off.
           anchor = case w.orientation of
             Vertical -> if start < 70.0 then "left:8px;top:calc(" <> show start <> "% + 4px)" else "left:8px;bottom:calc(" <> show (100.0 - max pf pt) <> "% + 4px)"
-            _ -> if start < 55.0 then "top:6px;left:" <> show start <> "%" else "top:6px;right:" <> show (100.0 - max pf pt) <> "%"
+            -- below the zoom bar's row, which would otherwise lie over it
+            _ -> if start < 55.0 then "top:32px;left:" <> show start <> "%" else "top:32px;right:" <> show (100.0 - max pf pt) <> "%"
         in
           [ HH.div
               [ style $ "position:absolute;" <> anchor <> ";z-index:7;min-width:150px;"
