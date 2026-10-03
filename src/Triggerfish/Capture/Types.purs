@@ -51,9 +51,12 @@ type Mark =
   -- for a machine with no quantiser): what the ♫ context panel shows
   , sounding :: Maybe { root :: Int, scale :: Array Int, chord :: Maybe (Array Int) }
   , tempo :: Number
-  -- the window as the mark made it, which a pattern places the window from
-  -- (`slide "<0 -1 -2>"`: bars from here), so a repeating pattern returns
-  , origin :: { from :: Number, to :: Number } }
+  -- its number: from 1, in the order marks are made (the rig numbers them
+  -- when it is there), so `loop 2` always means this mark
+  , n :: Int
+  -- the Link beat a loop on the rig began playing it from, while it does
+  -- (Capture.RigLoops); Nothing with no rig loop
+  , loop :: Maybe Number }
 
 -- | Which part of a loop region a drag grabbed: its start edge, end edge, or body
 -- | (slide the whole window). Edge naming is time-relative, not screen-relative, so

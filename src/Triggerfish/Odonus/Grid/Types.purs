@@ -312,6 +312,9 @@ type State =
                                   -- read at a glance and changed deliberately.
   , navScenes :: Boolean          -- Odonus's secondary-nav scene menu open?
   , playing :: Maybe PlayState    -- a REPLAY loop in flight (Nothing = not replaying)
+  -- The rig keeps the marks and plays the loops (Capture.RigLoops): true once
+  -- it has said so, and from then this page holds no loop of its own.
+  , rigLoops :: Boolean
   , regionDrag :: Maybe RegionDrag  -- a loop-region resize/slide in progress
   , contextOpen :: Boolean          -- REPLAY control card: harmonic-context panel open
   , codeOpen :: Boolean             -- REPLAY control card: the mark as code

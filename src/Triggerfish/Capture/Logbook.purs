@@ -23,18 +23,15 @@ module Triggerfish.Capture.Logbook
   , retentionMicros
   , chunkSize
   , materializeRegion
-  , Reshape(..)
-  , reshape
   , applyBounds
-  , windowTarget
   ) where
 
 import Prelude
 
-import Data.Array (any, concatMap, deleteAt, filter, length, modifyAt, null, (!!), (:))
+import Data.Array (any, concatMap, deleteAt, filter, length, modifyAt, null, (:))
 import Data.Foldable (sum)
 import Data.Int (floor, round, toNumber)
-import Data.Maybe (Maybe(..), fromMaybe, maybe)
+import Data.Maybe (Maybe(..), fromMaybe)
 import Triggerfish.Capture.Types (Chunk, Logbook, Mark, PlaySource(..), PlayState)
 import Triggerfish.Clips (NoteEvent)
 
@@ -96,16 +93,18 @@ loopBars :: Int
 loopBars = 2
 
 -- | The bar-aligned default loop window for a mark at `atMicros` / Link `beat`:
--- | `loopBars` bars starting at the downbeat of the bar the mark falls in.
--- | Computed in beat space and converted to recording micros via the tempo — bar
--- | alignment is what keeps the loop seam clean rather than clicking. Used once at
--- | capture; the stored `from`/`to` are then freely draggable.
+-- | the `loopBars` bars that end with the bar the mark falls in (the bar
+-- | before it and that bar), as the rig makes it (rig_loops): a mark says
+-- | "that was nice", so its window looks back. Computed in beat space and
+-- | converted to recording micros via the tempo — bar alignment is what keeps
+-- | the loop seam clean rather than clicking. The stored `from`/`to` are then
+-- | freely draggable.
 regionBounds :: Number -> Number -> Number -> { from :: Number, to :: Number }
 regionBounds tempo atMicros beat =
   let beatMicros = 60.0e6 / (if tempo > 1.0 then tempo else 120.0)
-      barStartBeat = toNumber (floor (beat / quantum)) * quantum
-      toBeat = barStartBeat + toNumber loopBars * quantum
-  in { from: atMicros + (barStartBeat - beat) * beatMicros
+      toBeat = toNumber (floor (beat / quantum)) * quantum + quantum
+      fromBeat = toBeat - toNumber loopBars * quantum
+  in { from: atMicros + (fromBeat - beat) * beatMicros
      , to: atMicros + (toBeat - beat) * beatMicros }
 
 -- | Snap a recording time to the nearest beat line, using a mark as the grid
@@ -134,32 +133,6 @@ materializeRegion from to lb =
     (filter (\e -> e.fireUnixMicros >= from && e.fireUnixMicros <= to)
       (lb.live <> concatMap _.events lb.chunks))
 
--- | A loop window edit, in bars (a fraction is fine): move it, or move its
--- | end (lengthening, or with a negative count shortening). From Limulus
--- | (`odonus $ slide -1`, `widen 2`, `narrow 1`) as the Review surface's own
--- | drag does by hand (docs/kb/plans/the-deck.md, step 3a).
--- |
--- | `Place` comes from a pattern the rig follows (`slide "<0 -1 -2>"`,
--- | `widen "<0 1>"`): not a nudge but a position, in bars from where the mark
--- | was made (`origin`): the start for a slide, the length beyond the
--- | original for a widen, the other kept as it is.
-data Reshape = Slide Number | Widen Number | Place { slide :: Maybe Number, widen :: Maybe Number }
-
--- | The window `r` makes of mark `m`'s, at `tempo` (a bar is four beats). It
--- | never gets shorter than a beat.
-reshape :: Number -> Reshape -> Mark -> { from :: Number, to :: Number }
-reshape tempo r m = case r of
-  Slide bars -> { from: m.from + bars * bar, to: m.to + bars * bar }
-  Widen bars -> { from: m.from, to: max (m.from + bar / quantum) (m.to + bars * bar) }
-  Place p ->
-    let
-      start = maybe m.from (\s -> m.origin.from + s * bar) p.slide
-      len = maybe (m.to - m.from) (\w -> (m.origin.to - m.origin.from) + w * bar) p.widen
-    in
-      { from: start, to: start + max (bar / quantum) len }
-  where
-  bar = quantum * 60.0e6 / (if tempo > 1.0 then tempo else 120.0)
-
 -- | Write new bounds onto mark `i`, and if it is the one looping, onto the
 -- | loop too (its notes taken again), so the change is heard next time round.
 applyBounds
@@ -177,9 +150,3 @@ applyBounds i b s =
       other -> other
   in
     s { logbook = lb, playing = playing }
-
--- | The mark a window cue acts on: the one looping, else the latest.
-windowTarget :: forall r. { logbook :: Logbook, playing :: Maybe PlayState | r } -> Maybe { i :: Int, mark :: Mark }
-windowTarget s = case s.playing of
-  Just { source: FromRegion i } | Just m <- s.logbook.marks !! i -> Just { i, mark: m }
-  _ -> map (\m -> { i: 0, mark: m }) (s.logbook.marks !! 0)

@@ -25,7 +25,7 @@ module Triggerfish.Capture.View
 
 import Prelude
 
-import Data.Array (concat, concatMap, filter, foldl, length, mapWithIndex, null, (!!))
+import Data.Array (concat, concatMap, filter, findIndex, foldl, length, mapMaybe, mapWithIndex, null, (!!))
 import Data.Array as Array
 import Data.Int (toNumber)
 import Data.Int as Int
@@ -37,6 +37,8 @@ import Halogen.HTML as HH
 import Halogen.HTML.Events as HE
 import Halogen.HTML.Properties as HP
 import Web.UIEvent.MouseEvent as ME
+import Triggerfish.Capture.RigLoops (Clock)
+import Triggerfish.Capture.RigLoops as RL
 import Triggerfish.Capture.Types (Logbook, Mark, Orientation(..), PlaySource(..), PlayState, RegionDrag, RegionEdge(..), Zoom(..))
 import Triggerfish.Clips (NoteEvent)
 import Halogen.Widgets.Svg (svgAttr, svgEl)
@@ -53,6 +55,9 @@ type CaptureState =
   -- the looped mark shown as code (`markCode`), with → Limulus
   , codeOpen :: Boolean
   , zoom :: Zoom
+  -- the rig keeps the marks and plays the loops (Capture.RigLoops): the
+  -- clock to place its loops' playheads by; Nothing when the page does
+  , rig :: Maybe Clock
   }
 
 -- | The harmonic context read off a mark's captured patch — the same shape as
@@ -161,8 +166,8 @@ capturePanel w cap =
                 , style "position:absolute;inset:0" ]
                 (map (noteDot w fracOf) (decimate shown) <> map (markLine w fracOf) lb.marks)
             ]
-              <> concat (mapWithIndex (regionBand w posOf cap.playing) lb.marks)
-              <> playhead w posOf cap.playing
+              <> concat (mapWithIndex (regionBand w posOf (activeAt cap)) lb.marks)
+              <> playheads w posOf cap
               <> [ caption (length shown) (length lb.marks) cap.zoom b.span, zoomBar w cap.zoom ]
               <> controlCard w posOf cap
       )
@@ -209,8 +214,8 @@ markLine w fracOf m =
 -- | grab doesn't also fire the body's mousedown. Brighter while it's the one playing.
 -- | Either horizontal → a vertical strip spanning the height; Vertical → a horizontal strip
 -- | spanning the width.
-regionBand :: forall action slots m. CaptureWiring action -> (Number -> Number) -> Maybe PlayState -> Int -> Mark -> Array (H.ComponentHTML action slots m)
-regionBand w posOf playing i m =
+regionBand :: forall action slots m. CaptureWiring action -> (Number -> Number) -> (Int -> Mark -> Boolean) -> Int -> Mark -> Array (H.ComponentHTML action slots m)
+regionBand w posOf isActive i m =
   let pf = posOf m.from
       pt = posOf m.to
       -- the band spans between the two endpoints; which is smaller flips with the
@@ -218,9 +223,7 @@ regionBand w posOf playing i m =
       -- take min/abs and the band placement is generic.
       start = min pf pt
       len = max 0.3 (abs (pt - pf))
-      active = case playing of
-        Just p -> p.source == FromRegion i
-        Nothing -> false
+      active = isActive i m
       bandStyle = case w.orientation of
         Vertical -> "left:0;right:0;top:" <> show start <> "%;height:" <> show len <> "%;cursor:grab;"
           <> "border-top:1px solid #e8c14a66;border-bottom:1px solid #e8c14a66;"
@@ -232,7 +235,11 @@ regionBand w posOf playing i m =
         , style $ "position:absolute;" <> bandStyle
             <> "background:rgba(232,193,74," <> (if active then "0.22" else "0.10") <> ")"
             <> (if active then ";box-shadow:inset 0 0 0 1px #e8c14a" else "") ]
-        []
+        [ HH.span
+            [ style $ "position:absolute;top:3px;left:4px;pointer-events:none;"
+                <> "font-family:'SF Mono',Menlo,monospace;font-size:9px;"
+                <> "color:" <> (if active then "#e8c14a" else "#e8c14a88") ]
+            [ HH.text (show m.n) ] ]
     , edgeHandle w i EdgeFrom pf
     , edgeHandle w i EdgeTo pt
     ]
@@ -253,33 +260,56 @@ edgeHandle w i edge pct =
     , style $ "position:absolute;" <> gripStyle <> "background:rgba(232,193,74,0.4)" ]
     []
 
--- | The moving loop playhead while replaying a REGION (a saved clip isn't on the
--- | timeline). A line perpendicular to the time axis, moving along it.
-playhead :: forall action slots m. CaptureWiring action -> (Number -> Number) -> Maybe PlayState -> Array (H.ComponentHTML action slots m)
-playhead w posOf = case _ of
-  Just p | FromRegion _ <- p.source ->
-    let pos = posOf (p.fromMicros + p.playheadFrac * (p.toMicros - p.fromMicros))
+-- | Whether mark `i` is looping: the page's own loop, or with a rig, one of
+-- | the rig's.
+activeAt :: CaptureState -> Int -> Mark -> Boolean
+activeAt cap i m = case cap.rig of
+  Just _ -> RL.looping m
+  Nothing -> case cap.playing of
+    Just p -> p.source == FromRegion i
+    Nothing -> false
+
+-- | The moving loop playheads: the page's loop of a REGION (a saved clip isn't
+-- | on the timeline), or each of the rig's loops. A line perpendicular to the
+-- | time axis, moving along it.
+playheads :: forall action slots m. CaptureWiring action -> (Number -> Number) -> CaptureState -> Array (H.ComponentHTML action slots m)
+playheads w posOf cap = case cap.rig of
+  Just c -> mapMaybe (\m -> RL.playheadFrac c m <#> \f -> line (m.from + f * (m.to - m.from))) cap.logbook.marks
+  Nothing -> case cap.playing of
+    Just p | FromRegion _ <- p.source -> [ line (p.fromMicros + p.playheadFrac * (p.toMicros - p.fromMicros)) ]
+    _ -> []
+  where
+  line t =
+    let pos = posOf t
         headStyle = case w.orientation of
           Vertical -> "left:0;right:0;top:" <> show pos <> "%;height:2px;"
           _ -> "top:0;bottom:0;left:" <> show pos <> "%;width:2px;"
-    in [ HH.div
-           [ style $ "position:absolute;" <> headStyle <> "background:#ffffff;opacity:0.85;pointer-events:none" ]
-           [] ]
-  _ -> []
+    in HH.div
+         [ style $ "position:absolute;" <> headStyle <> "background:#ffffff;opacity:0.85;pointer-events:none" ]
+         []
+
+-- | The mark the control card is on: the page's looping region, or the rig's
+-- | loop started last.
+cardMark :: CaptureState -> Maybe Int
+cardMark cap = case cap.rig of
+  Just _ -> RL.focus cap.logbook.marks >>= \f -> findIndex (\m -> m.n == f.n) cap.logbook.marks
+  Nothing -> case cap.playing of
+    Just { source: FromRegion i } -> Just i
+    _ -> Nothing
 
 -- | The control card on the playing region — stop, lift-to-clip, (optional) save
 -- | scene, and the harmonic context to jam over. When nothing plays it's just the
 -- | hint. Anchors near the region's start along the time axis.
 controlCard :: forall action slots m. CaptureWiring action -> (Number -> Number) -> CaptureState -> Array (H.ComponentHTML action slots m)
-controlCard w posOf cap = case cap.playing of
+controlCard w posOf cap = case cardMark cap of
   Nothing ->
     [ HH.div
         [ style "position:absolute;bottom:9px;right:12px;font-family:Georgia,serif;font-size:10px;color:#ffffff44" ]
-        [ HH.text "click a gold band to loop it" ]
+        [ HH.text (case cap.rig of
+                     Just _ -> "click a gold band to loop it on the rig; click again to stop it"
+                     Nothing -> "click a gold band to loop it") ]
     ]
-  Just p -> case p.source of
-    FromClip _ -> []
-    FromRegion i -> case cap.logbook.marks !! i of
+  Just i -> case cap.logbook.marks !! i of
       Nothing -> []
       Just m ->
         let
@@ -297,7 +327,9 @@ controlCard w posOf cap = case cap.playing of
                   <> "box-shadow:0 4px 14px #00000066" ]
               ( [ HH.div [ style $ "font-family:'SF Mono',Menlo,monospace;font-size:8px;letter-spacing:0.1em;"
                       <> "color:#e8c14a;margin-bottom:6px" ]
-                    [ HH.text ("LOOPING · MARK " <> show (i + 1)) ]
+                    [ HH.text ("LOOPING · MARK " <> show m.n <> (case cap.rig of
+                                                                 Just _ -> " · ON THE RIG"
+                                                                 Nothing -> "")) ]
                 , HH.div [ style "display:flex;gap:4px;flex-wrap:wrap" ]
                     ( [ cardBtn w.stopPlay "#e8c14a" "stop the loop" "■ stop"
                       , cardBtn (w.saveClip i) "#cdb98a" "lift this loop into the shared clip library" "⧉ clip"

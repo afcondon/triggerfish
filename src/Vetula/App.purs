@@ -129,7 +129,7 @@ import Triggerfish.Capture.View (CaptureState, capturePanel, markCode)
 import Vetula.Tidal (progressionSource, parseProgression)
 import Vetula.Lepidoptera (PerfDoc, VoiceSpec, docFromVoices, parseCard, parsePerform, printAsRecord, printCard)
 import Vetula.StageCards as SC
-import Triggerfish.Cue as Cue
+import Triggerfish.Capture.RigLoops as RL
 import Unsafe.Reference (unsafeRefEq)
 import Vetula.Clipboard (copyText)
 import Binnacle.Midi as Midi
@@ -857,6 +857,9 @@ type State =
   -- lifted into the shared clip library. Which of those you see is `stage`; there
   -- is no second flag (the old `captureView` folded into `Stage`).
   , capture :: CaptureState
+  -- The rig keeps the marks and plays the loops (Capture.RigLoops): true once
+  -- it has said so, and from then this page holds no loop of its own.
+  , rigLoops :: Boolean
   -- The LIVE river's two reads (`Capture.River`): the current instant, advanced by
   -- a 33ms frame timer so the roll FLOWS rather than jumping a 16th at a time, and
   -- the recent notes it draws — pruned to the river's fade span each frame. The
@@ -1258,7 +1261,8 @@ component = H.mkComponent
       , perfMenuOpen: false
       , clipLibrary: []
       , perfPhrasePick: Nothing
-      , capture: { logbook: Logbook.emptyLog, playing: Nothing, regionDrag: Nothing, contextOpen: false, codeOpen: false, zoom: Whole }
+      , capture: { logbook: Logbook.emptyLog, playing: Nothing, regionDrag: Nothing, contextOpen: false, codeOpen: false, zoom: Whole, rig: Nothing }
+      , rigLoops: false
       , nowMicros: 0.0
       , riverNotes: []
       }
@@ -1714,24 +1718,41 @@ handleActionCore = case _ of
   StageOpen -> do
     H.modify_ _ { stageCards = Nothing, stageKey = Nothing }
     st <- H.get
-    for_ st.binnacle \bin -> liftEffect $ Transport.send (Binnacle.socket bin) SC.subscribeLine
-  -- A Review cue from Limulus (`vetula $ mark`, `vetula $ loop 2`, `loop off`):
-  -- what the Review surface's own controls do. A loop opens the Review surface.
-  StageFrameIn msg | Just cue <- Cue.readCue "vetula" msg -> case cue of
-    Cue.MarkCue -> handleAction CaptureMark
-    Cue.StopCue -> handleAction CaptureStopSel
-    Cue.LoopCue n -> do
+    for_ st.binnacle \bin -> liftEffect do
+      Transport.send (Binnacle.socket bin) SC.subscribeLine
+      -- and the marks and loops the rig keeps (RigLoops)
+      Transport.send (Binnacle.socket bin) RL.syncLine
+  -- The marks and loops the rig keeps (RigLoops): this surface draws them,
+  -- and takes its own loop off, since the rig plays them now. A mark it has
+  -- not met (made from Limulus, or by ◆ a moment ago) takes Vetula's text
+  -- now; one from before this page opened has none to show.
+  StageFrameIn msg | isJust (stripPrefix (Pattern "loops-notes ") msg) -> do
+    mclock <- vetulaClock
+    for_ mclock \clock -> for_ (RL.readNotes "vetula" clock msg) \notes ->
+      H.modify_ \s -> s { capture = s.capture { logbook = RL.seedNotes notes s.capture.logbook } }
+  StageFrameIn msg | Just rig <- RL.readLoops "vetula" msg -> do
+    mclock <- vetulaClock
+    for_ mclock \clock -> do
       st <- H.get
-      let marks = st.capture.logbook.marks
-          i = if n == 0 then 0 else n - 1   -- marks are newest-first: 0 is the latest
-      when (i >= 0 && i < length marks) do
-        when (st.stage /= Review) (handleAction (SetStage Review))
-        handleAction (CaptureRegionSelect i)
-    -- the loop window moved or stretched from Limulus (Vetula's surface has
-    -- no drag, so this is the one way to move one)
-    Cue.WindowCue r -> H.modify_ \s -> case Logbook.windowTarget s.capture of
-      Just t -> s { capture = Logbook.applyBounds t.i (Logbook.reshape s.clockTempo r t.mark) s.capture }
-      Nothing -> s
+      when (isJust st.capture.playing) hushCapture
+      let r = RL.reconcile clock rig st.capture.logbook.marks
+      H.modify_ \s -> s { rigLoops = true, capture = s.capture { playing = Nothing, rig = Just clock, logbook = s.capture.logbook { marks = r.marks } } }
+      -- the first word from the rig: ask it for what was played before this page
+      unless st.rigLoops $ rigSend (RL.notesLine "vetula")
+      unixMs <- liftEffect dateNow
+      for_ r.fresh \rm -> do
+        s <- H.get
+        let recent = unixMs * 1000.0 - rm.us < 2.0e6
+            m = { atMicros: RL.microsOf clock rm.beat, beat: rm.beat
+                , from: RL.microsOf clock rm.from, to: RL.microsOf clock rm.to
+                , patch: if recent then markText s else "", now: "", sounding: Nothing
+                , rig: [], tempo: clock.tempo, n: rm.n
+                , loop: if rm.playing then rm.start else Nothing }
+        H.modify_ _ { capture = s.capture { logbook = s.capture.logbook { marks = RL.insertMark m s.capture.logbook.marks } } }
+        when recent $ H.raise (Marked m.atMicros)
+      st2 <- H.get
+      when (any RL.looping st2.capture.logbook.marks && not (any RL.looping st.capture.logbook.marks) && st2.stage /= Review)
+        (handleAction (SetStage Review))
   -- The notes the rig played for the cards (`vetula-notes`, Unix µs): into the
   -- Review logbook, as the page's own notes go in Local, so marks and loops work.
   -- Logged whatever this page's authority: these notes did sound.
@@ -2941,14 +2962,18 @@ handleActionCore = case _ of
   -- band shows the lift card; saveClip materializes the region and appends it to the
   -- shared library with source "vetula". No in-surface audition — you hear the lifted
   -- clip in the library modal (or attached into a voice).
+  -- With the rig, it makes the mark and numbers it; it comes back in a loops
+  -- frame, and takes Vetula's text then.
   CaptureMark -> do
     nowMs <- liftEffect perfNow
     st <- H.get
-    let atMic = nowMs * 1000.0
-        barMic = 60.0e6 / (if st.clockTempo > 1.0 then st.clockTempo else 120.0) * 4.0
-        mark = { atMicros: atMic, beat: 0.0, from: atMic - 2.0 * barMic, to: atMic, patch: markText st, now: "", sounding: Nothing, rig: [], tempo: st.clockTempo, origin: { from: atMic - 2.0 * barMic, to: atMic } }
-    H.modify_ \s -> s { capture = s.capture { logbook = Logbook.pushMark mark s.capture.logbook } }
-    H.raise (Marked atMic)
+    if st.rigLoops then rigSend (RL.cueLine "vetula" "mark")
+    else do
+      let atMic = nowMs * 1000.0
+          barMic = 60.0e6 / (if st.clockTempo > 1.0 then st.clockTempo else 120.0) * 4.0
+          mark = { atMicros: atMic, beat: 0.0, from: atMic - 2.0 * barMic, to: atMic, patch: markText st, now: "", sounding: Nothing, rig: [], tempo: st.clockTempo, n: RL.nextNumber st.capture.logbook.marks, loop: Nothing }
+      H.modify_ \s -> s { capture = s.capture { logbook = Logbook.pushMark mark s.capture.logbook } }
+      H.raise (Marked atMic)
 
   -- Click a gold band → LOOP it (Odonus's affordance). Materialise the region's
   -- notes rebased to [0, len) and stamp the loop clock; `driveCaptureReplay` queues
@@ -2956,7 +2981,10 @@ handleActionCore = case _ of
   -- origin so a phase-0 note isn't lost on the strict `>` boundary of frame one.
   CaptureRegionSelect i -> do
     st <- H.get
-    for_ (st.capture.logbook.marks !! i) \m -> do
+    -- with the rig, a click starts its loop of the mark, or stops it
+    if st.rigLoops then for_ (st.capture.logbook.marks !! i) \m ->
+      rigSend (RL.cueLine "vetula" (if RL.looping m then "loop " <> show m.n <> " hush" else "loop " <> show m.n))
+    else for_ (st.capture.logbook.marks !! i) \m -> do
       nowMs <- liftEffect perfNow
       H.modify_ \s -> s { capture = s.capture { playing = Just
         { source: FromRegion i
@@ -2966,8 +2994,11 @@ handleActionCore = case _ of
         , loopStartMs: nowMs, scheduledUntilMs: nowMs - 1.0, playheadFrac: 0.0 } } }
 
   CaptureStopSel -> do
-    hushCapture
-    H.modify_ \s -> s { capture = s.capture { playing = Nothing } }
+    st <- H.get
+    if st.rigLoops then for_ (RL.focus st.capture.logbook.marks) \m -> rigSend (RL.cueLine "vetula" ("loop " <> show m.n <> " hush"))
+    else do
+      hushCapture
+      H.modify_ \s -> s { capture = s.capture { playing = Nothing } }
 
   CaptureToggleContext -> H.modify_ \s -> s { capture = s.capture { contextOpen = not s.capture.contextOpen } }
   CaptureToggleCode -> H.modify_ \s -> s { capture = s.capture { codeOpen = not s.capture.codeOpen } }
@@ -2995,6 +3026,10 @@ handleActionCore = case _ of
       let now = nowMs * 1000.0
       H.modify_ _ { nowMicros = now
                   , riverNotes = filter (\n -> (now - n.fireUnixMicros) < River.windowMicros) st.riverNotes }
+    -- The rig's loops' playheads move on Review's clock
+    when (st.stage == Review && st.rigLoops && any RL.looping st.capture.logbook.marks) do
+      mclock <- vetulaClock
+      H.modify_ \s -> s { capture = s.capture { rig = mclock } }
     -- The REPLAY loop rides the same frame clock; it no-ops when nothing is looping.
     driveCaptureReplay
 
@@ -3446,6 +3481,12 @@ handleActionCore = case _ of
                      Right _ -> pure unit
       -- Fold this tick's tapped notes into the always-on capture logbook (#28).
       fresh <- liftEffect (Ref.read capRef)
+      -- playing here, the page sends the rig what it played, for the record
+      -- buffer (the rig records the cards itself when it plays them)
+      when (st.authority == Local && st.rigLoops) do
+        unixMs <- liftEffect dateNow
+        let offsetUs = (unixMs - nowMs) * 1000.0
+        for_ (RL.recordLine "vetula" (_ + offsetUs) fresh) rigSend
       H.modify_ \st2 -> st2
         { pulse = tick.index, voices = voices', clockTempo = tempo, tempo = round tempo
         , capture = st2.capture { logbook = Logbook.logAppend (nowMs * 1000.0) fresh st2.capture.logbook }
@@ -4757,6 +4798,21 @@ driveCaptureReplay = do
 -- | the lookahead already queued, so stopping (or leaving REPLAY) is silent at once.
 -- | Scoped to the region's own channels rather than all 16, so a preview can't
 -- | interrupt voices that are still performing.
+-- | A line to the rig, if this page has one.
+rigSend :: forall o m. MonadAff m => String -> H.HalogenM State Action Slots o m Unit
+rigSend line = do
+  st <- H.get
+  for_ st.binnacle \bin -> liftEffect $ Transport.send (Binnacle.socket bin) line
+
+-- | Now, in the surface's µs (performance time, here) and in Link beats.
+vetulaClock :: forall o m. MonadAff m => H.HalogenM State Action Slots o m (Maybe RL.Clock)
+vetulaClock = do
+  st <- H.get
+  traverse (\bin -> liftEffect do
+    nowMs <- perfNow
+    r <- Clock.read (Binnacle.clock bin)
+    pure { micros: nowMs * 1000.0, beat: r.beat, tempo: r.tempo }) st.binnacle
+
 hushCapture :: forall o m. MonadAff m => H.HalogenM State Action Slots o m Unit
 hushCapture = do
   st <- H.get

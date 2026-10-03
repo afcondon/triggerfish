@@ -33,7 +33,7 @@ import Triggerfish.Capture.View as CaptureView
 import Triggerfish.Odonus.Model as M
 import Triggerfish.Poly as Poly
 import Reef.Voices as RV
-import Triggerfish.Cue as Cue
+import Triggerfish.Capture.RigLoops as RL
 import Triggerfish.Odonus.Marbles as Marbles
 import Triggerfish.Odonus.Gen as Gen
 import Triggerfish.Odonus.Forms as Forms
@@ -105,7 +105,7 @@ component =
   H.mkComponent
     { initialState: \_ ->
         { odo: M.defaultOdonus, sounding: Silent, dragging: Nothing, dragSub: Nothing
-        , notes: [], logbook: Logbook.emptyLog, stage: Perform, selEuclid: Nothing, navScenes: false, playing: Nothing, regionDrag: Nothing, contextOpen: false, codeOpen: false, zoom: Whole, clips: [], twisterField: FNote, binnacle: Nothing, nowMicros: 0.0
+        , notes: [], logbook: Logbook.emptyLog, stage: Perform, selEuclid: Nothing, navScenes: false, playing: Nothing, rigLoops: false, regionDrag: Nothing, contextOpen: false, codeOpen: false, zoom: Whole, clips: [], twisterField: FNote, binnacle: Nothing, nowMicros: 0.0
         , outs: [], routing: RM.defaultTable, midiName: "…", clockTempo: 120.0, clockLocked: false
         , clockBeat: 0.0, clockBar: 0, anchorCount: 0
         , scenes: [], sceneNameInput: "", publishMsg: Nothing
@@ -665,6 +665,10 @@ dispatch = case _ of
         , nextModelStep = modelStep + 1 }
       -- a recalled patch's feel, which the page keeps beside the model
       adoptFeel (map _.input due)
+      -- playing here, the page sends the rig what it played, for the record
+      -- buffer (the rig records its own voice when it plays Odonus)
+      when (st.sounding == Local && st.rigLoops) $
+        for_ (RL.recordLine "odonus" identity fresh) rigSend
   Frame -> do
     st <- H.get
     case st.binnacle of
@@ -678,6 +682,8 @@ dispatch = case _ of
         -- promise across a frontend reload.
         when (not st.reconciled) do
           liftEffect $ Transport.send (Binnacle.socket bin) "hush"
+          -- and ask the rig for the marks and loops it keeps (RigLoops)
+          liftEffect $ Transport.send (Binnacle.socket bin) RL.syncLine
           H.modify_ _ { reconciled = true }
         now <- liftEffect $ Clock.unixMicrosNow (Binnacle.clock bin)
         r <- liftEffect $ Clock.read (Binnacle.clock bin)
@@ -695,6 +701,7 @@ dispatch = case _ of
               || r.bar /= st.clockBar || r.anchorCount /= st.anchorCount
               || floor r.beat /= floor st.clockBeat
               || not (null st.notes) || isJust st.playing
+              || any RL.looping st.logbook.marks
               || any (inWindow <<< _.atMicros) st.logbook.marks
         when moved $ H.modify_ \s -> s
           { nowMicros = now
@@ -727,19 +734,40 @@ dispatch = case _ of
   -- the panel shows what is playing. Only while the rig is what's sounding.
   -- A Review cue from Limulus (`odonus $ mark`, `odonus $ loop 2`, `loop off`):
   -- what the Review surface's own controls do. A loop opens the Review surface.
-  RigFrame msg | Just cue <- Cue.readCue "odonus" msg -> case cue of
-    Cue.MarkCue -> handleAction MarkNow
-    Cue.StopCue -> handleAction StopPlay
-    Cue.LoopCue n -> do
-      st <- H.get
-      let i = if n == 0 then 0 else n - 1   -- marks are newest-first: 0 is the latest
-      when (i >= 0 && i < length st.logbook.marks) do
-        when (st.stage /= Review) (handleAction (SetStage Review))
-        handleAction (PlayRegion i)
-    -- the loop window moved or stretched from Limulus, as a drag would
-    Cue.WindowCue r -> H.modify_ \s -> case Logbook.windowTarget s of
-      Just t -> Logbook.applyBounds t.i (Logbook.reshape s.clockTempo r t.mark) s
-      Nothing -> s
+  -- The marks and loops the rig keeps (RigLoops): this surface draws them,
+  -- and takes its own loop off, since the rig plays them now. A mark it has
+  -- not met (made from Limulus, or by ◆ a moment ago) takes what Odonus is
+  -- doing now; one from before this page opened has no patch to show.
+  RigFrame msg | isJust (Str.stripPrefix (Str.Pattern "loops-notes ") msg) -> do
+    freshClock
+    st <- H.get
+    for_ (RL.readNotes "odonus" (rigClock st) msg) \notes ->
+      H.modify_ \s -> s { logbook = RL.seedNotes notes s.logbook }
+  RigFrame msg | Just rig <- RL.readLoops "odonus" msg -> do
+    freshClock
+    st <- H.get
+    when (isJust st.playing) hushReplayVoices
+    let clock = rigClock st
+        r = RL.reconcile clock rig st.logbook.marks
+    H.modify_ \s -> s { rigLoops = true, playing = Nothing, logbook = s.logbook { marks = r.marks } }
+    -- the first word from the rig: ask it for what was played before this page
+    unless st.rigLoops $ rigSend (RL.notesLine "odonus")
+    for_ r.fresh \rm -> do
+      s <- H.get
+      let recent = s.nowMicros - rm.us < 2.0e6
+          m = { atMicros: RL.microsOf clock rm.beat, beat: rm.beat
+              , from: RL.microsOf clock rm.from, to: RL.microsOf clock rm.to
+              , patch: if recent then patchText s else ""
+              , now: if recent then nowText s else ""
+              , sounding: if recent then Just (soundingOf s) else Nothing
+              , rig: [], tempo: s.clockTempo, n: rm.n
+              , loop: if rm.playing then rm.start else Nothing }
+      H.modify_ _ { logbook = s.logbook { marks = RL.insertMark m s.logbook.marks } }
+      when recent $ H.raise (Marked m.atMicros)
+    -- a loop from Limulus opens the Review surface, as the page's own did
+    st2 <- H.get
+    when (any RL.looping st2.logbook.marks && not (any RL.looping st.logbook.marks) && st2.stage /= Review)
+      (handleAction (SetStage Review))
   -- The harmony feeds, resolved on the rig. Playing on the rig, its voice's
   -- moves carry them here as reef-inputs; otherwise this page plays (or will
   -- push) Odonus itself, so it takes the same inputs the rig voice would.
@@ -912,13 +940,20 @@ dispatch = case _ of
     Nothing -> s
   DeleteScene i -> H.modify_ \s -> s { scenes = fromMaybe s.scenes (deleteAt i s.scenes) }
   -- Performance logbook (#151): flag / drop a good bit, or purge the whole log.
+  -- With the rig, it makes the mark and numbers it; it comes back in a loops
+  -- frame, and takes what Odonus is doing then (RigFrame).
   MarkNow -> do
     s <- H.get
-    let rb = Logbook.regionBounds s.clockTempo s.nowMicros s.clockBeat
-        m = { atMicros: s.nowMicros, beat: s.clockBeat, from: rb.from, to: rb.to, patch: patchText s, now: nowText s, sounding: Just (soundingOf s), rig: [], tempo: s.clockTempo, origin: { from: rb.from, to: rb.to } }
-    H.modify_ _ { logbook = Logbook.pushMark m s.logbook }
-    H.raise (Marked m.atMicros)
-  DeleteMark i -> H.modify_ \s -> s { logbook = Logbook.deleteMark i s.logbook }
+    if s.rigLoops then rigSend (RL.cueLine "odonus" "mark")
+    else do
+      let rb = Logbook.regionBounds s.clockTempo s.nowMicros s.clockBeat
+          m = { atMicros: s.nowMicros, beat: s.clockBeat, from: rb.from, to: rb.to, patch: patchText s, now: nowText s, sounding: Just (soundingOf s), rig: [], tempo: s.clockTempo, n: RL.nextNumber s.logbook.marks, loop: Nothing }
+      H.modify_ _ { logbook = Logbook.pushMark m s.logbook }
+      H.raise (Marked m.atMicros)
+  DeleteMark i -> do
+    s <- H.get
+    if s.rigLoops then for_ (s.logbook.marks !! i) \m -> rigSend (RL.deleteLine "odonus" m.n)
+    else H.modify_ _ { logbook = Logbook.deleteMark i s.logbook }
   ClearLog -> H.modify_ \s -> s { logbook = Logbook.emptyLog }
   -- Resizing the surface is NOT a transport or session action (AC, 2026-08-06).
   -- It used to be: leaving REPLAY wiped the logbook, on the theory that the buffer
@@ -943,10 +978,14 @@ dispatch = case _ of
   PlayRegion i -> startRegion i
   -- Stop the loop AND cut anything already sounding: the windowed scheduler
   -- leaves at most one lookahead of notes queued, and all-notes-off silences a
-  -- note mid-ring, so stop is instant.
+  -- note mid-ring, so stop is instant. With the rig, stop the loop the card
+  -- is on.
   StopPlay -> do
-    hushReplayVoices
-    H.modify_ _ { playing = Nothing }
+    st <- H.get
+    if st.rigLoops then for_ (RL.focus st.logbook.marks) \m -> rigSend (RL.cueLine "odonus" ("loop " <> show m.n <> " hush"))
+    else do
+      hushReplayVoices
+      H.modify_ _ { playing = Nothing }
   -- REPLAY region drag (#151, R2c): grab a band's edge (resize) or body (slide).
   -- The pointer maps straight to a recording time via padNorm over the timeline.
   RegionDown i edge cx cy -> do
@@ -980,10 +1019,12 @@ dispatch = case _ of
         -- A bare click on the body plays the region; a resize/slide is finalized
         -- by snapping its edges to the beat grid so a freehand drag stays musical.
         EdgeBody, false -> startRegion rd.markIdx
-        _, _ -> for_ (st.logbook.marks !! rd.markIdx) \m ->
+        _, _ -> for_ (st.logbook.marks !! rd.markIdx) \m -> do
           let snapped = { from: Logbook.snapMicrosToBeat st.clockTempo m m.from
                         , to: Logbook.snapMicrosToBeat st.clockTempo m m.to }
-          in H.modify_ (Logbook.applyBounds rd.markIdx snapped)
+          H.modify_ (Logbook.applyBounds rd.markIdx snapped)
+          -- the rig's window is the one that plays
+          when st.rigLoops $ rigSend (RL.windowLine "odonus" (rigClock st) (m { from = snapped.from, to = snapped.to }))
     H.modify_ _ { regionDrag = Nothing, dragSub = Nothing }
   -- Promote a captured good bit into the SCENES list: a mark's stored patch IS
   -- a scene's text (same Lepidoptera form), so the loop can graduate into a
@@ -1251,7 +1292,10 @@ hushReplayVoices = do
 startRegion :: forall o m. MonadAff m => Int -> H.HalogenM State Action Slots o m Unit
 startRegion i = do
   st <- H.get
-  for_ (st.logbook.marks !! i) \m -> do
+  -- with the rig, a click starts its loop of the mark, or stops it
+  if st.rigLoops then for_ (st.logbook.marks !! i) \m ->
+    rigSend (RL.cueLine "odonus" (if RL.looping m then "loop " <> show m.n <> " hush" else "loop " <> show m.n))
+  else for_ (st.logbook.marks !! i) \m -> do
     nowMs <- liftEffect Time.perfNow
     -- Watermark starts a hair before the origin so a phase-0 note (off == 0) is
     -- included on the first frame rather than falling on the strict `>` boundary.
@@ -1260,6 +1304,16 @@ startRegion i = do
       , events: materializeRegion m.from m.to st.logbook, lenMicros: m.to - m.from
       , fromMicros: m.from, toMicros: m.to
       , loopStartMs: nowMs, scheduledUntilMs: nowMs - 1.0, playheadFrac: 0.0 } }
+
+-- | A line to the rig, if this page has one.
+rigSend :: forall o m. MonadAff m => String -> H.HalogenM State Action Slots o m Unit
+rigSend line = do
+  st <- H.get
+  for_ st.binnacle \bin -> liftEffect $ Transport.send (Binnacle.socket bin) line
+
+-- | Now, in the surface's µs (Unix, here) and in Link beats.
+rigClock :: State -> RL.Clock
+rigClock st = { micros: st.nowMicros, beat: st.clockBeat, tempo: st.clockTempo }
 
 -- | Start auditioning captured clip `i` — same looping scheduler as a region,
 -- | but the notes come from the clip (already rebased) and it isn't on the

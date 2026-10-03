@@ -25,7 +25,8 @@ replayPanel s = capturePanel wiring cap
   where
   cap =
     { logbook: s.logbook, playing: s.playing
-    , regionDrag: s.regionDrag, contextOpen: s.contextOpen, codeOpen: s.codeOpen, zoom: s.zoom }
+    , regionDrag: s.regionDrag, contextOpen: s.contextOpen, codeOpen: s.codeOpen, zoom: s.zoom
+    , rig: if s.rigLoops then Just { micros: s.nowMicros, beat: s.clockBeat, tempo: s.clockTempo } else Nothing }
   wiring =
     { orientation: Horizontal
     , timelineId: replayTimelineId
