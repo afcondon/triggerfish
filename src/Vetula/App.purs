@@ -1674,7 +1674,7 @@ contextKey st = case st.restScale of
 -- | evaluate (docs/kb/plans/the-deck.md).
 markText :: State -> String
 markText st =
-  joinWith "\n"
+  joinWith "\n\n"
     ( [ "-- vetula key " <> Route.printKey (contextKey st) ]
         <> map (\(Tuple n line) -> "v" <> show n <> " $ " <> line) (Map.toUnfoldable (cardTexts st.perfBoxes))
     )
@@ -2970,7 +2970,7 @@ handleActionCore = case _ of
     st <- H.get
     for_ (st.capture.logbook.marks !! i) \m -> for_ st.binnacle \bin ->
       liftEffect $ Transport.send (Binnacle.socket bin)
-        ("stage-paste vetula/mark " <> markCode "vetula" m)
+        ("stage-paste vetula/mark " <> markCode "vetula" _.patch m)
   CaptureZoom z -> H.modify_ \s -> s { capture = s.capture { zoom = z } }
 
   CaptureClear -> do
@@ -6238,6 +6238,7 @@ capturePane st =
     , toggleContext: CaptureToggleContext
     , setZoom: CaptureZoom
     , machine: "vetula"
+    , ownCode: _.patch
     , toggleCode: CaptureToggleCode
     , toLimulus: CaptureToLimulus
     }

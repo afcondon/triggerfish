@@ -9,6 +9,7 @@ module Triggerfish.Odonus.Patch
   , applyPatch
   , patchText
   , markText
+  , asCode
   , nowText
   , soundingOf
   , markContext
@@ -28,7 +29,7 @@ import Data.String.Common (joinWith)
 import Reef.PitchSet (PitchSet(..))
 import Reef.Route (Feed(..), Feeds, printFeeds)
 import Triggerfish.Odonus.Grid.Types (GenSource, State, genKinds, genDefaultRate, genDefaultAmt)
-import Triggerfish.Odonus.Lepidoptera (OdonusPatch, printPatch, parsePatch)
+import Reef.Odonus.Patch (OdonusPatch, parseNow, parsePatch, printNow, printPatch, reconcileGen, withPhases)
 import Triggerfish.Odonus.Model as M
 import Triggerfish.Scale as Scale
 
@@ -63,39 +64,32 @@ ownOdo fs o = unOut (unGrid o)
     FeedHarmony _ -> x { harmony = Nothing, chord = Nothing }
     _ -> x
 
--- | Odonus as a mark keeps it: the patch, then what was happening
--- | (docs/kb/plans/the-deck.md).
+-- | Odonus as a mark gives it to Limulus: two blocks, each a recall Limulus
+-- | can evaluate (`odonus $ odonusPatch …`, `odonus $ odonusNow …`), the
+-- | patch first (docs/kb/plans/the-deck.md).
 markText :: State -> String
-markText s = patchText s <> "\n" <> nowText s
+markText s = asCode (patchText s) (nowText s)
 
--- | What a patch leaves out, at this instant: where the playheads were and the
--- | generators' seed (so a moving patch can play on exactly as it was), what
--- | Odonus was quantising to, and the harmony routes and what they gave.
+-- | A patch and its instant as Limulus blocks, separated by a blank line.
+asCode :: String -> String -> String
+asCode patch now = "odonus $ " <> patch <> (if now == "" then "" else "\n\nodonus $ " <> now)
+
+-- | What a patch leaves out, at this instant (Reef.Odonus.Patch.OdonusNow):
+-- | where the playheads were and the generators' seed, so a moving patch can
+-- | play on exactly as it was; what Odonus was quantising to; and the
+-- | harmony routes and what they gave.
 nowText :: State -> String
 nowText s =
-  let
-    PitchSet ps = M.effectivePitchSet s.odo
-    ints xs = "[ " <> joinWith ", " (map show xs) <> " ]"
-    phase hd = "{ cursor: " <> show hd.cursor <> ", seqPos: " <> show hd.seqPos
-      <> ", acc: " <> show hd.accumulator <> ", pend: " <> show hd.pendStep
-      <> ", etick: " <> show hd.etick <> " }"
-    quoted t = show t
-  in
-    joinWith "\n"
-      [ "odonusNow"
-      , "  { step: " <> show s.nextModelStep
-      , "  , tempo: " <> show (round s.clockTempo)
-      , "  , seed: " <> show (round s.genSeed)
-      , "  , frozen: " <> (if s.genFrozen then "T" else "F")
-      , "  , phases:"
-      , "      [ " <> joinWith "\n      , " (map phase s.odo.heads) <> " ]"
-      , "  , sounding: { root: " <> Scale.rootName (ps.root `mod` 12)
-          <> ", scale: " <> ints ps.offsets
-          <> ", chord: " <> maybe "none" ints s.odo.chord <> " }"
-      , "  , routes: " <> maybe "none" quoted s.routesText
-      , "  , feeds: " <> (let t = printFeeds s.feedsSeen in if t == "" then "none" else quoted t)
-      , "  }"
-      ]
+  printNow
+    { step: s.nextModelStep
+    , tempo: round s.clockTempo
+    , seed: s.genSeed
+    , frozen: s.genFrozen
+    , phases: map (\hd -> { cursor: hd.cursor, seqPos: hd.seqPos, accumulator: hd.accumulator, pendStep: hd.pendStep, etick: hd.etick }) s.odo.heads
+    , sounding: soundingOf s
+    , routes: s.routesText
+    , feeds: let t = printFeeds s.feedsSeen in if t == "" then Nothing else Just t
+    }
 
 -- | Load a patch over State: replace the authored fields, leave the transport,
 -- | clock, MIDI, scenes and runtime alone.
@@ -109,19 +103,6 @@ applyPatch p s = s
   , velHumanize = p.velHumanize
   , stepDiv = p.stepDiv
   }
-
--- | Reconcile a loaded gen array against the full generator set: keep every
--- | source the patch saved, and fill in any generator the patch PREDATES (e.g.
--- | a scene authored before GVel/VELOCITY existed) with its default, off. This
--- | is the fix for a dead generator LED: without it, a source absent from the
--- | loaded array is absent from `s.gen`, so its LED reads permanently off and
--- | its toggle no-ops — `toggleGen` only maps over sources already present.
--- | Iterating `genKinds` also fixes the on-screen order to the canonical one.
-reconcileGen :: Array GenSource -> Array GenSource
-reconcileGen loaded =
-  genKinds <#> \k -> case find (\g -> g.kind == k) loaded of
-    Just g -> g
-    Nothing -> { kind: k, on: false, rate: genDefaultRate k, amt: genDefaultAmt k }
 
 -- | The live patch rendered to eDSL text — the shell's `AskSource` answer and
 -- | the form a scene is saved in.

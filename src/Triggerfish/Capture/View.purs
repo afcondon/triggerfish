@@ -78,6 +78,7 @@ type CaptureWiring action =
   -- the mark as code: this machine's slot (`odonus`), the toggle, and
   -- handing mark i's code to Limulus
   , machine :: String
+  , ownCode :: Mark -> String
   , toggleCode :: action
   , toLimulus :: Int -> action
   }
@@ -331,11 +332,13 @@ cardBtn act fg titleTxt label =
 -- | Vetula's cards are Limulus lines already; Odonus's patch is shown as
 -- | Lepidoptera text, which Tidal++ cannot evaluate yet
 -- | (docs/kb/plans/the-deck.md, step 2).
-markCode :: String -> Mark -> String
-markCode machine m =
-  joinWith "\n\n" ([ "-- mark · " <> show (Int.round m.tempo) <> " bpm" ] <> map section ([ { machine, text: m.patch <> (if m.now == "" then "" else "\n" <> m.now) } ] <> m.rig))
+markCode :: String -> (Mark -> String) -> Mark -> String
+markCode machine own m =
+  joinWith "\n\n"
+    ([ "-- mark · " <> show (Int.round m.tempo) <> " bpm" ] <> map section ([ { machine, text: own m } ] <> m.rig))
   where
-  section r = "-- " <> r.machine <> "\n" <> r.text
+  -- a comment on its own: Limulus sends a block led by `--` to Tidal
+  section r = "-- " <> r.machine <> "\n\n" <> r.text
 
 codePanel :: forall action slots m. CaptureWiring action -> Int -> Mark -> H.ComponentHTML action slots m
 codePanel w i m =
@@ -343,7 +346,7 @@ codePanel w i m =
     [ HH.pre
         [ style $ "margin:0 0 6px;max-height:220px;overflow:auto;white-space:pre-wrap;"
             <> "font-family:'SF Mono',Menlo,monospace;font-size:10px;line-height:1.45;color:#e9e3d0" ]
-        [ HH.text (markCode w.machine m) ]
+        [ HH.text (markCode w.machine w.ownCode m) ]
     , HH.div [ style "display:flex;gap:6px;align-items:center" ]
         [ cardBtn (w.toLimulus i) "#e8c14a" "add this to the end of Limulus's buffer" "→ Limulus"
         , HH.span [ style "font-family:Georgia,serif;font-size:9px;color:#ffffff55" ]

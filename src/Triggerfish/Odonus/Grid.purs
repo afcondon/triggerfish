@@ -74,7 +74,7 @@ import Triggerfish.Ui.Euclid as Euclid
 import Triggerfish.Odonus.View.Grid (gridPanel)
 import Triggerfish.Odonus.View.Replay (replayPanel)
 import Triggerfish.Odonus.View.Nav (navBar)
-import Triggerfish.Odonus.Patch (capturePatch, harmonicSummary, loadText, markText, nowText, patchText, recallText, recallGestureText, soundingOf)
+import Triggerfish.Odonus.Patch (asCode, capturePatch, harmonicSummary, loadText, markText, nowText, patchText, recallText, recallGestureText, soundingOf)
 import Triggerfish.Odonus.Store as Store
 import Triggerfish.Clips as Clips
 import Triggerfish.Clips.Store as ClipStore
@@ -663,6 +663,8 @@ dispatch = case _ of
         -- Push reads this to stamp the handoff (reef-sim-at), so the BEAM plays the
         -- pushed state on the same absolute step the frontend will — no phase flam.
         , nextModelStep = modelStep + 1 }
+      -- a recalled patch's feel, which the page keeps beside the model
+      adoptFeel (map _.input due)
   Frame -> do
     st <- H.get
     case st.binnacle of
@@ -1041,7 +1043,7 @@ dispatch = case _ of
     st <- H.get
     for_ (st.logbook.marks !! i) \m -> for_ st.binnacle \bin ->
       liftEffect $ Transport.send (Binnacle.socket bin)
-        ("stage-paste odonus/mark " <> CaptureView.markCode "odonus" m)
+        ("stage-paste odonus/mark " <> CaptureView.markCode "odonus" (\k -> asCode k.patch k.now) m)
   SetZoom z -> H.modify_ _ { zoom = z }
   -- STEP LENGTH is a transport/clock param, not a SimState edit, so it rides its
   -- own `reef-steplen` verb (not the tick-tagged input path): apply locally, then
@@ -1384,6 +1386,20 @@ twisterApply input = do
 -- | no-op when the rig isn't attached. Sent on Push and on every STEP LENGTH change
 -- | so reef_voice's grid tracks the frontend's — otherwise the BEAM keeps stepping
 -- | at 1/16 while the frontend steps coarser, and the two desync.
+-- | A recalled patch (`RecallPatch`, from a mark's code in Limulus) carries
+-- | the feel the page keeps beside the model, which reef's state does not
+-- | hold: swing, humanise, step length. Take them, and tell the rig as the
+-- | page's own controls would.
+adoptFeel :: forall o m. MonadAff m => Array RI.Input -> H.HalogenM State Action Slots o m Unit
+adoptFeel inputs = for_ inputs case _ of
+  RI.RecallPatch t -> for_ (parsePatch t) \p -> do
+    before <- H.get
+    H.modify_ _ { swing = p.swing, velHumanize = p.velHumanize, stepDiv = p.stepDiv }
+    st <- H.get
+    when (p.stepDiv /= before.stepDiv) (sendStepLen st)
+    when (p.swing /= before.swing) (sendSwing st)
+  _ -> pure unit
+
 sendStepLen :: forall o m. MonadAff m => State -> H.HalogenM State Action Slots o m Unit
 sendStepLen st =
   when (st.sounding == Rig) $ for_ st.binnacle \bin ->

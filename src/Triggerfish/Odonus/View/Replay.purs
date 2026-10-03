@@ -17,7 +17,7 @@ import Triggerfish.Capture.Types (Orientation(..))
 import Triggerfish.Capture.View (capturePanel)
 import Triggerfish.Odonus.Grid.Types (Action(..), Slots, State, replayTimelineId)
 import Triggerfish.Odonus.Grid.Widgets (headColor)
-import Triggerfish.Odonus.Patch (markContext)
+import Triggerfish.Odonus.Patch (asCode, markContext)
 
 -- | The whole-recording capture surface, laid out horizontally (time → X).
 replayPanel :: forall m. State -> H.ComponentHTML Action Slots m
@@ -38,6 +38,7 @@ replayPanel s = capturePanel wiring cap
     , toggleContext: ToggleContext
     , setZoom: SetZoom
     , machine: "odonus"
+    , ownCode: \m -> asCode m.patch m.now
     , toggleCode: ToggleCode
     , toLimulus: MarkToLimulus
     }
