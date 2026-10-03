@@ -38,6 +38,7 @@ import Halogen as H
 import Halogen.Widgets.Select as Select
 import Web.UIEvent.KeyboardEvent (KeyboardEvent)
 import Reef.Input as RI
+import Reef.Route as Route
 import Triggerfish.Odonus.Model as M
 import Triggerfish.Poly as Poly
 import Reef.Voices as RV
@@ -370,6 +371,10 @@ type State =
   -- Hidden from the user; arming re-pushes. Odonus hosts it as the always-first-
   -- mounted instrument (the shell owns no rig socket).
   , reconciled :: Boolean
+  -- The harmony feeds this page last took from the rig's `odonus/feeds`
+  -- (Triggerfish.Odonus.Feeds): applied here unless the rig is sounding,
+  -- whose own moves then arrive as reef-inputs.
+  , feedsSeen :: Route.Feeds
   -- The unified glyph-chip PRESET bank (docs/DESIGN-scene-modal.md): captured live
   -- patches, anonymous or named, freely intermixed — distinct from the named SCENE
   -- library. `identity` is the parked preset's text (the chip glyph; ghosts when the

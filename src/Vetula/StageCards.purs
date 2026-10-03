@@ -19,6 +19,7 @@ module Vetula.StageCards
   , rejectLine
   , StageFrame(..)
   , readFrame
+  , tableHasKey
   , publishLines
   , readNotes
   ) where
@@ -71,6 +72,14 @@ readFrame msg = case stripPrefix (Pattern "stage-texts ") msg of
     pure (Written n (toMaybe w.text))
   where
   entry (Tuple key v) = (\n -> Tuple n v.text) <$> cardIdOfKey key
+
+-- | Whether the whole table (the answer to a subscribe) holds Vetula's key
+-- | (`vetula/key`); `Nothing` for any other frame.
+tableHasKey :: String -> Maybe Boolean
+tableHasKey msg = do
+  json <- stripPrefix (Pattern "stage-texts ") msg
+  table :: Object { text :: String } <- hush (readJSON json)
+  pure (Object.member "vetula/key" table)
 
 -- | The notes the rig played for the cards, `vetula-notes [{pitch, ch, atUs,
 -- | vel, gateMs}]`, at Unix microseconds.

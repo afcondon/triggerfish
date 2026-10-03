@@ -45,6 +45,8 @@ import Binnacle.Scheduler as Scheduler
 import Binnacle.Time as Time
 import Binnacle.Transport as Transport
 import Reef.Input as RI
+import Reef.Route as Route
+import Triggerfish.Odonus.Feeds as Feeds
 import Reef.Rample as Rample
 import Effect.Console as Console
 import Reef.Protocol (decodeTagged, encodeSim, encodeTagged)
@@ -116,7 +118,7 @@ component =
         -- one-stop view of the whole setup; Odonus's own eDSL pane is for
         -- when you want to inspect just this module.
         , collapsed: [ "SOURCE" ], lastTap: "", lastTapMicros: 0.0
-        , reconciled: false
+        , reconciled: false, feedsSeen: { grid: Route.Unfed, out: Route.Unfed }
         , presets: [], identity: Nothing, lastChip: Nothing }
     , render
     , eval: H.mkEval H.defaultEval
@@ -339,6 +341,8 @@ dispatch = case _ of
     { emitter: rigE, listener: rigL } <- liftEffect HS.create
     _ <- H.subscribe rigE
     liftEffect $ Binnacle.onAppMessage bin (HS.notify rigL <<< RigFrame)
+    -- The harmony feeds the rig resolved (`odonus/feeds`), on every connect.
+    liftEffect $ Binnacle.onOpen bin (Transport.send (Binnacle.socket bin) Feeds.subscribeLine)
     -- The lookahead scheduler drives both model advance and audio.
     { emitter: stepE, listener: stepL } <- liftEffect HS.create
     _ <- H.subscribe stepE
@@ -663,6 +667,14 @@ dispatch = case _ of
       when (i >= 0 && i < length st.logbook.marks) do
         when (st.stage /= Review) (handleAction (SetStage Review))
         handleAction (PlayRegion i)
+  -- The harmony feeds, resolved on the rig. Playing on the rig, its voice's
+  -- moves carry them here as reef-inputs; otherwise this page plays (or will
+  -- push) Odonus itself, so it takes the same inputs the rig voice would.
+  RigFrame msg | Just new <- Feeds.readFeeds msg -> do
+    st <- H.get
+    when (st.sounding /= Rig) $
+      for_ (Route.feedInputs st.feedsSeen new) enqueue
+    H.modify_ _ { feedsSeen = new }
   RigFrame msg -> for_ (Str.stripPrefix (Str.Pattern "reef-input ") msg) \json ->
     case decodeTagged json of
       Left _ -> liftEffect $ Console.warn ("Odonus: a reef-input from the rig did not decode: " <> take 120 json)

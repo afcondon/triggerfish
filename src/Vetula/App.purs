@@ -1630,8 +1630,12 @@ handleAction a = do
   unless (unsafeRefEq before after) publishCards
   publishKey
 
--- | Write Vetula's key to the stage when it differs from what was last
--- | written (once the stage has answered, so a reconnect writes it again).
+-- | Write Vetula's key to the stage when this page's key changes. `stageKey`
+-- | is the key the page last stood in as far as the stage goes: what it wrote,
+-- | or, when it subscribed to a stage that already had a key, the one it had
+-- | then. So opening a page does not overwrite the key another page (or
+-- | Limulus) set; it writes only when the stage has none, or when its own key
+-- | is changed.
 publishKey :: forall m. MonadAff m => H.HalogenM State Action Slots Output m Unit
 publishKey = do
   st <- H.get
@@ -1711,36 +1715,40 @@ handleActionCore = case _ of
     -- own notes go to both
     H.modify_ \s -> s { capture = s.capture { logbook = Logbook.logAppend (perfMs * 1000.0) fresh s.capture.logbook }
                       , riverNotes = fresh <> s.riverNotes }
-  StageFrameIn msg -> case SC.readFrame msg of
-    Nothing -> pure unit
-    -- the stage has no cards (a fresh rig): it gets ours
-    Just (SC.Table table) | Map.isEmpty table -> do
-      H.modify_ _ { stageCards = Just Map.empty }
-      publishCards
-    -- the stage has cards: they are the current ones (another tab, Limulus, or
-    -- this page before a reload); adopt them, in card order
-    Just (SC.Table table) -> do
+  StageFrameIn msg -> do
+    for_ (SC.tableHasKey msg) \has -> when has do
       st <- H.get
-      let
-        readable = Map.toUnfoldable table # mapMaybe \(Tuple n text) ->
-          (\spec -> Tuple n (boxOfCard n spec (find (\b -> b.cardId == n) st.perfBoxes))) <$> parseCard text
-      H.modify_ _ { perfBoxes = map snd readable, stageCards = Just table }
-    Just (SC.Written n Nothing) ->
-      H.modify_ \s -> s { perfBoxes = filter (\b -> b.cardId /= n) s.perfBoxes
-                        , stageCards = map (Map.delete n) s.stageCards }
-    Just (SC.Written n (Just text)) -> do
-      st <- H.get
-      H.modify_ _ { stageCards = map (Map.insert n text) st.stageCards }
-      case parseCard text of
-        -- unreadable: refuse it; the publish that follows puts the card back
-        Nothing -> do
-          for_ st.binnacle \bin -> liftEffect $ Transport.send (Binnacle.socket bin)
-            (SC.rejectLine n "Vetula could not read this card (want: chN \"<[c4,e4,g4] …>\" \"0 1 2 3\" # layer …)")
-          publishCards
-        Just spec -> H.modify_ \s -> s
-          { perfBoxes = case find (\b -> b.cardId == n) s.perfBoxes of
-              Just old -> map (\b -> if b.cardId == n then boxOfCard n spec (Just old) else b) s.perfBoxes
-              Nothing -> s.perfBoxes <> [ boxOfCard n spec Nothing ] }
+      H.modify_ _ { stageKey = Just (Route.printKey (contextKey st)) }
+    case SC.readFrame msg of
+      Nothing -> pure unit
+      -- the stage has no cards (a fresh rig): it gets ours
+      Just (SC.Table table) | Map.isEmpty table -> do
+        H.modify_ _ { stageCards = Just Map.empty }
+        publishCards
+      -- the stage has cards: they are the current ones (another tab, Limulus, or
+      -- this page before a reload); adopt them, in card order
+      Just (SC.Table table) -> do
+        st <- H.get
+        let
+          readable = Map.toUnfoldable table # mapMaybe \(Tuple n text) ->
+            (\spec -> Tuple n (boxOfCard n spec (find (\b -> b.cardId == n) st.perfBoxes))) <$> parseCard text
+        H.modify_ _ { perfBoxes = map snd readable, stageCards = Just table }
+      Just (SC.Written n Nothing) ->
+        H.modify_ \s -> s { perfBoxes = filter (\b -> b.cardId /= n) s.perfBoxes
+                          , stageCards = map (Map.delete n) s.stageCards }
+      Just (SC.Written n (Just text)) -> do
+        st <- H.get
+        H.modify_ _ { stageCards = map (Map.insert n text) st.stageCards }
+        case parseCard text of
+          -- unreadable: refuse it; the publish that follows puts the card back
+          Nothing -> do
+            for_ st.binnacle \bin -> liftEffect $ Transport.send (Binnacle.socket bin)
+              (SC.rejectLine n "Vetula could not read this card (want: chN \"<[c4,e4,g4] …>\" \"0 1 2 3\" # layer …)")
+            publishCards
+          Just spec -> H.modify_ \s -> s
+            { perfBoxes = case find (\b -> b.cardId == n) s.perfBoxes of
+                Just old -> map (\b -> if b.cardId == n then boxOfCard n spec (Just old) else b) s.perfBoxes
+                Nothing -> s.perfBoxes <> [ boxOfCard n spec Nothing ] }
   CardToLimulus n -> do
     publishCards
     st <- H.get
