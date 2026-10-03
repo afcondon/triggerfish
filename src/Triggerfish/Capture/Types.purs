@@ -50,7 +50,10 @@ type Mark =
   -- what it was quantising to at the mark, pitch classes (Odonus; Nothing
   -- for a machine with no quantiser): what the ♫ context panel shows
   , sounding :: Maybe { root :: Int, scale :: Array Int, chord :: Maybe (Array Int) }
-  , tempo :: Number }
+  , tempo :: Number
+  -- the window as the mark made it, which a pattern places the window from
+  -- (`slide "<0 -1 -2>"`: bars from here), so a repeating pattern returns
+  , origin :: { from :: Number, to :: Number } }
 
 -- | Which part of a loop region a drag grabbed: its start edge, end edge, or body
 -- | (slide the whole window). Edge naming is time-relative, not screen-relative, so

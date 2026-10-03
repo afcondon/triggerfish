@@ -2946,7 +2946,7 @@ handleActionCore = case _ of
     st <- H.get
     let atMic = nowMs * 1000.0
         barMic = 60.0e6 / (if st.clockTempo > 1.0 then st.clockTempo else 120.0) * 4.0
-        mark = { atMicros: atMic, beat: 0.0, from: atMic - 2.0 * barMic, to: atMic, patch: markText st, now: "", sounding: Nothing, rig: [], tempo: st.clockTempo }
+        mark = { atMicros: atMic, beat: 0.0, from: atMic - 2.0 * barMic, to: atMic, patch: markText st, now: "", sounding: Nothing, rig: [], tempo: st.clockTempo, origin: { from: atMic - 2.0 * barMic, to: atMic } }
     H.modify_ \s -> s { capture = s.capture { logbook = Logbook.pushMark mark s.capture.logbook } }
     H.raise (Marked atMic)
 

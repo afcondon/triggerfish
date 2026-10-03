@@ -915,7 +915,7 @@ dispatch = case _ of
   MarkNow -> do
     s <- H.get
     let rb = Logbook.regionBounds s.clockTempo s.nowMicros s.clockBeat
-        m = { atMicros: s.nowMicros, beat: s.clockBeat, from: rb.from, to: rb.to, patch: patchText s, now: nowText s, sounding: Just (soundingOf s), rig: [], tempo: s.clockTempo }
+        m = { atMicros: s.nowMicros, beat: s.clockBeat, from: rb.from, to: rb.to, patch: patchText s, now: nowText s, sounding: Just (soundingOf s), rig: [], tempo: s.clockTempo, origin: { from: rb.from, to: rb.to } }
     H.modify_ _ { logbook = Logbook.pushMark m s.logbook }
     H.raise (Marked m.atMicros)
   DeleteMark i -> H.modify_ \s -> s { logbook = Logbook.deleteMark i s.logbook }

@@ -34,7 +34,7 @@ import Prelude
 import Data.Array (any, concatMap, deleteAt, filter, length, modifyAt, null, (!!), (:))
 import Data.Foldable (sum)
 import Data.Int (floor, round, toNumber)
-import Data.Maybe (Maybe(..), fromMaybe)
+import Data.Maybe (Maybe(..), fromMaybe, maybe)
 import Triggerfish.Capture.Types (Chunk, Logbook, Mark, PlaySource(..), PlayState)
 import Triggerfish.Clips (NoteEvent)
 
@@ -138,7 +138,12 @@ materializeRegion from to lb =
 -- | end (lengthening, or with a negative count shortening). From Limulus
 -- | (`odonus $ slide -1`, `widen 2`, `narrow 1`) as the Review surface's own
 -- | drag does by hand (docs/kb/plans/the-deck.md, step 3a).
-data Reshape = Slide Number | Widen Number
+-- |
+-- | `Place` comes from a pattern the rig follows (`slide "<0 -1 -2>"`,
+-- | `widen "<0 1>"`): not a nudge but a position, in bars from where the mark
+-- | was made (`origin`): the start for a slide, the length beyond the
+-- | original for a widen, the other kept as it is.
+data Reshape = Slide Number | Widen Number | Place { slide :: Maybe Number, widen :: Maybe Number }
 
 -- | The window `r` makes of mark `m`'s, at `tempo` (a bar is four beats). It
 -- | never gets shorter than a beat.
@@ -146,6 +151,12 @@ reshape :: Number -> Reshape -> Mark -> { from :: Number, to :: Number }
 reshape tempo r m = case r of
   Slide bars -> { from: m.from + bars * bar, to: m.to + bars * bar }
   Widen bars -> { from: m.from, to: max (m.from + bar / quantum) (m.to + bars * bar) }
+  Place p ->
+    let
+      start = maybe m.from (\s -> m.origin.from + s * bar) p.slide
+      len = maybe (m.to - m.from) (\w -> (m.origin.to - m.origin.from) + w * bar) p.widen
+    in
+      { from: start, to: start + max (bar / quantum) len }
   where
   bar = quantum * 60.0e6 / (if tempo > 1.0 then tempo else 120.0)
 

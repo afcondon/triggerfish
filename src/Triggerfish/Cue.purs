@@ -27,7 +27,8 @@ data Cue = MarkCue | LoopCue Int | StopCue | WindowCue Reshape
 readCue :: String -> String -> Maybe Cue
 readCue slot msg = do
   json <- stripPrefix (Pattern "cue ") msg
-  c :: { slot :: String, cue :: String, n :: Nullable Int, by :: Nullable Number } <- hush (readJSON json)
+  c :: { slot :: String, cue :: String, n :: Nullable Int, by :: Nullable Number
+       , slide :: Nullable Number, widen :: Nullable Number } <- hush (readJSON json)
   if c.slot /= slot then Nothing
   else case c.cue of
     "mark" -> Just MarkCue
@@ -36,4 +37,6 @@ readCue slot msg = do
     "slide" -> WindowCue <<< Slide <$> toMaybe c.by
     "widen" -> WindowCue <<< Widen <$> toMaybe c.by
     "narrow" -> WindowCue <<< Widen <<< negate <$> toMaybe c.by
+    -- a pattern's value, from the rig (window_patterns)
+    "place" -> Just (WindowCue (Place { slide: toMaybe c.slide, widen: toMaybe c.widen }))
     _ -> Nothing
