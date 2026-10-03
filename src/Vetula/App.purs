@@ -25,7 +25,7 @@ import Data.Int (ceil, floor, fromString, round, toNumber)
 import Data.Number as Number
 import Data.Map (Map)
 import Data.Map as Map
-import Data.Maybe (Maybe(..), fromMaybe, isJust, isNothing, maybe)
+import Data.Maybe (Maybe(..), fromMaybe, isJust, maybe)
 import Effect.Timer (setInterval)
 import Data.Nullable (Nullable, null)
 import Data.Set (Set)
@@ -81,7 +81,6 @@ import Vetula.Tank (Specimen, SpecimenId(..), Provenance(..), specNotes)
 import Reef.Vetula.Perf (VChord, VVoice, VDest(..), VRenderer(..), PerfClock, cursorAtClock, renderAlphaBlockMidiAt, renderAlphaClockMidiAt) as RV
 import Reef.Vetula.Articulate (VArticulator(..), articulate, articLabel, nextArtic) as RA
 import Reef.Route (printKey) as Route
-import Reef.Vetula.Harmony (Shape(..), chordText, clockHarmony, seqHarmony) as VH
 import Vetula.Playhead (clockFor, defaultPattern, noteClock, patternClock)
 import Vetula.Realise (fromChords)
 import Vetula.Perform.Types
@@ -1110,13 +1109,8 @@ data SourceQuery a
   | SetPreviewChanC Int a
   -- Where the audition goes (routing modal's per-machine cycle): Off/Continuo/Midi.
   | SetAuditionQ AuditionSel a
-  -- macro-tidal harmonic authority. The shell polls the rig's resting harmonic
-  -- context (the key's diatonic set, or a `# scale` override) and pushes it into
-  -- Odonus's pitchSet. `SetRestingScale` is where the macro `# scale` verb lands
-  -- (root pc + intervals) — Vetula owns the scale, every pitched voice follows.
-  -- The harmonic context Odonus quantises to — ONE set (chord-or-scale), per the
-  -- rule in `harmonicContext`. `SetRestingScale` is the macro `# scale` override.
-  | AskContextScale ({ root :: Int, offsets :: Array Int, harmony :: Maybe String } -> a)
+  -- `SetRestingScale` is where the macro `# scale` verb lands (root pc +
+  -- intervals): an override of the key's scale, published as `vetula/key`.
   | SetRestingScale Int (Array Int) a
   -- The unified glyph-chip PRESET bank (docs/DESIGN-scene-modal.md). Vetula reports
   -- its chip by PULL (`AskChip`, polled by the shell's 100ms PollVetula loop) rather
@@ -1384,10 +1378,6 @@ handleQuery = case _ of
     s <- H.get
     let names = nub (filter (_ /= "") (map _.name (filter (\v -> v.dest == ToMidi) s.voices)))
     pure (Just (reply names))
-  -- macro-tidal harmonic authority: hand the shell the harmonic context set.
-  AskContextScale reply -> do
-    s <- H.get
-    pure (Just (reply (harmonicContext s)))
   -- The macro `# scale` verb: install an explicit resting scale (any Reef scale).
   SetRestingScale root offsets next -> do
     H.modify_ _ { restScale = Just { root: mod root 12, offsets } }
@@ -1432,91 +1422,6 @@ handleQuery = case _ of
       AuditionOff -> H.modify_ _ { midiOut = Nothing, midiName = "muted" }
       _ -> connectMidi   -- re-pick the output port (continuo vs IAC) for the new mode
     pure (Just next)
-
--- | The ONE harmonic-context set Odonus quantises to (root pc + intervals). The
--- | rule, in precedence order — the decoupling of "Vetula's lens scale" from "what
--- | Odonus quantises to", honouring descriptive-not-prescriptive (a progression's
--- | chords are free of any scale, so the CHORD itself is the set):
--- |
--- |   1. an explicit `# scale` override (the user deliberately imposed a scale);
--- |   2. a loaded progression → its ACTIVE chord's pitch classes (current chord
--- |      when playing, else the sounding/first chord) — chord-quantise, not scale;
--- |   3. else the `→ odo` PERFORM BOXES' current block chord — the same rule one
--- |      step out: what's actually being conducted at Odonus right now IS the set,
--- |      whether it came from an arranged progression or a box sequence;
--- |   4. otherwise → the lens scale (`st.key`), which re-quantises live as the user
--- |      changes the scale they're browsing.
--- |
--- | (Free-auditioning arbitrary chords with no progression and no `→ odo` box falls
--- | into case 4 — the lens scale — which we accept: unrelated chords can't relate to
--- | Odonus. A future "clever layer" could look at the whole progression holistically
--- | — leading tones, Harmonia-driven expansion — to widen case 2 past bare
--- | arpeggiation.)
--- |
--- | Case 3 added 2026-08-06. The `→ odo` terminal (Perform slice 4, 2026-08-02) fed
--- | `perfBoxOdoFeed` → `AskVoiceChords`, but that poll had been retired three weeks
--- | earlier by the ONE-set unification (9b99022, 2026-07-11) — so the terminal had
--- | never done anything but silence its box. Rather than revive the per-voice
--- | overlay (two paths into Odonus that can disagree, exactly what the unification
--- | removed), the ONE set now knows about box-sourced chords too.
--- |
--- | **Since 2026-10-01 the chord travels as a Tidal pattern, not as the set.**
--- | Odonus quantises in two stages: the set (`root`, `offsets`) is where its
--- | cells' indices land, and the harmony (`odonus $ harmony "..."`) is what the
--- | result snaps to. Handing Odonus the active chord as its set, as cases 2 and
--- | 3 above did, rewrote the melody at every chord change and arrived on poll
--- | time. Now the set is the scale (case 1's override, else the lens scale) and
--- | the chords go in `harmony`, written by reef from what Vetula is conducting:
--- |
--- |   * a progression, playing: its conducting voice's own clock (dwell, skips,
--- |     phase, rests holding the chord), so Odonus changes chord on the same
--- |     pulse Vetula does, on both runtimes, with no messages per chord;
--- |   * an `→ odo` box, playing: its chord sequence (`seqText`) and its
--- |     always-on slow / fast / literal transpose (how the chords are voiced or
--- |     broken up is not harmony);
--- |   * stopped: the one chord sounding (cases 2 and 3 above, as one chord).
--- |
--- | Under a `# scale` override there is no harmony: the scale is the set.
-harmonicContext :: State -> { root :: Int, offsets :: Array Int, harmony :: Maybe String }
-harmonicContext st =
-  let k = contextKey st
-  in { root: k.root, offsets: k.offsets, harmony: if isJust st.restScale then Nothing else vetulaHarmony st }
-
--- | What Vetula is conducting, as a Tidal note pattern (see `harmonicContext`).
-vetulaHarmony :: State -> Maybe String
-vetulaHarmony st = case progression of
-  Just h -> Just h
-  Nothing -> box
-  where
-  cs = perfChords st
-  progression
-    | length cs == 0 = Nothing
-    | otherwise =
-        let
-          playing = if st.playing then harmonicVoice st >>= \v ->
-            VH.clockHarmony (map playNotes cs) (voiceClock (length cs) v) v.phase
-            else Nothing
-        in
-          case playing of
-            Just h -> Just h
-            Nothing -> VH.chordText <$> activeChordPcs st
-  box = case head (filter (\b -> b.term == TOdo && not b.muted && isJust b.seq && not (boxGhosted st.authority b)) st.perfBoxes) of
-    Nothing -> Nothing
-    Just b ->
-      let
-        current = VH.chordText <$> boxCurrentChord b st.pulse
-        chords = maybe [] (map _.notes <<< _.events) b.seq
-        seqText = if boxUsesSeq b then b.seqText else ""
-      in
-        if st.playing && isNothing b.phrase then case VH.seqHarmony chords seqText (mapMaybe shape b.stack) of
-          Just h -> Just h
-          Nothing -> current
-        else current
-  shape l = case l.when, l.fx of
-    Always, Slow n -> Just (VH.Slow n)
-    Always, Fast n -> Just (VH.Fast n)
-    Always, Transpose arg -> VH.Transpose <$> fromString (trim (argSrc arg))
-    _, _ -> Nothing
 
 -- | What the HARMONIC-CONTEXT VOICE is sounding right now — case 3 of
 -- | `harmonicContext`. That's the single box on the `→ odo` terminal: `PerfSetTerm`

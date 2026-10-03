@@ -28,5 +28,4 @@ main = Standalone.run
   , armOf: case _ of
       Page.Armed on -> Just on
       Page.Chip _ -> Nothing
-  , follow: const Nothing
   }

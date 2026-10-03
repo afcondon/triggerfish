@@ -363,10 +363,6 @@ type State =
   , collapsed :: Array String  -- panel labels currently collapsed (accordion)
   , lastTap :: String          -- last toggle target (debounce the double-dispatch)
   , lastTapMicros :: Number
-  -- The harmony pattern Vetula last set (SetContextPitchSet). Vetula may replace
-  -- it or, having none to give, clear it; it never clears a harmony someone
-  -- else set (an `odonus $ harmony` line from Limulus). Last writer wins.
-  , vetulaHarmony :: Maybe String
   -- One-shot connect-time rig reconcile: false until the first Frame fires a
   -- `hush` to the rig (clears any voices orphaned by a PREVIOUS session's push —
   -- a reload starts with nothing armed, so the rig should start silent, and the

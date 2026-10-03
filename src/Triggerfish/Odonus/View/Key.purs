@@ -1,8 +1,8 @@
--- | The READ-ONLY harmonic-context display. Vetula is the single harmonic
--- | authority (macro-tidal harmonic-authority decision): Odonus no longer owns a
--- | scale, it follows whatever Vetula supplies (the key's resting scale, a firing
--- | chord from a progression, or the `→ odo` box's chord). This shows that
--- | inherited context; to change it you set the scale in Vetula or via `# scale`.
+-- | The READ-ONLY harmonic-context display: what Odonus's grid quantises to and
+-- | what its output snaps to. Since 2026-10-02 the harmony routes decide where
+-- | each comes from (`routing/harmony`, the dashboard's Harmony matrix: a scale,
+-- | Vetula's key, a Vetula card's chords, a harmony pattern); Vetula is one
+-- | source among them, no longer the authority. This shows the result.
 -- |
 -- | Since 2026-10-01 the chords arrive as a Tidal pattern, the harmony
 -- | (`odonus $ harmony "..."`, set by Vetula or typed in Limulus): the strip
@@ -36,11 +36,11 @@ contextStrip s =
   in HH.div
     [ style "display:flex;align-items:center;gap:10px;min-width:0" ]
     $ [ HH.span [ style $ engrave <> ";font-size:8px;color:#7a6a3a;white-space:nowrap" ]
-        [ HH.text "◀ Vetula" ]
+        [ HH.text "Grid" ]
     , HH.span
         [ style "font-family:Georgia,serif;font-size:13px;color:#2a271e;white-space:nowrap"
         , HH.attr (HH.AttrName "title")
-            "Vetula owns the harmonic context — the active chord of a progression, the → odo box's chord, or the browsed scale" ]
+            "What the grid quantises to. Its source is a harmony route (the dashboard's Harmony matrix): a scale, Vetula's key, or nothing" ]
         [ HH.text (Scale.rootName ctx.rootPc <> " " <> ctx.name) ]
     , pcKeyboardRO ctx.rootPc ctx.pcs (M.currentChordPCs s.odo)
     ]

@@ -45,7 +45,6 @@ import Binnacle.Scheduler as Scheduler
 import Binnacle.Time as Time
 import Binnacle.Transport as Transport
 import Reef.Input as RI
-import Reef.PitchSet (PitchSet(..))
 import Reef.Rample as Rample
 import Effect.Console as Console
 import Reef.Protocol (decodeTagged, encodeSim, encodeTagged)
@@ -117,7 +116,7 @@ component =
         -- one-stop view of the whole setup; Odonus's own eDSL pane is for
         -- when you want to inspect just this module.
         , collapsed: [ "SOURCE" ], lastTap: "", lastTapMicros: 0.0
-        , vetulaHarmony: Nothing, reconciled: false
+        , reconciled: false
         , presets: [], identity: Nothing, lastChip: Nothing }
     , render
     , eval: H.mkEval H.defaultEval
@@ -208,18 +207,6 @@ handleQuery = case _ of
       persistAll
       pure (Just (reply true))
     Nothing -> pure (Just (reply false))
-  -- macro-tidal harmonic authority: install the resting context scale the shell
-  -- polled from Vetula as Odonus's pitchSet (the injected-realize seam). Rides the
-  -- lockstep-safe RI.SetPitchSet input so the BEAM voice stays in sync. Odonus no
-  -- longer owns a scale — it follows whatever Vetula supplies.
-  SetContextPitchSet root offsets harmony next -> do
-    enqueue (RI.SetPitchSet (PitchSet { offsets, root: 48 + root, period: Just 12 }))
-    st <- H.get
-    let ours = st.odo.harmony == st.vetulaHarmony
-    when (harmony /= st.vetulaHarmony && (isJust harmony || ours)) do
-      enqueue (RI.SetHarmony harmony)
-    H.modify_ _ { vetulaHarmony = harmony }
-    pure (Just next)
   -- The shell's CAPTURE hotkey: bank the live patch as a preset and park identity
   -- on it (the chip shows the freshly-minted glyph, held). See captureNow.
   Capture next -> do

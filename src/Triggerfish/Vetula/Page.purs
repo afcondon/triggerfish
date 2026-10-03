@@ -1,14 +1,13 @@
 -- | Vetula, made to fit the one-machine shell (`Triggerfish.Standalone`).
 -- |
 -- | Vetula speaks its own query type, and has no continuous frame loop, so in
--- | the Triggerfish page the shell polled it: for its preset chip, for its
--- | harmonic context (which Odonus quantises to), and in Atlantis for its rig
--- | payload, re-pushed once an edit settles. This wrapper does that polling
--- | itself and answers the shell's `SourceQuery` by translating it.
+-- | the Triggerfish page the shell polled it: for its preset chip, and in
+-- | Atlantis for its rig payload, re-pushed once an edit settles. This wrapper
+-- | does that polling itself and answers the shell's `SourceQuery` by
+-- | translating it.
 -- |
--- | The harmonic context leaves the page on the tab bus (`Bus.Scale`), so
--- | Odonus can follow it from its own tab. It is the one piece of music that
--- | passes between machines (`docs/kb/plans/the-offering.md`).
+-- | What passes from Vetula to Odonus (its key, a card's chords) goes by the
+-- | harmony routes on the rig (`odonus_feeds`), not from tab to tab.
 module Triggerfish.Vetula.Page
   ( Output(..)
   , component
@@ -28,7 +27,6 @@ import Halogen.HTML as HH
 import Halogen.Subscription as HS
 import Triggerfish.Glyph (ChipView)
 import Triggerfish.SourceQuery as SQ
-import Binnacle.TabBus as Bus
 import Triggerfish.Transport (Sounding(..))
 import Type.Proxy (Proxy(..))
 import Vetula.App as Vetula
@@ -37,13 +35,9 @@ data Output
   = Chip (Maybe ChipView)
   | Armed Boolean
 
-type Ctx = { root :: Int, offsets :: Array Int, harmony :: Maybe String }
-
 type State =
-  { bus :: Maybe Bus.Bus
-  , sounding :: Sounding
+  { sounding :: Sounding
   , chip :: Maybe (Maybe ChipView)
-  , scale :: Maybe Ctx
   -- The rig payload as last seen and as last sent: a change is re-pushed once
   -- it has held still for one poll, so a drag sends once, after it stops.
   , brushPrev :: String
@@ -57,7 +51,6 @@ data Action
   = Init
   | Poll
   | FromVetula Vetula.Output
-  | FromBus Bus.Msg
 
 type Slots = (vet :: H.Slot Vetula.SourceQuery Vetula.Output Unit)
 
@@ -67,7 +60,7 @@ _vet = Proxy
 component :: forall i. H.Component SQ.Query i Output Aff
 component = H.mkComponent
   { initialState: \_ ->
-      { bus: Nothing, sounding: Silent, chip: Nothing, scale: Nothing
+      { sounding: Silent, chip: Nothing
       , brushPrev: "", brushSent: "", busy: Nothing }
   , render: \_ -> HH.slot _vet unit Vetula.component unit FromVetula
   , eval: H.mkEval H.defaultEval
@@ -84,10 +77,8 @@ handleAction = case _ of
   Init -> do
     { emitter, listener } <- liftEffect HS.create
     _ <- H.subscribe emitter
-    bus <- liftEffect Bus.open
     gate <- liftEffect (Ref.new false)
-    H.modify_ _ { bus = Just bus, busy = Just gate }
-    liftEffect $ Bus.onMessage bus (HS.notify listener <<< FromBus)
+    H.modify_ _ { busy = Just gate }
     void $ liftEffect $ setInterval 100 (HS.notify listener Poll)
 
   Poll -> do
@@ -104,13 +95,6 @@ handleAction = case _ of
     Vetula.ArmChanged on -> H.raise (Armed on)
     Vetula.StageChanged _ -> pure unit
 
-  -- A page that has just opened asks where everyone is: say the scale again.
-  FromBus msg -> case msg of
-    Bus.Hello -> do
-      st <- H.get
-      for_ st.scale \sc -> for_ st.bus \bus -> liftEffect $ Bus.post bus (Bus.Scale sc)
-    _ -> pure unit
-
 -- | Every write is guarded on a change: this runs ten times a second.
 poll :: M Unit
 poll = do
@@ -120,12 +104,6 @@ poll = do
     when (st.chip /= Just cv) do
       H.modify_ _ { chip = Just cv }
       H.raise (Chip cv)
-  mctx <- H.query _vet unit (Vetula.AskContextScale identity)
-  for_ mctx \ctx -> do
-    st <- H.get
-    when (st.scale /= Just ctx) do
-      H.modify_ _ { scale = Just ctx }
-      for_ st.bus \bus -> liftEffect $ Bus.post bus (Bus.Scale ctx)
   -- Vetula has no incremental rig path: a settled change to its payload is
   -- pushed again, and only while it is the rig that sounds it.
   st <- H.get
@@ -159,5 +137,4 @@ handleQuery = case _ of
   SQ.PutLane _ _ _ -> pure Nothing
   SQ.PutSource _ _ -> pure Nothing
   SQ.AskClock _ -> pure Nothing
-  SQ.SetContextPitchSet _ _ _ _ -> pure Nothing
   SQ.SetRouting _ _ -> pure Nothing

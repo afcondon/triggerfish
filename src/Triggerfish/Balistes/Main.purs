@@ -29,5 +29,4 @@ main = Standalone.run
       , restoreLabel: "restore default kit routing"
       }
   , armOf: const Nothing
-  , follow: const Nothing
   }

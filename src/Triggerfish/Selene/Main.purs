@@ -24,5 +24,4 @@ main = Standalone.run
   , chipOf: \(Selene.IdentityChanged cv) -> Just cv
   , router: Nothing
   , armOf: const Nothing
-  , follow: const Nothing
   }

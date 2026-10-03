@@ -89,9 +89,7 @@ import Web.UIEvent.KeyboardEvent.EventTypes as KET
 -- | - `router`: the sources this page routes, or `Nothing` for a machine that
 -- |   does not read the routing table;
 -- | - `armOf`: the machine armed or disarmed itself (Vetula's own play, stop
--- |   and unload), which the shell's transport follows;
--- | - `follow`: what the machine does with a message from another tab (Odonus
--- |   takes Vetula's scale as its pitch set).
+-- |   and unload), which the shell's transport follows.
 type Config o =
   { which :: Which
   , nameplate :: String
@@ -99,7 +97,6 @@ type Config o =
   , chipOf :: o -> Maybe (Maybe ChipView)
   , router :: Maybe Router
   , armOf :: o -> Maybe Boolean
-  , follow :: Bus.Msg -> Maybe (SQ.Query Unit)
   }
 
 -- | A page's router: its title, the sources it shows, and what they are called
@@ -189,8 +186,7 @@ handleAction cfg = case _ of
     H.modify_ _ { bus = Just bus }
     liftEffect $ Bus.onMessage bus (HS.notify listener <<< FromBus)
     liftEffect $ Bus.sayGoodbye bus (maybe [] pure (Stage.slotOf cfg.which))
-    -- Ask the other pages to say where they are, so a follower (Odonus) has
-    -- what it follows (Vetula's scale) without waiting for it to change.
+    -- Ask the other pages to say where they are (the dashboard's chips).
     liftEffect $ Bus.post bus Bus.Hello
     -- The port names, for the router's reach column and its port menus. The
     -- machine asks for MIDI itself to play; this is only to know what exists.
@@ -262,7 +258,7 @@ handleAction cfg = case _ of
         H.modify_ _ { playing = false }
         pushSounding cfg
       Bus.Hello -> announce cfg
-      other -> for_ (cfg.follow other) \q -> void $ H.query _machine unit q
+      _ -> pure unit
   -- Another tab (the dashboard) changed the mode.
   ModeStored -> do
     mmode <- liftEffect TransportStore.load

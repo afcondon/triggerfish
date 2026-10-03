@@ -1,9 +1,9 @@
 -- | Odonus on its own page (`odonus.html`), in the standalone shell
 -- | (`Triggerfish.Standalone`). Its router shows the four heads.
 -- |
--- | It quantises to Vetula's harmonic context, which arrives from Vetula's
--- | page over the tab bus (`Bus.Scale`: a scale, and the chords as a Tidal
--- | pattern); with Vetula closed, Odonus keeps its own scale.
+-- | What it quantises to is the harmony routes' business (`routing/harmony`,
+-- | edited on the dashboard, applied on the rig by `odonus_feeds`); the page
+-- | takes nothing from Vetula's tab directly.
 -- |
 -- | Bundle: `spago bundle --module Triggerfish.Odonus.Main --outfile public/odonus.js`.
 module Triggerfish.Odonus.Main (main) where
@@ -15,9 +15,7 @@ import Data.Maybe (Maybe(..))
 import Effect (Effect)
 import Triggerfish.Odonus.Grid as Odonus
 import Triggerfish.Routing.Model as RM
-import Triggerfish.SourceQuery as SQ
 import Triggerfish.Standalone as Standalone
-import Binnacle.TabBus as Bus
 import Triggerfish.Transport (Which(..))
 
 main :: Effect Unit
@@ -35,7 +33,4 @@ main = Standalone.run
       , restoreLabel: "restore default head routing"
       }
   , armOf: const Nothing
-  , follow: case _ of
-      Bus.Scale sc -> Just (SQ.SetContextPitchSet sc.root sc.offsets sc.harmony unit)
-      _ -> Nothing
   }
