@@ -1,5 +1,5 @@
--- | A plain click on anything with `data-bg-open` opens that page in a
--- | background tab (see the JS for why it is a document listener).
+-- | A ghost fish is a link that a plain click leaves alone and a cmd-click
+-- | opens behind (see the JS for why).
 module Triggerfish.BackgroundOpen (install) where
 
 import Prelude

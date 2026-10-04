@@ -249,7 +249,7 @@ handleAction = case _ of
     void $ H.subscribe $ eventListener KET.keydown (Window.toEventTarget win) (map KeyDown <<< KE.fromEvent)
     -- the stage's text objects: the harmony routes, and Vetula's cards for
     -- its voices; asked for again whenever the socket (re)opens
-    -- a ghost fish opens its machine behind the dashboard
+    -- a plain click on a ghost fish stays here; cmd-click opens it behind
     liftEffect BackgroundOpen.install
     liftEffect $ Binnacle.onAppMessage rig (HS.notify listener <<< RigFrame)
     liftEffect $ Binnacle.onOpen rig (HS.notify listener RigOpen)

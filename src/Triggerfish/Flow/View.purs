@@ -428,9 +428,9 @@ chartOf on hot live f =
       svg "g" [ attr "class" ("dock" <> if d.open then " open" else " closed") ]
         [ svg "rect" [ attr "class" "hit", attr "x" "10", attr "y" (n (y - 18.0)), attr "width" (n (left - 20.0)), attr "height" "36" ] []
         , if d.open then fishBtn d.slot 23.0 (y - 16.0)
-          else svg "g" [ attr "class" "ghostfish", attr "data-bg-open" d.href, attr "role" "link", attr "tabindex" "0" ]
+          else svg "a" [ attr "class" "ghostfish", attr "href" d.href, attr "target" d.target, attr "data-peek" "" ]
                  [ use ("sp-" <> d.slot) 23.0 (y - 16.0) 54.0 32.0
-                 , svg "title" [] [ HH.text ("Open " <> d.name <> " behind the dashboard") ] ]
+                 , svg "title" [] [ HH.text (d.name <> ": cmd-click to open it behind the dashboard, or 'open ↗' to go to it") ] ]
         , label "name" (left - 10.0) (y - 1.0) "end" d.name
         , if d.open then label "sub" (left - 10.0) (y + 12.0) "end" ("open · nothing routed" <> preset d.slot)
           else svg "a" [ attr "class" "openlink", attr "href" d.href, attr "target" d.target ]
