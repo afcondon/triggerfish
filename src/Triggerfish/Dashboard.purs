@@ -165,7 +165,7 @@ type State =
   , bosun :: Maybe Bosun.Health
   -- the chart's X-ray (`#atlantis`, once the Atlantis page): open, the
   -- restarts asked, and whether lowering the rig waits on a second press
-  , xray :: Boolean
+  , lens :: FlowView.Lens
   , asked :: Array Bosun.Asked
   , confirmingDown :: Boolean
   -- the key as a filter: kinds of line hidden, and the kind hovered
@@ -228,7 +228,7 @@ data Action
   | RigRestart String
   | RigGroup String
   | ConfirmDown Boolean
-  | XRay Boolean
+  | SetLens FlowView.Lens
   | KeyToggle String
   | KeyHover (Maybe String)
   | KeyAll
@@ -245,7 +245,7 @@ component = H.mkComponent
       , table: RM.defaultTable, ports: [], sampleSets: [], hot: Nothing, router: Router.initial
       , matrix: Nothing, pick: Nothing, focus: Nothing, sheet: Nothing, foldDrums: true, vetulaSent: Nothing
       , relays: false, allVoices: false, rigLoops: Map.empty, bosun: Nothing
-      , xray: false, asked: [], confirmingDown: false, hidden: [], keyHot: Nothing, armed: Nothing, peeked: Nothing, rigPlaying: Map.empty, doctor: Nothing, midi: Nothing, portsRead: false, limulusEngine: "architeuthis", seleneBanks: [] }
+      , lens: FlowView.Flowing, asked: [], confirmingDown: false, hidden: [], keyHot: Nothing, armed: Nothing, peeked: Nothing, rigPlaying: Map.empty, doctor: Nothing, midi: Nothing, portsRead: false, limulusEngine: "architeuthis", seleneBanks: [] }
   , render
   , eval: H.mkEval H.defaultEval { handleAction = handleAction, initialize = Just Init }
   }
@@ -412,7 +412,7 @@ handleAction = case _ of
     syncCards
 
   FromHash h -> do
-    H.modify_ _ { xray = h == "atlantis", confirmingDown = false }
+    H.modify_ _ { lens = lensOfHash h, confirmingDown = false }
     case matrixOfHash h of
       Just g -> handleAction (OpenMatrix g Nothing)
       Nothing -> H.modify_ _ { matrix = Nothing, focus = Nothing, pick = Nothing }
@@ -484,9 +484,9 @@ handleAction = case _ of
   -- The X-ray keeps the Atlantis page's old address (a lamp's link, a
   -- bookmark). writeHash is replaceState, which fires no hashchange, so the
   -- state is set here as well.
-  XRay b -> do
-    H.modify_ _ { xray = b, confirmingDown = false }
-    liftEffect (Route.writeHash (if b then "atlantis" else ""))
+  SetLens l -> do
+    H.modify_ _ { lens = l, confirmingDown = false }
+    liftEffect (Route.writeHash (hashOfLens l))
 
   KeyToggle k -> H.modify_ \x -> x { hidden = if k `elem` x.hidden then filter (_ /= k) x.hidden else x.hidden <> [ k ] }
   KeyHover k -> H.modify_ _ { keyHot = k }
@@ -675,9 +675,12 @@ loopMachines = [ "odonus", "vetula" ]
 flowChart :: forall m. State -> H.ComponentHTML Action () m
 flowChart st =
   HH.section [ cls "flow", HP.attr (AttrName "aria-label") "Where it all goes" ]
-    ( (if st.xray then [ xrayStrip st ] else []) <>
+    ( (case st.lens of
+          FlowView.XRay -> [ xrayStrip st ]
+          FlowView.Storage -> [ storageStrip ]
+          FlowView.Flowing -> []) <>
     [ HH.div [ cls ("flow-chart" <> if st.allVoices then " all-voices" else "") ]
-        [ FlowView.chart { hover: Hover, link: ChartLink, port: PortClick, cable: CableClick, play: Command, peek: Peek, restart: RigRestart, engine: SetLimulusEngine } st.hot { playing: Array.nub (map _.slot (filter (playing st) machines) <> (if null (liveBanks st) then [] else [ "selene" ])), rigUp: st.rigUp, tempo: st.tempo, lamps, hidden: st.hidden, keyHot: st.keyHot, patch, dock, locked: st.locked, peeked: st.peeked, xray: st.xray, limulusEngine: st.limulusEngine }
+        [ FlowView.chart { hover: Hover, link: ChartLink, port: PortClick, cable: CableClick, play: Command, peek: Peek, restart: RigRestart, engine: SetLimulusEngine } st.hot { playing: Array.nub (map _.slot (filter (playing st) machines) <> (if null (liveBanks st) then [] else [ "selene" ])), rigUp: st.rigUp, tempo: st.tempo, lamps, hidden: st.hidden, keyHot: st.keyHot, patch, dock, locked: st.locked, peeked: st.peeked, lens: st.lens, limulusEngine: st.limulusEngine }
             ( Flow.flow
                 { mode: st.mode
                 , table: st.table
@@ -851,6 +854,33 @@ askedOf st id = Bosun.outcome st.now st.bosun <$> find (\a -> a.service == id) s
 
 -- | Above the chart, in the X-ray: who watches the rig (Bosun, DeepStar),
 -- | the group's raise and lower, and any daemon with no place on the chart.
+-- | The chart's lens, in the address: the X-ray keeps the Atlantis page's
+-- | old `#atlantis`, so links to it still land there.
+lensOfHash :: String -> FlowView.Lens
+lensOfHash = case _ of
+  "atlantis" -> FlowView.XRay
+  "storage" -> FlowView.Storage
+  _ -> FlowView.Flowing
+
+hashOfLens :: FlowView.Lens -> String
+hashOfLens = case _ of
+  FlowView.XRay -> "atlantis"
+  FlowView.Storage -> "storage"
+  FlowView.Flowing -> ""
+
+-- | The storage lens's key: how long each kind of keeping lasts.
+storageStrip :: forall m. H.ComponentHTML Action () m
+storageStrip =
+  HH.div [ cls "xray-strip" ]
+    [ HH.span [ cls "xray-note" ] [ HH.text "What each part keeps, and how long it lasts:" ]
+    , item "k-lost" "in memory" "gone when the process stops"
+    , item "k-disk" "on disk" "a file on this machine"
+    , item "k-browser" "in this browser" "per address: another port sees none of it"
+    , item "k-versioned" "in Amphora" "versioned; old versions stay reachable"
+    ]
+  where
+  item k name note = HH.span [ cls "xray-chip" ] [ HH.span [ cls ("xray-st " <> k) ] [ HH.text name ], HH.span [ cls "xray-note" ] [ HH.text note ] ]
+
 xrayStrip :: forall m. State -> H.ComponentHTML Action () m
 xrayStrip st = case st.bosun of
   Nothing ->
@@ -976,9 +1006,13 @@ machineBar st =
       -- the rig's are one-of segments, these each turn on and off.
       , HH.span [ cls "spacer" ] []
       , HH.span [ cls "seglabel" ] [ HH.text "Chart" ]
+      , HH.div [ cls "seg", HP.attr (AttrName "role") "group", HP.attr (AttrName "aria-label") "The chart's lens" ]
+          [ lens "Flow" "What plays, and where it goes." FlowView.Flowing
+          , lens "X-ray" "The rig's processes on its whole skeleton: each one's state and restart, with the flow faded behind." FlowView.XRay
+          , lens "Storage" "What each part keeps, and how long it lasts, on the same skeleton as the X-ray." FlowView.Storage
+          ]
       , HH.div [ cls "toggles", HP.attr (AttrName "role") "group", HP.attr (AttrName "aria-label") "The chart's views" ]
-          [ toggle "X-ray" "The rig's processes on its whole skeleton: each one's state and restart, with the flow faded behind." st.xray XRay
-          , toggle "Relays" "Draw Diaphus, which delivers every MIDI note the rig sends." st.relays ShowRelays
+          [ toggle "Relays" "Draw Diaphus, which delivers every MIDI note the rig sends." st.relays ShowRelays
           , toggle "Every voice" "Open every machine into its voices: one line per channel, head or lane." st.allVoices ShowAllVoices
           ]
       ]
@@ -990,6 +1024,14 @@ machineBar st =
       , HP.attr (AttrName "aria-pressed") (if on then "true" else "false")
       , HP.title tip
       , HE.onClick \_ -> act (not on)
+      ]
+      [ HH.text label ]
+  lens label tip l =
+    HH.button
+      [ cls (if st.lens == l then "on" else "")
+      , HP.attr (AttrName "aria-pressed") (if st.lens == l then "true" else "false")
+      , HP.title tip
+      , HE.onClick \_ -> SetLens l
       ]
       [ HH.text label ]
   seg label m =

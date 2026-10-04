@@ -14,7 +14,7 @@ import Effect (Effect)
 import Effect.Console (log)
 import Test.Assert (assert')
 import Triggerfish.Bosun as Bosun
-import Triggerfish.Flow (Inputs, Signal(..), flow, layerOf, onTheBeat, skeleton)
+import Triggerfish.Flow (Inputs, Signal(..), flow, keeps, layerOf, onTheBeat, skeleton)
 import Triggerfish.Routing.Model (Destination(..), Source(..), Table, defaultTableFor)
 import Triggerfish.Transport (Mode(..))
 
@@ -224,6 +224,10 @@ runFlowTests = do
   check "every place a daemon stands is a node the skeleton draws, or a machine"
     (all (\id -> all (\pl -> isJust (find (\nd -> nd.id == pl) bare.nodes) || pl `elem` [ "m:quadrat", "m:conspicillum", "m:limulus", "ghci" ]) (Bosun.placesOf id))
       [ "es9-daemon", "diaphus", "architeuthis", "triggerfish-frontend", "superdirt", "amphora", "friends-of-itajara", "fh2-daemon", "fh2-drumkit", "continuo" ])
+
+  -- the storage lens: a row whose node is never drawn would never be seen
+  check "everything kept is kept by a node the skeleton draws, or a machine"
+    (all (\k -> isJust (find (\nd -> nd.id == k.node) bare.nodes) || k.node `elem` [ "m:odonus", "m:vetula", "m:balistes", "m:selene", "m:limulus" ]) keeps)
 
   -- Limulus sent to Haskell Tidal (2026-10-04): GHCi plays SuperDirt itself
   let ghci = flow base { machines = [ "limulus" ], table = []

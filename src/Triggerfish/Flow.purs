@@ -62,6 +62,10 @@ module Triggerfish.Flow
   , nodeRank
   , machineOf
   , loopOf
+  , Lasts(..)
+  , Keep
+  , keeps
+  , storeLink
   ) where
 
 import Prelude
@@ -540,6 +544,51 @@ loopOf id = do
   case split (Pattern ":") rest of
     [ m, k ] -> Int.fromString k <#> \n -> { machine: m, n }
     _ -> Nothing
+
+-- ---------------------------------------------------------------------------
+-- What the rig keeps, and where (the storage lens)
+-- ---------------------------------------------------------------------------
+
+-- | How long something kept lasts. `Lost`: in a process's memory, gone when
+-- | it stops. `OnDisk`: a file on this machine. `InBrowser`: the page's own
+-- | storage, per address, so the same page from another port sees none of
+-- | it. `Versioned`: in Amphora, content-addressed, old versions kept.
+data Lasts = Lost | OnDisk | InBrowser | Versioned
+
+derive instance Eq Lasts
+
+-- | One thing kept: by which node, what, and where.
+type Keep = { node :: String, what :: String, at :: String, lasts :: Lasts }
+
+-- | Everything the rig keeps, by the node that keeps it (checked against
+-- | the code, 2026-10-04). A node not on the chart shows nothing.
+keeps :: Array Keep
+keeps =
+  [ k "engine" "loops and marks" "in its memory" Lost
+  , k "engine" "the stage" "in its memory" Lost
+  , k "engine" "stage texts" "~/.atlantis/stage-texts.json" OnDisk
+  , k "engine" "Selene's banks" "~/.architeuthis/selene-applied.term" OnDisk
+  , k "d-es9" "running polysignals" "in its memory (re-applied)" Lost
+  , k "d-es9" "bus claims" "~/.es9/claims.json" OnDisk
+  , k "fh2" "jack claims" "~/.fh2/claims.json" OnDisk
+  , k "d-dirt" "samples loaded" "in its memory" Lost
+  , k "sets" "sample sets" "~/.itajara/quadrat/samples" OnDisk
+  , k "sets" "scenes, progressions, racks, calibrations" "Amphora :3024" Versioned
+  , k "foi" "takes" "~/.itajara/takes" OnDisk
+  , k "browser" "routing, scenes, clips" "this browser" InBrowser
+  , k "m:odonus" "patterns" "this browser" InBrowser
+  , k "m:vetula" "library, session" "this browser" InBrowser
+  , k "m:balistes" "kits, patterns" "this browser" InBrowser
+  , k "m:selene" "racks" "this browser · Amphora" InBrowser
+  , k "m:limulus" "text, engine choice" "this browser" InBrowser
+  ]
+  where
+  k node what at lasts = { node, what, at, lasts }
+
+-- | A line that carries what is kept rather than what plays: sample sets
+-- | into SuperDirt, and what recorded a loop.
+storeLink :: Link -> Boolean
+storeLink l = l.signal == Samples || l.signal == Recorded
 
 isNoPort :: Reach -> Boolean
 isNoPort = case _ of

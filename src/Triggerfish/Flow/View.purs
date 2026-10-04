@@ -15,6 +15,7 @@ module Triggerfish.Flow.View
   , Patch
   , Dock
   , DaemonLamp
+  , Lens(..)
   ) where
 
 import Prelude
@@ -38,7 +39,7 @@ import Halogen.HTML.Core (AttrName(..), ElemName(..), Namespace(..))
 import Halogen.HTML.Events as HE
 import Halogen.HTML.Properties as HP
 import Triggerfish.Bosun (Lamp(..))
-import Triggerfish.Flow (Column(..), Flow, Link, Signal(..), columnTitle, layerOf, loopOf, nodeRank, onTheBeat, signalLabel, skeleton)
+import Triggerfish.Flow (Column(..), Flow, Lasts(..), Link, Signal(..), columnTitle, keeps, layerOf, loopOf, nodeRank, onTheBeat, signalLabel, skeleton, storeLink)
 
 -- | What the chart reports: a machine hovered (or left), and a machine picked.
 -- | `link`: a link clicked, with its machine and the node it runs into.
@@ -115,6 +116,17 @@ heightOf f = clampN 250.0 720.0 (130.0 + toNumber streams * 11.0 + toNumber rows
   rows = foldl max 1 (map (\c -> Array.length (filter (\nd -> nd.column == c) f.nodes)) (nub (map _.column f.nodes)))
   clampN lo hi x = max lo (min hi x)
 
+-- | How the chart is looked at. `Flowing`: what plays, and where it goes.
+-- | `XRay`: the rig's processes, on its whole skeleton, with the flow faded
+-- | behind them (was the Atlantis page). `Storage`: what each node keeps and
+-- | how long it lasts, on the same skeleton, so switching between the two
+-- | moves nothing. Outside `Storage`, what is mostly storage (the sample
+-- | sets, loops not playing, the lines that only record) is ghosted in its
+-- | place rather than dropped, so the layout holds.
+data Lens = Flowing | XRay | Storage
+
+derive instance Eq Lens
+
 -- | What the chart shows of the moment. `playing` names the machines
 -- | sounding now; the rest are drawn ghosted rather than dropped, since an
 -- | open page that is stopped is still part of the picture, and when nothing
@@ -124,9 +136,7 @@ heightOf f = clampN 250.0 720.0 (130.0 + toNumber streams * 11.0 + toNumber rows
 type Live =
   { playing :: Array String, rigUp :: Boolean, tempo :: Number
   , lamps :: Array DaemonLamp
-  -- | the X-ray: the rig's processes, on the rig's whole skeleton, with the
-  -- | flow faded behind them (was the Atlantis page)
-  , xray :: Boolean
+  , lens :: Lens
   -- | where Limulus sends its Tidal: "architeuthis" or "ghci"
   , limulusEngine :: String
   -- | the key as a filter: kinds of line hidden (the chart is laid out
@@ -158,19 +168,22 @@ hide hidden f
   ends = nub (Array.concatMap (\l -> [ l.from, l.to ]) links)
 
 chart :: forall w i. Handlers i -> Maybe String -> Live -> Flow -> HH.HTML w i
-chart on hot live = chartOf on hot live <<< (if live.xray then skeleton else identity) <<< hide live.hidden
+chart on hot live = chartOf on hot live <<< (if live.lens /= Flowing then skeleton else identity) <<< hide live.hidden
 
 chartOf :: forall w i. Handlers i -> Maybe String -> Live -> Flow -> HH.HTML w i
 chartOf on hot live f =
       svg "svg"
         [ attr "viewBox" ("0 0 " <> n width <> " " <> n (max h (dockBottom + 10.0)))
-        , attr "class" ("flows" <> (if hot == Nothing then "" else " hovering") <> (if live.keyHot == Nothing then "" else " keying") <> (if Array.null live.playing then " resting" else "") <> (if live.xray then " xray" else ""))
+        , attr "class" ("flows" <> (if hot == Nothing then "" else " hovering") <> (if live.keyHot == Nothing then "" else " keying") <> (if Array.null live.playing then " resting" else "") <> (if xray then " xray" else "") <> (if store then " storage" else ""))
         , attr "style" ("--beat: " <> n (60.0 / max 20.0 live.tempo) <> "s")
         , attr "role" "img"
         , attr "aria-label" "Where each machine's output goes: through the browser or the rig, through interfaces and instruments, to your ears"
         ]
         ( beatBand <> heads <> [ rule ] <> map link (filter (not <<< isQuant) laid.routes) <> map node laid.nodes <> beatMarks <> patchBay <> dock <> empty )
   where
+  -- the X-ray and the storage lens share the skeleton and its layout
+  xray = live.lens /= Flowing
+  store = live.lens == Storage
   -- In Atlantis, link-spike stands above the flow: the beat, broadcast to
   -- everything the rig times, rather than one more hop in it.
   beat = onTheBeat f
@@ -179,8 +192,8 @@ chartOf on hot live f =
   -- under the column heads.
   fedRoom = if Array.any (\l -> l.signal == Quantise) f.links then 84.0 else 0.0
   -- the X-ray's lines need room under each node, and on the right
-  h = heightOf f + band + fedRoom + (if live.xray then 90.0 else 0.0)
-  rightEdge = if live.xray then right - 90.0 else right
+  h = heightOf f + band + fedRoom + (if xray then 90.0 else 0.0)
+  rightEdge = if xray then right - 90.0 else right
   byId = Map.fromFoldable (map (\x -> x.id /\ x) f.nodes)
   ours sn = Map.lookup sn.name byId
   -- A long line from the machines' end (Feeds to Page, a machine to its
@@ -200,7 +213,7 @@ chartOf on hot live f =
     (map (\l -> { s: l.from, t: l.to, v: widthOf l }) f.links)
     (defaultSankeyConfig width h)
       { nodeWidth = 5.0
-      , nodePadding = if live.xray then 46.0 else 20.0
+      , nodePadding = if xray then 46.0 else 20.0
       , extent = { x0: left, y0: 48.0 + band + fedRoom, x1: rightEdge, y1: h - 40.0 }
       , nodeLayer = layerOf f
       , nodeSort = Just (comparing rankOf)
@@ -249,7 +262,7 @@ chartOf on hot live f =
       else Nothing
 
   linkCls l | l.bone = "bone"
-  linkCls l = sigClass l.signal <> (if l.control then " control" else "") <> (if live.keyHot == Just (kindOf l) then " khot" else "") <> (if Just l.machine == hot then " hot" else "") <> (if l.broken > 0 then " broken" else "") <> (if waits l then " waiting" else if sounding l then "" else " idle")
+  linkCls l = (if storeLink l && not store then "stored " else "") <> sigClass l.signal <> (if l.control then " control" else "") <> (if live.keyHot == Just (kindOf l) then " khot" else "") <> (if Just l.machine == hot then " hot" else "") <> (if l.broken > 0 then " broken" else "") <> (if waits l then " waiting" else if sounding l then "" else " idle")
   -- A bone is a line, not a ribbon: it carries nothing, so it has no width
   -- to show (and alone on the chart a ribbon would fill the height).
   link route | Just l <- f.links !! route.index, l.bone =
@@ -288,7 +301,12 @@ chartOf on hot live f =
 
   node sn = case ours sn of
     Nothing -> svg "g" [] []
-    Just nd -> case nd.machine, loopOf nd.id of
+    Just nd
+      | not store && storedNode nd -> svg "g" [ attr "class" "stored" ] [ node' sn nd ]
+      | otherwise -> node' sn nd
+  -- mostly storage: ghosted in place outside the storage lens
+  storedNode nd = nd.id == "sets" || (isJust (loopOf nd.id) && nd.note /= "playing")
+  node' sn nd = case nd.machine, loopOf nd.id of
       Just _, _ | isJust (String.stripPrefix (String.Pattern "src:") nd.id) -> voiceNode sn nd
       Just m, _ -> machineNode sn nd m
       Nothing, Just l -> loopNode sn nd l
@@ -399,7 +417,7 @@ chartOf on hot live f =
       [ svg "title" [] [ HH.text ("odonus." <> r.input <> " ← " <> s.label <> " · click to unplug") ] ]
 
   patchBay
-    | not quantShown || live.xray = []
+    | not quantShown || xray = []
     | otherwise =
         mapMaybe cable live.patch.routes
           <> mapMaybe (\s -> srcPort s <#> \p ->
@@ -483,7 +501,7 @@ chartOf on hot live f =
                  [ use ("sp-" <> d.slot) 23.0 (y - 16.0) 54.0 32.0
                  , label "name" (left - 10.0) (y - 1.0) "end" d.name
                  , svg "title" [] [ HH.text d.name ] ]
-        , if live.xray && not (Array.null (lampsOf ("m:" <> d.slot))) then lampLines ("m:" <> d.slot) "end" (left - 10.0) (y + 12.0)
+        , if annotated ("m:" <> d.slot) then annotLines ("m:" <> d.slot) "end" (left - 10.0) (y + 12.0)
           else if d.remote && not d.open then label "sub" (left - 10.0) (y + 12.0) "end" (if d.playing then "on the rig, no page" else "hushed on the rig")
           else if d.rig then label "sub" (left - 10.0) (y + 12.0) "end" "on the rig, no page"
           else if d.open then label "sub" (left - 10.0) (y + 12.0) "end" ("open · nothing routed" <> preset d.slot)
@@ -614,8 +632,8 @@ chartOf on hot live f =
         _ -> tx
       -- with loops beside it, the page's line is short, so it clears them
       sub
-        | live.xray && not (Array.null (lampsOf nd.id)) =
-            [ lampLines nd.id "start" lx (cy + (if nd.id == "engine" then 27.0 else 11.0)) ]
+        | annotated nd.id =
+            [ annotLines nd.id "start" lx (cy + (if nd.id == "engine" then 27.0 else 11.0)) ]
         | nd.id == "engine" = []
         | nd.id == "browser" && Array.any (\x -> x.column == Loops) f.nodes =
             [ label "sub" lx (cy + 11.0) "start" (show (round' sn.value)) ]
@@ -642,15 +660,17 @@ chartOf on hot live f =
   -- in the X-ray, a node with a process behind it is drawn as itself; the
   -- rest are greyed
   -- (its name in the colour of its worst process's state)
-  procCls id = case lampsOf id of
-    [] -> ""
-    ls -> " proc st-" <> lampClass (worst (map _.lamp ls))
+  procCls id
+    | store = if Array.null (keepsOf id) then "" else " proc kept"
+    | otherwise = case lampsOf id of
+        [] -> ""
+        ls -> " proc st-" <> lampClass (worst (map _.lamp ls))
   worst ls
     | Array.elem Down ls = Down
     | Array.elem Coming ls = Coming
     | otherwise = Up
   daemonLamp id sn
-    | live.xray = []
+    | xray = []
     | otherwise = lampAt id (sn.x0 + 2.5) (sn.y1 + 8.0)
   lampAt id x y = lampsOf id # Array.mapWithIndex \k l ->
       -- a link to the X-ray, where it can be restarted
@@ -663,7 +683,7 @@ chartOf on hot live f =
   -- about its path, so the choice is made where the path is drawn. One of
   -- two, right-aligned under its caption.
   engineChoice m x y
-    | m /= "limulus" || live.xray = svg "g" [] []
+    | m /= "limulus" || xray = svg "g" [] []
     | otherwise =
         let w = 6.0 * toNumber (String.length "→ Haskell Tidal")
         in svg "g" [ attr "class" "engines", attr "role" "group", attr "aria-label" "Where Limulus sends Tidal" ]
@@ -684,8 +704,37 @@ chartOf on hot live f =
   -- In the X-ray, a machine's caption is its page server's line, when it
   -- has one.
   subOr id anchor x y plain
-    | live.xray && not (Array.null (lampsOf id)) = lampLines id anchor x y
+    | annotated id = annotLines id anchor x y
     | otherwise = plain
+
+  -- What a lens says under a node: its processes in the X-ray, what it
+  -- keeps in the storage lens.
+  keepsOf id = filter (\k -> k.node == id) keeps
+  annotated id = case live.lens of
+    XRay -> not (Array.null (lampsOf id))
+    Storage -> not (Array.null (keepsOf id))
+    Flowing -> false
+  annotLines id
+    | store = keepLines id
+    | otherwise = lampLines id
+  -- A line for each thing kept, coloured by how long it lasts; where it
+  -- is kept is in its hover, which keeps the lines short.
+  keepLines id anchor x y =
+    svg "g" [ attr "class" "xlamps" ] $ keepsOf id # Array.mapWithIndex \k kp ->
+      svg "g" [ attr "class" "xlamp" ]
+        [ label ("sub " <> lastsClass kp.lasts) x (y + 14.0 * toNumber k) anchor kp.what
+        , svg "title" [] [ HH.text (kp.what <> " · " <> kp.at <> "\n" <> lastsText kp.lasts) ]
+        ]
+  lastsClass = case _ of
+    Lost -> "k-lost"
+    OnDisk -> "k-disk"
+    InBrowser -> "k-browser"
+    Versioned -> "k-versioned"
+  lastsText = case _ of
+    Lost -> "in memory, gone when the process stops"
+    OnDisk -> "a file on this machine, kept across restarts"
+    InBrowser -> "this browser's storage for this address; another port or machine sees none of it"
+    Versioned -> "in Amphora, content-addressed; old versions stay reachable"
 
   -- The X-ray's word on a node's processes: a line each, with its lamp and
   -- (for a daemon) its ↻, reading from the node outwards.
@@ -720,7 +769,7 @@ chartOf on hot live f =
     Down -> "down"
   -- The rig's link, on the rig: a lamp under purerl-tidal's label.
   rigLamp id x cy
-    | id == "engine" && live.xray =
+    | id == "engine" && xray =
         [ label ("sub st-" <> if live.rigUp then "up" else "down") x (cy + 13.0) "start" (if live.rigUp then "connected" else "not connected") ]
     | id == "engine" =
         [ svg "circle" [ attr "class" (if live.rigUp then "lamp-on" else "lamp-off"), attr "cx" (n (x + 4.0)), attr "cy" (n (cy + 10.0)), attr "r" "4" ] []

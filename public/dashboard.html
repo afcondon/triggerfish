@@ -303,6 +303,14 @@
     svg.flows.xray .node:not(.proc) .name, svg.flows.xray .dock:not(.proc) .name { fill: var(--faint); }
     svg.flows.xray .node:not(.proc) .bar { opacity: .3; }
     .xray-st { font: 600 12px var(--mono); }
+    /* the storage lens; outside it, what is mostly storage is ghosted in place */
+    svg.flows .stored { opacity: .13; pointer-events: none; }
+    svg.flows.storage .link.s-samples, svg.flows.storage .link.s-record { fill-opacity: .45 !important; stroke-opacity: .7; }
+    svg.flows.storage .bubble { opacity: 1; }
+    svg.flows.storage .xlamp .sub.k-lost, .xray-st.k-lost { fill: var(--amber); color: var(--amber); }
+    svg.flows.storage .xlamp .sub.k-disk, .xray-st.k-disk { fill: var(--ink); color: var(--ink); }
+    svg.flows.storage .xlamp .sub.k-browser, .xray-st.k-browser { fill: var(--reef); color: var(--reef); }
+    svg.flows.storage .xlamp .sub.k-versioned, .xray-st.k-versioned { fill: var(--live); color: var(--live); }
     .xray-st.up { color: var(--live); } .xray-st.coming { color: var(--amber); } .xray-st.down { color: var(--alarm); }
     svg.flows .restart { cursor: pointer; outline: none; }
     svg.flows .restart .rs { font: 700 12px var(--mono); fill: var(--reef); }
