@@ -125,7 +125,10 @@ chartOf on hot live f
   -- everything the rig times, rather than one more hop in it.
   beat = onTheBeat f
   band = if Array.null beat then 0.0 else 58.0
-  h = heightOf f + band
+  -- A machine fed from the left wears its label above its bar: room for it
+  -- under the column heads.
+  fedRoom = if Array.any (\l -> l.signal == Quantise) f.links then 46.0 else 0.0
+  h = heightOf f + band + fedRoom
   byId = Map.fromFoldable (map (\x -> x.id /\ x) f.nodes)
   ours sn = Map.lookup sn.name byId
   -- A long line from the machines' end (Feeds to Page, a machine to its
@@ -162,7 +165,7 @@ chartOf on hot live f
     (defaultSankeyConfig width h)
       { nodeWidth = 5.0
       , nodePadding = 20.0
-      , extent = { x0: left, y0: 48.0 + band, x1: right, y1: h - 40.0 }
+      , extent = { x0: left, y0: 48.0 + band + fedRoom, x1: right, y1: h - 40.0 }
       , nodeLayer = layerAt
       , nodeSort = Just (comparing rankOf)
       }
