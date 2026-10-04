@@ -22,7 +22,10 @@ import Data.Map as Map
 import Data.Maybe (Maybe(..), fromMaybe, maybe)
 import Data.Number as Number
 import Data.String (joinWith)
+import Data.Tuple (Tuple(..), snd)
 import Data.Tuple.Nested ((/\))
+import Data.Int as Int
+import Data.String as String
 import Data.Number.Format (fixed, toStringWith)
 import DataViz.Layout.Sankey.Compute (computeLayoutWithConfig)
 import DataViz.Layout.Sankey.Path (generateLinkPath)
@@ -125,14 +128,42 @@ chartOf on hot live f
   h = heightOf f + band
   byId = Map.fromFoldable (map (\x -> x.id /\ x) f.nodes)
   ours sn = Map.lookup sn.name byId
-  rankOf sn = map nodeRank (ours sn)
+  -- A long line from the machines' end (Feeds to Page, a machine to its
+  -- loops) is given a waypoint in each column it passes, so the layout keeps
+  -- it a lane of its own instead of running it through the nodes there: the
+  -- standard Sankey answer for long links, forced only where it matters.
+  -- Each waypoint sorts with the machine its line comes from.
+  segs = Array.concat $ Array.mapWithIndex split f.links
+  split i l = case layerOf f l.from, layerOf f l.to of
+    Just a, Just b | b - a > 1 && fromEnd l ->
+      let
+        ids = [ l.from ] <> map (\k -> waypoint i k) (Array.range (a + 1) (b - 1)) <> [ l.to ]
+      in Array.zipWith (\s' t' -> { s: s', t: t', v: widthOf l, origin: i }) ids (Array.drop 1 ids)
+    _, _ -> [ { s: l.from, t: l.to, v: widthOf l, origin: i } ]
+  fromEnd l = maybe false (\nd -> nd.column == Feeders || nd.column == Machines) (Map.lookup l.from byId)
+  waypoint i k = "~" <> show i <> ":" <> show k
+  waypointOf id = do
+    rest <- String.stripPrefix (String.Pattern "~") id
+    case String.split (String.Pattern ":") rest of
+      [ i, k ] -> { origin: _, layer: _ } <$> Int.fromString i <*> Int.fromString k
+      _ -> Nothing
+  layerAt id = case waypointOf id of
+    Just w -> Just w.layer
+    Nothing -> layerOf f id
+  rankOf sn = case waypointOf sn.name of
+    Just w -> do
+      l <- f.links !! w.origin
+      from <- Map.lookup l.from byId
+      c <- columns !! w.layer
+      pure (Tuple c (snd (nodeRank from)))
+    Nothing -> map nodeRank (ours sn)
   laid = computeLayoutWithConfig
-    (map (\l -> { s: l.from, t: l.to, v: widthOf l }) f.links)
+    (map (\x -> { s: x.s, t: x.t, v: x.v }) segs)
     (defaultSankeyConfig width h)
       { nodeWidth = 5.0
       , nodePadding = 20.0
       , extent = { x0: left, y0: 48.0 + band, x1: right, y1: h - 40.0 }
-      , nodeLayer = layerOf f
+      , nodeLayer = layerAt
       , nodeSort = Just (comparing rankOf)
       }
 
@@ -174,10 +205,11 @@ chartOf on hot live f
         [ svg "title" [] [ HH.text "on the beat: timed by Diaphus" ] ]
       else Nothing
 
+  linkCls l = sigClass l.signal <> (if l.control then " control" else "") <> (if live.keyHot == Just (kindOf l) then " khot" else "") <> (if Just l.machine == hot then " hot" else "") <> (if l.broken > 0 then " broken" else "") <> (if waits l then " waiting" else if sounding l then "" else " idle")
   link sl =
     let
-      ours' = f.links !! (unwrap' sl.index)
-      cls = maybe "" (\l -> sigClass l.signal <> (if l.control then " control" else "") <> (if live.keyHot == Just (kindOf l) then " khot" else "") <> (if Just l.machine == hot then " hot" else "") <> (if l.broken > 0 then " broken" else "") <> (if waits l then " waiting" else if sounding l then "" else " idle")) ours'
+      ours' = (segs !! unwrap' sl.index) >>= \x -> f.links !! x.origin
+      cls = maybe "" linkCls ours'
     in
       svg "path" ([ attr "class" ("link " <> cls), attr "d" (generateLinkPath laid.nodes sl) ]
           <> maybe [] (\l -> [ HE.onClick \_ -> on.link l.machine l.to ]) ours')
@@ -201,7 +233,10 @@ chartOf on hot live f
     in not (Array.null ls) && Array.all waits ls
 
   node sn = case ours sn of
-    Nothing -> svg "g" [] []
+    -- a waypoint: the line's own colour, across the gap between its halves
+    Nothing -> case waypointOf sn.name >>= \w -> f.links !! w.origin of
+      Just l -> svg "rect" [ attr "class" ("link " <> linkCls l), attr "x" (n (sn.x0 - 0.5)), attr "y" (n sn.y0), attr "width" (n (sn.x1 - sn.x0 + 1.0)), attr "height" (n (sn.y1 - sn.y0)) ] []
+      Nothing -> svg "g" [] []
     Just nd -> case nd.machine, loopOf nd.id of
       Just m, _ -> machineNode sn nd m
       Nothing, Just l -> loopNode sn nd l
@@ -222,7 +257,32 @@ chartOf on hot live f
 
   -- A machine downstream of another (fed its harmony): its fish above its
   -- name, both just left of its bar, since the margin belongs to the first.
-  innerMachine sn nd m =
+  innerMachine sn nd m
+    | Array.any (\l -> l.to == nd.id) f.links = fedMachine sn nd m
+    | otherwise = besideMachine sn nd m
+
+  -- A machine fed from the left (its harmony): the lines come in where its
+  -- label would be, so fish and name stand above its bar.
+  fedMachine sn nd m =
+    let top = sn.y0
+    in
+      svg "g"
+        [ attr "class" "node pick inner", attr "tabindex" "0", attr "role" "button"
+        , attr "aria-label" (nd.name <> ", " <> plural (streamsOf m) "stream")
+        , HE.onMouseEnter \_ -> on.hover (Just m)
+        , HE.onMouseLeave \_ -> on.hover Nothing
+        , HE.onFocus \_ -> on.hover (Just m)
+        , HE.onBlur \_ -> on.hover Nothing
+        , HE.onClick \_ -> on.pick m
+        ]
+        [ svg "rect" [ attr "class" "hit", attr "x" (n (sn.x0 - 150.0)), attr "y" (n (top - 46.0)), attr "width" "160", attr "height" "46" ] []
+        , bar sn
+        , use ("sp-" <> m) (sn.x0 - 140.0) (top - 44.0) 54.0 32.0
+        , label "name" (sn.x0 + 4.0) (top - 24.0) "end" nd.name
+        , label "sub" (sn.x0 + 4.0) (top - 10.0) "end" (plural (streamsOf m) "stream" <> " · " <> (if needsAtlantis m then "needs Atlantis" else playsWhere m))
+        ]
+
+  besideMachine sn nd m =
     let cy = mid sn
     in
       svg "g"
