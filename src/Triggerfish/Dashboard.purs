@@ -61,6 +61,7 @@ import Web.UIEvent.KeyboardEvent as KE
 import Web.UIEvent.KeyboardEvent.EventTypes as KET
 import Triggerfish.Flow as Flow
 import Triggerfish.Bosun as Bosun
+import Triggerfish.DeepStar as DeepStar
 import Simple.JSON (readJSON)
 import Data.Either (hush)
 import Triggerfish.BackgroundOpen as BackgroundOpen
@@ -176,6 +177,8 @@ type State =
   , peeked :: Maybe String
   -- what the rig says it is playing, per slot (its stage), page or no page
   , rigPlaying :: Map String Boolean
+  -- the rig doctor's checks (DeepStar :3027), Nothing while out of reach
+  , doctor :: Maybe (Array DeepStar.Check)
   }
 
 data Action
@@ -208,6 +211,7 @@ data Action
   | ChartLink String String
   | ShowRelays Boolean
   | BosunPoll
+  | DoctorPoll
   | RigRestart String
   | RigGroup String
   | ConfirmDown Boolean
@@ -227,7 +231,7 @@ component = H.mkComponent
       , table: RM.defaultTable, ports: [], sampleSets: [], hot: Nothing, router: Router.initial
       , matrix: Nothing, pick: Nothing, focus: Nothing, sheet: Nothing, foldDrums: true, vetulaSent: Nothing
       , relays: false, allVoices: false, rigLoops: Map.empty, bosun: Nothing
-      , atlantis: false, asked: [], confirmingDown: false, hidden: [], keyHot: Nothing, armed: Nothing, peeked: Nothing, rigPlaying: Map.empty }
+      , atlantis: false, asked: [], confirmingDown: false, hidden: [], keyHot: Nothing, armed: Nothing, peeked: Nothing, rigPlaying: Map.empty, doctor: Nothing }
   , render
   , eval: H.mkEval H.defaultEval { handleAction = handleAction, initialize = Just Init }
   }
@@ -275,6 +279,8 @@ handleAction = case _ of
     handleAction Tick
     _ <- liftEffect $ setInterval 3000 (HS.notify listener BosunPoll)
     handleAction BosunPoll
+    _ <- liftEffect $ setInterval 10000 (HS.notify listener DoctorPoll)
+    handleAction DoctorPoll
 
   -- Once a second: the clock, the rig link, and which tabs have gone quiet.
   -- State is written only when something shown changes.
@@ -390,6 +396,13 @@ handleAction = case _ of
     when (h /= st.bosun) (H.modify_ _ { bosun = h })
     -- a restart's outcome is judged against the clock
     unless (null st.asked) (H.modify_ _ { now = now })
+
+  -- Every ten seconds: the rig doctor, for what Bosun cannot see (is the
+  -- ES-9 on the bus at all; does a daemon's socket answer).
+  DoctorPoll -> void $ H.fork do
+    d <- liftAff DeepStar.doctor
+    st <- H.get
+    when (d /= st.doctor) (H.modify_ _ { doctor = d })
 
   -- Restart one daemon. What happened is read from /state, not the reply.
   RigRestart id -> do
@@ -658,12 +671,21 @@ flowChart st =
         HarmonyRoute.Harmony h -> "harmony " <> h
     }
   services = maybe [] _.services st.bosun
-  lamps = services # Array.mapMaybe \sv -> Bosun.nodeOf sv.id <#> \node ->
+  -- the ES-9's own lamp, from the doctor
+  es9Lamp = case st.doctor >>= Array.find (\c -> c.name == "ES-9 present") of
+    Just c -> [ { node: "es9", lamp: if c.status == "ok" then Bosun.Up else if c.status == "down" then Bosun.Down else Bosun.Coming
+                , title: "DeepStar · " <> c.detail } ]
+    Nothing -> []
+  lamps = es9Lamp <> bosunLamps
+  bosunLamps = services # Array.mapMaybe \sv -> Bosun.nodeOf sv.id <#> \node ->
     { node, lamp: Bosun.lampOf sv
     , title: sv.id <> ": " <> sv.state <> (if sv.gaveUp then ", gave up" else "")
         <> (if sv.restarts > 0 then " · " <> show sv.restarts <> " restarts" else "") }
-  downNodes = services # Array.mapMaybe \sv ->
-    if Bosun.lampOf sv == Bosun.Down && Bosun.breaksStreams sv.id then Bosun.nodeOf sv.id else Nothing
+  downNodes = Array.nub $ (services # Array.mapMaybe \sv ->
+    if Bosun.lampOf sv == Bosun.Down && Bosun.breaksStreams sv.id then Bosun.nodeOf sv.id else Nothing)
+      -- what the doctor sees: the ES-9 off the bus, es9-daemon's socket dead
+      <> (if maybe false DeepStar.es9Absent st.doctor then [ "es9" ] else [])
+      <> (if maybe false (elem "es9-daemon" <<< DeepStar.refusing) st.doctor then [ "d-es9" ] else [])
   switch label tip on act =
     HH.label [ cls "flow-switch", HP.title tip ]
       [ HH.input [ HP.type_ HP.InputCheckbox, HP.checked on, HE.onChecked act ], HH.text label ]
