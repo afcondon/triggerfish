@@ -289,8 +289,13 @@
     svg.flows.xray .fish, svg.flows.xray .bubble, svg.flows.xray .beat, svg.flows.xray .beatmark, svg.flows.xray use { opacity: .28; }
     svg.flows.xray .node > .sub, svg.flows.xray .stopsign { opacity: .4; }
     /* a process says its state in its colour; everything else is greyed */
-    svg.flows .st-up { fill: var(--live); } svg.flows .st-coming { fill: var(--amber); } svg.flows .st-down { fill: var(--alarm); }
-    svg.flows.xray .xlamp .sub, svg.flows.xray .node > .sub[class*="st-"] { font-weight: 600; opacity: 1; }
+    svg.flows .sub.st-up { fill: var(--live); } svg.flows .sub.st-down { fill: var(--alarm); }
+    svg.flows.xray .proc.st-up .name { fill: var(--live); } svg.flows.xray .proc.st-coming .name { fill: var(--amber); } svg.flows.xray .proc.st-down .name { fill: var(--alarm); }
+    svg.flows.xray .xlamp .sub, svg.flows.xray .node > .sub[class*="st-"] { fill: var(--ink); opacity: 1; }
+    /* the beat's marks pulse whatever the rig's state: not the X-ray's business */
+    svg.flows.xray .beatmark { display: none; }
+    /* a process is not resting because nothing plays */
+    svg.flows.xray.resting .proc text { fill-opacity: 1; } svg.flows.xray.resting .proc .bar { opacity: 1; }
     svg.flows.xray .node:not(.proc) .name, svg.flows.xray .dock:not(.proc) .name { fill: var(--faint); }
     svg.flows.xray .node:not(.proc) .bar { opacity: .3; }
     .xray-st { font: 600 12px var(--mono); }

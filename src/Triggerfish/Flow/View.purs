@@ -632,7 +632,14 @@ chartOf on hot live f =
   lampsOf id = filter (\l -> l.node == id) live.lamps
   -- in the X-ray, a node with a process behind it is drawn as itself; the
   -- rest are greyed
-  procCls id = if Array.null (lampsOf id) then "" else " proc"
+  -- (its name in the colour of its worst process's state)
+  procCls id = case lampsOf id of
+    [] -> ""
+    ls -> " proc st-" <> lampClass (worst (map _.lamp ls))
+  worst ls
+    | Array.elem Down ls = Down
+    | Array.elem Coming ls = Coming
+    | otherwise = Up
   daemonLamp id sn
     | live.xray = []
     | otherwise = lampAt id (sn.x0 + 2.5) (sn.y1 + 8.0)
@@ -672,7 +679,7 @@ chartOf on hot live f =
                 ]
               Nothing -> [])
             <>
-              [ label ("sub st-" <> lampClass l.lamp) (x + dir * 16.0) yk anchor txt
+              [ label "sub" (x + dir * 16.0) yk anchor txt
               , svg "title" [] [ HH.text l.title ]
               ]
           )
