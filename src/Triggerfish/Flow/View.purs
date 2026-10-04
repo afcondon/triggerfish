@@ -108,6 +108,8 @@ type Live =
   , keyHot :: Maybe String
   , patch :: Patch
   , dock :: Array Dock
+  -- | the rig's clock is locked to Diaphus's Link anchor: Diaphus is active
+  , locked :: Boolean
   }
 
 -- | A line's kind, as the key names it: control whatever it carries, else
@@ -190,7 +192,11 @@ chartOf on hot live f =
         in
           [ svg "g" [ attr "class" "beat" ]
               ( arcs cx (-1.0) <> arcs cx 1.0 <>
-                  [ use "ic-lantern" (cx - 30.0) 14.0 60.0 18.0
+                  -- facing right, towards the audio, while it keeps the beat
+                  [ svg "use"
+                      ( [ attr "href" "#ic-lantern", attr "x" (n (cx - 30.0)), attr "y" "14", attr "width" "60", attr "height" "18" ]
+                          <> (if live.locked then [ attr "transform" ("translate(" <> n (2.0 * cx) <> " 0) scale(-1 1)") ] else [])
+                      ) []
                   , label "beatlabel" cx 52.0 "middle" "Diaphus · the beat"
                   ] <> (if Array.any (\x -> x.id == "diaphus") f.nodes then [] else lampAt "diaphus" (cx + 58.0) 48.5)
               )

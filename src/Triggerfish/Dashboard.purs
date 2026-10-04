@@ -555,7 +555,7 @@ flowChart :: forall m. State -> H.ComponentHTML Action () m
 flowChart st =
   HH.section [ cls "flow", HP.attr (AttrName "aria-label") "Where it all goes" ]
     [ HH.div [ cls ("flow-chart" <> if st.allVoices then " all-voices" else "") ]
-        [ FlowView.chart { hover: Hover, link: ChartLink, port: PortClick, cable: CableClick, play: Command } st.hot { playing: map _.slot (filter (playing st) machines), rigUp: st.rigUp, tempo: st.tempo, lamps, hidden: st.hidden, keyHot: st.keyHot, patch, dock }
+        [ FlowView.chart { hover: Hover, link: ChartLink, port: PortClick, cable: CableClick, play: Command } st.hot { playing: map _.slot (filter (playing st) machines), rigUp: st.rigUp, tempo: st.tempo, lamps, hidden: st.hidden, keyHot: st.keyHot, patch, dock, locked: st.locked }
             ( Flow.flow
                 { mode: st.mode
                 , table: st.table
