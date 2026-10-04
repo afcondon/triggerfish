@@ -605,13 +605,14 @@ fixed =
   , n "sets" Engine "Sample sets" "Quadrat · Amphora"
   , n "diaphus" RigOut "Diaphus" "MIDI, on the beat"
   , n "d-es9" RigOut "es9-daemon" "CV over audio"
-  , n "d-dirt" RigOut "SuperDirt" "plays samples"
   , n "continuo" Interface "continuo" "a MIDI port, hosted"
   , n "fh2" Interface "FH-2" "MIDI to CV and gates"
   , n "es9" Interface "ES-9" "audio to CV"
   , n "ableton" Instrument "Ableton" "instruments and effects"
   , n "piano" Instrument "Piano" "in Continuo"
   , n "rample" Instrument "Rample" "four sample voices"
+  -- an instrument, not a way out of the rig: it makes the sound itself
+  , n "d-dirt" Instrument "SuperDirt" "plays samples"
   , n "modular" Instrument "The modular" "CV and gates"
   , n "ears" Heard "Your ears" "headphones · monitors"
   ]
