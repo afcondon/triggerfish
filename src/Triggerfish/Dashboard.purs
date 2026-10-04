@@ -875,6 +875,7 @@ topBar st =
             )
         , HH.span [ cls "spacer" ] []
         , tempoControl st
+        , HH.button [ cls "btn", HE.onClick \_ -> StopAll, HP.disabled (not (Array.any (playing st) machines)) ] [ HH.text "■ Stop all" ]
         , HH.button [ cls "btn panic", HE.onClick \_ -> Panic ] [ HH.text "Panic" ]
         ]
         )
@@ -932,7 +933,6 @@ machineBar st =
   HH.div [ cls "mbar" ]
     ( [ HH.div [ cls "seg", HP.attr (AttrName "role") "group", HP.attr (AttrName "aria-label") "Mode" ]
           [ seg "Solo" Solo, seg "Atlantis" Atlantis ]
-      , HH.button [ cls "btn", HE.onClick \_ -> StopAll, HP.disabled (not anyPlaying) ] [ HH.text "■ Stop all" ]
       -- where Limulus sends Tidal: the rig, or Haskell Tidal to compare
       , HH.span [ cls "seglabel" ] [ HH.text "Limulus" ]
       , HH.div [ cls "seg", HP.attr (AttrName "role") "group", HP.attr (AttrName "aria-label") "Limulus's engine" ]
@@ -960,7 +960,6 @@ machineBar st =
       , HE.onClick \_ -> act (not on)
       ]
       [ HH.text label ]
-  anyPlaying = not (null (filter (playing st) machines))
   engineSeg label key tip =
     HH.button
       [ cls (if st.limulusEngine == key then "on" else "")
