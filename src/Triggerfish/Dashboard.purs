@@ -185,6 +185,8 @@ type State =
   , portsRead :: Boolean
   -- the engine Limulus sends Tidal to: "architeuthis" or "ghci"
   , limulusEngine :: String
+  -- what Selene has given the modular, as the rig keeps it (`selene-applied`)
+  , polysignals :: Array Flow.Polysignal
   }
 
 data Action
@@ -242,7 +244,7 @@ component = H.mkComponent
       , table: RM.defaultTable, ports: [], sampleSets: [], hot: Nothing, router: Router.initial
       , matrix: Nothing, pick: Nothing, focus: Nothing, sheet: Nothing, foldDrums: true, vetulaSent: Nothing
       , relays: false, allVoices: false, rigLoops: Map.empty, bosun: Nothing
-      , xray: false, asked: [], confirmingDown: false, hidden: [], keyHot: Nothing, armed: Nothing, peeked: Nothing, rigPlaying: Map.empty, doctor: Nothing, midi: Nothing, portsRead: false, limulusEngine: "architeuthis" }
+      , xray: false, asked: [], confirmingDown: false, hidden: [], keyHot: Nothing, armed: Nothing, peeked: Nothing, rigPlaying: Map.empty, doctor: Nothing, midi: Nothing, portsRead: false, limulusEngine: "architeuthis", polysignals: [] }
   , render
   , eval: H.mkEval H.defaultEval { handleAction = handleAction, initialize = Just Init }
   }
@@ -419,6 +421,8 @@ handleAction = case _ of
     when (h /= st.bosun) (H.modify_ _ { bosun = h })
     -- a restart's outcome is judged against the clock
     unless (null st.asked) (H.modify_ _ { now = now })
+    -- and what the modular is running, which a Selene edit or a hush moves
+    sendRig "selene-applied"
 
   -- Every ten seconds: the rig doctor, for what Bosun cannot see (is the
   -- ES-9 on the bus at all; does a daemon's socket answer), and the MIDI
@@ -510,8 +514,12 @@ handleAction = case _ of
     sendRig Router.subscribeLine
     sendRig RigLoops.syncLine
     sendRig "stage-subscribe"
+    sendRig "selene-applied"
 
   RigFrame msg -> do
+    for_ (readApplied msg) \ps -> do
+      old <- H.gets _.polysignals
+      when (ps /= old) (H.modify_ _ { polysignals = ps })
     for_ (readStage msg) \e -> H.modify_ \x -> x { rigPlaying = Map.insert e.slot e.playing x.rigPlaying }
     for_ loopMachines \m -> do
       for_ (RigLoops.readLoops m msg) \marks -> H.modify_ \x -> x { rigLoops = Map.insert m marks x.rigLoops }
@@ -609,6 +617,17 @@ render st =
 readStage :: String -> Maybe { slot :: String, playing :: Boolean }
 readStage line = String.stripPrefix (Pattern "stage ") line >>= \json -> hush (readJSON json)
 
+-- | A `selene-applied [...]` line: the banks the rig keeps for the modular.
+-- | A hush silences the ES-9's (es9-daemon stops them); the FH-2's run on
+-- | the FH-2 and keep going, so they stay drawn.
+readApplied :: String -> Maybe (Array Flow.Polysignal)
+readApplied line = do
+  json <- String.stripPrefix (Pattern "selene-applied ") line
+  (rows :: Array { socket :: String, bank :: String, family :: String, slots :: Int, hushed :: Boolean }) <- hush (readJSON json)
+  pure $ rows # Array.mapMaybe \r ->
+    if r.hushed && r.socket == "es9" then Nothing
+    else Just { socket: r.socket, bank: r.bank, family: r.family, slots: r.slots }
+
 -- | Whether the FH-2 is among the MIDI ports.
 hasFh2 :: Array String -> Boolean
 hasFh2 = Array.any (String.contains (Pattern "FH-2"))
@@ -647,7 +666,7 @@ flowChart st =
   HH.section [ cls "flow", HP.attr (AttrName "aria-label") "Where it all goes" ]
     ( (if st.xray then [ xrayStrip st ] else []) <>
     [ HH.div [ cls ("flow-chart" <> if st.allVoices then " all-voices" else "") ]
-        [ FlowView.chart { hover: Hover, link: ChartLink, port: PortClick, cable: CableClick, play: Command, peek: Peek, restart: RigRestart, engine: SetLimulusEngine } st.hot { playing: map _.slot (filter (playing st) machines), rigUp: st.rigUp, tempo: st.tempo, lamps, hidden: st.hidden, keyHot: st.keyHot, patch, dock, locked: st.locked, peeked: st.peeked, xray: st.xray, limulusEngine: st.limulusEngine }
+        [ FlowView.chart { hover: Hover, link: ChartLink, port: PortClick, cable: CableClick, play: Command, peek: Peek, restart: RigRestart, engine: SetLimulusEngine } st.hot { playing: Array.nub (map _.slot (filter (playing st) machines) <> (if null st.polysignals then [] else [ "selene" ])), rigUp: st.rigUp, tempo: st.tempo, lamps, hidden: st.hidden, keyHot: st.keyHot, patch, dock, locked: st.locked, peeked: st.peeked, xray: st.xray, limulusEngine: st.limulusEngine }
             ( Flow.flow
                 { mode: st.mode
                 , table: st.table
@@ -661,6 +680,7 @@ flowChart st =
                 , down: downNodes
                 , quantise
                 , rigOnly: filter rigOnly (map _.slot machines)
+                , polysignals: st.polysignals
                 }
             )
         ]
@@ -681,7 +701,9 @@ flowChart st =
   -- machines with a `$ hush` on the rig (Selene's stops the ES-9's
   -- signals; its FH-2 banks run on the FH-2)
   rigOnly slot = slot `elem` [ "odonus", "vetula", "balistes", "conspicillum", "selene" ]
-    && st.rigUp && Map.lookup slot st.rigPlaying == Just true
+    && st.rigUp
+    -- the stage says so; or, for Selene, the rig keeps banks the modular runs
+    && (Map.lookup slot st.rigPlaying == Just true || slot == "selene" && not (null st.polysignals))
     && not (maybe false (isOpen st) (find (\m -> m.slot == slot) machines))
   -- The patch bay: a port for every row of the harmony matrix, the cables
   -- its routes make, and the port clicked first.

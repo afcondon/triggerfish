@@ -54,6 +54,7 @@ module Triggerfish.Flow
   , Extra
   , RigLoop
   , Quant
+  , Polysignal
   , flow
   , layerOf
   , onTheBeat
@@ -181,7 +182,14 @@ type Inputs =
   -- | machines the rig says it is playing (the stage) whose page is closed:
   -- | drawn from the engine, as a closed page's loops are
   , rigOnly :: Array String
+  -- | what Selene has given the modular, as the rig keeps it: each bank runs
+  -- | in its daemon (es9-daemon) or on the FH-2 itself, page or no page
+  , polysignals :: Array Polysignal
   }
+
+-- | One Selene bank the modular is running: its socket ("es9" or "fh2"),
+-- | its family (polyeuclid, an envelope bank…) and how many signals.
+type Polysignal = { socket :: String, bank :: String, family :: String, slots :: Int }
 
 -- | The machine a source belongs to, by its slot name.
 machineOf :: Source -> String
@@ -364,6 +372,27 @@ flow inp = { nodes, links: links <> loopLinks <> quantLinks <> makesLinks }
     else if loopsPlay e.machine && e.via == Nothing then loopStream e.machine [] e.dest
     else Nothing
 
+  -- Selene's banks: the page sends each to the rig, which hands it to its
+  -- daemon, and from then the daemon (or the FH-2) makes the signals itself.
+  -- So the page's hops are control. With the page closed the rig keeps the
+  -- banks and gives them back when a daemon returns (its keeper), so they
+  -- are drawn from the engine, as a closed page's loops are. One stream per
+  -- signal.
+  seleneStreams = inp.polysignals # concatMap \p ->
+    Array.range 1 p.slots <#> \i ->
+      let
+        made = case p.socket of
+          "fh2" -> [ hop "fh2" "modular" Cv ]
+          _ -> [ hop "d-es9" "es9" Cv, hop "es9" "modular" Cv ]
+        kept = [ ctl "engine" (if p.socket == "fh2" then "fh2" else "d-es9") Socket ]
+        hops = (if pageOpen "selene" then [ ctl "browser" "engine" Socket ] else []) <> kept <> made <> [ hop "modular" "ears" Audio ]
+      in
+        { machine: "selene", unit: "m:selene", wire: "selene:" <> p.socket <> ":" <> p.bank <> ":" <> show i
+        , hops, brokenAt: _.to <$> Array.find dead hops
+        , detail: p.family <> " " <> show i, notes: [], needsRig: false }
+  hop from to signal = { from, to, signal, control: false }
+  ctl from to signal = { from, to, signal, control: true }
+
   loopStream m notes dest =
     (\hops -> mk m ("rig:" <> m) notes dest (filter (\h -> h.from /= "browser") hops) false) <$> pathOf inp.relays Atlantis m Nothing dest
 
@@ -393,7 +422,7 @@ flow inp = { nodes, links: links <> loopLinks <> quantLinks <> makesLinks }
   -- Two legs on one wire from one unit are one stream; the drum lanes riding
   -- it are gathered, so the hover can say which.
   streams :: Array Stream
-  streams = foldl gather [] (tableStreams <> extraStreams)
+  streams = foldl gather [] (tableStreams <> extraStreams <> seleneStreams)
     where
     gather acc x = case findIndex (\a -> a.unit == x.unit && a.wire == x.wire) acc of
       Just i -> fromMaybe acc (Array.modifyAt i (\a -> a { notes = a.notes <> x.notes }) acc)
@@ -570,7 +599,10 @@ nodeOf units table loops feeders links id = case Array.find (\x -> x.id == id) f
   -- the FH-2 its gates and envelopes.
   withWires nd
     | nd.column == Interface =
-        let ws = concatMap _.wires (filter (\l -> l.to == id) links)
+        -- what comes in, or (a signal made here, the FH-2's envelopes) what
+        -- goes out
+        let ins = concatMap _.wires (filter (\l -> l.to == id) links)
+            ws = if null ins then concatMap _.wires (filter (\l -> l.from == id && not l.control) links) else ins
         in if null ws then nd else nd { note = compactWires ws }
     | otherwise = nd
   sourceOf k = _.source <$> Array.find (\r -> sourceKey r.source == k) table

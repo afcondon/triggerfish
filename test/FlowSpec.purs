@@ -9,7 +9,7 @@ module Test.FlowSpec (runFlowTests) where
 import Prelude
 
 import Data.Array (all, elem, filter, find, length, null)
-import Data.Maybe (Maybe(..), isJust, isNothing)
+import Data.Maybe (Maybe(..), isJust, isNothing, maybe)
 import Effect (Effect)
 import Effect.Console (log)
 import Test.Assert (assert')
@@ -35,6 +35,7 @@ base =
   , down: []
   , quantise: []
   , rigOnly: []
+  , polysignals: []
   }
 
 -- | Odonus on the IAC bus alone: the base case of the reveal.
@@ -231,4 +232,18 @@ runFlowTests = do
     ( isJust (find (\l -> l.from == "browser" && l.to == "ghci") ghci.links)
         && isJust (find (\l -> l.from == "ghci" && l.to == "d-dirt") ghci.links)
         && isNothing (find (\l -> l.to == "engine") ghci.links)
+    )
+
+  -- Selene's banks, as the rig keeps them (2026-10-04)
+  let sel = flow base { mode = Atlantis, machines = [ "selene" ], table = []
+        , polysignals = [ { socket: "es9", bank: "main", family: "polyeuclid", slots: 8 }, { socket: "fh2", bank: "main", family: "envelope", slots: 8 } ] }
+  check "Selene's banks reach the modular through es9-daemon and the FH-2"
+    ( (find (\l -> l.from == "d-es9" && l.to == "es9") sel.links <#> _.streams) == Just 8
+        && (find (\l -> l.from == "fh2" && l.to == "modular") sel.links <#> _.streams) == Just 8
+        && all _.control (filter (\l -> l.to == "engine" || l.from == "engine") sel.links)
+    )
+  let selClosed = flow base { machines = [], table = [], polysignals = [ { socket: "fh2", bank: "main", family: "envelope", slots: 4 } ] }
+  check "with Selene's page closed the rig keeps its banks: drawn from the engine"
+    ( isNothing (find (\l -> l.to == "engine") selClosed.links)
+        && maybe false _.control (find (\l -> l.from == "engine" && l.to == "fh2") selClosed.links)
     )
