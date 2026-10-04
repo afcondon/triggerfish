@@ -37,7 +37,8 @@ import Binnacle as Binnacle
 import Binnacle.Audio (armAudioKeepAlive)
 import Binnacle.Time (dateNow)
 import Binnacle.Transport as Transport
-import Data.Foldable (for_)
+import Data.Foldable (for_, traverse_)
+import Control.Monad (whenM)
 import Data.Maybe (Maybe(..), fromMaybe, isJust, isNothing, maybe)
 import Data.Set as Set
 import Effect (Effect)
@@ -73,6 +74,8 @@ import Web.HTML.HTMLTextAreaElement as HTextArea
 import Web.HTML.Window as Window
 import Web.UIEvent.KeyboardEvent as KE
 import Web.UIEvent.KeyboardEvent.EventTypes as KET
+import Web.HTML.HTMLElement (HTMLElement)
+import Web.Event.Event (EventType(..))
 
 -- | One machine's page.
 -- |
@@ -122,7 +125,17 @@ type State =
   -- the rig goes away, so a reconnect records it again.
   , staged :: Maybe String
   , bus :: Maybe Bus.Bus
+  -- Limulus as a panel on this page (Atlantis only; docs/kb/plans/the-deck.md,
+  -- revision 2026-10-04): open, and whether its frame exists yet. The frame is
+  -- kept once made, hidden when closed, so its log and undo survive.
+  , limulus :: Boolean
+  , limulusMade :: Boolean
   }
+
+-- | The panel asks to close (Escape inside it).
+foreign import limulusAskedClose :: E.Event -> Boolean
+foreign import focusFrame :: HTMLElement -> Effect Unit
+foreign import focusSelf :: Effect Unit
 
 data Action o
   = Init
@@ -138,6 +151,8 @@ data Action o
   | Tick
   | FromBus Bus.Msg
   | ModeStored
+  | ToggleLimulus
+  | FromFrame E.Event
 
 type Slots o = (machine :: H.Slot SQ.Query o Unit)
 
@@ -148,7 +163,7 @@ root :: forall q i o' o. Config o -> H.Component q i o' Aff
 root cfg = H.mkComponent
   { initialState: \_ ->
       { mode: Solo, playing: false, bpm: 120.0, tempoFlash: Nothing, freeT0: 0.0, chip: Nothing, rig: Nothing
-      , rigUp: false, table: RM.defaultTable, staged: Nothing, bus: Nothing }
+      , rigUp: false, table: RM.defaultTable, staged: Nothing, bus: Nothing, limulus: false, limulusMade: false }
   , render: render cfg
   , eval: H.mkEval H.defaultEval { handleAction = handleAction cfg, initialize = Just Init }
   }
@@ -180,6 +195,7 @@ handleAction cfg = case _ of
     _ <- liftEffect $ setInterval 1500 (HS.notify listener Tick)
     target <- liftEffect $ Window.toEventTarget <$> window
     _ <- H.subscribe $ eventListener KET.keydown target (Just <<< Key)
+    _ <- H.subscribe $ eventListener (EventType "message") target (Just <<< FromFrame)
     handleAction cfg RoutingChanged
     pushFree
     pushSounding cfg
@@ -208,6 +224,15 @@ handleAction cfg = case _ of
         handleAction cfg (EndFlash n)
   EndFlash n -> H.modify_ \s -> s { tempoFlash = if map _.n s.tempoFlash == Just n then Nothing else s.tempoFlash }
   Capture -> void $ H.query _machine unit (SQ.Capture unit)
+  ToggleLimulus -> do
+    st <- H.get
+    let open = not st.limulus && st.mode == Atlantis
+    H.modify_ _ { limulus = open, limulusMade = st.limulusMade || open }
+    if open then H.getHTMLElementRef limulusRef >>= traverse_ (liftEffect <<< focusFrame)
+    else liftEffect focusSelf
+  FromFrame e -> when (limulusAskedClose e) do
+    H.modify_ _ { limulus = false }
+    liftEffect focusSelf
   Panic -> do
     st <- H.get
     for_ st.rig \bin -> liftEffect $ Transport.send (Binnacle.socket bin) "hush"
@@ -287,6 +312,9 @@ handleAction cfg = case _ of
         | KE.altKey ke -> pure unit
         | otherwise -> case KE.key ke of
             "c" -> handleAction cfg Capture
+            -- the console key (Vetula has `l`): by position, so any layout
+            _ | KE.code ke == "Backquote" -> handleAction cfg ToggleLimulus
+            "Escape" -> whenM (H.gets _.limulus) (handleAction cfg ToggleLimulus)
             " " | cfg.playable -> do
               liftEffect $ E.preventDefault e
               handleAction cfg TogglePlay
@@ -343,9 +371,30 @@ targetIsField e = case E.target e of
 render :: forall o. Config o -> State -> H.ComponentHTML (Action o) (Slots o) Aff
 render cfg st =
   HH.div [ style "min-height:100vh;background:#fafafa" ]
-    [ bar cfg st
-    , HH.slot _machine unit cfg.component unit FromMachine
+    ( [ bar cfg st
+      , HH.slot _machine unit cfg.component unit FromMachine
+      ]
+      <> (if st.limulusMade then [ limulusPanel st.limulus ] else [])
+    )
+
+-- | Limulus beside the machine: the same editor and buffer as its own tab
+-- | (same origin), on the right, under the bar. Hidden rather than removed
+-- | when closed.
+limulusPanel :: forall w i. Boolean -> HH.HTML w i
+limulusPanel open =
+  HH.div
+    [ style $ "position:fixed;top:var(--tf-bar);right:0;bottom:0;width:min(720px,max(420px,46vw));z-index:60;"
+        <> "box-shadow:-6px 0 18px #00000040;border-left:1px solid #000;background:#000;"
+        <> (if open then "" else "display:none;")
     ]
+    [ HH.iframe
+        [ HP.src "/limulus/?embed", HP.ref limulusRef, HP.title "Limulus"
+        , style "width:100%;height:100%;border:0;display:block"
+        ]
+    ]
+
+limulusRef :: H.RefLabel
+limulusRef = H.RefLabel "limulus"
 
 bar :: forall o. Config o -> State -> H.ComponentHTML (Action o) (Slots o) Aff
 bar cfg st =
@@ -360,8 +409,10 @@ bar cfg st =
       -- the rig is the one playing.
       <> (if st.mode == Atlantis then [ atlantisTag ] else [])
       <> (if cfg.playable then [ button (if st.playing then "■ Stop" else "▶ Play") TogglePlay ] else [])
-      <> [ button "Capture (c)" Capture
-      , HH.span [ style "display:flex;align-items:center;min-width:40px" ] [ chipIcons st.chip ]
+      <> [ button "Capture (c)" Capture ]
+      -- Limulus combines the machines, on the rig: Atlantis only
+      <> (if st.mode == Atlantis then [ button (if st.limulus then "Close Limulus (`)" else "Limulus (`)") ToggleLimulus ] else [])
+      <> [ HH.span [ style "display:flex;align-items:center;min-width:40px" ] [ chipIcons st.chip ]
       , HH.span [ style "flex:1" ] []
       ]
       <> [ button "Panic" Panic ]
