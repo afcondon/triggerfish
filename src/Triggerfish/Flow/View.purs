@@ -24,12 +24,9 @@ import Data.Number as Number
 import Data.String (joinWith)
 import Data.Tuple (Tuple(..), snd)
 import Data.Tuple.Nested ((/\))
-import Data.Int as Int
-import Data.String as String
 import Data.Number.Format (fixed, toStringWith)
-import DataViz.Layout.Sankey.Compute (computeLayoutWithConfig)
-import DataViz.Layout.Sankey.Path (generateLinkPath)
-import DataViz.Layout.Sankey.Types (LinkID(..), defaultSankeyConfig)
+import DataViz.Layout.Sankey.Lanes (computeLayoutWithLanes, generateRoutePath, laneOf)
+import DataViz.Layout.Sankey.Types (defaultSankeyConfig)
 import Halogen.HTML as HH
 import Halogen.HTML.Core (AttrName(..), ElemName(..), Namespace(..))
 import Halogen.HTML.Events as HE
@@ -119,7 +116,7 @@ chartOf on hot live f
         , attr "role" "img"
         , attr "aria-label" "Where each machine's output goes: through the browser or the rig, through interfaces and instruments, to your ears"
         ]
-        ( beatBand <> heads <> [ rule ] <> map link laid.links <> map node laid.nodes <> beatMarks )
+        ( beatBand <> heads <> [ rule ] <> map link laid.routes <> map node laid.nodes <> beatMarks )
   where
   -- In Atlantis, link-spike stands above the flow: the beat, broadcast to
   -- everything the rig times, rather than one more hop in it.
@@ -132,41 +129,25 @@ chartOf on hot live f
   byId = Map.fromFoldable (map (\x -> x.id /\ x) f.nodes)
   ours sn = Map.lookup sn.name byId
   -- A long line from the machines' end (Feeds to Page, a machine to its
-  -- loops) is given a waypoint in each column it passes, so the layout keeps
-  -- it a lane of its own instead of running it through the nodes there: the
-  -- standard Sankey answer for long links, forced only where it matters.
-  -- Each waypoint sorts with the machine its line comes from.
-  segs = Array.concat $ Array.mapWithIndex split f.links
-  split i l = case layerOf f l.from, layerOf f l.to of
-    Just a, Just b | b - a > 1 && fromEnd l ->
-      let
-        ids = [ l.from ] <> map (\k -> waypoint i k) (Array.range (a + 1) (b - 1)) <> [ l.to ]
-      in Array.zipWith (\s' t' -> { s: s', t: t', v: widthOf l, origin: i }) ids (Array.drop 1 ids)
-    _, _ -> [ { s: l.from, t: l.to, v: widthOf l, origin: i } ]
+  -- loops) gets a lane: a waypoint in each column it passes, so it is not
+  -- drawn through the nodes there (hylograph's Sankey.Lanes). A lane sorts
+  -- with the machine its line comes from.
+  wants i _ = maybe false fromEnd (f.links !! i)
   fromEnd l = maybe false (\nd -> nd.column == Feeders || nd.column == Machines) (Map.lookup l.from byId)
-  waypoint i k = "~" <> show i <> ":" <> show k
-  waypointOf id = do
-    rest <- String.stripPrefix (String.Pattern "~") id
-    case String.split (String.Pattern ":") rest of
-      [ i, k ] -> { origin: _, layer: _ } <$> Int.fromString i <*> Int.fromString k
-      _ -> Nothing
-  layerAt id = case waypointOf id of
-    Just w -> Just w.layer
-    Nothing -> layerOf f id
-  rankOf sn = case waypointOf sn.name of
+  rankOf sn = case laneOf sn.name of
     Just w -> do
-      l <- f.links !! w.origin
+      l <- f.links !! w.link
       from <- Map.lookup l.from byId
       c <- columns !! w.layer
       pure (Tuple c (snd (nodeRank from)))
     Nothing -> map nodeRank (ours sn)
-  laid = computeLayoutWithConfig
-    (map (\x -> { s: x.s, t: x.t, v: x.v }) segs)
+  laid = computeLayoutWithLanes wants
+    (map (\l -> { s: l.from, t: l.to, v: widthOf l }) f.links)
     (defaultSankeyConfig width h)
       { nodeWidth = 5.0
       , nodePadding = 20.0
       , extent = { x0: left, y0: 48.0 + band + fedRoom, x1: right, y1: h - 40.0 }
-      , nodeLayer = layerAt
+      , nodeLayer = layerOf f
       , nodeSort = Just (comparing rankOf)
       }
 
@@ -209,12 +190,12 @@ chartOf on hot live f
       else Nothing
 
   linkCls l = sigClass l.signal <> (if l.control then " control" else "") <> (if live.keyHot == Just (kindOf l) then " khot" else "") <> (if Just l.machine == hot then " hot" else "") <> (if l.broken > 0 then " broken" else "") <> (if waits l then " waiting" else if sounding l then "" else " idle")
-  link sl =
+  link route =
     let
-      ours' = (segs !! unwrap' sl.index) >>= \x -> f.links !! x.origin
+      ours' = f.links !! route.index
       cls = maybe "" linkCls ours'
     in
-      svg "path" ([ attr "class" ("link " <> cls), attr "d" (generateLinkPath laid.nodes sl) ]
+      svg "path" ([ attr "class" ("link " <> cls), attr "d" (generateRoutePath (laid.nodes <> laid.waypoints) route) ]
           <> maybe [] (\l -> [ HE.onClick \_ -> on.link l.machine l.to ]) ours')
         (maybe [] (\l -> [ svg "title" [] [ HH.text (linkTitle l) ] ]) ours')
 
@@ -236,10 +217,7 @@ chartOf on hot live f
     in not (Array.null ls) && Array.all waits ls
 
   node sn = case ours sn of
-    -- a waypoint: the line's own colour, across the gap between its halves
-    Nothing -> case waypointOf sn.name >>= \w -> f.links !! w.origin of
-      Just l -> svg "rect" [ attr "class" ("link " <> linkCls l), attr "x" (n (sn.x0 - 0.5)), attr "y" (n sn.y0), attr "width" (n (sn.x1 - sn.x0 + 1.0)), attr "height" (n (sn.y1 - sn.y0)) ] []
-      Nothing -> svg "g" [] []
+    Nothing -> svg "g" [] []
     Just nd -> case nd.machine, loopOf nd.id of
       Just m, _ -> machineNode sn nd m
       Nothing, Just l -> loopNode sn nd l
@@ -406,7 +384,6 @@ chartOf on hot live f
             <> rigLamp nd.id lx cy
         )
 
-  unwrap' (LinkID i) = i
   -- Bosun's word on the daemon behind a node: a lamp under its bar.
   daemonLamp id sn = lampAt id (sn.x0 + 2.5) (sn.y1 + 8.0)
   lampAt id x y = case Array.find (\l -> l.node == id) live.lamps of
@@ -466,18 +443,18 @@ key on st =
     , { k: "s-record", label: signalLabel Recorded }
     , { k: "s-quant", label: signalLabel Quantise }
     ]
-  item { k, label } =
+  item { k, label: name } =
     let off = Array.elem k st.hidden
     in
       HH.button
         [ HP.class_ (HH.ClassName ("sig " <> k <> (if off then " off" else "")))
         , HP.attr (AttrName "aria-pressed") (if off then "false" else "true")
-        , HP.title (if off then "Show " <> label <> " lines" else "Hide " <> label <> " lines")
+        , HP.title (if off then "Show " <> name <> " lines" else "Hide " <> name <> " lines")
         , HE.onClick \_ -> on.toggle k
         , HE.onMouseEnter \_ -> on.hover (Just k)
         , HE.onMouseLeave \_ -> on.hover Nothing
         ]
-        [ HH.i_ [], HH.text label ]
+        [ HH.i_ [], HH.text name ]
 
 sigClass :: Signal -> String
 sigClass = case _ of

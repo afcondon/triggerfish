@@ -37,7 +37,7 @@ import Data.String as String
 import Data.Foldable (for_)
 import Data.Map (Map)
 import Data.Map as Map
-import Data.Maybe (Maybe(..), fromMaybe, isJust, isNothing, maybe)
+import Data.Maybe (Maybe(..), fromMaybe, isNothing, maybe)
 import Data.Traversable (traverse)
 import Data.Number as Number
 import Data.Number.Format (fixed, toStringWith)
