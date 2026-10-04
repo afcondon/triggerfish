@@ -5533,11 +5533,18 @@ riverWidth = "330px"
 barRightInset :: State -> String
 barRightInset st = if st.stage == Perform then riverWidth else "0"
 
+-- | The AUDITION chyron's height. It lies over the top of every stage (fixed,
+-- | under the CONTEXT bar), so a stage starts its content below it; fixed
+-- | rather than a minimum, so saved tokens cannot grow it over the chips
+-- | beneath (AC, 2026-10-04: it covered Perform's palette).
+chyronHeight :: String
+chyronHeight = "52px"
+
 chyronBar :: forall m. State -> H.ComponentHTML Action Slots m
 chyronBar st =
   HH.div
     [ HP.style ( "position: fixed; top: calc(var(--tf-bar) + 44px); left: 0; right: " <> barRightInset st <> "; z-index: 39; box-sizing: border-box; "
-        <> "display: flex; gap: 10px; align-items: center; padding: 3px 12px; min-height: 44px; overflow: hidden; "
+        <> "display: flex; gap: 10px; align-items: center; padding: 3px 12px; height: " <> chyronHeight <> "; overflow: hidden; "
         -- shift-click is a selection gesture here (extend the range), so kill the
         -- browser's own shift-click text selection across the bar. user-select
         -- inherits to the chips.
@@ -6402,10 +6409,10 @@ reviewSurface st =
     [ HP.style "position: absolute; inset: 0; display: flex; flex-direction: column; align-items: stretch; padding: 30px 28px;" ]
     [ HH.div
         -- Bleeds on three sides: the capture surface is the whole stage here,
-        -- not something laid out within it. Not the top: the 44px AUDITION
+        -- not something laid out within it. Not the top: the AUDITION
         -- chyron lies over the stage's top edge, and bled up under it the
         -- surface's own top row (zoom, ✂ cut, trim, undo) was hidden.
-        [ HP.style "flex: 1 1 auto; min-height: 0; margin: 14px -28px -30px -28px; display: flex; flex-direction: column; background: #0b0a07; border-top: 1px solid #2a281f;" ]
+        [ HP.style ("flex: 1 1 auto; min-height: 0; margin: calc(" <> chyronHeight <> " - 30px + 4px) -28px -30px -28px; display: flex; flex-direction: column; background: #0b0a07; border-top: 1px solid #2a281f;") ]
         [ capturePane st ]
     ]
 
@@ -6421,7 +6428,7 @@ performSurface :: forall m. State -> H.ComponentHTML Action Slots m
 performSurface st =
   HH.div
     [ HP.style ( "position: absolute; inset: 0; display: flex; flex-direction: column; align-items: stretch; "
-        <> "justify-content: flex-start; gap: 22px; padding: 30px 28px; padding-right: calc(" <> riverWidth <> " + 28px);" ) ]
+        <> "justify-content: flex-start; gap: 22px; padding: 30px 28px; padding-top: calc(" <> chyronHeight <> " + 16px); padding-right: calc(" <> riverWidth <> " + 28px);" ) ]
     ( body <> [ riverColumn st, perfEditModal st, perfPhrasePickModal st ] )
   where
   body =
@@ -7791,7 +7798,7 @@ rehearseSurface :: forall m. State -> H.ComponentHTML Action Slots m
 rehearseSurface st =
   HH.div
     [ HP.class_ (cn "vetula-surface vetula-surface--wide")
-    , HP.style "position: absolute; inset: 0; overflow: auto; padding: 14px 22px 26px;" ]
+    , HP.style ("position: absolute; inset: 0; overflow: auto; padding: 14px 22px 26px; padding-top: calc(" <> chyronHeight <> " + 14px);") ]
     (if length st.rehearsal == 0 then [ nothingTakenUp st ] else rehearsalBody st)
 
 -- | Nothing in hand. The rebus glyphs on the AUDITION bar are the shelf — this
