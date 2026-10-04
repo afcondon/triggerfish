@@ -19,7 +19,7 @@
   <style>
     :root {
       --ground: #f1f6f6; --plate: #ffffff; --ink: #0f2530; --muted: #54707a; --faint: #a9bcc1;
-      --rule: #cddbde; --reef: #0e5a73; --live: #2e9e6a; --alarm: #b3261e;
+      --rule: #cddbde; --reef: #0e5a73; --live: #2e9e6a; --alarm: #b3261e; --amber: #a87708;
       /* Destination families: the routing ledger's marks and key. */
       --f-midi: #13807b; --f-cv: #a8327a; --f-rample: #c05a12; --f-sample: #5a55b8; --f-continuo: #8a5a2b;
       --display: "Archivo", "Helvetica Neue", Arial, sans-serif;
@@ -29,14 +29,14 @@
       :root:not([data-theme="light"]) {
         color-scheme: dark;
         --ground: #0a1a21; --plate: #10252e; --ink: #e2eef0; --muted: #8fa9b1; --faint: #4f6d77;
-        --rule: #22404b; --reef: #6cc3dc; --live: #4cc38a; --alarm: #f2837a;
+        --rule: #22404b; --reef: #6cc3dc; --live: #4cc38a; --alarm: #f2837a; --amber: #e0b24a;
         --f-midi: #4cc5bd; --f-cv: #e87bbd; --f-rample: #f0955a; --f-sample: #a9a4f2; --f-continuo: #d2a06d;
       }
     }
     :root[data-theme="dark"] {
       color-scheme: dark;
       --ground: #0a1a21; --plate: #10252e; --ink: #e2eef0; --muted: #8fa9b1; --faint: #4f6d77;
-      --rule: #22404b; --reef: #6cc3dc; --live: #4cc38a; --alarm: #f2837a;
+      --rule: #22404b; --reef: #6cc3dc; --live: #4cc38a; --alarm: #f2837a; --amber: #e0b24a;
       --f-midi: #4cc5bd; --f-cv: #e87bbd; --f-rample: #f0955a; --f-sample: #a9a4f2; --f-continuo: #d2a06d;
     }
     /* The library reads --hw-*; point them at this page's tokens, which carry
@@ -58,6 +58,10 @@
     .seg { display: inline-flex; border: 1px solid var(--ink); }
     .seg button { font: 600 11px/1 var(--display); letter-spacing: .12em; text-transform: uppercase; padding: 8px 14px; border: 0; background: transparent; color: var(--ink); cursor: pointer; }
     .seg button.on { background: var(--ink); color: var(--plate); }
+    /* the chart's views: each its own box, in the segments' type, filled when on */
+    .toggles { display: inline-flex; gap: 6px; }
+    .toggles button { font: 600 11px/1 var(--display); letter-spacing: .12em; text-transform: uppercase; padding: 8px 14px; border: 1px solid var(--ink); background: transparent; color: var(--ink); cursor: pointer; }
+    .toggles button.on { background: var(--ink); color: var(--plate); }
     .tempo { font: 400 13px var(--mono); color: var(--muted); }
     .tempo { display: inline-flex; align-items: center; gap: 4px; }
     .tempo .num { color: var(--ink); font: 400 18px var(--mono); font-variant-numeric: tabular-nums; width: 3.4em; text-align: right; border: none; border-bottom: 1px solid var(--rule); background: transparent; padding: 0 2px; -moz-appearance: textfield; }
@@ -245,6 +249,7 @@
     svg.flows.resting .node text { fill-opacity: .7; }
 
     /* The machine bar: each machine's nameplate, its fish its play button. */
+    .mbar .spacer { flex: 1; }
     .mbar { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 18px; padding: 0 20px 10px; }
     .mitems { display: flex; flex-wrap: wrap; gap: 6px; }
     .mitem { flex: none; display: flex; align-items: center; gap: 9px; padding: 4px 12px 4px 4px; background: var(--field); color: var(--letter); }
@@ -283,7 +288,13 @@
     svg.flows.xray .xlamp .sub, svg.flows.xray .node > .name { paint-order: stroke; stroke: var(--plate); stroke-width: 3px; stroke-linejoin: round; }
     svg.flows.xray .fish, svg.flows.xray .bubble, svg.flows.xray .beat, svg.flows.xray .beatmark, svg.flows.xray use { opacity: .28; }
     svg.flows.xray .node > .sub, svg.flows.xray .stopsign { opacity: .4; }
-    svg.flows.xray .xlamp .sub { fill: var(--ink); opacity: 1; }
+    /* a process says its state in its colour; everything else is greyed */
+    svg.flows .st-up { fill: var(--live); } svg.flows .st-coming { fill: var(--amber); } svg.flows .st-down { fill: var(--alarm); }
+    svg.flows.xray .xlamp .sub, svg.flows.xray .node > .sub[class*="st-"] { font-weight: 600; opacity: 1; }
+    svg.flows.xray .node:not(.proc) .name, svg.flows.xray .dock:not(.proc) .name { fill: var(--faint); }
+    svg.flows.xray .node:not(.proc) .bar { opacity: .3; }
+    .xray-st { font: 600 12px var(--mono); }
+    .xray-st.up { color: var(--live); } .xray-st.coming { color: var(--amber); } .xray-st.down { color: var(--alarm); }
     svg.flows .restart { cursor: pointer; outline: none; }
     svg.flows .restart .rs { font: 700 12px var(--mono); fill: var(--reef); }
     svg.flows .restart:hover .rs, svg.flows .restart:focus-visible .rs { fill: var(--ink); }

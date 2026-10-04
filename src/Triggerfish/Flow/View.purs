@@ -315,7 +315,7 @@ chartOf on hot live f =
       cx = (sn.x0 + sn.x1) / 2.0
     in
       svg "g"
-        [ attr "class" "node pick inner", attr "tabindex" "0", attr "role" "button"
+        [ attr "class" ("node pick inner" <> procCls nd.id), attr "tabindex" "0", attr "role" "button"
         , attr "aria-label" (nd.name <> ", " <> plural (streamsOf m) "stream")
         , HE.onMouseEnter \_ -> on.hover (Just m)
         , HE.onMouseLeave \_ -> on.hover Nothing
@@ -468,7 +468,7 @@ chartOf on hot live f =
     let
       y = dockTop + 38.0 * toNumber k
     in
-      svg "g" [ attr "class" ("dock" <> if d.open then " open" else " closed") ]
+      svg "g" [ attr "class" ("dock" <> (if d.open then " open" else " closed") <> procCls ("m:" <> d.slot)) ]
         [ svg "rect" [ attr "class" "hit", attr "x" "10", attr "y" (n (y - 18.0)), attr "width" (n (left - 20.0)), attr "height" "36" ] []
         , if d.open || d.rig then svg "g" [] [ fishBtn d.slot 23.0 (y - 16.0), label "name" (left - 10.0) (y - 1.0) "end" d.name ]
           -- a closed machine: a plain click shows its 'open ↗'; the
@@ -500,7 +500,7 @@ chartOf on hot live f =
     let cy = mid sn
     in
       svg "g"
-        [ attr "class" "node pick inner", attr "tabindex" "0", attr "role" "button"
+        [ attr "class" ("node pick inner" <> procCls nd.id), attr "tabindex" "0", attr "role" "button"
         , attr "aria-label" (nd.name <> ", " <> plural (streamsOf m) "stream")
         , HE.onMouseEnter \_ -> on.hover (Just m)
         , HE.onMouseLeave \_ -> on.hover Nothing
@@ -532,7 +532,7 @@ chartOf on hot live f =
       reach = max 10.0 (min 22.0 ((sn.y1 - sn.y0) / 2.0 + 6.0))
     in
       svg "g"
-        [ attr "class" "node pick", attr "tabindex" "0", attr "role" "button"
+        [ attr "class" ("node pick" <> procCls nd.id), attr "tabindex" "0", attr "role" "button"
         , attr "aria-label" (nd.name <> ", " <> plural (round' sn.value) "stream")
         , HE.onMouseEnter \_ -> on.hover (Just m)
         , HE.onMouseLeave \_ -> on.hover Nothing
@@ -612,7 +612,7 @@ chartOf on hot live f =
             [ label "sub" lx (cy + 11.0) "start" (show (round' sn.value)) ]
         | otherwise = [ label "sub" lx (cy + 11.0) "start" (nd.note <> " · " <> show (round' sn.value)) ]
     in
-      svg "g" [ attr "class" "node" ]
+      svg "g" [ attr "class" ("node" <> procCls nd.id) ]
         ( [ bar sn ] <> icon <> daemonLamp nd.id sn <>
             [ label "name" lx (cy - 2.0) "start" nd.name ]
             <> sub
@@ -630,6 +630,9 @@ chartOf on hot live f =
   -- Bosun's word on the daemons behind a node: a lamp each under its bar
   -- (in the X-ray they are lines beside its name instead).
   lampsOf id = filter (\l -> l.node == id) live.lamps
+  -- in the X-ray, a node with a process behind it is drawn as itself; the
+  -- rest are greyed
+  procCls id = if Array.null (lampsOf id) then "" else " proc"
   daemonLamp id sn
     | live.xray = []
     | otherwise = lampAt id (sn.x0 + 2.5) (sn.y1 + 8.0)
@@ -669,8 +672,7 @@ chartOf on hot live f =
                 ]
               Nothing -> [])
             <>
-              [ svg "circle" [ attr "class" ("dlamp " <> lampClass l.lamp), attr "cx" (n (x + dir * 18.0)), attr "cy" (n (yk - 3.5)), attr "r" "3.5" ] []
-              , label "sub" (x + dir * 26.0) yk anchor txt
+              [ label ("sub st-" <> lampClass l.lamp) (x + dir * 16.0) yk anchor txt
               , svg "title" [] [ HH.text l.title ]
               ]
           )
@@ -680,6 +682,8 @@ chartOf on hot live f =
     Down -> "down"
   -- The rig's link, on the rig: a lamp under purerl-tidal's label.
   rigLamp id x cy
+    | id == "engine" && live.xray =
+        [ label ("sub st-" <> if live.rigUp then "up" else "down") x (cy + 13.0) "start" (if live.rigUp then "connected" else "not connected") ]
     | id == "engine" =
         [ svg "circle" [ attr "class" (if live.rigUp then "lamp-on" else "lamp-off"), attr "cx" (n (x + 4.0)), attr "cy" (n (cy + 10.0)), attr "r" "4" ] []
         , label "sub" (x + 13.0) (cy + 13.0) "start" (if live.rigUp then "connected" else "not connected")

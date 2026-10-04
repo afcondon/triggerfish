@@ -666,11 +666,6 @@ flowChart st =
         ]
     , HH.div [ cls "flow-foot" ]
         [ FlowView.key { toggle: KeyToggle, hover: KeyHover, all: KeyAll } { hidden: st.hidden, keyHot: st.keyHot }
-        , HH.div [ cls "flow-switches" ]
-            [ switch "X-ray" "The rig's processes on its whole skeleton: each daemon's lamp, state and restart, with the flow faded behind." st.xray XRay
-            , switch "Relays" "Draw Diaphus, which delivers every MIDI note the rig sends." st.relays ShowRelays
-            , switch "Every voice" "Open every machine into its voices: one line per channel, head or lane." st.allVoices ShowAllVoices
-            ]
         ]
     ])
   where
@@ -732,9 +727,6 @@ flowChart st =
       -- what the doctor sees: the ES-9 off the bus, es9-daemon's socket dead
       <> (if maybe false DeepStar.es9Absent st.doctor then [ "es9" ] else [])
       <> (if maybe false (elem "es9-daemon" <<< DeepStar.refusing) st.doctor then [ "d-es9" ] else [])
-  switch label tip on act =
-    HH.label [ cls "flow-switch", HP.title tip ]
-      [ HH.input [ HP.type_ HP.InputCheckbox, HP.checked on, HE.onChecked act ], HH.text label ]
   rigLoops = do
     Tuple m marks <- Map.toUnfoldable st.rigLoops
     mk <- Array.reverse marks
@@ -825,12 +817,12 @@ xrayStrip :: forall m. State -> H.ComponentHTML Action () m
 xrayStrip st = case st.bosun of
   Nothing ->
     HH.div [ cls "xray-strip" ]
-      [ HH.span [ cls "lamp dead" ] [ HH.i_ [], HH.text "Bosun :3994" ]
+      [ HH.span [ cls "xray-st down" ] [ HH.text "Bosun :3994" ]
       , HH.span [ cls "xray-note" ] [ HH.text "out of reach: no daemon can be shown or restarted from here. Start the Atlantis group's supervisor and the X-ray fills in." ]
       ]
   Just h ->
     HH.div [ cls "xray-strip" ]
-      ( [ HH.span [ cls "lamp live", HP.title "The Atlantis group's supervisor" ] [ HH.i_ [], HH.text "Bosun :3994" ]
+      ( [ HH.span [ cls "xray-st up", HP.title "The Atlantis group's supervisor" ] [ HH.text "Bosun :3994" ]
         , HH.span [ cls "xray-note" ] [ HH.text (if h.desired == "up" then "raised: it keeps the rig running" else "held: nothing is started or kept up") ]
         , groupButtons h
         ]
@@ -859,13 +851,13 @@ xrayStrip st = case st.bosun of
     let l = serviceLamp st "" sv
     in
       HH.span [ cls "xray-chip" ]
-        [ HH.span [ cls ("lamp" <> lampCls l.lamp), HP.title l.title ] [ HH.i_ [], HH.text (sv.id <> " · " <> l.caption) ]
+        [ HH.span [ cls ("xray-st" <> lampCls l.lamp), HP.title l.title ] [ HH.text (sv.id <> " · " <> l.caption) ]
         , HH.button [ cls "btn small", HP.disabled (not l.canRestart), HP.title (Bosun.restartTip sv.id), HE.onClick \_ -> RigRestart sv.id ] [ HH.text "↻" ]
         ]
   lampCls = case _ of
-    Bosun.Up -> " live"
+    Bosun.Up -> " up"
     Bosun.Coming -> " coming"
-    Bosun.Down -> " dead"
+    Bosun.Down -> " down"
 
 topBar :: forall m. State -> H.ComponentHTML Action () m
 topBar st =
@@ -964,9 +956,26 @@ machineBar st =
           , engineSeg "GHCi" "ghci" "Limulus sends Tidal to Haskell Tidal, to compare; machine lines still go to the rig."
           ]
       -- The machines themselves are on the chart: flowing, or in its dock.
+      -- The chart's own views, beside the rig's choices and drawn alike:
+      -- the rig's are one-of segments, these each turn on and off.
+      , HH.span [ cls "spacer" ] []
+      , HH.span [ cls "seglabel" ] [ HH.text "Chart" ]
+      , HH.div [ cls "toggles", HP.attr (AttrName "role") "group", HP.attr (AttrName "aria-label") "The chart's views" ]
+          [ toggle "X-ray" "The rig's processes on its whole skeleton: each one's state and restart, with the flow faded behind." st.xray XRay
+          , toggle "Relays" "Draw Diaphus, which delivers every MIDI note the rig sends." st.relays ShowRelays
+          , toggle "Every voice" "Open every machine into its voices: one line per channel, head or lane." st.allVoices ShowAllVoices
+          ]
       ]
     )
   where
+  toggle label tip on act =
+    HH.button
+      [ cls (if on then "on" else "")
+      , HP.attr (AttrName "aria-pressed") (if on then "true" else "false")
+      , HP.title tip
+      , HE.onClick \_ -> act (not on)
+      ]
+      [ HH.text label ]
   anyPlaying = not (null (filter (playing st) machines))
   engineSeg label key tip =
     HH.button
