@@ -875,8 +875,6 @@ topBar st =
             )
         , HH.span [ cls "spacer" ] []
         , tempoControl st
-        , rigLamp st
-        , lamp st.locked (if st.locked then "Link" else "free-running")
         , HH.button [ cls "btn panic", HE.onClick \_ -> Panic ] [ HH.text "Panic" ]
         ]
         )
@@ -906,28 +904,14 @@ tempoControl st =
         ]
     , HH.button [ cls "step", HE.onClick \_ -> BumpTempo 1.0, HP.title "tempo +1 (⌥=; with ⇧, +5)" ] [ HH.text "+" ]
     , HH.text " bpm"
+    -- whose tempo this is: Link's, through Diaphus, or this page's own
+    , HH.span
+        [ cls ("tsrc" <> if st.locked then " link" else "")
+        , HP.title (if st.locked then "Locked to Link: Diaphus's anchor sets the beat." else "Free-running: no Link anchor has reached this page; it keeps its own time.")
+        ]
+        [ HH.text (if st.locked then " · Link" else " · free") ]
     ]
 
--- | The rig's trunk, Architeuthis and Diaphus: every rig path needs both. Lit
--- | when this page reaches the rig and Bosun has both running; the title says
--- | which is missing.
-rigLamp :: forall w i. State -> HH.HTML w i
-rigLamp st =
-  HH.span [ cls ("lamp" <> if up then " live" else ""), HP.title tip ] [ HH.i_ [], HH.text (if up then "rig" else "no rig") ]
-  where
-  trunk = [ "architeuthis", "diaphus" ]
-  services = maybe [] _.services st.bosun
-  missing = filter (\id -> not (Array.any (\sv -> sv.id == id && Bosun.lampOf sv == Bosun.Up) services)) trunk
-  up = st.rigUp && (isNothing st.bosun || null missing)
-  tip
-    | not st.rigUp = "This page does not reach Architeuthis (:3012)."
-    | isNothing st.bosun = "Architeuthis answers. Bosun (:3994) is out of reach, so its daemons are not shown."
-    | null missing = "Architeuthis and Diaphus are running."
-    | otherwise = "Not running under Bosun: " <> String.joinWith ", " missing
-
-lamp :: forall w i. Boolean -> String -> HH.HTML w i
-lamp on label =
-  HH.span [ cls ("lamp" <> if on then " live" else "") ] [ HH.i_ [], HH.text label ]
 
 -- | Set the tempo for every page, and for Link if the rig is up; shown at
 -- | once rather than on the next tick.
