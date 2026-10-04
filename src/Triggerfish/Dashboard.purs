@@ -186,9 +186,6 @@ data Action
   | Hover (Maybe String)
   | RigOpen
   | RigFrame String
-  | RouterToggle Router.Line HarmonyRoute.Input
-  | RouterEdit (Router.Router -> Router.Router)
-  | RouterCommit Router.Line
   | NoOp
   | OpenMatrix Matrix.Grid (Maybe String)
   | CloseMatrix
@@ -436,16 +433,6 @@ handleAction = case _ of
       H.modify_ _ { router = r }
       syncCards
 
-  RouterToggle line input -> do
-    st <- H.get
-    for_ (Router.toggle line input st.router) sendRig
-
-  RouterEdit f -> H.modify_ \x -> x { router = f x.router }
-
-  RouterCommit line -> do
-    st <- H.get
-    for_ (Router.commit line st.router) sendRig
-
   NoOp -> pure unit
 
   OpenMatrix g focus -> H.modify_ _ { matrix = Just g, focus = focus, pick = Nothing, sheet = Nothing }
@@ -521,7 +508,7 @@ render st =
             [ Atlantis.view { restart: RigRestart, group: RigGroup, confirmDown: ConfirmDown }
                 { now: st.now, health: st.bosun, asked: st.asked, confirmingDown: st.confirmingDown }
             ]
-          else [ flowChart st, harmonyPanel st ]
+          else [ flowChart st ]
         )
     , case st.matrix of
         Nothing -> HH.text ""
@@ -664,22 +651,6 @@ flowChart st =
     case r.source of
       RM.SDrumLane _ -> map _.dest (filter _.on r.legs)
       _ -> []
-
--- | The harmony matrix, under the chart: it is played, not set and forgotten,
--- | so it stays in view where the music is watched (docs/kb/plans/matrix-router.md).
-harmonyPanel :: forall m. State -> H.ComponentHTML Action () m
-harmonyPanel st =
-  HH.div [ cls "harmony-panel" ]
-    [ Router.view
-        { toggle: RouterToggle
-        , scalePattern: RouterEdit <<< Router.setScalePattern
-        , scaleRoot: RouterEdit <<< Router.setScaleRoot
-        , harmony: RouterEdit <<< Router.setHarmony
-        , commit: RouterCommit
-        , none: NoOp
-        }
-        st.rigUp st.router
-    ]
 
 topBar :: forall m. State -> H.ComponentHTML Action () m
 topBar st =

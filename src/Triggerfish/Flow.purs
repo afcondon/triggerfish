@@ -545,6 +545,9 @@ nodeRank nd = Tuple nd.column (Tuple at nd.name)
     Just m -> fromMaybe 99 (findIndex (\x -> x.slot == m) machineNames)
     -- loops by machine, then number
     Nothing | Just l <- loopOf nd.id -> 100 * fromMaybe 99 (findIndex (\x -> x.slot == l.machine) machineNames) + l.n
+    -- A scale or pattern heads Feeds, above any machine there, whose
+    -- ports hang under its label.
+    Nothing | isJust (stripPrefix (Pattern "q:") nd.id) -> -2
     -- A named port heads its column: it is where most streams go.
     Nothing | isJust (stripPrefix (Pattern "port:") nd.id) -> -1
     Nothing -> fromMaybe 99 (findIndex (\x -> x.id == nd.id) fixed)

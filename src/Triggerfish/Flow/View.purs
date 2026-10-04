@@ -293,18 +293,14 @@ chartOf on hot live f =
   isQuant r = maybe false (\l -> l.signal == Quantise) (f.links !! r.index)
   quantShown = not (Array.elem "s-quant" live.hidden)
   nodeAt id = Array.find (\sn -> sn.name == id) laid.nodes
-  fedIn id = Array.any (\l -> l.to == id && l.signal == Quantise) f.links
   pt x y = { x, y }
 
-  -- Odonus's input ports: beside its centred name when fed, else in a row
-  -- under its label.
+  -- Odonus's input ports stand on its node, at the top of its left edge,
+  -- where the cables come in; its label stays centred over it.
   inputs = [ "grid", "out" ]
   inPort i = nodeAt "m:odonus" >>= \sn -> do
     k <- Array.elemIndex i inputs
-    let kn = toNumber k
-    pure if fedIn "m:odonus"
-      then pt ((sn.x0 + sn.x1) / 2.0 - 54.0 - 22.0 * (1.0 - kn)) (sn.y0 - 34.0)
-      else pt (sn.x0 - 16.0 - 34.0 * (1.0 - kn)) (mid sn + 40.0)
+    pure (pt (sn.x0 - 9.0) (sn.y0 + 8.0 + 17.0 * toNumber k))
 
   -- A source's output port: on its machine's label, in a row under it; on
   -- its own node in Feeds; else nowhere (a ghost, while an input is armed).
@@ -363,7 +359,7 @@ chartOf on hot live f =
           <> mapMaybe (\i -> inPort i <#> \p ->
                svg "g" []
                  [ portDot ("in:" <> i) ("in" <> portState ("in:" <> i) (maybe false (\s -> Array.elem i s.allowed) armedSource) (usedIn i)) p "" ("odonus." <> i <> ": click, then a source")
-                 , label "pin" p.x (p.y - 10.0) "middle" i
+                 , label "pin" (p.x - 10.0) (p.y + 3.0) "end" i
                  ]) inputs
           <> (ghosts <#> \g ->
                svg "g" [ attr "class" "ghost" ]
