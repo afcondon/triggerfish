@@ -91,6 +91,47 @@ randomFlow seed =
     , links: links <> map (\nd -> wire nd.id "ears") insts
     }
 
+-- | Every order of a list.
+perms :: forall a. Array a -> Array (Array a)
+perms xs
+  | Array.null xs = [ [] ]
+  | otherwise = concatMap (\i -> case xs !! i, Array.deleteAt i xs of
+      Just x, Just rest -> map (Array.cons x) (perms rest)
+      _, _ -> []) (range 0 (length xs - 1))
+
+-- | The fewest crossings any order of the wired columns can give, by
+-- | trying them all, column by column: with lines only between neighbouring
+-- | columns, the crossings are a sum over neighbouring pairs, so the best
+-- | for each order of a column, given the best up to the column before, is
+-- | enough (dynamic programming over the chain). The engine's column keeps
+-- | its fixed order, as `orderOf` does.
+optimum :: Flow -> Int
+optimum f = fromMaybe 0 (Array.head (sort run))
+  where
+  cols = Array.sort (nub (map _.column (filter (\nd -> nd.column /= Heard) f.nodes)))
+  idsIn c = map _.id (sortWith nodeRank (filter (\nd -> nd.column == c) f.nodes))
+  layers = cols <#> \c -> if c == Engine then [ idsIn c ] else perms (idsIn c)
+  ls = filter (not <<< _.bone) f.links
+  -- the crossings between one order of a column and one of the next
+  pairCost pa pb =
+    let
+      posA = Map.fromFoldable (mapWithIndex (\i id -> Tuple id i) pa)
+      posB = Map.fromFoldable (mapWithIndex (\i id -> Tuple id i) pb)
+      between = ls # Array.mapMaybe \l -> case Map.lookup l.from posA, Map.lookup l.to posB of
+        Just a, Just b -> Just (Tuple a b)
+        _, _ -> Nothing
+      idx = mapWithIndex Tuple between
+    in
+      length (concatMap (\(Tuple i (Tuple a1 b1)) -> filter (\(Tuple j (Tuple a2 b2)) -> j > i && a1 /= a2 && b1 /= b2 && (a1 - a2) * (b1 - b2) < 0) idx) idx)
+  -- the fewest crossings ending in each order of the latest column
+  run = Array.foldl (\acc k ->
+      let
+        prev = fromMaybe [] (layers !! (k - 1))
+        cur = fromMaybe [] (layers !! k)
+      in
+        cur <#> \pb -> fromMaybe 0 (Array.head (sort (mapWithIndex (\i pa -> fromMaybe 0 (acc !! i) + pairCost pa pb) prev))))
+    (map (const 0) (fromMaybe [] (layers !! 0))) (range 1 (length layers - 1))
+
 runOrderTests :: Effect Unit
 runOrderTests = do
   log "\n════ Flow.Order: the order within a column, from the wiring ════"
@@ -121,6 +162,19 @@ runOrderTests = do
           let ids = map _.id (filter (\nd -> nd.column == c) r.f.nodes)
           in sort (map (\id -> fromMaybe (-1) (Map.lookup id o)) ids) == range 0 (length ids - 1)
     )
+  -- how far from the best any order could do: worked out exactly where
+  -- the columns are small enough to try every order (the first hundred
+  -- seeds; all three hundred take a minute). Measured 2026-10-04 over all
+  -- of them: optimal in 152 of 184, 409 crossings against a best of 352,
+  -- never more than 4 off, which is why the chart does not search.
+  let small = filter (\r -> r.seed <= 100 && all (\c -> length (filter (\nd -> nd.column == c) r.f.nodes) <= 5) [ RigOut, Interface, Instrument ]) results
+  let gaps = small <#> \r -> { r, best: optimum r.f }
+  let sumOf g = foldl (+) 0 (map g gaps)
+  log ("  exact, " <> show (length gaps) <> " wirings small enough: best possible " <> show (sumOf _.best) <> " crossings in all, heuristic "
+    <> show (sumOf _.r.after) <> "; optimal in " <> show (length (filter (\g -> g.r.after == g.best) gaps))
+    <> ", worst gap " <> show (foldl max 0 (map (\g -> g.r.after - g.best) gaps)))
+  check "the heuristic never beats the exact optimum (the measure is sound)"
+    (all (\g -> g.best <= g.r.after) gaps)
   check "the order is the same each time it is worked out"
     (all (\r -> orderOf r.f == orderOf r.f) results)
   log ("  (mean " <> show (Int.round (toNumber (total _.before) / 3.0)) <> " → " <> show (Int.round (toNumber (total _.after) / 3.0)) <> " crossings a hundred wirings)")
