@@ -545,6 +545,7 @@ flowChart st =
                 , loops: rigLoops
                 , rigUp: st.rigUp
                 , down: downNodes
+                , quantise
                 }
             )
         ]
@@ -557,6 +558,22 @@ flowChart st =
         ]
     ]
   where
+  -- The harmony routes as quantisation: what feeds Odonus's grid and out.
+  quantise = st.router.routes <#> \rt ->
+    { target: "odonus"
+    , input: case rt.input of
+        HarmonyRoute.OdonusGrid -> "grid"
+        HarmonyRoute.OdonusOut -> "out"
+    , machine: case rt.source of
+        HarmonyRoute.VetulaKey -> Just "vetula"
+        HarmonyRoute.VetulaVoice _ -> Just "vetula"
+        _ -> Nothing
+    , label: case rt.source of
+        HarmonyRoute.VetulaKey -> "key" <> maybe "" (\k -> " " <> k) st.router.vetulaKey
+        HarmonyRoute.VetulaVoice v -> "voice " <> show v
+        HarmonyRoute.Scale sc -> "scale " <> sc.pattern
+        HarmonyRoute.Harmony h -> "harmony " <> h
+    }
   services = maybe [] _.services st.bosun
   lamps = services # Array.mapMaybe \sv -> Bosun.nodeOf sv.id <#> \node ->
     { node, lamp: Bosun.lampOf sv

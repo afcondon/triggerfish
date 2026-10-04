@@ -53,6 +53,7 @@ module Triggerfish.Flow
   , Inputs
   , Extra
   , RigLoop
+  , Quant
   , flow
   , layerOf
   , onTheBeat
@@ -80,13 +81,14 @@ import Reef.Balistes.Kit (canonKit)
 -- | Where a node stands, left to right. Fixed, so the chart reads the same in
 -- | every configuration; columns with nothing in them are packed away by
 -- | `layerOf`.
-data Column = Machines | Page | Loops | Engine | RigOut | Interface | Instrument | Heard
+data Column = Feeders | Machines | Page | Loops | Engine | RigOut | Interface | Instrument | Heard
 
 derive instance Eq Column
 derive instance Ord Column
 
 columnTitle :: Column -> String
 columnTitle = case _ of
+  Feeders -> "Feeds"
   Machines -> "Machine"
   Page -> "Page"
   Loops -> "Loop"
@@ -98,7 +100,7 @@ columnTitle = case _ of
 
 -- | What is travelling on a link. The colour changes where the signal changes
 -- | form, which is the architecture made visible.
-data Signal = Notes | Socket | Midi | Osc | Http | Cv | Audio | Samples | Recorded
+data Signal = Notes | Socket | Midi | Osc | Http | Cv | Audio | Samples | Recorded | Quantise
 
 derive instance Eq Signal
 
@@ -113,6 +115,7 @@ signalLabel = case _ of
   Audio -> "audio"
   Samples -> "samples"
   Recorded -> "recorded"
+  Quantise -> "quantisation"
 
 -- ---------------------------------------------------------------------------
 -- The chart's data
@@ -139,6 +142,12 @@ type Link =
 
 type Flow = { nodes :: Array Node, links :: Array Link }
 
+-- | What feeds one of a machine's harmony inputs (`routing/harmony`): today
+-- | Odonus's grid and out. `machine` when another machine feeds it (Vetula's
+-- | key, or a voice's chords), drawn from that machine, which then stands
+-- | upstream; else a source of its own (a scale, a harmony pattern).
+type Quant = { target :: String, input :: String, machine :: Maybe String, label :: String }
+
 -- | A mark the rig keeps for a machine (`rig_loops`), and whether a loop is
 -- | playing it. A loop plays on the rig whether or not its page is open.
 type RigLoop = { machine :: String, n :: Int, playing :: Boolean }
@@ -164,6 +173,7 @@ type Inputs =
   -- | nodes whose daemon Bosun says is down: a stream through one is broken
   -- | there. "diaphus" breaks every hop of the rig's MIDI, drawn or not.
   , down :: Array String
+  , quantise :: Array Quant
   }
 
 -- | The machine a source belongs to, by its slot name.
@@ -317,7 +327,7 @@ pathOf relays mode m via dest = case midiEnds dest of
 -- ---------------------------------------------------------------------------
 
 flow :: Inputs -> Flow
-flow inp = { nodes, links: links <> loopLinks }
+flow inp = { nodes, links: links <> loopLinks <> quantLinks }
   where
   pageOpen m = m `elem` inp.machines
   -- The rig's marks, while the rig is there to keep them.
@@ -417,12 +427,32 @@ flow inp = { nodes, links: links <> loopLinks }
         let id = loopId m l.n
         in map (\f -> plain f id Recorded m true) feeders
              <> (if l.playing then [ plain id "engine" Notes m false ] else [])
+  -- Quantisation: what feeds a machine's harmony inputs, into that machine
+  -- (or each of its voices, opened). A machine feeding it is drawn upstream,
+  -- in Feeds; a source with no page drawn (a scale, a pattern, or a machine
+  -- closed or opened into voices) is a node of its own there.
+  quantFrom q = case q.machine of
+    Just m | pageOpen m && not (m `elem` inp.open) -> "m:" <> m
+    Just m -> "q:" <> m <> " " <> q.label
+    Nothing -> "q:" <> q.label
+  quantTo t
+    | t `elem` inp.open = filter (\u -> isJust (stripPrefix (Pattern "src:") u)) (map _.unit (filter (\x -> x.machine == t) streams))
+    | Array.any (\x -> x.machine == t) streams = [ "m:" <> t ]
+    | otherwise = []
+  quantLinks = foldl addQ [] (inp.quantise # concatMap \q ->
+    quantTo q.target <#> \to -> { from: quantFrom q, to, machine: fromMaybe q.target q.machine, input: q.input <> " ← " <> q.label })
+    where
+    addQ acc x = case findIndex (\l -> l.from == x.from && l.to == x.to) acc of
+      Just i -> fromMaybe acc (Array.modifyAt i (\l -> l { streams = l.streams + 1, wires = nub (Array.snoc l.wires x.input) }) acc)
+      Nothing -> Array.snoc acc ((plain x.from x.to Quantise x.machine false) { wires = [ x.input ] })
+  feeders = nub (mapMaybe (\l -> stripPrefix (Pattern "m:") l.from) quantLinks)
+
   plain from to signal machine control =
     { from, to, signal, machine, streams: 1, broken: 0, wires: [], notes: [], waiting: 0, control }
 
-  ids = nub (concatMap (\l -> [ l.from, l.to ]) (links <> loopLinks))
+  ids = nub (concatMap (\l -> [ l.from, l.to ]) (links <> loopLinks <> quantLinks))
   units = nubByEq (\a b -> a.unit == b.unit) streams
-  nodes = sortWith nodeRank (catMaybes (map (nodeOf units inp.table inp.loops links) ids))
+  nodes = sortWith nodeRank (catMaybes (map (nodeOf units inp.table inp.loops feeders links) ids))
 
 -- | A loop's node: one per mark, by machine and number.
 loopId :: String -> Int -> String
@@ -473,10 +503,11 @@ machineNames =
   , { slot: "limulus", name: "Limulus", note: "Tidal, live-coded" }
   ]
 
-nodeOf :: Array Stream -> Table -> Array RigLoop -> Array Link -> String -> Maybe Node
-nodeOf units table loops links id = case Array.find (\x -> x.id == id) fixed of
+nodeOf :: Array Stream -> Table -> Array RigLoop -> Array String -> Array Link -> String -> Maybe Node
+nodeOf units table loops feeders links id = case Array.find (\x -> x.id == id) fixed of
   Just f -> Just (withWires f)
   Nothing
+    | Just q <- strip "q:" -> Just { id, column: Feeders, name: q, note: "kept on the rig", machine: Nothing }
     | Just l <- loopOf id ->
         let playing = Array.any (\x -> x.machine == l.machine && x.n == l.n && x.playing) loops
         in Just { id, column: Loops, name: show l.n, note: if playing then "playing" else "kept", machine: Nothing }
@@ -496,9 +527,12 @@ nodeOf units table loops links id = case Array.find (\x -> x.id == id) fixed of
         in if null ws then nd else nd { note = compactWires ws }
     | otherwise = nd
   sourceOf k = _.source <$> Array.find (\r -> sourceKey r.source == k) table
-  machineNode m = case Array.find (\x -> x.slot == m) machineNames of
-    Just x -> { id, column: Machines, name: x.name, note: x.note, machine: Just m }
-    Nothing -> { id, column: Machines, name: m, note: "", machine: Just m }
+  -- a machine that feeds another's harmony stands upstream of it
+  machineNode m =
+    let column = if m `elem` feeders then Feeders else Machines
+    in case Array.find (\x -> x.slot == m) machineNames of
+      Just x -> { id, column, name: x.name, note: x.note, machine: Just m }
+      Nothing -> { id, column, name: m, note: "", machine: Just m }
 
 -- | A node's place in reading order: machines in the dashboard's order,
 -- | everything else in `fixed`'s, named ports and instruments after the fixed

@@ -206,9 +206,9 @@
     .router-problem { color: var(--alarm); font-size: 12.5px; margin: 8px 0 0; }
     .routing .notes-head { margin: 0 0 6px; font-size: 13px; font-weight: 700; letter-spacing: .12em; text-transform: uppercase; padding-bottom: 10px; border-bottom: 1px solid var(--ink); }
     /* The signal-flow chart (Triggerfish.Flow.View). */
-    :root { --s-notes: #7f9098; --s-socket: #7c5cc4; --s-midi: #13807b; --s-osc: #c08a12; --s-cv: #a8327a; --s-audio: #2f6fae; --s-samples: #8a5a2b; --s-http: #9a8fb0; --kraken: #8a3a50; --kraken-deep: #5e2234; --kraken-pupil: #2a0f18; }
-    @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --s-notes: #9fb0b8; --s-socket: #ab93f0; --s-midi: #4cc5bd; --s-osc: #eab94f; --s-cv: #e87bbd; --s-audio: #7fb8e0; --s-samples: #d2a06d; --s-http: #b9aed0; --kraken: #c26a82; --kraken-deep: #8e4258; --kraken-pupil: #10252e; } }
-    :root[data-theme="dark"] { --s-notes: #9fb0b8; --s-socket: #ab93f0; --s-midi: #4cc5bd; --s-osc: #eab94f; --s-cv: #e87bbd; --s-audio: #7fb8e0; --s-samples: #d2a06d; --s-http: #b9aed0; --kraken: #c26a82; --kraken-deep: #8e4258; --kraken-pupil: #10252e; }
+    :root { --s-notes: #7f9098; --s-socket: #7c5cc4; --s-midi: #13807b; --s-osc: #c08a12; --s-cv: #a8327a; --s-audio: #2f6fae; --s-samples: #8a5a2b; --s-http: #9a8fb0; --s-quant: #5f8f3a; --kraken: #8a3a50; --kraken-deep: #5e2234; --kraken-pupil: #2a0f18; }
+    @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --s-notes: #9fb0b8; --s-socket: #ab93f0; --s-midi: #4cc5bd; --s-osc: #eab94f; --s-cv: #e87bbd; --s-audio: #7fb8e0; --s-samples: #d2a06d; --s-http: #b9aed0; --s-quant: #9ccc6f; --kraken: #c26a82; --kraken-deep: #8e4258; --kraken-pupil: #10252e; } }
+    :root[data-theme="dark"] { --s-notes: #9fb0b8; --s-socket: #ab93f0; --s-midi: #4cc5bd; --s-osc: #eab94f; --s-cv: #e87bbd; --s-audio: #7fb8e0; --s-samples: #d2a06d; --s-http: #b9aed0; --s-quant: #9ccc6f; --kraken: #c26a82; --kraken-deep: #8e4258; --kraken-pupil: #10252e; }
     .flow { margin-bottom: 24px; }
     .flow-chart { overflow-x: auto; background: var(--plate); border: 1px solid var(--rule); padding: 8px 0; }
     .flow-empty { margin: 0; padding: 28px 20px; color: var(--muted); }
@@ -264,7 +264,7 @@
     .mitem .alias { display: inline-flex; align-items: center; gap: 5px; font: 400 11px var(--mono); opacity: .85; }
     .mitem .alias.edited::after { content: "●"; }
     svg.flows .pick:focus-visible .bar { fill: var(--reef); }
-    .s-notes { fill: var(--s-notes); color: var(--s-notes); } .s-socket { fill: var(--s-socket); color: var(--s-socket); }
+    .s-notes { fill: var(--s-notes); color: var(--s-notes); } .s-quant { fill: var(--s-quant); color: var(--s-quant); } .s-socket { fill: var(--s-socket); color: var(--s-socket); }
     .s-midi { fill: var(--s-midi); color: var(--s-midi); } .s-osc { fill: var(--s-osc); color: var(--s-osc); }
     .s-http { fill: var(--s-http); color: var(--s-http); } .s-cv { fill: var(--s-cv); color: var(--s-cv); }
     .s-audio { fill: var(--s-audio); color: var(--s-audio); } .s-samples { fill: var(--s-samples); color: var(--s-samples); }

@@ -32,6 +32,7 @@ base =
   , loops: []
   , rigUp: true
   , down: []
+  , quantise: []
   }
 
 -- | Odonus on the IAC bus alone: the base case of the reveal.
@@ -126,6 +127,23 @@ runFlowTests = do
   check "with no rig, a stream that waits for Atlantis is waiting, not broken"
     (all (\l -> l.broken == 0) (flow base { machines = [ "balistes" ], rigUp = false
         , table = [ { source: SDrumLane 0, legs: [ { dest: DSample { set: "kit", n: 0, begin: 0, end: 100, reverse: false, gain: 100, chop: 1 }, offsetMs: 0.0, on: true } ] } ] }).links)
+
+  let
+    vetulaToOdonus = [ { source: SVetulaVoice "", legs: [ { dest: DMidi { port: "IAC Driver Tidal", channel: 5 }, offsetMs: 0.0, on: true } ] } ] <> odonusToAbleton
+    fed = flow base { machines = [ "odonus", "vetula" ], table = vetulaToOdonus
+                    , quantise = [ { target: "odonus", input: "grid", machine: Just "vetula", label: "key" }
+                                 , { target: "odonus", input: "out", machine: Just "vetula", label: "voice 3" } ] }
+  check "Vetula feeding Odonus's harmony stands upstream of it, one ribbon for both inputs"
+    ( layerOf fed "m:vetula" == Just 0 && layerOf fed "m:odonus" == Just 1
+        && ((find (\l -> l.signal == Quantise) fed.links <#> \l -> [ l.from, l.to, show l.streams ]) == Just [ "m:vetula", "m:odonus", "2" ])
+    )
+  let scaled = flow base { table = odonusToAbleton, quantise = [ { target: "odonus", input: "grid", machine: Nothing, label: "scale dorian" } ] }
+  check "a scale feeding Odonus is a node of its own, upstream"
+    ( layerOf scaled "q:scale dorian" == Just 0
+        && isJust (find (\l -> l.from == "q:scale dorian" && l.to == "m:odonus") scaled.links)
+    )
+  check "nothing is quantised when its machine is not drawn"
+    (null (flow base { machines = [], table = odonusToAbleton, quantise = [ { target: "odonus", input: "grid", machine: Nothing, label: "scale dorian" } ] }).links)
 
   check "Solo closes up the rig's columns"
     (layerOf one "port:IAC Driver Tidal" == Just 2)

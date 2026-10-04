@@ -136,9 +136,10 @@ chartOf on hot live f
       , nodeSort = Just (comparing rankOf)
       }
 
-  heads = mapMaybe colHead (nub (map _.column f.nodes))
+  columns = Array.sort (nub (map _.column f.nodes))
+  heads = mapMaybe colHead columns
   colHead c = do
-    x <- if c == Machines then Just 20.0 else
+    x <- if Just c == Array.head columns then Just 20.0 else
       Array.head (mapMaybe (\sn -> ours sn >>= \nd -> if nd.column == c then Just sn.x0 else Nothing) laid.nodes)
     pure $ svg "text" [ attr "class" "colhead", attr "x" (n x), attr "y" (n (24.0 + band)) ] [ HH.text (columnTitle c) ]
   rule = svg "line" [ attr "class" "colrule", attr "x1" "20", attr "x2" (n (width - 20.0)), attr "y1" (n (32.0 + band)), attr "y2" (n (32.0 + band)) ] []
@@ -184,7 +185,8 @@ chartOf on hot live f
 
   linkTitle l =
     l.from <> " → " <> l.to <> " · " <> signalLabel l.signal
-      <> (if l.signal == Recorded then " · its notes are kept in the rig's record buffer"
+      <> (if l.signal == Quantise then " · quantisation: feeds " <> joinWith " and " (map (\w -> "odonus." <> w) l.wires) <> " (resolved on the rig)"
+          else if l.signal == Recorded then " · its notes are kept in the rig's record buffer"
           else if l.control then " · control: the page tells the rig what to play; the rig makes the notes"
           else " · " <> plural l.streams "stream")
       <> (if l.broken > 0 then " · " <> show l.broken <> " not reaching " <> l.to else "")
@@ -203,7 +205,9 @@ chartOf on hot live f
     Just nd -> case nd.machine, loopOf nd.id of
       Just m, _ -> machineNode sn nd m
       Nothing, Just l -> loopNode sn nd l
-      Nothing, Nothing -> placeNode sn nd
+      Nothing, Nothing
+        | nd.column == Feeders -> feedNode sn nd
+        | otherwise -> placeNode sn nd
 
   bar sn = svg "rect"
     [ attr "class" "bar", attr "x" (n sn.x0), attr "y" (n sn.y0)
@@ -212,7 +216,44 @@ chartOf on hot live f
 
   mid sn = (sn.y0 + sn.y1) / 2.0
 
-  machineNode sn nd m =
+  machineNode sn nd m
+    | Just nd.column /= Array.head columns = innerMachine sn nd m
+    | otherwise = edgeMachine sn nd m
+
+  -- A machine downstream of another (fed its harmony): its fish above its
+  -- name, both just left of its bar, since the margin belongs to the first.
+  innerMachine sn nd m =
+    let cy = mid sn
+    in
+      svg "g"
+        [ attr "class" "node pick inner", attr "tabindex" "0", attr "role" "button"
+        , attr "aria-label" (nd.name <> ", " <> plural (streamsOf m) "stream")
+        , HE.onMouseEnter \_ -> on.hover (Just m)
+        , HE.onMouseLeave \_ -> on.hover Nothing
+        , HE.onFocus \_ -> on.hover (Just m)
+        , HE.onBlur \_ -> on.hover Nothing
+        , HE.onClick \_ -> on.pick m
+        ]
+        [ svg "rect" [ attr "class" "hit", attr "x" (n (sn.x0 - 120.0)), attr "y" (n (cy - 44.0)), attr "width" "120", attr "height" "84" ] []
+        , bar sn
+        , use ("sp-" <> m) (sn.x0 - 62.0) (cy - 42.0) 54.0 32.0
+        , label "name" (sn.x0 - 8.0) (cy + 2.0) "end" nd.name
+        , label "sub" (sn.x0 - 8.0) (cy + 15.0) "end" (plural (streamsOf m) "stream")
+        , label "sub where" (sn.x0 - 8.0) (cy + 27.0) "end" (if needsAtlantis m then "needs Atlantis" else playsWhere m)
+        ]
+
+  -- A source of quantisation of its own (a scale, a pattern, a machine not
+  -- drawn whole): named to the left of its bar, like a machine.
+  feedNode sn nd =
+    let cy = mid sn
+    in
+      svg "g" [ attr "class" "node feed" ]
+        [ bar sn
+        , label "name" (sn.x0 - 10.0) (cy - 2.0) "end" nd.name
+        , label "sub" (sn.x0 - 10.0) (cy + 11.0) "end" nd.note
+        ]
+
+  edgeMachine sn nd m =
     let
       cy = mid sn
       reach = max 10.0 (min 22.0 ((sn.y1 - sn.y0) / 2.0 + 6.0))
@@ -360,6 +401,7 @@ key on st =
     , { k: "s-audio", label: signalLabel Audio }
     , { k: "s-samples", label: signalLabel Samples }
     , { k: "s-record", label: signalLabel Recorded }
+    , { k: "s-quant", label: signalLabel Quantise }
     ]
   item { k, label } =
     let off = Array.elem k st.hidden
@@ -385,6 +427,7 @@ sigClass = case _ of
   Audio -> "s-audio"
   Samples -> "s-samples"
   Recorded -> "s-record"
+  Quantise -> "s-quant"
 
 -- ---------------------------------------------------------------------------
 -- SVG
