@@ -145,6 +145,10 @@ runFlowTests = do
   check "nothing is quantised when its machine is not drawn"
     (null (flow base { machines = [], table = odonusToAbleton, quantise = [ { target: "odonus", input: "grid", machine: Nothing, label: "scale dorian" } ] }).links)
 
+  let quadratOpen = flow base { machines = [ "quadrat" ], table = [] }
+  check "Quadrat, open, makes sample sets: a line into them"
+    ((find (\l -> l.from == "m:quadrat") quadratOpen.links <#> \l -> [ l.to, l.machine ]) == Just [ "sets", "quadrat" ])
+
   check "Solo closes up the rig's columns"
     (layerOf one "port:IAC Driver Tidal" == Just 2)
 

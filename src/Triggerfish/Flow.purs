@@ -327,7 +327,7 @@ pathOf relays mode m via dest = case midiEnds dest of
 -- ---------------------------------------------------------------------------
 
 flow :: Inputs -> Flow
-flow inp = { nodes, links: links <> loopLinks <> quantLinks }
+flow inp = { nodes, links: links <> loopLinks <> quantLinks <> makesLinks }
   where
   pageOpen m = m `elem` inp.machines
   -- The rig's marks, while the rig is there to keep them.
@@ -447,10 +447,16 @@ flow inp = { nodes, links: links <> loopLinks <> quantLinks }
       Nothing -> Array.snoc acc ((plain x.from x.to Quantise x.machine false) { wires = [ x.input ] })
   feeders = nub (mapMaybe (\l -> stripPrefix (Pattern "m:") l.from) quantLinks)
 
+  -- Quadrat makes sample sets: while its page is open, a line into them,
+  -- whatever plays them.
+  makesLinks
+    | pageOpen "quadrat" = [ (plain "m:quadrat" "sets" Samples "quadrat" false) { wires = [ "makes sample sets" ] } ]
+    | otherwise = []
+
   plain from to signal machine control =
     { from, to, signal, machine, streams: 1, broken: 0, wires: [], notes: [], waiting: 0, control }
 
-  ids = nub (concatMap (\l -> [ l.from, l.to ]) (links <> loopLinks <> quantLinks))
+  ids = nub (concatMap (\l -> [ l.from, l.to ]) (links <> loopLinks <> quantLinks <> makesLinks))
   units = nubByEq (\a b -> a.unit == b.unit) streams
   nodes = sortWith nodeRank (catMaybes (map (nodeOf units inp.table inp.loops feeders links) ids))
 

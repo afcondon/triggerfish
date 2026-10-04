@@ -61,6 +61,7 @@ import Web.UIEvent.KeyboardEvent as KE
 import Web.UIEvent.KeyboardEvent.EventTypes as KET
 import Triggerfish.Flow as Flow
 import Triggerfish.Bosun as Bosun
+import Triggerfish.BackgroundOpen as BackgroundOpen
 import Triggerfish.Dashboard.Atlantis as Atlantis
 import Triggerfish.Capture.RigLoops as RigLoops
 import Data.Tuple (Tuple(..))
@@ -248,6 +249,8 @@ handleAction = case _ of
     void $ H.subscribe $ eventListener KET.keydown (Window.toEventTarget win) (map KeyDown <<< KE.fromEvent)
     -- the stage's text objects: the harmony routes, and Vetula's cards for
     -- its voices; asked for again whenever the socket (re)opens
+    -- a ghost fish opens its machine behind the dashboard
+    liftEffect BackgroundOpen.install
     liftEffect $ Binnacle.onAppMessage rig (HS.notify listener <<< RigFrame)
     liftEffect $ Binnacle.onOpen rig (HS.notify listener RigOpen)
     bus <- liftEffect Bus.open

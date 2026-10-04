@@ -290,7 +290,8 @@ chartOf on hot live f =
         , bar sn
         , fishBtn m (cx - 27.0) (top - 80.0)
         , pickName m cx (top - 30.0) "middle" nd.name
-        , label "sub" cx (top - 16.0) "middle" (plural (streamsOf m) "stream" <> " · " <> (if needsAtlantis m then "needs Atlantis" else playsWhere m))
+        , label "sub" cx (top - 16.0) "middle" (summary m)
+        , svg "title" [] [ HH.text (tip nd m) ]
         ]
 
   -- --------------------------------------------------------------------
@@ -317,7 +318,7 @@ chartOf on hot live f =
         mine = filter (\x -> x.machine == s.machine) live.patch.sources
         k = toNumber (Array.length mine)
         j = toNumber (fromMaybe 0 (Array.findIndex (\x -> x.id == s.id) mine))
-      in Just (pt (sn.x0 - 16.0 - (k - 1.0 - j) * 17.0) (mid sn + 40.0))
+      in Just (pt (sn.x0 - 16.0 - (k - 1.0 - j) * 17.0) (mid sn + 28.0))
     Nothing -> nodeAt (qid s) <#> \sn -> pt (sn.x1 + 9.0) (mid sn)
 
   armedInput = live.patch.armed >>= String.stripPrefix (String.Pattern "in:")
@@ -378,6 +379,14 @@ chartOf on hot live f =
     svg "g" [ attr "class" "node voice" ]
       [ bar sn, label "sub" (sn.x0 - 8.0) (mid sn + 3.5) "end" nd.name ]
 
+  -- A machine's one line: its streams and where it plays. The rest (the
+  -- loaded preset, what it is) is in its hover.
+  summary m
+    | needsAtlantis m = "needs Atlantis"
+    | otherwise = plural (streamsOf m) "stream" <> " · " <> playsWhere m
+  tip nd m = nd.name <> (if nd.note == "" then "" else ", " <> nd.note) <> preset m
+  nameWidth t = 7.8 * toNumber (String.length t)
+
   dockOf m = Array.find (\d -> d.slot == m) live.dock
   preset m = maybe "" (\a -> " · " <> a) (dockOf m >>= _.alias)
   -- A machine's fish says its state: ghosted when its page is not running
@@ -418,7 +427,10 @@ chartOf on hot live f =
     in
       svg "g" [ attr "class" ("dock" <> if d.open then " open" else " closed") ]
         [ svg "rect" [ attr "class" "hit", attr "x" "10", attr "y" (n (y - 18.0)), attr "width" (n (left - 20.0)), attr "height" "36" ] []
-        , (if d.open then fishBtn d.slot 23.0 (y - 16.0) else use ("sp-" <> d.slot) 23.0 (y - 16.0) 54.0 32.0)
+        , if d.open then fishBtn d.slot 23.0 (y - 16.0)
+          else svg "g" [ attr "class" "ghostfish", attr "data-bg-open" d.href, attr "role" "link", attr "tabindex" "0" ]
+                 [ use ("sp-" <> d.slot) 23.0 (y - 16.0) 54.0 32.0
+                 , svg "title" [] [ HH.text ("Open " <> d.name <> " behind the dashboard") ] ]
         , label "name" (left - 10.0) (y - 1.0) "end" d.name
         , if d.open then label "sub" (left - 10.0) (y + 12.0) "end" ("open · nothing routed" <> preset d.slot)
           else svg "a" [ attr "class" "openlink", attr "href" d.href, attr "target" d.target ]
@@ -446,12 +458,12 @@ chartOf on hot live f =
         , HE.onFocus \_ -> on.hover (Just m)
         , HE.onBlur \_ -> on.hover Nothing
         ]
-        [ svg "rect" [ attr "class" "hit", attr "x" (n (sn.x0 - 120.0)), attr "y" (n (cy - 44.0)), attr "width" "120", attr "height" "84" ] []
+        [ svg "rect" [ attr "class" "hit", attr "x" (n (sn.x0 - 8.0 - nameWidth nd.name - 64.0)), attr "y" (n (cy - 20.0)), attr "width" (n (nameWidth nd.name + 72.0)), attr "height" "40" ] []
         , bar sn
-        , fishBtn m (sn.x0 - 62.0) (cy - 42.0)
-        , pickName m (sn.x0 - 8.0) (cy + 2.0) "end" nd.name
-        , label "sub" (sn.x0 - 8.0) (cy + 15.0) "end" (plural (streamsOf m) "stream")
-        , label "sub where" (sn.x0 - 8.0) (cy + 27.0) "end" (if needsAtlantis m then "needs Atlantis" else playsWhere m <> preset m)
+        , fishBtn m (sn.x0 - 8.0 - nameWidth nd.name - 62.0) (cy - 18.0)
+        , pickName m (sn.x0 - 8.0) (cy - 2.0) "end" nd.name
+        , label "sub" (sn.x0 - 8.0) (cy + 11.0) "end" (summary m)
+        , svg "title" [] [ HH.text (tip nd m) ]
         ]
 
   -- A source of quantisation of its own (a scale, a pattern, a machine not
@@ -484,8 +496,8 @@ chartOf on hot live f =
         , bar sn
         , fishBtn m 23.0 (cy - 16.0)
         , pickName m (sn.x0 - 10.0) (cy - 2.0) "end" nd.name
-        , label "sub" (sn.x0 - 10.0) (cy + 11.0) "end" (if needsAtlantis m then "needs Atlantis" else plural (streamsOf m) "stream")
-        , label "sub where" (sn.x0 - 10.0) (cy + 23.0) "end" (if needsAtlantis m then "" else playsWhere m <> preset m)
+        , label "sub" (sn.x0 - 10.0) (cy + 11.0) "end" (summary m)
+        , svg "title" [] [ HH.text (tip nd m) ]
         ]
 
   -- A loop: a bubble in its machine's colour with the mark's number, filled
@@ -531,6 +543,7 @@ chartOf on hot live f =
       icon = case nd.id of
         "engine" -> [ use "ic-kraken" tx (cy - 34.0) 64.0 64.0 ]
         "ears" -> [ use "ic-ears" tx (cy - 18.0) 34.0 34.0 ]
+        "sets" -> [ cylinder tx (cy - 11.0) ]
         _ -> []
       -- The kraken is drawn large, beside its label rather than above it (so
       -- it never climbs into the column heads). It says "the rig's engine"
@@ -538,6 +551,7 @@ chartOf on hot live f =
       -- column's even with all seven columns showing.
       lx = case nd.id of
         "ears" -> tx + 40.0
+        "sets" -> tx + 24.0
         "engine" -> tx + 68.0
         _ -> tx
       -- with loops beside it, the page's line is short, so it clears them
@@ -553,6 +567,14 @@ chartOf on hot live f =
             <> sub
             <> rigLamp nd.id lx cy
         )
+
+  -- The store's sign: a database cylinder, 16 by 22.
+  cylinder x y =
+    svg "g" [ attr "class" "dbicon" ]
+      [ svg "path" [ attr "d" ("M" <> n x <> "," <> n (y + 4.0) <> " v14 a8,4 0 0 0 16,0 v-14") ] []
+      , svg "ellipse" [ attr "cx" (n (x + 8.0)), attr "cy" (n (y + 4.0)), attr "rx" "8", attr "ry" "4" ] []
+      , svg "path" [ attr "class" "band", attr "d" ("M" <> n x <> "," <> n (y + 11.0) <> " a8,4 0 0 0 16,0") ] []
+      ]
 
   -- Bosun's word on the daemon behind a node: a lamp under its bar.
   daemonLamp id sn = lampAt id (sn.x0 + 2.5) (sn.y1 + 8.0)
@@ -581,9 +603,9 @@ chartOf on hot live f =
   streamsOf m = foldl (+) 0 (map _.streams (filter (\l -> l.machine == m && l.to == "ears") f.links))
   -- Who makes the notes: the page, or the rig it tells.
   playsWhere m
-    | Array.any (\l -> l.machine == m && l.control && l.signal /= Recorded) f.links = "plays on the rig"
+    | Array.any (\l -> l.machine == m && l.control && l.signal /= Recorded) f.links = "on the rig"
     | Array.any (\l -> l.machine == m && l.from == "engine") f.links = "loops on the rig"
-    | otherwise = "plays here"
+    | otherwise = "here"
 
   -- The sample sets sound whenever anything does.
   sounding l = l.machine `Array.elem` live.playing || (l.machine == "sets" && not (Array.null live.playing))
