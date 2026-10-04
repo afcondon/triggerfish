@@ -53,7 +53,9 @@ type Handlers i =
 -- | Every machine, for the dock: the ones not on the chart (closed, or open
 -- | with nothing routed) stand under the flowing ones, and a closed one is
 -- | opened from there. `playable`: its fish is its play button.
-type Dock = { slot :: String, name :: String, open :: Boolean, playing :: Boolean, playable :: Boolean, alias :: Maybe String, href :: String, target :: String }
+-- | `rig`: its page is closed but the rig is playing it (the stage says so);
+-- | its fish faces the audio and stops it on the rig.
+type Dock = { slot :: String, name :: String, open :: Boolean, playing :: Boolean, playable :: Boolean, alias :: Maybe String, href :: String, target :: String, rig :: Boolean }
 
 -- | The harmony patch bay drawn on the chart. A source has an output port:
 -- | on its machine's label (Vetula's key and voices), on its own node in
@@ -404,6 +406,13 @@ chartOf on hot live f =
         , HE.onClick \_ -> on.play m (not d.playing)
         ]
         [ fishUse m x y d.playing, svg "title" [] [ HH.text ((if d.playing then "Stop " else "Play ") <> d.name) ] ]
+    Just d | d.rig ->
+      svg "g"
+        [ attr "class" "fish fishbtn playing", attr "role" "button", attr "tabindex" "0"
+        , attr "aria-label" ("Stop " <> d.name <> " on the rig")
+        , HE.onClick \_ -> on.play m false
+        ]
+        [ fishUse m x y true, svg "title" [] [ HH.text ("Stop " <> d.name <> ": the rig plays it, with no page open") ] ]
     Just d ->
       svg "g" [ attr "class" ("fish" <> if d.playing then " playing" else "") ] [ fishUse m x y d.playing ]
     Nothing -> use ("sp-" <> m) x y 54.0 32.0
@@ -430,14 +439,15 @@ chartOf on hot live f =
     in
       svg "g" [ attr "class" ("dock" <> if d.open then " open" else " closed") ]
         [ svg "rect" [ attr "class" "hit", attr "x" "10", attr "y" (n (y - 18.0)), attr "width" (n (left - 20.0)), attr "height" "36" ] []
-        , if d.open then svg "g" [] [ fishBtn d.slot 23.0 (y - 16.0), label "name" (left - 10.0) (y - 1.0) "end" d.name ]
+        , if d.open || d.rig then svg "g" [] [ fishBtn d.slot 23.0 (y - 16.0), label "name" (left - 10.0) (y - 1.0) "end" d.name ]
           -- a closed machine: a plain click shows its 'open ↗'; the
           -- browser's own cmd-click opens it behind the dashboard
           else svg "a" [ attr "class" "ghostfish", attr "href" d.href, attr "target" d.target, attr "data-peek" "", HE.onClick \_ -> on.peek d.slot ]
                  [ use ("sp-" <> d.slot) 23.0 (y - 16.0) 54.0 32.0
                  , label "name" (left - 10.0) (y - 1.0) "end" d.name
                  , svg "title" [] [ HH.text d.name ] ]
-        , if d.open then label "sub" (left - 10.0) (y + 12.0) "end" ("open · nothing routed" <> preset d.slot)
+        , if d.rig then label "sub" (left - 10.0) (y + 12.0) "end" "on the rig, no page"
+          else if d.open then label "sub" (left - 10.0) (y + 12.0) "end" ("open · nothing routed" <> preset d.slot)
           else if live.peeked == Just d.slot then
             svg "a" [ attr "class" "openlink", attr "href" d.href, attr "target" d.target ]
               [ label "sub" (left - 10.0) (y + 12.0) "end" "open ↗"
@@ -611,6 +621,7 @@ chartOf on hot live f =
   -- Who makes the notes: the page, or the rig it tells.
   playsWhere m
     | Array.any (\l -> l.machine == m && l.control && l.signal /= Recorded) f.links = "on the rig"
+    | maybe false _.rig (dockOf m) = "on the rig, no page"
     | Array.any (\l -> l.machine == m && l.from == "engine") f.links = "loops on the rig"
     | otherwise = "here"
 

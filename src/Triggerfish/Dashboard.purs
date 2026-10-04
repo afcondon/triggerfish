@@ -61,6 +61,8 @@ import Web.UIEvent.KeyboardEvent as KE
 import Web.UIEvent.KeyboardEvent.EventTypes as KET
 import Triggerfish.Flow as Flow
 import Triggerfish.Bosun as Bosun
+import Simple.JSON (readJSON)
+import Data.Either (hush)
 import Triggerfish.BackgroundOpen as BackgroundOpen
 import Triggerfish.Dashboard.Atlantis as Atlantis
 import Triggerfish.Capture.RigLoops as RigLoops
@@ -172,6 +174,8 @@ type State =
   , armed :: Maybe String
   -- the closed machine whose 'open ↗' a plain click has shown
   , peeked :: Maybe String
+  -- what the rig says it is playing, per slot (its stage), page or no page
+  , rigPlaying :: Map String Boolean
   }
 
 data Action
@@ -223,7 +227,7 @@ component = H.mkComponent
       , table: RM.defaultTable, ports: [], sampleSets: [], hot: Nothing, router: Router.initial
       , matrix: Nothing, pick: Nothing, focus: Nothing, sheet: Nothing, foldDrums: true, vetulaSent: Nothing
       , relays: false, allVoices: false, rigLoops: Map.empty, bosun: Nothing
-      , atlantis: false, asked: [], confirmingDown: false, hidden: [], keyHot: Nothing, armed: Nothing, peeked: Nothing }
+      , atlantis: false, asked: [], confirmingDown: false, hidden: [], keyHot: Nothing, armed: Nothing, peeked: Nothing, rigPlaying: Map.empty }
   , render
   , eval: H.mkEval H.defaultEval { handleAction = handleAction, initialize = Just Init }
   }
@@ -332,7 +336,14 @@ handleAction = case _ of
     when (m == Atlantis && maybe false (\h -> h.desired /= "up") st.bosun)
       (handleAction (RigGroup "up"))
 
-  Command slot play -> post (if play then Bus.Play slot else Bus.Stop slot)
+  -- A machine's fish. With its page open, the page is told. With none, a
+  -- stop goes to the rig itself, as Limulus would send it; a start needs
+  -- the page, which holds what to play.
+  Command slot play -> do
+    st <- H.get
+    let open = maybe false (isOpen st) (find (\m -> m.slot == slot) machines)
+    if open then post (if play then Bus.Play slot else Bus.Stop slot)
+    else when (not play) (sendRig (RigLoops.cueLine slot "hush"))
 
   StopAll -> do
     st <- H.get
@@ -431,8 +442,10 @@ handleAction = case _ of
     H.modify_ _ { vetulaSent = Nothing }
     sendRig Router.subscribeLine
     sendRig RigLoops.syncLine
+    sendRig "stage-subscribe"
 
   RigFrame msg -> do
+    for_ (readStage msg) \e -> H.modify_ \x -> x { rigPlaying = Map.insert e.slot e.playing x.rigPlaying }
     for_ loopMachines \m -> do
       for_ (RigLoops.readLoops m msg) \marks -> H.modify_ \x -> x { rigLoops = Map.insert m marks x.rigLoops }
       when (RigLoops.readClear m msg) (H.modify_ \x -> x { rigLoops = Map.delete m x.rigLoops })
@@ -530,6 +543,10 @@ render st =
 -- | The signal-flow chart: what the open pages drive, by the path the mode
 -- | gives them. Conspicillum and Quadrat route themselves rather than through
 -- | the table, so their routes are stated here.
+-- | A `stage {"slot", "playing", …}` line: what the rig plays for a slot.
+readStage :: String -> Maybe { slot :: String, playing :: Boolean }
+readStage line = String.stripPrefix (Pattern "stage ") line >>= \json -> hush (readJSON json)
+
 -- | An input's word on the chart.
 inputWord :: HarmonyRoute.Input -> String
 inputWord = case _ of
@@ -576,6 +593,7 @@ flowChart st =
                 , rigUp: st.rigUp
                 , down: downNodes
                 , quantise
+                , rigOnly: filter rigOnly (map _.slot machines)
                 }
             )
         ]
@@ -595,7 +613,13 @@ flowChart st =
       { slot: m.slot, name: m.name, open: isOpen st m, playing: playing st m, playable: m.playable
       , alias: if isOpen st m then heard >>= _.state.alias else Nothing
       , href: m.href, target: m.target
+      , rig: rigOnly m.slot
       }
+  -- machines with a `$ hush` on the rig (Selene's stops the ES-9's
+  -- signals; its FH-2 banks run on the FH-2)
+  rigOnly slot = slot `elem` [ "odonus", "vetula", "balistes", "conspicillum", "selene" ]
+    && st.rigUp && Map.lookup slot st.rigPlaying == Just true
+    && not (maybe false (isOpen st) (find (\m -> m.slot == slot) machines))
   -- The patch bay: a port for every row of the harmony matrix, the cables
   -- its routes make, and the port clicked first.
   patch =

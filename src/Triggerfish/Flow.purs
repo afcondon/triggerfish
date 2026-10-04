@@ -174,6 +174,9 @@ type Inputs =
   -- | there. "diaphus" breaks every hop of the rig's MIDI, drawn or not.
   , down :: Array String
   , quantise :: Array Quant
+  -- | machines the rig says it is playing (the stage) whose page is closed:
+  -- | drawn from the engine, as a closed page's loops are
+  , rigOnly :: Array String
   }
 
 -- | The machine a source belongs to, by its slot name.
@@ -332,7 +335,7 @@ flow inp = { nodes, links: links <> loopLinks <> quantLinks <> makesLinks }
   pageOpen m = m `elem` inp.machines
   -- The rig's marks, while the rig is there to keep them.
   marks m = if inp.rigUp then filter (\l -> l.machine == m) inp.loops else []
-  loopsPlay m = Array.any _.playing (marks m)
+  loopsPlay m = Array.any _.playing (marks m) || (inp.rigUp && m `elem` inp.rigOnly && not (pageOpen m))
   -- Whether the page's own streams already run through the engine.
   rigCarries m = pageOpen m && modeFor inp.mode m == Atlantis && rigPlays m
   unitOf m src = if m `elem` inp.open then "src:" <> sourceKey src else "m:" <> m
@@ -348,8 +351,10 @@ flow inp = { nodes, links: links <> loopLinks <> quantLinks <> makesLinks }
         if loopsPlay m && not (rigCarries m) then mapMaybe (\leg -> loopStream m (notesOf r.source) leg.dest) legs else []
     in page <> fromLoops
 
-  extraStreams = inp.extras # filter (pageOpen <<< _.machine)
-    # mapMaybe \e -> stream e.machine ("m:" <> e.machine) e.via [] e.dest
+  extraStreams = inp.extras # mapMaybe \e ->
+    if pageOpen e.machine then stream e.machine ("m:" <> e.machine) e.via [] e.dest
+    else if loopsPlay e.machine && e.via == Nothing then loopStream e.machine [] e.dest
+    else Nothing
 
   loopStream m notes dest =
     (\hops -> mk m ("rig:" <> m) notes dest (filter (\h -> h.from /= "browser") hops) false) <$> pathOf inp.relays Atlantis m Nothing dest

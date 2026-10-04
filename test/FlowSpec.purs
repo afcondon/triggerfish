@@ -33,6 +33,7 @@ base =
   , rigUp: true
   , down: []
   , quantise: []
+  , rigOnly: []
   }
 
 -- | Odonus on the IAC bus alone: the base case of the reveal.
@@ -148,6 +149,13 @@ runFlowTests = do
   let quadratOpen = flow base { machines = [ "quadrat" ], table = [] }
   check "Quadrat, open, makes sample sets: a line into them"
     ((find (\l -> l.from == "m:quadrat") quadratOpen.links <#> \l -> [ l.to, l.machine ]) == Just [ "sets", "quadrat" ])
+
+  let conspOnRig = flow base { machines = [], table = [], rigOnly = [ "conspicillum" ]
+        , extras = [ { machine: "conspicillum", dest: DSample { set: "", n: 0, begin: 0, end: 100, reverse: false, gain: 100, chop: 1 }, via: Nothing } ] }
+  check "a machine the rig plays with its page closed is drawn from the engine"
+    ( isJust (find (\l -> l.from == "engine" && l.to == "d-dirt" && l.machine == "conspicillum") conspOnRig.links)
+        && isNothing (find (\l -> l.to == "browser" || l.from == "browser") conspOnRig.links)
+    )
 
   check "Solo closes up the rig's columns"
     (layerOf one "port:IAC Driver Tidal" == Just 2)
