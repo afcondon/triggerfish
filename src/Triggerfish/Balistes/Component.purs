@@ -994,20 +994,35 @@ render s =
     [ style $ "position:fixed;top:var(--tf-bar);left:0;right:0;bottom:0;display:flex;flex-direction:column;"
         <> "user-select:none;-webkit-user-select:none;background:#b7b1a0;font-family:Georgia,serif" ]
     [ navBar s
-    -- Bands left, ASSEMBLE right. Un-stretching the bands to ~2/3 costs them
+    -- Bands left, Limulus right. Un-stretching the bands to ~2/3 costs them
     -- nothing — the RYTM grid's aspect is ~7.4:1, so a narrower band makes it
     -- SHORTER, not cramped — and buys a full-height column for putting the
-    -- patterns together.
+    -- patterns together. That column was ASSEMBLE; since 2026-10-04 (AC)
+    -- patterns are combined in Tidal, so it is Limulus, kept open
+    -- (docs/kb/plans/the-deck.md). `assemblePanel` is dormant until Balistes's
+    -- named patterns replace the lane.
     , HH.div
         [ style "flex:1 1 auto;min-height:0;display:flex;align-items:stretch" ]
         [ HH.div
             [ style "flex:1 1 auto;min-width:0;overflow-y:auto;display:flex;flex-direction:column;gap:10px;padding:10px 14px 14px" ]
             [ mutableBand s, gridsBand s ]
-        , assemblePanel s
+        , limulusDock
         ]
     , presetModal s
     , laneEditModal s
     ]
+
+-- | The right third, given to Limulus (the shared bar's panel lies over it, in
+-- | Atlantis). What shows through only in Solo, where Limulus has no rig.
+limulusDock :: forall m. H.ComponentHTML Action () m
+limulusDock =
+  HH.div
+    [ HP.attr (HH.AttrName "data-limulus-dock") "always"
+    , style $ "flex:0 0 33%;min-width:360px;height:100%;box-sizing:border-box;display:flex;align-items:center;justify-content:center;"
+        <> "background:linear-gradient(#dcd8c9,#cfcabb);border-left:1px solid #b3ae9c;padding:24px;"
+        <> "color:#6a6657;font-size:13px;font-style:italic;text-align:center"
+    ]
+    [ HH.text "Patterns are combined in Limulus, which plays on the rig: switch to Atlantis on the dashboard." ]
 
 -- | **ASSEMBLE** — Balistes' view onto its own macro-tidal arrangement lane.
 -- |

@@ -33,6 +33,8 @@ import Data.Maybe (Maybe(..), fromMaybe, maybe)
 import Halogen as H
 import Halogen.HTML as HH
 import Halogen.HTML.Events as HE
+import Halogen.HTML.Properties as HP
+import Halogen.HTML.Core (AttrName(..))
 import Triggerfish.Odonus.Model as M
 import Triggerfish.Ui.Knob (knob)
 import Triggerfish.Ui.Style (engrave, style)
@@ -77,9 +79,10 @@ panelShell collapsed label sub widthCss body =
   if elem label collapsed then panelTab label
   else
     HH.div
+      ( (if elem label limulusCovers then [ HP.attr (AttrName "data-limulus-dock") "" ] else []) <>
       [ style $ widthCss <> ";height:calc(100vh - var(--tf-bar));box-sizing:border-box;overflow-y:auto;overflow-x:hidden;"
           <> "background:linear-gradient(#dcd8c9,#cfcabb);border-left:1px solid #b3ae9c;"
-          <> "padding:18px 14px;display:flex;flex-direction:column" ]
+          <> "padding:18px 14px;display:flex;flex-direction:column" ] )
       ( [ HH.div
             [ HE.onClick \_ -> CollapsePanel label
             , style $ engrave <> ";font-size:11px;display:flex;justify-content:space-between;"
@@ -92,6 +95,12 @@ panelShell collapsed label sub widthCss body =
                 ]
             ]
         ] <> body )
+
+-- | The panels the Limulus panel covers when it is open (AC, 2026-10-04: Odonus
+-- | has no room to spare, so it lies over the two rightmost). The shared bar
+-- | places it over whatever carries `data-limulus-dock`.
+limulusCovers :: Array String
+limulusCovers = [ "PARAMETERS", "PER CELL" ]
 
 -- | A collapsed panel: a thin full-height tab with the rotated label; click to
 -- | reopen. The freed width flows to the open panels and the scope.

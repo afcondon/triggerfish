@@ -130,12 +130,15 @@ type State =
   -- kept once made, hidden when closed, so its log and undo survive.
   , limulus :: Boolean
   , limulusMade :: Boolean
+  -- the page gives Limulus a region that keeps it open (Vetula's Perform)
+  , limulusAlways :: Boolean
   }
 
 -- | The panel asks to close (Escape inside it).
 foreign import limulusAskedClose :: E.Event -> Boolean
 foreign import focusFrame :: HTMLElement -> Effect Unit
 foreign import focusSelf :: Effect Unit
+foreign import watchDocks :: (Boolean -> Effect Unit) -> Effect Unit
 
 data Action o
   = Init
@@ -153,6 +156,7 @@ data Action o
   | ModeStored
   | ToggleLimulus
   | FromFrame E.Event
+  | DockAlways Boolean
 
 type Slots o = (machine :: H.Slot SQ.Query o Unit)
 
@@ -163,7 +167,7 @@ root :: forall q i o' o. Config o -> H.Component q i o' Aff
 root cfg = H.mkComponent
   { initialState: \_ ->
       { mode: Solo, playing: false, bpm: 120.0, tempoFlash: Nothing, freeT0: 0.0, chip: Nothing, rig: Nothing
-      , rigUp: false, table: RM.defaultTable, staged: Nothing, bus: Nothing, limulus: false, limulusMade: false }
+      , rigUp: false, table: RM.defaultTable, staged: Nothing, bus: Nothing, limulus: false, limulusMade: false, limulusAlways: false }
   , render: render cfg
   , eval: H.mkEval H.defaultEval { handleAction = handleAction cfg, initialize = Just Init }
   }
@@ -196,6 +200,7 @@ handleAction cfg = case _ of
     target <- liftEffect $ Window.toEventTarget <$> window
     _ <- H.subscribe $ eventListener KET.keydown target (Just <<< Key)
     _ <- H.subscribe $ eventListener (EventType "message") target (Just <<< FromFrame)
+    liftEffect $ watchDocks (HS.notify listener <<< DockAlways)
     handleAction cfg RoutingChanged
     pushFree
     pushSounding cfg
@@ -230,6 +235,7 @@ handleAction cfg = case _ of
     H.modify_ _ { limulus = open, limulusMade = st.limulusMade || open }
     if open then H.getHTMLElementRef limulusRef >>= traverse_ (liftEffect <<< focusFrame)
     else liftEffect focusSelf
+  DockAlways on -> H.modify_ _ { limulusAlways = on }
   FromFrame e -> when (limulusAskedClose e) do
     H.modify_ _ { limulus = false }
     liftEffect focusSelf
@@ -374,21 +380,27 @@ render cfg st =
     ( [ bar cfg st
       , HH.slot _machine unit cfg.component unit FromMachine
       ]
-      <> (if st.limulusMade then [ limulusPanel st.limulus ] else [])
+      <> (if st.limulusMade || docked then [ limulusPanel (st.limulus || docked) ] else [])
     )
+  where
+  -- a region that keeps Limulus open, in Atlantis (Limulus needs the rig)
+  docked = st.limulusAlways && st.mode == Atlantis
 
 -- | Limulus beside the machine: the same editor and buffer as its own tab
--- | (same origin), on the right, under the bar. Hidden rather than removed
--- | when closed.
+-- | (same origin), in the machine's paper look. It covers the region the page
+-- | marks with `data-limulus-dock` (`watchDocks`), else stands on the right,
+-- | under the bar. Hidden rather than removed when closed.
 limulusPanel :: forall w i. Boolean -> HH.HTML w i
 limulusPanel open =
   HH.div
-    [ style $ "position:fixed;top:var(--tf-bar);right:0;bottom:0;width:min(720px,max(420px,46vw));z-index:60;"
-        <> "box-shadow:-6px 0 18px #00000040;border-left:1px solid #000;background:#000;"
+    [ style $ "position:fixed;z-index:60;box-sizing:border-box;"
+        <> "left:var(--lim-left,auto);right:var(--lim-right,0);top:var(--lim-top,var(--tf-bar));"
+        <> "width:var(--lim-width,min(720px,max(420px,46vw)));height:var(--lim-height,calc(100vh - var(--tf-bar)));"
+        <> "box-shadow:-4px 0 14px #00000030;border-left:1px solid #b3ae9c;background:#f6f2e7;"
         <> (if open then "" else "display:none;")
     ]
     [ HH.iframe
-        [ HP.src "/limulus/?embed", HP.ref limulusRef, HP.title "Limulus"
+        [ HP.src "/limulus/?embed&look=paper", HP.ref limulusRef, HP.title "Limulus"
         , style "width:100%;height:100%;border:0;display:block"
         ]
     ]
@@ -411,7 +423,7 @@ bar cfg st =
       <> (if cfg.playable then [ button (if st.playing then "■ Stop" else "▶ Play") TogglePlay ] else [])
       <> [ button "Capture (c)" Capture ]
       -- Limulus combines the machines, on the rig: Atlantis only
-      <> (if st.mode == Atlantis then [ button (if st.limulus then "Close Limulus (`)" else "Limulus (`)") ToggleLimulus ] else [])
+      <> (if st.mode == Atlantis && not st.limulusAlways then [ button (if st.limulus then "Close Limulus (`)" else "Limulus (`)") ToggleLimulus ] else [])
       <> [ HH.span [ style "display:flex;align-items:center;min-width:40px" ] [ chipIcons st.chip ]
       , HH.span [ style "flex:1" ] []
       ]

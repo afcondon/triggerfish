@@ -6431,34 +6431,18 @@ performSurface st =
         <> "justify-content: flex-start; gap: 22px; padding: 30px 28px; padding-top: calc(" <> chyronHeight <> " + 16px); padding-right: calc(" <> riverWidth <> " + 28px);" ) ]
     ( body <> [ riverColumn st, perfEditModal st, perfPhrasePickModal st ] )
   where
+  -- Perform is Limulus (AC, 2026-10-04: docs/kb/plans/the-deck.md). The
+  -- shared bar's Limulus panel lies over this region whenever it is on the
+  -- page; the cards are lines there (`v3 $ …`), still kept on the stage and
+  -- played by the rig. The card boxes and the FX palette (`perfBox`,
+  -- `fxPalette`) are dormant until progressions become cards. What shows
+  -- through only in Solo, where Limulus has no rig.
   body =
       [ HH.div
-          -- the voices now take the full surface; the river is no longer a flex
-          -- sibling but a fixed column, so the padding-right above is what keeps
-          -- the cards clear of it.
-          [ HP.style "flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; gap: 22px; width: 100%; overflow-y: auto;" ]
-          -- FX palette floated to the top of the surface (holding pattern — its final
-          -- home and framing, "training wheels for Tidal" vs "starter-pack
-          -- suggestions", is a parked design question). AC, 2026-08-03.
-          -- The scene/session controls (save · new session · scenes · the 3-glyph
-          -- badge) live in the secondary nav's session menu (⋯).
-          [ fxPalette st
-          , HH.div
-              [ HP.style "display: flex; gap: 18px; flex-wrap: wrap; justify-content: flex-start; align-items: flex-start; width: 100%;" ]
-              (mapWithIndex (perfBox st) st.perfBoxes <> [ addPlayerTile ])
-          ]
+          [ HP.attr (HH.AttrName "data-limulus-dock") "always"
+          , HP.style "flex: 1 1 auto; min-height: 0; width: 100%; display: flex; align-items: center; justify-content: center; color: #9a8d6a; font-style: italic; font-size: 13px;" ]
+          [ HH.text "Perform is Limulus, which plays on the rig: switch to Atlantis on the dashboard." ]
       ]
-
-  -- a dashed ＋ tile sitting inline with the cards: the Perform surface is a
-  -- growable palette of voices, one per MIDI channel (1..16), not a fixed four.
-  addPlayerTile =
-    HH.button
-      [ HP.style "width: 208px; min-height: 118px; border: 2px dashed #d8ceb4; background: transparent; border-radius: 10px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px; cursor: pointer; color: #b0a684;"
-      , HP.title "add a player on the next free MIDI channel"
-      , HP.enabled (length st.perfBoxes < 16)
-      , HE.onClick \_ -> PerfAddBox ]
-      [ HH.div [ HP.style "font-size: 30px; line-height: 1;" ] [ HH.text "＋" ]
-      , HH.div [ HP.style "font-size: 10px; letter-spacing: 0.1em; text-transform: uppercase;" ] [ HH.text "add player" ] ]
 
 -- | The sequence-editor modal — a roomier surface for the text hatch than the
 -- | inline field, with a mini-notation guide and clickable examples in place. Edits
