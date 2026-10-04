@@ -411,10 +411,9 @@ handleAction = case _ of
 
   Step tick -> do
     st <- H.get
-    -- No audible output yet (CV/gate awaits the es9 path, #142) — just advance
-    -- the playhead so the rack's visuals sweep under the master transport.
-    when (st.sounding == Local) $
-      H.modify_ _ { playStep = tick.index `mod` cycleSteps }
+    -- The modular runs what was applied whatever this page does, so the
+    -- playhead always sweeps with the clock (there is no Play to wait for).
+    H.modify_ _ { playStep = tick.index `mod` cycleSteps }
 
   Frame -> do
     st <- H.get
@@ -1047,7 +1046,6 @@ transportStrip s =
     -- The tempo is the dashboard's (Triggerfish.Tempo), shown there only.
     ( [ stat "BAR" (show s.clockBar <> " · step " <> show (s.playStep + 1) <> "/" <> show cycleSteps)
       , stat "MIDI" s.midiName
-      , applyButton
       ]
         <> replyReadout s )
   where
@@ -1056,15 +1054,6 @@ transportStrip s =
       [ HH.span [ style $ engrave <> ";font-size:8px;opacity:0.55" ] [ HH.text label ]
       , HH.span [ style $ "font-family:'SF Mono',Menlo,monospace;font-size:10px;color:" <> ink ] [ HH.text val ]
       ]
-
-applyButton :: forall m. H.ComponentHTML Action Slots m
-applyButton =
-  HH.button
-    [ HE.onClick \_ -> ApplyToRig
-    , style $ "padding:7px 14px;border:1px solid #6f8fa0;border-radius:6px;cursor:pointer;"
-        <> "font-family:Georgia,serif;font-size:11px;letter-spacing:0.06em;color:#1c2a30;"
-        <> "background:linear-gradient(#9fc0d0,#7a9eb0)" ]
-    [ HH.text "APPLY → RIG" ]
 
 -- One status pill per modular (es9/fh2) destination: its socket:bank + the latest
 -- daemon reply. "—" before any push, "…" while in flight, then OK (green) / ERR

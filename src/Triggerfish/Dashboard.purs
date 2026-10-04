@@ -185,8 +185,9 @@ type State =
   , portsRead :: Boolean
   -- the engine Limulus sends Tidal to: "architeuthis" or "ghci"
   , limulusEngine :: String
-  -- what Selene has given the modular, as the rig keeps it (`selene-applied`)
-  , polysignals :: Array Flow.Polysignal
+  -- what Selene has given the modular, as the rig keeps it (`selene-applied`),
+  -- each bank running or silenced by a hush
+  , seleneBanks :: Array SeleneBank
   }
 
 data Action
@@ -244,7 +245,7 @@ component = H.mkComponent
       , table: RM.defaultTable, ports: [], sampleSets: [], hot: Nothing, router: Router.initial
       , matrix: Nothing, pick: Nothing, focus: Nothing, sheet: Nothing, foldDrums: true, vetulaSent: Nothing
       , relays: false, allVoices: false, rigLoops: Map.empty, bosun: Nothing
-      , xray: false, asked: [], confirmingDown: false, hidden: [], keyHot: Nothing, armed: Nothing, peeked: Nothing, rigPlaying: Map.empty, doctor: Nothing, midi: Nothing, portsRead: false, limulusEngine: "architeuthis", polysignals: [] }
+      , xray: false, asked: [], confirmingDown: false, hidden: [], keyHot: Nothing, armed: Nothing, peeked: Nothing, rigPlaying: Map.empty, doctor: Nothing, midi: Nothing, portsRead: false, limulusEngine: "architeuthis", seleneBanks: [] }
   , render
   , eval: H.mkEval H.defaultEval { handleAction = handleAction, initialize = Just Init }
   }
@@ -364,6 +365,12 @@ handleAction = case _ of
   -- A machine's fish. With its page open, the page is told. With none, a
   -- stop goes to the rig itself, as Limulus would send it; a start needs
   -- the page, which holds what to play.
+  -- Selene has no Play: what it applied runs on the modular, page or no
+  -- page, so its fish hushes the rig's banks or gives them back.
+  Command "selene" play -> do
+    sendRig (if play then "selene-resume" else RigLoops.cueLine "selene" "hush")
+    sendRig "selene-applied"
+
   Command slot play -> do
     st <- H.get
     let open = maybe false (isOpen st) (find (\m -> m.slot == slot) machines)
@@ -373,6 +380,7 @@ handleAction = case _ of
   StopAll -> do
     st <- H.get
     for_ machines \m -> when (playing st m) (post (Bus.Stop m.slot))
+    unless (null (liveBanks st)) (handleAction (Command "selene" false))
 
   -- Kill every voice on the rig, orphans included, and stop every page's
   -- transport. The same PANIC as each page's, for all of them at once.
@@ -517,9 +525,9 @@ handleAction = case _ of
     sendRig "selene-applied"
 
   RigFrame msg -> do
-    for_ (readApplied msg) \ps -> do
-      old <- H.gets _.polysignals
-      when (ps /= old) (H.modify_ _ { polysignals = ps })
+    for_ (readApplied msg) \bs -> do
+      old <- H.gets _.seleneBanks
+      when (bs /= old) (H.modify_ _ { seleneBanks = bs })
     for_ (readStage msg) \e -> H.modify_ \x -> x { rigPlaying = Map.insert e.slot e.playing x.rigPlaying }
     for_ loopMachines \m -> do
       for_ (RigLoops.readLoops m msg) \marks -> H.modify_ \x -> x { rigLoops = Map.insert m marks x.rigLoops }
@@ -617,16 +625,19 @@ render st =
 readStage :: String -> Maybe { slot :: String, playing :: Boolean }
 readStage line = String.stripPrefix (Pattern "stage ") line >>= \json -> hush (readJSON json)
 
--- | A `selene-applied [...]` line: the banks the rig keeps for the modular.
--- | A hush silences the ES-9's (es9-daemon stops them); the FH-2's run on
--- | the FH-2 and keep going, so they stay drawn.
-readApplied :: String -> Maybe (Array Flow.Polysignal)
-readApplied line = do
-  json <- String.stripPrefix (Pattern "selene-applied ") line
-  (rows :: Array { socket :: String, bank :: String, family :: String, slots :: Int, hushed :: Boolean }) <- hush (readJSON json)
-  pure $ rows # Array.mapMaybe \r ->
-    if r.hushed && r.socket == "es9" then Nothing
-    else Just { socket: r.socket, bank: r.bank, family: r.family, slots: r.slots }
+-- | A bank the rig keeps for the modular, and whether a hush has silenced it
+-- | (es9-daemon's panic for the ES-9; for the FH-2, the keeper's depth-0
+-- | copy, until its daemon has a `silence`).
+type SeleneBank = { socket :: String, bank :: String, family :: String, slots :: Int, hushed :: Boolean }
+
+-- | A `selene-applied [...]` line.
+readApplied :: String -> Maybe (Array SeleneBank)
+readApplied line = String.stripPrefix (Pattern "selene-applied ") line >>= hush <<< readJSON
+
+-- | The banks the modular is running now: the chart's.
+liveBanks :: State -> Array Flow.Polysignal
+liveBanks st = st.seleneBanks # Array.mapMaybe \b ->
+  if b.hushed then Nothing else Just { socket: b.socket, bank: b.bank, family: b.family, slots: b.slots }
 
 -- | Whether the FH-2 is among the MIDI ports.
 hasFh2 :: Array String -> Boolean
@@ -666,7 +677,7 @@ flowChart st =
   HH.section [ cls "flow", HP.attr (AttrName "aria-label") "Where it all goes" ]
     ( (if st.xray then [ xrayStrip st ] else []) <>
     [ HH.div [ cls ("flow-chart" <> if st.allVoices then " all-voices" else "") ]
-        [ FlowView.chart { hover: Hover, link: ChartLink, port: PortClick, cable: CableClick, play: Command, peek: Peek, restart: RigRestart, engine: SetLimulusEngine } st.hot { playing: Array.nub (map _.slot (filter (playing st) machines) <> (if null st.polysignals then [] else [ "selene" ])), rigUp: st.rigUp, tempo: st.tempo, lamps, hidden: st.hidden, keyHot: st.keyHot, patch, dock, locked: st.locked, peeked: st.peeked, xray: st.xray, limulusEngine: st.limulusEngine }
+        [ FlowView.chart { hover: Hover, link: ChartLink, port: PortClick, cable: CableClick, play: Command, peek: Peek, restart: RigRestart, engine: SetLimulusEngine } st.hot { playing: Array.nub (map _.slot (filter (playing st) machines) <> (if null (liveBanks st) then [] else [ "selene" ])), rigUp: st.rigUp, tempo: st.tempo, lamps, hidden: st.hidden, keyHot: st.keyHot, patch, dock, locked: st.locked, peeked: st.peeked, xray: st.xray, limulusEngine: st.limulusEngine }
             ( Flow.flow
                 { mode: st.mode
                 , table: st.table
@@ -680,7 +691,7 @@ flowChart st =
                 , down: downNodes
                 , quantise
                 , rigOnly: filter rigOnly (map _.slot machines)
-                , polysignals: st.polysignals
+                , polysignals: liveBanks st
                 }
             )
         ]
@@ -693,17 +704,21 @@ flowChart st =
   dock = machines <#> \m ->
     let heard = Map.lookup m.slot st.heard
     in
-      { slot: m.slot, name: m.name, open: isOpen st m, playing: playing st m, playable: m.playable
+      { slot: m.slot, name: m.name, open: isOpen st m
+      , playing: playing st m || remote m.slot && not (null (liveBanks st))
+      , playable: m.playable
       , alias: if isOpen st m then heard >>= _.state.alias else Nothing
       , href: m.href, target: m.target
       , rig: rigOnly m.slot
+      , remote: remote m.slot
       }
-  -- machines with a `$ hush` on the rig (Selene's stops the ES-9's
-  -- signals; its FH-2 banks run on the FH-2)
+  -- Selene, once the rig keeps banks for it: played and stopped on the rig
+  remote slot = slot == "selene" && not (null st.seleneBanks)
+  -- machines with a `$ hush` on the rig (Selene's silences its banks)
   rigOnly slot = slot `elem` [ "odonus", "vetula", "balistes", "conspicillum", "selene" ]
     && st.rigUp
     -- the stage says so; or, for Selene, the rig keeps banks the modular runs
-    && (Map.lookup slot st.rigPlaying == Just true || slot == "selene" && not (null st.polysignals))
+    && (Map.lookup slot st.rigPlaying == Just true || slot == "selene" && not (null (liveBanks st)))
     && not (maybe false (isOpen st) (find (\m -> m.slot == slot) machines))
   -- The patch bay: a port for every row of the harmony matrix, the cables
   -- its routes make, and the port clicked first.

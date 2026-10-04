@@ -71,7 +71,9 @@ type DaemonLamp =
 -- | opened from there. `playable`: its fish is its play button.
 -- | `rig`: its page is closed but the rig is playing it (the stage says so);
 -- | its fish faces the audio and stops it on the rig.
-type Dock = { slot :: String, name :: String, open :: Boolean, playing :: Boolean, playable :: Boolean, alias :: Maybe String, href :: String, target :: String, rig :: Boolean }
+-- | `remote`: its fish plays and stops it on the rig, page or no page
+-- | (Selene, whose banks run on the modular).
+type Dock = { slot :: String, name :: String, open :: Boolean, playing :: Boolean, playable :: Boolean, alias :: Maybe String, href :: String, target :: String, rig :: Boolean, remote :: Boolean }
 
 -- | The harmony patch bay drawn on the chart. A source has an output port:
 -- | on its machine's label (Vetula's key and voices), on its own node in
@@ -434,7 +436,7 @@ chartOf on hot live f =
   -- towards the audio, while it plays. A playable machine's fish is also its
   -- play and stop, as on its own page.
   fishBtn m x y = case dockOf m of
-    Just d | d.open && d.playable ->
+    Just d | d.playable && (d.open || d.remote) ->
       svg "g"
         [ attr "class" ("fish fishbtn" <> if d.playing then " playing" else ""), attr "role" "button", attr "tabindex" "0"
         , attr "aria-label" ((if d.playing then "Stop " else "Play ") <> d.name)
@@ -474,7 +476,7 @@ chartOf on hot live f =
     in
       svg "g" [ attr "class" ("dock" <> (if d.open then " open" else " closed") <> procCls ("m:" <> d.slot)) ]
         [ svg "rect" [ attr "class" "hit", attr "x" "10", attr "y" (n (y - 18.0)), attr "width" (n (left - 20.0)), attr "height" "36" ] []
-        , if d.open || d.rig then svg "g" [] [ fishBtn d.slot 23.0 (y - 16.0), label "name" (left - 10.0) (y - 1.0) "end" d.name ]
+        , if d.open || d.rig || d.remote then svg "g" [] [ fishBtn d.slot 23.0 (y - 16.0), label "name" (left - 10.0) (y - 1.0) "end" d.name ]
           -- a closed machine: a plain click shows its 'open ↗'; the
           -- browser's own cmd-click opens it behind the dashboard
           else svg "a" [ attr "class" "ghostfish", attr "href" d.href, attr "target" d.target, attr "data-peek" "", HE.onClick \_ -> on.peek d.slot ]
@@ -482,6 +484,7 @@ chartOf on hot live f =
                  , label "name" (left - 10.0) (y - 1.0) "end" d.name
                  , svg "title" [] [ HH.text d.name ] ]
         , if live.xray && not (Array.null (lampsOf ("m:" <> d.slot))) then lampLines ("m:" <> d.slot) "end" (left - 10.0) (y + 12.0)
+          else if d.remote && not d.open then label "sub" (left - 10.0) (y + 12.0) "end" (if d.playing then "on the rig, no page" else "hushed on the rig")
           else if d.rig then label "sub" (left - 10.0) (y + 12.0) "end" "on the rig, no page"
           else if d.open then label "sub" (left - 10.0) (y + 12.0) "end" ("open · nothing routed" <> preset d.slot)
           else if live.peeked == Just d.slot then

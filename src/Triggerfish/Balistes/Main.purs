@@ -22,4 +22,5 @@ main = Standalone.run
       Balistes.LaneEdited _ -> Nothing
   , armOf: const Nothing
   , markOf: const Nothing
+  , playable: true
   }

@@ -24,4 +24,5 @@ main = Standalone.run
   , chipOf: \(Selene.IdentityChanged cv) -> Just cv
   , armOf: const Nothing
   , markOf: const Nothing
+  , playable: false
   }

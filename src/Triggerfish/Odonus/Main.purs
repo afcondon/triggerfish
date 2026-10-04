@@ -26,6 +26,7 @@ main = Standalone.run
       Odonus.StageChanged _ -> Nothing
       Odonus.Marked _ -> Nothing
   , armOf: const Nothing
+  , playable: true
   , markOf: case _ of
       Odonus.Marked at -> Just at
       _ -> Nothing

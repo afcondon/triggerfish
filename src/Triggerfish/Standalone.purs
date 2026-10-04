@@ -91,6 +91,10 @@ type Config o =
   , chipOf :: o -> Maybe (Maybe ChipView)
   , armOf :: o -> Maybe Boolean
   , markOf :: o -> Maybe Number
+  -- | whether the page has a Play: Selene does not, since what it applies
+  -- | runs on the modular from the moment it is applied, and the Dashboard
+  -- | stops and resumes it there
+  , playable :: Boolean
   }
 
 run :: forall o. Config o -> Effect Unit
@@ -228,8 +232,8 @@ handleAction cfg = case _ of
     st <- H.get
     let mine m = Stage.slotOf cfg.which == Just m
     case msg of
-      Bus.Play m | mine m && not st.playing -> handleAction cfg TogglePlay
-      Bus.Stop m | mine m && st.playing -> handleAction cfg TogglePlay
+      Bus.Play m | cfg.playable && mine m && not st.playing -> handleAction cfg TogglePlay
+      Bus.Stop m | cfg.playable && mine m && st.playing -> handleAction cfg TogglePlay
       -- The dashboard hushes the rig itself; here only the local transport stops.
       Bus.Panic -> do
         H.modify_ _ { playing = false }
@@ -283,7 +287,7 @@ handleAction cfg = case _ of
         | KE.altKey ke -> pure unit
         | otherwise -> case KE.key ke of
             "c" -> handleAction cfg Capture
-            " " -> do
+            " " | cfg.playable -> do
               liftEffect $ E.preventDefault e
               handleAction cfg TogglePlay
             _ -> pure unit
@@ -355,8 +359,8 @@ bar cfg st =
       -- Solo, the base case, needs no word; in Atlantis a quiet tag says that
       -- the rig is the one playing.
       <> (if st.mode == Atlantis then [ atlantisTag ] else [])
-      <> [ button (if st.playing then "■ Stop" else "▶ Play") TogglePlay
-      , button "Capture (c)" Capture
+      <> (if cfg.playable then [ button (if st.playing then "■ Stop" else "▶ Play") TogglePlay ] else [])
+      <> [ button "Capture (c)" Capture
       , HH.span [ style "display:flex;align-items:center;min-width:40px" ] [ chipIcons st.chip ]
       , HH.span [ style "flex:1" ] []
       ]

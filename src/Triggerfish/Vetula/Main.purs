@@ -27,6 +27,7 @@ main = Standalone.run
       Page.Armed on -> Just on
       Page.Chip _ -> Nothing
       Page.Marked _ -> Nothing
+  , playable: true
   , markOf: case _ of
       Page.Marked at -> Just at
       _ -> Nothing
