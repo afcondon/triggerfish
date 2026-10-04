@@ -66,7 +66,6 @@ import Triggerfish.LimulusEngine as LimulusEngine
 import Simple.JSON (readJSON)
 import Data.Either (hush)
 import Triggerfish.BackgroundOpen as BackgroundOpen
-import Triggerfish.Dashboard.Atlantis as Atlantis
 import Triggerfish.Capture.RigLoops as RigLoops
 import Data.Tuple (Tuple(..))
 import Triggerfish.Flow.View as FlowView
@@ -164,10 +163,10 @@ type State =
   , rigLoops :: Map String (Array RigLoops.RigMark)
   -- the Atlantis group as Bosun last said, Nothing while out of reach
   , bosun :: Maybe Bosun.Health
-  -- the Atlantis page (`#atlantis`): open, its restarts asked, and whether
-  -- lowering the rig is waiting on a second press
-  , atlantis :: Boolean
-  , asked :: Array Atlantis.Asked
+  -- the chart's X-ray (`#atlantis`, once the Atlantis page): open, the
+  -- restarts asked, and whether lowering the rig waits on a second press
+  , xray :: Boolean
+  , asked :: Array Bosun.Asked
   , confirmingDown :: Boolean
   -- the key as a filter: kinds of line hidden, and the kind hovered
   , hidden :: Array String
@@ -226,6 +225,7 @@ data Action
   | RigRestart String
   | RigGroup String
   | ConfirmDown Boolean
+  | XRay Boolean
   | KeyToggle String
   | KeyHover (Maybe String)
   | KeyAll
@@ -242,7 +242,7 @@ component = H.mkComponent
       , table: RM.defaultTable, ports: [], sampleSets: [], hot: Nothing, router: Router.initial
       , matrix: Nothing, pick: Nothing, focus: Nothing, sheet: Nothing, foldDrums: true, vetulaSent: Nothing
       , relays: false, allVoices: false, rigLoops: Map.empty, bosun: Nothing
-      , atlantis: false, asked: [], confirmingDown: false, hidden: [], keyHot: Nothing, armed: Nothing, peeked: Nothing, rigPlaying: Map.empty, doctor: Nothing, midi: Nothing, portsRead: false, limulusEngine: "architeuthis" }
+      , xray: false, asked: [], confirmingDown: false, hidden: [], keyHot: Nothing, armed: Nothing, peeked: Nothing, rigPlaying: Map.empty, doctor: Nothing, midi: Nothing, portsRead: false, limulusEngine: "architeuthis" }
   , render
   , eval: H.mkEval H.defaultEval { handleAction = handleAction, initialize = Just Init }
   }
@@ -402,7 +402,7 @@ handleAction = case _ of
     syncCards
 
   FromHash h -> do
-    H.modify_ _ { atlantis = h == "atlantis", confirmingDown = false }
+    H.modify_ _ { xray = h == "atlantis", confirmingDown = false }
     case matrixOfHash h of
       Just g -> handleAction (OpenMatrix g Nothing)
       Nothing -> H.modify_ _ { matrix = Nothing, focus = Nothing, pick = Nothing }
@@ -468,6 +468,10 @@ handleAction = case _ of
       handleAction BosunPoll
 
   ConfirmDown b -> H.modify_ _ { confirmingDown = b }
+
+  -- The X-ray has the Atlantis page's old address, so a lamp's link and
+  -- the browser's back both reach it; the hashchange does the rest.
+  XRay b -> liftEffect (Route.writeHash (if b then "atlantis" else ""))
 
   KeyToggle k -> H.modify_ \x -> x { hidden = if k `elem` x.hidden then filter (_ /= k) x.hidden else x.hidden <> [ k ] }
   KeyHover k -> H.modify_ _ { keyHot = k }
@@ -585,12 +589,7 @@ render st =
   HH.div [ cls "dash" ]
     [ topBar st
     , HH.main [ cls "body" ]
-        ( if st.atlantis then
-            [ Atlantis.view { restart: RigRestart, group: RigGroup, confirmDown: ConfirmDown }
-                { now: st.now, health: st.bosun, asked: st.asked, confirmingDown: st.confirmingDown, doctor: st.doctor }
-            ]
-          else [ flowChart st ]
-        )
+        [ flowChart st ]
     , case st.matrix of
         Nothing -> HH.text ""
         Just g -> Matrix.view g
@@ -643,8 +642,9 @@ loopMachines = [ "odonus", "vetula" ]
 flowChart :: forall m. State -> H.ComponentHTML Action () m
 flowChart st =
   HH.section [ cls "flow", HP.attr (AttrName "aria-label") "Where it all goes" ]
+    ( (if st.xray then [ xrayStrip st ] else []) <>
     [ HH.div [ cls ("flow-chart" <> if st.allVoices then " all-voices" else "") ]
-        [ FlowView.chart { hover: Hover, link: ChartLink, port: PortClick, cable: CableClick, play: Command, peek: Peek } st.hot { playing: map _.slot (filter (playing st) machines), rigUp: st.rigUp, tempo: st.tempo, lamps, hidden: st.hidden, keyHot: st.keyHot, patch, dock, locked: st.locked, peeked: st.peeked }
+        [ FlowView.chart { hover: Hover, link: ChartLink, port: PortClick, cable: CableClick, play: Command, peek: Peek, restart: RigRestart } st.hot { playing: map _.slot (filter (playing st) machines), rigUp: st.rigUp, tempo: st.tempo, lamps, hidden: st.hidden, keyHot: st.keyHot, patch, dock, locked: st.locked, peeked: st.peeked, xray: st.xray }
             ( Flow.flow
                 { mode: st.mode
                 , table: st.table
@@ -664,11 +664,12 @@ flowChart st =
     , HH.div [ cls "flow-foot" ]
         [ FlowView.key { toggle: KeyToggle, hover: KeyHover, all: KeyAll } { hidden: st.hidden, keyHot: st.keyHot }
         , HH.div [ cls "flow-switches" ]
-            [ switch "Relays" "Draw Diaphus, which delivers every MIDI note the rig sends." st.relays ShowRelays
+            [ switch "X-ray" "The rig's processes on its whole skeleton: each daemon's lamp, state and restart, with the flow faded behind." st.xray XRay
+            , switch "Relays" "Draw Diaphus, which delivers every MIDI note the rig sends." st.relays ShowRelays
             , switch "Every voice" "Open every machine into its voices: one line per channel, head or lane." st.allVoices ShowAllVoices
             ]
         ]
-    ]
+    ])
   where
   -- Every machine, for the chart's dock and its fish.
   dock = machines <#> \m ->
@@ -722,16 +723,7 @@ flowChart st =
         HarmonyRoute.Harmony h -> "harmony " <> h
     }
   services = maybe [] _.services st.bosun
-  -- the ES-9's own lamp, from the doctor
-  es9Lamp = case st.doctor >>= Array.find (\c -> c.name == "ES-9 present") of
-    Just c -> [ { node: "es9", lamp: if c.status == "ok" then Bosun.Up else if c.status == "down" then Bosun.Down else Bosun.Coming
-                , title: "DeepStar · " <> c.detail } ]
-    Nothing -> []
-  lamps = es9Lamp <> bosunLamps
-  bosunLamps = services # Array.mapMaybe \sv -> Bosun.nodeOf sv.id <#> \node ->
-    { node, lamp: Bosun.lampOf sv
-    , title: sv.id <> ": " <> sv.state <> (if sv.gaveUp then ", gave up" else "")
-        <> (if sv.restarts > 0 then " · " <> show sv.restarts <> " restarts" else "") }
+  lamps = deviceLamps st <> serviceLamps st
   downNodes = Array.nub $ (services # Array.mapMaybe \sv ->
     if Bosun.lampOf sv == Bosun.Down && Bosun.breaksStreams sv.id then Bosun.nodeOf sv.id else Nothing)
       -- what the doctor sees: the ES-9 off the bus, es9-daemon's socket dead
@@ -757,6 +749,121 @@ flowChart st =
       RM.SDrumLane _ -> map _.dest (filter _.on r.legs)
       _ -> []
 
+-- | The hardware itself, which Bosun cannot see: the ES-9 on the USB bus
+-- | (the rig doctor), the FH-2 among the MIDI ports. No restart: a device is
+-- | plugged in, not restarted.
+deviceLamps :: State -> Array FlowView.DaemonLamp
+deviceLamps st = es9 <> fh2
+  where
+  es9 = case st.doctor >>= Array.find (\c -> c.name == "ES-9 present") of
+    Just c ->
+      [ device "es9" (if c.status == "ok" then Bosun.Up else if c.status == "down" then Bosun.Down else Bosun.Coming)
+          ("DeepStar · " <> c.detail)
+          (if c.status == "ok" then "the ES-9 is on the USB bus" else if c.status == "down" then "the ES-9 is not on the USB bus" else "the ES-9: " <> c.status) ]
+    Nothing -> []
+  fh2
+    | st.portsRead =
+        let on = hasFh2 st.ports
+        in [ device "fh2" (if on then Bosun.Up else Bosun.Down) "Web MIDI · the FH-2's port"
+               (if on then "the FH-2 is on USB" else "the FH-2 is not on USB") ]
+    | otherwise = []
+  device node lp title caption = { node, lamp: lp, title, service: Nothing, label: "", caption, canRestart: false, tip: "" }
+
+-- | Bosun's word on every daemon, at each place it stands on the chart
+-- | (`Bosun.placesOf`): its state, or how its last restart went.
+serviceLamps :: State -> Array FlowView.DaemonLamp
+serviceLamps st = do
+  sv <- maybe [] _.services st.bosun
+  node <- Bosun.placesOf sv.id
+  pure (serviceLamp st node sv)
+
+serviceLamp :: State -> String -> Bosun.Service -> FlowView.DaemonLamp
+serviceLamp st node sv =
+  { node, lamp: Bosun.lampOf sv
+  , title: "Bosun · " <> sv.id <> ": " <> stateText st sv
+  , service: Just sv.id
+  -- a machine's lamp is its page server's; a node named for its daemon
+  -- needs no name repeated
+  , label: if String.take 2 node == "m:" then "page"
+      else if Just sv.id == nodeName node then ""
+      else sv.id
+  , caption: case askedOf st sv.id of
+      Just Bosun.Waiting -> "restarting…"
+      Just Bosun.NothingMoved -> "Bosun said yes, but nothing moved"
+      _ -> stateText st sv
+  , canRestart: maybe false (\h -> h.desired == "up") st.bosun && askedOf st sv.id /= Just Bosun.Waiting
+  , tip: Bosun.restartTip sv.id
+  }
+
+-- | A daemon's state, its restarts, and the doctor's word on its control
+-- | socket where it has one (Bosun can say it runs, not that it answers).
+-- | The service a fixed node is named for, where it is.
+nodeName :: String -> Maybe String
+nodeName = case _ of
+  "engine" -> Just "architeuthis"
+  "diaphus" -> Just "diaphus"
+  "d-es9" -> Just "es9-daemon"
+  "d-dirt" -> Just "superdirt"
+  "continuo" -> Just "continuo"
+  _ -> Nothing
+
+stateText :: State -> Bosun.Service -> String
+stateText st sv = sv.state <> (if sv.gaveUp then ", gave up" else "")
+  <> (if sv.restarts > 0 then " · " <> show sv.restarts <> " restart" <> (if sv.restarts == 1 then "" else "s") else "")
+  <> (if maybe false (elem sv.id <<< DeepStar.refusing) st.doctor then " · its socket does not answer" else "")
+
+-- | How the last restart asked of a service went, if one was asked.
+askedOf :: State -> String -> Maybe Bosun.Outcome
+askedOf st id = Bosun.outcome st.now st.bosun <$> find (\a -> a.service == id) st.asked
+
+-- | Above the chart, in the X-ray: who watches the rig (Bosun, DeepStar),
+-- | the group's raise and lower, and any daemon with no place on the chart.
+xrayStrip :: forall m. State -> H.ComponentHTML Action () m
+xrayStrip st = case st.bosun of
+  Nothing ->
+    HH.div [ cls "xray-strip" ]
+      [ HH.span [ cls "lamp dead" ] [ HH.i_ [], HH.text "Bosun :3994" ]
+      , HH.span [ cls "xray-note" ] [ HH.text "out of reach: no daemon can be shown or restarted from here. Start the Atlantis group's supervisor and the X-ray fills in." ]
+      ]
+  Just h ->
+    HH.div [ cls "xray-strip" ]
+      ( [ HH.span [ cls "lamp live", HP.title "The Atlantis group's supervisor" ] [ HH.i_ [], HH.text "Bosun :3994" ]
+        , HH.span [ cls "xray-note" ] [ HH.text (if h.desired == "up" then "raised: it keeps the rig running" else "held: nothing is started or kept up") ]
+        , groupButtons h
+        ]
+          <> map (svcChip h) (filter (\sv -> sv.id `elem` Bosun.watchers) h.services)
+          <> doctorNote
+          <> unplacedChips h
+      )
+  where
+  groupButtons h
+    | h.desired /= "up" = HH.button [ cls "btn small", HE.onClick \_ -> RigGroup "up" ] [ HH.text "Raise the rig" ]
+    | st.confirmingDown =
+        HH.span [ cls "xray-confirm" ]
+          [ HH.text "Stop every daemon? "
+          , HH.button [ cls "btn small panic", HE.onClick \_ -> RigGroup "down" ] [ HH.text "Lower the rig" ]
+          , HH.button [ cls "btn small", HE.onClick \_ -> ConfirmDown false ] [ HH.text "Keep it up" ]
+          ]
+    | otherwise = HH.button [ cls "btn small", HE.onClick \_ -> ConfirmDown true ] [ HH.text "Lower the rig…" ]
+  doctorNote = case st.doctor of
+    Nothing -> [ HH.span [ cls "xray-note" ] [ HH.text "DeepStar (:3027) does not answer: the ES-9's lamp is unknown" ] ]
+    Just _ -> []
+  -- nothing Bosun runs is hidden: a daemon not yet placed on the chart
+  unplacedChips h =
+    let rest = filter (\sv -> null (Bosun.placesOf sv.id) && not (sv.id `elem` Bosun.watchers)) h.services
+    in if null rest then [] else [ HH.span [ cls "xray-note" ] [ HH.text "not on the chart:" ] ] <> map (svcChip h) rest
+  svcChip _ sv =
+    let l = serviceLamp st "" sv
+    in
+      HH.span [ cls "xray-chip" ]
+        [ HH.span [ cls ("lamp" <> lampCls l.lamp), HP.title l.title ] [ HH.i_ [], HH.text (sv.id <> " · " <> l.caption) ]
+        , HH.button [ cls "btn small", HP.disabled (not l.canRestart), HP.title (Bosun.restartTip sv.id), HE.onClick \_ -> RigRestart sv.id ] [ HH.text "↻" ]
+        ]
+  lampCls = case _ of
+    Bosun.Up -> " live"
+    Bosun.Coming -> " coming"
+    Bosun.Down -> " dead"
+
 topBar :: forall m. State -> H.ComponentHTML Action () m
 topBar st =
   HH.header [ cls "top" ]
@@ -769,8 +876,6 @@ topBar st =
             ( [ tab Matrix.Notes "#notes" "Routing: Notes"
               , tab Matrix.Drums "#drums" "Routing: Drums"
               ]
-                -- the rig's daemons: a tab in Atlantis, where they are needed
-                <> (if st.mode == Atlantis || st.atlantis then [ atlantisTab ] else [])
                 <> [ HH.a [ cls "tab", HP.href "/about.html", HP.target "atlantis-about" ] [ HH.text "About" ] ]
             )
         , HH.span [ cls "spacer" ] []
@@ -783,14 +888,6 @@ topBar st =
     , machineBar st
     ]
   where
-  -- A plain link: the browser moves the hash and keeps history; the page follows
-  -- through its hashchange listener.
-  atlantisTab =
-    HH.a
-      ( [ cls ("tab" <> if st.atlantis then " on" else ""), HP.href "#atlantis" ]
-          <> (if st.atlantis then [ HP.attr (AttrName "aria-current") "page" ] else [])
-      )
-      [ HH.text "Atlantis" ]
   tab g href label =
     HH.a
       ( [ cls ("tab" <> if st.matrix == Just g then " on" else ""), HP.href href ]

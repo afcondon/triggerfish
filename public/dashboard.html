@@ -268,23 +268,26 @@
     .s-midi { fill: var(--s-midi); color: var(--s-midi); } .s-osc { fill: var(--s-osc); color: var(--s-osc); }
     .s-http { fill: var(--s-http); color: var(--s-http); } .s-cv { fill: var(--s-cv); color: var(--s-cv); }
     .s-audio { fill: var(--s-audio); color: var(--s-audio); } .s-samples { fill: var(--s-samples); color: var(--s-samples); }
-    /* the Atlantis page: the rig's daemons by branch */
-    .atl { max-width: 980px; padding: 8px 0 40px; }
-    .atl-head { display: flex; align-items: baseline; gap: 14px; flex-wrap: wrap; border-bottom: 1px solid var(--rule); padding-bottom: 10px; }
-    .atl-head h2 { margin: 0; font: 700 22px var(--display); }
-    .atl-phase { font: 400 11px var(--mono); color: var(--muted); }
-    .atl-head .spacer { flex: 1; }
-    .atl-confirm { font-size: 13px; display: inline-flex; gap: 8px; align-items: center; }
-    .atl-none { color: var(--muted); max-width: 60ch; }
-    .atl-branch { display: grid; grid-template-columns: 220px 1fr; gap: 16px; padding: 14px 0; border-bottom: 1px solid var(--rule); }
-    .atl-bhead h3 { margin: 0 0 4px; font: 600 14px var(--display); }
-    .atl-serves { font-size: 12px; color: var(--muted); line-height: 1.4; }
-    .atl-row { display: grid; grid-template-columns: 200px 140px 90px 1fr auto; align-items: center; gap: 10px; padding: 3px 0; }
-    .atl-row .lamp { font: 500 12px var(--mono); color: var(--ink); }
-    .atl-state, .atl-restarts, .atl-asked { font: 400 11px var(--mono); color: var(--muted); }
+    /* the X-ray (was the Atlantis page): the rig's processes on its skeleton,
+       the flow faded behind them */
     .lamp.coming i { background: #d4a82a; } .lamp.dead i { background: var(--alarm); }
     .btn.small { padding: 2px 10px; font-size: 12px; }
-    @media (max-width: 720px) { .atl-branch { grid-template-columns: 1fr; } .atl-row { grid-template-columns: 1fr auto; } .atl-state, .atl-restarts { display: none; } }
+    .xray-strip { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px; padding: 8px 12px; margin-bottom: 6px; background: var(--plate); border: 1px solid var(--rule); }
+    .xray-strip .lamp { color: var(--ink); font-size: 12px; }
+    .xray-note { font: 400 11px var(--mono); color: var(--muted); }
+    .xray-confirm { font-size: 12px; display: inline-flex; gap: 8px; align-items: center; }
+    .xray-chip { display: inline-flex; align-items: center; gap: 6px; }
+    .xray-chip .btn.small { padding: 0 6px; }
+    svg.flows.xray .link { fill-opacity: .07 !important; stroke-opacity: .25; pointer-events: none; }
+    svg.flows .bone { fill: none; stroke: var(--ink); stroke-opacity: .5; stroke-width: 1.4; }
+    svg.flows.xray .xlamp .sub, svg.flows.xray .node > .name { paint-order: stroke; stroke: var(--plate); stroke-width: 3px; stroke-linejoin: round; }
+    svg.flows.xray .fish, svg.flows.xray .bubble, svg.flows.xray .beat, svg.flows.xray .beatmark, svg.flows.xray use { opacity: .28; }
+    svg.flows.xray .node > .sub, svg.flows.xray .stopsign { opacity: .4; }
+    svg.flows.xray .xlamp .sub { fill: var(--ink); opacity: 1; }
+    svg.flows .restart { cursor: pointer; outline: none; }
+    svg.flows .restart .rs { font: 700 12px var(--mono); fill: var(--reef); }
+    svg.flows .restart:hover .rs, svg.flows .restart:focus-visible .rs { fill: var(--ink); }
+    svg.flows .restart.off { cursor: default; } svg.flows .restart.off .rs { fill: var(--faint); }
     /* the dock: machines not on the chart; a fish plays its machine */
     svg.flows .dock { cursor: pointer; outline: none; }
     svg.flows .dock.closed use { opacity: .3; filter: grayscale(1); }

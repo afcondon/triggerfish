@@ -14,6 +14,7 @@ module Triggerfish.Flow.View
   , Port
   , Patch
   , Dock
+  , DaemonLamp
   ) where
 
 import Prelude
@@ -37,7 +38,7 @@ import Halogen.HTML.Core (AttrName(..), ElemName(..), Namespace(..))
 import Halogen.HTML.Events as HE
 import Halogen.HTML.Properties as HP
 import Triggerfish.Bosun (Lamp(..))
-import Triggerfish.Flow (Column(..), Flow, Link, Signal(..), columnTitle, layerOf, loopOf, nodeRank, onTheBeat, signalLabel)
+import Triggerfish.Flow (Column(..), Flow, Link, Signal(..), columnTitle, layerOf, loopOf, nodeRank, onTheBeat, signalLabel, skeleton)
 
 -- | What the chart reports: a machine hovered (or left), and a machine picked.
 -- | `link`: a link clicked, with its machine and the node it runs into.
@@ -48,6 +49,19 @@ type Handlers i =
   , port :: String -> i, cable :: String -> String -> i
   , play :: String -> Boolean -> i
   , peek :: String -> i
+  -- | a daemon's ↻, in the X-ray: restart it (by Bosun's service id)
+  , restart :: String -> i
+  }
+
+-- | What is known of one process behind a node: Bosun's word on a daemon
+-- | (`service`), or the rig doctor's on a device (no service, so no
+-- | restart). `label`: what it is to this node, said before its state (""
+-- | when the node's own name says it); `caption`: its state as the X-ray prints it; `tip`: what a
+-- | restart costs; `canRestart`: false while the group is held or a restart
+-- | is already on its way.
+type DaemonLamp =
+  { node :: String, lamp :: Lamp, title :: String
+  , service :: Maybe String, label :: String, caption :: String, canRestart :: Boolean, tip :: String
   }
 
 -- | Every machine, for the dock: the ones not on the chart (closed, or open
@@ -75,6 +89,7 @@ width = 1500.0
 -- | strict here). A recorded line is thin.
 widthOf :: Link -> Number
 widthOf l
+  | l.bone = 1.0
   | l.signal == Recorded = 0.4
   | l.control = max 1.0 (0.5 * toNumber l.streams)
   | otherwise = toNumber l.streams
@@ -104,7 +119,10 @@ heightOf f = clampN 250.0 720.0 (130.0 + toNumber streams * 11.0 + toNumber rows
 -- | `lamps`: what Bosun says of the daemon behind a node, when it was reached.
 type Live =
   { playing :: Array String, rigUp :: Boolean, tempo :: Number
-  , lamps :: Array { node :: String, lamp :: Lamp, title :: String }
+  , lamps :: Array DaemonLamp
+  -- | the X-ray: the rig's processes, on the rig's whole skeleton, with the
+  -- | flow faded behind them (was the Atlantis page)
+  , xray :: Boolean
   -- | the key as a filter: kinds of line hidden (the chart is laid out
   -- | without them), and the kind hovered in the key (lit, the rest dimmed)
   , hidden :: Array String
@@ -134,13 +152,13 @@ hide hidden f
   ends = nub (Array.concatMap (\l -> [ l.from, l.to ]) links)
 
 chart :: forall w i. Handlers i -> Maybe String -> Live -> Flow -> HH.HTML w i
-chart on hot live = chartOf on hot live <<< hide live.hidden
+chart on hot live = chartOf on hot live <<< (if live.xray then skeleton else identity) <<< hide live.hidden
 
 chartOf :: forall w i. Handlers i -> Maybe String -> Live -> Flow -> HH.HTML w i
 chartOf on hot live f =
       svg "svg"
         [ attr "viewBox" ("0 0 " <> n width <> " " <> n (max h (dockBottom + 10.0)))
-        , attr "class" ("flows" <> (if hot == Nothing then "" else " hovering") <> (if live.keyHot == Nothing then "" else " keying") <> (if Array.null live.playing then " resting" else ""))
+        , attr "class" ("flows" <> (if hot == Nothing then "" else " hovering") <> (if live.keyHot == Nothing then "" else " keying") <> (if Array.null live.playing then " resting" else "") <> (if live.xray then " xray" else ""))
         , attr "style" ("--beat: " <> n (60.0 / max 20.0 live.tempo) <> "s")
         , attr "role" "img"
         , attr "aria-label" "Where each machine's output goes: through the browser or the rig, through interfaces and instruments, to your ears"
@@ -154,7 +172,9 @@ chartOf on hot live f =
   -- A machine fed from the left wears its label above its bar: room for it
   -- under the column heads.
   fedRoom = if Array.any (\l -> l.signal == Quantise) f.links then 84.0 else 0.0
-  h = heightOf f + band + fedRoom
+  -- the X-ray's lines need room under each node, and on the right
+  h = heightOf f + band + fedRoom + (if live.xray then 90.0 else 0.0)
+  rightEdge = if live.xray then right - 90.0 else right
   byId = Map.fromFoldable (map (\x -> x.id /\ x) f.nodes)
   ours sn = Map.lookup sn.name byId
   -- A long line from the machines' end (Feeds to Page, a machine to its
@@ -174,8 +194,8 @@ chartOf on hot live f =
     (map (\l -> { s: l.from, t: l.to, v: widthOf l }) f.links)
     (defaultSankeyConfig width h)
       { nodeWidth = 5.0
-      , nodePadding = 20.0
-      , extent = { x0: left, y0: 48.0 + band + fedRoom, x1: right, y1: h - 40.0 }
+      , nodePadding = if live.xray then 46.0 else 20.0
+      , extent = { x0: left, y0: 48.0 + band + fedRoom, x1: rightEdge, y1: h - 40.0 }
       , nodeLayer = layerOf f
       , nodeSort = Just (comparing rankOf)
       }
@@ -222,7 +242,17 @@ chartOf on hot live f =
         [ svg "title" [] [ HH.text "on the beat: timed by Diaphus" ] ]
       else Nothing
 
+  linkCls l | l.bone = "bone"
   linkCls l = sigClass l.signal <> (if l.control then " control" else "") <> (if live.keyHot == Just (kindOf l) then " khot" else "") <> (if Just l.machine == hot then " hot" else "") <> (if l.broken > 0 then " broken" else "") <> (if waits l then " waiting" else if sounding l then "" else " idle")
+  -- A bone is a line, not a ribbon: it carries nothing, so it has no width
+  -- to show (and alone on the chart a ribbon would fill the height).
+  link route | Just l <- f.links !! route.index, l.bone =
+    case Array.head route.segments, nodeAt l.from, nodeAt l.to of
+      Just seg, Just a, Just b ->
+        let xi = (a.x1 + b.x0) / 2.0
+        in svg "path" [ attr "class" "bone", attr "d" ("M" <> n a.x1 <> "," <> n seg.y0 <> " C" <> n xi <> "," <> n seg.y0 <> " " <> n xi <> "," <> n seg.y1 <> " " <> n b.x0 <> "," <> n seg.y1) ]
+             [ svg "title" [] [ HH.text (linkTitle l) ] ]
+      _, _, _ -> svg "g" [] []
   link route =
     let
       ours' = f.links !! route.index
@@ -232,6 +262,7 @@ chartOf on hot live f =
           <> maybe [] (\l -> [ HE.onClick \_ -> on.link l.machine l.to ]) ours')
         (maybe [] (\l -> [ svg "title" [] [ HH.text (linkTitle l) ] ]) ours')
 
+  linkTitle l | l.bone = l.from <> " → " <> l.to <> " · " <> signalLabel l.signal <> " · the rig's wiring: nothing travels it now"
   linkTitle l =
     l.from <> " → " <> l.to <> " · " <> signalLabel l.signal
       <> (if l.signal == Quantise then " · quantisation: feeds " <> joinWith " and " (map (\w -> "odonus." <> w) l.wires) <> " (resolved on the rig)"
@@ -295,7 +326,7 @@ chartOf on hot live f =
         , bar sn
         , fishBtn m (cx - 27.0) (top - 80.0)
         , pickName m cx (top - 30.0) "middle" nd.name
-        , label "sub" cx (top - 16.0) "middle" (summary m)
+        , subOr ("m:" <> m) "start" (cx - 70.0) (top - 16.0) (label "sub" cx (top - 16.0) "middle" (summary m))
         , svg "title" [] [ HH.text (tip nd m) ]
         ]
 
@@ -362,7 +393,7 @@ chartOf on hot live f =
       [ svg "title" [] [ HH.text ("odonus." <> r.input <> " ← " <> s.label <> " · click to unplug") ] ]
 
   patchBay
-    | not quantShown = []
+    | not quantShown || live.xray = []
     | otherwise =
         mapMaybe cable live.patch.routes
           <> mapMaybe (\s -> srcPort s <#> \p ->
@@ -446,7 +477,8 @@ chartOf on hot live f =
                  [ use ("sp-" <> d.slot) 23.0 (y - 16.0) 54.0 32.0
                  , label "name" (left - 10.0) (y - 1.0) "end" d.name
                  , svg "title" [] [ HH.text d.name ] ]
-        , if d.rig then label "sub" (left - 10.0) (y + 12.0) "end" "on the rig, no page"
+        , if live.xray && not (Array.null (lampsOf ("m:" <> d.slot))) then lampLines ("m:" <> d.slot) "end" (left - 10.0) (y + 12.0)
+          else if d.rig then label "sub" (left - 10.0) (y + 12.0) "end" "on the rig, no page"
           else if d.open then label "sub" (left - 10.0) (y + 12.0) "end" ("open · nothing routed" <> preset d.slot)
           else if live.peeked == Just d.slot then
             svg "a" [ attr "class" "openlink", attr "href" d.href, attr "target" d.target ]
@@ -479,7 +511,7 @@ chartOf on hot live f =
         , bar sn
         , fishBtn m (sn.x0 - 8.0 - nameWidth nd.name - 62.0) (cy - 18.0)
         , pickName m (sn.x0 - 8.0) (cy - 2.0) "end" nd.name
-        , label "sub" (sn.x0 - 8.0) (cy + 11.0) "end" (summary m)
+        , subOr ("m:" <> m) "end" (sn.x0 - 8.0) (cy + 11.0) (label "sub" (sn.x0 - 8.0) (cy + 11.0) "end" (summary m))
         , svg "title" [] [ HH.text (tip nd m) ]
         ]
 
@@ -513,7 +545,7 @@ chartOf on hot live f =
         , bar sn
         , fishBtn m 23.0 (cy - 16.0)
         , pickName m (sn.x0 - 10.0) (cy - 2.0) "end" nd.name
-        , label "sub" (sn.x0 - 10.0) (cy + 11.0) "end" (summary m)
+        , subOr ("m:" <> m) "end" (sn.x0 - 10.0) (cy + 11.0) (label "sub" (sn.x0 - 10.0) (cy + 11.0) "end" (summary m))
         , svg "title" [] [ HH.text (tip nd m) ]
         ]
 
@@ -573,6 +605,8 @@ chartOf on hot live f =
         _ -> tx
       -- with loops beside it, the page's line is short, so it clears them
       sub
+        | live.xray && not (Array.null (lampsOf nd.id)) =
+            [ lampLines nd.id "start" lx (cy + (if nd.id == "engine" then 27.0 else 11.0)) ]
         | nd.id == "engine" = []
         | nd.id == "browser" && Array.any (\x -> x.column == Loops) f.nodes =
             [ label "sub" lx (cy + 11.0) "start" (show (round' sn.value)) ]
@@ -593,17 +627,53 @@ chartOf on hot live f =
       , svg "path" [ attr "class" "band", attr "d" ("M" <> n x <> "," <> n (y + 11.0) <> " a8,4 0 0 0 16,0") ] []
       ]
 
-  -- Bosun's word on the daemon behind a node: a lamp under its bar.
-  daemonLamp id sn = lampAt id (sn.x0 + 2.5) (sn.y1 + 8.0)
-  lampAt id x y = case Array.find (\l -> l.node == id) live.lamps of
-    Nothing -> []
-    Just l ->
-      -- a link to the Atlantis page, where it can be restarted
-      [ svg "a" [ attr "href" "#atlantis" ]
-          [ svg "circle" [ attr "class" ("dlamp " <> lampClass l.lamp), attr "cx" (n x), attr "cy" (n y), attr "r" "4" ]
-              [ svg "title" [] [ HH.text ("Bosun · " <> l.title <> " · open the Atlantis page") ] ]
-          ]
-      ]
+  -- Bosun's word on the daemons behind a node: a lamp each under its bar
+  -- (in the X-ray they are lines beside its name instead).
+  lampsOf id = filter (\l -> l.node == id) live.lamps
+  daemonLamp id sn
+    | live.xray = []
+    | otherwise = lampAt id (sn.x0 + 2.5) (sn.y1 + 8.0)
+  lampAt id x y = lampsOf id # Array.mapWithIndex \k l ->
+      -- a link to the X-ray, where it can be restarted
+      svg "a" [ attr "href" "#atlantis" ]
+        [ svg "circle" [ attr "class" ("dlamp " <> lampClass l.lamp), attr "cx" (n (x + 10.0 * toNumber k)), attr "cy" (n y), attr "r" "4" ]
+            [ svg "title" [] [ HH.text (l.title <> " · X-ray: restart it there") ] ]
+        ]
+
+  -- In the X-ray, a machine's caption is its page server's line, when it
+  -- has one.
+  subOr id anchor x y plain
+    | live.xray && not (Array.null (lampsOf id)) = lampLines id anchor x y
+    | otherwise = plain
+
+  -- The X-ray's word on a node's processes: a line each, with its lamp and
+  -- (for a daemon) its ↻, reading from the node outwards.
+  lampLines id anchor x y =
+    svg "g" [ attr "class" "xlamps" ] $ lampsOf id # Array.mapWithIndex \k l ->
+      let
+        yk = y + 14.0 * toNumber k
+        dir = if anchor == "end" then -1.0 else 1.0
+        txt = if l.label == "" then l.caption else l.label <> " · " <> l.caption
+      in
+        svg "g" [ attr "class" "xlamp" ]
+          ( (case l.service of
+              Just sv ->
+                [ svg "g"
+                    ( [ attr "class" ("restart" <> if l.canRestart then "" else " off"), attr "role" "button" ]
+                        <> (if l.canRestart then [ attr "tabindex" "0", HE.onClick \_ -> on.restart sv ] else [])
+                    )
+                    [ svg "rect" [ attr "class" "hit", attr "x" (n (x + dir * 6.0 - 7.0)), attr "y" (n (yk - 10.0)), attr "width" "14", attr "height" "13" ] []
+                    , label "rs" (x + dir * 6.0) (yk + 0.5) "middle" "↻"
+                    , svg "title" [] [ HH.text (if l.canRestart then "Restart " <> sv <> ". " <> l.tip else l.title) ]
+                    ]
+                ]
+              Nothing -> [])
+            <>
+              [ svg "circle" [ attr "class" ("dlamp " <> lampClass l.lamp), attr "cx" (n (x + dir * 18.0)), attr "cy" (n (yk - 3.5)), attr "r" "3.5" ] []
+              , label "sub" (x + dir * 26.0) yk anchor txt
+              , svg "title" [] [ HH.text l.title ]
+              ]
+          )
   lampClass = case _ of
     Up -> "up"
     Coming -> "coming"

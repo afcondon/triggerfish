@@ -57,6 +57,7 @@ module Triggerfish.Flow
   , flow
   , layerOf
   , onTheBeat
+  , skeleton
   , nodeRank
   , machineOf
   , loopOf
@@ -138,6 +139,9 @@ type Link =
   -- | the page telling the rig what to play (its patch, edits and cues), not
   -- | the notes themselves: drawn thin, whatever it carries
   , control :: Boolean
+  -- | a bone of the X-ray (`skeleton`): the rig's wiring, drawn whether or
+  -- | not anything travels it
+  , bone :: Boolean
   }
 
 type Flow = { nodes :: Array Node, links :: Array Link }
@@ -405,7 +409,7 @@ flow inp = { nodes, links: links <> loopLinks <> quantLinks <> makesLinks }
   sampleStreams = length sampleUsers
   setsLinks
     | sampleStreams > 0 =
-        [ { from: "sets", to: "d-dirt", signal: Samples, machine: "sets", streams: sampleStreams, broken: 0, wires: [], notes: [], waiting: if all _.needsRig sampleUsers then sampleStreams else 0, control: false } ]
+        [ { from: "sets", to: "d-dirt", signal: Samples, machine: "sets", streams: sampleStreams, broken: 0, wires: [], notes: [], waiting: if all _.needsRig sampleUsers then sampleStreams else 0, control: false, bone: false } ]
     | otherwise = []
 
   links = merge (concatMap (\s -> hopsOf s <#> \h -> { hop: h, machine: s.machine, broken: s.brokenAt == Just h.to, detail: s.detail, notes: s.notes, waiting: s.needsRig }) streams) <> setsLinks
@@ -414,7 +418,7 @@ flow inp = { nodes, links: links <> loopLinks <> quantLinks <> makesLinks }
     where
     add acc x = case findIndex (same x) acc of
       Just i -> fromMaybe acc (Array.modifyAt i (\l -> l { streams = l.streams + 1, broken = l.broken + fromBool x.broken, wires = nub (Array.snoc l.wires x.detail), notes = nub (l.notes <> x.notes), waiting = l.waiting + fromBool x.waiting }) acc)
-      Nothing -> Array.snoc acc { from: x.hop.from, to: x.hop.to, signal: x.hop.signal, machine: x.machine, streams: 1, broken: fromBool x.broken, wires: [ x.detail ], notes: x.notes, waiting: fromBool x.waiting, control: x.hop.control }
+      Nothing -> Array.snoc acc { from: x.hop.from, to: x.hop.to, signal: x.hop.signal, machine: x.machine, streams: 1, broken: fromBool x.broken, wires: [ x.detail ], notes: x.notes, waiting: fromBool x.waiting, control: x.hop.control, bone: false }
     same x l = l.from == x.hop.from && l.to == x.hop.to && l.signal == x.hop.signal && l.machine == x.machine && l.control == x.hop.control
     fromBool b = if b then 1 else 0
 
@@ -459,11 +463,38 @@ flow inp = { nodes, links: links <> loopLinks <> quantLinks <> makesLinks }
     | otherwise = []
 
   plain from to signal machine control =
-    { from, to, signal, machine, streams: 1, broken: 0, wires: [], notes: [], waiting: 0, control }
+    { from, to, signal, machine, streams: 1, broken: 0, wires: [], notes: [], waiting: 0, control, bone: false }
 
   ids = nub (concatMap (\l -> [ l.from, l.to ]) (links <> loopLinks <> quantLinks <> makesLinks))
   units = nubByEq (\a b -> a.unit == b.unit) streams
   nodes = sortWith nodeRank (catMaybes (map (nodeOf units inp.table inp.loops feeders links) ids))
+
+-- | **The X-ray's skeleton**: the flow with the rig's wiring added, so every
+-- | daemon has its node, in its column, whether or not anything travels
+-- | through it now (AC, 2026-10-04: the Atlantis page folded into the chart).
+-- | A bone is added only where no line of the flow already runs; the flow's
+-- | own nodes and lines are kept as they are.
+skeleton :: Flow -> Flow
+skeleton f = { nodes: f.nodes <> added, links: f.links <> bones }
+  where
+  bones = mapMaybe bone wiring
+  bone b
+    | Array.any (\l -> l.from == b.from && l.to == b.to) f.links = Nothing
+    | otherwise = Just { from: b.from, to: b.to, signal: b.signal, machine: "rig", streams: 1, broken: 0, wires: [], notes: [], waiting: 0, control: false, bone: true }
+  have = map _.id f.nodes
+  added = filter (\nd -> not (nd.id `elem` have) && Array.any (\b -> b.from == nd.id || b.to == nd.id) bones) fixed
+  wiring =
+    [ { from: "browser", to: "engine", signal: Socket }
+    , { from: "browser", to: "foi", signal: Http }
+    , { from: "engine", to: "diaphus", signal: Osc }
+    , { from: "engine", to: "d-es9", signal: Osc }
+    , { from: "engine", to: "d-dirt", signal: Osc }
+    , { from: "foi", to: "d-es9", signal: Osc }
+    , { from: "sets", to: "d-dirt", signal: Samples }
+    , { from: "diaphus", to: "continuo", signal: Midi }
+    , { from: "diaphus", to: "fh2", signal: Midi }
+    , { from: "d-es9", to: "es9", signal: Cv }
+    ]
 
 -- | A loop's node: one per mark, by machine and number.
 loopId :: String -> Int -> String
@@ -576,7 +607,7 @@ layerOf f id = do
 -- | every port it sends MIDI to (through link-spike, timestamped). Empty in
 -- | Solo, where each page keeps its own time.
 onTheBeat :: Flow -> Array String
-onTheBeat f = nub (concatMap rig f.links)
+onTheBeat f = nub (concatMap rig (filter (not <<< _.bone) f.links))
   where
   rig l
     | l.from == "engine" = [ "engine", l.to ]

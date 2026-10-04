@@ -8,12 +8,13 @@ module Test.FlowSpec (runFlowTests) where
 
 import Prelude
 
-import Data.Array (all, filter, find, length, null)
+import Data.Array (all, elem, filter, find, length, null)
 import Data.Maybe (Maybe(..), isJust, isNothing)
 import Effect (Effect)
 import Effect.Console (log)
 import Test.Assert (assert')
-import Triggerfish.Flow (Inputs, Signal(..), flow, layerOf, onTheBeat)
+import Triggerfish.Bosun as Bosun
+import Triggerfish.Flow (Inputs, Signal(..), flow, layerOf, onTheBeat, skeleton)
 import Triggerfish.Routing.Model (Destination(..), Source(..), Table, defaultTableFor)
 import Triggerfish.Transport (Mode(..))
 
@@ -202,3 +203,23 @@ runFlowTests = do
   let quadrat = flow base { mode = Atlantis, machines = [ "quadrat" ], extras = [ { machine: "quadrat", dest: DEs9Cv { bus: 1 }, via: Just "foi" } ] }
   check "Quadrat's CV goes through the Friends server"
     ((find (\l -> l.from == "browser") quadrat.links <#> _.to) == Just "foi")
+
+  -- The X-ray (2026-10-04): every daemon has its node, whatever plays.
+  let bare = skeleton (flow base { machines = [] })
+  check "the X-ray's skeleton gives every daemon a node with nothing playing"
+    (all (\id -> isJust (find (\nd -> nd.id == id) bare.nodes)) [ "browser", "engine", "foi", "sets", "diaphus", "d-es9", "d-dirt", "continuo", "fh2", "es9" ])
+  let rigX = skeleton rigSamples
+  check "a bone is added only where no line already runs"
+    ( length (filter (\l -> l.from == "engine" && l.to == "d-dirt") rigX.links) == 1
+        && all (\l -> not l.bone) (filter (\l -> l.from == "engine" && l.to == "d-dirt") rigX.links)
+    )
+  check "a bone is not on the beat"
+    (null (onTheBeat bare))
+  -- the Atlantis group as composed (bosun/fixtures/atlantis/compose.yml):
+  -- a service added there needs a place here, or the X-ray lists it apart
+  check "every Atlantis daemon has a place on the X-ray, or watches it"
+    (all (\id -> not (null (Bosun.placesOf id)) || id `elem` Bosun.watchers)
+      [ "es9-daemon", "diaphus", "architeuthis", "triggerfish-frontend", "conspicillum-frontend", "superdirt", "amphora", "friends-of-itajara", "limulus", "deepstar", "fh2-daemon", "fh2-drumkit", "continuo" ])
+  check "every place a daemon stands is a node the skeleton draws, or a machine"
+    (all (\id -> all (\pl -> isJust (find (\nd -> nd.id == pl) bare.nodes) || pl `elem` [ "m:quadrat", "m:conspicillum", "m:limulus" ]) (Bosun.placesOf id))
+      [ "es9-daemon", "diaphus", "architeuthis", "triggerfish-frontend", "superdirt", "amphora", "friends-of-itajara", "fh2-daemon", "fh2-drumkit", "continuo" ])
