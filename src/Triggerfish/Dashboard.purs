@@ -170,6 +170,8 @@ type State =
   , keyHot :: Maybe String
   -- the harmony port clicked first, waiting for its other end
   , armed :: Maybe String
+  -- the closed machine whose 'open ↗' a plain click has shown
+  , peeked :: Maybe String
   }
 
 data Action
@@ -209,6 +211,7 @@ data Action
   | KeyHover (Maybe String)
   | KeyAll
   | PortClick String
+  | Peek String
   | CableClick String String
   | ShowAllVoices Boolean
 
@@ -220,7 +223,7 @@ component = H.mkComponent
       , table: RM.defaultTable, ports: [], sampleSets: [], hot: Nothing, router: Router.initial
       , matrix: Nothing, pick: Nothing, focus: Nothing, sheet: Nothing, foldDrums: true, vetulaSent: Nothing
       , relays: false, allVoices: false, rigLoops: Map.empty, bosun: Nothing
-      , atlantis: false, asked: [], confirmingDown: false, hidden: [], keyHot: Nothing, armed: Nothing }
+      , atlantis: false, asked: [], confirmingDown: false, hidden: [], keyHot: Nothing, armed: Nothing, peeked: Nothing }
   , render
   , eval: H.mkEval H.defaultEval { handleAction = handleAction, initialize = Just Init }
   }
@@ -297,7 +300,7 @@ handleAction = case _ of
   TempoStored -> do
     mfree <- liftEffect Tempo.load
     for_ mfree \free -> H.modify_ \s -> s { freeTempo = free, tempo = if s.locked then s.tempo else free }
-  KeyDown ke | KE.key ke == "Escape" -> H.modify_ _ { armed = Nothing }
+  KeyDown ke | KE.key ke == "Escape" -> H.modify_ _ { armed = Nothing, peeked = Nothing }
   KeyDown ke -> for_ (Tempo.hotkey ke) \d -> do
     liftEffect $ preventDefault (KE.toEvent ke)
     handleAction (BumpTempo d)
@@ -412,6 +415,8 @@ handleAction = case _ of
             H.modify_ _ { armed = Nothing }
             for_ (Router.toggle pair.line pair.input st.router) sendRig
         | otherwise -> H.modify_ _ { armed = Just id }
+
+  Peek slot -> H.modify_ \x -> x { peeked = if x.peeked == Just slot then Nothing else Just slot }
 
   CableClick source input -> do
     st <- H.get
@@ -558,7 +563,7 @@ flowChart :: forall m. State -> H.ComponentHTML Action () m
 flowChart st =
   HH.section [ cls "flow", HP.attr (AttrName "aria-label") "Where it all goes" ]
     [ HH.div [ cls ("flow-chart" <> if st.allVoices then " all-voices" else "") ]
-        [ FlowView.chart { hover: Hover, link: ChartLink, port: PortClick, cable: CableClick, play: Command } st.hot { playing: map _.slot (filter (playing st) machines), rigUp: st.rigUp, tempo: st.tempo, lamps, hidden: st.hidden, keyHot: st.keyHot, patch, dock, locked: st.locked }
+        [ FlowView.chart { hover: Hover, link: ChartLink, port: PortClick, cable: CableClick, play: Command, peek: Peek } st.hot { playing: map _.slot (filter (playing st) machines), rigUp: st.rigUp, tempo: st.tempo, lamps, hidden: st.hidden, keyHot: st.keyHot, patch, dock, locked: st.locked, peeked: st.peeked }
             ( Flow.flow
                 { mode: st.mode
                 , table: st.table

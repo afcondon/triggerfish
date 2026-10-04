@@ -305,6 +305,8 @@
     svg.flows .dbicon path, svg.flows .dbicon ellipse { fill: var(--plate); stroke: var(--s-samples); stroke-width: 1.5; }
     svg.flows .dbicon .band { fill: none; }
     svg.flows .ghostfish { cursor: pointer; outline: none; }
+    svg.flows .ghostfish:hover use, svg.flows .ghostfish:focus-visible use { opacity: .7; filter: none; }
+    svg.flows .ghostfish:hover .name { fill: var(--ink); }
     /* the harmony patch bay: ports on the labels, cables between them */
     svg.flows .cable { fill: none; stroke: var(--s-quant); stroke-width: 2; stroke-linecap: round; cursor: pointer; }
     svg.flows .cable:hover { stroke-width: 3.5; }

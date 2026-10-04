@@ -47,6 +47,7 @@ type Handlers i =
   { hover :: Maybe String -> i, link :: String -> String -> i
   , port :: String -> i, cable :: String -> String -> i
   , play :: String -> Boolean -> i
+  , peek :: String -> i
   }
 
 -- | Every machine, for the dock: the ones not on the chart (closed, or open
@@ -110,6 +111,8 @@ type Live =
   , dock :: Array Dock
   -- | the rig's clock is locked to Diaphus's Link anchor: Diaphus is active
   , locked :: Boolean
+  -- | the closed machine whose 'open ↗' is showing (a plain click on it)
+  , peeked :: Maybe String
   }
 
 -- | A line's kind, as the key names it: control whatever it carries, else
@@ -427,15 +430,19 @@ chartOf on hot live f =
     in
       svg "g" [ attr "class" ("dock" <> if d.open then " open" else " closed") ]
         [ svg "rect" [ attr "class" "hit", attr "x" "10", attr "y" (n (y - 18.0)), attr "width" (n (left - 20.0)), attr "height" "36" ] []
-        , if d.open then fishBtn d.slot 23.0 (y - 16.0)
-          else svg "a" [ attr "class" "ghostfish", attr "href" d.href, attr "target" d.target, attr "data-peek" "" ]
+        , if d.open then svg "g" [] [ fishBtn d.slot 23.0 (y - 16.0), label "name" (left - 10.0) (y - 1.0) "end" d.name ]
+          -- a closed machine: a plain click shows its 'open ↗'; the
+          -- browser's own cmd-click opens it behind the dashboard
+          else svg "a" [ attr "class" "ghostfish", attr "href" d.href, attr "target" d.target, attr "data-peek" "", HE.onClick \_ -> on.peek d.slot ]
                  [ use ("sp-" <> d.slot) 23.0 (y - 16.0) 54.0 32.0
-                 , svg "title" [] [ HH.text (d.name <> ": cmd-click to open it behind the dashboard, or 'open ↗' to go to it") ] ]
-        , label "name" (left - 10.0) (y - 1.0) "end" d.name
+                 , label "name" (left - 10.0) (y - 1.0) "end" d.name
+                 , svg "title" [] [ HH.text d.name ] ]
         , if d.open then label "sub" (left - 10.0) (y + 12.0) "end" ("open · nothing routed" <> preset d.slot)
-          else svg "a" [ attr "class" "openlink", attr "href" d.href, attr "target" d.target ]
-                 [ label "sub" (left - 10.0) (y + 12.0) "end" "open ↗"
-                 , svg "title" [] [ HH.text ("Open " <> d.name <> " (cmd-click to stay here)") ] ]
+          else if live.peeked == Just d.slot then
+            svg "a" [ attr "class" "openlink", attr "href" d.href, attr "target" d.target ]
+              [ label "sub" (left - 10.0) (y + 12.0) "end" "open ↗"
+              , svg "title" [] [ HH.text ("Open " <> d.name) ] ]
+          else svg "g" [] []
         ]
   dock = Array.mapWithIndex dockItem docked
   -- with nothing routed anywhere, the chart is the dock and a line
