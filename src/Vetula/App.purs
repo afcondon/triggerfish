@@ -6428,7 +6428,8 @@ performSurface :: forall m. State -> H.ComponentHTML Action Slots m
 performSurface st =
   HH.div
     [ HP.style ( "position: absolute; inset: 0; display: flex; flex-direction: column; align-items: stretch; "
-        <> "justify-content: flex-start; gap: 22px; padding: 30px 28px; padding-top: calc(" <> chyronHeight <> " + 16px); padding-right: calc(" <> riverWidth <> " + 28px);" ) ]
+        -- edge to edge: the stage is Limulus, under the chyron and up to the river
+        <> "justify-content: flex-start; padding: 0; padding-top: " <> chyronHeight <> "; padding-right: " <> riverWidth <> ";" ) ]
     ( body <> [ riverColumn st, perfEditModal st, perfPhrasePickModal st ] )
   where
   -- Perform is Limulus (AC, 2026-10-04: docs/kb/plans/the-deck.md). The
@@ -6440,6 +6441,8 @@ performSurface st =
   body =
       [ HH.div
           [ HP.attr (HH.AttrName "data-limulus-dock") "always"
+          -- part of the page, not a window on it (AC, 2026-10-04)
+          , HP.attr (HH.AttrName "data-limulus-frame") "flush"
           , HP.style "flex: 1 1 auto; min-height: 0; width: 100%; display: flex; align-items: center; justify-content: center; color: #9a8d6a; font-style: italic; font-size: 13px;" ]
           [ HH.text "Perform is Limulus, which plays on the rig: switch to Atlantis on the dashboard." ]
       ]

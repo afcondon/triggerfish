@@ -19,12 +19,23 @@ export const focusSelf = () => window.focus();
 export const watchDocks = (onAlways) => () => {
   const root = document.documentElement;
   let always = null, queued = false;
-  const vars = ["--lim-left", "--lim-right", "--lim-top", "--lim-width", "--lim-height"];
+  const vars = ["--lim-left", "--lim-right", "--lim-top", "--lim-width", "--lim-height", "--lim-shadow", "--lim-edge"];
+  // A dock marked data-limulus-frame="flush" is part of the page: no window
+  // chrome on the panel, and the panel's Limulus is told so.
+  let flush = null;
+  const tellFrame = () => {
+    const f = document.querySelector('iframe[title="Limulus"]');
+    if (f && f.contentWindow) f.contentWindow.postMessage({ limulusFrame: flush ? "flush" : "window" }, location.origin);
+  };
   const place = () => {
     queued = false;
     const docks = [...document.querySelectorAll("[data-limulus-dock]")];
     const nowAlways = docks.some((d) => d.dataset.limulusDock === "always");
     if (nowAlways !== always) { always = nowAlways; onAlways(nowAlways)(); }
+    const nowFlush = docks.some((d) => d.dataset.limulusFrame === "flush");
+    if (nowFlush !== flush) { flush = nowFlush; tellFrame(); }
+    const f = document.querySelector('iframe[title="Limulus"]');
+    if (f && !f.dataset.told) { f.dataset.told = "1"; f.addEventListener("load", tellFrame); }
     const rects = docks.map((d) => d.getBoundingClientRect()).filter((r) => r.width > 0 && r.height > 0);
     if (rects.length === 0) { vars.forEach((v) => root.style.removeProperty(v)); return; }
     const bar = parseFloat(getComputedStyle(root).getPropertyValue("--tf-bar")) || 44;
@@ -37,6 +48,8 @@ export const watchDocks = (onAlways) => () => {
     root.style.setProperty("--lim-top", top + "px");
     root.style.setProperty("--lim-width", (right - left) + "px");
     root.style.setProperty("--lim-height", Math.max(120, bottom - top) + "px");
+    if (flush) { root.style.setProperty("--lim-shadow", "none"); root.style.setProperty("--lim-edge", "none"); }
+    else { root.style.removeProperty("--lim-shadow"); root.style.removeProperty("--lim-edge"); }
   };
   const queue = () => { if (!queued) { queued = true; requestAnimationFrame(place); } };
   window.addEventListener("resize", queue);

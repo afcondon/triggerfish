@@ -396,7 +396,7 @@ limulusPanel open =
     [ style $ "position:fixed;z-index:60;box-sizing:border-box;"
         <> "left:var(--lim-left,auto);right:var(--lim-right,0);top:var(--lim-top,var(--tf-bar));"
         <> "width:var(--lim-width,min(720px,max(420px,46vw)));height:var(--lim-height,calc(100vh - var(--tf-bar)));"
-        <> "box-shadow:-4px 0 14px #00000030;border-left:1px solid #b3ae9c;background:#f6f2e7;"
+        <> "box-shadow:var(--lim-shadow,-4px 0 14px #00000030);border-left:var(--lim-edge,1px solid #b3ae9c);background:#f6f2e7;"
         <> (if open then "" else "display:none;")
     ]
     [ HH.iframe
