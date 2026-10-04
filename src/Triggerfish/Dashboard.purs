@@ -469,9 +469,12 @@ handleAction = case _ of
 
   ConfirmDown b -> H.modify_ _ { confirmingDown = b }
 
-  -- The X-ray has the Atlantis page's old address, so a lamp's link and
-  -- the browser's back both reach it; the hashchange does the rest.
-  XRay b -> liftEffect (Route.writeHash (if b then "atlantis" else ""))
+  -- The X-ray keeps the Atlantis page's old address (a lamp's link, a
+  -- bookmark). writeHash is replaceState, which fires no hashchange, so the
+  -- state is set here as well.
+  XRay b -> do
+    H.modify_ _ { xray = b, confirmingDown = false }
+    liftEffect (Route.writeHash (if b then "atlantis" else ""))
 
   KeyToggle k -> H.modify_ \x -> x { hidden = if k `elem` x.hidden then filter (_ /= k) x.hidden else x.hidden <> [ k ] }
   KeyHover k -> H.modify_ _ { keyHot = k }
