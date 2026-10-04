@@ -312,6 +312,14 @@
     .flow-key { display: flex; flex-wrap: wrap; gap: 4px 14px; margin-top: 8px; font-size: 12px; font-weight: 600; }
     .flow-key .sig { display: inline-flex; align-items: center; gap: 6px; }
     .flow-key .sig i { width: 16px; height: 4px; background: currentColor; }
+    /* the key is a filter: click to hide a kind, hover to light it */
+    .flow-key button.sig { appearance: none; border: 0; background: none; padding: 2px 0; font: inherit; cursor: pointer; }
+    .flow-key button.sig:hover, .flow-key button.sig:focus-visible { text-decoration: underline; text-underline-offset: 3px; outline: none; }
+    .flow-key .sig.off { opacity: .35; text-decoration: line-through; }
+    .flow-key .sig.control { color: var(--muted); }
+    .flow-key .showall { color: var(--muted); font-weight: 400; }
+    svg.flows.keying .link { fill-opacity: .06; }
+    svg.flows.keying .link.khot { fill-opacity: .9; }
     @media (prefers-reduced-motion: reduce) { svg.flows .link { transition: none; } }
   </style>
   <link rel="icon" href="/favicon.svg" type="image/svg+xml">

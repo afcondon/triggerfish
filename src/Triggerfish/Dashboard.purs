@@ -171,6 +171,9 @@ type State =
   , atlantis :: Boolean
   , asked :: Array Atlantis.Asked
   , confirmingDown :: Boolean
+  -- the key as a filter: kinds of line hidden, and the kind hovered
+  , hidden :: Array String
+  , keyHot :: Maybe String
   }
 
 data Action
@@ -211,6 +214,9 @@ data Action
   | RigRestart String
   | RigGroup String
   | ConfirmDown Boolean
+  | KeyToggle String
+  | KeyHover (Maybe String)
+  | KeyAll
   | ShowAllVoices Boolean
 
 component :: forall q i o. H.Component q i o Aff
@@ -221,7 +227,7 @@ component = H.mkComponent
       , table: RM.defaultTable, ports: [], sampleSets: [], hot: Nothing, voices: [], router: Router.initial
       , matrix: Nothing, pick: Nothing, focus: Nothing, sheet: Nothing, foldDrums: true, vetulaSent: Nothing
       , relays: false, allVoices: false, rigLoops: Map.empty, bosun: Nothing
-      , atlantis: false, asked: [], confirmingDown: false }
+      , atlantis: false, asked: [], confirmingDown: false, hidden: [], keyHot: Nothing }
   , render
   , eval: H.mkEval H.defaultEval { handleAction = handleAction, initialize = Just Init }
   }
@@ -398,6 +404,10 @@ handleAction = case _ of
 
   ConfirmDown b -> H.modify_ _ { confirmingDown = b }
 
+  KeyToggle k -> H.modify_ \x -> x { hidden = if k `elem` x.hidden then filter (_ /= k) x.hidden else x.hidden <> [ k ] }
+  KeyHover k -> H.modify_ _ { keyHot = k }
+  KeyAll -> H.modify_ _ { hidden = [] }
+
   ShowAllVoices b -> H.modify_ _ { allVoices = b }
 
   ToggleVoices m -> H.modify_ \x -> x { voices = if m `elem` x.voices then filter (_ /= m) x.voices else x.voices <> [ m ] }
@@ -523,7 +533,7 @@ flowChart :: forall m. State -> H.ComponentHTML Action () m
 flowChart st =
   HH.section [ cls "flow", HP.attr (AttrName "aria-label") "Where it all goes" ]
     [ HH.div [ cls ("flow-chart" <> if st.allVoices then " all-voices" else "") ]
-        [ FlowView.chart { hover: Hover, pick: ToggleVoices, link: ChartLink } st.hot { playing: map _.slot (filter (playing st) machines), rigUp: st.rigUp, tempo: st.tempo, lamps }
+        [ FlowView.chart { hover: Hover, pick: ToggleVoices, link: ChartLink } st.hot { playing: map _.slot (filter (playing st) machines), rigUp: st.rigUp, tempo: st.tempo, lamps, hidden: st.hidden, keyHot: st.keyHot }
             ( Flow.flow
                 { mode: st.mode
                 , table: st.table
@@ -539,7 +549,7 @@ flowChart st =
             )
         ]
     , HH.div [ cls "flow-foot" ]
-        [ FlowView.key
+        [ FlowView.key { toggle: KeyToggle, hover: KeyHover, all: KeyAll } { hidden: st.hidden, keyHot: st.keyHot }
         , HH.div [ cls "flow-switches" ]
             [ switch "Relays" "Draw Diaphus, which delivers every MIDI note the rig sends." st.relays ShowRelays
             , switch "Every voice" "Open every machine into its voices: one line per channel, head or lane." st.allVoices ShowAllVoices

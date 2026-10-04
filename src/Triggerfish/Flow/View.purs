@@ -10,6 +10,7 @@ module Triggerfish.Flow.View
   , Live
   , chart
   , key
+  , KeyHandlers
   ) where
 
 import Prelude
@@ -76,17 +77,41 @@ heightOf f = clampN 250.0 720.0 (130.0 + toNumber streams * 11.0 + toNumber rows
 type Live =
   { playing :: Array String, rigUp :: Boolean, tempo :: Number
   , lamps :: Array { node :: String, lamp :: Lamp, title :: String }
+  -- | the key as a filter: kinds of line hidden (the chart is laid out
+  -- | without them), and the kind hovered in the key (lit, the rest dimmed)
+  , hidden :: Array String
+  , keyHot :: Maybe String
   }
 
+-- | A line's kind, as the key names it: control whatever it carries, else
+-- | its signal.
+kindOf :: Link -> String
+kindOf l
+  | l.control && l.signal /= Recorded = "control"
+  | otherwise = sigClass l.signal
+
+-- | The flow less the hidden kinds, and the nodes nothing reaches any more.
+hide :: Array String -> Flow -> Flow
+hide hidden f
+  | Array.null hidden = f
+  | otherwise = { nodes: filter (\nd -> Array.elem nd.id ends) f.nodes, links }
+  where
+  links = filter (\l -> not (Array.elem (kindOf l) hidden)) f.links
+  ends = nub (Array.concatMap (\l -> [ l.from, l.to ]) links)
+
 chart :: forall w i. Handlers i -> Maybe String -> Live -> Flow -> HH.HTML w i
-chart on hot live f
+chart on hot live = chartOf on hot live <<< hide live.hidden
+
+chartOf :: forall w i. Handlers i -> Maybe String -> Live -> Flow -> HH.HTML w i
+chartOf on hot live f
   | Array.null f.links =
       HH.p [ HP.class_ (HH.ClassName "flow-empty") ]
-        [ HH.text "Nothing is playing anywhere yet. Open a machine and the chart shows where it goes." ]
+        [ HH.text if Array.null live.hidden then "Nothing is playing anywhere yet. Open a machine and the chart shows where it goes."
+                  else "Every line drawn is of a kind hidden in the key. Click the key to show them again." ]
   | otherwise =
       svg "svg"
         [ attr "viewBox" ("0 0 " <> n width <> " " <> n h)
-        , attr "class" ("flows" <> (if hot == Nothing then "" else " hovering") <> (if Array.null live.playing then " resting" else ""))
+        , attr "class" ("flows" <> (if hot == Nothing then "" else " hovering") <> (if live.keyHot == Nothing then "" else " keying") <> (if Array.null live.playing then " resting" else ""))
         , attr "style" ("--beat: " <> n (60.0 / max 20.0 live.tempo) <> "s")
         , attr "role" "img"
         , attr "aria-label" "Where each machine's output goes: through the browser or the rig, through interfaces and instruments, to your ears"
@@ -151,7 +176,7 @@ chart on hot live f
   link sl =
     let
       ours' = f.links !! (unwrap' sl.index)
-      cls = maybe "" (\l -> sigClass l.signal <> (if l.control then " control" else "") <> (if Just l.machine == hot then " hot" else "") <> (if l.broken > 0 then " broken" else "") <> (if waits l then " waiting" else if sounding l then "" else " idle")) ours'
+      cls = maybe "" (\l -> sigClass l.signal <> (if l.control then " control" else "") <> (if live.keyHot == Just (kindOf l) then " khot" else "") <> (if Just l.machine == hot then " hot" else "") <> (if l.broken > 0 then " broken" else "") <> (if waits l then " waiting" else if sounding l then "" else " idle")) ours'
     in
       svg "path" ([ attr "class" ("link " <> cls), attr "d" (generateLinkPath laid.nodes sl) ]
           <> maybe [] (\l -> [ HE.onClick \_ -> on.link l.machine l.to ]) ours')
@@ -313,12 +338,41 @@ chart on hot live f
   sounding l = l.machine `Array.elem` live.playing || (l.machine == "sets" && not (Array.null live.playing))
 
 -- | The signals, as a key under the chart.
-key :: forall w i. HH.HTML w i
-key =
-  HH.div [ HP.class_ (HH.ClassName "flow-key") ]
-    ( [ Notes, Socket, Midi, Osc, Http, Cv, Audio, Samples, Recorded ] <#> \s ->
-        HH.span [ HP.class_ (HH.ClassName ("sig " <> sigClass s)) ] [ HH.i_ [], HH.text (signalLabel s) ]
+-- | The key under the chart, and a filter: a kind clicked is hidden (or
+-- | shown again), a kind hovered is lit on the chart.
+type KeyHandlers i = { toggle :: String -> i, hover :: Maybe String -> i, all :: i }
+
+key :: forall w i. KeyHandlers i -> { hidden :: Array String, keyHot :: Maybe String } -> HH.HTML w i
+key on st =
+  HH.div [ HP.class_ (HH.ClassName "flow-key"), HP.attr (AttrName "role") "group", HP.attr (AttrName "aria-label") "Kinds of line: click to hide or show" ]
+    ( map item kinds
+        <> (if Array.null st.hidden then [] else [ HH.button [ HP.class_ (HH.ClassName "sig showall"), HE.onClick \_ -> on.all ] [ HH.text "show all" ] ])
     )
+  where
+  kinds =
+    [ { k: "s-notes", label: signalLabel Notes }
+    , { k: "control", label: "control" }
+    , { k: "s-socket", label: signalLabel Socket }
+    , { k: "s-midi", label: signalLabel Midi }
+    , { k: "s-osc", label: signalLabel Osc }
+    , { k: "s-http", label: signalLabel Http }
+    , { k: "s-cv", label: signalLabel Cv }
+    , { k: "s-audio", label: signalLabel Audio }
+    , { k: "s-samples", label: signalLabel Samples }
+    , { k: "s-record", label: signalLabel Recorded }
+    ]
+  item { k, label } =
+    let off = Array.elem k st.hidden
+    in
+      HH.button
+        [ HP.class_ (HH.ClassName ("sig " <> k <> (if off then " off" else "")))
+        , HP.attr (AttrName "aria-pressed") (if off then "false" else "true")
+        , HP.title (if off then "Show " <> label <> " lines" else "Hide " <> label <> " lines")
+        , HE.onClick \_ -> on.toggle k
+        , HE.onMouseEnter \_ -> on.hover (Just k)
+        , HE.onMouseLeave \_ -> on.hover Nothing
+        ]
+        [ HH.i_ [], HH.text label ]
 
 sigClass :: Signal -> String
 sigClass = case _ of
