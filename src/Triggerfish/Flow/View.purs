@@ -39,6 +39,7 @@ import Halogen.HTML.Core (AttrName(..), ElemName(..), Namespace(..))
 import Halogen.HTML.Events as HE
 import Halogen.HTML.Properties as HP
 import Triggerfish.Bosun (Lamp(..))
+import Triggerfish.Flow.Order (orderOf, rankIn)
 import Triggerfish.Flow (Column(..), Flow, Lasts(..), Link, Signal(..), columnTitle, keeps, layerOf, loopOf, nodeRank, onTheBeat, signalLabel, skeleton, storeLink)
 
 -- | What the chart reports: a machine hovered (or left), and a machine picked.
@@ -208,7 +209,9 @@ chartOf on hot live f =
       from <- Map.lookup l.from byId
       c <- columns !! w.layer
       pure (Tuple c (snd (nodeRank from)))
-    Nothing -> map nodeRank (ours sn)
+    Nothing -> map (rankIn order) (ours sn)
+  -- the columns after the engine follow their wiring (Flow.Order)
+  order = orderOf f
   laid = computeLayoutWithLanes wants
     (map (\l -> { s: l.from, t: l.to, v: widthOf l }) f.links)
     (defaultSankeyConfig width h)
@@ -302,9 +305,10 @@ chartOf on hot live f =
   node sn = case ours sn of
     Nothing -> svg "g" [] []
     Just nd
-      | not store && storedNode nd -> svg "g" [ attr "class" "stored" ] [ node' sn nd ]
+      | not store && storedNode nd && not (annotated nd.id) -> svg "g" [ attr "class" "stored" ] [ node' sn nd ]
       | otherwise -> node' sn nd
-  -- mostly storage: ghosted in place outside the storage lens
+  -- mostly storage: ghosted in place outside the storage lens, unless the
+  -- X-ray has a process to show on it (Amphora, on the sample sets)
   storedNode nd = nd.id == "sets" || (isJust (loopOf nd.id) && nd.note /= "playing")
   node' sn nd = case nd.machine, loopOf nd.id of
       Just _, _ | isJust (String.stripPrefix (String.Pattern "src:") nd.id) -> voiceNode sn nd

@@ -17,6 +17,7 @@ import Data.String.Common (joinWith, split)
 import Effect (Effect)
 import Effect.Console (log)
 import Test.FlowSpec (runFlowTests)
+import Test.OrderSpec (runOrderTests)
 import Test.HarmonySpec (runHarmonyTests)
 import Test.LepidopteraScaleSpec (runLepidopteraScaleTests)
 import Test.CardLineSpec (runCardLineTests)
@@ -155,6 +156,7 @@ main = do
   -- only report.
   runRevoiceTests
   runFlowTests
+  runOrderTests
   runHarmonyTests
   runLepidopteraScaleTests
   runCardLineTests
