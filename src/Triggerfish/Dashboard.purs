@@ -220,6 +220,7 @@ data Action
   | KeyHover (Maybe String)
   | KeyAll
   | PortClick String
+  | OpenSlot String
   | CableClick String String
   | ShowAllVoices Boolean
 
@@ -378,6 +379,10 @@ handleAction = case _ of
   -- A machine opens behind the dashboard: the dashboard is where you are.
   OpenMachine m ev -> do
     liftEffect $ preventDefault (ME.toEvent ev)
+    liftEffect $ openInBackground m.href
+
+  -- A machine opened from the chart's dock, behind the dashboard.
+  OpenSlot slot -> for_ (find (\m -> m.slot == slot) machines) \m ->
     liftEffect $ openInBackground m.href
 
   ShowRelays b -> H.modify_ _ { relays = b }
@@ -583,7 +588,7 @@ flowChart :: forall m. State -> H.ComponentHTML Action () m
 flowChart st =
   HH.section [ cls "flow", HP.attr (AttrName "aria-label") "Where it all goes" ]
     [ HH.div [ cls ("flow-chart" <> if st.allVoices then " all-voices" else "") ]
-        [ FlowView.chart { hover: Hover, pick: ToggleVoices, link: ChartLink, port: PortClick, cable: CableClick } st.hot { playing: map _.slot (filter (playing st) machines), rigUp: st.rigUp, tempo: st.tempo, lamps, hidden: st.hidden, keyHot: st.keyHot, patch }
+        [ FlowView.chart { hover: Hover, pick: ToggleVoices, link: ChartLink, port: PortClick, cable: CableClick, play: Command, open: OpenSlot } st.hot { playing: map _.slot (filter (playing st) machines), rigUp: st.rigUp, tempo: st.tempo, lamps, hidden: st.hidden, keyHot: st.keyHot, patch, dock }
             ( Flow.flow
                 { mode: st.mode
                 , table: st.table
@@ -608,6 +613,13 @@ flowChart st =
         ]
     ]
   where
+  -- Every machine, for the chart's dock and its fish.
+  dock = machines <#> \m ->
+    let heard = Map.lookup m.slot st.heard
+    in
+      { slot: m.slot, name: m.name, open: isOpen st m, playing: playing st m, playable: m.playable
+      , alias: if isOpen st m then heard >>= _.state.alias else Nothing
+      }
   -- The patch bay: a port for every row of the harmony matrix, the cables
   -- its routes make, and the port clicked first.
   patch =
@@ -788,7 +800,7 @@ machineBar st =
     ( [ HH.div [ cls "seg", HP.attr (AttrName "role") "group", HP.attr (AttrName "aria-label") "Mode" ]
           [ seg "Solo" Solo, seg "Atlantis" Atlantis ]
       , HH.button [ cls "btn", HE.onClick \_ -> StopAll, HP.disabled (not anyPlaying) ] [ HH.text "■ Stop all" ]
-      , HH.nav [ cls "mitems", HP.attr (AttrName "aria-label") "Machines" ] (map item machines)
+      -- The machines themselves are on the chart: flowing, or in its dock.
       ]
     )
   where
@@ -803,49 +815,6 @@ machineBar st =
       , HE.onClick \_ -> SetMode m
       ]
       [ HH.text label ]
-  item m =
-    HH.div [ cls ("mitem m-" <> m.slot <> state) ]
-      ( [ fish, name ] <> chip )
-    where
-    open = isOpen st m
-    isPlaying = playing st m
-    state
-      | isPlaying = " playing"
-      | open = " open"
-      | otherwise = " closed"
-    fish
-      | open && m.playable =
-          HH.button
-            [ cls "fishplay"
-            , HP.title ((if isPlaying then "Stop " else "Play ") <> m.name)
-            , HP.attr (AttrName "aria-label") ((if isPlaying then "Stop " else "Play ") <> m.name)
-            , HP.attr (AttrName "aria-pressed") (if isPlaying then "true" else "false")
-            , HE.onClick \_ -> Command m.slot (not isPlaying)
-            ]
-            [ Fish.icon "ico" m.slot ]
-      | otherwise =
-          HH.span
-            [ cls "fishplay off"
-            , HP.title (if isPlaying then m.name <> ": recording" else m.name)
-            , HP.attr (AttrName "aria-hidden") "true"
-            ]
-            [ Fish.icon "ico" m.slot ]
-    name
-      | open = HH.span [ cls ("wordmark w-" <> m.slot) ] [ HH.text m.name ]
-      | otherwise =
-          HH.a
-            [ cls ("wordmark w-" <> m.slot), HP.href m.href, HP.title ("Open " <> m.name <> " in a new tab")
-            , HE.onClick (OpenMachine m)
-            ]
-            [ HH.text m.name ]
-    heard = Map.lookup m.slot st.heard
-    chip = case heard >>= _.state.alias of
-      Just alias | open ->
-        [ HH.span [ cls ("alias" <> if edited then " edited" else ""), HP.title "the loaded preset" ]
-            [ chipIcons (Just { glyph: G.glyphFromAlias alias, diverged: edited }), HH.text alias ]
-        ]
-      _ -> []
-    edited = fromMaybe false (map _.state.edited heard)
 
 -- | The whole table, one ledger, each source drawn by the same rows as every
 -- | other router.

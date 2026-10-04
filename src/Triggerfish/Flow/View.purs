@@ -13,6 +13,7 @@ module Triggerfish.Flow.View
   , KeyHandlers
   , Port
   , Patch
+  , Dock
   ) where
 
 import Prelude
@@ -45,7 +46,13 @@ import Triggerfish.Flow (Column(..), Flow, Link, Signal(..), columnTitle, layerO
 type Handlers i =
   { hover :: Maybe String -> i, pick :: String -> i, link :: String -> String -> i
   , port :: String -> i, cable :: String -> String -> i
+  , play :: String -> Boolean -> i, open :: String -> i
   }
+
+-- | Every machine, for the dock: the ones not on the chart (closed, or open
+-- | with nothing routed) stand under the flowing ones, and a closed one is
+-- | opened from there. `playable`: its fish is its play button.
+type Dock = { slot :: String, name :: String, open :: Boolean, playing :: Boolean, playable :: Boolean, alias :: Maybe String }
 
 -- | The harmony patch bay drawn on the chart. A source has an output port:
 -- | on its machine's label (Vetula's key and voices), on its own node in
@@ -100,6 +107,7 @@ type Live =
   , hidden :: Array String
   , keyHot :: Maybe String
   , patch :: Patch
+  , dock :: Array Dock
   }
 
 -- | A line's kind, as the key names it: control whatever it carries, else
@@ -122,20 +130,15 @@ chart :: forall w i. Handlers i -> Maybe String -> Live -> Flow -> HH.HTML w i
 chart on hot live = chartOf on hot live <<< hide live.hidden
 
 chartOf :: forall w i. Handlers i -> Maybe String -> Live -> Flow -> HH.HTML w i
-chartOf on hot live f
-  | Array.null f.links =
-      HH.p [ HP.class_ (HH.ClassName "flow-empty") ]
-        [ HH.text if Array.null live.hidden then "Nothing is playing anywhere yet. Open a machine and the chart shows where it goes."
-                  else "Every line drawn is of a kind hidden in the key. Click the key to show them again." ]
-  | otherwise =
+chartOf on hot live f =
       svg "svg"
-        [ attr "viewBox" ("0 0 " <> n width <> " " <> n h)
+        [ attr "viewBox" ("0 0 " <> n width <> " " <> n (max h (dockBottom + 10.0)))
         , attr "class" ("flows" <> (if hot == Nothing then "" else " hovering") <> (if live.keyHot == Nothing then "" else " keying") <> (if Array.null live.playing then " resting" else ""))
         , attr "style" ("--beat: " <> n (60.0 / max 20.0 live.tempo) <> "s")
         , attr "role" "img"
         , attr "aria-label" "Where each machine's output goes: through the browser or the rig, through interfaces and instruments, to your ears"
         ]
-        ( beatBand <> heads <> [ rule ] <> map link (filter (not <<< isQuant) laid.routes) <> map node laid.nodes <> beatMarks <> patchBay )
+        ( beatBand <> heads <> [ rule ] <> map link (filter (not <<< isQuant) laid.routes) <> map node laid.nodes <> beatMarks <> patchBay <> dock <> empty )
   where
   -- In Atlantis, link-spike stands above the flow: the beat, broadcast to
   -- everything the rig times, rather than one more hop in it.
@@ -275,12 +278,11 @@ chartOf on hot live f
         , HE.onMouseLeave \_ -> on.hover Nothing
         , HE.onFocus \_ -> on.hover (Just m)
         , HE.onBlur \_ -> on.hover Nothing
-        , HE.onClick \_ -> on.pick m
         ]
-        [ svg "rect" [ attr "class" "hit", attr "x" (n (cx - 90.0)), attr "y" (n (top - 80.0)), attr "width" "180", attr "height" "80" ] []
+        [ svg "rect" [ attr "class" "hit", attr "x" (n (cx - 90.0)), attr "y" (n (top - 80.0)), attr "width" "180", attr "height" "80", HE.onClick \_ -> on.pick m ] []
         , bar sn
-        , use ("sp-" <> m) (cx - 27.0) (top - 80.0) 54.0 32.0
-        , label "name" cx (top - 30.0) "middle" nd.name
+        , fishBtn m (cx - 27.0) (top - 80.0)
+        , pickName m cx (top - 30.0) "middle" nd.name
         , label "sub" cx (top - 16.0) "middle" (plural (streamsOf m) "stream" <> " · " <> (if needsAtlantis m then "needs Atlantis" else playsWhere m))
         ]
 
@@ -368,6 +370,52 @@ chartOf on hot live f
                  , portDot g.s.id "src can" g.p g.s.short (g.s.label <> " · plug into odonus." <> fromMaybe "" armedInput)
                  ])
 
+  dockOf m = Array.find (\d -> d.slot == m) live.dock
+  preset m = maybe "" (\a -> " · " <> a) (dockOf m >>= _.alias)
+  -- A playable machine's fish plays and stops it, as on its own page.
+  fishBtn m x y = case dockOf m of
+    Just d | d.open && d.playable ->
+      svg "g"
+        [ attr "class" ("fishbtn" <> if d.playing then " playing" else ""), attr "role" "button", attr "tabindex" "0"
+        , attr "aria-label" ((if d.playing then "Stop " else "Play ") <> d.name)
+        , HE.onClick \_ -> on.play m (not d.playing)
+        ]
+        [ use ("sp-" <> m) x y 54.0 32.0, svg "title" [] [ HH.text ((if d.playing then "Stop " else "Play ") <> d.name) ] ]
+    _ -> use ("sp-" <> m) x y 54.0 32.0
+  pickName m x y anchor txt =
+    svg "text" [ attr "class" "name", attr "x" (n x), attr "y" (n y), attr "text-anchor" anchor, HE.onClick \_ -> on.pick m ]
+      [ HH.text txt, svg "title" [] [ HH.text "Click to show its voices" ] ]
+
+  -- The dock: every machine not on the chart, under the ones that are, in
+  -- the left margin. A closed one is ghosted and opens on a click; an open
+  -- one with nothing routed says so.
+  onChart m = Array.any (\nd -> nd.machine == Just m) f.nodes
+  docked = filter (\d -> not (onChart d.slot)) live.dock
+  dockTop =
+    let bottoms = map _.y1 (filter (\sn -> sn.x0 < left + 300.0) laid.nodes)
+    in (foldl max (48.0 + band + fedRoom) bottoms) + 44.0
+  dockItem k d =
+    let
+      y = dockTop + 38.0 * toNumber k
+      act = if d.open then [] else [ HE.onClick \_ -> on.open d.slot ]
+    in
+      svg "g" ([ attr "class" ("dock" <> if d.open then " open" else " closed"), attr "role" "button", attr "tabindex" "0" ] <> act)
+        [ svg "rect" [ attr "class" "hit", attr "x" "10", attr "y" (n (y - 18.0)), attr "width" (n (left - 20.0)), attr "height" "36" ] []
+        , (if d.open then fishBtn d.slot 23.0 (y - 16.0) else use ("sp-" <> d.slot) 23.0 (y - 16.0) 54.0 32.0)
+        , label "name" (left - 10.0) (y - 1.0) "end" d.name
+        , label "sub" (left - 10.0) (y + 12.0) "end" (if d.open then "open · nothing routed" <> preset d.slot else "click to open")
+        , svg "title" [] [ HH.text (if d.open then d.name <> " is open, with nothing routed to sound" else "Open " <> d.name <> " in a new tab") ]
+        ]
+  dock = Array.mapWithIndex dockItem docked
+  -- with nothing routed anywhere, the chart is the dock and a line
+  empty
+    | Array.null f.links =
+        [ label "flow-empty" (left + 40.0) (48.0 + band + 26.0) "start"
+            if Array.null live.hidden then "Nothing is playing anywhere yet. Open a machine on the left and the chart shows where it goes."
+            else "Every line drawn is of a kind hidden in the key. Click the key to show them again." ]
+    | otherwise = []
+  dockBottom = dockTop + 38.0 * toNumber (Array.length docked)
+
   besideMachine sn nd m =
     let cy = mid sn
     in
@@ -378,14 +426,13 @@ chartOf on hot live f
         , HE.onMouseLeave \_ -> on.hover Nothing
         , HE.onFocus \_ -> on.hover (Just m)
         , HE.onBlur \_ -> on.hover Nothing
-        , HE.onClick \_ -> on.pick m
         ]
-        [ svg "rect" [ attr "class" "hit", attr "x" (n (sn.x0 - 120.0)), attr "y" (n (cy - 44.0)), attr "width" "120", attr "height" "84" ] []
+        [ svg "rect" [ attr "class" "hit", attr "x" (n (sn.x0 - 120.0)), attr "y" (n (cy - 44.0)), attr "width" "120", attr "height" "84", HE.onClick \_ -> on.pick m ] []
         , bar sn
-        , use ("sp-" <> m) (sn.x0 - 62.0) (cy - 42.0) 54.0 32.0
-        , label "name" (sn.x0 - 8.0) (cy + 2.0) "end" nd.name
+        , fishBtn m (sn.x0 - 62.0) (cy - 42.0)
+        , pickName m (sn.x0 - 8.0) (cy + 2.0) "end" nd.name
         , label "sub" (sn.x0 - 8.0) (cy + 15.0) "end" (plural (streamsOf m) "stream")
-        , label "sub where" (sn.x0 - 8.0) (cy + 27.0) "end" (if needsAtlantis m then "needs Atlantis" else playsWhere m)
+        , label "sub where" (sn.x0 - 8.0) (cy + 27.0) "end" (if needsAtlantis m then "needs Atlantis" else playsWhere m <> preset m)
         ]
 
   -- A source of quantisation of its own (a scale, a pattern, a machine not
@@ -411,16 +458,15 @@ chartOf on hot live f
         , HE.onMouseLeave \_ -> on.hover Nothing
         , HE.onFocus \_ -> on.hover (Just m)
         , HE.onBlur \_ -> on.hover Nothing
-        , HE.onClick \_ -> on.pick m
         ]
         -- A group catches the pointer only over what it paints, so the gap
         -- between the fish and the name needs something to land on.
-        [ svg "rect" [ attr "class" "hit", attr "x" "10", attr "y" (n (cy - reach)), attr "width" (n (sn.x0 - 10.0)), attr "height" (n (2.0 * reach)) ] []
+        [ svg "rect" [ attr "class" "hit", attr "x" "10", attr "y" (n (cy - reach)), attr "width" (n (sn.x0 - 10.0)), attr "height" (n (2.0 * reach)), HE.onClick \_ -> on.pick m ] []
         , bar sn
-        , use ("sp-" <> m) 23.0 (cy - 16.0) 54.0 32.0
-        , label "name" (sn.x0 - 10.0) (cy - 2.0) "end" nd.name
+        , fishBtn m 23.0 (cy - 16.0)
+        , pickName m (sn.x0 - 10.0) (cy - 2.0) "end" nd.name
         , label "sub" (sn.x0 - 10.0) (cy + 11.0) "end" (if needsAtlantis m then "needs Atlantis" else plural (streamsOf m) "stream")
-        , label "sub where" (sn.x0 - 10.0) (cy + 23.0) "end" (if needsAtlantis m then "" else playsWhere m)
+        , label "sub where" (sn.x0 - 10.0) (cy + 23.0) "end" (if needsAtlantis m then "" else playsWhere m <> preset m)
         ]
 
   -- A loop: a bubble in its machine's colour with the mark's number, filled

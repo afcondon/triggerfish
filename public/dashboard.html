@@ -285,6 +285,18 @@
     .lamp.coming i { background: #d4a82a; } .lamp.dead i { background: var(--alarm); }
     .btn.small { padding: 2px 10px; font-size: 12px; }
     @media (max-width: 720px) { .atl-branch { grid-template-columns: 1fr; } .atl-row { grid-template-columns: 1fr auto; } .atl-state, .atl-restarts { display: none; } }
+    /* the dock: machines not on the chart; a fish plays its machine */
+    svg.flows .dock { cursor: pointer; outline: none; }
+    svg.flows .dock.closed use { opacity: .3; filter: grayscale(1); }
+    svg.flows .dock.closed .name { fill: var(--muted); }
+    svg.flows .dock.closed:hover use, svg.flows .dock.closed:focus-visible use { opacity: .7; filter: none; }
+    svg.flows .dock.closed:hover .name { fill: var(--ink); }
+    svg.flows .dock.open { cursor: default; }
+    svg.flows .fishbtn { cursor: pointer; outline: none; }
+    svg.flows .fishbtn:hover use, svg.flows .fishbtn:focus-visible use { filter: drop-shadow(0 0 3px var(--live)); }
+    svg.flows .fishbtn.playing use { filter: drop-shadow(0 0 2px var(--live)); }
+    svg.flows text.name { cursor: pointer; }
+    svg.flows .flow-empty { font: 400 13px var(--mono); fill: var(--muted); }
     /* the harmony patch bay: ports on the labels, cables between them */
     svg.flows .cable { fill: none; stroke: var(--s-quant); stroke-width: 2; stroke-linecap: round; cursor: pointer; }
     svg.flows .cable:hover { stroke-width: 3.5; }
