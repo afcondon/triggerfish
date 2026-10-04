@@ -62,7 +62,8 @@ import Triggerfish.Transport (Sounding(..))
 import Triggerfish.Rig (defaultRig, targetGroups)
 import Halogen.Widgets.Select as Select
 import Type.Proxy (Proxy(..))
-import Data.Maybe (Maybe(..), fromMaybe)
+import Data.Maybe (Maybe(..), fromMaybe, isJust)
+import Binnacle.Time (dateNow)
 
 -- | The rack view hosts one cascade target-picker per destination, keyed by
 -- | destination index — the same nested ES-9/FH-2/MIDI menu the routing modal
@@ -99,6 +100,10 @@ type State =
   -- (e.g. "es9:main"). "…" while a push is in flight; the daemon's OK/ERR line
   -- once it answers. Drives the per-bank status readout (#142 S3).
   , replies :: Map String String
+  -- when to apply the rack to the rig: a moment after the last edit, so the
+  -- modular follows the page without an Apply (the rig keeps what it is given
+  -- and gives it back to a daemon that returns: selene_keeper)
+  , applyDue :: Maybe Number
   , publishMsg :: Maybe String   -- transient status from a publish-rack-to-Amphora click
   -- The unified glyph-chip PRESET bank (docs/DESIGN-scene-modal.md): captured rack
   -- docs, anonymous or named, freely intermixed. `identity` is the parked preset's
@@ -221,6 +226,7 @@ component =
           , binnacle: Nothing, midiOut: Nothing, midiName: "…"
           , clockTempo: 120.0, clockLocked: false, clockBar: 0
           , replies: Map.empty
+          , applyDue: Nothing
           , publishMsg: Nothing
           , presets: [], identity: Nothing, lastChip: Nothing
           , selected: Nothing
@@ -412,6 +418,11 @@ handleAction = case _ of
 
   Frame -> do
     st <- H.get
+    -- an edit settled: apply it, as the Apply button does
+    now <- liftEffect dateNow
+    for_ st.applyDue \due -> when (now >= due && isJust st.binnacle) do
+      H.modify_ _ { applyDue = Nothing }
+      handleAction ApplyToRig
     for_ st.binnacle \bin -> do
       r <- liftEffect $ Clock.read (Binnacle.clock bin)
       H.modify_ _ { clockTempo = r.tempo, clockLocked = r.locked, clockBar = r.bar }
@@ -603,6 +614,8 @@ persist :: forall o m. MonadAff m => H.HalogenM State Action Slots o m Unit
 persist = do
   s <- H.get
   liftEffect (Store.saveLibrary { active: s.active, library: s.library, presets: s.presets })
+  now <- liftEffect dateNow
+  H.modify_ _ { applyDue = Just (now + 800.0) }
 
 -- ---------------------------------------------------------------------------
 -- Constants

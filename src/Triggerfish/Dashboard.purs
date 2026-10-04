@@ -41,7 +41,7 @@ import Data.Maybe (Maybe(..), fromMaybe, isNothing, maybe)
 import Data.Traversable (traverse)
 import Data.Number as Number
 import Data.Number.Format (fixed, toStringWith)
-import Effect.Aff (Aff)
+import Effect.Aff (Aff, Milliseconds(..), delay)
 import Effect.Aff.Class (class MonadAff, liftAff)
 import Effect.Class (liftEffect)
 import Effect.Timer (setInterval)
@@ -62,6 +62,7 @@ import Web.UIEvent.KeyboardEvent.EventTypes as KET
 import Triggerfish.Flow as Flow
 import Triggerfish.Bosun as Bosun
 import Triggerfish.DeepStar as DeepStar
+import Triggerfish.LimulusEngine as LimulusEngine
 import Simple.JSON (readJSON)
 import Data.Either (hush)
 import Triggerfish.BackgroundOpen as BackgroundOpen
@@ -179,6 +180,12 @@ type State =
   , rigPlaying :: Map String Boolean
   -- the rig doctor's checks (DeepStar :3027), Nothing while out of reach
   , doctor :: Maybe (Array DeepStar.Check)
+  -- Web MIDI, kept to read the ports again (the FH-2 coming back), and
+  -- whether they have been read once (so the first read is no arrival)
+  , midi :: Maybe Midi.MidiAccess
+  , portsRead :: Boolean
+  -- the engine Limulus sends Tidal to: "architeuthis" or "ghci"
+  , limulusEngine :: String
   }
 
 data Action
@@ -212,6 +219,10 @@ data Action
   | ShowRelays Boolean
   | BosunPoll
   | DoctorPoll
+  | GotMidi Midi.MidiAccess
+  | Heal String String
+  | SetLimulusEngine String
+  | LimulusEngineChanged String
   | RigRestart String
   | RigGroup String
   | ConfirmDown Boolean
@@ -231,7 +242,7 @@ component = H.mkComponent
       , table: RM.defaultTable, ports: [], sampleSets: [], hot: Nothing, router: Router.initial
       , matrix: Nothing, pick: Nothing, focus: Nothing, sheet: Nothing, foldDrums: true, vetulaSent: Nothing
       , relays: false, allVoices: false, rigLoops: Map.empty, bosun: Nothing
-      , atlantis: false, asked: [], confirmingDown: false, hidden: [], keyHot: Nothing, armed: Nothing, peeked: Nothing, rigPlaying: Map.empty, doctor: Nothing }
+      , atlantis: false, asked: [], confirmingDown: false, hidden: [], keyHot: Nothing, armed: Nothing, peeked: Nothing, rigPlaying: Map.empty, doctor: Nothing, midi: Nothing, portsRead: false, limulusEngine: "architeuthis" }
   , render
   , eval: H.mkEval H.defaultEval { handleAction = handleAction, initialize = Just Init }
   }
@@ -260,6 +271,10 @@ handleAction = case _ of
     void $ H.subscribe $ eventListener KET.keydown (Window.toEventTarget win) (map KeyDown <<< KE.fromEvent)
     -- the stage's text objects: the harmony routes, and Vetula's cards for
     -- its voices; asked for again whenever the socket (re)opens
+    -- Limulus's engine, as last chosen here or in Limulus
+    eng <- liftEffect LimulusEngine.load
+    H.modify_ _ { limulusEngine = eng }
+    liftEffect $ LimulusEngine.onChange (HS.notify listener <<< LimulusEngineChanged)
     -- a plain click on a ghost fish stays here; cmd-click opens it behind
     liftEffect BackgroundOpen.install
     liftEffect $ Binnacle.onAppMessage rig (HS.notify listener <<< RigFrame)
@@ -270,7 +285,9 @@ handleAction = case _ of
     -- Ask every open page to say what it is now, rather than on its next tick.
     liftEffect $ Bus.post bus Bus.Hello
     liftEffect $ Midi.requestAccess case _ of
-      Just access -> Midi.outputNames access >>= HS.notify listener <<< SetPorts
+      Just access -> do
+        HS.notify listener (GotMidi access)
+        Midi.outputNames access >>= HS.notify listener <<< SetPorts
       Nothing -> HS.notify listener (SetPorts [])
     void $ H.fork do
       sets <- liftAff SampleSets.load
@@ -370,7 +387,13 @@ handleAction = case _ of
   -- At first run, with nothing stored, the default table is made for the ports
   -- this machine has and saved, as every other page with a router does.
   SetPorts ns -> do
-    H.modify_ _ { ports = ns }
+    before <- H.get
+    H.modify_ _ { ports = ns, portsRead = true }
+    -- the FH-2 back on USB: its daemon gave up while it was away, and the
+    -- drum-gate breakout must be applied again after a power cycle
+    when (before.portsRead && not (hasFh2 before.ports) && hasFh2 ns) do
+      handleAction (Heal "fh2" "fh2-daemon")
+      handleAction (RigRestart "fh2-drumkit")
     stored <- liftEffect RStore.load
     when (isNothing stored) do
       let t = RM.defaultTableFor ns
@@ -398,11 +421,35 @@ handleAction = case _ of
     unless (null st.asked) (H.modify_ _ { now = now })
 
   -- Every ten seconds: the rig doctor, for what Bosun cannot see (is the
-  -- ES-9 on the bus at all; does a daemon's socket answer).
+  -- ES-9 on the bus at all; does a daemon's socket answer), and the MIDI
+  -- ports again, for the FH-2.
   DoctorPoll -> void $ H.fork do
     d <- liftAff DeepStar.doctor
     st <- H.get
     when (d /= st.doctor) (H.modify_ _ { doctor = d })
+    -- the ES-9 back on the bus: es9-daemon never takes it up again itself
+    when (maybe false DeepStar.es9Absent st.doctor && maybe false DeepStar.es9Present d)
+      (handleAction (Heal "es9" "es9-daemon"))
+    for_ st.midi \access -> do
+      ns <- liftEffect (Midi.outputNames access)
+      when (ns /= st.ports) (handleAction (SetPorts ns))
+
+  GotMidi access -> H.modify_ _ { midi = Just access }
+
+  SetLimulusEngine e -> do
+    H.modify_ _ { limulusEngine = e }
+    liftEffect (LimulusEngine.save e)
+
+  LimulusEngineChanged e -> H.modify_ _ { limulusEngine = e }
+
+  -- A module back: restart the daemon that drives it (through the Atlantis
+  -- page's restart, so it shows there), then ask the rig to give it back
+  -- what Selene had applied. A power cycle of the rack heals itself.
+  Heal socket service -> do
+    handleAction (RigRestart service)
+    void $ H.fork do
+      liftAff (delay (Milliseconds 6000.0))
+      sendRig ("selene-reapply " <> socket)
 
   -- Restart one daemon. What happened is read from /state, not the reply.
   RigRestart id -> do
@@ -559,6 +606,10 @@ render st =
 -- | A `stage {"slot", "playing", …}` line: what the rig plays for a slot.
 readStage :: String -> Maybe { slot :: String, playing :: Boolean }
 readStage line = String.stripPrefix (Pattern "stage ") line >>= \json -> hush (readJSON json)
+
+-- | Whether the FH-2 is among the MIDI ports.
+hasFh2 :: Array String -> Boolean
+hasFh2 = Array.any (String.contains (Pattern "FH-2"))
 
 -- | An input's word on the chart.
 inputWord :: HarmonyRoute.Input -> String
@@ -806,11 +857,25 @@ machineBar st =
     ( [ HH.div [ cls "seg", HP.attr (AttrName "role") "group", HP.attr (AttrName "aria-label") "Mode" ]
           [ seg "Solo" Solo, seg "Atlantis" Atlantis ]
       , HH.button [ cls "btn", HE.onClick \_ -> StopAll, HP.disabled (not anyPlaying) ] [ HH.text "■ Stop all" ]
+      -- where Limulus sends Tidal: the rig, or Haskell Tidal to compare
+      , HH.span [ cls "seglabel" ] [ HH.text "Limulus" ]
+      , HH.div [ cls "seg", HP.attr (AttrName "role") "group", HP.attr (AttrName "aria-label") "Limulus's engine" ]
+          [ engineSeg "Architeuthis" "architeuthis" "Limulus sends Tidal to the rig, machines and all."
+          , engineSeg "GHCi" "ghci" "Limulus sends Tidal to Haskell Tidal, to compare; machine lines still go to the rig."
+          ]
       -- The machines themselves are on the chart: flowing, or in its dock.
       ]
     )
   where
   anyPlaying = not (null (filter (playing st) machines))
+  engineSeg label key tip =
+    HH.button
+      [ cls (if st.limulusEngine == key then "on" else "")
+      , HP.attr (AttrName "aria-pressed") (if st.limulusEngine == key then "true" else "false")
+      , HP.title tip
+      , HE.onClick \_ -> SetLimulusEngine key
+      ]
+      [ HH.text label ]
   seg label m =
     HH.button
       [ cls (if st.mode == m then "on" else "")

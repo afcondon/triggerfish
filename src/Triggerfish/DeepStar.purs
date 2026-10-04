@@ -10,6 +10,7 @@ module Triggerfish.DeepStar
   ( Check
   , doctor
   , es9Absent
+  , es9Present
   , refusing
   ) where
 
@@ -35,6 +36,10 @@ doctor = makeAff \done -> do
 -- | The ES-9 is not on the bus (its own check, not a daemon's word).
 es9Absent :: Array Check -> Boolean
 es9Absent = any (\c -> c.name == "ES-9 present" && c.status == "down")
+
+-- | The ES-9 is on the bus.
+es9Present :: Array Check -> Boolean
+es9Present = any (\c -> c.name == "ES-9 present" && c.status == "ok")
 
 -- | The daemons whose control socket does not answer, by their check names.
 refusing :: Array Check -> Array String
