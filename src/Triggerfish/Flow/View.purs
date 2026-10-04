@@ -385,10 +385,16 @@ chartOf on hot live f =
         , attr "aria-label" ((if d.playing then "Stop " else "Play ") <> d.name)
         , HE.onClick \_ -> on.play m (not d.playing)
         ]
-        [ use ("sp-" <> m) x y 54.0 32.0, svg "title" [] [ HH.text ((if d.playing then "Stop " else "Play ") <> d.name) ] ]
+        [ fishUse m x y d.playing, svg "title" [] [ HH.text ((if d.playing then "Stop " else "Play ") <> d.name) ] ]
     Just d ->
-      svg "g" [ attr "class" ("fish" <> if d.playing then " playing" else "") ] [ use ("sp-" <> m) x y 54.0 32.0 ]
+      svg "g" [ attr "class" ("fish" <> if d.playing then " playing" else "") ] [ fishUse m x y d.playing ]
     Nothing -> use ("sp-" <> m) x y 54.0 32.0
+  -- The fish, reflected in place about its own middle when facing right.
+  fishUse m x y right =
+    svg "use"
+      ( [ attr "href" ("#sp-" <> m), attr "x" (n x), attr "y" (n y), attr "width" "54", attr "height" "32" ]
+          <> (if right then [ attr "transform" ("translate(" <> n (2.0 * x + 54.0) <> " 0) scale(-1 1)") ] else [])
+      ) []
   pickName _ x y anchor txt =
     svg "text" [ attr "class" "name", attr "x" (n x), attr "y" (n y), attr "text-anchor" anchor ] [ HH.text txt ]
 
