@@ -22,7 +22,7 @@ import Data.Array (filter, foldl, mapMaybe, nub, (!!))
 import Data.Array as Array
 import Data.Int (fromNumber, toNumber)
 import Data.Map as Map
-import Data.Maybe (Maybe(..), fromMaybe, maybe)
+import Data.Maybe (Maybe(..), fromMaybe, isJust, maybe)
 import Data.Number as Number
 import Data.String (joinWith)
 import Data.Tuple (Tuple(..), snd)
@@ -41,18 +41,18 @@ import Triggerfish.Flow (Column(..), Flow, Link, Signal(..), columnTitle, layerO
 
 -- | What the chart reports: a machine hovered (or left), and a machine picked.
 -- | `link`: a link clicked, with its machine and the node it runs into.
--- | `port`: a harmony port clicked (`src:key`, `in:grid`); `cable`: a cable
+-- | `play`: a machine's fish pressed. `port`: a harmony port clicked (`src:key`, `in:grid`); `cable`: a cable
 -- | clicked, by its source port and input port.
 type Handlers i =
-  { hover :: Maybe String -> i, pick :: String -> i, link :: String -> String -> i
+  { hover :: Maybe String -> i, link :: String -> String -> i
   , port :: String -> i, cable :: String -> String -> i
-  , play :: String -> Boolean -> i, open :: String -> i
+  , play :: String -> Boolean -> i
   }
 
 -- | Every machine, for the dock: the ones not on the chart (closed, or open
 -- | with nothing routed) stand under the flowing ones, and a closed one is
 -- | opened from there. `playable`: its fish is its play button.
-type Dock = { slot :: String, name :: String, open :: Boolean, playing :: Boolean, playable :: Boolean, alias :: Maybe String }
+type Dock = { slot :: String, name :: String, open :: Boolean, playing :: Boolean, playable :: Boolean, alias :: Maybe String, href :: String, target :: String }
 
 -- | The harmony patch bay drawn on the chart. A source has an output port:
 -- | on its machine's label (Vetula's key and voices), on its own node in
@@ -241,6 +241,7 @@ chartOf on hot live f =
   node sn = case ours sn of
     Nothing -> svg "g" [] []
     Just nd -> case nd.machine, loopOf nd.id of
+      Just _, _ | isJust (String.stripPrefix (String.Pattern "src:") nd.id) -> voiceNode sn nd
       Just m, _ -> machineNode sn nd m
       Nothing, Just l -> loopNode sn nd l
       Nothing, Nothing
@@ -279,7 +280,7 @@ chartOf on hot live f =
         , HE.onFocus \_ -> on.hover (Just m)
         , HE.onBlur \_ -> on.hover Nothing
         ]
-        [ svg "rect" [ attr "class" "hit", attr "x" (n (cx - 90.0)), attr "y" (n (top - 80.0)), attr "width" "180", attr "height" "80", HE.onClick \_ -> on.pick m ] []
+        [ svg "rect" [ attr "class" "hit", attr "x" (n (cx - 90.0)), attr "y" (n (top - 80.0)), attr "width" "180", attr "height" "80" ] []
         , bar sn
         , fishBtn m (cx - 27.0) (top - 80.0)
         , pickName m cx (top - 30.0) "middle" nd.name
@@ -370,6 +371,11 @@ chartOf on hot live f =
                  , portDot g.s.id "src can" g.p g.s.short (g.s.label <> " · plug into odonus." <> fromMaybe "" armedInput)
                  ])
 
+  -- One voice of a machine opened into its voices: its name, no fish.
+  voiceNode sn nd =
+    svg "g" [ attr "class" "node voice" ]
+      [ bar sn, label "sub" (sn.x0 - 8.0) (mid sn + 3.5) "end" nd.name ]
+
   dockOf m = Array.find (\d -> d.slot == m) live.dock
   preset m = maybe "" (\a -> " · " <> a) (dockOf m >>= _.alias)
   -- A playable machine's fish plays and stops it, as on its own page.
@@ -382,9 +388,8 @@ chartOf on hot live f =
         ]
         [ use ("sp-" <> m) x y 54.0 32.0, svg "title" [] [ HH.text ((if d.playing then "Stop " else "Play ") <> d.name) ] ]
     _ -> use ("sp-" <> m) x y 54.0 32.0
-  pickName m x y anchor txt =
-    svg "text" [ attr "class" "name", attr "x" (n x), attr "y" (n y), attr "text-anchor" anchor, HE.onClick \_ -> on.pick m ]
-      [ HH.text txt, svg "title" [] [ HH.text "Click to show its voices" ] ]
+  pickName _ x y anchor txt =
+    svg "text" [ attr "class" "name", attr "x" (n x), attr "y" (n y), attr "text-anchor" anchor ] [ HH.text txt ]
 
   -- The dock: every machine not on the chart, under the ones that are, in
   -- the left margin. A closed one is ghosted and opens on a click; an open
@@ -397,14 +402,15 @@ chartOf on hot live f =
   dockItem k d =
     let
       y = dockTop + 38.0 * toNumber k
-      act = if d.open then [] else [ HE.onClick \_ -> on.open d.slot ]
     in
-      svg "g" ([ attr "class" ("dock" <> if d.open then " open" else " closed"), attr "role" "button", attr "tabindex" "0" ] <> act)
+      svg "g" [ attr "class" ("dock" <> if d.open then " open" else " closed") ]
         [ svg "rect" [ attr "class" "hit", attr "x" "10", attr "y" (n (y - 18.0)), attr "width" (n (left - 20.0)), attr "height" "36" ] []
         , (if d.open then fishBtn d.slot 23.0 (y - 16.0) else use ("sp-" <> d.slot) 23.0 (y - 16.0) 54.0 32.0)
         , label "name" (left - 10.0) (y - 1.0) "end" d.name
-        , label "sub" (left - 10.0) (y + 12.0) "end" (if d.open then "open · nothing routed" <> preset d.slot else "click to open")
-        , svg "title" [] [ HH.text (if d.open then d.name <> " is open, with nothing routed to sound" else "Open " <> d.name <> " in a new tab") ]
+        , if d.open then label "sub" (left - 10.0) (y + 12.0) "end" ("open · nothing routed" <> preset d.slot)
+          else svg "a" [ attr "class" "openlink", attr "href" d.href, attr "target" d.target ]
+                 [ label "sub" (left - 10.0) (y + 12.0) "end" "open ↗"
+                 , svg "title" [] [ HH.text ("Open " <> d.name <> " (cmd-click to stay here)") ] ]
         ]
   dock = Array.mapWithIndex dockItem docked
   -- with nothing routed anywhere, the chart is the dock and a line
@@ -427,7 +433,7 @@ chartOf on hot live f =
         , HE.onFocus \_ -> on.hover (Just m)
         , HE.onBlur \_ -> on.hover Nothing
         ]
-        [ svg "rect" [ attr "class" "hit", attr "x" (n (sn.x0 - 120.0)), attr "y" (n (cy - 44.0)), attr "width" "120", attr "height" "84", HE.onClick \_ -> on.pick m ] []
+        [ svg "rect" [ attr "class" "hit", attr "x" (n (sn.x0 - 120.0)), attr "y" (n (cy - 44.0)), attr "width" "120", attr "height" "84" ] []
         , bar sn
         , fishBtn m (sn.x0 - 62.0) (cy - 42.0)
         , pickName m (sn.x0 - 8.0) (cy + 2.0) "end" nd.name
@@ -461,7 +467,7 @@ chartOf on hot live f =
         ]
         -- A group catches the pointer only over what it paints, so the gap
         -- between the fish and the name needs something to land on.
-        [ svg "rect" [ attr "class" "hit", attr "x" "10", attr "y" (n (cy - reach)), attr "width" (n (sn.x0 - 10.0)), attr "height" (n (2.0 * reach)), HE.onClick \_ -> on.pick m ] []
+        [ svg "rect" [ attr "class" "hit", attr "x" "10", attr "y" (n (cy - reach)), attr "width" (n (sn.x0 - 10.0)), attr "height" (n (2.0 * reach)) ] []
         , bar sn
         , fishBtn m 23.0 (cy - 16.0)
         , pickName m (sn.x0 - 10.0) (cy - 2.0) "end" nd.name

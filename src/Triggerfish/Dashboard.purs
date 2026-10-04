@@ -41,7 +41,6 @@ import Data.Maybe (Maybe(..), fromMaybe, isNothing, maybe)
 import Data.Traversable (traverse)
 import Data.Number as Number
 import Data.Number.Format (fixed, toStringWith)
-import Effect (Effect)
 import Effect.Aff (Aff)
 import Effect.Aff.Class (class MonadAff, liftAff)
 import Effect.Class (liftEffect)
@@ -52,7 +51,6 @@ import Halogen.HTML.Core (AttrName(..))
 import Halogen.HTML.Events as HE
 import Halogen.HTML.Properties as HP
 import Halogen.Subscription as HS
-import Triggerfish.Glyph as G
 import Triggerfish.Fish as Fish
 import Web.Event.Event (preventDefault)
 import Halogen.Query.Event (eventListener)
@@ -61,15 +59,12 @@ import Web.HTML.Window as Window
 import Web.UIEvent.KeyboardEvent (KeyboardEvent)
 import Web.UIEvent.KeyboardEvent as KE
 import Web.UIEvent.KeyboardEvent.EventTypes as KET
-import Web.UIEvent.MouseEvent (MouseEvent)
-import Web.UIEvent.MouseEvent as ME
 import Triggerfish.Flow as Flow
 import Triggerfish.Bosun as Bosun
 import Triggerfish.Dashboard.Atlantis as Atlantis
 import Triggerfish.Capture.RigLoops as RigLoops
 import Data.Tuple (Tuple(..))
 import Triggerfish.Flow.View as FlowView
-import Triggerfish.GlyphView (chipIcons)
 import Triggerfish.Route as Route
 import Triggerfish.Router as Router
 import Triggerfish.Routing.Matrix as Matrix
@@ -120,7 +115,6 @@ openWindowMs = 90000.0
 
 type Heard = { state :: Bus.MachineState, at :: Number }
 
-foreign import openInBackground :: String -> Effect Unit
 
 -- | The page's views. Each is a real link (`#routing`), so the back button and
 -- | bookmarks work.
@@ -148,7 +142,6 @@ type State =
   , ports :: Array String
   , sampleSets :: Array SampleSet
   , hot :: Maybe String      -- the machine hovered on the chart
-  , voices :: Array String   -- machines the chart draws as their voices
   , router :: Router.Router  -- the harmony routes, as the rig's stage holds them
   -- the notes or drums matrix, when open, its picked cell and lit column
   , matrix :: Maybe Matrix.Grid
@@ -191,8 +184,6 @@ data Action
   | SetPorts (Array String)
   | FromHash String
   | Hover (Maybe String)
-  | OpenMachine Machine MouseEvent
-  | ToggleVoices String
   | RigOpen
   | RigFrame String
   | RouterToggle Router.Line HarmonyRoute.Input
@@ -220,7 +211,6 @@ data Action
   | KeyHover (Maybe String)
   | KeyAll
   | PortClick String
-  | OpenSlot String
   | CableClick String String
   | ShowAllVoices Boolean
 
@@ -229,7 +219,7 @@ component = H.mkComponent
   { initialState: \_ ->
       { mode: Solo, now: 0.0, heard: Map.empty, rig: Nothing, rigUp: false
       , tempo: 120.0, freeTempo: 120.0, locked: false, bus: Nothing
-      , table: RM.defaultTable, ports: [], sampleSets: [], hot: Nothing, voices: [], router: Router.initial
+      , table: RM.defaultTable, ports: [], sampleSets: [], hot: Nothing, router: Router.initial
       , matrix: Nothing, pick: Nothing, focus: Nothing, sheet: Nothing, foldDrums: true, vetulaSent: Nothing
       , relays: false, allVoices: false, rigLoops: Map.empty, bosun: Nothing
       , atlantis: false, asked: [], confirmingDown: false, hidden: [], keyHot: Nothing, armed: Nothing }
@@ -376,15 +366,6 @@ handleAction = case _ of
 
   Hover m -> H.modify_ _ { hot = m }
 
-  -- A machine opens behind the dashboard: the dashboard is where you are.
-  OpenMachine m ev -> do
-    liftEffect $ preventDefault (ME.toEvent ev)
-    liftEffect $ openInBackground m.href
-
-  -- A machine opened from the chart's dock, behind the dashboard.
-  OpenSlot slot -> for_ (find (\m -> m.slot == slot) machines) \m ->
-    liftEffect $ openInBackground m.href
-
   ShowRelays b -> H.modify_ _ { relays = b }
 
   -- Every three seconds: which of the group's daemons are up.
@@ -440,7 +421,6 @@ handleAction = case _ of
 
   ShowAllVoices b -> H.modify_ _ { allVoices = b }
 
-  ToggleVoices m -> H.modify_ \x -> x { voices = if m `elem` x.voices then filter (_ /= m) x.voices else x.voices <> [ m ] }
 
   RigOpen -> do
     H.modify_ _ { vetulaSent = Nothing }
@@ -588,13 +568,13 @@ flowChart :: forall m. State -> H.ComponentHTML Action () m
 flowChart st =
   HH.section [ cls "flow", HP.attr (AttrName "aria-label") "Where it all goes" ]
     [ HH.div [ cls ("flow-chart" <> if st.allVoices then " all-voices" else "") ]
-        [ FlowView.chart { hover: Hover, pick: ToggleVoices, link: ChartLink, port: PortClick, cable: CableClick, play: Command, open: OpenSlot } st.hot { playing: map _.slot (filter (playing st) machines), rigUp: st.rigUp, tempo: st.tempo, lamps, hidden: st.hidden, keyHot: st.keyHot, patch, dock }
+        [ FlowView.chart { hover: Hover, link: ChartLink, port: PortClick, cable: CableClick, play: Command } st.hot { playing: map _.slot (filter (playing st) machines), rigUp: st.rigUp, tempo: st.tempo, lamps, hidden: st.hidden, keyHot: st.keyHot, patch, dock }
             ( Flow.flow
                 { mode: st.mode
                 , table: st.table
                 , ports: { found: st.ports, rigUp: st.rigUp }
                 , machines: map _.slot (filter (isOpen st) machines)
-                , open: if st.allVoices then map _.slot machines else st.voices
+                , open: if st.allVoices then map _.slot machines else []
                 , extras
                 , relays: st.relays
                 , loops: rigLoops
@@ -619,6 +599,7 @@ flowChart st =
     in
       { slot: m.slot, name: m.name, open: isOpen st m, playing: playing st m, playable: m.playable
       , alias: if isOpen st m then heard >>= _.state.alias else Nothing
+      , href: m.href, target: m.target
       }
   -- The patch bay: a port for every row of the harmony matrix, the cables
   -- its routes make, and the port clicked first.
