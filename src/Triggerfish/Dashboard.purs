@@ -540,7 +540,7 @@ render st =
     , HH.main [ cls "body" ]
         ( if st.atlantis then
             [ Atlantis.view { restart: RigRestart, group: RigGroup, confirmDown: ConfirmDown }
-                { now: st.now, health: st.bosun, asked: st.asked, confirmingDown: st.confirmingDown }
+                { now: st.now, health: st.bosun, asked: st.asked, confirmingDown: st.confirmingDown, doctor: st.doctor }
             ]
           else [ flowChart st ]
         )

@@ -25,6 +25,7 @@ import Halogen.HTML as HH
 import Halogen.HTML.Events as HE
 import Halogen.HTML.Properties as HP
 import Triggerfish.Bosun (Health, Lamp(..), Service, lampOf)
+import Triggerfish.DeepStar (Check)
 
 -- | A restart asked of Bosun: when, and the service as it was.
 type Asked = { service :: String, at :: Number, before :: Maybe Service }
@@ -65,7 +66,7 @@ branches =
 view
   :: forall w i
    . Handlers i
-  -> { now :: Number, health :: Maybe Health, asked :: Array Asked, confirmingDown :: Boolean }
+  -> { now :: Number, health :: Maybe Health, asked :: Array Asked, confirmingDown :: Boolean, doctor :: Maybe (Array Check) }
   -> HH.HTML w i
 view on st = case st.health of
   Nothing ->
@@ -116,13 +117,38 @@ view on st = case st.health of
       else
         HH.div [ cls "atl-branch" ]
           [ HH.div [ cls "atl-bhead" ] [ HH.h3_ [ HH.text b.name ], HH.span [ cls "atl-serves" ] [ HH.text b.serves ] ]
-          , HH.div [ cls "atl-rows" ] (map (row h) svcs)
+          , HH.div [ cls "atl-rows" ] (deviceRows b <> map (row h) svcs)
           ]
+
+  -- The hardware itself, from the rig doctor (DeepStar), above the daemons
+  -- that drive it: Bosun can say a daemon runs, not that its device is
+  -- there. Today the ES-9's presence on the USB bus.
+  deviceRows b = case b.name of
+    "ES-9" -> case st.doctor >>= find (\c -> c.name == "ES-9 present") of
+      Just c ->
+        [ HH.div [ cls "atl-row device" ]
+            [ HH.span [ cls ("lamp" <> statusCls c.status) ] [ HH.i_ [], HH.text "the ES-9" ]
+            , HH.span [ cls "atl-state" ] [ HH.text (if c.status == "ok" then "on the USB bus" else if c.status == "down" then "not on the USB bus" else c.status) ]
+            , HH.span [ cls "atl-restarts" ] []
+            , HH.span [ cls "atl-asked" ] [ HH.text c.detail ]
+            , HH.span [] []
+            ]
+        ]
+      Nothing -> [ HH.div [ cls "atl-row device" ] [ HH.span [ cls "lamp" ] [ HH.i_ [], HH.text "the ES-9" ], HH.span [ cls "atl-state" ] [ HH.text "unknown: DeepStar (:3027) is out of reach" ] ] ]
+    _ -> []
+  statusCls = case _ of
+    "ok" -> " live"
+    "down" -> " dead"
+    _ -> " coming"
+  -- the doctor's word on a daemon's control socket, where it has one
+  socketNote s = case st.doctor >>= find (\c -> c.name == s.id && c.status == "down") of
+    Just _ -> " · its socket does not answer"
+    Nothing -> ""
 
   row h s =
     HH.div [ cls "atl-row" ]
       [ HH.span [ cls ("lamp" <> lampCls (lampOf s)) ] [ HH.i_ [], HH.text s.id ]
-      , HH.span [ cls "atl-state" ] [ HH.text (s.state <> (if s.gaveUp then ", gave up" else "")) ]
+      , HH.span [ cls "atl-state" ] [ HH.text (s.state <> (if s.gaveUp then ", gave up" else "") <> socketNote s) ]
       , HH.span [ cls "atl-restarts" ] [ HH.text (if s.restarts == 0 then "" else show s.restarts <> " restarts") ]
       , HH.span [ cls "atl-asked" ] [ HH.text (askedText s) ]
       , HH.button
