@@ -285,6 +285,20 @@
     .lamp.coming i { background: #d4a82a; } .lamp.dead i { background: var(--alarm); }
     .btn.small { padding: 2px 10px; font-size: 12px; }
     @media (max-width: 720px) { .atl-branch { grid-template-columns: 1fr; } .atl-row { grid-template-columns: 1fr auto; } .atl-state, .atl-restarts { display: none; } }
+    /* the harmony patch bay: ports on the labels, cables between them */
+    svg.flows .cable { fill: none; stroke: var(--s-quant); stroke-width: 2; stroke-linecap: round; cursor: pointer; }
+    svg.flows .cable:hover { stroke-width: 3.5; }
+    svg.flows .port { cursor: pointer; outline: none; }
+    svg.flows .port circle { fill: var(--plate); stroke: var(--s-quant); stroke-width: 1.5; }
+    svg.flows .port.on circle { fill: var(--s-quant); }
+    svg.flows .port .pl { font: 700 8px var(--mono); fill: var(--s-quant); stroke: none; pointer-events: none; }
+    svg.flows .port.on .pl { fill: var(--plate); }
+    svg.flows .port:hover circle, svg.flows .port:focus-visible circle { stroke-width: 3; }
+    svg.flows .port.armed circle { stroke: var(--ink); stroke-width: 3; }
+    svg.flows .port.can circle { stroke-width: 3; animation: pulse var(--beat, .5s) ease-out infinite; transform-box: fill-box; transform-origin: center; }
+    svg.flows .port.cannot { opacity: .25; pointer-events: none; }
+    svg.flows .pin { font: 500 8.5px var(--mono); fill: var(--muted); stroke: none; }
+    svg.flows .ghost .sub { font-style: italic; }
     /* Bosun's lamps on the daemons */
     svg.flows .dlamp.up { fill: var(--live); } svg.flows .dlamp.coming { fill: #d4a82a; } svg.flows .dlamp.down { fill: var(--alarm); }
     /* control: the page telling the rig what to play, drawn thin and grey */

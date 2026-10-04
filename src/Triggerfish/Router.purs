@@ -27,6 +27,9 @@ module Triggerfish.Router
   , setScaleRoot
   , setHarmony
   , subscribeLine
+  , rows
+  , allowed
+  , rowFeeds
   , Handlers
   , view
   ) where

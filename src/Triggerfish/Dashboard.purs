@@ -174,6 +174,8 @@ type State =
   -- the key as a filter: kinds of line hidden, and the kind hovered
   , hidden :: Array String
   , keyHot :: Maybe String
+  -- the harmony port clicked first, waiting for its other end
+  , armed :: Maybe String
   }
 
 data Action
@@ -217,6 +219,8 @@ data Action
   | KeyToggle String
   | KeyHover (Maybe String)
   | KeyAll
+  | PortClick String
+  | CableClick String String
   | ShowAllVoices Boolean
 
 component :: forall q i o. H.Component q i o Aff
@@ -227,7 +231,7 @@ component = H.mkComponent
       , table: RM.defaultTable, ports: [], sampleSets: [], hot: Nothing, voices: [], router: Router.initial
       , matrix: Nothing, pick: Nothing, focus: Nothing, sheet: Nothing, foldDrums: true, vetulaSent: Nothing
       , relays: false, allVoices: false, rigLoops: Map.empty, bosun: Nothing
-      , atlantis: false, asked: [], confirmingDown: false, hidden: [], keyHot: Nothing }
+      , atlantis: false, asked: [], confirmingDown: false, hidden: [], keyHot: Nothing, armed: Nothing }
   , render
   , eval: H.mkEval H.defaultEval { handleAction = handleAction, initialize = Just Init }
   }
@@ -302,6 +306,7 @@ handleAction = case _ of
   TempoStored -> do
     mfree <- liftEffect Tempo.load
     for_ mfree \free -> H.modify_ \s -> s { freeTempo = free, tempo = if s.locked then s.tempo else free }
+  KeyDown ke | KE.key ke == "Escape" -> H.modify_ _ { armed = Nothing }
   KeyDown ke -> for_ (Tempo.hotkey ke) \d -> do
     liftEffect $ preventDefault (KE.toEvent ke)
     handleAction (BumpTempo d)
@@ -407,6 +412,26 @@ handleAction = case _ of
   KeyToggle k -> H.modify_ \x -> x { hidden = if k `elem` x.hidden then filter (_ /= k) x.hidden else x.hidden <> [ k ] }
   KeyHover k -> H.modify_ _ { keyHot = k }
   KeyAll -> H.modify_ _ { hidden = [] }
+
+  -- A port, then its other end: a source and an input make a cable (or
+  -- unplug the one they already make). The rig owns the table: this sends
+  -- the change, as the matrix does, and draws what the stage says back.
+  PortClick id -> do
+    st <- H.get
+    case st.armed of
+      Nothing -> H.modify_ _ { armed = Just id }
+      Just a
+        | a == id -> H.modify_ _ { armed = Nothing }
+        | Just pair <- patchPair a id -> do
+            H.modify_ _ { armed = Nothing }
+            for_ (Router.toggle pair.line pair.input st.router) sendRig
+        | otherwise -> H.modify_ _ { armed = Just id }
+
+  CableClick source input -> do
+    st <- H.get
+    H.modify_ _ { armed = Nothing }
+    for_ (patchPair source ("in:" <> input)) \pair ->
+      for_ (Router.toggle pair.line pair.input st.router) sendRig
 
   ShowAllVoices b -> H.modify_ _ { allVoices = b }
 
@@ -525,6 +550,31 @@ render st =
 -- | The signal-flow chart: what the open pages drive, by the path the mode
 -- | gives them. Conspicillum and Quadrat route themselves rather than through
 -- | the table, so their routes are stated here.
+-- | An input's word on the chart.
+inputWord :: HarmonyRoute.Input -> String
+inputWord = case _ of
+  HarmonyRoute.OdonusGrid -> "grid"
+  HarmonyRoute.OdonusOut -> "out"
+
+-- | Two ports clicked, as a matrix cell: one a source (`src:…`), the other
+-- | an input (`in:…`), in either order.
+patchPair :: String -> String -> Maybe { line :: Router.Line, input :: HarmonyRoute.Input }
+patchPair a b = case lineOf a, inputOf b, lineOf b, inputOf a of
+  Just line, Just input, _, _ -> Just { line, input }
+  _, _, Just line, Just input -> Just { line, input }
+  _, _, _, _ -> Nothing
+  where
+  lineOf id = case String.stripPrefix (Pattern "src:") id of
+    Just "key" -> Just Router.RKey
+    Just "scale" -> Just Router.RScale
+    Just "harmony" -> Just Router.RHarmony
+    Just v -> String.stripPrefix (Pattern "v") v >>= Int.fromString <#> Router.RVoice
+    Nothing -> Nothing
+  inputOf = case _ of
+    "in:grid" -> Just HarmonyRoute.OdonusGrid
+    "in:out" -> Just HarmonyRoute.OdonusOut
+    _ -> Nothing
+
 -- | The machines whose marks the rig keeps.
 loopMachines :: Array String
 loopMachines = [ "odonus", "vetula" ]
@@ -533,7 +583,7 @@ flowChart :: forall m. State -> H.ComponentHTML Action () m
 flowChart st =
   HH.section [ cls "flow", HP.attr (AttrName "aria-label") "Where it all goes" ]
     [ HH.div [ cls ("flow-chart" <> if st.allVoices then " all-voices" else "") ]
-        [ FlowView.chart { hover: Hover, pick: ToggleVoices, link: ChartLink } st.hot { playing: map _.slot (filter (playing st) machines), rigUp: st.rigUp, tempo: st.tempo, lamps, hidden: st.hidden, keyHot: st.keyHot }
+        [ FlowView.chart { hover: Hover, pick: ToggleVoices, link: ChartLink, port: PortClick, cable: CableClick } st.hot { playing: map _.slot (filter (playing st) machines), rigUp: st.rigUp, tempo: st.tempo, lamps, hidden: st.hidden, keyHot: st.keyHot, patch }
             ( Flow.flow
                 { mode: st.mode
                 , table: st.table
@@ -558,6 +608,27 @@ flowChart st =
         ]
     ]
   where
+  -- The patch bay: a port for every row of the harmony matrix, the cables
+  -- its routes make, and the port clicked first.
+  patch =
+    { sources: Router.rows st.router <#> \row ->
+        let
+          allowed = map inputWord (filter (Router.allowed row) [ HarmonyRoute.OdonusGrid, HarmonyRoute.OdonusOut ])
+        in case row of
+          Router.RKey -> { id: "src:key", short: "K", label: "key" <> maybe "" (\k -> " " <> k) st.router.vetulaKey, machine: Just "vetula", allowed }
+          Router.RVoice v -> { id: "src:v" <> show v, short: show v, label: "voice " <> show v, machine: Just "vetula", allowed }
+          Router.RScale -> { id: "src:scale", short: "S", label: "scale " <> st.router.scalePattern, machine: Nothing, allowed }
+          Router.RHarmony -> { id: "src:harmony", short: "H", label: "harmony " <> st.router.harmony, machine: Nothing, allowed }
+    , routes: st.router.routes <#> \rt ->
+        { input: inputWord rt.input
+        , source: case rt.source of
+            HarmonyRoute.VetulaKey -> "src:key"
+            HarmonyRoute.VetulaVoice v -> "src:v" <> show v
+            HarmonyRoute.Scale _ -> "src:scale"
+            HarmonyRoute.Harmony _ -> "src:harmony"
+        }
+    , armed: st.armed
+    }
   -- The harmony routes as quantisation: what feeds Odonus's grid and out.
   quantise = st.router.routes <#> \rt ->
     { target: "odonus"

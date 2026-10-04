@@ -11,6 +11,8 @@ module Triggerfish.Flow.View
   , chart
   , key
   , KeyHandlers
+  , Port
+  , Patch
   ) where
 
 import Prelude
@@ -23,6 +25,8 @@ import Data.Maybe (Maybe(..), fromMaybe, maybe)
 import Data.Number as Number
 import Data.String (joinWith)
 import Data.Tuple (Tuple(..), snd)
+import Data.Number (abs)
+import Data.String as String
 import Data.Tuple.Nested ((/\))
 import Data.Number.Format (fixed, toStringWith)
 import DataViz.Layout.Sankey.Lanes (computeLayoutWithLanes, generateRoutePath, laneOf)
@@ -36,7 +40,21 @@ import Triggerfish.Flow (Column(..), Flow, Link, Signal(..), columnTitle, layerO
 
 -- | What the chart reports: a machine hovered (or left), and a machine picked.
 -- | `link`: a link clicked, with its machine and the node it runs into.
-type Handlers i = { hover :: Maybe String -> i, pick :: String -> i, link :: String -> String -> i }
+-- | `port`: a harmony port clicked (`src:key`, `in:grid`); `cable`: a cable
+-- | clicked, by its source port and input port.
+type Handlers i =
+  { hover :: Maybe String -> i, pick :: String -> i, link :: String -> String -> i
+  , port :: String -> i, cable :: String -> String -> i
+  }
+
+-- | The harmony patch bay drawn on the chart. A source has an output port:
+-- | on its machine's label (Vetula's key and voices), on its own node in
+-- | Feeds (a routed scale or pattern), or, while an input is armed, as a
+-- | ghost beside it (a scale or pattern not routed yet). Odonus has an input
+-- | port for its grid and one for its out. `allowed` names the inputs a
+-- | source may feed; `routes` the cables; `armed` the port clicked first.
+type Port = { id :: String, short :: String, label :: String, machine :: Maybe String, allowed :: Array String }
+type Patch = { sources :: Array Port, routes :: Array { input :: String, source :: String }, armed :: Maybe String }
 
 width :: Number
 width = 1500.0
@@ -81,6 +99,7 @@ type Live =
   -- | without them), and the kind hovered in the key (lit, the rest dimmed)
   , hidden :: Array String
   , keyHot :: Maybe String
+  , patch :: Patch
   }
 
 -- | A line's kind, as the key names it: control whatever it carries, else
@@ -116,7 +135,7 @@ chartOf on hot live f
         , attr "role" "img"
         , attr "aria-label" "Where each machine's output goes: through the browser or the rig, through interfaces and instruments, to your ears"
         ]
-        ( beatBand <> heads <> [ rule ] <> map link laid.routes <> map node laid.nodes <> beatMarks )
+        ( beatBand <> heads <> [ rule ] <> map link (filter (not <<< isQuant) laid.routes) <> map node laid.nodes <> beatMarks <> patchBay )
   where
   -- In Atlantis, link-spike stands above the flow: the beat, broadcast to
   -- everything the rig times, rather than one more hop in it.
@@ -124,7 +143,7 @@ chartOf on hot live f
   band = if Array.null beat then 0.0 else 58.0
   -- A machine fed from the left wears its label above its bar: room for it
   -- under the column heads.
-  fedRoom = if Array.any (\l -> l.signal == Quantise) f.links then 46.0 else 0.0
+  fedRoom = if Array.any (\l -> l.signal == Quantise) f.links then 84.0 else 0.0
   h = heightOf f + band + fedRoom
   byId = Map.fromFoldable (map (\x -> x.id /\ x) f.nodes)
   ours sn = Map.lookup sn.name byId
@@ -245,7 +264,9 @@ chartOf on hot live f
   -- A machine fed from the left (its harmony): the lines come in where its
   -- label would be, so fish and name stand above its bar.
   fedMachine sn nd m =
-    let top = sn.y0
+    let
+      top = sn.y0
+      cx = (sn.x0 + sn.x1) / 2.0
     in
       svg "g"
         [ attr "class" "node pick inner", attr "tabindex" "0", attr "role" "button"
@@ -256,12 +277,96 @@ chartOf on hot live f
         , HE.onBlur \_ -> on.hover Nothing
         , HE.onClick \_ -> on.pick m
         ]
-        [ svg "rect" [ attr "class" "hit", attr "x" (n (sn.x0 - 150.0)), attr "y" (n (top - 46.0)), attr "width" "160", attr "height" "46" ] []
+        [ svg "rect" [ attr "class" "hit", attr "x" (n (cx - 90.0)), attr "y" (n (top - 80.0)), attr "width" "180", attr "height" "80" ] []
         , bar sn
-        , use ("sp-" <> m) (sn.x0 - 140.0) (top - 44.0) 54.0 32.0
-        , label "name" (sn.x0 + 4.0) (top - 24.0) "end" nd.name
-        , label "sub" (sn.x0 + 4.0) (top - 10.0) "end" (plural (streamsOf m) "stream" <> " · " <> (if needsAtlantis m then "needs Atlantis" else playsWhere m))
+        , use ("sp-" <> m) (cx - 27.0) (top - 80.0) 54.0 32.0
+        , label "name" cx (top - 30.0) "middle" nd.name
+        , label "sub" cx (top - 16.0) "middle" (plural (streamsOf m) "stream" <> " · " <> (if needsAtlantis m then "needs Atlantis" else playsWhere m))
         ]
+
+  -- --------------------------------------------------------------------
+  -- The harmony patch bay: ports on the labels, cables between them.
+  -- --------------------------------------------------------------------
+  isQuant r = maybe false (\l -> l.signal == Quantise) (f.links !! r.index)
+  quantShown = not (Array.elem "s-quant" live.hidden)
+  nodeAt id = Array.find (\sn -> sn.name == id) laid.nodes
+  fedIn id = Array.any (\l -> l.to == id && l.signal == Quantise) f.links
+  pt x y = { x, y }
+
+  -- Odonus's input ports: beside its centred name when fed, else in a row
+  -- under its label.
+  inputs = [ "grid", "out" ]
+  inPort i = nodeAt "m:odonus" >>= \sn -> do
+    k <- Array.elemIndex i inputs
+    let kn = toNumber k
+    pure if fedIn "m:odonus"
+      then pt ((sn.x0 + sn.x1) / 2.0 - 54.0 - 22.0 * (1.0 - kn)) (sn.y0 - 34.0)
+      else pt (sn.x0 - 16.0 - 34.0 * (1.0 - kn)) (mid sn + 40.0)
+
+  -- A source's output port: on its machine's label, in a row under it; on
+  -- its own node in Feeds; else nowhere (a ghost, while an input is armed).
+  qid s = "q:" <> maybe s.label (\m -> m <> " " <> s.label) s.machine
+  srcPort s = case s.machine >>= \m -> nodeAt ("m:" <> m) of
+    Just sn ->
+      let
+        mine = filter (\x -> x.machine == s.machine) live.patch.sources
+        k = toNumber (Array.length mine)
+        j = toNumber (fromMaybe 0 (Array.findIndex (\x -> x.id == s.id) mine))
+      in Just (pt (sn.x0 - 16.0 - (k - 1.0 - j) * 17.0) (mid sn + 40.0))
+    Nothing -> nodeAt (qid s) <#> \sn -> pt (sn.x1 + 9.0) (mid sn)
+
+  armedInput = live.patch.armed >>= String.stripPrefix (String.Pattern "in:")
+  armedSource = live.patch.armed >>= \a -> Array.find (\s -> s.id == a) live.patch.sources
+  -- unrouted sources with nowhere to stand, shown beside an armed input
+  ghosts = case armedInput >>= inPort of
+    Just ip -> Array.mapWithIndex (\k s -> { s, p: pt (ip.x - 40.0) (ip.y + 26.0 + 20.0 * toNumber k) })
+      (filter (\s -> srcPort s == Nothing && Array.elem (fromMaybe "" armedInput) s.allowed) live.patch.sources)
+    Nothing -> []
+
+  portState id compatible used =
+    (if live.patch.armed == Just id then " armed" else "")
+      <> (if used then " on" else "")
+      <> case live.patch.armed of
+          Just a | a /= id -> if compatible then " can" else " cannot"
+          _ -> ""
+  usedSrc s = Array.any (\r -> r.source == s.id) live.patch.routes
+  usedIn i = Array.any (\r -> r.input == i) live.patch.routes
+
+  portDot id cls' p short tip =
+    svg "g" [ attr "class" ("port " <> cls'), attr "role" "button", attr "tabindex" "0", HE.onClick \_ -> on.port id ]
+      [ svg "circle" [ attr "cx" (n p.x), attr "cy" (n p.y), attr "r" "6.5" ] []
+      , label "pl" p.x (p.y + 3.0) "middle" short
+      , svg "title" [] [ HH.text tip ]
+      ]
+
+  cable r = do
+    s <- Array.find (\x -> x.id == r.source) live.patch.sources
+    a <- srcPort s
+    b <- inPort r.input
+    let dx = max 40.0 (abs (b.x - a.x) / 2.0)
+    pure $ svg "path"
+      [ attr "class" "cable", attr "d" ("M" <> n a.x <> "," <> n a.y <> " C" <> n (a.x + dx) <> "," <> n a.y <> " " <> n (b.x - dx) <> "," <> n b.y <> " " <> n b.x <> "," <> n b.y)
+      , HE.onClick \_ -> on.cable r.source r.input
+      ]
+      [ svg "title" [] [ HH.text ("odonus." <> r.input <> " ← " <> s.label <> " · click to unplug") ] ]
+
+  patchBay
+    | not quantShown = []
+    | otherwise =
+        mapMaybe cable live.patch.routes
+          <> mapMaybe (\s -> srcPort s <#> \p ->
+               portDot s.id ("src" <> portState s.id (maybe false (\i -> Array.elem i s.allowed) armedInput) (usedSrc s)) p s.short
+                 (s.label <> " · feeds " <> joinWith " or " (map ("odonus." <> _) s.allowed))) live.patch.sources
+          <> mapMaybe (\i -> inPort i <#> \p ->
+               svg "g" []
+                 [ portDot ("in:" <> i) ("in" <> portState ("in:" <> i) (maybe false (\s -> Array.elem i s.allowed) armedSource) (usedIn i)) p "" ("odonus." <> i <> ": click, then a source")
+                 , label "pin" p.x (p.y - 10.0) "middle" i
+                 ]) inputs
+          <> (ghosts <#> \g ->
+               svg "g" [ attr "class" "ghost" ]
+                 [ label "sub" (g.p.x - 11.0) (g.p.y + 3.5) "end" g.s.label
+                 , portDot g.s.id "src can" g.p g.s.short (g.s.label <> " · plug into odonus." <> fromMaybe "" armedInput)
+                 ])
 
   besideMachine sn nd m =
     let cy = mid sn
