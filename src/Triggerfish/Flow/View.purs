@@ -374,16 +374,21 @@ chartOf on hot live f =
 
   dockOf m = Array.find (\d -> d.slot == m) live.dock
   preset m = maybe "" (\a -> " · " <> a) (dockOf m >>= _.alias)
-  -- A playable machine's fish plays and stops it, as on its own page.
+  -- A machine's fish says its state: ghosted when its page is not running
+  -- (the dock), facing back up the chart when running, and turned to swim
+  -- with the flow, left to right, while it plays. A playable machine's fish
+  -- is also its play and stop, as on its own page.
   fishBtn m x y = case dockOf m of
     Just d | d.open && d.playable ->
       svg "g"
-        [ attr "class" ("fishbtn" <> if d.playing then " playing" else ""), attr "role" "button", attr "tabindex" "0"
+        [ attr "class" ("fish fishbtn" <> if d.playing then " playing" else ""), attr "role" "button", attr "tabindex" "0"
         , attr "aria-label" ((if d.playing then "Stop " else "Play ") <> d.name)
         , HE.onClick \_ -> on.play m (not d.playing)
         ]
         [ use ("sp-" <> m) x y 54.0 32.0, svg "title" [] [ HH.text ((if d.playing then "Stop " else "Play ") <> d.name) ] ]
-    _ -> use ("sp-" <> m) x y 54.0 32.0
+    Just d ->
+      svg "g" [ attr "class" ("fish" <> if d.playing then " playing" else "") ] [ use ("sp-" <> m) x y 54.0 32.0 ]
+    Nothing -> use ("sp-" <> m) x y 54.0 32.0
   pickName _ x y anchor txt =
     svg "text" [ attr "class" "name", attr "x" (n x), attr "y" (n y), attr "text-anchor" anchor ] [ HH.text txt ]
 

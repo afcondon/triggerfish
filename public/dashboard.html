@@ -292,6 +292,11 @@
     svg.flows .dock.closed:hover use, svg.flows .dock.closed:focus-visible use { opacity: .7; filter: none; }
     svg.flows .dock.closed:hover .name { fill: var(--ink); }
     svg.flows .dock.open { cursor: default; }
+    /* a fish faces back up the chart while its page runs, and turns to swim
+       with the flow, left to right, while it plays */
+    svg.flows .fish use { transform-box: fill-box; transform-origin: center; transition: transform .35s ease; }
+    svg.flows .fish.playing use { transform: scaleX(-1); }
+    @media (prefers-reduced-motion: reduce) { svg.flows .fish use { transition: none; } }
     svg.flows .fishbtn { cursor: pointer; outline: none; }
     svg.flows .fishbtn:hover use, svg.flows .fishbtn:focus-visible use { filter: drop-shadow(0 0 3px var(--live)); }
     svg.flows .fishbtn.playing use { filter: drop-shadow(0 0 2px var(--live)); }
