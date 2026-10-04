@@ -237,9 +237,10 @@ runFlowTests = do
   -- Selene's banks, as the rig keeps them (2026-10-04)
   let sel = flow base { mode = Atlantis, machines = [ "selene" ], table = []
         , polysignals = [ { socket: "es9", bank: "main", family: "polyeuclid", slots: 8 }, { socket: "fh2", bank: "main", family: "envelope", slots: 8 } ] }
-  check "Selene's banks reach the modular through es9-daemon and the FH-2"
-    ( (find (\l -> l.from == "d-es9" && l.to == "es9") sel.links <#> _.streams) == Just 8
-        && (find (\l -> l.from == "fh2" && l.to == "modular") sel.links <#> _.streams) == Just 8
+  check "Selene's banks reach the modular through es9-daemon and the FH-2, one stream a bank"
+    ( (find (\l -> l.from == "d-es9" && l.to == "es9") sel.links <#> _.streams) == Just 1
+        && (find (\l -> l.from == "fh2" && l.to == "modular") sel.links <#> _.streams) == Just 1
+        && (find (\l -> l.from == "d-es9") sel.links <#> _.wires) == Just [ "polyeuclid ×8" ]
         && all _.control (filter (\l -> l.to == "engine" || l.from == "engine") sel.links)
     )
   let selClosed = flow base { machines = [], table = [], polysignals = [ { socket: "fh2", bank: "main", family: "envelope", slots: 4 } ] }

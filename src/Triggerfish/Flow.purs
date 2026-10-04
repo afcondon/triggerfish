@@ -377,9 +377,10 @@ flow inp = { nodes, links: links <> loopLinks <> quantLinks <> makesLinks }
   -- So the page's hops are control. With the page closed the rig keeps the
   -- banks and gives them back when a daemon returns (its keeper), so they
   -- are drawn from the engine, as a closed page's loops are. One stream per
-  -- signal.
-  seleneStreams = inp.polysignals # concatMap \p ->
-    Array.range 1 p.slots <#> \i ->
+  -- bank, not per signal: a bank is configured and applied as one thing, and
+  -- its signals fan out on the hardware (AC, 2026-10-04: eight-wide banks
+  -- made the chart too tall to read). The count is in its label.
+  seleneStreams = inp.polysignals <#> \p ->
       let
         made = case p.socket of
           "fh2" -> [ hop "fh2" "modular" Cv ]
@@ -387,9 +388,9 @@ flow inp = { nodes, links: links <> loopLinks <> quantLinks <> makesLinks }
         kept = [ ctl "engine" (if p.socket == "fh2" then "fh2" else "d-es9") Socket ]
         hops = (if pageOpen "selene" then [ ctl "browser" "engine" Socket ] else []) <> kept <> made <> [ hop "modular" "ears" Audio ]
       in
-        { machine: "selene", unit: "m:selene", wire: "selene:" <> p.socket <> ":" <> p.bank <> ":" <> show i
+        { machine: "selene", unit: "m:selene", wire: "selene:" <> p.socket <> ":" <> p.bank
         , hops, brokenAt: _.to <$> Array.find dead hops
-        , detail: p.family <> " " <> show i, notes: [], needsRig: false }
+        , detail: p.family <> " ×" <> show p.slots, notes: [], needsRig: false }
   hop from to signal = { from, to, signal, control: false }
   ctl from to signal = { from, to, signal, control: true }
 
