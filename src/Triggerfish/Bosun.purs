@@ -93,7 +93,8 @@ placesOf = case _ of
   "amphora" -> [ "sets" ]
   "triggerfish-frontend" -> [ "browser" ]
   "conspicillum-frontend" -> [ "m:conspicillum" ]
-  "limulus" -> [ "m:limulus" ]
+  -- Limulus's server boots GHCi: Haskell Tidal stands or falls with it
+  "limulus" -> [ "m:limulus", "ghci" ]
   id -> maybe [] pure (nodeOf id)
 
 -- | The services that watch the rig and carry none of it: no line runs

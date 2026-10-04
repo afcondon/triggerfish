@@ -63,6 +63,9 @@
     .toggles button { font: 600 11px/1 var(--display); letter-spacing: .12em; text-transform: uppercase; padding: 8px 14px; border: 1px solid var(--ink); background: transparent; color: var(--ink); cursor: pointer; }
     .toggles button.on { background: var(--ink); color: var(--plate); }
     .tempo { font: 400 13px var(--mono); color: var(--muted); }
+    svg.flows .engine { cursor: pointer; outline: none; } svg.flows .engine .sub { fill: var(--faint); }
+    svg.flows .engine:hover .sub, svg.flows .engine:focus-visible .sub { fill: var(--ink); }
+    svg.flows .engine.on { cursor: default; } svg.flows .engine.on .sub { fill: var(--ink); font-weight: 600; }
     .tempo .tsrc { color: var(--muted); } .tempo .tsrc.link { color: var(--live); }
     .tempo { display: inline-flex; align-items: center; gap: 4px; }
     .tempo .num { color: var(--ink); font: 400 18px var(--mono); font-variant-numeric: tabular-nums; width: 3.4em; text-align: right; border: none; border-bottom: 1px solid var(--rule); background: transparent; padding: 0 2px; -moz-appearance: textfield; }

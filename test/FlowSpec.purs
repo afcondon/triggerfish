@@ -221,5 +221,14 @@ runFlowTests = do
     (all (\id -> not (null (Bosun.placesOf id)) || id `elem` Bosun.watchers)
       [ "es9-daemon", "diaphus", "architeuthis", "triggerfish-frontend", "conspicillum-frontend", "superdirt", "amphora", "friends-of-itajara", "limulus", "deepstar", "fh2-daemon", "fh2-drumkit", "continuo" ])
   check "every place a daemon stands is a node the skeleton draws, or a machine"
-    (all (\id -> all (\pl -> isJust (find (\nd -> nd.id == pl) bare.nodes) || pl `elem` [ "m:quadrat", "m:conspicillum", "m:limulus" ]) (Bosun.placesOf id))
+    (all (\id -> all (\pl -> isJust (find (\nd -> nd.id == pl) bare.nodes) || pl `elem` [ "m:quadrat", "m:conspicillum", "m:limulus", "ghci" ]) (Bosun.placesOf id))
       [ "es9-daemon", "diaphus", "architeuthis", "triggerfish-frontend", "superdirt", "amphora", "friends-of-itajara", "fh2-daemon", "fh2-drumkit", "continuo" ])
+
+  -- Limulus sent to Haskell Tidal (2026-10-04): GHCi plays SuperDirt itself
+  let ghci = flow base { machines = [ "limulus" ], table = []
+        , extras = [ { machine: "limulus", dest: DSample { set: "d1–d16", n: 0, begin: 0, end: 100, reverse: false, gain: 100, chop: 1 }, via: Just "ghci" } ] }
+  check "Limulus on Haskell Tidal goes through GHCi to SuperDirt, not the rig"
+    ( isJust (find (\l -> l.from == "browser" && l.to == "ghci") ghci.links)
+        && isJust (find (\l -> l.from == "ghci" && l.to == "d-dirt") ghci.links)
+        && isNothing (find (\l -> l.to == "engine") ghci.links)
+    )

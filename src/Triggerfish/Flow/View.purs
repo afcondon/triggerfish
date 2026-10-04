@@ -51,6 +51,8 @@ type Handlers i =
   , peek :: String -> i
   -- | a daemon's ↻, in the X-ray: restart it (by Bosun's service id)
   , restart :: String -> i
+  -- | Limulus's engine picked on its node: "architeuthis" or "ghci"
+  , engine :: String -> i
   }
 
 -- | What is known of one process behind a node: Bosun's word on a daemon
@@ -123,6 +125,8 @@ type Live =
   -- | the X-ray: the rig's processes, on the rig's whole skeleton, with the
   -- | flow faded behind them (was the Atlantis page)
   , xray :: Boolean
+  -- | where Limulus sends its Tidal: "architeuthis" or "ghci"
+  , limulusEngine :: String
   -- | the key as a filter: kinds of line hidden (the chart is laid out
   -- | without them), and the kind hovered in the key (lit, the rest dimmed)
   , hidden :: Array String
@@ -512,6 +516,7 @@ chartOf on hot live f =
         , fishBtn m (sn.x0 - 8.0 - nameWidth nd.name - 62.0) (cy - 18.0)
         , pickName m (sn.x0 - 8.0) (cy - 2.0) "end" nd.name
         , subOr ("m:" <> m) "end" (sn.x0 - 8.0) (cy + 11.0) (label "sub" (sn.x0 - 8.0) (cy + 11.0) "end" (summary m))
+        , engineChoice m (sn.x0 - 8.0) (cy + 25.0)
         , svg "title" [] [ HH.text (tip nd m) ]
         ]
 
@@ -546,6 +551,7 @@ chartOf on hot live f =
         , fishBtn m 23.0 (cy - 16.0)
         , pickName m (sn.x0 - 10.0) (cy - 2.0) "end" nd.name
         , subOr ("m:" <> m) "end" (sn.x0 - 10.0) (cy + 11.0) (label "sub" (sn.x0 - 10.0) (cy + 11.0) "end" (summary m))
+        , engineChoice m (sn.x0 - 10.0) (cy + 25.0)
         , svg "title" [] [ HH.text (tip nd m) ]
         ]
 
@@ -649,6 +655,28 @@ chartOf on hot live f =
         [ svg "circle" [ attr "class" ("dlamp " <> lampClass l.lamp), attr "cx" (n (x + 10.0 * toNumber k)), attr "cy" (n y), attr "r" "4" ]
             [ svg "title" [] [ HH.text (l.title <> " · X-ray: restart it there") ] ]
         ]
+
+  -- Limulus's engine, chosen on its node: where its Tidal goes is a fact
+  -- about its path, so the choice is made where the path is drawn. One of
+  -- two, right-aligned under its caption.
+  engineChoice m x y
+    | m /= "limulus" || live.xray = svg "g" [] []
+    | otherwise =
+        let w = 6.0 * toNumber (String.length "→ Haskell Tidal")
+        in svg "g" [ attr "class" "engines", attr "role" "group", attr "aria-label" "Where Limulus sends Tidal" ]
+             [ choice "ghci" "Haskell Tidal" x "Haskell Tidal (GHCi), to compare. Machine lines still go to the rig."
+             , label "sub" (x - w - 5.0) y "middle" "·"
+             , choice "architeuthis" "Architeuthis" (x - w - 10.0) "Architeuthis: the rig plays it, machines and all."
+             ]
+    where
+    choice key name cx hint =
+      let picked = live.limulusEngine == key
+      in svg "g"
+           ( [ attr "class" ("engine" <> if picked then " on" else ""), attr "role" "button", attr "tabindex" "0"
+             , attr "aria-pressed" (if picked then "true" else "false") ]
+               <> (if picked then [] else [ HE.onClick \_ -> on.engine key ])
+           )
+           [ label "sub" cx y "end" ("→ " <> name), svg "title" [] [ HH.text hint ] ]
 
   -- In the X-ray, a machine's caption is its page server's line, when it
   -- has one.

@@ -303,6 +303,10 @@ pathOf relays mode m via dest = case midiEnds dest of
           [ ctl "browser" "engine" Socket ] <> rigMidi e.iface
       | otherwise = [ hop "browser" e.iface Midi ]
   Nothing -> case dest of
+    -- Limulus sent to Haskell Tidal: GHCi, booted by Limulus's server,
+    -- sends OSC to SuperDirt itself; the rig is not on the way.
+    DSample _ | via == Just "ghci" ->
+      Just [ hop "browser" "ghci" Http, hop "ghci" "d-dirt" Osc, hop "d-dirt" "ears" Audio ]
     DSample _ | atlantis ->
       Just [ ctl "browser" "engine" Socket, hop "engine" "d-dirt" Osc, hop "d-dirt" "ears" Audio ]
     DPoly _ | atlantis -> Just (toEs9 relay)
@@ -517,6 +521,7 @@ fixed :: Array Node
 fixed =
   [ n "browser" Page "Browser" "every machine is a page"
   , n "engine" Engine "Architeuthis" "the rig's engine"
+  , n "ghci" Engine "Haskell Tidal" "GHCi, for comparison"
   , n "foi" Engine "Friends server" "Quadrat's CV relay"
   , n "sets" Engine "Sample sets" "Quadrat · Amphora"
   , n "diaphus" RigOut "Diaphus" "MIDI, on the beat"

@@ -647,7 +647,7 @@ flowChart st =
   HH.section [ cls "flow", HP.attr (AttrName "aria-label") "Where it all goes" ]
     ( (if st.xray then [ xrayStrip st ] else []) <>
     [ HH.div [ cls ("flow-chart" <> if st.allVoices then " all-voices" else "") ]
-        [ FlowView.chart { hover: Hover, link: ChartLink, port: PortClick, cable: CableClick, play: Command, peek: Peek, restart: RigRestart } st.hot { playing: map _.slot (filter (playing st) machines), rigUp: st.rigUp, tempo: st.tempo, lamps, hidden: st.hidden, keyHot: st.keyHot, patch, dock, locked: st.locked, peeked: st.peeked, xray: st.xray }
+        [ FlowView.chart { hover: Hover, link: ChartLink, port: PortClick, cable: CableClick, play: Command, peek: Peek, restart: RigRestart, engine: SetLimulusEngine } st.hot { playing: map _.slot (filter (playing st) machines), rigUp: st.rigUp, tempo: st.tempo, lamps, hidden: st.hidden, keyHot: st.keyHot, patch, dock, locked: st.locked, peeked: st.peeked, xray: st.xray, limulusEngine: st.limulusEngine }
             ( Flow.flow
                 { mode: st.mode
                 , table: st.table
@@ -736,7 +736,8 @@ flowChart st =
     , { machine: "quadrat", dest: RM.DEs9Cv { bus: 1 }, via: Just "foi" }
     -- Limulus: its Tidal streams to SuperDirt, and `drums $` down the drum
     -- lanes' own routing.
-    , { machine: "limulus", dest: RM.DSample { set: "d1–d16", n: 0, begin: 0, end: 100, reverse: false, gain: 100, chop: 1 }, via: Nothing }
+    -- its Tidal: through the rig, or (sent to Haskell Tidal) through GHCi
+    , { machine: "limulus", dest: RM.DSample { set: "d1–d16", n: 0, begin: 0, end: 100, reverse: false, gain: 100, chop: 1 }, via: if st.limulusEngine == "ghci" then Just "ghci" else Nothing }
     ] <> map (\dest -> { machine: "limulus", dest, via: Nothing }) drumDests
   drumDests = nubEq do
     r <- st.table
@@ -933,12 +934,6 @@ machineBar st =
   HH.div [ cls "mbar" ]
     ( [ HH.div [ cls "seg", HP.attr (AttrName "role") "group", HP.attr (AttrName "aria-label") "Mode" ]
           [ seg "Solo" Solo, seg "Atlantis" Atlantis ]
-      -- where Limulus sends Tidal: the rig, or Haskell Tidal to compare
-      , HH.span [ cls "seglabel" ] [ HH.text "Limulus" ]
-      , HH.div [ cls "seg", HP.attr (AttrName "role") "group", HP.attr (AttrName "aria-label") "Limulus's engine" ]
-          [ engineSeg "Architeuthis" "architeuthis" "Limulus sends Tidal to the rig, machines and all."
-          , engineSeg "GHCi" "ghci" "Limulus sends Tidal to Haskell Tidal, to compare; machine lines still go to the rig."
-          ]
       -- The machines themselves are on the chart: flowing, or in its dock.
       -- The chart's own views, beside the rig's choices and drawn alike:
       -- the rig's are one-of segments, these each turn on and off.
@@ -958,14 +953,6 @@ machineBar st =
       , HP.attr (AttrName "aria-pressed") (if on then "true" else "false")
       , HP.title tip
       , HE.onClick \_ -> act (not on)
-      ]
-      [ HH.text label ]
-  engineSeg label key tip =
-    HH.button
-      [ cls (if st.limulusEngine == key then "on" else "")
-      , HP.attr (AttrName "aria-pressed") (if st.limulusEngine == key then "true" else "false")
-      , HP.title tip
-      , HE.onClick \_ -> SetLimulusEngine key
       ]
       [ HH.text label ]
   seg label m =
