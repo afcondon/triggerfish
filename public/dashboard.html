@@ -292,8 +292,8 @@
     svg.flows .dock.closed:hover use, svg.flows .dock.closed:focus-visible use { opacity: .7; filter: none; }
     svg.flows .dock.closed:hover .name { fill: var(--ink); }
     svg.flows .dock.open { cursor: default; }
-    /* a fish faces back up the chart while its page runs, and turns to swim
-       with the flow, left to right, while it plays */
+    /* a fish faces left while its page runs, and turns to face right,
+       towards the audio, while it plays */
     svg.flows .fish use { transform-box: fill-box; transform-origin: center; transition: transform .35s ease; }
     svg.flows .fish.playing use { transform: scaleX(-1); }
     @media (prefers-reduced-motion: reduce) { svg.flows .fish use { transition: none; } }
