@@ -32,7 +32,11 @@ import Effect.Aff (attempt)
 import Effect.Aff.Class (class MonadAff, liftAff)
 import Effect.Class (liftEffect)
 import Effect.Timer (setInterval)
-import Data.Either (Either(..))
+import Data.Either (Either(..), hush)
+import Data.Nullable (Nullable, toMaybe)
+import Foreign.Object (Object)
+import Foreign.Object as Object
+import Simple.JSON (readJSON)
 import Data.String.CodeUnits (take)
 import Halogen as H
 import Halogen.HTML as HH
@@ -105,6 +109,12 @@ type State =
   -- modular follows the page without an Apply (the rig keeps what it is given
   -- and gives it back to a daemon that returns: selene_keeper)
   , applyDue :: Maybe Number
+  -- The rack on the stage (`selene/rack`), where the rig reads `selene $`
+  -- lines and writes them back (docs/kb/plans/selene-in-tidal.md): whether
+  -- this connection has subscribed, and the rack the stage was last seen to
+  -- hold, so a frame repeating it changes nothing.
+  , stageSubscribed :: Boolean
+  , stageRack :: Maybe String
   , publishMsg :: Maybe String   -- transient status from a publish-rack-to-Amphora click
   -- The unified glyph-chip PRESET bank (docs/DESIGN-scene-modal.md): captured rack
   -- docs, anonymous or named, freely intermixed. `identity` is the parked preset's
@@ -228,6 +238,8 @@ component =
           , clockTempo: 120.0, clockLocked: false, clockBar: 0
           , replies: Map.empty
           , applyDue: Nothing
+          , stageSubscribed: false
+          , stageRack: Nothing
           , publishMsg: Nothing
           , presets: [], identity: Nothing, lastChip: Nothing
           , selected: Nothing
@@ -439,6 +451,13 @@ handleAction = case _ of
 
   Frame -> do
     st <- H.get
+    -- subscribe to the stage's texts once per connection
+    for_ st.binnacle \bin -> do
+      up <- liftEffect $ Transport.isConnected (Binnacle.socket bin)
+      when (up && not st.stageSubscribed) do
+        H.modify_ _ { stageSubscribed = true }
+        liftEffect $ Transport.send (Binnacle.socket bin) "stage-text-subscribe"
+      when (not up && st.stageSubscribed) (H.modify_ _ { stageSubscribed = false, stageRack = Nothing })
     -- an edit settled: apply it, as the Apply button does
     now <- liftEffect dateNow
     for_ st.applyDue \due -> when (now >= due && isJust st.binnacle) do
@@ -578,15 +597,28 @@ handleAction = case _ of
   ApplyToRig -> do
     st <- H.get
     let envs = mapMaybe Wire.destinationEnvelope st.sel.destinations
-    for_ st.binnacle \bin ->
+    for_ st.binnacle \bin -> do
       for_ envs \e ->
         liftEffect $ Transport.send (Binnacle.socket bin)
           ("selene-apply " <> e.socket <> " " <> e.bank <> " " <> e.json)
+      -- and the rack goes on the stage, where `selene $` lines read it
+      publishRack
     -- mark every pushed bank pending; the daemon's OK/ERR replaces it.
     H.modify_ \s -> s { replies = foldr (\e m -> Map.insert (replyKey e.socket e.bank) "…" m) s.replies envs }
 
   -- A `selene-reply <socket> <bank> <status…>` frame — record the status against
   -- its bank. Non-matching frames (other verbs) are ignored.
+  -- The stage's rack: on subscribing, the whole table (adopt the rack it
+  -- holds, or give it this page's); later, a write elsewhere (a `selene $`
+  -- line on the rig): adopt it. Adopting does not apply: the rig already has.
+  SeleneReply raw | Just json <- Str.stripPrefix (Str.Pattern "stage-texts ") raw -> do
+    case readStageTable json of
+      Just t -> adoptRack t
+      Nothing -> do
+        H.modify_ _ { stageRack = Nothing }
+        publishRack
+  SeleneReply raw | Just json <- Str.stripPrefix (Str.Pattern "stage-text ") raw ->
+    for_ (readStageWrite json) adoptRack
   SeleneReply raw -> case Str.stripPrefix (Str.Pattern "selene-reply ") raw of
     Nothing -> pure unit
     Just rest ->
@@ -629,6 +661,38 @@ amphoraRack it = { name: it.name, doc: it.payload }
 mergeRacksByName :: Array Store.Rack -> Array Store.Rack -> Array Store.Rack
 mergeRacksByName current incoming =
   current <> filter (\p -> not (any (\q -> q.name == p.name) current)) incoming
+
+-- | Put this page's rack on the stage, if it is not what the stage holds.
+publishRack :: forall o m. MonadAff m => H.HalogenM State Action Slots o m Unit
+publishRack = do
+  st <- H.get
+  let doc = currentDoc st
+  when (st.stageSubscribed && st.stageRack /= Just doc) do
+    for_ st.binnacle \bin -> liftEffect $ Transport.send (Binnacle.socket bin) ("stage-text selene/rack " <> doc)
+    H.modify_ _ { stageRack = Just doc }
+
+-- | Take the stage's rack as the loaded one: the rig changed it (a `selene $`
+-- | line), or it was there when this page opened. Kept locally, not applied.
+adoptRack :: forall o m. MonadAff m => String -> H.HalogenM State Action Slots o m Unit
+adoptRack doc = do
+  H.modify_ _ { stageRack = Just doc }
+  st <- H.get
+  when (doc /= currentDoc st) do
+    H.modify_ \s -> s { library = setDocAt s.active doc s.library, sel = Source.parseRack doc }
+    s <- H.get
+    liftEffect (Store.saveLibrary { active: s.active, library: s.library, presets: s.presets })
+
+-- | The rack in a `stage-texts` table, if it has one.
+readStageTable :: String -> Maybe String
+readStageTable json = do
+  table :: Object { text :: String } <- hush (readJSON json)
+  _.text <$> Object.lookup "selene/rack" table
+
+-- | The rack in a `stage-text` write, if that is what was written.
+readStageWrite :: String -> Maybe String
+readStageWrite json = do
+  w :: { key :: String, text :: Nullable String } <- hush (readJSON json)
+  if w.key == "selene/rack" then toMaybe w.text else Nothing
 
 -- | Persist the rack library + preset bank (after any library/active/preset change).
 persist :: forall o m. MonadAff m => H.HalogenM State Action Slots o m Unit
@@ -917,7 +981,9 @@ render s =
     [ style $ "position:fixed;top:var(--tf-bar);left:var(--tf-left,0px);right:var(--tf-right,0px);bottom:0;display:flex;align-items:stretch;overflow:hidden;"
         <> "user-select:none;-webkit-user-select:none;background:#b7b1a0;font-family:Georgia,serif" ]
     [ rackPanel s
-    , sourcePanel s
+    -- (the SOURCE panel went 2026-10-05: the rack is edited as text in
+    -- Limulus now, `selene $ lfo es9main # rate 0.5`, applied on the rig;
+    -- docs/kb/plans/selene-in-tidal.md)
     ]
 
 panel :: forall m. String -> String -> Array (H.ComponentHTML Action Slots m) -> H.ComponentHTML Action Slots m
@@ -1117,7 +1183,7 @@ addButton k =
 footNote :: forall m. H.ComponentHTML Action Slots m
 footNote =
   HH.div [ style $ engrave <> ";font-size:8px;opacity:0.45;margin-top:14px;line-height:1.6" ]
-    [ HH.text "EACH DESTINATION = 8 SIGNALS → 8 JACKS. EDIT THE NUMBERS — AND RE-PATCH / REMOVE BLOCKS — IN THE SOURCE PANE. -- MUTES A SLOT." ]
+    [ HH.text "EACH DESTINATION = 8 SIGNALS → 8 JACKS. AS TEXT, IN LIMULUS: SELENE $ LFO ES9MAIN # RATE \"0.5 1 2 4\" — ONE LINE, ONE BANK, ALL AT ONCE." ]
 
 -- One destination: a target/header strip on the left, eight visualised slots.
 destinationRow :: forall m. MonadAff m => EnvParam -> Maybe Sel -> Int -> M.Destination -> H.ComponentHTML Action Slots m
