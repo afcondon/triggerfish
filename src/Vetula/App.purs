@@ -6030,9 +6030,9 @@ contextBar st =
     HH.div
       [ HP.style "position: absolute; top: 38px; left: 0; z-index: 46; min-width: 200px; background: #fff; border: 1px solid #e0d8bf; border-radius: 7px; box-shadow: 0 8px 28px rgba(0,0,0,0.16); padding: 5px 0; overflow: hidden;"
       , HE.onClick \e -> PerfStopClick e PerfNop ]
-      [ menuItem hasFilled ("⬡ save scene #" <> show st.perfSession.nextScene) SaveScene
-      , menuItem true "↴ load scene…" PerfOpenRecall
-      , menuItem true "↻ new session" PerfNewSession
+      -- saving and loading scenes are the browser drawer's (b) since
+      -- 2026-10-05; the session itself, and the chyron's housekeeping, stay
+      [ menuItem true "↻ new session" PerfNewSession
       , menuDivider
       , menuItem hasChyron "⌫ clear chyron" ClearChyron
       , menuItem hasChyron "≡ de-dupe chyron" DedupeChyron
