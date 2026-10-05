@@ -245,6 +245,7 @@ handleQuery = case _ of
   AskBrowser _ -> pure Nothing
   BrowserRecall _ _ next -> pure (Just next)
   BrowserRename _ _ next -> pure (Just next)
+  BrowserKeep next -> pure (Just next)
   -- No marks here: asked for its text, the shell falls back to AskSource.
   AskMarkText _ -> pure Nothing
   AddMarkSnapshot _ _ _ next -> pure (Just next)

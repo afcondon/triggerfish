@@ -9,22 +9,27 @@
 -- | accent beside the name.
 module Triggerfish.Browser
   ( Browser
-  , Row
+  , Item
   , Recall
   , defaultRecall
   , stamp
   ) where
 
 import Effect (Effect)
+import Triggerfish.Glyph (GlyphIcon)
 
 -- | `modes`: the machine recalls in four ways (`Recall`), so each row carries
--- | the 2×2 square and the drawer its key (Odonus).
-type Browser = { title :: String, modes :: Boolean, rows :: Array Row }
+-- | the 2×2 square and the drawer its key (Odonus). `keep`: what the drawer's
+-- | keep button says (`BrowserKeep`): "keep" for a preset, "save scene" for
+-- | Vetula, whose `c` captures something else.
+type Browser = { title :: String, modes :: Boolean, keep :: String, rows :: Array Item }
 
--- | One kept thing. `slot` is the machine's own index for it; `alias` its
--- | rebus; `tag` what kind it is, shown beside the name (Balistes's Grids or
--- | Rytm); `current` whether it is what the machine has loaded now.
-type Row = { slot :: Int, name :: String, alias :: String, tag :: String, current :: Boolean }
+-- | One kept thing. `slot` is the machine's own index for it; `icons` its
+-- | rebus, as the machine draws it (a preset's coloured pair; Vetula's
+-- | session triple in one colour); `tag` what kind it is, shown beside the
+-- | name (Balistes's Grids or Rytm); `current` whether it is what the machine
+-- | has loaded now.
+type Item = { slot :: Int, name :: String, icons :: Array GlyphIcon, tag :: String, current :: Boolean }
 
 -- | How to recall it (Odonus): `frozen`, its generators paused; `inKey`,
 -- | keeping the key the machine is in now rather than the saved one. A machine

@@ -54,8 +54,8 @@ import Halogen.Query.Event (eventListener)
 import Halogen.Subscription as HS
 import Halogen.VDom.Driver (runUI)
 import Triggerfish.Fish as Fish
-import Triggerfish.Glyph (ChipView, glyphFromAlias)
-import Triggerfish.GlyphView (chipIcons, faIcons)
+import Triggerfish.Glyph (ChipView)
+import Triggerfish.GlyphView (chipIcons, faIcon)
 import Triggerfish.Browser as Browser
 import Halogen.Widgets.Drawer as Drawer
 import Data.Array as Array
@@ -173,10 +173,11 @@ data Action o
   | AskBrowser
   | FromDrawer Drawer.Output
   | RecallRow Int Browser.Recall
-  | StartRename Browser.Row
+  | StartRename Browser.Item
   | RenameInput String
   | RenameKey KE.KeyboardEvent
   | CommitRename
+  | KeepRow
 
 type Slots o = (machine :: H.Slot SQ.Query o Unit, drawer :: Drawer.Slot Unit)
 
@@ -191,7 +192,7 @@ root cfg = H.mkComponent
   { initialState: \_ ->
       { mode: Solo, playing: false, bpm: 120.0, tempoFlash: Nothing, freeT0: 0.0, chip: Nothing, rig: Nothing
       , rigUp: false, table: RM.defaultTable, staged: Nothing, bus: Nothing, limulus: false, limulusMade: false, limulusAlways: false
-      , browser: Nothing, drawer: { open: true, width: 240.0 }, lastRecall: { frozen: false, inKey: false }, renaming: Nothing }
+      , browser: Nothing, drawer: { open: true, width: 280.0 }, lastRecall: { frozen: false, inKey: false }, renaming: Nothing }
   , render: render cfg
   , eval: H.mkEval H.defaultEval { handleAction = handleAction cfg, initialize = Just Init }
   }
@@ -274,6 +275,9 @@ handleAction cfg = case _ of
   RecallRow slot r -> do
     H.modify_ _ { lastRecall = r }
     void $ H.query _machine unit (SQ.BrowserRecall slot r unit)
+    handleAction cfg AskBrowser
+  KeepRow -> do
+    void $ H.query _machine unit (SQ.BrowserKeep unit)
     handleAction cfg AskBrowser
   StartRename row -> do
     H.modify_ _ { renaming = Just { slot: row.slot, text: row.name } }
@@ -493,13 +497,13 @@ browserDrawer st b =
             [ HH.span [ style (engrave <> ";font-size:12px;letter-spacing:0.16em;color:#3f3c33") ] [ HH.text (String.toUpper b.title) ]
             , HH.span [ style "flex:1" ] []
             , HH.button
-                [ HE.onClick \_ -> Capture, HP.title "Keep what the machine is doing now (c)"
+                [ HE.onClick \_ -> KeepRow, HP.title "Keep what the machine has now, as a new row"
                 , style "font:11px Georgia,serif;padding:2px 8px;border:1px solid #00000033;border-radius:4px;background:#f6f2e7;cursor:pointer" ]
-                [ HH.text "keep (c)" ]
+                [ HH.text b.keep ]
             ]
         ]
           <> (if b.modes then [ key ] else [])
-          <> (if Array.null b.rows then [ HH.p [ style "font-size:12px;font-style:italic;color:#6a6657" ] [ HH.text "Nothing kept yet: press c to keep what is playing." ] ] else [])
+          <> (if Array.null b.rows then [ HH.p [ style "font-size:12px;font-style:italic;color:#6a6657" ] [ HH.text ("Nothing here yet: " <> b.keep <> " adds what is playing.") ] ] else [])
           <> map row b.rows
       )
   -- the 2×2's axes, once
@@ -530,8 +534,8 @@ browserDrawer st b =
                         <> (if r.current then "font-weight:bold;" else "") ]
                     [ HH.text r.name ]
             ]
-          <> (if r.tag == "" then [] else [ HH.span [ style "font-size:10px;letter-spacing:0.08em;text-transform:uppercase;color:#6a6657" ] [ HH.text r.tag ] ])
-          <> [ HH.span [ HP.class_ (HH.ClassName "tfb-g"), style "display:inline-flex;gap:2px;opacity:0.75" ] (faIcons (glyphFromAlias r.alias)) ]
+          <> (if r.tag == "" then [] else [ HH.span [ style "flex:none;font-size:10px;letter-spacing:0.08em;text-transform:uppercase;color:#6a6657" ] [ HH.text r.tag ] ])
+          <> [ HH.span [ HP.class_ (HH.ClassName "tfb-g"), style "flex:none;display:inline-flex;gap:2px;opacity:0.75" ] (map faIcon r.icons) ]
       )
   -- four ways to recall: across, running or frozen; down, as saved or in key
   square r =

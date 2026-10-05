@@ -937,6 +937,7 @@ data Action
   | SaveScene              -- serialise the whole Perform surface as a vetulaScene → Amphora
   | PerfNewSession         -- mint a fresh session glyph-triple (rolls the scene counter)
   | PerfOpenRecall         -- fetch saved scenes from Amphora + open the recall modal
+  | FetchScenes            -- fetch them for the browser drawer, quietly
   | PerfCloseRecall
   | PerfMenuToggle         -- open/close the session/scene command menu (nav ⋯)
   | PerfMenuClose          -- close it (backdrop click, or after picking an item)
@@ -1141,6 +1142,11 @@ data SourceQuery a
   -- progression's Tidal source (`currentSource`). Capture/recall/star/cull mirror the
   -- other machines; the bank is distinct from Vetula's own auto-capture library.
   | Capture a
+  -- The browser drawer (docs/kb/plans/the-deck.md, 2026-10-05): the saved
+  -- scenes (Amphora `vetula-scene`), carried as they are; load one; save one.
+  | AskScenes (Array { name :: String, session :: String, key :: String } -> a)
+  | LoadSceneAt Int a
+  | SaveSceneQ a
   | AskBank (Array { slot :: Int, alias :: String, name :: String, starred :: Boolean } -> a)
   | RecallSlot Int a
   | StarSlot Int a
@@ -1422,6 +1428,19 @@ handleQuery = case _ of
     pure (Just next)
   -- The status-board chip's recall menu: report each preset as its glyph alias +
   -- optional name + star flag; recall / star / delete a chosen preset.
+  AskScenes reply -> do
+    s <- H.get
+    let
+      tagged pre item = maybe "" (SCU.drop (SCU.length pre)) (find (\t -> SCU.take (SCU.length pre) t == pre) item.tags)
+      scene item = { name: item.name, session: tagged "session:" item, key: tagged "key:" item }
+    pure (Just (reply (map scene s.perfScenes)))
+  LoadSceneAt i next -> do
+    s <- H.get
+    for_ (s.perfScenes !! i) \item -> handleAction (PerfLoadScene item.payload)
+    pure (Just next)
+  SaveSceneQ next -> do
+    handleAction SaveScene
+    pure (Just next)
   AskBank reply -> do
     s <- H.get
     pure (Just (reply (mapWithIndex (\i p -> { slot: i, alias: (progGlyph p.content).alias, name: fromMaybe "" p.name, starred: p.starred }) s.presets)))
@@ -1821,6 +1840,8 @@ handleActionCore = case _ of
     st <- H.get
     for_ st.binnacle \bin -> liftEffect $ Transport.send (Binnacle.socket bin) (SC.openLine n)
   Initialize -> do
+    -- the saved scenes, for the browser drawer, in the background
+    void $ H.fork (handleAction FetchScenes)
     -- Announce the opening stage so the shell can write a COMPLETE URL from a cold
     -- start (`#{slug}/{stage}`, not the bare `#{slug}`). Without this the address
     -- bar under-specifies until you touch a stage tab — still a valid route, since
@@ -2468,6 +2489,7 @@ handleActionCore = case _ of
         let sess' = sess { nextScene = n + 1 }
         liftEffect (Store.saveSession sess')
         H.modify_ _ { perfSession = sess', publishMsg = Just ("✓ " <> label <> " · " <> SCU.take 8 hash) }
+        handleAction FetchScenes
       Left _ -> H.modify_ _ { publishMsg = Just "✗ save failed (store offline?)" }
 
   -- Mint a fresh session (a new monochrome glyph-triple, scene counter back to 1)
@@ -2489,6 +2511,11 @@ handleActionCore = case _ of
       Left _ -> H.modify_ _ { perfScenes = [], publishMsg = Just "✗ scenes: store offline?" }
 
   PerfCloseRecall -> H.modify_ _ { perfRecallOpen = false }
+
+  -- The saved scenes, for the browser drawer, without opening the modal.
+  FetchScenes -> do
+    res <- liftAff (attempt (Amphora.fetchCollection "vetula-scene"))
+    for_ res \items -> H.modify_ _ { perfScenes = items }
 
   PerfMenuToggle -> H.modify_ \st -> st { perfMenuOpen = not st.perfMenuOpen }
   PerfMenuClose -> H.modify_ _ { perfMenuOpen = false }
@@ -5481,7 +5508,8 @@ render st =
     -- Pushed down by the nav (`--tf-bar`) + the 42px CONTEXT bar + the 44px AUDITION
     -- chyron, so the stage clears both top strips; the old bottom voice bar is gone,
     -- so it fills to the window bottom (freed lower strip → future MIDI-flow chyron).
-    [ HP.style ("position: relative; margin-top: calc(var(--tf-bar) + 44px); width: 100%; height: calc(100vh - 132px); min-height: 620px; overflow: hidden; border-radius: 8px; background: " <> canvasBg <> ";") ]
+    -- right of the browser drawer (Triggerfish.Standalone's --tf-left)
+    [ HP.style ("position: relative; margin-top: calc(var(--tf-bar) + 44px); margin-left: var(--tf-left, 0px); width: calc(100% - var(--tf-left, 0px)); height: calc(100vh - 132px); min-height: 620px; overflow: hidden; border-radius: 8px; background: " <> canvasBg <> ";") ]
     [ HH.div [ HP.style "position: absolute; inset: 0;" ] [ surface st ]
     -- Scene recall belongs to the INSTRUMENT, not to Perform. Its entry point
     -- has always been the session menu in `contextBar`, which renders on every
@@ -5543,7 +5571,7 @@ chyronHeight = "52px"
 chyronBar :: forall m. State -> H.ComponentHTML Action Slots m
 chyronBar st =
   HH.div
-    [ HP.style ( "position: fixed; top: calc(var(--tf-bar) + 44px); left: 0; right: " <> barRightInset st <> "; z-index: 39; box-sizing: border-box; "
+    [ HP.style ( "position: fixed; top: calc(var(--tf-bar) + 44px); left: var(--tf-left, 0px); right: " <> barRightInset st <> "; z-index: 39; box-sizing: border-box; "
         <> "display: flex; gap: 10px; align-items: center; padding: 3px 12px; height: " <> chyronHeight <> "; overflow: hidden; "
         -- shift-click is a selection gesture here (extend the range), so kill the
         -- browser's own shift-click text selection across the bar. user-select
@@ -5836,7 +5864,7 @@ contextBar st =
     -- was not enough: it keeps the items on one row, but each item still shrinks
     -- and wraps its text inside itself — which is what put "scene loaded",
     -- "horse-bell-bomb" and "continuo ✓" on two lines and grew the bar.
-    [ HP.style ( "position: fixed; top: var(--tf-bar); left: 0; right: " <> barRightInset st <> "; z-index: 40; box-sizing: border-box; "
+    [ HP.style ( "position: fixed; top: var(--tf-bar); left: var(--tf-left, 0px); right: " <> barRightInset st <> "; z-index: 40; box-sizing: border-box; "
         <> "display: flex; align-items: center; flex-wrap: nowrap; white-space: nowrap; gap: 10px; padding: 0 12px; height: 44px; overflow: visible; "
         <> "background: linear-gradient(#f3eee0,#ece5d0); border-bottom: 1px solid #0000000f; box-shadow: 0 1px 3px #0000000d;" ) ]
     -- LEFT: the stage tabs, then ONLY the controls that mean something in the
@@ -8572,7 +8600,7 @@ voiceBar st =
     -- stops short of the true bottom. Same gradient/bevel treatment as the nav,
     -- but COLOURED and thin — minimal padding, ceding vertical space to the
     -- lattice above.
-    [ HP.style ( "position: fixed; bottom: 0; left: 0; right: 0; z-index: 40; box-sizing: border-box; "
+    [ HP.style ( "position: fixed; bottom: 0; left: var(--tf-left, 0px); right: 0; z-index: 40; box-sizing: border-box; "
         <> "display: flex; gap: 10px; align-items: center; padding: 3px 12px; overflow: hidden; "
         <> "font-family: Georgia, serif; background: linear-gradient(#b6c3cc,#a4b4be); "
         <> "border-top: 1px solid #00000026; box-shadow: 0 -1px 4px #00000018;" ) ]

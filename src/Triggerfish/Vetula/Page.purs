@@ -16,7 +16,7 @@ module Triggerfish.Vetula.Page
 import Prelude
 
 import Data.Foldable (for_)
-import Data.Maybe (Maybe(..))
+import Data.Maybe (Maybe(..), fromMaybe)
 import Effect.Aff (Aff)
 import Effect.Class (liftEffect)
 import Effect.Ref (Ref)
@@ -27,6 +27,8 @@ import Halogen.HTML as HH
 import Halogen.Subscription as HS
 import Triggerfish.Glyph (ChipView)
 import Triggerfish.SourceQuery as SQ
+import Data.Array as Array
+import Data.String as String
 import Triggerfish.Transport (Sounding(..))
 import Type.Proxy (Proxy(..))
 import Vetula.App as Vetula
@@ -121,10 +123,18 @@ poll = do
 -- | (lanes, a clock, the routing table, a pitch set to follow) is unanswered.
 handleQuery :: forall a. SQ.Query a -> M (Maybe a)
 handleQuery = case _ of
-  -- No browser drawer yet (docs/kb/plans/the-deck.md, 2026-10-05).
-  SQ.AskBrowser _ -> pure Nothing
-  SQ.BrowserRecall _ _ next -> pure (Just next)
+  -- The browser drawer carries Vetula's scenes as they are (docs/kb/plans/
+  -- the-deck.md, 2026-10-05): name first, the key as the tag, the session's
+  -- three-glyph as the rebus, so a session's scenes share it. Renaming waits
+  -- for the revision of Vetula's saving (a scene's name is its Amphora label).
+  SQ.AskBrowser reply -> do
+    mscenes <- H.query _vet unit (Vetula.AskScenes identity)
+    pure $ mscenes <#> \scenes -> reply
+      { title: "Scenes", modes: false, keep: "save scene"
+      , rows: Array.mapWithIndex (\i sc -> { slot: i, name: sc.name, icons: map (\icon -> { icon, color: "#2a2a2a" }) (Array.filter (_ /= "") (String.split (String.Pattern "-") (sessionOf sc))), tag: sc.key, current: false }) scenes }
+  SQ.BrowserRecall i _ next -> H.query _vet unit (Vetula.LoadSceneAt i next)
   SQ.BrowserRename _ _ next -> pure (Just next)
+  SQ.BrowserKeep next -> H.query _vet unit (Vetula.SaveSceneQ next)
   SQ.AskSource k -> H.query _vet unit (Vetula.AskSource k)
   SQ.AskMarkText k -> H.query _vet unit (Vetula.AskMarkText k)
   SQ.AddMarkSnapshot at m t a -> H.query _vet unit (Vetula.AddMarkSnapshot at m t a)
@@ -146,3 +156,14 @@ handleQuery = case _ of
   SQ.PutSource _ _ -> pure Nothing
   SQ.AskClock _ -> pure Nothing
   SQ.SetRouting _ _ -> pure Nothing
+
+-- | A scene's session, for its rebus: the `session:` tag, else the name's head
+-- | (scenes are named `⟨session⟩ #N`).
+sessionOf :: { name :: String, session :: String, key :: String } -> String
+sessionOf sc
+  | sc.session /= "" = sc.session
+  | otherwise =
+      let head = fromMaybe "" (Array.head (String.split (String.Pattern " #") sc.name))
+      -- an alias is icon names joined by "-": a scene from before sessions
+      -- ("scene · C locrian") has none
+      in if String.contains (String.Pattern " ") head then "" else head

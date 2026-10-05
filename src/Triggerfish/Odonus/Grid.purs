@@ -237,12 +237,15 @@ handleQuery = case _ of
   AskBrowser reply -> do
     s <- H.get
     let
-      preset i p = { slot: i, name: fromMaybe "untitled" p.name, alias: presetAlias p, tag: "", current: s.identity == Just p.content }
-      scene i sc = { slot: length s.presets + i, name: sc.name, alias: (G.glyphOf sc.text).alias, tag: "", current: s.identity == Just sc.text }
-    pure (Just (reply { title: "Presets", modes: true, rows: mapWithIndex preset s.presets <> mapWithIndex scene s.scenes }))
+      preset i p = { slot: i, name: fromMaybe "untitled" p.name, icons: (G.glyphOf p.content).icons, tag: "", current: s.identity == Just p.content }
+      scene i sc = { slot: length s.presets + i, name: sc.name, icons: (G.glyphOf sc.text).icons, tag: "", current: s.identity == Just sc.text }
+    pure (Just (reply { title: "Presets", modes: true, keep: "keep (c)", rows: mapWithIndex preset s.presets <> mapWithIndex scene s.scenes }))
   BrowserRecall i r next -> do
     s <- H.get
     for_ (keptText s i) \text -> recallWith text r
+    pure (Just next)
+  BrowserKeep next -> do
+    captureNow
     pure (Just next)
   BrowserRename i name next -> do
     H.modify_ \s ->

@@ -109,6 +109,8 @@ data Query a
   | AskBrowser (Browser -> a)
   | BrowserRecall Int Recall a
   | BrowserRename Int String a
+  -- the drawer's keep button: keep what the machine has now, as a new row
+  | BrowserKeep a
   | AskBank (Array { slot :: Int, alias :: String, name :: String, starred :: Boolean } -> a)
   | RecallSlot Int a
   | StarSlot Int a

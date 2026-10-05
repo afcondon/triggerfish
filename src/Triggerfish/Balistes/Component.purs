@@ -60,7 +60,7 @@ import Triggerfish.Browser as Browser
 import Triggerfish.Balistes.TriSnapshot (Brain(..), TriSnapshot(..), brainBadge, brainLabel, brainOf, printTri, parseTri, rhythmContent, rhythmOfContent)
 import Triggerfish.Glyph as G
 import Triggerfish.GlyphView (faIcons)
-import Triggerfish.Preset (Preset, indexOfContent, presetAlias, presetLabel)
+import Triggerfish.Preset (Preset, indexOfContent, presetAlias, presetGlyph, presetLabel)
 import Triggerfish.Balistes.Widgets (armBtn, instColor)
 import Triggerfish.Balistes.View.Fixed (cellStrip, fixedSvg)
 import Triggerfish.Balistes.View.Grids (heatSvg, knobStack, padSvg)
@@ -118,10 +118,13 @@ handleQuery = case _ of
   -- its name, with the machine it runs on (Grids or Rytm) as its tag.
   AskBrowser reply -> do
     s <- H.get
-    let row i p = { slot: i, name: fromMaybe "untitled" p.name, alias: presetAlias p, tag: maybe "" machineTag (parseTri p.content), current: s.identity == Just p.content }
-    pure (Just (reply { title: "Beats", modes: false, rows: mapWithIndex row s.presets }))
+    let row i p = { slot: i, name: fromMaybe "untitled" p.name, icons: (presetGlyph p).icons, tag: maybe "" machineTag (parseTri p.content), current: s.identity == Just p.content }
+    pure (Just (reply { title: "Beats", modes: false, keep: "keep (c)", rows: mapWithIndex row s.presets }))
   BrowserRecall i _ next -> do
     recallPreset i
+    pure (Just next)
+  BrowserKeep next -> do
+    captureNow
     pure (Just next)
   BrowserRename i name next -> do
     H.modify_ \s -> s { presets = fromMaybe s.presets (modifyAt i (_ { name = Just name }) s.presets) }

@@ -63,8 +63,8 @@ export const watchDocks = (onAlways) => () => {
 export const loadDrawer = (key) => () => {
   try {
     const o = JSON.parse(localStorage.getItem(key) || "null");
-    return o && typeof o.open === "boolean" && typeof o.width === "number" ? o : { open: true, width: 240 };
-  } catch (_) { return { open: true, width: 240 }; }
+    return o && typeof o.open === "boolean" && typeof o.width === "number" ? o : { open: true, width: 280 };
+  } catch (_) { return { open: true, width: 280 }; }
 };
 export const saveDrawer = (key) => (o) => () => {
   try { localStorage.setItem(key, JSON.stringify(o)); } catch (_) {}
