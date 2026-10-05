@@ -22,7 +22,7 @@ import Data.Tuple (Tuple(..), fst, snd)
 import Web.UIEvent.MouseEvent as ME
 import Web.UIEvent.KeyboardEvent (KeyboardEvent)
 import Web.UIEvent.KeyboardEvent as KE
-import Web.Event.Event (preventDefault)
+import Web.Event.Event (Event, EventType(..), preventDefault)
 import Data.Int (round, toNumber)
 import Data.Map (Map)
 import Data.Map as Map
@@ -63,15 +63,13 @@ import Triggerfish.Selene.Drop as Drop
 import Data.Array as Array
 import Reef.Selene.Line as Line
 import Reef.Selene.Block as Block
-import Web.Event.Event (Event, EventType(..))
 import Triggerfish.Glyph as G
 import Triggerfish.Browser as Browser
 import Triggerfish.Preset (Preset, indexOfContent, presetAlias)
 import Triggerfish.SourceQuery (Query(..))
 import Triggerfish.Transport (Sounding(..))
-import Triggerfish.Rig (availableTargets, defaultRig, targetGroups)
+import Triggerfish.Rig (availableTargets, defaultRig)
 import Halogen.Widgets.Select as Select
-import Type.Proxy (Proxy(..))
 import Data.Maybe (Maybe(..), fromMaybe, isJust, maybe)
 import Binnacle.Time (dateNow)
 
@@ -79,9 +77,6 @@ import Binnacle.Time (dateNow)
 -- | destination index — the same nested ES-9/FH-2/MIDI menu the routing modal
 -- | uses (the machine's own copy of the shared control; see Triggerfish.Rig).
 type Slots = ( selTarget :: Select.Slot Int )
-
-_selTarget :: Proxy "selTarget"
-_selTarget = Proxy
 
 -- ---------------------------------------------------------------------------
 -- State / Actions
@@ -537,7 +532,6 @@ handleAction = case _ of
         _ -> pure unit
 
   Step tick -> do
-    st <- H.get
     -- The modular runs what was applied whatever this page does, so the
     -- playhead always sweeps with the clock (there is no Play to wait for).
     H.modify_ _ { playStep = tick.index `mod` cycleSteps }
@@ -1349,40 +1343,12 @@ rackBar s =
     , publishStatus s
     ]
 
--- Publish the active rack to the Amphora store (⚱); a sibling of + NEW.
-publishRackChip :: forall m. H.ComponentHTML Action Slots m
-publishRackChip =
-  HH.button
-    [ HE.onClick \_ -> PublishRack
-    , HP.title "publish the active rack to the Amphora store"
-    , style $ "padding:5px 11px;border:1px solid #8aa08a;border-radius:6px;cursor:pointer;"
-        <> "font-family:Georgia,serif;font-size:11px;color:#3d5c3b;background:#00000006" ]
-    [ HH.text "⚱ PUBLISH" ]
-
 publishStatus :: forall m. State -> H.ComponentHTML Action Slots m
 publishStatus s = case s.publishMsg of
   Nothing -> HH.text ""
   Just msg ->
     HH.span [ style $ engrave <> ";font-size:8px;color:#5a7458;margin-left:4px" ]
       [ HH.text msg ]
-
-rackChip :: forall m. String -> Boolean -> Action -> H.ComponentHTML Action Slots m
-rackChip label active act =
-  HH.button
-    [ HE.onClick \_ -> act
-    , style $ "padding:5px 11px;border:1px solid #a8a392;border-radius:6px;cursor:pointer;"
-        <> "font-family:Georgia,serif;font-size:11px;letter-spacing:0.04em;"
-        <> (if active then "color:#1c1a12;background:linear-gradient(#8fb0c0,#7a9eb0)"
-            else "color:#3f3c33;background:linear-gradient(#efece1,#ddd9cb)") ]
-    [ HH.text label ]
-
-newRackChip :: forall m. H.ComponentHTML Action Slots m
-newRackChip =
-  HH.button
-    [ HE.onClick \_ -> NewRack
-    , style $ "padding:5px 11px;border:1px dashed #a8a392;border-radius:6px;cursor:pointer;"
-        <> "font-family:Georgia,serif;font-size:11px;color:#6a6657;background:#00000006" ]
-    [ HH.text "+ NEW" ]
 
 -- A compact horizontal transport: live clock + MIDI readouts, the Apply → rig
 -- push button, and the per-bank status readout showing each daemon's OK / claim /
@@ -1427,22 +1393,6 @@ replyReadout s = map pill (mapMaybe Wire.destinationEnvelope s.sel.destinations)
                 <> ";white-space:nowrap;overflow:hidden;text-overflow:ellipsis" ]
             [ HH.text status ]
         ]
-
-addBar :: forall m. H.ComponentHTML Action Slots m
-addBar =
-  HH.div [ style "display:flex;align-items:center;gap:8px;margin-top:14px" ]
-    ( [ HH.span [ style $ engrave <> ";font-size:9px;opacity:0.6;margin-right:2px" ] [ HH.text "ADD 8 →" ] ]
-        <> map addButton M.allKinds
-    )
-
-addButton :: forall m. M.GenKind -> H.ComponentHTML Action Slots m
-addButton k =
-  HH.button
-    [ HE.onClick \_ -> AddDest k
-    , style $ "padding:6px 11px;border:1px solid #a8a392;border-radius:6px;cursor:pointer;"
-        <> "font-family:Georgia,serif;font-size:11px;letter-spacing:0.08em;color:#3f3c33;"
-        <> "background:linear-gradient(#efece1,#ddd9cb)" ]
-    [ HH.text (M.kindLabel k) ]
 
 footNote :: forall m. H.ComponentHTML Action Slots m
 footNote =
@@ -1743,21 +1693,6 @@ cellCaption t =
 -- ---------------------------------------------------------------------------
 -- Source panel — the growing-spec eDSL, one block per destination (read-only)
 -- ---------------------------------------------------------------------------
-
-sourcePanel :: forall m. State -> H.ComponentHTML Action Slots m
-sourcePanel s =
-  panel "SOURCE" "flex:0 0 340px"
-    [ HH.div [ style $ engrave <> ";font-size:8px;opacity:0.6;margin-bottom:6px" ]
-        [ HH.text "THE RACK · EDIT THE NUMBERS · -- MUTES A SLOT" ]
-    , HH.textarea
-        [ HP.value (currentDoc s)
-        , HE.onValueInput SetDoc
-        , HP.spellcheck false
-        , style $ "flex:1 1 auto;min-height:420px;resize:none;box-sizing:border-box;"
-            <> "padding:9px 10px;border:1px solid #a8a392;border-radius:6px;background:#f4f1e8;"
-            <> "font-family:'SF Mono',Menlo,monospace;font-size:11px;line-height:1.5;color:#2b2922;"
-            <> "white-space:pre;overflow:auto;outline:none" ]
-    ]
 
 -- ---------------------------------------------------------------------------
 -- helpers

@@ -1025,9 +1025,8 @@ render s =
         <> "user-select:none;-webkit-user-select:none;background:#b7b1a0;font-family:Georgia,serif" ]
     [ navBar s
     -- The bands, full width. Patterns are combined in Limulus (AC,
-    -- 2026-10-04), its drawer on the right of the page (the shared bar);
-    -- `assemblePanel`, the old right column, is dormant until Balistes's named
-    -- patterns replace the lane.
+    -- 2026-10-04), its drawer on the right of the page (the shared bar).
+    -- ASSEMBLE, the old right column, went when named beats came (2026-10-05).
     , HH.div
         [ style "flex:1 1 auto;min-height:0;display:flex;align-items:stretch" ]
         [ HH.div
@@ -1036,60 +1035,6 @@ render s =
         ]
     , presetModal s
     , laneEditModal s
-    ]
-
--- | **ASSEMBLE** — Balistes' view onto its own macro-tidal arrangement lane.
--- |
--- | Deliberately NOT a new chaining mechanism. The rack already has an
--- | arrangement language (docs/DESIGN-macro-tidal.md): one lane per machine,
--- | `step := form (# verb arg)*`, with `~` rests, `<a b c>` per-cycle
--- | alternation, quoted names and transform stacks. It runs on the shell's macro
--- | clock and the doc names "Balistes beats" as a form type. A private Balistes
--- | chainer would have been a second, weaker sequencer that didn't compose with
--- | the other machines' lanes.
--- |
--- | What this adds is REACH: the lane was only editable on the rack-wide TIDAL
--- | page, so assembling beats meant leaving the beats. Here the pattern names are
--- | click-to-insert next to the grid that makes them.
-assemblePanel :: forall m. State -> H.ComponentHTML Action () m
-assemblePanel s =
-  HH.div
-    [ style $ "flex:0 0 340px;min-width:0;height:100%;box-sizing:border-box;overflow-y:auto;"
-        <> "background:linear-gradient(#dcd8c9,#cfcabb);border-left:1px solid #b3ae9c;padding:14px 14px 16px" ]
-    [ HH.div [ style "display:flex;align-items:baseline;justify-content:space-between;border-bottom:1px solid #00000018;padding-bottom:6px;margin-bottom:10px" ]
-        [ HH.span [ style $ engrave <> ";font-size:12px;letter-spacing:0.16em;color:#3f3c33" ]
-            [ HH.text "ASSEMBLE" ]
-        , HH.button
-            [ HE.onClick \_ -> OpenLaneEdit
-            , HP.title "write the expression, with the notation guide"
-            , style $ engrave <> ";font-size:8px;letter-spacing:0.1em;padding:2px 8px;border-radius:5px;"
-                <> "border:1px solid #00000022;color:#6a6657;background:transparent;cursor:pointer" ]
-            [ HH.text "EDIT…" ]
-        ]
-    , HH.textarea
-        [ HP.value s.lane
-        , HE.onValueInput SetLane
-        , HP.placeholder "\"lo house 110\" <\"trap 140\" ~> # dilla"
-        , style $ "width:100%;box-sizing:border-box;height:78px;resize:vertical;padding:7px 9px;"
-            <> "border:1px solid #a8a392;border-radius:6px;background:#f3f1e8;"
-            <> "font-family:'SF Mono',Menlo,monospace;font-size:11px;line-height:1.5;color:#1c1a12" ]
-    , laneScore s
-    , HH.div [ style $ engrave <> ";font-size:8px;opacity:0.6;margin:7px 0 12px;line-height:1.6" ]
-        [ HH.text ("NOW: " <> (if s.laneReadout == "" then "—" else s.laneReadout)) ]
-    , HH.div [ style "display:flex;align-items:center;justify-content:space-between;border-bottom:1px solid #00000014;padding-bottom:4px;margin-bottom:8px" ]
-        [ HH.span [ style $ engrave <> ";font-size:9px;color:#8a8676" ] [ HH.text "BEATS" ]
-        , clickModeSwitch s
-        ]
-    , HH.div [ style "display:flex;gap:5px;flex-wrap:wrap;margin-bottom:12px" ]
-        (if null s.presets
-           then [ HH.span [ style $ engrave <> ";font-size:8px;opacity:0.5" ] [ HH.text "NOTHING BANKED YET" ] ]
-           else mapWithIndex (presetToken s) s.presets)
-    , HH.div [ style $ engrave <> ";font-size:9px;color:#8a8676;border-bottom:1px solid #00000014;padding-bottom:4px;margin-bottom:8px" ]
-        [ HH.text "STRUCTURE" ]
-    , HH.div [ style "display:flex;gap:5px;flex-wrap:wrap" ]
-        (map laneToken [ "~", "<", ">", "# dilla", "# flat" ])
-    , HH.div [ style $ engrave <> ";font-size:8px;opacity:0.5;margin-top:12px;line-height:1.7" ]
-        [ HH.text "STEPS DIVIDE THE MACRO-CYCLE. ~ RESTS. <a b> TAKES A DIFFERENT ONE EACH CYCLE. ATOMS ARE BANKED SNAPSHOTS — BANK A STATE (◆ TOP LEFT) TO MAKE IT SEQUENCEABLE. RUN IT FROM THE TIDAL PAGE." ]
     ]
 
 -- | The lane rendered as a SCORE — each step's alias drawn as its glyph pair
@@ -1158,28 +1103,6 @@ presetToken s i p =
       , style $ "display:flex;align-items:center;gap:3px;padding:3px 8px;border:1px solid #a8a392;"
           <> "border-radius:5px;cursor:pointer;background:#f3f1e8" ]
       (faIcons g)
-
--- | AUDITION / ASSEMBLE. The Vetula HUNT/PERFORM shape: one switch saying what
--- | the gesture below it means, so you can jam on the banked beats to find what
--- | works and then write with the same clicks — without leaving the surface for
--- | the preset modal, which covers the bands you are listening to.
-clickModeSwitch :: forall m. State -> H.ComponentHTML Action () m
-clickModeSwitch s =
-  HH.div [ style "display:flex;gap:0;align-items:center" ]
-    [ seg Audition "AUDITION", seg Assemble "ASSEMBLE" ]
-  where
-  seg m label =
-    let on = s.clickMode == m
-    in HH.button
-         [ HE.onClick \_ -> SetClickMode m
-         , HP.title (case m of
-             Audition -> "clicking a beat plays it"
-             Assemble -> "clicking a beat appends it to the lane")
-         , style $ engrave <> ";font-size:8px;letter-spacing:0.1em;padding:2px 7px;cursor:pointer;"
-             <> "border:1px solid " <> (if on then "#6f6a5c" else "#00000018")
-             <> ";color:" <> (if on then "#2f2c25" else "#8a8676")
-             <> ";background:" <> (if on then "#00000012" else "transparent") ]
-         [ HH.text label ]
 
 -- One click-to-insert token.
 laneToken :: forall m. String -> H.ComponentHTML Action () m
