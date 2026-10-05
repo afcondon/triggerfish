@@ -56,6 +56,7 @@ import Triggerfish.Balistes.Types
   , NoteRef(..), DragKind(..), State, Action(..), activePattern, selectedPattern, patternAt, rhythmEntries, rigUrl, gridCfg
   , editVel, flashWindow
   , padId )
+import Triggerfish.Browser as Browser
 import Triggerfish.Balistes.TriSnapshot (Brain(..), TriSnapshot(..), brainBadge, brainLabel, brainOf, printTri, parseTri, rhythmContent, rhythmOfContent)
 import Triggerfish.Glyph as G
 import Triggerfish.GlyphView (faIcons)
@@ -113,10 +114,19 @@ component =
 -- | doc — or adopt the rack's shared free-run baseline.
 handleQuery :: forall m a. MonadAff m => Query a -> H.HalogenM State Action () Output m (Maybe a)
 handleQuery = case _ of
-  -- No browser drawer yet (docs/kb/plans/the-deck.md, 2026-10-05).
-  AskBrowser _ -> pure Nothing
-  BrowserRecall _ _ next -> pure (Just next)
-  BrowserRename _ _ next -> pure (Just next)
+  -- The browser drawer (docs/kb/plans/the-deck.md, 2026-10-05): each beat by
+  -- its name, with the machine it runs on (Grids or Rytm) as its tag.
+  AskBrowser reply -> do
+    s <- H.get
+    let row i p = { slot: i, name: fromMaybe "untitled" p.name, alias: presetAlias p, tag: maybe "" machineTag (parseTri p.content), current: s.identity == Just p.content }
+    pure (Just (reply { title: "Beats", modes: false, rows: mapWithIndex row s.presets }))
+  BrowserRecall i _ next -> do
+    recallPreset i
+    pure (Just next)
+  BrowserRename i name next -> do
+    H.modify_ \s -> s { presets = fromMaybe s.presets (modifyAt i (_ { name = Just name }) s.presets) }
+    persist
+    pure (Just next)
   -- No marks here: asked for its text, the shell falls back to AskSource.
   AskMarkText _ -> pure Nothing
   AddMarkSnapshot _ _ _ next -> pure (Just next)
@@ -218,11 +228,21 @@ captureNow = do
     Just text -> do
       case indexOfContent text s.presets of
         Just _ -> H.modify_ _ { identity = Just text }
-        Nothing -> H.modify_ \st -> st
-          { presets = st.presets <> [ { content: text, name: Nothing, starred: false } ]
-          , identity = Just text
-          }
+        Nothing -> do
+          -- named for the machine it runs on and the time, until renamed
+          at <- liftEffect Browser.stamp
+          let named = maybe "Beat" machineTag (parseTri text) <> " · " <> at
+          H.modify_ \st -> st
+            { presets = st.presets <> [ { content: text, name: Just named, starred: false } ]
+            , identity = Just text
+            }
       persist
+
+-- | The machine a beat runs on, as the browser tags it.
+machineTag :: TriSnapshot -> String
+machineTag = case _ of
+  TSGrids _ -> "Grids"
+  TSFixed _ -> "Rytm"
 
 -- ---------------------------------------------------------------------------
 -- handleAction
