@@ -89,13 +89,13 @@ workspace:
     # cascade menu). Now the registry release `halogen-widgets` (namespace
     # Halogen.Widgets.*), migrated 2026-07-31 off the old path-dep
     # hylograph-halogen-ui v0.1 (Hylograph.Halogen.UI.*).
-    # TEMPORARY local override while the Svg/Euclid coalescence is tested.
-    # Back this out to `halogen-widgets: 0.4.0` before committing.
+    # PATH-DEP for Halogen.Widgets.Drawer (0.5.0, 2026-10-05), not yet
+    # published; back to the registry once it is.
     halogen-widgets:
       path: ../../../purescript-halogen-widgets
-    # The signal-flow chart's Sankey. PATH-DEP on the `sankey-fixed-columns`
-    # branch (nodeLayer, nodeSort), which is not in any published release;
-    # back to the registry once it is cut. hylograph-layout's own main pins
+    # The signal-flow chart's Sankey. PATH-DEP on hylograph-layout's main
+    # (nodeLayer, nodeSort, Sankey.Lanes; merged 2026-10-05), which is not in
+    # any published release; back to the registry once it is cut. hylograph-layout's own main pins
     # hylograph-graph by path for the same reason, so that comes along too.
     hylograph-layout:
       path: ../../../purescript-hylograph-libs/purescript-hylograph-layout
