@@ -16,3 +16,5 @@ public/selene.js
 __pycache__/
 public/odonus.js
 public/vetula.js
+# the bundle step's start mark (the freshness check)
+.bundle-start

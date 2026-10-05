@@ -38,6 +38,7 @@ import Halogen.HTML as HH
 import Halogen.HTML.Core (AttrName(..), ElemName(..), Namespace(..))
 import Halogen.HTML.Events as HE
 import Halogen.HTML.Properties as HP
+import Web.UIEvent.MouseEvent as ME
 import Triggerfish.Bosun (Lamp(..))
 import Triggerfish.Flow.Order (orderOf, rankIn)
 import Triggerfish.Flow (Column(..), Flow, Lasts(..), Link, Signal(..), columnTitle, keeps, layerOf, loopOf, nodeRank, onTheBeat, signalLabel, skeleton, storeLink)
@@ -462,19 +463,22 @@ chartOf on hot live f =
       svg "g"
         [ attr "class" ("fish fishbtn" <> if d.playing then " playing" else ""), attr "role" "button", attr "tabindex" "0"
         , attr "aria-label" ((if d.playing then "Stop " else "Play ") <> d.name)
-        , HE.onClick \_ -> on.play m (not d.playing)
+        , HE.onClick \e -> if modified e then on.peek m else on.play m (not d.playing)
         ]
         [ fishUse m x y d.playing, svg "title" [] [ HH.text ((if d.playing then "Stop " else "Play ") <> d.name) ] ]
     Just d | d.rig ->
       svg "g"
         [ attr "class" "fish fishbtn playing", attr "role" "button", attr "tabindex" "0"
         , attr "aria-label" ("Stop " <> d.name <> " on the rig")
-        , HE.onClick \_ -> on.play m false
+        , HE.onClick \e -> if modified e then on.peek m else on.play m false
         ]
         [ fishUse m x y true, svg "title" [] [ HH.text ("Stop " <> d.name <> ": the rig plays it, with no page open") ] ]
     Just d ->
       svg "g" [ attr "class" ("fish" <> if d.playing then " playing" else "") ] [ fishUse m x y d.playing ]
     Nothing -> use ("sp-" <> m) x y 54.0 32.0
+  -- A cmd- (ctrl-, shift-) click on a fish opens its page (the link around
+  -- it, in the dock), so it does not also play or stop it there.
+  modified e = ME.metaKey e || ME.ctrlKey e || ME.shiftKey e
   -- The fish, reflected in place about its own middle when facing right.
   fishUse m x y right =
     svg "use"
@@ -505,7 +509,9 @@ chartOf on hot live f =
           -- not be opened while its banks ran)
           else if d.rig || d.remote then
             svg "g" []
-              [ fishBtn d.slot 23.0 (y - 16.0)
+              -- the fish too, as before (AC cmd-clicks the fish): a plain click
+              -- on it plays or stops, a cmd-click opens the page behind
+              [ svg "a" [ attr "href" d.href, attr "target" d.target, attr "data-peek" "" ] [ fishBtn d.slot 23.0 (y - 16.0) ]
               , svg "a" [ attr "class" "ghostfish", attr "href" d.href, attr "target" d.target, attr "data-peek" "", HE.onClick \_ -> on.peek d.slot ]
                   [ label "name" (left - 10.0) (y - 1.0) "end" d.name, svg "title" [] [ HH.text ("Open " <> d.name) ] ]
               ]
