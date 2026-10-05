@@ -56,6 +56,7 @@ import Triggerfish.Selene.Store as Store
 import Triggerfish.Selene.Wire as Wire
 import Triggerfish.Amphora as Amphora
 import Triggerfish.Glyph as G
+import Triggerfish.Browser as Browser
 import Triggerfish.Preset (Preset, indexOfContent, presetAlias)
 import Triggerfish.SourceQuery (Query(..))
 import Triggerfish.Transport (Sounding(..))
@@ -241,11 +242,27 @@ component =
 
 handleQuery :: forall m a. MonadAff m => Query a -> H.HalogenM State Action Slots Output m (Maybe a)
 handleQuery = case _ of
-  -- No browser drawer yet (docs/kb/plans/the-deck.md, 2026-10-05).
-  AskBrowser _ -> pure Nothing
-  BrowserRecall _ _ next -> pure (Just next)
-  BrowserRename _ _ next -> pure (Just next)
-  BrowserKeep next -> pure (Just next)
+  -- The browser drawer (docs/kb/plans/the-deck.md, 2026-10-05): the racks,
+  -- by name, the loaded one current. A rack is edited in place, so keeping
+  -- copies the loaded rack as a new one, to carry on from.
+  AskBrowser reply -> do
+    s <- H.get
+    let row i r = { slot: i, name: r.name, icons: (G.glyphOf r.doc).icons, tag: "", current: i == s.active }
+    pure (Just (reply { title: "Racks", modes: false, keep: "keep a copy", rows: mapWithIndex row s.library }))
+  BrowserRecall i _ next -> do
+    handleAction (SelectRack i)
+    pure (Just next)
+  BrowserRename i name next -> do
+    H.modify_ \s -> s { library = fromMaybe s.library (modifyAt i (_ { name = name }) s.library) }
+    persist
+    pure (Just next)
+  BrowserKeep next -> do
+    at <- liftEffect Browser.stamp
+    H.modify_ \s ->
+      let n = length s.library
+      in s { library = s.library <> [ { name: "Selene · " <> at, doc: currentDoc s } ], active = n }
+    persist
+    pure (Just next)
   -- No marks here: asked for its text, the shell falls back to AskSource.
   AskMarkText _ -> pure Nothing
   AddMarkSnapshot _ _ _ next -> pure (Just next)
@@ -991,17 +1008,15 @@ durLabel ms =
 rackBar :: forall m. State -> H.ComponentHTML Action Slots m
 rackBar s =
   HH.div [ style "display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-bottom:12px" ]
-    ( [ HH.span [ style $ engrave <> ";font-size:9px;opacity:0.6;margin-right:2px" ] [ HH.text "RACKS" ] ]
-        <> mapWithIndex (\i r -> rackChip r.name (i == s.active) (SelectRack i)) s.library
-        <> [ newRackChip
-           , HH.input
-               [ HP.value (fromMaybe "" (map _.name (s.library !! s.active)))
-               , HE.onValueInput SetRackName
-               , style $ "margin-left:6px;padding:5px 9px;border:1px solid #a8a392;border-radius:5px;background:#f4f1e8;"
-                   <> "font-family:Georgia,serif;font-size:12px;color:#1c1a12;width:130px" ]
-           , publishRackChip
-           , publishStatus s
-           ]
+    -- The racks are listed, picked and renamed in the browser drawer on the
+    -- left (2026-10-05); here, the loaded one's name, a new blank one, and
+    -- publishing.
+    ( [ HH.span [ style $ engrave <> ";font-size:9px;opacity:0.6;margin-right:2px" ] [ HH.text "RACK" ]
+      , HH.span [ style "font-family:Georgia,serif;font-size:13px;color:#1c1a12;margin-right:6px" ] [ HH.text (fromMaybe "" (map _.name (s.library !! s.active))) ]
+      , newRackChip
+      , publishRackChip
+      , publishStatus s
+      ]
     )
 
 -- Publish the active rack to the Amphora store (⚱); a sibling of + NEW.
