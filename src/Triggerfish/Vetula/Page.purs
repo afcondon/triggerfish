@@ -32,11 +32,22 @@ import Data.String as String
 import Triggerfish.Transport (Sounding(..))
 import Type.Proxy (Proxy(..))
 import Vetula.App as Vetula
+import Binnacle (Binnacle)
+import Binnacle as Binnacle
+import Binnacle.Transport as Transport
+import Data.Int as Int
+import Data.Map (Map)
+import Data.Map as Map
+import Data.Maybe (maybe)
+import Triggerfish.Odonus.Samples as Samples
+import Triggerfish.Vetula.Voices as Voices
 
 data Output
   = Chip (Maybe ChipView)
   | Armed Boolean
   | Marked Number
+  -- the drawer's rows changed (Vetula's voices, from the rig)
+  | BrowserChanged
 
 type State =
   { sounding :: Sounding
@@ -48,12 +59,20 @@ type State =
   -- Vetula answers nothing until its lattice is built (tens of seconds), so
   -- the poll runs forked, and only one at a time.
   , busy :: Maybe (Ref Boolean)
+  -- Vetula's voices as the rig publishes them, the harmony routes, and each
+  -- voice's chords by name (Triggerfish.Vetula.Voices); this wrapper's own
+  -- socket to the rig
+  , bin :: Maybe Binnacle
+  , voices :: Array Voices.Voice
+  , routesText :: Maybe String
+  , names :: Map Int (Array String)
   }
 
 data Action
   = Init
   | Poll
   | FromVetula Vetula.Output
+  | RigFrame String
 
 type Slots = (vet :: H.Slot Vetula.SourceQuery Vetula.Output Unit)
 
@@ -64,7 +83,8 @@ component :: forall i. H.Component SQ.Query i Output Aff
 component = H.mkComponent
   { initialState: \_ ->
       { sounding: Silent, chip: Nothing
-      , brushPrev: "", brushSent: "", busy: Nothing }
+      , brushPrev: "", brushSent: "", busy: Nothing
+      , bin: Nothing, voices: [], routesText: Nothing, names: Map.empty }
   , render: \_ -> HH.slot _vet unit Vetula.component unit FromVetula
   , eval: H.mkEval H.defaultEval
       { handleAction = handleAction
@@ -83,6 +103,29 @@ handleAction = case _ of
     gate <- liftEffect (Ref.new false)
     H.modify_ _ { busy = Just gate }
     void $ liftEffect $ setInterval 100 (HS.notify listener Poll)
+    -- The rig: Vetula's voices and the harmony routes, for the drawer
+    bin <- liftEffect $ Binnacle.connect { url: "ws://127.0.0.1:3012/ws", tempo: 120.0 }
+    { emitter: rigE, listener: rigL } <- liftEffect HS.create
+    _ <- H.subscribe rigE
+    liftEffect $ Binnacle.onAppMessage bin (HS.notify rigL <<< RigFrame)
+    liftEffect $ Binnacle.onOpen bin (Transport.send (Binnacle.socket bin) "stage-text-subscribe")
+    H.modify_ _ { bin = Just bin }
+
+  RigFrame msg -> do
+    for_ (Voices.stageText Voices.routesKey msg) \t -> do
+      H.modify_ _ { routesText = t }
+      H.raise BrowserChanged
+    for_ (Voices.stageText Voices.harmoniesKey msg) \t -> do
+      let voices = maybe [] Voices.parseVoices t
+      H.modify_ _ { voices = voices }
+      -- name each voice's chords: the rig samples its pattern
+      st <- H.get
+      for_ st.bin \b -> for_ voices \v -> liftEffect (Transport.send (Binnacle.socket b) (Voices.sampleRequest v))
+      H.raise BrowserChanged
+    for_ (Samples.readSamples msg) \smp ->
+      for_ (String.stripPrefix (String.Pattern Voices.sampleKeyPrefix) smp.key >>= Int.fromString) \ch -> do
+        H.modify_ \x -> x { names = Map.insert ch (Voices.chordsOf smp.inputs) x.names }
+        H.raise BrowserChanged
 
   Poll -> do
     st <- H.get
@@ -129,14 +172,24 @@ handleQuery = case _ of
   -- for the revision of Vetula's saving (a scene's name is its Amphora label).
   SQ.AskBrowser reply -> do
     mscenes <- H.query _vet unit (Vetula.AskScenes identity)
+    st <- H.get
+    let voiceRows = Voices.rows st.voices st.names st.routesText
     pure $ mscenes <#> \scenes -> reply
-      { title: "Scenes", modes: false, keep: "save scene", notice: ""
-      , rows: Array.mapWithIndex (\i sc -> { slot: i, name: sc.name, icons: map (\icon -> { icon, color: "#2a2a2a" }) (Array.filter (_ /= "") (String.split (String.Pattern "-") (sessionOf sc))), tag: sc.key, current: false, section: "", builtin: false, drag: "", actions: [] }) scenes }
+      { title: if Array.null voiceRows then "Scenes" else "Vetula", modes: false, keep: "save scene", notice: ""
+      , rows: voiceRows <> map (_ { section = if Array.null voiceRows then "" else "Scenes" }) (Array.mapWithIndex (\i sc -> { slot: i, name: sc.name, icons: map (\icon -> { icon, color: "#2a2a2a" }) (Array.filter (_ /= "") (String.split (String.Pattern "-") (sessionOf sc))), tag: sc.key, current: false, section: "", builtin: false, drag: "", actions: [] }) scenes) }
+  -- a voice's row is not a scene: it recalls nothing
+  SQ.BrowserRecall i _ next | i >= Voices.slotBase -> pure (Just next)
   SQ.BrowserRecall i _ next -> H.query _vet unit (Vetula.LoadSceneAt i next)
   SQ.BrowserRename _ _ next -> pure (Just next)
   SQ.BrowserKeep next -> H.query _vet unit (Vetula.SaveSceneQ next)
   SQ.BrowserUndo next -> pure (Just next)
-  SQ.BrowserAction _ _ next -> pure (Just next)
+  -- shape / colour Odonus: a route line, as Limulus writes it
+  SQ.BrowserAction slot act next -> do
+    st <- H.get
+    when (slot >= Voices.slotBase) $
+      for_ (Voices.toggleLine (slot - Voices.slotBase) act st.routesText) \line ->
+        for_ st.bin \b -> liftEffect (Transport.send (Binnacle.socket b) line)
+    pure (Just next)
   SQ.BrowserDrop _ next -> pure (Just next)
   SQ.AskSource k -> H.query _vet unit (Vetula.AskSource k)
   SQ.AskMarkText k -> H.query _vet unit (Vetula.AskMarkText k)

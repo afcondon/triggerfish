@@ -413,6 +413,9 @@ handleAction cfg = case _ of
   -- Only the chip is this shell's business; a machine's other outputs (Balistes'
   -- macro-lane edits) belong to the dashboard.
   FromMachine out -> do
+    -- anything a machine says may change its drawer (Vetula's voices arrive
+    -- from the rig), so the rows are asked for again
+    handleAction cfg AskBrowser
     for_ (cfg.chipOf out) \cv -> do
       H.modify_ _ { chip = cv }
       publishStage cfg

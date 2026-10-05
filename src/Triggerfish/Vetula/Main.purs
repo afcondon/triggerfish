@@ -21,12 +21,10 @@ main = Standalone.run
   , component: Page.component
   , chipOf: case _ of
       Page.Chip cv -> Just cv
-      Page.Armed _ -> Nothing
-      Page.Marked _ -> Nothing
+      _ -> Nothing
   , armOf: case _ of
       Page.Armed on -> Just on
-      Page.Chip _ -> Nothing
-      Page.Marked _ -> Nothing
+      _ -> Nothing
   , playable: true
   , capturable: true
   , markOf: case _ of
