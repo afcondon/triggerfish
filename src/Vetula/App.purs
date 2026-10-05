@@ -5556,10 +5556,10 @@ render st =
 riverWidth :: String
 riverWidth = "330px"
 
--- | How far the docked bars pull their right edge in. Perform is the only stage
+-- | How far the docked bars start in from the left. Perform is the only stage
 -- | with a river, so it is the only stage that squashes.
-barRightInset :: State -> String
-barRightInset st = if st.stage == Perform then riverWidth else "0px"
+barLeftInset :: State -> String
+barLeftInset st = if st.stage == Perform then riverWidth else "0px"
 
 -- | The AUDITION chyron's height. It lies over the top of every stage (fixed,
 -- | under the CONTEXT bar), so a stage starts its content below it; fixed
@@ -5571,7 +5571,7 @@ chyronHeight = "52px"
 chyronBar :: forall m. State -> H.ComponentHTML Action Slots m
 chyronBar st =
   HH.div
-    [ HP.style ( "position: fixed; top: calc(var(--tf-bar) + 44px); left: var(--tf-left, 0px); right: calc(" <> barRightInset st <> " + var(--tf-right, 0px)); z-index: 39; box-sizing: border-box; "
+    [ HP.style ( "position: fixed; top: calc(var(--tf-bar) + 44px); left: calc(var(--tf-left, 0px) + " <> barLeftInset st <> "); right: var(--tf-right, 0px); z-index: 39; box-sizing: border-box; "
         <> "display: flex; gap: 10px; align-items: center; padding: 3px 12px; height: " <> chyronHeight <> "; overflow: hidden; "
         -- shift-click is a selection gesture here (extend the range), so kill the
         -- browser's own shift-click text selection across the bar. user-select
@@ -5864,7 +5864,7 @@ contextBar st =
     -- was not enough: it keeps the items on one row, but each item still shrinks
     -- and wraps its text inside itself — which is what put "scene loaded",
     -- "horse-bell-bomb" and "continuo ✓" on two lines and grew the bar.
-    [ HP.style ( "position: fixed; top: var(--tf-bar); left: var(--tf-left, 0px); right: calc(" <> barRightInset st <> " + var(--tf-right, 0px)); z-index: 40; box-sizing: border-box; "
+    [ HP.style ( "position: fixed; top: var(--tf-bar); left: calc(var(--tf-left, 0px) + " <> barLeftInset st <> "); right: var(--tf-right, 0px); z-index: 40; box-sizing: border-box; "
         <> "display: flex; align-items: center; flex-wrap: nowrap; white-space: nowrap; gap: 10px; padding: 0 12px; height: 44px; overflow: visible; "
         <> "background: linear-gradient(#f3eee0,#ece5d0); border-bottom: 1px solid #0000000f; box-shadow: 0 1px 3px #0000000d;" ) ]
     -- LEFT: the stage tabs, then ONLY the controls that mean something in the
@@ -6374,8 +6374,11 @@ perfRecallModal st =
 riverColumn :: forall m. State -> H.ComponentHTML Action Slots m
 riverColumn st =
   HH.div
-    [ HP.style ( "position: fixed; top: var(--tf-bar); right: 0; bottom: 0; width: " <> riverWidth <> "; "
-        <> "z-index: 38; display: flex; flex-direction: column; background: #0b0a07; border-left: 1px solid #2a281f;" ) ]
+    -- on the left of Perform, so Tidal (Limulus) is on the right, as on every
+    -- page (AC, 2026-10-05); notes enter at its right edge, beside Limulus,
+    -- and age leftward, as Odonus's river does
+    [ HP.style ( "position: fixed; top: var(--tf-bar); left: var(--tf-left, 0px); bottom: 0; width: " <> riverWidth <> "; "
+        <> "z-index: 38; display: flex; flex-direction: column; background: #0b0a07; border-right: 1px solid #2a281f;" ) ]
     [ riverPane st ]
 
 riverPane :: forall m. State -> H.ComponentHTML Action Slots m
@@ -6383,7 +6386,7 @@ riverPane st =
   HH.div
     [ HP.style "flex: 1 1 auto; min-height: 0; position: relative; overflow: hidden;" ]
     [ River.riverPanel
-        { flow: River.FlowRight, headColor: captureHeadColor }
+        { flow: River.FlowLeft, headColor: captureHeadColor }
         { nowMicros: st.nowMicros, notes: st.riverNotes, marks: st.capture.logbook.marks }
     ]
 
@@ -6457,7 +6460,7 @@ performSurface st =
   HH.div
     [ HP.style ( "position: absolute; inset: 0; display: flex; flex-direction: column; align-items: stretch; "
         -- edge to edge: the stage is Limulus, under the chyron and up to the river
-        <> "justify-content: flex-start; padding: 0; padding-top: " <> chyronHeight <> "; padding-right: " <> riverWidth <> ";" ) ]
+        <> "justify-content: flex-start; padding: 0; padding-top: " <> chyronHeight <> "; padding-left: " <> riverWidth <> ";" ) ]
     ( body <> [ riverColumn st, perfEditModal st, perfPhrasePickModal st ] )
   where
   -- Perform is Limulus (AC, 2026-10-04: docs/kb/plans/the-deck.md). The
