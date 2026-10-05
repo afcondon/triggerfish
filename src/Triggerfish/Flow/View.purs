@@ -498,7 +498,17 @@ chartOf on hot live f =
     in
       svg "g" [ attr "class" ("dock" <> (if d.open then " open" else " closed") <> procCls ("m:" <> d.slot)) ]
         [ svg "rect" [ attr "class" "hit", attr "x" "10", attr "y" (n (y - 18.0)), attr "width" (n (left - 20.0)), attr "height" "36" ] []
-        , if d.open || d.rig || d.remote then svg "g" [] [ fishBtn d.slot 23.0 (y - 16.0), label "name" (left - 10.0) (y - 1.0) "end" d.name ]
+        , if d.open then svg "g" [] [ fishBtn d.slot 23.0 (y - 16.0), label "name" (left - 10.0) (y - 1.0) "end" d.name ]
+          -- playing on the rig with its page closed (a loop, Selene's banks):
+          -- the fish plays and stops it there, and the name still opens the
+          -- page, as a closed machine's does (AC, 2026-10-05: Selene could
+          -- not be opened while its banks ran)
+          else if d.rig || d.remote then
+            svg "g" []
+              [ fishBtn d.slot 23.0 (y - 16.0)
+              , svg "a" [ attr "class" "ghostfish", attr "href" d.href, attr "target" d.target, attr "data-peek" "", HE.onClick \_ -> on.peek d.slot ]
+                  [ label "name" (left - 10.0) (y - 1.0) "end" d.name, svg "title" [] [ HH.text ("Open " <> d.name) ] ]
+              ]
           -- a closed machine: a plain click shows its 'open ↗'; the
           -- browser's own cmd-click opens it behind the dashboard
           else svg "a" [ attr "class" "ghostfish", attr "href" d.href, attr "target" d.target, attr "data-peek" "", HE.onClick \_ -> on.peek d.slot ]
@@ -506,6 +516,10 @@ chartOf on hot live f =
                  , label "name" (left - 10.0) (y - 1.0) "end" d.name
                  , svg "title" [] [ HH.text d.name ] ]
         , if annotated ("m:" <> d.slot) then annotLines ("m:" <> d.slot) "end" (left - 10.0) (y + 12.0)
+          else if live.peeked == Just d.slot && not d.open then
+            svg "a" [ attr "class" "openlink", attr "href" d.href, attr "target" d.target ]
+              [ label "sub" (left - 10.0) (y + 12.0) "end" "open ↗"
+              , svg "title" [] [ HH.text ("Open " <> d.name) ] ]
           else if d.remote && not d.open then label "sub" (left - 10.0) (y + 12.0) "end" (if d.playing then "on the rig, no page" else "hushed on the rig")
           else if d.rig then label "sub" (left - 10.0) (y + 12.0) "end" "on the rig, no page"
           else if d.open then label "sub" (left - 10.0) (y + 12.0) "end" ("open · nothing routed" <> preset d.slot)
