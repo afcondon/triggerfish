@@ -434,6 +434,7 @@ data Action
   | PickScale String          -- jump to a named preset scale (the Select widget)
   | ToggleDist
   | SetRoot Int
+  | SetOutChromatic Boolean   -- Odonus's own Output choice: chromatic, or the grid's set
   | SetOctave Int
   | SetDegShift Int
   | ToggleScaleNote Int

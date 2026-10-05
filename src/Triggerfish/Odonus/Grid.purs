@@ -972,6 +972,8 @@ dispatch = case _ of
   ToggleDist -> enqueue RI.ToggleDistribution
   -- Quantizer gestures — deferred + broadcast (lockstep P4c).
   SetRoot pc -> enqueue (RI.SetRoot pc)
+  -- null quantisation at the output (AC): each note snaps to itself
+  SetOutChromatic on -> enqueue (RI.SetOutScale (if on then Just "chromatic" else Nothing) 0)
   SetOctave n -> enqueue (RI.SetOctaveShift n)
   SetDegShift n -> enqueue (RI.SetDegShift n)
   ToggleScaleNote pc -> enqueue (RI.ToggleScaleNote pc)

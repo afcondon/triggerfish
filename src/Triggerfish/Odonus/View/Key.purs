@@ -17,7 +17,12 @@ module Triggerfish.Odonus.View.Key (quantPieces) where
 
 import Prelude
 
+import Data.Array (range)
 import Data.Either (hush)
+import Data.Int as Int
+import Halogen.HTML.Events as HE
+import Halogen.HTML.Properties as HP
+import Triggerfish.Scale (scaleTypes)
 import Data.Maybe (Maybe(..), fromMaybe, isJust)
 import Data.String (toUpper)
 import Reef.Route as Route
@@ -26,7 +31,7 @@ import Halogen.HTML as HH
 import Reef.PitchSet (PitchSet(..))
 import Triggerfish.Odonus.Model as M
 import Triggerfish.Scale as Scale
-import Triggerfish.Odonus.Grid.Types (Action, Slots, State)
+import Triggerfish.Odonus.Grid.Types (Action(..), Slots, State)
 import Triggerfish.Odonus.Grid.Widgets (engrave, style)
 
 -- | Odonus's two quantisations, each opening the panel it acts on, read right
@@ -41,32 +46,66 @@ import Triggerfish.Odonus.Grid.Widgets (engrave, style)
 -- |           `odonus.out`): a chord, an output scale, or none
 quantPieces :: forall m. State -> { output :: H.ComponentHTML Action Slots m, grid :: H.ComponentHTML Action Slots m }
 quantPieces s =
-  { output: piece "Output quantisation" outName (provenance Route.OdonusOut s)
-      "What each note snaps to at the end, past its head's offset: a chord colours the melody without changing its shape. Patched on the dashboard's chart (odonus.out), or set by odonus $ harmony in Limulus"
-  , grid: piece "Grid quantisation" gridName (provenance Route.OdonusGrid s)
-      "What a cell's value is mapped onto: the melody's shape. Patched on the dashboard's chart (odonus.grid), or set by odonus $ scale in Limulus"
+  { output: piece "Output quantisation" outBody
+      "What each note snaps to at the end, past its head's offset: a chord colours the melody without changing its shape; chromatic leaves each note as it is. Odonus's own choice, unless a route feeds odonus.out"
+  , grid: piece "Grid quantisation" gridBody
+      "What a cell's value is mapped onto: the melody's shape. Odonus's own scale, unless a route feeds odonus.grid (a chord's arpeggios, Vetula's key, a scale)"
   }
   where
   ctx = contextInfo s.odo
+  routes = fromMaybe [] (s.routesText >>= hush <<< Route.parse)
+  routed i = isJust (Route.sourceOf i routes)
+  outChromatic = map _.pattern s.odo.outScale == Just "chromatic"
+  -- Grid: a route says where it comes from; a line names what it set; else
+  -- Odonus's own scale, chosen here (the taster's only harmony, in Solo)
+  gridBody
+    | routed Route.OdonusGrid = [ named gridName, from (provenance Route.OdonusGrid s) ]
+    | isJust s.odo.gridHarmony || isJust s.odo.scalePattern = [ named gridName, from "a line in Limulus" ]
+    | otherwise = [ rootSelect, scaleSelect ]
   gridName = case s.odo.gridHarmony, s.odo.scalePattern of
     Just h, _ -> "arpeggios of harmony \"" <> h <> "\""
     _, Just sp -> "scale \"" <> sp <> "\""
     _, _ -> Scale.rootName ctx.rootPc <> " " <> ctx.name
+  -- Output: a route, a line, or Odonus's own choice: the grid's set, or
+  -- chromatic (AC: null quantisation at both)
+  outBody
+    | routed Route.OdonusOut = [ named outName, from (provenance Route.OdonusOut s) ]
+    | isJust s.odo.harmony || (isJust s.odo.outScale && not outChromatic) = [ named outName, from "a line in Limulus" ]
+    | otherwise = [ outToggle ]
   outName = case s.odo.outScale, s.odo.harmony of
+    Just o, _ | o.pattern == "chromatic" -> "chromatic"
     Just o, _ -> "scale \"" <> o.pattern <> "\" on " <> Scale.rootName o.root
     _, Just h -> "harmony \"" <> h <> "\""
-    _, _ -> "none"
-  piece label name from tip =
+    _, _ -> "the grid\x2019s set"
+  named t = HH.span [ style "font-family:Georgia,serif;font-size:13px;color:#2a271e;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0" ] [ HH.text t ]
+  from t = HH.span [ style "font-family:Georgia,serif;font-style:italic;font-size:12px;color:#6a5820;white-space:nowrap" ] [ HH.text ("\x00b7 " <> t) ]
+  rootSelect =
+    HH.select
+      [ HE.onValueChange \v -> SetRoot (fromMaybe ctx.rootPc (Int.fromString v)), selectStyle "width:52px" ]
+      (map (\pc -> HH.option [ HP.value (show pc), HP.selected (pc == ctx.rootPc) ] [ HH.text (Scale.rootName pc) ]) (range 0 11))
+  scaleSelect =
+    HH.select
+      [ HE.onValueChange PickScale, selectStyle "max-width:170px" ]
+      (map (\t -> HH.option [ HP.value t.name, HP.selected (t.name == ctx.name) ] [ HH.text t.name ]) scaleTypes)
+  selectStyle w = style $ "font-family:Georgia,serif;font-size:13px;color:#2a271e;background:#efece1;border:1px solid #00000026;border-radius:4px;padding:1px 3px;" <> w
+  outToggle =
+    HH.div [ style "display:flex;border:1px solid #00000026;border-radius:5px;overflow:hidden" ]
+      [ seg (not outChromatic) "the grid\x2019s set" (SetOutChromatic false)
+      , seg outChromatic "chromatic" (SetOutChromatic true)
+      ]
+  seg on label act =
+    HH.button
+      [ HE.onClick \_ -> act
+      , style $ "border:none;padding:2px 9px;cursor:pointer;font-family:Georgia,serif;font-size:12px;"
+          <> (if on then "background:linear-gradient(#c8a86a,#b8975a);color:#1c1a12" else "background:#efece1;color:#5a564b") ]
+      [ HH.text label ]
+  piece label body tip =
     HH.div [ style "display:flex;align-items:center;gap:8px;min-width:0;margin:-6px 0 14px;padding-bottom:10px;border-bottom:1px solid #00000018", HH.attr (HH.AttrName "title") tip ]
       [ HH.span [ style "font-family:Georgia,serif;font-size:18px;color:#7a6a3a;line-height:1" ] [ HH.text "\x2190" ]
-      , HH.div [ style "display:flex;flex-direction:column;min-width:0" ]
+      , HH.div [ style "display:flex;flex-direction:column;gap:3px;min-width:0" ]
           [ HH.span [ style $ engrave <> ";font-size:8px;letter-spacing:0.16em;color:#5a4a1f;white-space:nowrap" ]
               [ HH.text (toUpper label) ]
-          , HH.span [ style "white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0" ]
-              [ HH.span [ style "font-family:Georgia,serif;font-size:13px;color:#2a271e" ] [ HH.text name ]
-              , HH.span [ style "font-family:Georgia,serif;font-style:italic;font-size:12px;color:#6a5820" ]
-                  [ HH.text ("  \x00b7 " <> from) ]
-              ]
+          , HH.div [ style "display:flex;align-items:center;gap:6px;min-width:0;flex-wrap:wrap" ] body
           ]
       ]
 
