@@ -388,7 +388,9 @@ sampleFor st step =
 keepSampled :: forall o m. MonadAff m => H.HalogenM State Action Slots o m Unit
 keepSampled = do
   st <- H.get
-  unless (st.sounding == Rig) do
+  -- asked for whoever plays: on the rig too, to name the progression ahead
+  -- (View.Progression); applied below only when this page plays itself
+  do
     let
       p = patternsNow st
       key = Samples.keyOf p st.stepDiv

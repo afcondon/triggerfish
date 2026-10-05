@@ -17,12 +17,13 @@ module Triggerfish.Odonus.View.Key (quantPieces) where
 
 import Prelude
 
-import Data.Array (range)
+import Data.Array (mapWithIndex, range, take)
 import Data.Either (hush)
 import Data.Int as Int
 import Halogen.HTML.Events as HE
 import Halogen.HTML.Properties as HP
 import Triggerfish.Scale (scaleTypes)
+import Triggerfish.Odonus.View.Progression (gridChords, outChords)
 import Data.Maybe (Maybe(..), fromMaybe, isJust)
 import Data.String (toUpper)
 import Reef.Route as Route
@@ -46,9 +47,9 @@ import Triggerfish.Odonus.Grid.Widgets (engrave, style)
 -- |           `odonus.out`): a chord, an output scale, or none
 quantPieces :: forall m. State -> { output :: H.ComponentHTML Action Slots m, grid :: H.ComponentHTML Action Slots m }
 quantPieces s =
-  { output: piece "Output quantisation" outBody
+  { output: piece "Output quantisation" (outBody <> strip (if isJust s.odo.harmony then outChords s else []))
       "What each note snaps to at the end, past its head's offset: a chord colours the melody without changing its shape; chromatic leaves each note as it is. Odonus's own choice, unless a route feeds odonus.out"
-  , grid: piece "Grid quantisation" gridBody
+  , grid: piece "Grid quantisation" (gridBody <> strip (if isJust s.odo.gridHarmony then gridChords s else []))
       "What a cell's value is mapped onto: the melody's shape. Odonus's own scale, unless a route feeds odonus.grid (a chord's arpeggios, Vetula's key, a scale)"
   }
   where
@@ -77,6 +78,17 @@ quantPieces s =
     Just o, _ -> "scale \"" <> o.pattern <> "\" on " <> Scale.rootName o.root
     _, Just h -> "harmony \"" <> h <> "\""
     _, _ -> "the grid\x2019s set"
+  -- the progression ahead as names, the chord in force now lit
+  strip = case _ of
+    [] -> []
+    cs ->
+      [ HH.div [ style "flex-basis:100%;display:flex;flex-wrap:wrap;gap:3px;margin-top:2px" ]
+          (mapWithIndex (\i c -> HH.span
+              [ style $ "font-family:Georgia,serif;font-size:12px;padding:0 6px;border-radius:4px;white-space:nowrap;"
+                  <> (if i == 0 then "background:linear-gradient(#c8a86a,#b8975a);color:#1c1a12" else "background:#00000010;color:#5a564b")
+              , HH.attr (HH.AttrName "title") (if i == 0 then "the chord in force now" else "coming") ]
+              [ HH.text c.name ]) (take 8 cs))
+      ]
   named t = HH.span [ style "font-family:Georgia,serif;font-size:13px;color:#2a271e;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0" ] [ HH.text t ]
   from t = HH.span [ style "font-family:Georgia,serif;font-style:italic;font-size:12px;color:#6a5820;white-space:nowrap" ] [ HH.text ("\x00b7 " <> t) ]
   rootSelect =
