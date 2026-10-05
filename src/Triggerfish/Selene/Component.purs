@@ -296,13 +296,14 @@ handleQuery = case _ of
       -- a saved rack's rebus is its saved self; the live one diverging from it
       -- is said on its row (edited, and save) and in the page's header
       edited i = i == s.active && diverged s
-      rack i r = { slot: i, name: r.name, icons: (G.glyphOf r.doc).icons, tag: if edited i then "edited" else "", current: i == s.active, section: "Racks", builtin: false, drag: ""
+      rack i r = { slot: i, name: r.name, icons: rackIcons r.doc, tag: if edited i then "edited" else "", current: i == s.active, section: "Racks", builtin: false, drag: ""
                  , actions: (if edited i then [ "save" ] else []) <> [ "duplicate", "publish" ] <> (if i == s.active then [] else [ "delete" ]) }
       plain k kind = { slot: plainSlot + 1 + k, name: M.kindLabel kind, icons: [], tag: signalMark kind, current: false, section: "Modules", builtin: true, drag: Source.kindKeyword (M.freshBank kind), actions: [] }
+        # \r -> r { icons = settingIcons r.drag }
       -- the null signal: dropped on a group, frees it (`selene $ off`)
       free = { slot: plainSlot, name: "free", icons: [], tag: "plain", current: false, section: "Modules", builtin: true, drag: "off", actions: [] }
-      block k b = { slot: builtinSlot + k, name: b.name, icons: [], tag: signalMark b.kind, current: false, section: "Modules", builtin: true, drag: b.name, actions: [] }
-      kept k m = { slot: keptSlot + k, name: m.name, icons: (G.glyphOf m.line).icons, tag: maybe "" signalMark (Line.moduleKind m.line), current: false, section: "Modules", builtin: false, drag: m.line, actions: [ "delete" ] }
+      block k b = { slot: builtinSlot + k, name: b.name, icons: settingIcons b.name, tag: signalMark b.kind, current: false, section: "Modules", builtin: true, drag: b.name, actions: [] }
+      kept k m = { slot: keptSlot + k, name: m.name, icons: settingIcons m.line, tag: maybe "" signalMark (Line.moduleKind m.line), current: false, section: "Modules", builtin: false, drag: m.line, actions: [ "delete" ] }
     pure (Just (reply
       { title: "Selene", modes: false, keep: "save as new rack", notice: s.notice
       , rows: mapWithIndex rack s.library <> [ free ] <> mapWithIndex plain M.allKinds <> mapWithIndex block Block.blocks <> mapWithIndex kept s.modules }))
@@ -847,6 +848,15 @@ readStageWrite json = do
   w :: { key :: String, text :: Nullable String } <- hush (readJSON json)
   if w.key == "selene/rack" then toMaybe w.text else Nothing
 
+-- | A setting's rebus: the coloured pair of the setting a module makes (its
+-- | module form, Line.moduleText), the same in the drawer and on a row.
+settingIcons :: String -> Array G.GlyphIcon
+settingIcons m = maybe [] (\t -> (G.glyphOf t).icons) (Line.moduleText m)
+
+-- | A rack's rebus: three icons in one dark ink, as Vetula draws a session.
+rackIcons :: String -> Array G.GlyphIcon
+rackIcons doc = map (_ { color = "#2a2a2a" }) (G.rackGlyphOf doc).icons
+
 -- | What a module puts out, at a glance (AC, 2026-10-05): ∿ a continuous
 -- | voltage (LFOs, notes, envelopes), ⎍ gates (rhythms, clocks).
 signalMark :: M.GenKind -> String
@@ -1328,13 +1338,13 @@ rackBar s =
         , HE.handler (EventType "dragstart") DragRackStart
         , HP.title "This rack. Drag it onto the drawer to keep it as a new rack."
         , style "display:inline-flex;gap:6px;font-size:26px;cursor:grab" ]
-        (map (\g -> HH.i [ HP.attr (HH.AttrName "class") ("fa-solid fa-" <> g.icon), style ("font-size:26px;line-height:1;color:" <> g.color) ] []) (G.glyphOf (currentDoc s)).icons)
+        (map (\g -> HH.i [ HP.attr (HH.AttrName "class") ("fa-solid fa-" <> g.icon), style ("font-size:26px;line-height:1;color:" <> g.color) ] []) (rackIcons (currentDoc s)))
     , HH.span [ style "font:15px Georgia,serif;color:#1c1a12" ] [ HH.text (fromMaybe "" (map _.name (s.library !! s.active))) ]
     -- live moved away from saved: the saved rebus, faded, for what it was
     , if diverged s then
         HH.span [ HP.title "The saved rack: the live one has moved away from it (save it from the drawer)", style "display:inline-flex;align-items:center;gap:5px;opacity:0.4;font:italic 12px Georgia,serif;color:#5a5648" ]
           ( [ HH.text "edited from" ]
-              <> map (\g -> HH.i [ HP.attr (HH.AttrName "class") ("fa-solid fa-" <> g.icon), style ("font-size:15px;line-height:1;color:" <> g.color) ] []) (G.glyphOf (savedDoc s)).icons )
+              <> map (\g -> HH.i [ HP.attr (HH.AttrName "class") ("fa-solid fa-" <> g.icon), style ("font-size:15px;line-height:1;color:" <> g.color) ] []) (rackIcons (savedDoc s)) )
       else HH.text ""
     , publishStatus s
     ]
@@ -1461,7 +1471,10 @@ destHeader i d =
         [ HH.text (M.kindLabel (M.bankKind d.bank)) ]
     -- where it plays: a label now; moving it is a drop on the outputs strip
     -- at the top (2026-10-05, replacing the route menu)
-    , HH.span [ style "font:13px Georgia,serif;color:#1c1a12" ] [ HH.text (M.targetLabel d.target) ]
+    , HH.span [ style "display:flex;align-items:center;gap:8px;font:13px Georgia,serif;color:#1c1a12" ]
+        ( [ HH.text (M.targetLabel d.target) ]
+            -- the setting's rebus, as the drawer shows it for a module
+            <> map (\g -> HH.i [ HP.attr (HH.AttrName "class") ("fa-solid fa-" <> g.icon), style ("font-size:15px;line-height:1;color:" <> g.color) ] []) (settingIcons (Line.moduleOf d)) )
     , HH.span [ style $ engrave <> ";font-size:8px;opacity:0.45" ]
         [ HH.text ("→ " <> M.targetWire d.target) ]
     , HH.button

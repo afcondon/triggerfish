@@ -34,6 +34,7 @@ module Triggerfish.Glyph
   , chordGlyph
   , glyphFromAlias
   , sessionAliasOf
+  , rackGlyphOf
   , ChipView
   ) where
 
@@ -113,6 +114,13 @@ type Glyph = Rebus.Glyph
 -- | + MOD, `false` → solid/held). A machine with no parked identity reports
 -- | `Nothing` (empty), so `Maybe ChipView` is the full per-machine chip state.
 type ChipView = Rebus.ChipView
+
+-- | **A whole configuration's glyph**: three icons, drawn monochrome by the
+-- | view, as Vetula draws a session, so a container never reads as one of the
+-- | coloured pairs it holds (a Selene rack holds settings, each a pair).
+-- | From the configuration's text, so a rack changed is a rack renamed.
+rackGlyphOf :: String -> Glyph
+rackGlyphOf = Rebus.rebusOfTextWidth Rebus.Three
 
 -- | The glyph for a canonical text (e.g. a `TriSnapshot`'s `printTri`).
 -- | Triggerfish always hands over text it has already printed canonically, so
