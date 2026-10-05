@@ -288,11 +288,14 @@ handleQuery = case _ of
     s <- H.get
     let
       rack i r = { slot: i, name: r.name, icons: (G.glyphOf r.doc).icons, tag: "", current: i == s.active, section: "Racks", builtin: false, drag: "" }
+      plain k kind = { slot: plainSlot + 1 + k, name: M.kindLabel kind, icons: [], tag: "plain", current: false, section: "Modules", builtin: true, drag: Source.kindKeyword (M.freshBank kind) }
+      -- the null signal: dropped on a group, frees it (`selene $ off`)
+      free = { slot: plainSlot, name: "free", icons: [], tag: "plain", current: false, section: "Modules", builtin: true, drag: "off" }
       block k b = { slot: builtinSlot + k, name: b.name, icons: [], tag: "built in", current: false, section: "Modules", builtin: true, drag: b.name }
       kept k m = { slot: keptSlot + k, name: m.name, icons: (G.glyphOf m.line).icons, tag: fromMaybe "" (Array.head (Str.split (Str.Pattern " ") m.line)), current: false, section: "Modules", builtin: false, drag: m.line }
     pure (Just (reply
       { title: "Selene", modes: false, keep: "keep a copy", notice: s.notice
-      , rows: mapWithIndex rack s.library <> mapWithIndex block Block.blocks <> mapWithIndex kept s.modules }))
+      , rows: mapWithIndex rack s.library <> [ free ] <> mapWithIndex plain M.allKinds <> mapWithIndex block Block.blocks <> mapWithIndex kept s.modules }))
   BrowserRecall i _ next -> do
     s <- H.get
     -- a rack replaces the live one, which an undo gives back; a module is
@@ -668,9 +671,12 @@ handleAction = case _ of
   -- is let through), red with the reason if not (it is not).
   DragOverTarget target e -> do
     text <- liftEffect Drop.currentDrag
+    st0 <- H.get
     let
       wire = M.targetWire target
+      used = Array.any (\d -> d.target == target) st0.sel.destinations
       verdict = case Line.moduleKind text of
+        _ | text == "off" -> if used then { wire, ok: true, why: "" } else { wire, ok: false, why: "already free" }
         Just kind | Line.accepts target kind -> { wire, ok: true, why: "" }
         Just kind -> { wire, ok: false, why: Line.refusal target kind }
         Nothing -> { wire, ok: false, why: "drag a module from the drawer" }
@@ -686,6 +692,10 @@ handleAction = case _ of
     H.modify_ _ { dragOver = Nothing }
     st <- H.get
     case Line.moduleKind text of
+      -- the null signal: free the group (its outputs silenced on the rig)
+      _ | text == "off" -> for_ st.binnacle \bin -> do
+            liftEffect $ Transport.send (Binnacle.socket bin) ("tidal selene $ off " <> M.targetWire target)
+            H.modify_ _ { publishMsg = Just ("freeing " <> M.targetWire target) }
       Nothing -> pure unit
       Just kind
         | not (Line.accepts target kind) -> H.modify_ _ { publishMsg = Just (M.targetWire target <> ": " <> Line.refusal target kind) }
@@ -790,51 +800,14 @@ readStageWrite json = do
   w :: { key :: String, text :: Nullable String } <- hush (readJSON json)
   if w.key == "selene/rack" then toMaybe w.text else Nothing
 
--- | The rig's groups of eight outputs, across the top: what each has on it,
--- | and each a drop target for a module from the drawer, green when it can
--- | take it, red (with why) when it cannot. Wraps for a bigger rig.
-outputStrip :: forall m. State -> H.ComponentHTML Action Slots m
-outputStrip s =
-  HH.div [ style "display:flex;flex-wrap:wrap;gap:8px;margin:0 0 14px" ]
-    (map group (filter notMidi (availableTargets defaultRig)))
-  where
-  notMidi = case _ of
-    M.Midi _ -> false
-    _ -> true
-  group target =
-    let
-      wire = M.targetWire target
-      on = Array.find (\d -> d.target == target) s.sel.destinations
-      over = case s.dragOver of
-        Just v | v.wire == wire -> Just v
-        _ -> Nothing
-      edge = case over of
-        Just v | v.ok -> "2px solid #2e9e6a"
-        Just _ -> "2px solid #b3261e"
-        Nothing -> "1px solid #00000022"
-    in
-      HH.div
-        [ HE.handler (EventType "dragover") (DragOverTarget target)
-        , HE.handler (EventType "dragleave") (const DragLeaveTarget)
-        , HE.handler (EventType "drop") (DropOn target)
-        , HP.title (M.targetLabel target <> ": drop a module to replace what is here; Option to merge into it")
-        , style $ "flex:0 0 auto;min-width:150px;padding:7px 10px;border-radius:6px;box-sizing:border-box;background:"
-            <> (if isJust on then "#00000010" else "#00000005") <> ";border:" <> edge ]
-        ( [ HH.div [ style $ engrave <> ";font-size:9px;letter-spacing:0.12em;color:#3f3c33" ] [ HH.text (M.targetLabel target) ]
-          , HH.div [ style "display:flex;gap:3px;margin:5px 0 4px" ]
-              (map (\_ -> HH.span [ style ("width:7px;height:7px;border-radius:50%;background:" <> (if isJust on then "#2d5670" else "#00000020")) ] []) (Array.range 1 8))
-          , HH.div [ style "font:11px Georgia,serif;color:#5a5648" ]
-              [ HH.text (maybe "free" (\d -> M.kindLabel (M.bankKind d.bank)) on) ]
-          ]
-            <> case over of
-              Just v | not v.ok -> [ HH.div [ style "font:10px Georgia,serif;color:#b3261e;margin-top:3px;max-width:180px" ] [ HH.text v.why ] ]
-              _ -> []
-        )
-
 -- | Where the drawer's rows of each kind start: racks from 0, the built-in
 -- | blocks, then kept modules.
 builtinSlot :: Int
 builtinSlot = 1000
+
+-- | the plain modules (a fresh bank of each kind: what ADD used to give)
+plainSlot :: Int
+plainSlot = 1500
 
 keptSlot :: Int
 keptSlot = 2000
@@ -1156,11 +1129,66 @@ panel label widthCss body =
 rackPanel :: forall m. MonadAff m => State -> H.ComponentHTML Action Slots m
 rackPanel s =
   panel "SELENE · DESTINATIONS" "flex:1 1 auto;min-width:0"
-    ( [ outputStrip s, rackBar s, transportStrip s ]
-        <> mapWithIndex (destinationRow s.envParam s.selected) s.sel.destinations
+    -- every group of outputs the rig has, always, in the rig's order (AC,
+    -- 2026-10-05): a free one greyed, each row a drop target for a module
+    -- from the drawer (the plain modules there are the old ADD buttons);
+    -- then anything on a target off the rig (a MIDI channel, a virtual bus)
+    ( [ rackBar s, transportStrip s ]
+        <> map row rigTargets
+        <> Array.catMaybes (mapWithIndex (\i d -> if Array.elem d.target rigTargets then Nothing else Just (placed i d)) s.sel.destinations)
         <> envLibraryWall s
-        <> [ addBar, footNote ]
+        <> [ footNote ]
     )
+  where
+  rigTargets = filter notMidi (availableTargets defaultRig)
+  notMidi = case _ of
+    M.Midi _ -> false
+    _ -> true
+  row target = case Array.findIndex (\d -> d.target == target) s.sel.destinations of
+    Just i | Just d <- s.sel.destinations !! i -> placed i d
+    _ -> freeRow s target
+  placed i d = dropFrame s d.target (destinationRow s.envParam s.selected i d)
+
+-- | A row as a drop target: its edge green when a drag over it can land, red
+-- | with why when it cannot.
+dropFrame :: forall m. State -> M.Target -> H.ComponentHTML Action Slots m -> H.ComponentHTML Action Slots m
+dropFrame s target inner =
+  HH.div
+    [ HE.handler (EventType "dragover") (DragOverTarget target)
+    , HE.handler (EventType "dragleave") (const DragLeaveTarget)
+    , HE.handler (EventType "drop") (DropOn target)
+    , HP.title (M.targetLabel target <> ": drop a module to replace what is here; Option to merge into it")
+    , style ("border-radius:9px;margin-bottom:10px;border:2px solid " <> edge)
+    ]
+    ( [ inner ] <> case over of
+        Just v | not v.ok -> [ HH.div [ style "font:11px Georgia,serif;color:#b3261e;padding:0 14px 8px" ] [ HH.text v.why ] ]
+        _ -> []
+    )
+  where
+  over = case s.dragOver of
+    Just v | v.wire == M.targetWire target -> Just v
+    _ -> Nothing
+  edge = case over of
+    Just v | v.ok -> "#2e9e6a"
+    Just _ -> "#b3261e"
+    Nothing -> "transparent"
+
+-- | A group with nothing on it: greyed, and waiting for a module.
+freeRow :: forall m. State -> M.Target -> H.ComponentHTML Action Slots m
+freeRow s target =
+  dropFrame s target $
+    HH.div
+      [ style $ "display:flex;align-items:center;gap:12px;padding:11px 12px;border-radius:8px;opacity:0.55;"
+          <> "background:#00000005;border:1px dashed #00000026" ]
+      [ HH.div [ style "display:flex;flex-direction:column;gap:5px;flex:0 0 190px" ]
+          [ HH.div [ style $ engrave <> ";font-size:10px;letter-spacing:0.1em;color:#6a6657" ] [ HH.text "FREE" ]
+          , HH.span [ style "font:13px Georgia,serif;color:#1c1a12" ] [ HH.text (M.targetLabel target) ]
+          , HH.span [ style $ engrave <> ";font-size:8px;opacity:0.6" ] [ HH.text ("→ " <> M.targetWire target) ]
+          ]
+      , HH.div [ style "display:flex;gap:7px;align-items:center" ]
+          (map (\_ -> HH.span [ style "width:46px;height:46px;border-radius:6px;border:1px dashed #00000022" ] []) (Array.range 1 8))
+      , HH.span [ style "font:italic 12px Georgia,serif;color:#6a6657" ] [ HH.text "drop a module here" ]
+      ]
 
 -- | The STARTER WALL: every library shape drawn, shown only while an envelope
 -- | slot is selected.
@@ -1340,10 +1368,7 @@ footNote =
 destinationRow :: forall m. MonadAff m => EnvParam -> Maybe Sel -> Int -> M.Destination -> H.ComponentHTML Action Slots m
 destinationRow ep sel i d =
   HH.div
-    -- a drop target for a module from the browser drawer
-    [ HE.handler (EventType "dragover") (DragOverTarget d.target)
-    , HE.handler (EventType "drop") (DropOn d.target)
-    , style $ "display:flex;align-items:stretch;gap:12px;padding:11px 12px;margin-bottom:10px;border-radius:8px;"
+    [ style $ "display:flex;align-items:stretch;gap:12px;padding:11px 12px;border-radius:8px;"
         <> "background:#00000008;border:1px solid #00000012" ]
     [ destHeader i d
     , HH.div [ style (slotWrap d.bank) ] (slotViews ep i sel d.bank)
