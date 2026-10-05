@@ -562,7 +562,7 @@ browserDrawer st b =
     [ style $ "position:fixed;top:var(--tf-bar);left:0;bottom:0;z-index:45;display:flex;"
         <> "font-family:Georgia,serif;background:linear-gradient(#ece7da,#e2dccb);border-right:1px solid #b3ae9c" ]
     [ HH.element (HH.ElemName "style") []
-        [ HH.text ".tfb-act{visibility:hidden;font:10px Georgia,serif;padding:0 5px;border:1px solid #00000026;border-radius:3px;background:#f6f2e7;cursor:pointer;color:#5a5648}.tfb-row:hover .tfb-act,.tfb-act.ask{visibility:visible}.tfb-act.ask{color:#b3261e;border-color:#b3261e}.tfb-row:hover{background:#00000010}.tfb-q{width:9px;height:9px;border:1px solid #8a8270;background:#f6f2e7;cursor:pointer;padding:0}.tfb-q:hover{background:#2d5670;border-color:#2d5670}.tfb-q.last{background:#c9b98d}.tfb-g i{font-size:11px!important}" ]
+        [ HH.text ".tfb-act{display:none;font:10px Georgia,serif;padding:0 5px;border:1px solid #00000026;border-radius:3px;background:#f6f2e7;cursor:pointer;color:#5a5648}.tfb-row:hover .tfb-act,.tfb-act.ask{display:inline-block}.tfb-act.ask{color:#b3261e;border-color:#b3261e}.tfb-row:hover{background:#00000010}.tfb-q{width:9px;height:9px;border:1px solid #8a8270;background:#f6f2e7;cursor:pointer;padding:0}.tfb-q:hover{background:#2d5670;border-color:#2d5670}.tfb-q.last{background:#c9b98d}.tfb-g i{font-size:11px!important}" ]
     , body
     , HH.slot _drawer unit Drawer.component d FromDrawer
     ]

@@ -12,6 +12,8 @@ module Triggerfish.Selene.Store
   , Saved
   , saveLibrary
   , loadLibrary
+  , saveLive
+  , loadLive
   ) where
 
 import Prelude
@@ -80,3 +82,16 @@ decode env =
   , library: env.library
   , presets: map (\e -> { content: e.content, name: if e.name == "" then Nothing else Just e.name, starred: e.starred }) env.presets
   }
+
+-- | The live rack, kept apart from the saved ones (2026-10-05): what the
+-- | modular was last given, which may have moved away from any saved rack.
+liveKey :: String
+liveKey = "triggerfish.selene.live.v1"
+
+saveLive :: String -> Effect Unit
+saveLive doc = _save liveKey (_stringify { doc })
+
+loadLive :: Effect (Maybe String)
+loadLive = do
+  m <- _load liveKey
+  pure (map _.doc (toMaybe (m :: Nullable { doc :: String })))

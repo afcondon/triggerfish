@@ -123,8 +123,12 @@ type State =
   -- Modules kept from a bank (Amphora `selene-module`): a name and the line
   -- without its bank. And, after a rack was replaced, the one to go back to.
   , modules :: Array { name :: String, line :: String, hash :: String }
+  -- The live rack: what the modular is given, edited by hand, by drops and
+  -- by Limulus. The racks in the library are saved, and change only when
+  -- saved over (AC, 2026-10-05: the rebus shows live diverging from saved).
+  , live :: String
   , notice :: String
-  , undoTo :: Maybe Int
+  , undoTo :: Maybe { rack :: Int, live :: String }
   -- a drag from the drawer over a group of outputs: which, whether it can
   -- take what is dragged, and if not, why
   , dragOver :: Maybe { wire :: String, ok :: Boolean, why :: String }
@@ -251,7 +255,7 @@ component =
         let doc = Source.printRack M.defaultSelene
         in
           { sel: Source.parseRack doc
-          , library: [ { name: "rack 1", doc } ], active: 0
+          , library: [ { name: "rack 1", doc } ], active: 0, live: doc
           , sounding: Silent, playStep: 0
           , binnacle: Nothing, midiOut: Nothing, midiName: "…"
           , clockTempo: 120.0, clockLocked: false, clockBar: 0
@@ -289,13 +293,16 @@ handleQuery = case _ of
     s <- H.get
     let
       -- the live rack cannot be deleted here: load another first
-      rack i r = { slot: i, name: r.name, icons: (G.glyphOf r.doc).icons, tag: "", current: i == s.active, section: "Racks", builtin: false, drag: ""
-                 , actions: [ "duplicate", "publish" ] <> (if i == s.active then [] else [ "delete" ]) }
-      plain k kind = { slot: plainSlot + 1 + k, name: M.kindLabel kind, icons: [], tag: "plain", current: false, section: "Modules", builtin: true, drag: Source.kindKeyword (M.freshBank kind), actions: [] }
+      -- a saved rack's rebus is its saved self; the live one diverging from it
+      -- is said on its row (edited, and save) and in the page's header
+      edited i = i == s.active && diverged s
+      rack i r = { slot: i, name: r.name, icons: (G.glyphOf r.doc).icons, tag: if edited i then "edited" else "", current: i == s.active, section: "Racks", builtin: false, drag: ""
+                 , actions: (if edited i then [ "save" ] else []) <> [ "duplicate", "publish" ] <> (if i == s.active then [] else [ "delete" ]) }
+      plain k kind = { slot: plainSlot + 1 + k, name: M.kindLabel kind, icons: [], tag: signalMark kind, current: false, section: "Modules", builtin: true, drag: Source.kindKeyword (M.freshBank kind), actions: [] }
       -- the null signal: dropped on a group, frees it (`selene $ off`)
       free = { slot: plainSlot, name: "free", icons: [], tag: "plain", current: false, section: "Modules", builtin: true, drag: "off", actions: [] }
-      block k b = { slot: builtinSlot + k, name: b.name, icons: [], tag: "built in", current: false, section: "Modules", builtin: true, drag: b.name, actions: [] }
-      kept k m = { slot: keptSlot + k, name: m.name, icons: (G.glyphOf m.line).icons, tag: fromMaybe "" (Array.head (Str.split (Str.Pattern " ") m.line)), current: false, section: "Modules", builtin: false, drag: m.line, actions: [ "delete" ] }
+      block k b = { slot: builtinSlot + k, name: b.name, icons: [], tag: signalMark b.kind, current: false, section: "Modules", builtin: true, drag: b.name, actions: [] }
+      kept k m = { slot: keptSlot + k, name: m.name, icons: (G.glyphOf m.line).icons, tag: maybe "" signalMark (Line.moduleKind m.line), current: false, section: "Modules", builtin: false, drag: m.line, actions: [ "delete" ] }
     pure (Just (reply
       { title: "Selene", modes: false, keep: "save as new rack", notice: s.notice
       , rows: mapWithIndex rack s.library <> [ free ] <> mapWithIndex plain M.allKinds <> mapWithIndex block Block.blocks <> mapWithIndex kept s.modules }))
@@ -304,7 +311,7 @@ handleQuery = case _ of
     -- a rack replaces the live one, which an undo gives back; a module is
     -- dragged onto a bank, not clicked
     when (i < builtinSlot && i /= s.active) do
-      H.modify_ _ { undoTo = Just s.active, notice = "Replaced the rack with " <> fromMaybe "?" (map _.name (s.library !! i)) }
+      H.modify_ _ { undoTo = Just { rack: s.active, live: s.live }, notice = "Replaced the rack with " <> fromMaybe "?" (map _.name (s.library !! i)) }
       handleAction (SelectRack i)
     pure (Just next)
   BrowserRename i name next -> do
@@ -319,6 +326,10 @@ handleQuery = case _ of
   BrowserAction i act next -> do
     s <- H.get
     case act of
+      -- save the live rack over its saved one
+      "save" | i == s.active -> do
+        H.modify_ _ { library = setDocAt s.active s.live s.library }
+        persist
       "duplicate" | i < builtinSlot -> do
         for_ (s.library !! i) \r -> H.modify_ _ { library = s.library <> [ { name: r.name <> " copy", doc: r.doc } ] }
         persist
@@ -337,9 +348,12 @@ handleQuery = case _ of
     pure (Just next)
   BrowserUndo next -> do
     s <- H.get
+    -- back to the rack it was, as it was live (edits and all)
     for_ s.undoTo \back -> do
       H.modify_ _ { undoTo = Nothing, notice = "" }
-      handleAction (SelectRack back)
+      handleAction (SelectRack back.rack)
+      H.modify_ _ { live = back.live, sel = Source.parseRack back.live }
+      persist
     pure (Just next)
   BrowserKeep next -> do
     at <- liftEffect Browser.stamp
@@ -363,7 +377,7 @@ handleQuery = case _ of
     -- The write mirror of AskSource — same effect as the editor's SetDoc, so an
     -- edit from the routing modal round-trips through the active rack exactly as
     -- a keystroke in the Selene tab would.
-    H.modify_ \s -> s { library = setDocAt s.active doc s.library, sel = Source.parseRack doc }
+    H.modify_ \s -> s { live = doc, sel = Source.parseRack doc }
     persist
     pure (Just next)
   -- Selene has no clock of its own (it ignores SyncFree); answer the default so
@@ -395,7 +409,7 @@ handleQuery = case _ of
   LoadEntry i next -> do
     H.modify_ \s ->
       let doc = fromMaybe "" (map _.doc (s.library !! i))
-      in s { active = i, sel = Source.parseRack doc }
+      in s { active = i, live = doc, sel = Source.parseRack doc }
     persist
     pure (Just next)
   -- Import always succeeds (parseRack is total) — the manager routes here by an
@@ -456,7 +470,7 @@ recallPreset i = do
     Nothing -> pure unit
     Just p -> do
       H.modify_ \s -> s
-        { library = setDocAt s.active p.content s.library
+        { live = p.content
         , sel = Source.parseRack p.content
         , identity = Just p.content
         }
@@ -504,7 +518,9 @@ handleAction = case _ of
       when (not (null sv.library)) do
         let a = if sv.active >= 0 && sv.active < length sv.library then sv.active else 0
             doc = fromMaybe "" (map _.doc (sv.library !! a))
-        H.modify_ _ { library = sv.library, active = a, sel = Source.parseRack doc }
+        mlive <- liftEffect Store.loadLive
+        let live = fromMaybe doc mlive
+        H.modify_ _ { library = sv.library, active = a, live = live, sel = Source.parseRack live }
     H.modify_ _ { binnacle = Just bin }
     -- Merge the shared Amphora rack library over the local one (by name), in the
     -- BACKGROUND: awaiting it blocked Initialize (hence all queries to Selene) until
@@ -558,10 +574,10 @@ handleAction = case _ of
     H.modify_ \s ->
       let block = Source.printDest { target: M.defaultTargetFor k, range: Nothing, bank: M.freshBank k }
           doc = currentDoc s <> "\n\n" <> block
-      in s { library = setDocAt s.active doc s.library, sel = Source.parseRack doc }
+      in s { live = doc, sel = Source.parseRack doc }
     persist
   SetDoc doc -> do
-    H.modify_ \s -> s { library = setDocAt s.active doc s.library, sel = Source.parseRack doc }
+    H.modify_ \s -> s { live = doc, sel = Source.parseRack doc }
     persist
   -- Re-route one destination from its cascade menu: retarget in the parsed rack,
   -- reprint, and re-derive — the same doc-as-authority round-trip as SetDoc (and
@@ -574,7 +590,7 @@ handleAction = case _ of
                 (\j d -> if j == i then d { target = Source.parseTarget wire } else d)
                 rack.destinations }
           doc = Source.printRack rack'
-      in s { library = setDocAt s.active doc s.library, sel = Source.parseRack doc }
+      in s { live = doc, sel = Source.parseRack doc }
     persist
   -- Click a drawn slot. First click selects (the black box); re-clicking an
   -- already-selected LFO slot cycles its waveform (the one edit that reads best
@@ -654,13 +670,13 @@ handleAction = case _ of
   SelectRack i -> do
     H.modify_ \s ->
       let doc = fromMaybe "" (map _.doc (s.library !! i))
-      in s { active = i, sel = Source.parseRack doc }
+      in s { active = i, live = doc, sel = Source.parseRack doc }
     persist
   NewRack -> do
     H.modify_ \s ->
       let doc = Source.printRack M.defaultSelene
           n = length s.library
-      in s { library = s.library <> [ { name: "rack " <> show (n + 1), doc } ], active = n, sel = Source.parseRack doc }
+      in s { library = s.library <> [ { name: "rack " <> show (n + 1), doc } ], active = n, live = doc, sel = Source.parseRack doc }
     persist
   SetRackName name -> do
     H.modify_ \s -> s { library = fromMaybe s.library (modifyAt s.active (_ { name = name }) s.library) }
@@ -775,7 +791,15 @@ handleAction = case _ of
 
 -- | The active rack's eDSL doc — the editable text + the AskSource answer.
 currentDoc :: State -> String
-currentDoc s = fromMaybe "" (map _.doc (s.library !! s.active))
+currentDoc s = s.live
+
+-- | The saved rack the live one was loaded from (or last saved to).
+savedDoc :: State -> String
+savedDoc s = fromMaybe "" (map _.doc (s.library !! s.active))
+
+-- | Whether the live rack has moved away from its saved one.
+diverged :: State -> Boolean
+diverged s = s.live /= savedDoc s
 
 -- | Replace one rack's doc in the library.
 setDocAt :: Int -> String -> Array Store.Rack -> Array Store.Rack
@@ -807,7 +831,7 @@ adoptRack doc = do
   H.modify_ _ { stageRack = Just doc }
   st <- H.get
   when (doc /= currentDoc st) do
-    H.modify_ \s -> s { library = setDocAt s.active doc s.library, sel = Source.parseRack doc }
+    H.modify_ \s -> s { live = doc, sel = Source.parseRack doc }
     s <- H.get
     liftEffect (Store.saveLibrary { active: s.active, library: s.library, presets: s.presets })
 
@@ -822,6 +846,14 @@ readStageWrite :: String -> Maybe String
 readStageWrite json = do
   w :: { key :: String, text :: Nullable String } <- hush (readJSON json)
   if w.key == "selene/rack" then toMaybe w.text else Nothing
+
+-- | What a module puts out, at a glance (AC, 2026-10-05): ∿ a continuous
+-- | voltage (LFOs, notes, envelopes), ⎍ gates (rhythms, clocks).
+signalMark :: M.GenKind -> String
+signalMark = case _ of
+  M.KEuclid -> "⎍ gate"
+  M.KClock -> "⎍ gate"
+  _ -> "∿ cv"
 
 -- | Where the drawer's rows of each kind start: racks from 0, the built-in
 -- | blocks, then kept modules.
@@ -856,6 +888,7 @@ persist :: forall o m. MonadAff m => H.HalogenM State Action Slots o m Unit
 persist = do
   s <- H.get
   liftEffect (Store.saveLibrary { active: s.active, library: s.library, presets: s.presets })
+  liftEffect (Store.saveLive s.live)
   now <- liftEffect dateNow
   H.modify_ _ { applyDue = Just (now + 800.0) }
 
@@ -919,7 +952,7 @@ editDest d f = do
   H.modify_ \s ->
     let dests' = mapWithIndex (\i dd -> if i == d then f dd else dd) s.sel.destinations
         doc = Source.printRack (s.sel { destinations = dests' })
-    in s { library = setDocAt s.active doc s.library, sel = Source.parseRack doc }
+    in s { live = doc, sel = Source.parseRack doc }
   persist
 
 onBank :: (M.GenBank -> M.GenBank) -> M.Destination -> M.Destination
@@ -1297,6 +1330,12 @@ rackBar s =
         , style "display:inline-flex;gap:6px;font-size:26px;cursor:grab" ]
         (map (\g -> HH.i [ HP.attr (HH.AttrName "class") ("fa-solid fa-" <> g.icon), style ("font-size:26px;line-height:1;color:" <> g.color) ] []) (G.glyphOf (currentDoc s)).icons)
     , HH.span [ style "font:15px Georgia,serif;color:#1c1a12" ] [ HH.text (fromMaybe "" (map _.name (s.library !! s.active))) ]
+    -- live moved away from saved: the saved rebus, faded, for what it was
+    , if diverged s then
+        HH.span [ HP.title "The saved rack: the live one has moved away from it (save it from the drawer)", style "display:inline-flex;align-items:center;gap:5px;opacity:0.4;font:italic 12px Georgia,serif;color:#5a5648" ]
+          ( [ HH.text "edited from" ]
+              <> map (\g -> HH.i [ HP.attr (HH.AttrName "class") ("fa-solid fa-" <> g.icon), style ("font-size:15px;line-height:1;color:" <> g.color) ] []) (G.glyphOf (savedDoc s)).icons )
+      else HH.text ""
     , publishStatus s
     ]
 
