@@ -87,4 +87,8 @@ export const loadWidth = (key) => (fallback) => () => {
 // line), for a drop target on the page to read.
 export const setDragText = (e) => (text) => () => {
   if (e.dataTransfer) { e.dataTransfer.setData("text/plain", text); e.dataTransfer.effectAllowed = "copy"; }
+  // what is being dragged, for a target to judge while the drag is over it
+  // (the drag's own data cannot be read until the drop); gone when it ends
+  window.__tfDrag = text;
+  if (e.target) e.target.addEventListener("dragend", () => { window.__tfDrag = ""; }, { once: true });
 };

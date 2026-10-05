@@ -69,10 +69,10 @@ import Triggerfish.Browser as Browser
 import Triggerfish.Preset (Preset, indexOfContent, presetAlias)
 import Triggerfish.SourceQuery (Query(..))
 import Triggerfish.Transport (Sounding(..))
-import Triggerfish.Rig (defaultRig, targetGroups)
+import Triggerfish.Rig (availableTargets, defaultRig, targetGroups)
 import Halogen.Widgets.Select as Select
 import Type.Proxy (Proxy(..))
-import Data.Maybe (Maybe(..), fromMaybe, isJust)
+import Data.Maybe (Maybe(..), fromMaybe, isJust, maybe)
 import Binnacle.Time (dateNow)
 
 -- | The rack view hosts one cascade target-picker per destination, keyed by
@@ -125,6 +125,9 @@ type State =
   , modules :: Array { name :: String, line :: String }
   , notice :: String
   , undoTo :: Maybe Int
+  -- a drag from the drawer over a group of outputs: which, whether it can
+  -- take what is dragged, and if not, why
+  , dragOver :: Maybe { wire :: String, ok :: Boolean, why :: String }
   , publishMsg :: Maybe String   -- transient status from a publish-rack-to-Amphora click
   -- The unified glyph-chip PRESET bank (docs/DESIGN-scene-modal.md): captured rack
   -- docs, anonymous or named, freely intermixed. `identity` is the parked preset's
@@ -225,8 +228,9 @@ data Action
   | SetRackName String        -- rename the active rack
   | ApplyToRig                -- push every modular destination to its daemon
   | SeleneReply String        -- a raw `selene-reply …` frame from the rig
-  | DropModule Int Event      -- a module dropped on bank i
-  | DragOverBank Event
+  | DropOn M.Target Event     -- a module dropped on a group of outputs
+  | DragOverTarget M.Target Event
+  | DragLeaveTarget
   | KeepModule Int            -- keep bank i as a module
   | ModulesLoaded (Array { name :: String, line :: String })
   | PublishRack               -- publish the active rack to the Amphora store (selene-rack)
@@ -257,6 +261,7 @@ component =
           , modules: []
           , notice: ""
           , undoTo: Nothing
+          , dragOver: Nothing
           , publishMsg: Nothing
           , presets: [], identity: Nothing, lastChip: Nothing
           , selected: Nothing
@@ -659,18 +664,38 @@ handleAction = case _ of
   -- line on the rig): adopt it. Adopting does not apply: the rig already has.
   -- A drop on a bank: the module (or block) goes to the rig as a line on
   -- that bank, applied there in one step; the page follows by the stage.
-  DragOverBank e -> liftEffect (Drop.allowDrop e)
-  DropModule i e -> do
-    text <- liftEffect (Drop.dropText e)
+  -- Over a group of outputs: green if it can take what is dragged (the drop
+  -- is let through), red with the reason if not (it is not).
+  DragOverTarget target e -> do
+    text <- liftEffect Drop.currentDrag
+    let
+      wire = M.targetWire target
+      verdict = case Line.moduleKind text of
+        Just kind | Line.accepts target kind -> { wire, ok: true, why: "" }
+        Just kind -> { wire, ok: false, why: Line.refusal target kind }
+        Nothing -> { wire, ok: false, why: "drag a module from the drawer" }
+    when verdict.ok (liftEffect (Drop.allowDrop e))
     st <- H.get
-    for_ (st.sel.destinations !! i) \d -> case Line.moduleKind text of
+    when (st.dragOver /= Just verdict) (H.modify_ _ { dragOver = Just verdict })
+  DragLeaveTarget -> H.modify_ _ { dragOver = Nothing }
+  -- Dropped: the module goes to the rig as a line on that bank, replacing
+  -- what was there (`# fresh`); with Option held, merged into it instead (a
+  -- line changes only what it names). A block always sets the whole bank.
+  DropOn target e -> do
+    text <- liftEffect (Drop.dropText e)
+    H.modify_ _ { dragOver = Nothing }
+    st <- H.get
+    case Line.moduleKind text of
       Nothing -> pure unit
       Just kind
-        | not (Line.accepts d.target kind) ->
-            H.modify_ _ { publishMsg = Just (M.targetWire d.target <> " can't take " <> M.kindLabel kind <> " (gate banks take rhythms and clocks)") }
+        | not (Line.accepts target kind) -> H.modify_ _ { publishMsg = Just (M.targetWire target <> ": " <> Line.refusal target kind) }
         | otherwise -> for_ st.binnacle \bin -> do
-            liftEffect $ Transport.send (Binnacle.socket bin) ("tidal selene $ " <> Line.onBank text d.target)
-            H.modify_ _ { publishMsg = Just ("→ " <> M.targetWire d.target <> ": " <> text) }
+            let
+              isBlock = isJust (Array.head (Str.split (Str.Pattern " ") (Str.trim text)) >>= Block.blockNamed)
+              merge = Drop.altHeld e
+              line = Line.onBank text target <> (if isBlock || merge then "" else " # fresh")
+            liftEffect $ Transport.send (Binnacle.socket bin) ("tidal selene $ " <> line)
+            H.modify_ _ { publishMsg = Just ((if merge && not isBlock then "merged into " else "→ ") <> M.targetWire target <> ": " <> text) }
   KeepModule i -> do
     st <- H.get
     for_ (st.sel.destinations !! i) \d -> do
@@ -764,6 +789,47 @@ readStageWrite :: String -> Maybe String
 readStageWrite json = do
   w :: { key :: String, text :: Nullable String } <- hush (readJSON json)
   if w.key == "selene/rack" then toMaybe w.text else Nothing
+
+-- | The rig's groups of eight outputs, across the top: what each has on it,
+-- | and each a drop target for a module from the drawer, green when it can
+-- | take it, red (with why) when it cannot. Wraps for a bigger rig.
+outputStrip :: forall m. State -> H.ComponentHTML Action Slots m
+outputStrip s =
+  HH.div [ style "display:flex;flex-wrap:wrap;gap:8px;margin:0 0 14px" ]
+    (map group (filter notMidi (availableTargets defaultRig)))
+  where
+  notMidi = case _ of
+    M.Midi _ -> false
+    _ -> true
+  group target =
+    let
+      wire = M.targetWire target
+      on = Array.find (\d -> d.target == target) s.sel.destinations
+      over = case s.dragOver of
+        Just v | v.wire == wire -> Just v
+        _ -> Nothing
+      edge = case over of
+        Just v | v.ok -> "2px solid #2e9e6a"
+        Just _ -> "2px solid #b3261e"
+        Nothing -> "1px solid #00000022"
+    in
+      HH.div
+        [ HE.handler (EventType "dragover") (DragOverTarget target)
+        , HE.handler (EventType "dragleave") (const DragLeaveTarget)
+        , HE.handler (EventType "drop") (DropOn target)
+        , HP.title (M.targetLabel target <> ": drop a module to replace what is here; Option to merge into it")
+        , style $ "flex:0 0 auto;min-width:150px;padding:7px 10px;border-radius:6px;box-sizing:border-box;background:"
+            <> (if isJust on then "#00000010" else "#00000005") <> ";border:" <> edge ]
+        ( [ HH.div [ style $ engrave <> ";font-size:9px;letter-spacing:0.12em;color:#3f3c33" ] [ HH.text (M.targetLabel target) ]
+          , HH.div [ style "display:flex;gap:3px;margin:5px 0 4px" ]
+              (map (\_ -> HH.span [ style ("width:7px;height:7px;border-radius:50%;background:" <> (if isJust on then "#2d5670" else "#00000020")) ] []) (Array.range 1 8))
+          , HH.div [ style "font:11px Georgia,serif;color:#5a5648" ]
+              [ HH.text (maybe "free" (\d -> M.kindLabel (M.bankKind d.bank)) on) ]
+          ]
+            <> case over of
+              Just v | not v.ok -> [ HH.div [ style "font:10px Georgia,serif;color:#b3261e;margin-top:3px;max-width:180px" ] [ HH.text v.why ] ]
+              _ -> []
+        )
 
 -- | Where the drawer's rows of each kind start: racks from 0, the built-in
 -- | blocks, then kept modules.
@@ -1090,7 +1156,7 @@ panel label widthCss body =
 rackPanel :: forall m. MonadAff m => State -> H.ComponentHTML Action Slots m
 rackPanel s =
   panel "SELENE · DESTINATIONS" "flex:1 1 auto;min-width:0"
-    ( [ rackBar s, transportStrip s ]
+    ( [ outputStrip s, rackBar s, transportStrip s ]
         <> mapWithIndex (destinationRow s.envParam s.selected) s.sel.destinations
         <> envLibraryWall s
         <> [ addBar, footNote ]
@@ -1275,8 +1341,8 @@ destinationRow :: forall m. MonadAff m => EnvParam -> Maybe Sel -> Int -> M.Dest
 destinationRow ep sel i d =
   HH.div
     -- a drop target for a module from the browser drawer
-    [ HE.handler (EventType "dragover") DragOverBank
-    , HE.handler (EventType "drop") (DropModule i)
+    [ HE.handler (EventType "dragover") (DragOverTarget d.target)
+    , HE.handler (EventType "drop") (DropOn d.target)
     , style $ "display:flex;align-items:stretch;gap:12px;padding:11px 12px;margin-bottom:10px;border-radius:8px;"
         <> "background:#00000008;border:1px solid #00000012" ]
     [ destHeader i d
@@ -1293,12 +1359,9 @@ destHeader i d =
   HH.div [ style "display:flex;flex-direction:column;gap:5px;flex:0 0 190px;justify-content:center" ]
     [ HH.div [ style $ engrave <> ";font-size:10px;letter-spacing:0.1em;color:" <> ink ]
         [ HH.text (M.kindLabel (M.bankKind d.bank)) ]
-    -- The routing atom, now direct-manipulation: the same rig-bounded cascade
-    -- menu the routing modal uses, editing this destination's target in place.
-    , HH.slot _selTarget i Select.component
-        ((Select.cascadingInput (targetGroups defaultRig))
-           { selected = Just (M.targetWire d.target), placeholder = "route" })
-        (\(Select.Selected wire) -> RetargetDest i wire)
+    -- where it plays: a label now; moving it is a drop on the outputs strip
+    -- at the top (2026-10-05, replacing the route menu)
+    , HH.span [ style "font:13px Georgia,serif;color:#1c1a12" ] [ HH.text (M.targetLabel d.target) ]
     , HH.span [ style $ engrave <> ";font-size:8px;opacity:0.45" ]
         [ HH.text ("→ " <> M.targetWire d.target) ]
     , HH.button
