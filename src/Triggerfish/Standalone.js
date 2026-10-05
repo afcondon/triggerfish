@@ -58,13 +58,15 @@ export const watchDocks = (onAlways) => () => {
   queue();
 };
 
-// The browser drawer's place on this page, a view preference (open, width),
-// kept per page in the browser's storage.
+// The browser drawer's width on this page, a view preference kept per page
+// in the browser's storage. A page always opens with the drawer closed (AC,
+// 2026-10-05: open blank, to encourage experimenting rather than presets),
+// so only the width is taken from what was kept.
 export const loadDrawer = (key) => () => {
   try {
     const o = JSON.parse(localStorage.getItem(key) || "null");
-    return o && typeof o.open === "boolean" && typeof o.width === "number" ? o : { open: true, width: 280 };
-  } catch (_) { return { open: true, width: 280 }; }
+    return { open: false, width: o && typeof o.width === "number" ? o.width : 280 };
+  } catch (_) { return { open: false, width: 280 }; }
 };
 export const saveDrawer = (key) => (o) => () => {
   try { localStorage.setItem(key, JSON.stringify(o)); } catch (_) {}

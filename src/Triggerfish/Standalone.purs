@@ -192,7 +192,7 @@ root cfg = H.mkComponent
   { initialState: \_ ->
       { mode: Solo, playing: false, bpm: 120.0, tempoFlash: Nothing, freeT0: 0.0, chip: Nothing, rig: Nothing
       , rigUp: false, table: RM.defaultTable, staged: Nothing, bus: Nothing, limulus: false, limulusMade: false, limulusAlways: false
-      , browser: Nothing, drawer: { open: true, width: 280.0 }, lastRecall: { frozen: false, inKey: false }, renaming: Nothing }
+      , browser: Nothing, drawer: { open: false, width: 280.0 }, lastRecall: { frozen: false, inKey: false }, renaming: Nothing }
   , render: render cfg
   , eval: H.mkEval H.defaultEval { handleAction = handleAction cfg, initialize = Just Init }
   }
@@ -447,7 +447,7 @@ render :: forall o. Config o -> State -> H.ComponentHTML (Action o) (Slots o) Af
 render cfg st =
   -- `--tf-left`: what the drawer takes on the left; the machine's panel stands
   -- right of it, so the drawer pushes it rather than covering it
-  HH.div [ style ("min-height:100vh;background:#fafafa;--tf-left:" <> show drawerSpan <> "px") ]
+  HH.div [ style ("min-height:100vh;background:#fafafa;--tf-left:" <> show drawerSpan <> "px;transition:--tf-left 180ms ease-out") ]
     ( [ bar cfg st
       , HH.slot _machine unit cfg.component unit FromMachine
       ]
@@ -483,16 +483,23 @@ browserDrawer st b =
     [ style $ "position:fixed;top:var(--tf-bar);left:0;bottom:0;z-index:45;display:flex;"
         <> "font-family:Georgia,serif;background:linear-gradient(#ece7da,#e2dccb);border-right:1px solid #b3ae9c" ]
     [ HH.element (HH.ElemName "style") []
-        [ HH.text ".tfb-row:hover{background:#00000010}.tfb-q{width:9px;height:9px;border:1px solid #8a8270;background:#f6f2e7;cursor:pointer;padding:0}.tfb-q:hover{background:#2d5670;border-color:#2d5670}.tfb-q.last{background:#c9b98d}.tfb-g i{font-size:11px!important}" ]
-    , if st.drawer.open then body else HH.text ""
+        [ HH.text "@property --tf-left{syntax:'<length>';inherits:true;initial-value:0px}@media (prefers-reduced-motion:reduce){#tf-browser,[style*=--tf-left]{transition:none!important}}.tfb-row:hover{background:#00000010}.tfb-q{width:9px;height:9px;border:1px solid #8a8270;background:#f6f2e7;cursor:pointer;padding:0}.tfb-q:hover{background:#2d5670;border-color:#2d5670}.tfb-q.last{background:#c9b98d}.tfb-g i{font-size:11px!important}" ]
+    , body
     , HH.slot _drawer unit Drawer.component d FromDrawer
     ]
   where
   d = drawerInput st
+  w = Drawer.clampWidth d st.drawer.width
+  -- eased open and shut (Halogen.Widgets.Motion's 180 ms, as Conspicillum's
+  -- drawer), the rows at their full width throughout so they do not reflow
   body =
     HH.div
-      [ HP.id "tf-browser"
-      , style $ "width:" <> show (Drawer.clampWidth d st.drawer.width) <> "px;box-sizing:border-box;overflow-y:auto;padding:14px 12px 20px" ]
+      ( [ HP.id "tf-browser"
+        , style $ "width:" <> (if st.drawer.open then show w else "0") <> "px;overflow:hidden;transition:width 180ms ease-out;flex:none" ]
+          <> (if st.drawer.open then [] else [ HP.attr (HH.AttrName "inert") "" ])
+      )
+      [ HH.div
+      [ style $ "width:" <> show w <> "px;height:100%;box-sizing:border-box;overflow-y:auto;padding:14px 12px 20px" ]
       ( [ HH.div [ style "display:flex;align-items:baseline;gap:8px;border-bottom:1px solid #00000018;padding-bottom:6px;margin-bottom:8px" ]
             [ HH.span [ style (engrave <> ";font-size:12px;letter-spacing:0.16em;color:#3f3c33") ] [ HH.text (String.toUpper b.title) ]
             , HH.span [ style "flex:1" ] []
@@ -505,7 +512,7 @@ browserDrawer st b =
           <> (if b.modes then [ key ] else [])
           <> (if Array.null b.rows then [ HH.p [ style "font-size:12px;font-style:italic;color:#6a6657" ] [ HH.text ("Nothing here yet: " <> b.keep <> " adds what is playing.") ] ] else [])
           <> map row b.rows
-      )
+      ) ]
   -- the 2×2's axes, once
   key =
     HH.div [ style "display:grid;grid-template-columns:auto 11px 11px;gap:2px 3px;align-items:center;font-size:10px;color:#6a6657;margin:0 0 8px 2px" ]
