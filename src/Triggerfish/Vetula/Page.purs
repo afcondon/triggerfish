@@ -131,11 +131,13 @@ handleQuery = case _ of
     mscenes <- H.query _vet unit (Vetula.AskScenes identity)
     pure $ mscenes <#> \scenes -> reply
       { title: "Scenes", modes: false, keep: "save scene", notice: ""
-      , rows: Array.mapWithIndex (\i sc -> { slot: i, name: sc.name, icons: map (\icon -> { icon, color: "#2a2a2a" }) (Array.filter (_ /= "") (String.split (String.Pattern "-") (sessionOf sc))), tag: sc.key, current: false, section: "", builtin: false, drag: "" }) scenes }
+      , rows: Array.mapWithIndex (\i sc -> { slot: i, name: sc.name, icons: map (\icon -> { icon, color: "#2a2a2a" }) (Array.filter (_ /= "") (String.split (String.Pattern "-") (sessionOf sc))), tag: sc.key, current: false, section: "", builtin: false, drag: "", actions: [] }) scenes }
   SQ.BrowserRecall i _ next -> H.query _vet unit (Vetula.LoadSceneAt i next)
   SQ.BrowserRename _ _ next -> pure (Just next)
   SQ.BrowserKeep next -> H.query _vet unit (Vetula.SaveSceneQ next)
   SQ.BrowserUndo next -> pure (Just next)
+  SQ.BrowserAction _ _ next -> pure (Just next)
+  SQ.BrowserDrop _ next -> pure (Just next)
   SQ.AskSource k -> H.query _vet unit (Vetula.AskSource k)
   SQ.AskMarkText k -> H.query _vet unit (Vetula.AskMarkText k)
   SQ.AddMarkSnapshot at m t a -> H.query _vet unit (Vetula.AddMarkSnapshot at m t a)

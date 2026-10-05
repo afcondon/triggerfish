@@ -23,4 +23,5 @@ main = Standalone.run
   , armOf: const Nothing
   , markOf: const Nothing
   , playable: true
+  , capturable: true
   }

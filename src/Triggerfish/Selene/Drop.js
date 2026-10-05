@@ -10,3 +10,10 @@ export const dropText = (e) => () => {
   e.preventDefault();
   return e.dataTransfer ? e.dataTransfer.getData("text/plain") : "";
 };
+// Start a drag from the page (the rack's rebus) that the drawer can judge
+// while it is over it, as the drawer's own rows do.
+export const startDrag = (e) => (text) => () => {
+  if (e.dataTransfer) { e.dataTransfer.setData("text/plain", text); e.dataTransfer.effectAllowed = "copy"; }
+  window.__tfDrag = text;
+  if (e.target) e.target.addEventListener("dragend", () => { window.__tfDrag = ""; }, { once: true });
+};

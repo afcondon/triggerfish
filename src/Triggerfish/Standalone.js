@@ -72,6 +72,12 @@ export const saveDrawer = (key) => (o) => () => {
   try { localStorage.setItem(key, JSON.stringify(o)); } catch (_) {}
 };
 
+// What is being dragged from the page now (Selene's rack rebus), for the
+// drawer to judge while the drag is over it.
+export const currentDrag = () => window.__tfDrag || "";
+export const allowDrop = (e) => () => { e.preventDefault(); };
+export const dropText = (e) => () => { e.preventDefault(); return e.dataTransfer ? e.dataTransfer.getData("text/plain") : ""; };
+
 // A name being edited starts selected, so typing replaces it.
 export const selectAll = (el) => () => { el.focus(); if (el.select) el.select(); };
 

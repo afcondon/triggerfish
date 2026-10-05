@@ -113,6 +113,10 @@ data Query a
   | BrowserKeep a
   -- the drawer's undo, after a `notice`
   | BrowserUndo a
+  -- an action on a row (duplicate, publish, delete …), and something dropped
+  -- on the drawer from the page (Selene's rack rebus: keep it as a new rack)
+  | BrowserAction Int String a
+  | BrowserDrop String a
   | AskBank (Array { slot :: Int, alias :: String, name :: String, starred :: Boolean } -> a)
   | RecallSlot Int a
   | StarSlot Int a

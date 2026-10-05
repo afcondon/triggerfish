@@ -37,7 +37,10 @@ type Browser = { title :: String, modes :: Boolean, keep :: String, notice :: St
 -- | drag of it carries (a Selene module's line), "" for none.
 type Item =
   { slot :: Int, name :: String, icons :: Array GlyphIcon, tag :: String, current :: Boolean
-  , section :: String, builtin :: Boolean, drag :: String }
+  , section :: String, builtin :: Boolean, drag :: String
+  -- | what can be done to it, shown on hover (`BrowserAction`); "delete"
+  -- | asks first
+  , actions :: Array String }
 
 -- | How to recall it (Odonus): `frozen`, its generators paused; `inKey`,
 -- | keeping the key the machine is in now rather than the saved one. A machine

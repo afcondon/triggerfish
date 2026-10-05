@@ -122,7 +122,7 @@ type State =
   , stageRack :: Maybe String
   -- Modules kept from a bank (Amphora `selene-module`): a name and the line
   -- without its bank. And, after a rack was replaced, the one to go back to.
-  , modules :: Array { name :: String, line :: String }
+  , modules :: Array { name :: String, line :: String, hash :: String }
   , notice :: String
   , undoTo :: Maybe Int
   -- a drag from the drawer over a group of outputs: which, whether it can
@@ -231,8 +231,9 @@ data Action
   | DropOn M.Target Event     -- a module dropped on a group of outputs
   | DragOverTarget M.Target Event
   | DragLeaveTarget
+  | DragRackStart Event
   | KeepModule Int            -- keep bank i as a module
-  | ModulesLoaded (Array { name :: String, line :: String })
+  | ModulesLoaded (Array { name :: String, line :: String, hash :: String })
   | PublishRack               -- publish the active rack to the Amphora store (selene-rack)
   | PickStarter Int           -- apply library shape i to the selected envelope slot
   | EnvGrab EnvHandle Int Int -- mousedown on a breakpoint (handle, clientX, clientY)
@@ -287,14 +288,16 @@ handleQuery = case _ of
   AskBrowser reply -> do
     s <- H.get
     let
-      rack i r = { slot: i, name: r.name, icons: (G.glyphOf r.doc).icons, tag: "", current: i == s.active, section: "Racks", builtin: false, drag: "" }
-      plain k kind = { slot: plainSlot + 1 + k, name: M.kindLabel kind, icons: [], tag: "plain", current: false, section: "Modules", builtin: true, drag: Source.kindKeyword (M.freshBank kind) }
+      -- the live rack cannot be deleted here: load another first
+      rack i r = { slot: i, name: r.name, icons: (G.glyphOf r.doc).icons, tag: "", current: i == s.active, section: "Racks", builtin: false, drag: ""
+                 , actions: [ "duplicate", "publish" ] <> (if i == s.active then [] else [ "delete" ]) }
+      plain k kind = { slot: plainSlot + 1 + k, name: M.kindLabel kind, icons: [], tag: "plain", current: false, section: "Modules", builtin: true, drag: Source.kindKeyword (M.freshBank kind), actions: [] }
       -- the null signal: dropped on a group, frees it (`selene $ off`)
-      free = { slot: plainSlot, name: "free", icons: [], tag: "plain", current: false, section: "Modules", builtin: true, drag: "off" }
-      block k b = { slot: builtinSlot + k, name: b.name, icons: [], tag: "built in", current: false, section: "Modules", builtin: true, drag: b.name }
-      kept k m = { slot: keptSlot + k, name: m.name, icons: (G.glyphOf m.line).icons, tag: fromMaybe "" (Array.head (Str.split (Str.Pattern " ") m.line)), current: false, section: "Modules", builtin: false, drag: m.line }
+      free = { slot: plainSlot, name: "free", icons: [], tag: "plain", current: false, section: "Modules", builtin: true, drag: "off", actions: [] }
+      block k b = { slot: builtinSlot + k, name: b.name, icons: [], tag: "built in", current: false, section: "Modules", builtin: true, drag: b.name, actions: [] }
+      kept k m = { slot: keptSlot + k, name: m.name, icons: (G.glyphOf m.line).icons, tag: fromMaybe "" (Array.head (Str.split (Str.Pattern " ") m.line)), current: false, section: "Modules", builtin: false, drag: m.line, actions: [ "delete" ] }
     pure (Just (reply
-      { title: "Selene", modes: false, keep: "keep a copy", notice: s.notice
+      { title: "Selene", modes: false, keep: "save as new rack", notice: s.notice
       , rows: mapWithIndex rack s.library <> [ free ] <> mapWithIndex plain M.allKinds <> mapWithIndex block Block.blocks <> mapWithIndex kept s.modules }))
   BrowserRecall i _ next -> do
     s <- H.get
@@ -312,6 +315,25 @@ handleQuery = case _ of
       H.modify_ \s -> s { modules = fromMaybe s.modules (modifyAt (i - keptSlot) (_ { name = name }) s.modules) }
       s <- H.get
       for_ (s.modules !! (i - keptSlot)) publishModule
+    pure (Just next)
+  BrowserAction i act next -> do
+    s <- H.get
+    case act of
+      "duplicate" | i < builtinSlot -> do
+        for_ (s.library !! i) \r -> H.modify_ _ { library = s.library <> [ { name: r.name <> " copy", doc: r.doc } ] }
+        persist
+      "publish" | i < builtinSlot -> for_ (s.library !! i) publishRack'
+      "delete" | i < builtinSlot && i /= s.active -> do
+        H.modify_ _ { library = fromMaybe s.library (deleteAt i s.library), active = if i < s.active then s.active - 1 else s.active }
+        persist
+      "delete" | i >= keptSlot -> for_ (s.modules !! (i - keptSlot)) \m -> do
+        H.modify_ _ { modules = fromMaybe s.modules (deleteAt (i - keptSlot) s.modules) }
+        when (m.hash /= "") (void $ H.fork $ void $ liftAff $ attempt $ Amphora.unpublish "selene-module" m.hash)
+      _ -> pure unit
+    pure (Just next)
+  -- the rack's rebus, dragged from the page onto the drawer: kept as a new rack
+  BrowserDrop t next -> do
+    when (t == "keep:rack") (void (handleQuery (BrowserKeep unit)))
     pure (Just next)
   BrowserUndo next -> do
     s <- H.get
@@ -489,7 +511,7 @@ handleAction = case _ of
     -- the ~30s offline timeout. The store being offline is not fatal — keep local.
     void $ H.fork do
       res <- liftAff (attempt (Amphora.fetchCollection "selene-module"))
-      for_ res \items -> handleAction (ModulesLoaded (map (\it -> { name: it.name, line: it.payload }) items))
+      for_ res \items -> handleAction (ModulesLoaded (map (\it -> { name: it.name, line: it.payload, hash: it.hash }) items))
     void $ H.fork do
       dbRes <- liftAff (attempt (Amphora.fetchCollection "selene-rack"))
       case dbRes of
@@ -684,6 +706,7 @@ handleAction = case _ of
     st <- H.get
     when (st.dragOver /= Just verdict) (H.modify_ _ { dragOver = Just verdict })
   DragLeaveTarget -> H.modify_ _ { dragOver = Nothing }
+  DragRackStart e -> liftEffect (Drop.startDrag e "keep:rack")
   -- Dropped: the module goes to the rig as a line on that bank, replacing
   -- what was there (`# fresh`); with Option held, merged into it instead (a
   -- line changes only what it names). A block always sets the whole bank.
@@ -710,7 +733,7 @@ handleAction = case _ of
     st <- H.get
     for_ (st.sel.destinations !! i) \d -> do
       at <- liftEffect Browser.stamp
-      let m = { name: Source.kindKeyword d.bank <> " · " <> at, line: Line.moduleOf d }
+      let m = { name: Source.kindKeyword d.bank <> " · " <> at, line: Line.moduleOf d, hash: "" }
       H.modify_ _ { modules = st.modules <> [ m ], publishMsg = Just ("kept as a module: " <> m.name) }
       publishModule m
   ModulesLoaded ms -> H.modify_ \s -> s { modules = s.modules <> filter (\m -> not (Array.any (\k -> k.name == m.name) s.modules)) ms }
@@ -812,9 +835,19 @@ plainSlot = 1500
 keptSlot :: Int
 keptSlot = 2000
 
+-- | Publish a rack to Amphora (`selene-rack`), by name.
+publishRack' :: forall o m. MonadAff m => { name :: String, doc :: String } -> H.HalogenM State Action Slots o m Unit
+publishRack' r = do
+  H.modify_ _ { publishMsg = Just "publishing…" }
+  res <- liftAff (attempt (Amphora.publish
+    { kind: "selene-rack", collection: "selene-rack", name: r.name, source: "user", payload: r.doc, tags: [] }))
+  H.modify_ _ { publishMsg = Just case res of
+    Right hash -> "✓ " <> r.name <> " · " <> take 8 hash
+    Left _ -> "✗ publish failed (store offline?)" }
+
 -- | Keep a module in Amphora (`selene-module`), by name; a rename publishes it
 -- | again under the new name.
-publishModule :: forall o m. MonadAff m => { name :: String, line :: String } -> H.HalogenM State Action Slots o m Unit
+publishModule :: forall o m r. MonadAff m => { name :: String, line :: String | r } -> H.HalogenM State Action Slots o m Unit
 publishModule m = void $ H.fork $ void $ liftAff $ attempt $ Amphora.publish
   { kind: "selene-module", collection: "selene-module", name: m.name, source: "user", payload: m.line, tags: [] }
 
@@ -1252,17 +1285,20 @@ durLabel ms =
 -- editable. Persists to localStorage; a rack's `doc` is its transferable form.
 rackBar :: forall m. State -> H.ComponentHTML Action Slots m
 rackBar s =
-  HH.div [ style "display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-bottom:12px" ]
-    -- The racks are listed, picked and renamed in the browser drawer on the
-    -- left (2026-10-05); here, the loaded one's name, a new blank one, and
-    -- publishing.
-    ( [ HH.span [ style $ engrave <> ";font-size:9px;opacity:0.6;margin-right:2px" ] [ HH.text "RACK" ]
-      , HH.span [ style "font-family:Georgia,serif;font-size:13px;color:#1c1a12;margin-right:6px" ] [ HH.text (fromMaybe "" (map _.name (s.library !! s.active))) ]
-      , newRackChip
-      , publishRackChip
-      , publishStatus s
-      ]
-    )
+  -- The live rack: its name, and its rebus large, the one spark of colour,
+  -- which changes as the rack does. Dragged onto the drawer, it is kept as a
+  -- new rack (as people will try). New, duplicate, publish and delete are
+  -- the drawer's (2026-10-05); the last word from the rig is beside it.
+  HH.div [ style "display:flex;align-items:center;gap:14px;margin-bottom:12px" ]
+    [ HH.span
+        [ HP.attr (HH.AttrName "draggable") "true"
+        , HE.handler (EventType "dragstart") DragRackStart
+        , HP.title "This rack. Drag it onto the drawer to keep it as a new rack."
+        , style "display:inline-flex;gap:6px;font-size:26px;cursor:grab" ]
+        (map (\g -> HH.i [ HP.attr (HH.AttrName "class") ("fa-solid fa-" <> g.icon), style ("font-size:26px;line-height:1;color:" <> g.color) ] []) (G.glyphOf (currentDoc s)).icons)
+    , HH.span [ style "font:15px Georgia,serif;color:#1c1a12" ] [ HH.text (fromMaybe "" (map _.name (s.library !! s.active))) ]
+    , publishStatus s
+    ]
 
 -- Publish the active rack to the Amphora store (⚱); a sibling of + NEW.
 publishRackChip :: forall m. H.ComponentHTML Action Slots m

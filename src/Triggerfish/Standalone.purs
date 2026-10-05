@@ -101,6 +101,8 @@ type Config o =
   -- | runs on the modular from the moment it is applied, and the Dashboard
   -- | stops and resumes it there
   , playable :: Boolean
+  -- | whether the bar offers Capture (c): not Selene, whose drawer keeps racks
+  , capturable :: Boolean
   }
 
 run :: forall o. Config o -> Effect Unit
@@ -144,6 +146,8 @@ type State =
   , drawer :: { open :: Boolean, width :: Number }
   , lastRecall :: Browser.Recall
   , renaming :: Maybe { slot :: Int, text :: String }
+  -- a delete clicked once, waiting for the second click that confirms it
+  , confirming :: Maybe { slot :: Int, act :: String }
   }
 
 -- | The panel asks to close (Escape inside it).
@@ -153,6 +157,9 @@ foreign import focusSelf :: Effect Unit
 foreign import watchDocks :: (Boolean -> Effect Unit) -> Effect Unit
 foreign import selectAll :: HTMLElement -> Effect Unit
 foreign import setDragText :: E.Event -> String -> Effect Unit
+foreign import currentDrag :: Effect String
+foreign import allowDrop :: E.Event -> Effect Unit
+foreign import dropText :: E.Event -> Effect String
 foreign import loadDrawer :: String -> Effect { open :: Boolean, width :: Number }
 foreign import loadWidth :: String -> Number -> Effect Number
 foreign import saveDrawer :: String -> { open :: Boolean, width :: Number } -> Effect Unit
@@ -184,6 +191,9 @@ data Action o
   | CommitRename
   | KeepRow
   | UndoRow
+  | RowAction Int String
+  | DrawerDragOver E.Event
+  | DrawerDrop E.Event
   | DragRow String E.Event
 
 type Slots o = (machine :: H.Slot SQ.Query o Unit, drawer :: Drawer.Slot Unit, limdrawer :: Drawer.Slot Unit)
@@ -202,7 +212,7 @@ root cfg = H.mkComponent
   { initialState: \_ ->
       { mode: Solo, playing: false, bpm: 120.0, tempoFlash: Nothing, freeT0: 0.0, chip: Nothing, rig: Nothing
       , rigUp: false, table: RM.defaultTable, staged: Nothing, bus: Nothing, limulus: false, limulusMade: false, limulusAlways: false, limWidth: 560.0
-      , browser: Nothing, drawer: { open: false, width: 280.0 }, lastRecall: { frozen: false, inKey: false }, renaming: Nothing }
+      , browser: Nothing, drawer: { open: false, width: 280.0 }, lastRecall: { frozen: false, inKey: false }, renaming: Nothing, confirming: Nothing }
   , render: render cfg
   , eval: H.mkEval H.defaultEval { handleAction = handleAction cfg, initialize = Just Init }
   }
@@ -287,6 +297,24 @@ handleAction cfg = case _ of
     H.modify_ _ { lastRecall = r }
     void $ H.query _machine unit (SQ.BrowserRecall slot r unit)
     handleAction cfg AskBrowser
+  -- An action on a row; a delete asks first (a second click confirms).
+  RowAction slot act -> do
+    st <- H.get
+    if act == "delete" && st.confirming /= Just { slot, act } then H.modify_ _ { confirming = Just { slot, act } }
+    else do
+      H.modify_ _ { confirming = Nothing }
+      void $ H.query _machine unit (SQ.BrowserAction slot act unit)
+      handleAction cfg AskBrowser
+  -- Something from the page dropped on the drawer ("keep:…", e.g. Selene's
+  -- rack rebus): the machine keeps it.
+  DrawerDragOver e -> do
+    t <- liftEffect currentDrag
+    when (String.take 5 t == "keep:") (liftEffect (allowDrop e))
+  DrawerDrop e -> do
+    t <- liftEffect (dropText e)
+    when (String.take 5 t == "keep:") do
+      void $ H.query _machine unit (SQ.BrowserDrop t unit)
+      handleAction cfg AskBrowser
   UndoRow -> do
     void $ H.query _machine unit (SQ.BrowserUndo unit)
     handleAction cfg AskBrowser
@@ -410,7 +438,7 @@ handleAction cfg = case _ of
       Nothing
         | KE.altKey ke -> pure unit
         | otherwise -> case KE.key ke of
-            "c" -> handleAction cfg Capture
+            "c" | cfg.capturable -> handleAction cfg Capture
             -- the browser, by the suite's one key for it
             "b" -> do
               st <- H.get
@@ -534,7 +562,7 @@ browserDrawer st b =
     [ style $ "position:fixed;top:var(--tf-bar);left:0;bottom:0;z-index:45;display:flex;"
         <> "font-family:Georgia,serif;background:linear-gradient(#ece7da,#e2dccb);border-right:1px solid #b3ae9c" ]
     [ HH.element (HH.ElemName "style") []
-        [ HH.text ".tfb-row:hover{background:#00000010}.tfb-q{width:9px;height:9px;border:1px solid #8a8270;background:#f6f2e7;cursor:pointer;padding:0}.tfb-q:hover{background:#2d5670;border-color:#2d5670}.tfb-q.last{background:#c9b98d}.tfb-g i{font-size:11px!important}" ]
+        [ HH.text ".tfb-act{visibility:hidden;font:10px Georgia,serif;padding:0 5px;border:1px solid #00000026;border-radius:3px;background:#f6f2e7;cursor:pointer;color:#5a5648}.tfb-row:hover .tfb-act,.tfb-act.ask{visibility:visible}.tfb-act.ask{color:#b3261e;border-color:#b3261e}.tfb-row:hover{background:#00000010}.tfb-q{width:9px;height:9px;border:1px solid #8a8270;background:#f6f2e7;cursor:pointer;padding:0}.tfb-q:hover{background:#2d5670;border-color:#2d5670}.tfb-q.last{background:#c9b98d}.tfb-g i{font-size:11px!important}" ]
     , body
     , HH.slot _drawer unit Drawer.component d FromDrawer
     ]
@@ -546,6 +574,8 @@ browserDrawer st b =
   body =
     HH.div
       ( [ HP.id "tf-browser"
+        , HE.handler (E.EventType "dragover") DrawerDragOver
+        , HE.handler (E.EventType "drop") DrawerDrop
         , style $ "width:" <> (if st.drawer.open then show w else "0") <> "px;overflow:hidden;transition:width 180ms ease-out;flex:none" ]
           <> (if st.drawer.open then [] else [ HP.attr (HH.AttrName "inert") "" ])
       )
@@ -613,6 +643,13 @@ browserDrawer st b =
             ]
           <> (if r.tag == "" then [] else [ HH.span [ style "flex:none;font-size:10px;letter-spacing:0.08em;text-transform:uppercase;color:#6a6657" ] [ HH.text r.tag ] ])
           <> [ HH.span [ HP.class_ (HH.ClassName "tfb-g"), style "flex:none;display:inline-flex;gap:2px;opacity:0.75" ] (map faIcon r.icons) ]
+          <> map (\act ->
+                let asking = st.confirming == Just { slot: r.slot, act }
+                in HH.button
+                     [ HP.class_ (HH.ClassName ("tfb-act" <> if asking then " ask" else ""))
+                     , HE.onClick \_ -> RowAction r.slot act
+                     , HP.title (if asking then "Click again to " <> act <> " it" else act) ]
+                     [ HH.text (if asking then act <> "?" else act) ]) r.actions
       )
   -- four ways to recall: across, running or frozen; down, as saved or in key
   square r =
@@ -672,7 +709,7 @@ bar cfg st =
       -- the rig is the one playing.
       <> (if st.mode == Atlantis then [ atlantisTag ] else [])
       <> (if cfg.playable then [ button (if st.playing then "■ Stop" else "▶ Play") TogglePlay ] else [])
-      <> [ button "Capture (c)" Capture ]
+      <> (if cfg.capturable then [ button "Capture (c)" Capture ] else [])
       -- Limulus combines the machines, on the rig: its drawer on the right,
       -- in Atlantis
       <> [ HH.span [ style "display:flex;align-items:center;min-width:40px" ] [ chipIcons st.chip ]

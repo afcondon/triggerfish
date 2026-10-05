@@ -27,6 +27,7 @@ main = Standalone.run
       Odonus.Marked _ -> Nothing
   , armOf: const Nothing
   , playable: true
+  , capturable: true
   , markOf: case _ of
       Odonus.Marked at -> Just at
       _ -> Nothing
