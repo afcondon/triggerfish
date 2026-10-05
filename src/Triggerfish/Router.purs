@@ -144,12 +144,11 @@ sourceOfRow r = case _ of
   RScale -> Scale { pattern: r.scalePattern, root: fromMaybe 0 (hush (pitchClass (trim r.scaleRoot))) }
   RHarmony -> Harmony r.harmony
 
--- | Whether a row may feed an input: the grid takes only a scale.
+-- | Whether a row may feed an input: every row feeds either, since a chord
+-- | shapes the grid as its arpeggios (docs/kb/plans/harmony-routes-coherent.md).
+-- | Kept as the one place to say otherwise.
 allowed :: Line -> Input -> Boolean
-allowed row input = case input, row of
-  OdonusGrid, RVoice _ -> false
-  OdonusGrid, RHarmony -> false
-  _, _ -> true
+allowed _ _ = true
 
 rowFeeds :: Router -> Line -> Input -> Boolean
 rowFeeds r row input = case sourceOf input r.routes, row of

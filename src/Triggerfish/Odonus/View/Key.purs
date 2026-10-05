@@ -48,9 +48,10 @@ quantPieces s =
   }
   where
   ctx = contextInfo s.odo
-  gridName = case s.odo.scalePattern of
-    Just sp -> "scale \"" <> sp <> "\""
-    Nothing -> Scale.rootName ctx.rootPc <> " " <> ctx.name
+  gridName = case s.odo.gridHarmony, s.odo.scalePattern of
+    Just h, _ -> "arpeggios of harmony \"" <> h <> "\""
+    _, Just sp -> "scale \"" <> sp <> "\""
+    _, _ -> Scale.rootName ctx.rootPc <> " " <> ctx.name
   outName = case s.odo.outScale, s.odo.harmony of
     Just o, _ -> "scale \"" <> o.pattern <> "\" on " <> Scale.rootName o.root
     _, Just h -> "harmony \"" <> h <> "\""
@@ -80,7 +81,7 @@ provenance input s = case Route.sourceOf input routes of
   Just (Route.Harmony _) -> "a harmony route"
   Nothing -> case input of
     Route.OdonusGrid
-      | isJust s.odo.scalePattern -> "a line in Limulus"
+      | isJust s.odo.scalePattern || isJust s.odo.gridHarmony -> "a line in Limulus"
       | otherwise -> "Odonus\x2019s own scale"
     Route.OdonusOut
       | isJust s.odo.harmony || isJust s.odo.outScale -> "a line in Limulus"

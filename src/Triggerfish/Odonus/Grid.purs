@@ -371,7 +371,7 @@ stageAbout msg = isJust (Feeds.readFeeds msg) || isJust (Feeds.readRoutes msg)
 
 -- | Odonus's two patterns as they stand: what a sample reads.
 patternsNow :: State -> Patterns
-patternsNow st = { harmony: st.odo.harmony, scale: st.odo.scalePattern, outScale: st.odo.outScale }
+patternsNow st = { harmony: st.odo.harmony, scale: st.odo.scalePattern, outScale: st.odo.outScale, gridHarmony: st.odo.gridHarmony }
 
 -- | Off the rig, the sample for `step`: the rig's, if held for the patterns
 -- | as they stand; with no patterns, the one that needs no Tidal.
