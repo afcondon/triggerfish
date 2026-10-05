@@ -1,24 +1,13 @@
--- | Odonus's SECONDARY NAV — the thin bar under the shell's machine switcher.
+-- | Odonus's stage controls, as a card at the top-left of the river (AC,
+-- | 2026-10-05). They were a secondary nav under the shell's bar, which also
+-- | carried the harmonic context; that moved to the top of the panels it
+-- | describes (`Odonus.View.Key.quantPieces`), and the bar went, giving its
+-- | height back to the panels.
 -- |
--- | It carries the SAME shape as Vetula's (`Vetula.App.contextBar`), because the
--- | two machines answer the same three questions and a player shouldn't have to
--- | learn two layouts (AC, 2026-08-06):
--- |
--- |   LEFT   the stage tabs, hard left under the shell's transport, then ONLY
--- |          the controls that mean something in the stage you're in.
--- |   RIGHT  the routes' state, then the harmonic context — which sits in the
--- |          same column as the shell's pitch set above it and Vetula's key/scale
--- |          on Vetula's own bar, because all three show the same thing at
--- |          different removes: Vetula sets it, the shell states it rig-wide,
--- |          Odonus reports the slice it's quantising to.
--- |
--- | Two groups never move (tabs, harmonic context); only the middle-left changes
--- | with the stage. That's the whole locality argument, and it's why ◆ mark is
--- | HERE rather than on the surface: it belongs to both stages, so putting it on
--- | either surface would move it under you when you switched to look at what you
--- | just marked. (It used to be in two places at once — this nav *and* the
--- | scope's `● logging` overlay, with the same counts. One home now.)
-module Triggerfish.Odonus.View.Nav (navBar) where
+-- | The stage tabs, then the controls shared by both stages (◆ mark, the
+-- | counts, clear), then whether the heads' routes reach their ports. The card
+-- | floats over whichever surface is on the left, PERFORM's river or REVIEW's.
+module Triggerfish.Odonus.View.Nav (riverControls) where
 
 import Prelude
 
@@ -33,22 +22,16 @@ import Triggerfish.Odonus.Grid.Widgets (engrave, style)
 import Triggerfish.Routing.Model as RM
 import Triggerfish.Routing.Out as RO
 import Triggerfish.Odonus.Logbook (noteCount)
-import Triggerfish.Odonus.View.Key (contextStrip)
 
-navBar :: forall m. State -> H.ComponentHTML Action Slots m
-navBar s =
+riverControls :: forall m. State -> H.ComponentHTML Action Slots m
+riverControls s =
   HH.div
-    [ style $ "position:relative;z-index:20;display:flex;align-items:center;gap:12px;"
-        <> "padding:5px 14px;border-bottom:1px solid #00000014;"
-        <> "background:linear-gradient(#cdc7b6,#c4bead);font-family:Georgia,serif" ]
-    ( [ stageTabs s ]
-        <> captureControls s
-        <> [ HH.div [ style "flex:1 1 auto;min-width:8px" ] []
-           , routingReadout s
-           , divider
-           , contextStrip s
-           ]
-    )
+    [ style $ "position:absolute;top:10px;left:10px;z-index:20;display:flex;flex-direction:column;align-items:flex-start;gap:6px;"
+        <> "padding:7px 9px;border-radius:9px;background:#cdc7b6ee;box-shadow:0 2px 10px #00000055;font-family:Georgia,serif" ]
+    [ stageTabs s
+    , HH.div [ style "display:flex;align-items:center;gap:8px" ] (captureControls s)
+    , routingReadout s
+    ]
 
 -- | Where this machine's heads are going, and whether they can get there.
 -- |
@@ -72,9 +55,6 @@ routingReadout s =
        [ HH.text (if broken
            then show (length dead) <> "/" <> show (length legs) <> " ROUTES DEAD"
            else show (length legs) <> " ROUTES") ]
-
-divider :: forall m. H.ComponentHTML Action Slots m
-divider = HH.div [ style "width:1px;height:20px;background:#00000018" ] []
 
 -- | The stage tabs. Two on Odonus (Vetula's three minus HUNT — Vetula owns the
 -- | harmony, so there is nothing here to hunt), styled identically so the control

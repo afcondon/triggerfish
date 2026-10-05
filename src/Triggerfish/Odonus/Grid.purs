@@ -75,7 +75,7 @@ import Triggerfish.Odonus.View.Playheads as Playheads
 import Triggerfish.Ui.Euclid as Euclid
 import Triggerfish.Odonus.View.Grid (gridPanel)
 import Triggerfish.Odonus.View.Replay (replayPanel)
-import Triggerfish.Odonus.View.Nav (navBar)
+import Triggerfish.Odonus.View.Nav (riverControls)
 import Triggerfish.Odonus.Patch (asCode, capturePatch, harmonicSummary, loadText, markText, nowText, patchText, recallText, recallGestureText, soundingOf)
 import Triggerfish.Odonus.Store as Store
 import Triggerfish.Clips as Clips
@@ -1934,7 +1934,7 @@ render s =
     [ style $ "position:fixed;top:var(--tf-bar);left:var(--tf-left,0px);right:var(--tf-right,0px);bottom:0;overflow:hidden;"
         <> "user-select:none;-webkit-user-select:none;"
         <> "background:#b7b1a0;font-family:Georgia,serif" ]
-    [ navBar s
+    [ riverControls s
     , case s.stage of
         -- KEY carries the SCENES song machinery in one merged column (#139); it now
         -- sits at the RHS so the working order reads Scope · Playheads · Odonus ·
