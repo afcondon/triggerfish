@@ -69,6 +69,7 @@ import Binnacle.Transport as Transport
 import Triggerfish.Transport (Sounding(..))
 import Triggerfish.Midi.Routing as Routing
 import Triggerfish.Glyph (ChipView, Glyph, sessionAliasOf)
+import Triggerfish.Bar (Bar)
 -- Qualified: `chordGlyph` is also the name of this module's lattice-node
 -- renderer, which draws a chord and has nothing to do with identity.
 import Triggerfish.Clips.Share as Share
@@ -1143,6 +1144,11 @@ data SourceQuery a
   -- The browser drawer (docs/kb/plans/the-deck.md, 2026-10-05): the saved
   -- scenes (Amphora `vetula-scene`), carried as they are; load one; save one.
   | AskScenes (Array { name :: String, session :: String, key :: String } -> a)
+  -- The controls the shell draws in its top bar (Triggerfish.Bar, AC
+  -- 2026-10-05): the stage tabs, ◆ mark with its counts and clear (PERFORM and
+  -- REVIEW), and the session's rebus; and what was pressed there.
+  | AskBar (Bar -> a)
+  | BarAct String a
   | LoadSceneAt Int a
   | SaveSceneQ a
   | AskBank (Array { slot :: Int, alias :: String, name :: String, starred :: Boolean } -> a)
@@ -1432,6 +1438,34 @@ handleQuery = case _ of
       tagged pre item = maybe "" (SCU.drop (SCU.length pre)) (find (\t -> SCU.take (SCU.length pre) t == pre) item.tags)
       scene item = { name: item.name, session: tagged "session:" item, key: tagged "key:" item }
     pure (Just (reply (map scene s.perfScenes)))
+  AskBar reply -> do
+    s <- H.get
+    let
+      tab id label active tip = { id, label, active, tip }
+      marking = s.stage == Perform || s.stage == Review
+    pure $ Just $ reply
+      { tabs:
+          [ tab "hunt" "HUNT" (isHunt s.stage) "hunt harmonic space \x2014 catch chords into the tank"
+          , tab "rehearse" "REHEARSE" (s.stage == Rehearse) "a progression with alternatives at every chord \x2014 run it until it settles"
+          , tab "perform" "PERFORM" (s.stage == Perform) "play the voices, with the capture river alongside"
+          , tab "review" "REVIEW" (s.stage == Review) "the whole take \x2014 cherry-pick a phrase into the clip library"
+          ]
+      , marks: if marking then show (Logbook.noteCount s.capture.logbook) <> " notes \x00b7 " <> show (length s.capture.logbook.marks) <> " \x25c6" else ""
+      , icons: if s.perfSession.alias == "" then [] else map (\icon -> { icon, color: "#2a2a2a" }) (split (Pattern "-") s.perfSession.alias)
+      , rebusTip: "session " <> (if s.perfSession.name == "" then s.perfSession.alias else s.perfSession.name) <> " \x00b7 new session, chyron housekeeping"
+      }
+  BarAct act next -> do
+    s <- H.get
+    case act of
+      "stage:hunt" -> handleAction (SetStage (Hunt s.lastLens))
+      "stage:rehearse" -> handleAction (SetStage Rehearse)
+      "stage:perform" -> handleAction (SetStage Perform)
+      "stage:review" -> handleAction (SetStage Review)
+      "mark" -> handleAction CaptureMark
+      "clear" -> handleAction CaptureClear
+      "rebus" -> handleAction PerfMenuToggle
+      _ -> pure unit
+    pure (Just next)
   LoadSceneAt i next -> do
     s <- H.get
     for_ (s.perfScenes !! i) \item -> handleAction (PerfLoadScene item.payload)
@@ -5507,7 +5541,7 @@ render st =
     -- chyron, so the stage clears both top strips; the old bottom voice bar is gone,
     -- so it fills to the window bottom (freed lower strip → future MIDI-flow chyron).
     -- right of the browser drawer (Triggerfish.Standalone's --tf-left)
-    [ HP.style ("position: relative; margin-top: calc(var(--tf-bar) + 44px); margin-left: var(--tf-left, 0px); width: calc(100% - var(--tf-left, 0px) - var(--tf-right, 0px)); height: calc(100vh - 132px); min-height: 620px; overflow: hidden; border-radius: 8px; background: " <> canvasBg <> ";") ]
+    [ HP.style ("position: relative; margin-top: calc(var(--tf-bar) + " <> contextBarHeight st <> "); margin-left: var(--tf-left, 0px); width: calc(100% - var(--tf-left, 0px) - var(--tf-right, 0px)); height: calc(100vh - 88px - " <> contextBarHeight st <> "); min-height: 620px; overflow: hidden; border-radius: 8px; background: " <> canvasBg <> ";") ]
     [ HH.div [ HP.style "position: absolute; inset: 0;" ] [ surface st ]
     -- Scene recall belongs to the INSTRUMENT, not to Perform. Its entry point
     -- has always been the session menu in `contextBar`, which renders on every
@@ -5518,7 +5552,10 @@ render st =
     -- CONTEXT is now a docked control bar between the nav and the chyron (the last
     -- floating overlay is gone, reclaiming the whole left column): key · scale ·
     -- palettes · lens · rig/help. See `contextBar`.
-    , contextBar st
+    , if isHunt st.stage then contextBar st else HH.text ""
+    -- the session menu (new session, the chyron's housekeeping), opened from
+    -- the rebus in the shell's bar, so drawn under it
+    , if st.perfMenuOpen then sessionMenuPanel st else HH.text ""
     -- The Tank & Progression card is retired (Tank overhaul §10.6): the chyron is
     -- now the single surface for collect · select · reorder · bundle/unbundle, so
     -- the tank tiles, the tonnetz stack, arrange/grow, and the built-progression
@@ -5566,10 +5603,41 @@ barLeftInset st = if st.stage == Perform then riverWidth else "0px"
 chyronHeight :: String
 chyronHeight = "52px"
 
+-- | Vetula's own bar (`contextBar`) is HUNT's controls alone since its stage
+-- | tabs and mark went to the shell's bar (2026-10-05), so it takes room only
+-- | in HUNT.
+contextBarHeight :: State -> String
+contextBarHeight st = if isHunt st.stage then "44px" else "0px"
+
+-- | The session menu, opened from the rebus in the shell's bar: a new
+-- | session, and the chyron's housekeeping.
+sessionMenuPanel :: forall m. State -> H.ComponentHTML Action Slots m
+sessionMenuPanel st =
+  HH.div_
+    [ HH.div [ HP.style "position: fixed; inset: 0; z-index: 45;", HE.onClick \_ -> PerfMenuClose ] []
+    , HH.div
+        [ HP.style "position: fixed; top: calc(var(--tf-bar) + 4px); left: calc(var(--tf-left, 0px) + 12px); z-index: 46; min-width: 200px; background: #fff; border: 1px solid #e0d8bf; border-radius: 7px; box-shadow: 0 8px 28px rgba(0,0,0,0.16); padding: 5px 0; overflow: hidden;"
+        , HE.onClick \e -> PerfStopClick e PerfNop ]
+        [ item true "\x21bb new session" PerfNewSession
+        , HH.div [ HP.style "height: 1px; background: #efe8d4; margin: 4px 0;" ] []
+        , item hasChyron "\x232b clear chyron" ClearChyron
+        , item hasChyron "\x2261 de-dupe chyron" DedupeChyron
+        ]
+    ]
+  where
+  hasChyron = length st.chyron > 0
+  item enabled label act =
+    HH.button
+      [ HP.style ("display: block; width: 100%; text-align: left; border: none; background: transparent; padding: 6px 14px; font-size: 12px; "
+                   <> (if enabled then "color: #4a4a4a; cursor: pointer;" else "color: #c4bfa8; cursor: default;"))
+      , HP.enabled enabled
+      , HE.onClick \_ -> if enabled then PerfMenuPick act else PerfNop ]
+      [ HH.text label ]
+
 chyronBar :: forall m. State -> H.ComponentHTML Action Slots m
 chyronBar st =
   HH.div
-    [ HP.style ( "position: fixed; top: calc(var(--tf-bar) + 44px); left: calc(var(--tf-left, 0px) + " <> barLeftInset st <> "); right: var(--tf-right, 0px); z-index: 39; box-sizing: border-box; "
+    [ HP.style ( "position: fixed; top: calc(var(--tf-bar) + " <> contextBarHeight st <> "); left: calc(var(--tf-left, 0px) + " <> barLeftInset st <> "); right: var(--tf-right, 0px); z-index: 39; box-sizing: border-box; "
         <> "display: flex; gap: 10px; align-items: center; padding: 3px 12px; height: " <> chyronHeight <> "; overflow: hidden; "
         -- shift-click is a selection gesture here (extend the range), so kill the
         -- browser's own shift-click text selection across the bar. user-select
@@ -5821,39 +5889,6 @@ subGroup label body =
 countLabel :: Int -> String -> String
 countLabel n noun = show n <> " " <> noun <> (if n == 1 then "" else "s")
 
--- | The CONTEXT bar — a thin control strip docked between the top nav and the
--- | AUDITION chyron (Tank-overhaul follow-on: kills the last floating overlay,
--- | reclaiming the whole left column). Horizontal: key · scale · [family] ·
--- | palettes · [borrow] · lens, with the rig connection + help pushed right. The
--- | fields keep their little labels stacked over each control, so it reads as a
--- | labelled toolbar. Dropdowns open DOWN over the surface (z above the chyron),
--- | so the bar must not clip overflow.
--- | The STAGE TABS — Vetula's one mode control, hard left in the secondary nav
--- | so it sits directly under the shell's transport. Three peers, in the order
--- | material flows through them; see `Stage`.
--- |
--- | HUNT returns to `lastLens`, so the projection you were last using is where
--- | you land — the tab is the stage, the dropdown beside it (a Hunt control) is
--- | the projection.
-stageTabs :: forall m. State -> H.ComponentHTML Action Slots m
-stageTabs st =
-  HH.div
-    [ HP.style "display: flex; flex: 0 0 auto; border: 1px solid #00000026; border-radius: 6px; overflow: hidden; box-shadow: 0 1px 2px #0000001a;" ]
-    [ tab (isHunt st.stage) (Hunt st.lastLens) "HUNT" "hunt harmonic space — catch chords into the tank"
-    , tab (st.stage == Rehearse) Rehearse "REHEARSE" "a progression with alternatives at every chord — run it until it settles"
-    , tab (st.stage == Perform) Perform "PERFORM" "play the voices, with the capture river alongside"
-    , tab (st.stage == Review) Review "REVIEW" "the whole take — cherry-pick a phrase into the clip library"
-    ]
-  where
-  tab active target label tip =
-    HH.button
-      [ HP.title tip
-      , HE.onClick \_ -> SetStage target
-      , HP.style ("padding: 5px 14px; border: none; cursor: pointer; font-family: Georgia, serif; font-size: 11px; letter-spacing: 0.12em; "
-                   <> (if active then "background: linear-gradient(#c8a86a,#b8975a); color: #1c1a12; font-weight: 600;"
-                                 else "background: linear-gradient(#e9e5d9,#dcd8c9); color: #5a564b;")) ]
-      [ HH.text label ]
-
 contextBar :: forall m. MonadAff m => State -> H.ComponentHTML Action Slots m
 contextBar st =
   HH.div
@@ -5879,22 +5914,13 @@ contextBar st =
     -- and key/scale (far right, under the shell's pitch set, which they feed).
     -- Only the middle-left group changes with the stage, so it's one contiguous
     -- region you learn to expect rather than a row that rearranges under you.
-    ( [ stageTabs st ]
-        <> stageControls
+    -- Since 2026-10-05 (AC) the stage tabs, ◆ mark with its counts and clear,
+    -- and the session's rebus are the shell's, in its top bar (AskBar,
+    -- Triggerfish.Bar); "scene loaded" and the continuo chip went (MIDI out is
+    -- the Dashboard's and Limulus's). What is left is HUNT's own, so this bar
+    -- shows only in HUNT (`contextBarHeight`).
+    ( stageControls
         <> [ HH.div [ HP.style "flex: 1 1 auto; min-width: 8px;" ] [] ]
-        -- The one item allowed to give ground. It's transient status, so when the
-        -- bar is tight it should ellipsis rather than push the controls — which is
-        -- what it was doing: "scene loaded" appearing was enough to overflow the
-        -- squashed Perform bar.
-        <> [ case st.publishMsg of
-               Just m -> HH.span
-                 [ HP.style ( "font-size: 11px; color: #7a6a3a; font-family: ui-monospace, monospace; "
-                     <> "flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis;" ) ]
-                 [ HH.text m ]
-               Nothing -> HH.text ""
-           , sessionMenu
-           , divider
-           ]
         -- The harmonic column — HUNT ONLY. Vetula's key and scale are the source of
         -- the pitch set in the shell's top nav and of Odonus's inherited-context
         -- readout, so the VALUE still travels everywhere; it is the CONTROL that
@@ -5924,9 +5950,7 @@ contextBar st =
         -- transposition MAPPED over selected ones. Both are pattern functions, so
         -- both keep the identity honest. Neither is built.
         <> (if isHunt st.stage then harmonicColumn else [])
-        <> [ midiChip st.midiName
-           , HH.button [ HP.style helpBtnStyle, HP.title "keys & help", HE.onClick \_ -> ToggleHelp ] [ HH.text "ⓘ" ]
-           ]
+        <> [ HH.button [ HP.style helpBtnStyle, HP.title "keys & help", HE.onClick \_ -> ToggleHelp ] [ HH.text "ⓘ" ] ]
     )
   where
   -- Key · scale · divider. Only mounted in Hunt (see the note at the call site),
@@ -5950,8 +5974,9 @@ contextBar st =
     -- Rehearse's controls live in its own pane: they are about the progression
     -- in front of you, not about the app's mode.
     Rehearse -> []
-    Perform -> captureControls
-    Review -> captureControls
+    -- PERFORM and REVIEW share ◆ mark, the counts and clear: the shell's bar
+    Perform -> []
+    Review -> []
 
   -- The projection picker is a HUNT control, so it exists only while hunting.
   -- It used to sit in the bar permanently, displaying `browseOr lastBrowse view`
@@ -5972,24 +5997,6 @@ contextBar st =
       <> borrowField
       <> resetChip
 
-  -- ◆ mark · the running counts · clear. Lifted out of the roll's own header:
-  -- they're shared by PERFORM and REVIEW, and a control that belongs to two
-  -- stages belongs to the chrome, not to either surface. Same slot as Odonus's.
-  captureControls =
-    [ HH.button
-        [ HP.style "border: 1px solid #d8c98a; background: #fdf7e4; color: #8a6a10; cursor: pointer; padding: 3px 12px; border-radius: 5px; font-size: 11px; font-family: Georgia, serif;"
-        , HP.title "flag the last couple of bars as a good bit"
-        , HE.onClick \_ -> CaptureMark ]
-        [ HH.text "◆ mark" ]
-    , HH.span [ HP.style "font-size: 10px; color: #9a9482; font-family: 'SF Mono', Menlo, monospace;" ]
-        [ HH.text (show (Logbook.noteCount st.capture.logbook) <> " notes · " <> show (length st.capture.logbook.marks) <> " ◆") ]
-    , HH.button
-        [ HP.style "border: 1px solid #e2ddcc; background: transparent; color: #a09a88; cursor: pointer; padding: 3px 10px; border-radius: 5px; font-size: 10px; font-family: Georgia, serif;"
-        , HP.title "clear the Review surface: its notes, marks and loops (on the rig too: vetula $ clear)"
-        , HE.onClick \_ -> CaptureClear ]
-        [ HH.text "clear" ]
-    ]
-
   -- a way back to the fitted view (scroll to zoom · drag to pan), once it's moved.
   resetChip =
     if st.viewZoom /= 1.0 || st.viewCx /= 0.0 || st.viewCy /= 0.0 then
@@ -6001,50 +6008,6 @@ contextBar st =
     else []
   -- a hairline group separator.
   divider = HH.div [ HP.style "width: 1px; height: 22px; background: #00000016;" ] []
-  -- The session badge doubling as the session/scene/chyron command menu (the
-  -- Perform header's old control row, moved here). Click the 3-glyph badge to drop
-  -- the menu; a transparent backdrop closes it; each item runs via `PerfMenuPick`
-  -- (close, then act). Global — reachable from every view, not just Perform.
-  sessionMenu =
-    HH.div [ HP.style "position: relative; display: flex; align-items: center;" ]
-      ( [ HH.button
-            [ HP.style ("display: inline-flex; align-items: center; gap: 7px; padding: 3px 10px; border: 1px solid #d8cfa8; border-radius: 5px; cursor: pointer; background: "
-                         <> (if st.perfMenuOpen then "#f3ead2" else "#faf7ee") <> ";")
-            , HP.title "session · scenes · chyron housekeeping"
-            , HE.onClick \_ -> PerfMenuToggle ]
-            [ badgeGlyphs st.perfSession
-            , HH.span [ HP.style "font-size: 11px; color: #6a5a2a; letter-spacing: 0.03em;" ]
-                [ HH.text sessionName ]
-            , HH.span [ HP.style "font-size: 10px; color: #b0a684;" ] [ HH.text "▾" ] ] ]
-          <> (if st.perfMenuOpen then [ menuBackdrop, menuDropdown ] else []) )
-  badgeGlyphs sess =
-    HH.span [ HP.style "display: inline-flex; align-items: center; gap: 4px;" ]
-      (if sess.alias == "" then [ HH.text "…" ]
-       else map (\name -> faIcon { icon: name, color: "#2a2a2a" }) (split (Pattern "-") sess.alias))
-  sessionName = if st.perfSession.name == "" then st.perfSession.alias else st.perfSession.name
-  menuBackdrop =
-    HH.div [ HP.style "position: fixed; inset: 0; z-index: 45;", HE.onClick \_ -> PerfMenuClose ] []
-  menuDropdown =
-    HH.div
-      [ HP.style "position: absolute; top: 38px; left: 0; z-index: 46; min-width: 200px; background: #fff; border: 1px solid #e0d8bf; border-radius: 7px; box-shadow: 0 8px 28px rgba(0,0,0,0.16); padding: 5px 0; overflow: hidden;"
-      , HE.onClick \e -> PerfStopClick e PerfNop ]
-      -- saving and loading scenes are the browser drawer's (b) since
-      -- 2026-10-05; the session itself, and the chyron's housekeeping, stay
-      [ menuItem true "↻ new session" PerfNewSession
-      , menuDivider
-      , menuItem hasChyron "⌫ clear chyron" ClearChyron
-      , menuItem hasChyron "≡ de-dupe chyron" DedupeChyron
-      ]
-    where
-    hasChyron = length st.chyron > 0
-  menuDivider = HH.div [ HP.style "height: 1px; background: #efe8d4; margin: 4px 0;" ] []
-  menuItem enabled label act =
-    HH.button
-      [ HP.style ("display: block; width: 100%; text-align: left; border: none; background: transparent; padding: 6px 14px; font-size: 12px; "
-                   <> (if enabled then "color: #4a4a4a; cursor: pointer;" else "color: #c4bfa8; cursor: default;"))
-      , HP.enabled enabled
-      , HE.onClick \_ -> if enabled then PerfMenuPick act else PerfNop ]
-      [ HH.text label ]
   -- Perform as its own button — a mode apart from the browse projections. Filled
   -- dark when active; a toggle, so clicking it while in Perform returns to the last
   -- browse view (a guaranteed way back, since re-picking the dropdown's current
@@ -6094,17 +6057,6 @@ contextBar st =
                  ((Select.cascadingInput modeGroups) { selected = Just (currentModeValue famMode), searchable = true })
                  \(Select.Selected v) -> ReflavourFamily v ] ]
     Nothing -> []
-  -- clickable: a click is the user gesture Chrome needs to actually show the
-  -- Web-MIDI permission prompt (the page-load request stays silent), so clicking
-  -- the chip (re)connects. Green = connected, amber = click to enable/retry.
-  midiChip nm =
-    let ok = nm /= "…" && nm /= "" && nm /= "no Web-MIDI" && nm /= "muted"
-    in HH.button
-         [ HP.style "display: inline-flex; align-items: center; gap: 5px; font-size: 11px; color: #8a8a8a; background: #f4f4f4; border: 1px solid #e8e8e8; border-radius: 10px; padding: 2px 9px; cursor: pointer;"
-         , HP.title (if ok then "Web-MIDI connected — click to reconnect" else "click to enable Web-MIDI (grant the permission prompt)")
-         , HE.onClick \_ -> RetryMidi ]
-         [ HH.span [ HP.style ("width: 7px; height: 7px; border-radius: 50%; background: " <> (if ok then "#5aa86a" else "#c9a23a") <> ";") ] []
-         , HH.text nm ]
   helpBtnStyle = "border: 1px solid #e0e0e0; background: #fafafa; color: #7a7a7a; cursor: pointer; width: 22px; height: 22px; border-radius: 50%; font-size: 12px; line-height: 1; padding: 0;"
 
 -- | The Tank pane — the durable, unordered collection of caught chords, as a

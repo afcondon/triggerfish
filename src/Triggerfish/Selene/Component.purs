@@ -339,6 +339,9 @@ handleQuery = case _ of
       _ -> pure unit
     pure (Just next)
   -- the rack's rebus, dragged from the page onto the drawer: kept as a new rack
+  -- no controls of its own in the shared bar (yet)
+  AskBar _ -> pure Nothing
+  BarAction _ next -> pure (Just next)
   BrowserDrop t next -> do
     when (t == "keep:rack") (void (handleQuery (BrowserKeep unit)))
     pure (Just next)

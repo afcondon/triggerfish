@@ -56,6 +56,7 @@ import Halogen.VDom.Driver (runUI)
 import Triggerfish.Fish as Fish
 import Triggerfish.Glyph (ChipView)
 import Triggerfish.GlyphView (chipIcons, faIcon)
+import Triggerfish.Bar (Bar)
 import Triggerfish.Browser as Browser
 import Halogen.Widgets.Drawer as Drawer
 import Data.Array as Array
@@ -123,6 +124,8 @@ type State =
   , tempoFlash :: Maybe { bpm :: Number, n :: Int }
   , freeT0 :: Number
   , chip :: Maybe ChipView
+  -- the machine's own controls for the bar (Triggerfish.Bar); Nothing: none
+  , machineBar :: Maybe Bar
   , rig :: Maybe Binnacle.Binnacle
   , rigUp :: Boolean
   , table :: RM.Table
@@ -183,6 +186,8 @@ data Action o
   | FromFrame E.Event
   | DockAlways Boolean
   | AskBrowser
+  | AskBar
+  | PressBar String
   | FromDrawer Drawer.Output
   | RecallRow Int Browser.Recall
   | StartRename Browser.Item
@@ -210,7 +215,7 @@ _machine = Proxy
 root :: forall q i o' o. Config o -> H.Component q i o' Aff
 root cfg = H.mkComponent
   { initialState: \_ ->
-      { mode: Solo, playing: false, bpm: 120.0, tempoFlash: Nothing, freeT0: 0.0, chip: Nothing, rig: Nothing
+      { mode: Solo, playing: false, bpm: 120.0, tempoFlash: Nothing, freeT0: 0.0, chip: Nothing, machineBar: Nothing, rig: Nothing
       , rigUp: false, table: RM.defaultTable, staged: Nothing, bus: Nothing, limulus: false, limulusMade: false, limulusAlways: false, limWidth: 560.0
       , browser: Nothing, drawer: { open: false, width: 280.0 }, lastRecall: { frozen: false, inKey: false }, renaming: Nothing, confirming: Nothing }
   , render: render cfg
@@ -250,6 +255,7 @@ handleAction cfg = case _ of
     limWidth <- liftEffect (loadWidth (limKey cfg) 560.0)
     H.modify_ _ { drawer = drawer, limWidth = limWidth }
     handleAction cfg AskBrowser
+    handleAction cfg AskBar
     handleAction cfg RoutingChanged
     pushFree
     pushSounding cfg
@@ -283,6 +289,13 @@ handleAction cfg = case _ of
   AskBrowser -> do
     b <- H.query _machine unit (SQ.AskBrowser identity)
     H.modify_ _ { browser = b }
+  AskBar -> do
+    b <- H.query _machine unit (SQ.AskBar identity)
+    st <- H.get
+    when (b /= st.machineBar) (H.modify_ _ { machineBar = b })
+  PressBar act -> do
+    void $ H.query _machine unit (SQ.BarAction act unit)
+    handleAction cfg AskBar
   FromDrawer out -> do
     st <- H.get
     let d = case out of
@@ -414,8 +427,9 @@ handleAction cfg = case _ of
   -- macro-lane edits) belong to the dashboard.
   FromMachine out -> do
     -- anything a machine says may change its drawer (Vetula's voices arrive
-    -- from the rig), so the rows are asked for again
+    -- from the rig) or its controls in the bar, so both are asked for again
     handleAction cfg AskBrowser
+    handleAction cfg AskBar
     for_ (cfg.chipOf out) \cv -> do
       H.modify_ _ { chip = cv }
       publishStage cfg
@@ -715,9 +729,9 @@ bar cfg st =
       <> (if cfg.capturable then [ button "Capture (c)" Capture ] else [])
       -- Limulus combines the machines, on the rig: its drawer on the right,
       -- in Atlantis
-      <> [ HH.span [ style "display:flex;align-items:center;min-width:40px" ] [ chipIcons st.chip ]
-      , HH.span [ style "flex:1" ] []
-      ]
+      <> [ HH.span [ style "display:flex;align-items:center;min-width:40px" ] [ chipIcons st.chip ] ]
+      <> maybe [] machineControls st.machineBar
+      <> [ HH.span [ style "flex:1" ] [] ]
       <> [ button "Panic" Panic ]
       <> case st.tempoFlash of
         Just f -> [ tempoFlash f.bpm ]
@@ -740,6 +754,34 @@ bar cfg st =
           <> "text-transform:uppercase;color:#eaf3fa;background:linear-gradient(#3a6b8a,#2d5670)"
       ]
       [ HH.text "Atlantis" ]
+  -- the machine's own controls (Triggerfish.Bar): its stage tabs, ◆ mark
+  -- with the counts and clear, and its rebus, drawn here as the drawer draws
+  -- its rows
+  machineControls b =
+    [ HH.div [ style "display:flex;flex:0 0 auto;border:1px solid #00000026;border-radius:6px;overflow:hidden;box-shadow:0 1px 2px #0000001a" ]
+        (map (\t -> HH.button
+            [ HE.onClick \_ -> PressBar ("stage:" <> t.id), HP.title t.tip
+            , style $ "padding:5px 13px;border:none;cursor:pointer;font-family:Georgia,serif;font-size:11px;letter-spacing:0.12em;"
+                <> (if t.active then "background:linear-gradient(#c8a86a,#b8975a);color:#1c1a12;font-weight:600" else "background:linear-gradient(#f4f1e8,#e2ddcf);color:#5a564b") ]
+            [ HH.text t.label ]) b.tabs)
+    ]
+      <> (if b.marks == "" then [] else
+        [ HH.button
+            [ HE.onClick \_ -> PressBar "mark", HP.title "flag the last couple of bars as a good bit"
+            , style "padding:4px 11px;border:1px solid #d8c98a;border-radius:5px;cursor:pointer;background:#fdf7e4;color:#8a6a10;font-size:11px;font-family:Georgia,serif;white-space:nowrap" ]
+            [ HH.text "\x25c6 mark" ]
+        , HH.span [ style "font-family:'SF Mono',Menlo,monospace;font-size:10px;color:#8a8576;white-space:nowrap" ] [ HH.text b.marks ]
+        , HH.button
+            [ HE.onClick \_ -> PressBar "clear", HP.title "clear the Review surface: its notes, marks and loops"
+            , style "padding:4px 9px;border:1px solid #00000018;border-radius:5px;cursor:pointer;background:transparent;color:#8a8576;font-size:10px;font-family:Georgia,serif" ]
+            [ HH.text "clear" ]
+        ])
+      <> (if Array.null b.icons then [] else
+        [ HH.button
+            [ HE.onClick \_ -> PressBar "rebus", HP.title b.rebusTip
+            , style "display:inline-flex;align-items:center;gap:4px;padding:3px 8px;border:1px solid #00000022;border-radius:5px;cursor:pointer;background:#faf7ee" ]
+            (map faIcon b.icons)
+        ])
   button label act =
     HH.button
       [ HE.onClick \_ -> act

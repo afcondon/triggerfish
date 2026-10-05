@@ -26,7 +26,7 @@ main = Standalone.run
       Page.Armed on -> Just on
       _ -> Nothing
   , playable: true
-  , capturable: true
+  , capturable: false
   , markOf: case _ of
       Page.Marked at -> Just at
       _ -> Nothing

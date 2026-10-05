@@ -35,6 +35,7 @@
 -- | a STRUCTURAL record, so the two query types need share no nominal type.)
 module Triggerfish.SourceQuery (Query(..)) where
 
+import Triggerfish.Bar (Bar)
 import Triggerfish.Browser (Browser, Recall)
 import Triggerfish.Routing.Model (Table)
 import Triggerfish.Transport (Sounding)
@@ -117,6 +118,10 @@ data Query a
   -- on the drawer from the page (Selene's rack rebus: keep it as a new rack)
   | BrowserAction Int String a
   | BrowserDrop String a
+  -- The machine's own controls in the shared bar (Triggerfish.Bar): what to
+  -- show, and what was pressed (`stage:ID`, `mark`, `clear`, `rebus`).
+  | AskBar (Bar -> a)
+  | BarAction String a
   | AskBank (Array { slot :: Int, alias :: String, name :: String, starred :: Boolean } -> a)
   | RecallSlot Int a
   | StarSlot Int a

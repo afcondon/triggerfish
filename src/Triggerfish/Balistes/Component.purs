@@ -128,6 +128,9 @@ handleQuery = case _ of
     pure (Just next)
   BrowserUndo next -> pure (Just next)
   BrowserAction _ _ next -> pure (Just next)
+  -- no controls of its own in the shared bar (yet)
+  AskBar _ -> pure Nothing
+  BarAction _ next -> pure (Just next)
   BrowserDrop _ next -> pure (Just next)
   BrowserRename i name next -> do
     H.modify_ \s -> s { presets = fromMaybe s.presets (modifyAt i (_ { name = Just name }) s.presets) }

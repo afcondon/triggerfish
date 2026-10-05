@@ -16,7 +16,7 @@ module Triggerfish.Vetula.Page
 import Prelude
 
 import Data.Foldable (for_)
-import Data.Maybe (Maybe(..), fromMaybe)
+import Data.Maybe (Maybe(..), fromMaybe, maybe)
 import Effect.Aff (Aff)
 import Effect.Class (liftEffect)
 import Effect.Ref (Ref)
@@ -38,9 +38,9 @@ import Binnacle.Transport as Transport
 import Data.Int as Int
 import Data.Map (Map)
 import Data.Map as Map
-import Data.Maybe (maybe)
 import Triggerfish.Odonus.Samples as Samples
 import Triggerfish.Vetula.Voices as Voices
+import Triggerfish.Bar (Bar)
 
 data Output
   = Chip (Maybe ChipView)
@@ -66,6 +66,8 @@ type State =
   , voices :: Array Voices.Voice
   , routesText :: Maybe String
   , names :: Map Int (Array String)
+  -- the controls Vetula last gave for the shell's bar, to say when they change
+  , lastBar :: Maybe Bar
   }
 
 data Action
@@ -84,7 +86,7 @@ component = H.mkComponent
   { initialState: \_ ->
       { sounding: Silent, chip: Nothing
       , brushPrev: "", brushSent: "", busy: Nothing
-      , bin: Nothing, voices: [], routesText: Nothing, names: Map.empty }
+      , bin: Nothing, voices: [], routesText: Nothing, names: Map.empty, lastBar: Nothing }
   , render: \_ -> HH.slot _vet unit Vetula.component unit FromVetula
   , eval: H.mkEval H.defaultEval
       { handleAction = handleAction
@@ -145,6 +147,12 @@ handleAction = case _ of
 -- | Every write is guarded on a change: this runs ten times a second.
 poll :: M Unit
 poll = do
+  -- the bar's controls: the stage, the counts, the session's rebus
+  mbar <- H.query _vet unit (Vetula.AskBar identity)
+  stb <- H.get
+  when (mbar /= stb.lastBar) do
+    H.modify_ _ { lastBar = mbar }
+    H.raise BrowserChanged
   mchip <- H.query _vet unit (Vetula.AskChip identity)
   for_ mchip \cv -> do
     st <- H.get
@@ -191,6 +199,8 @@ handleQuery = case _ of
         for_ st.bin \b -> liftEffect (Transport.send (Binnacle.socket b) line)
     pure (Just next)
   SQ.BrowserDrop _ next -> pure (Just next)
+  SQ.AskBar reply -> H.query _vet unit (Vetula.AskBar reply)
+  SQ.BarAction act next -> H.query _vet unit (Vetula.BarAct act next)
   SQ.AskSource k -> H.query _vet unit (Vetula.AskSource k)
   SQ.AskMarkText k -> H.query _vet unit (Vetula.AskMarkText k)
   SQ.AddMarkSnapshot at m t a -> H.query _vet unit (Vetula.AddMarkSnapshot at m t a)
