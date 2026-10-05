@@ -37,7 +37,7 @@ import Data.String as String
 import Data.Foldable (for_)
 import Data.Map (Map)
 import Data.Map as Map
-import Data.Maybe (Maybe(..), fromMaybe, isNothing, maybe)
+import Data.Maybe (Maybe(..), fromMaybe, isNothing, maybe, isJust)
 import Data.Traversable (traverse)
 import Data.Number as Number
 import Data.Number.Format (fixed, toStringWith)
@@ -495,6 +495,7 @@ handleAction = case _ of
   -- A port, then its other end: a source and an input make a cable (or
   -- unplug the one they already make). The rig owns the table: this sends
   -- the change, as the matrix does, and draws what the stage says back.
+  PortClick id | not patchEditable -> handleAction (Peek (routeOwner id))
   PortClick id -> do
     st <- H.get
     case st.armed of
@@ -508,6 +509,7 @@ handleAction = case _ of
 
   Peek slot -> H.modify_ \x -> x { peeked = if x.peeked == Just slot then Nothing else Just slot }
 
+  CableClick source _ | not patchEditable -> handleAction (Peek (routeOwner source))
   CableClick source input -> do
     st <- H.get
     H.modify_ _ { armed = Nothing }
@@ -651,6 +653,22 @@ inputWord = case _ of
 
 -- | Two ports clicked, as a matrix cell: one a source (`src:…`), the other
 -- | an input (`in:…`), in either order.
+-- | The patch bay draws the harmony routes but does not change them (AC,
+-- | 2026-10-05: docs/kb/plans/harmony-routes-coherent.md). Vetula says what its
+-- | voices feed, Odonus chooses its own scale, Limulus writes `route $` lines;
+-- | the chart shows the result. A click on a port or a cable shows the machine
+-- | that owns it instead. Patching here as a live move may come back.
+patchEditable :: Boolean
+patchEditable = false
+
+-- | The machine to go to for a port: Vetula for its key and voices, Limulus
+-- | for a typed scale or harmony, Odonus for its inputs.
+routeOwner :: String -> String
+routeOwner id
+  | id == "src:key" || isJust (String.stripPrefix (String.Pattern "src:v") id) = "vetula"
+  | isJust (String.stripPrefix (String.Pattern "src:") id) = "limulus"
+  | otherwise = "odonus"
+
 patchPair :: String -> String -> Maybe { line :: Router.Line, input :: HarmonyRoute.Input }
 patchPair a b = case lineOf a, inputOf b, lineOf b, inputOf a of
   Just line, Just input, _, _ -> Just { line, input }
