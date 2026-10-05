@@ -719,8 +719,8 @@ handleAction = case _ of
   DragLeaveTarget -> H.modify_ _ { dragOver = Nothing }
   DragRackStart e -> liftEffect (Drop.startDrag e "keep:rack")
   -- Dropped: the module goes to the rig as a line on that bank, replacing
-  -- what was there (`# fresh`); with Option held, merged into it instead (a
-  -- line changes only what it names). A block always sets the whole bank.
+  -- what was there (`# fresh`). A block always sets the whole bank. Option to
+  -- merge is off (`mergeOnOption`) until merge means something.
   DropOn target e -> do
     text <- liftEffect (Drop.dropText e)
     H.modify_ _ { dragOver = Nothing }
@@ -736,7 +736,7 @@ handleAction = case _ of
         | otherwise -> for_ st.binnacle \bin -> do
             let
               isBlock = isJust (Array.head (Str.split (Str.Pattern " ") (Str.trim text)) >>= Block.blockNamed)
-              merge = Drop.altHeld e
+              merge = mergeOnOption && Drop.altHeld e
               line = Line.onBank text target <> (if isBlock || merge then "" else " # fresh")
             liftEffect $ Transport.send (Binnacle.socket bin) ("tidal selene $ " <> line)
             H.modify_ _ { publishMsg = Just ((if merge && not isBlock then "merged into " else "→ ") <> M.targetWire target <> ": " <> text) }
@@ -803,6 +803,13 @@ setDocAt i doc lib = fromMaybe lib (modifyAt i (_ { doc = doc }) lib)
 -- | An Amphora library item as a local rack (payload = the rack's eDSL doc).
 amphoraRack :: Amphora.LibItem -> Store.Rack
 amphoraRack it = { name: it.name, doc: it.payload }
+
+-- | Option-drop merges a module into a row (its line without `# fresh`, so
+-- | only what it names changes). Off for the MVP (AC, 2026-10-05): a real
+-- | merge makes an output a stack of signals, a conceptual and UI question
+-- | of its own, and a half-merge met first would shape it.
+mergeOnOption :: Boolean
+mergeOnOption = false
 
 -- | Merge incoming (Amphora) racks over the current local ones by name: keep
 -- | every local rack, then append any incoming rack whose name isn't present.
@@ -1227,7 +1234,7 @@ dropFrame s target inner =
     [ HE.handler (EventType "dragover") (DragOverTarget target)
     , HE.handler (EventType "dragleave") (const DragLeaveTarget)
     , HE.handler (EventType "drop") (DropOn target)
-    , HP.title (M.targetLabel target <> ": drop a module to replace what is here; Option to merge into it")
+    , HP.title (M.targetLabel target <> ": drop a module to replace what is here" <> (if mergeOnOption then "; Option to merge into it" else ""))
     , style ("border-radius:9px;margin-bottom:10px;border:2px solid " <> edge)
     ]
     ( [ inner ] <> case over of
