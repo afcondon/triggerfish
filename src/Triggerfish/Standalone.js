@@ -74,3 +74,11 @@ export const saveDrawer = (key) => (o) => () => {
 
 // A name being edited starts selected, so typing replaces it.
 export const selectAll = (el) => () => { el.focus(); if (el.select) el.select(); };
+
+// A drawer's kept width, or `fallback` when none was kept.
+export const loadWidth = (key) => (fallback) => () => {
+  try {
+    const o = JSON.parse(localStorage.getItem(key) || "null");
+    return o && typeof o.width === "number" ? o.width : fallback;
+  } catch (_) { return fallback; }
+};

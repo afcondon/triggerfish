@@ -914,7 +914,7 @@ cycleWaveBank j = case _ of
 render :: forall m. MonadAff m => State -> H.ComponentHTML Action Slots m
 render s =
   HH.div
-    [ style $ "position:fixed;top:var(--tf-bar);left:var(--tf-left,0px);right:0;bottom:0;display:flex;align-items:stretch;overflow:hidden;"
+    [ style $ "position:fixed;top:var(--tf-bar);left:var(--tf-left,0px);right:var(--tf-right,0px);bottom:0;display:flex;align-items:stretch;overflow:hidden;"
         <> "user-select:none;-webkit-user-select:none;background:#b7b1a0;font-family:Georgia,serif" ]
     [ rackPanel s
     , sourcePanel s

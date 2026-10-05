@@ -1928,7 +1928,7 @@ render s =
     -- The whole surface is non-selectable: knob drags and toggle/matrix clicks
     -- never start a text selection. Content fills it at full height; the stage
     -- switch is in the nav (`stageTabs`), not floating over the surface.
-    [ style $ "position:fixed;top:var(--tf-bar);left:var(--tf-left,0px);right:0;bottom:0;overflow:hidden;"
+    [ style $ "position:fixed;top:var(--tf-bar);left:var(--tf-left,0px);right:var(--tf-right,0px);bottom:0;overflow:hidden;"
         <> "user-select:none;-webkit-user-select:none;"
         <> "background:#b7b1a0;font-family:Georgia,serif" ]
     [ navBar s

@@ -5509,7 +5509,7 @@ render st =
     -- chyron, so the stage clears both top strips; the old bottom voice bar is gone,
     -- so it fills to the window bottom (freed lower strip → future MIDI-flow chyron).
     -- right of the browser drawer (Triggerfish.Standalone's --tf-left)
-    [ HP.style ("position: relative; margin-top: calc(var(--tf-bar) + 44px); margin-left: var(--tf-left, 0px); width: calc(100% - var(--tf-left, 0px)); height: calc(100vh - 132px); min-height: 620px; overflow: hidden; border-radius: 8px; background: " <> canvasBg <> ";") ]
+    [ HP.style ("position: relative; margin-top: calc(var(--tf-bar) + 44px); margin-left: var(--tf-left, 0px); width: calc(100% - var(--tf-left, 0px) - var(--tf-right, 0px)); height: calc(100vh - 132px); min-height: 620px; overflow: hidden; border-radius: 8px; background: " <> canvasBg <> ";") ]
     [ HH.div [ HP.style "position: absolute; inset: 0;" ] [ surface st ]
     -- Scene recall belongs to the INSTRUMENT, not to Perform. Its entry point
     -- has always been the session menu in `contextBar`, which renders on every
@@ -5559,7 +5559,7 @@ riverWidth = "330px"
 -- | How far the docked bars pull their right edge in. Perform is the only stage
 -- | with a river, so it is the only stage that squashes.
 barRightInset :: State -> String
-barRightInset st = if st.stage == Perform then riverWidth else "0"
+barRightInset st = if st.stage == Perform then riverWidth else "0px"
 
 -- | The AUDITION chyron's height. It lies over the top of every stage (fixed,
 -- | under the CONTEXT bar), so a stage starts its content below it; fixed
@@ -5571,7 +5571,7 @@ chyronHeight = "52px"
 chyronBar :: forall m. State -> H.ComponentHTML Action Slots m
 chyronBar st =
   HH.div
-    [ HP.style ( "position: fixed; top: calc(var(--tf-bar) + 44px); left: var(--tf-left, 0px); right: " <> barRightInset st <> "; z-index: 39; box-sizing: border-box; "
+    [ HP.style ( "position: fixed; top: calc(var(--tf-bar) + 44px); left: var(--tf-left, 0px); right: calc(" <> barRightInset st <> " + var(--tf-right, 0px)); z-index: 39; box-sizing: border-box; "
         <> "display: flex; gap: 10px; align-items: center; padding: 3px 12px; height: " <> chyronHeight <> "; overflow: hidden; "
         -- shift-click is a selection gesture here (extend the range), so kill the
         -- browser's own shift-click text selection across the bar. user-select
@@ -5864,7 +5864,7 @@ contextBar st =
     -- was not enough: it keeps the items on one row, but each item still shrinks
     -- and wraps its text inside itself — which is what put "scene loaded",
     -- "horse-bell-bomb" and "continuo ✓" on two lines and grew the bar.
-    [ HP.style ( "position: fixed; top: var(--tf-bar); left: var(--tf-left, 0px); right: " <> barRightInset st <> "; z-index: 40; box-sizing: border-box; "
+    [ HP.style ( "position: fixed; top: var(--tf-bar); left: var(--tf-left, 0px); right: calc(" <> barRightInset st <> " + var(--tf-right, 0px)); z-index: 40; box-sizing: border-box; "
         <> "display: flex; align-items: center; flex-wrap: nowrap; white-space: nowrap; gap: 10px; padding: 0 12px; height: 44px; overflow: visible; "
         <> "background: linear-gradient(#f3eee0,#ece5d0); border-bottom: 1px solid #0000000f; box-shadow: 0 1px 3px #0000000d;" ) ]
     -- LEFT: the stage tabs, then ONLY the controls that mean something in the
@@ -8600,7 +8600,7 @@ voiceBar st =
     -- stops short of the true bottom. Same gradient/bevel treatment as the nav,
     -- but COLOURED and thin — minimal padding, ceding vertical space to the
     -- lattice above.
-    [ HP.style ( "position: fixed; bottom: 0; left: var(--tf-left, 0px); right: 0; z-index: 40; box-sizing: border-box; "
+    [ HP.style ( "position: fixed; bottom: 0; left: var(--tf-left, 0px); right: var(--tf-right, 0px); z-index: 40; box-sizing: border-box; "
         <> "display: flex; gap: 10px; align-items: center; padding: 3px 12px; overflow: hidden; "
         <> "font-family: Georgia, serif; background: linear-gradient(#b6c3cc,#a4b4be); "
         <> "border-top: 1px solid #00000026; box-shadow: 0 -1px 4px #00000018;" ) ]

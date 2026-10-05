@@ -133,6 +133,8 @@ type State =
   -- kept once made, hidden when closed, so its log and undo survive.
   , limulus :: Boolean
   , limulusMade :: Boolean
+  -- its width, as a drawer from the right (a view preference, per page)
+  , limWidth :: Number
   -- the page gives Limulus a region that keeps it open (Vetula's Perform)
   , limulusAlways :: Boolean
   -- The browser drawer on the left (Triggerfish.Browser): the machine's rows
@@ -151,6 +153,7 @@ foreign import focusSelf :: Effect Unit
 foreign import watchDocks :: (Boolean -> Effect Unit) -> Effect Unit
 foreign import selectAll :: HTMLElement -> Effect Unit
 foreign import loadDrawer :: String -> Effect { open :: Boolean, width :: Number }
+foreign import loadWidth :: String -> Number -> Effect Number
 foreign import saveDrawer :: String -> { open :: Boolean, width :: Number } -> Effect Unit
 
 data Action o
@@ -168,6 +171,7 @@ data Action o
   | FromBus Bus.Msg
   | ModeStored
   | ToggleLimulus
+  | FromLimDrawer Drawer.Output
   | FromFrame E.Event
   | DockAlways Boolean
   | AskBrowser
@@ -179,7 +183,10 @@ data Action o
   | CommitRename
   | KeepRow
 
-type Slots o = (machine :: H.Slot SQ.Query o Unit, drawer :: Drawer.Slot Unit)
+type Slots o = (machine :: H.Slot SQ.Query o Unit, drawer :: Drawer.Slot Unit, limdrawer :: Drawer.Slot Unit)
+
+_limdrawer :: Proxy "limdrawer"
+_limdrawer = Proxy
 
 _drawer :: Proxy "drawer"
 _drawer = Proxy
@@ -191,7 +198,7 @@ root :: forall q i o' o. Config o -> H.Component q i o' Aff
 root cfg = H.mkComponent
   { initialState: \_ ->
       { mode: Solo, playing: false, bpm: 120.0, tempoFlash: Nothing, freeT0: 0.0, chip: Nothing, rig: Nothing
-      , rigUp: false, table: RM.defaultTable, staged: Nothing, bus: Nothing, limulus: false, limulusMade: false, limulusAlways: false
+      , rigUp: false, table: RM.defaultTable, staged: Nothing, bus: Nothing, limulus: false, limulusMade: false, limulusAlways: false, limWidth: 560.0
       , browser: Nothing, drawer: { open: false, width: 280.0 }, lastRecall: { frozen: false, inKey: false }, renaming: Nothing }
   , render: render cfg
   , eval: H.mkEval H.defaultEval { handleAction = handleAction cfg, initialize = Just Init }
@@ -227,7 +234,8 @@ handleAction cfg = case _ of
     _ <- H.subscribe $ eventListener (EventType "message") target (Just <<< FromFrame)
     liftEffect $ watchDocks (HS.notify listener <<< DockAlways)
     drawer <- liftEffect (loadDrawer (drawerKey cfg))
-    H.modify_ _ { drawer = drawer }
+    limWidth <- liftEffect (loadWidth (limKey cfg) 560.0)
+    H.modify_ _ { drawer = drawer, limWidth = limWidth }
     handleAction cfg AskBrowser
     handleAction cfg RoutingChanged
     pushFree
@@ -296,9 +304,22 @@ handleAction cfg = case _ of
   ToggleLimulus -> do
     st <- H.get
     let open = not st.limulus && st.mode == Atlantis
-    H.modify_ _ { limulus = open, limulusMade = st.limulusMade || open }
+    -- made shut the first time, then opened a frame later, so it eases open
+    -- like every later time rather than appearing at full width
+    when (open && not st.limulusMade) do
+      H.modify_ _ { limulusMade = true }
+      liftAff (delay (Milliseconds 30.0))
+    H.modify_ _ { limulus = open }
     if open then H.getHTMLElementRef limulusRef >>= traverse_ (liftEffect <<< focusFrame)
     else liftEffect focusSelf
+  FromLimDrawer out -> case out of
+    Drawer.Toggled open -> do
+      st <- H.get
+      when (open /= st.limulus) (handleAction cfg ToggleLimulus)
+    Drawer.Resizing w -> H.modify_ _ { limWidth = w }
+    Drawer.Resized w -> do
+      H.modify_ _ { limWidth = w }
+      liftEffect (saveDrawer (limKey cfg) { open: false, width: w })
   DockAlways on -> H.modify_ _ { limulusAlways = on }
   FromFrame e -> when (limulusAskedClose e) do
     H.modify_ _ { limulus = false }
@@ -447,21 +468,44 @@ render :: forall o. Config o -> State -> H.ComponentHTML (Action o) (Slots o) Af
 render cfg st =
   -- `--tf-left`: what the drawer takes on the left; the machine's panel stands
   -- right of it, so the drawer pushes it rather than covering it
-  HH.div [ style ("min-height:100vh;background:#fafafa;--tf-left:" <> show drawerSpan <> "px;transition:--tf-left 180ms ease-out") ]
-    ( [ bar cfg st
+  -- and `--tf-right`, Limulus's drawer on the right, the same way
+  HH.div [ style ("min-height:100vh;background:#fafafa;--tf-left:" <> show drawerSpan <> "px;--tf-right:" <> show limSpan <> "px;transition:--tf-left 180ms ease-out,--tf-right 180ms ease-out") ]
+    ( [ HH.element (HH.ElemName "style") []
+          [ HH.text "@property --tf-left{syntax:'<length>';inherits:true;initial-value:0px}@property --tf-right{syntax:'<length>';inherits:true;initial-value:0px}@media (prefers-reduced-motion:reduce){#tf-browser,#tf-limulus,[style*=--tf-left]{transition:none!important}}" ]
+      , bar cfg st
       , HH.slot _machine unit cfg.component unit FromMachine
       ]
       <> (case st.browser of
             Just b -> [ browserDrawer st b ]
             Nothing -> [])
-      <> (if st.limulusMade || docked then [ limulusPanel (st.limulus || docked) ] else [])
+      <> (if limDrawer then [ limulusRail ] else [])
+      <> (if st.limulusMade || docked then [ limulusPanel { docked, open: st.limulus || docked, width: limW, rail: (limulusInput st).railWidth } ] else [])
     )
   where
+  -- Limulus as a drawer from the right, in Atlantis, unless a region keeps
+  -- it open (Vetula's Perform)
+  limDrawer = st.mode == Atlantis && not docked
+  limW = Drawer.clampWidth (limulusInput st) st.limWidth
+  limSpan = if limDrawer then (if st.limulus then limW else 0.0) + (limulusInput st).railWidth else 0.0
+  limulusRail =
+    HH.div
+      [ style "position:fixed;top:var(--tf-bar);right:0;bottom:0;z-index:61;display:flex;background:linear-gradient(#ece7da,#e2dccb);border-left:1px solid #b3ae9c" ]
+      [ HH.slot _limdrawer unit Drawer.component (limulusInput st) FromLimDrawer ]
   -- a region that keeps Limulus open, in Atlantis (Limulus needs the rig)
   docked = st.limulusAlways && st.mode == Atlantis
   drawerSpan = case st.browser of
     Nothing -> 0.0
     Just _ -> (if st.drawer.open then Drawer.clampWidth (drawerInput st) st.drawer.width else 0.0) + (drawerInput st).railWidth
+
+-- | Limulus's drawer, from the right: the arrow and the grip.
+limulusInput :: State -> Drawer.Input
+limulusInput st = (Drawer.defaultInput "Limulus")
+  { open = st.limulus, width = st.limWidth, resizable = true, edge = Drawer.Right
+  , minWidth = 360.0, maxWidth = 1000.0, panelId = "tf-limulus"
+  , showLabel = "Show Limulus (`)", hideLabel = "Hide Limulus (`)" }
+
+limKey :: forall o. Config o -> String
+limKey cfg = "triggerfish.limulus." <> cfg.nameplate
 
 -- | Where the drawer's place is kept: per page.
 drawerKey :: forall o. Config o -> String
@@ -483,7 +527,7 @@ browserDrawer st b =
     [ style $ "position:fixed;top:var(--tf-bar);left:0;bottom:0;z-index:45;display:flex;"
         <> "font-family:Georgia,serif;background:linear-gradient(#ece7da,#e2dccb);border-right:1px solid #b3ae9c" ]
     [ HH.element (HH.ElemName "style") []
-        [ HH.text "@property --tf-left{syntax:'<length>';inherits:true;initial-value:0px}@media (prefers-reduced-motion:reduce){#tf-browser,[style*=--tf-left]{transition:none!important}}.tfb-row:hover{background:#00000010}.tfb-q{width:9px;height:9px;border:1px solid #8a8270;background:#f6f2e7;cursor:pointer;padding:0}.tfb-q:hover{background:#2d5670;border-color:#2d5670}.tfb-q.last{background:#c9b98d}.tfb-g i{font-size:11px!important}" ]
+        [ HH.text ".tfb-row:hover{background:#00000010}.tfb-q{width:9px;height:9px;border:1px solid #8a8270;background:#f6f2e7;cursor:pointer;padding:0}.tfb-q:hover{background:#2d5670;border-color:#2d5670}.tfb-q.last{background:#c9b98d}.tfb-g i{font-size:11px!important}" ]
     , body
     , HH.slot _drawer unit Drawer.component d FromDrawer
     ]
@@ -556,21 +600,30 @@ browserDrawer st b =
       , HP.title ("Recall " <> r.name <> ": " <> label) ]
       []
 -- | Limulus beside the machine: the same editor and buffer as its own tab
--- | (same origin), in the machine's paper look. It covers the region the page
--- | marks with `data-limulus-dock` (`watchDocks`), else stands on the right,
--- | under the bar. Hidden rather than removed when closed.
-limulusPanel :: forall w i. Boolean -> HH.HTML w i
-limulusPanel open =
+-- | (same origin), in the machine's paper look. A drawer from the right,
+-- | eased open and shut beside its rail (as the browser on the left), pushing
+-- | the page by `--tf-right`; or, where the page keeps a region for it
+-- | (`data-limulus-dock="always"`, Vetula's Perform), laid over that region
+-- | (`watchDocks`). One frame either way, made once and kept, so its log and
+-- | undo survive.
+limulusPanel :: forall w i. { docked :: Boolean, open :: Boolean, width :: Number, rail :: Number } -> HH.HTML w i
+limulusPanel p =
   HH.div
-    [ style $ "position:fixed;z-index:60;box-sizing:border-box;"
-        <> "left:var(--lim-left,auto);right:var(--lim-right,0);top:var(--lim-top,var(--tf-bar));"
-        <> "width:var(--lim-width,min(720px,max(420px,46vw)));height:var(--lim-height,calc(100vh - var(--tf-bar)));"
-        <> "box-shadow:var(--lim-shadow,-4px 0 14px #00000030);border-left:var(--lim-edge,1px solid #b3ae9c);background:#f6f2e7;"
-        <> (if open then "" else "display:none;")
-    ]
+    ( [ HP.id "tf-limulus"
+      , style $ "position:fixed;z-index:60;box-sizing:border-box;overflow:hidden;background:#f6f2e7;"
+          <> if p.docked then
+               "left:var(--lim-left,auto);right:var(--lim-right,0);top:var(--lim-top,var(--tf-bar));"
+                 <> "width:var(--lim-width,50vw);height:var(--lim-height,calc(100vh - var(--tf-bar)));"
+                 <> "box-shadow:var(--lim-shadow,none);border-left:var(--lim-edge,none);"
+             else
+               "right:" <> show p.rail <> "px;top:var(--tf-bar);height:calc(100vh - var(--tf-bar));"
+                 <> "width:" <> (if p.open then show p.width else "0") <> "px;transition:width 180ms ease-out;"
+                 <> "border-left:" <> (if p.open then "1px solid #b3ae9c" else "0") <> ";"
+      ] <> (if p.open then [] else [ HP.attr (HH.AttrName "inert") "" ])
+    )
     [ HH.iframe
         [ HP.src "/limulus/?embed&look=paper", HP.ref limulusRef, HP.title "Limulus"
-        , style "width:100%;height:100%;border:0;display:block"
+        , style ("height:100%;border:0;display:block;width:" <> (if p.docked then "100%" else show p.width <> "px"))
         ]
     ]
 
@@ -594,8 +647,8 @@ bar cfg st =
       <> (if st.mode == Atlantis then [ atlantisTag ] else [])
       <> (if cfg.playable then [ button (if st.playing then "■ Stop" else "▶ Play") TogglePlay ] else [])
       <> [ button "Capture (c)" Capture ]
-      -- Limulus combines the machines, on the rig: Atlantis only
-      <> (if st.mode == Atlantis && not st.limulusAlways then [ button (if st.limulus then "Close Limulus (`)" else "Limulus (`)") ToggleLimulus ] else [])
+      -- Limulus combines the machines, on the rig: its drawer on the right,
+      -- in Atlantis
       <> [ HH.span [ style "display:flex;align-items:center;min-width:40px" ] [ chipIcons st.chip ]
       , HH.span [ style "flex:1" ] []
       ]
