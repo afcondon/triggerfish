@@ -113,6 +113,10 @@ component =
 -- | doc — or adopt the rack's shared free-run baseline.
 handleQuery :: forall m a. MonadAff m => Query a -> H.HalogenM State Action () Output m (Maybe a)
 handleQuery = case _ of
+  -- No browser drawer yet (docs/kb/plans/the-deck.md, 2026-10-05).
+  AskBrowser _ -> pure Nothing
+  BrowserRecall _ _ next -> pure (Just next)
+  BrowserRename _ _ next -> pure (Just next)
   -- No marks here: asked for its text, the shell falls back to AskSource.
   AskMarkText _ -> pure Nothing
   AddMarkSnapshot _ _ _ next -> pure (Just next)
@@ -991,7 +995,7 @@ setupDrag =
 render :: forall m. State -> H.ComponentHTML Action () m
 render s =
   HH.div
-    [ style $ "position:fixed;top:var(--tf-bar);left:0;right:0;bottom:0;display:flex;flex-direction:column;"
+    [ style $ "position:fixed;top:var(--tf-bar);left:var(--tf-left,0px);right:0;bottom:0;display:flex;flex-direction:column;"
         <> "user-select:none;-webkit-user-select:none;background:#b7b1a0;font-family:Georgia,serif" ]
     [ navBar s
     -- Bands left, Limulus right. Un-stretching the bands to ~2/3 costs them

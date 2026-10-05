@@ -38,8 +38,7 @@ import Binnacle.Audio (armAudioKeepAlive)
 import Binnacle.Time (dateNow)
 import Binnacle.Transport as Transport
 import Data.Foldable (for_, traverse_)
-import Control.Monad (whenM)
-import Data.Maybe (Maybe(..), fromMaybe, isJust, isNothing, maybe)
+import Data.Maybe (Maybe(..), fromMaybe, isJust, maybe)
 import Data.Set as Set
 import Effect (Effect)
 import Effect.Aff (Aff, Milliseconds(..), delay)
@@ -55,8 +54,12 @@ import Halogen.Query.Event (eventListener)
 import Halogen.Subscription as HS
 import Halogen.VDom.Driver (runUI)
 import Triggerfish.Fish as Fish
-import Triggerfish.Glyph (ChipView)
-import Triggerfish.GlyphView (chipIcons)
+import Triggerfish.Glyph (ChipView, glyphFromAlias)
+import Triggerfish.GlyphView (chipIcons, faIcons)
+import Triggerfish.Browser as Browser
+import Halogen.Widgets.Drawer as Drawer
+import Data.Array as Array
+import Data.String as String
 import Triggerfish.Routing.Model as RM
 import Triggerfish.Routing.Store as RStore
 import Triggerfish.SourceQuery as SQ
@@ -132,6 +135,13 @@ type State =
   , limulusMade :: Boolean
   -- the page gives Limulus a region that keeps it open (Vetula's Perform)
   , limulusAlways :: Boolean
+  -- The browser drawer on the left (Triggerfish.Browser): the machine's rows
+  -- (Nothing: it keeps nothing to browse, so there is no drawer), the
+  -- drawer's place, the way a row was last recalled, and a name being edited.
+  , browser :: Maybe Browser.Browser
+  , drawer :: { open :: Boolean, width :: Number }
+  , lastRecall :: Browser.Recall
+  , renaming :: Maybe { slot :: Int, text :: String }
   }
 
 -- | The panel asks to close (Escape inside it).
@@ -139,6 +149,9 @@ foreign import limulusAskedClose :: E.Event -> Boolean
 foreign import focusFrame :: HTMLElement -> Effect Unit
 foreign import focusSelf :: Effect Unit
 foreign import watchDocks :: (Boolean -> Effect Unit) -> Effect Unit
+foreign import selectAll :: HTMLElement -> Effect Unit
+foreign import loadDrawer :: String -> Effect { open :: Boolean, width :: Number }
+foreign import saveDrawer :: String -> { open :: Boolean, width :: Number } -> Effect Unit
 
 data Action o
   = Init
@@ -157,8 +170,18 @@ data Action o
   | ToggleLimulus
   | FromFrame E.Event
   | DockAlways Boolean
+  | AskBrowser
+  | FromDrawer Drawer.Output
+  | RecallRow Int Browser.Recall
+  | StartRename Browser.Row
+  | RenameInput String
+  | RenameKey KE.KeyboardEvent
+  | CommitRename
 
-type Slots o = (machine :: H.Slot SQ.Query o Unit)
+type Slots o = (machine :: H.Slot SQ.Query o Unit, drawer :: Drawer.Slot Unit)
+
+_drawer :: Proxy "drawer"
+_drawer = Proxy
 
 _machine :: Proxy "machine"
 _machine = Proxy
@@ -167,7 +190,8 @@ root :: forall q i o' o. Config o -> H.Component q i o' Aff
 root cfg = H.mkComponent
   { initialState: \_ ->
       { mode: Solo, playing: false, bpm: 120.0, tempoFlash: Nothing, freeT0: 0.0, chip: Nothing, rig: Nothing
-      , rigUp: false, table: RM.defaultTable, staged: Nothing, bus: Nothing, limulus: false, limulusMade: false, limulusAlways: false }
+      , rigUp: false, table: RM.defaultTable, staged: Nothing, bus: Nothing, limulus: false, limulusMade: false, limulusAlways: false
+      , browser: Nothing, drawer: { open: true, width: 240.0 }, lastRecall: { frozen: false, inKey: false }, renaming: Nothing }
   , render: render cfg
   , eval: H.mkEval H.defaultEval { handleAction = handleAction cfg, initialize = Just Init }
   }
@@ -201,6 +225,9 @@ handleAction cfg = case _ of
     _ <- H.subscribe $ eventListener KET.keydown target (Just <<< Key)
     _ <- H.subscribe $ eventListener (EventType "message") target (Just <<< FromFrame)
     liftEffect $ watchDocks (HS.notify listener <<< DockAlways)
+    drawer <- liftEffect (loadDrawer (drawerKey cfg))
+    H.modify_ _ { drawer = drawer }
+    handleAction cfg AskBrowser
     handleAction cfg RoutingChanged
     pushFree
     pushSounding cfg
@@ -228,7 +255,40 @@ handleAction cfg = case _ of
         liftAff $ delay (Milliseconds 1200.0)
         handleAction cfg (EndFlash n)
   EndFlash n -> H.modify_ \s -> s { tempoFlash = if map _.n s.tempoFlash == Just n then Nothing else s.tempoFlash }
-  Capture -> void $ H.query _machine unit (SQ.Capture unit)
+  Capture -> do
+    void $ H.query _machine unit (SQ.Capture unit)
+    handleAction cfg AskBrowser
+  AskBrowser -> do
+    b <- H.query _machine unit (SQ.AskBrowser identity)
+    H.modify_ _ { browser = b }
+  FromDrawer out -> do
+    st <- H.get
+    let d = case out of
+          Drawer.Toggled open -> st.drawer { open = open }
+          Drawer.Resizing width -> st.drawer { width = width }
+          Drawer.Resized width -> st.drawer { width = width }
+    H.modify_ _ { drawer = d }
+    case out of
+      Drawer.Resizing _ -> pure unit
+      _ -> liftEffect (saveDrawer (drawerKey cfg) d)
+  RecallRow slot r -> do
+    H.modify_ _ { lastRecall = r }
+    void $ H.query _machine unit (SQ.BrowserRecall slot r unit)
+    handleAction cfg AskBrowser
+  StartRename row -> do
+    H.modify_ _ { renaming = Just { slot: row.slot, text: row.name } }
+    H.getHTMLElementRef renameRef >>= traverse_ (liftEffect <<< selectAll)
+  RenameInput t -> H.modify_ \st -> st { renaming = map (_ { text = t }) st.renaming }
+  RenameKey ke -> case KE.key ke of
+    "Enter" -> handleAction cfg CommitRename
+    "Escape" -> H.modify_ _ { renaming = Nothing }
+    _ -> pure unit
+  CommitRename -> do
+    st <- H.get
+    for_ st.renaming \r -> when (r.text /= "") do
+      void $ H.query _machine unit (SQ.BrowserRename r.slot r.text unit)
+    H.modify_ _ { renaming = Nothing }
+    handleAction cfg AskBrowser
   ToggleLimulus -> do
     st <- H.get
     let open = not st.limulus && st.mode == Atlantis
@@ -258,6 +318,7 @@ handleAction cfg = case _ of
     when (ok /= st.rigUp) (H.modify_ _ { rigUp = ok, staged = Nothing })
     publishStage cfg
     announce cfg
+    handleAction cfg AskBrowser
   -- The dashboard's commands, for this machine or for all.
   FromBus msg -> do
     st <- H.get
@@ -318,6 +379,10 @@ handleAction cfg = case _ of
         | KE.altKey ke -> pure unit
         | otherwise -> case KE.key ke of
             "c" -> handleAction cfg Capture
+            -- the browser, by the suite's one key for it
+            "b" -> do
+              st <- H.get
+              when (isJust st.browser) (handleAction cfg (FromDrawer (Drawer.Toggled (not st.drawer.open))))
             -- the console key (Vetula has `l`): by position, so any layout
             _ | KE.code ke == "Backquote" -> handleAction cfg ToggleLimulus
             "Escape" -> whenM (H.gets _.limulus) (handleAction cfg ToggleLimulus)
@@ -376,16 +441,109 @@ targetIsField e = case E.target e of
 
 render :: forall o. Config o -> State -> H.ComponentHTML (Action o) (Slots o) Aff
 render cfg st =
-  HH.div [ style "min-height:100vh;background:#fafafa" ]
+  -- `--tf-left`: what the drawer takes on the left; the machine's panel stands
+  -- right of it, so the drawer pushes it rather than covering it
+  HH.div [ style ("min-height:100vh;background:#fafafa;--tf-left:" <> show drawerSpan <> "px") ]
     ( [ bar cfg st
       , HH.slot _machine unit cfg.component unit FromMachine
       ]
+      <> (case st.browser of
+            Just b -> [ browserDrawer st b ]
+            Nothing -> [])
       <> (if st.limulusMade || docked then [ limulusPanel (st.limulus || docked) ] else [])
     )
   where
   -- a region that keeps Limulus open, in Atlantis (Limulus needs the rig)
   docked = st.limulusAlways && st.mode == Atlantis
+  drawerSpan = case st.browser of
+    Nothing -> 0.0
+    Just _ -> (if st.drawer.open then Drawer.clampWidth (drawerInput st) st.drawer.width else 0.0) + (drawerInput st).railWidth
 
+-- | Where the drawer's place is kept: per page.
+drawerKey :: forall o. Config o -> String
+drawerKey cfg = "triggerfish.browser." <> cfg.nameplate
+
+drawerInput :: State -> Drawer.Input
+drawerInput st = (Drawer.defaultInput "Presets")
+  { open = st.drawer.open, width = st.drawer.width, resizable = true
+  , minWidth = 180.0, maxWidth = 420.0, panelId = "tf-browser"
+  , showLabel = "Show presets (b)", hideLabel = "Hide presets (b)" }
+
+-- | The browser drawer: under the bar on the left, the machine's kept things,
+-- | name first, the rebus small beside it (docs/kb/plans/the-deck.md). With
+-- | `modes` (Odonus), each row has the 2×2 recall square, its axes in a key
+-- | at the top: across, running or frozen; down, as saved or in key.
+browserDrawer :: forall o. State -> Browser.Browser -> H.ComponentHTML (Action o) (Slots o) Aff
+browserDrawer st b =
+  HH.div
+    [ style $ "position:fixed;top:var(--tf-bar);left:0;bottom:0;z-index:45;display:flex;"
+        <> "font-family:Georgia,serif;background:linear-gradient(#ece7da,#e2dccb);border-right:1px solid #b3ae9c" ]
+    [ HH.element (HH.ElemName "style") []
+        [ HH.text ".tfb-row:hover{background:#00000010}.tfb-q{width:9px;height:9px;border:1px solid #8a8270;background:#f6f2e7;cursor:pointer;padding:0}.tfb-q:hover{background:#2d5670;border-color:#2d5670}.tfb-q.last{background:#c9b98d}.tfb-g i{font-size:11px!important}" ]
+    , if st.drawer.open then body else HH.text ""
+    , HH.slot _drawer unit Drawer.component d FromDrawer
+    ]
+  where
+  d = drawerInput st
+  body =
+    HH.div
+      [ HP.id "tf-browser"
+      , style $ "width:" <> show (Drawer.clampWidth d st.drawer.width) <> "px;box-sizing:border-box;overflow-y:auto;padding:14px 12px 20px" ]
+      ( [ HH.div [ style "display:flex;align-items:baseline;gap:8px;border-bottom:1px solid #00000018;padding-bottom:6px;margin-bottom:8px" ]
+            [ HH.span [ style (engrave <> ";font-size:12px;letter-spacing:0.16em;color:#3f3c33") ] [ HH.text (String.toUpper b.title) ]
+            , HH.span [ style "flex:1" ] []
+            , HH.button
+                [ HE.onClick \_ -> Capture, HP.title "Keep what the machine is doing now (c)"
+                , style "font:11px Georgia,serif;padding:2px 8px;border:1px solid #00000033;border-radius:4px;background:#f6f2e7;cursor:pointer" ]
+                [ HH.text "keep (c)" ]
+            ]
+        ]
+          <> (if b.modes then [ key ] else [])
+          <> (if Array.null b.rows then [ HH.p [ style "font-size:12px;font-style:italic;color:#6a6657" ] [ HH.text "Nothing kept yet: press c to keep what is playing." ] ] else [])
+          <> map row b.rows
+      )
+  -- the 2×2's axes, once
+  key =
+    HH.div [ style "display:grid;grid-template-columns:auto 11px 11px;gap:2px 3px;align-items:center;font-size:10px;color:#6a6657;margin:0 0 8px 2px" ]
+      [ HH.span_ [], HH.span [ style "writing-mode:vertical-rl;transform:rotate(180deg);font-size:9px" ] [ HH.text "run" ], HH.span [ style "writing-mode:vertical-rl;transform:rotate(180deg);font-size:9px" ] [ HH.text "freeze" ]
+      , HH.span [ style "padding-right:4px" ] [ HH.text "as saved" ], cell, cell
+      , HH.span [ style "padding-right:4px" ] [ HH.text "in key" ], cell, cell
+      ]
+  cell = HH.span [ style "width:9px;height:9px;border:1px solid #8a8270" ] []
+  row r =
+    HH.div
+      [ HP.class_ (HH.ClassName "tfb-row")
+      , style $ "display:flex;align-items:center;gap:8px;padding:3px 4px;border-radius:3px;"
+          <> (if r.current then "background:#00000018;" else "") ]
+      ( (if b.modes then [ square r ] else [])
+          <>
+            [ case st.renaming of
+                Just rn | rn.slot == r.slot ->
+                  HH.input
+                    [ HP.value rn.text, HE.onValueInput RenameInput, HE.onKeyDown RenameKey, HE.onBlur \_ -> CommitRename
+                    , HP.ref renameRef, style "flex:1;min-width:0;font:13px Georgia,serif;padding:1px 3px" ]
+                _ ->
+                  HH.span
+                    [ HE.onClick \_ -> RecallRow r.slot st.lastRecall, HE.onDoubleClick \_ -> StartRename r
+                    , HP.title "Click: recall it, the way you last did. Double-click: rename it."
+                    , style $ "flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;cursor:pointer;font-size:13px;color:#1c1a12;"
+                        <> (if r.current then "font-weight:bold;" else "") ]
+                    [ HH.text r.name ]
+            ]
+          <> (if r.tag == "" then [] else [ HH.span [ style "font-size:10px;letter-spacing:0.08em;text-transform:uppercase;color:#6a6657" ] [ HH.text r.tag ] ])
+          <> [ HH.span [ HP.class_ (HH.ClassName "tfb-g"), style "display:inline-flex;gap:2px;opacity:0.75" ] (faIcons (glyphFromAlias r.alias)) ]
+      )
+  -- four ways to recall: across, running or frozen; down, as saved or in key
+  square r =
+    HH.span [ style "display:grid;grid-template-columns:9px 9px;gap:2px;flex:none" ]
+      [ q r false false "as saved, running", q r true false "as saved, generators paused"
+      , q r false true "in the live key, running", q r true true "in the live key, generators paused" ]
+  q r frozen inKey label =
+    HH.button
+      [ HP.class_ (HH.ClassName ("tfb-q" <> if st.lastRecall == { frozen, inKey } then " last" else ""))
+      , HE.onClick \_ -> RecallRow r.slot { frozen, inKey }
+      , HP.title ("Recall " <> r.name <> ": " <> label) ]
+      []
 -- | Limulus beside the machine: the same editor and buffer as its own tab
 -- | (same origin), in the machine's paper look. It covers the region the page
 -- | marks with `data-limulus-dock` (`watchDocks`), else stands on the right,
@@ -404,6 +562,9 @@ limulusPanel open =
         , style "width:100%;height:100%;border:0;display:block"
         ]
     ]
+
+renameRef :: H.RefLabel
+renameRef = H.RefLabel "rename"
 
 limulusRef :: H.RefLabel
 limulusRef = H.RefLabel "limulus"

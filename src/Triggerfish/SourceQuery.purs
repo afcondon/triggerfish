@@ -35,6 +35,7 @@
 -- | a STRUCTURAL record, so the two query types need share no nominal type.)
 module Triggerfish.SourceQuery (Query(..)) where
 
+import Triggerfish.Browser (Browser, Recall)
 import Triggerfish.Routing.Model (Table)
 import Triggerfish.Transport (Sounding)
 
@@ -102,6 +103,12 @@ data Query a
   -- Pushed rather than each machine reading the store, so an edit takes effect on
   -- the next note instead of the next reload, and so there is exactly one writer.
   | SetRouting Table a
+  -- The browser drawer on the left of the page (Triggerfish.Browser): the
+  -- rows to show (a machine with none answers Nothing, and has no drawer),
+  -- recall one in a way, and rename one.
+  | AskBrowser (Browser -> a)
+  | BrowserRecall Int Recall a
+  | BrowserRename Int String a
   | AskBank (Array { slot :: Int, alias :: String, name :: String, starred :: Boolean } -> a)
   | RecallSlot Int a
   | StarSlot Int a

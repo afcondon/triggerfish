@@ -241,6 +241,10 @@ component =
 
 handleQuery :: forall m a. MonadAff m => Query a -> H.HalogenM State Action Slots Output m (Maybe a)
 handleQuery = case _ of
+  -- No browser drawer yet (docs/kb/plans/the-deck.md, 2026-10-05).
+  AskBrowser _ -> pure Nothing
+  BrowserRecall _ _ next -> pure (Just next)
+  BrowserRename _ _ next -> pure (Just next)
   -- No marks here: asked for its text, the shell falls back to AskSource.
   AskMarkText _ -> pure Nothing
   AddMarkSnapshot _ _ _ next -> pure (Just next)
@@ -892,7 +896,7 @@ cycleWaveBank j = case _ of
 render :: forall m. MonadAff m => State -> H.ComponentHTML Action Slots m
 render s =
   HH.div
-    [ style $ "position:fixed;top:var(--tf-bar);left:0;right:0;bottom:0;display:flex;align-items:stretch;overflow:hidden;"
+    [ style $ "position:fixed;top:var(--tf-bar);left:var(--tf-left,0px);right:0;bottom:0;display:flex;align-items:stretch;overflow:hidden;"
         <> "user-select:none;-webkit-user-select:none;background:#b7b1a0;font-family:Georgia,serif" ]
     [ rackPanel s
     , sourcePanel s

@@ -121,6 +121,10 @@ poll = do
 -- | (lanes, a clock, the routing table, a pitch set to follow) is unanswered.
 handleQuery :: forall a. SQ.Query a -> M (Maybe a)
 handleQuery = case _ of
+  -- No browser drawer yet (docs/kb/plans/the-deck.md, 2026-10-05).
+  SQ.AskBrowser _ -> pure Nothing
+  SQ.BrowserRecall _ _ next -> pure (Just next)
+  SQ.BrowserRename _ _ next -> pure (Just next)
   SQ.AskSource k -> H.query _vet unit (Vetula.AskSource k)
   SQ.AskMarkText k -> H.query _vet unit (Vetula.AskMarkText k)
   SQ.AddMarkSnapshot at m t a -> H.query _vet unit (Vetula.AddMarkSnapshot at m t a)

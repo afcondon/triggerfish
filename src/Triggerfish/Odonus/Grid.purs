@@ -82,6 +82,7 @@ import Triggerfish.Clips as Clips
 import Triggerfish.Clips.Store as ClipStore
 import Triggerfish.Amphora as Amphora
 import Triggerfish.Glyph as G
+import Triggerfish.Browser as Browser
 import Triggerfish.Preset (indexOfContent, presetAlias)
 import Triggerfish.Odonus.Lepidoptera (parsePatch, printPatch)
 import Triggerfish.SourceQuery (Query(..))
@@ -231,6 +232,25 @@ handleQuery = case _ of
     pure (Just next)
   -- The status-board chip's recall menu: report each preset as its glyph alias +
   -- optional name + star flag; recall / star / delete a chosen preset.
+  -- The browser drawer: the presets, then the scenes, as one list, name
+  -- first (docs/kb/plans/the-deck.md). Recalled in one of four ways.
+  AskBrowser reply -> do
+    s <- H.get
+    let
+      preset i p = { slot: i, name: fromMaybe "untitled" p.name, alias: presetAlias p, tag: "", current: s.identity == Just p.content }
+      scene i sc = { slot: length s.presets + i, name: sc.name, alias: (G.glyphOf sc.text).alias, tag: "", current: s.identity == Just sc.text }
+    pure (Just (reply { title: "Presets", modes: true, rows: mapWithIndex preset s.presets <> mapWithIndex scene s.scenes }))
+  BrowserRecall i r next -> do
+    s <- H.get
+    for_ (keptText s i) \text -> recallWith text r
+    pure (Just next)
+  BrowserRename i name next -> do
+    H.modify_ \s ->
+      let k = i - length s.presets
+      in if i < length s.presets then s { presets = fromMaybe s.presets (modifyAt i (_ { name = Just name }) s.presets) }
+         else s { scenes = fromMaybe s.scenes (modifyAt k (_ { name = name }) s.scenes) }
+    persistAll
+    pure (Just next)
   AskBank reply -> do
     s <- H.get
     pure (Just (reply (mapWithIndex (\i p -> { slot: i, alias: presetAlias p, name: fromMaybe "" p.name, starred: p.starred }) s.presets)))
@@ -257,10 +277,32 @@ captureNow = do
   let text = patchText s
   case indexOfContent text s.presets of
     Just _ -> H.modify_ _ { identity = Just text }
-    Nothing -> H.modify_ \st -> st
-      { presets = st.presets <> [ { content: text, name: Nothing, starred: false } ]
-      , identity = Just text
-      }
+    Nothing -> do
+      -- named for its machine and the time until renamed: a rebus never
+      -- labels a library (docs/kb/plans/the-deck.md)
+      at <- liftEffect Browser.stamp
+      H.modify_ \st -> st
+        { presets = st.presets <> [ { content: text, name: Just ("Odonus · " <> at), starred: false } ]
+        , identity = Just text
+        }
+  persistAll
+
+-- | The text of kept thing `i` in the browser's list: a preset, or after
+-- | them a scene.
+keptText :: State -> Int -> Maybe String
+keptText s i
+  | i < length s.presets = _.content <$> s.presets !! i
+  | otherwise = _.text <$> s.scenes !! (i - length s.presets)
+
+-- | Recall a kept patch one of the four ways: as saved, or keeping the live
+-- | key (the gesture: cells are scale degrees, so the riff re-voices); and
+-- | running, or with every generator paused (`SetFrozen`, deferred like the
+-- | freeze button, so both runtimes pause on the same step).
+recallWith :: forall m. MonadAff m => String -> Browser.Recall -> H.HalogenM State Action Slots Output m Unit
+recallWith text r = do
+  H.modify_ \s -> (if r.inKey then recallGestureText text s else recallText text s) { identity = Just text }
+  st <- H.get
+  when (st.genFrozen /= r.frozen) (enqueue (RI.SetFrozen r.frozen))
   persistAll
 
 -- | Recall preset `i`: apply its patch text PHASE-PRESERVING (`recallText`, exactly
@@ -1883,7 +1925,7 @@ render s =
     -- The whole surface is non-selectable: knob drags and toggle/matrix clicks
     -- never start a text selection. Content fills it at full height; the stage
     -- switch is in the nav (`stageTabs`), not floating over the surface.
-    [ style $ "position:fixed;top:var(--tf-bar);left:0;right:0;bottom:0;overflow:hidden;"
+    [ style $ "position:fixed;top:var(--tf-bar);left:var(--tf-left,0px);right:0;bottom:0;overflow:hidden;"
         <> "user-select:none;-webkit-user-select:none;"
         <> "background:#b7b1a0;font-family:Georgia,serif" ]
     [ navBar s

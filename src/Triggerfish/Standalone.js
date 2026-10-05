@@ -57,3 +57,18 @@ export const watchDocks = (onAlways) => () => {
   new MutationObserver(queue).observe(document.body, { childList: true, subtree: true, attributes: true, attributeFilter: ["data-limulus-dock", "style"] });
   queue();
 };
+
+// The browser drawer's place on this page, a view preference (open, width),
+// kept per page in the browser's storage.
+export const loadDrawer = (key) => () => {
+  try {
+    const o = JSON.parse(localStorage.getItem(key) || "null");
+    return o && typeof o.open === "boolean" && typeof o.width === "number" ? o : { open: true, width: 240 };
+  } catch (_) { return { open: true, width: 240 }; }
+};
+export const saveDrawer = (key) => (o) => () => {
+  try { localStorage.setItem(key, JSON.stringify(o)); } catch (_) {}
+};
+
+// A name being edited starts selected, so typing replaces it.
+export const selectAll = (el) => () => { el.focus(); if (el.select) el.select(); };
