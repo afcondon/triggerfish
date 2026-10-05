@@ -6,7 +6,7 @@
 -- |
 -- |   LEFT   the stage tabs, hard left under the shell's transport, then ONLY
 -- |          the controls that mean something in the stage you're in.
--- |   RIGHT  housekeeping (scenes), then the harmonic context — which sits in the
+-- |   RIGHT  the routes' state, then the harmonic context — which sits in the
 -- |          same column as the shell's pitch set above it and Vetula's key/scale
 -- |          on Vetula's own bar, because all three show the same thing at
 -- |          different removes: Vetula sets it, the shell states it rig-wide,
@@ -34,7 +34,6 @@ import Triggerfish.Routing.Model as RM
 import Triggerfish.Routing.Out as RO
 import Triggerfish.Odonus.Logbook (noteCount)
 import Triggerfish.Odonus.View.Key (contextStrip)
-import Triggerfish.Odonus.View.Scenes (sceneMenuBody)
 
 navBar :: forall m. State -> H.ComponentHTML Action Slots m
 navBar s =
@@ -46,8 +45,6 @@ navBar s =
         <> captureControls s
         <> [ HH.div [ style "flex:1 1 auto;min-width:8px" ] []
            , routingReadout s
-           , divider
-           , sceneMenu s
            , divider
            , contextStrip s
            ]
@@ -122,26 +119,3 @@ captureControls s =
           <> "background:transparent;color:#8a8576;font-size:10px;white-space:nowrap" ]
       [ HH.text "clear" ]
   ]
-
--- | Scenes behind a menu: capture and recall are housekeeping, so they shouldn't
--- | hold width open all the time.
-sceneMenu :: forall m. State -> H.ComponentHTML Action Slots m
-sceneMenu s =
-  HH.div [ style "position:relative" ]
-    ( [ HH.button
-          [ HE.onClick \_ -> ToggleSceneMenu
-          , HP.title "capture and recall named settings"
-          , style $ "padding:3px 11px;border-radius:6px;cursor:pointer;border:1px solid #00000022;font-size:11px;white-space:nowrap;"
-              <> (if s.navScenes then "background:#3a352a;color:#f2eee2" else "background:#efece1;color:#3f3c33") ]
-          [ HH.text ("scenes" <> (if null s.scenes then "" else " · " <> show (length s.scenes))) ]
-      ]
-        <> (if s.navScenes then [ menuPanel ] else [])
-    )
-  where
-  menuPanel =
-    HH.div
-      [ style $ "position:absolute;top:calc(100% + 6px);right:0;z-index:30;width:300px;max-height:60vh;overflow-y:auto;"
-          <> "padding:12px 14px;border-radius:9px;border:1px solid #a8a392;"
-          <> "background:linear-gradient(#f6f2e8,#efe9db);box-shadow:0 14px 40px #00000044" ]
-      -- no header of our own: `sceneMenuBody` opens with its own SCENES · SONG rule.
-      (sceneMenuBody s)

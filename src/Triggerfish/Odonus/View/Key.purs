@@ -18,7 +18,10 @@ module Triggerfish.Odonus.View.Key (contextStrip) where
 import Prelude
 
 import Data.Array (elem, range)
-import Data.Maybe (Maybe(..))
+import Data.Either (hush)
+import Data.Maybe (Maybe(..), fromMaybe, isJust)
+import Data.String (toUpper)
+import Reef.Route as Route
 import Halogen as H
 import Halogen.HTML as HH
 import Reef.PitchSet (PitchSet(..))
@@ -27,39 +30,79 @@ import Triggerfish.Scale as Scale
 import Triggerfish.Odonus.Grid.Types (Action, Slots, State)
 import Triggerfish.Odonus.Grid.Widgets (engrave, style)
 
--- | The nav strip: what Odonus is quantising to, as a name plus the twelve pitch
--- | classes with the in-context ones lit and the root accented. Horizontal, short,
--- | and non-interactive — a readout, not a control.
+-- | The nav strip: Odonus's two quantisations, one row each, as the dashboard's
+-- | patch bay names its two inputs (AC, 2026-10-05: prominent, clearly labelled,
+-- | and saying where each comes from).
+-- |
+-- |   GRID    the scale a cell's value is mapped onto (q1, `odonus.grid`)
+-- |   OUTPUT  the set the output snaps to past each head's offset (q2,
+-- |           `odonus.out`): a chord, an output scale, or the grid's own scale
+-- |
+-- | Each row: the twelve pitch classes (lit in the set, the root accented), the
+-- | set's name, and `← its source`: a harmony route (Vetula's key, a Vetula
+-- | voice, a scale or harmony route), a line typed in Limulus, or Odonus's own
+-- | scale. A readout, not a control: routes are patched on the dashboard's chart.
 contextStrip :: forall m. State -> H.ComponentHTML Action Slots m
 contextStrip s =
-  let ctx = contextInfo s.odo
-  in HH.div
-    [ style "display:flex;align-items:center;gap:10px;min-width:0" ]
-    $ [ HH.span [ style $ engrave <> ";font-size:8px;color:#7a6a3a;white-space:nowrap" ]
-        [ HH.text "Grid" ]
+  let
+    ctx = contextInfo s.odo
+    outSet = s.odo.chord
+    outRoot = case s.odo.outScale of
+      Just o -> o.root
+      Nothing -> case outSet of
+        Just _ -> -1
+        Nothing -> ctx.rootPc
+  in
+    HH.div [ style "display:grid;grid-template-columns:auto auto auto auto;align-items:center;column-gap:10px;row-gap:3px;min-width:0" ]
+      ( row "Grid" ctx.rootPc ctx.pcs (gridName ctx) (provenance Route.OdonusGrid s)
+          "What a cell's value is mapped onto: the melody's shape. Patched on the dashboard's chart (odonus.grid), or set by odonus $ scale in Limulus"
+        <> row "Output" outRoot (fromMaybe ctx.pcs outSet) (outName ctx) (provenance Route.OdonusOut s)
+          "What each note snaps to at the end, past each head's offset: a chord colours the melody without changing its shape. Patched on the dashboard's chart (odonus.out), or set by odonus $ harmony in Limulus"
+      )
+  where
+  gridName ctx = case s.odo.scalePattern of
+    Just sp -> "scale \"" <> sp <> "\""
+    Nothing -> Scale.rootName ctx.rootPc <> " " <> ctx.name
+  outName _ = case s.odo.outScale, s.odo.harmony of
+    Just o, _ -> "scale \"" <> o.pattern <> "\" on " <> Scale.rootName o.root
+    _, Just h -> "harmony \"" <> h <> "\""
+    _, _ -> "as the grid"
+  row label root lit name from tip =
+    [ HH.span [ style $ engrave <> ";font-size:9px;letter-spacing:0.14em;color:#5a4a1f;white-space:nowrap", HH.attr (HH.AttrName "title") tip ]
+        [ HH.text (toUpper label) ]
+    , pcKeyboardRO root lit []
     , HH.span
-        [ style "font-family:Georgia,serif;font-size:13px;color:#2a271e;white-space:nowrap"
-        , HH.attr (HH.AttrName "title")
-            "What the grid quantises to. Its source is a harmony route (the dashboard's Harmony matrix): a scale, Vetula's key, or nothing" ]
-        [ HH.text (Scale.rootName ctx.rootPc <> " " <> ctx.name) ]
-    , pcKeyboardRO ctx.rootPc ctx.pcs (M.currentChordPCs s.odo)
+        [ style "font-family:Georgia,serif;font-size:13px;color:#2a271e;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:240px"
+        , HH.attr (HH.AttrName "title") name ]
+        [ HH.text name ]
+    , HH.span
+        [ style "font-family:Georgia,serif;font-style:italic;font-size:12px;color:#6a5820;white-space:nowrap"
+        , HH.attr (HH.AttrName "title") tip ]
+        [ HH.text ("\x2190 " <> from) ]
     ]
-    <> case s.odo.scalePattern of
-      Nothing -> []
-      Just sp ->
-        [ HH.span
-            [ style "font-family:'SF Mono',Menlo,monospace;font-size:11px;color:#2a271e;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:200px"
-            , HH.attr (HH.AttrName "title") ("scale \"" <> sp <> "\" — Tidal scale names as a pattern; the lit keys are the scale it gives now") ]
-            [ HH.text ("scale \"" <> sp <> "\"") ]
-        ]
-    <> case s.odo.harmony of
-      Nothing -> []
-      Just h ->
-        [ HH.span
-            [ style "font-family:'SF Mono',Menlo,monospace;font-size:11px;color:#2a271e;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:260px"
-            , HH.attr (HH.AttrName "title") ("harmony \"" <> h <> "\" — a Tidal pattern; the ringed keys are the chord it gives now") ]
-            [ HH.text ("harmony \"" <> h <> "\"") ]
-        ]
+
+-- | Where an input's set comes from: its harmony route if it has one (saying
+-- | so when a Vetula source has nothing behind it, so the input falls back to
+-- | Odonus's own scale), else a line that set it, else Odonus's own.
+provenance :: Route.Input -> State -> String
+provenance input s = case Route.sourceOf input routes of
+  Just Route.VetulaKey -> vetula "Vetula\x2019s key"
+  Just (Route.VetulaVoice n) -> vetula ("Vetula voice " <> show n)
+  Just (Route.Scale _) -> "a scale route"
+  Just (Route.Harmony _) -> "a harmony route"
+  Nothing -> case input of
+    Route.OdonusGrid
+      | isJust s.odo.scalePattern -> "a line in Limulus"
+      | otherwise -> "Odonus\x2019s own scale"
+    Route.OdonusOut
+      | isJust s.odo.harmony || isJust s.odo.outScale -> "a line in Limulus"
+      | otherwise -> "no route"
+  where
+  routes = fromMaybe [] (s.routesText >>= hush <<< Route.parse)
+  fed = case input of
+    Route.OdonusGrid -> s.feedsSeen.grid
+    Route.OdonusOut -> s.feedsSeen.out
+  vetula name = if fed == Route.Unfed then name <> ", silent: Odonus\x2019s own" else name
 
 -- | Extract the display facts from the effective pitch set. `root` is a MIDI note;
 -- | its pitch class is the scale root, and each interval mapped over it gives the
