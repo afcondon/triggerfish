@@ -82,3 +82,9 @@ export const loadWidth = (key) => (fallback) => () => {
     return o && typeof o.width === "number" ? o.width : fallback;
   } catch (_) { return fallback; }
 };
+
+// A row dragged from the browser drawer carries its text (a Selene module's
+// line), for a drop target on the page to read.
+export const setDragText = (e) => (text) => () => {
+  if (e.dataTransfer) { e.dataTransfer.setData("text/plain", text); e.dataTransfer.effectAllowed = "copy"; }
+};

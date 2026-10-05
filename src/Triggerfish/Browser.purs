@@ -22,14 +22,22 @@ import Triggerfish.Glyph (GlyphIcon)
 -- | the 2×2 square and the drawer its key (Odonus). `keep`: what the drawer's
 -- | keep button says (`BrowserKeep`): "keep" for a preset, "save scene" for
 -- | Vetula, whose `c` captures something else.
-type Browser = { title :: String, modes :: Boolean, keep :: String, rows :: Array Item }
+-- | `notice`: a word from the machine after something it can take back (a
+-- | rack replaced), shown with an undo (`BrowserUndo`); "" for none.
+type Browser = { title :: String, modes :: Boolean, keep :: String, notice :: String, rows :: Array Item }
 
 -- | One kept thing. `slot` is the machine's own index for it; `icons` its
 -- | rebus, as the machine draws it (a preset's coloured pair; Vetula's
 -- | session triple in one colour); `tag` what kind it is, shown beside the
 -- | name (Balistes's Grids or Rytm); `current` whether it is what the machine
 -- | has loaded now.
-type Item = { slot :: Int, name :: String, icons :: Array GlyphIcon, tag :: String, current :: Boolean }
+-- | `section`: the heading it is listed under ("" for none; rows of a
+-- | section are kept together, in the order sections first appear).
+-- | `builtin`: not the user's (a Selene block): not renamed. `drag`: what a
+-- | drag of it carries (a Selene module's line), "" for none.
+type Item =
+  { slot :: Int, name :: String, icons :: Array GlyphIcon, tag :: String, current :: Boolean
+  , section :: String, builtin :: Boolean, drag :: String }
 
 -- | How to recall it (Odonus): `frozen`, its generators paused; `inKey`,
 -- | keeping the key the machine is in now rather than the saved one. A machine

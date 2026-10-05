@@ -59,6 +59,11 @@ import Triggerfish.Selene.Source as Source
 import Triggerfish.Selene.Store as Store
 import Triggerfish.Selene.Wire as Wire
 import Triggerfish.Amphora as Amphora
+import Triggerfish.Selene.Drop as Drop
+import Data.Array as Array
+import Reef.Selene.Line as Line
+import Reef.Selene.Block as Block
+import Web.Event.Event (Event, EventType(..))
 import Triggerfish.Glyph as G
 import Triggerfish.Browser as Browser
 import Triggerfish.Preset (Preset, indexOfContent, presetAlias)
@@ -115,6 +120,11 @@ type State =
   -- hold, so a frame repeating it changes nothing.
   , stageSubscribed :: Boolean
   , stageRack :: Maybe String
+  -- Modules kept from a bank (Amphora `selene-module`): a name and the line
+  -- without its bank. And, after a rack was replaced, the one to go back to.
+  , modules :: Array { name :: String, line :: String }
+  , notice :: String
+  , undoTo :: Maybe Int
   , publishMsg :: Maybe String   -- transient status from a publish-rack-to-Amphora click
   -- The unified glyph-chip PRESET bank (docs/DESIGN-scene-modal.md): captured rack
   -- docs, anonymous or named, freely intermixed. `identity` is the parked preset's
@@ -215,6 +225,10 @@ data Action
   | SetRackName String        -- rename the active rack
   | ApplyToRig                -- push every modular destination to its daemon
   | SeleneReply String        -- a raw `selene-reply …` frame from the rig
+  | DropModule Int Event      -- a module dropped on bank i
+  | DragOverBank Event
+  | KeepModule Int            -- keep bank i as a module
+  | ModulesLoaded (Array { name :: String, line :: String })
   | PublishRack               -- publish the active rack to the Amphora store (selene-rack)
   | PickStarter Int           -- apply library shape i to the selected envelope slot
   | EnvGrab EnvHandle Int Int -- mousedown on a breakpoint (handle, clientX, clientY)
@@ -240,6 +254,9 @@ component =
           , applyDue: Nothing
           , stageSubscribed: false
           , stageRack: Nothing
+          , modules: []
+          , notice: ""
+          , undoTo: Nothing
           , publishMsg: Nothing
           , presets: [], identity: Nothing, lastChip: Nothing
           , selected: Nothing
@@ -257,16 +274,42 @@ handleQuery = case _ of
   -- The browser drawer (docs/kb/plans/the-deck.md, 2026-10-05): the racks,
   -- by name, the loaded one current. A rack is edited in place, so keeping
   -- copies the loaded rack as a new one, to carry on from.
+  --
+  -- Two kinds of thing (AC, 2026-10-05): RACKS, whole configurations tied to
+  -- their outputs (a click replaces the live rack, with an undo); and
+  -- MODULES, one bank's worth free of any outputs, dropped on a bank: the
+  -- built-in blocks (Reef.Selene.Block) and the ones kept from a bank.
   AskBrowser reply -> do
     s <- H.get
-    let row i r = { slot: i, name: r.name, icons: (G.glyphOf r.doc).icons, tag: "", current: i == s.active }
-    pure (Just (reply { title: "Racks", modes: false, keep: "keep a copy", rows: mapWithIndex row s.library }))
+    let
+      rack i r = { slot: i, name: r.name, icons: (G.glyphOf r.doc).icons, tag: "", current: i == s.active, section: "Racks", builtin: false, drag: "" }
+      block k b = { slot: builtinSlot + k, name: b.name, icons: [], tag: "built in", current: false, section: "Modules", builtin: true, drag: b.name }
+      kept k m = { slot: keptSlot + k, name: m.name, icons: (G.glyphOf m.line).icons, tag: fromMaybe "" (Array.head (Str.split (Str.Pattern " ") m.line)), current: false, section: "Modules", builtin: false, drag: m.line }
+    pure (Just (reply
+      { title: "Selene", modes: false, keep: "keep a copy", notice: s.notice
+      , rows: mapWithIndex rack s.library <> mapWithIndex block Block.blocks <> mapWithIndex kept s.modules }))
   BrowserRecall i _ next -> do
-    handleAction (SelectRack i)
+    s <- H.get
+    -- a rack replaces the live one, which an undo gives back; a module is
+    -- dragged onto a bank, not clicked
+    when (i < builtinSlot && i /= s.active) do
+      H.modify_ _ { undoTo = Just s.active, notice = "Replaced the rack with " <> fromMaybe "?" (map _.name (s.library !! i)) }
+      handleAction (SelectRack i)
     pure (Just next)
   BrowserRename i name next -> do
-    H.modify_ \s -> s { library = fromMaybe s.library (modifyAt i (_ { name = name }) s.library) }
-    persist
+    if i < builtinSlot then do
+      H.modify_ \s -> s { library = fromMaybe s.library (modifyAt i (_ { name = name }) s.library) }
+      persist
+    else when (i >= keptSlot) do
+      H.modify_ \s -> s { modules = fromMaybe s.modules (modifyAt (i - keptSlot) (_ { name = name }) s.modules) }
+      s <- H.get
+      for_ (s.modules !! (i - keptSlot)) publishModule
+    pure (Just next)
+  BrowserUndo next -> do
+    s <- H.get
+    for_ s.undoTo \back -> do
+      H.modify_ _ { undoTo = Nothing, notice = "" }
+      handleAction (SelectRack back)
     pure (Just next)
   BrowserKeep next -> do
     at <- liftEffect Browser.stamp
@@ -436,6 +479,9 @@ handleAction = case _ of
     -- Merge the shared Amphora rack library over the local one (by name), in the
     -- BACKGROUND: awaiting it blocked Initialize (hence all queries to Selene) until
     -- the ~30s offline timeout. The store being offline is not fatal — keep local.
+    void $ H.fork do
+      res <- liftAff (attempt (Amphora.fetchCollection "selene-module"))
+      for_ res \items -> handleAction (ModulesLoaded (map (\it -> { name: it.name, line: it.payload }) items))
     void $ H.fork do
       dbRes <- liftAff (attempt (Amphora.fetchCollection "selene-rack"))
       case dbRes of
@@ -611,6 +657,31 @@ handleAction = case _ of
   -- The stage's rack: on subscribing, the whole table (adopt the rack it
   -- holds, or give it this page's); later, a write elsewhere (a `selene $`
   -- line on the rig): adopt it. Adopting does not apply: the rig already has.
+  -- A drop on a bank: the module (or block) goes to the rig as a line on
+  -- that bank, applied there in one step; the page follows by the stage.
+  DragOverBank e -> liftEffect (Drop.allowDrop e)
+  DropModule i e -> do
+    text <- liftEffect (Drop.dropText e)
+    st <- H.get
+    for_ (st.sel.destinations !! i) \d -> case Line.moduleKind text of
+      Nothing -> pure unit
+      Just kind
+        | not (Line.accepts d.target kind) ->
+            H.modify_ _ { publishMsg = Just (M.targetWire d.target <> " can't take " <> M.kindLabel kind <> " (gate banks take rhythms and clocks)") }
+        | otherwise -> for_ st.binnacle \bin -> do
+            liftEffect $ Transport.send (Binnacle.socket bin) ("tidal selene $ " <> Line.onBank text d.target)
+            H.modify_ _ { publishMsg = Just ("→ " <> M.targetWire d.target <> ": " <> text) }
+  KeepModule i -> do
+    st <- H.get
+    for_ (st.sel.destinations !! i) \d -> do
+      at <- liftEffect Browser.stamp
+      let m = { name: Source.kindKeyword d.bank <> " · " <> at, line: Line.moduleOf d }
+      H.modify_ _ { modules = st.modules <> [ m ], publishMsg = Just ("kept as a module: " <> m.name) }
+      publishModule m
+  ModulesLoaded ms -> H.modify_ \s -> s { modules = s.modules <> filter (\m -> not (Array.any (\k -> k.name == m.name) s.modules)) ms }
+  -- the rig's answer to a dropped module
+  SeleneReply raw | Just rest <- Str.stripPrefix (Str.Pattern "OK: selene: ") raw -> H.modify_ _ { publishMsg = Just ("✓ " <> rest) }
+  SeleneReply raw | Just rest <- Str.stripPrefix (Str.Pattern "ERR: selene: ") raw -> H.modify_ _ { publishMsg = Just ("✗ " <> rest) }
   SeleneReply raw | Just json <- Str.stripPrefix (Str.Pattern "stage-texts ") raw -> do
     case readStageTable json of
       Just t -> adoptRack t
@@ -693,6 +764,20 @@ readStageWrite :: String -> Maybe String
 readStageWrite json = do
   w :: { key :: String, text :: Nullable String } <- hush (readJSON json)
   if w.key == "selene/rack" then toMaybe w.text else Nothing
+
+-- | Where the drawer's rows of each kind start: racks from 0, the built-in
+-- | blocks, then kept modules.
+builtinSlot :: Int
+builtinSlot = 1000
+
+keptSlot :: Int
+keptSlot = 2000
+
+-- | Keep a module in Amphora (`selene-module`), by name; a rename publishes it
+-- | again under the new name.
+publishModule :: forall o m. MonadAff m => { name :: String, line :: String } -> H.HalogenM State Action Slots o m Unit
+publishModule m = void $ H.fork $ void $ liftAff $ attempt $ Amphora.publish
+  { kind: "selene-module", collection: "selene-module", name: m.name, source: "user", payload: m.line, tags: [] }
 
 -- | Persist the rack library + preset bank (after any library/active/preset change).
 persist :: forall o m. MonadAff m => H.HalogenM State Action Slots o m Unit
@@ -1189,7 +1274,10 @@ footNote =
 destinationRow :: forall m. MonadAff m => EnvParam -> Maybe Sel -> Int -> M.Destination -> H.ComponentHTML Action Slots m
 destinationRow ep sel i d =
   HH.div
-    [ style $ "display:flex;align-items:stretch;gap:12px;padding:11px 12px;margin-bottom:10px;border-radius:8px;"
+    -- a drop target for a module from the browser drawer
+    [ HE.handler (EventType "dragover") DragOverBank
+    , HE.handler (EventType "drop") (DropModule i)
+    , style $ "display:flex;align-items:stretch;gap:12px;padding:11px 12px;margin-bottom:10px;border-radius:8px;"
         <> "background:#00000008;border:1px solid #00000012" ]
     [ destHeader i d
     , HH.div [ style (slotWrap d.bank) ] (slotViews ep i sel d.bank)
@@ -1213,6 +1301,11 @@ destHeader i d =
         (\(Select.Selected wire) -> RetargetDest i wire)
     , HH.span [ style $ engrave <> ";font-size:8px;opacity:0.45" ]
         [ HH.text ("→ " <> M.targetWire d.target) ]
+    , HH.button
+        [ HE.onClick \_ -> KeepModule i
+        , HP.title "Keep this bank as a module, to drop on any bank (it goes in the drawer's Modules)"
+        , style $ "align-self:flex-start;font:10px Georgia,serif;padding:1px 7px;border:1px solid #00000026;border-radius:4px;background:transparent;cursor:pointer;color:#5a5648" ]
+        [ HH.text "keep as module" ]
     ]
 
 -- ---------------------------------------------------------------------------

@@ -152,6 +152,7 @@ foreign import focusFrame :: HTMLElement -> Effect Unit
 foreign import focusSelf :: Effect Unit
 foreign import watchDocks :: (Boolean -> Effect Unit) -> Effect Unit
 foreign import selectAll :: HTMLElement -> Effect Unit
+foreign import setDragText :: E.Event -> String -> Effect Unit
 foreign import loadDrawer :: String -> Effect { open :: Boolean, width :: Number }
 foreign import loadWidth :: String -> Number -> Effect Number
 foreign import saveDrawer :: String -> { open :: Boolean, width :: Number } -> Effect Unit
@@ -182,6 +183,8 @@ data Action o
   | RenameKey KE.KeyboardEvent
   | CommitRename
   | KeepRow
+  | UndoRow
+  | DragRow String E.Event
 
 type Slots o = (machine :: H.Slot SQ.Query o Unit, drawer :: Drawer.Slot Unit, limdrawer :: Drawer.Slot Unit)
 
@@ -284,6 +287,10 @@ handleAction cfg = case _ of
     H.modify_ _ { lastRecall = r }
     void $ H.query _machine unit (SQ.BrowserRecall slot r unit)
     handleAction cfg AskBrowser
+  UndoRow -> do
+    void $ H.query _machine unit (SQ.BrowserUndo unit)
+    handleAction cfg AskBrowser
+  DragRow text e -> liftEffect (setDragText e text)
   KeepRow -> do
     void $ H.query _machine unit (SQ.BrowserKeep unit)
     handleAction cfg AskBrowser
@@ -553,10 +560,24 @@ browserDrawer st b =
                 [ HH.text b.keep ]
             ]
         ]
+          <> (if b.notice == "" then [] else [ notice ])
           <> (if b.modes then [ key ] else [])
           <> (if Array.null b.rows then [ HH.p [ style "font-size:12px;font-style:italic;color:#6a6657" ] [ HH.text ("Nothing here yet: " <> b.keep <> " adds what is playing.") ] ] else [])
-          <> map row b.rows
+          <> Array.concatMap section (Array.nub (map _.section b.rows))
       ) ]
+  -- a word from the machine after something it can take back
+  notice =
+    HH.div [ style "display:flex;align-items:baseline;gap:8px;margin:0 0 10px;padding:6px 8px;border-radius:4px;background:#2d567018;font-size:12px;color:#1c1a12" ]
+      [ HH.span [ style "flex:1" ] [ HH.text b.notice ]
+      , HH.button
+          [ HE.onClick \_ -> UndoRow
+          , style "font:11px Georgia,serif;padding:1px 8px;border:1px solid #2d5670;border-radius:4px;background:#f6f2e7;cursor:pointer;color:#2d5670" ]
+          [ HH.text "undo" ]
+      ]
+  -- a section's rows under its heading (none for "")
+  section name =
+    (if name == "" then [] else [ HH.div [ style (engrave <> ";font-size:10px;letter-spacing:0.14em;color:#6a6657;margin:12px 0 4px 4px") ] [ HH.text (String.toUpper name) ] ])
+      <> map row (Array.filter (\r -> r.section == name) b.rows)
   -- the 2×2's axes, once
   key =
     HH.div [ style "display:grid;grid-template-columns:auto 11px 11px;gap:2px 3px;align-items:center;font-size:10px;color:#6a6657;margin:0 0 8px 2px" ]
@@ -567,9 +588,13 @@ browserDrawer st b =
   cell = HH.span [ style "width:9px;height:9px;border:1px solid #8a8270" ] []
   row r =
     HH.div
-      [ HP.class_ (HH.ClassName "tfb-row")
-      , style $ "display:flex;align-items:center;gap:8px;padding:3px 4px;border-radius:3px;"
-          <> (if r.current then "background:#00000018;" else "") ]
+      ( [ HP.class_ (HH.ClassName "tfb-row")
+        , style $ "display:flex;align-items:center;gap:8px;padding:3px 4px;border-radius:3px;"
+            <> (if r.current then "background:#00000018;" else "")
+            <> (if r.drag == "" then "" else "cursor:grab;") ]
+          -- a module is dragged onto a bank on the page
+          <> (if r.drag == "" then [] else [ HP.attr (HH.AttrName "draggable") "true", HE.handler (E.EventType "dragstart") (DragRow r.drag) ])
+      )
       ( (if b.modes then [ square r ] else [])
           <>
             [ case st.renaming of
@@ -579,10 +604,11 @@ browserDrawer st b =
                     , HP.ref renameRef, style "flex:1;min-width:0;font:13px Georgia,serif;padding:1px 3px" ]
                 _ ->
                   HH.span
-                    [ HE.onClick \_ -> RecallRow r.slot st.lastRecall, HE.onDoubleClick \_ -> StartRename r
-                    , HP.title "Click: recall it, the way you last did. Double-click: rename it."
-                    , style $ "flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;cursor:pointer;font-size:13px;color:#1c1a12;"
-                        <> (if r.current then "font-weight:bold;" else "") ]
+                    ( [ HE.onClick \_ -> RecallRow r.slot st.lastRecall
+                      , HP.title (if r.drag /= "" then "Drag it onto a bank." else "Click: recall it, the way you last did. Double-click: rename it.")
+                      , style $ "flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;cursor:pointer;font-size:13px;color:#1c1a12;"
+                          <> (if r.current then "font-weight:bold;" else "") ]
+                        <> (if r.builtin then [] else [ HE.onDoubleClick \_ -> StartRename r ]) )
                     [ HH.text r.name ]
             ]
           <> (if r.tag == "" then [] else [ HH.span [ style "flex:none;font-size:10px;letter-spacing:0.08em;text-transform:uppercase;color:#6a6657" ] [ HH.text r.tag ] ])

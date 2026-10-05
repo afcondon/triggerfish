@@ -111,6 +111,8 @@ data Query a
   | BrowserRename Int String a
   -- the drawer's keep button: keep what the machine has now, as a new row
   | BrowserKeep a
+  -- the drawer's undo, after a `notice`
+  | BrowserUndo a
   | AskBank (Array { slot :: Int, alias :: String, name :: String, starred :: Boolean } -> a)
   | RecallSlot Int a
   | StarSlot Int a

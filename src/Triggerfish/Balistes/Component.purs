@@ -118,14 +118,15 @@ handleQuery = case _ of
   -- its name, with the machine it runs on (Grids or Rytm) as its tag.
   AskBrowser reply -> do
     s <- H.get
-    let row i p = { slot: i, name: fromMaybe "untitled" p.name, icons: (presetGlyph p).icons, tag: maybe "" machineTag (parseTri p.content), current: s.identity == Just p.content }
-    pure (Just (reply { title: "Beats", modes: false, keep: "keep (c)", rows: mapWithIndex row s.presets }))
+    let row i p = { slot: i, name: fromMaybe "untitled" p.name, icons: (presetGlyph p).icons, tag: maybe "" machineTag (parseTri p.content), current: s.identity == Just p.content, section: "", builtin: false, drag: "" }
+    pure (Just (reply { title: "Beats", modes: false, keep: "keep (c)", notice: "", rows: mapWithIndex row s.presets }))
   BrowserRecall i _ next -> do
     recallPreset i
     pure (Just next)
   BrowserKeep next -> do
     captureNow
     pure (Just next)
+  BrowserUndo next -> pure (Just next)
   BrowserRename i name next -> do
     H.modify_ \s -> s { presets = fromMaybe s.presets (modifyAt i (_ { name = Just name }) s.presets) }
     persist
