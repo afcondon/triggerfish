@@ -13,7 +13,7 @@
 -- | PARAMETERS next to it needed a scrollbar. This is now a compact strip in
 -- | Odonus's secondary nav (`Odonus.View.Nav`), which is where a live player wants
 -- | it anyway — glanceable, not a panel to read.
-module Triggerfish.Odonus.View.Key (quantPieces) where
+module Triggerfish.Odonus.View.Key (outputPiece, gridPiece) where
 
 import Prelude
 
@@ -45,13 +45,22 @@ import Triggerfish.Odonus.Grid.Widgets (engrave, style)
 -- |   GRID    the scale a cell's value is mapped onto (q1, `odonus.grid`)
 -- |   OUTPUT  the set each note snaps to past its head's offset (q2,
 -- |           `odonus.out`): a chord, an output scale, or none
-quantPieces :: forall m. State -> { output :: H.ComponentHTML Action Slots m, grid :: H.ComponentHTML Action Slots m }
-quantPieces s =
-  { output: piece "Output quantisation" (outBody <> strip (if isJust s.odo.harmony then outChords s else []))
+-- | OUTPUT QUANTISATION, opening PLAYHEADS.
+outputPiece :: forall m. State -> H.ComponentHTML Action Slots m
+outputPiece s = (quantPieces s Route.OdonusOut)
+
+-- | GRID QUANTISATION, opening NOTES.
+gridPiece :: forall m. State -> H.ComponentHTML Action Slots m
+gridPiece s = (quantPieces s Route.OdonusGrid)
+
+-- | One piece. Each is built only for its own input: PureScript is strict, so
+-- | a record of both, built twice, cost each render four of these.
+quantPieces :: forall m. State -> Route.Input -> H.ComponentHTML Action Slots m
+quantPieces s = case _ of
+  Route.OdonusOut -> piece "Output quantisation" (outBody unit <> strip (if isJust s.odo.harmony then outChords s else []))
       "What each note snaps to at the end, past its head's offset: a chord colours the melody without changing its shape; chromatic leaves each note as it is. Odonus's own choice, unless a route feeds odonus.out"
-  , grid: piece "Grid quantisation" (gridBody <> strip (if isJust s.odo.gridHarmony then gridChords s else []))
+  Route.OdonusGrid -> piece "Grid quantisation" (gridBody unit <> strip (if isJust s.odo.gridHarmony then gridChords s else []))
       "What a cell's value is mapped onto: the melody's shape. Odonus's own scale, unless a route feeds odonus.grid (a chord's arpeggios, Vetula's key, a scale)"
-  }
   where
   ctx = contextInfo s.odo
   routes = fromMaybe [] (s.routesText >>= hush <<< Route.parse)
@@ -59,7 +68,7 @@ quantPieces s =
   outChromatic = map _.pattern s.odo.outScale == Just "chromatic"
   -- Grid: a route says where it comes from; a line names what it set; else
   -- Odonus's own scale, chosen here (the taster's only harmony, in Solo)
-  gridBody
+  gridBody _
     | routed Route.OdonusGrid = [ named gridName, from (provenance Route.OdonusGrid s) ]
     | isJust s.odo.gridHarmony || isJust s.odo.scalePattern = [ named gridName, from "a line in Limulus" ]
     | otherwise = [ rootSelect, scaleSelect ]
@@ -69,7 +78,7 @@ quantPieces s =
     _, _ -> Scale.rootName ctx.rootPc <> " " <> ctx.name
   -- Output: a route, a line, or Odonus's own choice: the grid's set, or
   -- chromatic (AC: null quantisation at both)
-  outBody
+  outBody _
     | routed Route.OdonusOut = [ named outName, from (provenance Route.OdonusOut s) ]
     | isJust s.odo.harmony || (isJust s.odo.outScale && not outChromatic) = [ named outName, from "a line in Limulus" ]
     | otherwise = [ outToggle ]

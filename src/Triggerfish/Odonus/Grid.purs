@@ -762,10 +762,16 @@ dispatch = case _ of
         -- readout, and the river, which moves only while a note or a mark is still
         -- inside its window. REPLAY runs from here, so it keeps the clock current
         -- too. Other readers take it fresh (`freshClock`, in handleAction).
+        --
+        -- The clock itself is drawn only on REVIEW (its rig loops' playhead):
+        -- the status bar that showed tempo, beat and anchors is unhosted, and
+        -- under Link the tempo is nudged nearly every frame, so on PERFORM a
+        -- clock change redrew the whole page some 30 times a second for
+        -- nothing seen (2026-10-05, AC: the tab's CPU).
         let inWindow at = now - at < windowMicros || st.nowMicros - at < windowMicros
-            moved = r.tempo /= st.clockTempo || r.locked /= st.clockLocked
-              || r.bar /= st.clockBar || r.anchorCount /= st.anchorCount
-              || floor r.beat /= floor st.clockBeat
+            clockShown = st.stage == Review
+            moved = clockShown && (r.tempo /= st.clockTempo || r.locked /= st.clockLocked
+                || r.bar /= st.clockBar || floor r.beat /= floor st.clockBeat)
               || not (null st.notes) || isJust st.playing
               || any RL.looping st.logbook.marks
               || any (inWindow <<< _.atMicros) st.logbook.marks

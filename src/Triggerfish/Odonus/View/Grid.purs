@@ -27,7 +27,7 @@ import Triggerfish.Odonus.Grid.Types
   ( Action(..), GenKind(..), KnobTarget(..), Slots, State, marblesPadId, twisterFieldLabel )
 import Triggerfish.Routing.Model as RM
 import Triggerfish.Routing.Out as RO
-import Triggerfish.Odonus.View.Key (quantPieces)
+import Triggerfish.Odonus.View.Key (gridPiece)
 import Triggerfish.Odonus.Grid.Widgets
   ( cellChrome, engrave, genRow, labelledRow, miniKnob, octLabel, panelShell, style, tabBtn )
 import Data.Array (length, mapWithIndex, null, (!!), (..))
@@ -42,7 +42,7 @@ gridPanel s =
     -- interval you jump TO: "1" = unison (no shift), "3" = a third, "5" = a fifth,
     -- "7" = a seventh — so `degShift` is the button number minus one. (Distinct
     -- from the per-head chromatic INT — see the PARAMETERS/Playheads panes.)
-    [ (quantPieces s).grid
+    [ gridPiece s
     , HH.div [ style "margin-bottom:12px;display:flex;flex-direction:column;gap:8px" ]
         [ labelledRow "OCTAVE"
             (map (\n -> tabBtn (octLabel n) (s.odo.octaveShift == n) (SetOctave n)) [ -2, -1, 0, 1, 2 ])

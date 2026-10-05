@@ -531,10 +531,9 @@ handleAction = case _ of
           H.modify_ \s -> s { library = mergeRacksByName s.library (map amphoraRack items) }
         _ -> pure unit
 
-  Step tick -> do
-    -- The modular runs what was applied whatever this page does, so the
-    -- playhead always sweeps with the clock (there is no Play to wait for).
-    H.modify_ _ { playStep = tick.index `mod` cycleSteps }
+  -- The step is not drawn (the rings have no playhead): writing it on every
+  -- tick redrew the whole page for nothing seen (2026-10-05, AC: CPU).
+  Step _ -> pure unit
 
   Frame -> do
     st <- H.get
@@ -550,9 +549,12 @@ handleAction = case _ of
     for_ st.applyDue \due -> when (now >= due && isJust st.binnacle) do
       H.modify_ _ { applyDue = Nothing }
       handleAction ApplyToRig
+    -- the clock, written only when the bar it shows moves: written on every
+    -- frame it redrew the whole page some 30 times a second
     for_ st.binnacle \bin -> do
       r <- liftEffect $ Clock.read (Binnacle.clock bin)
-      H.modify_ _ { clockTempo = r.tempo, clockLocked = r.locked, clockBar = r.bar }
+      when (r.bar /= st.clockBar) $
+        H.modify_ _ { clockTempo = r.tempo, clockLocked = r.locked, clockBar = r.bar }
     -- Report the identity chip up to the shell's status board, but only when it
     -- actually changed (this fires ~30×/s) — capture/recall/divergence all land here.
     s2 <- H.get
@@ -1367,7 +1369,7 @@ transportStrip s =
         <> "border-radius:7px;background:#00000008;border:1px solid #00000012;flex-wrap:wrap" ]
     -- ARM now lives on the tab dot in the top switcher; this strip keeps the readouts.
     -- The tempo is the dashboard's (Triggerfish.Tempo), shown there only.
-    ( [ stat "BAR" (show s.clockBar <> " · step " <> show (s.playStep + 1) <> "/" <> show cycleSteps)
+    ( [ stat "BAR" (show s.clockBar)
       , stat "MIDI" s.midiName
       ]
         <> replyReadout s )

@@ -17,14 +17,14 @@ import Halogen.HTML.Properties as HP
 import Triggerfish.Ui.Euclid as Euclid
 import Triggerfish.Odonus.Model as M
 import Triggerfish.Odonus.Grid.Types (Action(..), KnobTarget(..), Slots, State)
-import Triggerfish.Odonus.View.Key (quantPieces)
+import Triggerfish.Odonus.View.Key (outputPiece)
 import Triggerfish.Odonus.Grid.Widgets (engrave, headColor, miniKnob, panelShell, roman, signed, style)
 import Halogen.Widgets.Svg (svgAttr, svgEl)
 
 playheadsPanel :: forall m. State -> H.ComponentHTML Action Slots m
 playheadsPanel s =
   panelShell s.collapsed "PLAYHEADS" "Fugue · Access" "flex:0 1 290px;min-width:min-content"
-    [ (quantPieces s).output
+    [ outputPiece s
     , phasingBlock s.odo
     , HH.span [ style $ engrave <> ";font-size:9px;opacity:0.85;display:block;margin-bottom:4px" ]
         [ HH.text "COMBINATIONS" ]
