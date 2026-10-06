@@ -17,8 +17,8 @@ module Triggerfish.Odonus.View.Progression
 
 import Prelude
 
-import Data.Array (catMaybes, foldl, head, last, range, snoc, sort, nub)
-import Data.Maybe (Maybe(..), maybe)
+import Data.Array (all, catMaybes, find, foldl, head, index, last, length, range, snoc, sort, nub, take)
+import Data.Maybe (Maybe(..), fromMaybe, maybe)
 import Harmonia.Recognise (best, candidateName, observeWithBass)
 import Reef.Input (Input(..))
 import Triggerfish.Odonus.Grid.Types (State)
@@ -49,7 +49,14 @@ chords pick st =
     notes = catMaybes (map (\step -> Samples.sampleAt key step st.samples >>= pick) (range from (from + Samples.window.count - 1)))
     runs = foldl (\acc ns -> if map _.notes (last acc) == Just ns then acc else snoc acc { name: chordName ns, notes: ns }) [] notes
   in
-    runs
+    oneTurn runs
+
+-- | One turn of a progression that repeats within the window: the shortest
+-- | stretch the rest repeats (C F G C F G → C F G), from the chord now.
+oneTurn :: Array Chord -> Array Chord
+oneTurn cs = fromMaybe cs (find repeats (range 1 (length cs)) <#> \k -> take k cs)
+  where
+  repeats k = all (\i -> map _.notes (index cs i) == map _.notes (index cs (i `mod` k))) (range 0 (length cs - 1))
 
 -- | A chord's name from its notes as voiced: Harmonia's best reading, with
 -- | the lowest note as the bass (so an inversion reads as a slash chord);

@@ -66,10 +66,17 @@ quantPieces s = case _ of
   ctx = contextInfo s.odo
   routes = fromMaybe [] (s.routesText >>= hush <<< Route.parse)
   routed i = isJust (Route.sourceOf i routes)
+  fromVetula i = case Route.sourceOf i routes of
+    Just Route.VetulaKey -> true
+    Just (Route.VetulaVoice _) -> true
+    _ -> false
   outChromatic = map _.pattern s.odo.outScale == Just "chromatic"
   -- Grid: a route says where it comes from; a line names what it set; else
   -- Odonus's own scale, chosen here (the taster's only harmony, in Solo)
   gridBody _
+    -- fed by Vetula: where it comes from is the name, and the chords below
+    -- say what it holds (the pattern itself is the rig's business)
+    | fromVetula Route.OdonusGrid = [ named (provenance Route.OdonusGrid s) ]
     | routed Route.OdonusGrid = [ named gridName, from (provenance Route.OdonusGrid s) ]
     | isJust s.odo.gridHarmony || isJust s.odo.scalePattern = [ named gridName, from "a line in Limulus" ]
     | otherwise = [ rootSelect, scaleSelect ]
@@ -80,6 +87,7 @@ quantPieces s = case _ of
   -- Output: a route, a line, or Odonus's own choice: the grid's set, or
   -- chromatic (AC: null quantisation at both)
   outBody _
+    | fromVetula Route.OdonusOut = [ named (provenance Route.OdonusOut s) ]
     | routed Route.OdonusOut = [ named outName, from (provenance Route.OdonusOut s) ]
     | isJust s.odo.harmony || (isJust s.odo.outScale && not outChromatic) = [ named outName, from "a line in Limulus" ]
     | otherwise = [ outToggle ]
@@ -99,7 +107,9 @@ quantPieces s = case _ of
               , HH.attr (HH.AttrName "title") (if i == 0 then "the chord in force now" else "coming") ]
               [ HH.text c.name ]) (take 8 cs))
       ]
-  named t = HH.span [ style "font-family:Georgia,serif;font-size:13px;color:#2a271e;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0" ] [ HH.text t ]
+  -- one line at most, cut with … (a long pattern widened the whole panel); the
+  -- whole of it on hover
+  named t = HH.span [ style "font-family:Georgia,serif;font-size:13px;color:#2a271e;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0;max-width:20em", HH.attr (HH.AttrName "title") t ] [ HH.text t ]
   from t = HH.span [ style "font-family:Georgia,serif;font-style:italic;font-size:12px;color:#6a5820;white-space:nowrap" ] [ HH.text ("\x00b7 " <> t) ]
   rootSelect =
     HH.select
