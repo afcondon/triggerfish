@@ -233,7 +233,7 @@ derive instance ordLeftSection :: Ord LeftSection
 -- | kept but off the ladder: too simple to follow triads and sevenths, too
 -- | unfamiliar to open with, and at its best as a playing surface. The circle
 -- | of fifths (`Fifths`) is off the ladder too, reachable by URL.
-data Viewtype = Fifths | Tonnetz | KeyChords | Lattice4 | Lattice | Pads
+data Viewtype = Fifths | Tonnetz | KeyChords | Common | Lattice4 | Lattice | Pads
 
 -- | The side panel beside an Explore view: a chord's variations (Harmonia.Vary,
 -- | drift × density) or its relatives (voice-led neighbours, `generateCandidates`).
@@ -285,13 +285,14 @@ viewtypeLabel = case _ of
   Fifths -> "fifths"
   Tonnetz -> "tonnetz"
   KeyChords -> "key"
+  Common -> "+ common"
   Lattice4 -> "+ four-note"
   Lattice -> "+ extended"
   Pads -> "banks"
 
 -- | Explore's ladder, in order of complexity: the buttons in the bar.
 viewtypes :: Array Viewtype
-viewtypes = [ KeyChords, Lattice4, Lattice, Pads ]
+viewtypes = [ KeyChords, Common, Lattice4, Lattice, Pads ]
 
 -- | A view's stable string, for the URL and the remembered default.
 viewtypeValue :: Viewtype -> String
@@ -299,6 +300,7 @@ viewtypeValue = case _ of
   Fifths -> "fifths"
   Tonnetz -> "tonnetz"
   KeyChords -> "key"
+  Common -> "common"
   Lattice4 -> "lattice4"
   Lattice -> "lattice"
   Pads -> "banks"
@@ -309,6 +311,7 @@ viewtypeFromValue :: String -> Viewtype
 viewtypeFromValue = case _ of
   "fifths" -> Fifths
   "tonnetz" -> Tonnetz
+  "common" -> Common
   "lattice4" -> Lattice4
   "lattice" -> Lattice
   "banks" -> Pads
@@ -321,6 +324,7 @@ viewtypeTip = case _ of
   Fifths -> "the key's chords on the circle of fifths"
   Tonnetz -> "the tonal net: triads sharing two notes sit side by side"
   KeyChords -> "the key's own chords: a triad and a seventh on every degree"
+  Common -> "the chords a lead sheet names, on every degree: sus2, sus4, 6, add9, 7sus4, shells, 9ths, 6/9"
   Lattice4 -> "the lattice above them: every chord of up to four notes built from each degree"
   Lattice -> "the whole lattice: chords of five notes and more, up to the thirteenth"
   Pads -> "nine banks of sixteen: how far from home, by how rich"
@@ -3533,7 +3537,7 @@ handleActionCore = case _ of
     t <- liftEffect (unwrap <<< unInstant <$> now)
     let acc = (if t - st.wheelLast > 300.0 then 0.0 else st.wheelAcc) + dy
         cur = huntOr st.lastLens st.stage
-        ladder = [ KeyChords, Lattice4, Lattice ]
+        ladder = [ KeyChords, Common, Lattice4, Lattice ]
         ix = fromMaybe (-1) (elemIndex cur ladder)
         step d = for_ (if ix < 0 then Nothing else index ladder (ix + d)) \v -> do
           H.modify_ _ { wheelAcc = 0.0, wheelAt = t, wheelLast = t }
@@ -6459,6 +6463,7 @@ surface st
       Hunt Fifths -> circleFifthsSurface st
       Hunt Tonnetz -> tonnetzSurface st
       Hunt KeyChords -> fieldSurface st
+      Hunt Common -> fieldSurface st
       Hunt Lattice4 -> fieldSurface st
       Hunt Lattice -> fieldSurface st
       Hunt Pads -> fieldSurface st
@@ -7606,7 +7611,7 @@ fieldView :: State -> Maybe Viewtype
 fieldView st
   | length st.genSel > 0 && length st.candidates > 0 = Nothing
   | otherwise = case st.stage of
-      Hunt v | elem v [ KeyChords, Lattice4, Lattice, Pads ] -> Just v
+      Hunt v | elem v [ KeyChords, Common, Lattice4, Lattice, Pads ] -> Just v
       _ -> Nothing
 
 -- | Bring the field up to date with the state: a new scene when what it shows
@@ -7685,9 +7690,11 @@ fieldScene st view table listener =
     members = concat st.lattice
     banks = view == Pads
     keyChords = map (\c -> Tuple (mod c.root 12) (pcSetOf c)) (diatonicTriads st.key <> diatonicSevenths st.key)
+    isKey c = elem (Tuple (mod c.root 12) (pcSetOf c)) keyChords
     atLevel c = case view of
-      KeyChords -> elem (Tuple (mod c.root 12) (pcSetOf c)) keyChords
-      Lattice4 -> length (pcSetOf c) <= 4
+      KeyChords -> isKey c
+      Common -> isKey c || commonChord st.key c
+      Lattice4 -> length (pcSetOf c) <= 4 || commonChord st.key c
       Lattice -> true
       _ -> false
     -- The pads, each claiming the lattice mark of the same chord if there is
@@ -7738,11 +7745,12 @@ fieldScene st view table listener =
       , minY: topY - 30.0 - (if ribbonRows > 0 then 30.0 + toNumber ribbonRows * 42.0 else 0.0)
       , maxY: latGeo.baseY + 40.0
       }
-    -- a chord's level: 0 the key's own, 1 up to four notes, 2 beyond
+    -- a chord's level: 0 the key's own, 1 common, 2 up to four notes, 3 beyond
     levelOf c
-      | elem (Tuple (mod c.root 12) (pcSetOf c)) keyChords = 0
-      | length (pcSetOf c) <= 4 = 1
-      | otherwise = 2
+      | isKey c = 0
+      | commonChord st.key c = 1
+      | length (pcSetOf c) <= 4 = 2
+      | otherwise = 3
     edges = concatMap (fieldEdges levelOf) st.lattice
     degreeLabels =
       mapWithIndex
@@ -7758,14 +7766,48 @@ fieldScene st view table listener =
         , edges
         , edgeLevels: case view of
             KeyChords -> 1
-            Lattice4 -> 2
-            Lattice -> 3
+            Common -> 2
+            Lattice4 -> 3
+            Lattice -> 4
             _ -> 0
         , marks
         , css: fieldTintCss
         }
     , frame: if banks then bankBox { minX = bankBox.minX - 20.0, maxX = bankBox.maxX + 20.0, minY = bankBox.minY - 16.0, maxY = bankBox.maxY + 24.0 } else latBox
     }
+
+-- | **The common chords** (AC, 2026-10-06): what a pop or jazz lead sheet
+-- | would name, between the key's own triads and sevenths and the full
+-- | lattice. A lattice chord is its root plus some of the tones a third, fifth,
+-- | seventh, ninth, eleventh and thirteenth above it in the scale (k = 1 … 6),
+-- | so "common" is a list of those tone sets, and every quality follows the
+-- | key. Power chords are left out (AC).
+commonShapes :: Array (Array Int)
+commonShapes =
+  [ [ 1, 2 ]          -- triad
+  , [ 1, 2, 3 ]       -- seventh
+  , [ 2, 4 ]          -- sus2
+  , [ 2, 5 ]          -- sus4
+  , [ 1, 2, 6 ]       -- 6
+  , [ 1, 2, 4 ]       -- add9
+  , [ 2, 3, 5 ]       -- 7sus4
+  , [ 1, 3 ]          -- shell: root, third, seventh
+  , [ 1, 2, 3, 4 ]    -- 9th
+  , [ 1, 2, 4, 6 ]    -- 6/9
+  ]
+
+commonChord :: Key -> ChordNode -> Boolean
+commonChord key c =
+  let sc = scaleSet key
+      n = length sc
+      r = mod c.root 12
+      others = filter (_ /= r) (pcSetOf c)
+  in case elemIndex r sc of
+       Nothing -> false
+       Just rd ->
+         let toneOf k = fromMaybe (-1) (index sc (mod (rd + 2 * k) n))
+             ks = filter (\k -> elem (toneOf k) others) (range 1 6)
+         in length (nub (map toneOf ks)) == length others && elem ks commonShapes
 
 -- | One degree's covering edges, each at the level of its higher end, so it
 -- | shows only while both its ends do.

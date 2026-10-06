@@ -77,8 +77,8 @@ type Mark =
   , click :: Effect Unit
   }
 
--- | An edge belongs to the level of its higher end (0 key, 1 four-note, 2
--- | extended). Edges fade by level, as groups: 1,300 lines at a fractional
+-- | An edge belongs to the level of its higher end (0 key, 1 common, 2
+-- | four-note, 3 extended). Edges fade by level, as groups: 1,300 lines at a fractional
 -- | opacity each cost 80 ms a frame to paint, one group at one costs nothing.
 type Edge = { x1 :: Number, y1 :: Number, x2 :: Number, y2 :: Number, level :: Int }
 
@@ -92,7 +92,7 @@ type Scene =
   , lattice :: Furniture
   , bank :: Furniture
   , edges :: Array Edge
-  , edgeLevels :: Int          -- levels whose edges show: 0 none, 3 all
+  , edgeLevels :: Int          -- levels whose edges show: 0 none, 4 all
   , marks :: Array Mark
   , css :: String             -- the tints, as rules on `.vf-mark[data-hi=…]`
   }
@@ -256,7 +256,7 @@ sceneTree scene =
             { enter: Nothing, update: Just ease, exit: Nothing } ]
     , elem Group [ F.class_ "vf-edges" ]
         [ forEachWithGUP "vf-edges" Group
-            (map (\l -> { level: l, on: l < scene.edgeLevels, lines: filter (\e -> e.level == l) scene.edges }) [ 0, 1, 2 ])
+            (map (\l -> { level: l, on: l < scene.edgeLevels, lines: filter (\e -> e.level == l) scene.edges }) [ 0, 1, 2, 3 ])
             (\g -> show g.level)
             edgeGroup
             { enter: Nothing, update: Just ease, exit: Nothing } ]
