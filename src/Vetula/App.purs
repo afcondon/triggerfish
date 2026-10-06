@@ -2112,23 +2112,6 @@ handleActionCore = case _ of
     H.modify_ _ { field = Just { handle: fh, listener: fieldL, seen } }
     -- the saved scenes, for the browser drawer, in the background
     void $ H.fork (handleAction FetchScenes)
-    -- The progression being built when the page last closed (the working
-    -- copy), so a crash or a reload loses nothing.
-    mwork <- liftEffect Store.loadWorking
-    for_ mwork \w -> do
-      st0 <- H.get
-      let noteLists = filter (\ns -> length ns > 0) (parseProgression w.source)
-          fresh = mapWithIndex (\j ns -> importChord (st0.nextId + j) ns) noteLists
-          ids = map _.id fresh
-      when (length ids > 0) $ H.modify_ _
-        { chords = st0.chords <> fresh
-        , imported = st0.imported <> Set.fromFoldable ids
-        , nextId = st0.nextId + length fresh
-        , path = ids
-        , progName = Just w.name
-        , lastCapSig = w.source
-        , lastPubSig = w.saved
-        }
     -- Where this viewer chose to hear auditions, if they have.
     msound <- liftEffect Store.loadSound
     for_ (msound >>= soundFromValue) \sel -> H.modify_ _ { auditionSel = sel, soundChosen = true }
@@ -2237,6 +2220,26 @@ handleActionCore = case _ of
     -- initial palette
     st <- H.get
     startWith st.key seedFocus (seedsFor st.key)
+    -- The progression being built when the page last closed (the working
+    -- copy), so a crash or a reload loses nothing. After the pool is seeded,
+    -- and numbered above every chord in it: a clash of ids with the seed
+    -- triads made the path point at them instead (AC, 2026-10-06).
+    mwork <- liftEffect Store.loadWorking
+    for_ mwork \w -> do
+      st0 <- H.get
+      let base = max st0.nextId (1 + fromMaybe 0 (maximum (map _.id st0.chords)))
+          noteLists = filter (\ns -> length ns > 0) (parseProgression w.source)
+          fresh = mapWithIndex (\j ns -> importChord (base + j) ns) noteLists
+          ids = map _.id fresh
+      when (length ids > 0) $ H.modify_ _
+        { chords = st0.chords <> fresh
+        , imported = st0.imported <> Set.fromFoldable ids
+        , nextId = base + length fresh
+        , path = ids
+        , progName = Just w.name
+        , lastCapSig = w.source
+        , lastPubSig = w.saved
+        }
 
   MidiReady mout nm ->
     H.modify_ _ { midiOut = mout, midiName = nm }
@@ -2605,7 +2608,10 @@ handleActionCore = case _ of
   -- STARTS a fresh path instead of extending this one (the Nothing branch of
   -- PathPick then opens a new capture session). The visible twin of the `c` key —
   -- discoverable, and it works with a text field focused (where `c` is swallowed).
-  ClearPath -> H.modify_ _ { path = [], progName = Nothing, lastCapIdx = Nothing, lastCapSig = "" }
+  ClearPath -> do
+    H.modify_ _ { path = [], progName = Nothing, lastCapIdx = Nothing, lastCapSig = "" }
+    -- and the working copy with it, or a reload brings the cleared one back
+    liftEffect (Store.saveWorking { name: "", source: "", saved: "" })
 
   PlayStep pid -> playId pid
 
