@@ -8,6 +8,7 @@
 module Triggerfish.Bar
   ( Bar
   , Tab
+  , Chip
   ) where
 
 import Triggerfish.Glyph (GlyphIcon)
@@ -16,12 +17,16 @@ type Tab = { id :: String, label :: String, active :: Boolean, tip :: String }
 
 -- | `marks`: the counts beside ◆ mark ("" for no mark controls in this
 -- | stage). `icons`: the rebus of what is loaded, `rebusTip` its name.
--- | `chips`: small settings the page wants on show at every stage (Vetula's
--- | sound, 2026-10-06); a press arrives as `chip:ID`.
+-- | `chips`: small things the page wants on show at every stage (Vetula's
+-- | progression and its sound, 2026-10-06); a press arrives as `chip:ID`.
 type Bar =
   { tabs :: Array Tab
   , marks :: String
   , icons :: Array GlyphIcon
   , rebusTip :: String
-  , chips :: Array Tab
+  , chips :: Array Chip
   }
+
+-- | A chip: a label, with a rebus before it if it has one. `active` draws it
+-- | lit; `attention` draws it asking to be pressed (an unsaved progression).
+type Chip = { id :: String, label :: String, tip :: String, icons :: Array GlyphIcon, active :: Boolean, attention :: Boolean }

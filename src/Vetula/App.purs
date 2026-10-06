@@ -1579,7 +1579,24 @@ handleQuery = case _ of
       , icons: if s.perfSession.alias == "" then [] else map (\icon -> { icon, color: "#2a2a2a" }) (split (Pattern "-") s.perfSession.alias)
       , rebusTip: "session " <> (if s.perfSession.name == "" then s.perfSession.alias else s.perfSession.name) <> " \x00b7 new session, chyron housekeeping"
       , chips:
-          [ { id: "sound", label: "\x266a " <> soundValue s.auditionSel, active: s.auditionSel /= AuditionOff
+          -- the progression being built, on every stage (Explore builds it,
+          -- Rehearse and Perform play it): its frozen name as a monochrome
+          -- glyph (a container, as a session is), its length, and whether
+          -- this version is saved; pressing it saves
+          [ case s.progName of
+              Nothing ->
+                { id: "prog", label: "no progression", icons: [], active: false, attention: false
+                , tip: "on Explore, shift-click (or return) takes a chord into a new progression" }
+              Just nm ->
+                let unsaved = length s.path > 0 && currentSource s /= s.lastPubSig
+                in { id: "prog"
+                   , icons: map (\icon -> { icon, color: "#2a2a2a" }) (filter (_ /= "") (split (Pattern "-") (SCU.takeWhile (_ /= '′') nm)))
+                   , label: (if SCU.contains (Pattern "′") nm then "′ " else "") <> show (length s.path) <> " chords"
+                       <> (if unsaved then " \x00b7 \x25cf save" else " \x00b7 \x2713 saved")
+                   , active: true, attention: unsaved
+                   , tip: nm <> (if unsaved then " \x00b7 unsaved: click (or \x2318S) to save this version; \x2318\x21e7S saves a new sibling" else " \x00b7 saved")
+                       <> " \x00b7 on Explore, backspace takes back the last chord, delete starts a new progression" }
+          , { id: "sound", label: "\x266a " <> soundValue s.auditionSel, icons: [], active: s.auditionSel /= AuditionOff, attention: false
             , tip: "where auditions sound (" <> s.midiName <> ") \x00b7 click: browser \x2192 continuo \x2192 MIDI \x2192 off" } ]
       }
   BarAct act next -> do
@@ -1592,6 +1609,7 @@ handleQuery = case _ of
       "mark" -> handleAction CaptureMark
       "clear" -> handleAction CaptureClear
       "rebus" -> handleAction PerfMenuToggle
+      "chip:prog" -> handleAction (SaveProg false)
       "chip:sound" -> do
         let nxt = nextSound s.auditionSel
         H.modify_ _ { soundChosen = true }
@@ -6494,8 +6512,6 @@ contextBar st =
     , divider
     , HH.div [ HP.style "display: flex; border: 1px solid #d8cfb6; border-radius: 5px; overflow: hidden;" ]
         (map styleButton [ Tuple StyleBlock "1 block", Tuple StyleArp "2 arpeggio" ])
-    , divider
-    , progChip
     ]
       <> shakeChip
       <> familyField
@@ -6511,26 +6527,6 @@ contextBar st =
          , HP.title (viewtypeTip vt)
          , HE.onClick \_ -> SetStage (Hunt vt) ]
          [ HH.text (viewtypeLabel vt) ]
-  -- the progression being built: its frozen name as a monochrome glyph (a
-  -- container, as a session is, so it never reads as a chord token)
-  progChip = case st.progName of
-    Nothing ->
-      HH.span [ HP.style "font-size: 11px; color: #a89f86; font-style: italic;" ]
-        [ HH.text "shift-click or return takes a chord" ]
-    Just nm ->
-      HH.span
-        [ HP.style "display: inline-flex; align-items: center; gap: 4px; font-size: 11px; color: #5a5240;"
-        , HP.title (nm <> " \x00b7 backspace takes back the last chord, delete starts a new progression") ]
-        ( map (\n -> faIcon { icon: n, color: "#2a2a2a" }) (split (Pattern "-") (SCU.takeWhile (_ /= '′') nm))
-            <> [ HH.span [ HP.style "margin-left: 4px;" ]
-                   [ HH.text ((if SCU.contains (Pattern "′") nm then "′ " else "") <> show (length st.path) <> " chords") ]
-               , if length st.path > 0 && currentSource st /= st.lastPubSig then
-                   HH.button
-                     [ HP.style "margin-left: 6px; border: 1px solid #c9a445; border-radius: 4px; padding: 1px 8px; font-size: 11px; cursor: pointer; background: #fdf7e4; color: #8a6a10;"
-                     , HP.title "save this version (\x2318S); \x2318\x21e7S saves it as a new sibling"
-                     , HE.onClick \_ -> SaveProg false ]
-                     [ HH.text "\x25cf unsaved \x00b7 save" ]
-                 else HH.span [ HP.style "margin-left: 6px; color: #8a9a84;" ] [ HH.text "\x2713 saved" ] ] )
   styleButton (Tuple sty label) =
     let on = st.style == sty
     in HH.button
