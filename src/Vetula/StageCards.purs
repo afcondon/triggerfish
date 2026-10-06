@@ -22,11 +22,14 @@ module Vetula.StageCards
   , tableHasKey
   , publishLines
   , readNotes
+  , progressionTable
+  , progressionLines
+  , stageName
   ) where
 
 import Prelude
 
-import Data.Array (catMaybes, mapMaybe)
+import Data.Array (all, catMaybes, mapMaybe)
 import Data.Either (hush)
 import Data.Int as Int
 import Data.Map (Map)
@@ -34,6 +37,8 @@ import Data.Map as Map
 import Data.Maybe (Maybe(..))
 import Data.Nullable (Nullable, toMaybe)
 import Data.String (Pattern(..), stripPrefix)
+import Data.String.CodeUnits (toCharArray)
+import Reef.Vetula.Lepidoptera (progressionKey, progressionOfKey)
 import Data.Tuple (Tuple(..))
 import Foreign.Object (Object)
 import Foreign.Object as Object
@@ -99,3 +104,30 @@ publishLines seen now =
     if Map.lookup n seen == Just text then Nothing
     else Just ("stage-text " <> cardKey n <> " " <> text)
   gone (Tuple n _) = if Map.member n now then Nothing else Just n
+
+-- | The saved progressions the stage holds (`vetula/progression/<name>`, step
+-- | 4b), by name, from the whole table; `Nothing` for any other frame.
+progressionTable :: String -> Maybe (Map String String)
+progressionTable msg = do
+  json <- stripPrefix (Pattern "stage-texts ") msg
+  table :: Object { text :: String } <- hush (readJSON json)
+  pure (Map.fromFoldable (mapMaybe entry (Object.toUnfoldable table)))
+  where
+  entry (Tuple key v) = (\name -> Tuple name v.text) <$> progressionOfKey key
+
+-- | The writes that put each progression in `now` on the stage, where it
+-- | differs from what the stage holds (`seen`). None are deleted: a name a
+-- | card plays stays playable after this page forgets it.
+progressionLines :: Map String String -> Map String String -> Array String
+progressionLines seen now = catMaybes (map write (Map.toUnfoldable now :: Array (Tuple String String)))
+  where
+  write (Tuple name text) =
+    if Map.lookup name seen == Just text then Nothing
+    else Just ("stage-text " <> progressionKey name <> " " <> text)
+
+-- | Whether a name can be a stage key (letters, digits, `_-.`), and so be
+-- | named by a card.
+stageName :: String -> Boolean
+stageName name = name /= "" && all ok (toCharArray name)
+  where
+  ok c = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_' || c == '-' || c == '.'

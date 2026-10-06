@@ -134,7 +134,7 @@ import Triggerfish.Capture.View (CaptureState, capturePanel, markCode)
 import Triggerfish.Capture.View as CaptureView
 import Triggerfish.Ui.Pointer as Pointer
 import Vetula.Tidal (progressionSource, parseProgression)
-import Vetula.Lepidoptera (PerfDoc, VoiceSpec, docFromVoices, parseCard, parsePerform, printAsRecord, printCard)
+import Vetula.Lepidoptera (PerfDoc, VoiceSpec, cardProgression, docFromVoices, parseCardIn, parsePerform, printAsRecord, printCard, printProgression)
 import Vetula.StageCards as SC
 import Triggerfish.Capture.RigLoops as RL
 import Triggerfish.Capture.Runs as Runs
@@ -827,6 +827,9 @@ type State =
   -- The cards as the rig's stage holds them, as far as this page knows (card id →
   -- its line); Nothing until the stage has answered a subscribe. See Vetula.StageCards.
   , stageCards :: Maybe (Map Int String)
+  -- | The saved progressions the stage holds, by name (step 4b), as far as
+  -- | this page knows; `Nothing` until the rig answers.
+  , stageProgs :: Maybe (Map String String)
   -- Vetula's key as last written to the stage (`vetula/key`, Reef.Route.printKey),
   -- which the router's `vetula key` row feeds Odonus's grid from.
   , stageKey :: Maybe String
@@ -1357,6 +1360,7 @@ component = H.mkComponent
       , tempo: 120
       , binnacle: Nothing
       , stageCards: Nothing
+      , stageProgs: Nothing
       , stageKey: Nothing
       , clockTempo: 120.0
       , nextVoiceId: 4
@@ -1606,8 +1610,8 @@ handleQuery = case _ of
               Just nm ->
                 let unsaved = length s.path > 0 && currentSource s /= s.lastPubSig
                 in { id: "prog"
-                   , icons: map (\icon -> { icon, color: "#2a2a2a" }) (filter (_ /= "") (split (Pattern "-") (SCU.takeWhile (_ /= '′') nm)))
-                   , label: (if SCU.contains (Pattern "′") nm then "′ " else "") <> show (length s.path) <> " chords"
+                   , icons: map (\icon -> { icon, color: "#2a2a2a" }) (filter (\w -> w /= "" && not (isJust (fromString w))) (split (Pattern "-") (SCU.takeWhile (_ /= '′') nm)))
+                   , label: (if SCU.contains (Pattern "′") nm then "′ " else "") <> maybe "" (\k -> show k <> " \x00b7 ") (last (split (Pattern "-") nm) >>= fromString) <> show (length s.path) <> " chords"
                        <> (if unsaved then " \x00b7 \x25cf save" else " \x00b7 \x2713 saved")
                    , active: true, attention: unsaved
                    , tip: nm <> (if unsaved then " \x00b7 unsaved: click (or \x2318S) to save this version; \x2318\x21e7S saves a new sibling" else " \x00b7 saved")
@@ -1982,9 +1986,47 @@ publishCards :: forall m. MonadAff m => H.HalogenM State Action Slots Output m U
 publishCards = do
   st <- H.get
   for_ st.stageCards \seen -> for_ st.binnacle \bin -> do
-    let now = cardTexts st.perfBoxes
+    -- a card naming a progression is the composer's (Limulus): never
+    -- printed back, which would write its chords in
+    let named = Map.filter (isJust <<< cardProgression) seen
+        now = Map.union named (Map.filterKeys (not <<< flip Map.member named) (cardTexts st.perfBoxes))
     liftEffect $ for_ (SC.publishLines seen now) (Transport.send (Binnacle.socket bin))
     H.modify_ _ { stageCards = Just now }
+
+-- | Card `n`'s line, a progression it names looked up in the library.
+readCard :: State -> Int -> String -> Maybe VoiceSpec
+readCard st n text = parseCardIn lookup n text
+  where
+  lookup name = (\e -> filter (\ns -> length ns > 0) (parseProgression e.source))
+    <$> find (\e -> e.kept && e.name == name) st.library
+
+-- | Bring the stage's copy of the saved progressions up to date (step 4b):
+-- | each kept one as `vetula/progression/<name>`, which a card names
+-- | (`v1 $ vetula "bolt-tractor-horse"`) and the rig resolves.
+publishProgressions :: forall m. MonadAff m => H.HalogenM State Action Slots Output m Unit
+publishProgressions = do
+  st <- H.get
+  for_ st.stageProgs \seen -> for_ st.binnacle \bin -> do
+    let now = Map.fromFoldable (mapMaybe stageText st.library)
+    liftEffect $ for_ (SC.progressionLines seen now) (Transport.send (Binnacle.socket bin))
+    H.modify_ _ { stageProgs = Just (Map.union now seen) }
+  where
+  stageText e =
+    if e.kept && SC.stageName e.name
+    then Just (Tuple e.name (printProgression (filter (\ns -> length ns > 0) (parseProgression e.source))))
+    else Nothing
+
+-- | A sibling's name: the progression's stem and the next free number
+-- | (skull-tornado-x → skull-tornado-x-2), typeable in a card where the old
+-- | prime (′) was not.
+siblingName :: Array Store.Entry -> String -> String
+siblingName lib base = fromMaybe base (find free (map (\k -> stem <> "-" <> show k) (range 2 999)))
+  where
+  parts = split (Pattern "-") base
+  stem = case last parts >>= fromString of
+    Just _ -> joinWith "-" (take (length parts - 1) parts)
+    Nothing -> base
+  free nm = not (any (\e -> e.name == nm) lib)
 
 cardTexts :: Array PerfBox -> Map Int String
 cardTexts boxes = Map.fromFoldable (map (\b -> Tuple b.cardId (printCard (boxSpec b))) boxes)
@@ -2010,7 +2052,7 @@ boxOfCard n spec old =
 handleActionCore :: forall m. MonadAff m => Action -> H.HalogenM State Action Slots Output m Unit
 handleActionCore = case _ of
   StageOpen -> do
-    H.modify_ _ { stageCards = Nothing, stageKey = Nothing }
+    H.modify_ _ { stageCards = Nothing, stageProgs = Nothing, stageKey = Nothing }
     -- The rig answered, so this is not the zero-install page: unless the
     -- viewer chose, auditions go to Continuo (which falls back to the
     -- browser if no port answers).
@@ -2071,6 +2113,10 @@ handleActionCore = case _ of
     for_ (SC.tableHasKey msg) \has -> when has do
       st <- H.get
       H.modify_ _ { stageKey = Just (Route.printKey (contextKey st)) }
+    -- the stage's saved progressions: it gets any of ours it lacks
+    for_ (SC.progressionTable msg) \held -> do
+      H.modify_ _ { stageProgs = Just held }
+      publishProgressions
     case SC.readFrame msg of
       Nothing -> pure unit
       -- the stage has no cards (a fresh rig): it gets ours
@@ -2083,7 +2129,7 @@ handleActionCore = case _ of
         st <- H.get
         let
           readable = Map.toUnfoldable table # mapMaybe \(Tuple n text) ->
-            (\spec -> Tuple n (boxOfCard n spec (find (\b -> b.cardId == n) st.perfBoxes))) <$> parseCard text
+            (\spec -> Tuple n (boxOfCard n spec (find (\b -> b.cardId == n) st.perfBoxes))) <$> readCard st n text
         H.modify_ _ { perfBoxes = map snd readable, stageCards = Just table }
       Just (SC.Written n Nothing) ->
         H.modify_ \s -> s { perfBoxes = filter (\b -> b.cardId /= n) s.perfBoxes
@@ -2096,7 +2142,7 @@ handleActionCore = case _ of
           for_ (find (\b -> b.cardId == n) st.perfBoxes) \box ->
             when (printCard (boxSpec box) /= text) $ H.modify_ _ { auditionCard = Just ac { owned = true } }
         H.modify_ _ { stageCards = map (Map.insert n text) st.stageCards }
-        case parseCard text of
+        case readCard st n text of
           -- unreadable: refuse it; the publish that follows puts the card back
           Nothing -> do
             for_ st.binnacle \bin -> liftEffect $ Transport.send (Binnacle.socket bin)
@@ -3049,15 +3095,16 @@ handleActionCore = case _ of
   -- **Save** (AC, 2026-10-06: "explicit save and unsaved current version"):
   -- a version of the progression under its frozen name, in the library
   -- (updated in place, one entry per progression) and published to Amphora,
-  -- which keeps every version as the label re-points. ⌘⇧S saves as a new
-  -- sibling (skull-tornado′) instead.
+  -- which keeps every version as the label re-points, and put on the stage,
+  -- where cards naming it play it (step 4b). ⌘⇧S saves as a new sibling
+  -- (skull-tornado-x-2) instead.
   SaveProg fork -> do
     st <- H.get
     when (length st.path > 0) do
       let sig = currentSource st
           kl = groupLabel st.key
           base = fromMaybe kl st.progName
-          nm = if fork then base <> "′" else base
+          nm = if fork then siblingName st.library base else base
           entry = { name: nm, keyLabel: kl, source: sig, kept: true }
           lib = case findIndex (\e -> e.name == nm) st.library of
             Just i -> fromMaybe st.library (updateAt i entry st.library)
@@ -3073,6 +3120,7 @@ handleActionCore = case _ of
         H.modify_ _ { publishMsg = Just case res of
           Right _ -> "saved " <> nm
           Left _ -> "saved " <> nm <> " here (no store)" }
+      publishProgressions
 
   -- The audition card (step 4a): put the progression on the stage as a card,
   -- or take Vetula's off; the composer's own stays when a fresh one is made.
