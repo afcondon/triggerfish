@@ -2180,6 +2180,8 @@ handleActionCore = case _ of
           _, _ -> pure unit
         "Enter" -> for_ st.cursor \cur -> takeChord cur.chord
         "Escape" -> H.modify_ _ { cursor = Nothing }
+        "Backspace" -> H.modify_ \s -> s { path = fromMaybe [] (map _.init (unsnoc s.path)) }
+        "Delete" -> handleAction ClearPath
         "1" -> handleAction (SetStyle StyleBlock)
         "2" -> handleAction (SetStyle StyleArp)
         _ -> pure unit
@@ -2931,7 +2933,8 @@ handleActionCore = case _ of
     if st.panMoved then H.modify_ _ { panMoved = false }
     else do
       H.modify_ _ { cursor = Just { key: k, chord: c } }
-      playChord c
+      playChordQuiet c
+      takeChord c
 
   -- Chyron: remember which chip the pointer is over so space auditions it.
   HoverChyron mi -> H.modify_ _ { hoveredChyron = mi }
@@ -5086,15 +5089,30 @@ auditionStyled notes = do
   st <- H.get
   liftEffect $ for_ (styledNotes st.style notes) (auditionNote st)
 
--- | Put a chord in the chyron without sounding it again (it was just heard).
+-- | **Take a chord into the progression** (`path`): the step after hearing it.
+-- | The chord joins the pool once; taking it again reuses it, so a slot refers
+-- | to its chord rather than copying it, and revoicing that chord later changes
+-- | every place it is used (plan: "Names that survive edits"). AutoCapture banks
+-- | the progression from here as before.
 takeChord :: forall o m. MonadAff m => ChordNode -> H.HalogenM State Action Slots o m Unit
 takeChord c = do
-  let notes = playNotes c
-  logChyron c.label notes (nub (map (\x -> mod x 12) notes)) c.anchor
-  H.modify_ _ { lastHeard = Just c }
+  st <- H.get
+  let same d = mod d.root 12 == mod c.root 12 && pcSetOf d == pcSetOf c && playNotes d == playNotes c
+  case find same st.chords of
+    Just d -> H.modify_ _ { path = st.path <> [ d.id ], lastHeard = Just c }
+    Nothing -> do
+      let fresh = c { id = st.nextId }
+      H.modify_ _
+        { chords = st.chords <> [ fresh ]
+        , imported = Set.insert fresh.id st.imported
+        , nextId = st.nextId + 1
+        , path = st.path <> [ fresh.id ]
+        , lastHeard = Just c
+        }
 
 -- | The keys the Explore field takes for itself: space hears (never logs),
--- | return takes the cursor, esc drops it. Space and return fall back to their
+-- | return takes the cursor into the progression, esc drops it, backspace
+-- | takes back the last chord taken and delete clears the progression. Space and return fall back to their
 -- | old meanings when there is nothing on the field to act on.
 fieldKey :: State -> String -> Boolean
 fieldKey st = case _ of
@@ -5103,6 +5121,8 @@ fieldKey st = case _ of
   "Escape" -> isJust st.cursor
   "1" -> true
   "2" -> true
+  "Backspace" -> true
+  "Delete" -> true
   _ -> false
 
 playChord :: forall o m. MonadAff m => ChordNode -> H.HalogenM State Action Slots o m Unit
@@ -7750,8 +7770,8 @@ type FieldSeen =
   , pan :: { x :: Number, y :: Number, zoom :: Number }
   , hover :: Maybe { root :: Int, pcs :: Array Int }
   , cursor :: Maybe String
-  , chyron :: Array ChyronEvent
-  , chyronSel :: Maybe { lo :: Int, hi :: Int }
+  , path :: Array Int
+  , chords :: Array ChordNode
   }
 
 -- | The field rung on screen, if Explore is showing the field.
@@ -7776,7 +7796,7 @@ syncField = do
           cursorKey = map _.key st.cursor
           table = layerTable st
           same p = p.view == v && unsafeRefEq p.lattice st.lattice && unsafeRefEq p.pads st.bankPads && p.table == table
-            && unsafeRefEq p.chyron st.chyron && p.chyronSel == map (\c -> { lo: c.lo, hi: c.hi }) st.chyronSel
+            && p.path == st.path && unsafeRefEq p.chords st.chords
       case prev of
         Just p | mounted && same p -> do
           when (p.pan /= pan) (Field.setView rt.handle false (fieldViewBox st p.frame))
@@ -7788,7 +7808,7 @@ syncField = do
           fresh <- Field.draw rt.handle sc.scene
           Field.setView rt.handle (not fresh && mounted) (fieldViewBox st sc.frame)
           Ref.write (Just { view: v, lattice: st.lattice, pads: st.bankPads, table, frame: sc.frame, pan, hover: st.hoveredTriad, cursor: cursorKey
-                               , chyron: st.chyron, chyronSel: map (\c -> { lo: c.lo, hi: c.hi }) st.chyronSel }) rt.seen
+                               , path: st.path, chords: st.chords }) rt.seen
 
 -- | A glyph's tint under the current hover, as the field's `data-hi` value.
 glyphTint :: State -> Int -> Array Int -> String
@@ -7893,20 +7913,16 @@ fieldScene st view table listener =
           y = topY - 60.0 - toNumber (ribbonRows - 1 - row) * 42.0
       in mark ("rib:" <> markKey e.chord) e.chord x y 1.0 (not banks) "" false
     marks0 = map latticeMark members <> mapWithIndex ownMark claim.own <> mapWithIndex ribbonMark ribbonEntries
-    -- The progression as a path (plan: "Seeing what you have"): the chyron's
-    -- selected span, else its last 16 chords, each on the mark of the same
-    -- notes (its root the bass if there is a choice, a shown one if there is
-    -- one). Its chords stay lit at every level, so it never vanishes.
-    pathEvents = case st.chyronSel of
-      Just sel | sel.hi > sel.lo -> take (sel.hi - sel.lo + 1) (drop sel.lo st.chyron)
-      _ -> takeEnd 16 st.chyron
-    pathKeyOf ev =
-      let set = sort (nub (map (\p -> mod p 12) ev.pcs))
-          bass = maybe (-1) (\b -> mod b 12) (minimum ev.notes)
+    -- The progression as a path (plan: "Seeing what you have"): each chord
+    -- taken, on the mark of the same root and notes (else of the same notes,
+    -- a shown one first). Its chords stay lit at every level, so it never
+    -- vanishes.
+    pathKeyOf c =
+      let set = pcSetOf c
           cands = filter (\m -> sort (nub (map (\p -> mod p 12) m.pcs)) == set) marks0
-          rank m = (if mod m.root 12 == bass then 0 else 2) + (if m.shown then 0 else 1)
+          rank m = (if mod m.root 12 == mod c.root 12 then 0 else 2) + (if m.shown then 0 else 1)
       in map _.key (head (sortBy (comparing rank) cands))
-    path = if banks then [] else mapMaybe pathKeyOf pathEvents
+    path = if banks then [] else mapMaybe pathKeyOf (pathSteps st)
     marks = map (\m -> if elem m.key path then m { shown = true } else m) marks0
     -- The lattice's framing: the shown chords, with the ribbon above.
     latBox =
