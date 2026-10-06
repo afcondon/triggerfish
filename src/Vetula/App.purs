@@ -151,6 +151,7 @@ import Harmonia.Graded (transpose) as Graded
 import Vetula.Banks (butlerChords, stockChords)
 import Vetula.Pads as Pads
 import Harmonia.Trellis as HT
+import Harmonia.Recognise (best, candidateName, observeWithBass)
 import Harmonia.Vary as HV
 import Vetula.Rehearsal (Slot)
 import Vetula.Rehearsal as RH
@@ -214,14 +215,20 @@ derive instance ordLeftSection :: Ord LeftSection
 -- |
 -- | **Explore's ladder** (AC, 2026-10-06). The stage the UI calls EXPLORE (the
 -- | constructor is still `Hunt`) offers its views in a strict order of
--- | complexity, as buttons: Key (the circle of fifths, the key's triads and
--- | sevenths) · Lattice · Banks. The colour sets are not a rung: they are a
--- | layer, added from a tray on the surface, and painted into every rung.
+-- | complexity, as buttons: Key · + four-note · + extended · Banks. The first
+-- | three are ONE surface, the voice-leading lattice, shown in growing
+-- | amounts: the key's triads and sevenths along its bottom, then every
+-- | chord of four notes or fewer above them, then the rest (AC, 2026-10-06:
+-- | "the lattice could be strictly additive to that view"). Nothing moves
+-- | between them; chords appear in place. The colour sets are not a rung: they
+-- | are a layer, added from a tray on the surface, ringed in every rung, and the
+-- | key's own chords are one of them (diatonic).
 -- | Vary and the relatives bloom stopped being views: both work AROUND a chord
 -- | you already have, so they open in a side panel on it (`SideTab`). Tonnetz is
 -- | kept but off the ladder: too simple to follow triads and sevenths, too
--- | unfamiliar to open with, and at its best as a playing surface.
-data Viewtype = Fifths | Tonnetz | Lattice | Pads
+-- | unfamiliar to open with, and at its best as a playing surface. The circle
+-- | of fifths (`Fifths`) is off the ladder too, reachable by URL.
+data Viewtype = Fifths | Tonnetz | KeyChords | Lattice4 | Lattice | Pads
 
 -- | The side panel beside an Explore view: a chord's variations (Harmonia.Vary,
 -- | drift × density) or its relatives (voice-led neighbours, `generateCandidates`).
@@ -270,20 +277,24 @@ derive instance eqStage :: Eq Stage
 
 viewtypeLabel :: Viewtype -> String
 viewtypeLabel = case _ of
-  Fifths -> "key"
+  Fifths -> "fifths"
   Tonnetz -> "tonnetz"
-  Lattice -> "lattice"
+  KeyChords -> "key"
+  Lattice4 -> "+ four-note"
+  Lattice -> "+ extended"
   Pads -> "banks"
 
 -- | Explore's ladder, in order of complexity: the buttons in the bar.
 viewtypes :: Array Viewtype
-viewtypes = [ Fifths, Lattice, Pads ]
+viewtypes = [ KeyChords, Lattice4, Lattice, Pads ]
 
 -- | A view's stable string, for the URL and the remembered default.
 viewtypeValue :: Viewtype -> String
 viewtypeValue = case _ of
-  Fifths -> "key"
+  Fifths -> "fifths"
   Tonnetz -> "tonnetz"
+  KeyChords -> "key"
+  Lattice4 -> "lattice4"
   Lattice -> "lattice"
   Pads -> "banks"
 
@@ -291,18 +302,22 @@ viewtypeValue = case _ of
 -- | unknown (the retired "explore" and "vary" views) lands on Key.
 viewtypeFromValue :: String -> Viewtype
 viewtypeFromValue = case _ of
+  "fifths" -> Fifths
   "tonnetz" -> Tonnetz
+  "lattice4" -> Lattice4
   "lattice" -> Lattice
   "banks" -> Pads
   "pads" -> Pads
-  _ -> Fifths
+  _ -> KeyChords
 
 -- | What each rung shows, for its button's tooltip.
 viewtypeTip :: Viewtype -> String
 viewtypeTip = case _ of
-  Fifths -> "the key's own chords, its triads and sevenths, on the circle of fifths"
+  Fifths -> "the key's chords on the circle of fifths"
   Tonnetz -> "the tonal net: triads sharing two notes sit side by side"
-  Lattice -> "every degree's chords, triad to thirteenth, laid out by voice leading"
+  KeyChords -> "the key's own chords: a triad and a seventh on every degree"
+  Lattice4 -> "the lattice above them: every chord of up to four notes built from each degree"
+  Lattice -> "the whole lattice: chords of five notes and more, up to the thirteenth"
   Pads -> "nine banks of sixteen: how far from home, by how rich"
 
 -- | The projection a Stage names, or `fallback` when it isn't Hunt. Feeds
@@ -385,7 +400,7 @@ layerFromLabel s = find (\l -> layerLabel l == s) allColorLayers
 -- | sets each get a saturated, legible hue that reads on parchment.
 layerHue :: ColorLayer -> String
 layerHue = case _ of
-  LayerDiatonic -> "#6a6a6a"
+  LayerDiatonic -> "#c29a2e"
   LayerBorrowed -> "#b5622d"
   LayerMcMullen -> "#3f7d54"
   LayerButler -> "#4a6da8"
@@ -643,6 +658,9 @@ boxGhosted authority box = termRigOnly box.term && authority /= Rig
 
 type State =
   { key :: Key
+  -- The key's lattice, laid out: built when the key changes rather than on
+  -- every render, which it was, at 150 ms a hover.
+  , lattice :: Array (Array LatMember)
   -- The rig's resting harmonic scale (macro-tidal harmonic-authority): Nothing =
   -- follow the key's diatonic set; Just = an explicit `# scale` override (root pc
   -- + intervals from any Reef scale, beyond the diatonic modes the key can name).
@@ -1193,6 +1211,7 @@ component :: forall i m. MonadAff m => H.Component SourceQuery i Output m
 component = H.mkComponent
   { initialState: \_ ->
       { key: cMajorKey
+      , lattice: latticeFor cMajorKey
       , restScale: Nothing
       , leftOpen: Set.fromFoldable [ SecSetup, SecTank, SecLens ]
       , chords: []
@@ -1266,9 +1285,9 @@ component = H.mkComponent
       , nextSpecId: 0
       , seedChord: Map.empty
       , presets: [], identity: Nothing
-      , stage: Hunt Fifths   -- Key, the first rung, unless a default is pinned
-      , lastLens: Fifths
-      , defaultLens: Fifths
+      , stage: Hunt KeyChords   -- Key, the first rung, unless a default is pinned
+      , lastLens: KeyChords
+      , defaultLens: KeyChords
       , side: Nothing
       , lastHeard: Nothing
       , sideDensity: 0
@@ -1680,7 +1699,7 @@ startWith key focusId chords0 = do
         Completed -> SimDone
         Stopped -> SimDone
       H.modify_ \s ->
-        s { key = key, chords = placed, focusId = focusId, nodes = simNodes
+        s { key = key, lattice = latticeFor key, chords = placed, focusId = focusId, nodes = simNodes
           , handle = Just result.handle, subId = Just sid }
 
 stopSim :: forall o m. MonadAff m => H.HalogenM State Action Slots o m Unit
@@ -2007,13 +2026,10 @@ handleActionCore = case _ of
     H.modify_ _ { midiName = "…" }
     connectMidi
 
-  SimTick -> do
-    st <- H.get
-    case st.handle of
-      Just h -> do
-        ns <- liftEffect h.getNodes
-        H.modify_ _ { nodes = ns }
-      Nothing -> pure unit
+  -- The simulated positions were read only by the retired keyboard lens, so a
+  -- tick writes nothing: a write redraws the whole page, and the simulation
+  -- ticks every frame (2026-10-06: it held an idle page at 100% of a core).
+  SimTick -> pure unit
 
   SimDone -> pure unit
 
@@ -2487,7 +2503,7 @@ handleActionCore = case _ of
         -- stayed on whatever was loaded before — the "dark pads stayed C minor" bug.
         , restScale = Nothing
         }
-      for_ (parseKeyLabel entry.keyLabel) \k -> H.modify_ _ { key = k }
+      for_ (parseKeyLabel entry.keyLabel) \k -> H.modify_ _ { key = k, lattice = latticeFor k }
 
   -- ← library: set the current progression aside to browse the stack. Slice 4a: the
   -- path IS the progression, so snapshot it first (AutoCapture is on a timer and may
@@ -5595,7 +5611,7 @@ render st =
     [ HP.style ("position: relative; margin-top: calc(var(--tf-bar) + " <> contextBarHeight st <> "); margin-left: var(--tf-left, 0px); width: calc(100% - var(--tf-left, 0px) - var(--tf-right, 0px)); height: calc(100vh - var(--tf-bar) - " <> contextBarHeight st <> "); min-height: 620px; overflow: hidden; border-radius: 8px; background: " <> canvasBg <> ";") ]
     -- In HUNT the views start below the audition strip, which is fixed over
     -- the stage's top; Rehearse, Perform and Review pad for it themselves.
-    ( [ HH.div [ HP.style ("position: absolute; inset: " <> (if isHunt st.stage then chyronHeight else "0px") <> " " <> sideInset st <> " 0 0;") ] [ surface st ] ]
+    ( [ HH.div [ HP.style ("position: absolute; inset: " <> (if isHunt st.stage then chyronHeight else "0px") <> " " <> sideInset st <> " " <> (if isHunt st.stage then trayHeight else "0px") <> " 0;") ] [ surface st ] ]
       <> (if isHunt st.stage then [ colourTray st, sidePanel st ] else [])
       <>
     -- Scene recall belongs to the INSTRUMENT, not to Perform. Its entry point
@@ -5663,6 +5679,10 @@ chyronHeight = "52px"
 sidePanelWidth :: String
 sidePanelWidth = "440px"
 
+-- | The colour tray's strip under an Explore view, so it covers none of it.
+trayHeight :: String
+trayHeight = "46px"
+
 sideInset :: State -> String
 sideInset st = if isHunt st.stage && isJust st.side then sidePanelWidth else "0px"
 
@@ -5684,7 +5704,7 @@ sideTip = case _ of
 colourTray :: forall m. MonadAff m => State -> H.ComponentHTML Action Slots m
 colourTray st =
   HH.div
-    [ HP.style ("position: absolute; left: 12px; bottom: 12px; z-index: 6; display: flex; align-items: center; gap: 6px; flex-wrap: wrap; max-width: calc(100% - 24px - " <> sideInset st <> "); "
+    [ HP.style ("position: absolute; left: 12px; bottom: 6px; z-index: 6; display: flex; align-items: center; gap: 6px; flex-wrap: wrap; max-width: calc(100% - 24px - " <> sideInset st <> "); "
                  <> "padding: 6px 10px; background: #fffdf8ee; border: 1px solid #e6dfcc; border-radius: 6px; box-shadow: 0 1px 3px #0000000d;") ]
     ( [ HH.span
           [ HP.style "font-size: 10px; color: #9a9070; letter-spacing: 0.1em; text-transform: uppercase; margin-right: 2px;"
@@ -6392,7 +6412,13 @@ surface st
       Review -> reviewSurface st
       Hunt Fifths -> circleFifthsSurface st
       Hunt Tonnetz -> tonnetzSurface st
-      Hunt Lattice -> latticesSurface st
+      Hunt KeyChords ->
+        -- Each degree's own triad and seventh, matched on root as well as
+        -- notes: the same notes recur as inversions in other degrees' columns.
+        let keyChords = map (\c -> Tuple (mod c.root 12) (pcSetOf c)) (diatonicTriads st.key <> diatonicSevenths st.key)
+        in latticesSurface st (\c -> elem (Tuple (mod c.root 12) (pcSetOf c)) keyChords) true
+      Hunt Lattice4 -> latticesSurface st (\c -> length (pcSetOf c) <= 4) false
+      Hunt Lattice -> latticesSurface st (const true) false
       Hunt Pads -> padsSurface st
 
 -- | The PERFORM surface — a row of player BOXES, one per output. Shift-click (or
@@ -6888,6 +6914,17 @@ cofAngle tonic pc =
 geoView :: State -> { x :: Number, y :: Number, w :: Number, h :: Number }
 geoView st = geoViewFit st 1.0
 
+-- | A window framing a box of content at the surface's aspect, with the
+-- | viewer's zoom and pan on top.
+geoViewBox :: State -> { minX :: Number, maxX :: Number, minY :: Number, maxY :: Number } -> { x :: Number, y :: Number, w :: Number, h :: Number }
+geoViewBox st b =
+  let w0 = max (b.maxX - b.minX) ((b.maxY - b.minY) * 880.0 / 600.0)
+      w = w0 / st.viewZoom
+      h = w * 600.0 / 880.0
+      cx = (b.minX + b.maxX) / 2.0 + st.viewCx
+      cy = (b.minY + b.maxY) / 2.0 + st.viewCy
+  in { x: cx - w / 2.0, y: cy - h / 2.0, w, h }
+
 -- | The same, with the base window grown by `k` (never shrunk) to fit content.
 geoViewFit :: State -> Number -> { x :: Number, y :: Number, w :: Number, h :: Number }
 geoViewFit st k =
@@ -6970,18 +7007,18 @@ mergedLayerChords st =
         in map (\e -> { chord: e.chord, layers: nub (map _.layer ms) }) (head ms)
   in mapMaybe forKey keys
 
--- | A row of small badge pips, centred at (cx,cy), one per source layer in that
--- | layer's hue. This is the "why is this here" key — a chord that is both
--- | McMullen and borrowed wears two pips. The CONTEXT PALETTE swatches name each hue.
-layerBadges :: forall m. Number -> Number -> Array ColorLayer -> Array (H.ComponentHTML Action Slots m)
-layerBadges cx cy layers =
-  let k = length layers
-  in mapWithIndex
-       (\j l ->
-          SE.circle
-            [ SA.cx (cx - toNumber (k - 1) * 3.5 + toNumber j * 7.0), SA.cy cy, SA.r 2.8
-            , HP.style ("fill: " <> layerHue l <> "; stroke: #ffffff; stroke-width: 0.8; pointer-events: none;") ])
-       layers
+-- | A chord's colour sets as rings around its glyph, innermost first, one per
+-- | set in that set's hue: a chord that is both McMullen and borrowed wears two.
+-- | Rings rather than dots (AC, 2026-10-06), everywhere, because a dot sits on a
+-- | stave glyph as if it were a note.
+layerRings :: forall m. Number -> Number -> Number -> Array ColorLayer -> Array (H.ComponentHTML Action Slots m)
+layerRings cx cy r layers =
+  mapWithIndex
+    (\j l ->
+       SE.circle
+         [ SA.cx cx, SA.cy cy, SA.r (r + 2.6 * toNumber j)
+         , HP.style ("fill: none; stroke: " <> layerHue l <> "; stroke-width: 1.6; pointer-events: none;") ])
+    layers
 
 -- | The transparent click target over a color-overlay chord: the unified gesture
 -- | (matching every other Vetula surface) — plain click auditions the chord,
@@ -7010,7 +7047,7 @@ colorGlyphAt scl cx cy chord layers =
       , HP.style "fill: #fcfbf8; stroke: #e4e0d4; stroke-width: 1; pointer-events: none;" ]
   ]
     <> chordGlyph scl cx cy chord.voicing
-    <> layerBadges cx (cy - 19.0) layers
+    <> layerRings cx cy 17.0 layers
     <> [ colorHit chord cx cy 15.0 ]
 
 -- | The color-overlay corona on the circle of fifths (2026-07-31 redesign): the
@@ -7355,6 +7392,10 @@ type LatMember = { id :: Int, chord :: ChordNode, cx :: Number, cy :: Number }
 -- | Lay out one degree's capped lattice as a compact cluster: levels stack upward
 -- | (triad at the base, extensions climbing), each level's members wrapped into
 -- | rows of `latPerRow`, centred in the degree's band.
+-- | Every degree's cluster, for a key.
+latticeFor :: Key -> Array (Array LatMember)
+latticeFor key = mapWithIndex (degreeCluster key) (diatonicTriads key)
+
 degreeCluster :: Key -> Int -> ChordNode -> Array LatMember
 degreeCluster key i seed =
   let fam = filter (\f -> f.level <= latticeCap) (latticeFamily key seed)
@@ -7461,18 +7502,30 @@ pcPolygon hi root pcs cx cy r =
 -- | The Lattices lens — every diatonic degree's full tertian lattice at once, as
 -- | seven compact clusters of chromatic-circle polygons with their Hasse edges.
 -- | Hover a glyph to space-preview it; click to audition, shift-click to catch.
-latticesSurface :: forall m. State -> H.ComponentHTML Action Slots m
-latticesSurface st =
+latticesSurface :: forall m. State -> (ChordNode -> Boolean) -> Boolean -> H.ComponentHTML Action Slots m
+latticesSurface st shows named =
   let seeds = diatonicTriads st.key
-      clusters = mapWithIndex (degreeCluster st.key) seeds
+      -- Laid out whole and THEN filtered, so a chord sits in the same place on
+      -- every rung of the ladder and the next rung only adds.
+      clusters = map (filter (\m -> shows m.chord)) st.lattice
       members = concat clusters
       edges = concatMap degreeEdges clusters
       mh = st.hoveredTriad
-      vb = geoView st
-      -- The sets other than diatonic ring the lattice chords they hold (the
-      -- lattice is built from the key, so a diatonic ring would be on most of
-      -- it); the ribbon above keeps only the chords the lattice does not have.
-      table = filter (\e -> e.layer /= LayerDiatonic) (layerTable st)
+      -- Framed on what this rung shows, with the ribbon just above its top, so
+      -- the key rung fills the stage rather than sitting at the foot of an
+      -- empty lattice. Columns keep their x on every rung.
+      topY = fromMaybe latGeo.baseY (minimum (map _.cy members))
+      ribbonRows = (length ribbonEntries + latRibbonPerRow - 1) / latRibbonPerRow
+      ribbonEntries = filter (\e -> not (elem (pcSetOf e.chord) inLattice)) (mergedLayerChords st)
+      minY = topY - 30.0 - (if ribbonRows > 0 then 30.0 + toNumber ribbonRows * 42.0 else 0.0)
+      maxY = latGeo.baseY + 40.0
+      minX = latticeLeft - 70.0
+      maxX = latticeLeft + 6.0 * latGeo.bandW + 70.0 + (if named then 70.0 else 0.0)
+      vb = geoViewBox st { minX, maxX, minY, maxY }
+      -- Every active set rings the chords it holds, diatonic included (the key's
+      -- own chords, ringed in its colour, are the landmarks in the lattice); the
+      -- ribbon above keeps the chords not shown.
+      table = layerTable st
       inLattice = map (\m -> pcSetOf m.chord) members
   in SE.svg
       ( [ SA.viewBox vb.x vb.y vb.w vb.h
@@ -7485,8 +7538,9 @@ latticesSurface st =
         ] <> geoPanAttrs st )
       ( edges
           <> concatMap (\m -> latMemberView mh (layersOf table m.chord) m) members
+          <> (if named then map latMemberName members else [])
           <> mapWithIndex latDegreeLabel seeds
-          <> latColorRibbon st inLattice
+          <> latColorRibbon ribbonEntries (topY - 60.0)
       )
 
 -- | The color-overlay layers on the voice-leading lattice (2026-07-31 redesign).
@@ -7497,19 +7551,23 @@ latticesSurface st =
 -- | de-duplicated and badged by source. The CONTEXT PALETTE swatches name the hues.
 -- | Non-interactive for now (catch = Step 4). A deeper pass would place each color
 -- | chord by voice-leading distance into the web itself — logged as a follow-up.
-latColorRibbon :: forall m. State -> Array (Array Int) -> Array (H.ComponentHTML Action Slots m)
-latColorRibbon st inLattice =
-  let entries = filter (\e -> not (elem (pcSetOf e.chord) inLattice)) (mergedLayerChords st)
-      perRow = 22
+latColorRibbon :: forall m. Array { chord :: ChordNode, layers :: Array ColorLayer } -> Number -> Array (H.ComponentHTML Action Slots m)
+latColorRibbon entries bottomY =
+  let perRow = latRibbonPerRow
+      rows = (length entries + perRow - 1) / perRow
       place j e =
         let col = mod j perRow
             row = j / perRow
             x = latticeLeft + 24.0 + toNumber col * 34.0
-            y = -280.0 + toNumber row * 42.0
+            -- the last row sits just above the lattice's top
+            y = bottomY - toNumber (rows - 1 - row) * 42.0
         in pcPolygon HiNone e.chord.root e.chord.pcs x y 9.0
-             <> layerBadges x (y - 16.0) e.layers
+             <> layerRings x y 11.5 e.layers
              <> [ colorHit e.chord x y 11.0 ]
   in concat (mapWithIndex place entries)
+
+latRibbonPerRow :: Int
+latRibbonPerRow = 22
 
 -- | One lattice glyph plus its transparent click target (the polygon itself is
 -- | click-through so the disc-shaped hit region stays uniform). `mh` is the hovered
@@ -7517,11 +7575,7 @@ latColorRibbon st inLattice =
 latMemberView :: forall m. Maybe { root :: Int, pcs :: Array Int } -> Array ColorLayer -> LatMember -> Array (H.ComponentHTML Action Slots m)
 latMemberView mh rings m =
   pcPolygon (hiFor mh m.chord.pcs) m.chord.root m.chord.pcs m.cx m.cy latGeo.glyphR
-    <> mapWithIndex
-         (\k l -> SE.circle
-            [ SA.cx m.cx, SA.cy m.cy, SA.r (latGeo.glyphR + 2.0 + 2.5 * toNumber k)
-            , HP.style ("fill: none; stroke: " <> layerHue l <> "; stroke-width: 1.6; pointer-events: none;") ])
-         rings
+    <> layerRings m.cx m.cy (latGeo.glyphR + 2.0) rings
     <>
       [ SE.circle
           [ SA.cx m.cx, SA.cy m.cy, SA.r latGeo.glyphR
@@ -7531,6 +7585,40 @@ latMemberView mh rings m =
           , HE.onClick \_ -> AuditionNode m.chord
           ]
       ]
+
+-- | A chord's name beside its glyph, on the Key rung, where there are few
+-- | enough chords to name.
+latMemberName :: forall m. LatMember -> H.ComponentHTML Action Slots m
+latMemberName m =
+  SE.text
+    [ SA.x (m.cx + latGeo.glyphR + 7.0), SA.y (m.cy + 4.0)
+    , HP.style "font-size: 11px; fill: #5a5240; pointer-events: none; -webkit-user-select: none; user-select: none;"
+    ]
+    [ HH.text (chordNameOf m.chord) ]
+
+-- | A chord's name from its pitch classes over its root: Harmonia's best
+-- | reading, as Vary and Odonus name theirs.
+chordNameOf :: ChordNode -> String
+chordNameOf c =
+  let r = mod c.root 12
+      ivs = sort (map (\p -> mod (p - r) 12) (pcSetOf c))
+      common = case ivs of
+        [ 0, 4, 7 ] -> Just ""
+        [ 0, 3, 7 ] -> Just "m"
+        [ 0, 3, 6 ] -> Just "dim"
+        [ 0, 4, 8 ] -> Just "aug"
+        [ 0, 4, 7, 11 ] -> Just "maj7"
+        [ 0, 4, 7, 10 ] -> Just "7"
+        [ 0, 3, 7, 10 ] -> Just "m7"
+        [ 0, 3, 6, 10 ] -> Just "m7b5"
+        [ 0, 3, 6, 9 ] -> Just "dim7"
+        [ 0, 3, 7, 11 ] -> Just "mMaj7"
+        [ 0, 4, 8, 11 ] -> Just "maj7#5"
+        _ -> Nothing
+  in case common of
+       Just q -> noteName r <> q
+       -- the recogniser is thorough and slow; only the uncommon go to it
+       Nothing -> fromMaybe c.label (map candidateName (best (observeWithBass r (pcSetOf c))))
 
 -- | The degree's root name under its cluster.
 latDegreeLabel :: forall m. Int -> ChordNode -> H.ComponentHTML Action Slots m
@@ -7627,10 +7715,10 @@ padButton st table c =
     , HE.onClick \_ -> AuditionNode c
     ]
     [ SE.svg
-        [ SA.viewBox (-15.0) (-15.0) 30.0 30.0, SA.width 30.0, SA.height 30.0 ]
+        [ SA.viewBox (-19.0) (-19.0) 38.0 38.0, SA.width 34.0, SA.height 34.0 ]
         (pcPolygon (hiFor st.hoveredTriad c.pcs) c.root c.pcs 0.0 0.0 12.0
-           -- the colour sets holding this chord, as pips in their hues
-           <> layerBadges 0.0 (-12.5) (layersOf table c))
+           -- the colour sets holding this chord, ringed in their hues
+           <> layerRings 0.0 0.0 13.5 (layersOf table c))
     , HH.div
         [ HP.style "font-size: 10px; color: #6a6250; line-height: 1.1; text-align: center; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%; -webkit-user-select: none; user-select: none;" ]
         [ HH.text c.label ]
