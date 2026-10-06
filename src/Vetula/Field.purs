@@ -29,12 +29,14 @@ module Vetula.Field
   , mounted
   , setView
   , restyle
+  , select
   , containerId
   ) where
 
 import Prelude
 
 import Data.Array (filter, mapMaybe, mapWithIndex, nub, sort)
+import Data.Foldable (for_)
 import Data.Int (toNumber)
 import Data.Map (Map)
 import Data.Map as Map
@@ -47,7 +49,7 @@ import Data.Tuple (Tuple(..))
 import Effect (Effect)
 import Effect.Ref (Ref)
 import Effect.Ref as Ref
-import Hylograph.HATS (PhaseSpec, Tree, elem, forEachWithGUP, withBehaviors, onMouseEnter, onMouseLeave, onClick)
+import Hylograph.HATS (PhaseSpec, Tree, elem, forEachWithGUP, withBehaviors, onMouseEnter, onMouseLeave, onClickWithModifier)
 import Hylograph.HATS.Friendly as F
 import Hylograph.HATS.InterpreterTick (rerender)
 import Hylograph.HATS.Transitions (HATSTransitions, TransitionResult(..), tickTransitions)
@@ -74,7 +76,8 @@ type Mark =
   , tint :: String            -- the `data-hi` value: a key into `Scene.css`
   , enter :: Effect Unit
   , leave :: Effect Unit
-  , click :: Effect Unit
+  , select :: Effect Unit       -- a click: make this the field's cursor
+  , take :: Effect Unit         -- a shift-click: select and take it
   }
 
 -- | An edge belongs to the level of its higher end (0 key, 1 common, 2
@@ -95,6 +98,7 @@ type Scene =
   , edgeLevels :: Int          -- levels whose edges show: 0 none, 4 all
   , marks :: Array Mark
   , css :: String             -- the tints, as rules on `.vf-mark[data-hi=…]`
+  , selected :: Maybe String  -- the cursor's mark, by key
   }
 
 -- | The field's running state: the transitions in flight, the viewBox easing,
@@ -104,6 +108,7 @@ newtype Handle = Handle
   , view :: Ref { from :: ViewBox, to :: ViewBox, elapsed :: Number }
   , looping :: Ref Boolean
   , marks :: Ref (Map String { el :: Element, root :: Int, pcs :: Array Int, tint :: String })
+  , selected :: Ref (Maybe String)
   }
 
 containerId :: String
@@ -123,7 +128,8 @@ new = do
   view <- Ref.new { from: v0, to: v0, elapsed: duration }
   looping <- Ref.new false
   marks <- Ref.new Map.empty
-  pure (Handle { transitions, view, looping, marks })
+  selected <- Ref.new Nothing
+  pure (Handle { transitions, view, looping, marks, selected })
 
 -- | Draw a scene. Marks already on the page ease to their new places. Halogen
 -- | owns the container, so after a change of stage it is a new, empty div:
@@ -147,6 +153,7 @@ draw (Handle h) scene = hostPresent_ selector >>= if _ then go else pure false
       (Map.fromFoldable
          (mapMaybe (\(Tuple k el) -> map (\m -> Tuple k { el, root: m.root, pcs: m.pcs, tint: m.tint }) (Map.lookup k byData)) keyed))
       h.marks
+    Ref.write scene.selected h.selected
     startLoop (Handle h)
     pure fresh
 
@@ -181,6 +188,16 @@ restyle (Handle h) tintOf = do
          pure m { tint = t })
     ms
   Ref.write ms' h.marks
+
+-- | Move the cursor ring to another mark (or none), without a redraw.
+select :: Handle -> Maybe String -> Effect Unit
+select (Handle h) next = do
+  prev <- Ref.read h.selected
+  when (prev /= next) do
+    ms <- Ref.read h.marks
+    for_ (prev >>= \k -> Map.lookup k ms) \m -> setAttr_ m.el "data-sel" "0"
+    for_ (next >>= \k -> Map.lookup k ms) \m -> setAttr_ m.el "data-sel" "1"
+    Ref.write next h.selected
 
 -- ---------------------------------------------------------------------------
 -- The animation loop
@@ -261,7 +278,7 @@ sceneTree scene =
             edgeGroup
             { enter: Nothing, update: Just ease, exit: Nothing } ]
     , elem Group [ F.class_ "vf-marks" ]
-        [ forEachWithGUP "vf-marks" SVG scene.marks _.key markTree
+        [ forEachWithGUP "vf-marks" SVG scene.marks _.key (markTree scene.selected)
             { enter: Just { attrs: [ F.opacity "0" ], transition: ease.transition }
             , update: Just ease
             , exit: Nothing } ]
@@ -284,8 +301,8 @@ edgeGroup g =
     ]
     (map (\e -> elem Line [ F.x1 e.x1, F.y1 e.y1, F.x2 e.x2, F.y2 e.y2 ] []) g.lines)
 
-markTree :: Mark -> Tree
-markTree m =
+markTree :: Maybe String -> Mark -> Tree
+markTree selected m =
   let half = markBox * m.scale / 2.0
       sorted = sort (nub (map (\p -> mod p 12) m.pcs))
       ang p = (-Number.pi / 2.0) + toNumber p * (Number.pi / 6.0)
@@ -296,6 +313,7 @@ markTree m =
       , F.attr "overflow" "visible"
       , F.class_ "vf-mark"
       , F.attr "data-hi" m.tint
+      , F.attr "data-sel" (if selected == Just m.key then "1" else "0")
       , F.opacity (if m.shown then "1" else "0")
       , F.attr "pointer-events" (if m.shown then "auto" else "none")
       ]
@@ -327,11 +345,12 @@ markTree m =
               else
                 [ elem Text
                     ( (if m.below then [ F.x 0.0, F.y (glyphR + 12.0), F.textAnchor "middle" ]
-                       else [ F.x (glyphR + 7.0), F.y 4.0 ])
+                       else [ F.x (glyphR + 10.0), F.y 4.0 ])
                         <> [ F.style ("font-size: " <> (if m.below then "8px" else "11px") <> "; fill: #5a5240; pointer-events: none; -webkit-user-select: none; user-select: none;")
                            , F.attr "textContent" m.label ] )
                     [] ])
-          <> [ withBehaviors [ onMouseEnter m.enter, onMouseLeave m.leave, onClick m.click ]
+          <> [ elem Circle [ F.cx 0.0, F.cy 0.0, F.r (glyphR + 6.5), F.class_ "vf-cursor" ] []
+             , withBehaviors [ onMouseEnter m.enter, onMouseLeave m.leave, onClickWithModifier m.select m.take ]
                  (elem Circle [ F.cx 0.0, F.cy 0.0, F.r (glyphR + 3.0), F.style "fill: transparent; cursor: pointer;" ] [])
              ]
       )

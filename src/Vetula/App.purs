@@ -833,6 +833,9 @@ type State =
   -- Vary grid (an index into `HV.densities`: a panel has room for one).
   , side :: Maybe SideTab
   , lastHeard :: Maybe ChordNode
+  -- Explore's cursor: the chord a click selected (by its field key). Keys act
+  -- on it: space plays it, return takes it, esc lets it go.
+  , cursor :: Maybe { key :: String, chord :: ChordNode }
   , sideDensity :: Int
   -- The wheel's travel since the last level step, and when that step was, so
   -- one flick of a trackpad moves one level, not three.
@@ -1106,6 +1109,8 @@ data Action
   | ShakeGenerate          -- Generate lens: re-roll the tank-seeded relatives
   | ShufflePads            -- Banks lens: re-walk all nine banks
   | HoverPad (Maybe ChordNode)  -- Banks lens: hover a pad (highlight + exact preview)
+  | SelectMark String ChordNode  -- Explore: a click makes a chord the cursor, and plays it
+  | TakeMark String ChordNode    -- Explore: a shift-click selects and takes it
   | DropTone Event Int Int Int  -- silence chord `id`'s tone `i` at octave `k` (shift-click a note)
   | ShuffleVary            -- re-draw all nine cells of the Vary lens from a new seed
   | VaryAudition ChordNode -- hear a variation WITHOUT capturing it to the chyron
@@ -1312,6 +1317,7 @@ component = H.mkComponent
       , defaultLens: KeyChords
       , side: Nothing
       , lastHeard: Nothing
+      , cursor: Nothing
       , sideDensity: 0
       , wheelAcc: 0.0
       , wheelAt: 0.0
@@ -2100,6 +2106,14 @@ handleActionCore = case _ of
         " " -> playHoveredOrSounding
         "f" -> toggleFavorite
         _ -> pure unit
+      else if isJust (fieldView st) && fieldKey st k then case k of
+        " " -> case st.hoveredNode, st.cursor of
+          Just c, _ -> playChordQuiet c
+          _, Just cur -> playChordQuiet cur.chord
+          _, _ -> pure unit
+        "Enter" -> for_ st.cursor \cur -> takeChord cur.chord
+        "Escape" -> H.modify_ _ { cursor = Nothing }
+        _ -> pure unit
       else case k of
         "r" -> resetPalette
         " " -> playHoveredOrSounding
@@ -2828,6 +2842,22 @@ handleActionCore = case _ of
         H.modify_ _ { sounding = Just c.id, selected = Nothing }
       playChord c
 
+
+  -- **Hearing is not taking** (plan: "From exploring to progressions"). A click
+  -- on the field selects and plays, quietly; return (or a shift-click) takes.
+  SelectMark k c -> do
+    st <- H.get
+    if st.panMoved then H.modify_ _ { panMoved = false }
+    else do
+      H.modify_ _ { cursor = Just { key: k, chord: c }, lastHeard = Just c }
+      playChordQuiet c
+
+  TakeMark k c -> do
+    st <- H.get
+    if st.panMoved then H.modify_ _ { panMoved = false }
+    else do
+      H.modify_ _ { cursor = Just { key: k, chord: c } }
+      playChord c
 
   -- Chyron: remember which chip the pointer is over so space auditions it.
   HoverChyron mi -> H.modify_ _ { hoveredChyron = mi }
@@ -4964,6 +4994,23 @@ playChordQuiet c = do
   for_ st.midiOut \out ->
     liftEffect $ for_ (playNotes c) \n ->
       Midi.scheduleNote out { channel: st.previewChan, note: n, velocity: 92, delayMs: 0.0, durMs: 900.0 }
+
+-- | Put a chord in the chyron without sounding it again (it was just heard).
+takeChord :: forall o m. MonadAff m => ChordNode -> H.HalogenM State Action Slots o m Unit
+takeChord c = do
+  let notes = playNotes c
+  logChyron c.label notes (nub (map (\x -> mod x 12) notes)) c.anchor
+  H.modify_ _ { lastHeard = Just c }
+
+-- | The keys the Explore field takes for itself: space hears (never logs),
+-- | return takes the cursor, esc drops it. Space and return fall back to their
+-- | old meanings when there is nothing on the field to act on.
+fieldKey :: State -> String -> Boolean
+fieldKey st = case _ of
+  " " -> isJust st.hoveredNode || isJust st.cursor
+  "Enter" -> isJust st.cursor
+  "Escape" -> isJust st.cursor
+  _ -> false
 
 playChord :: forall o m. MonadAff m => ChordNode -> H.HalogenM State Action Slots o m Unit
 playChord c = do
@@ -7604,6 +7651,7 @@ type FieldSeen =
   , frame :: Box
   , pan :: { x :: Number, y :: Number, zoom :: Number }
   , hover :: Maybe { root :: Int, pcs :: Array Int }
+  , cursor :: Maybe String
   }
 
 -- | The field rung on screen, if Explore is showing the field.
@@ -7625,18 +7673,20 @@ syncField = do
       prev <- Ref.read rt.seen
       mounted <- Field.mounted
       let pan = { x: st.viewCx, y: st.viewCy, zoom: st.viewZoom }
+          cursorKey = map _.key st.cursor
           table = layerTable st
           same p = p.view == v && unsafeRefEq p.lattice st.lattice && unsafeRefEq p.pads st.bankPads && p.table == table
       case prev of
         Just p | mounted && same p -> do
           when (p.pan /= pan) (Field.setView rt.handle false (fieldViewBox st p.frame))
           when (p.hover /= st.hoveredTriad) (Field.restyle rt.handle (glyphTint st))
-          Ref.write (Just p { pan = pan, hover = st.hoveredTriad }) rt.seen
+          when (p.cursor /= cursorKey) (Field.select rt.handle cursorKey)
+          Ref.write (Just p { pan = pan, hover = st.hoveredTriad, cursor = cursorKey }) rt.seen
         _ -> do
           let sc = fieldScene st v table rt.listener
           fresh <- Field.draw rt.handle sc.scene
           Field.setView rt.handle (not fresh && mounted) (fieldViewBox st sc.frame)
-          Ref.write (Just { view: v, lattice: st.lattice, pads: st.bankPads, table, frame: sc.frame, pan, hover: st.hoveredTriad }) rt.seen
+          Ref.write (Just { view: v, lattice: st.lattice, pads: st.bankPads, table, frame: sc.frame, pan, hover: st.hoveredTriad, cursor: cursorKey }) rt.seen
 
 -- | A glyph's tint under the current hover, as the field's `data-hi` value.
 glyphTint :: State -> Int -> Array Int -> String
@@ -7652,6 +7702,8 @@ hiName = case _ of
 fieldTintCss :: String
 fieldTintCss =
   ".vf-poly, .vf-dot { pointer-events: none; }\n"
+    <> ".vf-cursor { display: none; fill: none; stroke: #3b3428; stroke-width: 1.6; pointer-events: none; }\n"
+    <> ".vf-mark[data-sel=\"1\"] .vf-cursor { display: inline; }\n"
     <> joinWith "\n"
          (map
             (\hi ->
@@ -7715,7 +7767,8 @@ fieldScene st view table listener =
       , tint: glyphTint st c.root c.pcs
       , enter: HS.notify listener (HoverPad (Just c))
       , leave: HS.notify listener (HoverPad Nothing)
-      , click: HS.notify listener (AuditionNode c)
+      , select: HS.notify listener (SelectMark k c)
+      , take: HS.notify listener (TakeMark k c)
       }
     latticeMark m =
       let k = markKey m.chord
@@ -7772,6 +7825,7 @@ fieldScene st view table listener =
             _ -> 0
         , marks
         , css: fieldTintCss
+        , selected: map _.key st.cursor
         }
     , frame: if banks then bankBox { minX = bankBox.minX - 20.0, maxX = bankBox.maxX + 20.0, minY = bankBox.minY - 16.0, maxY = bankBox.maxY + 24.0 } else latBox
     }
