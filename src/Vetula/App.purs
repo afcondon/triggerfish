@@ -801,9 +801,12 @@ type State =
   , saveName :: String            -- name for the next saved progression
   , publishMsg :: Maybe String    -- transient status from a publish-entry-to-Amphora click
   -- Slice 4a — the live `path` IS the performed progression (no separate loaded
-  -- working copy). `perfName` is just the title of the snapshot last restored into
-  -- the path (Nothing = hand-built on the lattice); the chords come from `path`.
-  , perfName :: Maybe String
+  -- working copy); the chords come from `path`. `progName` is its NAME, frozen
+  -- (plan: "Names that survive edits"): minted as a glyph at the first chord
+  -- taken, or the library entry's when one is loaded, and kept through every
+  -- edit; it is the Amphora label each settled version is published under.
+  , progName :: Maybe String
+  , lastPubSig :: String          -- the last version published under progName
   , voices :: Array Voice
   , armed :: Boolean              -- the ARM/cue flag (sticky). Vetula keeps its own arm
                                   -- lifecycle (standalone PerfPlay/PerfStop/unload); the
@@ -1325,10 +1328,11 @@ component = H.mkComponent
       , capSeq: 0
       , lastCapIdx: Nothing
       , lastCapSig: ""
+      , lastPubSig: ""
       , libSearch: ""
       , saveName: ""
       , publishMsg: Nothing
-      , perfName: Nothing
+      , progName: Nothing
       -- the four fixed lanes of the bottom voice bar, all MUTED (one toggle from
       -- sounding). See `canonicalVoices`.
       , voices: canonicalVoices 0
@@ -2489,7 +2493,7 @@ handleActionCore = case _ of
   -- STARTS a fresh path instead of extending this one (the Nothing branch of
   -- PathPick then opens a new capture session). The visible twin of the `c` key —
   -- discoverable, and it works with a text field focused (where `c` is swallowed).
-  ClearPath -> H.modify_ _ { path = [] }
+  ClearPath -> H.modify_ _ { path = [], progName = Nothing, lastCapIdx = Nothing, lastCapSig = "" }
 
   PlayStep pid -> playId pid
 
@@ -2582,7 +2586,18 @@ handleActionCore = case _ of
         sig = currentSource st
     if length steps == 0
       then when (isJust st.lastCapIdx) (H.modify_ _ { lastCapIdx = Nothing, lastCapSig = "" })
-      else when (sig /= st.lastCapSig) (captureSteps st)
+      else if sig /= st.lastCapSig then captureSteps st
+      -- settled (unchanged for a tick since its capture): publish it as a
+      -- version under the progression's name. Amphora keeps every version (a
+      -- label re-points); with no store (the demo) it stays local, silently.
+      else when (sig /= st.lastPubSig) do
+        H.modify_ _ { lastPubSig = sig }
+        for_ st.progName \nm -> void $ H.fork do
+          let entry = st.lastCapIdx >>= index st.library
+              tags = [ "key:" <> groupLabel st.key ] <> (if maybe false _.kept entry then [ "kept" ] else [])
+          void $ liftAff $ attempt $ Amphora.publish
+            { kind: "vetula-progression", collection: "vetula-progression"
+            , name: nm, source: "user", payload: sig, tags }
 
   -- Promote an ephemeral to a keeper (or demote a keeper). Promoting the current
   -- session's ephemeral forks a fresh one for continued edits (lastCapIdx cleared).
@@ -2610,7 +2625,12 @@ handleActionCore = case _ of
         -- Slice 4a: restore the snapshot INTO the path (the one performed progression),
         -- not a parallel working copy.
         , path = ids
-        , perfName = Just entry.name
+        , progName = Just entry.name
+        -- continue this entry's line of versions: edits update it in place
+        -- (or fork a sibling if it is kept)
+        , lastCapIdx = Just i
+        , lastCapSig = entry.source
+        , lastPubSig = entry.source
         , voices = canonicalVoices (length fresh)
         , nextVoiceId = 4
         , sounding = head ids
@@ -2630,7 +2650,7 @@ handleActionCore = case _ of
     st <- H.get
     when (length (pathSteps st) > 0) (captureSteps st)
     stopClock
-    H.modify_ _ { path = [], perfName = Nothing, voices = [], playing = false }
+    H.modify_ _ { path = [], progName = Nothing, voices = [], playing = false }
     -- Unloading self-disarms; tell the shell so it drops Vetula from `armed`.
     when st.armed (H.raise (ArmChanged false))
 
@@ -3853,7 +3873,7 @@ handleActionCore = case _ of
       , imported = st.imported <> Set.fromFoldable ids
       , nextId = st.nextId + length newChords
       , path = ids
-      , perfName = Nothing
+      , progName = Nothing
       , sounding = head ids
       , sourceEdit = Nothing
       -- loading a source is a new capture session (don't overwrite the last ◦)
@@ -4047,7 +4067,7 @@ recallPreset i = do
         , imported = st.imported <> Set.fromFoldable ids
         , nextId = st.nextId + length fresh
         , path = ids
-        , perfName = Nothing
+        , progName = Nothing
         , sounding = head ids
         , identity = Just p.content
         }
@@ -4091,9 +4111,13 @@ captureSteps st = do
       H.modify_ _ { library = fromMaybe st.library (modifyAt i (_ { keyLabel = kl, source = sig }) st.library), lastCapSig = sig }
     _ -> do
       let n = st.capSeq + 1
-          nm = kl <> " ◦" <> show n
+          nm0 = fromMaybe (kl <> " ◦" <> show n) st.progName
+          -- a kept entry of the same name is frozen: editing it forks a
+          -- sibling (skull-tornado → skull-tornado′), keeping both
+          nm = if any (\e -> e.name == nm0) st.library then nm0 <> "′" else nm0
       H.modify_ _ { library = st.library <> [ { name: nm, keyLabel: kl, source: sig, kept: false } ]
-                  , lastCapIdx = Just (length st.library), capSeq = n, lastCapSig = sig }
+                  , lastCapIdx = Just (length st.library), capSeq = n, lastCapSig = sig
+                  , progName = Just nm }
   persistLib
 
 -- | Note-off every voice's currently-held notes.
@@ -5096,6 +5120,16 @@ auditionStyled notes = do
 -- | the progression from here as before.
 takeChord :: forall o m. MonadAff m => ChordNode -> H.HalogenM State Action Slots o m Unit
 takeChord c = do
+  st0 <- H.get
+  -- the first chord of a new progression: a fresh frozen name, and a fresh
+  -- capture entry, so it never overwrites the last progression's
+  when (length st0.path == 0 || not (isJust st0.progName)) do
+    seed <- liftEffect (randomInt 0 999999)
+    H.modify_ _
+      { progName = Just (sessionAliasOf seed)
+      , lastCapIdx = if length st0.path == 0 then Nothing else st0.lastCapIdx
+      , lastCapSig = if length st0.path == 0 then "" else st0.lastCapSig
+      , lastPubSig = "" }
   st <- H.get
   let same d = mod d.root 12 == mod c.root 12 && pcSetOf d == pcSetOf c && playNotes d == playNotes c
   case find same st.chords of
@@ -6426,6 +6460,8 @@ contextBar st =
     , divider
     , HH.div [ HP.style "display: flex; border: 1px solid #d8cfb6; border-radius: 5px; overflow: hidden;" ]
         (map styleButton [ Tuple StyleBlock "1 block", Tuple StyleArp "2 arpeggio" ])
+    , divider
+    , progChip
     ]
       <> shakeChip
       <> familyField
@@ -6441,6 +6477,19 @@ contextBar st =
          , HP.title (viewtypeTip vt)
          , HE.onClick \_ -> SetStage (Hunt vt) ]
          [ HH.text (viewtypeLabel vt) ]
+  -- the progression being built: its frozen name as a monochrome glyph (a
+  -- container, as a session is, so it never reads as a chord token)
+  progChip = case st.progName of
+    Nothing ->
+      HH.span [ HP.style "font-size: 11px; color: #a89f86; font-style: italic;" ]
+        [ HH.text "shift-click or return takes a chord" ]
+    Just nm ->
+      HH.span
+        [ HP.style "display: inline-flex; align-items: center; gap: 4px; font-size: 11px; color: #5a5240;"
+        , HP.title (nm <> " \x00b7 backspace takes back the last chord, delete starts a new progression") ]
+        ( map (\n -> faIcon { icon: n, color: "#2a2a2a" }) (split (Pattern "-") (SCU.takeWhile (_ /= '′') nm))
+            <> [ HH.span [ HP.style "margin-left: 4px;" ]
+                   [ HH.text ((if SCU.contains (Pattern "′") nm then "′ " else "") <> show (length st.path) <> " chords") ] ] )
   styleButton (Tuple sty label) =
     let on = st.style == sty
     in HH.button
