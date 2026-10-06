@@ -1167,6 +1167,7 @@ data Action
   | SetStyle AuditionStyle       -- Explore: the audition style (keys 1, 2), heard at once
   | SaveProg Boolean             -- save the progression (⌘S); true = as a new sibling (⌘⇧S)
   | ToggleAuditionCard           -- the progression on the stage as a card (or off again)
+  | VoiceToLimulus               -- hand Limulus a voice line naming the progression
   | TakeMark String ChordNode    -- Explore: a shift-click selects and takes it
   | DropTone Event Int Int Int  -- silence chord `id`'s tone `i` at octave `k` (shift-click a note)
   | ShuffleVary            -- re-draw all nine cells of the Vary lens from a new seed
@@ -1627,19 +1628,18 @@ handleQuery = case _ of
           [ let copied = currentSource s == s.lastCopySig
             in { id: "copy", label: if copied then "\x2713 copied" else "copy as Tidal", icons: [], active: copied, attention: false
                , tip: "the progression as plain Tidal (note \"<[\x2026] \x2026>\"), for any Tidal; paste it back into Vetula to load it" } ])
-       <> (if length s.path == 0 || not (isJust s.stageCards) then [] else
-          -- the progression on the rig, in the current style, as a card that
-          -- Limulus shows and the composer can take over
-          [ case s.auditionCard of
-              Just ac | not ac.owned ->
-                { id: "tidal", label: "\x266b v" <> show ac.cardId <> " in Tidal", icons: [], active: true, attention: false
-                , tip: "card v" <> show ac.cardId <> " plays the progression in the current style, kept current by Vetula until you edit it in Limulus \x00b7 click to take it off the stage" }
-              Just ac ->
-                { id: "tidal", label: "v" <> show ac.cardId <> " is yours \x00b7 new card", icons: [], active: false, attention: false
-                , tip: "you edited card v" <> show ac.cardId <> " in Limulus, so Vetula leaves it alone \x00b7 click for a new audition card" }
-              Nothing ->
-                { id: "tidal", label: "play in Tidal", icons: [], active: false, attention: false
-                , tip: "put the progression on the stage as a card, in the current style; open Limulus to see it, and edit it there to make it yours" } ])
+       <> (case s.progName of
+            -- a voice for the progression (AC's voice model): a line handed to
+            -- Limulus naming it, which the composer runs; the voice plays every
+            -- later save of it
+            Just nm | length s.path > 0 && isJust s.stageCards && SC.stageName nm ->
+              [ { id: "voice", label: "+ voice", icons: [], active: false, attention: false
+                , tip: case nextVoice s of
+                    Just n -> "adds a line to Limulus, " <> voiceLine n nm s.style <> ": run it to hear "
+                      <> nm <> " on channel " <> show n <> "; it follows every save"
+                    Nothing -> "8 voices are playing: hush one in Limulus (v3 $ hush) first"
+                    <> (if currentSource s /= s.lastPubSig then " \x00b7 saves this version first" else "") } ]
+            _ -> [])
        <> [ { id: "sound", label: "\x266a " <> soundValue s.auditionSel, icons: [], active: s.auditionSel /= AuditionOff, attention: false
             , tip: "where auditions sound (" <> s.midiName <> ") \x00b7 click: browser \x2192 continuo \x2192 MIDI \x2192 off" } ]
       }
@@ -1656,7 +1656,7 @@ handleQuery = case _ of
       "chip:prog" -> handleAction (SaveProg false)
       -- through an action: the card has to reach the stage, and only the
       -- action wrapper publishes cards (a query's state change does not)
-      "chip:tidal" -> handleAction ToggleAuditionCard
+      "chip:voice" -> handleAction VoiceToLimulus
       "chip:copy" -> do
         let src = currentSource s
         liftEffect (copyText src)
@@ -2026,6 +2026,18 @@ publishProgressions = do
     if e.kept && SC.stageName e.name
     then Just (Tuple e.name (printProgression (filter (\ns -> length ns > 0) (parseProgression e.source))))
     else Nothing
+
+-- | The number a new voice takes: the lowest of v1–v8 not playing.
+nextVoice :: State -> Maybe Int
+nextVoice st = find (\k -> not (elem k taken)) (range 1 8)
+  where
+  taken = maybe [] (\m -> map fst (Map.toUnfoldable m :: Array (Tuple Int String))) st.stageCards
+
+-- | A voice line naming a saved progression, in the style auditions use.
+voiceLine :: Int -> String -> AuditionStyle -> String
+voiceLine n name sty = "v" <> show n <> " $ vetula \"" <> name <> "\"" <> case sty of
+  StyleArp -> " # arpup 8"
+  StyleBlock -> ""
 
 -- | Names with a prime (the old sibling mark) renamed to the numbered form,
 -- | with the renames made.
@@ -3176,6 +3188,19 @@ handleActionCore = case _ of
         st' <- H.get
         for_ st'.auditionCard \ac -> for_ st'.binnacle \bin ->
           liftEffect $ Transport.send (Binnacle.socket bin) (SC.openLine ac.cardId)
+
+  -- A voice for the progression: `v3 $ vetula "name"`, in the current
+  -- style, handed to Limulus to run (stage-paste). Numbered from the voices
+  -- playing, at most 8. A voice plays what is saved, so save first.
+  VoiceToLimulus -> do
+    st0 <- H.get
+    when (currentSource st0 /= st0.lastPubSig) (handleAction (SaveProg false))
+    st <- H.get
+    for_ st.progName \nm -> for_ st.binnacle \bin -> do
+      case nextVoice st of
+        Nothing -> H.modify_ _ { publishMsg = Just "8 voices already: hush one in Limulus (v3 $ hush) first" }
+        Just n -> liftEffect $ Transport.send (Binnacle.socket bin)
+          ("stage-paste vetula/v" <> show n <> " " <> voiceLine n nm st.style)
 
   SetStyle sty -> do
     H.modify_ _ { style = sty }

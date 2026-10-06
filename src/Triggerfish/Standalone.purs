@@ -175,6 +175,7 @@ data Action o
   | EndFlash Int
   | Capture
   | Panic
+  | RigHushed
   | RoutingChanged
   | FromMachine o
   | Key E.Event
@@ -238,6 +239,11 @@ handleAction cfg = case _ of
     { emitter, listener } <- liftEffect HS.create
     _ <- H.subscribe emitter
     liftEffect $ RStore.onChange (HS.notify listener RoutingChanged)
+    -- the rig hushed (from any page, Limulus or the dashboard), all of it or
+    -- this machine: the transport stops too, or its next push would start
+    -- the voices again
+    let hushedHere msg = msg == "hushed" || maybe false (\m -> msg == "hushed " <> m) (Stage.slotOf cfg.which)
+    liftEffect $ Binnacle.onAppMessage rig \msg -> when (hushedHere msg) (HS.notify listener RigHushed)
     liftEffect $ TransportStore.onChange (HS.notify listener ModeStored)
     liftEffect $ Tempo.onChange (HS.notify listener TempoStored)
     bus <- liftEffect Bus.open
@@ -372,6 +378,9 @@ handleAction cfg = case _ of
   FromFrame e -> when (limulusAskedClose e) do
     H.modify_ _ { limulus = false }
     liftEffect focusSelf
+  RigHushed -> whenM (H.gets _.playing) do
+    H.modify_ _ { playing = false }
+    pushSounding cfg
   Panic -> do
     st <- H.get
     for_ st.rig \bin -> liftEffect $ Transport.send (Binnacle.socket bin) "hush"
