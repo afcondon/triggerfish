@@ -32,6 +32,7 @@
             "littorina",
             "maybe",
             "newtype",
+            "now",
             "nullable",
             "numbers",
             "ordered-collections",
@@ -1647,6 +1648,16 @@
         "unfoldable"
       ]
     },
+    "now": {
+      "type": "registry",
+      "version": "6.0.0",
+      "integrity": "sha256-mTyG4s8tps3XIf0jjV/lME2/QlwMzrQly2wqfSSUM3o=",
+      "dependencies": [
+        "datetime",
+        "effect",
+        "prelude"
+      ]
+    },
     "nullable": {
       "type": "registry",
       "version": "6.0.0",
@@ -1828,7 +1839,8 @@
         "numbers",
         "prelude",
         "simple-json",
-        "strings"
+        "strings",
+        "tuples"
       ]
     },
     "refs": {
