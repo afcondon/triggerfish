@@ -2002,19 +2002,36 @@ readCard st n text = parseCardIn lookup n text
 
 -- | Bring the stage's copy of the saved progressions up to date (step 4b):
 -- | each kept one as `vetula/progression/<name>`, which a card names
--- | (`v1 $ vetula "bolt-tractor-horse"`) and the rig resolves.
+-- | (`v1 $ vetula "bolt-tractor-horse"`) and the rig resolves. Internal: the
+-- | user sees progressions and voices, never this copy
+-- | (docs/kb/plans/vetula-visibility-audit.md).
 publishProgressions :: forall m. MonadAff m => H.HalogenM State Action Slots Output m Unit
 publishProgressions = do
   st <- H.get
   for_ st.stageProgs \seen -> for_ st.binnacle \bin -> do
     let now = Map.fromFoldable (mapMaybe stageText st.library)
-    liftEffect $ for_ (SC.progressionLines seen now) (Transport.send (Binnacle.socket bin))
-    H.modify_ _ { stageProgs = Just (Map.union now seen) }
+    -- the rig's copy follows the library exactly, a deleted progression going
+    -- too (its voices fall silent); a library with nothing kept is a browser
+    -- that has not saved here yet, not one that deleted everything
+    unless (Map.isEmpty now) do
+      liftEffect $ for_ (SC.progressionLines seen now) (Transport.send (Binnacle.socket bin))
+      H.modify_ _ { stageProgs = Just now }
   where
   stageText e =
     if e.kept && SC.stageName e.name
     then Just (Tuple e.name (printProgression (filter (\ns -> length ns > 0) (parseProgression e.source))))
     else Nothing
+
+-- | Names with a prime (the old sibling mark) renamed to the numbered form,
+-- | with the renames made.
+renamePrimes :: Array Store.Entry -> { library :: Array Store.Entry, renames :: Array (Tuple String String) }
+renamePrimes lib = foldl step { library: lib, renames: [] } (range 0 (length lib - 1))
+  where
+  step acc i = case index acc.library i of
+    Just e | SCU.contains (Pattern "′") e.name ->
+      let nm = siblingName acc.library (SCU.takeWhile (_ /= '′') e.name)
+      in { library: fromMaybe acc.library (modifyAt i (_ { name = nm }) acc.library), renames: snoc acc.renames (Tuple e.name nm) }
+    _ -> acc
 
 -- | A sibling's name: the progression's stem and the next free number
 -- | (skull-tornado-x → skull-tornado-x-2), typeable in a card where the old
@@ -2214,7 +2231,11 @@ handleActionCore = case _ of
     -- Restore the persisted library (auto-capture stack) from localStorage. capSeq
     -- continues past the restored count so new ◦ autonames don't collide.
     msaved <- liftEffect Store.loadLibrary
-    for_ msaved \sv -> H.modify_ _ { library = sv.library, capSeq = length sv.library, presets = sv.presets }
+    -- old siblings named with a prime (skull-tornado′) take the numbered
+    -- form once, so every kept progression can be named in a card
+    let migrated = renamePrimes (maybe [] _.library msaved)
+    for_ msaved \sv -> H.modify_ _ { library = migrated.library, capSeq = length sv.library, presets = sv.presets }
+    when (length migrated.renames > 0) persistLib
     -- Load the shared MIDI clip library (#27) — the pool the phrase picker offers.
     savedClips <- liftEffect ClipStore.loadClips
     H.modify_ _ { clipLibrary = savedClips }
@@ -2289,7 +2310,7 @@ handleActionCore = case _ of
         , imported = st0.imported <> Set.fromFoldable ids
         , nextId = base + length fresh
         , path = ids
-        , progName = Just w.name
+        , progName = Just (maybe w.name snd (find (\r -> fst r == w.name) migrated.renames))
         , lastCapSig = w.source
         , lastPubSig = w.saved
         }
@@ -2807,6 +2828,7 @@ handleActionCore = case _ of
   DeleteLib i -> do
     H.modify_ \s -> s { library = fromMaybe s.library (deleteAt i s.library), lastCapIdx = Nothing }
     persistLib
+    publishProgressions
 
   -- Publish library entry #i to the shared Amphora store (vetula-progression).
   -- The entry's `source` is its canonical Tidal form; name + keyLabel + kept ride
@@ -4317,8 +4339,8 @@ captureSteps st = do
       let n = st.capSeq + 1
           nm0 = fromMaybe (kl <> " ◦" <> show n) st.progName
           -- a kept entry of the same name is frozen: editing it forks a
-          -- sibling (skull-tornado → skull-tornado′), keeping both
-          nm = if any (\e -> e.name == nm0) st.library then nm0 <> "′" else nm0
+          -- sibling (skull-tornado → skull-tornado-2), keeping both
+          nm = if any (\e -> e.name == nm0) st.library then siblingName st.library nm0 else nm0
       H.modify_ _ { library = st.library <> [ { name: nm, keyLabel: kl, source: sig, kept: false } ]
                   , lastCapIdx = Just (length st.library), capSeq = n, lastCapSig = sig
                   , progName = Just nm }

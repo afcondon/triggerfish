@@ -29,7 +29,8 @@ module Vetula.StageCards
 
 import Prelude
 
-import Data.Array (all, catMaybes, mapMaybe)
+import Data.Array (all, catMaybes, filter, mapMaybe)
+import Data.Array as Array
 import Data.Either (hush)
 import Data.Int as Int
 import Data.Map (Map)
@@ -115,11 +116,13 @@ progressionTable msg = do
   where
   entry (Tuple key v) = (\name -> Tuple name v.text) <$> progressionOfKey key
 
--- | The writes that put each progression in `now` on the stage, where it
--- | differs from what the stage holds (`seen`). None are deleted: a name a
--- | card plays stays playable after this page forgets it.
+-- | The writes that bring the stage's progressions from `seen` to `now`: a
+-- | write per changed or new one, a delete per one gone.
 progressionLines :: Map String String -> Map String String -> Array String
-progressionLines seen now = catMaybes (map write (Map.toUnfoldable now :: Array (Tuple String String)))
+progressionLines seen now =
+  catMaybes (map write (Map.toUnfoldable now :: Array (Tuple String String)))
+    <> map (\name -> "stage-text-del " <> progressionKey name)
+         (filter (\name -> not (Map.member name now)) (Map.keys seen # Array.fromFoldable))
   where
   write (Tuple name text) =
     if Map.lookup name seen == Just text then Nothing
