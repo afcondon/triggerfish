@@ -65,6 +65,7 @@ import Web.UIEvent.MouseEvent as ME
 import Web.UIEvent.WheelEvent as WE
 import Vetula.SvgCoord (svgYFromEvent, svgXFromEvent, isFormField, surfaceHidden)
 import Vetula.Field as Field
+import Vetula.Voice as Voice
 import Vetula.Path as Path
 import Vetula.Generate (GenMode(..), generateCandidates)
 import Binnacle as Binnacle
@@ -368,10 +369,21 @@ stageFromPath fallbackLens segs = case segs of
   _ -> Nothing
 
 -- | Where Vetula's chord/path AUDITION goes, chosen in the shell's routing modal
--- | (2026-08-01): Off (muted), Continuo (the piano+strings VST preview via the
--- | "continuo" virtual port), or Midi (the rig/IAC bus, on the preview channel).
--- | The shell drives this with SetAuditionQ; connectMidi picks the port from it.
-data AuditionSel = AuditionOff | AuditionContinuo | AuditionMidi
+-- | (2026-08-01): Off (muted), Browser (Vetula's own Web Audio electric piano,
+-- | 2026-10-06), Continuo (the piano+strings VST preview via the "continuo"
+-- | virtual port), or Midi (the rig/IAC bus, on the preview channel). The shell
+-- | drives this with SetAuditionQ; connectMidi picks the port from it. Whenever
+-- | no port answers, the audition falls back to the browser voice, so a page
+-- | with nothing installed still sounds.
+data AuditionSel = AuditionOff | AuditionBrowser | AuditionContinuo | AuditionMidi
+
+-- | How an audition plays a chord (plan: "From exploring to progressions"):
+-- | a sticky lens, shown in the bar and set by the number keys on the field.
+-- | Block and arpeggio first; the strings styles take keys 3–6 when a second
+-- | voice exists.
+data AuditionStyle = StyleBlock | StyleArp
+
+derive instance eqAuditionStyle :: Eq AuditionStyle
 
 derive instance eqAuditionSel :: Eq AuditionSel
 
@@ -833,6 +845,7 @@ type State =
   -- Vary grid (an index into `HV.densities`: a panel has room for one).
   , side :: Maybe SideTab
   , lastHeard :: Maybe ChordNode
+  , style :: AuditionStyle
   -- Explore's cursor: the chord a click selected (by its field key). Keys act
   -- on it: space plays it, return takes it, esc lets it go.
   , cursor :: Maybe { key :: String, chord :: ChordNode }
@@ -1110,6 +1123,7 @@ data Action
   | ShufflePads            -- Banks lens: re-walk all nine banks
   | HoverPad (Maybe ChordNode)  -- Banks lens: hover a pad (highlight + exact preview)
   | SelectMark String ChordNode  -- Explore: a click makes a chord the cursor, and plays it
+  | SetStyle AuditionStyle       -- Explore: the audition style (keys 1, 2), heard at once
   | TakeMark String ChordNode    -- Explore: a shift-click selects and takes it
   | DropTone Event Int Int Int  -- silence chord `id`'s tone `i` at octave `k` (shift-click a note)
   | ShuffleVary            -- re-draw all nine cells of the Vary lens from a new seed
@@ -1317,6 +1331,7 @@ component = H.mkComponent
       , defaultLens: KeyChords
       , side: Nothing
       , lastHeard: Nothing
+      , style: StyleBlock
       , cursor: Nothing
       , sideDensity: 0
       , wheelAcc: 0.0
@@ -1577,6 +1592,7 @@ handleQuery = case _ of
     H.modify_ _ { auditionSel = sel }
     case sel of
       AuditionOff -> H.modify_ _ { midiOut = Nothing, midiName = "muted" }
+      AuditionBrowser -> H.modify_ _ { midiOut = Nothing, midiName = "browser" }
       _ -> connectMidi   -- re-pick the output port (continuo vs IAC) for the new mode
     pure (Just next)
 
@@ -1755,6 +1771,7 @@ connectMidi = do
     Just access -> case sel of
       -- Off: no output at all.
       AuditionOff -> HS.notify midiL (MidiReady Nothing "muted")
+      AuditionBrowser -> HS.notify midiL (MidiReady Nothing "browser")
       -- Midi: the rig/IAC bus only (the rig is the audition, no Continuo fallback).
       AuditionMidi -> do
         miac <- Midi.findOutput access midiPortName
@@ -2113,6 +2130,8 @@ handleActionCore = case _ of
           _, _ -> pure unit
         "Enter" -> for_ st.cursor \cur -> takeChord cur.chord
         "Escape" -> H.modify_ _ { cursor = Nothing }
+        "1" -> handleAction (SetStyle StyleBlock)
+        "2" -> handleAction (SetStyle StyleArp)
         _ -> pure unit
       else case k of
         "r" -> resetPalette
@@ -2851,6 +2870,11 @@ handleActionCore = case _ of
     else do
       H.modify_ _ { cursor = Just { key: k, chord: c }, lastHeard = Just c }
       playChordQuiet c
+
+  SetStyle sty -> do
+    H.modify_ _ { style = sty }
+    st <- H.get
+    for_ (maybe (map _.chord st.cursor) Just st.hoveredNode) playChordQuiet
 
   TakeMark k c -> do
     st <- H.get
@@ -4213,11 +4237,7 @@ logChyron label notes pcs anchor = do
 -- | Schedule notes on the preview channel WITHOUT logging to the chyron — for
 -- | re-auditioning a chip already in the trace (no feedback loop).
 auditionNotesNoLog :: forall o m. MonadAff m => Array Int -> H.HalogenM State Action Slots o m Unit
-auditionNotesNoLog notes = do
-  st <- H.get
-  for_ st.midiOut \out ->
-    liftEffect $ for_ notes \n ->
-      Midi.scheduleNote out { channel: st.previewChan, note: n, velocity: 92, delayMs: 0.0, durMs: 900.0 }
+auditionNotesNoLog notes = auditionStyled notes
 
 -- | **Every chord identity in Vetula, through one function.**
 -- |
@@ -4245,11 +4265,10 @@ playEvents :: forall o m. MonadAff m => Array ChyronEvent -> H.HalogenM State Ac
 playEvents evs = do
   st <- H.get
   let t0 = maybe 0.0 _.at (head evs)
-  for_ st.midiOut \out -> liftEffect $
+  liftEffect $
     for_ evs \ev ->
       for_ ev.notes \n ->
-        Midi.scheduleNote out
-          { channel: st.previewChan, note: n, velocity: 88, delayMs: ev.at - t0, durMs: 780.0 }
+        auditionNote st { note: n, velocity: 88, delayMs: ev.at - t0, durMs: 780.0 }
 
 -- | Play the selected chyron span (see `playEvents`). Phase 3 will add a
 -- | de-quantised / grid-snapped alternative.
@@ -4989,11 +5008,33 @@ keepFreely c = do
 -- | Not `chyronArmed` — that is the user's own record switch, and a lens
 -- | silently flipping it would be a worse surprise than the pollution.
 playChordQuiet :: forall o m. MonadAff m => ChordNode -> H.HalogenM State Action Slots o m Unit
-playChordQuiet c = do
+playChordQuiet c = auditionStyled (playNotes c)
+
+-- | **Every audition note goes through here**: to the MIDI port the shell chose,
+-- | or to the browser's own voice when that is the choice or no port answered.
+auditionNote :: State -> Voice.Note -> Effect Unit
+auditionNote st n = case st.auditionSel, st.midiOut of
+  AuditionOff, _ -> pure unit
+  AuditionBrowser, _ -> Voice.play n
+  _, Just out -> Midi.scheduleNote out { channel: st.previewChan, note: n.note, velocity: n.velocity, delayMs: n.delayMs, durMs: n.durMs }
+  _, Nothing -> Voice.play n
+
+-- | A chord's notes as the current style plays them. An arpeggio climbs, and
+-- | each note rings on to the chord's end, as under a held pedal.
+styledNotes :: AuditionStyle -> Array Int -> Array Voice.Note
+styledNotes sty notes = case sty of
+  StyleBlock -> map (\n -> { note: n, velocity: 92, delayMs: 0.0, durMs: 900.0 }) notes
+  StyleArp ->
+    let up = sort notes
+        step = 150.0
+        len = toNumber (length up)
+    in mapWithIndex (\i n -> { note: n, velocity: 88, delayMs: toNumber i * step, durMs: 900.0 + (len - toNumber i) * step }) up
+
+-- | Sound a chord's notes in the current style.
+auditionStyled :: forall o m. MonadAff m => Array Int -> H.HalogenM State Action Slots o m Unit
+auditionStyled notes = do
   st <- H.get
-  for_ st.midiOut \out ->
-    liftEffect $ for_ (playNotes c) \n ->
-      Midi.scheduleNote out { channel: st.previewChan, note: n, velocity: 92, delayMs: 0.0, durMs: 900.0 }
+  liftEffect $ for_ (styledNotes st.style notes) (auditionNote st)
 
 -- | Put a chord in the chyron without sounding it again (it was just heard).
 takeChord :: forall o m. MonadAff m => ChordNode -> H.HalogenM State Action Slots o m Unit
@@ -5010,15 +5051,14 @@ fieldKey st = case _ of
   " " -> isJust st.hoveredNode || isJust st.cursor
   "Enter" -> isJust st.cursor
   "Escape" -> isJust st.cursor
+  "1" -> true
+  "2" -> true
   _ -> false
 
 playChord :: forall o m. MonadAff m => ChordNode -> H.HalogenM State Action Slots o m Unit
 playChord c = do
-  st <- H.get
   let notes = playNotes c
-  for_ st.midiOut \out ->
-    liftEffect $ for_ notes \n ->
-      Midi.scheduleNote out { channel: st.previewChan, note: n, velocity: 92, delayMs: 0.0, durMs: 900.0 }
+  auditionStyled notes
   logChyron c.label notes (nub (map (\x -> mod x 12) notes)) c.anchor
   -- Whatever it came from (the pool, a pad, a colour set), the side panel's
   -- "last chord played" is this one.
@@ -5029,11 +5069,8 @@ playChord c = do
 -- | self-contained Specimen.
 playSpecimen :: forall o m. MonadAff m => Specimen -> H.HalogenM State Action Slots o m Unit
 playSpecimen s = do
-  st <- H.get
   let notes = specNotes s
-  for_ st.midiOut \out ->
-    liftEffect $ for_ notes \n ->
-      Midi.scheduleNote out { channel: st.previewChan, note: n, velocity: 92, delayMs: 0.0, durMs: 900.0 }
+  auditionStyled notes
   logChyron s.label notes (nub (map (\x -> mod x 12) notes)) s.anchor
 
 -- | Audition a library clip (#33): replay its captured events once, FAITHFULLY — each
@@ -5173,11 +5210,11 @@ playPath ids = do
   let chordsOnPath = mapMaybe (\pid -> find (\c -> c.id == pid) st.chords) ids
       stepMs = 440.0
       rollMs = 22.0
-  for_ st.midiOut \out -> liftEffect $
+  liftEffect $
     for_ (mapWithIndex Tuple chordsOnPath) \(Tuple i c) ->
       for_ (mapWithIndex Tuple (playNotes c)) \(Tuple j n) ->
-        Midi.scheduleNote out
-          { channel: st.previewChan, note: n, velocity: 88
+        auditionNote st
+          { note: n, velocity: 88
           , delayMs: toNumber i * stepMs + toNumber j * rollMs, durMs: stepMs * 0.9 }
 
 -- | Write a changed chord set back for rendering. A revoice (Tab / arrow-nudge)
@@ -6316,6 +6353,9 @@ contextBar st =
     [ HH.div [ HP.style "display: flex; border: 1px solid #d8cfb6; border-radius: 5px; overflow: hidden;" ]
         (map rung viewtypes)
     , pinChip
+    , divider
+    , HH.div [ HP.style "display: flex; border: 1px solid #d8cfb6; border-radius: 5px; overflow: hidden;" ]
+        (map styleButton [ Tuple StyleBlock "1 block", Tuple StyleArp "2 arpeggio" ])
     ]
       <> shakeChip
       <> familyField
@@ -6331,6 +6371,14 @@ contextBar st =
          , HP.title (viewtypeTip vt)
          , HE.onClick \_ -> SetStage (Hunt vt) ]
          [ HH.text (viewtypeLabel vt) ]
+  styleButton (Tuple sty label) =
+    let on = st.style == sty
+    in HH.button
+         [ HP.style ("border: none; border-right: 1px solid #e4dcc6; padding: 4px 12px; font-size: 12px; cursor: pointer; "
+                      <> (if on then "background: #5f6f6a; color: #fff;" else "background: #fbf8f0; color: #5a5240;"))
+         , HP.title "how auditions play a chord (keys 1, 2 on the field)"
+         , HE.onClick \_ -> SetStyle sty ]
+         [ HH.text label ]
   pinChip =
     if st.defaultLens == current then
       HH.span [ HP.style "font-size: 11px; color: #b3a77f;", HP.title "Explore opens on this view" ] [ HH.text "\x2605 default" ]

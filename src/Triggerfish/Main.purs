@@ -216,10 +216,11 @@ type LibRow = { inst :: Which, idx :: Int, name :: String, text :: String }
 -- "Master playing" is derived (`anyArmed armed`); rig-voice running is derived
 -- (`soundingOf … == Rig`) and each instrument edge-detects its own transitions.
 -- | Where a machine's AUDITION goes (routing modal's per-machine cycle, 2026-08-01):
--- | None (silent), Continuo (the piano+strings VST preview), or Midi (the rig/IAC
--- | bus, on a per-machine channel). Cycle order None → Continuo → Midi → None. Only
+-- | None (silent), Browser (Vetula's own Web Audio voice), Continuo (the
+-- | piano+strings VST preview), or Midi (the rig/IAC bus, on a per-machine
+-- | channel). Cycle order None → Browser → Continuo → Midi → None. Only
 -- | Vetula is wired to act on it today; the others store the choice for later.
-data AuditionDest = ADNone | ADContinuo | ADMidi
+data AuditionDest = ADNone | ADBrowser | ADContinuo | ADMidi
 
 derive instance eqAuditionDest :: Eq AuditionDest
 
@@ -232,12 +233,14 @@ auditionMachines =
 auditionLabel :: AuditionDest -> String
 auditionLabel = case _ of
   ADNone -> "None"
+  ADBrowser -> "Browser"
   ADContinuo -> "Continuo"
   ADMidi -> "MIDI"
 
 toAuditionSel :: AuditionDest -> Vetula.AuditionSel
 toAuditionSel = case _ of
   ADNone -> Vetula.AuditionOff
+  ADBrowser -> Vetula.AuditionBrowser
   ADContinuo -> Vetula.AuditionContinuo
   ADMidi -> Vetula.AuditionMidi
 
@@ -752,7 +755,8 @@ handleAction = case _ of
     st <- H.get
     let cur = fromMaybe ADNone (Map.lookup w st.audition)
         nxt = case cur of
-                ADNone -> ADContinuo
+                ADNone -> ADBrowser
+                ADBrowser -> ADContinuo
                 ADContinuo -> ADMidi
                 ADMidi -> ADNone
     H.modify_ _ { audition = Map.insert w nxt st.audition }
