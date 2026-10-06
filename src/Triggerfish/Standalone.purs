@@ -782,6 +782,11 @@ bar cfg st =
             , style "display:inline-flex;align-items:center;gap:4px;padding:3px 8px;border:1px solid #00000022;border-radius:5px;cursor:pointer;background:#faf7ee" ]
             (map faIcon b.icons)
         ])
+      <> map (\c -> HH.button
+            [ HE.onClick \_ -> PressBar ("chip:" <> c.id), HP.title c.tip
+            , style $ "padding:4px 10px;border:1px solid #00000022;border-radius:5px;cursor:pointer;font-size:11px;font-family:Georgia,serif;white-space:nowrap;"
+                <> (if c.active then "background:#eef3f1;color:#3d5a52" else "background:transparent;color:#8a8576") ]
+            [ HH.text c.label ]) b.chips
   button label act =
     HH.button
       [ HE.onClick \_ -> act

@@ -16,6 +16,8 @@ module Vetula.Store
   , loadSession
   , saveDefaultLens
   , loadDefaultLens
+  , saveSound
+  , loadSound
   ) where
 
 import Prelude
@@ -115,4 +117,18 @@ saveDefaultLens v = _save defaultLensKey (_stringify v)
 loadDefaultLens :: Effect (Maybe String)
 loadDefaultLens = do
   m <- _load defaultLensKey
+  pure (toMaybe (m :: Nullable String))
+
+-- | Where this viewer chose to hear auditions (the bar's sound chip). Absent
+-- | until they choose: then the page decides (the browser, or Continuo once
+-- | the rig answers).
+soundKey :: String
+soundKey = "vetula.sound"
+
+saveSound :: String -> Effect Unit
+saveSound v = _save soundKey (_stringify v)
+
+loadSound :: Effect (Maybe String)
+loadSound = do
+  m <- _load soundKey
   pure (toMaybe (m :: Nullable String))

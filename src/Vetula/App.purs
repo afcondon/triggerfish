@@ -387,6 +387,29 @@ derive instance eqAuditionStyle :: Eq AuditionStyle
 
 derive instance eqAuditionSel :: Eq AuditionSel
 
+-- | The sound chip's names, and its cycle: browser → continuo → MIDI → off.
+soundValue :: AuditionSel -> String
+soundValue = case _ of
+  AuditionOff -> "off"
+  AuditionBrowser -> "browser"
+  AuditionContinuo -> "continuo"
+  AuditionMidi -> "midi"
+
+soundFromValue :: String -> Maybe AuditionSel
+soundFromValue = case _ of
+  "off" -> Just AuditionOff
+  "browser" -> Just AuditionBrowser
+  "continuo" -> Just AuditionContinuo
+  "midi" -> Just AuditionMidi
+  _ -> Nothing
+
+nextSound :: AuditionSel -> AuditionSel
+nextSound = case _ of
+  AuditionBrowser -> AuditionContinuo
+  AuditionContinuo -> AuditionMidi
+  AuditionMidi -> AuditionOff
+  AuditionOff -> AuditionBrowser
+
 -- | The color-overlay layers (2026-07-31 redesign — see
 -- | docs/DESIGN-vetula-progression-building.md §"Context-panel redesign").
 -- | The palettes stopped being MODE selectors that inject chords into the pool
@@ -846,6 +869,9 @@ type State =
   , side :: Maybe SideTab
   , lastHeard :: Maybe ChordNode
   , style :: AuditionStyle
+  -- the viewer chose where auditions sound (the chip, or the shell's ⌥1);
+  -- until then, the browser, and Continuo once the rig answers
+  , soundChosen :: Boolean
   -- Explore's cursor: the chord a click selected (by its field key). Keys act
   -- on it: space plays it, return takes it, esc lets it go.
   , cursor :: Maybe { key :: String, chord :: ChordNode }
@@ -1266,7 +1292,7 @@ component = H.mkComponent
       , subId: Nothing
       , midiOut: Nothing
       , midiName: "…"
-      , auditionSel: AuditionContinuo   -- audition through the Continuo VST by default
+      , auditionSel: AuditionBrowser    -- the browser's voice until the rig answers (then Continuo)
       -- chord/path auditions default to the canonical Vetula channel (MIDI ch 5,
       -- where the standard config parks a pad/strings) — `playChord` sends this raw
       -- to WebMIDI, so it's the 0-indexed toWire form of the canonical constant.
@@ -1332,6 +1358,7 @@ component = H.mkComponent
       , side: Nothing
       , lastHeard: Nothing
       , style: StyleBlock
+      , soundChosen: false
       , cursor: Nothing
       , sideDensity: 0
       , wheelAcc: 0.0
@@ -1542,6 +1569,9 @@ handleQuery = case _ of
       , marks: if marking then show (Logbook.noteCount s.capture.logbook) <> " notes \x00b7 " <> show (length s.capture.logbook.marks) <> " \x25c6" else ""
       , icons: if s.perfSession.alias == "" then [] else map (\icon -> { icon, color: "#2a2a2a" }) (split (Pattern "-") s.perfSession.alias)
       , rebusTip: "session " <> (if s.perfSession.name == "" then s.perfSession.alias else s.perfSession.name) <> " \x00b7 new session, chyron housekeeping"
+      , chips:
+          [ { id: "sound", label: "\x266a " <> soundValue s.auditionSel, active: s.auditionSel /= AuditionOff
+            , tip: "where auditions sound (" <> s.midiName <> ") \x00b7 click: browser \x2192 continuo \x2192 MIDI \x2192 off" } ]
       }
   BarAct act next -> do
     s <- H.get
@@ -1553,6 +1583,11 @@ handleQuery = case _ of
       "mark" -> handleAction CaptureMark
       "clear" -> handleAction CaptureClear
       "rebus" -> handleAction PerfMenuToggle
+      "chip:sound" -> do
+        let nxt = nextSound s.auditionSel
+        H.modify_ _ { soundChosen = true }
+        liftEffect (Store.saveSound (soundValue nxt))
+        setSound nxt
       _ -> pure unit
     pure (Just next)
   LoadSceneAt i next -> do
@@ -1589,11 +1624,9 @@ handleQuery = case _ of
     H.modify_ _ { previewChan = clamp 0 15 (ch - 1) }
     pure (Just next)
   SetAuditionQ sel next -> do
-    H.modify_ _ { auditionSel = sel }
-    case sel of
-      AuditionOff -> H.modify_ _ { midiOut = Nothing, midiName = "muted" }
-      AuditionBrowser -> H.modify_ _ { midiOut = Nothing, midiName = "browser" }
-      _ -> connectMidi   -- re-pick the output port (continuo vs IAC) for the new mode
+    H.modify_ _ { soundChosen = true }
+    liftEffect (Store.saveSound (soundValue sel))
+    setSound sel
     pure (Just next)
 
 -- | What the HARMONIC-CONTEXT VOICE is sounding right now — case 3 of
@@ -1761,6 +1794,15 @@ stopSim = do
 -- | for hearing Vetula, see the continuo-vst-daemon note), falling back to the IAC
 -- | bus that feeds the rig in production. Called on Initialize AND from the chip
 -- | click (RetryMidi) — the click is the user gesture Chrome needs to prompt.
+-- | Send auditions somewhere new, and find its port.
+setSound :: forall m. MonadAff m => AuditionSel -> H.HalogenM State Action Slots Output m Unit
+setSound sel = do
+  H.modify_ _ { auditionSel = sel }
+  case sel of
+    AuditionOff -> H.modify_ _ { midiOut = Nothing, midiName = "muted" }
+    AuditionBrowser -> H.modify_ _ { midiOut = Nothing, midiName = "browser" }
+    _ -> connectMidi   -- re-pick the output port (continuo vs IAC) for the new mode
+
 connectMidi :: forall m. MonadAff m => H.HalogenM State Action Slots Output m Unit
 connectMidi = do
   sel <- H.gets _.auditionSel
@@ -1874,6 +1916,11 @@ handleActionCore :: forall m. MonadAff m => Action -> H.HalogenM State Action Sl
 handleActionCore = case _ of
   StageOpen -> do
     H.modify_ _ { stageCards = Nothing, stageKey = Nothing }
+    -- The rig answered, so this is not the zero-install page: unless the
+    -- viewer chose, auditions go to Continuo (which falls back to the
+    -- browser if no port answers).
+    st0 <- H.get
+    when (not st0.soundChosen && st0.auditionSel == AuditionBrowser) (setSound AuditionContinuo)
     st <- H.get
     for_ st.binnacle \bin -> liftEffect do
       Transport.send (Binnacle.socket bin) SC.subscribeLine
@@ -1972,6 +2019,9 @@ handleActionCore = case _ of
     H.modify_ _ { field = Just { handle: fh, listener: fieldL, seen } }
     -- the saved scenes, for the browser drawer, in the background
     void $ H.fork (handleAction FetchScenes)
+    -- Where this viewer chose to hear auditions, if they have.
+    msound <- liftEffect Store.loadSound
+    for_ (msound >>= soundFromValue) \sel -> H.modify_ _ { auditionSel = sel, soundChosen = true }
     -- The viewer's pinned Explore view, if any, before the stage is announced.
     pinned <- liftEffect Store.loadDefaultLens
     for_ pinned \v ->
