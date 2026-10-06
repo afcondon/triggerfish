@@ -7700,6 +7700,8 @@ type FieldSeen =
   , pan :: { x :: Number, y :: Number, zoom :: Number }
   , hover :: Maybe { root :: Int, pcs :: Array Int }
   , cursor :: Maybe String
+  , chyron :: Array ChyronEvent
+  , chyronSel :: Maybe { lo :: Int, hi :: Int }
   }
 
 -- | The field rung on screen, if Explore is showing the field.
@@ -7724,6 +7726,7 @@ syncField = do
           cursorKey = map _.key st.cursor
           table = layerTable st
           same p = p.view == v && unsafeRefEq p.lattice st.lattice && unsafeRefEq p.pads st.bankPads && p.table == table
+            && unsafeRefEq p.chyron st.chyron && p.chyronSel == map (\c -> { lo: c.lo, hi: c.hi }) st.chyronSel
       case prev of
         Just p | mounted && same p -> do
           when (p.pan /= pan) (Field.setView rt.handle false (fieldViewBox st p.frame))
@@ -7734,7 +7737,8 @@ syncField = do
           let sc = fieldScene st v table rt.listener
           fresh <- Field.draw rt.handle sc.scene
           Field.setView rt.handle (not fresh && mounted) (fieldViewBox st sc.frame)
-          Ref.write (Just { view: v, lattice: st.lattice, pads: st.bankPads, table, frame: sc.frame, pan, hover: st.hoveredTriad, cursor: cursorKey }) rt.seen
+          Ref.write (Just { view: v, lattice: st.lattice, pads: st.bankPads, table, frame: sc.frame, pan, hover: st.hoveredTriad, cursor: cursorKey
+                               , chyron: st.chyron, chyronSel: map (\c -> { lo: c.lo, hi: c.hi }) st.chyronSel }) rt.seen
 
 -- | A glyph's tint under the current hover, as the field's `data-hi` value.
 glyphTint :: State -> Int -> Array Int -> String
@@ -7838,7 +7842,22 @@ fieldScene st view table listener =
           x = latticeLeft + 24.0 + toNumber col * 34.0
           y = topY - 60.0 - toNumber (ribbonRows - 1 - row) * 42.0
       in mark ("rib:" <> markKey e.chord) e.chord x y 1.0 (not banks) "" false
-    marks = map latticeMark members <> mapWithIndex ownMark claim.own <> mapWithIndex ribbonMark ribbonEntries
+    marks0 = map latticeMark members <> mapWithIndex ownMark claim.own <> mapWithIndex ribbonMark ribbonEntries
+    -- The progression as a path (plan: "Seeing what you have"): the chyron's
+    -- selected span, else its last 16 chords, each on the mark of the same
+    -- notes (its root the bass if there is a choice, a shown one if there is
+    -- one). Its chords stay lit at every level, so it never vanishes.
+    pathEvents = case st.chyronSel of
+      Just sel | sel.hi > sel.lo -> take (sel.hi - sel.lo + 1) (drop sel.lo st.chyron)
+      _ -> takeEnd 16 st.chyron
+    pathKeyOf ev =
+      let set = sort (nub (map (\p -> mod p 12) ev.pcs))
+          bass = maybe (-1) (\b -> mod b 12) (minimum ev.notes)
+          cands = filter (\m -> sort (nub (map (\p -> mod p 12) m.pcs)) == set) marks0
+          rank m = (if mod m.root 12 == bass then 0 else 2) + (if m.shown then 0 else 1)
+      in map _.key (head (sortBy (comparing rank) cands))
+    path = if banks then [] else mapMaybe pathKeyOf pathEvents
+    marks = map (\m -> if elem m.key path then m { shown = true } else m) marks0
     -- The lattice's framing: the shown chords, with the ribbon above.
     latBox =
       { minX: latticeLeft - 70.0
@@ -7874,6 +7893,7 @@ fieldScene st view table listener =
         , marks
         , css: fieldTintCss
         , selected: map _.key st.cursor
+        , path
         }
     , frame: if banks then bankBox { minX = bankBox.minX - 20.0, maxX = bankBox.maxX + 20.0, minY = bankBox.minY - 16.0, maxY = bankBox.maxY + 24.0 } else latBox
     }

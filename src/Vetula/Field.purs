@@ -35,7 +35,7 @@ module Vetula.Field
 
 import Prelude
 
-import Data.Array (filter, mapMaybe, mapWithIndex, nub, sort)
+import Data.Array (drop, filter, length, mapMaybe, mapWithIndex, nub, sort, take, zip)
 import Data.Foldable (for_)
 import Data.Int (toNumber)
 import Data.Map (Map)
@@ -99,6 +99,7 @@ type Scene =
   , marks :: Array Mark
   , css :: String             -- the tints, as rules on `.vf-mark[data-hi=…]`
   , selected :: Maybe String  -- the cursor's mark, by key
+  , path :: Array String      -- the progression, as mark keys in order
   }
 
 -- | The field's running state: the transitions in flight, the viewBox easing,
@@ -277,11 +278,66 @@ sceneTree scene =
             (\g -> show g.level)
             edgeGroup
             { enter: Nothing, update: Just ease, exit: Nothing } ]
+    , elem Group [ F.class_ "vf-path", F.opacity (if scene.banks then "0" else "1"), F.style "pointer-events: none;" ]
+        [ forEachWithGUP "vf-path-seg" Line (pathSegments scene) _.key segTree
+            { enter: Just { attrs: [ F.opacity "0" ], transition: ease.transition }, update: Just ease, exit: Nothing }
+        ]
     , elem Group [ F.class_ "vf-marks" ]
         [ forEachWithGUP "vf-marks" SVG scene.marks _.key (markTree scene.selected)
             { enter: Just { attrs: [ F.opacity "0" ], transition: ease.transition }
             , update: Just ease
             , exit: Nothing } ]
+    , elem Group [ F.class_ "vf-beads", F.opacity (if scene.banks then "0" else "1"), F.style "pointer-events: none;" ]
+        [ forEachWithGUP "vf-path-bead" SVG (pathBeads scene) _.key beadTree
+            { enter: Just { attrs: [ F.opacity "0" ], transition: ease.transition }, update: Just ease, exit: Nothing }
+        ]
+    ]
+
+-- | The progression's steps, placed on their marks. A chord that recurs gets a
+-- | bead per occurrence, fanned round the glyph so every number shows.
+type Step = { key :: String, n :: Int, x :: Number, y :: Number, k :: Int }
+
+pathSteps :: Scene -> Array Step
+pathSteps scene =
+  let at = Map.fromFoldable (map (\m -> Tuple m.key { x: m.x, y: m.y }) scene.marks)
+      placed = mapMaybe (\(Tuple i key) -> map (\p -> { i, key, p }) (Map.lookup key at)) (mapWithIndex Tuple scene.path)
+  in mapWithIndex
+       (\j e ->
+          { key: e.key, n: e.i + 1, x: e.p.x, y: e.p.y
+          , k: length (filter (\o -> o.key == e.key) (take j placed)) })
+       placed
+
+pathSegments :: Scene -> Array { key :: String, x1 :: Number, y1 :: Number, x2 :: Number, y2 :: Number }
+pathSegments scene =
+  let st = pathSteps scene
+  in mapMaybe
+       (\(Tuple a b) -> if a.key == b.key then Nothing
+                         else Just { key: "s" <> show a.n, x1: a.x, y1: a.y, x2: b.x, y2: b.y })
+       (zip st (drop 1 st))
+
+pathBeads :: Scene -> Array { key :: String, n :: Int, x :: Number, y :: Number }
+pathBeads scene =
+  map
+    (\s ->
+       -- top-left first, clear of a name beside the glyph, then round anticlockwise
+       let a = (-3.0 * Number.pi / 4.0) - toNumber s.k * (Number.pi / 4.0)
+       in { key: "b" <> show s.n, n: s.n, x: s.x + 15.0 * Number.cos a, y: s.y + 15.0 * Number.sin a })
+    (pathSteps scene)
+
+segTree :: { key :: String, x1 :: Number, y1 :: Number, x2 :: Number, y2 :: Number } -> Tree
+segTree e =
+  elem Line
+    [ F.x1 e.x1, F.y1 e.y1, F.x2 e.x2, F.y2 e.y2, F.opacity "1"
+    , F.style "stroke: #2f6f8f; stroke-width: 2; stroke-opacity: 0.55; stroke-linecap: round;" ]
+    []
+
+beadTree :: { key :: String, n :: Int, x :: Number, y :: Number } -> Tree
+beadTree b =
+  elem SVG
+    [ F.x (b.x - 7.0), F.y (b.y - 7.0), F.width 14.0, F.height 14.0
+    , F.viewBox (-7.0) (-7.0) 14.0 14.0, F.attr "overflow" "visible", F.opacity "1" ]
+    [ elem Circle [ F.cx 0.0, F.cy 0.0, F.r 6.2, F.style "fill: #2f6f8f; stroke: #fff; stroke-width: 1;" ] []
+    , elem Text [ F.x 0.0, F.y 2.8, F.textAnchor "middle", F.style "font-size: 8px; font-weight: 600; fill: #fff; -webkit-user-select: none; user-select: none;", F.attr "textContent" (show b.n) ] []
     ]
 
 furnitureTree :: { key :: String, on :: Boolean, f :: Furniture } -> Tree
