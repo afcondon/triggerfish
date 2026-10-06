@@ -1993,8 +1993,14 @@ publishCards = do
   for_ st.stageCards \seen -> for_ st.binnacle \bin -> do
     -- a card naming a progression is the composer's (Limulus): never
     -- printed back, which would write its chords in
+    -- and any card keeps the line it has on the stage unless the page has
+    -- changed what it means: a line typed in Limulus is never respelled
     let named = st.namedCards
-        now = Map.union named (Map.filterKeys (not <<< flip Map.member named) (cardTexts st.perfBoxes))
+        lineOf b = case Map.lookup b.cardId seen of
+          Just old | readCard st b.cardId old == Just (boxSpec b) -> old
+          _ -> printCard (boxSpec b)
+        own = Map.fromFoldable (map (\b -> Tuple b.cardId (lineOf b)) st.perfBoxes)
+        now = Map.union named (Map.filterKeys (not <<< flip Map.member named) own)
     liftEffect $ for_ (SC.publishLines seen now) (Transport.send (Binnacle.socket bin))
     H.modify_ _ { stageCards = Just now }
 
