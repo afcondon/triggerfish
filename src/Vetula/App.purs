@@ -1159,6 +1159,7 @@ data Action
   | SelectMark String ChordNode  -- Explore: a click makes a chord the cursor, and plays it
   | SetStyle AuditionStyle       -- Explore: the audition style (keys 1, 2), heard at once
   | SaveProg Boolean             -- save the progression (⌘S); true = as a new sibling (⌘⇧S)
+  | ToggleAuditionCard           -- the progression on the stage as a card (or off again)
   | TakeMark String ChordNode    -- Explore: a shift-click selects and takes it
   | DropTone Event Int Int Int  -- silence chord `id`'s tone `i` at octave `k` (shift-click a note)
   | ShuffleVary            -- re-draw all nine cells of the Vary lens from a new seed
@@ -1637,18 +1638,9 @@ handleQuery = case _ of
       "clear" -> handleAction CaptureClear
       "rebus" -> handleAction PerfMenuToggle
       "chip:prog" -> handleAction (SaveProg false)
-      "chip:tidal" -> case s.auditionCard of
-        -- Vetula's: take it off the stage
-        Just ac | not ac.owned -> H.modify_ \st -> st
-          { perfBoxes = filter (\b -> b.cardId /= ac.cardId) st.perfBoxes, auditionCard = Nothing }
-        -- none yet, or the composer's: a fresh card (the owned one stays)
-        _ -> H.modify_ \st ->
-          let used = map _.channel st.perfBoxes
-              want = st.previewChan + 1
-              ch = if elem want used then fromMaybe (length st.perfBoxes + 1) (find (\c -> not (elem c used)) (range 1 16)) else want
-              n = freeCardId st.perfBoxes
-              box = auditionBoxFor st { cardId: n, channel: ch, label: "P" <> show ch, seq: Nothing, stack: [], seqText: "", muted: false, term: TMidi, phrase: Nothing }
-          in st { perfBoxes = st.perfBoxes <> [ box ], auditionCard = Just { cardId: n, owned: false } }
+      -- through an action: the card has to reach the stage, and only the
+      -- action wrapper publishes cards (a query's state change does not)
+      "chip:tidal" -> handleAction ToggleAuditionCard
       "chip:copy" -> do
         let src = currentSource s
         liftEffect (copyText src)
@@ -3068,6 +3060,23 @@ handleActionCore = case _ of
         H.modify_ _ { publishMsg = Just case res of
           Right _ -> "saved " <> nm
           Left _ -> "saved " <> nm <> " here (no store)" }
+
+  -- The audition card (step 4a): put the progression on the stage as a card,
+  -- or take Vetula's off; the composer's own stays when a fresh one is made.
+  ToggleAuditionCard -> do
+   s <- H.get
+   case s.auditionCard of
+        -- Vetula's: take it off the stage
+        Just ac | not ac.owned -> H.modify_ \st -> st
+          { perfBoxes = filter (\b -> b.cardId /= ac.cardId) st.perfBoxes, auditionCard = Nothing }
+        -- none yet, or the composer's: a fresh card (the owned one stays)
+        _ -> H.modify_ \st ->
+          let used = map _.channel st.perfBoxes
+              want = st.previewChan + 1
+              ch = if elem want used then fromMaybe (length st.perfBoxes + 1) (find (\c -> not (elem c used)) (range 1 16)) else want
+              n = freeCardId st.perfBoxes
+              box = auditionBoxFor st { cardId: n, channel: ch, label: "P" <> show ch, seq: Nothing, stack: [], seqText: "", muted: false, term: TMidi, phrase: Nothing }
+          in st { perfBoxes = st.perfBoxes <> [ box ], auditionCard = Just { cardId: n, owned: false } }
 
   SetStyle sty -> do
     H.modify_ _ { style = sty }
