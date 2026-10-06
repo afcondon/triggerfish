@@ -134,6 +134,7 @@ import Triggerfish.Capture.View (CaptureState, capturePanel, markCode)
 import Triggerfish.Capture.View as CaptureView
 import Triggerfish.Ui.Pointer as Pointer
 import Vetula.Tidal (progressionSource, parseProgression)
+import Reef.Vetula.VoiceName (voiceLetter)
 import Vetula.Lepidoptera (PerfDoc, VoiceSpec, cardProgression, docFromVoices, parseCardIn, parsePerform, printAsRecord, printCard, printProgression)
 import Vetula.StageCards as SC
 import Triggerfish.Capture.RigLoops as RL
@@ -1547,9 +1548,9 @@ handleQuery = case _ of
     pure (Just next)
   -- Limulus keeps in step only the cards it has a block for: this puts one
   -- back (or reveals it), for a card whose block was lost or never added.
-  OpenChannelCard ch next -> do
-    s <- H.get
-    for_ (find (\b -> b.channel == ch) s.perfBoxes) \b -> handleAction (CardToLimulus b.cardId)
+  -- the drawer's voice row: its line in Limulus (the row is the voice's number)
+  OpenChannelCard n next -> do
+    handleAction (CardToLimulus n)
     pure (Just next)
   AskProgressions reply -> do
     s <- H.get
@@ -1636,8 +1637,8 @@ handleQuery = case _ of
               [ { id: "voice", label: "+ voice", icons: [], active: false, attention: false
                 , tip: case nextVoice s of
                     Just n -> "adds a line to Limulus, " <> voiceLine n nm s.style <> ": run it to hear "
-                      <> nm <> " on channel " <> show n <> "; it follows every save"
-                    Nothing -> "8 voices are playing: hush one in Limulus (v3 $ hush) first"
+                      <> nm <> " (voice " <> voiceLetter n <> ", channel " <> show n <> "); it follows every save"
+                    Nothing -> "8 voices are playing: hush one in Limulus (R $ hush) first"
                     <> (if currentSource s /= s.lastPubSig then " \x00b7 saves this version first" else "") } ]
             _ -> [])
        <> [ { id: "sound", label: "\x266a " <> soundValue s.auditionSel, icons: [], active: s.auditionSel /= AuditionOff, attention: false
@@ -2033,7 +2034,7 @@ publishProgressions = do
     then Just (Tuple e.name (printProgression (filter (\ns -> length ns > 0) (parseProgression e.source))))
     else Nothing
 
--- | The number a new voice takes: the lowest of v1–v8 not playing.
+-- | The number a new voice takes: the lowest of P..W (1..8) not playing.
 nextVoice :: State -> Maybe Int
 nextVoice st = find (\k -> not (elem k taken)) (range 1 8)
   where
@@ -2041,7 +2042,7 @@ nextVoice st = find (\k -> not (elem k taken)) (range 1 8)
 
 -- | A voice line naming a saved progression, in the style auditions use.
 voiceLine :: Int -> String -> AuditionStyle -> String
-voiceLine n name sty = "v" <> show n <> " $ vetula \"" <> name <> "\"" <> case sty of
+voiceLine n name sty = voiceLetter n <> " $ vetula \"" <> name <> "\"" <> case sty of
   StyleArp -> " # arpup 8"
   StyleBlock -> ""
 
@@ -3219,7 +3220,7 @@ handleActionCore = case _ of
     st <- H.get
     for_ st.progName \nm -> for_ st.binnacle \bin -> do
       case nextVoice st of
-        Nothing -> H.modify_ _ { publishMsg = Just "8 voices already: hush one in Limulus (v3 $ hush) first" }
+        Nothing -> H.modify_ _ { publishMsg = Just "8 voices already: hush one in Limulus (R $ hush) first" }
         Just n -> liftEffect $ Transport.send (Binnacle.socket bin)
           ("stage-paste vetula/v" <> show n <> " " <> voiceLine n nm st.style)
 

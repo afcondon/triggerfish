@@ -15,6 +15,7 @@
 -- | it anyway — glanceable, not a panel to read.
 module Triggerfish.Odonus.View.Key (outputPiece, gridPiece) where
 
+import Reef.Vetula.VoiceName (voiceLetter)
 import Prelude
 
 import Data.Array (mapWithIndex, range, take)
@@ -136,7 +137,7 @@ quantPieces s = case _ of
 provenance :: Route.Input -> State -> String
 provenance input s = case Route.sourceOf input routes of
   Just Route.VetulaKey -> vetula "Vetula\x2019s key"
-  Just (Route.VetulaVoice n) -> vetula ("Vetula voice " <> show n)
+  Just (Route.VetulaVoice n) -> vetula ("Vetula voice " <> voiceLetter n)
   Just (Route.Scale _) -> "a scale route"
   Just (Route.Harmony _) -> "a harmony route"
   Nothing -> case input of

@@ -22,6 +22,7 @@ module Triggerfish.Dashboard
   ( component
   ) where
 
+import Reef.Vetula.VoiceName (voiceLetter)
 import Prelude
 
 import Binnacle as Binnacle
@@ -749,7 +750,7 @@ flowChart st =
           allowed = map inputWord (filter (Router.allowed row) [ HarmonyRoute.OdonusGrid, HarmonyRoute.OdonusOut ])
         in case row of
           Router.RKey -> { id: "src:key", short: "K", label: "key" <> maybe "" (\k -> " " <> k) st.router.vetulaKey, machine: Just "vetula", allowed }
-          Router.RVoice v -> { id: "src:v" <> show v, short: show v, label: "voice " <> show v, machine: Just "vetula", allowed }
+          Router.RVoice v -> { id: "src:v" <> show v, short: voiceLetter v, label: "voice " <> voiceLetter v, machine: Just "vetula", allowed }
           Router.RScale -> { id: "src:scale", short: "S", label: "scale " <> st.router.scalePattern, machine: Nothing, allowed }
           Router.RHarmony -> { id: "src:harmony", short: "H", label: "harmony " <> st.router.harmony, machine: Nothing, allowed }
     , routes: st.router.routes <#> \rt ->
@@ -774,7 +775,7 @@ flowChart st =
         _ -> Nothing
     , label: case rt.source of
         HarmonyRoute.VetulaKey -> "key" <> maybe "" (\k -> " " <> k) st.router.vetulaKey
-        HarmonyRoute.VetulaVoice v -> "voice " <> show v
+        HarmonyRoute.VetulaVoice v -> "voice " <> voiceLetter v
         HarmonyRoute.Scale sc -> "scale " <> sc.pattern
         HarmonyRoute.Harmony h -> "harmony " <> h
     }

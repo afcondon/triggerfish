@@ -52,6 +52,7 @@ import Halogen.HTML as HH
 import Halogen.HTML.Events as HE
 import Halogen.HTML.Properties as HP
 import Reef.Move (pitchClass)
+import Reef.Vetula.VoiceName (voiceLetter)
 import Reef.Route (Input(..), Routes, Source(..), inputName, print, sourceOf)
 import Reef.Route as Route
 import Simple.JSON (readJSON)
@@ -88,11 +89,11 @@ data Line = RKey | RVoice Int | RScale | RHarmony
 
 derive instance Eq Line
 
--- | Vetula's voices: the channels its cards play on (`ch3 …`).
+-- | Vetula's voices, by number (P = 1; shown by letter, `voiceLetter`).
 voices :: Router -> Array Int
-voices r = sort (nub (mapMaybe channel (Array.fromFoldable (Map.values r.cards))))
+voices r = sort (nub (mapMaybe number (Array.fromFoldable (Map.keys r.cards))))
   where
-  channel line = Array.head (split (Pattern " ") (trim line)) >>= stripPrefix (Pattern "ch") >>= Int.fromString
+  number k = stripPrefix (Pattern "vetula/v") k >>= Int.fromString
 
 rows :: Router -> Array Line
 rows r = [ RKey ] <> map RVoice (voices r) <> [ RScale, RHarmony ]
@@ -252,7 +253,7 @@ view on rigUp r =
       [ HH.text "Vetula key "
       , HH.small_ [ HH.text (fromMaybe "(Vetula has not said)" r.vetulaKey) ]
       ]
-    RVoice n -> [ HH.text ("Vetula voice " <> show n) ]
+    RVoice n -> [ HH.text ("Vetula voice " <> voiceLetter n) ]
     RScale ->
       [ HH.text "Scale "
       , field "pattern" r.scalePattern on.scalePattern RScale "a scale name, or a pattern of them: <dorian lydian>/4"
