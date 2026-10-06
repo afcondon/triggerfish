@@ -64,6 +64,7 @@ import Web.UIEvent.KeyboardEvent as KE
 import Web.UIEvent.MouseEvent as ME
 import Web.UIEvent.WheelEvent as WE
 import Vetula.SvgCoord (svgYFromEvent, svgXFromEvent, isFormField, surfaceHidden)
+import Vetula.Field as Field
 import Vetula.Path as Path
 import Vetula.Generate (GenMode(..), generateCandidates)
 import Binnacle as Binnacle
@@ -668,6 +669,8 @@ type State =
   -- The banks' pads, placed: rebuilt with the key or a shuffle, for the same
   -- reason (the walks are the dearest thing on the page to compute).
   , bankPads :: Array BankPad
+  -- Explore's field, drawn outside Halogen (Vetula.Field); made in Initialize
+  , field :: Maybe FieldRt
   -- The rig's resting harmonic scale (macro-tidal harmonic-authority): Nothing =
   -- follow the key's diatonic set; Just = an explicit `# scale` override (root pc
   -- + intervals from any Reef scale, beyond the diatonic modes the key can name).
@@ -1226,6 +1229,7 @@ component = H.mkComponent
       { key: cMajorKey
       , lattice: latticeFor cMajorKey
       , bankPads: bankPadsFor cMajorKey 0
+      , field: Nothing
       , restScale: Nothing
       , leftOpen: Set.fromFoldable [ SecSetup, SecTank, SecLens ]
       , chords: []
@@ -1768,6 +1772,7 @@ handleAction :: forall m. MonadAff m => Action -> H.HalogenM State Action Slots 
 handleAction a = do
   before <- H.gets _.perfBoxes
   handleActionCore a
+  syncField
   after <- H.gets _.perfBoxes
   -- the cards changed (any edit, by hand or from the stage): publish what differs
   unless (unsafeRefEq before after) publishCards
@@ -1932,6 +1937,12 @@ handleActionCore = case _ of
     st <- H.get
     for_ st.binnacle \bin -> liftEffect $ Transport.send (Binnacle.socket bin) (SC.openLine n)
   Initialize -> do
+    -- Explore's field: its marks call back into Halogen through this listener
+    { emitter: fieldE, listener: fieldL } <- liftEffect HS.create
+    _ <- H.subscribe fieldE
+    fh <- liftEffect Field.new
+    seen <- liftEffect (Ref.new Nothing)
+    H.modify_ _ { field = Just { handle: fh, listener: fieldL, seen } }
     -- the saved scenes, for the browser drawer, in the background
     void $ H.fork (handleAction FetchScenes)
     -- The viewer's pinned Explore view, if any, before the stage is announced.
@@ -6447,10 +6458,10 @@ surface st
       Review -> reviewSurface st
       Hunt Fifths -> circleFifthsSurface st
       Hunt Tonnetz -> tonnetzSurface st
-      Hunt KeyChords -> fieldSurface st KeyChords
-      Hunt Lattice4 -> fieldSurface st Lattice4
-      Hunt Lattice -> fieldSurface st Lattice
-      Hunt Pads -> fieldSurface st Pads
+      Hunt KeyChords -> fieldSurface st
+      Hunt Lattice4 -> fieldSurface st
+      Hunt Lattice -> fieldSurface st
+      Hunt Pads -> fieldSurface st
 
 -- | The PERFORM surface — a row of player BOXES, one per output. Shift-click (or
 -- | drag) a saved token in the chyron to pick it up, then click (or drop it onto)
@@ -7507,29 +7518,7 @@ pcPolygon hi root pcs cx cy r =
      ]
        <> map dot sorted
 
--- | The color-overlay layers on the voice-leading lattice (2026-07-31 redesign).
--- | The lattice's own glyphs are chromatic-circle POLYGONS (stave-less), and its
--- | tertian webs climb UPWARD from baseY — so the empty top of the surface carries
--- | the color chords as a wrapping ribbon of polygon glyphs (matching this
--- | surface's vocabulary, the way the fifths corona matches the stave), each
--- | de-duplicated and badged by source. The CONTEXT PALETTE swatches name the hues.
--- | Non-interactive for now (catch = Step 4). A deeper pass would place each color
--- | chord by voice-leading distance into the web itself — logged as a follow-up.
-latColorRibbon :: forall m. Array { chord :: ChordNode, layers :: Array ColorLayer } -> Number -> Array (H.ComponentHTML Action Slots m)
-latColorRibbon entries bottomY =
-  let perRow = latRibbonPerRow
-      rows = (length entries + perRow - 1) / perRow
-      place j e =
-        let col = mod j perRow
-            row = j / perRow
-            x = latticeLeft + 24.0 + toNumber col * 34.0
-            -- the last row sits just above the lattice's top
-            y = bottomY - toNumber (rows - 1 - row) * 42.0
-        in pcPolygon HiNone e.chord.root e.chord.pcs x y 9.0
-             <> layerRings x y 11.5 e.layers
-             <> [ colorHit e.chord x y 11.0 ]
-  in concat (mapWithIndex place entries)
-
+-- | The colour sets' chords the lattice lacks sit above it in rows this long.
 latRibbonPerRow :: Int
 latRibbonPerRow = 22
 
@@ -7538,32 +7527,19 @@ latRibbonPerRow = 22
 -- ---------------------------------------------------------------------------
 
 -- | **Explore as one view, zoomed semantically.** Every chord any rung can
--- | show is one persistent mark: the key's lattice (441 chords) and whatever
--- | the banks add. A rung only decides where each mark is, how large, and
--- | whether it is visible:
+-- | show is one persistent mark: the key's lattice (441 chords), the colour
+-- | sets' chords the lattice lacks (a ribbon above it), and whatever the banks
+-- | add. A rung only decides where each mark is, how large, and whether it is
+-- | visible:
 -- |
 -- | - key · + four-note · + extended reveal more of the lattice in place;
 -- | - banks moves the lattice chords that are in a bank to their pads, fades
 -- |   in the banks' other chords, and fades the rest out.
 -- |
--- | The browser animates it (CSS transitions on each mark's transform and
--- | opacity, and on the framing group), so a change of rung is ONE render, not
--- | one a frame: every Halogen write redraws the page. That is also why it is
--- | not hylograph's scene engine, which is driven per tick (worth revisiting:
--- | docs/kb/plans/vetula-rehearse.md). For the transitions to run, the marks
--- | must stay the same DOM nodes, so they are drawn in one fixed order (the
--- | lattice's, then the banks' own) whatever the rung.
-type Mark =
-  { key :: String
-  , chord :: ChordNode
-  , x :: Number
-  , y :: Number
-  , scale :: Number
-  , shown :: Boolean
-  , label :: String
-  , below :: Boolean          -- label under the glyph (banks) or beside it
-  }
-
+-- | The field is drawn outside Halogen (`Vetula.Field`): Halogen renders an
+-- | empty container, and `syncField` hands the field a scene after any action
+-- | that changed what it shows. HATS keeps each mark the same DOM node and
+-- | eases it to its new place; hover restyles the glyphs in place.
 type Box = { minX :: Number, maxX :: Number, minY :: Number, maxY :: Number }
 
 -- | A lattice chord's identity across arrangements: its root and notes.
@@ -7605,8 +7581,106 @@ bankPadsFor key roll =
                cell.chords)
        cells
 
-fieldSurface :: forall m. State -> Viewtype -> H.ComponentHTML Action Slots m
-fieldSurface st view =
+-- | The field's runtime: the drawing, the listener its marks call back on,
+-- | and what it last drew.
+type FieldRt =
+  { handle :: Field.Handle
+  , listener :: HS.Listener Action
+  , seen :: Ref.Ref (Maybe FieldSeen)
+  }
+
+-- | What a drawing depends on. The lattice and the pads are cached in state,
+-- | so a new array is a new key or a new shuffle.
+type FieldSeen =
+  { view :: Viewtype
+  , lattice :: Array (Array LatMember)
+  , pads :: Array BankPad
+  , table :: LayerTable
+  , frame :: Box
+  , pan :: { x :: Number, y :: Number, zoom :: Number }
+  , hover :: Maybe { root :: Int, pcs :: Array Int }
+  }
+
+-- | The field rung on screen, if Explore is showing the field.
+fieldView :: State -> Maybe Viewtype
+fieldView st
+  | length st.genSel > 0 && length st.candidates > 0 = Nothing
+  | otherwise = case st.stage of
+      Hunt v | elem v [ KeyChords, Lattice4, Lattice, Pads ] -> Just v
+      _ -> Nothing
+
+-- | Bring the field up to date with the state: a new scene when what it shows
+-- | changed, a moved frame for a pan, new tints for a hover, nothing otherwise.
+syncField :: forall m. MonadAff m => H.HalogenM State Action Slots Output m Unit
+syncField = do
+  st <- H.get
+  for_ st.field \rt -> liftEffect case fieldView st of
+    Nothing -> Ref.write Nothing rt.seen
+    Just v -> do
+      prev <- Ref.read rt.seen
+      mounted <- Field.mounted
+      let pan = { x: st.viewCx, y: st.viewCy, zoom: st.viewZoom }
+          table = layerTable st
+          same p = p.view == v && unsafeRefEq p.lattice st.lattice && unsafeRefEq p.pads st.bankPads && p.table == table
+      case prev of
+        Just p | mounted && same p -> do
+          when (p.pan /= pan) (Field.setView rt.handle false (fieldViewBox st p.frame))
+          when (p.hover /= st.hoveredTriad) (Field.restyle rt.handle (glyphTint st))
+          Ref.write (Just p { pan = pan, hover = st.hoveredTriad }) rt.seen
+        _ -> do
+          let sc = fieldScene st v table rt.listener
+          fresh <- Field.draw rt.handle sc.scene
+          Field.setView rt.handle (not fresh && mounted) (fieldViewBox st sc.frame)
+          Ref.write (Just { view: v, lattice: st.lattice, pads: st.bankPads, table, frame: sc.frame, pan, hover: st.hoveredTriad }) rt.seen
+
+-- | A glyph's tint under the current hover, as the field's `data-hi` value.
+glyphTint :: State -> Int -> Array Int -> String
+glyphTint st _ pcs = hiName (hiFor st.hoveredTriad pcs)
+
+hiName :: GlyphHi -> String
+hiName = case _ of
+  HiNone -> "none"
+  HiSame -> "same"
+  HiTier n -> "t" <> show (max 0 (min 5 n))
+
+-- | The field's tints: `hiStyle`'s ramp as rules on each mark's `data-hi`.
+fieldTintCss :: String
+fieldTintCss =
+  ".vf-poly, .vf-dot { pointer-events: none; }\n"
+    <> joinWith "\n"
+         (map
+            (\hi ->
+               let sty = hiStyle hi
+                   at = ".vf-mark[data-hi=\"" <> hiName hi <> "\"] "
+               in at <> ".vf-poly { fill: " <> sty.fill <> "; stroke: " <> sty.stroke <> "; stroke-width: " <> sty.sw <> "; }\n"
+                    <> at <> ".vf-dot { fill: " <> sty.otherDot <> "; }\n"
+                    <> at <> ".vf-root { fill: " <> sty.rootDot <> "; }")
+            ([ HiNone, HiSame ] <> map HiTier (range 0 5)))
+
+-- | The frame fitted to the 880 × 600 window, then panned and zoomed.
+fieldViewBox :: State -> Box -> Field.ViewBox
+fieldViewBox st box =
+  let fit = min (880.0 / (box.maxX - box.minX)) (600.0 / (box.maxY - box.minY)) * st.viewZoom
+      w = 880.0 / fit
+      h = 600.0 / fit
+  in { x: (box.minX + box.maxX) / 2.0 + st.viewCx - w / 2.0
+     , y: (box.minY + box.maxY) / 2.0 + st.viewCy - h / 2.0
+     , w, h }
+
+-- | Halogen's part of the field: an empty container, the wheel, and the pan.
+fieldSurface :: forall m. State -> H.ComponentHTML Action Slots m
+fieldSurface st =
+  HH.div
+    ( [ HP.id Field.containerId
+      , HP.style "width: 100%; height: 100%;"
+      , HE.onWheel \we -> LevelWheel (WE.toEvent we) (WE.deltaY we)
+      , HE.onMouseDown (PanStart <<< ME.toEvent)
+      ] <> geoPanAttrs st )
+    []
+
+-- | The scene for a rung, and the frame it should fill.
+fieldScene :: State -> Viewtype -> LayerTable -> HS.Listener Action -> { scene :: Field.Scene, frame :: Box }
+fieldScene st view table listener =
   let
     members = concat st.lattice
     banks = view == Pads
@@ -7619,7 +7693,6 @@ fieldSurface st view =
     -- The pads, each claiming the lattice mark of the same chord if there is
     -- one still unclaimed (C opens every bank; only the first takes it).
     latticeKeys = Set.fromFoldable (map (\m -> markKey m.chord) members)
-    pads = st.bankPads
     claim = foldl
       (\acc p ->
          let k = markKey p.chord
@@ -7627,128 +7700,102 @@ fieldSurface st view =
               then acc { claimed = Map.insert k p acc.claimed }
               else acc { own = snoc acc.own p })
       { claimed: Map.empty, own: [] }
-      pads
+      st.bankPads
     named = view == KeyChords
+    mark k c x y scale shown label below =
+      { key: k, root: c.root, pcs: c.pcs, x, y, scale, shown, label, below
+      , rings: map layerHue (layersOf table c)
+      , tint: glyphTint st c.root c.pcs
+      , enter: HS.notify listener (HoverPad (Just c))
+      , leave: HS.notify listener (HoverPad Nothing)
+      , click: HS.notify listener (AuditionNode c)
+      }
     latticeMark m =
       let k = markKey m.chord
-          padHere = if banks then Map.lookup k claim.claimed else Nothing
-      in case padHere of
-           Just p -> { key: k, chord: p.chord, x: p.x, y: p.y, scale: 1.3, shown: true, label: p.chord.label, below: true }
+      in case (if banks then Map.lookup k claim.claimed else Nothing) of
+           Just p -> mark k p.chord p.x p.y 1.3 true p.chord.label true
            Nothing ->
              let vis = not banks && atLevel m.chord
-             in { key: k, chord: m.chord, x: m.cx, y: m.cy, scale: 1.0, shown: vis
-                , label: if named && vis then chordNameOf m.chord else "", below: false }
-    ownMark i p = { key: "pad" <> show i, chord: p.chord, x: p.x, y: p.y, scale: 1.3, shown: banks, label: p.chord.label, below: true }
-    marks = map latticeMark members <> mapWithIndex ownMark claim.own
+             in mark k m.chord m.cx m.cy 1.0 vis (if named && vis then chordNameOf m.chord else "") false
+    ownMark i p = mark ("pad" <> show i) p.chord p.x p.y 1.3 banks p.chord.label true
     shownLattice = filter (\m -> atLevel m.chord) members
-    -- The lattice's framing: the shown chords, with the ribbon above.
+    -- The colour sets' chords the shown lattice lacks, in a ribbon above it.
     inView = map (\m -> pcSetOf m.chord) shownLattice
     ribbonEntries = filter (\e -> not (elem (pcSetOf e.chord) inView)) (mergedLayerChords st)
     ribbonRows = (length ribbonEntries + latRibbonPerRow - 1) / latRibbonPerRow
     topY = fromMaybe latGeo.baseY (minimum (map _.cy shownLattice))
+    ribbonMark j e =
+      let col = mod j latRibbonPerRow
+          row = j / latRibbonPerRow
+          x = latticeLeft + 24.0 + toNumber col * 34.0
+          y = topY - 60.0 - toNumber (ribbonRows - 1 - row) * 42.0
+      in mark ("rib:" <> markKey e.chord) e.chord x y 1.0 (not banks) "" false
+    marks = map latticeMark members <> mapWithIndex ownMark claim.own <> mapWithIndex ribbonMark ribbonEntries
+    -- The lattice's framing: the shown chords, with the ribbon above.
     latBox =
       { minX: latticeLeft - 70.0
       , maxX: latticeLeft + 6.0 * latGeo.bandW + 70.0 + (if named then 70.0 else 0.0)
       , minY: topY - 30.0 - (if ribbonRows > 0 then 30.0 + toNumber ribbonRows * 42.0 else 0.0)
       , maxY: latGeo.baseY + 40.0
       }
-    box = if banks then bankBox else latBox
-    -- The frame maps `box` onto the fixed 880 × 600 window.
-    fit = min (880.0 / (box.maxX - box.minX)) (600.0 / (box.maxY - box.minY))
-    cx = (box.minX + box.maxX) / 2.0
-    cy = (box.minY + box.maxY) / 2.0
-    moving = not (isJust st.panning)
-    table = layerTable st
-    vb = geoView st
-    shownKeys = Set.fromFoldable (map _.key (filter _.shown marks))
-    edgeShown a b = Set.member (markKey a.chord) shownKeys && not banks && atLevel a.chord && atLevel b.chord
+    -- a chord's level: 0 the key's own, 1 up to four notes, 2 beyond
+    levelOf c
+      | elem (Tuple (mod c.root 12) (pcSetOf c)) keyChords = 0
+      | length (pcSetOf c) <= 4 = 1
+      | otherwise = 2
+    edges = concatMap (fieldEdges levelOf) st.lattice
+    degreeLabels =
+      mapWithIndex
+        (\i seed ->
+           { x: latticeLeft + toNumber i * latGeo.bandW, y: latGeo.baseY + 26.0, anchor: "middle", text: noteName seed.root
+           , css: "font-size: 13px; fill: #6a6a6a; letter-spacing: 0.04em; -webkit-user-select: none; user-select: none;" })
+        (diatonicTriads st.key)
   in
-    SE.svg
-      ( [ SA.viewBox vb.x vb.y vb.w vb.h
-        , SA.width 880.0
-        , SA.height 600.0
-        , SA.class_ (cn "vetula-surface")
-        , HP.style surfaceFillCss
-        , HE.onWheel \we -> LevelWheel (WE.toEvent we) (WE.deltaY we)
-        , HE.onMouseDown (PanStart <<< ME.toEvent)
-        ] <> geoPanAttrs st )
-      [ SE.g
-          [ HP.style ("transform: scale(" <> show fit <> ") translate(" <> show (-cx) <> "px, " <> show (-cy) <> "px); "
-                       <> (if moving then "transition: transform 700ms ease-in-out;" else "")) ]
-          ( -- the lattice's own furniture, faded with it
-            [ SE.g [ HP.style ("opacity: " <> (if banks then "0" else "1") <> "; transition: opacity 400ms; pointer-events: " <> (if banks then "none" else "auto") <> ";") ]
-                ( concatMap (fieldEdges edgeShown) st.lattice
-                    <> mapWithIndex latDegreeLabel (diatonicTriads st.key)
-                    <> (if banks then [] else latColorRibbon ribbonEntries (topY - 60.0)) )
-            -- the banks' frames and headings
-            , SE.g [ HP.style ("opacity: " <> (if banks then "1" else "0") <> "; transition: opacity 500ms; pointer-events: none;") ]
-                bankFurniture
-            ]
-              <> map (fieldMark st table) marks
-          )
-      ]
+    { scene:
+        { banks
+        , lattice: { rects: [], texts: degreeLabels }
+        , bank: bankFurniture
+        , edges
+        , edgeLevels: case view of
+            KeyChords -> 1
+            Lattice4 -> 2
+            Lattice -> 3
+            _ -> 0
+        , marks
+        , css: fieldTintCss
+        }
+    , frame: if banks then bankBox { minX = bankBox.minX - 20.0, maxX = bankBox.maxX + 20.0, minY = bankBox.minY - 16.0, maxY = bankBox.maxY + 24.0 } else latBox
+    }
 
--- | One degree's covering edges, each shown only while both its ends are.
-fieldEdges :: forall m. (LatMember -> LatMember -> Boolean) -> Array LatMember -> Array (H.ComponentHTML Action Slots m)
-fieldEdges shown ms =
-  let pairs = concat (mapWithIndex (\i a -> map (\b -> Tuple a b) (drop (i + 1) ms)) ms)
+-- | One degree's covering edges, each at the level of its higher end, so it
+-- | shows only while both its ends do.
+fieldEdges :: (ChordNode -> Int) -> Array LatMember -> Array Field.Edge
+fieldEdges levelOf members =
+  let ms = map (\m -> { m, lv: levelOf m.chord }) members
+      pairs = concat (mapWithIndex (\i a -> map (\b -> Tuple a b) (drop (i + 1) ms)) ms)
   in concatMap
        (\(Tuple a b) ->
-          if pcSymDiff a.chord.pcs b.chord.pcs == 1 then
-            [ SE.line
-                [ SA.x1 a.cx, SA.y1 a.cy, SA.x2 b.cx, SA.y2 b.cy
-                , HP.style ("stroke: #e8e4d6; stroke-width: 1; pointer-events: none; transition: opacity 400ms; opacity: " <> (if shown a b then "1" else "0") <> ";") ] ]
+          if pcSymDiff a.m.chord.pcs b.m.chord.pcs == 1 then
+            [ { x1: a.m.cx, y1: a.m.cy, x2: b.m.cx, y2: b.m.cy, level: max a.lv b.lv } ]
           else [])
        pairs
 
 -- | The banks' backgrounds and axis names.
-bankFurniture :: forall m. Array (H.ComponentHTML Action Slots m)
+bankFurniture :: Field.Furniture
 bankFurniture =
-  concat (mapWithIndex (\r _ -> concat (mapWithIndex (\c _ -> bankRect r c) Pads.colours)) Pads.reaches)
-    <> mapWithIndex (\c col -> heading (bankOrigin 0 c).x (bankBox.minY + 20.0) "start" (Pads.colourLabel col)) Pads.colours
-    <> mapWithIndex (\r row -> heading (bankBox.minX + bankGeo.headW - 12.0) ((bankOrigin r 0).y + 26.0) "end" (Pads.reachLabel row)) Pads.reaches
+  { rects:
+      concat (mapWithIndex (\r _ -> mapWithIndex (\c _ -> bankRect r c) Pads.colours) Pads.reaches)
+  , texts:
+      mapWithIndex (\c col -> heading (bankOrigin 0 c).x (bankBox.minY + 20.0) "start" (Pads.colourLabel col)) Pads.colours
+        <> mapWithIndex (\r row -> heading (bankBox.minX + bankGeo.headW - 12.0) ((bankOrigin r 0).y + 26.0) "end" (Pads.reachLabel row)) Pads.reaches
+  }
   where
   bankRect r c =
     let o = bankOrigin r c
-    in [ SE.rect
-           [ SA.x o.x, SA.y o.y
-           , SA.width (4.0 * bankGeo.padW + 2.0 * bankGeo.pad), SA.height (4.0 * bankGeo.padH + 2.0 * bankGeo.pad)
-           , SA.rx 6.0
-           , HP.style "fill: #fbf8f0; stroke: #ece5d2; stroke-width: 1;" ] ]
+    in { x: o.x, y: o.y, w: 4.0 * bankGeo.padW + 2.0 * bankGeo.pad, h: 4.0 * bankGeo.padH + 2.0 * bankGeo.pad }
   heading x y anchor t =
-    SE.text
-      [ SA.x x, SA.y y, HP.attr (AttrName "text-anchor") anchor
-      , HP.style "font-size: 12px; fill: #7a7360; letter-spacing: 0.08em; text-transform: uppercase; -webkit-user-select: none; user-select: none;" ]
-      [ HH.text t ]
-
--- | One chord mark: the polygon, its colour sets as rings, a name when the rung
--- | has room for one, and the hit target. Hidden marks keep their place, at
--- | opacity 0 and out of the pointer's way, so they can fade back in.
-fieldMark :: forall m. State -> LayerTable -> Mark -> H.ComponentHTML Action Slots m
-fieldMark st table m =
-  let r = latGeo.glyphR
-      c = m.chord
-  in SE.g
-      [ HP.style ("transform: translate(" <> show m.x <> "px, " <> show m.y <> "px) scale(" <> show m.scale <> "); "
-                   <> "opacity: " <> (if m.shown then "1" else "0") <> "; pointer-events: " <> (if m.shown then "auto" else "none") <> "; "
-                   <> (if not (isJust st.panning) then "transition: transform 700ms ease-in-out, opacity 450ms;" else "")) ]
-      ( pcPolygon (hiFor st.hoveredTriad c.pcs) c.root c.pcs 0.0 0.0 r
-          <> layerRings 0.0 0.0 (r + 2.0) (layersOf table c)
-          <> (if m.label == "" then []
-              else
-                [ SE.text
-                    ( (if m.below then [ SA.x 0.0, SA.y (r + 12.0), HP.attr (AttrName "text-anchor") "middle" ]
-                       else [ SA.x (r + 7.0), SA.y 4.0 ])
-                        <> [ HP.style ("font-size: " <> (if m.below then "8px" else "11px") <> "; fill: #5a5240; pointer-events: none; -webkit-user-select: none; user-select: none;") ] )
-                    [ HH.text m.label ] ])
-          <> [ SE.circle
-                 [ SA.cx 0.0, SA.cy 0.0, SA.r (r + 3.0)
-                 , HP.style "fill: transparent; cursor: pointer;"
-                 , HE.onMouseEnter \_ -> HoverPad (Just c)
-                 , HE.onMouseLeave \_ -> HoverPad Nothing
-                 , HE.onClick \_ -> AuditionNode c
-                 ] ]
-      )
+    { x, y, anchor, text: t
+    , css: "font-size: 12px; fill: #7a7360; letter-spacing: 0.08em; text-transform: uppercase; -webkit-user-select: none; user-select: none;" }
 
 -- | A chord's name from its pitch classes over its root: Harmonia's best
 -- | reading, as Vary and Odonus name theirs.
@@ -7773,16 +7820,6 @@ chordNameOf c =
        Just q -> noteName r <> q
        -- the recogniser is thorough and slow; only the uncommon go to it
        Nothing -> fromMaybe c.label (map candidateName (best (observeWithBass r (pcSetOf c))))
-
--- | The degree's root name under its cluster.
-latDegreeLabel :: forall m. Int -> ChordNode -> H.ComponentHTML Action Slots m
-latDegreeLabel i seed =
-  SE.text
-    [ SA.x (latticeLeft + toNumber i * latGeo.bandW), SA.y (latGeo.baseY + 26.0)
-    , HP.attr (AttrName "text-anchor") "middle"
-    , HP.style "font-size: 13px; fill: #6a6a6a; letter-spacing: 0.04em; -webkit-user-select: none; user-select: none;"
-    ]
-    [ HH.text (noteName seed.root) ]
 
 
 -- ---------------------------------------------------------------------------

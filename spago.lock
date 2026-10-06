@@ -26,6 +26,7 @@
             "hylograph-selection",
             "hylograph-simulation",
             "hylograph-simulation-halogen",
+            "hylograph-transitions",
             "integers",
             "js-timers",
             "lists",

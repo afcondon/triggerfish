@@ -52,6 +52,7 @@ package:
     - hylograph-simulation
     - hylograph-simulation-halogen
     - hylograph-selection
+    - hylograph-transitions
     - hylograph-d3-kernel
   bundle:
     module: Triggerfish.Main

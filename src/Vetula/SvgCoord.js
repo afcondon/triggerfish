@@ -1,5 +1,13 @@
-export const svgYFromEvent = (ev) => () => {
+// The SVG an event's handler sits on, or (for a container that hosts an SVG
+// drawn outside Halogen, such as Explore's field) the SVG inside it.
+const svgOf = (ev) => {
   const el = ev.currentTarget;
+  if (el && el.viewBox && el.viewBox.baseVal) return el;
+  return el && el.querySelector ? el.querySelector(":scope > svg") : null;
+};
+
+export const svgYFromEvent = (ev) => () => {
+  const el = svgOf(ev);
   if (!el || !el.viewBox || !el.viewBox.baseVal) return 0.0;
   const rect = el.getBoundingClientRect();
   if (rect.height === 0) return 0.0;
@@ -24,7 +32,7 @@ export const surfaceHidden = () => {
 };
 
 export const svgXFromEvent = (ev) => () => {
-  const el = ev.currentTarget;
+  const el = svgOf(ev);
   if (!el || !el.viewBox || !el.viewBox.baseVal) return 0.0;
   const rect = el.getBoundingClientRect();
   if (rect.width === 0) return 0.0;
