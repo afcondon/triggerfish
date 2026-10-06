@@ -807,6 +807,7 @@ type State =
   -- edit; it is the Amphora label each settled version is published under.
   , progName :: Maybe String
   , lastPubSig :: String          -- the source last SAVED (a version in the library and Amphora)
+  , lastCopySig :: String         -- the source last copied as plain Tidal (the chip says so)
   , voices :: Array Voice
   , armed :: Boolean              -- the ARM/cue flag (sticky). Vetula keeps its own arm
                                   -- lifecycle (standalone PerfPlay/PerfStop/unload); the
@@ -1330,6 +1331,7 @@ component = H.mkComponent
       , lastCapIdx: Nothing
       , lastCapSig: ""
       , lastPubSig: ""
+      , lastCopySig: ""
       , libSearch: ""
       , saveName: ""
       , publishMsg: Nothing
@@ -1596,7 +1598,13 @@ handleQuery = case _ of
                    , active: true, attention: unsaved
                    , tip: nm <> (if unsaved then " \x00b7 unsaved: click (or \x2318S) to save this version; \x2318\x21e7S saves a new sibling" else " \x00b7 saved")
                        <> " \x00b7 on Explore, backspace takes back the last chord, delete starts a new progression" }
-          , { id: "sound", label: "\x266a " <> soundValue s.auditionSel, icons: [], active: s.auditionSel /= AuditionOff, attention: false
+          ] <> (if length s.path == 0 then [] else
+          -- the progression as plain Tidal on the clipboard: works anywhere,
+          -- with no rig, and pastes back into Vetula
+          [ let copied = currentSource s == s.lastCopySig
+            in { id: "copy", label: if copied then "\x2713 copied" else "copy as Tidal", icons: [], active: copied, attention: false
+               , tip: "the progression as plain Tidal (note \"<[\x2026] \x2026>\"), for any Tidal; paste it back into Vetula to load it" } ])
+       <> [ { id: "sound", label: "\x266a " <> soundValue s.auditionSel, icons: [], active: s.auditionSel /= AuditionOff, attention: false
             , tip: "where auditions sound (" <> s.midiName <> ") \x00b7 click: browser \x2192 continuo \x2192 MIDI \x2192 off" } ]
       }
   BarAct act next -> do
@@ -1610,6 +1618,10 @@ handleQuery = case _ of
       "clear" -> handleAction CaptureClear
       "rebus" -> handleAction PerfMenuToggle
       "chip:prog" -> handleAction (SaveProg false)
+      "chip:copy" -> do
+        let src = currentSource s
+        liftEffect (copyText src)
+        H.modify_ _ { lastCopySig = src }
       "chip:sound" -> do
         let nxt = nextSound s.auditionSel
         H.modify_ _ { soundChosen = true }
@@ -5187,7 +5199,9 @@ takeChord c = do
   case find same st.chords of
     Just d -> H.modify_ _ { path = st.path <> [ d.id ], lastHeard = Just c }
     Nothing -> do
-      let fresh = c { id = st.nextId }
+      -- named in full (a lattice chord's label is only its root), so the
+      -- chyron, Rehearse and the Tidal header read "Am", not "A"
+      let fresh = c { id = st.nextId, label = chordNameOf c }
       H.modify_ _
         { chords = st.chords <> [ fresh ]
         , imported = Set.insert fresh.id st.imported
