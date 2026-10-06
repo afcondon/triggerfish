@@ -5197,7 +5197,9 @@ takeChord c = do
   st <- H.get
   let same d = mod d.root 12 == mod c.root 12 && pcSetOf d == pcSetOf c && playNotes d == playNotes c
   case find same st.chords of
-    Just d -> H.modify_ _ { path = st.path <> [ d.id ], lastHeard = Just c }
+    Just d -> H.modify_ _
+      { path = st.path <> [ d.id ], lastHeard = Just c
+      , chords = map (\e -> if e.id == d.id then e { label = chordNameOf e } else e) st.chords }
     Nothing -> do
       -- named in full (a lattice chord's label is only its root), so the
       -- chyron, Rehearse and the Tidal header read "Am", not "A"
