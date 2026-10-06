@@ -808,6 +808,11 @@ type State =
   , progName :: Maybe String
   , lastPubSig :: String          -- the source last SAVED (a version in the library and Amphora)
   , lastCopySig :: String         -- the source last copied as plain Tidal (the chip says so)
+  -- The AUDITION CARD (plan, step 4a): a card on the stage holding the
+  -- progression in the current style, kept current by Vetula until it is
+  -- edited in Limulus, when it becomes the composer's (`owned`) and is never
+  -- rewritten again.
+  , auditionCard :: Maybe { cardId :: Int, owned :: Boolean }
   , voices :: Array Voice
   , armed :: Boolean              -- the ARM/cue flag (sticky). Vetula keeps its own arm
                                   -- lifecycle (standalone PerfPlay/PerfStop/unload); the
@@ -1332,6 +1337,7 @@ component = H.mkComponent
       , lastCapSig: ""
       , lastPubSig: ""
       , lastCopySig: ""
+      , auditionCard: Nothing
       , libSearch: ""
       , saveName: ""
       , publishMsg: Nothing
@@ -1604,6 +1610,19 @@ handleQuery = case _ of
           [ let copied = currentSource s == s.lastCopySig
             in { id: "copy", label: if copied then "\x2713 copied" else "copy as Tidal", icons: [], active: copied, attention: false
                , tip: "the progression as plain Tidal (note \"<[\x2026] \x2026>\"), for any Tidal; paste it back into Vetula to load it" } ])
+       <> (if length s.path == 0 || not (isJust s.stageCards) then [] else
+          -- the progression on the rig, in the current style, as a card that
+          -- Limulus shows and the composer can take over
+          [ case s.auditionCard of
+              Just ac | not ac.owned ->
+                { id: "tidal", label: "\x266b v" <> show ac.cardId <> " in Tidal", icons: [], active: true, attention: false
+                , tip: "card v" <> show ac.cardId <> " plays the progression in the current style, kept current by Vetula until you edit it in Limulus \x00b7 click to take it off the stage" }
+              Just ac ->
+                { id: "tidal", label: "v" <> show ac.cardId <> " is yours \x00b7 new card", icons: [], active: false, attention: false
+                , tip: "you edited card v" <> show ac.cardId <> " in Limulus, so Vetula leaves it alone \x00b7 click for a new audition card" }
+              Nothing ->
+                { id: "tidal", label: "play in Tidal", icons: [], active: false, attention: false
+                , tip: "put the progression on the stage as a card, in the current style; open Limulus to see it, and edit it there to make it yours" } ])
        <> [ { id: "sound", label: "\x266a " <> soundValue s.auditionSel, icons: [], active: s.auditionSel /= AuditionOff, attention: false
             , tip: "where auditions sound (" <> s.midiName <> ") \x00b7 click: browser \x2192 continuo \x2192 MIDI \x2192 off" } ]
       }
@@ -1618,6 +1637,18 @@ handleQuery = case _ of
       "clear" -> handleAction CaptureClear
       "rebus" -> handleAction PerfMenuToggle
       "chip:prog" -> handleAction (SaveProg false)
+      "chip:tidal" -> case s.auditionCard of
+        -- Vetula's: take it off the stage
+        Just ac | not ac.owned -> H.modify_ \st -> st
+          { perfBoxes = filter (\b -> b.cardId /= ac.cardId) st.perfBoxes, auditionCard = Nothing }
+        -- none yet, or the composer's: a fresh card (the owned one stays)
+        _ -> H.modify_ \st ->
+          let used = map _.channel st.perfBoxes
+              want = st.previewChan + 1
+              ch = if elem want used then fromMaybe (length st.perfBoxes + 1) (find (\c -> not (elem c used)) (range 1 16)) else want
+              n = freeCardId st.perfBoxes
+              box = auditionBoxFor st { cardId: n, channel: ch, label: "P" <> show ch, seq: Nothing, stack: [], seqText: "", muted: false, term: TMidi, phrase: Nothing }
+          in st { perfBoxes = st.perfBoxes <> [ box ], auditionCard = Just { cardId: n, owned: false } }
       "chip:copy" -> do
         let src = currentSource s
         liftEffect (copyText src)
@@ -1881,10 +1912,36 @@ handleAction a = do
   before <- H.gets _.perfBoxes
   handleActionCore a
   syncField
+  syncAuditionCard
   after <- H.gets _.perfBoxes
   -- the cards changed (any edit, by hand or from the stage): publish what differs
   unless (unsafeRefEq before after) publishCards
   publishKey
+
+-- | The audition card as the progression and the style say it should be:
+-- | one chord a bar, arpeggiated if the style is.
+auditionBoxFor :: State -> PerfBox -> PerfBox
+auditionBoxFor st box =
+  let chords = map playNotes (pathSteps st)
+  in box
+       { seq = if length chords == 0 then Nothing else Just (mkSavedSeq chords)
+       , seqText = "<" <> joinWith " " (map show (range 0 (length chords - 1))) <> ">"
+       , stack = case st.style of
+           StyleBlock -> []
+           StyleArp -> [ mkLayer (Arpg ArpUp 8) ]
+       }
+
+-- | Keep the audition card current while it is Vetula's: rewritten whenever
+-- | the progression or the style changes, until it is taken over in Limulus.
+syncAuditionCard :: forall m. MonadAff m => H.HalogenM State Action Slots Output m Unit
+syncAuditionCard = do
+  st <- H.get
+  for_ st.auditionCard \ac -> unless ac.owned do
+    for_ (find (\b -> b.cardId == ac.cardId) st.perfBoxes) \box -> do
+      let want = auditionBoxFor st box
+          sameSeq = map (map _.notes <<< _.events) want.seq == map (map _.notes <<< _.events) box.seq
+      unless (sameSeq && want.seqText == box.seqText && map _.fx want.stack == map _.fx box.stack) $
+        H.modify_ \s -> s { perfBoxes = map (\b -> if b.cardId == ac.cardId then want else b) s.perfBoxes }
 
 -- | Write Vetula's key to the stage when this page's key changes. `stageKey`
 -- | is the key the page last stood in as far as the stage goes: what it wrote,
@@ -2034,6 +2091,11 @@ handleActionCore = case _ of
                           , stageCards = map (Map.delete n) s.stageCards }
       Just (SC.Written n (Just text)) -> do
         st <- H.get
+        -- the audition card written as something other than what Vetula last
+        -- wrote: it was edited in Limulus, so it is the composer's now
+        for_ st.auditionCard \ac -> when (ac.cardId == n && not ac.owned) $
+          for_ (find (\b -> b.cardId == n) st.perfBoxes) \box ->
+            when (printCard (boxSpec box) /= text) $ H.modify_ _ { auditionCard = Just ac { owned = true } }
         H.modify_ _ { stageCards = map (Map.insert n text) st.stageCards }
         case parseCard text of
           -- unreadable: refuse it; the publish that follows puts the card back
