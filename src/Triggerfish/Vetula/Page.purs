@@ -198,7 +198,8 @@ handleQuery = case _ of
       , rows: voiceRows <> progRows <> map (_ { section = if Array.null voiceRows && Array.null progRows then "" else "Scenes" }) (Array.mapWithIndex (\i sc -> { slot: i, name: sc.name, icons: map (\icon -> { icon, color: "#2a2a2a" }) (Array.filter (_ /= "") (String.split (String.Pattern "-") (sessionOf sc))), tag: sc.key, current: false, section: "", builtin: false, drag: "", actions: [] }) scenes) }
   -- a voice's row is not a scene: it recalls nothing
   SQ.BrowserRecall i _ next | i >= progSlotBase -> H.query _vet unit (Vetula.LoadEntry (i - progSlotBase) next)
-  SQ.BrowserRecall i _ next | i >= Voices.slotBase -> pure (Just next)
+  -- a voice's row: show its card in Limulus (adding the block if it is gone)
+  SQ.BrowserRecall i _ next | i >= Voices.slotBase -> H.query _vet unit (Vetula.OpenChannelCard (i - Voices.slotBase) next)
   SQ.BrowserRecall i _ next -> H.query _vet unit (Vetula.LoadSceneAt i next)
   SQ.BrowserRename _ _ next -> pure (Just next)
   SQ.BrowserKeep next -> H.query _vet unit (Vetula.SaveSceneQ next)

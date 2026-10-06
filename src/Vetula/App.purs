@@ -1234,6 +1234,7 @@ data SourceQuery a
   | AskLibrary (Array { name :: String, text :: String } -> a)   -- A5 manager
   | AskProgressions (Array { slot :: Int, name :: String, key :: String, current :: Boolean } -> a)  -- the drawer's saved progressions
   | LoadEntry Int a
+  | OpenChannelCard Int a   -- the drawer's voice row: show that channel's card in Limulus
   | ImportText String (Boolean -> a)
   -- MIDI routing (Tidal-page channel map). The shell pushes the name → channel
   -- bindings; the page asks which → midi voice names are in use so it can list them.
@@ -1533,6 +1534,12 @@ handleQuery = case _ of
     pure (Just (reply (map (\e -> { name: e.name, text: e.source }) s.library)))
   LoadEntry i next -> do
     handleAction (LoadProg i)
+    pure (Just next)
+  -- Limulus keeps in step only the cards it has a block for: this puts one
+  -- back (or reveals it), for a card whose block was lost or never added.
+  OpenChannelCard ch next -> do
+    s <- H.get
+    for_ (find (\b -> b.channel == ch) s.perfBoxes) \b -> handleAction (CardToLimulus b.cardId)
     pure (Just next)
   AskProgressions reply -> do
     s <- H.get
