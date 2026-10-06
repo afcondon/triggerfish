@@ -2039,16 +2039,31 @@ voiceLine n name sty = "v" <> show n <> " $ vetula \"" <> name <> "\"" <> case s
   StyleArp -> " # arpup 8"
   StyleBlock -> ""
 
--- | Names with a prime (the old sibling mark) renamed to the numbered form,
--- | with the renames made.
+-- | Kept progressions whose names a voice line cannot say (a space, the old
+-- | prime) renamed once to ones it can (`cleanName`), with the renames made.
+-- | Safe because no voice can have named them.
 renamePrimes :: Array Store.Entry -> { library :: Array Store.Entry, renames :: Array (Tuple String String) }
 renamePrimes lib = foldl step { library: lib, renames: [] } (range 0 (length lib - 1))
   where
   step acc i = case index acc.library i of
-    Just e | SCU.contains (Pattern "′") e.name ->
-      let nm = siblingName acc.library (SCU.takeWhile (_ /= '′') e.name)
+    Just e | e.kept && not (SC.stageName e.name) ->
+      let nm0 = cleanName e.name
+          nm = if any (\o -> o.name == nm0) acc.library then siblingName acc.library nm0 else nm0
       in { library: fromMaybe acc.library (modifyAt i (_ { name = nm }) acc.library), renames: snoc acc.renames (Tuple e.name nm) }
     _ -> acc
+
+-- | A name a voice line can say: spaces become hyphens, primes the sibling
+-- | number (skull-tornado′ → skull-tornado-2), anything else unsayable goes.
+cleanName :: String -> String
+cleanName nm = (if base == "" then "progression" else base) <> (if primes > 0 then "-" <> show (primes + 1) else "")
+  where
+  cs = SCU.toCharArray (SCU.takeWhile (_ /= '′') nm)
+  primes = length (filter (_ == '′') (SCU.toCharArray nm))
+  base = SCU.fromCharArray (mapMaybe keep cs)
+  keep c
+    | c == ' ' = Just '-'
+    | (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_' || c == '-' || c == '.' = Just c
+    | otherwise = Nothing
 
 -- | A sibling's name: the progression's stem and the next free number
 -- | (skull-tornado-x → skull-tornado-x-2), typeable in a card where the old
@@ -4345,7 +4360,8 @@ chipViewOf s = case s.identity of
 -- | `kept` from a `kept` tag.
 amphoraEntry :: Amphora.LibItem -> LibEntry
 amphoraEntry it =
-  { name: it.name
+  -- a kept name a voice cannot say arrives as the one it was renamed to
+  { name: if elem "kept" it.tags && not (SC.stageName it.name) then cleanName it.name else it.name
   , keyLabel: fromMaybe "" (map (SCU.drop 4) (find (\t -> contains (Pattern "key:") t) it.tags))
   , source: it.payload
   , kept: elem "kept" it.tags

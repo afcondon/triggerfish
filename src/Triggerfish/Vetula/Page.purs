@@ -190,7 +190,7 @@ handleQuery = case _ of
     -- colour: a container, as a session is)
     let progRows = map (\p -> { slot: progSlotBase + p.slot, name: p.name
                               , icons: map (\icon -> { icon, color: "#2a2a2a" }) (Array.filter (_ /= "") (String.split (String.Pattern "-") (String.takeWhile (_ /= String.codePointFromChar '′') p.name)))
-                              , tag: p.key, current: p.current, section: "Progressions", builtin: false, drag: "", actions: [] })
+                              , tag: p.key, current: p.current, section: "Progressions", builtin: true, drag: "", actions: [] })
                        (fromMaybe [] mprogs)
     let voiceRows = Voices.rows st.voices st.names st.routesText
     pure $ mscenes <#> \scenes -> reply
@@ -201,6 +201,8 @@ handleQuery = case _ of
   -- a voice's row: show its card in Limulus (adding the block if it is gone)
   SQ.BrowserRecall i _ next | i >= Voices.slotBase -> H.query _vet unit (Vetula.OpenChannelCard (i - Voices.slotBase) next)
   SQ.BrowserRecall i _ next -> H.query _vet unit (Vetula.LoadSceneAt i next)
+  -- progression names are fixed, so the voices that name one keep finding it
+  -- (their rows are `builtin`, so the drawer offers no rename)
   SQ.BrowserRename _ _ next -> pure (Just next)
   SQ.BrowserKeep next -> H.query _vet unit (Vetula.SaveSceneQ next)
   SQ.BrowserUndo next -> pure (Just next)
