@@ -18,6 +18,9 @@ module Vetula.Store
   , loadDefaultLens
   , saveSound
   , loadSound
+  , WorkingCopy
+  , saveWorking
+  , loadWorking
   ) where
 
 import Prelude
@@ -132,3 +135,20 @@ loadSound :: Effect (Maybe String)
 loadSound = do
   m <- _load soundKey
   pure (toMaybe (m :: Nullable String))
+
+-- | The progression being built, as it stands: saved locally on every change
+-- | so a crash or a reload loses nothing (AC, 2026-10-06), but only the one,
+-- | so it never piles up. Keeping is explicit (save), into the library.
+-- | `saved` is the source last saved, so the page can say "unsaved".
+type WorkingCopy = { name :: String, source :: String, saved :: String }
+
+workingKey :: String
+workingKey = "vetula.working"
+
+saveWorking :: WorkingCopy -> Effect Unit
+saveWorking w = _save workingKey (_stringify w)
+
+loadWorking :: Effect (Maybe WorkingCopy)
+loadWorking = do
+  m <- _load workingKey
+  pure (toMaybe (m :: Nullable WorkingCopy))

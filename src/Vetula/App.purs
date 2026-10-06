@@ -806,7 +806,7 @@ type State =
   -- taken, or the library entry's when one is loaded, and kept through every
   -- edit; it is the Amphora label each settled version is published under.
   , progName :: Maybe String
-  , lastPubSig :: String          -- the last version published under progName
+  , lastPubSig :: String          -- the source last SAVED (a version in the library and Amphora)
   , voices :: Array Voice
   , armed :: Boolean              -- the ARM/cue flag (sticky). Vetula keeps its own arm
                                   -- lifecycle (standalone PerfPlay/PerfStop/unload); the
@@ -1022,7 +1022,6 @@ data Action
   | SetAdventure String    -- the adventurousness dial (slider value)
   -- Performance tab
   | SetSaveName String
-  | SaveProg               -- promote the current Lattice path to the library (a keeper)
   | AutoCapture            -- timer: auto-capture the current path (ephemeral, update-in-place)
   | KeepLib Int            -- promote / demote a library entry between keeper and ephemeral
   | SetLibSearch String
@@ -1153,6 +1152,7 @@ data Action
   | HoverPad (Maybe ChordNode)  -- Banks lens: hover a pad (highlight + exact preview)
   | SelectMark String ChordNode  -- Explore: a click makes a chord the cursor, and plays it
   | SetStyle AuditionStyle       -- Explore: the audition style (keys 1, 2), heard at once
+  | SaveProg Boolean             -- save the progression (⌘S); true = as a new sibling (⌘⇧S)
   | TakeMark String ChordNode    -- Explore: a shift-click selects and takes it
   | DropTone Event Int Int Int  -- silence chord `id`'s tone `i` at octave `k` (shift-click a note)
   | ShuffleVary            -- re-draw all nine cells of the Vary lens from a new seed
@@ -1225,6 +1225,7 @@ data SourceQuery a
   | AskSounding (Sounding -> a)
   | SyncFree Number Number a    -- adopt the rack's shared free-run baseline (start micros, BPM)
   | AskLibrary (Array { name :: String, text :: String } -> a)   -- A5 manager
+  | AskProgressions (Array { slot :: Int, name :: String, key :: String, current :: Boolean } -> a)  -- the drawer's saved progressions
   | LoadEntry Int a
   | ImportText String (Boolean -> a)
   -- MIDI routing (Tidal-page channel map). The shell pushes the name → channel
@@ -1524,6 +1525,10 @@ handleQuery = case _ of
   LoadEntry i next -> do
     handleAction (LoadProg i)
     pure (Just next)
+  AskProgressions reply -> do
+    s <- H.get
+    pure $ Just $ reply $ map (\(Tuple i e) -> { slot: i, name: e.name, key: e.keyLabel, current: s.progName == Just e.name })
+      (filter (\(Tuple _ e) -> e.kept) (mapWithIndex Tuple s.library))
   ImportText txt reply -> do
     st <- H.get
     let noteLists = filter (\ns -> length ns > 0) (parseProgression txt)
@@ -2023,6 +2028,23 @@ handleActionCore = case _ of
     H.modify_ _ { field = Just { handle: fh, listener: fieldL, seen } }
     -- the saved scenes, for the browser drawer, in the background
     void $ H.fork (handleAction FetchScenes)
+    -- The progression being built when the page last closed (the working
+    -- copy), so a crash or a reload loses nothing.
+    mwork <- liftEffect Store.loadWorking
+    for_ mwork \w -> do
+      st0 <- H.get
+      let noteLists = filter (\ns -> length ns > 0) (parseProgression w.source)
+          fresh = mapWithIndex (\j ns -> importChord (st0.nextId + j) ns) noteLists
+          ids = map _.id fresh
+      when (length ids > 0) $ H.modify_ _
+        { chords = st0.chords <> fresh
+        , imported = st0.imported <> Set.fromFoldable ids
+        , nextId = st0.nextId + length fresh
+        , path = ids
+        , progName = Just w.name
+        , lastCapSig = w.source
+        , lastPubSig = w.saved
+        }
     -- Where this viewer chose to hear auditions, if they have.
     msound <- liftEffect Store.loadSound
     for_ (msound >>= soundFromValue) \sel -> H.modify_ _ { auditionSel = sel, soundChosen = true }
@@ -2119,7 +2141,13 @@ handleActionCore = case _ of
             when (elem k [ " ", "Tab", "ArrowUp", "ArrowDown" ]) (preventDefault ev)
             -- ignore OS auto-repeat: a held key is one event, so space gives one
             -- sustained chord rather than a machine-gun retrigger
-            when (not (KE.repeat ke)) (HS.notify keyL (Key k (KE.shiftKey ke)))
+            -- ⌘S / ctrl-S saves the progression (not the browser's page);
+            -- any other modified key belongs to the browser or the shell
+            if KE.metaKey ke || KE.ctrlKey ke then
+              when (k == "s" || k == "S") do
+                preventDefault ev
+                HS.notify keyL (SaveProg (KE.shiftKey ke))
+            else when (not (KE.repeat ke)) (HS.notify keyL (Key k (KE.shiftKey ke)))
           Nothing -> pure unit
       addEventListener (EventType "keydown") el false (Window.toEventTarget w)
     -- initial palette
@@ -2561,21 +2589,6 @@ handleActionCore = case _ of
   -- Manual save = promote the current path to a KEEPER (frozen). If the current
   -- session's ephemeral is already in the library, promote it in place (+ rename);
   -- otherwise append a fresh keeper.
-  SaveProg -> do
-    st <- H.get
-    let steps = pathSteps st
-    when (length steps > 0) do
-      let nm = if st.saveName == "" then groupLabel st.key <> " · " <> show (length steps) else st.saveName
-          kl = groupLabel st.key
-          src = currentSource st
-      case st.lastCapIdx of
-        Just i | isJust (index st.library i) ->
-          H.modify_ _ { library = fromMaybe st.library (modifyAt i (_ { name = nm, keyLabel = kl, source = src, kept = true }) st.library)
-                      , saveName = "", lastCapIdx = Nothing }
-        _ ->
-          H.modify_ _ { library = st.library <> [ { name: nm, keyLabel: kl, source: src, kept: true } ], saveName = "" }
-      persistLib
-
   -- Timer auto-capture (Slice 1). Empty path → close the current session (next
   -- capture starts fresh). Non-empty + changed → UPDATE the session's ephemeral in
   -- place (or open a new one), so a building session is one live-updated entry.
@@ -2586,18 +2599,11 @@ handleActionCore = case _ of
         sig = currentSource st
     if length steps == 0
       then when (isJust st.lastCapIdx) (H.modify_ _ { lastCapIdx = Nothing, lastCapSig = "" })
-      else if sig /= st.lastCapSig then captureSteps st
-      -- settled (unchanged for a tick since its capture): publish it as a
-      -- version under the progression's name. Amphora keeps every version (a
-      -- label re-points); with no store (the demo) it stays local, silently.
-      else when (sig /= st.lastPubSig) do
-        H.modify_ _ { lastPubSig = sig }
-        for_ st.progName \nm -> void $ H.fork do
-          let entry = st.lastCapIdx >>= index st.library
-              tags = [ "key:" <> groupLabel st.key ] <> (if maybe false _.kept entry then [ "kept" ] else [])
-          void $ liftAff $ attempt $ Amphora.publish
-            { kind: "vetula-progression", collection: "vetula-progression"
-            , name: nm, source: "user", payload: sig, tags }
+      -- the working copy: saved locally on every change, for a crash or a
+      -- reload; keeping it is explicit (SaveProg)
+      else when (sig /= st.lastCapSig) do
+        H.modify_ _ { lastCapSig = sig }
+        for_ st.progName \nm -> liftEffect (Store.saveWorking { name: nm, source: sig, saved: st.lastPubSig })
 
   -- Promote an ephemeral to a keeper (or demote a keeper). Promoting the current
   -- session's ephemeral forks a fresh one for continued edits (lastCapIdx cleared).
@@ -2942,6 +2948,34 @@ handleActionCore = case _ of
     else do
       H.modify_ _ { cursor = Just { key: k, chord: c }, lastHeard = Just c }
       playChordQuiet c
+
+  -- **Save** (AC, 2026-10-06: "explicit save and unsaved current version"):
+  -- a version of the progression under its frozen name, in the library
+  -- (updated in place, one entry per progression) and published to Amphora,
+  -- which keeps every version as the label re-points. ⌘⇧S saves as a new
+  -- sibling (skull-tornado′) instead.
+  SaveProg fork -> do
+    st <- H.get
+    when (length st.path > 0) do
+      let sig = currentSource st
+          kl = groupLabel st.key
+          base = fromMaybe kl st.progName
+          nm = if fork then base <> "′" else base
+          entry = { name: nm, keyLabel: kl, source: sig, kept: true }
+          lib = case findIndex (\e -> e.name == nm) st.library of
+            Just i -> fromMaybe st.library (updateAt i entry st.library)
+            Nothing -> st.library <> [ entry ]
+      H.modify_ _ { library = lib, progName = Just nm, lastPubSig = sig, lastCapIdx = findIndex (\e -> e.name == nm) lib
+                  , publishMsg = Just ("saved " <> nm) }
+      persistLib
+      liftEffect (Store.saveWorking { name: nm, source: sig, saved: sig })
+      void $ H.fork do
+        res <- liftAff $ attempt $ Amphora.publish
+          { kind: "vetula-progression", collection: "vetula-progression"
+          , name: nm, source: "user", payload: sig, tags: [ "key:" <> kl, "kept" ] }
+        H.modify_ _ { publishMsg = Just case res of
+          Right _ -> "saved " <> nm
+          Left _ -> "saved " <> nm <> " here (no store)" }
 
   SetStyle sty -> do
     H.modify_ _ { style = sty }
@@ -5129,7 +5163,7 @@ takeChord c = do
       { progName = Just (sessionAliasOf seed)
       , lastCapIdx = if length st0.path == 0 then Nothing else st0.lastCapIdx
       , lastCapSig = if length st0.path == 0 then "" else st0.lastCapSig
-      , lastPubSig = "" }
+      , lastPubSig = if length st0.path == 0 then "" else st0.lastPubSig }
   st <- H.get
   let same d = mod d.root 12 == mod c.root 12 && pcSetOf d == pcSetOf c && playNotes d == playNotes c
   case find same st.chords of
@@ -6489,7 +6523,14 @@ contextBar st =
         , HP.title (nm <> " \x00b7 backspace takes back the last chord, delete starts a new progression") ]
         ( map (\n -> faIcon { icon: n, color: "#2a2a2a" }) (split (Pattern "-") (SCU.takeWhile (_ /= '′') nm))
             <> [ HH.span [ HP.style "margin-left: 4px;" ]
-                   [ HH.text ((if SCU.contains (Pattern "′") nm then "′ " else "") <> show (length st.path) <> " chords") ] ] )
+                   [ HH.text ((if SCU.contains (Pattern "′") nm then "′ " else "") <> show (length st.path) <> " chords") ]
+               , if length st.path > 0 && currentSource st /= st.lastPubSig then
+                   HH.button
+                     [ HP.style "margin-left: 6px; border: 1px solid #c9a445; border-radius: 4px; padding: 1px 8px; font-size: 11px; cursor: pointer; background: #fdf7e4; color: #8a6a10;"
+                     , HP.title "save this version (\x2318S); \x2318\x21e7S saves it as a new sibling"
+                     , HE.onClick \_ -> SaveProg false ]
+                     [ HH.text "\x25cf unsaved \x00b7 save" ]
+                 else HH.span [ HP.style "margin-left: 6px; color: #8a9a84;" ] [ HH.text "\x2713 saved" ] ] )
   styleButton (Tuple sty label) =
     let on = st.style == sty
     in HH.button
@@ -8861,7 +8902,7 @@ progressionPanel st =
                 , HP.style "flex: 1; font-size: 12px; padding: 2px 7px; border: 1px solid #ddd; border-radius: 3px;" ]
             , HH.button
                 [ HP.style "border: 1px solid #d8d8d8; background: #fafafa; color: #4a4a4a; cursor: pointer; padding: 2px 12px; border-radius: 3px; font-size: 12px;"
-                , HE.onClick \_ -> SaveProg ]
+                , HE.onClick \_ -> SaveProg false ]
                 [ HH.text "save → library" ]
             ]
       , if length steps == 0

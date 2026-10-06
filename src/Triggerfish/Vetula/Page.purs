@@ -170,6 +170,10 @@ poll = do
         H.modify_ _ { brushSent = sig }
       when (sig /= st.brushPrev) (H.modify_ _ { brushPrev = sig })
 
+-- | The drawer's slots for saved progressions, above the voices' (`Voices.slotBase`).
+progSlotBase :: Int
+progSlotBase = 2000
+
 -- | The shell's queries, in Vetula's terms. What Vetula has no counterpart for
 -- | (lanes, a clock, the routing table, a pitch set to follow) is unanswered.
 handleQuery :: forall a. SQ.Query a -> M (Maybe a)
@@ -180,12 +184,20 @@ handleQuery = case _ of
   -- for the revision of Vetula's saving (a scene's name is its Amphora label).
   SQ.AskBrowser reply -> do
     mscenes <- H.query _vet unit (Vetula.AskScenes identity)
+    mprogs <- H.query _vet unit (Vetula.AskProgressions identity)
     st <- H.get
+    -- the progressions you saved, by their frozen names (a glyph triple, one
+    -- colour: a container, as a session is)
+    let progRows = map (\p -> { slot: progSlotBase + p.slot, name: p.name
+                              , icons: map (\icon -> { icon, color: "#2a2a2a" }) (Array.filter (_ /= "") (String.split (String.Pattern "-") (String.takeWhile (_ /= String.codePointFromChar '′') p.name)))
+                              , tag: p.key, current: p.current, section: "Progressions", builtin: false, drag: "", actions: [] })
+                       (fromMaybe [] mprogs)
     let voiceRows = Voices.rows st.voices st.names st.routesText
     pure $ mscenes <#> \scenes -> reply
-      { title: if Array.null voiceRows then "Scenes" else "Vetula", modes: false, keep: "save scene", notice: ""
-      , rows: voiceRows <> map (_ { section = if Array.null voiceRows then "" else "Scenes" }) (Array.mapWithIndex (\i sc -> { slot: i, name: sc.name, icons: map (\icon -> { icon, color: "#2a2a2a" }) (Array.filter (_ /= "") (String.split (String.Pattern "-") (sessionOf sc))), tag: sc.key, current: false, section: "", builtin: false, drag: "", actions: [] }) scenes) }
+      { title: if Array.null voiceRows && Array.null progRows then "Scenes" else "Vetula", modes: false, keep: "save scene", notice: ""
+      , rows: voiceRows <> progRows <> map (_ { section = if Array.null voiceRows && Array.null progRows then "" else "Scenes" }) (Array.mapWithIndex (\i sc -> { slot: i, name: sc.name, icons: map (\icon -> { icon, color: "#2a2a2a" }) (Array.filter (_ /= "") (String.split (String.Pattern "-") (sessionOf sc))), tag: sc.key, current: false, section: "", builtin: false, drag: "", actions: [] }) scenes) }
   -- a voice's row is not a scene: it recalls nothing
+  SQ.BrowserRecall i _ next | i >= progSlotBase -> H.query _vet unit (Vetula.LoadEntry (i - progSlotBase) next)
   SQ.BrowserRecall i _ next | i >= Voices.slotBase -> pure (Just next)
   SQ.BrowserRecall i _ next -> H.query _vet unit (Vetula.LoadSceneAt i next)
   SQ.BrowserRename _ _ next -> pure (Just next)
