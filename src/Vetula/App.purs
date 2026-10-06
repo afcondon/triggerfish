@@ -157,7 +157,7 @@ import Vetula.Rehearsal as RH
 import Vetula.Vary as Vary
 import Vetula.Spread (applyToNode, ghostRows, invertNode, nextBassTone, refootNode, spreadOfNode, toneAt)
 import Harmonia.OpenVoicing (at, dropAt, setTone, sounds) as OV
-import Vetula.Harmony (ChordNode, Family(..), Kind(..), bassMidi, blackKeyPcs, octaveShift, diatonicTriads, generate, interchangeChords, keyX, keyboard, latticeChild, latticeFamily, mcmullenChords, noteName, place, placeOutside, playNotes, scaleSet, suspendSet, triadNode, triadOn, voicingCandidates, whiteKeyPcs)
+import Vetula.Harmony (ChordNode, Family(..), Kind(..), bassMidi, blackKeyPcs, octaveShift, diatonicTriads, diatonicSevenths, generate, interchangeChords, keyX, keyboard, latticeChild, latticeFamily, mcmullenChords, noteName, place, placeOutside, playNotes, scaleSet, suspendSet, triadNode, triadOn, voicingCandidates, whiteKeyPcs)
 
 midiPortName :: String
 midiPortName = "IAC"
@@ -211,7 +211,23 @@ derive instance ordLeftSection :: Ord LeftSection
 -- | idea). Catch a relative and it feeds the tank — the compositional loop closes.
 -- |
 -- | (Keyboard / pad-grid retired — subsumed by the interactive fifths.)
-data Viewtype = Fifths | Tonnetz | Lattice | Explore | Pads | Vary
+-- |
+-- | **Explore's ladder** (AC, 2026-10-06). The stage the UI calls EXPLORE (the
+-- | constructor is still `Hunt`) offers its views in a strict order of
+-- | complexity, as buttons: Key (the circle of fifths, the key's triads and
+-- | sevenths) · Lattice · Banks. The colour sets are not a rung: they are a
+-- | layer, added from a tray on the surface, and painted into every rung.
+-- | Vary and the relatives bloom stopped being views: both work AROUND a chord
+-- | you already have, so they open in a side panel on it (`SideTab`). Tonnetz is
+-- | kept but off the ladder: too simple to follow triads and sevenths, too
+-- | unfamiliar to open with, and at its best as a playing surface.
+data Viewtype = Fifths | Tonnetz | Lattice | Pads
+
+-- | The side panel beside an Explore view: a chord's variations (Harmonia.Vary,
+-- | drift × density) or its relatives (voice-led neighbours, `generateCandidates`).
+data SideTab = SideVariations | SideRelatives
+
+derive instance eqSideTab :: Eq SideTab
 
 derive instance eqViewtype :: Eq Viewtype
 
@@ -254,50 +270,40 @@ derive instance eqStage :: Eq Stage
 
 viewtypeLabel :: Viewtype -> String
 viewtypeLabel = case _ of
-  Fifths -> "fifths"
-  Tonnetz -> "tonnetz"
-  Lattice -> "voice-leading lattice"
-  Explore -> "explore"
-  Pads -> "banks"
-  Vary -> "vary"
-
--- | The browse projections, in bar order.
-viewtypes :: Array Viewtype
-viewtypes = [ Fifths, Tonnetz, Lattice, Explore, Pads, Vary ]
-
--- | The four HUNT projections as the dropdown hanging off the HUNT tab: a stable
--- | string `value` ↔ `Viewtype`, with a readable menu `label`. Perform and Review
--- | are NOT here — they're peer stages, not projections.
-viewtypeValue :: Viewtype -> String
-viewtypeValue = case _ of
-  Fifths -> "fifths"
+  Fifths -> "key"
   Tonnetz -> "tonnetz"
   Lattice -> "lattice"
-  Explore -> "explore"
-  Pads -> "pads"
-  Vary -> "vary"
+  Pads -> "banks"
 
+-- | Explore's ladder, in order of complexity: the buttons in the bar.
+viewtypes :: Array Viewtype
+viewtypes = [ Fifths, Lattice, Pads ]
+
+-- | A view's stable string, for the URL and the remembered default.
+viewtypeValue :: Viewtype -> String
+viewtypeValue = case _ of
+  Fifths -> "key"
+  Tonnetz -> "tonnetz"
+  Lattice -> "lattice"
+  Pads -> "banks"
+
+-- | The inverse; the old names ("fifths", "pads") still land, and anything
+-- | unknown (the retired "explore" and "vary" views) lands on Key.
 viewtypeFromValue :: String -> Viewtype
 viewtypeFromValue = case _ of
-  "fifths" -> Fifths
   "tonnetz" -> Tonnetz
   "lattice" -> Lattice
-  "explore" -> Explore
+  "banks" -> Pads
   "pads" -> Pads
-  "vary" -> Vary
-  _ -> Tonnetz
+  _ -> Fifths
 
-viewtypeMenuLabel :: Viewtype -> String
-viewtypeMenuLabel = case _ of
-  Fifths -> "circle of fifths"
-  Tonnetz -> "tonnetz"
-  Lattice -> "voice-leading lattice"
-  Explore -> "explore"
-  Pads -> "banks (freedom × complexity)"
-  Vary -> "vary a chord (drift × density)"
-
-browseOptions :: Array { value :: String, label :: String }
-browseOptions = map (\vt -> { value: viewtypeValue vt, label: viewtypeMenuLabel vt }) viewtypes
+-- | What each rung shows, for its button's tooltip.
+viewtypeTip :: Viewtype -> String
+viewtypeTip = case _ of
+  Fifths -> "the key's own chords, its triads and sevenths, on the circle of fifths"
+  Tonnetz -> "the tonal net: triads sharing two notes sit side by side"
+  Lattice -> "every degree's chords, triad to thirteenth, laid out by voice leading"
+  Pads -> "nine banks of sixteen: how far from home, by how rich"
 
 -- | The projection a Stage names, or `fallback` when it isn't Hunt. Feeds
 -- | `lastLens`, so leaving Hunt and coming back returns to the same projection.
@@ -317,7 +323,7 @@ isHunt = case _ of
 -- | segments opaquely and never learns what a stage is.
 stagePath :: Stage -> Array String
 stagePath = case _ of
-  Hunt vt -> [ "hunt", viewtypeValue vt ]
+  Hunt vt -> [ "explore", viewtypeValue vt ]
   Rehearse -> [ "rehearse" ]
   Perform -> [ "perform" ]
   Review -> [ "review" ]
@@ -331,6 +337,8 @@ stageFromPath fallbackLens segs = case segs of
   [ "perform" ] -> Just Perform
   [ "review" ] -> Just Review
   [ "rehearse" ] -> Just Rehearse
+  [ "explore" ] -> Just (Hunt fallbackLens)
+  [ "explore", vt ] -> Just (Hunt (viewtypeFromValue vt))
   [ "hunt" ] -> Just (Hunt fallbackLens)
   [ "hunt", vt ] -> Just (Hunt (viewtypeFromValue vt))
   _ -> Nothing
@@ -389,7 +397,7 @@ layerHue = case _ of
 -- | fly for annotation — they are NOT added to the pool (`st.chords`).
 layerChords :: State -> ColorLayer -> Array ChordNode
 layerChords st = case _ of
-  LayerDiatonic -> diatonicTriads st.key
+  LayerDiatonic -> diatonicTriads st.key <> diatonicSevenths st.key
   LayerBorrowed -> case st.borrowMode of
     Just v -> interchangeChords (modeOf v) st.key
     Nothing -> []
@@ -789,6 +797,13 @@ type State =
   -- The chord the Vary lens is working on. `Nothing` falls back to whatever is
   -- sounding, so the lens is never empty for no reason.
   , varying :: Maybe ChordNode
+  -- Explore's side panel, when open, and the density column it shows of the
+  -- Vary grid (an index into `HV.densities`: a panel has room for one).
+  , side :: Maybe SideTab
+  , lastHeard :: Maybe ChordNode
+  , sideDensity :: Int
+  -- The Explore view a viewer pinned as their default (`Store.saveDefaultLens`).
+  , defaultLens :: Viewtype
   -- The hovered PAD, carried whole. `hoveredTriad` would be enough to highlight
   -- it, but not to preview it: that path re-voices from pitch classes, and a
   -- pad's open voicing (bass pinned to the root, contour smoothed against its
@@ -1081,7 +1096,12 @@ data Action
   | DropOption Int Int     -- remove slot i's option j (never option zero)
   | VaryFromSlot Int       -- excurse to the Vary lens on slot i's base chord
   | BackToRehearsal        -- return from that excursion
-  | OpenVary ChordNode     -- send a chord to the Vary lens and go there
+  | OpenVary ChordNode     -- open Explore's variations panel on a chord
+  | OpenSide SideTab       -- open (or, if open on this tab, close) Explore's side panel
+  | CloseSide
+  | SideOnLastPlayed       -- re-aim the side panel at the chord last played
+  | SetSideDensity Int
+  | PinDefaultLens         -- make the view showing the default Explore opens on
   | RollBass Int           -- roll the revoiced chord's bass to the next/previous chord tone
   | ShiftOctave Int        -- move the revoiced chord bodily up/down an octave
   | PlaceTone Event Int Int Int -- put chord `id`'s tone `i` at octave `k` (click a ghost)
@@ -1246,8 +1266,12 @@ component = H.mkComponent
       , nextSpecId: 0
       , seedChord: Map.empty
       , presets: [], identity: Nothing
-      , stage: Hunt Tonnetz   -- default: the tonal net shows the scale's shape best
-      , lastLens: Tonnetz
+      , stage: Hunt Fifths   -- Key, the first rung, unless a default is pinned
+      , lastLens: Fifths
+      , defaultLens: Fifths
+      , side: Nothing
+      , lastHeard: Nothing
+      , sideDensity: 0
       , viewCx: 0.0
       , viewCy: 0.0
       , viewZoom: 1.0
@@ -1445,7 +1469,7 @@ handleQuery = case _ of
       marking = s.stage == Perform || s.stage == Review
     pure $ Just $ reply
       { tabs:
-          [ tab "hunt" "HUNT" (isHunt s.stage) "hunt harmonic space \x2014 catch chords into the tank"
+          [ tab "explore" "EXPLORE" (isHunt s.stage) "explore harmonic space: the key, the lattice, the banks, and the colour sets in all of them"
           , tab "rehearse" "REHEARSE" (s.stage == Rehearse) "a progression with alternatives at every chord \x2014 run it until it settles"
           , tab "perform" "PERFORM" (s.stage == Perform) "play the voices, with the capture river alongside"
           , tab "review" "REVIEW" (s.stage == Review) "the whole take \x2014 cherry-pick a phrase into the clip library"
@@ -1457,7 +1481,7 @@ handleQuery = case _ of
   BarAct act next -> do
     s <- H.get
     case act of
-      "stage:hunt" -> handleAction (SetStage (Hunt s.lastLens))
+      "stage:explore" -> handleAction (SetStage (Hunt s.lastLens))
       "stage:rehearse" -> handleAction (SetStage Rehearse)
       "stage:perform" -> handleAction (SetStage Perform)
       "stage:review" -> handleAction (SetStage Review)
@@ -1874,6 +1898,11 @@ handleActionCore = case _ of
   Initialize -> do
     -- the saved scenes, for the browser drawer, in the background
     void $ H.fork (handleAction FetchScenes)
+    -- The viewer's pinned Explore view, if any, before the stage is announced.
+    pinned <- liftEffect Store.loadDefaultLens
+    for_ pinned \v ->
+      let vt = viewtypeFromValue v
+      in H.modify_ \s -> s { defaultLens = vt, lastLens = vt, stage = if isHunt s.stage then Hunt vt else s.stage }
     -- Announce the opening stage so the shell can write a COMPLETE URL from a cold
     -- start (`#{slug}/{stage}`, not the bare `#{slug}`). Without this the address
     -- bar under-specifies until you touch a stage tab — still a valid route, since
@@ -3435,10 +3464,29 @@ handleActionCore = case _ of
   -- Opening the lens closes the revoice modal: they are two views of the same
   -- question at different magnifications, and both up at once is just clutter.
   OpenVary c -> do
-    H.modify_ \s -> s { varying = Just c, revoicing = Nothing, stage = Hunt Vary, lastLens = Vary
-                      -- A fresh excursion from a chord is not a return trip.
-                      , pane = Nothing }
+    st <- H.get
+    unless (isHunt st.stage) (handleAction (SetStage (Hunt st.lastLens)))
+    H.modify_ _ { varying = Just c, revoicing = Nothing, side = Just SideVariations }
     playChord c
+
+  -- The panel holds the chord it opened on (`varying`), so auditioning its own
+  -- pads does not move it; `SideOnLastPlayed` re-aims it.
+  OpenSide t -> do
+    st <- H.get
+    if st.side == Just t then H.modify_ _ { side = Nothing }
+    else H.modify_ _ { side = Just t, varying = if isJust st.side then st.varying else soundingChord st }
+
+  CloseSide -> H.modify_ _ { side = Nothing }
+
+  SideOnLastPlayed -> H.modify_ \s -> s { varying = soundingChord s }
+
+  SetSideDensity i -> H.modify_ _ { sideDensity = i }
+
+  PinDefaultLens -> do
+    st <- H.get
+    let v = huntOr st.lastLens st.stage
+    liftEffect (Store.saveDefaultLens (viewtypeValue v))
+    H.modify_ _ { defaultLens = v }
 
   -- The one mode switch. Absorbed the old `SetCaptureView`, so leaving REVIEW by
   -- ANY route — Perform, or off to Hunt — hushes the region preview and drops the
@@ -3459,7 +3507,7 @@ handleActionCore = case _ of
       -- A panel belongs to the Rehearse pane; leaving for anywhere but the
       -- standalone Vary lens closes it, so a keep can never post into a slot you
       -- had stopped thinking about.
-      , pane = if v == Rehearse || v == Hunt Vary then st.pane else Nothing
+      , pane = if v == Rehearse then st.pane else Nothing
       }
 
   -- Slice E — transpose. In-place shift of a specimen's absolute-MIDI voicing +
@@ -4859,6 +4907,9 @@ playChord c = do
     liftEffect $ for_ notes \n ->
       Midi.scheduleNote out { channel: st.previewChan, note: n, velocity: 92, delayMs: 0.0, durMs: 900.0 }
   logChyron c.label notes (nub (map (\x -> mod x 12) notes)) c.anchor
+  -- Whatever it came from (the pool, a pad, a colour set), the side panel's
+  -- "last chord played" is this one.
+  H.modify_ _ { lastHeard = Just c }
 
 -- | Audition a tank specimen: sound its notes on the preview channel (no state
 -- | change) and log it to the chyron. Same shape as `playChord`, but reads a
@@ -5544,13 +5595,15 @@ render st =
     [ HP.style ("position: relative; margin-top: calc(var(--tf-bar) + " <> contextBarHeight st <> "); margin-left: var(--tf-left, 0px); width: calc(100% - var(--tf-left, 0px) - var(--tf-right, 0px)); height: calc(100vh - var(--tf-bar) - " <> contextBarHeight st <> "); min-height: 620px; overflow: hidden; border-radius: 8px; background: " <> canvasBg <> ";") ]
     -- In HUNT the views start below the audition strip, which is fixed over
     -- the stage's top; Rehearse, Perform and Review pad for it themselves.
-    [ HH.div [ HP.style ("position: absolute; inset: " <> (if isHunt st.stage then chyronHeight else "0px") <> " 0 0 0;") ] [ surface st ]
+    ( [ HH.div [ HP.style ("position: absolute; inset: " <> (if isHunt st.stage then chyronHeight else "0px") <> " " <> sideInset st <> " 0 0;") ] [ surface st ] ]
+      <> (if isHunt st.stage then [ colourTray st, sidePanel st ] else [])
+      <>
     -- Scene recall belongs to the INSTRUMENT, not to Perform. Its entry point
     -- has always been the session menu in `contextBar`, which renders on every
     -- stage — but the modal itself was inside `performSurface`, so anywhere
     -- else the click set the flag and nothing appeared. Loading a scene is legal
     -- wherever you can use one, which is certainly Rehearse and reasonably Hunt.
-    , perfRecallModal st
+    [ perfRecallModal st
     -- CONTEXT is now a docked control bar between the nav and the chyron (the last
     -- floating overlay is gone, reclaiming the whole left column): key · scale ·
     -- palettes · lens · rig/help. See `contextBar`.
@@ -5573,7 +5626,7 @@ render st =
         [ pickBar st ]
     , helpOverlay st
     , revoiceModal st
-    ]
+    ] )
 
 -- | The CHYRON — a thin ticker pinned just above the voice bar that logs every
 -- | audition this session (see DESIGN-vetula-chyron-redesign.md). Oldest→newest,
@@ -5604,6 +5657,161 @@ barLeftInset st = if st.stage == Perform then riverWidth else "0px"
 -- | beneath (AC, 2026-10-04: it covered Perform's palette).
 chyronHeight :: String
 chyronHeight = "52px"
+
+-- | The side panel's width, and how far it insets the Explore view it sits
+-- | beside, so the view is narrowed rather than covered.
+sidePanelWidth :: String
+sidePanelWidth = "440px"
+
+sideInset :: State -> String
+sideInset st = if isHunt st.stage && isJust st.side then sidePanelWidth else "0px"
+
+sideLabel :: SideTab -> String
+sideLabel = case _ of
+  SideVariations -> "variations"
+  SideRelatives -> "relatives"
+
+sideTip :: SideTab -> String
+sideTip = case _ of
+  SideVariations -> "the chord last played, varied: revoiced, thinned, or swapped for a substitute"
+  SideRelatives -> "the chords that lead well from the one last played, smoothest first"
+
+-- | **The colour sets, on the surface** (AC, 2026-10-06). Each set is a chip
+-- | in its own hue; adding one paints its chords in that hue in every view (the
+-- | corona on Key, the ribbon on Lattice, pips on the Banks pads), which is how
+-- | someone sees where a set's chords sit in the rest of the space. They were a
+-- | dropdown in the bar, which hid them from the thing they annotate.
+colourTray :: forall m. MonadAff m => State -> H.ComponentHTML Action Slots m
+colourTray st =
+  HH.div
+    [ HP.style ("position: absolute; left: 12px; bottom: 12px; z-index: 6; display: flex; align-items: center; gap: 6px; flex-wrap: wrap; max-width: calc(100% - 24px - " <> sideInset st <> "); "
+                 <> "padding: 6px 10px; background: #fffdf8ee; border: 1px solid #e6dfcc; border-radius: 6px; box-shadow: 0 1px 3px #0000000d;") ]
+    ( [ HH.span
+          [ HP.style "font-size: 10px; color: #9a9070; letter-spacing: 0.1em; text-transform: uppercase; margin-right: 2px;"
+          , HP.title "add a set and its chords appear in its colour in every view" ]
+          [ HH.text "colour" ] ]
+        <> map chip allColorLayers
+        <> borrowPick
+    )
+  where
+  chip l =
+    let on = Set.member l st.colorLayers
+    in HH.button
+         [ HP.style ("display: flex; align-items: center; gap: 5px; border: 1px solid " <> (if on then layerHue l else "#e0d8c2") <> "; "
+                      <> "background: " <> (if on then "#ffffff" else "#faf7ee") <> "; color: " <> (if on then "#3a3428" else "#9a9070") <> "; "
+                      <> "border-radius: 12px; padding: 2px 9px 2px 6px; font-size: 11px; cursor: pointer;")
+         , HP.title (layerTip l)
+         , HE.onClick \_ -> ToggleLayer l ]
+         [ HH.span [ HP.style ("width: 9px; height: 9px; border-radius: 50%; background: " <> (if on then layerHue l else "transparent") <> "; border: 1.5px solid " <> layerHue l <> ";") ] []
+         , HH.text (layerLabel l) ]
+  -- The borrowed set's source scale, beside its chip, only while it is on.
+  borrowPick =
+    if Set.member LayerBorrowed st.colorLayers then
+      [ HH.slot (Proxy :: _ "borrowSelect") unit Select.component
+          ((Select.cascadingInput borrowGroups) { selected = Just (fromMaybe "off" st.borrowMode), searchable = true, placeholder = "borrow from" })
+          \(Select.Selected v) -> BorrowFrom v ]
+    else []
+
+-- | What each colour set is, for its chip's tooltip.
+layerTip :: ColorLayer -> String
+layerTip = case _ of
+  LayerDiatonic -> "the key's own chords: its triads and sevenths"
+  LayerBorrowed -> "chords borrowed from a parallel mode (pick which)"
+  LayerMcMullen -> "Joe McMullen's scale-relative chords, from the Plaits alt firmware"
+  LayerButler -> "Jon Butler's 17 voicings, from the Plaits alt firmware"
+  LayerStock -> "Émilie Gillet's original 11 Plaits chords"
+
+-- | **The side panel**: Variations or Relatives of one chord, beside the view.
+-- | It holds the chord it opened on (`varying`), so hearing its own pads does
+-- | not move it; "↺" re-aims it at whatever was played last.
+sidePanel :: forall m. State -> H.ComponentHTML Action Slots m
+sidePanel st = case st.side of
+  Nothing -> HH.text ""
+  Just t ->
+    HH.div
+      [ HP.class_ (cn "vetula-surface--wide")
+      , HP.style ("position: absolute; top: " <> chyronHeight <> "; right: 0; bottom: 0; width: " <> sidePanelWidth <> "; box-sizing: border-box; z-index: 7; overflow: auto; "
+                   <> "background: #fffdf8; border-left: 1px solid #e6dfcc; padding: 10px 14px 20px;") ]
+      ( [ HH.div [ HP.style "display: flex; align-items: center; gap: 6px; margin-bottom: 8px;" ]
+            ( map tab [ SideVariations, SideRelatives ]
+                <> [ HH.div [ HP.style "flex: 1 1 auto;" ] []
+                   , HH.button
+                       [ HP.style "border: none; background: none; color: #a09880; font-size: 14px; cursor: pointer;"
+                       , HP.title "close", HE.onClick \_ -> CloseSide ]
+                       [ HH.text "\x00d7" ] ] )
+        ]
+          <> case varySource st of
+               Nothing ->
+                 [ HH.div [ HP.style "font-size: 12px; color: #a09880; line-height: 1.6; padding-top: 12px;" ]
+                     [ HH.text "Play a chord in any view and press \x21ba, or open this panel after playing one." ]
+                 , reaim ]
+               Just src ->
+                 [ HH.div [ HP.style "display: flex; align-items: baseline; gap: 8px; margin-bottom: 10px; font-size: 11px; color: #a09880;" ]
+                     [ HH.span [ HP.style "font-size: 15px; color: #3a3428; font-weight: 500;" ] [ HH.text src.label ]
+                     , HH.text (show (playNotes src))
+                     , HH.div [ HP.style "flex: 1 1 auto;" ] []
+                     , reaim ]
+                 ]
+                   <> (case t of
+                         SideVariations -> variations src
+                         SideRelatives -> relatives src)
+      )
+  where
+  tab x =
+    let on = st.side == Just x
+    in HH.button
+         [ HP.style ("border: none; border-bottom: 2px solid " <> (if on then "#8d7a4a" else "transparent") <> "; background: none; padding: 2px 4px; font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; cursor: pointer; color: " <> (if on then "#3a3428" else "#a09880") <> ";")
+         , HP.title (sideTip x), HE.onClick \_ -> OpenSide x ]
+         [ HH.text (sideLabel x) ]
+  reaim = case soundingChord st of
+    Just c | map playNotes (varySource st) /= Just (playNotes c) ->
+      smallBtn ("\x21ba " <> c.label) "aim the panel at the chord last played" SideOnLastPlayed
+    _ -> HH.text ""
+  smallBtn label tip act =
+    HH.button
+      [ HP.style "border: 1px solid #cdbb8c; background: #fbf6ea; color: #7a5c00; cursor: pointer; padding: 2px 8px; border-radius: 4px; font-size: 11px; white-space: nowrap;"
+      , HP.title tip, HE.onClick \_ -> act ]
+      [ HH.text label ]
+  -- One density column at a time: a panel has room for one, and the three
+  -- drift rows (held, thinned, swapped) are the question it answers.
+  variations src =
+    let cells = Vary.grid st.key src st.varyRoll
+        dn = fromMaybe HV.densities (map pure (index HV.densities st.sideDensity))
+        cellAt d = filter (\x -> x.drift == d && elem x.density dn) cells
+    in [ HH.div [ HP.style "display: flex; align-items: center; gap: 4px; margin-bottom: 10px;" ]
+           ( mapWithIndex densityBtn HV.densities
+               <> [ HH.div [ HP.style "flex: 1 1 auto;" ] []
+                  , smallBtn "shuffle \x27f3" "re-draw the cells from a new seed" ShuffleVary ] )
+       ]
+         <> concatMap (\d -> [ HH.div [ HP.style "margin: 6px 0 4px;" ] [ varyRowHead d ], varyBank st (cellAt d) ]) HV.drifts
+         <> [ keptTray st ]
+  densityBtn i d =
+    let on = i == st.sideDensity
+    in HH.button
+         [ HP.style ("border: 1px solid " <> (if on then "#8d7a4a" else "#e0d8c2") <> "; background: " <> (if on then "#f2e7c6" else "#fbf8f0") <> "; color: #5a5240; border-radius: 4px; padding: 2px 9px; font-size: 11px; cursor: pointer;")
+         , HP.title (HV.densityBlurb d), HE.onClick \_ -> SetSideDensity i ]
+         [ HH.text (HV.densityLabel d) ]
+  -- Three rows from the same generator at three settings of its adventure
+  -- dial; a chord shows once, in the smoothest row that holds it.
+  relatives src =
+    let seed = src { label = chordTag src }
+        row adv = take 8 (drop (mod (st.genRoll * 2) 5) (filter (not <<< same src) (generateCandidates Append [ seed ] st.key adv 0)))
+        smooth = row 0.0
+        middle = filter (\c -> not (any (same c) smooth)) (row 0.5)
+        far = filter (\c -> not (any (same c) (smooth <> middle))) (row 1.0)
+        same a b = pcSetOf a == pcSetOf b
+        table = layerTable st
+        group lbl tip cs =
+          if length cs == 0 then []
+          else [ HH.div [ HP.style "font-size: 11px; color: #7a7360; letter-spacing: 0.08em; text-transform: uppercase; margin: 8px 0 4px;", HP.title tip ] [ HH.text lbl ]
+               , HH.div [ HP.style "display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 4px; background: #fbf8f0; border: 1px solid #ece5d2; border-radius: 5px; padding: 6px;" ]
+                   (map (padButton st table) cs) ]
+    in [ HH.div [ HP.style "display: flex; margin-bottom: 4px;" ]
+           [ HH.div [ HP.style "flex: 1 1 auto; font-size: 11px; color: #a09880;" ] [ HH.text "what could come next, voice-led from it" ]
+           , smallBtn "shake \x27f3" "a different crop of the candidates" ShakeGenerate ] ]
+         <> group "smooth" "the nearest moves: most notes held or moved by a step" smooth
+         <> group "further" "a little more adventurous" middle
+         <> group "striking" "the most adventurous of the plausible" far
 
 -- | Vetula's own bar (`contextBar`) is HUNT's controls alone since its stage
 -- | tabs and mark went to the shell's bar (2026-10-05), so it takes room only
@@ -5984,20 +6192,45 @@ contextBar st =
   -- It used to sit in the bar permanently, displaying `browseOr lastBrowse view`
   -- — a *remembered* projection presented as the current one, because with
   -- Perform up there was no honest value for it to show. Now it never lies.
+  -- The ladder, in order of complexity, then the pin that makes the view
+  -- showing Explore's default, then the side panel's two tabs. The colour sets
+  -- are no longer here: they are a tray on the surface (`colourTray`).
   huntControls =
-    [ HH.slot (Proxy :: _ "viewSelect") unit Select.component
-        ((Select.defaultInput browseOptions)
-           { selected = Just (viewtypeValue (huntOr st.lastLens st.stage)), minWidth = Just "116px" })
-        \(Select.Selected v) -> SetStage (Hunt (viewtypeFromValue v)) ]
+    [ HH.div [ HP.style "display: flex; border: 1px solid #d8cfb6; border-radius: 5px; overflow: hidden;" ]
+        (map rung viewtypes)
+    , pinChip
+    ]
       <> shakeChip
       <> familyField
       <> [ divider ]
-      <> [ HH.slot (Proxy :: _ "paletteSelect") unit MultiSelect.component
-             ((MultiSelect.defaultInput paletteOptions)
-                { selected = activeLayerLabels, placeholder = "palettes", maxLabels = 3, minWidth = Just "128px" })
-             \(MultiSelect.SelectedMany vs) -> SetLayers vs ]
-      <> borrowField
+      <> map sideChip [ SideVariations, SideRelatives ]
       <> resetChip
+  current = huntOr st.lastLens st.stage
+  rung vt =
+    let on = current == vt
+    in HH.button
+         [ HP.style ("border: none; border-right: 1px solid #e4dcc6; padding: 4px 14px; font-size: 12px; cursor: pointer; letter-spacing: 0.02em; "
+                      <> (if on then "background: #8d7a4a; color: #fff;" else "background: #fbf8f0; color: #5a5240;"))
+         , HP.title (viewtypeTip vt)
+         , HE.onClick \_ -> SetStage (Hunt vt) ]
+         [ HH.text (viewtypeLabel vt) ]
+  pinChip =
+    if st.defaultLens == current then
+      HH.span [ HP.style "font-size: 11px; color: #b3a77f;", HP.title "Explore opens on this view" ] [ HH.text "\x2605 default" ]
+    else
+      HH.button
+        [ HP.style "border: none; background: none; font-size: 11px; color: #8d7a4a; cursor: pointer; padding: 0;"
+        , HP.title "open Explore on this view from now on (this browser)"
+        , HE.onClick \_ -> PinDefaultLens ]
+        [ HH.text "\x2606 make default" ]
+  sideChip t =
+    let on = st.side == Just t
+    in HH.button
+         [ HP.style ("border: 1px solid " <> (if on then "#8d7a4a" else "#d8cfb6") <> "; border-radius: 4px; padding: 3px 10px; font-size: 12px; cursor: pointer; "
+                      <> (if on then "background: #f2e7c6; color: #4a4232;" else "background: #fbf8f0; color: #5a5240;"))
+         , HP.title (sideTip t)
+         , HE.onClick \_ -> OpenSide t ]
+         [ HH.text (sideLabel t <> " \x25b8") ]
 
   -- a way back to the fitted view (scroll to zoom · drag to pan), once it's moved.
   resetChip =
@@ -6018,9 +6251,7 @@ contextBar st =
   -- The Banks lens borrows the same chip with its own verb: there it re-walks
   -- all nine banks from a fresh number.
   shakeChip = case st.stage of
-    Hunt Explore -> [ rollChip "shake ⟳" "re-roll the relatives around each seed" ShakeGenerate ]
     Hunt Pads -> [ rollChip "shuffle ⟳" "re-walk all nine banks from a new seed" ShufflePads ]
-    Hunt Vary -> [ rollChip "shuffle ⟳" "re-draw all nine cells from a new seed" ShuffleVary ]
     _ -> []
   rollChip label tip act =
     HH.button
@@ -6028,27 +6259,10 @@ contextBar st =
       , HP.title tip
       , HE.onClick \_ -> act ]
       [ HH.text label ]
-  -- the borrow-scale picker only appears when the BORROWED color layer is
-  -- engaged — it is that layer's source, meaningless otherwise (AC, 2026-07-31).
-  -- Kept with a small inline label (unlike key/scale) since it appears
-  -- contextually — a bare dropdown popping in would be a mystery.
-  borrowField =
-    if Set.member LayerBorrowed st.colorLayers then
-      [ inlineField "borrow"
-          [ HH.slot (Proxy :: _ "borrowSelect") unit Select.component
-              ((Select.cascadingInput borrowGroups) { selected = Just (fromMaybe "off" st.borrowMode), searchable = true })
-              \(Select.Selected v) -> BorrowFrom v ]
-      ]
-    else []
   labelStyle = "font-size: 10px; color: #9a9a9a; letter-spacing: 0.1em; text-transform: uppercase;"
   inlineField lbl controls =
     HH.div [ HP.style "display: flex; align-items: center; gap: 5px;" ]
       ([ HH.span [ HP.style labelStyle ] [ HH.text lbl ] ] <> controls)
-  -- the color-overlay layers are now a compact MultiSelect (was a row of
-  -- swatch chips): one option per layer, the active set controlled from
-  -- `colorLayers` and written back via `SetLayers`.
-  paletteOptions = map (\l -> { value: layerLabel l, label: layerLabel l }) allColorLayers
-  activeLayerLabels = map layerLabel (filter (\l -> Set.member l st.colorLayers) allColorLayers)
   -- a contextual scale picker for the focused family (click a keyboard key to
   -- focus one) — this is what lets two families hold different modes at once.
   familyField = case st.focusedFamily >>= (\sid -> find (\c -> c.id == sid) st.chords) of
@@ -6179,9 +6393,7 @@ surface st
       Hunt Fifths -> circleFifthsSurface st
       Hunt Tonnetz -> tonnetzSurface st
       Hunt Lattice -> latticesSurface st
-      Hunt Explore -> generativeSurface st
       Hunt Pads -> padsSurface st
-      Hunt Vary -> varySurface st
 
 -- | The PERFORM surface — a row of player BOXES, one per output. Shift-click (or
 -- | drag) a saved token in the chyron to pick it up, then click (or drop it onto)
@@ -6674,9 +6886,14 @@ cofAngle tonic pc =
 -- | The geometric viewport as a viewBox: the base window (−440,−300,880,600)
 -- | scaled by `viewZoom` about the pan centre (`viewCx`,`viewCy`).
 geoView :: State -> { x :: Number, y :: Number, w :: Number, h :: Number }
-geoView st =
-  let hw = 440.0 / st.viewZoom
-      hh = 300.0 / st.viewZoom
+geoView st = geoViewFit st 1.0
+
+-- | The same, with the base window grown by `k` (never shrunk) to fit content.
+geoViewFit :: State -> Number -> { x :: Number, y :: Number, w :: Number, h :: Number }
+geoViewFit st k =
+  let f = max 1.0 k
+      hw = 440.0 * f / st.viewZoom
+      hh = 300.0 * f / st.viewZoom
   in { x: st.viewCx - hw, y: st.viewCy - hh, w: 2.0 * hw, h: 2.0 * hh }
 
 -- | The mouse-move / up / leave handlers a geometric surface adds *only while a
@@ -6719,7 +6936,12 @@ circleFifthsSurface st =
             ang = cofAngle tonic pc
         in Tuple c.id { x: rad * Number.cos ang, y: rad * Number.sin ang }
       posMap = Map.fromFoldable (map posFor shown)
-      vb = geoView st
+      -- Fit the window to how far the beads reach (the pool's spokes and the
+      -- colour sets' corona), so a full set never runs off the top.
+      perRoot xs = fromMaybe 0 (maximum (map (\pc -> length (filter (\r -> r == pc) xs)) (range 0 11)))
+      poolReach = cofWheel.baseR + toNumber (perRoot (map (\c -> mod c.root 12) shown) - 1) * cofWheel.dr
+      coronaReach = 246.0 + toNumber (perRoot (map (\e -> mod e.chord.root 12) (coronaEntries st)) - 1) * 34.0
+      vb = geoViewFit st ((max poolReach coronaReach + 40.0) / 300.0)
   in SE.svg
       ( [ SA.viewBox vb.x vb.y vb.w vb.h
         , SA.width 880.0
@@ -6798,7 +7020,7 @@ colorGlyphAt scl cx cy chord layers =
 -- | → set. Non-interactive for now — the unified catch gesture lands in Step 4.
 cofCorona :: forall m. State -> Int -> Array Int -> Array (H.ComponentHTML Action Slots m)
 cofCorona st tonic scl =
-  let entries = mergedLayerChords st
+  let entries = coronaEntries st
       place j e =
         let pc = mod e.chord.root 12
             dupIx = length (filter (\d -> mod d.chord.root 12 == pc) (take j entries))
@@ -6808,6 +7030,14 @@ cofCorona st tonic scl =
             y = rad * Number.sin ang
         in colorGlyphAt scl x y e.chord e.layers
   in concat (mapWithIndex place entries)
+
+-- | The corona's chords. One already on the wheel (the pool) is not drawn
+-- | twice: with the key's triads in the pool, the diatonic set adds only its
+-- | sevenths here.
+coronaEntries :: State -> Array { chord :: ChordNode, layers :: Array ColorLayer }
+coronaEntries st =
+  let onWheel = map pcSetOf (filter (\c -> not (Set.member c.id st.imported)) st.chords)
+  in filter (\e -> not (elem (pcSetOf e.chord) onWheel)) (mergedLayerChords st)
 
 -- | The wheel behind the chords: twelve spokes radiating OUT from the hub, and the
 -- | twelve root names ringed tightly around the centre. Diatonic roots (in the
@@ -7239,6 +7469,11 @@ latticesSurface st =
       edges = concatMap degreeEdges clusters
       mh = st.hoveredTriad
       vb = geoView st
+      -- The sets other than diatonic ring the lattice chords they hold (the
+      -- lattice is built from the key, so a diatonic ring would be on most of
+      -- it); the ribbon above keeps only the chords the lattice does not have.
+      table = filter (\e -> e.layer /= LayerDiatonic) (layerTable st)
+      inLattice = map (\m -> pcSetOf m.chord) members
   in SE.svg
       ( [ SA.viewBox vb.x vb.y vb.w vb.h
         , SA.width 880.0
@@ -7249,9 +7484,9 @@ latticesSurface st =
         , HE.onMouseDown (PanStart <<< ME.toEvent)
         ] <> geoPanAttrs st )
       ( edges
-          <> concatMap (latMemberView mh) members
+          <> concatMap (\m -> latMemberView mh (layersOf table m.chord) m) members
           <> mapWithIndex latDegreeLabel seeds
-          <> latColorRibbon st
+          <> latColorRibbon st inLattice
       )
 
 -- | The color-overlay layers on the voice-leading lattice (2026-07-31 redesign).
@@ -7262,9 +7497,9 @@ latticesSurface st =
 -- | de-duplicated and badged by source. The CONTEXT PALETTE swatches name the hues.
 -- | Non-interactive for now (catch = Step 4). A deeper pass would place each color
 -- | chord by voice-leading distance into the web itself — logged as a follow-up.
-latColorRibbon :: forall m. State -> Array (H.ComponentHTML Action Slots m)
-latColorRibbon st =
-  let entries = mergedLayerChords st
+latColorRibbon :: forall m. State -> Array (Array Int) -> Array (H.ComponentHTML Action Slots m)
+latColorRibbon st inLattice =
+  let entries = filter (\e -> not (elem (pcSetOf e.chord) inLattice)) (mergedLayerChords st)
       perRow = 22
       place j e =
         let col = mod j perRow
@@ -7279,9 +7514,14 @@ latColorRibbon st =
 -- | One lattice glyph plus its transparent click target (the polygon itself is
 -- | click-through so the disc-shaped hit region stays uniform). `mh` is the hovered
 -- | chord, driving cross-degree hover-discovery highlighting.
-latMemberView :: forall m. Maybe { root :: Int, pcs :: Array Int } -> LatMember -> Array (H.ComponentHTML Action Slots m)
-latMemberView mh m =
+latMemberView :: forall m. Maybe { root :: Int, pcs :: Array Int } -> Array ColorLayer -> LatMember -> Array (H.ComponentHTML Action Slots m)
+latMemberView mh rings m =
   pcPolygon (hiFor mh m.chord.pcs) m.chord.root m.chord.pcs m.cx m.cy latGeo.glyphR
+    <> mapWithIndex
+         (\k l -> SE.circle
+            [ SA.cx m.cx, SA.cy m.cy, SA.r (latGeo.glyphR + 2.0 + 2.5 * toNumber k)
+            , HP.style ("fill: none; stroke: " <> layerHue l <> "; stroke-width: 1.6; pointer-events: none;") ])
+         rings
     <>
       [ SE.circle
           [ SA.cx m.cx, SA.cy m.cy, SA.r latGeo.glyphR
@@ -7302,107 +7542,6 @@ latDegreeLabel i seed =
     ]
     [ HH.text (noteName seed.root) ]
 
--- ---------------------------------------------------------------------------
--- The Generate lens (tank-seeded relatives — the compositional loop)
--- ---------------------------------------------------------------------------
-
-genRadius :: Number
-genRadius = 80.0
-
--- | Where each seed's constellation sits — a 3-wide grid, so up to six tank seeds
--- | tile two rows across the zoomable frame.
-genCenter :: Int -> { x :: Number, y :: Number }
-genCenter i =
-  { x: -230.0 + toNumber (mod i 3) * 230.0
-  , y: -120.0 + toNumber (i / 3) * 250.0
-  }
-
--- | A chyron audition lifted into a SEED specimen for Explore. Carries the event's
--- | real harmonic reading (`anchor`, enriched in step 1) so `specToNode` blooms the
--- | RIGHT neighbourhood per chord — a selection can span scales, so the reading must
--- | travel with each seed, never the buffer (DESIGN-tank-overhaul.md §§1, 4). `notes`
--- | is `bass : voicing`, so the foot is the low note and the rest is the voicing.
-specFromEvent :: Int -> ChyronEvent -> Specimen
-specFromEvent i ev =
-  let sorted = sort ev.notes
-  in { id: SpecimenId i
-     , voicing: drop 1 sorted
-     , bass: fromMaybe 0 (head sorted)
-     , label: ev.label
-     , provenance: Imported     -- lifted from the audition trace
-     , anchor: ev.anchor
-     }
-
--- | The seeds Explore blooms around: the chyron SELECTION when there is one (each
--- | selected chord seeds its own neighbourhood), else the tail of the tape as a
--- | convenience so Explore is never blank. Capped at 6 rings to keep the layout
--- | sane (mirrors the old `take 6` over the tank).
-chyronSeeds :: State -> Array Specimen
-chyronSeeds st =
-  let evs = case st.chyronSel of
-        Just sel -> mapMaybe (\ix -> index st.chyron ix) (range sel.lo sel.hi)
-        Nothing  -> takeEnd 6 st.chyron
-  in mapWithIndex specFromEvent (take 6 evs)
-
--- | The Generate lens — each SEED (now a chyron-selection chord, formerly a tank
--- | specimen) with a ring of voice-led relatives bloomed around it (reusing
--- | `generateCandidates`, the same engine the Lab pick-mode uses). "shake" re-rolls:
--- | a different adventure + a rotated crop of the ranked relatives. Hover a relative
--- | to preview, click to audition — which appends it to the chyron, growing the
--- | buffer (DESIGN-tank-overhaul.md §4).
-generativeSurface :: forall m. State -> H.ComponentHTML Action Slots m
-generativeSurface st =
-  let vb = geoView st
-  in SE.svg
-      ( [ SA.viewBox vb.x vb.y vb.w vb.h
-        , SA.width 880.0
-        , SA.height 600.0
-        , SA.class_ (cn "vetula-surface")
-        , HP.style surfaceFillCss
-        , HE.onWheel \we -> ZoomAt (WE.toEvent we) (WE.deltaY we)
-        , HE.onMouseDown (PanStart <<< ME.toEvent)
-        ] <> geoPanAttrs st )
-      ( let seeds = chyronSeeds st
-        in if length seeds == 0
-          then
-            [ SE.text
-                [ SA.x 0.0, SA.y 0.0, HP.attr (AttrName "text-anchor") "middle"
-                , HP.style "font-size: 15px; fill: #b8b8b8; -webkit-user-select: none; user-select: none;"
-                ]
-                [ HH.text "audition chords — they land in the chyron; select some, then grow relatives here — shake ⟳" ]
-            ]
-          else concat (mapWithIndex (genCluster st) seeds)
-      )
-
--- | One seed's constellation: the seed glyph at the centre, its relatives ringed
--- | around it with faint spokes. `genRoll` varies both the adventure dial and which
--- | slice of the ranked relatives shows, so each shake crops a fresh set.
-genCluster :: forall m. State -> Int -> Specimen -> Array (H.ComponentHTML Action Slots m)
-genCluster st i spec =
-  let key = st.key
-      center = genCenter i
-      -- name the seed from its own pitches (quality-aware: minor gets its "m"),
-      -- not the captured audition label — some lens paths label a minor triad with
-      -- just its bare root, which reads fine for C major but wrong for F minor. The
-      -- relatives are already named by the generator.
-      seedBase = specToNode (9000 + i) key spec
-      seedN = seedBase { label = chordTag seedBase }
-      adv = toNumber (mod st.genRoll 5) * 0.2
-      rollRot = toNumber st.genRoll * 0.37
-      full = generateCandidates Append [ seedN ] key adv 0
-      rel = take 8 (drop (mod (st.genRoll * 2) 7) full)
-      n = max 1 (length rel)
-      placed = mapWithIndex
-        (\j c ->
-           let ang = toNumber j * (2.0 * Number.pi / toNumber n) + rollRot
-           in { c, cx: center.x + genRadius * Number.cos ang, cy: center.y + genRadius * Number.sin ang })
-        rel
-      spokes = map
-        (\p -> SE.line [ SA.x1 center.x, SA.y1 center.y, SA.x2 p.cx, SA.y2 p.cy, HP.style "stroke: #eceae2; stroke-width: 1; pointer-events: none;" ])
-        placed
-  in spokes
-       <> concatMap (\p -> genGlyph st.hoveredTriad p.cx p.cy 11.0 false p.c) placed
-       <> genGlyph st.hoveredTriad center.x center.y 15.0 true seedN
 
 -- ---------------------------------------------------------------------------
 -- The BANKS lens — the chord space as nine banks of sixteen
@@ -7431,7 +7570,7 @@ padsSurface st =
       -- nothing, which stands the WHOLE keyboard down. Every other lens gets it
       -- free by being an `SE.svg`; an HTML surface has to say it.
       [ HP.class_ (cn "vetula-surface vetula-surface--wide")
-      , HP.style "position: absolute; inset: 0; overflow: auto; padding: 16px 22px 26px;" ]
+      , HP.style "position: absolute; inset: 0; overflow: auto; padding: 16px 22px 64px;" ]
       [ HH.div
           [ HP.style "font-size: 11px; color: #a09880; letter-spacing: 0.04em; margin-bottom: 10px; -webkit-user-select: none; user-select: none;" ]
           [ HH.text ("144 chords of a 480-chord vocabulary · rows roam further from "
@@ -7469,14 +7608,14 @@ padBank st cs = case head cs of
   Nothing -> HH.div [] []
   Just cell ->
     HH.div
-      [ HP.style "display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 4px; background: #fbf8f0; border: 1px solid #ece5d2; border-radius: 5px; padding: 6px;" ]
-      (map (padButton st) cell.chords)
+      [ HP.style "display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 4px; background: #fbf8f0; border: 1px solid #ece5d2; border-radius: 5px; padding: 6px; min-width: 0;" ]
+      (map (padButton st (layerTable st)) cell.chords)
 
 -- | One pad. Click auditions it, which is also what puts it in the chyron — so
 -- | this lens feeds the same buffer as every other, and everything downstream
 -- | (Continuo, the Odonus quantiser, a Quadrat sample set) is already wired.
-padButton :: forall m. State -> ChordNode -> H.ComponentHTML Action Slots m
-padButton st c =
+padButton :: forall m. State -> LayerTable -> ChordNode -> H.ComponentHTML Action Slots m
+padButton st table c =
   HH.button
     [ HP.style ("display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 1px; "
                  <> "border: 1px solid " <> (if padLit st c then "#cdbb8c" else "#eee7d6") <> "; "
@@ -7489,11 +7628,34 @@ padButton st c =
     ]
     [ SE.svg
         [ SA.viewBox (-15.0) (-15.0) 30.0 30.0, SA.width 30.0, SA.height 30.0 ]
-        (pcPolygon (hiFor st.hoveredTriad c.pcs) c.root c.pcs 0.0 0.0 12.0)
+        (pcPolygon (hiFor st.hoveredTriad c.pcs) c.root c.pcs 0.0 0.0 12.0
+           -- the colour sets holding this chord, as pips in their hues
+           <> layerBadges 0.0 (-12.5) (layersOf table c))
     , HH.div
         [ HP.style "font-size: 10px; color: #6a6250; line-height: 1.1; text-align: center; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%; -webkit-user-select: none; user-select: none;" ]
         [ HH.text c.label ]
     ]
+
+-- | A chord's pitch classes as a set: what "the same chord" means across views,
+-- | whatever its voicing or inversion.
+pcSetOf :: ChordNode -> Array Int
+pcSetOf c = sort (nub (map (\p -> mod p 12) c.pcs))
+
+-- | The active colour sets, each with its chords' pitch-class sets: built once
+-- | per render and asked per pad by `layersOf`, since a pad grid redraws on
+-- | every hover.
+type LayerTable = Array { layer :: ColorLayer, sets :: Array (Array Int) }
+
+layerTable :: State -> LayerTable
+layerTable st =
+  map (\l -> { layer: l, sets: map pcSetOf (layerChords st l) })
+    (filter (\l -> Set.member l st.colorLayers) allColorLayers)
+
+-- | The sets in the table holding a chord, in legend order.
+layersOf :: LayerTable -> ChordNode -> Array ColorLayer
+layersOf table c =
+  let k = pcSetOf c
+  in map _.layer (filter (\e -> elem k e.sets) table)
 
 -- | A pad lights when its pitch-class set matches whatever is hovered anywhere
 -- | in the app — so hovering one pad shows you every other bank holding the
@@ -7527,7 +7689,7 @@ nothingTakenUp st =
   HH.div
     [ HP.style "font-size: 12px; color: #a09880; line-height: 1.6; max-width: 480px; padding-top: 20px;" ]
     [ HH.text (if length st.chyronSaved == 0
-                 then "Nothing saved yet — hunt a progression and ⏎ it onto the shelf, then click its rebus above."
+                 then "Nothing saved yet — play a progression in Explore and ⏎ it onto the shelf, then click its rebus above."
                  else "Click a progression's rebus on the audition bar above and every chord in it becomes a slot you can give alternatives to.") ]
 
 -- | The controls, the readout, the slots, and — when a slot is being varied —
@@ -7779,57 +7941,6 @@ optionRow i sl playing j c =
                [ HH.text "×" ]
       ]
 
--- | **The VARY surface — the Banks widget pointed at one chord.**
--- |
--- | Rows are drift (how far the content may travel, revoicing → substitution),
--- | columns are density (how widely it may be spread and doubled). Pads, banks,
--- | shuffle and hover-lighting are all the Banks lens's, unchanged: this is the
--- | same gesture asking a different question, which is the whole argument for
--- | building it this way rather than as its own screen.
-varySurface :: forall m. State -> H.ComponentHTML Action Slots m
-varySurface st = case varySource st of
-  Nothing ->
-    HH.div
-      [ HP.class_ (cn "vetula-surface vetula-surface--wide")
-      , HP.style "position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; padding: 24px;" ]
-      [ HH.div
-          [ HP.style "font-size: 12px; color: #a09880; text-align: center; max-width: 380px; line-height: 1.6;" ]
-          [ HH.text "Nothing to vary yet. Play a chord in any lens — or open one for revoicing and press "
-          , HH.span [ HP.style "color: #6a6250;" ] [ HH.text "vary ⋯" ]
-          , HH.text " — and its neighbourhood appears here."
-          ]
-      ]
-  Just src ->
-    HH.div
-        -- `vetula-surface` is load-bearing, not cosmetic — see `padsSurface`.
-        [ HP.class_ (cn "vetula-surface vetula-surface--wide")
-        , HP.style "position: absolute; inset: 0; overflow: auto; padding: 16px 22px 26px;" ]
-        ( [ HH.div
-            [ HP.style "font-size: 11px; color: #a09880; letter-spacing: 0.04em; margin-bottom: 10px; -webkit-user-select: none; user-select: none;" ]
-            [ HH.text "varying "
-            , HH.span [ HP.style "color: #6a6250; font-weight: 500;" ] [ HH.text src.label ]
-            , HH.text (" · " <> show (playNotes src)
-                        <> " · rows let the notes themselves drift, columns spread and double them")
-            ]
-        , case varyingSlot st of
-            Nothing -> HH.text ""
-            Just i ->
-              HH.div
-                [ HP.style "margin-bottom: 10px; font-size: 11px;" ]
-                [ HH.button
-                    [ HP.style "border: 1px solid #b8975a; background: #f2e7c6; color: #6a6250; border-radius: 3px; padding: 3px 10px; cursor: pointer; font-size: 11px;"
-                    , HP.title "back to the progression — what you kept is already in the slot"
-                    , HE.onClick \_ -> BackToRehearsal ]
-                    [ HH.text ("← rehearsal · slot " <> show (i + 1)) ]
-                , HH.span
-                    [ HP.style "color: #b3aa92; margin-left: 8px;" ]
-                    [ HH.text "shift-click keeps into that slot" ]
-                ]
-        ]
-          <> varyGridFor st src
-          <> [ keptTray st ]
-        )
-
 -- | **The nine cells themselves**, shared by the standalone lens and the panel
 -- | that opens under a rehearsal slot. Identical either way on purpose: the two
 -- | places are the same tool at different distances from the music, and a grid
@@ -7855,7 +7966,11 @@ varyGridFor st src =
 varySource :: State -> Maybe ChordNode
 varySource st = case st.varying of
   Just c -> Just c
-  Nothing -> st.sounding >>= \sid -> find (\c -> c.id == sid) st.chords
+  Nothing -> soundingChord st
+
+-- | The chord last played, from any view.
+soundingChord :: State -> Maybe ChordNode
+soundingChord st = st.lastHeard
 
 -- | One variation pad. Click HEARS it (and nothing else); shift-click KEEPS it.
 -- | A kept pad wears a filled ring, so the nine cells double as the record of
@@ -7930,7 +8045,7 @@ registerStrip c =
 -- | Is the pointer in a Vary grid — either the standalone lens or the panel
 -- | under a rehearsal slot? The two are the same tool, so they audition alike.
 inVaryGrid :: State -> Boolean
-inVaryGrid st = st.stage == Hunt Vary || isJust (varyingSlot st)
+inVaryGrid st = (isHunt st.stage && st.side == Just SideVariations) || isJust (varyingSlot st)
 
 -- | The slot whose variations are open under the progression, if that is what
 -- | is open. Most of the app only cares about this one case, so it asks for it
@@ -8046,29 +8161,6 @@ varyBank st cs = case head cs of
                [ HH.text (show (length cell.chords) <> " — all there is") ]
       ]
 
-
--- | A generative glyph: the chromatic-circle polygon, a name below, and a
--- | transparent hit target. The seed wears a gold ring and only auditions; a
--- | relative auditions on click and catches on shift-click. `mh` (the hovered
--- | chord) drives cross-constellation hover-discovery highlighting.
-genGlyph :: forall m. Maybe { root :: Int, pcs :: Array Int } -> Number -> Number -> Number -> Boolean -> ChordNode -> Array (H.ComponentHTML Action Slots m)
-genGlyph mh cx cy r isSeed c =
-  pcPolygon (hiFor mh c.pcs) c.root c.pcs cx cy r
-    <> (if isSeed then [ SE.circle [ SA.cx cx, SA.cy cy, SA.r (r + 4.0), HP.style "fill: none; stroke: #b8860b; stroke-width: 1.5; pointer-events: none;" ] ] else [])
-    <>
-      [ SE.text
-          [ SA.x cx, SA.y (cy + r + 11.0), HP.attr (AttrName "text-anchor") "middle"
-          , HP.style ("font-size: 10px; fill: " <> (if isSeed then "#7a5c00" else "#8a8a8a") <> "; pointer-events: none; -webkit-user-select: none; user-select: none;")
-          ]
-          [ HH.text c.label ]
-      , SE.circle
-          [ SA.cx cx, SA.cy cy, SA.r r
-          , HP.style "fill: transparent; cursor: pointer;"
-          , HE.onMouseEnter \_ -> HoverTriad (Just { root: c.root, pcs: c.pcs })
-          , HE.onMouseLeave \_ -> HoverTriad Nothing
-          , HE.onClick \_ -> AuditionNode c
-          ]
-      ]
 
 -- | The clip region for the chord cloud. On Explore it stops at the pitch
 -- | ladder's edge (x −304) so a dense beeswarm can't paint over the ladder; on
