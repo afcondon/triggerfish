@@ -467,8 +467,8 @@
     <p class="motto">Applying the Unix philosophy to music since 2026</p>
 
     <div class="edition">
-      <span>Vol. I &middot; No. 4</span>
-      <span>Monday, 5 October 2026</span>
+      <span>Vol. I &middot; No. 5</span>
+      <span>Tuesday, 6 October 2026</span>
       <span class="opt">Triggerfish &amp; the Atlantis rig</span>
       <span>Price: one browser</span>
     </div>
@@ -491,7 +491,7 @@
           <blockquote class="pull">&ldquo;Write programs that do one thing and do it well. Write programs to work together.&rdquo;<cite>Doug McIlroy, as summarised by Peter H. Salus</cite></blockquote>
           <p>That is the Unix idea, moved from text to sound. A pipe in a shell carries text; these wires carry notes, clocks and control voltages. Because each piece does one thing, each can be understood, replaced or simply left out. Someone new can open one page and play Ableton with it. Someone with a eurorack case can add the small programs that reach it. Nothing in between is needed until it is wanted.</p>
           <p>Every machine is a web page, and every page is served from one origin, <span class="mono">localhost:3023</span>. So the pages share the routing table and the mode through the browser's own storage, and talk on a tab bus. The dashboard is one more page on that bus: it shows which machines are open, starts and stops them, sets the mode for all of them at once, and holds the routing: two matrices, in the manner of AUM, for the notes and the drums, while the harmony is patched on the chart itself, from Vetula to Odonus. In Atlantis its X-ray shows the rig: each of its programs, whether it is running, and a button to restart it. Close the dashboard, and each machine still plays on its own.</p>
-          <p>Text is a page like any other. Limulus is one editor in front of Tidal, and the machines answer to it too: <span class="mono">drums $ s "bd*2 sn"</span> plays the drum kit, <span class="mono">odonus $ scale "dorian"</span> moves Odonus, <span class="mono">v3 $ …</span> is a Vetula voice, <span class="mono">conspicillum $ …</span> a grain cloud, and <span class="mono">odonus $ loop 2</span> plays back a stretch of what Odonus played, and <span class="mono">selene $ ochd es9main</span> sets eight LFOs running on the modular. Each machine is also open in its own page, and the rig keeps the two in step.</p>
+          <p>Text is a page like any other. Limulus is one editor in front of Tidal, and the machines answer to it too: <span class="mono">drums $ s "bd*2 sn"</span> plays the drum kit, <span class="mono">odonus $ scale "dorian"</span> moves Odonus, <span class="mono">Q $ vetula "cow-umbrella-bell"</span> is a Vetula voice playing a progression saved by name, <span class="mono">conspicillum $ …</span> a grain cloud, and <span class="mono">odonus $ loop 2</span> plays back a stretch of what Odonus played, and <span class="mono">selene $ ochd es9main</span> sets eight LFOs running on the modular. Each machine is also open in its own page, and the rig keeps the two in step.</p>
           <p>Every page is now laid out the same way: a browser on the left for what the machine keeps, the instrument in the middle, and Limulus on the right. Both drawers slide out when wanted (backtick for Limulus) and shut again, so the instrument gets the width. The pages are instruments; Limulus, with Tidal++, is where they are combined.</p>
           <p>The same discipline runs underneath. The sequencer engines are written once, in PureScript, and compiled twice: to JavaScript for the page and to Erlang for the rig, with conformance tests holding the two to the same behaviour. A pattern does not change its mind when it moves from the browser to the rig.</p>
         </div>
@@ -538,8 +538,9 @@
         <section class="box">
           <h3>Soundings</h3>
           <table class="soundings">
-            <tr><th>Surface</th><td>A Chromium browser and a MIDI port. Odonus, Vetula and Balistes into Ableton, or any synth.</td></tr>
-            <tr><th>The trunk</th><td>Diaphus and Architeuthis. The rig plays, on Link's beat. Every rig path needs both.</td></tr>
+            <tr><th>Surface</th><td>A Chromium browser, nothing installed. Explore Vetula's harmony and hear it in the browser's own electric piano; copy a progression out as plain Tidal; MIDI to Ableton or any synth. Nothing is kept.</td></tr>
+            <tr><th>Keeping</th><td>Amphora, the store. Progressions kept by name, with every version.</td></tr>
+            <tr><th>The trunk</th><td>Diaphus and Architeuthis. The rig plays, on Link's beat: Limulus's voices and lines, Vetula shaping Odonus. Every rig path needs both.</td></tr>
             <tr><th>Branches</th><td>Each independent of the others:
               <span class="fath">SuperDirt &middot; samples</span>
               <span class="fath">ES-9 &middot; Selene's ES-9 banks</span>
@@ -547,17 +548,19 @@
               <span class="fath">Itajara &middot; Quadrat's takes</span>
               <span class="fath">Continuo &middot; a piano</span></td></tr>
           </table>
-          <p class="small" style="margin:6px 0 0">How deep you need to go depends on what you want to reach. It is a branching tree, not a ladder.</p>
+          <p class="small" style="margin:6px 0 0">How deep you need to go depends on what you want to reach. Each daemon has to pay for itself in what it adds; past the trunk it is a branching tree, not a ladder.</p>
         </section>
 
         <section class="box brief">
           <h3>News in brief</h3>
+          <p><b>Voices name progressions.</b> <span class="mono">Q $ vetula "cow-umbrella-bell" # arpup 8</span> plays a progression saved in Vetula; save it again and every voice naming it follows. Vetula's <b>+ voice</b> writes the line for you. <span class="mono">Q $ hush</span> removes a voice, and Vetula's drawer lists the ones playing, since a REPL never shows you which lines are live.</p>
+          <p><b>Letters for voices, numbers for channels.</b> Vetula's voices are P to W, clear of the note names; a number is only ever a MIDI channel (<span class="mono">ch3</span>). The dashboard's chart and Odonus say the same letters.</p>
+          <p><b>Vetula shapes Odonus from a line.</b> <span class="mono">route $ odonus.out &lt;- vetula Q</span> colours Odonus's melody with voice Q's chords as they change; a muted voice still shapes it. Odonus names where its harmony comes from, and shows the chords once round.</p>
+          <p><b>Harmony at every zoom.</b> Vetula's Explore zooms from the key's own chords through the ones popular music uses to every four-note chord, at sixty frames a second. Click to hear a chord, shift-click to take it into a progression, named with three glyphs, saved with &#x2318;S, kept in versions.</p>
           <p><b>Selene learns Tidal++.</b> One line sets a bank of eight outputs, all on the same instant: <span class="mono">selene $ lfo es9main # rate "0.5 1 2 4"</span>. A list wraps across the outputs, as Tidal's lists do. The rig applies it with Selene's page shut.</p>
-          <p><b>Modules without the hp.</b> Blocks are virtual modules, written as definitions rather than built as hardware: <span class="mono">ochd</span> (eight free LFOs, after Instru&#x14d;'s), <span class="mono">quadrature</span>, <span class="mono">drift</span>, a clock <span class="mono">divider</span>, Toussaint's eight traditional rhythms, <span class="mono">polymeter</span>, <span class="mono">scatter</span> and <span class="mono">chord</span>. Each was watched working on the ES-9's outputs.</p>
           <p><b>Selene, by drag and drop.</b> Every output group is a row, always; drop a module on one to replace what it plays. A row that cannot take it turns red and says why. Racks are kept in the drawer, and a click puts one on the rig, with undo.</p>
           <p><b>A drawer on every page.</b> The machines keep their presets, beats, scenes and racks in a browser that slides out from the left. Odonus recalls a preset as saved or in key, running or frozen. Balistes keeps its beats by name and by machine, and Vetula's Perform is Limulus.</p>
           <p><b>The chart, three ways.</b> Flow is the music; X-ray is the rig's skeleton, with a restart on every program; Storage shows what each part keeps, and for how long. The columns now order themselves by their wiring, to cross as little as they can.</p>
-          <p><b>A rebus, not a label.</b> A few glyphs tell kept things apart at a glance: three in black for a rack, two in colour for a setting. Names still come first.</p>
         </section>
       </aside>
     </div>
@@ -577,7 +580,7 @@
           </article>
           <article class="who">
             <header><svg class="fish flip" viewBox="0 0 200 120"><use href="#sp-vetula"/></svg><div><span class="w-vetula">Vetula</span><span class="sp">Balistes vetula, the queen triggerfish</span></div></header>
-            <p>Grows harmony by ear: a palette of chords that you widen by revoicing, inverting, suspending and extending. Its key, or the chords of one of its voices, can feed Odonus, patched on the dashboard's chart. Its Perform stage is Limulus: each voice a <span class="mono">v3 $</span> line. <a class="go" href="vetula.html">vetula.html</a></p>
+            <p>Grows harmony by ear: a palette of chords that you widen by revoicing, inverting, suspending and extending. Chords you take become a progression, saved by name. A voice is a line in Limulus naming one (<span class="mono">Q $ vetula "name"</span>), lettered P to W; its key, or a voice's chords, can feed Odonus, by a <span class="mono">route $</span> line or on the dashboard's chart. <a class="go" href="vetula.html">vetula.html</a></p>
           </article>
           <article class="who">
             <header><svg class="fish flip" viewBox="0 0 200 120"><use href="#sp-balistes"/></svg><div><span class="w-balistes">Balistes</span><span class="sp">Balistes capriscus, the grey triggerfish</span></div></header>
@@ -607,7 +610,7 @@
           </article>
           <article class="who">
             <header><svg class="fish flip" viewBox="0 0 200 120"><use href="#sp-limulus"/></svg><div><span class="nm">Limulus</span><span class="sp">Limulus polyphemus, the horseshoe crab</span></div></header>
-            <p>Text in, sound out: one editor in front of Tidal, sending each block to Haskell Tidal or to Architeuthis, to show they are the same. The machines answer to it too, loops and all; it slides out from the right of every machine's page, folds its blocks, and its cheatsheet lists everything the rig adds to Tidal. Not a fish, and not a machine: the editor that plays them. It took over from Calypso, the boat, now laid up. <a class="go" href="/limulus/">/limulus/</a></p>
+            <p>Text in, sound out: one editor in front of Tidal, sending each block to Haskell Tidal or to Architeuthis, to show they are the same. The machines answer to it too, loops and all; it is the same editor, with the same text, on every machine's page, sliding out from the right; folds its blocks, and its cheatsheet lists everything the rig adds to Tidal. Not a fish, and not a machine: the editor that plays them. It took over from Calypso, the boat, now laid up. <a class="go" href="/limulus/">/limulus/</a></p>
           </article>
         </div>
       </div>
