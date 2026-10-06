@@ -830,6 +830,10 @@ type State =
   -- | The saved progressions the stage holds, by name (step 4b), as far as
   -- | this page knows; `Nothing` until the rig answers.
   , stageProgs :: Maybe (Map String String)
+  -- | The cards that name a progression, by number, as last written: the
+  -- | composer's lines, which this page never prints back (not even after
+  -- | refusing a write to one).
+  , namedCards :: Map Int String
   -- Vetula's key as last written to the stage (`vetula/key`, Reef.Route.printKey),
   -- which the router's `vetula key` row feeds Odonus's grid from.
   , stageKey :: Maybe String
@@ -1361,6 +1365,7 @@ component = H.mkComponent
       , binnacle: Nothing
       , stageCards: Nothing
       , stageProgs: Nothing
+      , namedCards: Map.empty
       , stageKey: Nothing
       , clockTempo: 120.0
       , nextVoiceId: 4
@@ -1988,7 +1993,7 @@ publishCards = do
   for_ st.stageCards \seen -> for_ st.binnacle \bin -> do
     -- a card naming a progression is the composer's (Limulus): never
     -- printed back, which would write its chords in
-    let named = Map.filter (isJust <<< cardProgression) seen
+    let named = st.namedCards
         now = Map.union named (Map.filterKeys (not <<< flip Map.member named) (cardTexts st.perfBoxes))
     liftEffect $ for_ (SC.publishLines seen now) (Transport.send (Binnacle.socket bin))
     H.modify_ _ { stageCards = Just now }
@@ -2147,10 +2152,12 @@ handleActionCore = case _ of
         let
           readable = Map.toUnfoldable table # mapMaybe \(Tuple n text) ->
             (\spec -> Tuple n (boxOfCard n spec (find (\b -> b.cardId == n) st.perfBoxes))) <$> readCard st n text
-        H.modify_ _ { perfBoxes = map snd readable, stageCards = Just table }
+        H.modify_ _ { perfBoxes = map snd readable, stageCards = Just table
+                    , namedCards = Map.filter (isJust <<< cardProgression) table }
       Just (SC.Written n Nothing) ->
         H.modify_ \s -> s { perfBoxes = filter (\b -> b.cardId /= n) s.perfBoxes
-                          , stageCards = map (Map.delete n) s.stageCards }
+                          , stageCards = map (Map.delete n) s.stageCards
+                          , namedCards = Map.delete n s.namedCards }
       Just (SC.Written n (Just text)) -> do
         st <- H.get
         -- the audition card written as something other than what Vetula last
@@ -2166,7 +2173,8 @@ handleActionCore = case _ of
               (SC.rejectLine n "Vetula could not read this card (want: chN \"<[c4,e4,g4] …>\" \"0 1 2 3\" # layer …)")
             publishCards
           Just spec -> H.modify_ \s -> s
-            { perfBoxes = case find (\b -> b.cardId == n) s.perfBoxes of
+            { namedCards = if isJust (cardProgression text) then Map.insert n text s.namedCards else Map.delete n s.namedCards
+            , perfBoxes = case find (\b -> b.cardId == n) s.perfBoxes of
                 Just old -> map (\b -> if b.cardId == n then boxOfCard n spec (Just old) else b) s.perfBoxes
                 Nothing -> s.perfBoxes <> [ boxOfCard n spec Nothing ] }
   CardToLimulus n -> do
