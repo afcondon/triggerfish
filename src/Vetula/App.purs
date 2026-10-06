@@ -5541,8 +5541,10 @@ render st =
     -- chyron, so the stage clears both top strips; the old bottom voice bar is gone,
     -- so it fills to the window bottom (freed lower strip → future MIDI-flow chyron).
     -- right of the browser drawer (Triggerfish.Standalone's --tf-left)
-    [ HP.style ("position: relative; margin-top: calc(var(--tf-bar) + " <> contextBarHeight st <> "); margin-left: var(--tf-left, 0px); width: calc(100% - var(--tf-left, 0px) - var(--tf-right, 0px)); height: calc(100vh - 88px - " <> contextBarHeight st <> "); min-height: 620px; overflow: hidden; border-radius: 8px; background: " <> canvasBg <> ";") ]
-    [ HH.div [ HP.style "position: absolute; inset: 0;" ] [ surface st ]
+    [ HP.style ("position: relative; margin-top: calc(var(--tf-bar) + " <> contextBarHeight st <> "); margin-left: var(--tf-left, 0px); width: calc(100% - var(--tf-left, 0px) - var(--tf-right, 0px)); height: calc(100vh - var(--tf-bar) - " <> contextBarHeight st <> "); min-height: 620px; overflow: hidden; border-radius: 8px; background: " <> canvasBg <> ";") ]
+    -- In HUNT the views start below the audition strip, which is fixed over
+    -- the stage's top; Rehearse, Perform and Review pad for it themselves.
+    [ HH.div [ HP.style ("position: absolute; inset: " <> (if isHunt st.stage then chyronHeight else "0px") <> " 0 0 0;") ] [ surface st ]
     -- Scene recall belongs to the INSTRUMENT, not to Perform. Its entry point
     -- has always been the session menu in `contextBar`, which renders on every
     -- stage — but the modal itself was inside `performSurface`, so anywhere
