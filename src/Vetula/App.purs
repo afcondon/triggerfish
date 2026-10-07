@@ -2803,9 +2803,9 @@ handleActionCore = case _ of
     when (isJust (stripPrefix (Pattern progDragPrefix) d)) (liftEffect (Drop.allowDrop ev))
 
   VoiceDrop n ev -> do
-    txt <- liftEffect (Drop.dropText ev)
+    name0 <- liftEffect (Drop.dropProgression ev)
     st <- H.get
-    for_ (stripPrefix (Pattern progDragPrefix) txt) \name ->
+    for_ (if name0 == "" then Nothing else Just name0) \name ->
       for_ (st.stageCards >>= Map.lookup n) \old ->
         case SC.repoint name old of
           Nothing -> H.modify_ _ { publishMsg = Just ("✗ voice " <> voiceLetter n <> "'s line names no progression to swap") }

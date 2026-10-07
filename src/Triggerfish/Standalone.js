@@ -91,8 +91,19 @@ export const loadWidth = (key) => (fallback) => () => {
 
 // A row dragged from the browser drawer carries its text (a Selene module's
 // line), for a drop target on the page to read.
+// A progression (`vetula-progression <name>`) carries its own type, which
+// Limulus reads to repoint a voice's block, and as plain text just its name
+// quoted, which drops into any line as a source.
+const carry = (dt, text) => {
+  const m = /^vetula-progression (.+)$/.exec(text);
+  if (m) {
+    dt.setData("application/x-vetula-progression", m[1]);
+    dt.setData("text/plain", '"' + m[1] + '"');
+  } else dt.setData("text/plain", text);
+  dt.effectAllowed = "copy";
+};
 export const setDragText = (e) => (text) => () => {
-  if (e.dataTransfer) { e.dataTransfer.setData("text/plain", text); e.dataTransfer.effectAllowed = "copy"; }
+  if (e.dataTransfer) carry(e.dataTransfer, text);
   // what is being dragged, for a target to judge while the drag is over it
   // (the drag's own data cannot be read until the drop); gone when it ends
   window.__tfDrag = text;
