@@ -244,7 +244,7 @@ derive instance ordLeftSection :: Ord LeftSection
 -- | kept but off the ladder: too simple to follow triads and sevenths, too
 -- | unfamiliar to open with, and at its best as a playing surface. The circle
 -- | of fifths (`Fifths`) is off the ladder too, reachable by URL.
-data Viewtype = Fifths | Tonnetz | KeyChords | Common | Lattice4 | Lattice | Pads | Score
+data Viewtype = Fifths | Tonnetz | KeyChords | Common | Lattice4 | Lattice | Pads | Score | River
 
 -- | The side panel beside an Explore view: a chord's variations (Harmonia.Vary,
 -- | drift × density) or its relatives (voice-led neighbours, `generateCandidates`).
@@ -301,6 +301,7 @@ viewtypeLabel = case _ of
   Lattice -> "+ extended"
   Pads -> "banks"
   Score -> "score"
+  River -> "river"
 
 -- | Explore's ladder, in order of complexity: the buttons in the bar.
 viewtypes :: Array Viewtype
@@ -317,6 +318,7 @@ viewtypeValue = case _ of
   Lattice -> "lattice"
   Pads -> "banks"
   Score -> "score"
+  River -> "river"
 
 -- | The inverse; the old names ("fifths", "pads") still land, and anything
 -- | unknown (the retired "explore" and "vary" views) lands on Key.
@@ -330,6 +332,7 @@ viewtypeFromValue = case _ of
   "banks" -> Pads
   "pads" -> Pads
   "score" -> Score
+  "river" -> River
   _ -> KeyChords
 
 -- | What each rung shows, for its button's tooltip.
@@ -343,6 +346,7 @@ viewtypeTip = case _ of
   Lattice -> "the whole lattice: chords of five notes and more, up to the thirteenth"
   Pads -> "nine banks of sixteen: how far from home, by how rich"
   Score -> "the progression on a grand staff, and every progression a voice is playing, with the voices' letters"
+  River -> "what was played: every note, by voice, in time; mark, loop, cut a phrase into the clip library"
 
 -- | The projection a Stage names, or `fallback` when it isn't Hunt. Feeds
 -- | `lastLens`, so leaving Hunt and coming back returns to the same projection.
@@ -1657,7 +1661,7 @@ handleQuery = case _ of
     s <- H.get
     let
       tab id label active tip = { id, label, active, tip }
-      marking = s.stage == Perform || s.stage == Review
+      marking = s.stage == Perform || showsRiver s.stage
     pure $ Just $ reply
       { tabs:
           [ tab "explore" "EXPLORE" (isHunt s.stage) "explore harmonic space: the key, the lattice, the banks, and the colour sets in all of them"
@@ -2214,7 +2218,7 @@ handleActionCore = case _ of
         H.modify_ _ { capture = s.capture { logbook = s.capture.logbook { marks = RL.insertMark m s.capture.logbook.marks } } }
         when recent $ H.raise (Marked m.atMicros)
       st2 <- H.get
-      when (any RL.looping st2.capture.logbook.marks && not (any RL.looping st.capture.logbook.marks) && st2.stage /= Review)
+      when (any RL.looping st2.capture.logbook.marks && not (any RL.looping st.capture.logbook.marks) && not (showsRiver st2.stage))
         (handleAction (SetStage Review))
   -- The notes the rig played for the cards (`vetula-notes`, Unix µs): into the
   -- Review logbook, as the page's own notes go in Local, so marks and loops work.
@@ -3902,7 +3906,7 @@ handleActionCore = case _ of
         rigSend RL.syncLine
         H.modify_ _ { rigAsked = ms }
     -- The rig's loops' playheads move on Review's clock
-    when (st.stage == Review && st.rigLoops && any RL.looping st.capture.logbook.marks) do
+    when (showsRiver st.stage && st.rigLoops && any RL.looping st.capture.logbook.marks) do
       mclock <- vetulaClock
       H.modify_ \s -> s { capture = s.capture { rig = mclock } }
     -- The REPLAY loop rides the same frame clock; it no-ops when nothing is looping.
@@ -4231,17 +4235,17 @@ handleActionCore = case _ of
   -- lift card. Under the old split you could escape a looping preview sideways
   -- into Browse and it would keep ringing.
   SetStage v -> do
-    when (v /= Review) hushCapture
+    when (not (showsRiver v)) hushCapture
     H.raise (StageChanged (stagePath v))
     H.modify_ \st -> st
       { stage = v
       , lastLens = huntOr st.lastLens v
       , fieldLens = case st.stage of
-          Hunt vt | vt /= Score -> vt
+          Hunt vt | not (fullView (Hunt vt)) -> vt
           _ -> st.fieldLens
       , hoveredId = Nothing, hoveredTriad = Nothing
       , viewCx = 0.0, viewCy = 0.0, viewZoom = 1.0, panning = Nothing, panMoved = false
-      , capture = if v == Review then st.capture else st.capture { playing = Nothing, contextOpen = false }
+      , capture = if showsRiver v then st.capture else st.capture { playing = Nothing, contextOpen = false }
       -- An excursion is a round trip between two places. Navigating anywhere
       -- ELSE ends it, or a later free visit to the Vary lens would quietly post
       -- its keeps into a slot you had stopped thinking about.
@@ -6419,8 +6423,8 @@ render st =
     -- element: the field draws its own <svg> into its container, which
     -- Halogen does not know about, and a reused container kept the old
     -- lattice under the score
-    ( [ HH.keyed (ElemName "div") [ HP.style ("position: absolute; inset: " <> (if isHunt st.stage && st.stage /= Hunt Score then chyronHeight else "0px") <> " " <> sideInset st <> " " <> (if isHunt st.stage && st.stage /= Hunt Score then trayHeight else "0px") <> " 0;") ] [ Tuple (surfaceKey st) (surface st) ] ]
-      <> (if isHunt st.stage then (if st.stage == Hunt Score then [] else [ colourTray st ]) <> [ sidePanel st ] else [])
+    ( [ HH.keyed (ElemName "div") [ HP.style ("position: absolute; inset: " <> (if isHunt st.stage && not (fullView st.stage) then chyronHeight else "0px") <> " " <> sideInset st <> " " <> (if isHunt st.stage && not (fullView st.stage) then trayHeight else "0px") <> " 0;") ] [ Tuple (surfaceKey st) (surface st) ] ]
+      <> (if isHunt st.stage then (if fullView st.stage then [] else [ colourTray st ]) <> [ sidePanel st ] else [])
       <>
     -- Scene recall belongs to the INSTRUMENT, not to Perform. Its entry point
     -- has always been the session menu in `contextBar`, which renders on every
@@ -6445,7 +6449,7 @@ render st =
     -- voice bar (four mini-notation lanes) was removed — the Perform surface
     -- supersedes it — and the freed bottom is reserved for a future MIDI-flow chyron.
     -- not over the score: the audition trace belongs to the lattice
-    , if st.stage == Hunt Score then HH.text "" else chyronBar st
+    , if fullView st.stage then HH.text "" else chyronBar st
     , HH.div
         [ HP.style "position: absolute; bottom: 44px; left: 50%; transform: translateX(-50%); z-index: 5;" ]
         [ pickBar st ]
@@ -6561,7 +6565,7 @@ sidePanel st = case st.side of
   Just t ->
     HH.div
       [ HP.class_ (cn "vetula-surface--wide")
-      , HP.style ("position: absolute; top: " <> (if st.stage == Hunt Score then "0px" else chyronHeight) <> "; right: 0; bottom: 0; width: " <> sidePanelWidth <> "; box-sizing: border-box; z-index: 7; overflow: auto; "
+      , HP.style ("position: absolute; top: " <> (if fullView st.stage then "0px" else chyronHeight) <> "; right: 0; bottom: 0; width: " <> sidePanelWidth <> "; box-sizing: border-box; z-index: 7; overflow: auto; "
                    <> "background: #fffdf8; border-left: 1px solid #e6dfcc; padding: 10px 14px 20px;") ]
       ( [ HH.div [ HP.style "display: flex; align-items: center; gap: 6px; margin-bottom: 8px;" ]
             ( map tab [ SideVariations, SideRelatives, SideSubstitutes ]
@@ -7046,13 +7050,15 @@ contextBar st =
     [ HH.div [ HP.style "display: flex; border: 1px solid #d8cfb6; border-radius: 5px; overflow: hidden;" ]
         (map rung viewtypes)
     , HH.div [ HP.style "display: flex; border: 1px solid #d8cfb6; border-radius: 5px; overflow: hidden;" ]
-        [ let on = current == Score
+        -- the score and the river: each a toggle, back to the lattice rung
+        (map (\vt ->
+          let on = current == vt
           in HH.button
                [ HP.style ("border: none; padding: 4px 14px; font-size: 12px; cursor: pointer; letter-spacing: 0.02em; "
                             <> (if on then "background: #8d7a4a; color: #fff;" else "background: #fbf8f0; color: #5a5240;"))
-               , HP.title (if on then "back to the lattice (" <> viewtypeLabel st.fieldLens <> ")" else viewtypeTip Score)
-               , HE.onClick \_ -> SetStage (Hunt (if on then st.fieldLens else Score)) ]
-               [ HH.text "score" ] ]
+               , HP.title (if on then "back to the lattice (" <> viewtypeLabel st.fieldLens <> ")" else viewtypeTip vt)
+               , HE.onClick \_ -> SetStage (Hunt (if on then st.fieldLens else vt)) ]
+               [ HH.text (viewtypeLabel vt) ]) [ Score, River ])
     , pinChip
     , divider
     , HH.div [ HP.style "display: flex; border: 1px solid #d8cfb6; border-radius: 5px; overflow: hidden;" ]
@@ -7316,6 +7322,7 @@ surfaceKey st
   | length st.genSel > 0 && length st.candidates > 0 = "pick"
   | otherwise = case st.stage of
       Hunt Score -> "score"
+      Hunt River -> "river"
       Hunt Fifths -> "fifths"
       Hunt Tonnetz -> "tonnetz"
       Hunt _ -> "field"
@@ -7340,6 +7347,7 @@ surface st
       Hunt Lattice -> fieldSurface st
       Hunt Pads -> fieldSurface st
       Hunt Score -> scoreSurface st
+      Hunt River -> riverSurface st
 
 -- | The PERFORM surface — a row of player BOXES, one per output. Shift-click (or
 -- | drag) a saved token in the chyron to pick it up, then click (or drop it onto)
@@ -7555,6 +7563,30 @@ reviewSurface st =
         [ HP.style ("flex: 1 1 auto; min-height: 0; margin: calc(" <> chyronHeight <> " - 30px + 4px) -28px -30px -28px; display: flex; flex-direction: column; background: #0b0a07; border-top: 1px solid #2a281f;") ]
         [ capturePane st ]
     ]
+
+-- | **The river as a main-space view** (docs/kb/plans/vetula-one-surface.md,
+-- | step 2): Review's whole-session roll, beside the lattice and the score
+-- | rather than a mode of its own. Full height: no chyron over it here.
+riverSurface :: forall m. State -> H.ComponentHTML Action Slots m
+riverSurface st =
+  HH.div
+    [ HP.style "position: absolute; inset: 0; display: flex; flex-direction: column; background: #0b0a07;" ]
+    [ capturePane st ]
+
+-- | The views that take the whole main space: no chyron above them, no
+-- | colour tray below.
+fullView :: Stage -> Boolean
+fullView = case _ of
+  Hunt Score -> true
+  Hunt River -> true
+  _ -> false
+
+-- | Where the river is the surface: Review, and the river view.
+showsRiver :: Stage -> Boolean
+showsRiver = case _ of
+  Review -> true
+  Hunt River -> true
+  _ -> false
 
 -- | The PERFORM surface: voices in the left two thirds, the capture river as a
 -- | narrow strip down the right third. Notes enter the strip at ITS left edge,
