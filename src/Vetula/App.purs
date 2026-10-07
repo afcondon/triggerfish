@@ -2772,9 +2772,11 @@ handleActionCore = case _ of
       Just sel | sel.row == row -> Just sel { to = i }
       _ -> Just { row, anchor: i, to: i } }
   ScoreUnselect -> H.modify_ _ { scoreSel = Nothing }
+  -- also the side panel's subject: variations and relatives follow the bar
   ScoreStep i -> do
     st <- H.get
-    H.modify_ _ { scoreBar = Just i, scoreDrag = Nothing }
+    let node = st.path !! i >>= \pid -> find (\c -> c.id == pid) st.chords
+    H.modify_ _ { scoreBar = Just i, scoreDrag = Nothing, lastHeard = maybe st.lastHeard Just node, varying = Nothing }
     for_ (st.path !! i) playId
   -- a copy with its own id, after it: revoicing or replacing one leaves the other
   ScoreDuplicate i -> do

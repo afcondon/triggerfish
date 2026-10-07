@@ -271,7 +271,7 @@ staffGap = 14.0
 system :: forall w i. Spelling -> Handlers i -> Staff -> HH.HTML w i
 system pageSp on row =
   HH.div
-    [ HP.style ("margin: 0 0 18px; padding: 10px 14px 6px; border-radius: 6px; "
+    [ HP.style ("margin: 0 0 18px; padding: 10px 14px 6px; border-radius: 6px; user-select: none; -webkit-user-select: none; "
         <> (if row.top then "background: #fffdf6; border: 1px solid #d8cfb6;" else "background: #fbf8f0; border: 1px solid #ece5d0;")) ]
     ( [ header
       , HH.div [ HP.style "overflow-x: auto;" ] [ staff ]
@@ -388,11 +388,14 @@ system pageSp on row =
       [ attr "viewBox" ("0 0 " <> show width <> " " <> show height)
       , attr "width" (show width)
       , attr "height" (show height)
-      , attr "style" "display: block;"
+      , attr "style" "display: block; user-select: none; -webkit-user-select: none;"
       ]
-      ( lit <> staffLines <> clefs <> barlines <> Array.concat (Array.mapWithIndex bar spelt) )
+      -- the drag outline LAST: an element added before the bars shifts them,
+      -- Halogen patches the nodes by position, and the press and release then
+      -- land on different elements, so no click ever fires
+      ( lit <> staffLines <> clefs <> barlines <> Array.concat (Array.mapWithIndex bar spelt) <> dragged )
 
-  lit = chosen <> dragged <> case row.active of
+  lit = chosen <> case row.active of
     Just i | i >= 0 && i < n ->
       [ el "rect" [ attr "x" (show (colX i)), attr "y" "0", attr "width" (show barWidth), attr "height" (show height)
                   , attr "fill" "#f2e7c6", attr "rx" "4" ] [] ]
@@ -401,7 +404,7 @@ system pageSp on row =
   dragged = case row.dragging of
     Just i | i >= 0 && i < n ->
       [ el "rect" [ attr "x" (show (colX i)), attr "y" "0", attr "width" (show barWidth), attr "height" (show height)
-                  , attr "fill" "none", attr "stroke" "#4f7a8c", attr "stroke-dasharray" "4 3", attr "rx" "4" ] [] ]
+                  , attr "fill" "none", attr "stroke" "#4f7a8c", attr "stroke-dasharray" "4 3", attr "rx" "4", attr "style" "pointer-events: none;" ] [] ]
     _ -> []
   -- the chords chosen for the scales, underlined in a band beneath the staff
   chosen = case row.selected of
