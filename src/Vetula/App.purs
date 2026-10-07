@@ -18,6 +18,8 @@ module Vetula.App where
 
 import Prelude
 
+import Control.Alt ((<|>))
+
 import Data.DateTime.Instant (unInstant)
 import Data.Newtype (unwrap)
 import Effect.Now (now)
@@ -1047,7 +1049,6 @@ data Action
   | ScoreStep Int            -- the score: click a chord of the open progression (hear it, make it the bar the panel's chords go into)
   | ScoreDuplicate Int
   | ScoreDelete Int
-  | ScoreDragFrom Int
   | ScoreDropAt Int
   | ScorePut ChordNode        -- the score: a chord from the panel into the chosen bar
   | ScoreReadIn String       -- the score: spell a row (by title) in its own reading, or back in the key
@@ -2777,11 +2778,14 @@ handleActionCore = case _ of
       _ -> Just { row, anchor: i, to: i } }
   ScoreUnselect -> H.modify_ _ { scoreSel = Nothing }
   -- also the side panel's subject: variations and relatives follow the bar
+  -- on the press: the chord sounds first, before any state changes (each
+  -- redraws the page), and the press may become a drag
   ScoreStep i -> do
     st <- H.get
     let node = st.path !! i >>= \pid -> find (\c -> c.id == pid) st.chords
-    H.modify_ _ { scoreBar = Just i, scoreDrag = Nothing, lastHeard = maybe st.lastHeard Just node, varying = Nothing }
-    for_ (st.path !! i) playId
+    for_ node playChord
+    H.modify_ _ { sounding = map _.id node <|> st.sounding, selected = Nothing
+                , scoreBar = Just i, scoreDrag = Just i, lastHeard = node <|> st.lastHeard, varying = Nothing }
   -- a copy with its own id, after it: revoicing or replacing one leaves the other
   ScoreDuplicate i -> do
     st <- H.get
@@ -2793,7 +2797,6 @@ handleActionCore = case _ of
     { path = fromMaybe s.path (deleteAt i s.path)
     , scoreBar = if s.scoreBar == Just i then Nothing else map (\b -> if b > i then b - 1 else b) s.scoreBar
     , scoreSel = Nothing }
-  ScoreDragFrom i -> H.modify_ _ { scoreDrag = Just i }
   -- dropped on another bar: the dragged chord takes that place
   ScoreDropAt j -> H.modify_ \s -> case s.scoreDrag of
     Just i | i /= j ->
@@ -8366,7 +8369,6 @@ scoreSurface st =
     , adopt: Just ScoreAdopt
     , duplicate: Just ScoreDuplicate
     , remove: Just ScoreDelete
-    , dragFrom: Just ScoreDragFrom
     , dropAt: Just ScoreDropAt
     }
   -- the chosen run on a row, if it is this one and still fits it
@@ -8410,7 +8412,6 @@ scoreSurface st =
     , adopt: Nothing
     , duplicate: Nothing
     , remove: Nothing
-    , dragFrom: Nothing
     , dropAt: Nothing
     }
 

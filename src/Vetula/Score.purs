@@ -89,7 +89,6 @@ type Handlers i =
   -- the open progression's edits: by position
   , duplicate :: Maybe (Int -> i)
   , remove :: Maybe (Int -> i)
-  , dragFrom :: Maybe (Int -> i)
   , dropAt :: Maybe (Int -> i)
   }
 
@@ -297,7 +296,7 @@ system pageSp on row =
   sp = case read of
     Just r | row.ownKey -> spellingOf r.root (readScale r)
     _ -> keySp
-  outsideOf scale = Array.length (Array.nub (Array.filter (\n -> not (Array.elem (n `mod` 12) scale)) (map (_ `mod` 12) allNotes)))
+  outsideOf scale = Array.length (Array.nub (Array.filter (\pc -> not (Array.elem pc scale)) (map (_ `mod` 12) allNotes)))
   inKey = outsideOf keySp.scale
   better = case read of
     Just r | Array.length r.outside < inKey -> Just r
@@ -357,7 +356,7 @@ system pageSp on row =
   -- each note spelled, and whether it lies outside the key's scale: red, as
   -- in the lattice's chord glyphs, so a chord's borrowed tones read at a glance
   spelt = Array.mapWithIndex
-    (\i ns -> Array.zipWith (\n g -> { d: g.d, acc: g.acc, out: not (Array.null sp.scale) && not (Array.elem (n `mod` 12) sp.scale) })
+    (\i ns -> Array.zipWith (\m g -> { d: g.d, acc: g.acc, out: not (Array.null sp.scale) && not (Array.elem (m `mod` 12) sp.scale) })
                 ns (spellChord sp (Array.index row.names i >>= rootOfName) ns))
     row.chords
   allDs = Array.concatMap (map _.d) spelt
@@ -462,21 +461,20 @@ system pageSp on row =
     let fsp = case Array.head f.names of
           Just nm | Array.length f.pcs == 7 -> spellingOf nm.root (fromRoot f)
           _ -> sp
-        pcName = pcNameIn fsp
-        names = map (\nm -> pcName nm.root <> " " <> nm.mode) f.names
+        spelt' = pcNameIn fsp
+        names = map (\nm -> spelt' nm.root <> " " <> nm.mode) f.names
     in HH.div [ HP.style "display: flex; align-items: baseline; gap: 8px; padding: 2px 0;" ]
          ( [ HH.span [ HP.style "font-weight: 600; min-width: 13em;" ] [ HH.text (fromMaybe "" (Array.head names)) ]
-           , HH.span [ HP.style "color: #6c8792;" ] [ HH.text (String.joinWith " \x00b7 " (map pcName (fromRoot f))) ]
+           , HH.span [ HP.style "color: #6c8792;" ] [ HH.text (String.joinWith " \x00b7 " (map spelt' (fromRoot f))) ]
            ]
              <> (if Array.length names > 1 then [ HH.span [ HP.style "color: #8fa3ab; font-size: 11px;" ] [ HH.text ("also " <> String.joinWith ", " (Array.take 3 (Array.drop 1 names))) ] ] else [])
-             <> (if Array.null f.outside then [] else [ HH.span [ HP.style "color: #c0392b; font-size: 11px;" ] [ HH.text ("leaves out " <> String.joinWith ", " (map pcName f.outside)) ] ])
+             <> (if Array.null f.outside then [] else [ HH.span [ HP.style "color: #c0392b; font-size: 11px;" ] [ HH.text ("leaves out " <> String.joinWith ", " (map spelt' f.outside)) ] ])
          )
   -- the scale's notes from the root it is named on
   fromRoot f = case Array.head f.names of
     Just nm -> Array.filter (_ >= nm.root) f.pcs <> Array.filter (_ < nm.root) f.pcs
     Nothing -> f.pcs
   -- a pitch class as the key spells it
-  pcName = pcNameIn sp
   pcNameIn s r = let l = keyLetter s r in letterName l <> accGlyph (pcDiff r (natural l))
 
   hline x1 x2 d stroke =
@@ -520,10 +518,9 @@ system pageSp on row =
         el "rect"
           ( [ attr "x" (show x0), attr "y" "0", attr "width" (show barWidth), attr "height" (show staffBottom)
             , attr "fill" "transparent", attr "style" "cursor: pointer;"
-            , HE.onClick \e -> if ME.shiftKey e then on.select i else on.hear i ]
-            <> (case on.dragFrom of
-                  Just act -> [ HE.onMouseDown \_ -> act i ]
-                  Nothing -> [])
+            -- on the PRESS, not the click: the chord sounds at once, and the
+            -- same press starts a drag (released on another bar, it moves)
+            , HE.onMouseDown \e -> if ME.shiftKey e then on.select i else on.hear i ]
             <> (case on.dropAt of
                   Just act -> [ HE.onMouseUp \_ -> act i ]
                   Nothing -> [])
