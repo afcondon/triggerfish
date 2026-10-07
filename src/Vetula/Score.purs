@@ -59,7 +59,7 @@ type Spelling = { letter :: Int, scale :: Array Int, flats :: Boolean }
 
 -- | A voice playing the row's progression: its letter, what it does to the
 -- | chords (the line's `# …`, as written), and whether it is muted.
-type Badge = { letter :: String, how :: String, muted :: Boolean }
+type Badge = { n :: Int, letter :: String, how :: String, muted :: Boolean }
 
 -- | One system. `active`: the chord (by position) last heard, lit.
 type Staff =
@@ -94,6 +94,11 @@ type Handlers i =
   -- a chord dragged from the side panel: allowed over a bar, dropped into it
   , padOver :: Maybe (Event -> i)
   , padDrop :: Maybe (Int -> i)
+  -- a progression dragged onto a voice's badge: that voice reads it; the
+  -- row's title, dragged, is that progression
+  , voiceOver :: Event -> i
+  , voiceDrop :: Int -> Event -> i
+  , titleDrag :: Maybe (Event -> i)
   }
 
 -- | The natural pitch class of each letter.
@@ -335,11 +340,11 @@ system pageSp on row =
       ( [ case on.open of
             Just act ->
               HH.button
-                [ HP.style "border: none; background: none; padding: 0; font: inherit; font-size: 13px; color: #4a4232; cursor: pointer; text-decoration: underline dotted #b3a77f;"
-                , HP.title "open this progression"
-                , HE.onClick \_ -> act ]
+                ( [ HP.style "border: none; background: none; padding: 0; font: inherit; font-size: 13px; color: #4a4232; cursor: pointer; text-decoration: underline dotted #b3a77f;"
+                  , HP.title "open this progression · drag it onto a voice to have the voice play it"
+                  , HE.onClick \_ -> act ] <> titleDrags )
                 [ HH.text row.title ]
-            Nothing -> HH.span [ HP.style "font-size: 13px; color: #2a2a2a; font-weight: 600;" ] [ HH.text row.title ]
+            Nothing -> HH.span ([ HP.style "font-size: 13px; color: #2a2a2a; font-weight: 600;" ] <> titleDrags) [ HH.text row.title ]
         ]
           <> (case on.revoice of
                 Just act | not (Array.null row.chords) ->
@@ -351,11 +356,18 @@ system pageSp on row =
           <> readingLine
       )
 
+  titleDrags :: forall r. Array (HP.IProp r i)
+  titleDrags = case on.titleDrag of
+    Just act -> [ HP.attr (HH.AttrName "draggable") "true", HE.handler (EventType "dragstart") act ]
+    Nothing -> []
   badge b =
     HH.span
       [ HP.style ("display: inline-flex; align-items: baseline; gap: 5px; padding: 1px 7px; border-radius: 9px; font-size: 11px; "
           <> (if b.muted then "background: #eee9db; color: #9a9070;" else "background: #5f6f6a; color: #fff;"))
-      , HP.title ("voice " <> b.letter <> (if b.muted then ", muted" else "")) ]
+      , HP.title ("voice " <> b.letter <> (if b.muted then ", muted" else "") <> " \x00b7 drop a progression here and this voice plays it")
+      , HP.class_ (HH.ClassName "score-voice")
+      , HE.handler (EventType "dragover") on.voiceOver
+      , HE.handler (EventType "drop") (on.voiceDrop b.n) ]
       ( [ HH.span [ HP.style "font-weight: 700;" ] [ HH.text b.letter ] ]
           <> (if b.how == "" then [] else [ HH.span [ HP.style "opacity: 0.85;" ] [ HH.text b.how ] ])
           <> (if b.muted then [ HH.span [] [ HH.text "muted" ] ] else [])

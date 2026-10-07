@@ -139,6 +139,7 @@ import Vetula.Tidal (progressionSource, parseProgression)
 import Reef.Vetula.VoiceName (voiceLetter)
 import Vetula.Lepidoptera (PerfDoc, VoiceSpec, cardProgression, docFromVoices, parseCardIn, parsePerform, printAsRecord, printCard, printProgression)
 import Vetula.StageCards as SC
+import Triggerfish.Selene.Drop as Drop
 import Vetula.Score as Score
 import Harmonia.Substitute as HS
 import Harmonia.Voicing (voiceLead) as HVL
@@ -1050,6 +1051,9 @@ data Action
   | RevoiceFocus Int       -- the progression's ladders: focus (and hear) the chord at a position
   | RevoiceStep Int        -- move the focus a bar left / right
   | RevoiceLead            -- voice-lead every later bar from the focused one
+  | VoiceDragOver Event    -- a progression dragged over a voice's badge: let it land
+  | VoiceDrop Int Event    -- dropped on voice n: the voice reads that progression
+  | TitleDrag String Event -- a score row's title dragged: it carries its progression
   | ScoreOpen String       -- the score: open a saved progression by name
   | ScoreSelect String Int -- the score: shift-click a chord on a row (by title), choosing a run for the scales
   | ScoreUnselect
@@ -2788,6 +2792,34 @@ handleActionCore = case _ of
   PlayStep pid -> playId pid
   ScoreHear notes -> auditionNotesNoLog notes
   ScoreRevoice cid -> H.modify_ _ { revoicing = Just cid, sounding = Just cid, selected = Nothing }
+
+  -- **Repointing a voice** (docs/kb/plans/vetula-progressions-not-tokens.md
+  -- §2): a progression dropped on a voice's badge, and the voice's line
+  -- reads it, its sequence and manner kept. The line is the composer's, so
+  -- it is written only by this gesture; Limulus follows it (its block is
+  -- rewritten unless an edit is in hand there).
+  VoiceDragOver ev -> do
+    d <- liftEffect Drop.currentDrag
+    when (isJust (stripPrefix (Pattern progDragPrefix) d)) (liftEffect (Drop.allowDrop ev))
+
+  VoiceDrop n ev -> do
+    txt <- liftEffect (Drop.dropText ev)
+    st <- H.get
+    for_ (stripPrefix (Pattern progDragPrefix) txt) \name ->
+      for_ (st.stageCards >>= Map.lookup n) \old ->
+        case SC.repoint name old of
+          Nothing -> H.modify_ _ { publishMsg = Just ("✗ voice " <> voiceLetter n <> "'s line names no progression to swap") }
+          Just line -> do
+            for_ st.binnacle \bin -> liftEffect $ Transport.send (Binnacle.socket bin) ("stage-text " <> SC.cardKey n <> " " <> line)
+            H.modify_ \s -> s
+              { stageCards = map (Map.insert n line) s.stageCards
+              , namedCards = Map.insert n line s.namedCards
+              , publishMsg = Just ("voice " <> voiceLetter n <> " plays " <> name) }
+            st2 <- H.get
+            for_ (readCard st2 n line) \spec -> H.modify_ \s -> s
+              { perfBoxes = map (\b -> if b.cardId == n then boxOfCard n spec (Just b) else b) s.perfBoxes }
+
+  TitleDrag name ev -> liftEffect (Drop.startDrag ev (progDragPrefix <> name))
 
   -- **The progression's ladders.** The focus is the chord the single-chord
   -- tools act on (and Tab / arrows / f, through `sounding`).
@@ -8495,7 +8527,7 @@ scoreSurface st =
   card (Tuple n text) = do
     spec <- readCard st n text
     pure { n, name: cardProgression text, chords: spec.chords
-         , badge: { letter: voiceLetter n, how: howOf text, muted: spec.muted } }
+         , badge: { n, letter: voiceLetter n, how: howOf text, muted: spec.muted } }
   -- what the line does after its source: its `# …`, as written, less `mute`
   howOf text = case Array.drop 1 (split (Pattern "#") text) of
     [] -> ""
@@ -8532,6 +8564,12 @@ scoreSurface st =
     , dropAt: Just ScoreDropAt
     , padOver: Just ScoreDragOver
     , padDrop: Just ScoreDropPad
+    , voiceOver: VoiceDragOver
+    , voiceDrop: VoiceDrop
+    -- the open progression as the voices would play it: once saved
+    , titleDrag: case st.progName of
+        Just nm | any (\e -> e.kept && e.name == nm) st.library -> Just (TitleDrag nm)
+        _ -> Nothing
     }
   -- the chosen run on a row, if it is this one and still fits it
   selOf title k = st.scoreSel >>= \sel ->
@@ -8577,7 +8615,16 @@ scoreSurface st =
     , dropAt: Nothing
     , padOver: Nothing
     , padDrop: Nothing
+    , voiceOver: VoiceDragOver
+    , voiceDrop: VoiceDrop
+    , titleDrag: case r.name of
+        Just nm | any (\e -> e.kept && e.name == nm) st.library -> Just (TitleDrag nm)
+        _ -> Nothing
     }
+
+-- | What a dragged progression carries (the drawer's rows, a score title).
+progDragPrefix :: String
+progDragPrefix = "vetula-progression "
 
 fieldSurface :: forall m. State -> H.ComponentHTML Action Slots m
 fieldSurface st =

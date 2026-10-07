@@ -663,7 +663,7 @@ browserDrawer st b =
                 _ ->
                   HH.span
                     ( [ HE.onClick \_ -> RecallRow r.slot st.lastRecall
-                      , HP.title (if r.drag /= "" then "Drag it onto a bank." else "Click: recall it, the way you last did. Double-click: rename it.")
+                      , HP.title (if String.take 19 r.drag == "vetula-progression " then "Click: open it. Drag it onto a voice (its badge on the score) and the voice plays it." else if r.drag /= "" then "Drag it onto a bank." else "Click: recall it, the way you last did. Double-click: rename it.")
                       , style $ "flex:1 1 7em;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;cursor:pointer;font-size:13px;color:#1c1a12;"
                           <> (if r.current then "font-weight:bold;" else "") ]
                         <> (if r.builtin then [] else [ HE.onDoubleClick \_ -> StartRename r ]) )

@@ -25,6 +25,7 @@ module Vetula.StageCards
   , progressionTable
   , progressionLines
   , stageName
+  , repoint
   ) where
 
 import Prelude
@@ -37,7 +38,8 @@ import Data.Map (Map)
 import Data.Map as Map
 import Data.Maybe (Maybe(..))
 import Data.Nullable (Nullable, toMaybe)
-import Data.String (Pattern(..), stripPrefix)
+import Data.String (Pattern(..), stripPrefix, trim)
+import Data.String.CodeUnits as SCU
 import Data.String.CodeUnits (toCharArray)
 import Reef.Vetula.Lepidoptera (progressionKey, progressionOfKey)
 import Data.Tuple (Tuple(..))
@@ -134,3 +136,31 @@ stageName :: String -> Boolean
 stageName name = name /= "" && all ok (toCharArray name)
   where
   ok c = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_' || c == '-' || c == '.'
+
+-- | **A voice's line, reading another progression.** The source (the
+-- | quoted name after `vetula`, or the name or written-in chords after
+-- | `chN`) becomes `"name"`; the sequence and every `# …` stay as they were,
+-- | so the voice keeps its rhythm and its manner over new harmony. A line
+-- | of neither form gives `Nothing`.
+repoint :: String -> String -> Maybe String
+repoint name line0 =
+  let line = trim line0
+      cs = toCharArray line
+      quoted = "\"" <> name <> "\""
+      -- the head word, the spaces after it, then the source token
+      headLen = Array.length (Array.takeWhile (_ /= ' ') cs)
+      afterHead = Array.drop headLen cs
+      spaces = Array.length (Array.takeWhile (_ == ' ') afterHead)
+      start = headLen + spaces
+      rest = Array.drop start cs
+      srcLen = case Array.head rest of
+        Just '"' -> 1 + Array.length (Array.takeWhile (_ /= '"') (Array.drop 1 rest)) + 1
+        Just _ -> Array.length (Array.takeWhile (_ /= ' ') rest)
+        Nothing -> 0
+      headWord = SCU.take headLen line
+      isCh = case stripPrefix (Pattern "ch") headWord of
+        Just d -> d /= "" && all (\c -> c >= '0' && c <= '9') (toCharArray d)
+        Nothing -> false
+  in if (headWord == "vetula" || isCh) && srcLen > 0
+       then Just (SCU.take start line <> quoted <> SCU.drop (start + srcLen) line)
+       else Nothing
