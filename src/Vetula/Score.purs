@@ -50,6 +50,7 @@ import Halogen.HTML.Properties as HP
 import Harmonia.Chord (Mode, modeIntervals)
 import Harmonia.ScaleFit (fitsFor, reading)
 import Web.UIEvent.MouseEvent as ME
+import Web.Event.Event (Event, EventType(..))
 
 -- | The key, as far as spelling needs it: the tonic's letter (0 = C .. 6 =
 -- | B), the scale's pitch classes from the tonic up, and which side
@@ -90,6 +91,9 @@ type Handlers i =
   , duplicate :: Maybe (Int -> i)
   , remove :: Maybe (Int -> i)
   , dropAt :: Maybe (Int -> i)
+  -- a chord dragged from the side panel: allowed over a bar, dropped into it
+  , padOver :: Maybe (Event -> i)
+  , padDrop :: Maybe (Int -> i)
   }
 
 -- | The natural pitch class of each letter.
@@ -523,6 +527,12 @@ system pageSp on row =
             , HE.onMouseDown \e -> if ME.shiftKey e then on.select i else on.hear i ]
             <> (case on.dropAt of
                   Just act -> [ HE.onMouseUp \_ -> act i ]
+                  Nothing -> [])
+            <> (case on.padOver of
+                  Just act -> [ HE.handler (EventType "dragover") act ]
+                  Nothing -> [])
+            <> (case on.padDrop of
+                  Just act -> [ HE.handler (EventType "drop") \_ -> act i ]
                   Nothing -> [])
           ) [ el "title" [] [ HH.text ("hear " <> name <> " \x00b7 shift-click to choose chords for the scales that fit them") ] ]
       label =

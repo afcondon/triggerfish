@@ -140,6 +140,9 @@ import Reef.Vetula.VoiceName (voiceLetter)
 import Vetula.Lepidoptera (PerfDoc, VoiceSpec, cardProgression, docFromVoices, parseCardIn, parsePerform, printAsRecord, printCard, printProgression)
 import Vetula.StageCards as SC
 import Vetula.Score as Score
+import Harmonia.Substitute as HS
+import Harmonia.Voicing (voiceLead) as HVL
+import Harmonia.Chord (Chord(..)) as HC
 import Data.Array as Array
 import Triggerfish.Odonus.View.Progression (chordName) as OP
 import Triggerfish.Capture.RigLoops as RL
@@ -244,7 +247,7 @@ data Viewtype = Fifths | Tonnetz | KeyChords | Common | Lattice4 | Lattice | Pad
 
 -- | The side panel beside an Explore view: a chord's variations (Harmonia.Vary,
 -- | drift × density) or its relatives (voice-led neighbours, `generateCandidates`).
-data SideTab = SideVariations | SideRelatives
+data SideTab = SideVariations | SideRelatives | SideSubstitutes
 
 derive instance eqSideTab :: Eq SideTab
 
@@ -851,6 +854,7 @@ type State =
   -- the open progression's bar the side panel's chords go into, and a bar being dragged
   , scoreBar :: Maybe Int
   , scoreDrag :: Maybe Int
+  , scorePad :: Maybe ChordNode
   -- Vetula's key as last written to the stage (`vetula/key`, Reef.Route.printKey),
   -- which the router's `vetula key` row feeds Odonus's grid from.
   , stageKey :: Maybe String
@@ -1051,6 +1055,11 @@ data Action
   | ScoreDelete Int
   | ScoreDropAt Int
   | ScorePut ChordNode        -- the score: a chord from the panel into the chosen bar
+  | ScorePutAt Int ChordNode
+  | ScoreHearPad ChordNode    -- a panel chord heard in the chosen bar's register
+  | ScorePadDrag ChordNode    -- a panel chord picked up, to drop on a bar
+  | ScoreDropPad Int
+  | ScoreDragOver Event
   | ScoreReadIn String       -- the score: spell a row (by title) in its own reading, or back in the key
   | ScoreAdopt Int Mode      -- the score: make the open progression's reading the key, transposing nothing
   | CopyTidal String       -- copy the progression's Tidal source to the clipboard
@@ -1401,6 +1410,7 @@ component = H.mkComponent
       , scoreRead: Set.empty
       , scoreBar: Nothing
       , scoreDrag: Nothing
+      , scorePad: Nothing
       , stageKey: Nothing
       , clockTempo: 120.0
       , nextVoiceId: 4
@@ -2808,13 +2818,32 @@ handleActionCore = case _ of
     _ -> s { scoreDrag = Nothing }
   -- a chord from variations or relatives in place of the chosen bar's, with
   -- an id of its own (as revoicing a lattice chord catches it)
+  -- silent: it was heard on the way here (the double-click's own clicks)
   ScorePut c -> do
     st <- H.get
-    for_ st.scoreBar \i -> when (puts st && i < length st.path) do
-      let caught = place st.key c (c { id = st.nextId, isCentre = false, pinned = false })
+    for_ st.scoreBar \i -> handleAction (ScorePutAt i c)
+  ScorePutAt i c -> do
+    st <- H.get
+    when (st.stage == Hunt Score && i < length st.path) do
+      let old = st.path !! i >>= \pid -> find (\d -> d.id == pid) st.chords
+          fitted = maybe c (\o -> fitRegister o c) old
+          caught = place st.key fitted (fitted { id = st.nextId, isCentre = false, pinned = false })
       applyChords (st.chords <> [ caught ])
-      H.modify_ \s -> s { nextId = st.nextId + 1, path = fromMaybe s.path (updateAt i caught.id s.path), sounding = Just caught.id }
-      playId caught.id
+      H.modify_ \s -> s { nextId = st.nextId + 1, path = fromMaybe s.path (updateAt i caught.id s.path)
+                        , sounding = Just caught.id, scoreBar = Just i, scorePad = Nothing }
+  -- a pad heard where it would go: in its bar's register
+  ScoreHearPad c -> do
+    st <- H.get
+    let old = st.scoreBar >>= \i -> st.path !! i >>= \pid -> find (\d -> d.id == pid) st.chords
+    auditionNotesNoLog (playNotes (maybe c (\o -> fitRegister o c) old))
+  ScorePadDrag c -> H.modify_ _ { scorePad = Just c }
+  ScoreDropPad i -> do
+    st <- H.get
+    for_ st.scorePad \c -> do
+      handleAction (ScorePutAt i c)
+      st' <- H.get
+      for_ (st'.path !! i) playId
+  ScoreDragOver ev -> liftEffect (preventDefault ev)
   ScoreReadIn row -> H.modify_ \st -> st { scoreRead = if Set.member row st.scoreRead then Set.delete row st.scoreRead else Set.insert row st.scoreRead }
   -- as loading a progression adopts its saved key: the key moves under the
   -- chords, which stay where they are (`rebuild` would transpose them)
@@ -6324,11 +6353,13 @@ sideLabel :: SideTab -> String
 sideLabel = case _ of
   SideVariations -> "variations"
   SideRelatives -> "relatives"
+  SideSubstitutes -> "substitutes"
 
 sideTip :: SideTab -> String
 sideTip = case _ of
   SideVariations -> "the chord last played, varied: revoiced, thinned, or swapped for a substitute"
   SideRelatives -> "the chords that lead well from the one last played, smoothest first"
+  SideSubstitutes -> "chords that could stand in for the one last played: its tritone substitute, the same root, three or two notes in common"
 
 -- | **The colour sets, on the surface** (AC, 2026-10-06). Each set is a chip
 -- | in its own hue; adding one paints its chords in that hue in every view (the
@@ -6387,7 +6418,7 @@ sidePanel st = case st.side of
       , HP.style ("position: absolute; top: " <> (if st.stage == Hunt Score then "0px" else chyronHeight) <> "; right: 0; bottom: 0; width: " <> sidePanelWidth <> "; box-sizing: border-box; z-index: 7; overflow: auto; "
                    <> "background: #fffdf8; border-left: 1px solid #e6dfcc; padding: 10px 14px 20px;") ]
       ( [ HH.div [ HP.style "display: flex; align-items: center; gap: 6px; margin-bottom: 8px;" ]
-            ( map tab [ SideVariations, SideRelatives ]
+            ( map tab [ SideVariations, SideRelatives, SideSubstitutes ]
                 <> [ HH.div [ HP.style "flex: 1 1 auto;" ] []
                    , HH.button
                        [ HP.style "border: none; background: none; color: #a09880; font-size: 14px; cursor: pointer;"
@@ -6397,7 +6428,7 @@ sidePanel st = case st.side of
           <> (case st.scoreBar of
                 Just i | puts st ->
                   [ HH.div [ HP.style "font-size: 11px; color: #4f7a8c; background: #f3f6f7; border: 1px solid #d9e3e7; border-radius: 4px; padding: 4px 8px; margin-bottom: 8px;" ]
-                      [ HH.text ("double-click a chord to put it in bar " <> show (i + 1) <> " of the score") ] ]
+                      [ HH.text ("click hears a chord in bar " <> show (i + 1) <> "'s register; double-click puts it there, or drag it onto any bar") ] ]
                 _ -> [])
           <> case varySource st of
                Nothing ->
@@ -6413,7 +6444,8 @@ sidePanel st = case st.side of
                  ]
                    <> (case t of
                          SideVariations -> variations src
-                         SideRelatives -> relatives src)
+                         SideRelatives -> relatives src
+                         SideSubstitutes -> substitutesOf src)
       )
   where
   tab x =
@@ -6431,6 +6463,24 @@ sidePanel st = case st.side of
       [ HP.style "border: 1px solid #cdbb8c; background: #fbf6ea; color: #7a5c00; cursor: pointer; padding: 2px 8px; border-radius: 4px; font-size: 11px; white-space: nowrap;"
       , HP.title tip, HE.onClick \_ -> act ]
       [ HH.text label ]
+  -- **Substitutes** (Harmonia.Substitute), voiced near the chord they would
+  -- replace: the bass nearest its bass, the rest voice-led from its notes
+  substitutesOf src =
+    let
+      subs = HS.substitutes 6 (scaleSet st.key) src.root (map (\m -> mod m 12) (playNotes src))
+      node i sub = (importChord (-5000 - i) (voiceNear src sub.root sub.pcs)) { label = Score.spellName (Score.spellingOf st.key.tonic (scaleSet st.key)) (noteName sub.root <> sub.suffix) }
+      nodes = mapWithIndex (\i sub -> Tuple sub (node i sub)) subs
+      section reason heading blurb =
+        let cs = map snd (filter (\(Tuple sub _) -> sub.reason == reason) nodes)
+        in if length cs == 0 then [] else
+          [ HH.div [ HP.style "font-size: 10px; letter-spacing: 0.1em; text-transform: uppercase; color: #9a8d6a; margin: 10px 0 2px;" ] [ HH.text heading ]
+          , HH.div [ HP.style "font-size: 11px; color: #a09880; margin-bottom: 4px;" ] [ HH.text blurb ]
+          , HH.div [ HP.style "display: grid; grid-template-columns: repeat(4, 1fr); gap: 4px;" ] (map (padButton st (layerTable st)) cs) ]
+    in section HS.Tritone "tritone substitute" "the dominant a tritone away: same third and seventh, swapped"
+         <> section HS.SameRoot "same root" "another quality on this root"
+         <> section (HS.Shares 3) "three notes in common" "the closest stand-ins"
+         <> section (HS.Shares 2) "two notes in common" "further, but still sharing"
+
   -- One density column at a time: a panel has room for one, and the three
   -- drift rows (held, thinned, swapped) are the question it answers.
   variations src =
@@ -6873,7 +6923,7 @@ contextBar st =
       <> shakeChip
       <> familyField
       <> [ divider ]
-      <> map sideChip [ SideVariations, SideRelatives ]
+      <> map sideChip [ SideVariations, SideRelatives, SideSubstitutes ]
       <> resetChip
   current = huntOr st.lastLens st.stage
   rung vt =
@@ -7058,6 +7108,36 @@ helpOverlay st =
       [ HH.div [ HP.style "font-size: 11px; letter-spacing: 0.06em; text-transform: uppercase; color: #9a7a2a; margin: 0 0 5px;" ] [ HH.text heading ]
       , HH.p [ HP.style "font-size: 12.5px; line-height: 1.65; color: #555; margin: 0;" ] [ HH.text body ]
       ]
+
+-- | A chord (by root and pitch classes) voiced near another: its root as the
+-- | bass, nearest the other's bass; the rest voice-led from the other's
+-- | upper notes (Harmonia.Voicing.voiceLead), or placed nearest their middle
+-- | when the counts differ.
+voiceNear :: ChordNode -> Int -> Array Int -> Array Int
+voiceNear src root pcs =
+  let
+    oldBass = bassMidi src
+    bass = nearestOf oldBass root
+    uppers = src.voicing
+    mid = if length uppers == 0 then oldBass + 12 else sum uppers / length uppers
+    placed =
+      if length uppers == length pcs
+        then voicingMidi (HVL.voiceLead (Voicing uppers) (HC.Chord pcs))
+        else map (nearestOf mid) pcs
+    lifted = map (\m -> if m <= bass then m + 12 else m) placed
+  in [ bass ] <> sort (nub lifted)
+  where
+  nearestOf target pc =
+    let base = target - mod (target - pc) 12
+    in if target - base > 6 then base + 12 else base
+
+-- | A chord moved by octaves to sit where another sat (their middles
+-- | nearest): a substitute takes its bar's register.
+fitRegister :: ChordNode -> ChordNode -> ChordNode
+fitRegister old c =
+  let mean ns = if length ns == 0 then 60.0 else toNumber (sum ns) / toNumber (length ns)
+      k = round ((mean (playNotes old) - mean (playNotes c)) / 12.0)
+  in octaveShift k c
 
 -- | Whether the side panel's chords go into the score: it is showing, with a
 -- | bar of the open progression chosen.
@@ -8370,6 +8450,8 @@ scoreSurface st =
     , duplicate: Just ScoreDuplicate
     , remove: Just ScoreDelete
     , dropAt: Just ScoreDropAt
+    , padOver: Just ScoreDragOver
+    , padDrop: Just ScoreDropPad
     }
   -- the chosen run on a row, if it is this one and still fits it
   selOf title k = st.scoreSel >>= \sel ->
@@ -8413,6 +8495,8 @@ scoreSurface st =
     , duplicate: Nothing
     , remove: Nothing
     , dropAt: Nothing
+    , padOver: Nothing
+    , padDrop: Nothing
     }
 
 fieldSurface :: forall m. State -> H.ComponentHTML Action Slots m
@@ -8637,8 +8721,10 @@ padButton st table c =
     , HP.title (c.label <> " — " <> show (playNotes c))
     , HE.onMouseEnter \_ -> HoverPad (Just c)
     , HE.onMouseLeave \_ -> HoverPad Nothing
-    , HE.onClick \_ -> AuditionNode c
+    , HE.onClick \_ -> if puts st then ScoreHearPad c else AuditionNode c
     , HE.onDoubleClick \_ -> ScorePut c
+    , HP.draggable (st.stage == Hunt Score)
+    , HE.onDragStart \_ -> ScorePadDrag c
     ]
     [ SE.svg
         [ SA.viewBox (-19.0) (-19.0) 38.0 38.0, SA.width 34.0, SA.height 34.0 ]
@@ -9011,8 +9097,11 @@ varyPad st c =
           if ME.shiftKey e then KeepVariation c
           else case varyingSlot st of
             Just i | ME.altKey e -> HearAround i c
+            _ | puts st -> ScoreHearPad c
             _ -> VaryAudition c
       , HE.onDoubleClick \_ -> ScorePut c
+      , HP.draggable (st.stage == Hunt Score)
+      , HE.onDragStart \_ -> ScorePadDrag c
       ]
       [ SE.svg
           [ SA.viewBox (-15.0) (-15.0) 30.0 30.0, SA.width 30.0, SA.height 30.0 ]
