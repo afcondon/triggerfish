@@ -137,6 +137,9 @@ import Vetula.Tidal (progressionSource, parseProgression)
 import Reef.Vetula.VoiceName (voiceLetter)
 import Vetula.Lepidoptera (PerfDoc, VoiceSpec, cardProgression, docFromVoices, parseCardIn, parsePerform, printAsRecord, printCard, printProgression)
 import Vetula.StageCards as SC
+import Vetula.Score as Score
+import Data.Array as Array
+import Triggerfish.Odonus.View.Progression (chordName) as OP
 import Triggerfish.Capture.RigLoops as RL
 import Triggerfish.Capture.Runs as Runs
 import Unsafe.Reference (unsafeRefEq)
@@ -235,7 +238,7 @@ derive instance ordLeftSection :: Ord LeftSection
 -- | kept but off the ladder: too simple to follow triads and sevenths, too
 -- | unfamiliar to open with, and at its best as a playing surface. The circle
 -- | of fifths (`Fifths`) is off the ladder too, reachable by URL.
-data Viewtype = Fifths | Tonnetz | KeyChords | Common | Lattice4 | Lattice | Pads
+data Viewtype = Fifths | Tonnetz | KeyChords | Common | Lattice4 | Lattice | Pads | Score
 
 -- | The side panel beside an Explore view: a chord's variations (Harmonia.Vary,
 -- | drift × density) or its relatives (voice-led neighbours, `generateCandidates`).
@@ -291,6 +294,7 @@ viewtypeLabel = case _ of
   Lattice4 -> "+ four-note"
   Lattice -> "+ extended"
   Pads -> "banks"
+  Score -> "score"
 
 -- | Explore's ladder, in order of complexity: the buttons in the bar.
 viewtypes :: Array Viewtype
@@ -306,6 +310,7 @@ viewtypeValue = case _ of
   Lattice4 -> "lattice4"
   Lattice -> "lattice"
   Pads -> "banks"
+  Score -> "score"
 
 -- | The inverse; the old names ("fifths", "pads") still land, and anything
 -- | unknown (the retired "explore" and "vary" views) lands on Key.
@@ -318,6 +323,7 @@ viewtypeFromValue = case _ of
   "lattice" -> Lattice
   "banks" -> Pads
   "pads" -> Pads
+  "score" -> Score
   _ -> KeyChords
 
 -- | What each rung shows, for its button's tooltip.
@@ -330,6 +336,7 @@ viewtypeTip = case _ of
   Lattice4 -> "the lattice above them: every chord of up to four notes built from each degree"
   Lattice -> "the whole lattice: chords of five notes and more, up to the thirteenth"
   Pads -> "nine banks of sixteen: how far from home, by how rich"
+  Score -> "the progression on a grand staff, and every progression a voice is playing, with the voices' letters"
 
 -- | The projection a Stage names, or `fallback` when it isn't Hunt. Feeds
 -- | `lastLens`, so leaving Hunt and coming back returns to the same projection.
@@ -1024,6 +1031,9 @@ data Action
   | PlayPath               -- ▶ play the whole progression
   | ClearPath              -- ✕ empty the progression so the next shift-click starts fresh
   | PlayStep Int           -- hear one step (and make it the active chord)
+  | ScoreHear (Array Int)  -- the score: hear a chord of a progression that is not open
+  | ScoreRevoice Int       -- the score: open the ladder on a chord of the open progression (its id)
+  | ScoreOpen String       -- the score: open a saved progression by name
   | CopyTidal String       -- copy the progression's Tidal source to the clipboard
   | EditSource String      -- the Tidal-source textarea was edited (freeze the live view)
   | LoadSource             -- parse the textarea + rebuild the progression from it
@@ -2730,6 +2740,11 @@ handleActionCore = case _ of
     liftEffect (Store.saveWorking { name: "", source: "", saved: "" })
 
   PlayStep pid -> playId pid
+  ScoreHear notes -> auditionNotesNoLog notes
+  ScoreRevoice cid -> H.modify_ _ { revoicing = Just cid, sounding = Just cid, selected = Nothing }
+  ScoreOpen name -> do
+    st <- H.get
+    for_ (findIndex (\e -> e.kept && e.name == name) st.library) \i -> handleAction (LoadProg i)
 
   CopyTidal src -> liftEffect (copyText src)
 
@@ -6136,7 +6151,7 @@ render st =
     -- In HUNT the views start below the audition strip, which is fixed over
     -- the stage's top; Rehearse, Perform and Review pad for it themselves.
     ( [ HH.div [ HP.style ("position: absolute; inset: " <> (if isHunt st.stage then chyronHeight else "0px") <> " " <> sideInset st <> " " <> (if isHunt st.stage then trayHeight else "0px") <> " 0;") ] [ surface st ] ]
-      <> (if isHunt st.stage then [ colourTray st, sidePanel st ] else [])
+      <> (if isHunt st.stage then (if st.stage == Hunt Score then [] else [ colourTray st ]) <> [ sidePanel st ] else [])
       <>
     -- Scene recall belongs to the INSTRUMENT, not to Perform. Its entry point
     -- has always been the session menu in `contextBar`, which renders on every
@@ -6742,6 +6757,8 @@ contextBar st =
   huntControls =
     [ HH.div [ HP.style "display: flex; border: 1px solid #d8cfb6; border-radius: 5px; overflow: hidden;" ]
         (map rung viewtypes)
+    , HH.div [ HP.style "display: flex; border: 1px solid #d8cfb6; border-radius: 5px; overflow: hidden;" ]
+        [ rung Score ]
     , pinChip
     , divider
     , HH.div [ HP.style "display: flex; border: 1px solid #d8cfb6; border-radius: 5px; overflow: hidden;" ]
@@ -6952,6 +6969,7 @@ surface st
       Hunt Lattice4 -> fieldSurface st
       Hunt Lattice -> fieldSurface st
       Hunt Pads -> fieldSurface st
+      Hunt Score -> scoreSurface st
 
 -- | The PERFORM surface — a row of player BOXES, one per output. Shift-click (or
 -- | drag) a saved token in the chyron to pick it up, then click (or drop it onto)
@@ -8167,6 +8185,80 @@ fieldViewBox st box =
      , w, h }
 
 -- | Halogen's part of the field: an empty container, the wheel, and the pan.
+-- | **The score** (docs/kb/plans/vetula-one-surface.md): the open
+-- | progression first, then every progression a voice on the rig is playing,
+-- | each as one system with its voices as letter badges. A voice whose chords
+-- | are written into its line gets a system of its own. The badges come from
+-- | the voices on the stage, which hush removes, so they are what is playing.
+scoreSurface :: forall m. State -> H.ComponentHTML Action Slots m
+scoreSurface st =
+  HH.div
+    [ HP.style "position: absolute; inset: 0; overflow: auto; padding: 16px 22px 30px;" ]
+    ( [ Score.system sp openHandlers openRow ]
+        <> map (\r -> Score.system sp (handlersFor r) r.row) others
+        <> (if Array.null cards then [ HH.p [ HP.style "font-size: 12px; color: #a09880;" ] [ HH.text "No voices playing. \x201c+ voice\x201d hands Limulus a line that plays the open progression." ] ] else [])
+    )
+  where
+  sp = Score.spelling (noteName st.key.tonic) (scaleSet st.key)
+  pathNodes = mapMaybe (\pid -> find (\c -> c.id == pid) st.chords) st.path
+  openChords = map playNotes pathNodes
+  unsaved = length st.path > 0 && currentSource st /= st.lastPubSig
+
+  -- the voices on the stage, in letter order: their progression's name (if
+  -- they name one), their chords, and how they play them
+  cards = Array.sortWith _.n $ mapMaybe card (maybe [] Map.toUnfoldable st.stageCards)
+  card (Tuple n text) = do
+    spec <- readCard st n text
+    pure { n, name: cardProgression text, chords: spec.chords
+         , badge: { letter: voiceLetter n, how: howOf text, muted: spec.muted } }
+  -- what the line does after its source: its `# …`, as written, less `mute`
+  howOf text = case Array.drop 1 (split (Pattern "#") text) of
+    [] -> ""
+    rest -> joinWith " \x00b7 " (filter (\w -> w /= "" && w /= "mute") (map trim rest))
+
+  openBadges = maybe [] (\nm -> map _.badge (filter (\c -> c.name == Just nm) cards)) st.progName
+  openRow =
+    { title: fromMaybe "new progression" st.progName
+    , note: if length st.path == 0 then "empty: take chords in from the lattice"
+            else if unsaved && not (Array.null openBadges) then "edited: its voices play the saved version until you save"
+            else if unsaved then "not saved"
+            else ""
+    , top: true
+    , chords: openChords
+    , names: map OP.chordName openChords
+    , badges: openBadges
+    , active: st.sounding >>= \sid -> findIndex (_ == sid) st.path
+    }
+  openHandlers =
+    { hear: \i -> maybe (ScoreHear []) PlayStep (st.path !! i)
+    , revoice: Just \i -> maybe (ScoreHear []) ScoreRevoice (st.path !! i)
+    , open: Nothing
+    }
+
+  -- one row a named progression (not the open one), one a written-in voice
+  named = nub (mapMaybe _.name cards) # filter (\nm -> Just nm /= st.progName)
+  others =
+    map (\nm ->
+      let vs = filter (\c -> c.name == Just nm) cards
+          chords = maybe [] _.chords (head vs)
+          saved = any (\e -> e.kept && e.name == nm) st.library
+      in { name: Just nm
+         , row: { title: nm, note: if saved then "" else "not a saved progression: these voices are silent"
+                , top: false, chords, names: map OP.chordName chords, badges: map _.badge vs, active: Nothing } })
+      named
+    <> map (\c ->
+      { name: Nothing
+      , row: { title: "voice " <> voiceLetter c.n, note: "chords written into its line"
+             , top: false, chords: c.chords, names: map OP.chordName c.chords, badges: [ c.badge ], active: Nothing } })
+      (filter (\c -> c.name == Nothing) cards)
+  handlersFor r =
+    { hear: \i -> ScoreHear (fromMaybe [] (r.row.chords !! i))
+    , revoice: Nothing
+    , open: case r.name of
+        Just nm | any (\e -> e.kept && e.name == nm) st.library -> Just (ScoreOpen nm)
+        _ -> Nothing
+    }
+
 fieldSurface :: forall m. State -> H.ComponentHTML Action Slots m
 fieldSurface st =
   HH.div
