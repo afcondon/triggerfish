@@ -189,7 +189,7 @@ handleQuery = case _ of
     -- the progressions you saved, by their frozen names (a glyph triple, one
     -- colour: a container, as a session is)
     let progRows = map (\p -> { slot: progSlotBase + p.slot, name: p.name
-                              , icons: map (\icon -> { icon, color: "#2a2a2a" }) (Array.filter (_ /= "") (String.split (String.Pattern "-") (String.takeWhile (_ /= String.codePointFromChar '′') p.name)))
+                              , icons: map (\icon -> { icon, color: "#2a2a2a" }) (Array.filter (_ /= "") (String.split (String.Pattern "-") (String.takeWhile (_ /= String.codePointFromChar '′') p.name))) <> p.rebus
                               , tag: p.key, current: p.current, section: "Progressions", builtin: true, drag: "vetula-progression " <> p.name, actions: [] })
                        (fromMaybe [] mprogs)
     let voiceRows = Voices.rows st.voices st.names st.routesText

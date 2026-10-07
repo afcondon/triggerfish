@@ -1286,7 +1286,7 @@ data SourceQuery a
   | AskSounding (Sounding -> a)
   | SyncFree Number Number a    -- adopt the rack's shared free-run baseline (start micros, BPM)
   | AskLibrary (Array { name :: String, text :: String } -> a)   -- A5 manager
-  | AskProgressions (Array { slot :: Int, name :: String, key :: String, current :: Boolean } -> a)  -- the drawer's saved progressions
+  | AskProgressions (Array { slot :: Int, name :: String, key :: String, current :: Boolean, rebus :: Array TGlyph.GlyphIcon } -> a)  -- the drawer's saved progressions
   | LoadEntry Int a
   | OpenChannelCard Int a   -- the drawer's voice row: show that channel's card in Limulus
   | ImportText String (Boolean -> a)
@@ -1605,7 +1605,8 @@ handleQuery = case _ of
     pure (Just next)
   AskProgressions reply -> do
     s <- H.get
-    pure $ Just $ reply $ map (\(Tuple i e) -> { slot: i, name: e.name, key: e.keyLabel, current: s.progName == Just e.name })
+    pure $ Just $ reply $ map (\(Tuple i e) -> { slot: i, name: e.name, key: e.keyLabel, current: s.progName == Just e.name
+                                               , rebus: bundleRebus (parseProgression e.source) })
       (filter (\(Tuple _ e) -> e.kept) (mapWithIndex Tuple s.library))
   ImportText txt reply -> do
     st <- H.get
@@ -8550,6 +8551,7 @@ scoreSurface st =
     , ownKey: Set.member (fromMaybe "new progression" st.progName) st.scoreRead
     -- the page's key, said: the open progression is in it
     , saved: Just { tonic: st.key.tonic, scale: scaleSet st.key, mode: modeWord st.key.mode, saved: false }
+    , rebus: bundleRebus openChords
     }
   openHandlers =
     { hear: ScoreStep
@@ -8589,7 +8591,8 @@ scoreSurface st =
                 , top: false, chords, names: map OP.chordName chords, badges: map _.badge vs, active: Nothing, selected: selOf nm (length chords)
                 , ownKey: Set.member nm st.scoreRead
                 , dragging: Nothing
-                , saved: savedKey <#> \k -> { tonic: k.tonic, scale: scaleSet k, mode: modeWord k.mode, saved: true } } })
+                , saved: savedKey <#> \k -> { tonic: k.tonic, scale: scaleSet k, mode: modeWord k.mode, saved: true }
+                , rebus: bundleRebus chords } })
       named
     <> map (\c ->
       { name: Nothing
@@ -8598,7 +8601,8 @@ scoreSurface st =
              , selected: selOf ("voice " <> voiceLetter c.n) (length c.chords)
              , ownKey: Set.member ("voice " <> voiceLetter c.n) st.scoreRead
              , dragging: Nothing
-             , saved: Nothing } })
+             , saved: Nothing
+             , rebus: bundleRebus c.chords } })
       (filter (\c -> c.name == Nothing) cards)
   handlersFor r =
     { hear: \i -> ScoreHear (fromMaybe [] (r.row.chords !! i))
@@ -8621,6 +8625,15 @@ scoreSurface st =
         Just nm | any (\e -> e.kept && e.name == nm) st.library -> Just (TitleDrag nm)
         _ -> Nothing
     }
+
+-- | **A progression's chords as a set**, as a picture: its distinct chords,
+-- | in no order, through the chord rebus. The set is a function of the
+-- | progression and never stored, so it cannot go stale; two progressions
+-- | of the same chords in another order wear the same one.
+bundleRebus :: Array (Array Int) -> Array TGlyph.GlyphIcon
+bundleRebus chords =
+  let set = sort (nub (map sort (filter (\ns -> length ns > 0) chords)))
+  in if length set == 0 then [] else (TGlyph.chordGlyph set).icons
 
 -- | What a dragged progression carries (the drawer's rows, a score title).
 progDragPrefix :: String

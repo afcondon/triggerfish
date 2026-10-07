@@ -49,6 +49,7 @@ import Halogen.HTML.Events as HE
 import Halogen.HTML.Properties as HP
 import Harmonia.Chord (Mode, modeIntervals)
 import Harmonia.ScaleFit (fitsFor, reading)
+import Triggerfish.Glyph (GlyphIcon)
 import Web.UIEvent.MouseEvent as ME
 import Web.Event.Event (Event, EventType(..))
 
@@ -74,6 +75,9 @@ type Staff =
   , ownKey :: Boolean
   , dragging :: Maybe Int
   , saved :: Maybe { tonic :: Int, scale :: Array Int, mode :: String, saved :: Boolean }
+  -- the rebus of its chords as a set: the same chords in another order
+  -- wear the same picture
+  , rebus :: Array GlyphIcon
   }
 
 -- | What a click does: hear a chord (by position), revoice it (the open
@@ -346,6 +350,10 @@ system pageSp on row =
                 [ HH.text row.title ]
             Nothing -> HH.span ([ HP.style "font-size: 13px; color: #2a2a2a; font-weight: 600;" ] <> titleDrags) [ HH.text row.title ]
         ]
+          <> (if Array.null row.rebus then [] else
+                [ HH.span [ HP.style "display: inline-flex; gap: 3px; align-items: center; opacity: 0.85;"
+                          , HP.title "its chords as a set: the same chords in another order wear the same picture" ]
+                    (map (\g -> HH.i [ HP.attr (HH.AttrName "class") ("fa-solid fa-" <> g.icon), HP.style ("font-size: 12px; color: " <> g.color <> ";") ] []) row.rebus) ])
           <> (case on.revoice of
                 Just act | not (Array.null row.chords) ->
                   [ chip "revoice" "every chord's notes, side by side, the voices joined bar to bar" (act (fromMaybe 0 row.active)) ]
