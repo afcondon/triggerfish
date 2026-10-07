@@ -137,11 +137,11 @@ import Triggerfish.Capture.View as CaptureView
 import Triggerfish.Ui.Pointer as Pointer
 import Vetula.Tidal (progressionSource, progressionSourceIn, parseBeats, parseProgression)
 import Reef.Vetula.VoiceName (voiceLetter)
-import Vetula.Lepidoptera (PerfDoc, VoiceSpec, cardProgression, docFromVoices, parseCardIn, parsePerform, printAsRecord, printCard, printProgression, printProgressionIn)
+import Vetula.Lepidoptera (PerfDoc, VoiceSpec, cardProgression, docFromVoices, parseCardIn, parsePerform, printAsRecord, printCard, printProgressionIn)
 import Vetula.StageCards as SC
 import Triggerfish.Selene.Drop as Drop
 import Vetula.Score as Score
-import Harmonia.Substitute as HS
+import Harmonia.Substitute as HSub
 import Harmonia.Voicing (voiceLead) as HVL
 import Harmonia.Chord (Chord(..)) as HC
 import Data.Array as Array
@@ -1244,7 +1244,7 @@ data Action
   | KeepPass               -- mint the current pass onto the shelf as a progression
   | KeepMarked             -- mint the marked shortlist as ONE alternating token
   | KeepLattice            -- mint the whole lattice, each slot alternating
-  | ToQuadrat Int          -- publish shelf token i as a clip for Quadrat to sample
+  | ToQuadrat String       -- publish a saved progression (by name) as a clip for Quadrat to sample
   | SettleSlot Int Int     -- lock slot i to option j (or unlock if already it)
   | SettlePass             -- lock every slot to what this pass chose
   | LoosenAll              -- unlock every slot
@@ -4033,22 +4033,21 @@ handleActionCore = case _ of
   ForgetKept i -> H.modify_ \s -> s { kept = fromMaybe s.kept (deleteAt i s.kept) }
 
   -- **Declare a progression to the sampler.** One path, never a lattice: you
-  -- can only name what you sampled if you know which reading played, and a
-  -- lattice deliberately plays a different one each cycle. A token carrying an
-  -- alternating pattern is refused rather than silently flattened — flattening
-  -- would hand over a reading nobody chose.
-  ToQuadrat i -> do
+  -- can only name what you sampled if you know which reading played. A saved
+  -- progression is one plain path (alternation is a voice's business), so
+  -- there is nothing to refuse. Named by the progression; its glyph is the
+  -- chord rebus, which Quadrat mints the same way from the same chords.
+  ToQuadrat name -> do
     st <- H.get
-    case index st.chyronSaved i of
-      Nothing -> pure unit
-      Just sq
-        | sq.pattern /= "" && contains (Pattern "<") sq.pattern ->
-            H.modify_ _ { publishMsg = Just "✗ that one alternates — settle a single path first" }
-        | otherwise -> do
+    case find (\e -> e.kept && e.name == name) st.library of
+      Nothing -> H.modify_ _ { publishMsg = Just ("✗ " <> name <> " is not saved") }
+      Just entry -> do
             now <- liftEffect dateNow
-            let clip = clipOfSeq st sq now
+            let chords = filter (\ns -> length ns > 0) (parseProgression entry.source)
+                glyph = TGlyph.chordGlyph chords
+                clip = clipOfChords st name glyph.alias chords now
                 spec = Share.shareSpec clip
-                         { kind: "chord-hits", glyph: sq.glyph.alias }
+                         { kind: "chord-hits", glyph: glyph.alias }
             H.modify_ _ { publishMsg = Just "sending to Quadrat…" }
             res <- liftAff (attempt (Amphora.publish spec))
             case res of
@@ -5477,19 +5476,24 @@ sweepCap = 8
 -- | notes a chord has. `bpm` is left absent: the clip carries times, and what
 -- | tempo they are read at belongs to whatever plays it.
 clipOfSeq :: State -> SavedSeq -> Number -> MidiClip
-clipOfSeq st sq now =
+clipOfSeq st sq now = clipOfChords st sq.glyph.alias sq.glyph.alias (map _.notes sq.events) now
+
+-- | A progression as a clip for Quadrat: one chord a beat (`chordMicros`),
+-- | named, its id from its rebus and the time.
+clipOfChords :: State -> String -> String -> Array (Array Int) -> Number -> MidiClip
+clipOfChords st name alias chords now =
   -- SECONDS, not millis. `round` targets a 32-bit Int and epoch millis
   -- (1.79e12) saturate it at 2147483647 — so every clip minted from the same
   -- rebus got the identical id, which is the one field that must not collide.
   -- Seconds (1.79e9) fit until 2038, and Amphora content-addresses anyway, so a
   -- genuine duplicate dedupes on its hash rather than on this.
-  { id: "vetula-" <> sq.glyph.alias <> "-" <> show (round (now / 1000.0))
-  , events: concat (mapWithIndex evs sq.events)
-  , lenMicros: toNumber (length sq.events) * chordMicros
+  { id: "vetula-" <> alias <> "-" <> show (round (now / 1000.0))
+  , events: concat (mapWithIndex evs chords)
+  , lenMicros: toNumber (length chords) * chordMicros
   , heads: 1
   , capturedMicros: now
   , source: "vetula"
-  , name: sq.glyph.alias
+  , name
   , tags: [ "progression" ]
   , notes: ""
   , bpm: Nothing
@@ -5497,10 +5501,10 @@ clipOfSeq st sq now =
   , context: Nothing
   }
   where
-  evs i ev =
+  evs i notes =
     map (\n -> { pitch: n, headIdx: 0, fireUnixMicros: toNumber i * chordMicros
                 , vel: 92, gateMs: 700.0 })
-      ev.notes
+      notes
 
 -- | One chord a beat, in micros. The same 700 ms the pass auditions at, so what
 -- | a sampler is told matches what you heard when you chose it.
@@ -6609,7 +6613,7 @@ sidePanel st = case st.side of
   -- replace: the bass nearest its bass, the rest voice-led from its notes
   substitutesOf src =
     let
-      subs = HS.substitutes 6 (scaleSet st.key) src.root (map (\m -> mod m 12) (playNotes src))
+      subs = HSub.substitutes 6 (scaleSet st.key) src.root (map (\m -> mod m 12) (playNotes src))
       node i sub = (importChord (-5000 - i) (voiceNear src sub.root sub.pcs)) { label = Score.spellName (Score.spellingOf st.key.tonic (scaleSet st.key)) (noteName sub.root <> sub.suffix) }
       nodes = mapWithIndex (\i sub -> Tuple sub (node i sub)) subs
       section reason heading blurb =
@@ -6618,10 +6622,10 @@ sidePanel st = case st.side of
           [ HH.div [ HP.style "font-size: 10px; letter-spacing: 0.1em; text-transform: uppercase; color: #9a8d6a; margin: 10px 0 2px;" ] [ HH.text heading ]
           , HH.div [ HP.style "font-size: 11px; color: #a09880; margin-bottom: 4px;" ] [ HH.text blurb ]
           , HH.div [ HP.style "display: grid; grid-template-columns: repeat(4, 1fr); gap: 4px;" ] (map (padButton st (layerTable st)) cs) ]
-    in section HS.Tritone "tritone substitute" "the dominant a tritone away: same third and seventh, swapped"
-         <> section HS.SameRoot "same root" "another quality on this root"
-         <> section (HS.Shares 3) "three notes in common" "the closest stand-ins"
-         <> section (HS.Shares 2) "two notes in common" "further, but still sharing"
+    in section HSub.Tritone "tritone substitute" "the dominant a tritone away: same third and seventh, swapped"
+         <> section HSub.SameRoot "same root" "another quality on this root"
+         <> section (HSub.Shares 3) "three notes in common" "the closest stand-ins"
+         <> section (HSub.Shares 2) "two notes in common" "further, but still sharing"
 
   -- One density column at a time: a panel has room for one, and the three
   -- drift rows (held, thinned, swapped) are the question it answers.
@@ -6788,14 +6792,6 @@ chyronBar st =
           , HP.title "check out to the buffer to edit — the token leaves the shelf; ⏎ save re-bundles a new one"
           , HE.onClick \_ -> Unbundle i ]
           [ HH.text "✎" ]
-      -- Declare this progression to the sampler. Not a MIDI route: Quadrat is a
-      -- different origin and learns the chords by being TOLD, which is exact
-      -- where listening to the wire is a detector's best guess.
-      , HH.button
-          [ HP.style "position: absolute; bottom: -5px; left: -3px; z-index: 2; border: 1px solid #cdbb8c; background: #f6efdc; color: #4a6a3a; font-size: 9px; line-height: 1; cursor: pointer; padding: 0 3px; border-radius: 8px;"
-          , HP.title "send to Quadrat to sample — the chords, their times and this rebus"
-          , HE.onClick \_ -> ToQuadrat i ]
-          [ HH.text "◴" ]
       , HH.button
           [ HP.style "position: absolute; top: -5px; right: -3px; z-index: 2; border: 1px solid #cdbb8c; background: #f6efdc; color: #b06a5a; font-size: 10px; line-height: 1; cursor: pointer; padding: 0 3px; border-radius: 8px;"
           , HP.title "delete this saved sequence"
@@ -8630,6 +8626,9 @@ scoreSurface st =
     , voiceOver: VoiceDragOver
     , voiceDrop: VoiceDrop
     , tap: Just { start: TapStart, stop: TapStop, clear: ClearRhythm }
+    , toQuadrat: case st.progName of
+        Just nm | any (\e -> e.kept && e.name == nm) st.library -> Just (ToQuadrat nm)
+        _ -> Nothing
     -- the open progression as the voices would play it: once saved
     , titleDrag: case st.progName of
         Just nm | any (\e -> e.kept && e.name == nm) st.library -> Just (TitleDrag nm)
@@ -8688,6 +8687,9 @@ scoreSurface st =
     , voiceOver: VoiceDragOver
     , voiceDrop: VoiceDrop
     , tap: Nothing
+    , toQuadrat: case r.name of
+        Just nm | any (\e -> e.kept && e.name == nm) st.library -> Just (ToQuadrat nm)
+        _ -> Nothing
     , titleDrag: case r.name of
         Just nm | any (\e -> e.kept && e.name == nm) st.library -> Just (TitleDrag nm)
         _ -> Nothing

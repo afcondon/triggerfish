@@ -109,6 +109,8 @@ type Handlers i =
   , titleDrag :: Maybe (Event -> i)
   -- tapping a rhythm in (the open progression only)
   , tap :: Maybe { start :: i, stop :: i, clear :: i }
+  -- a saved progression, sent to Quadrat to sample
+  , toQuadrat :: Maybe i
   }
 
 -- | The natural pitch class of each letter.
@@ -372,6 +374,9 @@ system pageSp on row =
                     <> (if Array.null row.beats then [] else
                           [ chip "\x00d7 rhythm" "back to one chord a bar" t.clear ])
                 _, _ -> [])
+          <> (case on.toQuadrat of
+                Just act -> [ chip "\x25f4 Quadrat" "send to Quadrat to sample: its chords, one a beat, and their rebus" act ]
+                Nothing -> [])
           <> (case on.revoice of
                 Just act | not (Array.null row.chords) ->
                   [ chip "revoice" "every chord's notes, side by side, the voices joined bar to bar" (act (fromMaybe 0 row.active)) ]
