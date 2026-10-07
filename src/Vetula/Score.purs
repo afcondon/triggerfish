@@ -70,6 +70,7 @@ type Staff =
   , active :: Maybe Int
   , selected :: Maybe { from :: Int, to :: Int }
   , ownKey :: Boolean
+  , saved :: Maybe { tonic :: Int, scale :: Array Int, mode :: String }
   }
 
 -- | What a click does: hear a chord (by position), revoice it (the open
@@ -261,7 +262,7 @@ staffGap = 14.0
 -- | note. Every bar shares the row's vertical extent, so a note that looks
 -- | higher than its neighbour is.
 system :: forall w i. Spelling -> Handlers i -> Staff -> HH.HTML w i
-system keySp on row =
+system pageSp on row =
   HH.div
     [ HP.style ("margin: 0 0 18px; padding: 10px 14px 6px; border-radius: 6px; "
         <> (if row.top then "background: #fffdf6; border: 1px solid #d8cfb6;" else "background: #fbf8f0; border: 1px solid #ece5d0;")) ]
@@ -276,6 +277,15 @@ system keySp on row =
   allNotes = Array.concat row.chords
   roots = Array.mapMaybe rootOfName row.names
   read = reading roots allNotes
+  -- a row is measured against the key its progression was saved in, when it
+  -- has one; the open progression and written-in voices, the page's key
+  keySp = case row.saved of
+    Just k -> spellingOf k.tonic k.scale
+    Nothing -> pageSp
+  savedLine = case row.saved of
+    Just k -> [ HH.span [ HP.style "font-size: 11px; color: #6c8792;" ]
+                  [ HH.text "saved in ", HH.span [ HP.style "font-weight: 600; color: #2f3e44;" ] [ HH.text (pcNameIn keySp k.tonic <> " " <> k.mode) ] ] ]
+    Nothing -> []
   readScale r = map (\iv -> (r.root + iv) `mod` 12) (modeIntervals r.key)
   sp = case read of
     Just r | row.ownKey -> spellingOf r.root (readScale r)
@@ -294,7 +304,7 @@ system keySp on row =
           outs = Array.length r.outside
       in
         [ HH.span [ HP.style "font-size: 11px; color: #6c8792;" ]
-            [ HH.text (show inKey <> " note" <> plural inKey <> " outside the key \x00b7 reads as ")
+            [ HH.text (show inKey <> " note" <> plural inKey <> " outside " <> (if isJust row.saved then "it" else "the key") <> " \x00b7 reads as ")
             , HH.span [ HP.style "font-weight: 600; color: #2f3e44;" ] [ HH.text nm ]
             , HH.text (if outs == 0 then "" else " (" <> show outs <> " outside)")
             ]
@@ -323,6 +333,7 @@ system keySp on row =
         ]
           <> map badge row.badges
           <> (if row.note == "" then [] else [ HH.span [ HP.style "font-size: 11px; color: #9a8d6a; font-style: italic;" ] [ HH.text row.note ] ])
+          <> savedLine
           <> readingLine
       )
 

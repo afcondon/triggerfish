@@ -5763,6 +5763,13 @@ modeShort = case _ of
 -- | back into a Key. The note name is the first word; the rest is a `modeShort`
 -- | value (which can itself contain spaces, so split at the FIRST space only). Used
 -- | when loading a saved progression so its key becomes the live harmonic context.
+-- | A mode as a word in a sentence: "phrygian dominant", "major", "minor".
+modeWord :: Mode -> String
+modeWord m = case m of
+  Ionian -> "major"
+  Aeolian -> "minor"
+  _ -> toLower (trim (SCU.takeWhile (_ /= '(') (maybe "" _.label (find (\c -> c.mode == m) modeChoices))))
+
 parseKeyLabel :: String -> Maybe Key
 parseKeyLabel lbl = case SCU.indexOf (Pattern " ") lbl of
   Nothing -> Nothing
@@ -8254,6 +8261,7 @@ scoreSurface st =
     , active: st.sounding >>= \sid -> findIndex (_ == sid) st.path
     , selected: selOf (fromMaybe "new progression" st.progName) (length openChords)
     , ownKey: Set.member (fromMaybe "new progression" st.progName) st.scoreRead
+    , saved: Nothing
     }
   openHandlers =
     { hear: \i -> maybe (ScoreHear []) PlayStep (st.path !! i)
@@ -8276,17 +8284,20 @@ scoreSurface st =
       let vs = filter (\c -> c.name == Just nm) cards
           chords = maybe [] _.chords (head vs)
           saved = any (\e -> e.kept && e.name == nm) st.library
+          savedKey = find (\e -> e.kept && e.name == nm) st.library >>= \e -> parseKeyLabel e.keyLabel
       in { name: Just nm
          , row: { title: nm, note: if saved then "" else "not a saved progression: these voices are silent"
                 , top: false, chords, names: map OP.chordName chords, badges: map _.badge vs, active: Nothing, selected: selOf nm (length chords)
-                , ownKey: Set.member nm st.scoreRead } })
+                , ownKey: Set.member nm st.scoreRead
+                , saved: savedKey <#> \k -> { tonic: k.tonic, scale: scaleSet k, mode: modeWord k.mode } } })
       named
     <> map (\c ->
       { name: Nothing
       , row: { title: "voice " <> voiceLetter c.n, note: "chords written into its line"
              , top: false, chords: c.chords, names: map OP.chordName c.chords, badges: [ c.badge ], active: Nothing
              , selected: selOf ("voice " <> voiceLetter c.n) (length c.chords)
-             , ownKey: Set.member ("voice " <> voiceLetter c.n) st.scoreRead } })
+             , ownKey: Set.member ("voice " <> voiceLetter c.n) st.scoreRead
+             , saved: Nothing } })
       (filter (\c -> c.name == Nothing) cards)
   handlersFor r =
     { hear: \i -> ScoreHear (fromMaybe [] (r.row.chords !! i))
