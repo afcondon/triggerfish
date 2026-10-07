@@ -846,6 +846,9 @@ type State =
   , scoreSel :: Maybe { row :: String, anchor :: Int, to :: Int }
   -- rows spelled in their own reading rather than the key
   , scoreRead :: Set String
+  -- the open progression's bar the side panel's chords go into, and a bar being dragged
+  , scoreBar :: Maybe Int
+  , scoreDrag :: Maybe Int
   -- Vetula's key as last written to the stage (`vetula/key`, Reef.Route.printKey),
   -- which the router's `vetula key` row feeds Odonus's grid from.
   , stageKey :: Maybe String
@@ -1041,6 +1044,12 @@ data Action
   | ScoreOpen String       -- the score: open a saved progression by name
   | ScoreSelect String Int -- the score: shift-click a chord on a row (by title), choosing a run for the scales
   | ScoreUnselect
+  | ScoreStep Int            -- the score: click a chord of the open progression (hear it, make it the bar the panel's chords go into)
+  | ScoreDuplicate Int
+  | ScoreDelete Int
+  | ScoreDragFrom Int
+  | ScoreDropAt Int
+  | ScorePut ChordNode        -- the score: a chord from the panel into the chosen bar
   | ScoreReadIn String       -- the score: spell a row (by title) in its own reading, or back in the key
   | ScoreAdopt Int Mode      -- the score: make the open progression's reading the key, transposing nothing
   | CopyTidal String       -- copy the progression's Tidal source to the clipboard
@@ -1389,6 +1398,8 @@ component = H.mkComponent
       , namedCards: Map.empty
       , scoreSel: Nothing
       , scoreRead: Set.empty
+      , scoreBar: Nothing
+      , scoreDrag: Nothing
       , stageKey: Nothing
       , clockTempo: 120.0
       , nextVoiceId: 4
@@ -2761,6 +2772,40 @@ handleActionCore = case _ of
       Just sel | sel.row == row -> Just sel { to = i }
       _ -> Just { row, anchor: i, to: i } }
   ScoreUnselect -> H.modify_ _ { scoreSel = Nothing }
+  ScoreStep i -> do
+    st <- H.get
+    H.modify_ _ { scoreBar = Just i, scoreDrag = Nothing }
+    for_ (st.path !! i) playId
+  -- a copy with its own id, after it: revoicing or replacing one leaves the other
+  ScoreDuplicate i -> do
+    st <- H.get
+    for_ (st.path !! i >>= \pid -> find (\c -> c.id == pid) st.chords) \c -> do
+      let copy = c { id = st.nextId, isCentre = false, pinned = false }
+      applyChords (st.chords <> [ copy ])
+      H.modify_ \s -> s { nextId = st.nextId + 1, path = fromMaybe s.path (insertAt (i + 1) copy.id s.path), scoreBar = Just (i + 1) }
+  ScoreDelete i -> H.modify_ \s -> s
+    { path = fromMaybe s.path (deleteAt i s.path)
+    , scoreBar = if s.scoreBar == Just i then Nothing else map (\b -> if b > i then b - 1 else b) s.scoreBar
+    , scoreSel = Nothing }
+  ScoreDragFrom i -> H.modify_ _ { scoreDrag = Just i }
+  -- dropped on another bar: the dragged chord takes that place
+  ScoreDropAt j -> H.modify_ \s -> case s.scoreDrag of
+    Just i | i /= j ->
+      let moved = do
+            pid <- s.path !! i
+            rest <- deleteAt i s.path
+            insertAt j pid rest
+      in s { path = fromMaybe s.path moved, scoreDrag = Nothing, scoreBar = Just j, scoreSel = Nothing }
+    _ -> s { scoreDrag = Nothing }
+  -- a chord from variations or relatives in place of the chosen bar's, with
+  -- an id of its own (as revoicing a lattice chord catches it)
+  ScorePut c -> do
+    st <- H.get
+    for_ st.scoreBar \i -> when (puts st && i < length st.path) do
+      let caught = place st.key c (c { id = st.nextId, isCentre = false, pinned = false })
+      applyChords (st.chords <> [ caught ])
+      H.modify_ \s -> s { nextId = st.nextId + 1, path = fromMaybe s.path (updateAt i caught.id s.path), sounding = Just caught.id }
+      playId caught.id
   ScoreReadIn row -> H.modify_ \st -> st { scoreRead = if Set.member row st.scoreRead then Set.delete row st.scoreRead else Set.insert row st.scoreRead }
   -- as loading a progression adopts its saved key: the key moves under the
   -- chords, which stay where they are (`rebuild` would transpose them)
@@ -6190,7 +6235,7 @@ render st =
     -- element: the field draws its own <svg> into its container, which
     -- Halogen does not know about, and a reused container kept the old
     -- lattice under the score
-    ( [ HH.keyed (ElemName "div") [ HP.style ("position: absolute; inset: " <> (if isHunt st.stage then chyronHeight else "0px") <> " " <> sideInset st <> " " <> (if isHunt st.stage && st.stage /= Hunt Score then trayHeight else "0px") <> " 0;") ] [ Tuple (surfaceKey st) (surface st) ] ]
+    ( [ HH.keyed (ElemName "div") [ HP.style ("position: absolute; inset: " <> (if isHunt st.stage && st.stage /= Hunt Score then chyronHeight else "0px") <> " " <> sideInset st <> " " <> (if isHunt st.stage && st.stage /= Hunt Score then trayHeight else "0px") <> " 0;") ] [ Tuple (surfaceKey st) (surface st) ] ]
       <> (if isHunt st.stage then (if st.stage == Hunt Score then [] else [ colourTray st ]) <> [ sidePanel st ] else [])
       <>
     -- Scene recall belongs to the INSTRUMENT, not to Perform. Its entry point
@@ -6215,7 +6260,8 @@ render st =
     -- The AUDITION bar (chyron) now docks under the shell nav (top). The old bottom
     -- voice bar (four mini-notation lanes) was removed — the Perform surface
     -- supersedes it — and the freed bottom is reserved for a future MIDI-flow chyron.
-    , chyronBar st
+    -- not over the score: the audition trace belongs to the lattice
+    , if st.stage == Hunt Score then HH.text "" else chyronBar st
     , HH.div
         [ HP.style "position: absolute; bottom: 44px; left: 50%; transform: translateX(-50%); z-index: 5;" ]
         [ pickBar st ]
@@ -6329,7 +6375,7 @@ sidePanel st = case st.side of
   Just t ->
     HH.div
       [ HP.class_ (cn "vetula-surface--wide")
-      , HP.style ("position: absolute; top: " <> chyronHeight <> "; right: 0; bottom: 0; width: " <> sidePanelWidth <> "; box-sizing: border-box; z-index: 7; overflow: auto; "
+      , HP.style ("position: absolute; top: " <> (if st.stage == Hunt Score then "0px" else chyronHeight) <> "; right: 0; bottom: 0; width: " <> sidePanelWidth <> "; box-sizing: border-box; z-index: 7; overflow: auto; "
                    <> "background: #fffdf8; border-left: 1px solid #e6dfcc; padding: 10px 14px 20px;") ]
       ( [ HH.div [ HP.style "display: flex; align-items: center; gap: 6px; margin-bottom: 8px;" ]
             ( map tab [ SideVariations, SideRelatives ]
@@ -6339,6 +6385,11 @@ sidePanel st = case st.side of
                        , HP.title "close", HE.onClick \_ -> CloseSide ]
                        [ HH.text "\x00d7" ] ] )
         ]
+          <> (case st.scoreBar of
+                Just i | puts st ->
+                  [ HH.div [ HP.style "font-size: 11px; color: #4f7a8c; background: #f3f6f7; border: 1px solid #d9e3e7; border-radius: 4px; padding: 4px 8px; margin-bottom: 8px;" ]
+                      [ HH.text ("double-click a chord to put it in bar " <> show (i + 1) <> " of the score") ] ]
+                _ -> [])
           <> case varySource st of
                Nothing ->
                  [ HH.div [ HP.style "font-size: 12px; color: #a09880; line-height: 1.6; padding-top: 12px;" ]
@@ -6998,6 +7049,11 @@ helpOverlay st =
       [ HH.div [ HP.style "font-size: 11px; letter-spacing: 0.06em; text-transform: uppercase; color: #9a7a2a; margin: 0 0 5px;" ] [ HH.text heading ]
       , HH.p [ HP.style "font-size: 12.5px; line-height: 1.65; color: #555; margin: 0;" ] [ HH.text body ]
       ]
+
+-- | Whether the side panel's chords go into the score: it is showing, with a
+-- | bar of the open progression chosen.
+puts :: State -> Boolean
+puts st = st.stage == Hunt Score && maybe false (_ < length st.path) st.scoreBar
 
 -- | Which surface is showing, as a key: every field rung shares one, so the
 -- | field's own drawing survives a rung change.
@@ -8287,20 +8343,25 @@ scoreSurface st =
     , chords: openChords
     , names: map OP.chordName openChords
     , badges: openBadges
-    , active: st.sounding >>= \sid -> findIndex (_ == sid) st.path
+    , active: st.scoreBar
     , selected: selOf (fromMaybe "new progression" st.progName) (length openChords)
+    , dragging: st.scoreDrag
     , ownKey: Set.member (fromMaybe "new progression" st.progName) st.scoreRead
     -- the page's key, said: the open progression is in it
     , saved: Just { tonic: st.key.tonic, scale: scaleSet st.key, mode: modeWord st.key.mode, saved: false }
     }
   openHandlers =
-    { hear: \i -> maybe (ScoreHear []) PlayStep (st.path !! i)
+    { hear: ScoreStep
     , revoice: Just \i -> maybe (ScoreHear []) ScoreRevoice (st.path !! i)
     , open: Nothing
     , select: ScoreSelect openRow.title
     , unselect: ScoreUnselect
     , readIn: ScoreReadIn openRow.title
     , adopt: Just ScoreAdopt
+    , duplicate: Just ScoreDuplicate
+    , remove: Just ScoreDelete
+    , dragFrom: Just ScoreDragFrom
+    , dropAt: Just ScoreDropAt
     }
   -- the chosen run on a row, if it is this one and still fits it
   selOf title k = st.scoreSel >>= \sel ->
@@ -8319,6 +8380,7 @@ scoreSurface st =
          , row: { title: nm, note: if saved then "" else "not a saved progression: these voices are silent"
                 , top: false, chords, names: map OP.chordName chords, badges: map _.badge vs, active: Nothing, selected: selOf nm (length chords)
                 , ownKey: Set.member nm st.scoreRead
+                , dragging: Nothing
                 , saved: savedKey <#> \k -> { tonic: k.tonic, scale: scaleSet k, mode: modeWord k.mode, saved: true } } })
       named
     <> map (\c ->
@@ -8327,6 +8389,7 @@ scoreSurface st =
              , top: false, chords: c.chords, names: map OP.chordName c.chords, badges: [ c.badge ], active: Nothing
              , selected: selOf ("voice " <> voiceLetter c.n) (length c.chords)
              , ownKey: Set.member ("voice " <> voiceLetter c.n) st.scoreRead
+             , dragging: Nothing
              , saved: Nothing } })
       (filter (\c -> c.name == Nothing) cards)
   handlersFor r =
@@ -8339,6 +8402,10 @@ scoreSurface st =
     , unselect: ScoreUnselect
     , readIn: ScoreReadIn r.row.title
     , adopt: Nothing
+    , duplicate: Nothing
+    , remove: Nothing
+    , dragFrom: Nothing
+    , dropAt: Nothing
     }
 
 fieldSurface :: forall m. State -> H.ComponentHTML Action Slots m
@@ -8564,6 +8631,7 @@ padButton st table c =
     , HE.onMouseEnter \_ -> HoverPad (Just c)
     , HE.onMouseLeave \_ -> HoverPad Nothing
     , HE.onClick \_ -> AuditionNode c
+    , HE.onDoubleClick \_ -> ScorePut c
     ]
     [ SE.svg
         [ SA.viewBox (-19.0) (-19.0) 38.0 38.0, SA.width 34.0, SA.height 34.0 ]
@@ -8937,6 +9005,7 @@ varyPad st c =
           else case varyingSlot st of
             Just i | ME.altKey e -> HearAround i c
             _ -> VaryAudition c
+      , HE.onDoubleClick \_ -> ScorePut c
       ]
       [ SE.svg
           [ SA.viewBox (-15.0) (-15.0) 30.0 30.0, SA.width 30.0, SA.height 30.0 ]
@@ -9793,7 +9862,7 @@ revoiceModal :: forall m. State -> H.ComponentHTML Action Slots m
 revoiceModal st =
   Modal.modal
     { open: isJust mc
-    , title: maybe "revoice" (\c -> noteName c.root <> " · revoice") mc
+    , title: maybe "revoice" (\c -> Score.spellName (Score.spellingOf st.key.tonic (scaleSet st.key)) (OP.chordName (playNotes c)) <> " · revoice") mc
     , onClose: CloseRevoice
     }
     (maybe [] revoiceBody mc)

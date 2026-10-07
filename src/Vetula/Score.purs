@@ -29,6 +29,7 @@ module Vetula.Score
   , spellingOf
   , spell
   , spellChord
+  , spellName
   , rootOfName
   , system
   ) where
@@ -70,6 +71,7 @@ type Staff =
   , active :: Maybe Int
   , selected :: Maybe { from :: Int, to :: Int }
   , ownKey :: Boolean
+  , dragging :: Maybe Int
   , saved :: Maybe { tonic :: Int, scale :: Array Int, mode :: String, saved :: Boolean }
   }
 
@@ -84,6 +86,11 @@ type Handlers i =
   , unselect :: i
   , readIn :: i
   , adopt :: Maybe (Int -> Mode -> i)
+  -- the open progression's edits: by position
+  , duplicate :: Maybe (Int -> i)
+  , remove :: Maybe (Int -> i)
+  , dragFrom :: Maybe (Int -> i)
+  , dropAt :: Maybe (Int -> i)
   }
 
 -- | The natural pitch class of each letter.
@@ -385,10 +392,16 @@ system pageSp on row =
       ]
       ( lit <> staffLines <> clefs <> barlines <> Array.concat (Array.mapWithIndex bar spelt) )
 
-  lit = chosen <> case row.active of
+  lit = chosen <> dragged <> case row.active of
     Just i | i >= 0 && i < n ->
       [ el "rect" [ attr "x" (show (colX i)), attr "y" "0", attr "width" (show barWidth), attr "height" (show height)
                   , attr "fill" "#f2e7c6", attr "rx" "4" ] [] ]
+    _ -> []
+  -- a chord being dragged to a new place: drop it on another bar
+  dragged = case row.dragging of
+    Just i | i >= 0 && i < n ->
+      [ el "rect" [ attr "x" (show (colX i)), attr "y" "0", attr "width" (show barWidth), attr "height" (show height)
+                  , attr "fill" "none", attr "stroke" "#4f7a8c", attr "stroke-dasharray" "4 3", attr "rx" "4" ] [] ]
     _ -> []
   -- the chords chosen for the scales, underlined in a band beneath the staff
   chosen = case row.selected of
@@ -413,8 +426,8 @@ system pageSp on row =
         whole = Array.take 8 (Array.filter (\f -> Array.null f.outside) fits)
         near = Array.take (max 0 (6 - Array.length whole)) (Array.filter (\f -> not (Array.null f.outside)) fits)
         span = case Array.head chosenNames, Array.last chosenNames of
-          Just a, Just b | sel.from /= sel.to -> respell a <> " \x2013 " <> respell b
-          Just a, _ -> respell a
+          Just a, Just b | sel.from /= sel.to -> spellName sp a <> " \x2013 " <> spellName sp b
+          Just a, _ -> spellName sp a
           _, _ -> ""
       in
         [ HH.div [ HP.style "margin: 4px 0 4px; padding: 8px 10px; background: #f3f6f7; border: 1px solid #d9e3e7; border-radius: 5px; font-size: 12px; color: #2f3e44;" ]
@@ -472,7 +485,7 @@ system pageSp on row =
       x0 = colX i
       cx = x0 + barWidth / 2.0 + 6.0
       sorted = Array.sortWith _.d notes
-      name = respell (fromMaybe "" (Array.index row.names i))
+      name = spellName sp (fromMaybe "" (Array.index row.names i))
       -- seconds are offset, as written: a head a step above the one below
       -- it moves right (and back for the next, so a cluster zig-zags)
       heads = (foldl (\acc g -> case acc.prev of
@@ -490,18 +503,30 @@ system pageSp on row =
           ( [ attr "x" (show x0), attr "y" "0", attr "width" (show barWidth), attr "height" (show staffBottom)
             , attr "fill" "transparent", attr "style" "cursor: pointer;"
             , HE.onClick \e -> if ME.shiftKey e then on.select i else on.hear i ]
+            <> (case on.dragFrom of
+                  Just act -> [ HE.onMouseDown \_ -> act i ]
+                  Nothing -> [])
+            <> (case on.dropAt of
+                  Just act -> [ HE.onMouseUp \_ -> act i ]
+                  Nothing -> [])
           ) [ el "title" [] [ HH.text ("hear " <> name <> " \x00b7 shift-click to choose chords for the scales that fit them") ] ]
       label =
         el "text" [ attr "x" (show (x0 + barWidth / 2.0)), attr "y" "13", attr "text-anchor" "middle", attr "font-size" "11", attr "fill" "#4a4232"
                   , attr "style" "pointer-events: none;" ] [ HH.text name ]
-      revoiceBtn = case on.revoice of
+      -- the open progression's tools, under each bar: revoice, duplicate
+      -- (to vary the copy), delete
+      tool dx glyph tip mact = case mact of
         Just act ->
           [ el "text"
-              [ attr "x" (show (x0 + barWidth / 2.0)), attr "y" (show (staffBottom + 11.0)), attr "text-anchor" "middle", attr "font-size" "10"
+              [ attr "x" (show (x0 + barWidth / 2.0 + dx)), attr "y" (show (staffBottom + 11.0)), attr "text-anchor" "middle", attr "font-size" "10"
               , attr "fill" "#8d7a4a", attr "style" "cursor: pointer;"
               , HE.onClick \_ -> act i ]
-              [ el "title" [] [ HH.text "revoice this chord" ], HH.text "revoice" ] ]
+              [ el "title" [] [ HH.text tip ], HH.text glyph ] ]
         Nothing -> []
+      revoiceBtn =
+        tool (-14.0) "revoice" "revoice this chord: its ladder" on.revoice
+          <> tool 18.0 "\x29c9" "duplicate this chord (then vary the copy)" on.duplicate
+          <> tool 30.0 "\x00d7" "take this chord out" on.remove
     in
       [ hits, label ]
         <> Array.concatMap (\g -> ledgersFor cx g.d) (Array.nubByEq (\a b -> a.d == b.d) sorted)
@@ -520,34 +545,39 @@ system pageSp on row =
     | d == 35 = [ hline (cx - 7.0) (cx + 7.0) 35 "#8a8270" ]
     | otherwise = []
 
-  -- the name as the notes spell it: the root and any slash bass by the key
-  -- (D♭, not C#), and the suffix's alterations as accidentals (m7♭5)
-  respell nm = case String.split (String.Pattern "/") nm of
-    [ chord, bass ] -> respellRoot (alterations chord) <> "/" <> respellRoot bass
-    _ -> respellRoot (alterations nm)
-  respellRoot nm = case rootOfName nm of
-    Nothing -> nm
+-- | **A chord name as the notes spell it**: the root and any slash bass by
+-- | the key (D♭, not C#), and the suffix's alterations as accidentals (m7♭5).
+spellName :: Spelling -> String -> String
+spellName sp nm = case String.split (String.Pattern "/") nm of
+  [ chord, bass ] -> respellRoot (alterations chord) <> "/" <> respellRoot bass
+  _ -> respellRoot (alterations nm)
+  where
+  respellRoot n = case rootOfName n of
+    Nothing -> n
     Just r ->
       let l = keyLetter sp r
           acc = pcDiff r (natural l)
-          rest = SCU.drop (if Array.elem (SCU.charAt 1 nm) [ Just '#', Just 'b', Just '\x266f', Just '\x266d' ] then 2 else 1) nm
+          rest = SCU.drop (if Array.elem (SCU.charAt 1 n) [ Just '#', Just 'b', Just '\x266f', Just '\x266d' ] then 2 else 1) n
       in letterName l <> accGlyph acc <> rest
   -- "b5" → "♭5", "#11" → "♯11", past the root (whose own b or # is its spelling)
-  alterations nm =
-    let k = if Array.elem (SCU.charAt 1 nm) [ Just '#', Just 'b' ] then 2 else 1
-        head = SCU.take k nm
-        tail = SCU.drop k nm
+  alterations n =
+    let k = if Array.elem (SCU.charAt 1 n) [ Just '#', Just 'b' ] then 2 else 1
+        head = SCU.take k n
+        tail = SCU.drop k n
         swap from to t = String.replaceAll (String.Pattern from) (String.Replacement to) t
         fixed = foldl (\t d -> swap ("#" <> d) ("\x266f" <> d) (swap ("b" <> d) ("\x266d" <> d) t)) tail [ "13", "11", "9", "6", "5" ]
     in head <> fixed
-  letterName l = fromMaybe "" (Array.index [ "C", "D", "E", "F", "G", "A", "B" ] l)
 
-  accGlyph = case _ of
-    1 -> "\x266f"
-    2 -> "\x1d12a"
-    (-1) -> "\x266d"
-    (-2) -> "\x1d12b"
-    _ -> ""
+letterName :: Int -> String
+letterName l = fromMaybe "" (Array.index [ "C", "D", "E", "F", "G", "A", "B" ] l)
+
+accGlyph :: Int -> String
+accGlyph = case _ of
+  1 -> "\x266f"
+  2 -> "\x1d12a"
+  (-1) -> "\x266d"
+  (-2) -> "\x1d12b"
+  _ -> ""
 
 el :: forall r w i. String -> Array (HH.IProp r i) -> Array (HH.HTML w i) -> HH.HTML w i
 el name = HH.elementNS (Namespace "http://www.w3.org/2000/svg") (ElemName name)
