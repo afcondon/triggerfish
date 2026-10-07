@@ -87,7 +87,7 @@ import Triggerfish.Preset (Preset, indexOfContent)
 import Vetula.Store as Store
 import Triggerfish.Amphora as Amphora
 import Vetula.Tank (Specimen, SpecimenId(..), Provenance(..), specNotes)
-import Reef.Vetula.Perf (VChord, VVoice, VDest(..), VRenderer(..), PerfClock, cursorAtClock, renderAlphaBlockMidiAt, renderAlphaClockMidiAt) as RV
+import Reef.Vetula.Perf (VChord, VVoice, VDest(..), VRenderer(..), PerfClock, cursorAtClock, renderAlphaBlockMidiAt, renderAlphaClockMidiAt, wrapAt) as RV
 import Reef.Vetula.Articulate (VArticulator(..), articulate, articLabel, nextArtic) as RA
 import Reef.Route (printKey) as Route
 import Vetula.Playhead (clockFor, defaultPattern, noteClock, patternClock)
@@ -5237,7 +5237,8 @@ seqPattern chords txt
   | trim txt == "" = Nothing
   | otherwise = case parseMiniPattern txt of
       Left _ -> Nothing
-      Right idxPat -> Just (map (\s -> fromMaybe [] (fromString (trim s) >>= index chords)) idxPat)
+      -- an index past the end wraps: a progression is a stream of itself
+      Right idxPat -> Just (map (\s -> fromMaybe [] (fromString (trim s) >>= RV.wrapAt chords)) idxPat)
 
 -- | Whether a box plays on the BAR grid (a valid text-hatch sequence, or a phrase
 -- | source — a phrase always spans one bar) rather than the default per-beat grid.
