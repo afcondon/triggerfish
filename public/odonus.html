@@ -61,6 +61,15 @@
     .ladder-dot--drag { cursor: ns-resize; }
     .ladder-dot--drag:hover { stroke: #1a1a1a; stroke-width: 1.5; }
     .ladder-dot--sel { stroke: #1a1a1a; stroke-width: 2.5; }
+    .ladder-out { fill: none; stroke: #c0392b; stroke-width: 1.6; pointer-events: none; }
+    .rv-col { fill: #ffffff; fill-opacity: 0; cursor: pointer; }
+    .rv-col:hover { fill: #f4efe0; fill-opacity: 0.6; }
+    .rv-col--focus, .rv-col--focus:hover { fill: #f2e7c6; fill-opacity: 0.75; }
+    .rv-name { font-size: 12px; text-anchor: middle; fill: #8a826c; pointer-events: none; }
+    .rv-name--focus { fill: #2a2a2a; font-weight: 600; }
+    .rv-join { stroke: #b9b2a0; stroke-width: 1.2; pointer-events: none; }
+    .rv-join--leap { stroke: #c08a2b; stroke-dasharray: 3 2; }
+    .hg-modal__panel:has(.rv-wide) { max-width: 96vw !important; }
 
     /* Progression panel — horizontal note-rows (RHS of the Lattice) */
     .prow-oct { stroke: #ededed; stroke-width: 1; }

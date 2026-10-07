@@ -341,6 +341,10 @@ system pageSp on row =
                 [ HH.text row.title ]
             Nothing -> HH.span [ HP.style "font-size: 13px; color: #2a2a2a; font-weight: 600;" ] [ HH.text row.title ]
         ]
+          <> (case on.revoice of
+                Just act | not (Array.null row.chords) ->
+                  [ chip "revoice" "every chord's notes, side by side, the voices joined bar to bar" (act (fromMaybe 0 row.active)) ]
+                _ -> [])
           <> map badge row.badges
           <> (if row.note == "" then [] else [ HH.span [ HP.style "font-size: 11px; color: #9a8d6a; font-style: italic;" ] [ HH.text row.note ] ])
           <> savedLine
@@ -538,8 +542,8 @@ system pageSp on row =
       label =
         el "text" [ attr "x" (show (x0 + barWidth / 2.0)), attr "y" "13", attr "text-anchor" "middle", attr "font-size" "11", attr "fill" "#4a4232"
                   , attr "style" "pointer-events: none;" ] [ HH.text name ]
-      -- the open progression's tools, under each bar: revoice, duplicate
-      -- (to vary the copy), delete
+      -- the open progression's tools, under each bar: duplicate (to vary
+      -- the copy), delete; revoicing is the whole row's, in its header
       tool dx glyph tip mact = case mact of
         Just act ->
           [ el "text"
@@ -549,9 +553,8 @@ system pageSp on row =
               [ el "title" [] [ HH.text tip ], HH.text glyph ] ]
         Nothing -> []
       revoiceBtn =
-        tool (-14.0) "revoice" "revoice this chord: its ladder" on.revoice
-          <> tool 18.0 "\x29c9" "duplicate this chord (then vary the copy)" on.duplicate
-          <> tool 30.0 "\x00d7" "take this chord out" on.remove
+        tool (-6.0) "\x29c9" "duplicate this chord (then vary the copy)" on.duplicate
+          <> tool 8.0 "\x00d7" "take this chord out" on.remove
     in
       [ hits, label ]
         <> Array.concatMap (\g -> ledgersFor cx g.d) (Array.nubByEq (\a b -> a.d == b.d) sorted)

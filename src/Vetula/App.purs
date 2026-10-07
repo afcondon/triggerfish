@@ -1047,6 +1047,9 @@ data Action
   | PlayStep Int           -- hear one step (and make it the active chord)
   | ScoreHear (Array Int)  -- the score: hear a chord of a progression that is not open
   | ScoreRevoice Int       -- the score: open the ladder on a chord of the open progression (its id)
+  | RevoiceFocus Int       -- the progression's ladders: focus (and hear) the chord at a position
+  | RevoiceStep Int        -- move the focus a bar left / right
+  | RevoiceLead            -- voice-lead every later bar from the focused one
   | ScoreOpen String       -- the score: open a saved progression by name
   | ScoreSelect String Int -- the score: shift-click a chord on a row (by title), choosing a run for the scales
   | ScoreUnselect
@@ -2455,6 +2458,8 @@ handleActionCore = case _ of
         "Tab" -> cycleVoicing (if shift then -1 else 1)
         "ArrowUp" -> nudgeSelected 1
         "ArrowDown" -> nudgeSelected (-1)
+        "ArrowLeft" -> handleAction (RevoiceStep (-1))
+        "ArrowRight" -> handleAction (RevoiceStep 1)
         " " -> playHoveredOrSounding
         "f" -> toggleFavorite
         _ -> pure unit
@@ -2718,12 +2723,13 @@ handleActionCore = case _ of
   -- one, so the arrow / Tab / f revoicing all follow the widget you touched —
   -- which is what lets the replicated Progression ladders each be independent.
   DragStart alt horiz cid vix sm ->
-    H.modify_ _ { drag = Just { chordId: cid, voiceIx: vix, startMidi: sm, offset: 0, horizontal: horiz, double: alt }
-                , sounding = Just cid
-                , selected = Just (UpperVoice vix) }
+    H.modify_ \s -> s { drag = Just { chordId: cid, voiceIx: vix, startMidi: sm, offset: 0, horizontal: horiz, double: alt }
+                     , sounding = Just cid
+                     , revoicing = map (const cid) s.revoicing
+                     , selected = Just (UpperVoice vix) }
 
   SelectVoice cid sel ->
-    H.modify_ _ { sounding = Just cid, selected = Just sel }
+    H.modify_ \s -> s { sounding = Just cid, selected = Just sel, revoicing = map (const cid) s.revoicing }
 
   -- Omission — the axis the ladder never had, and the one that makes the five- and
   -- six-note chords of the Banks lens playable. Shift-click a note to drop it,
@@ -2743,7 +2749,7 @@ handleActionCore = case _ of
       let c' = applyToNode c (OV.dropAt i k (spreadOfNode c))
           chords' = map (\d -> if d.id == cid then c' else d) st.chords
       applyChords chords'
-      H.modify_ _ { sounding = Just cid }
+      H.modify_ \s -> s { sounding = Just cid, revoicing = map (const cid) s.revoicing }
       playChord c'
 
   -- Restore an omitted tone AT THE OCTAVE CLICKED. The ghosts stand at every
@@ -2756,7 +2762,7 @@ handleActionCore = case _ of
       let c' = applyToNode c (OV.setTone i (OV.at k) (spreadOfNode c))
           chords' = map (\d -> if d.id == cid then c' else d) st.chords
       applyChords chords'
-      H.modify_ _ { sounding = Just cid }
+      H.modify_ \s -> s { sounding = Just cid, revoicing = map (const cid) s.revoicing }
       playChord c'
 
   ToggleFavorite -> toggleFavorite
@@ -2765,7 +2771,7 @@ handleActionCore = case _ of
     st <- H.get
     let chords' = map (\d -> if d.id == cid then d { voicing = v } else d) st.chords
     applyChords chords'
-    H.modify_ _ { sounding = Just cid }
+    H.modify_ \s -> s { sounding = Just cid, revoicing = map (const cid) s.revoicing }
     for_ (find (\d -> d.id == cid) chords') playChord
 
   PlayPath -> H.gets _.path >>= playPath
@@ -2782,6 +2788,43 @@ handleActionCore = case _ of
   PlayStep pid -> playId pid
   ScoreHear notes -> auditionNotesNoLog notes
   ScoreRevoice cid -> H.modify_ _ { revoicing = Just cid, sounding = Just cid, selected = Nothing }
+
+  -- **The progression's ladders.** The focus is the chord the single-chord
+  -- tools act on (and Tab / arrows / f, through `sounding`).
+  RevoiceFocus i -> do
+    st <- H.get
+    for_ (st.path !! i >>= \pid -> find (\c -> c.id == pid) st.chords) \c -> do
+      playChord c
+      H.modify_ _ { revoicing = Just c.id, sounding = Just c.id, selected = Nothing, scoreBar = Just i }
+
+  RevoiceStep d -> do
+    st <- H.get
+    let n = length st.path
+        at = revoiceAt st
+    when (n > 0) $ handleAction (RevoiceFocus (clamp 0 (n - 1) (at + d)))
+
+  -- Each later bar voice-led from the one before it, from the focus on: the
+  -- least motion that keeps every voice. A bar with a different number of
+  -- notes is left as it is (no voice has an obvious place to go), and the
+  -- next leads on from it.
+  RevoiceLead -> do
+    st <- H.get
+    let at = revoiceAt st
+        nodeAt i = st.path !! i >>= \pid -> find (\c -> c.id == pid) st.chords
+        step acc i = case acc.prev, nodeAt i of
+          Just prev, Just cur
+            | Set.member cur.id acc.done -> acc { prev = Just cur }
+            | length cur.voicing == length prev.voicing ->
+                let notes = voiceNear prev cur.bassPc (map (\m -> mod m 12) cur.voicing)
+                    cur' = case Array.uncons notes of
+                      Just { head: b, tail: ups } | length ups == length cur.voicing ->
+                        cur { bassOct = (b - mod cur.bassPc 12) / 12, voicing = ups }
+                      _ -> cur
+                in { prev: Just cur', done: Set.insert cur.id acc.done, changed: Map.insert cur.id cur' acc.changed }
+          _, cur -> acc { prev = cur }
+        led = foldl step { prev: nodeAt at, done: Set.fromFoldable (map _.id (nodeAt at)), changed: Map.empty } (range (at + 1) (length st.path - 1))
+    applyChords (map (\c -> fromMaybe c (Map.lookup c.id led.changed)) st.chords)
+    H.gets _.path >>= playPath
   -- the first shift-click chooses one chord; the next on the same row
   -- stretches the run to it; one on the only chord chosen lets it go
   -- shift-click: this chord's scales. With ONE chord chosen on the row, a
@@ -8431,8 +8474,11 @@ fieldViewBox st box =
 -- | the voices on the stage, which hush removes, so they are what is playing.
 scoreSurface :: forall m. State -> H.ComponentHTML Action Slots m
 scoreSurface st =
+  -- `.vetula-surface` is how the key listener knows Vetula is on screen:
+  -- without it every key (Esc, Tab, the arrows) stood down on the score
   HH.div
-    [ HP.style "position: absolute; inset: 0; overflow: auto; padding: 16px 22px 30px;" ]
+    [ HP.class_ (cn "vetula-surface vetula-surface--wide")
+    , HP.style "position: absolute; inset: 0; overflow: auto; padding: 16px 22px 30px;" ]
     ( [ Score.system sp openHandlers openRow ]
         <> map (\r -> Score.system sp (handlersFor r) r.row) others
         <> (if Array.null cards then [ HH.p [ HP.style "font-size: 12px; color: #a09880;" ] [ HH.text "No voices playing. \x201c+ voice\x201d hands Limulus a line that plays the open progression." ] ] else [])
@@ -9900,21 +9946,30 @@ latticeLinkLines posMap chords =
 
 -- | The left-hand pitch ladder: a fixed pitch axis (C2..C6) showing the chord
 -- | that is currently sounding as coloured dots — the prototype's display.
-ladderView :: forall m. Maybe VoiceSel -> Maybe ChordNode -> Array (H.ComponentHTML Action Slots m)
-ladderView msel msound = grid <> octs <> dots
+-- |
+-- | `dx` moves the ladder sideways (the progression's ladders stand in a row,
+-- | in one user space, so the drag's y-maths is the same for every one);
+-- | `labels` writes the octave names (the first only); `scl`, when not empty,
+-- | rings the notes outside it in red, as on the score.
+ladderView :: forall m. Number -> Boolean -> Array Int -> Maybe VoiceSel -> Maybe ChordNode -> Array (H.ComponentHTML Action Slots m)
+ladderView dx labels scl msel msound = grid <> octs <> outs <> dots
   where
-  lx = -432.0
-  rx = -320.0
-  dotX = -376.0
+  lx = -432.0 + dx
+  rx = -320.0 + dx
+  dotX = -376.0 + dx
   midiToY m = 205.0 - toNumber (m - 36) * 9.8
+  outs = case msound of
+    Just c | length scl > 0 ->
+      map (\m -> SE.circle [ SA.cx dotX, SA.cy (midiToY m), SA.r 9.5, SA.class_ (cn "ladder-out") ])
+        (filter (\m -> not (elem (mod m 12) scl)) (playNotes c))
+    _ -> []
   grid = map
     (\m -> SE.line [ SA.x1 lx, SA.y1 (midiToY m), SA.x2 rx, SA.y2 (midiToY m), SA.class_ (cn "ladder-line") ])
     (range 36 84)
   octs = concatMap oct [ 36, 48, 60, 72, 84 ]
   oct m =
-    [ SE.line [ SA.x1 lx, SA.y1 (midiToY m), SA.x2 rx, SA.y2 (midiToY m), SA.class_ (cn "ladder-oct") ]
-    , SE.text [ SA.x (lx - 6.0), SA.y (midiToY m + 3.0), SA.class_ (cn "ladder-label") ] [ HH.text ("C" <> show (m / 12 - 1)) ]
-    ]
+    [ SE.line [ SA.x1 lx, SA.y1 (midiToY m), SA.x2 rx, SA.y2 (midiToY m), SA.class_ (cn "ladder-oct") ] ]
+      <> (if labels then [ SE.text [ SA.x (lx - 6.0), SA.y (midiToY m + 3.0), SA.class_ (cn "ladder-label") ] [ HH.text ("C" <> show (m / 12 - 1)) ] ] else [])
   dots = case msound of
     Nothing -> []
     Just c -> mapWithIndex (dot c.id) (playNotes c) <> concatMap (ghost c.id) (ghostRows c)
@@ -9975,10 +10030,11 @@ ghostOctaves base = filter (\k -> base + 12 * k <= 84) (range 0 3)
 -- | voicing. Empty until you keep one.
 voicingStrip
   :: forall m
-   . Maybe ChordNode
+   . Number
+  -> Maybe ChordNode
   -> Map String (Array (Array Int))
   -> Array (H.ComponentHTML Action Slots m)
-voicingStrip msound favs = case msound of
+voicingStrip dx msound favs = case msound of
   Nothing -> []
   Just c ->
     let vs = fromMaybe [] (Map.lookup (pcsKey c) favs)
@@ -9989,8 +10045,8 @@ voicingStrip msound favs = case msound of
                   [ HH.text "press f to keep a voicing" ] ]
          else mapWithIndex (swatch c.id c.voicing n) vs
   where
-  sLeft = -430.0
-  sRight = -322.0
+  sLeft = -430.0 + dx
+  sRight = -322.0 + dx
   sTop = -298.0
   sBot = -272.0
   yReg m = sBot - 3.0 - (toNumber (clamp 36 84 m - 36) / 48.0) * (sBot - sTop - 6.0)
@@ -10008,6 +10064,14 @@ voicingStrip msound favs = case msound of
         , SE.line [ SA.x1 cx, SA.y1 (yReg hi), SA.x2 cx, SA.y2 (yReg lo), SA.class_ (cn "vstrip-span") ]
         ]
 
+-- | The bar the progression's ladders focus: the score's, if it still holds
+-- | the chord being revoiced, else that chord's first place in the
+-- | progression (a chord can stand in more than one bar).
+revoiceAt :: State -> Int
+revoiceAt st = case st.scoreBar of
+  Just b | st.path !! b == st.revoicing -> b
+  _ -> fromMaybe 0 (st.revoicing >>= \cid -> elemIndex cid st.path)
+
 -- | The revoice modal: a dim backdrop + a left "drawer" lighting up the kept
 -- | pitch ladder + favourites strip for one chosen chord — the one-stop shop for
 -- | every WITHIN-chord change. Octave-drag a note (⌥ doubles it), Tab/Shift-Tab
@@ -10017,12 +10081,96 @@ revoiceModal :: forall m. State -> H.ComponentHTML Action Slots m
 revoiceModal st =
   Modal.modal
     { open: isJust mc
-    , title: maybe "revoice" (\c -> Score.spellName (Score.spellingOf st.key.tonic (scaleSet st.key)) (OP.chordName (playNotes c)) <> " · revoice") mc
+    , title:
+        if onPath then fromMaybe "new progression" st.progName <> " · revoice"
+        else maybe "revoice" (\c -> nameOf c <> " · revoice") mc
     , onClose: CloseRevoice
     }
-    (maybe [] revoiceBody mc)
+    (maybe [] (if onPath then progressionBody else revoiceBody) mc)
   where
   mc = st.revoicing >>= \cid -> find (\c -> c.id == cid) st.chords
+  sp = Score.spellingOf st.key.tonic (scaleSet st.key)
+  nameOf c = Score.spellName sp (OP.chordName (playNotes c))
+  onPath = maybe false (\cid -> elem cid st.path) st.revoicing
+  pathNodes = mapMaybe (\pid -> find (\c -> c.id == pid) st.chords) st.path
+  -- the focused bar: the score's, if it still holds the chord, else the
+  -- chord's first place in the progression
+  focusAt = revoiceAt st
+
+  -- **Every bar's ladder, side by side** on one pitch axis, each voice joined
+  -- to the same voice of the next chord (lowest to lowest, and so on up).
+  -- Where two chords have different numbers of notes there is no such
+  -- voice, and nothing is drawn: the gap says so. The focused bar carries
+  -- the single-chord tools; click a ladder to focus it.
+  progressionBody c =
+    let
+      n = length pathNodes
+      colW = 122.0
+      vbW = 150.0 + toNumber (max 0 (n - 1)) * colW
+      dxOf i = toNumber i * colW
+      midiToY m = 205.0 - toNumber (m - 36) * 9.8
+      dotX i = -376.0 + dxOf i
+      cols = mapWithIndex col pathNodes
+      col i _ =
+        SE.rect
+          [ SA.x (-438.0 + dxOf i), SA.y (-330.0), SA.width (colW - 4.0), SA.height 548.0, SA.rx 5.0, SA.ry 5.0
+          , SA.class_ (cn ("rv-col" <> if i == focusAt then " rv-col--focus" else ""))
+          , HE.onClick \_ -> RevoiceFocus i ]
+      names = mapWithIndex (\i d ->
+        SE.text [ SA.x (dotX i), SA.y (-312.0), SA.class_ (cn ("rv-name" <> if i == focusAt then " rv-name--focus" else "")) ]
+          [ HH.text (nameOf d) ]) pathNodes
+      joins = concat (mapWithIndex (\i d -> case pathNodes !! (i + 1) of
+        Just e | length (playNotes d) == length (playNotes e) ->
+          zipWith (\a b ->
+            SE.line [ SA.x1 (dotX i + 8.0), SA.y1 (midiToY a), SA.x2 (dotX (i + 1) - 8.0), SA.y2 (midiToY b)
+                    , SA.class_ (cn ("rv-join" <> if max (b - a) (a - b) > 7 then " rv-join--leap" else "")) ])
+            (sort (playNotes d)) (sort (playNotes e))
+        _ -> []) pathNodes)
+      ladders = concat (mapWithIndex (\i d ->
+        ladderView (dxOf i) (i == 0) (scaleSet st.key) (if i == focusAt then st.selected else Nothing) (Just d)) pathNodes)
+      tones = sort (nub (map (\m -> mod m 12) (playNotes c)))
+    in
+      [ HH.div [ HP.class_ (cn "rv-wide"), HP.style "overflow-x: auto; overflow-y: hidden; max-width: 100%;" ]
+          [ SE.svg
+              ( [ SA.viewBox (-455.0) (-335.0) vbW 560.0
+                , SA.class_ (cn "rv-svg")
+                , HP.style ("display: block; margin: 0 auto; width: " <> show vbW <> "px; height: 540px; user-select: none; -webkit-user-select: none;")
+                ]
+                  <> (case st.drag of
+                        Just _ ->
+                          [ HE.onMouseMove (DragMove <<< ME.toEvent)
+                          , HE.onMouseUp \_ -> DragEnd
+                          , HE.onMouseLeave \_ -> DragEnd
+                          ]
+                        Nothing -> []) )
+              -- the backgrounds first and fixed in number, so nothing a press
+              -- changes is inserted ahead of the dots
+              ( cols <> names <> voicingStrip (dxOf focusAt) (Just c) st.favorites <> joins <> ladders )
+          ]
+      , HH.div [ HP.style "display: flex; gap: 6px; justify-content: center; align-items: baseline; flex-wrap: wrap; margin-top: 10px;" ]
+          ( [ HH.span [ HP.style "font-size: 12px; font-weight: 600; color: #4a4a4a; margin-right: 4px;" ] [ HH.text (nameOf c) ]
+            , rvBtn "8ve ▼" "this chord down an octave, bass included" (ShiftOctave (-1))
+            , rvBtn "⟲ invert" "roll the lowest voice down: the previous inversion" (RollBass (-1))
+            , rvBtn "invert ⟳" "roll the lowest voice up: the next inversion" (RollBass 1)
+            , rvBtn "8ve ▲" "this chord up an octave, bass included" (ShiftOctave 1)
+            , HH.span [ HP.style "font-size: 11px; color: #9a9a9a; margin-left: 8px;" ] [ HH.text "bass /" ]
+            ]
+              <> map (\pc -> slashHtml c.bassPc pc) tones )
+      , HH.div [ HP.style "display: flex; gap: 6px; justify-content: center; margin-top: 8px;" ]
+          [ rvBtn "▶ play through" "the progression, bar by bar" PlayPath
+          , rvBtn "lead on from here →" "voice every later bar from the one before it, with the least motion (bars with a different number of notes are left alone)" RevoiceLead
+          ]
+      , HH.div [ HP.style "margin-top: 8px; font-size: 11px; color: #9a9a9a; text-align: center;" ]
+          [ HH.text "click a ladder to focus it · ←→ bars · Tab voicings · ↑↓ nudge · drag = 8ve · ⌥ doubles · ⇧ drops a note · f keep · Esc" ]
+      ]
+  slashHtml activeBass pc =
+    HH.button
+      [ HP.style ("border: 1px solid " <> (if pc == activeBass then "#4a4a4a" else "#d8d8d8") <> "; background: "
+                   <> (if pc == activeBass then "#4a4a4a; color: #fff;" else "#fafafa; color: #4a4a4a;")
+                   <> " cursor: pointer; padding: 2px 7px; border-radius: 3px; font-size: 11px;")
+      , HP.title "re-foot the chord on this note"
+      , HE.onClick \_ -> SlashBass pc ]
+      [ HH.text (Score.spellName sp (noteName pc)) ]
   -- The revoice content stays SVG (the ladder's octave-drag + voicing swatches are
   -- intrinsically spatial), but now lives in a small self-contained <svg> INSIDE the
   -- shared Modal widget's body rather than being painted into the lattice canvas. The
@@ -10049,8 +10197,8 @@ revoiceModal st =
                        , HE.onMouseLeave \_ -> DragEnd
                        ]
                      Nothing -> []) )
-           ( voicingStrip (Just c) st.favorites
-               <> ladderView st.selected (Just c)
+           ( voicingStrip 0.0 (Just c) st.favorites
+               <> ladderView 0.0 true (scaleSet st.key) st.selected (Just c)
                <> [ SE.text [ SA.x (-447.0), SA.y 250.0, SA.class_ (cn "rv-bass-label") ] [ HH.text "bass /" ] ]
                <> mapWithIndex (slashBtn c.bassPc) tones )
        , HH.div
