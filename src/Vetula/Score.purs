@@ -439,14 +439,26 @@ system sp on row =
     | d == 35 = [ hline (cx - 7.0) (cx + 7.0) 35 "#8a8270" ]
     | otherwise = []
 
-  -- the name's root as the notes spell it (D♭, not C#)
-  respell nm = case rootOfName nm of
+  -- the name as the notes spell it: the root and any slash bass by the key
+  -- (D♭, not C#), and the suffix's alterations as accidentals (m7♭5)
+  respell nm = case String.split (String.Pattern "/") nm of
+    [ chord, bass ] -> respellRoot (alterations chord) <> "/" <> respellRoot bass
+    _ -> respellRoot (alterations nm)
+  respellRoot nm = case rootOfName nm of
     Nothing -> nm
     Just r ->
       let l = keyLetter sp r
           acc = pcDiff r (natural l)
           rest = SCU.drop (if Array.elem (SCU.charAt 1 nm) [ Just '#', Just 'b', Just '\x266f', Just '\x266d' ] then 2 else 1) nm
       in letterName l <> accGlyph acc <> rest
+  -- "b5" → "♭5", "#11" → "♯11", past the root (whose own b or # is its spelling)
+  alterations nm =
+    let k = if Array.elem (SCU.charAt 1 nm) [ Just '#', Just 'b' ] then 2 else 1
+        head = SCU.take k nm
+        tail = SCU.drop k nm
+        swap from to t = String.replaceAll (String.Pattern from) (String.Replacement to) t
+        fixed = foldl (\t d -> swap ("#" <> d) ("\x266f" <> d) (swap ("b" <> d) ("\x266d" <> d) t)) tail [ "13", "11", "9", "6", "5" ]
+    in head <> fixed
   letterName l = fromMaybe "" (Array.index [ "C", "D", "E", "F", "G", "A", "B" ] l)
 
   accGlyph = case _ of
