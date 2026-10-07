@@ -2391,15 +2391,21 @@ handleActionCore = case _ of
           noteLists = filter (\ns -> length ns > 0) (parseProgression w.source)
           fresh = mapWithIndex (\j ns -> importChord (base + j) ns) noteLists
           ids = map _.id fresh
-      when (length ids > 0) $ H.modify_ _
-        { chords = st0.chords <> fresh
-        , imported = st0.imported <> Set.fromFoldable ids
-        , nextId = base + length fresh
-        , path = ids
-        , progName = Just (maybe w.name snd (find (\r -> fst r == w.name) migrated.renames))
-        , lastCapSig = w.source
-        , lastPubSig = w.saved
-        }
+      when (length ids > 0) do
+        let name = maybe w.name snd (find (\r -> fst r == w.name) migrated.renames)
+        H.modify_ _
+          { chords = st0.chords <> fresh
+          , imported = st0.imported <> Set.fromFoldable ids
+          , nextId = base + length fresh
+          , path = ids
+          , progName = Just name
+          , lastCapSig = w.source
+          , lastPubSig = w.saved
+          }
+        -- its key, as loading it from the library adopts it
+        for_ (find (\e -> e.kept && e.name == name) st0.library >>= \e -> parseKeyLabel e.keyLabel) \k ->
+          H.modify_ \s -> s { key = k, lattice = latticeFor k, bankPads = bankPadsFor k s.padRoll }
+        showPathRung
 
   MidiReady mout nm ->
     H.modify_ _ { midiOut = mout, midiName = nm }
@@ -2977,6 +2983,7 @@ handleActionCore = case _ of
         , restScale = Nothing
         }
       for_ (parseKeyLabel entry.keyLabel) \k -> H.modify_ \s -> s { key = k, lattice = latticeFor k, bankPads = bankPadsFor k s.padRoll }
+      showPathRung
 
   -- ← library: set the current progression aside to browse the stack. Slice 4a: the
   -- path IS the progression, so snapshot it first (AutoCapture is on a timer and may
@@ -7139,6 +7146,33 @@ fitRegister old c =
       k = round ((mean (playNotes old) - mean (playNotes c)) / 12.0)
   in octaveShift k c
 
+-- | The lowest lattice rung that shows every chord of the progression: the
+-- | key's own, + common, up to four notes, or the whole lattice.
+rungForPath :: State -> Viewtype
+rungForPath st =
+  let
+    keyChords = map (\c -> Tuple (mod c.root 12) (pcSetOf c)) (diatonicTriads st.key <> diatonicSevenths st.key)
+    levelOf c
+      | elem (Tuple (mod c.root 12) (pcSetOf c)) keyChords = 0
+      | commonChord st.key c = 1
+      | length (pcSetOf c) <= 4 = 2
+      | otherwise = 3
+    nodes = mapMaybe (\pid -> find (\c -> c.id == pid) st.chords) st.path
+    lvl = fromMaybe 0 (maximum (map levelOf nodes))
+  in fromMaybe KeyChords (index [ KeyChords, Common, Lattice4, Lattice ] lvl)
+
+-- | Raise the field to the rung the progression needs, if it is on a lower
+-- | one (never lower it: a richer view the composer chose stays).
+showPathRung :: forall o m. MonadAff m => H.HalogenM State Action Slots o m Unit
+showPathRung = do
+  st <- H.get
+  let need = rungForPath st
+      rank v = fromMaybe (-1) (elemIndex v [ KeyChords, Common, Lattice4, Lattice ])
+  case st.stage of
+    Hunt v | rank v >= 0 && rank v < rank need ->
+      H.modify_ _ { stage = Hunt need, lastLens = need, fieldLens = need }
+    _ -> pure unit
+
 -- | Whether the side panel's chords go into the score: it is showing, with a
 -- | bar of the open progression chosen.
 puts :: State -> Boolean
@@ -8574,15 +8608,40 @@ fieldScene st view table listener =
           cands = filter (\m -> sort (nub (map (\p -> mod p 12) m.pcs)) == set) marks0
           rank m = (if mod m.root 12 == mod c.root 12 then 0 else 2) + (if m.shown then 0 else 1)
       in map _.key (head (sortBy (comparing rank) cands))
-    path = if banks then [] else mapMaybe pathKeyOf (pathSteps st)
-    marks = map (\m -> if elem m.key path then m { shown = true } else m) marks0
-    -- The lattice's framing: the shown chords, with the ribbon above.
-    latBox =
+    -- a chord no mark holds (a borrowed or chromatic one) gets its own, in a
+    -- row under the lattice, across by its root, so every chord of the
+    -- progression is drawn (AC: "the progression's chords should all be visible")
+    steps = if banks then [] else pathSteps st
+    -- chords on one root stack downwards; a chord met again keeps its mark
+    strayMark i k c =
+      let deg = toNumber (mod (c.root - st.key.tonic + 12) 12) / 12.0 * 7.0
+      in mark ("path:" <> show i) c (latticeLeft + deg * latGeo.bandW) (latGeo.baseY + 80.0 + 56.0 * toNumber k) 1.0 true (chordNameOf c) false
+    strayKey c = Tuple (mod c.root 12) (pcSetOf c)
+    stepKeys = (foldl (\acc (Tuple i c) -> case pathKeyOf c of
+                  Just k -> acc { out = snoc acc.out (Tuple k Nothing) }
+                  Nothing -> case Map.lookup (strayKey c) acc.seen of
+                    Just k -> acc { out = snoc acc.out (Tuple k Nothing) }
+                    Nothing ->
+                      let row = fromMaybe 0 (Map.lookup (mod c.root 12) acc.rows)
+                          key = "path:" <> show i
+                      in { out: snoc acc.out (Tuple key (Just (strayMark i row c)))
+                         , seen: Map.insert (strayKey c) key acc.seen
+                         , rows: Map.insert (mod c.root 12) (row + 1) acc.rows })
+                 { out: [], seen: Map.empty, rows: Map.empty } (mapWithIndex Tuple steps)).out
+    path = map fst stepKeys
+    marks = map (\m -> if elem m.key path then m { shown = true } else m) (marks0 <> mapMaybe snd stepKeys)
+    -- The lattice's framing: the shown chords, with the ribbon above, and
+    -- the progression's own chords wherever they sit (a progression from
+    -- higher rungs, reopened on "key", had its beads off the top)
+    pathMarks = filter (\m -> elem m.key path) marks
+    base =
       { minX: latticeLeft - 70.0
       , maxX: latticeLeft + 6.0 * latGeo.bandW + 70.0 + (if named then 70.0 else 0.0)
       , minY: topY - 30.0 - (if ribbonRows > 0 then 30.0 + toNumber ribbonRows * 42.0 else 0.0)
       , maxY: latGeo.baseY + 40.0
       }
+    latBox = foldl (\b m -> b { minX = min b.minX (m.x - 50.0), maxX = max b.maxX (m.x + 50.0)
+                              , minY = min b.minY (m.y - 40.0), maxY = max b.maxY (m.y + 40.0) }) base pathMarks
     -- a chord's level: 0 the key's own, 1 common, 2 up to four notes, 3 beyond
     levelOf c
       | isKey c = 0
