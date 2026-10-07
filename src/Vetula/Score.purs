@@ -393,9 +393,9 @@ system pageSp on row =
       -- the drag outline LAST: an element added before the bars shifts them,
       -- Halogen patches the nodes by position, and the press and release then
       -- land on different elements, so no click ever fires
-      ( lit <> staffLines <> clefs <> barlines <> Array.concat (Array.mapWithIndex bar spelt) <> dragged )
+      ( lit <> staffLines <> clefs <> barlines <> Array.concat (Array.mapWithIndex bar spelt) <> dragged <> chosen )
 
-  lit = chosen <> case row.active of
+  lit = case row.active of
     Just i | i >= 0 && i < n ->
       [ el "rect" [ attr "x" (show (colX i)), attr "y" "0", attr "width" (show barWidth), attr "height" (show height)
                   , attr "fill" "#f2e7c6", attr "rx" "4" ] [] ]
@@ -406,12 +406,17 @@ system pageSp on row =
       [ el "rect" [ attr "x" (show (colX i)), attr "y" "0", attr "width" (show barWidth), attr "height" (show height)
                   , attr "fill" "none", attr "stroke" "#4f7a8c", attr "stroke-dasharray" "4 3", attr "rx" "4", attr "style" "pointer-events: none;" ] [] ]
     _ -> []
-  -- the chords chosen for the scales, underlined in a band beneath the staff
+  -- the chords chosen for the scales: tinted, with a band beneath, drawn
+  -- over everything (and after the bars, so nothing shifts under the mouse)
   chosen = case row.selected of
     Just sel ->
-      [ el "rect" [ attr "x" (show (colX sel.from + 2.0)), attr "y" (show (staffBottom - 3.0))
-                  , attr "width" (show (Int.toNumber (sel.to - sel.from + 1) * barWidth - 4.0)), attr "height" "3"
-                  , attr "fill" "#4f7a8c", attr "rx" "1.5" ] [] ]
+      let w = Int.toNumber (sel.to - sel.from + 1) * barWidth
+      in [ el "rect" [ attr "x" (show (colX sel.from)), attr "y" "0", attr "width" (show w), attr "height" (show staffBottom)
+                     , attr "fill" "#4f7a8c", attr "fill-opacity" "0.09", attr "stroke" "#4f7a8c", attr "stroke-opacity" "0.5", attr "rx" "4"
+                     , attr "style" "pointer-events: none;" ] []
+         , el "rect" [ attr "x" (show (colX sel.from + 2.0)), attr "y" (show (staffBottom - 3.0))
+                     , attr "width" (show (w - 4.0)), attr "height" "3"
+                     , attr "fill" "#4f7a8c", attr "rx" "1.5", attr "style" "pointer-events: none;" ] [] ]
     Nothing -> []
 
   -- **The scales that fit the chosen chords** (Harmonia.ScaleFit): every
@@ -425,11 +430,15 @@ system pageSp on row =
         ixs = Array.range sel.from sel.to
         chosenNames = Array.mapMaybe (\i -> Array.index row.names i) ixs
         notes = Array.concat (Array.mapMaybe (\i -> Array.index row.chords i) ixs)
-        fits = fitsFor 1 (Array.mapMaybe rootOfName chosenNames) notes
+        -- every scale within three notes: when nothing holds them all, the
+        -- closest still say what they leave out
+        fits = fitsFor 3 (Array.mapMaybe rootOfName chosenNames) notes
         whole = Array.take 8 (Array.filter (\f -> Array.null f.outside) fits)
-        near = Array.take (max 0 (6 - Array.length whole)) (Array.filter (\f -> not (Array.null f.outside)) fits)
+        near = Array.take (max 3 (6 - Array.length whole)) (Array.filter (\f -> not (Array.null f.outside)) fits)
+        k = sel.to - sel.from + 1
         span = case Array.head chosenNames, Array.last chosenNames of
-          Just a, Just b | sel.from /= sel.to -> spellName sp a <> " \x2013 " <> spellName sp b
+          Just a, Just b | k > 2 -> show k <> " chords: " <> spellName sp a <> " \x2026 " <> spellName sp b
+          Just a, Just b | k == 2 -> "2 chords: " <> spellName sp a <> ", " <> spellName sp b
           Just a, _ -> spellName sp a
           _, _ -> ""
       in
@@ -442,13 +451,19 @@ system pageSp on row =
                               , HP.title "put the scales away", HE.onClick \_ -> on.unselect ] [ HH.text "\x00d7" ]
                   ]
               ]
-                <> (if Array.null whole then [ HH.div [ HP.style "color: #6c8792; font-style: italic; margin-bottom: 4px;" ] [ HH.text "no scale holds every note of these chords" ] ] else [])
+                <> (if Array.null whole then [ HH.div [ HP.style "color: #6c8792; font-style: italic; margin-bottom: 4px;" ] [ HH.text (if k > 1 then "no one scale holds every note of these chords; the closest:" else "no scale here holds every note; the closest:") ] ] else [])
                 <> map fitRow whole
                 <> map fitRow near
             )
         ]
+  -- a scale's notes spelled within it, a letter a degree (A mixolydian ♭6
+  -- has C♯, not D♭); its names likewise
   fitRow f =
-    let names = map (\nm -> pcName nm.root <> " " <> nm.mode) f.names
+    let fsp = case Array.head f.names of
+          Just nm | Array.length f.pcs == 7 -> spellingOf nm.root (fromRoot f)
+          _ -> sp
+        pcName = pcNameIn fsp
+        names = map (\nm -> pcName nm.root <> " " <> nm.mode) f.names
     in HH.div [ HP.style "display: flex; align-items: baseline; gap: 8px; padding: 2px 0;" ]
          ( [ HH.span [ HP.style "font-weight: 600; min-width: 13em;" ] [ HH.text (fromMaybe "" (Array.head names)) ]
            , HH.span [ HP.style "color: #6c8792;" ] [ HH.text (String.joinWith " \x00b7 " (map pcName (fromRoot f))) ]

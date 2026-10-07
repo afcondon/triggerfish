@@ -2767,9 +2767,13 @@ handleActionCore = case _ of
   ScoreRevoice cid -> H.modify_ _ { revoicing = Just cid, sounding = Just cid, selected = Nothing }
   -- the first shift-click chooses one chord; the next on the same row
   -- stretches the run to it; one on the only chord chosen lets it go
+  -- shift-click: this chord's scales. With ONE chord chosen on the row, a
+  -- shift-click on another stretches it to a run; inside a run, or on the
+  -- chord chosen alone, it lets go; outside a run, a fresh start
   ScoreSelect row i -> H.modify_ \st -> st { scoreSel = case st.scoreSel of
-      Just sel | sel.row == row && sel.anchor == i && sel.to == i -> Nothing
-      Just sel | sel.row == row -> Just sel { to = i }
+      Just sel | sel.row == row && sel.anchor == sel.to && sel.anchor == i -> Nothing
+      Just sel | sel.row == row && sel.anchor == sel.to -> Just sel { to = i }
+      Just sel | sel.row == row && i >= min sel.anchor sel.to && i <= max sel.anchor sel.to -> Nothing
       _ -> Just { row, anchor: i, to: i } }
   ScoreUnselect -> H.modify_ _ { scoreSel = Nothing }
   -- also the side panel's subject: variations and relatives follow the bar
