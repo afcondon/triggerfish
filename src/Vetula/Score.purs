@@ -45,6 +45,8 @@ import Halogen.HTML as HH
 import Halogen.HTML.Core (AttrName(..), ElemName(..), Namespace(..))
 import Halogen.HTML.Events as HE
 import Halogen.HTML.Properties as HP
+import Harmonia.ScaleFit (fitsFor)
+import Web.UIEvent.MouseEvent as ME
 
 -- | The key, as far as spelling needs it: the tonic's letter (0 = C .. 6 =
 -- | B), the scale's pitch classes from the tonic up, and which side
@@ -64,14 +66,18 @@ type Staff =
   , names :: Array String
   , badges :: Array Badge
   , active :: Maybe Int
+  , selected :: Maybe { from :: Int, to :: Int }
   }
 
 -- | What a click does: hear a chord (by position), revoice it (the open
--- | progression only), open the row's progression (any other).
+-- | progression only), open the row's progression (any other), select a
+-- | run of chords (shift-click) for the scales that fit it, or let it go.
 type Handlers i =
   { hear :: Int -> i
   , revoice :: Maybe (Int -> i)
   , open :: Maybe i
+  , select :: Int -> i
+  , unselect :: i
   }
 
 -- | The natural pitch class of each letter.
@@ -232,9 +238,9 @@ system sp on row =
   HH.div
     [ HP.style ("margin: 0 0 18px; padding: 10px 14px 6px; border-radius: 6px; "
         <> (if row.top then "background: #fffdf6; border: 1px solid #d8cfb6;" else "background: #fbf8f0; border: 1px solid #ece5d0;")) ]
-    [ header
-    , HH.div [ HP.style "overflow-x: auto;" ] [ staff ]
-    ]
+    ( [ header
+      , HH.div [ HP.style "overflow-x: auto;" ] [ staff ]
+      ] <> scales )
   where
   header =
     HH.div [ HP.style "display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; margin-bottom: 2px;" ]
@@ -299,11 +305,67 @@ system sp on row =
       ]
       ( lit <> staffLines <> clefs <> barlines <> Array.concat (Array.mapWithIndex bar spelt) )
 
-  lit = case row.active of
+  lit = chosen <> case row.active of
     Just i | i >= 0 && i < n ->
       [ el "rect" [ attr "x" (show (colX i)), attr "y" "0", attr "width" (show barWidth), attr "height" (show height)
                   , attr "fill" "#f2e7c6", attr "rx" "4" ] [] ]
     _ -> []
+  -- the chords chosen for the scales, underlined in a band beneath the staff
+  chosen = case row.selected of
+    Just sel ->
+      [ el "rect" [ attr "x" (show (colX sel.from + 2.0)), attr "y" (show (staffBottom - 3.0))
+                  , attr "width" (show (Int.toNumber (sel.to - sel.from + 1) * barWidth - 4.0)), attr "height" "3"
+                  , attr "fill" "#4f7a8c", attr "rx" "1.5" ] [] ]
+    Nothing -> []
+
+  -- **The scales that fit the chosen chords** (Harmonia.ScaleFit): every
+  -- set that holds all their notes, named from their own roots first, then
+  -- those one note short, saying which note. A list to take to the
+  -- fretboard, not advice on what to play.
+  scales = case row.selected of
+    Nothing -> []
+    Just sel ->
+      let
+        ixs = Array.range sel.from sel.to
+        chosenNames = Array.mapMaybe (\i -> Array.index row.names i) ixs
+        notes = Array.concat (Array.mapMaybe (\i -> Array.index row.chords i) ixs)
+        fits = fitsFor 1 (Array.mapMaybe rootOfName chosenNames) notes
+        whole = Array.take 8 (Array.filter (\f -> Array.null f.outside) fits)
+        near = Array.take (max 0 (6 - Array.length whole)) (Array.filter (\f -> not (Array.null f.outside)) fits)
+        span = case Array.head chosenNames, Array.last chosenNames of
+          Just a, Just b | sel.from /= sel.to -> respell a <> " \x2013 " <> respell b
+          Just a, _ -> respell a
+          _, _ -> ""
+      in
+        [ HH.div [ HP.style "margin: 4px 0 4px; padding: 8px 10px; background: #f3f6f7; border: 1px solid #d9e3e7; border-radius: 5px; font-size: 12px; color: #2f3e44;" ]
+            ( [ HH.div [ HP.style "display: flex; align-items: baseline; gap: 8px; margin-bottom: 6px;" ]
+                  [ HH.span [ HP.style "font-size: 10px; letter-spacing: 0.1em; text-transform: uppercase; color: #6c8792;" ] [ HH.text "scales for" ]
+                  , HH.span [ HP.style "font-weight: 600;" ] [ HH.text span ]
+                  , HH.span [ HP.style "flex: 1;" ] []
+                  , HH.button [ HP.style "border: none; background: none; color: #6c8792; cursor: pointer; font-size: 13px; padding: 0;"
+                              , HP.title "put the scales away", HE.onClick \_ -> on.unselect ] [ HH.text "\x00d7" ]
+                  ]
+              ]
+                <> (if Array.null whole then [ HH.div [ HP.style "color: #6c8792; font-style: italic; margin-bottom: 4px;" ] [ HH.text "no scale holds every note of these chords" ] ] else [])
+                <> map fitRow whole
+                <> map fitRow near
+            )
+        ]
+  fitRow f =
+    let names = map (\nm -> pcName nm.root <> " " <> nm.mode) f.names
+    in HH.div [ HP.style "display: flex; align-items: baseline; gap: 8px; padding: 2px 0;" ]
+         ( [ HH.span [ HP.style "font-weight: 600; min-width: 13em;" ] [ HH.text (fromMaybe "" (Array.head names)) ]
+           , HH.span [ HP.style "color: #6c8792;" ] [ HH.text (String.joinWith " \x00b7 " (map pcName (fromRoot f))) ]
+           ]
+             <> (if Array.length names > 1 then [ HH.span [ HP.style "color: #8fa3ab; font-size: 11px;" ] [ HH.text ("also " <> String.joinWith ", " (Array.take 3 (Array.drop 1 names))) ] ] else [])
+             <> (if Array.null f.outside then [] else [ HH.span [ HP.style "color: #c0392b; font-size: 11px;" ] [ HH.text ("leaves out " <> String.joinWith ", " (map pcName f.outside)) ] ])
+         )
+  -- the scale's notes from the root it is named on
+  fromRoot f = case Array.head f.names of
+    Just nm -> Array.filter (_ >= nm.root) f.pcs <> Array.filter (_ < nm.root) f.pcs
+    Nothing -> f.pcs
+  -- a pitch class as the key spells it
+  pcName r = let l = keyLetter sp r in letterName l <> accGlyph (pcDiff r (natural l))
 
   hline x1 x2 d stroke =
     el "line" [ attr "x1" (show x1), attr "y1" (show (y d)), attr "x2" (show x2), attr "y2" (show (y d)), attr "stroke" stroke, attr "stroke-width" "1" ] []
@@ -346,8 +408,8 @@ system sp on row =
         el "rect"
           ( [ attr "x" (show x0), attr "y" "0", attr "width" (show barWidth), attr "height" (show staffBottom)
             , attr "fill" "transparent", attr "style" "cursor: pointer;"
-            , HE.onClick \_ -> on.hear i ]
-          ) [ el "title" [] [ HH.text ("hear " <> name) ] ]
+            , HE.onClick \e -> if ME.shiftKey e then on.select i else on.hear i ]
+          ) [ el "title" [] [ HH.text ("hear " <> name <> " \x00b7 shift-click to choose chords for the scales that fit them") ] ]
       label =
         el "text" [ attr "x" (show (x0 + barWidth / 2.0)), attr "y" "13", attr "text-anchor" "middle", attr "font-size" "11", attr "fill" "#4a4232"
                   , attr "style" "pointer-events: none;" ] [ HH.text name ]
