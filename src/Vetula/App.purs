@@ -860,6 +860,7 @@ type State =
   , nextSpecId :: Int             -- running number for minting SpecimenIds
   , stage :: Stage                -- Hunt <projection> | Perform | Review — see `Stage`
   , lastLens :: Viewtype          -- the Hunt projection to return to from Perform/Review
+  , fieldLens :: Viewtype         -- the last lattice rung, for the score button to return to
   -- Geometric-lens viewport (CoF / Tonnetz): pan centre + zoom, applied as the
   -- surface's viewBox. Wheel zooms toward the cursor; drag pans; reset re-fits.
   , viewCx :: Number
@@ -1400,6 +1401,7 @@ component = H.mkComponent
       , presets: [], identity: Nothing
       , stage: Hunt KeyChords   -- Key, the first rung, unless a default is pinned
       , lastLens: KeyChords
+      , fieldLens: KeyChords
       , defaultLens: KeyChords
       , side: Nothing
       , lastHeard: Nothing
@@ -4011,6 +4013,9 @@ handleActionCore = case _ of
     H.modify_ \st -> st
       { stage = v
       , lastLens = huntOr st.lastLens v
+      , fieldLens = case st.stage of
+          Hunt vt | vt /= Score -> vt
+          _ -> st.fieldLens
       , hoveredId = Nothing, hoveredTriad = Nothing
       , viewCx = 0.0, viewCy = 0.0, viewZoom = 1.0, panning = Nothing, panMoved = false
       , capture = if v == Review then st.capture else st.capture { playing = Nothing, contextOpen = false }
@@ -6181,7 +6186,11 @@ render st =
     [ HP.style ("position: relative; margin-top: calc(var(--tf-bar) + " <> contextBarHeight st <> "); margin-left: var(--tf-left, 0px); width: calc(100% - var(--tf-left, 0px) - var(--tf-right, 0px)); height: calc(100vh - var(--tf-bar) - " <> contextBarHeight st <> "); min-height: 620px; overflow: hidden; border-radius: 8px; background: " <> canvasBg <> ";") ]
     -- In HUNT the views start below the audition strip, which is fixed over
     -- the stage's top; Rehearse, Perform and Review pad for it themselves.
-    ( [ HH.div [ HP.style ("position: absolute; inset: " <> (if isHunt st.stage then chyronHeight else "0px") <> " " <> sideInset st <> " " <> (if isHunt st.stage then trayHeight else "0px") <> " 0;") ] [ surface st ] ]
+    -- Keyed by what the surface is, so a different surface gets a fresh
+    -- element: the field draws its own <svg> into its container, which
+    -- Halogen does not know about, and a reused container kept the old
+    -- lattice under the score
+    ( [ HH.keyed (ElemName "div") [ HP.style ("position: absolute; inset: " <> (if isHunt st.stage then chyronHeight else "0px") <> " " <> sideInset st <> " " <> (if isHunt st.stage && st.stage /= Hunt Score then trayHeight else "0px") <> " 0;") ] [ Tuple (surfaceKey st) (surface st) ] ]
       <> (if isHunt st.stage then (if st.stage == Hunt Score then [] else [ colourTray st ]) <> [ sidePanel st ] else [])
       <>
     -- Scene recall belongs to the INSTRUMENT, not to Perform. Its entry point
@@ -6789,7 +6798,13 @@ contextBar st =
     [ HH.div [ HP.style "display: flex; border: 1px solid #d8cfb6; border-radius: 5px; overflow: hidden;" ]
         (map rung viewtypes)
     , HH.div [ HP.style "display: flex; border: 1px solid #d8cfb6; border-radius: 5px; overflow: hidden;" ]
-        [ rung Score ]
+        [ let on = current == Score
+          in HH.button
+               [ HP.style ("border: none; padding: 4px 14px; font-size: 12px; cursor: pointer; letter-spacing: 0.02em; "
+                            <> (if on then "background: #8d7a4a; color: #fff;" else "background: #fbf8f0; color: #5a5240;"))
+               , HP.title (if on then "back to the lattice (" <> viewtypeLabel st.fieldLens <> ")" else viewtypeTip Score)
+               , HE.onClick \_ -> SetStage (Hunt (if on then st.fieldLens else Score)) ]
+               [ HH.text "score" ] ]
     , pinChip
     , divider
     , HH.div [ HP.style "display: flex; border: 1px solid #d8cfb6; border-radius: 5px; overflow: hidden;" ]
@@ -6983,6 +6998,20 @@ helpOverlay st =
       [ HH.div [ HP.style "font-size: 11px; letter-spacing: 0.06em; text-transform: uppercase; color: #9a7a2a; margin: 0 0 5px;" ] [ HH.text heading ]
       , HH.p [ HP.style "font-size: 12.5px; line-height: 1.65; color: #555; margin: 0;" ] [ HH.text body ]
       ]
+
+-- | Which surface is showing, as a key: every field rung shares one, so the
+-- | field's own drawing survives a rung change.
+surfaceKey :: State -> String
+surfaceKey st
+  | length st.genSel > 0 && length st.candidates > 0 = "pick"
+  | otherwise = case st.stage of
+      Hunt Score -> "score"
+      Hunt Fifths -> "fifths"
+      Hunt Tonnetz -> "tonnetz"
+      Hunt _ -> "field"
+      Rehearse -> "rehearse"
+      Perform -> "perform"
+      Review -> "review"
 
 -- | The Stage frame: the pick-mode cloud always wins; otherwise the active View
 -- | renders. `Perform` is its own surface; every `Browse` viewtype is one branch.
