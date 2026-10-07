@@ -135,9 +135,9 @@ import Triggerfish.Capture.River (Flow(..), riverPanel, windowMicros) as River
 import Triggerfish.Capture.View (CaptureState, capturePanel, markCode)
 import Triggerfish.Capture.View as CaptureView
 import Triggerfish.Ui.Pointer as Pointer
-import Vetula.Tidal (progressionSource, parseProgression)
+import Vetula.Tidal (progressionSource, progressionSourceIn, parseBeats, parseProgression)
 import Reef.Vetula.VoiceName (voiceLetter)
-import Vetula.Lepidoptera (PerfDoc, VoiceSpec, cardProgression, docFromVoices, parseCardIn, parsePerform, printAsRecord, printCard, printProgression)
+import Vetula.Lepidoptera (PerfDoc, VoiceSpec, cardProgression, docFromVoices, parseCardIn, parsePerform, printAsRecord, printCard, printProgression, printProgressionIn)
 import Vetula.StageCards as SC
 import Triggerfish.Selene.Drop as Drop
 import Vetula.Score as Score
@@ -855,6 +855,11 @@ type State =
   -- the open progression's bar the side panel's chords go into, and a bar being dragged
   , scoreBar :: Maybe Int
   , scoreDrag :: Maybe Int
+  -- the open progression's rhythm, tapped in: each bar's length in beats
+  -- (empty: one chord a bar); and a take in progress (the bar sounding, the
+  -- press times so far)
+  , rhythm :: Array Int
+  , tapping :: Maybe { at :: Int, times :: Array Number }
   , scorePad :: Maybe ChordNode
   -- Vetula's key as last written to the stage (`vetula/key`, Reef.Route.printKey),
   -- which the router's `vetula key` row feeds Odonus's grid from.
@@ -1069,6 +1074,10 @@ data Action
   | ScoreDragOver Event
   | ScoreReadIn String       -- the score: spell a row (by title) in its own reading, or back in the key
   | ScoreAdopt Int Mode      -- the score: make the open progression's reading the key, transposing nothing
+  | TapStart               -- tap a rhythm in: the first chord sounds, space moves on
+  | TapNext                -- space while tapping: the next chord (after the last, the take ends)
+  | TapStop                -- Esc: the take abandoned, the rhythm as it was
+  | ClearRhythm            -- back to one chord a bar
   | CopyTidal String       -- copy the progression's Tidal source to the clipboard
   | EditSource String      -- the Tidal-source textarea was edited (freeze the live view)
   | LoadSource             -- parse the textarea + rebuild the progression from it
@@ -1417,6 +1426,8 @@ component = H.mkComponent
       , scoreRead: Set.empty
       , scoreBar: Nothing
       , scoreDrag: Nothing
+      , rhythm: []
+      , tapping: Nothing
       , scorePad: Nothing
       , stageKey: Nothing
       , clockTempo: 120.0
@@ -2061,7 +2072,7 @@ publishCards = do
 readCard :: State -> Int -> String -> Maybe VoiceSpec
 readCard st n text = parseCardIn lookup n text
   where
-  lookup name = (\e -> filter (\ns -> length ns > 0) (parseProgression e.source))
+  lookup name = (\e -> { chords: filter (\ns -> length ns > 0) (parseProgression e.source), beats: parseBeats e.source })
     <$> find (\e -> e.kept && e.name == name) st.library
 
 -- | Bring the stage's copy of the saved progressions up to date (step 4b):
@@ -2083,7 +2094,7 @@ publishProgressions = do
   where
   stageText e =
     if e.kept && SC.stageName e.name
-    then Just (Tuple e.name (printProgression (filter (\ns -> length ns > 0) (parseProgression e.source))))
+    then Just (Tuple e.name (printProgressionIn (parseBeats e.source) (filter (\ns -> length ns > 0) (parseProgression e.source))))
     else Nothing
 
 -- | The number a new voice takes: the lowest of P..W (1..8) not playing.
@@ -2406,6 +2417,7 @@ handleActionCore = case _ of
           , imported = st0.imported <> Set.fromFoldable ids
           , nextId = base + length fresh
           , path = ids
+          , rhythm = parseBeats w.source
           , progName = Just name
           , lastCapSig = w.source
           , lastPubSig = w.saved
@@ -2456,7 +2468,13 @@ handleActionCore = case _ of
     st <- H.get
     -- while the revoice modal is open the surface keys (stacking / explode / reset)
     -- stand down; only the within-chord controls stay live.
-    if isJust st.revoicing
+    -- a rhythm being tapped in owns space (next chord) and Esc (stop)
+    if isJust st.tapping
+      then case k of
+        " " -> handleAction TapNext
+        "Escape" -> handleAction TapStop
+        _ -> pure unit
+    else if isJust st.revoicing
       then case k of
         "Escape" -> H.modify_ _ { revoicing = Nothing }
         "v" -> H.modify_ _ { revoicing = Nothing }
@@ -2786,13 +2804,45 @@ handleActionCore = case _ of
   -- PathPick then opens a new capture session). The visible twin of the `c` key —
   -- discoverable, and it works with a text field focused (where `c` is swallowed).
   ClearPath -> do
-    H.modify_ _ { path = [], progName = Nothing, lastCapIdx = Nothing, lastCapSig = "" }
+    H.modify_ _ { path = [], progName = Nothing, lastCapIdx = Nothing, lastCapSig = "", rhythm = [], tapping = Nothing }
     -- and the working copy with it, or a reload brings the cleared one back
     liftEffect (Store.saveWorking { name: "", source: "", saved: "" })
 
   PlayStep pid -> playId pid
   ScoreHear notes -> auditionNotesNoLog notes
   ScoreRevoice cid -> H.modify_ _ { revoicing = Just cid, sounding = Just cid, selected = Nothing }
+
+  -- **A rhythm, tapped in** (docs/kb/plans/vetula-progressions-not-tokens.md
+  -- §5): the first chord sounds; each space moves to the next, and the time
+  -- between presses is that chord's length, in beats at the clock's tempo
+  -- (whole beats, at least one). Space after the last chord ends the take.
+  -- Retaking is doing it again; the take is part of the progression, so
+  -- saving keeps it and the voices naming it play it.
+  TapStart -> do
+    st <- H.get
+    when (length st.path > 0) do
+      now <- liftEffect perfNow
+      for_ (nodeAtBar st 0) playChord
+      H.modify_ _ { tapping = Just { at: 0, times: [ now ] }, scoreBar = Just 0, selected = Nothing }
+
+  TapNext -> do
+    st <- H.get
+    for_ st.tapping \t -> do
+      now <- liftEffect perfNow
+      let times = snoc t.times now
+          at = t.at + 1
+      if at < length st.path then do
+        for_ (nodeAtBar st at) playChord
+        H.modify_ _ { tapping = Just { at, times }, scoreBar = Just at }
+      else do
+        let beatMs = 60000.0 / (if st.clockTempo > 0.0 then st.clockTempo else 120.0)
+            beats = map (\ms -> max 1 (round (ms / beatMs))) (zipWith (-) (drop 1 times) times)
+        H.modify_ _ { tapping = Nothing, rhythm = beats, scoreBar = Nothing
+                    , publishMsg = Just ("rhythm: " <> joinWith " " (map show beats) <> " beats · save to keep it") }
+
+  TapStop -> H.modify_ _ { tapping = Nothing, scoreBar = Nothing }
+
+  ClearRhythm -> H.modify_ _ { rhythm = [] }
 
   -- **Repointing a voice** (docs/kb/plans/vetula-progressions-not-tokens.md
   -- §2): a progression dropped on a voice's badge, and the voice's line
@@ -2884,9 +2934,11 @@ handleActionCore = case _ of
     for_ (st.path !! i >>= \pid -> find (\c -> c.id == pid) st.chords) \c -> do
       let copy = c { id = st.nextId, isCentre = false, pinned = false }
       applyChords (st.chords <> [ copy ])
-      H.modify_ \s -> s { nextId = st.nextId + 1, path = fromMaybe s.path (insertAt (i + 1) copy.id s.path), scoreBar = Just (i + 1) }
+      H.modify_ \s -> s { nextId = st.nextId + 1, path = fromMaybe s.path (insertAt (i + 1) copy.id s.path), scoreBar = Just (i + 1)
+                       , rhythm = inStep s (\r -> r !! i >>= \b -> insertAt (i + 1) b r) }
   ScoreDelete i -> H.modify_ \s -> s
     { path = fromMaybe s.path (deleteAt i s.path)
+    , rhythm = inStep s (deleteAt i)
     , scoreBar = if s.scoreBar == Just i then Nothing else map (\b -> if b > i then b - 1 else b) s.scoreBar
     , scoreSel = Nothing }
   -- dropped on another bar: the dragged chord takes that place
@@ -2896,7 +2948,12 @@ handleActionCore = case _ of
             pid <- s.path !! i
             rest <- deleteAt i s.path
             insertAt j pid rest
-      in s { path = fromMaybe s.path moved, scoreDrag = Nothing, scoreBar = Just j, scoreSel = Nothing }
+          -- the length moves with its chord
+          movedR = inStep s \r -> do
+            b <- r !! i
+            rest <- deleteAt i r
+            insertAt j b rest
+      in s { path = fromMaybe s.path moved, rhythm = movedR, scoreDrag = Nothing, scoreBar = Just j, scoreSel = Nothing }
     _ -> s { scoreDrag = Nothing }
   -- a chord from variations or relatives in place of the chosen bar's, with
   -- an id of its own (as revoicing a lattice chord catches it)
@@ -3043,6 +3100,7 @@ handleActionCore = case _ of
         -- Slice 4a: restore the snapshot INTO the path (the one performed progression),
         -- not a parallel working copy.
         , path = ids
+        , rhythm = parseBeats entry.source
         , progName = Just entry.name
         -- continue this entry's line of versions: edits update it in place
         -- (or fork a sibling if it is kept)
@@ -8553,6 +8611,8 @@ scoreSurface st =
     -- the page's key, said: the open progression is in it
     , saved: Just { tonic: st.key.tonic, scale: scaleSet st.key, mode: modeWord st.key.mode, saved: false }
     , rebus: bundleRebus openChords
+    , beats: rhythmOf st
+    , tapping: map _.at st.tapping
     }
   openHandlers =
     { hear: ScoreStep
@@ -8569,6 +8629,7 @@ scoreSurface st =
     , padDrop: Just ScoreDropPad
     , voiceOver: VoiceDragOver
     , voiceDrop: VoiceDrop
+    , tap: Just { start: TapStart, stop: TapStop, clear: ClearRhythm }
     -- the open progression as the voices would play it: once saved
     , titleDrag: case st.progName of
         Just nm | any (\e -> e.kept && e.name == nm) st.library -> Just (TitleDrag nm)
@@ -8593,7 +8654,9 @@ scoreSurface st =
                 , ownKey: Set.member nm st.scoreRead
                 , dragging: Nothing
                 , saved: savedKey <#> \k -> { tonic: k.tonic, scale: scaleSet k, mode: modeWord k.mode, saved: true }
-                , rebus: bundleRebus chords } })
+                , rebus: bundleRebus chords
+                , beats: maybe [] (\e -> parseBeats e.source) (find (\e -> e.kept && e.name == nm) st.library)
+                , tapping: Nothing } })
       named
     <> map (\c ->
       { name: Nothing
@@ -8603,7 +8666,9 @@ scoreSurface st =
              , ownKey: Set.member ("voice " <> voiceLetter c.n) st.scoreRead
              , dragging: Nothing
              , saved: Nothing
-             , rebus: bundleRebus c.chords } })
+             , rebus: bundleRebus c.chords
+             , beats: []
+             , tapping: Nothing } })
       (filter (\c -> c.name == Nothing) cards)
   handlersFor r =
     { hear: \i -> ScoreHear (fromMaybe [] (r.row.chords !! i))
@@ -8622,6 +8687,7 @@ scoreSurface st =
     , padDrop: Nothing
     , voiceOver: VoiceDragOver
     , voiceDrop: VoiceDrop
+    , tap: Nothing
     , titleDrag: case r.name of
         Just nm | any (\e -> e.kept && e.name == nm) st.library -> Just (TitleDrag nm)
         _ -> Nothing
@@ -8635,6 +8701,19 @@ bundleRebus :: Array (Array Int) -> Array TGlyph.GlyphIcon
 bundleRebus chords =
   let set = sort (nub (map sort (filter (\ns -> length ns > 0) chords)))
   in if length set == 0 then [] else (TGlyph.chordGlyph set).icons
+
+-- | The open progression's rhythm, if it has one a bar (an edit the
+-- | rhythm could not follow leaves it out of step: then none).
+rhythmOf :: State -> Array Int
+rhythmOf st = if length st.rhythm == length st.path then st.rhythm else []
+
+-- | A rhythm changed with its bars, while it is in step with them.
+inStep :: State -> (Array Int -> Maybe (Array Int)) -> Array Int
+inStep st f = if length st.rhythm == length st.path then fromMaybe [] (f st.rhythm) else []
+
+-- | The chord at a bar of the open progression.
+nodeAtBar :: State -> Int -> Maybe ChordNode
+nodeAtBar st i = st.path !! i >>= \pid -> find (\c -> c.id == pid) st.chords
 
 -- | What a dragged progression carries (the drawer's rows, a score title).
 progDragPrefix :: String
@@ -9572,7 +9651,7 @@ pathSteps st = mapMaybe (\pid -> find (\c -> c.id == pid) st.chords) st.path
 
 -- | The live-derived Tidal source for the current progression.
 currentSource :: State -> String
-currentSource st = progressionSource (groupLabel st.key) (pathSteps st)
+currentSource st = progressionSourceIn (groupLabel st.key) (rhythmOf st) (pathSteps st)
 
 -- | Rebuild a chord from a pasted note-list: the lowest note grounds the bass,
 -- | the rest are the voicing (uppers). Re-export reproduces the paste, since

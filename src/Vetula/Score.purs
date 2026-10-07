@@ -78,6 +78,10 @@ type Staff =
   -- the rebus of its chords as a set: the same chords in another order
   -- wear the same picture
   , rebus :: Array GlyphIcon
+  -- each bar's length in beats, if a rhythm was tapped in (empty: a bar
+  -- each); and the bar a take in progress has reached
+  , beats :: Array Int
+  , tapping :: Maybe Int
   }
 
 -- | What a click does: hear a chord (by position), revoice it (the open
@@ -103,6 +107,8 @@ type Handlers i =
   , voiceOver :: Event -> i
   , voiceDrop :: Int -> Event -> i
   , titleDrag :: Maybe (Event -> i)
+  -- tapping a rhythm in (the open progression only)
+  , tap :: Maybe { start :: i, stop :: i, clear :: i }
   }
 
 -- | The natural pitch class of each letter.
@@ -354,6 +360,18 @@ system pageSp on row =
                 [ HH.span [ HP.style "display: inline-flex; gap: 3px; align-items: center; opacity: 0.85;"
                           , HP.title "its chords as a set: the same chords in another order wear the same picture" ]
                     (map (\g -> HH.i [ HP.attr (HH.AttrName "class") ("fa-solid fa-" <> g.icon), HP.style ("font-size: 12px; color: " <> g.color <> ";") ] []) row.rebus) ])
+          <> (case on.tap, row.tapping of
+                Just t, Just at ->
+                  [ HH.span [ HP.style "font-size: 11px; color: #fff; background: #b3261e; border-radius: 4px; padding: 1px 8px;" ]
+                      [ HH.text ("\x25cf tapping, bar " <> show (at + 1) <> " of " <> show (Array.length row.chords) <> " \x00b7 space: next chord \x00b7 Esc: stop") ]
+                  , chip "stop" "abandon this take; the rhythm stays as it was" t.stop ]
+                Just t, Nothing | not (Array.null row.chords) ->
+                  [ chip (if Array.null row.beats then "\x25cf tap rhythm" else "\x25cf retake")
+                      "tap the rhythm in: the first chord sounds, space moves to the next; the time between presses is each chord's length"
+                      t.start ]
+                    <> (if Array.null row.beats then [] else
+                          [ chip "\x00d7 rhythm" "back to one chord a bar" t.clear ])
+                _, _ -> [])
           <> (case on.revoice of
                 Just act | not (Array.null row.chords) ->
                   [ chip "revoice" "every chord's notes, side by side, the voices joined bar to bar" (act (fromMaybe 0 row.active)) ]
@@ -577,6 +595,12 @@ system pageSp on row =
           <> tool 8.0 "\x00d7" "take this chord out" on.remove
     in
       [ hits, label ]
+        -- its length, when the row has a rhythm
+        <> (case Array.index row.beats i of
+              Just b -> [ el "text" [ attr "x" (show (x0 + barWidth - 5.0)), attr "y" "13", attr "text-anchor" "end", attr "font-size" "9"
+                                    , attr "fill" "#9a8d6a", attr "style" "pointer-events: none;" ]
+                            [ el "title" [] [ HH.text (show b <> " beats") ], HH.text ("\x2669" <> show b) ] ]
+              Nothing -> [])
         <> Array.concatMap (\g -> ledgersFor cx g.d) (Array.nubByEq (\a b -> a.d == b.d) sorted)
         <> map (\(Tuple g dx) -> el "ellipse" [ attr "cx" (show (cx + dx)), attr "cy" (show (y g.d)), attr "rx" "3.9", attr "ry" "2.9"
                                                  , attr "transform" ("rotate(-20 " <> show (cx + dx) <> " " <> show (y g.d) <> ")")
