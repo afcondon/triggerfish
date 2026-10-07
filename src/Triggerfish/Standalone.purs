@@ -588,7 +588,7 @@ browserDrawer st b =
     [ style $ "position:fixed;top:var(--tf-bar);left:0;bottom:0;z-index:45;display:flex;"
         <> "font-family:Georgia,serif;background:linear-gradient(#ece7da,#e2dccb);border-right:1px solid #b3ae9c" ]
     [ HH.element (HH.ElemName "style") []
-        [ HH.text ".tfb-act{display:none;font:10px Georgia,serif;padding:0 5px;border:1px solid #00000026;border-radius:3px;background:#f6f2e7;cursor:pointer;color:#5a5648}.tfb-row:hover .tfb-act,.tfb-act.ask{display:inline-block}.tfb-act.ask{color:#b3261e;border-color:#b3261e}.tfb-row:hover{background:#00000010}.tfb-q{width:9px;height:9px;border:1px solid #8a8270;background:#f6f2e7;cursor:pointer;padding:0}.tfb-q:hover{background:#2d5670;border-color:#2d5670}.tfb-q.last{background:#c9b98d}.tfb-g i{font-size:11px!important}" ]
+        [ HH.text ".tfb-act{display:none;white-space:nowrap;font:10px Georgia,serif;padding:0 5px;border:1px solid #00000026;border-radius:3px;background:#f6f2e7;cursor:pointer;color:#5a5648}.tfb-row:hover .tfb-act,.tfb-act.ask{display:inline-block}.tfb-act.ask{color:#b3261e;border-color:#b3261e}.tfb-row:hover{background:#00000010}.tfb-q{width:9px;height:9px;border:1px solid #8a8270;background:#f6f2e7;cursor:pointer;padding:0}.tfb-q:hover{background:#2d5670;border-color:#2d5670}.tfb-q.last{background:#c9b98d}.tfb-g i{font-size:11px!important}" ]
     , body
     , HH.slot _drawer unit Drawer.component d FromDrawer
     ]
@@ -645,7 +645,9 @@ browserDrawer st b =
   row r =
     HH.div
       ( [ HP.class_ (HH.ClassName "tfb-row")
-        , style $ "display:flex;align-items:center;gap:8px;padding:3px 4px;border-radius:3px;"
+        -- wraps, so the hover buttons go to a line of their own rather than
+        -- squeezing the name out of the row
+        , style $ "display:flex;flex-wrap:wrap;align-items:center;gap:4px 8px;padding:3px 4px;border-radius:3px;"
             <> (if r.current then "background:#00000018;" else "")
             <> (if r.drag == "" then "" else "cursor:grab;") ]
           -- a module is dragged onto a bank on the page
@@ -662,12 +664,12 @@ browserDrawer st b =
                   HH.span
                     ( [ HE.onClick \_ -> RecallRow r.slot st.lastRecall
                       , HP.title (if r.drag /= "" then "Drag it onto a bank." else "Click: recall it, the way you last did. Double-click: rename it.")
-                      , style $ "flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;cursor:pointer;font-size:13px;color:#1c1a12;"
+                      , style $ "flex:1 1 7em;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;cursor:pointer;font-size:13px;color:#1c1a12;"
                           <> (if r.current then "font-weight:bold;" else "") ]
                         <> (if r.builtin then [] else [ HE.onDoubleClick \_ -> StartRename r ]) )
                     [ HH.text r.name ]
             ]
-          <> (if r.tag == "" then [] else [ HH.span [ style "flex:none;font-size:10px;letter-spacing:0.08em;text-transform:uppercase;color:#6a6657" ] [ HH.text r.tag ] ])
+          <> (if r.tag == "" then [] else [ HH.span [ HP.title r.tag, style "flex:0 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:10px;letter-spacing:0.08em;text-transform:uppercase;color:#6a6657" ] [ HH.text r.tag ] ])
           <> [ HH.span [ HP.class_ (HH.ClassName "tfb-g"), style "flex:none;display:inline-flex;gap:2px;opacity:0.75" ] (map faIcon r.icons) ]
           <> map (\act ->
                 let asking = st.confirming == Just { slot: r.slot, act }

@@ -70,7 +70,7 @@ type Staff =
   , active :: Maybe Int
   , selected :: Maybe { from :: Int, to :: Int }
   , ownKey :: Boolean
-  , saved :: Maybe { tonic :: Int, scale :: Array Int, mode :: String }
+  , saved :: Maybe { tonic :: Int, scale :: Array Int, mode :: String, saved :: Boolean }
   }
 
 -- | What a click does: hear a chord (by position), revoice it (the open
@@ -284,7 +284,7 @@ system pageSp on row =
     Nothing -> pageSp
   savedLine = case row.saved of
     Just k -> [ HH.span [ HP.style "font-size: 11px; color: #6c8792;" ]
-                  [ HH.text "saved in ", HH.span [ HP.style "font-weight: 600; color: #2f3e44;" ] [ HH.text (pcNameIn keySp k.tonic <> " " <> k.mode) ] ] ]
+                  [ HH.text (if k.saved then "saved in " else "in "), HH.span [ HP.style "font-weight: 600; color: #2f3e44;" ] [ HH.text (pcNameIn keySp k.tonic <> " " <> k.mode) ] ] ]
     Nothing -> []
   readScale r = map (\iv -> (r.root + iv) `mod` 12) (modeIntervals r.key)
   sp = case read of
@@ -304,7 +304,7 @@ system pageSp on row =
           outs = Array.length r.outside
       in
         [ HH.span [ HP.style "font-size: 11px; color: #6c8792;" ]
-            [ HH.text (show inKey <> " note" <> plural inKey <> " outside " <> (if isJust row.saved then "it" else "the key") <> " \x00b7 reads as ")
+            [ HH.text (show inKey <> " note" <> plural inKey <> " outside it \x00b7 reads as ")
             , HH.span [ HP.style "font-weight: 600; color: #2f3e44;" ] [ HH.text nm ]
             , HH.text (if outs == 0 then "" else " (" <> show outs <> " outside)")
             ]

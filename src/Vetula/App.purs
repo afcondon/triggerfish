@@ -8290,7 +8290,8 @@ scoreSurface st =
     , active: st.sounding >>= \sid -> findIndex (_ == sid) st.path
     , selected: selOf (fromMaybe "new progression" st.progName) (length openChords)
     , ownKey: Set.member (fromMaybe "new progression" st.progName) st.scoreRead
-    , saved: Nothing
+    -- the page's key, said: the open progression is in it
+    , saved: Just { tonic: st.key.tonic, scale: scaleSet st.key, mode: modeWord st.key.mode, saved: false }
     }
   openHandlers =
     { hear: \i -> maybe (ScoreHear []) PlayStep (st.path !! i)
@@ -8318,7 +8319,7 @@ scoreSurface st =
          , row: { title: nm, note: if saved then "" else "not a saved progression: these voices are silent"
                 , top: false, chords, names: map OP.chordName chords, badges: map _.badge vs, active: Nothing, selected: selOf nm (length chords)
                 , ownKey: Set.member nm st.scoreRead
-                , saved: savedKey <#> \k -> { tonic: k.tonic, scale: scaleSet k, mode: modeWord k.mode } } })
+                , saved: savedKey <#> \k -> { tonic: k.tonic, scale: scaleSet k, mode: modeWord k.mode, saved: true } } })
       named
     <> map (\c ->
       { name: Nothing
