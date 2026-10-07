@@ -844,6 +844,8 @@ type State =
   , namedCards :: Map Int String
   -- the score's chosen run of chords (a row by its title), for the scales
   , scoreSel :: Maybe { row :: String, anchor :: Int, to :: Int }
+  -- rows spelled in their own reading rather than the key
+  , scoreRead :: Set String
   -- Vetula's key as last written to the stage (`vetula/key`, Reef.Route.printKey),
   -- which the router's `vetula key` row feeds Odonus's grid from.
   , stageKey :: Maybe String
@@ -1038,6 +1040,8 @@ data Action
   | ScoreOpen String       -- the score: open a saved progression by name
   | ScoreSelect String Int -- the score: shift-click a chord on a row (by title), choosing a run for the scales
   | ScoreUnselect
+  | ScoreReadIn String       -- the score: spell a row (by title) in its own reading, or back in the key
+  | ScoreAdopt Int Mode      -- the score: make the open progression's reading the key, transposing nothing
   | CopyTidal String       -- copy the progression's Tidal source to the clipboard
   | EditSource String      -- the Tidal-source textarea was edited (freeze the live view)
   | LoadSource             -- parse the textarea + rebuild the progression from it
@@ -1383,6 +1387,7 @@ component = H.mkComponent
       , stageProgs: Nothing
       , namedCards: Map.empty
       , scoreSel: Nothing
+      , scoreRead: Set.empty
       , stageKey: Nothing
       , clockTempo: 120.0
       , nextVoiceId: 4
@@ -2754,6 +2759,13 @@ handleActionCore = case _ of
       Just sel | sel.row == row -> Just sel { to = i }
       _ -> Just { row, anchor: i, to: i } }
   ScoreUnselect -> H.modify_ _ { scoreSel = Nothing }
+  ScoreReadIn row -> H.modify_ \st -> st { scoreRead = if Set.member row st.scoreRead then Set.delete row st.scoreRead else Set.insert row st.scoreRead }
+  -- as loading a progression adopts its saved key: the key moves under the
+  -- chords, which stay where they are (`rebuild` would transpose them)
+  ScoreAdopt root mode -> H.modify_ \s ->
+    let k = { tonic: root, mode }
+    in s { key = k, lattice = latticeFor k, bankPads = bankPadsFor k s.padRoll, restScale = Nothing
+         , scoreRead = Set.delete (fromMaybe "new progression" s.progName) s.scoreRead }
   ScoreOpen name -> do
     st <- H.get
     for_ (findIndex (\e -> e.kept && e.name == name) st.library) \i -> handleAction (LoadProg i)
@@ -8211,7 +8223,7 @@ scoreSurface st =
         <> (if Array.null cards then [ HH.p [ HP.style "font-size: 12px; color: #a09880;" ] [ HH.text "No voices playing. \x201c+ voice\x201d hands Limulus a line that plays the open progression." ] ] else [])
     )
   where
-  sp = Score.spelling (noteName st.key.tonic) (scaleSet st.key)
+  sp = Score.spellingOf st.key.tonic (scaleSet st.key)
   pathNodes = mapMaybe (\pid -> find (\c -> c.id == pid) st.chords) st.path
   openChords = map playNotes pathNodes
   unsaved = length st.path > 0 && currentSource st /= st.lastPubSig
@@ -8241,6 +8253,7 @@ scoreSurface st =
     , badges: openBadges
     , active: st.sounding >>= \sid -> findIndex (_ == sid) st.path
     , selected: selOf (fromMaybe "new progression" st.progName) (length openChords)
+    , ownKey: Set.member (fromMaybe "new progression" st.progName) st.scoreRead
     }
   openHandlers =
     { hear: \i -> maybe (ScoreHear []) PlayStep (st.path !! i)
@@ -8248,6 +8261,8 @@ scoreSurface st =
     , open: Nothing
     , select: ScoreSelect openRow.title
     , unselect: ScoreUnselect
+    , readIn: ScoreReadIn openRow.title
+    , adopt: Just ScoreAdopt
     }
   -- the chosen run on a row, if it is this one and still fits it
   selOf title k = st.scoreSel >>= \sel ->
@@ -8263,13 +8278,15 @@ scoreSurface st =
           saved = any (\e -> e.kept && e.name == nm) st.library
       in { name: Just nm
          , row: { title: nm, note: if saved then "" else "not a saved progression: these voices are silent"
-                , top: false, chords, names: map OP.chordName chords, badges: map _.badge vs, active: Nothing, selected: selOf nm (length chords) } })
+                , top: false, chords, names: map OP.chordName chords, badges: map _.badge vs, active: Nothing, selected: selOf nm (length chords)
+                , ownKey: Set.member nm st.scoreRead } })
       named
     <> map (\c ->
       { name: Nothing
       , row: { title: "voice " <> voiceLetter c.n, note: "chords written into its line"
              , top: false, chords: c.chords, names: map OP.chordName c.chords, badges: [ c.badge ], active: Nothing
-             , selected: selOf ("voice " <> voiceLetter c.n) (length c.chords) } })
+             , selected: selOf ("voice " <> voiceLetter c.n) (length c.chords)
+             , ownKey: Set.member ("voice " <> voiceLetter c.n) st.scoreRead } })
       (filter (\c -> c.name == Nothing) cards)
   handlersFor r =
     { hear: \i -> ScoreHear (fromMaybe [] (r.row.chords !! i))
@@ -8279,6 +8296,8 @@ scoreSurface st =
         _ -> Nothing
     , select: ScoreSelect r.row.title
     , unselect: ScoreUnselect
+    , readIn: ScoreReadIn r.row.title
+    , adopt: Nothing
     }
 
 fieldSurface :: forall m. State -> H.ComponentHTML Action Slots m

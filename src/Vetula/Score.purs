@@ -26,6 +26,7 @@ module Vetula.Score
   , Staff
   , Handlers
   , spelling
+  , spellingOf
   , spell
   , spellChord
   , rootOfName
@@ -45,7 +46,8 @@ import Halogen.HTML as HH
 import Halogen.HTML.Core (AttrName(..), ElemName(..), Namespace(..))
 import Halogen.HTML.Events as HE
 import Halogen.HTML.Properties as HP
-import Harmonia.ScaleFit (fitsFor)
+import Harmonia.Chord (Mode, modeIntervals)
+import Harmonia.ScaleFit (fitsFor, reading)
 import Web.UIEvent.MouseEvent as ME
 
 -- | The key, as far as spelling needs it: the tonic's letter (0 = C .. 6 =
@@ -67,6 +69,7 @@ type Staff =
   , badges :: Array Badge
   , active :: Maybe Int
   , selected :: Maybe { from :: Int, to :: Int }
+  , ownKey :: Boolean
   }
 
 -- | What a click does: hear a chord (by position), revoice it (the open
@@ -78,6 +81,8 @@ type Handlers i =
   , open :: Maybe i
   , select :: Int -> i
   , unselect :: i
+  , readIn :: i
+  , adopt :: Maybe (Int -> Mode -> i)
   }
 
 -- | The natural pitch class of each letter.
@@ -126,6 +131,24 @@ spelling tonicName scale =
     Just x -> f x
     Nothing -> d
 
+-- | The spelling of a scale given by its root and pitch classes (root
+-- | first): the tonic letter that spells it with the fewest accidentals,
+-- | flats breaking a tie (E♭ dorian, not D♯).
+spellingOf :: Int -> Array Int -> Spelling
+spellingOf root scale =
+  let
+    cost l = if Array.length scale == 7
+      then Array.foldl (+) 0 (Array.mapWithIndex (\i p -> absI (pcDiff p (natural (l + i)))) scale)
+      else absI (pcDiff root (natural l))
+    letters = Array.filter (\l -> absI (pcDiff root (natural l)) <= 1) (Array.range 0 6)
+    flatOf l = pcDiff root (natural l) < 0
+    ranked = Array.sortBy (\a b -> compare (cost a) (cost b) <> compare (not (flatOf a)) (not (flatOf b))) letters
+    l0 = fromMaybe 0 (Array.head ranked)
+    accs = if Array.length scale == 7 then Array.mapWithIndex (\i p -> pcDiff p (natural (l0 + i))) scale else [ pcDiff root (natural l0) ]
+  in { letter: l0, scale, flats: Array.any (_ < 0) accs }
+  where
+  absI x = if x < 0 then negate x else x
+
 -- | A MIDI note's place on the diatonic axis and its accidental (−2 .. 2),
 -- | spelled from the key alone: a scale tone takes its degree's letter; a
 -- | chromatic one, in a flat key, a flat; otherwise the common borrowings,
@@ -153,8 +176,9 @@ place n letter =
       oct = Int.floor (Int.toNumber (n - acc) / 12.0)
   in { d: oct * 7 + letter, acc }
 
--- | **A chord, spelled as a chord.** The root takes the key's spelling, and
--- | every other tone the letter of its interval above the root: a seventh is
+-- | **A chord, spelled as a chord.** A tone in the key's scale is spelled as
+-- | the key spells it; a chromatic one takes the letter of its interval
+-- | above the root (the root itself by the key): a seventh is
 -- | a seventh (C E G B♭, never A♯), a third a third. Where an interval could
 -- | be read two ways the chord decides: a sharp fifth beside a major third
 -- | and no fifth (augmented), a diminished seventh beside a minor third and
@@ -180,10 +204,13 @@ spellChord sp mroot notes = case mroot of
         8 -> if has 4 && not (has 7) then 4 else 5   -- ♯5 (augmented), or ♭6/♭13
         9 -> if has 3 && has 6 && not (has 10) then 6 else 5   -- °7, or 6/13
         _ -> 6
+      -- a tone in the key's scale keeps the key's spelling; only a
+      -- chromatic one is spelled from the chord (C7's B♭ in C)
+      inScale n = Array.length sp.scale == 7 && Array.elem (n `mod` 12) sp.scale
       one n =
         let i = ((n - r) `mod` 12 + 12) `mod` 12
             w = place n ((rootLetter + steps i) `mod` 7)
-        in if w.acc > 2 || w.acc < (-2) then spell sp n else w
+        in if inScale n || w.acc > 2 || w.acc < (-2) then spell sp n else w
     in map one notes
 
 -- | The root a chord name begins with ("A♭m7", "C#/E", "Bbmaj7").
@@ -234,7 +261,7 @@ staffGap = 14.0
 -- | note. Every bar shares the row's vertical extent, so a note that looks
 -- | higher than its neighbour is.
 system :: forall w i. Spelling -> Handlers i -> Staff -> HH.HTML w i
-system sp on row =
+system keySp on row =
   HH.div
     [ HP.style ("margin: 0 0 18px; padding: 10px 14px 6px; border-radius: 6px; "
         <> (if row.top then "background: #fffdf6; border: 1px solid #d8cfb6;" else "background: #fbf8f0; border: 1px solid #ece5d0;")) ]
@@ -242,6 +269,47 @@ system sp on row =
       , HH.div [ HP.style "overflow-x: auto;" ] [ staff ]
       ] <> scales )
   where
+  -- **What the progression is in.** The key it is shown against is the
+  -- page's; its reading (Harmonia.ScaleFit) is the key-capable scale that
+  -- leaves out fewest of its notes, from its own chords' roots. Spelled and
+  -- coloured in the reading when the row asks (`ownKey`).
+  allNotes = Array.concat row.chords
+  roots = Array.mapMaybe rootOfName row.names
+  read = reading roots allNotes
+  readScale r = map (\iv -> (r.root + iv) `mod` 12) (modeIntervals r.key)
+  sp = case read of
+    Just r | row.ownKey -> spellingOf r.root (readScale r)
+    _ -> keySp
+  outsideOf scale = Array.length (Array.nub (Array.filter (\n -> not (Array.elem (n `mod` 12) scale)) (map (_ `mod` 12) allNotes)))
+  inKey = outsideOf keySp.scale
+  better = case read of
+    Just r | Array.length r.outside < inKey -> Just r
+    _ -> Nothing
+
+  readingLine = case better of
+    Nothing -> []
+    Just r ->
+      let rsp = spellingOf r.root (readScale r)
+          nm = pcNameIn rsp r.root <> " " <> r.mode
+          outs = Array.length r.outside
+      in
+        [ HH.span [ HP.style "font-size: 11px; color: #6c8792;" ]
+            [ HH.text (show inKey <> " note" <> plural inKey <> " outside the key \x00b7 reads as ")
+            , HH.span [ HP.style "font-weight: 600; color: #2f3e44;" ] [ HH.text nm ]
+            , HH.text (if outs == 0 then "" else " (" <> show outs <> " outside)")
+            ]
+        , chip (if row.ownKey then "\x2713 spelled in " <> nm else "spell in " <> nm) ("show this row's notes, and colour them, as " <> nm) on.readIn
+        ] <> case on.adopt of
+          Just act | Array.length r.outside < inKey ->
+            [ chip ("make " <> nm <> " the key") ("the key becomes " <> nm <> ", with nothing transposed: the lattice follows, and saving the progression keeps it") (act r.root r.key) ]
+          _ -> []
+  plural k = if k == 1 then "" else "s"
+  chip label tip act =
+    HH.button
+      [ HP.style "border: 1px solid #c9d6db; background: #f3f6f7; color: #2f3e44; border-radius: 4px; padding: 1px 8px; font-size: 11px; cursor: pointer;"
+      , HP.title tip, HE.onClick \_ -> act ]
+      [ HH.text label ]
+
   header =
     HH.div [ HP.style "display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; margin-bottom: 2px;" ]
       ( [ case on.open of
@@ -255,6 +323,7 @@ system sp on row =
         ]
           <> map badge row.badges
           <> (if row.note == "" then [] else [ HH.span [ HP.style "font-size: 11px; color: #9a8d6a; font-style: italic;" ] [ HH.text row.note ] ])
+          <> readingLine
       )
 
   badge b =
@@ -365,7 +434,8 @@ system sp on row =
     Just nm -> Array.filter (_ >= nm.root) f.pcs <> Array.filter (_ < nm.root) f.pcs
     Nothing -> f.pcs
   -- a pitch class as the key spells it
-  pcName r = let l = keyLetter sp r in letterName l <> accGlyph (pcDiff r (natural l))
+  pcName = pcNameIn sp
+  pcNameIn s r = let l = keyLetter s r in letterName l <> accGlyph (pcDiff r (natural l))
 
   hline x1 x2 d stroke =
     el "line" [ attr "x1" (show x1), attr "y1" (show (y d)), attr "x2" (show x2), attr "y2" (show (y d)), attr "stroke" stroke, attr "stroke-width" "1" ] []
