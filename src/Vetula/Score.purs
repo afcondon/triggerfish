@@ -261,7 +261,12 @@ system sp on row =
           <> (if b.muted then [ HH.span [] [ HH.text "muted" ] ] else [])
       )
 
-  spelt = Array.mapWithIndex (\i ns -> spellChord sp (Array.index row.names i >>= rootOfName) ns) row.chords
+  -- each note spelled, and whether it lies outside the key's scale: red, as
+  -- in the lattice's chord glyphs, so a chord's borrowed tones read at a glance
+  spelt = Array.mapWithIndex
+    (\i ns -> Array.zipWith (\n g -> { d: g.d, acc: g.acc, out: not (Array.null sp.scale) && not (Array.elem (n `mod` 12) sp.scale) })
+                ns (spellChord sp (Array.index row.names i >>= rootOfName) ns))
+    row.chords
   allDs = Array.concatMap (map _.d) spelt
   hiD = max (topD + 1) (fromMaybe topD (Array.foldr max' Nothing allDs))
   loD = min (botD - 1) (fromMaybe botD (Array.foldr min' Nothing allDs))
@@ -359,7 +364,7 @@ system sp on row =
         <> Array.concatMap (\g -> ledgersFor cx g.d) (Array.nubByEq (\a b -> a.d == b.d) sorted)
         <> map (\(Tuple g dx) -> el "ellipse" [ attr "cx" (show (cx + dx)), attr "cy" (show (y g.d)), attr "rx" "3.9", attr "ry" "2.9"
                                                  , attr "transform" ("rotate(-20 " <> show (cx + dx) <> " " <> show (y g.d) <> ")")
-                                                 , attr "fill" "#1e1c17", attr "style" "pointer-events: none;" ] []) heads
+                                                 , attr "fill" (if g.out then "#c0392b" else "#1e1c17"), attr "style" "pointer-events: none;" ] []) heads
         <> map (\(Tuple g col) -> el "text" [ attr "x" (show (cx - 10.0 - Int.toNumber col * 8.0)), attr "y" (show (y g.d)), attr "dominant-baseline" "central"
                                              , attr "text-anchor" "middle", attr "font-size" "12", attr "fill" "#1e1c17", attr "style" "pointer-events: none;" ]
                                              [ HH.text (accGlyph g.acc) ]) accCols
