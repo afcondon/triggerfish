@@ -4666,10 +4666,10 @@ limulusWanted = HH.div [ HP.attr (HH.AttrName "data-limulus-dock") "open", HP.st
 viewTabs :: forall m. State -> H.ComponentHTML Action Slots m
 viewTabs st =
   barGroup
-    [ barBtn (v == River) "river" "everything played this session: mark the good bits, loop them" (SetStage (Hunt River))
-    , barBtn (elem v rungs) "lattice" "the chords built on the key, from triads up" (SetStage (Hunt st.lastRung))
+    [ barBtn (elem v rungs) "lattice" "the chords built on the key, from triads up" (SetStage (Hunt st.lastRung))
     , barBtn (v == Pads) "banks" "nine banks of sixteen: how far from home, by how rich" (SetStage (Hunt Pads))
-    , barBtn (v == Score) "score" "the progression on a grand staff, to arrange and play" (SetStage (Hunt Score)) ]
+    , barBtn (v == Score) "score" "the progression on a grand staff, to arrange and play" (SetStage (Hunt Score))
+    , barBtn (v == River) "review" "everything played this session, as a river: mark the good bits, loop them" (SetStage (Hunt River)) ]
   where
   v = huntOr st.lastLens st.stage
 
