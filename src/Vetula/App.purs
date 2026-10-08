@@ -742,6 +742,9 @@ type State =
   -- the open progression's bar the side panel's chords go into, and a bar being dragged
   , scoreBar :: Maybe Int
   , scoreDrag :: Maybe Int
+  -- score mode's two drawers: Limulus on the right, the candidates below
+  , scoreRepl :: Boolean
+  , scoreCands :: Boolean
   -- the open progression's rhythm, tapped in: each bar's length in beats
   -- (empty: one chord a bar); and a take in progress (the bar sounding, the
   -- press times so far)
@@ -909,7 +912,6 @@ data Action
   | VoiceDragOver Event    -- a progression dragged over a voice's badge: let it land
   | VoiceDrop Int Event    -- dropped on voice n: the voice reads that progression
   | TitleDrag String Event -- a score row's title dragged: it carries its progression
-  | ScoreOpen String       -- the score: open a saved progression by name
   | ScoreSelect String Int -- the score: shift-click a chord on a row (by title), choosing a run for the scales
   | ScoreUnselect
   | ScoreStep Int            -- the score: click a chord of the open progression (hear it, make it the bar the panel's chords go into)
@@ -1000,6 +1002,8 @@ data Action
   -- REHEARSE
   | ToQuadrat String       -- publish a saved progression (by name) as a clip for Quadrat to sample
   | ResumeWorking          -- reopen the progression open when the page last closed
+  | ToggleScoreRepl        -- score mode: Limulus in the right-hand slot, or not
+  | ToggleScoreCands       -- score mode: the candidates drawer up, or tucked down
   | OpenVary ChordNode     -- open Explore's variations panel on a chord
   | OpenSide SideTab       -- open (or, if open on this tab, close) Explore's side panel
   | CloseSide
@@ -1161,6 +1165,8 @@ component = H.mkComponent
       , scoreRead: Set.empty
       , scoreBar: Nothing
       , scoreDrag: Nothing
+      , scoreRepl: true
+      , scoreCands: true
       , rhythm: []
       , tapping: Nothing
       , scorePad: Nothing
@@ -2076,6 +2082,10 @@ handleActionCore = case _ of
     for_ mwork \w -> when (length (parseProgression w.source) > 0) $
       H.modify_ _ { resumable = Just (w { name = maybe w.name snd (find (\r -> fst r == w.name) migrated.renames) }) }
 
+  ToggleScoreRepl -> H.modify_ \s -> s { scoreRepl = not s.scoreRepl }
+
+  ToggleScoreCands -> H.modify_ \s -> s { scoreCands = not s.scoreCands }
+
   -- Reopen the working copy, numbered above every chord in the pool: a clash
   -- of ids with the seed triads made the path point at them instead (AC,
   -- 2026-10-06).
@@ -2570,10 +2580,6 @@ handleActionCore = case _ of
     let k = { tonic: root, mode }
     in s { key = k, lattice = latticeFor k, bankPads = bankPadsFor k s.padRoll, restScale = Nothing
          , scoreRead = Set.delete (fromMaybe "new progression" s.progName) s.scoreRead }
-  ScoreOpen name -> do
-    st <- H.get
-    for_ (findIndex (\e -> e.kept && e.name == name) st.library) \i -> handleAction (LoadProg i)
-
   CopyTidal src -> liftEffect (copyText src)
 
   ToggleHelp -> H.modify_ \s -> s { helpOpen = not s.helpOpen }
@@ -4622,7 +4628,7 @@ render st =
     ( [ HH.keyed (ElemName "div") [ HP.style ("position: absolute; inset: 0px " <> sideInset st <> " " <> (if fullView st.stage then "0px" else trayHeight) <> " 0;") ] [ Tuple (surfaceKey st) (surface st) ] ]
       <> (if fullView st.stage then [] else [ colourTray st ])
       -- the right-hand slot: Limulus while the score is up, else the side panel
-      <> [ if st.stage == Hunt Score then limulusDock else sidePanel st ]
+      <> [ if st.stage /= Hunt Score then sidePanel st else if st.scoreRepl then limulusDock else HH.text "" ]
       <>
     -- Scene recall belongs to the INSTRUMENT, not to Perform. Its entry point
     -- has always been the session menu in `contextBar`, which renders on every
@@ -4665,7 +4671,7 @@ trayHeight = "46px"
 
 sideInset :: State -> String
 sideInset st
-  | st.stage == Hunt Score = limulusWidth
+  | st.stage == Hunt Score = if st.scoreRepl then limulusWidth else "0px"
   | isJust st.side = sidePanelWidth
   | otherwise = "0px"
 
@@ -4677,7 +4683,8 @@ limulusWidth :: String
 limulusWidth = "min(600px, 38vw)"
 
 -- | The region the shell docks Limulus over (`Standalone.watchDocks`):
--- | "always" keeps the panel open while the score is up, "flush" makes it
+-- | "always" keeps the panel open while it is drawn (the score's Limulus
+-- | toggle draws it or not, AC 2026-10-08), "flush" makes it
 -- | part of the page rather than a window over it. What shows through only
 -- | when there is no rig for Limulus to play on.
 limulusDock :: forall m. H.ComponentHTML Action Slots m
@@ -4810,18 +4817,24 @@ sidePanel st = case st.side of
 scoreCandidates :: forall m. State -> H.ComponentHTML Action Slots m
 scoreCandidates st =
   HH.div
-    [ HP.style "flex: 0 0 42%; min-height: 0; display: flex; flex-direction: column; border-top: 1px solid #e6dfcc; background: #fffdf8;" ]
-    [ HH.div [ HP.style "display: flex; align-items: baseline; gap: 10px; padding: 8px 16px 6px; font-size: 11px; color: #a09880; border-bottom: 1px solid #f0eadb;" ]
-        ( case varySource st of
+    [ HP.style ("flex: 0 0 " <> (if st.scoreCands then "42%" else "auto") <> "; min-height: 0; display: flex; flex-direction: column; border-top: 1px solid #e6dfcc; background: #fffdf8;") ]
+    ( [ HH.div [ HP.style "display: flex; align-items: baseline; gap: 10px; padding: 8px 16px 6px; font-size: 11px; color: #a09880; border-bottom: 1px solid #f0eadb; cursor: pointer;"
+               , HP.title (if st.scoreCands then "tuck the candidates down" else "bring the candidates up")
+               , HE.onClick \_ -> ToggleScoreCands ]
+        ( ( case varySource st of
             Just src ->
               [ HH.span [ HP.style "font-size: 14px; color: #3a3428; font-weight: 500;" ] [ HH.text (chordTitle st src) ]
               , HH.text (case st.scoreBar of
                   Just i | puts st -> "bar " <> show (i + 1) <> " \x00b7 click hears in its register \x00b7 double-click puts it there \x00b7 or drag onto any bar"
                   _ -> "click a bar to see its candidates") ]
             Nothing -> [ HH.text "click a bar of the score: its substitutes, variations and relatives show here" ] )
-    , HH.div [ HP.style "flex: 1 1 auto; min-height: 0; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr));" ]
-        (map column [ SideSubstitutes, SideVariations, SideRelatives ])
-    ]
+            <> [ HH.span [ HP.style "flex: 1 1 auto;" ] []
+               , HH.span [ HP.style "font-size: 12px; color: #8d7a4a;" ]
+                   [ HH.text (if st.scoreCands then "substitutes \x00b7 variations \x00b7 relatives \x25be" else "substitutes \x00b7 variations \x00b7 relatives \x25b4") ] ] ) ]
+      <> (if not st.scoreCands then [] else
+      [ HH.div [ HP.style "flex: 1 1 auto; min-height: 0; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr));" ]
+          (map column [ SideSubstitutes, SideVariations, SideRelatives ]) ])
+    )
   where
   column t =
     HH.div [ HP.style "min-height: 0; overflow: auto; padding: 8px 12px 16px; border-right: 1px solid #f0eadb;" ]
@@ -5019,9 +5032,9 @@ contextBar st =
   -- It used to sit in the bar permanently, displaying `browseOr lastBrowse view`
   -- — a *remembered* projection presented as the current one, because with
   -- Perform up there was no honest value for it to show. Now it never lies.
-  -- The ladder, in order of complexity, then the pin that makes the view
-  -- showing Explore's default, then the side panel's two tabs. The colour sets
-  -- are no longer here: they are a tray on the surface (`colourTray`).
+  -- The ladder, in order of complexity, then the score and the river (and,
+  -- on the score, Limulus), then the side panel's tabs. The colour sets are
+  -- a tray on the surface (`colourTray`).
   huntControls =
     [ HH.div [ HP.style "display: flex; border: 1px solid #d8cfb6; border-radius: 5px; overflow: hidden;" ]
         (map rung viewtypes)
@@ -5035,7 +5048,16 @@ contextBar st =
                , HP.title (if on then "back to the lattice (" <> viewtypeLabel st.fieldLens <> ")" else viewtypeTip vt)
                , HE.onClick \_ -> SetStage (Hunt (if on then st.fieldLens else vt)) ]
                [ HH.text (viewtypeLabel vt) ]) [ Score, River ])
-    , divider
+    ]
+      <> (if current /= Score then [] else
+    [ let on = st.scoreRepl
+      in HH.button
+           [ HP.style ("border: 1px solid #d8cfb6; border-radius: 5px; padding: 4px 12px; font-size: 12px; cursor: pointer; "
+                        <> (if on then "background: #3d4a46; color: #eaf3ef;" else "background: #fbf8f0; color: #5a5240;"))
+           , HP.title (if on then "put Limulus away: the score takes the width" else "Limulus beside the score")
+           , HE.onClick \_ -> ToggleScoreRepl ]
+           [ HH.text "Limulus" ] ])
+      <> [ divider
     , HH.div [ HP.style "display: flex; border: 1px solid #d8cfb6; border-radius: 5px; overflow: hidden;" ]
         (map styleButton [ Tuple StyleBlock "1 block", Tuple StyleArp "2 arpeggio" ])
     ]
@@ -6146,8 +6168,6 @@ scoreSurface st =
     , HP.style "position: absolute; inset: 0; display: flex; flex-direction: column;" ]
     [ HH.div [ HP.style "flex: 1 1 58%; min-height: 0; overflow: auto; padding: 16px 22px 20px;" ]
         ( [ Score.system sp openHandlers openRow ]
-            <> map (\r -> Score.system sp (handlersFor r) r.row) others
-            <> (if Array.null cards then [ HH.p [ HP.style "font-size: 12px; color: #a09880;" ] [ HH.text "No voices playing. \x201c+ voice\x201d hands Limulus a line that plays the open progression." ] ] else [])
         )
     , scoreCandidates st
     ]
@@ -6193,7 +6213,6 @@ scoreSurface st =
   openHandlers =
     { hear: ScoreStep
     , revoice: Just \i -> maybe (ScoreHear []) ScoreRevoice (st.path !! i)
-    , open: Nothing
     , select: ScoreSelect openRow.title
     , unselect: ScoreUnselect
     , readIn: ScoreReadIn openRow.title
@@ -6220,62 +6239,6 @@ scoreSurface st =
     if sel.row == title && sel.anchor < k && sel.to < k
       then Just { from: min sel.anchor sel.to, to: max sel.anchor sel.to } else Nothing
 
-  -- one row a named progression (not the open one), one a written-in voice
-  named = nub (mapMaybe _.name cards) # filter (\nm -> Just nm /= st.progName)
-  others =
-    map (\nm ->
-      let vs = filter (\c -> c.name == Just nm) cards
-          chords = maybe [] _.chords (head vs)
-          saved = any (\e -> e.kept && e.name == nm) st.library
-          savedKey = find (\e -> e.kept && e.name == nm) st.library >>= \e -> parseKeyLabel e.keyLabel
-      in { name: Just nm
-         , row: { title: nm, note: if saved then "" else "not a saved progression: these voices are silent"
-                , top: false, chords, names: map OP.chordName chords, badges: map _.badge vs, active: Nothing, selected: selOf nm (length chords)
-                , ownKey: Set.member nm st.scoreRead
-                , dragging: Nothing
-                , saved: savedKey <#> \k -> { tonic: k.tonic, scale: scaleSet k, mode: modeWord k.mode, saved: true }
-                , rebus: bundleRebus chords
-                , beats: maybe [] (\e -> parseBeats e.source) (find (\e -> e.kept && e.name == nm) st.library)
-                , tapping: Nothing } })
-      named
-    <> map (\c ->
-      { name: Nothing
-      , row: { title: "voice " <> voiceLetter c.n, note: "chords written into its line"
-             , top: false, chords: c.chords, names: map OP.chordName c.chords, badges: [ c.badge ], active: Nothing
-             , selected: selOf ("voice " <> voiceLetter c.n) (length c.chords)
-             , ownKey: Set.member ("voice " <> voiceLetter c.n) st.scoreRead
-             , dragging: Nothing
-             , saved: Nothing
-             , rebus: bundleRebus c.chords
-             , beats: []
-             , tapping: Nothing } })
-      (filter (\c -> c.name == Nothing) cards)
-  handlersFor r =
-    { hear: \i -> ScoreHear (fromMaybe [] (r.row.chords !! i))
-    , revoice: Nothing
-    , open: case r.name of
-        Just nm | any (\e -> e.kept && e.name == nm) st.library -> Just (ScoreOpen nm)
-        _ -> Nothing
-    , select: ScoreSelect r.row.title
-    , unselect: ScoreUnselect
-    , readIn: ScoreReadIn r.row.title
-    , adopt: Nothing
-    , duplicate: Nothing
-    , remove: Nothing
-    , dropAt: Nothing
-    , padOver: Nothing
-    , padDrop: Nothing
-    , voiceOver: VoiceDragOver
-    , voiceDrop: VoiceDrop
-    , tap: Nothing
-    , resume: Nothing
-    , toQuadrat: case r.name of
-        Just nm | any (\e -> e.kept && e.name == nm) st.library -> Just (ToQuadrat nm)
-        _ -> Nothing
-    , titleDrag: case r.name of
-        Just nm | any (\e -> e.kept && e.name == nm) st.library -> Just (TitleDrag nm)
-        _ -> Nothing
-    }
 
 -- | **A progression's chords as a set**, as a picture: its distinct chords,
 -- | in no order, through the chord rebus. The set is a function of the

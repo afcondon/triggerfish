@@ -90,7 +90,6 @@ type Staff =
 type Handlers i =
   { hear :: Int -> i
   , revoice :: Maybe (Int -> i)
-  , open :: Maybe i
   , select :: Int -> i
   , unselect :: i
   , readIn :: i
@@ -351,15 +350,7 @@ system pageSp on row =
 
   header =
     HH.div [ HP.style "display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; margin-bottom: 2px;" ]
-      ( [ case on.open of
-            Just act ->
-              HH.button
-                ( [ HP.style "border: none; background: none; padding: 0; font: inherit; font-size: 13px; color: #4a4232; cursor: pointer; text-decoration: underline dotted #b3a77f;"
-                  , HP.title "open this progression · drag it onto a voice to have the voice play it"
-                  , HE.onClick \_ -> act ] <> titleDrags )
-                [ HH.text row.title ]
-            Nothing -> HH.span ([ HP.style "font-size: 13px; color: #2a2a2a; font-weight: 600;" ] <> titleDrags) [ HH.text row.title ]
-        ]
+      ( [ HH.span ([ HP.style "font-size: 13px; color: #2a2a2a; font-weight: 600;", HP.title "drag it onto a voice to have the voice play it" ] <> titleDrags) [ HH.text row.title ] ]
           <> (if Array.null row.rebus then [] else
                 [ HH.span [ HP.style "display: inline-flex; gap: 3px; align-items: center; opacity: 0.85;"
                           , HP.title "its chords as a set: the same chords in another order wear the same picture" ]
