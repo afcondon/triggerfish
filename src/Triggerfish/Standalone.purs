@@ -755,7 +755,9 @@ limulusRef = H.RefLabel "limulus"
 bar :: forall o. Config o -> State -> H.ComponentHTML (Action o) (Slots o) Aff
 bar cfg st =
   HH.div
-    [ style $ "position:fixed;top:0;left:0;right:0;height:var(--tf-bar);z-index:50;box-sizing:border-box;"
+    -- above the drawers (Limulus is 60, its rail 61), so a dropdown opened
+    -- from the bar (Vetula's key and scale) falls over them, not under
+    [ style $ "position:fixed;top:0;left:0;right:0;height:var(--tf-bar);z-index:62;box-sizing:border-box;"
         <> "display:flex;align-items:center;gap:14px;padding:0 16px;overflow:hidden;"
         <> "border-bottom:1px solid #00000026;background:linear-gradient(#f1eee5,#e6e2d6)" ]
     ( [ HH.span [ style (engrave <> ";font-size:11px") ] [ HH.text cfg.nameplate ]
