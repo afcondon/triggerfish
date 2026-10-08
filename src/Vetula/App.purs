@@ -4621,7 +4621,7 @@ sideTip = case _ of
 -- | **Score mode's three columns**, under the score (AC's sketch,
 -- | 2026-10-08): substitutes, variations and relatives of the chord in hand
 -- | (the bar last clicked), side by side so candidates compare at a glance.
--- | A click hears one in the bar's register, a double-click puts it in the
+-- | A click hears one in the bar's register, a shift-click puts it in the
 -- | bar, or drag it onto any bar.
 scoreCandidates :: forall m. State -> H.ComponentHTML Action Slots m
 scoreCandidates st =
@@ -4634,7 +4634,7 @@ scoreCandidates st =
             Just src ->
               [ HH.span [ HP.style "font-size: 14px; color: #3a3428; font-weight: 500;" ] [ HH.text (chordTitle st src) ]
               , HH.text (case st.scoreBar of
-                  Just i | puts st -> "bar " <> show (i + 1) <> " \x00b7 click hears in its register \x00b7 double-click puts it there \x00b7 or drag onto any bar"
+                  Just i | puts st -> "bar " <> show (i + 1) <> " \x00b7 click hears it in its register \x00b7 shift-click puts it there \x00b7 or drag it onto any bar"
                   _ -> "click a bar to see its candidates") ]
             Nothing -> [ HH.text "click a bar of the score: its substitutes, variations and relatives show here" ] )
             <> [ HH.span [ HP.style "flex: 1 1 auto;" ] []
@@ -6158,7 +6158,7 @@ varySource = soundingChord
 soundingChord :: State -> Maybe ChordNode
 soundingChord st = st.lastHeard
 
--- | One variation pad. Click HEARS it; on the score, double-click (or drag)
+-- | One variation pad. Click HEARS it; on the score, shift-click (or drag)
 -- | puts it in the chosen bar.
 varyPad :: forall m. State -> ChordNode -> H.ComponentHTML Action Slots m
 varyPad st c =
