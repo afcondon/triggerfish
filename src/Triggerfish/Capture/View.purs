@@ -65,6 +65,10 @@ type CaptureState =
   -- stretch being dragged (surface µs)
   , cutting :: Boolean
   , cutSel :: Maybe { from :: Number, to :: Number }
+  -- the mark whose card was put away (a press on the empty surface): its
+  -- loop plays on; the card comes back with a press on a band, or when
+  -- another loop takes the focus
+  , cardShut :: Maybe Int
   }
 
 -- | The harmonic context read off a mark's captured patch — the same shape as
@@ -87,6 +91,8 @@ type CaptureWiring action =
   , saveScene :: Maybe (Int -> action)
   -- delete the mark (its loop stops), from the loop's card
   , deleteMark :: Maybe (Int -> action)
+  -- a press on the empty surface puts the card away (the mark's id)
+  , dismissCard :: Int -> action
   , toggleContext :: action
   , setZoom :: Zoom -> action
   -- the mark as code: this machine's slot (`odonus`), the toggle, and
@@ -171,11 +177,17 @@ capturePanel w cap =
             -- the notes in view, thinned only after cropping, so a zoom shows them all
             shown = filter (\e -> let f = fracOf e.fireUnixMicros in f >= 0.0 && f <= 1.0) events
           in
+            -- the empty surface: a press here puts the loop's card away
+            (case cardMark cap >>= \i -> cap.logbook.marks !! i of
+               Just m -> [ HH.div [ style "position:absolute;inset:0", HE.onMouseDown \_ -> w.dismissCard m.id ] [] ]
+               Nothing -> [])
+            <>
             [ svgEl "svg"
                 [ svgAttr "width" "100%", svgAttr "height" "100%"
                 , svgAttr "viewBox" ("0 0 " <> show tlW <> " " <> show tlH)
                 , svgAttr "preserveAspectRatio" "none"
-                , style "position:absolute;inset:0" ]
+                -- presses go through the drawing to the surface under it
+                , style "position:absolute;inset:0;pointer-events:none" ]
                 (map (seamLine w) (filter (\f -> f > 0.0 && f < 1.0) b.seams)
                   <> map (noteDot w fracOf) (decimate shown) <> map (markLine w fracOf) lb.marks)
             ]
@@ -319,11 +331,15 @@ playheads w posOf cap = case cap.rig of
 -- | The mark the control card is on: the page's looping region, or the rig's
 -- | loop started last.
 cardMark :: CaptureState -> Maybe Int
-cardMark cap = case cap.rig of
-  Just _ -> RL.focus cap.logbook.marks >>= \f -> findIndex (\m -> m.n == f.n) cap.logbook.marks
-  Nothing -> case cap.playing of
-    Just { source: FromRegion i } -> Just i
-    _ -> Nothing
+cardMark cap = case shown of
+  Just i | map _.id (cap.logbook.marks !! i) == cap.cardShut -> Nothing
+  other -> other
+  where
+  shown = case cap.rig of
+    Just _ -> RL.focus cap.logbook.marks >>= \f -> findIndex (\m -> m.n == f.n) cap.logbook.marks
+    Nothing -> case cap.playing of
+      Just { source: FromRegion i } -> Just i
+      _ -> Nothing
 
 -- | The control card on the playing region — stop, lift-to-clip, (optional) save
 -- | scene, and the harmonic context to jam over. When nothing plays it's just the

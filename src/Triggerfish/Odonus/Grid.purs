@@ -108,7 +108,7 @@ component =
   H.mkComponent
     { initialState: \_ ->
         { odo: M.defaultOdonus, sounding: Silent, dragging: Nothing, dragSub: Nothing
-        , notes: [], logbook: Logbook.emptyLog, stage: Perform, selEuclid: Nothing, navScenes: false, playing: Nothing, rigLoops: false, rigAsked: 0.0, cutting: false, cutSel: Nothing, regionDrag: Nothing, contextOpen: false, codeOpen: false, zoom: Whole, clips: [], twisterField: FNote, binnacle: Nothing, nowMicros: 0.0
+        , notes: [], logbook: Logbook.emptyLog, stage: Perform, selEuclid: Nothing, navScenes: false, playing: Nothing, rigLoops: false, rigAsked: 0.0, cutting: false, cutSel: Nothing, regionDrag: Nothing, cardShut: Nothing, contextOpen: false, codeOpen: false, zoom: Whole, clips: [], twisterField: FNote, binnacle: Nothing, nowMicros: 0.0
         , outs: [], routing: RM.defaultTable, midiName: "…", clockTempo: 120.0, clockLocked: false
         , clockBeat: 0.0, clockBar: 0, anchorCount: 0
         , scenes: [], sceneNameInput: "", publishMsg: Nothing
@@ -1076,6 +1076,7 @@ dispatch = case _ of
       H.modify_ _ { playing = Nothing }
   -- REPLAY region drag (#151, R2c): grab a band's edge (resize) or body (slide).
   -- The pointer maps straight to a recording time via padNorm over the timeline.
+  DismissCard mid -> H.modify_ _ { cardShut = Just mid }
   RegionDown i edge cx cy -> do
     sid <- setupRegionDrag
     st <- H.get
@@ -1120,7 +1121,10 @@ dispatch = case _ of
       case rd.edge, rd.moved of
         -- A bare click on the body plays the region; a resize/slide is finalized
         -- by snapping its edges to the beat grid so a freehand drag stays musical.
-        EdgeBody, false -> startRegion rd.markIdx
+        -- (a band whose card was put away only brings the card back)
+        EdgeBody, false
+          | map _.id (st.logbook.marks !! rd.markIdx) == st.cardShut -> H.modify_ _ { cardShut = Nothing }
+          | otherwise -> startRegion rd.markIdx
         _, _ -> for_ (st.logbook.marks !! rd.markIdx) \m -> do
           let snapped = { from: Logbook.snapMicrosToBeat st.clockTempo m m.from
                         , to: Logbook.snapMicrosToBeat st.clockTempo m m.to }

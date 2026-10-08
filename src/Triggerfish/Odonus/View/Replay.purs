@@ -27,7 +27,7 @@ replayPanel s = capturePanel wiring cap
     { logbook: s.logbook, playing: s.playing
     , regionDrag: s.regionDrag, contextOpen: s.contextOpen, codeOpen: s.codeOpen, zoom: s.zoom
     , rig: if s.rigLoops then Just { micros: s.nowMicros, beat: s.clockBeat, tempo: s.clockTempo } else Nothing
-    , cutting: s.cutting, cutSel: s.cutSel }
+    , cutting: s.cutting, cutSel: s.cutSel, cardShut: s.cardShut }
   wiring =
     { orientation: Horizontal
     , timelineId: replayTimelineId
@@ -38,6 +38,7 @@ replayPanel s = capturePanel wiring cap
     , saveClip: SaveMarkClip
     , saveScene: Just SaveMarkScene
     , deleteMark: Just DeleteMark
+    , dismissCard: DismissCard
     , toggleContext: ToggleContext
     , setZoom: SetZoom
     , machine: "odonus"

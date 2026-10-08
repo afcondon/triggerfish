@@ -108,7 +108,7 @@ import Data.Either (Either(..))
 import Binnacle.Time (dateNow, perfNow)
 import Effect.Ref as Ref
 import Triggerfish.Capture.Logbook as Logbook
-import Triggerfish.Capture.Types (Orientation(..), PlaySource(..), RegionDrag, RegionEdge(..), Zoom(..))
+import Triggerfish.Capture.Types (Orientation(..), PlaySource(..), RegionEdge(..), Zoom(..))
 import Triggerfish.Capture.River (Flow(..), riverPanel)
 import Triggerfish.Capture.River as River
 
@@ -818,8 +818,6 @@ type State =
   , captureDragSub :: Maybe H.SubscriptionId
   -- the live river's clock (performance µs), advanced only while review shows
   , riverNow :: Number
-  -- a band of the review being dragged (its edge or its body)
-  , regionDrag :: Maybe RegionDrag
   -- The LIVE river's two reads (`Capture.River`): the current instant, advanced by
   -- a 33ms frame timer so the roll FLOWS rather than jumping a 16th at a time, and
   -- the recent notes it draws — pruned to the river's fade span each frame. The
@@ -928,6 +926,7 @@ data Action
   | CaptureRegionMove Int Int                 -- the pointer, while a band is dragged
   | CaptureRegionUp                           -- released: a click loops, a drag sets the window
   | CaptureDeleteMark Int                     -- delete a mark (its loop stops)
+  | CaptureDismissCard Int                    -- put the loop card away; the loop plays on
   | Nop                    -- nothing (a handler that must name an action)
   | PerfStopClick ME.MouseEvent Action -- run Action but stop the click bubbling to the box
   | ZoomAt Event Number    -- geometric lens: wheel-zoom toward the cursor (event, deltaY)
@@ -1144,8 +1143,8 @@ component = H.mkComponent
       , perfScenes: []
       , perfRecallOpen: false
       , clipLibrary: []
-      , capture: { logbook: Logbook.emptyLog, playing: Nothing, regionDrag: Nothing, contextOpen: false, codeOpen: false, zoom: Whole, rig: Nothing, cutting: false, cutSel: Nothing }
-      , rigLoops: false, rigAsked: 0.0, captureDragSub: Nothing, riverNow: 0.0, regionDrag: Nothing
+      , capture: { logbook: Logbook.emptyLog, playing: Nothing, regionDrag: Nothing, contextOpen: false, codeOpen: false, zoom: Whole, rig: Nothing, cutting: false, cutSel: Nothing, cardShut: Nothing }
+      , rigLoops: false, rigAsked: 0.0, captureDragSub: Nothing, riverNow: 0.0
       }
   , render
   , eval: H.mkEval H.defaultEval
@@ -2790,11 +2789,11 @@ handleActionCore = case _ of
     grab <- capturePointer cx cy
     st <- H.get
     for_ (st.capture.logbook.marks !! i) \m ->
-      H.modify_ _ { captureDragSub = Just sid
-                  , regionDrag = Just { markIdx: i, edge, grabMicros: grab, startFrom: m.from, startTo: m.to, moved: false } }
+      H.modify_ \s -> s { captureDragSub = Just sid
+                       , capture = s.capture { regionDrag = Just { markIdx: i, edge, grabMicros: grab, startFrom: m.from, startTo: m.to, moved: false } } }
   CaptureRegionMove cx cy -> do
     st <- H.get
-    for_ st.regionDrag \rd -> do
+    for_ st.capture.regionDrag \rd -> do
       cur <- capturePointer cx cy
       let ax = CaptureView.bounds st.capture.zoom st.capture.logbook
           d = ax.toFrac cur - ax.toFrac rd.grabMicros
@@ -2806,14 +2805,17 @@ handleActionCore = case _ of
               EdgeFrom -> { from: min (rd.startTo - minLen) cur, to: rd.startTo }
               EdgeTo -> { from: rd.startFrom, to: max (rd.startFrom + minLen) cur }
               EdgeBody -> Runs.offSeams ax { from: slid, to: slid + (rd.startTo - rd.startFrom) }
-        H.modify_ \s -> s { regionDrag = map (_ { moved = true }) s.regionDrag
-                          , capture = Logbook.applyBounds rd.markIdx bounds s.capture }
+        H.modify_ \s -> s { capture = Logbook.applyBounds rd.markIdx bounds (s.capture { regionDrag = map (_ { moved = true }) s.capture.regionDrag }) }
   CaptureRegionUp -> do
     st <- H.get
     for_ st.captureDragSub H.unsubscribe
-    H.modify_ _ { captureDragSub = Nothing, regionDrag = Nothing }
-    for_ st.regionDrag \rd -> case rd.edge, rd.moved of
-      EdgeBody, false -> handleAction (CaptureRegionSelect rd.markIdx)
+    H.modify_ \s -> s { captureDragSub = Nothing, capture = s.capture { regionDrag = Nothing } }
+    for_ st.capture.regionDrag \rd -> case rd.edge, rd.moved of
+      -- a band whose card was put away only brings the card back
+      EdgeBody, false
+        | map _.id (st.capture.logbook.marks !! rd.markIdx) == st.capture.cardShut ->
+            H.modify_ \s -> s { capture = s.capture { cardShut = Nothing } }
+        | otherwise -> handleAction (CaptureRegionSelect rd.markIdx)
       _, _ -> for_ (st.capture.logbook.marks !! rd.markIdx) \m -> do
         let snapped = { from: Logbook.snapMicrosToBeat st.clockTempo m m.from
                       , to: Logbook.snapMicrosToBeat st.clockTempo m m.to }
@@ -2822,6 +2824,7 @@ handleActionCore = case _ of
         when st.rigLoops do
           mclock <- vetulaClock
           for_ mclock \clock -> rigSend (RL.windowLine "vetula" clock (m { from = snapped.from, to = snapped.to }))
+  CaptureDismissCard mid -> H.modify_ \s -> s { capture = s.capture { cardShut = Just mid } }
   CaptureDeleteMark i -> do
     st <- H.get
     if st.rigLoops then for_ (st.capture.logbook.marks !! i) \m -> rigSend (RL.deleteLine "vetula" m.n)
@@ -5046,6 +5049,7 @@ capturePane st =
     , saveClip: CaptureSaveClip
     , saveScene: Nothing
     , deleteMark: Just CaptureDeleteMark
+    , dismissCard: CaptureDismissCard
     , toggleContext: CaptureToggleContext
     , setZoom: CaptureZoom
     , machine: "vetula"

@@ -322,6 +322,7 @@ type State =
   , cutting :: Boolean
   , cutSel :: Maybe { from :: Number, to :: Number }
   , regionDrag :: Maybe RegionDrag  -- a loop-region resize/slide in progress
+  , cardShut :: Maybe Int           -- the mark whose loop card was put away
   , contextOpen :: Boolean          -- REPLAY control card: harmonic-context panel open
   , codeOpen :: Boolean             -- REPLAY control card: the mark as code
   , zoom :: Zoom                    -- REPLAY: how much of the take the surface shows
@@ -446,6 +447,7 @@ data Action
   | DeleteScene Int
   | MarkNow                 -- flag "a good bit" at the current instant (logbook)
   | DeleteMark Int          -- drop a flagged instant
+  | DismissCard Int         -- put the loop card away (the mark's id); the loop plays on
   | ClearLog                -- purge the whole logbook manually
   | SetStage Stage          -- switch stage: Perform (instrument) | Review (capture)
   | ToggleSceneMenu         -- secondary nav: open/close the scene menu
