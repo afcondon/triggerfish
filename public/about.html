@@ -467,8 +467,8 @@
     <p class="motto">Applying the Unix philosophy to music since 2026</p>
 
     <div class="edition">
-      <span>Vol. I &middot; No. 5</span>
-      <span>Tuesday, 6 October 2026</span>
+      <span>Vol. I &middot; No. 6</span>
+      <span>Thursday, 8 October 2026</span>
       <span class="opt">Triggerfish &amp; the Atlantis rig</span>
       <span>Price: one browser</span>
     </div>
@@ -538,7 +538,7 @@
         <section class="box">
           <h3>Soundings</h3>
           <table class="soundings">
-            <tr><th>Surface</th><td>A Chromium browser, nothing installed. Explore Vetula's harmony and hear it in the browser's own electric piano; copy a progression out as plain Tidal; MIDI to Ableton or any synth. Nothing is kept.</td></tr>
+            <tr><th>Surface</th><td>A browser, nothing installed: Vetula and Odonus are at <span class="mono">vetula.trigger-fish.app</span> and <span class="mono">odonus.trigger-fish.app</span>. Hear them in the browser's own electric piano, or send MIDI to Ableton or any synth from a Chromium browser. What you save stays in that browser.</td></tr>
             <tr><th>Keeping</th><td>Amphora, the store. Progressions kept by name, with every version.</td></tr>
             <tr><th>The trunk</th><td>Diaphus and Architeuthis. The rig plays, on Link's beat: Limulus's voices and lines, Vetula shaping Odonus. Every rig path needs both.</td></tr>
             <tr><th>Branches</th><td>Each independent of the others:
@@ -553,13 +553,14 @@
 
         <section class="box brief">
           <h3>News in brief</h3>
-          <p><b>Voices name progressions.</b> <span class="mono">Q $ vetula "cow-umbrella-bell" # arpup 8</span> plays a progression saved in Vetula; save it again and every voice naming it follows. Vetula's <b>+ voice</b> writes the line for you. <span class="mono">Q $ hush</span> removes a voice, and Vetula's drawer lists the ones playing, since a REPL never shows you which lines are live.</p>
-          <p><b>Letters for voices, numbers for channels.</b> Vetula's voices are P to W, clear of the note names; a number is only ever a MIDI channel (<span class="mono">ch3</span>). The dashboard's chart and Odonus say the same letters.</p>
+          <p><b>Vetula, one surface.</b> Four views on one bar: the lattice, the banks, the score and the review. The lattice grows in rungs, from the key's own chords through the ones a lead sheet names to every four-note chord and beyond. Hover and press space to hear a chord, shift-click to put it at the end of the progression; Backspace takes the last one back. On the score, a bar's alternatives (substitutes, variations, relatives) wait in a drawer beneath it.</p>
+          <p><b>The river reaches Vetula.</b> The review view is a live strip of what Vetula plays, flowing left out of Limulus, as Odonus's does. Mark it, and the mark is a loop: <span class="mono">vetula $ loop 2</span> plays it back on the channels it was recorded on.</p>
+          <p><b>Every machine, from a line.</b> <span class="mono">vetula $ play</span>, <span class="mono">odonus $ play</span> and <span class="mono">balistes $ play</span> start a machine from Limulus: Vetula's voices on the rig, Odonus and Balistes by pressing Play on their open pages.</p>
+          <p><b>Voices name progressions.</b> <span class="mono">Q $ vetula "cow-umbrella-bell" # arpup 8</span> plays a progression saved in Vetula; save it again and every voice naming it follows. <span class="mono">Q $ hush</span> removes a voice, and Vetula's drawer lists the ones playing, since a REPL never shows you which lines are live. Voices are lettered P to W, clear of the note names; a number is only ever a MIDI channel (<span class="mono">ch3</span>).</p>
           <p><b>Vetula shapes Odonus from a line.</b> <span class="mono">route $ odonus.out &lt;- vetula Q</span> colours Odonus's melody with voice Q's chords as they change; a muted voice still shapes it. Odonus names where its harmony comes from, and shows the chords once round.</p>
-          <p><b>Harmony at every zoom.</b> Vetula's Explore zooms from the key's own chords through the ones popular music uses to every four-note chord, at sixty frames a second. Click to hear a chord, shift-click to take it into a progression, named with three glyphs, saved with &#x2318;S, kept in versions.</p>
+          <p><b>On the open water.</b> Vetula and Odonus now play from <span class="mono">trigger-fish.app</span>, in any browser, with nothing installed; the rest of the rig, and the source for all of it, is public too.</p>
           <p><b>Selene learns Tidal++.</b> One line sets a bank of eight outputs, all on the same instant: <span class="mono">selene $ lfo es9main # rate "0.5 1 2 4"</span>. A list wraps across the outputs, as Tidal's lists do. The rig applies it with Selene's page shut.</p>
-          <p><b>Selene, by drag and drop.</b> Every output group is a row, always; drop a module on one to replace what it plays. A row that cannot take it turns red and says why. Racks are kept in the drawer, and a click puts one on the rig, with undo.</p>
-          <p><b>A drawer on every page.</b> The machines keep their presets, beats, scenes and racks in a browser that slides out from the left. Odonus recalls a preset as saved or in key, running or frozen. Balistes keeps its beats by name and by machine, and Vetula's Perform is Limulus.</p>
+          <p><b>A drawer on every page.</b> The machines keep their presets, beats, scenes and racks in a browser that slides out from the left. Odonus recalls a preset as saved or in key, running or frozen; Balistes keeps its beats by name and by machine; Selene keeps its racks, and a click puts one on the rig, with undo.</p>
           <p><b>The chart, three ways.</b> Flow is the music; X-ray is the rig's skeleton, with a restart on every program; Storage shows what each part keeps, and for how long. The columns now order themselves by their wiring, to cross as little as they can.</p>
         </section>
       </aside>
@@ -580,7 +581,7 @@
           </article>
           <article class="who">
             <header><svg class="fish flip" viewBox="0 0 200 120"><use href="#sp-vetula"/></svg><div><span class="w-vetula">Vetula</span><span class="sp">Balistes vetula, the queen triggerfish</span></div></header>
-            <p>Grows harmony by ear: a palette of chords that you widen by revoicing, inverting, suspending and extending. Chords you take become a progression, saved by name. A voice is a line in Limulus naming one (<span class="mono">Q $ vetula "name"</span>), lettered P to W; its key, or a voice's chords, can feed Odonus, by a <span class="mono">route $</span> line or on the dashboard's chart. <a class="go" href="vetula.html">vetula.html</a></p>
+            <p>Grows harmony by ear: the key's chords on a lattice that widens, rung by rung, to every chord, with banks to play from, a score to arrange on, and the river to review. Chords you put become a progression, saved by name; any one can be revoiced, a note at a time. A voice is a line in Limulus naming one (<span class="mono">Q $ vetula "name"</span>), lettered P to W; its key, or a voice's chords, can feed Odonus, by a <span class="mono">route $</span> line or on the dashboard's chart. <a class="go" href="vetula.html">vetula.html</a></p>
           </article>
           <article class="who">
             <header><svg class="fish flip" viewBox="0 0 200 120"><use href="#sp-balistes"/></svg><div><span class="w-balistes">Balistes</span><span class="sp">Balistes capriscus, the grey triggerfish</span></div></header>
@@ -654,7 +655,7 @@
           <p><strong>Colour is the signal on each hop:</strong> note events, the rig socket, MIDI, OSC, CV and gates, audio, samples. It changes wherever the signal changes form, so the colours are the architecture.</p>
           <p><strong>Width is the number of streams,</strong> meaning distinct wires, not rows of the routing table. Sixteen drum lanes all sent to channel 10 are one stream; four Odonus playheads on four channels are four.</p>
           <p><strong>Only what you use is drawn.</strong> Nothing on the chart is chosen for it: it is read from the routing table, the MIDI ports that exist, and the pages that are open. One sequencer playing Ableton in Solo is five nodes in a line. The whole rig, with the modular and the samples, is drawn only when the whole rig is in use.</p>
-          <p><strong>Loops have a column of their own.</strong> Each mark is a bubble in its machine's colour, fed a thin line by the machine that recorded it; a playing loop fills, pulses on the beat, and feeds the engine. A loop that nobody can hear wears a stop sign.</p>
+          <p><strong>Loops have a column of their own.</strong> Each mark is a starfish in its machine's colour (a feather star for Odonus, a sea star for Vetula), fed a thin line by the machine that recorded it. Click one to start or stop it; a playing loop fills, pulses, and feeds the engine. A loop that nobody can hear wears a stop sign.</p>
           <p><strong>Diaphus is the beat, above the chart,</strong> and gold marks pulse on everything it times. It does carry every MIDI note the rig sends; a switch, Relays, draws it on that path too.</p>
           <p><strong>Three lenses.</strong> Flow is the music. X-ray is the rig's skeleton: every program has a node, its name coloured by what Bosun says of it, with &#x21bb; to restart it. Storage stands on the same skeleton and names what each part keeps, and for how long: memory, disk, this browser, or Amphora. What is mostly storage is ghosted in place in the other two, so nothing moves.</p>
           <p><strong>The order is the wiring&rsquo;s.</strong> The columns after the engine sort themselves by what they are joined to, to cross as few lines as they can, and move only when the routing does, never when something starts or stops.</p>
@@ -769,12 +770,12 @@
       </section>
       <section class="colophon">
         <h3>Colophon</h3>
-        <p><em>The Atlantis Gazette</em> is the About page of Triggerfish, served with the machines at <span class="mono">localhost:3023/about.html</span>. It is plain HTML, with no script.</p>
+        <p><em>The Atlantis Gazette</em> is the About page of Triggerfish, served with the machines at <span class="mono">localhost:3023/about.html</span>, and on the open water at <span class="mono">trigger-fish.app/gazette.html</span>. It is plain HTML, with no script.</p>
         <p><strong>Masthead.</strong> A. E. Verrill, <em>Architeuthis dux</em> (syn. <em>A. princeps</em>), 1882, from his work on the giant squids in the <em>Transactions of the Connecticut Academy of Arts and Sciences</em>. Public domain, via <a href="https://commons.wikimedia.org/wiki/File:Architeuthis_dux_Verrill_1882.jpg">Wikimedia Commons</a>; the credit is kept beside the image in <span class="mono">img/CREDITS.md</span>.</p>
         <p><strong>The fish</strong> are the app's own, from the identity study, and each machine's name is set in its nameplate face: <span style="font-family:Syne;font-weight:800">Syne</span>, <span style="font-family:Cormorant;font-style:italic;font-weight:700">Cormorant</span>, <span style="font-family:'Big Shoulders Stencil Display';font-weight:800">Big Shoulders Stencil</span>, <span style="font-family:Michroma;font-size:.85em">Michroma</span>, <span style="font-family:'Instrument Serif';font-style:italic">Instrument Serif</span> and <span style="font-family:'Major Mono Display'">Major Mono</span>.</p>
         <p><strong>The lanternfish</strong> of Diaphus is drawn after a plate of <em>Myctophum punctatum</em>, public domain, via <a href="https://commons.wikimedia.org/wiki/File:Myctophum_punctatum1.jpg">Wikimedia Commons</a>.</p>
         <p><strong>Type.</strong> Nameplate in UnifrakturMaguntia; headlines in Playfair Display; text in Source Serif 4; labels in Archivo, the app's own face.</p>
-        <p><strong>Licence.</strong> Every Atlantis machine is to be open source: MIT throughout, except Littorina and Architeuthis, which are GPL-3.0 as Tidal is, and Diaphus, which is GPLv2+ by way of Ableton Link. Triggerfish is handing the last of its Tidal to the rig, so that it can be MIT.</p>
+        <p><strong>Licence.</strong> The Atlantis machines are open source: MIT throughout, except Littorina, and Architeuthis and Triggerfish, which build it in, all GPL-3.0 as Tidal is; and Diaphus, which is GPLv2+ by way of Ableton Link. Reef and Binnacle never import Littorina, so they stay MIT.</p>
       </section>
     </div>
     <p class="finis">&#x2766;</p>
