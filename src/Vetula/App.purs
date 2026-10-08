@@ -44,7 +44,7 @@ import Effect (Effect)
 import Effect.Random (randomInt)
 import Effect.Class.Console as Console
 import Effect.Exception (try, message)
-import Effect.Aff (attempt)
+import Effect.Aff (Milliseconds(..), attempt, delay)
 import Effect.Aff.Class (class MonadAff, liftAff)
 import Effect.Class (liftEffect)
 import Halogen as H
@@ -252,10 +252,6 @@ viewtypeLabel = case _ of
   Pads -> "banks"
   Score -> "score"
   River -> "river"
-
--- | Explore's ladder, in order of complexity: the buttons in the bar.
-viewtypes :: Array Viewtype
-viewtypes = [ KeyChords, Common, Lattice4, Lattice, Pads ]
 
 -- | A view's stable string, for the URL and the remembered default.
 viewtypeValue :: Viewtype -> String
@@ -764,7 +760,9 @@ type State =
   -- it here; the tank persists until cleared and will feed the Stage + Sequences.
   , stage :: Stage                -- Hunt <projection> | Perform | Review — see `Stage`
   , lastLens :: Viewtype          -- the Hunt projection to return to from Perform/Review
-  , fieldLens :: Viewtype         -- the last lattice rung, for the score button to return to
+  , fieldLens :: Viewtype         -- the last lattice view (a rung or banks), to return to from the score
+  , lastRung :: Viewtype          -- the last lattice rung, for the lattice | banks switch
+  , riverFrom :: Viewtype         -- the view the river was opened from, to return to
   -- Geometric-lens viewport (CoF / Tonnetz): pan centre + zoom, applied as the
   -- surface's viewBox. Wheel zooms toward the cursor; drag pans; reset re-fits.
   , viewCx :: Number
@@ -789,10 +787,7 @@ type State =
   -- What is open under the progression, if anything.
   -- The chord the Vary lens is working on. `Nothing` falls back to whatever is
   -- sounding, so the lens is never empty for no reason.
-  , varying :: Maybe ChordNode
-  -- Explore's side panel, when open, and the density column it shows of the
-  -- Vary grid (an index into `HV.densities`: a panel has room for one).
-  , side :: Maybe SideTab
+  -- the density the variations column shows (an index into `HV.densities`)
   , lastHeard :: Maybe ChordNode
   , style :: AuditionStyle
   -- the viewer chose where auditions sound (the chip, or the shell's ⌥1);
@@ -983,7 +978,7 @@ data Action
   | CaptureTrim            -- cut all but the marks' windows (on the rig)
   | CaptureUndo            -- put back the last cut or trim (on the rig)
   | CaptureFrame           -- 33ms tick: advance the river's clock, prune its window
-  | PerfNop                -- no-op (used to stop a click bubbling without a re-render)
+  | Nop                    -- nothing (a handler that must name an action)
   | PerfStopClick ME.MouseEvent Action -- run Action but stop the click bubbling to the box
   | ZoomAt Event Number    -- geometric lens: wheel-zoom toward the cursor (event, deltaY)
   | PanStart Event         -- geometric lens: begin a grab-to-pan drag
@@ -1004,12 +999,8 @@ data Action
   -- REHEARSE
   | ToQuadrat String       -- publish a saved progression (by name) as a clip for Quadrat to sample
   | ResumeWorking          -- reopen the progression open when the page last closed
-  | ToggleScoreRepl        -- score mode: Limulus in the right-hand slot, or not
   | ToggleScoreCands       -- score mode: the candidates drawer up, or tucked down
-  | OpenVary ChordNode     -- open Explore's variations panel on a chord
-  | OpenSide SideTab       -- open (or, if open on this tab, close) Explore's side panel
-  | CloseSide
-  | SideOnLastPlayed       -- re-aim the side panel at the chord last played
+  | ToggleScoreRepl        -- score mode: Limulus beside the score, or put away
   | SetSideDensity Int
   | LevelWheel Event Number -- the wheel over the field: step the level of detail
   | RollBass Int           -- roll the revoiced chord's bass to the next/previous chord tone
@@ -1182,8 +1173,9 @@ component = H.mkComponent
       , stage: Hunt KeyChords   -- Key, the first rung, unless a default is pinned
       , lastLens: KeyChords
       , fieldLens: KeyChords
+      , lastRung: KeyChords
+      , riverFrom: KeyChords
       , resumable: Nothing
-      , side: Nothing
       , lastHeard: Nothing
       , style: StyleBlock
       , soundChosen: false
@@ -1200,7 +1192,6 @@ component = H.mkComponent
       , genRoll: 0
       , padRoll: 0
       , varyRoll: 0
-      , varying: Nothing
       , hoveredNode: Nothing
       -- four player boxes on MIDI ch 1-4 (Odonus I-IV in AC's routing); a token
       -- dropped on one loops there while the transport plays.
@@ -1325,13 +1316,25 @@ handleQuery = case _ of
   AskLibrary reply -> do
     s <- H.get
     pure (Just (reply (map (\e -> { name: e.name, text: e.source }) s.library)))
+  -- a progression from the drawer: work on it, on the score
   LoadEntry i next -> do
     handleAction (LoadProg i)
+    handleAction (SetStage (Hunt Score))
     pure (Just next)
   -- Limulus keeps in step only the cards it has a block for: this puts one
   -- back (or reveals it), for a card whose block was lost or never added.
   -- the drawer's voice row: its line in Limulus (the row is the voice's number)
+  -- A voice from the drawer: the score for the progression it plays (if it
+  -- names a saved one), with Limulus open and showing its block.
   OpenChannelCard n next -> do
+    s <- H.get
+    let named = s.stageCards >>= Map.lookup n >>= cardProgression
+    for_ (named >>= \nm -> findIndex (\e -> e.kept && e.name == nm) s.library) \i ->
+      unless (s.progName == named) (handleAction (LoadProg i))
+    H.modify_ _ { scoreRepl = true }
+    handleAction (SetStage (Hunt Score))
+    -- Limulus may only now be opening: give it a moment to listen
+    liftAff (delay (Milliseconds 600.0))
     handleAction (CardToLimulus n)
     pure (Just next)
   AskProgressions reply -> do
@@ -1397,7 +1400,7 @@ handleQuery = case _ of
                    , label: (if SCU.contains (Pattern "′") nm then "′ " else "") <> maybe "" (\k -> show k <> " \x00b7 ") (last (split (Pattern "-") nm) >>= fromString) <> show (length s.path) <> " chords"
                        <> (if unsaved then " \x00b7 \x25cf save" else " \x00b7 \x2713 saved")
                    , active: true, attention: unsaved
-                   , tip: nm <> (if unsaved then " \x00b7 unsaved: click (or \x2318S) to save this version; \x2318\x21e7S saves a new sibling" else " \x00b7 saved")
+                   , tip: nm <> (if unsaved then " \x00b7 unsaved: \x2318S saves this version, \x2318\x21e7S a new sibling" else " \x00b7 saved") <> " \x00b7 click: arrange it, on the score"
                        <> " \x00b7 on the lattice, backspace takes back the last chord, delete starts a new progression" }
           ] <> (if length s.path == 0 then [] else
           -- the progression as plain Tidal on the clipboard: works anywhere,
@@ -1427,7 +1430,8 @@ handleQuery = case _ of
       "mark" -> handleAction CaptureMark
       "clear" -> handleAction CaptureClear
       "rebus" -> handleAction PerfMenuToggle
-      "chip:prog" -> handleAction (SaveProg false)
+      -- the progression: arrange it, on the score (saving is ⌘S, or the row's save)
+      "chip:prog" -> when (length s.path > 0) (handleAction (SetStage (Hunt Score)))
       -- through an action: the card has to reach the stage, and only the
       -- action wrapper publishes cards (a query's state change does not)
       "chip:voice" -> handleAction VoiceToLimulus
@@ -2086,9 +2090,9 @@ handleActionCore = case _ of
     for_ mwork \w -> when (length (parseProgression w.source) > 0) $
       H.modify_ _ { resumable = Just (w { name = maybe w.name snd (find (\r -> fst r == w.name) migrated.renames) }) }
 
-  ToggleScoreRepl -> H.modify_ \s -> s { scoreRepl = not s.scoreRepl }
-
   ToggleScoreCands -> H.modify_ \s -> s { scoreCands = not s.scoreCands }
+
+  ToggleScoreRepl -> H.modify_ \s -> s { scoreRepl = not s.scoreRepl }
 
   -- Reopen the working copy, numbered above every chord in the pool: a clash
   -- of ids with the seed triads made the path point at them instead (AC,
@@ -2399,6 +2403,9 @@ handleActionCore = case _ of
   -- PathPick then opens a new capture session). The visible twin of the `c` key —
   -- discoverable, and it works with a text field focused (where `c` is swallowed).
   ClearPath -> do
+    st0 <- H.get
+    -- no progression open: the lattice, where one starts
+    when (st0.stage == Hunt Score) (handleAction (SetStage (Hunt st0.fieldLens)))
     H.modify_ _ { path = [], progName = Nothing, lastCapIdx = Nothing, lastCapSig = "", rhythm = [], tapping = Nothing }
     -- and the working copy with it, or a reload brings the cleared one back
     liftEffect (Store.saveWorking { name: "", source: "", saved: "" })
@@ -2521,7 +2528,7 @@ handleActionCore = case _ of
     let node = st.path !! i >>= \pid -> find (\c -> c.id == pid) st.chords
     for_ node playChord
     H.modify_ _ { sounding = map _.id node <|> st.sounding, selected = Nothing
-                , scoreBar = Just i, scoreDrag = Just i, lastHeard = node <|> st.lastHeard, varying = Nothing }
+                , scoreBar = Just i, scoreDrag = Just i, lastHeard = node <|> st.lastHeard }
   -- a copy with its own id, after it: revoicing or replacing one leaves the other
   ScoreDuplicate i -> do
     st <- H.get
@@ -3037,7 +3044,7 @@ handleActionCore = case _ of
       hushCapture
       H.modify_ _ { clipLibrary = lib', capture = st.capture { playing = Nothing } }
 
-  PerfNop -> pure unit
+  Nop -> pure unit
 
   -- Run an inner-control action but stop the click bubbling to the box's
   -- placement onClick — otherwise nudging/removing a layer while something is in
@@ -3121,23 +3128,6 @@ handleActionCore = case _ of
                 { publishMsg = Just ("✓ for Quadrat · " <> SCU.take 8 hash) }
               Left _ -> H.modify_ _ { publishMsg = Just "✗ send failed (store offline?)" }
 
-  -- Opening the lens closes the revoice modal: they are two views of the same
-  -- question at different magnifications, and both up at once is just clutter.
-  OpenVary c -> do
-    H.modify_ _ { varying = Just c, revoicing = Nothing, side = Just SideVariations }
-    playChord c
-
-  -- The panel holds the chord it opened on (`varying`), so auditioning its own
-  -- pads does not move it; `SideOnLastPlayed` re-aims it.
-  OpenSide t -> do
-    st <- H.get
-    if st.side == Just t then H.modify_ _ { side = Nothing }
-    else H.modify_ _ { side = Just t, varying = if isJust st.side then st.varying else soundingChord st }
-
-  CloseSide -> H.modify_ _ { side = Nothing }
-
-  SideOnLastPlayed -> H.modify_ \s -> s { varying = soundingChord s }
-
   SetSideDensity i -> H.modify_ _ { sideDensity = i }
 
   -- Semantic zoom: wheel in for more chords, out for fewer, a level a flick.
@@ -3147,7 +3137,7 @@ handleActionCore = case _ of
     t <- liftEffect (unwrap <<< unInstant <$> now)
     let acc = (if t - st.wheelLast > 300.0 then 0.0 else st.wheelAcc) + dy
         cur = huntOr st.lastLens st.stage
-        ladder = [ KeyChords, Common, Lattice4, Lattice ]
+        ladder = rungs
         ix = fromMaybe (-1) (elemIndex cur ladder)
         step d = for_ (if ix < 0 then Nothing else index ladder (ix + d)) \v -> do
           H.modify_ _ { wheelAcc = 0.0, wheelAt = t, wheelLast = t }
@@ -3171,6 +3161,12 @@ handleActionCore = case _ of
       , fieldLens = case st.stage of
           Hunt vt | not (fullView (Hunt vt)) -> vt
           _ -> st.fieldLens
+      , lastRung = case v of
+          Hunt vt | elem vt rungs -> vt
+          _ -> st.lastRung
+      , riverFrom = case v, st.stage of
+          Hunt River, Hunt vt | vt /= River -> vt
+          _, _ -> st.riverFrom
       , hoveredId = Nothing, hoveredTriad = Nothing
       , viewCx = 0.0, viewCy = 0.0, viewZoom = 1.0, panning = Nothing, panMoved = false
       , capture = if showsRiver v then st.capture else st.capture { playing = Nothing, contextOpen = false }
@@ -4631,8 +4627,9 @@ render st =
     -- lattice under the score
     ( [ HH.keyed (ElemName "div") [ HP.style ("position: absolute; inset: 0px " <> sideInset st <> " " <> (if fullView st.stage then "0px" else trayHeight) <> " 0;") ] [ Tuple (surfaceKey st) (surface st) ] ]
       <> (if fullView st.stage then [] else [ colourTray st ])
-      -- the right-hand slot: Limulus while the score is up, else the side panel
-      <> [ if st.stage /= Hunt Score then sidePanel st else if st.scoreRepl then limulusDock else HH.text "" ]
+      <> latticeControls st
+      -- the right-hand slot: Limulus, beside the score
+      <> [ if st.stage == Hunt Score && st.scoreRepl then limulusDock else HH.text "" ]
       <>
     -- Scene recall belongs to the INSTRUMENT, not to Perform. Its entry point
     -- has always been the session menu in `contextBar`, which renders on every
@@ -4664,20 +4661,68 @@ render st =
     ] )
 
 
--- | The side panel's width, and how far it insets the Explore view it sits
--- | beside, so the view is narrowed rather than covered.
-sidePanelWidth :: String
-sidePanelWidth = "440px"
-
 -- | The colour tray's strip under an Explore view, so it covers none of it.
 trayHeight :: String
 trayHeight = "46px"
 
 sideInset :: State -> String
-sideInset st
-  | st.stage == Hunt Score = if st.scoreRepl then limulusWidth else "0px"
-  | isJust st.side = sidePanelWidth
-  | otherwise = "0px"
+sideInset st = if st.stage == Hunt Score && st.scoreRepl then limulusWidth else "0px"
+
+-- | The lattice's rungs, fewest chords first: what its slider steps through
+-- | (and the wheel over it).
+rungs :: Array Viewtype
+rungs = [ KeyChords, Common, Lattice4, Lattice ]
+
+-- | **The lattice pane's own controls** (AC, 2026-10-08: a control lives in
+-- | the pane it controls): a lattice | banks switch; on the lattice, a slider
+-- | through its rungs, which moves with the wheel and sets it when clicked or
+-- | dragged, the top the most chords; on banks, its shuffle; and a way back
+-- | to the fitted view once it has moved.
+latticeControls :: forall m. State -> Array (H.ComponentHTML Action Slots m)
+latticeControls st = case st.stage of
+  Hunt v | elem v rungs || v == Pads ->
+    [ HH.div [ HP.style "position: absolute; top: 14px; right: 16px; z-index: 6; display: flex; border: 1px solid #d8cfb6; border-radius: 5px; overflow: hidden; background: #fbf8f0;" ]
+        [ switchBtn (v /= Pads) "lattice" "the chords built on the key, from triads up" (Hunt st.lastRung)
+        , switchBtn (v == Pads) "banks" "nine banks of sixteen: how far from home, by how rich" (Hunt Pads) ]
+    ]
+      <> (if v == Pads then [] else [ slider v ])
+      <> [ HH.div [ HP.style ("position: absolute; right: 16px; bottom: calc(" <> trayHeight <> " + 12px); z-index: 6; display: flex; gap: 6px;") ]
+             ( (if v == Pads then [ chip "shuffle \x27f3" "re-walk all nine banks from a new seed" ShufflePads ] else [])
+                 <> (if st.viewZoom /= 1.0 || st.viewCx /= 0.0 || st.viewCy /= 0.0
+                       then [ chip "reset view" "back to the fitted view \x00b7 scroll to change the rung \x00b7 drag to pan" ResetView ] else []) ) ]
+  _ -> []
+  where
+  switchBtn on label tip target =
+    HH.button
+      [ HP.style ("border: none; padding: 4px 12px; font-size: 12px; cursor: pointer; "
+                   <> (if on then "background: #8d7a4a; color: #fff;" else "background: #fbf8f0; color: #5a5240;"))
+      , HP.title tip, HE.onClick \_ -> SetStage target ]
+      [ HH.text label ]
+  chip label tip act =
+    HH.button
+      [ HP.style "border: 1px solid #cdbb8c; background: #fbf6ea; color: #7a5c00; cursor: pointer; padding: 3px 10px; border-radius: 4px; font-size: 12px; white-space: nowrap;"
+      , HP.title tip, HE.onClick \_ -> act ]
+      [ HH.text label ]
+  -- the most chords at the top, as the wheel goes up
+  slider v =
+    HH.div
+      [ HP.style "position: absolute; top: 64px; right: 16px; z-index: 6; display: flex; flex-direction: column; align-items: flex-end; gap: 0; user-select: none; -webkit-user-select: none;"
+      , HP.title "how much of the lattice: scroll over it, or click or drag here" ]
+      (mapWithIndex (stop v) (Array.reverse rungs))
+  stop v i r =
+    let on = r == v
+        last = i == length rungs - 1
+    in HH.div
+         [ HP.style "display: flex; align-items: center; gap: 8px; cursor: pointer; height: 34px;"
+         , HP.title (viewtypeTip r)
+         , HE.onMouseDown \_ -> SetStage (Hunt r)
+         , HE.onMouseEnter \e -> if ME.buttons e > 0 then SetStage (Hunt r) else Nop ]
+         [ HH.span [ HP.style ("font-size: 11px; " <> (if on then "color: #3a3428; font-weight: 600;" else "color: #a09880;")) ] [ HH.text (viewtypeLabel r) ]
+         , HH.div [ HP.style "position: relative; width: 14px; height: 34px; display: flex; align-items: center; justify-content: center;" ]
+             ( [ HH.div [ HP.style ("position: absolute; left: 6px; width: 2px; background: #d8cfb6; top: " <> (if i == 0 then "17px" else "0") <> "; bottom: " <> (if last then "17px" else "0") <> ";") ] []
+               , HH.div [ HP.style ("position: relative; width: " <> (if on then "12px" else "8px") <> "; height: " <> (if on then "12px" else "8px") <> "; border-radius: 50%; "
+                                     <> (if on then "background: #8d7a4a;" else "background: #fbf8f0; border: 1px solid #b8ab84;")) ] [] ] )
+         ]
 
 -- | **Score mode's REPL column** (docs/kb/plans/vetula-one-surface.md, Model
 -- | B): Limulus, open while the score is up, in the right-hand slot. About
@@ -4758,61 +4803,6 @@ layerTip = case _ of
   LayerButler -> "Jon Butler's 17 voicings, from the Plaits alt firmware"
   LayerStock -> "Émilie Gillet's original 11 Plaits chords"
 
--- | **The side panel**: Variations or Relatives of one chord, beside the view.
--- | It holds the chord it opened on (`varying`), so hearing its own pads does
--- | not move it; "↺" re-aims it at whatever was played last.
-sidePanel :: forall m. State -> H.ComponentHTML Action Slots m
-sidePanel st = case st.side of
-  Nothing -> HH.text ""
-  Just t ->
-    HH.div
-      [ HP.class_ (cn "vetula-surface--wide")
-      , HP.style ("position: absolute; top: 0px; right: 0; bottom: 0; width: " <> sidePanelWidth <> "; box-sizing: border-box; z-index: 7; overflow: auto; "
-                   <> "background: #fffdf8; border-left: 1px solid #e6dfcc; padding: 10px 14px 20px;") ]
-      ( [ HH.div [ HP.style "display: flex; align-items: center; gap: 6px; margin-bottom: 8px;" ]
-            ( map tab [ SideVariations, SideRelatives, SideSubstitutes ]
-                <> [ HH.div [ HP.style "flex: 1 1 auto;" ] []
-                   , HH.button
-                       [ HP.style "border: none; background: none; color: #a09880; font-size: 14px; cursor: pointer;"
-                       , HP.title "close", HE.onClick \_ -> CloseSide ]
-                       [ HH.text "\x00d7" ] ] )
-        ]
-          <> (case st.scoreBar of
-                Just i | puts st ->
-                  [ HH.div [ HP.style "font-size: 11px; color: #4f7a8c; background: #f3f6f7; border: 1px solid #d9e3e7; border-radius: 4px; padding: 4px 8px; margin-bottom: 8px;" ]
-                      [ HH.text ("click hears a chord in bar " <> show (i + 1) <> "'s register; double-click puts it there, or drag it onto any bar") ] ]
-                _ -> [])
-          <> case varySource st of
-               Nothing ->
-                 [ HH.div [ HP.style "font-size: 12px; color: #a09880; line-height: 1.6; padding-top: 12px;" ]
-                     [ HH.text "Play a chord in any view and press \x21ba, or open this panel after playing one." ]
-                 , reaim ]
-               Just src ->
-                 [ HH.div [ HP.style "display: flex; align-items: baseline; gap: 8px; margin-bottom: 10px; font-size: 11px; color: #a09880;" ]
-                     [ HH.span [ HP.style "font-size: 15px; color: #3a3428; font-weight: 500;" ] [ HH.text (chordTitle st src) ]
-                     , HH.text (show (playNotes src))
-                     , HH.div [ HP.style "flex: 1 1 auto;" ] []
-                     , reaim ]
-                 ]
-                   <> sideContent st t src
-      )
-  where
-  tab x =
-    let on = st.side == Just x
-    in HH.button
-         [ HP.style ("border: none; border-bottom: 2px solid " <> (if on then "#8d7a4a" else "transparent") <> "; background: none; padding: 2px 4px; font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; cursor: pointer; color: " <> (if on then "#3a3428" else "#a09880") <> ";")
-         , HP.title (sideTip x), HE.onClick \_ -> OpenSide x ]
-         [ HH.text (sideLabel x) ]
-  reaim = case soundingChord st of
-    Just c | map playNotes (varySource st) /= Just (playNotes c) ->
-      smallBtn ("\x21ba " <> c.label) "aim the panel at the chord last played" SideOnLastPlayed
-    _ -> HH.text ""
-  smallBtn label tip act =
-    HH.button
-      [ HP.style "border: 1px solid #cdbb8c; background: #fbf6ea; color: #7a5c00; cursor: pointer; padding: 2px 8px; border-radius: 4px; font-size: 11px; white-space: nowrap;"
-      , HP.title tip, HE.onClick \_ -> act ]
-      [ HH.text label ]
-
 -- | **Score mode's three columns**, under the score (AC's sketch,
 -- | 2026-10-08): substitutes, variations and relatives of the chord in hand
 -- | (the bar last clicked), side by side so candidates compare at a glance.
@@ -4892,12 +4882,12 @@ computeCands st src =
   far = filter (\c -> not (any (same c) (smooth <> middle))) (row 1.0)
   same a b = pcSetOf a == pcSetOf b
 
--- | Bring the kept candidates up to date with the chord in hand, only where
--- | something shows them (the side panel, or the score).
+-- | Bring the kept candidates up to date with the chord in hand, only while
+-- | the score shows them.
 refreshCands :: forall m. MonadAff m => H.HalogenM State Action Slots Output m Unit
 refreshCands = do
   st <- H.get
-  let showing = isJust st.side || st.stage == Hunt Score
+  let showing = st.stage == Hunt Score
   case varySource st of
     Just src | showing ->
       unless (map _.sig st.cands == Just (candsSig st src)) $
@@ -4979,7 +4969,7 @@ sessionMenuPanel _ =
     [ HH.div [ HP.style "position: fixed; inset: 0; z-index: 45;", HE.onClick \_ -> PerfMenuClose ] []
     , HH.div
         [ HP.style "position: fixed; top: calc(var(--tf-bar) + 4px); left: calc(var(--tf-left, 0px) + 12px); z-index: 46; min-width: 200px; background: #fff; border: 1px solid #e0d8bf; border-radius: 7px; box-shadow: 0 8px 28px rgba(0,0,0,0.16); padding: 5px 0; overflow: hidden;"
-        , HE.onClick \e -> PerfStopClick e PerfNop ]
+        , HE.onClick \e -> PerfStopClick e Nop ]
         [ item true "\x21bb new session" PerfNewSession
         ]
     ]
@@ -4989,7 +4979,7 @@ sessionMenuPanel _ =
       [ HP.style ("display: block; width: 100%; text-align: left; border: none; background: transparent; padding: 6px 14px; font-size: 12px; "
                    <> (if enabled then "color: #4a4a4a; cursor: pointer;" else "color: #c4bfa8; cursor: default;"))
       , HP.enabled enabled
-      , HE.onClick \_ -> if enabled then PerfMenuPick act else PerfNop ]
+      , HE.onClick \_ -> if enabled then PerfMenuPick act else Nop ]
       [ HH.text label ]
 
 contextBar :: forall m. MonadAff m => State -> H.ComponentHTML Action Slots m
@@ -5081,46 +5071,25 @@ contextBar st =
   -- The ladder, in order of complexity, then the score and the river (and,
   -- on the score, Limulus), then the side panel's tabs. The colour sets are
   -- a tray on the surface (`colourTray`).
+  -- AC, 2026-10-08: a control lives in the pane it controls. The lattice's
+  -- rungs, banks switch and reset are on the lattice; Limulus's handle is on
+  -- the score; whether the score or the lattice shows is the app's call
+  -- (a progression opened is arranged on the score). What is left here is
+  -- the river, how auditions sound, and (on the right) the key.
   huntControls =
-    [ HH.div [ HP.style "display: flex; border: 1px solid #d8cfb6; border-radius: 5px; overflow: hidden;" ]
-        (map rung viewtypes)
-    , HH.div [ HP.style "display: flex; border: 1px solid #d8cfb6; border-radius: 5px; overflow: hidden;" ]
-        -- the score and the river: each a toggle, back to the lattice rung
-        (map (\vt ->
-          let on = current == vt
-          in HH.button
-               [ HP.style ("border: none; padding: 4px 14px; font-size: 12px; cursor: pointer; letter-spacing: 0.02em; "
-                            <> (if on then "background: #8d7a4a; color: #fff;" else "background: #fbf8f0; color: #5a5240;"))
-               , HP.title (if on then "back to the lattice (" <> viewtypeLabel st.fieldLens <> ")" else viewtypeTip vt)
-               , HE.onClick \_ -> SetStage (Hunt (if on then st.fieldLens else vt)) ]
-               [ HH.text (viewtypeLabel vt) ]) [ Score, River ])
-    ]
-      <> (if current /= Score then [] else
-    [ let on = st.scoreRepl
+    [ let on = current == River
       in HH.button
-           [ HP.style ("border: 1px solid #d8cfb6; border-radius: 5px; padding: 4px 12px; font-size: 12px; cursor: pointer; "
-                        <> (if on then "background: #3d4a46; color: #eaf3ef;" else "background: #fbf8f0; color: #5a5240;"))
-           , HP.title (if on then "put Limulus away: the score takes the width" else "Limulus beside the score")
-           , HE.onClick \_ -> ToggleScoreRepl ]
-           [ HH.text "Limulus" ] ])
-      <> [ divider
+           [ HP.style ("border: 1px solid #d8cfb6; border-radius: 5px; padding: 4px 14px; font-size: 12px; cursor: pointer; letter-spacing: 0.02em; "
+                        <> (if on then "background: #8d7a4a; color: #fff;" else "background: #fbf8f0; color: #5a5240;"))
+           , HP.title (if on then "back to the " <> viewtypeLabel st.riverFrom else viewtypeTip River)
+           , HE.onClick \_ -> SetStage (Hunt (if on then st.riverFrom else River)) ]
+           [ HH.text "river" ]
+    , divider
     , HH.div [ HP.style "display: flex; border: 1px solid #d8cfb6; border-radius: 5px; overflow: hidden;" ]
         (map styleButton [ Tuple StyleBlock "1 block", Tuple StyleArp "2 arpeggio" ])
     ]
-      <> shakeChip
       <> familyField
-      -- in score mode the three lists are under the score, all at once
-      <> (if current == Score then [] else [ divider ] <> map sideChip [ SideVariations, SideRelatives, SideSubstitutes ])
-      <> resetChip
   current = huntOr st.lastLens st.stage
-  rung vt =
-    let on = current == vt
-    in HH.button
-         [ HP.style ("border: none; border-right: 1px solid #e4dcc6; padding: 4px 14px; font-size: 12px; cursor: pointer; letter-spacing: 0.02em; "
-                      <> (if on then "background: #8d7a4a; color: #fff;" else "background: #fbf8f0; color: #5a5240;"))
-         , HP.title (viewtypeTip vt)
-         , HE.onClick \_ -> SetStage (Hunt vt) ]
-         [ HH.text (viewtypeLabel vt) ]
   styleButton (Tuple sty label) =
     let on = st.style == sty
     in HH.button
@@ -5129,42 +5098,9 @@ contextBar st =
          , HP.title "how auditions play a chord (keys 1, 2 on the field)"
          , HE.onClick \_ -> SetStyle sty ]
          [ HH.text label ]
-  sideChip t =
-    let on = st.side == Just t
-    in HH.button
-         [ HP.style ("border: 1px solid " <> (if on then "#8d7a4a" else "#d8cfb6") <> "; border-radius: 4px; padding: 3px 10px; font-size: 12px; cursor: pointer; "
-                      <> (if on then "background: #f2e7c6; color: #4a4232;" else "background: #fbf8f0; color: #5a5240;"))
-         , HP.title (sideTip t)
-         , HE.onClick \_ -> OpenSide t ]
-         [ HH.text (sideLabel t <> " \x25b8") ]
 
-  -- a way back to the fitted view (scroll to zoom · drag to pan), once it's moved.
-  resetChip =
-    if st.viewZoom /= 1.0 || st.viewCx /= 0.0 || st.viewCy /= 0.0 then
-      [ HH.button
-          [ HP.style "border: 1px solid #dcdcdc; background: #fafafa; color: #6a6a6a; cursor: pointer; padding: 3px 10px; border-radius: 4px; font-size: 12px; white-space: nowrap;"
-          , HP.title "reset the view · scroll to zoom · drag to pan"
-          , HE.onClick \_ -> ResetView ]
-          [ HH.text "reset view" ] ]
-    else []
   -- a hairline group separator.
   divider = HH.div [ HP.style "width: 1px; height: 22px; background: #00000016;" ] []
-  -- Perform as its own button — a mode apart from the browse projections. Filled
-  -- dark when active; a toggle, so clicking it while in Perform returns to the last
-  -- browse view (a guaranteed way back, since re-picking the dropdown's current
-  -- value wouldn't fire).
-  -- shake re-rolls Explore's relatives; only meaningful while Explore is showing.
-  -- The Banks lens borrows the same chip with its own verb: there it re-walks
-  -- all nine banks from a fresh number.
-  shakeChip = case st.stage of
-    Hunt Pads -> [ rollChip "shuffle ⟳" "re-walk all nine banks from a new seed" ShufflePads ]
-    _ -> []
-  rollChip label tip act =
-    HH.button
-      [ HP.style "border: 1px solid #cdbb8c; background: #fbf6ea; color: #7a5c00; cursor: pointer; padding: 3px 10px; border-radius: 4px; font-size: 12px; white-space: nowrap;"
-      , HP.title tip
-      , HE.onClick \_ -> act ]
-      [ HH.text label ]
   labelStyle = "font-size: 10px; color: #9a9a9a; letter-spacing: 0.1em; text-transform: uppercase;"
   inlineField lbl controls =
     HH.div [ HP.style "display: flex; align-items: center; gap: 5px;" ]
@@ -5380,7 +5316,7 @@ perfRecallModal st =
       , HE.onClick \_ -> PerfCloseRecall ]
       [ HH.div
           [ HP.style "background: #fbfaf4; width: 520px; max-width: 92vw; max-height: 84vh; overflow-y: auto; border-radius: 10px; box-shadow: 0 12px 48px rgba(0,0,0,0.24); padding: 22px 26px 24px;"
-          , HE.onClick \e -> PerfStopClick e PerfNop ]
+          , HE.onClick \e -> PerfStopClick e Nop ]
           [ HH.div [ HP.style "display: flex; align-items: baseline; justify-content: space-between; margin: 0 0 14px;" ]
               [ HH.h2 [ HP.style "font-size: 15px; font-weight: 600; margin: 0; color: #2a2a2a;" ] [ HH.text "Recall scene" ]
               , HH.button
@@ -6216,6 +6152,15 @@ scoreSurface st =
         ( [ Score.system sp openHandlers openRow ]
         )
     , scoreCandidates st
+    -- Limulus's handle, on the score's right edge (a control lives in the
+    -- pane it controls)
+    , HH.button
+        [ HP.style ("position: absolute; right: 0; top: 50%; transform: translateY(-50%); z-index: 6; writing-mode: vertical-rl; "
+                     <> "border: 1px solid #d8cfb6; border-right: none; border-radius: 6px 0 0 6px; padding: 10px 4px; font-size: 11px; letter-spacing: 0.08em; cursor: pointer; "
+                     <> (if st.scoreRepl then "background: #3d4a46; color: #eaf3ef;" else "background: #fbf8f0; color: #5a5240;"))
+        , HP.title (if st.scoreRepl then "put Limulus away: the score takes the width" else "Limulus beside the score")
+        , HE.onClick \_ -> ToggleScoreRepl ]
+        [ HH.text (if st.scoreRepl then "Limulus \x25b8" else "\x25c2 Limulus") ]
     ]
   where
   sp = Score.spellingOf st.key.tonic (scaleSet st.key)
@@ -6272,6 +6217,8 @@ scoreSurface st =
     , voiceDrop: VoiceDrop
     , tap: Just { start: TapStart, stop: TapStop, clear: ClearRhythm }
     , resume: (\w -> { name: w.name, act: ResumeWorking }) <$> st.resumable
+    , addChords: Just (SetStage (Hunt st.fieldLens))
+    , save: if unsaved then Just (SaveProg false) else Nothing
     , toQuadrat: case st.progName of
         Just nm | any (\e -> e.kept && e.name == nm) st.library -> Just (ToQuadrat nm)
         _ -> Nothing
@@ -6603,13 +6550,10 @@ padLit st c = case st.hoveredTriad of
   Nothing -> false
   Just h -> sort (nub (map (\p -> mod p 12) h.pcs)) == sort (nub (map (\p -> mod p 12) c.pcs))
 
--- | The chord under the lens: the one explicitly sent here, else whatever is
--- | sounding. Falling back means the lens is never blank merely because you
--- | arrived by the dropdown rather than by the button.
+-- | The chord the candidates are for: the one last heard (on the score, the
+-- | bar last clicked).
 varySource :: State -> Maybe ChordNode
-varySource st = case st.varying of
-  Just c -> Just c
-  Nothing -> soundingChord st
+varySource = soundingChord
 
 -- | The chord last played, from any view.
 soundingChord :: State -> Maybe ChordNode
@@ -6679,7 +6623,7 @@ registerStrip c =
 -- | Is the pointer in a Vary grid — either the standalone lens or the panel
 -- | under a rehearsal slot? The two are the same tool, so they audition alike.
 inVaryGrid :: State -> Boolean
-inVaryGrid st = st.side == Just SideVariations
+inVaryGrid st = st.stage == Hunt Score
 
 varyRowHead :: forall m. HV.Drift -> H.ComponentHTML Action Slots m
 varyRowHead d =
@@ -7098,7 +7042,6 @@ revoiceModal st =
            , rvBtn "⟲ invert" "roll the lowest voice down — the previous inversion" (RollBass (-1))
            , rvBtn "invert ⟳" "roll the lowest voice up — the next inversion" (RollBass 1)
            , rvBtn "8ve ▲" "the whole chord up an octave, bass included" (ShiftOctave 1)
-           , rvBtn "vary ⋯" "open this chord's whole neighbourhood — drift × density" (OpenVary c)
            ]
        , HH.div [ HP.style "margin-top: 8px; font-size: 11px; color: #9a9a9a; text-align: center;" ]
            [ HH.text "Tab voicings · ↑↓ nudge · drag = 8ve · ⌥ doubles · ⇧ drops a note · f keep · Esc" ]

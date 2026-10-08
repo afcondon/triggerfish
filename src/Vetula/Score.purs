@@ -112,6 +112,9 @@ type Handlers i =
   , toQuadrat :: Maybe i
   -- the progression open when the page last closed, offered back
   , resume :: Maybe { name :: String, act :: i }
+  -- back to the lattice to take more chords in; save this version
+  , addChords :: Maybe i
+  , save :: Maybe i
   }
 
 -- | The natural pitch class of each letter.
@@ -367,6 +370,12 @@ system pageSp on row =
                     <> (if Array.null row.beats then [] else
                           [ chip "\x00d7 rhythm" "back to one chord a bar" t.clear ])
                 _, _ -> [])
+          <> (case on.save of
+                Just act -> [ chip "save" "save this version (\x2318S); its voices then play it" act ]
+                Nothing -> [])
+          <> (case on.addChords of
+                Just act | not (Array.null row.chords) -> [ chip "+ chords" "back to the lattice to take more chords in" act ]
+                _ -> [])
           <> (case on.resume of
                 Just r | Array.null row.chords ->
                   [ chip ("resume " <> r.name) "reopen the progression you had open when the page last closed" r.act ]
