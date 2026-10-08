@@ -103,6 +103,9 @@ type Config o =
   -- | runs on the modular from the moment it is applied, and the Dashboard
   -- | stops and resumes it there
   , playable :: Boolean
+  -- | the transport on shift-space rather than space: Vetula, where space
+  -- | hears the chord under the pointer (AC, 2026-10-08)
+  , spaceHears :: Boolean
   -- | whether the bar offers Capture (c): not Selene, whose drawer keeps racks
   , capturable :: Boolean
   }
@@ -495,8 +498,9 @@ handleAction cfg = case _ of
               when (isJust st.browser) (handleAction cfg (FromDrawer (Drawer.Toggled (not st.drawer.open))))
             -- the console key (Vetula has `l`): by position, so any layout
             _ | KE.code ke == "Backquote" -> handleAction cfg ToggleLimulus
-            "Escape" -> whenM (H.gets _.limulus) (handleAction cfg ToggleLimulus)
-            " " | cfg.playable -> do
+            -- Esc is the page's (it closes the innermost thing there); Limulus
+            -- closes with its own key or its rail (AC, 2026-10-08)
+            " " | cfg.playable && KE.shiftKey ke == cfg.spaceHears -> do
               liftEffect $ E.preventDefault e
               handleAction cfg TogglePlay
             _ -> pure unit

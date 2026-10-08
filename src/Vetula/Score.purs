@@ -88,7 +88,10 @@ type Staff =
 -- | progression only), open the row's progression (any other), select a
 -- | run of chords (shift-click) for the scales that fit it, or let it go.
 type Handlers i =
-  { hear :: Int -> i
+  { press :: Int -> i
+  -- the pointer over a bar, and off it
+  , hover :: Int -> i
+  , unhover :: i
   , revoice :: Maybe (Int -> i)
   , select :: Int -> i
   , unselect :: i
@@ -575,9 +578,11 @@ system pageSp on row =
         el "rect"
           ( [ attr "x" (show x0), attr "y" "0", attr "width" (show barWidth), attr "height" (show staffBottom)
             , attr "fill" "transparent", attr "style" "cursor: pointer;"
-            -- on the PRESS, not the click: the chord sounds at once, and the
-            -- same press starts a drag (released on another bar, it moves)
-            , HE.onMouseDown \e -> if ME.shiftKey e then on.select i else on.hear i ]
+            -- a press starts a drag: released on another bar it moves there,
+            -- released on this one it is a click (hear it, choose the bar)
+            , HE.onMouseDown \e -> if ME.shiftKey e then on.select i else on.press i
+            , HE.onMouseEnter \_ -> on.hover i
+            , HE.onMouseLeave \_ -> on.unhover ]
             <> (case on.dropAt of
                   Just act -> [ HE.onMouseUp \_ -> act i ]
                   Nothing -> [])
@@ -587,7 +592,7 @@ system pageSp on row =
             <> (case on.padDrop of
                   Just act -> [ HE.handler (EventType "drop") \_ -> act i ]
                   Nothing -> [])
-          ) [ el "title" [] [ HH.text ("hear " <> name <> " \x00b7 shift-click to choose chords for the scales that fit them") ] ]
+          ) [ el "title" [] [ HH.text (name <> " \x00b7 click: hear it and choose this bar \x00b7 drag: move it \x00b7 shift-click: choose a run of bars, for the scales that fit them") ] ]
       label =
         el "text" [ attr "x" (show (x0 + barWidth / 2.0)), attr "y" "13", attr "text-anchor" "middle", attr "font-size" "11", attr "fill" "#4a4232"
                   , attr "style" "pointer-events: none;" ] [ HH.text name ]

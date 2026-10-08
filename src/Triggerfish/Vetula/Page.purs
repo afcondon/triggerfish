@@ -181,7 +181,8 @@ handleQuery = case _ of
   -- The browser drawer carries Vetula's scenes as they are (docs/kb/plans/
   -- the-deck.md, 2026-10-05): name first, the key as the tag, the session's
   -- three-glyph as the rebus, so a session's scenes share it. Renaming waits
-  -- for the revision of Vetula's saving (a scene's name is its Amphora label).
+  -- for the revision of Vetula's saving (a scene's name is its Amphora label),
+  -- so the rows are `builtin`: no rename is offered.
   SQ.AskBrowser reply -> do
     mscenes <- H.query _vet unit (Vetula.AskScenes identity)
     mprogs <- H.query _vet unit (Vetula.AskProgressions identity)
@@ -195,7 +196,7 @@ handleQuery = case _ of
     let voiceRows = Voices.rows st.voices st.names st.routesText
     pure $ mscenes <#> \scenes -> reply
       { title: if Array.null voiceRows && Array.null progRows then "Scenes" else "Vetula", modes: false, keep: "save scene", notice: ""
-      , rows: voiceRows <> progRows <> map (_ { section = if Array.null voiceRows && Array.null progRows then "" else "Scenes" }) (Array.mapWithIndex (\i sc -> { slot: i, name: sc.name, icons: map (\icon -> { icon, color: "#2a2a2a" }) (Array.filter (_ /= "") (String.split (String.Pattern "-") (sessionOf sc))), tag: sc.key, current: false, section: "", builtin: false, drag: "", actions: [] }) scenes) }
+      , rows: voiceRows <> progRows <> map (_ { section = if Array.null voiceRows && Array.null progRows then "" else "Scenes" }) (Array.mapWithIndex (\i sc -> { slot: i, name: sc.name, icons: map (\icon -> { icon, color: "#2a2a2a" }) (Array.filter (_ /= "") (String.split (String.Pattern "-") (sessionOf sc))), tag: sc.key, current: false, section: "", builtin: true, drag: "", actions: [] }) scenes) }
   -- a voice's row is not a scene: it recalls nothing
   SQ.BrowserRecall i _ next | i >= progSlotBase -> H.query _vet unit (Vetula.LoadEntry (i - progSlotBase) next)
   -- a voice's row: show its card in Limulus (adding the block if it is gone)

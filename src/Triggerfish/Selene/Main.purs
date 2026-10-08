@@ -25,5 +25,6 @@ main = Standalone.run
   , armOf: const Nothing
   , markOf: const Nothing
   , playable: false
+  , spaceHears: false
   , capturable: false
   }

@@ -24,7 +24,7 @@ import Data.DateTime.Instant (unInstant)
 import Data.Newtype (unwrap)
 import Effect.Now (now)
 
-import Data.Array (concat, concatMap, deleteAt, drop, elem, elemIndex, filter, find, findIndex, head, index, insertAt, last, length, mapMaybe, mapWithIndex, modifyAt, nub, nubByEq, range, replicate, snoc, sort, sortBy, take, unsnoc, updateAt, zipWith, (!!))
+import Data.Array (concat, concatMap, deleteAt, drop, elem, elemIndex, filter, find, findIndex, head, index, insertAt, last, length, mapMaybe, mapWithIndex, modifyAt, nub, nubByEq, range, replicate, snoc, sort, sortBy, take, updateAt, zipWith, (!!))
 import Data.Foldable (all, any, foldl, for_, maximum, minimum, sum)
 import Data.Traversable (traverse)
 import Data.Int (ceil, floor, fromString, round, toNumber)
@@ -149,7 +149,7 @@ import Harmonia.Vary as HV
 import Vetula.Vary as Vary
 import Vetula.Spread (applyToNode, ghostRows, invertNode, nextBassTone, refootNode, spreadOfNode, toneAt)
 import Harmonia.OpenVoicing (at, dropAt, setTone, sounds) as OV
-import Vetula.Harmony (ChordNode, Kind(..), bassMidi, diatonicSevenths, diatonicTriads, keyX, latticeChild, latticeFamily, noteName, octaveShift, place, placeOutside, playNotes, scaleSet, suspendSet, triadNode, triadOn, voicingCandidates)
+import Vetula.Harmony (ChordNode, Kind(..), bassMidi, diatonicSevenths, diatonicTriads, keyX, latticeFamily, noteName, octaveShift, place, playNotes, scaleSet, triadNode, triadOn, voicingCandidates)
 
 midiPortName :: String
 midiPortName = "IAC"
@@ -680,6 +680,10 @@ type State =
   -- the open progression's bar the side panel's chords go into, and a bar being dragged
   , scoreBar :: Maybe Int
   , scoreDrag :: Maybe Int
+  , hoveredBar :: Maybe Int       -- the bar of the score under the pointer
+  -- an unsaved progression about to be lost, asked once: the same act again
+  -- within a moment goes through (`guardLoss`)
+  , lossArmed :: Maybe { what :: String, at :: Number }
   -- score mode's two drawers: Limulus on the right, the candidates below
   -- the candidates for the chord in hand, computed once per chord (`refreshCands`)
   , cands :: Maybe Cands
@@ -838,6 +842,11 @@ data Action
   | ReflavourFamily String -- re-flavour the focused family's scale (mode value)
   | PlayPath               -- ▶ play the whole progression
   | ClearPath              -- ✕ empty the progression so the next shift-click starts fresh
+  | ScorePress Int         -- a press on a bar: a drag starts (a release on it is a click)
+  | HoverBar (Maybe Int)   -- the pointer over a bar of the score, or off it
+  | AltClick ChordNode     -- an alternative clicked: heard, and in hand
+  | AltPut ChordNode       -- an alternative shift-clicked: into the chosen bar
+  | AltDragEnd             -- a drag of an alternative ended, dropped or not
   | ScoreHear (Array Int)  -- the score: hear a chord of a progression that is not open
   | ScoreRevoice Int       -- the score: open the ladder on a chord of the open progression (its id)
   | RevoiceFocus Int       -- the progression's ladders: focus (and hear) the chord at a position
@@ -852,7 +861,6 @@ data Action
   | ScoreDuplicate Int
   | ScoreDelete Int
   | ScoreDropAt Int
-  | ScorePut ChordNode        -- the score: a chord from the panel into the chosen bar
   | ScorePutAt Int ChordNode
   | ScoreHearPad ChordNode    -- a panel chord heard in the chosen bar's register
   | ScorePadDrag ChordNode    -- a panel chord picked up, to drop on a bar
@@ -881,7 +889,6 @@ data Action
   -- Tank model (Slice A)
   | PlayChordId Int        -- plain-click a pool chord: audition it (no path change)
   | AuditionTriad Int (Array Int)        -- Tonnetz: hear a triad off the net (root pc, pcs)
-  | AuditionNode ChordNode               -- Lattices: hear a generated chord (its own voicing)
   -- Chyron: hover a chip (space auditions it), or click one — plain click selects
   -- a single chord, shift-click extends the range from the anchor (Mac semantics).
   -- PERFORM surface
@@ -925,9 +932,7 @@ data Action
   | SetStyle AuditionStyle       -- Explore: the audition style (keys 1, 2), heard at once
   | SaveProg Boolean             -- save the progression (⌘S); true = as a new sibling (⌘⇧S)
   | TakeMark String ChordNode    -- Explore: a shift-click selects and takes it
-  | DropTone Event Int Int Int  -- silence chord `id`'s tone `i` at octave `k` (shift-click a note)
   | ShuffleVary            -- re-draw all nine cells of the Vary lens from a new seed
-  | VaryAudition ChordNode -- hear a variation
   -- REHEARSE
   | ToQuadrat String       -- publish a saved progression (by name) as a clip for Quadrat to sample
   | ResumeWorking          -- reopen the progression open when the page last closed
@@ -1087,6 +1092,8 @@ component = H.mkComponent
       , scoreRead: Set.empty
       , scoreBar: Nothing
       , scoreDrag: Nothing
+      , hoveredBar: Nothing
+      , lossArmed: Nothing
       , cands: Nothing
       , scoreCands: true
       , rhythm: []
@@ -1244,8 +1251,9 @@ handleQuery = case _ of
     pure (Just (reply (map (\e -> { name: e.name, text: e.source }) s.library)))
   -- a progression from the drawer: work on it, on the score
   LoadEntry i next -> do
-    handleAction (LoadProg i)
-    handleAction (SetStage (Hunt Score))
+    guardLoss ("load " <> show i) do
+      handleAction (LoadProg i)
+      handleAction (SetStage (Hunt Score))
     pure (Just next)
   -- Limulus keeps in step only the cards it has a block for: this puts one
   -- back (or reveals it), for a card whose block was lost or never added.
@@ -1255,12 +1263,16 @@ handleQuery = case _ of
   OpenChannelCard n next -> do
     s <- H.get
     let named = s.stageCards >>= Map.lookup n >>= cardProgression
-    for_ (named >>= \nm -> findIndex (\e -> e.kept && e.name == nm) s.library) \i ->
-      unless (s.progName == named) (handleAction (LoadProg i))
-    handleAction (SetStage (Hunt Score))
-    -- Limulus may only now be opening: give it a moment to listen
-    liftAff (delay (Milliseconds 600.0))
-    handleAction (CardToLimulus n)
+        loads = isJust named && s.progName /= named
+        open = do
+          for_ (named >>= \nm -> findIndex (\e -> e.kept && e.name == nm) s.library) \i ->
+            when loads (handleAction (LoadProg i))
+          handleAction (SetStage (Hunt Score))
+          -- Limulus may only now be opening: give it a moment to listen
+          liftAff (delay (Milliseconds 600.0))
+          handleAction (CardToLimulus n)
+    -- only a different progression replaces the open one
+    if loads then guardLoss ("voice " <> show n) open else open
     pure (Just next)
   AskProgressions reply -> do
     s <- H.get
@@ -1335,7 +1347,7 @@ handleQuery = case _ of
                 in { id: "prog"
                    , icons: map (\icon -> { icon, color: "#2a2a2a" }) (filter (\w -> w /= "" && not (isJust (fromString w))) (split (Pattern "-") (SCU.takeWhile (_ /= '′') nm)))
                    , label: (if SCU.contains (Pattern "′") nm then "′ " else "") <> maybe "" (\k -> show k <> " \x00b7 ") (last (split (Pattern "-") nm) >>= fromString)
-                       <> (if unsaved then "\x25cf save" else "\x2713 saved")
+                       <> (if isJust s.lossArmed then "\x25cf unsaved: again to discard" else if unsaved then "\x25cf save" else "\x2713 saved")
                    , active: true, attention: unsaved
                    , tip: nm <> (if unsaved then " \x00b7 unsaved: \x2318S saves this version, \x2318\x21e7S a new sibling" else " \x00b7 saved") <> " \x00b7 click: arrange it, on the score"
                        <> " \x00b7 on the lattice, backspace takes back the last chord, delete starts a new progression" }
@@ -1356,7 +1368,7 @@ handleQuery = case _ of
         | Just v <- SCU.stripPrefix (Pattern "pick:scale:") act -> handleAction (SelectScale v)
       -- the progression: arrange it, on the score (saving is ⌘S, or the row's save)
       "chip:prog" -> when (length s.path > 0) (handleAction (SetStage (Hunt Score)))
-      "chip:clear" -> handleAction ClearPath
+      "chip:clear" -> guardLoss "clear" (handleAction ClearPath)
       _ -> pure unit
     pure (Just next)
   LoadSceneAt i next -> do
@@ -1977,7 +1989,8 @@ handleActionCore = case _ of
               when (k == "s" || k == "S") do
                 preventDefault ev
                 HS.notify keyL (SaveProg (KE.shiftKey ke))
-            else when (not (KE.repeat ke)) (HS.notify keyL (Key k (KE.shiftKey ke)))
+            -- shift-space is the shell's transport (Standalone's spaceHears)
+            else when (not (KE.repeat ke) && not (k == " " && KE.shiftKey ke)) (HS.notify keyL (Key k (KE.shiftKey ke)))
           Nothing -> pure unit
       addEventListener (EventType "keydown") el false (Window.toEventTarget w)
     -- initial palette
@@ -2073,45 +2086,24 @@ handleActionCore = case _ of
         " " -> playHoveredOrSounding
         "f" -> toggleFavorite
         _ -> pure unit
-      else if isJust (fieldView st) && fieldKey st k then case k of
-        " " -> case st.hoveredNode, st.cursor of
-          Just c, _ -> playChordQuiet c
-          _, Just cur -> playChordQuiet cur.chord
-          _, _ -> pure unit
-        "Enter" -> for_ st.cursor \cur -> takeChord cur.chord
-        "Escape" -> H.modify_ _ { cursor = Nothing }
-        "Backspace" -> H.modify_ \s -> s { path = fromMaybe [] (map _.init (unsnoc s.path)) }
-        "Delete" -> handleAction ClearPath
+      -- every view the same (docs: Vetula gestures, 2026-10-08): the keys
+      -- act on what is under the pointer, else on the chord in hand
+      else case k of
+        " " -> hearHoveredOrHand
+        "Enter" -> putHand
+        "Escape" ->
+          if isJust st.cursor then H.modify_ _ { cursor = Nothing }
+          else when (isJust st.scoreSel) (handleAction ScoreUnselect)
+        "Backspace" -> takeBack
+        "Delete" -> guardLoss "clear" (handleAction ClearPath)
         "1" -> handleAction (SetStyle StyleBlock)
         "2" -> handleAction (SetStyle StyleArp)
-        _ -> pure unit
-      else case k of
-        "r" -> resetPalette
-        " " -> playHoveredOrSounding
-        "Tab" -> cycleVoicing (if shift then -1 else 1)
-        "ArrowUp" -> nudgeSelected 1
-        "ArrowDown" -> nudgeSelected (-1)
-        -- Clear the path is Backspace/Delete (the ✕ button also does it). `c` used to
-        -- clear here, but it's now the shell's global CAPTURE hotkey (same key on every
-        -- pane, docs/DESIGN-scene-modal.md) — so clear yields it the letter.
-        "Backspace" -> handleAction ClearPath
-        "Delete" -> handleAction ClearPath
-        "p" -> H.gets _.path >>= playPath
-        "f" -> toggleFavorite
-        -- open the revoice modal on the hovered (else sounding) chord
+        "Tab" -> cycleHand (if shift then -1 else 1)
+        "ArrowUp" -> octaveHand 1
+        "ArrowDown" -> octaveHand (-1)
+        "f" -> for_ (handChord st) toggleFavoriteOf
         "v" -> handleAction OpenRevoice
-        -- explode / collapse the focused root's full lattice (the firehose)
-        "l" -> for_ st.focusedFamily explode
-        -- number-stacking: add the scale tone (n−1) generic steps above the head note
-        "2" -> stackOn 2
-        "3" -> stackOn 3
-        "4" -> stackOn 4
-        "5" -> stackOn 5
-        "6" -> stackOn 6
-        "7" -> stackOn 7
-        -- friendly populators: e = next third, s = the suspension set
-        "e" -> stackThird
-        "s" -> suspend
+        "p" -> H.gets _.path >>= playPath
         _ -> pure unit
 
   SelectKey v -> case fromString v of
@@ -2133,11 +2125,11 @@ handleActionCore = case _ of
     st <- H.get
     -- What to revoice, most direct first: the pad under the pointer (Banks),
     -- then the pool bubble under it, then whatever is sounding.
-    let candidate = case st.hoveredNode of
-          Just c -> Just c
-          Nothing -> case st.hoveredId >>= \hid -> find (\c -> c.id == hid) st.chords of
-            Just c -> Just c
-            Nothing -> st.sounding >>= \sid -> find (\c -> c.id == sid) st.chords
+    let candidate = (st.hoveredBar >>= barChord st)
+          <|> st.hoveredNode
+          <|> (st.hoveredId >>= \hid -> find (\c -> c.id == hid) st.chords)
+          <|> handChord st
+          <|> (st.sounding >>= \sid -> find (\c -> c.id == sid) st.chords)
     for_ candidate \c ->
       -- **Every lens but Explore recomputes its chords on each render**, so most
       -- of what you can click — a lattice member, a colour-layer chord, a Banks
@@ -2220,27 +2212,9 @@ handleActionCore = case _ of
   SelectVoice cid sel ->
     H.modify_ \s -> s { sounding = Just cid, selected = Just sel, revoicing = map (const cid) s.revoicing }
 
-  -- Omission — the axis the ladder never had, and the one that makes the five- and
-  -- six-note chords of the Banks lens playable. Shift-click a note to drop it,
-  -- click its ghost to bring it back.
-  --
   -- A restored tone returns to its STACK POSITION, not to where it was, because
-  -- omitting genuinely discards that: `Place []` holds no octave. The ghost is
-  -- therefore drawn at the position it will return to, so the gesture is honest
-  -- rather than surprising.
-  DropTone ev cid i k -> do
-    -- A progression row handles its own click (play / arm pick mode), and this
-    -- gesture lives on a dot INSIDE that row — so it has to be stopped here, or
-    -- dropping a note would also select the step.
-    liftEffect (stopPropagation ev)
-    st <- H.get
-    for_ (find (\c -> c.id == cid) st.chords) \c -> do
-      let c' = applyToNode c (OV.dropAt i k (spreadOfNode c))
-          chords' = map (\d -> if d.id == cid then c' else d) st.chords
-      applyChords chords'
-      H.modify_ \s -> s { sounding = Just cid, revoicing = map (const cid) s.revoicing }
-      playChord c'
-
+  -- omitting genuinely discards that (`omitTone`). The ghost is therefore drawn
+  -- at the position it will return to.
   -- Restore an omitted tone AT THE OCTAVE CLICKED. The ghosts stand at every
   -- octave the tone could occupy, so bringing a dropped note back where you
   -- want it is one gesture rather than restore-then-drag.
@@ -2350,7 +2324,9 @@ handleActionCore = case _ of
     st <- H.get
     let n = length st.path
         at = revoiceAt st
-    when (n > 0) $ handleAction (RevoiceFocus (clamp 0 (n - 1) (at + d)))
+        inPath = maybe false (\cid -> elem cid st.path) st.revoicing
+    -- a chord revoiced on its own has no neighbours to step to
+    when (n > 0 && inPath) $ handleAction (RevoiceFocus (clamp 0 (n - 1) (at + d)))
 
   -- Each later bar voice-led from the one before it, from the focus on: the
   -- least motion that keeps every voice. A bar with a different number of
@@ -2392,8 +2368,8 @@ handleActionCore = case _ of
     st <- H.get
     let node = st.path !! i >>= \pid -> find (\c -> c.id == pid) st.chords
     for_ node playChord
-    H.modify_ _ { sounding = map _.id node <|> st.sounding, selected = Nothing
-                , scoreBar = Just i, scoreDrag = Just i, lastHeard = node <|> st.lastHeard }
+    H.modify_ _ { sounding = map _.id node <|> st.sounding, selected = Nothing, cursor = Nothing
+                , scoreBar = Just i, lastHeard = node <|> st.lastHeard }
   -- a copy with its own id, after it: revoicing or replacing one leaves the other
   ScoreDuplicate i -> do
     st <- H.get
@@ -2408,25 +2384,40 @@ handleActionCore = case _ of
     , scoreBar = if s.scoreBar == Just i then Nothing else map (\b -> if b > i then b - 1 else b) s.scoreBar
     , scoreSel = Nothing }
   -- dropped on another bar: the dragged chord takes that place
-  ScoreDropAt j -> H.modify_ \s -> case s.scoreDrag of
-    Just i | i /= j ->
-      let moved = do
-            pid <- s.path !! i
-            rest <- deleteAt i s.path
-            insertAt j pid rest
-          -- the length moves with its chord
-          movedR = inStep s \r -> do
-            b <- r !! i
-            rest <- deleteAt i r
-            insertAt j b rest
-      in s { path = fromMaybe s.path moved, rhythm = movedR, scoreDrag = Nothing, scoreBar = Just j, scoreSel = Nothing }
-    _ -> s { scoreDrag = Nothing }
-  -- a chord from variations or relatives in place of the chosen bar's, with
-  -- an id of its own (as revoicing a lattice chord catches it)
-  -- silent: it was heard on the way here (the double-click's own clicks)
-  ScorePut c -> do
+  ScorePress i -> H.modify_ _ { scoreDrag = Just i }
+  HoverBar mi -> do
     st <- H.get
-    for_ st.scoreBar \i -> handleAction (ScorePutAt i c)
+    let c = mi >>= barChord st
+    H.modify_ _ { hoveredBar = mi, hoveredNode = c, hoveredTriad = map (\d -> { root: d.root, pcs: d.pcs }) c }
+  -- an alternative: heard where it would go, and in hand (return puts it)
+  AltClick c -> do
+    H.modify_ _ { cursor = Just { key: "alt", chord: c } }
+    hearLoose c
+  AltPut c -> do
+    st <- H.get
+    for_ st.scoreBar \i -> do
+      handleAction (ScorePutAt i c)
+      st' <- H.get
+      for_ (st'.path !! i) playId
+  AltDragEnd -> H.modify_ _ { scorePad = Nothing }
+  ScoreDropAt j -> H.gets _.scoreDrag >>= case _ of
+    -- released where it was pressed: a click, the bar heard and chosen
+    Just i | i == j -> do
+      H.modify_ _ { scoreDrag = Nothing }
+      handleAction (ScoreStep j)
+    _ -> H.modify_ \s -> case s.scoreDrag of
+        Just i | i /= j ->
+          let moved = do
+                pid <- s.path !! i
+                rest <- deleteAt i s.path
+                insertAt j pid rest
+              -- the length moves with its chord
+              movedR = inStep s \r -> do
+                b <- r !! i
+                rest <- deleteAt i r
+                insertAt j b rest
+          in s { path = fromMaybe s.path moved, rhythm = movedR, scoreDrag = Nothing, scoreBar = Just j, scoreSel = Nothing }
+        _ -> s { scoreDrag = Nothing }
   ScorePutAt i c -> do
     st <- H.get
     when (st.stage == Hunt Score && i < length st.path) do
@@ -2448,7 +2439,8 @@ handleActionCore = case _ of
       handleAction (ScorePutAt i c)
       st' <- H.get
       for_ (st'.path !! i) playId
-  ScoreDragOver ev -> liftEffect (preventDefault ev)
+  -- only a chord being carried from the alternatives drops on a bar
+  ScoreDragOver ev -> whenM (isJust <$> H.gets _.scorePad) (liftEffect (preventDefault ev))
   ScoreReadIn row -> H.modify_ \st -> st { scoreRead = if Set.member row st.scoreRead then Set.delete row st.scoreRead else Set.insert row st.scoreRead }
   -- as loading a progression adopts its saved key: the key moves under the
   -- chords, which stay where they are (`rebuild` would transpose them)
@@ -2635,25 +2627,6 @@ handleActionCore = case _ of
     if st.panMoved then H.modify_ _ { panMoved = false }
     -- label it like CatchTriad (root name + minor mark) so the chyron reads it
     else playChord (triadNode root pcs (noteName root <> (if elem (mod (root + 4) 12) pcs then "" else "m")))
-
-  -- Lattices lens: a generated lattice chord carries its own voicing, so audition/
-  -- catch use it verbatim (unlike the triad path, which re-voices from pcs).
-  AuditionNode c -> do
-    st <- H.get
-    if st.panMoved then H.modify_ _ { panMoved = false }
-    else do
-      -- Make it the ACTIVE chord, so `v` opens what you just clicked. Without
-      -- this, `sounding` was only ever set by `playId` (the pool-bubble path),
-      -- so auditioning from any other lens left `v` pointing at whatever chord
-      -- was last opened — it reads as the modal being stuck.
-      --
-      -- Guarded on pool membership because the modal edits `st.chords`: a Banks
-      -- pad or a generated candidate is not in there, and claiming it as
-      -- `sounding` would point the ladder at a chord it cannot find.
-      when (any (\d -> d.id == c.id) st.chords) $
-        H.modify_ _ { sounding = Just c.id, selected = Nothing }
-      playChord c
-
 
   -- **Hearing is not taking** (plan: "From exploring to progressions"). A click
   -- on the field selects and plays, quietly; return (or a shift-click) takes.
@@ -2937,11 +2910,6 @@ handleActionCore = case _ of
 
   ShuffleVary -> H.modify_ \s -> s { varyRoll = s.varyRoll + 1 }
 
-  -- Sounds, does not capture. The chyron is what a progression gets lifted
-  -- from, and a browse through 144 variations of one chord would bury the
-  -- trace in things you were only listening to.
-  VaryAudition c -> playChordQuiet c
-
   -- **Declare a progression to the sampler.** One path, never a lattice: you
   -- can only name what you sampled if you know which reading played. A saved
   -- progression is one plain path (alternation is a voice's business), so
@@ -2994,6 +2962,7 @@ handleActionCore = case _ of
     H.raise (StageChanged (stagePath v))
     H.modify_ \st -> st
       { stage = v
+      , cursor = if (v == Hunt Score) /= (st.stage == Hunt Score) then Nothing else st.cursor
       , lastLens = huntOr st.lastLens v
       , fieldLens = case st.stage of
           Hunt vt | not (fullView (Hunt vt)) -> vt
@@ -3108,6 +3077,11 @@ handleActionCore = case _ of
             chords' = map (\c -> if c.id == dg.chordId then c { voicing = addDouble c.voicing } else c) st.chords
         applyChords chords'
         H.modify_ _ { drag = Nothing }
+      -- ⌥-click, no drag: omit the note
+      Just dg | dg.double -> do
+        H.modify_ _ { drag = Nothing }
+        for_ (find (\c -> c.id == dg.chordId) st.chords >>= \c -> toneAt c dg.startMidi) \tn ->
+          omitTone dg.chordId tn.ix tn.oct
       -- a plain click (select only): leave the voicing alone
       _ -> H.modify_ _ { drag = Nothing }
 
@@ -3846,21 +3820,6 @@ takeChord c = do
         , lastHeard = Just c
         }
 
--- | The keys the Explore field takes for itself: space hears (never logs),
--- | return takes the cursor into the progression, esc drops it, backspace
--- | takes back the last chord taken and delete clears the progression. Space and return fall back to their
--- | old meanings when there is nothing on the field to act on.
-fieldKey :: State -> String -> Boolean
-fieldKey st = case _ of
-  " " -> isJust st.hoveredNode || isJust st.cursor
-  "Enter" -> isJust st.cursor
-  "Escape" -> isJust st.cursor
-  "1" -> true
-  "2" -> true
-  "Backspace" -> true
-  "Delete" -> true
-  _ -> false
-
 playChord :: forall o m. MonadAff m => ChordNode -> H.HalogenM State Action Slots o m Unit
 playChord c = do
   let notes = playNotes c
@@ -3991,21 +3950,25 @@ applyChords chords' = H.modify_ _ { chords = chords' }
 -- | while it stays in sync with the chord; any other edit (drag / arrow) leaves
 -- | the cycle stale, so we rebuild it from the current voicing.
 cycleVoicing :: forall o m. MonadAff m => Int -> H.HalogenM State Action Slots o m Unit
-cycleVoicing dir = do
+cycleVoicing dir = H.gets _.sounding >>= \ms -> for_ ms \sid -> cycleVoicingOf sid dir
+
+-- | Tab through a pool chord's candidate voicings, in place: every bar that
+-- | uses it changes with it.
+cycleVoicingOf :: forall o m. MonadAff m => Int -> Int -> H.HalogenM State Action Slots o m Unit
+cycleVoicingOf sid dir = do
   st <- H.get
-  for_ st.sounding \sid ->
-    for_ (find (\c -> c.id == sid) st.chords) \c -> do
-      let cyc = case st.cycle of
-            Just vc | vc.chordId == sid && index vc.options vc.ix == Just c.voicing -> vc
-            _ -> { chordId: sid, options: voicingCandidates c, ix: 0 }
-          n = length cyc.options
-      when (n > 0) do
-        let ix' = mod (cyc.ix + dir + n) n
-            newV = fromMaybe c.voicing (index cyc.options ix')
-            chords' = map (\d -> if d.id == sid then d { voicing = newV } else d) st.chords
-        H.modify_ _ { cycle = Just (cyc { ix = ix' }) }
-        applyChords chords'
-        for_ (find (\d -> d.id == sid) chords') playChord
+  for_ (find (\c -> c.id == sid) st.chords) \c -> do
+    let cyc = case st.cycle of
+          Just vc | vc.chordId == sid && index vc.options vc.ix == Just c.voicing -> vc
+          _ -> { chordId: sid, options: voicingCandidates c, ix: 0 }
+        n = length cyc.options
+    when (n > 0) do
+      let ix' = mod (cyc.ix + dir + n) n
+          newV = fromMaybe c.voicing (index cyc.options ix')
+          chords' = map (\d -> if d.id == sid then d { voicing = newV } else d) st.chords
+      H.modify_ _ { cycle = Just (cyc { ix = ix' }) }
+      applyChords chords'
+      for_ (find (\d -> d.id == sid) chords') playChord
 
 -- | Nudge the selected ladder voice (dir +1 = up / -1 = down): an upper voice
 -- | shifts by an octave; the bass rotates to the next chord tone already present
@@ -4044,6 +4007,133 @@ playHoveredOrSounding = do
           Just hid | Just cand <- find (\c -> c.id == hid) st.candidates -> playChord cand
           Just hid -> playId hid
           Nothing -> for_ st.sounding \sid -> for_ (find (\c -> c.id == sid) st.chords) playChord
+
+-- | **The chord in hand** (docs: Vetula gestures, 2026-10-08): the one last
+-- | clicked, on any view, which the keys act on. A bar of the progression
+-- | (a pool chord, changed in place), or a loose chord: one clicked on the
+-- | lattice, the banks or the alternatives, which return puts.
+data Hand = InBar Int ChordNode | Loose ChordNode
+
+hand :: State -> Maybe Hand
+hand st = case st.cursor of
+  Just cur -> Just (Loose cur.chord)
+  Nothing
+    | st.stage == Hunt Score -> st.scoreBar >>= \i -> InBar i <$> barChord st i
+    | otherwise -> Nothing
+
+handChord :: State -> Maybe ChordNode
+handChord st = hand st <#> case _ of
+  InBar _ c -> c
+  Loose c -> c
+
+-- | The chord in a bar of the progression.
+barChord :: State -> Int -> Maybe ChordNode
+barChord st i = st.path !! i >>= \pid -> find (\c -> c.id == pid) st.chords
+
+-- | A loose chord heard: on the score with a bar chosen, where it would sit
+-- | in that bar; elsewhere as it is.
+hearLoose :: forall m. MonadAff m => ChordNode -> H.HalogenM State Action Slots Output m Unit
+hearLoose c = do
+  st <- H.get
+  if puts st then handleAction (ScoreHearPad c) else playChordQuiet c
+
+-- | Space: what is under the pointer, else the chord in hand. Heard only:
+-- | nothing it does changes what the alternatives are for.
+hearHoveredOrHand :: forall m. MonadAff m => H.HalogenM State Action Slots Output m Unit
+hearHoveredOrHand = do
+  st <- H.get
+  case st.hoveredBar >>= barChord st of
+    Just c -> playChordQuiet c
+    Nothing -> case st.hoveredNode of
+      Just c -> hearLoose c
+      -- the parked fifths and Tonnetz views
+      Nothing -> case st.hoveredTriad, st.hoveredId >>= \hid -> find (\c -> c.id == hid) st.chords of
+        Just t, _ -> playChordQuiet (triadNode t.root t.pcs "")
+        _, Just c -> playChordQuiet c
+        _, _ -> for_ (hand st) case _ of
+          InBar _ c -> playChordQuiet c
+          Loose c -> hearLoose c
+
+-- | Return: put a loose chord in hand into the progression: at its end on
+-- | the lattice and the banks, into the chosen bar on the score.
+putHand :: forall m. MonadAff m => H.HalogenM State Action Slots Output m Unit
+putHand = do
+  st <- H.get
+  for_ st.cursor \cur ->
+    if st.stage == Hunt Score then handleAction (AltPut cur.chord) else takeChord cur.chord
+
+-- | Backspace: take back the progression's last chord.
+takeBack :: forall o m. MonadAff m => H.HalogenM State Action Slots o m Unit
+takeBack = H.modify_ \s ->
+  let n = length s.path
+  in if n == 0 then s
+     else s { path = fromMaybe s.path (deleteAt (n - 1) s.path)
+            , rhythm = inStep s (deleteAt (n - 1))
+            , scoreBar = s.scoreBar >>= \b -> if b < n - 1 then Just b else if n > 1 then Just (n - 2) else Nothing }
+
+-- | The cycle position of a loose chord's voicings (it has no pool id).
+looseCycle :: Int
+looseCycle = -1
+
+-- | Tab: the next voicing of the chord in hand.
+cycleHand :: forall m. MonadAff m => Int -> H.HalogenM State Action Slots Output m Unit
+cycleHand dir = do
+  st <- H.get
+  for_ (hand st) case _ of
+    InBar _ c -> cycleVoicingOf c.id dir
+    Loose c -> do
+      let cyc = case st.cycle of
+            Just vc | vc.chordId == looseCycle && index vc.options vc.ix == Just c.voicing -> vc
+            _ -> { chordId: looseCycle, options: voicingCandidates c, ix: 0 }
+          n = length cyc.options
+      when (n > 0) do
+        let ix' = mod (cyc.ix + dir + n) n
+            c' = c { voicing = fromMaybe c.voicing (index cyc.options ix') }
+        H.modify_ \s -> s { cycle = Just (cyc { ix = ix' }), cursor = map (_ { chord = c' }) s.cursor }
+        hearLoose c'
+
+-- | ↑ ↓: the chord in hand an octave up or down.
+octaveHand :: forall m. MonadAff m => Int -> H.HalogenM State Action Slots Output m Unit
+octaveHand d = do
+  st <- H.get
+  for_ (hand st) case _ of
+    InBar _ c -> do
+      let c' = octaveShift d c
+      applyChords (map (\e -> if e.id == c.id then c' else e) st.chords)
+      playChord c'
+    Loose c -> do
+      let c' = octaveShift d c
+      H.modify_ \s -> s { cursor = map (_ { chord = c' }) s.cursor }
+      hearLoose c'
+
+-- | Whether the open progression has changes not saved (as its chip says).
+unsavedNow :: State -> Boolean
+unsavedNow st = length st.path > 0 && currentSource st /= st.lastPubSig
+
+-- | **Losing unsaved work asks once, without a dialog** (AC, 2026-10-08): the
+-- | first press only marks the progression's chip; the same act again within
+-- | a moment goes through.
+guardLoss :: forall m. MonadAff m => String -> H.HalogenM State Action Slots Output m Unit -> H.HalogenM State Action Slots Output m Unit
+guardLoss what act = do
+  st <- H.get
+  if not (unsavedNow st) then act
+  else do
+    at <- liftEffect dateNow
+    case st.lossArmed of
+      Just a | a.what == what && at - a.at < lossWindowMs -> do
+        H.modify_ _ { lossArmed = Nothing }
+        act
+      _ -> do
+        H.modify_ _ { lossArmed = Just { what, at } }
+        H.raise (StageChanged (stagePath st.stage))
+        void $ H.fork do
+          liftAff (delay (Milliseconds lossWindowMs))
+          H.modify_ \s -> if map _.at s.lossArmed == Just at then s { lossArmed = Nothing } else s
+          s' <- H.get
+          H.raise (StageChanged (stagePath s'.stage))
+
+lossWindowMs :: Number
+lossWindowMs = 2500.0
 
 -- | The key/scale a chord is gathered under — the bubblepack it joins.
 groupLabel :: Key -> String
@@ -4100,13 +4190,15 @@ parseKeyLabel lbl = case SCU.indexOf (Pattern " ") lbl of
 toggleFavorite :: forall o m. MonadAff m => H.HalogenM State Action Slots o m Unit
 toggleFavorite = do
   st <- H.get
-  for_ st.sounding \sid ->
-    for_ (find (\c -> c.id == sid) st.chords) \c -> do
-      let key = pcsKey c
-          cur = fromMaybe [] (Map.lookup key st.favorites)
-          next = if elem c.voicing cur then filter (_ /= c.voicing) cur else cur <> [ c.voicing ]
-          favs' = if length next == 0 then Map.delete key st.favorites else Map.insert key next st.favorites
-      H.modify_ _ { favorites = favs' }
+  for_ (st.sounding >>= \sid -> find (\c -> c.id == sid) st.chords) toggleFavoriteOf
+
+-- | Star / unstar a chord's voicing among its note-set's favourites.
+toggleFavoriteOf :: forall o m. MonadAff m => ChordNode -> H.HalogenM State Action Slots o m Unit
+toggleFavoriteOf c = H.modify_ \st ->
+  let key = pcsKey c
+      cur = fromMaybe [] (Map.lookup key st.favorites)
+      next = if elem c.voicing cur then filter (_ /= c.voicing) cur else cur <> [ c.voicing ]
+  in st { favorites = if length next == 0 then Map.delete key st.favorites else Map.insert key next st.favorites }
 
 -- | A chord's favourites key — its note-set, so favoured voicings follow the
 -- | actual notes (and survive key changes) rather than a transient node id.
@@ -4140,114 +4232,6 @@ explode pid = do
           _ <- liftEffect $ handle.updateData (map mkSimNode chords') (neighborLinks chords')
           H.modify_ _ { chords = chords', nextId = st.nextId + length kids }
     _, _ -> pure unit
-
--- | Number-key stacking: add the scale tone `(nKey−1)` generic steps above the
--- | focused family's current head note, materialising the next interior chord and
--- | making it the new head. `3·3·3` climbs a seventh; `2·4` builds a sus2; the
--- | added tone's quality is the scale's to decide. (`e` is the friendly third.)
-stackOn :: forall o m. MonadAff m => Int -> H.HalogenM State Action Slots o m Unit
-stackOn nKey = stackBy (nKey - 1)
-
-stackBy :: forall o m. MonadAff m => Int -> H.HalogenM State Action Slots o m Unit
-stackBy steps = do
-  st <- H.get
-  for_ st.focusedFamily \seedId ->
-    for_ (find (\c -> c.id == seedId) st.chords) \seed -> do
-      let famKey = fromMaybe st.key (Map.lookup seedId st.familyScale)
-          hd = stackingHead st seedId seed
-          s = scaleSet famKey
-          n = length s
-          newTop = hd.top + steps                       -- ABSOLUTE degree — keeps climbing
-          newPc = fromMaybe seed.root (s !! mod newTop n)
-          newPcs = sort (nub ([ newPc ] <> hd.pcs))
-      if sort (nub hd.pcs) == newPcs
-        -- the new tone repeats a pitch class already present (an octave up): no new
-        -- node, but advance the top so the next third reaches a fresh scale tone.
-        then H.modify_ _ { stackHead = Just { id: hd.id, top: newTop } }
-        else do
-          hid <- materialize seedId famKey newPcs
-          for_ hid \i -> do
-            H.modify_ _ { stackHead = Just { id: i, top: newTop } }
-            playId i
-
--- | Friendly `e` — "add the next third." On a bare root it lays the whole triad
--- | in one press (the lonely dyad is skipped); otherwise it is exactly a third
--- | stacked (`stackBy 2`), so `e·e` reaches the seventh, `e·e·e` the ninth.
-stackThird :: forall o m. MonadAff m => H.HalogenM State Action Slots o m Unit
-stackThird = do
-  st <- H.get
-  for_ st.focusedFamily \seedId ->
-    for_ (find (\c -> c.id == seedId) st.chords) \seed -> do
-      let famKey = fromMaybe st.key (Map.lookup seedId st.familyScale)
-          hd = stackingHead st seedId seed
-      if length hd.pcs <= 1
-        then do
-          let triad = triadOn famKey seed.root
-          hid <- materialize seedId famKey triad
-          for_ hid \i -> do
-            H.modify_ _ { stackHead = Just { id: i, top: seedTopDeg famKey (seed { pcs = triad }) } }
-            playId i
-        else stackBy 2
-
--- | Friendly `s` — drop the focused seed's scale-pure suspension set (sus2, sus4,
--- | no-3, no-5) into the family. Each is an interior member, so they dedupe and
--- | wire like any other lattice node. Leaves the stacking head where it was.
-suspend :: forall o m. MonadAff m => H.HalogenM State Action Slots o m Unit
-suspend = do
-  st <- H.get
-  for_ st.focusedFamily \seedId ->
-    for_ (find (\c -> c.id == seedId) st.chords) \seed -> do
-      let famKey = fromMaybe st.key (Map.lookup seedId st.familyScale)
-      for_ (suspendSet famKey seed) \pcs ->
-        void (materialize seedId famKey pcs)
-
--- | The chord the next stack press climbs from: the remembered head (with its
--- | absolute top degree) if it still belongs to the focused family, else the
--- | seed itself (its top degree read off its pitch classes).
-stackingHead :: State -> Int -> ChordNode -> { id :: Int, top :: Int, pcs :: Array Int }
-stackingHead st seedId seed =
-  case st.stackHead >>= \h -> map (\c -> { node: c, top: h.top }) (find (\c -> c.id == h.id) st.chords) of
-    Just { node, top } | node.id == seedId || node.parentId == Just seedId ->
-      { id: node.id, top, pcs: node.pcs }
-    _ ->
-      let famKey = fromMaybe st.key (Map.lookup seedId st.familyScale)
-      in { id: seed.id, top: seedTopDeg famKey seed, pcs: seed.pcs }
-
--- | The absolute scale degree of a chord's highest note (read off its pitch
--- | classes — correct for any chord spanning at most an octave, which the seeds
--- | and freshly-summoned triads always do).
-seedTopDeg :: Key -> ChordNode -> Int
-seedTopDeg key c =
-  let s = scaleSet key
-  in fromMaybe 0 (maximum (map (\pc -> fromMaybe 0 (elemIndex (mod pc 12) s)) c.pcs))
-
--- | Add a lattice child with explicit pitch classes to the focused family,
--- | placed in its stratum and deduped by content against existing nodes; returns
--- | the resulting node's id (existing or fresh). The surgical counterpart to
--- | `explode`'s firehose — shared by the number / `e` / `s` populators.
-materialize :: forall o m. MonadAff m => Int -> Key -> Array Int -> H.HalogenM State Action Slots o m (Maybe Int)
-materialize seedId famKey pcs = do
-  st <- H.get
-  case find (\c -> c.id == seedId) st.chords, st.handle of
-    Just seed, Just handle -> do
-      let meta = latticeChild famKey seed pcs
-          childBase = meta.chord { id = st.nextId, parentId = Just seedId }
-          -- in-scale extensions climb the interior column by level; extensions that
-          -- step OUTSIDE the home scale (e.g. when growing a borrowed chord in its
-          -- own modal world) rise onto the outside shelf by their ring index.
-          shelf = placeOutside st.key childBase
-          child = if shelf.outside == 0
-                    then latticePlace seed meta.level meta.lean childBase
-                    else shelf
-          ck = contentKey child
-      case find (\c -> contentKey c == ck) st.chords of
-        Just existing -> pure (Just existing.id)
-        Nothing -> do
-          let chords' = st.chords <> [ child ]
-          _ <- liftEffect $ handle.updateData (map mkSimNode chords') (neighborLinks chords')
-          H.modify_ _ { chords = chords', nextId = st.nextId + 1 }
-          pure (Just child.id)
-    _, _ -> pure Nothing
 
 -- | Place an exploded child in the stratified lattice that floats above the seed
 -- | (and above the keyboard): y = extension level (the vertical rank — triad tones
@@ -4325,16 +4309,6 @@ contentKey :: ChordNode -> String
 -- voicing sorted here so a pure slot-reorder (a drag that keeps the same notes) reads
 -- as the same identity — the array order is a UI detail, not harmonic content.
 contentKey c = show c.pcs <> "|" <> show (sort c.voicing) <> "|" <> show c.bassPc
-
--- | Reset to the McMullen palette in the current key/scale; pinned survive.
-resetPalette :: forall o m. MonadAff m => H.HalogenM State Action Slots o m Unit
-resetPalette = do
-  st <- H.get
-  let kept = filter _.pinned st.chords
-      set = nubByEq (\a b -> a.id == b.id) (seedsFor st.key <> kept)
-  stopSim
-  H.modify_ _ { dropped = Map.empty, focusedFamily = Nothing, stackHead = Nothing }
-  startWith st.key seedFocus set
 
 -- | Rebuild the palette in a new key/scale, keeping pinned chords.
 -- |
@@ -4763,9 +4737,29 @@ sideContent st t src = case st.cands of
 contextBarHeight :: State -> String
 contextBarHeight _ = "0px"
 
-helpText :: String
-helpText =
-  "One triad per scale degree. Click a piano key to focus that root — a beam lights its column. Stack notes on the focused chord: number keys 2–7 add an interval that many steps up (3 = a third, so 3·3·3 climbs a seventh; 2·4 makes a sus2), e adds the next third (e·e = seventh), s drops the suspensions; press l to explode its whole lattice at once (l again to collapse). The McMullen button drops a curated signpost palette and BORROW pulls chromatic chords from a parallel mode (modal interchange) — chords the scale-pure lattice can't reach, floating up over their own roots and shaded warmer the further outside the chosen scale they sit. Hover any chord + space to hear it. Hover a chord and press v to REVOICE it — a modal with its pitch ladder (drag a note by octaves, ⌥ to double), Tab to cycle voicings, ↑↓ to nudge a voice, f to keep one, and a slash row to re-foot the bass; Esc closes. Click any chord — triads included — to grow the progression on the right: same family bridges by the shortest single-note walk (gold); a chord in another family leaps across as an interconnector (dashed violet). Chromatic keys summon borrowed roots (modulation). On the right: click a step to hear it (shift-click one or two to offer chords to add), then Tab / Shift-Tab cycles its voicings, ↑/↓ nudges a clicked voice, drag a note to move it by octaves (⌥-drag to double it); ▶ plays the whole thing, c clears it. The Tidal source tracks it live — copy to save, paste + Load to work on a saved one again. “save → library” stores it in the progression library for later recall."
+-- | **The gestures, one meaning each on every view** (docs: Vetula gestures,
+-- | 2026-10-08). The help is this table, so it says what the code does.
+helpRows :: Array { gesture :: String, meaning :: String }
+helpRows =
+  [ { gesture: "click", meaning: "hear a chord, and take it in hand: the keys below act on it. On the score, a bar clicked is the bar chosen; the alternatives under it are for that bar" }
+  , { gesture: "shift-click", meaning: "put it: on the lattice and banks at the end of the progression; from the alternatives, into the chosen bar. On the score's bars, shift-click chooses a run, for the scales that fit them" }
+  , { gesture: "hover", meaning: "light the chords related to it" }
+  , { gesture: "hover + space", meaning: "hear it. With nothing under the pointer, the chord in hand. On the score an alternative is heard where it would sit in the chosen bar" }
+  , { gesture: "drag", meaning: "a bar to another place; an alternative onto a bar. On the lattice, drag the view" }
+  , { gesture: "return", meaning: "put the chord in hand" }
+  , { gesture: "tab · shift-tab", meaning: "the next or previous voicing of the chord in hand" }
+  , { gesture: "↑ ↓", meaning: "the chord in hand an octave up or down" }
+  , { gesture: "v", meaning: "revoice the chord under the pointer, else the one in hand. In the revoice view: drag a note by octaves, ⌥-drag to double it, ⌥-click to omit it, click its ghost to bring it back; ← → step through the bars, esc closes" }
+  , { gesture: "f", meaning: "keep this voicing among the chord's favourites" }
+  , { gesture: "p", meaning: "play the progression" }
+  , { gesture: "backspace", meaning: "take back the progression's last chord" }
+  , { gesture: "delete", meaning: "clear the progression (unsaved: press again to confirm)" }
+  , { gesture: "esc", meaning: "close the innermost thing: tapping, the revoice view, the chord in hand" }
+  , { gesture: "1 · 2", meaning: "previews struck (block) or rolled (arpeggio)" }
+  , { gesture: "⌘S · ⌘⇧S", meaning: "save the progression; save it as a new sibling" }
+  , { gesture: "shift-space", meaning: "the transport: play or stop" }
+  , { gesture: "b · `", meaning: "the library; Limulus" }
+  ]
 
 -- | The keys-and-help overlay (the ⓘ button). The reference text that used to sit as a
 -- | paragraph under the canvas, moved off it. Static, so click-anywhere dismisses.
@@ -4778,18 +4772,17 @@ helpOverlay st =
     [ HH.div
         [ HP.style "background: #fff; max-width: 720px; max-height: 80vh; overflow-y: auto; border-radius: 8px; box-shadow: 0 10px 44px rgba(0,0,0,0.18); padding: 20px 26px 26px;" ]
         [ HH.div [ HP.style "display: flex; align-items: baseline; gap: 10px; margin: 0 0 14px;" ]
-            [ HH.h2 [ HP.style "font-size: 15px; font-weight: 600; margin: 0; color: #2a2a2a;" ] [ HH.text "Keys & help" ]
+            [ HH.h2 [ HP.style "font-size: 15px; font-weight: 600; margin: 0; color: #2a2a2a;" ] [ HH.text "Gestures and keys" ]
             , HH.span [ HP.style "font-size: 11px; color: #b0b0b0;" ] [ HH.text "click anywhere to close" ]
             ]
-        , helpSection "Lattice" helpText
+        , HH.div [ HP.style "display: grid; grid-template-columns: max-content 1fr; gap: 7px 18px; font-size: 12.5px; line-height: 1.5;" ]
+            (concatMap row helpRows)
         ]
     ]
   where
-  helpSection heading body =
-    HH.div [ HP.style "margin: 0 0 14px;" ]
-      [ HH.div [ HP.style "font-size: 11px; letter-spacing: 0.06em; text-transform: uppercase; color: #9a7a2a; margin: 0 0 5px;" ] [ HH.text heading ]
-      , HH.p [ HP.style "font-size: 12.5px; line-height: 1.65; color: #555; margin: 0;" ] [ HH.text body ]
-      ]
+  row r =
+    [ HH.div [ HP.style "font-family: 'SF Mono', Menlo, monospace; font-size: 11.5px; color: #7a5c00; white-space: nowrap;" ] [ HH.text r.gesture ]
+    , HH.div [ HP.style "color: #555;" ] [ HH.text r.meaning ] ]
 
 -- | A chord (by root and pitch classes) voiced near another: its root as the
 -- | bass, nearest the other's bass; the rest voice-led from the other's
@@ -5042,7 +5035,9 @@ captureHeadColor h = case h `mod` 6 of
 riverSurface :: forall m. State -> H.ComponentHTML Action Slots m
 riverSurface st =
   HH.div
-    [ HP.style "position: absolute; inset: 0; display: flex; flex-direction: column; background: #0b0a07;" ]
+    -- `.vetula-surface`: the key listener acts while one is on screen
+    [ HP.class_ (HH.ClassName "vetula-surface vetula-surface--wide")
+    , HP.style "position: absolute; inset: 0; display: flex; flex-direction: column; background: #0b0a07;" ]
     [ capturePane st, riverTools st ]
 
 -- | **The river's own tools**, on the river (AC, 2026-10-08: marking moves
@@ -5077,6 +5072,17 @@ showsRiver :: Stage -> Boolean
 showsRiver = case _ of
   Hunt River -> true
   _ -> false
+
+-- | **Omit a note** (⌥-click on the ladder): the axis that makes the five- and
+-- | six-note chords of the banks playable. Its ghost brings it back.
+omitTone :: forall o m. MonadAff m => Int -> Int -> Int -> H.HalogenM State Action Slots o m Unit
+omitTone cid i k = do
+  st <- H.get
+  for_ (find (\c -> c.id == cid) st.chords) \c -> do
+    let c' = applyToNode c (OV.dropAt i k (spreadOfNode c))
+    applyChords (map (\d -> if d.id == cid then c' else d) st.chords)
+    H.modify_ \s -> s { sounding = Just cid, revoicing = map (const cid) s.revoicing }
+    playChord c'
 
 -- ---------------------------------------------------------------------------
 -- The Circle-of-Fifths lens (first geometric view)
@@ -5766,7 +5772,9 @@ scoreSurface st =
     , tapping: map _.at st.tapping
     }
   openHandlers =
-    { hear: ScoreStep
+    { press: ScorePress
+    , hover: \i -> HoverBar (Just i)
+    , unhover: HoverBar Nothing
     , revoice: Just \i -> maybe (ScoreHear []) ScoreRevoice (st.path !! i)
     , select: ScoreSelect openRow.title
     , unselect: ScoreUnselect
@@ -6059,8 +6067,8 @@ padButton st c =
     , HP.title (c.label <> " — " <> show (playNotes c))
     , HE.onMouseEnter \_ -> HoverPad (Just c)
     , HE.onMouseLeave \_ -> HoverPad Nothing
-    , HE.onClick \_ -> if puts st then ScoreHearPad c else AuditionNode c
-    , HE.onDoubleClick \_ -> ScorePut c
+    , HE.onClick \e -> if ME.shiftKey e then AltPut c else AltClick c
+    , HE.onDragEnd \_ -> AltDragEnd
     , HP.draggable (st.stage == Hunt Score)
     , HE.onDragStart \_ -> ScorePadDrag c
     ]
@@ -6109,8 +6117,8 @@ varyPad st c =
       , HE.onMouseEnter \_ -> HoverPad (Just c)
       , HE.onMouseLeave \_ -> HoverPad Nothing
       -- a click hears the chord alone; on the score, in its bar's register
-      , HE.onClick \_ -> if puts st then ScoreHearPad c else VaryAudition c
-      , HE.onDoubleClick \_ -> ScorePut c
+      , HE.onClick \e -> if ME.shiftKey e then AltPut c else AltClick c
+      , HE.onDragEnd \_ -> AltDragEnd
       , HP.draggable (st.stage == Hunt Score)
       , HE.onDragStart \_ -> ScorePadDrag c
       ]
@@ -6378,13 +6386,11 @@ ladderView dx labels scl msel msound = grid <> octs <> outs <> dots
       , SA.class_ (cn ("ladder-dot ladder-dot--" <> show (mod m 12)
                        <> (if i == 0 then " ladder-dot--bass" else " ladder-dot--drag")
                        <> (if selHere i then " ladder-dot--sel" else "")))
-      -- shift-click omits the tone; plain drag is unchanged. The bass is not a
-      -- tone the spread can reach, so it is never omittable.
+      -- drag moves the note by octaves; ⌥-drag leaves a double behind, and
+      -- ⌥-click (no drag) omits it (DragEnd). The bass is not a tone the
+      -- spread can reach, so it is never omittable.
       , if i == 0 then HE.onMouseDown \_ -> SelectVoice cid BassVoice
-        else HE.onMouseDown \ev ->
-               if ME.shiftKey ev
-                 then maybe (SelectVoice cid (UpperVoice (i - 1))) (\tn -> DropTone (ME.toEvent ev) cid tn.ix tn.oct) (msound >>= \c -> toneAt c m)
-                 else DragStart (ME.altKey ev) false cid (i - 1) m
+        else HE.onMouseDown \ev -> DragStart (ME.altKey ev) false cid (i - 1) m
       ]
     )
 
