@@ -11,15 +11,14 @@
 -- |     picture and the roll appears to lurch.
 -- |
 -- | Generalised from `Odonus.View.Scope` (now a thin adapter over this) when Vetula
--- | needed the same river running the other way (AC, 2026-08-05). `Flow` is the only
--- | parameter that differs. Vetula's river now flows left too, in from Limulus's
--- | drawer on the right, so nothing uses `FlowRight` at present.
+-- | needed the same river (AC, 2026-08-05). It once ran either way; since
+-- | Vetula's river came to flow left too, in from Limulus's drawer on the
+-- | right, it runs one way only: emitted at the RIGHT edge, ageing leftward.
 -- |
 -- | Pure and polymorphic in the host's `action` (nothing here is clickable): the
 -- | host wraps it with its own overlays and gestures.
 module Triggerfish.Capture.River
-  ( Flow(..)
-  , RiverWiring
+  ( RiverWiring
   , RiverState
   , riverPanel
   , windowMicros
@@ -36,16 +35,8 @@ import Triggerfish.Clips (NoteEvent)
 import Halogen.Widgets.Svg (svgAttr, svgEl)
 import Triggerfish.Ui.Style (style)
 
--- | Which way the river runs. `FlowLeft` = emitted at the RIGHT edge, ageing
--- | leftward (Odonus, Vetula). `FlowRight` = emitted at the LEFT edge, ageing
--- | rightward (unused since Vetula's river moved above the capture pane).
-data Flow = FlowLeft | FlowRight
-
-derive instance eqFlow :: Eq Flow
-
 type RiverWiring =
-  { flow :: Flow
-  , headColor :: Int -> String   -- colour a note by its source voice/channel
+  { headColor :: Int -> String   -- colour a note by its source voice/channel
   }
 
 -- | What the river reads: the current instant (in the same time base the notes were
@@ -81,16 +72,12 @@ windowMicros :: Number
 windowMicros = fadeMs * 1000.0
 
 -- | The leading edge a note is emitted from, inset a little so it isn't clipped.
-emitEdge :: Flow -> Number
-emitEdge = case _ of
-  FlowLeft -> riverW - 10.0
-  FlowRight -> 4.0
+emitEdge :: Number
+emitEdge = riverW - 10.0
 
 -- | Where something of a given age sits along the time axis, in viewBox units.
-xAt :: Flow -> Number -> Number
-xAt flow elapsedMs = case flow of
-  FlowLeft -> emitEdge FlowLeft - elapsedMs * pxPerMs
-  FlowRight -> emitEdge FlowRight + elapsedMs * pxPerMs
+xAt :: Number -> Number
+xAt elapsedMs = emitEdge - elapsedMs * pxPerMs
 
 pitchToY :: Int -> Number
 pitchToY pitch = riverH * (1.0 - (toNumber (clamp 24 96 pitch) - 24.0) / 72.0)
@@ -105,10 +92,7 @@ riverPanel w r =
     -- the gradient brightens toward the emit edge, so the eye is drawn to where
     -- notes are appearing rather than to where they're dying.
     [ style $ "position:absolute;inset:0;overflow:hidden;background:radial-gradient(140% 100% at "
-        <> (case w.flow of
-              FlowLeft -> "100%"
-              FlowRight -> "0%")
-        <> " 50%,#15140f,#0b0a07)" ]
+        <> "100% 50%,#15140f,#0b0a07)" ]
     ( octaveGuides
         <>
           [ svgEl "svg"
@@ -116,7 +100,7 @@ riverPanel w r =
               , svgAttr "viewBox" ("0 0 " <> show riverW <> " " <> show riverH)
               , svgAttr "preserveAspectRatio" "none"
               , style "position:absolute;inset:0" ]
-              ( map (markLine w r.nowMicros) (visibleMarks r.nowMicros r.marks)
+              ( map (markLine r.nowMicros) (visibleMarks r.nowMicros r.marks)
                   <> map (noteBar w r.nowMicros) r.notes )
           ]
     )
@@ -126,10 +110,10 @@ visibleMarks :: Number -> Array Mark -> Array Mark
 visibleMarks now = filter (\m -> (now - m.atMicros) / 1000.0 * pxPerMs < riverW)
 
 -- | A flagged instant as a full-height gold line, placed by age like a note.
-markLine :: forall action slots m. RiverWiring -> Number -> Mark -> H.ComponentHTML action slots m
-markLine w now m =
+markLine :: forall action slots m. Number -> Mark -> H.ComponentHTML action slots m
+markLine now m =
   svgEl "rect"
-    [ svgAttr "x" (show (xAt w.flow ((now - m.atMicros) / 1000.0)))
+    [ svgAttr "x" (show (xAt ((now - m.atMicros) / 1000.0)))
     , svgAttr "y" "0"
     , svgAttr "width" "1.5", svgAttr "height" (show riverH)
     , svgAttr "fill" "#e8c14a", svgAttr "opacity" "0.5"
@@ -141,7 +125,7 @@ noteBar w now n =
   let elapsedMs = (now - n.fireUnixMicros) / 1000.0
   in
     svgEl "rect"
-      [ svgAttr "x" (show (xAt w.flow elapsedMs))
+      [ svgAttr "x" (show (xAt elapsedMs))
       , svgAttr "y" (show (pitchToY n.pitch))
       , svgAttr "width" "9", svgAttr "height" "5", svgAttr "rx" "2"
       , svgAttr "fill" (w.headColor n.headIdx)

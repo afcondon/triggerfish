@@ -103,7 +103,7 @@ import Binnacle.Time (dateNow, perfNow)
 import Effect.Ref as Ref
 import Triggerfish.Capture.Logbook as Logbook
 import Triggerfish.Capture.Types (Orientation(..), PlaySource(..), RegionEdge(..), Zoom(..))
-import Triggerfish.Capture.River (Flow(..), riverPanel)
+import Triggerfish.Capture.River (riverPanel)
 import Triggerfish.Capture.River as River
 
 import Triggerfish.Capture.View (CaptureState, capturePanel, markCode)
@@ -123,7 +123,6 @@ import Triggerfish.Odonus.View.Progression (chordName) as OP
 import Triggerfish.Capture.RigLoops as RL
 import Triggerfish.Capture.Runs as Runs
 import Unsafe.Reference (unsafeRefEq)
-import Vetula.Clipboard (copyText)
 import Binnacle.Midi as Midi
 import Halogen.Widgets.Select as Select
 import Halogen.Widgets.MultiSelect as MultiSelect
@@ -161,12 +160,6 @@ gridCfg = { stepBeats: 0.25, lookaheadMs: 120.0, tickMs: 25 }
 -- toggled with no renderer left to observe it, and `poolSpine`/`focusTab` were
 -- defined but never called. `Hunt` is now a Stage constructor.
 
--- | The LEFT accordion (the reclaimed top bar): Setup (key/scale/family/borrow/
--- | palettes/connection), Tank (caught chords), Lens (view choice). Multi-open.
-data LeftSection = SecSetup | SecTank | SecLens
-
-derive instance eqLeftSection :: Eq LeftSection
-derive instance ordLeftSection :: Ord LeftSection
 
 -- | **The views.** The lattice's rungs come first, in a strict order of
 -- | complexity: key · + common · + four-note · + extended (`rungs`). They are
@@ -548,20 +541,11 @@ type State =
   -- seeds aren't listed; they default to the home key.
   , familyScale :: Map Int Key
   , focusedFamily :: Maybe Int        -- the family the per-family scale picker re-flavours
-  -- unused since the stacking helpers went (2026-10-07): only ever reset
-  , stackHead :: Maybe { id :: Int, top :: Int }
-  -- unused since the signpost buttons went: only ever reset
-  , dropped :: Map String (Array Int)
   -- chords reconstructed by pasting a saved Tidal progression back in. They live
   -- in `chords` (so the Revoice ladders + export work on them) but are kept off
   -- the Explore/Lattice surfaces — they aren't lattice nodes.
   , imported :: Set Int
   , helpOpen :: Boolean     -- is the ⓘ help overlay open? (the notes, off the canvas)
-  -- "pick mode": shift-clicked progression step indices (max 2). When non-empty,
-  -- the left surface shows a generated candidate cloud to insert/substitute.
-  , genSel :: Array Int
-  , candidates :: Array ChordNode
-  , adventure :: Number      -- 0 = smoothest candidates … 1 = most striking
   -- The progression library: every saved progression, kept (★) or
   -- auto-captured (◦).
   , library :: Array LibEntry
@@ -753,11 +737,7 @@ data Action
   | TapNext                -- space while tapping: the next chord (after the last, the take ends)
   | TapStop                -- Esc: the take abandoned, the rhythm as it was
   | ClearRhythm            -- back to one chord a bar
-  | CopyTidal String       -- copy the progression's Tidal source to the clipboard
   | ToggleHelp             -- open / close the ⓘ help overlay
-  | PickCandidate Int      -- insert/substitute the chosen candidate into the progression
-  | CancelGen              -- leave pick mode
-  | SetAdventure String    -- the adventurousness dial (slider value)
   | AutoCapture            -- timer: auto-capture the current path (ephemeral, update-in-place)
   | LoadProg Int           -- load library entry #i into the performance working copy
   | SaveScene              -- serialise the whole Perform surface as a vetulaScene → Amphora
@@ -816,7 +796,7 @@ data Action
   | ShuffleVary            -- re-draw all nine cells of the Vary lens from a new seed
   | ToQuadrat String       -- publish a saved progression (by name) as a clip for Quadrat to sample
   | ResumeWorking          -- reopen the progression open when the page last closed
-  | ToggleScoreCands       -- score mode: the candidates drawer up, or tucked down
+  | ToggleScoreCands       -- score mode: the alternatives up, or tucked down
   | CycleSound             -- where previews sound: browser, continuo, MIDI, off
   | SetSideDensity Int
   | LevelWheel Event Number -- the wheel over the field: step the level of detail
@@ -931,13 +911,8 @@ component = H.mkComponent
       , path: []
       , familyScale: Map.empty
       , focusedFamily: Nothing
-      , stackHead: Nothing
-      , dropped: Map.empty
       , imported: Set.empty
       , helpOpen: false
-      , genSel: []
-      , candidates: []
-      , adventure: 0.25
       , library: []
       , capSeq: 0
       , lastCapIdx: Nothing
@@ -2252,43 +2227,8 @@ handleActionCore = case _ of
     let k = { tonic: root, mode }
     in s { key = k, lattice = latticeFor k, bankPads = bankPadsFor k s.padRoll, restScale = Nothing
          , scoreRead = Set.delete (fromMaybe "new progression" s.progName) s.scoreRead }
-  CopyTidal src -> liftEffect (copyText src)
 
   ToggleHelp -> H.modify_ \s -> s { helpOpen = not s.helpOpen }
-
-  CancelGen -> H.modify_ _ { genSel = [], candidates = [] }
-
-  SetAdventure v -> case Number.fromString v of
-    Just x -> do
-      H.modify_ _ { adventure = x }
-      regen
-    Nothing -> pure unit
-
-  -- commit a candidate into the progression at the right place (insert before /
-  -- after / between, or replace for a substitute), then leave pick mode.
-  PickCandidate cid -> do
-    st <- H.get
-    for_ (find (\c -> c.id == cid) st.candidates) \cand -> do
-      let sel = sort (nub st.genSel)
-          n = length st.path
-          newId = st.nextId
-          newC = cand { id = newId }
-          path' = case genModeOf sel n, sel of
-            Just Substitute, [ i ] -> fromMaybe st.path (updateAt i newId st.path)
-            Just Transition, [ i, _ ] -> fromMaybe (st.path <> [ newId ]) (insertAt (i + 1) newId st.path)
-            Just Prepend, _ -> [ newId ] <> st.path
-            Just Append, _ -> st.path <> [ newId ]
-            _, _ -> st.path
-      H.modify_ _
-        { chords = st.chords <> [ newC ]
-        , imported = Set.insert newId st.imported
-        , nextId = newId + 1
-        , path = path'
-        , genSel = []
-        , candidates = []
-        , sounding = Just newId
-        }
-      playChord newC
 
   -- The working copy, on a timer: an empty path ends the current line of
   -- versions; a changed one is saved locally. Keeping it is SaveProg's job.
@@ -3184,30 +3124,6 @@ jumpVoice n pulse i v =
 cursorAt :: Array ChordNode -> Int -> Voice -> Maybe Int
 cursorAt chords pulse v = RV.cursorAtClock (voiceClock (length chords) v) v.phase pulse
 
--- | The pick-mode generator mode implied by a step selection over an n-step path:
--- | one chord at the start prepends, at the end appends, in the middle
--- | substitutes; two chords bracket a transition. Nothing = no valid selection.
-genModeOf :: Array Int -> Int -> Maybe GenMode
-genModeOf sel n = case sel of
-  [ i ]
-    | n <= 1 -> Just Append
-    | i == 0 -> Just Prepend
-    | i == n - 1 -> Just Append
-    | otherwise -> Just Substitute
-  [ _, _ ] -> Just Transition
-  _ -> Nothing
-
--- | Recompute the candidate cloud from the current step selection + adventure dial.
-regen :: forall o m. MonadAff m => H.HalogenM State Action Slots o m Unit
-regen = do
-  st <- H.get
-  let steps = pathSteps st
-      sel = sort (nub st.genSel)
-  case genModeOf sel (length steps) of
-    Nothing -> H.modify_ _ { candidates = [] }
-    Just mode ->
-      H.modify_ _ { candidates = generateCandidates mode (mapMaybe (\ix -> index steps ix) sel) st.key st.adventure st.nextId }
-
 -- | Play one chord (no re-centre) and make it the sounding chord on the ladder.
 playId :: forall o m. MonadAff m => Int -> H.HalogenM State Action Slots o m Unit
 playId pid = do
@@ -3795,9 +3711,6 @@ playHoveredOrSounding = do
         -- root + pitch classes (no state change, like the candidate preview below).
         Just t -> playChord (triadNode t.root t.pcs "")
         Nothing -> case st.hoveredId of
-          -- in pick mode the hovered bubble is a candidate (not yet in `chords`);
-          -- preview it without committing (no sounding change, no insert)
-          Just hid | Just cand <- find (\c -> c.id == hid) st.candidates -> playChord cand
           Just hid -> playId hid
           Nothing -> for_ st.sounding \sid -> for_ (find (\c -> c.id == sid) st.chords) playChord
 
@@ -4105,9 +4018,7 @@ rebuild key = do
   H.modify_ _
     { chords = chords'
     , imported = Set.union st2.imported pathIds
-    , familyScale = Map.empty, focusedFamily = Nothing, stackHead = Nothing
-    , dropped = Map.empty
-    , genSel = [], candidates = []
+    , familyScale = Map.empty, focusedFamily = Nothing
     -- keep `path` (the progression, now transposed); fork a fresh capture session
     , lastCapIdx = Nothing, lastCapSig = "" }
   startWith key seedFocus set
@@ -4205,9 +4116,6 @@ render st =
     -- session menu in the old second bar; with that gone nothing sets
     -- `perfRecallOpen`, and the modal waits for a new door.
     [ perfRecallModal st
-    , HH.div
-        [ HP.style "position: absolute; bottom: 44px; left: 50%; transform: translateX(-50%); z-index: 5;" ]
-        [ pickBar st ]
     , helpOverlay st
     , revoiceModal st
     ] )
@@ -4268,19 +4176,6 @@ latticeControls st = case st.stage of
 -- | the shell watches (`Standalone.watchDocks`, "open"): it places nothing.
 limulusWanted :: forall m. H.ComponentHTML Action Slots m
 limulusWanted = HH.div [ HP.attr (HH.AttrName "data-limulus-dock") "open", HP.style "display: none;" ] []
-
--- | **The workspace's views** (AC, 2026-10-08): lattice, banks, score and
--- | review are four views of one workspace, the drawers around it (library,
--- | Limulus) supporting it.
-viewTabs :: forall m. State -> H.ComponentHTML Action Slots m
-viewTabs st =
-  barGroup
-    [ barBtn (elem v rungs) "lattice" "the chords built on the key, from triads up" (SetStage (Hunt st.lastRung))
-    , barBtn (v == Pads) "banks" "nine banks of sixteen: how far from home, by how rich" (SetStage (Hunt Pads))
-    , barBtn (v == Score) "score" "the progression on a grand staff, to arrange and play" (SetStage (Hunt Score))
-    , barBtn (v == River) "review" "everything played this session, as a river: mark the good bits, loop them" (SetStage (Hunt River)) ]
-  where
-  v = huntOr st.lastLens st.stage
 
 -- | **How a preview sounds**, whichever view it comes from: struck or
 -- | rolled, and where it sounds.
@@ -4347,14 +4242,14 @@ scoreCandidates st =
   HH.div
     [ HP.style ("flex: " <> (if st.scoreCands then "1 1 0" else "0 0 auto") <> "; min-height: 0; display: flex; flex-direction: column; border-top: 1px solid #e6dfcc; background: #fffdf8;") ]
     ( [ HH.div [ HP.style "display: flex; align-items: baseline; gap: 10px; padding: 8px 16px 6px; font-size: 11px; color: #a09880; border-bottom: 1px solid #f0eadb; cursor: pointer;"
-               , HP.title (if st.scoreCands then "tuck the candidates down" else "bring the candidates up")
+               , HP.title (if st.scoreCands then "tuck the alternatives down" else "bring the alternatives up")
                , HE.onClick \_ -> ToggleScoreCands ]
         ( ( case varySource st of
             Just src ->
               [ HH.span [ HP.style "font-size: 14px; color: #3a3428; font-weight: 500;" ] [ HH.text (chordTitle st src) ]
               , HH.text (case st.scoreBar of
                   Just i | puts st -> "bar " <> show (i + 1) <> " \x00b7 click hears it in its register \x00b7 shift-click puts it there \x00b7 or drag it onto any bar"
-                  _ -> "click a bar to see its candidates") ]
+                  _ -> "click a bar to see its alternatives") ]
             Nothing -> [ HH.text "click a bar of the score: its substitutes, variations and relatives show here" ] )
             <> [ HH.span [ HP.style "flex: 1 1 auto;" ] []
                , HH.span [ HP.style "font-size: 12px; color: #8d7a4a;" ]
@@ -4480,7 +4375,7 @@ sideContent st t src = case st.cands of
                    (map (padButton st) cs') ]
     in [ HH.div [ HP.style "display: flex; margin-bottom: 4px;" ]
            [ HH.div [ HP.style "flex: 1 1 auto; font-size: 11px; color: #a09880;" ] [ HH.text "what could come next, voice-led from it" ]
-           , smallBtn "shake \x27f3" "a different crop of the candidates" ShakeGenerate ] ]
+           , smallBtn "shake \x27f3" "a different crop of relatives" ShakeGenerate ] ]
          <> group "smooth" "the nearest moves: most notes held or moved by a step" cs.smooth
          <> group "further" "a little more adventurous" cs.middle
          <> group "striking" "the most adventurous of the plausible" cs.far
@@ -4603,8 +4498,7 @@ puts st = st.stage == Hunt Score && maybe false (_ < length st.path) st.scoreBar
 -- | field's own drawing survives a rung change.
 surfaceKey :: State -> String
 surfaceKey st
-  | length st.genSel > 0 && length st.candidates > 0 = "pick"
-  | otherwise = case st.stage of
+  = case st.stage of
       Hunt Score -> "score"
       Hunt River -> "river"
       Hunt Fifths -> "fifths"
@@ -4615,8 +4509,7 @@ surfaceKey st
 -- | view renders, one branch per viewtype.
 surface :: forall m. State -> H.ComponentHTML Action Slots m
 surface st
-  | length st.genSel > 0 && length st.candidates > 0 = pickSurface st
-  | otherwise = case st.stage of
+  = case st.stage of
       Hunt Fifths -> circleFifthsSurface st
       Hunt Tonnetz -> tonnetzSurface st
       Hunt KeyChords -> fieldSurface st
@@ -4729,7 +4622,7 @@ perfRecallModal st =
 
 -- | The REPLAY roll — the shared whole-session surface, left to right: the
 -- | oldest notes at the left, now at the right, marks numbered 1, 2, 3 across,
--- | as on Odonus. The live river above it runs the same way (FlowLeft); this
+-- | as on Odonus. The live river above it runs the same way; this
 -- | is the session laid out from its start, not that strip slid over (AC's
 -- | drawing, 2026-10-03).
 capturePane :: forall m. State -> H.ComponentHTML Action Slots m
@@ -4781,7 +4674,7 @@ riverSurface st =
     -- drawer is (AC: "as if emitting from the Limulus drawer, which it is");
     -- the whole session below, where marks are looped and their windows set
     [ HH.div [ HP.style "flex: 0 0 38%; position: relative; border-bottom: 1px solid #e8c14a33;" ]
-        [ riverPanel { flow: FlowLeft, headColor: captureHeadColor }
+        [ riverPanel { headColor: captureHeadColor }
             { nowMicros: st.riverNow, notes: recentNotes st, marks: st.capture.logbook.marks }
         , riverTools st ]
     , capturePane st ]
@@ -5398,8 +5291,7 @@ type FieldSeen =
 -- | The field rung on screen, if the view is one the field draws.
 fieldView :: State -> Maybe Viewtype
 fieldView st
-  | length st.genSel > 0 && length st.candidates > 0 = Nothing
-  | otherwise = case st.stage of
+  = case st.stage of
       Hunt v | elem v [ KeyChords, Common, Lattice4, Lattice, Pads ] -> Just v
       _ -> Nothing
 
@@ -5948,80 +5840,6 @@ varyBank st cs = case head cs of
 -- ---------------------------------------------------------------------------
 -- Pick mode — the generated candidate cloud (shift-select steps on the right)
 -- ---------------------------------------------------------------------------
-
--- | The candidate cloud that replaces the lattice while a progression selection
--- | is live. The anchor chord(s) sit at fixed positions; the candidates spread
--- | by voice-leading distance (x) and outside-ness (y). Click a candidate to
--- | commit it; click the empty backdrop to cancel.
-pickSurface :: forall m. State -> H.ComponentHTML Action Slots m
-pickSurface st =
-  let steps = pathSteps st
-      sel = sort (nub st.genSel)
-      anchors = mapMaybe (\ix -> index steps ix) sel
-      mode = genModeOf sel (length steps)
-      anchorNodes = case anchors of
-        [ a, b ] -> [ anchorView (-360.0) 30.0 a, anchorView 360.0 30.0 b ]
-        [ a ] -> [ anchorView 0.0 (-248.0) a ]
-        _ -> []
-      title = case mode of
-        Just Prepend -> "chords to begin with — click one to prepend"
-        Just Append -> "where to next? — click one to append"
-        Just Transition -> "transitions between the two — click one to insert"
-        Just Substitute -> "plausible substitutes — click one to replace"
-        Nothing -> ""
-  in SE.svg
-      [ SA.viewBox (-440.0) (-300.0) 880.0 600.0, SA.width 880.0, SA.height 600.0
-      , SA.class_ (cn "vetula-surface"), HP.style "max-width: none;" ]
-      ( [ SE.rect [ SA.x (-440.0), SA.y (-300.0), SA.width 880.0, SA.height 600.0
-                  , HP.style "fill: #fafafa;", HE.onClick \_ -> CancelGen ]
-        , SE.text [ SA.x 0.0, SA.y (-278.0), SA.class_ (cn "pick-title") ] [ HH.text title ]
-        ] <> anchorNodes <> map candidateView st.candidates )
-
--- | An anchor chord in pick mode: its disc + glyph, ringed to mark it as fixed.
-anchorView :: forall m. Number -> Number -> ChordNode -> H.ComponentHTML Action Slots m
-anchorView x y c =
-  let r = nodeRadius c
-  in SE.g [ SA.class_ (cn (nodeClass c)) ]
-      ( [ SE.circle [ SA.cx x, SA.cy y, SA.r (r + 3.0), SA.class_ (cn "anchor-ring") ]
-        , SE.circle [ SA.cx x, SA.cy y, SA.r r, SA.class_ (cn "vn-disc") ]
-        ] <> chordGlyph [] x y c.voicing
-          <> [ SE.text [ SA.x x, SA.y (y + r + 13.0), SA.class_ (cn "cand-label") ] [ HH.text c.label ] ] )
-
--- | A candidate chord: disc + glyph + name, clickable to commit it.
-candidateView :: forall m. ChordNode -> H.ComponentHTML Action Slots m
-candidateView c =
-  let r = nodeRadius c
-  in SE.g
-      [ SA.class_ (cn (nodeClass c <> " cand"))
-      , HE.onMouseEnter \_ -> Hover (Just c.id)
-      , HE.onMouseLeave \_ -> Hover Nothing
-      , HE.onClick \_ -> PickCandidate c.id
-      ]
-      ( [ SE.circle [ SA.cx c.targetX, SA.cy c.targetY, SA.r r, SA.class_ (cn "vn-disc") ] ]
-          <> chordGlyph [] c.targetX c.targetY c.voicing
-          <> [ SE.text [ SA.x c.targetX, SA.y (c.targetY + r + 12.0), SA.class_ (cn "cand-label") ] [ HH.text c.label ] ] )
-
--- | The pick-mode control strip above the surface: the adventurousness dial
--- | (smooth ↔ striking) + a cancel. Empty when not picking.
-pickBar :: forall m. State -> H.ComponentHTML Action Slots m
-pickBar st =
-  if length st.genSel > 0
-    then HH.div
-      [ HP.style "display: flex; align-items: center; gap: 10px; margin: 0 0 8px; font-size: 12px; color: #6a6a6a;" ]
-      [ HH.span [ HP.style "letter-spacing: 0.04em;" ] [ HH.text "smooth" ]
-      , HH.input
-          [ HP.attr (AttrName "type") "range", HP.attr (AttrName "min") "0"
-          , HP.attr (AttrName "max") "1", HP.attr (AttrName "step") "0.01"
-          , HP.value (show st.adventure), HE.onValueInput SetAdventure
-          , HP.style "width: 160px;"
-          ]
-      , HH.span [ HP.style "letter-spacing: 0.04em;" ] [ HH.text "striking" ]
-      , HH.button
-          [ HP.style "margin-left: 8px; border: 1px solid #d8d8d8; background: #fafafa; color: #4a4a4a; cursor: pointer; padding: 3px 12px; border-radius: 3px; font-size: 12px;"
-          , HE.onClick \_ -> CancelGen ]
-          [ HH.text "cancel" ]
-      ]
-    else HH.text ""
 
 -- ---------------------------------------------------------------------------
 -- The path, and its voicing ladders (the revoice modal)

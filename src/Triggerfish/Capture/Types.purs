@@ -124,17 +124,10 @@ type Logbook =
 -- | view — same data, same gestures, different projection.
 -- |
 -- |   * `Horizontal` — time → X, OLDEST at left (Odonus, and now Vetula).
--- |   * `HorizontalOutward` — time → X REVERSED: the newest note enters at the LEFT
--- |     edge and ages rightward, out of the voices beside it (AC, 2026-08-05).
--- |     Unused since Vetula's capture pane went `Horizontal`.
 -- |   * `Vertical` — time → Y, newest at top. Built for the Vetula tracker; unused
 -- |     since Vetula went horizontal, kept for the true-tracker refinement the
 -- |     design note still parks (docs/DESIGN-capture-surface.md).
--- |
--- | The two horizontal variants share ALL their geometry (strip shape, resize
--- | cursors, card anchoring) — they differ only in `timeCoord`/`axisPos`, which is
--- | why the view matches `Vertical` explicitly and lets `_` carry the rest.
-data Orientation = Horizontal | HorizontalOutward | Vertical
+data Orientation = Horizontal | Vertical
 
 derive instance eqOrientation :: Eq Orientation
 

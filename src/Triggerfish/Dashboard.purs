@@ -379,8 +379,8 @@ handleAction = case _ of
     else when (not play) (sendRig (RigLoops.cueLine slot "hush"))
 
   -- A loop's starfish: the line Limulus would send, to the rig.
-  LoopToggle m k playing ->
-    sendRig (RigLoops.cueLine m (if playing then "loop " <> show k <> " hush" else "loop " <> show k))
+  LoopToggle m k sounding ->
+    sendRig (RigLoops.cueLine m (if sounding then "loop " <> show k <> " hush" else "loop " <> show k))
 
   StopAll -> do
     st <- H.get

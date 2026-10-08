@@ -1,8 +1,7 @@
 -- | `Triggerfish.Capture.View` — the machine-agnostic capture/replay surface (#28,
--- | docs/DESIGN-capture-surface.md). One renderer, three orientations: `Horizontal`
--- | lays time along X oldest-first (Odonus, Vetula), `HorizontalOutward` reverses it
--- | so the newest note enters at the left and ages rightward (unused now),
--- | `Vertical` lays time down Y. Same data, same gestures,
+-- | docs/DESIGN-capture-surface.md). One renderer, two orientations: `Horizontal`
+-- | lays time along X oldest-first (Odonus, Vetula), `Vertical` lays time down Y,
+-- | newest first. Same data, same gestures,
 -- | different projection — see `Capture.Types.Orientation`.
 -- |
 -- | Pure and POLYMORPHIC in the host's `action`: the view never imports a machine's
@@ -134,23 +133,19 @@ pitchCoord o pitch =
        _ -> tlH * (1.0 - norm)
 
 -- | Position along the TIME axis, in viewBox units, for a 0..1 fraction (0 =
--- | earliest note, 1 = newest). Horizontal → X, earliest at left. HorizontalOutward
--- | → X flipped, NEWEST AT LEFT so the roll ages away from the voices. Vertical →
+-- | earliest note, 1 = newest). Horizontal → X, earliest at left. Vertical →
 -- | Y, NEWEST AT TOP (AC's call): frac 1 maps to Y 0, ageing downward.
 timeCoord :: Orientation -> Number -> Number
 timeCoord o frac = case o of
   Horizontal -> frac * tlW
-  HorizontalOutward -> (1.0 - frac) * tlW
   Vertical -> (1.0 - frac) * tlH
 
 -- | Position along the TIME axis as a PERCENT (0..100) for HTML overlays — same
 -- | convention as `timeCoord` (Horizontal → % from left, oldest first;
--- | HorizontalOutward → % from left, NEWEST first; Vertical → % from top, newest at
--- | top). Region bands/handles/playhead all place through this.
+-- | Vertical → % from top, newest at top). Region bands/handles/playhead all place through this.
 axisPos :: Orientation -> Number -> Number
 axisPos o frac = case o of
   Horizontal -> frac * 100.0
-  HorizontalOutward -> (1.0 - frac) * 100.0
   Vertical -> (1.0 - frac) * 100.0
 
 -- ── the surface ──────────────────────────────────────────────────────────────
@@ -259,7 +254,7 @@ regionBand w posOf isActive i m =
   let pf = posOf m.from
       pt = posOf m.to
       -- the band spans between the two endpoints; which is smaller flips with the
-      -- axis direction (Vertical and HorizontalOutward both run newest-first), so
+      -- axis direction (Vertical runs newest-first), so
       -- take min/abs and the band placement is generic.
       start = min pf pt
       len = max 0.3 (abs (pt - pf))
@@ -470,7 +465,6 @@ caption notes marks zoom span =
 pointerFrac :: Orientation -> { x :: Number, y :: Number } -> Number
 pointerFrac o p = case o of
   Horizontal -> p.x
-  HorizontalOutward -> 1.0 - p.x
   Vertical -> 1.0 - p.y
 
 -- | The surface's time axis: what it shows, over played time (the pauses
