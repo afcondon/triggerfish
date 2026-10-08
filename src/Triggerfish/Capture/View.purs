@@ -1,15 +1,15 @@
 -- | `Triggerfish.Capture.View` — the machine-agnostic capture/replay surface (#28,
 -- | docs/DESIGN-capture-surface.md). One renderer, three orientations: `Horizontal`
--- | lays time along X oldest-first (Odonus), `HorizontalOutward` reverses it so the
--- | newest note enters at the left and ages rightward (Vetula, whose surface sits to
--- | the right of its voices), `Vertical` lays time down Y. Same data, same gestures,
+-- | lays time along X oldest-first (Odonus, Vetula), `HorizontalOutward` reverses it
+-- | so the newest note enters at the left and ages rightward (unused now),
+-- | `Vertical` lays time down Y. Same data, same gestures,
 -- | different projection — see `Capture.Types.Orientation`.
 -- |
 -- | Pure and POLYMORPHIC in the host's `action`: the view never imports a machine's
 -- | Action type (that would be a cycle, and machine-specific). Instead the host
 -- | passes a `CaptureWiring` of the constructors it wants emitted plus the two
--- | machine-specific reads (voice colour, harmonic context). So Odonus, Vetula and
--- | Balistes each wire their own State/Action to one shared surface.
+-- | machine-specific reads (voice colour, harmonic context). So Odonus and Vetula
+-- | each wire their own State/Action to one shared surface (Balistes next).
 -- |
 -- | Generalised from `Odonus.View.Replay` (now a thin adapter over this). The old
 -- | on-surface CLIPS strip is gone: capture saves straight to the shared library

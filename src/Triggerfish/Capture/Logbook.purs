@@ -1,6 +1,6 @@
 -- | The always-on performance logbook (#28, machine-agnostic) — pure operations
 -- | over `Logbook`. Lifted from `Odonus.Logbook` (which now re-exports this), so
--- | every capturing machine (Odonus now, Vetula + Balistes next) shares one engine.
+-- | every capturing machine (Odonus and Vetula now, Balistes next) shares one engine.
 -- |
 -- | The machine is always capturing: every step's fresh notes append to a small
 -- | LIVE chunk; when it fills (`chunkSize`), it freezes into `chunks` and a new

@@ -1,19 +1,14 @@
 -- | Vetula — a growable harmonic exploration surface.
 -- |
--- | The surface starts as the McMullen palette laid out on two axes (y = inside
--- | ↔ outside the chosen scale, x = the voice-leading move from the focus
--- | chord). Then you GROW it by ear:
+-- | The surface starts as the key's chords on the voice-leading lattice; you
+-- | build a progression from them by ear: hover + space, or a click, hears a
+-- | chord (the click takes it in hand), shift-click or return puts it at the end
+-- | of the progression, v revoices it. The score arranges what you put, and
+-- | the river (review) shows what was played. `helpRows` is the full table of
+-- | gestures.
 -- |
--- |   * hover a chord, press **space** to hear it;
--- |   * hover + **v / i / s / e** to spawn its children — revoicings,
--- |     inversions, suspensions/omissions, extensions — re-centring on it;
--- |   * **click** a chord to pin it (kept across re-centres);
--- |   * **r** resets to the palette (pinned chords survive).
--- |
--- | `st.chords` is the model (provenance, pin, layout targets); the simulation
--- | supplies positions only; the render joins them by id. Plain Halogen-SVG
--- | render — the simple path; the model carries over to a HATS render if it
--- | scales.
+-- | `st.chords` is the model (provenance, layout targets); the lattice draws
+-- | each chord at its targetX/targetY.
 module Vetula.App where
 
 import Prelude
@@ -150,7 +145,7 @@ import Vetula.Harmony (ChordNode, Kind(..), bassMidi, diatonicSevenths, diatonic
 midiPortName :: String
 midiPortName = "IAC"
 
--- | The rig WebSocket (purerl-tidal); Binnacle subscribes to the Link anchor
+-- | The rig WebSocket (Architeuthis); Binnacle subscribes to the Link anchor
 -- | here. Same endpoint Odonus/Balistes use, so all three share one clock.
 rigUrl :: String
 rigUrl = "ws://127.0.0.1:3012/ws"
@@ -173,48 +168,17 @@ data LeftSection = SecSetup | SecTank | SecLens
 derive instance eqLeftSection :: Eq LeftSection
 derive instance ordLeftSection :: Ord LeftSection
 
--- | Slice C (tank model) — the Stage's swappable LENS. The pool is a frame; the
--- | lens is the view inside it. Adding a lens is ADDITIVE: one constructor, one
--- | `renderLens` branch, one `allLenses` entry — that's the decoupling proof.
--- | Lenses span a density axis: Keyboard is the exhaustive hunting cloud (every
--- | family + seed-bloom on the piano); PadGrid is a sparse, playable 4×4 board of
--- | the tank — the mouse-driven seed of the control-surface idea (see
--- | docs/DESIGN-vetula-tank-model.md).
--- | `LensCircleFifths` is the first of the GEOMETRIC lenses: the same pool chords,
--- | laid out by root on the circle of fifths (a spoke per root, radiating outward)
--- | rather than over the piano. Its geometry and the grade agree — the active
--- | key's diatonic roots form a contiguous highlighted wedge, borrowed roots sit
--- | just outside it, distant roots fall around the far side.
--- | `LensTonnetz` is the second geometric lens: the neo-Riemannian tonal net. Its
--- | own triad-lattice (not a pool re-projection) — every triangle is a major or
--- | minor triad, edge-adjacent triangles share two tones (the P/L/R moves), and
--- | the active key's diatonic triads light up as a connected "spider".
--- | `LensLattices` shows every scale degree's full tertian lattice at once — the
--- | powerset web the keyboard's `l`-explode blooms one degree at a time — as
--- | seven compact clusters of chromatic-circle polygon glyphs (no stave), tiled
--- | in the zoomable container. A firehose meant to be roamed, not read at 1:1.
--- | `LensGenerate` is the tank-seeded generative surface: it takes chords caught
--- | in the tank as SEEDS and blooms a constellation of voice-led relatives around
--- | each one (the "shake the etch-a-sketch, put chords back in, grow what relates"
--- | idea). Catch a relative and it feeds the tank — the compositional loop closes.
--- |
--- | (Keyboard / pad-grid retired — subsumed by the interactive fifths.)
--- |
--- | **Explore's ladder** (AC, 2026-10-06). The stage the UI calls EXPLORE (the
--- | constructor is still `Hunt`) offers its views in a strict order of
--- | complexity, as buttons: Key · + four-note · + extended · Banks. The first
--- | three are ONE surface, the voice-leading lattice, shown in growing
--- | amounts: the key's triads and sevenths along its bottom, then every
--- | chord of four notes or fewer above them, then the rest (AC, 2026-10-06:
--- | "the lattice could be strictly additive to that view"). Nothing moves
--- | between them; chords appear in place. The colour sets are not a rung: they
--- | are a layer, added from a tray on the surface, ringed in every rung, and the
--- | key's own chords are one of them (diatonic).
--- | Vary and the relatives bloom stopped being views: both work AROUND a chord
--- | you already have, so they open in a side panel on it (`SideTab`). Tonnetz is
--- | kept but off the ladder: too simple to follow triads and sevenths, too
--- | unfamiliar to open with, and at its best as a playing surface. The circle
--- | of fifths (`Fifths`) is off the ladder too, reachable by URL.
+-- | **The views.** The lattice's rungs come first, in a strict order of
+-- | complexity: key · + common · + four-note · + extended (`rungs`). They are
+-- | ONE surface, the voice-leading lattice, shown in growing amounts: the
+-- | key's triads and sevenths along its bottom, then the chords a lead sheet
+-- | names, then every chord of four notes or fewer, then the rest (AC,
+-- | 2026-10-06: "the lattice could be strictly additive to that view").
+-- | Nothing moves between them; chords appear in place. Banks, the score and
+-- | the river follow. Variations, relatives and substitutes are not views:
+-- | they work AROUND a chord you already have, so they are its alternatives.
+-- | Tonnetz and the circle of fifths (`Fifths`) are off the ladder, reachable
+-- | by URL.
 data Viewtype = Fifths | Tonnetz | KeyChords | Common | Lattice4 | Lattice | Pads | Score | River
 
 -- | The side panel beside an Explore view: a chord's variations (Harmonia.Vary,
@@ -294,9 +258,9 @@ viewtypeTip = case _ of
 huntOr :: Viewtype -> Stage -> Viewtype
 huntOr _ (Hunt vt) = vt
 
--- | The URL segments for a stage: `["hunt","tonnetz"]`, `["perform"]`,
--- | `["review"]`. Vetula owns this vocabulary — `Triggerfish.Route` carries the
--- | segments opaquely and never learns what a stage is.
+-- | The URL segments for a view: `["explore","tonnetz"]`. Vetula owns this
+-- | vocabulary — `Triggerfish.Route` carries the segments opaquely and never
+-- | learns what a view is.
 stagePath :: Stage -> Array String
 stagePath = case _ of
   Hunt vt -> [ "explore", viewtypeValue vt ]
@@ -471,14 +435,10 @@ type VoicingCycle =
   , ix :: Int
   }
 
--- | One audition event on the CHYRON — the rolling harmonic capture buffer (see
--- | docs/DESIGN-vetula-chyron-redesign.md). Every single-chord audition (via
--- | `playChord`/`playSpecimen`, the only two audition choke-points) appends one
--- | of these, whether or not sound actually came out. `pcs` for the glyph/dedup,
--- | `notes` for exact replay, `at` (ms, `dateNow`) for the timing axis that a
--- | later lift can quantise or drop. The trace is what a progression gets LIFTED
--- | from retroactively, replacing build-a-progression-up-front.
--- |
+-- | One chord of a token (`SavedSeq`), named for the CHYRON, the audition
+-- | trace tokens were once lifted from (docs/DESIGN-vetula-chyron-redesign.md),
+-- | which is gone. `pcs` for the glyph/dedup, `notes` for exact replay, `at`
+-- | for the timing axis.
 -- | `anchor` carries the chord's *harmonic reading* (`Harmonia.Anchor`) — the one
 -- | thing the raw notes cannot reconstruct: where the chord sits in a scale. This
 -- | is what Explore needs to bloom the *right* neighbourhood around a captured
@@ -494,19 +454,14 @@ type ChyronEvent =
   , anchor :: Anchor
   }
 
--- | A SAVED sequence: a span lifted out of the live trace and compressed to a
--- | pinned 2-glyph token (its identity, from `glyphOf` over the sequence's
--- | content). Carries the full events so it can be replayed with timing and,
--- | later, `split` into (Progression, Timings). See DESIGN-vetula-chyron-redesign.
+-- | A TOKEN: a card's chords as a sequence, with a content glyph for its
+-- | identity (`TGlyph.chordGlyph` over the chords). Carries the full events
+-- | so it can be replayed with timing.
 type SavedSeq =
   { events :: Array ChyronEvent
   , glyph :: Glyph
-  -- | The mini-notation sequence over this token's own chord indices, or `""`
-  -- | for the default one-a-beat reading. Carried on the TOKEN so a hand-off
-  -- | from Rehearse arrives self-describing: a shortlist of approved readings is
-  -- | `"<[0 1 2 3] [0 1 4 3]>"`, and a whole lattice is `"0 1 <3 4 5> 2"`.
-  -- | `PerfDropBox` copies it into the box's `seqText`, which a scene already
-  -- | persists — so the pattern survives from here to a saved scene.
+  -- | Always `""` now: a scene stores the box's `seqText` in its own right,
+  -- | so a token needs no pattern of its own (`mkSavedSeq`).
   , pattern :: String
   }
 
@@ -523,10 +478,11 @@ type SavedSeq =
 
 
 
--- | A PERFORM box: one persistent player slot on the Perform surface, bound to a
--- | MIDI channel. A dropped token LOOPS through its function `stack` (folded over
--- | the chord pattern) while the transport plays, out its terminal `term`. Empty or
--- | muted boxes are silent; a rig-only terminal is silent+ghosted in Solo.
+-- | A CARD (`v1`, `v2`, …): one persistent player slot, bound to a MIDI channel
+-- | and mirrored to the stage, where Limulus edits it. Its token LOOPS through its
+-- | function `stack` (folded over the chord pattern) while the transport plays,
+-- | out its terminal `term`. Empty or muted boxes are silent; a rig-only terminal
+-- | is silent+ghosted in Solo.
 type PerfBox =
   { cardId  :: Int        -- the card's stable number (`v3`): its name on the stage and
                           -- in Limulus (docs/kb/plans/text-on-the-stage.md); the
@@ -592,35 +548,22 @@ type State =
   -- seeds aren't listed; they default to the home key.
   , familyScale :: Map Int Key
   , focusedFamily :: Maybe Int        -- the family the per-family scale picker re-flavours
-  -- the chord the next number / e stack climbs from, with the ABSOLUTE scale
-  -- degree of its top note (may exceed the octave, so thirds keep climbing
-  -- 7→9→11→13 instead of folding back when a tone repeats a pitch class).
+  -- unused since the stacking helpers went (2026-10-07): only ever reset
   , stackHead :: Maybe { id :: Int, top :: Int }
-  -- the exterior signpost sets currently dropped (generator key → the chord ids
-  -- it added), so a button can toggle its set off again.
+  -- unused since the signpost buttons went: only ever reset
   , dropped :: Map String (Array Int)
-  -- the tonnetz triad STACK (2026-07-31 redesign): triads accumulated by
-  -- alt-clicking triangles, in pick order. Edge-adjacent triads fold into
-  -- 7ths/9ths naturally (the polychord is the pitch-class union); the whole
-  -- stack catches to the tank as one Anchor. Empty = not stacking.
   -- chords reconstructed by pasting a saved Tidal progression back in. They live
   -- in `chords` (so the Revoice ladders + export work on them) but are kept off
   -- the Explore/Lattice surfaces — they aren't lattice nodes.
   , imported :: Set Int
-  -- the Tidal-source textarea's verbatim content while the user is editing it
-  -- (Nothing = show the live-derived source, which tracks revoicing).
   , helpOpen :: Boolean     -- is the ⓘ help overlay open? (the notes, off the canvas)
   -- "pick mode": shift-clicked progression step indices (max 2). When non-empty,
   -- the left surface shows a generated candidate cloud to insert/substitute.
   , genSel :: Array Int
   , candidates :: Array ChordNode
   , adventure :: Number      -- 0 = smoothest candidates … 1 = most striking
-  -- ARRANGE (control B): how many bridge chords `Vetula.Between` lays in front of
-  -- a tank chord as it's dropped into the progression — the "cadence length" dial
-  -- (0 = drop it bare, 1 = V, 2 = ii–V, …). See docs/DESIGN-vetula-progression-building.md.
-  -- Floating-control fold state: each card collapses to just its header (click the
-  -- title bar) to cede the stage to the underlying music viz. See `floatCard`.
-  -- Performance tab — the progression library + the loaded working copy + voices.
+  -- The progression library: every saved progression, kept (★) or
+  -- auto-captured (◦).
   , library :: Array LibEntry
   -- Auto-capture bookkeeping (Slice 1): the current progression is captured to the
   -- library on a slow timer — one ephemeral entry per building session, UPDATED in
@@ -642,9 +585,8 @@ type State =
   -- rewritten again.
   , auditionCard :: Maybe { cardId :: Int, owned :: Boolean }
   , voices :: Array Voice
-  , armed :: Boolean              -- the ARM/cue flag (sticky). Vetula keeps its own arm
-                                  -- lifecycle (standalone PerfPlay/PerfStop/unload); the
-                                  -- shell mirrors it through SetSounding (`Silent` ⇒ disarm).
+  , armed :: Boolean              -- the ARM/cue flag, set only by the shell through
+                                  -- SetSounding (`Silent` ⇒ disarm).
   , authority :: Sounding        -- where PERFORMANCE output goes (MISU refactor, replaces
                                   -- master+audible): Local = local Web-MIDI, Rig = muted
                                   -- locally, the voices on the rig. Standalone stays Local.
@@ -673,8 +615,8 @@ type State =
   -- an unsaved progression about to be lost, asked once: the same act again
   -- within a moment goes through (`guardLoss`)
   , lossArmed :: Maybe { what :: String, at :: Number }
-  -- score mode's two drawers: Limulus on the right, the candidates below
-  -- the candidates for the chord in hand, computed once per chord (`refreshCands`)
+  -- the alternatives for the chord in hand, computed once per chord
+  -- (`refreshCands`), and whether their drawer is up
   , cands :: Maybe Cands
   , scoreCands :: Boolean
   -- the open progression's rhythm, tapped in: each bar's length in beats
@@ -688,12 +630,8 @@ type State =
   , stageKey :: Maybe String
   , clockTempo :: Number          -- the clock's live tempo, read each tick (drives note durations)
   , routing :: Map String Int   -- name → canonical MIDI channel, pushed from the Tidal page
-  -- Tank model (Slice A): the durable, unordered collection of CAUGHT chords.
-  -- Frozen `Specimen`s reference no lattice node, so the volatile lattice can
-  -- reflow/regenerate underneath without disturbing them. `k` over a chord catches
-  -- it here; the tank persists until cleared and will feed the Stage + Sequences.
-  , stage :: Stage                -- Hunt <projection> | Perform | Review — see `Stage`
-  , lastLens :: Viewtype          -- the Hunt projection to return to from Perform/Review
+  , stage :: Stage                -- the view on show — see `Stage`
+  , lastLens :: Viewtype          -- the view last shown; a bare `explore` URL lands on it
   , fieldLens :: Viewtype         -- the last lattice view (a rung or banks), to return to from the score
   , lastRung :: Viewtype          -- the last lattice rung, for the lattice | banks switch
   -- Geometric-lens viewport (CoF / Tonnetz): pan centre + zoom, applied as the
@@ -703,31 +641,18 @@ type State =
   , viewZoom :: Number
   , panning :: Maybe { ux :: Number, uy :: Number }  -- grabbed anchor point in user-space
   , panMoved :: Boolean            -- a real drag happened → swallow the ensuing click
-  , genRoll :: Int                 -- Generate lens: the "shake" counter (re-rolls relatives)
+  , genRoll :: Int                 -- the alternatives' "shake" counter (a different crop)
   -- Banks lens: the shuffle number. ONE Int regenerates all nine banks, because
   -- each is a `Harmonia.Progression.Spec` whose seed is fanned out from this.
   , padRoll :: Int
   , varyRoll :: Int
-  -- REHEARSE: a progression with alternatives at each slot. Empty = nothing
-  -- taken up yet, and the stage offers the saved tokens to start from.
-  -- **Paths you approved.** Held by CONTENT, not by index: dropping an option
-  -- renumbers every index above it, and a mark that silently re-pointed at its
-  -- neighbour would be the worst kind of wrong — a decision you made, recorded
-  -- against a chord you did not choose. Content survives any edit.
-  --
-  -- Not regenerable, which is why it is stored at all: the lattice can produce
-  -- every path, but which ones you liked exists nowhere else.
-  -- What is open under the progression, if anything.
-  -- The chord the Vary lens is working on. `Nothing` falls back to whatever is
-  -- sounding, so the lens is never empty for no reason.
-  -- the density the variations column shows (an index into `HV.densities`)
   , lastHeard :: Maybe ChordNode
   , style :: AuditionStyle
   -- the viewer chose where auditions sound (the chip, or the shell's ⌥1);
   -- until then, the browser, and Continuo once the rig answers
   , soundChosen :: Boolean
-  -- Explore's cursor: the chord a click selected (by its field key). Keys act
-  -- on it: space plays it, return takes it, esc lets it go.
+  -- The chord in hand when it is loose (`Hand`'s `Loose`): a click takes it;
+  -- space hears it, return puts it, esc lets it go.
   , cursor :: Maybe { key :: String, chord :: ChordNode }
   , sideDensity :: Int
   -- The wheel's travel since the last level step, and when that step was, so
@@ -744,9 +669,6 @@ type State =
   -- neighbours in the bank) is exactly what must NOT be thrown away — space and
   -- click have to sound the same chord.
   , hoveredNode :: Maybe ChordNode
-  -- Tank model (Slice B): the staged seeds. Clicking a tank specimen injects it
-  -- into the pool as a centre chord (`seedChord` maps the specimen → its pool
-  -- chord id) and blooms its neighbours around it; clicking again unstages it.
   -- The unified glyph-chip PRESET bank (docs/DESIGN-scene-modal.md): captured
   -- progression sources, anonymous or named, freely intermixed — distinct from the
   -- auto-capture `library`. `identity` is the parked preset's source text (the chip
@@ -754,27 +676,7 @@ type State =
   -- Vetula reports its chip by PULL (AskChip), not a change-gated push.
   , presets :: Array Preset
   , identity :: Maybe String
-  -- The CHYRON: an append-only (capped) log of everything auditioned this
-  -- session, oldest→newest. Phase 1 = the ticker; Phase 2 adds interaction.
-  -- See DESIGN-vetula-chyron-redesign.
-  -- Chyron interaction. `hoveredChyron` = the chip index under the pointer (space
-  -- auditions it, no re-log). `chyronSel` = the current selection, Mac text-editing
-  -- semantics: a plain click drops a fresh single-chord selection (`lo==hi`) and
-  -- sets the `anchor`; a shift-click extends the range from that fixed anchor
-  -- (anchor stays put, the clicked chip becomes the moving end). `lo`/`hi` are the
-  -- sorted span endpoints the render/save/play all read; `anchor` is the fixed end
-  -- a subsequent shift-click re-extends from.
-  -- The chip index currently being dragged to REORDER the buffer (Nothing = no
-  -- drag in flight). Reordering makes the buffer a list, not a tape (§8): order,
-  -- not timestamps, becomes the arrangement.
-  -- Saved sequences: pinned 2-glyph tokens on the left of the chyron. Saving a
-  -- selection compresses its live chips into one of these (reclaiming space).
-  -- Record-arm: when false, auditions still SOUND but don't log to the trace
-  -- (noodle without cluttering). Defaults true — always-on capture, the flow AC
-  -- liked; disarm only when you want to explore off the record.
-  -- PERFORM surface: player boxes (one per output) + the token "picked up" for
-  -- placement (shift-click / drag a saved token, then click / drop on a box), and
-  -- an fx "picked up" from the palette for placement onto a box's stack.
+  -- The cards (`v1`, `v2`, …): a box each, mirrored to the stage (`publishCards`).
   , perfBoxes :: Array PerfBox
   -- The persistent Perform SESSION: the container for saved scenes. Resumes across
   -- reloads; scenes save as `⟨alias|name⟩ #nextScene`. Minted/restored in Initialize.
@@ -782,18 +684,12 @@ type State =
   -- Recall: scenes fetched from Amphora (collection `vetula-scene`), + modal flag.
   , perfScenes :: Array { hash :: String, name :: String, payload :: String, tags :: Array String }
   , perfRecallOpen :: Boolean
-  -- The session/scene command menu in the secondary nav (the ⋯ dropdown off the
-  -- session badge) — session + scene + chyron housekeeping, moved off the Perform
-  -- header. (AC, 2026-08-03.)
   -- The shared MIDI clip library (#27), loaded from `Triggerfish.Clips.Store` in
-  -- Initialize — the pool the phrase picker offers. `perfPhrasePick` is the box index
-  -- whose picker is open (Nothing = closed).
+  -- Initialize.
   , clipLibrary :: Array MidiClip
   -- The always-on capture logbook (#28): every note the voices/boxes emit is tapped
-  -- in PerfTick and appended here (the "player piano" roll), shown live beside the
-  -- voices in PERFORM and given the whole surface in REVIEW, where a phrase is
-  -- lifted into the shared clip library. Which of those you see is `stage`; there
-  -- is no second flag (the old `captureView` folded into `Stage`).
+  -- in PerfTick and appended here (the "player piano" roll), drawn by the review
+  -- view's river, where a phrase is lifted into the shared clip library.
   , capture :: CaptureState
   -- The rig keeps the marks and plays the loops (Capture.RigLoops): true once
   -- it has said so, and from then this page holds no loop of its own.
@@ -805,10 +701,6 @@ type State =
   , captureDragSub :: Maybe H.SubscriptionId
   -- the live river's clock (performance µs), advanced only while review shows
   , riverNow :: Number
-  -- The LIVE river's two reads (`Capture.River`): the current instant, advanced by
-  -- a 33ms frame timer so the roll FLOWS rather than jumping a 16th at a time, and
-  -- the recent notes it draws — pruned to the river's fade span each frame. The
-  -- logbook keeps everything; this is just the window that's on screen.
   }
 
 
@@ -866,7 +758,6 @@ data Action
   | PickCandidate Int      -- insert/substitute the chosen candidate into the progression
   | CancelGen              -- leave pick mode
   | SetAdventure String    -- the adventurousness dial (slider value)
-  -- Performance tab
   | AutoCapture            -- timer: auto-capture the current path (ephemeral, update-in-place)
   | LoadProg Int           -- load library entry #i into the performance working copy
   | SaveScene              -- serialise the whole Perform surface as a vetulaScene → Amphora
@@ -875,12 +766,8 @@ data Action
   | PerfLoadScene String   -- parse a scene payload and load it onto the surface
   | SetTempo String
   | PerfTick Scheduler.Tick  -- one 16th-note pulse from the shared scheduler
-  -- Tank model (Slice A)
   | PlayChordId Int        -- plain-click a pool chord: audition it (no path change)
   | AuditionTriad Int (Array Int)        -- Tonnetz: hear a triad off the net (root pc, pcs)
-  -- Chyron: hover a chip (space auditions it), or click one — plain click selects
-  -- a single chord, shift-click extends the range from the anchor (Mac semantics).
-  -- PERFORM surface
   | StageOpen              -- the rig socket (re)connected: subscribe to the cards on the stage
   | StageFrameIn String    -- a frame from the rig; the stage's card frames are acted on
   | CardToLimulus Int      -- ask Limulus to show card n (`stage-open vetula/vN`)
@@ -919,7 +806,7 @@ data Action
   | PanMove Event          -- geometric lens: drag the viewport
   | PanEnd                 -- geometric lens: end the pan drag
   | ResetView              -- geometric lens: re-fit (zoom 1, centred)
-  | ShakeGenerate          -- Generate lens: re-roll the tank-seeded relatives
+  | ShakeGenerate          -- the alternatives: a different crop of the relatives
   | ShufflePads            -- Banks lens: re-walk all nine banks
   | HoverPad (Maybe ChordNode)  -- Banks lens: hover a pad (highlight + exact preview)
   | SelectMark String ChordNode  -- Explore: a click makes a chord the cursor, and plays it
@@ -927,7 +814,6 @@ data Action
   | SaveProg Boolean             -- save the progression (⌘S); true = as a new sibling (⌘⇧S)
   | TakeMark String ChordNode    -- Explore: a shift-click selects and takes it
   | ShuffleVary            -- re-draw all nine cells of the Vary lens from a new seed
-  -- REHEARSE
   | ToQuadrat String       -- publish a saved progression (by name) as a clip for Quadrat to sample
   | ResumeWorking          -- reopen the progression open when the page last closed
   | ToggleScoreCands       -- score mode: the candidates drawer up, or tucked down
@@ -937,7 +823,7 @@ data Action
   | RollBass Int           -- roll the revoiced chord's bass to the next/previous chord tone
   | ShiftOctave Int        -- move the revoiced chord bodily up/down an octave
   | PlaceTone Event Int Int Int -- put chord `id`'s tone `i` at octave `k` (click a ghost)
-  | SetStage Stage         -- switch stage: Hunt <projection> | Perform | Review
+  | SetStage Stage         -- show a view (the bar's tabs, the URL, the wheel)
 
 -- | The queries the Triggerfish shell pulls from Vetula: its current Tidal
 -- | source (for the aggregate TIDAL tab) and its current progression as PC sets
@@ -963,7 +849,7 @@ data SourceQuery a
   -- derived `Sounding`: `Silent` disarms, `Local` plays local Web-MIDI, `Rig` mutes
   -- locally, the rig plays the voices. Replaces SetMaster/SetAudible/
   -- SetArm/SyncToRig/StopRig. `AskSounding` reports the EFFECTIVE sounding (Silent
-  -- when self-disarmed, e.g. unloading a progression) so the shell can reconcile.
+  -- when disarmed) so the shell can reconcile.
   | SetSounding Sounding a
   | AskSounding (Sounding -> a)
   | SyncFree Number Number a    -- adopt the rack's shared free-run baseline (start micros, BPM)
@@ -995,9 +881,9 @@ data SourceQuery a
   -- The browser drawer (docs/kb/plans/the-deck.md, 2026-10-05): the saved
   -- scenes (Amphora `vetula-scene`), carried as they are; load one; save one.
   | AskScenes (Array { name :: String, session :: String, key :: String } -> a)
-  -- The controls the shell draws in its top bar (Triggerfish.Bar, AC
-  -- 2026-10-05): the stage tabs, ◆ mark with its counts and clear (PERFORM and
-  -- REVIEW), and the session's rebus; and what was pressed there.
+  -- The controls the shell draws in its one top bar (Triggerfish.Bar, AC
+  -- 2026-10-08): the view tabs, the key and scale pickers, help, and the
+  -- progression and clear chips; and what was pressed there.
   | AskBar (Bar -> a)
   | BarAct String a
   | LoadSceneAt Int a
@@ -1008,11 +894,8 @@ data SourceQuery a
   | DeleteSlot Int a
   | AskChip (Maybe ChipView -> a)
 
--- The one thing Vetula tells the shell without being asked: it armed or disarmed
--- itself (its own play / stop / unload). The shell owns the `armed` set, so this
--- event lets it update membership directly — replacing the old per-tick poll of
--- every instrument's effective sounding. Odo/Bal/Sel never self-disarm, so only
--- Vetula needs an output.
+-- `ArmChanged` told the shell Vetula had armed or disarmed itself; nothing
+-- raises it since Vetula's own play / stop went, and `SetSounding` is the only arm.
 -- | `StageChanged` carries the new stage's URL segments so the shell can write
 -- | the hash. Push, not poll: the shell would otherwise have to interrogate every
 -- | machine on a timer to notice a mode change it didn't cause.
@@ -1063,8 +946,8 @@ component = H.mkComponent
       , auditionCard: Nothing
       , publishMsg: Nothing
       , progName: Nothing
-      -- the four fixed lanes of the bottom voice bar, all MUTED (one toggle from
-      -- sounding). See `canonicalVoices`.
+      -- four fixed lanes, all MUTED (the voice bar that toggled them is gone).
+      -- See `canonicalVoices`.
       , voices: canonicalVoices 0
       , armed: false
       -- standalone Vetula has no shell, so authority defaults Local (the play button
@@ -1117,8 +1000,7 @@ component = H.mkComponent
       , padRoll: 0
       , varyRoll: 0
       , hoveredNode: Nothing
-      -- four player boxes on MIDI ch 1-4 (Odonus I-IV in AC's routing); a token
-      -- dropped on one loops there while the transport plays.
+      -- four cards, v1–v4, on MIDI ch 1-4 (Odonus I-IV in AC's routing)
       , perfBoxes: map (\n -> { cardId: n, channel: n, label: "P" <> show n, seq: Nothing, stack: [], seqText: "", muted: false, term: TMidi, phrase: Nothing }) (range 1 4)
       -- placeholder; Initialize resumes the persisted session or mints a fresh one
       , perfSession: { alias: "", name: "", nextScene: 1 }
@@ -1172,9 +1054,8 @@ handleQuery = case _ of
         -- The active chord's notes, bass-up as note names (unique pitch classes in
         -- voicing order) — the compact echo of the progression row's pitch ladder.
         -- With NO arranged progression the strip used to go blank, even while a box
-        -- was plainly sounding chords; it now falls back to the harmonic-context
-        -- voice (the `→ odo` box), in the SAME precedence `harmonicContext` uses —
-        -- so the nav readout and what Odonus is quantising to can't disagree.
+        -- was plainly sounding chords; it now falls back to the `→ odo` box
+        -- (`odoBoxPcs`).
         chord = case cs !! active of
           Just c -> joinWith " " (map noteName (nub (map (\x -> mod x 12) (playNotes c))))
           Nothing -> case odoBoxPcs s of
@@ -1213,8 +1094,8 @@ handleQuery = case _ of
       -- page plays them itself only in Local
       for_ st.binnacle \bin -> liftEffect $ Transport.send (Binnacle.socket bin) "vetula-cards-play"
     pure (Just next)
-  -- Report the EFFECTIVE sounding: Silent when self-disarmed (unload) so the shell
-  -- drops us from its armed set; otherwise the pushed authority.
+  -- Report the EFFECTIVE sounding: Silent when disarmed, so the shell drops us
+  -- from its armed set; otherwise the pushed authority.
   AskSounding reply -> do
     st <- H.get
     pure (Just (reply (if st.armed then st.authority else Silent)))
@@ -1237,9 +1118,6 @@ handleQuery = case _ of
       handleAction (LoadProg i)
       handleAction (SetStage (Hunt Score))
     pure (Just next)
-  -- Limulus keeps in step only the cards it has a block for: this puts one
-  -- back (or reveals it), for a card whose block was lost or never added.
-  -- the drawer's voice row: its line in Limulus (the row is the voice's number)
   -- A voice from the drawer: the score for the progression it plays (if it
   -- names a saved one), with Limulus open and showing its block.
   OpenChannelCard n next -> do
@@ -1287,8 +1165,8 @@ handleQuery = case _ of
   Capture next -> do
     captureNow
     pure (Just next)
-  -- The status-board chip's recall menu: report each preset as its glyph alias +
-  -- optional name + star flag; recall / star / delete a chosen preset.
+  -- The browser drawer's saved scenes (Amphora `vetula-scene`), with the session
+  -- and key read from their tags.
   AskScenes reply -> do
     s <- H.get
     let
@@ -1349,7 +1227,6 @@ handleQuery = case _ of
       "help" -> handleAction ToggleHelp
       _ | Just v <- SCU.stripPrefix (Pattern "pick:key:") act -> handleAction (SelectKey v)
         | Just v <- SCU.stripPrefix (Pattern "pick:scale:") act -> handleAction (SelectScale v)
-      -- the progression: arrange it, on the score (saving is ⌘S, or the row's save)
       -- the progression's chip says save while unsaved, and does it; saved,
       -- it arranges the progression on the score
       "chip:prog"
@@ -1397,15 +1274,13 @@ handleQuery = case _ of
     setSound sel
     pure (Just next)
 
--- | What the HARMONIC-CONTEXT VOICE is sounding right now — case 3 of
--- | `harmonicContext`. That's the single box on the `→ odo` terminal: `PerfSetTerm`
--- | keeps the terminal exclusive, so there is one conductor or none, never a blend.
--- | (AC's rule, 2026-08-06: a per-voice feed makes no sense, but ONE voice standing
--- | for the harmonic context does — it's the same call `harmonicVoice` already makes
--- | for the nav chyron.) `head` is belt-and-braces for state predating exclusivity.
+-- | What the HARMONIC-CONTEXT VOICE is sounding right now: the box on the `→ odo`
+-- | terminal, for the top bar's readout when no progression is arranged. (AC's
+-- | rule, 2026-08-06: a per-voice feed makes no sense, but ONE voice standing
+-- | for the harmonic context does.) `head` takes the first if several claim it.
 -- |
--- | Reads `perfBoxOdoFeed`, which queries each box's OWN pattern — so unlike case 2
--- | it works with no arranged progression, which is the whole point.
+-- | Reads `perfBoxOdoFeed`, which queries each box's OWN pattern, so it works
+-- | with no arranged progression, which is the whole point.
 -- |
 -- | NB `perfBoxOdoFeed` requires `isJust box.seq`, so a box playing a captured PHRASE
 -- | doesn't conduct — a recorded phrase has no single block chord to quantise to.
@@ -1465,12 +1340,7 @@ pulsesPerBar :: Int
 pulsesPerBar = 16
 
 -- ---------------------------------------------------------------------------
--- Force layout
--- ---------------------------------------------------------------------------
-
-
--- ---------------------------------------------------------------------------
--- Simulation lifecycle — runs over a given chord set, focused on focusId
+-- Seeding: lay a chord set out in a key, around a focus chord
 -- ---------------------------------------------------------------------------
 
 startWith :: forall o m. MonadAff m => Key -> Int -> Array ChordNode -> H.HalogenM State Action Slots o m Unit
@@ -1488,12 +1358,10 @@ startWith key focusId chords0 = do
       H.modify_ \s ->
         s { key = key, lattice = latticeFor key, bankPads = bankPadsFor key s.padRoll, chords = placed }
 
--- | Request Web-MIDI access and pick the output. Prefers the Continuo audition
--- | port when it's live (a JUCE virtual dest named "continuo" — Piano One/strings
--- | for hearing Vetula, see the continuo-vst-daemon note), falling back to the IAC
--- | bus that feeds the rig in production. Called on Initialize AND from the chip
--- | click (RetryMidi) — the click is the user gesture Chrome needs to prompt.
--- | Send auditions somewhere new, and find its port.
+-- | Send auditions somewhere new, and find its port. `connectMidi` asks Web-MIDI
+-- | for it: Continuo's "continuo" virtual port when live, else the IAC bus to the
+-- | rig. Asked from Initialize and from the sound chip (CycleSound), whose click
+-- | is the user gesture Chrome needs to prompt.
 setSound :: forall m. MonadAff m => AuditionSel -> H.HalogenM State Action Slots Output m Unit
 setSound sel = do
   H.modify_ _ { auditionSel = sel }
@@ -1763,15 +1631,14 @@ handleActionCore = case _ of
       when (any RL.looping st2.capture.logbook.marks && not (any RL.looping st.capture.logbook.marks) && not (showsRiver st2.stage))
         (handleAction (SetStage (Hunt River)))
   -- The notes the rig played for the cards (`vetula-notes`, Unix µs): into the
-  -- Review logbook, as the page's own notes go in Local, so marks and loops work.
-  -- Logged whatever this page's authority: these notes did sound.
+  -- logbook the river draws, as the page's own notes go in Local, so marks and
+  -- loops work. Logged whatever this page's authority: these notes did sound.
   StageFrameIn msg | Just notes <- SC.readNotes msg -> do
     perfMs <- liftEffect perfNow
     unixMs <- liftEffect dateNow
     let offsetUs = (unixMs - perfMs) * 1000.0
         fresh = map (\n -> { pitch: n.pitch, headIdx: n.ch, fireUnixMicros: n.atUs - offsetUs, vel: n.vel, gateMs: n.gateMs }) notes
-    -- the logbook (Review) and the river (Perform's live strip), as the page's
-    -- own notes go to both
+    -- the logbook, which the river draws, as the page's own notes go
     H.modify_ \s -> s { capture = s.capture { logbook = Logbook.logAppend (perfMs * 1000.0) fresh s.capture.logbook }
                       }
   StageFrameIn msg -> do
@@ -1825,7 +1692,7 @@ handleActionCore = case _ of
     st <- H.get
     for_ st.binnacle \bin -> liftEffect $ Transport.send (Binnacle.socket bin) (SC.openLine n)
   Initialize -> do
-    -- Explore's field: its marks call back into Halogen through this listener
+    -- the lattice's field (Vetula.Field): its marks call back into Halogen through this listener
     { emitter: fieldE, listener: fieldL } <- liftEffect HS.create
     _ <- H.subscribe fieldE
     fh <- liftEffect Field.new
@@ -1844,8 +1711,8 @@ handleActionCore = case _ of
     H.gets _.stage >>= \stg -> H.raise (StageChanged (stagePath stg))
     -- MIDI out. NB modern Chrome only shows the Web-MIDI permission prompt in
     -- response to a USER GESTURE, so this page-load request often resolves to
-    -- "no Web-MIDI" the first time — clicking the MIDI chip (→ RetryMidi) re-runs
-    -- it from a real gesture and surfaces the prompt. See connectMidi.
+    -- "no Web-MIDI" the first time; clicking the sound chip (CycleSound ->
+    -- setSound) re-runs it from a real gesture. See connectMidi.
     connectMidi
     -- The shared transport: connect Binnacle (free-run 120 → Link-lock on the
     -- rig) and run the lookahead scheduler. It ticks the 16th-note grid always;
@@ -1856,14 +1723,14 @@ handleActionCore = case _ of
     _ <- H.subscribe stepE
     _ <- liftEffect $ Scheduler.startGrid (Binnacle.clock bin) gridCfg \tick ->
       HS.notify stepL (PerfTick tick)
-    -- Slice 1: auto-capture the progression you're building to the library on a
-    -- slow timer (settle + update-in-place), so nothing is ever silently lost.
+    -- The working copy, saved locally on a slow timer (AutoCapture), so a crash
+    -- or a reload loses nothing.
     { emitter: capE, listener: capL } <- liftEffect HS.create
     _ <- H.subscribe capE
     _ <- liftEffect $ setInterval 1800 (HS.notify capL AutoCapture)
     -- The LIVE river's animation clock (33ms ≈ 30fps, the same cadence Odonus's
-    -- scope runs at). The handler no-ops off the Perform surface, so this costs
-    -- nothing while you're on the tonnetz.
+    -- scope runs at). Off the river it only keeps runs, polls the rig and drives
+    -- a loop's replay, so it costs little elsewhere.
     { emitter: frameE, listener: frameL } <- liftEffect HS.create
     _ <- H.subscribe frameE
     _ <- liftEffect $ setInterval 33 (HS.notify frameL CaptureFrame)
@@ -1913,8 +1780,8 @@ handleActionCore = case _ of
       w <- window
       el <- eventListener \ev -> do
         -- while typing in a name / search / source field, the single-key
-        -- shortcuts (⌫ = clear, r = reset, space, Tab…) must stand down — they
-        -- were wiping the progression mid-type. `c` is the shell's global CAPTURE
+        -- shortcuts (⌫, Delete, space, Tab…) must stand down — they were
+        -- wiping the progression mid-type. `c` is the shell's global CAPTURE
         -- hotkey now, not a Vetula key.
         typing <- isFormField ev
         -- and when Vetula is mounted-but-hidden (it's one tab of the Triggerfish
@@ -2004,8 +1871,8 @@ handleActionCore = case _ of
 
   Key k shift -> do
     st <- H.get
-    -- while the revoice modal is open the surface keys (stacking / explode / reset)
-    -- stand down; only the within-chord controls stay live.
+    -- while the revoice modal is open the surface keys stand down; only the
+    -- within-chord controls stay live.
     -- a rhythm being tapped in owns space (next chord) and Esc (stop)
     if isJust st.tapping
       then case k of
@@ -2061,17 +1928,18 @@ handleActionCore = case _ of
   -- it the active chord so Tab / arrows / drag / f all target it inside the modal.
   OpenRevoice -> do
     st <- H.get
-    -- What to revoice, most direct first: the pad under the pointer (Banks),
-    -- then the pool bubble under it, then whatever is sounding.
+    -- What to revoice, most direct first: the bar or pad under the pointer,
+    -- then the pool chord under it, then the chord in hand, then whatever is
+    -- sounding.
     let candidate = (st.hoveredBar >>= barChord st)
           <|> st.hoveredNode
           <|> (st.hoveredId >>= \hid -> find (\c -> c.id == hid) st.chords)
           <|> handChord st
           <|> (st.sounding >>= \sid -> find (\c -> c.id == sid) st.chords)
     for_ candidate \c ->
-      -- **Every lens but Explore recomputes its chords on each render**, so most
-      -- of what you can click — a lattice member, a colour-layer chord, a Banks
-      -- pad — is not in `st.chords` and has no id the modal can hold. Addressing
+      -- **The lenses recompute their chords on each render**, so most of what
+      -- you can click — a lattice member, a Banks pad — is not in `st.chords`
+      -- and has no id the modal can hold. Addressing
       -- the modal by pool id therefore meant `v` silently fell back to the last
       -- SOUNDING pool chord, which from a cold start is the home chord: the
       -- modal looked like it always opened C.
@@ -2175,10 +2043,8 @@ handleActionCore = case _ of
 
   PlayPath -> H.gets _.path >>= playPath
 
-  -- ✕ clear: empty the progression and drop back to Hunt, so the next shift-click
-  -- STARTS a fresh path instead of extending this one (the Nothing branch of
-  -- PathPick then opens a new capture session). The visible twin of the `c` key —
-  -- discoverable, and it works with a text field focused (where `c` is swallowed).
+  -- Clear (the bar's chip, or Delete): empty the progression, and leave the
+  -- score for the lattice, so the next put starts a fresh one.
   ClearPath -> do
     st0 <- H.get
     -- no progression open: the lattice, where one starts
@@ -2424,15 +2290,8 @@ handleActionCore = case _ of
         }
       playChord newC
 
-  -- ----- Performance tab -----
-
-  -- Manual save = promote the current path to a KEEPER (frozen). If the current
-  -- session's ephemeral is already in the library, promote it in place (+ rename);
-  -- otherwise append a fresh keeper.
-  -- Timer auto-capture (Slice 1). Empty path → close the current session (next
-  -- capture starts fresh). Non-empty + changed → UPDATE the session's ephemeral in
-  -- place (or open a new one), so a building session is one live-updated entry.
-  -- Keepers are never touched. The entry's canonical form is its Tidal source.
+  -- The working copy, on a timer: an empty path ends the current line of
+  -- versions; a changed one is saved locally. Keeping it is SaveProg's job.
   AutoCapture -> do
     st <- H.get
     let steps = pathSteps st
@@ -2480,7 +2339,7 @@ handleActionCore = case _ of
       for_ (parseKeyLabel entry.keyLabel) \k -> H.modify_ \s -> s { key = k, lattice = latticeFor k, bankPads = bankPadsFor k s.padRoll }
       showPathRung
 
-  -- Serialise the whole Perform surface as a `vetulaScene` record and publish it
+  -- Serialise every voice (`perfBoxes`) as a `vetulaScene` record and publish it
   -- to the shared Amphora store (collection `vetula-scene`). The scene is auto-
   -- named `⟨session alias|name⟩ #N` (no naming friction — identity without a name,
   -- per the glyph substrate) and tagged `session:`/`scene:` so recall groups by
@@ -2519,14 +2378,6 @@ handleActionCore = case _ of
   -- Parse a stored scene payload (the `vetulaScene { … }` record) back into a
   -- document and reconstruct the surface's boxes. Lenient: a payload that yields
   -- no voices is left as a note rather than blanking the surface.
-  -- Load a scene onto the Perform surface AND surface its progressions in the
-  -- chyron: each named source becomes a saved 2-glyph token (its content glyph),
-  -- so a recalled scene's chord sets are right there to replay or unbundle for
-  -- editing — closing the save→recall→edit loop (DESIGN-tank-overhaul.md §6). One
-  -- token per distinct source preserves the multi-source separation (a voice's
-  -- substitution-sibling or different-key set stays its own token). The saved
-  -- region belongs to the loaded document, so it REPLACES what was there; the live
-  -- capture buffer is left untouched.
   PerfLoadScene payload -> do
     let doc = parsePerform payload
         boxes = boxesFromDoc doc
@@ -2548,22 +2399,18 @@ handleActionCore = case _ of
       H.modify_ _ { tempo = t', clockTempo = toNumber t' }
     Nothing -> pure unit
 
-  -- Tank model (Slice A). Catch a lattice chord into the durable tank as a frozen
-  -- Specimen: absolute-MIDI voicing + bass (bassPc grounded an octave below middle
-  -- C, matching playNotes), a descriptive label + provenance. It references no
-  -- lattice id, so the cloud can regenerate underneath without disturbing it.
+  -- A pool chord clicked: heard, unless the click ended a pan.
   PlayChordId pid -> do
     st <- H.get
     if st.panMoved then H.modify_ _ { panMoved = false }
     else playId pid
 
-  -- Tonnetz lens: a triad picked straight off the tonal net. Audition sounds it
-  -- (no state change); catch freezes it into the tank as a Free-anchored Specimen,
-  -- exactly like a palette drop.
+  -- Tonnetz lens: a triad picked straight off the tonal net, heard with no
+  -- state change.
   AuditionTriad root pcs -> do
     st <- H.get
     if st.panMoved then H.modify_ _ { panMoved = false }
-    -- label it like CatchTriad (root name + minor mark) so the chyron reads it
+    -- labelled by root name + minor mark, so the chyron reads it
     else playChord (triadNode root pcs (noteName root <> (if elem (mod (root + 4) 12) pcs then "" else "m")))
 
   -- **Hearing is not taking** (plan: "From exploring to progressions"). A click
@@ -2647,11 +2494,9 @@ handleActionCore = case _ of
         Right hash -> "✓ for Quadrat · " <> SCU.take 8 hash
         Left _ -> "✗ send failed (store offline?)" }
 
-  -- Capture band (#28). Mark flags the last two bars (the roll runs newest-at-top,
-  -- so a mark drops a default region back over what you just played). Selecting a
-  -- band shows the lift card; saveClip materializes the region and appends it to the
-  -- shared library with source "vetula". No in-surface audition — you hear the lifted
-  -- clip in the library modal (or attached into a voice).
+  -- Capture band (#28). Mark flags the last two bars, a region over what you
+  -- just played; a band's card lifts it into the shared clip library
+  -- (CaptureSaveClip, source "vetula").
   -- With the rig, it makes the mark and numbers it; it comes back in a loops
   -- frame, and takes Vetula's text then.
   CaptureMark -> do
@@ -2802,13 +2647,10 @@ handleActionCore = case _ of
       hushCapture
       H.modify_ \s -> s { capture = s.capture { logbook = Logbook.emptyLog, playing = Nothing, contextOpen = false } }
 
-  -- Leaving REPLAY drops the selected region and its context card: the lift card is
-  -- a REPLAY affordance, and a stale one hanging over the strip in LIVE reads as if
-  -- something were still armed.
   CaptureFrame -> do
     st <- H.get
-    -- A run starts and stops with the transport (Capture.Runs): the Review
-    -- surface draws only time inside runs. The rig keeps them too.
+    -- A run starts and stops with the transport (Capture.Runs): the river
+    -- draws only time inside runs. The rig keeps them too.
     when (st.playing /= Runs.running st.capture.logbook.runs) do
       nowMs <- liftEffect perfNow
       H.modify_ \s -> s { capture = s.capture { logbook = s.capture.logbook { runs = (if st.playing then Runs.startRun else Runs.stopRun) (nowMs * 1000.0) s.capture.logbook.runs } } }
@@ -2820,7 +2662,7 @@ handleActionCore = case _ of
       when (ms - st.rigAsked > (if st.rigLoops then 5000.0 else 2000.0)) do
         rigSend RL.syncLine
         H.modify_ _ { rigAsked = ms }
-    -- The rig's loops' playheads move on Review's clock
+    -- The rig's loops' playheads move while the river is on screen
     when (showsRiver st.stage && st.rigLoops && any RL.looping st.capture.logbook.marks) do
       mclock <- vetulaClock
       H.modify_ \s -> s { capture = s.capture { rig = mclock } }
@@ -2958,10 +2800,8 @@ handleActionCore = case _ of
     else if acc >= 60.0 then step (-1)
     else H.modify_ _ { wheelAcc = acc, wheelLast = t }
 
-  -- The one mode switch. Absorbed the old `SetCaptureView`, so leaving REVIEW by
-  -- ANY route — Perform, or off to Hunt — hushes the region preview and drops the
-  -- lift card. Under the old split you could escape a looping preview sideways
-  -- into Browse and it would keep ringing.
+  -- The one view switch: leaving the river by any route hushes its loop
+  -- preview and drops the lift card, so nothing rings on unseen.
   SetStage v -> do
     when (not (showsRiver v)) hushCapture
     H.raise (StageChanged (stagePath v))
@@ -2978,9 +2818,6 @@ handleActionCore = case _ of
       , hoveredId = Nothing, hoveredTriad = Nothing
       , viewCx = 0.0, viewCy = 0.0, viewZoom = 1.0, panning = Nothing, panMoved = false
       , capture = if showsRiver v then st.capture else st.capture { playing = Nothing, contextOpen = false }
-      -- An excursion is a round trip between two places. Navigating anywhere
-      -- ELSE ends it, or a later free visit to the Vary lens would quietly post
-      -- its keeps into a slot you had stopped thinking about.
       }
 
   -- One 16th-note from the shared scheduler. We use the tick's absolute grid
@@ -3002,10 +2839,9 @@ handleActionCore = case _ of
                     , fireUnixMicros: (nowMs + r.delayMs) * 1000.0, vel: r.vel, gateMs: r.gateMs } ] <> xs) capRef
       let reefChords = map toReefChord (perfChords st)
           pulseMs = 60000.0 / tempo / 4.0
-          -- ATLANTIS (audible=false): keep advancing each voice's read-head so the
-          -- pulse + cursor march on (the nav harmonic strip stays live in every
-          -- pane), but pass no MIDI-out so nothing sounds locally — the rig's voices
-          -- is the sound. SOLO: emit as normal.
+          -- Rig authority: keep advancing each voice's read-head so the pulse and
+          -- cursor march on (the nav harmonic strip stays live in every pane), but
+          -- pass no MIDI-out, since the rig's voices are the sound. Local: emit as normal.
           mout = if st.authority == Local then st.midiOut else Nothing
       voices' <- liftEffect $ traverse (stepVoice mout st.routing reefChords tick.index pulseMs tick.delayMs rec) st.voices
       -- PERFORM boxes: query each filled box's `Pattern` for the current cycle and
@@ -3043,14 +2879,14 @@ handleActionCore = case _ of
       H.modify_ \st2 -> st2
         { pulse = tick.index, voices = voices', clockTempo = tempo, tempo = round tempo
         , capture = st2.capture { logbook = Logbook.logAppend (nowMs * 1000.0) fresh st2.capture.logbook }
-        -- the river draws the same notes over a short window; CaptureFrame prunes it
+        -- the river draws the same notes over a short window (recentNotes)
         }
 
   DragMove ev -> do
     st <- H.get
     for_ st.drag \dg -> do
-      -- invert the ladder's pitch map (vertical on Explore, horizontal on the
-      -- progression rows), then snap to whole octaves from the grab
+      -- invert the ladder's pitch map (vertical on the chord's ladder, horizontal
+      -- on the progression rows), then snap to whole octaves from the grab
       targetMidi <- liftEffect $
         if dg.horizontal
           then (\x -> 36.0 + (x - prowPad) / (prowW - 2.0 * prowPad) * 48.0) <$> svgXFromEvent ev
@@ -3229,8 +3065,8 @@ mergeLibByName current incoming =
   current <> filter (\p -> not (any (\q -> q.name == p.name) current)) incoming
 
 -- | Capture the current progression into the stack — update the session's ephemeral
--- | ◦ in place, or open a new one — then persist. Shared by the settle-timer and the
--- | key-change snapshot; uses the CURRENT key, so a key-change snapshot is
+-- | ◦ in place, or open a new one — then persist. Called by the key-change
+-- | snapshot (`rebuild`); uses the CURRENT key, so the snapshot is
 -- | self-contained in the old key. Assumes a non-empty path.
 captureSteps :: forall o m. MonadAff m => State -> H.HalogenM State Action Slots o m Unit
 captureSteps st = do
@@ -3256,19 +3092,13 @@ silenceHeld st =
   liftEffect $ for_ st.midiOut \out ->
     for_ st.voices \v -> for_ v.held \nn -> Midi.noteOffAt out { channel: Routing.toWire (midiChannelFor st.routing v), note: nn, delayMs: 0.0 }
 
--- | The loaded performance progression's chords, resolved from the working copy.
--- | The performed progression. Slice 4a: this IS the live `path` (`pathSteps`) — the
--- | voices read what you're building, with no load-a-copy step. Kept as a named alias
--- | because the reef-projection sites (`buildPerf`) read more clearly as
--- | "the performance's chords"; 4b may inline it.
+-- | The performed progression: the live `path` (`pathSteps`), so the voices
+-- | read what you're building, with no load-a-copy step. Kept as a named alias
+-- | because the reef-projection sites read more clearly as "the performance's
+-- | chords".
 perfChords :: State -> Array ChordNode
 perfChords = pathSteps
 
--- | Project the live performance onto the shared `Reef.Vetula.Perf` (the wire shape
--- | the rig runs): the resolved progression as `{ pcs, notes }` (pcs for the → odo
--- | quantiser, notes = `playNotes` for the V2 MIDI voices) and each voice's dest /
--- | renderer / channel / dwell schedule / phase mapped to the reef enums. The
--- | frontend's own `Renderer`/`VoiceDest` map onto reef's by meaning, not order.
 -- | Project a live `ChordNode` onto the shared `Reef.Vetula.Perf` chord: the pitch
 -- | classes (→ odo quantiser) + the concrete `playNotes` (→ midi voices). Sorting is
 -- | the renderer's job, so `notes` rides through unsorted.
@@ -3293,7 +3123,7 @@ toReefVoice routing v =
       Block -> RV.VBlock
       Arp -> RV.VArp
       Strummed -> RV.VStrummed
-  -- canonical 1..16 for the rig (link-spike is 1-indexed); no toWire here.
+  -- canonical 1..16 for the rig (Diaphus is 1-indexed); no toWire here.
   , channel: midiChannelFor routing v
   , durs: v.durs
   , phase: v.phase
@@ -3717,16 +3547,11 @@ clipOfChords st name alias chords now =
 chordMicros :: Number
 chordMicros = 700000.0
 
--- | **Sound a chord without capturing it.**
+-- | **Sound a chord without making it the subject.**
 -- |
--- | `playChord` is an audition choke-point and logs to the chyron, which is
--- | right when every click is a compositional act. It is wrong while browsing a
--- | grid of variations on ONE chord: the trace would fill with near-twins and
--- | the progression you meant to lift out of it would be unfindable. So the
--- | Vary lens sounds through here and captures only what you shift-click.
--- |
--- | Not `chyronArmed` — that is the user's own record switch, and a lens
--- | silently flipping it would be a worse surprise than the pollution.
+-- | `playChord` also makes the chord the one the alternatives are for, which
+-- | is wrong while hearing those alternatives, or hearing with space: the
+-- | panel would re-root under the pointer. So those sound through here.
 playChordQuiet :: forall o m. MonadAff m => ChordNode -> H.HalogenM State Action Slots o m Unit
 playChordQuiet c = auditionStyled (playNotes c)
 
@@ -3781,7 +3606,7 @@ takeChord c = do
       , chords = map (\e -> if e.id == d.id then e { label = chordNameOf e } else e) st.chords }
     Nothing -> do
       -- named in full (a lattice chord's label is only its root), so the
-      -- chyron, Rehearse and the Tidal header read "Am", not "A"
+      -- Tidal header reads "Am", not "A"
       let fresh = c { id = st.nextId, label = chordNameOf c }
       H.modify_ _
         { chords = st.chords <> [ fresh ]
@@ -3795,8 +3620,8 @@ playChord :: forall o m. MonadAff m => ChordNode -> H.HalogenM State Action Slot
 playChord c = do
   let notes = playNotes c
   auditionStyled notes
-  -- Whatever it came from (the pool, a pad, a colour set), the side panel's
-  -- "last chord played" is this one.
+  -- Whatever it came from (the pool, a pad), it is now the chord the
+  -- alternatives are for.
   H.modify_ _ { lastHeard = Just c }
 
 -- | Audition a library clip (#33): replay its captured events once, FAITHFULLY — each
@@ -3909,10 +3734,7 @@ playPath ids = do
 
 -- | Write a changed chord set back for rendering. A revoice (Tab / arrow-nudge)
 -- | changes only the glyph and the bubble's size — both read from `chords` — and
--- | never a node's lattice position. So we deliberately do NOT re-feed the
--- | simulation: `h.updateData` re-heats it, which reads as a distracting jolt of
--- | the whole cloud on every Tab. The disc resizes from the new voicing; we just
--- | don't let collision re-settle, which is exactly what we want here.
+-- | never a node's lattice position, so nothing else needs telling.
 applyChords :: forall o m. MonadAff m => Array ChordNode -> H.HalogenM State Action Slots o m Unit
 applyChords chords' = H.modify_ _ { chords = chords' }
 
@@ -4202,12 +4024,11 @@ explode pid = do
           H.modify_ _ { chords = chords', nextId = st.nextId + length kids }
     _ -> pure unit
 
--- | Place an exploded child in the stratified lattice that floats above the seed
--- | (and above the keyboard): y = extension level (the vertical rank — triad tones
--- | at the base, 7→9→11→13 rising), so stacking climbs straight up the root's
--- | "column of light." x = the root's column plus a small signed `lean` nudge
--- | (sus2 left, sus4 right — see `Harmony.familyMeta`); chords sharing a level
--- | then beeswarm apart horizontally under the collide force.
+-- | Place an exploded child in the stratified lattice that floats above the seed:
+-- | y = extension level (the vertical rank — triad tones at the base, 7→9→11→13
+-- | rising), so stacking climbs straight up the root's "column of light." x = the
+-- | root's column plus a small signed `lean` nudge (sus2 left, sus4 right — see
+-- | `Harmony.familyMeta`).
 latticePlace :: ChordNode -> Int -> Int -> ChordNode -> ChordNode
 latticePlace seed level lean child =
   child
@@ -4361,19 +4182,15 @@ canvasBg = "#f6f3ea"
 surfaceFillCss :: String
 surfaceFillCss = "max-width: none; touch-action: none; width: 100%; height: 100%; display: block;"
 
--- | The whole instrument: a near-fullscreen view canvas with the Setup/Tank/Lens
--- | accordion floating top-left and the Progression/Library/Voices rail floating
--- | top-right — both darker-beige cards sitting over the paper canvas.
+-- | The whole instrument: a near-fullscreen view canvas, each view's own
+-- | controls floating over the paper.
 render :: forall m. MonadAff m => State -> H.ComponentHTML Action Slots m
 render st =
   HH.div
-    -- Pushed down by the nav (`--tf-bar`) + the 42px CONTEXT bar + the 44px AUDITION
-    -- chyron, so the stage clears both top strips; the old bottom voice bar is gone,
-    -- so it fills to the window bottom (freed lower strip → future MIDI-flow chyron).
-    -- right of the browser drawer (Triggerfish.Standalone's --tf-left)
+    -- Pushed down by the shell's one bar (`--tf-bar`) and filling to the window
+    -- bottom, between the shell's drawers (Triggerfish.Standalone's --tf-left
+    -- and --tf-right)
     [ HP.style ("position: relative; margin-top: calc(var(--tf-bar) + " <> contextBarHeight st <> "); margin-left: var(--tf-left, 0px); width: calc(100% - var(--tf-left, 0px) - var(--tf-right, 0px)); height: calc(100vh - var(--tf-bar) - " <> contextBarHeight st <> "); min-height: 620px; overflow: hidden; border-radius: 8px; background: " <> canvasBg <> ";") ]
-    -- In HUNT the views start below the audition strip, which is fixed over
-    -- the stage's top; Rehearse, Perform and Review pad for it themselves.
     -- Keyed by what the surface is, so a different surface gets a fresh
     -- element: the field draws its own <svg> into its container, which
     -- Halogen does not know about, and a reused container kept the old
@@ -4384,21 +4201,10 @@ render st =
       -- Limulus's drawer, out while the score is up
       <> [ if st.stage == Hunt Score then limulusWanted else HH.text "" ]
       <>
-    -- Scene recall belongs to the INSTRUMENT, not to Perform. Its entry point
-    -- has always been the session menu in `contextBar`, which renders on every
-    -- stage — but the modal itself was inside `performSurface`, so anywhere
-    -- else the click set the flag and nothing appeared. Loading a scene is legal
-    -- wherever you can use one, which is certainly Rehearse and reasonably Hunt.
+    -- Scene recall belongs to the INSTRUMENT, not to one view. Its door was the
+    -- session menu in the old second bar; with that gone nothing sets
+    -- `perfRecallOpen`, and the modal waits for a new door.
     [ perfRecallModal st
-    -- The Tank & Progression card is retired (Tank overhaul §10.6): the chyron is
-    -- now the single surface for collect · select · reorder · bundle/unbundle, so
-    -- the tank tiles, the tonnetz stack, arrange/grow, and the built-progression
-    -- panel (with its ▶ preview) are all superseded. The underlying code —
-    -- specimens, `Vetula.Between` (the cadence bridge), ArrangeSpec/SequenceSpec —
-    -- is kept dormant in the source for re-homing onto the chyron later.
-    -- The AUDITION bar (chyron) now docks under the shell nav (top). The old bottom
-    -- voice bar (four mini-notation lanes) was removed — the Perform surface
-    -- supersedes it — and the freed bottom is reserved for a future MIDI-flow chyron.
     , HH.div
         [ HP.style "position: absolute; bottom: 44px; left: 50%; transform: translateX(-50%); z-index: 5;" ]
         [ pickBar st ]
@@ -4463,10 +4269,9 @@ latticeControls st = case st.stage of
 limulusWanted :: forall m. H.ComponentHTML Action Slots m
 limulusWanted = HH.div [ HP.attr (HH.AttrName "data-limulus-dock") "open", HP.style "display: none;" ] []
 
--- | **The workspace's views** (AC, 2026-10-08): river, lattice, banks and
--- | score are four views of one workspace, the drawers around it (library,
--- | Limulus, the score's candidates) supporting it. One switch, always at the
--- | left of the workspace's bar, whichever view is up.
+-- | **The workspace's views** (AC, 2026-10-08): lattice, banks, score and
+-- | review are four views of one workspace, the drawers around it (library,
+-- | Limulus) supporting it.
 viewTabs :: forall m. State -> H.ComponentHTML Action Slots m
 viewTabs st =
   barGroup
@@ -4570,9 +4375,6 @@ scoreCandidates st =
 chordTitle :: State -> ChordNode -> String
 chordTitle st c = Score.spellName (Score.spellingOf st.key.tonic (scaleSet st.key)) (OP.chordName (playNotes c))
 
--- | **What the side panel shows for a chord**, by tab: its substitutes,
--- | variations or relatives. The side panel shows one beside the lattice; in
--- | score mode the three stand side by side under the score.
 -- | **The candidates for a chord**: its substitutes (voiced near it), its
 -- | variations and its relatives. Expensive (the variations alone are
 -- | hundreds of trial voicings), so computed once per chord, key and roll,
@@ -4683,9 +4485,8 @@ sideContent st t src = case st.cands of
          <> group "further" "a little more adventurous" cs.middle
          <> group "striking" "the most adventurous of the plausible" cs.far
 
--- | Vetula's own bar (`contextBar`) is HUNT's controls alone since its stage
--- | tabs and mark went to the shell's bar (2026-10-05), so it takes room only
--- | in HUNT.
+-- | Vetula's own bar (`contextBar`) went on 2026-10-08; everything is in the
+-- | shell's one bar, so this takes no room.
 contextBarHeight :: State -> String
 contextBarHeight _ = "0px"
 
@@ -4793,7 +4594,7 @@ showPathRung = do
       H.modify_ _ { stage = Hunt need, lastLens = need, fieldLens = need }
     _ -> pure unit
 
--- | Whether the side panel's chords go into the score: it is showing, with a
+-- | Whether the alternatives' chords go into the score: it is showing, with a
 -- | bar of the open progression chosen.
 puts :: State -> Boolean
 puts st = st.stage == Hunt Score && maybe false (_ < length st.path) st.scoreBar
@@ -4810,8 +4611,8 @@ surfaceKey st
       Hunt Tonnetz -> "tonnetz"
       Hunt _ -> "field"
 
--- | The Stage frame: the pick-mode cloud always wins; otherwise the active View
--- | renders. `Perform` is its own surface; every `Browse` viewtype is one branch.
+-- | The Stage frame: the pick-mode cloud always wins; otherwise the active
+-- | view renders, one branch per viewtype.
 surface :: forall m. State -> H.ComponentHTML Action Slots m
 surface st
   | length st.genSel > 0 && length st.candidates > 0 = pickSurface st
@@ -4826,11 +4627,6 @@ surface st
       Hunt Score -> scoreSurface st
       Hunt River -> riverSurface st
 
--- | The PERFORM surface — a row of player BOXES, one per output. Shift-click (or
--- | drag) a saved token in the chyron to pick it up, then click (or drop it onto)
--- | a box: the box loops that token's chords on its MIDI channel while the
--- | transport plays. This is the first slice of the Perform view (DESIGN §Perform);
--- | function stacks and non-MIDI sinks come later.
 -- | Mint a fresh Perform session: a random seed → a monochrome glyph-triple alias,
 -- | scene counter at 1. Random (not content-derived) — a session is a container.
 mintSession :: Effect Store.SessionState
@@ -4891,10 +4687,6 @@ boxSpec box =
   , muted: box.muted
   }
 
--- | The persistent SESSION identity next to the save button: the session's
--- | monochrome glyph-TRIPLE (three black FontAwesome icons — deliberately unlike a
--- | chord token's coloured PAIR) reconstructed from its persisted alias, plus the
--- | alias/name and the next scene number a save will mint.
 -- | The recall modal — saved scenes fetched from Amphora, grouped by SESSION (each
 -- | group headed by its monochrome triple). Click a scene to parse its payload and
 -- | reconstruct the surface (`PerfLoadScene`). Empty / offline → a gentle note.
@@ -4935,18 +4727,11 @@ perfRecallModal st =
       , HE.onClick \_ -> PerfLoadScene item.payload ]
       [ HH.text item.name ]
 
--- The LIVE/REPLAY switch that used to float here (absolute, top-right of the
--- surface) is gone: it was the mode control for a mode the type didn't admit,
--- with nowhere in the chrome to stand. It's now the PERFORM/REVIEW stage tabs in
--- `stageTabs`. The roll's own header went the same way — ◆ mark, the counts and
--- clear are STAGE CONTROLS, so they live in the nav beside the tabs, in the same
--- slot Odonus puts them (`captureControls`).
-
 -- | The REPLAY roll — the shared whole-session surface, left to right: the
 -- | oldest notes at the left, now at the right, marks numbered 1, 2, 3 across,
--- | as on Odonus. The Perform river runs the other way (the newest note at its
--- | left edge, ageing rightward); Review is the session laid out from its
--- | start, not that strip slid over (AC's drawing, 2026-10-03).
+-- | as on Odonus. The live river above it runs the same way (FlowLeft); this
+-- | is the session laid out from its start, not that strip slid over (AC's
+-- | drawing, 2026-10-03).
 capturePane :: forall m. State -> H.ComponentHTML Action Slots m
 capturePane st =
   HH.div
@@ -4984,8 +4769,8 @@ captureHeadColor h = case h `mod` 6 of
   _ -> "#2f7d8a"
 
 -- | **The river as a main-space view** (docs/kb/plans/vetula-one-surface.md,
--- | step 2): Review's whole-session roll, beside the lattice and the score
--- | rather than a mode of its own. Full height: no chyron over it here.
+-- | step 2): the live river over the whole-session roll, beside the lattice
+-- | and the score rather than a mode of its own.
 riverSurface :: forall m. State -> H.ComponentHTML Action Slots m
 riverSurface st =
   HH.div
@@ -5027,8 +4812,8 @@ riverTools st =
         , HP.style "padding: 3px 10px; border-radius: 6px; cursor: pointer; border: 1px solid #ffffff1a; background: transparent; color: #ffffff66; font-size: 10px; white-space: nowrap;" ]
         [ HH.text "clear" ] ]
 
--- | The views that take the whole main space: no chyron above them, no
--- | colour tray below.
+-- | The views that take the whole main space, and so are never the field
+-- | view to come back to.
 fullView :: Stage -> Boolean
 fullView = case _ of
   Hunt Score -> true
@@ -5103,14 +4888,14 @@ geoPanAttrs st = case st.panning of
     ]
   Nothing -> []
 
--- | The Circle-of-Fifths lens — the same pool chords as the Keyboard lens, but
--- | laid out by root around a wheel of fifths instead of over the piano. The root
+-- | The Circle-of-Fifths lens — the pool chords laid out by root around a
+-- | wheel of fifths. The root
 -- | names sit at the HUB; each root owns a spoke, and chords sharing a root bead
 -- | OUTWARD along it from the centre — so every spoke has unlimited room to grow.
 -- | The active key's diatonic roots light up as a contiguous wedge (geometry ==
 -- | grade), so the friendly diatonic spokes cluster near the top and the
 -- | borrowings fan out to the sides and around the back. Rendering reuses
--- | `nodeView` (same glyph, same audition/catch gestures, same path badges) via a
+-- | `nodeView` (same glyph, same audition gesture, same path badges) via a
 -- | computed position map.
 circleFifthsSurface :: forall m. State -> H.ComponentHTML Action Slots m
 circleFifthsSurface st =
@@ -5195,8 +4980,8 @@ cofBackdrop key tonic scl rootsPresent =
             ]
           else []
         txtColor = if diat then "#2a2a2a" else "#c4c4c4"
-        -- the diatonic triad rooted here — click auditions the root's triad (it
-        -- lands in the chyron). Every root gets a transparent hit disc, so
+        -- the diatonic triad rooted here — click auditions the root's triad.
+        -- Every root gets a transparent hit disc, so
         -- out-of-scale roots (label-only, no parchment disc) click too.
         triadPcs = triadOn key pc
         hit =
@@ -5224,7 +5009,7 @@ cofBackdrop key tonic scl rootsPresent =
 -- | Lattice geometry. A node at grid (u,v) carries pitch class (7u + 4v) mod 12
 -- | — u steps a perfect fifth, v a major third — so up-triangles are major triads
 -- | and down-triangles minor. Drawn over a bounded window (a peek into the
--- | infinite net); roaming by pan/zoom comes with the shared geometric host.
+-- | infinite net), roamed by pan and zoom.
 tonnetz :: { s :: Number, rowH :: Number, uLo :: Int, uHi :: Int, vLo :: Int, vHi :: Int, nodeR :: Number }
 tonnetz =
   { s: 78.0, rowH: 78.0 * 0.8660254, uLo: -5, uHi: 5, vLo: -3, vHi: 3, nodeR: 15.0 }
@@ -5280,7 +5065,7 @@ centroid ps =
 -- | projection). Every triangle is a triad; edge-adjacent triangles share two
 -- | tones (a P/L/R move). Diatonic triads of the active key (all three tones in
 -- | scale) fill parchment and carry a name — the connected "spider". Click a
--- | triangle to audition it; shift-click to catch it into the tank.
+-- | triangle to audition it.
 tonnetzSurface :: forall m. State -> H.ComponentHTML Action Slots m
 tonnetzSurface st =
   let scl = scaleSet st.key
@@ -5392,9 +5177,7 @@ tonTriName diatonic t =
        ]
   else []
 
--- | The transparent click target over a triangle: plain click auditions the triad,
--- | shift-click catches it into the tank, alt-click adds it to the Tonnetz stack
--- | (2026-07-31 — the freeform triad-stacking gesture).
+-- | The transparent click target over a triangle: a click auditions the triad.
 tonHit :: forall m. TonTri -> H.ComponentHTML Action Slots m
 tonHit t =
   SE.element (ElemName "polygon")
@@ -5479,8 +5262,8 @@ sharedTones a b =
 sameChordSet :: Array Int -> Array Int -> Boolean
 sameChordSet a b = sort (nub (map (\x -> mod x 12) a)) == sort (nub (map (\x -> mod x 12) b))
 
--- | Grade a glyph against the hovered chord — the hovered chord itself is tier 5;
--- | otherwise the Jaccard similarity (shared ÷ union of pitch classes) is banded
+-- | Grade a glyph against the hovered chord — the same chord, in any spelling,
+-- | is `HiSame`; otherwise the Jaccard similarity (shared ÷ union of pitch classes) is banded
 -- | into tiers 0–4. Jaccard normalises for chord size, so a big chord that merely
 -- | overlaps a small one lands mid-ramp, and genuinely similar chords rank high —
 -- | the field reads as a graded web of relatedness rather than an on/off split.
@@ -5497,7 +5280,8 @@ hiFor mh pcs = case mh of
       in HiTier (if j >= 0.6 then 4 else if j >= 0.45 then 3 else if j >= 0.28 then 2 else if j > 0.0 then 1 else 0)
 
 -- | The warm relatedness ramp: pale straw (weakly related) → gold → amber → burnt
--- | orange (the hovered chord), with tier 0 ghosted back so the related web lifts.
+-- | orange, with tier 0 ghosted back so the related web lifts; the hovered chord
+-- | itself is `HiSame`'s teal.
 hiStyle :: GlyphHi -> { fill :: String, stroke :: String, sw :: String, rootDot :: String, otherDot :: String }
 hiStyle = case _ of
   HiNone   -> { fill: "rgba(184,134,11,0.09)", stroke: "#bcac78", sw: "1",   rootDot: "#b8860b", otherDot: "#9a9a9a" }
@@ -5535,12 +5319,12 @@ pcPolygon hi root pcs cx cy r =
 -- The FIELD: Explore's one surface (AC, 2026-10-06)
 -- ---------------------------------------------------------------------------
 
--- | **Explore as one view, zoomed semantically.** Every chord any rung can
+-- | **The lattice and banks as one view, zoomed semantically.** Every chord any rung can
 -- | show is one persistent mark: the key's lattice (441 chords) and whatever
 -- | the banks add. A rung only decides where each mark is, how large, and whether it is
 -- | visible:
 -- |
--- | - key · + four-note · + extended reveal more of the lattice in place;
+-- | - key · + common · + four-note · + extended reveal more of the lattice in place;
 -- | - banks moves the lattice chords that are in a bank to their pads, fades
 -- |   in the banks' other chords, and fades the rest out.
 -- |
@@ -5611,7 +5395,7 @@ type FieldSeen =
   , chords :: Array ChordNode
   }
 
--- | The field rung on screen, if Explore is showing the field.
+-- | The field rung on screen, if the view is one the field draws.
 fieldView :: State -> Maybe Viewtype
 fieldView st
   | length st.genSel > 0 && length st.candidates > 0 = Nothing
@@ -5682,12 +5466,10 @@ fieldViewBox st box =
      , y: (box.minY + box.maxY) / 2.0 + st.viewCy - h / 2.0
      , w, h }
 
--- | Halogen's part of the field: an empty container, the wheel, and the pan.
 -- | **The score** (docs/kb/plans/vetula-one-surface.md): the open
--- | progression first, then every progression a voice on the rig is playing,
--- | each as one system with its voices as letter badges. A voice whose chords
--- | are written into its line gets a system of its own. The badges come from
--- | the voices on the stage, which hush removes, so they are what is playing.
+-- | progression as one system, its voices as letter badges, with the
+-- | alternatives under it. The badges come from the voices on the stage,
+-- | which hush removes, so they are what is playing.
 scoreSurface :: forall m. State -> H.ComponentHTML Action Slots m
 scoreSurface st =
   -- `.vetula-surface` is how the key listener knows Vetula is on screen:
@@ -6019,12 +5801,11 @@ chordNameOf c =
 
 
 -- ---------------------------------------------------------------------------
--- The BANKS lens — the chord space as nine banks of sixteen
+-- Pads — the alternatives' chords as buttons
 -- ---------------------------------------------------------------------------
 
--- | One pad. Click auditions it, which is also what puts it in the chyron — so
--- | this lens feeds the same buffer as every other, and everything downstream
--- | (Continuo, the Odonus quantiser, a Quadrat sample set) is already wired.
+-- | One alternative as a pad. A click hears it and puts it in hand; on the
+-- | score, shift-click (or drag) puts it in the bar.
 padButton :: forall m. State -> ChordNode -> H.ComponentHTML Action Slots m
 padButton st c =
   HH.button
@@ -6056,14 +5837,13 @@ pcSetOf c = sort (nub (map (\p -> mod p 12) c.pcs))
 
 
 -- | A pad lights when its pitch-class set matches whatever is hovered anywhere
--- | in the app — so hovering one pad shows you every other bank holding the
--- | same chord, which is how the nesting between cells becomes visible.
+-- | in the app — a bar, a mark, or another pad holding the same chord.
 padLit :: State -> ChordNode -> Boolean
 padLit st c = case st.hoveredTriad of
   Nothing -> false
   Just h -> sort (nub (map (\p -> mod p 12) h.pcs)) == sort (nub (map (\p -> mod p 12) c.pcs))
 
--- | The chord the candidates are for: the one last heard (on the score, the
+-- | The chord the alternatives are for: the one last heard (on the score, the
 -- | bar last clicked).
 varySource :: State -> Maybe ChordNode
 varySource = soundingChord
@@ -6133,8 +5913,8 @@ registerStrip c =
       , SA.class_ (cn ("ladder-dot ladder-dot--" <> show (mod m 12)))
       , HP.style "pointer-events: none;" ]
 
--- | Is the pointer in a Vary grid — either the standalone lens or the panel
--- | under a rehearsal slot? The two are the same tool, so they audition alike.
+-- | Is the pointer in a Vary grid? Only the score shows one, among the
+-- | alternatives, so it is the score that browses quietly.
 inVaryGrid :: State -> Boolean
 inVaryGrid st = st.stage == Hunt Score
 
@@ -6244,13 +6024,9 @@ pickBar st =
     else HH.text ""
 
 -- ---------------------------------------------------------------------------
--- The Progression tab — the path laid out as a row of voicing ladders
+-- The path, and its voicing ladders (the revoice modal)
 -- ---------------------------------------------------------------------------
 
--- | The path you built on the Lattice, one step per column, each its own copy of
--- | the voicing ladder + favourites strip. Click a step's number to hear it and
--- | make it active; then the Tab / arrow / f revoicing all act on that step. The
--- | drawn voicings (and the bubble glyphs everywhere) update live as you edit.
 -- | The chords of the path, in order (the steps of the progression).
 pathSteps :: State -> Array ChordNode
 pathSteps st = mapMaybe (\pid -> find (\c -> c.id == pid) st.chords) st.path
@@ -6597,10 +6373,7 @@ nodeView scl pathOrder collectedHere posMap c =
       [ SA.class_ (cn (nodeClass c))
       , HE.onMouseEnter \_ -> Hover (Just c.id)
       , HE.onMouseLeave \_ -> Hover Nothing
-      -- Tank model (Slice D): the pool is a hunting ground, not a progression
-      -- builder. Plain click AUDITIONS the chord (hear it, make it sounding);
-      -- shift-click CATCHES it into the tank (a mouse alternative to `k`).
-      -- Progressions are now sequenced from the tank, not walked on the lattice.
+      -- a click auditions the chord; it does not change the path
       , HE.onClick \_ -> PlayChordId c.id
       ]
       ( [ -- the disc; size = stave-span (cluster ↔ wide), fill = ring index

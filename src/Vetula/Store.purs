@@ -86,10 +86,10 @@ decode env =
   }
 
 -- ---------------------------------------------------------------------------
--- Perform SESSION — the persistent container for saved scenes (see the Perform
--- surface). One session per working body-of-work: it RESUMES across app reloads
--- (a reload must not fragment a sitting), and only an explicit "new session"
--- mints a fresh one. `alias` is the session's monochrome glyph-triple identity
+-- Perform SESSION — the persistent container for saved scenes. One session per
+-- working body-of-work: it RESUMES across app reloads (a reload must not
+-- fragment a sitting), and is minted only on the very first launch.
+-- `alias` is the session's monochrome glyph-triple identity
 -- (`Glyph.sessionAliasOf`); `name` is an optional promotion ("" = use the alias);
 -- `nextScene` is the monotonic scene counter within this session.
 -- ---------------------------------------------------------------------------
@@ -107,8 +107,6 @@ loadSession = do
   m <- _load sessionKey
   pure (toMaybe (m :: Nullable SessionState))
 
--- | The Explore view a viewer has pinned as their default (AC, 2026-10-06): a
--- | per-browser convenience, so it lives here rather than in Amphora.
 -- | Where this viewer chose to hear auditions (the bar's sound chip). Absent
 -- | until they choose: then the page decides (the browser, or Continuo once
 -- | the rig answers).

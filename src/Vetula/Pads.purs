@@ -1,10 +1,9 @@
 -- | `Vetula.Pads` — **the chord space as nine banks of sixteen.**
 -- |
--- | A fifth Hunt lens, and a deliberately different principle from the other
--- | four. The lattice, the fifths and the tonnetz all arrange chords by
--- | NEARNESS to the one you are looking at: position is computed from pitch
--- | content, relative to the selection, and recomputed whenever the selection
--- | moves. This arranges them by ABSOLUTE ADDRESS — where a chord sits in the
+-- | The banks view, and a deliberately different principle from the lattice,
+-- | the fifths and the tonnetz, which all place a chord by its own pitch
+-- | content: its root, its notes, how far it stacks. This arranges them by
+-- | ABSOLUTE ADDRESS — where a chord sits in the
 -- | Progressions-family generator's two axes, measured from home and not from
 -- | whatever you last clicked.
 -- |
@@ -214,8 +213,7 @@ nodeOf scl nid v =
     , pinned: false
     , outside: outsideCount scl ps
     -- The pads are laid out by the surface on a fixed grid, so there is no
-    -- computed position to carry. Zero here is honest; a stale force-layout
-    -- coordinate would not be.
+    -- computed position to carry.
     , targetX: 0.0
     , targetY: 0.0
     , isCentre: false

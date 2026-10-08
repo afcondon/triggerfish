@@ -1,10 +1,8 @@
 -- | Vetula, made to fit the one-machine shell (`Triggerfish.Standalone`).
 -- |
--- | Vetula speaks its own query type, and has no continuous frame loop, so in
--- | the Triggerfish page the shell polled it: for its preset chip, and in
--- | Atlantis for its rig payload, re-pushed once an edit settles. This wrapper
--- | does that polling itself and answers the shell's `SourceQuery` by
--- | translating it.
+-- | Vetula speaks its own query type, and has no continuous frame loop, so
+-- | this wrapper polls it (for its preset chip and its controls in the bar)
+-- | and answers the shell's `SourceQuery` by translating it.
 -- |
 -- | What passes from Vetula to Odonus (its key, a card's chords) goes by the
 -- | harmony routes on the rig (`odonus_feeds`), not from tab to tab.
@@ -52,10 +50,7 @@ data Output
 type State =
   { sounding :: Sounding
   , chip :: Maybe (Maybe ChipView)
-  -- The rig payload as last seen and as last sent: a change is re-pushed once
-  -- it has held still for one poll, so a drag sends once, after it stops.
-  -- Vetula answers nothing until its lattice is built (tens of seconds), so
-  -- the poll runs forked, and only one at a time.
+  -- the poll runs forked, and only one at a time
   , busy :: Maybe (Ref Boolean)
   -- Vetula's voices as the rig publishes them, the harmony routes, and each
   -- voice's chords by name (Triggerfish.Vetula.Voices); this wrapper's own
@@ -145,7 +140,7 @@ handleAction = case _ of
 -- | Every write is guarded on a change: this runs ten times a second.
 poll :: M Unit
 poll = do
-  -- the bar's controls: the stage, the counts, the session's rebus
+  -- the bar's controls: the view tabs, the key and scale, the chips
   mbar <- H.query _vet unit (Vetula.AskBar identity)
   stb <- H.get
   when (mbar /= stb.lastBar) do
@@ -185,7 +180,7 @@ handleQuery = case _ of
     pure $ mscenes <#> \scenes -> reply
       { title: if Array.null voiceRows && Array.null progRows then "Scenes" else "Vetula", modes: false, keep: "save scene", notice: ""
       , rows: voiceRows <> progRows <> map (_ { section = if Array.null voiceRows && Array.null progRows then "" else "Scenes" }) (Array.mapWithIndex (\i sc -> { slot: i, name: sc.name, icons: map (\icon -> { icon, color: "#2a2a2a" }) (Array.filter (_ /= "") (String.split (String.Pattern "-") (sessionOf sc))), tag: sc.key, current: false, section: "", builtin: true, drag: "", actions: [] }) scenes) }
-  -- a voice's row is not a scene: it recalls nothing
+  -- a saved progression's row: load it
   SQ.BrowserRecall i _ next | i >= progSlotBase -> H.query _vet unit (Vetula.LoadEntry (i - progSlotBase) next)
   -- a voice's row: show its card in Limulus (adding the block if it is gone)
   SQ.BrowserRecall i _ next | i >= Voices.slotBase -> H.query _vet unit (Vetula.OpenChannelCard (i - Voices.slotBase) next)

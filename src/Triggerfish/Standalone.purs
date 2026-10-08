@@ -1,6 +1,6 @@
 -- | One Triggerfish machine on a page of its own: the smallest shell that can
--- | carry it. Balistes (`balistes.html`) and the Selene rack (`selene.html`) run
--- | in it; see `docs/kb/plans/the-offering.md`.
+-- | carry it. Odonus, Vetula, Balistes and the Selene rack each run in it, on
+-- | a page of their own; see `docs/kb/plans/the-offering.md`.
 -- |
 -- | The machine is the same component the Triggerfish page used to mount, and
 -- | this shell does for it what Triggerfish's did:
@@ -21,7 +21,7 @@
 -- |     follows the dashboard's switch through the store.
 -- |
 -- | What spans machines (scenes, macro lanes, the library manager) belongs to the
--- | dashboard to come, not here.
+-- | dashboard, not here.
 -- |
 -- | The machine's panel is `position:fixed; top:var(--tf-bar)`, so the page must
 -- | set `--tf-bar` (the HTML does, 44px, as index.html does) and the bar is pinned
@@ -104,7 +104,7 @@ type Config o =
   -- | stops and resumes it there
   , playable :: Boolean
   -- | the transport on shift-space rather than space: Vetula, where space
-  -- | hears the chord under the pointer (AC, 2026-10-08)
+  -- | hears the hovered chord or the one in hand (AC, 2026-10-08)
   , spaceHears :: Boolean
   -- | whether the bar offers Capture (c): not Selene, whose drawer keeps racks
   , capturable :: Boolean
@@ -145,7 +145,7 @@ type State =
   , limulusAsked :: Boolean  -- the drawer is open because a page asked (`DockWants`)
   -- its width, as a drawer from the right (a view preference, per page)
   , limWidth :: Number
-  -- the page gives Limulus a region that keeps it open (Vetula's Perform)
+  -- the page gives Limulus a region that keeps it open
   , limulusAlways :: Boolean
   -- The browser drawer on the left (Triggerfish.Browser): the machine's rows
   -- (Nothing: it keeps nothing to browse, so there is no drawer), the
@@ -496,7 +496,7 @@ handleAction cfg = case _ of
             "b" -> do
               st <- H.get
               when (isJust st.browser) (handleAction cfg (FromDrawer (Drawer.Toggled (not st.drawer.open))))
-            -- the console key (Vetula has `l`): by position, so any layout
+            -- the console key (`): by position, so any layout
             _ | KE.code ke == "Backquote" -> handleAction cfg ToggleLimulus
             -- Esc is the page's (it closes the innermost thing there); Limulus
             -- closes with its own key or its rail (AC, 2026-10-08)
@@ -572,7 +572,7 @@ render cfg st =
     )
   where
   -- Limulus as a drawer from the right, in Atlantis, unless a region keeps
-  -- it open (Vetula's Perform)
+  -- it open
   limDrawer = st.mode == Atlantis && not docked
   limW = Drawer.clampWidth (limulusInput st) st.limWidth
   limSpan = if limDrawer then (if st.limulus then limW else 0.0) + (limulusInput st).railWidth else 0.0
@@ -722,7 +722,7 @@ browserDrawer st b =
 -- | (same origin), in the machine's paper look. A drawer from the right,
 -- | eased open and shut beside its rail (as the browser on the left), pushing
 -- | the page by `--tf-right`; or, where the page keeps a region for it
--- | (`data-limulus-dock="always"`, Vetula's Perform), laid over that region
+-- | (`data-limulus-dock="always"`), laid over that region
 -- | (`watchDocks`). One frame either way, made once and kept, so its log and
 -- | undo survive.
 limulusPanel :: forall w i. { docked :: Boolean, open :: Boolean, width :: Number, rail :: Number } -> HH.HTML w i
@@ -796,11 +796,11 @@ bar cfg st =
           <> "text-transform:uppercase;color:#eaf3fa;background:linear-gradient(#3a6b8a,#2d5670)"
       ]
       [ HH.text "Atlantis" ]
-  -- the machine's own controls (Triggerfish.Bar): its stage tabs, ◆ mark
-  -- with the counts and clear, and its rebus, drawn here as the drawer draws
+  -- the machine's own controls (Triggerfish.Bar): its tabs, ◆ mark with the
+  -- counts and clear, its rebus and its chips, drawn here as the drawer draws
   -- its rows
   machineControls b =
-    -- a machine with no stages (Vetula, one surface) has no tab group
+    -- a machine that gives no tabs has no tab group
     (if Array.null b.tabs then [] else
     [ HH.div [ style "display:flex;flex:0 0 auto;border:1px solid #00000026;border-radius:6px;overflow:hidden;box-shadow:0 1px 2px #0000001a" ]
         (map (\t -> HH.button

@@ -1,5 +1,5 @@
 // The SVG an event's handler sits on, or (for a container that hosts an SVG
-// drawn outside Halogen, such as Explore's field) the SVG inside it.
+// drawn outside Halogen, such as the lattice's field) the SVG inside it.
 const svgOf = (ev) => {
   const el = ev.currentTarget;
   if (el && el.viewBox && el.viewBox.baseVal) return el;

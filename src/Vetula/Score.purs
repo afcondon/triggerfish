@@ -84,9 +84,9 @@ type Staff =
   , tapping :: Maybe Int
   }
 
--- | What a click does: hear a chord (by position), revoice it (the open
--- | progression only), open the row's progression (any other), select a
--- | run of chords (shift-click) for the scales that fit it, or let it go.
+-- | What the pointer does on a bar: a press starts a drag (released where it
+-- | began, it hears and chooses the bar), hovering marks it, shift-click
+-- | selects a run of chords for the scales that fit it, or lets it go.
 type Handlers i =
   { press :: Int -> i
   -- the pointer over a bar, and off it
@@ -291,8 +291,8 @@ barWidth = 74.0
 staffGap :: Number
 staffGap = 14.0
 
--- | **A progression as one system**, with its header: the title (a button
--- | when the row can be opened), the badges of the voices playing it, and a
+-- | **A progression as one system**, with its header: the title (drag it
+-- | onto a voice to have the voice play it), the badges of the voices playing it, and a
 -- | note. Every bar shares the row's vertical extent, so a note that looks
 -- | higher than its neighbour is.
 system :: forall w i. Spelling -> Handlers i -> Staff -> HH.HTML w i

@@ -104,7 +104,7 @@ fifthsBetween :: Int -> Int -> Int
 fifthsBetween a b = let s = mod ((b - a) * 7) 12 in min s (12 - s)
 
 -- ---------------------------------------------------------------------------
--- Interval-class primitives (shared with the App's internal-dissonance fill)
+-- Interval-class primitives (`roughness` also scores Generate's candidates)
 -- ---------------------------------------------------------------------------
 
 intervalClass :: Int -> Int -> Int

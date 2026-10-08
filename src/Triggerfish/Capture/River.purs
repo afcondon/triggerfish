@@ -12,9 +12,8 @@
 -- |
 -- | Generalised from `Odonus.View.Scope` (now a thin adapter over this) when Vetula
 -- | needed the same river running the other way (AC, 2026-08-05). `Flow` is the only
--- | parameter that differs: Odonus emits at the right edge and flows left; Vetula's
--- | surface sits to the RIGHT of its voices, so it emits at the left edge — next to
--- | the voice that played the note — and flows right.
+-- | parameter that differs. Vetula's river now flows left too, in from Limulus's
+-- | drawer on the right, so nothing uses `FlowRight` at present.
 -- |
 -- | Pure and polymorphic in the host's `action` (nothing here is clickable): the
 -- | host wraps it with its own overlays and gestures.
@@ -38,8 +37,8 @@ import Halogen.Widgets.Svg (svgAttr, svgEl)
 import Triggerfish.Ui.Style (style)
 
 -- | Which way the river runs. `FlowLeft` = emitted at the RIGHT edge, ageing
--- | leftward (Odonus). `FlowRight` = emitted at the LEFT edge, ageing rightward
--- | (Vetula, whose river sits to the right of the voices that feed it).
+-- | leftward (Odonus, Vetula). `FlowRight` = emitted at the LEFT edge, ageing
+-- | rightward (unused since Vetula's river moved above the capture pane).
 data Flow = FlowLeft | FlowRight
 
 derive instance eqFlow :: Eq Flow

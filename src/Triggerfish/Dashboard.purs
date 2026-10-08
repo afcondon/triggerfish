@@ -15,9 +15,9 @@
 -- | Each machine keeps its nameplate from the identity study: its own colour,
 -- | face and fish. Everything else is standard, and styled by `dashboard.html`.
 -- |
--- | Two views so far, each at its own address: the machines (`#`, the landing)
--- | and routing (`#routing`), so the table is not the first thing seen. More are
--- | planned (process management, documentation); see the plan.
+-- | One page, the chart, with its lenses at their own addresses (`#atlantis`
+-- | for the X-ray, `#storage`) and a routing matrix opened over it at `#notes`
+-- | or `#drums`, so the table is not the first thing seen; see the plan.
 module Triggerfish.Dashboard
   ( component
   ) where
@@ -121,10 +121,9 @@ openWindowMs = 90000.0
 type Heard = { state :: Bus.MachineState, at :: Number }
 
 
--- | The page's views. Each is a real link (`#routing`), so the back button and
--- | bookmarks work.
 -- | The hash names an open matrix: `#notes`, `#drums` (and the old `#routing`,
--- | which was the routing page, opens the notes).
+-- | which was the routing page, opens the notes), so the back button and
+-- | bookmarks work.
 matrixOfHash :: String -> Maybe Matrix.Grid
 matrixOfHash = case _ of
   "notes" -> Just Matrix.Notes
@@ -160,7 +159,7 @@ type State =
   -- machine opened into its voices
   , relays :: Boolean
   , allVoices :: Boolean
-  -- the marks the rig keeps, per machine (`loops` frames), for the bubbles
+  -- the marks the rig keeps, per machine (`loops` frames), for the starfish
   , rigLoops :: Map String (Array RigLoops.RigMark)
   -- the Atlantis group as Bosun last said, Nothing while out of reach
   , bosun :: Maybe Bosun.Health
@@ -1015,11 +1014,8 @@ setTempo n = do
   for_ st.rig \bin -> liftEffect (Tempo.set bin bpm)
   H.modify_ _ { tempo = bpm, freeTempo = bpm }
 
--- | The machines, as the app's navigation: each one's nameplate, with its fish
--- | as its play button (turned to face right, the way a play arrow points).
--- | A closed machine's name opens its page, behind the dashboard; an open
--- | one's name is only a name, since following a link into a tab that is
--- | already open would reload it.
+-- | The bar under the top row: the rig's mode, then the chart's lens and its
+-- | views. The machines themselves are on the chart.
 machineBar :: forall m. State -> H.ComponentHTML Action () m
 machineBar st =
   HH.div [ cls "mbar" ]
@@ -1069,8 +1065,6 @@ machineBar st =
       ]
       [ HH.text label ]
 
--- | The whole table, one ledger, each source drawn by the same rows as every
--- | other router.
 cls :: forall r i. String -> HP.IProp (class :: String | r) i
 cls = HP.class_ <<< H.ClassName
 

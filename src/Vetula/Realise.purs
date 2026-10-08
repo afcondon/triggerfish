@@ -1,7 +1,7 @@
 -- | `Vetula.Realise` — the FRONTEND chord→`Pattern` realiser for the Perform view.
 -- |
 -- | The Perform boxes carry a saved sequence (a list of chords, each an `Array Int`
--- | of MIDI notes) and realise it through the vendored Tidal engine
+-- | of MIDI notes) and realise it through Littorina's Tidal engine
 -- | (`Tidal.Pattern.Core`). Building the carrier as a real `Pattern Int` — rather
 -- | than the ad-hoc beat-fire the first Perform slice used — is what lets the
 -- | function-stack layers (`fast`/`ply`/`arp`/`every`/…) compose on it directly:
@@ -10,7 +10,7 @@
 -- | pattern per cycle and schedules the events (see `App.purs` PerfTick).
 -- |
 -- | This mirrors the pure `voicingAs*` helpers that live BEAM-side in
--- | `purerl-tidal/src/Tidal/Vetula/Pattern.purs`, ported to the frontend over raw
+-- | `architeuthis/src/Tidal/Vetula/Pattern.purs`, ported to the frontend over raw
 -- | `Array Int` note-sets (no `PitchedNote12`/`Voicing` dependency needed). The
 -- | value carried is the MIDI note number itself.
 -- |

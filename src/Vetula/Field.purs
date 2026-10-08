@@ -1,4 +1,4 @@
--- | **Explore's field, drawn outside Halogen** (AC, 2026-10-06: "the SVG
+-- | **The lattice's field, drawn outside Halogen** (AC, 2026-10-06: "the SVG
 -- | entirely outside the Halogen event loop", as in the hylograph force demos).
 -- |
 -- | Halogen renders one empty `<div id="vetula-field">` and hands this module a

@@ -19,7 +19,8 @@
 -- | **Renamed from `Vetula.Palette` (2026-09-14)** to clear the way for
 -- | `Harmonia.Palette`, which is a different thing with the same word: this is
 -- | a bank of CURATED VOICINGS lifted from a firmware table, that is a chord
--- | VOCABULARY graded by complexity. Both are now imported by `Vetula.App`.
+-- | VOCABULARY graded by complexity. Since the colour-set tray went, only the
+-- | revoicing tests (test/RevoiceSpec) import this one.
 -- |
 -- | Rooted on a note, each entry becomes a `ChordNode` for the pool; `anchor` is
 -- | `Free` for now (a root+quality voicing has no fixed scale reading — grade is
@@ -79,8 +80,8 @@ stockPalette = mapMaybe (\i -> butlerPalette !! i) stockMapping
 
 -- | Root a palette entry on a pitch class, producing a pool `ChordNode`. The
 -- | literal interval-voicing is placed from octave 4 (48 + root); `pcs` is the
--- | de-duplicated pitch-class content. The `id` is provisional — `DropSet`
--- | reassigns it when the set is dropped onto the surface.
+-- | de-duplicated pitch-class content. The `id` is provisional: the caller
+-- | renumbers it.
 paletteNode :: Int -> Int -> PaletteEntry -> ChordNode
 paletteNode nid root entry =
   { id: nid

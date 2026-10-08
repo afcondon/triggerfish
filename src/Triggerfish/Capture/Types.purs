@@ -1,6 +1,6 @@
 -- | `Triggerfish.Capture.Types` — the machine-agnostic value types of the
 -- | self-sampling capture/replay surface (#28, docs/DESIGN-capture-surface.md).
--- | Every capturing machine (Odonus now, Vetula + Balistes next) shares ONE
+-- | Every capturing machine (Odonus and Vetula now, Balistes next) shares ONE
 -- | definition of the always-on logbook, its marks, loop regions, and the replay
 -- | play-state. A clean leaf (Prelude + `Data.Maybe` + the shared `NoteEvent`), so
 -- | any machine can depend on it without a cycle.
@@ -123,10 +123,10 @@ type Logbook =
 -- | How a capture surface lays time out. The one axis-aware parameter of the shared
 -- | view — same data, same gestures, different projection.
 -- |
--- |   * `Horizontal` — time → X, OLDEST at left (Odonus, as it always has).
+-- |   * `Horizontal` — time → X, OLDEST at left (Odonus, and now Vetula).
 -- |   * `HorizontalOutward` — time → X REVERSED: the newest note enters at the LEFT
--- |     edge and ages rightward. Vetula's surface sits to the RIGHT of its voices,
--- |     so notes appear to flow OUT of the voice that played them (AC, 2026-08-05).
+-- |     edge and ages rightward, out of the voices beside it (AC, 2026-08-05).
+-- |     Unused since Vetula's capture pane went `Horizontal`.
 -- |   * `Vertical` — time → Y, newest at top. Built for the Vetula tracker; unused
 -- |     since Vetula went horizontal, kept for the true-tracker refinement the
 -- |     design note still parks (docs/DESIGN-capture-surface.md).

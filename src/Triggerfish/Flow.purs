@@ -22,7 +22,7 @@
 -- |   2026-10-03: "make the Sankey honest about data flows").
 -- | - **Rig loops** play on the rig whether or not their page is open, so a
 -- |   machine with a loop playing and its page closed is drawn from the engine.
--- |   The marks themselves are bubbles under the engine (the view's).
+-- |   The marks themselves are starfish between the pages and the engine.
 -- |
 -- | Diaphus carries the rig's MIDI (Architeuthis hands it `/midi/note/at` over
 -- | OSC for timestamped CoreMIDI delivery), but what it means to a reader is
@@ -203,13 +203,13 @@ machineOf = case _ of
   SVetulaVoice _ -> "vetula"
   SSeleneBank _ -> "selene"
 
--- | The machines purerl-tidal plays in Atlantis. Selene and Quadrat stay in
+-- | The machines Architeuthis plays in Atlantis. Selene and Quadrat stay in
 -- | the browser; Conspicillum's samples go through the rig regardless.
 rigPlays :: String -> Boolean
 rigPlays m = m `elem` [ "odonus", "vetula", "balistes", "limulus" ]
 
 -- | Limulus always plays through the rig, whatever the mode: it sends its
--- | lines to purerl-tidal even when the machines' pages play themselves.
+-- | lines to Architeuthis even when the machines' pages play themselves.
 modeFor :: Mode -> String -> Mode
 modeFor mode m = if m == "limulus" then Atlantis else mode
 
@@ -694,8 +694,8 @@ layerOf f id = do
   where
   present = Array.sort (nub (map _.column f.nodes))
 
--- | The nodes the rig times to Link's beat: purerl-tidal, its daemons, and
--- | every port it sends MIDI to (through link-spike, timestamped). Empty in
+-- | The nodes the rig times to Link's beat: Architeuthis, its daemons, and
+-- | every port it sends MIDI to (through Diaphus, timestamped). Empty in
 -- | Solo, where each page keeps its own time.
 onTheBeat :: Flow -> Array String
 onTheBeat f = nub (concatMap rig (filter (not <<< _.bone) f.links))

@@ -136,7 +136,7 @@ derive instance Eq Lens
 -- | sounding now; the rest are drawn ghosted rather than dropped, since an
 -- | open page that is stopped is still part of the picture, and when nothing
 -- | plays the whole chart rests. `rigUp` is whether the page reaches
--- | purerl-tidal, shown on the kraken. `tempo` sets the beat's pulse.
+-- | Architeuthis, shown on the kraken. `tempo` sets the beat's pulse.
 -- | `lamps`: what Bosun says of the daemon behind a node, when it was reached.
 type Live =
   { playing :: Array String, rigUp :: Boolean, tempo :: Number
@@ -189,7 +189,7 @@ chartOf on hot live f =
   -- the X-ray and the storage lens share the skeleton and its layout
   xray = live.lens /= Flowing
   store = live.lens == Storage
-  -- In Atlantis, link-spike stands above the flow: the beat, broadcast to
+  -- In Atlantis, Diaphus stands above the flow: the beat, broadcast to
   -- everything the rig times, rather than one more hop in it.
   beat = onTheBeat f
   band = if Array.null beat then 0.0 else 58.0
@@ -832,7 +832,7 @@ chartOf on hot live f =
     Up -> "up"
     Coming -> "coming"
     Down -> "down"
-  -- The rig's link, on the rig: a lamp under purerl-tidal's label.
+  -- The rig's link, on the rig: a lamp under Architeuthis's label.
   rigLamp id x cy
     | id == "engine" && xray =
         [ label ("sub st-" <> if live.rigUp then "up" else "down") x (cy + 13.0) "start" (if live.rigUp then "connected" else "not connected") ]

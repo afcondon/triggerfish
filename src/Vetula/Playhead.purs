@@ -3,15 +3,15 @@
 -- | A Vetula performance voice reads the loaded progression on its own read-head.
 -- | Historically that read-head was a bars-per-chord `durs` array (a form/grid);
 -- | here it becomes a live-coded **Tidal pattern of chord indices** — `"0 1 2 3"`,
--- | `"<0 2> 1"`, `"0 [1 2] 3"`, `"0(3,8)"` — parsed by the vendored Tidal engine and
+-- | `"<0 2> 1"`, `"0 [1 2] 3"`, `"0(3,8)"` — parsed by Littorina's Tidal engine and
 -- | QUERIED into the exact same `{ ix, start, len }` segment clock the shared reef
 -- | realiser (`Reef.Vetula.Perf.renderClockMidiAt`) already consumes. So block / arp
 -- | / strum are untouched: the pattern only changes WHERE the segments come from.
 -- |
 -- | Convention (decided with the rig's 1/16 grid): **one pattern cycle = one bar =
 -- | 16 pulses**. `"0 1 2 3"` is a chord per beat; `"[0 1 2 3]/4"` is one chord per bar
--- | over four bars (the old durs=[1,1,1,1] default — bracketed `/` slow; note this
--- | engine's `<…>` is grouping, NOT slow-alternation). Sub-bar subdivisions that don't
+-- | over four bars (the old durs=[1,1,1,1] default — bracketed `/` slow; `<…>`
+-- | alternates, one step a cycle, as in Tidal). Sub-bar subdivisions that don't
 -- | divide 16 (triplets, …) round to the nearest pulse — the rig IS a 16-grid.
 -- |
 -- | This is the FRONTEND half of the pattern path (SOLO). The identical parse+query

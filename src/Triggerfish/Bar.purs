@@ -1,6 +1,7 @@
 -- | **The page's own controls in the shared bar** (AC, 2026-10-05): a machine's
--- | stage tabs, its ◆ mark with the counts and clear, and the rebus of what it
--- | has loaded, drawn by the shell (`Triggerfish.Standalone`) in its top bar,
+-- | tabs, its chips, its dropdowns and ⓘ (and a ◆ mark and a rebus, which no
+-- | machine fills since marking moved to the river), drawn by the shell
+-- | (`Triggerfish.Standalone`) in its top bar,
 -- | as the drawer's rows are (`Triggerfish.Browser`). The machine says what to
 -- | show (`SourceQuery.AskBar`) and is told what was pressed
 -- | (`SourceQuery.BarAction`): `stage:ID`, `mark`, `clear`, `rebus`, `chip:ID`,

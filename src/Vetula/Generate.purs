@@ -1,6 +1,6 @@
--- | `Vetula.Generate` — the candidate-chord generator behind the Lattice's
--- | "pick mode". From the chords the user shift-selected in the progression, it
--- | proposes a cloud of plausible chords:
+-- | `Vetula.Generate` — the candidate-chord generator behind the alternatives'
+-- | smooth / middle / far rows (one anchor, three settings of `adventure`).
+-- | From one or two anchor chords it proposes a cloud of plausible chords:
 -- |
 -- |   * Prepend / Append — a plausible chord before the first / after the last,
 -- |     voice-led from that anchor;
