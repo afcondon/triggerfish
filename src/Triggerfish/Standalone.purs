@@ -80,7 +80,6 @@ import Web.HTML.Window as Window
 import Web.UIEvent.KeyboardEvent as KE
 import Web.UIEvent.KeyboardEvent.EventTypes as KET
 import Web.HTML.HTMLElement (HTMLElement)
-import Web.Event.Event (EventType(..))
 
 -- | One machine's page.
 -- |
@@ -158,8 +157,6 @@ type State =
   , confirming :: Maybe { slot :: Int, act :: String }
   }
 
--- | The panel asks to close (Escape inside it).
-foreign import limulusAskedClose :: E.Event -> Boolean
 foreign import focusFrame :: HTMLElement -> Effect Unit
 foreign import focusSelf :: Effect Unit
 foreign import watchDocks :: (Boolean -> Effect Unit) -> (Boolean -> Effect Unit) -> Effect Unit
@@ -190,7 +187,6 @@ data Action o
   | ModeStored
   | ToggleLimulus
   | FromLimDrawer Drawer.Output
-  | FromFrame E.Event
   | DockAlways Boolean
   | DockWants Boolean    -- a page asks for the Limulus drawer (true) or is done with it
   | AskBrowser
@@ -266,7 +262,6 @@ handleAction cfg = case _ of
     _ <- liftEffect $ setInterval 1500 (HS.notify listener Tick)
     target <- liftEffect $ Window.toEventTarget <$> window
     _ <- H.subscribe $ eventListener KET.keydown target (Just <<< Key)
-    _ <- H.subscribe $ eventListener (EventType "message") target (Just <<< FromFrame)
     liftEffect $ watchDocks (HS.notify listener <<< DockAlways) (HS.notify listener <<< DockWants)
     drawer <- liftEffect (loadDrawer (drawerKey cfg))
     limWidth <- liftEffect (loadWidth (limKey cfg) 560.0)
@@ -399,9 +394,6 @@ handleAction cfg = case _ of
     else do
       when (st.limulus && st.limulusAsked) (handleAction cfg ToggleLimulus)
       H.modify_ _ { limulusAsked = false }
-  FromFrame e -> when (limulusAskedClose e) do
-    H.modify_ _ { limulus = false }
-    liftEffect focusSelf
   RigPlayed -> unlessM (H.gets _.playing) do
     H.modify_ _ { playing = true }
     pushSounding cfg
