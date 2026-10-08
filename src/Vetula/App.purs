@@ -108,7 +108,9 @@ import Data.Either (Either(..))
 import Binnacle.Time (dateNow, perfNow)
 import Effect.Ref as Ref
 import Triggerfish.Capture.Logbook as Logbook
-import Triggerfish.Capture.Types (Orientation(..), PlaySource(..), Zoom(..))
+import Triggerfish.Capture.Types (Orientation(..), PlaySource(..), RegionDrag, RegionEdge(..), Zoom(..))
+import Triggerfish.Capture.River (Flow(..), riverPanel)
+import Triggerfish.Capture.River as River
 
 import Triggerfish.Capture.View (CaptureState, capturePanel, markCode)
 import Triggerfish.Capture.View as CaptureView
@@ -814,6 +816,10 @@ type State =
   , rigAsked :: Number
   -- the document listeners of a ✂ drag across the Review surface
   , captureDragSub :: Maybe H.SubscriptionId
+  -- the live river's clock (performance µs), advanced only while review shows
+  , riverNow :: Number
+  -- a band of the review being dragged (its edge or its body)
+  , regionDrag :: Maybe RegionDrag
   -- The LIVE river's two reads (`Capture.River`): the current instant, advanced by
   -- a 33ms frame timer so the roll FLOWS rather than jumping a 16th at a time, and
   -- the recent notes it draws — pruned to the river's fade span each frame. The
@@ -918,6 +924,10 @@ data Action
   | CaptureTrim            -- cut all but the marks' windows (on the rig)
   | CaptureUndo            -- put back the last cut or trim (on the rig)
   | CaptureFrame           -- 33ms tick: advance the river's clock, prune its window
+  | CaptureRegionDown Int RegionEdge Int Int  -- a band's edge or body grabbed
+  | CaptureRegionMove Int Int                 -- the pointer, while a band is dragged
+  | CaptureRegionUp                           -- released: a click loops, a drag sets the window
+  | CaptureDeleteMark Int                     -- delete a mark (its loop stops)
   | Nop                    -- nothing (a handler that must name an action)
   | PerfStopClick ME.MouseEvent Action -- run Action but stop the click bubbling to the box
   | ZoomAt Event Number    -- geometric lens: wheel-zoom toward the cursor (event, deltaY)
@@ -1135,7 +1145,7 @@ component = H.mkComponent
       , perfRecallOpen: false
       , clipLibrary: []
       , capture: { logbook: Logbook.emptyLog, playing: Nothing, regionDrag: Nothing, contextOpen: false, codeOpen: false, zoom: Whole, rig: Nothing, cutting: false, cutSel: Nothing }
-      , rigLoops: false, rigAsked: 0.0, captureDragSub: Nothing
+      , rigLoops: false, rigAsked: 0.0, captureDragSub: Nothing, riverNow: 0.0, regionDrag: Nothing
       }
   , render
   , eval: H.mkEval H.defaultEval
@@ -2717,9 +2727,14 @@ handleActionCore = case _ of
     st <- H.get
     if st.rigLoops then rigSend (RL.cueLine "vetula" "mark")
     else do
+      -- bar-aligned, as the rig and Odonus make it: the bar before and the
+      -- bar the mark falls in
+      mclock <- vetulaClock
       let atMic = nowMs * 1000.0
-          barMic = 60.0e6 / (if st.clockTempo > 1.0 then st.clockTempo else 120.0) * 4.0
-          mark = { atMicros: atMic, beat: 0.0, from: atMic - 2.0 * barMic, to: atMic, patch: markText st, now: "", sounding: Nothing, rig: [], tempo: st.clockTempo, n: 0, id: RL.nextId st.capture.logbook.marks, loop: Nothing }
+          beat = maybe 0.0 _.beat mclock
+          tempo = maybe st.clockTempo _.tempo mclock
+          rb = Logbook.regionBounds tempo atMic beat
+          mark = { atMicros: atMic, beat, from: rb.from, to: rb.to, patch: markText st, now: "", sounding: Nothing, rig: [], tempo, n: 0, id: RL.nextId st.capture.logbook.marks, loop: Nothing }
       H.modify_ \s -> s { capture = s.capture { logbook = let lb = Logbook.pushMark mark s.capture.logbook in lb { marks = RL.renumber lb.marks } } }
       H.raise (Marked atMic)
 
@@ -2757,6 +2772,60 @@ handleActionCore = case _ of
         ("stage-paste vetula/mark " <> markCode "vetula" _.patch m)
   CaptureZoom z -> H.modify_ \s -> s { capture = s.capture { zoom = z } }
 
+  -- a band's edge resizes its window, its body slides it (past a small
+  -- threshold, so a click still loops it); released, the edges snap to beats
+  -- and the rig is told (Odonus's gesture, Grid.RegionDown)
+  CaptureRegionDown i edge cx cy -> do
+    sid <- H.subscribe $ HS.makeEmitter \emit -> do
+      moveFn <- eventListener \e -> case ME.fromEvent e of
+        Just me -> emit (CaptureRegionMove (ME.clientX me) (ME.clientY me))
+        Nothing -> pure unit
+      upFn <- eventListener \_ -> emit CaptureRegionUp
+      target <- Window.toEventTarget <$> window
+      addEventListener (EventType "mousemove") moveFn false target
+      addEventListener (EventType "mouseup") upFn false target
+      pure do
+        removeEventListener (EventType "mousemove") moveFn false target
+        removeEventListener (EventType "mouseup") upFn false target
+    grab <- capturePointer cx cy
+    st <- H.get
+    for_ (st.capture.logbook.marks !! i) \m ->
+      H.modify_ _ { captureDragSub = Just sid
+                  , regionDrag = Just { markIdx: i, edge, grabMicros: grab, startFrom: m.from, startTo: m.to, moved: false } }
+  CaptureRegionMove cx cy -> do
+    st <- H.get
+    for_ st.regionDrag \rd -> do
+      cur <- capturePointer cx cy
+      let ax = CaptureView.bounds st.capture.zoom st.capture.logbook
+          d = ax.toFrac cur - ax.toFrac rd.grabMicros
+          past = max d (negate d) > 0.005
+      when (rd.moved || rd.edge /= EdgeBody || past) do
+        let minLen = 60.0e6 / max 30.0 st.clockTempo
+            slid = ax.fromFrac (ax.toFrac rd.startFrom + ax.toFrac cur - ax.toFrac rd.grabMicros)
+            bounds = case rd.edge of
+              EdgeFrom -> { from: min (rd.startTo - minLen) cur, to: rd.startTo }
+              EdgeTo -> { from: rd.startFrom, to: max (rd.startFrom + minLen) cur }
+              EdgeBody -> Runs.offSeams ax { from: slid, to: slid + (rd.startTo - rd.startFrom) }
+        H.modify_ \s -> s { regionDrag = map (_ { moved = true }) s.regionDrag
+                          , capture = Logbook.applyBounds rd.markIdx bounds s.capture }
+  CaptureRegionUp -> do
+    st <- H.get
+    for_ st.captureDragSub H.unsubscribe
+    H.modify_ _ { captureDragSub = Nothing, regionDrag = Nothing }
+    for_ st.regionDrag \rd -> case rd.edge, rd.moved of
+      EdgeBody, false -> handleAction (CaptureRegionSelect rd.markIdx)
+      _, _ -> for_ (st.capture.logbook.marks !! rd.markIdx) \m -> do
+        let snapped = { from: Logbook.snapMicrosToBeat st.clockTempo m m.from
+                      , to: Logbook.snapMicrosToBeat st.clockTempo m m.to }
+        H.modify_ \s -> s { capture = Logbook.applyBounds rd.markIdx snapped s.capture }
+        -- the rig's window is the one that plays
+        when st.rigLoops do
+          mclock <- vetulaClock
+          for_ mclock \clock -> rigSend (RL.windowLine "vetula" clock (m { from = snapped.from, to = snapped.to }))
+  CaptureDeleteMark i -> do
+    st <- H.get
+    if st.rigLoops then for_ (st.capture.logbook.marks !! i) \m -> rigSend (RL.deleteLine "vetula" m.n)
+    else H.modify_ \s -> s { capture = s.capture { playing = Nothing, logbook = let lb = Logbook.deleteMark i s.capture.logbook in lb { marks = RL.renumber lb.marks } } }
   CaptureCutArm -> H.modify_ \s -> s { capture = s.capture { cutting = not s.capture.cutting, cutSel = Nothing } }
   CaptureCutDown cx cy -> do
     sid <- H.subscribe $ HS.makeEmitter \emit -> do
@@ -2819,6 +2888,10 @@ handleActionCore = case _ of
     when (showsRiver st.stage && st.rigLoops && any RL.looping st.capture.logbook.marks) do
       mclock <- vetulaClock
       H.modify_ \s -> s { capture = s.capture { rig = mclock } }
+    -- the live river moves only while it is on screen
+    when (showsRiver st.stage) do
+      nowMs <- liftEffect perfNow
+      H.modify_ _ { riverNow = nowMs * 1000.0 }
     -- The REPLAY loop rides the same frame clock; it no-ops when nothing is looping.
     driveCaptureReplay
 
@@ -3807,9 +3880,9 @@ replayLookaheadMs = 120.0
 -- | self-contained `scheduleNoteAtMs` (auto note-off). Also advances the 0..1
 -- | playhead the capture surface draws. No-op when nothing is looping.
 -- |
--- | Notes sound on the channels they were CAPTURED on (`odonusHeadChannel headIdx`),
--- | the same convention as the clip-library audition, and through `st.midiOut` — so
--- | an ⌥1 AuditionOff silences a region preview too.
+-- | Notes sound on the channels they were captured on: a Vetula note's `headIdx`
+-- | IS its voice's 1-based channel (unlike an Odonus head, 0..3), so it is sent
+-- | as it is. Through `st.midiOut`, so an ⌥1 AuditionOff silences a preview too.
 driveCaptureReplay :: forall o m. MonadAff m => H.HalogenM State Action Slots o m Unit
 driveCaptureReplay = do
   st <- H.get
@@ -3826,7 +3899,7 @@ driveCaptureReplay = do
           atMs = ps.loopStartMs + off + toNumber k * loopLenMs
       when (atMs > ps.scheduledUntilMs && atMs <= horizon) $
         Midi.scheduleNoteAtMs out
-          { channel: Routing.toWire (Routing.odonusHeadChannel e.headIdx)
+          { channel: Routing.toWire e.headIdx
           , note: e.pitch, velocity: e.vel, atMs, durMs: e.gateMs }
     H.modify_ \s -> case s.capture.playing of
       Just p ->
@@ -3868,7 +3941,7 @@ hushCapture = do
   st <- H.get
   for_ st.capture.playing \ps ->
     for_ st.midiOut \out -> liftEffect $
-      for_ (nub (map (\e -> Routing.odonusHeadChannel e.headIdx) ps.events)) \ch ->
+      for_ (nub (map _.headIdx ps.events)) \ch ->
         Midi.sendCC out { channel: Routing.toWire ch, controller: 123, value: 0 }
 
 auditionClip :: forall o m. MonadAff m => MidiClip -> H.HalogenM State Action Slots o m Unit
@@ -4968,10 +5041,11 @@ capturePane st =
     , timelineId: "vetula-capture-timeline"
     , headColor: captureHeadColor
     , contextSummary: \_ -> Nothing
-    , regionDown: \i _ _ _ -> CaptureRegionSelect i
+    , regionDown: CaptureRegionDown
     , stopPlay: CaptureStopSel
     , saveClip: CaptureSaveClip
     , saveScene: Nothing
+    , deleteMark: Just CaptureDeleteMark
     , toggleContext: CaptureToggleContext
     , setZoom: CaptureZoom
     , machine: "vetula"
@@ -5000,11 +5074,25 @@ riverSurface st =
     -- `.vetula-surface`: the key listener acts while one is on screen
     [ HP.class_ (HH.ClassName "vetula-surface vetula-surface--wide")
     , HP.style "position: absolute; inset: 0; display: flex; flex-direction: column; background: #0b0a07;" ]
-    [ capturePane st, riverTools st ]
+    -- the live river on top, flowing in from the right, where Limulus's
+    -- drawer is (AC: "as if emitting from the Limulus drawer, which it is");
+    -- the whole session below, where marks are looped and their windows set
+    [ HH.div [ HP.style "flex: 0 0 38%; position: relative; border-bottom: 1px solid #e8c14a33;" ]
+        [ riverPanel { flow: FlowLeft, headColor: captureHeadColor }
+            { nowMicros: st.riverNow, notes: recentNotes st, marks: st.capture.logbook.marks }
+        , riverTools st ]
+    , capturePane st ]
 
--- | **The river's own tools**, on the river (AC, 2026-10-08: marking moves
--- | into the river, as Odonus has it): ◆ mark, the running counts, clear.
--- | Top left; the zoom and the edits are top right.
+-- | The notes the live river shows: the last few seconds of the record.
+recentNotes :: State -> Array NoteEvent
+recentNotes st =
+  let lb = st.capture.logbook
+      cutoff = st.riverNow - River.windowMicros
+  in filter (\n -> n.fireUnixMicros > cutoff) (lb.live <> maybe [] _.events (head lb.chunks))
+
+-- | **The river's own tools**, on the live river (AC, 2026-10-08: marking
+-- | moves into the river, as Odonus has it): ◆ mark, the running counts,
+-- | clear. Top left of the live strip.
 riverTools :: forall m. State -> H.ComponentHTML Action Slots m
 riverTools st =
   HH.div [ HP.style "position: absolute; top: 8px; left: 10px; z-index: 9; display: flex; align-items: center; gap: 8px;" ]

@@ -37,6 +37,7 @@ replayPanel s = capturePanel wiring cap
     , stopPlay: StopPlay
     , saveClip: SaveMarkClip
     , saveScene: Just SaveMarkScene
+    , deleteMark: Just DeleteMark
     , toggleContext: ToggleContext
     , setZoom: SetZoom
     , machine: "odonus"

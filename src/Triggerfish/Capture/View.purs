@@ -85,6 +85,8 @@ type CaptureWiring action =
   , stopPlay :: action
   , saveClip :: Int -> action
   , saveScene :: Maybe (Int -> action)
+  -- delete the mark (its loop stops), from the loop's card
+  , deleteMark :: Maybe (Int -> action)
   , toggleContext :: action
   , setZoom :: Zoom -> action
   -- the mark as code: this machine's slot (`odonus`), the toggle, and
@@ -370,6 +372,9 @@ controlCard w posOf cap = case cardMark cap of
                          , cardBtn w.toggleCode (if cap.codeOpen then "#e8c14a" else "#cdb98a")
                              "this mark as code: every open machine as it was at the mark" "{ } code"
                          ]
+                      <> (case w.deleteMark of
+                            Just del -> [ cardBtn (del i) "#d08a7a" "delete this mark; its loop stops" "\x00d7 delete" ]
+                            Nothing -> [])
                     )
                 ]
                 <> (if cap.contextOpen then [ contextPanel w m ] else [])
