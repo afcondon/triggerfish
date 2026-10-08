@@ -28,6 +28,7 @@ module Triggerfish.Odonus.Grid.Types
   , Slots
   ) where
 
+import Triggerfish.Amphora (LibItem)
 import Prelude
 
 import Data.Array as Array
@@ -360,6 +361,9 @@ type State =
   -- MIDI and has no rig entry. Same shape of state, different wire.
   , rampleVoices :: RV.Voices
   , polyNote :: Maybe String  -- why poly is degraded, if it is
+  -- The `vco-calibrations` fetch, kept for the ES-9 pitch lines
+  -- (`Triggerfish.Es9Line`), which look their VCO's table up per leg.
+  , vcoTables :: Array LibItem
   , swing :: Number          -- groove: fraction of a step that off-beats lag (0..0.6)
   , velHumanize :: Int       -- velocity jitter range ± (0 = dead-flat)
   , gen :: Array GenSource    -- the randomisation matrix — one source per aspect

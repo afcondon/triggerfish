@@ -236,7 +236,7 @@ wireOf = case _ of
   DFh2Env d -> "fh2env:" <> show d.slot
   DFh2Gate d -> "fh2gate:" <> show d.jack
   DEs9Gate d -> "es9gate:" <> show d.block <> ":" <> show d.jack
-  DEs9Cv d -> "es9cv:" <> show d.bus
+  DEs9Cv d -> "es9cv:" <> show d.jack
   DContinuo d -> "continuo:" <> show d.channel
   DRample d -> "rample:" <> d.port <> ":" <> show d.channel <> ":" <> show d.voice
   DRamplePoly d -> "rample:" <> d.port <> ":" <> show d.channel
@@ -250,7 +250,7 @@ detailOf = case _ of
   DFh2Env d -> "env " <> show d.slot
   DFh2Gate d -> "gate " <> show d.jack
   DEs9Gate d -> "gate " <> show (d.block + 1) <> "." <> show d.jack
-  DEs9Cv d -> "bus " <> show d.bus
+  DEs9Cv d -> "jack " <> show d.jack
   DContinuo d -> "ch " <> show d.channel
   DRample d -> "ch " <> show d.channel <> " voice " <> show d.voice
   DRamplePoly d -> "ch " <> show d.channel
@@ -322,9 +322,9 @@ pathOf relays mode m via dest = case midiEnds dest of
     DSample _ | atlantis ->
       Just [ ctl "browser" "engine" Socket, hop "engine" "d-dirt" Osc, hop "d-dirt" "ears" Audio ]
     DPoly _ | atlantis -> Just (toEs9 relay)
-    -- Nothing sends a plain ES-9 leg from the table yet (`reachOf` says
-    -- `NotBuilt`); Quadrat's own CV, through the Friends server, is built.
-    DEs9Cv _ | atlantis, Just _ <- via -> Just (toEs9 relay)
+    -- A mono pitch line: the page drives it, over the rig, as with DPoly.
+    -- Quadrat's own CV goes the same way, through the Friends server.
+    DEs9Cv _ | atlantis -> Just (toEs9 relay)
     DEs9Gate _ | atlantis, Just _ <- via -> Just (toEs9 relay)
     _ -> Nothing
   where

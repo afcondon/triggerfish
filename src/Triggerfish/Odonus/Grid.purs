@@ -32,6 +32,7 @@ import Triggerfish.Capture.Types (Zoom(..))
 import Triggerfish.Capture.View as CaptureView
 import Triggerfish.Odonus.Model as M
 import Triggerfish.Poly as Poly
+import Triggerfish.Es9Line as Es9Line
 import Reef.Voices as RV
 import Triggerfish.Capture.RigLoops as RL
 import Triggerfish.Capture.Runs (Axis)
@@ -119,6 +120,7 @@ component =
         , polys: polyInit []
         , rampleVoices: RV.empty RV.rample
         , polyNote: Just "calibration tables not loaded"
+        , vcoTables: []
         , swing: 0.0, velHumanize: 12
         , gen: map (\k -> { kind: k, on: false, rate: genDefaultRate k, amt: genDefaultAmt k }) genKinds
         , genSpread: 0.5, genBias: 0.5, genSeed: Marbles.seedFrom 1, genFrozen: false, pending: [], nextModelStep: 0
@@ -191,6 +193,9 @@ handleQuery = case _ of
         let stopped = map (\p -> { p, r: RV.allOff 0.0 p.voices }) st.polys
         liftEffect $ for_ stopped \s ->
           Poly.emitAll (Binnacle.socket bin) s.p.rig 0.0 s.r.emits
+        -- A held slide on an ES-9 line would leave its envelope open.
+        liftEffect $ for_ [ 0, 1, 2, 3 ] \h ->
+          for_ (es9LinesOf st h) (Es9Line.release (Binnacle.socket bin))
         H.modify_ _ { polys = map (\s -> s.p { voices = s.r.voices }) stopped }
       -- Nothing to silence — a struck slice rings out on its own — but the
       -- allocator must forget what it thinks is sounding, or the first notes
@@ -538,6 +543,7 @@ dispatch = case _ of
               wanted = length (concatMap (\p -> p.rig.tables) polys)
           H.modify_ _
             { polys = polys
+            , vcoTables = items
             , polyNote =
                 if null missing then Nothing
                 else Just (show (length missing) <> " of " <> show wanted
@@ -641,6 +647,8 @@ dispatch = case _ of
         liftEffect $ for_ newlyMuted \h -> case join (st.headNote !! h) of
           Just n -> noteOffEverywhere st.outs st.routing h n
           Nothing -> pure unit
+        for_ st.binnacle \bin -> liftEffect $ for_ newlyMuted \h ->
+          for_ (es9LinesOf st h) (Es9Line.release (Binnacle.socket bin))
         -- Emit MIDI with per-head legato: glide cells HOLD until the next note
         -- (tie if same pitch, portamento-slide if different); non-glide cells are
         -- gated notes whose length scales with tempo.
@@ -662,6 +670,12 @@ dispatch = case _ of
               played = map (playPoly st.routing polyNotes emitAtMs) st.polys
           liftEffect $ for_ played \p ->
             Poly.emitAll sock p.poly.rig emitAtMs p.emits
+          -- Mono ES-9 pitch lines: each head's own, with its glide (the slide).
+          liftEffect $ for_ firedV \fv ->
+            for_ (es9LinesOf st fv.f.headIdx) \line ->
+              Es9Line.emit sock line emitAtMs
+                { atMs: emitAtMs, pitch: fv.f.pitch, prev: prevOf fv.f.headIdx
+                , glide: fv.f.glide, gateMs: gateMsFor fv.f }
           H.modify_ _ { polys = map _.poly played }
 
       -- The Rample as ONE instrument, its four voices allocated. Outside the
@@ -2064,6 +2078,15 @@ type RampleCfg =
 -- | There is ONE allocator, so there is one configuration: if two legs
 -- | disagreed they could not each be right, and the first live one winning is
 -- | at least a rule. Same reconciliation argument as `polyOrder`.
+-- | A head's mono ES-9 pitch lines: one per live `DEs9Cv` leg, with its VCO's
+-- | table from the calibration fetch.
+es9LinesOf :: State -> Int -> Array Es9Line.Line
+es9LinesOf st h = mapMaybe line (filter _.on (RM.legsFor st.routing (RM.SOdonusHead h)))
+  where
+  line lg = case lg.dest of
+    RM.DEs9Cv d -> Just (Es9Line.lineFor st.vcoTables d)
+    _ -> Nothing
+
 ramplePolyOf :: RM.Table -> Maybe RampleCfg
 ramplePolyOf tbl = head (mapMaybe pick (filter _.on (concatMap _.legs tbl)))
   where

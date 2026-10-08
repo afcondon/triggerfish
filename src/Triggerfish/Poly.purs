@@ -19,6 +19,9 @@ module Triggerfish.Poly
   , tablesFor
   , withOrder
   , emitAll
+  , normalise
+  , gateVolts
+  , nominalVolts
   ) where
 
 import Prelude

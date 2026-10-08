@@ -796,7 +796,7 @@ flowChart st =
     pure { machine: m, n: mk.n, playing: mk.playing }
   extras =
     [ { machine: "conspicillum", dest: RM.DSample { set: "", n: 0, begin: 0, end: 100, reverse: false, gain: 100, chop: 1 }, via: Nothing }
-    , { machine: "quadrat", dest: RM.DEs9Cv { bus: 1 }, via: Just "foi" }
+    , { machine: "quadrat", dest: RM.DEs9Cv { jack: 1, gate: 0 }, via: Just "foi" }
     -- Limulus: its Tidal streams to SuperDirt, and `drums $` down the drum
     -- lanes' own routing.
     -- its Tidal: through the rig, or (sent to Haskell Tidal) through GHCi

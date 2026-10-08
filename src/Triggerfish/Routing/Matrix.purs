@@ -113,7 +113,7 @@ valueOf = case _ of
   RM.DContinuo d -> Just { field: "channel", value: d.channel }
   RM.DFh2Env d -> Just { field: "slot", value: d.slot }
   RM.DFh2Gate d -> Just { field: "jack", value: d.jack }
-  RM.DEs9Cv d -> Just { field: "bus", value: d.bus }
+  RM.DEs9Cv d -> Just { field: "jack", value: d.jack }
   RM.DEs9Gate d -> Just { field: "jack", value: d.jack }
   RM.DRample d -> Just { field: "voice", value: d.voice }
   _ -> Nothing

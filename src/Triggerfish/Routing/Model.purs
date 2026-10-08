@@ -37,6 +37,8 @@ module Triggerfish.Routing.Model
   , InstrumentId(..)
   , instrumentLabel
   , polyJacks
+  , es9JackBus
+  , es9JackVco
   , destLabel
   , destShortLabel
   , destDevice
@@ -154,8 +156,13 @@ data Destination
   | DFh2Gate { note :: Int, jack :: Int }
   -- | An ES-9 gate, on gate block `block` (0-based), jack 1..8.
   | DEs9Gate { block :: Int, jack :: Int }
-  -- | An ES-9 CV bus (1-indexed), e.g. a calibrated pitch route.
-  | DEs9Cv { bus :: Int }
+  -- | A MONO PITCH LINE on the ES-9: pitch on panel jack `jack` (1-8), and a
+  -- | gate on panel jack `gate` (1-8; 0 = no gate). Panel jacks rather than
+  -- | es9-daemon buses, because that is how a cable is patched and because the
+  -- | two numberings are offset (bus = jack + 7, `es9JackBus`). A glide cell
+  -- | holds the gate and slides the pitch into the next note: the acid slide
+  -- | (`Triggerfish.Es9Line`).
+  | DEs9Cv { jack :: Int, gate :: Int }
   -- | The `continuo` MIDI port, kept separate from `DMidi` because it is a fixed
   -- | rig fixture rather than a port you pick.
   | DContinuo { channel :: Int }
@@ -304,7 +311,7 @@ destLabel = case _ of
   DFh2Env d -> "FH-2 envelope " <> show d.slot
   DFh2Gate d -> "FH-2 gate → FHX-8GT jack " <> show d.jack <> " (note " <> show d.note <> ")"
   DEs9Gate d -> "ES-9 GT " <> show d.block <> " jack " <> show d.jack
-  DEs9Cv d -> "ES-9 CV bus " <> show d.bus
+  DEs9Cv d -> "ES-9 pitch jack " <> show d.jack <> (if d.gate > 0 then ", gate jack " <> show d.gate else "")
   DPoly d ->
     let js = polyJacks d.inst
     in instrumentLabel d.inst
@@ -335,7 +342,7 @@ destShortLabel = case _ of
   DFh2Env d -> "env " <> show d.slot
   DFh2Gate d -> "8gt " <> show d.jack
   DEs9Gate d -> "GT" <> show d.block <> "/" <> show d.jack
-  DEs9Cv d -> "cv " <> show d.bus
+  DEs9Cv d -> "cv " <> show d.jack <> (if d.gate > 0 then "+" <> show d.gate else "")
   DPoly d -> instrumentLabel d.inst <> (if d.sortByPitch then " ↓" else "")
   DContinuo d -> "cont " <> show d.channel
   DRample d -> "ramp v" <> show d.voice
@@ -498,7 +505,8 @@ setDestField field v = case _ of
     "jack" -> DEs9Gate d { jack = clamp 1 8 v }
     _ -> DEs9Gate d
   DEs9Cv d -> case field of
-    "bus" -> DEs9Cv d { bus = clamp 1 16 v }
+    "jack" -> DEs9Cv d { jack = clamp 1 8 v }
+    "gate" -> DEs9Cv d { gate = clamp 0 8 v }
     _ -> DEs9Cv d
   DContinuo d -> case field of
     "channel" -> DContinuo d { channel = clamp 1 16 v }
@@ -575,7 +583,9 @@ reachOf ports = case _ of
   -- Reachable whenever the rig was up, and a drum lane routed to an ES-9 gate
   -- stayed silent with the router saying all was well (2026-09-28).
   DEs9Gate _ -> NotBuilt
-  DEs9Cv _ -> NotBuilt
+  -- Driven from the page (`Triggerfish.Es9Line`), and like a poly instrument
+  -- its voltages travel over the rig WS to es9-daemon.
+  DEs9Cv _ -> if ports.rigUp then Reachable else NeedsRig
   -- Played by the rig voice, so only through the rig.
   DSample _ -> if ports.rigUp then Reachable else NeedsRig
   -- Same route as any other ES-9 CV: the allocator runs in the browser, but the
@@ -748,7 +758,7 @@ outputsOf = case _ of
   DFh2Env d -> [ { device: "fh2", bank: "main", slot: d.slot - 1 } ]
   DFh2Gate d -> [ { device: "fh2", bank: "gt0", slot: d.jack - 1 } ]
   DEs9Gate d -> [ { device: "es9", bank: "gt" <> show d.block, slot: d.jack - 1 } ]
-  DEs9Cv d -> [ es9CvOutput d.bus ]
+  DEs9Cv d -> map (es9CvOutput <<< es9JackBus) (if d.gate > 0 then [ d.jack, d.gate ] else [ d.jack ])
   -- A polyphonic instrument spends EVERY jack it can allocate onto, plus the one
   -- that decides how many are audible. Reporting only one would under-report the
   -- spend, and the failure that hides is the quiet one: something else claiming
@@ -770,6 +780,18 @@ outputsOf = case _ of
 -- | Anything outside 8..15 is an expander bus whose map we have not established;
 -- | it gets its own bank name rather than being folded into the panel, so a wrong
 -- | guess shows up as an unknown bank instead of silently colliding with jack 1.
+-- | es9-daemon's bus for an ES-9 panel jack (1-8).
+es9JackBus :: Int -> Int
+es9JackBus jack = jack + 7
+
+-- | The VCO an ES-9 panel jack reaches, by its Amphora `vco-calibrations`
+-- | label, for a mono pitch line. Patching, like `polyJacks`: DeepStar's
+-- | CALIBRATION.md has the Tona on output 1, swept as `instruo-tona`.
+es9JackVco :: Int -> Maybe String
+es9JackVco = case _ of
+  1 -> Just "instruo-tona"
+  _ -> Nothing
+
 es9CvOutput :: Int -> Output
 es9CvOutput bus
   | bus >= 8 && bus <= 15 = { device: "es9", bank: "main", slot: bus - 8 }

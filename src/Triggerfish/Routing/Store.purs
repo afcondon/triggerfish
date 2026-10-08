@@ -84,7 +84,7 @@ destStr = case _ of
   DFh2Env d -> "fh2env:" <> show d.slot
   DFh2Gate d -> "fh2gate:" <> show d.note <> "|" <> show d.jack
   DEs9Gate d -> "es9gate:" <> show d.block <> "|" <> show d.jack
-  DEs9Cv d -> "es9cv:" <> show d.bus
+  DEs9Cv d -> "es9cv:" <> show d.jack <> "|" <> show d.gate
   -- Only the instrument's NAME is stored. Which jacks it occupies is a fact
   -- about how the rack is patched, not about this preference, and baking the
   -- buses in here would let a saved route go on claiming jacks the module no
@@ -140,7 +140,7 @@ destOf s = case Str.indexOf (Pattern ":") s of
       "fh2env", [ n ] -> (\slot -> DFh2Env { slot }) <$> inRange 1 8 n
       "fh2gate", [ n, j ] -> (\note jack -> DFh2Gate { note, jack }) <$> inRange 0 127 n <*> inRange 1 8 j
       "es9gate", [ b, j ] -> (\block jack -> DEs9Gate { block, jack }) <$> inRange 0 7 b <*> inRange 1 8 j
-      "es9cv", [ n ] -> (\bus -> DEs9Cv { bus }) <$> inRange 1 16 n
+      "es9cv", [ j, g ] -> (\jack gate -> DEs9Cv { jack, gate }) <$> inRange 1 8 j <*> inRange 0 8 g
       -- The one-part form predates the sort flag; read it as unsorted rather
       -- than dropping the leg, so an older saved routing still plays.
       "poly", [ n ] -> (\inst -> DPoly { inst, sortByPitch: false }) <$> instOf n

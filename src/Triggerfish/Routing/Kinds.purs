@@ -131,7 +131,10 @@ describe d = case d of
       , one "jack" "jack 1-8" "jack" x.jack 1
       ]
   RM.DEs9Cv x ->
-    fixed "es9 cv" [ one "bus" "CV bus 1-16" "bus" x.bus 2 ]
+    fixed "es9 cv"
+      [ one "jack" "pitch: ES-9 panel jack 1-8" "jack" x.jack 1
+      , one "gate" "gate: ES-9 panel jack 1-8, 0 for none" "gate" x.gate 1
+      ]
   -- The allocator picks the jack, so nothing here is editable: the buses are
   -- how the module is patched (`RM.polyJacks`), shown so they can be checked.
   RM.DPoly x ->

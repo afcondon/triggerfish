@@ -201,7 +201,7 @@ runFlowTests = do
   check "an open machine shows its voices"
     (length (filter (\n -> n.machine == Just "odonus") opened.nodes) == 4)
 
-  let quadrat = flow base { mode = Atlantis, machines = [ "quadrat" ], extras = [ { machine: "quadrat", dest: DEs9Cv { bus: 1 }, via: Just "foi" } ] }
+  let quadrat = flow base { mode = Atlantis, machines = [ "quadrat" ], extras = [ { machine: "quadrat", dest: DEs9Cv { jack: 1, gate: 0 }, via: Just "foi" } ] }
   check "Quadrat's CV goes through the Friends server"
     ((find (\l -> l.from == "browser") quadrat.links <#> _.to) == Just "foi")
 
