@@ -999,6 +999,7 @@ data Action
   | ToQuadrat String       -- publish a saved progression (by name) as a clip for Quadrat to sample
   | ResumeWorking          -- reopen the progression open when the page last closed
   | ToggleScoreCands       -- score mode: the candidates drawer up, or tucked down
+  | CycleSound             -- where previews sound: browser, continuo, MIDI, off
   | SetSideDensity Int
   | LevelWheel Event Number -- the wheel over the field: step the level of detail
   | RollBass Int           -- roll the revoiced chord's bass to the next/previous chord tone
@@ -1416,8 +1417,6 @@ handleQuery = case _ of
                     Nothing -> "8 voices are playing: hush one in Limulus (R $ hush) first"
                     <> (if currentSource s /= s.lastPubSig then " \x00b7 saves this version first" else "") } ]
             _ -> [])
-       <> [ { id: "sound", label: "\x266a " <> soundValue s.auditionSel, icons: [], active: s.auditionSel /= AuditionOff, attention: false
-            , tip: "where auditions sound (" <> s.midiName <> ") \x00b7 click: browser \x2192 continuo \x2192 MIDI \x2192 off" } ]
       }
   BarAct act next -> do
     s <- H.get
@@ -1435,11 +1434,6 @@ handleQuery = case _ of
         let src = currentSource s
         liftEffect (copyText src)
         H.modify_ _ { lastCopySig = src }
-      "chip:sound" -> do
-        let nxt = nextSound s.auditionSel
-        H.modify_ _ { soundChosen = true }
-        liftEffect (Store.saveSound (soundValue nxt))
-        setSound nxt
       _ -> pure unit
     pure (Just next)
   LoadSceneAt i next -> do
@@ -2087,6 +2081,13 @@ handleActionCore = case _ of
       H.modify_ _ { resumable = Just (w { name = maybe w.name snd (find (\r -> fst r == w.name) migrated.renames) }) }
 
   ToggleScoreCands -> H.modify_ \s -> s { scoreCands = not s.scoreCands }
+
+  CycleSound -> do
+    s <- H.get
+    let nxt = nextSound s.auditionSel
+    H.modify_ _ { soundChosen = true }
+    liftEffect (Store.saveSound (soundValue nxt))
+    setSound nxt
 
 
   -- Reopen the working copy, numbered above every chord in the pool: a clash
@@ -4717,23 +4718,34 @@ latticeControls st = case st.stage of
 limulusWanted :: forall m. H.ComponentHTML Action Slots m
 limulusWanted = HH.div [ HP.attr (HH.AttrName "data-limulus-dock") "open", HP.style "display: none;" ] []
 
--- | **Which view, from any of them**: the lattice, the banks, the score, in
+-- | **The progression display's controls** (AC, 2026-10-08: the lattice,
+-- | the banks and the score are "the progression display"): which view, in
 -- | the same place on each (top right), so a new progression is never more
--- | than one click away (AC, 2026-10-08).
+-- | than one click away; and everything that shapes a preview, how it is
+-- | struck and where it sounds.
 viewSwitch :: forall m. State -> Array (H.ComponentHTML Action Slots m)
 viewSwitch st = case st.stage of
   Hunt v | elem v rungs || v == Pads || v == Score ->
-    [ HH.div [ HP.style "position: absolute; top: 14px; right: 16px; z-index: 6; display: flex; border: 1px solid #d8cfb6; border-radius: 5px; overflow: hidden; background: #fbf8f0; box-shadow: 0 1px 2px #0000000d;" ]
-        [ btn (elem v rungs) "lattice" "the chords built on the key, from triads up" (Hunt st.lastRung)
-        , btn (v == Pads) "banks" "nine banks of sixteen: how far from home, by how rich" (Hunt Pads)
-        , btn (v == Score) "score" "the progression on a grand staff, to arrange and play" (Hunt Score) ] ]
+    [ HH.div [ HP.style "position: absolute; top: 14px; right: 16px; z-index: 6; display: flex; align-items: center; gap: 8px;" ]
+        -- how a preview sounds: struck or rolled, and where
+        [ group
+            [ btn (st.style == StyleBlock) "block" "previews strike the chord (key 1)" (SetStyle StyleBlock)
+            , btn (st.style == StyleArp) "arpeggio" "previews roll the chord (key 2)" (SetStyle StyleArp) ]
+        , group
+            [ btn (st.auditionSel /= AuditionOff) ("\x266a " <> soundValue st.auditionSel)
+                ("where previews sound (" <> st.midiName <> ") \x00b7 click: browser \x2192 continuo \x2192 MIDI \x2192 off") CycleSound ]
+        , group
+            [ btn (elem v rungs) "lattice" "the chords built on the key, from triads up" (SetStage (Hunt st.lastRung))
+            , btn (v == Pads) "banks" "nine banks of sixteen: how far from home, by how rich" (SetStage (Hunt Pads))
+            , btn (v == Score) "score" "the progression on a grand staff, to arrange and play" (SetStage (Hunt Score)) ] ] ]
   _ -> []
   where
-  btn on label tip target =
+  group = HH.div [ HP.style "display: flex; border: 1px solid #d8cfb6; border-radius: 5px; overflow: hidden; background: #fbf8f0; box-shadow: 0 1px 2px #0000000d;" ]
+  btn on label tip act =
     HH.button
-      [ HP.style ("border: none; padding: 4px 12px; font-size: 12px; cursor: pointer; "
+      [ HP.style ("border: none; padding: 4px 12px; font-size: 12px; cursor: pointer; white-space: nowrap; "
                    <> (if on then "background: #8d7a4a; color: #fff;" else "background: #fbf8f0; color: #5a5240;"))
-      , HP.title tip, HE.onClick \_ -> SetStage target ]
+      , HP.title tip, HE.onClick \_ -> act ]
       [ HH.text label ]
 
 sideLabel :: SideTab -> String
@@ -5074,20 +5086,9 @@ contextBar st =
            , HP.title (if on then "back to the " <> viewtypeLabel st.riverFrom else viewtypeTip River)
            , HE.onClick \_ -> SetStage (Hunt (if on then st.riverFrom else River)) ]
            [ HH.text "river" ]
-    , divider
-    , HH.div [ HP.style "display: flex; border: 1px solid #d8cfb6; border-radius: 5px; overflow: hidden;" ]
-        (map styleButton [ Tuple StyleBlock "1 block", Tuple StyleArp "2 arpeggio" ])
     ]
       <> familyField
   current = huntOr st.lastLens st.stage
-  styleButton (Tuple sty label) =
-    let on = st.style == sty
-    in HH.button
-         [ HP.style ("border: none; border-right: 1px solid #e4dcc6; padding: 4px 12px; font-size: 12px; cursor: pointer; "
-                      <> (if on then "background: #5f6f6a; color: #fff;" else "background: #fbf8f0; color: #5a5240;"))
-         , HP.title "how auditions play a chord (keys 1, 2 on the field)"
-         , HE.onClick \_ -> SetStyle sty ]
-         [ HH.text label ]
 
   -- a hairline group separator.
   divider = HH.div [ HP.style "width: 1px; height: 22px; background: #00000016;" ] []
