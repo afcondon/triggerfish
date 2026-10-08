@@ -24,7 +24,7 @@ import Data.DateTime.Instant (unInstant)
 import Data.Newtype (unwrap)
 import Effect.Now (now)
 
-import Data.Array (catMaybes, concat, concatMap, deleteAt, sortBy, drop, elem, elemIndex, filter, find, findIndex, head, index, insertAt, last, length, mapMaybe, mapWithIndex, modifyAt, nub, nubByEq, range, replicate, snoc, sort, take, takeEnd, unsnoc, updateAt, zipWith, (!!))
+import Data.Array (concat, concatMap, deleteAt, drop, elem, elemIndex, filter, find, findIndex, head, index, insertAt, last, length, mapMaybe, mapWithIndex, modifyAt, nub, nubByEq, range, replicate, snoc, sort, sortBy, take, unsnoc, updateAt, zipWith, (!!))
 import Data.Foldable (all, any, foldl, foldr, for_, maximum, minimum, sum)
 import Data.Traversable (traverse)
 import Data.Int (ceil, floor, fromString, round, toNumber)
@@ -57,8 +57,8 @@ import Halogen.Svg.Attributes as SA
 import Halogen.Svg.Elements as SE
 import Type.Proxy (Proxy(..))
 import Web.Event.Event (Event, EventType(..), preventDefault, stopPropagation)
-import Web.HTML.Event.DragEvent (DragEvent)
-import Web.HTML.Event.DragEvent as DE
+
+
 import Web.Event.EventTarget (addEventListener, eventListener, removeEventListener)
 import Web.HTML (window)
 import Web.HTML.Window as Window
@@ -68,7 +68,7 @@ import Web.UIEvent.WheelEvent as WE
 import Vetula.SvgCoord (svgYFromEvent, svgXFromEvent, isFormField, surfaceHidden)
 import Vetula.Field as Field
 import Vetula.Voice as Voice
-import Vetula.Path as Path
+
 import Vetula.Generate (GenMode(..), generateCandidates)
 import Binnacle as Binnacle
 import Binnacle.Clock as Clock
@@ -82,39 +82,17 @@ import Triggerfish.Bar (Bar)
 -- renderer, which draws a chord and has nothing to do with identity.
 import Triggerfish.Clips.Share as Share
 import Triggerfish.Glyph as TGlyph
-import Triggerfish.GlyphView (faIcon, faIcons)
+import Triggerfish.GlyphView (faIcon)
 import Triggerfish.Preset (Preset, indexOfContent)
 import Vetula.Store as Store
 import Triggerfish.Amphora as Amphora
-import Vetula.Tank (Specimen, SpecimenId(..), Provenance(..), specNotes)
 import Reef.Vetula.Perf (VChord, VVoice, VDest(..), VRenderer(..), PerfClock, cursorAtClock, renderAlphaBlockMidiAt, renderAlphaClockMidiAt, wrapAt) as RV
-import Reef.Vetula.Articulate (VArticulator(..), articulate, articLabel, nextArtic) as RA
+import Reef.Vetula.Articulate (VArticulator(..), articulate) as RA
 import Reef.Route (printKey) as Route
-import Vetula.Playhead (clockFor, defaultPattern, noteClock, patternClock)
+import Vetula.Playhead (clockFor, defaultPattern, noteClock)
 import Vetula.Realise (fromChords)
-import Vetula.Perform.Types
-  ( PerfFx(..)
-  , ArpDir(..)
-  , PhraseAttach
-  , ChannelMode(..)
-  , VoiceShape(..)
-  , PerfSel(..)
-  , When(..)
-  , Layer
-  , PerfTerm(..)
-  , PerfDragSrc(..)
-  , mkLayer
-  , arpDirGlyph
-  , cycleArpDir
-  , arpOrder
-  , cycleWhen
-  , termRigOnly
-  , printArpDir
-  , parseArpDir
-  , printVoiceShape
-  , parseVoiceShape
-  )
-import Triggerfish.PatternArg (PatternArg(..), argSrc, printArg, glyphArg, mkArg, tokenize, unq)
+import Vetula.Perform.Types (ArpDir(..), ChannelMode(..), Layer, PerfFx(..), PerfSel(..), PerfTerm(..), PhraseAttach, VoiceShape(..), When(..), arpOrder, mkLayer, parseVoiceShape, termRigOnly)
+import Triggerfish.PatternArg (PatternArg, argSrc)
 import Tidal.Pattern.Core (compress, stack, fast, slow, every, whenCycle)
 import Vetula.Pattern (arpIndexed, arpRate, cycleRand, withSampledArg)
 import Tidal.Pattern.Mini (parseMiniPattern)
@@ -124,14 +102,14 @@ import Haskell.Rational as Rat
 import Haskell.Rational ((%))
 import Triggerfish.Clips (MidiClip, NoteEvent, headCount)
 import Triggerfish.Clips.Store as ClipStore
-import Triggerfish.Clips.View as ClipsView
+
 import Data.Either (Either(..))
-import Reef.Vetula.Protocol (encodePerf) as RV
+
 import Binnacle.Time (dateNow, perfNow)
 import Effect.Ref as Ref
 import Triggerfish.Capture.Logbook as Logbook
 import Triggerfish.Capture.Types (Orientation(..), PlaySource(..), Zoom(..))
-import Triggerfish.Capture.River (Flow(..), riverPanel, windowMicros) as River
+
 import Triggerfish.Capture.View (CaptureState, capturePanel, markCode)
 import Triggerfish.Capture.View as CaptureView
 import Triggerfish.Ui.Pointer as Pointer
@@ -161,20 +139,17 @@ import Hylograph.Simulation
   , withStrength, withRadius, withDistance, withX, withY, static, dynamic )
 import Harmonia.Anchor (Anchor(..))
 import Harmonia.Voicing (Voicing(..), Selector(..), voicingMidi, takeVoicing, openTriad, rootless, drop2, drop2and4, quartal, cluster)
-import Harmonia.Chord (Key, Mode(..), cMajorKey, chordRoot)
-import Vetula.Between (bridgeNotes, maxBridge)
-import Harmonia.Graded (transpose) as Graded
+import Harmonia.Chord (Key, Mode(..), cMajorKey)
+
+
 import Vetula.Banks (butlerChords, stockChords)
 import Vetula.Pads as Pads
-import Harmonia.Trellis as HT
 import Harmonia.Recognise (best, candidateName, observeWithBass)
 import Harmonia.Vary as HV
-import Vetula.Rehearsal (Slot)
-import Vetula.Rehearsal as RH
 import Vetula.Vary as Vary
 import Vetula.Spread (applyToNode, ghostRows, invertNode, nextBassTone, refootNode, spreadOfNode, toneAt)
 import Harmonia.OpenVoicing (at, dropAt, setTone, sounds) as OV
-import Vetula.Harmony (ChordNode, Family(..), Kind(..), bassMidi, blackKeyPcs, octaveShift, diatonicTriads, diatonicSevenths, generate, interchangeChords, keyX, keyboard, latticeChild, latticeFamily, mcmullenChords, noteName, place, placeOutside, playNotes, scaleSet, suspendSet, triadNode, triadOn, voicingCandidates, whiteKeyPcs)
+import Vetula.Harmony (ChordNode, Kind(..), bassMidi, diatonicSevenths, diatonicTriads, interchangeChords, keyX, latticeChild, latticeFamily, mcmullenChords, noteName, octaveShift, place, placeOutside, playNotes, scaleSet, suspendSet, triadNode, triadOn, voicingCandidates)
 
 midiPortName :: String
 midiPortName = "IAC"
@@ -254,40 +229,15 @@ derive instance eqSideTab :: Eq SideTab
 
 derive instance eqViewtype :: Eq Viewtype
 
--- | **The STAGE — Vetula's one mode axis** (AC, 2026-08-06).
+-- | **What the main space shows** (docs/kb/plans/vetula-one-surface.md).
 -- |
--- | Three stages, in the order material flows through them:
--- |
--- |   HUNT ──→ PERFORM ──→ REVIEW ──┐
--- |    ↑   harmonic material        │
--- |    └── voiced into notes ───────┘
--- |             lifted into clips
--- |
--- |   * `Hunt lens` — hunt harmonic space through one of four projections
--- |     (fifths / tonnetz / lattice / explore). Produces the tank and the
--- |     progression. Adding a projection is still one `Viewtype` constructor and
--- |     one `surface` branch; the other stages stay untouched.
--- |   * `Perform` — player boxes voicing that material live, with the capture
--- |     river alongside. Produces notes.
--- |   * `Review` — the whole-session capture roll, for cherry-picking a phrase
--- |     into the clip library. Produces clips.
--- |
--- | **Why one type and not two.** This replaced `View = Browse Viewtype | Perform`
--- | plus a separate `captureView :: CapLive | CapReplay` flag nested inside
--- | Perform. The type said "two modes, one with a layout switch"; the player
--- | counted three (AC: "vetula is complex because it has three forms"). When the
--- | user's count and the type's count disagree, the type is wrong. The flat
--- | version also killed the dishonest lens dropdown, which used to display
--- | `browseOr lastBrowse view` — a *remembered* projection presented as the
--- | current one, because it had nowhere truthful to stand while Perform was up.
--- |
--- | **A stage is what you are LOOKING AT, not what is running.** The transport is
--- | orthogonal and lives in the shell's top nav: voices keep sounding while you
--- | hunt chords, the generator keeps generating while you review. Top nav owns
--- | what's running; the machine's secondary nav owns what you're looking at.
--- | Odonus has the same axis minus Hunt (Vetula is the harmonic authority, so
--- | Odonus has nothing to hunt) — see `Triggerfish.Odonus.Grid.Types.Stage`.
-data Stage = Hunt Viewtype | Rehearse | Perform | Review
+-- | One surface since 2026-10-08: the four stages (Explore, Rehearse,
+-- | Perform, Review) are gone, and the main space shows one view at a time,
+-- | a lattice rung, the score, or the river, picked in the bar. `Hunt` is
+-- | the name the stage had while it was one of several; a view is what you
+-- | are LOOKING AT, never what is running: voices keep sounding whichever
+-- | view is up.
+data Stage = Hunt Viewtype
 
 derive instance eqStage :: Eq Stage
 
@@ -348,18 +298,9 @@ viewtypeTip = case _ of
   Score -> "the progression on a grand staff, and every progression a voice is playing, with the voices' letters"
   River -> "what was played: every note, by voice, in time; mark, loop, cut a phrase into the clip library"
 
--- | The projection a Stage names, or `fallback` when it isn't Hunt. Feeds
--- | `lastLens`, so leaving Hunt and coming back returns to the same projection.
+-- | The view a Stage shows.
 huntOr :: Viewtype -> Stage -> Viewtype
-huntOr fallback = case _ of
-  Hunt vt -> vt
-  _ -> fallback
-
--- | Is this stage Hunt (in any projection)? The stage tab's active test.
-isHunt :: Stage -> Boolean
-isHunt = case _ of
-  Hunt _ -> true
-  _ -> false
+huntOr _ (Hunt vt) = vt
 
 -- | The URL segments for a stage: `["hunt","tonnetz"]`, `["perform"]`,
 -- | `["review"]`. Vetula owns this vocabulary — `Triggerfish.Route` carries the
@@ -367,9 +308,6 @@ isHunt = case _ of
 stagePath :: Stage -> Array String
 stagePath = case _ of
   Hunt vt -> [ "explore", viewtypeValue vt ]
-  Rehearse -> [ "rehearse" ]
-  Perform -> [ "perform" ]
-  Review -> [ "review" ]
 
 -- | The inverse. `Nothing` for anything unrecognised, so a stale or hand-typed
 -- | URL leaves the app where it is rather than dumping it somewhere arbitrary.
@@ -377,9 +315,11 @@ stagePath = case _ of
 -- | why the caller passes it in.
 stageFromPath :: Viewtype -> Array String -> Maybe Stage
 stageFromPath fallbackLens segs = case segs of
-  [ "perform" ] -> Just Perform
-  [ "review" ] -> Just Review
-  [ "rehearse" ] -> Just Rehearse
+  -- the stages before one surface: Review's river is a view now; Rehearse
+  -- and Perform are gone, and land on the lattice
+  [ "review" ] -> Just (Hunt River)
+  [ "perform" ] -> Just (Hunt KeyChords)
+  [ "rehearse" ] -> Just (Hunt KeyChords)
   [ "explore" ] -> Just (Hunt fallbackLens)
   [ "explore", vt ] -> Just (Hunt (viewtypeFromValue vt))
   [ "hunt" ] -> Just (Hunt fallbackLens)
@@ -453,10 +393,6 @@ layerLabel = case _ of
   LayerButler -> "Butler"
   LayerStock -> "Stock"
 
--- | Inverse of `layerLabel` — the palettes multiselect hands back these strings.
-layerFromLabel :: String -> Maybe ColorLayer
-layerFromLabel s = find (\l -> layerLabel l == s) allColorLayers
-
 -- | Each layer's own distinct hue — a legend, NOT the tonnetz outside-distance
 -- | ramp (AC decision 3, 2026-07-31). Diatonic is a quiet base ink; the color
 -- | sets each get a saturated, legible hue that reads on parchment.
@@ -508,16 +444,6 @@ data VoiceDest = ToMidi | ToOdonus
 
 derive instance eqVoiceDest :: Eq VoiceDest
 
-destName :: VoiceDest -> String
-destName = case _ of
-  ToMidi -> "→ midi"
-  ToOdonus -> "→ odo"
-
-cycleDest :: VoiceDest -> VoiceDest
-cycleDest = case _ of
-  ToMidi -> ToOdonus
-  ToOdonus -> ToMidi
-
 -- | A performance VOICE: its own read-head into the loaded progression (its own
 -- | clock + offset, so voices can run locked or phased), a way to sound it, and
 -- | a MIDI channel. The shared material is the progression; the position is the
@@ -565,8 +491,8 @@ type LibEntry =
   }
 
 -- | The simulation only needs the layout targets + a size for collision.
-type Row = (targetX :: Number, targetY :: Number, radius :: Number)
-type VNode = SimulationNode Row
+type SimRow = (targetX :: Number, targetY :: Number, radius :: Number)
+type VNode = SimulationNode SimRow
 
 type Slots =
   ( keySelect :: Select.Slot Unit
@@ -630,10 +556,6 @@ type ChyronEvent =
   , anchor :: Anchor
   }
 
--- | Cap on the rolling chyron buffer — oldest events fall off the left.
-chyronCap :: Int
-chyronCap = 128
-
 -- | A SAVED sequence: a span lifted out of the live trace and compressed to a
 -- | pinned 2-glyph token (its identity, from `glyphOf` over the sequence's
 -- | content). Carries the full events so it can be replayed with timing and,
@@ -651,23 +573,6 @@ type SavedSeq =
   }
 
 
--- | **Variations KEPT for one chord** — the selection pool the Vary lens feeds.
--- |
--- | Browsing a nine-cell grid is not composing, so a Vary pad sounds without
--- | touching the chyron; shift-click is what says *keep this one*. The kept set
--- | is therefore small and deliberate, where the trace would have been 144 near
--- | identical chords deep after a minute of listening.
--- |
--- | Keyed by the source chord's exact NOTES rather than its id. Every lens but
--- | Explore recomputes its chords on each render, so an id is good only until
--- | the next frame; the notes are what the chord actually is, so a kept set
--- | survives leaving the lens and coming back to the same chord.
-type KeptFor =
-  { notes :: Array Int         -- the source chord, exactly as voiced
-  , label :: String
-  , options :: Array ChordNode -- what this slot may sound; option ZERO is the
-                               -- source chord itself
-  }
 
 -- | **The source chord is option zero, always.**
 -- |
@@ -678,18 +583,7 @@ type KeptFor =
 -- | the true thing — when the progression runs, the chord you started with is a
 -- | legitimate choice unless you have decided otherwise.
 
--- | One approved path, as the notes it sounds — one array per slot.
-type MarkedPath = Array (Array Int)
 
--- | **What is open UNDER the progression.**
--- |
--- | One at a time, and peers: each answers a different question about the same
--- | chords. `Vary` finds alternatives for one slot, `Paths` lays out every way
--- | through the ones you have. A hand-tweak panel joins them here rather than
--- | anywhere else, which is the point of naming the axis.
-data Pane = PaneVary Int | PanePaths
-
-derive instance eqPane :: Eq Pane
 
 -- | A PERFORM box: one persistent player slot on the Perform surface, bound to a
 -- | MIDI channel. A dropped token LOOPS through its function `stack` (folded over
@@ -734,15 +628,12 @@ type State =
   -- Vetula is the single harmonic authority — this is what pitched voices quantise
   -- to when no chord is firing.
   , restScale :: Maybe { root :: Int, offsets :: Array Int }
-  , leftOpen :: Set LeftSection        -- which LEFT accordion sections are open (multi)
   , chords :: Array ChordNode          -- the model (pin, provenance, layout targets)
   , nodes :: Array VNode               -- live positions from the simulation
-  , focusId :: Int
   , hoveredId :: Maybe Int
   , hoveredTriad :: Maybe { root :: Int, pcs :: Array Int }  -- Tonnetz hover (no pool id)
-  , hoveredSpec :: Maybe SpecimenId  -- a hovered tank specimen (space previews it)
   , nextId :: Int
-  , handle :: Maybe (SimulationHandle Row)
+  , handle :: Maybe (SimulationHandle SimRow)
   , subId :: Maybe H.SubscriptionId
   , midiOut :: Maybe Midi.MidiOut
   , midiName :: String
@@ -784,15 +675,12 @@ type State =
   -- alt-clicking triangles, in pick order. Edge-adjacent triads fold into
   -- 7ths/9ths naturally (the polychord is the pitch-class union); the whole
   -- stack catches to the tank as one Anchor. Empty = not stacking.
-  , tonnetzStack :: Array { root :: Int, pcs :: Array Int, major :: Boolean }
   -- chords reconstructed by pasting a saved Tidal progression back in. They live
   -- in `chords` (so the Revoice ladders + export work on them) but are kept off
   -- the Explore/Lattice surfaces — they aren't lattice nodes.
   , imported :: Set Int
   -- the Tidal-source textarea's verbatim content while the user is editing it
   -- (Nothing = show the live-derived source, which tracks revoicing).
-  , sourceEdit :: Maybe String
-  , sourceOpen :: Boolean   -- is the Tidal-source code revealed? (copy works either way)
   , helpOpen :: Boolean     -- is the ⓘ help overlay open? (the notes, off the canvas)
   -- "pick mode": shift-clicked progression step indices (max 2). When non-empty,
   -- the left surface shows a generated candidate cloud to insert/substitute.
@@ -802,11 +690,8 @@ type State =
   -- ARRANGE (control B): how many bridge chords `Vetula.Between` lays in front of
   -- a tank chord as it's dropped into the progression — the "cadence length" dial
   -- (0 = drop it bare, 1 = V, 2 = ii–V, …). See docs/DESIGN-vetula-progression-building.md.
-  , bridgeLen :: Int
   -- Floating-control fold state: each card collapses to just its header (click the
   -- title bar) to cede the stage to the underlying music viz. See `floatCard`.
-  , foldCtx :: Boolean
-  , foldProg :: Boolean
   -- Performance tab — the progression library + the loaded working copy + voices.
   , library :: Array LibEntry
   -- Auto-capture bookkeeping (Slice 1): the current progression is captured to the
@@ -815,8 +700,6 @@ type State =
   , capSeq :: Int                 -- running number for ephemeral autonames (◦N)
   , lastCapIdx :: Maybe Int       -- library index of the current session's ephemeral (Nothing = start fresh)
   , lastCapSig :: String          -- signature (currentSource) of the last capture, for dedup
-  , libSearch :: String           -- filter the library by key
-  , saveName :: String            -- name for the next saved progression
   , publishMsg :: Maybe String    -- transient status from a publish-entry-to-Amphora click
   -- Slice 4a — the live `path` IS the performed progression (no separate loaded
   -- working copy); the chords come from `path`. `progName` is its NAME, frozen
@@ -869,14 +752,11 @@ type State =
   -- which the router's `vetula key` row feeds Odonus's grid from.
   , stageKey :: Maybe String
   , clockTempo :: Number          -- the clock's live tempo, read each tick (drives note durations)
-  , nextVoiceId :: Int
   , routing :: Map String Int   -- name → canonical MIDI channel, pushed from the Tidal page
   -- Tank model (Slice A): the durable, unordered collection of CAUGHT chords.
   -- Frozen `Specimen`s reference no lattice node, so the volatile lattice can
   -- reflow/regenerate underneath without disturbing them. `k` over a chord catches
   -- it here; the tank persists until cleared and will feed the Stage + Sequences.
-  , tank :: Array Specimen
-  , nextSpecId :: Int             -- running number for minting SpecimenIds
   , stage :: Stage                -- Hunt <projection> | Perform | Review — see `Stage`
   , lastLens :: Viewtype          -- the Hunt projection to return to from Perform/Review
   , fieldLens :: Viewtype         -- the last lattice rung, for the score button to return to
@@ -892,12 +772,8 @@ type State =
   -- each is a `Harmonia.Progression.Spec` whose seed is fanned out from this.
   , padRoll :: Int
   , varyRoll :: Int
-  , kept :: Array KeptFor
   -- REHEARSE: a progression with alternatives at each slot. Empty = nothing
   -- taken up yet, and the stage offers the saved tokens to start from.
-  , rehearsal :: Array Slot
-  , rehearseRoll :: Int       -- the seed of the current pass; a pass is an address
-  , rehearsalFrom :: Maybe Int -- which saved token is up, so the shelf can show it
   -- **Paths you approved.** Held by CONTENT, not by index: dropping an option
   -- renumbers every index above it, and a mark that silently re-pointed at its
   -- neighbour would be the worst kind of wrong — a decision you made, recorded
@@ -905,10 +781,7 @@ type State =
   --
   -- Not regenerable, which is why it is stored at all: the lattice can produce
   -- every path, but which ones you liked exists nowhere else.
-  , marked :: Array MarkedPath
-  , pull :: HT.Pull           -- how hard the previous chord pulls on the next choice
   -- What is open under the progression, if anything.
-  , pane :: Maybe Pane
   -- The chord the Vary lens is working on. `Nothing` falls back to whatever is
   -- sounding, so the lens is never empty for no reason.
   , varying :: Maybe ChordNode
@@ -929,8 +802,9 @@ type State =
   , wheelAcc :: Number
   , wheelAt :: Number
   , wheelLast :: Number
-  -- The Explore view a viewer pinned as their default (`Store.saveDefaultLens`).
-  , defaultLens :: Viewtype
+  -- the progression open when the page last closed, kept (not reopened) so
+  -- the score can offer it back
+  , resumable :: Maybe { name :: String, source :: String, saved :: String }
   -- The hovered PAD, carried whole. `hoveredTriad` would be enough to highlight
   -- it, but not to preview it: that path re-voices from pitch classes, and a
   -- pad's open voicing (bass pinned to the root, contour smoothed against its
@@ -940,7 +814,6 @@ type State =
   -- Tank model (Slice B): the staged seeds. Clicking a tank specimen injects it
   -- into the pool as a centre chord (`seedChord` maps the specimen → its pool
   -- chord id) and blooms its neighbours around it; clicking again unstages it.
-  , seedChord :: Map SpecimenId Int
   -- The unified glyph-chip PRESET bank (docs/DESIGN-scene-modal.md): captured
   -- progression sources, anonymous or named, freely intermixed — distinct from the
   -- auto-capture `library`. `identity` is the parked preset's source text (the chip
@@ -951,7 +824,6 @@ type State =
   -- The CHYRON: an append-only (capped) log of everything auditioned this
   -- session, oldest→newest. Phase 1 = the ticker; Phase 2 adds interaction.
   -- See DESIGN-vetula-chyron-redesign.
-  , chyron :: Array ChyronEvent
   -- Chyron interaction. `hoveredChyron` = the chip index under the pointer (space
   -- auditions it, no re-log). `chyronSel` = the current selection, Mac text-editing
   -- semantics: a plain click drops a fresh single-chord selection (`lo==hi`) and
@@ -959,27 +831,18 @@ type State =
   -- (anchor stays put, the clicked chip becomes the moving end). `lo`/`hi` are the
   -- sorted span endpoints the render/save/play all read; `anchor` is the fixed end
   -- a subsequent shift-click re-extends from.
-  , hoveredChyron :: Maybe Int
-  , chyronSel :: Maybe { lo :: Int, hi :: Int, anchor :: Int }
   -- The chip index currently being dragged to REORDER the buffer (Nothing = no
   -- drag in flight). Reordering makes the buffer a list, not a tape (§8): order,
   -- not timestamps, becomes the arrangement.
-  , chyronDrag :: Maybe Int
   -- Saved sequences: pinned 2-glyph tokens on the left of the chyron. Saving a
   -- selection compresses its live chips into one of these (reclaiming space).
-  , chyronSaved :: Array SavedSeq
   -- Record-arm: when false, auditions still SOUND but don't log to the trace
   -- (noodle without cluttering). Defaults true — always-on capture, the flow AC
   -- liked; disarm only when you want to explore off the record.
-  , chyronArmed :: Boolean
   -- PERFORM surface: player boxes (one per output) + the token "picked up" for
   -- placement (shift-click / drag a saved token, then click / drop on a box), and
   -- an fx "picked up" from the palette for placement onto a box's stack.
   , perfBoxes :: Array PerfBox
-  , perfHeld :: Maybe Int
-  , perfHeldFx :: Maybe PerfFx
-  , perfDrag :: Maybe PerfDragSrc   -- the in-flight HTML5 drag payload
-  , perfEditBox :: Maybe Int        -- box whose sequence is open in the editor modal
   -- The persistent Perform SESSION: the container for saved scenes. Resumes across
   -- reloads; scenes save as `⟨alias|name⟩ #nextScene`. Minted/restored in Initialize.
   , perfSession :: Store.SessionState
@@ -994,7 +857,6 @@ type State =
   -- Initialize — the pool the phrase picker offers. `perfPhrasePick` is the box index
   -- whose picker is open (Nothing = closed).
   , clipLibrary :: Array MidiClip
-  , perfPhrasePick :: Maybe Int
   -- The always-on capture logbook (#28): every note the voices/boxes emit is tapped
   -- in PerfTick and appended here (the "player piano" roll), shown live beside the
   -- voices in PERFORM and given the whole surface in REVIEW, where a phrase is
@@ -1013,23 +875,16 @@ type State =
   -- a 33ms frame timer so the roll FLOWS rather than jumping a 16th at a time, and
   -- the recent notes it draws — pruned to the river's fade span each frame. The
   -- logbook keeps everything; this is just the window that's on screen.
-  , nowMicros :: Number
-  , riverNotes :: Array NoteEvent
   }
 
--- | Which floating control a fold toggle targets.
-data VPanel = VCtx | VProg
 
 data Action
   = Initialize
   | MidiReady (Maybe Midi.MidiOut) String
-  | RetryMidi              -- (re)request Web-MIDI access from a user gesture (chip click)
   | SimTick
   | SimDone
   | Hover (Maybe Int)
   | HoverTriad (Maybe { root :: Int, pcs :: Array Int })  -- Tonnetz: hover a triad for space-preview
-  | HoverSpec (Maybe SpecimenId)  -- hover a tank specimen for space-preview
-  | ToggleLeftSection LeftSection  -- open/close a left accordion section
   | Key String Boolean     -- key, shift held
   | SelectKey String
   | SelectScale String
@@ -1037,24 +892,15 @@ data Action
   | DragMove Event
   | DragEnd
   | SelectVoice Int VoiceSel -- chord id, the voice to select (and make sounding)
-  | ToggleFavorite         -- star / unstar the sounding chord's current voicing
   | PickVoicing Int (Array Int) -- chord id, the favoured voicing to activate
-  | PathPick Int           -- shift-click a Lattice chord: arm / complete a path segment
-  | SummonRoot Int         -- click a keyboard key: summon (or focus) a family on that pc
   | OpenRevoice            -- open the revoice modal on the hovered/sounding chord
   | CloseRevoice           -- dismiss the revoice modal
   | SlashBass Int          -- set the revoiced chord's bass to a pitch class (slash chord)
-  | DropSet String         -- toggle an exterior signpost set (McMullen …)
   | ToggleLayer ColorLayer -- toggle a color-overlay layer on/off (2026-07-31)
-  | SetLayers (Array String) -- set the active layers from the palettes multiselect
-  | StackTriad Int (Array Int) Boolean -- alt-click a Tonnetz triad: add/remove it from the stack
-  | CommitStack            -- catch the accumulated Tonnetz stack to the tank as one Anchor
-  | ClearStack             -- discard the Tonnetz stack
   | BorrowFrom String      -- modal interchange: borrow from a parallel mode (or off)
   | ReflavourFamily String -- re-flavour the focused family's scale (mode value)
   | PlayPath               -- ▶ play the whole progression
   | ClearPath              -- ✕ empty the progression so the next shift-click starts fresh
-  | PlayStep Int           -- hear one step (and make it the active chord)
   | ScoreHear (Array Int)  -- the score: hear a chord of a progression that is not open
   | ScoreRevoice Int       -- the score: open the ladder on a chord of the open progression (its id)
   | RevoiceFocus Int       -- the progression's ladders: focus (and hear) the chord at a position
@@ -1083,108 +929,33 @@ data Action
   | TapStop                -- Esc: the take abandoned, the rhythm as it was
   | ClearRhythm            -- back to one chord a bar
   | CopyTidal String       -- copy the progression's Tidal source to the clipboard
-  | EditSource String      -- the Tidal-source textarea was edited (freeze the live view)
-  | LoadSource             -- parse the textarea + rebuild the progression from it
-  | RevertSource           -- discard edits, go back to the live-derived source
-  | ToggleSource           -- reveal / hide the Tidal source code
   | ToggleHelp             -- open / close the ⓘ help overlay
-  | StepClick Int Boolean  -- a progression row clicked (index, shift) — play, or arm pick mode
   | PickCandidate Int      -- insert/substitute the chosen candidate into the progression
   | CancelGen              -- leave pick mode
   | SetAdventure String    -- the adventurousness dial (slider value)
   -- Performance tab
-  | SetSaveName String
   | AutoCapture            -- timer: auto-capture the current path (ephemeral, update-in-place)
-  | KeepLib Int            -- promote / demote a library entry between keeper and ephemeral
-  | SetLibSearch String
   | LoadProg Int           -- load library entry #i into the performance working copy
-  | UnloadProg             -- back to the library
-  | DeleteLib Int          -- remove a library entry
-  | PublishLib Int         -- publish library entry #i to the Amphora store (vetula-progression)
   | SaveScene              -- serialise the whole Perform surface as a vetulaScene → Amphora
   | PerfNewSession         -- mint a fresh session glyph-triple (rolls the scene counter)
-  | PerfOpenRecall         -- fetch saved scenes from Amphora + open the recall modal
   | FetchScenes            -- fetch them for the browser drawer, quietly
   | PerfCloseRecall
   | PerfMenuToggle         -- open/close the session/scene command menu (nav ⋯)
   | PerfMenuClose          -- close it (backdrop click, or after picking an item)
   | PerfMenuPick Action    -- close the menu, then run the picked command
   | PerfLoadScene String   -- parse a scene payload and load it onto the surface
-  | AddVoice
-  | RemoveVoice Int
-  | SetVoiceChannel Int String
-  | SetVoiceName Int String        -- name a → midi voice (routing identity; "" = unnamed)
-  | SetPreviewChan String        -- set the chord/path audition channel
-  | CycleVoiceDest Int
-  | CycleVoiceRenderer Int
-  | BumpCell Int Int Boolean    -- voice id, chord index, shift-held (down) — set a cell's bars
-  | SetVoicePhase Int String
-  | SetVoicePattern Int String     -- edit a voice's read-head (chord) pattern draft
-  | SetVoiceNotePattern Int String -- edit a voice's Axis-B note-index pattern draft
-  | CycleVoiceArticulator Int      -- cycle how the note-pattern reads (block / voice-led)
-  | CommitVoicePattern Int         -- commit BOTH drafts into the live patterns (atomic)
-  | ToggleVoiceMute Int
   | SetTempo String
-  | ToggleArm              -- the ▶/■ button: sticky arm/cue under the shell master
-  | PushVetula             -- lockstep: push the whole performance to the rig (→ odo conducts reef_voice)
-  | PushBrush              -- Option B: push the progression's voicings as a real Tidal Pattern (reef_vetula_brush)
-  | PerfPlay
-  | PerfStop
   | PerfTick Scheduler.Tick  -- one 16th-note pulse from the shared scheduler
-  | SelectPerfChord Int    -- click a working-copy chord row (for live Tab-revoice)
   -- Tank model (Slice A)
   | PlayChordId Int        -- plain-click a pool chord: audition it (no path change)
-  | DeleteSpec SpecimenId  -- × a tank specimen
-  | AuditionSpec SpecimenId -- shift-click a tank specimen: hear it (no state change)
-  | StageSpec SpecimenId   -- click a tank specimen: seed the pool with it (toggle)
-  | SequenceSpec SpecimenId -- shift-click a tank specimen: append a snapshot to the progression
-  | ArrangeSpec SpecimenId  -- drop a tank chord into the progression, bridged by `bridgeLen`
-  | SetBridgeLen Int        -- set the cadence-length dial (clamped 0..maxBridge)
-  | ToggleFold VPanel       -- collapse/expand a floating control to just its header
-  | ClearStage             -- remove all staged seeds + the chords bloomed from them
   | AuditionTriad Int (Array Int)        -- Tonnetz: hear a triad off the net (root pc, pcs)
   | AuditionNode ChordNode               -- Lattices: hear a generated chord (its own voicing)
   -- Chyron: hover a chip (space auditions it), or click one — plain click selects
   -- a single chord, shift-click extends the range from the anchor (Mac semantics).
-  | HoverChyron (Maybe Int)
-  | ChyronClick Int Boolean
-  | DeleteChyron Int       -- × a single audition out of the trace
-  | ClearChyron            -- wipe the whole audition trace
-  | DedupeChyron           -- drop repeat chords (same pcs), keeping first occurrence
-  | SaveChyronSel          -- compress the selection into a pinned 2-glyph token
-  | ChyronDragStart Int    -- begin dragging chip i to reorder the buffer
-  | ChyronDropOn Int       -- drop the dragged chip before chip i (reorder)
-  | ChyronDragEnd          -- drag ended (clear the in-flight index)
-  | PlaySaved Int          -- replay a pinned saved sequence (with its timing)
-  | DeleteSaved Int        -- × a pinned saved sequence
-  | Unbundle Int           -- open a saved token back into the working buffer (§6)
-  | ToggleChyronArm        -- record-arm the chyron on/off
   -- PERFORM surface
-  | PerfPickup Int         -- pick up saved token i for placement (toggle)
-  | PerfDropBox Int        -- place the held token/fx onto box i
-  | PerfClearBox Int       -- empty box i (stop its loop)
-  | PerfAddBox             -- append a new empty player on the next free MIDI channel
-  | PerfRemoveBox Int      -- delete player i outright (not just empty it)
   | StageOpen              -- the rig socket (re)connected: subscribe to the cards on the stage
   | StageFrameIn String    -- a frame from the rig; the stage's card frames are acted on
   | CardToLimulus Int      -- ask Limulus to show card n (`stage-open vetula/vN`)
-  | PerfDragOver DragEvent -- allow HTML5 drop onto a box (preventDefault)
-  | PerfPickFx PerfFx      -- pick up an fx from the palette for placement (toggle)
-  | PerfFxNudge Int Int Int -- nudge box b's stack layer i by delta
-  | PerfFxRemove Int Int   -- remove box b's stack layer i
-  | PerfFxAlt Int Int      -- box b, layer i: alternate control (arp cycles direction)
-  | PerfFxWhen Int Int     -- box b, layer i: cycle the when clause (always / every n)
-  | PerfSetTerm Int PerfTerm -- set box b's terminal sink directly
-  | PerfSetSeq Int String  -- edit box b's text-hatch sequence (mini-notation) only
-  | PerfSetPipeline Int String -- edit box b's WHOLE pipeline text (seq # layers)
-  | PerfOpenEdit Int       -- open the sequence editor modal for box b
-  | PerfCloseEdit          -- close the sequence editor modal
-  | PerfOpenPhrasePick Int -- open the clip-library picker for box b (#27)
-  | PerfClosePhrasePick    -- close the phrase picker
-  | PerfAttachPhrase Int MidiClip -- attach a clip (copy) as box b's phrase source
-  | PerfDetachPhrase Int   -- drop box b's phrase source (back to chords)
-  | PerfPhraseMode Int ChannelMode -- box b: flatten-to-channel vs original-source-channels
-  | PerfPhraseMuteHead Int Int     -- box b: toggle mute of source head h in the phrase
   -- Clip-library management (#33), operating on the SHARED store rather than a box: an
   -- attached box holds a self-contained copy, so rename/delete here never touch a voice.
   | ClipAudition MidiClip  -- play a library clip once, faithfully (own channels/vel/gate)
@@ -1209,10 +980,6 @@ data Action
   | CaptureUndo            -- put back the last cut or trim (on the rig)
   | CaptureFrame           -- 33ms tick: advance the river's clock, prune its window
   | PerfNop                -- no-op (used to stop a click bubbling without a re-render)
-  | PerfToggleMute Int     -- silence/unsilence box b's pipeline
-  | PerfDragStart PerfDragSrc -- begin an HTML5 drag of a palette/box layer
-  | PerfDropOnChip DragEvent Int Int -- drop the dragged layer before box b's chip i
-  | PerfDragEnd            -- clear the drag payload (drop landed or was abandoned)
   | PerfStopClick ME.MouseEvent Action -- run Action but stop the click bubbling to the box
   | ZoomAt Event Number    -- geometric lens: wheel-zoom toward the cursor (event, deltaY)
   | PanStart Event         -- geometric lens: begin a grab-to-pan drag
@@ -1225,49 +992,24 @@ data Action
   | SelectMark String ChordNode  -- Explore: a click makes a chord the cursor, and plays it
   | SetStyle AuditionStyle       -- Explore: the audition style (keys 1, 2), heard at once
   | SaveProg Boolean             -- save the progression (⌘S); true = as a new sibling (⌘⇧S)
-  | ToggleAuditionCard           -- the progression on the stage as a card (or off again)
   | VoiceToLimulus               -- hand Limulus a voice line naming the progression
   | TakeMark String ChordNode    -- Explore: a shift-click selects and takes it
   | DropTone Event Int Int Int  -- silence chord `id`'s tone `i` at octave `k` (shift-click a note)
   | ShuffleVary            -- re-draw all nine cells of the Vary lens from a new seed
-  | VaryAudition ChordNode -- hear a variation WITHOUT capturing it to the chyron
-  | KeepVariation ChordNode -- shift-click: keep (or un-keep) a variation for this chord
-  | ForgetKept Int         -- drop a whole chord's kept set
+  | VaryAudition ChordNode -- hear a variation
   -- REHEARSE
-  | TakeUp Int             -- build a rehearsal from saved token i
-  | DropRehearsal          -- put the whole rehearsal down
-  | RollPass               -- draw a new pass through the lattice
-  | PlayPass               -- hear the current pass
-  | SetPull HT.Pull        -- loose / mid / smooth
-  | HearOption Int Int     -- hear slot i's option j (without capturing)
-  | HearAround Int ChordNode   -- hear it BETWEEN its neighbours, as the pass stands
-  | SweepAround Int ChordNode  -- hear it against every way the neighbours could go
-  | ShowPaths              -- lay out every way through the chords, smoothest first
-  | HearPath (Array Int)   -- hear one of them
-  | MarkPath (Array Int)   -- approve (or un-approve) one of them
-  | KeepPass               -- mint the current pass onto the shelf as a progression
-  | KeepMarked             -- mint the marked shortlist as ONE alternating token
-  | KeepLattice            -- mint the whole lattice, each slot alternating
   | ToQuadrat String       -- publish a saved progression (by name) as a clip for Quadrat to sample
-  | SettleSlot Int Int     -- lock slot i to option j (or unlock if already it)
-  | SettlePass             -- lock every slot to what this pass chose
-  | LoosenAll              -- unlock every slot
-  | DropOption Int Int     -- remove slot i's option j (never option zero)
-  | VaryFromSlot Int       -- excurse to the Vary lens on slot i's base chord
-  | BackToRehearsal        -- return from that excursion
+  | ResumeWorking          -- reopen the progression open when the page last closed
   | OpenVary ChordNode     -- open Explore's variations panel on a chord
   | OpenSide SideTab       -- open (or, if open on this tab, close) Explore's side panel
   | CloseSide
   | SideOnLastPlayed       -- re-aim the side panel at the chord last played
   | SetSideDensity Int
-  | PinDefaultLens         -- make the view showing the default Explore opens on
   | LevelWheel Event Number -- the wheel over the field: step the level of detail
   | RollBass Int           -- roll the revoiced chord's bass to the next/previous chord tone
   | ShiftOctave Int        -- move the revoiced chord bodily up/down an octave
   | PlaceTone Event Int Int Int -- put chord `id`'s tone `i` at octave `k` (click a ghost)
   | SetStage Stage         -- switch stage: Hunt <projection> | Perform | Review
-  | TransposeSpec SpecimenId Int -- Slice E: shift one tank specimen by n semitones (in place)
-  | CapoTank Int           -- Slice E: shift the WHOLE tank by n semitones (a capo)
 
 -- | The queries the Triggerfish shell pulls from Vetula: its current Tidal
 -- | source (for the aggregate TIDAL tab) and its current progression as PC sets
@@ -1359,13 +1101,10 @@ component = H.mkComponent
       , bankPads: bankPadsFor cMajorKey 0
       , field: Nothing
       , restScale: Nothing
-      , leftOpen: Set.fromFoldable [ SecSetup, SecTank, SecLens ]
       , chords: []
       , nodes: []
-      , focusId: 0           -- the first diatonic triad seed
       , hoveredId: Nothing
       , hoveredTriad: Nothing
-      , hoveredSpec: Nothing
       , nextId: 100          -- generated children start here; seeds are 0..17
       , handle: Nothing
       , subId: Nothing
@@ -1389,17 +1128,11 @@ component = H.mkComponent
       , dropped: Map.empty
       , borrowMode: Nothing
       , colorLayers: Set.singleton LayerDiatonic
-      , tonnetzStack: []
       , imported: Set.empty
-      , sourceEdit: Nothing
-      , sourceOpen: false
       , helpOpen: false
       , genSel: []
       , candidates: []
       , adventure: 0.25
-      , bridgeLen: 2
-      , foldCtx: false
-      , foldProg: false
       , library: []
       , capSeq: 0
       , lastCapIdx: Nothing
@@ -1407,8 +1140,6 @@ component = H.mkComponent
       , lastPubSig: ""
       , lastCopySig: ""
       , auditionCard: Nothing
-      , libSearch: ""
-      , saveName: ""
       , publishMsg: Nothing
       , progName: Nothing
       -- the four fixed lanes of the bottom voice bar, all MUTED (one toggle from
@@ -1435,18 +1166,14 @@ component = H.mkComponent
       , scorePad: Nothing
       , stageKey: Nothing
       , clockTempo: 120.0
-      , nextVoiceId: 4
       -- name → canonical MIDI channel, pushed from the shell's Tidal-page routing
       -- table (SetRouting). Unnamed / unbound voices fall back to the default channel.
       , routing: Map.empty :: Map String Int
-      , tank: []
-      , nextSpecId: 0
-      , seedChord: Map.empty
       , presets: [], identity: Nothing
       , stage: Hunt KeyChords   -- Key, the first rung, unless a default is pinned
       , lastLens: KeyChords
       , fieldLens: KeyChords
-      , defaultLens: KeyChords
+      , resumable: Nothing
       , side: Nothing
       , lastHeard: Nothing
       , style: StyleBlock
@@ -1464,39 +1191,19 @@ component = H.mkComponent
       , genRoll: 0
       , padRoll: 0
       , varyRoll: 0
-      , kept: []
-      , rehearsal: []
-      , rehearseRoll: 0
-      , rehearsalFrom: Nothing
-      , marked: []
-      , pull: HT.Mid
-      , pane: Nothing
       , varying: Nothing
       , hoveredNode: Nothing
-      , chyron: []
-      , hoveredChyron: Nothing
-      , chyronSel: Nothing
-      , chyronDrag: Nothing
-      , chyronSaved: []
-      , chyronArmed: true
       -- four player boxes on MIDI ch 1-4 (Odonus I-IV in AC's routing); a token
       -- dropped on one loops there while the transport plays.
       , perfBoxes: map (\n -> { cardId: n, channel: n, label: "P" <> show n, seq: Nothing, stack: [], seqText: "", muted: false, term: TMidi, phrase: Nothing }) (range 1 4)
-      , perfHeld: Nothing
-      , perfHeldFx: Nothing
-      , perfDrag: Nothing
-      , perfEditBox: Nothing
       -- placeholder; Initialize resumes the persisted session or mints a fresh one
       , perfSession: { alias: "", name: "", nextScene: 1 }
       , perfScenes: []
       , perfRecallOpen: false
       , perfMenuOpen: false
       , clipLibrary: []
-      , perfPhrasePick: Nothing
       , capture: { logbook: Logbook.emptyLog, playing: Nothing, regionDrag: Nothing, contextOpen: false, codeOpen: false, zoom: Whole, rig: Nothing, cutting: false, cutSel: Nothing }
       , rigLoops: false, rigAsked: 0.0, captureDragSub: Nothing
-      , nowMicros: 0.0
-      , riverNotes: []
       }
   , render
   , eval: H.mkEval H.defaultEval
@@ -1659,19 +1366,12 @@ handleQuery = case _ of
     pure (Just (reply (map scene s.perfScenes)))
   AskBar reply -> do
     s <- H.get
-    let
-      tab id label active tip = { id, label, active, tip }
-      marking = s.stage == Perform || showsRiver s.stage
     pure $ Just $ reply
-      { tabs:
-          [ tab "explore" "EXPLORE" (isHunt s.stage) "explore harmonic space: the key, the lattice, the banks, and the colour sets in all of them"
-          , tab "rehearse" "REHEARSE" (s.stage == Rehearse) "a progression with alternatives at every chord \x2014 run it until it settles"
-          , tab "perform" "PERFORM" (s.stage == Perform) "play the voices, with the capture river alongside"
-          , tab "review" "REVIEW" (s.stage == Review) "the whole take \x2014 cherry-pick a phrase into the clip library"
-          ]
-      , marks: if marking then show (Logbook.noteCount s.capture.logbook) <> " notes \x00b7 " <> show (length s.capture.logbook.marks) <> " \x25c6" else ""
+      -- one surface: no mode tabs (docs/kb/plans/vetula-one-surface.md)
+      { tabs: []
+      , marks: show (Logbook.noteCount s.capture.logbook) <> " notes \x00b7 " <> show (length s.capture.logbook.marks) <> " \x25c6"
       , icons: if s.perfSession.alias == "" then [] else map (\icon -> { icon, color: "#2a2a2a" }) (split (Pattern "-") s.perfSession.alias)
-      , rebusTip: "session " <> (if s.perfSession.name == "" then s.perfSession.alias else s.perfSession.name) <> " \x00b7 new session, chyron housekeeping"
+      , rebusTip: "session " <> (if s.perfSession.name == "" then s.perfSession.alias else s.perfSession.name) <> " \x00b7 new session"
       , chips:
           -- the progression being built, on every stage (Explore builds it,
           -- Rehearse and Perform play it): its frozen name as a monochrome
@@ -1680,7 +1380,7 @@ handleQuery = case _ of
           [ case s.progName of
               Nothing ->
                 { id: "prog", label: "no progression", icons: [], active: false, attention: false
-                , tip: "on Explore, shift-click (or return) takes a chord into a new progression" }
+                , tip: "on the lattice, shift-click (or return) takes a chord into a new progression" }
               Just nm ->
                 let unsaved = length s.path > 0 && currentSource s /= s.lastPubSig
                 in { id: "prog"
@@ -1689,7 +1389,7 @@ handleQuery = case _ of
                        <> (if unsaved then " \x00b7 \x25cf save" else " \x00b7 \x2713 saved")
                    , active: true, attention: unsaved
                    , tip: nm <> (if unsaved then " \x00b7 unsaved: click (or \x2318S) to save this version; \x2318\x21e7S saves a new sibling" else " \x00b7 saved")
-                       <> " \x00b7 on Explore, backspace takes back the last chord, delete starts a new progression" }
+                       <> " \x00b7 on the lattice, backspace takes back the last chord, delete starts a new progression" }
           ] <> (if length s.path == 0 then [] else
           -- the progression as plain Tidal on the clipboard: works anywhere,
           -- with no rig, and pastes back into Vetula
@@ -1715,9 +1415,6 @@ handleQuery = case _ of
     s <- H.get
     case act of
       "stage:explore" -> handleAction (SetStage (Hunt s.lastLens))
-      "stage:rehearse" -> handleAction (SetStage Rehearse)
-      "stage:perform" -> handleAction (SetStage Perform)
-      "stage:review" -> handleAction (SetStage Review)
       "mark" -> handleAction CaptureMark
       "clear" -> handleAction CaptureClear
       "rebus" -> handleAction PerfMenuToggle
@@ -1789,33 +1486,6 @@ handleQuery = case _ of
 -- | doesn't conduct — a recorded phrase has no single block chord to quantise to.
 odoBoxPcs :: State -> Maybe (Array Int)
 odoBoxPcs st = _.pcs <$> head (perfBoxOdoFeed st)
-
--- | The active chord of a loaded progression as pitch classes: the chord under the
--- | playhead when playing, else the sounding chord, else the first — `Nothing` when
--- | no progression is loaded (empty path).
-activeChordPcs :: State -> Maybe (Array Int)
-activeChordPcs st
-  | length st.path == 0 = Nothing
-  | otherwise =
-      let cs = perfChords st
-          byPulse =
-            if st.playing then (harmonicVoice st >>= cursorAt cs st.pulse) >>= (cs !! _)
-            else Nothing
-          bySounding = st.sounding >>= \sid -> find (\c -> c.id == sid) cs
-          chosen = case byPulse of
-            Just c -> Just c
-            Nothing -> case bySounding of
-              Just c -> Just c
-              Nothing -> head cs
-      in (\c -> nub (map (\x -> mod x 12) (playNotes c))) <$> chosen
-
--- | A set of pitch classes → a PitchSet payload (lowest pc as root, ascending
--- | intervals up from it). Order/duplicates normalised.
-pcsToSet :: Array Int -> { root :: Int, offsets :: Array Int }
-pcsToSet pcs = case sort (nub (map (\x -> mod x 12) pcs)) of
-  sorted -> case head sorted of
-    Just r -> { root: r, offsets: map (_ - r) sorted }
-    Nothing -> { root: 0, offsets: [ 0 ] }
 
 -- | The single voice (if any) whose read-head may honestly stand for "the" harmonic
 -- | context in the top bar. An Odonus-feeding voice wins outright — it conducts the
@@ -1925,7 +1595,7 @@ startWith key focusId chords0 = do
         Completed -> SimDone
         Stopped -> SimDone
       H.modify_ \s ->
-        s { key = key, lattice = latticeFor key, bankPads = bankPadsFor key s.padRoll, chords = placed, focusId = focusId, nodes = simNodes
+        s { key = key, lattice = latticeFor key, bankPads = bankPadsFor key s.padRoll, chords = placed, nodes = simNodes
           , handle = Just result.handle, subId = Just sid }
 
 stopSim :: forall o m. MonadAff m => H.HalogenM State Action Slots o m Unit
@@ -2219,7 +1889,7 @@ handleActionCore = case _ of
         when recent $ H.raise (Marked m.atMicros)
       st2 <- H.get
       when (any RL.looping st2.capture.logbook.marks && not (any RL.looping st.capture.logbook.marks) && not (showsRiver st2.stage))
-        (handleAction (SetStage Review))
+        (handleAction (SetStage (Hunt River)))
   -- The notes the rig played for the cards (`vetula-notes`, Unix µs): into the
   -- Review logbook, as the page's own notes go in Local, so marks and loops work.
   -- Logged whatever this page's authority: these notes did sound.
@@ -2231,7 +1901,7 @@ handleActionCore = case _ of
     -- the logbook (Review) and the river (Perform's live strip), as the page's
     -- own notes go to both
     H.modify_ \s -> s { capture = s.capture { logbook = Logbook.logAppend (perfMs * 1000.0) fresh s.capture.logbook }
-                      , riverNotes = fresh <> s.riverNotes }
+                      }
   StageFrameIn msg -> do
     for_ (SC.tableHasKey msg) \has -> when has do
       st <- H.get
@@ -2294,11 +1964,6 @@ handleActionCore = case _ of
     -- Where this viewer chose to hear auditions, if they have.
     msound <- liftEffect Store.loadSound
     for_ (msound >>= soundFromValue) \sel -> H.modify_ _ { auditionSel = sel, soundChosen = true }
-    -- The viewer's pinned Explore view, if any, before the stage is announced.
-    pinned <- liftEffect Store.loadDefaultLens
-    for_ pinned \v ->
-      let vt = viewtypeFromValue v
-      in H.modify_ \s -> s { defaultLens = vt, lastLens = vt, stage = if isHunt s.stage then Hunt vt else s.stage }
     -- Announce the opening stage so the shell can write a COMPLETE URL from a cold
     -- start (`#{slug}/{stage}`, not the bare `#{slug}`). Without this the address
     -- bar under-specifies until you touch a stage tab — still a valid route, since
@@ -2403,19 +2068,26 @@ handleActionCore = case _ of
     -- initial palette
     st <- H.get
     startWith st.key seedFocus (seedsFor st.key)
-    -- The progression being built when the page last closed (the working
-    -- copy), so a crash or a reload loses nothing. After the pool is seeded,
-    -- and numbered above every chord in it: a clash of ids with the seed
-    -- triads made the path point at them instead (AC, 2026-10-06).
+    -- The page opens neutral: the key rung, C major, nothing loaded (AC,
+    -- 2026-10-08). The progression open when it last closed (the working
+    -- copy) is kept, so a crash or a reload loses nothing, and the score
+    -- offers it back.
     mwork <- liftEffect Store.loadWorking
-    for_ mwork \w -> do
-      st0 <- H.get
+    for_ mwork \w -> when (length (parseProgression w.source) > 0) $
+      H.modify_ _ { resumable = Just (w { name = maybe w.name snd (find (\r -> fst r == w.name) migrated.renames) }) }
+
+  -- Reopen the working copy, numbered above every chord in the pool: a clash
+  -- of ids with the seed triads made the path point at them instead (AC,
+  -- 2026-10-06).
+  ResumeWorking -> do
+    st0 <- H.get
+    for_ st0.resumable \w -> do
       let base = max st0.nextId (1 + fromMaybe 0 (maximum (map _.id st0.chords)))
           noteLists = filter (\ns -> length ns > 0) (parseProgression w.source)
           fresh = mapWithIndex (\j ns -> importChord (base + j) ns) noteLists
           ids = map _.id fresh
       when (length ids > 0) do
-        let name = maybe w.name snd (find (\r -> fst r == w.name) migrated.renames)
+        let name = w.name
         H.modify_ _
           { chords = st0.chords <> fresh
           , imported = st0.imported <> Set.fromFoldable ids
@@ -2425,6 +2097,7 @@ handleActionCore = case _ of
           , progName = Just name
           , lastCapSig = w.source
           , lastPubSig = w.saved
+          , resumable = Nothing
           }
         -- its key, as loading it from the library adopts it
         for_ (find (\e -> e.kept && e.name == name) st0.library >>= \e -> parseKeyLabel e.keyLabel) \k ->
@@ -2433,12 +2106,6 @@ handleActionCore = case _ of
 
   MidiReady mout nm ->
     H.modify_ _ { midiOut = mout, midiName = nm }
-
-  -- Click the MIDI chip to (re)request access — this runs from a user gesture,
-  -- which is what makes Chrome actually show the permission prompt.
-  RetryMidi -> do
-    H.modify_ _ { midiName = "…" }
-    connectMidi
 
   -- The simulated positions were read only by the retired keyboard lens, so a
   -- tick writes nothing: a write redraws the whole page, and the simulation
@@ -2458,15 +2125,6 @@ handleActionCore = case _ of
     { hoveredNode = mc
     , hoveredTriad = map (\c -> { root: c.root, pcs: c.pcs }) mc
     }
-
-  -- entering a tank tile sets the hovered specimen (space previews it); leaving
-  -- clears it. Also clears any surface hover so space can't fall back to a stale
-  -- pool bubble while the pointer is over the tank.
-  HoverSpec ms -> H.modify_ _ { hoveredSpec = ms, hoveredId = Nothing, hoveredTriad = Nothing, hoveredNode = Nothing }
-
-  -- Slice 4c: hand-override the width-focus (the Hunt/Perform toggle, the pool spine).
-  ToggleLeftSection sec -> H.modify_ \s ->
-    s { leftOpen = if Set.member sec s.leftOpen then Set.delete sec s.leftOpen else Set.insert sec s.leftOpen }
 
   Key k shift -> do
     st <- H.get
@@ -2513,8 +2171,6 @@ handleActionCore = case _ of
         -- pane, docs/DESIGN-scene-modal.md) — so clear yields it the letter.
         "Backspace" -> handleAction ClearPath
         "Delete" -> handleAction ClearPath
-        -- Enter: compress the current chyron selection into a saved glyph token
-        "Enter" -> handleAction SaveChyronSel
         "p" -> H.gets _.path >>= playPath
         "f" -> toggleFavorite
         -- open the revoice modal on the hovered (else sounding) chord
@@ -2545,52 +2201,6 @@ handleActionCore = case _ of
     st <- H.get
     H.modify_ _ { restScale = Nothing }
     rebuild (st.key { mode = modeOf v })
-
-  -- shift-click a Lattice chord to grow the running path. From the current end:
-  -- same family → bridge by the shortest single-note walk; different family →
-  -- leap (an interconnector). Clicking the current end again clears the path.
-  PathPick pid -> do
-    st <- H.get
-    case last st.path of
-      -- Starting a path from empty (after ANY clear: c / double-click / key rebuild)
-      -- opens a NEW capture session, so the next auto-capture forks a fresh ◦
-      -- instead of overwriting the previous progression's entry in place.
-      Nothing -> H.modify_ _ { path = [ pid ], lastCapIdx = Nothing, lastCapSig = "" }
-      Just lastId
-        | pid == lastId -> H.modify_ _ { path = [] }
-        | otherwise -> case Path.shortestPath (Path.adjacency (neighborLinks st.chords)) lastId pid of
-            Just bridge -> do
-              let added = drop 1 bridge
-              H.modify_ _ { path = st.path <> added }
-              playPath ([ lastId ] <> added)
-            Nothing -> do
-              H.modify_ _ { path = st.path <> [ pid ] }
-              playPath [ lastId, pid ]
-
-  -- click a keyboard key to summon a family on that root — diatonic OR not — and
-  -- focus it for re-flavouring. It defaults to the home mode on the clicked tonic
-  -- (a chromatic key brings in a borrowed family). A root that already has a
-  -- family is just focused, so clicking its key selects it for the scale picker.
-  SummonRoot pc -> do
-    st <- H.get
-    case find (\c -> c.parentId == Nothing && c.root == pc) st.chords of
-      Just existing ->
-        let exKey = fromMaybe st.key (Map.lookup existing.id st.familyScale)
-        in H.modify_ _ { focusedFamily = Just existing.id, stackHead = Just { id: existing.id, top: seedTopDeg exKey existing } }
-      Nothing -> do
-        let famKey = st.key { tonic = pc }
-        for_ (head (diatonicTriads famKey)) \t0 -> do
-          let seed = place famKey t0 (t0 { id = st.nextId, parentId = Nothing })
-              chords' = st.chords <> [ seed ]
-          H.modify_ _
-            { chords = chords'
-            , nextId = st.nextId + 1
-            , familyScale = Map.insert st.nextId famKey st.familyScale
-            , focusedFamily = Just st.nextId
-            , stackHead = Just { id: st.nextId, top: seedTopDeg famKey seed }
-            }
-          for_ st.handle \h ->
-            liftEffect $ void $ h.updateData (map mkSimNode chords') (neighborLinks chords')
 
   -- open the revoice modal on the hovered chord (else the sounding one), making
   -- it the active chord so Tab / arrows / drag / f all target it inside the modal.
@@ -2659,33 +2269,6 @@ handleActionCore = case _ of
       applyChords chords'
       for_ (find (\c -> c.id == cid) chords') playChord
 
-  -- toggle an exterior signpost set (McMullen Yellow / Borrowed …). On: generate
-  -- the curated chords against the home key, drop the ones not already present
-  -- (the in-scale members merge into the interior), place each over its own root
-  -- floating up by ring index. Off: remove exactly the ids this set added.
-  DropSet gkey -> do
-    st <- H.get
-    for_ st.handle \handle -> case Map.lookup gkey st.dropped of
-      Just ids -> do
-        let chords' = filter (\c -> not (elem c.id ids)) st.chords
-        _ <- liftEffect $ handle.updateData (map mkSimNode chords') (neighborLinks chords')
-        H.modify_ _ { chords = chords', dropped = Map.delete gkey st.dropped }
-      Nothing ->
-        for_ (find (\g -> g.key == gkey) exteriorGens) \g -> do
-          let existing = map contentKey st.chords
-              fresh = nubByEq (\a b -> contentKey a == contentKey b)
-                        (filter (\c -> not (elem (contentKey c) existing)) (g.gen st.key))
-              placed = mapWithIndex
-                         (\i c -> placeOutside st.key (c { id = st.nextId + i, parentId = Nothing, pinned = false }))
-                         fresh
-              chords' = st.chords <> placed
-          _ <- liftEffect $ handle.updateData (map mkSimNode chords') (neighborLinks chords')
-          H.modify_ _
-            { chords = chords'
-            , nextId = st.nextId + length placed
-            , dropped = Map.insert gkey (map _.id placed) st.dropped
-            }
-
   -- toggle a color-overlay layer (2026-07-31 redesign): pure state — the layer
   -- is painted or not painted onto the views (Step 3), the pool is untouched.
   ToggleLayer l ->
@@ -2693,10 +2276,6 @@ handleActionCore = case _ of
       s { colorLayers =
             if Set.member l s.colorLayers then Set.delete l s.colorLayers
             else Set.insert l s.colorLayers }
-
-  -- The palettes MultiSelect hands back the full new selection as value strings
-  -- (each a `layerLabel`); rebuild the layer Set from them.
-  SetLayers vs -> H.modify_ _ { colorLayers = Set.fromFoldable (mapMaybe layerFromLabel vs) }
 
   -- modal interchange: borrow the chosen parallel mode's chromatic chords (or
   -- "off" to clear). Always replaces the previous interchange set, so the picker
@@ -2792,8 +2371,6 @@ handleActionCore = case _ of
       H.modify_ \s -> s { sounding = Just cid, revoicing = map (const cid) s.revoicing }
       playChord c'
 
-  ToggleFavorite -> toggleFavorite
-
   PickVoicing cid v -> do
     st <- H.get
     let chords' = map (\d -> if d.id == cid then d { voicing = v } else d) st.chords
@@ -2812,7 +2389,6 @@ handleActionCore = case _ of
     -- and the working copy with it, or a reload brings the cleared one back
     liftEffect (Store.saveWorking { name: "", source: "", saved: "" })
 
-  PlayStep pid -> playId pid
   ScoreHear notes -> auditionNotesNoLog notes
   ScoreRevoice cid -> H.modify_ _ { revoicing = Just cid, sounding = Just cid, selected = Nothing }
 
@@ -3000,26 +2576,7 @@ handleActionCore = case _ of
 
   CopyTidal src -> liftEffect (copyText src)
 
-  EditSource s -> H.modify_ _ { sourceEdit = Just s }
-
-  RevertSource -> H.modify_ _ { sourceEdit = Nothing }
-
-  ToggleSource -> H.modify_ \s -> s { sourceOpen = not s.sourceOpen }
-
   ToggleHelp -> H.modify_ \s -> s { helpOpen = not s.helpOpen }
-
-  -- a progression row: plain click plays that step (out of sequence); shift-click
-  -- arms pick mode by selecting it (max two — a 3rd starts fresh).
-  StepClick i shift -> do
-    st <- H.get
-    if not shift
-      then for_ (index st.path i) playId
-      else do
-        let sel' = if elem i st.genSel then filter (_ /= i) st.genSel
-                   else if length st.genSel < 2 then st.genSel <> [ i ]
-                   else [ i ]
-        H.modify_ _ { genSel = sel' }
-        regen
 
   CancelGen -> H.modify_ _ { genSel = [], candidates = [] }
 
@@ -3057,8 +2614,6 @@ handleActionCore = case _ of
 
   -- ----- Performance tab -----
 
-  SetSaveName s -> H.modify_ _ { saveName = s }
-
   -- Manual save = promote the current path to a KEEPER (frozen). If the current
   -- session's ephemeral is already in the library, promote it in place (+ rename);
   -- otherwise append a fresh keeper.
@@ -3077,16 +2632,6 @@ handleActionCore = case _ of
       else when (sig /= st.lastCapSig) do
         H.modify_ _ { lastCapSig = sig }
         for_ st.progName \nm -> liftEffect (Store.saveWorking { name: nm, source: sig, saved: st.lastPubSig })
-
-  -- Promote an ephemeral to a keeper (or demote a keeper). Promoting the current
-  -- session's ephemeral forks a fresh one for continued edits (lastCapIdx cleared).
-  KeepLib i -> do
-    H.modify_ \s ->
-      let lib' = fromMaybe s.library (modifyAt i (\e -> e { kept = not e.kept }) s.library)
-      in s { library = lib', lastCapIdx = if Just i == s.lastCapIdx then Nothing else s.lastCapIdx }
-    persistLib
-
-  SetLibSearch s -> H.modify_ _ { libSearch = s }
 
   -- Parse the entry's Tidal source into note-lists and rebuild them as fresh
   -- imported chords (off the lattice); revoice stays safe, and this is the same
@@ -3112,7 +2657,7 @@ handleActionCore = case _ of
         , lastCapSig = entry.source
         , lastPubSig = entry.source
         , voices = canonicalVoices (length fresh)
-        , nextVoiceId = 4
+        
         , sounding = head ids
         -- The loaded progression's key becomes the live harmonic context: clear any
         -- `# scale` override, then adopt the entry's saved key so the resting scale
@@ -3122,42 +2667,6 @@ handleActionCore = case _ of
         }
       for_ (parseKeyLabel entry.keyLabel) \k -> H.modify_ \s -> s { key = k, lattice = latticeFor k, bankPads = bankPadsFor k s.padRoll }
       showPathRung
-
-  -- ← library: set the current progression aside to browse the stack. Slice 4a: the
-  -- path IS the progression, so snapshot it first (AutoCapture is on a timer and may
-  -- not have fired yet), then clear — non-destructive, and it's the design's
-  -- "library = snapshots you restore into the path".
-  UnloadProg -> do
-    st <- H.get
-    when (length (pathSteps st) > 0) (captureSteps st)
-    stopClock
-    H.modify_ _ { path = [], progName = Nothing, voices = [], playing = false }
-    -- Unloading self-disarms; tell the shell so it drops Vetula from `armed`.
-    when st.armed (H.raise (ArmChanged false))
-
-  -- Delete shifts indices, so drop the session pointer to avoid it dangling.
-  DeleteLib i -> do
-    H.modify_ \s -> s { library = fromMaybe s.library (deleteAt i s.library), lastCapIdx = Nothing }
-    persistLib
-    publishProgressions
-
-  -- Publish library entry #i to the shared Amphora store (vetula-progression).
-  -- The entry's `source` is its canonical Tidal form; name + keyLabel + kept ride
-  -- the label (keyLabel as a `key:` tag, kept as a `kept` tag). Store offline → a
-  -- transient failure message, never fatal.
-  PublishLib i -> do
-    st <- H.get
-    case st.library !! i of
-      Nothing -> pure unit
-      Just e -> do
-        H.modify_ _ { publishMsg = Just "publishing…" }
-        let tags = [ "key:" <> e.keyLabel ] <> (if e.kept then [ "kept" ] else [])
-        res <- liftAff (attempt (Amphora.publish
-          { kind: "vetula-progression", collection: "vetula-progression"
-          , name: e.name, source: "user", payload: e.source, tags }))
-        H.modify_ _ { publishMsg = Just case res of
-          Right hash -> "✓ " <> e.name <> " · " <> SCU.take 8 hash
-          Left _ -> "✗ publish failed (store offline?)" }
 
   -- Serialise the whole Perform surface as a `vetulaScene` record and publish it
   -- to the shared Amphora store (collection `vetula-scene`). The scene is auto-
@@ -3197,15 +2706,6 @@ handleActionCore = case _ of
     Console.log ("Vetula session: new-session button → " <> fresh.alias)
     H.modify_ _ { perfSession = fresh, publishMsg = Just ("new session · " <> fresh.alias) }
 
-  -- Open the recall modal, fetching the saved scenes from Amphora (grouped by
-  -- session in the view). Store offline → an empty list + a note, never fatal.
-  PerfOpenRecall -> do
-    H.modify_ _ { perfRecallOpen = true, publishMsg = Just "loading scenes…" }
-    res <- liftAff (attempt (Amphora.fetchCollection "vetula-scene"))
-    case res of
-      Right items -> H.modify_ _ { perfScenes = items, publishMsg = Nothing }
-      Left _ -> H.modify_ _ { perfScenes = [], publishMsg = Just "✗ scenes: store offline?" }
-
   PerfCloseRecall -> H.modify_ _ { perfRecallOpen = false }
 
   -- The saved scenes, for the browser drawer, without opening the modal.
@@ -3233,59 +2733,10 @@ handleActionCore = case _ of
   PerfLoadScene payload -> do
     let doc = parsePerform payload
         boxes = boxesFromDoc doc
-        tokens = map (\s -> mkSavedSeq s.chords) doc.sources
     if length boxes == 0
       then H.modify_ _ { perfRecallOpen = false, publishMsg = Just "✗ couldn't read that scene" }
-      else H.modify_ _ { perfBoxes = boxes, chyronSaved = tokens
+      else H.modify_ _ { perfBoxes = boxes
                        , perfRecallOpen = false, publishMsg = Just "scene loaded" }
-
-  AddVoice -> H.modify_ \s ->
-    s { voices = s.voices <> [ defaultVoice s.nextVoiceId (mod s.nextVoiceId 4) (rendOf s.nextVoiceId) (length (perfChords s)) ]
-      , nextVoiceId = s.nextVoiceId + 1 }
-
-  RemoveVoice vid -> H.modify_ \s -> s { voices = filter (\v -> v.id /= vid) s.voices }
-
-  SetVoiceChannel vid v -> case fromString v of
-    Just ch -> updateVoice vid (_ { channel = clamp 0 15 ch })
-    Nothing -> pure unit
-
-  -- Name a → midi voice: its routing identity, which the Tidal page binds to a channel.
-  SetVoiceName vid nm -> updateVoice vid (_ { name = nm })
-
-  -- The AUDITION channel (chord/path preview). Its own routable channel so, in
-  -- ATLANTIS, the preview can be cued/muted at the desk independently of the brush.
-  SetPreviewChan v -> case fromString v of
-    Just ch -> H.modify_ _ { previewChan = clamp 0 15 ch }
-    Nothing -> pure unit
-
-  CycleVoiceDest vid -> updateVoice vid (\v -> v { dest = cycleDest v.dest })
-
-  CycleVoiceRenderer vid -> updateVoice vid (\v -> v { renderer = nextRenderer v.renderer })
-
-  -- click a grid cell to set how many bars this voice dwells on this chord:
-  -- plain click bumps up (wrapping 0→1→…→8→0), shift-click bumps down. 0 = skip.
-  BumpCell vid i shift -> do
-    st <- H.get
-    let n = length (perfChords st)
-    updateVoice vid \v ->
-      let ds = padDurs n v.durs
-      in v { durs = fromMaybe ds (modifyAt i (\d -> mod (d + (if shift then 8 else 1)) 9) ds) }
-
-  SetVoicePhase vid v -> case fromString v of
-    Just n -> updateVoice vid (_ { phase = max 0 n })
-    Nothing -> pure unit
-
-  -- live-code the read-head (which chord, when) and the note pattern (which note of it)…
-  SetVoicePattern vid p -> updateVoice vid (_ { patternDraft = p })
-  SetVoiceNotePattern vid p -> updateVoice vid (_ { notePatternDraft = p })
-  CycleVoiceArticulator vid -> updateVoice vid (\v -> v { articulator = RA.nextArtic v.articulator })
-
-  -- …then commit BOTH atomically. Committing resets the live-jump phase (the new
-  -- patterns re-anchor from bar 0) so an edit is a clean structural change.
-  CommitVoicePattern vid -> updateVoice vid \v ->
-    v { pattern = trim v.patternDraft, notePattern = trim v.notePatternDraft, phase = 0 }
-
-  ToggleVoiceMute vid -> updateVoice vid (\v -> v { muted = not v.muted })
 
   -- The bpm field nudges the shared clock's free-run baseline (so it works
   -- standalone). On the rig the Link anchor — and in the rack the shell's
@@ -3300,8 +2751,6 @@ handleActionCore = case _ of
       H.modify_ _ { tempo = t', clockTempo = toNumber t' }
     Nothing -> pure unit
 
-  SelectPerfChord pid -> H.modify_ _ { sounding = Just pid, selected = Nothing }
-
   -- Tank model (Slice A). Catch a lattice chord into the durable tank as a frozen
   -- Specimen: absolute-MIDI voicing + bass (bassPc grounded an octave below middle
   -- C, matching playNotes), a descriptive label + provenance. It references no
@@ -3311,49 +2760,6 @@ handleActionCore = case _ of
     if st.panMoved then H.modify_ _ { panMoved = false }
     else playId pid
 
-  DeleteSpec sid -> H.modify_ \s -> s { tank = filter (\sp -> sp.id /= sid) s.tank }
-
-  AuditionSpec sid -> do
-    st <- H.get
-    for_ (find (\sp -> sp.id == sid) st.tank) playSpecimen
-
-  -- Seed the Stage from the tank. First click injects the specimen into the pool
-  -- as a centre chord and blooms its extensions around it (seed → generate);
-  -- clicking a staged specimen again unstages it, pruning the seed + its bloom.
-  StageSpec sid -> do
-    st <- H.get
-    case Map.lookup sid st.seedChord of
-      Just cid -> do
-        let removeIds = pruneSet st.chords [ cid ]
-            surviving = filter (\c -> not (elem c.id removeIds)) st.chords
-        H.modify_ _ { chords = surviving, seedChord = Map.delete sid st.seedChord }
-        for_ st.handle \h ->
-          liftEffect $ void $ h.updateData (map mkSimNode surviving) (neighborLinks surviving)
-      Nothing ->
-        for_ (find (\sp -> sp.id == sid) st.tank) \spec -> do
-          let seedId = st.nextId
-              node = specToNode seedId st.key spec
-              chords' = st.chords <> [ node ]
-          H.modify_ _
-            { chords = chords'
-            , nextId = seedId + 1
-            , seedChord = Map.insert sid seedId st.seedChord
-            , focusId = seedId
-            , focusedFamily = Just seedId
-            , sounding = Just seedId
-            }
-          spawn Extend seedId    -- a modest neighbourhood; richer lenses come in Slice C+
-          playSpecimen spec
-
-  ClearStage -> do
-    st <- H.get
-    let seedCids = map snd (Map.toUnfoldable st.seedChord :: Array (Tuple SpecimenId Int))
-        removeIds = pruneSet st.chords seedCids
-        surviving = filter (\c -> not (elem c.id removeIds)) st.chords
-    H.modify_ _ { chords = surviving, seedChord = Map.empty }
-    for_ st.handle \h ->
-      liftEffect $ void $ h.updateData (map mkSimNode surviving) (neighborLinks surviving)
-
   -- Tonnetz lens: a triad picked straight off the tonal net. Audition sounds it
   -- (no state change); catch freezes it into the tank as a Free-anchored Specimen,
   -- exactly like a palette drop.
@@ -3362,40 +2768,6 @@ handleActionCore = case _ of
     if st.panMoved then H.modify_ _ { panMoved = false }
     -- label it like CatchTriad (root name + minor mark) so the chyron reads it
     else playChord (triadNode root pcs (noteName root <> (if elem (mod (root + 4) 12) pcs then "" else "m")))
-
-  -- Tonnetz stacking (2026-07-31): alt-click accumulates triads into a stack
-  -- (toggle — alt-clicking a stacked triad removes it). The stack builds a
-  -- polychord; edge-adjacent triads fold into 7ths/9ths since the chord is the
-  -- pitch-class union. Auditions the triad on the way in so you hear it stack.
-  StackTriad root pcs isMajor -> do
-    playChord (triadNode root pcs "")
-    H.modify_ \s ->
-      let same e = e.root == root && e.pcs == pcs
-      in s { tonnetzStack = case find same s.tonnetzStack of
-               Just _ -> filter (not <<< same) s.tonnetzStack
-               Nothing -> s.tonnetzStack <> [ { root, pcs, major: isMajor } ] }
-
-  -- Catch the whole stack to the tank as ONE Anchor: the pitch-class union,
-  -- bassed on the first (lowest-picked) triad, labelled as the stacked triads.
-  CommitStack -> do
-    st <- H.get
-    case st.tonnetzStack of
-      [] -> pure unit
-      stack -> do
-        let allPcs = nub (concatMap _.pcs stack)
-            root = maybe 0 _.root (head stack)
-            label = joinWith "+" (map (\e -> noteName e.root <> (if e.major then "" else "m")) stack)
-            node = triadNode root allPcs label
-            spec = { id: SpecimenId st.nextSpecId
-                   , voicing: node.voicing
-                   , bass: bassMidi node
-                   , label: node.label
-                   , provenance: FromLens (groupLabel st.key)
-                   , anchor: node.anchor
-                   }
-        H.modify_ _ { tank = st.tank <> [ spec ], nextSpecId = st.nextSpecId + 1, tonnetzStack = [] }
-
-  ClearStack -> H.modify_ _ { tonnetzStack = [] }
 
   -- Lattices lens: a generated lattice chord carries its own voicing, so audition/
   -- catch use it verbatim (unlike the triad path, which re-voices from pcs).
@@ -3455,31 +2827,6 @@ handleActionCore = case _ of
           Left _ -> "saved " <> nm <> " here (no store)" }
       publishProgressions
 
-  -- The audition card (step 4a): put the progression on the stage as a card,
-  -- or take Vetula's off; the composer's own stays when a fresh one is made.
-  ToggleAuditionCard -> do
-    s <- H.get
-    case s.auditionCard of
-      -- Vetula's: take it off the stage
-      Just ac | not ac.owned -> H.modify_ \st -> st
-        { perfBoxes = filter (\b -> b.cardId /= ac.cardId) st.perfBoxes, auditionCard = Nothing }
-      -- none yet, or the composer's: a fresh card (the owned one stays)
-      _ -> do
-        H.modify_ \st ->
-          let used = map _.channel st.perfBoxes
-              want = st.previewChan + 1
-              ch = if elem want used then fromMaybe (length st.perfBoxes + 1) (find (\c -> not (elem c used)) (range 1 16)) else want
-              n = freeCardId st.perfBoxes
-              box = auditionBoxFor st { cardId: n, channel: ch, label: "P" <> show ch, seq: Nothing, stack: [], seqText: "", muted: false, term: TMidi, phrase: Nothing }
-          in st { perfBoxes = st.perfBoxes <> [ box ], auditionCard = Just { cardId: n, owned: false } }
-        -- publish it now, then ask Limulus to show it: Limulus only keeps in
-        -- step the cards it already has a block for, and adds one when asked
-        -- (stage-open), which needs the card on the stage first
-        publishCards
-        st' <- H.get
-        for_ st'.auditionCard \ac -> for_ st'.binnacle \bin ->
-          liftEffect $ Transport.send (Binnacle.socket bin) (SC.openLine ac.cardId)
-
   -- A voice for the progression: `v3 $ vetula "name"`, in the current
   -- style, handed to Limulus to run (stage-paste). Numbered from the voices
   -- playing, at most 8. A voice plays what is saved, so save first.
@@ -3505,258 +2852,6 @@ handleActionCore = case _ of
       H.modify_ _ { cursor = Just { key: k, chord: c } }
       playChordQuiet c
       takeChord c
-
-  -- Chyron: remember which chip the pointer is over so space auditions it.
-  HoverChyron mi -> H.modify_ _ { hoveredChyron = mi }
-
-  -- Chyron click. Plain click walks the selection state machine (endpoint →
-  -- span → reset). Shift-click LIFTS: for now, catch the chord into the tank
-  -- (Phase 2b will special-case a shift-click INSIDE the span to lift the whole
-  -- selection as a named progression).
-  -- Chyron selection, Mac text-editing semantics. Plain click drops a fresh
-  -- single-chord selection whose `anchor` is that chord; shift-click extends the
-  -- range from the fixed anchor (a shift-click with no prior selection is just a
-  -- plain click). This is the collector-and-editor's select gesture — it no longer
-  -- catches to the tank (the tank is being retired; you explore from the selection
-  -- itself, DESIGN-tank-overhaul.md §§3–4).
-  ChyronClick i shift -> do
-    st <- H.get
-    case index st.chyron i of
-      Nothing -> pure unit
-      Just _ ->
-        let sel = case st.chyronSel of
-              Just s | shift -> { lo: min s.anchor i, hi: max s.anchor i, anchor: s.anchor }
-              _ -> { lo: i, hi: i, anchor: i }
-        in H.modify_ _ { chyronSel = Just sel }
-
-  -- Delete one audition. Indices shift, so ADJUST the selection rather than drop it:
-  -- a delete below the span slides it down; a delete inside shrinks the top; deleting
-  -- the lone selected chord clears it. Keeping the selection alive through edits is
-  -- what leaves the ⏎ save (rebundle) button available while you're editing an
-  -- unbundled progression (the check-out → edit → check-in loop, §6).
-  DeleteChyron i -> H.modify_ \st ->
-    let sel' = case st.chyronSel of
-          Nothing -> Nothing
-          Just s
-            | i < s.lo    -> Just { lo: s.lo - 1, hi: s.hi - 1, anchor: max 0 (s.anchor - 1) }
-            | i > s.hi    -> Just s
-            | s.hi > s.lo -> Just { lo: s.lo, hi: s.hi - 1, anchor: clamp s.lo (s.hi - 1) s.anchor }
-            | otherwise   -> Nothing   -- the single selected chord was deleted
-    in st { chyron = fromMaybe st.chyron (deleteAt i st.chyron)
-          , chyronSel = sel'
-          , hoveredChyron = Nothing }
-
-  ClearChyron -> H.modify_ _ { chyron = [], chyronSel = Nothing, hoveredChyron = Nothing }
-
-  -- Drop repeat chords from the trace (same pitch-class set), keeping the first of
-  -- each. Selection is cleared since indices shift.
-  DedupeChyron -> H.modify_ \st ->
-    st { chyron = nubByEq (\a b -> a.pcs == b.pcs) st.chyron
-       , chyronSel = Nothing, hoveredChyron = Nothing }
-
-  -- Compress the selected span into a pinned 2-glyph token: mint a SavedSeq from
-  -- its events + content-glyph, then REMOVE those events from the live trace
-  -- (reclaiming the space — the saving is the compression).
-  SaveChyronSel -> do
-    st <- H.get
-    case st.chyronSel of
-      Just sel -> do
-        let evs = mapMaybe (\ix -> index st.chyron ix) (range sel.lo sel.hi)
-            saved = { events: evs, glyph: TGlyph.chordGlyph (map _.notes evs), pattern: "" }
-            keep = mapMaybe (\(Tuple ix e) -> if ix < sel.lo || ix > sel.hi then Just e else Nothing)
-                     (mapWithIndex Tuple st.chyron)
-        H.modify_ _ { chyronSaved = shelve saved st.chyronSaved, chyron = keep
-                    , chyronSel = Nothing, hoveredChyron = Nothing }
-      _ -> pure unit
-
-  -- Reorder the buffer by drag-and-drop (§10.4): drop chip `f` before chip `t`.
-  -- Arrangement is ORDER now, not timestamps (§8), so a plain array move is the
-  -- whole story; the selection is dropped since its indices no longer mean the
-  -- same chords.
-  ChyronDragStart i -> H.modify_ _ { chyronDrag = Just i }
-
-  ChyronDropOn t -> H.modify_ \st -> case st.chyronDrag of
-    Nothing -> st
-    Just f
-      | f == t -> st { chyronDrag = Nothing }
-      | otherwise -> case index st.chyron f of
-          Nothing -> st { chyronDrag = Nothing }
-          Just el ->
-            let without = fromMaybe st.chyron (deleteAt f st.chyron)
-                t' = if f < t then t - 1 else t     -- removing f before t shifts t left
-                reordered = fromMaybe (without <> [ el ]) (insertAt t' el without)
-            in st { chyron = reordered, chyronDrag = Nothing, chyronSel = Nothing }
-
-  ChyronDragEnd -> H.modify_ _ { chyronDrag = Nothing }
-
-  PlaySaved i -> do
-    st <- H.get
-    for_ (index st.chyronSaved i) \s -> playEvents s.events
-
-  DeleteSaved i -> H.modify_ \st -> st { chyronSaved = fromMaybe st.chyronSaved (deleteAt i st.chyronSaved) }
-
-  -- Unbundle (check OUT) a saved token into the working buffer to edit it (§6): the
-  -- token LEAVES the shelf, its events append to the buffer, and the appended run is
-  -- SELECTED so you can immediately reorder / revoice / Explore / delete it — and the
-  -- ⏎ save (rebundle) button is right there. Editing then ⏎-saving mints a fresh token
-  -- (new content-glyph) back onto the shelf: check-out → edit → check-in, additive,
-  -- never a silent overwrite. (The cap can trim the front, so the selection is
-  -- computed against the merged length.)
-  Unbundle i -> H.modify_ \st -> case index st.chyronSaved i of
-    Nothing -> st
-    Just s ->
-      let merged = takeEnd chyronCap (st.chyron <> s.events)
-          addN = length s.events
-          selLo = max 0 (length merged - addN)
-          selHi = max selLo (length merged - 1)
-      in st { chyron = merged
-            , chyronSaved = fromMaybe st.chyronSaved (deleteAt i st.chyronSaved)
-            , chyronSel = if addN == 0 then st.chyronSel else Just { lo: selLo, hi: selHi, anchor: selLo } }
-
-  ToggleChyronArm -> H.modify_ \st -> st { chyronArmed = not st.chyronArmed }
-
-  -- PERFORM: pick up / drop / clear a player box. Pickup toggles (click the held
-  -- token again to drop it). Drop assigns the held token and clears the hand;
-  -- with nothing in hand it is a no-op (so a bubbled × clear is harmless).
-  PerfPickup i -> H.modify_ \st ->
-    st { perfHeld = if st.perfHeld == Just i then Nothing else Just i, perfHeldFx = Nothing }
-
-  -- Drop onto box b (appends): a DRAGGED layer (palette or moved from another box)
-  -- wins; else an fx-in-hand (click-place); else a token-in-hand assigns the
-  -- sequence; else no-op (so a bubbled × clear / chip-drop stays harmless).
-  PerfDropBox b -> do
-    st <- H.get
-    case st.perfDrag of
-      Just src -> H.modify_ _ { perfBoxes = dropFxInto src b Nothing st.perfBoxes, perfDrag = Nothing }
-      Nothing -> case st.perfHeldFx of
-        Just fx -> H.modify_ _
-          { perfBoxes = mapWithIndex (\j box -> if j == b then box { stack = box.stack <> [ mkLayer fx ] } else box) st.perfBoxes
-          , perfHeldFx = Nothing
-          }
-        Nothing -> case st.perfHeld >>= index st.chyronSaved of
-          -- A token that names its own reading brings it with it; one that does
-          -- not leaves whatever the box was already doing alone.
-          Just sq -> H.modify_ _
-            { perfBoxes = mapWithIndex
-                (\j box -> if j /= b then box
-                           else box { seq = Just sq
-                                    , seqText = if sq.pattern == "" then box.seqText else sq.pattern })
-                st.perfBoxes
-            , perfHeld = Nothing
-            }
-          Nothing -> pure unit
-
-  PerfClearBox b -> H.modify_ \st ->
-    st { perfBoxes = mapWithIndex (\j box -> if j == b then box { seq = Nothing } else box) st.perfBoxes }
-
-  -- Append a fresh empty player on the lowest free MIDI channel (1..16), so the
-  -- Perform surface is a growable palette of voices rather than a fixed four.
-  PerfAddBox -> H.modify_ \st ->
-    let used = map _.channel st.perfBoxes
-        free = fromMaybe (length st.perfBoxes + 1) (find (\c -> not (elem c used)) (range 1 16))
-    in st { perfBoxes = st.perfBoxes <>
-              [ { cardId: freeCardId st.perfBoxes, channel: free, label: "P" <> show free, seq: Nothing, stack: [], seqText: "", muted: false, term: TMidi, phrase: Nothing } ] }
-
-  -- Delete a player outright (distinct from PerfClearBox, which only empties its
-  -- token). Its channel frees for the next add.
-  PerfRemoveBox b -> H.modify_ \st ->
-    st { perfBoxes = fromMaybe st.perfBoxes (deleteAt b st.perfBoxes) }
-
-  PerfDragOver ev -> liftEffect (preventDefault (DE.toEvent ev))
-
-  PerfPickFx fx -> H.modify_ \st ->
-    st { perfHeldFx = if st.perfHeldFx == Just fx then Nothing else Just fx, perfHeld = Nothing }
-
-  PerfFxNudge b i d -> H.modify_ \st ->
-    st { perfBoxes = mapWithIndex (\j box ->
-           if j == b then box { stack = fromMaybe box.stack (modifyAt i (\lyr -> lyr { fx = fxNudge d lyr.fx }) box.stack) } else box)
-         st.perfBoxes }
-
-  PerfFxWhen b i -> H.modify_ \st ->
-    st { perfBoxes = mapWithIndex (\j box ->
-           if j == b then box { stack = fromMaybe box.stack (modifyAt i (\lyr -> lyr { when = cycleWhen lyr.when }) box.stack) } else box)
-         st.perfBoxes }
-
-  PerfFxRemove b i -> H.modify_ \st ->
-    st { perfBoxes = mapWithIndex (\j box ->
-           if j == b then box { stack = fromMaybe box.stack (deleteAt i box.stack) } else box)
-         st.perfBoxes }
-
-  PerfFxAlt b i -> H.modify_ \st ->
-    st { perfBoxes = mapWithIndex (\j box ->
-           if j == b then box { stack = fromMaybe box.stack (modifyAt i (\lyr -> lyr { fx = fxAlt lyr.fx }) box.stack) } else box)
-         st.perfBoxes }
-
-  PerfToggleMute b -> H.modify_ \st ->
-    st { perfBoxes = mapWithIndex (\j box ->
-           if j == b then box { muted = not box.muted } else box)
-         st.perfBoxes }
-
-  -- `→ odo` is EXCLUSIVE (AC, 2026-08-06): exactly one box may conduct Odonus's
-  -- quantiser at a time — the harmonic-context voice. Promoting one demotes any
-  -- other to `→ midi`, so there is never an ambiguous "which chord is THE context"
-  -- and the ONE-set model has one unambiguous source. Any other terminal is free.
-  PerfSetTerm b t -> H.modify_ \st ->
-    st { perfBoxes = mapWithIndex (\j box ->
-           if j == b then box { term = t }
-           else if t == TOdo && box.term == TOdo then box { term = TMidi }
-           else box)
-         st.perfBoxes }
-
-  PerfSetSeq b txt -> H.modify_ \st ->
-    st { perfBoxes = mapWithIndex (\j box ->
-           if j == b then box { seqText = txt } else box)
-         st.perfBoxes }
-
-  -- the round-trip commit: parse the whole pipeline text back into the structured
-  -- box (seq part + layer stack), so the text field and the chips stay one thing.
-  PerfSetPipeline b txt -> H.modify_ \st ->
-    st { perfBoxes = mapWithIndex (\j box ->
-           if j == b then let r = parsePipeline txt in box { seqText = r.seqText, stack = r.stack } else box)
-         st.perfBoxes }
-
-  PerfOpenEdit b -> H.modify_ _ { perfEditBox = Just b }
-
-  PerfCloseEdit -> H.modify_ _ { perfEditBox = Nothing }
-
-  -- Phrase picker (#27): open/close the clip library, attach a chosen clip as a box's
-  -- source (a self-contained copy), or detach back to chords. Attaching coerces a → odo
-  -- terminal to → midi, since a frozen phrase can only sound (midi/rig), not condition.
-  -- re-read the shared clip library when opening the picker, so a clip captured in
-  -- Odonus this session shows up without a reload.
-  PerfOpenPhrasePick b -> do
-    clips <- liftEffect ClipStore.loadClips
-    H.modify_ _ { perfPhrasePick = Just b, clipLibrary = clips }
-
-  PerfClosePhrasePick -> H.modify_ _ { perfPhrasePick = Nothing }
-
-  PerfAttachPhrase b clip -> H.modify_ \st ->
-    st { perfBoxes = mapWithIndex (\j box ->
-           if j == b
-             then box { phrase = Just { clip, mutedHeads: [], channelMode: Flatten }
-                      , term = if box.term == TOdo then TMidi else box.term }
-             else box)
-         st.perfBoxes
-       , perfPhrasePick = Nothing }
-
-  PerfDetachPhrase b -> H.modify_ \st ->
-    st { perfBoxes = mapWithIndex (\j box ->
-           if j == b then box { phrase = Nothing } else box)
-         st.perfBoxes }
-
-  PerfPhraseMode b mode -> H.modify_ \st ->
-    st { perfBoxes = mapWithIndex (\j box ->
-           if j == b then box { phrase = map (_ { channelMode = mode }) box.phrase } else box)
-         st.perfBoxes }
-
-  -- toggle source head `h` in box `b`'s phrase mute mask (silence it from the recording).
-  PerfPhraseMuteHead b h -> H.modify_ \st ->
-    st { perfBoxes = mapWithIndex (\j box ->
-           if j == b
-             then box { phrase = map (\ph -> ph { mutedHeads =
-                          if elem h ph.mutedHeads then filter (_ /= h) ph.mutedHeads else [ h ] <> ph.mutedHeads }) box.phrase }
-             else box)
-         st.perfBoxes }
 
   -- Clip-library management (#33). These write the WHOLE library back to the shared
   -- store (clipLibrary was loaded fresh when the picker opened, so it's authoritative).
@@ -3882,16 +2977,8 @@ handleActionCore = case _ of
   -- Leaving REPLAY drops the selected region and its context card: the lift card is
   -- a REPLAY affordance, and a stale one hanging over the strip in LIVE reads as if
   -- something were still armed.
-  -- The river's animation tick. Guarded to the Perform surface in LIVE: this fires
-  -- ~30×/s and Vetula's render is not cheap, so it must not run while you're
-  -- hunting or reviewing (neither stage reads `nowMicros`).
   CaptureFrame -> do
     st <- H.get
-    when (st.stage == Perform) do
-      nowMs <- liftEffect perfNow
-      let now = nowMs * 1000.0
-      H.modify_ _ { nowMicros = now
-                  , riverNotes = filter (\n -> (now - n.fireUnixMicros) < River.windowMicros) st.riverNotes }
     -- A run starts and stops with the transport (Capture.Runs): the Review
     -- surface draws only time inside runs. The rig keeps them too.
     when (st.playing /= Runs.running st.capture.logbook.runs) do
@@ -3942,30 +3029,12 @@ handleActionCore = case _ of
 
   PerfNop -> pure unit
 
-  -- Starting a drag abandons any click-to-place hold, so the two gestures can't
-  -- coexist and leave a stray held layer to be dropped by a later bubbled event.
-  PerfDragStart src -> H.modify_ _ { perfDrag = Just src, perfHeld = Nothing, perfHeldFx = Nothing }
-
-  PerfDragEnd -> H.modify_ _ { perfDrag = Nothing }
-
   -- Run an inner-control action but stop the click bubbling to the box's
   -- placement onClick — otherwise nudging/removing a layer while something is in
   -- hand would also drop that held item onto the box.
   PerfStopClick ev act -> do
     liftEffect $ stopPropagation (ME.toEvent ev)
     handleAction act
-
-  -- Drop the dragged layer BEFORE box b's chip i (reorder within a box, or precise
-  -- cross-box placement). Consumes perfDrag, so the bubbled box-level PerfDropBox
-  -- that follows is a no-op.
-  PerfDropOnChip ev b i -> do
-    -- stop the drop bubbling to the box-level PerfDropBox (which would otherwise
-    -- also drop any click-held layer onto the box — a spurious duplicate).
-    liftEffect $ stopPropagation (DE.toEvent ev)
-    st <- H.get
-    case st.perfDrag of
-      Just src -> H.modify_ _ { perfBoxes = dropFxInto src b (Just i) st.perfBoxes, perfDrag = Nothing }
-      Nothing -> pure unit
 
   -- Wheel-zoom the geometric viewport toward the cursor. The point under the
   -- pointer stays fixed: the centre's offset from it scales by the zoom ratio.
@@ -4019,23 +3088,6 @@ handleActionCore = case _ of
   -- trace in things you were only listening to.
   VaryAudition c -> playChordQuiet c
 
-  -- Shift-click TOGGLES: the same gesture keeps and un-keeps, so a mistake
-  -- costs the same as the choice did.
-  --
-  -- In an EXCURSION the keep belongs to the SLOT that sent us, not to the
-  -- free-standing tray: you went looking on behalf of a chord in a progression,
-  -- and making you carry the result back by hand would be the tool forgetting
-  -- what you asked it.
-  KeepVariation c -> do
-    st <- H.get
-    case slotForKeep st of
-      Just i -> do
-        H.modify_ \s -> s { rehearsal = modifyIx i (RH.toggleOption c) s.rehearsal }
-        playChordQuiet c
-      Nothing -> keepFreely c
-
-  ForgetKept i -> H.modify_ \s -> s { kept = fromMaybe s.kept (deleteAt i s.kept) }
-
   -- **Declare a progression to the sampler.** One path, never a lattice: you
   -- can only name what you sampled if you know which reading played. A saved
   -- progression is one plain path (alternation is a voice's business), so
@@ -4059,137 +3111,9 @@ handleActionCore = case _ of
                 { publishMsg = Just ("✓ for Quadrat · " <> SCU.take 8 hash) }
               Left _ -> H.modify_ _ { publishMsg = Just "✗ send failed (store offline?)" }
 
-  -- ── The hand-off ──────────────────────────────────────────────────────
-  -- Everything leaves Rehearse the same way: as a token on the shelf. From
-  -- there the app already knows what to do — drag it to a Perform box, and the
-  -- box loops it on the transport and feeds Odonus if its terminal is → odo.
-  -- Building a second route would have meant a second looping mechanism and a
-  -- second thing that can be stale.
-  --
-  -- A settled pass mints a NEW token rather than replacing the one you took up:
-  -- its chords differ, so its rebus differs, so it IS a different progression.
-  -- Check out, edit, check in — the shape `Unbundle` already uses.
-  KeepPass -> do
-    st <- H.get
-    mintFromRehearsal [ passIxs st ]
-
-  KeepMarked -> do
-    st <- H.get
-    mintFromRehearsal (map _.ixs (markedRows st))
-
-  -- Every slot's options at once, each slot alternating independently. The
-  -- generative shape: the rig walks the space per cycle instead of us choosing.
-  KeepLattice -> do
-    st <- H.get
-    mintLattice st.rehearsal
-
-  -- ── REHEARSE ──────────────────────────────────────────────────────────
-  -- Take up a saved progression: one slot per chord, its own voicing as option
-  -- zero, and any variations already kept for that exact chord folded in — which
-  -- is why `kept` is keyed by notes and not by id.
-  TakeUp i -> do
-    st <- H.get
-    for_ (index st.chyronSaved i) \sq -> do
-      let slots = map (RH.slotFrom st.kept) sq.events
-      H.modify_ _ { rehearsal = slots, rehearseRoll = 0, stage = Rehearse
-                  , rehearsalFrom = Just i, pane = Nothing, marked = [] }
-
-  DropRehearsal -> H.modify_ _ { rehearsal = [], pane = Nothing, rehearsalFrom = Nothing, marked = [] }
-
-  RollPass -> do
-    H.modify_ \s -> s { rehearseRoll = s.rehearseRoll + 1 }
-    handleAction PlayPass
-
-  PlayPass -> do
-    st <- H.get
-    playEvents (passEvents st)
-
-  SetPull p -> do
-    H.modify_ _ { pull = p }
-    handleAction PlayPass
-
-  -- The chord ALONE, the same as a click in the vary grid. Two surfaces where
-  -- pointing at a chord means different things is the thing you mis-predict a
-  -- fortnight later; and the paths view now answers "how does it go" properly,
-  -- so the three-chord preview no longer has to muddy this one.
-  HearOption i j -> do
-    st <- H.get
-    for_ (index st.rehearsal i >>= \sl -> index sl.options j) playChordQuiet
-
-  -- A chord is not good or bad, it is good or bad THERE. Three chords, which is
-  -- what a player trying a substitution actually plays.
-  HearAround i c -> do
-    st <- H.get
-    playEvents (spaced 0.0 (RH.around st.pull st.rehearseRoll st.rehearsal i c))
-
-  -- And if the neighbours have alternatives of their own, whether this one
-  -- works is a question about all of them at once. A gap between phrases, so
-  -- you can hear where one reading ends and the next begins.
-  SweepAround i c -> do
-    st <- H.get
-    let phrases = RH.allAround sweepCap st.rehearsal i c
-        laid = mapWithIndex (\k ph -> spaced (toNumber k * phraseGap) ph) phrases
-    playEvents (concat laid)
-
-  ShowPaths -> H.modify_ \s -> s { pane = if s.pane == Just PanePaths then Nothing else Just PanePaths }
-
-  HearPath ixs -> do
-    st <- H.get
-    playEvents (spaced 0.0 (pathChords st ixs))
-
-  MarkPath ixs -> do
-    st <- H.get
-    let key = map playNotes (pathChords st ixs)
-    H.modify_ \s -> s { marked = if elem key s.marked
-                                   then filter (_ /= key) s.marked
-                                   else s.marked <> [ key ] }
-    playEvents (spaced 0.0 (pathChords st ixs))
-
-  -- Toggling, so the same click settles and unsettles.
-  SettleSlot i j -> do
-    H.modify_ \s -> s { rehearsal = modifyIx i (\sl ->
-      sl { locked = if sl.locked == Just j then Nothing else Just j }) s.rehearsal }
-    st <- H.get
-    for_ (index st.rehearsal i >>= \sl -> index sl.options j) playChordQuiet
-
-  -- Settle the WHOLE pass: the converging gesture. You heard it, you keep it,
-  -- and every alternative is still there when you unlock.
-  SettlePass -> H.modify_ \s ->
-    s { rehearsal = zipWith (\sl j -> sl { locked = Just j }) s.rehearsal (passIxs s) }
-
-  LoosenAll -> H.modify_ \s -> s { rehearsal = map (_ { locked = Nothing }) s.rehearsal }
-
-  -- Option zero is the progression's own chord and is not removable: a slot has
-  -- to be able to play what was written.
-  DropOption i j -> H.modify_ \s ->
-    if j == 0 then s
-    else s { rehearsal = modifyIx i (\sl ->
-      sl { options = fromMaybe sl.options (deleteAt j sl.options)
-         , locked = case sl.locked of
-             Just k | k == j -> Nothing
-             Just k | k > j -> Just (k - 1)
-             other -> other
-         }) s.rehearsal }
-
-  -- Opens the grid UNDERNEATH the progression rather than navigating to it.
-  -- AC: there is plenty of room, and scrolling down a little to find a chord is
-  -- fine — where losing sight of the progression you are varying is not, since
-  -- what you keep only makes sense against the chords either side of it.
-  -- Clicking the same slot again closes the panel.
-  VaryFromSlot i -> do
-    st <- H.get
-    if varyingSlot st == Just i then H.modify_ _ { pane = Nothing }
-    else for_ (index st.rehearsal i >>= \sl -> index sl.options 0) \base -> do
-      H.modify_ _ { varying = Just base, pane = Just (PaneVary i), revoicing = Nothing }
-      playChordQuiet base
-
-  BackToRehearsal -> H.modify_ _ { stage = Rehearse, pane = Nothing }
-
   -- Opening the lens closes the revoice modal: they are two views of the same
   -- question at different magnifications, and both up at once is just clutter.
   OpenVary c -> do
-    st <- H.get
-    unless (isHunt st.stage) (handleAction (SetStage (Hunt st.lastLens)))
     H.modify_ _ { varying = Just c, revoicing = Nothing, side = Just SideVariations }
     playChord c
 
@@ -4224,12 +3148,6 @@ handleActionCore = case _ of
     else if acc >= 60.0 then step (-1)
     else H.modify_ _ { wheelAcc = acc, wheelLast = t }
 
-  PinDefaultLens -> do
-    st <- H.get
-    let v = huntOr st.lastLens st.stage
-    liftEffect (Store.saveDefaultLens (viewtypeValue v))
-    H.modify_ _ { defaultLens = v }
-
   -- The one mode switch. Absorbed the old `SetCaptureView`, so leaving REVIEW by
   -- ANY route — Perform, or off to Hunt — hushes the region preview and drops the
   -- lift card. Under the old split you could escape a looping preview sideways
@@ -4249,104 +3167,7 @@ handleActionCore = case _ of
       -- An excursion is a round trip between two places. Navigating anywhere
       -- ELSE ends it, or a later free visit to the Vary lens would quietly post
       -- its keeps into a slot you had stopped thinking about.
-      -- A panel belongs to the Rehearse pane; leaving for anywhere but the
-      -- standalone Vary lens closes it, so a keep can never post into a slot you
-      -- had stopped thinking about.
-      , pane = if v == Rehearse then st.pane else Nothing
       }
-
-  -- Slice E — transpose. In-place shift of a specimen's absolute-MIDI voicing +
-  -- bass (arithmetic, since everything is absolute MIDI), relabelled to the new
-  -- root. Already-sequenced chords are untouched: they're separate imported
-  -- snapshots, so a tank capo never rewrites a built progression.
-  TransposeSpec sid n -> do
-    st <- H.get
-    let tank' = map (\sp -> if sp.id == sid then transposeSpecimen n sp else sp) st.tank
-    H.modify_ _ { tank = tank' }
-    for_ (find (\sp -> sp.id == sid) tank') playSpecimen
-
-  CapoTank n -> H.modify_ \s -> s { tank = map (transposeSpecimen n) s.tank }
-
-  -- Slice D — sequence a tank specimen onto the progression. It's materialised as
-  -- an IMPORTED (off-lattice) snapshot with its own stable id: it lives in `chords`
-  -- for playback / revoice / export but never renders on the lattice and is never
-  -- pruned or regenerated. So the progression is self-contained and survives every
-  -- context change — the original path-on-lattice staleness bug, fixed. (Same
-  -- stable-snapshot mechanism `PickCandidate` and `rebuild` already rely on.)
-  SequenceSpec sid -> do
-    st <- H.get
-    for_ (find (\sp -> sp.id == sid) st.tank) \spec -> do
-      let newId = st.nextId
-          node = (specToNode newId st.key spec) { isCentre = false }
-      H.modify_ _
-        { chords = st.chords <> [ node ]
-        , imported = Set.insert newId st.imported
-        , nextId = newId + 1
-        , path = st.path <> [ newId ]
-        , sounding = Just newId
-        }
-      playSpecimen spec
-
-  SetBridgeLen n -> H.modify_ _ { bridgeLen = clamp 0 maxBridge n }
-  ToggleFold p -> H.modify_ \st -> case p of
-    VCtx -> st { foldCtx = not st.foldCtx }
-    VProg -> st { foldProg = not st.foldProg }
-
-  -- Drop a caught chord into the progression, BRIDGED. Between the current end
-  -- and the dropped chord `Vetula.Between` lays `bridgeLen` passing chords (a
-  -- tonicizing turnaround into the target's root); the bridge is skipped for the
-  -- first chord (nothing to bridge from) or when the dial is 0. All new chords
-  -- are minted as imported nodes and appended in order, then the segment plays.
-  ArrangeSpec sid -> do
-    st <- H.get
-    for_ (find (\sp -> sp.id == sid) st.tank) \spec -> do
-      let bnotes = case last st.path of
-            Just _ -> bridgeNotes st.bridgeLen (specRoot spec)
-            Nothing -> []
-          nB = length bnotes
-          bridgeNodes = mapWithIndex (\i ns -> importChord (st.nextId + i) ns) bnotes
-          targetId = st.nextId + nB
-          targetNode = (specToNode targetId st.key spec) { isCentre = false }
-          newChords = bridgeNodes <> [ targetNode ]
-          newIds = map _.id newChords
-      H.modify_ _
-        { chords = st.chords <> newChords
-        , imported = foldr Set.insert st.imported newIds
-        , nextId = targetId + 1
-        , path = st.path <> newIds
-        , sounding = Just targetId
-        }
-      playPath (maybe newIds (\l -> [ l ] <> newIds) (last st.path))
-
-  -- The play button is now a sticky ARM/cue toggle: flip arm, then let
-  -- reconcilePerf start or stop the ticker per (armed && master).
-  ToggleArm -> do
-    H.modify_ \s -> s { armed = not s.armed }
-    reconcilePerf
-
-  -- Push the whole performance to the rig: the shared Reef.Vetula.Perf scheduler
-  -- runs on the BEAM (reef_vetula_voice) and its → odo voice conducts reef_voice's
-  -- chord overlay — reproducing "Vetula progressions quantising Odonus" entirely in
-  -- the backend. A pure function of the absolute pulse, so ONE push is the whole
-  -- wire (a re-push after an edit swaps it in place). Push Odonus to the rig first.
-  PushVetula -> do
-    st <- H.get
-    for_ st.binnacle \bin ->
-      liftEffect $ Transport.send (Binnacle.socket bin) ("vetula-perf " <> RV.encodePerf (buildPerf st))
-
-  -- Push the progression's voicings as a real Tidal Pattern (Option B): the rig's
-  -- reef_vetula_brush queries it per pulse and, on each chord change, conducts
-  -- Odonus (reef_voice) with the active chord's pitch classes — one source of
-  -- truth for pads + quantise-target. Single brush voice for now: uses the FIRST
-  -- voice's renderer (Strummed → the legato/held reading) and channel. A re-push
-  -- live re-voices in place. (Push Odonus to the rig in follow-Vetula mode first.)
-  PushBrush -> do
-    st <- H.get
-    for_ st.binnacle \bin ->
-      liftEffect $ Transport.send (Binnacle.socket bin) (brushMsg st)
-
-  PerfPlay -> H.modify_ _ { armed = true } *> reconcilePerf *> H.raise (ArmChanged true)
-  PerfStop -> H.modify_ _ { armed = false } *> reconcilePerf *> H.raise (ArmChanged false)
 
   -- One 16th-note from the shared scheduler. We use the tick's absolute grid
   -- INDEX as the pulse (so every voice — and every module — aligns to the same
@@ -4409,29 +3230,7 @@ handleActionCore = case _ of
         { pulse = tick.index, voices = voices', clockTempo = tempo, tempo = round tempo
         , capture = st2.capture { logbook = Logbook.logAppend (nowMs * 1000.0) fresh st2.capture.logbook }
         -- the river draws the same notes over a short window; CaptureFrame prunes it
-        , riverNotes = fresh <> st2.riverNotes }
-
-  -- parse the (possibly edited) Tidal source into note-lists, rebuild them as a
-  -- fresh progression of imported chords, and point the path at them. The
-  -- voicing = the notes above the (lowest) bass; re-export reproduces the paste.
-  LoadSource -> do
-    st <- H.get
-    let txt = fromMaybe (currentSource st) st.sourceEdit
-        noteLists = filter (\ns -> length ns > 0) (parseProgression txt)
-        newChords = mapWithIndex (\i ns -> importChord (st.nextId + i) ns) noteLists
-        ids = map _.id newChords
-    H.modify_ _
-      { chords = st.chords <> newChords
-      , imported = st.imported <> Set.fromFoldable ids
-      , nextId = st.nextId + length newChords
-      , path = ids
-      , progName = Nothing
-      , sounding = head ids
-      , sourceEdit = Nothing
-      -- loading a source is a new capture session (don't overwrite the last ◦)
-      , lastCapIdx = Nothing
-      , lastCapSig = ""
-      }
+        }
 
   DragMove ev -> do
     st <- H.get
@@ -4472,12 +3271,6 @@ handleActionCore = case _ of
       -- a plain click (select only): leave the voicing alone
       _ -> H.modify_ _ { drag = Nothing }
 
--- | Run an action with the currently-hovered chord id, if any.
-withHovered :: forall o m. MonadAff m => (Int -> H.HalogenM State Action Slots o m Unit) -> H.HalogenM State Action Slots o m Unit
-withHovered f = do
-  st <- H.get
-  for_ st.hoveredId f
-
 -- ---------------------------------------------------------------------------
 -- Performance — voices reading the loaded progression on their own clocks
 -- ---------------------------------------------------------------------------
@@ -4517,12 +3310,6 @@ displayDurs :: Int -> RV.PerfClock -> Array Int
 displayDurs n clock =
   map (\c -> sum (map _.len (filter (\s -> s.ix == c) clock.segs)) / 16) (range 0 (n - 1))
 
--- | Fit a voice's duration column to the current chord count (pad new chords with
--- | one bar, drop any trailing extras) — keeps the grid + clock robust if the
--- | progression length and the stored column ever disagree.
-padDurs :: Int -> Array Int -> Array Int
-padDurs n ds = take n (ds <> replicate n 1)
-
 -- | A voice's timeline: one segment per NON-skipped chord, in chord order, each at
 -- | its cumulative pulse offset. 1 bar = 16 pulses (16th notes). Skipped chords
 -- | (0 bars) contribute nothing, so a voice plays only the chords it dwells on.
@@ -4532,28 +3319,6 @@ timeline ds = snd (foldl step (Tuple 0 []) (mapWithIndex Tuple ds))
   step (Tuple off segs) (Tuple i d) =
     if d <= 0 then Tuple off segs
     else Tuple (off + d * 16) (segs <> [ { ix: i, start: off, len: d * 16 } ])
-
-rendOf :: Int -> Renderer
-rendOf i = case mod i 3 of
-  0 -> Block
-  1 -> Arp
-  _ -> Strummed
-
-nextRenderer :: Renderer -> Renderer
-nextRenderer = case _ of
-  Block -> Strummed
-  Strummed -> Arp
-  Arp -> Block
-
-rendName :: Renderer -> String
-rendName = case _ of
-  Block -> "block"
-  Strummed -> "strum"
-  Arp -> "arp"
-
--- | Modify one voice by id.
-updateVoice :: forall o m. MonadAff m => Int -> (Voice -> Voice) -> H.HalogenM State Action Slots o m Unit
-updateVoice vid f = H.modify_ \s -> s { voices = map (\v -> if v.id == vid then f v else v) s.voices }
 
 -- | Bring sounding in line with the transport: the shared scheduler runs always,
 -- | so this only flips `playing` (= armed && master) and the voice note-state.
@@ -4569,13 +3334,6 @@ reconcilePerf = do
     , voices = if want && not s.playing then map (_ { held = [], cursor = 0 }) s.voices
                else if not want then map (_ { held = [] }) s.voices
                else s.voices }
-
--- | Full stop (used when unloading a progression): disarm, silence, clear voices.
-stopClock :: forall o m. MonadAff m => H.HalogenM State Action Slots o m Unit
-stopClock = do
-  st <- H.get
-  silenceHeld st
-  H.modify_ _ { playing = false, armed = false, voices = map (_ { held = [] }) st.voices }
 
 -- | Persist the whole library (the auto-capture stack) to localStorage, best-
 -- | effort. Called after every library mutation. Entries are all-strings (Tidal
@@ -4723,12 +3481,6 @@ toReefVoice routing v =
   , muted: v.muted
   }
 
-buildPerf :: State -> { chords :: Array RV.VChord, voices :: Array RV.VVoice }
-buildPerf st =
-  { chords: map toReefChord (perfChords st)
-  , voices: map (toReefVoice st.routing) st.voices
-  }
-
 -- | The brush renderer name for the `vetula-voicings` verb. Note Strummed → "held":
 -- | on the brush side the old "strum" is the legato / common-tone reading (the
 -- | audible voice-leading), not an intra-chord roll.
@@ -4848,22 +3600,6 @@ playId pid = do
   st <- H.get
   for_ (find (\c -> c.id == pid) st.chords) playChord
 
--- | Append one audition to the CHYRON (the rolling capture buffer), oldest
--- | events falling off past `chyronCap`. Called from the single-chord audition
--- | choke-points below, unconditionally — the trace records intent, so a muted
--- | audition (no `midiOut`) still lands here. See DESIGN-vetula-chyron-redesign.
-logChyron :: forall o m. MonadAff m => String -> Array Int -> Array Int -> Anchor -> H.HalogenM State Action Slots o m Unit
-logChyron label notes pcs anchor = do
-  st <- H.get
-  -- record-arm: disarmed → the audition still sounded, it just isn't captured.
-  when st.chyronArmed do
-    now <- liftEffect dateNow
-    -- never log a blank chip: fall back to the pitch-class names if a call site
-    -- has no label (e.g. an off-net triad before it's named).
-    let lab = if label == "" then joinWith " " (map noteName (sort pcs)) else label
-        ev = { label: lab, notes, pcs, at: now, anchor }
-    H.modify_ \s -> s { chyron = takeEnd chyronCap (s.chyron <> [ ev ]) }
-
 -- | Schedule notes on the preview channel WITHOUT logging to the chyron — for
 -- | re-auditioning a chip already in the trace (no feedback loop).
 auditionNotesNoLog :: forall o m. MonadAff m => Array Int -> H.HalogenM State Action Slots o m Unit
@@ -4887,52 +3623,6 @@ auditionNotesNoLog notes = auditionStyled notes
 -- | run over a source that has been hand-edited in the source box.
 progGlyph :: String -> Glyph
 progGlyph = TGlyph.chordGlyph <<< parseProgression
-
--- | Play a list of captured events back with their ORIGINAL timing (inter-onset
--- | gaps from each `at`), each chord as a BLOCK (all notes together — no per-note
--- | roll, which read as an unwanted arpeggio). No re-log.
-playEvents :: forall o m. MonadAff m => Array ChyronEvent -> H.HalogenM State Action Slots o m Unit
-playEvents evs = do
-  st <- H.get
-  let t0 = maybe 0.0 _.at (head evs)
-  liftEffect $
-    for_ evs \ev ->
-      for_ ev.notes \n ->
-        auditionNote st { note: n, velocity: 88, delayMs: ev.at - t0, durMs: 780.0 }
-
--- | Play the selected chyron span (see `playEvents`). Phase 3 will add a
--- | de-quantised / grid-snapped alternative.
-playChyronSelection :: forall o m. MonadAff m => H.HalogenM State Action Slots o m Unit
-playChyronSelection = do
-  st <- H.get
-  case st.chyronSel of
-    Just sel | sel.hi > sel.lo -> playEvents (mapMaybe (\ix -> index st.chyron ix) (range sel.lo sel.hi))
-    _ -> pure unit
-
--- | Resolve a drag-drop of a layer into the boxes: pull the layer's value (from the
--- | palette, or out of its source box), remove it from the source box if it came
--- | from one, then insert it into the target box — at `mpos` (Just = before that
--- | chip index) or appended (Nothing). A same-box move shifts the insert index down
--- | by one when the removed layer sat before it.
-dropFxInto :: PerfDragSrc -> Int -> Maybe Int -> Array PerfBox -> Array PerfBox
-dropFxInto src tb mpos boxes =
-  case fxOf src of
-    Nothing -> boxes
-    Just fx ->
-      let removed = case src of
-            FromBox sb si -> adjustStack sb (\s -> fromMaybe s (deleteAt si s)) boxes
-            FromPalette _ -> boxes
-          pos = case mpos of
-            Nothing -> maybe 0 (length <<< _.stack) (index removed tb)
-            Just i -> case src of
-              FromBox sb si | sb == tb && si < i -> i - 1
-              _ -> i
-      in adjustStack tb (\s -> fromMaybe (s <> [ fx ]) (insertAt pos fx s)) removed
-  where
-  fxOf = case _ of
-    FromPalette fx -> Just (mkLayer fx)
-    FromBox b i -> index boxes b >>= \bx -> index bx.stack i
-  adjustStack bi f = mapWithIndex (\j bx -> if j == bi then bx { stack = f bx.stack } else bx)
 
 -- | One function-stack layer as a `Pattern (Array Int)` endomorphism. Pitch-shapers
 -- | `map` over each chord's notes; Tidal time combinators (`slow`/`fast`) are
@@ -5043,77 +3733,6 @@ voiceStrategy = case _ of
   Quartal -> quartal
   Cluster -> cluster
 
--- | A short chip label for a stack layer.
-fxLabel :: PerfFx -> String
-fxLabel = case _ of
-  Transpose arg -> "transpose " <> glyphArg arg
-  Octave arg -> "8ve " <> glyphArg arg
-  Slow n -> "slow ×" <> show (max 1 n)
-  Fast n -> "fast ×" <> show (max 1 n)
-  Voice arg -> "voice " <> glyphArg arg
-  Select (Low arg) -> "bottom " <> glyphArg arg
-  Select (High arg) -> "top " <> glyphArg arg
-  Arpg dir r -> "arp " <> arpDirGlyph dir <> " ×" <> show r
-  ArpP src -> "arp " <> src
-  Strum ms -> "strum " <> show ms <> "ms"
-
-voiceShapeName :: VoiceShape -> String
-voiceShapeName = case _ of
-  Open -> "open"
-  Rootless -> "rootless"
-  Drop2 -> "drop2"
-  Drop24 -> "drop2&4"
-  Quartal -> "quartal"
-  Cluster -> "cluster"
-
--- | Nudge a layer's parameter by `d` (the chip's − / + controls), clamped. A LITERAL
--- | arg nudges (transpose/oct/select the number, voice the shape); a PATTERN arg is
--- | left untouched — you edit a figure in the text hatch, per the two-views rule.
-fxNudge :: Int -> PerfFx -> PerfFx
-fxNudge d = case _ of
-  Transpose arg -> Transpose (nudgeIntArg (-24) 24 d arg)
-  Octave arg -> Octave (nudgeIntArg (-4) 4 d arg)
-  Slow n -> Slow (max 1 (n + d))
-  Fast n -> Fast (max 1 (n + d))
-  Voice arg -> Voice (cycleShapeArg d arg)
-  Select (Low arg) -> Select (Low (nudgeIntArg 1 6 d arg))
-  Select (High arg) -> Select (High (nudgeIntArg 1 6 d arg))
-  Arpg dir r -> Arpg dir (clamp 1 16 (r + d))     -- nudge the steps-per-bar
-  ArpP src -> ArpP src                            -- the figure is edited in the text hatch
-  Strum ms -> Strum (clamp 0 80 (ms + d))
-
--- | Nudge a literal-integer arg within [lo,hi]; a pattern (or non-numeric literal) is
--- | left as-is (edit it in the text hatch).
-nudgeIntArg :: Int -> Int -> Int -> PatternArg -> PatternArg
-nudgeIntArg lo hi d = case _ of
-  Lit s -> case fromString (fromMaybe s (stripPrefix (Pattern "+") s)) of
-    Just n -> Lit (show (clamp lo hi (n + d)))
-    Nothing -> Lit s
-  Pat s -> Pat s
-
--- | Cycle a literal voice-shape arg through the shapes; a pattern is left as-is.
-cycleShapeArg :: Int -> PatternArg -> PatternArg
-cycleShapeArg d = case _ of
-  Lit s -> Lit (printVoiceShape (cycleVoiceShape d (fromMaybe Open (parseVoiceShape (trim s)))))
-  Pat s -> Pat s
-
--- | The layer's ALTERNATE control (the second param when it has one): arp cycles
--- | its direction; everything else is unchanged.
-fxAlt :: PerfFx -> PerfFx
-fxAlt = case _ of
-  Arpg dir r -> Arpg (cycleArpDir dir) r
-  other -> other
-
-cycleVoiceShape :: Int -> VoiceShape -> VoiceShape
-cycleVoiceShape d shape =
-  let shapes = [ Open, Rootless, Drop2, Drop24, Quartal, Cluster ]
-      i = fromMaybe 0 (elemIndex shape shapes)
-      n = length shapes
-  in fromMaybe shape (index shapes (mod (i + d) n))
-
-showSigned :: Int -> String
-showSigned n = if n >= 0 then "+" <> show n else show n
-
 -- ============================================================================
 -- Canonical pipeline text ⇄ structure — the chrome↔text round-trip.
 --
@@ -5129,162 +3748,10 @@ showSigned n = if n >= 0 then "+" <> show n else show n
 -- ============================================================================
 
 
-printPerfFx :: PerfFx -> String
-printPerfFx = case _ of
-  Transpose arg -> "transpose " <> printArg arg
-  Octave arg -> "oct " <> printArg arg
-  Slow n -> "slow " <> show (max 1 n)
-  Fast n -> "fast " <> show (max 1 n)
-  Voice arg -> "voice " <> printArg arg
-  Select (High arg) -> "top " <> printArg arg
-  Select (Low arg) -> "bottom " <> printArg arg
-  Arpg dir r -> "arp " <> printArpDir dir <> " " <> show r
-  ArpP src -> "arp \"" <> src <> "\""
-  Strum ms -> "strum " <> show ms
-
-printWhen :: When -> String
-printWhen = case _ of
-  Always -> ""
-  Every n -> " every " <> show n
-  Prob p -> " prob " <> show p
-  AfterBar n -> " afterbar " <> show n
-  Whenmod n r -> " whenmod " <> show n <> " " <> show r
-
-printLayer :: Layer -> String
-printLayer lyr = printPerfFx lyr.fx <> printWhen lyr.when
-
-printPipeline :: PerfBox -> String
-printPipeline box =
-  let s = trim box.seqText
-      layers = map printLayer box.stack
-  in if s == "" && length layers == 0 then ""
-     else if s == "" then "# " <> joinWith " # " layers
-     else joinWith " # " ([ s ] <> layers)
-
--- | The pipeline printed one segment per LINE — the head sequence, then each `# layer`
--- | on its own line. Display-only, for the voice-card textarea: it parses back
--- | identically (`parsePipeline` splits on `#` and trims each segment, so the newlines
--- | are harmless), but keeps a many-layer card NARROW instead of running the whole
--- | pipeline off one line. The reconciliation invariant still holds through
--- | `parsePipeline`; this is purely how the text is laid out for the eye.
-printPipelineLines :: PerfBox -> String
-printPipelineLines box =
-  let s = trim box.seqText
-      -- a gated layer prints on TWO lines — the verb, then its gate as its own `# …`
-      -- line — matching how the eye reads the card (each `#` line one modifier). It
-      -- re-attaches on parse (`parseBareGate`), so the round-trip is stable.
-      layerLines l = [ "# " <> printPerfFx l.fx ] <> case printWhen l.when of
-                       "" -> []
-                       g -> [ "#" <> g ]
-      layers = concatMap layerLines box.stack
-  in if s == "" && length layers == 0 then ""
-     else if s == "" then joinWith "\n" layers
-     else joinWith "\n" ([ s ] <> layers)
-
--- the arp DIRECTION keywords (vs. an index figure like "0 1 2").
-isArpDir :: String -> Boolean
-isArpDir d = elem (toLower d) [ "up", "down", "updown" ]
-
 -- one integer token, lenient: strips a leading '+' (which `fromString` rejects),
 -- falls back to `def` on anything non-numeric.
 tokInt :: Int -> String -> Int
 tokInt def s = fromMaybe def (fromString (fromMaybe s (stripPrefix (Pattern "+") s)))
-
-parsePerfFx :: Array String -> Maybe PerfFx
-parsePerfFx toks = case head toks of
-  Nothing -> Nothing
-  Just kw ->
-    let args = drop 1 toks
-        -- slot 0 as a PatternArg, defaulting to a bare literal `d` when absent.
-        arg0 d = mkArg (fromMaybe d (head args))
-        a1 d = tokInt d (fromMaybe "" (index args 1))
-    in case toLower kw of
-         "transpose" -> Just (Transpose (arg0 "0"))
-         "trans" -> Just (Transpose (arg0 "0"))
-         "oct" -> Just (Octave (arg0 "0"))
-         "octave" -> Just (Octave (arg0 "0"))
-         "8ve" -> Just (Octave (arg0 "0"))
-         "slow" -> Just (Slow (max 1 (tokInt 4 (fromMaybe "" (head args)))))
-         "fast" -> Just (Fast (max 1 (tokInt 2 (fromMaybe "" (head args)))))
-         "voice" -> Just (Voice (arg0 "open"))
-         "top" -> Just (Select (High (arg0 "1")))
-         "bottom" -> Just (Select (Low (arg0 "1")))
-         "arp" -> case head args of
-           Nothing -> Just (Arpg ArpUp 4)
-           Just d
-             | isArpDir d -> Just (Arpg (parseArpDir (toLower d)) (clamp 1 16 (a1 4)))
-             | otherwise -> Just (ArpP (unq (joinWith " " args)))
-         "strum" -> Just (Strum (clamp 0 80 (tokInt 14 (fromMaybe "" (head args)))))
-         _ -> Nothing
-
-parseLayer :: String -> Maybe Layer
-parseLayer seg =
-  let g = peelGate (tokenize seg)
-  in map (\fx -> { fx, when: g.when }) (parsePerfFx g.body)
-
--- | Peel a trailing GATE clause off a layer's tokens, returning the gate and the
--- | remaining verb `body`. Two-arg `whenmod n r` (three tokens) is tried first, then
--- | the one-arg gates `every`/`prob`/`afterbar` (two tokens). No recognised gate →
--- | `Always`, body unchanged. Only recognised keywords peel, so a verb whose trailing
--- | tokens aren't a gate keeps them (value args are single/quoted tokens).
-peelGate :: Array String -> { when :: When, body :: Array String }
-peelGate toks =
-  let n = length toks
-      two = do
-        kw <- index toks (n - 3)
-        a <- index toks (n - 2) >>= fromString
-        b <- index toks (n - 1) >>= fromString
-        if toLower kw == "whenmod" then Just (Whenmod a b) else Nothing
-      one = do
-        kw <- index toks (n - 2)
-        val <- index toks (n - 1)
-        parseGate1 kw val
-  in case two of
-       Just w -> { when: w, body: take (n - 3) toks }
-       Nothing -> case one of
-         Just w -> { when: w, body: take (n - 2) toks }
-         Nothing -> { when: Always, body: toks }
-
--- | A one-arg gate clause `<keyword> <value>` → a `When`. Unrecognised → Nothing.
-parseGate1 :: String -> String -> Maybe When
-parseGate1 kw val = case toLower kw of
-  "every" -> Every <$> fromString val
-  "prob" -> Prob <$> Number.fromString val
-  "afterbar" -> AfterBar <$> fromString val
-  _ -> Nothing
-
-parsePipeline :: String -> { seqText :: String, stack :: Array Layer }
-parsePipeline txt =
-  let segs = split (Pattern "#") txt
-  in { seqText: trim (fromMaybe "" (head segs))
-     , stack: foldl addSeg [] (drop 1 segs)
-     }
-  where
-  -- a `#` segment is either a verb layer (append it) or a BARE gate with no verb —
-  -- in which case attach it to the layer above, so `# arp "0 1 2"` / `# prob 0.4` on
-  -- separate lines works (the gate is a suffix on a layer, not a layer of its own).
-  addSeg stack seg = case parseLayer seg of
-    Just lyr -> snoc stack lyr
-    Nothing -> case parseBareGate seg of
-      Just w -> attachWhen w stack
-      Nothing -> stack
-
--- | Attach a gate to the last layer in the stack (a bare `# prob 0.4` line modifies
--- | the layer above it). No preceding layer → the gate is dropped (nothing to gate).
-attachWhen :: When -> Array Layer -> Array Layer
-attachWhen w stack = case unsnoc stack of
-  Just { init: i, last: l } -> snoc i (l { when = w })
-  Nothing -> stack
-
--- | A segment that is ONLY a gate clause (`every 4`, `prob 0.3`, `whenmod 8 1`) — no
--- | verb left after peeling. Used to attach a bare `# prob 0.4` line to the layer above.
-parseBareGate :: String -> Maybe When
-parseBareGate seg =
-  let g = peelGate (tokenize seg)
-  in if length g.body == 0 then (case g.when of
-                                   Always -> Nothing
-                                   w -> Just w)
-     else Nothing
 
 -- | The `Pattern (Array Int)` a Perform box realises this cycle: its saved sequence
 -- | as a looping chord pattern (one chord per beat-cycle), with the box's function
@@ -5432,56 +3899,6 @@ onsetWhole ev = do
   let Arc p = eventPart ev
   if w.start == p.start then Just wa else Nothing
 
--- | Send a chord's notes to the MIDI bus (no state change) and log it to the chyron.
--- | Replace one element of an array, leaving it alone if the index is out.
-modifyIx :: forall a. Int -> (a -> a) -> Array a -> Array a
-modifyIx i f xs = fromMaybe xs (modifyAt i f xs)
-
--- | The pass, read off state. `Vetula.Rehearsal` owns the computation; these are
--- | only the three readings the view and the transport ask for.
-passIxs :: State -> Array Int
-passIxs st = RH.chosen st.pull st.rehearseRoll st.rehearsal
-
-passChords :: State -> Array ChordNode
-passChords st = RH.chords st.pull st.rehearseRoll st.rehearsal
-
--- | The pass as playable events, evenly spaced. Timing is not the point here —
--- | Perform owns that — so one chord a beat is enough to hear the joins.
-passEvents :: State -> Array ChyronEvent
-passEvents st = spaced 0.0 (passChords st)
-
--- | Chords laid out one a beat from `t0`, as playable events. `playEvents`
--- | rebases on the FIRST event, so every phrase in a sweep must be laid on one
--- | shared clock rather than each starting at zero.
-spaced :: Number -> Array ChordNode -> Array ChyronEvent
-spaced t0 cs = mapWithIndex ev cs
-  where
-  ev i c = { pcs: c.pcs, notes: playNotes c, label: c.label, at: t0 + toNumber i * 700.0, anchor: c.anchor }
-
--- | Three chords and a breath, so one reading is audibly separate from the next.
-phraseGap :: Number
-phraseGap = 2800.0
-
--- | How many readings a sweep will play. Six options either side is thirty-six
--- | phrases — near two minutes, and nobody is comparing the first to the last.
--- | Eight keeps it inside the span of a musical decision.
-sweepCap :: Int
-sweepCap = 8
-
--- | **A shelf token as a clip.**
--- |
--- | One `NoteEvent` per note of every chord, at the chord's own onset — which is
--- | the whole point: a sampler reading these times knows where each chord starts
--- | exactly, so its division is a fact rather than a detector's opinion. Notes of
--- | one chord share an onset, which is the cluster Quadrat looks for; declared,
--- | that cluster is exact.
--- |
--- | `heads: 1` — a progression is one voice's worth of material however many
--- | notes a chord has. `bpm` is left absent: the clip carries times, and what
--- | tempo they are read at belongs to whatever plays it.
-clipOfSeq :: State -> SavedSeq -> Number -> MidiClip
-clipOfSeq st sq now = clipOfChords st sq.glyph.alias sq.glyph.alias (map _.notes sq.events) now
-
 -- | A progression as a clip for Quadrat: one chord a beat (`chordMicros`),
 -- | named, its id from its rebus and the time.
 clipOfChords :: State -> String -> String -> Array (Array Int) -> Number -> MidiClip
@@ -5514,124 +3931,6 @@ clipOfChords st name alias chords now =
 -- | a sampler is told matches what you heard when you chose it.
 chordMicros :: Number
 chordMicros = 700000.0
-
--- | **Mint a token from a set of paths and put it on the shelf.**
--- |
--- | One path gives a plain sequence; several give one alternation over whole
--- | bracketed readings, so a cycle picks a progression you approved rather than
--- | crossing slots independently into one you never heard.
--- |
--- | The token's `events` are the DISTINCT chords the readings use, which is what
--- | a box's bag is, and its glyph is content-derived — so a settled pass gets a
--- | different rebus from the one you took up, because it is a different
--- | progression. That is the lineage, not a collision.
-mintFromRehearsal
-  :: forall o m. MonadAff m
-  => Array (Array Int) -> H.HalogenM State Action Slots o m Unit
-mintFromRehearsal paths = do
-  st <- H.get
-  when (length paths > 0 && length st.rehearsal > 0) do
-    let h = RH.handOff st.rehearsal paths
-    mintToken h.chords h.pattern
-
--- | The whole lattice: every slot's options, each slot alternating on its own.
--- | The generative shape — the rig walks the space per cycle instead of us
--- | choosing a reading now.
-mintLattice :: forall o m. MonadAff m => Array Slot -> H.HalogenM State Action Slots o m Unit
-mintLattice slots = when (length slots > 0) do
-  let bag = nub (concatMap (\sl -> map playNotes sl.options) slots)
-      ixOf ns = show (fromMaybe 0 (elemIndex ns bag))
-      slotTxt sl = case map ixOf (map playNotes sl.options) of
-        [ one ] -> one
-        many -> "<" <> joinWith " " many <> ">"
-  mintToken bag (joinWith " " (map slotTxt slots))
-
-mintToken
-  :: forall o m. MonadAff m
-  => Array (Array Int) -> String -> H.HalogenM State Action Slots o m Unit
-mintToken chords pattern = do
-  let evs = mapWithIndex
-              (\i ns -> { pcs: nub (map (\n -> mod n 12) ns), notes: ns
-                        , label: show (i + 1), at: toNumber i, anchor: Free })
-              chords
-      tok = { events: evs, glyph: TGlyph.chordGlyph chords, pattern }
-  st <- H.get
-  if any (sameToken tok) st.chyronSaved
-    then H.modify_ _ { publishMsg = Just "already on the shelf" }
-    else H.modify_ \s -> s { chyronSaved = shelve tok s.chyronSaved
-                           , perfHeld = Nothing
-                           , publishMsg = Just ("⏎ kept · " <> show (length chords) <> " chords") }
-
--- | **Two tokens are the same progression when they sound the same.**
--- |
--- | Content, not glyph: the glyph is DERIVED from the content, so equal glyphs
--- | almost always mean equal chords — but "almost always" is the wrong standard
--- | for deciding whether to throw one away.
--- |
--- | The pattern counts. The same bag of chords read as one pass and read as an
--- | alternating lattice are different progressions that happen to be built from
--- | the same material, and collapsing them would lose the more interesting one.
-sameToken :: SavedSeq -> SavedSeq -> Boolean
-sameToken a b = map _.notes a.events == map _.notes b.events && a.pattern == b.pattern
-
--- | Append, and collapse any duplicates already on the shelf. Keeping a pass
--- | identical to the progression you took up used to mint a second, identical
--- | rebus — two tokens you cannot tell apart, because there is nothing to tell.
-shelve :: SavedSeq -> Array SavedSeq -> Array SavedSeq
-shelve tok existing = nubByEq sameToken (existing <> [ tok ])
-
--- | The chords a path names, in order.
-pathChords :: State -> Array Int -> Array ChordNode
-pathChords st ixs = catMaybes (zipWith (\sl j -> index sl.options j) st.rehearsal ixs)
-
--- | **The approved paths, resolved back to the slots as they stand now.**
--- |
--- | Read from the stored CONTENT rather than by enumerating the lattice, which
--- | matters most in the case this exists for: when the space is too large to lay
--- | out, your shortlist still has to be readable.
--- |
--- | A mark whose chord has since been dropped simply does not resolve, and is
--- | not shown. It stays in `marked` rather than being deleted — put the option
--- | back and the mark comes back with it, which is kinder than discarding a
--- | decision because of an edit that might be a mistake.
-markedRows :: State -> Array { ixs :: Array Int, motion :: Int }
-markedRows st = mapMaybe row st.marked
-  where
-  row notesPer =
-    let ixs = zipWith slotIx st.rehearsal notesPer
-    in if length notesPer /= length st.rehearsal || any (_ < 0) ixs
-         then Nothing
-         else Just { ixs, motion: HT.pathMotion (map Voicing notesPer) }
-  slotIx sl ns = fromMaybe (-1) (findIndex (\o -> playNotes o == ns) sl.options)
-
--- | Is this path one you approved? Compared by content, so a mark survives
--- | options being dropped or re-kept underneath it.
-pathMarked :: State -> Array Int -> Boolean
-pathMarked st ixs = elem (map playNotes (pathChords st ixs)) st.marked
-
-passMotion :: State -> Int
-passMotion st = RH.motion st.pull st.rehearseRoll st.rehearsal
-
--- | Keep a variation in the free-standing tray (no excursion in flight).
-keepFreely :: forall o m. MonadAff m => ChordNode -> H.HalogenM State Action Slots o m Unit
-keepFreely c = do
-  st <- H.get
-  for_ (varySource st) \src -> do
-    let key = playNotes src
-        alreadyKept e = e.notes == key
-        held o = playNotes o == playNotes c
-        toggle e =
-          if not (alreadyKept e) then e
-          else e { options = if any held e.options
-                               then filter (not <<< held) e.options
-                               else e.options <> [ c ] }
-    if any alreadyKept st.kept
-      -- A slot whose variations have all been dropped is back to just its
-      -- source, which is no slot at all — so it leaves rather than lingering
-      -- as a one-option row that can never vary.
-      then H.modify_ \s -> s { kept = filter (\e -> length e.options > 1) (map toggle s.kept) }
-      else H.modify_ \s -> s { kept = s.kept <> [ { notes: key, label: src.label, options: [ src, c ] } ] }
-    playChordQuiet c
 
 -- | **Sound a chord without capturing it.**
 -- |
@@ -5726,19 +4025,9 @@ playChord :: forall o m. MonadAff m => ChordNode -> H.HalogenM State Action Slot
 playChord c = do
   let notes = playNotes c
   auditionStyled notes
-  logChyron c.label notes (nub (map (\x -> mod x 12) notes)) c.anchor
   -- Whatever it came from (the pool, a pad, a colour set), the side panel's
   -- "last chord played" is this one.
   H.modify_ _ { lastHeard = Just c }
-
--- | Audition a tank specimen: sound its notes on the preview channel (no state
--- | change) and log it to the chyron. Same shape as `playChord`, but reads a
--- | self-contained Specimen.
-playSpecimen :: forall o m. MonadAff m => Specimen -> H.HalogenM State Action Slots o m Unit
-playSpecimen s = do
-  let notes = specNotes s
-  auditionStyled notes
-  logChyron s.label notes (nub (map (\x -> mod x 12) notes)) s.anchor
 
 -- | Audition a library clip (#33): replay its captured events once, FAITHFULLY — each
 -- | note on its own source channel (`odonusHeadChannel headIdx`, matching ORIGINAL-mode
@@ -5833,42 +4122,6 @@ auditionClip clip = do
         , delayMs: e.fireUnixMicros / 1000.0
         , durMs: e.gateMs }
 
--- | In-place transpose of a tank specimen by `n` semitones — the capo move. Bass
--- | and every upper voice shift arithmetically (absolute MIDI), and the label is
--- | recomputed to the new root name. (The label loses any richer suffix — labels
--- | are informational per the model, and the glyph shows the truth — but for the
--- | bare root names the tank carries today that's exactly right.)
-transposeSpecimen :: Int -> Specimen -> Specimen
-transposeSpecimen n s =
-  s { voicing = map (_ + n) s.voicing
-    , bass = s.bass + n
-    , anchor = Graded.transpose n s.anchor   -- move the reading with the pitches
-    , label = noteName (mod (s.bass + n) 12)
-    }
-
--- | Reconstruct a pool `ChordNode` from a frozen tank `Specimen` — the reverse of
--- | a catch. The specimen shed its lattice identity, so we rebuild the fields the
--- | surface needs: pitch-class set from the sounding notes, root ≈ the bass pc (a
--- | fair placement anchor even for slash voicings), and its own voicing verbatim.
--- | `place` then positions it as a centre; generation blooms around it.
--- | A caught chord's ROOT pitch class — from its Harmonia reading when it has one
--- | (`Located` → `chordRoot` against the anchor's own key), else its frozen foot.
--- | The betweening engine needs it to tonicize toward the target.
-specRoot :: Specimen -> Int
-specRoot s = case s.anchor of
-  Located k dc -> chordRoot k dc
-  Free -> mod s.bass 12
-
-specToNode :: Int -> Key -> Specimen -> ChordNode
-specToNode newId key s =
-  let pcs = nub (map (\n -> mod n 12) ([ s.bass ] <> s.voicing))
-      base =
-        { id: newId, parentId: Nothing, root: mod s.bass 12, bassPc: mod s.bass 12, bassOct: s.bass / 12
-        , pcs, voicing: s.voicing, kind: Seed, label: s.label, pinned: false
-        , outside: 0, targetX: 0.0, targetY: 0.0, isCentre: true
-        , anchor: s.anchor }   -- carry the tank reading back onto the surface
-  in place key base base
-
 -- | Arpeggiate a path: each chord in turn, lightly rolled, ~440ms apart — the
 -- | segment heard as a phrase (the consonant, directional walk AC noticed).
 playPath :: forall o m. MonadAff m => Array Int -> H.HalogenM State Action Slots o m Unit
@@ -5936,28 +4189,12 @@ nudgeSelected dir = do
 playHoveredOrSounding :: forall o m. MonadAff m => H.HalogenM State Action Slots o m Unit
 playHoveredOrSounding = do
   st <- H.get
-  case st.hoveredChyron of
-    -- pointer over the chyron: audition the hovered chip, or — if it's inside a
-    -- completed span — play the whole selection with its original timing. Never
-    -- re-logs (it's already in the trace).
-    Just i | Just ev <- index st.chyron i ->
-      case st.chyronSel of
-        Just sel | sel.hi > sel.lo, i >= sel.lo, i <= sel.hi -> playChyronSelection
-        _ -> auditionNotesNoLog ev.notes
-    _ -> case st.hoveredSpec of
-      -- pointer over a tank tile: preview that frozen specimen straight from its
-      -- own voicing (no state change), so you can explore the tank by ear too.
-      Just sid | Just spec <- find (\sp -> sp.id == sid) st.tank -> playSpecimen spec
+  case st.hoveredNode of
       -- Banks: a pad carries its own open voicing, so play it VERBATIM. This has
       -- to come before the triad branch below, which would re-voice it close.
-      --
-      -- QUIET in the Vary grid: space there is browsing, same as a click, and a
-      -- sweep through a hundred near-twins of one chord would bury the trace a
-      -- progression gets lifted from. Banks keeps logging — clicking through a
-      -- row of banks IS building a progression.
-      _ | Just c <- st.hoveredNode ->
-            if inVaryGrid st then playChordQuiet c else playChord c
-      _ -> case st.hoveredTriad of
+      -- Quiet in the Vary grid: space there is browsing, same as a click.
+      Just c -> if inVaryGrid st then playChordQuiet c else playChord c
+      Nothing -> case st.hoveredTriad of
         -- Tonnetz: a hovered triangle has no pool id, so preview it straight from its
         -- root + pitch classes (no state change, like the candidate preview below).
         Just t -> playChord (triadNode t.root t.pcs "")
@@ -6035,33 +4272,6 @@ toggleFavorite = do
 -- | actual notes (and survive key changes) rather than a transient node id.
 pcsKey :: ChordNode -> String
 pcsKey c = show (sort (nub c.pcs))
-
--- | Spawn a family of children of the hovered chord and ENTER them into the
--- | graph without disturbing what's already there. The focus (the reference
--- | frame the x-axis measures from) stays put, so existing nodes keep their
--- | positions; `handle.updateData` does the keyed enter, animating only the new
--- | children in. New chords whose content already exists are skipped, so
--- | re-pressing a key doesn't pile up duplicates.
-spawn :: forall o m. MonadAff m => Family -> Int -> H.HalogenM State Action Slots o m Unit
-spawn fam hid = do
-  st <- H.get
-  case find (\c -> c.id == hid) st.chords, find (\c -> c.id == st.focusId) st.chords, st.handle of
-    Just h, Just focus, Just handle -> do
-      let -- prune h's abandoned siblings (and their subtrees), unless pinned —
-          -- but only when h was itself generated; expanding a palette seed never
-          -- prunes its peers.
-          siblingRoots = case h.parentId of
-            Just p -> map _.id (filter (\c -> c.parentId == Just p && c.id /= h.id && not c.pinned) st.chords)
-            Nothing -> []
-          pruned = pruneSet st.chords siblingRoots
-          surviving = filter (\c -> not (elem c.id pruned)) st.chords
-          existing = map contentKey surviving
-          fresh = filter (\c -> not (elem (contentKey c) existing)) (generate fam h)
-          kids = mapWithIndex (\i c -> place st.key focus (c { id = st.nextId + i, parentId = Just h.id })) fresh
-          chords' = surviving <> kids
-      _ <- liftEffect $ handle.updateData (map mkSimNode chords') []
-      H.modify_ _ { chords = chords', nextId = st.nextId + length kids }
-    _, _, _ -> pure unit
 
 -- | Lattice tab: explode a seed triad into the web of its extensions,
 -- | suspensions and bass-inversions (linked back to the seed) — or, if already
@@ -6244,17 +4454,6 @@ latticeColW = 50.0
 latticeRowH :: Number
 latticeRowH = 52.0
 
--- | The exterior signpost generators — each a curated set the scale-pure interior
--- | can't reach, dropped (and re-toggled) by a button. A generator is just
--- | `Key -> Array ChordNode`, so new harmonic worlds (quartal, Satie, whole-tone)
--- | are additive entries here.
-exteriorGens :: Array { key :: String, label :: String, gen :: Key -> Array ChordNode }
-exteriorGens =
-  [ { key: "mcmullen", label: "McMullen", gen: mcmullenChords }
-  , { key: "butler",   label: "Butler",   gen: butlerChords }
-  , { key: "stock",    label: "Stock",    gen: stockChords }
-  ]
-
 -- | Seeds + focus for the lattice surface.
 seedsFor :: Key -> Array ChordNode
 seedsFor = diatonicTriads
@@ -6320,7 +4519,7 @@ rebuild key = do
     { chords = chords'
     , imported = Set.union st2.imported pathIds
     , familyScale = Map.empty, focusedFamily = Nothing, stackHead = Nothing
-    , dropped = Map.empty, borrowMode = Nothing, sourceEdit = Nothing
+    , dropped = Map.empty, borrowMode = Nothing
     , genSel = [], candidates = []
     -- keep `path` (the progression, now transposed); fork a fresh capture session
     , lastCapIdx = Nothing, lastCapSig = "" }
@@ -6398,9 +4597,6 @@ cn = HH.ClassName
 canvasBg :: String
 canvasBg = "#f6f3ea"
 
-panelCss :: String
-panelCss = "background: #e8e1cf; border: 1px solid #cdbb96; border-radius: 8px; box-shadow: 0 2px 14px #0000002a;"
-
 -- | The view SVG fills its layer (the canvas); the fixed 880×600 viewBox still
 -- | drives coordinates (scaled to fit by the browser), pan/zoom on top.
 surfaceFillCss :: String
@@ -6423,8 +4619,8 @@ render st =
     -- element: the field draws its own <svg> into its container, which
     -- Halogen does not know about, and a reused container kept the old
     -- lattice under the score
-    ( [ HH.keyed (ElemName "div") [ HP.style ("position: absolute; inset: " <> (if isHunt st.stage && not (fullView st.stage) then chyronHeight else "0px") <> " " <> sideInset st <> " " <> (if isHunt st.stage && not (fullView st.stage) then trayHeight else "0px") <> " 0;") ] [ Tuple (surfaceKey st) (surface st) ] ]
-      <> (if isHunt st.stage then (if fullView st.stage then [] else [ colourTray st ]) <> [ sidePanel st ] else [])
+    ( [ HH.keyed (ElemName "div") [ HP.style ("position: absolute; inset: 0px " <> sideInset st <> " " <> (if fullView st.stage then "0px" else trayHeight) <> " 0;") ] [ Tuple (surfaceKey st) (surface st) ] ]
+      <> (if fullView st.stage then [] else [ colourTray st ]) <> [ sidePanel st ]
       <>
     -- Scene recall belongs to the INSTRUMENT, not to Perform. Its entry point
     -- has always been the session menu in `contextBar`, which renders on every
@@ -6435,7 +4631,7 @@ render st =
     -- CONTEXT is now a docked control bar between the nav and the chyron (the last
     -- floating overlay is gone, reclaiming the whole left column): key · scale ·
     -- palettes · lens · rig/help. See `contextBar`.
-    , if isHunt st.stage then contextBar st else HH.text ""
+    , contextBar st
     -- the session menu (new session, the chyron's housekeeping), opened from
     -- the rebus in the shell's bar, so drawn under it
     , if st.perfMenuOpen then sessionMenuPanel st else HH.text ""
@@ -6448,8 +4644,6 @@ render st =
     -- The AUDITION bar (chyron) now docks under the shell nav (top). The old bottom
     -- voice bar (four mini-notation lanes) was removed — the Perform surface
     -- supersedes it — and the freed bottom is reserved for a future MIDI-flow chyron.
-    -- not over the score: the audition trace belongs to the lattice
-    , if fullView st.stage then HH.text "" else chyronBar st
     , HH.div
         [ HP.style "position: absolute; bottom: 44px; left: 50%; transform: translateX(-50%); z-index: 5;" ]
         [ pickBar st ]
@@ -6457,35 +4651,6 @@ render st =
     , revoiceModal st
     ] )
 
--- | The CHYRON — a thin ticker pinned just above the voice bar that logs every
--- | audition this session (see DESIGN-vetula-chyron-redesign.md). Oldest→newest,
--- | newest pinned at the right; older events clip off the left as the row fills
--- | (one notch per new chord). Phase 1 is read-only — a running trace of what you
--- | played; Phases 2–3 add span-selection, lift-to-progression, and timing verbs.
--- | The PERFORM river's width. ONE constant, read by the river column and by both
--- | docked bars, because the whole arrangement is the bars inseting their right
--- | edge by exactly what the river occupies. Two numbers here would drift into
--- | either a covered control or a seam of paper beside the river.
--- |
--- | Bounded from above by the CONTEXT bar, whose non-flexible content measures
--- | ~1111px of a 1512 viewport — and MORE whenever the transient `publishMsg`
--- | ("scene loaded") is showing, which is exactly what caught the first attempt
--- | at 360px. 330px leaves room for that message; the message itself now
--- | ellipsises rather than pushing, so the bar has two defences instead of one.
-riverWidth :: String
-riverWidth = "330px"
-
--- | How far the docked bars start in from the left. Perform is the only stage
--- | with a river, so it is the only stage that squashes.
-barLeftInset :: State -> String
-barLeftInset st = if st.stage == Perform then riverWidth else "0px"
-
--- | The AUDITION chyron's height. It lies over the top of every stage (fixed,
--- | under the CONTEXT bar), so a stage starts its content below it; fixed
--- | rather than a minimum, so saved tokens cannot grow it over the chips
--- | beneath (AC, 2026-10-04: it covered Perform's palette).
-chyronHeight :: String
-chyronHeight = "52px"
 
 -- | The side panel's width, and how far it insets the Explore view it sits
 -- | beside, so the view is narrowed rather than covered.
@@ -6497,7 +4662,7 @@ trayHeight :: String
 trayHeight = "46px"
 
 sideInset :: State -> String
-sideInset st = if isHunt st.stage && isJust st.side then sidePanelWidth else "0px"
+sideInset st = if isJust st.side then sidePanelWidth else "0px"
 
 sideLabel :: SideTab -> String
 sideLabel = case _ of
@@ -6565,7 +4730,7 @@ sidePanel st = case st.side of
   Just t ->
     HH.div
       [ HP.class_ (cn "vetula-surface--wide")
-      , HP.style ("position: absolute; top: " <> (if fullView st.stage then "0px" else chyronHeight) <> "; right: 0; bottom: 0; width: " <> sidePanelWidth <> "; box-sizing: border-box; z-index: 7; overflow: auto; "
+      , HP.style ("position: absolute; top: 0px; right: 0; bottom: 0; width: " <> sidePanelWidth <> "; box-sizing: border-box; z-index: 7; overflow: auto; "
                    <> "background: #fffdf8; border-left: 1px solid #e6dfcc; padding: 10px 14px 20px;") ]
       ( [ HH.div [ HP.style "display: flex; align-items: center; gap: 6px; margin-bottom: 8px;" ]
             ( map tab [ SideVariations, SideRelatives, SideSubstitutes ]
@@ -6643,7 +4808,6 @@ sidePanel st = case st.side of
                   , smallBtn "shuffle \x27f3" "re-draw the cells from a new seed" ShuffleVary ] )
        ]
          <> concatMap (\d -> [ HH.div [ HP.style "margin: 6px 0 4px;" ] [ varyRowHead d ], varyBank st (cellAt d) ]) HV.drifts
-         <> [ keptTray st ]
   densityBtn i d =
     let on = i == st.sideDensity
     in HH.button
@@ -6676,25 +4840,21 @@ sidePanel st = case st.side of
 -- | tabs and mark went to the shell's bar (2026-10-05), so it takes room only
 -- | in HUNT.
 contextBarHeight :: State -> String
-contextBarHeight st = if isHunt st.stage then "44px" else "0px"
+contextBarHeight _ = "44px"
 
 -- | The session menu, opened from the rebus in the shell's bar: a new
 -- | session, and the chyron's housekeeping.
 sessionMenuPanel :: forall m. State -> H.ComponentHTML Action Slots m
-sessionMenuPanel st =
+sessionMenuPanel _ =
   HH.div_
     [ HH.div [ HP.style "position: fixed; inset: 0; z-index: 45;", HE.onClick \_ -> PerfMenuClose ] []
     , HH.div
         [ HP.style "position: fixed; top: calc(var(--tf-bar) + 4px); left: calc(var(--tf-left, 0px) + 12px); z-index: 46; min-width: 200px; background: #fff; border: 1px solid #e0d8bf; border-radius: 7px; box-shadow: 0 8px 28px rgba(0,0,0,0.16); padding: 5px 0; overflow: hidden;"
         , HE.onClick \e -> PerfStopClick e PerfNop ]
         [ item true "\x21bb new session" PerfNewSession
-        , HH.div [ HP.style "height: 1px; background: #efe8d4; margin: 4px 0;" ] []
-        , item hasChyron "\x232b clear chyron" ClearChyron
-        , item hasChyron "\x2261 de-dupe chyron" DedupeChyron
         ]
     ]
   where
-  hasChyron = length st.chyron > 0
   item enabled label act =
     HH.button
       [ HP.style ("display: block; width: 100%; text-align: left; border: none; background: transparent; padding: 6px 14px; font-size: 12px; "
@@ -6702,253 +4862,6 @@ sessionMenuPanel st =
       , HP.enabled enabled
       , HE.onClick \_ -> if enabled then PerfMenuPick act else PerfNop ]
       [ HH.text label ]
-
-chyronBar :: forall m. State -> H.ComponentHTML Action Slots m
-chyronBar st =
-  HH.div
-    [ HP.style ( "position: fixed; top: calc(var(--tf-bar) + " <> contextBarHeight st <> "); left: calc(var(--tf-left, 0px) + " <> barLeftInset st <> "); right: var(--tf-right, 0px); z-index: 39; box-sizing: border-box; "
-        <> "display: flex; gap: 10px; align-items: center; padding: 3px 12px; height: " <> chyronHeight <> "; overflow: hidden; "
-        -- shift-click is a selection gesture here (extend the range), so kill the
-        -- browser's own shift-click text selection across the bar. user-select
-        -- inherits to the chips.
-        <> "user-select: none; -webkit-user-select: none; "
-        <> "font-family: Georgia, serif; background: linear-gradient(#efe9d8,#e7e0cb); "
-        <> "border-bottom: 1px solid #0000000f; box-shadow: 0 1px 3px #0000000d;" ) ]
-    [ HH.div
-        [ HP.style "flex: 0 0 auto; display: flex; align-items: center; gap: 6px;" ]
-        ( [ -- record-arm toggle: ● red = capturing, ○ = paused (still audible)
-            HH.button
-              [ HP.style ("border: none; background: none; cursor: pointer; padding: 0; font-size: 13px; line-height: 1; color: "
-                           <> (if st.chyronArmed then "#c0392b" else "#b9ad8c") <> ";")
-              , HP.title (if st.chyronArmed then "recording auditions — click to pause capture" else "capture paused (auditions still sound) — click to record")
-              , HE.onClick \_ -> ToggleChyronArm ]
-              [ HH.text (if st.chyronArmed then "●" else "○") ]
-          , HH.span
-              [ HP.style "font-size: 10px; letter-spacing: 0.16em; text-transform: uppercase; color: #8a7d5a;" ]
-              [ HH.text "audition" ] ]
-          -- ⏎ save appears only while a completed span is selected
-          -- ⏎ save (bundle) shows for ANY selection — single chord or span — so the
-          -- rebundle path is reliably available while editing a checked-out
-          -- progression (not just when a multi-chord span happens to be selected).
-          <> ( case st.chyronSel of
-                 Just sel ->
-                   [ HH.button
-                       [ HP.style "border: 1px solid #b8860b; background: #fbf6ea; color: #7a5c00; font-size: 11px; line-height: 1; cursor: pointer; padding: 2px 6px; border-radius: 3px;"
-                       , HP.title "bundle the selected chord(s) into a glyph token (⏎)"
-                       , HE.onClick \_ -> SaveChyronSel ]
-                       [ HH.text ("⏎ bundle " <> show (sel.hi - sel.lo + 1)) ] ]
-                 _ -> [] )
-          <> ( if length st.chyron == 0 then []
-               else [ HH.button
-                        [ HP.style "border: 1px solid #d8ceb4; background: #faf7ee; color: #9a8d6a; font-size: 11px; line-height: 1; cursor: pointer; padding: 2px 5px; border-radius: 3px;"
-                        , HP.title "clear the whole audition trace"
-                        , HE.onClick \_ -> ClearChyron ]
-                        [ HH.text "clear ✕" ] ]
-             )
-        )
-    -- SAVED region: pinned 2-glyph tokens, left, natural width (they push the
-    -- live region rightward as they accumulate — saving reclaims live space).
-    , HH.div
-        [ HP.style "flex: 0 0 auto; display: flex; align-items: center; gap: 7px;" ]
-        (mapWithIndex savedToken st.chyronSaved)
-    -- LIVE region: fills the rest; newest right, oldest clips left; shrinks as the
-    -- saved region grows (min-width:0).
-    , HH.div
-        [ HP.style "flex: 1 1 auto; min-width: 0; overflow: hidden; display: flex; gap: 5px; align-items: center; justify-content: flex-end;" ]
-        ( if length st.chyron == 0
-            then [ HH.span [ HP.style "font-size: 11px; color: #b3a888; font-style: italic;" ] [ HH.text "play a chord anywhere — it lands here" ] ]
-            else let off = max 0 (length st.chyron - 30)
-                 in mapWithIndex (\j ev -> chyronChip (off + j) ev) (takeEnd 30 st.chyron)
-        )
-    ]
-  where
-  -- a SAVED sequence: its 2-glyph identity (FA icon pair — visually distinct from
-  -- the live stave-glyphs, so "named unit" reads at a glance). Click the icons to
-  -- replay it with timing; ✎ unbundles it back into the buffer to edit; × deletes.
-  -- Tooltip carries the chord names.
-  -- On REHEARSE the rebus is how you choose what to work on: click takes it up.
-  -- These glyphs already ARE the shelf of saved progressions, so the stage does
-  -- not draw a second row of them — that was the same set twice in one window.
-  savedToken i s =
-    let held = st.perfHeld == Just i
-        upNow = st.stage == Rehearse && st.rehearsalFrom == Just i && length st.rehearsal > 0
-        lit = held || upNow
-    in HH.span
-      [ HP.style ("position: relative; flex: 0 0 auto; display: inline-flex; align-items: center; gap: 3px; border: 1px solid "
-                   <> (if lit then "#b8860b" else "#cdbb8c")
-                   <> "; background: " <> (if lit then "#fbf1d6" else "#f6efdc")
-                   <> "; box-shadow: " <> (if lit then "0 0 0 2px #f1e2b4" else "none")
-                   <> "; border-radius: 4px; padding: 3px 6px; line-height: 1;")
-      , HP.draggable true
-      , HE.onDragStart \_ -> PerfPickup i
-      , HP.title ("saved · " <> joinWith " " (map _.label s.events)
-                   <> (if st.stage == Rehearse then " · click takes it up to rehearse" else " · click plays")
-                   <> " · ✎ unbundles to the buffer · shift-click / drag → a Perform box") ]
-      [ HH.span
-          [ HP.style "display: inline-flex; align-items: center; gap: 3px; cursor: pointer;"
-          , HE.onClick \e ->
-              if ME.shiftKey e then PerfPickup i
-              else if st.stage == Rehearse then TakeUp i
-              else PlaySaved i ]
-          (faIcons s.glyph)
-      , HH.button
-          [ HP.style "position: absolute; top: -5px; left: -3px; z-index: 2; border: 1px solid #cdbb8c; background: #f6efdc; color: #7a5c00; font-size: 10px; line-height: 1; cursor: pointer; padding: 0 3px; border-radius: 8px;"
-          , HP.title "check out to the buffer to edit — the token leaves the shelf; ⏎ save re-bundles a new one"
-          , HE.onClick \_ -> Unbundle i ]
-          [ HH.text "✎" ]
-      , HH.button
-          [ HP.style "position: absolute; top: -5px; right: -3px; z-index: 2; border: 1px solid #cdbb8c; background: #f6efdc; color: #b06a5a; font-size: 10px; line-height: 1; cursor: pointer; padding: 0 3px; border-radius: 8px;"
-          , HP.title "delete this saved sequence"
-          , HE.onClick \_ -> DeleteSaved i ]
-          [ HH.text "×" ]
-      ]
-  -- one chip = the chord's mini stave-glyph (same as the Tank), name-free. Hover
-  -- + space auditions it; click selects this one chord; shift-click extends the
-  -- range from the anchor; DRAG it to reorder the buffer (§10.4). In-span chips
-  -- wear a warm wash; the endpoints a gold rim; the dragged chip dims.
-  chyronChip i ev =
-    let inSel = case st.chyronSel of
-                  Just sel -> i >= sel.lo && i <= sel.hi
-                  Nothing -> false
-        isEnd = case st.chyronSel of
-                  Just sel -> i == sel.lo || i == sel.hi
-                  Nothing -> false
-        hov = st.hoveredChyron == Just i
-        dragging = st.chyronDrag == Just i
-        bg = if inSel then "#efe6c8" else "#faf7ee"
-        brd = if isEnd then "#b8860b" else if inSel then "#cdbb8c" else "#d8ceb4"
-        pcNames = joinWith " " (map noteName (sort ev.pcs))
-        -- a delete × surfaces on hover (its own element, above the drag handle so it
-        -- stays clickable). Bigger hit target than before.
-        delX = if hov
-          then [ HH.button
-                   [ HP.style "position: absolute; top: -4px; right: -4px; z-index: 3; border: 1px solid #e4d9be; background: #faf7ee; color: #b06a5a; font-size: 12px; line-height: 1; cursor: pointer; padding: 0 3px; border-radius: 8px;"
-                   , HP.title "delete this audition"
-                   , HE.onClick \_ -> DeleteChyron i ]
-                   [ HH.text "×" ] ]
-          else []
-    in HH.span
-        -- the whole chip is a DROP target for reorder; the inner glyph is the drag
-        -- HANDLE. The container is deliberately NOT draggable — a draggable container
-        -- swallows child-button clicks, which made the corner × unresponsive.
-        [ HP.style ("position: relative; flex: 0 0 auto; white-space: nowrap; border: 1px solid " <> brd
-                     <> "; background: " <> bg <> "; border-radius: 3px; padding: 0 1px; line-height: 0; opacity: "
-                     <> (if dragging then "0.4" else "1") <> ";")
-        , HP.title (ev.label <> (if pcNames == "" then "" else " · " <> pcNames))
-        , HE.onDragOver PerfDragOver
-        , HE.onDrop \_ -> ChyronDropOn i
-        , HE.onMouseEnter \_ -> HoverChyron (Just i)
-        , HE.onMouseLeave \_ -> HoverChyron Nothing ]
-        ( delX <>
-          [ HH.div
-              [ HP.style "cursor: grab; line-height: 0;"
-              , HP.draggable true
-              , HE.onDragStart \_ -> ChyronDragStart i
-              , HE.onDragEnd \_ -> ChyronDragEnd ]
-              [ SE.svg
-                  [ SA.viewBox (-18.0) (-22.0) 36.0 44.0, SA.width 30.0, SA.height 38.0
-                  , HE.onClick \e -> ChyronClick i (ME.shiftKey e) ]
-                  (chordGlyph [] 0.0 0.0 ev.notes) ]
-          ]
-        )
-
--- | The Tonnetz-stack HUD in the tank card (2026-07-31): shown only while a stack
--- | is accumulating. Names the picked triads and the resulting polychord's pitch
--- | classes, and offers to catch the whole stack to the tank as one Anchor, or
--- | clear it. (Renders nothing when the stack is empty.)
-stackBar :: forall m. State -> H.ComponentHTML Action Slots m
-stackBar st =
-  let stack = st.tonnetzStack in
-  if length stack == 0 then HH.text ""
-  else
-    let names = joinWith " + " (map (\e -> noteName e.root <> (if e.major then "" else "m")) stack)
-        pcs = joinWith " " (map noteName (sort (nub (concatMap _.pcs stack))))
-        btn bg fg brd act lbl =
-          HH.button
-            [ HP.style ("border: 1px solid " <> brd <> "; background: " <> bg <> "; color: " <> fg
-                         <> "; cursor: pointer; padding: 4px 10px; border-radius: 4px; font-size: 12px;")
-            , HE.onClick \_ -> act ]
-            [ HH.text lbl ]
-    in HH.div
-         [ HP.style "border: 1px solid #cbb8e0; background: #f6f1fb; border-radius: 6px; padding: 8px 10px; margin: 0 0 8px; display: flex; flex-direction: column; gap: 6px;" ]
-         [ HH.div [ HP.style "font-size: 10px; color: #7a5c9a; letter-spacing: 0.1em; text-transform: uppercase;" ]
-             [ HH.text ("Tonnetz stack · " <> countLabel (length stack) "triad") ]
-         , HH.div [ HP.style "font-size: 13px; color: #4a3a5a;" ] [ HH.text names ]
-         , HH.div [ HP.style "font-size: 11px; color: #8a7a9a; letter-spacing: 0.04em;" ] [ HH.text pcs ]
-         , HH.div [ HP.style "display: flex; gap: 6px;" ]
-             [ btn "#6a4a9a" "#ffffff" "#6a4a9a" CommitStack "catch as anchor"
-             , btn "#faf7fd" "#7a5c9a" "#d8c8ea" ClearStack "clear"
-             ]
-         ]
-
--- | A floating control card: a clickable title bar (the concern name), then the
--- | panel body — which collapses to just the bar when `collapsed`, ceding the
--- | stage to the music viz underneath. Positioning is passed in (provisional —
--- | these will be made draggable once the placement settles).
-floatCard :: forall m. String -> Boolean -> Action -> String -> Array (H.ComponentHTML Action Slots m) -> H.ComponentHTML Action Slots m
-floatCard title collapsed toggle posCss body =
-  HH.div
-    [ HP.style (posCss <> " padding: 2px 12px " <> (if collapsed then "4px" else "10px") <> "; " <> panelCss) ]
-    ( [ HH.div
-          [ HP.style "display: flex; align-items: center; gap: 8px; padding: 6px 2px 2px; cursor: pointer; user-select: none;"
-          , HP.title (if collapsed then "expand" else "collapse")
-          , HE.onClick \_ -> toggle ]
-          [ HH.span [ HP.style "font-size: 9px; color: #b0b0b0; width: 9px;" ] [ HH.text (if collapsed then "▸" else "▾") ]
-          , HH.span [ HP.style "font-size: 11px; font-weight: 700; color: #1a1a1a; letter-spacing: 0.12em; text-transform: uppercase;" ] [ HH.text title ]
-          ]
-      ] <> (if collapsed then [] else body) )
-
--- | What the cadence dial's `n` means, in Roman numerals — the tonicizing
--- | turnaround `Vetula.Between` lays in front of the dropped chord.
-cadenceName :: Int -> String
-cadenceName = case _ of
-  0 -> "bare"
-  1 -> "V"
-  2 -> "ii–V"
-  3 -> "vi–ii–V"
-  _ -> "iii–vi–ii–V"
-
--- | The ARRANGE row (control B): the bridge between gather and compose. A hint
--- | (shift-click a caught chord to drop it in) and the CADENCE dial — how many
--- | passing chords `Vetula.Between` lays in front of each dropped chord.
-arrangeBar :: forall m. State -> H.ComponentHTML Action Slots m
-arrangeBar st =
-  HH.div
-    [ HP.style "border-top: 1px solid #d8ceb4; margin-top: 8px; padding-top: 6px; display: flex; flex-direction: column; gap: 6px;" ]
-    [ HH.div [ HP.style "font-size: 10px; color: #b0b0b0; letter-spacing: 0.12em; text-transform: uppercase; margin: 0 2px;" ] [ HH.text "Arrange" ]
-    , HH.div [ HP.style "font-size: 11px; color: #a0a0a0; margin: 0 2px;" ] [ HH.text "shift-click a caught chord to drop it into the progression, bridged." ]
-    , HH.div
-        [ HP.style "display: flex; align-items: center; gap: 8px; margin: 0 2px;" ]
-        [ HH.span [ HP.style "font-size: 11px; color: #7a7a7a;" ] [ HH.text "cadence" ]
-        , stepBtn "−" (SetBridgeLen (st.bridgeLen - 1)) (st.bridgeLen <= 0)
-        , HH.span [ HP.style "font-size: 12px; color: #1a1a1a; min-width: 12px; text-align: center;" ] [ HH.text (show st.bridgeLen) ]
-        , stepBtn "+" (SetBridgeLen (st.bridgeLen + 1)) (st.bridgeLen >= maxBridge)
-        , HH.span [ HP.style "font-size: 12px; color: #7a5c00; font-variant: small-caps;" ] [ HH.text (cadenceName st.bridgeLen) ]
-        ]
-    ]
-  where
-  stepBtn glyph act disabled =
-    HH.button
-      [ HP.style ("border: 1px solid #dcdcdc; background: #fafafa; border-radius: 4px; width: 22px; height: 22px; font-size: 13px; line-height: 1; "
-                   <> if disabled then "color: #d8d8d8; cursor: default;" else "color: #6a6a6a; cursor: pointer;")
-      , HP.disabled disabled
-      , HE.onClick \_ -> act ]
-      [ HH.text glyph ]
-
--- | A flat labelled group inside a floating control — a small uppercase caption
--- | over a divider, then the body. Replaces the old collapsible accordion box:
--- | the controls float, they don't fold.
-subGroup :: forall m. String -> H.ComponentHTML Action Slots m -> H.ComponentHTML Action Slots m
-subGroup label body =
-  HH.div
-    [ HP.style "border-top: 1px solid #d8ceb4; margin-top: 8px; padding-top: 6px;" ]
-    [ HH.div [ HP.style "font-size: 10px; color: #b0b0b0; letter-spacing: 0.12em; text-transform: uppercase; margin: 0 2px 6px;" ] [ HH.text label ]
-    , body
-    ]
-
--- | "N steps" / "N step" for the control captions.
-countLabel :: Int -> String -> String
-countLabel n noun = show n <> " " <> noun <> (if n == 1 then "" else "s")
 
 contextBar :: forall m. MonadAff m => State -> H.ComponentHTML Action Slots m
 contextBar st =
@@ -6958,7 +4871,7 @@ contextBar st =
     -- was not enough: it keeps the items on one row, but each item still shrinks
     -- and wraps its text inside itself — which is what put "scene loaded",
     -- "horse-bell-bomb" and "continuo ✓" on two lines and grew the bar.
-    [ HP.style ( "position: fixed; top: var(--tf-bar); left: calc(var(--tf-left, 0px) + " <> barLeftInset st <> "); right: var(--tf-right, 0px); z-index: 40; box-sizing: border-box; "
+    [ HP.style ( "position: fixed; top: var(--tf-bar); left: var(--tf-left, 0px); right: var(--tf-right, 0px); z-index: 40; box-sizing: border-box; "
         <> "display: flex; align-items: center; flex-wrap: nowrap; white-space: nowrap; gap: 10px; padding: 0 12px; height: 44px; overflow: visible; "
         <> "background: linear-gradient(#f3eee0,#ece5d0); border-bottom: 1px solid #0000000f; box-shadow: 0 1px 3px #0000000d;" ) ]
     -- LEFT: the stage tabs, then ONLY the controls that mean something in the
@@ -7010,7 +4923,7 @@ contextBar st =
         -- What may replace it: a Tidal-style transposition over all voices, or a
         -- transposition MAPPED over selected ones. Both are pattern functions, so
         -- both keep the identity honest. Neither is built.
-        <> (if isHunt st.stage then harmonicColumn else [])
+        <> harmonicColumn
         <> [ HH.button [ HP.style helpBtnStyle, HP.title "keys & help", HE.onClick \_ -> ToggleHelp ] [ HH.text "ⓘ" ] ]
     )
   where
@@ -7030,14 +4943,7 @@ contextBar st =
   -- controls; PERFORM and REVIEW share the capture controls, deliberately
   -- identical and in the same place, so ◆ mark doesn't move when you change
   -- stage to look at what you just marked.
-  stageControls = case st.stage of
-    Hunt _ -> huntControls
-    -- Rehearse's controls live in its own pane: they are about the progression
-    -- in front of you, not about the app's mode.
-    Rehearse -> []
-    -- PERFORM and REVIEW share ◆ mark, the counts and clear: the shell's bar
-    Perform -> []
-    Review -> []
+  stageControls = huntControls
 
   -- The projection picker is a HUNT control, so it exists only while hunting.
   -- It used to sit in the bar permanently, displaying `browseOr lastBrowse view`
@@ -7059,7 +4965,6 @@ contextBar st =
                , HP.title (if on then "back to the lattice (" <> viewtypeLabel st.fieldLens <> ")" else viewtypeTip vt)
                , HE.onClick \_ -> SetStage (Hunt (if on then st.fieldLens else vt)) ]
                [ HH.text (viewtypeLabel vt) ]) [ Score, River ])
-    , pinChip
     , divider
     , HH.div [ HP.style "display: flex; border: 1px solid #d8cfb6; border-radius: 5px; overflow: hidden;" ]
         (map styleButton [ Tuple StyleBlock "1 block", Tuple StyleArp "2 arpeggio" ])
@@ -7086,15 +4991,6 @@ contextBar st =
          , HP.title "how auditions play a chord (keys 1, 2 on the field)"
          , HE.onClick \_ -> SetStyle sty ]
          [ HH.text label ]
-  pinChip =
-    if st.defaultLens == current then
-      HH.span [ HP.style "font-size: 11px; color: #b3a77f;", HP.title "Explore opens on this view" ] [ HH.text "\x2605 default" ]
-    else
-      HH.button
-        [ HP.style "border: none; background: none; font-size: 11px; color: #8d7a4a; cursor: pointer; padding: 0;"
-        , HP.title "open Explore on this view from now on (this browser)"
-        , HE.onClick \_ -> PinDefaultLens ]
-        [ HH.text "\x2606 make default" ]
   sideChip t =
     let on = st.side == Just t
     in HH.button
@@ -7146,84 +5042,6 @@ contextBar st =
                  \(Select.Selected v) -> ReflavourFamily v ] ]
     Nothing -> []
   helpBtnStyle = "border: 1px solid #e0e0e0; background: #fafafa; color: #7a7a7a; cursor: pointer; width: 22px; height: 22px; border-radius: 50%; font-size: 12px; line-height: 1; padding: 0;"
-
--- | The Tank pane — the durable, unordered collection of caught chords, as a
--- | wrapping grid of specimen tiles in the left accordion. `k` over a surface
--- | chord catches it; × deletes; click stages a seed, shift-click sequences it.
--- | The accordion header carries the "N caught" count, so this is just the
--- | capo/clear toolbar + tiles (the gesture legend lives behind the ⓘ help).
-tankPane :: forall m. State -> H.ComponentHTML Action Slots m
-tankPane st =
-  HH.div
-    [ HP.style "-webkit-user-select: none; user-select: none;" ]
-    [ HH.div
-        [ HP.style "display: flex; align-items: center; gap: 8px; margin-bottom: 8px; font-size: 11px; color: #b0b0b0; min-height: 16px;" ]
-        ( (if Map.isEmpty st.seedChord then []
-                else [ HH.button
-                         [ HP.style "border: none; background: none; color: #9a7a2a; font-size: 11px; cursor: pointer; padding: 0;"
-                         , HP.title "unstage every seeded specimen"
-                         , HE.onClick \_ -> ClearStage ]
-                         [ HH.text ("clear stage (" <> show (Map.size st.seedChord) <> ")") ] ])
-          <> (if length st.tank == 0 then []
-                else [ HH.span [ HP.style "margin-left: auto;" ] [ HH.text "capo" ]
-                     , capoBtn (-1) "♭" "whole tank down a semitone"
-                     , capoBtn 1 "♯" "whole tank up a semitone" ])
-        )
-    , if length st.tank == 0
-        then HH.div [ HP.style "font-size: 12px; color: #c4c4c4; padding: 4px 0;" ]
-               [ HH.text "empty — hover a chord and press k to catch it" ]
-        else HH.div [ HP.style "display: flex; flex-wrap: wrap; gap: 8px;" ]
-               (map (\s -> specimenTile (Map.member s.id st.seedChord) s) st.tank)
-    ]
-
--- | One tank specimen: a small treble-staff thumbnail of its voicing (reusing the
--- | cloud's `chordGlyph`), its label, and a × delete. Plain-click STAGES it as a
--- | seed (bloom around it in the pool); shift-click ARRANGES it into the
--- | progression — bridged by the cadence dial (`ArrangeSpec`). A staged tile wears
--- | a gold frame so the pool ↔ tank link reads at a glance. (Staged-ness and
--- | arranged-ness are orthogonal.)
-specimenTile :: forall m. Boolean -> Specimen -> H.ComponentHTML Action Slots m
-specimenTile staged s =
-  HH.div
-    [ HP.style ("position: relative; width: 66px; padding: 6px 6px 4px; border-radius: 6px; display: flex; flex-direction: column; align-items: center; "
-                 <> if staged then "border: 1px solid #c9a23a; background: #fbf3df;"
-                              else "border: 1px solid #eee; background: #fbfbfa;")
-    , HE.onMouseEnter \_ -> HoverSpec (Just s.id)
-    , HE.onMouseLeave \_ -> HoverSpec Nothing ]
-    [ HH.button
-        [ HP.style "position: absolute; top: 1px; right: 3px; border: none; background: none; color: #c4c4c4; font-size: 13px; line-height: 1; cursor: pointer; padding: 0;"
-        , HP.title "remove from tank"
-        , HE.onClick \_ -> DeleteSpec s.id ]
-        [ HH.text "×" ]
-    , SE.svg
-        [ SA.viewBox (-18.0) (-22.0) 36.0 44.0, SA.width 52.0, SA.height 46.0
-        , HP.style "cursor: pointer;"
-        , HE.onClick \e -> if ME.shiftKey e then ArrangeSpec s.id else StageSpec s.id ]
-        (chordGlyph [] 0.0 0.0 s.voicing)
-    , HH.div [ HP.style "font-size: 10px; color: #6a6a6a; margin-top: 2px; max-width: 60px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" ]
-        [ HH.text s.label ]
-    , HH.div [ HP.style "display: flex; gap: 10px; margin-top: 1px;" ]
-        [ transposeBtn s.id (-1) "♭" "down a semitone"
-        , transposeBtn s.id 1 "♯" "up a semitone" ]
-    ]
-
--- | A small ♭/♯ button that transposes ONE tank specimen in place.
-transposeBtn :: forall m. SpecimenId -> Int -> String -> String -> H.ComponentHTML Action Slots m
-transposeBtn sid n glyph tip =
-  HH.button
-    [ HP.style "border: none; background: none; color: #b0b0b0; font-size: 12px; line-height: 1; cursor: pointer; padding: 0 1px;"
-    , HP.title tip
-    , HE.onClick \_ -> TransposeSpec sid n ]
-    [ HH.text glyph ]
-
--- | A small ♭/♯ button that capos the WHOLE tank.
-capoBtn :: forall m. Int -> String -> String -> H.ComponentHTML Action Slots m
-capoBtn n glyph tip =
-  HH.button
-    [ HP.style "border: 1px solid #dcdcdc; background: #fafafa; color: #6a6a6a; font-size: 11px; line-height: 1; cursor: pointer; padding: 2px 6px; border-radius: 3px;"
-    , HP.title tip
-    , HE.onClick \_ -> CapoTank n ]
-    [ HH.text glyph ]
 
 helpText :: String
 helpText =
@@ -7326,9 +5144,6 @@ surfaceKey st
       Hunt Fifths -> "fifths"
       Hunt Tonnetz -> "tonnetz"
       Hunt _ -> "field"
-      Rehearse -> "rehearse"
-      Perform -> "perform"
-      Review -> "review"
 
 -- | The Stage frame: the pick-mode cloud always wins; otherwise the active View
 -- | renders. `Perform` is its own surface; every `Browse` viewtype is one branch.
@@ -7336,9 +5151,6 @@ surface :: forall m. State -> H.ComponentHTML Action Slots m
 surface st
   | length st.genSel > 0 && length st.candidates > 0 = pickSurface st
   | otherwise = case st.stage of
-      Perform -> performSurface st
-      Rehearse -> rehearseSurface st
-      Review -> reviewSurface st
       Hunt Fifths -> circleFifthsSurface st
       Hunt Tonnetz -> tonnetzSurface st
       Hunt KeyChords -> fieldSurface st
@@ -7402,11 +5214,6 @@ boxesFromDoc doc = mapWithIndex voiceToBox doc.voices
        , phrase: Nothing   -- phrase boxes aren't carried in the eDSL doc (#27)
        }
 
--- | The smallest card number no card has.
-freeCardId :: Array PerfBox -> Int
-freeCardId boxes = fromMaybe (length boxes + 1)
-  (find (\n -> not (elem n (map _.cardId boxes))) (range 1 (length boxes + 1)))
-
 -- | A live Perform box → the neutral `VoiceSpec` the Lepidoptera serialiser takes
 -- | (its chords are the token's event notes; empty seq = a sourceless voice).
 boxSpec :: PerfBox -> VoiceSpec
@@ -7459,7 +5266,7 @@ perfRecallModal st =
   sceneRow item =
     HH.button
       [ HP.style "display: block; width: 100%; text-align: left; border: 1px solid #e4dcc2; background: #fcfaf3; color: #4a4436; cursor: pointer; padding: 7px 12px; margin: 0 0 5px; border-radius: 5px; font-size: 13px; font-family: ui-monospace, monospace;"
-      , HP.title "load this scene onto the Perform surface"
+      , HP.title "load this scene: its voices onto the stage"
       , HE.onClick \_ -> PerfLoadScene item.payload ]
       [ HH.text item.name ]
 
@@ -7469,43 +5276,6 @@ perfRecallModal st =
 -- `stageTabs`. The roll's own header went the same way — ◆ mark, the counts and
 -- clear are STAGE CONTROLS, so they live in the nav beside the tabs, in the same
 -- slot Odonus puts them (`captureControls`).
-
--- | The LIVE roll: `Capture.River`, flowing RIGHT — notes are emitted at the strip's
--- | left edge, next to the voice that played them, and age away from the voices at a
--- | constant speed. A river, NOT the whole-session fit: the fit renderer rescales on
--- | every new note (the roll lurches) and squeezes its marks toward slivers as the
--- | take grows. That renderer is right for REPLAY and wrong here.
--- | The river as a FIXED column running from the shell nav to the window bottom,
--- | mirroring Odonus's full-height capture surface. It used to be a flex sibling
--- | of the voices inside the padded stage, which left a 30px seam of paper between
--- | it and the bars above — the padding was doing its job, but the river is not
--- | stage content and should not be inset by the stage's margin.
--- |
--- | The two docked bars inset their right edge by `riverWidth` instead, so nothing
--- | is covered: the CONTEXT and AUDITION bars squash leftward and the river owns
--- | its column outright.
--- |
--- | z-index sits BELOW both bars deliberately. If the CONTEXT bar's content ever
--- | outgrows the squashed width, it overflows visibly over the river rather than
--- | being silently painted under it — a visible bug beats an unclickable control.
-riverColumn :: forall m. State -> H.ComponentHTML Action Slots m
-riverColumn st =
-  HH.div
-    -- on the left of Perform, so Tidal (Limulus) is on the right, as on every
-    -- page (AC, 2026-10-05); notes enter at its right edge, beside Limulus,
-    -- and age leftward, as Odonus's river does
-    [ HP.style ( "position: fixed; top: var(--tf-bar); left: var(--tf-left, 0px); bottom: 0; width: " <> riverWidth <> "; "
-        <> "z-index: 38; display: flex; flex-direction: column; background: #0b0a07; border-right: 1px solid #2a281f;" ) ]
-    [ riverPane st ]
-
-riverPane :: forall m. State -> H.ComponentHTML Action Slots m
-riverPane st =
-  HH.div
-    [ HP.style "flex: 1 1 auto; min-height: 0; position: relative; overflow: hidden;" ]
-    [ River.riverPanel
-        { flow: River.FlowLeft, headColor: captureHeadColor }
-        { nowMicros: st.nowMicros, notes: st.riverNotes, marks: st.capture.logbook.marks }
-    ]
 
 -- | The REPLAY roll — the shared whole-session surface, left to right: the
 -- | oldest notes at the left, now at the right, marks numbered 1, 2, 3 across,
@@ -7546,24 +5316,6 @@ captureHeadColor h = case h `mod` 6 of
   4 -> "#6a4a8a"
   _ -> "#2f7d8a"
 
--- | The REVIEW surface — the whole-session roll, full bleed. The negative margins
--- | cancel the surface's own padding so it reaches all four edges, exactly as
--- | Odonus's does. Its controls (◆ mark · counts · clear) are in the nav, not
--- | here: they're shared with PERFORM, so putting them on the surface would move
--- | them under you every time you changed stage.
-reviewSurface :: forall m. State -> H.ComponentHTML Action Slots m
-reviewSurface st =
-  HH.div
-    [ HP.style "position: absolute; inset: 0; display: flex; flex-direction: column; align-items: stretch; padding: 30px 28px;" ]
-    [ HH.div
-        -- Bleeds on three sides: the capture surface is the whole stage here,
-        -- not something laid out within it. Not the top: the AUDITION
-        -- chyron lies over the stage's top edge, and bled up under it the
-        -- surface's own top row (zoom, ✂ cut, trim, undo) was hidden.
-        [ HP.style ("flex: 1 1 auto; min-height: 0; margin: calc(" <> chyronHeight <> " - 30px + 4px) -28px -30px -28px; display: flex; flex-direction: column; background: #0b0a07; border-top: 1px solid #2a281f;") ]
-        [ capturePane st ]
-    ]
-
 -- | **The river as a main-space view** (docs/kb/plans/vetula-one-surface.md,
 -- | step 2): Review's whole-session roll, beside the lattice and the score
 -- | rather than a mode of its own. Full height: no chyron over it here.
@@ -7581,262 +5333,11 @@ fullView = case _ of
   Hunt River -> true
   _ -> false
 
--- | Where the river is the surface: Review, and the river view.
+-- | Where the river is the surface: the river view.
 showsRiver :: Stage -> Boolean
 showsRiver = case _ of
-  Review -> true
   Hunt River -> true
   _ -> false
-
--- | The PERFORM surface: voices in the left two thirds, the capture river as a
--- | narrow strip down the right third. Notes enter the strip at ITS left edge,
--- | next to the voice that played them, and age rightward (`HorizontalOutward`).
--- |
--- | This replaced the full-bleed VERTICAL tracker band of #28b: the vertical axis
--- | read well on its own but cost Vetula too much of its voices. Differentiation
--- | from Odonus is now POSITION (a side strip vs a full-width surface) and time
--- | DIRECTION (outward from the voices vs oldest-first), not the axis.
-performSurface :: forall m. State -> H.ComponentHTML Action Slots m
-performSurface st =
-  HH.div
-    [ HP.style ( "position: absolute; inset: 0; display: flex; flex-direction: column; align-items: stretch; "
-        -- edge to edge: the stage is Limulus, under the chyron and up to the river
-        <> "justify-content: flex-start; padding: 0; padding-top: " <> chyronHeight <> "; padding-left: " <> riverWidth <> ";" ) ]
-    ( body <> [ riverColumn st, perfEditModal st, perfPhrasePickModal st ] )
-  where
-  -- Perform is Limulus (AC, 2026-10-04: docs/kb/plans/the-deck.md). The
-  -- shared bar's Limulus panel lies over this region whenever it is on the
-  -- page; the cards are lines there (`v3 $ …`), still kept on the stage and
-  -- played by the rig. The card boxes and the FX palette went 2026-10-05
-  -- (in git, should progressions become cards). What shows through only in
-  -- Solo, where Limulus has no rig.
-  body =
-      [ HH.div
-          [ HP.attr (HH.AttrName "data-limulus-dock") "always"
-          -- part of the page, not a window on it (AC, 2026-10-04)
-          , HP.attr (HH.AttrName "data-limulus-frame") "flush"
-          , HP.style "flex: 1 1 auto; min-height: 0; width: 100%; display: flex; align-items: center; justify-content: center; color: #9a8d6a; font-style: italic; font-size: 13px;" ]
-          [ HH.text "Perform is Limulus, which plays on the rig: switch to Atlantis on the dashboard." ]
-      ]
-
--- | The sequence-editor modal — a roomier surface for the text hatch than the
--- | inline field, with a mini-notation guide and clickable examples in place. Edits
--- | box `perfEditBox`'s `seqText` directly (same `PerfSetSeq` path, committed on
--- | blur). Examples drop straight into the field; the guide makes the notation
--- | learnable where you use it (the complexity-budget point).
--- | The phrase picker (#27/#28-lib): the SHARED clip-library surface
--- | (`Clips.View.libraryPanel`, also the shell's ⌥6 modal) in its attach mode —
--- | same rows, plus an ＋ column that lands a self-contained COPY of the clip on
--- | box `perfPhrasePick` as its source. Only the wiring lives here now; the rows
--- | themselves are the one renderer both entry points share.
--- |
--- | The controls don't need `PerfStopClick`: the panel div below already stops the
--- | click before it reaches the backdrop, so a button inside can't close the modal.
-perfPhrasePickModal :: forall m. State -> H.ComponentHTML Action Slots m
-perfPhrasePickModal st = case st.perfPhrasePick of
-  Nothing -> HH.text ""
-  Just i ->
-    HH.div
-      [ HP.style "position: fixed; inset: 0; background: rgba(20,20,20,0.32); z-index: 60; display: flex; align-items: center; justify-content: center; padding: 40px;"
-      , HE.onClick \_ -> PerfClosePhrasePick ]
-      [ HH.div
-          [ HP.style "background: #fbf9f2; border: 1px solid #cdbb8c; border-radius: 10px; padding: 18px 20px; max-width: 460px; width: 100%; max-height: 70vh; overflow-y: auto; box-shadow: 0 10px 40px rgba(0,0,0,0.25);"
-          , HE.onClick \e -> PerfStopClick e PerfNop ]
-          [ ClipsView.libraryPanel
-              { audition: ClipAudition
-              , rename: ClipRename
-              , delete: ClipDelete
-              , attach: Just
-                  { label: "P" <> show (maybe (i + 1) _.channel (index st.perfBoxes i))
-                  , onAttach: PerfAttachPhrase i }
-              , share: Just { onShare: ClipShare, msg: fromMaybe "" st.publishMsg }
-              }
-              st.clipLibrary
-          , HH.button
-              [ HP.style "margin-top: 12px; border: 1px solid #dcd2b4; background: #faf6ea; color: #8a7a4a; cursor: pointer; padding: 4px 12px; border-radius: 4px; font-size: 11px;"
-              , HE.onClick \_ -> PerfClosePhrasePick ]
-              [ HH.text "cancel" ]
-          ]
-      ]
-
-perfEditModal :: forall m. State -> H.ComponentHTML Action Slots m
-perfEditModal st = case st.perfEditBox >>= \i -> map (Tuple i) (index st.perfBoxes i) of
-  Nothing -> HH.text ""
-  Just (Tuple i box) ->
-    HH.div
-      [ HP.style "position: fixed; inset: 0; background: rgba(20,20,20,0.32); z-index: 60; display: flex; align-items: center; justify-content: center; padding: 40px;"
-      , HE.onClick \_ -> PerfCloseEdit ]
-      [ HH.div
-          [ HP.style "background: #fbfaf4; width: 560px; max-width: 92vw; max-height: 84vh; overflow-y: auto; border-radius: 10px; box-shadow: 0 12px 48px rgba(0,0,0,0.24); padding: 22px 26px 24px;"
-          , HE.onClick \e -> PerfStopClick e PerfNop ]
-          [ HH.div [ HP.style "display: flex; align-items: baseline; justify-content: space-between; margin: 0 0 14px;" ]
-              [ HH.h2 [ HP.style "font-size: 15px; font-weight: 600; margin: 0; color: #2a2a2a;" ]
-                  [ HH.text ("Sequence · " <> box.label <> " · ch " <> show box.channel) ]
-              , HH.button
-                  [ HP.style "border: none; background: transparent; color: #9a9a9a; font-size: 18px; cursor: pointer; line-height: 1;"
-                  , HP.title "close"
-                  , HE.onClick \_ -> PerfCloseEdit ]
-                  [ HH.text "×" ]
-              ]
-          , HH.textarea
-              [ HP.style ("width: 100%; box-sizing: border-box; resize: vertical; field-sizing: content; border: 1px solid "
-                           <> (if boxUsesSeq box then "#b8860b" else "#cdbb8c")
-                           <> "; background: #fff; color: #3a3a3a; border-radius: 6px; padding: 9px 12px; font-size: 15px; line-height: 1.6; font-family: ui-monospace, monospace;")
-              , HP.rows 2
-              , HP.value (printPipelineLines box)
-              , HP.attr (AttrName "placeholder") "0 1 2 3\n# arp up 4"
-              , HE.onValueChange \s -> PerfSetPipeline i s ]
-          , HH.div [ HP.style "font-size: 11px; color: #9a8a5a; margin: 8px 0 16px;" ]
-              [ HH.text "One cycle = one bar; numbers index the token's chords (out-of-range = rest). Type freely, click away to apply." ]
-          , sectionLabel "Examples — click to use"
-          , HH.div [ HP.style "display: flex; flex-wrap: wrap; gap: 6px; margin: 0 0 18px;" ]
-              (map (exampleChip i) examples)
-          , sectionLabel "Mini-notation (the sequence)"
-          , HH.div [ HP.style "display: grid; grid-template-columns: auto 1fr; gap: 4px 14px; font-size: 12.5px; color: #555;" ]
-              (concatMap guideRow guide)
-          , HH.div [ HP.style "height: 14px;" ] []
-          , sectionLabel "Layers (after each #)"
-          , HH.div [ HP.style "display: grid; grid-template-columns: auto 1fr; gap: 4px 14px; font-size: 12.5px; color: #555;" ]
-              (concatMap guideRow layerGuide)
-          ]
-      ]
-  where
-  sectionLabel t =
-    HH.div [ HP.style "font-size: 10px; letter-spacing: 0.1em; text-transform: uppercase; color: #b0a684; margin: 0 0 7px;" ] [ HH.text t ]
-  exampleChip i ex =
-    HH.button
-      [ HP.style "border: 1px solid #cdbb8c; background: #f3ead2; color: #6a5a2a; cursor: pointer; padding: 3px 9px; border-radius: 4px; font-size: 12px; font-family: ui-monospace, monospace;"
-      , HP.title (snd ex)
-      , HE.onClick \_ -> PerfSetSeq i (fst ex) ]
-      [ HH.text (fst ex) ]
-  guideRow (Tuple syntax meaning) =
-    [ HH.code [ HP.style "font-family: ui-monospace, monospace; color: #7a5c00;" ] [ HH.text syntax ]
-    , HH.span_ [ HH.text meaning ] ]
-  examples =
-    [ Tuple "0 1 2 3" "one chord per beat"
-    , Tuple "0 ~ 2 ~" "beats 1 and 3 only (rests)"
-    , Tuple "<0 2> 1" "alternate 0/2 each bar, then 1"
-    , Tuple "0(3,8)" "euclidean — 3 hits over 8"
-    , Tuple "[0 1] 2" "0 and 1 share a beat, then 2"
-    , Tuple "0!3 1" "repeat chord 0 three times, then 1"
-    , Tuple "0*2 1" "chord 0 twice as fast, then 1"
-    ]
-  guide =
-    [ Tuple "0 1 2" "a sequence — one step each"
-    , Tuple "~" "a rest"
-    , Tuple "[a b]" "group into one step (subdivide)"
-    , Tuple "<a b>" "alternate, one per cycle"
-    , Tuple "a(k,n)" "euclidean rhythm — k hits in n"
-    , Tuple "a!n" "repeat a, n times"
-    , Tuple "a*n / a/n" "speed up / slow down"
-    , Tuple "a?" "randomly drop (degrade)"
-    ]
-  layerGuide =
-    [ Tuple "# transpose 5" "shift every chord ±semitones"
-    , Tuple "# transpose \"0 7 <5 3>\"" "any arg can be a pattern — sampled per chord/cycle"
-    , Tuple "# oct -1" "shift ±octaves"
-    , Tuple "# slow 4" "unfold over N bars — the harmonic-progression verb"
-    , Tuple "# fast 2" "pack into 1/N of a bar"
-    , Tuple "# voice open" "re-voice: open/rootless/drop2/drop24/quartal/cluster"
-    , Tuple "# top 1 · # bottom 1" "keep the top / bottom N voices"
-    , Tuple "# arp up 4" "arpeggiate: up/down/updown, steps per bar (spreads under slow)"
-    , Tuple "# arp \"0 1 2 3\"" "arp an index figure: 0 = lowest, wraps up an 8ve; rests/<alt>/euclid ok"
-    , Tuple "# strum 14" "strum — ms between notes"
-    , Tuple "… every 4" "gate: apply the layer only every N cycles"
-    , Tuple "… prob 0.3" "gate: apply it on ~30% of cycles (random)"
-    , Tuple "… afterbar 16" "gate: apply it only from bar N onward (a build-up)"
-    , Tuple "… whenmod 8 1" "gate: apply when (cycle mod n) ≥ r — e.g. every cycle but every 8th"
-    ]
-
--- | The Keyboard lens — the exhaustive hunting cloud: the piano keyboard, diatonic
--- | triad families, seed-blooms, the voice-leading lattice, and the path overlay.
-keyboardSurface :: forall m. State -> H.ComponentHTML Action Slots m
-keyboardSurface st =
-  let scl = scaleSet st.key
-      posMap = Map.fromFoldable (map (\n -> Tuple n.id { x: n.x, y: n.y }) st.nodes)
-      links = latticeLinkLines posMap st.chords
-      -- chord id → 1-based step in the running sequence (the node step-number badge)
-      pathOrder = Map.fromFoldable (mapWithIndex (\i pid -> Tuple pid (i + 1)) st.path)
-      -- the focused root (from a keyboard-key click) lights a beam up its column
-      focusRoot = st.focusedFamily >>= \fid -> map _.root (find (\c -> c.id == fid) st.chords)
-      -- a faint divider marking the OUTSIDE shelf — only when outside chords exist
-      shelfMarker =
-        if any (\c -> c.outside > 0) st.chords
-          then [ SE.line [ SA.x1 (-436.0), SA.y1 (-80.0), SA.x2 440.0, SA.y2 (-80.0), SA.class_ (cn "shelf-line") ]
-               , SE.text [ SA.x (-430.0), SA.y (-86.0), SA.class_ (cn "shelf-label") ] [ HH.text "OUTSIDE THE SCALE ↑" ]
-               ]
-          else []
-      vb = geoView st
-  in SE.svg
-      ( [ SA.viewBox vb.x vb.y vb.w vb.h
-        , SA.width 880.0
-        , SA.height 600.0
-        , SA.class_ (cn "vetula-surface")
-        -- no left ladder on the Lab surface — let the cloud fill the wide window.
-        , HP.style surfaceFillCss
-        , HE.onWheel \we -> ZoomAt (WE.toEvent we) (WE.deltaY we)
-        , HE.onMouseDown (PanStart <<< ME.toEvent)
-        ]
-          <> geoPanAttrs st
-          -- also listen for moves while a ladder voice is being dragged (mutually
-          -- exclusive with a pan — the keyboard never starts a ladder drag itself)
-          <> (case st.drag of
-                Just _ ->
-                  [ HE.onMouseMove (DragMove <<< ME.toEvent)
-                  , HE.onMouseUp \_ -> DragEnd
-                  , HE.onMouseLeave \_ -> DragEnd
-                  ]
-                Nothing -> [])
-      )
-      -- revoiceModal is no longer drawn into this SVG — it's a DOM-level modal
-      -- (shared Modal widget), rendered at the top of `render`.
-      [ cloudClipDef
-      , clippedCloud
-          ( focusBeam focusRoot <> keyboardView scl <> axisLabels <> shelfMarker <> links
-              <> map (nodeView scl pathOrder Set.empty posMap)
-                   (filter (\c -> not (Set.member c.id st.imported)) st.chords) )
-      ]
-
--- | The PadGrid lens — a sparse, playable 4×4 board of the tank. The mouse-driven
--- | precursor to the MidiFighter/Push idea: click a pad to PLAY it (audition, no
--- | commitment), shift-click to stage it as a seed. Empty cells are faint holders.
--- | Sixteen cells, row-major over the tank; a tank beyond 16 is browsed in the
--- | strip above (recipes + paging come later — Slice F).
-padGridSurface :: forall m. State -> H.ComponentHTML Action Slots m
-padGridSurface st =
-  -- fill the canvas and settle the board centred at the bottom, clear of the
-  -- floating side panels (it's HTML, not a viewBox-scaled SVG like the other lenses)
-  HH.div
-    [ HP.style "width: 100%; height: 100%; display: flex; flex-direction: column; align-items: center; justify-content: flex-end; padding-bottom: 24px; -webkit-user-select: none; user-select: none;" ]
-    [ HH.div
-        [ HP.style "width: 560px; max-width: 90%;" ]
-        [ HH.div [ HP.style "font-size: 11px; color: #9a9488; margin: 0 0 8px; letter-spacing: 0.04em; text-align: center;" ]
-            [ HH.text "click a pad to play it · shift-click to seed the stage — nothing is committed" ]
-        , HH.div
-            [ HP.style "display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px;" ]
-            (map (\i -> padCell (index st.tank i)) (range 0 15))
-        ]
-    ]
-
--- | One pad on the board: a filled pad (glyph + label, playable) or a faint empty
--- | holder. Same gesture split as the tank strip, but PLAY is the default here —
--- | a pad's job is to sound, not to stage.
-padCell :: forall m. Maybe Specimen -> H.ComponentHTML Action Slots m
-padCell = case _ of
-  Nothing ->
-    HH.div
-      [ HP.style "aspect-ratio: 1 / 1; border: 1px dashed #ececec; border-radius: 8px; background: #fcfcfc;" ]
-      []
-  Just s ->
-    HH.div
-      [ HP.style "aspect-ratio: 1 / 1; border: 1px solid #e2e2e2; border-radius: 8px; background: #fbfbfa; cursor: pointer; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px;"
-      , HE.onClick \e -> if ME.shiftKey e then StageSpec s.id else AuditionSpec s.id ]
-      [ SE.svg
-          [ SA.viewBox (-20.0) (-24.0) 40.0 48.0, SA.width 66.0, SA.height 62.0 ]
-          (chordGlyph [] 0.0 0.0 s.voicing)
-      , HH.div [ HP.style "font-size: 11px; color: #6a6a6a; max-width: 88%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" ]
-          [ HH.text s.label ]
-      ]
 
 -- ---------------------------------------------------------------------------
 -- The Circle-of-Fifths lens (first geometric view)
@@ -8181,7 +5682,6 @@ tonnetzSurface st =
           <> concatMap (tonEdgesFrom scl) cells
           <> concatMap (tonNode scl tonic) cells
           <> concatMap (tonTriName diatonic) tris
-          <> concatMap (tonStackMark st.tonnetzStack) tris
           <> map tonHit tris
       )
 
@@ -8277,31 +5777,6 @@ tonHit t =
     , HE.onClick \_ -> AuditionTriad t.root t.pcs
     ]
     []
-
--- | The stack highlight over a triangle that is currently in the Tonnetz stack:
--- | a violet wash + a numbered badge at its centroid showing its pick order.
-tonStackMark
-  :: forall m
-   . Array { root :: Int, pcs :: Array Int, major :: Boolean }
-  -> TonTri -> Array (H.ComponentHTML Action Slots m)
-tonStackMark stack t =
-  case findIndex (\e -> e.root == t.root && e.pcs == t.pcs) stack of
-    Nothing -> []
-    Just i ->
-      let c = centroid t.verts
-      in [ SE.element (ElemName "polygon")
-             [ HP.attr (AttrName "points") (ptsStr t.verts)
-             , HP.style "fill: rgba(106,74,154,0.20); stroke: #6a4a9a; stroke-width: 2; pointer-events: none;" ]
-             []
-         , SE.circle
-             [ SA.cx c.x, SA.cy (c.y - 15.0), SA.r 7.0
-             , HP.style "fill: #6a4a9a; stroke: #ffffff; stroke-width: 1; pointer-events: none;" ]
-         , SE.text
-             [ SA.x c.x, SA.y (c.y - 15.0 + 3.0)
-             , HP.attr (AttrName "text-anchor") "middle"
-             , HP.style "font-size: 9px; fill: #ffffff; pointer-events: none; -webkit-user-select: none; user-select: none;" ]
-             [ HH.text (show (i + 1)) ]
-         ]
 
 -- ---------------------------------------------------------------------------
 -- The Lattices lens (every degree's tertian powerset web, tiled + zoomable)
@@ -8658,6 +6133,7 @@ scoreSurface st =
     , voiceOver: VoiceDragOver
     , voiceDrop: VoiceDrop
     , tap: Just { start: TapStart, stop: TapStop, clear: ClearRhythm }
+    , resume: (\w -> { name: w.name, act: ResumeWorking }) <$> st.resumable
     , toQuadrat: case st.progName of
         Just nm | any (\e -> e.kept && e.name == nm) st.library -> Just (ToQuadrat nm)
         _ -> Nothing
@@ -8719,6 +6195,7 @@ scoreSurface st =
     , voiceOver: VoiceDragOver
     , voiceDrop: VoiceDrop
     , tap: Nothing
+    , resume: Nothing
     , toQuadrat: case r.name of
         Just nm | any (\e -> e.kept && e.name == nm) st.library -> Just (ToQuadrat nm)
         _ -> Nothing
@@ -9044,301 +6521,6 @@ padLit st c = case st.hoveredTriad of
   Nothing -> false
   Just h -> sort (nub (map (\p -> mod p 12) h.pcs)) == sort (nub (map (\p -> mod p 12) c.pcs))
 
--- | **The REHEARSE surface — a progression with alternatives at every chord.**
--- |
--- | A column per slot, its options stacked beneath it. The pass the transport
--- | would play is highlighted; a settled slot wears a pin and stops moving.
--- |
--- | The whole stage exists because a progression stops being a list the moment
--- | its chords have alternatives: four options at each of three chords is
--- | sixty-four progressions, and what you want is not to pick one but to keep
--- | running them until one of them is obviously right.
-rehearseSurface :: forall m. State -> H.ComponentHTML Action Slots m
-rehearseSurface st =
-  HH.div
-    [ HP.class_ (cn "vetula-surface vetula-surface--wide")
-    , HP.style ("position: absolute; inset: 0; overflow: auto; padding: 14px 22px 26px; padding-top: calc(" <> chyronHeight <> " + 14px);") ]
-    (if length st.rehearsal == 0 then [ nothingTakenUp st ] else rehearsalBody st)
-
--- | Nothing in hand. The rebus glyphs on the AUDITION bar are the shelf — this
--- | stage had its own row of them for a day, which was the same set of
--- | progressions drawn twice in one window.
-nothingTakenUp :: forall m. State -> H.ComponentHTML Action Slots m
-nothingTakenUp st =
-  HH.div
-    [ HP.style "font-size: 12px; color: #a09880; line-height: 1.6; max-width: 480px; padding-top: 20px;" ]
-    [ HH.text (if length st.chyronSaved == 0
-                 then "Nothing saved yet — play a progression in Explore and ⏎ it onto the shelf, then click its rebus above."
-                 else "Click a progression's rebus on the audition bar above and every chord in it becomes a slot you can give alternatives to.") ]
-
--- | The controls, the readout, the slots, and — when a slot is being varied —
--- | the grid underneath. The controls live HERE rather than in the context bar:
--- | they are about the progression in front of you, not about the app's mode,
--- | and the bar is for things true of the whole instrument.
-rehearsalBody :: forall m. State -> Array (H.ComponentHTML Action Slots m)
-rehearsalBody st =
-  let ixs = passIxs st
-  in
-    [ HH.div
-        [ HP.style "display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 12px;" ]
-        ( [ paneBtn true "play ▶" "hear this pass" PlayPass
-          , paneBtn false "pass ⟳" "draw a new pass through the lattice" RollPass
-          , paneDivider
-          ]
-            <> map (pullBtn st) HT.pulls
-            <> [ paneDivider
-               , paneBtn false "settle" "lock every slot to what this pass chose — the alternatives stay" SettlePass
-               , paneBtn false "loosen" "unlock every slot" LoosenAll
-               , paneDivider
-               , paneBtn (st.pane == Just PanePaths) "paths"
-                   "lay out every way through these chords, smoothest first" ShowPaths
-               , paneDivider
-               , paneBtn false "keep ⏎"
-                   "put this pass on the shelf as a progression — drag it to a Perform box from there" KeepPass
-               , paneBtn false "keep all ⇶"
-                   "put the WHOLE lattice on the shelf: each slot alternates, so the rig walks the space per cycle"
-                   KeepLattice
-               , HH.div [ HP.style "flex: 1 1 auto;" ] []
-               , HH.span
-                   [ HP.style "font-size: 11px; color: #b3aa92; -webkit-user-select: none; user-select: none;" ]
-                   [ HH.text (show (length st.rehearsal) <> " chords · " <> show (RH.size st.rehearsal)
-                               <> " progressions · pass " <> show st.rehearseRoll
-                               <> " · motion " <> show (passMotion st)) ]
-               , HH.button
-                   [ HP.style "border: none; background: none; color: #b3aa92; font-size: 11px; cursor: pointer; padding: 0;"
-                   , HP.title "put this progression down — the kept variations survive it"
-                   , HE.onClick \_ -> DropRehearsal ]
-                   [ HH.text "put down" ]
-               ]
-        )
-    , HH.div
-        [ HP.style "display: flex; gap: 10px; align-items: flex-start; flex-wrap: wrap;" ]
-        (mapWithIndex (slotColumn ixs) st.rehearsal)
-    ]
-      <> panelBelow st
-
--- | Whatever is open under the progression. One at a time, and each a different
--- | question about the same chords.
-panelBelow :: forall m. State -> Array (H.ComponentHTML Action Slots m)
-panelBelow st = case st.pane of
-  Nothing -> []
-  Just PanePaths -> pathsPanel st
-  Just (PaneVary _) -> varyPanel st
-
--- | **Every way through the chords, smoothest first.**
--- |
--- | The pull dial plays one path and re-rolls; this lays them all out. Different
--- | questions — the dial is for finding what you did not expect, this is for
--- | choosing once you roughly know — and the ordering is what makes it usable:
--- | the top moves least, the bottom leaps, and the middle is a trade you can
--- | hear. Click one to play it.
-pathsPanel :: forall m. State -> Array (H.ComponentHTML Action Slots m)
-pathsPanel st =
-  [ HH.div
-      [ HP.style "margin-top: 22px; border-top: 1px solid #e6dfcc; padding-top: 14px;" ]
-      ( [ HH.div
-            [ HP.style "display: flex; align-items: baseline; gap: 10px; margin-bottom: 10px; font-size: 11px; color: #a09880; letter-spacing: 0.04em; -webkit-user-select: none; user-select: none;" ]
-            [ HH.span [ HP.style "color: #6a6250; font-weight: 500;" ] [ HH.text "paths" ]
-            , HH.text ("every way through these chords, least motion first · click to hear one · ★ marks one to keep"
-                        <> (if length st.marked == 0 then "" else " · " <> show (length st.marked) <> " marked"))
-            , HH.div [ HP.style "flex: 1 1 auto;" ] []
-            , if length (markedRows st) == 0 then HH.text ""
-              else HH.button
-                     [ HP.style "border: 1px solid #b8975a; background: #f2e7c6; color: #5a564b; font-size: 11px; padding: 2px 10px; border-radius: 3px; cursor: pointer;"
-                     , HP.title "put the marked readings on the shelf as ONE token — a cycle picks between them"
-                     , HE.onClick \_ -> KeepMarked ]
-                     [ HH.text ("keep " <> show (length (markedRows st)) <> " marked ⏎") ]
-            , HH.button
-                [ HP.style "border: none; background: none; color: #b3aa92; font-size: 11px; cursor: pointer; padding: 0;"
-                , HE.onClick \_ -> ShowPaths ]
-                [ HH.text "close" ]
-            ]
-        ]
-          <> body
-      )
-  ]
-  where
-  body = case RH.allPaths pathLimit pathCap st.rehearsal of
-    -- Not an error to swallow but a thing to say, and an actionable one: the
-    -- list collapses the moment you settle a slot, which makes this view the
-    -- reason to settle rather than a casualty of not having. What you have
-    -- already approved still shows — marks are most useful exactly when the
-    -- space is too big to read.
-    Nothing ->
-      [ HH.div
-          [ HP.style "font-size: 12px; color: #a09880; line-height: 1.6; max-width: 480px; margin-bottom: 10px;" ]
-          [ HH.text (show (RH.size st.rehearsal)
-                      <> " paths — too many to lay out. Settle a slot or two and they collapse."
-                      <> (if length st.marked == 0 then "" else " What you have marked is below.")) ]
-      ]
-        <> rows (markedRows st)
-    Just ps -> rows ps
-
-  -- Approved paths float to the top — your shortlist is what you want to
-  -- compare — and the rest stay in order of least motion.
-  rows ps =
-    [ HH.div
-        [ HP.style "display: flex; flex-direction: column; gap: 3px; max-width: 900px;" ]
-        (map pathRow (sortBy (comparing (\r -> Tuple (if pathMarked st r.ixs then 0 else 1) r.motion)) ps))
-    ]
-
-  live = passIxs st
-
-  pathRow r =
-    let now = r.ixs == live
-        mk = pathMarked st r.ixs
-    in HH.div
-        [ HP.style ("display: flex; align-items: baseline; gap: 8px; "
-                     <> "border: 1px solid " <> (if mk then "#b8975a" else if now then "#cdbb8c" else "#ece5d2")
-                     <> "; background: " <> (if mk then "#f2e7c6" else if now then "#fdf6e4" else "#fdfbf5")
-                     <> "; border-radius: 3px; padding: 4px 6px 4px 10px; font-size: 11px; color: #6a6250;") ]
-        [ HH.button
-            [ HP.style "flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: left; border: none; background: none; color: inherit; font-size: 11px; cursor: pointer; padding: 0;"
-            , HP.title (if now then "the pass you are hearing" else "hear this one")
-            , HE.onClick \_ -> HearPath r.ixs ]
-            [ HH.text (joinWith "  ·  " (namesFor r.ixs)) ]
-        , HH.span [ HP.style "color: #b3aa92; flex: 0 0 auto;" ] [ HH.text (show r.motion) ]
-        , HH.button
-            [ HP.style ("border: none; background: none; cursor: pointer; font-size: 12px; line-height: 1; padding: 0 2px; flex: 0 0 auto; color: "
-                         <> (if mk then "#b8860b" else "#d8cfb8"))
-            , HP.title (if mk then "marked — click to drop it" else "mark this one to keep")
-            , HE.onClick \_ -> MarkPath r.ixs ]
-            [ HH.text (if mk then "★" else "☆") ]
-        ]
-
-  namesFor ixs = catMaybes (zipWith (\sl j -> map _.label (index sl.options j)) st.rehearsal ixs)
-
--- | Beyond this the list stops being something a person chooses from — five
--- | slots of four is 1024 readings.
-pathLimit :: Int
-pathLimit = 240
-
--- | And of the ones we do lay out, the smoothest handful is where the answer is.
-pathCap :: Int
-pathCap = 40
-
--- | The Vary grid, opened UNDER the progression rather than in place of it.
-varyPanel :: forall m. State -> Array (H.ComponentHTML Action Slots m)
-varyPanel st = case varyingSlot st of
-  Nothing -> []
-  Just i -> case index st.rehearsal i >>= \sl -> head sl.options of
-    Nothing -> []
-    Just src ->
-      [ HH.div
-          [ HP.style "margin-top: 22px; border-top: 1px solid #e6dfcc; padding-top: 14px;" ]
-          ( [ HH.div
-                [ HP.style "display: flex; align-items: baseline; gap: 10px; margin-bottom: 10px; font-size: 11px; color: #a09880; letter-spacing: 0.04em; -webkit-user-select: none; user-select: none;" ]
-                [ HH.span [ HP.style "color: #6a6250; font-weight: 500;" ]
-                    [ HH.text ("slot " <> show (i + 1) <> " · " <> src.label) ]
-                , HH.text "rows let the notes drift, columns spread and double them · click hears it alone · ⌥-click in place · shift-click keeps"
-                , HH.div [ HP.style "flex: 1 1 auto;" ] []
-                , HH.button
-                    [ HP.style "border: none; background: none; color: #b3aa92; font-size: 11px; cursor: pointer; padding: 0;"
-                    , HP.title "close the grid"
-                    , HE.onClick \_ -> VaryFromSlot i ]
-                    [ HH.text "close" ]
-                ]
-            ]
-              <> varyGridFor st src
-          )
-      ]
-
-paneBtn :: forall m. Boolean -> String -> String -> Action -> H.ComponentHTML Action Slots m
-paneBtn strong label tip act =
-  HH.button
-    [ HP.title tip
-    , HE.onClick \_ -> act
-    , HP.style ("border: 1px solid " <> (if strong then "#b8975a" else "#ddd5c0")
-                 <> "; background: " <> (if strong then "#f2e7c6" else "#fdfbf5")
-                 <> "; color: #5a564b; font-size: 12px; padding: 4px 12px; border-radius: 3px; cursor: pointer;") ]
-    [ HH.text label ]
-
-paneDivider :: forall m. H.ComponentHTML Action Slots m
-paneDivider = HH.span [ HP.style "width: 1px; height: 18px; background: #e6dfcc;" ] []
-
-pullBtn :: forall m. State -> HT.Pull -> H.ComponentHTML Action Slots m
-pullBtn st p =
-  HH.button
-    [ HP.title (HT.pullBlurb p)
-    , HE.onClick \_ -> SetPull p
-    , HP.style ("border: 1px solid " <> (if st.pull == p then "#b8975a" else "#ddd5c0")
-                 <> "; background: " <> (if st.pull == p then "linear-gradient(#c8a86a,#b8975a)" else "#fdfbf5")
-                 <> "; color: " <> (if st.pull == p then "#1c1a12" else "#5a564b")
-                 <> "; font-size: 12px; padding: 4px 12px; border-radius: 3px; cursor: pointer;") ]
-    [ HH.text (HT.pullLabel p) ]
-
--- | One slot: the chord's name, an excursion button, and its options beneath.
-slotColumn :: forall m. Array Int -> Int -> Slot -> H.ComponentHTML Action Slots m
-slotColumn ixs i sl =
-  let playing = fromMaybe 0 (index ixs i)
-  in HH.div
-      [ HP.style "flex: 0 0 auto; min-width: 116px; background: #fbf8f0; border: 1px solid #ece5d2; border-radius: 5px; padding: 8px 8px 6px;" ]
-      -- No slot number: the position is implicit in the row, and a numeral beside
-      -- a chord name reads as part of the name.
-      ( [ HH.div
-            [ HP.style "display: flex; align-items: baseline; justify-content: flex-end; gap: 6px; margin-bottom: 6px;" ]
-            [ HH.button
-                [ HP.style "border: none; background: none; color: #a09880; font-size: 11px; cursor: pointer; padding: 0;"
-                , HP.title "open this chord's variations below"
-                , HE.onClick \_ -> VaryFromSlot i ]
-                [ HH.text "vary ⋯" ]
-            ]
-        ]
-          <> mapWithIndex (optionRow i sl playing) sl.options
-      )
-
--- | One option. Click hears it; the ✓ settles the slot on it; the × drops it
--- | (never option zero, which is the chord the progression actually said).
-optionRow :: forall m. Int -> Slot -> Int -> Int -> ChordNode -> H.ComponentHTML Action Slots m
-optionRow i sl playing j c =
-  let
-    settled = sl.locked == Just j
-    live = j == playing
-    bg = if settled then "#f2e7c6" else if live then "#fdf6e4" else "#ffffff"
-    brd = if settled then "#b8975a" else if live then "#cdbb8c" else "#eee7d6"
-  in
-    HH.div
-      [ HP.style ("display: flex; align-items: center; gap: 4px; border: 1px solid " <> brd
-                   <> "; background: " <> bg <> "; border-radius: 3px; padding: 3px 4px 3px 6px; margin-bottom: 3px;") ]
-      [ HH.button
-          [ HP.style "flex: 1 1 auto; min-width: 0; border: none; background: none; text-align: left; font-size: 11px; color: #6a6250; cursor: pointer; padding: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;"
-          , HP.title (show (playNotes c) <> (if j == 0 then " — as written" else "")
-                       <> " · ⌥-click hears it in place")
-          , HE.onClick \e -> if ME.altKey e then HearAround i c else HearOption i j ]
-          [ HH.text c.label ]
-      , HH.button
-          [ HP.style ("border: none; background: none; font-size: 10px; cursor: pointer; padding: 0 2px; color: "
-                       <> (if settled then "#8d7a4a" else "#cbc2aa"))
-          , HP.title (if settled then "unsettle this slot" else "settle the slot on this one")
-          , HE.onClick \_ -> SettleSlot i j ]
-          [ HH.text (if settled then "◉" else "○") ]
-      , if j == 0 then HH.text ""
-        else HH.button
-               [ HP.style "border: none; background: none; color: #cbc2aa; font-size: 11px; cursor: pointer; padding: 0 2px;"
-               , HP.title "drop this variation"
-               , HE.onClick \_ -> DropOption i j ]
-               [ HH.text "×" ]
-      ]
-
--- | **The nine cells themselves**, shared by the standalone lens and the panel
--- | that opens under a rehearsal slot. Identical either way on purpose: the two
--- | places are the same tool at different distances from the music, and a grid
--- | that behaved differently inline would be a second thing to learn.
-varyGridFor :: forall m. State -> ChordNode -> Array (H.ComponentHTML Action Slots m)
-varyGridFor st src =
-  let cells = Vary.grid st.key src st.varyRoll
-      cellAt d dn = filter (\x -> x.drift == d && x.density == dn) cells
-  in
-    [ HH.div
-        [ HP.style "display: grid; grid-template-columns: 62px repeat(3, minmax(0, 1fr)); gap: 10px 12px; align-items: start;" ]
-        ( [ HH.div [] [] ]
-            <> map varyColHead HV.densities
-            <> concatMap
-                 (\d -> [ varyRowHead d ] <> map (\dn -> varyBank st (cellAt d dn)) HV.densities)
-                 HV.drifts
-        )
-    ]
-
 -- | The chord under the lens: the one explicitly sent here, else whatever is
 -- | sounding. Falling back means the lens is never blank merely because you
 -- | arrived by the dropdown rather than by the button.
@@ -9351,33 +6533,20 @@ varySource st = case st.varying of
 soundingChord :: State -> Maybe ChordNode
 soundingChord st = st.lastHeard
 
--- | One variation pad. Click HEARS it (and nothing else); shift-click KEEPS it.
--- | A kept pad wears a filled ring, so the nine cells double as the record of
--- | what you have chosen out of them.
+-- | One variation pad. Click HEARS it; on the score, double-click (or drag)
+-- | puts it in the chosen bar.
 varyPad :: forall m. State -> ChordNode -> H.ComponentHTML Action Slots m
 varyPad st c =
-  let mine = isKept st c
-  in HH.button
+  HH.button
       [ HP.style ("display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 1px; "
-                   <> "border: 1px solid " <> (if mine then "#8d7a4a" else if padLit st c then "#cdbb8c" else "#eee7d6") <> "; "
-                   <> (if mine then "box-shadow: inset 0 0 0 1px #8d7a4a; " else "")
-                   <> "background: " <> (if mine then "#f6efd9" else if padLit st c then "#fdf6e4" else "#ffffff") <> "; "
+                   <> "border: 1px solid " <> (if padLit st c then "#cdbb8c" else "#eee7d6") <> "; "
+                   <> "background: " <> (if padLit st c then "#fdf6e4" else "#ffffff") <> "; "
                    <> "border-radius: 4px; padding: 5px 2px 4px; cursor: pointer; min-width: 0;")
-      , HP.title (c.label <> " — " <> show (playNotes c)
-                   <> (if mine then " · kept (shift-click to drop)" else " · shift-click to keep")
-                   <> " · ⌥-click hears it in place")
+      , HP.title (c.label <> " — " <> show (playNotes c))
       , HE.onMouseEnter \_ -> HoverPad (Just c)
       , HE.onMouseLeave \_ -> HoverPad Nothing
-      -- Plain click hears the chord ALONE. In the grid you are judging the
-      -- chord itself — whether it is a thing you want at all — and three chords
-      -- would answer a question you have not got to yet. ⌥ hears it in place
-      -- when you have.
-      , HE.onClick \e ->
-          if ME.shiftKey e then KeepVariation c
-          else case varyingSlot st of
-            Just i | ME.altKey e -> HearAround i c
-            _ | puts st -> ScoreHearPad c
-            _ -> VaryAudition c
+      -- a click hears the chord alone; on the score, in its bar's register
+      , HE.onClick \_ -> if puts st then ScoreHearPad c else VaryAudition c
       , HE.onDoubleClick \_ -> ScorePut c
       , HP.draggable (st.stage == Hunt Score)
       , HE.onDragStart \_ -> ScorePadDrag c
@@ -9428,95 +6597,7 @@ registerStrip c =
 -- | Is the pointer in a Vary grid — either the standalone lens or the panel
 -- | under a rehearsal slot? The two are the same tool, so they audition alike.
 inVaryGrid :: State -> Boolean
-inVaryGrid st = (isHunt st.stage && st.side == Just SideVariations) || isJust (varyingSlot st)
-
--- | The slot whose variations are open under the progression, if that is what
--- | is open. Most of the app only cares about this one case, so it asks for it
--- | directly rather than matching the whole `Pane`.
-varyingSlot :: State -> Maybe Int
-varyingSlot st = case st.pane of
-  Just (PaneVary i) -> Just i
-  _ -> Nothing
-
--- | **Which rehearsal slot a keep belongs to, if any.**
--- |
--- | The open panel first, then — for the case where you reached the Vary lens
--- | some other way while a rehearsal happens to be up — the slot whose chord
--- | this actually IS. Keyed by notes, the same key the free-standing tray uses,
--- | so a keep lands in the progression however you got to the grid. Without the
--- | second case a keep made from the lens dropdown silently went to the tray and
--- | never reached the slot it plainly belonged to.
-slotForKeep :: State -> Maybe Int
-slotForKeep st = case varyingSlot st of
-  Just i -> Just i
-  Nothing -> varySource st >>= \src ->
-    findIndex (\sl -> map playNotes (head sl.options) == Just (playNotes src)) st.rehearsal
-
--- | Is this variation already kept? During an EXCURSION that means the slot
--- | that sent us; otherwise the free-standing tray. Same question, two places
--- | the answer can live, and the ring on the pad has to tell the truth in both.
-isKept :: State -> ChordNode -> Boolean
-isKept st c = case slotForKeep st of
-  Just i -> case index st.rehearsal i of
-    Just sl -> any (\o -> playNotes o == playNotes c) (drop 1 sl.options)
-    Nothing -> false
-  Nothing -> case varySource st of
-    Nothing -> false
-    Just src ->
-      any (\e -> e.notes == playNotes src && any (\o -> playNotes o == playNotes c) e.options) st.kept
-
--- | **What you have kept, and how big a space it makes.**
--- |
--- | The product is the point: four variations on each of three chords is
--- | sixty-four progressions, and the number is worth showing because it is the
--- | thing you are actually building. One chord with variations is a choice; three
--- | is a space.
-keptTray :: forall m. State -> H.ComponentHTML Action Slots m
-keptTray st
-  | length st.kept == 0 = HH.text ""
-  | otherwise =
-      HH.div
-        -- Sticky rather than in flow: the tray is the RECORD of what you are
-        -- doing, and it was landing below the fold of a nine-cell grid, which
-        -- meant the count you were building was the one thing you could not see.
-        [ HP.style ("position: sticky; bottom: 0; margin-top: 18px; border-top: 1px solid #ece5d2; "
-                     <> "padding: 10px 0 2px; background: linear-gradient(180deg, #ffffffd9, #ffffff); "
-                     <> "backdrop-filter: blur(2px);") ]
-        [ HH.div
-            [ HP.style "font-size: 11px; color: #a09880; letter-spacing: 0.04em; margin-bottom: 8px; -webkit-user-select: none; user-select: none;" ]
-            [ HH.text ("kept · " <> show (length st.kept)
-                        <> (if length st.kept == 1 then " chord · " else " chords · ")
-                        <> show (keptSpace st) <> " progressions in the space"
-                        <> " · each count includes the original") ]
-        , HH.div
-            [ HP.style "display: flex; flex-wrap: wrap; gap: 8px;" ]
-            (mapWithIndex keptChip st.kept)
-        ]
-
--- | How many distinct progressions the kept sets describe: the product of the
--- | per-chord option counts.
-keptSpace :: State -> Int
-keptSpace st = foldl (\n e -> n * max 1 (length e.options)) 1 st.kept
-
-keptChip :: forall m. Int -> KeptFor -> H.ComponentHTML Action Slots m
-keptChip i e =
-  HH.div
-    [ HP.style "display: flex; align-items: center; gap: 6px; border: 1px solid #ece5d2; background: #fbf8f0; border-radius: 4px; padding: 4px 6px 4px 8px; font-size: 11px; color: #6a6250;" ]
-    [ HH.span [ HP.style "font-weight: 500;" ] [ HH.text e.label ]
-    , HH.span [ HP.style "color: #a09880;" ] [ HH.text (show (length e.options) <> "×") ]
-    , HH.button
-        [ HP.style "border: none; background: none; color: #b3aa92; cursor: pointer; font-size: 12px; line-height: 1; padding: 0 2px;"
-        , HP.title "forget every variation kept for this chord"
-        , HE.onClick \_ -> ForgetKept i ]
-        [ HH.text "×" ]
-    ]
-
-varyColHead :: forall m. HV.Density -> H.ComponentHTML Action Slots m
-varyColHead dn =
-  HH.div
-    [ HP.style "font-size: 11px; color: #7a7360; letter-spacing: 0.08em; text-transform: uppercase; padding-bottom: 2px; border-bottom: 1px solid #e6dfcc; -webkit-user-select: none; user-select: none;"
-    , HP.title (HV.densityBlurb dn) ]
-    [ HH.text (HV.densityLabel dn) ]
+inVaryGrid st = st.side == Just SideVariations
 
 varyRowHead :: forall m. HV.Drift -> H.ComponentHTML Action Slots m
 varyRowHead d =
@@ -9544,54 +6625,6 @@ varyBank st cs = case head cs of
                [ HH.text (show (length cell.chords) <> " — all there is") ]
       ]
 
-
--- | The clip region for the chord cloud. On Explore it stops at the pitch
--- | ladder's edge (x −304) so a dense beeswarm can't paint over the ladder; on
--- | the Lattice there's no ladder, so it spans almost the full width (x −436),
--- | reclaiming the old ladder strip for left-rooted families.
-cloudClipDef :: forall m. H.ComponentHTML Action Slots m
-cloudClipDef =
-  let x0 = -436.0
-      w = 440.0 - x0
-  in SE.defs []
-       [ SE.element (ElemName "clipPath") [ SA.id "cloudClip" ]
-           [ SE.rect [ SA.x x0, SA.y (-300.0), SA.width w, SA.height 600.0 ] ]
-       , SE.element (ElemName "linearGradient")
-           [ SA.id "focusBeam"
-           , HP.attr (AttrName "gradientUnits") "userSpaceOnUse"
-           , HP.attr (AttrName "x1") "0", HP.attr (AttrName "y1") "232"
-           , HP.attr (AttrName "x2") "0", HP.attr (AttrName "y2") "-300"
-           ]
-           [ beamStop "0" "0.22", beamStop "0.5" "0.07", beamStop "1" "0" ]
-       ]
-
--- | One stop of the focused-root beam gradient (gold, fading up).
-beamStop :: forall m. String -> String -> H.ComponentHTML Action Slots m
-beamStop off op =
-  SE.element (ElemName "stop")
-    [ HP.attr (AttrName "offset") off
-    , HP.attr (AttrName "stop-color") "#b8860b"
-    , HP.attr (AttrName "stop-opacity") op
-    ] []
-
--- | The focused-root beam: a soft gold gradient column rising from the focused
--- | key up through the cloud — marks the root you're building on and lights its
--- | x-column (where chords stacked on it land). Brightest at the key, fading up;
--- | pointer-events off so it never blocks a click.
-focusBeam :: forall m. Maybe Int -> Array (H.ComponentHTML Action Slots m)
-focusBeam = case _ of
-  Nothing -> []
-  Just pc ->
-    [ SE.rect
-        [ SA.x (keyX pc - 20.0), SA.y (-300.0), SA.width 40.0, SA.height (keyboard.top + 300.0)
-        , HP.attr (AttrName "fill") "url(#focusBeam)"
-        , HP.style "pointer-events: none;"
-        ]
-    ]
-
-clippedCloud :: forall m. Array (H.ComponentHTML Action Slots m) -> H.ComponentHTML Action Slots m
-clippedCloud kids =
-  SE.element (ElemName "g") [ HP.attr (AttrName "clip-path") "url(#cloudClip)" ] kids
 
 -- ---------------------------------------------------------------------------
 -- Pick mode — the generated candidate cloud (shift-select steps on the right)
@@ -9713,410 +6746,12 @@ nearestShift old new = let d = mod (new - old) 12 in if d > 6 then d - 12 else d
 transposeChord :: Int -> ChordNode -> ChordNode
 transposeChord d c = importChord c.id (map (_ + d) (playNotes c))
 
--- | The progression panel — the Lattice's right-hand side. The path assembles
--- | top→bottom, each step a compact horizontal note-row (pitch left→right) you
--- | can revoice; ▶ plays the whole thing; the Tidal source at the foot saves and
--- | loads it. Replaces the old collection on the Lattice.
-progressionPanel :: forall m. MonadAff m => State -> H.ComponentHTML Action Slots m
-progressionPanel st =
-  let steps = pathSteps st
-  in HH.div
-      -- capped so the note-rows stay a compact reference even when the rail is wide
-      -- (Perform); the playheads, not the progression, get the extra width.
-      [ HP.style "margin: 0 0 6px; max-width: 360px;" ]
-      [ HH.div
-          [ HP.style "display: flex; align-items: center; gap: 8px; margin: 0 0 8px;" ]
-          ( [ HH.button
-                [ HP.style "border: 1px solid #b8860b; background: #fbf6e9; color: #7a5c00; cursor: pointer; padding: 3px 12px; border-radius: 4px; font-size: 12px; font-weight: 600;"
-                , HE.onClick \_ -> PlayPath
-                ]
-                [ HH.text "▶ preview" ]
-            ]
-            -- ✕ clear appears only with a progression to clear; one click empties it
-            -- so the next shift-click on the lattice starts a NEW progression.
-            <> ( if length steps == 0 then [] else
-                   [ HH.button
-                       [ HP.style "border: 1px solid #e0d4d4; background: #fdf7f7; color: #9a6a6a; cursor: pointer; padding: 3px 11px; border-radius: 4px; font-size: 12px;"
-                       , HE.onClick \_ -> ClearPath
-                       ]
-                       [ HH.text "✕ clear" ]
-                   ]
-               )
-          )
-      , if length steps == 0 then HH.text "" else
-          HH.div [ HP.style "display: flex; align-items: center; gap: 6px; margin: 0 0 8px;" ]
-            [ HH.input
-                [ HP.value st.saveName, HE.onValueInput SetSaveName, HP.attr (AttrName "placeholder") "name…"
-                , HP.style "flex: 1; font-size: 12px; padding: 2px 7px; border: 1px solid #ddd; border-radius: 3px;" ]
-            , HH.button
-                [ HP.style "border: 1px solid #d8d8d8; background: #fafafa; color: #4a4a4a; cursor: pointer; padding: 2px 12px; border-radius: 3px; font-size: 12px;"
-                , HE.onClick \_ -> SaveProg false ]
-                [ HH.text "save → library" ]
-            ]
-      , if length steps == 0
-          then HH.p
-                 [ HP.style "color: #c0c0c0; font-size: 12px; line-height: 1.6; margin: 4px 0 10px;" ]
-                 [ HH.text "Shift-click chords on the lattice to grow a progression here. Or paste a saved one into the Tidal source below and press Load." ]
-          else HH.div [ HP.style "margin: 0 0 10px;" ] (mapWithIndex (progressionRow st) steps)
-      ]
-
--- | The performance rack: transport (bpm / preview channel) + one live-coded Tidal
--- | read-head per voice. Extracted from the old Performance `loadedView`; the rail shows
--- | it only in Perform focus, where it has the width for the (wide) voice rows.
--- | The new bottom VOICE BAR (docs/DESIGN-scene-modal.md) — a one-line strip of
--- | FOUR FIXED lanes (block · strum · arp · odo). Each lane is just its live
--- | surface: an enable light (green on / red off), its two mini-notation fields
--- | (read-head + notes), and a commit arrow (red when there are uncommitted edits).
--- | Deliberately NO routing / bpm / channel here — those move to the routing modal.
--- | Built alongside the old Voices card (control C); C is deleted once this is at
--- | parity (`canonicalVoices` guarantees the four lanes always exist).
-voiceBar :: forall m. State -> H.ComponentHTML Action Slots m
-voiceBar st =
-  HH.div
-    -- Tied to the WINDOW bottom edge like the shell's top nav — `fixed`, not
-    -- `absolute`, because the Vetula container's `calc(100vh - 118px)` height
-    -- stops short of the true bottom. Same gradient/bevel treatment as the nav,
-    -- but COLOURED and thin — minimal padding, ceding vertical space to the
-    -- lattice above.
-    [ HP.style ( "position: fixed; bottom: 0; left: var(--tf-left, 0px); right: var(--tf-right, 0px); z-index: 40; box-sizing: border-box; "
-        <> "display: flex; gap: 10px; align-items: center; padding: 3px 12px; overflow: hidden; "
-        <> "font-family: Georgia, serif; background: linear-gradient(#b6c3cc,#a4b4be); "
-        <> "border-top: 1px solid #00000026; box-shadow: 0 -1px 4px #00000018;" ) ]
-    ( [ HH.span [ HP.style "font-size: 11px; letter-spacing: 0.16em; text-transform: uppercase; color: #33424d; flex: 0 0 auto;" ] [ HH.text "voices" ] ]
-        <> map (voiceLane st) [ Tuple 0 "block", Tuple 1 "strum", Tuple 2 "arp", Tuple 3 "odo" ] )
-
--- | One fixed lane of the voice bar, found by its canonical id.
-voiceLane :: forall m. State -> Tuple Int String -> H.ComponentHTML Action Slots m
-voiceLane st (Tuple vid label) = case find (\v -> v.id == vid) st.voices of
-  Nothing -> HH.text ""
-  Just v ->
-    let dirty = v.patternDraft /= v.pattern || v.notePatternDraft /= v.notePattern
-        on = not v.muted
-    in HH.div
-        [ HP.style "flex: 1 1 0; min-width: 0; display: flex; align-items: center; gap: 6px; border-left: 1px solid #00000022; padding-left: 8px;" ]
-        [ HH.button
-            [ HP.style ("border: none; background: none; cursor: pointer; font-size: 12px; line-height: 1; padding: 0; " <> if on then "color: #2f8f3f;" else "color: #c14a4a;")
-            , HP.title (if on then label <> " on — click to mute" else label <> " off — click to enable")
-            , HE.onClick \_ -> ToggleVoiceMute vid ]
-            [ HH.text "●" ]
-        , HH.span [ HP.style "font-size: 11px; color: #2c3944; width: 32px; letter-spacing: 0.03em;" ] [ HH.text label ]
-        , laneInput v.patternDraft "chord" (SetVoicePattern vid)
-        , laneInput v.notePatternDraft "notes" (SetVoiceNotePattern vid)
-        , HH.button
-            [ HP.style ("border: none; background: none; cursor: pointer; font-size: 13px; line-height: 1; padding: 0; " <> if dirty then "color: #c0392b;" else "color: #7d8d97;")
-            , HP.title "commit both patterns"
-            , HE.onClick \_ -> CommitVoicePattern vid ]
-            [ HH.text "▶" ]
-        ]
-
--- | A compact monospace mini-notation field for one lane of the voice bar.
-laneInput :: forall m. String -> String -> (String -> Action) -> H.ComponentHTML Action Slots m
-laneInput val ph onInput =
-  HH.input
-    [ HP.value val, HE.onValueInput onInput, HP.placeholder ph
-    , HP.style "flex: 1 1 0; min-width: 36px; font-family: ui-monospace, monospace; font-size: 11px; padding: 3px 6px; border-radius: 4px; border: 1px solid #ddd6c6; background: #fff;" ]
-
-playheadsRack :: forall m. State -> H.ComponentHTML Action Slots m
-playheadsRack st =
-  let chords = perfChords st
-  -- Voices are stacked cards, tiled by a responsive grid: one column in a narrow
-  -- rail, several across a wide one. No fixed width / overflow band-aid needed —
-  -- each card fills its own track, so it can't "eat the display" (#91).
-  in HH.div_
-      [ HH.div [ HP.style "display: flex; align-items: baseline; gap: 12px; margin: 0 0 8px; flex-wrap: wrap;" ]
-          [ HH.span [ HP.style "font-size: 11px; color: #b0b0b0;" ] [ HH.text "commit applies both boxes · empty ♪ = block/arp/strum renderer" ]
-          , cellBtn "+ add voice" false AddVoice
-          , numField "bpm" st.tempo SetTempo
-          , numField "preview ch" st.previewChan SetPreviewChan
-          ]
-      , HH.keyed (ElemName "div")
-          [ HP.style "display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 8px; align-items: start;" ]
-          (map (\v -> Tuple (show v.id) (voicePlayheadRow (length chords) v)) st.voices)
-      ]
-
 -- | The progression rows' pitch-axis geometry (shared with DragMove's inverse).
 prowW :: Number
 prowW = 300.0
 
-prowH :: Number
-prowH = 34.0
-
 prowPad :: Number
 prowPad = 16.0
-
-prowPitchX :: Int -> Number
-prowPitchX m = prowPad + (toNumber (clamp 36 84 m - 36) / 48.0) * (prowW - 2.0 * prowPad)
-
--- | One progression step as a horizontal note-row: the chord's voiced notes
--- | (bass + uppers) plotted along a left→right pitch axis. Click the row to hear
--- | it and make it active; click a bass note to select it, DRAG an upper note
--- | left/right to move it by octaves (then ↑/↓ nudge the selected voice too).
--- | The active step is tinted; its selected voice gets a ring.
-progressionRow :: forall m. State -> Int -> ChordNode -> H.ComponentHTML Action Slots m
-progressionRow st i c =
-  let active = Just c.id == st.sounding
-      picked = elem i st.genSel        -- shift-selected as a pick-mode anchor
-      sel = if active then st.selected else Nothing
-      selHere j = case sel of
-        Just BassVoice -> j == 0
-        Just (UpperVoice k) -> j == k + 1
-        Nothing -> false
-      cy = prowH / 2.0
-      octLine m = SE.line [ SA.x1 (prowPitchX m), SA.y1 4.0, SA.x2 (prowPitchX m), SA.y2 (prowH - 4.0), SA.class_ (cn "prow-oct") ]
-      dot j m = SE.circle
-        [ SA.cx (prowPitchX m), SA.cy cy, SA.r 4.5
-        -- colour = pitch class (see the revoice ladder) — one hue per chromatic tone
-        , SA.class_ (cn ("ladder-dot ladder-dot--" <> show (mod m 12)
-                         <> (if j == 0 then " ladder-dot--bass" else " ladder-dot--drag")
-                         <> (if selHere j then " ladder-dot--sel" else "")))
-        , if j == 0 then HE.onMouseDown \_ -> SelectVoice c.id BassVoice
-          else HE.onMouseDown \ev ->
-                 if ME.shiftKey ev
-                   then maybe (SelectVoice c.id (UpperVoice (j - 1))) (\tn -> DropTone (ME.toEvent ev) c.id tn.ix tn.oct) (toneAt c m)
-                   else DragStart (ME.altKey ev) true c.id (j - 1) m
-        ]
-      -- the omitted tones, clickable back on at the position they would return to
-      ghost r =
-        if OV.sounds r.place then []
-        else map (\k ->
-          SE.circle
-            [ SA.cx (prowPitchX (r.base + 12 * k)), SA.cy cy, SA.r 4.5
-            , SA.class_ (cn ("ladder-dot--off ladder-dot--" <> show r.pc))
-            , HE.onClick \ev -> PlaceTone (ME.toEvent ev) c.id r.ix k
-            ]) (ghostOctaves r.base)
-  in HH.div
-      [ HP.style ("display: flex; align-items: center; gap: 8px; padding: 0 2px; border-radius: 3px; cursor: pointer; "
-          <> (if picked then "background: #e7eef4; box-shadow: inset 0 0 0 1px #9bb8d4;"
-              else if active then "background: #f1efe7;" else ""))
-      , HE.onClick \ev -> StepClick i (ME.shiftKey ev)
-      ]
-      [ HH.span
-          [ HP.style ("flex: 0 0 16px; text-align: right; font-size: 11px; font-weight: 600; "
-              <> (if picked then "color: #3f5f8a;" else if active then "color: #7a5c00;" else "color: #b0b0b0;")) ]
-          [ HH.text (show i) ]
-      , SE.svg
-          ( [ SA.viewBox 0.0 0.0 prowW prowH, HP.style "width: 100%; height: auto; display: block;" ]
-              <> (case st.drag of
-                    Just _ ->
-                      [ HE.onMouseMove (DragMove <<< ME.toEvent)
-                      , HE.onMouseUp \_ -> DragEnd
-                      , HE.onMouseLeave \_ -> DragEnd
-                      ]
-                    Nothing -> [])
-          )
-          (map octLine [ 36, 48, 60, 72, 84 ] <> mapWithIndex dot (playNotes c) <> concatMap ghost (ghostRows c))
-      , HH.span [ HP.style "flex: 0 0 26px; font-size: 10px; color: #b0b0b0;" ] [ HH.text c.label ]
-      ]
-
--- | The progression as TidalCycles source — a `note "<…>"` pattern of the voiced
--- | chords (the "preserve these pitch sets for Tidal" thread). It's an EDITABLE
--- | textarea: by default it tracks the live progression (re-deriving as you
--- | revoice), but paste a saved block + press Load and it parses back into a
--- | fresh progression to work on. `copy` for the clipboard, `revert` to drop
--- | edits and return to the live view.
-tidalExport :: forall m. Boolean -> Maybe String -> String -> Array ChordNode -> H.ComponentHTML Action Slots m
-tidalExport open sourceEdit keyLabel steps =
-  let derived = progressionSource keyLabel steps
-      eff = fromMaybe derived sourceEdit
-      editing = isJust sourceEdit
-  in HH.div
-      [ HP.style "margin: 8px 0 0;" ]
-      [ HH.div
-          [ HP.style "display: flex; align-items: center; gap: 8px; margin: 0 0 5px;" ]
-          ( [ HH.button
-                [ HP.style "border: none; background: none; cursor: pointer; padding: 0; font-size: 12px; color: #6a6a6a; letter-spacing: 0.06em; text-transform: uppercase;"
-                , HE.onClick \_ -> ToggleSource ]
-                [ HH.text ((if open then "▾ " else "▸ ") <> "Tidal source") ]
-            , HH.button [ HP.style btnStyle, HE.onClick \_ -> CopyTidal eff ] [ HH.text "copy" ]
-            ]
-              -- load / revert only matter when the code is open for editing
-              <> (if open
-                    then [ HH.button [ HP.style loadBtnStyle, HE.onClick \_ -> LoadSource ] [ HH.text "load" ] ]
-                      <> (if editing then [ HH.button [ HP.style btnStyle, HE.onClick \_ -> RevertSource ] [ HH.text "revert" ] ] else [])
-                    else [])
-          )
-      -- the code itself is hidden until revealed; copy still works collapsed
-      , if open
-          then HH.textarea
-            [ HP.value eff
-            , HP.rows 6
-            , HE.onValueInput EditSource
-            , HP.style ("width: 100%; box-sizing: border-box; resize: vertical; "
-                <> "font-family: 'SF Mono', Menlo, monospace; font-size: 12px; line-height: 1.5; "
-                <> "color: #2a2a2a; background: #f7f7f5; border: 1px solid "
-                <> (if editing then "#cdbb96" else "#e2e2e2") <> "; "
-                <> "border-radius: 4px; padding: 8px 10px;")
-            ]
-          else HH.text ""
-      ]
-  where
-  btnStyle =
-    "border: 1px solid #d8d8d8; background: #fafafa; color: #4a4a4a; cursor: pointer; "
-      <> "padding: 2px 10px; border-radius: 3px; font-size: 12px;"
-  loadBtnStyle =
-    "border: 1px solid #cdbb96; background: #fbf6e9; color: #7a5c00; cursor: pointer; "
-      <> "padding: 2px 10px; border-radius: 3px; font-size: 12px; font-weight: 600;"
-
-cellBtn :: forall m. String -> Boolean -> Action -> H.ComponentHTML Action Slots m
-cellBtn label on act =
-  HH.button
-    [ HP.style ("border: 1px solid " <> (if on then "#7a5c00" else "#d8d8d8") <> "; cursor: pointer; "
-        <> "padding: 2px 9px; border-radius: 3px; font-size: 12px; "
-        <> (if on then "background: #fbf6e9; color: #7a5c00; font-weight: 600;" else "background: #fafafa; color: #4a4a4a;"))
-    , HE.onClick \_ -> act ]
-    [ HH.text label ]
-
-numField :: forall m. String -> Int -> (String -> Action) -> H.ComponentHTML Action Slots m
-numField lbl val act =
-  HH.label [ HP.style "display: inline-flex; align-items: center; gap: 4px; font-size: 11px; color: #9a9a9a;" ]
-    [ HH.text lbl
-    , HH.input
-        [ HP.attr (AttrName "type") "number", HP.value (show val), HE.onValueInput act
-        , HP.style "width: 44px; font-size: 12px; padding: 1px 4px; border: 1px solid #ddd; border-radius: 3px;" ]
-    ]
-
--- | The library — saved progressions, searchable by key, each loadable.
-libraryView :: forall m. MonadAff m => State -> H.ComponentHTML Action Slots m
-libraryView st =
-  let q = trimLower st.libSearch
-      shown = filter (\(Tuple _ e) -> q == "" || contains (Pattern q) (trimLower (e.keyLabel <> " " <> e.name)))
-                (mapWithIndex Tuple st.library)
-  in HH.div [ HP.style "padding: 2px 0;" ]
-      [ HH.div [ HP.style "display: flex; align-items: center; gap: 12px; margin: 0 0 10px;" ]
-          [ HH.input
-              [ HP.value st.libSearch, HE.onValueInput SetLibSearch, HP.attr (AttrName "placeholder") "search by key…"
-              , HP.style "font-size: 13px; padding: 3px 8px; border: 1px solid #ddd; border-radius: 4px; width: 100%; box-sizing: border-box;" ]
-          ]
-      , case st.publishMsg of
-          Nothing -> HH.text ""
-          Just msg -> HH.div [ HP.style "font-size: 11px; color: #5a7458; margin: 0 0 8px;" ] [ HH.text msg ]
-      , if length st.library == 0
-          then HH.p [ HP.style "color: #c0c0c0; font-size: 13px; line-height: 1.6;" ]
-                 [ HH.text "Nothing captured yet. Build a progression on the Lattice — it's auto-saved here as you go (◦). Star (★) the keepers." ]
-          else HH.div [] (map libRow shown)
-      ]
-  where
-  libRow (Tuple i e) =
-    HH.div
-      [ HP.style ("display: flex; align-items: center; gap: 12px; padding: 6px 4px; border-bottom: 1px solid #f0f0f0;"
-                  <> (if e.kept then "" else " opacity: 0.66;")) ]
-      -- ★ keeper (frozen) vs ☆ ephemeral auto-capture (live-updated). Click to toggle.
-      [ HH.button
-          [ HP.style ("border: none; background: none; cursor: pointer; font-size: 14px; color: "
-                      <> (if e.kept then "#c8a86a" else "#c8c4b8") <> ";")
-          , HP.title (if e.kept then "keeper — click to release to ephemeral" else "ephemeral — click to keep")
-          , HE.onClick \_ -> KeepLib i ]
-          [ HH.text (if e.kept then "★" else "☆") ]
-      , HH.span [ HP.style "flex: 0 0 120px; font-size: 12px; color: #7a5c00;" ] [ HH.text e.keyLabel ]
-      , HH.span [ HP.style "flex: 1; font-size: 13px; color: #2a2a2a;" ] [ HH.text e.name ]
-      , HH.span [ HP.style "font-size: 11px; color: #b0b0b0;" ] [ HH.text (show (length (parseProgression e.source)) <> " chords") ]
-      , cellBtn "load" false (LoadProg i)
-      , HH.button
-          [ HP.style "border: none; background: none; cursor: pointer; color: #5a7458; font-size: 14px;"
-          , HP.title "publish this progression to the Amphora store"
-          , HE.onClick \_ -> PublishLib i ] [ HH.text "⚱" ]
-      , HH.button [ HP.style "border: none; background: none; cursor: pointer; color: #c0c0c0; font-size: 15px;", HE.onClick \_ -> DeleteLib i ] [ HH.text "×" ]
-      ]
-
--- | One voice's live-coded read-head: its controls (destination / mute / renderer /
--- | channel / remove) then a mini-notation input, a commit button, and a status
--- | readout — parse error if the DRAFT is broken, else the committed loop length in
--- | bars, with a • when there are uncommitted edits. Placeholder shows the default
--- | (`[0 1 … n-1]/n`) that an empty pattern falls back to.
-voicePlayheadRow :: forall m. Int -> Voice -> H.ComponentHTML Action Slots m
-voicePlayheadRow n v =
-  let draft = trim v.patternDraft
-      draftErr = if draft == "" then Nothing
-                 else case patternClock n draft of
-                        Left e -> Just e
-                        Right _ -> Nothing
-      -- Axis-B note pattern parse-check (indices bound generously, reef wraps to chord size)
-      noteDraft = trim v.notePatternDraft
-      noteErr = if noteDraft == "" then Nothing
-                else case patternClock 128 noteDraft of
-                       Left e -> Just e
-                       Right _ -> Nothing
-      dirty = v.patternDraft /= v.pattern || v.notePatternDraft /= v.notePattern
-      colOf = case _ of
-        Just _ -> "#e2b6ae"
-        Nothing -> "#dcdcdc"
-      borderCol = colOf draftErr
-      noteBorderCol = colOf noteErr
-      loopBars = (voiceClock n v).loopLen / 16
-      anyErr = isJust draftErr || isJust noteErr
-      status = if anyErr
-        then HH.span [ HP.style "font-size: 11px; color: #c0392b;" ] [ HH.text "⚠ parse error" ]
-        else HH.span [ HP.style "font-size: 11px; color: #9a9a9a;" ]
-          [ HH.text ((if dirty then "• " else "") <> "loop " <> show loopBars <> "b") ]
-      -- one voice = one vertical card that fills its own grid track, so nothing
-      -- stretches across the whole rail (the old wide-row "eats the display" bug, #91).
-      fieldLabel txt = HH.div [ HP.style "font-size: 10px; letter-spacing: 0.04em; text-transform: uppercase; color: #b8b8b8; margin: 6px 0 2px;" ] [ HH.text txt ]
-      patInput val ph col act =
-        HH.input
-          -- controlled (like the bpm field, which edits fine); the field carries the
-          -- REAL pattern text. Placeholder only shows if you clear it, and reads as a hint.
-          [ HP.value val
-          , HP.placeholder ph
-          , HP.style ("width: 100%; box-sizing: border-box; font-family: ui-monospace, monospace; font-size: 12px; padding: 4px 6px; border-radius: 4px; border: 1px solid " <> col <> ";")
-          , HE.onValueInput act
-          ]
-  in HH.div
-      [ HP.style ("display: flex; flex-direction: column; padding: 8px; border: 1px solid #eee; border-radius: 6px; background: #fbfbfa;"
-          <> (if v.muted && v.dest == ToMidi then " opacity: 0.5;" else "")) ]
-      [ -- header: destination + per-dest controls, remove on the right
-        HH.div [ HP.style "display: flex; align-items: center; gap: 6px; flex-wrap: wrap;" ]
-          ( [ cellBtn (destName v.dest) (v.dest == ToOdonus) (CycleVoiceDest v.id) ]
-              <> (case v.dest of
-                    ToMidi ->
-                      [ cellBtn (if v.muted then "off" else "on") (not v.muted) (ToggleVoiceMute v.id)
-                      , cellBtn (rendName v.renderer) true (CycleVoiceRenderer v.id)
-                      , HH.input
-                          [ HP.value v.name
-                          , HE.onValueInput (SetVoiceName v.id)
-                          , HP.placeholder "name → ch5"
-                          , HP.style "width:84px;font-family:ui-monospace,monospace;font-size:11px;padding:2px 5px;border-radius:4px;border:1px solid #d8d3c6;background:#fff"
-                          ]
-                      ]
-                    ToOdonus ->
-                      [ numField "id" v.channel (SetVoiceChannel v.id) ])
-              <>
-              [ HH.div [ HP.style "flex: 1 1 auto;" ] []
-              , HH.button [ HP.style "border: none; background: none; cursor: pointer; color: #c8c8c8; font-size: 14px; line-height: 1;", HE.onClick \_ -> RemoveVoice v.id ] [ HH.text "×" ]
-              ] )
-      , fieldLabel "read-head — which chord, when"
-      , patInput v.patternDraft ("empty = " <> defaultPattern n) borderCol (SetVoicePattern v.id)
-      , HH.div [ HP.style "display: flex; align-items: center; justify-content: space-between; gap: 6px; margin: 6px 0 2px;" ]
-          [ HH.span [ HP.style "font-size: 10px; letter-spacing: 0.04em; text-transform: uppercase; color: #b8b8b8;" ] [ HH.text "♪ notes — 0 = lowest · -1 = top" ]
-          , cellBtn (RA.articLabel v.articulator) (v.articulator /= RA.ABlock) (CycleVoiceArticulator v.id)
-          ]
-        -- Axis B: how to sound the chord — a note-index pattern. Empty = the renderer
-        -- (block/arp/strum). The articulator button above picks the note ALPHABET both
-        -- this pattern AND the renderer use: block = the chord's own notes; voice-led = a
-        -- fixed-N line carried through the loop (0=bass, -1=melody); entering = just the
-        -- notes new to each chord (arp the newcomers in).
-      , patInput v.notePatternDraft ("empty = " <> rendName v.renderer) noteBorderCol (SetVoiceNotePattern v.id)
-      , HH.div [ HP.style "display: flex; align-items: center; justify-content: space-between; gap: 6px; margin-top: 8px;" ]
-          [ cellBtn "commit" dirty (CommitVoicePattern v.id)
-          , status
-          ]
-      ]
-
-trimLower :: String -> String
-trimLower = toLower <<< trim
-
--- | The drawn Hasse web on the Lattice tab: a faint line between every pair of
--- | chords that differ by one note (the same edges that act as force links).
-latticeLinkLines
-  :: forall m
-   . Map Int { x :: Number, y :: Number }
-  -> Array ChordNode
-  -> Array (H.ComponentHTML Action Slots m)
-latticeLinkLines posMap chords =
-  concatMap
-    (\l -> case Map.lookup l.source posMap, Map.lookup l.target posMap of
-        Just p, Just q -> [ SE.line [ SA.x1 p.x, SA.y1 p.y, SA.x2 q.x, SA.y2 q.y, SA.class_ (cn "lattice-link") ] ]
-        _, _ -> [])
-    (neighborLinks chords)
 
 -- | The left-hand pitch ladder: a fixed pitch axis (C2..C6) showing the chord
 -- | that is currently sounding as coloured dots — the prototype's display.
@@ -10403,45 +7038,6 @@ revoiceModal st =
         , SE.text [ SA.x (x0 + w / 2.0), SA.y 251.0, SA.class_ (cn "rv-slash-tx") ] [ HH.text (noteName pc) ]
         ]
 
--- | The imaginary piano: white keys, black keys on top, note labels; scale
--- | keys tinted.
-keyboardView :: forall m. Array Int -> Array (H.ComponentHTML Action Slots m)
-keyboardView scl = whites <> blacks <> labels
-  where
-  kb = keyboard
-  inScale pc = elem pc scl
-  whites = mapWithIndex whiteKey whiteKeyPcs
-  whiteKey slot pc =
-    SE.rect
-      [ SA.x (kb.left + toNumber slot * kb.whiteW)
-      , SA.y kb.top
-      , SA.width kb.whiteW
-      , SA.height (kb.bot - kb.top)
-      , SA.class_ (cn ("pkey pkey--w" <> if inScale pc then " pkey--in" else ""))
-      , HE.onClick \_ -> SummonRoot pc
-      ]
-  blacks = map blackKey blackKeyPcs
-  blackKey pc =
-    let w = kb.whiteW * 0.58
-    in SE.rect
-        [ SA.x (keyX pc - w / 2.0)
-        , SA.y kb.top
-        , SA.width w
-        , SA.height ((kb.bot - kb.top) * 0.62)
-        , SA.class_ (cn ("pkey pkey--b" <> if inScale pc then " pkey--in" else ""))
-        , HE.onClick \_ -> SummonRoot pc
-        ]
-  labels = map lbl whiteKeyPcs
-  lbl pc = SE.text [ SA.x (keyX pc), SA.y (kb.bot - 5.0), SA.class_ (cn "pkey-label") ] [ HH.text (noteName pc) ]
-
-axisLabels :: forall m. Array (H.ComponentHTML Action Slots m)
-axisLabels =
-  [ lab 0.0 (-272.0) "↑ more extended (7 · 9 · 11 · 13)"
-  , lab 0.0 216.0 "click a key to focus · 2–7 / e / s / l to grow"
-  ]
-  where
-  lab x y t = SE.text [ SA.x x, SA.y y, SA.class_ (cn "axis-label") ] [ HH.text t ]
-
 nodeView
   :: forall m
    . Array Int
@@ -10563,3 +7159,5 @@ spreadSpan xs = case maximum xs, minimum xs of
 
 keyOptions :: Array { value :: String, label :: String }
 keyOptions = map (\pc -> { value: show pc, label: noteName pc }) (range 0 11)
+
+

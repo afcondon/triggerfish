@@ -14,8 +14,6 @@ module Vetula.Store
   , SessionState
   , saveSession
   , loadSession
-  , saveDefaultLens
-  , loadDefaultLens
   , saveSound
   , loadSound
   , WorkingCopy
@@ -111,17 +109,6 @@ loadSession = do
 
 -- | The Explore view a viewer has pinned as their default (AC, 2026-10-06): a
 -- | per-browser convenience, so it lives here rather than in Amphora.
-defaultLensKey :: String
-defaultLensKey = "vetula.defaultLens"
-
-saveDefaultLens :: String -> Effect Unit
-saveDefaultLens v = _save defaultLensKey (_stringify v)
-
-loadDefaultLens :: Effect (Maybe String)
-loadDefaultLens = do
-  m <- _load defaultLensKey
-  pure (toMaybe (m :: Nullable String))
-
 -- | Where this viewer chose to hear auditions (the bar's sound chip). Absent
 -- | until they choose: then the page decides (the browser, or Continuo once
 -- | the rig answers).

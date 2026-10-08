@@ -769,13 +769,15 @@ bar cfg st =
   -- with the counts and clear, and its rebus, drawn here as the drawer draws
   -- its rows
   machineControls b =
+    -- a machine with no stages (Vetula, one surface) has no tab group
+    (if Array.null b.tabs then [] else
     [ HH.div [ style "display:flex;flex:0 0 auto;border:1px solid #00000026;border-radius:6px;overflow:hidden;box-shadow:0 1px 2px #0000001a" ]
         (map (\t -> HH.button
             [ HE.onClick \_ -> PressBar ("stage:" <> t.id), HP.title t.tip
             , style $ "padding:5px 13px;border:none;cursor:pointer;font-family:Georgia,serif;font-size:11px;letter-spacing:0.12em;"
                 <> (if t.active then "background:linear-gradient(#c8a86a,#b8975a);color:#1c1a12;font-weight:600" else "background:linear-gradient(#f4f1e8,#e2ddcf);color:#5a564b") ]
             [ HH.text t.label ]) b.tabs)
-    ]
+    ])
       <> (if b.marks == "" then [] else
         [ HH.button
             [ HE.onClick \_ -> PressBar "mark", HP.title "flag the last couple of bars as a good bit"
@@ -783,7 +785,7 @@ bar cfg st =
             [ HH.text "\x25c6 mark" ]
         , HH.span [ style "font-family:'SF Mono',Menlo,monospace;font-size:10px;color:#8a8576;white-space:nowrap" ] [ HH.text b.marks ]
         , HH.button
-            [ HE.onClick \_ -> PressBar "clear", HP.title "clear the Review surface: its notes, marks and loops"
+            [ HE.onClick \_ -> PressBar "clear", HP.title "clear the river: its notes, marks and loops"
             , style "padding:4px 9px;border:1px solid #00000018;border-radius:5px;cursor:pointer;background:transparent;color:#8a8576;font-size:10px;font-family:Georgia,serif" ]
             [ HH.text "clear" ]
         ])
