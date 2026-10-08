@@ -6283,7 +6283,7 @@ revoiceModal st =
           , rvBtn "lead on from here →" "voice every later bar from the one before it, with the least motion (bars with a different number of notes are left alone)" RevoiceLead
           ]
       , HH.div [ HP.style "margin-top: 8px; font-size: 11px; color: #9a9a9a; text-align: center;" ]
-          [ HH.text "click a ladder to focus it · ←→ bars · Tab voicings · ↑↓ nudge · drag = 8ve · ⌥ doubles · ⇧ drops a note · f keep · Esc" ]
+          [ HH.text "click a ladder to focus it · ←→ bars · Tab voicings · ↑↓ nudge · drag = 8ve · ⌥-drag doubles · ⌥-click drops a note · f keep · Esc" ]
       ]
   slashHtml activeBass pc =
     HH.button
@@ -6331,7 +6331,7 @@ revoiceModal st =
            , rvBtn "8ve ▲" "the whole chord up an octave, bass included" (ShiftOctave 1)
            ]
        , HH.div [ HP.style "margin-top: 8px; font-size: 11px; color: #9a9a9a; text-align: center;" ]
-           [ HH.text "Tab voicings · ↑↓ nudge · drag = 8ve · ⌥ doubles · ⇧ drops a note · f keep · Esc" ]
+           [ HH.text "Tab voicings · ↑↓ nudge · drag = 8ve · ⌥-drag doubles · ⌥-click drops a note · f keep · Esc" ]
        ]
   rvBtn label tip act =
     HH.button
