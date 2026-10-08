@@ -312,8 +312,9 @@ chartOf on hot live f =
       | not store && storedNode nd && not (annotated nd.id) -> svg "g" [ attr "class" "stored" ] [ node' sn nd ]
       | otherwise -> node' sn nd
   -- mostly storage: ghosted in place outside the storage lens, unless the
-  -- X-ray has a process to show on it (Amphora, on the sample sets)
-  storedNode nd = nd.id == "sets" || (isJust (loopOf nd.id) && nd.note /= "playing")
+  -- X-ray has a process to show on it (Amphora, on the sample sets). A kept
+  -- loop is not: its starfish is drawn in outline, there to be started
+  storedNode nd = nd.id == "sets"
   node' sn nd = case nd.machine, loopOf nd.id of
       Just _, _ | isJust (String.stripPrefix (String.Pattern "src:") nd.id) -> voiceNode sn nd
       Just m, _ -> machineNode sn nd m

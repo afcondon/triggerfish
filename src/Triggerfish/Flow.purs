@@ -462,7 +462,9 @@ flow inp = { nodes, links: links <> loopLinks <> quantLinks <> makesLinks }
 
   -- The loops, between the pages and the engine: each mark fed, thin, by
   -- what recorded it (the machine, or each of its voices when opened), and a
-  -- playing one feeding the engine with its notes.
+  -- playing one feeding the engine with its notes. With its page closed, a
+  -- kept one hangs off the engine that keeps it, so it is still there to be
+  -- started.
   loopLinks = nub (map _.machine inp.loops) # concatMap \m ->
     let
       feeders
@@ -473,7 +475,8 @@ flow inp = { nodes, links: links <> loopLinks <> quantLinks <> makesLinks }
       marks m # concatMap \l ->
         let id = loopId m l.n
         in map (\f -> plain f id Recorded m true) feeders
-             <> (if l.playing then [ plain id "engine" Notes m false ] else [])
+             <> (if l.playing then [ plain id "engine" Notes m false ]
+                 else if Array.null feeders then [ plain id "engine" Recorded m true ] else [])
   -- Quantisation: what feeds a machine's harmony inputs, into that machine
   -- (or each of its voices, opened). A machine feeding it is drawn upstream,
   -- in Feeds; a source with no page drawn (a scale, a pattern, or a machine
