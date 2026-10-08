@@ -744,6 +744,8 @@ type State =
   , scoreDrag :: Maybe Int
   -- score mode's two drawers: Limulus on the right, the candidates below
   , scoreRepl :: Boolean
+  -- the candidates for the chord in hand, computed once per chord (`refreshCands`)
+  , cands :: Maybe Cands
   , scoreCands :: Boolean
   -- the open progression's rhythm, tapped in: each bar's length in beats
   -- (empty: one chord a bar); and a take in progress (the bar sounding, the
@@ -1166,6 +1168,7 @@ component = H.mkComponent
       , scoreBar: Nothing
       , scoreDrag: Nothing
       , scoreRepl: true
+      , cands: Nothing
       , scoreCands: true
       , rhythm: []
       , tapping: Nothing
@@ -1663,6 +1666,7 @@ handleAction :: forall m. MonadAff m => Action -> H.HalogenM State Action Slots 
 handleAction a = do
   before <- H.gets _.perfBoxes
   handleActionCore a
+  refreshCands
   syncField
   syncAuditionCard
   after <- H.gets _.perfBoxes
@@ -4817,7 +4821,7 @@ sidePanel st = case st.side of
 scoreCandidates :: forall m. State -> H.ComponentHTML Action Slots m
 scoreCandidates st =
   HH.div
-    [ HP.style ("flex: 0 0 " <> (if st.scoreCands then "42%" else "auto") <> "; min-height: 0; display: flex; flex-direction: column; border-top: 1px solid #e6dfcc; background: #fffdf8;") ]
+    [ HP.style ("flex: " <> (if st.scoreCands then "1 1 0" else "0 0 auto") <> "; min-height: 0; display: flex; flex-direction: column; border-top: 1px solid #e6dfcc; background: #fffdf8;") ]
     ( [ HH.div [ HP.style "display: flex; align-items: baseline; gap: 10px; padding: 8px 16px 6px; font-size: 11px; color: #a09880; border-bottom: 1px solid #f0eadb; cursor: pointer;"
                , HP.title (if st.scoreCands then "tuck the candidates down" else "bring the candidates up")
                , HE.onClick \_ -> ToggleScoreCands ]
@@ -4850,30 +4854,79 @@ chordTitle st c = Score.spellName (Score.spellingOf st.key.tonic (scaleSet st.ke
 -- | **What the side panel shows for a chord**, by tab: its substitutes,
 -- | variations or relatives. The side panel shows one beside the lattice; in
 -- | score mode the three stand side by side under the score.
+-- | **The candidates for a chord**: its substitutes (voiced near it), its
+-- | variations and its relatives. Expensive (the variations alone are
+-- | hundreds of trial voicings), so computed once per chord, key and roll,
+-- | and kept: rendering them on every frame made a click on the score take
+-- | three seconds (2026-10-08).
+type Cands =
+  { sig :: String
+  , subs :: Array (Tuple HSub.Substitute ChordNode)
+  , cells :: Array Vary.Cell
+  , smooth :: Array ChordNode
+  , middle :: Array ChordNode
+  , far :: Array ChordNode
+  }
+
+candsSig :: State -> ChordNode -> String
+candsSig st src = show (playNotes src) <> "|" <> show st.key.tonic <> show (scaleSet st.key) <> "|" <> show st.varyRoll <> "|" <> show st.genRoll <> "|" <> show st.sideDensity
+
+computeCands :: State -> ChordNode -> Cands
+computeCands st src =
+  { sig: candsSig st src, subs, smooth, middle, far
+  -- the density on show only (the panel shows one)
+  , cells: Vary.gridIn (maybe HV.densities pure (index HV.densities st.sideDensity)) st.key src st.varyRoll }
+  where
+  -- **Substitutes** (Harmonia.Substitute), voiced near the chord they would
+  -- replace: the bass nearest its bass, the rest voice-led from its notes
+  subs =
+    let found = HSub.substitutes 6 (scaleSet st.key) src.root (map (\m -> mod m 12) (playNotes src))
+        node i sub = (importChord (-5000 - i) (voiceNear src sub.root sub.pcs)) { label = Score.spellName (Score.spellingOf st.key.tonic (scaleSet st.key)) (noteName sub.root <> sub.suffix) }
+    in mapWithIndex (\i sub -> Tuple sub (node i sub)) found
+  -- Three rows from the same generator at three settings of its adventure
+  -- dial; a chord shows once, in the smoothest row that holds it.
+  seed = src { label = chordTag src }
+  row adv = take 8 (drop (mod (st.genRoll * 2) 5) (filter (not <<< same src) (generateCandidates Append [ seed ] st.key adv 0)))
+  smooth = row 0.0
+  middle = filter (\c -> not (any (same c) smooth)) (row 0.5)
+  far = filter (\c -> not (any (same c) (smooth <> middle))) (row 1.0)
+  same a b = pcSetOf a == pcSetOf b
+
+-- | Bring the kept candidates up to date with the chord in hand, only where
+-- | something shows them (the side panel, or the score).
+refreshCands :: forall m. MonadAff m => H.HalogenM State Action Slots Output m Unit
+refreshCands = do
+  st <- H.get
+  let showing = isJust st.side || st.stage == Hunt Score
+  case varySource st of
+    Just src | showing ->
+      unless (map _.sig st.cands == Just (candsSig st src)) $
+        H.modify_ _ { cands = Just (computeCands st src) }
+    _ -> pure unit
+
 sideContent :: forall m. State -> SideTab -> ChordNode -> Array (H.ComponentHTML Action Slots m)
-sideContent st t src = case t of
-  SideVariations -> variations
-  SideRelatives -> relatives
-  SideSubstitutes -> substitutesOf
+sideContent st t src = case st.cands of
+  Just cs | cs.sig == candsSig st src -> case t of
+    SideVariations -> variations cs
+    SideRelatives -> relatives cs
+    SideSubstitutes -> substitutesOf cs
+  _ -> []
   where
   smallBtn label tip act =
     HH.button
       [ HP.style "border: 1px solid #cdbb8c; background: #fbf6ea; color: #7a5c00; cursor: pointer; padding: 2px 8px; border-radius: 4px; font-size: 11px; white-space: nowrap;"
       , HP.title tip, HE.onClick \_ -> act ]
       [ HH.text label ]
-  -- **Substitutes** (Harmonia.Substitute), voiced near the chord they would
-  -- replace: the bass nearest its bass, the rest voice-led from its notes
-  substitutesOf =
+  table = layerTable st
+  substitutesOf cs =
     let
-      subs = HSub.substitutes 6 (scaleSet st.key) src.root (map (\m -> mod m 12) (playNotes src))
-      node i sub = (importChord (-5000 - i) (voiceNear src sub.root sub.pcs)) { label = Score.spellName (Score.spellingOf st.key.tonic (scaleSet st.key)) (noteName sub.root <> sub.suffix) }
-      nodes = mapWithIndex (\i sub -> Tuple sub (node i sub)) subs
+      nodes = cs.subs
       section reason heading blurb =
-        let cs = map snd (filter (\(Tuple sub _) -> sub.reason == reason) nodes)
-        in if length cs == 0 then [] else
+        let cs' = map snd (filter (\(Tuple sub _) -> sub.reason == reason) nodes)
+        in if length cs' == 0 then [] else
           [ HH.div [ HP.style "font-size: 10px; letter-spacing: 0.1em; text-transform: uppercase; color: #9a8d6a; margin: 10px 0 2px;" ] [ HH.text heading ]
           , HH.div [ HP.style "font-size: 11px; color: #a09880; margin-bottom: 4px;" ] [ HH.text blurb ]
-          , HH.div [ HP.style "display: grid; grid-template-columns: repeat(4, 1fr); gap: 4px;" ] (map (padButton st (layerTable st)) cs) ]
+          , HH.div [ HP.style "display: grid; grid-template-columns: repeat(4, 1fr); gap: 4px;" ] (map (padButton st table) cs') ]
     in section HSub.Tritone "tritone substitute" "the dominant a tritone away: same third and seventh, swapped"
          <> section HSub.SameRoot "same root" "another quality on this root"
          <> section (HSub.Shares 3) "three notes in common" "the closest stand-ins"
@@ -4881,8 +4934,8 @@ sideContent st t src = case t of
 
   -- One density column at a time: a panel has room for one, and the three
   -- drift rows (held, thinned, swapped) are the question it answers.
-  variations =
-    let cells = Vary.grid st.key src st.varyRoll
+  variations cs =
+    let cells = cs.cells
         dn = fromMaybe HV.densities (map pure (index HV.densities st.sideDensity))
         cellAt d = filter (\x -> x.drift == d && elem x.density dn) cells
     in [ HH.div [ HP.style "display: flex; align-items: center; gap: 4px; margin-bottom: 10px;" ]
@@ -4899,25 +4952,18 @@ sideContent st t src = case t of
          [ HH.text (HV.densityLabel d) ]
   -- Three rows from the same generator at three settings of its adventure
   -- dial; a chord shows once, in the smoothest row that holds it.
-  relatives =
-    let seed = src { label = chordTag src }
-        row adv = take 8 (drop (mod (st.genRoll * 2) 5) (filter (not <<< same src) (generateCandidates Append [ seed ] st.key adv 0)))
-        smooth = row 0.0
-        middle = filter (\c -> not (any (same c) smooth)) (row 0.5)
-        far = filter (\c -> not (any (same c) (smooth <> middle))) (row 1.0)
-        same a b = pcSetOf a == pcSetOf b
-        table = layerTable st
-        group lbl tip cs =
-          if length cs == 0 then []
+  relatives cs =
+    let group lbl tip cs' =
+          if length cs' == 0 then []
           else [ HH.div [ HP.style "font-size: 11px; color: #7a7360; letter-spacing: 0.08em; text-transform: uppercase; margin: 8px 0 4px;", HP.title tip ] [ HH.text lbl ]
                , HH.div [ HP.style "display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 4px; background: #fbf8f0; border: 1px solid #ece5d2; border-radius: 5px; padding: 6px;" ]
-                   (map (padButton st table) cs) ]
+                   (map (padButton st table) cs') ]
     in [ HH.div [ HP.style "display: flex; margin-bottom: 4px;" ]
            [ HH.div [ HP.style "flex: 1 1 auto; font-size: 11px; color: #a09880;" ] [ HH.text "what could come next, voice-led from it" ]
            , smallBtn "shake \x27f3" "a different crop of the candidates" ShakeGenerate ] ]
-         <> group "smooth" "the nearest moves: most notes held or moved by a step" smooth
-         <> group "further" "a little more adventurous" middle
-         <> group "striking" "the most adventurous of the plausible" far
+         <> group "smooth" "the nearest moves: most notes held or moved by a step" cs.smooth
+         <> group "further" "a little more adventurous" cs.middle
+         <> group "striking" "the most adventurous of the plausible" cs.far
 
 -- | Vetula's own bar (`contextBar`) is HUNT's controls alone since its stage
 -- | tabs and mark went to the shell's bar (2026-10-05), so it takes room only
@@ -6166,7 +6212,7 @@ scoreSurface st =
   HH.div
     [ HP.class_ (cn "vetula-surface vetula-surface--wide")
     , HP.style "position: absolute; inset: 0; display: flex; flex-direction: column;" ]
-    [ HH.div [ HP.style "flex: 1 1 58%; min-height: 0; overflow: auto; padding: 16px 22px 20px;" ]
+    [ HH.div [ HP.style "flex: 0 0 auto; max-height: 60%; overflow: auto; padding: 16px 22px 12px;" ]
         ( [ Score.system sp openHandlers openRow ]
         )
     , scoreCandidates st

@@ -17,6 +17,7 @@
 module Vetula.Vary
   ( Cell
   , grid
+  , gridIn
   , varyRows
   , varyCols
   ) where
@@ -55,9 +56,15 @@ type Cell =
 -- | than a shortfall — `Harmonia.Vary` keeps only distinct voicings, so the close
 -- | end of the held row exhausts its neighbourhood and says so by stopping.
 grid :: Key -> ChordNode -> Int -> Array Cell
-grid key src roll = do
+grid = gridIn densities
+
+-- | The cells of some densities only, the same cells `grid` gives (each is
+-- | seeded by its own place): a panel showing one density need not pay for
+-- | three, and each costs about a hundred milliseconds.
+gridIn :: Array Density -> Key -> ChordNode -> Int -> Array Cell
+gridIn dns key src roll = do
   d <- drifts
-  dn <- densities
+  dn <- dns
   let
     vs = variations (openFor src) (rootedOf src) d dn (seed (cellSeed roll d dn)) 16
     base = 30000 + cellIx d dn * 100
