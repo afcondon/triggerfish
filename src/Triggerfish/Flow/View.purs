@@ -56,6 +56,9 @@ type Handlers i =
   , restart :: String -> i
   -- | Limulus's engine picked on its node: "architeuthis" or "ghci"
   , engine :: String -> i
+  -- | a loop's starfish clicked: its machine, its mark's number, and whether
+  -- | it is playing now (so the click stops it) or kept (so it starts)
+  , loop :: String -> Int -> Boolean -> i
   }
 
 -- | What is known of one process behind a node: Bosun's word on a daemon
@@ -600,25 +603,62 @@ chartOf on hot live f =
         , svg "title" [] [ HH.text (tip nd m) ]
         ]
 
-  -- A loop: a bubble in its machine's colour with the mark's number, filled
-  -- and pulsing while the rig plays it.
+  -- A loop: a starfish in its machine's colour with the mark's number (AC,
+  -- 2026-10-08: a feather star for Odonus, a sea star for Vetula), filled
+  -- and pulsing while the rig plays it. A click starts or stops it.
   loopNode sn nd l =
     let
       cy = mid sn
       playing = nd.note == "playing"
-      cx = sn.x1 + 14.0
+      cx = sn.x1 + 15.0
+      body cls = starfish l.machine cls cx cy
     in
-      svg "g" [ attr "class" ("node loopnode m-" <> l.machine) ] $
+      svg "g" [ attr "class" ("node loopnode pick m-" <> l.machine), attr "role" "button", attr "tabindex" "0"
+              , attr "aria-label" (l.machine <> " loop " <> nd.name <> (if playing then ", playing: stop it" else ", kept: start it"))
+              , HE.onClick \_ -> on.loop l.machine l.n playing ] $
         [ bar sn
         , svg "g" [ attr "class" ("bubble" <> if playing then " playing" else "") ]
-            -- the pulse is a halo behind the bubble, so the number stays solid
-            ( (if playing then [ svg "circle" [ attr "class" "halo", attr "cx" (n cx), attr "cy" (n cy), attr "r" "9" ] [] ] else []) <>
-            [ svg "circle" [ attr "class" "disc", attr "cx" (n cx), attr "cy" (n cy), attr "r" "9" ] []
-            , label "bn" cx (cy + 3.5) "middle" nd.name
+            -- the pulse is a halo behind the starfish, so the number stays solid
+            ( (if playing then [ body "halo" ] else []) <>
+            [ body "disc"
+            , label "bn" cx (cy + 3.0) "middle" nd.name
             ] )
-        , svg "title" [] [ HH.text (l.machine <> " mark " <> nd.name <> (if playing then ": looping on the rig" else ": kept on the rig, not playing")
+        , svg "title" [] [ HH.text (l.machine <> " loop " <> nd.name <> (if playing then ": playing on the rig · click to stop it" else ": kept on the rig · click to play it")
             <> (if silenced l.machine then "\nIt cannot be heard: every path out of the rig for " <> l.machine <> " is broken." else "")) ]
         ] <> (if playing && silenced l.machine then [ stopSign (cx + 18.0) (cy - 9.0) ] else [])
+
+  -- The two starfish, about 26 units across. Odonus's is a feather star: a
+  -- small disc and ten slender arms that curl. Vetula's is a sea star: five
+  -- wide arms with rounded tips. Each is one closed shape, so the loop's
+  -- fill and stroke (and the halo) apply to it whole.
+  starfish m cls cx cy =
+    let
+      pol r a = { x: cx + r * Number.cos a, y: cy + r * Number.sin a }
+      p q = n q.x <> "," <> n q.y
+      top = -Number.pi / 2.0
+      shape d = svg "path" [ attr "class" cls, attr "d" d, attr "stroke-linejoin" "round" ] []
+    in
+      if m == "odonus" then
+        let
+          step = 2.0 * Number.pi / 10.0
+          -- an arm leaves the disc, curls sunwise and comes back on its
+          -- other side; the disc's rim joins one arm to the next
+          arm k =
+            let a = top + toNumber k * step
+            in "L" <> p (pol 5.6 (a - 0.16))
+                 <> "Q" <> p (pol 10.0 (a - 0.10)) <> " " <> p (pol 13.6 (a + 0.30))
+                 <> "Q" <> p (pol 9.6 (a + 0.20)) <> " " <> p (pol 5.6 (a + 0.16))
+        in shape ("M" <> p (pol 5.6 (top - 0.16)) <> joinWith "" (map arm (Array.range 0 9)) <> "Z")
+      else
+        let
+          step = 2.0 * Number.pi / 5.0
+          -- valley, up the arm's side, round the tip, down the other side
+          arm k =
+            let a = top + toNumber k * step
+            in "L" <> p (pol 8.6 (a - 0.20))
+                 <> "Q" <> p (pol 13.6 a) <> " " <> p (pol 8.6 (a + 0.20))
+                 <> "L" <> p (pol 5.4 (a + step / 2.0))
+        in shape ("M" <> p (pol 5.4 (top - step / 2.0)) <> joinWith "" (map arm (Array.range 0 4)) <> "Z")
 
   -- Whether everything the rig sends for a machine is broken: its loops
   -- play, and nobody hears them.

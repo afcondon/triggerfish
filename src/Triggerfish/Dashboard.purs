@@ -199,6 +199,7 @@ data Action
   | SetMode Mode
   | Command String Boolean
   | StopAll
+  | LoopToggle String Int Boolean  -- a loop's starfish: start it, or stop it
   | Panic
   | RoutingStored
   | SetPorts (Array String)
@@ -377,6 +378,10 @@ handleAction = case _ of
     let open = maybe false (isOpen st) (find (\m -> m.slot == slot) machines)
     if open then post (if play then Bus.Play slot else Bus.Stop slot)
     else when (not play) (sendRig (RigLoops.cueLine slot "hush"))
+
+  -- A loop's starfish: the line Limulus would send, to the rig.
+  LoopToggle m k playing ->
+    sendRig (RigLoops.cueLine m (if playing then "loop " <> show k <> " hush" else "loop " <> show k))
 
   StopAll -> do
     st <- H.get
@@ -699,7 +704,7 @@ flowChart st =
           FlowView.Storage -> [ storageStrip ]
           FlowView.Flowing -> []) <>
     [ HH.div [ cls ("flow-chart" <> if st.allVoices then " all-voices" else "") ]
-        [ FlowView.chart { hover: Hover, link: ChartLink, port: PortClick, cable: CableClick, play: Command, peek: Peek, restart: RigRestart, engine: SetLimulusEngine } st.hot { playing: Array.nub (map _.slot (filter (playing st) machines) <> (if null (liveBanks st) then [] else [ "selene" ])), rigUp: st.rigUp, tempo: st.tempo, lamps, hidden: st.hidden, keyHot: st.keyHot, patch, dock, locked: st.locked, peeked: st.peeked, lens: st.lens, limulusEngine: st.limulusEngine }
+        [ FlowView.chart { hover: Hover, link: ChartLink, port: PortClick, cable: CableClick, play: Command, peek: Peek, restart: RigRestart, engine: SetLimulusEngine, loop: LoopToggle } st.hot { playing: Array.nub (map _.slot (filter (playing st) machines) <> (if null (liveBanks st) then [] else [ "selene" ])), rigUp: st.rigUp, tempo: st.tempo, lamps, hidden: st.hidden, keyHot: st.keyHot, patch, dock, locked: st.locked, peeked: st.peeked, lens: st.lens, limulusEngine: st.limulusEngine }
             ( Flow.flow
                 { mode: st.mode
                 , table: st.table
