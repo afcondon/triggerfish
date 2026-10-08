@@ -760,7 +760,6 @@ type State =
   , lastLens :: Viewtype          -- the Hunt projection to return to from Perform/Review
   , fieldLens :: Viewtype         -- the last lattice view (a rung or banks), to return to from the score
   , lastRung :: Viewtype          -- the last lattice rung, for the lattice | banks switch
-  , riverFrom :: Viewtype         -- the view the river was opened from, to return to
   -- Geometric-lens viewport (CoF / Tonnetz): pan centre + zoom, applied as the
   -- surface's viewBox. Wheel zooms toward the cursor; drag pans; reset re-fits.
   , viewCx :: Number
@@ -1169,7 +1168,6 @@ component = H.mkComponent
       , lastLens: KeyChords
       , fieldLens: KeyChords
       , lastRung: KeyChords
-      , riverFrom: KeyChords
       , resumable: Nothing
       , lastHeard: Nothing
       , style: StyleBlock
@@ -3107,9 +3105,6 @@ handleActionCore = case _ of
       , lastRung = case v of
           Hunt vt | elem vt rungs -> vt
           _ -> st.lastRung
-      , riverFrom = case v, st.stage of
-          Hunt River, Hunt vt | vt /= River -> vt
-          _, _ -> st.riverFrom
       , hoveredId = Nothing, hoveredTriad = Nothing
       , viewCx = 0.0, viewCy = 0.0, viewZoom = 1.0, panning = Nothing, panMoved = false
       , capture = if showsRiver v then st.capture else st.capture { playing = Nothing, contextOpen = false }
@@ -4571,7 +4566,6 @@ render st =
     ( [ HH.keyed (ElemName "div") [ HP.style ("position: absolute; inset: 0px " <> sideInset st <> " " <> (if fullView st.stage then "0px" else trayHeight) <> " 0;") ] [ Tuple (surfaceKey st) (surface st) ] ]
       <> (if fullView st.stage then [] else [ colourTray st ])
       <> latticeControls st
-      <> viewSwitch st
       -- Limulus's drawer, out while the score is up
       <> [ if st.stage == Hunt Score then limulusWanted else HH.text "" ]
       <>
@@ -4640,7 +4634,7 @@ latticeControls st = case st.stage of
   -- the most chords at the top, as the wheel goes up
   slider v =
     HH.div
-      [ HP.style "position: absolute; top: 64px; right: 16px; z-index: 6; display: flex; flex-direction: column; align-items: flex-end; gap: 0; user-select: none; -webkit-user-select: none;"
+      [ HP.style "position: absolute; top: 14px; right: 16px; z-index: 6; display: flex; flex-direction: column; align-items: flex-end; gap: 0; user-select: none; -webkit-user-select: none;"
       , HP.title "how much of the lattice: scroll over it, or click or drag here" ]
       (mapWithIndex (stop v) (Array.reverse rungs))
   stop v i r =
@@ -4665,35 +4659,42 @@ latticeControls st = case st.stage of
 limulusWanted :: forall m. H.ComponentHTML Action Slots m
 limulusWanted = HH.div [ HP.attr (HH.AttrName "data-limulus-dock") "open", HP.style "display: none;" ] []
 
--- | **The progression display's controls** (AC, 2026-10-08: the lattice,
--- | the banks and the score are "the progression display"): which view, in
--- | the same place on each (top right), so a new progression is never more
--- | than one click away; and everything that shapes a preview, how it is
--- | struck and where it sounds.
-viewSwitch :: forall m. State -> Array (H.ComponentHTML Action Slots m)
-viewSwitch st = case st.stage of
-  Hunt v | elem v rungs || v == Pads || v == Score ->
-    [ HH.div [ HP.style "position: absolute; top: 14px; right: 16px; z-index: 6; display: flex; align-items: center; gap: 8px;" ]
-        -- how a preview sounds: struck or rolled, and where
-        [ group
-            [ btn (st.style == StyleBlock) "block" "previews strike the chord (key 1)" (SetStyle StyleBlock)
-            , btn (st.style == StyleArp) "arpeggio" "previews roll the chord (key 2)" (SetStyle StyleArp) ]
-        , group
-            [ btn (st.auditionSel /= AuditionOff) ("\x266a " <> soundValue st.auditionSel)
-                ("where previews sound (" <> st.midiName <> ") \x00b7 click: browser \x2192 continuo \x2192 MIDI \x2192 off") CycleSound ]
-        , group
-            [ btn (elem v rungs) "lattice" "the chords built on the key, from triads up" (SetStage (Hunt st.lastRung))
-            , btn (v == Pads) "banks" "nine banks of sixteen: how far from home, by how rich" (SetStage (Hunt Pads))
-            , btn (v == Score) "score" "the progression on a grand staff, to arrange and play" (SetStage (Hunt Score)) ] ] ]
-  _ -> []
+-- | **The workspace's views** (AC, 2026-10-08): river, lattice, banks and
+-- | score are four views of one workspace, the drawers around it (library,
+-- | Limulus, the score's candidates) supporting it. One switch, always at the
+-- | left of the workspace's bar, whichever view is up.
+viewTabs :: forall m. State -> H.ComponentHTML Action Slots m
+viewTabs st =
+  barGroup
+    [ barBtn (v == River) "river" "everything played this session: mark the good bits, loop them" (SetStage (Hunt River))
+    , barBtn (elem v rungs) "lattice" "the chords built on the key, from triads up" (SetStage (Hunt st.lastRung))
+    , barBtn (v == Pads) "banks" "nine banks of sixteen: how far from home, by how rich" (SetStage (Hunt Pads))
+    , barBtn (v == Score) "score" "the progression on a grand staff, to arrange and play" (SetStage (Hunt Score)) ]
   where
-  group = HH.div [ HP.style "display: flex; border: 1px solid #d8cfb6; border-radius: 5px; overflow: hidden; background: #fbf8f0; box-shadow: 0 1px 2px #0000000d;" ]
-  btn on label tip act =
-    HH.button
-      [ HP.style ("border: none; padding: 4px 12px; font-size: 12px; cursor: pointer; white-space: nowrap; "
-                   <> (if on then "background: #8d7a4a; color: #fff;" else "background: #fbf8f0; color: #5a5240;"))
-      , HP.title tip, HE.onClick \_ -> act ]
-      [ HH.text label ]
+  v = huntOr st.lastLens st.stage
+
+-- | **How a preview sounds**, whichever view it comes from: struck or
+-- | rolled, and where it sounds.
+soundControls :: forall m. State -> Array (H.ComponentHTML Action Slots m)
+soundControls st =
+  [ barGroup
+      [ barBtn (st.style == StyleBlock) "block" "previews strike the chord (key 1)" (SetStyle StyleBlock)
+      , barBtn (st.style == StyleArp) "arpeggio" "previews roll the chord (key 2)" (SetStyle StyleArp) ]
+  , barGroup
+      [ barBtn (st.auditionSel /= AuditionOff) ("\x266a " <> soundValue st.auditionSel)
+          ("where previews sound (" <> st.midiName <> ") \x00b7 click: browser \x2192 continuo \x2192 MIDI \x2192 off") CycleSound ]
+  ]
+
+barGroup :: forall m. Array (H.ComponentHTML Action Slots m) -> H.ComponentHTML Action Slots m
+barGroup = HH.div [ HP.style "display: flex; border: 1px solid #d8cfb6; border-radius: 5px; overflow: hidden; background: #fbf8f0; box-shadow: 0 1px 2px #0000000d;" ]
+
+barBtn :: forall m. Boolean -> String -> String -> Action -> H.ComponentHTML Action Slots m
+barBtn on label tip act =
+  HH.button
+    [ HP.style ("border: none; padding: 4px 12px; font-size: 12px; cursor: pointer; white-space: nowrap; "
+                 <> (if on then "background: #8d7a4a; color: #fff;" else "background: #fbf8f0; color: #5a5240;"))
+    , HP.title tip, HE.onClick \_ -> act ]
+    [ HH.text label ]
 
 sideLabel :: SideTab -> String
 sideLabel = case _ of
@@ -4991,6 +4992,8 @@ contextBar st =
         -- What may replace it: a Tidal-style transposition over all voices, or a
         -- transposition MAPPED over selected ones. Both are pattern functions, so
         -- both keep the identity honest. Neither is built.
+        <> soundControls st
+        <> [ divider ]
         <> harmonicColumn
         <> [ HH.button [ HP.style helpBtnStyle, HP.title "keys & help", HE.onClick \_ -> ToggleHelp ] [ HH.text "ⓘ" ] ]
     )
@@ -5013,29 +5016,12 @@ contextBar st =
   -- stage to look at what you just marked.
   stageControls = huntControls
 
-  -- The projection picker is a HUNT control, so it exists only while hunting.
-  -- It used to sit in the bar permanently, displaying `browseOr lastBrowse view`
-  -- — a *remembered* projection presented as the current one, because with
-  -- Perform up there was no honest value for it to show. Now it never lies.
-  -- The ladder, in order of complexity, then the score and the river (and,
-  -- on the score, Limulus), then the side panel's tabs. The colour sets are
-  -- a tray on the surface (`colourTray`).
-  -- AC, 2026-10-08: a control lives in the pane it controls. The lattice's
-  -- rungs, banks switch and reset are on the lattice; Limulus's handle is on
-  -- the score; whether the score or the lattice shows is the app's call
-  -- (a progression opened is arranged on the score). What is left here is
-  -- the river, how auditions sound, and (on the right) the key.
+  -- The workspace's bar (AC, 2026-10-08): which view on the left, with the
+  -- focused family's scale when one is focused; how previews sound and the
+  -- key on the right. Each view's own tools are on the view.
   huntControls =
-    [ let on = current == River
-      in HH.button
-           [ HP.style ("border: 1px solid #d8cfb6; border-radius: 5px; padding: 4px 14px; font-size: 12px; cursor: pointer; letter-spacing: 0.02em; "
-                        <> (if on then "background: #8d7a4a; color: #fff;" else "background: #fbf8f0; color: #5a5240;"))
-           , HP.title (if on then "back to the " <> viewtypeLabel st.riverFrom else viewtypeTip River)
-           , HE.onClick \_ -> SetStage (Hunt (if on then st.riverFrom else River)) ]
-           [ HH.text "river" ]
-    ]
+    [ viewTabs st ]
       <> familyField
-  current = huntOr st.lastLens st.stage
 
   -- a hairline group separator.
   divider = HH.div [ HP.style "width: 1px; height: 22px; background: #00000016;" ] []
@@ -5335,7 +5321,26 @@ riverSurface :: forall m. State -> H.ComponentHTML Action Slots m
 riverSurface st =
   HH.div
     [ HP.style "position: absolute; inset: 0; display: flex; flex-direction: column; background: #0b0a07;" ]
-    [ capturePane st ]
+    [ capturePane st, riverTools st ]
+
+-- | **The river's own tools**, on the river (AC, 2026-10-08: marking moves
+-- | into the river, as Odonus has it): ◆ mark, the running counts, clear.
+-- | Top left; the zoom and the edits are top right.
+riverTools :: forall m. State -> H.ComponentHTML Action Slots m
+riverTools st =
+  HH.div [ HP.style "position: absolute; top: 8px; left: 10px; z-index: 9; display: flex; align-items: center; gap: 8px;" ]
+    [ HH.button
+        [ HE.onClick \_ -> CaptureMark
+        , HP.title "flag the last couple of bars as a good bit (on the rig too: vetula $ mark)"
+        , HP.style "padding: 3px 12px; border-radius: 6px; cursor: pointer; border: 1px solid #e8c14a55; background: #e8c14a1a; color: #e8c14a; font-size: 11px; white-space: nowrap;" ]
+        [ HH.text "\x25c6 mark" ]
+    , HH.span [ HP.style "font-family: 'SF Mono', Menlo, monospace; font-size: 9px; color: #ffffff55; white-space: nowrap;" ]
+        [ HH.text (show (Logbook.noteCount st.capture.logbook) <> " notes \x00b7 " <> show (length st.capture.logbook.marks) <> " \x25c6") ]
+    , HH.button
+        [ HE.onClick \_ -> CaptureClear
+        , HP.title "clear the river: its notes, marks and loops (on the rig too: vetula $ clear)"
+        , HP.style "padding: 3px 10px; border-radius: 6px; cursor: pointer; border: 1px solid #ffffff1a; background: transparent; color: #ffffff66; font-size: 10px; white-space: nowrap;" ]
+        [ HH.text "clear" ] ]
 
 -- | The views that take the whole main space: no chyron above them, no
 -- | colour tray below.
