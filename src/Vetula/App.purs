@@ -586,7 +586,7 @@ type State =
   , auditionSel :: AuditionSel      -- where the audition goes (Off/Continuo/Midi); shell-driven
   , previewChan :: Int              -- the MIDI channel chord/path AUDITION plays on (own
                                     -- routable channel, so ATLANTIS preview can be cued
-                                    -- separately from the live brush; 0-indexed like voices)
+                                    -- separately from the voices; 0-indexed like voices)
   , sounding :: Maybe Int            -- the chord shown on the left-hand pitch ladder
   , revoicing :: Maybe Int           -- the chord open in the revoice modal (Nothing = closed)
   , drag :: Maybe DragState          -- an in-progress octave-drag on the ladder
@@ -658,7 +658,7 @@ type State =
                                   -- shell mirrors it through SetSounding (`Silent` ⇒ disarm).
   , authority :: Sounding        -- where PERFORMANCE output goes (MISU refactor, replaces
                                   -- master+audible): Local = local Web-MIDI, Rig = muted
-                                  -- locally + brush on the rig. Standalone stays Local.
+                                  -- locally, the voices on the rig. Standalone stays Local.
   , playing :: Boolean           -- derived: currently sounding (= armed, under authority)
   , pulse :: Int                  -- the shared clock's 16th-note grid index (from the scheduler tick)
   , tempo :: Int                  -- BPM display (tracks the live clock; the bpm field nudges the free baseline)
@@ -960,7 +960,6 @@ data SourceQuery a
   -- switches machine and leaves the stage alone.
   | SetStagePath (Array String) a
   | AskHarmonic ({ durs :: Array Int, active :: Int, chord :: String } -> a)  -- nav harmonic strip: voice-0 dwell schedule + live playhead + the active chord's notes
-  | AskBrushSig (String -> a)   -- the current rig payload string; the shell diffs it to auto-re-push on change
   -- Live jump: re-anchor every voice so chord `i` reads NOW (from the nav strip).
   -- Playing → the ensemble advances to chord i and continues; stopped → the → odo
   -- feed + the strip's playhead move to i (so Odonus re-quantises). One gesture,
@@ -968,7 +967,7 @@ data SourceQuery a
   | JumpChord Int a
   -- The ONE transport query (control-surface MISU refactor). The shell pushes the
   -- derived `Sounding`: `Silent` disarms, `Local` plays local Web-MIDI, `Rig` mutes
-  -- locally + (re)pushes the brush to the rig voice. Replaces SetMaster/SetAudible/
+  -- locally, the rig plays the voices. Replaces SetMaster/SetAudible/
   -- SetArm/SyncToRig/StopRig. `AskSounding` reports the EFFECTIVE sounding (Silent
   -- when self-disarmed, e.g. unloading a progression) so the shell can reconcile.
   | SetSounding Sounding a
@@ -1191,12 +1190,6 @@ handleQuery = case _ of
             Just pcs | length pcs > 0 -> joinWith " " (map noteName pcs)
             _ -> ""
     pure (Just (reply { durs, active, chord }))
-  -- The exact rig payload string the progression would push (Vetula has no
-  -- incremental path, so this whole string IS the wire). The shell diffs it each
-  -- poll and, in ATLANTIS, calls SyncToRig on a settled change — no manual push.
-  AskBrushSig reply -> do
-    s <- H.get
-    pure (Just (reply (brushMsg s)))
   -- Live jump from the nav strip: re-anchor every voice's read-head to chord i at
   -- the current pulse (phase set so cursorAt = i now; cursor cached to i for the
   -- stopped/feed case). No-op for voices that skip chord i, and for i out of range.
@@ -1210,8 +1203,8 @@ handleQuery = case _ of
   --   * Silent ⇒ disarm; Local/Rig ⇒ arm (reconcilePerf starts/stops the ticker).
   --   * leaving Local  → silence held local notes (the clock keeps ticking; audition
   --     previews stay local and ungated — the palette's sample-the-harmony gesture).
-  --   * entering Rig   → (re)push the brush as a Tidal pattern (re-issuing Rig
-  --     re-voices — the shell does this on a settled edit); leaving Rig → vetula-stop.
+  --   * entering Rig   → the rig plays the voices (vetula-cards-play); leaving Rig
+  --     → vetula-stop.
   SetSounding s next -> do
     st <- H.get
     let nowArmed = s /= Silent
@@ -1225,11 +1218,9 @@ handleQuery = case _ of
     when (st.authority == Rig && s /= Rig) $
       for_ st.binnacle \bin -> liftEffect $ Transport.send (Binnacle.socket bin) "vetula-stop"
     when (s == Rig) $
-      for_ st.binnacle \bin -> liftEffect do
-        Transport.send (Binnacle.socket bin) (brushMsg st)
-        -- the cards play on the rig, read from the stage (vetula_cards); the page
-        -- plays them itself only in Local
-        Transport.send (Binnacle.socket bin) "vetula-cards-play"
+      -- the voices play on the rig, read from the stage (vetula_cards); the
+      -- page plays them itself only in Local
+      for_ st.binnacle \bin -> liftEffect $ Transport.send (Binnacle.socket bin) "vetula-cards-play"
     pure (Just next)
   -- Report the EFFECTIVE sounding: Silent when self-disarmed (unload) so the shell
   -- drops us from its armed set; otherwise the pushed authority.
@@ -3004,7 +2995,7 @@ handleActionCore = case _ of
           pulseMs = 60000.0 / tempo / 4.0
           -- ATLANTIS (audible=false): keep advancing each voice's read-head so the
           -- pulse + cursor march on (the nav harmonic strip stays live in every
-          -- pane), but pass no MIDI-out so nothing sounds locally — the rig's brush
+          -- pane), but pass no MIDI-out so nothing sounds locally — the rig's voices
           -- is the sound. SOLO: emit as normal.
           mout = if st.authority == Local then st.midiOut else Nothing
       voices' <- liftEffect $ traverse (stepVoice mout st.routing reefChords tick.index pulseMs tick.delayMs rec) st.voices
@@ -3259,7 +3250,7 @@ silenceHeld st =
 -- | The loaded performance progression's chords, resolved from the working copy.
 -- | The performed progression. Slice 4a: this IS the live `path` (`pathSteps`) — the
 -- | voices read what you're building, with no load-a-copy step. Kept as a named alias
--- | because the reef-projection sites (`buildPerf`, `brushMsg`) read more clearly as
+-- | because the reef-projection sites (`buildPerf`) read more clearly as
 -- | "the performance's chords"; 4b may inline it.
 perfChords :: State -> Array ChordNode
 perfChords = pathSteps
@@ -3299,40 +3290,6 @@ toReefVoice routing v =
   , phase: v.phase
   , muted: v.muted
   }
-
--- | The brush renderer name for the `vetula-voicings` verb. Note Strummed → "held":
--- | on the brush side the old "strum" is the legato / common-tone reading (the
--- | audible voice-leading), not an intra-chord roll.
-rendBrush :: Renderer -> String
-rendBrush = case _ of
-  Block -> "block"
-  Arp -> "arp"
-  Strummed -> "held"
-
--- | Build the `vetula-voicings <channel> <renderer> <json>` message: the whole
--- | progression's hand-picked voicings (playNotes per chord) as a compact JSON
--- | `Array (Array Int)` (no spaces — the rig splits the verb on spaces). Single
--- | brush voice: takes the first → MIDI voice's renderer + channel + dwell (the
--- | brush is a MIDI-out voice; a → odo voice only conducts Odonus and sounds no
--- | MIDI, so it must NOT be the brush). Defaults block / ch 8 if there is no MIDI
--- | voice yet. The rig treats <channel> as the link-spike (1-indexed) MIDI channel.
-brushMsg :: State -> String
-brushMsg st =
-  let
-    chords = perfChords st
-    v0 = find (\v -> v.dest == ToMidi) st.voices
-    rend = maybe "block" (rendBrush <<< _.renderer) v0
-    -- canonical 1..16 MIDI channel; the rig treats it as link-spike (1-indexed).
-    ch = maybe Routing.vetulaDefaultChannel (midiChannelFor st.routing) v0
-    durs = maybe (replicate (length chords) 1) _.durs v0
-    jsonRow xs = "[" <> joinWith "," (map show xs) <> "]"
-    vJson = "[" <> joinWith "," (map (jsonRow <<< playNotes) chords) <> "]"
-    dJson = "[" <> joinWith "," (map show durs) <> "]"
-    -- {"v":[[..]],"d":[..]} — compact (no spaces; the rig splits the verb on spaces).
-    -- v = voicings, d = voice 1's bars-per-chord dwell (0 = skip).
-    json = "{\"v\":" <> vJson <> ",\"d\":" <> dJson <> "}"
-  in
-    "vetula-voicings " <> show ch <> " " <> rend <> " " <> json
 
 -- | One pulse of one voice, rendered by the SHARED `Reef.Vetula.Perf` engine — the
 -- | exact code the rig's reef_vetula_voice runs, so browser and rig are identical BY

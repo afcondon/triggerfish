@@ -54,8 +54,6 @@ type State =
   , chip :: Maybe (Maybe ChipView)
   -- The rig payload as last seen and as last sent: a change is re-pushed once
   -- it has held still for one poll, so a drag sends once, after it stops.
-  , brushPrev :: String
-  , brushSent :: String
   -- Vetula answers nothing until its lattice is built (tens of seconds), so
   -- the poll runs forked, and only one at a time.
   , busy :: Maybe (Ref Boolean)
@@ -85,7 +83,7 @@ component :: forall i. H.Component SQ.Query i Output Aff
 component = H.mkComponent
   { initialState: \_ ->
       { sounding: Silent, chip: Nothing
-      , brushPrev: "", brushSent: "", busy: Nothing
+      , busy: Nothing
       , bin: Nothing, voices: [], routesText: Nothing, names: Map.empty, lastBar: Nothing }
   , render: \_ -> HH.slot _vet unit Vetula.component unit FromVetula
   , eval: H.mkEval H.defaultEval
@@ -159,16 +157,6 @@ poll = do
     when (st.chip /= Just cv) do
       H.modify_ _ { chip = Just cv }
       H.raise (Chip cv)
-  -- Vetula has no incremental rig path: a settled change to its payload is
-  -- pushed again, and only while it is the rig that sounds it.
-  st <- H.get
-  when (st.sounding == Rig) do
-    msig <- H.query _vet unit (Vetula.AskBrushSig identity)
-    for_ msig \sig -> do
-      when (sig == st.brushPrev && sig /= st.brushSent) do
-        void $ H.query _vet unit (Vetula.SetSounding Rig unit)
-        H.modify_ _ { brushSent = sig }
-      when (sig /= st.brushPrev) (H.modify_ _ { brushPrev = sig })
 
 -- | The drawer's slots for saved progressions, above the voices' (`Voices.slotBase`).
 progSlotBase :: Int

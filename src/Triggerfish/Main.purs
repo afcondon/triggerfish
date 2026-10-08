@@ -301,12 +301,6 @@ type RState =
   , staged :: Map Which String
   -- The tab bus to the dashboard (`Binnacle.TabBus`).
   , bus :: Maybe Bus.Bus
-  -- Vetula auto-resync (ATLANTIS): the shell polls Vetula's rig payload and, when
-  -- it settles on a new value, re-pushes (SetSounding Rig re-voices) — so the
-  -- progression re-voices live with no manual button. `brushSent` = last value
-  -- pushed; `brushPrev` = last poll's value (a one-tick settle coalesces a drag).
-  , brushSent :: String
-  , brushPrev :: String
   -- The armed set: the single source of truth for the switcher's per-tab dots and
   -- the master button label. Reconciled from the instruments on SyncTick (a machine
   -- can self-disarm, e.g. Vetula unloading a progression).
@@ -448,7 +442,6 @@ root =
         , picked: Nothing, sourceOpen: false, digOpen: false, goTo: [], previewing: []
         , mode: Solo, harm: { durs: [], active: -1, chord: "" }
         , rig: Nothing, rigConnected: false, staged: Map.empty, bus: Nothing
-        , brushSent: "", brushPrev: ""
         , armed: Set.empty
         , routingTable: RM.defaultTable
         , routingPorts: []
@@ -1128,20 +1121,6 @@ handleAction = case _ of
         for_ mpc \pc -> do
           prev <- H.gets _.previewCh
           when (pc /= prev) (H.modify_ _ { previewCh = pc })
-        -- Vetula auto-resync (ATLANTIS only): Vetula has no incremental rig path, so the
-        -- shell diffs its payload and re-pushes on a SETTLED change (payload stable for
-        -- one poll AND different from what was last sent). A drag coalesces into one push
-        -- ~one tick after it stops; glitchless because the rig re-push phase-aligns.
-        -- Only when the Vetula voice is actually running on the rig (armed in ATLANTIS).
-        msig <- H.query _vet unit (Vetula.AskBrushSig identity)
-        for_ msig \sig -> do
-          st <- H.get
-          -- Re-push (SetSounding Rig re-voices) only when Vetula is actually rig-
-          -- authoritative — `soundingOf … Vet == Rig` already implies armed + ATLANTIS.
-          when (soundingOf st.mode st.armed (previewSet st) Vet == Rig && sig == st.brushPrev && sig /= st.brushSent) do
-            _ <- H.query _vet unit (Vetula.SetSounding Rig unit)
-            H.modify_ _ { brushSent = sig }
-          when (sig /= st.brushPrev) (H.modify_ _ { brushPrev = sig })
         liftEffect (Ref.write false gate)
 
 -- Push one machine its DERIVED Sounding (soundingOf mode armed). The instrument
