@@ -45,6 +45,7 @@ import Binnacle.Clock as Clock
 import Binnacle.Midi as Midi
 import Binnacle.Scheduler as Scheduler
 import Binnacle.Time as Time
+import Vetula.Voice as Voice
 import Binnacle.Transport as Transport
 import Reef.Input as RI
 import Reef.Route as Route
@@ -1651,6 +1652,10 @@ emitNote
   :: RO.Outs -> RM.Table -> Int -> Number -> Number -> Int -> Maybe Int -> M.Fired
   -> Effect Unit
 emitNote outs tbl headIdx atMs gateMs vel prev f =
+  -- No MIDI port at all (a visitor to the static site, with no Web MIDI or
+  -- none granted): the browser's own voice plays, so Odonus is never silent
+  -- for want of an instrument. A rig always has ports, so it never comes here.
+  if null outs then browserNote else
   for_ (RO.resolveLegs outs tbl (RM.SOdonusHead headIdx)) \r ->
     case r.wire, r.out of
       Just w, Just o
@@ -1662,6 +1667,16 @@ emitNote outs tbl headIdx atMs gateMs vel prev f =
       _, _ -> pure unit
   where
   p = f.pitch
+  -- the browser voice: a tie holds (nothing new), a ratchet is its hits
+  browserNote = case prev, f.glide of
+    Just q, true | q == p -> pure unit
+    _, _ -> do
+      now <- Time.perfNow
+      let rat = if f.ratchet < 1 then 1 else f.ratchet
+          sub = gateMs / toNumber rat
+      for_ (range 0 (rat - 1)) \k ->
+        Voice.play { note: p, velocity: vel, delayMs: atMs - now + toNumber k * sub
+                   , durMs: if rat <= 1 then gateMs else sub * 0.85 }
   -- A TRIGGER leg (an FH-2 envelope or gate): fired once, at the note's velocity
   -- and for its gate length, so a sustaining envelope tracks the gate rather than
   -- running on its own. Velocity is carried because `velDepth` is the ONLY
