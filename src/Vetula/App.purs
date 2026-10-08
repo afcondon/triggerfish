@@ -704,7 +704,6 @@ type State =
   -- edit; it is the Amphora label each settled version is published under.
   , progName :: Maybe String
   , lastPubSig :: String          -- the source last SAVED (a version in the library and Amphora)
-  , lastCopySig :: String         -- the source last copied as plain Tidal (the chip says so)
   -- The AUDITION CARD (plan, step 4a): a card on the stage holding the
   -- progression in the current style, kept current by Vetula until it is
   -- edited in Limulus, when it becomes the composer's (`owned`) and is never
@@ -990,7 +989,6 @@ data Action
   | SelectMark String ChordNode  -- Explore: a click makes a chord the cursor, and plays it
   | SetStyle AuditionStyle       -- Explore: the audition style (keys 1, 2), heard at once
   | SaveProg Boolean             -- save the progression (⌘S); true = as a new sibling (⌘⇧S)
-  | VoiceToLimulus               -- hand Limulus a voice line naming the progression
   | TakeMark String ChordNode    -- Explore: a shift-click selects and takes it
   | DropTone Event Int Int Int  -- silence chord `id`'s tone `i` at octave `k` (shift-click a note)
   | ShuffleVary            -- re-draw all nine cells of the Vary lens from a new seed
@@ -1134,7 +1132,6 @@ component = H.mkComponent
       , lastCapIdx: Nothing
       , lastCapSig: ""
       , lastPubSig: ""
-      , lastCopySig: ""
       , auditionCard: Nothing
       , publishMsg: Nothing
       , progName: Nothing
@@ -1378,7 +1375,8 @@ handleQuery = case _ of
     pure $ Just $ reply
       -- one surface: no mode tabs (docs/kb/plans/vetula-one-surface.md)
       { tabs: []
-      , marks: show (Logbook.noteCount s.capture.logbook) <> " notes \x00b7 " <> show (length s.capture.logbook.marks) <> " \x25c6"
+      -- marking moves into the river, as on Odonus; the bar shows none
+      , marks: ""
       , icons: if s.perfSession.alias == "" then [] else map (\icon -> { icon, color: "#2a2a2a" }) (split (Pattern "-") s.perfSession.alias)
       , rebusTip: "session " <> (if s.perfSession.name == "" then s.perfSession.alias else s.perfSession.name) <> " \x00b7 new session"
       , chips:
@@ -1399,41 +1397,15 @@ handleQuery = case _ of
                    , active: true, attention: unsaved
                    , tip: nm <> (if unsaved then " \x00b7 unsaved: \x2318S saves this version, \x2318\x21e7S a new sibling" else " \x00b7 saved") <> " \x00b7 click: arrange it, on the score"
                        <> " \x00b7 on the lattice, backspace takes back the last chord, delete starts a new progression" }
-          ] <> (if length s.path == 0 then [] else
-          -- the progression as plain Tidal on the clipboard: works anywhere,
-          -- with no rig, and pastes back into Vetula
-          [ let copied = currentSource s == s.lastCopySig
-            in { id: "copy", label: if copied then "\x2713 copied" else "copy as Tidal", icons: [], active: copied, attention: false
-               , tip: "the progression as plain Tidal (note \"<[\x2026] \x2026>\"), for any Tidal; paste it back into Vetula to load it" } ])
-       <> (case s.progName of
-            -- a voice for the progression (AC's voice model): a line handed to
-            -- Limulus naming it, which the composer runs; the voice plays every
-            -- later save of it
-            Just nm | length s.path > 0 && isJust s.stageCards && SC.stageName nm ->
-              [ { id: "voice", label: "+ voice", icons: [], active: false, attention: false
-                , tip: case nextVoice s of
-                    Just n -> "adds a line to Limulus, " <> voiceLine n nm s.style <> ": run it to hear "
-                      <> nm <> " (voice " <> voiceLetter n <> ", channel " <> show n <> "); it follows every save"
-                    Nothing -> "8 voices are playing: hush one in Limulus (R $ hush) first"
-                    <> (if currentSource s /= s.lastPubSig then " \x00b7 saves this version first" else "") } ]
-            _ -> [])
+          ]
       }
   BarAct act next -> do
     s <- H.get
     case act of
       "stage:explore" -> handleAction (SetStage (Hunt s.lastLens))
-      "mark" -> handleAction CaptureMark
-      "clear" -> handleAction CaptureClear
       "rebus" -> handleAction PerfMenuToggle
       -- the progression: arrange it, on the score (saving is ⌘S, or the row's save)
       "chip:prog" -> when (length s.path > 0) (handleAction (SetStage (Hunt Score)))
-      -- through an action: the card has to reach the stage, and only the
-      -- action wrapper publishes cards (a query's state change does not)
-      "chip:voice" -> handleAction VoiceToLimulus
-      "chip:copy" -> do
-        let src = currentSource s
-        liftEffect (copyText src)
-        H.modify_ _ { lastCopySig = src }
       _ -> pure unit
     pure (Just next)
   LoadSceneAt i next -> do
@@ -1774,18 +1746,6 @@ publishProgressions = do
     if e.kept && SC.stageName e.name
     then Just (Tuple e.name (printProgressionIn (parseBeats e.source) (filter (\ns -> length ns > 0) (parseProgression e.source))))
     else Nothing
-
--- | The number a new voice takes: the lowest of P..W (1..8) not playing.
-nextVoice :: State -> Maybe Int
-nextVoice st = find (\k -> not (elem k taken)) (range 1 8)
-  where
-  taken = maybe [] (\m -> map fst (Map.toUnfoldable m :: Array (Tuple Int String))) st.stageCards
-
--- | A voice line naming a saved progression, in the style auditions use.
-voiceLine :: Int -> String -> AuditionStyle -> String
-voiceLine n name sty = voiceLetter n <> " $ vetula \"" <> name <> "\"" <> case sty of
-  StyleArp -> " # arpup 8"
-  StyleBlock -> ""
 
 -- | Kept progressions whose names a voice line cannot say (a space, the old
 -- | prime) renamed once to ones it can (`cleanName`), with the renames made.
@@ -2839,19 +2799,6 @@ handleActionCore = case _ of
           Right _ -> "saved " <> nm
           Left _ -> "saved " <> nm <> " here (no store)" }
       publishProgressions
-
-  -- A voice for the progression: `v3 $ vetula "name"`, in the current
-  -- style, handed to Limulus to run (stage-paste). Numbered from the voices
-  -- playing, at most 8. A voice plays what is saved, so save first.
-  VoiceToLimulus -> do
-    st0 <- H.get
-    when (currentSource st0 /= st0.lastPubSig) (handleAction (SaveProg false))
-    st <- H.get
-    for_ st.progName \nm -> for_ st.binnacle \bin -> do
-      case nextVoice st of
-        Nothing -> H.modify_ _ { publishMsg = Just "8 voices already: hush one in Limulus (R $ hush) first" }
-        Just n -> liftEffect $ Transport.send (Binnacle.socket bin)
-          ("stage-paste vetula/v" <> show n <> " " <> voiceLine n nm st.style)
 
   SetStyle sty -> do
     H.modify_ _ { style = sty }

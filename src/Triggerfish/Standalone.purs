@@ -177,6 +177,7 @@ data Action o
   | Capture
   | Panic
   | RigHushed
+  | RigPlayed
   | RoutingChanged
   | FromMachine o
   | Key E.Event
@@ -245,7 +246,11 @@ handleAction cfg = case _ of
     -- this machine: the transport stops too, or its next push would start
     -- the voices again
     let hushedHere msg = msg == "hushed" || maybe false (\m -> msg == "hushed " <> m) (Stage.slotOf cfg.which)
-    liftEffect $ Binnacle.onAppMessage rig \msg -> when (hushedHere msg) (HS.notify listener RigHushed)
+        -- `<machine> $ play`, from a line: the transport starts, as if pressed
+        playedHere msg = maybe false (\m -> msg == "played " <> m) (Stage.slotOf cfg.which)
+    liftEffect $ Binnacle.onAppMessage rig \msg -> do
+      when (hushedHere msg) (HS.notify listener RigHushed)
+      when (playedHere msg) (HS.notify listener RigPlayed)
     liftEffect $ TransportStore.onChange (HS.notify listener ModeStored)
     liftEffect $ Tempo.onChange (HS.notify listener TempoStored)
     bus <- liftEffect Bus.open
@@ -393,6 +398,9 @@ handleAction cfg = case _ of
   FromFrame e -> when (limulusAskedClose e) do
     H.modify_ _ { limulus = false }
     liftEffect focusSelf
+  RigPlayed -> unlessM (H.gets _.playing) do
+    H.modify_ _ { playing = true }
+    pushSounding cfg
   RigHushed -> whenM (H.gets _.playing) do
     H.modify_ _ { playing = false }
     pushSounding cfg
