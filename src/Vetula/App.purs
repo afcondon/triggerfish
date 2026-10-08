@@ -4620,7 +4620,9 @@ render st =
     -- Halogen does not know about, and a reused container kept the old
     -- lattice under the score
     ( [ HH.keyed (ElemName "div") [ HP.style ("position: absolute; inset: 0px " <> sideInset st <> " " <> (if fullView st.stage then "0px" else trayHeight) <> " 0;") ] [ Tuple (surfaceKey st) (surface st) ] ]
-      <> (if fullView st.stage then [] else [ colourTray st ]) <> [ sidePanel st ]
+      <> (if fullView st.stage then [] else [ colourTray st ])
+      -- the right-hand slot: Limulus while the score is up, else the side panel
+      <> [ if st.stage == Hunt Score then limulusDock else sidePanel st ]
       <>
     -- Scene recall belongs to the INSTRUMENT, not to Perform. Its entry point
     -- has always been the session menu in `contextBar`, which renders on every
@@ -4662,7 +4664,31 @@ trayHeight :: String
 trayHeight = "46px"
 
 sideInset :: State -> String
-sideInset st = if isJust st.side then sidePanelWidth else "0px"
+sideInset st
+  | st.stage == Hunt Score = limulusWidth
+  | isJust st.side = sidePanelWidth
+  | otherwise = "0px"
+
+-- | **Score mode's REPL column** (docs/kb/plans/vetula-one-surface.md, Model
+-- | B): Limulus, open while the score is up, in the right-hand slot. About
+-- | eighty columns: a REPL works badly wide (AC: Perform's dock was far too
+-- | wide).
+limulusWidth :: String
+limulusWidth = "min(600px, 38vw)"
+
+-- | The region the shell docks Limulus over (`Standalone.watchDocks`):
+-- | "always" keeps the panel open while the score is up, "flush" makes it
+-- | part of the page rather than a window over it. What shows through only
+-- | when there is no rig for Limulus to play on.
+limulusDock :: forall m. H.ComponentHTML Action Slots m
+limulusDock =
+  HH.div
+    [ HP.attr (HH.AttrName "data-limulus-dock") "always"
+    , HP.attr (HH.AttrName "data-limulus-frame") "flush"
+    , HP.style ("position: absolute; top: 0; right: 0; bottom: 0; width: " <> limulusWidth <> "; box-sizing: border-box; "
+                 <> "border-left: 1px solid #e6dfcc; display: flex; align-items: center; justify-content: center; padding: 20px; "
+                 <> "color: #9a8d6a; font-style: italic; font-size: 13px; text-align: center;") ]
+    [ HH.text "Limulus plays on the rig: switch to Atlantis on the dashboard." ]
 
 sideLabel :: SideTab -> String
 sideLabel = case _ of
@@ -4752,15 +4778,12 @@ sidePanel st = case st.side of
                  , reaim ]
                Just src ->
                  [ HH.div [ HP.style "display: flex; align-items: baseline; gap: 8px; margin-bottom: 10px; font-size: 11px; color: #a09880;" ]
-                     [ HH.span [ HP.style "font-size: 15px; color: #3a3428; font-weight: 500;" ] [ HH.text src.label ]
+                     [ HH.span [ HP.style "font-size: 15px; color: #3a3428; font-weight: 500;" ] [ HH.text (chordTitle st src) ]
                      , HH.text (show (playNotes src))
                      , HH.div [ HP.style "flex: 1 1 auto;" ] []
                      , reaim ]
                  ]
-                   <> (case t of
-                         SideVariations -> variations src
-                         SideRelatives -> relatives src
-                         SideSubstitutes -> substitutesOf src)
+                   <> sideContent st t src
       )
   where
   tab x =
@@ -4778,9 +4801,56 @@ sidePanel st = case st.side of
       [ HP.style "border: 1px solid #cdbb8c; background: #fbf6ea; color: #7a5c00; cursor: pointer; padding: 2px 8px; border-radius: 4px; font-size: 11px; white-space: nowrap;"
       , HP.title tip, HE.onClick \_ -> act ]
       [ HH.text label ]
+
+-- | **Score mode's three columns**, under the score (AC's sketch,
+-- | 2026-10-08): substitutes, variations and relatives of the chord in hand
+-- | (the bar last clicked), side by side so candidates compare at a glance.
+-- | A click hears one in the bar's register, a double-click puts it in the
+-- | bar, or drag it onto any bar.
+scoreCandidates :: forall m. State -> H.ComponentHTML Action Slots m
+scoreCandidates st =
+  HH.div
+    [ HP.style "flex: 0 0 42%; min-height: 0; display: flex; flex-direction: column; border-top: 1px solid #e6dfcc; background: #fffdf8;" ]
+    [ HH.div [ HP.style "display: flex; align-items: baseline; gap: 10px; padding: 8px 16px 6px; font-size: 11px; color: #a09880; border-bottom: 1px solid #f0eadb;" ]
+        ( case varySource st of
+            Just src ->
+              [ HH.span [ HP.style "font-size: 14px; color: #3a3428; font-weight: 500;" ] [ HH.text (chordTitle st src) ]
+              , HH.text (case st.scoreBar of
+                  Just i | puts st -> "bar " <> show (i + 1) <> " \x00b7 click hears in its register \x00b7 double-click puts it there \x00b7 or drag onto any bar"
+                  _ -> "click a bar to see its candidates") ]
+            Nothing -> [ HH.text "click a bar of the score: its substitutes, variations and relatives show here" ] )
+    , HH.div [ HP.style "flex: 1 1 auto; min-height: 0; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr));" ]
+        (map column [ SideSubstitutes, SideVariations, SideRelatives ])
+    ]
+  where
+  column t =
+    HH.div [ HP.style "min-height: 0; overflow: auto; padding: 8px 12px 16px; border-right: 1px solid #f0eadb;" ]
+      ( [ HH.div [ HP.style "font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; color: #3a3428; margin-bottom: 6px;", HP.title (sideTip t) ]
+            [ HH.text (sideLabel t) ] ]
+          <> maybe [] (sideContent st t) (varySource st) )
+
+-- | A chord's name as the score spells it (a chord loaded from a saved
+-- | progression is labelled by its root alone).
+chordTitle :: State -> ChordNode -> String
+chordTitle st c = Score.spellName (Score.spellingOf st.key.tonic (scaleSet st.key)) (OP.chordName (playNotes c))
+
+-- | **What the side panel shows for a chord**, by tab: its substitutes,
+-- | variations or relatives. The side panel shows one beside the lattice; in
+-- | score mode the three stand side by side under the score.
+sideContent :: forall m. State -> SideTab -> ChordNode -> Array (H.ComponentHTML Action Slots m)
+sideContent st t src = case t of
+  SideVariations -> variations
+  SideRelatives -> relatives
+  SideSubstitutes -> substitutesOf
+  where
+  smallBtn label tip act =
+    HH.button
+      [ HP.style "border: 1px solid #cdbb8c; background: #fbf6ea; color: #7a5c00; cursor: pointer; padding: 2px 8px; border-radius: 4px; font-size: 11px; white-space: nowrap;"
+      , HP.title tip, HE.onClick \_ -> act ]
+      [ HH.text label ]
   -- **Substitutes** (Harmonia.Substitute), voiced near the chord they would
   -- replace: the bass nearest its bass, the rest voice-led from its notes
-  substitutesOf src =
+  substitutesOf =
     let
       subs = HSub.substitutes 6 (scaleSet st.key) src.root (map (\m -> mod m 12) (playNotes src))
       node i sub = (importChord (-5000 - i) (voiceNear src sub.root sub.pcs)) { label = Score.spellName (Score.spellingOf st.key.tonic (scaleSet st.key)) (noteName sub.root <> sub.suffix) }
@@ -4798,7 +4868,7 @@ sidePanel st = case st.side of
 
   -- One density column at a time: a panel has room for one, and the three
   -- drift rows (held, thinned, swapped) are the question it answers.
-  variations src =
+  variations =
     let cells = Vary.grid st.key src st.varyRoll
         dn = fromMaybe HV.densities (map pure (index HV.densities st.sideDensity))
         cellAt d = filter (\x -> x.drift == d && elem x.density dn) cells
@@ -4816,7 +4886,7 @@ sidePanel st = case st.side of
          [ HH.text (HV.densityLabel d) ]
   -- Three rows from the same generator at three settings of its adventure
   -- dial; a chord shows once, in the smoothest row that holds it.
-  relatives src =
+  relatives =
     let seed = src { label = chordTag src }
         row adv = take 8 (drop (mod (st.genRoll * 2) 5) (filter (not <<< same src) (generateCandidates Append [ seed ] st.key adv 0)))
         smooth = row 0.0
@@ -4971,8 +5041,8 @@ contextBar st =
     ]
       <> shakeChip
       <> familyField
-      <> [ divider ]
-      <> map sideChip [ SideVariations, SideRelatives, SideSubstitutes ]
+      -- in score mode the three lists are under the score, all at once
+      <> (if current == Score then [] else [ divider ] <> map sideChip [ SideVariations, SideRelatives, SideSubstitutes ])
       <> resetChip
   current = huntOr st.lastLens st.stage
   rung vt =
@@ -6073,11 +6143,14 @@ scoreSurface st =
   -- without it every key (Esc, Tab, the arrows) stood down on the score
   HH.div
     [ HP.class_ (cn "vetula-surface vetula-surface--wide")
-    , HP.style "position: absolute; inset: 0; overflow: auto; padding: 16px 22px 30px;" ]
-    ( [ Score.system sp openHandlers openRow ]
-        <> map (\r -> Score.system sp (handlersFor r) r.row) others
-        <> (if Array.null cards then [ HH.p [ HP.style "font-size: 12px; color: #a09880;" ] [ HH.text "No voices playing. \x201c+ voice\x201d hands Limulus a line that plays the open progression." ] ] else [])
-    )
+    , HP.style "position: absolute; inset: 0; display: flex; flex-direction: column;" ]
+    [ HH.div [ HP.style "flex: 1 1 58%; min-height: 0; overflow: auto; padding: 16px 22px 20px;" ]
+        ( [ Score.system sp openHandlers openRow ]
+            <> map (\r -> Score.system sp (handlersFor r) r.row) others
+            <> (if Array.null cards then [ HH.p [ HP.style "font-size: 12px; color: #a09880;" ] [ HH.text "No voices playing. \x201c+ voice\x201d hands Limulus a line that plays the open progression." ] ] else [])
+        )
+    , scoreCandidates st
+    ]
   where
   sp = Score.spellingOf st.key.tonic (scaleSet st.key)
   pathNodes = mapMaybe (\pid -> find (\c -> c.id == pid) st.chords) st.path
