@@ -12,13 +12,16 @@ export const focusSelf = () => window.focus();
 // with `data-limulus-dock` (one element or several, taken together); the
 // panel covers that region's columns, from under the bar (or the region's
 // top, if lower) to the window's foot (or its bottom, if higher). A dock
-// marked "always" keeps the panel open while it is on the page (Vetula's
-// Perform). No dock: the panel stands on the right, as the bar's CSS says.
+// marked "always" keeps the panel open while it is on the page. A marker
+// "open" places nothing: it asks for the ordinary drawer to open when it
+// appears (and to close again when it goes, if it was what opened it), so a
+// page can bring Limulus out without taking it over (Vetula's score). No
+// dock: the panel stands on the right, as the bar's CSS says.
 // The place goes into CSS variables on the root, so Halogen's own render of
 // the panel's style never fights it.
-export const watchDocks = (onAlways) => () => {
+export const watchDocks = (onAlways) => (onWant) => () => {
   const root = document.documentElement;
-  let always = null, queued = false;
+  let always = null, queued = false, want = null;
   const vars = ["--lim-left", "--lim-right", "--lim-top", "--lim-width", "--lim-height", "--lim-shadow", "--lim-edge"];
   // A dock marked data-limulus-frame="flush" is part of the page: no window
   // chrome on the panel, and the panel's Limulus is told so.
@@ -29,7 +32,10 @@ export const watchDocks = (onAlways) => () => {
   };
   const place = () => {
     queued = false;
-    const docks = [...document.querySelectorAll("[data-limulus-dock]")];
+    const marks = [...document.querySelectorAll("[data-limulus-dock]")];
+    const nowWant = marks.some((d) => d.dataset.limulusDock === "open");
+    if (nowWant !== want) { const first = want === null; want = nowWant; if (!(first && !nowWant)) onWant(nowWant)(); }
+    const docks = marks.filter((d) => d.dataset.limulusDock !== "open");
     const nowAlways = docks.some((d) => d.dataset.limulusDock === "always");
     if (nowAlways !== always) { always = nowAlways; onAlways(nowAlways)(); }
     const nowFlush = docks.some((d) => d.dataset.limulusFrame === "flush");

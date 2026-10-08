@@ -138,6 +138,7 @@ type State =
   -- kept once made, hidden when closed, so its log and undo survive.
   , limulus :: Boolean
   , limulusMade :: Boolean
+  , limulusAsked :: Boolean  -- the drawer is open because a page asked (`DockWants`)
   -- its width, as a drawer from the right (a view preference, per page)
   , limWidth :: Number
   -- the page gives Limulus a region that keeps it open (Vetula's Perform)
@@ -157,7 +158,7 @@ type State =
 foreign import limulusAskedClose :: E.Event -> Boolean
 foreign import focusFrame :: HTMLElement -> Effect Unit
 foreign import focusSelf :: Effect Unit
-foreign import watchDocks :: (Boolean -> Effect Unit) -> Effect Unit
+foreign import watchDocks :: (Boolean -> Effect Unit) -> (Boolean -> Effect Unit) -> Effect Unit
 foreign import selectAll :: HTMLElement -> Effect Unit
 foreign import setDragText :: E.Event -> String -> Effect Unit
 foreign import currentDrag :: Effect String
@@ -186,6 +187,7 @@ data Action o
   | FromLimDrawer Drawer.Output
   | FromFrame E.Event
   | DockAlways Boolean
+  | DockWants Boolean    -- a page asks for the Limulus drawer (true) or is done with it
   | AskBrowser
   | AskBar
   | PressBar String
@@ -217,7 +219,7 @@ root :: forall q i o' o. Config o -> H.Component q i o' Aff
 root cfg = H.mkComponent
   { initialState: \_ ->
       { mode: Solo, playing: false, bpm: 120.0, tempoFlash: Nothing, freeT0: 0.0, chip: Nothing, machineBar: Nothing, rig: Nothing
-      , rigUp: false, table: RM.defaultTable, staged: Nothing, bus: Nothing, limulus: false, limulusMade: false, limulusAlways: false, limWidth: 560.0
+      , rigUp: false, table: RM.defaultTable, staged: Nothing, bus: Nothing, limulus: false, limulusMade: false, limulusAsked: false, limulusAlways: false, limWidth: 560.0
       , browser: Nothing, drawer: { open: false, width: 280.0 }, lastRecall: { frozen: false, inKey: false }, renaming: Nothing, confirming: Nothing }
   , render: render cfg
   , eval: H.mkEval H.defaultEval { handleAction = handleAction cfg, initialize = Just Init }
@@ -256,7 +258,7 @@ handleAction cfg = case _ of
     target <- liftEffect $ Window.toEventTarget <$> window
     _ <- H.subscribe $ eventListener KET.keydown target (Just <<< Key)
     _ <- H.subscribe $ eventListener (EventType "message") target (Just <<< FromFrame)
-    liftEffect $ watchDocks (HS.notify listener <<< DockAlways)
+    liftEffect $ watchDocks (HS.notify listener <<< DockAlways) (HS.notify listener <<< DockWants)
     drawer <- liftEffect (loadDrawer (drawerKey cfg))
     limWidth <- liftEffect (loadWidth (limKey cfg) 560.0)
     H.modify_ _ { drawer = drawer, limWidth = limWidth }
@@ -363,7 +365,7 @@ handleAction cfg = case _ of
     when (open && not st.limulusMade) do
       H.modify_ _ { limulusMade = true }
       liftAff (delay (Milliseconds 30.0))
-    H.modify_ _ { limulus = open }
+    H.modify_ _ { limulus = open, limulusAsked = false }
     if open then H.getHTMLElementRef limulusRef >>= traverse_ (liftEffect <<< focusFrame)
     else liftEffect focusSelf
   FromLimDrawer out -> case out of
@@ -375,6 +377,19 @@ handleAction cfg = case _ of
       H.modify_ _ { limWidth = w }
       liftEffect (saveDrawer (limKey cfg) { open: false, width: w })
   DockAlways on -> H.modify_ _ { limulusAlways = on }
+  -- A page wants the drawer out (Vetula's score): open it, and close it when
+  -- the page is done, only if it was the page that opened it.
+  DockWants on -> do
+    st <- H.get
+    -- opened without taking the keyboard: the page asked, not the player
+    if on then when (not st.limulus && st.mode == Atlantis) do
+      unless st.limulusMade do
+        H.modify_ _ { limulusMade = true }
+        liftAff (delay (Milliseconds 30.0))
+      H.modify_ _ { limulus = true, limulusAsked = true }
+    else do
+      when (st.limulus && st.limulusAsked) (handleAction cfg ToggleLimulus)
+      H.modify_ _ { limulusAsked = false }
   FromFrame e -> when (limulusAskedClose e) do
     H.modify_ _ { limulus = false }
     liftEffect focusSelf

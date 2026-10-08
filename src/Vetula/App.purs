@@ -739,7 +739,6 @@ type State =
   , scoreBar :: Maybe Int
   , scoreDrag :: Maybe Int
   -- score mode's two drawers: Limulus on the right, the candidates below
-  , scoreRepl :: Boolean
   -- the candidates for the chord in hand, computed once per chord (`refreshCands`)
   , cands :: Maybe Cands
   , scoreCands :: Boolean
@@ -1000,7 +999,6 @@ data Action
   | ToQuadrat String       -- publish a saved progression (by name) as a clip for Quadrat to sample
   | ResumeWorking          -- reopen the progression open when the page last closed
   | ToggleScoreCands       -- score mode: the candidates drawer up, or tucked down
-  | ToggleScoreRepl        -- score mode: Limulus beside the score, or put away
   | SetSideDensity Int
   | LevelWheel Event Number -- the wheel over the field: step the level of detail
   | RollBass Int           -- roll the revoiced chord's bass to the next/previous chord tone
@@ -1158,7 +1156,6 @@ component = H.mkComponent
       , scoreRead: Set.empty
       , scoreBar: Nothing
       , scoreDrag: Nothing
-      , scoreRepl: true
       , cands: Nothing
       , scoreCands: true
       , rhythm: []
@@ -1331,7 +1328,6 @@ handleQuery = case _ of
     let named = s.stageCards >>= Map.lookup n >>= cardProgression
     for_ (named >>= \nm -> findIndex (\e -> e.kept && e.name == nm) s.library) \i ->
       unless (s.progName == named) (handleAction (LoadProg i))
-    H.modify_ _ { scoreRepl = true }
     handleAction (SetStage (Hunt Score))
     -- Limulus may only now be opening: give it a moment to listen
     liftAff (delay (Milliseconds 600.0))
@@ -2092,7 +2088,6 @@ handleActionCore = case _ of
 
   ToggleScoreCands -> H.modify_ \s -> s { scoreCands = not s.scoreCands }
 
-  ToggleScoreRepl -> H.modify_ \s -> s { scoreRepl = not s.scoreRepl }
 
   -- Reopen the working copy, numbered above every chord in the pool: a clash
   -- of ids with the seed triads made the path point at them instead (AC,
@@ -4628,8 +4623,9 @@ render st =
     ( [ HH.keyed (ElemName "div") [ HP.style ("position: absolute; inset: 0px " <> sideInset st <> " " <> (if fullView st.stage then "0px" else trayHeight) <> " 0;") ] [ Tuple (surfaceKey st) (surface st) ] ]
       <> (if fullView st.stage then [] else [ colourTray st ])
       <> latticeControls st
-      -- the right-hand slot: Limulus, beside the score
-      <> [ if st.stage == Hunt Score && st.scoreRepl then limulusDock else HH.text "" ]
+      <> viewSwitch st
+      -- Limulus's drawer, out while the score is up
+      <> [ if st.stage == Hunt Score then limulusWanted else HH.text "" ]
       <>
     -- Scene recall belongs to the INSTRUMENT, not to Perform. Its entry point
     -- has always been the session menu in `contextBar`, which renders on every
@@ -4666,7 +4662,7 @@ trayHeight :: String
 trayHeight = "46px"
 
 sideInset :: State -> String
-sideInset st = if st.stage == Hunt Score && st.scoreRepl then limulusWidth else "0px"
+sideInset _ = "0px"
 
 -- | The lattice's rungs, fewest chords first: what its slider steps through
 -- | (and the wheel over it).
@@ -4681,23 +4677,13 @@ rungs = [ KeyChords, Common, Lattice4, Lattice ]
 latticeControls :: forall m. State -> Array (H.ComponentHTML Action Slots m)
 latticeControls st = case st.stage of
   Hunt v | elem v rungs || v == Pads ->
-    [ HH.div [ HP.style "position: absolute; top: 14px; right: 16px; z-index: 6; display: flex; border: 1px solid #d8cfb6; border-radius: 5px; overflow: hidden; background: #fbf8f0;" ]
-        [ switchBtn (v /= Pads) "lattice" "the chords built on the key, from triads up" (Hunt st.lastRung)
-        , switchBtn (v == Pads) "banks" "nine banks of sixteen: how far from home, by how rich" (Hunt Pads) ]
-    ]
-      <> (if v == Pads then [] else [ slider v ])
+    (if v == Pads then [] else [ slider v ])
       <> [ HH.div [ HP.style ("position: absolute; right: 16px; bottom: calc(" <> trayHeight <> " + 12px); z-index: 6; display: flex; gap: 6px;") ]
              ( (if v == Pads then [ chip "shuffle \x27f3" "re-walk all nine banks from a new seed" ShufflePads ] else [])
                  <> (if st.viewZoom /= 1.0 || st.viewCx /= 0.0 || st.viewCy /= 0.0
                        then [ chip "reset view" "back to the fitted view \x00b7 scroll to change the rung \x00b7 drag to pan" ResetView ] else []) ) ]
   _ -> []
   where
-  switchBtn on label tip target =
-    HH.button
-      [ HP.style ("border: none; padding: 4px 12px; font-size: 12px; cursor: pointer; "
-                   <> (if on then "background: #8d7a4a; color: #fff;" else "background: #fbf8f0; color: #5a5240;"))
-      , HP.title tip, HE.onClick \_ -> SetStage target ]
-      [ HH.text label ]
   chip label tip act =
     HH.button
       [ HP.style "border: 1px solid #cdbb8c; background: #fbf6ea; color: #7a5c00; cursor: pointer; padding: 3px 10px; border-radius: 4px; font-size: 12px; white-space: nowrap;"
@@ -4724,27 +4710,31 @@ latticeControls st = case st.stage of
                                      <> (if on then "background: #8d7a4a;" else "background: #fbf8f0; border: 1px solid #b8ab84;")) ] [] ] )
          ]
 
--- | **Score mode's REPL column** (docs/kb/plans/vetula-one-surface.md, Model
--- | B): Limulus, open while the score is up, in the right-hand slot. About
--- | eighty columns: a REPL works badly wide (AC: Perform's dock was far too
--- | wide).
-limulusWidth :: String
-limulusWidth = "min(600px, 38vw)"
+-- | **Limulus, out while the score is up** (AC, 2026-10-08): not docked in
+-- | a column of the page but the shell's own right-hand drawer, opened on
+-- | arriving and withdrawable like the library's (its rail, or `). A marker
+-- | the shell watches (`Standalone.watchDocks`, "open"): it places nothing.
+limulusWanted :: forall m. H.ComponentHTML Action Slots m
+limulusWanted = HH.div [ HP.attr (HH.AttrName "data-limulus-dock") "open", HP.style "display: none;" ] []
 
--- | The region the shell docks Limulus over (`Standalone.watchDocks`):
--- | "always" keeps the panel open while it is drawn (the score's Limulus
--- | toggle draws it or not, AC 2026-10-08), "flush" makes it
--- | part of the page rather than a window over it. What shows through only
--- | when there is no rig for Limulus to play on.
-limulusDock :: forall m. H.ComponentHTML Action Slots m
-limulusDock =
-  HH.div
-    [ HP.attr (HH.AttrName "data-limulus-dock") "always"
-    , HP.attr (HH.AttrName "data-limulus-frame") "flush"
-    , HP.style ("position: absolute; top: 0; right: 0; bottom: 0; width: " <> limulusWidth <> "; box-sizing: border-box; "
-                 <> "border-left: 1px solid #e6dfcc; display: flex; align-items: center; justify-content: center; padding: 20px; "
-                 <> "color: #9a8d6a; font-style: italic; font-size: 13px; text-align: center;") ]
-    [ HH.text "Limulus plays on the rig: switch to Atlantis on the dashboard." ]
+-- | **Which view, from any of them**: the lattice, the banks, the score, in
+-- | the same place on each (top right), so a new progression is never more
+-- | than one click away (AC, 2026-10-08).
+viewSwitch :: forall m. State -> Array (H.ComponentHTML Action Slots m)
+viewSwitch st = case st.stage of
+  Hunt v | elem v rungs || v == Pads || v == Score ->
+    [ HH.div [ HP.style "position: absolute; top: 14px; right: 16px; z-index: 6; display: flex; border: 1px solid #d8cfb6; border-radius: 5px; overflow: hidden; background: #fbf8f0; box-shadow: 0 1px 2px #0000000d;" ]
+        [ btn (elem v rungs) "lattice" "the chords built on the key, from triads up" (Hunt st.lastRung)
+        , btn (v == Pads) "banks" "nine banks of sixteen: how far from home, by how rich" (Hunt Pads)
+        , btn (v == Score) "score" "the progression on a grand staff, to arrange and play" (Hunt Score) ] ]
+  _ -> []
+  where
+  btn on label tip target =
+    HH.button
+      [ HP.style ("border: none; padding: 4px 12px; font-size: 12px; cursor: pointer; "
+                   <> (if on then "background: #8d7a4a; color: #fff;" else "background: #fbf8f0; color: #5a5240;"))
+      , HP.title tip, HE.onClick \_ -> SetStage target ]
+      [ HH.text label ]
 
 sideLabel :: SideTab -> String
 sideLabel = case _ of
@@ -6152,15 +6142,6 @@ scoreSurface st =
         ( [ Score.system sp openHandlers openRow ]
         )
     , scoreCandidates st
-    -- Limulus's handle, on the score's right edge (a control lives in the
-    -- pane it controls)
-    , HH.button
-        [ HP.style ("position: absolute; right: 0; top: 50%; transform: translateY(-50%); z-index: 6; writing-mode: vertical-rl; "
-                     <> "border: 1px solid #d8cfb6; border-right: none; border-radius: 6px 0 0 6px; padding: 10px 4px; font-size: 11px; letter-spacing: 0.08em; cursor: pointer; "
-                     <> (if st.scoreRepl then "background: #3d4a46; color: #eaf3ef;" else "background: #fbf8f0; color: #5a5240;"))
-        , HP.title (if st.scoreRepl then "put Limulus away: the score takes the width" else "Limulus beside the score")
-        , HE.onClick \_ -> ToggleScoreRepl ]
-        [ HH.text (if st.scoreRepl then "Limulus \x25b8" else "\x25c2 Limulus") ]
     ]
   where
   sp = Score.spellingOf st.key.tonic (scaleSet st.key)
@@ -6217,7 +6198,7 @@ scoreSurface st =
     , voiceDrop: VoiceDrop
     , tap: Just { start: TapStart, stop: TapStop, clear: ClearRhythm }
     , resume: (\w -> { name: w.name, act: ResumeWorking }) <$> st.resumable
-    , addChords: Just (SetStage (Hunt st.fieldLens))
+    , addChords: Nothing
     , save: if unsaved then Just (SaveProg false) else Nothing
     , toQuadrat: case st.progName of
         Just nm | any (\e -> e.kept && e.name == nm) st.library -> Just (ToQuadrat nm)
