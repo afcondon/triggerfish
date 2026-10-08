@@ -71,6 +71,7 @@ import Triggerfish.Transport (Mode(..), Sounding(..), Which, soundingOf)
 import Triggerfish.Transport.Store as TransportStore
 import Triggerfish.Ui.Style (engrave, style)
 import Type.Proxy (Proxy(..))
+import Halogen.Widgets.Select as Select
 import Web.Event.Event as E
 import Web.HTML (window)
 import Web.HTML.HTMLInputElement as HInput
@@ -205,7 +206,7 @@ data Action o
   | DrawerDrop E.Event
   | DragRow String E.Event
 
-type Slots o = (machine :: H.Slot SQ.Query o Unit, drawer :: Drawer.Slot Unit, limdrawer :: Drawer.Slot Unit)
+type Slots o = (machine :: H.Slot SQ.Query o Unit, drawer :: Drawer.Slot Unit, limdrawer :: Drawer.Slot Unit, picker :: H.Slot Select.Query Select.Output String)
 
 _limdrawer :: Proxy "limdrawer"
 _limdrawer = Proxy
@@ -766,6 +767,7 @@ bar cfg st =
       <> [ HH.span [ style "display:flex;align-items:center;min-width:40px" ] [ chipIcons st.chip ] ]
       <> maybe [] machineControls st.machineBar
       <> [ HH.span [ style "flex:1" ] [] ]
+      <> maybe [] machineRight st.machineBar
       <> [ button "Panic" Panic ]
       <> case st.tempoFlash of
         Just f -> [ tempoFlash f.bpm ]
@@ -824,6 +826,14 @@ bar cfg st =
                 <> (if c.attention then "background:#fdf7e4;color:#8a6a10;border-color:#c9a445"
                     else if c.active then "background:#eef3f1;color:#3d5a52" else "background:transparent;color:#8a8576") ]
             (map faIcon c.icons <> [ HH.span [ style (if Array.null c.icons then "" else "margin-left:3px") ] [ HH.text c.label ] ])) b.chips
+  -- the machine's dropdowns (Vetula's key and scale) and its ⓘ, at the right
+  machineRight b =
+    map (\p -> HH.slot (Proxy :: _ "picker") p.id Select.component p.input \(Select.Selected v) -> PressBar ("pick:" <> p.id <> ":" <> v)) b.pickers
+      <> (if b.help == "" then [] else
+        [ HH.button
+            [ HE.onClick \_ -> PressBar "help", HP.title b.help
+            , style "border:1px solid #00000022;background:#faf7ee;color:#7a7a7a;cursor:pointer;width:22px;height:22px;border-radius:50%;font-size:12px;line-height:1;padding:0;flex:0 0 auto" ]
+            [ HH.text "\x24d8" ] ])
   button label act =
     HH.button
       [ HE.onClick \_ -> act

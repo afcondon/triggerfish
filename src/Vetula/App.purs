@@ -849,7 +849,6 @@ type State =
   -- The session/scene command menu in the secondary nav (the ⋯ dropdown off the
   -- session badge) — session + scene + chyron housekeeping, moved off the Perform
   -- header. (AC, 2026-08-03.)
-  , perfMenuOpen :: Boolean
   -- The shared MIDI clip library (#27), loaded from `Triggerfish.Clips.Store` in
   -- Initialize — the pool the phrase picker offers. `perfPhrasePick` is the box index
   -- whose picker is open (Nothing = closed).
@@ -933,12 +932,8 @@ data Action
   | AutoCapture            -- timer: auto-capture the current path (ephemeral, update-in-place)
   | LoadProg Int           -- load library entry #i into the performance working copy
   | SaveScene              -- serialise the whole Perform surface as a vetulaScene → Amphora
-  | PerfNewSession         -- mint a fresh session glyph-triple (rolls the scene counter)
   | FetchScenes            -- fetch them for the browser drawer, quietly
   | PerfCloseRecall
-  | PerfMenuToggle         -- open/close the session/scene command menu (nav ⋯)
-  | PerfMenuClose          -- close it (backdrop click, or after picking an item)
-  | PerfMenuPick Action    -- close the menu, then run the picked command
   | PerfLoadScene String   -- parse a scene payload and load it onto the surface
   | SetTempo String
   | PerfTick Scheduler.Tick  -- one 16th-note pulse from the shared scheduler
@@ -1193,7 +1188,6 @@ component = H.mkComponent
       , perfSession: { alias: "", name: "", nextScene: 1 }
       , perfScenes: []
       , perfRecallOpen: false
-      , perfMenuOpen: false
       , clipLibrary: []
       , capture: { logbook: Logbook.emptyLog, playing: Nothing, regionDrag: Nothing, contextOpen: false, codeOpen: false, zoom: Whole, rig: Nothing, cutting: false, cutSel: Nothing }
       , rigLoops: false, rigAsked: 0.0, captureDragSub: Nothing
@@ -1371,12 +1365,24 @@ handleQuery = case _ of
   AskBar reply -> do
     s <- H.get
     pure $ Just $ reply
-      -- one surface: no mode tabs (docs/kb/plans/vetula-one-surface.md)
-      { tabs: []
-      -- marking moves into the river, as on Odonus; the bar shows none
+      -- the workspace's four views, and the key they share, in the shell's
+      -- bar (AC, 2026-10-08): the second bar went
+      { tabs:
+          let v = huntOr s.lastLens s.stage
+          in [ { id: "lattice", label: "lattice", active: elem v rungs, tip: "the chords built on the key, from triads up" }
+             , { id: "banks", label: "banks", active: v == Pads, tip: "nine banks of sixteen: how far from home, by how rich" }
+             , { id: "score", label: "score", active: v == Score, tip: "the progression on a grand staff, to arrange and play" }
+             , { id: "review", label: "review", active: v == River, tip: "everything played this session, as a river: mark the good bits, loop them" } ]
+      -- marking is in the review view, as on Odonus
       , marks: ""
-      , icons: if s.perfSession.alias == "" then [] else map (\icon -> { icon, color: "#2a2a2a" }) (split (Pattern "-") s.perfSession.alias)
-      , rebusTip: "session " <> (if s.perfSession.name == "" then s.perfSession.alias else s.perfSession.name) <> " \x00b7 new session"
+      -- the session names saved scenes; it is not shown (AC: two things
+      -- named by three glyphs side by side read as one)
+      , icons: []
+      , rebusTip: ""
+      , pickers:
+          [ { id: "key", input: (Select.defaultInput keyOptions) { selected = Just (show s.key.tonic), placeholder = "Key", minWidth = Just "72px" } }
+          , { id: "scale", input: (Select.cascadingInput modeGroups) { selected = Just (currentModeValue s.key.mode), searchable = true } } ]
+      , help: "keys & help"
       , chips:
           -- the progression being built, on every stage (Explore builds it,
           -- Rehearse and Perform play it): its frozen name as a monochrome
@@ -1400,8 +1406,13 @@ handleQuery = case _ of
   BarAct act next -> do
     s <- H.get
     case act of
-      "stage:explore" -> handleAction (SetStage (Hunt s.lastLens))
-      "rebus" -> handleAction PerfMenuToggle
+      "stage:lattice" -> handleAction (SetStage (Hunt s.lastRung))
+      "stage:banks" -> handleAction (SetStage (Hunt Pads))
+      "stage:score" -> handleAction (SetStage (Hunt Score))
+      "stage:review" -> handleAction (SetStage (Hunt River))
+      "help" -> handleAction ToggleHelp
+      _ | Just v <- SCU.stripPrefix (Pattern "pick:key:") act -> handleAction (SelectKey v)
+        | Just v <- SCU.stripPrefix (Pattern "pick:scale:") act -> handleAction (SelectScale v)
       -- the progression: arrange it, on the score (saving is ⌘S, or the row's save)
       "chip:prog" -> when (length s.path > 0) (handleAction (SetStage (Hunt Score)))
       _ -> pure unit
@@ -2668,27 +2679,12 @@ handleActionCore = case _ of
         handleAction FetchScenes
       Left _ -> H.modify_ _ { publishMsg = Just "✗ save failed (store offline?)" }
 
-  -- Mint a fresh session (a new monochrome glyph-triple, scene counter back to 1)
-  -- and persist it. The deliberate "I'm starting a new body of work" boundary — the
-  -- only thing besides a first-ever launch that rolls the session (reloads resume).
-  PerfNewSession -> do
-    fresh <- liftEffect mintSession
-    liftEffect (Store.saveSession fresh)
-    Console.log ("Vetula session: new-session button → " <> fresh.alias)
-    H.modify_ _ { perfSession = fresh, publishMsg = Just ("new session · " <> fresh.alias) }
-
   PerfCloseRecall -> H.modify_ _ { perfRecallOpen = false }
 
   -- The saved scenes, for the browser drawer, without opening the modal.
   FetchScenes -> do
     res <- liftAff (attempt (Amphora.fetchCollection "vetula-scene"))
     for_ res \items -> H.modify_ _ { perfScenes = items }
-
-  PerfMenuToggle -> H.modify_ \st -> st { perfMenuOpen = not st.perfMenuOpen }
-  PerfMenuClose -> H.modify_ _ { perfMenuOpen = false }
-  PerfMenuPick act -> do
-    H.modify_ _ { perfMenuOpen = false }
-    handleAction act
 
   -- Parse a stored scene payload (the `vetulaScene { … }` record) back into a
   -- document and reconstruct the surface's boxes. Lenient: a payload that yields
@@ -4566,6 +4562,7 @@ render st =
     ( [ HH.keyed (ElemName "div") [ HP.style ("position: absolute; inset: 0px " <> sideInset st <> " " <> (if fullView st.stage then "0px" else trayHeight) <> " 0;") ] [ Tuple (surfaceKey st) (surface st) ] ]
       <> (if fullView st.stage then [] else [ colourTray st ])
       <> latticeControls st
+      <> previewControls st
       -- Limulus's drawer, out while the score is up
       <> [ if st.stage == Hunt Score then limulusWanted else HH.text "" ]
       <>
@@ -4575,13 +4572,6 @@ render st =
     -- else the click set the flag and nothing appeared. Loading a scene is legal
     -- wherever you can use one, which is certainly Rehearse and reasonably Hunt.
     [ perfRecallModal st
-    -- CONTEXT is now a docked control bar between the nav and the chyron (the last
-    -- floating overlay is gone, reclaiming the whole left column): key · scale ·
-    -- palettes · lens · rig/help. See `contextBar`.
-    , contextBar st
-    -- the session menu (new session, the chyron's housekeeping), opened from
-    -- the rebus in the shell's bar, so drawn under it
-    , if st.perfMenuOpen then sessionMenuPanel st else HH.text ""
     -- The Tank & Progression card is retired (Tank overhaul §10.6): the chyron is
     -- now the single surface for collect · select · reorder · bundle/unbundle, so
     -- the tank tiles, the tonnetz stack, arrange/grow, and the built-progression
@@ -4634,7 +4624,7 @@ latticeControls st = case st.stage of
   -- the most chords at the top, as the wheel goes up
   slider v =
     HH.div
-      [ HP.style "position: absolute; top: 14px; right: 16px; z-index: 6; display: flex; flex-direction: column; align-items: flex-end; gap: 0; user-select: none; -webkit-user-select: none;"
+      [ HP.style "position: absolute; top: 60px; right: 16px; z-index: 6; display: flex; flex-direction: column; align-items: flex-end; gap: 0; user-select: none; -webkit-user-select: none;"
       , HP.title "how much of the lattice: scroll over it, or click or drag here" ]
       (mapWithIndex (stop v) (Array.reverse rungs))
   stop v i r =
@@ -4684,6 +4674,26 @@ soundControls st =
       [ barBtn (st.auditionSel /= AuditionOff) ("\x266a " <> soundValue st.auditionSel)
           ("where previews sound (" <> st.midiName <> ") \x00b7 click: browser \x2192 continuo \x2192 MIDI \x2192 off") CycleSound ]
   ]
+
+-- | **The workspace's own controls** (AC, 2026-10-08: the second bar went):
+-- | how a preview sounds, top right, on every view that previews; and the
+-- | focused family's scale, top left, while a family is focused.
+previewControls :: forall m. MonadAff m => State -> Array (H.ComponentHTML Action Slots m)
+previewControls st = case st.stage of
+  Hunt River -> []
+  _ ->
+    -- on the score, inside the open row's header line, which is empty on the right
+    [ HH.div [ HP.style ("position: absolute; z-index: 7; display: flex; align-items: center; gap: 8px; "
+                          <> (if st.stage == Hunt Score then "top: 20px; right: 36px;" else "top: 14px; right: 16px;")) ] (soundControls st) ]
+      <> case st.focusedFamily >>= (\sid -> find (\c -> c.id == sid) st.chords) of
+        Just seed | st.stage /= Hunt Score ->
+          let famMode = (fromMaybe st.key (Map.lookup seed.id st.familyScale)).mode
+          in [ HH.div [ HP.style "position: absolute; top: 14px; left: 16px; z-index: 7; display: flex; align-items: center; gap: 6px;" ]
+                 [ HH.span [ HP.style "font-size: 10px; color: #9a9a9a; letter-spacing: 0.1em; text-transform: uppercase;" ] [ HH.text ("family " <> noteName seed.root) ]
+                 , HH.slot (Proxy :: _ "familyScaleSelect") unit Select.component
+                     ((Select.cascadingInput modeGroups) { selected = Just (currentModeValue famMode), searchable = true })
+                     \(Select.Selected v) -> ReflavourFamily v ] ]
+        _ -> []
 
 barGroup :: forall m. Array (H.ComponentHTML Action Slots m) -> H.ComponentHTML Action Slots m
 barGroup = HH.div [ HP.style "display: flex; border: 1px solid #d8cfb6; border-radius: 5px; overflow: hidden; background: #fbf8f0; box-shadow: 0 1px 2px #0000000d;" ]
@@ -4909,137 +4919,7 @@ sideContent st t src = case st.cands of
 -- | tabs and mark went to the shell's bar (2026-10-05), so it takes room only
 -- | in HUNT.
 contextBarHeight :: State -> String
-contextBarHeight _ = "44px"
-
--- | The session menu, opened from the rebus in the shell's bar: a new
--- | session, and the chyron's housekeeping.
-sessionMenuPanel :: forall m. State -> H.ComponentHTML Action Slots m
-sessionMenuPanel _ =
-  HH.div_
-    [ HH.div [ HP.style "position: fixed; inset: 0; z-index: 45;", HE.onClick \_ -> PerfMenuClose ] []
-    , HH.div
-        [ HP.style "position: fixed; top: calc(var(--tf-bar) + 4px); left: calc(var(--tf-left, 0px) + 12px); z-index: 46; min-width: 200px; background: #fff; border: 1px solid #e0d8bf; border-radius: 7px; box-shadow: 0 8px 28px rgba(0,0,0,0.16); padding: 5px 0; overflow: hidden;"
-        , HE.onClick \e -> PerfStopClick e Nop ]
-        [ item true "\x21bb new session" PerfNewSession
-        ]
-    ]
-  where
-  item enabled label act =
-    HH.button
-      [ HP.style ("display: block; width: 100%; text-align: left; border: none; background: transparent; padding: 6px 14px; font-size: 12px; "
-                   <> (if enabled then "color: #4a4a4a; cursor: pointer;" else "color: #c4bfa8; cursor: default;"))
-      , HP.enabled enabled
-      , HE.onClick \_ -> if enabled then PerfMenuPick act else Nop ]
-      [ HH.text label ]
-
-contextBar :: forall m. MonadAff m => State -> H.ComponentHTML Action Slots m
-contextBar st =
-  HH.div
-    -- `white-space: nowrap` INHERITS, so one declaration here stops every chip in
-    -- the bar breaking its own label across two lines. `flex-wrap: nowrap` alone
-    -- was not enough: it keeps the items on one row, but each item still shrinks
-    -- and wraps its text inside itself — which is what put "scene loaded",
-    -- "horse-bell-bomb" and "continuo ✓" on two lines and grew the bar.
-    [ HP.style ( "position: fixed; top: var(--tf-bar); left: var(--tf-left, 0px); right: var(--tf-right, 0px); z-index: 40; box-sizing: border-box; "
-        <> "display: flex; align-items: center; flex-wrap: nowrap; white-space: nowrap; gap: 10px; padding: 0 12px; height: 44px; overflow: visible; "
-        <> "background: linear-gradient(#f3eee0,#ece5d0); border-bottom: 1px solid #0000000f; box-shadow: 0 1px 3px #0000000d;" ) ]
-    -- LEFT: the stage tabs, then ONLY the controls that mean something in the
-    -- stage you're in. RIGHT: the housekeeping and the harmonic authority.
-    --
-    -- The old bar was one flat row of ten slots regardless of mode, of which six
-    -- (family · palettes · borrow · lens · shake · reset) were Hunt-only — lit and
-    -- clickable while you performed, meaning nothing. Meanwhile the one control
-    -- that WAS live in Perform, the capture switch, wasn't in the bar at all: it
-    -- floated absolutely-positioned over the surface, because the bar had no
-    -- notion of stage to hang it on. Exactly inverted.
-    --
-    -- Two groups never move — the tabs (far left, beside the shell's transport)
-    -- and key/scale (far right, under the shell's pitch set, which they feed).
-    -- Only the middle-left group changes with the stage, so it's one contiguous
-    -- region you learn to expect rather than a row that rearranges under you.
-    -- Since 2026-10-05 (AC) the stage tabs, ◆ mark with its counts and clear,
-    -- and the session's rebus are the shell's, in its top bar (AskBar,
-    -- Triggerfish.Bar); "scene loaded" and the continuo chip went (MIDI out is
-    -- the Dashboard's and Limulus's). What is left is HUNT's own, so this bar
-    -- shows only in HUNT (`contextBarHeight`).
-    ( stageControls
-        <> [ HH.div [ HP.style "flex: 1 1 auto; min-width: 8px;" ] [] ]
-        -- The harmonic column — HUNT ONLY. Vetula's key and scale are the source of
-        -- the pitch set in the shell's top nav and of Odonus's inherited-context
-        -- readout, so the VALUE still travels everywhere; it is the CONTROL that
-        -- has no business in Perform or Review.
-        --
-        -- Removed from those two stages 2026-08-07 (AC), for three reasons that
-        -- turn out to be one:
-        --
-        --   * The chord sets are deliberately free — borrowed chords, and
-        --     progressions assembled across incompatible scales. A performance
-        --     built that way is not "in a key", so offering to change its key
-        --     asks a question the material cannot answer.
-        --   * A global mode switch is un-Tidal. Transposition belongs in the
-        --     pattern language, as a function over voices, not as an ambient
-        --     setting the whole surface sits inside.
-        --   * It moved the music without moving its identity. `transposeChord`
-        --     keeps the chord id, a token's glyph is frozen at save time from its
-        --     own event content, and the boxes read that snapshot while `buildPerf`
-        --     sends the rig the live (transposed) path — so one glyph could name
-        --     two different chord sets, differently on Solo and on Atlantis.
-        --
-        -- That last one is the real indictment: Solo and Atlantis are supposed to
-        -- be the same computation with the same result, and a stage-level key was
-        -- a lever that could quietly break that equivalence.
-        --
-        -- What may replace it: a Tidal-style transposition over all voices, or a
-        -- transposition MAPPED over selected ones. Both are pattern functions, so
-        -- both keep the identity honest. Neither is built.
-        <> soundControls st
-        <> [ divider ]
-        <> harmonicColumn
-        <> [ HH.button [ HP.style helpBtnStyle, HP.title "keys & help", HE.onClick \_ -> ToggleHelp ] [ HH.text "ⓘ" ] ]
-    )
-  where
-  -- Key · scale · divider. Only mounted in Hunt (see the note at the call site),
-  -- so the Select children only exist where they can mean something.
-  harmonicColumn =
-    [ HH.slot (Proxy :: _ "keySelect") unit Select.component
-        ((Select.defaultInput keyOptions) { selected = Just (show st.key.tonic), placeholder = "Key", minWidth = Just "72px" })
-        \(Select.Selected v) -> SelectKey v
-    , HH.slot (Proxy :: _ "scaleSelect") unit Select.component
-        ((Select.cascadingInput modeGroups) { selected = Just (currentModeValue st.key.mode), searchable = true })
-        \(Select.Selected v) -> SelectScale v
-    , divider
-    ]
-
-  -- The stage-specific group. HUNT gets its projection picker and the pool
-  -- controls; PERFORM and REVIEW share the capture controls, deliberately
-  -- identical and in the same place, so ◆ mark doesn't move when you change
-  -- stage to look at what you just marked.
-  stageControls = huntControls
-
-  -- The workspace's bar (AC, 2026-10-08): which view on the left, with the
-  -- focused family's scale when one is focused; how previews sound and the
-  -- key on the right. Each view's own tools are on the view.
-  huntControls =
-    [ viewTabs st ]
-      <> familyField
-
-  -- a hairline group separator.
-  divider = HH.div [ HP.style "width: 1px; height: 22px; background: #00000016;" ] []
-  labelStyle = "font-size: 10px; color: #9a9a9a; letter-spacing: 0.1em; text-transform: uppercase;"
-  inlineField lbl controls =
-    HH.div [ HP.style "display: flex; align-items: center; gap: 5px;" ]
-      ([ HH.span [ HP.style labelStyle ] [ HH.text lbl ] ] <> controls)
-  -- a contextual scale picker for the focused family (click a keyboard key to
-  -- focus one) — this is what lets two families hold different modes at once.
-  familyField = case st.focusedFamily >>= (\sid -> find (\c -> c.id == sid) st.chords) of
-    Just seed ->
-      let famMode = (fromMaybe st.key (Map.lookup seed.id st.familyScale)).mode
-      in [ inlineField ("family " <> noteName seed.root)
-             [ HH.slot (Proxy :: _ "familyScaleSelect") unit Select.component
-                 ((Select.cascadingInput modeGroups) { selected = Just (currentModeValue famMode), searchable = true })
-                 \(Select.Selected v) -> ReflavourFamily v ] ]
-    Nothing -> []
-  helpBtnStyle = "border: 1px solid #e0e0e0; background: #fafafa; color: #7a7a7a; cursor: pointer; width: 22px; height: 22px; border-radius: 50%; font-size: 12px; line-height: 1; padding: 0;"
+contextBarHeight _ = "0px"
 
 helpText :: String
 helpText =
