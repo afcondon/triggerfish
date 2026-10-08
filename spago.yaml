@@ -49,11 +49,8 @@ package:
     - halogen-svg-elems
     - halogen-widgets
     - hylograph-layout
-    - hylograph-simulation
-    - hylograph-simulation-halogen
     - hylograph-selection
     - hylograph-transitions
-    - hylograph-d3-kernel
   bundle:
     module: Triggerfish.Main
     outfile: public/bundle.js

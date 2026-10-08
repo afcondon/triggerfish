@@ -33,7 +33,6 @@ import Data.Map (Map)
 import Data.Map as Map
 import Data.Maybe (Maybe(..), fromMaybe, isJust, maybe)
 import Effect.Timer (setInterval)
-import Data.Nullable (Nullable, null)
 import Data.Set (Set)
 import Data.Set as Set
 import Data.String (Pattern(..), contains, stripPrefix)
@@ -134,11 +133,6 @@ import Binnacle.Midi as Midi
 import Halogen.Widgets.Select as Select
 import Halogen.Widgets.MultiSelect as MultiSelect
 import Halogen.Widgets.Modal as Modal
-import Hylograph.ForceEngine.Halogen (toHalogenEmitter)
-import Hylograph.Simulation
-  ( Engine(..), SimulationEvent(..), SimulationHandle, SimulationNode
-  , Setup, runSimulation, setup, manyBody, collide, link, positionX, positionY
-  , withStrength, withRadius, withDistance, withX, withY, static, dynamic )
 import Harmonia.Anchor (Anchor(..))
 import Harmonia.Voicing (Voicing(..), Selector(..), voicingMidi, takeVoicing, openTriad, rootless, drop2, drop2and4, quartal, cluster)
 import Harmonia.Chord (Key, Mode(..), cMajorKey)
@@ -438,10 +432,6 @@ type LibEntry =
   , kept :: Boolean       -- promoted keeper (★, frozen) vs ephemeral auto-capture (◦, live)
   }
 
--- | The simulation only needs the layout targets + a size for collision.
-type SimRow = (targetX :: Number, targetY :: Number, radius :: Number)
-type VNode = SimulationNode SimRow
-
 type Slots =
   ( keySelect :: Select.Slot Unit
   , scaleSelect :: Select.Slot Unit
@@ -577,12 +567,9 @@ type State =
   -- to when no chord is firing.
   , restScale :: Maybe { root :: Int, offsets :: Array Int }
   , chords :: Array ChordNode          -- the model (pin, provenance, layout targets)
-  , nodes :: Array VNode               -- live positions from the simulation
   , hoveredId :: Maybe Int
   , hoveredTriad :: Maybe { root :: Int, pcs :: Array Int }  -- Tonnetz hover (no pool id)
   , nextId :: Int
-  , handle :: Maybe (SimulationHandle SimRow)
-  , subId :: Maybe H.SubscriptionId
   , midiOut :: Maybe Midi.MidiOut
   , midiName :: String
   , auditionSel :: AuditionSel      -- where the audition goes (Off/Continuo/Midi); shell-driven
@@ -828,8 +815,6 @@ type State =
 data Action
   = Initialize
   | MidiReady (Maybe Midi.MidiOut) String
-  | SimTick
-  | SimDone
   | Hover (Maybe Int)
   | HoverTriad (Maybe { root :: Int, pcs :: Array Int })  -- Tonnetz: hover a triad for space-preview
   | Key String Boolean     -- key, shift held
@@ -1044,12 +1029,9 @@ component = H.mkComponent
       , field: Nothing
       , restScale: Nothing
       , chords: []
-      , nodes: []
       , hoveredId: Nothing
       , hoveredTriad: Nothing
       , nextId: 100          -- generated children start here; seeds are 0..17
-      , handle: Nothing
-      , subId: Nothing
       , midiOut: Nothing
       , midiName: "…"
       , auditionSel: AuditionBrowser    -- the browser's voice until the rig answers (then Continuo)
@@ -1486,25 +1468,6 @@ pulsesPerBar = 16
 -- Force layout
 -- ---------------------------------------------------------------------------
 
--- | x is pinned HARD to the target; y is firm so the extension strata hold their
--- | rows (a gentler y would let collision beeswarm chords sharing a key).
-vetulaForceSetup :: Setup VNode
-vetulaForceSetup =
-  setup "vetula"
-    [ positionX "px" # withX (dynamic _.targetX) # withStrength (static 0.12)
-    , positionY "py" # withY (dynamic _.targetY) # withStrength (static 0.55)
-    , link "neighbours" # withDistance (static 46.0) # withStrength (static 0.3)
-    , collide "collide" # withRadius (dynamic (\n -> n.radius + 6.0)) # withStrength (static 0.9)
-    , manyBody "charge" # withStrength (static (-8.0))
-    ]
-
-mkSimNode :: ChordNode -> VNode
-mkSimNode c =
-  { id: c.id
-  , x: c.targetX, y: c.targetY, vx: 0.0, vy: 0.0
-  , fx: (null :: Nullable Number), fy: (null :: Nullable Number)
-  , targetX: c.targetX, targetY: c.targetY, radius: discRadius c.voicing
-  }
 
 -- ---------------------------------------------------------------------------
 -- Simulation lifecycle — runs over a given chord set, focused on focusId
@@ -1522,31 +1485,8 @@ startWith key focusId chords0 = do
       let pathKept = filter (\c -> elem c.id st.path) st.chords
           placed = nubByEq (\a b -> a.id == b.id)
                      (map (place key focus) chords0 <> pathKept)
-          simNodes = map mkSimNode (map (place key focus) chords0)
-      result <- liftEffect $ runSimulation
-        { engine: D3
-        , setup: vetulaForceSetup
-        , nodes: simNodes
-        , links: ([] :: Array { source :: Int, target :: Int })
-        , container: "#vetula-surface"
-        , alphaMin: 0.005
-        }
-      emitter <- liftEffect $ toHalogenEmitter result.events
-      sid <- H.subscribe $ emitter <#> case _ of
-        Tick _ -> SimTick
-        Started -> SimTick
-        Completed -> SimDone
-        Stopped -> SimDone
       H.modify_ \s ->
-        s { key = key, lattice = latticeFor key, bankPads = bankPadsFor key s.padRoll, chords = placed, nodes = simNodes
-          , handle = Just result.handle, subId = Just sid }
-
-stopSim :: forall o m. MonadAff m => H.HalogenM State Action Slots o m Unit
-stopSim = do
-  st <- H.get
-  for_ st.subId H.unsubscribe
-  for_ st.handle \h -> liftEffect h.stop
-  H.modify_ _ { subId = Nothing, handle = Nothing }
+        s { key = key, lattice = latticeFor key, bankPads = bankPadsFor key s.padRoll, chords = placed }
 
 -- | Request Web-MIDI access and pick the output. Prefers the Continuo audition
 -- | port when it's live (a JUCE virtual dest named "continuo" — Piano One/strings
@@ -2049,13 +1989,6 @@ handleActionCore = case _ of
 
   MidiReady mout nm ->
     H.modify_ _ { midiOut = mout, midiName = nm }
-
-  -- The simulated positions were read only by the retired keyboard lens, so a
-  -- tick writes nothing: a write redraws the whole page, and the simulation
-  -- ticks every frame (2026-10-06: it held an idle page at 100% of a core).
-  SimTick -> pure unit
-
-  SimDone -> pure unit
 
   Hover mid -> H.modify_ _ { hoveredId = mid }
 
@@ -4249,13 +4182,12 @@ pcsKey c = show (sort (nub c.pcs))
 explode :: forall o m. MonadAff m => Int -> H.HalogenM State Action Slots o m Unit
 explode pid = do
   st <- H.get
-  case find (\c -> c.id == pid) st.chords, st.handle of
-    Just c, Just handle ->
+  case find (\c -> c.id == pid) st.chords of
+    Just c ->
       if any (\d -> d.parentId == Just pid) st.chords
         then do
           let descendants = filter (_ /= pid) (pruneSet st.chords [ pid ])
               surviving = filter (\d -> not (elem d.id descendants)) st.chords
-          _ <- liftEffect $ handle.updateData (map mkSimNode surviving) (neighborLinks surviving)
           H.modify_ _ { chords = surviving }
         else do
           let famKey = fromMaybe st.key (Map.lookup c.id st.familyScale)
@@ -4267,9 +4199,8 @@ explode pid = do
                        (\i f -> latticePlace c f.level f.lean (f.chord { id = st.nextId + i, parentId = Just c.id }))
                        fresh
               chords' = st.chords <> kids
-          _ <- liftEffect $ handle.updateData (map mkSimNode chords') (neighborLinks chords')
           H.modify_ _ { chords = chords', nextId = st.nextId + length kids }
-    _, _ -> pure unit
+    _ -> pure unit
 
 -- | Place an exploded child in the stratified lattice that floats above the seed
 -- | (and above the keyboard): y = extension level (the vertical rank — triad tones
@@ -4285,22 +4216,6 @@ latticePlace seed level lean child =
     , outside = 0
     , isCentre = false
     }
-
--- | The lattice's edges: every pair of exploded chords (in the same seed's
--- | family) that differ by exactly one note — the covering relations of the
--- | subset lattice (its Hasse diagram). Used both as force links (they pull
--- | one-step neighbours together) and as the drawn web. Seeds are excluded, so
--- | the old star-of-links to the root triad is gone.
-neighborLinks :: Array ChordNode -> Array { source :: Int, target :: Int }
-neighborLinks chords =
-  let fam = filter (\c -> c.parentId /= Nothing) chords
-      pairs = concat (mapWithIndex (\i a -> map (\b -> Tuple a b) (drop (i + 1) fam)) fam)
-  in concatMap
-       (\(Tuple a b) ->
-          if a.parentId == b.parentId && pcSymDiff a.pcs b.pcs == 1
-            then [ { source: a.id, target: b.id } ]
-            else [])
-       pairs
 
 -- | Size of the symmetric difference of two pitch-class sets (already nubbed).
 pcSymDiff :: Array Int -> Array Int -> Int
@@ -4366,7 +4281,6 @@ rebuild key = do
       chords' = map (\c -> if Set.member c.id pathIds then transposeChord d c else c) st2.chords
       kept = filter _.pinned st2.chords
       set = nubByEq (\a b -> a.id == b.id) (seedsFor key <> kept)
-  stopSim
   H.modify_ _
     { chords = chords'
     , imported = Set.union st2.imported pathIds

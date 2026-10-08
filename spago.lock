@@ -21,11 +21,8 @@
             "halogen-svg-elems",
             "halogen-widgets",
             "harmonia",
-            "hylograph-d3-kernel",
             "hylograph-layout",
             "hylograph-selection",
-            "hylograph-simulation",
-            "hylograph-simulation-halogen",
             "hylograph-transitions",
             "integers",
             "js-timers",
@@ -1300,26 +1297,6 @@
         "tuples"
       ]
     },
-    "hylograph-d3-kernel": {
-      "type": "registry",
-      "version": "0.1.0",
-      "integrity": "sha256-jP+uXTD1GhiZP1eXwANOcpifA7vI364NJWGEP1XLfx0=",
-      "dependencies": [
-        "arrays",
-        "effect",
-        "foldable-traversable",
-        "foreign-object",
-        "hylograph-simulation-core",
-        "maybe",
-        "nullable",
-        "ordered-collections",
-        "prelude",
-        "refs",
-        "tuples",
-        "typelevel-prelude",
-        "web-dom"
-      ]
-    },
     "hylograph-graph": {
       "type": "local",
       "path": "../../../purescript-hylograph-libs/purescript-hylograph-graph",
@@ -1397,61 +1374,6 @@
         "web-html",
         "web-pointerevents",
         "web-uievents"
-      ]
-    },
-    "hylograph-simulation": {
-      "type": "registry",
-      "version": "0.5.0",
-      "integrity": "sha256-gWcNTjxi0PyUB5zvKIPkhTVuqtjHkiTx+aem0Sshbak=",
-      "dependencies": [
-        "aff",
-        "arrays",
-        "console",
-        "effect",
-        "foldable-traversable",
-        "foreign-object",
-        "hylograph-selection",
-        "hylograph-transitions",
-        "integers",
-        "maybe",
-        "newtype",
-        "nullable",
-        "numbers",
-        "ordered-collections",
-        "prelude",
-        "refs",
-        "tuples",
-        "typelevel-prelude",
-        "web-dom"
-      ]
-    },
-    "hylograph-simulation-core": {
-      "type": "registry",
-      "version": "0.1.0",
-      "integrity": "sha256-t5hU6gx2zRbtaehPB8a2fFPYy3HuNWUQ3QCL2RXqwlw=",
-      "dependencies": [
-        "arrays",
-        "effect",
-        "foreign-object",
-        "integers",
-        "maybe",
-        "ordered-collections",
-        "prelude",
-        "refs"
-      ]
-    },
-    "hylograph-simulation-halogen": {
-      "type": "registry",
-      "version": "0.5.0",
-      "integrity": "sha256-eObpLIZKtXEqeOk3nSLQFw6uHkVDZbUi0uWO/AmRl1M=",
-      "dependencies": [
-        "effect",
-        "halogen-subscriptions",
-        "hylograph-d3-kernel",
-        "hylograph-simulation",
-        "maybe",
-        "prelude",
-        "refs"
       ]
     },
     "hylograph-transitions": {
