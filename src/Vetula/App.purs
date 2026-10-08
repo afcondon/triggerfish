@@ -25,7 +25,7 @@ import Data.Newtype (unwrap)
 import Effect.Now (now)
 
 import Data.Array (concat, concatMap, deleteAt, drop, elem, elemIndex, filter, find, findIndex, head, index, insertAt, last, length, mapMaybe, mapWithIndex, modifyAt, nub, nubByEq, range, replicate, snoc, sort, sortBy, take, unsnoc, updateAt, zipWith, (!!))
-import Data.Foldable (all, any, foldl, foldr, for_, maximum, minimum, sum)
+import Data.Foldable (all, any, foldl, for_, maximum, minimum, sum)
 import Data.Traversable (traverse)
 import Data.Int (ceil, floor, fromString, round, toNumber)
 import Data.Number as Number
@@ -142,14 +142,14 @@ import Harmonia.Voicing (Voicing(..), Selector(..), voicingMidi, takeVoicing, op
 import Harmonia.Chord (Key, Mode(..), cMajorKey)
 
 
-import Vetula.Banks (butlerChords, stockChords)
+
 import Vetula.Pads as Pads
 import Harmonia.Recognise (best, candidateName, observeWithBass)
 import Harmonia.Vary as HV
 import Vetula.Vary as Vary
 import Vetula.Spread (applyToNode, ghostRows, invertNode, nextBassTone, refootNode, spreadOfNode, toneAt)
 import Harmonia.OpenVoicing (at, dropAt, setTone, sounds) as OV
-import Vetula.Harmony (ChordNode, Kind(..), bassMidi, diatonicSevenths, diatonicTriads, interchangeChords, keyX, latticeChild, latticeFamily, mcmullenChords, noteName, octaveShift, place, placeOutside, playNotes, scaleSet, suspendSet, triadNode, triadOn, voicingCandidates)
+import Vetula.Harmony (ChordNode, Kind(..), bassMidi, diatonicSevenths, diatonicTriads, keyX, latticeChild, latticeFamily, noteName, octaveShift, place, placeOutside, playNotes, scaleSet, suspendSet, triadNode, triadOn, voicingCandidates)
 
 midiPortName :: String
 midiPortName = "IAC"
@@ -364,58 +364,8 @@ nextSound = case _ of
   AuditionMidi -> AuditionOff
   AuditionOff -> AuditionBrowser
 
--- | The color-overlay layers (2026-07-31 redesign — see
--- | docs/DESIGN-vetula-progression-building.md §"Context-panel redesign").
--- | The palettes stopped being MODE selectors that inject chords into the pool
--- | and became an always-on annotation layer: each set of chords is *painted*
--- | onto the geometric views in its own fixed hue, toggled independently. The
--- | diatonic triads are the base layer; borrowed comes from the BORROW scale;
--- | McMullen/Butler/Stock are the curated exterior signpost sets. Rendering the
--- | layers is Step 3 — this type + its state + the toggles are Step 2.
-data ColorLayer = LayerDiatonic | LayerBorrowed | LayerMcMullen | LayerButler | LayerStock
-
-derive instance eqColorLayer :: Eq ColorLayer
-derive instance ordColorLayer :: Ord ColorLayer
-
--- | The layer registry, in legend order (base first).
-allColorLayers :: Array ColorLayer
-allColorLayers = [ LayerDiatonic, LayerBorrowed, LayerMcMullen, LayerButler, LayerStock ]
-
-layerLabel :: ColorLayer -> String
-layerLabel = case _ of
-  LayerDiatonic -> "diatonic"
-  LayerBorrowed -> "borrowed"
-  LayerMcMullen -> "McMullen"
-  LayerButler -> "Butler"
-  LayerStock -> "Stock"
-
--- | Each layer's own distinct hue — a legend, NOT the tonnetz outside-distance
--- | ramp (AC decision 3, 2026-07-31). Diatonic is a quiet base ink; the color
--- | sets each get a saturated, legible hue that reads on parchment.
-layerHue :: ColorLayer -> String
-layerHue = case _ of
-  LayerDiatonic -> "#c29a2e"
-  LayerBorrowed -> "#b5622d"
-  LayerMcMullen -> "#3f7d54"
-  LayerButler -> "#4a6da8"
-  LayerStock -> "#8a5a9a"
-
--- | The chords a color layer paints for the current key: the diatonic triads,
--- | the borrow scale's interchange chords (only when a BORROW mode is chosen),
--- | or one of the curated exterior signpost sets. These are generated on the
--- | fly for annotation — they are NOT added to the pool (`st.chords`).
-layerChords :: State -> ColorLayer -> Array ChordNode
-layerChords st = case _ of
-  LayerDiatonic -> diatonicTriads st.key <> diatonicSevenths st.key
-  LayerBorrowed -> case st.borrowMode of
-    Just v -> interchangeChords (modeOf v) st.key
-    Nothing -> []
-  LayerMcMullen -> mcmullenChords st.key
-  LayerButler -> butlerChords st.key
-  LayerStock -> stockChords st.key
-
 -- | A chord's short name from its root + quality (major bare, minor "m", else
--- | the bare root) — the token label on the color corona.
+-- | the bare root).
 chordTag :: ChordNode -> String
 chordTag c =
   let pc = mod c.root 12
@@ -660,13 +610,6 @@ type State =
   -- the exterior signpost sets currently dropped (generator key → the chord ids
   -- it added), so a button can toggle its set off again.
   , dropped :: Map String (Array Int)
-  -- the modal-interchange source mode currently borrowed from (the picker's
-  -- value; Nothing = none). Its chords live in `dropped` under "interchange".
-  , borrowMode :: Maybe String
-  -- the active color-overlay layers (2026-07-31 redesign): which palette sets
-  -- are painted onto the geometric views, each in its own hue. Replaces the
-  -- old "drop chords into the pool" palette mode. Rendered in Step 3.
-  , colorLayers :: Set ColorLayer
   -- the tonnetz triad STACK (2026-07-31 redesign): triads accumulated by
   -- alt-clicking triangles, in pick order. Edge-adjacent triads fold into
   -- 7ths/9ths naturally (the polychord is the pitch-class union); the whole
@@ -892,8 +835,6 @@ data Action
   | OpenRevoice            -- open the revoice modal on the hovered/sounding chord
   | CloseRevoice           -- dismiss the revoice modal
   | SlashBass Int          -- set the revoiced chord's bass to a pitch class (slash chord)
-  | ToggleLayer ColorLayer -- toggle a color-overlay layer on/off (2026-07-31)
-  | BorrowFrom String      -- modal interchange: borrow from a parallel mode (or off)
   | ReflavourFamily String -- re-flavour the focused family's scale (mode value)
   | PlayPath               -- ▶ play the whole progression
   | ClearPath              -- ✕ empty the progression so the next shift-click starts fresh
@@ -1114,8 +1055,6 @@ component = H.mkComponent
       , focusedFamily: Nothing
       , stackHead: Nothing
       , dropped: Map.empty
-      , borrowMode: Nothing
-      , colorLayers: Set.singleton LayerDiatonic
       , imported: Set.empty
       , helpOpen: false
       , genSel: []
@@ -1384,10 +1323,9 @@ handleQuery = case _ of
           , { id: "scale", input: (Select.cascadingInput modeGroups) { selected = Just (currentModeValue s.key.mode), searchable = true } } ]
       , help: "keys & help"
       , chips:
-          -- the progression being built, on every stage (Explore builds it,
-          -- Rehearse and Perform play it): its frozen name as a monochrome
-          -- glyph (a container, as a session is), its length, and whether
-          -- this version is saved; pressing it saves
+          -- the progression being built: its frozen name as a monochrome
+          -- glyph and whether this version is saved (its length is on the
+          -- view, AC); pressing it arranges it on the score. Then clear.
           [ case s.progName of
               Nothing ->
                 { id: "prog", label: "no progression", icons: [], active: false, attention: false
@@ -1396,12 +1334,15 @@ handleQuery = case _ of
                 let unsaved = length s.path > 0 && currentSource s /= s.lastPubSig
                 in { id: "prog"
                    , icons: map (\icon -> { icon, color: "#2a2a2a" }) (filter (\w -> w /= "" && not (isJust (fromString w))) (split (Pattern "-") (SCU.takeWhile (_ /= '′') nm)))
-                   , label: (if SCU.contains (Pattern "′") nm then "′ " else "") <> maybe "" (\k -> show k <> " \x00b7 ") (last (split (Pattern "-") nm) >>= fromString) <> show (length s.path) <> " chords"
-                       <> (if unsaved then " \x00b7 \x25cf save" else " \x00b7 \x2713 saved")
+                   , label: (if SCU.contains (Pattern "′") nm then "′ " else "") <> maybe "" (\k -> show k <> " \x00b7 ") (last (split (Pattern "-") nm) >>= fromString)
+                       <> (if unsaved then "\x25cf save" else "\x2713 saved")
                    , active: true, attention: unsaved
                    , tip: nm <> (if unsaved then " \x00b7 unsaved: \x2318S saves this version, \x2318\x21e7S a new sibling" else " \x00b7 saved") <> " \x00b7 click: arrange it, on the score"
                        <> " \x00b7 on the lattice, backspace takes back the last chord, delete starts a new progression" }
-          ]
+          ] <> (if length s.path == 0 then [] else
+          [ { id: "clear", label: "clear", icons: [], active: false, attention: false
+            , tip: "put this progression away and start a new one (delete, on the lattice)"
+                <> (if currentSource s /= s.lastPubSig then " \x00b7 its unsaved changes are lost" else "") } ])
       }
   BarAct act next -> do
     s <- H.get
@@ -1415,6 +1356,7 @@ handleQuery = case _ of
         | Just v <- SCU.stripPrefix (Pattern "pick:scale:") act -> handleAction (SelectScale v)
       -- the progression: arrange it, on the score (saving is ⌘S, or the row's save)
       "chip:prog" -> when (length s.path > 0) (handleAction (SetStage (Hunt Score)))
+      "chip:clear" -> handleAction ClearPath
       _ -> pure unit
     pure (Just next)
   LoadSceneAt i next -> do
@@ -2251,48 +2193,6 @@ handleActionCore = case _ of
       let chords' = map (\c -> if c.id == cid then refootNode pc c else c) st.chords
       applyChords chords'
       for_ (find (\c -> c.id == cid) chords') playChord
-
-  -- toggle a color-overlay layer (2026-07-31 redesign): pure state — the layer
-  -- is painted or not painted onto the views (Step 3), the pool is untouched.
-  ToggleLayer l ->
-    H.modify_ \s ->
-      s { colorLayers =
-            if Set.member l s.colorLayers then Set.delete l s.colorLayers
-            else Set.insert l s.colorLayers }
-
-  -- modal interchange: borrow the chosen parallel mode's chromatic chords (or
-  -- "off" to clear). Always replaces the previous interchange set, so the picker
-  -- swaps source modes cleanly. The chords live in `dropped` under "interchange".
-  BorrowFrom v -> do
-    st <- H.get
-    for_ st.handle \handle -> do
-      let ids = fromMaybe [] (Map.lookup "interchange" st.dropped)
-          cleared = filter (\c -> not (elem c.id ids)) st.chords
-          famBase = foldr Map.delete st.familyScale ids   -- drop the old set's scales
-      if v == "off"
-        then do
-          _ <- liftEffect $ handle.updateData (map mkSimNode cleared) (neighborLinks cleared)
-          H.modify_ _ { chords = cleared, dropped = Map.delete "interchange" st.dropped, familyScale = famBase, borrowMode = Nothing }
-        else do
-          let srcKey = st.key { mode = modeOf v }
-              existing = map contentKey cleared
-              fresh = nubByEq (\a b -> contentKey a == contentKey b)
-                        (filter (\c -> not (elem (contentKey c) existing)) (interchangeChords (modeOf v) st.key))
-              placed = mapWithIndex
-                         (\i c -> placeOutside st.key (c { id = st.nextId + i, parentId = Nothing, pinned = false }))
-                         fresh
-              chords' = cleared <> placed
-              -- tag each borrowed chord with its SOURCE scale, so focusing it (click
-              -- its key) and stacking extends it in its own modal world, not the home key
-              famScale' = Map.union (Map.fromFoldable (map (\c -> Tuple c.id srcKey) placed)) famBase
-          _ <- liftEffect $ handle.updateData (map mkSimNode chords') (neighborLinks chords')
-          H.modify_ _
-            { chords = chords'
-            , nextId = st.nextId + length placed
-            , dropped = Map.insert "interchange" (map _.id placed) st.dropped
-            , familyScale = famScale'
-            , borrowMode = Just v
-            }
 
   -- re-flavour the focused family: change its scale (keeping its root), and if
   -- it's currently exploded, re-bloom its lattice from the new scale (collapse +
@@ -4433,7 +4333,7 @@ resetPalette = do
   let kept = filter _.pinned st.chords
       set = nubByEq (\a b -> a.id == b.id) (seedsFor st.key <> kept)
   stopSim
-  H.modify_ _ { dropped = Map.empty, borrowMode = Nothing, focusedFamily = Nothing, stackHead = Nothing }
+  H.modify_ _ { dropped = Map.empty, focusedFamily = Nothing, stackHead = Nothing }
   startWith st.key seedFocus set
 
 -- | Rebuild the palette in a new key/scale, keeping pinned chords.
@@ -4459,7 +4359,7 @@ rebuild key = do
     { chords = chords'
     , imported = Set.union st2.imported pathIds
     , familyScale = Map.empty, focusedFamily = Nothing, stackHead = Nothing
-    , dropped = Map.empty, borrowMode = Nothing
+    , dropped = Map.empty
     , genSel = [], candidates = []
     -- keep `path` (the progression, now transposed); fork a fresh capture session
     , lastCapIdx = Nothing, lastCapSig = "" }
@@ -4512,13 +4412,6 @@ modeGroups =
   grp label vals = { label, options: mapMaybe lookupOpt vals }
   lookupOpt v = map (\m -> { value: m.value, label: m.label }) (find (\m -> m.value == v) modeChoices)
 
--- | The borrow-source picker's groups: a leading single-item "clear" family
--- | (cascade hides flat options, so the off-switch must live in a group) then
--- | the same three mode families.
-borrowGroups :: Array Select.OptionGroup
-borrowGroups =
-  [ { label: "Clear borrowing", options: [ { value: "off", label: "— none —" } ] } ] <> modeGroups
-
 modeOf :: String -> Mode
 modeOf v = maybe Ionian _.mode (find (\m -> m.value == v) modeChoices)
 
@@ -4559,8 +4452,7 @@ render st =
     -- element: the field draws its own <svg> into its container, which
     -- Halogen does not know about, and a reused container kept the old
     -- lattice under the score
-    ( [ HH.keyed (ElemName "div") [ HP.style ("position: absolute; inset: 0px " <> sideInset st <> " " <> (if fullView st.stage then "0px" else trayHeight) <> " 0;") ] [ Tuple (surfaceKey st) (surface st) ] ]
-      <> (if fullView st.stage then [] else [ colourTray st ])
+    ( [ HH.keyed (ElemName "div") [ HP.style ("position: absolute; inset: 0px " <> sideInset st <> " " <> "0px" <> " 0;") ] [ Tuple (surfaceKey st) (surface st) ] ]
       <> latticeControls st
       <> previewControls st
       -- Limulus's drawer, out while the score is up
@@ -4589,10 +4481,6 @@ render st =
     ] )
 
 
--- | The colour tray's strip under an Explore view, so it covers none of it.
-trayHeight :: String
-trayHeight = "46px"
-
 sideInset :: State -> String
 sideInset _ = "0px"
 
@@ -4610,7 +4498,7 @@ latticeControls :: forall m. State -> Array (H.ComponentHTML Action Slots m)
 latticeControls st = case st.stage of
   Hunt v | elem v rungs || v == Pads ->
     (if v == Pads then [] else [ slider v ])
-      <> [ HH.div [ HP.style ("position: absolute; right: 16px; bottom: calc(" <> trayHeight <> " + 12px); z-index: 6; display: flex; gap: 6px;") ]
+      <> [ HH.div [ HP.style ("position: absolute; right: 16px; bottom: 12px; z-index: 6; display: flex; gap: 6px;") ]
              ( (if v == Pads then [ chip "shuffle \x27f3" "re-walk all nine banks from a new seed" ShufflePads ] else [])
                  <> (if st.viewZoom /= 1.0 || st.viewCx /= 0.0 || st.viewCy /= 0.0
                        then [ chip "reset view" "back to the fitted view \x00b7 scroll to change the rung \x00b7 drag to pan" ResetView ] else []) ) ]
@@ -4718,51 +4606,6 @@ sideTip = case _ of
   SideRelatives -> "the chords that lead well from the one last played, smoothest first"
   SideSubstitutes -> "chords that could stand in for the one last played: its tritone substitute, the same root, three or two notes in common"
 
--- | **The colour sets, on the surface** (AC, 2026-10-06). Each set is a chip
--- | in its own hue; adding one paints its chords in that hue in every view (the
--- | corona on Key, the ribbon on Lattice, pips on the Banks pads), which is how
--- | someone sees where a set's chords sit in the rest of the space. They were a
--- | dropdown in the bar, which hid them from the thing they annotate.
-colourTray :: forall m. MonadAff m => State -> H.ComponentHTML Action Slots m
-colourTray st =
-  HH.div
-    [ HP.style ("position: absolute; left: 12px; bottom: 6px; z-index: 6; display: flex; align-items: center; gap: 6px; flex-wrap: wrap; max-width: calc(100% - 24px - " <> sideInset st <> "); "
-                 <> "padding: 6px 10px; background: #fffdf8ee; border: 1px solid #e6dfcc; border-radius: 6px; box-shadow: 0 1px 3px #0000000d;") ]
-    ( [ HH.span
-          [ HP.style "font-size: 10px; color: #9a9070; letter-spacing: 0.1em; text-transform: uppercase; margin-right: 2px;"
-          , HP.title "add a set and its chords appear in its colour in every view" ]
-          [ HH.text "colour" ] ]
-        <> map chip allColorLayers
-        <> borrowPick
-    )
-  where
-  chip l =
-    let on = Set.member l st.colorLayers
-    in HH.button
-         [ HP.style ("display: flex; align-items: center; gap: 5px; border: 1px solid " <> (if on then layerHue l else "#e0d8c2") <> "; "
-                      <> "background: " <> (if on then "#ffffff" else "#faf7ee") <> "; color: " <> (if on then "#3a3428" else "#9a9070") <> "; "
-                      <> "border-radius: 12px; padding: 2px 9px 2px 6px; font-size: 11px; cursor: pointer;")
-         , HP.title (layerTip l)
-         , HE.onClick \_ -> ToggleLayer l ]
-         [ HH.span [ HP.style ("width: 9px; height: 9px; border-radius: 50%; background: " <> (if on then layerHue l else "transparent") <> "; border: 1.5px solid " <> layerHue l <> ";") ] []
-         , HH.text (layerLabel l) ]
-  -- The borrowed set's source scale, beside its chip, only while it is on.
-  borrowPick =
-    if Set.member LayerBorrowed st.colorLayers then
-      [ HH.slot (Proxy :: _ "borrowSelect") unit Select.component
-          ((Select.cascadingInput borrowGroups) { selected = Just (fromMaybe "off" st.borrowMode), searchable = true, placeholder = "borrow from" })
-          \(Select.Selected v) -> BorrowFrom v ]
-    else []
-
--- | What each colour set is, for its chip's tooltip.
-layerTip :: ColorLayer -> String
-layerTip = case _ of
-  LayerDiatonic -> "the key's own chords: its triads and sevenths"
-  LayerBorrowed -> "chords borrowed from a parallel mode (pick which)"
-  LayerMcMullen -> "Joe McMullen's scale-relative chords, from the Plaits alt firmware"
-  LayerButler -> "Jon Butler's 17 voicings, from the Plaits alt firmware"
-  LayerStock -> "Émilie Gillet's original 11 Plaits chords"
-
 -- | **Score mode's three columns**, under the score (AC's sketch,
 -- | 2026-10-08): substitutes, variations and relatives of the chord in hand
 -- | (the bar last clicked), side by side so candidates compare at a glance.
@@ -4867,7 +4710,6 @@ sideContent st t src = case st.cands of
       [ HP.style "border: 1px solid #cdbb8c; background: #fbf6ea; color: #7a5c00; cursor: pointer; padding: 2px 8px; border-radius: 4px; font-size: 11px; white-space: nowrap;"
       , HP.title tip, HE.onClick \_ -> act ]
       [ HH.text label ]
-  table = layerTable st
   substitutesOf cs =
     let
       nodes = cs.subs
@@ -4876,7 +4718,7 @@ sideContent st t src = case st.cands of
         in if length cs' == 0 then [] else
           [ HH.div [ HP.style "font-size: 10px; letter-spacing: 0.1em; text-transform: uppercase; color: #9a8d6a; margin: 10px 0 2px;" ] [ HH.text heading ]
           , HH.div [ HP.style "font-size: 11px; color: #a09880; margin-bottom: 4px;" ] [ HH.text blurb ]
-          , HH.div [ HP.style "display: grid; grid-template-columns: repeat(4, 1fr); gap: 4px;" ] (map (padButton st table) cs') ]
+          , HH.div [ HP.style "display: grid; grid-template-columns: repeat(4, 1fr); gap: 4px;" ] (map (padButton st) cs') ]
     in section HSub.Tritone "tritone substitute" "the dominant a tritone away: same third and seventh, swapped"
          <> section HSub.SameRoot "same root" "another quality on this root"
          <> section (HSub.Shares 3) "three notes in common" "the closest stand-ins"
@@ -4907,7 +4749,7 @@ sideContent st t src = case st.cands of
           if length cs' == 0 then []
           else [ HH.div [ HP.style "font-size: 11px; color: #7a7360; letter-spacing: 0.08em; text-transform: uppercase; margin: 8px 0 4px;", HP.title tip ] [ HH.text lbl ]
                , HH.div [ HP.style "display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 4px; background: #fbf8f0; border: 1px solid #ece5d2; border-radius: 5px; padding: 6px;" ]
-                   (map (padButton st table) cs') ]
+                   (map (padButton st) cs') ]
     in [ HH.div [ HP.style "display: flex; margin-bottom: 4px;" ]
            [ HH.div [ HP.style "flex: 1 1 auto; font-size: 11px; color: #a09880;" ] [ HH.text "what could come next, voice-led from it" ]
            , smallBtn "shake \x27f3" "a different crop of the candidates" ShakeGenerate ] ]
@@ -5312,12 +5154,11 @@ circleFifthsSurface st =
             ang = cofAngle tonic pc
         in Tuple c.id { x: rad * Number.cos ang, y: rad * Number.sin ang }
       posMap = Map.fromFoldable (map posFor shown)
-      -- Fit the window to how far the beads reach (the pool's spokes and the
-      -- colour sets' corona), so a full set never runs off the top.
+      -- Fit the window to how far the beads reach (the pool's spokes), so a
+      -- full set never runs off the top.
       perRoot xs = fromMaybe 0 (maximum (map (\pc -> length (filter (\r -> r == pc) xs)) (range 0 11)))
       poolReach = cofWheel.baseR + toNumber (perRoot (map (\c -> mod c.root 12) shown) - 1) * cofWheel.dr
-      coronaReach = 246.0 + toNumber (perRoot (map (\e -> mod e.chord.root 12) (coronaEntries st)) - 1) * 34.0
-      vb = geoViewFit st ((max poolReach coronaReach + 40.0) / 300.0)
+      vb = geoViewFit st ((poolReach + 40.0) / 300.0)
   in SE.svg
       ( [ SA.viewBox vb.x vb.y vb.w vb.h
         , SA.width 880.0
@@ -5329,91 +5170,7 @@ circleFifthsSurface st =
         ] <> geoPanAttrs st )
       ( cofBackdrop st.key tonic scl rootsPresent
           <> map (nodeView scl pathOrder Set.empty posMap) shown
-          <> cofCorona st tonic scl
       )
-
--- | The active color layers' chords, DE-DUPLICATED by content: each unique chord
--- | appears once, carrying the list of layers that contain it (so a chord that is
--- | both McMullen and borrowed is one glyph with two source badges, not two
--- | overlapping tokens). Layer order follows `allColorLayers` (diatonic first).
-mergedLayerChords :: State -> Array { chord :: ChordNode, layers :: Array ColorLayer }
-mergedLayerChords st =
-  let active = filter (\l -> Set.member l st.colorLayers) allColorLayers
-      tagged = concatMap (\l -> map (\c -> { layer: l, chord: c }) (layerChords st l)) active
-      keys = nub (map (\e -> contentKey e.chord) tagged)
-      forKey k =
-        let ms = filter (\e -> contentKey e.chord == k) tagged
-        in map (\e -> { chord: e.chord, layers: nub (map _.layer ms) }) (head ms)
-  in mapMaybe forKey keys
-
--- | A chord's colour sets as rings around its glyph, innermost first, one per
--- | set in that set's hue: a chord that is both McMullen and borrowed wears two.
--- | Rings rather than dots (AC, 2026-10-06), everywhere, because a dot sits on a
--- | stave glyph as if it were a note.
-layerRings :: forall m. Number -> Number -> Number -> Array ColorLayer -> Array (H.ComponentHTML Action Slots m)
-layerRings cx cy r layers =
-  mapWithIndex
-    (\j l ->
-       SE.circle
-         [ SA.cx cx, SA.cy cy, SA.r (r + 2.6 * toNumber j)
-         , HP.style ("fill: none; stroke: " <> layerHue l <> "; stroke-width: 1.6; pointer-events: none;") ])
-    layers
-
--- | The transparent click target over a color-overlay chord: the unified gesture
--- | (matching every other Vetula surface) — plain click auditions the chord,
--- | shift-click catches it into the tank. Hover space-previews it.
-colorHit :: forall m. ChordNode -> Number -> Number -> Number -> H.ComponentHTML Action Slots m
-colorHit chord cx cy r =
-  SE.circle
-    [ SA.cx cx, SA.cy cy, SA.r r
-    , HP.style "fill: transparent; cursor: pointer;"
-    , HE.onMouseEnter \_ -> HoverTriad (Just { root: chord.root, pcs: chord.pcs })
-    , HE.onMouseLeave \_ -> HoverTriad Nothing
-    , HE.onClick \_ -> AuditionNode chord
-    ]
-
--- | One color-overlay chord drawn as notes-on-stave (the same `chordGlyph` the
--- | pool uses — the notation IS the chord's identity) on a soft backing disc,
--- | with a row of source badges above it, over a catch/audition hit target. Used
--- | on the circle of fifths, whose native chord glyph is the stave.
-colorGlyphAt
-  :: forall m
-   . Array Int -> Number -> Number -> ChordNode -> Array ColorLayer
-  -> Array (H.ComponentHTML Action Slots m)
-colorGlyphAt scl cx cy chord layers =
-  [ SE.circle
-      [ SA.cx cx, SA.cy cy, SA.r 15.0
-      , HP.style "fill: #fcfbf8; stroke: #e4e0d4; stroke-width: 1; pointer-events: none;" ]
-  ]
-    <> chordGlyph scl cx cy chord.voicing
-    <> layerRings cx cy 17.0 layers
-    <> [ colorHit chord cx cy 15.0 ]
-
--- | The color-overlay corona on the circle of fifths (2026-07-31 redesign): the
--- | active layers' chords (de-duplicated, badged by source) painted as staff
--- | glyphs beyond the pool, each at its root's wheel angle. Same-root chords stack
--- | radially outward along the spoke. The CONTEXT card's PALETTE swatches map hue
--- | → set. Non-interactive for now — the unified catch gesture lands in Step 4.
-cofCorona :: forall m. State -> Int -> Array Int -> Array (H.ComponentHTML Action Slots m)
-cofCorona st tonic scl =
-  let entries = coronaEntries st
-      place j e =
-        let pc = mod e.chord.root 12
-            dupIx = length (filter (\d -> mod d.chord.root 12 == pc) (take j entries))
-            ang = cofAngle tonic pc
-            rad = 246.0 + toNumber dupIx * 34.0
-            x = rad * Number.cos ang
-            y = rad * Number.sin ang
-        in colorGlyphAt scl x y e.chord e.layers
-  in concat (mapWithIndex place entries)
-
--- | The corona's chords. One already on the wheel (the pool) is not drawn
--- | twice: with the key's triads in the pool, the diatonic set adds only its
--- | sevenths here.
-coronaEntries :: State -> Array { chord :: ChordNode, layers :: Array ColorLayer }
-coronaEntries st =
-  let onWheel = map pcSetOf (filter (\c -> not (Set.member c.id st.imported)) st.chords)
-  in filter (\e -> not (elem (pcSetOf e.chord) onWheel)) (mergedLayerChords st)
 
 -- | The wheel behind the chords: twelve spokes radiating OUT from the hub, and the
 -- | twelve root names ringed tightly around the centre. Diatonic roots (in the
@@ -5800,18 +5557,13 @@ pcPolygon hi root pcs cx cy r =
      ]
        <> map dot sorted
 
--- | The colour sets' chords the lattice lacks sit above it in rows this long.
-latRibbonPerRow :: Int
-latRibbonPerRow = 22
-
 -- ---------------------------------------------------------------------------
 -- The FIELD: Explore's one surface (AC, 2026-10-06)
 -- ---------------------------------------------------------------------------
 
 -- | **Explore as one view, zoomed semantically.** Every chord any rung can
--- | show is one persistent mark: the key's lattice (441 chords), the colour
--- | sets' chords the lattice lacks (a ribbon above it), and whatever the banks
--- | add. A rung only decides where each mark is, how large, and whether it is
+-- | show is one persistent mark: the key's lattice (441 chords) and whatever
+-- | the banks add. A rung only decides where each mark is, how large, and whether it is
 -- | visible:
 -- |
 -- | - key · + four-note · + extended reveal more of the lattice in place;
@@ -5877,7 +5629,6 @@ type FieldSeen =
   { view :: Viewtype
   , lattice :: Array (Array LatMember)
   , pads :: Array BankPad
-  , table :: LayerTable
   , frame :: Box
   , pan :: { x :: Number, y :: Number, zoom :: Number }
   , hover :: Maybe { root :: Int, pcs :: Array Int }
@@ -5906,8 +5657,7 @@ syncField = do
       mounted <- Field.mounted
       let pan = { x: st.viewCx, y: st.viewCy, zoom: st.viewZoom }
           cursorKey = map _.key st.cursor
-          table = layerTable st
-          same p = p.view == v && unsafeRefEq p.lattice st.lattice && unsafeRefEq p.pads st.bankPads && p.table == table
+          same p = p.view == v && unsafeRefEq p.lattice st.lattice && unsafeRefEq p.pads st.bankPads
             && p.path == st.path && unsafeRefEq p.chords st.chords
       case prev of
         Just p | mounted && same p -> do
@@ -5916,10 +5666,10 @@ syncField = do
           when (p.cursor /= cursorKey) (Field.select rt.handle cursorKey)
           Ref.write (Just p { pan = pan, hover = st.hoveredTriad, cursor = cursorKey }) rt.seen
         _ -> do
-          let sc = fieldScene st v table rt.listener
+          let sc = fieldScene st v rt.listener
           fresh <- Field.draw rt.handle sc.scene
           Field.setView rt.handle (not fresh && mounted) (fieldViewBox st sc.frame)
-          Ref.write (Just { view: v, lattice: st.lattice, pads: st.bankPads, table, frame: sc.frame, pan, hover: st.hoveredTriad, cursor: cursorKey
+          Ref.write (Just { view: v, lattice: st.lattice, pads: st.bankPads, frame: sc.frame, pan, hover: st.hoveredTriad, cursor: cursorKey
                                , path: st.path, chords: st.chords }) rt.seen
 
 -- | A glyph's tint under the current hover, as the field's `data-hi` value.
@@ -6084,8 +5834,8 @@ fieldSurface st =
     []
 
 -- | The scene for a rung, and the frame it should fill.
-fieldScene :: State -> Viewtype -> LayerTable -> HS.Listener Action -> { scene :: Field.Scene, frame :: Box }
-fieldScene st view table listener =
+fieldScene :: State -> Viewtype -> HS.Listener Action -> { scene :: Field.Scene, frame :: Box }
+fieldScene st view listener =
   let
     members = concat st.lattice
     banks = view == Pads
@@ -6111,7 +5861,6 @@ fieldScene st view table listener =
     named = view == KeyChords
     mark k c x y scale shown label below =
       { key: k, root: c.root, pcs: c.pcs, x, y, scale, shown, label, below
-      , rings: map layerHue (layersOf table c)
       , tint: glyphTint st c.root c.pcs
       , enter: HS.notify listener (HoverPad (Just c))
       , leave: HS.notify listener (HoverPad Nothing)
@@ -6127,18 +5876,8 @@ fieldScene st view table listener =
              in mark k m.chord m.cx m.cy 1.0 vis (if named && vis then chordNameOf m.chord else "") false
     ownMark i p = mark ("pad" <> show i) p.chord p.x p.y 1.3 banks p.chord.label true
     shownLattice = filter (\m -> atLevel m.chord) members
-    -- The colour sets' chords the shown lattice lacks, in a ribbon above it.
-    inView = map (\m -> pcSetOf m.chord) shownLattice
-    ribbonEntries = filter (\e -> not (elem (pcSetOf e.chord) inView)) (mergedLayerChords st)
-    ribbonRows = (length ribbonEntries + latRibbonPerRow - 1) / latRibbonPerRow
     topY = fromMaybe latGeo.baseY (minimum (map _.cy shownLattice))
-    ribbonMark j e =
-      let col = mod j latRibbonPerRow
-          row = j / latRibbonPerRow
-          x = latticeLeft + 24.0 + toNumber col * 34.0
-          y = topY - 60.0 - toNumber (ribbonRows - 1 - row) * 42.0
-      in mark ("rib:" <> markKey e.chord) e.chord x y 1.0 (not banks) "" false
-    marks0 = map latticeMark members <> mapWithIndex ownMark claim.own <> mapWithIndex ribbonMark ribbonEntries
+    marks0 = map latticeMark members <> mapWithIndex ownMark claim.own
     -- The progression as a path (plan: "Seeing what you have"): each chord
     -- taken, on the mark of the same root and notes (else of the same notes,
     -- a shown one first). Its chords stay lit at every level, so it never
@@ -6170,14 +5909,14 @@ fieldScene st view table listener =
                  { out: [], seen: Map.empty, rows: Map.empty } (mapWithIndex Tuple steps)).out
     path = map fst stepKeys
     marks = map (\m -> if elem m.key path then m { shown = true } else m) (marks0 <> mapMaybe snd stepKeys)
-    -- The lattice's framing: the shown chords, with the ribbon above, and
+    -- The lattice's framing: the shown chords, and
     -- the progression's own chords wherever they sit (a progression from
     -- higher rungs, reopened on "key", had its beads off the top)
     pathMarks = filter (\m -> elem m.key path) marks
     base =
       { minX: latticeLeft - 70.0
       , maxX: latticeLeft + 6.0 * latGeo.bandW + 70.0 + (if named then 70.0 else 0.0)
-      , minY: topY - 30.0 - (if ribbonRows > 0 then 30.0 + toNumber ribbonRows * 42.0 else 0.0)
+      , minY: topY - 30.0
       , maxY: latGeo.baseY + 40.0
       }
     latBox = foldl (\b m -> b { minX = min b.minX (m.x - 50.0), maxX = max b.maxX (m.x + 50.0)
@@ -6310,8 +6049,8 @@ chordNameOf c =
 -- | One pad. Click auditions it, which is also what puts it in the chyron — so
 -- | this lens feeds the same buffer as every other, and everything downstream
 -- | (Continuo, the Odonus quantiser, a Quadrat sample set) is already wired.
-padButton :: forall m. State -> LayerTable -> ChordNode -> H.ComponentHTML Action Slots m
-padButton st table c =
+padButton :: forall m. State -> ChordNode -> H.ComponentHTML Action Slots m
+padButton st c =
   HH.button
     [ HP.style ("display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 1px; "
                  <> "border: 1px solid " <> (if padLit st c then "#cdbb8c" else "#eee7d6") <> "; "
@@ -6328,8 +6067,7 @@ padButton st table c =
     [ SE.svg
         [ SA.viewBox (-19.0) (-19.0) 38.0 38.0, SA.width 34.0, SA.height 34.0 ]
         (pcPolygon (hiFor st.hoveredTriad c.pcs) c.root c.pcs 0.0 0.0 12.0
-           -- the colour sets holding this chord, ringed in their hues
-           <> layerRings 0.0 0.0 13.5 (layersOf table c))
+)
     , HH.div
         [ HP.style "font-size: 10px; color: #6a6250; line-height: 1.1; text-align: center; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%; -webkit-user-select: none; user-select: none;" ]
         [ HH.text c.label ]
@@ -6340,21 +6078,6 @@ padButton st table c =
 pcSetOf :: ChordNode -> Array Int
 pcSetOf c = sort (nub (map (\p -> mod p 12) c.pcs))
 
--- | The active colour sets, each with its chords' pitch-class sets: built once
--- | per render and asked per pad by `layersOf`, since a pad grid redraws on
--- | every hover.
-type LayerTable = Array { layer :: ColorLayer, sets :: Array (Array Int) }
-
-layerTable :: State -> LayerTable
-layerTable st =
-  map (\l -> { layer: l, sets: map pcSetOf (layerChords st l) })
-    (filter (\l -> Set.member l st.colorLayers) allColorLayers)
-
--- | The sets in the table holding a chord, in legend order.
-layersOf :: LayerTable -> ChordNode -> Array ColorLayer
-layersOf table c =
-  let k = pcSetOf c
-  in map _.layer (filter (\e -> elem k e.sets) table)
 
 -- | A pad lights when its pitch-class set matches whatever is hovered anywhere
 -- | in the app — so hovering one pad shows you every other bank holding the

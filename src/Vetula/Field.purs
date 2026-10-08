@@ -72,7 +72,6 @@ type Mark =
   , shown :: Boolean
   , label :: String
   , below :: Boolean          -- label under the glyph, or beside it
-  , rings :: Array String     -- colour-set hues, innermost first
   , tint :: String            -- the `data-hi` value: a key into `Scene.css`
   , enter :: Effect Unit
   , leave :: Effect Unit
@@ -389,14 +388,6 @@ markTree selected m =
                        ]
                        [])
                sorted
-          <> mapWithIndex
-               (\j hue ->
-                  elem Circle
-                    [ F.cx 0.0, F.cy 0.0, F.r (glyphR + 2.0 + 2.6 * toNumber j)
-                    , F.style ("fill: none; stroke: " <> hue <> "; stroke-width: 1.6; pointer-events: none;")
-                    ]
-                    [])
-               m.rings
           <> (if m.label == "" then []
               else
                 [ elem Text
