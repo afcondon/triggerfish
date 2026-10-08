@@ -1337,7 +1337,8 @@ handleQuery = case _ of
       , chips:
           -- the progression being built: its frozen name as a monochrome
           -- glyph and whether this version is saved (its length is on the
-          -- view, AC); pressing it arranges it on the score. Then clear.
+          -- view, AC); pressing it saves, or once saved arranges it on the
+          -- score. Then clear.
           [ case s.progName of
               Nothing ->
                 { id: "prog", label: "no progression", icons: [], active: false, attention: false
@@ -1349,7 +1350,7 @@ handleQuery = case _ of
                    , label: (if SCU.contains (Pattern "′") nm then "′ " else "") <> maybe "" (\k -> show k <> " \x00b7 ") (last (split (Pattern "-") nm) >>= fromString)
                        <> (if isJust s.lossArmed then "\x25cf unsaved: again to discard" else if unsaved then "\x25cf save" else "\x2713 saved")
                    , active: true, attention: unsaved
-                   , tip: nm <> (if unsaved then " \x00b7 unsaved: \x2318S saves this version, \x2318\x21e7S a new sibling" else " \x00b7 saved") <> " \x00b7 click: arrange it, on the score"
+                   , tip: nm <> (if unsaved then " \x00b7 unsaved: click or \x2318S saves this version, \x2318\x21e7S a new sibling" else " \x00b7 saved \x00b7 click: arrange it, on the score")
                        <> " \x00b7 on the lattice, backspace takes back the last chord, delete starts a new progression" }
           ] <> (if length s.path == 0 then [] else
           [ { id: "clear", label: "clear", icons: [], active: false, attention: false
@@ -1367,7 +1368,11 @@ handleQuery = case _ of
       _ | Just v <- SCU.stripPrefix (Pattern "pick:key:") act -> handleAction (SelectKey v)
         | Just v <- SCU.stripPrefix (Pattern "pick:scale:") act -> handleAction (SelectScale v)
       -- the progression: arrange it, on the score (saving is ⌘S, or the row's save)
-      "chip:prog" -> when (length s.path > 0) (handleAction (SetStage (Hunt Score)))
+      -- the progression's chip says save while unsaved, and does it; saved,
+      -- it arranges the progression on the score
+      "chip:prog"
+        | unsavedNow s -> handleAction (SaveProg false)
+        | otherwise -> when (length s.path > 0) (handleAction (SetStage (Hunt Score)))
       "chip:clear" -> guardLoss "clear" (handleAction ClearPath)
       _ -> pure unit
     pure (Just next)
