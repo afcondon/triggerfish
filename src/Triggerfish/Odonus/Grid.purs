@@ -14,7 +14,7 @@ import Data.Array.NonEmpty as NEA
 import Data.Foldable (foldM, foldl, for_)
 import Data.FoldableWithIndex (forWithIndex_)
 import Data.Int (ceil, floor, round, toNumber)
-import Data.Ord (abs, comparing)
+import Data.Ord (abs)
 import Data.Maybe (Maybe(..), fromMaybe, isJust, isNothing, maybe)
 import Data.String.Common (joinWith)
 import Effect (Effect)
@@ -116,7 +116,7 @@ component =
         , outs: [], routing: RM.defaultTable, midiName: "…", clockTempo: 120.0, clockLocked: false
         , clockBeat: 0.0, clockBar: 0, anchorCount: 0
         , scenes: [], sceneNameInput: "", publishMsg: Nothing
-        , stepDiv: 1, headNote: [ Nothing, Nothing, Nothing, Nothing ]
+        , stepDiv: 4, headNote: [ Nothing, Nothing, Nothing, Nothing ]
         -- No tables yet: fetched from Amphora on Initialize. Until then the
         -- allocator still works, it just drives uncorrected volts.
         , polys: polyInit []
@@ -1921,7 +1921,7 @@ twisterMacro cell d2 st = case cell of
          H.modify_ (markTap "tw-roll")
          twisterApply RI.RollAllNotes
   8 -> do
-         H.modify_ _ { stepDiv = twisterScale 1 16 d2 }
+         H.modify_ _ { stepDiv = twisterScale 1 8 d2 }
          H.get >>= sendStepLen
   9 -> enqueue (RI.SetGatePct (twisterScale 10 200 d2))
   10 -> do

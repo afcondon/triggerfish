@@ -175,14 +175,13 @@ transportRow s =
     , feelBlock s
     ]
 
--- | Global step length — what a 1× head plays. Buttons map to the clock
--- | divider (1=whole … 1/16=fast); per-head SPD multiplies from here.
+-- | The CLOCK DIVIDER: the 16th-note clock divided by 1 to 8 is the model
+-- | step, what a ×1 head plays; each head's SPEED multiplies it by 1 to 8
+-- | (AC, 2026-10-09). ÷4 is a quarter note.
 clockRow :: forall m. State -> H.ComponentHTML Action Slots m
 clockRow s =
-  labelledRow "STEP LENGTH"
-    (map (\d -> tabBtn d.lbl (s.stepDiv == d.div) (SetStepDiv d.div))
-      [ { lbl: "1", div: 16 }, { lbl: "½", div: 8 }, { lbl: "¼", div: 4 }
-      , { lbl: "⅛", div: 2 }, { lbl: "1/16", div: 1 } ])
+  labelledRow "CLOCK"
+    (map (\d -> tabBtn ("\x00f7" <> show d) (s.stepDiv == d) (SetStepDiv d)) (1 .. 8))
 
 -- | Format a positive Number to one decimal place (so Link's constant
 -- | sub-BPM nudging is visible — the readout flickers when truly locked).

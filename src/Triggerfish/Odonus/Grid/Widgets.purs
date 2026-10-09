@@ -29,6 +29,7 @@ module Triggerfish.Odonus.Grid.Widgets
 import Prelude
 
 import Data.Array (elem, find, findIndex, (!!))
+import Data.Int (round)
 import Data.Maybe (Maybe(..), fromMaybe, maybe)
 import Halogen as H
 import Halogen.HTML as HH
@@ -60,7 +61,7 @@ dirName = case _ of
   _ -> "PEND"
 
 speedRatio :: Int -> String
-speedRatio ix = maybe "1.0" show (M.speedTable !! ix) <> "×"
+speedRatio ix = "×" <> maybe "1" (show <<< round) (M.speedTable !! ix)
 
 signed :: Int -> String
 signed n = if n > 0 then "+" <> show n else show n

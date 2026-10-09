@@ -173,9 +173,8 @@ euclidChrome =
   , active: "background:#ffffff44;border:1px solid #3f3c33;"
   }
 
--- | SPEED as a single wide radio row across the top of the strip: every ratio in
--- | M.speedTable as a chip, the live one lit. flex-wrap so adding dotted values
--- | later simply wraps to a second row rather than overflowing.
+-- | SPEED as a single wide radio row across the top of the strip: the head's
+-- | clock multiplier, ×1 to ×8 over the CLOCK divider, the live one lit.
 speedRow :: forall m. Int -> Int -> String -> H.ComponentHTML Action Slots m
 speedRow h cur col =
   HH.div [ style "flex:1;display:flex;flex-wrap:wrap;gap:3px" ]
@@ -193,16 +192,11 @@ speedChip h cur col ix val =
                                  else "linear-gradient(#efece1,#ddd9cb)") ]
        [ HH.text (speedLbl val) ]
 
--- | Compact ratio label: unit fractions as glyphs, whole numbers bare, the rest
--- | as a short decimal (so 1.5 stays "1.5" and future dotted values read cleanly).
+-- | A speed as the clock multiplier it is: ×1 to ×8.
 speedLbl :: Number -> String
 speedLbl x
-  | x == 0.125 = "⅛"
-  | x == 0.25 = "¼"
-  | x == 0.5 = "½"
-  | x == 0.75 = "¾"
-  | x == toNumber (round x) = show (round x)
-  | otherwise = show x
+  | x == toNumber (round x) = "\x00d7" <> show (round x)
+  | otherwise = "\x00d7" <> show x
 
 -- | Direction as a three-way radio under the pattern thumbnail (→ forward,
 -- | ← backward, ↔ pendulum) — frees the knob row, and reads at a glance.
