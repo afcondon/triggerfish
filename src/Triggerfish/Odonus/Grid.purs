@@ -116,7 +116,7 @@ component =
         , outs: [], routing: RM.defaultTable, midiName: "…", clockTempo: 120.0, clockLocked: false
         , clockBeat: 0.0, clockBar: 0, anchorCount: 0
         , scenes: [], sceneNameInput: "", publishMsg: Nothing
-        , stepDiv: 4, headNote: [ Nothing, Nothing, Nothing, Nothing ]
+        , headNote: [ Nothing, Nothing, Nothing, Nothing ]
         -- No tables yet: fetched from Amphora on Initialize. Until then the
         -- allocator still works, it just drives uncorrected volts.
         , polys: polyInit []
@@ -389,7 +389,7 @@ patternsNow st = { harmony: st.odo.harmony, scale: st.odo.scalePattern, outScale
 sampleFor :: State -> Int -> Maybe RI.Input
 sampleFor st step =
   let p = patternsNow st
-  in if Samples.hasPatterns p then Samples.sampleAt (Samples.keyOf p st.stepDiv) step st.samples
+  in if Samples.hasPatterns p then Samples.sampleAt (Samples.keyOf p) step st.samples
      else Just (Samples.localSample p)
 
 -- | Off the rig, keep samples of the patterns ahead of the next step: ask the
@@ -404,13 +404,13 @@ keepSampled = do
   do
     let
       p = patternsNow st
-      key = Samples.keyOf p st.stepDiv
+      key = Samples.keyOf p
       step = st.nextModelStep
       asked = case st.sampleAsked of
         Just a -> a.key == key && a.from <= step && step + Samples.window.margin < a.from + Samples.window.count
         Nothing -> false
     when (Samples.hasPatterns p && not (Samples.reaches key step st.samples) && not asked) do
-      for_ st.binnacle \bin -> liftEffect $ Transport.send (Binnacle.socket bin) (Samples.requestLine p st.stepDiv step)
+      for_ st.binnacle \bin -> liftEffect $ Transport.send (Binnacle.socket bin) (Samples.requestLine p step)
       H.modify_ _ { sampleAsked = Just { key, from: step } }
     when (st.sounding == Silent) $ for_ (sampleFor st step) \i -> do
       let enc = encodeInput i
@@ -554,9 +554,8 @@ dispatch = case _ of
   Step tick -> do
     -- Note-offs must not wait for the next MODEL step. A gate shorter than a
     -- step would otherwise sound until something replaced it, so gate length
-    -- would have no audible effect at all — and with `stepDiv` above 1 the
-    -- error is several beats. Retire on every scheduler tick, the finest grid
-    -- this component sees.
+    -- would have no audible effect at all. Retire on every scheduler tick, the
+    -- finest grid this component sees.
     stTick <- H.get
     when (stTick.sounding == Local && isNothing stTick.playing) do
       for_ stTick.binnacle \bin -> do
@@ -566,16 +565,16 @@ dispatch = case _ of
             Poly.emitAll (Binnacle.socket bin) s.p.rig tick.firePerfMs s.r.emits
           H.modify_ _ { polys = map (\s -> s.p { voices = s.r.voices }) stepped }
     st <- H.get
-    -- Global step divider: the scheduler ticks on a fine 1/16 grid; advance the
-    -- model only every stepDiv ticks, so STEP LENGTH sets what a 1× head plays.
+    -- The model steps on every scheduler tick, a 16th note; Odonus's clock and
+    -- each head's speed decide which of those a head steps on (Reef.Odonus).
     -- CO-SIM: advance the model whenever the machine is armed (Local OR Rig), not
     -- just Local — otherwise Atlantis mode freezes the display. `tick.index` is
     -- Link-absolute (ceil beat/stepBeats), so the frontend's modelStep matches the
     -- rig's step and the co-simulation stays byte-identical (same inputs are
     -- broadcast). MIDI emission below stays Local-only; the BEAM sounds in Rig mode.
-    when (st.sounding /= Silent && tick.index `mod` st.stepDiv == 0) do
+    when (st.sounding /= Silent) do
       let
-        modelStep = tick.index / st.stepDiv
+        modelStep = tick.index
         -- LOCKSTEP (P4c): apply any tick-tagged inputs whose step has arrived
         -- BEFORE the model steps — exactly as reef_voice's drain does on the BEAM,
         -- so a deferred gesture lands on the same step on both runtimes. `<=` (not
@@ -585,7 +584,7 @@ dispatch = case _ of
         stillPending = filter (\p -> p.step > modelStep) st.pending
         -- HARMONY: then the chord overlay follows Odonus's Tidal harmony pattern,
         -- if it has one, as Littorina reads it at this step's cycle position
-        -- (stepDiv quarter-beats a step, four beats a cycle) — the same call
+        -- (a quarter-beat a step, four beats a cycle) — the same call
         -- reef_voice makes on the BEAM.
         -- The harmony and scale patterns are read by the rig, never here
         -- (docs/kb/plans/gpl-boundary-review.md): it samples them and sends the
@@ -613,7 +612,7 @@ dispatch = case _ of
         r = M.stepEmit o1
         msPerBeat = 60000.0 / max 30.0 st.clockTempo
         -- One model step in ms (a 1× head's note spacing at this STEP LENGTH).
-        stepMs = (0.25 * toNumber st.stepDiv) * msPerBeat
+        stepMs = gridCfg.stepBeats * msPerBeat
         -- Swing: lag the off-beat (odd) model steps by a fraction of a step, so
         -- the grid breathes instead of being metronomic. Applied to the audible
         -- onset (and the scope), not the model advance.
@@ -625,9 +624,9 @@ dispatch = case _ of
         accent = if modelStep `mod` 4 == 0 then 14 else 0
         -- A non-glide note's length scales with this head's note-spacing (so it
         -- breathes with the tempo / step length) rather than a fixed blip.
-        gateMsFor f =
-          let spd = maybe 1.0 M.speedOf (r.odo.heads !! f.headIdx)
-          in stepMs / max 1.0 spd * (toNumber r.odo.gatePct / 100.0) * toNumber f.dur
+        -- A note lasts one step of its head's clock, times its LENGTH and the
+        -- gate %: the same function the BEAM renders with.
+        gateMsFor f = Render.gateMs r.odo stepMs f
         -- Where inside the step a note falls: a head faster than the clock fires
         -- several notes in one step, each at its own tick (Reef.Odonus.headTicks).
         subMs f = Render.subOffsetMs stepMs f
@@ -1245,14 +1244,9 @@ dispatch = case _ of
       liftEffect $ Transport.send (Binnacle.socket bin)
         ("stage-paste odonus/mark " <> CaptureView.markCode "odonus" (\k -> asCode k.patch k.now) m)
   SetZoom z -> H.modify_ _ { zoom = z }
-  -- STEP LENGTH is a transport/clock param, not a SimState edit, so it rides its
-  -- own `reef-steplen` verb (not the tick-tagged input path): apply locally, then
-  -- tell the BEAM voice the new model-step length so it steps at the same rate and
-  -- keeps the same model-step numbering (lockstep P4c).
-  SetStepDiv d -> do
-    H.modify_ \s -> s { stepDiv = d }
-    st <- H.get
-    sendStepLen st
+  -- Odonus's clock is part of the model, so it goes the tick-tagged input way
+  -- like any other edit, and the BEAM applies it on the same step.
+  SetOdoClock ix -> enqueue (RI.SetOdoClock ix)
   KnobDown target startVal -> do
     sid <- setupDrag
     H.modify_ _ { dragging = Just { target, startY: 0, startVal, curVal: startVal }, dragSub = Just sid }
@@ -1368,7 +1362,7 @@ dispatch = case _ of
     pushRouting
     for_ st.binnacle \bin ->
       liftEffect $ Transport.send (Binnacle.socket bin)
-        ("reef-sim-at " <> show st.nextModelStep <> " " <> show (stepBeatsOf st) <> " "
+        ("reef-sim-at " <> show st.nextModelStep <> " " <> show gridCfg.stepBeats <> " "
            <> encodeSim
                 { odo: st.odo, gen: st.gen, spread: st.genSpread, bias: st.genBias, seed: st.genSeed, frozen: st.genFrozen })
     -- A fresh voice starts with swing 0, so re-assert the current swing (its own
@@ -1588,17 +1582,10 @@ adoptFeel :: forall o m. MonadAff m => Array RI.Input -> H.HalogenM State Action
 adoptFeel inputs = for_ inputs case _ of
   RI.RecallPatch t -> for_ (parsePatch t) \p -> do
     before <- H.get
-    H.modify_ _ { swing = p.swing, velHumanize = p.velHumanize, stepDiv = p.stepDiv }
+    H.modify_ _ { swing = p.swing, velHumanize = p.velHumanize }
     st <- H.get
-    when (p.stepDiv /= before.stepDiv) (sendStepLen st)
     when (p.swing /= before.swing) (sendSwing st)
   _ -> pure unit
-
-sendStepLen :: forall o m. MonadAff m => State -> H.HalogenM State Action Slots o m Unit
-sendStepLen st =
-  when (st.sounding == Rig) $ for_ st.binnacle \bin ->
-    liftEffect $ Transport.send (Binnacle.socket bin)
-      ("reef-steplen " <> show (stepBeatsOf st))
 
 -- | Tell the BEAM voice the current swing fraction (lockstep P4f render stage 2). A
 -- | no-op when the rig isn't attached. Swing lags the odd model steps by
@@ -1643,19 +1630,11 @@ targetToInput t v = case t of
 
 -- | The model step currently SOUNDING, off the shared Link clock — the same
 -- | quantity reef_voice derives (`trunc(BeatNow / step_beats)`), so a step tagged
--- | here means the same step on the BEAM. Model-step length is `stepBeats × stepDiv`
--- | (STEP LENGTH divides the scheduler's 1/16 grid); the BEAM voice is told the
--- | same length via `reef-steplen`, so both agree on which model step is which at
--- | any step length. (`floor(floor(beat/0.25)/stepDiv) = floor(beat/(0.25·stepDiv))`,
--- | so this matches the Step loop's `tick.index / stepDiv`.)
+-- | here means the same step on the BEAM. A model step is the scheduler's 16th
+-- | note (`gridCfg.stepBeats`), and the BEAM voice is told the same on Push, so
+-- | both number model steps alike.
 soundingStep :: State -> Int
-soundingStep s = floor (s.clockBeat / stepBeatsOf s)
-
--- | Model-step length in beats: the scheduler's 1/16 grid times the STEP LENGTH
--- | divider. This is what the BEAM voice must step on to stay in lockstep, sent via
--- | `reef-steplen` on Push and whenever STEP LENGTH changes.
-stepBeatsOf :: State -> Number
-stepBeatsOf s = gridCfg.stepBeats * toNumber s.stepDiv
+soundingStep s = floor (s.clockBeat / gridCfg.stepBeats)
 
 -- | How far ahead a synced input is scheduled. Must exceed reef_voice's scheduling
 -- | lookahead (LOOKAHEAD_MS = 200ms) in steps, so the broadcast reaches the rig
@@ -1921,8 +1900,7 @@ twisterMacro cell d2 st = case cell of
          H.modify_ (markTap "tw-roll")
          twisterApply RI.RollAllNotes
   8 -> do
-         H.modify_ _ { stepDiv = twisterScale 1 8 d2 }
-         H.get >>= sendStepLen
+         enqueue (RI.SetOdoClock (twisterScale 0 (length M.speedTable - 1) d2))
   9 -> enqueue (RI.SetGatePct (twisterScale 10 200 d2))
   10 -> do
          H.modify_ _ { swing = toNumber (twisterScale 0 60 d2) / 100.0 }

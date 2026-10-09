@@ -12,6 +12,7 @@ module Triggerfish.Odonus.Grid.Widgets
   , roman
   , dirName
   , speedRatio
+  , rateLabel
   , signed
   , octLabel
   , romanNum
@@ -29,7 +30,7 @@ module Triggerfish.Odonus.Grid.Widgets
 import Prelude
 
 import Data.Array (elem, find, findIndex, (!!))
-import Data.Int (round)
+import Data.Int (round, toNumber)
 import Data.Maybe (Maybe(..), fromMaybe, maybe)
 import Halogen as H
 import Halogen.HTML as HH
@@ -61,7 +62,19 @@ dirName = case _ of
   _ -> "PEND"
 
 speedRatio :: Int -> String
-speedRatio ix = "×" <> maybe "1" (show <<< round) (M.speedTable !! ix)
+speedRatio ix = maybe "×1" rateLabel (M.speedTable !! ix)
+
+-- | A clock ratio as the page shows it: ×1.5, ×4, and below ×1 as the
+-- | divisor, ÷1.5, ÷4.
+rateLabel :: Number -> String
+rateLabel x =
+  if x >= 1.0 then "\x00d7" <> oneDecimal x else "\x00f7" <> oneDecimal (1.0 / x)
+
+-- | 4 as "4", 1.5 as "1.5".
+oneDecimal :: Number -> String
+oneDecimal v =
+  let r = round (v * 10.0)
+  in if r `mod` 10 == 0 then show (r / 10) else show (toNumber r / 10.0)
 
 signed :: Int -> String
 signed n = if n > 0 then "+" <> show n else show n

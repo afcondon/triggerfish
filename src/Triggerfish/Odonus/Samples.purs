@@ -45,8 +45,8 @@ noSamples = { key: "", from: 0, inputs: [] }
 window :: { count :: Int, margin :: Int }
 window = { count: 64, margin: 16 }
 
-keyOf :: Patterns -> Int -> String
-keyOf p quarters = writeJSON (wire p quarters)
+keyOf :: Patterns -> String
+keyOf p = writeJSON (wire p)
 
 hasPatterns :: Patterns -> Boolean
 hasPatterns p = isJust p.harmony || isJust p.scale || isJust p.outScale || isJust p.gridHarmony
@@ -57,20 +57,19 @@ localSample = samplePatterns (const []) (const [])
 
 wire
   :: Patterns
-  -> Int
   -> { harmony :: Nullable String, scale :: Nullable String
      , outScale :: Nullable { pattern :: String, root :: Int }, gridHarmony :: Nullable String, quarters :: Int }
-wire p quarters =
+wire p =
   { harmony: toNullable p.harmony, scale: toNullable p.scale
-  , outScale: toNullable p.outScale, gridHarmony: toNullable p.gridHarmony, quarters }
+  , outScale: toNullable p.outScale, gridHarmony: toNullable p.gridHarmony, quarters: 1 }
 
--- | Ask for `window.count` steps from `from`; `quarters` is the step length in
--- | sixteenths of a cycle (Odonus's stepDiv).
-requestLine :: Patterns -> Int -> Int -> String
-requestLine p quarters from =
-  let w = wire p quarters
+-- | Ask for `window.count` steps from `from`. A model step is a sixteenth of
+-- | a cycle; the rig is told so as `quarters`, which a step length once set.
+requestLine :: Patterns -> Int -> String
+requestLine p from =
+  let w = wire p
   in "odonus-sample " <> writeJSON
-       { key: keyOf p quarters, from, count: window.count, quarters
+       { key: keyOf p, from, count: window.count, quarters: 1
        , harmony: w.harmony, scale: w.scale, outScale: w.outScale, gridHarmony: w.gridHarmony }
 
 -- | The rig's answer, `odonus-samples {key, from, inputs}`, or Nothing for

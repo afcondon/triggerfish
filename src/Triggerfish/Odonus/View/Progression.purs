@@ -44,7 +44,7 @@ chords pick st =
     -- the patterns as Odonus.Grid.patternsNow gives them (not imported: Grid
     -- imports this view)
     patterns = { harmony: st.odo.harmony, scale: st.odo.scalePattern, outScale: st.odo.outScale, gridHarmony: st.odo.gridHarmony }
-    key = Samples.keyOf patterns st.stepDiv
+    key = Samples.keyOf patterns
     from = st.nextModelStep
     notes = catMaybes (map (\step -> Samples.sampleAt key step st.samples >>= pick) (range from (from + Samples.window.count - 1)))
     runs = foldl (\acc ns -> if map _.notes (last acc) == Just ns then acc else snoc acc { name: chordName ns, notes: ns }) [] notes

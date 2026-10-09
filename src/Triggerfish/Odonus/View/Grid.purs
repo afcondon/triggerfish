@@ -29,7 +29,7 @@ import Triggerfish.Routing.Model as RM
 import Triggerfish.Routing.Out as RO
 import Triggerfish.Odonus.View.Key (gridPiece)
 import Triggerfish.Odonus.Grid.Widgets
-  ( cellChrome, engrave, genRow, labelledRow, miniKnob, octLabel, panelShell, style, tabBtn )
+  ( cellChrome, engrave, genRow, labelledRow, miniKnob, octLabel, panelShell, rateLabel, style, tabBtn )
 import Data.Array (length, mapWithIndex, null, (!!), (..))
 
 gridPanel :: forall m. State -> H.ComponentHTML Action Slots m
@@ -175,13 +175,13 @@ transportRow s =
     , feelBlock s
     ]
 
--- | The CLOCK DIVIDER: the 16th-note clock divided by 1 to 8 is the model
--- | step, what a ×1 head plays; each head's SPEED multiplies it by 1 to 8
--- | (AC, 2026-10-09). ÷4 is a quarter note.
+-- | ODONUS'S CLOCK: the beat (Link's, from Diaphus) multiplied or divided,
+-- | ÷4 to ×4; each head's SPEED then multiplies or divides this (AC,
+-- | 2026-10-09). ×4 is 16ths.
 clockRow :: forall m. State -> H.ComponentHTML Action Slots m
 clockRow s =
   labelledRow "CLOCK"
-    (map (\d -> tabBtn ("\x00f7" <> show d) (s.stepDiv == d) (SetStepDiv d)) (1 .. 8))
+    (mapWithIndex (\ix v -> tabBtn (rateLabel v) (s.odo.clockIx == ix) (SetOdoClock ix)) M.speedTable)
 
 -- | Format a positive Number to one decimal place (so Link's constant
 -- | sub-BPM nudging is visible — the readout flickers when truly locked).

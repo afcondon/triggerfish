@@ -6,7 +6,7 @@ module Triggerfish.Odonus.View.Playheads (playheadsPanel, euclidBounds) where
 import Prelude
 
 import Data.Array (findIndex, mapWithIndex, range, (!!))
-import Data.Int (round, toNumber)
+import Data.Int (toNumber)
 import Data.Int.Bits (and, shr)
 import Data.Maybe (Maybe(..), fromMaybe, maybe)
 import Data.String.Common (joinWith)
@@ -18,7 +18,7 @@ import Triggerfish.Ui.Euclid as Euclid
 import Triggerfish.Odonus.Model as M
 import Triggerfish.Odonus.Grid.Types (Action(..), KnobTarget(..), Slots, State)
 import Triggerfish.Odonus.View.Key (outputPiece)
-import Triggerfish.Odonus.Grid.Widgets (engrave, headColor, miniKnob, panelShell, roman, signed, style)
+import Triggerfish.Odonus.Grid.Widgets (engrave, headColor, miniKnob, panelShell, rateLabel, roman, signed, style)
 import Halogen.Widgets.Svg (svgAttr, svgEl)
 
 playheadsPanel :: forall m. State -> H.ComponentHTML Action Slots m
@@ -174,7 +174,7 @@ euclidChrome =
   }
 
 -- | SPEED as a single wide radio row across the top of the strip: the head's
--- | clock multiplier, ×1 to ×8 over the CLOCK divider, the live one lit.
+-- | ratio of Odonus's CLOCK, ÷4 to ×4, the live one lit.
 speedRow :: forall m. Int -> Int -> String -> H.ComponentHTML Action Slots m
 speedRow h cur col =
   HH.div [ style "flex:1;display:flex;flex-wrap:wrap;gap:3px" ]
@@ -190,13 +190,7 @@ speedChip h cur col ix val =
            <> (if active then "#1c1a12" else "#6a6456")
            <> ";background:" <> (if active then "linear-gradient(" <> col <> "," <> col <> ")"
                                  else "linear-gradient(#efece1,#ddd9cb)") ]
-       [ HH.text (speedLbl val) ]
-
--- | A speed as the clock multiplier it is: ×1 to ×8.
-speedLbl :: Number -> String
-speedLbl x
-  | x == toNumber (round x) = "\x00d7" <> show (round x)
-  | otherwise = "\x00d7" <> show x
+       [ HH.text (rateLabel val) ]
 
 -- | Direction as a three-way radio under the pattern thumbnail (→ forward,
 -- | ← backward, ↔ pendulum) — frees the knob row, and reads at a glance.

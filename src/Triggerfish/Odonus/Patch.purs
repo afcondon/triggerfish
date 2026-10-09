@@ -50,7 +50,6 @@ capturePatch s =
   , genBias: s.genBias
   , swing: s.swing
   , velHumanize: s.velHumanize
-  , stepDiv: s.stepDiv
   }
 
 -- | Odonus with what the routes feed taken out.
@@ -101,7 +100,6 @@ applyPatch p s = s
   , genBias = p.genBias
   , swing = p.swing
   , velHumanize = p.velHumanize
-  , stepDiv = p.stepDiv
   }
 
 -- | The live patch rendered to eDSL text — the shell's `AskSource` answer and
@@ -124,7 +122,7 @@ recallText txt s = case parsePatch txt of
 -- | the harmony pattern. Because cell notes are
 -- | scale degrees, the saved riff re-voices through whatever key or progression
 -- | is sounding now: the same lick in the current key. Playhead phase carries
--- | across (as `recallText`). The gen matrix / marbles / swing / stepDiv ARE
+-- | across (as `recallText`). The gen matrix / marbles / swing ARE
 -- | part of the gesture, so they come from the scene; the harmony does not.
 -- | Unparseable text → no-op.
 recallGestureText :: String -> State -> State
@@ -136,7 +134,6 @@ recallGestureText txt s = case parsePatch txt of
     , genBias = p.genBias
     , swing = p.swing
     , velHumanize = p.velHumanize
-    , stepDiv = p.stepDiv
     }
   Nothing -> s
 

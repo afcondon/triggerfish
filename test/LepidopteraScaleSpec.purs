@@ -23,7 +23,7 @@ runLepidopteraScaleTests :: Effect Unit
 runLepidopteraScaleTests = do
   log "Lepidoptera: scales by name and the scale pattern"
   let
-    base = { name: "t", odo: defaultOdonus, gen: [], genSpread: 0.5, genBias: 0.5, swing: 0.0, velHumanize: 0, stepDiv: 1 }
+    base = { name: "t", odo: defaultOdonus, gen: [], genSpread: 0.5, genBias: 0.5, swing: 0.0, velHumanize: 0 }
     txt = printPatch base
     line2 t = fromMaybe "" (split (Pattern "\n") t !! 1)
     withScale s = Re.replace (unsafeRegex "scale: C [^\\n]*" noFlags) ("scale: " <> s) txt

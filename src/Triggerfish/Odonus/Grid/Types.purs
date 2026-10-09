@@ -347,7 +347,6 @@ type State =
   , scenes :: Array Scene
   , sceneNameInput :: String  -- the name typed in the SCENES form for the next capture
   , publishMsg :: Maybe String  -- transient status from a publish-scene-to-Amphora click
-  , stepDiv :: Int          -- global clock divider (1=1/16 .. 16=whole note)
   , headNote :: Array (Maybe Int)  -- the held/sounding MIDI note per head (4)
   -- Voice allocation for any DPoly leg — one entry per instrument the rack can
   -- drive, because two of them are two independent allocators: a note on Rings
@@ -475,7 +474,7 @@ data Action
   | ToggleCode              -- REPLAY card: show/hide the active mark as code
   | MarkToLimulus Int       -- hand mark i, as code, to Limulus (stage-paste)
   | SetZoom Zoom            -- REPLAY: whole / last N / crop to a loop
-  | SetStepDiv Int
+  | SetOdoClock Int
   | KnobDown KnobTarget Int
   | DragMove Int
   | DragEnd
