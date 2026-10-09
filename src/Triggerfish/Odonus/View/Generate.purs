@@ -16,7 +16,7 @@ import Halogen.HTML as HH
 import Halogen.HTML.Events as HE
 import Triggerfish.Odonus.Grid.Types (Action(..), GenKind(..), KnobTarget(..), Slots, State)
 import Triggerfish.Odonus.View.Grid (transportRow)
-import Triggerfish.Odonus.Grid.Widgets (cellChrome, genRow, panelShell, style)
+import Triggerfish.Odonus.Grid.Widgets (cellPad, genRow, panelShell, style)
 import Triggerfish.Odonus.Model as M
 import Triggerfish.Ui.Knob (knob)
 
@@ -95,13 +95,13 @@ toggleGrid
 toggleGrid color get act odo =
   HH.div
     [ style "display:grid;grid-template-columns:repeat(4,1fr);gap:4px" ]
-    (mapWithIndex (\i c -> toggleCell odo color (get c) (act i) i) odo.cells)
+    (mapWithIndex (\i c -> toggleCell color (get c) (act i)) odo.cells)
 
-toggleCell :: forall m. M.Odonus -> String -> Boolean -> Action -> Int -> HH.ComponentHTML Action Slots m
-toggleCell odo color on act i =
+toggleCell :: forall m. String -> Boolean -> Action -> HH.ComponentHTML Action Slots m
+toggleCell color on act =
   HH.div
     [ HE.onClick \_ -> act
-    , style $ cellChrome odo i
+    , style $ cellPad
         <> ";height:14px;cursor:pointer;user-select:none;display:flex;align-items:center;justify-content:center"
     ]
     [ HH.div
@@ -121,15 +121,15 @@ perCellKnobGrid
 perCellKnobGrid color lo hi ticks mkTarget getVal odo =
   HH.div
     [ style "display:grid;grid-template-columns:repeat(4,1fr);gap:4px" ]
-    (mapWithIndex (\i c -> perCellKnob odo color lo hi ticks (mkTarget i) (getVal c) i) odo.cells)
+    (mapWithIndex (\i c -> perCellKnob color lo hi ticks (mkTarget i) (getVal c)) odo.cells)
 
 perCellKnob
   :: forall m
-   . M.Odonus -> String -> Int -> Int -> Int -> KnobTarget -> Int -> Int
+   . String -> Int -> Int -> Int -> KnobTarget -> Int
   -> HH.ComponentHTML Action Slots m
-perCellKnob odo color lo hi ticks target val i =
+perCellKnob color lo hi ticks target val =
   HH.div
-    [ style $ cellChrome odo i
+    [ style $ cellPad
         <> ";padding:3px;aspect-ratio:1;display:flex;align-items:center;justify-content:center"
     ]
     [ HH.div [ style "width:100%;height:100%;min-height:0" ]

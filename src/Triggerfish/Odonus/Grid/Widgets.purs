@@ -24,6 +24,7 @@ module Triggerfish.Odonus.Grid.Widgets
   , miniKnob
   , headAt
   , cellChrome
+  , cellPad
   , genRow
   ) where
 
@@ -171,8 +172,14 @@ headAt o i = case findIndex (\hd -> hd.cursor == i) o.heads of
   Just idx -> Just { idx, mute: maybe false _.mute (o.heads !! idx) }
   Nothing -> Nothing
 
--- | The per-cell chrome shared by every small multiple: pale pad +
--- | head-presence ring (bright = a playhead is here, dim = a muted one).
+-- | A cell's pale pad, as the parameter cards draw it: no playheads there
+-- | (AC, 2026-10-09: the moving rings belong to the grid, and on every card
+-- | at once they distract, and repaint every card on every step).
+cellPad :: String
+cellPad = "background:#cbc6b6;border-radius:7px;box-shadow:0 0 0 1px #a79f86"
+
+-- | The grid's cell chrome: the pad plus a head-presence ring (bright = a
+-- | playhead is here, dim = a muted one).
 cellChrome :: M.Odonus -> Int -> String
 cellChrome odo i =
   let
