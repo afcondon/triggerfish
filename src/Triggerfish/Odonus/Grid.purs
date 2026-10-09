@@ -53,7 +53,7 @@ import Reef.Input as RI
 import Reef.Route as Route
 import Triggerfish.Odonus.Feeds as Feeds
 import Triggerfish.Odonus.Samples as Samples
-import Reef.Engine (Patterns)
+import Reef.Engine (Patterns, odoPatterns)
 import Reef.Render as Render
 import Reef.Rample as Rample
 import Effect.Console as Console
@@ -382,7 +382,7 @@ stageAbout msg = isJust (Feeds.readFeeds msg) || isJust (Feeds.readRoutes msg)
 
 -- | Odonus's two patterns as they stand: what a sample reads.
 patternsNow :: State -> Patterns
-patternsNow st = { harmony: st.odo.harmony, scale: st.odo.scalePattern, outScale: st.odo.outScale, gridHarmony: st.odo.gridHarmony }
+patternsNow st = odoPatterns st.odo
 
 -- | Off the rig, the sample for `step`: the rig's, if held for the patterns
 -- | as they stand; with no patterns, the one that needs no Tidal.

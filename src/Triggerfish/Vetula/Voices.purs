@@ -101,7 +101,7 @@ chordsOf inputs = take 8 (oneTurn (map _.name runs))
   runs = foldl (\acc ns -> if map _.notes (last acc) == Just ns then acc else snoc acc { name: chordName ns, notes: ns }) [] notes
   oneTurn xs = fromMaybe xs (find (\k -> all (\i -> xs !! i == xs !! (i `mod` k)) (range 0 (length xs - 1))) (range 1 (length xs)) <#> \k -> take k xs)
   notes = catMaybes (map (\i -> case i of
-    SetSampled (Just c) _ _ -> Just c
+    SetSampled (Just c) _ _ _ -> Just c
     _ -> Nothing) inputs)
 
 -- | Voice rows' slots start here, past any scene's.

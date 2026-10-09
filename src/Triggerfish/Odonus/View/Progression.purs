@@ -21,6 +21,7 @@ import Data.Array (all, catMaybes, find, foldl, head, index, last, length, range
 import Data.Maybe (Maybe(..), fromMaybe, maybe)
 import Harmonia.Recognise (best, candidateName, observeWithBass)
 import Reef.Input (Input(..))
+import Reef.Engine (odoPatterns)
 import Triggerfish.Odonus.Grid.Types (State)
 import Triggerfish.Odonus.Samples as Samples
 
@@ -29,21 +30,19 @@ type Chord = { name :: String, notes :: Array Int }
 -- | The chords shaping the grid over the sampled window, now first.
 gridChords :: State -> Array Chord
 gridChords = chords (\i -> case i of
-  SetSampled _ _ g -> g
+  SetSampled _ _ g _ -> g
   _ -> Nothing)
 
 -- | The chords colouring the output over the sampled window, now first.
 outChords :: State -> Array Chord
 outChords = chords (\i -> case i of
-  SetSampled c _ _ -> c
+  SetSampled c _ _ _ -> c
   _ -> Nothing)
 
 chords :: (Input -> Maybe (Array Int)) -> State -> Array Chord
 chords pick st =
   let
-    -- the patterns as Odonus.Grid.patternsNow gives them (not imported: Grid
-    -- imports this view)
-    patterns = { harmony: st.odo.harmony, scale: st.odo.scalePattern, outScale: st.odo.outScale, gridHarmony: st.odo.gridHarmony }
+    patterns = odoPatterns st.odo
     key = Samples.keyOf patterns
     from = st.nextModelStep
     notes = catMaybes (map (\step -> Samples.sampleAt key step st.samples >>= pick) (range from (from + Samples.window.count - 1)))
