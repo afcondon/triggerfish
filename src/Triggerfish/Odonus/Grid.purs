@@ -1000,6 +1000,12 @@ dispatch = case _ of
   SetRoot pc -> enqueue (RI.SetRoot pc)
   -- null quantisation at the output (AC): each note snaps to itself
   SetOutChromatic on -> enqueue (RI.SetOutScale (if on then Just "chromatic" else Nothing) 0)
+  -- The rig owns the route table, so this asks it, as Vetula's toggles do;
+  -- the pane redraws from the table the rig sends back.
+  Unroute i -> do
+    st <- H.get
+    for_ st.binnacle \bin -> liftEffect $ Transport.send (Binnacle.socket bin)
+      ("tidal route $ " <> Route.inputName i <> " <- none")
   SetOctave n -> enqueue (RI.SetOctaveShift n)
   SetDegShift n -> enqueue (RI.SetDegShift n)
   ToggleScaleNote pc -> enqueue (RI.ToggleScaleNote pc)

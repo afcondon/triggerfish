@@ -76,8 +76,8 @@ quantPieces s = case _ of
   gridBody _
     -- fed by Vetula: where it comes from is the name, and the chords below
     -- say what it holds (the pattern itself is the rig's business)
-    | fromVetula Route.OdonusGrid = [ named (provenance Route.OdonusGrid s) ]
-    | routed Route.OdonusGrid = [ named gridName, from (provenance Route.OdonusGrid s) ]
+    | fromVetula Route.OdonusGrid = [ named (provenance Route.OdonusGrid s), unplug Route.OdonusGrid ]
+    | routed Route.OdonusGrid = [ named gridName, from (provenance Route.OdonusGrid s), unplug Route.OdonusGrid ]
     | isJust s.odo.gridHarmony || isJust s.odo.scalePattern = [ named gridName, from "a line in Limulus" ]
     | otherwise = [ rootSelect, scaleSelect ]
   gridName = case s.odo.gridHarmony, s.odo.scalePattern of
@@ -87,8 +87,8 @@ quantPieces s = case _ of
   -- Output: a route, a line, or Odonus's own choice: the grid's set, or
   -- chromatic (AC: null quantisation at both)
   outBody _
-    | fromVetula Route.OdonusOut = [ named (provenance Route.OdonusOut s) ]
-    | routed Route.OdonusOut = [ named outName, from (provenance Route.OdonusOut s) ]
+    | fromVetula Route.OdonusOut = [ named (provenance Route.OdonusOut s), unplug Route.OdonusOut ]
+    | routed Route.OdonusOut = [ named outName, from (provenance Route.OdonusOut s), unplug Route.OdonusOut ]
     | isJust s.odo.harmony || (isJust s.odo.outScale && not outChromatic) = [ named outName, from "a line in Limulus" ]
     | otherwise = [ outToggle ]
   outName = case s.odo.outScale, s.odo.harmony of
@@ -125,6 +125,13 @@ quantPieces s = case _ of
       [ seg (not outChromatic) "the grid\x2019s set" (SetOutChromatic false)
       , seg outChromatic "chromatic" (SetOutChromatic true)
       ]
+  -- a route's way out: back to Odonus's own choice, here and on the rig
+  unplug i =
+    HH.button
+      [ HE.onClick \_ -> Unroute i
+      , HH.attr (HH.AttrName "title") "Unplug this route: Odonus chooses for itself again"
+      , style "border:1px solid #00000026;border-radius:4px;padding:0 6px;cursor:pointer;font-family:Georgia,serif;font-size:12px;background:#efece1;color:#5a564b" ]
+      [ HH.text "\x00d7 own" ]
   seg on label act =
     HH.button
       [ HE.onClick \_ -> act

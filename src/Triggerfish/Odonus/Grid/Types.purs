@@ -440,6 +440,7 @@ data Action
   | ToggleDist
   | SetRoot Int
   | SetOutChromatic Boolean   -- Odonus's own Output choice: chromatic, or the grid's set
+  | Unroute Route.Input       -- take a harmony route off an input: Odonus's own again
   | SetOctave Int
   | SetDegShift Int
   | ToggleScaleNote Int

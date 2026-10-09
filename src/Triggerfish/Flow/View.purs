@@ -423,7 +423,7 @@ chartOf on hot live f =
       [ attr "class" "cable", attr "d" ("M" <> n a.x <> "," <> n a.y <> " C" <> n (a.x + dx) <> "," <> n a.y <> " " <> n (b.x - dx) <> "," <> n b.y <> " " <> n b.x <> "," <> n b.y)
       , HE.onClick \_ -> on.cable r.source r.input
       ]
-      [ svg "title" [] [ HH.text ("odonus." <> r.input <> " ← " <> s.label <> " · click to unplug") ] ]
+      [ svg "title" [] [ HH.text ("odonus." <> r.input <> " ← " <> s.label <> " · unplug it in Odonus\x2019s quantisation pane") ] ]
 
   patchBay
     | not quantShown || xray = []
