@@ -1745,9 +1745,10 @@ emitNote outs tbl headIdx atMs gateMs vel prev f =
                , durMs: if rat <= 1 then gateMs else sub' * 0.85 }
   -- A LINE leg: the full legato state machine (tie / slide / gated + ratchet).
   line o ch t =
-    let portaOn = do
-          Midi.sendCC o { channel: ch, controller: 65, value: 127 }
-          Midi.sendCC o { channel: ch, controller: 5, value: 40 }
+    -- Portamento ON only, never its time (CC 5): the glide time is the
+    -- synth's own setting, and a fixed CC 5 overwrote it on every slide
+    -- (Yarns maps CC 5 onto its PO setting, so PO kept snapping back to 31).
+    let portaOn = Midi.sendCC o { channel: ch, controller: 65, value: 127 }
         portaOff = Midi.sendCC o { channel: ch, controller: 65, value: 0 }
         rat = if f.ratchet < 1 then 1 else f.ratchet
         ratchetNote =
