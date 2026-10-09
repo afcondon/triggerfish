@@ -9,11 +9,12 @@ module Triggerfish.Odonus.Grid (component, Output(..)) where
 
 import Prelude
 
-import Data.Array (any, concatMap, deleteAt, elem, filter, find, findIndex, head, length, mapMaybe, mapWithIndex, modifyAt, null, partition, range, replicate, snoc, sort, updateAt, (!!))
-import Data.Foldable (foldl, for_)
+import Data.Array (any, concatMap, deleteAt, elem, filter, find, findIndex, groupAllBy, head, length, mapMaybe, mapWithIndex, modifyAt, null, partition, range, replicate, snoc, sort, updateAt, (!!))
+import Data.Array.NonEmpty as NEA
+import Data.Foldable (foldM, foldl, for_)
 import Data.FoldableWithIndex (forWithIndex_)
 import Data.Int (ceil, floor, round, toNumber)
-import Data.Ord (abs)
+import Data.Ord (abs, comparing)
 import Data.Maybe (Maybe(..), fromMaybe, isJust, isNothing, maybe)
 import Data.String.Common (joinWith)
 import Effect (Effect)
@@ -53,6 +54,7 @@ import Reef.Route as Route
 import Triggerfish.Odonus.Feeds as Feeds
 import Triggerfish.Odonus.Samples as Samples
 import Reef.Engine (Patterns)
+import Reef.Render as Render
 import Reef.Rample as Rample
 import Effect.Console as Console
 import Reef.Protocol (decodeTagged, encodeInput, encodeSim, encodeTagged)
@@ -626,7 +628,9 @@ dispatch = case _ of
         gateMsFor f =
           let spd = maybe 1.0 M.speedOf (r.odo.heads !! f.headIdx)
           in stepMs / max 1.0 spd * (toNumber r.odo.gatePct / 100.0) * toNumber f.dur
-        prevOf h = join (st.headNote !! h)
+        -- Where inside the step a note falls: a head faster than the clock fires
+        -- several notes in one step, each at its own tick (Reef.Odonus.headTicks).
+        subMs f = Render.subOffsetMs stepMs f
         -- Velocity: the cell's own base + beat accent + seeded humanise
         -- (±velHumanize). Drawn from the same PRNG as the generators, threaded on
         -- after Gen, so per-cell VEL authoring sets the contour the groove rides.
@@ -637,6 +641,19 @@ dispatch = case _ of
           in { items: acc.items <> [ { f, v } ], seed }
         velied = foldl velStep { items: [], seed: g.seed } r.fired
         firedV = velied.items
+        -- Each note with the note its head is holding when it plays: a fast head's
+        -- second note in a step is held over from its first, not from the last step.
+        withPrev = (foldl
+          (\acc fv ->
+            let held = join (acc.held !! fv.f.headIdx)
+                next = if fv.f.glide then Just fv.f.pitch else Nothing
+            in { held: fromMaybe acc.held (updateAt fv.f.headIdx next acc.held)
+               , out: snoc acc.out { fv, prev: held, atMs: emitAtMs + subMs fv.f } })
+          { held: st.headNote, out: [] } firedV).out
+        -- The step's notes in groups by their place in it, earliest first, for
+        -- the allocators, which take the notes that start together as one chord.
+        byTime = map (\grp -> { atMs: (NEA.head grp).atMs, notes: NEA.toArray grp })
+          (groupAllBy (comparing _.atMs) withPrev)
       -- Local MIDI I/O only. In Rig (Atlantis) mode the BEAM voice sounds; the
       -- frontend advances the same model purely to mirror it (co-sim display), so
       -- it must NOT also emit — otherwise you'd double-trigger on the rig.
@@ -652,9 +669,9 @@ dispatch = case _ of
         -- Emit MIDI with per-head legato: glide cells HOLD until the next note
         -- (tie if same pitch, portamento-slide if different); non-glide cells are
         -- gated notes whose length scales with tempo.
-        liftEffect $ for_ firedV \fv ->
-          emitNote st.outs st.routing fv.f.headIdx emitAtMs (gateMsFor fv.f) fv.v
-            (prevOf fv.f.headIdx) fv.f
+        liftEffect $ for_ withPrev \n ->
+          emitNote st.outs st.routing n.fv.f.headIdx n.atMs (gateMsFor n.fv.f) n.fv.v
+            n.prev n.fv.f
 
       -- Poly instruments are driven separately from the MIDI fan-out, because
       -- an allocator is STATEFUL and shared: several heads routed to one Saich
@@ -664,37 +681,43 @@ dispatch = case _ of
       when (st.sounding == Local && isNothing st.playing) do
         for_ st.binnacle \bin -> do
           let sock = Binnacle.socket bin
-              polyNotes = map
-                (\fv -> { headIdx: fv.f.headIdx, pitch: fv.f.pitch, gateMs: gateMsFor fv.f })
-                firedV
-              played = map (playPoly st.routing polyNotes emitAtMs) st.polys
-          liftEffect $ for_ played \p ->
-            Poly.emitAll sock p.poly.rig emitAtMs p.emits
+              polyNotes grp = map
+                (\n -> { headIdx: n.fv.f.headIdx, pitch: n.fv.f.pitch, gateMs: gateMsFor n.fv.f })
+                grp.notes
+          polys' <- liftEffect $ foldM
+            (\polys grp -> do
+              let played = map (playPoly st.routing (polyNotes grp) grp.atMs) polys
+              for_ played \p -> Poly.emitAll sock p.poly.rig grp.atMs p.emits
+              pure (map _.poly played))
+            st.polys byTime
           -- Mono ES-9 pitch lines: each head's own, with its glide (the slide).
-          liftEffect $ for_ firedV \fv ->
-            for_ (es9LinesOf st fv.f.headIdx) \line ->
+          liftEffect $ for_ withPrev \n ->
+            for_ (es9LinesOf st n.fv.f.headIdx) \line ->
               Es9Line.emit sock line emitAtMs
-                { atMs: emitAtMs, pitch: fv.f.pitch, prev: prevOf fv.f.headIdx
-                , glide: fv.f.glide, gateMs: gateMsFor fv.f }
-          H.modify_ _ { polys = map _.poly played }
+                { atMs: n.atMs, pitch: n.fv.f.pitch, prev: n.prev
+                , glide: n.fv.f.glide, gateMs: gateMsFor n.fv.f }
+          H.modify_ _ { polys = polys' }
 
       -- The Rample as ONE instrument, its four voices allocated. Outside the
       -- `binnacle` block above because this one needs no ES-9 socket: the
       -- allocator's decisions leave as MIDI like any other note.
       when (st.sounding == Local && isNothing st.playing) do
         for_ (ramplePolyOf st.routing) \cfg -> do
-          let rampleNotes = map
-                (\fv -> { headIdx: fv.f.headIdx, pitch: fv.f.pitch
-                        , gateMs: gateMsFor fv.f, vel: fv.v })
-                firedV
-              rr = playRample cfg st.routing rampleNotes emitAtMs st.rampleVoices
-          liftEffect do
-            emitRample st.outs cfg rr.emits
-            for_ rr.refused \pitch ->
-              Console.warn $ "[rample] dropped note " <> show pitch
-                <> ": outside the card (" <> show cfg.pitchOfSlot0 <> ".."
-                <> show (cfg.pitchOfSlot0 + cfg.slots - 1) <> ")"
-          H.modify_ _ { rampleVoices = rr.voices }
+          let rampleNotes grp = map
+                (\n -> { headIdx: n.fv.f.headIdx, pitch: n.fv.f.pitch
+                       , gateMs: gateMsFor n.fv.f, vel: n.fv.v })
+                grp.notes
+          voices' <- liftEffect $ foldM
+            (\voices grp -> do
+              let rr = playRample cfg st.routing (rampleNotes grp) grp.atMs voices
+              emitRample st.outs cfg rr.emits
+              for_ rr.refused \pitch ->
+                Console.warn $ "[rample] dropped note " <> show pitch
+                  <> ": outside the card (" <> show cfg.pitchOfSlot0 <> ".."
+                  <> show (cfg.pitchOfSlot0 + cfg.slots - 1) <> ")"
+              pure rr.voices)
+            st.rampleVoices byTime
+          H.modify_ _ { rampleVoices = voices' }
       let
         -- A glide note stays held (its pitch); a gated note auto-ends.
         nextNote f = if f.glide then Just f.pitch else Nothing
@@ -706,7 +729,7 @@ dispatch = case _ of
         -- Built from `firedV` (not `r.fired`) so the capture carries velocity and
         -- gate length too — REPLAY re-emits these faithfully. The scope ignores them.
         fresh = map (\fv -> { pitch: fv.f.pitch, headIdx: fv.f.headIdx
-                            , fireUnixMicros: tick.fireUnixMicros + swingMs * 1000.0
+                            , fireUnixMicros: tick.fireUnixMicros + (swingMs + subMs fv.f) * 1000.0
                             , vel: fv.v, gateMs: gateMsFor fv.f }) firedV
       H.modify_ \s -> s
         { odo = r.odo, notes = fresh <> s.notes, headNote = clearedHeadNote
