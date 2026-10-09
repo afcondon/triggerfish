@@ -1764,10 +1764,21 @@ emitNote outs tbl headIdx atMs gateMs vel prev f =
         portaOn
         Midi.noteOnAtMs o { channel: ch, note: p, velocity: vel, atMs: t }
         Midi.noteOffAtMs o { channel: ch, note: q, atMs: t + 60.0 }
-      Just q, false -> do                                         -- gated, end held
-        Midi.noteOffAtMs o { channel: ch, note: q, atMs: t }
-        portaOff
-        ratchetNote
+      -- The ARRIVAL of a slide, as on a 303: the glide flag on the held note
+      -- carries it into this one, so this note overlaps it as a slide does
+      -- and then ends at its own gate. Ending the held note first would be a
+      -- detached retrigger, and a single GLIDE cell would never slide at all
+      -- (Yarns's LG=AUTO and `Es9Line` both slide here). Its ratchet is not
+      -- played, since a slide is one sustained event. The overlap is kept
+      -- inside the gate, or a short note would end before the held one and
+      -- leave a mono synth on the old pitch.
+      Just q, false
+        | q == p ->                                               -- tie, then end
+            Midi.noteOffAtMs o { channel: ch, note: q, atMs: t + gateMs }
+        | otherwise -> do                                         -- slid into, then end
+            portaOn
+            Midi.scheduleNoteAtMs o { channel: ch, note: p, velocity: vel, atMs: t, durMs: gateMs }
+            Midi.noteOffAtMs o { channel: ch, note: q, atMs: t + min 60.0 (gateMs / 2.0) }
       Nothing, true -> do                                         -- start held
         portaOff
         Midi.noteOnAtMs o { channel: ch, note: p, velocity: vel, atMs: t }
