@@ -50,10 +50,11 @@ import Effect (Effect)
 
 import Binnacle.Midi as Midi
 import Binnacle.Time (perfNow)
+import Reef.Calibration as Calibration
 import Reef.Rample as Rample
 import Reef.Routing as RR
 import Simple.JSON (writeJSON)
-import Triggerfish.Routing.Model (Destination(..), Leg, Source(..), Table, Wire, cardLegs, liveLegsFor, wireOf)
+import Triggerfish.Routing.Model (Destination(..), Leg, Source(..), Table, Wire, cardLegs, carriesLine, es9JackBus, liveLegsFor, wireOf)
 
 -- | Every MIDI output port, by name. Built once when MIDI access arrives.
 type Outs = Array { name :: String, out :: Midi.MidiOut }
@@ -224,21 +225,37 @@ resolveLegIn names leg = do
     , note: fromMaybe (-1) w.noteOverride
     , offsetMs: leg.offsetMs
     , rample: maybe [] (\r -> [ { voice: r.voice, slots: r.slots, pitchOfSlot0: r.pitchOfSlot0, settleMs: r.settleMs } ]) w.rample
+    , line: carriesLine leg.dest
     }
 
 -- | A melodic machine's voices (Odonus's heads, in order) as the rig is told
--- | to play them: each voice's live MIDI legs, resolved as the drum lanes' are.
--- | The kinds that allocate across voices (a poly instrument, a Rample played
--- | polyphonically) are the page's to play and are left out.
-voiceRouting :: Outs -> Table -> Array Source -> RR.VoiceRouting
-voiceRouting outs tbl sources = { voices: map (\src -> mapMaybe (resolveLeg outs) (liveLegsFor tbl src)) sources }
+-- | to play them: each voice's live MIDI legs, resolved as the drum lanes'
+-- | are, and its ES-9 lines, each with its oscillator's calibration
+-- | (`tableOf` a pitch jack), so the rig needs no lookup of its own. The kinds
+-- | that allocate across voices (a poly instrument, a Rample played
+-- | polyphonically) are not here yet.
+voiceRouting :: Outs -> Table -> (Int -> Array Calibration.Table) -> Array Source -> RR.VoiceRouting
+voiceRouting outs tbl tableOf sources =
+  { voices: map (\src -> mapMaybe (resolveLeg outs) (liveLegsFor tbl src)) sources
+  , lines: map (\src -> mapMaybe cvLine (liveLegsFor tbl src)) sources
+  }
+  where
+  cvLine leg = case leg.dest of
+    DEs9Cv d -> Just
+      { pitchBus: es9JackBus d.jack
+      , gateBus: if d.gate > 0 then [ es9JackBus d.gate ] else []
+      , table: tableOf d.jack
+      }
+    _ -> Nothing
 
 -- | Vetula's sixteen channels as the rig's card player plays them: voice
 -- | `ch - 1` is the card on channel `ch`, down its row's live legs (or its
 -- | channel on the default port, with no row).
 vetulaRouting :: Array String -> Table -> RR.VoiceRouting
 vetulaRouting names tbl =
-  { voices: map (\ch -> mapMaybe (resolveLegIn names) (filter _.on (cardLegs names tbl ch))) (range 1 16) }
+  { voices: map (\ch -> mapMaybe (resolveLegIn names) (filter _.on (cardLegs names tbl ch))) (range 1 16)
+  , lines: []
+  }
 
 -- | The SuperDirt orbit drum voices play on: an effects chain of their own,
 -- | apart from Conspicillum's 0 and its sends 10 and 11, on the main outputs.
@@ -259,6 +276,8 @@ auditionLine = case _ of
 
 -- | Send what `Reef.Routing` decided, each `atMs` from now. Returns how many
 -- | notes went out. A `Play` is the rig's to send; the browser has no OSC.
+-- | Nor does the page ever send to the ES-9: the interfaces are the rig's
+-- | alone (docs/kb/plans/hardware-through-the-rig.md).
 sendAll :: Outs -> Array RR.Send -> Effect Int
 sendAll outs sends = do
   now <- perfNow
@@ -277,4 +296,17 @@ sendAll outs sends = do
       Just o -> do
         Midi.sendCCAtMs o { channel: c.channel - 1, controller: c.controller, value: c.value, atMs: now + c.atMs }
         pure 0
+    RR.NoteOn n -> case byName n.port of
+      Nothing -> pure 0
+      Just o -> do
+        Midi.noteOnAtMs o { channel: n.channel - 1, note: n.note, velocity: n.velocity, atMs: now + n.atMs }
+        pure 1
+    RR.NoteOff n -> case byName n.port of
+      Nothing -> pure 0
+      Just o -> do
+        Midi.noteOffAtMs o { channel: n.channel - 1, note: n.note, atMs: now + n.atMs }
+        pure 0
     RR.Play _ -> pure 0
+    RR.CvSet _ -> pure 0
+    RR.CvSlew _ -> pure 0
+    RR.CvPulse _ -> pure 0
