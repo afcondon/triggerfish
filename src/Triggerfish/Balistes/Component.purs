@@ -327,7 +327,7 @@ handleAction = case _ of
             -- pushed fixed rhythm plays in lockstep. The frontend projects its rich
             -- pattern onto the wire-flat reef pattern (fixedOf).
             for_ (RF.renderFixed (fixedOf pat) tick.index) \e ->
-              emitHit st.outs (drumsOf st) stepMs
+              emitHit st.outs (RO.soloDrumRouting st.outs st.routing kitNotes) stepMs
                 (max 0.0 (tick.delayMs + toNumber e.pushMs))
                 e.note e.durMs e.velocity e.ratchet
           H.modify_ _ { playStep = tick.index `mod` pat.steps }
@@ -353,7 +353,7 @@ handleAction = case _ of
           -- + per-voice Dilla push come back on each event. The runtime only
           -- schedules the result — front and rig can't diverge on the decision.
           for_ (Sim.renderStep bal0 playedStep r.fired) \e ->
-            emitHit st.outs (drumsOf st) stepMs
+            emitHit st.outs (RO.soloDrumRouting st.outs st.routing kitNotes) stepMs
               (max 0.0 (tick.delayMs + toNumber e.pushMs))
               e.note e.durMs e.velocity e.ratchet
         let

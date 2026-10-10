@@ -61,8 +61,11 @@ runFlowTests = do
     ((find (\l -> l.from == "browser") one.links <#> _.signal) == Just Midi)
 
   let drums = flow base { machines = [ "balistes" ] }
-  check "sixteen lanes on channel 10 are one stream, plus four FH-2 gates"
-    ((find (\l -> l.to == "browser") drums.links <#> _.streams) == Just 5)
+  check "in Solo, sixteen lanes on channel 10 are one stream; the FH-2's gates are the rig's"
+    ((find (\l -> l.to == "browser") drums.links <#> _.streams) == Just 1)
+  let rigDrums = flow base { mode = Atlantis, machines = [ "balistes" ] }
+  check "in Atlantis, the sixteen lanes plus four FH-2 gates"
+    ((find (\l -> l.to == "browser") rigDrums.links <#> _.streams) == Just 5)
 
   let rig = flow base { mode = Atlantis, table = odonusToAbleton }
   check "in Atlantis the page tells the rig what to play"

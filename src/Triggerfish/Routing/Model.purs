@@ -72,6 +72,7 @@ module Triggerfish.Routing.Model
   , Wire
   , RampleWire
   , wireOf
+  , isInterface
   , outputsOf
   , carriesLine
   , fh2Port
@@ -161,7 +162,7 @@ data Destination
   -- | es9-daemon buses, because that is how a cable is patched and because the
   -- | two numberings are offset (bus = jack + 7, `es9JackBus`). A glide cell
   -- | holds the gate and slides the pitch into the next note: the acid slide
-  -- | (`Triggerfish.Es9Line`).
+  -- | (`Reef.Articulation`, played by the rig).
   | DEs9Cv { jack :: Int, gate :: Int }
   -- | The `continuo` MIDI port, kept separate from `DMidi` because it is a fixed
   -- | rig fixture rather than a port you pick.
@@ -583,13 +584,11 @@ reachOf ports = case _ of
   -- Reachable whenever the rig was up, and a drum lane routed to an ES-9 gate
   -- stayed silent with the router saying all was well (2026-09-28).
   DEs9Gate _ -> NotBuilt
-  -- Driven from the page (`Triggerfish.Es9Line`), and like a poly instrument
-  -- its voltages travel over the rig WS to es9-daemon.
+  -- Played by the rig (Reef.Articulation), as every interface is.
   DEs9Cv _ -> if ports.rigUp then Reachable else NeedsRig
   -- Played by the rig voice, so only through the rig.
   DSample _ -> if ports.rigUp then Reachable else NeedsRig
-  -- Same route as any other ES-9 CV: the allocator runs in the browser, but the
-  -- voltages it decides on still travel over the rig WS to es9-daemon.
+  -- Played by the rig, its allocator in Reef.Articulation.
   DPoly _ -> if ports.rigUp then Reachable else NeedsRig
   DContinuo _ -> portReach "continuo"
   DRample d -> portReach d.port
@@ -681,6 +680,20 @@ type RampleWire =
 -- | one the player made in the note grid. A MIDI or continuo destination is a
 -- | line. Odonus branches on this so its expressive logic runs where it applies
 -- | and nowhere else.
+-- | Whether a destination is a modular INTERFACE (the ES-9, the FH-2, or an
+-- | instrument reached through them), which only the rig sends to: in Solo a
+-- | page plays Web MIDI and WebAudio, never these
+-- | (docs/kb/plans/hardware-through-the-rig.md). The FH-2 is one although it
+-- | is reached over MIDI.
+isInterface :: Destination -> Boolean
+isInterface = case _ of
+  DFh2Env _ -> true
+  DFh2Gate _ -> true
+  DEs9Gate _ -> true
+  DEs9Cv _ -> true
+  DPoly _ -> true
+  _ -> false
+
 carriesLine :: Destination -> Boolean
 carriesLine = case _ of
   DMidi _ -> true
@@ -699,7 +712,7 @@ carriesLine = case _ of
   -- Also a line: its voices are pitched and legato within a voice is meaningful.
   -- The subtlety is that a note MIGRATING between voices must not glide — the
   -- arriving oscillator would audibly slide in from whatever it held before — so
-  -- `Triggerfish.Poly` emits migration pitches un-slewed regardless of this.
+  -- `Reef.Articulation` sets migration pitches, never slews them, regardless of this.
   DPoly _ -> true
   -- One strike of a sample: nothing to slide along.
   DSample _ -> false
@@ -727,7 +740,7 @@ wireOf = case _ of
   DEs9Gate _ -> Nothing
   DEs9Cv _ -> Nothing
   -- Not a MIDI wire, and not one wire at all: the allocator chooses among
-  -- several per note. `Triggerfish.Poly` drives it instead.
+  -- several per note. The rig's `Reef.Articulation` drives it instead.
   DPoly _ -> Nothing
   -- Not one wire either: the allocator picks a voice per note, so this is
   -- driven by the Rample pass rather than the per-leg fan-out.

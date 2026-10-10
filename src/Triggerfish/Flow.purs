@@ -76,7 +76,7 @@ import Data.Maybe (Maybe(..), fromMaybe, isJust, maybe)
 import Data.Int as Int
 import Data.String (Pattern(..), contains, joinWith, split, stripPrefix)
 import Data.Tuple (Tuple(..))
-import Triggerfish.Routing.Model (Destination(..), Ports, Reach(..), Source(..), Table, instrumentLabel, reachOf, sourceKey, sourceLabel)
+import Triggerfish.Routing.Model (Destination(..), Ports, Reach(..), Source(..), Table, instrumentLabel, isInterface, reachOf, sourceKey, sourceLabel)
 import Triggerfish.Transport (Mode(..))
 import Reef.Balistes.Kit (canonKit)
 
@@ -307,6 +307,8 @@ midiEnds = case _ of
 -- | (or when nothing sends to it yet).
 pathOf :: Boolean -> Mode -> String -> Maybe String -> Destination -> Maybe (Array Hop)
 pathOf relays mode m via dest = case midiEnds dest of
+  -- an interface (the FH-2) is the rig's alone: in Solo nothing reaches it
+  Just _ | not atlantis && isInterface dest -> Nothing
   Just e ->
     Just $ head <> [ hop e.iface e.inst e.last, hop e.inst "ears" Audio ]
     where
@@ -322,8 +324,8 @@ pathOf relays mode m via dest = case midiEnds dest of
     DSample _ | atlantis ->
       Just [ ctl "browser" "engine" Socket, hop "engine" "d-dirt" Osc, hop "d-dirt" "ears" Audio ]
     DPoly _ | atlantis -> Just (toEs9 relay)
-    -- A mono pitch line: the page drives it, over the rig, as with DPoly.
-    -- Quadrat's own CV goes the same way, through the Friends server.
+    -- A mono pitch line: the rig plays it, as it plays DPoly
+    -- (Reef.Articulation). Quadrat's own CV goes through the Friends server.
     DEs9Cv _ | atlantis -> Just (toEs9 relay)
     DEs9Gate _ | atlantis, Just _ <- via -> Just (toEs9 relay)
     _ -> Nothing

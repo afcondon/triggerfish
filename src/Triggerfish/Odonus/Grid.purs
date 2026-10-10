@@ -9,10 +9,8 @@ module Triggerfish.Odonus.Grid (component, Output(..)) where
 
 import Prelude
 
-import Data.Array (any, concatMap, deleteAt, elem, filter, find, findIndex, groupAllBy, head, length, mapMaybe, mapWithIndex, modifyAt, null, partition, range, replicate, snoc, sort, updateAt, (!!))
-import Data.Array.NonEmpty as NEA
-import Data.Foldable (foldM, foldl, for_)
-import Data.FoldableWithIndex (forWithIndex_)
+import Data.Array (any, concatMap, deleteAt, elem, filter, find, findIndex, head, length, mapWithIndex, modifyAt, null, range, replicate, sort, updateAt, (!!))
+import Data.Foldable (foldl, for_)
 import Data.Int (ceil, floor, round, toNumber)
 import Data.Ord (abs)
 import Data.Maybe (Maybe(..), fromMaybe, isJust, isNothing, maybe)
@@ -33,8 +31,6 @@ import Triggerfish.Capture.Types (Zoom(..))
 import Triggerfish.Capture.View as CaptureView
 import Triggerfish.Odonus.Model as M
 import Triggerfish.Poly as Poly
-import Triggerfish.Es9Line as Es9Line
-import Reef.Voices as RV
 import Triggerfish.Capture.RigLoops as RL
 import Triggerfish.Capture.Runs (Axis)
 import Triggerfish.Capture.Runs as Runs
@@ -54,8 +50,9 @@ import Reef.Route as Route
 import Triggerfish.Odonus.Feeds as Feeds
 import Triggerfish.Odonus.Samples as Samples
 import Reef.Engine (Patterns, odoPatterns)
+import Reef.Articulation as Art
+import Reef.Calibration (Table)
 import Reef.Render as Render
-import Reef.Rample as Rample
 import Effect.Console as Console
 import Reef.Protocol (decodeTagged, encodeInput, encodeSim, encodeTagged)
 import Data.String (Pattern(..), stripPrefix) as Str
@@ -66,7 +63,7 @@ import Web.HTML.Window as Window
 import Web.UIEvent.KeyboardEvent as KE
 import Web.UIEvent.MouseEvent as ME
 import Triggerfish.Odonus.Grid.Types
-  ( Action(..), GenKind(..), KnobTarget(..), Stage(..), stagePath, stageFromPath, RegionEdge(..), PlaySource(..), TwisterField(..), Logbook, NoteEvent, PolyInst, Slots, State, applyTarget, genDefaultAmt, genDefaultRate, genKinds, genLabel
+  ( Action(..), GenKind(..), KnobTarget(..), Stage(..), stagePath, stageFromPath, RegionEdge(..), PlaySource(..), TwisterField(..), Logbook, NoteEvent, Slots, State, applyTarget, genDefaultAmt, genDefaultRate, genKinds, genLabel
   , marblesPadId, rateMax, replayTimelineId, setAmt, setRate, targetRange
    )
 import Triggerfish.Scale (scaleTypes)
@@ -117,10 +114,9 @@ component =
         , clockBeat: 0.0, clockBar: 0, anchorCount: 0
         , scenes: [], sceneNameInput: "", publishMsg: Nothing
         , headNote: [ Nothing, Nothing, Nothing, Nothing ]
-        -- No tables yet: fetched from Amphora on Initialize. Until then the
-        -- allocator still works, it just drives uncorrected volts.
-        , polys: polyInit []
-        , rampleVoices: RV.empty RV.rample
+        -- No tables yet: fetched from Amphora on Initialize. Until then the rig
+        -- plays its ES-9 voices uncorrected.
+        , soloPolys: []
         , polyNote: Just "calibration tables not loaded"
         , vcoTables: []
         , swing: 0.0, velHumanize: 12
@@ -185,24 +181,11 @@ handleQuery = case _ of
     let wasLocal = st.sounding == Local
         nowLocal = s == Local
     when (wasLocal && not nowLocal) do
-      liftEffect $ silenceHeld st.outs st.routing st.headNote
-      -- And the poly instruments, which `silenceHeld` cannot reach: their notes
-      -- are not MIDI and the Saïch's oscillators never stop, so a transport that
-      -- merely stops ticking leaves the last chord droning for ever. (Rings
-      -- returns nothing here and rings out on its own decay, which is the
-      -- difference between having a note-off and not.)
-      for_ st.binnacle \bin -> do
-        let stopped = map (\p -> { p, r: RV.allOff 0.0 p.voices }) st.polys
-        liftEffect $ for_ stopped \s ->
-          Poly.emitAll (Binnacle.socket bin) s.p.rig 0.0 s.r.emits
-        -- A held slide on an ES-9 line would leave its envelope open.
-        liftEffect $ for_ [ 0, 1, 2, 3 ] \h ->
-          for_ (es9LinesOf st h) (Es9Line.release (Binnacle.socket bin))
-        H.modify_ _ { polys = map (\s -> s.p { voices = s.r.voices }) stopped }
-      -- Nothing to silence — a struck slice rings out on its own — but the
-      -- allocator must forget what it thinks is sounding, or the first notes
-      -- after a restart would steal voices that are long finished.
-      H.modify_ _ { rampleVoices = RV.empty RV.rample }
+      -- Let go of every held note and every voice an allocator still thinks
+      -- is sounding: a transport that merely stops ticking would leave them.
+      let solo = RO.soloRouting st.outs st.routing (map RM.SOdonusHead [ 0, 1, 2, 3 ])
+      _ <- liftEffect $ RO.sendAll st.outs (Art.releaseAll solo st.headNote st.soloPolys)
+      H.modify_ _ { soloPolys = [] }
     H.modify_ \s' -> s'
       { sounding = s
       -- a sample applied before is no guide to what this mode has taken
@@ -540,12 +523,11 @@ dispatch = case _ of
         Left _ ->
           H.modify_ _ { polyNote = Just "Amphora unreachable — poly voices uncorrected" }
         Right items -> do
-          let polys = polyInit items
-              missing = concatMap (\p -> filter isNothing p.rig.tables) polys
-              wanted = length (concatMap (\p -> p.rig.tables) polys)
+          let tables = Poly.tablesFor (polyLabels RM.Saich <> polyLabels RM.Rings) items
+              missing = filter isNothing tables
+              wanted = length tables
           H.modify_ _
-            { polys = polys
-            , vcoTables = items
+            { vcoTables = items
             , polyNote =
                 if null missing then Nothing
                 else Just (show (length missing) <> " of " <> show wanted
@@ -554,18 +536,6 @@ dispatch = case _ of
           -- the rig's ES-9 lines carry their tables, so tell it again now
           pushRouting
   Step tick -> do
-    -- Note-offs must not wait for the next MODEL step. A gate shorter than a
-    -- step would otherwise sound until something replaced it, so gate length
-    -- would have no audible effect at all. Retire on every scheduler tick, the
-    -- finest grid this component sees.
-    stTick <- H.get
-    when (stTick.sounding == Local && isNothing stTick.playing) do
-      for_ stTick.binnacle \bin -> do
-        let stepped = map (\p -> { p, r: RV.expireAt tick.firePerfMs p.voices }) stTick.polys
-        unless (null (concatMap (\s -> s.r.emits) stepped)) do
-          liftEffect $ for_ stepped \s ->
-            Poly.emitAll (Binnacle.socket bin) s.p.rig tick.firePerfMs s.r.emits
-          H.modify_ _ { polys = map (\s -> s.p { voices = s.r.voices }) stepped }
     st <- H.get
     -- The model steps on every scheduler tick, a 16th note; Odonus's clock and
     -- each head's speed decide which of those a head steps on (Reef.Odonus).
@@ -642,83 +612,24 @@ dispatch = case _ of
           in { items: acc.items <> [ { f, v } ], seed }
         velied = foldl velStep { items: [], seed: g.seed } r.fired
         firedV = velied.items
-        -- Each note with the note its head is holding when it plays: a fast head's
-        -- second note in a step is held over from its first, not from the last step.
-        withPrev = (foldl
-          (\acc fv ->
-            let held = join (acc.held !! fv.f.headIdx)
-                next = if fv.f.glide then Just fv.f.pitch else Nothing
-            in { held: fromMaybe acc.held (updateAt fv.f.headIdx next acc.held)
-               , out: snoc acc.out { fv, prev: held, atMs: emitAtMs + subMs fv.f } })
-          { held: st.headNote, out: [] } firedV).out
-        -- The step's notes in groups by their place in it, earliest first, for
-        -- the allocators, which take the notes that start together as one chord.
-        byTime = map (\grp -> { atMs: (NEA.head grp).atMs, notes: NEA.toArray grp })
-          (groupAllBy (comparing _.atMs) withPrev)
-      -- Local MIDI I/O only. In Rig (Atlantis) mode the BEAM voice sounds; the
-      -- frontend advances the same model purely to mirror it (co-sim display), so
-      -- it must NOT also emit — otherwise you'd double-trigger on the rig.
-      -- Solo: while a REPLAY loop is running, the live model still advances
-      -- (silently) but does NOT emit — replay owns the MIDI out (#151, R2b).
+      -- SOLO: the page plays its own notes, through the same articulation the
+      -- rig plays (Reef.Articulation): legato, slides, ratchets and the Rample
+      -- as one instrument, down Web MIDI only, never an interface
+      -- (docs/kb/plans/hardware-through-the-rig.md). With no MIDI at all, the
+      -- browser's own voice. In Rig (Atlantis) mode the BEAM sounds and the page
+      -- only mirrors the model; while a REPLAY loop runs, replay owns the out.
       when (st.sounding == Local && isNothing st.playing) do
-        -- Silence any voice the generator muted this step.
-        liftEffect $ for_ newlyMuted \h -> case join (st.headNote !! h) of
-          Just n -> noteOffEverywhere st.outs st.routing h n
-          Nothing -> pure unit
-        for_ st.binnacle \bin -> liftEffect $ for_ newlyMuted \h ->
-          for_ (es9LinesOf st h) (Es9Line.release (Binnacle.socket bin))
-        -- Emit MIDI with per-head legato: glide cells HOLD until the next note
-        -- (tie if same pitch, portamento-slide if different); non-glide cells are
-        -- gated notes whose length scales with tempo.
-        liftEffect $ for_ withPrev \n ->
-          emitNote st.outs st.routing n.fv.f.headIdx n.atMs (gateMsFor n.fv.f) n.fv.v
-            n.prev n.fv.f
-
-      -- Poly instruments are driven separately from the MIDI fan-out, because
-      -- an allocator is STATEFUL and shared: several heads routed to one Saich
-      -- are competing for the same four oscillators, so they cannot each be
-      -- handled independently the way a MIDI leg can. One pass per INSTRUMENT —
-      -- two instruments share nothing, so they get a state each.
-      when (st.sounding == Local && isNothing st.playing) do
-        for_ st.binnacle \bin -> do
-          let sock = Binnacle.socket bin
-              polyNotes grp = map
-                (\n -> { headIdx: n.fv.f.headIdx, pitch: n.fv.f.pitch, gateMs: gateMsFor n.fv.f })
-                grp.notes
-          polys' <- liftEffect $ foldM
-            (\polys grp -> do
-              let played = map (playPoly st.routing (polyNotes grp) grp.atMs) polys
-              for_ played \p -> Poly.emitAll sock p.poly.rig grp.atMs p.emits
-              pure (map _.poly played))
-            st.polys byTime
-          -- Mono ES-9 pitch lines: each head's own, with its glide (the slide).
-          liftEffect $ for_ withPrev \n ->
-            for_ (es9LinesOf st n.fv.f.headIdx) \line ->
-              Es9Line.emit sock line emitAtMs
-                { atMs: n.atMs, pitch: n.fv.f.pitch, prev: n.prev
-                , glide: n.fv.f.glide, gateMs: gateMsFor n.fv.f }
-          H.modify_ _ { polys = polys' }
-
-      -- The Rample as ONE instrument, its four voices allocated. Outside the
-      -- `binnacle` block above because this one needs no ES-9 socket: the
-      -- allocator's decisions leave as MIDI like any other note.
-      when (st.sounding == Local && isNothing st.playing) do
-        for_ (ramplePolyOf st.routing) \cfg -> do
-          let rampleNotes grp = map
-                (\n -> { headIdx: n.fv.f.headIdx, pitch: n.fv.f.pitch
-                       , gateMs: gateMsFor n.fv.f, vel: n.fv.v })
-                grp.notes
-          voices' <- liftEffect $ foldM
-            (\voices grp -> do
-              let rr = playRample cfg st.routing (rampleNotes grp) grp.atMs voices
-              emitRample st.outs cfg rr.emits
-              for_ rr.refused \pitch ->
-                Console.warn $ "[rample] dropped note " <> show pitch
-                  <> ": outside the card (" <> show cfg.pitchOfSlot0 <> ".."
-                  <> show (cfg.pitchOfSlot0 + cfg.slots - 1) <> ")"
-              pure rr.voices)
-            st.rampleVoices byTime
-          H.modify_ _ { rampleVoices = voices' }
+        if null st.outs then
+          liftEffect $ for_ firedV \fv ->
+            browserNote (emitAtMs + subMs fv.f) (gateMsFor fv.f) fv.v (join (st.headNote !! fv.f.headIdx)) fv.f
+        else do
+          let
+            solo = RO.soloRouting st.outs st.routing (map RM.SOdonusHead [ 0, 1, 2, 3 ])
+            played = Art.playStep solo
+              { odo: r.odo, stepMs, nowMs: emitAtMs, polys: st.soloPolys, held: st.headNote
+              , newlyMuted, notes: map (\fv -> { fired: fv.f, velocity: fv.v }) firedV }
+          _ <- liftEffect $ RO.sendAllAt st.outs emitAtMs played.sends
+          H.modify_ _ { soloPolys = played.polys }
       let
         -- A glide note stays held (its pitch); a gated note auto-ends.
         nextNote f = if f.glide then Just f.pitch else Nothing
@@ -1658,169 +1569,20 @@ rigUrl = "ws://127.0.0.1:3012/ws"
 gridCfg :: Scheduler.GridConfig
 gridCfg = { stepBeats: 0.25, lookaheadMs: 180.0, tickMs: 25 }
 
--- | The per-head legato state machine for one emitted note. `prev` is the note
--- | currently held on this head's channel (from a previous glide), if any.
--- |   glide + same pitch  → tie: leave the held note ringing (no retrigger)
--- |   glide + diff pitch  → slide: porta-on, note-on new, note-off old (overlap)
--- |   glide + nothing held → start a held note (no auto-off)
--- |   no glide             → gated note: end any held note, then a roll of
--- |                          `ratchet` retriggers filling `gateMs` (1 = a single
--- |                          hit; the old behaviour). Glide and ratchet don't mix
--- |                          (a slide is a single sustained event).
--- | `atMs` is the ABSOLUTE performance.now onset for this note (from the
--- | scheduler's `firePerfMs`, + swing). Every event is scheduled at an absolute
--- | timestamp so Web MIDI fires it on the beat regardless of how long the Halogen
--- | pipeline took to reach here — this is what keeps the frontend monitor locked to
--- | the backend rather than trailing it by the render latency.
-emitNote
-  :: RO.Outs -> RM.Table -> Int -> Number -> Number -> Int -> Maybe Int -> M.Fired
-  -> Effect Unit
-emitNote outs tbl headIdx atMs gateMs vel prev f =
-  -- No MIDI port at all (a visitor to the static site, with no Web MIDI or
-  -- none granted): the browser's own voice plays, so Odonus is never silent
-  -- for want of an instrument. A rig always has ports, so it never comes here.
-  if null outs then browserNote else
-  for_ (RO.resolveLegs outs tbl (RM.SOdonusHead headIdx)) \r ->
-    case r.wire, r.out of
-      Just w, Just o
-        -- Checked BEFORE `carriesLine`, because a Rample is neither a line nor
-        -- an ordinary trigger: its pitch does not travel in the note at all.
-        | Just rp <- w.rample -> rample o (w.channel - 1) rp (atMs + r.leg.offsetMs)
-        | RM.carriesLine r.leg.dest -> line o (w.channel - 1) (atMs + r.leg.offsetMs)
-        | otherwise -> trigger o (w.channel - 1) (fromMaybe p w.noteOverride) (atMs + r.leg.offsetMs)
-      _, _ -> pure unit
-  where
-  p = f.pitch
-  -- the browser voice: a tie holds (nothing new), a ratchet is its hits
-  browserNote = case prev, f.glide of
-    Just q, true | q == p -> pure unit
-    _, _ -> do
-      now <- Time.perfNow
-      let rat = if f.ratchet < 1 then 1 else f.ratchet
-          sub = gateMs / toNumber rat
-      for_ (range 0 (rat - 1)) \k ->
-        Voice.play { note: p, velocity: vel, delayMs: atMs - now + toNumber k * sub
-                   , durMs: if rat <= 1 then gateMs else sub * 0.85 }
-  -- A TRIGGER leg (an FH-2 envelope or gate): fired once, at the note's velocity
-  -- and for its gate length, so a sustaining envelope tracks the gate rather than
-  -- running on its own. Velocity is carried because `velDepth` is the ONLY
-  -- per-note expression this path has — the shape itself is config.
-  --
-  -- Ratchets are deliberately not subdivided here: retriggering an envelope once
-  -- per ratchet is a different musical decision from the one the grid recorded.
-  trigger o ch note t =
-    Midi.scheduleNoteAtMs o { channel: ch, note, velocity: vel, atMs: t, durMs: gateMs }
-  -- A RAMPLE leg: the pitch becomes a start-point CC ahead of the note, and the
-  -- note is only the trigger. `Reef.Rample` owns the arithmetic — the same
-  -- module purerl-tidal's sink calls — so the browser and the BEAM cannot
-  -- disagree about which slice a pitch is.
-  --
-  -- A pitch the card does not hold is DROPPED, not clamped: a silently
-  -- transposed note is harder to notice than a missing one.
-  --
-  -- Unlike an envelope, ratchets ARE subdivided here. Retriggering a sample is
-  -- exactly what a ratchet means on a sample player, and it costs one extra
-  -- note per hit, not one extra CC — the slice does not change between them.
-  -- A tie is honoured for the same reason it is on a line: the player asked for
-  -- the slice to keep ringing.
-  rample o ch rp t =
-    let held = case prev, f.glide of
-          Just q, true | q == p -> true
-          _, _ -> false
-        layer = { velocity: Nothing, slots: rp.slots
-                , pitchOfSlot0: Just rp.pitchOfSlot0, slotPitches: Nothing }
-        rat = if f.ratchet < 1 then 1 else f.ratchet
-        sub' = gateMs / toNumber rat
-    in if held then pure unit
-       else case Rample.slotFor layer p of
-         -- SAID, not swallowed. A pitch the card does not hold is dropped
-         -- rather than transposed, and a drop nobody reports is indistinguishable
-         -- from the module declining to retrigger — which is the exact
-         -- confusion this warning exists to end.
-         Nothing ->
-           Console.warn $ "[rample] v" <> show rp.voice <> " dropped note " <> show p
-             <> ": outside the card (" <> show rp.pitchOfSlot0 <> ".."
-             <> show (rp.pitchOfSlot0 + rp.slots - 1) <> ")"
-         Just slot -> do
-           Midi.sendCCAtMs o
-             { channel: ch
-             , controller: Rample.startCC rp.voice
-             , value: Rample.ccForSlot slot rp.slots
-             , atMs: t - toNumber rp.settleMs
-             }
-           for_ (range 0 (rat - 1)) \k ->
-             Midi.scheduleNoteAtMs o
-               { channel: ch, note: rp.trigger, velocity: vel
-               , atMs: t + toNumber k * sub'
-               , durMs: if rat <= 1 then gateMs else sub' * 0.85 }
-  -- A LINE leg: the full legato state machine (tie / slide / gated + ratchet).
-  line o ch t =
-    -- Portamento ON only, never its time (CC 5): the glide time is the
-    -- synth's own setting, and a fixed CC 5 overwrote it on every slide
-    -- (Yarns maps CC 5 onto its PO setting, so PO kept snapping back to 31).
-    let portaOn = Midi.sendCC o { channel: ch, controller: 65, value: 127 }
-        portaOff = Midi.sendCC o { channel: ch, controller: 65, value: 0 }
-        rat = if f.ratchet < 1 then 1 else f.ratchet
-        ratchetNote =
-          if rat <= 1 then Midi.scheduleNoteAtMs o { channel: ch, note: p, velocity: vel, atMs: t, durMs: gateMs }
-          else
-            let sub = gateMs / toNumber rat
-            in for_ (range 0 (rat - 1)) \k ->
-                 Midi.scheduleNoteAtMs o
-                   { channel: ch, note: p, velocity: vel
-                   , atMs: t + toNumber k * sub, durMs: sub * 0.85 }
-    in case prev, f.glide of
-      Just q, true | q == p -> pure unit                         -- tie
-      Just q, true -> do                                          -- slide
-        portaOn
-        Midi.noteOnAtMs o { channel: ch, note: p, velocity: vel, atMs: t }
-        Midi.noteOffAtMs o { channel: ch, note: q, atMs: t + 60.0 }
-      -- The ARRIVAL of a slide, as on a 303: the glide flag on the held note
-      -- carries it into this one, so this note overlaps it as a slide does
-      -- and then ends at its own gate. Ending the held note first would be a
-      -- detached retrigger, and a single GLIDE cell would never slide at all
-      -- (Yarns's LG=AUTO and `Es9Line` both slide here). Its ratchet is not
-      -- played, since a slide is one sustained event. The overlap is kept
-      -- inside the gate, or a short note would end before the held one and
-      -- leave a mono synth on the old pitch.
-      Just q, false
-        | q == p ->                                               -- tie, then end
-            Midi.noteOffAtMs o { channel: ch, note: q, atMs: t + gateMs }
-        | otherwise -> do                                         -- slid into, then end
-            portaOn
-            Midi.scheduleNoteAtMs o { channel: ch, note: p, velocity: vel, atMs: t, durMs: gateMs }
-            Midi.noteOffAtMs o { channel: ch, note: q, atMs: t + min 60.0 (gateMs / 2.0) }
-      Nothing, true -> do                                         -- start held
-        portaOff
-        Midi.noteOnAtMs o { channel: ch, note: p, velocity: vel, atMs: t }
-      Nothing, false -> do                                        -- gated
-        portaOff
-        ratchetNote
-
--- | Note-off one head's held note on EVERY leg it was started on.
-noteOffEverywhere :: RO.Outs -> RM.Table -> Int -> Int -> Effect Unit
-noteOffEverywhere outs tbl h n =
-  for_ (RO.resolveLegs outs tbl (RM.SOdonusHead h)) \r -> case r.wire, r.out of
-    Just w, Just o ->
-      -- A Rample's note is its TRIGGER, never the pitch. Sending the pitch here
-      -- would be a note-off for a note that was never started, and leave the
-      -- trigger that WAS started still held.
-      let note = case w.rample of
-            Just rp -> rp.trigger
-            Nothing -> n
-      in Midi.noteOffAt o { channel: w.channel - 1, note, delayMs: 0.0 }
-    _, _ -> pure unit
-
--- | Note-off every held note (e.g. on Stop) and clear the held-note table.
--- | Routed, like the note-ons: a held note must be released on every leg it was
--- | started on. Releasing only the port a head used to hardcode would leave a
--- | second destination droning — the shape "stopping doesn't stop anything" is
--- | made of.
-silenceHeld :: RO.Outs -> RM.Table -> Array (Maybe Int) -> Effect Unit
-silenceHeld outs tbl held =
-  forWithIndex_ held \h mn -> case mn of
-    Just n -> noteOffEverywhere outs tbl h n
-    Nothing -> pure unit
+-- | One note in the browser's own voice: what a visitor with no MIDI hears
+-- | (the static site), so Odonus is never silent for want of an instrument.
+-- | A tie holds (nothing new); a ratchet is its hits. `atMs` is the absolute
+-- | `performance.now` onset, `prev` the note the head is holding.
+browserNote :: Number -> Number -> Int -> Maybe Int -> M.Fired -> Effect Unit
+browserNote atMs gateMs vel prev f = case prev, f.glide of
+  Just q, true | q == f.pitch -> pure unit
+  _, _ -> do
+    now <- Time.perfNow
+    let rat = if f.ratchet < 1 then 1 else f.ratchet
+        sub = gateMs / toNumber rat
+    for_ (range 0 (rat - 1)) \k ->
+      Voice.play { note: f.pitch, velocity: vel, delayMs: atMs - now + toNumber k * sub
+                 , durMs: if rat <= 1 then gateMs else sub * 0.85 }
 
 -- | MIDI output port (substring match). On macOS enable the IAC Driver in
 -- | Audio MIDI Setup and receive this bus in Ableton; each head sends on
@@ -2018,202 +1780,22 @@ render s =
         Review -> replayPanel s
     ]
 
--- | Every polyphonic instrument the rack can drive, with whichever calibration
--- | tables the Amphora fetch turned up.
--- |
--- | The one place that says which instruments exist, which labels correct them,
--- | and — via `Poly.saichRig` / `Poly.ringsRig` — where they are patched. Called
--- | with `[]` before the fetch returns, which yields the same instruments
--- | playing uncorrected rather than no instruments at all.
-polyInit :: Array Amphora.LibItem -> Array PolyInst
-polyInit items =
-  [ { inst: RM.Saich
-    , rig: Poly.saichRig (Poly.tablesFor [ "saich-1", "saich-2", "saich-3", "saich-4" ] items)
-    , voices: RV.empty RV.saich
-    }
-  -- One table, because Rings presents one pitch input however many voices it
-  -- holds. Its correction is its CV input's own error, which every note shares.
-  , { inst: RM.Rings
-    , rig: Poly.ringsRig (Poly.tablesFor [ "rings-1" ] items)
-    , voices: RV.empty RV.rings
-    }
-  ]
+-- | Each voice's calibration for a poly instrument, by the labels DeepStar
+-- | files them under, from the `vco-calibrations` fetch (none: nominal).
+polyTables :: Array Amphora.LibItem -> RM.InstrumentId -> Array (Array Table)
+polyTables items inst = map (maybe [] pure) (Poly.tablesFor (polyLabels inst) items)
 
--- | Run one step's notes through ONE instrument's allocator.
--- |
--- | Retires elapsed notes FIRST, so a note arriving this step can take a voice
--- | that just freed up rather than being dropped as overflow against a stale
--- | picture. The seating policy is re-read from the routing table each step, so
--- | toggling it in the router takes effect without a reload.
-playPoly
-  :: RM.Table
-  -> Array { headIdx :: Int, pitch :: Int, gateMs :: Number }
-  -> Number
-  -> PolyInst
-  -> { poly :: PolyInst, emits :: Array RV.Emit }
-playPoly tbl notes atMs p =
-  let
-    seated = p.voices { inst = (Poly.withOrder (polyOrder tbl p.inst) p.rig).inst }
-    expired = RV.expireAt atMs seated
-    mine = filter (\n -> headGoesPoly tbl p.inst n.headIdx) notes
-    step acc n =
-      let r = RV.noteOn atMs n.pitch n.gateMs acc.voices
-      in { voices: r.voices, emits: acc.emits <> r.emits }
-    played = foldl step { voices: expired.voices, emits: expired.emits } mine
-  in
-    { poly: p { voices = played.voices }, emits: played.emits }
+polyLabels :: RM.InstrumentId -> Array String
+polyLabels = case _ of
+  RM.Saich -> [ "saich-1", "saich-2", "saich-3", "saich-4" ]
+  -- one table: Rings presents one pitch input however many voices it holds
+  RM.Rings -> [ "rings-1" ]
 
--- | Whether this head has a live leg into THIS instrument. A head can route to
--- | MIDI and to a poly instrument at once — that is the point of fan-out — so
--- | this is a filter on the poly pass, not an alternative to the MIDI one, and
--- | it is per-instrument because two of them allocate independently.
-headGoesPoly :: RM.Table -> RM.InstrumentId -> Int -> Boolean
-headGoesPoly tbl inst h =
-  any isMine (filter _.on (RM.legsFor tbl (RM.SOdonusHead h)))
-  where
-  isMine lg = case lg.dest of
-    RM.DPoly d -> d.inst == inst
-    _ -> false
-
--- ---------------------------------------------------------------------------
--- The Rample as ONE instrument
--- ---------------------------------------------------------------------------
-
--- | The Rample's settle, taken from the profile that measured it rather than
--- | restated here — 40 ms between the start-point CC and the trigger.
-rampleSettleMs :: Number
-rampleSettleMs = case RV.rample.silencing of
-  RV.PerVoiceStrike ps -> ps.settleMs
-  _ -> 40.0
-
-type RampleCfg =
-  { port :: String
-  , channel :: Int
-  , triggers :: Array Int
-  , slots :: Int
-  , pitchOfSlot0 :: Int
-  }
-
--- | The Rample-as-instrument route, if the table has a live one.
--- |
--- | There is ONE allocator, so there is one configuration: if two legs
--- | disagreed they could not each be right, and the first live one winning is
--- | at least a rule. Same reconciliation argument as `polyOrder`.
--- | A head's mono ES-9 pitch lines: one per live `DEs9Cv` leg, with its VCO's
--- | table from the calibration fetch.
-es9LinesOf :: State -> Int -> Array Es9Line.Line
-es9LinesOf st h = mapMaybe line (filter _.on (RM.legsFor st.routing (RM.SOdonusHead h)))
-  where
-  line lg = case lg.dest of
-    RM.DEs9Cv d -> Just (Es9Line.lineFor st.vcoTables d)
-    _ -> Nothing
-
-ramplePolyOf :: RM.Table -> Maybe RampleCfg
-ramplePolyOf tbl = head (mapMaybe pick (filter _.on (concatMap _.legs tbl)))
-  where
-  pick lg = case lg.dest of
-    RM.DRamplePoly d -> Just d
-    _ -> Nothing
-
--- | The card's layout as `Reef.Rample` wants it. A chromatic run from
--- | `pitchOfSlot0`; a card in some other order would carry `slotPitches`.
-rampleLayer :: RampleCfg -> Rample.Layer
-rampleLayer d =
-  { velocity: Nothing, slots: d.slots
-  , pitchOfSlot0: Just d.pitchOfSlot0, slotPitches: Nothing }
-
--- | Whether this head has a live leg into the Rample-as-instrument. A head can
--- | route here AND to plain MIDI at once, so this filters the Rample pass
--- | rather than replacing the MIDI one.
-headGoesRamplePoly :: RM.Table -> Int -> Boolean
-headGoesRamplePoly tbl h =
-  any isMine (filter _.on (RM.legsFor tbl (RM.SOdonusHead h)))
-  where
-  isMine lg = case lg.dest of
-    RM.DRamplePoly _ -> true
-    _ -> false
-
--- | Hand this step's notes to the allocator and report what it decided.
--- |
--- | Notes the card cannot play are refused BEFORE allocation, not after: a
--- | pitch with no slice must not consume a voice, and it must not be allowed to
--- | reach the trigger half on its own — a trigger whose start-point CC was
--- | dropped plays the PREVIOUS slice, which is a wrong note rather than a
--- | missing one.
--- |
--- | `Reef.Voices` emits `Pitch` at the moment it is given and `Trigger` a
--- | settle later, so the pass runs a settle EARLY to land the trigger on the
--- | beat. Velocity is carried alongside because `RV.Emit` has no room for it
--- | and the Rample needs it: velocity is what picks the dynamic layer.
-playRample
-  :: RampleCfg
-  -> RM.Table
-  -> Array { headIdx :: Int, pitch :: Int, gateMs :: Number, vel :: Int }
-  -> Number
-  -> RV.Voices
-  -> { voices :: RV.Voices
-     , emits :: Array { emit :: RV.Emit, vel :: Int, gateMs :: Number }
-     , refused :: Array Int
-     }
-playRample cfg tbl notes atMs v0 =
-  let
-    mine = filter (\n -> headGoesRamplePoly tbl n.headIdx) notes
-    split = partition (\n -> isJust (Rample.slotFor (rampleLayer cfg) n.pitch)) mine
-    -- Emits nothing for a struck instrument: a sample rings out on its own
-    -- envelope, so this only frees slots for allocation.
-    start = atMs - rampleSettleMs
-    -- Expire at the same instant we allocate at, not at `atMs`: freeing a slot
-    -- 40 ms early would let a voice be stolen a beat before it was due.
-    expired = RV.expireAt start v0
-    step acc n =
-      let r = RV.noteOn start n.pitch n.gateMs acc.voices
-      in { voices: r.voices
-         , emits: acc.emits <> map (\e -> { emit: e, vel: n.vel, gateMs: n.gateMs }) r.emits
-         }
-    played = foldl step { voices: expired.voices, emits: [] } split.yes
-  in
-    { voices: played.voices, emits: played.emits, refused: map _.pitch split.no }
-
--- | Render the allocator's decisions as the two messages a Rample hears.
-emitRample
-  :: RO.Outs -> RampleCfg
-  -> Array { emit :: RV.Emit, vel :: Int, gateMs :: Number }
-  -> Effect Unit
-emitRample outs cfg es = case RO.outFor outs cfg.port of
-  Nothing -> pure unit
-  Just o -> for_ es \x -> case x.emit.action of
-    -- The allocator counts voices from 0; the Rample's panel counts from 1.
-    RV.Pitch i pitch -> case Rample.slotFor (rampleLayer cfg) pitch of
-      Nothing -> pure unit   -- refused upstream; unreachable
-      Just slot -> Midi.sendCCAtMs o
-        { channel: cfg.channel - 1
-        , controller: Rample.startCC (i + 1)
-        , value: Rample.ccForSlot slot cfg.slots
-        , atMs: x.emit.atMs
-        }
-    RV.Trigger i _ -> case cfg.triggers !! i of
-      Nothing -> pure unit
-      Just n -> Midi.scheduleNoteAtMs o
-        { channel: cfg.channel - 1, note: n, velocity: x.vel
-        , atMs: x.emit.atMs, durMs: x.gateMs
-        }
-    -- A struck instrument emits nothing else: no gate to close, no mix to move.
-    _ -> pure unit
-
--- | How one instrument's allocator should seat notes, reconciled across every
--- | route into it.
--- |
--- | ANY live leg asking for pitch order wins. The allocator has one state that
--- | all routes into that instrument share, so they cannot each have their own
--- | answer — and a disjunction is the only reconciliation that does not depend
--- | on which route you happen to read first.
-polyOrder :: RM.Table -> RM.InstrumentId -> RV.Order
-polyOrder tbl inst =
-  if any wants (concatMap _.legs tbl) then RV.ByPitch else RV.Arrival
-  where
-  wants lg = lg.on && case lg.dest of
-    RM.DPoly d -> d.inst == inst && d.sortByPitch
-    _ -> false
+-- | The calibration of the oscillator on an ES-9 pitch jack, if one is known.
+lineTable :: Array Amphora.LibItem -> Int -> Array Table
+lineTable items jack = case RM.es9JackVco jack of
+  Just label -> maybe [] pure (join (head (Poly.tablesFor [ label ] items)))
+  Nothing -> []
 
 -- | Tell the rig where the heads go (`odonus-routing`), when it is the rig
 -- | that sounds: the routing table's legs for heads I-IV, resolved against
@@ -2226,10 +1808,7 @@ pushRouting = do
   let
     -- the calibrations, as the fetch found them: an ES-9 line's oscillator by
     -- its pitch jack, and each voice of a poly instrument
-    cal =
-      { line: \jack -> maybe [] pure (Es9Line.lineFor st.vcoTables { jack, gate: 0 }).table
-      , poly: \inst -> maybe [] (map (maybe [] pure) <<< _.rig.tables) (find (\p -> p.inst == inst) st.polys)
-      }
+    cal = { line: lineTable st.vcoTables, poly: polyTables st.vcoTables }
   when (st.sounding == Rig && not (null st.outs)) $ for_ st.binnacle \bin ->
     liftEffect $ Transport.send (Binnacle.socket bin)
       ("odonus-routing " <> RR.encodeVoiceRouting (RO.voiceRouting st.outs st.routing cal (map RM.SOdonusHead [ 0, 1, 2, 3 ])))

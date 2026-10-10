@@ -31,12 +31,15 @@ module Triggerfish.Routing.Out
   , fanNote
   , fanNoteAt
   , drumRouting
+  , soloDrumRouting
   , Calibrations
   , voiceRouting
+  , soloRouting
   , vetulaRouting
   , drumsOrbit
   , auditionLine
   , sendAll
+  , sendAllAt
   ) where
 
 import Prelude
@@ -55,7 +58,7 @@ import Reef.Calibration as Calibration
 import Reef.Rample as Rample
 import Reef.Routing as RR
 import Simple.JSON (writeJSON)
-import Triggerfish.Routing.Model (Destination(..), InstrumentId(..), Leg, Source(..), Table, Wire, cardLegs, carriesLine, es9JackBus, liveLegsFor, polyJacks, wireOf)
+import Triggerfish.Routing.Model (Destination(..), InstrumentId(..), Leg, Source(..), Table, Wire, cardLegs, carriesLine, es9JackBus, isInterface, liveLegsFor, polyJacks, wireOf)
 
 -- | Every MIDI output port, by name. Built once when MIDI access arrives.
 type Outs = Array { name :: String, out :: Midi.MidiOut }
@@ -86,8 +89,11 @@ type ResolvedLeg =
   , out :: Maybe Midi.MidiOut   -- Nothing = the named port is absent
   }
 
+-- | A source's legs as the PAGE sends them: never to an interface (the ES-9,
+-- | the FH-2), which only the rig sends to
+-- | (docs/kb/plans/hardware-through-the-rig.md).
 resolveLegs :: Outs -> Table -> Source -> Array ResolvedLeg
-resolveLegs outs tbl src = map res (liveLegsFor tbl src)
+resolveLegs outs tbl src = map res (filter (not <<< isInterface <<< _.dest) (liveLegsFor tbl src))
   where
   res leg =
     let w = wireOf leg.dest
@@ -190,13 +196,21 @@ fanNote outs tbl src ev =
 -- | absent is left out, so the rig plays exactly what the browser would. A
 -- | sample leg goes in as a voice: only the rig plays those, in Rig mode.
 drumRouting :: Outs -> Table -> Array Int -> RR.DrumRouting
-drumRouting outs tbl notes =
+drumRouting outs tbl = drumRoutingOf (const true) outs tbl
+
+-- | The drums as a page plays them in Solo: no lane reaches an interface (the
+-- | FH-2's gates), which only the rig sends to.
+soloDrumRouting :: Outs -> Table -> Array Int -> RR.DrumRouting
+soloDrumRouting = drumRoutingOf (not <<< isInterface <<< _.dest)
+
+drumRoutingOf :: (Leg -> Boolean) -> Outs -> Table -> Array Int -> RR.DrumRouting
+drumRoutingOf keep outs tbl notes =
   { notes
   , lanes: mapWithIndex (\lane _ -> mapMaybe resolve (legsOf lane)) notes
   , voices: mapWithIndex (\lane _ -> mapMaybe voice (legsOf lane)) notes
   }
   where
-  legsOf lane = liveLegsFor tbl (SDrumLane lane)
+  legsOf lane = filter keep (liveLegsFor tbl (SDrumLane lane))
   voice leg = case leg.dest of
     DSample d -> Just
       { s: d.set, n: d.n
@@ -297,6 +311,17 @@ voiceRouting outs tbl cal sources =
       }
     _ -> Nothing
 
+-- | What a page plays in Solo: its voices' legs to MIDI ports and the Rample
+-- | played as one instrument, but no interface (no ES-9 line or instrument,
+-- | no FH-2), which only the rig sends to.
+soloRouting :: Outs -> Table -> Array Source -> RR.VoiceRouting
+soloRouting outs tbl sources =
+  { voices: map (\src -> mapMaybe (resolveLeg outs) (filter (not <<< isInterface <<< _.dest) (liveLegsFor tbl src))) sources
+  , lines: []
+  , polys: []
+  , samplers: (voiceRouting outs tbl { line: const [], poly: const [] } sources).samplers
+  }
+
 -- | Vetula's sixteen channels as the rig's card player plays them: voice
 -- | `ch - 1` is the card on channel `ch`, down its row's live legs (or its
 -- | channel on the default port, with no row).
@@ -332,10 +357,15 @@ auditionLine = case _ of
 sendAll :: Outs -> Array RR.Send -> Effect Int
 sendAll outs sends = do
   now <- perfNow
-  map sum (traverse (one now) sends)
+  sendAllAt outs now sends
+
+-- | `sendAll`, each `atMs` from `base` (a `performance.now()` time) rather
+-- | than from now: a step's sends are timed from its onset.
+sendAllAt :: Outs -> Number -> Array RR.Send -> Effect Int
+sendAllAt outs now sends = map sum (traverse one sends)
   where
   byName name = map _.out (find (\r -> r.name == name) outs)
-  one now = case _ of
+  one = case _ of
     RR.Note n -> case byName n.port of
       Nothing -> pure 0
       Just o -> do

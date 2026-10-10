@@ -23,7 +23,6 @@ module Triggerfish.Odonus.Grid.Types
   , TwisterField(..)
   , twisterFieldLabel
   , State
-  , PolyInst
   , Action(..)
   , Slots
   ) where
@@ -42,7 +41,6 @@ import Reef.Input as RI
 import Reef.Route as Route
 import Triggerfish.Odonus.Samples as Samples
 import Triggerfish.Odonus.Model as M
-import Triggerfish.Poly as Poly
 import Reef.Voices as RV
 import Triggerfish.Odonus.Marbles as Marbles
 import Triggerfish.Clips (NoteEvent, MidiClip)
@@ -282,20 +280,6 @@ twisterFieldLabel = case _ of
   FGlide -> "GLIDE"
   FMacro -> "MACRO"
 
--- | One polyphonic instrument the rack can drive, and the allocator state that
--- | belongs to it.
--- |
--- | Separate states rather than one, because the instruments do not share
--- | anything: a note on Rings takes no oscillator away from the Saïch. What IS
--- | shared is per-instrument — several Odonus heads routed to the same module
--- | compete for its voices — which is why the state hangs off the instrument
--- | and not off the route.
-type PolyInst =
-  { inst :: RM.InstrumentId
-  , rig :: Poly.Rig
-  , voices :: RV.Voices
-  }
-
 type State =
   { odo :: M.Odonus
   , sounding :: Sounding     -- the ONE transport value (control-surface MISU refactor):
@@ -348,20 +332,13 @@ type State =
   , sceneNameInput :: String  -- the name typed in the SCENES form for the next capture
   , publishMsg :: Maybe String  -- transient status from a publish-scene-to-Amphora click
   , headNote :: Array (Maybe Int)  -- the held/sounding MIDI note per head (4)
-  -- Voice allocation for any DPoly leg — one entry per instrument the rack can
-  -- drive, because two of them are two independent allocators: a note on Rings
-  -- takes nothing away from the Saïch. `rig` is where the instrument reaches
-  -- and how to correct its pitch (tables fetched from Amphora at startup, all
-  -- Nothing until they arrive, which plays at nominal 1 V/oct rather than
-  -- refusing); `voices` is that allocator's live state.
-  , polys :: Array PolyInst
-  -- The Rample's ONE allocator. Not in `polys` because that array is keyed by
-  -- `RM.InstrumentId` and driven over the ES-9 socket; the Rample is reached by
-  -- MIDI and has no rig entry. Same shape of state, different wire.
-  , rampleVoices :: RV.Voices
-  , polyNote :: Maybe String  -- why poly is degraded, if it is
-  -- The `vco-calibrations` fetch, kept for the ES-9 pitch lines
-  -- (`Triggerfish.Es9Line`), which look their VCO's table up per leg.
+  -- In Solo, the allocators of the instruments the page plays itself (the
+  -- Rample as one instrument), as Reef.Articulation leaves them each step.
+  -- Empty means "start fresh": playStep makes them.
+  , soloPolys :: Array RV.Voices
+  , polyNote :: Maybe String  -- why poly calibration is missing, if it is
+  -- The `vco-calibrations` fetch, handed to the rig with the routing so its
+  -- ES-9 lines and poly instruments play in tune.
   , vcoTables :: Array LibItem
   , swing :: Number          -- groove: fraction of a step that off-beats lag (0..0.6)
   , velHumanize :: Int       -- velocity jitter range ± (0 = dead-flat)
