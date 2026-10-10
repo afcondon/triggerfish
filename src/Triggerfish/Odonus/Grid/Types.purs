@@ -336,6 +336,9 @@ type State =
   -- Rample as one instrument), as Reef.Articulation leaves them each step.
   -- Empty means "start fresh": playStep makes them.
   , soloPolys :: Array RV.Voices
+  -- In Solo, each line's plain note still sounding and when it ends
+  -- (Reef.Articulation's `sounding`): its note-off is still to be sent.
+  , soloSounding :: Array (Maybe { pitch :: Int, untilMs :: Number })
   , polyNote :: Maybe String  -- why poly calibration is missing, if it is
   -- The `vco-calibrations` fetch, handed to the rig with the routing so its
   -- ES-9 lines and poly instruments play in tune.

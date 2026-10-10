@@ -117,6 +117,7 @@ component =
         -- No tables yet: fetched from Amphora on Initialize. Until then the rig
         -- plays its ES-9 voices uncorrected.
         , soloPolys: []
+        , soloSounding: [ Nothing, Nothing, Nothing, Nothing ]
         , polyNote: Just "calibration tables not loaded"
         , vcoTables: []
         , swing: 0.0, velHumanize: 12
@@ -184,8 +185,8 @@ handleQuery = case _ of
       -- Let go of every held note and every voice an allocator still thinks
       -- is sounding: a transport that merely stops ticking would leave them.
       let solo = RO.soloRouting st.outs st.routing (map RM.SOdonusHead [ 0, 1, 2, 3 ])
-      _ <- liftEffect $ RO.sendAll st.outs (Art.releaseAll solo st.headNote st.soloPolys)
-      H.modify_ _ { soloPolys = [] }
+      _ <- liftEffect $ RO.sendAll st.outs (Art.releaseAll solo st.headNote st.soloSounding st.soloPolys)
+      H.modify_ _ { soloPolys = [], soloSounding = map (const Nothing) st.soloSounding }
     H.modify_ \s' -> s'
       { sounding = s
       -- a sample applied before is no guide to what this mode has taken
@@ -627,9 +628,9 @@ dispatch = case _ of
             solo = RO.soloRouting st.outs st.routing (map RM.SOdonusHead [ 0, 1, 2, 3 ])
             played = Art.playStep solo
               { odo: r.odo, stepMs, nowMs: emitAtMs, polys: st.soloPolys, held: st.headNote
-              , newlyMuted, notes: map (\fv -> { fired: fv.f, velocity: fv.v }) firedV }
+              , sounding: st.soloSounding, newlyMuted, notes: map (\fv -> { fired: fv.f, velocity: fv.v }) firedV }
           _ <- liftEffect $ RO.sendAllAt st.outs emitAtMs played.sends
-          H.modify_ _ { soloPolys = played.polys }
+          H.modify_ _ { soloPolys = played.polys, soloSounding = played.sounding }
       let
         -- A glide note stays held (its pitch); a gated note auto-ends.
         nextNote f = if f.glide then Just f.pitch else Nothing
