@@ -31,6 +31,7 @@ module Triggerfish.Routing.Out
   , fanNote
   , fanNoteAt
   , drumRouting
+  , Calibrations
   , voiceRouting
   , vetulaRouting
   , drumsOrbit
@@ -40,7 +41,7 @@ module Triggerfish.Routing.Out
 
 import Prelude
 
-import Data.Array (filter, find, mapMaybe, mapWithIndex, range)
+import Data.Array (any, concatMap, filter, find, head, mapMaybe, mapWithIndex, null, range)
 import Data.Foldable (sum)
 import Data.Int as Int
 import Data.Maybe (Maybe(..), fromMaybe, maybe)
@@ -54,7 +55,7 @@ import Reef.Calibration as Calibration
 import Reef.Rample as Rample
 import Reef.Routing as RR
 import Simple.JSON (writeJSON)
-import Triggerfish.Routing.Model (Destination(..), Leg, Source(..), Table, Wire, cardLegs, carriesLine, es9JackBus, liveLegsFor, wireOf)
+import Triggerfish.Routing.Model (Destination(..), InstrumentId(..), Leg, Source(..), Table, Wire, cardLegs, carriesLine, es9JackBus, liveLegsFor, polyJacks, wireOf)
 
 -- | Every MIDI output port, by name. Built once when MIDI access arrives.
 type Outs = Array { name :: String, out :: Midi.MidiOut }
@@ -228,18 +229,66 @@ resolveLegIn names leg = do
     , line: carriesLine leg.dest
     }
 
+-- | The calibrations the rig is handed with a routing: an ES-9 line's
+-- | oscillator by its pitch jack, and a poly instrument's, one per voice.
+type Calibrations =
+  { line :: Int -> Array Calibration.Table
+  , poly :: InstrumentId -> Array (Array Calibration.Table)
+  }
+
 -- | A melodic machine's voices (Odonus's heads, in order) as the rig is told
 -- | to play them: each voice's live MIDI legs, resolved as the drum lanes'
--- | are, and its ES-9 lines, each with its oscillator's calibration
--- | (`tableOf` a pitch jack), so the rig needs no lookup of its own. The kinds
--- | that allocate across voices (a poly instrument, a Rample played
--- | polyphonically) are not here yet.
-voiceRouting :: Outs -> Table -> (Int -> Array Calibration.Table) -> Array Source -> RR.VoiceRouting
-voiceRouting outs tbl tableOf sources =
+-- | are, its ES-9 lines, and the instruments that allocate across voices (a
+-- | poly instrument on the ES-9, the Rample played as one), each with its
+-- | calibrations, so the rig needs no lookup of its own.
+voiceRouting :: Outs -> Table -> Calibrations -> Array Source -> RR.VoiceRouting
+voiceRouting outs tbl cal sources =
   { voices: map (\src -> mapMaybe (resolveLeg outs) (liveLegsFor tbl src)) sources
   , lines: map (\src -> mapMaybe cvLine (liveLegsFor tbl src)) sources
+  , polys: mapMaybe poly [ Saich, Rings ]
+  , samplers: maybe [] pure sampler
   }
   where
+  tableOf = cal.line
+  legs = mapWithIndex (\i src -> { i, legs: liveLegsFor tbl src }) sources
+  -- a poly instrument, if any voice is routed to it; seated by pitch if any
+  -- route asks, since its one allocator is shared by them all
+  poly inst =
+    let
+      mine = filter (\v -> any (isPoly inst) v.legs) legs
+      js = polyJacks inst
+    in
+      if null mine then Nothing
+      else Just
+        { instrument: case inst of
+            Saich -> "saich"
+            Rings -> "rings"
+        , heads: map _.i mine
+        , byPitch: any (\v -> any (byPitch inst) v.legs) mine
+        , voiceBuses: js.voiceBuses
+        , gateBuses: []
+        , ctrlBus: js.ctrlBus
+        , tables: cal.poly inst
+        }
+  isPoly inst lg = case lg.dest of
+    DPoly d -> d.inst == inst
+    _ -> false
+  byPitch inst lg = case lg.dest of
+    DPoly d -> d.inst == inst && d.sortByPitch
+    _ -> false
+  -- the Rample as one instrument: ONE allocator, so the first live route's
+  -- configuration, fed by every voice routed to it
+  sampler = do
+    d <- head (mapMaybe (\lg -> case lg.dest of
+                          DRamplePoly r -> Just r
+                          _ -> Nothing) (concatMap _.legs legs))
+    port <- find (contains (Pattern d.port)) (map _.name outs)
+    pure
+      { heads: map _.i (filter (\v -> any isRample v.legs) legs)
+      , port, channel: d.channel, triggers: d.triggers, slots: d.slots, pitchOfSlot0: d.pitchOfSlot0 }
+  isRample lg = case lg.dest of
+    DRamplePoly _ -> true
+    _ -> false
   cvLine leg = case leg.dest of
     DEs9Cv d -> Just
       { pitchBus: es9JackBus d.jack
@@ -255,6 +304,8 @@ vetulaRouting :: Array String -> Table -> RR.VoiceRouting
 vetulaRouting names tbl =
   { voices: map (\ch -> mapMaybe (resolveLegIn names) (filter _.on (cardLegs names tbl ch))) (range 1 16)
   , lines: []
+  , polys: []
+  , samplers: []
   }
 
 -- | The SuperDirt orbit drum voices play on: an effects chain of their own,

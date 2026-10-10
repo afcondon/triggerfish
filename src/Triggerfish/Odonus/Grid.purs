@@ -2224,8 +2224,12 @@ pushRouting :: forall o m. MonadAff m => H.HalogenM State Action Slots o m Unit
 pushRouting = do
   st <- H.get
   let
-    -- the oscillator on a pitch jack, as the calibration fetch found it
-    tableOf jack = maybe [] pure (Es9Line.lineFor st.vcoTables { jack, gate: 0 }).table
+    -- the calibrations, as the fetch found them: an ES-9 line's oscillator by
+    -- its pitch jack, and each voice of a poly instrument
+    cal =
+      { line: \jack -> maybe [] pure (Es9Line.lineFor st.vcoTables { jack, gate: 0 }).table
+      , poly: \inst -> maybe [] (map (maybe [] pure) <<< _.rig.tables) (find (\p -> p.inst == inst) st.polys)
+      }
   when (st.sounding == Rig && not (null st.outs)) $ for_ st.binnacle \bin ->
     liftEffect $ Transport.send (Binnacle.socket bin)
-      ("odonus-routing " <> RR.encodeVoiceRouting (RO.voiceRouting st.outs st.routing tableOf (map RM.SOdonusHead [ 0, 1, 2, 3 ])))
+      ("odonus-routing " <> RR.encodeVoiceRouting (RO.voiceRouting st.outs st.routing cal (map RM.SOdonusHead [ 0, 1, 2, 3 ])))
