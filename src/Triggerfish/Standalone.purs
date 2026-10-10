@@ -80,6 +80,7 @@ import Web.HTML.Window as Window
 import Web.UIEvent.KeyboardEvent as KE
 import Web.UIEvent.KeyboardEvent.EventTypes as KET
 import Web.HTML.HTMLElement (HTMLElement)
+import Web.Event.Event (EventType(..))
 
 -- | One machine's page.
 -- |
@@ -157,6 +158,8 @@ type State =
   , confirming :: Maybe { slot :: Int, act :: String }
   }
 
+-- | The panel passes on Ctrl+` pressed inside it.
+foreign import limulusAskedToggle :: E.Event -> Boolean
 foreign import focusFrame :: HTMLElement -> Effect Unit
 foreign import focusSelf :: Effect Unit
 foreign import watchDocks :: (Boolean -> Effect Unit) -> (Boolean -> Effect Unit) -> Effect Unit
@@ -187,6 +190,7 @@ data Action o
   | ModeStored
   | ToggleLimulus
   | FromLimDrawer Drawer.Output
+  | FromFrame E.Event
   | DockAlways Boolean
   | DockWants Boolean    -- a page asks for the Limulus drawer (true) or is done with it
   | AskBrowser
@@ -262,6 +266,7 @@ handleAction cfg = case _ of
     _ <- liftEffect $ setInterval 1500 (HS.notify listener Tick)
     target <- liftEffect $ Window.toEventTarget <$> window
     _ <- H.subscribe $ eventListener KET.keydown target (Just <<< Key)
+    _ <- H.subscribe $ eventListener (EventType "message") target (Just <<< FromFrame)
     liftEffect $ watchDocks (HS.notify listener <<< DockAlways) (HS.notify listener <<< DockWants)
     drawer <- liftEffect (loadDrawer (drawerKey cfg))
     limWidth <- liftEffect (loadWidth (limKey cfg) 560.0)
@@ -394,6 +399,7 @@ handleAction cfg = case _ of
     else do
       when (st.limulus && st.limulusAsked) (handleAction cfg ToggleLimulus)
       H.modify_ _ { limulusAsked = false }
+  FromFrame e -> when (limulusAskedToggle e) (handleAction cfg ToggleLimulus)
   RigPlayed -> unlessM (H.gets _.playing) do
     H.modify_ _ { playing = true }
     pushSounding cfg
@@ -474,6 +480,12 @@ handleAction cfg = case _ of
       when (on /= st.playing) do
         H.modify_ _ { playing = on }
         pushSounding cfg
+  -- Limulus's key, Ctrl+` (VS Code's for its terminal): modified, so it types
+  -- nothing into the editor, and it works from a field too. The panel holds
+  -- the keyboard while open, so it passes the same key back (FromFrame).
+  Key e | Just ke <- KE.fromEvent e, KE.ctrlKey ke, not (KE.metaKey ke), KE.code ke == "Backquote" -> do
+    liftEffect $ E.preventDefault e
+    handleAction cfg ToggleLimulus
   Key e -> for_ (KE.fromEvent e) \ke -> unless (targetIsField e || KE.metaKey ke || KE.ctrlKey ke) do
     -- The tempo hotkeys, by the key's position (Triggerfish.Tempo.hotkey).
     case Tempo.hotkey ke of
@@ -488,8 +500,6 @@ handleAction cfg = case _ of
             "b" -> do
               st <- H.get
               when (isJust st.browser) (handleAction cfg (FromDrawer (Drawer.Toggled (not st.drawer.open))))
-            -- the console key (`): by position, so any layout
-            _ | KE.code ke == "Backquote" -> handleAction cfg ToggleLimulus
             -- Esc is the page's (it closes the innermost thing there); Limulus
             -- closes with its own key or its rail (AC, 2026-10-08)
             " " | cfg.playable && KE.shiftKey ke == cfg.spaceHears -> do
@@ -583,7 +593,7 @@ limulusInput :: State -> Drawer.Input
 limulusInput st = (Drawer.defaultInput "Limulus")
   { open = st.limulus, width = st.limWidth, resizable = true, edge = Drawer.Right
   , minWidth = 360.0, maxWidth = 1000.0, panelId = "tf-limulus"
-  , showLabel = "Show Limulus (`)", hideLabel = "Hide Limulus (`)" }
+  , showLabel = "Show Limulus (Ctrl+`)", hideLabel = "Hide Limulus (Ctrl+`)" }
 
 limKey :: forall o. Config o -> String
 limKey cfg = "triggerfish.limulus." <> cfg.nameplate

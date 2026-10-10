@@ -1,3 +1,9 @@
+// The Limulus panel passes on Ctrl+` pressed inside it (it holds the
+// keyboard while open): a message from the panel's own frame, on this
+// page's origin.
+export const limulusAskedToggle = (e) =>
+  e.origin === window.location.origin && !!e.data && e.data.limulus === "toggle";
+
 // Give the panel's frame the keyboard (its window's focus also has Limulus
 // take the latest buffer), or take it back.
 export const focusFrame = (el) => () => { if (el && el.contentWindow) el.contentWindow.focus(); };
