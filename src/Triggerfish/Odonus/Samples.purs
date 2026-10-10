@@ -49,7 +49,7 @@ keyOf :: Patterns -> String
 keyOf p = writeJSON (wire p)
 
 hasPatterns :: Patterns -> Boolean
-hasPatterns p = isJust p.harmony || isJust p.scale || isJust p.outScale || isJust p.gridHarmony || isJust p.heads
+hasPatterns p = isJust p.harmony || isJust p.scale || isJust p.outScale || isJust p.gridHarmony || isJust p.heads || isJust p.octave
 
 -- | The sample with no pattern to read: what the rig would send then.
 localSample :: Patterns -> Input
@@ -59,11 +59,11 @@ wire
   :: Patterns
   -> { harmony :: Nullable String, scale :: Nullable String
      , outScale :: Nullable { pattern :: String, root :: Int }, gridHarmony :: Nullable String
-     , heads :: Nullable String, quarters :: Int }
+     , heads :: Nullable String, octave :: Nullable String, quarters :: Int }
 wire p =
   { harmony: toNullable p.harmony, scale: toNullable p.scale
   , outScale: toNullable p.outScale, gridHarmony: toNullable p.gridHarmony
-  , heads: toNullable p.heads, quarters: 1 }
+  , heads: toNullable p.heads, octave: toNullable p.octave, quarters: 1 }
 
 -- | Ask for `window.count` steps from `from`. A model step is a sixteenth of
 -- | a cycle; the rig is told so as `quarters`, which a step length once set.
@@ -73,7 +73,7 @@ requestLine p from =
   in "odonus-sample " <> writeJSON
        { key: keyOf p, from, count: window.count, quarters: 1
        , harmony: w.harmony, scale: w.scale, outScale: w.outScale, gridHarmony: w.gridHarmony
-       , heads: w.heads }
+       , heads: w.heads, octave: w.octave }
 
 -- | The rig's answer, `odonus-samples {key, from, inputs}`, or Nothing for
 -- | any other frame.

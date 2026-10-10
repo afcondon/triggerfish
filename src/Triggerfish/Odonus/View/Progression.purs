@@ -30,13 +30,13 @@ type Chord = { name :: String, notes :: Array Int }
 -- | The chords shaping the grid over the sampled window, now first.
 gridChords :: State -> Array Chord
 gridChords = chords (\i -> case i of
-  SetSampled _ _ g _ -> g
+  SetSampled _ _ g _ _ -> g
   _ -> Nothing)
 
 -- | The chords colouring the output over the sampled window, now first.
 outChords :: State -> Array Chord
 outChords = chords (\i -> case i of
-  SetSampled c _ _ _ -> c
+  SetSampled c _ _ _ _ -> c
   _ -> Nothing)
 
 chords :: (Input -> Maybe (Array Int)) -> State -> Array Chord
