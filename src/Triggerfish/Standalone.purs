@@ -423,6 +423,11 @@ handleAction cfg = case _ of
       Nothing -> pure false
       Just bin -> liftEffect $ Transport.isConnected (Binnacle.socket bin)
     when (ok /= st.rigUp) (H.modify_ _ { rigUp = ok, staged = Nothing })
+    -- The rig came back (an Architeuthis restart, say): its voices went with
+    -- it, and a machine still playing in Atlantis changed no mode, so nothing
+    -- else would hand it back. Say how it sounds again, which hands the
+    -- machine's state (its patterns included) to the new rig.
+    when (ok && not st.rigUp && st.playing) (pushSounding cfg)
     publishStage cfg
     announce cfg
     handleAction cfg AskBrowser
