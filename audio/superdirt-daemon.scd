@@ -187,29 +187,49 @@ s.reboot {
 			});
 		};
 		s.sync;
-		// Takes, in every sample set — see takeFolders above. Read properly even
-		// when the library is lazy: doNotReadYet loses the first hit of a sample,
-		// and the first hit of a take you just recorded is the one being listened
-		// for.
+		// Takes, sets and tapes: REGISTERED, NOT READ (AC, 2026-10-11). Read
+		// whole they were 3.9 GB of scsynth on a 16 GB machine (279 takes,
+		// most of them test recordings), the rig's largest memory holder. Lazy,
+		// every name still plays (`s "mytake"` by hand loses only its first
+		// hit), and a bank is read properly on demand: Conspicillum asks for
+		// its corpus with `/atlantis/ensure` when a scene arrives, a cycle
+		// ahead of its first grain. Same order as before, so a set still
+		// shadows its take and a tape comes last.
+		~dirt.soundLibrary.doNotReadYet = true;
 		if(takeFolders.notEmpty, {
-			~dirt.soundLibrary.doNotReadYet = false;
-			("STELLATUS-SUPERDIRT takes = " ++ takeFolders.size ++ " from " ++ takesDir).postln;
+			("STELLATUS-SUPERDIRT takes = " ++ takeFolders.size ++ " from " ++ takesDir ++ " (lazy)").postln;
 			~dirt.loadSoundFiles(takeFolders);
 			s.sync;
 		});
-		// Swept sets, in every sample set, and read properly for the same
-		// reason takes are: a set you cut two minutes ago being silent on its
-		// first hit would be the least explicable silence on the rig.
 		if(setFolders.notEmpty, {
-			~dirt.soundLibrary.doNotReadYet = false;
-			("STELLATUS-SUPERDIRT sets = " ++ setFolders.size ++ " from " ++ setsDir).postln;
+			("STELLATUS-SUPERDIRT sets = " ++ setFolders.size ++ " from " ++ setsDir ++ " (lazy)").postln;
 			~dirt.loadSoundFiles(setFolders);
 			s.sync;
 		});
 		if(tapeFolders.notEmpty, {
-			("STELLATUS-SUPERDIRT tapes = " ++ tapeFolders.size ++ " from " ++ tapesDir).postln;
+			("STELLATUS-SUPERDIRT tapes = " ++ tapeFolders.size ++ " from " ++ tapesDir ++ " (lazy)").postln;
 			~dirt.loadSoundFiles(tapeFolders);
 		});
+		~dirt.soundLibrary.doNotReadYet = false;
+		// The banks read in full since boot, so an ensure for one already
+		// read is free (Conspicillum asks on every scene, edits included).
+		~ensured = Set.new;
+
+		// **Read one bank in full, by name, once.** The name is looked up as
+		// the boot registered it: a tape, then a set, then a take. Freed first,
+		// so the lazy registration is replaced rather than appended to.
+		OSCdef(\atlantisEnsure, { |msg|
+			var name = msg[1].asString;
+			var dir = [tapesDir, setsDir, takesDir]
+				.collect { |d| d +/+ name +/+ "" }
+				.detect { |d| File.exists(d) };
+			if(dir.notNil and: { ~ensured.includes(name.asSymbol).not }, {
+				~dirt.soundLibrary.freeSoundFiles([name.asSymbol]);
+				~dirt.loadSoundFiles([dir]);
+				~ensured.add(name.asSymbol);
+				("STELLATUS-SUPERDIRT read " ++ name).postln;
+			});
+		}, '/atlantis/ensure', recvPort: port).fix;
 
 		// **Load one bank now, without a restart.** Quadrat's "Send to · tape"
 		// projects a kept take into tapesDir and then says `/quadrat/load
@@ -220,6 +240,7 @@ s.reboot {
 			var name = dir.withoutTrailingSlash.basename.asSymbol;
 			~dirt.soundLibrary.freeSoundFiles([name]);
 			~dirt.loadSoundFiles([dir]);
+			~ensured.add(name);
 			("STELLATUS-SUPERDIRT loaded " ++ name).postln;
 		}, '/quadrat/load', recvPort: port).fix;
 		// --- Conspicillum resonator ------------------------------------------
