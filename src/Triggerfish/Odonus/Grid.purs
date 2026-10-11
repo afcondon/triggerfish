@@ -809,6 +809,10 @@ dispatch = case _ of
       when (st.sounding /= Rig) $
         for_ (Route.feedInputs st.feedsSeen new) enqueue
       H.modify_ _ { feedsSeen = new }
+  -- Hushed on the rig: its voice is gone, so an octave pattern it was
+  -- sampling ends here, and OCT goes back to where the pattern found it.
+  RigFrame msg | msg == "hushed" || msg == "hushed odonus" ->
+    H.modify_ \s -> s { odo = M.setOctavePattern Nothing s.odo }
   RigFrame msg -> for_ (Str.stripPrefix (Str.Pattern "reef-input ") msg) \json ->
     case decodeTagged json of
       Left _ -> liftEffect $ Console.warn ("Odonus: a reef-input from the rig did not decode: " <> take 120 json)
