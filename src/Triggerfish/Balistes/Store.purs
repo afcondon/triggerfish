@@ -38,12 +38,15 @@ module Triggerfish.Balistes.Store
 
 import Prelude
 
-import Data.Array (mapMaybe)
+import Data.Array (foldl, mapMaybe, snoc)
+import Data.Set as Set
+import Reef.Balistes.Lepidoptera (rhythmSlug)
 import Data.Maybe (Maybe(..), fromMaybe)
 import Data.Nullable (Nullable, toMaybe)
 import Effect (Effect)
 import Triggerfish.Balistes.Lepidoptera (parsePattern)
-import Triggerfish.Balistes.TriSnapshot (rhythmContent, rhythmOfContent)
+import Triggerfish.Balistes.Stage (freeName, takenWords, uniqueNames)
+import Triggerfish.Balistes.TriSnapshot (TriSnapshot(..), parseTri, rhythmContent, rhythmOfContent)
 import Triggerfish.Preset (Preset)
 
 -- | What a session restores: the one bank.
@@ -89,6 +92,20 @@ encodeOne p = { content: p.content, name: fromMaybe "" p.name, starred: p.starre
 decodeOne :: { content :: String, name :: String, starred :: Boolean } -> Preset
 decodeOne e = { content: e.content, name: if e.name == "" then Nothing else Just e.name, starred: e.starred }
 
+-- | A rhythm saved before names moved into the envelope (2026-08) carries its
+-- | name only in its text, and showed as "untitled": the name is lifted out,
+-- | as `migrateRhythm` does for v4. The names the bank already gives come
+-- | first, so a lifted name that is taken is the one that gets a number.
+recoverNames :: Array Preset -> Array Preset
+recoverNames presets = _.out (foldl step { taken: takenWords presets, out: [] } presets)
+  where
+  step acc p = case p.name, parseTri p.content of
+    Nothing, Just (TSFixed pat) | pat.name /= "" ->
+      let named = freeName acc.taken pat.name
+      in { taken: Set.insert (rhythmSlug named) acc.taken
+         , out: snoc acc.out { content: rhythmContent pat, name: Just named, starred: p.starred } }
+    _, _ -> acc { out = snoc acc.out p }
+
 -- | Load the bank. Prefers v5; otherwise migrates v4's rhythm library.
 -- |
 -- | The migration keeps RHYTHMS ONLY and drops v4's old snapshot bank — sanctioned
@@ -100,7 +117,7 @@ load :: Effect (Maybe Saved)
 load = do
   mEnv <- _load storeKey
   case toMaybe (mEnv :: Nullable Envelope) of
-    Just env -> pure (Just { presets: map decodeOne env.presets })
+    Just env -> pure (Just { presets: recoverNames (uniqueNames (map decodeOne env.presets)) })
     Nothing -> do
       mV4 <- _load legacyV4Key
       pure $ toMaybe (mV4 :: Nullable EnvelopeV4) <#> \v4 ->

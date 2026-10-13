@@ -100,12 +100,19 @@ export const loadWidth = (key) => (fallback) => () => {
 // line), for a drop target on the page to read.
 // A progression (`vetula-progression <name>`) carries its own type, which
 // Limulus reads to repoint a voice's block, and as plain text just its name
-// quoted, which drops into any line as a source.
+// quoted, which drops into any line as a source. A Balistes rhythm
+// (`balistes-rhythm <word>`) likewise, its word bare.
 const carry = (dt, text) => {
   const m = /^vetula-progression (.+)$/.exec(text);
+  const r = /^balistes-rhythm (.+)$/.exec(text);
   if (m) {
     dt.setData("application/x-vetula-progression", m[1]);
     dt.setData("text/plain", '"' + m[1] + '"');
+  } else if (r) {
+    // a Balistes rhythm: its word, which Limulus places in a `balistes $`
+    // line, and as plain text the word alone (it goes inside a pattern)
+    dt.setData("application/x-balistes-rhythm", r[1]);
+    dt.setData("text/plain", r[1]);
   } else dt.setData("text/plain", text);
   dt.effectAllowed = "copy";
 };

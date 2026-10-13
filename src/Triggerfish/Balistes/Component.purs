@@ -18,11 +18,14 @@ module Triggerfish.Balistes.Component (component, Output(..)) where
 
 import Prelude
 
-import Data.Array (concatMap, deleteAt, filter, find, length, mapWithIndex, modifyAt, null, range, sortWith, (!!))
+import Data.Array (concatMap, deleteAt, insertAt, filter, find, length, mapWithIndex, modifyAt, null, partition, range, sortWith, (!!))
 import Data.Tuple (Tuple(..), fst, snd)
 import Data.Foldable (any, foldl, for_)
+import Data.Map as Map
 import Data.Int (floor, round, toNumber)
 import Data.Maybe (Maybe(..), fromMaybe, isJust, isNothing, maybe)
+import Reef.Balistes.Lepidoptera (rhythmSlug)
+import Triggerfish.Balistes.Follow as Follow
 import Data.String (contains) as String
 import Data.String.Common (trim) as String
 import Data.String.Pattern (Pattern(..)) as String
@@ -69,6 +72,7 @@ import Triggerfish.Balistes.Source as Source
 import Triggerfish.Balistes.Store as Store
 import Triggerfish.Balistes.Remote as Remote
 import Triggerfish.Balistes.Lepidoptera (printPattern, parsePattern)
+import Triggerfish.Balistes.Stage as Stage
 import Triggerfish.SourceQuery (Query(..))
 import Triggerfish.Transport (Sounding(..))
 import Reef.Balistes.Sim as Sim
@@ -103,7 +107,7 @@ component =
         , identity: Nothing, lastChip: Nothing
         , active: AGrids, editing: false, presetsOpen: false, bankFilter: Nothing, clickMode: Assemble, laneEditOpen: false, fixedSel: 0, lane: "", laneReadout: "", selected: Nothing
         , scratchFixed: Nothing
-        , publishMsg: Nothing }
+        , publishMsg: Nothing, stageRhythms: Nothing, undoDelete: Nothing, follow: Nothing, followQueue: [], rigLine: Nothing }
     , render
     , eval: H.mkEval H.defaultEval
         { handleAction = handleAction, handleQuery = handleQuery, initialize = Just Initialize }
@@ -118,22 +122,36 @@ handleQuery = case _ of
   -- its name, with the machine it runs on (Grids or Rytm) as its tag.
   AskBrowser reply -> do
     s <- H.get
-    let row i p = { slot: i, name: fromMaybe "untitled" p.name, icons: (presetGlyph p).icons, tag: maybe "" machineTag (parseTri p.content), current: s.identity == Just p.content, section: "", builtin: false, drag: "", actions: [] }
-    pure (Just (reply { title: "Beats", modes: false, keep: "keep (c)", notice: "", rows: mapWithIndex row s.presets }))
+    let row i p = { slot: i, name: fromMaybe "untitled" p.name, icons: (presetGlyph p).icons, tag: maybe "" machineTag (parseTri p.content), current: s.identity == Just p.content, section: "", builtin: false, drag: Stage.rhythmDrag p, actions: [ "delete" ] }
+    pure (Just (reply { title: "Beats", modes: false, keep: "keep (c)", notice: maybe "" (\d -> "Deleted " <> fromMaybe "untitled" d.preset.name) s.undoDelete, rows: mapWithIndex row s.presets }))
   BrowserRecall i _ next -> do
+    H.modify_ _ { undoDelete = Nothing }
     recallPreset i
     pure (Just next)
   BrowserKeep next -> do
+    H.modify_ _ { undoDelete = Nothing }
     captureNow
     pure (Just next)
-  BrowserUndo next -> pure (Just next)
+  -- the drawer's delete (it asks first), and its undo
+  BrowserAction i "delete" next -> do
+    s <- H.get
+    for_ (s.presets !! i) \preset -> do
+      H.modify_ (deletePresetAt i >>> _ { undoDelete = Just { at: i, preset } })
+      persist
+    pure (Just next)
   BrowserAction _ _ next -> pure (Just next)
+  BrowserUndo next -> do
+    s <- H.get
+    for_ s.undoDelete \d -> do
+      H.modify_ _ { presets = fromMaybe (s.presets <> [ d.preset ]) (insertAt d.at d.preset s.presets), undoDelete = Nothing }
+      persist
+    pure (Just next)
   -- no controls of its own in the shared bar (yet)
   AskBar _ -> pure Nothing
   BarAction _ next -> pure (Just next)
   BrowserDrop _ next -> pure (Just next)
   BrowserRename i name next -> do
-    H.modify_ \s -> s { presets = fromMaybe s.presets (modifyAt i (_ { name = Just name }) s.presets) }
+    H.modify_ \s -> s { presets = fromMaybe s.presets (modifyAt i (_ { name = Just name }) s.presets), undoDelete = Nothing }
     persist
     pure (Just next)
   -- No marks here: asked for its text, the shell falls back to AskSource.
@@ -170,8 +188,10 @@ handleQuery = case _ of
   -- re-hands-off), leaving Rig stops the voice. Local emission gates on `== Local`.
   SetSounding s next -> do
     st <- H.get
-    when (st.sounding == Rig && s /= Rig) $
-      for_ st.binnacle \bin -> liftEffect $ Transport.send (Binnacle.socket bin) "balistes-stop"
+    -- Stopping, or leaving the rig, stops the rig's voice: the page's beat,
+    -- or the line it is following.
+    when ((st.sounding == Rig || isJust st.follow) && s /= Rig) $
+      for_ st.binnacle \bin -> toRigVoice bin "balistes-stop"
     -- Leaving Silent: the Grids model did not advance while stopped, so put it on
     -- the step the clock is at now, as if it had. Its step is the absolute step
     -- mod 32; only the perturbation draws (one per wrap) differ from a model that
@@ -180,7 +200,12 @@ handleQuery = case _ of
       now <- currentStep
       H.modify_ \t -> t { bal = t.bal { step = now `mod` 32 }, nextModelStep = now }
     H.modify_ _ { sounding = s }
-    when (s == Rig) (handleAction PushBalistes)
+    -- Playing on the rig: carry on following a line that is playing, resume
+    -- the line that was (Stop then Play), else push the page's beat.
+    when (s == Rig && isNothing st.follow) case st.rigLine of
+      Just line -> for_ st.binnacle \bin -> liftEffect $
+        Transport.send (Binnacle.socket bin) ("tidal balistes $ \"" <> line <> "\"")
+      Nothing -> handleAction PushBalistes
     pure (Just next)
   AskSounding reply -> do
     s <- H.get
@@ -288,6 +313,13 @@ handleAction = case _ of
     for_ msaved \sv -> H.modify_ _
       { presets = sv.presets }
     H.modify_ _ { binnacle = Just bin }
+    -- The rig's stage keeps a copy of the named rhythms, which a
+    -- `balistes $ "<a b>"` line plays by name: subscribe on every connect,
+    -- since a rig restart empties it.
+    { emitter: stageE, listener: stageL } <- liftEffect HS.create
+    _ <- H.subscribe stageE
+    liftEffect $ Binnacle.onAppMessage bin (HS.notify stageL <<< StageFrameIn)
+    liftEffect $ Binnacle.onOpen bin (HS.notify stageL StageOpen)
     -- Merge the shared Amphora library in the BACKGROUND. Forked deliberately: the
     -- fetch times out at ~30s when the store is unreachable, and awaiting it here
     -- kept Balistes' Initialize (hence the whole component) from completing — so the
@@ -301,6 +333,10 @@ handleAction = case _ of
         _ -> pure unit
 
   Step tick -> do
+    -- what the rig's line plays from this step on, shown before the step runs
+    H.modify_ \s -> case partition (\f -> f.step <= tick.index) s.followQueue of
+      { yes: [], no: _ } -> s
+      { yes, no } -> foldl (flip (showNow tick.index)) (s { followQueue = no }) yes
     st <- H.get
     -- Atlantis keeps the schedulers RUNNING and mutes only the emit — see
     -- Triggerfish.Transport: "the frontend is muted but keeps its schedulers
@@ -312,8 +348,12 @@ handleAction = case _ of
     -- co-simulate, and a step here would only re-render three bands to move a
     -- playhead nobody is listening to. Balistes does no per-step work while
     -- stopped; `SetSounding` realigns the Grids model to the clock when it starts.
-    let audible = st.sounding == Local
-    unless (st.sounding == Silent) case st.active of
+    -- Following a line the rig plays: the model runs to show it, but the rig
+    -- is what sounds, and a rest shows nothing moving.
+    let following = isJust st.follow
+        audible = st.sounding == Local && not following
+        offset = maybe 0 _.from st.follow
+    unless ((st.sounding == Silent && not following) || maybe false _.rest st.follow) case st.active of
       -- A fixed rhythm: derive the step from the tick (no internal navigator),
       -- then emit each used lane's hit verbatim at its kit note + velocity. Reads
       -- `activePattern` so an ephemeral recalled snapshot (scratchFixed) plays too.
@@ -325,12 +365,12 @@ handleAction = case _ of
             -- the SHARED fixed-rhythm render (Reef.Balistes.Fixed.renderFixed) — the
             -- exact code the BEAM voice runs, keyed off the same absolute step, so a
             -- pushed fixed rhythm plays in lockstep. The frontend projects its rich
-            -- pattern onto the wire-flat reef pattern (fixedOf).
-            for_ (RF.renderFixed (fixedOf pat) tick.index) \e ->
+            -- pattern onto the wire-flat reef pattern (toWire).
+            for_ (RF.renderFixed (P.toWire pat) (tick.index - offset)) \e ->
               emitHit st.outs (RO.soloDrumRouting st.outs st.routing kitNotes) stepMs
                 (max 0.0 (tick.delayMs + toNumber e.pushMs))
                 e.note e.durMs e.velocity e.ratchet
-          H.modify_ _ { playStep = tick.index `mod` pat.steps }
+          H.modify_ _ { playStep = (tick.index - offset) `mod` pat.steps }
       AGrids -> do
         let
           -- Lockstep input-drain (deferred-on-both): apply any tick-tagged inputs
@@ -398,6 +438,25 @@ handleAction = case _ of
       H.modify_ _ { lastChip = cv }
       H.raise (IdentityChanged cv)
 
+  StageOpen -> do
+    H.modify_ _ { stageRhythms = Nothing }
+    st <- H.get
+    for_ st.binnacle \bin -> liftEffect (Transport.send (Binnacle.socket bin) Stage.subscribeLine)
+  -- the stage's whole table, on subscribing: it gets any of our rhythms it
+  -- lacks, and loses any we have deleted
+  StageFrameIn msg -> do
+    -- The stage's beats are everyone's: only those this bank names count as
+    -- ours, so connecting adds and updates ours and never deletes another
+    -- browser's. A delete is only ever a beat this page had and lost.
+    for_ (Stage.rhythmTable msg) \held -> do
+      H.modify_ \s -> s { stageRhythms = Just (Map.filterKeys (\word -> Map.member word (Stage.bankRhythms s.bal s.presets)) held) }
+      publishRhythms
+    for_ (Follow.parseNow msg) \now ->
+      H.modify_ \s -> s { followQueue = s.followQueue <> [ now ] }
+    for_ (Follow.lineOf msg) \line ->
+      H.modify_ _ { rigLine = Just line }
+    when (Follow.endsLine msg) $
+      H.modify_ _ { follow = Nothing, followQueue = [] }
   MidiReady outs nm -> do
     H.modify_ _ { outs = outs, midiName = nm }
     pushRouting
@@ -508,7 +567,9 @@ handleAction = case _ of
     H.modify_ _ { presetsOpen = false }
   StarPreset i ->
     H.modify_ \s -> s { presets = fromMaybe s.presets (modifyAt i (\p -> p { starred = not p.starred }) s.presets) }
-  DeletePreset i -> H.modify_ (deletePresetAt i)
+  DeletePreset i -> do
+    H.modify_ (deletePresetAt i)
+    persist
   -- Naming is promotion: a blank field means "still just a capture", so it
   -- clears back to Nothing rather than storing an empty string — otherwise a
   -- cleared name would read as a named-but-nameless artefact, and `presetLabel`
@@ -631,6 +692,7 @@ handleAction = case _ of
           Left _ -> "✗ publish failed (store offline?)" }
       Nothing -> pure unit
   PushBalistes -> do
+    H.modify_ _ { rigLine = Nothing }
     -- The routing table first, so the handoff's first hit already goes where
     -- the table says.
     pushRouting
@@ -645,8 +707,7 @@ handleAction = case _ of
       -- Fixed rhythm: push the whole pattern (stateless, no phase-hold needed).
       AFixed _ -> when (st.sounding == Rig) $ for_ (activePattern st) \pat ->
         for_ st.binnacle \bin ->
-          liftEffect $ Transport.send (Binnacle.socket bin)
-            ("balistes-fixed " <> encodeFixed (fixedOf pat))
+          toRigVoice bin ("balistes-fixed " <> encodeFixed (P.toWire pat))
       -- Grids: the phase-aligned BalSim handoff.
       AGrids -> pushHandoff st
   -- Purely a view narrowing; nothing to persist and nothing to push. Not saved
@@ -704,24 +765,17 @@ broadcastBInput input = do
   st <- H.get
   now <- currentStep
   -- Rig-send only in ATLANTIS (onRig = not audible); SOLO is silent to the rig.
-  when (st.sounding == Rig) $ for_ st.binnacle \bin ->
+  -- Not while following a line: the rig is playing the line, not this.
+  when (st.sounding == Rig && isNothing st.follow) $ for_ st.binnacle \bin ->
     liftEffect $ Transport.send (Binnacle.socket bin) (balInputMsg now input)
 
--- | Project the frontend's rich FixedPattern onto the wire-flat reef pattern: drop
--- | the name/kit metadata and flatten each cell's TrigCond to condX/condY (CAlways →
--- | 0). The frontend and the rig then share reef's renderFixed off this exact data.
-fixedOf :: P.FixedPattern -> RF.FixedPattern
-fixedOf p =
-  { steps: p.steps
-  , notes: p.notes
-  , grid: map (map cellOf) p.grid
-  }
-  where
-  cellOf c =
-    let cond = case c.cond of
-                 P.CAlways -> { x: 0, y: 0 }
-                 P.CEvery x y -> { x, y }
-    in { vel: c.vel, prob: c.prob, ratchet: c.ratchet, condX: cond.x, condY: cond.y }
+-- | Say something to the rig's Balistes voice. Whatever the page says to it
+-- | (a pushed beat, a stop) takes the voice off any `balistes $` line, so the
+-- | page stops following that line.
+toRigVoice :: forall o m. MonadAff m => Binnacle.Binnacle -> String -> H.HalogenM State Action () o m Unit
+toRigVoice bin line = do
+  H.modify_ _ { follow = Nothing, followQueue = [] }
+  liftEffect $ Transport.send (Binnacle.socket bin) line
 
 -- | Push the phase-aligned handoff: the whole BalSim stamped with nextModelStep, so
 -- | the rig holds it until that step. Used by the Push button and by snapshot recall
@@ -730,8 +784,8 @@ pushHandoff :: forall o m. MonadAff m => State -> H.HalogenM State Action () o m
 pushHandoff st =
   -- ATLANTIS only. Called by SyncToRig (the entering-ATLANTIS handoff, where audible
   -- is already false) and by snapshot recall (a no-op in SOLO — no rig leak).
-  when (st.sounding == Rig) $ for_ st.binnacle \bin ->
-    liftEffect $ Transport.send (Binnacle.socket bin)
+  when (st.sounding == Rig && isNothing st.follow) $ for_ st.binnacle \bin ->
+    toRigVoice bin
       ("balistes-sim-at " <> show st.nextModelStep <> " 0.25 " <> encodeBalSim (balSimOf st.bal))
 
 -- | Capture the CURRENTLY ACTIVE brain's playing-state into a `TriSnapshot`, so one
@@ -771,12 +825,34 @@ recallSnap = case _ of
     let idx = fromMaybe 0 (map fst (find (\(Tuple _ q) -> q.name == pat.name) (rhythmEntries st)))
     H.modify_ _ { active = AFixed idx, scratchFixed = Just pat }
     st2 <- H.get
-    when (st2.sounding == Rig) $ for_ st2.binnacle \bin ->
-      liftEffect $ Transport.send (Binnacle.socket bin) ("balistes-fixed " <> encodeFixed (fixedOf pat))
+    when (st2.sounding == Rig && isNothing st2.follow) $ for_ st2.binnacle \bin ->
+      toRigVoice bin ("balistes-fixed " <> encodeFixed (P.toWire pat))
+-- | Show what the rig's line plays from `now.step`: the saved beat its word
+-- | names, as the rig plays it (a rhythm from that step, a Grids beat from the
+-- | engine state the rig sent), or a rest for `~` or a word with no beat.
+-- | The chip and the drawer's bold row follow `identity`. Heard late (the
+-- | line's first event, announced as the rig starts it), a Grids engine is
+-- | run on to step `at`, where the rig's is.
+showNow :: Int -> Follow.Now -> State -> State
+showNow at now s = case find (\p -> map rhythmSlug p.name == Just now.word) s.presets of
+  Just p | Just named <- p.name -> case parseTri p.content, now.grids of
+    Just (TSGrids _), Just engine ->
+      s { active = AGrids, scratchFixed = Nothing, bal = catchUp (at - now.step) engine, identity = Just p.content, follow = Just { from: now.step, rest: false } }
+    Just (TSFixed _), _ | Just pat <- rhythmOfContent named p.content ->
+      let idx = fromMaybe 0 (map fst (find (\(Tuple _ q) -> q.name == pat.name) (rhythmEntries s)))
+      in s { active = AFixed idx, scratchFixed = Just pat, identity = Just p.content, follow = Just { from: now.step, rest: false } }
+    _, _ -> rest
+  _ -> rest
+  where
+  rest = s { identity = Nothing, follow = Just { from: now.step, rest: true } }
+  catchUp n b = if n <= 0 then b else catchUp (n - 1) (M.tick b).bal
+
 -- | Recall preset `i`: parse its content to a `TriSnapshot`, restore it, and park
 -- | the identity chip on the preset's text (glyph SOLID; ghosts on divergence).
 recallPreset :: forall o m. MonadAff m => Int -> H.HalogenM State Action () o m Unit
 recallPreset i = do
+  -- recalled with no line playing, a beat is what Play should play next
+  H.modify_ \s -> if isJust s.follow then s else s { rigLine = Nothing }
   st <- H.get
   case st.presets !! i of
     Nothing -> pure unit
@@ -797,7 +873,7 @@ enqueueBInput input = do
   let tag = now + inputBufferSteps
   -- Local always applies (SOLO plays it); rig-send only in ATLANTIS.
   H.modify_ \s -> s { pending = s.pending <> [ { step: tag, input } ] }
-  when (st.sounding == Rig) $ for_ st.binnacle \bin ->
+  when (st.sounding == Rig && isNothing st.follow) $ for_ st.binnacle \bin ->
     liftEffect $ Transport.send (Binnacle.socket bin) (balInputMsg now input)
 
 -- | Map a settled drag to the BInput that reproduces it on the rig. The four knob
@@ -825,8 +901,22 @@ savedOf s = { presets: s.presets }
 -- | after any bank / sequence edit; `persistLib` layers the rig re-push on top.
 persist :: forall o m. MonadAff m => H.HalogenM State Action () o m Unit
 persist = do
-  s <- H.get
+  s <- H.modify \st -> st { presets = Stage.uniqueNames st.presets }
   liftEffect (Store.save (savedOf s))
+  publishRhythms
+
+-- | Bring the stage's copy of the named rhythms up to date with the bank: a
+-- | write per new or changed one, a delete per one this page had that is gone. A bank with no
+-- | rhythms is a browser that has saved none here, not one that deleted them
+-- | all, so it changes nothing (as Vetula's progressions).
+publishRhythms :: forall o m. MonadAff m => H.HalogenM State Action () o m Unit
+publishRhythms = do
+  st <- H.get
+  for_ st.stageRhythms \seen -> for_ st.binnacle \bin -> do
+    let now = Stage.bankRhythms st.bal st.presets
+    unless (Map.isEmpty now) do
+      liftEffect $ for_ (Stage.rhythmLines seen now) (Transport.send (Binnacle.socket bin))
+      H.modify_ _ { stageRhythms = Just now }
 
 -- | Save after a library edit, then re-push the active pattern to the rig.
 persistLib :: forall o m. MonadAff m => H.HalogenM State Action () o m Unit
@@ -839,10 +929,10 @@ persistLib = persist *> repushFixed
 repushFixed :: forall o m. MonadAff m => H.HalogenM State Action () o m Unit
 repushFixed = do
   st <- H.get
-  when (st.sounding == Rig) case st.active of
+  when (st.sounding == Rig && isNothing st.follow) case st.active of
     AFixed _ -> for_ (activePattern st) \pat ->
       for_ st.binnacle \bin ->
-        liftEffect $ Transport.send (Binnacle.socket bin) ("balistes-fixed " <> encodeFixed (fixedOf pat))
+        toRigVoice bin ("balistes-fixed " <> encodeFixed (P.toWire pat))
     AGrids -> pure unit
 
 -- | What the nav shows instead of a channel number: how many drum lanes are

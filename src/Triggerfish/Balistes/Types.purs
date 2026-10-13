@@ -49,6 +49,8 @@ import Reef.Balistes.Input as RBI
 import Triggerfish.Balistes.Model as M
 import Triggerfish.Balistes.Pattern as P
 import Triggerfish.Glyph as G
+import Data.Map (Map)
+import Triggerfish.Balistes.Follow as Follow
 import Triggerfish.Preset (Preset)
 import Triggerfish.Balistes.TriSnapshot (Brain, rhythmOfContent)
 import Triggerfish.Midi.Routing as Routing
@@ -190,6 +192,21 @@ type State =
   -- the POLYTRIG jack rack (SELENE DRUMS tab) — browser-only, no reef path.
   -- transient status for the "publish to Amphora" action on the active rhythm.
   , publishMsg :: Maybe String
+  -- The named rhythms the rig's stage holds, by word (Balistes.Stage), which
+  -- `balistes $ "<a b>"` plays; Nothing until the stage has answered a
+  -- subscribe on this connect.
+  , stageRhythms :: Maybe (Map String String)
+  -- the drawer's last delete, which its undo puts back where it was
+  , undoDelete :: Maybe { at :: Int, preset :: Preset }
+  -- Following a `balistes $` line the rig plays (Balistes.Follow): the beat
+  -- shown came in at step `from`, or a rest. Shown, never sounded or pushed;
+  -- the page's own push takes the voice back and ends it.
+  , follow :: Maybe { from :: Int, rest :: Boolean }
+  -- what the rig said it will play next, each applied on its step
+  , followQueue :: Array Follow.Now
+  -- the last `balistes $` line the rig played (its pattern), which Play
+  -- resumes after a Stop; forgotten once a beat is recalled here instead
+  , rigLine :: Maybe String
   }
 
 data Action
@@ -224,6 +241,8 @@ data Action
   | Step Scheduler.Tick
   | Frame
   | MidiReady RO.Outs String
+  | StageOpen                 -- the rig socket (re)connected: subscribe to the stage
+  | StageFrameIn String       -- a frame from the rig (the stage's table among them)
   | ResetPat
   | Dice
   | PadAt Int Int Int          -- clientX clientY buttons

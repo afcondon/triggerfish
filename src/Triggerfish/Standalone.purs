@@ -182,6 +182,7 @@ data Action o
   | Panic
   | RigHushed
   | RigPlayed
+  | RigLine
   | RoutingChanged
   | FromMachine o
   | Key E.Event
@@ -252,9 +253,14 @@ handleAction cfg = case _ of
     let hushedHere msg = msg == "hushed" || maybe false (\m -> msg == "hushed " <> m) (Stage.slotOf cfg.which)
         -- `<machine> $ play`, from a line: the transport starts, as if pressed
         playedHere msg = maybe false (\m -> msg == "played " <> m) (Stage.slotOf cfg.which)
+        -- a line from Limulus now plays this machine (`balistes $ "<a b>"`):
+        -- the transport shows it playing, and the machine, which follows the
+        -- line, is asked for nothing (a push would play over the line)
+        lineHere msg = maybe false (\m -> String.take (String.length ("played " <> m <> " line ")) msg == "played " <> m <> " line ") (Stage.slotOf cfg.which)
     liftEffect $ Binnacle.onAppMessage rig \msg -> do
       when (hushedHere msg) (HS.notify listener RigHushed)
       when (playedHere msg) (HS.notify listener RigPlayed)
+      when (lineHere msg) (HS.notify listener RigLine)
     liftEffect $ TransportStore.onChange (HS.notify listener ModeStored)
     liftEffect $ Tempo.onChange (HS.notify listener TempoStored)
     bus <- liftEffect Bus.open
@@ -403,6 +409,10 @@ handleAction cfg = case _ of
   RigPlayed -> unlessM (H.gets _.playing) do
     H.modify_ _ { playing = true }
     pushSounding cfg
+  RigLine -> unlessM (H.gets _.playing) do
+    H.modify_ _ { playing = true }
+    publishStage cfg
+    announce cfg
   RigHushed -> whenM (H.gets _.playing) do
     H.modify_ _ { playing = false }
     pushSounding cfg
@@ -698,7 +708,7 @@ browserDrawer st b =
                 _ ->
                   HH.span
                     ( [ HE.onClick \_ -> RecallRow r.slot st.lastRecall
-                      , HP.title (if String.take 19 r.drag == "vetula-progression " then "Click: open it. Drag it onto a voice (its badge on the score) and the voice plays it." else if r.drag /= "" then "Drag it onto a bank." else "Click: recall it, the way you last did. Double-click: rename it.")
+                      , HP.title (if String.take 19 r.drag == "vetula-progression " then "Click: open it. Drag it onto a voice (its badge on the score) and the voice plays it." else if String.take 16 r.drag == "balistes-rhythm " then "Click: recall it. Double-click: rename it. Drag it into Limulus: on a balistes line it joins the alternation, on an empty line it starts one." else if r.drag /= "" then "Drag it onto a bank." else "Click: recall it, the way you last did. Double-click: rename it.")
                       , style $ "flex:1 1 7em;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;cursor:pointer;font-size:13px;color:#1c1a12;"
                           <> (if r.current then "font-weight:bold;" else "") ]
                         <> (if r.builtin then [] else [ HE.onDoubleClick \_ -> StartRename r ]) )
