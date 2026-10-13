@@ -60,6 +60,8 @@ import Triggerfish.Selene.Store as Store
 import Triggerfish.Selene.Wire as Wire
 import Triggerfish.Amphora as Amphora
 import Triggerfish.Drag as Drop
+import Triggerfish.Drag as Drag
+import Control.Alt ((<|>))
 import Data.Array as Array
 import Reef.Selene.Line as Line
 import Reef.Selene.Block as Block
@@ -293,13 +295,13 @@ handleQuery = case _ of
       edited i = i == s.active && diverged s
       rack i r = { slot: i, name: r.name, icons: rackIcons r.doc, tag: if edited i then "edited" else "", current: i == s.active, section: "Racks", builtin: false, drag: "", hint: "Click: make it the live rack. Double-click: rename it."
                  , actions: (if edited i then [ "save" ] else []) <> [ "duplicate", "publish" ] <> (if i == s.active then [] else [ "delete" ]) }
-      plain k kind = { slot: plainSlot + 1 + k, name: M.kindLabel kind, icons: [], tag: signalMark kind, current: false, section: "Modules", builtin: true, drag: Source.kindKeyword (M.freshBank kind), hint: moduleHint, actions: [] }
-        # \r -> r { icons = settingIcons r.drag }
+      plain k kind = { slot: plainSlot + 1 + k, name: M.kindLabel kind, icons: [], tag: signalMark kind, current: false, section: "Modules", builtin: true, drag: moduleDrag s (Source.kindKeyword (M.freshBank kind)), hint: moduleHint, actions: [] }
+        # \r -> r { icons = settingIcons (Source.kindKeyword (M.freshBank kind)) }
       -- the null signal: dropped on a group, frees it (`selene $ off`)
-      free = { slot: plainSlot, name: "free", icons: [], tag: "plain", current: false, section: "Modules", builtin: true, drag: "off", hint: "Drag it onto a bank to free it.", actions: [] }
-      block k b = { slot: builtinSlot + k, name: b.name, icons: settingIcons b.name, tag: signalMark b.kind, current: false, section: "Modules", builtin: true, drag: b.name, hint: moduleHint, actions: [] }
-      moduleHint = "Drag it onto a bank."
-      kept k m = { slot: keptSlot + k, name: m.name, icons: settingIcons m.line, tag: maybe "" signalMark (Line.moduleKind m.line), current: false, section: "Modules", builtin: false, drag: m.line, hint: moduleHint, actions: [ "delete" ] }
+      free = { slot: plainSlot, name: "free", icons: [], tag: "plain", current: false, section: "Modules", builtin: true, drag: Drag.dragOf "selene-module" "off", hint: "Drag it onto a bank to free it, or into Limulus onto a selene line to free that bank.", actions: [] }
+      block k b = { slot: builtinSlot + k, name: b.name, icons: settingIcons b.name, tag: signalMark b.kind, current: false, section: "Modules", builtin: true, drag: moduleDrag s b.name, hint: moduleHint, actions: [] }
+      moduleHint = "Drag it onto a bank. Drag it into Limulus: onto a selene line it replaces what that bank plays; anywhere else it starts a line on a free bank that can take it."
+      kept k m = { slot: keptSlot + k, name: m.name, icons: settingIcons m.line, tag: maybe "" signalMark (Line.moduleKind m.line), current: false, section: "Modules", builtin: false, drag: moduleDrag s m.line, hint: moduleHint, actions: [ "delete" ] }
     pure (Just (reply
       { title: "Selene", modes: false, keep: "save as new rack", notice: s.notice
       , rows: mapWithIndex rack s.library <> [ free ] <> mapWithIndex plain M.allKinds <> mapWithIndex block Block.blocks <> mapWithIndex kept s.modules }))
@@ -709,7 +711,7 @@ handleAction = case _ of
   -- Over a group of outputs: green if it can take what is dragged (the drop
   -- is let through), red with the reason if not (it is not).
   DragOverTarget target e -> do
-    text <- liftEffect Drop.currentDrag
+    text <- moduleOfDrag <$> liftEffect Drop.currentDrag
     st0 <- H.get
     let
       wire = M.targetWire target
@@ -1223,10 +1225,7 @@ rackPanel s =
         <> [ footNote ]
     )
   where
-  rigTargets = filter notMidi (availableTargets defaultRig)
-  notMidi = case _ of
-    M.Midi _ -> false
-    _ -> true
+  rigTargets = rigBanks
   row target = case Array.findIndex (\d -> d.target == target) s.sel.destinations of
     Just i | Just d <- s.sel.destinations !! i -> placed i d
     _ -> freeRow s target
@@ -1719,3 +1718,31 @@ round2 x = toNumber (round (x * 100.0)) / 100.0
 
 fmt2 :: Number -> String
 fmt2 x = show (toNumber (round (x * 100.0)) / 100.0)
+
+-- | The banks of the rig a page shows (MIDI channels are not modular banks).
+rigBanks :: Array M.Target
+rigBanks = filter notMidi (availableTargets defaultRig)
+  where
+  notMidi = case _ of
+    M.Midi _ -> false
+    _ -> true
+
+-- | What a drawer row of a module (or block) carries when dragged: the module,
+-- | the bank a new line would put it on (the first free one that can take
+-- | it, else the first that can), and what a drop adds after it (a module,
+-- | not a block, replaces the bank's whole setting: `# fresh`), tab-separated
+-- | (Triggerfish.Drag's `selene-module`; Limulus.Drop reads it).
+moduleDrag :: State -> String -> String
+moduleDrag s m = Drag.dragOf "selene-module" (m <> "\t" <> bank <> "\t" <> suffix)
+  where
+  takes t = maybe false (Line.accepts t) (Line.moduleKind m)
+  used t = Array.any (\d -> d.target == t) s.sel.destinations
+  bank = maybe "" M.targetWire (Array.find (\t -> takes t && not (used t)) rigBanks <|> Array.find takes rigBanks)
+  isBlock = isJust (Array.head (Str.split (Str.Pattern " ") (Str.trim m)) >>= Block.blockNamed)
+  suffix = if isBlock then "" else " # fresh"
+
+-- | The module a drag carries (its first field), or the drag's text as it is.
+moduleOfDrag :: String -> String
+moduleOfDrag text = case Str.stripPrefix (Str.Pattern "selene-module ") text of
+  Just payload -> Str.takeWhile (_ /= Str.codePointFromChar '\t') payload
+  Nothing -> text

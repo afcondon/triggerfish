@@ -12,8 +12,9 @@ const kinds = {
   // a Balistes beat, an Odonus patch: the word, bare (it goes in a pattern)
   "balistes-beat": (word) => word,
   "odonus-patch": (word) => word,
-  // a Selene module: its line
-  "selene-module": (line) => line,
+  // a Selene module: its line (the payload also carries, tab-separated, a
+  // bank for a new line and what a drop adds after it; Limulus reads those)
+  "selene-module": (payload) => payload.split("\t")[0],
 };
 
 const carry = (dt, text) => {

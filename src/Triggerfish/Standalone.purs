@@ -161,6 +161,10 @@ type State =
   -- Play resumes until something is recalled here; and whether it plays now
   , line :: Maybe String
   , lineOn :: Boolean
+  -- hushed on the rig (`<machine> $ hush`, from anywhere): a machine with no
+  -- transport here (Selene, whose signals run with or without a page) shows
+  -- it, with a resume
+  , hushed :: Boolean
   }
 
 -- | The panel passes on Ctrl+` pressed inside it.
@@ -184,6 +188,8 @@ data Action o
   | RigHushed
   | RigPlayed
   | RigLine String
+  | RigHush Boolean
+  | Resume
   | RoutingChanged
   | FromMachine o
   | Key E.Event
@@ -228,7 +234,7 @@ root cfg = H.mkComponent
       { mode: Solo, playing: false, bpm: 120.0, tempoFlash: Nothing, freeT0: 0.0, chip: Nothing, machineBar: Nothing, rig: Nothing
       , rigUp: false, table: RM.defaultTable, staged: Nothing, bus: Nothing, limulus: false, limulusMade: false, limulusAsked: false, limulusAlways: false, limWidth: 560.0
       , browser: Nothing, drawer: { open: false, width: 280.0 }, lastRecall: { frozen: false, inKey: false }, renaming: Nothing, confirming: Nothing
-      , line: Nothing, lineOn: false }
+      , line: Nothing, lineOn: false, hushed: false }
   , render: render cfg
   , eval: H.mkEval H.defaultEval { handleAction = handleAction cfg, initialize = Just Init }
   }
@@ -262,6 +268,8 @@ handleAction cfg = case _ of
     liftEffect $ Binnacle.onAppMessage rig \msg -> do
       when (hushedHere msg) (HS.notify listener RigHushed)
       when (playedHere msg) (HS.notify listener RigPlayed)
+      for_ (Stage.slotOf cfg.which) \m -> when (msg == "hushed " <> m) (HS.notify listener (RigHush true))
+      for_ (Stage.slotOf cfg.which) \m -> when (msg == "played " <> m) (HS.notify listener (RigHush false))
       for_ (lineHere msg) (HS.notify listener <<< RigLine)
     liftEffect $ TransportStore.onChange (HS.notify listener ModeStored)
     liftEffect $ Tempo.onChange (HS.notify listener TempoStored)
@@ -435,6 +443,9 @@ handleAction cfg = case _ of
     unless was do
       publishStage cfg
       announce cfg
+  RigHush h -> H.modify_ _ { hushed = h }
+  -- resume what the rig hushed (Selene's `selene $ play`)
+  Resume -> for_ (Stage.slotOf cfg.which) \m -> toRig ("tidal " <> m <> " $ play")
   RigHushed -> do
     H.modify_ _ { lineOn = false }
     whenM (H.gets _.playing) do
@@ -814,6 +825,7 @@ bar cfg st =
       -- the rig is the one playing.
       <> (if st.mode == Atlantis then [ atlantisTag ] else [])
       <> (if cfg.playable then [ button (if st.playing then "■ Stop" else "▶ Play") TogglePlay ] else [])
+      <> (if not cfg.playable && st.hushed then [ button "Hushed · ▶ resume" Resume ] else [])
       <> (if cfg.capturable then [ button "Capture (c)" Capture ] else [])
       -- Limulus combines the machines, on the rig: its drawer on the right,
       -- in Atlantis
