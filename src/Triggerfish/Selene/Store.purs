@@ -18,13 +18,20 @@ module Triggerfish.Selene.Store
 
 import Prelude
 
-import Data.Maybe (Maybe(..))
-import Data.Nullable (Nullable, toMaybe)
+import Data.Maybe (Maybe(..), fromMaybe)
+import Data.Nullable (Nullable, toMaybe, toNullable)
 import Effect (Effect)
 import Triggerfish.Preset (Preset, Stored, fromStored, toStored, withWords)
 
 -- | A named rack: its eDSL doc is the whole rack, rendered.
-type Rack = { name :: String, doc :: String }
+type Rack = { name :: String, doc :: String, id :: String }
+
+-- | A rack as stored: `id` (its identity in Amphora, `Triggerfish.Library`)
+-- | is absent from one saved before ids.
+type StoredRack = { name :: String, doc :: String, id :: Nullable String }
+
+fromStoredRack :: StoredRack -> Rack
+fromStoredRack r = r { id = fromMaybe "" (toMaybe r.id) }
 
 -- | What we persist: the library, which rack was open, and the preset bank.
 type Saved = { active :: Int, library :: Array Rack, presets :: Array Preset }
@@ -33,13 +40,13 @@ type Saved = { active :: Int, library :: Array Rack, presets :: Array Preset }
 -- | anonymous). `content` is the preset's canonical rack-doc text verbatim.
 type Envelope =
   { active :: Int
-  , library :: Array Rack
+  , library :: Array StoredRack
   , presets :: Array Stored
   }
 
 -- | v1's on-disk shape — library + active only, no presets. Migrated with an
 -- | empty bank when v2 is absent.
-type EnvelopeV1 = { active :: Int, library :: Array Rack }
+type EnvelopeV1 = { active :: Int, library :: Array StoredRack }
 
 -- v2: added the unified preset bank alongside the rack library.
 storeKey :: String
@@ -60,7 +67,7 @@ saveLibrary s = _save storeKey (_stringify env)
   env :: Envelope
   env =
     { active: s.active
-    , library: s.library
+    , library: map (\r -> r { id = toNullable (Just r.id) }) s.library
     , presets: map toStored s.presets
     }
 
@@ -74,12 +81,12 @@ loadLibrary = do
     Nothing -> do
       mV1 <- _load legacyKey
       pure $ toMaybe (mV1 :: Nullable EnvelopeV1) <#> \v1 ->
-        { active: v1.active, library: v1.library, presets: [] }
+        { active: v1.active, library: map fromStoredRack v1.library, presets: [] }
 
 decode :: Envelope -> Saved
 decode env =
   { active: env.active
-  , library: env.library
+  , library: map fromStoredRack env.library
   , presets: withWords (map fromStored env.presets)
   }
 

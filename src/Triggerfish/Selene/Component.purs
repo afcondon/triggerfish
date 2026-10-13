@@ -16,7 +16,7 @@ module Triggerfish.Selene.Component (component, Output(..)) where
 
 import Prelude
 
-import Data.Array (any, deleteAt, insertAt, drop, filter, findIndex, length, mapMaybe, mapWithIndex, modifyAt, null, range, (!!))
+import Data.Array (deleteAt, drop, filter, findIndex, insertAt, length, mapMaybe, mapWithIndex, modifyAt, null, range, (!!))
 import Data.Foldable (for_, foldl, foldr)
 import Data.Tuple (Tuple(..), fst, snd)
 import Web.UIEvent.MouseEvent as ME
@@ -28,16 +28,14 @@ import Data.Map (Map)
 import Data.Map as Map
 import Data.String as Str
 import Data.String.Common (joinWith)
-import Effect.Aff (attempt)
-import Effect.Aff.Class (class MonadAff, liftAff)
+import Effect.Aff.Class (class MonadAff)
 import Effect.Class (liftEffect)
 import Effect.Timer (setInterval)
-import Data.Either (Either(..), hush)
+import Data.Either (hush)
 import Data.Nullable (Nullable, toMaybe)
 import Foreign.Object (Object)
 import Foreign.Object as Object
-import Simple.JSON (readJSON)
-import Data.String.CodeUnits (take)
+import Simple.JSON (readJSON, writeJSON)
 import Halogen as H
 import Halogen.HTML as HH
 import Halogen.HTML.Events as HE
@@ -59,6 +57,7 @@ import Triggerfish.Selene.Source as Source
 import Triggerfish.Selene.Store as Store
 import Triggerfish.Selene.Wire as Wire
 import Triggerfish.Amphora as Amphora
+import Triggerfish.Library as Library
 import Triggerfish.Drag as Drop
 import Triggerfish.Drag as Drag
 import Control.Alt ((<|>))
@@ -117,9 +116,12 @@ type State =
   -- hold, so a frame repeating it changes nothing.
   , stageSubscribed :: Boolean
   , stageRack :: Maybe String
-  -- Modules kept from a bank (Amphora `selene-module`): a name and the line
-  -- without its bank. And, after a rack was replaced, the one to go back to.
-  , modules :: Array { name :: String, line :: String, hash :: String }
+  -- Modules kept from a bank: a name and the line without its bank.
+  , modules :: Array Module
+  -- the racks and the kept modules as Amphora keeps them
+  -- (`Triggerfish.Library`); Nothing until opened
+  , rackShelf :: Maybe (Library.Shelf Store.Rack)
+  , moduleShelf :: Maybe (Library.Shelf Module)
   -- The live rack: what the modular is given, edited by hand, by drops and
   -- by Limulus. The racks in the library are saved, and change only when
   -- saved over (AC, 2026-10-05: the rebus shows live diverging from saved).
@@ -234,8 +236,8 @@ data Action
   | DragLeaveTarget
   | DragRackStart Event
   | KeepModule Int            -- keep bank i as a module
-  | ModulesLoaded (Array { name :: String, line :: String, hash :: String })
-  | PublishRack               -- publish the active rack to the Amphora store (selene-rack)
+  | RacksArrived (Array Store.Rack)   -- the racks as Amphora has them, changed elsewhere
+  | ModulesArrived (Array Module)     -- the kept modules, likewise
   | PickStarter Int           -- apply library shape i to the selected envelope slot
   | EnvGrab EnvHandle Int Int -- mousedown on a breakpoint (handle, clientX, clientY)
   | EnvDragMove Int Int Int Boolean -- mousemove over the editing cell (x, y, buttons, shift)
@@ -252,7 +254,7 @@ component =
         let doc = Source.printRack M.defaultSelene
         in
           { sel: Source.parseRack doc
-          , library: [ { name: "rack 1", doc } ], active: 0, live: doc
+          , library: [ { name: "rack 1", doc, id: "" } ], active: 0, live: doc
           , sounding: Silent, playStep: 0
           , binnacle: Nothing, midiOut: Nothing, midiName: "…"
           , clockTempo: 120.0, clockLocked: false, clockBar: 0
@@ -260,6 +262,8 @@ component =
           , applyDue: Nothing
           , stageSubscribed: false
           , stageRack: Nothing
+          , rackShelf: Nothing
+          , moduleShelf: Nothing
           , modules: []
           , notice: ""
           , undoTo: Nothing
@@ -294,7 +298,7 @@ handleQuery = case _ of
       -- is said on its row (edited, and save) and in the page's header
       edited i = i == s.active && diverged s
       rack i r = { slot: i, name: r.name, icons: rackIcons r.doc, tag: if edited i then "edited" else "", current: i == s.active, section: "Racks", builtin: false, drag: "", hint: "Click: make it the live rack. Double-click: rename it."
-                 , actions: (if edited i then [ "save" ] else []) <> [ "duplicate", "publish" ] <> (if i == s.active then [] else [ "delete" ]) }
+                 , actions: (if edited i then [ "save" ] else []) <> [ "duplicate" ] <> (if i == s.active then [] else [ "delete" ]) }
       plain k kind = { slot: plainSlot + 1 + k, name: M.kindLabel kind, icons: [], tag: signalMark kind, current: false, section: "Modules", builtin: true, drag: moduleDrag s (Source.kindKeyword (M.freshBank kind)), hint: moduleHint, actions: [] }
         # \r -> r { icons = settingIcons (Source.kindKeyword (M.freshBank kind)) }
       -- the null signal: dropped on a group, frees it (`selene $ off`)
@@ -320,9 +324,8 @@ handleQuery = case _ of
       H.modify_ \s -> s { library = fromMaybe s.library (modifyAt i (_ { name = name }) s.library) }
       persist
     else when (i >= keptSlot) do
-      H.modify_ \s -> s { modules = fromMaybe s.modules (modifyAt (i - keptSlot) (_ { name = name }) s.modules) }
       s <- H.get
-      for_ (s.modules !! (i - keptSlot)) publishModule
+      keepModules (fromMaybe s.modules (modifyAt (i - keptSlot) (_ { name = name }) s.modules))
     pure (Just next)
   BrowserAction i act next -> do
     settleUndo
@@ -333,18 +336,15 @@ handleQuery = case _ of
         H.modify_ _ { library = setDocAt s.active s.live s.library }
         persist
       "duplicate" | i < builtinSlot -> do
-        for_ (s.library !! i) \r -> H.modify_ _ { library = s.library <> [ { name: r.name <> " copy", doc: r.doc } ] }
+        for_ (s.library !! i) \r -> H.modify_ _ { library = s.library <> [ { name: r.name <> " copy", doc: r.doc, id: "" } ] }
         persist
-      "publish" | i < builtinSlot -> for_ (s.library !! i) publishRack'
       "delete" | i < builtinSlot && i /= s.active -> for_ (s.library !! i) \r -> do
         H.modify_ _ { library = fromMaybe s.library (deleteAt i s.library), active = if i < s.active then s.active - 1 else s.active
                     , undoTo = Just (UndoRack i r), notice = "Deleted " <> r.name }
         persist
-      -- a kept module leaves the shared store too, once its delete can no
-      -- longer be undone (settleUndo)
       "delete" | i >= keptSlot -> for_ (s.modules !! (i - keptSlot)) \m -> do
-        H.modify_ _ { modules = fromMaybe s.modules (deleteAt (i - keptSlot) s.modules)
-                    , undoTo = Just (UndoModule (i - keptSlot) m), notice = "Deleted " <> m.name }
+        keepModules (fromMaybe s.modules (deleteAt (i - keptSlot) s.modules))
+        H.modify_ _ { undoTo = Just (UndoModule (i - keptSlot) m), notice = "Deleted " <> m.name }
       _ -> pure unit
     pure (Just next)
   -- the rack's rebus, dragged from the page onto the drawer: kept as a new rack
@@ -366,15 +366,16 @@ handleQuery = case _ of
       UndoRack at r -> do
         H.modify_ \t -> t { library = fromMaybe (t.library <> [ r ]) (insertAt at r t.library), active = if at <= t.active then t.active + 1 else t.active }
         persist
-      UndoModule at m ->
-        H.modify_ \t -> t { modules = fromMaybe (t.modules <> [ m ]) (insertAt at m t.modules) }
+      UndoModule at m -> do
+        t <- H.get
+        keepModules (fromMaybe (t.modules <> [ m ]) (insertAt at m t.modules))
     pure (Just next)
   BrowserKeep next -> do
     settleUndo
     at <- liftEffect Browser.stamp
     H.modify_ \s ->
       let n = length s.library
-      in s { library = s.library <> [ { name: "Selene · " <> at, doc: currentDoc s } ], active = n }
+      in s { library = s.library <> [ { name: "Selene · " <> at, doc: currentDoc s, id: "" } ], active = n }
     persist
     pure (Just next)
   -- No marks here: asked for its text, the shell falls back to AskSource.
@@ -432,7 +433,7 @@ handleQuery = case _ of
   ImportText txt reply -> do
     H.modify_ \s ->
       let n = length s.library
-      in s { library = s.library <> [ { name: "imported " <> show (n + 1), doc: txt } ], active = n
+      in s { library = s.library <> [ { name: "imported " <> show (n + 1), doc: txt, id: "" } ], active = n
            , sel = Source.parseRack txt }
     persist
     pure (Just (reply true))
@@ -537,18 +538,20 @@ handleAction = case _ of
         let live = fromMaybe doc mlive
         H.modify_ _ { library = sv.library, active = a, live = live, sel = Source.parseRack live }
     H.modify_ _ { binnacle = Just bin }
-    -- Merge the shared Amphora rack library over the local one (by name), in the
-    -- BACKGROUND: awaiting it blocked Initialize (hence all queries to Selene) until
-    -- the ~30s offline timeout. The store being offline is not fatal — keep local.
-    void $ H.fork do
-      res <- liftAff (attempt (Amphora.fetchCollection "selene-module"))
-      for_ res \items -> handleAction (ModulesLoaded (map (\it -> { name: it.name, line: it.payload, hash: it.hash }) items))
-    void $ H.fork do
-      dbRes <- liftAff (attempt (Amphora.fetchCollection "selene-rack"))
-      case dbRes of
-        Right items | not (null items) ->
-          H.modify_ \s -> s { library = mergeRacksByName s.library (map amphoraRack items) }
-        _ -> pure unit
+    -- The racks and kept modules are what Amphora keeps (`Triggerfish.Library`):
+    -- this browser's copy at once, Amphora's when it answers or changes
+    -- elsewhere; the first time, what this browser kept and the old
+    -- `selene-rack` / `selene-module` collections. Which rack is live stays
+    -- in this browser.
+    { emitter: rackE, listener: rackL } <- liftEffect HS.create
+    _ <- H.subscribe (RacksArrived <$> rackE)
+    -- (what this browser saved, never the default rack it opens with)
+    racks <- liftEffect $ Library.open rackDoc (maybe [] _.library msaved) (HS.notify rackL)
+    H.modify_ \s -> rerack racks.items s { rackShelf = Just racks.shelf }
+    { emitter: moduleE, listener: moduleL } <- liftEffect HS.create
+    _ <- H.subscribe (ModulesArrived <$> moduleE)
+    modules <- liftEffect $ Library.open moduleDoc [] (HS.notify moduleL)
+    H.modify_ _ { modules = modules.items, moduleShelf = Just modules.shelf }
 
   -- The step is not drawn (the rings have no playhead): writing it on every
   -- tick redrew the whole page for nothing seen (2026-10-05, AC: CPU).
@@ -692,7 +695,7 @@ handleAction = case _ of
     H.modify_ \s ->
       let doc = Source.printRack M.defaultSelene
           n = length s.library
-      in s { library = s.library <> [ { name: "rack " <> show (n + 1), doc } ], active = n, live = doc, sel = Source.parseRack doc }
+      in s { library = s.library <> [ { name: "rack " <> show (n + 1), doc, id: "" } ], active = n, live = doc, sel = Source.parseRack doc }
     persist
   SetRackName name -> do
     H.modify_ \s -> s { library = fromMaybe s.library (modifyAt s.active (_ { name = name }) s.library) }
@@ -765,10 +768,11 @@ handleAction = case _ of
     st <- H.get
     for_ (st.sel.destinations !! i) \d -> do
       at <- liftEffect Browser.stamp
-      let m = { name: Source.kindKeyword d.bank <> " · " <> at, line: Line.moduleOf d, hash: "" }
-      H.modify_ _ { modules = st.modules <> [ m ], publishMsg = Just ("kept as a module: " <> m.name) }
-      publishModule m
-  ModulesLoaded ms -> H.modify_ \s -> s { modules = s.modules <> filter (\m -> not (Array.any (\k -> k.name == m.name) s.modules)) ms }
+      let m = { name: Source.kindKeyword d.bank <> " · " <> at, line: Line.moduleOf d, id: "" }
+      keepModules (st.modules <> [ m ])
+      H.modify_ _ { publishMsg = Just ("kept as a module: " <> m.name) }
+  RacksArrived racks -> H.modify_ (rerack racks)
+  ModulesArrived ms -> H.modify_ _ { modules = ms }
   -- the rig's answer to a dropped module
   SeleneReply raw | Just rest <- Str.stripPrefix (Str.Pattern "OK: selene: ") raw -> H.modify_ _ { publishMsg = Just ("✓ " <> rest) }
   SeleneReply raw | Just rest <- Str.stripPrefix (Str.Pattern "ERR: selene: ") raw -> H.modify_ _ { publishMsg = Just ("✗ " <> rest) }
@@ -789,22 +793,6 @@ handleAction = case _ of
              H.modify_ \s -> s { replies = Map.insert (replyKey socket bank) (joinWith " " (drop 2 toks)) s.replies }
            _, _ -> pure unit
 
-  -- Publish the active rack to the shared Amphora store (selene-rack collection).
-  -- The rack's doc is already its canonical eDSL form; the name rides the label.
-  -- Store offline → a transient failure message, never fatal.
-  PublishRack -> do
-    s <- H.get
-    case s.library !! s.active of
-      Nothing -> pure unit
-      Just r -> do
-        H.modify_ _ { publishMsg = Just "publishing…" }
-        res <- liftAff (attempt (Amphora.publish
-          { kind: "selene-rack", collection: "selene-rack"
-          , name: r.name, source: "user", payload: r.doc, tags: [] }))
-        H.modify_ _ { publishMsg = Just case res of
-          Right hash -> "✓ " <> r.name <> " · " <> take 8 hash
-          Left _ -> "✗ publish failed (store offline?)" }
-
 -- | The active rack's eDSL doc — the editable text + the AskSource answer.
 currentDoc :: State -> String
 currentDoc s = s.live
@@ -821,9 +809,54 @@ diverged s = s.live /= savedDoc s
 setDocAt :: Int -> String -> Array Store.Rack -> Array Store.Rack
 setDocAt i doc lib = fromMaybe lib (modifyAt i (_ { doc = doc }) lib)
 
--- | An Amphora library item as a local rack (payload = the rack's eDSL doc).
-amphoraRack :: Amphora.LibItem -> Store.Rack
-amphoraRack it = { name: it.name, doc: it.payload }
+-- | A module kept from a bank: its name and its line without the bank.
+type Module = { name :: String, line :: String, id :: String }
+
+-- | The racks as Amphora keeps them, at `triggerfish/selene/racks`; the
+-- | first time, with the old `selene-rack` collection.
+rackDoc :: Library.Doc Store.Rack
+rackDoc =
+  { ref: "triggerfish/selene/racks"
+  , kind: "triggerfish-selene-racks"
+  , idOf: _.id
+  , withId: \id r -> r { id = id }
+  , encode: writeJSON
+  , decode: hush <<< readJSON
+  , same: \a b -> a.name == b.name
+  , first: map (\it -> { name: it.name, doc: it.payload, id: "" }) <$> Amphora.fetchCollection "selene-rack"
+  }
+
+-- | The kept modules, at `triggerfish/selene/modules`; the first time, with
+-- | the old `selene-module` collection.
+moduleDoc :: Library.Doc Module
+moduleDoc =
+  { ref: "triggerfish/selene/modules"
+  , kind: "triggerfish-selene-modules"
+  , idOf: _.id
+  , withId: \id m -> m { id = id }
+  , encode: writeJSON
+  , decode: hush <<< readJSON
+  , same: \a b -> a.name == b.name
+  , first: map (\it -> { name: it.name, line: it.payload, id: "" }) <$> Amphora.fetchCollection "selene-module"
+  }
+
+-- | A new rack library, the live rack's saved one followed to where it now
+-- | is (the first, if it went).
+rerack :: Array Store.Rack -> State -> State
+rerack racks s = s
+  { library = racks
+  , active = fromMaybe 0 ((s.library !! s.active) >>= \r -> findIndex (\x -> if r.id /= "" then x.id == r.id else x.name == r.name) racks)
+  }
+
+-- | The kept modules now: shown, and kept in Amphora.
+keepModules :: forall o m. MonadAff m => Array Module -> H.HalogenM State Action Slots o m Unit
+keepModules ms = do
+  st <- H.get
+  case st.moduleShelf of
+    Nothing -> H.modify_ _ { modules = ms }
+    Just shelf -> do
+      kept <- liftEffect (Library.put shelf ms)
+      H.modify_ _ { modules = kept }
 
 -- | Option-drop merges a module into a row (its line without `# fresh`, so
 -- | only what it names changes). Off for the MVP (AC, 2026-10-05): a real
@@ -832,11 +865,6 @@ amphoraRack it = { name: it.name, doc: it.payload }
 mergeOnOption :: Boolean
 mergeOnOption = false
 
--- | Merge incoming (Amphora) racks over the current local ones by name: keep
--- | every local rack, then append any incoming rack whose name isn't present.
-mergeRacksByName :: Array Store.Rack -> Array Store.Rack -> Array Store.Rack
-mergeRacksByName current incoming =
-  current <> filter (\p -> not (any (\q -> q.name == p.name) current)) incoming
 
 -- | Put this page's rack on the stage, if it is not what the stage holds.
 publishRack :: forall o m. MonadAff m => H.HalogenM State Action Slots o m Unit
@@ -899,25 +927,13 @@ plainSlot = 1500
 keptSlot :: Int
 keptSlot = 2000
 
--- | Publish a rack to Amphora (`selene-rack`), by name.
-publishRack' :: forall o m. MonadAff m => { name :: String, doc :: String } -> H.HalogenM State Action Slots o m Unit
-publishRack' r = do
-  H.modify_ _ { publishMsg = Just "publishing…" }
-  res <- liftAff (attempt (Amphora.publish
-    { kind: "selene-rack", collection: "selene-rack", name: r.name, source: "user", payload: r.doc, tags: [] }))
-  H.modify_ _ { publishMsg = Just case res of
-    Right hash -> "✓ " <> r.name <> " · " <> take 8 hash
-    Left _ -> "✗ publish failed (store offline?)" }
-
--- | Keep a module in Amphora (`selene-module`), by name; a rename publishes it
--- | again under the new name.
-publishModule :: forall o m r. MonadAff m => { name :: String, line :: String | r } -> H.HalogenM State Action Slots o m Unit
-publishModule m = void $ H.fork $ void $ liftAff $ attempt $ Amphora.publish
-  { kind: "selene-module", collection: "selene-module", name: m.name, source: "user", payload: m.line, tags: [] }
-
 -- | Persist the rack library + preset bank (after any library/active/preset change).
 persist :: forall o m. MonadAff m => H.HalogenM State Action Slots o m Unit
 persist = do
+  s0 <- H.get
+  for_ s0.rackShelf \shelf -> do
+    kept <- liftEffect (Library.put shelf s0.library)
+    H.modify_ (rerack kept)
   s <- H.get
   liftEffect (Store.saveLibrary { active: s.active, library: s.library, presets: s.presets })
   liftEffect (Store.saveLive s.live)
@@ -1765,15 +1781,8 @@ moduleOfDrag text = case Str.stripPrefix (Str.Pattern "selene-module ") text of
 data Undo
   = UndoReplace { rack :: Int, live :: String }
   | UndoRack Int Store.Rack
-  | UndoModule Int { name :: String, line :: String, hash :: String }
+  | UndoModule Int Module
 
--- | The drawer has moved on, so the last undo is gone: a deleted kept module
--- | now leaves the shared store too.
+-- | The drawer has moved on, so the last undo is gone.
 settleUndo :: forall slots o m. MonadAff m => H.HalogenM State Action slots o m Unit
-settleUndo = do
-  s <- H.get
-  case s.undoTo of
-    Just (UndoModule _ m) | m.hash /= "" ->
-      void $ H.fork $ void $ liftAff $ attempt $ Amphora.unpublish "selene-module" m.hash
-    _ -> pure unit
-  H.modify_ _ { undoTo = Nothing, notice = "" }
+settleUndo = H.modify_ _ { undoTo = Nothing, notice = "" }
