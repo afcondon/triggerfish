@@ -310,8 +310,8 @@ handleAction = case _ of
     -- `balistes-grid` rhythms.
     legacy <- liftEffect (maybe [] _.presets <$> Store.load)
     { emitter: libE, listener: libL } <- liftEffect HS.create
-    _ <- H.subscribe (LibraryArrived <$> libE)
-    opened <- liftEffect $ Library.open (presetDoc "balistes" (map presetOfRhythm <$> Remote.fetchLibrary)) legacy (HS.notify libL)
+    _ <- H.subscribe (LibraryChanged <$ libE)
+    opened <- liftEffect $ Library.open (presetDoc "balistes" (map presetOfRhythm <$> Remote.fetchLibrary)) legacy (HS.notify libL unit)
     H.modify_ _ { presets = withWords opened.items, shelf = Just opened.shelf }
     H.modify_ _ { binnacle = Just bin }
     -- The rig's stage keeps a copy of the named rhythms, which a
@@ -436,8 +436,11 @@ handleAction = case _ of
   -- lacks, and loses any we have deleted
   -- Another browser changed the bank (or this one's change was kept on top
   -- of theirs): show it, and the stage follows.
-  LibraryArrived items -> do
-    H.modify_ _ { presets = withWords items, undoDelete = Nothing }
+  LibraryChanged -> do
+    st <- H.get
+    for_ st.shelf \shelf -> do
+      items <- liftEffect (Library.current shelf)
+      H.modify_ _ { presets = withWords items, undoDelete = Nothing }
     publishRhythms
   StageFrameIn msg -> do
     -- The stage's beats are everyone's: only those this bank names count as

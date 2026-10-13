@@ -753,8 +753,8 @@ data Action
   | AutoCapture            -- timer: auto-capture the current path (ephemeral, update-in-place)
   | LoadProg Int           -- load library entry #i into the performance working copy
   | SaveScene              -- serialise the whole Perform surface as a vetulaScene → Amphora
-  | ProgressionsArrived (Array LibEntry)  -- the kept progressions as Amphora has them
-  | ScenesArrived (Array Scene)            -- the scenes as Amphora has them
+  | ProgressionsChanged    -- the kept progressions changed in Amphora (another page)
+  | ScenesChanged          -- the scenes, likewise
   | PerfCloseRecall
   | PerfLoadScene String   -- parse a scene payload and load it onto the surface
   | SetTempo String
@@ -1728,8 +1728,8 @@ handleActionCore = case _ of
     -- The scenes are what Amphora keeps (`Triggerfish.Library`), started the
     -- first time from the old `vetula-scene` collection.
     { emitter: sceneE, listener: sceneL } <- liftEffect HS.create
-    _ <- H.subscribe (ScenesArrived <$> sceneE)
-    scenes <- liftEffect $ Library.open sceneDoc [] (HS.notify sceneL)
+    _ <- H.subscribe (ScenesChanged <$ sceneE)
+    scenes <- liftEffect $ Library.open sceneDoc [] (HS.notify sceneL unit)
     H.modify_ _ { perfScenes = scenes.items, sceneShelf = Just scenes.shelf }
     -- Where this viewer chose to hear auditions, if they have.
     msound <- liftEffect Store.loadSound
@@ -1784,8 +1784,8 @@ handleActionCore = case _ of
     -- elsewhere; the first time, what this browser kept and the old
     -- `vetula-progression` collection. The ◦ captures stay in this browser.
     { emitter: progE, listener: progL } <- liftEffect HS.create
-    _ <- H.subscribe (ProgressionsArrived <$> progE)
-    progs <- liftEffect $ Library.open progressionDoc (filter _.kept migrated.library) (HS.notify progL)
+    _ <- H.subscribe (ProgressionsChanged <$ progE)
+    progs <- liftEffect $ Library.open progressionDoc (filter _.kept migrated.library) (HS.notify progL unit)
     H.modify_ \s -> relibrary (withKept progs.items s.library) s { progShelf = Just progs.shelf }
     when (length migrated.renames > 0) persistLib
     -- Load the shared MIDI clip library (#27) — the pool the phrase picker offers.
@@ -2361,10 +2361,17 @@ handleActionCore = case _ of
 
   -- Another browser changed them (or this one's change was kept on top of
   -- theirs).
-  ProgressionsArrived kept -> do
-    H.modify_ \s -> relibrary (withKept kept s.library) s
-    publishProgressions
-  ScenesArrived scenes -> H.modify_ _ { perfScenes = scenes }
+  ProgressionsChanged -> do
+    st <- H.get
+    for_ st.progShelf \shelf -> do
+      kept <- liftEffect (Library.current shelf)
+      H.modify_ \s -> relibrary (withKept kept s.library) s
+      publishProgressions
+  ScenesChanged -> do
+    st <- H.get
+    for_ st.sceneShelf \shelf -> do
+      scenes <- liftEffect (Library.current shelf)
+      H.modify_ _ { perfScenes = scenes }
 
   -- Parse a stored scene payload (the `vetulaScene { … }` record) back into a
   -- document and reconstruct the surface's boxes. Lenient: a payload that yields
@@ -3069,6 +3076,7 @@ progressionDoc =
   , decode: hush <<< readJSON
   , same: \a b -> a.name == b.name
   , first: filter _.kept <<< map amphoraEntry <$> Amphora.fetchCollection "vetula-progression"
+  , tidy: identity
   }
 
 -- | The scenes as Amphora keeps them, at `triggerfish/vetula/scenes`.
@@ -3082,6 +3090,7 @@ sceneDoc =
   , decode: hush <<< readJSON
   , same: \a b -> a.payload == b.payload
   , first: map (\it -> { id: "", name: it.name, payload: it.payload, tags: it.tags }) <$> Amphora.fetchCollection "vetula-scene"
+  , tidy: identity
   }
 
 -- | The library with its kept progressions as `kept` has them: each where it

@@ -133,4 +133,5 @@ presetDoc machine first =
   , decode: \text -> map fromStored <$> hush (readJSON text)
   , same: \a b -> if isJust a.name then a.name == b.name else a.content == b.content
   , first
+  , tidy: withWords
   }

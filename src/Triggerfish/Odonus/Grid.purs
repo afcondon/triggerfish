@@ -514,9 +514,9 @@ dispatch = case _ of
     msaved <- liftEffect Store.loadAll
     for_ msaved \sv -> H.modify_ (loadText sv.live)
     { emitter: libE, listener: libL } <- liftEffect HS.create
-    _ <- H.subscribe (LibraryArrived <$> libE)
+    _ <- H.subscribe (LibraryChanged <$ libE)
     let oldScenes = map (\it -> newPreset it.payload (Just it.name)) <$> Amphora.fetchCollection "odonus-scene"
-    opened <- liftEffect $ Library.open (presetDoc "odonus" oldScenes) (maybe [] _.presets msaved) (HS.notify libL)
+    opened <- liftEffect $ Library.open (presetDoc "odonus" oldScenes) (maybe [] _.presets msaved) (HS.notify libL unit)
     H.modify_ _ { presets = withWords opened.items, shelf = Just opened.shelf }
     -- Cold-start read of the routing table. The shell OWNS it and pushes it
     -- down via SetRouting; this only covers the window before its first
@@ -838,8 +838,11 @@ dispatch = case _ of
     H.modify_ \s -> s { odo = M.setOctavePattern Nothing s.odo }
   -- Another browser changed the presets (or this one's change was kept on
   -- top of theirs): show them, and the stage follows.
-  LibraryArrived items -> do
-    H.modify_ _ { presets = withWords items, undoDelete = Nothing }
+  LibraryChanged -> do
+    st <- H.get
+    for_ st.shelf \shelf -> do
+      items <- liftEffect (Library.current shelf)
+      H.modify_ _ { presets = withWords items, undoDelete = Nothing }
     publishPatches
   RigFrame msg -> for_ (Str.stripPrefix (Str.Pattern "reef-input ") msg) \json ->
     case decodeTagged json of

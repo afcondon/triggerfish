@@ -224,7 +224,7 @@ data Action
   | MidiReady RO.Outs String
   | StageOpen                 -- the rig socket (re)connected: subscribe to the stage
   | StageFrameIn String       -- a frame from the rig (the stage's table among them)
-  | LibraryArrived (Array Preset)  -- the bank as Amphora has it, changed elsewhere
+  | LibraryChanged             -- the bank changed in Amphora (another page)
   | ResetPat
   | Dice
   | PadAt Int Int Int          -- clientX clientY buttons

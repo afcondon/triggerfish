@@ -23,6 +23,7 @@ module Triggerfish.Library
   , Shelf
   , open
   , put
+  , current
   ) where
 
 import Prelude
@@ -51,6 +52,10 @@ type Doc a =
   , decode :: String -> Maybe (Array a)
   , same :: a -> a -> Boolean         -- one thing kept twice, before ids (by name)
   , first :: Aff (Array a)            -- the old collection, read once
+  -- What every page would make of a library (a preset's word): made here, as
+  -- items come in, so no page sends it as an edit of its own, made to its
+  -- older view, over another page's.
+  , tidy :: Array a -> Array a
   }
 
 type Held a = { hash :: Maybe String, items :: Array a }
@@ -89,7 +94,7 @@ load doc = Amphora.exchange "GET" ("/refs/" <> doc.ref) Nothing >>= case _ of
   Left problem -> pure (Left problem)
   Right { status: 404 } -> pure (Right Nothing)
   Right { status: 200, body } | Right ({ hash } :: { hash :: String }) <- readJSON body ->
-    map (\items -> Just { hash: Just hash, items }) <$> contentOf doc hash
+    map (\items -> Just { hash: Just hash, items: doc.tidy items }) <$> contentOf doc hash
   Right r -> pure (Left (doc.ref <> ": " <> show r.status <> " " <> r.body))
 
 contentOf :: forall a. Doc a -> String -> Aff (Either String (Array a))
@@ -109,7 +114,7 @@ keep doc = go 5
   go tries at cs
     | tries <= 0 = pure (Left (doc.ref <> " kept changing under this page"))
     | otherwise = do
-        let next = makeChanges doc cs at.items
+        let next = doc.tidy (makeChanges doc cs at.items)
         saved <- Amphora.exchange "POST" "/content" (Just (writeJSON { kind: doc.kind, payload: doc.encode next }))
         case saved of
           Right { status, body }
@@ -125,7 +130,7 @@ keep doc = go 5
                             Nothing -> go (tries - 1) { hash: Nothing, items: [] } cs
                             Just now -> contentOf doc now.hash >>= case _ of
                               Left problem -> pure (Left problem)
-                              Right items -> go (tries - 1) { hash: Just now.hash, items } cs
+                              Right items -> go (tries - 1) { hash: Just now.hash, items: doc.tidy items } cs
                     Right r -> pure (Left (doc.ref <> ": " <> show r.status <> " " <> r.body))
                     Left problem -> pure (Left problem)
           Right r -> pure (Left ("/content: " <> show r.status <> " " <> r.body))
@@ -139,45 +144,54 @@ keep doc = go 5
 newtype Shelf a = Shelf
   { doc :: Doc a
   , state :: Ref (St a)
-  , arrive :: Array a -> Effect Unit
+  , changed :: Effect Unit
   }
 
 -- | `base` is what Amphora last said (`known` once it has said anything to
--- | this browser); `local` is the page's library, which differs from `base`
--- | by the changes not yet kept.
+-- | this browser); `local` is the library here, which differs from `base` by
+-- | the changes not yet kept; `handed` is what the page was last given. A
+-- | page's library is `handed` plus its own edits, so what it puts is read
+-- | as those edits and nothing else: another page's change that arrived
+-- | since is kept, not undone.
 type St a =
   { base :: Held a
   , known :: Boolean
   , local :: Array a
+  , handed :: Array a
   , busy :: Boolean
   , again :: Boolean
   }
 
 -- | Open a collection: the library as this browser last had it (or, the
--- | first time, `legacy`, what it kept before Amphora did) at once, then
--- | whatever Amphora has, through `arrive`, whenever that differs.
-open :: forall a. Doc a -> Array a -> (Array a -> Effect Unit) -> Effect { shelf :: Shelf a, items :: Array a }
-open doc legacy arrive = do
+-- | first time, `legacy`, what it kept before Amphora did) at once; then
+-- | `changed` whenever Amphora's differs, when the page reads it (`current`).
+open :: forall a. Doc a -> Array a -> Effect Unit -> Effect { shelf :: Shelf a, items :: Array a }
+open doc legacy changed = do
   cached <- readCache doc
   let st = case cached of
-        Just c -> { base: c.base, known: true, local: c.local, busy: false, again: false }
-        Nothing -> { base: { hash: Nothing, items: [] }, known: false, local: legacy, busy: false, again: false }
-  local <- withIds doc st.local
-  state <- Ref.new st { local = local }
-  let shelf = Shelf { doc, state, arrive }
+        Just c -> { base: c.base, known: true, local: c.local, handed: [], busy: false, again: false }
+        Nothing -> { base: { hash: Nothing, items: [] }, known: false, local: legacy, handed: [], busy: false, again: false }
+  local <- withIds doc (doc.tidy st.local)
+  state <- Ref.new st { local = local, handed = local }
+  let shelf = Shelf { doc, state, changed }
   launchAff_ (sync shelf)
   onShown (launchAff_ (sync shelf))
   pure { shelf, items: local }
 
--- | The page's library now. Returns it with an id on every item (keep it so),
--- | and sends what changed.
+-- | The page's library now, as its edits to what it was last handed. Returns
+-- | the library with them made (an id on every item, and any other page's
+-- | change that arrived meanwhile): the page shows that. Sends the edits.
 put :: forall a. Shelf a -> Array a -> Effect (Array a)
 put shelf@(Shelf sh) items = do
-  local <- withIds sh.doc items
-  st <- Ref.modify (_ { local = local }) sh.state
+  edited <- withIds sh.doc items
+  st <- Ref.modify (\s -> let local = sh.doc.tidy (makeChanges sh.doc (changes sh.doc s.handed edited) s.local) in s { local = local, handed = local }) sh.state
   writeCache sh.doc st
   launchAff_ (sync shelf)
-  pure local
+  pure st.local
+
+-- | The library as it is here now, for a page told it `changed`.
+current :: forall a. Shelf a -> Effect (Array a)
+current (Shelf sh) = _.local <$> Ref.modify (\s -> s { handed = s.local }) sh.state
 
 -- | Bring this page and Amphora together: send what this page changed, take
 -- | what others did. One at a time; a call while one runs runs again after.
@@ -196,7 +210,7 @@ sync shelf@(Shelf sh) = do
           Nothing -> do
             old <- either (const []) identity <$> attempt sh.doc.first
             olds <- liftEffect (withIds sh.doc (filter (\o -> not (any (sh.doc.same o) sent)) old))
-            pure { at: { hash: Nothing, items: [] }, cs: changes sh.doc [] (sent <> olds) }
+            pure { at: { hash: Nothing, items: [] }, cs: changes sh.doc [] (sh.doc.tidy (sent <> olds)) }
           Just at
             | st.known -> pure { at, cs: changes sh.doc st.base.items sent }
             -- this browser's first word from Amphora: add what it kept and
@@ -208,10 +222,11 @@ sync shelf@(Shelf sh) = do
           Right now -> liftEffect do
             latest <- Ref.read sh.state
             -- what the page changed while this was out, made on what was kept
-            let local = makeChanges sh.doc (changes sh.doc sent latest.local) now.items
+            let local = sh.doc.tidy (makeChanges sh.doc (changes sh.doc sent latest.local) now.items)
             st' <- Ref.modify (_ { base = now, known = true, local = local }) sh.state
             writeCache sh.doc st'
-            when (sh.doc.encode local /= sh.doc.encode latest.local) (sh.arrive local)
+            -- the page shows what it was handed: tell it when that is not this
+            when (sh.doc.encode local /= sh.doc.encode st'.handed) sh.changed
     after <- liftEffect (Ref.modify (_ { busy = false }) sh.state)
     when after.again (sync shelf)
 

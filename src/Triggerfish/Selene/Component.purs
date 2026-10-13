@@ -236,8 +236,8 @@ data Action
   | DragLeaveTarget
   | DragRackStart Event
   | KeepModule Int            -- keep bank i as a module
-  | RacksArrived (Array Store.Rack)   -- the racks as Amphora has them, changed elsewhere
-  | ModulesArrived (Array Module)     -- the kept modules, likewise
+  | RacksChanged              -- the racks changed in Amphora (another page)
+  | ModulesChanged            -- the kept modules, likewise
   | PickStarter Int           -- apply library shape i to the selected envelope slot
   | EnvGrab EnvHandle Int Int -- mousedown on a breakpoint (handle, clientX, clientY)
   | EnvDragMove Int Int Int Boolean -- mousemove over the editing cell (x, y, buttons, shift)
@@ -544,13 +544,13 @@ handleAction = case _ of
     -- `selene-rack` / `selene-module` collections. Which rack is live stays
     -- in this browser.
     { emitter: rackE, listener: rackL } <- liftEffect HS.create
-    _ <- H.subscribe (RacksArrived <$> rackE)
+    _ <- H.subscribe (RacksChanged <$ rackE)
     -- (what this browser saved, never the default rack it opens with)
-    racks <- liftEffect $ Library.open rackDoc (maybe [] _.library msaved) (HS.notify rackL)
+    racks <- liftEffect $ Library.open rackDoc (maybe [] _.library msaved) (HS.notify rackL unit)
     H.modify_ \s -> rerack racks.items s { rackShelf = Just racks.shelf }
     { emitter: moduleE, listener: moduleL } <- liftEffect HS.create
-    _ <- H.subscribe (ModulesArrived <$> moduleE)
-    modules <- liftEffect $ Library.open moduleDoc [] (HS.notify moduleL)
+    _ <- H.subscribe (ModulesChanged <$ moduleE)
+    modules <- liftEffect $ Library.open moduleDoc [] (HS.notify moduleL unit)
     H.modify_ _ { modules = modules.items, moduleShelf = Just modules.shelf }
 
   -- The step is not drawn (the rings have no playhead): writing it on every
@@ -771,8 +771,16 @@ handleAction = case _ of
       let m = { name: Source.kindKeyword d.bank <> " · " <> at, line: Line.moduleOf d, id: "" }
       keepModules (st.modules <> [ m ])
       H.modify_ _ { publishMsg = Just ("kept as a module: " <> m.name) }
-  RacksArrived racks -> H.modify_ (rerack racks)
-  ModulesArrived ms -> H.modify_ _ { modules = ms }
+  RacksChanged -> do
+    st <- H.get
+    for_ st.rackShelf \shelf -> do
+      racks <- liftEffect (Library.current shelf)
+      H.modify_ (rerack racks)
+  ModulesChanged -> do
+    st <- H.get
+    for_ st.moduleShelf \shelf -> do
+      ms <- liftEffect (Library.current shelf)
+      H.modify_ _ { modules = ms }
   -- the rig's answer to a dropped module
   SeleneReply raw | Just rest <- Str.stripPrefix (Str.Pattern "OK: selene: ") raw -> H.modify_ _ { publishMsg = Just ("✓ " <> rest) }
   SeleneReply raw | Just rest <- Str.stripPrefix (Str.Pattern "ERR: selene: ") raw -> H.modify_ _ { publishMsg = Just ("✗ " <> rest) }
@@ -824,6 +832,7 @@ rackDoc =
   , decode: hush <<< readJSON
   , same: \a b -> a.name == b.name
   , first: map (\it -> { name: it.name, doc: it.payload, id: "" }) <$> Amphora.fetchCollection "selene-rack"
+  , tidy: identity
   }
 
 -- | The kept modules, at `triggerfish/selene/modules`; the first time, with
@@ -838,6 +847,7 @@ moduleDoc =
   , decode: hush <<< readJSON
   , same: \a b -> a.name == b.name
   , first: map (\it -> { name: it.name, line: it.payload, id: "" }) <$> Amphora.fetchCollection "selene-module"
+  , tidy: identity
   }
 
 -- | A new rack library, the live rack's saved one followed to where it now
