@@ -48,6 +48,7 @@ import Triggerfish.Clips (NoteEvent, MidiClip)
 -- are now machine-agnostic in `Triggerfish.Capture.Types` (#28); imported here and
 -- re-exported below so every Odonus view module reaches them unchanged.
 import Triggerfish.Capture.Types (Chunk, Mark, RegionEdge(..), RegionDrag, PlaySource(..), PlayState, Logbook, Zoom)
+import Data.Map (Map)
 import Triggerfish.Preset (Preset)
 import Triggerfish.Glyph (ChipView)
 import Triggerfish.Transport (Sounding)
@@ -295,7 +296,6 @@ type State =
                                   -- editing (`Triggerfish.Ui.Euclid`); Nothing = none.
                                   -- Selection-before-editing, as in Selene: the ring is
                                   -- read at a glance and changed deliberately.
-  , navScenes :: Boolean          -- Odonus's secondary-nav scene menu open?
   , playing :: Maybe PlayState    -- a REPLAY loop in flight (Nothing = not replaying)
   -- The rig keeps the marks and plays the loops (Capture.RigLoops): true once
   -- it has said so, and from then this page holds no loop of its own.
@@ -328,9 +328,13 @@ type State =
   , clockBeat :: Number
   , clockBar :: Int
   , anchorCount :: Int
-  , scenes :: Array Scene
-  , sceneNameInput :: String  -- the name typed in the SCENES form for the next capture
-  , publishMsg :: Maybe String  -- transient status from a publish-scene-to-Amphora click
+  -- the drawer's word after something it can take back (a delete), and the
+  -- last delete, which its undo puts back where it was
+  , notice :: String
+  , undoDelete :: Maybe { at :: Int, preset :: Preset }
+  -- the named presets the rig's stage holds, by word (StageCopy), which
+  -- `odonus $ "<a b>"` recalls; Nothing until the stage answers a subscribe
+  , stagePatches :: Maybe (Map String String)
   , headNote :: Array (Maybe Int)  -- the held/sounding MIDI note per head (4)
   -- In Solo, the allocators of the instruments the page plays itself (the
   -- Rample as one instrument), as Reef.Articulation leaves them each step.
@@ -423,18 +427,11 @@ data Action
   | SetOctave Int
   | SetDegShift Int
   | ToggleScaleNote Int
-  | CaptureScene
-  | SetSceneName String
-  | PublishScene Int         -- publish scene i to the Amphora store (odonus-scene)
-  | RecallScene Int
-  | RecallGesture Int
-  | DeleteScene Int
   | MarkNow                 -- flag "a good bit" at the current instant (logbook)
   | DeleteMark Int          -- drop a flagged instant
   | DismissCard Int         -- put the loop card away (the mark's id); the loop plays on
   | ClearLog                -- purge the whole logbook manually
   | SetStage Stage          -- switch stage: Perform (instrument) | Review (capture)
-  | ToggleSceneMenu         -- secondary nav: open/close the scene menu
   | PlayRegion Int          -- start looping the region around mark i (REPLAY)
   | StopPlay                -- stop the REPLAY loop
   | RegionDown Int RegionEdge Int Int  -- grab a region: markIdx, edge, clientX, clientY

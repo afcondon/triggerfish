@@ -9,7 +9,8 @@ module Triggerfish.Odonus.Grid (component, Output(..)) where
 
 import Prelude
 
-import Data.Array (any, concatMap, deleteAt, elem, filter, find, findIndex, head, length, mapWithIndex, modifyAt, null, range, replicate, sort, updateAt, (!!))
+import Data.Array (any, concatMap, deleteAt, elem, filter, find, findIndex, head, insertAt, length, mapMaybe, mapWithIndex, modifyAt, null, range, replicate, updateAt, (!!))
+import Data.Map as Map
 import Data.Foldable (foldl, for_)
 import Data.Int (ceil, floor, round, toNumber)
 import Data.Ord (abs)
@@ -24,8 +25,6 @@ import Data.String.CodeUnits (take)
 import Effect.Timer (setInterval)
 import Halogen as H
 import Halogen.HTML as HH
-import Halogen.HTML.Events as HE
-import Halogen.HTML.Properties as HP
 import Halogen.Subscription as HS
 import Triggerfish.Capture.Types (Zoom(..))
 import Triggerfish.Capture.View as CaptureView
@@ -68,7 +67,7 @@ import Triggerfish.Odonus.Grid.Types
    )
 import Triggerfish.Scale (scaleTypes)
 import Triggerfish.Transport (Sounding(..))
-import Triggerfish.Odonus.Grid.Widgets (engrave, style)
+import Triggerfish.Odonus.Grid.Widgets (style)
 import Triggerfish.Odonus.Logbook as Logbook
 import Triggerfish.Odonus.View.Scope (scopePanel)
 import Triggerfish.Odonus.View.Playheads (playheadsPanel)
@@ -77,14 +76,16 @@ import Triggerfish.Ui.Euclid as Euclid
 import Triggerfish.Odonus.View.Grid (gridPanel)
 import Triggerfish.Odonus.View.Replay (replayPanel)
 import Triggerfish.Odonus.View.Nav (riverControls)
-import Triggerfish.Odonus.Patch (asCode, capturePatch, harmonicSummary, loadText, markText, nowText, patchText, recallText, recallGestureText, soundingOf)
+import Triggerfish.Odonus.Patch (asCode, harmonicSummary, loadText, markText, nowText, patchText, recallText, recallGestureText, soundingOf)
 import Triggerfish.Odonus.Store as Store
 import Triggerfish.Clips as Clips
 import Triggerfish.Clips.Store as ClipStore
 import Triggerfish.Amphora as Amphora
 import Triggerfish.Glyph as G
 import Triggerfish.Browser as Browser
-import Triggerfish.Preset (indexOfContent, presetAlias, newPreset)
+import Triggerfish.Preset (Preset, indexOfContent, newPreset, presetAlias, withWords)
+import Triggerfish.Odonus.Stage as OStage
+import Triggerfish.StageCopy as StageCopy
 import Triggerfish.Odonus.Lepidoptera (parsePatch, printPatch)
 import Triggerfish.SourceQuery (Query(..))
 import Triggerfish.Routing.Model as RM
@@ -92,7 +93,6 @@ import Triggerfish.Routing.Out as RO
 import Reef.Routing as RR
 import Triggerfish.Routing.Store as RStore
 import Triggerfish.Odonus.View.Generate (generatePanel, cellParamsPanel)
-import Triggerfish.Odonus.View.Scenes (sceneName)
 
 -- | The upward message to the shell: Odonus's identity-chip view (or `Nothing` when
 -- | nothing is parked), for the six-machine status board. Raised from the Frame loop
@@ -109,10 +109,10 @@ component =
   H.mkComponent
     { initialState: \_ ->
         { odo: M.defaultOdonus, sounding: Silent, dragging: Nothing, dragSub: Nothing
-        , notes: [], logbook: Logbook.emptyLog, stage: Perform, selEuclid: Nothing, navScenes: false, playing: Nothing, rigLoops: false, rigAsked: 0.0, cutting: false, cutSel: Nothing, regionDrag: Nothing, cardShut: Nothing, contextOpen: false, codeOpen: false, zoom: Whole, clips: [], twisterField: FNote, binnacle: Nothing, nowMicros: 0.0
+        , notes: [], logbook: Logbook.emptyLog, stage: Perform, selEuclid: Nothing, playing: Nothing, rigLoops: false, rigAsked: 0.0, cutting: false, cutSel: Nothing, regionDrag: Nothing, cardShut: Nothing, contextOpen: false, codeOpen: false, zoom: Whole, clips: [], twisterField: FNote, binnacle: Nothing, nowMicros: 0.0
         , outs: [], routing: RM.defaultTable, midiName: "…", clockTempo: 120.0, clockLocked: false
         , clockBeat: 0.0, clockBar: 0, anchorCount: 0
-        , scenes: [], sceneNameInput: "", publishMsg: Nothing
+        , notice: "", undoDelete: Nothing, stagePatches: Nothing
         , headNote: [ Nothing, Nothing, Nothing, Nothing ]
         -- No tables yet: fetched from Amphora on Initialize. Until then the rig
         -- plays its ES-9 voices uncorrected.
@@ -199,21 +199,21 @@ handleQuery = case _ of
   AskSounding reply -> do
     s <- H.get
     pure (Just (reply s.sounding))
-  -- A5 library manager: Odonus's saved SCENES are its named presets. LoadEntry
-  -- cold-loads a scene (hard playhead reset); import adds a scene (parsePatch
-  -- self-guards on `odonusPatch`).
+  -- A5 library manager: Odonus's named presets. LoadEntry cold-loads one
+  -- (hard playhead reset); import keeps one (parsePatch self-guards on
+  -- `odonusPatch`).
   AskLibrary reply -> do
     s <- H.get
-    pure (Just (reply s.scenes))
+    pure (Just (reply (namedPatches s.presets)))
   LoadEntry i next -> do
-    H.modify_ \s -> case s.scenes !! i of
+    H.modify_ \s -> case namedPatches s.presets !! i of
       Just sc -> loadText sc.text s
       Nothing -> s
     persistAll
     pure (Just next)
   ImportText txt reply -> case parsePatch txt of
     Just p -> do
-      H.modify_ \s -> s { scenes = s.scenes <> [ { name: p.name, text: printPatch p } ] }
+      H.modify_ \s -> s { presets = s.presets <> [ newPreset (printPatch p) (Just p.name) ] }
       persistAll
       pure (Just (reply true))
     Nothing -> pure (Just (reply false))
@@ -224,32 +224,54 @@ handleQuery = case _ of
     pure (Just next)
   -- The status-board chip's recall menu: report each preset as its glyph alias +
   -- optional name + star flag; recall / star / delete a chosen preset.
-  -- The browser drawer: the presets, then the scenes, as one list, name
-  -- first (docs/kb/plans/the-deck.md). Recalled in one of four ways.
+  -- The browser drawer: the presets, name first (docs/kb/plans/the-deck.md).
+  -- Recalled in one of four ways; a named one drags into Limulus.
   AskBrowser reply -> do
     s <- H.get
     let
-      preset i p = { slot: i, name: fromMaybe "untitled" p.name, icons: (G.glyphOf p.content).icons, tag: "", current: s.identity == Just p.content, section: "", builtin: false, drag: "", hint: "", actions: [] }
-      scene i sc = { slot: length s.presets + i, name: sc.name, icons: (G.glyphOf sc.text).icons, tag: "", current: s.identity == Just sc.text, section: "", builtin: false, drag: "", hint: "", actions: [] }
-    pure (Just (reply { title: "Presets", modes: true, keep: "keep", notice: "", rows: mapWithIndex preset s.presets <> mapWithIndex scene s.scenes }))
+      preset i p = { slot: i, name: fromMaybe "untitled" p.name, icons: (G.glyphOf p.content).icons, tag: "", current: s.identity == Just p.content, section: "", builtin: false, drag: OStage.patchDrag p, hint: OStage.patchHint p, actions: [ "publish", "delete" ] }
+    pure (Just (reply { title: "Presets", modes: true, keep: "keep", notice: s.notice, rows: mapWithIndex preset s.presets }))
   BrowserRecall i r next -> do
+    H.modify_ _ { undoDelete = Nothing, notice = "" }
     s <- H.get
     for_ (keptText s i) \text -> recallWith text r
     pure (Just next)
   BrowserKeep next -> do
     captureNow
     pure (Just next)
-  BrowserUndo next -> pure (Just next)
-  BrowserAction _ _ next -> pure (Just next)
+  -- the drawer's undo, after a delete
+  BrowserUndo next -> do
+    s <- H.get
+    for_ s.undoDelete \d -> do
+      H.modify_ _ { presets = fromMaybe (s.presets <> [ d.preset ]) (insertAt d.at d.preset s.presets), undoDelete = Nothing, notice = "" }
+      persistAll
+    pure (Just next)
+  -- a row's actions: delete (the drawer asks first; undoable), and publish
+  -- to the shared store (Amphora's odonus-scene collection)
+  BrowserAction i act next -> do
+    s <- H.get
+    for_ (s.presets !! i) \p -> case act of
+      "delete" -> do
+        H.modify_ _ { presets = fromMaybe s.presets (deleteAt i s.presets), undoDelete = Just { at: i, preset: p }
+                    , notice = "Deleted " <> fromMaybe "untitled" p.name }
+        persistAll
+      "publish" -> do
+        let name = fromMaybe "untitled" p.name
+        H.modify_ _ { notice = "Publishing " <> name <> "…", undoDelete = Nothing }
+        res <- liftAff (attempt (Amphora.publish
+          { kind: "odonus-scene", collection: "odonus-scene"
+          , name, source: "user", payload: p.content, tags: [] }))
+        H.modify_ _ { notice = case res of
+          Right hash -> "Published " <> name <> " · " <> take 8 hash
+          Left _ -> "Could not publish " <> name <> " (is the store offline?)" }
+      _ -> pure unit
+    pure (Just next)
   -- no controls of its own in the shared bar (yet)
   AskBar _ -> pure Nothing
   BarAction _ next -> pure (Just next)
   BrowserDrop _ next -> pure (Just next)
   BrowserRename i name next -> do
-    H.modify_ \s ->
-      let k = i - length s.presets
-      in if i < length s.presets then s { presets = fromMaybe s.presets (modifyAt i (_ { name = Just name }) s.presets) }
-         else s { scenes = fromMaybe s.scenes (modifyAt k (_ { name = name }) s.scenes) }
+    H.modify_ \s -> s { presets = fromMaybe s.presets (modifyAt i (_ { name = Just name }) s.presets), undoDelete = Nothing, notice = "" }
     persistAll
     pure (Just next)
   AskBank reply -> do
@@ -288,12 +310,13 @@ captureNow = do
         }
   persistAll
 
--- | The text of kept thing `i` in the browser's list: a preset, or after
--- | them a scene.
+-- | The text of kept thing `i` in the browser's list.
 keptText :: State -> Int -> Maybe String
-keptText s i
-  | i < length s.presets = _.content <$> s.presets !! i
-  | otherwise = _.text <$> s.scenes !! (i - length s.presets)
+keptText s i = _.content <$> s.presets !! i
+
+-- | The named presets as the library manager lists them.
+namedPatches :: Array Preset -> Array { name :: String, text :: String }
+namedPatches = mapMaybe \p -> (\name -> { name, text: p.content }) <$> p.name
 
 -- | Recall a kept patch one of the four ways: as saved, or keeping the live
 -- | key (the gesture: cells are scale degrees, so the riff re-voices); and
@@ -301,7 +324,16 @@ keptText s i
 -- | freeze button, so both runtimes pause on the same step).
 recallWith :: forall m. MonadAff m => String -> Browser.Recall -> H.HalogenM State Action Slots Output m Unit
 recallWith text r = do
-  H.modify_ \s -> (if r.inKey then recallGestureText text s else recallText text s) { identity = Just text }
+  s0 <- H.get
+  if s0.sounding == Rig then do
+    -- on the rig too, on the same step as here (it was the page's alone, so
+    -- the rig played on the old patch); in key, the patch the gesture makes
+    let patch = if r.inKey then patchText (recallGestureText text s0) else text
+    enqueue (RI.RecallPatch patch)
+    adoptFeel [ RI.RecallPatch text ]
+    H.modify_ _ { identity = Just text }
+  else
+    H.modify_ \s -> (if r.inKey then recallGestureText text s else recallText text s) { identity = Just text }
   st <- H.get
   when (st.genFrozen /= r.frozen) (enqueue (RI.SetFrozen r.frozen))
   persistAll
@@ -312,11 +344,7 @@ recallWith text r = do
 recallPreset :: forall m. MonadAff m => Int -> H.HalogenM State Action Slots Output m Unit
 recallPreset i = do
   st <- H.get
-  case st.presets !! i of
-    Nothing -> pure unit
-    Just p -> do
-      H.modify_ \s -> (recallText p.content s) { identity = Just p.content }
-      persistAll
+  for_ (st.presets !! i) \p -> recallWith p.content { frozen: st.genFrozen, inKey: false }
 
 -- | The identity-chip view Odonus reports to the shell's status board: the glyph of
 -- | the parked patch + whether the live patch has diverged from it (edited away).
@@ -350,8 +378,6 @@ handleAction a = do
     DragMove _ -> pure unit
     MidiReady _ _ -> pure unit
     Initialize -> pure unit
-    SetSceneName _ -> pure unit   -- per-keystroke; nothing authoring changed yet
-    PublishScene _ -> pure unit   -- a network write; no local authoring changed
     _ -> persistAll
   -- Off the rig, keep the patterns' samples coming (any action may have
   -- changed a pattern, and a step may have used up what is held).
@@ -363,6 +389,7 @@ handleAction a = do
 -- | A stage frame about the harmony routes or what they resolved to.
 stageAbout :: String -> Boolean
 stageAbout msg = isJust (Feeds.readFeeds msg) || isJust (Feeds.readRoutes msg)
+  || isJust (StageCopy.table OStage.stagePrefix msg)
 
 -- | Odonus's two patterns as they stand: what a sample reads.
 patternsNow :: State -> Patterns
@@ -405,8 +432,21 @@ keepSampled = do
 -- | Persist the live working patch + the named scene library.
 persistAll :: forall o m. MonadAff m => H.HalogenM State Action Slots o m Unit
 persistAll = do
-  s <- H.get
-  liftEffect (Store.saveAll { live: patchText s, scenes: s.scenes, presets: s.presets })
+  s <- H.modify \st -> st { presets = withWords st.presets }
+  liftEffect (Store.saveAll { live: patchText s, presets: s.presets })
+  publishPatches
+
+-- | Bring the stage's copy of the named presets up to date (StageCopy): a
+-- | write per new or changed one, a delete per one this page had that is
+-- | gone. Nothing until the stage has answered this connect's subscribe.
+publishPatches :: forall o m. MonadAff m => H.HalogenM State Action Slots o m Unit
+publishPatches = do
+  st <- H.get
+  for_ st.stagePatches \seen -> for_ st.binnacle \bin -> do
+    let now = OStage.bankPatches st.presets
+    unless (Map.isEmpty now) do
+      liftEffect $ for_ (StageCopy.lines OStage.stagePrefix seen now) (Transport.send (Binnacle.socket bin))
+      H.modify_ _ { stagePatches = Just now }
 
 -- | Persist the captured clip harvest to the SHARED library store (#27) — separate
 -- | from the Odonus patch envelope, so a clip is pickable in Vetula and beyond.
@@ -415,18 +455,16 @@ persistClips = do
   s <- H.get
   liftEffect (ClipStore.saveClips s.clips)
 
--- | An Amphora library item as a local scene (payload = the scene's eDSL text).
+-- | An Amphora library item as a named patch (payload = its eDSL text).
 amphoraScene :: Amphora.LibItem -> { name :: String, text :: String }
 amphoraScene it = { name: it.name, text: it.payload }
 
--- | Merge incoming (Amphora) scenes over the current local ones by name: keep
--- | every local scene, then append any incoming scene whose name isn't present.
-mergeScenesByName
-  :: Array { name :: String, text :: String }
-  -> Array { name :: String, text :: String }
-  -> Array { name :: String, text :: String }
-mergeScenesByName current incoming =
-  current <> filter (\p -> not (any (\q -> q.name == p.name) current)) incoming
+-- | Merge incoming (Amphora) patches over the local presets by name: keep
+-- | every local one, then keep any incoming one whose name isn't present.
+mergeByName :: Array Preset -> Array { name :: String, text :: String } -> Array Preset
+mergeByName current incoming =
+  withWords (current <> map (\p -> newPreset p.text (Just p.name))
+    (filter (\p -> not (any (\q -> q.name == Just p.name) current)) incoming))
 
 dispatch :: forall m. MonadAff m => Action -> H.HalogenM State Action Slots Output m Unit
 dispatch = case _ of
@@ -489,7 +527,7 @@ dispatch = case _ of
     -- Lepidoptera text; unparseable / absent storage falls back to defaults).
     msaved <- liftEffect Store.loadAll
     for_ msaved \sv -> do
-      H.modify_ _ { scenes = sv.scenes, presets = sv.presets }
+      H.modify_ _ { presets = sv.presets }
       H.modify_ (loadText sv.live)
     -- Cold-start read of the routing table. The shell OWNS it and pushes it
     -- down via SetRouting; this only covers the window before its first
@@ -511,7 +549,7 @@ dispatch = case _ of
       dbRes <- liftAff (attempt (Amphora.fetchCollection "odonus-scene"))
       case dbRes of
         Right items | not (null items) ->
-          H.modify_ \s -> s { scenes = mergeScenesByName s.scenes (map amphoraScene items) }
+          H.modify_ \s -> s { presets = mergeByName s.presets (map amphoraScene items) }
         _ -> pure unit
     -- Calibration tables for any poly instrument, likewise in the background and
     -- likewise non-fatal. Missing tables are LOUD rather than silent: without
@@ -803,6 +841,11 @@ dispatch = case _ of
   RigFrame msg | Just s <- Samples.readSamples msg -> H.modify_ _ { samples = s }
   -- The routes as written come in the same frames; a mark keeps them.
   RigFrame msg | stageAbout msg -> do
+    -- the stage's whole table, on subscribing: it gets any of our named
+    -- presets it lacks or holds stale
+    for_ (StageCopy.table OStage.stagePrefix msg) \held -> do
+      H.modify_ \s -> s { stagePatches = Just (StageCopy.ours held (OStage.bankPatches s.presets)) }
+      publishPatches
     for_ (Feeds.readRoutes msg) \r -> H.modify_ _ { routesText = r }
     for_ (Feeds.readFeeds msg) \new -> do
       st <- H.get
@@ -818,6 +861,13 @@ dispatch = case _ of
       Left _ -> liftEffect $ Console.warn ("Odonus: a reef-input from the rig did not decode: " <> take 120 json)
       Right t -> do
         st <- H.get
+        -- a patch an `odonus $ "<a b>"` line recalls: the drawer marks it, and a
+        -- page not on the rig shows it at once (on the rig it lands on its step)
+        case t.input of
+          RI.RecallPatch txt -> do
+            H.modify_ _ { identity = Just txt }
+            when (st.sounding /= Rig) $ H.modify_ (recallText txt)
+          _ -> pure unit
         when (st.sounding == Rig) do
           when (t.tick < st.nextModelStep) $ liftEffect $ Console.warn
             ("Odonus: a rig move for step " <> show t.tick <> " arrived at step "
@@ -949,37 +999,6 @@ dispatch = case _ of
   SetOctave n -> enqueue (RI.SetOctaveShift n)
   SetDegShift n -> enqueue (RI.SetDegShift n)
   ToggleScaleNote pc -> enqueue (RI.ToggleScaleNote pc)
-  -- Capture the WHOLE current setup under the typed name (or an auto-name), as
-  -- its Lepidoptera text — the named, recallable preset. (persistAll runs in the
-  -- handleAction wrapper.)
-  CaptureScene -> H.modify_ \s ->
-    let nm = if s.sceneNameInput == "" then sceneName s else s.sceneNameInput
-    in s { scenes = s.scenes <> [ { name: nm, text: printPatch ((capturePatch s) { name = nm }) } ]
-         , sceneNameInput = "" }
-  SetSceneName n -> H.modify_ _ { sceneNameInput = n }
-  -- Publish scene i to the shared Amphora store (odonus-scene collection). The
-  -- scene text is already its canonical Lepidoptera form; the name rides the
-  -- label. Store offline → a transient failure message, never fatal.
-  PublishScene i -> do
-    s <- H.get
-    case s.scenes !! i of
-      Nothing -> pure unit
-      Just sc -> do
-        H.modify_ _ { publishMsg = Just "publishing…" }
-        res <- liftAff (attempt (Amphora.publish
-          { kind: "odonus-scene", collection: "odonus-scene"
-          , name: sc.name, source: "user", payload: sc.text, tags: [] }))
-        H.modify_ _ { publishMsg = Just case res of
-          Right hash -> "✓ " <> sc.name <> " · " <> take 8 hash
-          Left _ -> "✗ publish failed (store offline?)" }
-  RecallScene i -> H.modify_ \s -> case s.scenes !! i of
-    Just sc -> recallText sc.text s
-    Nothing -> s
-  -- Recall the scene's gesture but stay in the live key/progression (#150).
-  RecallGesture i -> H.modify_ \s -> case s.scenes !! i of
-    Just sc -> recallGestureText sc.text s
-    Nothing -> s
-  DeleteScene i -> H.modify_ \s -> s { scenes = fromMaybe s.scenes (deleteAt i s.scenes) }
   -- Performance logbook (#151): flag / drop a good bit, or purge the whole log.
   -- With the rig, it makes the mark and numbers it; it comes back in a loops
   -- frame, and takes what Odonus is doing then (RigFrame).
@@ -1021,7 +1040,6 @@ dispatch = case _ of
       , contextOpen = if v == Review then s.contextOpen else false
       }
 
-  ToggleSceneMenu -> H.modify_ \s -> s { navScenes = not s.navScenes }
   -- REPLAY (#151, R2b): start looping the one-bar region around mark i. The Frame
   -- loop (driveReplay) schedules each iteration; StopPlay ends it.
   PlayRegion i -> startRegion i
@@ -1101,15 +1119,15 @@ dispatch = case _ of
     H.modify_ _ { cutSel = Just { from: at, to: at }, dragSub = Just sid }
   TrimLog -> rigSend (RL.cueLine "odonus" "trim")
   UndoLog -> rigSend (RL.cueLine "odonus" "undo")
-  -- Promote a captured good bit into the SCENES list: a mark's stored patch IS
-  -- a scene's text (same Lepidoptera form), so the loop can graduate into a
-  -- chainable, recallable (as-saved / in-key #150) scene. Auto-named by its key.
+  -- Keep a captured good bit as a named preset: a mark's stored patch is a
+  -- preset's text (same Lepidoptera form), so the loop graduates into a
+  -- recallable (as saved / in key #150), draggable preset. Named by its key.
   SaveMarkScene i -> H.modify_ \s -> case s.logbook.marks !! i of
     Just m ->
       let nm = case harmonicSummary m.patch of
                  Just h -> "loop · " <> h.root <> " " <> h.scale
                  Nothing -> "loop " <> show (i + 1)
-      in s { scenes = s.scenes <> [ { name: nm, text: m.patch } ] }
+      in s { presets = withWords (s.presets <> [ newPreset m.patch (Just nm) ]) }
     Nothing -> s
   -- Lift a mark's region out as a captured clip (#27): copy its notes, rebased to
   -- zero, into a shared-library `MidiClip` with metadata populated cheaply from the

@@ -20,14 +20,15 @@ import Prelude
 import Data.Maybe (Maybe(..))
 import Data.Nullable (Nullable, toMaybe)
 import Effect (Effect)
-import Triggerfish.Preset (Preset, Stored, fromStored, toStored, withWords)
+import Data.Array (filter, notElem)
+import Triggerfish.Preset (Preset, Stored, fromStored, newPreset, toStored, withWords)
 
--- | What we persist: the live working patch, the named scene library (each
--- | scene's `text` is its full authored patch rendered to eDSL), and the unified
--- | glyph-chip preset bank.
+-- | What we persist: the live working patch and the preset bank. (The named
+-- | scene library was folded into the bank as named presets, 2026-10-13: the
+-- | two held the same thing. Stored scenes are folded in on load and the
+-- | field is written empty.)
 type Saved =
   { live :: String
-  , scenes :: Array { name :: String, text :: String }
   , presets :: Array Preset
   }
 
@@ -64,7 +65,7 @@ saveAll sv = _save storeKey (_stringify env)
   env :: Envelope
   env =
     { live: sv.live
-    , scenes: sv.scenes
+    , scenes: []
     , presets: map toStored sv.presets
     }
 
@@ -79,11 +80,17 @@ loadAll = do
     Nothing -> do
       mV2 <- _load legacyKey
       pure $ toMaybe (mV2 :: Nullable EnvelopeV2) <#> \v2 ->
-        { live: v2.live, scenes: v2.scenes, presets: [] }
+        { live: v2.live, presets: withWords (foldScenes v2.scenes []) }
 
 decode :: Envelope -> Saved
 decode env =
   { live: env.live
-  , scenes: env.scenes
-  , presets: withWords (map fromStored env.presets)
+  , presets: withWords (foldScenes env.scenes (map fromStored env.presets))
   }
+
+-- | Scenes as named presets after the bank's own, each once: a scene whose
+-- | patch the bank already holds is not kept twice.
+foldScenes :: Array { name :: String, text :: String } -> Array Preset -> Array Preset
+foldScenes scenes presets =
+  presets <> map (\sc -> newPreset sc.text (Just sc.name))
+    (filter (\sc -> notElem sc.text (map _.content presets)) scenes)
