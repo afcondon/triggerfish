@@ -27,6 +27,7 @@ module Triggerfish.Odonus.Grid.Types
   , Slots
   ) where
 
+import Triggerfish.Library as Library
 import Triggerfish.Amphora (LibItem)
 import Prelude
 
@@ -335,6 +336,8 @@ type State =
   -- the named presets the rig's stage holds, by word (StageCopy), which
   -- `odonus $ "<a b>"` recalls; Nothing until the stage answers a subscribe
   , stagePatches :: Maybe (Map String String)
+  -- the presets as Amphora keeps them (`Triggerfish.Library`); Nothing until opened
+  , shelf :: Maybe (Library.Shelf Preset)
   , headNote :: Array (Maybe Int)  -- the held/sounding MIDI note per head (4)
   -- In Solo, the allocators of the instruments the page plays itself (the
   -- Rample as one instrument), as Reef.Articulation leaves them each step.
@@ -396,6 +399,7 @@ data Action
   = Initialize
   | Step Scheduler.Tick
   | Frame
+  | LibraryArrived (Array Preset)  -- the presets as Amphora has them, changed elsewhere
   | RigFrame String         -- a frame from the rig: an `odonus` move's tagged gestures to follow
   -- every output port, status line
   | MidiReady RO.Outs String

@@ -83,7 +83,8 @@ import Triggerfish.Clips.Store as ClipStore
 import Triggerfish.Amphora as Amphora
 import Triggerfish.Glyph as G
 import Triggerfish.Browser as Browser
-import Triggerfish.Preset (Preset, indexOfContent, newPreset, presetAlias, rename, withWords)
+import Triggerfish.Library as Library
+import Triggerfish.Preset (Preset, indexOfContent, newPreset, presetAlias, presetDoc, rename, withWords)
 import Triggerfish.Odonus.Stage as OStage
 import Triggerfish.StageCopy as StageCopy
 import Triggerfish.Odonus.Lepidoptera (parsePatch, printPatch)
@@ -112,7 +113,7 @@ component =
         , notes: [], logbook: Logbook.emptyLog, stage: Perform, selEuclid: Nothing, playing: Nothing, rigLoops: false, rigAsked: 0.0, cutting: false, cutSel: Nothing, regionDrag: Nothing, cardShut: Nothing, contextOpen: false, codeOpen: false, zoom: Whole, clips: [], twisterField: FNote, binnacle: Nothing, nowMicros: 0.0
         , outs: [], routing: RM.defaultTable, midiName: "…", clockTempo: 120.0, clockLocked: false
         , clockBeat: 0.0, clockBar: 0, anchorCount: 0
-        , notice: "", undoDelete: Nothing, stagePatches: Nothing
+        , notice: "", undoDelete: Nothing, stagePatches: Nothing, shelf: Nothing
         , headNote: [ Nothing, Nothing, Nothing, Nothing ]
         -- No tables yet: fetched from Amphora on Initialize. Until then the rig
         -- plays its ES-9 voices uncorrected.
@@ -229,7 +230,7 @@ handleQuery = case _ of
   AskBrowser reply -> do
     s <- H.get
     let
-      preset i p = { slot: i, name: fromMaybe "untitled" p.name, icons: (G.glyphOf p.content).icons, tag: "", current: s.identity == Just p.content, section: "", builtin: false, drag: OStage.patchDrag p, hint: OStage.patchHint p, actions: [ "publish", "delete" ] }
+      preset i p = { slot: i, name: fromMaybe "untitled" p.name, icons: (G.glyphOf p.content).icons, tag: "", current: s.identity == Just p.content, section: "", builtin: false, drag: OStage.patchDrag p, hint: OStage.patchHint p, actions: [ "delete" ] }
     pure (Just (reply { title: "Presets", modes: true, keep: "keep", notice: s.notice, rows: mapWithIndex preset s.presets }))
   BrowserRecall i r next -> do
     H.modify_ _ { undoDelete = Nothing, notice = "" }
@@ -246,8 +247,7 @@ handleQuery = case _ of
       H.modify_ _ { presets = fromMaybe (s.presets <> [ d.preset ]) (insertAt d.at d.preset s.presets), undoDelete = Nothing, notice = "" }
       persistAll
     pure (Just next)
-  -- a row's actions: delete (the drawer asks first; undoable), and publish
-  -- to the shared store (Amphora's odonus-scene collection)
+  -- a row's action: delete (the drawer asks first; undoable)
   BrowserAction i act next -> do
     s <- H.get
     for_ (s.presets !! i) \p -> case act of
@@ -255,15 +255,6 @@ handleQuery = case _ of
         H.modify_ _ { presets = fromMaybe s.presets (deleteAt i s.presets), undoDelete = Just { at: i, preset: p }
                     , notice = "Deleted " <> fromMaybe "untitled" p.name }
         persistAll
-      "publish" -> do
-        let name = fromMaybe "untitled" p.name
-        H.modify_ _ { notice = "Publishing " <> name <> "…", undoDelete = Nothing }
-        res <- liftAff (attempt (Amphora.publish
-          { kind: "odonus-scene", collection: "odonus-scene"
-          , name, source: "user", payload: p.content, tags: [] }))
-        H.modify_ _ { notice = case res of
-          Right hash -> "Published " <> name <> " · " <> take 8 hash
-          Left _ -> "Could not publish " <> name <> " (is the store offline?)" }
       _ -> pure unit
     pure (Just next)
   -- no controls of its own in the shared bar (yet)
@@ -429,11 +420,14 @@ keepSampled = do
         enqueue i
         H.modify_ _ { lastSample = Just enc }
 
--- | Persist the live working patch + the named scene library.
+-- | Persist the live working patch (this browser) and the presets (Amphora).
 persistAll :: forall o m. MonadAff m => H.HalogenM State Action Slots o m Unit
 persistAll = do
   s <- H.modify \st -> st { presets = withWords st.presets }
-  liftEffect (Store.saveAll { live: patchText s, presets: s.presets })
+  liftEffect (Store.saveLive (patchText s))
+  for_ s.shelf \shelf -> do
+    kept <- liftEffect (Library.put shelf s.presets)
+    H.modify_ _ { presets = kept }
   publishPatches
 
 -- | Bring the stage's copy of the named presets up to date (StageCopy): a
@@ -454,17 +448,6 @@ persistClips :: forall o m. MonadAff m => H.HalogenM State Action Slots o m Unit
 persistClips = do
   s <- H.get
   liftEffect (ClipStore.saveClips s.clips)
-
--- | An Amphora library item as a named patch (payload = its eDSL text).
-amphoraScene :: Amphora.LibItem -> { name :: String, text :: String }
-amphoraScene it = { name: it.name, text: it.payload }
-
--- | Merge incoming (Amphora) patches over the local presets by name: keep
--- | every local one, then keep any incoming one whose name isn't present.
-mergeByName :: Array Preset -> Array { name :: String, text :: String } -> Array Preset
-mergeByName current incoming =
-  withWords (current <> map (\p -> newPreset p.text (Just p.name))
-    (filter (\p -> not (any (\q -> q.name == Just p.name) current)) incoming))
 
 dispatch :: forall m. MonadAff m => Action -> H.HalogenM State Action Slots Output m Unit
 dispatch = case _ of
@@ -523,12 +506,18 @@ dispatch = case _ of
           HS.notify midiL (TwisterMsg m.status m.data1 m.data2)
       Nothing -> HS.notify midiL (MidiReady [] "unavailable")
     H.modify_ _ { binnacle = Just bin }
-    -- Restore the saved scene library + the live working patch (each is
-    -- Lepidoptera text; unparseable / absent storage falls back to defaults).
+    -- Restore the live working patch (Lepidoptera text; unparseable / absent
+    -- storage falls back to defaults). The presets are what Amphora keeps
+    -- (`Triggerfish.Library`): this browser's copy at once, Amphora's when it
+    -- answers or changes elsewhere. The first time, they start from what this
+    -- browser kept before and the old `odonus-scene` collection.
     msaved <- liftEffect Store.loadAll
-    for_ msaved \sv -> do
-      H.modify_ _ { presets = sv.presets }
-      H.modify_ (loadText sv.live)
+    for_ msaved \sv -> H.modify_ (loadText sv.live)
+    { emitter: libE, listener: libL } <- liftEffect HS.create
+    _ <- H.subscribe (LibraryArrived <$> libE)
+    let oldScenes = map (\it -> newPreset it.payload (Just it.name)) <$> Amphora.fetchCollection "odonus-scene"
+    opened <- liftEffect $ Library.open (presetDoc "odonus" oldScenes) (maybe [] _.presets msaved) (HS.notify libL)
+    H.modify_ _ { presets = withWords opened.items, shelf = Just opened.shelf }
     -- Cold-start read of the routing table. The shell OWNS it and pushes it
     -- down via SetRouting; this only covers the window before its first
     -- broadcast, so a solo-mounted Odonus is routed from the first tick.
@@ -542,15 +531,6 @@ dispatch = case _ of
     -- Restore the shared MIDI clip library (#27) — captured anywhere, pickable here.
     savedClips <- liftEffect ClipStore.loadClips
     H.modify_ _ { clips = savedClips }
-    -- Merge the shared Amphora scene library over the local one (by name), in the
-    -- BACKGROUND: awaiting it blocked Initialize (hence all queries to Odonus) until
-    -- the ~30s offline timeout. The store being offline is not fatal — keep local.
-    void $ H.fork do
-      dbRes <- liftAff (attempt (Amphora.fetchCollection "odonus-scene"))
-      case dbRes of
-        Right items | not (null items) ->
-          H.modify_ \s -> s { presets = mergeByName s.presets (map amphoraScene items) }
-        _ -> pure unit
     -- Calibration tables for any poly instrument, likewise in the background and
     -- likewise non-fatal. Missing tables are LOUD rather than silent: without
     -- them the four Saich voices differ by up to 16 cents at the same voltage,
@@ -856,6 +836,11 @@ dispatch = case _ of
   -- sampling ends here, and OCT goes back to where the pattern found it.
   RigFrame msg | msg == "hushed" || msg == "hushed odonus" ->
     H.modify_ \s -> s { odo = M.setOctavePattern Nothing s.odo }
+  -- Another browser changed the presets (or this one's change was kept on
+  -- top of theirs): show them, and the stage follows.
+  LibraryArrived items -> do
+    H.modify_ _ { presets = withWords items, undoDelete = Nothing }
+    publishPatches
   RigFrame msg -> for_ (Str.stripPrefix (Str.Pattern "reef-input ") msg) \json ->
     case decodeTagged json of
       Left _ -> liftEffect $ Console.warn ("Odonus: a reef-input from the rig did not decode: " <> take 120 json)

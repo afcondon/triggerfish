@@ -11,7 +11,7 @@
 -- | Odonus is pickable in Vetula and beyond.
 module Triggerfish.Odonus.Store
   ( Saved
-  , saveAll
+  , saveLive
   , loadAll
   ) where
 
@@ -21,7 +21,7 @@ import Data.Maybe (Maybe(..))
 import Data.Nullable (Nullable, toMaybe)
 import Effect (Effect)
 import Data.Array (filter, notElem)
-import Triggerfish.Preset (Preset, Stored, fromStored, newPreset, toStored, withWords)
+import Triggerfish.Preset (Preset, Stored, fromStored, newPreset, withWords)
 
 -- | What we persist: the live working patch and the preset bank. (The named
 -- | scene library was folded into the bank as named presets, 2026-10-13: the
@@ -57,17 +57,14 @@ foreign import _save :: String -> String -> Effect Unit
 foreign import _load :: forall a. String -> Effect (Nullable a)
 foreign import _stringify :: forall a. a -> String
 
--- | Persist the live patch + scene library + preset bank (best-effort — the FFI
--- | swallows quota / private-mode errors).
-saveAll :: Saved -> Effect Unit
-saveAll sv = _save storeKey (_stringify env)
+-- | Persist the live patch (best-effort — the FFI swallows quota /
+-- | private-mode errors). The presets are Amphora's (`Triggerfish.Library`,
+-- | 2026-10-13): what this store held of them is read once, to start it.
+saveLive :: String -> Effect Unit
+saveLive live = _save storeKey (_stringify env)
   where
   env :: Envelope
-  env =
-    { live: sv.live
-    , scenes: []
-    , presets: map toStored sv.presets
-    }
+  env = { live, scenes: [], presets: [] }
 
 -- | Load the stored envelope. Prefers v3; migrates a v2 (live + scenes) store with
 -- | an empty preset bank; `Nothing` if absent / unparseable. The caller parses each
