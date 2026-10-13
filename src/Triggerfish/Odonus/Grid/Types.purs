@@ -467,8 +467,6 @@ data Action
   | PushToRig                  -- encode the whole Odonus record (Reef.Protocol)
                                -- and send it over the rig WS as `reef-odonus <json>`,
                                -- to run on the BEAM via the shared reef engine
-  | HushRig                    -- send `hush` over the rig WS (stops the reef voice
-                               -- the push started, plus everything else on the rig)
   | TwisterMsg Int Int Int     -- a raw MIDI message from the MidiFighter Twister
   -- VOICE config: which FH-2 polyenv envelopes each head fires.
                                -- (status, data1, data2). Bank 1: encoders 0..15 map

@@ -16,7 +16,7 @@ module Triggerfish.Selene.Component (component, Output(..)) where
 
 import Prelude
 
-import Data.Array (any, deleteAt, drop, filter, findIndex, length, mapMaybe, mapWithIndex, modifyAt, null, range, (!!))
+import Data.Array (any, deleteAt, insertAt, drop, filter, findIndex, length, mapMaybe, mapWithIndex, modifyAt, null, range, (!!))
 import Data.Foldable (for_, foldl, foldr)
 import Data.Tuple (Tuple(..), fst, snd)
 import Web.UIEvent.MouseEvent as ME
@@ -125,7 +125,7 @@ type State =
   -- saved over (AC, 2026-10-05: the rebus shows live diverging from saved).
   , live :: String
   , notice :: String
-  , undoTo :: Maybe { rack :: Int, live :: String }
+  , undoTo :: Maybe Undo
   -- a drag from the drawer over a group of outputs: which, whether it can
   -- take what is dragged, and if not, why
   , dragOver :: Maybe { wire :: String, ok :: Boolean, why :: String }
@@ -303,17 +303,19 @@ handleQuery = case _ of
       moduleHint = "Drag it onto a bank. Drag it into Limulus: onto a selene line it replaces what that bank plays; anywhere else it starts a line on a free bank that can take it."
       kept k m = { slot: keptSlot + k, name: m.name, icons: settingIcons m.line, tag: maybe "" signalMark (Line.moduleKind m.line), current: false, section: "Modules", builtin: false, drag: moduleDrag s m.line, hint: moduleHint, actions: [ "delete" ] }
     pure (Just (reply
-      { title: "Selene", modes: false, keep: "save as new rack", notice: s.notice
+      { title: "Selene", modes: false, keep: "keep rack", notice: s.notice
       , rows: mapWithIndex rack s.library <> [ free ] <> mapWithIndex plain M.allKinds <> mapWithIndex block Block.blocks <> mapWithIndex kept s.modules }))
   BrowserRecall i _ next -> do
+    settleUndo
     s <- H.get
     -- a rack replaces the live one, which an undo gives back; a module is
     -- dragged onto a bank, not clicked
     when (i < builtinSlot && i /= s.active) do
-      H.modify_ _ { undoTo = Just { rack: s.active, live: s.live }, notice = "Replaced the rack with " <> fromMaybe "?" (map _.name (s.library !! i)) }
+      H.modify_ _ { undoTo = Just (UndoReplace { rack: s.active, live: s.live }), notice = "Replaced the rack with " <> fromMaybe "?" (map _.name (s.library !! i)) }
       handleAction (SelectRack i)
     pure (Just next)
   BrowserRename i name next -> do
+    settleUndo
     if i < builtinSlot then do
       H.modify_ \s -> s { library = fromMaybe s.library (modifyAt i (_ { name = name }) s.library) }
       persist
@@ -323,6 +325,7 @@ handleQuery = case _ of
       for_ (s.modules !! (i - keptSlot)) publishModule
     pure (Just next)
   BrowserAction i act next -> do
+    settleUndo
     s <- H.get
     case act of
       -- save the live rack over its saved one
@@ -333,12 +336,15 @@ handleQuery = case _ of
         for_ (s.library !! i) \r -> H.modify_ _ { library = s.library <> [ { name: r.name <> " copy", doc: r.doc } ] }
         persist
       "publish" | i < builtinSlot -> for_ (s.library !! i) publishRack'
-      "delete" | i < builtinSlot && i /= s.active -> do
-        H.modify_ _ { library = fromMaybe s.library (deleteAt i s.library), active = if i < s.active then s.active - 1 else s.active }
+      "delete" | i < builtinSlot && i /= s.active -> for_ (s.library !! i) \r -> do
+        H.modify_ _ { library = fromMaybe s.library (deleteAt i s.library), active = if i < s.active then s.active - 1 else s.active
+                    , undoTo = Just (UndoRack i r), notice = "Deleted " <> r.name }
         persist
+      -- a kept module leaves the shared store too, once its delete can no
+      -- longer be undone (settleUndo)
       "delete" | i >= keptSlot -> for_ (s.modules !! (i - keptSlot)) \m -> do
-        H.modify_ _ { modules = fromMaybe s.modules (deleteAt (i - keptSlot) s.modules) }
-        when (m.hash /= "") (void $ H.fork $ void $ liftAff $ attempt $ Amphora.unpublish "selene-module" m.hash)
+        H.modify_ _ { modules = fromMaybe s.modules (deleteAt (i - keptSlot) s.modules)
+                    , undoTo = Just (UndoModule (i - keptSlot) m), notice = "Deleted " <> m.name }
       _ -> pure unit
     pure (Just next)
   -- the rack's rebus, dragged from the page onto the drawer: kept as a new rack
@@ -350,14 +356,21 @@ handleQuery = case _ of
     pure (Just next)
   BrowserUndo next -> do
     s <- H.get
-    -- back to the rack it was, as it was live (edits and all)
-    for_ s.undoTo \back -> do
-      H.modify_ _ { undoTo = Nothing, notice = "" }
-      handleAction (SelectRack back.rack)
-      H.modify_ _ { live = back.live, sel = Source.parseRack back.live }
-      persist
+    H.modify_ _ { undoTo = Nothing, notice = "" }
+    for_ s.undoTo case _ of
+      -- back to the rack it was, as it was live (edits and all)
+      UndoReplace back -> do
+        handleAction (SelectRack back.rack)
+        H.modify_ _ { live = back.live, sel = Source.parseRack back.live }
+        persist
+      UndoRack at r -> do
+        H.modify_ \t -> t { library = fromMaybe (t.library <> [ r ]) (insertAt at r t.library), active = if at <= t.active then t.active + 1 else t.active }
+        persist
+      UndoModule at m ->
+        H.modify_ \t -> t { modules = fromMaybe (t.modules <> [ m ]) (insertAt at m t.modules) }
     pure (Just next)
   BrowserKeep next -> do
+    settleUndo
     at <- liftEffect Browser.stamp
     H.modify_ \s ->
       let n = length s.library
@@ -1746,3 +1759,21 @@ moduleOfDrag :: String -> String
 moduleOfDrag text = case Str.stripPrefix (Str.Pattern "selene-module ") text of
   Just payload -> Str.takeWhile (_ /= Str.codePointFromChar '\t') payload
   Nothing -> text
+
+-- | What the drawer's undo gives back: the rack a recall replaced (as it was
+-- | live), or a deleted rack or kept module, where it was.
+data Undo
+  = UndoReplace { rack :: Int, live :: String }
+  | UndoRack Int Store.Rack
+  | UndoModule Int { name :: String, line :: String, hash :: String }
+
+-- | The drawer has moved on, so the last undo is gone: a deleted kept module
+-- | now leaves the shared store too.
+settleUndo :: forall slots o m. MonadAff m => H.HalogenM State Action slots o m Unit
+settleUndo = do
+  s <- H.get
+  case s.undoTo of
+    Just (UndoModule _ m) | m.hash /= "" ->
+      void $ H.fork $ void $ liftAff $ attempt $ Amphora.unpublish "selene-module" m.hash
+    _ -> pure unit
+  H.modify_ _ { undoTo = Nothing, notice = "" }

@@ -113,6 +113,7 @@ import Vetula.Tidal (progressionSource, progressionSourceIn, parseBeats, parsePr
 import Reef.Vetula.VoiceName (voiceLetter)
 import Vetula.Lepidoptera (PerfDoc, VoiceSpec, cardProgression, docFromVoices, parseCardIn, parsePerform, printAsRecord, printCard, printProgressionIn)
 import Vetula.StageCards as SC
+import Triggerfish.StageCopy as StageCopy
 import Triggerfish.Drag as Drop
 import Vetula.Score as Score
 import Harmonia.Substitute as HSub
@@ -836,6 +837,9 @@ data SourceQuery a
   | AskLibrary (Array { name :: String, text :: String } -> a)   -- A5 manager
   | AskProgressions (Array { slot :: Int, name :: String, key :: String, current :: Boolean, rebus :: Array TGlyph.GlyphIcon } -> a)  -- the drawer's saved progressions
   | LoadEntry Int a
+  -- the drawer's delete of a saved progression, and its undo: library entry
+  -- `i` no longer kept (its voices fall silent), or kept again
+  | SetKept Int Boolean a
   | OpenChannelCard Int a   -- the drawer's voice row: show that channel's card in Limulus
   | ImportText String (Boolean -> a)
   -- MIDI routing (Tidal-page channel map). The shell pushes the name → channel
@@ -1088,6 +1092,13 @@ handleQuery = case _ of
     s <- H.get
     pure (Just (reply (map (\e -> { name: e.name, text: e.source }) s.library)))
   -- a progression from the drawer: work on it, on the score
+  SetKept i k next -> do
+    H.modify_ \s -> s { library = fromMaybe s.library (modifyAt i (_ { kept = k }) s.library)
+                      -- an entry no longer kept is not the capture to update
+                      , lastCapIdx = if not k && s.lastCapIdx == Just i then Nothing else s.lastCapIdx }
+    persistLib
+    publishProgressions
+    pure (Just next)
   LoadEntry i next -> do
     guardLoss ("load " <> show i) do
       handleAction (LoadProg i)
@@ -1485,18 +1496,24 @@ publishProgressions :: forall m. MonadAff m => H.HalogenM State Action Slots Out
 publishProgressions = do
   st <- H.get
   for_ st.stageProgs \seen -> for_ st.binnacle \bin -> do
-    let now = Map.fromFoldable (mapMaybe stageText st.library)
+    let now = Map.fromFoldable (mapMaybe (stageTextOf st) st.library)
     -- the rig's copy follows the library exactly, a deleted progression going
     -- too (its voices fall silent); a library with nothing kept is a browser
     -- that has not saved here yet, not one that deleted everything
     unless (Map.isEmpty now) do
-      liftEffect $ for_ (SC.progressionLines seen now) (Transport.send (Binnacle.socket bin))
+      liftEffect $ for_ (StageCopy.lines progressionPrefix seen now) (Transport.send (Binnacle.socket bin))
       H.modify_ _ { stageProgs = Just now }
-  where
-  stageText e =
-    if e.kept && SC.stageName e.name
-    then Just (Tuple e.name (printProgressionIn (parseBeats e.source) (filter (\ns -> length ns > 0) (parseProgression e.source))))
-    else Nothing
+
+-- | Where the stage keeps Vetula's saved progressions (StageCopy).
+progressionPrefix :: String
+progressionPrefix = "vetula/progression/"
+
+-- | A kept progression as the stage keeps it, by name.
+stageTextOf :: State -> Store.Entry -> Maybe (Tuple String String)
+stageTextOf _ e =
+  if e.kept && SC.stageName e.name
+  then Just (Tuple e.name (printProgressionIn (parseBeats e.source) (filter (\ns -> length ns > 0) (parseProgression e.source))))
+  else Nothing
 
 -- | Kept progressions whose names a voice line cannot say (a space, the old
 -- | prime) renamed once to ones it can (`cleanName`), with the renames made.
@@ -1621,8 +1638,10 @@ handleActionCore = case _ of
       st <- H.get
       H.modify_ _ { stageKey = Just (Route.printKey (contextKey st)) }
     -- the stage's saved progressions: it gets any of ours it lacks
-    for_ (SC.progressionTable msg) \held -> do
-      H.modify_ _ { stageProgs = Just held }
+    -- only the progressions this library keeps count as its own: connecting
+    -- never deletes another browser's (StageCopy)
+    for_ (StageCopy.table progressionPrefix msg) \held -> do
+      H.modify_ \s -> s { stageProgs = Just (StageCopy.ours held (Map.fromFoldable (mapMaybe (stageTextOf s) s.library))) }
       publishProgressions
     case SC.readFrame msg of
       Nothing -> pure unit

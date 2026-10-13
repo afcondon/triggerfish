@@ -61,6 +61,9 @@ type State =
   , names :: Map Int (Array String)
   -- the controls Vetula last gave for the shell's bar, to say when they change
   , lastBar :: Maybe Bar
+  -- the drawer's word after a delete, and the progression its undo keeps again
+  , notice :: String
+  , undoKept :: Maybe Int
   }
 
 data Action
@@ -79,7 +82,7 @@ component = H.mkComponent
   { initialState: \_ ->
       { sounding: Silent, chip: Nothing
       , busy: Nothing
-      , bin: Nothing, voices: [], routesText: Nothing, names: Map.empty, lastBar: Nothing }
+      , bin: Nothing, voices: [], routesText: Nothing, names: Map.empty, lastBar: Nothing, notice: "", undoKept: Nothing }
   , render: \_ -> HH.slot _vet unit Vetula.component unit FromVetula
   , eval: H.mkEval H.defaultEval
       { handleAction = handleAction
@@ -157,6 +160,10 @@ poll = do
 progSlotBase :: Int
 progSlotBase = 2000
 
+-- | The drawer has moved on: its last delete can no longer be undone.
+settle :: M Unit
+settle = H.modify_ _ { notice = "", undoKept = Nothing }
+
 -- | The shell's queries, in Vetula's terms. What Vetula has no counterpart for
 -- | (lanes, a clock, the routing table, a pitch set to follow) is unanswered.
 handleQuery :: forall a. SQ.Query a -> M (Maybe a)
@@ -174,24 +181,40 @@ handleQuery = case _ of
     -- colour: a container, as a session is)
     let progRows = map (\p -> { slot: progSlotBase + p.slot, name: p.name
                               , icons: map (\icon -> { icon, color: "#2a2a2a" }) (Array.filter (_ /= "") (String.split (String.Pattern "-") (String.takeWhile (_ /= String.codePointFromChar '′') p.name))) <> p.rebus
-                              , tag: p.key, current: p.current, section: "Progressions", builtin: true, drag: "vetula-progression " <> p.name, hint: "Click: open it. Drag it onto a voice (its badge on the score) and the voice plays it. Drag it into Limulus: onto a voice's block it becomes that voice's progression; anywhere else it starts a new voice.", actions: [] })
+                              , tag: p.key, current: p.current, section: "Progressions", builtin: true, drag: "vetula-progression " <> p.name, hint: "Click: open it. Drag it onto a voice (its badge on the score) and the voice plays it. Drag it into Limulus: onto a voice's block it becomes that voice's progression; anywhere else it starts a new voice.", actions: [ "delete" ] })
                        (fromMaybe [] mprogs)
     let voiceRows = Voices.rows st.voices st.names st.routesText
     pure $ mscenes <#> \scenes -> reply
-      { title: if Array.null voiceRows && Array.null progRows then "Scenes" else "Vetula", modes: false, keep: "save scene", notice: ""
+      { title: if Array.null voiceRows && Array.null progRows then "Scenes" else "Vetula", modes: false, keep: "keep scene", notice: st.notice
       , rows: voiceRows <> progRows <> map (_ { section = if Array.null voiceRows && Array.null progRows then "" else "Scenes" }) (Array.mapWithIndex (\i sc -> { slot: i, name: sc.name, icons: map (\icon -> { icon, color: "#2a2a2a" }) (Array.filter (_ /= "") (String.split (String.Pattern "-") (sessionOf sc))), tag: sc.key, current: false, section: "", builtin: true, drag: "", hint: "", actions: [] }) scenes) }
   -- a saved progression's row: load it
-  SQ.BrowserRecall i _ next | i >= progSlotBase -> H.query _vet unit (Vetula.LoadEntry (i - progSlotBase) next)
+  SQ.BrowserRecall i _ next | i >= progSlotBase -> settle *> H.query _vet unit (Vetula.LoadEntry (i - progSlotBase) next)
   -- a voice's row: show its card in Limulus (adding the block if it is gone)
-  SQ.BrowserRecall i _ next | i >= Voices.slotBase -> H.query _vet unit (Vetula.OpenChannelCard (i - Voices.slotBase) next)
-  SQ.BrowserRecall i _ next -> H.query _vet unit (Vetula.LoadSceneAt i next)
+  SQ.BrowserRecall i _ next | i >= Voices.slotBase -> settle *> H.query _vet unit (Vetula.OpenChannelCard (i - Voices.slotBase) next)
+  SQ.BrowserRecall i _ next -> settle *> H.query _vet unit (Vetula.LoadSceneAt i next)
   -- progression names are fixed, so the voices that name one keep finding it
   -- (their rows are `builtin`, so the drawer offers no rename)
   SQ.BrowserRename _ _ next -> pure (Just next)
-  SQ.BrowserKeep next -> H.query _vet unit (Vetula.SaveSceneQ next)
-  SQ.BrowserUndo next -> pure (Just next)
+  SQ.BrowserKeep next -> do
+    H.modify_ _ { notice = "", undoKept = Nothing }
+    H.query _vet unit (Vetula.SaveSceneQ next)
+  SQ.BrowserUndo next -> do
+    st <- H.get
+    H.modify_ _ { notice = "", undoKept = Nothing }
+    for_ st.undoKept \i -> H.query _vet unit (Vetula.SetKept i true unit)
+    pure (Just next)
   -- shape / colour Odonus: a route line, as Limulus writes it
+  -- a progression's delete (the drawer asks first): no longer kept, so its
+  -- voices fall silent until the undo keeps it again
+  SQ.BrowserAction slot "delete" next | slot >= progSlotBase -> do
+    mprogs <- H.query _vet unit (Vetula.AskProgressions identity)
+    let i = slot - progSlotBase
+        name = maybe "it" _.name (Array.find (\p -> p.slot == i) (fromMaybe [] mprogs))
+    _ <- H.query _vet unit (Vetula.SetKept i false unit)
+    H.modify_ _ { notice = "Deleted " <> name, undoKept = Just i }
+    pure (Just next)
   SQ.BrowserAction slot act next -> do
+    H.modify_ _ { notice = "", undoKept = Nothing }
     st <- H.get
     when (slot >= Voices.slotBase) $
       for_ (Voices.toggleLine (slot - Voices.slotBase) act st.routesText) \line ->

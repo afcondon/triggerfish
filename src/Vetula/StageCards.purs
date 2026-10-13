@@ -22,15 +22,13 @@ module Vetula.StageCards
   , tableHasKey
   , publishLines
   , readNotes
-  , progressionTable
-  , progressionLines
   , stageName
   , repoint
   ) where
 
 import Prelude
 
-import Data.Array (all, catMaybes, filter, mapMaybe)
+import Data.Array (all, catMaybes, mapMaybe)
 import Data.Array as Array
 import Data.Either (hush)
 import Data.Int as Int
@@ -41,7 +39,6 @@ import Data.Nullable (Nullable, toMaybe)
 import Data.String (Pattern(..), stripPrefix, trim)
 import Data.String.CodeUnits as SCU
 import Data.String.CodeUnits (toCharArray)
-import Reef.Vetula.Lepidoptera (progressionKey, progressionOfKey)
 import Data.Tuple (Tuple(..))
 import Foreign.Object (Object)
 import Foreign.Object as Object
@@ -107,28 +104,6 @@ publishLines seen now =
     if Map.lookup n seen == Just text then Nothing
     else Just ("stage-text " <> cardKey n <> " " <> text)
   gone (Tuple n _) = if Map.member n now then Nothing else Just n
-
--- | The saved progressions the stage holds (`vetula/progression/<name>`, step
--- | 4b), by name, from the whole table; `Nothing` for any other frame.
-progressionTable :: String -> Maybe (Map String String)
-progressionTable msg = do
-  json <- stripPrefix (Pattern "stage-texts ") msg
-  table :: Object { text :: String } <- hush (readJSON json)
-  pure (Map.fromFoldable (mapMaybe entry (Object.toUnfoldable table)))
-  where
-  entry (Tuple key v) = (\name -> Tuple name v.text) <$> progressionOfKey key
-
--- | The writes that bring the stage's progressions from `seen` to `now`: a
--- | write per changed or new one, a delete per one gone.
-progressionLines :: Map String String -> Map String String -> Array String
-progressionLines seen now =
-  catMaybes (map write (Map.toUnfoldable now :: Array (Tuple String String)))
-    <> map (\name -> "stage-text-del " <> progressionKey name)
-         (filter (\name -> not (Map.member name now)) (Map.keys seen # Array.fromFoldable))
-  where
-  write (Tuple name text) =
-    if Map.lookup name seen == Just text then Nothing
-    else Just ("stage-text " <> progressionKey name <> " " <> text)
 
 -- | Whether a name can be a stage key (letters, digits, `_-.`), and so be
 -- | named by a card.

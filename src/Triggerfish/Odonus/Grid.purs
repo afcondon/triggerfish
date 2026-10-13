@@ -1304,12 +1304,6 @@ dispatch = case _ of
     -- A fresh voice starts with swing 0, so re-assert the current swing (its own
     -- verb, no last_step reset — safe right after the handoff).
     sendSwing st
-  HushRig -> do
-    -- Stop the reef voice (and everything else) on the rig via the existing
-    -- hush verb, over the same socket the push used.
-    st <- H.get
-    for_ st.binnacle \bin ->
-      liftEffect $ Transport.send (Binnacle.socket bin) "hush"
 
 
 -- | REPLAY loop driver (#151, R2b), run each Frame. A WINDOWED scheduler: each
