@@ -53,7 +53,7 @@ import Triggerfish.Routing.Out as RO
 import Reef.Routing as RR
 import Triggerfish.Balistes.Types
   ( KnobTarget(..), targetRange, applyKnob, Active(..), ClickMode(..)
-  , NoteRef(..), DragKind(..), State, Action(..), activePattern, selectedPattern, patternAt, rhythmEntries, rigUrl, gridCfg
+  , DragKind(..), State, Action(..), activePattern, selectedPattern, patternAt, rhythmEntries, rigUrl, gridCfg
   , editVel, flashWindow
   , padId )
 import Triggerfish.Browser as Browser
@@ -509,11 +509,6 @@ handleAction = case _ of
               DCell inst step ->
                 let newVal = clamp 1 8 (d.startVal + round (toNumber dist / 22.0))
                 in H.modify_ \s -> s { bal = M.setRatchetAt inst step newVal s.bal }
-              DNote ref ->
-                let newVal = clamp 0 127 (d.startVal + round (toNumber dist / 7.0))
-                in H.modify_ \s -> case ref of
-                     NGrids lane -> s { bal = M.setNote lane newVal s.bal }
-                     NFixed i lane -> modRhythmAt i (P.setNoteAt lane newVal) s
       Nothing -> pure unit
   DragEnd -> do
     st <- H.get
@@ -524,7 +519,6 @@ handleAction = case _ of
     -- replaying the settled value lands the rig exactly where the drag settled.
     for_ (st.dragging >>= \d -> dragToBInput d.kind st.bal) broadcastBInput
     H.modify_ _ { dragging = Nothing, dragSub = Nothing }
-    persistLib   -- a note drag (NFixed) may have edited the library
 
   BankNow -> captureNow
   -- Bank the named brain, whether or not it is the sounding one — the glyph you
@@ -655,7 +649,7 @@ balSimOf :: M.Balistes -> Sim.BalSim
 balSimOf b =
   { x: b.x, y: b.y, densBd: b.densBd, densSd: b.densSd, densHh: b.densHh
   , randomness: b.randomness, step: b.step, perts: b.perts, rng: b.rng
-  , notes: b.notes, open: b.open, push: b.push, ratchet: b.ratchet }
+  , open: b.open, push: b.push, ratchet: b.ratchet }
 
 -- | Steps to defer a synced gesture: tagged for currentStep + this. It must clear
 -- | the rig voice's 200ms scheduling lookahead (~1.6 steps @120bpm) BY A MARGIN, plus
@@ -803,9 +797,8 @@ enqueueBInput input = do
   when (st.sounding == Rig && isNothing st.follow) $ for_ st.binnacle \bin ->
     liftEffect $ Transport.send (Binnacle.socket bin) (balInputMsg now input)
 
--- | Map a settled drag to the BInput that reproduces it on the rig. The four knob
--- | kinds, grid notes and ratchets sync; a fixed-rhythm note edit (NFixed) is
--- | frontend-only (not part of the shared Grids engine), so it doesn't.
+-- | Map a settled drag to the BInput that reproduces it on the rig: the four
+-- | knob kinds and ratchets.
 dragToBInput :: DragKind -> M.Balistes -> Maybe RBI.BInput
 dragToBInput kind b = case kind of
   DKnob (KDens i) -> Just (RBI.BSetDensity i (M.densityOf i b))
@@ -813,8 +806,6 @@ dragToBInput kind b = case kind of
   DKnob (KPush i) -> Just (RBI.BSetPush i (M.pushOf i b))
   DKnob KOpen -> Just (RBI.BSetOpen (M.openOf b))
   DCell inst step -> Just (RBI.BSetRatchet inst step (M.ratchetAt b inst step))
-  DNote (NGrids lane) -> Just (RBI.BSetNote lane (M.noteOf lane b))
-  DNote (NFixed _ _) -> Nothing
 
 -- | Delete preset `i` from the bank.
 deletePresetAt :: Int -> State -> State
@@ -1243,7 +1234,7 @@ gridsBand s =
   band s (AFixed s.fixedSel) "RYTM" extras
     ( case selectedPattern s of
         Nothing -> HH.div [ style $ engrave <> ";font-size:9px;opacity:0.5" ] [ HH.text "NO RHYTHM SELECTED — OPEN PRESETS." ]
-        Just pat -> HH.div [ style "width:100%" ] [ fixedSvg s s.fixedSel pat ] )
+        Just pat -> HH.div [ style "width:100%" ] [ fixedSvg s pat ] )
   where
   extras =
     -- Its name is given and changed in the Library drawer (double-click),

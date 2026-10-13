@@ -18,7 +18,7 @@ import Prelude
 import Control.Alt ((<|>))
 import Data.Array (find, foldl, head)
 import Data.Int as Int
-import Data.Maybe (Maybe(..), fromMaybe, maybe)
+import Data.Maybe (Maybe(..), maybe)
 import Data.Number as Number
 import Data.String as String
 import Triggerfish.Balistes.Pattern as P
@@ -42,6 +42,9 @@ data Edit
   | SetOffset RM.Source Int String
   | SetPort RM.Source Int String
   | SetSampleSet RM.Source Int String
+  -- the note a drum lane's MIDI leg sends: a number, or "" for the hit's own
+  -- (its GM note)
+  | SetNote RM.Source Int String
 
 -- | The table after the edit, or `Nothing` when there is nothing to change: a
 -- | field mid-typing, or an unknown kind of leg.
@@ -55,6 +58,9 @@ apply ctx edit tbl = case edit of
   SetOffset src i v -> (\n -> modify src i \l -> l { offsetMs = n }) <$> Number.fromString v
   SetPort src i port -> Just (modify src i \l -> l { dest = setPort port l.dest })
   SetSampleSet src i set -> Just (modify src i \l -> l { dest = chooseSet set l.dest })
+  SetNote src i v
+    | String.trim v == "" -> Just (modify src i _ { note = -1 })
+    | otherwise -> (\n -> modify src i _ { note = clamp 0 127 n }) <$> Int.fromString (String.trim v)
   where
   modify src i f = RM.modifyLeg src i f tbl
   chooseSet set = case _ of

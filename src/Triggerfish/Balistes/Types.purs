@@ -1,6 +1,6 @@
 -- | Triggerfish.Balistes.Types — the stable DAG root for the Balistes component:
 -- | the `State` record, the `Action` set, the small closed tag types they lean on
--- | (`Active`, `NoteRef`, `DragKind`, `KnobTarget`), and the domain constants +
+-- | (`Active`, `DragKind`, `KnobTarget`), and the domain constants +
 -- | pure vocab (`targetRange`, `knobValue`, `applyKnob`, `drumChannel`, …).
 -- |
 -- | This module owns no rendering and no state machine — it's the shared
@@ -15,7 +15,6 @@ module Triggerfish.Balistes.Types
   , applyKnob
   , Active(..)
   , ClickMode(..)
-  , NoteRef(..)
   , DragKind(..)
   , Drag
   , State
@@ -40,7 +39,6 @@ import Data.Array (mapMaybe, mapWithIndex, (!!))
 import Data.Maybe (Maybe(..), fromMaybe)
 import Data.Tuple (Tuple(..))
 import Binnacle as Binnacle
-import Binnacle.Midi as Midi
 import Triggerfish.Routing.Model as RM
 import Triggerfish.Routing.Out as RO
 import Binnacle.Scheduler as Scheduler
@@ -104,13 +102,9 @@ data ClickMode = Audition | Assemble
 
 derive instance eqClickMode :: Eq ClickMode
 
--- | Which MIDI note a note-drag edits: a Grids lane (0..3) or a fixed-pattern
--- | lane (`NFixed patternIx lane`).
-data NoteRef = NGrids Int | NFixed Int Int
-
--- | A document-tracked drag turns a knob, subdivides a Grids cell into ratchets
--- | (`DCell lane step`), or nudges a lane's MIDI note (`DNote`). One plumbing.
-data DragKind = DKnob KnobTarget | DCell Int Int | DNote NoteRef
+-- | A document-tracked drag turns a knob or subdivides a Grids cell into
+-- | ratchets (`DCell lane step`). One plumbing.
+data DragKind = DKnob KnobTarget | DCell Int Int
 
 type Drag = { kind :: DragKind, startY :: Int, startVal :: Int }
 

@@ -58,7 +58,7 @@ import Reef.Calibration as Calibration
 import Reef.Rample as Rample
 import Reef.Routing as RR
 import Simple.JSON (writeJSON)
-import Triggerfish.Routing.Model (Destination(..), InstrumentId(..), Leg, Source(..), Table, Wire, cardLegs, carriesLine, es9JackBus, isInterface, liveLegsFor, polyJacks, wireOf)
+import Triggerfish.Routing.Model (Destination(..), InstrumentId(..), Leg, Source(..), Table, Wire, cardLegs, carriesLine, es9JackBus, isInterface, legWire, liveLegsFor, polyJacks)
 
 -- | Every MIDI output port, by name. Built once when MIDI access arrives.
 type Outs = Array { name :: String, out :: Midi.MidiOut }
@@ -96,7 +96,7 @@ resolveLegs :: Outs -> Table -> Source -> Array ResolvedLeg
 resolveLegs outs tbl src = map res (filter (not <<< isInterface <<< _.dest) (liveLegsFor tbl src))
   where
   res leg =
-    let w = wireOf leg.dest
+    let w = legWire leg
     in { leg, wire: w, out: w >>= \x -> outFor outs x.port }
 
 -- | Fan one note out to every live, reachable leg of a source, at an ABSOLUTE
@@ -232,7 +232,7 @@ resolveLeg outs = resolveLegIn (map _.name outs)
 -- | (the dashboard) knows them.
 resolveLegIn :: Array String -> Leg -> Maybe RR.Leg
 resolveLegIn names leg = do
-  w <- wireOf leg.dest
+  w <- legWire leg
   found <- find (contains (Pattern w.port)) names
   pure
     { port: found

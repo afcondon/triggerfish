@@ -22,9 +22,9 @@ import Halogen.Widgets.Svg (svgAttr, svgEl, svgOn)
 import Reef.Balistes.Tables as T
 import Triggerfish.Balistes.Model as M
 import Triggerfish.Transport (Sounding(..))
-import Triggerfish.Balistes.Types (Action(..), DragKind(..), KnobTarget(..), NoteRef(..), State, padId)
+import Triggerfish.Balistes.Types (Action(..), DragKind(..), KnobTarget(..), State, padId)
 import Triggerfish.Balistes.Widgets
-  ( knobRow, bigKnob, flatBtn, noteTag, instColor, ohColor, concatMap' )
+  ( knobRow, bigKnob, flatBtn, laneTag, instColor, ohColor, concatMap' )
 
 -- The knob block for the GRIDS band: density / push / groove, stacked. Was the
 -- body of the old CONTROL panel, minus the pad (now a sibling in the band) and
@@ -199,15 +199,18 @@ heatSvg s =
         , svgAttr "y2" (show (laneY lane))
         , svgAttr "stroke" "#3f3c33", svgAttr "stroke-opacity" "0.12", svgAttr "stroke-width" "0.6"
         , svgAttr "style" "pointer-events:none" ] []
-    -- the lane name (bold, coloured) + its editable MIDI note below, pulled into
-    -- the gutter like the fixed grid.
+    -- the lane name (bold, coloured) + the kit lane(s) it plays below, as the
+    -- fixed grid shows them: BD 1, SD 2, the hat 5 (7 when it rings open).
     rowLabel lane =
       [ svgEl "text"
           [ svgAttr "x" "3", svgAttr "y" (show (laneY lane + 13.0))
           , svgAttr "fill" (instColor lane), svgAttr "fill-opacity" "0.9", svgAttr "style" "pointer-events:none"
           , svgAttr "font-size" "9", svgAttr "font-weight" "bold", svgAttr "font-family" "Georgia,serif" ]
           [ HH.text (M.instName lane) ]
-      , noteTag 3.0 (laneY lane + 25.0) (NGrids lane) (M.noteOf lane b)
+      , laneTag 3.0 (laneY lane + 25.0) (case lane of
+          0 -> "1"
+          1 -> "2"
+          _ -> "5·7")
       ]
     visuals =
       range 0 2 `concatMap'` \lane -> range 0 (cols - 1) `concatMap'` \step -> gridsCell lane step

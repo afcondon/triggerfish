@@ -24,20 +24,23 @@ import Prelude
 
 import Data.Array (drop, mapMaybe, take, unsnoc)
 import Data.Int as Int
-import Data.Maybe (Maybe(..))
-import Data.Nullable (Nullable, toMaybe)
+import Data.Maybe (Maybe(..), fromMaybe)
+import Data.Nullable (Nullable, toMaybe, toNullable)
 import Data.String (Pattern(..), split, joinWith)
 import Data.String as Str
 import Effect (Effect)
 
-import Triggerfish.Routing.Model (Destination(..), InstrumentId(..), Leg, Route, Source(..), Table, sourceKey)
+import Triggerfish.Routing.Model (Destination(..), InstrumentId(..), Leg, Route, Source(..), Table, newLeg, sourceKey)
 
 -- | The on-disk shape. Sources and destinations are flat strings so that a row
 -- | this build doesn't understand can be dropped individually, rather than
 -- | poisoning the whole table.
 type Saved = { routes :: Array { source :: String, legs :: Array StoredLeg } }
 
-type StoredLeg = { dest :: String, offsetMs :: Number, on :: Boolean }
+-- | `note` is absent from a leg saved before legs carried one (2026-10-13):
+-- | it takes the default a new leg would (`RM.newLeg`), so a drum lane's MIDI
+-- | leg plays its Drum Rack pad.
+type StoredLeg = { dest :: String, offsetMs :: Number, on :: Boolean, note :: Nullable Int }
 
 storeKey :: String
 storeKey = "triggerfish.routing.v1"
@@ -203,7 +206,7 @@ save tbl = _save storeKey (_stringify env)
   env :: Saved
   env = { routes: map row tbl }
   row r = { source: sourceKey r.source, legs: map leg r.legs }
-  leg l = { dest: destStr l.dest, offsetMs: l.offsetMs, on: l.on }
+  leg l = { dest: destStr l.dest, offsetMs: l.offsetMs, on: l.on, note: toNullable (Just l.note) }
 
 -- | Load the stored table, or `Nothing` if absent / unparseable. Individual rows
 -- | and legs that fail to decode are DROPPED rather than failing the load: a
@@ -218,8 +221,8 @@ load = do
   where
   row r = case sourceOf r.source of
     Nothing -> Nothing
-    Just src -> Just ({ source: src, legs: mapMaybe leg r.legs } :: Route)
-  leg :: StoredLeg -> Maybe Leg
-  leg l = case destOf l.dest of
+    Just src -> Just ({ source: src, legs: mapMaybe (leg src) r.legs } :: Route)
+  leg :: Source -> StoredLeg -> Maybe Leg
+  leg src l = case destOf l.dest of
     Nothing -> Nothing
-    Just d -> Just { dest: d, offsetMs: l.offsetMs, on: l.on }
+    Just d -> Just { dest: d, offsetMs: l.offsetMs, on: l.on, note: fromMaybe (newLeg src d).note (toMaybe l.note) }

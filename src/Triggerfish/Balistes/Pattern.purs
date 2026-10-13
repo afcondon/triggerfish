@@ -101,7 +101,7 @@ genreStarters =
       ]
   ]
   where
-  p16 name rows = { name, steps: 16, notes: defaultNotes, grid: buildGrid 16 rows }
+  p16 name rows = { name, steps: 16, grid: buildGrid 16 rows }
 
 -- | "Lo-tempo house, 110 bpm" — 2 bars (32 sixteenths), six voices: four-on-the-
 -- | floor kick with ghost pushes, clap backbeat, off-beat open hats, a driving
@@ -110,7 +110,6 @@ houseLoTempo110 :: FixedPattern
 houseLoTempo110 =
   { name: "lo house 110"
   , steps: 32
-  , notes: defaultNotes
   , grid: buildGrid 32
       [ Tuple 0 [ 98, 0, 0, 0, 98, 0, 0, 0, 98, 0, 0, 0, 98, 0, 0, 98, 98, 0, 0, 0, 98, 0, 0, 0, 98, 0, 0, 0, 98, 0, 98, 0 ] -- BD
       , Tuple 2 [ 0, 0, 0, 0, 98, 0, 0, 0, 0, 0, 0, 0, 98, 0, 0, 0, 0, 0, 0, 0, 98, 0, 0, 0, 0, 0, 0, 0, 98, 0, 0, 0 ] -- CP

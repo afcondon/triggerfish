@@ -19,7 +19,7 @@ module Triggerfish.Balistes.Widgets
   , knobRow
   , bigKnob
   , svgRect
-  , noteTag
+  , laneTag
   , concatMap'
   , instColor
   , laneColor
@@ -33,10 +33,10 @@ import Halogen as H
 import Halogen.HTML as HH
 import Halogen.HTML.Events as HE
 import Triggerfish.Ui.Style (engrave, style)
-import Halogen.Widgets.Svg (svgAttr, svgEl, svgOn)
+import Halogen.Widgets.Svg (svgAttr, svgEl)
 import Triggerfish.Ui.Knob (knob)
 import Triggerfish.Balistes.Model as M
-import Triggerfish.Balistes.Types (Action(..), DragKind(..), KnobTarget, NoteRef, knobValue, targetRange)
+import Triggerfish.Balistes.Types (Action(..), DragKind(..), KnobTarget, knobValue, targetRange)
 
 -- A pale Hainbach panel (header + body). Scrolls vertically if its content is
 -- taller than the viewport (the consolidated CONTROL panel can be).
@@ -138,17 +138,18 @@ svgRect x0 y0 wid hgt c op =
     , svgAttr "width" (show wid), svgAttr "height" (show hgt), svgAttr "rx" "2"
     , svgAttr "fill" c, svgAttr "fill-opacity" (show op) ] []
 
--- An editable MIDI-note tag in a lane gutter: drag up/down to nudge the note.
--- Shared by the Grids heatmap and the fixed grid.
-noteTag :: forall m. Number -> Number -> NoteRef -> Int -> H.ComponentHTML Action () m
-noteTag x y ref n =
+-- The kit lane number(s) under a lane's name in the gutter: lanes are 1..16,
+-- the number the routing window's rows use. Which note an instrument hears is
+-- set there (2026-10-13), not here. Shared by the Grids heatmap and the fixed
+-- grid.
+laneTag :: forall m. Number -> Number -> String -> H.ComponentHTML Action () m
+laneTag x y label =
   svgEl "text"
     [ svgAttr "x" (show x), svgAttr "y" (show y)
-    , svgAttr "fill" "#3f3c33", svgAttr "fill-opacity" "0.7"
+    , svgAttr "fill" "#3f3c33", svgAttr "fill-opacity" "0.55"
     , svgAttr "font-size" "8.5", svgAttr "font-family" "'SF Mono',Menlo,monospace"
-    , svgAttr "style" "cursor:ns-resize"
-    , svgOn "mousedown" \_ -> StartDrag (DNote ref) n ]
-    [ HH.text ("♪" <> show n) ]
+    , svgAttr "style" "pointer-events:none" ]
+    [ HH.text label ]
 
 -- Flipped concatMap so the call sites read `range … `concatMap'` \i -> …`.
 concatMap' :: forall a b. Array a -> (a -> Array b) -> Array b

@@ -14,7 +14,8 @@
 -- |
 -- | A destination with settings of its own has a **sheet**, opened from its
 -- | column head, as tapping a node in AUM opens it: a Rample's slicing and each
--- | voice's trigger; each sample voice's set and window. The grid says where;
+-- | voice's trigger; each sample voice's set and window; and, for a drum MIDI
+-- | port, the note each lane sends (Drum Rack pads, GM, or one per lane). The grid says where;
 -- | the sheet says what the thing at the end of the wire is set to.
 module Triggerfish.Routing.Matrix
   ( Grid(..)
@@ -29,7 +30,8 @@ import Prelude
 
 import Data.Array (concatMap, filter, find, length, mapMaybe, mapWithIndex, nub, null, snoc)
 import Data.Array as Array
-import Data.Maybe (Maybe(..), fromMaybe, isJust, maybe)
+import Data.Foldable (maximum, minimum)
+import Data.Maybe (Maybe(..), fromMaybe, maybe)
 import Data.String (Pattern(..), contains)
 import Data.String as Str
 import Halogen.HTML as HH
@@ -266,14 +268,25 @@ view grid env =
       , HH.span [ cls ("fam " <> c.fam) ] []
       ]
   headSub c = case grid, sharedChannel env srcs c.key of
-    Drums, Just ch | Str.take 5 c.key == "midi:" -> joinSub c.sub ("ch " <> show ch)
+    Drums, Just ch | isMidiKey c.key -> joinSub c.sub ("ch " <> show ch <> " · " <> noteMapName c.key)
+    Drums, Nothing | isMidiKey c.key -> joinSub c.sub (noteMapName c.key)
     _, _ -> c.sub
+  -- what a drum MIDI column's lanes send, as one word when they agree on one
+  noteMapName key =
+    let ls = concatMap (\src -> map (\x -> { src, leg: x.leg }) (legsIn env src key)) srcs
+    in if null ls then ""
+       else if Array.all (\x -> isPad x.src x.leg) ls then "pads"
+       else if Array.all (\x -> x.leg.note < 0) ls then "GM"
+       else "custom notes"
+  isPad src leg = case src of
+    RM.SDrumLane i -> leg.note == RM.drumPad i
+    _ -> false
   joinSub a b = if a == "" then b else a <> " · " <> b
   row group =
     HH.tr [ cls ((if maybe false (\pk -> Array.elem pk.source group) env.pick then "picked" else "") <> (if length group > 1 then " folded" else "")) ]
       ([ HH.th [ cls "row" ] (rowLabel group) ] <> map (cell group) cols)
   rowLabel group = case group of
-    [ RM.SDrumLane i ] -> [ HH.text (P.laneName i), HH.small_ [ HH.text (show (P.laneNote i)) ] ]
+    [ RM.SDrumLane i ] -> [ HH.text (laneLabel i) ]
     [ src ] -> [ HH.text (RM.sourceLabel src) ]
     _ -> [ HH.text (Str.joinWith " · " (map whose group)) ]
   cell group c =
@@ -285,8 +298,18 @@ view grid env =
       mark x =
         let off = if x.leg.on then "" else " off"
         in case valueOf x.leg.dest of
+             -- a drum lane's MIDI leg: the note it sends, which is the pad it plays
+             Just v | grid == Drums && isMidi x.leg.dest ->
+               HH.span [ cls ("v " <> c.fam <> off), HP.title (noteTitle src x.leg <> (if shared == Just v.value then "" else " · ch " <> show v.value)) ]
+                 [ HH.text (foldedNotes x) ]
              Just v | not (isMidi x.leg.dest && shared == Just v.value) -> HH.span [ cls ("v " <> c.fam <> off) ] [ HH.text (show v.value) ]
              _ -> HH.span [ cls ("dot " <> c.fam <> off) ] []
+      -- a folded row's lanes play their own pads: say the run they cover
+      foldedNotes x =
+        let ns = concatMap (\s -> map (sentNote s <<< _.leg) (legsIn env s c.key)) group
+        in case minimum ns, maximum ns of
+             Just lo, Just hi | lo /= hi -> show lo <> "–" <> show hi
+             _, _ -> show (sentNote src x.leg)
     in
       HH.td
         [ cls ((if picked then "picked" else "") <> (if env.focus == Just c.key then " focus" else ""))
@@ -311,7 +334,14 @@ view grid env =
              <> [ HH.button [ cls "add", HE.onClick \_ -> maybe (env.onPick Nothing) (\c -> env.onEdits (addEdits grid pk.source c (length (RM.legsFor env.table pk.source)))) (find (\c -> c.key == pk.col) cols) ] [ HH.text "+ another" ] ])
   legDetail src x =
     HH.div [ cls ("leg" <> if x.leg.on then "" else " off") ]
-      ( case valueOf x.leg.dest of
+      ( ( if grid == Drums && isMidi x.leg.dest then
+            [ HH.span [ cls "field" ] [ HH.text "note" ]
+            , HH.button [ HE.onClick \_ -> env.onEdits [ SetNote src x.i (show (sentNote src x.leg - 1)) ] ] [ HH.text "−" ]
+            , HH.span [ cls "val", HP.title (noteTitle src x.leg) ] [ HH.text (show (sentNote src x.leg) <> " " <> noteName (sentNote src x.leg)) ]
+            , HH.button [ HE.onClick \_ -> env.onEdits [ SetNote src x.i (show (sentNote src x.leg + 1)) ] ] [ HH.text "+" ]
+            ]
+          else [] ) <>
+        case valueOf x.leg.dest of
           Just v ->
             [ HH.span [ cls "field" ] [ HH.text v.field ]
             , HH.button [ HE.onClick \_ -> env.onEdits [ SetField src x.i v.field (show (v.value - 1)) ] ] [ HH.text "−" ]
@@ -330,7 +360,7 @@ view grid env =
           ]
       )
   whose = case _ of
-    RM.SDrumLane i -> P.laneName i
+    RM.SDrumLane i -> laneLabel i
     src -> RM.sourceLabel src
   -- ── sheets ────────────────────────────────────────────────────────────────
   sheet key =
@@ -345,8 +375,32 @@ view grid env =
             ]
         , if null rows then HH.p [ cls "matrix-hint" ] [ HH.text "Nothing is routed here yet: add it in the grid, then set it here." ]
           else if key == "sample" then sampleSheet rows
+          else if isMidiKey key then notesSheet rows
           else rampleSheet rows
         ]
+  -- The note each lane sends this port: a Drum Rack's pads (lane n, pad n),
+  -- GM, or set lane by lane.
+  notesSheet legs =
+    HH.div_
+      [ HH.p [ cls "matrix-hint" ] [ HH.text "The note each lane sends to this port. Pads: lane 1 plays the Drum Rack's first pad (C1, 36), lane 16 its last (D#2, 51). GM: the General MIDI drum note. Or set any lane's own." ]
+      , HH.div [ cls "presets" ]
+          [ HH.button [ HE.onClick \_ -> env.onEdits (map (\r -> SetNote r.src r.i (show (padOf r.src))) legs), HP.title RM.padsLabel ] [ HH.text "Drum Rack pads" ]
+          , HH.button [ HE.onClick \_ -> env.onEdits (map (\r -> SetNote r.src r.i "") legs), HP.title "each lane's General MIDI drum note" ] [ HH.text "GM" ]
+          ]
+      , HH.table [ cls "sheet" ]
+          [ HH.thead_ [ HH.tr_ (map (\h -> HH.th_ [ HH.text h ]) [ "lane", "note", "" ]) ]
+          , HH.tbody_ (map noteRow legs)
+          ]
+      ]
+  noteRow r =
+    HH.tr_
+      [ HH.th_ [ HH.text (whose r.src) ]
+      , HH.td_ [ HH.input [ cls "num", HP.value (show (sentNote r.src r.leg)), HE.onValueChange \t -> env.onEdits [ SetNote r.src r.i t ] ] ]
+      , HH.td_ [ HH.text (noteName (sentNote r.src r.leg) <> (if r.leg.note < 0 then " · GM" else if isPad r.src r.leg then " · pad " <> show (sentNote r.src r.leg - 35) else "")) ]
+      ]
+  padOf = case _ of
+    RM.SDrumLane i -> RM.drumPad i
+    _ -> 36
   rampleSheet rows =
     HH.div_
       [ HH.p [ cls "matrix-hint" ] [ HH.text "What the card is set up for: which note fires each voice (SETTINGS > SPx), how the card is sliced, the note of slice 0, and how far ahead the slice control lands." ]
@@ -391,10 +445,34 @@ view grid env =
   num r field v = HH.td_ [ numIn r field v ]
   numIn r field v =
     HH.input [ cls "num", HP.value (show v), HE.onValueChange \t -> env.onEdits [ SetField r.src r.i field t ] ]
-  hasSheet key = key == "sample" || Str.take 7 key == "rample:"
+  hasSheet key = key == "sample" || Str.take 7 key == "rample:" || (grid == Drums && isMidiKey key)
   isMidi = case _ of
     RM.DMidi _ -> true
     _ -> false
 
 cls :: forall r i. String -> HP.IProp (class :: String | r) i
 cls = HP.class_ <<< HH.ClassName
+
+-- | A drum lane as the matrix names it: its number, 1..16, and its drum.
+laneLabel :: Int -> String
+laneLabel i = show (i + 1) <> " " <> P.laneName i
+
+-- | The note a source's leg sends: its own, or the lane's GM note.
+sentNote :: RM.Source -> RM.Leg -> Int
+sentNote src leg
+  | leg.note >= 0 = leg.note
+  | otherwise = case src of
+      RM.SDrumLane i -> P.laneNote i
+      _ -> 36
+
+noteTitle :: RM.Source -> RM.Leg -> String
+noteTitle src leg = "note " <> show (sentNote src leg) <> " (" <> noteName (sentNote src leg) <> " in Ableton)"
+
+-- | A note as Ableton names it: C1 = 36, middle C = C3.
+noteName :: Int -> String
+noteName n = fromMaybe "?" (names Array.!! (n `mod` 12)) <> show (n / 12 - 2)
+  where
+  names = [ "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B" ]
+
+isMidiKey :: String -> Boolean
+isMidiKey key = Str.take 5 key == "midi:"

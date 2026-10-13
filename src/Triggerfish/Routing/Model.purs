@@ -45,6 +45,10 @@ module Triggerfish.Routing.Model
   , Device(..)
   , deviceLabel
   , Leg
+  , newLeg
+  , drumPad
+  , padsLabel
+  , legWire
   , Route
   , Table
   , defaultTable
@@ -367,11 +371,49 @@ destShortLabel = case _ of
 -- |
 -- | `on` mutes a leg without deleting it, because trying the double and backing
 -- | it out is the actual gesture. A muted leg keeps its offset and its place.
+-- |
+-- | `note` is the note a drum lane's MIDI leg sends, or −1 for the hit's own
+-- | (the lane's GM note). A rhythm names no notes (2026-10-13): which note an
+-- | instrument hears is set here, where the hit leaves — by default a Drum
+-- | Rack's pads, so lane n plays pad n (`drumPad`).
 type Leg =
   { dest :: Destination
   , offsetMs :: Number
   , on :: Boolean
+  , note :: Int
   }
+
+-- | Lane `i`'s pad on an Ableton Drum Rack (or any 16-pad kit from C1): 36,
+-- | 37, … so lane 1 is pad 1.
+drumPad :: Int -> Int
+drumPad i = 36 + i
+
+-- | What a run of pads is called where a player sets them.
+padsLabel :: String
+padsLabel = "Drum Rack pads (lane n → pad n, 36–51)"
+
+-- | A new leg to `d` for this source: a drum lane's MIDI or continuo leg
+-- | plays its pad; everything else sends the note it is given.
+newLeg :: Source -> Destination -> Leg
+newLeg src d = { dest: d, offsetMs: 0.0, on: true, note }
+  where
+  note = case src, d of
+    SDrumLane i, DMidi _ -> drumPad i
+    SDrumLane i, DContinuo _ -> drumPad i
+    _, _ -> -1
+
+-- | The wire a leg sends down: its destination's, with the leg's own note
+-- | where it sets one. Every emit path and the monitor read a leg through
+-- | this, so a note set in the matrix is the note that goes out, in the
+-- | browser and on the rig alike.
+legWire :: Leg -> Maybe Wire
+legWire leg = wireOf leg.dest <#> \w ->
+  if leg.note >= 0 && plain leg.dest then w { noteOverride = Just leg.note } else w
+  where
+  plain = case _ of
+    DMidi _ -> true
+    DContinuo _ -> true
+    _ -> false
 
 type Route = { source :: Source, legs :: Array Leg }
 
@@ -402,8 +444,8 @@ defaultTable = defaultTableFor []
 -- | FH-2. This is what shipped on 2026-08-08 as hardcoded constants; it is data
 -- | now.
 -- |
--- | Drum lanes: all sixteen to GM channel 10 on the MIDI port, which is what
--- | Balistes has always done. The first four ALSO drive FHX-8GT jacks 1..4, which
+-- | Drum lanes: all sixteen to channel 10 on the MIDI port, lane n on pad n of
+-- | a Drum Rack (`drumPad`; GM notes until 2026-10-13). The first four ALSO drive FHX-8GT jacks 1..4, which
 -- | reproduces `apply-drum-breakout.mjs`'s `KIT` table — the same four rows, now
 -- | somewhere a player can change them.
 defaultTableFor :: Array String -> Table
@@ -411,9 +453,9 @@ defaultTableFor ports =
   odonus <> drums <> [ { source: SVetulaVoice "", legs: [ midiLeg iac 5 ] } ]
   where
   iac = defaultPort ports
-  midiLeg port ch = { dest: DMidi { port, channel: ch }, offsetMs: 0.0, on: true }
-  envLeg slot = { dest: DFh2Env { slot }, offsetMs: 0.0, on: true }
-  gateLeg note jack = { dest: DFh2Gate { note, jack }, offsetMs: 0.0, on: true }
+  midiLeg port ch = { dest: DMidi { port, channel: ch }, offsetMs: 0.0, on: true, note: -1 }
+  envLeg slot = { dest: DFh2Env { slot }, offsetMs: 0.0, on: true, note: -1 }
+  gateLeg note jack = { dest: DFh2Gate { note, jack }, offsetMs: 0.0, on: true, note: -1 }
   odonus =
     map (\h -> { source: SOdonusHead h, legs: [ midiLeg iac (h + 1), envLeg (h + 1) ] })
       [ 0, 1, 2, 3 ]
@@ -427,7 +469,7 @@ defaultTableFor ports =
     4 -> [ gateLeg 42 3 ]
     _ -> []
   drums =
-    mapWithIndex (\i _ -> { source: SDrumLane i, legs: [ midiLeg iac 10 ] <> gateOf i })
+    mapWithIndex (\i _ -> { source: SDrumLane i, legs: [ newLeg (SDrumLane i) (DMidi { port: iac, channel: 10 }) ] <> gateOf i })
       kitNotes
 
 -- | Every leg declared for a source, muted ones included (the editor wants those).
@@ -465,7 +507,7 @@ cardLegs ports tbl ch = case find (\r -> r.source == cardSource ch) tbl of
   Nothing -> cardDefault ports ch
 
 cardDefault :: Array String -> Int -> Array Leg
-cardDefault ports ch = [ { dest: DMidi { port: defaultPort ports, channel: ch }, offsetMs: 0.0, on: true } ]
+cardDefault ports ch = [ newLeg (cardSource ch) (DMidi { port: defaultPort ports, channel: ch }) ]
 
 -- | Give each card channel without a row its default row, so the matrix edits
 -- | a row that already says where the card plays.
@@ -484,7 +526,7 @@ removeLeg :: Source -> Int -> Table -> Table
 removeLeg src i tbl = setLegs src (mapWithIndex Tuple (legsFor tbl src) # filter (\(Tuple j _) -> j /= i) # map snd) tbl
 
 addLeg :: Source -> Destination -> Table -> Table
-addLeg src d tbl = setLegs src (snoc (legsFor tbl src) { dest: d, offsetMs: 0.0, on: true }) tbl
+addLeg src d tbl = setLegs src (snoc (legsFor tbl src) (newLeg src d)) tbl
 
 -- | Set one numeric field of a destination, by name, clamped to what the hardware
 -- | actually has. Clamping here rather than in the UI means a typed value can

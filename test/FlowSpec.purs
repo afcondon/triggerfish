@@ -41,7 +41,7 @@ base =
 -- | Odonus on the IAC bus alone: the base case of the reveal.
 odonusToAbleton :: Table
 odonusToAbleton = [ 0, 1, 2, 3 ] <#> \h ->
-  { source: SOdonusHead h, legs: [ { dest: DMidi { port: "IAC Driver Tidal", channel: h + 1 }, offsetMs: 0.0, on: true } ] }
+  { source: SOdonusHead h, legs: [ { dest: DMidi { port: "IAC Driver Tidal", channel: h + 1 }, offsetMs: 0.0, on: true, note: -1 } ] }
 
 check :: String -> Boolean -> Effect Unit
 check name ok = do
@@ -121,7 +121,7 @@ runFlowTests = do
   check "in Solo, Diaphus down breaks nothing"
     (all (\l -> l.broken == 0) (flow base { table = odonusToAbleton, down = [ "diaphus" ] }).links)
   let noDirt = flow base { mode = Atlantis, machines = [ "balistes" ], down = [ "d-dirt" ]
-                         , table = [ { source: SDrumLane 0, legs: [ { dest: DSample { set: "kit", n: 0, begin: 0, end: 100, reverse: false, gain: 100, chop: 1 }, offsetMs: 0.0, on: true } ] } ] }
+                         , table = [ { source: SDrumLane 0, legs: [ { dest: DSample { set: "kit", n: 0, begin: 0, end: 100, reverse: false, gain: 100, chop: 1 }, offsetMs: 0.0, on: true, note: -1 } ] } ] }
   check "with SuperDirt down, a sample stream is broken going into it"
     ((find (\l -> l.to == "d-dirt" && l.from == "engine") noDirt.links <#> _.broken) == Just 1)
 
@@ -132,10 +132,10 @@ runFlowTests = do
     ((find (\l -> l.to == "engine") lonely.links <#> _.broken) == Just 1)
   check "with no rig, a stream that waits for Atlantis is waiting, not broken"
     (all (\l -> l.broken == 0) (flow base { machines = [ "balistes" ], rigUp = false
-        , table = [ { source: SDrumLane 0, legs: [ { dest: DSample { set: "kit", n: 0, begin: 0, end: 100, reverse: false, gain: 100, chop: 1 }, offsetMs: 0.0, on: true } ] } ] }).links)
+        , table = [ { source: SDrumLane 0, legs: [ { dest: DSample { set: "kit", n: 0, begin: 0, end: 100, reverse: false, gain: 100, chop: 1 }, offsetMs: 0.0, on: true, note: -1 } ] } ] }).links)
 
   let
-    vetulaToOdonus = [ { source: SVetulaVoice "", legs: [ { dest: DMidi { port: "IAC Driver Tidal", channel: 5 }, offsetMs: 0.0, on: true } ] } ] <> odonusToAbleton
+    vetulaToOdonus = [ { source: SVetulaVoice "", legs: [ { dest: DMidi { port: "IAC Driver Tidal", channel: 5 }, offsetMs: 0.0, on: true, note: -1 } ] } ] <> odonusToAbleton
     fed = flow base { machines = [ "odonus", "vetula" ], table = vetulaToOdonus
                     , quantise = [ { target: "odonus", input: "grid", machine: Just "vetula", label: "key" }
                                  , { target: "odonus", input: "out", machine: Just "vetula", label: "voice 3" } ] }
@@ -166,7 +166,7 @@ runFlowTests = do
     (layerOf one "port:IAC Driver Tidal" == Just 2)
 
   let
-    sampled = [ { source: SDrumLane 0, legs: [ { dest: DSample { set: "kit", n: 0, begin: 0, end: 100, reverse: false, gain: 100, chop: 1 }, offsetMs: 0.0, on: true } ] } ]
+    sampled = [ { source: SDrumLane 0, legs: [ { dest: DSample { set: "kit", n: 0, begin: 0, end: 100, reverse: false, gain: 100, chop: 1 }, offsetMs: 0.0, on: true, note: -1 } ] } ]
     soloSamples = flow base { machines = [ "balistes" ], table = sampled }
     rigSamples = flow base { mode = Atlantis, machines = [ "balistes" ], table = sampled }
   check "a sample cannot sound in Solo: drawn on the rig's path, every hop waiting"

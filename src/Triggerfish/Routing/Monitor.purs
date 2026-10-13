@@ -28,7 +28,7 @@ import Data.Maybe (Maybe(..), isNothing)
 import Data.String (Pattern(..), contains)
 import Effect (Effect)
 
-import Triggerfish.Routing.Model (Source, Table, Wire, liveLegsFor, wireOf)
+import Triggerfish.Routing.Model (Source, Table, Wire, legWire, liveLegsFor)
 
 -- | One observed (port, channel, note) triple. `agoMs` is how long since the last
 -- | hit, which is what makes "this route was live a moment ago" distinguishable
@@ -85,7 +85,7 @@ hitsFor :: Array Row -> Table -> Source -> Int
 hitsFor rows tbl src =
   sum (map legHits (liveLegsFor tbl src))
   where
-  legHits l = case wireOf l.dest of
+  legHits l = case legWire l of
     Nothing -> 0
     Just w -> sum (map _.hits (filter (matches w) rows))
 
@@ -101,7 +101,7 @@ unaccounted rows tbl srcs = filter unexplained rows
   wires = do
     src <- srcs
     l <- liveLegsFor tbl src
-    case wireOf l.dest of
+    case legWire l of
       Nothing -> []
       Just w -> [ w ]
   unexplained r = isNothing (find (\w -> matches w r) wires)

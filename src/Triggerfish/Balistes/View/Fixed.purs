@@ -21,9 +21,9 @@ import Triggerfish.Ui.Style (engrave, style)
 import Halogen.Widgets.Svg (svgAttr, svgEl, svgOn)
 import Triggerfish.Balistes.Pattern as P
 import Triggerfish.Transport (Sounding(..))
-import Triggerfish.Balistes.Types (Action(..), NoteRef(..), State, activePattern)
+import Triggerfish.Balistes.Types (Action(..), State, activePattern)
 import Triggerfish.Balistes.Widgets
-  ( stepBtn, svgRect, noteTag, laneColor, concatMap' )
+  ( stepBtn, svgRect, laneTag, laneColor, concatMap' )
 
 -- The per-cell editor, as a HORIZONTAL strip that rides in the RYTM band header
 -- and fills only while a cell is selected. Was a whole 240px NOTE column that
@@ -42,7 +42,7 @@ cellStrip s = HH.div [ style stripRow ] case s.selected >>= \sel -> map { sel, p
       in   [ HH.span [ style $ "font-family:Georgia,serif;font-size:12px;font-weight:bold;color:" <> laneColor sel.lane ]
                [ HH.text (P.laneName sel.lane) ]
            , HH.span [ style $ engrave <> ";font-size:8px;opacity:0.6" ]
-               [ HH.text ("STEP " <> show (sel.step + 1) <> " · ♪" <> show (P.noteOf pat sel.lane)) ]
+               [ HH.text ("LANE " <> show (sel.lane + 1) <> " · STEP " <> show (sel.step + 1)) ]
            , paramCell "VEL" (show c.vel) (SetCellVel (-8)) (SetCellVel 8)
            , paramCell "PROB" (show c.prob <> "%") (SetCellProb (-10)) (SetCellProb 10)
            , paramCell "RATCHET" ("×" <> show c.ratchet) (SetCellRatchet (-1)) (SetCellRatchet 1)
@@ -81,8 +81,8 @@ condDisplay c = P.condLabel c
 
 -- The fixed-rhythm step grid: one row per used lane (kit name + GM note),
 -- velocity as cell intensity, playhead sweeping the steps.
-fixedSvg :: forall m. State -> Int -> P.FixedPattern -> H.ComponentHTML Action () m
-fixedSvg s idx pat =
+fixedSvg :: forall m. State -> P.FixedPattern -> H.ComponentHTML Action () m
+fixedSvg s pat =
   let
     -- folded to the lanes in use, or the whole 16-lane kit when editing.
     lanes = if s.editing then range 0 (P.kitSize - 1) else P.usedLanes pat
@@ -169,7 +169,7 @@ fixedSvg s idx pat =
              , svgAttr "fill" (laneColor lane), svgAttr "fill-opacity" op, svgAttr "style" "pointer-events:none"
              , svgAttr "font-size" "9", svgAttr "font-weight" "bold", svgAttr "font-family" "Georgia,serif" ]
              [ HH.text (P.laneName lane) ]
-         , noteTag 3.0 (toNumber row * rowH + 23.0) (NFixed idx lane) (P.noteOf pat lane)
+         , laneTag 3.0 (toNumber row * rowH + 23.0) (show (lane + 1))
          ]
     playhead =
       svgEl "rect"
