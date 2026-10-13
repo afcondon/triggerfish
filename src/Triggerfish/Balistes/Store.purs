@@ -1,6 +1,7 @@
--- | Triggerfish.Balistes.Store — localStorage persistence for the Balistes
--- | artefact: ONE bank holding every brain's artefacts. The per-tab panels hold
--- | no storage of their own.
+-- | Triggerfish.Balistes.Store — the Balistes bank as this browser kept it in
+-- | localStorage before Amphora kept it (`Triggerfish.Library`, 2026-10-13):
+-- | read, never written, to start the Library the first time. ONE bank
+-- | holding every brain's artefacts.
 -- |
 -- | Each entry's `content` is canonical TEXT — a brain-tagged `printTri` — per the
 -- | Lepidoptera "save the rendering, not bespoke structure" rule. `name` and
@@ -32,7 +33,6 @@
 -- | with the rest of the brain-tag vocabulary; import them from there.)
 module Triggerfish.Balistes.Store
   ( Saved
-  , save
   , load
   ) where
 
@@ -44,7 +44,7 @@ import Data.Nullable (Nullable, toMaybe)
 import Effect (Effect)
 import Triggerfish.Balistes.Lepidoptera (parsePattern)
 import Triggerfish.Balistes.TriSnapshot (TriSnapshot(..), parseTri, rhythmContent)
-import Triggerfish.Preset (Preset, Stored, fromStored, toStored, withWords)
+import Triggerfish.Preset (Preset, Stored, fromStored, withWords)
 
 -- | What a session restores: the one bank.
 type Saved = { presets :: Array Preset }
@@ -68,20 +68,11 @@ storeKey = "triggerfish.balistes.v5"
 legacyV4Key :: String
 legacyV4Key = "triggerfish.balistes.v4"
 
-foreign import _save :: String -> String -> Effect Unit
 foreign import _load :: forall a. String -> Effect (Nullable a)
-foreign import _stringify :: forall a. a -> String
 
 -- ---------------------------------------------------------------------------
 -- Persist
 -- ---------------------------------------------------------------------------
-
--- | Persist the bank (best-effort — the FFI swallows quota / private-mode).
-save :: Saved -> Effect Unit
-save s = _save storeKey (_stringify env)
-  where
-  env :: Envelope
-  env = { presets: map toStored s.presets }
 
 -- | A rhythm saved before names moved into the envelope (2026-08) carries its
 -- | name only in its text, and showed as "untitled": the name is lifted out,
@@ -121,4 +112,5 @@ migrateRhythm text = parsePattern text <#> \p ->
   , starred: false
   , word: Nothing
   , was: []
+  , id: ""
   }

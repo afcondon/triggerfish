@@ -12,6 +12,8 @@
 -- |     (`Reef.Word`): its name's, unique in its machine, `Nothing` until
 -- |     named. It follows a rename, so what a drag carries is what the row
 -- |     says (AC, 2026-10-13).
+-- |   • `id` — which it is, for the Library in Amphora (`Triggerfish.Library`),
+-- |     whatever it is renamed or changed to; "" until it is first kept.
 -- |   • `was` — the words it had before, still on the stage, so a line
 -- |     naming it by an old word never goes silent.
 -- |
@@ -27,6 +29,7 @@ module Triggerfish.Preset
   , rename
   , wordsOf
   , withWords
+  , presetDoc
   , Stored
   , toStored
   , fromStored
@@ -35,11 +38,15 @@ module Triggerfish.Preset
 import Prelude
 
 import Data.Array (concatMap, deleteAt, filter, findIndex, foldl, modifyAt, snoc)
-import Data.Maybe (Maybe(..), fromMaybe, maybe)
+import Data.Either (hush)
+import Data.Maybe (Maybe(..), fromMaybe, isJust, maybe)
 import Data.Nullable (Nullable, toMaybe, toNullable)
 import Data.Set as Set
+import Effect.Aff (Aff)
+import Simple.JSON (readJSON, writeJSON)
 import Reef.Word (freeWord)
 import Triggerfish.Glyph (Glyph, glyphOf)
+import Triggerfish.Library (Doc)
 
 type Preset =
   { content :: String
@@ -47,11 +54,12 @@ type Preset =
   , starred :: Boolean
   , word :: Maybe String
   , was :: Array String
+  , id :: String
   }
 
 -- | A preset just kept: not starred, and no word until it is named and saved.
 newPreset :: String -> Maybe String -> Preset
-newPreset content name = { content, name, starred: false, word: Nothing, was: [] }
+newPreset content name = { content, name, starred: false, word: Nothing, was: [], id: "" }
 
 -- | The preset's (derived) glyph.
 presetGlyph :: Preset -> Glyph
@@ -102,11 +110,27 @@ withWords presets = _.out (foldl step { taken: Set.fromFoldable (concatMap words
 
 -- | A preset as every machine's store keeps it: an anonymous one's name is
 -- | "", and a preset saved before words has none (`word` null or absent).
--- | `was` is absent from one saved before words followed renames.
-type Stored = { content :: String, name :: String, starred :: Boolean, word :: Nullable String, was :: Nullable (Array String) }
+-- | `was` and `id` are absent from one saved before they existed.
+type Stored = { content :: String, name :: String, starred :: Boolean, word :: Nullable String, was :: Nullable (Array String), id :: Nullable String }
 
 toStored :: Preset -> Stored
-toStored p = { content: p.content, name: fromMaybe "" p.name, starred: p.starred, word: toNullable p.word, was: toNullable (Just p.was) }
+toStored p = { content: p.content, name: fromMaybe "" p.name, starred: p.starred, word: toNullable p.word, was: toNullable (Just p.was), id: toNullable (Just p.id) }
 
 fromStored :: Stored -> Preset
-fromStored e = { content: e.content, name: if e.name == "" then Nothing else Just e.name, starred: e.starred, word: toMaybe e.word, was: fromMaybe [] (toMaybe e.was) }
+fromStored e = { content: e.content, name: if e.name == "" then Nothing else Just e.name, starred: e.starred, word: toMaybe e.word, was: fromMaybe [] (toMaybe e.was), id: fromMaybe "" (toMaybe e.id) }
+
+-- | A machine's presets as its Library drawer keeps them in Amphora, at
+-- | `triggerfish/<machine>/library`; `first` is what the machine kept there
+-- | before (read once). One thing kept twice before ids is one by name, or,
+-- | unnamed, by content.
+presetDoc :: String -> Aff (Array Preset) -> Doc Preset
+presetDoc machine first =
+  { ref: "triggerfish/" <> machine <> "/library"
+  , kind: "triggerfish-" <> machine <> "-library"
+  , idOf: _.id
+  , withId: \id p -> p { id = id }
+  , encode: \ps -> writeJSON (map toStored ps)
+  , decode: \text -> map fromStored <$> hush (readJSON text)
+  , same: \a b -> if isJust a.name then a.name == b.name else a.content == b.content
+  , first
+  }

@@ -130,3 +130,16 @@ export const unpublishImpl = (collection) => (hash) => (onError) => (onSuccess) 
     .then(() => onSuccess()())
     .catch(fail);
 };
+
+// exchangeImpl(method)(path)(body|null)(ok)(fail)() — any status is a reply;
+// only no reply (down, or slower than the timeout) fails.
+export const exchangeImpl = (method) => (path) => (body) => (ok) => (fail) => () => {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), FETCH_TIMEOUT_MS);
+  const init = { method, signal: ctrl.signal };
+  if (body !== null) { init.body = body; init.headers = { "Content-Type": "application/json" }; }
+  fetch(amphoraBase() + path, init)
+    .then((r) => r.text().then((t) => ok({ status: r.status, body: t })()))
+    .catch((e) => fail(path + ": " + String(e && e.message ? e.message : e))())
+    .finally(() => clearTimeout(timer));
+};

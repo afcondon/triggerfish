@@ -51,8 +51,9 @@ import Triggerfish.Balistes.Pattern as P
 import Triggerfish.Glyph as G
 import Data.Map (Map)
 import Triggerfish.Balistes.Follow as Follow
+import Triggerfish.Library as Library
 import Triggerfish.Preset (Preset)
-import Triggerfish.Balistes.TriSnapshot (Brain, rhythmOfContent)
+import Triggerfish.Balistes.TriSnapshot (rhythmOfContent)
 import Triggerfish.Midi.Routing as Routing
 import Triggerfish.Transport (Sounding)
 
@@ -190,6 +191,8 @@ type State =
   -- `balistes $ "<a b>"` plays; Nothing until the stage has answered a
   -- subscribe on this connect.
   , stageRhythms :: Maybe (Map String String)
+  -- the bank as Amphora keeps it (`Triggerfish.Library`); Nothing until opened
+  , shelf :: Maybe (Library.Shelf Preset)
   -- the drawer's last delete, which its undo puts back where it was
   , undoDelete :: Maybe { at :: Int, preset :: Preset }
   -- Following a `balistes $` line the rig plays (Balistes.Follow): the beat
@@ -221,6 +224,7 @@ data Action
   | MidiReady RO.Outs String
   | StageOpen                 -- the rig socket (re)connected: subscribe to the stage
   | StageFrameIn String       -- a frame from the rig (the stage's table among them)
+  | LibraryArrived (Array Preset)  -- the bank as Amphora has it, changed elsewhere
   | ResetPat
   | Dice
   | PadAt Int Int Int          -- clientX clientY buttons

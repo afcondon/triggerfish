@@ -19,11 +19,15 @@ module Triggerfish.Amphora
   , fetchCollection
   , publish
   , unpublish
+  , Reply
+  , exchange
   ) where
 
 import Prelude
 
 import Data.Either (Either(..))
+import Data.Maybe (Maybe)
+import Data.Nullable (Nullable, toNullable)
 import Effect (Effect)
 import Effect.Aff (Aff, makeAff, nonCanceler)
 import Effect.Exception (Error)
@@ -88,4 +92,19 @@ publish spec = makeAff \cb -> do
 unpublish :: String -> String -> Aff Unit
 unpublish collection hash = makeAff \cb -> do
   unpublishImpl collection hash (cb <<< Left) (cb <<< Right)
+  pure nonCanceler
+
+-- | A reply of any status, for a call whose non-2xx replies mean something
+-- | (a ref's 404 or 409).
+type Reply = { status :: Int, body :: String }
+
+foreign import exchangeImpl
+  :: String -> String -> Nullable String -> (Reply -> Effect Unit) -> (String -> Effect Unit) -> Effect Unit
+
+-- | One request to the store, by method and path (`/refs/…`), with an
+-- | optional JSON body. `Left` only when no reply came at all (the store is
+-- | down, or took too long).
+exchange :: String -> String -> Maybe String -> Aff (Either String Reply)
+exchange method path body = makeAff \done -> do
+  exchangeImpl method path (toNullable body) (done <<< Right <<< Right) (done <<< Right <<< Left)
   pure nonCanceler

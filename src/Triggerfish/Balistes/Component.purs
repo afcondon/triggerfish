@@ -30,9 +30,7 @@ import Data.String (contains) as String
 import Data.String.Common (trim) as String
 import Data.String.Pattern (Pattern(..)) as String
 import Effect (Effect)
-import Data.Either (Either(..))
-import Effect.Aff (attempt)
-import Effect.Aff.Class (class MonadAff, liftAff)
+import Effect.Aff.Class (class MonadAff)
 import Effect.Class (liftEffect)
 import Effect.Timer (setInterval)
 import Halogen as H
@@ -62,7 +60,8 @@ import Triggerfish.Browser as Browser
 import Triggerfish.Balistes.TriSnapshot (TriSnapshot(..), parseTri, printTri, rhythmContent, rhythmOfContent)
 import Triggerfish.Glyph as G
 import Triggerfish.GlyphView (faIcons)
-import Triggerfish.Preset (Preset, indexOfContent, newPreset, presetAlias, presetGlyph, rename, withWords, wordsOf)
+import Triggerfish.Library as Library
+import Triggerfish.Preset (Preset, indexOfContent, newPreset, presetAlias, presetDoc, presetGlyph, rename, withWords, wordsOf)
 import Triggerfish.Balistes.Widgets (armBtn, instColor)
 import Triggerfish.Balistes.View.Fixed (cellStrip, fixedSvg)
 import Triggerfish.Balistes.View.Grids (heatSvg, knobStack, padSvg)
@@ -106,7 +105,7 @@ component =
         , identity: Nothing, lastChip: Nothing
         , active: AGrids, editing: false, clickMode: Assemble, laneEditOpen: false, fixedSel: 0, lane: "", laneReadout: "", selected: Nothing
         , scratchFixed: Nothing
-        , stageRhythms: Nothing, undoDelete: Nothing, follow: Nothing, followQueue: [] }
+        , stageRhythms: Nothing, shelf: Nothing, undoDelete: Nothing, follow: Nothing, followQueue: [] }
     , render
     , eval: H.mkEval H.defaultEval
         { handleAction = handleAction, handleQuery = handleQuery, initialize = Just Initialize }
@@ -305,9 +304,15 @@ handleAction = case _ of
       Nothing -> HS.notify midiL (MidiReady [] "unavailable")
     -- restore the saved artefact: the rhythm library AND the ARRANGE rail (bank +
     -- Falls back to the bundled patterns / empty bank.
-    msaved <- liftEffect Store.load
-    for_ msaved \sv -> H.modify_ _
-      { presets = sv.presets }
+    -- The bank is what Amphora keeps (`Triggerfish.Library`): this browser's
+    -- copy at once, Amphora's when it answers or changes elsewhere. The first
+    -- time, it starts from what this browser kept before and the old
+    -- `balistes-grid` rhythms.
+    legacy <- liftEffect (maybe [] _.presets <$> Store.load)
+    { emitter: libE, listener: libL } <- liftEffect HS.create
+    _ <- H.subscribe (LibraryArrived <$> libE)
+    opened <- liftEffect $ Library.open (presetDoc "balistes" (map presetOfRhythm <$> Remote.fetchLibrary)) legacy (HS.notify libL)
+    H.modify_ _ { presets = withWords opened.items, shelf = Just opened.shelf }
     H.modify_ _ { binnacle = Just bin }
     -- The rig's stage keeps a copy of the named rhythms, which a
     -- `balistes $ "<a b>"` line plays by name: subscribe on every connect,
@@ -316,17 +321,6 @@ handleAction = case _ of
     _ <- H.subscribe stageE
     liftEffect $ Binnacle.onAppMessage bin (HS.notify stageL <<< StageFrameIn)
     liftEffect $ Binnacle.onOpen bin (HS.notify stageL StageOpen)
-    -- Merge the shared Amphora library in the BACKGROUND. Forked deliberately: the
-    -- fetch times out at ~30s when the store is unreachable, and awaiting it here
-    -- kept Balistes' Initialize (hence the whole component) from completing — so the
-    -- shell's queries (SetSounding, the CAPTURE hotkey) blocked until the timeout.
-    -- Offline → keep the saved/bundled library; the merge lands if/when the DB answers.
-    void $ H.fork do
-      dbResult <- liftAff (attempt Remote.fetchLibrary)
-      case dbResult of
-        Right dbPats | not (null dbPats) ->
-          H.modify_ \s -> s { presets = mergeRhythmsByName s dbPats }
-        _ -> pure unit
 
   Step tick -> do
     -- what the rig's line plays from this step on, shown before the step runs
@@ -440,6 +434,11 @@ handleAction = case _ of
     for_ st.binnacle \bin -> liftEffect (Transport.send (Binnacle.socket bin) StageCopy.subscribeLine)
   -- the stage's whole table, on subscribing: it gets any of our rhythms it
   -- lacks, and loses any we have deleted
+  -- Another browser changed the bank (or this one's change was kept on top
+  -- of theirs): show it, and the stage follows.
+  LibraryArrived items -> do
+    H.modify_ _ { presets = withWords items, undoDelete = Nothing }
+    publishRhythms
   StageFrameIn msg -> do
     -- The stage's beats are everyone's: only those this bank names count as
     -- ours, so connecting adds and updates ours and never deletes another
@@ -819,15 +818,15 @@ deletePresetAt :: Int -> State -> State
 deletePresetAt i s = s { presets = fromMaybe s.presets (deleteAt i s.presets) }
 
 -- | Project component `State` onto the persisted artefact (library + preset bank).
-savedOf :: State -> Store.Saved
-savedOf s = { presets: s.presets }
 
 -- | Save the whole artefact to localStorage (library + bank + sequence). Called
 -- | after any bank / sequence edit; `persistLib` layers the rig re-push on top.
 persist :: forall o m. MonadAff m => H.HalogenM State Action () o m Unit
 persist = do
   s <- H.modify \st -> st { presets = withWords st.presets }
-  liftEffect (Store.save (savedOf s))
+  for_ s.shelf \shelf -> do
+    kept <- liftEffect (Library.put shelf s.presets)
+    H.modify_ _ { presets = kept }
   publishRhythms
 
 -- | Bring the stage's copy of the named rhythms up to date with the bank: a
@@ -939,21 +938,6 @@ modRhythmAt i f s = case patternAt s i of
 -- | A fresh bank entry holding one rhythm, named from the pattern.
 presetOfRhythm :: P.FixedPattern -> Preset
 presetOfRhythm p = newPreset (rhythmContent p) (if p.name == "" then Nothing else Just p.name)
-
--- | Fold Amphora's `balistes-grid` rhythms into the bank, keyed by NAME: keep
--- | every local entry (it may carry unsaved edits), append only rhythms the bank
--- | has never seen.
--- |
--- | Name is still the key, but the comparison is now scoped to rhythms rather
--- | than run over the whole bank. Once other brains' artefacts are savable to the
--- | store too, a bare name is no longer unique across the collection — a Grids
--- | point and a rhythm can share one — so the brain has to be part of any
--- | cross-brain key. Filtering to `rhythmEntries` first is what keeps that true
--- | here (see docs/DESIGN-balistes-bank-coherence.md, slice 5 hazards).
-mergeRhythmsByName :: State -> Array P.FixedPattern -> Array Preset
-mergeRhythmsByName s incoming =
-  let known = map (\(Tuple _ p) -> p.name) (rhythmEntries s)
-  in s.presets <> map presetOfRhythm (filter (\p -> not (any (_ == p.name) known)) incoming)
 
 -- | Apply a function to the selected cell of the active fixed rhythm.
 -- | A recalled rhythm plays as a frozen snapshot (`scratchFixed`), so the banked
