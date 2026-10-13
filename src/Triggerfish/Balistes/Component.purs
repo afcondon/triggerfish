@@ -72,7 +72,8 @@ import Triggerfish.Balistes.Remote as Remote
 import Triggerfish.Balistes.Lepidoptera (printPattern, parsePattern)
 import Triggerfish.Balistes.Stage as Stage
 import Triggerfish.SourceQuery (Query(..))
-import Triggerfish.Transport (Sounding(..))
+import Triggerfish.Transport (Mode(..), Sounding(..))
+import Triggerfish.Transport.Store as TStore
 import Reef.Balistes.Sim as Sim
 import Triggerfish.Ui.Pointer as Pointer
 import Triggerfish.Ui.Style (engrave, style)
@@ -620,6 +621,19 @@ handleAction = case _ of
       in s { presets = s.presets <> [ presetOfRhythm p ]
            , active = AFixed n, fixedSel = n, editing = true, selected = Nothing }
     persistLib
+  -- A lane's head was clicked: one hit of it, where the routing sends it. In
+  -- Atlantis the rig plays it (`balistes-hit`), through the table it holds, so
+  -- the FH-2's gates and SuperDirt's samples sound too; in Solo this page does,
+  -- as it plays its own steps.
+  HearLane lane -> do
+    st <- H.get
+    mode <- liftEffect TStore.load
+    case mode, st.binnacle of
+      Just Atlantis, Just bin ->
+        liftEffect $ Transport.send (Binnacle.socket bin) ("balistes-hit " <> show lane <> " 110")
+      _, _ ->
+        liftEffect $ emitHit st.outs (RO.soloDrumRouting st.outs st.routing kitNotes) 125.0 0.0
+          (P.laneNote lane) 120.0 110 1
   PushBalistes -> do
     -- The routing table first, so the handoff's first hit already goes where
     -- the table says.

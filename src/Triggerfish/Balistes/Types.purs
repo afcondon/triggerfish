@@ -237,6 +237,7 @@ data Action
   | CycleCellCond              -- step its trig condition
   | ClearSelected              -- clear the selected cell + deselect
   | NewPattern                 -- append a fresh empty rhythm + select it
+  | HearLane Int               -- one hit of a kit lane, where the routing sends it
   | PushBalistes               -- lockstep handoff: the routing table, then the brain's state, to the rig
   | NoOp
 

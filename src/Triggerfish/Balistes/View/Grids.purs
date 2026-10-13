@@ -24,7 +24,7 @@ import Triggerfish.Balistes.Model as M
 import Triggerfish.Transport (Sounding(..))
 import Triggerfish.Balistes.Types (Action(..), DragKind(..), KnobTarget(..), State, padId)
 import Triggerfish.Balistes.Widgets
-  ( knobRow, bigKnob, flatBtn, laneTag, instColor, ohColor, concatMap' )
+  ( knobRow, bigKnob, flatBtn, laneHead, instColor, ohColor, concatMap' )
 
 -- The knob block for the GRIDS band: density / push / groove, stacked. Was the
 -- body of the old CONTROL panel, minus the pad (now a sibling in the band) and
@@ -117,7 +117,7 @@ heatSvg s =
     colW = 16.0
     rowH = 30.0
     nLanes = 3
-    gutter = 34.0                       -- left margin for lane name + MIDI note
+    gutter = 34.0                       -- left margin for the lane's head
     laneY lane = toNumber lane * rowH
     colX step = gutter + toNumber step * colW
     w = gutter + toNumber cols * colW
@@ -199,19 +199,15 @@ heatSvg s =
         , svgAttr "y2" (show (laneY lane))
         , svgAttr "stroke" "#3f3c33", svgAttr "stroke-opacity" "0.12", svgAttr "stroke-width" "0.6"
         , svgAttr "style" "pointer-events:none" ] []
-    -- the lane name (bold, coloured) + the kit lane(s) it plays below, as the
-    -- fixed grid shows them: BD 1, SD 2, the hat 5 (7 when it rings open).
+    -- the lane's head, as the fixed grid's: BD 1, SD 2, the hat 5 (7 when
+    -- it rings open), which plays the closed hat
     rowLabel lane =
-      [ svgEl "text"
-          [ svgAttr "x" "3", svgAttr "y" (show (laneY lane + 13.0))
-          , svgAttr "fill" (instColor lane), svgAttr "fill-opacity" "0.9", svgAttr "style" "pointer-events:none"
-          , svgAttr "font-size" "9", svgAttr "font-weight" "bold", svgAttr "font-family" "Georgia,serif" ]
-          [ HH.text (M.instName lane) ]
-      , laneTag 3.0 (laneY lane + 25.0) (case lane of
-          0 -> "1"
-          1 -> "2"
-          _ -> "5·7")
-      ]
+      let kit = case lane of
+            0 -> { lane: 0, number: "1" }
+            1 -> { lane: 1, number: "2" }
+            _ -> { lane: 4, number: "5·7" }
+      in laneHead { top: laneY lane, height: rowH, width: gutter, lane: kit.lane, name: M.instName lane
+                  , number: kit.number, color: instColor lane, opacity: "0.9" }
     visuals =
       range 0 2 `concatMap'` \lane -> range 0 (cols - 1) `concatMap'` \step -> gridsCell lane step
     targets =

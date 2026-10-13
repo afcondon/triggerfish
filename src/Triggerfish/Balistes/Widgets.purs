@@ -19,7 +19,7 @@ module Triggerfish.Balistes.Widgets
   , knobRow
   , bigKnob
   , svgRect
-  , laneTag
+  , laneHead
   , concatMap'
   , instColor
   , laneColor
@@ -33,7 +33,7 @@ import Halogen as H
 import Halogen.HTML as HH
 import Halogen.HTML.Events as HE
 import Triggerfish.Ui.Style (engrave, style)
-import Halogen.Widgets.Svg (svgAttr, svgEl)
+import Halogen.Widgets.Svg (svgAttr, svgEl, svgOn)
 import Triggerfish.Ui.Knob (knob)
 import Triggerfish.Balistes.Model as M
 import Triggerfish.Balistes.Types (Action(..), DragKind(..), KnobTarget, knobValue, targetRange)
@@ -138,18 +138,36 @@ svgRect x0 y0 wid hgt c op =
     , svgAttr "width" (show wid), svgAttr "height" (show hgt), svgAttr "rx" "2"
     , svgAttr "fill" c, svgAttr "fill-opacity" (show op) ] []
 
--- The kit lane number(s) under a lane's name in the gutter: lanes are 1..16,
--- the number the routing window's rows use. Which note an instrument hears is
--- set there (2026-10-13), not here. Shared by the Grids heatmap and the fixed
--- grid.
-laneTag :: forall m. Number -> Number -> String -> H.ComponentHTML Action () m
-laneTag x y label =
-  svgEl "text"
-    [ svgAttr "x" (show x), svgAttr "y" (show y)
-    , svgAttr "fill" "#3f3c33", svgAttr "fill-opacity" "0.55"
-    , svgAttr "font-size" "8.5", svgAttr "font-family" "'SF Mono',Menlo,monospace"
-    , svgAttr "style" "pointer-events:none" ]
-    [ HH.text label ]
+-- | A lane's head in the gutter: its drum and its number (lanes 1..16, as the
+-- | routing window numbers them; which note an instrument hears is set there),
+-- | on a faint button that plays one hit of `lane` where the routing sends it,
+-- | so a drum can be heard before it is programmed (AC, 2026-10-13). Shared by
+-- | the Grids heatmap and the fixed grid.
+laneHead
+  :: forall m
+   . { top :: Number, height :: Number, width :: Number, lane :: Int, name :: String, number :: String, color :: String, opacity :: String }
+  -> Array (H.ComponentHTML Action () m)
+laneHead h =
+  [ svgEl "rect"
+      [ svgAttr "x" "1", svgAttr "y" (show (h.top + 2.0))
+      , svgAttr "width" (show (h.width - 4.0)), svgAttr "height" (show (h.height - 4.0)), svgAttr "rx" "3"
+      , svgAttr "fill" h.color, svgAttr "fill-opacity" "0.07"
+      , svgAttr "stroke" h.color, svgAttr "stroke-opacity" "0.25", svgAttr "stroke-width" "0.6"
+      , svgAttr "style" "cursor:pointer"
+      , svgOn "click" \_ -> HearLane h.lane ]
+      [ svgEl "title" [] [ HH.text ("Hear " <> h.name <> ", lane " <> h.number) ] ]
+  , svgEl "text"
+      [ svgAttr "x" "4", svgAttr "y" (show (h.top + 12.0))
+      , svgAttr "fill" h.color, svgAttr "fill-opacity" h.opacity, svgAttr "style" "pointer-events:none"
+      , svgAttr "font-size" "9", svgAttr "font-weight" "bold", svgAttr "font-family" "Georgia,serif" ]
+      [ HH.text h.name ]
+  , svgEl "text"
+      [ svgAttr "x" "4", svgAttr "y" (show (h.top + 23.0))
+      , svgAttr "fill" "#3f3c33", svgAttr "fill-opacity" "0.55"
+      , svgAttr "font-size" "8.5", svgAttr "font-family" "'SF Mono',Menlo,monospace"
+      , svgAttr "style" "pointer-events:none" ]
+      [ HH.text (h.number <> " ▸") ]
+  ]
 
 -- Flipped concatMap so the call sites read `range … `concatMap'` \i -> …`.
 concatMap' :: forall a b. Array a -> (a -> Array b) -> Array b

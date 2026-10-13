@@ -23,7 +23,7 @@ import Triggerfish.Balistes.Pattern as P
 import Triggerfish.Transport (Sounding(..))
 import Triggerfish.Balistes.Types (Action(..), State, activePattern)
 import Triggerfish.Balistes.Widgets
-  ( stepBtn, svgRect, laneTag, laneColor, concatMap' )
+  ( stepBtn, svgRect, laneHead, laneColor, concatMap' )
 
 -- The per-cell editor, as a HORIZONTAL strip that rides in the RYTM band header
 -- and fills only while a cell is selected. Was a whole 240px NOTE column that
@@ -96,7 +96,7 @@ fixedSvg s pat =
     -- easier click target besides. Everything else here derives from colW.
     colW = 38.0
     rowH = 28.0
-    gutter = 34.0                       -- left margin for lane name + MIDI note
+    gutter = 34.0                       -- left margin for the lane's head
     w = gutter + toNumber cols * colW
     h = toNumber nLanes * rowH
     here = s.playStep `mod` cols
@@ -164,13 +164,8 @@ fixedSvg s pat =
     rowLabel row =
       let lane = laneAt row
           op = if laneEmpty lane then "0.4" else "0.9"
-      in [ svgEl "text"
-             [ svgAttr "x" "3", svgAttr "y" (show (toNumber row * rowH + 12.0))
-             , svgAttr "fill" (laneColor lane), svgAttr "fill-opacity" op, svgAttr "style" "pointer-events:none"
-             , svgAttr "font-size" "9", svgAttr "font-weight" "bold", svgAttr "font-family" "Georgia,serif" ]
-             [ HH.text (P.laneName lane) ]
-         , laneTag 3.0 (toNumber row * rowH + 23.0) (show (lane + 1))
-         ]
+      in laneHead { top: toNumber row * rowH, height: rowH, width: gutter, lane
+                  , name: P.laneName lane, number: show (lane + 1), color: laneColor lane, opacity: op }
     playhead =
       svgEl "rect"
         [ svgAttr "x" (show (colX here)), svgAttr "y" "0"
