@@ -21,6 +21,7 @@ import Prelude
 import Data.Array (concatMap, deleteAt, filter, find, insertAt, length, mapWithIndex, modifyAt, null, partition, range, (!!))
 import Data.Tuple (Tuple(..), fst, snd)
 import Data.Foldable (any, elem, foldl, for_)
+import Effect.Random (randomInt)
 import Data.Map as Map
 import Data.Int (floor, round, toNumber)
 import Data.Maybe (Maybe(..), fromMaybe, isJust, isNothing, maybe)
@@ -466,13 +467,24 @@ handleAction = case _ of
   -- broadcast tagged for a near-future step, applied by the drain here and by the
   -- voice on the rig at the SAME absolute step — no pattern offset. (When stopped it
   -- queues and applies on the next play, the drain's `<=` self-heal.)
-  ResetPat -> enqueueBInput RBI.BReset
-  -- Dice only reseeds the perturbation RNG (no step change), so it converges: the rig
-  -- reseeds from the same RNG state at the tagged step. Rare edge = a 32-step resample
-  -- landing in the ~2-step apply window (self-heals at the next boundary).
+  -- Shake Grids up (AC, 2026-10-13): a new place on the map, new densities in
+  -- ranges that stay musical, a touch of randomness, a new open-hat boundary,
+  -- and a fresh seed. The groove (Dilla push) and ratchets are left alone: a
+  -- push rolled at random is the one thing that easily sounds wrong. Applied
+  -- at once, as a pad drag is, and the settled values sent to the rig.
   Dice -> do
-    H.modify_ \s -> s { bal = M.reseed s.bal }
-    broadcastBInput RBI.BReseed
+    x <- liftEffect (randomInt 0 255)
+    y <- liftEffect (randomInt 0 255)
+    bd <- liftEffect (randomInt 150 235)
+    sd <- liftEffect (randomInt 110 210)
+    hh <- liftEffect (randomInt 120 230)
+    rand <- liftEffect (randomInt 0 60)
+    open <- liftEffect (randomInt 20 140)
+    let setters =
+          [ RBI.BSetX x, RBI.BSetY y, RBI.BSetDensity 0 bd, RBI.BSetDensity 1 sd, RBI.BSetDensity 2 hh
+          , RBI.BSetRandomness rand, RBI.BSetOpen open ]
+    H.modify_ \s -> s { bal = M.reseed (foldl (flip RBI.applyBInput) s.bal setters) }
+    for_ (setters <> [ RBI.BReseed ]) broadcastBInput
 
   -- The pad's own SVG mousemove fires whenever the cursor crosses it with a
   -- button held — including mid-knob-drag. Guard on `dragging`: a knob drag owns
@@ -801,20 +813,6 @@ recallPreset i = do
         recallSnap snap
         H.modify_ _ { identity = Just p.content }
 
--- | Deferred-on-both: enqueue a gesture locally AND broadcast it, both tagged for the
--- | same near-future step. The Step-loop drain applies it here, the voice applies it
--- | on the rig — both on the SAME model step. Needed for gestures that shift the step
--- | (Reset), where broadcast-on-settle would offset the pattern.
-enqueueBInput :: forall o m. MonadAff m => RBI.BInput -> H.HalogenM State Action () o m Unit
-enqueueBInput input = do
-  st <- H.get
-  now <- currentStep
-  let tag = now + inputBufferSteps
-  -- Local always applies (SOLO plays it); rig-send only in ATLANTIS.
-  H.modify_ \s -> s { pending = s.pending <> [ { step: tag, input } ] }
-  when (st.sounding == Rig && isNothing st.follow) $ for_ st.binnacle \bin ->
-    liftEffect $ Transport.send (Binnacle.socket bin) (balInputMsg now input)
-
 -- | Map a settled drag to the BInput that reproduces it on the rig: the four
 -- | knob kinds and ratchets.
 dragToBInput :: DragKind -> M.Balistes -> Maybe RBI.BInput
@@ -1131,8 +1129,7 @@ navBar s =
   HH.div
     [ style $ "flex:0 0 auto;display:flex;align-items:center;gap:10px;padding:5px 14px;"
         <> "background:linear-gradient(#cdc7b6,#c4bead);border-bottom:1px solid #00000014" ]
-    ( [ navBtn "RESET" ResetPat
-      , navBtn "DICE" Dice
+    ( [ navBtn "DICE" Dice
       , HH.div [ style "flex:1 1 auto;min-width:8px" ] []
       , lampRow s
       , navDivider
