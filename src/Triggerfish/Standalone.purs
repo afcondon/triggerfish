@@ -826,7 +826,6 @@ bar cfg st =
       <> (if st.mode == Atlantis then [ atlantisTag ] else [])
       <> (if cfg.playable then [ button (if st.playing then "■ Stop" else "▶ Play") TogglePlay ] else [])
       <> (if not cfg.playable && st.hushed then [ button "Hushed · ▶ resume" Resume ] else [])
-      <> (if cfg.capturable then [ button "Keep (c)" Capture ] else [])
       -- Limulus combines the machines, on the rig: its drawer on the right,
       -- in Atlantis
       <> [ HH.span [ style "display:flex;align-items:center;min-width:40px" ] [ chipIcons st.chip ] ]

@@ -120,4 +120,5 @@ migrateRhythm text = parsePattern text <#> \p ->
   , name: if p.name == "" then Nothing else Just p.name
   , starred: false
   , word: Nothing
+  , was: []
   }

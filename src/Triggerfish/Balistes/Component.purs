@@ -18,9 +18,9 @@ module Triggerfish.Balistes.Component (component, Output(..)) where
 
 import Prelude
 
-import Data.Array (concatMap, deleteAt, insertAt, filter, find, length, mapWithIndex, modifyAt, null, partition, range, sortWith, (!!))
+import Data.Array (concatMap, deleteAt, filter, find, insertAt, length, mapWithIndex, modifyAt, null, partition, range, (!!))
 import Data.Tuple (Tuple(..), fst, snd)
-import Data.Foldable (any, foldl, for_)
+import Data.Foldable (any, elem, foldl, for_)
 import Data.Map as Map
 import Data.Int (floor, round, toNumber)
 import Data.Maybe (Maybe(..), fromMaybe, isJust, isNothing, maybe)
@@ -29,7 +29,6 @@ import Triggerfish.StageCopy as StageCopy
 import Data.String (contains) as String
 import Data.String.Common (trim) as String
 import Data.String.Pattern (Pattern(..)) as String
-import Data.String.CodeUnits (take)
 import Effect (Effect)
 import Data.Either (Either(..))
 import Effect.Aff (attempt)
@@ -60,10 +59,10 @@ import Triggerfish.Balistes.Types
   , editVel, flashWindow
   , padId )
 import Triggerfish.Browser as Browser
-import Triggerfish.Balistes.TriSnapshot (Brain(..), TriSnapshot(..), brainBadge, brainLabel, brainOf, printTri, parseTri, rhythmContent, rhythmOfContent)
+import Triggerfish.Balistes.TriSnapshot (TriSnapshot(..), parseTri, printTri, rhythmContent, rhythmOfContent)
 import Triggerfish.Glyph as G
 import Triggerfish.GlyphView (faIcons)
-import Triggerfish.Preset (Preset, indexOfContent, presetAlias, presetGlyph, presetLabel, withWords, newPreset)
+import Triggerfish.Preset (Preset, indexOfContent, newPreset, presetAlias, presetGlyph, rename, withWords, wordsOf)
 import Triggerfish.Balistes.Widgets (armBtn, instColor)
 import Triggerfish.Balistes.View.Fixed (cellStrip, fixedSvg)
 import Triggerfish.Balistes.View.Grids (heatSvg, knobStack, padSvg)
@@ -105,9 +104,9 @@ component =
         , nowMicros: 0.0, dragging: Nothing, dragSub: Nothing
         , presets: []
         , identity: Nothing, lastChip: Nothing
-        , active: AGrids, editing: false, presetsOpen: false, bankFilter: Nothing, clickMode: Assemble, laneEditOpen: false, fixedSel: 0, lane: "", laneReadout: "", selected: Nothing
+        , active: AGrids, editing: false, clickMode: Assemble, laneEditOpen: false, fixedSel: 0, lane: "", laneReadout: "", selected: Nothing
         , scratchFixed: Nothing
-        , publishMsg: Nothing, stageRhythms: Nothing, undoDelete: Nothing, follow: Nothing, followQueue: [] }
+        , stageRhythms: Nothing, undoDelete: Nothing, follow: Nothing, followQueue: [] }
     , render
     , eval: H.mkEval H.defaultEval
         { handleAction = handleAction, handleQuery = handleQuery, initialize = Just Initialize }
@@ -151,7 +150,7 @@ handleQuery = case _ of
   BarAction _ next -> pure (Just next)
   BrowserDrop _ next -> pure (Just next)
   BrowserRename i name next -> do
-    H.modify_ \s -> s { presets = fromMaybe s.presets (modifyAt i (_ { name = Just name }) s.presets), undoDelete = Nothing }
+    H.modify_ \s -> s { presets = rename i (String.trim name) s.presets, undoDelete = Nothing }
     persist
     pure (Just next)
   -- No marks here: asked for its text, the shell falls back to AskSource.
@@ -553,46 +552,12 @@ handleAction = case _ of
     H.modify_ _ { lane = joined }
     H.raise (LaneEdited joined)
 
-  OpenPresets -> H.modify_ _ { presetsOpen = true }
-  ClosePresets -> H.modify_ _ { presetsOpen = false }
-  -- Recall closes the modal: you picked a thing, you want to see it land on the
-  -- bands. Star and delete leave it open — those are curation, done in batches.
-  RecallPreset i -> do
-    recallPreset i
-    H.modify_ _ { presetsOpen = false }
+  RecallPreset i -> recallPreset i
   StarPreset i ->
     H.modify_ \s -> s { presets = fromMaybe s.presets (modifyAt i (\p -> p { starred = not p.starred }) s.presets) }
   DeletePreset i -> do
     H.modify_ (deletePresetAt i)
     persist
-  -- Naming is promotion: a blank field means "still just a capture", so it
-  -- clears back to Nothing rather than storing an empty string — otherwise a
-  -- cleared name would read as a named-but-nameless artefact, and `presetLabel`
-  -- would show a blank row instead of falling back to the glyph alias.
-  -- `persist` (not `persistLib`): the bank is not the rig's business, so there
-  -- is nothing to re-push.
-  RenamePreset i name -> do
-    let trimmed = String.trim name
-    H.modify_ \s -> s
-      { presets = fromMaybe s.presets
-          (modifyAt i (_ { name = if trimmed == "" then Nothing else Just trimmed }) s.presets)
-      }
-    persist
-  -- Save a bank entry to the shared store, any brain. Reuses `publishMsg` as the
-  -- status line so the store's answer appears in one place rather than growing a
-  -- second reporting channel for the same operation.
-  SavePreset i -> do
-    st <- H.get
-    case st.presets !! i of
-      Nothing -> pure unit
-      Just p -> do
-        let brain = maybe "·" brainBadge (brainOf <$> parseTri p.content)
-        H.modify_ _ { publishMsg = Just "saving…" }
-        res <- liftAff (attempt (Remote.publishSnapshot p.content (presetLabel p) brain))
-        H.modify_ _ { publishMsg = Just case res of
-          Right hash -> "✓ saved · " <> take 8 hash
-          Left _ -> "✗ save failed (store offline?)" }
-
   DillaPreset -> H.modify_ \s -> s { bal = M.dillaPush s.bal }
   FlatGroove -> H.modify_ \s -> s { bal = M.flatPush s.bal }
   -- switching pattern just changes which branch the next Step takes; hits are
@@ -606,13 +571,8 @@ handleAction = case _ of
     -- output agree whenever RYTM is live. Choosing another brain leaves
     -- `fixedSel` alone — the RYTM band keeps showing (and editing) its rhythm
     -- while ghosted.
-    -- Close the modal on picking, same as RecallPreset ("you picked a thing, you
-    -- want to see it land on the bands"). The two halves of one modal behaved
-    -- differently: choosing a rhythm left the panel covering the band it had just
-    -- changed. Harmless when the modal is not open.
     H.modify_ \s -> s
-      { active = a, scratchFixed = Nothing, publishMsg = Nothing
-      , presetsOpen = false
+      { active = a, scratchFixed = Nothing
       , fixedSel = case a of
           AFixed i -> i
           _ -> s.fixedSel }
@@ -664,28 +624,6 @@ handleAction = case _ of
       in s { presets = s.presets <> [ presetOfRhythm p ]
            , active = AFixed n, fixedSel = n, editing = true, selected = Nothing }
     persistLib
-  -- One rename path. `modRhythmAt` lifts the new name into the ENVELOPE and
-  -- re-prints the content name-stripped, so the two can never disagree — and the
-  -- glyph, being a fingerprint of the sound alone, does not move when you rename.
-  SetPatternName name -> do
-    H.modify_ \s -> let t = thawed s in modRhythmAt t.fixedSel (_ { name = name }) t
-    persistLib
-  -- Write-back to Amphora: publish the active fixed rhythm to the store (content
-  -- + label + balistes-grid favourite), so a pattern built in the app persists
-  -- and round-trips on next load. Content-addressed, so re-publishing an
-  -- unchanged pattern is a no-op dedup.
-  PublishActive -> do
-    st <- H.get
-    -- Publishes the SELECTED rhythm, not the sounding one: the RYTM band is
-    -- editable while ghosted, so publishing must follow what you were editing.
-    case selectedPattern st of
-      Just pat -> do
-        H.modify_ _ { publishMsg = Just "publishing…" }
-        res <- liftAff (attempt (Remote.publishPattern pat))
-        H.modify_ _ { publishMsg = Just case res of
-          Right hash -> "✓ published · " <> take 8 hash
-          Left _ -> "✗ publish failed (store offline?)" }
-      Nothing -> pure unit
   PushBalistes -> do
     -- The routing table first, so the handoff's first hit already goes where
     -- the table says.
@@ -704,11 +642,6 @@ handleAction = case _ of
           toRigVoice bin ("balistes-fixed " <> encodeFixed (P.toWire pat))
       -- Grids: the phase-aligned BalSim handoff.
       AGrids -> pushHandoff st
-  -- Purely a view narrowing; nothing to persist and nothing to push. Not saved
-  -- across reloads either — which brain you were reading last session is not a
-  -- preference worth restoring, and a filter that survives a reload is a good way
-  -- to conclude your patterns have vanished.
-  SetBankFilter mb -> H.modify_ _ { bankFilter = mb }
   SetClickMode m -> H.modify_ _ { clickMode = m }
   OpenLaneEdit -> H.modify_ _ { laneEditOpen = true }
   CloseLaneEdit -> H.modify_ _ { laneEditOpen = false }
@@ -828,7 +761,7 @@ recallSnap = case _ of
 -- | line's first event, announced as the rig starts it), a Grids engine is
 -- | run on to step `at`, where the rig's is.
 showNow :: Int -> Follow.Now -> State -> State
-showNow at now s = case find (\p -> p.word == Just now.word) s.presets of
+showNow at now s = case find (\p -> elem now.word (wordsOf p)) s.presets of
   Just p | Just named <- p.name -> case parseTri p.content, now.grids of
     Just (TSGrids _), Just engine ->
       s { active = AGrids, scratchFixed = Nothing, bal = catchUp (at - now.step) engine, identity = Just p.content, follow = Just { from: now.step, rest: false } }
@@ -1114,7 +1047,6 @@ render s =
             [ style "flex:1 1 auto;min-width:0;overflow-y:auto;display:flex;flex-direction:column;gap:10px;padding:10px 14px 14px" ]
             [ mutableBand s, gridsBand s ]
         ]
-    , presetModal s
     , laneEditModal s
     ]
 
@@ -1205,7 +1137,6 @@ navBar s =
         <> "background:linear-gradient(#cdc7b6,#c4bead);border-bottom:1px solid #00000014" ]
     ( [ navBtn "RESET" ResetPat
       , navBtn "DICE" Dice
-      , navBtn "presets…" OpenPresets
       , HH.div [ style "flex:1 1 auto;min-width:8px" ] []
       , lampRow s
       , navDivider
@@ -1328,37 +1259,19 @@ gridsBand s =
         Just pat -> HH.div [ style "width:100%" ] [ fixedSvg s s.fixedSel pat ] )
   where
   extras =
-    [ HH.input
-        [ HP.value (maybe "" _.name (selectedPattern s))
-        , HE.onValueInput SetPatternName
-        , style $ "padding:3px 8px;border:1px solid #a8a392;border-radius:5px;background:#f3f1e8;"
-            <> "font-family:Georgia,serif;font-size:12px;color:#1c1a12;width:130px" ]
+    -- Its name is given and changed in the Library drawer (double-click),
+    -- the one place a beat is named, so the drag carries what the row says.
+    [ HH.span [ style "font-family:Georgia,serif;font-size:12px;color:#1c1a12;min-width:80px" ]
+        [ HH.text (maybe "" _.name (selectedPattern s)) ]
     , armBtn (if s.editing then "● EDITING" else "EDIT") s.editing ToggleEdit
-    -- "PUBLISH" read as a transport verb and said nothing about where the bytes
-    -- went. Naming the destination also disambiguates it from the CONTINUOUS
-    -- local save (persistLib writes to localStorage on every edit) — this is the
-    -- one that puts it somewhere else, not the one that stops you losing work.
-    , armBtn "SAVE TO AMPHORA ⚱" false PublishActive
-    , case s.publishMsg of
-        Just msg -> HH.span [ style $ engrave <> ";font-size:8px;color:#2f6a4a" ] [ HH.text msg ]
-        Nothing -> HH.text ""
+    , armBtn "+ NEW" false NewPattern
     , cellStrip s
     ]
 
 -- ---------------------------------------------------------------------------
--- The preset modal
+-- The lane editor
 -- ---------------------------------------------------------------------------
 
--- | Two collections, deliberately kept apart (they are NOT the same thing and
--- | merging them would lose a distinction the rest of the rack relies on):
--- |
--- |   * **RHYTHMS** — `library :: Array FixedPattern`, the named user rhythms
--- |     that the RYTM brain plays. Amphora-merged, shared across the rig.
--- |   * **SNAPSHOTS** — `presets :: Array Preset`, whole-machine captures with
--- |     content-derived 2-glyph aliases (identical state ⇒ identical glyph).
--- |     These carry WHICH BRAIN was live, so recalling one can change the band
--- |     you're on. Previously reachable only from the shell's status-board chip
--- |     menu — i.e. not from inside Balistes at all.
 -- | The lane EDITOR — a full-size surface for writing the tidal expression of a
 -- | combined beat, with the notation guide right there. Same shape as Vetula's
 -- | sequence editor (`Vetula.App.perfEditModal`): title, the expression, a live
@@ -1370,7 +1283,7 @@ gridsBand s =
 -- | commit step — `SetLane` already raises `LaneEdited` to the shell, which owns
 -- | and persists it.
 -- |
--- | Backdrop and panel are SIBLINGS, matching `presetModal` below: nesting would
+-- | Backdrop and panel are SIBLINGS: nesting would
 -- | need the panel to stop click propagation, which needs an Effect-carrying
 -- | no-op action. Siblings get the same behaviour with no plumbing.
 laneEditModal :: forall m. State -> H.ComponentHTML Action () m
@@ -1457,68 +1370,6 @@ laneGuide =
   , Tuple "# verb" "a transform applied to the step (# dilla, # flat, # scale)"
   ]
 
-presetModal :: forall m. State -> H.ComponentHTML Action () m
-presetModal s =
-  if not s.presetsOpen then HH.text ""
-  else
-    -- Backdrop and panel are SIBLINGS, not nested: a click-outside-to-close
-    -- backdrop wrapped around the panel would need the panel to stop propagation,
-    -- which needs an Effect-carrying no-op action. Siblings get the same
-    -- behaviour with no plumbing — the panel simply isn't inside the catcher.
-    HH.div [ style "position:fixed;inset:0;z-index:60" ]
-      [ HH.div
-          [ style "position:absolute;inset:0;background:#00000055"
-          , HE.onClick \_ -> ClosePresets ]
-          []
-      , HH.div
-          [ style $ "position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);"
-              <> "width:660px;max-width:92vw;max-height:82vh;overflow-y:auto;border-radius:10px;"
-              <> "background:linear-gradient(#f6f2e8,#efe9db);border:1px solid #a8a392;"
-              <> "box-shadow:0 14px 48px #00000044;padding:20px 24px" ]
-          [ HH.div [ style "display:flex;align-items:baseline;justify-content:space-between;margin-bottom:14px" ]
-              [ HH.span [ style $ engrave <> ";font-size:13px;letter-spacing:0.16em;color:#3f3c33" ] [ HH.text "PRESETS" ]
-              , HH.button
-                  [ HE.onClick \_ -> ClosePresets
-                  , style "border:none;background:none;color:#8a8676;font-size:16px;cursor:pointer;line-height:1" ]
-                  [ HH.text "✕" ]
-              ]
-          , bankFilterRow s
-          , modalSection "BANK"
-              "every machine's artefacts in one list — named ones are yours, the rest are captures"
-              (bankList s)
-          ]
-      ]
-
--- | ALL / G / R / T, plus the +NEW action that used to ride at the end of the
--- | rhythm chips. Filtering is a VIEW over one collection, not a partition of it:
--- | the bank exists to hold the three brains intermingled (that is the
--- | macro-tidal purpose in DESIGN-tri-snapshot.md), so narrowing is something you
--- | do to read it, never something that splits it.
-bankFilterRow :: forall m. State -> H.ComponentHTML Action () m
-bankFilterRow s =
-  HH.div [ style "display:flex;align-items:center;gap:6px;margin-bottom:10px" ]
-    ( [ filterBtn Nothing "ALL" ]
-        <> map (\b -> filterBtn (Just b) (brainBadge b)) [ BGrids, BFixed ]
-        <> [ HH.div [ style "flex:1 1 auto" ] []
-           , HH.button
-               [ HE.onClick \_ -> NewPattern
-               , HP.title "new empty rhythm"
-               , style $ "padding:4px 11px;border:1px dashed #a8a392;border-radius:6px;cursor:pointer;"
-                   <> "font-family:Georgia,serif;font-size:11px;color:#6a6657;background:#00000006" ]
-               [ HH.text "+ NEW RHYTHM" ]
-           ] )
-  where
-  filterBtn mb label =
-    let on = s.bankFilter == mb
-    in HH.button
-         [ HE.onClick \_ -> SetBankFilter mb
-         , HP.title (maybe "show every brain" brainLabel mb)
-         , style $ engrave <> ";font-size:9px;letter-spacing:0.1em;padding:3px 9px;border-radius:5px;cursor:pointer;"
-             <> "border:1px solid " <> (if on then "#6f6a5c" else "#00000018")
-             <> ";color:" <> (if on then "#2f2c25" else "#8a8676")
-             <> ";background:" <> (if on then "#00000010" else "transparent") ]
-         [ HH.text label ]
-
 modalSection :: forall m. String -> String -> H.ComponentHTML Action () m -> H.ComponentHTML Action () m
 modalSection label blurb body =
   HH.div [ style "margin-bottom:18px" ]
@@ -1528,129 +1379,10 @@ modalSection label blurb body =
     , body
     ]
 
--- The banked snapshots as their glyph pairs + names. Recall / star / delete are
--- the same three verbs the shell's chip menu offers, now available in-machine.
--- | The bank, starred entries first.
--- |
--- | Sorted on STAR ONLY, deliberately — star trumps naming (AC, 2026-08-07), and
--- | an anonymous starred capture is a perfectly good go-to. Naming is a separate
--- | axis (promotion, see `RenamePreset`) and must NOT sort, because the name is
--- | edited character-by-character in a live input: re-ordering on `name` would
--- | slide the row out from under the cursor on the first keystroke. A star is one
--- | deliberate click, so a row jumping to the top there is the feedback you want.
--- |
--- | `sortWith` is stable, so entries keep capture order within each group.
--- |
--- | NB the index carried through is the ORIGINAL position in `s.presets`, since
--- | that is what Star/Delete/Rename address. Sorting bare presets and re-indexing
--- | would silently point every row's actions at the wrong entry.
-bankList :: forall m. State -> H.ComponentHTML Action () m
-bankList s =
-  let rows = sortWith (\(Tuple _ p) -> if p.starred then 0 else 1)
-               (filter (\(Tuple _ p) -> matchesFilter s p) (mapWithIndex Tuple s.presets))
-  in if null rows
-       then HH.div [ style $ engrave <> ";font-size:9px;opacity:0.5" ]
-              [ HH.text (if null s.presets
-                  then "NOTHING BANKED YET — THE `c` HOTKEY CAPTURES THE LIVE STATE."
-                  else "NOTHING FOR THIS BRAIN — TRY ALL.") ]
-       else HH.div [ style "display:flex;flex-direction:column;gap:4px" ]
-              (map (\(Tuple i p) -> snapshotRow i p) rows)
-
--- | Does this entry pass the current brain filter? Unparseable entries show only
--- | under ALL — they badge as `·` and there is no brain to file them under, but
--- | hiding them entirely would make a decode problem invisible.
-matchesFilter :: State -> Preset -> Boolean
-matchesFilter s p = case s.bankFilter of
-  Nothing -> true
-  Just b -> (brainOf <$> parseTri p.content) == Just b
-
--- | Is this bank entry a rhythm? Rhythms fold into the same bank as of v5, but
--- | until the two modal sections merge (slice 5b) they keep their existing homes:
--- | RHYTHMS renders them, SNAPSHOTS renders everything else. Without this the
--- | fold would dump a dozen rhythms into the captures list and the step that was
--- | supposed to change nothing visible would rearrange the screen.
+-- | Is this bank entry a RYTM rhythm (clicking it selects it for editing)
+-- | rather than a captured moment (clicking it restores that state)?
 isRhythm :: Preset -> Boolean
 isRhythm p = isJust (rhythmOfContent (fromMaybe "" p.name) p.content)
-
-snapshotRow :: forall m. Int -> Preset -> H.ComponentHTML Action () m
-snapshotRow i p =
-  let g = G.glyphFromAlias (presetAlias p)
-  in HH.div
-      [ style "display:flex;align-items:center;gap:9px;padding:4px 8px;border-radius:6px;background:#00000008" ]
-      [ HH.span
-          [ HE.onClick \_ -> StarPreset i
-          , HP.title (if p.starred then "unstar" else "star (go-to)")
-          , style $ "cursor:pointer;font-size:12px;color:" <> (if p.starred then "#c9a23a" else "#c2beb0") ]
-          [ HH.text (if p.starred then "★" else "☆") ]
-      -- The badge + glyph pair are the RECALL target. The name field is a
-      -- SIBLING, not a child: nesting an input inside the click handler would
-      -- recall the snapshot on every attempt to put the cursor in the field.
-      -- One gesture, brain-appropriate meaning. A rhythm IS the artefact now that
-      -- the library folded in, so clicking it selects it for editing (what the
-      -- RHYTHMS chips did). Another brain's entry is a captured moment, so
-      -- clicking it restores that state (what SNAPSHOTS did). Recalling a rhythm
-      -- ephemerally — the old scratchFixed path — is still reachable, but it is
-      -- no longer the obvious meaning of clicking your own saved rhythm.
-      , HH.span
-          [ HE.onClick \_ -> if isRhythm p then SelectPattern (AFixed i) else RecallPreset i
-          , HP.title (if isRhythm p then "select for editing" else "recall")
-          , style "display:flex;align-items:center;gap:8px;cursor:pointer;flex:0 0 auto" ]
-          [ brainTag p
-          , HH.span [ style "display:inline-flex;align-items:center;gap:3px" ] (faIcons g)
-          ]
-      -- Placeholder is the glyph alias, so an unnamed capture shows the very
-      -- label it is going by — the field reads as "this is its name until you
-      -- give it one", which is the promotion story made visible.
-      , HH.input
-          [ HP.value (fromMaybe "" p.name)
-          , HP.placeholder (presetAlias p)
-          , HE.onValueInput (RenamePreset i)
-          , HP.title "name this snapshot (blank = leave it anonymous)"
-          , style $ "flex:1 1 auto;min-width:0;padding:2px 6px;border:1px solid transparent;"
-              <> "border-radius:4px;background:transparent;"
-              <> "font-family:'SF Mono',Menlo,monospace;font-size:10px;color:#4a463b" ]
-      , HH.span
-          [ HE.onClick \_ -> SavePreset i
-          , HP.title "save to Amphora (shared store)"
-          , style "cursor:pointer;color:#8a8676;font-size:11px;flex:0 0 auto" ]
-          [ HH.text "⚱" ]
-      , HH.span
-          [ HE.onClick \_ -> DeletePreset i
-          , HP.title "delete"
-          , style "cursor:pointer;color:#b0a898;font-size:11px" ]
-          [ HH.text "✕" ]
-      ]
-
--- | The brain a banked snapshot came from, as a small engraved letter beside its
--- | glyph pair — so one badged list reads across all three brains and you can see
--- | at a glance which machine an entry is from (AC, 2026-08-07). Engraved letter
--- | rather than a coloured pill, per the Hainbach × Rams line in
--- | DESIGN-tri-snapshot.md.
--- |
--- | **Derived, never read off the stored text.** `printTri`'s on-disk tags are the
--- | FROZEN M/G/T from when the brains were MUTABLE/GRIDS/TIDAL, while the display
--- | letters are G/R/T — so stored `G` means RYTM and displayed `G` means GRIDS.
--- | Going through parseTri → brainOf → brainBadge is what keeps those two
--- | alphabets apart; taking the first character of `p.content` would be
--- | confidently wrong for two brains out of three.
--- |
--- | Unparseable content renders a dim `·`: a slot whose text no longer decodes
--- | is exactly the case where a made-up letter would mislead.
-brainTag :: forall m. Preset -> H.ComponentHTML Action () m
-brainTag p =
-  let
-    mBrain = brainOf <$> parseTri p.content
-    label = maybe "·" brainBadge mBrain
-    title = case mBrain of
-      Just b -> brainLabel b
-      Nothing -> "unrecognised snapshot content"
-  in
-    HH.span
-      [ HP.title title
-      , style $ engrave <> ";font-size:9px;letter-spacing:0.08em;width:11px;"
-          <> "text-align:center;flex:0 0 auto;color:"
-          <> (if isJust mBrain then "#6f6a5c" else "#bdb8a8") ]
-      [ HH.text label ]
 
 -- Three pilot lamps that glow on a recent hit (bright = accented).
 lampRow :: forall m. State -> H.ComponentHTML Action () m

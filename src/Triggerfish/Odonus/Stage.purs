@@ -12,23 +12,24 @@ module Triggerfish.Odonus.Stage
 
 import Prelude
 
-import Data.Array (mapMaybe)
+import Data.Array (concatMap)
 import Data.Map as Map
 import Data.Maybe (Maybe(..), fromMaybe)
 import Data.Tuple (Tuple(..))
 import Triggerfish.Drag (dragOf)
-import Triggerfish.Preset (Preset)
+import Triggerfish.Preset (Preset, wordsOf)
 import Triggerfish.StageCopy (Copy)
 
 -- | Where the stage keeps Odonus's patches.
 stagePrefix :: String
 stagePrefix = "odonus/patch/"
 
--- | The bank's named presets as the stage keeps them, by word.
+-- | The bank's named presets as the stage keeps them, by every word each
+-- | plays by.
 bankPatches :: Array Preset -> Copy
-bankPatches = Map.fromFoldable <<< mapMaybe \p -> case p.name, p.word of
-  Just _, Just word -> Just (Tuple word p.content)
-  _, _ -> Nothing
+bankPatches = Map.fromFoldable <<< concatMap \p -> case p.name of
+  Just _ -> map (\word -> Tuple word p.content) (wordsOf p)
+  Nothing -> []
 
 -- | What a drag of a row carries: its word, for a named preset; "" for a
 -- | capture not yet named.

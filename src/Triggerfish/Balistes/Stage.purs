@@ -16,7 +16,7 @@ module Triggerfish.Balistes.Stage
 
 import Prelude
 
-import Data.Array (mapMaybe)
+import Data.Array (concatMap)
 import Data.Map (Map)
 import Data.Map as Map
 import Data.Maybe (Maybe(..), fromMaybe)
@@ -26,22 +26,22 @@ import Reef.Balistes.Protocol (encodeBalSim)
 import Reef.Balistes.Sim (fromTop)
 import Triggerfish.Balistes.Model as M
 import Triggerfish.Balistes.TriSnapshot (TriSnapshot(..), parseTri, rhythmOfContent)
-import Triggerfish.Preset (Preset)
+import Triggerfish.Preset (Preset, wordsOf)
 
 -- | Where the stage keeps Balistes's beats (`Triggerfish.StageCopy`).
 stagePrefix :: String
 stagePrefix = "balistes/rhythm/"
 
--- | The bank's named beats as the stage keeps them, by word, a Grids beat
+-- | The bank's named beats as the stage keeps them, by every word each
+-- | plays by, a Grids beat
 -- | played on `bal`'s notes and ratchets. Captures (no name) are not.
 bankRhythms :: M.Balistes -> Array Preset -> Map String String
-bankRhythms bal presets = Map.fromFoldable (mapMaybe one presets)
+bankRhythms bal presets = Map.fromFoldable (concatMap one presets)
   where
-  one p = do
+  one p = fromMaybe [] do
     name <- p.name
-    word <- p.word
     text <- stageText name p.content
-    pure (Tuple word text)
+    pure (map (\word -> Tuple word text) (wordsOf p))
   stageText name content = case parseTri content of
     Just (TSGrids point) -> Just (gridsPrefix <> encodeBalSim (fromTop (M.applySnapshot point bal)))
     Just (TSFixed _) -> printPattern <$> rhythmOfContent name content

@@ -169,10 +169,6 @@ type State =
   -- EDIT mode for a fixed rhythm: reveal all 16 lanes (greyed where empty) so
   -- you can add voices; cells are click-to-toggle either way.
   , editing :: Boolean
-  , presetsOpen :: Boolean       -- the bank modal
-  -- Bank filter: `Nothing` shows every brain's entries, `Just b` narrows to one.
-  -- Presentation only — the collection stays whole (the point of the fold).
-  , bankFilter :: Maybe Brain
   -- What a beat-glyph click means. Not persisted: it is a posture you are in for
   -- the next few minutes, not a preference (cf. Transport.Store, which persists
   -- the authority mode and nothing about what was playing).
@@ -190,8 +186,6 @@ type State =
   -- the cell the NOTE inspector is editing (lane, step) on the active rhythm.
   , selected :: Maybe { lane :: Int, step :: Int }
   -- the POLYTRIG jack rack (SELENE DRUMS tab) — browser-only, no reef path.
-  -- transient status for the "publish to Amphora" action on the active rhythm.
-  , publishMsg :: Maybe String
   -- The named rhythms the rig's stage holds, by word (Balistes.Stage), which
   -- `balistes $ "<a b>"` plays; Nothing until the stage has answered a
   -- subscribe on this connect.
@@ -216,25 +210,12 @@ data Action
   | BankBrain Active          -- bank ONE brain's state, sounding or not (its band's glyph)
   | SetLane String            -- edit this machine's macro-tidal arrangement lane
   | InsertLaneToken String    -- append a pattern name to the lane (click-to-assemble)
-  | OpenPresets
-  | ClosePresets
   | RecallPreset Int
   | StarPreset Int
   | DeletePreset Int
-  -- Name a banked snapshot. NOT merely cosmetic: naming is PROMOTION — an
-  -- anonymous, glyph-identified capture becomes a curated artefact (see
-  -- `Triggerfish.Preset.presetLabel`, "the name if promoted, else the glyph
-  -- alias", and docs/DESIGN-balistes-bank-coherence.md). Blank clears back to
-  -- anonymous, matching the Store's "empty name = anonymous".
-  | RenamePreset Int String
-  | SetBankFilter (Maybe Brain)  -- narrow the bank list to one brain (Nothing = all)
   | SetClickMode ClickMode       -- audition-vs-assemble: what clicking a beat does
   | OpenLaneEdit                 -- open the lane-expression editor
   | CloseLaneEdit
-  -- Save one bank entry to Amphora, any brain. The generalisation of
-  -- PublishActive, which could only ever save a RYTM rhythm because the store
-  -- write-back was wired to the RYTM-only `library`.
-  | SavePreset Int
   | Step Scheduler.Tick
   | Frame
   | MidiReady RO.Outs String
@@ -258,8 +239,6 @@ data Action
   | CycleCellCond              -- step its trig condition
   | ClearSelected              -- clear the selected cell + deselect
   | NewPattern                 -- append a fresh empty rhythm + select it
-  | SetPatternName String      -- rename the active rhythm
-  | PublishActive              -- publish the active rhythm to Amphora (persist + share)
   | PushBalistes               -- lockstep handoff: the routing table, then the brain's state, to the rig
   | NoOp
 

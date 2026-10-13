@@ -9,9 +9,11 @@
 -- |   • `name` — `Nothing` = anonymous (fast capture), `Just` = promoted/authored.
 -- |   • `starred` — a go-to; the recall menu surfaces these first.
 -- |   • `word` — what a line plays it by and its key on the stage
--- |     (`Reef.Word`): given once, when it is first named, unique in its
--- |     machine, and kept through renames, so a line naming it never goes
--- |     silent. `Nothing` until named.
+-- |     (`Reef.Word`): its name's, unique in its machine, `Nothing` until
+-- |     named. It follows a rename, so what a drag carries is what the row
+-- |     says (AC, 2026-10-13).
+-- |   • `was` — the words it had before, still on the stage, so a line
+-- |     naming it by an old word never goes silent.
 -- |
 -- | Capture DEDUPS by content (identical state → identical glyph), so hammering the
 -- | hotkey on an unchanged state is idempotent — the main defence against clutter.
@@ -22,6 +24,8 @@ module Triggerfish.Preset
   , presetAlias
   , indexOfContent
   , newPreset
+  , rename
+  , wordsOf
   , withWords
   , Stored
   , toStored
@@ -30,8 +34,8 @@ module Triggerfish.Preset
 
 import Prelude
 
-import Data.Array (findIndex, foldl, mapMaybe, snoc)
-import Data.Maybe (Maybe(..), fromMaybe)
+import Data.Array (concatMap, deleteAt, filter, findIndex, foldl, modifyAt, snoc)
+import Data.Maybe (Maybe(..), fromMaybe, maybe)
 import Data.Nullable (Nullable, toMaybe, toNullable)
 import Data.Set as Set
 import Reef.Word (freeWord)
@@ -42,11 +46,12 @@ type Preset =
   , name :: Maybe String
   , starred :: Boolean
   , word :: Maybe String
+  , was :: Array String
   }
 
 -- | A preset just kept: not starred, and no word until it is named and saved.
 newPreset :: String -> Maybe String -> Preset
-newPreset content name = { content, name, starred: false, word: Nothing }
+newPreset content name = { content, name, starred: false, word: Nothing, was: [] }
 
 -- | The preset's (derived) glyph.
 presetGlyph :: Preset -> Glyph
@@ -65,11 +70,30 @@ presetAlias p = (glyphOf p.content).alias
 indexOfContent :: String -> Array Preset -> Maybe Int
 indexOfContent content = findIndex \p -> p.content == content
 
+-- | Every word a preset plays by: its own, then its old ones.
+wordsOf :: Preset -> Array String
+wordsOf p = maybe p.was (\w -> [ w ] <> p.was) p.word
+
+-- | Name the preset at `i`. A named preset's word becomes its new name's,
+-- | numbered if another preset plays by it; the word it had stays playable
+-- | in `was`. A blank name, or one with nothing to make a word of, leaves
+-- | the words alone.
+rename :: Int -> String -> Array Preset -> Array Preset
+rename i name presets = fromMaybe presets (modifyAt i named presets)
+  where
+  taken = Set.fromFoldable (concatMap wordsOf (fromMaybe presets (deleteAt i presets)))
+  named p
+    | name == "" = p { name = Nothing }
+    | otherwise = case freeWord (\c -> Set.member c taken) name of
+        "" -> p { name = Just name }
+        w | p.word == Just w -> p { name = Just name }
+          | otherwise -> p { name = Just name, word = Just w, was = filter (_ /= w) (wordsOf p) }
+
 -- | Every named preset with a word: one that has none (just named, or saved
 -- | before words) gets its name's, numbered if another preset holds it.
 -- | Words already given are never changed.
 withWords :: Array Preset -> Array Preset
-withWords presets = _.out (foldl step { taken: Set.fromFoldable (mapMaybe _.word presets), out: [] } presets)
+withWords presets = _.out (foldl step { taken: Set.fromFoldable (concatMap wordsOf presets), out: [] } presets)
   where
   step acc p = case p.word, p.name of
     Nothing, Just name | w <- freeWord (\c -> Set.member c acc.taken) name, w /= "" ->
@@ -78,10 +102,11 @@ withWords presets = _.out (foldl step { taken: Set.fromFoldable (mapMaybe _.word
 
 -- | A preset as every machine's store keeps it: an anonymous one's name is
 -- | "", and a preset saved before words has none (`word` null or absent).
-type Stored = { content :: String, name :: String, starred :: Boolean, word :: Nullable String }
+-- | `was` is absent from one saved before words followed renames.
+type Stored = { content :: String, name :: String, starred :: Boolean, word :: Nullable String, was :: Nullable (Array String) }
 
 toStored :: Preset -> Stored
-toStored p = { content: p.content, name: fromMaybe "" p.name, starred: p.starred, word: toNullable p.word }
+toStored p = { content: p.content, name: fromMaybe "" p.name, starred: p.starred, word: toNullable p.word, was: toNullable (Just p.was) }
 
 fromStored :: Stored -> Preset
-fromStored e = { content: e.content, name: if e.name == "" then Nothing else Just e.name, starred: e.starred, word: toMaybe e.word }
+fromStored e = { content: e.content, name: if e.name == "" then Nothing else Just e.name, starred: e.starred, word: toMaybe e.word, was: fromMaybe [] (toMaybe e.was) }

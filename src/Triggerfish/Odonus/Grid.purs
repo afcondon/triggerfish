@@ -54,7 +54,7 @@ import Reef.Calibration (Table)
 import Reef.Render as Render
 import Effect.Console as Console
 import Reef.Protocol (decodeTagged, encodeInput, encodeSim, encodeTagged)
-import Data.String (Pattern(..), stripPrefix) as Str
+import Data.String (Pattern(..), stripPrefix, trim) as Str
 import Web.Event.Event (EventType(..), preventDefault)
 import Web.Event.EventTarget (addEventListener, eventListener, removeEventListener)
 import Web.HTML (window)
@@ -83,7 +83,7 @@ import Triggerfish.Clips.Store as ClipStore
 import Triggerfish.Amphora as Amphora
 import Triggerfish.Glyph as G
 import Triggerfish.Browser as Browser
-import Triggerfish.Preset (Preset, indexOfContent, newPreset, presetAlias, withWords)
+import Triggerfish.Preset (Preset, indexOfContent, newPreset, presetAlias, rename, withWords)
 import Triggerfish.Odonus.Stage as OStage
 import Triggerfish.StageCopy as StageCopy
 import Triggerfish.Odonus.Lepidoptera (parsePatch, printPatch)
@@ -271,7 +271,7 @@ handleQuery = case _ of
   BarAction _ next -> pure (Just next)
   BrowserDrop _ next -> pure (Just next)
   BrowserRename i name next -> do
-    H.modify_ \s -> s { presets = fromMaybe s.presets (modifyAt i (_ { name = Just name }) s.presets), undoDelete = Nothing, notice = "" }
+    H.modify_ \s -> s { presets = rename i (Str.trim name) s.presets, undoDelete = Nothing, notice = "" }
     persistAll
     pure (Just next)
   AskBank reply -> do
