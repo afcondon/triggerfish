@@ -63,7 +63,7 @@ type State =
   , lastBar :: Maybe Bar
   -- the drawer's word after a delete, and the progression its undo keeps again
   , notice :: String
-  , undoKept :: Maybe Int
+  , undo :: Maybe Undo
   }
 
 data Action
@@ -82,7 +82,7 @@ component = H.mkComponent
   { initialState: \_ ->
       { sounding: Silent, chip: Nothing
       , busy: Nothing
-      , bin: Nothing, voices: [], routesText: Nothing, names: Map.empty, lastBar: Nothing, notice: "", undoKept: Nothing }
+      , bin: Nothing, voices: [], routesText: Nothing, names: Map.empty, lastBar: Nothing, notice: "", undo: Nothing }
   , render: \_ -> HH.slot _vet unit Vetula.component unit FromVetula
   , eval: H.mkEval H.defaultEval
       { handleAction = handleAction
@@ -156,13 +156,17 @@ poll = do
       H.modify_ _ { chip = Just cv }
       H.raise (Chip cv)
 
+-- | What the drawer's undo brings back: a progression kept again (by its
+-- | name, which is its identity), or a scene where it was.
+data Undo = UndoProgression String | UndoScene Int Vetula.Scene
+
 -- | The drawer's slots for saved progressions, above the voices' (`Voices.slotBase`).
 progSlotBase :: Int
 progSlotBase = 2000
 
 -- | The drawer has moved on: its last delete can no longer be undone.
 settle :: M Unit
-settle = H.modify_ _ { notice = "", undoKept = Nothing }
+settle = H.modify_ _ { notice = "", undo = Nothing }
 
 -- | The shell's queries, in Vetula's terms. What Vetula has no counterpart for
 -- | (lanes, a clock, the routing table, a pitch set to follow) is unanswered.
@@ -170,9 +174,9 @@ handleQuery :: forall a. SQ.Query a -> M (Maybe a)
 handleQuery = case _ of
   -- The browser drawer carries Vetula's scenes as they are (docs/kb/plans/
   -- the-deck.md, 2026-10-05): name first, the key as the tag, the session's
-  -- three-glyph as the rebus, so a session's scenes share it. Renaming waits
-  -- for the revision of Vetula's saving (a scene's name is its Amphora label),
-  -- so the rows are `builtin`: no rename is offered.
+  -- three-glyph as the rebus, so a session's scenes share it. A scene renames
+  -- and deletes as any drawer's row does; a progression only deletes (voices
+  -- play it by name).
   SQ.AskBrowser reply -> do
     mscenes <- H.query _vet unit (Vetula.AskScenes identity)
     mprogs <- H.query _vet unit (Vetula.AskProgressions identity)
@@ -186,22 +190,26 @@ handleQuery = case _ of
     let voiceRows = Voices.rows st.voices st.names st.routesText
     pure $ mscenes <#> \scenes -> reply
       { title: if Array.null voiceRows && Array.null progRows then "Scenes" else "Vetula", modes: false, keep: "keep scene", notice: st.notice
-      , rows: voiceRows <> progRows <> map (_ { section = if Array.null voiceRows && Array.null progRows then "" else "Scenes" }) (Array.mapWithIndex (\i sc -> { slot: i, name: sc.name, icons: map (\icon -> { icon, color: "#2a2a2a" }) (Array.filter (_ /= "") (String.split (String.Pattern "-") (sessionOf sc))), tag: sc.key, current: false, section: "", builtin: true, drag: "", hint: "", actions: [] }) scenes) }
+      , rows: voiceRows <> progRows <> map (_ { section = if Array.null voiceRows && Array.null progRows then "" else "Scenes" }) (Array.mapWithIndex (\i sc -> { slot: i, name: sc.name, icons: map (\icon -> { icon, color: "#2a2a2a" }) (Array.filter (_ /= "") (String.split (String.Pattern "-") (sessionOf sc))), tag: sc.key, current: false, section: "", builtin: false, drag: "", hint: "Click: load it onto the surface. Double-click: rename it.", actions: [ "delete" ] }) scenes) }
   -- a saved progression's row: load it
   SQ.BrowserRecall i _ next | i >= progSlotBase -> settle *> H.query _vet unit (Vetula.LoadEntry (i - progSlotBase) next)
   -- a voice's row: show its card in Limulus (adding the block if it is gone)
   SQ.BrowserRecall i _ next | i >= Voices.slotBase -> settle *> H.query _vet unit (Vetula.OpenChannelCard (i - Voices.slotBase) next)
   SQ.BrowserRecall i _ next -> settle *> H.query _vet unit (Vetula.LoadSceneAt i next)
   -- progression names are fixed, so the voices that name one keep finding it
-  -- (their rows are `builtin`, so the drawer offers no rename)
+  -- (their rows are `builtin`, so the drawer offers no rename); a scene's is
+  -- its own
+  SQ.BrowserRename i name next | i < Voices.slotBase -> settle *> H.query _vet unit (Vetula.RenameScene i name next)
   SQ.BrowserRename _ _ next -> pure (Just next)
   SQ.BrowserKeep next -> do
-    H.modify_ _ { notice = "", undoKept = Nothing }
+    settle
     H.query _vet unit (Vetula.SaveSceneQ next)
   SQ.BrowserUndo next -> do
     st <- H.get
-    H.modify_ _ { notice = "", undoKept = Nothing }
-    for_ st.undoKept \i -> H.query _vet unit (Vetula.SetKept i true unit)
+    settle
+    for_ st.undo case _ of
+      UndoProgression name -> H.query _vet unit (Vetula.SetKept name true unit)
+      UndoScene i scene -> H.query _vet unit (Vetula.InsertScene i scene unit)
     pure (Just next)
   -- shape / colour Odonus: a route line, as Limulus writes it
   -- a progression's delete (the drawer asks first): no longer kept, so its
@@ -210,11 +218,15 @@ handleQuery = case _ of
     mprogs <- H.query _vet unit (Vetula.AskProgressions identity)
     let i = slot - progSlotBase
         name = maybe "it" _.name (Array.find (\p -> p.slot == i) (fromMaybe [] mprogs))
-    _ <- H.query _vet unit (Vetula.SetKept i false unit)
-    H.modify_ _ { notice = "Deleted " <> name, undoKept = Just i }
+    _ <- H.query _vet unit (Vetula.SetKept name false unit)
+    H.modify_ _ { notice = "Deleted " <> name, undo = Just (UndoProgression name) }
+    pure (Just next)
+  SQ.BrowserAction slot "delete" next | slot < Voices.slotBase -> do
+    gone <- H.query _vet unit (Vetula.DeleteScene slot identity)
+    for_ (join gone) \scene -> H.modify_ _ { notice = "Deleted " <> scene.name, undo = Just (UndoScene slot scene) }
     pure (Just next)
   SQ.BrowserAction slot act next -> do
-    H.modify_ _ { notice = "", undoKept = Nothing }
+    settle
     st <- H.get
     when (slot >= Voices.slotBase) $
       for_ (Voices.toggleLine (slot - Voices.slotBase) act st.routesText) \line ->

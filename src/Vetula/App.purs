@@ -80,6 +80,8 @@ import Triggerfish.GlyphView (faIcon)
 import Triggerfish.Preset (Preset, indexOfContent, newPreset)
 import Vetula.Store as Store
 import Triggerfish.Amphora as Amphora
+import Triggerfish.Library as Library
+import Simple.JSON (readJSON, writeJSON)
 import Reef.Vetula.Perf (VChord, VVoice, VDest(..), VRenderer(..), PerfClock, cursorAtClock, renderAlphaBlockMidiAt, renderAlphaClockMidiAt, wrapAt) as RV
 import Reef.Vetula.Articulate (VArticulator(..), articulate) as RA
 import Reef.Route (printKey) as Route
@@ -97,7 +99,7 @@ import Haskell.Rational ((%))
 import Triggerfish.Clips (MidiClip, NoteEvent, headCount)
 import Triggerfish.Clips.Store as ClipStore
 
-import Data.Either (Either(..))
+import Data.Either (Either(..), hush)
 
 import Binnacle.Time (dateNow, perfNow)
 import Effect.Ref as Ref
@@ -388,7 +390,12 @@ type LibEntry =
   , keyLabel :: String   -- the display label, e.g. "D major" (was structured Key)
   , source :: String     -- the progression rendered to Tidal source (the chords)
   , kept :: Boolean       -- promoted keeper (★, frozen) vs ephemeral auto-capture (◦, live)
+  , id :: String          -- which it is in Amphora (`Triggerfish.Library`), once kept; "" before
   }
+
+-- | A saved scene: every voice of the Perform surface (`printAsRecord`), named
+-- | `⟨session⟩ #N` and tagged `session:` / `scene:` / `key:`.
+type Scene = { id :: String, name :: String, payload :: String, tags :: Array String }
 
 type Slots =
   ( keySelect :: Select.Slot Unit
@@ -667,7 +674,11 @@ type State =
   -- reloads; scenes save as `⟨alias|name⟩ #nextScene`. Minted/restored in Initialize.
   , perfSession :: Store.SessionState
   -- Recall: scenes fetched from Amphora (collection `vetula-scene`), + modal flag.
-  , perfScenes :: Array { hash :: String, name :: String, payload :: String, tags :: Array String }
+  , perfScenes :: Array Scene
+  -- the kept progressions and the scenes, as Amphora keeps them
+  -- (`Triggerfish.Library`); Nothing until opened
+  , progShelf :: Maybe (Library.Shelf LibEntry)
+  , sceneShelf :: Maybe (Library.Shelf Scene)
   , perfRecallOpen :: Boolean
   -- The shared MIDI clip library (#27), loaded from `Triggerfish.Clips.Store` in
   -- Initialize.
@@ -742,7 +753,8 @@ data Action
   | AutoCapture            -- timer: auto-capture the current path (ephemeral, update-in-place)
   | LoadProg Int           -- load library entry #i into the performance working copy
   | SaveScene              -- serialise the whole Perform surface as a vetulaScene → Amphora
-  | FetchScenes            -- fetch them for the browser drawer, quietly
+  | ProgressionsArrived (Array LibEntry)  -- the kept progressions as Amphora has them
+  | ScenesArrived (Array Scene)            -- the scenes as Amphora has them
   | PerfCloseRecall
   | PerfLoadScene String   -- parse a scene payload and load it onto the surface
   | SetTempo String
@@ -837,9 +849,9 @@ data SourceQuery a
   | AskLibrary (Array { name :: String, text :: String } -> a)   -- A5 manager
   | AskProgressions (Array { slot :: Int, name :: String, key :: String, current :: Boolean, rebus :: Array TGlyph.GlyphIcon } -> a)  -- the drawer's saved progressions
   | LoadEntry Int a
-  -- the drawer's delete of a saved progression, and its undo: library entry
-  -- `i` no longer kept (its voices fall silent), or kept again
-  | SetKept Int Boolean a
+  -- the drawer's delete of a saved progression, and its undo: the one by
+  -- this name no longer kept (its voices fall silent), or kept again
+  | SetKept String Boolean a
   | OpenChannelCard Int a   -- the drawer's voice row: show that channel's card in Limulus
   | ImportText String (Boolean -> a)
   -- MIDI routing (Tidal-page channel map). The shell pushes the name → channel
@@ -872,6 +884,10 @@ data SourceQuery a
   | BarAct String a
   | LoadSceneAt Int a
   | SaveSceneQ a
+  -- the drawer's rename and delete of a scene, and the delete's undo
+  | RenameScene Int String a
+  | DeleteScene Int (Maybe Scene -> a)
+  | InsertScene Int Scene a
   | AskBank (Array { slot :: Int, alias :: String, name :: String, starred :: Boolean } -> a)
   | RecallSlot Int a
   | StarSlot Int a
@@ -984,6 +1000,8 @@ component = H.mkComponent
       -- placeholder; Initialize resumes the persisted session or mints a fresh one
       , perfSession: { alias: "", name: "", nextScene: 1 }
       , perfScenes: []
+      , progShelf: Nothing
+      , sceneShelf: Nothing
       , perfRecallOpen: false
       , clipLibrary: []
       , capture: { logbook: Logbook.emptyLog, playing: Nothing, regionDrag: Nothing, contextOpen: false, codeOpen: false, zoom: Whole, rig: Nothing, cutting: false, cutSel: Nothing, cardShut: Nothing }
@@ -1092,10 +1110,13 @@ handleQuery = case _ of
     s <- H.get
     pure (Just (reply (map (\e -> { name: e.name, text: e.source }) s.library)))
   -- a progression from the drawer: work on it, on the score
-  SetKept i k next -> do
-    H.modify_ \s -> s { library = fromMaybe s.library (modifyAt i (_ { kept = k }) s.library)
-                      -- an entry no longer kept is not the capture to update
-                      , lastCapIdx = if not k && s.lastCapIdx == Just i then Nothing else s.lastCapIdx }
+  SetKept name k next -> do
+    H.modify_ \s -> case findIndex (\e -> e.name == name) s.library of
+      Nothing -> s
+      Just i -> s
+        { library = fromMaybe s.library (modifyAt i (_ { kept = k }) s.library)
+        -- an entry no longer kept is not the capture to update
+        , lastCapIdx = if not k && s.lastCapIdx == Just i then Nothing else s.lastCapIdx }
     persistLib
     publishProgressions
     pure (Just next)
@@ -1131,7 +1152,7 @@ handleQuery = case _ of
     if length noteLists == 0 then pure (Just (reply false))
     else do
       let chords = mapWithIndex importChord noteLists
-      H.modify_ \s -> s { library = s.library <> [ { name: "imported", keyLabel: groupLabel st.key, source: progressionSource (groupLabel st.key) chords, kept: true } ] }
+      H.modify_ \s -> s { library = s.library <> [ { name: "imported", keyLabel: groupLabel st.key, source: progressionSource (groupLabel st.key) chords, kept: true, id: "" } ] }
       persistLib
       pure (Just (reply true))
   SetRouting binds next -> do
@@ -1227,6 +1248,18 @@ handleQuery = case _ of
     pure (Just next)
   SaveSceneQ next -> do
     handleAction SaveScene
+    pure (Just next)
+  RenameScene i name next -> do
+    s <- H.get
+    keepScenes (fromMaybe s.perfScenes (modifyAt i (_ { name = name }) s.perfScenes))
+    pure (Just next)
+  DeleteScene i reply -> do
+    s <- H.get
+    keepScenes (fromMaybe s.perfScenes (deleteAt i s.perfScenes))
+    pure (Just (reply (s.perfScenes !! i)))
+  InsertScene i scene next -> do
+    s <- H.get
+    keepScenes (fromMaybe (snoc s.perfScenes scene) (insertAt i scene s.perfScenes))
     pure (Just next)
   AskBank reply -> do
     s <- H.get
@@ -1692,8 +1725,12 @@ handleActionCore = case _ of
     fh <- liftEffect Field.new
     seen <- liftEffect (Ref.new Nothing)
     H.modify_ _ { field = Just { handle: fh, listener: fieldL, seen } }
-    -- the saved scenes, for the browser drawer, in the background
-    void $ H.fork (handleAction FetchScenes)
+    -- The scenes are what Amphora keeps (`Triggerfish.Library`), started the
+    -- first time from the old `vetula-scene` collection.
+    { emitter: sceneE, listener: sceneL } <- liftEffect HS.create
+    _ <- H.subscribe (ScenesArrived <$> sceneE)
+    scenes <- liftEffect $ Library.open sceneDoc [] (HS.notify sceneL)
+    H.modify_ _ { perfScenes = scenes.items, sceneShelf = Just scenes.shelf }
     -- Where this viewer chose to hear auditions, if they have.
     msound <- liftEffect Store.loadSound
     for_ (msound >>= soundFromValue) \sel -> H.modify_ _ { auditionSel = sel, soundChosen = true }
@@ -1742,6 +1779,14 @@ handleActionCore = case _ of
     -- form once, so every kept progression can be named in a card
     let migrated = renamePrimes (maybe [] _.library msaved)
     for_ msaved \sv -> H.modify_ _ { library = migrated.library, capSeq = length sv.library, presets = sv.presets }
+    -- The kept progressions are what Amphora keeps (`Triggerfish.Library`):
+    -- this browser's copy at once, Amphora's when it answers or changes
+    -- elsewhere; the first time, what this browser kept and the old
+    -- `vetula-progression` collection. The ◦ captures stay in this browser.
+    { emitter: progE, listener: progL } <- liftEffect HS.create
+    _ <- H.subscribe (ProgressionsArrived <$> progE)
+    progs <- liftEffect $ Library.open progressionDoc (filter _.kept migrated.library) (HS.notify progL)
+    H.modify_ \s -> relibrary (withKept progs.items s.library) s { progShelf = Just progs.shelf }
     when (length migrated.renames > 0) persistLib
     -- Load the shared MIDI clip library (#27) — the pool the phrase picker offers.
     savedClips <- liftEffect ClipStore.loadClips
@@ -1758,15 +1803,6 @@ handleActionCore = case _ of
         liftEffect (Store.saveSession fresh)
         Console.log ("Vetula session: minted (first-launch) " <> fresh.alias)
         H.modify_ _ { perfSession = fresh }
-    -- Merge the shared Amphora progression library in the BACKGROUND: awaiting it
-    -- blocked Initialize (hence the shell's polls of Vetula) until the ~30s offline
-    -- timeout. The store being offline is not fatal — keep whatever's local.
-    void $ H.fork do
-      dbRes <- liftAff (attempt (Amphora.fetchCollection "vetula-progression"))
-      case dbRes of
-        Right items | length items > 0 ->
-          H.modify_ \s -> s { library = mergeLibByName s.library (map amphoraEntry items) }
-        _ -> pure unit
     -- keyboard
     { emitter: keyE, listener: keyL } <- liftEffect HS.create
     _ <- H.subscribe keyE
@@ -2316,23 +2352,19 @@ handleActionCore = case _ of
         doc = docFromVoices keyLabel (map boxSpec st.perfBoxes)
         payload = printAsRecord label doc
         tags = [ "session:" <> sess.alias, "scene:" <> show n, "key:" <> keyLabel ]
-    res <- liftAff (attempt (Amphora.publish
-      { kind: "vetula-scene", collection: "vetula-scene"
-      , name: label, source: "user", payload, tags }))
-    case res of
-      Right hash -> do
-        let sess' = sess { nextScene = n + 1 }
-        liftEffect (Store.saveSession sess')
-        H.modify_ _ { perfSession = sess', publishMsg = Just ("✓ " <> label <> " · " <> SCU.take 8 hash) }
-        handleAction FetchScenes
-      Left _ -> H.modify_ _ { publishMsg = Just "✗ save failed (store offline?)" }
+    keepScenes (snoc st.perfScenes { id: "", name: label, payload, tags })
+    let sess' = sess { nextScene = n + 1 }
+    liftEffect (Store.saveSession sess')
+    H.modify_ _ { perfSession = sess', publishMsg = Just ("✓ " <> label) }
 
   PerfCloseRecall -> H.modify_ _ { perfRecallOpen = false }
 
-  -- The saved scenes, for the browser drawer, without opening the modal.
-  FetchScenes -> do
-    res <- liftAff (attempt (Amphora.fetchCollection "vetula-scene"))
-    for_ res \items -> H.modify_ _ { perfScenes = items }
+  -- Another browser changed them (or this one's change was kept on top of
+  -- theirs).
+  ProgressionsArrived kept -> do
+    H.modify_ \s -> relibrary (withKept kept s.library) s
+    publishProgressions
+  ScenesArrived scenes -> H.modify_ _ { perfScenes = scenes }
 
   -- Parse a stored scene payload (the `vetulaScene { … }` record) back into a
   -- document and reconstruct the surface's boxes. Lenient: a payload that yields
@@ -2394,7 +2426,7 @@ handleActionCore = case _ of
           kl = groupLabel st.key
           base = fromMaybe kl st.progName
           nm = if fork then siblingName st.library base else base
-          entry = { name: nm, keyLabel: kl, source: sig, kept: true }
+          entry = { name: nm, keyLabel: kl, source: sig, kept: true, id: maybe "" _.id (find (\e -> e.name == nm) st.library) }
           lib = case findIndex (\e -> e.name == nm) st.library of
             Just i -> fromMaybe st.library (updateAt i entry st.library)
             Nothing -> st.library <> [ entry ]
@@ -2402,13 +2434,6 @@ handleActionCore = case _ of
                   , publishMsg = Just ("saved " <> nm) }
       persistLib
       liftEffect (Store.saveWorking { name: nm, source: sig, saved: sig })
-      void $ H.fork do
-        res <- liftAff $ attempt $ Amphora.publish
-          { kind: "vetula-progression", collection: "vetula-progression"
-          , name: nm, source: "user", payload: sig, tags: [ "key:" <> kl, "kept" ] }
-        H.modify_ _ { publishMsg = Just case res of
-          Right _ -> "saved " <> nm
-          Left _ -> "saved " <> nm <> " here (no store)" }
       publishProgressions
 
   SetStyle sty -> do
@@ -2956,6 +2981,19 @@ persistLib :: forall o m. MonadAff m => H.HalogenM State Action Slots o m Unit
 persistLib = do
   s <- H.get
   liftEffect $ Store.saveLibrary { library: s.library, presets: s.presets }
+  for_ s.progShelf \shelf -> do
+    kept <- liftEffect (Library.put shelf (filter _.kept s.library))
+    H.modify_ \st -> relibrary (withKept kept st.library) st
+
+-- | The scenes now: shown, and kept in Amphora.
+keepScenes :: forall o m. MonadAff m => Array Scene -> H.HalogenM State Action Slots o m Unit
+keepScenes scenes = do
+  st <- H.get
+  case st.sceneShelf of
+    Nothing -> H.modify_ _ { perfScenes = scenes }
+    Just shelf -> do
+      kept <- liftEffect (Library.put shelf scenes)
+      H.modify_ _ { perfScenes = kept }
 
 -- | Bank the live progression source as a preset — the CAPTURE hotkey. DEDUPS by
 -- | content (an unchanged progression ⇒ identical glyph): already banked ⇒ just
@@ -3015,13 +3053,54 @@ amphoraEntry it =
   , keyLabel: fromMaybe "" (map (SCU.drop 4) (find (\t -> contains (Pattern "key:") t) it.tags))
   , source: it.payload
   , kept: elem "kept" it.tags
+  , id: ""
   }
 
--- | Merge incoming (Amphora) entries over the current local ones by name: keep
--- | every local entry, then append any incoming entry whose name isn't present.
-mergeLibByName :: Array LibEntry -> Array LibEntry -> Array LibEntry
-mergeLibByName current incoming =
-  current <> filter (\p -> not (any (\q -> q.name == p.name) current)) incoming
+-- | The kept progressions as Amphora keeps them, at
+-- | `triggerfish/vetula/progressions`. A name is a progression's identity
+-- | (voices play it by name), so one kept twice before ids is one by name.
+progressionDoc :: Library.Doc LibEntry
+progressionDoc =
+  { ref: "triggerfish/vetula/progressions"
+  , kind: "triggerfish-vetula-progressions"
+  , idOf: _.id
+  , withId: \id e -> e { id = id }
+  , encode: writeJSON
+  , decode: hush <<< readJSON
+  , same: \a b -> a.name == b.name
+  , first: filter _.kept <<< map amphoraEntry <$> Amphora.fetchCollection "vetula-progression"
+  }
+
+-- | The scenes as Amphora keeps them, at `triggerfish/vetula/scenes`.
+sceneDoc :: Library.Doc Scene
+sceneDoc =
+  { ref: "triggerfish/vetula/scenes"
+  , kind: "triggerfish-vetula-scenes"
+  , idOf: _.id
+  , withId: \id sc -> sc { id = id }
+  , encode: writeJSON
+  , decode: hush <<< readJSON
+  , same: \a b -> a.payload == b.payload
+  , first: map (\it -> { id: "", name: it.name, payload: it.payload, tags: it.tags }) <$> Amphora.fetchCollection "vetula-scene"
+  }
+
+-- | The library with its kept progressions as `kept` has them: each where it
+-- | was (gone if `kept` lacks it), new ones after. The ◦ captures stay put.
+withKept :: Array LibEntry -> Array LibEntry -> Array LibEntry
+withKept kept library =
+  mapMaybe one library <> filter (\k -> not (any (\e -> matches k e) library)) kept
+  where
+  matches k e = e.kept && (if e.id /= "" then e.id == k.id else e.name == k.name)
+  one e
+    | not e.kept = Just e
+    | otherwise = find (\k -> matches k e) kept
+
+-- | A new library, the capture being updated followed to where it now is.
+relibrary :: Array LibEntry -> State -> State
+relibrary lib s = s
+  { library = lib
+  , lastCapIdx = s.lastCapIdx >>= (s.library !! _) >>= \e -> findIndex (\x -> x.name == e.name) lib
+  }
 
 -- | Capture the current progression into the stack — update the session's ephemeral
 -- | ◦ in place, or open a new one — then persist. Called by the key-change
@@ -3040,7 +3119,7 @@ captureSteps st = do
           -- a kept entry of the same name is frozen: editing it forks a
           -- sibling (skull-tornado → skull-tornado-2), keeping both
           nm = if any (\e -> e.name == nm0) st.library then siblingName st.library nm0 else nm0
-      H.modify_ _ { library = st.library <> [ { name: nm, keyLabel: kl, source: sig, kept: false } ]
+      H.modify_ _ { library = st.library <> [ { name: nm, keyLabel: kl, source: sig, kept: false, id: "" } ]
                   , lastCapIdx = Just (length st.library), capSeq = n, lastCapSig = sig
                   , progName = Just nm }
   persistLib

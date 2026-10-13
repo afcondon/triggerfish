@@ -23,14 +23,20 @@ module Vetula.Store
 
 import Prelude
 
-import Data.Maybe (Maybe(..))
-import Data.Nullable (Nullable, toMaybe)
+import Data.Maybe (Maybe(..), fromMaybe)
+import Data.Nullable (Nullable, toMaybe, toNullable)
 import Effect (Effect)
 import Triggerfish.Preset (Preset, Stored, fromStored, toStored, withWords)
 
 -- | One saved progression: its display label, its Tidal source (the chords), and
 -- | whether it's a promoted keeper (★) or an ephemeral auto-capture (◦).
-type Entry = { name :: String, keyLabel :: String, source :: String, kept :: Boolean }
+type Entry = { name :: String, keyLabel :: String, source :: String, kept :: Boolean, id :: String }
+
+-- | An entry as stored: `id` is absent from one saved before ids.
+type StoredEntry = { name :: String, keyLabel :: String, source :: String, kept :: Boolean, id :: Nullable String }
+
+fromStoredEntry :: StoredEntry -> Entry
+fromStoredEntry e = e { id = fromMaybe "" (toMaybe e.id) }
 
 -- | What we persist: the whole library (newest-appended) + the preset bank.
 type Saved = { library :: Array Entry, presets :: Array Preset }
@@ -38,12 +44,12 @@ type Saved = { library :: Array Entry, presets :: Array Preset }
 -- | The on-disk shape (v2): presets as { content, name, starred } (empty `name` =
 -- | anonymous). `content` is the preset's canonical progression source verbatim.
 type Envelope =
-  { library :: Array Entry
+  { library :: Array StoredEntry
   , presets :: Array Stored
   }
 
 -- | v1's on-disk shape — library only, no preset bank. Migrated with an empty bank.
-type EnvelopeV1 = { library :: Array Entry }
+type EnvelopeV1 = { library :: Array StoredEntry }
 
 -- v2: added the unified glyph-chip preset bank alongside the library.
 storeKey :: String
@@ -63,7 +69,7 @@ saveLibrary s = _save storeKey (_stringify env)
   where
   env :: Envelope
   env =
-    { library: s.library
+    { library: map (\e -> e { id = toNullable (Just e.id) }) s.library
     , presets: map toStored s.presets
     }
 
@@ -77,11 +83,11 @@ loadLibrary = do
     Nothing -> do
       mV1 <- _load legacyKey
       pure $ toMaybe (mV1 :: Nullable EnvelopeV1) <#> \v1 ->
-        { library: v1.library, presets: [] }
+        { library: map fromStoredEntry v1.library, presets: [] }
 
 decode :: Envelope -> Saved
 decode env =
-  { library: env.library
+  { library: map fromStoredEntry env.library
   , presets: withWords (map fromStored env.presets)
   }
 
