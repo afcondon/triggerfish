@@ -68,6 +68,7 @@ import Triggerfish.Stage as Stage
 import Binnacle.TabBus as Bus
 import Triggerfish.Tempo as Tempo
 import Triggerfish.Transport (Mode(..), Sounding(..), Which, soundingOf)
+import Triggerfish.Drag as Drag
 import Triggerfish.Transport.Store as TransportStore
 import Triggerfish.Ui.Style (engrave, style)
 import Type.Proxy (Proxy(..))
@@ -156,6 +157,10 @@ type State =
   , renaming :: Maybe { slot :: Int, text :: String }
   -- a delete clicked once, waiting for the second click that confirms it
   , confirming :: Maybe { slot :: Int, act :: String }
+  -- the last line from Limulus that played this machine (its pattern), which
+  -- Play resumes until something is recalled here; and whether it plays now
+  , line :: Maybe String
+  , lineOn :: Boolean
   }
 
 -- | The panel passes on Ctrl+` pressed inside it.
@@ -164,10 +169,6 @@ foreign import focusFrame :: HTMLElement -> Effect Unit
 foreign import focusSelf :: Effect Unit
 foreign import watchDocks :: (Boolean -> Effect Unit) -> (Boolean -> Effect Unit) -> Effect Unit
 foreign import selectAll :: HTMLElement -> Effect Unit
-foreign import setDragText :: E.Event -> String -> Effect Unit
-foreign import currentDrag :: Effect String
-foreign import allowDrop :: E.Event -> Effect Unit
-foreign import dropText :: E.Event -> Effect String
 foreign import loadDrawer :: String -> Effect { open :: Boolean, width :: Number }
 foreign import loadWidth :: String -> Number -> Effect Number
 foreign import saveDrawer :: String -> { open :: Boolean, width :: Number } -> Effect Unit
@@ -182,7 +183,7 @@ data Action o
   | Panic
   | RigHushed
   | RigPlayed
-  | RigLine
+  | RigLine String
   | RoutingChanged
   | FromMachine o
   | Key E.Event
@@ -226,7 +227,8 @@ root cfg = H.mkComponent
   { initialState: \_ ->
       { mode: Solo, playing: false, bpm: 120.0, tempoFlash: Nothing, freeT0: 0.0, chip: Nothing, machineBar: Nothing, rig: Nothing
       , rigUp: false, table: RM.defaultTable, staged: Nothing, bus: Nothing, limulus: false, limulusMade: false, limulusAsked: false, limulusAlways: false, limWidth: 560.0
-      , browser: Nothing, drawer: { open: false, width: 280.0 }, lastRecall: { frozen: false, inKey: false }, renaming: Nothing, confirming: Nothing }
+      , browser: Nothing, drawer: { open: false, width: 280.0 }, lastRecall: { frozen: false, inKey: false }, renaming: Nothing, confirming: Nothing
+      , line: Nothing, lineOn: false }
   , render: render cfg
   , eval: H.mkEval H.defaultEval { handleAction = handleAction cfg, initialize = Just Init }
   }
@@ -256,11 +258,11 @@ handleAction cfg = case _ of
         -- a line from Limulus now plays this machine (`balistes $ "<a b>"`):
         -- the transport shows it playing, and the machine, which follows the
         -- line, is asked for nothing (a push would play over the line)
-        lineHere msg = maybe false (\m -> String.take (String.length ("played " <> m <> " line ")) msg == "played " <> m <> " line ") (Stage.slotOf cfg.which)
+        lineHere msg = Stage.slotOf cfg.which >>= \m -> String.stripPrefix (String.Pattern ("played " <> m <> " line ")) msg
     liftEffect $ Binnacle.onAppMessage rig \msg -> do
       when (hushedHere msg) (HS.notify listener RigHushed)
       when (playedHere msg) (HS.notify listener RigPlayed)
-      when (lineHere msg) (HS.notify listener RigLine)
+      for_ (lineHere msg) (HS.notify listener <<< RigLine)
     liftEffect $ TransportStore.onChange (HS.notify listener ModeStored)
     liftEffect $ Tempo.onChange (HS.notify listener TempoStored)
     bus <- liftEffect Bus.open
@@ -282,9 +284,24 @@ handleAction cfg = case _ of
     handleAction cfg RoutingChanged
     pushFree
     pushSounding cfg
+  -- Play and Stop. While a line from Limulus plays this machine, Stop hushes
+  -- it; Play, in Atlantis, resumes the last line until something is recalled
+  -- here instead. Otherwise they start and stop the page's own playing.
   TogglePlay -> do
-    H.modify_ \s -> s { playing = not s.playing }
-    pushSounding cfg
+    st <- H.get
+    case st.playing, st.line, st.mode of
+      true, _, _ -> do
+        when st.lineOn $ for_ (Stage.slotOf cfg.which) \m -> toRig ("tidal " <> m <> " $ hush")
+        H.modify_ _ { playing = false, lineOn = false }
+        pushSounding cfg
+      false, Just src, Atlantis -> for_ (Stage.slotOf cfg.which) \m -> do
+        H.modify_ _ { playing = true, lineOn = true }
+        toRig ("tidal " <> m <> " $ \"" <> src <> "\"")
+        publishStage cfg
+        announce cfg
+      false, _, _ -> do
+        H.modify_ _ { playing = true }
+        pushSounding cfg
   -- The tempo, set in another tab (the dashboard, or a hotkey there).
   TempoStored -> do
     mbpm <- liftEffect Tempo.load
@@ -330,7 +347,8 @@ handleAction cfg = case _ of
       Drawer.Resizing _ -> pure unit
       _ -> liftEffect (saveDrawer (drawerKey cfg) d)
   RecallRow slot r -> do
-    H.modify_ _ { lastRecall = r }
+    -- recalled here, it is what Play plays next, not the last line
+    H.modify_ _ { lastRecall = r, line = Nothing }
     void $ H.query _machine unit (SQ.BrowserRecall slot r unit)
     handleAction cfg AskBrowser
   -- An action on a row; a delete asks first (a second click confirms).
@@ -344,17 +362,17 @@ handleAction cfg = case _ of
   -- Something from the page dropped on the drawer ("keep:…", e.g. Selene's
   -- rack rebus): the machine keeps it.
   DrawerDragOver e -> do
-    t <- liftEffect currentDrag
-    when (String.take 5 t == "keep:") (liftEffect (allowDrop e))
+    t <- liftEffect Drag.currentDrag
+    when (String.take 5 t == "keep:") (liftEffect (Drag.allowDrop e))
   DrawerDrop e -> do
-    t <- liftEffect (dropText e)
+    t <- liftEffect (Drag.dropText e)
     when (String.take 5 t == "keep:") do
       void $ H.query _machine unit (SQ.BrowserDrop t unit)
       handleAction cfg AskBrowser
   UndoRow -> do
     void $ H.query _machine unit (SQ.BrowserUndo unit)
     handleAction cfg AskBrowser
-  DragRow text e -> liftEffect (setDragText e text)
+  DragRow text e -> liftEffect (Drag.startDrag e text)
   KeepRow -> do
     void $ H.query _machine unit (SQ.BrowserKeep unit)
     handleAction cfg AskBrowser
@@ -409,13 +427,19 @@ handleAction cfg = case _ of
   RigPlayed -> unlessM (H.gets _.playing) do
     H.modify_ _ { playing = true }
     pushSounding cfg
-  RigLine -> unlessM (H.gets _.playing) do
-    H.modify_ _ { playing = true }
-    publishStage cfg
-    announce cfg
-  RigHushed -> whenM (H.gets _.playing) do
-    H.modify_ _ { playing = false }
-    pushSounding cfg
+  -- A line now plays this machine: remembered, so Stop hushes it and Play
+  -- resumes it, until something is recalled here instead.
+  RigLine src -> do
+    was <- H.gets _.playing
+    H.modify_ _ { playing = true, line = Just src, lineOn = true }
+    unless was do
+      publishStage cfg
+      announce cfg
+  RigHushed -> do
+    H.modify_ _ { lineOn = false }
+    whenM (H.gets _.playing) do
+      H.modify_ _ { playing = false }
+      pushSounding cfg
   Panic -> do
     st <- H.get
     for_ st.rig \bin -> liftEffect $ Transport.send (Binnacle.socket bin) "hush"
@@ -524,6 +548,12 @@ handleAction cfg = case _ of
 
 -- | The machine's one `Sounding`, derived exactly as the Triggerfish shell derives
 -- | it: playing is being armed, and the mode says who makes the sound.
+-- | Send a line to the rig, if it is there.
+toRig :: forall o o'. String -> M o o' Unit
+toRig line = do
+  st <- H.get
+  for_ st.rig \bin -> liftEffect $ Transport.send (Binnacle.socket bin) line
+
 pushSounding :: forall o o'. Config o -> M o o' Unit
 pushSounding cfg = do
   st <- H.get
@@ -708,7 +738,7 @@ browserDrawer st b =
                 _ ->
                   HH.span
                     ( [ HE.onClick \_ -> RecallRow r.slot st.lastRecall
-                      , HP.title (if String.take 19 r.drag == "vetula-progression " then "Click: open it. Drag it onto a voice (its badge on the score) and the voice plays it." else if String.take 16 r.drag == "balistes-rhythm " then "Click: recall it. Double-click: rename it. Drag it into Limulus: on a balistes line it joins the alternation, on an empty line it starts one." else if r.drag /= "" then "Drag it onto a bank." else "Click: recall it, the way you last did. Double-click: rename it.")
+                      , HP.title (if r.hint /= "" then r.hint else "Click: recall it, the way you last did. Double-click: rename it.")
                       , style $ "flex:1 1 7em;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;cursor:pointer;font-size:13px;color:#1c1a12;"
                           <> (if r.current then "font-weight:bold;" else "") ]
                         <> (if r.builtin then [] else [ HE.onDoubleClick \_ -> StartRename r ]) )

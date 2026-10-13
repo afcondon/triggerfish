@@ -38,6 +38,9 @@ type Browser = { title :: String, modes :: Boolean, keep :: String, notice :: St
 type Item =
   { slot :: Int, name :: String, icons :: Array GlyphIcon, tag :: String, current :: Boolean
   , section :: String, builtin :: Boolean, drag :: String
+  -- | what hovering it says (what a click and a drag do); "" for the plain
+  -- | recall-and-rename
+  , hint :: String
   -- | what can be done to it, shown on hover (`BrowserAction`); "delete"
   -- | asks first
   , actions :: Array String }

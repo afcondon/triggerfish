@@ -129,6 +129,7 @@ rows voices names routesText = map row voices
       , section: "Voices"
       , builtin: true
       , drag: ""
+      , hint: ""
       , actions: [ (if shapes then "\x2713 " else "") <> "shape Odonus", (if colours then "\x2713 " else "") <> "colour Odonus" ]
       }
   sounds = case _ of

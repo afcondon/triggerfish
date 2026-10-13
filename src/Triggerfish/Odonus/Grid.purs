@@ -84,7 +84,7 @@ import Triggerfish.Clips.Store as ClipStore
 import Triggerfish.Amphora as Amphora
 import Triggerfish.Glyph as G
 import Triggerfish.Browser as Browser
-import Triggerfish.Preset (indexOfContent, presetAlias)
+import Triggerfish.Preset (indexOfContent, presetAlias, newPreset)
 import Triggerfish.Odonus.Lepidoptera (parsePatch, printPatch)
 import Triggerfish.SourceQuery (Query(..))
 import Triggerfish.Routing.Model as RM
@@ -229,8 +229,8 @@ handleQuery = case _ of
   AskBrowser reply -> do
     s <- H.get
     let
-      preset i p = { slot: i, name: fromMaybe "untitled" p.name, icons: (G.glyphOf p.content).icons, tag: "", current: s.identity == Just p.content, section: "", builtin: false, drag: "", actions: [] }
-      scene i sc = { slot: length s.presets + i, name: sc.name, icons: (G.glyphOf sc.text).icons, tag: "", current: s.identity == Just sc.text, section: "", builtin: false, drag: "", actions: [] }
+      preset i p = { slot: i, name: fromMaybe "untitled" p.name, icons: (G.glyphOf p.content).icons, tag: "", current: s.identity == Just p.content, section: "", builtin: false, drag: "", hint: "", actions: [] }
+      scene i sc = { slot: length s.presets + i, name: sc.name, icons: (G.glyphOf sc.text).icons, tag: "", current: s.identity == Just sc.text, section: "", builtin: false, drag: "", hint: "", actions: [] }
     pure (Just (reply { title: "Presets", modes: true, keep: "keep", notice: "", rows: mapWithIndex preset s.presets <> mapWithIndex scene s.scenes }))
   BrowserRecall i r next -> do
     s <- H.get
@@ -283,7 +283,7 @@ captureNow = do
       -- labels a library (docs/kb/plans/the-deck.md)
       at <- liftEffect Browser.stamp
       H.modify_ \st -> st
-        { presets = st.presets <> [ { content: text, name: Just ("Odonus · " <> at), starred: false } ]
+        { presets = st.presets <> [ newPreset text (Just ("Odonus · " <> at)) ]
         , identity = Just text
         }
   persistAll

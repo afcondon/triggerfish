@@ -59,13 +59,13 @@ import Triggerfish.Selene.Source as Source
 import Triggerfish.Selene.Store as Store
 import Triggerfish.Selene.Wire as Wire
 import Triggerfish.Amphora as Amphora
-import Triggerfish.Selene.Drop as Drop
+import Triggerfish.Drag as Drop
 import Data.Array as Array
 import Reef.Selene.Line as Line
 import Reef.Selene.Block as Block
 import Triggerfish.Glyph as G
 import Triggerfish.Browser as Browser
-import Triggerfish.Preset (Preset, indexOfContent, presetAlias)
+import Triggerfish.Preset (Preset, indexOfContent, presetAlias, newPreset)
 import Triggerfish.SourceQuery (Query(..))
 import Triggerfish.Transport (Sounding(..))
 import Triggerfish.Rig (availableTargets, defaultRig)
@@ -291,14 +291,15 @@ handleQuery = case _ of
       -- a saved rack's rebus is its saved self; the live one diverging from it
       -- is said on its row (edited, and save) and in the page's header
       edited i = i == s.active && diverged s
-      rack i r = { slot: i, name: r.name, icons: rackIcons r.doc, tag: if edited i then "edited" else "", current: i == s.active, section: "Racks", builtin: false, drag: ""
+      rack i r = { slot: i, name: r.name, icons: rackIcons r.doc, tag: if edited i then "edited" else "", current: i == s.active, section: "Racks", builtin: false, drag: "", hint: "Click: make it the live rack. Double-click: rename it."
                  , actions: (if edited i then [ "save" ] else []) <> [ "duplicate", "publish" ] <> (if i == s.active then [] else [ "delete" ]) }
-      plain k kind = { slot: plainSlot + 1 + k, name: M.kindLabel kind, icons: [], tag: signalMark kind, current: false, section: "Modules", builtin: true, drag: Source.kindKeyword (M.freshBank kind), actions: [] }
+      plain k kind = { slot: plainSlot + 1 + k, name: M.kindLabel kind, icons: [], tag: signalMark kind, current: false, section: "Modules", builtin: true, drag: Source.kindKeyword (M.freshBank kind), hint: moduleHint, actions: [] }
         # \r -> r { icons = settingIcons r.drag }
       -- the null signal: dropped on a group, frees it (`selene $ off`)
-      free = { slot: plainSlot, name: "free", icons: [], tag: "plain", current: false, section: "Modules", builtin: true, drag: "off", actions: [] }
-      block k b = { slot: builtinSlot + k, name: b.name, icons: settingIcons b.name, tag: signalMark b.kind, current: false, section: "Modules", builtin: true, drag: b.name, actions: [] }
-      kept k m = { slot: keptSlot + k, name: m.name, icons: settingIcons m.line, tag: maybe "" signalMark (Line.moduleKind m.line), current: false, section: "Modules", builtin: false, drag: m.line, actions: [ "delete" ] }
+      free = { slot: plainSlot, name: "free", icons: [], tag: "plain", current: false, section: "Modules", builtin: true, drag: "off", hint: "Drag it onto a bank to free it.", actions: [] }
+      block k b = { slot: builtinSlot + k, name: b.name, icons: settingIcons b.name, tag: signalMark b.kind, current: false, section: "Modules", builtin: true, drag: b.name, hint: moduleHint, actions: [] }
+      moduleHint = "Drag it onto a bank."
+      kept k m = { slot: keptSlot + k, name: m.name, icons: settingIcons m.line, tag: maybe "" signalMark (Line.moduleKind m.line), current: false, section: "Modules", builtin: false, drag: m.line, hint: moduleHint, actions: [ "delete" ] }
     pure (Just (reply
       { title: "Selene", modes: false, keep: "save as new rack", notice: s.notice
       , rows: mapWithIndex rack s.library <> [ free ] <> mapWithIndex plain M.allKinds <> mapWithIndex block Block.blocks <> mapWithIndex kept s.modules }))
@@ -454,7 +455,7 @@ captureNow = do
     case indexOfContent text s.presets of
       Just _ -> H.modify_ _ { identity = Just text }
       Nothing -> H.modify_ \st -> st
-        { presets = st.presets <> [ { content: text, name: Nothing, starred: false } ]
+        { presets = st.presets <> [ newPreset text Nothing ]
         , identity = Just text
         }
     persist

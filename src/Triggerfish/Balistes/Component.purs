@@ -24,8 +24,8 @@ import Data.Foldable (any, foldl, for_)
 import Data.Map as Map
 import Data.Int (floor, round, toNumber)
 import Data.Maybe (Maybe(..), fromMaybe, isJust, isNothing, maybe)
-import Reef.Balistes.Lepidoptera (rhythmSlug)
 import Triggerfish.Balistes.Follow as Follow
+import Triggerfish.StageCopy as StageCopy
 import Data.String (contains) as String
 import Data.String.Common (trim) as String
 import Data.String.Pattern (Pattern(..)) as String
@@ -63,7 +63,7 @@ import Triggerfish.Browser as Browser
 import Triggerfish.Balistes.TriSnapshot (Brain(..), TriSnapshot(..), brainBadge, brainLabel, brainOf, printTri, parseTri, rhythmContent, rhythmOfContent)
 import Triggerfish.Glyph as G
 import Triggerfish.GlyphView (faIcons)
-import Triggerfish.Preset (Preset, indexOfContent, presetAlias, presetGlyph, presetLabel)
+import Triggerfish.Preset (Preset, indexOfContent, presetAlias, presetGlyph, presetLabel, withWords, newPreset)
 import Triggerfish.Balistes.Widgets (armBtn, instColor)
 import Triggerfish.Balistes.View.Fixed (cellStrip, fixedSvg)
 import Triggerfish.Balistes.View.Grids (heatSvg, knobStack, padSvg)
@@ -107,7 +107,7 @@ component =
         , identity: Nothing, lastChip: Nothing
         , active: AGrids, editing: false, presetsOpen: false, bankFilter: Nothing, clickMode: Assemble, laneEditOpen: false, fixedSel: 0, lane: "", laneReadout: "", selected: Nothing
         , scratchFixed: Nothing
-        , publishMsg: Nothing, stageRhythms: Nothing, undoDelete: Nothing, follow: Nothing, followQueue: [], rigLine: Nothing }
+        , publishMsg: Nothing, stageRhythms: Nothing, undoDelete: Nothing, follow: Nothing, followQueue: [] }
     , render
     , eval: H.mkEval H.defaultEval
         { handleAction = handleAction, handleQuery = handleQuery, initialize = Just Initialize }
@@ -122,7 +122,7 @@ handleQuery = case _ of
   -- its name, with the machine it runs on (Grids or Rytm) as its tag.
   AskBrowser reply -> do
     s <- H.get
-    let row i p = { slot: i, name: fromMaybe "untitled" p.name, icons: (presetGlyph p).icons, tag: maybe "" machineTag (parseTri p.content), current: s.identity == Just p.content, section: "", builtin: false, drag: Stage.rhythmDrag p, actions: [ "delete" ] }
+    let row i p = { slot: i, name: fromMaybe "untitled" p.name, icons: (presetGlyph p).icons, tag: maybe "" machineTag (parseTri p.content), current: s.identity == Just p.content, section: "", builtin: false, drag: Stage.rhythmDrag p, hint: Stage.rhythmHint p, actions: [ "delete" ] }
     pure (Just (reply { title: "Beats", modes: false, keep: "keep (c)", notice: maybe "" (\d -> "Deleted " <> fromMaybe "untitled" d.preset.name) s.undoDelete, rows: mapWithIndex row s.presets }))
   BrowserRecall i _ next -> do
     H.modify_ _ { undoDelete = Nothing }
@@ -200,12 +200,9 @@ handleQuery = case _ of
       now <- currentStep
       H.modify_ \t -> t { bal = t.bal { step = now `mod` 32 }, nextModelStep = now }
     H.modify_ _ { sounding = s }
-    -- Playing on the rig: carry on following a line that is playing, resume
-    -- the line that was (Stop then Play), else push the page's beat.
-    when (s == Rig && isNothing st.follow) case st.rigLine of
-      Just line -> for_ st.binnacle \bin -> liftEffect $
-        Transport.send (Binnacle.socket bin) ("tidal balistes $ \"" <> line <> "\"")
-      Nothing -> handleAction PushBalistes
+    -- Playing on the rig pushes the page's beat, unless a line is playing it
+    -- (resuming a line is the shell's: Triggerfish.Standalone's Play).
+    when (s == Rig && isNothing st.follow) (handleAction PushBalistes)
     pure (Just next)
   AskSounding reply -> do
     s <- H.get
@@ -267,7 +264,7 @@ captureNow = do
           at <- liftEffect Browser.stamp
           let named = maybe "Beat" machineTag (parseTri text) <> " · " <> at
           H.modify_ \st -> st
-            { presets = st.presets <> [ { content: text, name: Just named, starred: false } ]
+            { presets = st.presets <> [ newPreset text (Just named) ]
             , identity = Just text
             }
       persist
@@ -441,20 +438,18 @@ handleAction = case _ of
   StageOpen -> do
     H.modify_ _ { stageRhythms = Nothing }
     st <- H.get
-    for_ st.binnacle \bin -> liftEffect (Transport.send (Binnacle.socket bin) Stage.subscribeLine)
+    for_ st.binnacle \bin -> liftEffect (Transport.send (Binnacle.socket bin) StageCopy.subscribeLine)
   -- the stage's whole table, on subscribing: it gets any of our rhythms it
   -- lacks, and loses any we have deleted
   StageFrameIn msg -> do
     -- The stage's beats are everyone's: only those this bank names count as
     -- ours, so connecting adds and updates ours and never deletes another
     -- browser's. A delete is only ever a beat this page had and lost.
-    for_ (Stage.rhythmTable msg) \held -> do
-      H.modify_ \s -> s { stageRhythms = Just (Map.filterKeys (\word -> Map.member word (Stage.bankRhythms s.bal s.presets)) held) }
+    for_ (StageCopy.table Stage.stagePrefix msg) \held -> do
+      H.modify_ \s -> s { stageRhythms = Just (StageCopy.ours held (Stage.bankRhythms s.bal s.presets)) }
       publishRhythms
     for_ (Follow.parseNow msg) \now ->
       H.modify_ \s -> s { followQueue = s.followQueue <> [ now ] }
-    for_ (Follow.lineOf msg) \line ->
-      H.modify_ _ { rigLine = Just line }
     when (Follow.endsLine msg) $
       H.modify_ _ { follow = Nothing, followQueue = [] }
   MidiReady outs nm -> do
@@ -539,7 +534,7 @@ handleAction = case _ of
       Nothing -> pure unit
       Just text -> do
         when (isNothing (indexOfContent text s.presets)) $
-          H.modify_ \st -> st { presets = st.presets <> [ { content: text, name: Nothing, starred: false } ] }
+          H.modify_ \st -> st { presets = st.presets <> [ newPreset text Nothing ] }
         -- `identity` is the parked identity of the SOUNDING brain, so only move it
         -- when we banked that one; banking a ghosted band must not claim the chip.
         when (sameBrain s.active target) (H.modify_ _ { identity = Just text })
@@ -692,7 +687,6 @@ handleAction = case _ of
           Left _ -> "✗ publish failed (store offline?)" }
       Nothing -> pure unit
   PushBalistes -> do
-    H.modify_ _ { rigLine = Nothing }
     -- The routing table first, so the handoff's first hit already goes where
     -- the table says.
     pushRouting
@@ -834,7 +828,7 @@ recallSnap = case _ of
 -- | line's first event, announced as the rig starts it), a Grids engine is
 -- | run on to step `at`, where the rig's is.
 showNow :: Int -> Follow.Now -> State -> State
-showNow at now s = case find (\p -> map rhythmSlug p.name == Just now.word) s.presets of
+showNow at now s = case find (\p -> p.word == Just now.word) s.presets of
   Just p | Just named <- p.name -> case parseTri p.content, now.grids of
     Just (TSGrids _), Just engine ->
       s { active = AGrids, scratchFixed = Nothing, bal = catchUp (at - now.step) engine, identity = Just p.content, follow = Just { from: now.step, rest: false } }
@@ -851,8 +845,6 @@ showNow at now s = case find (\p -> map rhythmSlug p.name == Just now.word) s.pr
 -- | the identity chip on the preset's text (glyph SOLID; ghosts on divergence).
 recallPreset :: forall o m. MonadAff m => Int -> H.HalogenM State Action () o m Unit
 recallPreset i = do
-  -- recalled with no line playing, a beat is what Play should play next
-  H.modify_ \s -> if isJust s.follow then s else s { rigLine = Nothing }
   st <- H.get
   case st.presets !! i of
     Nothing -> pure unit
@@ -901,7 +893,7 @@ savedOf s = { presets: s.presets }
 -- | after any bank / sequence edit; `persistLib` layers the rig re-push on top.
 persist :: forall o m. MonadAff m => H.HalogenM State Action () o m Unit
 persist = do
-  s <- H.modify \st -> st { presets = Stage.uniqueNames st.presets }
+  s <- H.modify \st -> st { presets = withWords st.presets }
   liftEffect (Store.save (savedOf s))
   publishRhythms
 
@@ -915,7 +907,7 @@ publishRhythms = do
   for_ st.stageRhythms \seen -> for_ st.binnacle \bin -> do
     let now = Stage.bankRhythms st.bal st.presets
     unless (Map.isEmpty now) do
-      liftEffect $ for_ (Stage.rhythmLines seen now) (Transport.send (Binnacle.socket bin))
+      liftEffect $ for_ (StageCopy.lines Stage.stagePrefix seen now) (Transport.send (Binnacle.socket bin))
       H.modify_ _ { stageRhythms = Just now }
 
 -- | Save after a library edit, then re-push the active pattern to the rig.
@@ -1013,11 +1005,7 @@ modRhythmAt i f s = case patternAt s i of
 
 -- | A fresh bank entry holding one rhythm, named from the pattern.
 presetOfRhythm :: P.FixedPattern -> Preset
-presetOfRhythm p =
-  { content: rhythmContent p
-  , name: if p.name == "" then Nothing else Just p.name
-  , starred: false
-  }
+presetOfRhythm p = newPreset (rhythmContent p) (if p.name == "" then Nothing else Just p.name)
 
 -- | Fold Amphora's `balistes-grid` rhythms into the bank, keyed by NAME: keep
 -- | every local entry (it may carry unsaved edits), append only rhythms the bank

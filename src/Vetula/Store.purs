@@ -23,10 +23,10 @@ module Vetula.Store
 
 import Prelude
 
-import Data.Maybe (Maybe(..), fromMaybe)
+import Data.Maybe (Maybe(..))
 import Data.Nullable (Nullable, toMaybe)
 import Effect (Effect)
-import Triggerfish.Preset (Preset)
+import Triggerfish.Preset (Preset, Stored, fromStored, toStored, withWords)
 
 -- | One saved progression: its display label, its Tidal source (the chords), and
 -- | whether it's a promoted keeper (★) or an ephemeral auto-capture (◦).
@@ -39,7 +39,7 @@ type Saved = { library :: Array Entry, presets :: Array Preset }
 -- | anonymous). `content` is the preset's canonical progression source verbatim.
 type Envelope =
   { library :: Array Entry
-  , presets :: Array { content :: String, name :: String, starred :: Boolean }
+  , presets :: Array Stored
   }
 
 -- | v1's on-disk shape — library only, no preset bank. Migrated with an empty bank.
@@ -64,7 +64,7 @@ saveLibrary s = _save storeKey (_stringify env)
   env :: Envelope
   env =
     { library: s.library
-    , presets: map (\p -> { content: p.content, name: fromMaybe "" p.name, starred: p.starred }) s.presets
+    , presets: map toStored s.presets
     }
 
 -- | Load the stored library. Prefers v2; migrates a v1 (library-only) store with an
@@ -82,7 +82,7 @@ loadLibrary = do
 decode :: Envelope -> Saved
 decode env =
   { library: env.library
-  , presets: map (\e -> { content: e.content, name: if e.name == "" then Nothing else Just e.name, starred: e.starred }) env.presets
+  , presets: withWords (map fromStored env.presets)
   }
 
 -- ---------------------------------------------------------------------------

@@ -79,12 +79,6 @@ export const saveDrawer = (key) => (o) => () => {
   try { localStorage.setItem(key, JSON.stringify(o)); } catch (_) {}
 };
 
-// What is being dragged from the page now (Selene's rack rebus), for the
-// drawer to judge while the drag is over it.
-export const currentDrag = () => window.__tfDrag || "";
-export const allowDrop = (e) => () => { e.preventDefault(); };
-export const dropText = (e) => () => { e.preventDefault(); return e.dataTransfer ? e.dataTransfer.getData("text/plain") : ""; };
-
 // A name being edited starts selected, so typing replaces it.
 export const selectAll = (el) => () => { el.focus(); if (el.select) el.select(); };
 
@@ -96,30 +90,3 @@ export const loadWidth = (key) => (fallback) => () => {
   } catch (_) { return fallback; }
 };
 
-// A row dragged from the browser drawer carries its text (a Selene module's
-// line), for a drop target on the page to read.
-// A progression (`vetula-progression <name>`) carries its own type, which
-// Limulus reads to repoint a voice's block, and as plain text just its name
-// quoted, which drops into any line as a source. A Balistes rhythm
-// (`balistes-rhythm <word>`) likewise, its word bare.
-const carry = (dt, text) => {
-  const m = /^vetula-progression (.+)$/.exec(text);
-  const r = /^balistes-rhythm (.+)$/.exec(text);
-  if (m) {
-    dt.setData("application/x-vetula-progression", m[1]);
-    dt.setData("text/plain", '"' + m[1] + '"');
-  } else if (r) {
-    // a Balistes rhythm: its word, which Limulus places in a `balistes $`
-    // line, and as plain text the word alone (it goes inside a pattern)
-    dt.setData("application/x-balistes-rhythm", r[1]);
-    dt.setData("text/plain", r[1]);
-  } else dt.setData("text/plain", text);
-  dt.effectAllowed = "copy";
-};
-export const setDragText = (e) => (text) => () => {
-  if (e.dataTransfer) carry(e.dataTransfer, text);
-  // what is being dragged, for a target to judge while the drag is over it
-  // (the drag's own data cannot be read until the drop); gone when it ends
-  window.__tfDrag = text;
-  if (e.target) e.target.addEventListener("dragend", () => { window.__tfDrag = ""; }, { once: true });
-};

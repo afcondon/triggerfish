@@ -8,13 +8,12 @@
 -- |   balistes-now <step> <word> <state>   a Grids beat, its engine from there
 -- |   balistes-now <step> ~                a rest
 -- |
--- | Evaluating the line is announced too (`played balistes line <pattern>`),
--- | and a hush ends it.
+-- | Evaluating the line is announced too (`played balistes line <pattern>`,
+-- | which the shell's transport hears), and a hush or a stop ends it.
 module Triggerfish.Balistes.Follow
   ( Now
   , parseNow
   , endsLine
-  , lineOf
   ) where
 
 import Prelude
@@ -43,11 +42,6 @@ parseNow msg = do
   where
   cut s = indexOf (Pattern " ") s <#> \i ->
     let parts = splitAt i s in { before: parts.before, after: (splitAt 1 parts.after).after }
-
--- | The pattern of a line the rig has started playing (`played balistes
--- | line <pattern>`, broadcast when a `balistes $` line is evaluated).
-lineOf :: String -> Maybe String
-lineOf = stripPrefix (Pattern "played balistes line ")
 
 -- | Whether a frame from the rig ends the line: the rig hushed, all of it or
 -- | Balistes, or a page stopped the Balistes voice.

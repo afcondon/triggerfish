@@ -204,9 +204,6 @@ type State =
   , follow :: Maybe { from :: Int, rest :: Boolean }
   -- what the rig said it will play next, each applied on its step
   , followQueue :: Array Follow.Now
-  -- the last `balistes $` line the rig played (its pattern), which Play
-  -- resumes after a Stop; forgotten once a beat is recalled here instead
-  , rigLine :: Maybe String
   }
 
 data Action

@@ -38,16 +38,13 @@ module Triggerfish.Balistes.Store
 
 import Prelude
 
-import Data.Array (foldl, mapMaybe, snoc)
-import Data.Set as Set
-import Reef.Balistes.Lepidoptera (rhythmSlug)
-import Data.Maybe (Maybe(..), fromMaybe)
+import Data.Array (mapMaybe)
+import Data.Maybe (Maybe(..))
 import Data.Nullable (Nullable, toMaybe)
 import Effect (Effect)
 import Triggerfish.Balistes.Lepidoptera (parsePattern)
-import Triggerfish.Balistes.Stage (freeName, takenWords, uniqueNames)
-import Triggerfish.Balistes.TriSnapshot (TriSnapshot(..), parseTri, rhythmContent, rhythmOfContent)
-import Triggerfish.Preset (Preset)
+import Triggerfish.Balistes.TriSnapshot (TriSnapshot(..), parseTri, rhythmContent)
+import Triggerfish.Preset (Preset, Stored, fromStored, toStored, withWords)
 
 -- | What a session restores: the one bank.
 type Saved = { presets :: Array Preset }
@@ -55,7 +52,7 @@ type Saved = { presets :: Array Preset }
 -- | The on-disk shape (v5): one list of { content, name, starred }. Empty `name`
 -- | = anonymous (a capture rather than a promoted artefact).
 type Envelope =
-  { presets :: Array { content :: String, name :: String, starred :: Boolean } }
+  { presets :: Array Stored }
 
 -- | v4 — the two-collection shape this replaces.
 type EnvelopeV4 =
@@ -84,27 +81,16 @@ save :: Saved -> Effect Unit
 save s = _save storeKey (_stringify env)
   where
   env :: Envelope
-  env = { presets: map encodeOne s.presets }
-
-encodeOne :: Preset -> { content :: String, name :: String, starred :: Boolean }
-encodeOne p = { content: p.content, name: fromMaybe "" p.name, starred: p.starred }
-
-decodeOne :: { content :: String, name :: String, starred :: Boolean } -> Preset
-decodeOne e = { content: e.content, name: if e.name == "" then Nothing else Just e.name, starred: e.starred }
+  env = { presets: map toStored s.presets }
 
 -- | A rhythm saved before names moved into the envelope (2026-08) carries its
 -- | name only in its text, and showed as "untitled": the name is lifted out,
--- | as `migrateRhythm` does for v4. The names the bank already gives come
--- | first, so a lifted name that is taken is the one that gets a number.
-recoverNames :: Array Preset -> Array Preset
-recoverNames presets = _.out (foldl step { taken: takenWords presets, out: [] } presets)
-  where
-  step acc p = case p.name, parseTri p.content of
-    Nothing, Just (TSFixed pat) | pat.name /= "" ->
-      let named = freeName acc.taken pat.name
-      in { taken: Set.insert (rhythmSlug named) acc.taken
-         , out: snoc acc.out { content: rhythmContent pat, name: Just named, starred: p.starred } }
-    _, _ -> acc { out = snoc acc.out p }
+-- | as `migrateRhythm` does for v4.
+recoverName :: Preset -> Preset
+recoverName p = case p.name, parseTri p.content of
+  Nothing, Just (TSFixed pat) | pat.name /= "" ->
+    p { content = rhythmContent pat, name = Just pat.name }
+  _, _ -> p
 
 -- | Load the bank. Prefers v5; otherwise migrates v4's rhythm library.
 -- |
@@ -117,11 +103,11 @@ load :: Effect (Maybe Saved)
 load = do
   mEnv <- _load storeKey
   case toMaybe (mEnv :: Nullable Envelope) of
-    Just env -> pure (Just { presets: recoverNames (uniqueNames (map decodeOne env.presets)) })
+    Just env -> pure (Just { presets: withWords (map (recoverName <<< fromStored) env.presets) })
     Nothing -> do
       mV4 <- _load legacyV4Key
       pure $ toMaybe (mV4 :: Nullable EnvelopeV4) <#> \v4 ->
-        { presets: mapMaybe migrateRhythm v4.library }
+        { presets: withWords (mapMaybe migrateRhythm v4.library) }
 
 -- | One v4 library text → one named bank entry. The name is lifted OUT of the
 -- | text and into the envelope, leaving name-stripped content, so the fold
@@ -133,4 +119,5 @@ migrateRhythm text = parsePattern text <#> \p ->
   { content: rhythmContent p
   , name: if p.name == "" then Nothing else Just p.name
   , starred: false
+  , word: Nothing
   }

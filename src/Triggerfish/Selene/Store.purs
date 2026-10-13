@@ -18,10 +18,10 @@ module Triggerfish.Selene.Store
 
 import Prelude
 
-import Data.Maybe (Maybe(..), fromMaybe)
+import Data.Maybe (Maybe(..))
 import Data.Nullable (Nullable, toMaybe)
 import Effect (Effect)
-import Triggerfish.Preset (Preset)
+import Triggerfish.Preset (Preset, Stored, fromStored, toStored, withWords)
 
 -- | A named rack: its eDSL doc is the whole rack, rendered.
 type Rack = { name :: String, doc :: String }
@@ -34,7 +34,7 @@ type Saved = { active :: Int, library :: Array Rack, presets :: Array Preset }
 type Envelope =
   { active :: Int
   , library :: Array Rack
-  , presets :: Array { content :: String, name :: String, starred :: Boolean }
+  , presets :: Array Stored
   }
 
 -- | v1's on-disk shape — library + active only, no presets. Migrated with an
@@ -61,7 +61,7 @@ saveLibrary s = _save storeKey (_stringify env)
   env =
     { active: s.active
     , library: s.library
-    , presets: map (\p -> { content: p.content, name: fromMaybe "" p.name, starred: p.starred }) s.presets
+    , presets: map toStored s.presets
     }
 
 -- | Load the stored library. Prefers v2; migrates a v1 (library-only) store with an
@@ -80,7 +80,7 @@ decode :: Envelope -> Saved
 decode env =
   { active: env.active
   , library: env.library
-  , presets: map (\e -> { content: e.content, name: if e.name == "" then Nothing else Just e.name, starred: e.starred }) env.presets
+  , presets: withWords (map fromStored env.presets)
   }
 
 -- | The live rack, kept apart from the saved ones (2026-10-05): what the

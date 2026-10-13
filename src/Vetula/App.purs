@@ -77,7 +77,7 @@ import Triggerfish.Bar (Bar)
 import Triggerfish.Clips.Share as Share
 import Triggerfish.Glyph as TGlyph
 import Triggerfish.GlyphView (faIcon)
-import Triggerfish.Preset (Preset, indexOfContent)
+import Triggerfish.Preset (Preset, indexOfContent, newPreset)
 import Vetula.Store as Store
 import Triggerfish.Amphora as Amphora
 import Reef.Vetula.Perf (VChord, VVoice, VDest(..), VRenderer(..), PerfClock, cursorAtClock, renderAlphaBlockMidiAt, renderAlphaClockMidiAt, wrapAt) as RV
@@ -113,7 +113,7 @@ import Vetula.Tidal (progressionSource, progressionSourceIn, parseBeats, parsePr
 import Reef.Vetula.VoiceName (voiceLetter)
 import Vetula.Lepidoptera (PerfDoc, VoiceSpec, cardProgression, docFromVoices, parseCardIn, parsePerform, printAsRecord, printCard, printProgressionIn)
 import Vetula.StageCards as SC
-import Triggerfish.Selene.Drop as Drop
+import Triggerfish.Drag as Drop
 import Vetula.Score as Score
 import Harmonia.Substitute as HSub
 import Harmonia.Voicing (voiceLead) as HVL
@@ -2073,7 +2073,7 @@ handleActionCore = case _ of
     when (isJust (stripPrefix (Pattern progDragPrefix) d)) (liftEffect (Drop.allowDrop ev))
 
   VoiceDrop n ev -> do
-    name0 <- liftEffect (Drop.dropProgression ev)
+    name0 <- liftEffect (Drop.dropOf "vetula-progression" ev)
     st <- H.get
     for_ (if name0 == "" then Nothing else Just name0) \name ->
       for_ (st.stageCards >>= Map.lookup n) \old ->
@@ -2951,7 +2951,7 @@ captureNow = do
     case indexOfContent text s.presets of
       Just _ -> H.modify_ _ { identity = Just text }
       Nothing -> H.modify_ \st -> st
-        { presets = st.presets <> [ { content: text, name: Nothing, starred: false } ]
+        { presets = st.presets <> [ newPreset text Nothing ]
         , identity = Just text
         }
     persistLib

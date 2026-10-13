@@ -174,12 +174,12 @@ handleQuery = case _ of
     -- colour: a container, as a session is)
     let progRows = map (\p -> { slot: progSlotBase + p.slot, name: p.name
                               , icons: map (\icon -> { icon, color: "#2a2a2a" }) (Array.filter (_ /= "") (String.split (String.Pattern "-") (String.takeWhile (_ /= String.codePointFromChar '′') p.name))) <> p.rebus
-                              , tag: p.key, current: p.current, section: "Progressions", builtin: true, drag: "vetula-progression " <> p.name, actions: [] })
+                              , tag: p.key, current: p.current, section: "Progressions", builtin: true, drag: "vetula-progression " <> p.name, hint: "Click: open it. Drag it onto a voice (its badge on the score) and the voice plays it. Drag it into Limulus: onto a voice's block it becomes that voice's progression; anywhere else it starts a new voice.", actions: [] })
                        (fromMaybe [] mprogs)
     let voiceRows = Voices.rows st.voices st.names st.routesText
     pure $ mscenes <#> \scenes -> reply
       { title: if Array.null voiceRows && Array.null progRows then "Scenes" else "Vetula", modes: false, keep: "save scene", notice: ""
-      , rows: voiceRows <> progRows <> map (_ { section = if Array.null voiceRows && Array.null progRows then "" else "Scenes" }) (Array.mapWithIndex (\i sc -> { slot: i, name: sc.name, icons: map (\icon -> { icon, color: "#2a2a2a" }) (Array.filter (_ /= "") (String.split (String.Pattern "-") (sessionOf sc))), tag: sc.key, current: false, section: "", builtin: true, drag: "", actions: [] }) scenes) }
+      , rows: voiceRows <> progRows <> map (_ { section = if Array.null voiceRows && Array.null progRows then "" else "Scenes" }) (Array.mapWithIndex (\i sc -> { slot: i, name: sc.name, icons: map (\icon -> { icon, color: "#2a2a2a" }) (Array.filter (_ /= "") (String.split (String.Pattern "-") (sessionOf sc))), tag: sc.key, current: false, section: "", builtin: true, drag: "", hint: "", actions: [] }) scenes) }
   -- a saved progression's row: load it
   SQ.BrowserRecall i _ next | i >= progSlotBase -> H.query _vet unit (Vetula.LoadEntry (i - progSlotBase) next)
   -- a voice's row: show its card in Limulus (adding the block if it is gone)

@@ -17,10 +17,10 @@ module Triggerfish.Odonus.Store
 
 import Prelude
 
-import Data.Maybe (Maybe(..), fromMaybe)
+import Data.Maybe (Maybe(..))
 import Data.Nullable (Nullable, toMaybe)
 import Effect (Effect)
-import Triggerfish.Preset (Preset)
+import Triggerfish.Preset (Preset, Stored, fromStored, toStored, withWords)
 
 -- | What we persist: the live working patch, the named scene library (each
 -- | scene's `text` is its full authored patch rendered to eDSL), and the unified
@@ -36,7 +36,7 @@ type Saved =
 type Envelope =
   { live :: String
   , scenes :: Array { name :: String, text :: String }
-  , presets :: Array { content :: String, name :: String, starred :: Boolean }
+  , presets :: Array Stored
   }
 
 -- | v2's on-disk shape — live + scenes, no preset bank. Migrated with an empty bank.
@@ -65,7 +65,7 @@ saveAll sv = _save storeKey (_stringify env)
   env =
     { live: sv.live
     , scenes: sv.scenes
-    , presets: map (\p -> { content: p.content, name: fromMaybe "" p.name, starred: p.starred }) sv.presets
+    , presets: map toStored sv.presets
     }
 
 -- | Load the stored envelope. Prefers v3; migrates a v2 (live + scenes) store with
@@ -85,5 +85,5 @@ decode :: Envelope -> Saved
 decode env =
   { live: env.live
   , scenes: env.scenes
-  , presets: map (\e -> { content: e.content, name: if e.name == "" then Nothing else Just e.name, starred: e.starred }) env.presets
+  , presets: withWords (map fromStored env.presets)
   }
