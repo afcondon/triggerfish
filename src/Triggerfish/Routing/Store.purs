@@ -17,6 +17,7 @@
 module Triggerfish.Routing.Store
   ( save
   , load
+  , heal
   , onChange
   ) where
 
@@ -30,7 +31,7 @@ import Data.String (Pattern(..), split, joinWith)
 import Data.String as Str
 import Effect (Effect)
 
-import Triggerfish.Routing.Model (Destination(..), InstrumentId(..), Leg, Route, Source(..), Table, newLeg, sourceKey)
+import Triggerfish.Routing.Model (Destination(..), InstrumentId(..), Leg, Route, Source(..), Table, healPorts, newLeg, sourceKey)
 
 -- | The on-disk shape. Sources and destinations are flat strings so that a row
 -- | this build doesn't understand can be dropped individually, rather than
@@ -207,6 +208,16 @@ save tbl = _save storeKey (_stringify env)
   env = { routes: map row tbl }
   row r = { source: sourceKey r.source, legs: map leg r.legs }
   leg l = { dest: destStr l.dest, offsetMs: l.offsetMs, on: l.on, note: toNullable (Just l.note) }
+
+-- | Move legs off an IAC bus that is gone (`RM.healPorts`), given the ports
+-- | there are, and save: the healed table, or `Nothing` when nothing moved.
+heal :: Array String -> Effect (Maybe Table)
+heal ports = load >>= case _ of
+  Just t | healPorts ports t /= t -> do
+    let healed = healPorts ports t
+    save healed
+    pure (Just healed)
+  _ -> pure Nothing
 
 -- | Load the stored table, or `Nothing` if absent / unparseable. Individual rows
 -- | and legs that fail to decode are DROPPED rather than failing the load: a

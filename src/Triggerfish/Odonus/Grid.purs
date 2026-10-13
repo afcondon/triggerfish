@@ -767,6 +767,9 @@ dispatch = case _ of
       H.raise (IdentityChanged cv)
   MidiReady outs nm -> do
     H.modify_ _ { outs = outs, midiName = nm }
+    -- a saved IAC bus this browser no longer has: moved to the one it has
+    healed <- liftEffect (RStore.heal (RO.portNames outs))
+    for_ healed \t -> H.modify_ _ { routing = t }
     pushRouting
   RoutingStored -> do
     mroute <- liftEffect RStore.load

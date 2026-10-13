@@ -50,6 +50,7 @@ import Triggerfish.Balistes.Model as M
 import Triggerfish.Balistes.Pattern as P
 import Triggerfish.Routing.Model as RM
 import Triggerfish.Routing.Out as RO
+import Triggerfish.Routing.Store as RStore
 import Reef.Routing as RR
 import Triggerfish.Balistes.Types
   ( KnobTarget(..), targetRange, applyKnob, Active(..), ClickMode(..)
@@ -456,6 +457,9 @@ handleAction = case _ of
       H.modify_ _ { follow = Nothing, followQueue = [] }
   MidiReady outs nm -> do
     H.modify_ _ { outs = outs, midiName = nm }
+    -- a saved IAC bus this browser no longer has: moved to the one it has
+    healed <- liftEffect (RStore.heal (RO.portNames outs))
+    for_ healed \t -> H.modify_ _ { routing = t }
     pushRouting
 
   -- Reset shifts the model step (jump to 0), so it's DEFERRED-ON-BOTH: enqueued +

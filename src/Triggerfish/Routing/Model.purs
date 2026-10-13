@@ -54,6 +54,7 @@ module Triggerfish.Routing.Model
   , defaultTable
   , defaultTableFor
   , defaultPort
+  , healPorts
   , legsFor
   , liveLegsFor
   , setLegs
@@ -86,7 +87,7 @@ module Triggerfish.Routing.Model
 import Prelude
 
 import Control.Alt ((<|>))
-import Data.Array (concatMap, filter, find, findIndex, foldl, head, length, mapMaybe, mapWithIndex, nub, snoc, updateAt, (!!))
+import Data.Array (any, concatMap, filter, find, findIndex, foldl, head, length, mapMaybe, mapWithIndex, nub, snoc, updateAt, (!!))
 import Data.Int as Int
 import Data.Maybe (Maybe(..), fromMaybe, isJust, maybe)
 import Data.Tuple (Tuple(..), snd)
@@ -429,6 +430,26 @@ type Table = Array Route
 -- | "Zero install".
 defaultPort :: Array String -> String
 defaultPort ports = fromMaybe "" (find (contains (Pattern "IAC")) ports <|> head ports)
+
+-- | The table with each leg on an IAC bus that is gone moved to the IAC bus
+-- | there is, when there is exactly one. A browser running since before the
+-- | bus was made or renamed hands the page the old name, the page saves it,
+-- | and from then on every note in Atlantis goes to a port CoreMIDI does not
+-- | have (installing-triggerfish#10). A port a leg names that still exists,
+-- | or any other missing port, is left as it is: the matrix shows that as
+-- | "not on this computer".
+healPorts :: Array String -> Table -> Table
+healPorts ports = map \r -> r { legs = map (\l -> l { dest = heal l.dest }) r.legs }
+  where
+  iacs = filter (contains (Pattern "IAC")) ports
+  gone p = p /= "" && contains (Pattern "IAC") p && not (any (contains (Pattern p)) ports)
+  heal d = case iacs of
+    [ only ] -> case d of
+      DMidi x | gone x.port -> DMidi x { port = only }
+      DRample x | gone x.port -> DRample x { port = only }
+      DRamplePoly x | gone x.port -> DRamplePoly x { port = only }
+      _ -> d
+    _ -> d
 
 -- | The default table before any port is known: every MIDI leg on `""`, the
 -- | first output. A page replaces it with `defaultTableFor` its ports, once, at

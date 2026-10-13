@@ -414,6 +414,9 @@ handleAction = case _ of
       let t = RM.defaultTableFor ns
       liftEffect $ RStore.save t
       H.modify_ _ { table = t }
+    -- a saved IAC bus this browser no longer has: moved to the one it has
+    healed <- liftEffect (RStore.heal ns)
+    for_ healed \t -> H.modify_ _ { table = t }
     syncCards
 
   FromHash h -> do
