@@ -8,8 +8,7 @@
 -- | `Balistes.Snapshot`) and the controller (`Balistes.Component`) import, so
 -- | neither imports the other. Mirrors `Odonus.Grid.Types`.
 module Triggerfish.Balistes.Types
-  ( Flash
-  , KnobTarget(..)
+  ( KnobTarget(..)
   , targetRange
   , knobValue
   , applyKnob
@@ -29,7 +28,6 @@ module Triggerfish.Balistes.Types
   , midiPortName
   , drumChannel
   , editVel
-  , flashWindow
   , padId
   ) where
 
@@ -54,9 +52,6 @@ import Triggerfish.Preset (Preset)
 import Triggerfish.Balistes.TriSnapshot (rhythmOfContent)
 import Triggerfish.Midi.Routing as Routing
 import Triggerfish.Transport (Sounding)
-
--- | A recent hit, kept just long enough to flash the transport pilot lamps.
-type Flash = { inst :: Int, accent :: Boolean, fireUnixMicros :: Number }
 
 data KnobTarget = KDens Int | KRand | KPush Int | KOpen
 
@@ -121,7 +116,6 @@ type State =
   -- tick-tagged gestures awaiting their model step (deferred-on-both lockstep):
   -- applied in the Step loop when step <= tick.index, on both runtimes.
   , pending :: Array { step :: Int, input :: RBI.BInput }
-  , flash :: Array Flash
   , binnacle :: Maybe Binnacle.Binnacle
   -- The rig's reading of each lane source (POLYTRIG jacks and routes), by
   -- source text: the page reads no Tidal itself (Triggerfish.LaneShapes).
@@ -312,10 +306,6 @@ drumChannel = Routing.toWire Routing.drumsChannel
 -- | Velocity a freshly-clicked fixed-rhythm cell lands at (a firm hit).
 editVel :: Int
 editVel = 98
-
--- | Keep a hit around ~0.4s — long enough for the pilot lamps to glow.
-flashWindow :: Number
-flashWindow = 400000.0
 
 padId :: String
 padId = "balistes-pad"

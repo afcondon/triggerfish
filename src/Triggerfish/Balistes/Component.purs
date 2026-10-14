@@ -56,7 +56,7 @@ import Reef.Routing as RR
 import Triggerfish.Balistes.Types
   ( KnobTarget(..), targetRange, applyKnob, Active(..), ClickMode(..)
   , DragKind(..), State, Action(..), activePattern, selectedPattern, patternAt, rhythmEntries, rigUrl, gridCfg
-  , editVel, flashWindow
+  , editVel
   , padId )
 import Triggerfish.Browser as Browser
 import Triggerfish.Balistes.TriSnapshot (TriSnapshot(..), parseTri, printTri, rhythmContent, rhythmOfContent)
@@ -100,7 +100,7 @@ component =
   H.mkComponent
     { initialState: \_ ->
         { bal: M.defaultBalistes
-        , sounding: Silent, playStep: 0, nextModelStep: 0, pending: [], flash: []
+        , sounding: Silent, playStep: 0, nextModelStep: 0, pending: []
         , binnacle: Nothing, outs: [], routing: RM.defaultTable, midiName: "…"
         , clockTempo: 120.0, clockLocked: false, clockBeat: 0.0, clockBar: 0, anchorCount: 0
         , nowMicros: 0.0, dragging: Nothing, dragSub: Nothing
@@ -404,15 +404,12 @@ handleAction = case _ of
             emitHit st.outs (RO.soloDrumRouting st.outs st.routing kitNotes) stepMs
               (max 0.0 (tick.delayMs + toNumber e.pushMs))
               e.note e.durMs e.velocity e.ratchet
-        let
-          gridsFlash = map (\t -> { inst: t.inst, accent: t.accent, fireUnixMicros: tick.fireUnixMicros }) r.fired
         H.modify_ \s -> s
           { bal = r.bal, playStep = playedStep
           -- r.bal is the state that plays NEXT, at absolute step tick.index + 1;
           -- PushBalistes stamps the handoff with this for phase alignment.
           , nextModelStep = tick.index + 1
-          , pending = keepInputs
-          , flash = gridsFlash <> s.flash }
+          , pending = keepInputs }
   Frame -> do
     st <- H.get
     case st.binnacle of
@@ -421,13 +418,12 @@ handleAction = case _ of
         r <- liftEffect $ Clock.read (Binnacle.clock bin)
         -- Write only when something drawn or read has moved. Every write
         -- re-renders the whole panel, and at 30 a second, stopped, that was most
-        -- of this page's idle CPU. What is drawn: the rounded tempo, the lock,
-        -- the bar, and the flashes (which fade against `nowMicros`); what is read:
+        -- of this page's idle CPU. What is drawn: the rounded tempo, the lock
+        -- and the bar; what is read:
         -- the tempo (step length). The step is read from the clock where it is
         -- needed (`currentStep`).
         let moved = r.tempo /= st.clockTempo || r.locked /= st.clockLocked
               || r.bar /= st.clockBar || r.anchorCount /= st.anchorCount
-              || not (null st.flash)
         when moved $ H.modify_ \s -> s
           { nowMicros = now
           , clockTempo = r.tempo
@@ -435,7 +431,6 @@ handleAction = case _ of
           , clockBeat = r.beat
           , clockBar = r.bar
           , anchorCount = r.anchorCount
-          , flash = filter (\f -> (now - f.fireUnixMicros) < flashWindow) s.flash
           }
       Nothing -> pure unit
     -- Report the identity chip up to the shell's status board, but only when it
@@ -1175,8 +1170,6 @@ navBar s =
     [ style $ "flex:0 0 auto;display:flex;align-items:center;gap:10px;padding:5px 14px;"
         <> "background:linear-gradient(#cdc7b6,#c4bead);border-bottom:1px solid #00000014" ]
     ( [ HH.div [ style "flex:1 1 auto;min-width:8px" ] []
-      , lampRow s
-      , navDivider
       , navReadout ("bar " <> show s.clockBar <> " · " <> pad2 (s.playStep + 1) <> "/32")
       , navReadout (routingHealth s)
       , navReadout s.midiName
@@ -1211,9 +1204,6 @@ bandGlyph s target = case printTri <$> triOf s target of
             (faIcons g)
         , HH.text (if banked then "banked" else "bank")
         ]
-
-navDivider :: forall m. H.ComponentHTML Action () m
-navDivider = HH.div [ style "width:1px;height:18px;background:#00000018" ] []
 
 navReadout :: forall m. String -> H.ComponentHTML Action () m
 navReadout txt =
@@ -1412,23 +1402,6 @@ modalSection label blurb body =
 -- | rather than a captured moment (clicking it restores that state)?
 isRhythm :: Preset -> Boolean
 isRhythm p = isJust (rhythmOfContent (fromMaybe "" p.name) p.content)
-
--- Three pilot lamps that glow on a recent hit (bright = accented).
-lampRow :: forall m. State -> H.ComponentHTML Action () m
-lampRow s =
-  HH.div [ style "display:flex;gap:8px;align-items:center" ]
-    (map lamp [ 0, 1, 2 ])
-  where
-  lamp inst =
-    let
-      hits = filter (\f -> f.inst == inst && (s.nowMicros - f.fireUnixMicros) < flashWindow) s.flash
-      on = not (null hits)
-      accent = any _.accent hits
-      col = instColor inst
-      fill = if on then col else "#8c887a"
-      glow = if on then ";box-shadow:0 0 8px " <> col <> (if accent then "" else "aa") else ""
-    in
-      HH.div [ style $ "width:11px;height:11px;border-radius:50%;border:1px solid #00000033;background:" <> fill <> glow ] []
 
 pad2 :: Int -> String
 pad2 n = if n < 10 then "0" <> show n else show n
