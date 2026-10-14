@@ -152,10 +152,18 @@ handleQuery = case _ of
     { tabs: [], marks: "", icons: [], rebusTip: "", pickers: [], help: ""
     , chips:
         [ { id: "dice", label: "", icons: [ { icon: "dice", color: "#3f3c33" } ], active: false, attention: false
-          , tip: "shake Grids up: a new place on the map, densities, randomness and open (push and ratchets stay)" } ]
+          , tip: "shake Grids up: a new place on the map, densities, randomness and open (push and ratchets stay)" }
+        , { id: "densities", label: "", icons: map (\i -> { icon: "dice-five", color: instColor i }) [ 0, 1, 2 ]
+          , active: false, attention: false, tip: "new BD, SD and HH densities, the place on the map kept" }
+        , { id: "dilla", label: "", icons: [ { icon: "dice-five", color: dillaColor } ], active: false, attention: false
+          , tip: "a new Dilla push: kick near the grid, snare late, hats a little either side" } ]
     }
   BarAction act next -> do
-    when (act == "chip:dice") (handleAction Dice)
+    case act of
+      "chip:dice" -> handleAction Dice
+      "chip:densities" -> handleAction DiceDensities
+      "chip:dilla" -> handleAction DiceDilla
+      _ -> pure unit
     pure (Just next)
   BrowserDrop _ next -> pure (Just next)
   BrowserRename i name next -> do
@@ -492,6 +500,21 @@ handleAction = case _ of
           , RBI.BSetRandomness rand, RBI.BSetOpen open ]
     H.modify_ \s -> s { bal = M.reseed (foldl (flip RBI.applyBInput) s.bal setters) }
     for_ (setters <> [ RBI.BReseed ]) broadcastBInput
+  -- The three coloured dice (AC, 2026-10-14): new BD/SD/HH densities, in
+  -- Dice's ranges, leaving the place on the map where it is.
+  DiceDensities -> do
+    bd <- liftEffect (randomInt 150 235)
+    sd <- liftEffect (randomInt 110 210)
+    hh <- liftEffect (randomInt 120 230)
+    settle [ RBI.BSetDensity 0 bd, RBI.BSetDensity 1 sd, RBI.BSetDensity 2 hh ]
+  -- The Dilla dice: a push rolled within the feel's own shape, the kick near
+  -- the grid, the snare late, the hats (closed and open together) a little
+  -- early or late. Kept small: a wide push is the easy way to sound wrong.
+  DiceDilla -> do
+    bd <- liftEffect (randomInt (-5) 5)
+    sd <- liftEffect (randomInt 4 22)
+    hh <- liftEffect (randomInt (-14) 6)
+    settle [ RBI.BSetPush 0 bd, RBI.BSetPush 1 sd, RBI.BSetPush 2 hh, RBI.BSetPush 3 hh ]
 
   -- The pad's own SVG mousemove fires whenever the cursor crosses it with a
   -- button held — including mid-knob-drag. Guard on `dragging`: a knob drag owns
@@ -578,8 +601,9 @@ handleAction = case _ of
   DeletePreset i -> do
     H.modify_ (deletePresetAt i)
     persist
-  DillaPreset -> H.modify_ \s -> s { bal = M.dillaPush s.bal }
-  FlatGroove -> H.modify_ \s -> s { bal = M.flatPush s.bal }
+  -- DILLA and FLAT go to the rig as four pushes, as a knob's settled value does
+  DillaPreset -> H.gets _.bal >>= \b -> settle (pushes (M.dillaPush b).push)
+  FlatGroove -> H.gets _.bal >>= \b -> settle (pushes (M.flatPush b).push)
   -- switching pattern just changes which branch the next Step takes; hits are
   -- one-shot, so nothing to silence.
   -- switching pattern changes which branch the next Step takes; once pushed, make the
@@ -720,6 +744,21 @@ balInputMsg step input =
 -- | Broadcast a settled gesture to the rig as a tick-tagged BInput (no-op if no rig
 -- | is connected). The frontend has already applied it locally; the rig applies it
 -- | (via the shared applyBInput) on the tagged step and converges.
+-- | Apply settled values at once, as a pad or knob drag does, and send them to
+-- | the rig.
+settle :: forall o m. MonadAff m => Array RBI.BInput -> H.HalogenM State Action () o m Unit
+settle setters = do
+  H.modify_ \s -> s { bal = foldl (flip RBI.applyBInput) s.bal setters }
+  for_ setters broadcastBInput
+
+-- | A push array (BD, SD, HH, OH) as the four inputs that set it.
+pushes :: Array Int -> Array RBI.BInput
+pushes = mapWithIndex RBI.BSetPush
+
+-- | The Dilla dice's colour: a plum, apart from the three lanes' own.
+dillaColor :: String
+dillaColor = "#7a3f6a"
+
 broadcastBInput :: forall o m. MonadAff m => RBI.BInput -> H.HalogenM State Action () o m Unit
 broadcastBInput input = do
   st <- H.get

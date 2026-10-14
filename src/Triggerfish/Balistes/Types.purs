@@ -220,6 +220,8 @@ data Action
   | StageFrameIn String       -- a frame from the rig (the stage's table among them)
   | LibraryChanged             -- the bank changed in Amphora (another page)
   | Dice
+  | DiceDensities
+  | DiceDilla
   | PadAt Int Int Int          -- clientX clientY buttons
   | PadRelease                 -- pad pointer-up: broadcast the settled X/Y to the rig
   | StartDrag DragKind Int     -- kind, startVal
