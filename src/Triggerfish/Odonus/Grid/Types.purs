@@ -443,6 +443,7 @@ data Action
   | EuclidKey KeyboardEvent  -- a keystroke on the focused ring; arrows nudge k / n
   | UnifyHeads
   | ToggleUnisonGroup Int   -- a group's bit
+  | SetUnisonMask Int       -- ALL or NONE
   | SetHeadRestart Int Boolean  -- head, its pattern restarting with its ring
   | PhaseShift Int          -- Reichian PHASE ±: rotate the whole canon
   | CycleScaleType Int

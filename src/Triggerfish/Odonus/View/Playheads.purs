@@ -16,6 +16,7 @@ import Halogen.HTML.Events as HE
 import Halogen.HTML.Properties as HP
 import Triggerfish.Ui.Euclid as Euclid
 import Triggerfish.Odonus.Model as M
+import Reef.Odonus (unisonAll) as ROdo
 import Triggerfish.Odonus.Grid.Types (Action(..), KnobTarget(..), Slots, State)
 import Triggerfish.Odonus.View.Key (outputPiece)
 import Triggerfish.Odonus.Grid.Widgets (engrave, headColor, miniKnob, panelShell, rateLabel, roman, signed, style)
@@ -55,49 +56,66 @@ phasingBlock unisonMask odo =
     HH.div [ style "margin-bottom:12px" ]
       [ HH.span [ style $ engrave <> ";font-size:9px;opacity:0.85;display:block;margin-bottom:5px" ]
           [ HH.text "PHASING" ]
-      , HH.div [ style "display:flex;align-items:flex-end;justify-content:space-between;gap:8px" ]
+      , HH.div [ style "display:flex;align-items:flex-start;justify-content:space-between;gap:8px" ]
           [ miniKnob FanOff fanN "#6f7f88" "FAN" (show fanN)
           , miniKnob StaggerLen stagN "#6f7f88" "STAGGER" (show stagN)
           , miniKnob HeadSpread spreadN "#6f7f88" "SPREAD" (show spreadN)
+          -- laid out as a miniKnob is (label, 38px body, value line), so the
+          -- button sits level with the knobs' centres
           , HH.div [ style "display:flex;flex-direction:column;align-items:center;width:52px" ]
-              [ HH.span [ style $ engrave <> ";font-size:8px;margin-bottom:3px" ] [ HH.text "UNISON" ]
-              , HH.button
-                  [ HE.onClick \_ -> UnifyHeads
-                  , HP.title "copy head I to every head: the groups lit below"
-                  , style $ "width:44px;padding:7px 0;border:1px solid #a8a392;border-radius:7px;cursor:pointer;"
-                      <> "background:linear-gradient(#efece1,#ddd9cb);font-family:Georgia,serif;font-size:13px;color:#3f3c33" ]
-                  [ HH.text "≡" ]
+              [ HH.span [ style $ engrave <> ";font-size:8px;margin-bottom:1px" ] [ HH.text "UNISON" ]
+              , HH.div [ style "height:38px;display:flex;align-items:center" ]
+                  [ HH.button
+                      [ HE.onClick \_ -> UnifyHeads
+                      , HP.title (if unisonMask == 0 then "nothing lit below to copy" else "copy head I to every head: the groups lit below")
+                      , style $ "width:44px;padding:7px 0;border:1px solid #a8a392;border-radius:7px;cursor:pointer;"
+                          <> "background:linear-gradient(#efece1,#ddd9cb);font-family:Georgia,serif;font-size:13px;color:#3f3c33"
+                          <> (if unisonMask == 0 then ";opacity:0.4" else "") ]
+                      [ HH.text "≡" ]
+                  ]
               ]
           ]
       , unisonGroups unisonMask
       ]
 
 -- | What UNISON copies from head I, one lamp-button a group (AC, 2026-10-14:
--- | often you want most of head I, not all of it). Kept per browser.
+-- | often you want most of head I, not all of it), then ALL and NONE. Kept
+-- | per browser.
 unisonGroups :: forall m. Int -> H.ComponentHTML Action Slots m
 unisonGroups mask =
   HH.div [ style "display:flex;align-items:center;justify-content:flex-end;gap:3px;margin-top:6px" ]
     ( [ HH.span [ style $ engrave <> ";font-size:7px;opacity:0.7;margin-right:3px" ] [ HH.text "UNISON COPIES" ] ]
         <> map group
-          [ { label: "PAT", bit: 1, tip: "access pattern and direction" }
+          [ { label: "PAT", bit: 1, tip: "access pattern" }
+          , { label: "DIR", bit: 32, tip: "direction" }
           , { label: "SPD", bit: 2, tip: "speed" }
           , { label: "INT", bit: 4, tip: "interval (each head's transposition)" }
           , { label: "RHY", bit: 8, tip: "Euclid, length and offset, phase realigned" }
           , { label: "CLK", bit: 16, tip: "what moves the head: steps or notes" }
           ]
+        <> [ HH.span [ style "width:5px" ] []
+           , setAll "ALL" ROdo.unisonAll "light every group"
+           , setAll "NONE" 0 "light no group"
+           ]
     )
   where
+  lampStyle on =
+    "padding:2px 5px;border:1px solid #a8a392;border-radius:4px;cursor:pointer;"
+      <> "font-family:Georgia,serif;font-size:8px;letter-spacing:0.05em;"
+      <> (if on then "background:linear-gradient(#c8a86a,#b8975a);color:#1c1a12"
+                else "background:linear-gradient(#efece1,#ddd9cb);color:#8a8473")
   group g =
     let on = (mask `div` g.bit) `mod` 2 == 1
     in
       HH.button
         [ HE.onClick \_ -> ToggleUnisonGroup g.bit
         , HP.title ((if on then "copied: " else "kept: ") <> g.tip)
-        , style $ "padding:2px 5px;border:1px solid #a8a392;border-radius:4px;cursor:pointer;"
-            <> "font-family:Georgia,serif;font-size:8px;letter-spacing:0.05em;"
-            <> (if on then "background:linear-gradient(#c8a86a,#b8975a);color:#1c1a12"
-                      else "background:linear-gradient(#efece1,#ddd9cb);color:#8a8473") ]
+        , style (lampStyle on) ]
         [ HH.text g.label ]
+  setAll label m tip =
+    HH.button
+      [ HE.onClick \_ -> SetUnisonMask m, HP.title tip, style (lampStyle false <> ";color:#3f3c33") ]
+      [ HH.text label ]
 
 -- | The 16 head-activation combinations (2⁴) as a switch palette: each
 -- | switch is four vertical bars (I–IV, lit when that head sounds in this

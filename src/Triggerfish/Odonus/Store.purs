@@ -19,7 +19,7 @@ module Triggerfish.Odonus.Store
 
 import Prelude
 
-import Data.Maybe (Maybe(..), fromMaybe)
+import Data.Maybe (Maybe(..))
 import Data.Nullable (Nullable, toMaybe)
 import Effect (Effect)
 import Data.Array (filter, notElem)
@@ -97,11 +97,25 @@ foldScenes scenes presets =
 -- | Which groups UNISON copies from head I (a `Reef.Odonus.unisonBit` mask),
 -- | kept per browser so a choice made once holds (AC, 2026-10-14).
 unisonKey :: String
-unisonKey = "triggerfish.odonus.unison"
+unisonKey = "triggerfish.odonus.unison.v2"
+
+-- | Before DIRECTION was split from PATTERN, PAT copied both.
+legacyUnisonKey :: String
+legacyUnisonKey = "triggerfish.odonus.unison"
 
 saveUnison :: Int -> Effect Unit
 saveUnison m = _save unisonKey (_stringify m)
 
 -- | Every group but INT until a choice is made: the voices keep their intervals.
+-- | A choice saved before the split keeps its meaning: PAT lit lights DIR too.
 loadUnison :: Effect Int
-loadUnison = fromMaybe 27 <<< toMaybe <$> _load unisonKey
+loadUnison = do
+  mask <- toMaybe <$> _load unisonKey
+  case mask of
+    Just m -> pure m
+    Nothing -> do
+      legacy <- toMaybe <$> _load legacyUnisonKey
+      pure case legacy of
+        Just m | m `mod` 2 == 1 -> m + 32
+        Just m -> m
+        Nothing -> 59

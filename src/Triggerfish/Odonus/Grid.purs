@@ -126,7 +126,7 @@ component =
         , vcoTables: []
         , swing: 0.0, velHumanize: 12
         , gen: map (\k -> { kind: k, on: false, rate: genDefaultRate k, amt: genDefaultAmt k }) genKinds
-        , genSpread: 0.5, genBias: 0.5, genSeed: Marbles.seedFrom 1, genFrozen: false, unisonMask: 27, pending: [], nextModelStep: 0
+        , genSpread: 0.5, genBias: 0.5, genSeed: Marbles.seedFrom 1, genFrozen: false, unisonMask: 59, pending: [], nextModelStep: 0
         -- SOURCE folds away by default: the dedicated TIDAL tab is the
         -- one-stop view of the whole setup; Odonus's own eDSL pane is for
         -- when you want to inspect just this module.
@@ -995,7 +995,8 @@ dispatch = case _ of
   -- UNISON copies the groups lit beneath it; all of them is the old unison.
   UnifyHeads -> do
     st <- H.get
-    enqueue (if st.unisonMask == ROdo.unisonAll then RI.UnifyHeads else RI.UnifyHeadsOf st.unisonMask)
+    when (st.unisonMask /= 0) $
+      enqueue (if st.unisonMask == ROdo.unisonAll then RI.UnifyHeads else RI.UnifyHeadsOf st.unisonMask)
   SetHeadRestart h v -> enqueue (RI.SetHeadRestart h v)
   ToggleUnisonGroup bit -> do
     st <- H.get
@@ -1003,6 +1004,9 @@ dispatch = case _ of
       let m = if (st.unisonMask `div` bit) `mod` 2 == 1 then st.unisonMask - bit else st.unisonMask + bit
       H.modify_ (markTap "unison" >>> _ { unisonMask = m })
       liftEffect (Store.saveUnison m)
+  SetUnisonMask m -> do
+    H.modify_ _ { unisonMask = m }
+    liftEffect (Store.saveUnison m)
   PhaseShift d -> enqueue (RI.NudgeOffsets d)
   CycleScaleType dir -> enqueue (RI.CycleScaleType dir)
   -- The Select widget picks a preset by NAME; jump straight to it by driving the
