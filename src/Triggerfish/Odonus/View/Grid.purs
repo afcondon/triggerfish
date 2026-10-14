@@ -161,9 +161,11 @@ gateBlock odo =
 -- | NOTES, which had run out of column).
 transportRow :: forall m. State -> H.ComponentHTML Action Slots m
 transportRow s =
-  HH.div [ style "display:flex;align-items:flex-end;gap:10px;margin-bottom:14px" ]
-    [ HH.div [ style "flex:1" ] [ clockRow s ]
-    , feelBlock s
+  -- two lines, CLOCK over the three knobs, so the row no longer sets the
+  -- pane's width (AC, 2026-10-14)
+  HH.div [ style "display:flex;flex-direction:column;gap:6px;margin-bottom:14px" ]
+    [ clockRow s
+    , HH.div [ style "display:flex;justify-content:space-around" ] [ feelBlock s ]
     ]
 
 -- | ODONUS'S CLOCK: the beat (Link's, from Diaphus) multiplied or divided,
