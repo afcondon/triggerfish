@@ -926,10 +926,14 @@ dispatch = case _ of
   -- A card's buttons: every cell at once, as plain absolute cell edits, read
   -- against the model with the edits still pending applied, so a toggle is
   -- sent only where the cell would otherwise be wrong.
+  -- Debounced, as FREEZE is: a doubled dispatch would roll twice and toggle
+  -- the booleans back against the first roll's stale read.
   Shortcut sc -> do
     st <- H.get
-    inputs <- liftEffect (shortcutInputs sc (effectiveSim st).odo)
-    for_ inputs enqueue
+    unless (tapBounced "shortcut" st) do
+      H.modify_ (markTap "shortcut")
+      inputs <- liftEffect (shortcutInputs sc (effectiveSim st).odo)
+      for_ inputs enqueue
   -- SeedMelody THREADS the shared seed, so deferred-on-both is mandatory: applied
   -- a step apart the two PRNGs would desync permanently. (Reef.Gen.seedMelody
   -- ignores its harmony-PC arg, so RI.SeedMelody == the old inline call.)

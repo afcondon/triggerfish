@@ -18,6 +18,7 @@ module Triggerfish.Odonus.Grid.Widgets
   , romanNum
   , panelShell
   , tabBtn
+  , diceBtn
   , stepBtn
   , stepperRow
   , labelledRow
@@ -36,6 +37,7 @@ import Data.Maybe (Maybe(..), fromMaybe, maybe)
 import Halogen as H
 import Halogen.HTML as HH
 import Halogen.HTML.Events as HE
+import Halogen.HTML.Properties as HP
 import Triggerfish.Odonus.Model as M
 import Triggerfish.Ui.Knob (knob)
 import Triggerfish.Ui.Style (engrave, style)
@@ -138,6 +140,17 @@ tabBtn label active act =
         <> "font-family:Georgia,serif;font-size:10px;color:" <> (if active then "#1c1a12" else "#3f3c33")
         <> ";background:" <> (if active then "linear-gradient(#c8a86a,#b8975a)" else "linear-gradient(#efece1,#ddd9cb)") ]
     [ HH.text label ]
+
+-- | A one-shot that rolls something: a die where a word would be, the same
+-- | button otherwise. `tip` says what it rolls.
+diceBtn :: forall m. String -> Action -> H.ComponentHTML Action Slots m
+diceBtn tip act =
+  HH.button
+    [ HE.onClick \_ -> act
+    , HP.title tip
+    , style $ "flex:1;padding:4px 0;border:1px solid #a8a392;border-radius:5px;cursor:pointer;"
+        <> "font-size:11px;color:#3f3c33;background:linear-gradient(#efece1,#ddd9cb)" ]
+    [ HH.i [ HP.attr (H.AttrName "class") "fa-solid fa-dice" ] [] ]
 
 octLabel :: Int -> String
 octLabel n = if n > 0 then "+" <> show n else show n

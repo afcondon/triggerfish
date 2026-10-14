@@ -16,7 +16,7 @@ import Halogen.HTML as HH
 import Halogen.HTML.Events as HE
 import Triggerfish.Odonus.Grid.Types (Action(..), CellShortcut(..), GenKind(..), KnobTarget(..), Slots, State)
 import Triggerfish.Odonus.View.Grid (transportRow)
-import Triggerfish.Odonus.Grid.Widgets (cellPad, genRow, panelShell, style, tabBtn)
+import Triggerfish.Odonus.Grid.Widgets (cellPad, diceBtn, genRow, panelShell, style, tabBtn)
 import Triggerfish.Odonus.Model as M
 import Triggerfish.Ui.Knob (knob)
 
@@ -26,12 +26,12 @@ generatePanel s =
     ( [ transportRow s ]
         <> map (topRow s) [ GHeads, GTransp, GPattern, GSpeed ]
         <>
-        [ paramCard s GGate (toggleGrid "#e0a32e" _.gate ToggleGate s.odo)
-            [ shortcut "ALL" (GateAll true), shortcut "NONE" (GateAll false), shortcut "⟳ ROLL" GateRoll ]
-        , paramCard s GSkip (toggleGrid "#c0563f" _.skip ToggleSkip s.odo)
-            [ shortcut "NONE" (SkipAll false), shortcut "⟳ ROLL" SkipRoll ]
-        , paramCard s GGlide (toggleGrid "#4f9d69" _.glide ToggleGlide s.odo)
-            [ shortcut "NONE" (GlideAll false), shortcut "⟳ ROLL" GlideRoll ]
+        [ lampCard s GGate (toggleGrid "#e0a32e" _.gate ToggleGate s.odo)
+            [ shortcut "ALL" (GateAll true), shortcut "NONE" (GateAll false), diceBtn "gate each cell, about three in four" (Shortcut GateRoll) ]
+        , lampCard s GSkip (toggleGrid "#c0563f" _.skip ToggleSkip s.odo)
+            [ shortcut "NONE" (SkipAll false), diceBtn "skip about one cell in five" (Shortcut SkipRoll) ]
+        , lampCard s GGlide (toggleGrid "#4f9d69" _.glide ToggleGlide s.odo)
+            [ shortcut "NONE" (GlideAll false), diceBtn "glide about one cell in five" (Shortcut GlideRoll) ]
         ]
     )
 
@@ -48,9 +48,9 @@ cellParamsPanel s =
   -- below is already labelled LEN / RATCHET / VELOCITY (AC, 2026-08-06).
   panelShell s.collapsed "PER CELL" "" "flex:0 1 290px;min-width:min-content"
     [ paramCard s GLen (perCellKnobGrid "#7d8a93" 1 8 8 CellDur _.dur s.odo)
-        [ shortcut "1" (DurAll 1), shortcut "2" (DurAll 2), shortcut "4" (DurAll 4), shortcut "⟳ ROLL" DurRoll ]
+        [ shortcut "1" (DurAll 1), shortcut "2" (DurAll 2), shortcut "4" (DurAll 4), diceBtn "a length for each cell, mostly 1 or 2" (Shortcut DurRoll) ]
     , paramCard s GRatchet (perCellKnobGrid "#9d6b8a" 1 8 8 CellRatchet _.ratchet s.odo)
-        [ shortcut "NONE" (RatchetAll 1), shortcut "×2" (RatchetAll 2), shortcut "⟳ ROLL" RatchetRoll ]
+        [ shortcut "NONE" (RatchetAll 1), shortcut "×2" (RatchetAll 2), diceBtn "ratchet about one cell in five, ×2 to ×4" (Shortcut RatchetRoll) ]
     , paramCard s GVel (perCellKnobGrid "#8a9d6b" 1 127 0 CellVel _.vel s.odo)
         [ shortcut "SOFT" (VelAll 60), shortcut "MID" (VelAll 90), shortcut "LOUD" (VelAll 115)
         , shortcut "ACCENT" VelAccent ]
@@ -77,6 +77,22 @@ paramCard s kind gridBody buttons =
     , HH.div [ style "display:flex;gap:3px;margin-top:6px" ] buttons
     ]
 
+-- | A lamp card: the generator row over a compact 4×4 of lamps, its buttons
+-- | stacked beside the lamps rather than under them (as small as the
+-- | COMBINATIONS key, and as playable).
+lampCard
+  :: forall m
+   . State -> GenKind -> HH.ComponentHTML Action Slots m -> Array (HH.ComponentHTML Action Slots m)
+  -> HH.ComponentHTML Action Slots m
+lampCard s kind lamps buttons =
+  HH.div [ style cardStyle ]
+    [ genRow s kind
+    , HH.div [ style "display:flex;gap:10px;align-items:stretch;margin-top:6px" ]
+        [ lamps
+        , HH.div [ style "flex:1;display:flex;flex-direction:column;justify-content:center;gap:3px" ] buttons
+        ]
+    ]
+
 -- | One of a card's buttons: set the card's parameter on every cell, or roll it.
 shortcut :: forall m. String -> CellShortcut -> HH.ComponentHTML Action Slots m
 shortcut label sc = tabBtn label false (Shortcut sc)
@@ -95,14 +111,14 @@ toggleGrid
   -> HH.ComponentHTML Action Slots m
 toggleGrid color get act odo =
   HH.div
-    [ style "display:grid;grid-template-columns:repeat(4,1fr);gap:4px" ]
+    [ style "flex:none;display:grid;grid-template-columns:repeat(4,18px);gap:3px" ]
     (mapWithIndex (\i c -> toggleCell color (get c) (act i)) odo.cells)
 
 toggleCell :: forall m. String -> Boolean -> Action -> HH.ComponentHTML Action Slots m
 toggleCell color on act =
   HH.div
     [ HE.onClick \_ -> act
-    , style "height:16px;cursor:pointer;user-select:none;display:flex;align-items:center;justify-content:center"
+    , style "width:18px;height:18px;cursor:pointer;user-select:none;display:flex;align-items:center;justify-content:center"
     ]
     [ HH.div
         [ style $ "width:9px;height:9px;border-radius:50%;border:1px solid #00000022;background:"

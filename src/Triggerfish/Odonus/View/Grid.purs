@@ -29,7 +29,7 @@ import Triggerfish.Routing.Model as RM
 import Triggerfish.Routing.Out as RO
 import Triggerfish.Odonus.View.Key (gridPiece)
 import Triggerfish.Odonus.Grid.Widgets
-  ( cellChrome, engrave, genRow, labelledRow, miniKnob, octLabel, panelShell, rateLabel, style, tabBtn )
+  ( cellChrome, diceBtn, engrave, genRow, labelledRow, miniKnob, octLabel, panelShell, rateLabel, style, tabBtn )
 import Data.Array (length, mapWithIndex, null, (!!), (..))
 
 gridPanel :: forall m. State -> H.ComponentHTML Action Slots m
@@ -124,7 +124,7 @@ noteButtons =
     ( [ tabBtn "LOW" false (SetAllNotes 0)
       , tabBtn "MID" false (SetAllNotes (M.knobMax `div` 2))
       , tabBtn "MELODY" false SeedMelody
-      , tabBtn "⟳ ROLL" false MarblesRoll
+      , diceBtn "roll the notes from the Marbles distribution" MarblesRoll
       ]
         <> mapWithIndex (\i f -> tabBtn f.name false (StampForm i)) formLibrary
     )
