@@ -98,7 +98,7 @@ shortcut :: forall m. String -> CellShortcut -> HH.ComponentHTML Action Slots m
 shortcut label sc = tabBtn label false (Shortcut sc)
 
 cardStyle :: String
-cardStyle = "margin-bottom:9px;padding:8px 9px;border-radius:7px;background:#ffffff30;border:1px solid #00000012"
+cardStyle = "margin-bottom:6px;padding:6px 9px;border-radius:7px;background:#ffffff30;border:1px solid #00000012"
 
 -- ---------------------------------------------------------------------------
 -- Bare grids — the 4×4 small multiples, sans label (the card header labels them).
@@ -135,8 +135,10 @@ perCellKnobGrid
    . String -> Int -> Int -> Int -> (Int -> KnobTarget) -> (M.Cell -> Int) -> M.Odonus
   -> HH.ComponentHTML Action Slots m
 perCellKnobGrid color lo hi ticks mkTarget getVal odo =
+  -- fixed 38px pads rather than the card's width (AC, 2026-10-14: PER CELL
+  -- fits an MBP's height, and a pad this size plays as well as the COMBINATIONS key)
   HH.div
-    [ style "display:grid;grid-template-columns:repeat(4,1fr);gap:4px" ]
+    [ style "display:grid;grid-template-columns:repeat(4,38px);gap:3px;justify-content:center" ]
     (mapWithIndex (\i c -> perCellKnob color lo hi ticks (mkTarget i) (getVal c)) odo.cells)
 
 perCellKnob
@@ -146,7 +148,7 @@ perCellKnob
 perCellKnob color lo hi ticks target val =
   HH.div
     [ style $ cellPad
-        <> ";padding:3px;aspect-ratio:1;display:flex;align-items:center;justify-content:center"
+        <> ";padding:2px;aspect-ratio:1;display:flex;align-items:center;justify-content:center"
     ]
     [ HH.div [ style "width:100%;height:100%;min-height:0" ]
         [ knob
