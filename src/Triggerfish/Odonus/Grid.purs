@@ -9,12 +9,14 @@ module Triggerfish.Odonus.Grid (component, Output(..)) where
 
 import Prelude
 
-import Data.Array (any, concatMap, deleteAt, elem, filter, find, findIndex, head, insertAt, length, mapMaybe, mapWithIndex, modifyAt, null, range, replicate, updateAt, (!!))
+import Data.Array (any, catMaybes, concatMap, deleteAt, elem, filter, find, findIndex, head, insertAt, length, mapMaybe, mapWithIndex, modifyAt, null, range, replicate, updateAt, (!!))
 import Data.Map as Map
 import Data.Foldable (foldl, for_)
 import Data.Int (ceil, floor, round, toNumber)
 import Data.Ord (abs)
 import Data.Maybe (Maybe(..), fromMaybe, isJust, isNothing, maybe)
+import Data.Traversable (traverse)
+import Effect.Random (randomInt)
 import Data.String.Common (joinWith)
 import Effect (Effect)
 import Effect.Aff (attempt)
@@ -62,7 +64,7 @@ import Web.HTML.Window as Window
 import Web.UIEvent.KeyboardEvent as KE
 import Web.UIEvent.MouseEvent as ME
 import Triggerfish.Odonus.Grid.Types
-  ( Action(..), GenKind(..), KnobTarget(..), Stage(..), stagePath, stageFromPath, RegionEdge(..), PlaySource(..), TwisterField(..), Logbook, NoteEvent, Slots, State, applyTarget, genDefaultAmt, genDefaultRate, genKinds, genLabel
+  ( Action(..), CellShortcut(..), GenKind(..), KnobTarget(..), Stage(..), stagePath, stageFromPath, RegionEdge(..), PlaySource(..), TwisterField(..), Logbook, NoteEvent, Slots, State, applyTarget, genDefaultAmt, genDefaultRate, genKinds, genLabel
   , marblesPadId, rateMax, replayTimelineId, setAmt, setRate, targetRange
    )
 import Triggerfish.Scale (scaleTypes)
@@ -257,9 +259,22 @@ handleQuery = case _ of
         persistAll
       _ -> pure unit
     pure (Just next)
-  -- no controls of its own in the shared bar (yet)
-  AskBar _ -> pure Nothing
-  BarAction _ next -> pure (Just next)
+  -- FREEZE lives in the shared bar, lit while generation is held; read with
+  -- the pending edits applied, so it is lit as soon as it is pressed.
+  AskBar reply -> do
+    st <- H.get
+    let frozen = (effectiveSim st).frozen
+    pure $ Just $ reply
+      { tabs: [], marks: "", icons: [], rebusTip: "", pickers: [], help: ""
+      , chips:
+          [ { id: "freeze", label: if frozen then "FROZEN" else "FREEZE"
+            , icons: [ { icon: "snowflake", color: if frozen then "#2b5878" else "#3f3c33" } ]
+            , active: frozen, attention: false
+            , tip: "hold every generator still (their settings kept), to hear or save a moment before it drifts" } ]
+      }
+  BarAction act next -> do
+    when (act == "chip:freeze") (handleAction ToggleFreeze)
+    pure (Just next)
   BrowserDrop _ next -> pure (Just next)
   BrowserRename i name next -> do
     H.modify_ \s -> s { presets = rename i (Str.trim name) s.presets, undoDelete = Nothing, notice = "" }
@@ -908,6 +923,13 @@ dispatch = case _ of
   ToggleGate i -> enqueue (RI.ToggleGate i)
   ToggleSkip i -> enqueue (RI.ToggleSkip i)
   SetAllNotes v -> enqueue (RI.SetAllNotes v)
+  -- A card's buttons: every cell at once, as plain absolute cell edits, read
+  -- against the model with the edits still pending applied, so a toggle is
+  -- sent only where the cell would otherwise be wrong.
+  Shortcut sc -> do
+    st <- H.get
+    inputs <- liftEffect (shortcutInputs sc (effectiveSim st).odo)
+    for_ inputs enqueue
   -- SeedMelody THREADS the shared seed, so deferred-on-both is mandatory: applied
   -- a step apart the two PRNGs would desync permanently. (Reef.Gen.seedMelody
   -- ignores its harmony-PC arg, so RI.SeedMelody == the old inline call.)
@@ -1445,6 +1467,46 @@ markTap k s = s { lastTap = k, lastTapMicros = s.nowMicros }
 -- | When the rig isn't attached the broadcast is skipped; the local queue still
 -- | applies it, so the standalone webapp behaves the same (just quantized to the
 -- | grid instead of instant).
+-- | The model as it will be once the pending edits land: what a bulk edit
+-- | and the bar's FREEZE read, so neither is a step behind a press.
+effectiveSim :: State -> RI.SimState
+effectiveSim st = RI.applyInputs (map _.input st.pending)
+  { odo: st.odo, gen: st.gen, spread: st.genSpread, bias: st.genBias
+  , seed: st.genSeed, frozen: st.genFrozen }
+
+-- | A card button's cell edits. A roll is drawn here and sent as values.
+shortcutInputs :: CellShortcut -> M.Odonus -> Effect (Array RI.Input)
+shortcutInputs sc odo = case sc of
+  VelAll v -> pure (every \i -> RI.SetCellVel i v)
+  VelAccent -> pure (every \i -> RI.SetCellVel i (if i `mod` 4 == 0 then 115 else 90))
+  DurAll n -> pure (every \i -> RI.SetCellDur i n)
+  DurRoll -> rolled \i -> RI.SetCellDur i <$> pick [ 1, 1, 2, 2, 3, 4 ]
+  RatchetAll n -> pure (every \i -> RI.SetCellRatchet i n)
+  RatchetRoll -> rolled \i -> do
+    r <- randomInt 1 5
+    RI.SetCellRatchet i <$> (if r == 1 then randomInt 2 4 else pure 1)
+  GateAll b -> flips _.gate RI.ToggleGate (\_ -> pure b)
+  GateRoll -> flips _.gate RI.ToggleGate (\_ -> chance 3 4)
+  SkipAll b -> flips _.skip RI.ToggleSkip (\_ -> pure b)
+  SkipRoll -> flips _.skip RI.ToggleSkip (\_ -> chance 1 5)
+  GlideAll b -> flips _.glide RI.ToggleGlide (\_ -> pure b)
+  GlideRoll -> flips _.glide RI.ToggleGlide (\_ -> chance 1 5)
+  where
+  cells = range 0 (length odo.cells - 1)
+  every f = map f cells
+  rolled f = traverse f cells
+  pick xs = fromMaybe 1 <<< (xs !! _) <$> randomInt 0 (length xs - 1)
+  chance k n = (_ <= k) <$> randomInt 1 n
+  -- a boolean has only a toggle on the wire: toggle where it differs
+  flips get toggle want = catMaybes <$> traverse
+    ( \i -> do
+        w <- want i
+        pure case odo.cells !! i of
+          Just c | get c /= w -> Just (toggle i)
+          _ -> Nothing
+    )
+    cells
+
 enqueue :: forall o m. MonadAff m => RI.Input -> H.HalogenM State Action Slots o m Unit
 enqueue input = do
   st <- H.get

@@ -24,6 +24,7 @@ module Triggerfish.Odonus.Grid.Types
   , twisterFieldLabel
   , State
   , Action(..)
+  , CellShortcut(..)
   , Slots
   ) where
 
@@ -395,6 +396,24 @@ type State =
   , lastChip :: Maybe ChipView
   }
 
+-- | A per-cell card's buttons: set one parameter on every cell at once, or roll
+-- | it. Each becomes ordinary absolute cell edits (`SetCellVel`, `ToggleGate` …),
+-- | so the rig follows with nothing new on the wire, and a roll is drawn here
+-- | and sent as its values.
+data CellShortcut
+  = VelAll Int
+  | VelAccent
+  | DurAll Int
+  | DurRoll
+  | RatchetAll Int
+  | RatchetRoll
+  | GateAll Boolean
+  | GateRoll
+  | SkipAll Boolean
+  | SkipRoll
+  | GlideAll Boolean
+  | GlideRoll
+
 data Action
   = Initialize
   | Step Scheduler.Tick
@@ -408,6 +427,7 @@ data Action
   | ToggleGate Int
   | ToggleSkip Int
   | SetAllNotes Int
+  | Shortcut CellShortcut   -- one of a card's buttons: every cell at once
   | SeedMelody              -- fill cells with a random in-harmony melodic line
   | StampForm Int           -- lay a named figure (Odonus.Forms) into the note field
   | ToggleHeadMute Int

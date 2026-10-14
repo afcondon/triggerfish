@@ -52,8 +52,7 @@ gridPanel s =
     , genRow s GNotes
     , xyPad s
     , readout s
-    , rollGrid
-    , formShelf
+    , noteButtons
     , HH.div [ style "margin-top:12px" ] [ noteField s.odo ]
     -- STEP LENGTH + GATE/SWING/HUMAN moved to the top of PARAMETERS (AC,
     -- 2026-08-06) — they're global transport/feel, not part of the note field, and
@@ -113,30 +112,22 @@ readout s =
 pct :: Number -> String
 pct x = show (round (x * 100.0)) <> "%"
 
--- | The NOTES one-shots as a compact 2×2: flatten every note to the scale root
--- | low (LOW, basslines) or middle (MID, melodies), seed a fresh MELODY line, or
--- | ROLL the Marbles once. Both octave floors follow the current key.
-rollGrid :: forall m. H.ComponentHTML Action Slots m
-rollGrid =
-  HH.div [ style "display:grid;grid-template-columns:1fr 1fr;gap:4px;margin-top:7px" ]
-    [ tabBtn "LOW" false (SetAllNotes 0)
-    , tabBtn "MID" false (SetAllNotes (M.knobMax `div` 2))
-    , tabBtn "MELODY" false SeedMelody
-    , tabBtn "⟳ ROLL" false MarblesRoll
-    ]
-
--- | FORM shelf — the known lines, beside MELODY's random one. Each button lays
--- | a named figure (`Triggerfish.Odonus.Forms`) into the note field as scale
--- | degrees, tiled to 16 and written in head I's reading order, so UP sounds
--- | like up whatever pattern that head walks. Nothing is "selected": a form is a
--- | one-shot stamp on the cells, which you are then free to edit.
-formShelf :: forall m. H.ComponentHTML Action Slots m
-formShelf =
-  HH.div [ style "margin-top:10px" ]
-    [ HH.div [ style $ engrave <> ";font-size:9px;margin-bottom:4px" ] [ HH.text "FORM" ]
-    , HH.div [ style "display:grid;grid-template-columns:repeat(3,1fr);gap:4px" ]
-        (mapWithIndex (\i f -> tabBtn f.name false (StampForm i)) formLibrary)
-    ]
+-- | The NOTES one-shots, one block of four columns: flatten every note to the
+-- | scale root low (LOW, basslines) or middle (MID, melodies), seed a random
+-- | MELODY, ROLL the Marbles once, or lay a known FORM. A form is laid into the
+-- | note field as scale degrees (`Triggerfish.Odonus.Forms`), tiled to 16 and in
+-- | head I's reading order, so UP sounds like up whatever pattern that head
+-- | walks. Nothing stays selected: each is a one-shot stamp on the cells.
+noteButtons :: forall m. H.ComponentHTML Action Slots m
+noteButtons =
+  HH.div [ style "display:grid;grid-template-columns:repeat(4,1fr);gap:4px;margin-top:7px" ]
+    ( [ tabBtn "LOW" false (SetAllNotes 0)
+      , tabBtn "MID" false (SetAllNotes (M.knobMax `div` 2))
+      , tabBtn "MELODY" false SeedMelody
+      , tabBtn "⟳ ROLL" false MarblesRoll
+      ]
+        <> mapWithIndex (\i f -> tabBtn f.name false (StampForm i)) formLibrary
+    )
 
 -- ---------------------------------------------------------------------------
 -- Groove + transport chrome

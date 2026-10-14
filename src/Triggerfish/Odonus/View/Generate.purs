@@ -14,21 +14,24 @@ import Prelude
 import Data.Array (mapWithIndex)
 import Halogen.HTML as HH
 import Halogen.HTML.Events as HE
-import Triggerfish.Odonus.Grid.Types (Action(..), GenKind(..), KnobTarget(..), Slots, State)
+import Triggerfish.Odonus.Grid.Types (Action(..), CellShortcut(..), GenKind(..), KnobTarget(..), Slots, State)
 import Triggerfish.Odonus.View.Grid (transportRow)
-import Triggerfish.Odonus.Grid.Widgets (cellPad, genRow, panelShell, style)
+import Triggerfish.Odonus.Grid.Widgets (cellPad, genRow, panelShell, style, tabBtn)
 import Triggerfish.Odonus.Model as M
 import Triggerfish.Ui.Knob (knob)
 
 generatePanel :: forall m. State -> HH.ComponentHTML Action Slots m
 generatePanel s =
   panelShell s.collapsed "PARAMETERS" "sources · grids" "flex:0 1 300px;min-width:min-content"
-    ( [ transportRow s, freezeToggle s ]
+    ( [ transportRow s ]
         <> map (topRow s) [ GHeads, GTransp, GPattern, GSpeed ]
         <>
-        [ paramCard s GGate    (toggleGrid "#e0a32e" _.gate ToggleGate s.odo)
-        , paramCard s GSkip    (toggleGrid "#c0563f" _.skip ToggleSkip s.odo)
-        , paramCard s GGlide   (toggleGrid "#4f9d69" _.glide ToggleGlide s.odo)
+        [ paramCard s GGate (toggleGrid "#e0a32e" _.gate ToggleGate s.odo)
+            [ shortcut "ALL" (GateAll true), shortcut "NONE" (GateAll false), shortcut "⟳ ROLL" GateRoll ]
+        , paramCard s GSkip (toggleGrid "#c0563f" _.skip ToggleSkip s.odo)
+            [ shortcut "NONE" (SkipAll false), shortcut "⟳ ROLL" SkipRoll ]
+        , paramCard s GGlide (toggleGrid "#4f9d69" _.glide ToggleGlide s.odo)
+            [ shortcut "NONE" (GlideAll false), shortcut "⟳ ROLL" GlideRoll ]
         ]
     )
 
@@ -44,24 +47,14 @@ cellParamsPanel s =
   -- cost the column the vertical space its third knob grid needed — and each card
   -- below is already labelled LEN / RATCHET / VELOCITY (AC, 2026-08-06).
   panelShell s.collapsed "PER CELL" "" "flex:0 1 290px;min-width:min-content"
-    [ paramCard s GLen     (perCellKnobGrid "#7d8a93" 1 8 8 CellDur _.dur s.odo)
+    [ paramCard s GLen (perCellKnobGrid "#7d8a93" 1 8 8 CellDur _.dur s.odo)
+        [ shortcut "1" (DurAll 1), shortcut "2" (DurAll 2), shortcut "4" (DurAll 4), shortcut "⟳ ROLL" DurRoll ]
     , paramCard s GRatchet (perCellKnobGrid "#9d6b8a" 1 8 8 CellRatchet _.ratchet s.odo)
-    , paramCard s GVel     (perCellKnobGrid "#8a9d6b" 1 127 0 CellVel _.vel s.odo)
+        [ shortcut "NONE" (RatchetAll 1), shortcut "×2" (RatchetAll 2), shortcut "⟳ ROLL" RatchetRoll ]
+    , paramCard s GVel (perCellKnobGrid "#8a9d6b" 1 127 0 CellVel _.vel s.odo)
+        [ shortcut "SOFT" (VelAll 60), shortcut "MID" (VelAll 90), shortcut "LOUD" (VelAll 115)
+        , shortcut "ACCENT" VelAccent ]
     ]
-
--- | The freeze toggle — pauses ALL generation WITHOUT touching the config, so a
--- | liked moment holds still long enough to hear, extend, or save it before the
--- | matrix drifts on. Deferred-on-both, so the rig freezes on the same step.
-freezeToggle :: forall m. State -> HH.ComponentHTML Action Slots m
-freezeToggle s =
-  HH.div
-    [ HE.onClick \_ -> ToggleFreeze
-    , style $ "display:flex;align-items:center;justify-content:center;cursor:pointer;user-select:none;"
-        <> "margin-bottom:9px;padding:5px 0;border-radius:6px;font-size:11px;letter-spacing:0.07em;"
-        <> "border:1px solid " <> (if s.genFrozen then "#5b8bb0" else "#00000018") <> ";"
-        <> (if s.genFrozen then "background:#dcebf5;color:#2b5878;font-weight:600"
-                           else "background:#ffffff30;color:#6a6a6a") ]
-    [ HH.text (if s.genFrozen then "❄ FROZEN — generation paused" else "❄ freeze generation") ]
 
 -- | A grid-less generator (heads / transp / pattern / speed / key): the plain
 -- | source row with a divider under it, as the old GENERATE pane rendered them.
@@ -73,12 +66,20 @@ topRow s kind =
 -- | A parameter card: the generator row header (LED · label · depth · period)
 -- | over the bare 4×4 grid it drives. The generator's label serves for both, so
 -- | the grid carries no second label.
-paramCard :: forall m. State -> GenKind -> HH.ComponentHTML Action Slots m -> HH.ComponentHTML Action Slots m
-paramCard s kind gridBody =
+paramCard
+  :: forall m
+   . State -> GenKind -> HH.ComponentHTML Action Slots m -> Array (HH.ComponentHTML Action Slots m)
+  -> HH.ComponentHTML Action Slots m
+paramCard s kind gridBody buttons =
   HH.div [ style cardStyle ]
     [ genRow s kind
     , HH.div [ style "margin-top:7px" ] [ gridBody ]
+    , HH.div [ style "display:flex;gap:3px;margin-top:6px" ] buttons
     ]
+
+-- | One of a card's buttons: set the card's parameter on every cell, or roll it.
+shortcut :: forall m. String -> CellShortcut -> HH.ComponentHTML Action Slots m
+shortcut label sc = tabBtn label false (Shortcut sc)
 
 cardStyle :: String
 cardStyle = "margin-bottom:9px;padding:8px 9px;border-radius:7px;background:#ffffff30;border:1px solid #00000012"
@@ -101,12 +102,11 @@ toggleCell :: forall m. String -> Boolean -> Action -> HH.ComponentHTML Action S
 toggleCell color on act =
   HH.div
     [ HE.onClick \_ -> act
-    , style $ cellPad
-        <> ";height:14px;cursor:pointer;user-select:none;display:flex;align-items:center;justify-content:center"
+    , style "height:16px;cursor:pointer;user-select:none;display:flex;align-items:center;justify-content:center"
     ]
     [ HH.div
-        [ style $ "width:7px;height:7px;border-radius:50%;border:1px solid #00000022;background:"
-            <> (if on then color else "#46433a")
+        [ style $ "width:9px;height:9px;border-radius:50%;border:1px solid #00000022;background:"
+            <> (if on then color else "#b4ae9c")
             <> (if on then ";box-shadow:0 0 5px " <> color else "")
         ] []
     ]
