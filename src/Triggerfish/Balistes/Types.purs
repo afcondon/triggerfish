@@ -205,6 +205,9 @@ type State =
   , selected :: Array Spot
   , cursor :: Maybe Spot
   , copied :: Array Copied
+  -- the muted kit lanes, one bit a lane (Reef.Balistes.Kit): not a
+  -- rhythm's, so never saved; sent to the rig as `balistes-mute`
+  , mutes :: Int
   -- the POLYTRIG jack rack (SELENE DRUMS tab) — browser-only, no reef path.
   -- The named rhythms the rig's stage holds, by word (Balistes.Stage), which
   -- `balistes $ "<a b>"` plays; Nothing until the stage has answered a
@@ -262,6 +265,7 @@ data Action
   | SetCellRatchet Int         -- nudge its ratchet count
   | CycleCellCond              -- step its trig condition
   | ClearSelected              -- clear the selected hits + deselect
+  | ToggleMute (Array Int)     -- mute the lanes, or unmute them if all are muted
   | RytmKey E.Event            -- ⌫, ←/→, ⌘C/⌘V and Esc on the selection
   | SetLength Int              -- the rhythm's length, the new bars repeating it
   | NudgeLength Int            -- a step longer (silent) or shorter

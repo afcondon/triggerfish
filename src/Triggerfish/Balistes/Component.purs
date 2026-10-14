@@ -20,8 +20,9 @@ import Prelude
 
 import Data.Array (concatMap, deleteAt, filter, find, head, insertAt, length, mapWithIndex, modifyAt, null, partition, range, (!!))
 import Data.Ord (abs)
+import Reef.Balistes.Kit as Kit
 import Data.Tuple (Tuple(..), fst, snd)
-import Data.Foldable (any, elem, foldl, for_, minimum)
+import Data.Foldable (all, any, elem, foldl, for_, minimum)
 import Effect.Random (randomInt)
 import Data.Map as Map
 import Data.Int (floor, round, toNumber)
@@ -113,7 +114,7 @@ component =
         , nowMicros: 0.0, dragging: Nothing, paint: Nothing, dragSub: Nothing
         , presets: []
         , identity: Nothing, lastChip: Nothing
-        , active: AGrids, editing: false, clickMode: Assemble, laneEditOpen: false, fixedSel: 0, lane: "", laneReadout: "", selected: [], cursor: Nothing, copied: []
+        , active: AGrids, editing: false, clickMode: Assemble, laneEditOpen: false, fixedSel: 0, lane: "", laneReadout: "", selected: [], cursor: Nothing, copied: [], mutes: 0
         , scratchFixed: Nothing
         , stageRhythms: Nothing, shelf: Nothing, undoDelete: Nothing, follow: Nothing, followQueue: [] }
     , render
@@ -383,7 +384,7 @@ handleAction = case _ of
             -- exact code the BEAM voice runs, keyed off the same absolute step, so a
             -- pushed fixed rhythm plays in lockstep. The frontend projects its rich
             -- pattern onto the wire-flat reef pattern (toWire).
-            for_ (RF.renderFixed (P.toWire pat) (tick.index - offset)) \e ->
+            for_ (filter (\e -> Kit.audible st.mutes e.note) (RF.renderFixed (P.toWire pat) (tick.index - offset))) \e ->
               emitHit st.outs (RO.soloDrumRouting st.outs st.routing kitNotes) stepMs
                 (max 0.0 (tick.delayMs + toNumber e.pushMs))
                 e.note e.durMs e.velocity e.ratchet
@@ -409,7 +410,7 @@ handleAction = case _ of
           -- boundary rings as an open hat and chokes its closed self; ratchet roll
           -- + per-voice Dilla push come back on each event. The runtime only
           -- schedules the result — front and rig can't diverge on the decision.
-          for_ (Sim.renderStep bal0 playedStep r.fired) \e ->
+          for_ (filter (\e -> Kit.audible st.mutes e.note) (Sim.renderStep bal0 playedStep r.fired)) \e ->
             emitHit st.outs (RO.soloDrumRouting st.outs st.routing kitNotes) stepMs
               (max 0.0 (tick.delayMs + toNumber e.pushMs))
               e.note e.durMs e.velocity e.ratchet
@@ -711,6 +712,11 @@ handleAction = case _ of
     for_ (head st.selected >>= \sp -> map (\p -> P.cycleCond (P.cellAt p sp.lane sp.step).cond) (selectedPattern st)) \cond -> do
       H.modify_ (modSelectedCell _ { cond = cond })
       persistLib
+  ToggleMute lanes -> do
+    H.modify_ \s ->
+      let on = not (all (Kit.muted s.mutes) lanes)
+      in s { mutes = foldl (\m l -> if Kit.muted m l == on then m else Kit.toggleMute l m) s.mutes lanes }
+    pushMutes
   ClearSelected -> do
     H.modify_ \s -> (modSelectedCell (const P.emptyCell) s) { selected = [] }
     persistLib
@@ -1043,6 +1049,14 @@ pushRouting = do
   st <- H.get
   when (st.sounding == Rig && not (null st.outs)) $ for_ st.binnacle \bin ->
     liftEffect $ Transport.send (Binnacle.socket bin) ("balistes-routing " <> RR.encodeDrumRouting (drumsOf st))
+  pushMutes
+
+-- | The muted lanes, to the rig, which drops their hits in every mode.
+pushMutes :: forall o m. MonadAff m => H.HalogenM State Action () o m Unit
+pushMutes = do
+  st <- H.get
+  when (st.sounding == Rig) $ for_ st.binnacle \bin ->
+    liftEffect $ Transport.send (Binnacle.socket bin) ("balistes-mute " <> show st.mutes)
 
 -- | Emit one already-resolved hit down its lane's legs, `delay0` from now for
 -- | `durMs`, or, when the cell is ratcheted (n > 1), as n evenly-spaced

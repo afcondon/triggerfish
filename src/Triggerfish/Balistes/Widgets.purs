@@ -143,9 +143,13 @@ svgRect x0 y0 wid hgt c op =
 -- | on a faint button that plays one hit of `lane` where the routing sends it,
 -- | so a drum can be heard before it is programmed (AC, 2026-10-13). Shared by
 -- | the Grids heatmap and the fixed grid.
+-- |
+-- | Its M mutes `mutes` (AC, 2026-10-14): the lane, or for the Grids hat both
+-- | hats; a muted head is dimmed and its M lit.
 laneHead
   :: forall m
-   . { top :: Number, height :: Number, width :: Number, lane :: Int, name :: String, number :: String, color :: String, opacity :: String }
+   . { top :: Number, height :: Number, width :: Number, lane :: Int, name :: String, number :: String, color :: String, opacity :: String
+     , mutes :: Array Int, muted :: Boolean }
   -> Array (H.ComponentHTML Action () m)
 laneHead h =
   [ svgEl "rect"
@@ -167,6 +171,18 @@ laneHead h =
       , svgAttr "font-size" "8.5", svgAttr "font-family" "'SF Mono',Menlo,monospace"
       , svgAttr "style" "pointer-events:none" ]
       [ HH.text (h.number <> " ▸") ]
+  , svgEl "rect"
+      [ svgAttr "x" (show (h.width - 14.0)), svgAttr "y" (show (h.top + 4.5)), svgAttr "width" "9", svgAttr "height" "9", svgAttr "rx" "1.5"
+      , svgAttr "fill" (if h.muted then "#8a3120" else "#efece1"), svgAttr "stroke" "#3f3c33", svgAttr "stroke-opacity" "0.35", svgAttr "stroke-width" "0.5"
+      , svgAttr "style" "cursor:pointer"
+      , svgOn "click" \_ -> ToggleMute h.mutes ]
+      [ svgEl "title" [] [ HH.text ((if h.muted then "Unmute " else "Mute ") <> h.name) ] ]
+  , svgEl "text"
+      [ svgAttr "x" (show (h.width - 9.5)), svgAttr "y" (show (h.top + 11.6)), svgAttr "text-anchor" "middle"
+      , svgAttr "fill" (if h.muted then "#f4f1e8" else "#3f3c33"), svgAttr "fill-opacity" (if h.muted then "1" else "0.6")
+      , svgAttr "font-size" "6.5", svgAttr "font-weight" "bold", svgAttr "font-family" "'SF Mono',Menlo,monospace"
+      , svgAttr "style" "pointer-events:none" ]
+      [ HH.text "M" ]
   ]
 
 -- Flipped concatMap so the call sites read `range … `concatMap'` \i -> …`.

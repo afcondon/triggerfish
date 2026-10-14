@@ -10,6 +10,8 @@ module Triggerfish.Balistes.View.Fixed
 
 import Prelude
 
+import Reef.Balistes.Kit as Kit
+
 import Data.Array (concatMap, head, length, range, (!!))
 import Data.Foldable (all, any, elem)
 import Data.Int (toNumber)
@@ -186,8 +188,10 @@ fixedSvg s pat =
     rowLabel row =
       let lane = laneAt row
           op = if laneEmpty lane then "0.4" else "0.9"
+          muted = Kit.muted s.mutes lane
       in laneHead { top: toNumber row * rowH, height: rowH, width: gutter, lane
-                  , name: P.laneName lane, number: show (lane + 1), color: laneColor lane, opacity: op }
+                  , name: P.laneName lane, number: show (lane + 1), color: laneColor lane
+                  , opacity: if muted then "0.3" else op, mutes: [ lane ], muted }
     playhead =
       svgEl "rect"
         [ svgAttr "x" (show (colX here)), svgAttr "y" "0"

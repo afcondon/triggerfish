@@ -10,8 +10,10 @@ module Triggerfish.Balistes.View.Grids
 
 import Prelude
 
+import Reef.Balistes.Kit as Kit
+
 import Data.Array (concatMap, null, range)
-import Data.Foldable (sum)
+import Data.Foldable (all, sum)
 import Data.Int (toNumber)
 import Data.Int.Bits (shr)
 import Halogen as H
@@ -206,8 +208,10 @@ heatSvg s =
             0 -> { lane: 0, number: "1" }
             1 -> { lane: 1, number: "2" }
             _ -> { lane: 4, number: "5·7" }
+          mutes = if lane == 2 then [ 4, 6 ] else [ kit.lane ]
+          muted = all (Kit.muted s.mutes) mutes
       in laneHead { top: laneY lane, height: rowH, width: gutter, lane: kit.lane, name: M.instName lane
-                  , number: kit.number, color: instColor lane, opacity: "0.9" }
+                  , number: kit.number, color: instColor lane, opacity: if muted then "0.35" else "0.9", mutes, muted }
     visuals =
       range 0 2 `concatMap'` \lane -> range 0 (cols - 1) `concatMap'` \step -> gridsCell lane step
     targets =
