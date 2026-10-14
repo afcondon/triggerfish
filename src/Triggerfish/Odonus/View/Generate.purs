@@ -22,7 +22,7 @@ import Triggerfish.Ui.Knob (knob)
 
 generatePanel :: forall m. State -> HH.ComponentHTML Action Slots m
 generatePanel s =
-  panelShell s.collapsed "PARAMETERS" "sources · grids" "flex:0 1 300px;min-width:min-content"
+  panelShell s.collapsed "PARAMETERS" "sources · grids" "flex:0 1 280px;min-width:min-content"
     ( [ transportRow s ]
         <> map (topRow s) [ GHeads, GTransp, GPattern, GSpeed ]
         <>
@@ -46,7 +46,7 @@ cellParamsPanel s =
   -- No subtitle: "len · ratchet · velocity" wrapped the header onto two lines and
   -- cost the column the vertical space its third knob grid needed — and each card
   -- below is already labelled LEN / RATCHET / VELOCITY (AC, 2026-08-06).
-  panelShell s.collapsed "PER CELL" "" "flex:0 1 290px;min-width:min-content"
+  panelShell s.collapsed "PER CELL" "" "flex:0 1 270px;min-width:min-content"
     [ paramCard s GLen (perCellKnobGrid "#7d8a93" 1 8 8 CellDur _.dur s.odo)
         [ shortcut "1" (DurAll 1), shortcut "2" (DurAll 2), shortcut "4" (DurAll 4), diceBtn "a length for each cell, mostly 1 or 2" (Shortcut DurRoll) ]
     , paramCard s GRatchet (perCellKnobGrid "#9d6b8a" 1 8 8 CellRatchet _.ratchet s.odo)

@@ -23,7 +23,7 @@ import Halogen.Widgets.Svg (svgAttr, svgEl)
 
 playheadsPanel :: forall m. State -> H.ComponentHTML Action Slots m
 playheadsPanel s =
-  panelShell s.collapsed "PLAYHEADS" "Fugue · Access" "flex:0 1 290px;min-width:min-content"
+  panelShell s.collapsed "PLAYHEADS" "Fugue · Access" "flex:0 0 400px;min-width:min-content"
     [ outputPiece s
     , phasingBlock s.unisonMask s.odo
     , HH.span [ style $ engrave <> ";font-size:9px;opacity:0.85;display:block;margin-bottom:4px" ]
@@ -131,7 +131,7 @@ comboBar on h =
 
 headBank :: forall m. State -> H.ComponentHTML Action Slots m
 headBank s =
-  HH.div [ style "display:flex;flex-direction:column;gap:8px" ]
+  HH.div [ style "display:flex;flex-direction:column;gap:6px" ]
     (mapWithIndex (headStrip s) s.odo.heads)
 
 -- | Odonus's Euclid limits — taken from the engine, not chosen here.
@@ -149,23 +149,23 @@ headStrip s h hd =
     pat = fromMaybe { name: "?", order: [] } (M.patternLibrary !! hd.patternIx)
   in
     HH.div
-      [ style $ "display:flex;flex-direction:column;gap:8px;padding:8px 10px;border-radius:8px;background:#cbc6b6;box-shadow:0 0 0 1px " <> col <> "66;" <> dim ]
+      [ style $ "display:flex;flex-direction:column;gap:5px;padding:6px 10px;border-radius:8px;background:#cbc6b6;box-shadow:0 0 0 1px " <> col <> "66;" <> dim ]
       -- TOP TIER: engage/bypass in the top-left corner, then SPEED as one wide row.
       [ HH.div [ style "display:flex;align-items:center;gap:12px" ]
           [ muteBlock h hd col
           , speedRow h hd.speedIx col
           ]
-      -- BOTTOM TIER: pattern + direction · Euclid ring · INT knob.
-      , HH.div [ style "display:flex;align-items:center;gap:14px" ]
+      -- BOTTOM TIER, four columns centred on one line (AC, 2026-10-14: the
+      -- strip wider and shorter, so the four fit the pane's height):
+      -- pattern + direction · Euclid ring · INT knob · what moves the head.
+      , HH.div [ style "display:flex;align-items:center;justify-content:space-between;gap:10px" ]
           [ HH.div [ style "display:flex;flex-direction:column;align-items:center;gap:4px" ]
               [ patBlock h pat col hd.seqPos
               , dirRadio h hd.direction col
               ]
-          , HH.div [ style "display:flex;flex-direction:column;align-items:center;gap:4px" ]
-              [ HH.div [ style (if hd.clock == 1 then "opacity:0.35" else "") ] [ euclidCell s h hd col ]
-              , clockRadio h hd.clock col
-              ]
+          , HH.div [ style (if hd.clock == 1 then "opacity:0.35" else "") ] [ euclidCell s h hd col ]
           , miniKnob (HeadTransp h) hd.transp col "INT" (signed hd.transp)
+          , clockRadio h hd.clock col
           ]
       ]
 
@@ -189,8 +189,8 @@ euclidCell s h hd col =
 -- | outlined in ink, sized to the voice strip.
 euclidStyle :: String -> Euclid.Style
 euclidStyle col = Euclid.defaultStyle
-  { size = 82.0, inset = 12.0, dotOn = 4.0, dotOff = 2.6
-  , fill = col, ink = "#3f3c33", fontSize = 15.0, stretch = false
+  { size = 72.0, inset = 10.0, dotOn = 4.0, dotOff = 2.6
+  , fill = col, ink = "#3f3c33", fontSize = 12.5, stretch = false
   }
 
 -- | The selection box, tuned for the `#cbc6b6` voice strip rather than Selene's
@@ -233,7 +233,7 @@ dirRadio h cur col =
 clockRadio :: forall m. Int -> Int -> String -> H.ComponentHTML Action Slots m
 clockRadio h cur col =
   HH.div
-    [ style "display:flex;gap:3px;width:82px"
+    [ style "display:flex;flex-direction:column;gap:3px;width:48px"
     , HP.title "what moves this head on: its steps (the ring), or its notes' lengths (each cell held for its dur)" ]
     [ dirBtn "steps" (cur == 0) col (SetHeadClock h 0)
     , dirBtn "notes" (cur == 1) col (SetHeadClock h 1)
@@ -299,7 +299,7 @@ patternThumb pat color seqPos =
           , svgAttr "stroke" "#0000001a", svgAttr "stroke-width" "0.5" ] []
       ]
   in
-    svgEl "svg" [ svgAttr "viewBox" "0 0 54 54", svgAttr "width" "46", svgAttr "height" "46" ]
+    svgEl "svg" [ svgAttr "viewBox" "0 0 54 54", svgAttr "width" "40", svgAttr "height" "40" ]
       ( gline 0 <> gline 1 <> gline 2 <> gline 3 <> gline 4
           <>
             [ svgEl "polyline"

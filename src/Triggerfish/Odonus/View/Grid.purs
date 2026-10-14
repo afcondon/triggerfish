@@ -34,7 +34,7 @@ import Data.Array (length, mapWithIndex, null, (!!), (..))
 
 gridPanel :: forall m. State -> H.ComponentHTML Action Slots m
 gridPanel s =
-  panelShell s.collapsed "NOTES" "pitch · Marbles" "flex:0 1 340px;min-width:min-content"
+  panelShell s.collapsed "NOTES" "pitch · Marbles" "flex:0 1 310px;min-width:min-content"
     -- OCTAVE + DEGREE: the two global pitch moves, brought here from KEY — both
     -- shift the register the note grid plays and its knob labels now show. OCTAVE
     -- is chromatic (±octaves); DEGREE is scalar — shift every voice by a scale
