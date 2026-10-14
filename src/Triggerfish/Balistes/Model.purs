@@ -11,6 +11,7 @@ module Triggerfish.Balistes.Model
   ( Balistes
   , defaultBalistes
   , tick
+  , bake
   , reset
   , reseed
   , setX
@@ -41,7 +42,9 @@ module Triggerfish.Balistes.Model
 import Prelude
 
 import Data.Array (replicate, updateAt)
-import Data.Maybe (fromMaybe)
+import Data.Foldable (foldl)
+import Data.Maybe (Maybe(..), fromMaybe)
+import Triggerfish.Balistes.Pattern as P
 import Reef.Balistes.Engine (Trigger, freshPerturbations, readDrumMap, clampDensity)
 import Reef.Balistes.Sim as Sim
 
@@ -123,6 +126,23 @@ initialSeed = 0x1A2B3C4D
 -- | sampled for the new pattern — the firmware's once-per-pattern-start rule.
 tick :: Balistes -> { bal :: Balistes, fired :: Array Trigger }
 tick = Sim.stepBal
+
+-- | **Grids baked into a rhythm** (AC, 2026-10-14): what the engine plays over
+-- | its 32-step bar from the top, through the shared `renderStep`, written as
+-- | RYTM cells: the lane from the note (so an open hat lands on OH), the
+-- | velocity and the ratchet. The Dilla push is not carried; a rhythm has none.
+bake :: String -> Balistes -> P.FixedPattern
+bake name b0 = go 0 (b0 { step = 0 }) (P.emptyPattern name 32)
+  where
+  go i b p
+    | i >= 32 = p
+    | otherwise =
+        let r = tick b
+            hits = Sim.renderStep b b.step r.fired
+            place acc e = case P.laneFromNote e.note of
+              Just lane -> P.modifyCell lane i (const ((P.hitCell e.velocity) { ratchet = e.ratchet })) acc
+              Nothing -> acc
+        in go (i + 1) r.bal (foldl place p hits)
 
 -- | Jump to step 0 and resample — the panel RESET / restart.
 reset :: Balistes -> Balistes

@@ -772,6 +772,14 @@ handleAction = case _ of
   NudgeLength d -> do
     st <- H.get
     for_ (selectedPattern st) \p -> resizeRhythm (P.resizeTo (p.steps + d))
+  -- Grids pushed to RYTM: what it plays, baked into a new rhythm and selected
+  -- there, to edit, lengthen and fill; what is playing does not change.
+  PushToRytm -> do
+    H.modify_ \s ->
+      let n = length s.presets
+          p = M.bake ("grids " <> show s.bal.x <> "·" <> show s.bal.y) s.bal
+      in s { presets = s.presets <> [ presetOfRhythm p ], fixedSel = n, scratchFixed = Nothing, selected = [] }
+    persist
   -- a fresh empty rhythm, selected and opened in EDIT so all 16 lanes show.
   NewPattern -> do
     H.modify_ \s ->
@@ -1439,7 +1447,7 @@ sameBrain a b = case a, b of
 
 mutableBand :: forall m. State -> H.ComponentHTML Action () m
 mutableBand s =
-  band s AGrids "GRIDS" [ xyReadout ]
+  band s AGrids "GRIDS" [ xyReadout, armBtn "PUSH TO RYTM" false PushToRytm ]
     ( HH.div [ style "display:flex;align-items:flex-start;gap:16px" ]
         [ HH.div [ style "flex:0 0 200px;height:200px" ] [ padSvg s ]
         , knobStack s

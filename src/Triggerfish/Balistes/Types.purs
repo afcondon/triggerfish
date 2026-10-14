@@ -275,6 +275,7 @@ data Action
   | RytmKey E.Event            -- ⌫, ←/→, ⌘C/⌘V and Esc on the selection
   | SetLength Int              -- the rhythm's length, the new bars repeating it
   | NudgeLength Int            -- a step longer (silent) or shorter
+  | PushToRytm                 -- bake what Grids plays into a new RYTM rhythm
   | NewPattern                 -- append a fresh empty rhythm + select it
   | HearLane Int               -- one hit of a kit lane, where the routing sends it
   | PushBalistes               -- lockstep handoff: the routing table, then the brain's state, to the rig
