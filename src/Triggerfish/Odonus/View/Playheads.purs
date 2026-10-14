@@ -165,7 +165,8 @@ headStrip s h hd =
               ]
           , HH.div [ style (if hd.clock == 1 then "opacity:0.35" else "") ] [ euclidCell s h hd col ]
           , miniKnob (HeadTransp h) hd.transp col "INT" (signed hd.transp)
-          , clockRadio h hd.clock col
+          , HH.div [ style "display:flex;flex-direction:column;gap:3px;width:48px" ]
+              [ clockRadio h hd.clock col, restartBtn h hd col ]
           ]
       ]
 
@@ -233,11 +234,21 @@ dirRadio h cur col =
 clockRadio :: forall m. Int -> Int -> String -> H.ComponentHTML Action Slots m
 clockRadio h cur col =
   HH.div
-    [ style "display:flex;flex-direction:column;gap:3px;width:48px"
+    [ style "display:flex;flex-direction:column;gap:3px"
     , HP.title "what moves this head on: its steps (the ring), or its notes' lengths (each cell held for its dur)" ]
     [ dirBtn "steps" (cur == 0) col (SetHeadClock h 0)
     , dirBtn "notes" (cur == 1) col (SetHeadClock h 1)
     ]
+
+-- | Whether the pattern starts again at each turn of the ring, so E(5,8)
+-- | is a five-note figure repeating with its rhythm. The step clock's alone:
+-- | dimmed, like the ring, when the notes' lengths move the head.
+restartBtn :: forall m. Int -> M.Head -> String -> H.ComponentHTML Action Slots m
+restartBtn h hd col =
+  HH.div
+    [ style (if hd.clock == 1 then "opacity:0.35;display:flex" else "display:flex")
+    , HP.title "restart the pattern at each turn of the ring: E(5,8) plays a five-note figure, again and again" ]
+    [ dirBtn "↺ ring" hd.restart col (SetHeadRestart h (not hd.restart)) ]
 
 dirGlyph :: Int -> String
 dirGlyph = case _ of
