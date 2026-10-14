@@ -499,9 +499,7 @@ handleAction = case _ of
   Dice -> do
     x <- liftEffect (randomInt 0 255)
     y <- liftEffect (randomInt 0 255)
-    bd <- liftEffect (randomInt 150 235)
-    sd <- liftEffect (randomInt 110 210)
-    hh <- liftEffect (randomInt 120 230)
+    { bd, sd, hh } <- liftEffect rollDensities
     rand <- liftEffect (randomInt 0 60)
     open <- liftEffect (randomInt 20 140)
     let setters =
@@ -509,12 +507,10 @@ handleAction = case _ of
           , RBI.BSetRandomness rand, RBI.BSetOpen open ]
     H.modify_ \s -> s { bal = M.reseed (foldl (flip RBI.applyBInput) s.bal setters) }
     for_ (setters <> [ RBI.BReseed ]) broadcastBInput
-  -- The three coloured dice (AC, 2026-10-14): new BD/SD/HH densities, in
-  -- Dice's ranges, leaving the place on the map where it is.
+  -- The three coloured dice (AC, 2026-10-14): new BD/SD/HH densities, as
+  -- Dice rolls them, leaving the place on the map where it is.
   DiceDensities -> do
-    bd <- liftEffect (randomInt 150 235)
-    sd <- liftEffect (randomInt 110 210)
-    hh <- liftEffect (randomInt 120 230)
+    { bd, sd, hh } <- liftEffect rollDensities
     settle [ RBI.BSetDensity 0 bd, RBI.BSetDensity 1 sd, RBI.BSetDensity 2 hh ]
   -- The Dilla dice: a push rolled within the feel's own shape, the kick near
   -- the grid, the snare late, the hats (closed and open together) a little
@@ -866,6 +862,19 @@ settle :: forall o m. MonadAff m => Array RBI.BInput -> H.HalogenM State Action 
 settle setters = do
   H.modify_ \s -> s { bal = foldl (flip RBI.applyBInput) s.bal setters }
   for_ setters broadcastBInput
+
+-- | Dice's densities (AC, 2026-10-14): anywhere on the knob 0..255 one roll in
+-- | three, otherwise in the range that reliably grooves (BD busy, SD and HH freer).
+rollDensities :: Effect { bd :: Int, sd :: Int, hh :: Int }
+rollDensities = ado
+  bd <- roll 150 235
+  sd <- roll 110 210
+  hh <- roll 120 230
+  in { bd, sd, hh }
+  where
+  roll lo hi = do
+    wide <- randomInt 0 2
+    if wide == 0 then randomInt 0 255 else randomInt lo hi
 
 -- | A push array (BD, SD, HH, OH) as the four inputs that set it.
 pushes :: Array Int -> Array RBI.BInput
