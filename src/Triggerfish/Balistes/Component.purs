@@ -601,8 +601,7 @@ handleAction = case _ of
   DeletePreset i -> do
     H.modify_ (deletePresetAt i)
     persist
-  -- DILLA and FLAT go to the rig as four pushes, as a knob's settled value does
-  DillaPreset -> H.gets _.bal >>= \b -> settle (pushes (M.dillaPush b).push)
+  -- FLAT goes to the rig as four pushes, as a knob's settled value does
   FlatGroove -> H.gets _.bal >>= \b -> settle (pushes (M.flatPush b).push)
   -- switching pattern just changes which branch the next Step takes; hits are
   -- one-shot, so nothing to silence.

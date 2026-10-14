@@ -46,7 +46,7 @@ knobStack s =
         [ bigKnob KRand "#6a6657" "RAND" s.bal
         , bigKnob KOpen ohColor "OPEN" s.bal
         , HH.div [ style "display:flex;flex-direction:column;gap:5px;width:58px;align-self:center" ]
-            [ flatBtn "DILLA" DillaPreset, flatBtn "FLAT" FlatGroove ]
+            [ flatBtn "FLAT" FlatGroove ]
         ]
     ]
 

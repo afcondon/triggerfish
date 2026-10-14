@@ -28,7 +28,6 @@ module Triggerfish.Balistes.Model
   , clearRatchets
   , pushOf
   , setPush
-  , dillaPush
   , flatPush
   , openOf
   , setOpen
@@ -216,11 +215,6 @@ pushOf = Sim.pushOf
 
 setPush :: Inst -> Int -> Balistes -> Balistes
 setPush inst v b = b { push = fromMaybe b.push (updateAt inst (clamp (-50) 50 v) b.push) }
-
--- | The classic Dilla feel: snare a touch late, hats (closed + open) a touch
--- | early, kick on the grid. A one-tap groove preset.
-dillaPush :: Balistes -> Balistes
-dillaPush b = b { push = [ 0, 16, -9, -9 ] }
 
 -- | Zero every lane's timing offset.
 flatPush :: Balistes -> Balistes

@@ -227,7 +227,6 @@ data Action
   | StartDrag DragKind Int     -- kind, startVal
   | DragMove Int
   | DragEnd
-  | DillaPreset
   | FlatGroove
   | SelectPattern Active       -- switch the playing pattern (Grids / a rhythm)
   | ToggleEdit                 -- reveal all 16 lanes on the active fixed rhythm
