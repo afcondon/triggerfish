@@ -16,6 +16,8 @@ module Triggerfish.Balistes.Types
   , ClickMode(..)
   , DragKind(..)
   , Paint(..)
+  , Spot
+  , Copied
   , Drag
   , State
   , Action(..)
@@ -53,6 +55,7 @@ import Triggerfish.Preset (Preset)
 import Triggerfish.Balistes.TriSnapshot (rhythmOfContent)
 import Triggerfish.Midi.Routing as Routing
 import Triggerfish.Transport (Sounding)
+import Web.Event.Event as E
 
 data KnobTarget = KDens Int | KRand | KPush Int | KOpen
 
@@ -106,7 +109,21 @@ data DragKind = DKnob KnobTarget | DCell Int Int | DHit Int Int
 -- | an empty cell paints; on a hit it is `Undecided` until the pointer moves:
 -- | along the row it erases, up or down it shapes the hit's velocity, and a
 -- | release without moving removes the hit.
-data Paint = Undecided | Painting | Erasing | Shaping
+-- | `Shaping` carries the group being shaped with each hit's velocity when the
+-- | drag began; `Selecting` the selection before a shift-drag began, which the
+-- | rectangle adds to.
+data Paint
+  = Undecided
+  | Painting
+  | Erasing
+  | Shaping (Array { spot :: Spot, vel :: Int })
+  | Selecting (Array Spot)
+
+-- | A cell of the RYTM grid.
+type Spot = { lane :: Int, step :: Int }
+
+-- | A copied hit: its lane, its step counted from the copy's first step.
+type Copied = { lane :: Int, step :: Int, cell :: P.Cell }
 
 derive instance eqPaint :: Eq Paint
 
@@ -182,8 +199,12 @@ type State =
   , laneReadout :: String        -- the lane's live current-token label
   , fixedSel :: Int              -- the SELECTED RYTM rhythm (see `selectedPattern`);
                                  -- independent of whether RYTM is the live brain
-  -- the cell the NOTE inspector is editing (lane, step) on the active rhythm.
-  , selected :: Maybe { lane :: Int, step :: Int }
+  -- the hits the strip edits, on the selected rhythm (AC, 2026-10-14: a
+  -- group, by shift-click and shift-drag); the last cell pressed, where a
+  -- paste lands; and what ⌘C copied.
+  , selected :: Array Spot
+  , cursor :: Maybe Spot
+  , copied :: Array Copied
   -- the POLYTRIG jack rack (SELENE DRUMS tab) — browser-only, no reef path.
   -- The named rhythms the rig's stage holds, by word (Balistes.Stage), which
   -- `balistes $ "<a b>"` plays; Nothing until the stage has answered a
@@ -240,7 +261,8 @@ data Action
   | SetCellProb Int            -- nudge its probability
   | SetCellRatchet Int         -- nudge its ratchet count
   | CycleCellCond              -- step its trig condition
-  | ClearSelected              -- clear the selected cell + deselect
+  | ClearSelected              -- clear the selected hits + deselect
+  | RytmKey E.Event            -- ⌫, ←/→, ⌘C/⌘V and Esc on the selection
   | SetLength Int              -- the rhythm's length, the new bars repeating it
   | NudgeLength Int            -- a step longer (silent) or shorter
   | NewPattern                 -- append a fresh empty rhythm + select it

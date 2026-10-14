@@ -10,8 +10,8 @@ module Triggerfish.Balistes.View.Fixed
 
 import Prelude
 
-import Data.Array (concatMap, length, range, (!!))
-import Data.Foldable (any)
+import Data.Array (concatMap, head, length, range, (!!))
+import Data.Foldable (all, any, elem)
 import Data.Int (toNumber)
 import Data.Maybe (Maybe(..), fromMaybe)
 import Halogen as H
@@ -36,28 +36,34 @@ import Triggerfish.Balistes.Widgets
 -- the pointer: select a hit and the grid dropped a row, clear it and it jumped
 -- back, so the next click landed on a different cell.
 cellStrip :: forall m. State -> H.ComponentHTML Action () m
-cellStrip s = HH.div [ style stripRow ] case s.selected >>= \sel -> map { sel, pat: _ } (activePattern s) of
-  Nothing -> []
-  Just { sel, pat } ->
-      let c = P.cellAt pat sel.lane sel.step
-      in   [ HH.span [ style $ "font-family:Georgia,serif;font-size:12px;font-weight:bold;color:" <> laneColor sel.lane ]
-               [ HH.text (P.laneName sel.lane) ]
+cellStrip s = HH.div [ style stripRow ] case activePattern s of
+  Just pat | Just first <- head s.selected ->
+      let cells = map (\sp -> P.cellAt pat sp.lane sp.step) s.selected
+          c = P.cellAt pat first.lane first.step
+          -- one value, or "mixed" when the group's hits differ
+          shown :: forall a. Eq a => (P.Cell -> a) -> String -> String
+          shown f txt = if all (\x -> f x == f c) cells then txt else "mixed"
+          one = length s.selected == 1
+      in   [ HH.span [ style $ "font-family:Georgia,serif;font-size:12px;font-weight:bold;color:" <> (if one then laneColor first.lane else "#3f3c33") ]
+               [ HH.text (if one then P.laneName first.lane else show (length s.selected) <> " hits") ]
            , HH.span [ style $ engrave <> ";font-size:8px;opacity:0.6" ]
-               [ HH.text ("LANE " <> show (sel.lane + 1) <> " · STEP " <> show (sel.step + 1)) ]
-           , paramCell "VEL" (show c.vel) (SetCellVel (-8)) (SetCellVel 8)
-           , paramCell "PROB" (show c.prob <> "%") (SetCellProb (-10)) (SetCellProb 10)
-           , paramCell "RATCHET" ("×" <> show c.ratchet) (SetCellRatchet (-1)) (SetCellRatchet 1)
+               [ HH.text (if one then "LANE " <> show (first.lane + 1) <> " · STEP " <> show (first.step + 1)
+                          else "⌫ CLEAR · ←→ MOVE · ⌘C ⌘V") ]
+           , paramCell "VEL" (shown _.vel (show c.vel)) (SetCellVel (-8)) (SetCellVel 8)
+           , paramCell "PROB" (shown _.prob (show c.prob <> "%")) (SetCellProb (-10)) (SetCellProb 10)
+           , paramCell "RATCHET" (shown _.ratchet ("×" <> show c.ratchet)) (SetCellRatchet (-1)) (SetCellRatchet 1)
            , HH.button
                [ HE.onClick \_ -> CycleCellCond
                , style $ "padding:3px 10px;border:1px solid #a8a392;border-radius:5px;cursor:pointer;"
                    <> "font-family:'SF Mono',Menlo,monospace;font-size:10px;color:#3f3c33;background:linear-gradient(#efece1,#ddd9cb)" ]
-               [ HH.text (condDisplay c.cond) ]
+               [ HH.text (shown _.cond (condDisplay c.cond)) ]
            , HH.button
                [ HE.onClick \_ -> ClearSelected
                , style $ "padding:3px 10px;border:1px solid #a8a392;border-radius:5px;cursor:pointer;"
                    <> "font-family:Georgia,serif;font-size:10px;color:#8a3120;background:#efece1" ]
                [ HH.text "× clear" ]
            ]
+  _ -> []
 
 -- `flex: 0 0 100%`: it sits in the band header, which wraps, and a blank strip
 -- has no width, so without it the blank row would fold up onto the header's
@@ -139,7 +145,7 @@ fixedSvg s pat =
                        [ svgAttr "cx" (show (x + colW - 3.6)), svgAttr "cy" (show (y + 4.6)), svgAttr "r" "1.9"
                        , svgAttr "fill" "#1c1a12", svgAttr "fill-opacity" "0.85", svgAttr "style" "pointer-events:none" ] [] ]
               else []
-            sel = if s.selected == Just { lane, step }
+            sel = if elem { lane, step } s.selected
               then [ svgEl "rect"
                        [ svgAttr "x" (show (x + 0.5)), svgAttr "y" (show (y + 0.5))
                        , svgAttr "width" (show (colW - 1.0)), svgAttr "height" (show (rowH - 1.0)), svgAttr "rx" "3"

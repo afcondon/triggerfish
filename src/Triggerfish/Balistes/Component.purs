@@ -18,10 +18,10 @@ module Triggerfish.Balistes.Component (component, Output(..)) where
 
 import Prelude
 
-import Data.Array (concatMap, deleteAt, filter, find, insertAt, length, mapWithIndex, modifyAt, null, partition, range, (!!))
+import Data.Array (concatMap, deleteAt, filter, find, head, insertAt, length, mapWithIndex, modifyAt, null, partition, range, (!!))
 import Data.Ord (abs)
 import Data.Tuple (Tuple(..), fst, snd)
-import Data.Foldable (any, elem, foldl, for_)
+import Data.Foldable (any, elem, foldl, for_, minimum)
 import Effect.Random (randomInt)
 import Data.Map as Map
 import Data.Int (floor, round, toNumber)
@@ -56,7 +56,7 @@ import Triggerfish.Routing.Store as RStore
 import Reef.Routing as RR
 import Triggerfish.Balistes.Types
   ( KnobTarget(..), targetRange, applyKnob, Active(..), ClickMode(..)
-  , DragKind(..), Paint(..), State, Action(..), activePattern, selectedPattern, patternAt, rhythmEntries, rigUrl, gridCfg
+  , DragKind(..), Paint(..), Spot, State, Action(..), activePattern, selectedPattern, patternAt, rhythmEntries, rigUrl, gridCfg
   , editVel
   , padId )
 import Triggerfish.Browser as Browser
@@ -81,10 +81,16 @@ import Reef.Balistes.Sim as Sim
 import Triggerfish.Ui.Pointer as Pointer
 import Triggerfish.Ui.Style (engrave, style)
 import Web.Event.Event (EventType(..))
+import Web.Event.Event as E
 import Web.Event.EventTarget (addEventListener, eventListener, removeEventListener)
 import Web.HTML (window)
 import Web.HTML.Window as Window
 import Web.UIEvent.MouseEvent as ME
+import Web.UIEvent.KeyboardEvent as KE
+import Web.UIEvent.KeyboardEvent.EventTypes as KET
+import Web.HTML.HTMLInputElement as HInput
+import Web.HTML.HTMLTextAreaElement as HTextArea
+import Halogen.Query.Event as HQE
 
 -- | The upward message to the shell: Balistes' identity-chip view (or `Nothing`
 -- | when nothing is parked), for the six-machine status board. Raised from the
@@ -107,7 +113,7 @@ component =
         , nowMicros: 0.0, dragging: Nothing, paint: Nothing, dragSub: Nothing
         , presets: []
         , identity: Nothing, lastChip: Nothing
-        , active: AGrids, editing: false, clickMode: Assemble, laneEditOpen: false, fixedSel: 0, lane: "", laneReadout: "", selected: Nothing
+        , active: AGrids, editing: false, clickMode: Assemble, laneEditOpen: false, fixedSel: 0, lane: "", laneReadout: "", selected: [], cursor: Nothing, copied: []
         , scratchFixed: Nothing
         , stageRhythms: Nothing, shelf: Nothing, undoDelete: Nothing, follow: Nothing, followQueue: [] }
     , render
@@ -308,6 +314,8 @@ handleAction = case _ of
       HS.notify stepL (Step tick)
     frameE <- frameTimer
     _ <- H.subscribe frameE
+    win <- liftEffect window
+    _ <- H.subscribe $ HQE.eventListener KET.keydown (Window.toEventTarget win) (Just <<< RytmKey)
     { emitter: midiE, listener: midiL } <- liftEffect HS.create
     _ <- H.subscribe midiE
     liftEffect $ Midi.requestAccess \maccess -> case maccess of
@@ -552,13 +560,17 @@ handleAction = case _ of
               DCell inst step ->
                 let newVal = clamp 1 8 (d.startVal + round (toNumber dist / 22.0))
                 in H.modify_ \s -> s { bal = M.setRatchetAt inst step newVal s.bal }
-              -- up or down on a hit shapes its velocity, a unit a pixel; the
-              -- strip shows it as it moves
+              -- up or down on a hit shapes its velocity, a unit a pixel, and
+              -- the whole selection's with it if the hit is in it; the strip
+              -- shows it as it moves
               DHit lane step -> case st.paint of
                 Just Undecided | abs dist >= 4 ->
-                  H.modify_ _ { paint = Just Shaping, selected = Just { lane, step } }
-                Just Shaping ->
-                  H.modify_ \s -> modRhythmAt s.fixedSel (P.modifyCell lane step _ { vel = clamp 1 127 (d.startVal + dist) }) s
+                  let origin = { lane, step }
+                      group = if elem origin st.selected then st.selected else [ origin ]
+                      vels = map (\spot -> { spot, vel: maybe editVel (\p -> (P.cellAt p spot.lane spot.step).vel) (selectedPattern st) }) group
+                  in H.modify_ _ { paint = Just (Shaping vels), selected = group }
+                Just (Shaping vels) ->
+                  H.modify_ \s -> foldl (\acc v -> modRhythmAt acc.fixedSel (P.modifyCell v.spot.lane v.spot.step _ { vel = clamp 1 127 (v.vel + dist) }) acc) s vels
                 _ -> pure unit
       Nothing -> pure unit
   DragEnd -> do
@@ -574,8 +586,9 @@ handleAction = case _ of
       -- a press and release on a hit, without moving, removes it
       Just { kind: DHit lane step }, Just Undecided -> do
         H.modify_ \s -> (modRhythmAt s.fixedSel (P.modifyCell lane step (const P.emptyCell)) s)
-          { selected = if s.selected == Just { lane, step } then Nothing else s.selected }
+          { selected = filter (_ /= { lane, step }) s.selected }
         persistLib
+      Just { kind: DHit _ _ }, Just (Selecting _) -> pure unit
       Just { kind: DHit _ _ }, Just _ -> persistLib
       _, _ -> pure unit
 
@@ -638,35 +651,50 @@ handleAction = case _ of
   ToggleEdit -> H.modify_ \s -> s { editing = not s.editing }
   -- A press on a cell (AC, 2026-10-14): on an empty cell it adds a hit and
   -- paints along the row; on a hit, what it does waits for the pointer (see
-  -- `Paint`). Shift-click selects a hit for the strip. On a recalled snapshot
-  -- the first edit makes an editable copy (`thawed`) rather than doing nothing.
-  -- The rhythm is saved and sent to the rig once, when the press ends.
+  -- `Paint`). Shift-click adds a hit to the selection or takes it out, and
+  -- shift-drag adds every hit in the rectangle; painting deselects. Every press moves the cursor,
+  -- where a paste lands. On a recalled snapshot the first edit makes an
+  -- editable copy (`thawed`) rather than doing nothing. The rhythm is saved
+  -- and sent to the rig once, when the press ends.
   CellDown lane step shift -> do
     s0 <- H.get
-    let s = thawed s0
-        lit = maybe false (\p -> P.firesAt p lane step) (selectedPattern s)
+    sid <- setupDrag
+    let s = (thawed s0) { cursor = Just { lane, step } }
+        origin = { lane, step }
+        lit = litAt s origin
+        press = { kind: DHit lane step, startY: 0, startVal: 0 }
     if shift then
-      H.put s { selected = if lit && s.selected /= Just { lane, step } then Just { lane, step } else Nothing }
-    else do
-      sid <- setupDrag
-      let start = if lit then s else (modRhythmAt s.fixedSel (P.modifyCell lane step (const (P.hitCell editVel))) s) { selected = Just { lane, step } }
-          vel = maybe editVel (\p -> (P.cellAt p lane step).vel) (selectedPattern start)
-      H.put start
-        { dragging = Just { kind: DHit lane step, startY: 0, startVal: vel }, dragSub = Just sid
-        , paint = Just (if lit then Undecided else Painting) }
-  -- Along the origin's row only: a vertical drag on a hit crosses into the
-  -- rows above and below, and must not erase them.
+      let base = if not lit then s.selected
+                 else if elem origin s.selected then filter (_ /= origin) s.selected
+                 else s.selected <> [ origin ]
+      in H.put s { selected = base, dragging = Just press, dragSub = Just sid, paint = Just (Selecting base) }
+    else if lit then
+      H.put s { dragging = Just press, dragSub = Just sid, paint = Just Undecided }
+    else
+      H.put (modRhythmAt s.fixedSel (P.modifyCell lane step (const (P.hitCell editVel))) s)
+        { selected = [], dragging = Just press, dragSub = Just sid, paint = Just Painting }
+  -- Painting and erasing go along the origin's row only: a vertical drag on a
+  -- hit crosses into the rows above and below, and must not erase them. A
+  -- selection rectangle takes any cell.
   PaintOver lane step -> do
     st <- H.get
     case st.dragging, st.paint of
+      Just { kind: DHit lane0 step0 }, Just (Selecting base) ->
+        let inRect sp = between (min lane0 lane) (max lane0 lane) sp.lane && between (min step0 step) (max step0 step) sp.step
+            steps = maybe 0 _.steps (selectedPattern st)
+            rect = filter (litAt st) (filter inRect (do
+                     l <- range 0 (P.kitSize - 1)
+                     t <- range 0 (steps - 1)
+                     pure { lane: l, step: t }))
+        in H.modify_ _ { selected = base <> filter (\sp -> not (elem sp base)) rect }
       Just { kind: DHit lane0 step0 }, Just mode | lane == lane0 && step /= step0 ->
         let set c = modRhythmAt st.fixedSel (P.modifyCell lane step (const c))
         in case mode of
-          Painting -> H.modify_ \s -> if maybe false (\p -> P.firesAt p lane step) (selectedPattern s) then s else set (P.hitCell editVel) s
+          Painting -> H.modify_ \s -> if litAt s { lane, step } then s else set (P.hitCell editVel) s
           Undecided -> H.modify_ \s -> (set P.emptyCell (modRhythmAt s.fixedSel (P.modifyCell lane0 step0 (const P.emptyCell)) s))
-            { paint = Just Erasing, selected = Nothing }
+            { paint = Just Erasing, selected = [] }
           Erasing -> H.modify_ (set P.emptyCell)
-          Shaping -> pure unit
+          _ -> pure unit
       _, _ -> pure unit
   SetCellVel d -> do
     H.modify_ (modSelectedCell \c -> c { vel = clamp 1 127 (c.vel + d) })
@@ -677,15 +705,44 @@ handleAction = case _ of
   SetCellRatchet d -> do
     H.modify_ (modSelectedCell \c -> c { ratchet = clamp 1 8 (c.ratchet + d) })
     persistLib
+  -- the whole group takes the condition after the first hit's
   CycleCellCond -> do
-    H.modify_ (modSelectedCell \c -> c { cond = P.cycleCond c.cond })
-    persistLib
+    st <- H.get
+    for_ (head st.selected >>= \sp -> map (\p -> P.cycleCond (P.cellAt p sp.lane sp.step).cond) (selectedPattern st)) \cond -> do
+      H.modify_ (modSelectedCell _ { cond = cond })
+      persistLib
   ClearSelected -> do
-    H.modify_ \s -> case s.selected of
-      Just { lane, step } | isNothing s.scratchFixed ->
-        (modRhythmAt s.fixedSel (P.modifyCell lane step (const P.emptyCell)) s) { selected = Nothing }
-      _ -> s
+    H.modify_ \s -> (modSelectedCell (const P.emptyCell) s) { selected = [] }
     persistLib
+  -- The selection's keys (AC, 2026-10-14), unless a field has the focus:
+  -- ⌫ clears the selected hits, ← and → move them a step (round the end),
+  -- ⌘C copies them, ⌘V pastes the copy at the cursor, Esc deselects.
+  RytmKey e -> for_ (KE.fromEvent e) \ke -> unless (targetIsField e) do
+    st <- H.get
+    let has = not (null st.selected) && isNothing st.scratchFixed
+        command = KE.metaKey ke || KE.ctrlKey ke
+        take' act = do
+          liftEffect (E.preventDefault e)
+          act
+    case KE.key ke of
+      k | has && not command && (k == "Backspace" || k == "Delete") -> take' (handleAction ClearSelected)
+      "ArrowLeft" | has && not command -> take' (moveSelection (-1))
+      "ArrowRight" | has && not command -> take' (moveSelection 1)
+      "Escape" | has -> take' (H.modify_ _ { selected = [] })
+      k | command && (k == "c" || k == "C") && has -> take' do
+        for_ (selectedPattern st) \p ->
+          let first = fromMaybe 0 (minimum (map _.step st.selected))
+          in H.modify_ _ { copied = map (\sp -> { lane: sp.lane, step: sp.step - first, cell: P.cellAt p sp.lane sp.step }) st.selected }
+      k | command && (k == "v" || k == "V") && not (null st.copied) -> take' do
+        H.modify_ \s0 ->
+          let s = thawed s0
+              at = maybe 0 _.step s.cursor
+              steps = maybe 0 _.steps (selectedPattern s)
+              landed = filter (\c -> c.step < steps) (map (\c -> c { step = c.step + at }) s.copied)
+          in (foldl (\acc c -> modRhythmAt acc.fixedSel (P.modifyCell c.lane c.step (const c.cell)) acc) s landed)
+               { selected = map (\c -> { lane: c.lane, step: c.step }) landed }
+        persistLib
+      _ -> pure unit
   -- The rhythm's length (AC, 2026-10-14): a pick repeats it into the new
   -- bars, a nudge adds or drops one silent step. A selection past the end
   -- goes with the steps.
@@ -699,7 +756,7 @@ handleAction = case _ of
       let n = length s.presets
           p = P.emptyPattern ("pattern " <> show (length (rhythmEntries s) + 1)) 32
       in s { presets = s.presets <> [ presetOfRhythm p ]
-           , active = AFixed n, fixedSel = n, editing = true, selected = Nothing }
+           , active = AFixed n, fixedSel = n, editing = true, selected = [] }
     persistLib
   -- A lane's head was clicked: one hit of it, where the routing sends it. In
   -- Atlantis the rig plays it (`balistes-hit`), through the table it holds, so
@@ -1044,21 +1101,44 @@ thawed s = case s.scratchFixed of
       copy = pat { name = (if pat.name == "" then "rhythm" else pat.name) <> " (edited)" }
     in
       s { presets = s.presets <> [ presetOfRhythm copy ]
-        , active = AFixed n, fixedSel = n, scratchFixed = Nothing, selected = Nothing }
+        , active = AFixed n, fixedSel = n, scratchFixed = Nothing, selected = [] }
 
 resizeRhythm :: forall o m. MonadAff m => (P.FixedPattern -> P.FixedPattern) -> H.HalogenM State Action () o m Unit
 resizeRhythm f = do
   H.modify_ \s0 ->
     let s = modRhythmAt s0.fixedSel f (thawed s0)
         steps = maybe 0 _.steps (selectedPattern s)
-    in s { selected = s.selected >>= \c -> if c.step < steps then Just c else Nothing }
+    in s { selected = filter (\c -> c.step < steps) s.selected }
   persistLib
 
 modSelectedCell :: (P.Cell -> P.Cell) -> State -> State
-modSelectedCell f s = case s.selected of
-  Just { lane, step } | isNothing s.scratchFixed ->
-    modRhythmAt s.fixedSel (P.modifyCell lane step f) s
-  _ -> s
+modSelectedCell f s
+  | isNothing s.scratchFixed = foldl (\acc sp -> modRhythmAt acc.fixedSel (P.modifyCell sp.lane sp.step f) acc) s s.selected
+  | otherwise = s
+
+-- | A key typed into a field (the lane editor) is the field's.
+targetIsField :: E.Event -> Boolean
+targetIsField e = case E.target e of
+  Just t -> isJust (HInput.fromEventTarget t) || isJust (HTextArea.fromEventTarget t)
+  Nothing -> false
+
+-- | Is there a hit at this cell of the selected rhythm?
+litAt :: State -> Spot -> Boolean
+litAt s sp = maybe false (\p -> P.firesAt p sp.lane sp.step) (selectedPattern s)
+
+-- | Move the selected hits `d` steps, round the end of the rhythm; what they
+-- | land on is written over.
+moveSelection :: forall o m. MonadAff m => Int -> H.HalogenM State Action () o m Unit
+moveSelection d = do
+  H.modify_ \s -> case selectedPattern s of
+    Nothing -> s
+    Just p ->
+      let moved sp = sp { step = (sp.step + d + p.steps) `mod` p.steps }
+          held = map (\sp -> { to: moved sp, cell: P.cellAt p sp.lane sp.step }) s.selected
+          cleared = foldl (\acc sp -> modRhythmAt acc.fixedSel (P.modifyCell sp.lane sp.step (const P.emptyCell)) acc) s s.selected
+      in (foldl (\acc h -> modRhythmAt acc.fixedSel (P.modifyCell h.to.lane h.to.step (const h.cell)) acc) cleared held)
+           { selected = map _.to held }
+  persistLib
 
 -- ---------------------------------------------------------------------------
 -- Timers / drag plumbing (mirrors Odonus)
