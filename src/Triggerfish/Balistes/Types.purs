@@ -208,6 +208,10 @@ type State =
   -- the muted kit lanes, one bit a lane (Reef.Balistes.Kit): not a
   -- rhythm's, so never saved; sent to the rig as `balistes-mute`
   , mutes :: Int
+  -- FILL (AC, 2026-10-14): the rhythm plays its fill, and the grid shows and
+  -- edits it; performance state like the mutes, sent as `balistes-fill`
+  , fill :: Boolean
+  , fillHeld :: Boolean          -- the fill is on because F is held
   -- the POLYTRIG jack rack (SELENE DRUMS tab) — browser-only, no reef path.
   -- The named rhythms the rig's stage holds, by word (Balistes.Stage), which
   -- `balistes $ "<a b>"` plays; Nothing until the stage has answered a
@@ -265,7 +269,9 @@ data Action
   | SetCellRatchet Int         -- nudge its ratchet count
   | CycleCellCond              -- step its trig condition
   | ClearSelected              -- clear the selected hits + deselect
+  | SetFill Boolean            -- the fill on or off
   | ToggleMute (Array Int)     -- mute the lanes, or unmute them if all are muted
+  | RytmKeyUp E.Event          -- F let go: a held fill ends
   | RytmKey E.Event            -- ⌫, ←/→, ⌘C/⌘V and Esc on the selection
   | SetLength Int              -- the rhythm's length, the new bars repeating it
   | NudgeLength Int            -- a step longer (silent) or shorter

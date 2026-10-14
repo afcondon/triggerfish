@@ -114,7 +114,7 @@ component =
         , nowMicros: 0.0, dragging: Nothing, paint: Nothing, dragSub: Nothing
         , presets: []
         , identity: Nothing, lastChip: Nothing
-        , active: AGrids, editing: false, clickMode: Assemble, laneEditOpen: false, fixedSel: 0, lane: "", laneReadout: "", selected: [], cursor: Nothing, copied: [], mutes: 0
+        , active: AGrids, editing: false, clickMode: Assemble, laneEditOpen: false, fixedSel: 0, lane: "", laneReadout: "", selected: [], cursor: Nothing, copied: [], mutes: 0, fill: false, fillHeld: false
         , scratchFixed: Nothing
         , stageRhythms: Nothing, shelf: Nothing, undoDelete: Nothing, follow: Nothing, followQueue: [] }
     , render
@@ -317,6 +317,7 @@ handleAction = case _ of
     _ <- H.subscribe frameE
     win <- liftEffect window
     _ <- H.subscribe $ HQE.eventListener KET.keydown (Window.toEventTarget win) (Just <<< RytmKey)
+    _ <- H.subscribe $ HQE.eventListener KET.keyup (Window.toEventTarget win) (Just <<< RytmKeyUp)
     { emitter: midiE, listener: midiL } <- liftEffect HS.create
     _ <- H.subscribe midiE
     liftEffect $ Midi.requestAccess \maccess -> case maccess of
@@ -384,7 +385,7 @@ handleAction = case _ of
             -- exact code the BEAM voice runs, keyed off the same absolute step, so a
             -- pushed fixed rhythm plays in lockstep. The frontend projects its rich
             -- pattern onto the wire-flat reef pattern (toWire).
-            for_ (filter (\e -> Kit.audible st.mutes e.note) (RF.renderFixed (P.toWire pat) (tick.index - offset))) \e ->
+            for_ (filter (\e -> Kit.audible st.mutes e.note) (RF.renderFixedFill st.fill (P.toWire pat) (tick.index - offset))) \e ->
               emitHit st.outs (RO.soloDrumRouting st.outs st.routing kitNotes) stepMs
                 (max 0.0 (tick.delayMs + toNumber e.pushMs))
                 e.note e.durMs e.velocity e.ratchet
@@ -586,7 +587,7 @@ handleAction = case _ of
     case st.dragging, st.paint of
       -- a press and release on a hit, without moving, removes it
       Just { kind: DHit lane step }, Just Undecided -> do
-        H.modify_ \s -> (modRhythmAt s.fixedSel (P.modifyCell lane step (const P.emptyCell)) s)
+        H.modify_ \s -> (modRhythmAt s.fixedSel (P.modifyCell lane step (P.removeIn s.fill)) s)
           { selected = filter (_ /= { lane, step }) s.selected }
         persistLib
       Just { kind: DHit _ _ }, Just (Selecting _) -> pure unit
@@ -672,7 +673,7 @@ handleAction = case _ of
     else if lit then
       H.put s { dragging = Just press, dragSub = Just sid, paint = Just Undecided }
     else
-      H.put (modRhythmAt s.fixedSel (P.modifyCell lane step (const (P.hitCell editVel))) s)
+      H.put (modRhythmAt s.fixedSel (P.modifyCell lane step (P.addIn s.fill editVel)) s)
         { selected = [], dragging = Just press, dragSub = Just sid, paint = Just Painting }
   -- Painting and erasing go along the origin's row only: a vertical drag on a
   -- hit crosses into the rows above and below, and must not erase them. A
@@ -689,12 +690,14 @@ handleAction = case _ of
                      pure { lane: l, step: t }))
         in H.modify_ _ { selected = base <> filter (\sp -> not (elem sp base)) rect }
       Just { kind: DHit lane0 step0 }, Just mode | lane == lane0 && step /= step0 ->
-        let set c = modRhythmAt st.fixedSel (P.modifyCell lane step (const c))
+        let set f = modRhythmAt st.fixedSel (P.modifyCell lane step f)
+            add = P.addIn st.fill editVel
+            remove = P.removeIn st.fill
         in case mode of
-          Painting -> H.modify_ \s -> if litAt s { lane, step } then s else set (P.hitCell editVel) s
-          Undecided -> H.modify_ \s -> (set P.emptyCell (modRhythmAt s.fixedSel (P.modifyCell lane0 step0 (const P.emptyCell)) s))
+          Painting -> H.modify_ \s -> if litAt s { lane, step } then s else set add s
+          Undecided -> H.modify_ \s -> (set remove (modRhythmAt s.fixedSel (P.modifyCell lane0 step0 remove) s))
             { paint = Just Erasing, selected = [] }
-          Erasing -> H.modify_ (set P.emptyCell)
+          Erasing -> H.modify_ \s -> if litAt s { lane, step } then set remove s else s
           _ -> pure unit
       _, _ -> pure unit
   SetCellVel d -> do
@@ -712,13 +715,23 @@ handleAction = case _ of
     for_ (head st.selected >>= \sp -> map (\p -> P.cycleCond (P.cellAt p sp.lane sp.step).cond) (selectedPattern st)) \cond -> do
       H.modify_ (modSelectedCell _ { cond = cond })
       persistLib
+  RytmKeyUp e -> for_ (KE.fromEvent e) \ke -> do
+    st <- H.get
+    when ((KE.key ke == "f" || KE.key ke == "F") && st.fillHeld) do
+      handleAction (SetFill false)
+  -- A selection is of hits as the grid showed them, so it goes with the view.
+  SetFill on -> do
+    st <- H.get
+    when (on /= st.fill) do
+      H.modify_ _ { fill = on, selected = [], fillHeld = false }
+      pushFill
   ToggleMute lanes -> do
     H.modify_ \s ->
       let on = not (all (Kit.muted s.mutes) lanes)
       in s { mutes = foldl (\m l -> if Kit.muted m l == on then m else Kit.toggleMute l m) s.mutes lanes }
     pushMutes
   ClearSelected -> do
-    H.modify_ \s -> (modSelectedCell (const P.emptyCell) s) { selected = [] }
+    H.modify_ \s -> (modSelectedCell (P.removeIn s.fill) s) { selected = [] }
     persistLib
   -- The selection's keys (AC, 2026-10-14), unless a field has the focus:
   -- ⌫ clears the selected hits, ← and → move them a step (round the end),
@@ -731,6 +744,10 @@ handleAction = case _ of
           liftEffect (E.preventDefault e)
           act
     case KE.key ke of
+      -- F held is the fill, as long as it is held (the FILL button latches it)
+      k | (k == "f" || k == "F") && not command && not (KE.altKey ke) && not (KE.repeat ke) && not st.fill -> take' do
+        handleAction (SetFill true)
+        H.modify_ _ { fillHeld = true }
       k | has && not command && (k == "Backspace" || k == "Delete") -> take' (handleAction ClearSelected)
       "ArrowLeft" | has && not command -> take' (moveSelection (-1))
       "ArrowRight" | has && not command -> take' (moveSelection 1)
@@ -1050,6 +1067,14 @@ pushRouting = do
   when (st.sounding == Rig && not (null st.outs)) $ for_ st.binnacle \bin ->
     liftEffect $ Transport.send (Binnacle.socket bin) ("balistes-routing " <> RR.encodeDrumRouting (drumsOf st))
   pushMutes
+  pushFill
+
+-- | The fill, to the rig.
+pushFill :: forall o m. MonadAff m => H.HalogenM State Action () o m Unit
+pushFill = do
+  st <- H.get
+  when (st.sounding == Rig) $ for_ st.binnacle \bin ->
+    liftEffect $ Transport.send (Binnacle.socket bin) ("balistes-fill " <> if st.fill then "1" else "0")
 
 -- | The muted lanes, to the rig, which drops their hits in every mode.
 pushMutes :: forall o m. MonadAff m => H.HalogenM State Action () o m Unit
@@ -1136,9 +1161,10 @@ targetIsField e = case E.target e of
   Just t -> isJust (HInput.fromEventTarget t) || isJust (HTextArea.fromEventTarget t)
   Nothing -> false
 
--- | Is there a hit at this cell of the selected rhythm?
+-- | Does a hit sound at this cell of the selected rhythm, as the grid shows
+-- | it (with the fill, or without)?
 litAt :: State -> Spot -> Boolean
-litAt s sp = maybe false (\p -> P.firesAt p sp.lane sp.step) (selectedPattern s)
+litAt s sp = maybe false (\p -> P.soundsIn s.fill (P.cellAt p sp.lane sp.step)) (selectedPattern s)
 
 -- | Move the selected hits `d` steps, round the end of the rhythm; what they
 -- | land on is written over.
@@ -1426,6 +1452,7 @@ gridsBand s =
         [ HH.text (maybe "" _.name (selectedPattern s)) ]
     , armBtn (if s.editing then "● EDITING" else "EDIT") s.editing ToggleEdit
     , armBtn "+ NEW" false NewPattern
+    , armBtn "FILL" s.fill (SetFill (not s.fill))
     , maybe (HH.text "") lengthControl (selectedPattern s)
     , cellStrip s
     ]

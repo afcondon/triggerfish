@@ -97,6 +97,11 @@ paramCell label val dec inc =
     , stepBtn "+" inc
     ]
 
+isEvery :: P.TrigCond -> Boolean
+isEvery = case _ of
+  P.CEvery _ _ -> true
+  _ -> false
+
 -- The condition button's label ("ALWAYS" reads better than the "—" glyph here).
 condDisplay :: P.TrigCond -> String
 condDisplay P.CAlways = "ALWAYS"
@@ -128,10 +133,27 @@ fixedSvg s pat =
     rowVisuals row lane =
       range 0 (cols - 1) `concatMap'` \step ->
         let c = P.cellAt pat lane step
-            v = c.vel
+            sounds = P.soundsIn s.fill c
+            v = if sounds then c.vel else 0
             x = colX step
             y = toNumber row * rowH
-            slot = if s.editing && v <= 0
+            -- a hit that sounds only in the other view (fill-only in the
+            -- rhythm, NOT FILL in the fill): a dashed ghost, so the delta shows
+            ghost = if c.vel > 0 && not sounds
+              then [ svgEl "rect"
+                       [ svgAttr "x" (show (x + 2.5)), svgAttr "y" (show (y + 2.5))
+                       , svgAttr "width" (show (colW - 5.0)), svgAttr "height" (show (rowH - 6.0)), svgAttr "rx" "2"
+                       , svgAttr "fill" "none", svgAttr "stroke" (laneColor lane), svgAttr "stroke-opacity" "0.6"
+                       , svgAttr "stroke-width" "0.9", svgAttr "stroke-dasharray" "2 1.5", svgAttr "style" "pointer-events:none" ] [] ]
+              else []
+            -- in the fill, its own hits carry a brass bar along the top
+            fillMark = if s.fill && sounds && c.cond == P.CFill
+              then [ svgEl "rect"
+                       [ svgAttr "x" (show (x + 2.0)), svgAttr "y" (show (y + 2.0))
+                       , svgAttr "width" (show (colW - 4.0)), svgAttr "height" "3"
+                       , svgAttr "fill" "#b8975a", svgAttr "style" "pointer-events:none" ] [] ]
+              else []
+            slot = if s.editing && v <= 0 && c.vel <= 0
               then [ svgEl "rect"
                        [ svgAttr "x" (show (x + 2.0)), svgAttr "y" (show (y + 2.0))
                        , svgAttr "width" (show (colW - 4.0)), svgAttr "height" (show (rowH - 5.0)), svgAttr "rx" "2"
@@ -142,7 +164,7 @@ fixedSvg s pat =
               else [ svgRect (x + 2.0) (y + 2.0) (colW - 4.0) (rowH - 5.0) (laneColor lane)
                        (0.34 + toNumber v / 127.0 * 0.62) ]
             -- a small dot marks a hit whose prob/cond/ratchet overlay was tweaked.
-            dot = if v > 0 && P.cellTweaked c
+            dot = if v > 0 && (c.prob /= 100 || c.ratchet /= 1 || isEvery c.cond)
               then [ svgEl "circle"
                        [ svgAttr "cx" (show (x + colW - 3.6)), svgAttr "cy" (show (y + 4.6)), svgAttr "r" "1.9"
                        , svgAttr "fill" "#1c1a12", svgAttr "fill-opacity" "0.85", svgAttr "style" "pointer-events:none" ] [] ]
@@ -154,7 +176,7 @@ fixedSvg s pat =
                        , svgAttr "fill" "none", svgAttr "stroke" "#1c1a12", svgAttr "stroke-width" "1.4"
                        , svgAttr "stroke-opacity" "0.9", svgAttr "style" "pointer-events:none" ] [] ]
               else []
-        in slot <> hit <> dot <> sel
+        in slot <> ghost <> hit <> fillMark <> dot <> sel
     -- a transparent click target per cell, drawn last so it always wins clicks.
     rowTargets row lane =
       range 0 (cols - 1) `concatMap'` \step ->
