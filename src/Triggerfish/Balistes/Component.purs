@@ -157,7 +157,10 @@ handleQuery = case _ of
     pure (Just next)
   -- the dice, in the shell's bar (AC, 2026-10-14): it shakes Grids up
   AskBar reply -> pure $ Just $ reply
-    { tabs: [], marks: "", icons: [], rebusTip: "", pickers: [], help: ""
+    { tabs: [], marks: "", icons: [], rebusTip: "", pickers: []
+    , help: "RYTM: click toggles a hit; drag along a row paints or erases; drag a hit up or down for its velocity. "
+        <> "Shift-click or shift-drag selects; then ⌫ clears, ← → move, ⌘C ⌘V copy and paste at the last cell pressed, Esc deselects. "
+        <> "FILL (or hold F) plays and edits the fill. M on a lane head mutes it, in both bands. Click a lane's name to hear it."
     , chips:
         [ { id: "dice", label: "", icons: [ { icon: "dice", color: "#3f3c33" } ], active: false, attention: false
           , tip: "shake Grids up: a new place on the map, densities, randomness and open (push and ratchets stay)" }
