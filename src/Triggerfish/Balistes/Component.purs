@@ -147,9 +147,16 @@ handleQuery = case _ of
       H.modify_ _ { presets = fromMaybe (s.presets <> [ d.preset ]) (insertAt d.at d.preset s.presets), undoDelete = Nothing }
       persist
     pure (Just next)
-  -- no controls of its own in the shared bar (yet)
-  AskBar _ -> pure Nothing
-  BarAction _ next -> pure (Just next)
+  -- the dice, in the shell's bar (AC, 2026-10-14): it shakes Grids up
+  AskBar reply -> pure $ Just $ reply
+    { tabs: [], marks: "", icons: [], rebusTip: "", pickers: [], help: ""
+    , chips:
+        [ { id: "dice", label: "", icons: [ { icon: "dice", color: "#3f3c33" } ], active: false, attention: false
+          , tip: "shake Grids up: a new place on the map, densities, randomness and open (push and ratchets stay)" } ]
+    }
+  BarAction act next -> do
+    when (act == "chip:dice") (handleAction Dice)
+    pure (Just next)
   BrowserDrop _ next -> pure (Just next)
   BrowserRename i name next -> do
     H.modify_ \s -> s { presets = rename i (String.trim name) s.presets, undoDelete = Nothing }
@@ -1129,8 +1136,7 @@ navBar s =
   HH.div
     [ style $ "flex:0 0 auto;display:flex;align-items:center;gap:10px;padding:5px 14px;"
         <> "background:linear-gradient(#cdc7b6,#c4bead);border-bottom:1px solid #00000014" ]
-    ( [ navBtn "DICE" Dice
-      , HH.div [ style "flex:1 1 auto;min-width:8px" ] []
+    ( [ HH.div [ style "flex:1 1 auto;min-width:8px" ] []
       , lampRow s
       , navDivider
       , navReadout ("bar " <> show s.clockBar <> " · " <> pad2 (s.playStep + 1) <> "/32")
@@ -1167,14 +1173,6 @@ bandGlyph s target = case printTri <$> triOf s target of
             (faIcons g)
         , HH.text (if banked then "banked" else "bank")
         ]
-
-navBtn :: forall m. String -> Action -> H.ComponentHTML Action () m
-navBtn label act =
-  HH.button
-    [ HE.onClick \_ -> act
-    , style $ "flex:0 0 auto;padding:3px 12px;border:1px solid #00000022;border-radius:6px;cursor:pointer;"
-        <> "font-family:Georgia,serif;font-size:11px;color:#3f3c33;background:#efece1" ]
-    [ HH.text label ]
 
 navDivider :: forall m. H.ComponentHTML Action () m
 navDivider = HH.div [ style "width:1px;height:18px;background:#00000018" ] []
