@@ -13,11 +13,13 @@ module Triggerfish.Odonus.Store
   ( Saved
   , saveLive
   , loadAll
+  , saveUnison
+  , loadUnison
   ) where
 
 import Prelude
 
-import Data.Maybe (Maybe(..))
+import Data.Maybe (Maybe(..), fromMaybe)
 import Data.Nullable (Nullable, toMaybe)
 import Effect (Effect)
 import Data.Array (filter, notElem)
@@ -91,3 +93,15 @@ foldScenes :: Array { name :: String, text :: String } -> Array Preset -> Array 
 foldScenes scenes presets =
   presets <> map (\sc -> newPreset sc.text (Just sc.name))
     (filter (\sc -> notElem sc.text (map _.content presets)) scenes)
+
+-- | Which groups UNISON copies from head I (a `Reef.Odonus.unisonBit` mask),
+-- | kept per browser so a choice made once holds (AC, 2026-10-14).
+unisonKey :: String
+unisonKey = "triggerfish.odonus.unison"
+
+saveUnison :: Int -> Effect Unit
+saveUnison m = _save unisonKey (_stringify m)
+
+-- | Every group but INT until a choice is made: the voices keep their intervals.
+loadUnison :: Effect Int
+loadUnison = fromMaybe 27 <<< toMaybe <$> _load unisonKey

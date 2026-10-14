@@ -364,6 +364,7 @@ type State =
                              -- handoff stamped with this step (`reef-sim-at`) plays the pushed
                              -- state on the SAME absolute step on the BEAM — phase-zero by
                              -- construction (no more +1-step / +1-beat flam on Push).
+  , unisonMask :: Int           -- which groups UNISON copies from head I
   , collapsed :: Array String  -- panel labels currently collapsed (accordion)
   , lastTap :: String          -- last toggle target (debounce the double-dispatch)
   , lastTapMicros :: Number
@@ -441,6 +442,7 @@ data Action
   | DeselectEuclid Int       -- that ring lost focus (a click anywhere else): drop the selection
   | EuclidKey KeyboardEvent  -- a keystroke on the focused ring; arrows nudge k / n
   | UnifyHeads
+  | ToggleUnisonGroup Int   -- a group's bit
   | PhaseShift Int          -- Reichian PHASE ±: rotate the whole canon
   | CycleScaleType Int
   | PickScale String          -- jump to a named preset scale (the Select widget)

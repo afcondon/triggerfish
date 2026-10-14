@@ -80,6 +80,7 @@ import Triggerfish.Odonus.View.Replay (replayPanel)
 import Triggerfish.Odonus.View.Nav (riverControls)
 import Triggerfish.Odonus.Patch (asCode, harmonicSummary, loadText, markText, nowText, patchText, recallText, recallGestureText, soundingOf)
 import Triggerfish.Odonus.Store as Store
+import Reef.Odonus (unisonAll) as ROdo
 import Triggerfish.Clips as Clips
 import Triggerfish.Clips.Store as ClipStore
 import Triggerfish.Amphora as Amphora
@@ -125,7 +126,7 @@ component =
         , vcoTables: []
         , swing: 0.0, velHumanize: 12
         , gen: map (\k -> { kind: k, on: false, rate: genDefaultRate k, amt: genDefaultAmt k }) genKinds
-        , genSpread: 0.5, genBias: 0.5, genSeed: Marbles.seedFrom 1, genFrozen: false, pending: [], nextModelStep: 0
+        , genSpread: 0.5, genBias: 0.5, genSeed: Marbles.seedFrom 1, genFrozen: false, unisonMask: 27, pending: [], nextModelStep: 0
         -- SOURCE folds away by default: the dedicated TIDAL tab is the
         -- one-stop view of the whole setup; Odonus's own eDSL pane is for
         -- when you want to inspect just this module.
@@ -526,6 +527,8 @@ dispatch = case _ of
     -- (`Triggerfish.Library`): this browser's copy at once, Amphora's when it
     -- answers or changes elsewhere. The first time, they start from what this
     -- browser kept before and the old `odonus-scene` collection.
+    unisonMask <- liftEffect Store.loadUnison
+    H.modify_ _ { unisonMask = unisonMask }
     msaved <- liftEffect Store.loadAll
     for_ msaved \sv -> H.modify_ (loadText sv.live)
     { emitter: libE, listener: libL } <- liftEffect HS.create
@@ -989,7 +992,16 @@ dispatch = case _ of
           when (d.amount /= 0) $ enqueue $ case d.axis of
             Euclid.Beats -> RI.NudgeHeadPulses h d.amount
             Euclid.Steps -> RI.NudgeHeadEuclidSteps h d.amount
-  UnifyHeads -> enqueue RI.UnifyHeads
+  -- UNISON copies the groups lit beneath it; all of them is the old unison.
+  UnifyHeads -> do
+    st <- H.get
+    enqueue (if st.unisonMask == ROdo.unisonAll then RI.UnifyHeads else RI.UnifyHeadsOf st.unisonMask)
+  ToggleUnisonGroup bit -> do
+    st <- H.get
+    unless (tapBounced "unison" st) do
+      let m = if (st.unisonMask `div` bit) `mod` 2 == 1 then st.unisonMask - bit else st.unisonMask + bit
+      H.modify_ (markTap "unison" >>> _ { unisonMask = m })
+      liftEffect (Store.saveUnison m)
   PhaseShift d -> enqueue (RI.NudgeOffsets d)
   CycleScaleType dir -> enqueue (RI.CycleScaleType dir)
   -- The Select widget picks a preset by NAME; jump straight to it by driving the

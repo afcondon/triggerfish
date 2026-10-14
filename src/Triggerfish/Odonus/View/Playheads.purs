@@ -25,7 +25,7 @@ playheadsPanel :: forall m. State -> H.ComponentHTML Action Slots m
 playheadsPanel s =
   panelShell s.collapsed "PLAYHEADS" "Fugue · Access" "flex:0 1 290px;min-width:min-content"
     [ outputPiece s
-    , phasingBlock s.odo
+    , phasingBlock s.unisonMask s.odo
     , HH.span [ style $ engrave <> ";font-size:9px;opacity:0.85;display:block;margin-bottom:4px" ]
         [ HH.text "COMBINATIONS" ]
     , headMatrix s.odo
@@ -42,8 +42,8 @@ playheadsPanel s =
 -- | overlapped FAN, which already authors the offsets, and the block was costing
 -- | vertical space the panel didn't have. UNISON shrank from a full-width bar into
 -- | the slot PHASE vacated, so the section is one row instead of three.
-phasingBlock :: forall m. M.Odonus -> H.ComponentHTML Action Slots m
-phasingBlock odo =
+phasingBlock :: forall m. Int -> M.Odonus -> H.ComponentHTML Action Slots m
+phasingBlock unisonMask odo =
   let
     fanN = maybe 0 _.offset (odo.heads !! 1)
     stagN = 16 - maybe 16 _.len (odo.heads !! 1)
@@ -63,13 +63,41 @@ phasingBlock odo =
               [ HH.span [ style $ engrave <> ";font-size:8px;margin-bottom:3px" ] [ HH.text "UNISON" ]
               , HH.button
                   [ HE.onClick \_ -> UnifyHeads
-                  , HP.title "collapse every head to unison — all heads = I"
+                  , HP.title "copy head I to every head: the groups lit below"
                   , style $ "width:44px;padding:7px 0;border:1px solid #a8a392;border-radius:7px;cursor:pointer;"
                       <> "background:linear-gradient(#efece1,#ddd9cb);font-family:Georgia,serif;font-size:13px;color:#3f3c33" ]
                   [ HH.text "≡" ]
               ]
           ]
+      , unisonGroups unisonMask
       ]
+
+-- | What UNISON copies from head I, one lamp-button a group (AC, 2026-10-14:
+-- | often you want most of head I, not all of it). Kept per browser.
+unisonGroups :: forall m. Int -> H.ComponentHTML Action Slots m
+unisonGroups mask =
+  HH.div [ style "display:flex;align-items:center;justify-content:flex-end;gap:3px;margin-top:6px" ]
+    ( [ HH.span [ style $ engrave <> ";font-size:7px;opacity:0.7;margin-right:3px" ] [ HH.text "UNISON COPIES" ] ]
+        <> map group
+          [ { label: "PAT", bit: 1, tip: "access pattern and direction" }
+          , { label: "SPD", bit: 2, tip: "speed" }
+          , { label: "INT", bit: 4, tip: "interval (each head's transposition)" }
+          , { label: "RHY", bit: 8, tip: "Euclid, length and offset, phase realigned" }
+          , { label: "CLK", bit: 16, tip: "what moves the head: steps or notes" }
+          ]
+    )
+  where
+  group g =
+    let on = (mask `div` g.bit) `mod` 2 == 1
+    in
+      HH.button
+        [ HE.onClick \_ -> ToggleUnisonGroup g.bit
+        , HP.title ((if on then "copied: " else "kept: ") <> g.tip)
+        , style $ "padding:2px 5px;border:1px solid #a8a392;border-radius:4px;cursor:pointer;"
+            <> "font-family:Georgia,serif;font-size:8px;letter-spacing:0.05em;"
+            <> (if on then "background:linear-gradient(#c8a86a,#b8975a);color:#1c1a12"
+                      else "background:linear-gradient(#efece1,#ddd9cb);color:#8a8473") ]
+        [ HH.text g.label ]
 
 -- | The 16 head-activation combinations (2⁴) as a switch palette: each
 -- | switch is four vertical bars (I–IV, lit when that head sounds in this
