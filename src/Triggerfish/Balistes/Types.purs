@@ -270,6 +270,7 @@ data Action
   | CycleCellCond              -- step its trig condition
   | ClearSelected              -- clear the selected hits + deselect
   | SetFill Boolean            -- the fill on or off
+  | ToggleFillMute Int         -- mute the lane in the fill, or unmute it
   | ToggleMute (Array Int)     -- mute the lanes, or unmute them if all are muted
   | RytmKeyUp E.Event          -- F let go: a held fill ends
   | RytmKey E.Event            -- ⌫, ←/→, ⌘C/⌘V and Esc on the selection

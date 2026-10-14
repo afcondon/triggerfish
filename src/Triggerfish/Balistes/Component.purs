@@ -724,6 +724,9 @@ handleAction = case _ of
     when (on /= st.fill) do
       H.modify_ _ { fill = on, selected = [], fillHeld = false }
       pushFill
+  ToggleFillMute lane -> do
+    H.modify_ \s -> modRhythmAt s.fixedSel (P.toggleFillMute lane) (thawed s)
+    persistLib
   ToggleMute lanes -> do
     H.modify_ \s ->
       let on = not (all (Kit.muted s.mutes) lanes)
@@ -1184,7 +1187,7 @@ targetIsField e = case E.target e of
 -- | Does a hit sound at this cell of the selected rhythm, as the grid shows
 -- | it (with the fill, or without)?
 litAt :: State -> Spot -> Boolean
-litAt s sp = maybe false (\p -> P.soundsIn s.fill (P.cellAt p sp.lane sp.step)) (selectedPattern s)
+litAt s sp = maybe false (\p -> P.soundsAt s.fill p sp.lane sp.step) (selectedPattern s)
 
 -- | Move the selected hits `d` steps, round the end of the rhythm; what they
 -- | land on is written over.

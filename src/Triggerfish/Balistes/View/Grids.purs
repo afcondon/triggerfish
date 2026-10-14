@@ -211,7 +211,8 @@ heatSvg s =
           mutes = if lane == 2 then [ 4, 6 ] else [ kit.lane ]
           muted = all (Kit.muted s.mutes) mutes
       in laneHead { top: laneY lane, height: rowH, width: gutter, lane: kit.lane, name: M.instName lane
-                  , number: kit.number, color: instColor lane, opacity: if muted then "0.35" else "0.9", mutes, muted }
+                  , number: kit.number, color: instColor lane, opacity: if muted then "0.35" else "0.9"
+                  , onMute: ToggleMute mutes, muted, muteColor: "#8a3120" }
     visuals =
       range 0 2 `concatMap'` \lane -> range 0 (cols - 1) `concatMap'` \step -> gridsCell lane step
     targets =

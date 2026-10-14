@@ -133,7 +133,7 @@ fixedSvg s pat =
     rowVisuals row lane =
       range 0 (cols - 1) `concatMap'` \step ->
         let c = P.cellAt pat lane step
-            sounds = P.soundsIn s.fill c
+            sounds = P.soundsAt s.fill pat lane step
             v = if sounds then c.vel else 0
             x = colX step
             y = toNumber row * rowH
@@ -210,10 +210,15 @@ fixedSvg s pat =
     rowLabel row =
       let lane = laneAt row
           op = if laneEmpty lane then "0.4" else "0.9"
+          -- with the fill on, the M is the fill's: brass, and saved with the rhythm
+          fillMuted = Kit.muted pat.fillMutes lane
           muted = Kit.muted s.mutes lane
       in laneHead { top: toNumber row * rowH, height: rowH, width: gutter, lane
                   , name: P.laneName lane, number: show (lane + 1), color: laneColor lane
-                  , opacity: if muted then "0.3" else op, mutes: [ lane ], muted }
+                  , opacity: if muted || (s.fill && fillMuted) then "0.3" else op
+                  , onMute: if s.fill then ToggleFillMute lane else ToggleMute [ lane ]
+                  , muted: if s.fill then fillMuted else muted
+                  , muteColor: if s.fill then "#b8975a" else "#8a3120" }
     playhead =
       svgEl "rect"
         [ svgAttr "x" (show (colX here)), svgAttr "y" "0"
