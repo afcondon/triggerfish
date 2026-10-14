@@ -65,7 +65,7 @@ import Triggerfish.GlyphView (faIcons)
 import Triggerfish.Library as Library
 import Triggerfish.Preset (Preset, indexOfContent, newPreset, presetAlias, presetDoc, presetGlyph, rename, withWords, wordsOf)
 import Triggerfish.Balistes.Widgets (armBtn, instColor)
-import Triggerfish.Balistes.View.Fixed (cellStrip, fixedSvg)
+import Triggerfish.Balistes.View.Fixed (cellStrip, fixedSvg, lengthControl)
 import Triggerfish.Balistes.View.Grids (heatSvg, knobStack, padSvg)
 import Triggerfish.Macro (Form(..), parseLane)
 import Triggerfish.Balistes.Source as Source
@@ -654,6 +654,13 @@ handleAction = case _ of
         (modRhythmAt s.fixedSel (P.modifyCell lane step (const P.emptyCell)) s) { selected = Nothing }
       _ -> s
     persistLib
+  -- The rhythm's length (AC, 2026-10-14): a pick repeats it into the new
+  -- bars, a nudge adds or drops one silent step. A selection past the end
+  -- goes with the steps.
+  SetLength n -> resizeRhythm (P.extendTo n)
+  NudgeLength d -> do
+    st <- H.get
+    for_ (selectedPattern st) \p -> resizeRhythm (P.resizeTo (p.steps + d))
   -- a fresh empty rhythm, selected and opened in EDIT so all 16 lanes show.
   NewPattern -> do
     H.modify_ \s ->
@@ -1006,6 +1013,14 @@ thawed s = case s.scratchFixed of
       s { presets = s.presets <> [ presetOfRhythm copy ]
         , active = AFixed n, fixedSel = n, scratchFixed = Nothing, selected = Nothing }
 
+resizeRhythm :: forall o m. MonadAff m => (P.FixedPattern -> P.FixedPattern) -> H.HalogenM State Action () o m Unit
+resizeRhythm f = do
+  H.modify_ \s0 ->
+    let s = modRhythmAt s0.fixedSel f (thawed s0)
+        steps = maybe 0 _.steps (selectedPattern s)
+    in s { selected = s.selected >>= \c -> if c.step < steps then Just c else Nothing }
+  persistLib
+
 modSelectedCell :: (P.Cell -> P.Cell) -> State -> State
 modSelectedCell f s = case s.selected of
   Just { lane, step } | isNothing s.scratchFixed ->
@@ -1284,6 +1299,7 @@ gridsBand s =
         [ HH.text (maybe "" _.name (selectedPattern s)) ]
     , armBtn (if s.editing then "● EDITING" else "EDIT") s.editing ToggleEdit
     , armBtn "+ NEW" false NewPattern
+    , maybe (HH.text "") lengthControl (selectedPattern s)
     , cellStrip s
     ]
 

@@ -230,6 +230,8 @@ data Action
   | SetCellRatchet Int         -- nudge its ratchet count
   | CycleCellCond              -- step its trig condition
   | ClearSelected              -- clear the selected cell + deselect
+  | SetLength Int              -- the rhythm's length, the new bars repeating it
+  | NudgeLength Int            -- a step longer (silent) or shorter
   | NewPattern                 -- append a fresh empty rhythm + select it
   | HearLane Int               -- one hit of a kit lane, where the routing sends it
   | PushBalistes               -- lockstep handoff: the routing table, then the brain's state, to the rig

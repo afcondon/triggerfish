@@ -5,6 +5,7 @@
 module Triggerfish.Balistes.View.Fixed
   ( fixedSvg
   , cellStrip
+  , lengthControl
   ) where
 
 import Prelude
@@ -23,7 +24,7 @@ import Triggerfish.Balistes.Pattern as P
 import Triggerfish.Transport (Sounding(..))
 import Triggerfish.Balistes.Types (Action(..), State, activePattern)
 import Triggerfish.Balistes.Widgets
-  ( stepBtn, svgRect, laneHead, laneColor, concatMap' )
+  ( stepBtn, armBtn, svgRect, laneHead, laneColor, concatMap' )
 
 -- The per-cell editor, as a HORIZONTAL strip that rides in the RYTM band header
 -- and fills only while a cell is selected. Was a whole 240px NOTE column that
@@ -64,6 +65,20 @@ cellStrip s = HH.div [ style stripRow ] case s.selected >>= \sel -> map { sel, p
 stripRow :: String
 stripRow = "flex:0 0 100%;display:flex;align-items:center;gap:12px;flex-wrap:nowrap;height:32px;overflow-x:auto;overflow-y:hidden;white-space:nowrap"
 
+-- The rhythm's length: four picks that repeat it into the new bars, and a
+-- step either way.
+lengthControl :: forall m. P.FixedPattern -> H.ComponentHTML Action () m
+lengthControl pat =
+  HH.div [ style "display:flex;align-items:center;gap:5px" ]
+    ( [ HH.span [ style $ engrave <> ";font-size:8px;opacity:0.7" ] [ HH.text "LENGTH" ] ]
+      <> map pick [ 16, 32, 48, 64 ]
+      <> [ stepBtn "−" (NudgeLength (-1))
+         , HH.span [ style "font-family:'SF Mono',Menlo,monospace;font-size:11px;color:#3f3c33;min-width:20px;text-align:center" ]
+             [ HH.text (show pat.steps) ]
+         , stepBtn "+" (NudgeLength 1) ] )
+  where
+  pick n = armBtn (show n) (pat.steps == n) (SetLength n)
+
 -- One inline parameter: label, − stepper, value, + stepper.
 paramCell :: forall m. String -> String -> Action -> Action -> H.ComponentHTML Action () m
 paramCell label val dec inc =
@@ -88,13 +103,11 @@ fixedSvg s pat =
     lanes = if s.editing then range 0 (P.kitSize - 1) else P.usedLanes pat
     nLanes = length lanes
     cols = pat.steps
-    -- WIDE cells. The band is ~8:1 but the grid's natural aspect was 3.25:1, so
-    -- fitting it by height letterboxed it into the middle third with dead space
-    -- either side while GRIDS's heatmap spanned the full width. Widening the
-    -- cells (rather than scaling the drawing) makes the natural aspect match the
-    -- band, so it fills the width at the height we want — and a wider cell is an
-    -- easier click target besides. Everything else here derives from colW.
-    colW = 38.0
+    -- The drawing is always sixteen of the old 38-wide cells across, whatever
+    -- the length (AC, 2026-10-14): a bar fills the band as GRIDS's heatmap
+    -- does, and a longer rhythm narrows its cells rather than its rows, so 64
+    -- steps sit at half a Grids cell. Everything else here derives from colW.
+    colW = 608.0 / toNumber (max 1 cols)
     rowH = 28.0
     gutter = 34.0                       -- left margin for the lane's head
     w = gutter + toNumber cols * colW
@@ -150,9 +163,11 @@ fixedSvg s pat =
     beatLines =
       range 0 (cols / 4) `concatMap'` \k ->
         let x = colX (k * 4)
+            bar = k `mod` 4 == 0
         in [ svgEl "line"
                [ svgAttr "x1" (show x), svgAttr "y1" "0", svgAttr "x2" (show x), svgAttr "y2" (show h)
-               , svgAttr "stroke" "#3f3c33", svgAttr "stroke-opacity" "0.18", svgAttr "stroke-width" "0.8"
+               , svgAttr "stroke" "#3f3c33", svgAttr "stroke-opacity" (if bar then "0.42" else "0.16")
+               , svgAttr "stroke-width" (if bar then "1.2" else "0.8")
                , svgAttr "style" "pointer-events:none" ] [] ]
     laneDivider row =
       svgEl "line"
