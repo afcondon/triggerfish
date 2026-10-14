@@ -15,6 +15,7 @@ module Triggerfish.Balistes.Types
   , Active(..)
   , ClickMode(..)
   , DragKind(..)
+  , Paint(..)
   , Drag
   , State
   , Action(..)
@@ -99,7 +100,15 @@ derive instance eqClickMode :: Eq ClickMode
 
 -- | A document-tracked drag turns a knob or subdivides a Grids cell into
 -- | ratchets (`DCell lane step`). One plumbing.
-data DragKind = DKnob KnobTarget | DCell Int Int
+data DragKind = DKnob KnobTarget | DCell Int Int | DHit Int Int
+
+-- | What a press on a RYTM cell turned out to be (AC, 2026-10-14). A press on
+-- | an empty cell paints; on a hit it is `Undecided` until the pointer moves:
+-- | along the row it erases, up or down it shapes the hit's velocity, and a
+-- | release without moving removes the hit.
+data Paint = Undecided | Painting | Erasing | Shaping
+
+derive instance eqPaint :: Eq Paint
 
 type Drag = { kind :: DragKind, startY :: Int, startVal :: Int }
 
@@ -132,6 +141,7 @@ type State =
   , anchorCount :: Int
   , nowMicros :: Number
   , dragging :: Maybe Drag
+  , paint :: Maybe Paint
   , dragSub :: Maybe H.SubscriptionId
   -- the PRESET bank (unified model, docs/DESIGN-scene-modal.md): a growing list,
   -- each preset a captured playing-state of ANY brain (Mutable / Grids / Tidal)
@@ -224,7 +234,8 @@ data Action
   | FlatGroove
   | SelectPattern Active       -- switch the playing pattern (Grids / a rhythm)
   | ToggleEdit                 -- reveal all 16 lanes on the active fixed rhythm
-  | CellClick Int Int Boolean  -- select a cell (lane, step); shift = clear
+  | CellDown Int Int Boolean   -- a press on a cell (lane, step); shift selects
+  | PaintOver Int Int          -- the pointer entered a cell mid-press
   | SetCellVel Int             -- nudge the selected cell's velocity
   | SetCellProb Int            -- nudge its probability
   | SetCellRatchet Int         -- nudge its ratchet count

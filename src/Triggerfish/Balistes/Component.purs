@@ -19,6 +19,7 @@ module Triggerfish.Balistes.Component (component, Output(..)) where
 import Prelude
 
 import Data.Array (concatMap, deleteAt, filter, find, insertAt, length, mapWithIndex, modifyAt, null, partition, range, (!!))
+import Data.Ord (abs)
 import Data.Tuple (Tuple(..), fst, snd)
 import Data.Foldable (any, elem, foldl, for_)
 import Effect.Random (randomInt)
@@ -55,7 +56,7 @@ import Triggerfish.Routing.Store as RStore
 import Reef.Routing as RR
 import Triggerfish.Balistes.Types
   ( KnobTarget(..), targetRange, applyKnob, Active(..), ClickMode(..)
-  , DragKind(..), State, Action(..), activePattern, selectedPattern, patternAt, rhythmEntries, rigUrl, gridCfg
+  , DragKind(..), Paint(..), State, Action(..), activePattern, selectedPattern, patternAt, rhythmEntries, rigUrl, gridCfg
   , editVel
   , padId )
 import Triggerfish.Browser as Browser
@@ -103,7 +104,7 @@ component =
         , sounding: Silent, playStep: 0, nextModelStep: 0, pending: []
         , binnacle: Nothing, outs: [], routing: RM.defaultTable, midiName: "…"
         , clockTempo: 120.0, clockLocked: false, clockBeat: 0.0, clockBar: 0, anchorCount: 0
-        , nowMicros: 0.0, dragging: Nothing, dragSub: Nothing
+        , nowMicros: 0.0, dragging: Nothing, paint: Nothing, dragSub: Nothing
         , presets: []
         , identity: Nothing, lastChip: Nothing
         , active: AGrids, editing: false, clickMode: Assemble, laneEditOpen: false, fixedSel: 0, lane: "", laneReadout: "", selected: Nothing
@@ -551,6 +552,14 @@ handleAction = case _ of
               DCell inst step ->
                 let newVal = clamp 1 8 (d.startVal + round (toNumber dist / 22.0))
                 in H.modify_ \s -> s { bal = M.setRatchetAt inst step newVal s.bal }
+              -- up or down on a hit shapes its velocity, a unit a pixel; the
+              -- strip shows it as it moves
+              DHit lane step -> case st.paint of
+                Just Undecided | abs dist >= 4 ->
+                  H.modify_ _ { paint = Just Shaping, selected = Just { lane, step } }
+                Just Shaping ->
+                  H.modify_ \s -> modRhythmAt s.fixedSel (P.modifyCell lane step _ { vel = clamp 1 127 (d.startVal + dist) }) s
+                _ -> pure unit
       Nothing -> pure unit
   DragEnd -> do
     st <- H.get
@@ -560,7 +569,15 @@ handleAction = case _ of
     -- tagged model step, so the rig follows the edit. Absolute idempotent setters, so
     -- replaying the settled value lands the rig exactly where the drag settled.
     for_ (st.dragging >>= \d -> dragToBInput d.kind st.bal) broadcastBInput
-    H.modify_ _ { dragging = Nothing, dragSub = Nothing }
+    H.modify_ _ { dragging = Nothing, dragSub = Nothing, paint = Nothing }
+    case st.dragging, st.paint of
+      -- a press and release on a hit, without moving, removes it
+      Just { kind: DHit lane step }, Just Undecided -> do
+        H.modify_ \s -> (modRhythmAt s.fixedSel (P.modifyCell lane step (const P.emptyCell)) s)
+          { selected = if s.selected == Just { lane, step } then Nothing else s.selected }
+        persistLib
+      Just { kind: DHit _ _ }, Just _ -> persistLib
+      _, _ -> pure unit
 
   BankNow -> captureNow
   -- Bank the named brain, whether or not it is the sounding one — the glyph you
@@ -619,23 +636,38 @@ handleAction = case _ of
       AFixed _ -> repushFixed
       AGrids -> pushHandoff st
   ToggleEdit -> H.modify_ \s -> s { editing = not s.editing }
-  -- A click on an empty cell adds a hit at the default velocity and selects it
-  -- for the NOTE inspector; on a lit cell it selects it; on the SELECTED lit
-  -- cell it clears it. Shift-click clears any cell. On a recalled snapshot the
-  -- first edit makes an editable copy (`thawed`) rather than doing nothing.
-  CellClick lane step shift -> do
-    H.modify_ \s0 ->
-      let
-        s = thawed s0
-        here = Just { lane, step }
+  -- A press on a cell (AC, 2026-10-14): on an empty cell it adds a hit and
+  -- paints along the row; on a hit, what it does waits for the pointer (see
+  -- `Paint`). Shift-click selects a hit for the strip. On a recalled snapshot
+  -- the first edit makes an editable copy (`thawed`) rather than doing nothing.
+  -- The rhythm is saved and sent to the rig once, when the press ends.
+  CellDown lane step shift -> do
+    s0 <- H.get
+    let s = thawed s0
         lit = maybe false (\p -> P.firesAt p lane step) (selectedPattern s)
-        clear = modRhythmAt s.fixedSel (P.modifyCell lane step (const P.emptyCell)) s
-      in
-        if shift then clear { selected = if s.selected == here then Nothing else s.selected }
-        else if lit && s.selected == here then clear { selected = Nothing }
-        else (modRhythmAt s.fixedSel (\p -> if P.firesAt p lane step then p else P.modifyCell lane step (const (P.hitCell editVel)) p) s)
-          { selected = here }
-    persistLib
+    if shift then
+      H.put s { selected = if lit && s.selected /= Just { lane, step } then Just { lane, step } else Nothing }
+    else do
+      sid <- setupDrag
+      let start = if lit then s else (modRhythmAt s.fixedSel (P.modifyCell lane step (const (P.hitCell editVel))) s) { selected = Just { lane, step } }
+          vel = maybe editVel (\p -> (P.cellAt p lane step).vel) (selectedPattern start)
+      H.put start
+        { dragging = Just { kind: DHit lane step, startY: 0, startVal: vel }, dragSub = Just sid
+        , paint = Just (if lit then Undecided else Painting) }
+  -- Along the origin's row only: a vertical drag on a hit crosses into the
+  -- rows above and below, and must not erase them.
+  PaintOver lane step -> do
+    st <- H.get
+    case st.dragging, st.paint of
+      Just { kind: DHit lane0 step0 }, Just mode | lane == lane0 && step /= step0 ->
+        let set c = modRhythmAt st.fixedSel (P.modifyCell lane step (const c))
+        in case mode of
+          Painting -> H.modify_ \s -> if maybe false (\p -> P.firesAt p lane step) (selectedPattern s) then s else set (P.hitCell editVel) s
+          Undecided -> H.modify_ \s -> (set P.emptyCell (modRhythmAt s.fixedSel (P.modifyCell lane0 step0 (const P.emptyCell)) s))
+            { paint = Just Erasing, selected = Nothing }
+          Erasing -> H.modify_ (set P.emptyCell)
+          Shaping -> pure unit
+      _, _ -> pure unit
   SetCellVel d -> do
     H.modify_ (modSelectedCell \c -> c { vel = clamp 1 127 (c.vel + d) })
     persistLib
@@ -869,6 +901,7 @@ dragToBInput kind b = case kind of
   DKnob (KPush i) -> Just (RBI.BSetPush i (M.pushOf i b))
   DKnob KOpen -> Just (RBI.BSetOpen (M.openOf b))
   DCell inst step -> Just (RBI.BSetRatchet inst step (M.ratchetAt b inst step))
+  DHit _ _ -> Nothing
 
 -- | Delete preset `i` from the bank.
 deletePresetAt :: Int -> State -> State

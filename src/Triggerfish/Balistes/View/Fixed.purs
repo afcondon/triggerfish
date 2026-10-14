@@ -156,7 +156,8 @@ fixedSvg s pat =
                [ svgAttr "x" (show x), svgAttr "y" (show y)
                , svgAttr "width" (show (colW - 1.0)), svgAttr "height" (show (rowH - 1.0))
                , svgAttr "fill" "rgba(0,0,0,0)", svgAttr "style" "cursor:pointer;pointer-events:all"
-               , svgOn "click" \e -> CellClick lane step (ME.shiftKey e) ] [] ]
+               , svgOn "mousedown" \e -> CellDown lane step (ME.shiftKey e)
+               , svgOn "mouseenter" \_ -> PaintOver lane step ] [] ]
     laneAt row = fromMaybe 0 (lanes !! row)
     cells = concatMap (\row -> rowVisuals row (laneAt row)) (range 0 (nLanes - 1))
     targets = concatMap (\row -> rowTargets row (laneAt row)) (range 0 (nLanes - 1))
@@ -197,7 +198,7 @@ fixedSvg s pat =
       -- the surface scrolls rather than squashing it.
       , svgAttr "width" "100%"
       , svgAttr "preserveAspectRatio" "xMidYMid meet"
-      , svgAttr "style" "display:block;max-height:60vh" ]
+      , svgAttr "style" "display:block;max-height:60vh;user-select:none;-webkit-user-select:none" ]
       ( cells <> beatLines
           <> map laneDivider (range 1 (nLanes - 1))
           <> [ playhead ] <> concatMap rowLabel (range 0 (nLanes - 1)) <> targets )
