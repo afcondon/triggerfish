@@ -16,7 +16,7 @@ import Halogen.HTML.Events as HE
 import Halogen.HTML.Properties as HP
 import Triggerfish.Ui.Euclid as Euclid
 import Triggerfish.Odonus.Model as M
-import Reef.Odonus (unisonAll) as ROdo
+import Reef.Odonus (headOrderPos, unisonAll) as ROdo
 import Reef.Odonus.Voices (Rule(..), rulesOf)
 import Reef.PitchSet (cardinality)
 import Data.Ord (abs)
@@ -184,7 +184,7 @@ headStrip s h hd =
       -- pattern + direction · Euclid ring · INT knob · what moves the head.
       , HH.div [ style "display:flex;align-items:center;justify-content:space-between;gap:10px" ]
           [ HH.div [ style "display:flex;flex-direction:column;align-items:center;gap:4px" ]
-              [ patBlock h pat col hd.seqPos
+              [ patBlock h pat col (ROdo.headOrderPos hd)
               , dirRadio h hd.direction col
               ]
           , HH.div [ style (if hd.clock == 1 then "opacity:0.35" else "") ] [ euclidCell s h hd col ]
@@ -255,7 +255,8 @@ euclidCell s h hd col =
     , onKey: EuclidKey
     , onBlur: DeselectEuclid h
     }
-    (Just hd.seqPos)
+    -- the step of the ring last ticked (`etick` is the next one)
+    (Just (hd.etick - 1 + max 1 hd.esteps))
     { beats: hd.pulses, steps: hd.esteps, rotation: hd.rotation }
 
 -- | Odonus's dressing for the shared ring: the voice's own colour, the live step
