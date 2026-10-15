@@ -48,10 +48,9 @@ phasingBlock unisonMask odo =
   let
     fanN = maybe 0 _.offset (odo.heads !! 1)
     stagN = 16 - maybe 16 _.len (odo.heads !! 1)
-    -- SPREAD is a voicing morph now, so read the knob back by matching the heads'
-    -- current transposes against the voicing table (exact right after a spread; a
-    -- manual INT edit that breaks the match just reads as 0, like FAN/STAGGER).
-    spreadN = fromMaybe 0 (findIndex (\v -> v == map _.transp odo.heads) M.spreadVoicings)
+    -- read SPREAD back by matching the heads' spreads against its table (a
+    -- UNISON that breaks the match reads as 0, like FAN/STAGGER)
+    spreadN = fromMaybe 0 (findIndex (\v -> v == map (\h -> { oct: h.spreadOct, deg: h.spreadDeg }) odo.heads) M.spreadVoicings)
   in
     HH.div [ style "margin-bottom:12px" ]
       [ HH.span [ style $ engrave <> ";font-size:9px;opacity:0.85;display:block;margin-bottom:5px" ]
@@ -59,7 +58,7 @@ phasingBlock unisonMask odo =
       , HH.div [ style "display:flex;align-items:flex-start;justify-content:space-between;gap:8px" ]
           [ miniKnob FanOff fanN "#6f7f88" "FAN" (show fanN)
           , miniKnob StaggerLen stagN "#6f7f88" "STAGGER" (show stagN)
-          , miniKnob HeadSpread spreadN "#6f7f88" "SPREAD" (show spreadN)
+          , miniKnob HeadSpread spreadN "#6f7f88" "SPREAD" (fromMaybe (show spreadN) (spreadNames !! spreadN))
           -- laid out as a miniKnob is (label, 38px body, value line), so the
           -- button sits level with the knobs' centres
           , HH.div [ style "display:flex;flex-direction:column;align-items:center;width:52px" ]
@@ -78,6 +77,10 @@ phasingBlock unisonMask odo =
       , unisonGroups unisonMask
       ]
 
+-- | SPREAD's eight, named under the knob (`Reef.Odonus.spreadVoicings`).
+spreadNames :: Array String
+spreadNames = [ "uni", "7ths", "triad", "3rds↓", "4ths", "5ths", "open", "8ves" ]
+
 -- | What UNISON copies from head I, one lamp-button a group (AC, 2026-10-14:
 -- | often you want most of head I, not all of it), then ALL and NONE. Kept
 -- | per browser.
@@ -89,7 +92,7 @@ unisonGroups mask =
           [ { label: "PAT", bit: 1, tip: "access pattern" }
           , { label: "DIR", bit: 32, tip: "direction" }
           , { label: "SPD", bit: 2, tip: "speed" }
-          , { label: "INT", bit: 4, tip: "interval (each head's transposition)" }
+          , { label: "INT", bit: 4, tip: "interval: each head's INT and SPREAD" }
           , { label: "RHY", bit: 8, tip: "Euclid, length and offset, phase realigned" }
           , { label: "CLK", bit: 16, tip: "what moves the head: steps or notes" }
           ]
