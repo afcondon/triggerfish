@@ -186,6 +186,7 @@ headStrip s h hd =
           [ HH.div [ style "display:flex;flex-direction:column;align-items:center;gap:4px" ]
               [ patBlock h pat col (ROdo.headOrderPos hd)
               , dirRadio h hd.direction col
+              , invertBtn h hd col
               ]
           , HH.div [ style (if hd.clock == 1 then "opacity:0.35" else "") ] [ euclidCell s h hd col ]
           , HH.div [ style "display:flex;flex-direction:column;align-items:center" ]
@@ -322,6 +323,15 @@ restartBtn h hd col =
     [ style (if hd.clock == 1 then "opacity:0.35;display:flex" else "display:flex")
     , HP.title "restart the pattern at each turn of the ring: E(5,8) plays a five-note figure, again and again" ]
     [ dirBtn "↺ ring" hd.restart col (SetHeadRestart h (not hd.restart)) ]
+
+-- | The melody upside down, in scale degrees, mirrored on the first cell of
+-- | the head's loop: with ← it is the retrograde inversion.
+invertBtn :: forall m. Int -> M.Head -> String -> H.ComponentHTML Action Slots m
+invertBtn h hd col =
+  HH.div
+    [ style "display:flex;width:54px"
+    , HP.title "invert: the melody upside down in the scale, mirrored on the loop's first note (with ←, the retrograde inversion)" ]
+    [ dirBtn "⇅ inv" hd.invert col (SetHeadInvert h (not hd.invert)) ]
 
 dirGlyph :: Int -> String
 dirGlyph = case _ of

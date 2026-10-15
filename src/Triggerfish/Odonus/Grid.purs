@@ -1008,6 +1008,7 @@ dispatch = case _ of
     when (st.unisonMask /= 0) $
       enqueue (if st.unisonMask == ROdo.unisonAll then RI.UnifyHeads else RI.UnifyHeadsOf st.unisonMask)
   SetHeadRestart h v -> enqueue (RI.SetHeadRestart h v)
+  SetHeadInvert h v -> enqueue (RI.SetHeadInvert h v)
   ToggleUnisonGroup bit -> do
     st <- H.get
     unless (tapBounced "unison" st) do

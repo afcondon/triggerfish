@@ -448,6 +448,7 @@ data Action
   | ToggleVoicesModal
   | SetVoicesText String    -- a VOICES strategy as its text; "off" clears
   | SetHeadRestart Int Boolean  -- head, its pattern restarting with its ring
+  | SetHeadInvert Int Boolean   -- head, its melody upside down
   | PhaseShift Int          -- Reichian PHASE ±: rotate the whole canon
   | CycleScaleType Int
   | PickScale String          -- jump to a named preset scale (the Select widget)

@@ -39,6 +39,7 @@ module Triggerfish.Odonus.Forms
 import Prelude
 
 import Data.Array (findIndex, length, mapWithIndex, (!!), (..))
+import Data.Foldable (maximum)
 import Data.Maybe (Maybe(..), fromMaybe)
 import Reef.PitchSet (cardinality)
 import Triggerfish.Odonus.Model as M
@@ -51,8 +52,8 @@ type Form = { name :: String, degrees :: Array Int }
 -- | cell (Reich's twelve notes as degrees of the minor scale).
 formLibrary :: Array Form
 formLibrary =
-  [ { name: "UP", degrees: [ 0, 1, 2, 3, 4, 5, 6, 7 ] }
-  , { name: "DOWN", degrees: [ 7, 6, 5, 4, 3, 2, 1, 0 ] }
+  [ { name: "UP", degrees: 0 .. 15 }
+  , { name: "DOWN", degrees: 15 .. 0 }
   , { name: "↑↓", degrees: [ 0, 1, 2, 3, 4, 3, 2, 1 ] }
   , { name: "↓↑", degrees: [ 4, 3, 2, 1, 0, 1, 2, 3 ] }
   , { name: "TRIAD", degrees: [ 0, 2, 4 ] }
@@ -84,7 +85,10 @@ stampForm ix o = case formLibrary !! ix of
           -- Sit the figure in the MIDDLE period of the span, not on its floor:
           -- at the default span of 3 that is the middle octave, which is where a
           -- melody wants to be. LOW / MID remain the way to flatten to a floor.
-          base = ((o.span - 1) `div` 2) * card
+          -- A figure too tall for that (UP and DOWN run all 16 cells, AC
+          -- 2026-10-15) sits lower, just far enough that its top still fits.
+          top = fromMaybe 0 (maximum f.degrees)
+          base = max 0 (min (((o.span - 1) `div` 2) * card) (slots - 1 - top))
           -- Reading order of head I — identity for the default Rows pattern.
           order = M.orderOf (fromMaybe 0 (map _.patternIx (o.heads !! 0)))
           -- The figure, tiled to 16, in reading order.
