@@ -157,7 +157,7 @@ headBank s =
 -- | would draw steps that never sound. Reading the constant rather than copying
 -- | the number keeps the picture and the engine in lockstep by construction.
 euclidBounds :: Euclid.Bounds
-euclidBounds = Euclid.boundedBy M.maxEsteps
+euclidBounds = (Euclid.boundedBy M.maxEsteps) { turns = true }
 
 headStrip :: forall m. State -> Int -> M.Head -> H.ComponentHTML Action Slots m
 headStrip s h hd =
@@ -191,7 +191,7 @@ headStrip s h hd =
 -- | The head's Euclidean gate E(pulses, steps), drawn by the shared control
 -- | (`Triggerfish.Ui.Euclid`) — the same instrument as Selene's POLYEUCLID slots.
 -- | Click selects the ring, arrows then edit it: ←/→ steps (n), ↑/↓ pulses (k),
--- | shift for a four-step stride. This replaced four corner ± clickers, which
+-- | shift-↑/↓ four pulses at a time, shift-←/→ turn the ring. This replaced four corner ± clickers, which
 -- | were four targets for what is really two axes.
 euclidCell :: forall m. State -> Int -> M.Head -> String -> H.ComponentHTML Action Slots m
 euclidCell s h hd col =
@@ -202,7 +202,7 @@ euclidCell s h hd col =
     , onBlur: DeselectEuclid h
     }
     (Just hd.seqPos)
-    { beats: hd.pulses, steps: hd.esteps }
+    { beats: hd.pulses, steps: hd.esteps, rotation: hd.rotation }
 
 -- | Odonus's dressing for the shared ring: the voice's own colour, the live step
 -- | outlined in ink, sized to the voice strip.

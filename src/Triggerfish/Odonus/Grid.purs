@@ -987,11 +987,12 @@ dispatch = case _ of
       for_ (Euclid.dirOf (KE.key ev)) \dir ->
         for_ (s.odo.heads !! h) \hd -> do
           liftEffect (preventDefault (KE.toEvent ev))
-          let cur = { beats: hd.pulses, steps: hd.esteps }
+          let cur = { beats: hd.pulses, steps: hd.esteps, rotation: hd.rotation }
               d = Euclid.stepOf Playheads.euclidBounds dir (KE.shiftKey ev) cur
           when (d.amount /= 0) $ enqueue $ case d.axis of
             Euclid.Beats -> RI.NudgeHeadPulses h d.amount
             Euclid.Steps -> RI.NudgeHeadEuclidSteps h d.amount
+            Euclid.Turn -> RI.NudgeHeadEuclidRotation h d.amount
   -- UNISON copies the groups lit beneath it; all of them is the old unison.
   UnifyHeads -> do
     st <- H.get

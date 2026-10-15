@@ -65,19 +65,22 @@ import Halogen.Widgets.Svg (svgAttr, svgEl)
 -- The value
 -- ---------------------------------------------------------------------------
 
--- | `beats` pulses spread evenly over `steps` steps — the k and n of E(k, n).
--- | Deliberately a bare record: Selene's `EuclidSlot` and reef's `Head` both
+-- | `beats` pulses spread evenly over `steps` steps — the k and n of E(k, n) —
+-- | turned `rotation` steps later round the ring. Deliberately a bare record: Selene's `EuclidSlot` and reef's `Head` both
 -- | carry these two numbers under their own field names, and each converts at
 -- | the call site rather than this module learning about either.
-type Euclid = { beats :: Int, steps :: Int }
+type Euclid = { beats :: Int, steps :: Int, rotation :: Int }
 
--- | Editing limits. `coarse` is the shift-held stride.
-type Bounds = { minSteps :: Int, maxSteps :: Int, coarse :: Int }
+-- | Editing limits. `coarse` is the shift-held stride. `turns`: the engine
+-- | downstream can rotate the ring, so shift-←/→ turn it instead of striding
+-- | its size (AC, 2026-10-15: on a ring you play, rotation is worth more than
+-- | the stride; Odonus turns, Selene strides until its slots carry the FH-2's R).
+type Bounds = { minSteps :: Int, maxSteps :: Int, coarse :: Int, turns :: Boolean }
 
 -- | The usual bounds for a given ceiling: down to a single step, shift striding
 -- | by four (a bar's worth at sixteenths, so shift-← walks whole bars).
 boundedBy :: Int -> Bounds
-boundedBy maxSteps = { minSteps: 1, maxSteps, coarse: 4 }
+boundedBy maxSteps = { minSteps: 1, maxSteps, coarse: 4, turns: false }
 
 -- ---------------------------------------------------------------------------
 -- Arithmetic
@@ -90,7 +93,7 @@ derive instance eqNudge :: Eq Nudge
 
 -- | Which number an arrow moves. One arrow moves one axis — never both — so a
 -- | caller transmitting relative edits sends exactly one input per keystroke.
-data Axis = Beats | Steps
+data Axis = Beats | Steps | Turn
 
 derive instance eqAxis :: Eq Axis
 
@@ -114,15 +117,32 @@ axisOf = case _ of
 -- | rather than leaving an impossible k > n behind.
 nudge :: Bounds -> Nudge -> Boolean -> Euclid -> Euclid
 nudge b dir shift e = case dir of
+  NRight | turning -> turn 1
+  NLeft | turning -> turn (-1)
   NRight -> resize (e.steps + d)
   NLeft -> resize (e.steps - d)
   NUp -> e { beats = clamp 0 e.steps (e.beats + d) }
   NDown -> e { beats = clamp 0 e.steps (e.beats - d) }
   where
+  turning = shift && b.turns
   d = if shift then b.coarse else 1
+  turn t = e { rotation = wrap (e.rotation + t) e.steps }
   resize n =
     let n' = clamp b.minSteps b.maxSteps n
-    in { steps: n', beats: clamp 0 n' e.beats }
+    in { steps: n', beats: clamp 0 n' e.beats, rotation: wrap e.rotation n' }
+
+-- | Into 0..n-1, negatives included.
+wrap :: Int -> Int -> Int
+wrap a n = let m = max 1 n in ((a `mod` m) + m) `mod` m
+
+-- | Is this keystroke a turn of the ring rather than a change to k or n?
+turnOf :: Bounds -> Nudge -> Boolean -> Maybe Int
+turnOf b dir shift
+  | shift && b.turns = case dir of
+      NRight -> Just 1
+      NLeft -> Just (-1)
+      _ -> Nothing
+  | otherwise = Nothing
 
 -- | The same keystroke as a **relative** edit: which axis moves, and by how much
 -- | (signed, already clamped — so at a limit the amount is 0 and the caller sends
@@ -130,19 +150,25 @@ nudge b dir shift e = case dir of
 -- | Odonus does, because a burst of edits is buffered for the rig and an absolute
 -- | `current ± 1` would re-read a stale value.
 stepOf :: Bounds -> Nudge -> Boolean -> Euclid -> { axis :: Axis, amount :: Int }
-stepOf b dir shift e =
-  let e' = nudge b dir shift e
-  in case axisOf dir of
-    Beats -> { axis: Beats, amount: e'.beats - e.beats }
-    Steps -> { axis: Steps, amount: e'.steps - e.steps }
+stepOf b dir shift e = case turnOf b dir shift of
+  -- a turn is sent as the turn, not as the wrapped difference, so the engine's
+  -- own wrap decides where it lands
+  Just t -> { axis: Turn, amount: if e.steps > 1 then t else 0 }
+  Nothing ->
+    let e' = nudge b dir shift e
+    in case axisOf dir of
+      Beats -> { axis: Beats, amount: e'.beats - e.beats }
+      Steps -> { axis: Steps, amount: e'.steps - e.steps }
+      Turn -> { axis: Turn, amount: 0 }
 
--- | Is step `i` a pulse of E(k, n)? The Bresenham rule the reef engine plays —
--- | see the note on `hit` in the module header before changing this.
+-- | Is step `i` a pulse of E(k, n) turned by its rotation? The Bresenham rule
+-- | the reef engine plays — see the note on `hit` in the module header before
+-- | changing this.
 hit :: Euclid -> Int -> Boolean
 hit e i
   | e.beats <= 0 = false
   | e.beats >= e.steps = true
-  | otherwise = ((i `mod` e.steps) * e.beats) `mod` e.steps < e.beats
+  | otherwise = (wrap (i - e.rotation) e.steps * e.beats) `mod` e.steps < e.beats
 
 bits :: Euclid -> Array Boolean
 bits e = map (hit e) (range 0 (max 1 e.steps - 1))

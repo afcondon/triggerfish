@@ -1095,7 +1095,7 @@ euclidBounds = Euclid.boundedBy 64
 
 nudgeEuclid :: NudgeDir -> Boolean -> M.EuclidSlot -> M.EuclidSlot
 nudgeEuclid dir shift sl =
-  let e = Euclid.nudge euclidBounds dir shift { beats: sl.beats, steps: sl.steps }
+  let e = Euclid.nudge euclidBounds dir shift { beats: sl.beats, steps: sl.steps, rotation: 0 }
   in sl { beats = e.beats, steps = e.steps }
 
 -- Clock: ←/→ walk a slow→fast ladder that runs through DIVISION (below ×1, via
@@ -1560,7 +1560,7 @@ lfoShapeHint sl =
 -- --- POLYEUCLID: a ring of step-dots with k / n in the centre ----------------
 
 euclidInner :: forall m. M.EuclidSlot -> Array (H.ComponentHTML Action Slots m)
-euclidInner sl = [ Euclid.ring euclidStyle Nothing { beats: sl.beats, steps: sl.steps } ]
+euclidInner sl = [ Euclid.ring euclidStyle Nothing { beats: sl.beats, steps: sl.steps, rotation: 0 } ]
 
 -- | Selene's dressing for the shared ring: steel-blue dots, no playhead (a
 -- | polysignal Euclid is a shape handed to the daemon, not a thing this pane
