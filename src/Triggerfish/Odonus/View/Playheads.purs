@@ -17,6 +17,9 @@ import Halogen.HTML.Properties as HP
 import Triggerfish.Ui.Euclid as Euclid
 import Triggerfish.Odonus.Model as M
 import Reef.Odonus (unisonAll) as ROdo
+import Reef.Odonus.Voices (Rule(..), rulesOf)
+import Reef.PitchSet (cardinality)
+import Data.Ord (abs)
 import Triggerfish.Odonus.Grid.Types (Action(..), KnobTarget(..), Slots, State)
 import Triggerfish.Odonus.View.Key (outputPiece)
 import Triggerfish.Odonus.Grid.Widgets (engrave, headColor, miniKnob, panelShell, rateLabel, roman, signed, style)
@@ -185,11 +188,59 @@ headStrip s h hd =
               , dirRadio h hd.direction col
               ]
           , HH.div [ style (if hd.clock == 1 then "opacity:0.35" else "") ] [ euclidCell s h hd col ]
-          , miniKnob (HeadTransp h) hd.transp col "INT" (signed hd.transp)
+          , HH.div [ style "display:flex;flex-direction:column;align-items:center" ]
+              [ miniKnob (HeadTransp h) hd.transp col "INT" (signed hd.transp)
+              , HH.span
+                  [ HP.title "this head's part: its SPREAD, or its VOICES rule; INT adds to it, in semitones"
+                  , style "font-family:Georgia,serif;font-style:italic;font-size:9px;color:#5d584b;height:11px;white-space:nowrap" ]
+                  [ HH.text (headRole s.odo h hd) ]
+              ]
           , HH.div [ style "display:flex;flex-direction:column;gap:3px;width:48px" ]
               [ clockRadio h hd.clock col, restartBtn h hd col ]
           ]
       ]
+
+-- | What sets this head's pitch, beside INT: its VOICES rule when a strategy
+-- | is on and the head is not on its melody, else its SPREAD as an interval
+-- | from the tune (named as intervals in a seven-note scale, as steps in any
+-- | other). Blank for a head on the tune itself.
+headRole :: M.Odonus -> Int -> M.Head -> String
+headRole odo h hd = case rule of
+  Voice k -> "voice " <> show k
+  Lead n -> "lead " <> signed n
+  Melody -> spreadName (cardinality (M.effectivePitchSet odo)) hd.spreadOct hd.spreadDeg
+  where
+  rule = maybe Melody (\v -> fromMaybe Melody (rulesOf v !! h)) odo.voices
+
+spreadName :: Int -> Int -> Int -> String
+spreadName card oct deg
+  | oct == 0 && deg == 0 = ""
+  | card == 7 =
+      let
+        n = oct * 7 + deg
+        sign = if n < 0 then "−" else "+"
+        size = abs n + 1
+        name = case size of
+          8 -> "8ve"
+          15 -> "2 8ves"
+          22 -> "3 8ves"
+          _ -> show size <> ordinal size
+      in sign <> name
+  | otherwise =
+      let
+        octs = if oct == 0 then [] else [ signed oct <> " 8ve" ]
+        steps = if deg == 0 then [] else [ signed deg <> " st" ]
+      in joinWith " " (octs <> steps)
+
+ordinal :: Int -> String
+ordinal k = case k `mod` 10, k `mod` 100 of
+  _, 11 -> "th"
+  _, 12 -> "th"
+  _, 13 -> "th"
+  1, _ -> "st"
+  2, _ -> "nd"
+  3, _ -> "rd"
+  _, _ -> "th"
 
 -- | The head's Euclidean gate E(pulses, steps), drawn by the shared control
 -- | (`Triggerfish.Ui.Euclid`) — the same instrument as Selene's POLYEUCLID slots.
