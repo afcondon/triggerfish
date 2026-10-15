@@ -127,7 +127,7 @@ component =
         , vcoTables: []
         , swing: 0.0, velHumanize: 12
         , gen: map (\k -> { kind: k, on: false, rate: genDefaultRate k, amt: genDefaultAmt k }) genKinds
-        , genSpread: 0.5, genBias: 0.5, genSeed: Marbles.seedFrom 1, genFrozen: false, unisonMask: 59, voicesOpen: false, pending: [], nextModelStep: 0
+        , genSpread: 0.5, genBias: 0.5, genSeed: Marbles.seedFrom 1, genFrozen: false, unisonMask: 59, voicesOpen: false, stamped: Nothing, pending: [], nextModelStep: 0
         -- SOURCE folds away by default: the dedicated TIDAL tab is the
         -- one-stop view of the whole setup; Odonus's own eDSL pane is for
         -- when you want to inspect just this module.
@@ -956,7 +956,9 @@ dispatch = case _ of
   -- BEAM having to carry the library.
   StampForm ix -> do
     st <- H.get
-    enqueue (RI.SetNotes (Forms.stampForm ix st.odo))
+    let notes = Forms.stampForm ix st.odo
+    H.modify_ _ { stamped = map (\f -> { form: f.name, patternIx: maybe 0 _.patternIx (st.odo.heads !! 0), notes }) (Forms.formLibrary !! ix) }
+    enqueue (RI.SetNotes notes)
   -- LOCKSTEP (P4c): head mute + activation-matrix are DEFERRED, not applied now —
   -- enqueued for a near-future step and broadcast to the rig so both runtimes flip
   -- the head on the same step (no flam through the edit). The note-off + held-slot

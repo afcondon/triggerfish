@@ -13,7 +13,8 @@ import Prelude
 
 import Data.Foldable (all, maximum)
 import Data.Int (floor, round)
-import Data.Maybe (fromMaybe)
+import Data.Maybe (Maybe(..), fromMaybe, maybe)
+import Data.String.Common (toUpper)
 import Halogen as H
 import Halogen.HTML as HH
 import Halogen.HTML.Events as HE
@@ -53,6 +54,7 @@ gridPanel s =
     , xyPad s
     , readout s
     , noteButtons
+    , stampedFor s
     , HH.div [ style "margin-top:12px" ] [ noteField s.odo ]
     -- STEP LENGTH + GATE/SWING/HUMAN moved to the top of PARAMETERS (AC,
     -- 2026-08-06) — they're global transport/feel, not part of the note field, and
@@ -128,6 +130,28 @@ noteButtons =
       ]
         <> mapWithIndex (\i f -> tabBtn f.name false (StampForm i)) formLibrary
     )
+
+-- | Which reading the last FORM was written for, while the grid still holds
+-- | it: a form is laid in head I's reading order, so the same button gives a
+-- | different grid under each pattern, and UP stops sounding like up if head
+-- | I's pattern changes afterwards. Dimmed, with the pattern head I reads now,
+-- | when that has happened. Gone once the notes change (an edit, MELODY, a
+-- | preset).
+stampedFor :: forall m. State -> H.ComponentHTML Action Slots m
+stampedFor s = case s.stamped of
+  Just st | st.notes == map _.note s.odo.cells ->
+    let
+      now = maybe 0 _.patternIx (s.odo.heads !! 0)
+      nameOf ix = maybe "?" (toUpper <<< _.name) (M.patternLibrary !! ix)
+      moved = now /= st.patternIx
+    in
+      HH.div
+        [ style $ "margin-top:5px;font-family:Georgia,serif;font-style:italic;font-size:10px;color:#5a564b"
+            <> (if moved then ";opacity:0.45" else "")
+        , HP.title "a form is written in head I's reading order, so head I plays it as named; the other heads read the same notes through their own patterns" ]
+        [ HH.text (st.form <> " · written for I's " <> nameOf st.patternIx
+            <> (if moved then " (I now reads " <> nameOf now <> ")" else "")) ]
+  _ -> HH.text ""
 
 -- ---------------------------------------------------------------------------
 -- Groove + transport chrome

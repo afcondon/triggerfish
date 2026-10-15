@@ -366,6 +366,10 @@ type State =
                              -- construction (no more +1-step / +1-beat flam on Push).
   , unisonMask :: Int           -- which groups UNISON copies from head I
   , voicesOpen :: Boolean       -- the VOICES modal is showing
+  -- the last FORM stamped: its name, the pattern head I read when it was laid
+  -- (a form is written in head I's reading order), and the notes it wrote, so
+  -- the shelf can say "written for I's DIAGONAL" while the grid still holds it
+  , stamped :: Maybe { form :: String, patternIx :: Int, notes :: Array Int }
   , collapsed :: Array String  -- panel labels currently collapsed (accordion)
   , lastTap :: String          -- last toggle target (debounce the double-dispatch)
   , lastTapMicros :: Number
