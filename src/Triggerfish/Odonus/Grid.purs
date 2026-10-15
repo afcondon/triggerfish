@@ -74,6 +74,7 @@ import Triggerfish.Odonus.Logbook as Logbook
 import Triggerfish.Odonus.View.Scope (scopePanel)
 import Triggerfish.Odonus.View.Playheads (playheadsPanel)
 import Triggerfish.Odonus.View.Playheads as Playheads
+import Triggerfish.Odonus.View.Voices (voicesModal)
 import Triggerfish.Ui.Euclid as Euclid
 import Triggerfish.Odonus.View.Grid (gridPanel)
 import Triggerfish.Odonus.View.Replay (replayPanel)
@@ -126,7 +127,7 @@ component =
         , vcoTables: []
         , swing: 0.0, velHumanize: 12
         , gen: map (\k -> { kind: k, on: false, rate: genDefaultRate k, amt: genDefaultAmt k }) genKinds
-        , genSpread: 0.5, genBias: 0.5, genSeed: Marbles.seedFrom 1, genFrozen: false, unisonMask: 59, pending: [], nextModelStep: 0
+        , genSpread: 0.5, genBias: 0.5, genSeed: Marbles.seedFrom 1, genFrozen: false, unisonMask: 59, voicesOpen: false, pending: [], nextModelStep: 0
         -- SOURCE folds away by default: the dedicated TIDAL tab is the
         -- one-stop view of the whole setup; Odonus's own eDSL pane is for
         -- when you want to inspect just this module.
@@ -265,16 +266,24 @@ handleQuery = case _ of
   AskBar reply -> do
     st <- H.get
     let frozen = (effectiveSim st).frozen
+        voicesOn = case (effectiveSim st).odo.voices of
+          Just _ -> true
+          Nothing -> false
     pure $ Just $ reply
       { tabs: [], marks: "", icons: [], rebusTip: "", pickers: [], help: ""
       , chips:
           [ { id: "freeze", label: if frozen then "FROZEN" else "FREEZE"
             , icons: [ { icon: "snowflake", color: if frozen then "#2b5878" else "#3f3c33" } ]
             , active: frozen, attention: false
-            , tip: "hold every generator still (their settings kept), to hear or save a moment before it drifts" } ]
+            , tip: "hold every generator still (their settings kept), to hear or save a moment before it drifts" }
+          , { id: "voices", label: "VOICES"
+            , icons: [ { icon: "layer-group", color: if voicesOn then "#7a5a1c" else "#3f3c33" } ]
+            , active: voicesOn, attention: false
+            , tip: "harmonise head I's tune: a voicing and a rule per head" } ]
       }
   BarAction act next -> do
     when (act == "chip:freeze") (handleAction ToggleFreeze)
+    when (act == "chip:voices") (handleAction ToggleVoicesModal)
     pure (Just next)
   BrowserDrop _ next -> pure (Just next)
   BrowserRename i name next -> do
@@ -1005,6 +1014,15 @@ dispatch = case _ of
       let m = if (st.unisonMask `div` bit) `mod` 2 == 1 then st.unisonMask - bit else st.unisonMask + bit
       H.modify_ (markTap "unison" >>> _ { unisonMask = m })
       liftEffect (Store.saveUnison m)
+  ToggleVoicesModal -> do
+    st <- H.get
+    unless (tapBounced "voicesModal" st) $
+      H.modify_ (markTap "voicesModal" >>> \s -> s { voicesOpen = not s.voicesOpen })
+  SetVoicesText t -> do
+    st <- H.get
+    unless (tapBounced "voices" st) do
+      H.modify_ (markTap "voices")
+      enqueue (RI.SetVoices t)
   SetUnisonMask m -> do
     H.modify_ _ { unisonMask = m }
     liftEffect (Store.saveUnison m)
@@ -1870,6 +1888,7 @@ render s =
             , cellParamsPanel s
             ]
         Review -> replayPanel s
+    , if s.voicesOpen then voicesModal (effectiveSim s).odo else HH.text ""
     ]
 
 -- | Each voice's calibration for a poly instrument, by the labels DeepStar

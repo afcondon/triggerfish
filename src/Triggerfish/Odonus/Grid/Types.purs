@@ -365,6 +365,7 @@ type State =
                              -- state on the SAME absolute step on the BEAM — phase-zero by
                              -- construction (no more +1-step / +1-beat flam on Push).
   , unisonMask :: Int           -- which groups UNISON copies from head I
+  , voicesOpen :: Boolean       -- the VOICES modal is showing
   , collapsed :: Array String  -- panel labels currently collapsed (accordion)
   , lastTap :: String          -- last toggle target (debounce the double-dispatch)
   , lastTapMicros :: Number
@@ -444,6 +445,8 @@ data Action
   | UnifyHeads
   | ToggleUnisonGroup Int   -- a group's bit
   | SetUnisonMask Int       -- ALL or NONE
+  | ToggleVoicesModal
+  | SetVoicesText String    -- a VOICES strategy as its text; "off" clears
   | SetHeadRestart Int Boolean  -- head, its pattern restarting with its ring
   | PhaseShift Int          -- Reichian PHASE ±: rotate the whole canon
   | CycleScaleType Int
