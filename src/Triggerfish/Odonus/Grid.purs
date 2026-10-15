@@ -862,10 +862,10 @@ dispatch = case _ of
       when (st.sounding /= Rig) $
         for_ (Route.feedInputs st.feedsSeen new) enqueue
       H.modify_ _ { feedsSeen = new }
-  -- Hushed on the rig: its voice is gone, so an octave pattern it was
-  -- sampling ends here, and OCT goes back to where the pattern found it.
+  -- Hushed on the rig: its voice is gone, so an octave or degree pattern it
+  -- was sampling ends here; OCT and DEGREE stay where the pattern left them.
   RigFrame msg | msg == "hushed" || msg == "hushed odonus" ->
-    H.modify_ \s -> s { odo = M.setOctavePattern Nothing s.odo }
+    H.modify_ \s -> s { odo = M.setDegreePattern Nothing (M.setOctavePattern Nothing s.odo) }
   -- Another browser changed the presets (or this one's change was kept on
   -- top of theirs): show them, and the stage follows.
   LibraryChanged -> do
