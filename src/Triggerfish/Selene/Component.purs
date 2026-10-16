@@ -106,6 +106,11 @@ type State =
   -- (e.g. "es9:main"). "…" while a push is in flight; the daemon's OK/ERR line
   -- once it answers. Drives the per-bank status readout (#142 S3).
   , replies :: Map String String
+  -- what each bank was last sent (or adopted from the stage, which the rig
+  -- has applied), keyed as `replies` is: an apply sends only the banks that
+  -- differ. Every FH-2 apply rewrites the whole device, so re-sending the
+  -- unchanged banks put three short dips on its jacks per edit (2026-10-16).
+  , pushed :: Map String String
   -- when to apply the rack to the rig: a moment after the last edit, so the
   -- modular follows the page without an Apply (the rig keeps what it is given
   -- and gives it back to a daemon that returns: selene_keeper)
@@ -229,13 +234,14 @@ data Action
   | SelectRack Int            -- load a library rack into the editor
   | NewRack                   -- append a fresh empty rack + select it
   | SetRackName String        -- rename the active rack
-  | ApplyToRig                -- push every modular destination to its daemon
+  | ApplyToRig                -- push each changed modular destination to its daemon
   | SeleneReply String        -- a raw `selene-reply …` frame from the rig
   | DropOn M.Target Event     -- a module dropped on a group of outputs
   | DragOverTarget M.Target Event
   | DragLeaveTarget
   | DragRackStart Event
   | KeepModule Int            -- keep bank i as a module
+  | ToggleMute Int            -- mute bank i (its jacks to 0 V, the bank kept) or unmute it
   | RacksChanged              -- the racks changed in Amphora (another page)
   | ModulesChanged            -- the kept modules, likewise
   | PickStarter Int           -- apply library shape i to the selected envelope slot
@@ -259,6 +265,7 @@ component =
           , binnacle: Nothing, midiOut: Nothing, midiName: "…"
           , clockTempo: 120.0, clockLocked: false, clockBar: 0
           , replies: Map.empty
+          , pushed: Map.empty
           , applyDue: Nothing
           , stageSubscribed: false
           , stageRack: Nothing
@@ -565,7 +572,7 @@ handleAction = case _ of
       when (up && not st.stageSubscribed) do
         H.modify_ _ { stageSubscribed = true }
         liftEffect $ Transport.send (Binnacle.socket bin) "stage-text-subscribe"
-      when (not up && st.stageSubscribed) (H.modify_ _ { stageSubscribed = false, stageRack = Nothing })
+      when (not up && st.stageSubscribed) (H.modify_ _ { stageSubscribed = false, stageRack = Nothing, pushed = Map.empty })
     -- an edit settled: apply it, as the Apply button does
     now <- liftEffect dateNow
     for_ st.applyDue \due -> when (now >= due && isJust st.binnacle) do
@@ -591,7 +598,7 @@ handleAction = case _ of
   -- survive), then re-derive the rack from the new text.
   AddDest k -> do
     H.modify_ \s ->
-      let block = Source.printDest { target: M.defaultTargetFor k, range: Nothing, bank: M.freshBank k, retrig: Nothing }
+      let block = Source.printDest { target: M.defaultTargetFor k, range: Nothing, bank: M.freshBank k, retrig: Nothing, muted: false }
           doc = currentDoc s <> "\n\n" <> block
       in s { live = doc, sel = Source.parseRack doc }
     persist
@@ -707,7 +714,9 @@ handleAction = case _ of
   -- `selene-apply <socket> <bank> <json>`; the reply lands async in SeleneReply.
   ApplyToRig -> do
     st <- H.get
-    let envs = mapMaybe Wire.destinationEnvelope st.sel.destinations
+    let envs = filter (\e -> Map.lookup (replyKey e.socket e.bank) st.pushed /= Just e.json)
+                 (mapMaybe Wire.destinationEnvelope st.sel.destinations)
+    H.modify_ \s -> s { pushed = foldr (\e m -> Map.insert (replyKey e.socket e.bank) e.json m) s.pushed envs }
     for_ st.binnacle \bin -> do
       for_ envs \e ->
         liftEffect $ Transport.send (Binnacle.socket bin)
@@ -764,6 +773,7 @@ handleAction = case _ of
               line = Line.onBank text target <> (if isBlock || merge then "" else " # fresh")
             liftEffect $ Transport.send (Binnacle.socket bin) ("tidal selene $ " <> line)
             H.modify_ _ { publishMsg = Just ((if merge && not isBlock then "merged into " else "→ ") <> M.targetWire target <> ": " <> text) }
+  ToggleMute i -> editDest i (\d -> d { muted = not d.muted })
   KeepModule i -> do
     st <- H.get
     for_ (st.sel.destinations !! i) \d -> do
@@ -889,12 +899,16 @@ publishRack = do
 -- | line), or it was there when this page opened. Kept locally, not applied.
 adoptRack :: forall o m. MonadAff m => String -> H.HalogenM State Action Slots o m Unit
 adoptRack doc = do
-  H.modify_ _ { stageRack = Just doc }
+  H.modify_ _ { stageRack = Just doc, pushed = pushedOf (Source.parseRack doc) }
   st <- H.get
   when (doc /= currentDoc st) do
     H.modify_ \s -> s { live = doc, sel = Source.parseRack doc }
     s <- H.get
     liftEffect (Store.saveLibrary { active: s.active, library: s.library, presets: s.presets })
+
+-- | Each bank of a rack as the rig has it applied, keyed as `replies` is.
+pushedOf :: M.Selene -> Map String String
+pushedOf sel = Map.fromFoldable (map (\e -> Tuple (replyKey e.socket e.bank) e.json) (mapMaybe Wire.destinationEnvelope sel.destinations))
 
 -- | The rack in a `stage-texts` table, if it has one.
 readStageTable :: String -> Maybe String
@@ -1457,7 +1471,8 @@ destinationRow ep sel i d =
     [ style $ "display:flex;align-items:stretch;gap:12px;padding:11px 12px;border-radius:8px;"
         <> "background:#00000008;border:1px solid #00000012" ]
     [ destHeader i d
-    , HH.div [ style (slotWrap d.bank) ] (slotViews ep i sel d.target d.bank)
+    -- a muted bank is still drawn, and editable, but faded: its jacks are at 0 V
+    , HH.div [ style (slotWrap d.bank <> if d.muted then ";opacity:0.35" else "") ] (slotViews ep i sel d.target d.bank)
     ]
 
 -- | The slot layout: the CV/gate kinds flow eight-across. (POLYTRIG's 4×2
@@ -1478,6 +1493,12 @@ destHeader i d =
             <> map (\g -> HH.i [ HP.attr (HH.AttrName "class") ("fa-solid fa-" <> g.icon), style ("font-size:15px;line-height:1;color:" <> g.color) ] []) (settingIcons (Line.moduleOf d)) )
     , HH.span [ style $ engrave <> ";font-size:8px;opacity:0.45" ]
         [ HH.text ("→ " <> M.targetWire d.target) ]
+    , HH.button
+        [ HE.onClick \_ -> ToggleMute i
+        , HP.title (if d.muted then "Unmute: play this bank again, as it now is" else "Mute: the jacks go to 0 V; the bank is kept, and can still be edited")
+        , style $ "align-self:flex-start;font:10px Georgia,serif;padding:1px 7px;border-radius:4px;cursor:pointer;"
+            <> if d.muted then "border:1px solid #b3261e;background:#b3261e;color:#fff" else "border:1px solid #00000026;background:transparent;color:#5a5648" ]
+        [ HH.text (if d.muted then "muted" else "mute") ]
     , HH.button
         [ HE.onClick \_ -> KeepModule i
         , HP.title "Keep this bank as a module, to drop on any bank (it goes in the drawer's Modules)"
