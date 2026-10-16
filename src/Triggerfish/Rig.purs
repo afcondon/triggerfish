@@ -37,8 +37,11 @@ import Triggerfish.Selene.Model (Target(..), targetWire)
 -- | always present when the ES-9 is.
 type Es9Rig = { gtBlocks :: Int, cvBlocks :: Int }
 
--- | FH-2 side. `banks` = 8-wide banks: the FH-2's own eight plus each FHX-8.
-type Fh2Rig = { banks :: Int }
+-- | FH-2 side. The FH-2's own eight are always present; `gtExpanders` counts
+-- | FHX-8GTs and `cvExpanders` FHX-8CVs (the names `FH2.Roles.Profile` uses).
+-- | Each family numbers its expanders from 1 by its own jumpers, so the counts
+-- | assume they are set 1, 2, … with no gaps.
+type Fh2Rig = { gtExpanders :: Int, cvExpanders :: Int }
 
 -- | The whole routing-visible rig. `Nothing` for a family means it isn't
 -- | patched in, so none of its destinations are offered at all.
@@ -49,12 +52,12 @@ type RigConfig =
   }
 
 -- | AC's rig: ES-9 with two gate blocks (ES-5 + one ESX-8GT) and one ESX-8CV,
--- | an FH-2 with one FHX-8 expander (two banks), 16 MIDI channels. Adjust to
+-- | an FH-2 with one FHX-8GT and one FHX-8CV, 16 MIDI channels. Adjust to
 -- | match the actual patch.
 defaultRig :: RigConfig
 defaultRig =
   { es9: Just { gtBlocks: 2, cvBlocks: 1 }
-  , fh2: Just { banks: 2 }
+  , fh2: Just { gtExpanders: 1, cvExpanders: 1 }
   , midiChannels: 16
   }
 
@@ -69,23 +72,13 @@ availableTargets cfg =
     Just r -> [ ES9Main ] <> blocks r.gtBlocks ES9Gt <> blocks r.cvBlocks ES9Cv
   fh2 = case _ of
     Nothing -> []
-    Just r -> blocks r.banks FH2
+    Just r -> fh2Targets r
   midi n = guard (n >= 1) (map Midi (range 1 n))
 
 -- | Every PHYSICAL OUTPUT the rig has, in `Selene.Layout`'s address vocabulary.
 -- | This is the row set of the output-backward view — one row per jack, whether
 -- | or not anything claims it, because "which jacks are free?" is a first-class
 -- | answer rather than a leftover.
--- |
--- | **Two honest limitations, both in `RigConfig` rather than here.**
--- |
--- | `Fh2Rig` counts `banks` without saying what KIND each expander is, but an
--- | output address must choose `gt0` or `cv0`. Banks beyond the first are
--- | assumed to be FHX-8**GT**, which is what is in the rack (the drum breakout
--- | targets `gt0`) — but it is an assumption the model cannot currently express,
--- | and a wrong one would render rows for hardware that is not there. That is
--- | the same argument for the discovery handshake `RigConfig` already
--- | contemplates.
 -- |
 -- | The ES-9's own eight panel jacks are listed, though no `Destination`
 -- | addresses them today, so they will always read as free. That is truthful:
@@ -104,7 +97,7 @@ rigOutputs cfg = es9 cfg.es9 <> fh2 cfg.fh2
 
   fh2 = case _ of
     Nothing -> []
-    Just r -> jacks "fh2" "main" <> expanders "fh2" "gt" (r.banks - 1)
+    Just r -> jacks "fh2" "main" <> expanders "fh2" "gt" r.gtExpanders <> expanders "fh2" "cv" r.cvExpanders
 
   expanders device prefix n =
     guard (n >= 1) (range 0 (n - 1)) >>= \i -> jacks device (prefix <> show i)
@@ -125,9 +118,13 @@ targetGroups cfg =
       }
   fh2 = case _ of
     Nothing -> { label: "FH-2", options: [] }
-    Just r -> { label: "FH-2", options: map (opt leafLabel) (blocks r.banks FH2) }
+    Just r -> { label: "FH-2", options: map (opt leafLabel) (fh2Targets r) }
   midiTargets n = guard (n >= 1) (map Midi (range 1 n))
   nonEmpty g = guard (g.options /= []) [ g ]
+
+-- | The FH-2's banks in menu order: its own eight, the FHX-8GTs, the FHX-8CVs.
+fh2Targets :: Fh2Rig -> Array Target
+fh2Targets r = [ FH2 0 ] <> blocks r.gtExpanders (\i -> FH2 (i + 1)) <> blocks r.cvExpanders FH2Cv
 
 -- | A bounded run of expander blocks `f 0 .. f (n-1)`, empty when `n <= 0` (so
 -- | `range 0 (-1)` never produces the descending `[0,-1]`).
@@ -144,6 +141,8 @@ leafLabel = case _ of
   ES9Main -> "MAIN"
   ES9Gt n -> "GT " <> show n
   ES9Cv n -> "CV " <> show n
-  FH2 n -> "BANK " <> show n
+  FH2 0 -> "MAIN"
+  FH2 n -> "GT " <> show (n - 1)
+  FH2Cv n -> "CV " <> show n
   Midi n -> "CH " <> show n
   Virtual s -> s
