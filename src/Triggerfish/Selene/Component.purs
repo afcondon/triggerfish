@@ -1457,7 +1457,7 @@ destinationRow ep sel i d =
     [ style $ "display:flex;align-items:stretch;gap:12px;padding:11px 12px;border-radius:8px;"
         <> "background:#00000008;border:1px solid #00000012" ]
     [ destHeader i d
-    , HH.div [ style (slotWrap d.bank) ] (slotViews ep i sel d.bank)
+    , HH.div [ style (slotWrap d.bank) ] (slotViews ep i sel d.target d.bank)
     ]
 
 -- | The slot layout: the CV/gate kinds flow eight-across. (POLYTRIG's 4×2
@@ -1492,9 +1492,9 @@ destHeader i d =
 -- Each slot is drawn inside a focusable cell: clicking selects it (a black box);
 -- arrow keys then nudge it. `slotViews` threads the destination index + current
 -- selection so each cell knows whether it's the selected one and what to fire.
-slotViews :: forall m. EnvParam -> Int -> Maybe Sel -> M.GenBank -> Array (H.ComponentHTML Action Slots m)
-slotViews ep d sel = case _ of
-  M.GLfo slots -> mapWithIndex (cellFor d sel 90.0 lfoInner) slots
+slotViews :: forall m. EnvParam -> Int -> Maybe Sel -> M.Target -> M.GenBank -> Array (H.ComponentHTML Action Slots m)
+slotViews ep d sel target = case _ of
+  M.GLfo slots -> mapWithIndex (cellFor d sel 90.0 (lfoInner target)) slots
   M.GEuclid slots -> mapWithIndex (cellFor d sel 70.0 euclidInner) slots
   M.GClock slots -> mapWithIndex (cellFor d sel 58.0 clockInner) slots
   M.GNote slots -> mapWithIndex (cellFor d sel 58.0 noteInner) slots
@@ -1519,8 +1519,8 @@ slotCell d j isSel widthPx body =
 
 -- --- POLYLFO: a scaled waveform, 0V baseline, log-frequency, rate label ------
 
-lfoInner :: forall m. M.ModSlot -> Array (H.ComponentHTML Action Slots m)
-lfoInner sl =
+lfoInner :: forall m. M.Target -> M.ModSlot -> Array (H.ComponentHTML Action Slots m)
+lfoInner target sl =
   let
     w = 84.0
     h = 50.0
@@ -1548,7 +1548,8 @@ lfoInner sl =
             [ svgAttr "points" poly, svgAttr "fill" "none", svgAttr "stroke" accent
             , svgAttr "stroke-width" "1.6", svgAttr "stroke-linejoin" "round" ] []
         ]
-    , cellCaption (shapeName (activeShape sl) <> " · " <> fmt2 sl.rate <> " Hz" <> hint)
+    -- the rate it really runs at, where the hardware clamps it (an FH-2 LFO)
+    , cellCaption (shapeName (activeShape sl) <> " · " <> fmt2 sl.rate <> " Hz" <> maybe "" (\c -> " → " <> fmt2 c) (M.lfoRateOn target sl.rate) <> hint)
     ]
 
 -- which non-drawn shapes are present, as a tiny tag
