@@ -24,6 +24,7 @@ import Web.UIEvent.KeyboardEvent (KeyboardEvent)
 import Web.UIEvent.KeyboardEvent as KE
 import Web.Event.Event (Event, EventType(..), preventDefault)
 import Data.Int (round, toNumber)
+import Data.Int as Int
 import Data.Map (Map)
 import Data.Map as Map
 import Data.String as Str
@@ -648,6 +649,13 @@ handleAction = case _ of
             H.modify_ _ { envPick = i }
             for_ (Lib.starterAt i) \st ->
               editDest dest (onBank (setEnvSlot slot st.slot))
+        -- Alt (Option) + ←/→ slides an LFO's phase by a sixteenth of a cycle
+        -- (Shift: a quarter); → moves the drawn wave right. Each apply resets
+        -- an FH-2 LFO bank, so the jack moves by exactly what is drawn.
+        | KE.altKey ev, Just dir <- dirOf k, dir == NLeft || dir == NRight, kindAt dest s == Just M.KLfo -> do
+            liftEffect (preventDefault (KE.toEvent ev))
+            let step = (if KE.shiftKey ev then 0.25 else 0.0625) * (if dir == NRight then -1.0 else 1.0)
+            editDest dest (onBank (slidePhase slot step))
         | otherwise ->
             for_ (dirOf k) \dir -> do
               liftEffect (preventDefault (KE.toEvent ev))
@@ -1232,6 +1240,16 @@ setActiveAmp amp sl = setShape (activeShape sl) (clamp 0.0 2.0 amp) sl
 cycleWave :: M.ModSlot -> M.ModSlot
 cycleWave sl = setShape ((activeShape sl + 1) `mod` 6) (max 0.1 (activeAmp sl)) sl
 
+-- | Move one LFO slot's phase by `step` cycles, kept in [0, 1). The phase is
+-- | first snapped to the nearest sixteenth: the rack prints three decimals, so
+-- | 0.1875 comes back as 0.188, and without the snap each press would drift.
+slidePhase :: Int -> Number -> M.GenBank -> M.GenBank
+slidePhase j step = case _ of
+  M.GLfo xs -> M.GLfo (overAt j (\sl -> sl { phase = wrap (toNumber (round (sl.phase * 16.0)) / 16.0 + step) }) xs)
+  b -> b
+  where
+  wrap p = let f = p - toNumber (Int.floor p) in if f >= 0.99999 then 0.0 else f
+
 cycleWaveBank :: Int -> M.GenBank -> M.GenBank
 cycleWaveBank j = case _ of
   M.GLfo xs -> M.GLfo (overAt j cycleWave xs)
@@ -1547,17 +1565,18 @@ lfoInner target sl =
     h = 50.0
     mid = h / 2.0
     -- normalise the summed wave into the cell (90% of half-height)
-    span = max 1.0 (abs sl.level + sl.sin + sl.sqr + sl.tri + abs sl.saw)
-    samples = 48
+    span = max 1.0 (abs sl.level + sl.sin + sl.sqr + sl.tri + abs sl.saw + sl.rnd + sl.nse)
+    -- enough points that a random slot's steps draw as steps
+    samples = 96
     pt k =
       let
         u = toNumber k / toNumber samples
         x = u * w
-        y = mid - (M.lfoValue sl u / span) * (mid * 0.9)
+        y = mid - (lfoDrawn sl u / span) * (mid * 0.9)
       in
         show (round2 x) <> "," <> show (round2 y)
     poly = joinWith " " (map pt (range 0 samples))
-    hint = lfoShapeHint sl
+    clamped = M.lfoRateOn target sl.rate
   in
     [ svgEl "svg"
         [ svgAttr "viewBox" ("0 0 " <> show w <> " " <> show h), svgAttr "width" "100%"
@@ -1569,15 +1588,34 @@ lfoInner target sl =
             [ svgAttr "points" poly, svgAttr "fill" "none", svgAttr "stroke" accent
             , svgAttr "stroke-width" "1.6", svgAttr "stroke-linejoin" "round" ] []
         ]
-    -- the rate it really runs at, where the hardware clamps it (an FH-2 LFO)
-    , cellCaption (shapeName (activeShape sl) <> " · " <> fmt2 sl.rate <> " Hz" <> maybe "" (\c -> " → " <> fmt2 c) (M.lfoRateOn target sl.rate) <> hint)
+    -- the rate it really runs at, where the hardware clamps it (an FH-2 LFO),
+    -- with a red ! so a clamped slot shows at a glance
+    , HH.span [ style "display:flex;align-items:center;gap:3px" ]
+        ( ( case clamped of
+              Just c ->
+                [ HH.span
+                    [ HP.title ("The FH-2 can't run " <> fmt2 sl.rate <> " Hz: this LFO runs at " <> fmt2 c <> " Hz (its LFOs span 0.1 to 10.36 Hz)")
+                    , style "font:bold 10px Georgia,serif;color:#fff;background:#b3261e;border-radius:6px;padding:0 4px;line-height:12px" ]
+                    [ HH.text "!" ] ]
+              Nothing -> [] )
+          <> [ cellCaption (shapeName (activeShape sl) <> " · " <> fmt2 sl.rate <> " Hz" <> maybe "" (\c -> " → " <> fmt2 c) clamped) ] )
     ]
 
--- which non-drawn shapes are present, as a tiny tag
-lfoShapeHint :: M.ModSlot -> String
-lfoShapeHint sl =
-  let tags = filter (_ /= "") [ if sl.rnd > 0.0 then "+rnd" else "", if sl.nse > 0.0 then "+nse" else "" ]
-  in if length tags == 0 then "" else " " <> joinWith "" tags
+-- | The drawn wave: the model's deterministic shapes (M.lfoValue), plus random
+-- | and noise as fixed icons, the same on every slot. The hardware's random
+-- | is not this curve and cannot be drawn ahead, so the drawing says only that
+-- | it is random, and how much: a sample-and-hold staircase that moves with
+-- | the slot's rate and phase, and a fine jitter for noise.
+lfoDrawn :: M.ModSlot -> Number -> Number
+lfoDrawn sl u = M.lfoValue sl u + sl.rnd * held + sl.nse * jitter
+  where
+  t = u * M.lfoCyclesShown sl.rate + sl.phase
+  held = stepTable (Int.floor (t * 4.0))
+  jitter = stepTable (Int.floor (u * 96.0) * 5) * 0.8
+  stepTable i = fromMaybe 0.0 (rndSteps !! (i `mod` 8))   -- Int mod is never negative
+
+rndSteps :: Array Number
+rndSteps = [ 0.55, -0.35, 0.9, -0.8, 0.15, -0.6, 0.7, -0.1 ]
 
 -- --- POLYEUCLID: a ring of step-dots with k / n in the centre ----------------
 
