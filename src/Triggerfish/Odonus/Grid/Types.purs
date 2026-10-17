@@ -63,6 +63,7 @@ import Reef.Gen
   , periodOf, toggleGen, setRate, setAmt )
 import Binnacle (Binnacle)
 import Binnacle.Midi as Midi
+import Helm.Twister as HelmTwister
 import Triggerfish.Routing.Model as RM
 import Triggerfish.Routing.Out as RO
 import Triggerfish.Routing.Model as RM
@@ -315,6 +316,11 @@ type State =
   , zoom :: Zoom                    -- REPLAY: how much of the take the surface shows
   , clips :: Array MidiClip         -- captured clips (shared library, #27), newest-first
   , twisterField :: TwisterField    -- which cell attribute the Twister's rotaries drive (bank 1)
+  -- The Twister's lights (`Triggerfish.Odonus.Twister`): its output, the last
+  -- position it reported per CC, and the last ring written per CC.
+  , twisterOut :: Maybe Midi.MidiOut
+  , twisterHeard :: Map Int Int
+  , twisterLit :: Map Int Int
   , binnacle :: Maybe Binnacle
   , nowMicros :: Number
   -- Every MIDI output port, plus the routing table saying which of them each
@@ -503,7 +509,8 @@ data Action
   | PushToRig                  -- encode the whole Odonus record (Reef.Protocol)
                                -- and send it over the rig WS as `reef-odonus <json>`,
                                -- to run on the BEAM via the shared reef engine
-  | TwisterMsg Int Int Int     -- a raw MIDI message from the MidiFighter Twister
+  | TwisterMsg HelmTwister.TwisterMsg  -- from the MidiFighter Twister, past Helm's press-nudge guard
+  | TwisterOut Midi.MidiOut    -- the Twister's output was found: its rings can be lit
   -- VOICE config: which FH-2 polyenv envelopes each head fires.
                                -- (status, data1, data2). Bank 1: encoders 0..15 map
                                -- 1:1 onto the 16 cells — rotate sets the cell note

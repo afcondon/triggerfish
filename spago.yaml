@@ -27,6 +27,7 @@ package:
     - js-timers
     - random
     - binnacle
+    - helm
     - littorina      # Tidal's engine (music/littorina), one source for the BEAM and JS
     - control
     - either
@@ -79,6 +80,10 @@ workspace:
       path: ../../../code-typography/rebus
     binnacle:
       path: ../binnacle
+    # The controllers: device profiles (the Twister's decoding, lights and
+    # press-nudge guard) and the one Web MIDI FFI, shared with PWYF.
+    helm:
+      path: ../../helm
     # Tidal's patterns, mini-notation and line language: Littorina, held to
     # Haskell Tidal by its conformance suite on both JS and the BEAM. Replaced
     # the vendored copy in src/Tidal 2026-10-01.

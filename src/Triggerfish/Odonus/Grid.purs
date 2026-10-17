@@ -42,6 +42,11 @@ import Triggerfish.Ui.Pointer as Pointer
 import Binnacle as Binnacle
 import Binnacle.Clock as Clock
 import Binnacle.Midi as Midi
+import Helm.Twister as HelmTwister
+import Helm.Twister.Guard as Guard
+import Helm.WebMIDI as WebMIDI
+import Triggerfish.Odonus.Twister (twisterScale)
+import Triggerfish.Odonus.Twister as Tw
 import Binnacle.Scheduler as Scheduler
 import Binnacle.Time as Time
 import Vetula.Voice as Voice
@@ -114,7 +119,7 @@ component =
   H.mkComponent
     { initialState: \_ ->
         { odo: M.defaultOdonus, sounding: Silent, dragging: Nothing, dragSub: Nothing
-        , notes: [], logbook: Logbook.emptyLog, stage: Perform, selEuclid: Nothing, playing: Nothing, rigLoops: false, rigAsked: 0.0, cutting: false, cutSel: Nothing, regionDrag: Nothing, cardShut: Nothing, contextOpen: false, codeOpen: false, zoom: Whole, clips: [], twisterField: FNote, binnacle: Nothing, nowMicros: 0.0
+        , notes: [], logbook: Logbook.emptyLog, stage: Perform, selEuclid: Nothing, playing: Nothing, rigLoops: false, rigAsked: 0.0, cutting: false, cutSel: Nothing, regionDrag: Nothing, cardShut: Nothing, contextOpen: false, codeOpen: false, zoom: Whole, clips: [], twisterField: FNote, twisterOut: Nothing, twisterHeard: Map.empty, twisterLit: Map.empty, binnacle: Nothing, nowMicros: 0.0
         , outs: [], routing: RM.defaultTable, midiName: "…", clockTempo: 120.0, clockLocked: false
         , clockBeat: 0.0, clockBar: 0, anchorCount: 0
         , notice: "", undoDelete: Nothing, stagePatches: Nothing, shelf: Nothing
@@ -527,8 +532,13 @@ dispatch = case _ of
               Nothing -> "no '" <> twisterInputName <> "' in: " <> joinWith ", " innames
             nm = show (length names) <> " ports · " <> twNm
         HS.notify midiL (MidiReady outs nm)
+        -- Through Helm's press-nudge guard first: a push always nudges the
+        -- encoder, and a field-select push must not also edit a cell.
+        feed <- Guard.guarded Guard.timing (HS.notify midiL <<< TwisterMsg)
         for_ minput \inp -> void $ Midi.onMessage inp \m ->
-          HS.notify midiL (TwisterMsg m.status m.data1 m.data2)
+          for_ (HelmTwister.parse [ m.status, m.data1, m.data2 ]) feed
+        mtwOut <- Midi.findOutput access twisterInputName
+        for_ mtwOut (HS.notify midiL <<< TwisterOut)
       Nothing -> HS.notify midiL (MidiReady [] "unavailable")
     H.modify_ _ { binnacle = Just bin }
     -- Restore the live working patch (Lepidoptera text; unparseable / absent
@@ -721,6 +731,7 @@ dispatch = case _ of
       when (st.sounding == Local && st.rigLoops) $
         for_ (RL.recordLine "odonus" identity fresh) rigSend
   Frame -> do
+    paintTwister
     st <- H.get
     case st.binnacle of
       Just bin -> do
@@ -891,23 +902,19 @@ dispatch = case _ of
             ("Odonus: a rig move for step " <> show t.tick <> " arrived at step "
               <> show st.nextModelStep <> "; applied late, so this page may drift from the rig")
           H.modify_ \s -> s { pending = s.pending <> [ { step: t.tick, input: t.input } ] }
-  -- MidiFighter Twister, bank 1: the 16 encoders map 1:1 onto the 16 cells.
-  -- ROTATE (absolute CC on the rotate channel) sets the ACTIVE grid's field for that
-  -- cell — scaled from 0..127 into the field's range and pushed through the SAME
-  -- Set* input a trackpad drag emits, so it defers + broadcasts (lockstep P4c)
-  -- identically. PUSH on a top-row encoder (0..3) SELECTS the active grid
-  -- (NOTE/LEN/RATCHET/VEL). Other channels / kinds / future banks are ignored.
-  TwisterMsg status d1 d2 -> do
-    let kind = status `div` 16   -- high nibble: 0xB CC, 0x9 note-on
-        ch = status `mod` 16     -- low nibble: 0-based MIDI channel
-        bank = d1 `div` 16       -- CC 0..15 = bank 1 (cells), 16..31 = bank 2 (voices)
-        idx = d1 `mod` 16        -- position within the bank's 4×4
-        isRotate = kind == 0xB && ch == twisterRotateCh
-        isPush = (kind == 0xB && ch == twisterPushCh && d2 > 0) || (kind == 0x9 && d2 > 0)
-    case bank of
-      -- Bank 1: the 16 cells (value + boolean grids) + the Notes-pane MACRO.
-      0 ->
-        if isRotate then do
+  -- MidiFighter Twister, layer 0: the 16 encoders map 1:1 onto the 16 cells.
+  -- ROTATE sets the ACTIVE grid's field for that cell — scaled from 0..127 into
+  -- the field's range and pushed through the SAME Set* input a trackpad drag
+  -- emits, so it defers + broadcasts (lockstep P4c) identically. PUSH on an
+  -- encoder of the top two rows SELECTS the active grid. Decoding and the
+  -- press-nudge guard are Helm's; what arrives here is already a gesture.
+  TwisterMsg msg -> case msg of
+    HelmTwister.Turn k d2 -> do
+      H.modify_ \s -> s { twisterHeard = Map.insert (HelmTwister.knobCC k) d2 s.twisterHeard }
+      let idx = k.index
+      case k.layer of
+        -- Layer 0: the 16 cells (value + boolean grids) + the Notes-pane MACRO.
+        0 -> do
           st <- H.get
           case st.twisterField of
             -- Value grids: 0..127 → the field's range → the same Set* input the knob emits.
@@ -922,13 +929,22 @@ dispatch = case _ of
             FGlide -> for_ (st.odo.cells !! idx) \c -> when (c.glide /= (d2 >= 64)) (twisterApply (RI.ToggleGlide idx))
             -- Macro pane: the 16 rotaries drive the Notes-pane globals, not the cells.
             FMacro -> twisterMacro idx d2 st
-        else if isPush then
-          for_ (twisterFieldForPush idx) \fld -> H.modify_ _ { twisterField = fld }
-        else pure unit
-      -- Bank 2: each ROW is a voice (head 0..3); the four columns are pattern /
-      -- euclid-k / euclid-n / transpose. Pushes here are unmapped for now.
-      1 -> when isRotate $ twisterVoice idx d2
-      _ -> pure unit
+        -- Layer 1: each ROW is a voice (head 0..3); the four columns are pattern /
+        -- euclid-k / euclid-n / transpose. Pushes here are unmapped for now.
+        1 -> twisterVoice idx d2
+        _ -> pure unit
+    HelmTwister.Press k -> do
+      -- The push nudged the encoder and the guard swallowed the nudge, so the
+      -- device now sits a click or two from its ring: forget what was written
+      -- and the next frame puts it back.
+      H.modify_ \s -> s { twisterLit = Map.delete (HelmTwister.knobCC k) s.twisterLit
+                         , twisterHeard = Map.delete (HelmTwister.knobCC k) s.twisterHeard }
+      when (k.layer == 0) $
+        for_ (twisterFieldForPush k.index) \fld -> H.modify_ _ { twisterField = fld }
+    _ -> pure unit
+  TwisterOut out -> do
+    H.modify_ _ { twisterOut = Just out, twisterLit = Map.empty }
+    paintTwister
   -- Cell edits — deferred + broadcast (lockstep P4c) so they land on the same
   -- model step on both runtimes.
   ToggleGlide i -> enqueue (RI.ToggleGlide i)
@@ -1718,19 +1734,6 @@ envPortName = "FH-2"
 twisterInputName :: String
 twisterInputName = "Twister"
 
--- | Factory-default Twister map: encoder ROTATE arrives as CC on MIDI channel 1
--- | (0-based 0), the encoder PUSH switch as CC on channel 2 (0-based 1). Set the
--- | Twister to match in the MidiFighter Utility — encoders ABSOLUTE, switches CC.
-twisterRotateCh :: Int
-twisterRotateCh = 0
-
-twisterPushCh :: Int
-twisterPushCh = 1
-
--- | Map an absolute 0..127 encoder onto an integer range [lo,hi].
-twisterScale :: Int -> Int -> Int -> Int
-twisterScale lo hi d2 = lo + round (toNumber d2 / 127.0 * toNumber (hi - lo))
-
 -- | PUSH switch → active grid. Row 1 (enc 0..3) = the four cell VALUE grids; row 2
 -- | (enc 4..7) = the three cell BOOLEAN grids + the MACRO pane. Other pushes are
 -- | free (future banks). The "dedicated selector pushes" scheme.
@@ -1814,6 +1817,18 @@ twisterPattern voice d2 = do
 -- | Drop monitor notes once they've scrolled off the left edge (~8s).
 windowMicros :: Number
 windowMicros = 8000000.0
+
+-- | Bring the Twister's rings up to date with the model. Runs every frame and
+-- | writes only what changed; see `Triggerfish.Odonus.Twister` for why a ring
+-- | under a moving hand is left where the hand put it.
+paintTwister :: forall o m. MonadAff m => H.HalogenM State Action Slots o m Unit
+paintTwister = do
+  st <- H.get
+  for_ st.twisterOut \out -> do
+    let writes = Tw.paint st { heard: st.twisterHeard, lit: st.twisterLit }
+    unless (null writes) do
+      liftEffect $ for_ writes \w -> WebMIDI.send out (HelmTwister.ring w.knob w.pos)
+      H.modify_ \s -> s { twisterLit = foldl (\m w -> Map.insert w.cc w.pos m) s.twisterLit writes }
 
 -- | ~30fps UI ticker that scrolls the scope + refreshes the clock readout.
 -- | Driven by `setInterval` (a browser timer) rather than a forked Aff

@@ -22,6 +22,7 @@ import Test.HarmonySpec (runHarmonyTests)
 import Test.LepidopteraScaleSpec (runLepidopteraScaleTests)
 import Test.CardLineSpec (runCardLineTests)
 import Test.RevoiceSpec (runRevoiceTests)
+import Test.TwisterSpec (runTwisterTests)
 import Triggerfish.Odonus.Model as M
 import Triggerfish.Odonus.Marbles as Marbles
 import Triggerfish.Odonus.Gen as Gen
@@ -155,6 +156,7 @@ main = do
   -- Assertion suites first: these FAIL the run, where the sampling stats below
   -- only report.
   runRevoiceTests
+  runTwisterTests
   runFlowTests
   runOrderTests
   runHarmonyTests

@@ -21,6 +21,7 @@
             "halogen-svg-elems",
             "halogen-widgets",
             "harmonia",
+            "helm",
             "hylograph-layout",
             "hylograph-selection",
             "hylograph-transitions",
@@ -717,6 +718,9 @@
       "harmonia": {
         "path": "../../harmonia"
       },
+      "helm": {
+        "path": "../../helm"
+      },
       "hylograph-graph": {
         "path": "../../../purescript-hylograph-libs/purescript-hylograph-graph"
       },
@@ -803,9 +807,11 @@
       "type": "local",
       "path": "../binnacle",
       "dependencies": [
+        "arrays",
         "effect",
         "either",
         "foldable-traversable",
+        "helm",
         "integers",
         "js-timers",
         "maybe",
@@ -1294,6 +1300,26 @@
         "integers",
         "maybe",
         "prelude",
+        "tuples"
+      ]
+    },
+    "helm": {
+      "type": "local",
+      "path": "../../helm",
+      "dependencies": [
+        "aff",
+        "arrays",
+        "effect",
+        "either",
+        "exceptions",
+        "foldable-traversable",
+        "integers",
+        "js-timers",
+        "maybe",
+        "nullable",
+        "ordered-collections",
+        "prelude",
+        "refs",
         "tuples"
       ]
     },
