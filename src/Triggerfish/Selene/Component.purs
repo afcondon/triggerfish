@@ -45,6 +45,10 @@ import Halogen.Subscription as HS
 import Binnacle as Binnacle
 import Binnacle.Clock as Clock
 import Binnacle.Midi as Midi
+import Helm.Twister as HT
+import Helm.Twister.Guard as Guard
+import Helm.WebMIDI as WebMIDI
+import Triggerfish.Selene.Twister as Tw
 import Binnacle.Scheduler as Scheduler
 import Binnacle.Transport as Transport
 import Triggerfish.Ui.Style (engrave, style)
@@ -165,6 +169,10 @@ type State =
   -- with the sensitivity below the handle tracks the pointer closely enough to
   -- read as direct.
   , envDrag :: Maybe EnvDrag
+  -- The Twister on its bank 3 (`Triggerfish.Selene.Twister`): the port, whether
+  -- the selected signal is entered, the device's last reported position and
+  -- what was last lit, per encoder.
+  , twister :: { out :: Maybe Midi.MidiOut, open :: Boolean, heard :: Map Int Int, lit :: Map Int Tw.Look }
   }
 
 -- | Which breakpoint of the drawn envelope is being dragged. Three handles, two
@@ -226,6 +234,8 @@ data Action
   | Step Scheduler.Tick
   | Frame
   | MidiReady (Maybe Midi.MidiOut) String
+  | TwisterMsg HT.TwisterMsg      -- a gesture, after Helm's press-nudge guard
+  | TwisterOut Midi.MidiOut
   | AddDest M.GenKind         -- append a template block (comment-safe)
   | SetDoc String             -- the whole editable document, verbatim
   | RetargetDest Int String   -- re-route destination i to a target wire (cascade menu)
@@ -282,6 +292,7 @@ component =
           , envParam: EPDecay
           , envPick: 0
           , envDrag: Nothing
+          , twister: { out: Nothing, open: false, heard: Map.empty, lit: Map.empty }
           }
     , render
     , eval: H.mkEval H.defaultEval
@@ -534,6 +545,14 @@ handleAction = case _ of
               Just _ -> midiPortName <> " ✓"
               Nothing -> "no '" <> midiPortName <> "' — ports: " <> joinWith ", " names
         HS.notify midiL (MidiReady mout nm)
+        -- The Twister, through Helm's guard: a push always nudges its encoder,
+        -- and COLUMN's push must not also move the column.
+        feed <- Guard.guarded Guard.timing (HS.notify midiL <<< TwisterMsg)
+        twIn <- Midi.findInput access twisterPortName
+        for_ twIn \inp -> void $ Midi.onMessage inp \m ->
+          for_ (HT.parse [ m.status, m.data1, m.data2 ]) feed
+        twOut <- Midi.findOutput access twisterPortName
+        for_ twOut (HS.notify midiL <<< TwisterOut)
       Nothing -> HS.notify midiL (MidiReady Nothing "unavailable")
     -- restore the saved rack library + preset bank (falls back to the default rack).
     msaved <- liftEffect Store.loadLibrary
@@ -592,8 +611,27 @@ handleAction = case _ of
     when (cv /= s2.lastChip) do
       H.modify_ _ { lastChip = cv }
       H.raise (IdentityChanged cv)
+    paintTwister
 
   MidiReady mout nm -> H.modify_ _ { midiOut = mout, midiName = nm }
+
+  -- The Twister's bank 3 is this page's; the other banks belong to Odonus.
+  TwisterMsg msg -> case msg of
+    HT.Turn k v | k.layer == Tw.layer -> do
+      H.modify_ \s -> s { twister = s.twister { heard = Map.insert k.index v s.twister.heard } }
+      st <- H.get
+      for_ (join (twisterControls st !! k.index)) \c -> for_ (c.turn v) twisterAct
+    HT.Press k | k.layer == Tw.layer -> do
+      -- The guard swallowed the push's nudge, so the device sits a click from
+      -- its ring: forget both, and the next frame puts the ring back.
+      H.modify_ \s -> s { twister = s.twister { heard = Map.delete k.index s.twister.heard, lit = Map.delete k.index s.twister.lit } }
+      st <- H.get
+      for_ (join (twisterControls st !! k.index)) \c -> for_ c.press twisterAct
+    _ -> pure unit
+
+  TwisterOut out -> do
+    H.modify_ \s -> s { twister = s.twister { out = Just out, lit = Map.empty } }
+    paintTwister
 
   -- append a fresh block to the active rack's doc (so existing comments
   -- survive), then re-derive the rack from the new text.
@@ -820,6 +858,45 @@ handleAction = case _ of
            _, _ -> pure unit
 
 -- | The active rack's eDSL doc — the editable text + the AskSource answer.
+-- | The Twister's sixteen encoders as the page stands.
+twisterControls :: State -> Array (Maybe Tw.Control)
+twisterControls st = Tw.surface twisterOps st.sel { sel: st.selected, open: st.twister.open }
+
+-- | The page's own slot arithmetic, so a turn steps exactly as the arrows do.
+twisterOps :: Tw.Ops
+twisterOps =
+  { clockSpeeds: length clockSpeeds
+  , clockSpeed: speedIndex
+  , setClockSpeed: setSpeed
+  , lfoShape: activeShape
+  , lfoAmp: activeAmp
+  , setLfoShape: setShape
+  }
+
+twisterAct :: forall m. MonadAff m => Tw.Act -> H.HalogenM State Action Slots Output m Unit
+twisterAct = case _ of
+  Tw.Edit d f -> editDest d (onBank f)
+  Tw.Goto sel open -> H.modify_ \s -> s { selected = Just sel, twister = s.twister { open = open } }
+  Tw.Mute d -> handleAction (ToggleMute d)
+  Tw.Apply -> handleAction ApplyToRig
+
+-- | Bring the device's rings and colours into line with the page. Writes, and
+-- | touches the state, only when something differs: this runs every frame.
+paintTwister :: forall m. MonadAff m => H.HalogenM State Action Slots Output m Unit
+paintTwister = do
+  st <- H.get
+  for_ st.twister.out \out -> do
+    let r = Tw.paint (twisterControls st) { heard: st.twister.heard, lit: st.twister.lit }
+    unless (null r.writes) do
+      liftEffect $ for_ r.writes \w -> WebMIDI.send out case w of
+        Tw.Ring k p -> HT.ring k p
+        Tw.Colour k h -> HT.colour k h
+        Tw.Light k on -> HT.ringBrightness k (if on then 30 else 0) <> HT.colourBrightness k (if on then 30 else 0)
+      H.modify_ \s -> s { twister = s.twister { lit = r.lit } }
+
+twisterPortName :: String
+twisterPortName = "Twister"
+
 currentDoc :: State -> String
 currentDoc s = s.live
 

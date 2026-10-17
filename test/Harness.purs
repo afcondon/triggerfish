@@ -23,6 +23,7 @@ import Test.LepidopteraScaleSpec (runLepidopteraScaleTests)
 import Test.CardLineSpec (runCardLineTests)
 import Test.RevoiceSpec (runRevoiceTests)
 import Test.TwisterSpec (runTwisterTests)
+import Test.SeleneTwisterSpec (runSeleneTwisterTests)
 import Triggerfish.Odonus.Model as M
 import Triggerfish.Odonus.Marbles as Marbles
 import Triggerfish.Odonus.Gen as Gen
@@ -157,6 +158,7 @@ main = do
   -- only report.
   runRevoiceTests
   runTwisterTests
+  runSeleneTwisterTests
   runFlowTests
   runOrderTests
   runHarmonyTests
