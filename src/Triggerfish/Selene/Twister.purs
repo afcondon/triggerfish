@@ -76,8 +76,11 @@ import Triggerfish.Selene.Model as M
 layer :: Int
 layer = 2
 
--- | Where the hand is: the page's own selection, and whether it is entered.
-type Cursor = { sel :: Maybe { dest :: Int, slot :: Int }, open :: Boolean }
+-- | Where the hand is: the page's own selection, whether it is entered, and
+-- | the destinations in the order the page draws them, which is what ROW
+-- | walks. That is not the rack's own order: the page lists the rig's outputs
+-- | in the rig's order, then anything off it (`Component.rackRows`).
+type Cursor = { sel :: Maybe { dest :: Int, slot :: Int }, open :: Boolean, rows :: Array Int }
 
 -- | What a gesture asks the page to do.
 data Act
@@ -145,12 +148,14 @@ surface :: Ops -> M.Selene -> Cursor -> Array (Maybe Control)
 surface ops sel cur = top <> bottom
   where
   dests = sel.destinations
-  here = fromMaybe { dest: 0, slot: 0 } cur.sel
+  here = fromMaybe { dest: fromMaybe 0 (cur.rows !! 0), slot: 0 } cur.sel
   dest = dests !! here.dest
+  rowAt = fromMaybe 0 (elemIndex here.dest cur.rows)
   hue = maybe blue (hueOf <<< M.bankKind <<< _.bank) dest
 
   bottom =
-    [ Just (stepped (length dests - 1) here.dest hue \d -> Goto { dest: d, slot: here.slot } false)
+    [ Just (stepped (length cur.rows - 1) rowAt hue \r ->
+        Goto { dest: fromMaybe here.dest (cur.rows !! r), slot: here.slot } false)
     , Just ((stepped (M.slotCount - 1) here.slot hue \s -> Goto { dest: here.dest, slot: s } cur.open)
         { press = [ Goto here (not cur.open) ] })
     , dest <#> \d -> button (if d.muted then red else blue) (if d.muted then 127 else 0) (Mute here.dest)

@@ -860,7 +860,7 @@ handleAction = case _ of
 -- | The active rack's eDSL doc — the editable text + the AskSource answer.
 -- | The Twister's sixteen encoders as the page stands.
 twisterControls :: State -> Array (Maybe Tw.Control)
-twisterControls st = Tw.surface twisterOps st.sel { sel: st.selected, open: st.twister.open }
+twisterControls st = Tw.surface twisterOps st.sel { sel: st.selected, open: st.twister.open, rows: rowOrder st }
 
 -- | The page's own slot arithmetic, so a turn steps exactly as the arrows do.
 twisterOps :: Tw.Ops
@@ -1367,28 +1367,48 @@ rackPanel s =
     -- from the drawer (the plain modules there are the old ADD buttons);
     -- then anything on a target off the rig (a MIDI channel, a virtual bus)
     ( [ rackBar s, transportStrip s ]
-        <> map row rigTargets
-        <> Array.catMaybes (mapWithIndex (\i d -> if Array.elem d.target rigTargets then Nothing else Just (placed i d)) s.sel.destinations)
+        <> map row (rackRows s)
         <> envLibraryWall s
         <> [ footNote ]
     )
   where
-  rigTargets = rigBanks
-  row target = case Array.findIndex (\d -> d.target == target) s.sel.destinations of
-    Just i | Just d <- s.sel.destinations !! i -> placed i d
-    _ -> freeRow s target
-  placed i d = dropFrame s d.target (destinationRow s.envParam s.selected i d)
+  row = case _ of
+    Placed i | Just d <- s.sel.destinations !! i ->
+      dropFrame s d.target (map _.dest s.selected == Just i) (destinationRow s.envParam s.selected i d)
+    Placed _ -> HH.text ""
+    Free target -> freeRow s target
+
+-- | A row of the rack as drawn: a destination, or a group of outputs with
+-- | nothing on it.
+data RackRow = Placed Int | Free M.Target
+
+-- | The rows in the order the page draws them: every group of outputs the rig
+-- | has, in the rig's order, then anything on a target off the rig. One
+-- | function, so the Twister's ROW walks what the eye sees.
+rackRows :: State -> Array RackRow
+rackRows s =
+  map onRig rigBanks
+    <> Array.catMaybes (mapWithIndex (\i d -> if Array.elem d.target rigBanks then Nothing else Just (Placed i)) s.sel.destinations)
+  where
+  onRig target = maybe (Free target) Placed (Array.findIndex (\d -> d.target == target) s.sel.destinations)
+
+-- | The destinations in drawn order, free rows skipped: what ROW steps over.
+rowOrder :: State -> Array Int
+rowOrder s = Array.mapMaybe (case _ of
+  Placed i -> Just i
+  Free _ -> Nothing) (rackRows s)
 
 -- | A row as a drop target: its edge green when a drag over it can land, red
 -- | with why when it cannot.
-dropFrame :: forall m. State -> M.Target -> H.ComponentHTML Action Slots m -> H.ComponentHTML Action Slots m
-dropFrame s target inner =
+dropFrame :: forall m. State -> M.Target -> Boolean -> H.ComponentHTML Action Slots m -> H.ComponentHTML Action Slots m
+dropFrame s target current inner =
   HH.div
     [ HE.handler (EventType "dragover") (DragOverTarget target)
     , HE.handler (EventType "dragleave") (const DragLeaveTarget)
     , HE.handler (EventType "drop") (DropOn target)
     , HP.title (M.targetLabel target <> ": drop a module to replace what is here" <> (if mergeOnOption then "; Option to merge into it" else ""))
-    , style ("border-radius:9px;margin-bottom:10px;border:2px solid " <> edge)
+    , style ("border-radius:9px;margin-bottom:10px;border:2px solid " <> edge
+        <> (if current then ";background:#0000000b" else ""))
     ]
     ( [ inner ] <> case over of
         Just v | not v.ok -> [ HH.div [ style "font:11px Georgia,serif;color:#b3261e;padding:0 14px 8px" ] [ HH.text v.why ] ]
@@ -1398,15 +1418,18 @@ dropFrame s target inner =
   over = case s.dragOver of
     Just v | v.wire == M.targetWire target -> Just v
     _ -> Nothing
+  -- The row holding the selection is framed, so ROW on the Twister can be
+  -- followed by eye; a drag's verdict outranks it.
   edge = case over of
     Just v | v.ok -> "#2e9e6a"
     Just _ -> "#b3261e"
+    Nothing | current -> "#3f3c33"
     Nothing -> "transparent"
 
 -- | A group with nothing on it: greyed, and waiting for a module.
 freeRow :: forall m. State -> M.Target -> H.ComponentHTML Action Slots m
 freeRow s target =
-  dropFrame s target $
+  dropFrame s target false $
     HH.div
       [ style $ "display:flex;align-items:center;gap:12px;padding:11px 12px;border-radius:8px;opacity:0.55;"
           <> "background:#00000005;border:1px dashed #00000026" ]

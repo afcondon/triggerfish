@@ -36,7 +36,11 @@ rack =
   }
 
 at :: Int -> Boolean -> Array (Maybe Tw.Control)
-at d open = Tw.surface ops rack { sel: Just { dest: d, slot: 0 }, open }
+at d open = Tw.surface ops rack { sel: Just { dest: d, slot: 0 }, open, rows: drawn }
+
+-- | The order the page draws them in, which is not the rack's.
+drawn :: Array Int
+drawn = [ 2, 0, 4, 1, 3 ]
 
 -- | Which of the sixteen encoders are lit.
 litOf :: Array (Maybe Tw.Control) -> Array Int
@@ -63,8 +67,11 @@ runSeleneTwisterTests = do
   -- Navigation
   let row = join (at 0 true !! 12)
       col = join (at 0 true !! 13)
-  assert' "turning ROW leaves the entered signal" $
-    (row <#> \c -> firstGoto (c.turn 127)) == Just (Just { slot: 0, dest: 4, open: false })
+  assert' "turning ROW leaves the entered signal, and walks the drawn order" $
+    (row <#> \c -> firstGoto (c.turn 127)) == Just (Just { slot: 0, dest: 3, open: false })
+      && (row <#> \c -> firstGoto (c.turn 0)) == Just (Just { slot: 0, dest: 2, open: false })
+  assert' "ROW's ring sits at the row's place on screen, not in the rack" $
+    (row <#> _.pos) == Just 32
   assert' "turning COLUMN walks the row and stays entered" $
     (col <#> \c -> firstGoto (c.turn 127)) == Just (Just { slot: 7, dest: 0, open: true })
   assert' "pushing COLUMN leaves, and in the overview enters" $
