@@ -128,8 +128,8 @@ describe d = case d of
       ]
   RM.DFh2Voice x ->
     fixed "fh2 voice"
-      [ one "pair" ("pitch on FH-2 jack " <> show x.jack <> ", gate on " <> show (x.jack + 1)
-                     <> ", MIDI ch " <> show (RM.fh2VoiceChannel x.jack)) "pair" ((x.jack + 1) / 2) 1
+      [ one "jack" ("pitch on FH-2 jack " <> show x.jack <> ", gate on " <> show (x.jack + 1)
+                     <> ", MIDI ch " <> show (RM.fh2VoiceChannel x.jack)) "jack" x.jack 1
       ]
   RM.DEs9Gate x ->
     fixed "es9 gate"

@@ -579,9 +579,10 @@ setDestField field v = case _ of
     "note" -> DFh2Gate d { note = clamp 0 127 v }
     "jack" -> DFh2Gate d { jack = clamp 1 8 v }
     _ -> DFh2Gate d
-  -- Stepped by PAIR (1..4), since a voice's gate takes the jack after its pitch.
+  -- Named by its pitch jack, which is odd: an even jack is a gate, so a step
+  -- onto one carries on in the same direction to the next pitch jack.
   DFh2Voice d -> case field of
-    "pair" -> DFh2Voice d { jack = 2 * clamp 1 4 v - 1 }
+    "jack" -> DFh2Voice d { jack = clamp 1 7 (if v `mod` 2 == 1 then v else if v > d.jack then v + 1 else v - 1) }
     _ -> DFh2Voice d
   DEs9Gate d -> case field of
     "block" -> DEs9Gate d { block = clamp 0 7 v }

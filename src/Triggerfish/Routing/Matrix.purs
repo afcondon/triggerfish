@@ -117,7 +117,7 @@ valueOf = case _ of
   RM.DFh2Env d -> Just { field: "slot", value: d.slot }
   RM.DFh2Gate d -> Just { field: "jack", value: d.jack }
   RM.DEs9Cv d -> Just { field: "jack", value: d.jack }
-  RM.DFh2Voice d -> Just { field: "pair", value: (d.jack + 1) / 2 }
+  RM.DFh2Voice d -> Just { field: "jack", value: d.jack }
   RM.DEs9Gate d -> Just { field: "jack", value: d.jack }
   RM.DRample d -> Just { field: "voice", value: d.voice }
   _ -> Nothing
