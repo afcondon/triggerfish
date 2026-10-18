@@ -253,6 +253,7 @@ data Action
   | DragRackStart Event
   | KeepModule Int            -- keep bank i as a module
   | ToggleMute Int            -- mute bank i (its jacks to 0 V, the bank kept) or unmute it
+  | RemoveDest Int            -- take bank i off the rack and free its jacks (`selene $ off`)
   | RacksChanged              -- the racks changed in Amphora (another page)
   | ModulesChanged            -- the kept modules, likewise
   | PickStarter Int           -- apply library shape i to the selected envelope slot
@@ -820,6 +821,20 @@ handleAction = case _ of
             liftEffect $ Transport.send (Binnacle.socket bin) ("tidal selene $ " <> line)
             H.modify_ _ { publishMsg = Just ((if merge && not isBlock then "merged into " else "→ ") <> M.targetWire target <> ": " <> text) }
   ToggleMute i -> editDest i (\d -> d { muted = not d.muted })
+  -- The same `off` the "free" module drops: the rig takes the bank off the
+  -- rack, its daemon releases the claim (which silences the jacks), and the
+  -- page follows by the stage. With no rig to tell, it only leaves the text.
+  RemoveDest i -> do
+    st <- H.get
+    for_ (st.sel.destinations !! i) \d -> case st.binnacle of
+      Just bin -> do
+        liftEffect $ Transport.send (Binnacle.socket bin) ("tidal selene $ off " <> M.targetWire d.target)
+        H.modify_ _ { publishMsg = Just ("freeing " <> M.targetWire d.target) }
+      Nothing -> do
+        H.modify_ \s ->
+          let doc = Source.printRack (s.sel { destinations = fromMaybe s.sel.destinations (deleteAt i s.sel.destinations) })
+          in s { live = doc, sel = Source.parseRack doc, selected = Nothing }
+        persist
   KeepModule i -> do
     st <- H.get
     for_ (st.sel.destinations !! i) \d -> do
@@ -1622,6 +1637,11 @@ destHeader i d =
         , HP.title "Keep this bank as a module, to drop on any bank (it goes in the drawer's Modules)"
         , style $ "align-self:flex-start;font:10px Georgia,serif;padding:1px 7px;border:1px solid #00000026;border-radius:4px;background:transparent;cursor:pointer;color:#5a5648" ]
         [ HH.text "keep as module" ]
+    , HH.button
+        [ HE.onClick \_ -> RemoveDest i
+        , HP.title "Remove: take this bank off the rack and free its jacks for something else (keep it as a module first to have it back)"
+        , style $ "align-self:flex-start;font:10px Georgia,serif;padding:1px 7px;border:1px solid #00000026;border-radius:4px;background:transparent;cursor:pointer;color:#5a5648" ]
+        [ HH.text "remove" ]
     ]
 
 -- ---------------------------------------------------------------------------
