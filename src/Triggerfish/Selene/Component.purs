@@ -22,7 +22,7 @@ import Data.Tuple (Tuple(..), fst, snd)
 import Web.UIEvent.MouseEvent as ME
 import Web.UIEvent.KeyboardEvent (KeyboardEvent)
 import Web.UIEvent.KeyboardEvent as KE
-import Web.Event.Event (Event, EventType(..), preventDefault)
+import Web.Event.Event (Event, EventType(..), preventDefault, stopPropagation)
 import Data.Int (round, toNumber)
 import Data.Int as Int
 import Data.Map (Map)
@@ -254,6 +254,7 @@ data Action
   | KeepModule Int            -- keep bank i as a module
   | ToggleMute Int            -- mute bank i (its jacks to 0 V, the bank kept) or unmute it
   | SetRange Int String       -- bank i's output range, by its wire word ("" = the rig's default)
+  | ToggleSlotMute Int Int ME.MouseEvent  -- mute output j of bank i (kept, sent silent) or unmute it
   | RemoveDest Int            -- take bank i off the rack and free its jacks (`selene $ off`)
   | RacksChanged              -- the racks changed in Amphora (another page)
   | ModulesChanged            -- the kept modules, likewise
@@ -639,7 +640,7 @@ handleAction = case _ of
   -- survive), then re-derive the rack from the new text.
   AddDest k -> do
     H.modify_ \s ->
-      let block = Source.printDest { target: M.defaultTargetFor k, range: Nothing, bank: M.freshBank k, retrig: Nothing, muted: false }
+      let block = Source.printDest { target: M.defaultTargetFor k, range: Nothing, bank: M.freshBank k, retrig: Nothing, muted: false, mutedSlots: [] }
           doc = currentDoc s <> "\n\n" <> block
       in s { live = doc, sel = Source.parseRack doc }
     persist
@@ -823,6 +824,10 @@ handleAction = case _ of
             H.modify_ _ { publishMsg = Just ((if merge && not isBlock then "merged into " else "→ ") <> M.targetWire target <> ": " <> text) }
   ToggleMute i -> editDest i (\d -> d { muted = not d.muted })
   SetRange i w -> editDest i (\d -> d { range = M.rangeOfWire w })
+  -- the badge sits on the cell, whose click selects it: this click is the mute's
+  ToggleSlotMute i j e -> do
+    liftEffect (stopPropagation (ME.toEvent e))
+    editDest i \d -> d { mutedSlots = if Array.elem j d.mutedSlots then Array.delete j d.mutedSlots else Array.sort (Array.snoc d.mutedSlots j) }
   -- The same `off` the "free" module drops: the rig takes the bank off the
   -- rack, its daemon releases the claim (which silences the jacks), and the
   -- page follows by the stage. With no rig to tell, it only leaves the text.
@@ -1450,7 +1455,7 @@ freeRow s target =
     HH.div
       [ style $ "display:flex;align-items:center;gap:12px;padding:11px 12px;border-radius:8px;opacity:0.55;"
           <> "background:#00000005;border:1px dashed #00000026" ]
-      [ HH.div [ style "display:flex;flex-direction:column;gap:5px;flex:0 0 190px" ]
+      [ HH.div [ style ("display:flex;flex-direction:column;gap:5px;flex:0 0 " <> headerWidth) ]
           [ HH.div [ style $ engrave <> ";font-size:10px;letter-spacing:0.1em;color:#6a6657" ] [ HH.text "FREE" ]
           , HH.span [ style "font:13px Georgia,serif;color:#1c1a12" ] [ HH.text (M.targetLabel target) ]
           , HH.span [ style $ engrave <> ";font-size:8px;opacity:0.6" ] [ HH.text ("→ " <> M.targetWire target) ]
@@ -1617,7 +1622,7 @@ destinationRow ep sel i d =
         <> "background:#00000008;border:1px solid #00000012" ]
     [ destHeader i d
     -- a muted bank is still drawn, and editable, but faded: its jacks are at 0 V
-    , HH.div [ style (slotWrap d.bank <> if d.muted then ";opacity:0.35" else "") ] (slotViews ep i sel d.target d.bank)
+    , HH.div [ style (slotWrap d.bank <> if d.muted then ";opacity:0.35" else "") ] (slotViews ep i sel d.target d.mutedSlots d.bank)
     ]
 
 -- | The slot layout: the CV/gate kinds flow eight-across. (POLYTRIG's 4×2
@@ -1625,46 +1630,61 @@ destinationRow ep sel i d =
 slotWrap :: M.GenBank -> String
 slotWrap _ = "display:flex;flex-wrap:wrap;gap:7px;align-items:center;flex:1 1 auto"
 
+-- | Every bank's header is as wide as the widest (a title, a range menu and
+-- | three buttons on one line), so the eight outputs line up down the page.
+headerWidth :: String
+headerWidth = "430px"
+
 destHeader :: forall m. MonadAff m => Int -> M.Destination -> H.ComponentHTML Action Slots m
 destHeader i d =
-  HH.div [ style "display:flex;flex-direction:column;gap:5px;flex:0 0 190px;justify-content:center" ]
+  -- three lines, the controls beside the title: a row's height is what
+  -- decides how many banks fit on a screen, and its width is spare
+  HH.div [ style ("display:flex;flex-direction:column;gap:4px;justify-content:center;flex:0 0 " <> headerWidth) ]
     [ HH.div [ style $ engrave <> ";font-size:10px;letter-spacing:0.1em;color:" <> ink ]
         [ HH.text (M.kindLabel (M.bankKind d.bank)) ]
-    -- where it plays: a label now; moving it is a drop on the outputs strip
-    -- at the top (2026-10-05, replacing the route menu)
-    , HH.span [ style "display:flex;align-items:center;gap:8px;font:13px Georgia,serif;color:#1c1a12" ]
-        ( [ HH.text (M.targetLabel d.target) ]
-            -- the setting's rebus, as the drawer shows it for a module
-            <> map (\g -> HH.i [ HP.attr (HH.AttrName "class") ("fa-solid fa-" <> g.icon), style ("font-size:15px;line-height:1;color:" <> g.color) ] []) (settingIcons (Line.moduleOf d)) )
+    , HH.div [ style "display:flex;align-items:center;flex-wrap:wrap;gap:6px 8px" ]
+        ( [ HH.span [ style "display:flex;align-items:center;gap:8px;font:13px Georgia,serif;color:#1c1a12;margin-right:4px" ]
+              -- where it plays: a label now; moving it is a drop on the outputs
+              -- strip at the top (2026-10-05, replacing the route menu); then
+              -- the setting's rebus, as the drawer shows it for a module
+              ( [ HH.text (M.targetLabel d.target) ]
+                  <> map (\g -> HH.i [ HP.attr (HH.AttrName "class") ("fa-solid fa-" <> g.icon), style ("font-size:15px;line-height:1;color:" <> g.color) ] []) (settingIcons (Line.moduleOf d)) )
+          ]
+          -- the jacks' voltage range: an LFO into a 0–5V input wants 0–5V, not
+          -- the ±5V an LFO gets by default. An FHX-8GT has no range to set.
+          <> ( if not (hasRange d.target) then []
+               else
+                 [ HH.select
+                     [ HE.onValueChange (SetRange i)
+                     , HP.title "Output range of this bank's jacks; default is the rig's for this kind"
+                     , style (control <> "padding:1px 4px") ]
+                     ( [ HH.option [ HP.value "", HP.selected (d.range == Nothing) ] [ HH.text "range: default" ] ]
+                         <> map (\r -> HH.option [ HP.value (M.rangeToWire r), HP.selected (d.range == Just r) ] [ HH.text ("range: " <> M.rangeLabel r) ])
+                              [ M.Bipolar5V, M.Unipolar5V, M.Unipolar8V, M.Unipolar10V, M.Unipolar1V ] )
+                 ] )
+          <>
+            [ HH.button
+                [ HE.onClick \_ -> ToggleMute i
+                , HP.title (if d.muted then "Unmute: play this bank again, as it now is" else "Mute: the jacks go to 0 V; the bank is kept, and can still be edited")
+                , style $ control <> "padding:1px 7px;"
+                    <> if d.muted then "border-color:#b3261e;background:#b3261e;color:#fff" else "" ]
+                [ HH.text (if d.muted then "muted" else "mute") ]
+            , HH.button
+                [ HE.onClick \_ -> KeepModule i
+                , HP.title "Keep this bank as a module, to drop on any bank (it goes in the drawer's Modules)"
+                , style (control <> "padding:1px 7px") ]
+                [ HH.text "keep as module" ]
+            , HH.button
+                [ HE.onClick \_ -> RemoveDest i
+                , HP.title "Remove: take this bank off the rack and free its jacks for something else (keep it as a module first to have it back)"
+                , style (control <> "padding:1px 7px") ]
+                [ HH.text "remove" ]
+            ] )
     , HH.span [ style $ engrave <> ";font-size:8px;opacity:0.45" ]
         [ HH.text ("→ " <> M.targetWire d.target) ]
-    -- the jacks' voltage range: an LFO into a 0–5V input wants 0–5V, not the
-    -- ±5V an LFO gets by default. An FHX-8GT has no range to set.
-    , if not (hasRange d.target) then HH.text ""
-      else HH.select
-        [ HE.onValueChange (SetRange i)
-        , HP.title "Output range of this bank's jacks; default is the rig's for this kind"
-        , style "align-self:flex-start;font:10px Georgia,serif;padding:1px 4px;border:1px solid #00000026;border-radius:4px;background:transparent;color:#5a5648" ]
-        ( [ HH.option [ HP.value "", HP.selected (d.range == Nothing) ] [ HH.text "range: default" ] ]
-            <> map (\r -> HH.option [ HP.value (M.rangeToWire r), HP.selected (d.range == Just r) ] [ HH.text ("range: " <> M.rangeLabel r) ])
-                 [ M.Bipolar5V, M.Unipolar5V, M.Unipolar8V, M.Unipolar10V, M.Unipolar1V ] )
-    , HH.button
-        [ HE.onClick \_ -> ToggleMute i
-        , HP.title (if d.muted then "Unmute: play this bank again, as it now is" else "Mute: the jacks go to 0 V; the bank is kept, and can still be edited")
-        , style $ "align-self:flex-start;font:10px Georgia,serif;padding:1px 7px;border-radius:4px;cursor:pointer;"
-            <> if d.muted then "border:1px solid #b3261e;background:#b3261e;color:#fff" else "border:1px solid #00000026;background:transparent;color:#5a5648" ]
-        [ HH.text (if d.muted then "muted" else "mute") ]
-    , HH.button
-        [ HE.onClick \_ -> KeepModule i
-        , HP.title "Keep this bank as a module, to drop on any bank (it goes in the drawer's Modules)"
-        , style $ "align-self:flex-start;font:10px Georgia,serif;padding:1px 7px;border:1px solid #00000026;border-radius:4px;background:transparent;cursor:pointer;color:#5a5648" ]
-        [ HH.text "keep as module" ]
-    , HH.button
-        [ HE.onClick \_ -> RemoveDest i
-        , HP.title "Remove: take this bank off the rack and free its jacks for something else (keep it as a module first to have it back)"
-        , style $ "align-self:flex-start;font:10px Georgia,serif;padding:1px 7px;border:1px solid #00000026;border-radius:4px;background:transparent;cursor:pointer;color:#5a5648" ]
-        [ HH.text "remove" ]
     ]
+  where
+  control = "font:10px Georgia,serif;border:1px solid #00000026;border-radius:4px;background:transparent;cursor:pointer;color:#5a5648;"
 
 -- ---------------------------------------------------------------------------
 -- Per-kind slot visualisations
@@ -1673,30 +1693,40 @@ destHeader i d =
 -- Each slot is drawn inside a focusable cell: clicking selects it (a black box);
 -- arrow keys then nudge it. `slotViews` threads the destination index + current
 -- selection so each cell knows whether it's the selected one and what to fire.
-slotViews :: forall m. EnvParam -> Int -> Maybe Sel -> M.Target -> M.GenBank -> Array (H.ComponentHTML Action Slots m)
-slotViews ep d sel target = case _ of
-  M.GLfo slots -> mapWithIndex (cellFor d sel 90.0 (lfoInner target)) slots
-  M.GEuclid slots -> mapWithIndex (cellFor d sel 70.0 euclidInner) slots
-  M.GClock slots -> mapWithIndex (cellFor d sel 58.0 clockInner) slots
-  M.GNote slots -> mapWithIndex (cellFor d sel 58.0 noteInner) slots
-  M.GEnv slots -> mapWithIndex (\j sl -> slotCell d j (sel == Just { dest: d, slot: j }) 90.0 (envInner (sel == Just { dest: d, slot: j }) ep sl)) slots
+slotViews :: forall m. EnvParam -> Int -> Maybe Sel -> M.Target -> Array Int -> M.GenBank -> Array (H.ComponentHTML Action Slots m)
+slotViews ep d sel target mutes = case _ of
+  M.GLfo slots -> mapWithIndex (cellFor d sel mutes 90.0 (lfoInner target)) slots
+  M.GEuclid slots -> mapWithIndex (cellFor d sel mutes 70.0 euclidInner) slots
+  M.GClock slots -> mapWithIndex (cellFor d sel mutes 58.0 clockInner) slots
+  M.GNote slots -> mapWithIndex (cellFor d sel mutes 58.0 noteInner) slots
+  M.GEnv slots -> mapWithIndex (\j sl -> slotCell d j (sel == Just { dest: d, slot: j }) (Array.elem j mutes) 90.0 (envInner (sel == Just { dest: d, slot: j }) ep sl)) slots
 
 -- | Wrap one slot's inner drawing in the focusable, selectable cell.
-cellFor :: forall m a. Int -> Maybe Sel -> Number -> (a -> Array (H.ComponentHTML Action Slots m)) -> Int -> a -> H.ComponentHTML Action Slots m
-cellFor d sel widthPx inner j sl =
-  slotCell d j (sel == Just { dest: d, slot: j }) widthPx (inner sl)
+cellFor :: forall m a. Int -> Maybe Sel -> Array Int -> Number -> (a -> Array (H.ComponentHTML Action Slots m)) -> Int -> a -> H.ComponentHTML Action Slots m
+cellFor d sel mutes widthPx inner j sl =
+  slotCell d j (sel == Just { dest: d, slot: j }) (Array.elem j mutes) widthPx (inner sl)
 
-slotCell :: forall m. Int -> Int -> Boolean -> Number -> Array (H.ComponentHTML Action Slots m) -> H.ComponentHTML Action Slots m
-slotCell d j isSel widthPx body =
+-- | One output's cell, with its mute in the corner: a muted output is drawn
+-- | faded, keeps its settings (and can still be edited), and goes out silent.
+slotCell :: forall m. Int -> Int -> Boolean -> Boolean -> Number -> Array (H.ComponentHTML Action Slots m) -> H.ComponentHTML Action Slots m
+slotCell d j isSel muted widthPx body =
   HH.div
     [ HP.tabIndex 0
-    , style $ "width:" <> show (round widthPx) <> "px;flex:0 0 auto;padding:5px 4px;border-radius:6px;"
+    , style $ "position:relative;width:" <> show (round widthPx) <> "px;flex:0 0 auto;padding:5px 4px;border-radius:6px;"
         <> "display:flex;flex-direction:column;gap:2px;align-items:center;cursor:pointer;outline:none;"
         <> ( if isSel then "background:#ffffffcc;border:2px solid #1a1a1a;"
              else "background:#ffffff55;border:1px solid #00000010;padding:6px 5px;" )
     , HE.onClick \_ -> SelectSlot d j
     , HE.onKeyDown SlotKeyDown ]
-    body
+    ( [ HH.div [ style ("display:flex;flex-direction:column;gap:2px;align-items:center" <> if muted then ";opacity:0.3" else "") ] body
+      , HH.button
+          [ HE.onClick (ToggleSlotMute d j)
+          , HP.title (if muted then "Unmute output " <> show (j + 1) <> ": it plays again, as it now is" else "Mute output " <> show (j + 1) <> ": it goes silent and keeps its settings")
+          , style $ "position:absolute;top:2px;right:2px;width:15px;height:15px;padding:0;border-radius:3px;"
+              <> "font:bold 9px/13px Georgia,serif;cursor:pointer;"
+              <> if muted then "border:1px solid #b3261e;background:#b3261e;color:#fff" else "border:1px solid #00000022;background:#ffffffaa;color:#00000066" ]
+          [ HH.text "M" ]
+      ] )
 
 -- --- POLYLFO: a scaled waveform, 0V baseline, log-frequency, rate label ------
 

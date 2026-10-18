@@ -31,7 +31,7 @@ kinds = [ M.KEnv, M.KLfo, M.KEuclid, M.KClock, M.KNote ]
 rack :: M.Selene
 rack =
   { destinations: map
-      (\k -> { target: M.defaultTargetFor k, range: Nothing, bank: M.freshBank k, retrig: Nothing, muted: false })
+      (\k -> { target: M.defaultTargetFor k, range: Nothing, bank: M.freshBank k, retrig: Nothing, muted: false, mutedSlots: [] })
       kinds
   }
 
