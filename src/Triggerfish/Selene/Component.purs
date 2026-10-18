@@ -253,6 +253,7 @@ data Action
   | DragRackStart Event
   | KeepModule Int            -- keep bank i as a module
   | ToggleMute Int            -- mute bank i (its jacks to 0 V, the bank kept) or unmute it
+  | SetRange Int String       -- bank i's output range, by its wire word ("" = the rig's default)
   | RemoveDest Int            -- take bank i off the rack and free its jacks (`selene $ off`)
   | RacksChanged              -- the racks changed in Amphora (another page)
   | ModulesChanged            -- the kept modules, likewise
@@ -821,6 +822,7 @@ handleAction = case _ of
             liftEffect $ Transport.send (Binnacle.socket bin) ("tidal selene $ " <> line)
             H.modify_ _ { publishMsg = Just ((if merge && not isBlock then "merged into " else "→ ") <> M.targetWire target <> ": " <> text) }
   ToggleMute i -> editDest i (\d -> d { muted = not d.muted })
+  SetRange i w -> editDest i (\d -> d { range = M.rangeOfWire w })
   -- The same `off` the "free" module drops: the rig takes the bank off the
   -- rack, its daemon releases the claim (which silences the jacks), and the
   -- page follows by the stage. With no rig to tell, it only leaves the text.
@@ -1597,6 +1599,16 @@ footNote =
   HH.div [ style $ engrave <> ";font-size:8px;opacity:0.45;margin-top:14px;line-height:1.6" ]
     [ HH.text "EACH DESTINATION = 8 SIGNALS → 8 JACKS. AS TEXT, IN LIMULUS: SELENE $ LFO ES9MAIN # RATE \"0.5 1 2 4\" — ONE LINE, ONE BANK, ALL AT ONCE." ]
 
+-- | Whether a bank's jacks have a range to set: the ES-9's and the FH-2's do;
+-- | an FHX-8GT (`FH2 n`, n > 0) is gates only, and MIDI or a virtual bank has
+-- | no jacks.
+hasRange :: M.Target -> Boolean
+hasRange = case _ of
+  M.FH2 n -> n == 0
+  M.Midi _ -> false
+  M.Virtual _ -> false
+  _ -> true
+
 -- One destination: a target/header strip on the left, eight visualised slots.
 destinationRow :: forall m. MonadAff m => EnvParam -> Maybe Sel -> Int -> M.Destination -> H.ComponentHTML Action Slots m
 destinationRow ep sel i d =
@@ -1626,6 +1638,16 @@ destHeader i d =
             <> map (\g -> HH.i [ HP.attr (HH.AttrName "class") ("fa-solid fa-" <> g.icon), style ("font-size:15px;line-height:1;color:" <> g.color) ] []) (settingIcons (Line.moduleOf d)) )
     , HH.span [ style $ engrave <> ";font-size:8px;opacity:0.45" ]
         [ HH.text ("→ " <> M.targetWire d.target) ]
+    -- the jacks' voltage range: an LFO into a 0–5V input wants 0–5V, not the
+    -- ±5V an LFO gets by default. An FHX-8GT has no range to set.
+    , if not (hasRange d.target) then HH.text ""
+      else HH.select
+        [ HE.onValueChange (SetRange i)
+        , HP.title "Output range of this bank's jacks; default is the rig's for this kind"
+        , style "align-self:flex-start;font:10px Georgia,serif;padding:1px 4px;border:1px solid #00000026;border-radius:4px;background:transparent;color:#5a5648" ]
+        ( [ HH.option [ HP.value "", HP.selected (d.range == Nothing) ] [ HH.text "range: default" ] ]
+            <> map (\r -> HH.option [ HP.value (M.rangeToWire r), HP.selected (d.range == Just r) ] [ HH.text ("range: " <> M.rangeLabel r) ])
+                 [ M.Bipolar5V, M.Unipolar5V, M.Unipolar8V, M.Unipolar10V, M.Unipolar1V ] )
     , HH.button
         [ HE.onClick \_ -> ToggleMute i
         , HP.title (if d.muted then "Unmute: play this bank again, as it now is" else "Mute: the jacks go to 0 V; the bank is kept, and can still be edited")
