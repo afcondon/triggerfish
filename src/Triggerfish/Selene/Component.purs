@@ -16,8 +16,8 @@ module Triggerfish.Selene.Component (component, Output(..)) where
 
 import Prelude
 
-import Data.Array (deleteAt, drop, filter, findIndex, insertAt, length, mapMaybe, mapWithIndex, modifyAt, null, range, (!!))
-import Data.Foldable (for_, foldl, foldr)
+import Data.Array (deleteAt, drop, elemIndex, filter, findIndex, insertAt, length, mapMaybe, mapWithIndex, modifyAt, null, range, (!!))
+import Data.Foldable (all, for_, foldl, foldr)
 import Data.Tuple (Tuple(..), fst, snd)
 import Web.UIEvent.MouseEvent as ME
 import Web.UIEvent.KeyboardEvent (KeyboardEvent)
@@ -1322,14 +1322,18 @@ shapeName = case _ of
   4 -> "rnd"
   _ -> "nse"
 
+-- A slot turned all the way down has no dominant shape; it is the shape it
+-- was last edited as (`wave`), so turning it back up gives that shape again.
 activeShape :: M.ModSlot -> Int
-activeShape sl = fst (foldl (\best (Tuple k v) -> if v > snd best then Tuple k v else best) (Tuple 0 (-1.0)) (mapWithIndex Tuple (lfoAmps sl)))
+activeShape sl =
+  if all (_ == 0.0) (lfoAmps sl) then fromMaybe 0 (elemIndex sl.wave M.lfoWaves)
+  else fst (foldl (\best (Tuple k v) -> if v > snd best then Tuple k v else best) (Tuple 0 (-1.0)) (mapWithIndex Tuple (lfoAmps sl)))
 
 activeAmp :: M.ModSlot -> Number
 activeAmp sl = fromMaybe 0.0 (lfoAmps sl !! activeShape sl)
 
 setShape :: Int -> Number -> M.ModSlot -> M.ModSlot
-setShape ix amp sl = sl { sin = a 0, sqr = a 1, tri = a 2, saw = a 3, rnd = a 4, nse = a 5 }
+setShape ix amp sl = sl { sin = a 0, sqr = a 1, tri = a 2, saw = a 3, rnd = a 4, nse = a 5, wave = fromMaybe sl.wave (M.lfoWaves !! ix) }
   where
   a k = if k == ix then max 0.0 amp else 0.0
 
