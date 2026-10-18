@@ -82,12 +82,15 @@ module Triggerfish.Routing.Model
   , carriesLine
   , fh2Port
   , fh2GateChannel
+  , fh2VoiceChannel
+  , fh2VoiceJacks
+  , fh2VoicesLine
   ) where
 
 import Prelude
 
 import Control.Alt ((<|>))
-import Data.Array (any, concatMap, filter, find, findIndex, foldl, head, length, mapMaybe, mapWithIndex, nub, snoc, updateAt, (!!))
+import Data.Array (any, concatMap, filter, find, findIndex, foldl, head, length, mapMaybe, mapWithIndex, nub, snoc, sort, updateAt, (!!))
 import Data.Int as Int
 import Data.Maybe (Maybe(..), fromMaybe, isJust, maybe)
 import Data.Tuple (Tuple(..), snd)
@@ -160,6 +163,14 @@ data Destination
   -- | The two are only correct relative to each other, which is the argument for
   -- | one table owning both.
   | DFh2Gate { note :: Int, jack :: Int }
+  -- | A MONO PITCH LINE on the FH-2's main panel: pitch CV on jack `jack` (1, 3,
+  -- | 5 or 7) and its gate on the next jack, played as MIDI notes on the FH-2's
+  -- | port. The FH-2 can put a converter's gate only on the jack after its pitch
+  -- | (base gate 0) or on an FHX-8GT, so a voice is a PAIR, and the pair names its
+  -- | channel (`fh2VoiceChannel`): two numbers that must agree are one number.
+  -- | The converter itself is set up by the rig (`fh2/voices` on the stage,
+  -- | which the keeper applies).
+  | DFh2Voice { jack :: Int }
   -- | An ES-9 gate, on gate block `block` (0-based), jack 1..8.
   | DEs9Gate { block :: Int, jack :: Int }
   -- | A MONO PITCH LINE on the ES-9: pitch on panel jack `jack` (1-8), and a
@@ -303,6 +314,7 @@ destDevice = case _ of
   DMidi d -> DevMidi d.port
   DFh2Env _ -> DevFh2
   DFh2Gate _ -> DevFh2
+  DFh2Voice _ -> DevFh2
   DEs9Gate _ -> DevEs9
   DEs9Cv _ -> DevEs9
   DContinuo _ -> DevContinuo
@@ -316,6 +328,8 @@ destLabel = case _ of
   DMidi d -> d.port <> " ch " <> show d.channel
   DFh2Env d -> "FH-2 envelope " <> show d.slot
   DFh2Gate d -> "FH-2 gate → FHX-8GT jack " <> show d.jack <> " (note " <> show d.note <> ")"
+  DFh2Voice d -> "FH-2 voice: pitch jack " <> show d.jack <> ", gate jack " <> show (d.jack + 1)
+    <> " (ch " <> show (fh2VoiceChannel d.jack) <> ")"
   DEs9Gate d -> "ES-9 GT " <> show d.block <> " jack " <> show d.jack
   DEs9Cv d -> "ES-9 pitch jack " <> show d.jack <> (if d.gate > 0 then ", gate jack " <> show d.gate else "")
   DPoly d ->
@@ -347,6 +361,7 @@ destShortLabel = case _ of
   DMidi d -> d.port <> " " <> show d.channel
   DFh2Env d -> "env " <> show d.slot
   DFh2Gate d -> "8gt " <> show d.jack
+  DFh2Voice d -> "voice " <> show d.jack <> "+" <> show (d.jack + 1)
   DEs9Gate d -> "GT" <> show d.block <> "/" <> show d.jack
   DEs9Cv d -> "cv " <> show d.jack <> (if d.gate > 0 then "+" <> show d.gate else "")
   DPoly d -> instrumentLabel d.inst <> (if d.sortByPitch then " ↓" else "")
@@ -564,6 +579,10 @@ setDestField field v = case _ of
     "note" -> DFh2Gate d { note = clamp 0 127 v }
     "jack" -> DFh2Gate d { jack = clamp 1 8 v }
     _ -> DFh2Gate d
+  -- Stepped by PAIR (1..4), since a voice's gate takes the jack after its pitch.
+  DFh2Voice d -> case field of
+    "pair" -> DFh2Voice d { jack = 2 * clamp 1 4 v - 1 }
+    _ -> DFh2Voice d
   DEs9Gate d -> case field of
     "block" -> DEs9Gate d { block = clamp 0 7 v }
     "jack" -> DEs9Gate d { jack = clamp 1 8 v }
@@ -641,6 +660,7 @@ reachOf ports = case _ of
   -- shape an envelope has — is the daemon's, applied out of band.)
   DFh2Env _ -> portReach fh2Port
   DFh2Gate _ -> portReach fh2Port
+  DFh2Voice _ -> portReach fh2Port
   -- The ES-9 CV/gate generators live in es9-daemon behind OSC over UDP, which a
   -- browser cannot speak, so these would have to go through the rig. But no
   -- code, browser or rig, sends a leg of either kind yet: they used to read
@@ -698,6 +718,27 @@ fh2Port = "FH-2"
 fh2GateChannel :: Int
 fh2GateChannel = 10
 
+-- | The pitch jacks an FH-2 voice can start on: its gate takes the next one.
+fh2VoiceJacks :: Array Int
+fh2VoiceJacks = [ 1, 3, 5, 7 ]
+
+-- | The FH-2 voices the table plays, for the rig to set up: the stage object
+-- | `routing/fh2-voices`, their pitch jacks in order (`1 3`), which the keeper
+-- | (Architeuthis `selene_keeper`) applies to the FH-2 and releases when they go.
+fh2VoicesLine :: Table -> String
+fh2VoicesLine tbl =
+  "stage-text routing/fh2-voices " <> joinWith " " (map show jacks)
+  where
+  jacks = sort (nub (concatMap (\r -> concatMap pitchJack (filter _.on r.legs)) tbl))
+  pitchJack leg = case leg.dest of
+    DFh2Voice d -> [ d.jack ]
+    _ -> []
+
+-- | The MIDI channel of the FH-2 voice on pitch jack `jack`: 11, 12, 13, 14.
+-- | Clear of polyenv (1..8), the drum breakout (10) and Selene's LFO resets (16).
+fh2VoiceChannel :: Int -> Int
+fh2VoiceChannel jack = 10 + (jack + 1) / 2
+
 -- | What an emit path actually needs: a port, a canonical channel, and possibly
 -- | a note number that replaces the source's own.
 -- |
@@ -752,6 +793,7 @@ isInterface :: Destination -> Boolean
 isInterface = case _ of
   DFh2Env _ -> true
   DFh2Gate _ -> true
+  DFh2Voice _ -> true
   DEs9Gate _ -> true
   DEs9Cv _ -> true
   DPoly _ -> true
@@ -770,6 +812,8 @@ carriesLine = case _ of
   DRamplePoly _ -> false
   DFh2Env _ -> false
   DFh2Gate _ -> false
+  -- A pitch line, as `DEs9Cv`; the converter tracks each note it is sent.
+  DFh2Voice _ -> true
   DEs9Gate _ -> false
   DEs9Cv _ -> true      -- a pitch CV bus is a line; glide is exactly what it wants
   -- Also a line: its voices are pitched and legato within a voice is meaningful.
@@ -788,6 +832,7 @@ wireOf = case _ of
   -- what selects it from this side is the NOTE. That asymmetry is the reason
   -- `DFh2Gate` carries both halves — see its comment.
   DFh2Gate d -> Just { port: fh2Port, channel: fh2GateChannel, noteOverride: Just d.note, rample: Nothing }
+  DFh2Voice d -> Just { port: fh2Port, channel: fh2VoiceChannel d.jack, noteOverride: Nothing, rample: Nothing }
   DContinuo d -> Just { port: "continuo", channel: d.channel, noteOverride: Nothing, rample: Nothing }
   -- The trigger note is the note, always; the PITCH becomes a CC, and the emit
   -- path reads it off `rample` rather than from `note`.
@@ -833,6 +878,7 @@ outputsOf :: Destination -> Array Output
 outputsOf = case _ of
   DFh2Env d -> [ { device: "fh2", bank: "main", slot: d.slot - 1 } ]
   DFh2Gate d -> [ { device: "fh2", bank: "gt0", slot: d.jack - 1 } ]
+  DFh2Voice d -> [ { device: "fh2", bank: "main", slot: d.jack - 1 }, { device: "fh2", bank: "main", slot: d.jack } ]
   DEs9Gate d -> [ { device: "es9", bank: "gt" <> show d.block, slot: d.jack - 1 } ]
   DEs9Cv d -> map (es9CvOutput <<< es9JackBus) (if d.gate > 0 then [ d.jack, d.gate ] else [ d.jack ])
   -- A polyphonic instrument spends EVERY jack it can allocate onto, plus the one
@@ -914,6 +960,8 @@ claims tbl = map collect (nub (map _.slot spent))
   slotOf src leg = case leg.dest of
     DFh2Env d -> [ { device: DevFh2, slot: mcvSlot (d.slot - 1), by: [ src ] } ] <> jack leg
     DFh2Gate d -> [ { device: DevFh2, slot: mcvSlot (d.jack - 1), by: [ src ] } ] <> jack leg
+    -- Its MCV is whichever the daemon allocates, so only its jacks are known here.
+    DFh2Voice _ -> jack leg
     DEs9Gate _ -> jack leg
     DEs9Cv _ -> jack leg
     DPoly _ -> jack leg

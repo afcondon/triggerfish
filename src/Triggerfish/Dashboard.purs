@@ -155,6 +155,7 @@ type State =
   , foldDrums :: Boolean
   -- the Vetula routing last written to the stage (`vetula/routing`)
   , vetulaSent :: Maybe String
+  , fh2VoicesSent :: Maybe String
   -- the chart's switches: Diaphus drawn on the rig's MIDI path, and every
   -- machine opened into its voices
   , relays :: Boolean
@@ -244,7 +245,7 @@ component = H.mkComponent
       { mode: Solo, now: 0.0, heard: Map.empty, rig: Nothing, rigUp: false
       , tempo: 120.0, freeTempo: 120.0, locked: false, bus: Nothing
       , table: RM.defaultTable, ports: [], sampleSets: [], hot: Nothing, router: Router.initial
-      , matrix: Nothing, pick: Nothing, focus: Nothing, sheet: Nothing, foldDrums: true, vetulaSent: Nothing
+      , matrix: Nothing, pick: Nothing, focus: Nothing, sheet: Nothing, foldDrums: true, vetulaSent: Nothing, fh2VoicesSent: Nothing
       , relays: false, allVoices: false, rigLoops: Map.empty, bosun: Nothing
       , lens: FlowView.Flowing, asked: [], confirmingDown: false, hidden: [], keyHot: Nothing, armed: Nothing, peeked: Nothing, rigPlaying: Map.empty, doctor: Nothing, midi: Nothing, portsRead: false, limulusEngine: "architeuthis", seleneBanks: [] }
   , render
@@ -528,7 +529,7 @@ handleAction = case _ of
 
 
   RigOpen -> do
-    H.modify_ _ { vetulaSent = Nothing }
+    H.modify_ _ { vetulaSent = Nothing, fh2VoicesSent = Nothing }
     sendRig Router.subscribeLine
     sendRig RigLoops.syncLine
     sendRig "stage-subscribe"
@@ -1090,3 +1091,9 @@ syncCards = do
     when (st.vetulaSent /= Just s.json) $ for_ st.rig \bin -> do
       liftEffect $ Transport.send (Binnacle.socket bin) (VetulaSync.stageLine s.json)
       H.modify_ _ { vetulaSent = Just s.json }
+  -- and the FH-2 voices it plays, which the rig sets up on the module
+  st' <- H.get
+  let voices = RM.fh2VoicesLine st'.table
+  when (st'.fh2VoicesSent /= Just voices) $ for_ st'.rig \bin -> do
+    liftEffect $ Transport.send (Binnacle.socket bin) voices
+    H.modify_ _ { fh2VoicesSent = Just voices }

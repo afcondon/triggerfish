@@ -237,6 +237,7 @@ wireOf = case _ of
   DFh2Gate d -> "fh2gate:" <> show d.jack
   DEs9Gate d -> "es9gate:" <> show d.block <> ":" <> show d.jack
   DEs9Cv d -> "es9cv:" <> show d.jack
+  DFh2Voice d -> "fh2voice:" <> show d.jack
   DContinuo d -> "continuo:" <> show d.channel
   DRample d -> "rample:" <> d.port <> ":" <> show d.channel <> ":" <> show d.voice
   DRamplePoly d -> "rample:" <> d.port <> ":" <> show d.channel
@@ -251,6 +252,7 @@ detailOf = case _ of
   DFh2Gate d -> "gate " <> show d.jack
   DEs9Gate d -> "gate " <> show (d.block + 1) <> "." <> show d.jack
   DEs9Cv d -> "jack " <> show d.jack
+  DFh2Voice d -> "jacks " <> show d.jack <> "+" <> show (d.jack + 1)
   DContinuo d -> "ch " <> show d.channel
   DRample d -> "ch " <> show d.channel <> " voice " <> show d.voice
   DRamplePoly d -> "ch " <> show d.channel
@@ -294,6 +296,7 @@ midiEnds = case _ of
   DMidi d -> Just (portEnds d.port)
   DFh2Env _ -> Just { iface: "fh2", inst: "modular", last: Cv }
   DFh2Gate _ -> Just { iface: "fh2", inst: "modular", last: Cv }
+  DFh2Voice _ -> Just { iface: "fh2", inst: "modular", last: Cv }
   DContinuo _ -> Just { iface: "continuo", inst: "piano", last: Midi }
   DRample d -> Just { iface: "port:" <> d.port, inst: "rample", last: Midi }
   DRamplePoly d -> Just { iface: "port:" <> d.port, inst: "rample", last: Midi }

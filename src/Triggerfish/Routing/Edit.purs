@@ -83,6 +83,7 @@ setPort port = case _ of
   -- by name, and the ES-9 kinds are not MIDI at all.
   d@(RM.DFh2Env _) -> d
   d@(RM.DFh2Gate _) -> d
+  d@(RM.DFh2Voice _) -> d
   d@(RM.DEs9Gate _) -> d
   d@(RM.DEs9Cv _) -> d
   d@(RM.DPoly _) -> d
@@ -100,6 +101,7 @@ newDest ctx src = case _ of
   "fh2gate" -> Just (RM.DFh2Gate { note: laneNote, jack: 1 })
   "es9gate" -> Just (RM.DEs9Gate { block: 0, jack: 1 })
   "es9cv" -> Just (RM.DEs9Cv { jack: 1, gate: 0 })
+  "fh2voice" -> Just (RM.DFh2Voice { jack: 1 })
   "poly-saich" -> Just (RM.DPoly { inst: RM.Saich, sortByPitch: false })
   "poly-saich-sorted" -> Just (RM.DPoly { inst: RM.Saich, sortByPitch: true })
   -- No sorted variant: Rings has one pitch bus, so there is no seating to sort.

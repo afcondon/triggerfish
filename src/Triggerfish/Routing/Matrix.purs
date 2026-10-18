@@ -102,6 +102,7 @@ columnOf ports = case _ of
   RM.DFh2Env _ -> "fh2env"
   RM.DFh2Gate _ -> "fh2gate"
   RM.DEs9Cv _ -> "es9cv"
+  RM.DFh2Voice _ -> "fh2voice"
   RM.DEs9Gate _ -> "es9gate"
   RM.DRample d -> "rample:" <> portOf ports d.port
   RM.DRamplePoly d -> "rample:" <> portOf ports d.port
@@ -116,6 +117,7 @@ valueOf = case _ of
   RM.DFh2Env d -> Just { field: "slot", value: d.slot }
   RM.DFh2Gate d -> Just { field: "jack", value: d.jack }
   RM.DEs9Cv d -> Just { field: "jack", value: d.jack }
+  RM.DFh2Voice d -> Just { field: "pair", value: (d.jack + 1) / 2 }
   RM.DEs9Gate d -> Just { field: "jack", value: d.jack }
   RM.DRample d -> Just { field: "voice", value: d.voice }
   _ -> Nothing
@@ -150,6 +152,7 @@ columns grid env = Array.sortWith (\c -> fromMaybe 9 (Array.elemIndex c.group gr
       [ one "continuo" "Hosted" "Continuo" "piano" "continuo" (Just "continuo")
       , one "fh2env" "Modular" "FH-2 envelopes" "" "cv" (Just "fh2env")
       , one "es9cv" "Modular" "ES-9 CV" "calibrated" "cv" (Just "es9cv")
+      , one "fh2voice" "Modular" "FH-2 voices" "pitch + gate" "cv" (Just "fh2voice")
       ] <> rampleCols
     Drums ->
       [ one "fh2gate" "Modular" "FH-2 gates" "QuadDrum" "cv" (Just "fh2gate") ] <> rampleCols
