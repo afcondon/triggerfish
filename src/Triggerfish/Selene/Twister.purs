@@ -215,9 +215,10 @@ detail ops d j bank = fromMaybe (dark 12) case bank of
          ]
   M.GEuclid xs -> xs !! j <#> \sl ->
     let p = put M.GEuclid xs
-    in place [ 0, 4, 8 ]
+    in place [ 0, 4, 5, 8 ]
          [ int 0 sl.steps sl.beats green (p <<< sl { beats = _ })
-         , int 1 64 sl.steps green \n -> p (sl { steps = n, beats = min sl.beats n })
+         , int 1 M.maxEuclidSteps sl.steps green \n -> p (sl { steps = n, beats = min sl.beats n, rotation = sl.rotation `mod` n })
+         , int 0 (max 0 (sl.steps - 1)) sl.rotation green (p <<< sl { rotation = _ })
          , int 1 16 sl.rate green (p <<< sl { rate = _ })
          ]
   M.GClock xs -> xs !! j <#> \sl ->

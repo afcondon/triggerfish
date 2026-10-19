@@ -74,7 +74,8 @@ type Euclid = { beats :: Int, steps :: Int, rotation :: Int }
 -- | Editing limits. `coarse` is the shift-held stride. `turns`: the engine
 -- | downstream can rotate the ring, so shift-←/→ turn it instead of striding
 -- | its size (AC, 2026-10-15: on a ring you play, rotation is worth more than
--- | the stride; Odonus turns, Selene strides until its slots carry the FH-2's R).
+-- | the stride). Odonus and Selene both turn (Selene since 2026-10-19, when its
+-- | slots gained the rotation both daemons play).
 type Bounds = { minSteps :: Int, maxSteps :: Int, coarse :: Int, turns :: Boolean }
 
 -- | The usual bounds for a given ceiling: down to a single step, shift striding

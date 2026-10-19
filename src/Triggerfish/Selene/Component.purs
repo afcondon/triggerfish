@@ -1279,12 +1279,12 @@ nudgeLfo dir shift sl = case dir of
 -- generator takes the ring as a period, so a long cycle is a legitimate patch
 -- rather than an unreadable picture.
 euclidBounds :: Euclid.Bounds
-euclidBounds = Euclid.boundedBy 64
+euclidBounds = (Euclid.boundedBy M.maxEuclidSteps) { turns = true }
 
 nudgeEuclid :: NudgeDir -> Boolean -> M.EuclidSlot -> M.EuclidSlot
 nudgeEuclid dir shift sl =
-  let e = Euclid.nudge euclidBounds dir shift { beats: sl.beats, steps: sl.steps, rotation: 0 }
-  in sl { beats = e.beats, steps = e.steps }
+  let e = Euclid.nudge euclidBounds dir shift { beats: sl.beats, steps: sl.steps, rotation: sl.rotation }
+  in sl { beats = e.beats, steps = e.steps, rotation = e.rotation }
 
 -- Clock: ←/→ walk a slow→fast ladder: divisions of the beat (a quarter base,
 -- the multiplier its period in beats), then the beat itself, then shorter
@@ -2003,7 +2003,7 @@ rndSteps = [ 0.55, -0.35, 0.9, -0.8, 0.15, -0.6, 0.7, -0.1 ]
 
 euclidInner :: forall m. M.Target -> M.EuclidSlot -> Array (H.ComponentHTML Action Slots m)
 euclidInner target sl =
-  [ Euclid.ring euclidStyle Nothing { beats: sl.beats, steps: sl.steps, rotation: 0 } ]
+  [ Euclid.ring euclidStyle Nothing { beats: sl.beats, steps: sl.steps, rotation: sl.rotation } ]
     -- a slot the hardware can't play as asked goes out silent, as a clock does
     <> case M.euclidOn target sl of
       Just why -> [ silentMark why ]
