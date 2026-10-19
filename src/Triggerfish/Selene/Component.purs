@@ -144,6 +144,9 @@ type State =
   -- the free banks drawn as two rows of four, so a module can be dropped on
   -- either half (docs/kb/plans/selene-split-banks.md); by target wire
   , splitFree :: Array String
+  -- jacks the routing table holds (its FH-2 voices, `routing/fh2-voices` on
+  -- the stage): drawn as held, and not offered to a module
+  , held :: Array Held
   , publishMsg :: Maybe String   -- transient status from a publish-rack-to-Amphora click
   -- The unified glyph-chip PRESET bank (docs/DESIGN-scene-modal.md): captured rack
   -- docs, anonymous or named, freely intermixed. `identity` is the parked preset's
@@ -297,6 +300,7 @@ component =
           , undoTo: Nothing
           , dragOver: Nothing
           , splitFree: []
+          , held: []
           , publishMsg: Nothing
           , presets: [], identity: Nothing, lastChip: Nothing
           , selected: Nothing
@@ -886,12 +890,14 @@ handleAction = case _ of
   SeleneReply raw | Just rest <- Str.stripPrefix (Str.Pattern "OK: selene: ") raw -> H.modify_ _ { publishMsg = Just ("✓ " <> rest) }
   SeleneReply raw | Just rest <- Str.stripPrefix (Str.Pattern "ERR: selene: ") raw -> H.modify_ _ { publishMsg = Just ("✗ " <> rest) }
   SeleneReply raw | Just json <- Str.stripPrefix (Str.Pattern "stage-texts ") raw -> do
+    H.modify_ _ { held = maybe [] heldOfVoices (readStageKey "routing/fh2-voices" json) }
     case readStageTable json of
       Just t -> adoptRack t
       Nothing -> do
         H.modify_ _ { stageRack = Nothing }
         publishRack
-  SeleneReply raw | Just json <- Str.stripPrefix (Str.Pattern "stage-text ") raw ->
+  SeleneReply raw | Just json <- Str.stripPrefix (Str.Pattern "stage-text ") raw -> do
+    for_ (readStageWriteOf "routing/fh2-voices" json) \t -> H.modify_ _ { held = maybe [] heldOfVoices t }
     for_ (readStageWrite json) adoptRack
   SeleneReply raw -> case Str.stripPrefix (Str.Pattern "selene-reply ") raw of
     Nothing -> pure unit
@@ -1045,6 +1051,19 @@ readStageTable :: String -> Maybe String
 readStageTable json = do
   table :: Object { text :: String } <- hush (readJSON json)
   _.text <$> Object.lookup "selene/rack" table
+
+-- | Any object's text in a `stage-texts` table.
+readStageKey :: String -> String -> Maybe String
+readStageKey key json = do
+  table :: Object { text :: String } <- hush (readJSON json)
+  _.text <$> Object.lookup key table
+
+-- | A write to one object: `Just` its text (`Nothing` when it was removed),
+-- | or `Nothing` when the write is to another object.
+readStageWriteOf :: String -> String -> Maybe (Maybe String)
+readStageWriteOf key json = do
+  w :: { key :: String, text :: Nullable String } <- hush (readJSON json)
+  if w.key == key then Just (toMaybe w.text) else Nothing
 
 -- | The rack in a `stage-text` write, if that is what was written.
 readStageWrite :: String -> Maybe String
@@ -1437,10 +1456,22 @@ rackPanel s =
       dropFrame s { target: d.target, jacks: d.jacks } (map _.dest s.selected == Just i) (destinationRow s s.envParam s.selected i d)
     Placed _ -> HH.text ""
     Free target jacks -> freeRow s target jacks
+    HeldRow h -> heldRow h
 
 -- | A row of the rack as drawn: a destination, or a group of outputs with
 -- | nothing on it.
-data RackRow = Placed Int | Free M.Target M.Jacks
+data RackRow = Placed Int | Free M.Target M.Jacks | HeldRow Held
+
+-- | A run of a bank's jacks that something other than Selene holds, and what.
+type Held = { target :: M.Target, jacks :: M.Jacks, by :: String }
+
+-- | The FH-2 voices of a `routing/fh2-voices` text (`1 3`): each a pitch
+-- | jack and the gate on the next, on the FH-2's own eight.
+heldOfVoices :: String -> Array Held
+heldOfVoices txt =
+  Array.mapMaybe
+    (\w -> Int.fromString w <#> \j -> { target: M.FH2 0, jacks: { first: j, count: 2 }, by: "FH-2 voice " <> show ((j + 1) / 2) <> ", from the routing table" })
+    (filter (_ /= "") (Str.split (Str.Pattern " ") (Str.trim txt)))
 
 -- | Where a row is: a bank, and the run of its jacks.
 type Place = { target :: M.Target, jacks :: M.Jacks }
@@ -1459,12 +1490,15 @@ rackRows s =
   onRig target =
     let
       here = Array.filter (\(Tuple _ d) -> d.target == target) (mapWithIndex Tuple s.sel.destinations)
-      covered = Array.concatMap (\(Tuple _ d) -> M.jackNumbers d.jacks) here
+      heldHere = filter (\h -> h.target == target) s.held
+      covered = Array.concatMap (\(Tuple _ d) -> M.jackNumbers d.jacks) here <> Array.concatMap (\h -> M.jackNumbers h.jacks) heldHere
       gaps = runsOf (filter (\j -> not (Array.elem j covered)) (Array.range 1 M.slotCount))
       free
-        | Array.null here && Array.elem (M.targetWire target) s.splitFree = [ { first: 1, count: 4 }, { first: 5, count: 4 } ]
+        | Array.null here && Array.null heldHere && Array.elem (M.targetWire target) s.splitFree = [ { first: 1, count: 4 }, { first: 5, count: 4 } ]
         | otherwise = gaps
-      rows = map (\(Tuple i d) -> Tuple d.jacks.first (Placed i)) here <> map (\j -> Tuple j.first (Free target j)) free
+      rows = map (\(Tuple i d) -> Tuple d.jacks.first (Placed i)) here
+        <> map (\h -> Tuple h.jacks.first (HeldRow h)) heldHere
+        <> map (\j -> Tuple j.first (Free target j)) free
     in map snd (Array.sortWith fst rows)
 
 -- | Consecutive jack numbers as runs: [5,6,7,8] is 5-8.
@@ -1479,7 +1513,7 @@ runsOf = foldl step []
 rowOrder :: State -> Array Int
 rowOrder s = Array.mapMaybe (case _ of
   Placed i -> Just i
-  Free _ _ -> Nothing) (rackRows s)
+  _ -> Nothing) (rackRows s)
 
 -- | A row as a drop target: its edge green when a drag over it can land, red
 -- | with why when it cannot.
@@ -1534,6 +1568,22 @@ freeRow s target jacks =
     | M.isWholeBank jacks = [ smallButton "split" "Split: draw this bank as two rows of four, to put a module on each half" (SplitFree wire) ]
     | Array.elem wire s.splitFree && jacks.first == 1 = [ smallButton "join" "Join: draw this bank as one row of eight again" (JoinFree wire) ]
     | otherwise = []
+
+-- | Jacks something else holds: drawn so the bank reads true, and not a drop
+-- | target (a module there would fight the voice for its jacks).
+heldRow :: forall m. Held -> H.ComponentHTML Action Slots m
+heldRow h =
+  HH.div [ style "border-radius:9px;margin-bottom:10px;border:2px solid transparent" ]
+    [ HH.div
+        [ style $ "display:flex;align-items:center;gap:12px;padding:8px 12px;border-radius:8px;"
+            <> "background:repeating-linear-gradient(135deg,#00000006 0 6px,#00000000 6px 12px);border:1px solid #00000018" ]
+        [ HH.div [ style ("display:flex;flex-direction:column;gap:4px;flex:0 0 " <> headerWidth) ]
+            [ HH.div [ style $ engrave <> ";font-size:10px;letter-spacing:0.1em;color:#6a6657" ] [ HH.text "HELD" ]
+            , HH.span [ style "font:13px Georgia,serif;color:#1c1a12" ] [ HH.text (placeLabel { target: h.target, jacks: h.jacks }) ]
+            ]
+        , HH.span [ style "font:italic 12px Georgia,serif;color:#6a6657" ] [ HH.text h.by ]
+        ]
+    ]
 
 -- | A bank and its run as the page names it: "FH-2 · jacks 5-8".
 placeLabel :: Place -> String
@@ -1788,6 +1838,7 @@ destHeader s i d =
     | M.isWholeBank d.jacks =
         [ smallButton "split" "Split: this bank keeps jacks 1-4 and frees 5-8 for another module" (SplitDest i) ]
     | Array.any (\o -> o.target == d.target && not (M.samePlace o d)) s.sel.destinations = []
+    | Array.any (\h -> h.target == d.target) s.held = []
     | otherwise =
         [ smallButton "join" "Join: this run grows back to the whole bank, the new jacks fresh" (JoinDest i) ]
   control = "font:10px Georgia,serif;border:1px solid #00000026;border-radius:4px;background:transparent;cursor:pointer;color:#5a5648;"
