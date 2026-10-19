@@ -1917,7 +1917,7 @@ iconButton icon title act lit =
 slotViews :: forall m. EnvParam -> Int -> Maybe Sel -> M.Target -> Array Int -> M.GenBank -> Array (H.ComponentHTML Action Slots m)
 slotViews ep d sel target mutes = case _ of
   M.GLfo slots -> mapWithIndex (cellFor d sel mutes 90.0 (lfoInner target)) slots
-  M.GEuclid slots -> mapWithIndex (cellFor d sel mutes 70.0 euclidInner) slots
+  M.GEuclid slots -> mapWithIndex (cellFor d sel mutes 70.0 (euclidInner target)) slots
   M.GClock slots -> mapWithIndex (cellFor d sel mutes 58.0 (clockInner target)) slots
   M.GNote slots -> mapWithIndex (cellFor d sel mutes 58.0 noteInner) slots
   M.GEnv slots -> mapWithIndex (\j sl -> slotCell d j (sel == Just { dest: d, slot: j }) (Array.elem j mutes) 90.0 (envInner (sel == Just { dest: d, slot: j }) ep sl)) slots
@@ -2015,8 +2015,13 @@ rndSteps = [ 0.55, -0.35, 0.9, -0.8, 0.15, -0.6, 0.7, -0.1 ]
 
 -- --- POLYEUCLID: a ring of step-dots with k / n in the centre ----------------
 
-euclidInner :: forall m. M.EuclidSlot -> Array (H.ComponentHTML Action Slots m)
-euclidInner sl = [ Euclid.ring euclidStyle Nothing { beats: sl.beats, steps: sl.steps, rotation: 0 } ]
+euclidInner :: forall m. M.Target -> M.EuclidSlot -> Array (H.ComponentHTML Action Slots m)
+euclidInner target sl =
+  [ Euclid.ring euclidStyle Nothing { beats: sl.beats, steps: sl.steps, rotation: 0 } ]
+    -- a slot the hardware can't play as asked goes out silent, as a clock does
+    <> case M.euclidOn target sl of
+      Just why -> [ silentMark why ]
+      Nothing -> []
 
 -- | Selene's dressing for the shared ring: steel-blue dots, no playhead (a
 -- | polysignal Euclid is a shape handed to the daemon, not a thing this pane
@@ -2037,14 +2042,18 @@ clockInner target sl =
   -- so, and why (an FH-2 duty other than 50%)
   , HH.span [ style "display:flex;align-items:center;gap:3px" ]
       ( ( case M.clockOn target sl of
-            Just why ->
-              [ HH.span
-                  [ HP.title ("Silent: " <> why)
-                  , style "font:bold 10px Georgia,serif;color:#fff;background:#b3261e;border-radius:6px;padding:0 4px;line-height:12px" ]
-                  [ HH.text "!" ] ]
+            Just why -> [ silentMark why ]
             Nothing -> [] )
         <> [ cellCaption (M.clockBaseLabel sl.base <> " x" <> show sl.multiplier <> " · " <> show sl.pulseWidth <> "%") ] )
   ]
+
+-- | The red ! on a slot the hardware plays silent, saying why.
+silentMark :: forall m. String -> H.ComponentHTML Action Slots m
+silentMark why =
+  HH.span
+    [ HP.title ("Silent: " <> why)
+    , style "font:bold 10px Georgia,serif;color:#fff;background:#b3261e;border-radius:6px;padding:0 4px;line-height:12px" ]
+    [ HH.text "!" ]
 
 -- --- POLYNOTE: a list of notes -----------------------------------------------
 
