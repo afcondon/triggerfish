@@ -108,8 +108,13 @@ runFlowTests = do
         && isJust (find (\l -> l.from == "engine" && l.machine == "odonus") soloLoop.links)
     )
 
-  check "a kept mark that is not playing draws no streams"
-    (null (flow base { machines = [], table = odonusToAbleton, loops = [ { machine: "odonus", n: 1, playing: false } ] }).links)
+  -- with its page closed, a kept loop hangs off the engine that keeps it, in
+  -- outline (Recorded, not Notes), so it is there to be started (22555b9)
+  let kept = (flow base { machines = [], table = odonusToAbleton, loops = [ { machine: "odonus", n: 1, playing: false } ] }).links
+  check "a kept mark that is not playing sends no notes, and hangs off the engine in outline"
+    ( map (\l -> { from: l.from, to: l.to, notes: l.signal == Notes }) kept
+        == [ { from: "loop:odonus:1", to: "engine", notes: false } ]
+    )
   check "with the rig down a loop draws nothing"
     (null (flow base { machines = [], table = odonusToAbleton, rigUp = false, loops = [ { machine: "odonus", n: 1, playing: true } ] }).links)
 

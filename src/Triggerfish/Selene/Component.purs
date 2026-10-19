@@ -141,6 +141,9 @@ type State =
   -- a drag from the drawer over a group of outputs: which, whether it can
   -- take what is dragged, and if not, why
   , dragOver :: Maybe { wire :: String, ok :: Boolean, why :: String }
+  -- the free banks drawn as two rows of four, so a module can be dropped on
+  -- either half (docs/kb/plans/selene-split-banks.md); by target wire
+  , splitFree :: Array String
   , publishMsg :: Maybe String   -- transient status from a publish-rack-to-Amphora click
   -- The unified glyph-chip PRESET bank (docs/DESIGN-scene-modal.md): captured rack
   -- docs, anonymous or named, freely intermixed. `identity` is the parked preset's
@@ -247,8 +250,12 @@ data Action
   | SetRackName String        -- rename the active rack
   | ApplyToRig                -- push each changed modular destination to its daemon
   | SeleneReply String        -- a raw `selene-reply …` frame from the rig
-  | DropOn M.Target Event     -- a module dropped on a group of outputs
-  | DragOverTarget M.Target Event
+  | DropOn Place Event        -- a module dropped on a group of outputs (or a run of them)
+  | DragOverTarget Place Event
+  | SplitDest Int             -- bank i, a whole bank, becomes its jacks 1-4; 5-8 go free
+  | JoinDest Int              -- bank i, a run, grows back to the whole bank
+  | SplitFree String          -- a free bank (by wire) drawn as two free rows of four
+  | JoinFree String           -- and back to one
   | DragLeaveTarget
   | DragRackStart Event
   | KeepModule Int            -- keep bank i as a module
@@ -289,6 +296,7 @@ component =
           , notice: ""
           , undoTo: Nothing
           , dragOver: Nothing
+          , splitFree: []
           , publishMsg: Nothing
           , presets: [], identity: Nothing, lastChip: Nothing
           , selected: Nothing
@@ -640,7 +648,7 @@ handleAction = case _ of
   -- survive), then re-derive the rack from the new text.
   AddDest k -> do
     H.modify_ \s ->
-      let block = Source.printDest { target: M.defaultTargetFor k, range: Nothing, bank: M.freshBank k, retrig: Nothing, muted: false, mutedSlots: [] }
+      let block = Source.printDest { target: M.defaultTargetFor k, jacks: M.allJacks, range: Nothing, bank: M.freshBank k, retrig: Nothing, muted: false, mutedSlots: [] }
           doc = currentDoc s <> "\n\n" <> block
       in s { live = doc, sel = Source.parseRack doc }
     persist
@@ -784,12 +792,13 @@ handleAction = case _ of
   -- that bank, applied there in one step; the page follows by the stage.
   -- Over a group of outputs: green if it can take what is dragged (the drop
   -- is let through), red with the reason if not (it is not).
-  DragOverTarget target e -> do
+  DragOverTarget place e -> do
     text <- moduleOfDrag <$> liftEffect Drop.currentDrag
     st0 <- H.get
     let
-      wire = M.targetWire target
-      used = Array.any (\d -> d.target == target) st0.sel.destinations
+      target = place.target
+      wire = M.placeWire place.target place.jacks
+      used = Array.any (M.samePlace place) st0.sel.destinations
       verdict = case Line.moduleKind text of
         _ | text == "off" -> if used then { wire, ok: true, why: "" } else { wire, ok: false, why: "already free" }
         Just kind | Line.accepts target kind -> { wire, ok: true, why: "" }
@@ -803,25 +812,39 @@ handleAction = case _ of
   -- Dropped: the module goes to the rig as a line on that bank, replacing
   -- what was there (`# fresh`). A block always sets the whole bank. Option to
   -- merge is off (`mergeOnOption`) until merge means something.
-  DropOn target e -> do
+  -- A drop on a run of a bank (a row of four) fills that run: the module's
+  -- first slots, one per jack.
+  DropOn place e -> do
     text <- liftEffect (Drop.dropText e)
     H.modify_ _ { dragOver = Nothing }
     st <- H.get
+    let
+      target = place.target
+      wire = M.placeWire place.target place.jacks
     case Line.moduleKind text of
       -- the null signal: free the group (its outputs silenced on the rig)
       _ | text == "off" -> for_ st.binnacle \bin -> do
-            liftEffect $ Transport.send (Binnacle.socket bin) ("tidal selene $ off " <> M.targetWire target)
-            H.modify_ _ { publishMsg = Just ("freeing " <> M.targetWire target) }
+            liftEffect $ Transport.send (Binnacle.socket bin) ("tidal selene $ off " <> wire)
+            H.modify_ _ { publishMsg = Just ("freeing " <> wire) }
       Nothing -> pure unit
       Just kind
-        | not (Line.accepts target kind) -> H.modify_ _ { publishMsg = Just (M.targetWire target <> ": " <> Line.refusal target kind) }
+        | not (Line.accepts target kind) -> H.modify_ _ { publishMsg = Just (wire <> ": " <> Line.refusal target kind) }
         | otherwise -> for_ st.binnacle \bin -> do
             let
               isBlock = isJust (Array.head (Str.split (Str.Pattern " ") (Str.trim text)) >>= Block.blockNamed)
               merge = mergeOnOption && Drop.altHeld e
-              line = Line.onBank text target <> (if isBlock || merge then "" else " # fresh")
+              line = Line.onPlace text target place.jacks <> (if isBlock || merge then "" else " # fresh")
             liftEffect $ Transport.send (Binnacle.socket bin) ("tidal selene $ " <> line)
-            H.modify_ _ { publishMsg = Just ((if merge && not isBlock then "merged into " else "→ ") <> M.targetWire target <> ": " <> text) }
+            H.modify_ _ { publishMsg = Just ((if merge && not isBlock then "merged into " else "→ ") <> wire <> ": " <> text) }
+  -- Split and join go to the rig as one line each (`selene $ split fh2_0`),
+  -- which releases the old claim before applying the new one; the page
+  -- follows by the stage. With no rig, they only change the text.
+  SplitDest i -> reshape i "split" \d -> d
+    { jacks = { first: 1, count: 4 }, bank = M.takeSlots 4 d.bank, mutedSlots = filter (_ < 4) d.mutedSlots }
+  JoinDest i -> reshape i "join" \d -> d
+    { jacks = M.allJacks, bank = M.widenBank d.jacks d.bank, mutedSlots = map (\k -> k + d.jacks.first - 1) d.mutedSlots }
+  SplitFree wire -> H.modify_ \s -> s { splitFree = Array.nub (Array.snoc s.splitFree wire) }
+  JoinFree wire -> H.modify_ \s -> s { splitFree = filter (_ /= wire) s.splitFree }
   ToggleMute i -> editDest i (\d -> d { muted = not d.muted })
   SetRange i w -> editDest i (\d -> d { range = M.rangeOfWire w })
   -- the badge sits on the cell, whose click selects it: this click is the mute's
@@ -835,8 +858,8 @@ handleAction = case _ of
     st <- H.get
     for_ (st.sel.destinations !! i) \d -> case st.binnacle of
       Just bin -> do
-        liftEffect $ Transport.send (Binnacle.socket bin) ("tidal selene $ off " <> M.targetWire d.target)
-        H.modify_ _ { publishMsg = Just ("freeing " <> M.targetWire d.target) }
+        liftEffect $ Transport.send (Binnacle.socket bin) ("tidal selene $ off " <> M.placeWire d.target d.jacks)
+        H.modify_ _ { publishMsg = Just ("freeing " <> M.placeWire d.target d.jacks) }
       Nothing -> do
         H.modify_ \s ->
           let doc = Source.printRack (s.sel { destinations = fromMaybe s.sel.destinations (deleteAt i s.sel.destinations) })
@@ -1126,6 +1149,17 @@ kindAt d s = map (M.bankKind <<< _.bank) (s.sel.destinations !! d)
 -- | Apply a bank transform to one destination, then reprint → reparse → persist:
 -- | the same doc-as-authority round-trip as RetargetDest / SetDoc, so the drawn
 -- | slot, the SOURCE pane, and the routing modal stay in lockstep.
+-- | Split or join bank i: on the rig, as a `selene $` line (the page follows
+-- | by the stage); with no rig, the same change to the text.
+reshape :: forall m. MonadAff m => Int -> String -> (M.Destination -> M.Destination) -> H.HalogenM State Action Slots Output m Unit
+reshape i verb local = do
+  st <- H.get
+  for_ (st.sel.destinations !! i) \d -> case st.binnacle of
+    Just bin -> do
+      liftEffect $ Transport.send (Binnacle.socket bin) ("tidal selene $ " <> verb <> " " <> M.placeWire d.target d.jacks)
+      H.modify_ _ { publishMsg = Just (verb <> " " <> M.placeWire d.target d.jacks) }
+    Nothing -> editDest i local
+
 editDest :: forall m. MonadAff m => Int -> (M.Destination -> M.Destination) -> H.HalogenM State Action Slots Output m Unit
 editDest d f = do
   H.modify_ \s ->
@@ -1400,39 +1434,62 @@ rackPanel s =
   where
   row = case _ of
     Placed i | Just d <- s.sel.destinations !! i ->
-      dropFrame s d.target (map _.dest s.selected == Just i) (destinationRow s.envParam s.selected i d)
+      dropFrame s { target: d.target, jacks: d.jacks } (map _.dest s.selected == Just i) (destinationRow s s.envParam s.selected i d)
     Placed _ -> HH.text ""
-    Free target -> freeRow s target
+    Free target jacks -> freeRow s target jacks
 
 -- | A row of the rack as drawn: a destination, or a group of outputs with
 -- | nothing on it.
-data RackRow = Placed Int | Free M.Target
+data RackRow = Placed Int | Free M.Target M.Jacks
+
+-- | Where a row is: a bank, and the run of its jacks.
+type Place = { target :: M.Target, jacks :: M.Jacks }
 
 -- | The rows in the order the page draws them: every group of outputs the rig
 -- | has, in the rig's order, then anything on a target off the rig. One
 -- | function, so the Twister's ROW walks what the eye sees.
 rackRows :: State -> Array RackRow
 rackRows s =
-  map onRig rigBanks
+  Array.concatMap onRig rigBanks
     <> Array.catMaybes (mapWithIndex (\i d -> if Array.elem d.target rigBanks then Nothing else Just (Placed i)) s.sel.destinations)
   where
-  onRig target = maybe (Free target) Placed (Array.findIndex (\d -> d.target == target) s.sel.destinations)
+  -- a bank's rows in jack order: each destination on it, and each run of
+  -- jacks nothing is on; a bank with nothing on it is one free row, or two
+  -- of four when it has been split to take a module on either half
+  onRig target =
+    let
+      here = Array.filter (\(Tuple _ d) -> d.target == target) (mapWithIndex Tuple s.sel.destinations)
+      covered = Array.concatMap (\(Tuple _ d) -> M.jackNumbers d.jacks) here
+      gaps = runsOf (filter (\j -> not (Array.elem j covered)) (Array.range 1 M.slotCount))
+      free
+        | Array.null here && Array.elem (M.targetWire target) s.splitFree = [ { first: 1, count: 4 }, { first: 5, count: 4 } ]
+        | otherwise = gaps
+      rows = map (\(Tuple i d) -> Tuple d.jacks.first (Placed i)) here <> map (\j -> Tuple j.first (Free target j)) free
+    in map snd (Array.sortWith fst rows)
+
+-- | Consecutive jack numbers as runs: [5,6,7,8] is 5-8.
+runsOf :: Array Int -> Array M.Jacks
+runsOf = foldl step []
+  where
+  step acc j = case Array.unsnoc acc of
+    Just { init, last } | last.first + last.count == j -> Array.snoc init (last { count = last.count + 1 })
+    _ -> Array.snoc acc { first: j, count: 1 }
 
 -- | The destinations in drawn order, free rows skipped: what ROW steps over.
 rowOrder :: State -> Array Int
 rowOrder s = Array.mapMaybe (case _ of
   Placed i -> Just i
-  Free _ -> Nothing) (rackRows s)
+  Free _ _ -> Nothing) (rackRows s)
 
 -- | A row as a drop target: its edge green when a drag over it can land, red
 -- | with why when it cannot.
-dropFrame :: forall m. State -> M.Target -> Boolean -> H.ComponentHTML Action Slots m -> H.ComponentHTML Action Slots m
-dropFrame s target current inner =
+dropFrame :: forall m. State -> Place -> Boolean -> H.ComponentHTML Action Slots m -> H.ComponentHTML Action Slots m
+dropFrame s place current inner =
   HH.div
-    [ HE.handler (EventType "dragover") (DragOverTarget target)
+    [ HE.handler (EventType "dragover") (DragOverTarget place)
     , HE.handler (EventType "dragleave") (const DragLeaveTarget)
-    , HE.handler (EventType "drop") (DropOn target)
-    , HP.title (M.targetLabel target <> ": drop a module to replace what is here" <> (if mergeOnOption then "; Option to merge into it" else ""))
+    , HE.handler (EventType "drop") (DropOn place)
+    , HP.title (placeLabel place <> ": drop a module to replace what is here" <> (if mergeOnOption then "; Option to merge into it" else ""))
     , style ("border-radius:9px;margin-bottom:10px;border:2px solid " <> edge
         <> (if current then ";background:#0000000b" else ""))
     ]
@@ -1442,7 +1499,7 @@ dropFrame s target current inner =
     )
   where
   over = case s.dragOver of
-    Just v | v.wire == M.targetWire target -> Just v
+    Just v | v.wire == M.placeWire place.target place.jacks -> Just v
     _ -> Nothing
   -- The row holding the selection is framed, so ROW on the Twister can be
   -- followed by eye; a drag's verdict outranks it.
@@ -1453,21 +1510,55 @@ dropFrame s target current inner =
     Nothing -> "transparent"
 
 -- | A group with nothing on it: greyed, and waiting for a module.
-freeRow :: forall m. State -> M.Target -> H.ComponentHTML Action Slots m
-freeRow s target =
-  dropFrame s target false $
+freeRow :: forall m. State -> M.Target -> M.Jacks -> H.ComponentHTML Action Slots m
+freeRow s target jacks =
+  dropFrame s { target, jacks } false $
     HH.div
-      [ style $ "display:flex;align-items:center;gap:12px;padding:11px 12px;border-radius:8px;opacity:0.55;"
+      [ style $ "display:flex;align-items:center;gap:12px;padding:11px 12px;border-radius:8px;"
           <> "background:#00000005;border:1px dashed #00000026" ]
-      [ HH.div [ style ("display:flex;flex-direction:column;gap:5px;flex:0 0 " <> headerWidth) ]
+      [ HH.div [ style ("display:flex;flex-direction:column;gap:5px;opacity:0.55;flex:0 0 " <> headerWidth) ]
           [ HH.div [ style $ engrave <> ";font-size:10px;letter-spacing:0.1em;color:#6a6657" ] [ HH.text "FREE" ]
-          , HH.span [ style "font:13px Georgia,serif;color:#1c1a12" ] [ HH.text (M.targetLabel target) ]
-          , HH.span [ style $ engrave <> ";font-size:8px;opacity:0.6" ] [ HH.text ("→ " <> M.targetWire target) ]
+          , HH.span [ style "display:flex;align-items:center;gap:8px;font:13px Georgia,serif;color:#1c1a12" ]
+              ( [ HH.text (placeLabel { target, jacks }) ] <> halves )
+          , HH.span [ style $ engrave <> ";font-size:8px;opacity:0.6" ] [ HH.text ("→ " <> M.placeWire target jacks) ]
           ]
-      , HH.div [ style "display:flex;gap:7px;align-items:center" ]
-          (map (\_ -> HH.span [ style "width:46px;height:46px;border-radius:6px;border:1px dashed #00000022" ] []) (Array.range 1 8))
-      , HH.span [ style "font:italic 12px Georgia,serif;color:#6a6657" ] [ HH.text "drop a module here" ]
+      , HH.div [ style "display:flex;gap:7px;align-items:center;opacity:0.55" ]
+          (map (\_ -> HH.span [ style "width:46px;height:46px;border-radius:6px;border:1px dashed #00000022" ] []) (Array.range 1 jacks.count))
+      , HH.span [ style "font:italic 12px Georgia,serif;color:#6a6657;opacity:0.55" ] [ HH.text "drop a module here" ]
       ]
+  where
+  wire = M.targetWire target
+  -- a free bank can be drawn as two rows of four, and back
+  halves
+    | not (hasJacks target) = []
+    | M.isWholeBank jacks = [ smallButton "split" "Split: draw this bank as two rows of four, to put a module on each half" (SplitFree wire) ]
+    | Array.elem wire s.splitFree && jacks.first == 1 = [ smallButton "join" "Join: draw this bank as one row of eight again" (JoinFree wire) ]
+    | otherwise = []
+
+-- | A bank and its run as the page names it: "FH-2 · jacks 5-8".
+placeLabel :: Place -> String
+placeLabel p = M.targetLabel p.target <> runLabel p.jacks
+
+runLabel :: M.Jacks -> String
+runLabel j
+  | M.isWholeBank j = ""
+  | j.count == 1 = " · jack " <> show j.first
+  | otherwise = " · jacks " <> show j.first <> "-" <> show (j.first + j.count - 1)
+
+-- | Whether a target has jacks to split (a MIDI channel or a virtual bus has none).
+hasJacks :: M.Target -> Boolean
+hasJacks = case _ of
+  M.Midi _ -> false
+  M.Virtual _ -> false
+  _ -> true
+
+smallButton :: forall m. String -> String -> Action -> H.ComponentHTML Action Slots m
+smallButton label title act =
+  HH.button
+    [ HE.onClick \_ -> act
+    , HP.title title
+    , style "font:10px Georgia,serif;border:1px solid #00000026;border-radius:4px;background:transparent;cursor:pointer;color:#5a5648;padding:1px 7px" ]
+    [ HH.text label ]
 
 -- | The STARTER WALL: every library shape drawn, shown only while an envelope
 -- | slot is selected.
@@ -1606,7 +1697,7 @@ replyReadout s = map pill (mapMaybe Wire.destinationEnvelope s.sel.destinations)
 footNote :: forall m. H.ComponentHTML Action Slots m
 footNote =
   HH.div [ style $ engrave <> ";font-size:8px;opacity:0.45;margin-top:14px;line-height:1.6" ]
-    [ HH.text "EACH DESTINATION = 8 SIGNALS → 8 JACKS. AS TEXT, IN LIMULUS: SELENE $ LFO ES9MAIN # RATE \"0.5 1 2 4\" — ONE LINE, ONE BANK, ALL AT ONCE." ]
+    [ HH.text "EACH DESTINATION = A BANK'S 8 JACKS, OR A RUN OF THEM (SPLIT: 1-4 AND 5-8). AS TEXT, IN LIMULUS: SELENE $ LFO ES9MAIN # RATE \"0.5 1 2 4\", OR SELENE $ NOTE FH2_0:5-8 # NOTE \"C3 E3 G3 B3\" — ONE LINE, ONE BANK, ALL AT ONCE." ]
 
 -- | Whether a bank's jacks have a range to set: the ES-9's and the FH-2's do;
 -- | an FHX-8GT (`FH2 n`, n > 0) is gates only, and MIDI or a virtual bank has
@@ -1619,12 +1710,12 @@ hasRange = case _ of
   _ -> true
 
 -- One destination: a target/header strip on the left, eight visualised slots.
-destinationRow :: forall m. MonadAff m => EnvParam -> Maybe Sel -> Int -> M.Destination -> H.ComponentHTML Action Slots m
-destinationRow ep sel i d =
+destinationRow :: forall m. MonadAff m => State -> EnvParam -> Maybe Sel -> Int -> M.Destination -> H.ComponentHTML Action Slots m
+destinationRow s ep sel i d =
   HH.div
     [ style $ "display:flex;align-items:stretch;gap:12px;padding:11px 12px;border-radius:8px;"
         <> "background:#00000008;border:1px solid #00000012" ]
-    [ destHeader i d
+    [ destHeader s i d
     -- a muted bank is still drawn, and editable, but faded: its jacks are at 0 V
     , HH.div [ style (slotWrap d.bank <> if d.muted then ";opacity:0.35" else "") ] (slotViews ep i sel d.target d.mutedSlots d.bank)
     ]
@@ -1634,13 +1725,14 @@ destinationRow ep sel i d =
 slotWrap :: M.GenBank -> String
 slotWrap _ = "display:flex;flex-wrap:wrap;gap:7px;align-items:center;flex:1 1 auto"
 
--- | Every bank's header is as wide as the widest (a title, a range menu and
--- | three buttons on one line), so the eight outputs line up down the page.
+-- | Every bank's header is as wide as the widest (a title with its run of
+-- | jacks, a range menu and four buttons on one line), so the outputs line
+-- | up down the page.
 headerWidth :: String
-headerWidth = "430px"
+headerWidth = "480px"
 
-destHeader :: forall m. MonadAff m => Int -> M.Destination -> H.ComponentHTML Action Slots m
-destHeader i d =
+destHeader :: forall m. MonadAff m => State -> Int -> M.Destination -> H.ComponentHTML Action Slots m
+destHeader s i d =
   -- three lines, the controls beside the title: a row's height is what
   -- decides how many banks fit on a screen, and its width is spare
   HH.div [ style ("display:flex;flex-direction:column;gap:4px;justify-content:center;flex:0 0 " <> headerWidth) ]
@@ -1651,7 +1743,7 @@ destHeader i d =
               -- where it plays: a label now; moving it is a drop on the outputs
               -- strip at the top (2026-10-05, replacing the route menu); then
               -- the setting's rebus, as the drawer shows it for a module
-              ( [ HH.text (M.targetLabel d.target) ]
+              ( [ HH.text (placeLabel { target: d.target, jacks: d.jacks }) ]
                   <> map (\g -> HH.i [ HP.attr (HH.AttrName "class") ("fa-solid fa-" <> g.icon), style ("font-size:15px;line-height:1;color:" <> g.color) ] []) (settingIcons (Line.moduleOf d)) )
           ]
           -- the jacks' voltage range: an LFO into a 0–5V input wants 0–5V, not
@@ -1678,16 +1770,26 @@ destHeader i d =
                 , HP.title "Keep this bank as a module, to drop on any bank (it goes in the drawer's Modules)"
                 , style (control <> "padding:1px 7px") ]
                 [ HH.text "keep as module" ]
-            , HH.button
+            ] <> splitJoin <>
+            [ HH.button
                 [ HE.onClick \_ -> RemoveDest i
                 , HP.title "Remove: take this bank off the rack and free its jacks for something else (keep it as a module first to have it back)"
                 , style (control <> "padding:1px 7px") ]
                 [ HH.text "remove" ]
             ] )
     , HH.span [ style $ engrave <> ";font-size:8px;opacity:0.45" ]
-        [ HH.text ("→ " <> M.targetWire d.target) ]
+        [ HH.text ("→ " <> M.placeWire d.target d.jacks) ]
     ]
   where
+  -- a whole bank splits into two rows of four (it keeps 1-4, 5-8 go free);
+  -- a run joins back into the whole bank when nothing else is on it
+  splitJoin
+    | not (hasJacks d.target) = []
+    | M.isWholeBank d.jacks =
+        [ smallButton "split" "Split: this bank keeps jacks 1-4 and frees 5-8 for another module" (SplitDest i) ]
+    | Array.any (\o -> o.target == d.target && not (M.samePlace o d)) s.sel.destinations = []
+    | otherwise =
+        [ smallButton "join" "Join: this run grows back to the whole bank, the new jacks fresh" (JoinDest i) ]
   control = "font:10px Georgia,serif;border:1px solid #00000026;border-radius:4px;background:transparent;cursor:pointer;color:#5a5648;"
 
 -- ---------------------------------------------------------------------------

@@ -156,7 +156,8 @@ surface ops sel cur = top <> bottom
   bottom =
     [ Just (stepped (length cur.rows - 1) rowAt hue \r ->
         Goto { dest: fromMaybe here.dest (cur.rows !! r), slot: here.slot } false)
-    , Just ((stepped (M.slotCount - 1) here.slot hue \s -> Goto { dest: here.dest, slot: s } cur.open)
+    -- a row of four steps over four
+    , Just ((stepped (maybe M.slotCount (M.bankSize <<< _.bank) dest - 1) here.slot hue \s -> Goto { dest: here.dest, slot: s } cur.open)
         { press = [ Goto here (not cur.open) ] })
     , dest <#> \d -> button (if d.muted then red else blue) (if d.muted then 127 else 0) (Mute here.dest)
     , Just (button blue 0 Apply)
