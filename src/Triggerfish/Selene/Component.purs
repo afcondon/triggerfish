@@ -34,6 +34,7 @@ import Effect.Class (liftEffect)
 import Effect.Timer (setInterval)
 import Data.Either (hush)
 import Data.Nullable (Nullable, toMaybe)
+import Data.Number as Number
 import Foreign.Object (Object)
 import Foreign.Object as Object
 import Simple.JSON (readJSON, writeJSON)
@@ -1285,8 +1286,9 @@ nudgeEuclid dir shift sl =
   let e = Euclid.nudge euclidBounds dir shift { beats: sl.beats, steps: sl.steps, rotation: 0 }
   in sl { beats = e.beats, steps = e.steps }
 
--- Clock: ←/→ walk a slow→fast ladder that runs through DIVISION (below ×1, via
--- a longer base) as well as multiplication; ↑/↓ pulse width %. Shift = coarse.
+-- Clock: ←/→ walk a slow→fast ladder: divisions of the beat (a quarter base,
+-- the multiplier its period in beats), then the beat itself, then shorter
+-- bases above it. ↑/↓ pulse width %. Shift = coarse.
 nudgeClock :: NudgeDir -> Boolean -> M.ClockSlot -> M.ClockSlot
 nudgeClock dir shift sl = case dir of
   NRight -> setSpeed (speedIndex sl + step) sl   -- faster, into ×N
@@ -1296,44 +1298,48 @@ nudgeClock dir shift sl = case dir of
   where
   step = if shift then 2 else 1
 
--- The ladder: division rungs (a longer base at ×1) below the multiplication
--- rungs (the multiplier over a quarter). One monotonic slow→fast axis.
+-- The ladder, one monotonic slow→fast axis: one pulse every 64 beats up to
+-- the beat as a quarter's multiplier, then the beat's subdivisions as
+-- shorter bases, to 24 ppqn. Every rung plays on both rigs.
 clockSpeeds :: Array { base :: M.ClockBase, mult :: Int }
 clockSpeeds =
-  [ { base: M.ClockWhole, mult: 1 }     -- ÷4
-  , { base: M.ClockHalf, mult: 1 }      -- ÷2
-  , { base: M.ClockQuarter, mult: 1 }   -- ×1
-  , { base: M.ClockQuarter, mult: 2 }
-  , { base: M.ClockQuarter, mult: 3 }
-  , { base: M.ClockQuarter, mult: 4 }
-  , { base: M.ClockQuarter, mult: 6 }
-  , { base: M.ClockQuarter, mult: 8 }
-  , { base: M.ClockQuarter, mult: 16 }
-  ]
+  map (\n -> { base: M.ClockQuarter, mult: n }) [ 64, 32, 16, 12, 8, 6, 4, 3, 2, 1 ]
+    <> map (\b -> { base: b, mult: 1 })
+      [ M.ClockEighth, M.ClockEighthT, M.ClockSixteenth, M.ClockSixteenthT
+      , M.ClockThirtySecond, M.ClockThirtySecondT, M.ClockSixtyFourthT ]
 
--- Pulses per beat: 1.0 = ×1. Both base and multiplier feed it.
+-- Pulses per beat: 1.0 = the beat. Both base and multiplier feed it.
 clockRate :: M.ClockSlot -> Number
-clockRate sl = toNumber sl.multiplier / M.clockBaseBeats sl.base
+clockRate sl = 1.0 / (M.clockBaseBeats sl.base * toNumber (max 1 sl.multiplier))
 
 -- The nearest ladder rung to the slot's current rate — so an exotic source value
 -- (a triplet base, an odd multiplier) still steps to a defined neighbour.
+-- Compared as logs, since the ladder is geometric.
 speedIndex :: M.ClockSlot -> Int
 speedIndex sl =
-  let target = clockRate sl
-      rateOf e = toNumber e.mult / M.clockBaseBeats e.base
+  let target = Number.log (clockRate sl)
+      rateOf e = Number.log (clockRate { base: e.base, multiplier: e.mult, pulseWidth: 0, phase: 0 })
       paired = mapWithIndex (\i e -> Tuple i (abs (rateOf e - target))) clockSpeeds
-  in fst (foldl (\best (Tuple i dist) -> if dist < snd best then Tuple i dist else best) (Tuple 2 1.0e9) paired)
+  in fst (foldl (\best (Tuple i dist) -> if dist < snd best then Tuple i dist else best) (Tuple 9 1.0e9) paired)
 
 setSpeed :: Int -> M.ClockSlot -> M.ClockSlot
 setSpeed i sl = case clockSpeeds !! clamp 0 (length clockSpeeds - 1) i of
   Just e -> sl { base = e.base, multiplier = e.mult }
   Nothing -> sl
 
--- The effective ratio shown big in the cell: ×N over a beat, or ÷N below it.
+-- The ratio shown big in the cell, exact: ×N pulses a beat, ÷N one pulse
+-- every N beats, and N/M for the rest (a 1/4T is 3/2). In 24ppqn ticks.
 clockRatioLabel :: M.ClockSlot -> String
 clockRatioLabel sl =
-  let r = clockRate sl
-  in if r >= 1.0 then "×" <> show (round r) else "÷" <> show (round (1.0 / r))
+  let
+    ticks = M.clockBaseTicks sl.base * max 1 sl.multiplier
+    g = gcd 24 ticks
+    perBeat = 24 / g
+    beats = ticks / g
+  in
+    if beats == 1 then "×" <> show perBeat
+    else if perBeat == 1 then "÷" <> show beats
+    else "×" <> show perBeat <> "/" <> show beats
 
 -- Note: arrows = ±semitone; SHIFT = ±octave (any direction; ↑/→ up, ↓/← down).
 -- | Envelope: ←/→ move the SELECTED field; ↑/↓ change which field that is.
@@ -1912,7 +1918,7 @@ slotViews :: forall m. EnvParam -> Int -> Maybe Sel -> M.Target -> Array Int -> 
 slotViews ep d sel target mutes = case _ of
   M.GLfo slots -> mapWithIndex (cellFor d sel mutes 90.0 (lfoInner target)) slots
   M.GEuclid slots -> mapWithIndex (cellFor d sel mutes 70.0 euclidInner) slots
-  M.GClock slots -> mapWithIndex (cellFor d sel mutes 58.0 clockInner) slots
+  M.GClock slots -> mapWithIndex (cellFor d sel mutes 58.0 (clockInner target)) slots
   M.GNote slots -> mapWithIndex (cellFor d sel mutes 58.0 noteInner) slots
   M.GEnv slots -> mapWithIndex (\j sl -> slotCell d j (sel == Just { dest: d, slot: j }) (Array.elem j mutes) 90.0 (envInner (sel == Just { dest: d, slot: j }) ep sl)) slots
   -- a voice is as wide as the jacks it takes, and has no mute of its own:
@@ -2023,11 +2029,21 @@ euclidStyle = Euclid.defaultStyle
 
 -- --- POLYCLOCK: a list of division numbers -----------------------------------
 
-clockInner :: forall m. M.ClockSlot -> Array (H.ComponentHTML Action Slots m)
-clockInner sl =
+clockInner :: forall m. M.Target -> M.ClockSlot -> Array (H.ComponentHTML Action Slots m)
+clockInner target sl =
   [ HH.div [ style $ "font-family:'SF Mono',Menlo,monospace;font-size:18px;color:" <> ink <> ";text-align:center" ]
       [ HH.text (clockRatioLabel sl) ]
-  , cellCaption (M.clockBaseLabel sl.base <> " · " <> show sl.pulseWidth <> "%")
+  -- a slot the hardware can't play as asked goes out silent: the red ! says
+  -- so, and why (an FH-2 duty other than 50%)
+  , HH.span [ style "display:flex;align-items:center;gap:3px" ]
+      ( ( case M.clockOn target sl of
+            Just why ->
+              [ HH.span
+                  [ HP.title ("Silent: " <> why)
+                  , style "font:bold 10px Georgia,serif;color:#fff;background:#b3261e;border-radius:6px;padding:0 4px;line-height:12px" ]
+                  [ HH.text "!" ] ]
+            Nothing -> [] )
+        <> [ cellCaption (M.clockBaseLabel sl.base <> " x" <> show sl.multiplier <> " · " <> show sl.pulseWidth <> "%") ] )
   ]
 
 -- --- POLYNOTE: a list of notes -----------------------------------------------
