@@ -1327,20 +1327,6 @@ setSpeed i sl = case clockSpeeds !! clamp 0 (length clockSpeeds - 1) i of
   Just e -> sl { base = e.base, multiplier = e.mult }
   Nothing -> sl
 
--- The ratio shown big in the cell, exact: ×N pulses a beat, ÷N one pulse
--- every N beats, and N/M for the rest (a 1/4T is 3/2). In 24ppqn ticks.
-clockRatioLabel :: M.ClockSlot -> String
-clockRatioLabel sl =
-  let
-    ticks = M.clockBaseTicks sl.base * max 1 sl.multiplier
-    g = gcd 24 ticks
-    perBeat = 24 / g
-    beats = ticks / g
-  in
-    if beats == 1 then "×" <> show perBeat
-    else if perBeat == 1 then "÷" <> show beats
-    else "×" <> show perBeat <> "/" <> show beats
-
 -- Note: arrows = ±semitone; SHIFT = ±octave (any direction; ↑/→ up, ↓/← down).
 -- | Envelope: ←/→ move the SELECTED field; ↑/↓ change which field that is.
 -- |
@@ -2037,14 +2023,14 @@ euclidStyle = Euclid.defaultStyle
 clockInner :: forall m. M.Target -> M.ClockSlot -> Array (H.ComponentHTML Action Slots m)
 clockInner target sl =
   [ HH.div [ style $ "font-family:'SF Mono',Menlo,monospace;font-size:18px;color:" <> ink <> ";text-align:center" ]
-      [ HH.text (clockRatioLabel sl) ]
+      [ HH.text (M.clockRatio sl) ]
   -- a slot the hardware can't play as asked goes out silent: the red ! says
   -- so, and why (an FH-2 duty other than 50%)
   , HH.span [ style "display:flex;align-items:center;gap:3px" ]
       ( ( case M.clockOn target sl of
             Just why -> [ silentMark why ]
             Nothing -> [] )
-        <> [ cellCaption (M.clockBaseLabel sl.base <> " x" <> show sl.multiplier <> " · " <> show sl.pulseWidth <> "%") ] )
+        <> [ cellCaption (show sl.pulseWidth <> "%" <> (if sl.phase == 0 then "" else " · " <> show sl.phase <> "°")) ] )
   ]
 
 -- | The red ! on a slot the hardware plays silent, saying why.
