@@ -83,8 +83,6 @@ module Triggerfish.Routing.Model
   , fh2Port
   , fh2GateChannel
   , fh2VoiceChannel
-  , fh2VoiceJacks
-  , fh2VoicesLine
   ) where
 
 import Prelude
@@ -163,14 +161,13 @@ data Destination
   -- | The two are only correct relative to each other, which is the argument for
   -- | one table owning both.
   | DFh2Gate { note :: Int, jack :: Int }
-  -- | A MONO PITCH LINE on the FH-2's main panel: pitch CV on jack `jack` (1, 3,
-  -- | 5 or 7) and its gate on the next jack, played as MIDI notes on the FH-2's
-  -- | port. The FH-2 can put a converter's gate only on the jack after its pitch
-  -- | (base gate 0) or on an FHX-8GT, so a voice is a PAIR, and the pair names its
-  -- | channel (`fh2VoiceChannel`): two numbers that must agree are one number.
-  -- | The converter itself is set up by the rig (`fh2/voices` on the stage,
-  -- | which the keeper applies).
-  | DFh2Voice { jack :: Int }
+  -- | An FH-2 VOICE, by the MIDI channel that plays it: notes on the FH-2's
+  -- | port. Which jacks it comes out of (its pitch, its envelope, its gate on
+  -- | the FHX-8GT) is a Selene voice layout's business, a POLYVOICE on the
+  -- | Selene page (docs/kb/plans/selene-voice-layouts.md); the table only plays.
+  -- | It was a pitch jack with the gate on the next one, which the rig built
+  -- | from `routing/fh2-voices`; a stored jack reads as its channel.
+  | DFh2Voice { channel :: Int }
   -- | An ES-9 gate, on gate block `block` (0-based), jack 1..8.
   | DEs9Gate { block :: Int, jack :: Int }
   -- | A MONO PITCH LINE on the ES-9: pitch on panel jack `jack` (1-8), and a
@@ -328,8 +325,7 @@ destLabel = case _ of
   DMidi d -> d.port <> " ch " <> show d.channel
   DFh2Env d -> "FH-2 envelope " <> show d.slot
   DFh2Gate d -> "FH-2 gate → FHX-8GT jack " <> show d.jack <> " (note " <> show d.note <> ")"
-  DFh2Voice d -> "FH-2 voice: pitch jack " <> show d.jack <> ", gate jack " <> show (d.jack + 1)
-    <> " (ch " <> show (fh2VoiceChannel d.jack) <> ")"
+  DFh2Voice d -> "FH-2 voice on ch " <> show d.channel <> " (its jacks are the Selene POLYVOICE's)"
   DEs9Gate d -> "ES-9 GT " <> show d.block <> " jack " <> show d.jack
   DEs9Cv d -> "ES-9 pitch jack " <> show d.jack <> (if d.gate > 0 then ", gate jack " <> show d.gate else "")
   DPoly d ->
@@ -361,7 +357,7 @@ destShortLabel = case _ of
   DMidi d -> d.port <> " " <> show d.channel
   DFh2Env d -> "env " <> show d.slot
   DFh2Gate d -> "8gt " <> show d.jack
-  DFh2Voice d -> "voice " <> show d.jack <> "+" <> show (d.jack + 1)
+  DFh2Voice d -> "voice ch " <> show d.channel
   DEs9Gate d -> "GT" <> show d.block <> "/" <> show d.jack
   DEs9Cv d -> "cv " <> show d.jack <> (if d.gate > 0 then "+" <> show d.gate else "")
   DPoly d -> instrumentLabel d.inst <> (if d.sortByPitch then " ↓" else "")
@@ -582,7 +578,7 @@ setDestField field v = case _ of
   -- Named by its pitch jack, which is odd: an even jack is a gate, so a step
   -- onto one carries on in the same direction to the next pitch jack.
   DFh2Voice d -> case field of
-    "jack" -> DFh2Voice d { jack = clamp 1 7 (if v `mod` 2 == 1 then v else if v > d.jack then v + 1 else v - 1) }
+    "channel" -> DFh2Voice d { channel = clamp 1 16 v }
     _ -> DFh2Voice d
   DEs9Gate d -> case field of
     "block" -> DEs9Gate d { block = clamp 0 7 v }
@@ -719,24 +715,8 @@ fh2Port = "FH-2"
 fh2GateChannel :: Int
 fh2GateChannel = 10
 
--- | The pitch jacks an FH-2 voice can start on: its gate takes the next one.
-fh2VoiceJacks :: Array Int
-fh2VoiceJacks = [ 1, 3, 5, 7 ]
-
--- | The FH-2 voices the table plays, for the rig to set up: the stage object
--- | `routing/fh2-voices`, their pitch jacks in order (`1 3`), which the keeper
--- | (Architeuthis `selene_keeper`) applies to the FH-2 and releases when they go.
-fh2VoicesLine :: Table -> String
-fh2VoicesLine tbl =
-  "stage-text routing/fh2-voices " <> joinWith " " (map show jacks)
-  where
-  jacks = sort (nub (concatMap (\r -> concatMap pitchJack (filter _.on r.legs)) tbl))
-  pitchJack leg = case leg.dest of
-    DFh2Voice d -> [ d.jack ]
-    _ -> []
-
--- | The MIDI channel of the FH-2 voice on pitch jack `jack`: 11, 12, 13, 14.
--- | Clear of polyenv (1..8), the drum breakout (10) and Selene's LFO resets (16).
+-- | The channel an FH-2 voice stored by its old pitch jack (1, 3, 5, 7) plays
+-- | on: 11, 12, 13, 14, the channels a Selene voice layout starts from.
 fh2VoiceChannel :: Int -> Int
 fh2VoiceChannel jack = 10 + (jack + 1) / 2
 
@@ -833,7 +813,7 @@ wireOf = case _ of
   -- what selects it from this side is the NOTE. That asymmetry is the reason
   -- `DFh2Gate` carries both halves — see its comment.
   DFh2Gate d -> Just { port: fh2Port, channel: fh2GateChannel, noteOverride: Just d.note, rample: Nothing }
-  DFh2Voice d -> Just { port: fh2Port, channel: fh2VoiceChannel d.jack, noteOverride: Nothing, rample: Nothing }
+  DFh2Voice d -> Just { port: fh2Port, channel: d.channel, noteOverride: Nothing, rample: Nothing }
   DContinuo d -> Just { port: "continuo", channel: d.channel, noteOverride: Nothing, rample: Nothing }
   -- The trigger note is the note, always; the PITCH becomes a CC, and the emit
   -- path reads it off `rample` rather than from `note`.
@@ -879,7 +859,8 @@ outputsOf :: Destination -> Array Output
 outputsOf = case _ of
   DFh2Env d -> [ { device: "fh2", bank: "main", slot: d.slot - 1 } ]
   DFh2Gate d -> [ { device: "fh2", bank: "gt0", slot: d.jack - 1 } ]
-  DFh2Voice d -> [ { device: "fh2", bank: "main", slot: d.jack - 1 }, { device: "fh2", bank: "main", slot: d.jack } ]
+  -- its jacks are the Selene layout's, which holds and shows them
+  DFh2Voice _ -> []
   DEs9Gate d -> [ { device: "es9", bank: "gt" <> show d.block, slot: d.jack - 1 } ]
   DEs9Cv d -> map (es9CvOutput <<< es9JackBus) (if d.gate > 0 then [ d.jack, d.gate ] else [ d.jack ])
   -- A polyphonic instrument spends EVERY jack it can allocate onto, plus the one
@@ -961,8 +942,8 @@ claims tbl = map collect (nub (map _.slot spent))
   slotOf src leg = case leg.dest of
     DFh2Env d -> [ { device: DevFh2, slot: mcvSlot (d.slot - 1), by: [ src ] } ] <> jack leg
     DFh2Gate d -> [ { device: DevFh2, slot: mcvSlot (d.jack - 1), by: [ src ] } ] <> jack leg
-    -- Its MCV is whichever the daemon allocates, so only its jacks are known here.
-    DFh2Voice _ -> jack leg
+    -- its converter and jacks are a Selene layout's, claimed there
+    DFh2Voice _ -> []
     DEs9Gate _ -> jack leg
     DEs9Cv _ -> jack leg
     DPoly _ -> jack leg

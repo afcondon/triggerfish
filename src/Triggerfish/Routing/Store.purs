@@ -31,7 +31,7 @@ import Data.String (Pattern(..), split, joinWith)
 import Data.String as Str
 import Effect (Effect)
 
-import Triggerfish.Routing.Model (Destination(..), InstrumentId(..), Leg, Route, Source(..), Table, healPorts, newLeg, sourceKey)
+import Triggerfish.Routing.Model (Destination(..), InstrumentId(..), Leg, fh2VoiceChannel, Route, Source(..), Table, healPorts, newLeg, sourceKey)
 
 -- | The on-disk shape. Sources and destinations are flat strings so that a row
 -- | this build doesn't understand can be dropped individually, rather than
@@ -89,7 +89,7 @@ destStr = case _ of
   DFh2Gate d -> "fh2gate:" <> show d.note <> "|" <> show d.jack
   DEs9Gate d -> "es9gate:" <> show d.block <> "|" <> show d.jack
   DEs9Cv d -> "es9cv:" <> show d.jack <> "|" <> show d.gate
-  DFh2Voice d -> "fh2voice:" <> show d.jack
+  DFh2Voice d -> "fh2voice:ch" <> show d.channel
   -- Only the instrument's NAME is stored. Which jacks it occupies is a fact
   -- about how the rack is patched, not about this preference, and baking the
   -- buses in here would let a saved route go on claiming jacks the module no
@@ -145,7 +145,11 @@ destOf s = case Str.indexOf (Pattern ":") s of
       "fh2env", [ n ] -> (\slot -> DFh2Env { slot }) <$> inRange 1 8 n
       "fh2gate", [ n, j ] -> (\note jack -> DFh2Gate { note, jack }) <$> inRange 0 127 n <*> inRange 1 8 j
       "es9gate", [ b, j ] -> (\block jack -> DEs9Gate { block, jack }) <$> inRange 0 7 b <*> inRange 1 8 j
-      "fh2voice", [ j ] -> (\jack -> DFh2Voice { jack }) <$> (inRange 1 7 j >>= \x -> if x `mod` 2 == 1 then Just x else Nothing)
+      -- by channel (`fh2voice:ch12`); stored before 2026-10-19 by its pitch
+      -- jack (`fh2voice:3`), which read as that jack's channel
+      "fh2voice", [ j ] -> case Str.stripPrefix (Str.Pattern "ch") j of
+        Just c -> (\channel -> DFh2Voice { channel }) <$> inRange 1 16 c
+        Nothing -> (\jack -> DFh2Voice { channel: fh2VoiceChannel jack }) <$> (inRange 1 7 j >>= \x -> if x `mod` 2 == 1 then Just x else Nothing)
       "es9cv", [ j, g ] -> (\jack gate -> DEs9Cv { jack, gate }) <$> inRange 1 8 j <*> inRange 0 8 g
       -- The one-part form predates the sort flag; read it as unsorted rather
       -- than dropping the leg, so an older saved routing still plays.

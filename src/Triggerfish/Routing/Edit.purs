@@ -101,7 +101,7 @@ newDest ctx src = case _ of
   "fh2gate" -> Just (RM.DFh2Gate { note: laneNote, jack: 1 })
   "es9gate" -> Just (RM.DEs9Gate { block: 0, jack: 1 })
   "es9cv" -> Just (RM.DEs9Cv { jack: 1, gate: 0 })
-  "fh2voice" -> Just (RM.DFh2Voice { jack: 1 })
+  "fh2voice" -> Just (RM.DFh2Voice { channel: 11 })
   "poly-saich" -> Just (RM.DPoly { inst: RM.Saich, sortByPitch: false })
   "poly-saich-sorted" -> Just (RM.DPoly { inst: RM.Saich, sortByPitch: true })
   -- No sorted variant: Rings has one pitch bus, so there is no seating to sort.

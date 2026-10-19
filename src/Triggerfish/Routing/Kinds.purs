@@ -128,8 +128,7 @@ describe d = case d of
       ]
   RM.DFh2Voice x ->
     fixed "fh2 voice"
-      [ one "jack" ("pitch on FH-2 jack " <> show x.jack <> ", gate on " <> show (x.jack + 1)
-                     <> ", MIDI ch " <> show (RM.fh2VoiceChannel x.jack)) "jack" x.jack 1
+      [ one "channel" ("the voice's MIDI channel; a POLYVOICE on the Selene page lays its jacks out") "channel" x.channel 1
       ]
   RM.DEs9Gate x ->
     fixed "es9 gate"
@@ -221,7 +220,7 @@ addable =
   , { value: "fh2gate", label: "FH-2 gate", family: FCvGate }
   , { value: "es9gate", label: "ES-9 gate", family: FCvGate }
   , { value: "es9cv", label: "ES-9 CV", family: FCvGate }
-  , { value: "fh2voice", label: "FH-2 voice (pitch + gate)", family: FCvGate }
+  , { value: "fh2voice", label: "FH-2 voice (by channel; laid out in Selene)", family: FCvGate }
   , { value: "poly-saich", label: "Saïch (poly)", family: FCvGate }
   , { value: "poly-saich-sorted", label: "Saïch (poly, bass on voice 1)", family: FCvGate }
   , { value: "poly-rings", label: "Rings (poly mode)", family: FCvGate }

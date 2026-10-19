@@ -144,9 +144,6 @@ type State =
   -- the free banks drawn as two rows of four, so a module can be dropped on
   -- either half (docs/kb/plans/selene-split-banks.md); by target wire
   , splitFree :: Array String
-  -- jacks the routing table holds (its FH-2 voices, `routing/fh2-voices` on
-  -- the stage): drawn as held, and not offered to a module
-  , held :: Array Held
   , publishMsg :: Maybe String   -- transient status from a publish-rack-to-Amphora click
   -- The unified glyph-chip PRESET bank (docs/DESIGN-scene-modal.md): captured rack
   -- docs, anonymous or named, freely intermixed. `identity` is the parked preset's
@@ -300,7 +297,6 @@ component =
           , undoTo: Nothing
           , dragOver: Nothing
           , splitFree: []
-          , held: []
           , publishMsg: Nothing
           , presets: [], identity: Nothing, lastChip: Nothing
           , selected: Nothing
@@ -890,14 +886,12 @@ handleAction = case _ of
   SeleneReply raw | Just rest <- Str.stripPrefix (Str.Pattern "OK: selene: ") raw -> H.modify_ _ { publishMsg = Just ("✓ " <> rest) }
   SeleneReply raw | Just rest <- Str.stripPrefix (Str.Pattern "ERR: selene: ") raw -> H.modify_ _ { publishMsg = Just ("✗ " <> rest) }
   SeleneReply raw | Just json <- Str.stripPrefix (Str.Pattern "stage-texts ") raw -> do
-    H.modify_ _ { held = maybe [] heldOfVoices (readStageKey "routing/fh2-voices" json) }
     case readStageTable json of
       Just t -> adoptRack t
       Nothing -> do
         H.modify_ _ { stageRack = Nothing }
         publishRack
   SeleneReply raw | Just json <- Str.stripPrefix (Str.Pattern "stage-text ") raw -> do
-    for_ (readStageWriteOf "routing/fh2-voices" json) \t -> H.modify_ _ { held = maybe [] heldOfVoices t }
     for_ (readStageWrite json) adoptRack
   SeleneReply raw -> case Str.stripPrefix (Str.Pattern "selene-reply ") raw of
     Nothing -> pure unit
@@ -1052,19 +1046,6 @@ readStageTable json = do
   table :: Object { text :: String } <- hush (readJSON json)
   _.text <$> Object.lookup "selene/rack" table
 
--- | Any object's text in a `stage-texts` table.
-readStageKey :: String -> String -> Maybe String
-readStageKey key json = do
-  table :: Object { text :: String } <- hush (readJSON json)
-  _.text <$> Object.lookup key table
-
--- | A write to one object: `Just` its text (`Nothing` when it was removed),
--- | or `Nothing` when the write is to another object.
-readStageWriteOf :: String -> String -> Maybe (Maybe String)
-readStageWriteOf key json = do
-  w :: { key :: String, text :: Nullable String } <- hush (readJSON json)
-  if w.key == key then Just (toMaybe w.text) else Nothing
-
 -- | The rack in a `stage-text` write, if that is what was written.
 readStageWrite :: String -> Maybe String
 readStageWrite json = do
@@ -1201,6 +1182,11 @@ nudgeSlot ep dir shift j = case _ of
   M.GClock xs -> M.GClock (overAt j (nudgeClock dir shift) xs)
   M.GNote xs -> M.GNote (overAt j (nudgeNote dir shift) xs)
   M.GEnv xs -> M.GEnv (overAt j (nudgeEnv ep dir shift) xs)
+  -- a voice: ↑/↓ its channel; ←/→ its envelope's field, as on an envelope
+  M.GVoice vb -> M.GVoice vb { voices = overAt j (\v -> case dir of
+      NUp -> v { channel = clamp 1 16 (v.channel + 1) }
+      NDown -> v { channel = clamp 1 16 (v.channel - 1) }
+      _ -> v { env = nudgeEnv ep dir shift v.env }) vb.voices }
 
 -- | The envelope slot at (destination, slot), if that destination is one.
 envSlotAt :: State -> Int -> Int -> Maybe M.EnvSlot
@@ -1462,16 +1448,9 @@ rackPanel s =
 -- | nothing on it.
 data RackRow = Placed Int | Free M.Target M.Jacks | HeldRow Held
 
--- | A run of a bank's jacks that something other than Selene holds, and what.
+-- | A run of a bank's jacks held by something drawn elsewhere (a voice
+-- | layout's gates), and what.
 type Held = { target :: M.Target, jacks :: M.Jacks, by :: String }
-
--- | The FH-2 voices of a `routing/fh2-voices` text (`1 3`): each a pitch
--- | jack and the gate on the next, on the FH-2's own eight.
-heldOfVoices :: String -> Array Held
-heldOfVoices txt =
-  Array.mapMaybe
-    (\w -> Int.fromString w <#> \j -> { target: M.FH2 0, jacks: { first: j, count: 2 }, by: "FH-2 voice " <> show ((j + 1) / 2) <> ", from the routing table" })
-    (filter (_ /= "") (Str.split (Str.Pattern " ") (Str.trim txt)))
 
 -- | Where a row is: a bank, and the run of its jacks.
 type Place = { target :: M.Target, jacks :: M.Jacks }
@@ -1484,13 +1463,14 @@ rackRows s =
   Array.concatMap onRig rigBanks
     <> Array.catMaybes (mapWithIndex (\i d -> if Array.elem d.target rigBanks then Nothing else Just (Placed i)) s.sel.destinations)
   where
+  voiceGates = voiceGatesOf s.sel
   -- a bank's rows in jack order: each destination on it, and each run of
   -- jacks nothing is on; a bank with nothing on it is one free row, or two
   -- of four when it has been split to take a module on either half
   onRig target =
     let
       here = Array.filter (\(Tuple _ d) -> d.target == target) (mapWithIndex Tuple s.sel.destinations)
-      heldHere = filter (\h -> h.target == target) s.held
+      heldHere = filter (\h -> h.target == target) voiceGates
       covered = Array.concatMap (\(Tuple _ d) -> M.jackNumbers d.jacks) here <> Array.concatMap (\h -> M.jackNumbers h.jacks) heldHere
       gaps = runsOf (filter (\j -> not (Array.elem j covered)) (Array.range 1 M.slotCount))
       free
@@ -1500,6 +1480,14 @@ rackRows s =
         <> map (\h -> Tuple h.jacks.first (HeldRow h)) heldHere
         <> map (\j -> Tuple j.first (Free target j)) free
     in map snd (Array.sortWith fst rows)
+
+-- | The gates the rack's voice layouts gather on gate banks, as held runs.
+voiceGatesOf :: M.Selene -> Array Held
+voiceGatesOf sel = Array.concatMap (\d -> case d.bank of
+  M.GVoice vb -> Array.fromFoldable vb.gates <#> \g ->
+    { target: g.target, jacks: g.jacks
+    , by: "the gates of the POLYVOICE on " <> placeLabel { target: d.target, jacks: d.jacks } <> ", voice by voice" }
+  _ -> []) sel.destinations
 
 -- | Consecutive jack numbers as runs: [5,6,7,8] is 5-8.
 runsOf :: Array Int -> Array M.Jacks
@@ -1601,14 +1589,6 @@ hasJacks = case _ of
   M.Midi _ -> false
   M.Virtual _ -> false
   _ -> true
-
-smallButton :: forall m. String -> String -> Action -> H.ComponentHTML Action Slots m
-smallButton label title act =
-  HH.button
-    [ HE.onClick \_ -> act
-    , HP.title title
-    , style "font:10px Georgia,serif;border:1px solid #00000026;border-radius:4px;background:transparent;cursor:pointer;color:#5a5648;padding:1px 7px" ]
-    [ HH.text label ]
 
 -- | The STARTER WALL: every library shape drawn, shown only while an envelope
 -- | slot is selected.
@@ -1798,12 +1778,12 @@ destHeader s i d =
             ( [ HH.text (placeLabel { target: d.target, jacks: d.jacks }) ]
                 <> map (\g -> HH.i [ HP.attr (HH.AttrName "class") ("fa-solid fa-" <> g.icon), style ("font-size:15px;line-height:1;color:" <> g.color) ] []) (settingIcons (Line.moduleOf d)) )
         , HH.span [ style $ engrave <> ";font-size:8px;opacity:0.45" ]
-            [ HH.text ("→ " <> M.placeWire d.target d.jacks) ]
+            [ HH.text ("→ " <> M.placeWire d.target d.jacks <> gatesWire) ]
         ]
     , HH.div [ style "display:flex;flex-direction:column;gap:4px;align-items:stretch;flex:0 0 auto" ]
         -- the jacks' voltage range: an LFO into a 0–5V input wants 0–5V, not
         -- the ±5V an LFO gets by default. An FHX-8GT has no range to set.
-        ( ( if not (hasRange d.target) then []
+        ( ( if not (hasRange d.target) || isVoices then []
             else
               [ HH.select
                   [ HE.onValueChange (SetRange i)
@@ -1815,9 +1795,11 @@ destHeader s i d =
               ] )
           <>
             [ HH.div [ style "display:flex;gap:3px" ]
-                ( [ iconButton (if d.muted then "volume-xmark" else "volume-high")
-                      (if d.muted then "Unmute: play these jacks again, as the bank now is" else "Mute: the jacks go to 0 V; the bank is kept, and can still be edited")
-                      (Just (ToggleMute i)) d.muted
+                ( [ if isVoices
+                      then iconButton "volume-high" "A voice is silenced where its notes come from: its playhead, or the routing" Nothing false
+                      else iconButton (if d.muted then "volume-xmark" else "volume-high")
+                        (if d.muted then "Unmute: play these jacks again, as the bank now is" else "Mute: the jacks go to 0 V; the bank is kept, and can still be edited")
+                        (Just (ToggleMute i)) d.muted
                   ]
                   <> splitJoin
                   <> [ iconButton "bookmark" "Keep as a module, to drop on any bank (it goes in the drawer's Modules)" (Just (KeepModule i)) false
@@ -1826,6 +1808,11 @@ destHeader s i d =
             ] )
     ]
   where
+  isVoices = M.bankKind d.bank == M.KVoice
+  -- a voice layout's gates, gathered on their own bank
+  gatesWire = case d.bank of
+    M.GVoice vb -> maybe "" (\g -> " · gates → " <> M.placeWire g.target g.jacks) vb.gates
+    _ -> ""
   -- a whole bank splits into two rows of four (it keeps 1-4, 5-8 go free); a
   -- run joins back into the whole bank. Join is always shown on a run, and
   -- greyed with the reason when the rest of the bank is not free.
@@ -1835,9 +1822,9 @@ destHeader s i d =
         [ iconButton "table-columns" "An envelope bank takes a whole bank: its envelopes answer MIDI channels 1-8, one per slot" Nothing false ]
     | M.isWholeBank d.jacks =
         [ iconButton "table-columns" "Split: keep jacks 1-4 here and free 5-8 for another module" (Just (SplitDest i)) false ]
-    | Just o <- Array.find (\o -> o.target == d.target && not (M.samePlace o d)) s.sel.destinations =
+    | Just o <- Array.find (\x -> x.target == d.target && not (M.samePlace x d)) s.sel.destinations =
         [ iconButton "object-group" ("Join needs the rest of the bank free: " <> M.placeWire o.target o.jacks <> " holds " <> M.kindLabel (M.bankKind o.bank) <> " (remove it first)") Nothing false ]
-    | Just h <- Array.find (\h -> h.target == d.target) s.held =
+    | Just h <- Array.find (\x -> x.target == d.target) (voiceGatesOf s.sel) =
         [ iconButton "object-group" ("Join needs the rest of the bank free: " <> h.by <> " holds " <> runLabel h.jacks) Nothing false ]
     | otherwise =
         [ iconButton "object-group" "Join: grow back to the whole bank, the new jacks fresh" (Just (JoinDest i)) false ]
@@ -1871,6 +1858,9 @@ slotViews ep d sel target mutes = case _ of
   M.GClock slots -> mapWithIndex (cellFor d sel mutes 58.0 clockInner) slots
   M.GNote slots -> mapWithIndex (cellFor d sel mutes 58.0 noteInner) slots
   M.GEnv slots -> mapWithIndex (\j sl -> slotCell d j (sel == Just { dest: d, slot: j }) (Array.elem j mutes) 90.0 (envInner (sel == Just { dest: d, slot: j }) ep sl)) slots
+  -- a voice is as wide as the jacks it takes, and has no mute of its own:
+  -- it is silenced where its notes come from
+  M.GVoice vb -> mapWithIndex (\j v -> voiceCell d j (sel == Just { dest: d, slot: j }) (if Array.elem M.VEnvelope vb.outputs then 104.0 + 40.0 * toNumber (M.voiceStride vb - 2) else 64.0) (voiceInner vb j v)) vb.voices
 
 -- | Wrap one slot's inner drawing in the focusable, selectable cell.
 cellFor :: forall m a. Int -> Maybe Sel -> Array Int -> Number -> (a -> Array (H.ComponentHTML Action Slots m)) -> Int -> a -> H.ComponentHTML Action Slots m
@@ -1991,6 +1981,35 @@ noteInner sl =
       [ HH.text (M.noteName sl.note) ]
   , cellCaption ("midi " <> show sl.note)
   ]
+
+-- --- POLYVOICE: a MIDI voice, its channel and its outputs ---------------------
+
+-- | A voice's cell: selectable as a slot is, with no mute badge.
+voiceCell :: forall m. Int -> Int -> Boolean -> Number -> Array (H.ComponentHTML Action Slots m) -> H.ComponentHTML Action Slots m
+voiceCell d j isSel widthPx body =
+  HH.div
+    [ HP.tabIndex 0
+    , style $ "width:" <> show (round widthPx) <> "px;flex:0 0 auto;padding:5px 4px;border-radius:6px;"
+        <> "display:flex;flex-direction:column;gap:2px;align-items:center;cursor:pointer;outline:none;"
+        <> ( if isSel then "background:#ffffffcc;border:2px solid #1a1a1a;"
+             else "background:#ffffff55;border:1px solid #00000010;padding:6px 5px;" )
+    , HE.onClick \_ -> SelectSlot d j
+    , HE.onKeyDown SlotKeyDown ]
+    body
+
+-- | The channel that plays the voice, its envelope when it has one, and its
+-- | outputs in the order they come out of its jacks.
+voiceInner :: forall m. M.VoiceBank -> Int -> M.VoiceSlot -> Array (H.ComponentHTML Action Slots m)
+voiceInner vb _ v =
+  [ HH.div [ style $ "font-family:'SF Mono',Menlo,monospace;font-size:15px;color:" <> ink <> ";text-align:center" ]
+      [ HH.text ("ch " <> show v.channel) ] ]
+    <> (if Array.elem M.VEnvelope vb.outputs then [ envSvgWith false { w: 92.0, h: 26.0 } v.env ] else [])
+    <> [ cellCaption (Str.joinWith " · " ([ "pitch" ] <> map outName (Array.filter (\o -> Array.elem o vb.outputs) M.voiceOuts))) ]
+  where
+  outName = case _ of
+    M.VVelocity -> "vel"
+    M.VEnvelope -> "env"
+    M.VPressure -> "pres"
 
 -- --- POLYENV: the shape itself ----------------------------------------------
 

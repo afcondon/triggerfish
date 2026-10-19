@@ -61,7 +61,7 @@ module Triggerfish.Selene.Twister
 
 import Prelude
 
-import Data.Array (catMaybes, concatMap, elemIndex, length, mapWithIndex, range, replicate, (!!))
+import Data.Array (catMaybes, concatMap, elem, elemIndex, length, mapWithIndex, range, replicate, (!!))
 import Data.Int (round, toNumber)
 import Data.Map (Map)
 import Data.Map as Map
@@ -138,6 +138,7 @@ violet = 100
 hueOf :: M.GenKind -> Int
 hueOf = case _ of
   M.KEnv -> orange
+  M.KVoice -> red
   M.KLfo -> teal
   M.KEuclid -> green
   M.KClock -> yellow
@@ -185,6 +186,8 @@ overview ops d bank = map (\j -> follow j <$> main j) (range 0 (M.slotCount - 1)
     M.GEuclid xs -> xs !! j <#> \sl -> int 0 sl.steps sl.beats green (put M.GEuclid xs j <<< sl { beats = _ })
     M.GClock xs -> xs !! j <#> \sl -> clockSpeed ops (put M.GClock xs j) sl
     M.GNote xs -> xs !! j <#> \sl -> int 0 127 sl.note violet (put M.GNote xs j <<< sl { note = _ })
+    -- a voice's channel: what plays it
+    M.GVoice vb -> vb.voices !! j <#> \v -> int 1 16 v.channel red (put (\vs -> M.GVoice vb { voices = vs }) vb.voices j <<< v { channel = _ })
   put :: forall a. (Array a -> M.GenBank) -> Array a -> Int -> a -> Act
   put mk xs j x = Edit d (const (mk (setAt j xs x)))
 
@@ -223,6 +226,19 @@ detail ops d j bank = fromMaybe (dark 12) case bank of
          [ clockSpeed ops p sl
          , int 1 99 sl.pulseWidth yellow (p <<< sl { pulseWidth = _ })
          ]
+  -- a voice: its channel, and its envelope's when the layout has one
+  M.GVoice vb -> vb.voices !! j <#> \v ->
+    let pv = put (\vs -> M.GVoice vb { voices = vs }) vb.voices
+        f x set = int 0 127 x orange (\n -> pv (v { env = set n }))
+    in if elem M.VEnvelope vb.outputs
+      then place [ 0, 4, 5, 6, 7 ]
+             [ int 1 16 v.channel red (\c -> pv (v { channel = c }))
+             , f v.env.attack (\n -> v.env { attack = n })
+             , f v.env.decay (\n -> v.env { decay = n })
+             , f v.env.sustain (\n -> v.env { sustain = n })
+             , f v.env.release (\n -> v.env { release = n })
+             ]
+      else place [ 0 ] [ int 1 16 v.channel red (\c -> pv (v { channel = c })) ]
   M.GNote xs -> xs !! j <#> \sl ->
     let p = put M.GNote xs
         oct = sl.note / 12
