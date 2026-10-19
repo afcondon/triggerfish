@@ -805,8 +805,8 @@ handleAction = case _ of
       used = Array.any (M.samePlace place) st0.sel.destinations
       verdict = case Line.moduleKind text of
         _ | text == "off" -> if used then { wire, ok: true, why: "" } else { wire, ok: false, why: "already free" }
-        Just kind | Line.accepts target kind -> { wire, ok: true, why: "" }
-        Just kind -> { wire, ok: false, why: Line.refusal target kind }
+        Just kind | Line.acceptsAt target place.jacks kind -> { wire, ok: true, why: "" }
+        Just kind -> { wire, ok: false, why: Line.refusalAt target place.jacks kind }
         Nothing -> { wire, ok: false, why: "drag a module from the drawer" }
     when verdict.ok (liftEffect (Drop.allowDrop e))
     st <- H.get
@@ -832,7 +832,7 @@ handleAction = case _ of
             H.modify_ _ { publishMsg = Just ("freeing " <> wire) }
       Nothing -> pure unit
       Just kind
-        | not (Line.accepts target kind) -> H.modify_ _ { publishMsg = Just (wire <> ": " <> Line.refusal target kind) }
+        | not (Line.acceptsAt target place.jacks kind) -> H.modify_ _ { publishMsg = Just (wire <> ": " <> Line.refusalAt target place.jacks kind) }
         | otherwise -> for_ st.binnacle \bin -> do
             let
               isBlock = isJust (Array.head (Str.split (Str.Pattern " ") (Str.trim text)) >>= Block.blockNamed)
@@ -1565,8 +1565,8 @@ freeRow s target jacks =
   -- a free bank can be drawn as two rows of four, and back
   halves
     | not (hasJacks target) = []
-    | M.isWholeBank jacks = [ smallButton "split" "Split: draw this bank as two rows of four, to put a module on each half" (SplitFree wire) ]
-    | Array.elem wire s.splitFree && jacks.first == 1 = [ smallButton "join" "Join: draw this bank as one row of eight again" (JoinFree wire) ]
+    | M.isWholeBank jacks = [ iconButton "table-columns" "Split: draw this bank as two rows of four, to put a module on each half" (Just (SplitFree wire)) false ]
+    | Array.elem wire s.splitFree && jacks.first == 1 = [ iconButton "object-group" "Join: draw this bank as one row of eight again" (Just (JoinFree wire)) false ]
     | otherwise = []
 
 -- | Jacks something else holds: drawn so the bank reads true, and not a drop
@@ -1779,69 +1779,81 @@ slotWrap _ = "display:flex;flex-wrap:wrap;gap:7px;align-items:center;flex:1 1 au
 -- | jacks, a range menu and four buttons on one line), so the outputs line
 -- | up down the page.
 headerWidth :: String
-headerWidth = "480px"
+headerWidth = "330px"
 
 destHeader :: forall m. MonadAff m => State -> Int -> M.Destination -> H.ComponentHTML Action Slots m
 destHeader s i d =
-  -- three lines, the controls beside the title: a row's height is what
-  -- decides how many banks fit on a screen, and its width is spare
-  HH.div [ style ("display:flex;flex-direction:column;gap:4px;justify-content:center;flex:0 0 " <> headerWidth) ]
-    [ HH.div [ style $ engrave <> ";font-size:10px;letter-spacing:0.1em;color:" <> ink ]
-        [ HH.text (M.kindLabel (M.bankKind d.bank)) ]
-    , HH.div [ style "display:flex;align-items:center;flex-wrap:wrap;gap:6px 8px" ]
-        ( [ HH.span [ style "display:flex;align-items:center;gap:8px;font:13px Georgia,serif;color:#1c1a12;margin-right:4px" ]
-              -- where it plays: a label now; moving it is a drop on the outputs
-              -- strip at the top (2026-10-05, replacing the route menu); then
-              -- the setting's rebus, as the drawer shows it for a module
-              ( [ HH.text (placeLabel { target: d.target, jacks: d.jacks }) ]
-                  <> map (\g -> HH.i [ HP.attr (HH.AttrName "class") ("fa-solid fa-" <> g.icon), style ("font-size:15px;line-height:1;color:" <> g.color) ] []) (settingIcons (Line.moduleOf d)) )
-          ]
-          -- the jacks' voltage range: an LFO into a 0–5V input wants 0–5V, not
-          -- the ±5V an LFO gets by default. An FHX-8GT has no range to set.
-          <> ( if not (hasRange d.target) then []
-               else
-                 [ HH.select
-                     [ HE.onValueChange (SetRange i)
-                     , HP.title "Output range of this bank's jacks; default is the rig's for this kind"
-                     , style (control <> "padding:1px 4px") ]
-                     ( [ HH.option [ HP.value "", HP.selected (d.range == Nothing) ] [ HH.text "range: default" ] ]
-                         <> map (\r -> HH.option [ HP.value (M.rangeToWire r), HP.selected (d.range == Just r) ] [ HH.text ("range: " <> M.rangeLabel r) ])
-                              [ M.Bipolar5V, M.Unipolar5V, M.Unipolar8V, M.Unipolar10V, M.Unipolar1V ] )
-                 ] )
+  -- the title on the left, three lines; the controls a small panel beside it,
+  -- no taller than the title: a row's height decides how many banks fit on a
+  -- screen, and the panel gives back the width the buttons took
+  HH.div [ style ("display:flex;align-items:center;gap:10px;flex:0 0 " <> headerWidth) ]
+    [ HH.div [ style "display:flex;flex-direction:column;gap:4px;justify-content:center;flex:1 1 auto;min-width:0" ]
+        [ HH.div [ style $ engrave <> ";font-size:10px;letter-spacing:0.1em;color:" <> ink ]
+            [ HH.text (M.kindLabel (M.bankKind d.bank)) ]
+        -- where it plays (moving it is a drop on another row), then the
+        -- setting's rebus, as the drawer shows it for a module
+        , HH.span [ style "display:flex;align-items:center;gap:8px;font:13px Georgia,serif;color:#1c1a12;white-space:nowrap" ]
+            ( [ HH.text (placeLabel { target: d.target, jacks: d.jacks }) ]
+                <> map (\g -> HH.i [ HP.attr (HH.AttrName "class") ("fa-solid fa-" <> g.icon), style ("font-size:15px;line-height:1;color:" <> g.color) ] []) (settingIcons (Line.moduleOf d)) )
+        , HH.span [ style $ engrave <> ";font-size:8px;opacity:0.45" ]
+            [ HH.text ("→ " <> M.placeWire d.target d.jacks) ]
+        ]
+    , HH.div [ style "display:flex;flex-direction:column;gap:4px;align-items:stretch;flex:0 0 auto" ]
+        -- the jacks' voltage range: an LFO into a 0–5V input wants 0–5V, not
+        -- the ±5V an LFO gets by default. An FHX-8GT has no range to set.
+        ( ( if not (hasRange d.target) then []
+            else
+              [ HH.select
+                  [ HE.onValueChange (SetRange i)
+                  , HP.title "Output range of these jacks; default is the rig's for this kind"
+                  , style "font:10px Georgia,serif;border:1px solid #00000026;border-radius:4px;background:transparent;color:#5a5648;padding:1px 2px;height:20px" ]
+                  ( [ HH.option [ HP.value "", HP.selected (d.range == Nothing) ] [ HH.text "default range" ] ]
+                      <> map (\r -> HH.option [ HP.value (M.rangeToWire r), HP.selected (d.range == Just r) ] [ HH.text (M.rangeLabel r) ])
+                           [ M.Bipolar5V, M.Unipolar5V, M.Unipolar8V, M.Unipolar10V, M.Unipolar1V ] )
+              ] )
           <>
-            [ HH.button
-                [ HE.onClick \_ -> ToggleMute i
-                , HP.title (if d.muted then "Unmute: play this bank again, as it now is" else "Mute: the jacks go to 0 V; the bank is kept, and can still be edited")
-                , style $ control <> "padding:1px 7px;"
-                    <> if d.muted then "border-color:#b3261e;background:#b3261e;color:#fff" else "" ]
-                [ HH.text (if d.muted then "muted" else "mute") ]
-            , HH.button
-                [ HE.onClick \_ -> KeepModule i
-                , HP.title "Keep this bank as a module, to drop on any bank (it goes in the drawer's Modules)"
-                , style (control <> "padding:1px 7px") ]
-                [ HH.text "keep as module" ]
-            ] <> splitJoin <>
-            [ HH.button
-                [ HE.onClick \_ -> RemoveDest i
-                , HP.title "Remove: take this bank off the rack and free its jacks for something else (keep it as a module first to have it back)"
-                , style (control <> "padding:1px 7px") ]
-                [ HH.text "remove" ]
+            [ HH.div [ style "display:flex;gap:3px" ]
+                ( [ iconButton (if d.muted then "volume-xmark" else "volume-high")
+                      (if d.muted then "Unmute: play these jacks again, as the bank now is" else "Mute: the jacks go to 0 V; the bank is kept, and can still be edited")
+                      (Just (ToggleMute i)) d.muted
+                  ]
+                  <> splitJoin
+                  <> [ iconButton "bookmark" "Keep as a module, to drop on any bank (it goes in the drawer's Modules)" (Just (KeepModule i)) false
+                     , iconButton "xmark" "Remove: take this off the rack and free its jacks (keep it as a module first to have it back)" (Just (RemoveDest i)) false
+                     ] )
             ] )
-    , HH.span [ style $ engrave <> ";font-size:8px;opacity:0.45" ]
-        [ HH.text ("→ " <> M.placeWire d.target d.jacks) ]
     ]
   where
-  -- a whole bank splits into two rows of four (it keeps 1-4, 5-8 go free);
-  -- a run joins back into the whole bank when nothing else is on it
+  -- a whole bank splits into two rows of four (it keeps 1-4, 5-8 go free); a
+  -- run joins back into the whole bank. Join is always shown on a run, and
+  -- greyed with the reason when the rest of the bank is not free.
   splitJoin
     | not (hasJacks d.target) = []
+    | M.isWholeBank d.jacks && M.bankKind d.bank == M.KEnv =
+        [ iconButton "table-columns" "An envelope bank takes a whole bank: its envelopes answer MIDI channels 1-8, one per slot" Nothing false ]
     | M.isWholeBank d.jacks =
-        [ smallButton "split" "Split: this bank keeps jacks 1-4 and frees 5-8 for another module" (SplitDest i) ]
-    | Array.any (\o -> o.target == d.target && not (M.samePlace o d)) s.sel.destinations = []
-    | Array.any (\h -> h.target == d.target) s.held = []
+        [ iconButton "table-columns" "Split: keep jacks 1-4 here and free 5-8 for another module" (Just (SplitDest i)) false ]
+    | Just o <- Array.find (\o -> o.target == d.target && not (M.samePlace o d)) s.sel.destinations =
+        [ iconButton "object-group" ("Join needs the rest of the bank free: " <> M.placeWire o.target o.jacks <> " holds " <> M.kindLabel (M.bankKind o.bank) <> " (remove it first)") Nothing false ]
+    | Just h <- Array.find (\h -> h.target == d.target) s.held =
+        [ iconButton "object-group" ("Join needs the rest of the bank free: " <> h.by <> " holds " <> runLabel h.jacks) Nothing false ]
     | otherwise =
-        [ smallButton "join" "Join: this run grows back to the whole bank, the new jacks fresh" (JoinDest i) ]
-  control = "font:10px Georgia,serif;border:1px solid #00000026;border-radius:4px;background:transparent;cursor:pointer;color:#5a5648;"
+        [ iconButton "object-group" "Join: grow back to the whole bank, the new jacks fresh" (Just (JoinDest i)) false ]
+
+-- | A small square control: an icon, its title, what it does (`Nothing`:
+-- | shown greyed, the title saying why not), and whether it is lit (a mute
+-- | that is on).
+iconButton :: forall m. String -> String -> Maybe Action -> Boolean -> H.ComponentHTML Action Slots m
+iconButton icon title act lit =
+  HH.button
+    ( [ HP.title title
+      , style $ "width:24px;height:22px;padding:0;border-radius:4px;display:flex;align-items:center;justify-content:center;"
+          <> case act, lit of
+               Nothing, _ -> "border:1px solid #00000014;background:transparent;color:#00000030;cursor:default"
+               _, true -> "border:1px solid #b3261e;background:#b3261e;color:#fff;cursor:pointer"
+               _, false -> "border:1px solid #00000026;background:transparent;color:#5a5648;cursor:pointer"
+      ] <> maybe [] (\a -> [ HE.onClick \_ -> a ]) act )
+    [ HH.i [ HP.attr (HH.AttrName "class") ("fa-solid fa-" <> icon), style "font-size:11px;line-height:1" ] [] ]
 
 -- ---------------------------------------------------------------------------
 -- Per-kind slot visualisations
