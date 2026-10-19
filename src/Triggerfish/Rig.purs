@@ -51,12 +51,14 @@ type RigConfig =
   , midiChannels :: Int
   }
 
--- | AC's rig: ES-9 with two gate blocks (ES-5 + one ESX-8GT) and one ESX-8CV,
--- | an FH-2 with one FHX-8GT and one FHX-8CV, 16 MIDI channels. Adjust to
--- | match the actual patch.
+-- | AC's rig: ES-9 with one gate block (the ES-5) and one ESX-8CV, an FH-2
+-- | with one FHX-8GT and one FHX-8CV, 16 MIDI channels. Adjust to match the
+-- | actual patch. There is no ESX-8GT: one was assumed here until 2026-10-19,
+-- | and its row (`es9gt1`, which es9-daemon has no bank for) kept turning up
+-- | from old racks and blocked drops on the ES-5.
 defaultRig :: RigConfig
 defaultRig =
-  { es9: Just { gtBlocks: 2, cvBlocks: 1 }
+  { es9: Just { gtBlocks: 1, cvBlocks: 1 }
   , fh2: Just { gtExpanders: 1, cvExpanders: 1 }
   , midiChannels: 16
   }
