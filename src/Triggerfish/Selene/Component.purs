@@ -1067,6 +1067,9 @@ signalMark :: M.GenKind -> String
 signalMark = case _ of
   M.KEuclid -> "⎍ gate"
   M.KClock -> "⎍ gate"
+  -- played by MIDI notes, not set: a voice, not a signal (POLYNOTE's pitches
+  -- are voltages held still, a POLYVOICE's follow what is played)
+  M.KVoice -> "♪ voice"
   _ -> "∿ cv"
 
 -- | Where the drawer's rows of each kind start: racks from 0, the built-in
