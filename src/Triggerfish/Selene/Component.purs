@@ -68,7 +68,7 @@ import Triggerfish.Drag as Drag
 import Control.Alt ((<|>))
 import Data.Array as Array
 import Reef.Selene.Line as Line
-import Reef.Selene.Block as Block
+import Reef.Selene.Recipe as Recipe
 import Triggerfish.Glyph as G
 import Triggerfish.Browser as Browser
 import Triggerfish.Preset (Preset, indexOfContent, presetAlias, newPreset)
@@ -258,6 +258,7 @@ data Action
   | JoinFree String           -- and back to one
   | DragLeaveTarget
   | DragRackStart Event
+  | DragHalfStart Place Event -- a half of a bank, dragged to swap it with the other
   | KeepModule Int            -- keep bank i as a module
   | ToggleMute Int            -- mute bank i (its jacks to 0 V, the bank kept) or unmute it
   | SetRange Int String       -- bank i's output range, by its wire word ("" = the rig's default)
@@ -319,7 +320,7 @@ handleQuery = case _ of
   -- Two kinds of thing (AC, 2026-10-05): RACKS, whole configurations tied to
   -- their outputs (a click replaces the live rack, with an undo); and
   -- MODULES, one bank's worth free of any outputs, dropped on a bank: the
-  -- built-in blocks (Reef.Selene.Block) and the ones kept from a bank.
+  -- built-in recipes (Reef.Selene.Recipe) and the ones kept from a bank.
   AskBrowser reply -> do
     s <- H.get
     let
@@ -329,16 +330,20 @@ handleQuery = case _ of
       edited i = i == s.active && diverged s
       rack i r = { slot: i, name: r.name, icons: rackIcons r.doc, tag: if edited i then "edited" else "", current: i == s.active, section: "Racks", builtin: false, drag: "", hint: "Click: make it the live rack. Double-click: rename it."
                  , actions: (if edited i then [ "save" ] else []) <> [ "duplicate" ] <> (if i == s.active then [] else [ "delete" ]) }
-      plain k kind = { slot: plainSlot + 1 + k, name: M.kindLabel kind, icons: [], tag: signalMark kind, current: false, section: "Modules", builtin: true, drag: moduleDrag s (Source.kindKeyword (M.freshBank kind)), hint: moduleHint, actions: [] }
+      -- three kinds of module (AC, 2026-10-19): an empty bank of a kind to set
+      -- up yourself; a recipe, which makes something definite from a few
+      -- ingredients; and one you kept, a setting as it is ("Kept": the
+      -- PRESETS tab already names whole-rack snapshots)
+      plain k kind = { slot: plainSlot + 1 + k, name: M.kindLabel kind, icons: [], tag: signalMark kind, current: false, section: "Empty", builtin: true, drag: moduleDrag s (Source.kindKeyword (M.freshBank kind)), hint: moduleHint, actions: [] }
         # \r -> r { icons = settingIcons (Source.kindKeyword (M.freshBank kind)) }
       -- the null signal: dropped on a group, frees it (`selene $ off`)
-      free = { slot: plainSlot, name: "free", icons: [], tag: "plain", current: false, section: "Modules", builtin: true, drag: Drag.dragOf "selene-module" "off", hint: "Drag it onto a bank to free it, or into Limulus onto a selene line to free that bank.", actions: [] }
-      block k b = { slot: builtinSlot + k, name: b.name, icons: settingIcons b.name, tag: signalMark b.kind, current: false, section: "Modules", builtin: true, drag: moduleDrag s b.name, hint: moduleHint, actions: [] }
+      free = { slot: plainSlot, name: "free", icons: [], tag: "frees a bank", current: false, section: "Empty", builtin: true, drag: Drag.dragOf "selene-module" "off", hint: "Drag it onto a bank to free it, or into Limulus onto a selene line to free that bank.", actions: [] }
+      recipe k b = { slot: builtinSlot + k, name: b.name, icons: settingIcons b.name, tag: signalMark b.kind, current: false, section: "Recipes", builtin: true, drag: moduleDrag s b.name, hint: moduleHint, actions: [] }
       moduleHint = "Drag it onto a bank. Drag it into Limulus: onto a selene line it replaces what that bank plays; anywhere else it starts a line on a free bank that can take it."
-      kept k m = { slot: keptSlot + k, name: m.name, icons: settingIcons m.line, tag: maybe "" signalMark (Line.moduleKind m.line), current: false, section: "Modules", builtin: false, drag: moduleDrag s m.line, hint: moduleHint, actions: [ "delete" ] }
+      kept k m = { slot: keptSlot + k, name: m.name, icons: settingIcons m.line, tag: maybe "" signalMark (Line.moduleKind m.line), current: false, section: "Kept", builtin: false, drag: moduleDrag s m.line, hint: moduleHint, actions: [ "delete" ] }
     pure (Just (reply
       { title: "Selene", modes: false, keep: "keep rack", notice: s.notice
-      , rows: mapWithIndex rack s.library <> [ free ] <> mapWithIndex plain M.allKinds <> mapWithIndex block Block.blocks <> mapWithIndex kept s.modules }))
+      , rows: mapWithIndex rack s.library <> [ free ] <> mapWithIndex plain M.allKinds <> mapWithIndex recipe Recipe.recipes <> mapWithIndex kept s.modules }))
   BrowserRecall i _ next -> do
     settleUndo
     s <- H.get
@@ -799,7 +804,13 @@ handleAction = case _ of
       target = place.target
       wire = M.placeWire place.target place.jacks
       used = Array.any (M.samePlace place) st0.sel.destinations
-      verdict = case Line.moduleKind text of
+      verdict = case swapOf text of
+        Just from
+          | from.target /= target -> { wire, ok: false, why: "a half swaps with the other half of its own bank" }
+          | halfOf from.jacks == halfOf place.jacks || halfOf place.jacks == Nothing -> { wire, ok: false, why: "drop it on the other half to swap them" }
+          | otherwise -> { wire, ok: true, why: "" }
+        Nothing -> moduleVerdict
+      moduleVerdict = case Line.moduleKind text of
         _ | text == "off" -> if used then { wire, ok: true, why: "" } else { wire, ok: false, why: "already free" }
         Just kind | Line.acceptsAt target place.jacks kind -> { wire, ok: true, why: "" }
         Just kind -> { wire, ok: false, why: Line.refusalAt target place.jacks kind }
@@ -809,6 +820,7 @@ handleAction = case _ of
     when (st.dragOver /= Just verdict) (H.modify_ _ { dragOver = Just verdict })
   DragLeaveTarget -> H.modify_ _ { dragOver = Nothing }
   DragRackStart e -> liftEffect (Drop.startDrag e "keep:rack")
+  DragHalfStart place e -> liftEffect (Drop.startDrag e (swapDrag place))
   -- Dropped: the module goes to the rig as a line on that bank, replacing
   -- what was there (`# fresh`). A block always sets the whole bank. Option to
   -- merge is off (`mergeOnOption`) until merge means something.
@@ -821,21 +833,13 @@ handleAction = case _ of
     let
       target = place.target
       wire = M.placeWire place.target place.jacks
-    case Line.moduleKind text of
-      -- the null signal: free the group (its outputs silenced on the rig)
-      _ | text == "off" -> for_ st.binnacle \bin -> do
-            liftEffect $ Transport.send (Binnacle.socket bin) ("tidal selene $ off " <> wire)
-            H.modify_ _ { publishMsg = Just ("freeing " <> wire) }
-      Nothing -> pure unit
-      Just kind
-        | not (Line.acceptsAt target place.jacks kind) -> H.modify_ _ { publishMsg = Just (wire <> ": " <> Line.refusalAt target place.jacks kind) }
-        | otherwise -> for_ st.binnacle \bin -> do
-            let
-              isBlock = isJust (Array.head (Str.split (Str.Pattern " ") (Str.trim text)) >>= Block.blockNamed)
-              merge = mergeOnOption && Drop.altHeld e
-              line = Line.onPlace text target place.jacks <> (if isBlock || merge then "" else " # fresh")
-            liftEffect $ Transport.send (Binnacle.socket bin) ("tidal selene $ " <> line)
-            H.modify_ _ { publishMsg = Just ((if merge && not isBlock then "merged into " else "→ ") <> wire <> ": " <> text) }
+    case swapOf text of
+      Just from | from.target == target && halfOf from.jacks /= halfOf place.jacks && halfOf place.jacks /= Nothing ->
+        for_ st.binnacle \bin -> do
+          liftEffect $ Transport.send (Binnacle.socket bin) ("tidal selene $ swap " <> M.targetWire target)
+          H.modify_ _ { publishMsg = Just ("swapping the halves of " <> M.targetWire target) }
+      Just _ -> pure unit
+      Nothing -> dropModule st target place wire text e
   -- Split and join go to the rig as one line each (`selene $ split fh2_0`),
   -- which releases the old claim before applying the new one; the page
   -- follows by the stage. With no rig, they only change the text.
@@ -1152,6 +1156,26 @@ kindAt d s = map (M.bankKind <<< _.bank) (s.sel.destinations !! d)
 -- | Apply a bank transform to one destination, then reprint → reparse → persist:
 -- | the same doc-as-authority round-trip as RetargetDest / SetDoc, so the drawn
 -- | slot, the SOURCE pane, and the routing modal stay in lockstep.
+-- | A module (or recipe) dropped on a place: it goes to the rig as a line on
+-- | that place, replacing what was there (`# fresh`; a recipe always sets the
+-- | whole run). `off` frees the place.
+dropModule :: forall m. MonadAff m => State -> M.Target -> Place -> String -> String -> Event -> H.HalogenM State Action Slots Output m Unit
+dropModule st target place wire text e =
+  case Line.moduleKind text of
+    _ | text == "off" -> for_ st.binnacle \bin -> do
+          liftEffect $ Transport.send (Binnacle.socket bin) ("tidal selene $ off " <> wire)
+          H.modify_ _ { publishMsg = Just ("freeing " <> wire) }
+    Nothing -> pure unit
+    Just kind
+      | not (Line.acceptsAt target place.jacks kind) -> H.modify_ _ { publishMsg = Just (wire <> ": " <> Line.refusalAt target place.jacks kind) }
+      | otherwise -> for_ st.binnacle \bin -> do
+          let
+            isRecipe = isJust (Array.head (Str.split (Str.Pattern " ") (Str.trim text)) >>= Recipe.recipeNamed)
+            merge = mergeOnOption && Drop.altHeld e
+            line = Line.onPlace text target place.jacks <> (if isRecipe || merge then "" else " # fresh")
+          liftEffect $ Transport.send (Binnacle.socket bin) ("tidal selene $ " <> line)
+          H.modify_ _ { publishMsg = Just ((if merge && not isRecipe then "merged into " else "→ ") <> wire <> ": " <> text) }
+
 -- | Split or join bank i: on the rig, as a `selene $` line (the page follows
 -- | by the stage); with no rig, the same change to the text.
 reshape :: forall m. MonadAff m => Int -> String -> (M.Destination -> M.Destination) -> H.HalogenM State Action Slots Output m Unit
@@ -1445,7 +1469,7 @@ rackPanel s =
       dropFrame s { target: d.target, jacks: d.jacks } (map _.dest s.selected == Just i) (destinationRow s s.envParam s.selected i d)
     Placed _ -> HH.text ""
     Free target jacks -> freeRow s target jacks
-    HeldRow h -> heldRow h
+    HeldRow h -> heldRow s h
 
 -- | A row of the rack as drawn: a destination, or a group of outputs with
 -- | nothing on it.
@@ -1543,8 +1567,8 @@ freeRow s target jacks =
           <> "background:#00000005;border:1px dashed #00000026" ]
       [ HH.div [ style ("display:flex;flex-direction:column;gap:5px;opacity:0.55;flex:0 0 " <> headerWidth) ]
           [ HH.div [ style $ engrave <> ";font-size:10px;letter-spacing:0.1em;color:#6a6657" ] [ HH.text "FREE" ]
-          , HH.span [ style "display:flex;align-items:center;gap:8px;font:13px Georgia,serif;color:#1c1a12" ]
-              ( [ HH.text (placeLabel { target, jacks }) ] <> halves )
+          , HH.span [ style "font:13px Georgia,serif;color:#1c1a12" ]
+              [ halfGrip { target, jacks } ([ HH.text (placeLabel { target, jacks }) ] <> halves) ]
           , HH.span [ style $ engrave <> ";font-size:8px;opacity:0.6" ] [ HH.text ("→ " <> M.placeWire target jacks) ]
           ]
       , HH.div [ style "display:flex;gap:7px;align-items:center;opacity:0.55" ]
@@ -1562,19 +1586,48 @@ freeRow s target jacks =
 
 -- | Jacks something else holds: drawn so the bank reads true, and not a drop
 -- | target (a module there would fight the voice for its jacks).
-heldRow :: forall m. Held -> H.ComponentHTML Action Slots m
-heldRow h =
-  HH.div [ style "border-radius:9px;margin-bottom:10px;border:2px solid transparent" ]
-    [ HH.div
+heldRow :: forall m. State -> Held -> H.ComponentHTML Action Slots m
+heldRow s h =
+  dropFrame s { target: h.target, jacks: h.jacks } false $
+    HH.div
         [ style $ "display:flex;align-items:center;gap:12px;padding:8px 12px;border-radius:8px;"
             <> "background:repeating-linear-gradient(135deg,#00000006 0 6px,#00000000 6px 12px);border:1px solid #00000018" ]
         [ HH.div [ style ("display:flex;flex-direction:column;gap:4px;flex:0 0 " <> headerWidth) ]
             [ HH.div [ style $ engrave <> ";font-size:10px;letter-spacing:0.1em;color:#6a6657" ] [ HH.text "HELD" ]
-            , HH.span [ style "font:13px Georgia,serif;color:#1c1a12" ] [ HH.text (placeLabel { target: h.target, jacks: h.jacks }) ]
+            , HH.span [ style "font:13px Georgia,serif;color:#1c1a12" ]
+                [ halfGrip { target: h.target, jacks: h.jacks } [ HH.text (placeLabel { target: h.target, jacks: h.jacks }) ] ]
             ]
         , HH.span [ style "font:italic 12px Georgia,serif;color:#6a6657" ] [ HH.text h.by ]
         ]
-    ]
+
+-- | Which half of its bank a run is in: 1 (jacks 1-4), 5 (jacks 5-8), or
+-- | neither (a whole bank, or across the middle).
+halfOf :: M.Jacks -> Maybe Int
+halfOf j
+  | M.isWholeBank j = Nothing
+  | j.first + j.count - 1 <= 4 = Just 1
+  | j.first >= 5 = Just 5
+  | otherwise = Nothing
+
+-- | A half dragged to swap: its bank and run, as the drag carries them.
+swapDrag :: Place -> String
+swapDrag p = "selene-swap\t" <> M.placeWire p.target p.jacks
+
+swapOf :: String -> Maybe Place
+swapOf text = Str.stripPrefix (Str.Pattern "selene-swap\t") text <#> Source.parsePlace
+
+-- | A row's title, as a handle to drag its half onto the other (a swap), when
+-- | it is in one half of a bank.
+halfGrip :: forall m. Place -> Array (H.ComponentHTML Action Slots m) -> H.ComponentHTML Action Slots m
+halfGrip place body = case halfOf place.jacks of
+  Just _ | hasJacks place.target ->
+    HH.span
+      [ HP.attr (HH.AttrName "draggable") "true"
+      , HE.handler (EventType "dragstart") (DragHalfStart place)
+      , HP.title "Drag onto the other half of this bank to swap the two halves"
+      , style "display:flex;align-items:center;gap:8px;cursor:grab;white-space:nowrap" ]
+      ([ HH.i [ HP.attr (HH.AttrName "class") "fa-solid fa-grip-vertical", style "font-size:10px;opacity:0.35" ] [] ] <> body)
+  _ -> HH.span [ style "display:flex;align-items:center;gap:8px;white-space:nowrap" ] body
 
 -- | A bank and its run as the page names it: "FH-2 · jacks 5-8".
 placeLabel :: Place -> String
@@ -1777,9 +1830,10 @@ destHeader s i d =
             [ HH.text (M.kindLabel (M.bankKind d.bank)) ]
         -- where it plays (moving it is a drop on another row), then the
         -- setting's rebus, as the drawer shows it for a module
-        , HH.span [ style "display:flex;align-items:center;gap:8px;font:13px Georgia,serif;color:#1c1a12;white-space:nowrap" ]
-            ( [ HH.text (placeLabel { target: d.target, jacks: d.jacks }) ]
-                <> map (\g -> HH.i [ HP.attr (HH.AttrName "class") ("fa-solid fa-" <> g.icon), style ("font-size:15px;line-height:1;color:" <> g.color) ] []) (settingIcons (Line.moduleOf d)) )
+        , HH.span [ style "font:13px Georgia,serif;color:#1c1a12" ]
+            [ halfGrip { target: d.target, jacks: d.jacks }
+                ( [ HH.text (placeLabel { target: d.target, jacks: d.jacks }) ]
+                    <> map (\g -> HH.i [ HP.attr (HH.AttrName "class") ("fa-solid fa-" <> g.icon), style ("font-size:15px;line-height:1;color:" <> g.color) ] []) (settingIcons (Line.moduleOf d)) ) ]
         , HH.span [ style $ engrave <> ";font-size:8px;opacity:0.45" ]
             [ HH.text ("→ " <> M.placeWire d.target d.jacks <> gatesWire) ]
         ]
@@ -1805,7 +1859,7 @@ destHeader s i d =
                         (Just (ToggleMute i)) d.muted
                   ]
                   <> splitJoin
-                  <> [ iconButton "bookmark" "Keep as a module, to drop on any bank (it goes in the drawer's Modules)" (Just (KeepModule i)) false
+                  <> [ iconButton "bookmark" "Keep this setting, to drop on any bank (it goes in the drawer's Kept)" (Just (KeepModule i)) false
                      , iconButton "xmark" "Remove: take this off the rack and free its jacks (keep it as a module first to have it back)" (Just (RemoveDest i)) false
                      ] )
             ] )
@@ -2202,8 +2256,8 @@ moduleDrag s m = Drag.dragOf "selene-module" (m <> "\t" <> bank <> "\t" <> suffi
   takes t = maybe false (Line.accepts t) (Line.moduleKind m)
   used t = Array.any (\d -> d.target == t) s.sel.destinations
   bank = maybe "" M.targetWire (Array.find (\t -> takes t && not (used t)) rigBanks <|> Array.find takes rigBanks)
-  isBlock = isJust (Array.head (Str.split (Str.Pattern " ") (Str.trim m)) >>= Block.blockNamed)
-  suffix = if isBlock then "" else " # fresh"
+  isRecipe = isJust (Array.head (Str.split (Str.Pattern " ") (Str.trim m)) >>= Recipe.recipeNamed)
+  suffix = if isRecipe then "" else " # fresh"
 
 -- | The module a drag carries (its first field), or the drag's text as it is.
 moduleOfDrag :: String -> String
