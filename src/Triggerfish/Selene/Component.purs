@@ -1779,7 +1779,7 @@ slotWrap _ = "display:flex;flex-wrap:wrap;gap:7px;align-items:center;flex:1 1 au
 -- | jacks, a range menu and four buttons on one line), so the outputs line
 -- | up down the page.
 headerWidth :: String
-headerWidth = "330px"
+headerWidth = "290px"
 
 destHeader :: forall m. MonadAff m => State -> Int -> M.Destination -> H.ComponentHTML Action Slots m
 destHeader s i d =
@@ -1787,7 +1787,9 @@ destHeader s i d =
   -- no taller than the title: a row's height decides how many banks fit on a
   -- screen, and the panel gives back the width the buttons took
   HH.div [ style ("display:flex;align-items:center;gap:10px;flex:0 0 " <> headerWidth) ]
-    [ HH.div [ style "display:flex;flex-direction:column;gap:4px;justify-content:center;flex:1 1 auto;min-width:0" ]
+    -- the title as wide as the widest (a run's, with its rebus: measured 165px)
+    -- and the panel straight after it, so the header is no wider than the two
+    [ HH.div [ style "display:flex;flex-direction:column;gap:4px;justify-content:center;flex:0 0 172px;min-width:0;overflow:hidden" ]
         [ HH.div [ style $ engrave <> ";font-size:10px;letter-spacing:0.1em;color:" <> ink ]
             [ HH.text (M.kindLabel (M.bankKind d.bank)) ]
         -- where it plays (moving it is a drop on another row), then the
