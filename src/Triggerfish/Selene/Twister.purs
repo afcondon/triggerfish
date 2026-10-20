@@ -140,6 +140,7 @@ hueOf = case _ of
   M.KEnv -> orange
   M.KVoice -> red
   M.KLfo -> teal
+  M.KLfoT -> teal
   M.KEuclid -> green
   M.KClock -> yellow
   M.KNote -> violet
@@ -182,6 +183,7 @@ overview ops d bank = map (\j -> follow j <$> main j) (range 0 (M.slotCount - 1)
     }
   main j = case bank of
     M.GLfo xs -> xs !! j <#> \sl -> lfoRate (put M.GLfo xs j) sl
+    M.GLfoT xs -> xs !! j <#> \sl -> lfoTSpeed (put M.GLfoT xs j) sl
     M.GEnv xs -> xs !! j <#> \sl -> int 0 127 sl.depth orange (put M.GEnv xs j <<< sl { depth = _ })
     M.GEuclid xs -> xs !! j <#> \sl -> int 0 sl.steps sl.beats green (put M.GEuclid xs j <<< sl { beats = _ })
     M.GClock xs -> xs !! j <#> \sl -> clockSpeed ops (put M.GClock xs j) sl
@@ -209,6 +211,14 @@ detail ops d j bank = fromMaybe (dark 12) case bank of
     let p = put M.GLfo xs
     in place [ 5, 6, 9, 10 ]
          [ lfoRate p sl
+         , phase p sl
+         , int 0 5 (ops.lfoShape sl) teal \k -> p (ops.setLfoShape k (max 0.1 (ops.lfoAmp sl)) sl)
+         , amp ops p sl
+         ]
+  M.GLfoT xs -> xs !! j <#> \sl ->
+    let p = put M.GLfoT xs
+    in place [ 5, 6, 9, 10 ]
+         [ lfoTSpeed p sl
          , phase p sl
          , int 0 5 (ops.lfoShape sl) teal \k -> p (ops.setLfoShape k (max 0.1 (ops.lfoAmp sl)) sl)
          , amp ops p sl
@@ -294,6 +304,10 @@ lfoRate p sl = continuous to from sl.rate teal \r -> p (sl { rate = r })
   hi = 50.0
   to r = (log (clamp lo hi r) - log lo) / (log hi - log lo)
   from u = exp (log lo + u * (log hi - log lo))
+
+-- | A POLYLFOT slot's period, stepped along the ladder, slow to fast.
+lfoTSpeed :: (M.ModSlot -> Act) -> M.ModSlot -> Control
+lfoTSpeed p sl = int 0 (length M.lfoTLadder - 1) (M.lfoTRung sl) teal \i -> p (M.onLfoTRung i sl)
 
 phase :: (M.ModSlot -> Act) -> M.ModSlot -> Control
 phase p sl = continuous identity (min 0.999) sl.phase teal \v -> p (sl { phase = v })

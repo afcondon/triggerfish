@@ -679,7 +679,7 @@ handleAction = case _ of
   -- as a click rather than a key).
   SelectSlot d j -> do
     s <- H.get
-    if s.selected == Just { dest: d, slot: j } && kindAt d s == Just M.KLfo
+    if s.selected == Just { dest: d, slot: j } && isLfoKind (kindAt d s)
       then editDest d (onBank (cycleWaveBank j))
       else H.modify_ _ { selected = Just { dest: d, slot: j } }
   -- Arrow keys nudge the selected slot's field, per kind (see nudgeSlot). Printable
@@ -707,7 +707,7 @@ handleAction = case _ of
         -- Alt (Option) + ←/→ slides an LFO's phase by a sixteenth of a cycle
         -- (Shift: a quarter); → moves the drawn wave right. Each apply resets
         -- an FH-2 LFO bank, so the jack moves by exactly what is drawn.
-        | KE.altKey ev, Just dir <- dirOf k, dir == NLeft || dir == NRight, kindAt dest s == Just M.KLfo -> do
+        | KE.altKey ev, Just dir <- dirOf k, dir == NLeft || dir == NRight, isLfoKind (kindAt dest s) -> do
             liftEffect (preventDefault (KE.toEvent ev))
             let step = (if KE.shiftKey ev then 0.25 else 0.0625) * (if dir == NRight then -1.0 else 1.0)
             editDest dest (onBank (slidePhase slot step))
@@ -1206,6 +1206,7 @@ overAt j f xs = fromMaybe xs (modifyAt j f xs)
 nudgeSlot :: EnvParam -> NudgeDir -> Boolean -> Int -> M.GenBank -> M.GenBank
 nudgeSlot ep dir shift j = case _ of
   M.GLfo xs -> M.GLfo (overAt j (nudgeLfo dir shift) xs)
+  M.GLfoT xs -> M.GLfoT (overAt j (nudgeLfoT dir shift) xs)
   M.GEuclid xs -> M.GEuclid (overAt j (nudgeEuclid dir shift) xs)
   M.GClock xs -> M.GClock (overAt j (nudgeClock dir shift) xs)
   M.GNote xs -> M.GNote (overAt j (nudgeNote dir shift) xs)
@@ -1273,6 +1274,20 @@ nudgeLfo dir shift sl = case dir of
   where
   rStep = if shift then 1.0 else 0.1
   aStep = if shift then 0.5 else 0.05
+
+-- POLYLFOT: ←/→ walk the ladder of periods (→ slower, stretching the wave
+-- as on a POLYLFO), ↑/↓ amplitude. Shift = two rungs.
+nudgeLfoT :: NudgeDir -> Boolean -> M.ModSlot -> M.ModSlot
+nudgeLfoT dir shift sl = case dir of
+  NRight -> M.onLfoTRung (M.lfoTRung sl - rungs) sl
+  NLeft -> M.onLfoTRung (M.lfoTRung sl + rungs) sl
+  _ -> nudgeLfo dir shift sl
+  where
+  rungs = if shift then 2 else 1
+
+-- | POLYLFO and POLYLFOT: the kinds whose slots are waves.
+isLfoKind :: Maybe M.GenKind -> Boolean
+isLfoKind k = k == Just M.KLfo || k == Just M.KLfoT
 
 -- Euclid: ←/→ n (steps), ↑/↓ k (beats) — the shared widget's arithmetic, applied
 -- to the slot's own two fields. Selene's ceiling is generous: the polysignal
@@ -1406,14 +1421,17 @@ cycleWave sl = setShape ((activeShape sl + 1) `mod` 6) (max 0.1 (activeAmp sl)) 
 -- | 0.1875 comes back as 0.188, and without the snap each press would drift.
 slidePhase :: Int -> Number -> M.GenBank -> M.GenBank
 slidePhase j step = case _ of
-  M.GLfo xs -> M.GLfo (overAt j (\sl -> sl { phase = wrap (toNumber (round (sl.phase * 16.0)) / 16.0 + step) }) xs)
+  M.GLfo xs -> M.GLfo (overAt j slide xs)
+  M.GLfoT xs -> M.GLfoT (overAt j slide xs)
   b -> b
   where
+  slide sl = sl { phase = wrap (toNumber (round (sl.phase * 16.0)) / 16.0 + step) }
   wrap p = let f = p - toNumber (Int.floor p) in if f >= 0.99999 then 0.0 else f
 
 cycleWaveBank :: Int -> M.GenBank -> M.GenBank
 cycleWaveBank j = case _ of
   M.GLfo xs -> M.GLfo (overAt j cycleWave xs)
+  M.GLfoT xs -> M.GLfoT (overAt j cycleWave xs)
   b -> b
 
 render :: forall m. MonadAff m => State -> H.ComponentHTML Action Slots m
@@ -1903,6 +1921,7 @@ iconButton icon title act lit =
 slotViews :: forall m. EnvParam -> Int -> Maybe Sel -> M.Target -> Array Int -> M.GenBank -> Array (H.ComponentHTML Action Slots m)
 slotViews ep d sel target mutes = case _ of
   M.GLfo slots -> mapWithIndex (cellFor d sel mutes 90.0 (lfoInner target)) slots
+  M.GLfoT slots -> mapWithIndex (cellFor d sel mutes 90.0 (lfoTInner target)) slots
   M.GEuclid slots -> mapWithIndex (cellFor d sel mutes 70.0 (euclidInner target)) slots
   M.GClock slots -> mapWithIndex (cellFor d sel mutes 58.0 (clockInner target)) slots
   M.GNote slots -> mapWithIndex (cellFor d sel mutes 58.0 noteInner) slots
@@ -1943,6 +1962,41 @@ slotCell d j isSel muted widthPx body =
 lfoInner :: forall m. M.Target -> M.ModSlot -> Array (H.ComponentHTML Action Slots m)
 lfoInner target sl =
   let
+    clamped = M.lfoRateOn target sl.rate
+  in
+    [ lfoFigure sl
+    -- the rate it really runs at, where the hardware clamps it (an FH-2 LFO),
+    -- with a red ! so a clamped slot shows at a glance
+    , HH.span [ style "display:flex;align-items:center;gap:3px" ]
+        ( ( case clamped of
+              Just c ->
+                [ HH.span
+                    [ HP.title ("The FH-2 can't run " <> fmt2 sl.rate <> " Hz: this LFO runs at " <> fmt2 c <> " Hz (its LFOs span 0.1 to 10.36 Hz)")
+                    , style "font:bold 10px Georgia,serif;color:#fff;background:#b3261e;border-radius:6px;padding:0 4px;line-height:12px" ]
+                    [ HH.text "!" ] ]
+              Nothing -> [] )
+          <> [ cellCaption (shapeName (activeShape sl) <> " · " <> fmt2 sl.rate <> " Hz" <> maybe "" (\c -> " → " <> fmt2 c) clamped) ] )
+    ]
+
+-- --- POLYLFOT: the same wave, its period a ratio to the beat ------------------
+
+-- | Drawn as a POLYLFO at 120 bpm would be (a cycle every 16 beats is
+-- | slow, a cycle a beat is quick), captioned with its ratio. A period the
+-- | FH-2 can't make stays still there, and the red ! says why.
+lfoTInner :: forall m. M.Target -> M.ModSlot -> Array (H.ComponentHTML Action Slots m)
+lfoTInner target sl =
+  [ lfoFigure (sl { rate = sl.rate * 2.0 })
+  , HH.span [ style "display:flex;align-items:center;gap:3px" ]
+      ( ( case M.lfoTOn target sl of
+            Just why -> [ silentMark why ]
+            Nothing -> [] )
+        <> [ cellCaption (shapeName (activeShape sl) <> " · " <> M.lfoRatio sl) ] )
+  ]
+
+-- | A slot's summed wave, drawn across the cell.
+lfoFigure :: forall m. M.ModSlot -> H.ComponentHTML Action Slots m
+lfoFigure sl =
+  let
     w = 84.0
     h = 50.0
     mid = h / 2.0
@@ -1958,9 +2012,8 @@ lfoInner target sl =
       in
         show (round2 x) <> "," <> show (round2 y)
     poly = joinWith " " (map pt (range 0 samples))
-    clamped = M.lfoRateOn target sl.rate
   in
-    [ svgEl "svg"
+    svgEl "svg"
         [ svgAttr "viewBox" ("0 0 " <> show w <> " " <> show h), svgAttr "width" "100%"
         , svgAttr "height" (show h), svgAttr "style" "display:block;overflow:visible" ]
         [ svgEl "line"
@@ -1970,18 +2023,6 @@ lfoInner target sl =
             [ svgAttr "points" poly, svgAttr "fill" "none", svgAttr "stroke" accent
             , svgAttr "stroke-width" "1.6", svgAttr "stroke-linejoin" "round" ] []
         ]
-    -- the rate it really runs at, where the hardware clamps it (an FH-2 LFO),
-    -- with a red ! so a clamped slot shows at a glance
-    , HH.span [ style "display:flex;align-items:center;gap:3px" ]
-        ( ( case clamped of
-              Just c ->
-                [ HH.span
-                    [ HP.title ("The FH-2 can't run " <> fmt2 sl.rate <> " Hz: this LFO runs at " <> fmt2 c <> " Hz (its LFOs span 0.1 to 10.36 Hz)")
-                    , style "font:bold 10px Georgia,serif;color:#fff;background:#b3261e;border-radius:6px;padding:0 4px;line-height:12px" ]
-                    [ HH.text "!" ] ]
-              Nothing -> [] )
-          <> [ cellCaption (shapeName (activeShape sl) <> " · " <> fmt2 sl.rate <> " Hz" <> maybe "" (\c -> " → " <> fmt2 c) clamped) ] )
-    ]
 
 -- | The drawn wave: the model's deterministic shapes (M.lfoValue), plus random
 -- | and noise as fixed icons, the same on every slot. The hardware's random
