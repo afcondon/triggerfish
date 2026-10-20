@@ -16,12 +16,11 @@
 -- |     (a caller that TRANSMITS relative edits, as Odonus's lockstep inputs do).
 -- |     `stepOf` is defined against `nudge`, so the two can't drift apart.
 -- |
--- | **On `hit`.** Selene's `euclidBits` and reef's `Reef.Odonus.euclidHit` are the
--- | same function — Bresenham, `(i * k) mod n < k`, with reef spelling out the
--- | `k <= 0` and `k >= n` ends that fall out of the arithmetic anyway. That is why
--- | one predicate here can serve both machines, and why this drawing is guaranteed
--- | to agree with what the reef engine actually plays. Keep it that way: if reef's
--- | rule ever changes, this one has to change with it.
+-- | **On `hit`.** It is `Reef.Euclid.hit`, the one E(k,n) that Selene's
+-- | `euclidBits`, Odonus's `euclidHit` and es9-daemon all play: the FH-2's own
+-- | rule (Bjorklund, as Toussaint writes it), since that firmware is the copy we
+-- | can't change. One predicate serves both machines, so this drawing is what the
+-- | engines play.
 -- |
 -- | **On bounds.** The widget imposes no step ceiling of its own — `Bounds` is the
 -- | caller's, because the honest limit is a property of the engine downstream, not
@@ -60,6 +59,7 @@ import Halogen.HTML.Events as HE
 import Halogen.HTML.Properties as HP
 import Web.UIEvent.KeyboardEvent (KeyboardEvent)
 import Halogen.Widgets.Svg (svgAttr, svgEl)
+import Reef.Euclid as Euclid
 
 -- ---------------------------------------------------------------------------
 -- The value
@@ -162,14 +162,10 @@ stepOf b dir shift e = case turnOf b dir shift of
       Steps -> { axis: Steps, amount: e'.steps - e.steps }
       Turn -> { axis: Turn, amount: 0 }
 
--- | Is step `i` a pulse of E(k, n) turned by its rotation? The Bresenham rule
--- | the reef engine plays — see the note on `hit` in the module header before
--- | changing this.
+-- | Is step `i` a pulse of E(k, n) turned by its rotation? reef's rule — see the
+-- | note on `hit` in the module header.
 hit :: Euclid -> Int -> Boolean
-hit e i
-  | e.beats <= 0 = false
-  | e.beats >= e.steps = true
-  | otherwise = (wrap (i - e.rotation) e.steps * e.beats) `mod` e.steps < e.beats
+hit e i = Euclid.hit e.beats e.steps e.rotation i
 
 bits :: Euclid -> Array Boolean
 bits e = map (hit e) (range 0 (max 1 e.steps - 1))
