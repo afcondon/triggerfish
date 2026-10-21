@@ -806,7 +806,9 @@ handleAction = case _ of
       wire = M.placeWire place.target place.jacks
       used = Array.any (M.samePlace place) st0.sel.destinations
       verdict = case swapOf text of
+        _ | Just h <- heldAt st0 place -> { wire, ok: false, why: "held: " <> h.by }
         Just from
+          | Just h <- heldAt st0 from -> { wire, ok: false, why: "held: " <> h.by }
           | from.target /= target -> { wire, ok: false, why: "a half swaps with the other half of its own bank" }
           | halfOf from.jacks == halfOf place.jacks || halfOf place.jacks == Nothing -> { wire, ok: false, why: "drop it on the other half to swap them" }
           | otherwise -> { wire, ok: true, why: "" }
@@ -835,6 +837,10 @@ handleAction = case _ of
       target = place.target
       wire = M.placeWire place.target place.jacks
     case swapOf text of
+      -- the verdict refused it already; a drop that arrives anyway (a stale
+      -- verdict) must not take a voice's gates either
+      _ | Just h <- heldAt st place -> H.modify_ _ { publishMsg = Just (wire <> " is held: " <> h.by) }
+      Just from | isJust (heldAt st from) -> pure unit
       Just from | from.target == target && halfOf from.jacks /= halfOf place.jacks && halfOf place.jacks /= Nothing ->
         for_ st.binnacle \bin -> do
           liftEffect $ Transport.send (Binnacle.socket bin) ("tidal selene $ swap " <> M.targetWire target)
@@ -1211,11 +1217,14 @@ nudgeSlot ep dir shift j = case _ of
   M.GClock xs -> M.GClock (overAt j (nudgeClock dir shift) xs)
   M.GNote xs -> M.GNote (overAt j (nudgeNote dir shift) xs)
   M.GEnv xs -> M.GEnv (overAt j (nudgeEnv ep dir shift) xs)
-  -- a voice: ↑/↓ its channel; ←/→ its envelope's field, as on an envelope
+  -- a voice: ↑/↓ its channel; ←/→ its envelope's field, as on an envelope,
+  -- when the layout has an envelope output (otherwise there is none drawn,
+  -- and nothing to edit)
   M.GVoice vb -> M.GVoice vb { voices = overAt j (\v -> case dir of
       NUp -> v { channel = clamp 1 16 (v.channel + 1) }
       NDown -> v { channel = clamp 1 16 (v.channel - 1) }
-      _ -> v { env = nudgeEnv ep dir shift v.env }) vb.voices }
+      _ | Array.elem M.VEnvelope vb.outputs -> v { env = nudgeEnv ep dir shift v.env }
+      _ -> v) vb.voices }
 
 -- | The envelope slot at (destination, slot), if that destination is one.
 envSlotAt :: State -> Int -> Int -> Maybe M.EnvSlot
@@ -1526,6 +1535,14 @@ voiceGatesOf sel = Array.concatMap (\d -> case d.bank of
     , by: "the gates of the POLYVOICE on " <> placeLabel { target: d.target, jacks: d.jacks } <> ", voice by voice" }
   _ -> []) sel.destinations
 
+-- | The voice gates a place overlaps, if any: a module dropped there, or a
+-- | half swapped from or to it, would take jacks a voice layout holds.
+heldAt :: State -> Place -> Maybe Held
+heldAt s place = Array.find overlaps (voiceGatesOf s.sel)
+  where
+  overlaps h = h.target == place.target
+    && Array.any (\j -> Array.elem j (M.jackNumbers h.jacks)) (M.jackNumbers place.jacks)
+
 -- | Consecutive jack numbers as runs: [5,6,7,8] is 5-8.
 runsOf :: Array Int -> Array M.Jacks
 runsOf = foldl step []
@@ -1594,8 +1611,9 @@ freeRow s target jacks =
     | Array.elem wire s.splitFree && jacks.first == 1 = [ iconButton "object-group" "Join: draw this bank as one row of eight again" (Just (JoinFree wire)) false ]
     | otherwise = []
 
--- | Jacks something else holds: drawn so the bank reads true, and not a drop
--- | target (a module there would fight the voice for its jacks).
+-- | Jacks something else holds: drawn so the bank reads true. A drag over it
+-- | turns its edge red with why (`heldAt`): a module there would fight the
+-- | voice for its jacks. Not a half to swap, for the same reason.
 heldRow :: forall m. State -> Held -> H.ComponentHTML Action Slots m
 heldRow s h =
   dropFrame s { target: h.target, jacks: h.jacks } false $
@@ -1605,7 +1623,7 @@ heldRow s h =
         [ HH.div [ style ("display:flex;flex-direction:column;gap:4px;flex:0 0 " <> headerWidth) ]
             [ HH.div [ style $ engrave <> ";font-size:10px;letter-spacing:0.1em;color:#6a6657" ] [ HH.text "HELD" ]
             , HH.span [ style "font:13px Georgia,serif;color:#1c1a12" ]
-                [ halfGrip { target: h.target, jacks: h.jacks } [ HH.text (placeLabel { target: h.target, jacks: h.jacks }) ] ]
+                [ HH.text (placeLabel { target: h.target, jacks: h.jacks }) ]
             ]
         , HH.span [ style "font:italic 12px Georgia,serif;color:#6a6657" ] [ HH.text h.by ]
         ]

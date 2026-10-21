@@ -575,8 +575,7 @@ setDestField field v = case _ of
     "note" -> DFh2Gate d { note = clamp 0 127 v }
     "jack" -> DFh2Gate d { jack = clamp 1 8 v }
     _ -> DFh2Gate d
-  -- Named by its pitch jack, which is odd: an even jack is a gate, so a step
-  -- onto one carries on in the same direction to the next pitch jack.
+  -- a voice is named by its MIDI channel
   DFh2Voice d -> case field of
     "channel" -> DFh2Voice d { channel = clamp 1 16 v }
     _ -> DFh2Voice d

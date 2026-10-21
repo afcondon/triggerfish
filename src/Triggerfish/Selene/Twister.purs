@@ -154,10 +154,14 @@ surface ops sel cur = top <> bottom
   dest = dests !! here.dest
   rowAt = fromMaybe 0 (elemIndex here.dest cur.rows)
   hue = maybe blue (hueOf <<< M.bankKind <<< _.bank) dest
+  slotsOf i = maybe M.slotCount (M.bankSize <<< _.bank) (dests !! i)
 
   bottom =
     [ Just (stepped (length cur.rows - 1) rowAt hue \r ->
-        Goto { dest: fromMaybe here.dest (cur.rows !! r), slot: here.slot } false)
+        let to = fromMaybe here.dest (cur.rows !! r)
+        -- the same slot where the new row has it: slot 7 of a whole bank is
+        -- slot 3 of a row of four, not a slot that isn't there
+        in Goto { dest: to, slot: min here.slot (slotsOf to - 1) } false)
     -- a row of four steps over four
     , Just ((stepped (maybe M.slotCount (M.bankSize <<< _.bank) dest - 1) here.slot hue \s -> Goto { dest: here.dest, slot: s } cur.open)
         { press = [ Goto here (not cur.open) ] })
