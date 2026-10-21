@@ -477,7 +477,7 @@ defaultTable = defaultTableFor []
 -- | now.
 -- |
 -- | Drum lanes: all sixteen to channel 10 on the MIDI port, lane n on pad n of
--- | a Drum Rack (`drumPad`; GM notes until 2026-10-13). The first four ALSO drive FHX-8GT jacks 1..4, which
+-- | a Drum Rack (`drumPad`; GM notes until 2026-10-13). The first four ALSO drive FHX-8GT jacks 5..8, which
 -- | reproduces `apply-drum-breakout.mjs`'s `KIT` table — the same four rows, now
 -- | somewhere a player can change them.
 defaultTableFor :: Array String -> Table
@@ -492,13 +492,14 @@ defaultTableFor ports =
     map (\h -> { source: SOdonusHead h, legs: [ midiLeg iac (h + 1), envLeg (h + 1) ] })
       [ 0, 1, 2, 3 ]
   -- canonKit order: BD SD CP RS CH PH OH LT MT HT RD RB CR CW TB SH.
-  -- The breakout script's four: BD→1, SD→2, HH(CH)→3, CP→4.
+  -- The breakout script's four: BD→5, SD→6, CP→7, HH(CH)→8 (GT 1-4 are left
+  -- for Selene voice layouts' gates).
   kitNotes = [ 36, 38, 39, 37, 42, 44, 46, 41, 47, 50, 51, 53, 49, 56, 54, 70 ]
   gateOf i = case i of
-    0 -> [ gateLeg 36 1 ]
-    1 -> [ gateLeg 38 2 ]
-    2 -> [ gateLeg 39 4 ]
-    4 -> [ gateLeg 42 3 ]
+    0 -> [ gateLeg 36 5 ]
+    1 -> [ gateLeg 38 6 ]
+    2 -> [ gateLeg 39 7 ]
+    4 -> [ gateLeg 42 8 ]
     _ -> []
   drums =
     mapWithIndex (\i _ -> { source: SDrumLane i, legs: [ newLeg (SDrumLane i) (DMidi { port: iac, channel: 10 }) ] <> gateOf i })
