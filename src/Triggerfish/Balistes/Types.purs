@@ -212,6 +212,12 @@ type State =
   -- edits it; performance state like the mutes, sent as `balistes-fill`
   , fill :: Boolean
   , fillHeld :: Boolean          -- the fill is on because F is held
+  -- What the rig's fill line makes of FILL (`balistes $ fill "<f!7 t>"`),
+  -- applied on its step: Nothing with no line. Shown on the FILL button and
+  -- never written into `fill`, which is also the edit lens: a pattern
+  -- flipping it would flip what the grid edits under the player's hands.
+  , rigFill :: Maybe Boolean
+  , rigFillQueue :: Array Follow.FillAt
   -- the POLYTRIG jack rack (SELENE DRUMS tab) — browser-only, no reef path.
   -- The named rhythms the rig's stage holds, by word (Balistes.Stage), which
   -- `balistes $ "<a b>"` plays; Nothing until the stage has answered a

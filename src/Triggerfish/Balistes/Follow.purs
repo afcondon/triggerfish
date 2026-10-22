@@ -8,11 +8,19 @@
 -- |   balistes-now <step> <word> <state>   a Grids beat, its engine from there
 -- |   balistes-now <step> ~                a rest
 -- |
+-- | A fill line (`balistes $ fill "<f!7 t>"`) is announced as its value
+-- | changes, ahead of the step, the same way:
+-- |
+-- |   balistes-fill-at <step> 1|0          the pattern fills from that step, or not
+-- |   balistes-fill-at <step> -            no pattern: FILL is the page's F alone
+-- |
 -- | Evaluating the line is announced too (`played balistes line <pattern>`,
 -- | which the shell's transport hears), and a hush or a stop ends it.
 module Triggerfish.Balistes.Follow
   ( Now
   , parseNow
+  , FillAt
+  , parseFillAt
   , endsLine
   ) where
 
@@ -47,3 +55,20 @@ parseNow msg = do
 -- | Balistes, or a page stopped the Balistes voice.
 endsLine :: String -> Boolean
 endsLine msg = msg == "hushed" || msg == "hushed balistes" || msg == "stopped balistes"
+
+-- | From sixteenth `step`, the rig's fill pattern fills (`Just true`), does
+-- | not (`Just false`), or there is no pattern (`Nothing`).
+type FillAt = { step :: Int, on :: Maybe Boolean }
+
+parseFillAt :: String -> Maybe FillAt
+parseFillAt msg = do
+  rest <- stripPrefix (Pattern "balistes-fill-at ") msg
+  i <- indexOf (Pattern " ") rest
+  let parts = splitAt i rest
+  step <- Int.fromString parts.before
+  on <- case (splitAt 1 parts.after).after of
+    "1" -> Just (Just true)
+    "0" -> Just (Just false)
+    "-" -> Just Nothing
+    _ -> Nothing
+  pure { step, on }

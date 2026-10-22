@@ -18,6 +18,7 @@ import Effect (Effect)
 import Effect.Console (log)
 import Test.FlowSpec (runFlowTests)
 import Test.OrderSpec (runOrderTests)
+import Test.FollowSpec (runFollowTests)
 import Test.HarmonySpec (runHarmonyTests)
 import Test.LepidopteraScaleSpec (runLepidopteraScaleTests)
 import Test.CardLineSpec (runCardLineTests)
@@ -161,6 +162,7 @@ main = do
   runSeleneTwisterTests
   runFlowTests
   runOrderTests
+  runFollowTests
   runHarmonyTests
   runLepidopteraScaleTests
   runCardLineTests

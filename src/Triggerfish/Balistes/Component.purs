@@ -18,7 +18,7 @@ module Triggerfish.Balistes.Component (component, Output(..)) where
 
 import Prelude
 
-import Data.Array (concatMap, deleteAt, filter, find, head, insertAt, length, mapWithIndex, modifyAt, null, partition, range, (!!))
+import Data.Array (concatMap, deleteAt, filter, find, head, insertAt, last, length, mapWithIndex, modifyAt, null, partition, range, (!!))
 import Data.Ord (abs)
 import Reef.Balistes.Kit as Kit
 import Data.Tuple (Tuple(..), fst, snd)
@@ -114,7 +114,7 @@ component =
         , nowMicros: 0.0, dragging: Nothing, paint: Nothing, dragSub: Nothing
         , presets: []
         , identity: Nothing, lastChip: Nothing
-        , active: AGrids, editing: false, clickMode: Assemble, laneEditOpen: false, fixedSel: 0, lane: "", laneReadout: "", selected: [], cursor: Nothing, copied: [], mutes: 0, fill: false, fillHeld: false
+        , active: AGrids, editing: false, clickMode: Assemble, laneEditOpen: false, fixedSel: 0, lane: "", laneReadout: "", selected: [], cursor: Nothing, copied: [], mutes: 0, fill: false, fillHeld: false, rigFill: Nothing, rigFillQueue: []
         , scratchFixed: Nothing
         , stageRhythms: Nothing, shelf: Nothing, undoDelete: Nothing, follow: Nothing, followQueue: [] }
     , render
@@ -360,6 +360,14 @@ handleAction = case _ of
     H.modify_ \s -> case partition (\f -> f.step <= tick.index) s.followQueue of
       { yes: [], no: _ } -> s
       { yes, no } -> foldl (flip (showNow tick.index)) (s { followQueue = no }) yes
+    -- and what its fill line makes of FILL, likewise; written only when it
+    -- changes, as every state write redraws the page
+    st0 <- H.get
+    case partition (\f -> f.step <= tick.index) st0.rigFillQueue of
+      { yes: [], no: _ } -> pure unit
+      { yes, no } ->
+        let on = maybe st0.rigFill _.on (last yes)
+        in H.modify_ _ { rigFillQueue = no, rigFill = on }
     st <- H.get
     -- Atlantis keeps the schedulers RUNNING and mutes only the emit — see
     -- Triggerfish.Transport: "the frontend is muted but keeps its schedulers
@@ -479,6 +487,8 @@ handleAction = case _ of
       publishRhythms
     for_ (Follow.parseNow msg) \now ->
       H.modify_ \s -> s { followQueue = s.followQueue <> [ now ] }
+    for_ (Follow.parseFillAt msg) \at ->
+      H.modify_ \s -> s { rigFillQueue = s.rigFillQueue <> [ at ] }
     when (Follow.endsLine msg) $
       H.modify_ _ { follow = Nothing, followQueue = [] }
   MidiReady outs nm -> do
@@ -1476,7 +1486,11 @@ gridsBand s =
         [ HH.text (maybe "" _.name (selectedPattern s)) ]
     , armBtn (if s.editing then "● EDITING" else "EDIT") s.editing ToggleEdit
     , armBtn "+ NEW" false NewPattern
-    , armBtn "FILL" s.fill (SetFill (not s.fill))
+    -- a fill line on the rig marks the button: ◆ filling now, ◇ not now
+    , armBtn ("FILL" <> case s.rigFill of
+        Just true -> " ◆"
+        Just false -> " ◇"
+        Nothing -> "") s.fill (SetFill (not s.fill))
     , maybe (HH.text "") lengthControl (selectedPattern s)
     , cellStrip s
     ]
