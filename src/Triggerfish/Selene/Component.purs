@@ -22,7 +22,8 @@ import Data.Tuple (Tuple(..), fst, snd)
 import Web.UIEvent.MouseEvent as ME
 import Web.UIEvent.KeyboardEvent (KeyboardEvent)
 import Web.UIEvent.KeyboardEvent as KE
-import Web.Event.Event (Event, EventType(..), preventDefault, stopPropagation)
+import Web.Event.Event (Event, EventType(..), preventDefault, stopPropagation, target)
+import Web.HTML.HTMLInputElement as HInput
 import Data.Int (round, toNumber)
 import Data.Int as Int
 import Data.Map (Map)
@@ -278,6 +279,7 @@ data Action
   | ToggleLabels              -- draw the jack labels under the outputs, or not
   | SetLabel String String    -- name a jack (its key, the text; "" takes it off)
   | EditLabel String          -- open a jack's label for typing
+  | SetMidiOut Int Int String Event  -- a MIDI row's signal: row, slot, "channel"|"cc", the field's change
   | EndLabel                  -- close it (left the field)
   | PickStarter Int           -- apply library shape i to the selected envelope slot
   | EnvGrab EnvHandle Int Int -- mousedown on a breakpoint (handle, clientX, clientY)
@@ -675,7 +677,7 @@ handleAction = case _ of
   -- survive), then re-derive the rack from the new text.
   AddDest k -> do
     H.modify_ \s ->
-      let block = Source.printDest { target: M.defaultTargetFor k, jacks: M.allJacks, range: Nothing, bank: M.freshBank k, retrig: Nothing, muted: false, mutedSlots: [] }
+      let block = Source.printDest { target: M.defaultTargetFor k, jacks: M.allJacks, range: Nothing, bank: M.freshBank k, retrig: Nothing, muted: false, mutedSlots: [], midi: [] }
           doc = currentDoc s <> "\n\n" <> block
       in s { live = doc, sel = Source.parseRack doc }
     persist
@@ -935,6 +937,24 @@ handleAction = case _ of
     H.modify_ _ { editingLabel = Just jack }
     H.getHTMLElementRef labelRef >>= traverse_ (liftEffect <<< JL.focusField)
   EndLabel -> H.modify_ _ { editingLabel = Nothing }
+  -- A MIDI signal's channel or CC, typed: kept when it is in range (the rack
+  -- text then says it, and the rig sends on it), else the field goes back
+  -- to what it was and the reason is said.
+  SetMidiOut i k which e -> for_ (target e >>= HInput.fromEventTarget) \field -> do
+    st <- H.get
+    text <- liftEffect (HInput.value field)
+    let
+      (Tuple lo hi) = if which == "channel" then Tuple 1 16 else Tuple 0 127
+      set v o = if which == "channel" then o { channel = v } else o { cc = v }
+      was = (st.sel.destinations !! i) >>= \d -> M.midiOutsOf d !! k
+    case Int.fromString (Str.trim text) of
+      Just v | v >= lo && v <= hi ->
+        editDest i \d -> d { midi = fromMaybe (M.midiOutsOf d) (modifyAt k (set v) (M.midiOutsOf d)) }
+      -- refused: the field shows what is kept again (no state changed, so
+      -- no redraw would), and says why
+      _ -> do
+        for_ was \o -> liftEffect (HInput.setValue (show (if which == "channel" then o.channel else o.cc)) field)
+        H.modify_ _ { publishMsg = Just (which <> " is a whole number from " <> show lo <> " to " <> show hi <> ", not " <> text) }
   -- the rig's answer to a dropped module
   SeleneReply raw | Just rest <- Str.stripPrefix (Str.Pattern "OK: selene: ") raw -> H.modify_ _ { publishMsg = Just ("✓ " <> rest) }
   SeleneReply raw | Just rest <- Str.stripPrefix (Str.Pattern "ERR: selene: ") raw -> H.modify_ _ { publishMsg = Just ("✗ " <> rest) }
@@ -1551,6 +1571,9 @@ rackRows :: State -> Array RackRow
 rackRows s =
   Array.concatMap onRig rigBanks
     <> Array.catMaybes (mapWithIndex (\i d -> if Array.elem d.target rigBanks then Nothing else Just (Placed i)) s.sel.destinations)
+    -- and a free MIDI row to drop an LFO on, the next one no row is using
+    -- (docs/kb/plans/selene-midi-signals.md)
+    <> maybe [] (\n -> [ Free (M.Midi n) M.allJacks ]) (Array.find (\n -> not (Array.any (\d -> d.target == M.Midi n) s.sel.destinations)) (Array.range 1 16))
   where
   voiceGates = voiceGatesOf s.sel
   -- a bank's rows in jack order: each destination on it, and each run of
@@ -1905,8 +1928,33 @@ destinationRow s ep sel i d =
     [ destHeader s i d
     -- a muted bank is still drawn, and editable, but faded: its jacks are at 0 V
     , HH.div [ style (slotWrap d.bank <> if d.muted then ";opacity:0.35" else "") ]
-        (Array.zipWith (labelled s) (map (JL.jackKey d.target) (slotJacks d)) (slotViews ep i sel d.target d.mutedSlots d.bank))
+        (Array.zipWith (\{ key, out } cell -> labelled s key (maybe cell (\o -> withMidiOut i o cell) out))
+          (mapWithIndex (\k j -> { key: JL.jackKey d.target j, out: map (\o -> { slot: k, out: o }) (outs !! k) }) (slotJacks d))
+          (slotViews ep i sel d.target d.mutedSlots d.bank))
     ]
+  where
+  outs = M.midiOutsOf d
+
+-- | A MIDI row's signal with where it goes under it: its channel and CC,
+-- | each a field, since they are what the instrument learns.
+withMidiOut :: forall m. Int -> { slot :: Int, out :: M.MidiOut } -> H.ComponentHTML Action Slots m -> H.ComponentHTML Action Slots m
+withMidiOut i o cell =
+  HH.div [ style "display:flex;flex-direction:column;gap:3px;align-items:center" ]
+    [ cell
+    , HH.div [ style "display:flex;gap:3px;align-items:center;font:9px 'SF Mono',Menlo,monospace;color:#5a5648" ]
+        [ HH.text "ch", field "channel" o.out.channel 2, HH.text "cc", field "cc" o.out.cc 3 ]
+    ]
+  where
+  field which v size =
+    HH.input
+      [ HP.value (show v)
+      , HP.attr (HH.AttrName "size") (show size)
+      , HP.attr (HH.AttrName "inputmode") "numeric"
+      , HP.title (if which == "channel" then "The MIDI channel this signal is sent on (1-16)" else "The controller this signal is sent as (0-127); the instrument learns it")
+      , HE.handler (EventType "change") (SetMidiOut i o.slot which)
+      , style $ "width:" <> show (size * 8 + 4) <> "px;box-sizing:border-box;border:none;border-bottom:1px dotted #00000040;"
+          <> "background:transparent;padding:0 1px;font:10px 'SF Mono',Menlo,monospace;color:#1c1a12;text-align:center;outline:none"
+      ]
 
 -- | The jack each drawn output is on, in drawing order: one jack a slot, or a
 -- | voice's first (its pitch), a voice being as wide as its outputs.
