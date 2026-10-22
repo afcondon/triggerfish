@@ -20,6 +20,7 @@ module Triggerfish.Balistes.Types
   , Copied
   , Drag
   , State
+  , fillShown
   , Action(..)
   , activePattern
   , selectedPattern
@@ -213,11 +214,13 @@ type State =
   , fill :: Boolean
   , fillHeld :: Boolean          -- the fill is on because F is held
   -- What the rig's fill line makes of FILL (`balistes $ fill "<f!7 t>"`),
-  -- applied on its step: Nothing with no line. Shown on the FILL button and
-  -- never written into `fill`, which is also the edit lens: a pattern
-  -- flipping it would flip what the grid edits under the player's hands.
+  -- applied on its step: Nothing with no line. Never written into `fill`,
+  -- which is the player's own and what the page tells the rig.
   , rigFill :: Maybe Boolean
   , rigFillQueue :: Array Follow.FillAt
+  -- the layer a press on the grid edits, fixed when it starts: a fill line
+  -- flipping FILL mid-stroke must not split one stroke across two layers
+  , pressFill :: Maybe Boolean
   -- the POLYTRIG jack rack (SELENE DRUMS tab) — browser-only, no reef path.
   -- The named rhythms the rig's stage holds, by word (Balistes.Stage), which
   -- `balistes $ "<a b>"` plays; Nothing until the stage has answered a
@@ -362,3 +365,12 @@ editVel = 98
 
 padId :: String
 padId = "balistes-pad"
+
+
+-- | The FILL the page shows, lights and edits: the player's own (button or
+-- | F), or the rig's fill line filling now. AC, 2026-10-22: letting the
+-- | line flip the grid lets a deft hand edit the fill and the rhythm as they
+-- | come round, without stopping anything; a line too fast for that is
+-- | stopped from the REPL (`balistes $ fill off`).
+fillShown :: State -> Boolean
+fillShown s = s.fill || s.rigFill == Just true

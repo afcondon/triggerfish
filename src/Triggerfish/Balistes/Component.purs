@@ -58,7 +58,7 @@ import Reef.Routing as RR
 import Triggerfish.Balistes.Types
   ( KnobTarget(..), targetRange, applyKnob, Active(..), ClickMode(..)
   , DragKind(..), Paint(..), Spot, State, Action(..), activePattern, selectedPattern, patternAt, rhythmEntries, rigUrl, gridCfg
-  , editVel
+  , editVel, fillShown
   , padId )
 import Triggerfish.Browser as Browser
 import Triggerfish.Balistes.TriSnapshot (TriSnapshot(..), parseTri, printTri, rhythmContent, rhythmOfContent)
@@ -114,7 +114,7 @@ component =
         , nowMicros: 0.0, dragging: Nothing, paint: Nothing, dragSub: Nothing
         , presets: []
         , identity: Nothing, lastChip: Nothing
-        , active: AGrids, editing: false, clickMode: Assemble, laneEditOpen: false, fixedSel: 0, lane: "", laneReadout: "", selected: [], cursor: Nothing, copied: [], mutes: 0, fill: false, fillHeld: false, rigFill: Nothing, rigFillQueue: []
+        , active: AGrids, editing: false, clickMode: Assemble, laneEditOpen: false, fixedSel: 0, lane: "", laneReadout: "", selected: [], cursor: Nothing, copied: [], mutes: 0, fill: false, fillHeld: false, rigFill: Nothing, rigFillQueue: [], pressFill: Nothing
         , scratchFixed: Nothing
         , stageRhythms: Nothing, shelf: Nothing, undoDelete: Nothing, follow: Nothing, followQueue: [] }
     , render
@@ -397,7 +397,7 @@ handleAction = case _ of
             -- exact code the BEAM voice runs, keyed off the same absolute step, so a
             -- pushed fixed rhythm plays in lockstep. The frontend projects its rich
             -- pattern onto the wire-flat reef pattern (toWire).
-            for_ (filter (\e -> Kit.audible st.mutes e.note) (RF.renderFixedFill st.fill (P.toWire pat) (tick.index - offset))) \e ->
+            for_ (filter (\e -> Kit.audible st.mutes e.note) (RF.renderFixedFill (fillShown st) (P.toWire pat) (tick.index - offset))) \e ->
               emitHit st.outs (RO.soloDrumRouting st.outs st.routing kitNotes) stepMs
                 (max 0.0 (tick.delayMs + toNumber e.pushMs))
                 e.note e.durMs e.velocity e.ratchet
@@ -593,11 +593,11 @@ handleAction = case _ of
     -- tagged model step, so the rig follows the edit. Absolute idempotent setters, so
     -- replaying the settled value lands the rig exactly where the drag settled.
     for_ (st.dragging >>= \d -> dragToBInput d.kind st.bal) broadcastBInput
-    H.modify_ _ { dragging = Nothing, dragSub = Nothing, paint = Nothing }
+    H.modify_ _ { dragging = Nothing, dragSub = Nothing, paint = Nothing, pressFill = Nothing }
     case st.dragging, st.paint of
       -- a press and release on a hit, without moving, removes it
       Just { kind: DHit lane step }, Just Undecided -> do
-        H.modify_ \s -> (modRhythmAt s.fixedSel (P.modifyCell lane step (P.removeIn s.fill)) s)
+        H.modify_ \s -> (modRhythmAt s.fixedSel (P.modifyCell lane step (P.removeIn (pressLayer st))) s)
           { selected = filter (_ /= { lane, step }) s.selected }
         persistLib
       Just { kind: DHit _ _ }, Just (Selecting _) -> pure unit
@@ -671,7 +671,7 @@ handleAction = case _ of
   CellDown lane step shift -> do
     s0 <- H.get
     sid <- setupDrag
-    let s = (thawed s0) { cursor = Just { lane, step } }
+    let s = (thawed s0) { cursor = Just { lane, step }, pressFill = Just (fillShown s0) }
         origin = { lane, step }
         lit = litAt s origin
         press = { kind: DHit lane step, startY: 0, startVal: 0 }
@@ -683,7 +683,7 @@ handleAction = case _ of
     else if lit then
       H.put s { dragging = Just press, dragSub = Just sid, paint = Just Undecided }
     else
-      H.put (modRhythmAt s.fixedSel (P.modifyCell lane step (P.addIn s.fill editVel)) s)
+      H.put (modRhythmAt s.fixedSel (P.modifyCell lane step (P.addIn (pressLayer s) editVel)) s)
         { selected = [], dragging = Just press, dragSub = Just sid, paint = Just Painting }
   -- Painting and erasing go along the origin's row only: a vertical drag on a
   -- hit crosses into the rows above and below, and must not erase them. A
@@ -694,20 +694,21 @@ handleAction = case _ of
       Just { kind: DHit lane0 step0 }, Just (Selecting base) ->
         let inRect sp = between (min lane0 lane) (max lane0 lane) sp.lane && between (min step0 step) (max step0 step) sp.step
             steps = maybe 0 _.steps (selectedPattern st)
-            rect = filter (litAt st) (filter inRect (do
+            rect = filter (litIn (pressLayer st) st) (filter inRect (do
                      l <- range 0 (P.kitSize - 1)
                      t <- range 0 (steps - 1)
                      pure { lane: l, step: t }))
         in H.modify_ _ { selected = base <> filter (\sp -> not (elem sp base)) rect }
       Just { kind: DHit lane0 step0 }, Just mode | lane == lane0 && step /= step0 ->
         let set f = modRhythmAt st.fixedSel (P.modifyCell lane step f)
-            add = P.addIn st.fill editVel
-            remove = P.removeIn st.fill
+            layer = pressLayer st
+            add = P.addIn layer editVel
+            remove = P.removeIn layer
         in case mode of
-          Painting -> H.modify_ \s -> if litAt s { lane, step } then s else set add s
+          Painting -> H.modify_ \s -> if litIn layer s { lane, step } then s else set add s
           Undecided -> H.modify_ \s -> (set remove (modRhythmAt s.fixedSel (P.modifyCell lane0 step0 remove) s))
             { paint = Just Erasing, selected = [] }
-          Erasing -> H.modify_ \s -> if litAt s { lane, step } then set remove s else s
+          Erasing -> H.modify_ \s -> if litIn layer s { lane, step } then set remove s else s
           _ -> pure unit
       _, _ -> pure unit
   SetCellVel d -> do
@@ -744,7 +745,7 @@ handleAction = case _ of
       in s { mutes = foldl (\m l -> if Kit.muted m l == on then m else Kit.toggleMute l m) s.mutes lanes }
     pushMutes
   ClearSelected -> do
-    H.modify_ \s -> (modSelectedCell (P.removeIn s.fill) s) { selected = [] }
+    H.modify_ \s -> (modSelectedCell (P.removeIn (fillShown s)) s) { selected = [] }
     persistLib
   -- The selection's keys (AC, 2026-10-14), unless a field has the focus:
   -- ⌫ clears the selected hits, ← and → move them a step (round the end),
@@ -1198,7 +1199,15 @@ targetIsField e = case E.target e of
 -- | Does a hit sound at this cell of the selected rhythm, as the grid shows
 -- | it (with the fill, or without)?
 litAt :: State -> Spot -> Boolean
-litAt s sp = maybe false (\p -> P.soundsAt s.fill p sp.lane sp.step) (selectedPattern s)
+litAt s = litIn (fillShown s) s
+
+-- | Does a hit sound at this cell with the fill on (true) or off?
+litIn :: Boolean -> State -> Spot -> Boolean
+litIn layer s sp = maybe false (\p -> P.soundsAt layer p sp.lane sp.step) (selectedPattern s)
+
+-- | The layer the press under way edits (what FILL showed when it began).
+pressLayer :: State -> Boolean
+pressLayer s = fromMaybe (fillShown s) s.pressFill
 
 -- | Move the selected hits `d` steps, round the end of the rhythm; what they
 -- | land on is written over.
@@ -1486,11 +1495,9 @@ gridsBand s =
         [ HH.text (maybe "" _.name (selectedPattern s)) ]
     , armBtn (if s.editing then "● EDITING" else "EDIT") s.editing ToggleEdit
     , armBtn "+ NEW" false NewPattern
-    -- a fill line on the rig marks the button: ◆ filling now, ◇ not now
-    , armBtn ("FILL" <> case s.rigFill of
-        Just true -> " ◆"
-        Just false -> " ◇"
-        Nothing -> "") s.fill (SetFill (not s.fill))
+    -- lit while FILL is shown: the player's own, or a fill line filling now
+    -- (the grid shows and edits that layer too); a press sets the player's
+    , armBtn "FILL" (fillShown s) (SetFill (not s.fill))
     , maybe (HH.text "") lengthControl (selectedPattern s)
     , cellStrip s
     ]

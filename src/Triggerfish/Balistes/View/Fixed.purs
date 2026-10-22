@@ -24,7 +24,7 @@ import Triggerfish.Ui.Style (engrave, style)
 import Halogen.Widgets.Svg (svgAttr, svgEl, svgOn)
 import Triggerfish.Balistes.Pattern as P
 import Triggerfish.Transport (Sounding(..))
-import Triggerfish.Balistes.Types (Action(..), State, activePattern)
+import Triggerfish.Balistes.Types (Action(..), State, activePattern, fillShown)
 import Triggerfish.Balistes.Widgets
   ( stepBtn, armBtn, svgRect, laneHead, laneColor, concatMap' )
 
@@ -133,7 +133,7 @@ fixedSvg s pat =
     rowVisuals row lane =
       range 0 (cols - 1) `concatMap'` \step ->
         let c = P.cellAt pat lane step
-            sounds = P.soundsAt s.fill pat lane step
+            sounds = P.soundsAt (fillShown s) pat lane step
             v = if sounds then c.vel else 0
             x = colX step
             y = toNumber row * rowH
@@ -147,7 +147,7 @@ fixedSvg s pat =
                        , svgAttr "stroke-width" "0.9", svgAttr "stroke-dasharray" "2 1.5", svgAttr "style" "pointer-events:none" ] [] ]
               else []
             -- in the fill, its own hits carry a brass bar along the top
-            fillMark = if s.fill && sounds && c.cond == P.CFill
+            fillMark = if fillShown s && sounds && c.cond == P.CFill
               then [ svgEl "rect"
                        [ svgAttr "x" (show (x + 2.0)), svgAttr "y" (show (y + 2.0))
                        , svgAttr "width" (show (colW - 4.0)), svgAttr "height" "3"
@@ -215,10 +215,10 @@ fixedSvg s pat =
           muted = Kit.muted s.mutes lane
       in laneHead { top: toNumber row * rowH, height: rowH, width: gutter, lane
                   , name: P.laneName lane, number: show (lane + 1), color: laneColor lane
-                  , opacity: if muted || (s.fill && fillMuted) then "0.3" else op
-                  , onMute: if s.fill then ToggleFillMute lane else ToggleMute [ lane ]
-                  , muted: if s.fill then fillMuted else muted
-                  , muteColor: if s.fill then "#b8975a" else "#8a3120" }
+                  , opacity: if muted || (fillShown s && fillMuted) then "0.3" else op
+                  , onMute: if fillShown s then ToggleFillMute lane else ToggleMute [ lane ]
+                  , muted: if fillShown s then fillMuted else muted
+                  , muteColor: if fillShown s then "#b8975a" else "#8a3120" }
     playhead =
       svgEl "rect"
         [ svgAttr "x" (show (colX here)), svgAttr "y" "0"
