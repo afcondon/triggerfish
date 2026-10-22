@@ -1789,10 +1789,16 @@ rackBar s =
               <> map (\g -> HH.i [ HP.attr (HH.AttrName "class") ("fa-solid fa-" <> g.icon), style ("font-size:15px;line-height:1;color:" <> g.color) ] []) (rackIcons (savedDoc s)) )
       else HH.text ""
     , publishStatus s
+    -- with labels on and none written yet, the dotted rules are easy to miss
+    -- (AC, 2026-10-22); one label on the page shows the idea, so the hint goes
+    , if s.showLabels && Array.null s.labels then
+        HH.span [ style "margin-left:auto;font:italic 12px Georgia,serif;color:#5a5648" ]
+          [ HH.text "click the dotted line under an output to name its jack" ]
+      else HH.text ""
     , HH.button
         [ HE.onClick \_ -> ToggleLabels
         , HP.title (if s.showLabels then "Hide the jack labels" else "Show the jack labels: a name under each output, for where its cable goes")
-        , style $ "margin-left:auto;display:flex;align-items:center;gap:5px;height:22px;padding:0 8px;border-radius:4px;cursor:pointer;"
+        , style $ (if s.showLabels && Array.null s.labels then "" else "margin-left:auto;") <> "display:flex;align-items:center;gap:5px;height:22px;padding:0 8px;border-radius:4px;cursor:pointer;"
             <> "font:11px Georgia,serif;"
             <> if s.showLabels then "border:1px solid #3f3c33;background:#3f3c33;color:#fff" else "border:1px solid #00000026;background:transparent;color:#5a5648"
         ]
