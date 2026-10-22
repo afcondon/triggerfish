@@ -61,6 +61,7 @@ import Triggerfish.Selene.EnvLibrary as Lib
 import Triggerfish.Selene.Model as M
 import Triggerfish.Selene.Source as Source
 import Triggerfish.Selene.Store as Store
+import Triggerfish.Selene.JackLabels as JL
 import Triggerfish.Selene.Wire as Wire
 import Triggerfish.Amphora as Amphora
 import Triggerfish.Library as Library
@@ -133,6 +134,11 @@ type State =
   -- (`Triggerfish.Library`); Nothing until opened
   , rackShelf :: Maybe (Library.Shelf Store.Rack)
   , moduleShelf :: Maybe (Library.Shelf Module)
+  -- Names written on jacks ("QD bd"), kept in Amphora (CR-6), and whether
+  -- this browser draws them: a line under every output, so off until asked.
+  , labels :: Array JL.JackLabel
+  , labelShelf :: Maybe (Library.Shelf JL.JackLabel)
+  , showLabels :: Boolean
   -- The live rack: what the modular is given, edited by hand, by drops and
   -- by Limulus. The racks in the library are saved, and change only when
   -- saved over (AC, 2026-10-05: the rebus shows live diverging from saved).
@@ -267,6 +273,9 @@ data Action
   | RemoveDest Int            -- take bank i off the rack and free its jacks (`selene $ off`)
   | RacksChanged              -- the racks changed in Amphora (another page)
   | ModulesChanged            -- the kept modules, likewise
+  | LabelsChanged             -- the jack labels, likewise
+  | ToggleLabels              -- draw the jack labels under the outputs, or not
+  | SetLabel String String    -- name a jack (its key, the text; "" takes it off)
   | PickStarter Int           -- apply library shape i to the selected envelope slot
   | EnvGrab EnvHandle Int Int -- mousedown on a breakpoint (handle, clientX, clientY)
   | EnvDragMove Int Int Int Boolean -- mousemove over the editing cell (x, y, buttons, shift)
@@ -294,6 +303,9 @@ component =
           , stageRack: Nothing
           , rackShelf: Nothing
           , moduleShelf: Nothing
+          , labels: []
+          , labelShelf: Nothing
+          , showLabels: false
           , modules: []
           , notice: ""
           , undoTo: Nothing
@@ -596,6 +608,11 @@ handleAction = case _ of
     _ <- H.subscribe (ModulesChanged <$ moduleE)
     modules <- liftEffect $ Library.open moduleDoc [] (HS.notify moduleL unit)
     H.modify_ _ { modules = modules.items, moduleShelf = Just modules.shelf }
+    { emitter: labelE, listener: labelL } <- liftEffect HS.create
+    _ <- H.subscribe (LabelsChanged <$ labelE)
+    labels <- liftEffect $ Library.open JL.doc [] (HS.notify labelL unit)
+    shown <- liftEffect JL.loadShown
+    H.modify_ _ { labels = labels.items, labelShelf = Just labels.shelf, showLabels = shown }
 
   -- The step is not drawn (the rings have no playhead): writing it on every
   -- tick redrew the whole page for nothing seen (2026-10-05, AC: CPU).
@@ -893,6 +910,23 @@ handleAction = case _ of
     for_ st.moduleShelf \shelf -> do
       ms <- liftEffect (Library.current shelf)
       H.modify_ _ { modules = ms }
+  LabelsChanged -> do
+    st <- H.get
+    for_ st.labelShelf \shelf -> do
+      ls <- liftEffect (Library.current shelf)
+      H.modify_ _ { labels = ls }
+  ToggleLabels -> do
+    st <- H.get
+    liftEffect (JL.saveShown (not st.showLabels))
+    H.modify_ _ { showLabels = not st.showLabels }
+  SetLabel jack text -> do
+    st <- H.get
+    let ls = JL.setLabel jack text st.labels
+    case st.labelShelf of
+      Nothing -> H.modify_ _ { labels = ls }
+      Just shelf -> do
+        kept <- liftEffect (Library.put shelf ls)
+        H.modify_ _ { labels = kept }
   -- the rig's answer to a dropped module
   SeleneReply raw | Just rest <- Str.stripPrefix (Str.Pattern "OK: selene: ") raw -> H.modify_ _ { publishMsg = Just ("✓ " <> rest) }
   SeleneReply raw | Just rest <- Str.stripPrefix (Str.Pattern "ERR: selene: ") raw -> H.modify_ _ { publishMsg = Just ("✗ " <> rest) }
@@ -1599,7 +1633,7 @@ freeRow s target jacks =
           , HH.span [ style $ engrave <> ";font-size:8px;opacity:0.6" ] [ HH.text ("→ " <> M.placeWire target jacks) ]
           ]
       , HH.div [ style "display:flex;gap:7px;align-items:center;opacity:0.55" ]
-          (map (\_ -> HH.span [ style "width:46px;height:46px;border-radius:6px;border:1px dashed #00000022" ] []) (Array.range 1 jacks.count))
+          (map (\k -> labelled s (JL.jackKey target (jacks.first + k)) (HH.span [ style "width:46px;height:46px;border-radius:6px;border:1px dashed #00000022" ] [])) (Array.range 0 (jacks.count - 1)))
       , HH.span [ style "font:italic 12px Georgia,serif;color:#6a6657;opacity:0.55" ] [ HH.text "drop a module here" ]
       ]
   where
@@ -1755,6 +1789,16 @@ rackBar s =
               <> map (\g -> HH.i [ HP.attr (HH.AttrName "class") ("fa-solid fa-" <> g.icon), style ("font-size:15px;line-height:1;color:" <> g.color) ] []) (rackIcons (savedDoc s)) )
       else HH.text ""
     , publishStatus s
+    , HH.button
+        [ HE.onClick \_ -> ToggleLabels
+        , HP.title (if s.showLabels then "Hide the jack labels" else "Show the jack labels: a name under each output, for where its cable goes")
+        , style $ "margin-left:auto;display:flex;align-items:center;gap:5px;height:22px;padding:0 8px;border-radius:4px;cursor:pointer;"
+            <> "font:11px Georgia,serif;"
+            <> if s.showLabels then "border:1px solid #3f3c33;background:#3f3c33;color:#fff" else "border:1px solid #00000026;background:transparent;color:#5a5648"
+        ]
+        [ HH.i [ HP.attr (HH.AttrName "class") "fa-solid fa-tag", style "font-size:10px;line-height:1" ] []
+        , HH.text "labels"
+        ]
     ]
 
 publishStatus :: forall m. State -> H.ComponentHTML Action Slots m
@@ -1831,7 +1875,43 @@ destinationRow s ep sel i d =
         <> "background:#00000008;border:1px solid #00000012" ]
     [ destHeader s i d
     -- a muted bank is still drawn, and editable, but faded: its jacks are at 0 V
-    , HH.div [ style (slotWrap d.bank <> if d.muted then ";opacity:0.35" else "") ] (slotViews ep i sel d.target d.mutedSlots d.bank)
+    , HH.div [ style (slotWrap d.bank <> if d.muted then ";opacity:0.35" else "") ]
+        (Array.zipWith (labelled s) (map (JL.jackKey d.target) (slotJacks d)) (slotViews ep i sel d.target d.mutedSlots d.bank))
+    ]
+
+-- | The jack each drawn output is on, in drawing order: one jack a slot, or a
+-- | voice's first (its pitch), a voice being as wide as its outputs.
+slotJacks :: M.Destination -> Array Int
+slotJacks d = case d.bank of
+  M.GVoice vb -> mapWithIndex (\k _ -> d.jacks.first + k * M.voiceStride vb) vb.voices
+  _ -> map (_ + d.jacks.first) (range 0 (M.slotCount - 1))
+
+-- | An output with the name written on its jack: under it when labels are
+-- | drawn, and as its tooltip always. Wrapped either way, so turning labels
+-- | on or off never moves the cells Halogen is patching.
+labelled :: forall m. State -> String -> H.ComponentHTML Action Slots m -> H.ComponentHTML Action Slots m
+labelled s jack cell =
+  HH.div
+    ( [ style "display:flex;flex-direction:column;gap:3px;flex:0 0 auto;align-items:stretch" ]
+        <> (if name /= "" then [ HP.title name ] else []) )
+    ( [ cell ] <> if s.showLabels then [ labelField jack name ] else [] )
+  where
+  name = JL.labelAt s.labels jack
+
+-- | A jack's label, edited where it is drawn: it reads as text, and a click
+-- | makes it editable. Kept on Enter or leaving the field.
+labelField :: forall m. String -> String -> H.ComponentHTML Action Slots m
+labelField jack name =
+  HH.input
+    [ HP.value name
+    -- no placeholder word: forty "label"s down the page is noise; the dotted
+    -- rule says a name can go here, and the title says what for
+    , HP.attr (HH.AttrName "size") "1"
+    , HP.attr (HH.AttrName "spellcheck") "false"
+    , HP.title ("The name on " <> jack <> ": where its cable goes. Empty to take it off.")
+    , HE.onValueChange (SetLabel jack)
+    , style $ "width:100%;box-sizing:border-box;border:none;border-bottom:1px dotted #00000026;"
+        <> "background:transparent;padding:1px 2px;font:italic 11px Georgia,serif;color:#1c1a12;text-align:center;outline:none"
     ]
 
 -- | The slot layout: the CV/gate kinds flow eight-across. (POLYTRIG's 4×2
