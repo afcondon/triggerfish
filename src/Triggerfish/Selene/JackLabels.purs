@@ -21,6 +21,7 @@ module Triggerfish.Selene.JackLabels
   , setLabel
   , loadShown
   , saveShown
+  , focusField
   ) where
 
 import Prelude
@@ -33,6 +34,7 @@ import Effect (Effect)
 import Simple.JSON (readJSON, writeJSON)
 import Triggerfish.Library as Library
 import Triggerfish.Selene.Model as M
+import Web.HTML.HTMLElement (HTMLElement)
 
 -- | One jack's label. `jack` is the bank's wire name and the jack's number
 -- | on it, 1-based as the panel prints it: `fh2_1:5`, `es9gt0:3`, `midi1:2`.
@@ -72,3 +74,6 @@ setLabel jack text labels = case find (\l -> l.jack == jack) labels of
 -- | this browser only.
 foreign import loadShown :: Effect Boolean
 foreign import saveShown :: Boolean -> Effect Unit
+
+-- | Put the cursor in a label just opened, its text selected to retype.
+foreign import focusField :: HTMLElement -> Effect Unit

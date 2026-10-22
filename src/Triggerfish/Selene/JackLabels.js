@@ -17,3 +17,8 @@ export const saveShown = (on) => () => {
     /* private mode / no storage: the default (off) is fine */
   }
 };
+
+export const focusField = (el) => () => {
+  el.focus();
+  if (el.select) el.select();
+};

@@ -17,7 +17,7 @@ module Triggerfish.Selene.Component (component, Output(..)) where
 import Prelude
 
 import Data.Array (deleteAt, drop, elemIndex, filter, findIndex, insertAt, length, mapMaybe, mapWithIndex, modifyAt, null, range, (!!))
-import Data.Foldable (all, for_, foldl, foldr)
+import Data.Foldable (all, for_, foldl, foldr, traverse_)
 import Data.Tuple (Tuple(..), fst, snd)
 import Web.UIEvent.MouseEvent as ME
 import Web.UIEvent.KeyboardEvent (KeyboardEvent)
@@ -139,6 +139,7 @@ type State =
   , labels :: Array JL.JackLabel
   , labelShelf :: Maybe (Library.Shelf JL.JackLabel)
   , showLabels :: Boolean
+  , editingLabel :: Maybe String   -- the jack whose label is open for typing
   -- The live rack: what the modular is given, edited by hand, by drops and
   -- by Limulus. The racks in the library are saved, and change only when
   -- saved over (AC, 2026-10-05: the rebus shows live diverging from saved).
@@ -276,6 +277,8 @@ data Action
   | LabelsChanged             -- the jack labels, likewise
   | ToggleLabels              -- draw the jack labels under the outputs, or not
   | SetLabel String String    -- name a jack (its key, the text; "" takes it off)
+  | EditLabel String          -- open a jack's label for typing
+  | EndLabel                  -- close it (left the field)
   | PickStarter Int           -- apply library shape i to the selected envelope slot
   | EnvGrab EnvHandle Int Int -- mousedown on a breakpoint (handle, clientX, clientY)
   | EnvDragMove Int Int Int Boolean -- mousemove over the editing cell (x, y, buttons, shift)
@@ -306,6 +309,7 @@ component =
           , labels: []
           , labelShelf: Nothing
           , showLabels: false
+          , editingLabel: Nothing
           , modules: []
           , notice: ""
           , undoTo: Nothing
@@ -923,10 +927,14 @@ handleAction = case _ of
     st <- H.get
     let ls = JL.setLabel jack text st.labels
     case st.labelShelf of
-      Nothing -> H.modify_ _ { labels = ls }
+      Nothing -> H.modify_ _ { labels = ls, editingLabel = Nothing }
       Just shelf -> do
         kept <- liftEffect (Library.put shelf ls)
-        H.modify_ _ { labels = kept }
+        H.modify_ _ { labels = kept, editingLabel = Nothing }
+  EditLabel jack -> do
+    H.modify_ _ { editingLabel = Just jack }
+    H.getHTMLElementRef labelRef >>= traverse_ (liftEffect <<< JL.focusField)
+  EndLabel -> H.modify_ _ { editingLabel = Nothing }
   -- the rig's answer to a dropped module
   SeleneReply raw | Just rest <- Str.stripPrefix (Str.Pattern "OK: selene: ") raw -> H.modify_ _ { publishMsg = Just ("✓ " <> rest) }
   SeleneReply raw | Just rest <- Str.stripPrefix (Str.Pattern "ERR: selene: ") raw -> H.modify_ _ { publishMsg = Just ("✗ " <> rest) }
@@ -1530,7 +1538,8 @@ data RackRow = Placed Int | Free M.Target M.Jacks | HeldRow Held
 
 -- | A run of a bank's jacks held by something drawn elsewhere (a voice
 -- | layout's gates), and what.
-type Held = { target :: M.Target, jacks :: M.Jacks, by :: String }
+-- | `channels`: the MIDI channel whose gate each jack is, in jack order.
+type Held = { target :: M.Target, jacks :: M.Jacks, by :: String, channels :: Array Int }
 
 -- | Where a row is: a bank, and the run of its jacks.
 type Place = { target :: M.Target, jacks :: M.Jacks }
@@ -1565,7 +1574,7 @@ rackRows s =
 voiceGatesOf :: M.Selene -> Array Held
 voiceGatesOf sel = Array.concatMap (\d -> case d.bank of
   M.GVoice vb -> Array.fromFoldable vb.gates <#> \g ->
-    { target: g.target, jacks: g.jacks
+    { target: g.target, jacks: g.jacks, channels: map _.channel vb.voices
     , by: "the gates of the POLYVOICE on " <> placeLabel { target: d.target, jacks: d.jacks } <> ", voice by voice" }
   _ -> []) sel.destinations
 
@@ -1659,8 +1668,22 @@ heldRow s h =
             , HH.span [ style "font:13px Georgia,serif;color:#1c1a12" ]
                 [ HH.text (placeLabel { target: h.target, jacks: h.jacks }) ]
             ]
+        -- each gate jack drawn, with the voice it belongs to, so its cable
+        -- can be labelled like any other (CR-6)
+        , HH.div [ style "display:flex;gap:7px;align-items:flex-start" ]
+            (mapWithIndex (\k n -> labelled s (JL.jackKey h.target n) (gateJack (h.channels !! k))) (M.jackNumbers h.jacks))
         , HH.span [ style "font:italic 12px Georgia,serif;color:#6a6657" ] [ HH.text h.by ]
         ]
+
+-- | A held gate jack: the voice whose gate it is, by its channel.
+gateJack :: forall m. Maybe Int -> H.ComponentHTML Action Slots m
+gateJack ch =
+  HH.span
+    [ style $ "width:46px;height:34px;border-radius:6px;border:1px solid #00000022;background:#ffffff44;"
+        <> "display:flex;flex-direction:column;align-items:center;justify-content:center;gap:1px" ]
+    [ HH.span [ style "font-family:'SF Mono',Menlo,monospace;font-size:11px;color:#1c1a12" ] [ HH.text (maybe "" (\c -> "ch " <> show c) ch) ]
+    , cellCaption "gate"
+    ]
 
 -- | Which half of its bank a run is in: 1 (jacks 1-4), 5 (jacks 5-8), or
 -- | neither (a whole bank, or across the middle).
@@ -1900,25 +1923,46 @@ labelled s jack cell =
   HH.div
     ( [ style "display:flex;flex-direction:column;gap:3px;flex:0 0 auto;align-items:stretch" ]
         <> (if name /= "" then [ HP.title name ] else []) )
-    ( [ cell ] <> if s.showLabels then [ labelField jack name ] else [] )
+    ( [ cell ] <> if s.showLabels then [ labelField (s.editingLabel == Just jack) jack name ] else [] )
   where
   name = JL.labelAt s.labels jack
 
--- | A jack's label, edited where it is drawn: it reads as text, and a click
--- | makes it editable. Kept on Enter or leaving the field.
-labelField :: forall m. String -> String -> H.ComponentHTML Action Slots m
-labelField jack name =
-  HH.input
-    [ HP.value name
-    -- no placeholder word: forty "label"s down the page is noise; the dotted
-    -- rule says a name can go here, and the title says what for
-    , HP.attr (HH.AttrName "size") "1"
-    , HP.attr (HH.AttrName "spellcheck") "false"
-    , HP.title ("The name on " <> jack <> ": where its cable goes. Empty to take it off.")
-    , HE.onValueChange (SetLabel jack)
-    , style $ "width:100%;box-sizing:border-box;border:none;border-bottom:1px dotted #00000026;"
-        <> "background:transparent;padding:1px 2px;font:italic 11px Georgia,serif;color:#1c1a12;text-align:center;outline:none"
-    ]
+-- | A jack's label, edited where it is drawn. Read, it is text that wraps
+-- | under its output, so a long name is never cut to the cell's width; a
+-- | click opens it as a field, kept on Enter or on leaving it.
+labelField :: forall m. Boolean -> String -> String -> H.ComponentHTML Action Slots m
+labelField editing jack name
+  | editing =
+      HH.input
+        [ HP.ref labelRef
+        , HP.value name
+        , HP.attr (HH.AttrName "size") "1"
+        , HP.attr (HH.AttrName "spellcheck") "false"
+        , HP.title (labelTip jack)
+        , HE.onValueChange (SetLabel jack)
+        , HE.onBlur \_ -> EndLabel
+        , style $ "width:100%;box-sizing:border-box;border:none;border-bottom:1px solid #3f3c33;"
+            <> "background:#ffffffaa;padding:1px 2px;font:italic 11px Georgia,serif;color:#1c1a12;text-align:center;outline:none"
+        ]
+  | otherwise =
+      -- no placeholder word: forty "label"s down the page is noise; the
+      -- dotted rule says a name can go here, and the title says what for
+      HH.span
+        [ HE.onClick \_ -> EditLabel jack
+        , HP.title (labelTip jack)
+        -- width 0 and min-width 100%: as wide as the output above it and
+        -- no wider, so a long name wraps rather than pushing the row apart
+        , style $ "display:block;width:0;min-width:100%;box-sizing:border-box;min-height:15px;cursor:text;"
+            <> "border-bottom:1px dotted #00000026;padding:1px 2px;font:italic 11px/1.2 Georgia,serif;color:#1c1a12;"
+            <> "text-align:center;white-space:normal;overflow-wrap:anywhere"
+        ]
+        [ HH.text name ]
+
+labelTip :: String -> String
+labelTip jack = "The name on " <> jack <> ": where its cable goes. Empty to take it off."
+
+labelRef :: H.RefLabel
+labelRef = H.RefLabel "jack-label"
 
 -- | The slot layout: the CV/gate kinds flow eight-across. (POLYTRIG's 4×2
 -- | mini-notation grid went with it to Balistes' TIDAL tab.)
