@@ -112,8 +112,8 @@ condDisplay c = P.condLabel c
 fixedSvg :: forall m. State -> P.FixedPattern -> H.ComponentHTML Action () m
 fixedSvg s pat =
   let
-    -- folded to the lanes in use, or the whole 16-lane kit when editing.
-    lanes = if s.editing then range 0 (P.kitSize - 1) else P.usedLanes pat
+    -- folded to the lanes in use, or the whole 16-lane kit when unfolded.
+    lanes = if s.unfolded then range 0 (P.kitSize - 1) else P.usedLanes pat
     nLanes = length lanes
     cols = pat.steps
     -- The drawing is always sixteen of the old 38-wide cells across, whatever
@@ -153,7 +153,7 @@ fixedSvg s pat =
                        , svgAttr "width" (show (colW - 4.0)), svgAttr "height" "3"
                        , svgAttr "fill" "#b8975a", svgAttr "style" "pointer-events:none" ] [] ]
               else []
-            slot = if s.editing && v <= 0 && c.vel <= 0
+            slot = if s.unfolded && v <= 0 && c.vel <= 0
               then [ svgEl "rect"
                        [ svgAttr "x" (show (x + 2.0)), svgAttr "y" (show (y + 2.0))
                        , svgAttr "width" (show (colW - 4.0)), svgAttr "height" (show (rowH - 5.0)), svgAttr "rx" "2"
@@ -206,7 +206,7 @@ fixedSvg s pat =
         , svgAttr "y2" (show (toNumber row * rowH))
         , svgAttr "stroke" "#3f3c33", svgAttr "stroke-opacity" "0.12", svgAttr "stroke-width" "0.6"
         , svgAttr "style" "pointer-events:none" ] []
-    -- empty lanes (only visible while editing) are dimmed; named-and-used ones full.
+    -- empty lanes (only visible while unfolded) are dimmed; named-and-used ones full.
     rowLabel row =
       let lane = laneAt row
           op = if laneEmpty lane then "0.4" else "0.9"
@@ -230,7 +230,7 @@ fixedSvg s pat =
     svgEl "svg"
       [ svgAttr "viewBox" ("0 0 " <> show w <> " " <> show h)
       -- Aspect-preserving at full band width, which now lands at ~180px for the
-      -- usual 6 lanes because `colW` matches the band's shape. EDIT mode reveals
+      -- usual 6 lanes because `colW` matches the band's shape. UNFOLD reveals
       -- all 16 lanes and legitimately needs more room, so the cap is generous and
       -- the surface scrolls rather than squashing it.
       , svgAttr "width" "100%"

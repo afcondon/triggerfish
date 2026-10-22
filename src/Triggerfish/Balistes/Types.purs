@@ -183,9 +183,9 @@ type State =
   -- recalling a snapshot never mutates the library. Cleared on any deliberate
   -- tab / library selection. See `activePattern`.
   , scratchFixed :: Maybe P.FixedPattern
-  -- EDIT mode for a fixed rhythm: reveal all 16 lanes (greyed where empty) so
+  -- UNFOLD for a fixed rhythm: reveal all 16 lanes (greyed where empty) so
   -- you can add voices; cells are click-to-toggle either way.
-  , editing :: Boolean
+  , unfolded :: Boolean             -- all 16 lanes drawn (UNFOLD), not only those in use
   -- What a beat-glyph click means. Not persisted: it is a posture you are in for
   -- the next few minutes, not a preference (cf. Transport.Store, which persists
   -- the authority mode and nothing about what was playing).
@@ -270,7 +270,7 @@ data Action
   | DragEnd
   | FlatGroove
   | SelectPattern Active       -- switch the playing pattern (Grids / a rhythm)
-  | ToggleEdit                 -- reveal all 16 lanes on the active fixed rhythm
+  | ToggleUnfold               -- draw all 16 lanes of the rhythm, or only those in use
   | CellDown Int Int Boolean   -- a press on a cell (lane, step); shift selects
   | PaintOver Int Int          -- the pointer entered a cell mid-press
   | SetCellVel Int             -- nudge the selected cell's velocity

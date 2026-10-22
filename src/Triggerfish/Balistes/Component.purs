@@ -114,7 +114,7 @@ component =
         , nowMicros: 0.0, dragging: Nothing, paint: Nothing, dragSub: Nothing
         , presets: []
         , identity: Nothing, lastChip: Nothing
-        , active: AGrids, editing: false, clickMode: Assemble, laneEditOpen: false, fixedSel: 0, lane: "", laneReadout: "", selected: [], cursor: Nothing, copied: [], mutes: 0, fill: false, fillHeld: false, rigFill: Nothing, rigFillQueue: [], pressFill: Nothing
+        , active: AGrids, unfolded: false, clickMode: Assemble, laneEditOpen: false, fixedSel: 0, lane: "", laneReadout: "", selected: [], cursor: Nothing, copied: [], mutes: 0, fill: false, fillHeld: false, rigFill: Nothing, rigFillQueue: [], pressFill: Nothing
         , scratchFixed: Nothing
         , stageRhythms: Nothing, shelf: Nothing, undoDelete: Nothing, follow: Nothing, followQueue: [] }
     , render
@@ -660,7 +660,7 @@ handleAction = case _ of
     when (st.sounding == Rig) case a of
       AFixed _ -> repushFixed
       AGrids -> pushHandoff st
-  ToggleEdit -> H.modify_ \s -> s { editing = not s.editing }
+  ToggleUnfold -> H.modify_ \s -> s { unfolded = not s.unfolded }
   -- A press on a cell (AC, 2026-10-14): on an empty cell it adds a hit and
   -- paints along the row; on a hit, what it does waits for the pointer (see
   -- `Paint`). Shift-click adds a hit to the selection or takes it out, and
@@ -795,13 +795,13 @@ handleAction = case _ of
           p = M.bake ("grids " <> show s.bal.x <> "·" <> show s.bal.y) s.bal
       in s { presets = s.presets <> [ presetOfRhythm p ], fixedSel = n, scratchFixed = Nothing, selected = [] }
     persist
-  -- a fresh empty rhythm, selected and opened in EDIT so all 16 lanes show.
+  -- a fresh empty rhythm, selected and UNFOLDED so all 16 lanes show.
   NewPattern -> do
     H.modify_ \s ->
       let n = length s.presets
           p = P.emptyPattern ("pattern " <> show (length (rhythmEntries s) + 1)) 32
       in s { presets = s.presets <> [ presetOfRhythm p ]
-           , active = AFixed n, fixedSel = n, editing = true, selected = [] }
+           , active = AFixed n, fixedSel = n, unfolded = true, selected = [] }
     persistLib
   -- A lane's head was clicked: one hit of it, where the routing sends it. In
   -- Atlantis the rig plays it (`balistes-hit`), through the table it holds, so
@@ -1493,7 +1493,9 @@ gridsBand s =
     -- the one place a beat is named, so the drag carries what the row says.
     [ HH.span [ style "font-family:Georgia,serif;font-size:12px;color:#1c1a12;min-width:80px" ]
         [ HH.text (maybe "" _.name (selectedPattern s)) ]
-    , armBtn (if s.editing then "● EDITING" else "EDIT") s.editing ToggleEdit
+    -- UNFOLD (was EDIT, AC 2026-10-22): it only ever drew the empty lanes;
+    -- the grid edits whether it is on or not
+    , armBtn "UNFOLD" s.unfolded ToggleUnfold
     , armBtn "+ NEW" false NewPattern
     -- lit while FILL is shown: the player's own, or a fill line filling now
     -- (the grid shows and edits that layer too); a press sets the player's
