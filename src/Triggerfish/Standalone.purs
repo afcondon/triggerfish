@@ -100,9 +100,9 @@ type Config o =
   , chipOf :: o -> Maybe (Maybe ChipView)
   , armOf :: o -> Maybe Boolean
   , markOf :: o -> Maybe Number
-  -- | whether the page has a Play: Selene does not, since what it applies
-  -- | runs on the modular from the moment it is applied, and the Dashboard
-  -- | stops and resumes it there
+  -- | whether the page's Play plays the page: Selene's does not, since what
+  -- | it applies runs on the rig with or without a page; its Play and Stop
+  -- | set whether it runs there (`selene $ play` / `hush`, CR-11)
   , playable :: Boolean
   -- | the transport on shift-space rather than space: Vetula, where space
   -- | hears the hovered chord or the one in hand (AC, 2026-10-08)
@@ -161,9 +161,9 @@ type State =
   -- Play resumes until something is recalled here; and whether it plays now
   , line :: Maybe String
   , lineOn :: Boolean
-  -- hushed on the rig (`<machine> $ hush`, from anywhere): a machine with no
-  -- transport here (Selene, whose signals run with or without a page) shows
-  -- it, with a resume
+  -- stopped on the rig (`<machine> $ hush`, or `hush`, from anywhere): a
+  -- machine with no transport here (Selene, whose signals run with or
+  -- without a page) draws its Play and Stop from this, asked for on connect
   , hushed :: Boolean
   }
 
@@ -190,6 +190,7 @@ data Action o
   | RigLine String
   | RigHush Boolean
   | Resume
+  | StopRig
   | RoutingChanged
   | FromMachine o
   | Key E.Event
@@ -444,8 +445,9 @@ handleAction cfg = case _ of
       publishStage cfg
       announce cfg
   RigHush h -> H.modify_ _ { hushed = h }
-  -- resume what the rig hushed (Selene's `selene $ play`)
+  -- resume what the rig hushed (Selene's `selene $ play`), or stop it
   Resume -> for_ (Stage.slotOf cfg.which) \m -> toRig ("tidal " <> m <> " $ play")
+  StopRig -> for_ (Stage.slotOf cfg.which) \m -> toRig ("tidal " <> m <> " $ hush")
   RigHushed -> do
     H.modify_ _ { lineOn = false }
     whenM (H.gets _.playing) do
@@ -468,6 +470,9 @@ handleAction cfg = case _ of
       Nothing -> pure false
       Just bin -> liftEffect $ Transport.isConnected (Binnacle.socket bin)
     when (ok /= st.rigUp) (H.modify_ _ { rigUp = ok, staged = Nothing })
+    -- a machine that runs on the rig without a page: is it running there?
+    -- (answered as a stop or a play is told, `hushed selene`/`played selene`)
+    when (ok && not st.rigUp && not cfg.playable) $ for_ (Stage.slotOf cfg.which) \m -> toRig (m <> "-running")
     -- The rig came back (an Architeuthis restart, say): its voices went with
     -- it, and a machine still playing in Atlantis changed no mode, so nothing
     -- else would hand it back. Say how it sounds again, which hands the
@@ -825,7 +830,9 @@ bar cfg st =
       -- the rig is the one playing.
       <> (if st.mode == Atlantis then [ atlantisTag ] else [])
       <> (if cfg.playable then [ button (if st.playing then "■ Stop" else "▶ Play") TogglePlay ] else [])
-      <> (if not cfg.playable && st.hushed then [ button "Hushed · ▶ resume" Resume ] else [])
+      -- a machine that runs on the rig with or without a page (Selene) has
+      -- the same button, drawing and setting whether it runs there (CR-11)
+      <> (if not cfg.playable then [ button (if st.hushed then "▶ Play" else "■ Stop") (if st.hushed then Resume else StopRig) ] else [])
       -- Limulus combines the machines, on the rig: its drawer on the right,
       -- in Atlantis
       <> [ HH.span [ style "display:flex;align-items:center;min-width:40px" ] [ chipIcons st.chip ] ]

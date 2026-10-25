@@ -33,7 +33,7 @@ import Data.String.Common (joinWith)
 import Effect.Aff.Class (class MonadAff)
 import Effect.Class (liftEffect)
 import Effect.Timer (setInterval)
-import Data.Either (hush)
+import Data.Either (Either(..), either, hush)
 import Data.Nullable (Nullable, toMaybe)
 import Data.Number as Number
 import Foreign.Object (Object)
@@ -79,7 +79,7 @@ import Triggerfish.SourceQuery (Query(..))
 import Triggerfish.Transport (Sounding(..))
 import Triggerfish.Rig (availableTargets, defaultRig)
 import Halogen.Widgets.Select as Select
-import Data.Maybe (Maybe(..), fromMaybe, isJust, maybe)
+import Data.Maybe (Maybe(..), fromMaybe, isJust, isNothing, maybe)
 import Binnacle.Time (dateNow)
 
 -- | The rack view hosts one cascade target-picker per destination, keyed by
@@ -937,24 +937,35 @@ handleAction = case _ of
     H.modify_ _ { editingLabel = Just jack }
     H.getHTMLElementRef labelRef >>= traverse_ (liftEffect <<< JL.focusField)
   EndLabel -> H.modify_ _ { editingLabel = Nothing }
-  -- A MIDI signal's channel or CC, typed: kept when it is in range (the rack
-  -- text then says it, and the rig sends on it), else the field goes back
-  -- to what it was and the reason is said.
+  -- A MIDI signal's channel, CC or span, typed: kept when it is in range and
+  -- takes no other signal's CC (the rack text then says it, and the rig
+  -- sends on it), else the field goes back to what it was and the reason is
+  -- said. An empty CC (or `-`) is none: that signal sends nothing.
   SetMidiOut i k which e -> for_ (target e >>= HInput.fromEventTarget) \field -> do
     st <- H.get
-    text <- liftEffect (HInput.value field)
+    text <- liftEffect (Str.trim <$> HInput.value field)
     let
       (Tuple lo hi) = if which == "channel" then Tuple 1 16 else Tuple 0 127
-      set v o = if which == "channel" then o { channel = v } else o { cc = v }
       was = (st.sel.destinations !! i) >>= \d -> M.midiOutsOf d !! k
-    case Int.fromString (Str.trim text) of
-      Just v | v >= lo && v <= hi ->
-        editDest i \d -> d { midi = fromMaybe (M.midiOutsOf d) (modifyAt k (set v) (M.midiOutsOf d)) }
+      parsed = case Int.fromString text of
+        Just v | v >= lo && v <= hi -> Right (Just v)
+        _ | which == "cc" && (text == "" || text == "-") -> Right Nothing
+        _ -> Left (which <> " is a whole number from " <> show lo <> " to " <> show hi <> (if which == "cc" then ", or empty for none" else "") <> ", not " <> text)
+      set v o = case which of
+        "channel" -> o { channel = fromMaybe o.channel v }
+        "lo" -> o { lo = fromMaybe o.lo v }
+        "hi" -> o { hi = fromMaybe o.hi v }
+        _ -> o { cc = v }
+      edited d = d { midi = fromMaybe (M.midiOutsOf d) (modifyAt k (set (either (const Nothing) identity parsed)) (M.midiOutsOf d)) }
+      next = st.sel { destinations = fromMaybe st.sel.destinations (modifyAt i edited st.sel.destinations) }
+      verdict = parsed >>= \_ -> maybe (Right unit) Left (M.midiClash next)
+    case verdict of
+      Right _ -> editDest i edited
       -- refused: the field shows what is kept again (no state changed, so
       -- no redraw would), and says why
-      _ -> do
-        for_ was \o -> liftEffect (HInput.setValue (show (if which == "channel" then o.channel else o.cc)) field)
-        H.modify_ _ { publishMsg = Just (which <> " is a whole number from " <> show lo <> " to " <> show hi <> ", not " <> text) }
+      Left why -> do
+        for_ was \o -> liftEffect (HInput.setValue (midiFieldText which o) field)
+        H.modify_ _ { publishMsg = Just why }
   -- the rig's answer to a dropped module
   SeleneReply raw | Just rest <- Str.stripPrefix (Str.Pattern "OK: selene: ") raw -> H.modify_ _ { publishMsg = Just ("✓ " <> rest) }
   SeleneReply raw | Just rest <- Str.stripPrefix (Str.Pattern "ERR: selene: ") raw -> H.modify_ _ { publishMsg = Just ("✗ " <> rest) }
@@ -1936,25 +1947,42 @@ destinationRow s ep sel i d =
   outs = M.midiOutsOf d
 
 -- | A MIDI row's signal with where it goes under it: its channel and CC,
--- | each a field, since they are what the instrument learns.
+-- | since they are what the instrument learns, and the span of CC values it
+-- | covers (Ableton's mapping has no attenuverter). A signal with no CC
+-- | sends nothing, and is drawn faded.
 withMidiOut :: forall m. Int -> { slot :: Int, out :: M.MidiOut } -> H.ComponentHTML Action Slots m -> H.ComponentHTML Action Slots m
 withMidiOut i o cell =
   HH.div [ style "display:flex;flex-direction:column;gap:3px;align-items:center" ]
-    [ cell
-    , HH.div [ style "display:flex;gap:3px;align-items:center;font:9px 'SF Mono',Menlo,monospace;color:#5a5648" ]
-        [ HH.text "ch", field "channel" o.out.channel 2, HH.text "cc", field "cc" o.out.cc 3 ]
+    [ HH.div [ style (if isNothing o.out.cc then "opacity:0.4" else "") ] [ cell ]
+    , HH.div [ style row ]
+        [ HH.text "ch", field "channel" 2, HH.text "cc", field "cc" 3 ]
+    , HH.div [ style row ]
+        [ field "lo" 3, HH.text "–", field "hi" 3 ]
     ]
   where
-  field which v size =
+  row = "display:flex;gap:3px;align-items:center;font:9px 'SF Mono',Menlo,monospace;color:#5a5648"
+  field which size =
     HH.input
-      [ HP.value (show v)
+      [ HP.value (midiFieldText which o.out)
+      , HP.placeholder (if which == "cc" then "—" else "")
       , HP.attr (HH.AttrName "size") (show size)
       , HP.attr (HH.AttrName "inputmode") "numeric"
-      , HP.title (if which == "channel" then "The MIDI channel this signal is sent on (1-16)" else "The controller this signal is sent as (0-127); the instrument learns it")
+      , HP.title case which of
+          "channel" -> "The MIDI channel this signal is sent on (1-16)"
+          "cc" -> "The controller this signal is sent as (0-127), which the instrument learns; empty for none, and it sends nothing"
+          _ -> "The span of CC values the signal's swing covers (0-127); lo above hi turns it upside down"
       , HE.handler (EventType "change") (SetMidiOut i o.slot which)
       , style $ "width:" <> show (size * 8 + 4) <> "px;box-sizing:border-box;border:none;border-bottom:1px dotted #00000040;"
           <> "background:transparent;padding:0 1px;font:10px 'SF Mono',Menlo,monospace;color:#1c1a12;text-align:center;outline:none"
       ]
+
+-- | What a MIDI signal's field shows: a number, or nothing for no CC.
+midiFieldText :: String -> M.MidiOut -> String
+midiFieldText which o = case which of
+  "channel" -> show o.channel
+  "lo" -> show o.lo
+  "hi" -> show o.hi
+  _ -> maybe "" show o.cc
 
 -- | The jack each drawn output is on, in drawing order: one jack a slot, or a
 -- | voice's first (its pitch), a voice being as wide as its outputs.
