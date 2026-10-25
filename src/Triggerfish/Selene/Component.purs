@@ -157,6 +157,10 @@ type State =
   -- the MIDI signal learned on the rig (its row and signal, from 1), while
   -- the rig sends no other MIDI; told by the rig, as every page is
   , learning :: Maybe { row :: Int, slot :: Int }
+  -- what each MIDI signal mapped in Live is doing, told by the rig
+  -- (selene_ableton): whether Live answers, and by signal ("1 2" is MIDI 1's
+  -- signal 2) its state and why (docs/kb/plans/selene-ableton-destinations.md)
+  , destinations :: { live :: Boolean, signals :: Map String { state :: String, said :: String } }
   -- The unified glyph-chip PRESET bank (docs/DESIGN-scene-modal.md): captured rack
   -- docs, anonymous or named, freely intermixed. `identity` is the parked preset's
   -- content (the chip glyph; ghosts when the live doc diverges from it); `lastChip`
@@ -285,6 +289,8 @@ data Action
   | SetMidiOut Int Int String Event  -- a MIDI row's signal: row, slot, "channel"|"cc", the field's change
   | ToggleLearn Int Int       -- learn MIDI row n's signal k (from 1), or end the learn of it
   | FireThrow Int Int         -- fire MIDI row n's throw k (from 1)
+  | MapSignal Int Int         -- bind MIDI row n's signal k (from 1) to the parameter last clicked in Live
+  | UnmapSignal Int Int       -- let it go
   | EndLabel                  -- close it (left the field)
   | PickStarter Int           -- apply library shape i to the selected envelope slot
   | EnvGrab EnvHandle Int Int -- mousedown on a breakpoint (handle, clientX, clientY)
@@ -324,6 +330,7 @@ component =
           , splitFree: []
           , publishMsg: Nothing
           , learning: Nothing
+          , destinations: { live: false, signals: Map.empty }
           , presets: [], identity: Nothing, lastChip: Nothing
           , selected: Nothing
           , envParam: EPDecay
@@ -639,6 +646,7 @@ handleAction = case _ of
         H.modify_ _ { stageSubscribed = true }
         liftEffect $ Transport.send (Binnacle.socket bin) "stage-text-subscribe"
         liftEffect $ Transport.send (Binnacle.socket bin) "selene-learning"
+        liftEffect $ Transport.send (Binnacle.socket bin) "selene-destinations"
       when (not up && st.stageSubscribed) (H.modify_ _ { stageSubscribed = false, stageRack = Nothing, pushed = Map.empty })
     -- an edit settled: apply it, as the Apply button does
     now <- liftEffect dateNow
@@ -982,6 +990,20 @@ handleAction = case _ of
   FireThrow n k -> do
     st <- H.get
     for_ st.binnacle \bin -> liftEffect $ Transport.send (Binnacle.socket bin) ("tidal selene $ fire midi" <> show n <> " " <> show k)
+  -- map: the rig asks Live what was last clicked there, and writes it on the
+  -- signal's line in the rack (with a CC, if it had none), which comes back
+  -- as the rack does
+  MapSignal n k -> do
+    st <- H.get
+    for_ st.binnacle \bin -> liftEffect $ Transport.send (Binnacle.socket bin) ("tidal selene $ map midi" <> show n <> " " <> show k)
+  UnmapSignal n k -> do
+    st <- H.get
+    for_ st.binnacle \bin -> liftEffect $ Transport.send (Binnacle.socket bin) ("tidal selene $ unmap midi" <> show n <> " " <> show k)
+  SeleneReply raw | Just json <- Str.stripPrefix (Str.Pattern "destinations selene ") raw ->
+    case readJSON json of
+      Right (d :: { live :: Boolean, signals :: Array { row :: Int, slot :: Int, state :: String, said :: String } }) ->
+        H.modify_ _ { destinations = { live: d.live, signals: Map.fromFoldable (map (\x -> Tuple (show x.row <> " " <> show x.slot) { state: x.state, said: x.said }) d.signals) } }
+      Left _ -> pure unit
   SeleneReply "unlearned selene" -> H.modify_ _ { learning = Nothing }
   SeleneReply raw | Just rest <- Str.stripPrefix (Str.Pattern "learning selene midi") raw ->
     case map Int.fromString (Str.split (Str.Pattern " ") rest) of
@@ -1983,9 +2005,56 @@ withMidiOut s i d o cell =
         [ HH.text "ch", field "channel" 2, HH.text "cc", field "cc" 3 ]
     , HH.div [ style row ]
         [ field "lo" 3, HH.text "–", field "hi" 3 ]
-    , HH.div [ style "display:flex;gap:4px" ] [ fireButton, learnButton ]
+    , HH.div [ style "display:flex;gap:4px" ] [ fireButton, learnButton, mapButton ]
+    , destination
     ]
   where
+  -- map: binds this signal to the parameter last clicked in Live, by name,
+  -- giving it a CC if it has none (selene $ map midi1 1); mapped, the name is
+  -- said under it, with why when Live has not bound it (a signal drawn here
+  -- is one a MIDI row sends as CCs: midiOutsOf has none for notes)
+  mapButton = case d.target of
+    M.Midi n ->
+      HH.button
+        [ HE.onClick \_ -> MapSignal n (o.slot + 1)
+        , HP.title ("Map: click a parameter in Live, then this, and the signal moves it (selene $ map midi" <> show n <> " " <> show (o.slot + 1) <> ")")
+        , style $ "font:600 8px/1 -apple-system,'Helvetica Neue',sans-serif;letter-spacing:0.08em;text-transform:uppercase;"
+            <> "padding:2px 5px;border-radius:3px;cursor:pointer;border:1px solid #00000025;background:transparent;color:#5a5648"
+        ]
+        [ HH.text "map" ]
+    _ -> HH.text ""
+  destination = case d.target, o.out.to of
+    M.Midi n, Just path ->
+      let
+        told = Map.lookup (show n <> " " <> show (o.slot + 1)) s.destinations.signals
+        state = maybe "waiting" _.state told
+        said = maybe "" _.said told
+        word = case state of
+          "bound" -> ""
+          "unbound" -> "not in this Set"
+          "ambiguous" -> "named twice"
+          "shadowed" -> "a hand mapping wins"
+          "refused" -> "refused"
+          _ -> if s.destinations.live then "waiting for Live" else "Live isn't answering"
+        colour = case state of
+          "bound" -> "#1c1a12"
+          "shadowed" -> "#b5651d"
+          _ -> "#a33a2a"
+      in
+        HH.div
+          [ HP.title (path <> (if said == "" then "" else ": " <> said))
+          , style $ "display:flex;gap:3px;align-items:flex-start;max-width:96px;font:9px/1.25 -apple-system,'Helvetica Neue',sans-serif;color:" <> colour ]
+          [ HH.div [ style "overflow-wrap:anywhere" ]
+              ( [ HH.text ("→ " <> Str.joinWith " · " (Str.split (Str.Pattern "/") path)) ]
+                  <> if word == "" then [] else [ HH.div [ style "font-weight:600" ] [ HH.text word ] ] )
+          , HH.button
+              [ HE.onClick \_ -> UnmapSignal n (o.slot + 1)
+              , HP.title ("Unmap: Live lets the parameter go; the CC is kept (selene $ unmap midi" <> show n <> " " <> show (o.slot + 1) <> ")")
+              , style "border:none;background:transparent;padding:0 1px;cursor:pointer;font:9px/1.25 sans-serif;color:#5a5648"
+              ]
+              [ HH.text "✕" ]
+          ]
+    _, _ -> HH.text ""
   -- learn: while this signal is learned the rig sends no other MIDI, so the
   -- instrument's MIDI map hears it alone; a signal with no CC has nothing to learn
   -- a throw plays once when fired: here, or `selene $ fire midi4 2` in a line
