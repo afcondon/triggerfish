@@ -144,6 +144,7 @@ hueOf = case _ of
   M.KEuclid -> green
   M.KClock -> yellow
   M.KNote -> violet
+  M.KThrow -> orange
 
 -- | The sixteen encoders, top-left first; `Nothing` is dark.
 surface :: Ops -> M.Selene -> Cursor -> Array (Maybe Control)
@@ -194,6 +195,8 @@ overview ops d bank = map (\j -> follow j <$> main j) (range 0 (M.slotCount - 1)
     M.GNote xs -> xs !! j <#> \sl -> int 0 127 sl.note violet (put M.GNote xs j <<< sl { note = _ })
     -- a voice's channel: what plays it
     M.GVoice vb -> vb.voices !! j <#> \v -> int 1 16 v.channel red (put (\vs -> M.GVoice vb { voices = vs }) vb.voices j <<< v { channel = _ })
+    -- a throw's lengths are written, not turned: dark
+    M.GThrow _ -> Nothing
   put :: forall a. (Array a -> M.GenBank) -> Array a -> Int -> a -> Act
   put mk xs j x = Edit d (const (mk (setAt j xs x)))
 
@@ -262,6 +265,7 @@ detail ops d j bank = fromMaybe (dark 12) case bank of
          [ int 0 10 oct violet \o -> p (sl { note = clamp 0 127 (o * 12 + semi) })
          , int 0 11 semi violet \s -> p (sl { note = clamp 0 127 (oct * 12 + s) })
          ]
+  M.GThrow _ -> Nothing
   where
   put :: forall a. (Array a -> M.GenBank) -> Array a -> a -> Act
   put mk xs x = Edit d (const (mk (setAt j xs x)))

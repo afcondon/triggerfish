@@ -284,6 +284,7 @@ data Action
   | EditLabel String          -- open a jack's label for typing
   | SetMidiOut Int Int String Event  -- a MIDI row's signal: row, slot, "channel"|"cc", the field's change
   | ToggleLearn Int Int       -- learn MIDI row n's signal k (from 1), or end the learn of it
+  | FireThrow Int Int         -- fire MIDI row n's throw k (from 1)
   | EndLabel                  -- close it (left the field)
   | PickStarter Int           -- apply library shape i to the selected envelope slot
   | EnvGrab EnvHandle Int Int -- mousedown on a breakpoint (handle, clientX, clientY)
@@ -978,6 +979,9 @@ handleAction = case _ of
     st <- H.get
     let line = if st.learning == Just { row: n, slot: k } then "selene $ unlearn" else "selene $ learn midi" <> show n <> " " <> show k
     for_ st.binnacle \bin -> liftEffect $ Transport.send (Binnacle.socket bin) ("tidal " <> line)
+  FireThrow n k -> do
+    st <- H.get
+    for_ st.binnacle \bin -> liftEffect $ Transport.send (Binnacle.socket bin) ("tidal selene $ fire midi" <> show n <> " " <> show k)
   SeleneReply "unlearned selene" -> H.modify_ _ { learning = Nothing }
   SeleneReply raw | Just rest <- Str.stripPrefix (Str.Pattern "learning selene midi") raw ->
     case map Int.fromString (Str.split (Str.Pattern " ") rest) of
@@ -1171,6 +1175,8 @@ signalMark = case _ of
   -- played by MIDI notes, not set: a voice, not a signal (POLYNOTE's pitches
   -- are voltages held still, a POLYVOICE's follow what is played)
   M.KVoice -> "♪ voice"
+  -- a one-shot CC, fired
+  M.KThrow -> "↗ throw"
   _ -> "∿ cv"
 
 -- | Where the drawer's rows of each kind start: racks from 0, the built-in
@@ -1310,6 +1316,8 @@ nudgeSlot ep dir shift j = case _ of
   -- a voice: ↑/↓ its channel; ←/→ its envelope's field, as on an envelope,
   -- when the layout has an envelope output (otherwise there is none drawn,
   -- and nothing to edit)
+  -- a throw's lengths are written, in a line or the rack's text
+  M.GThrow xs -> M.GThrow xs
   M.GVoice vb -> M.GVoice vb { voices = overAt j (\v -> case dir of
       NUp -> v { channel = clamp 1 16 (v.channel + 1) }
       NDown -> v { channel = clamp 1 16 (v.channel - 1) }
@@ -1975,11 +1983,22 @@ withMidiOut s i d o cell =
         [ HH.text "ch", field "channel" 2, HH.text "cc", field "cc" 3 ]
     , HH.div [ style row ]
         [ field "lo" 3, HH.text "–", field "hi" 3 ]
-    , learnButton
+    , HH.div [ style "display:flex;gap:4px" ] [ fireButton, learnButton ]
     ]
   where
   -- learn: while this signal is learned the rig sends no other MIDI, so the
   -- instrument's MIDI map hears it alone; a signal with no CC has nothing to learn
+  -- a throw plays once when fired: here, or `selene $ fire midi4 2` in a line
+  fireButton = case d.target, d.bank of
+    M.Midi n, M.GThrow _ | isJust o.out.cc ->
+      HH.button
+        [ HE.onClick \_ -> FireThrow n (o.slot + 1)
+        , HP.title ("Fire: the throw plays once, from the bottom of its span to the top and back (selene $ fire midi" <> show n <> " " <> show (o.slot + 1) <> ")")
+        , style $ "font:600 8px/1 -apple-system,'Helvetica Neue',sans-serif;letter-spacing:0.08em;text-transform:uppercase;"
+            <> "padding:2px 5px;border-radius:3px;cursor:pointer;border:1px solid #b5651d;background:transparent;color:#6b3a0c"
+        ]
+        [ HH.text "fire" ]
+    _, _ -> HH.text ""
   learnButton = case d.target of
     M.Midi n | isJust o.out.cc ->
       let on = s.learning == Just { row: n, slot: o.slot + 1 }
@@ -2182,6 +2201,7 @@ slotViews ep d sel target mutes = case _ of
   M.GEuclid slots -> mapWithIndex (cellFor d sel mutes 70.0 (euclidInner target)) slots
   M.GClock slots -> mapWithIndex (cellFor d sel mutes 58.0 (clockInner target)) slots
   M.GNote slots -> mapWithIndex (cellFor d sel mutes 58.0 noteInner) slots
+  M.GThrow slots -> mapWithIndex (cellFor d sel mutes 90.0 throwInner) slots
   M.GEnv slots -> mapWithIndex (\j sl -> slotCell d j (sel == Just { dest: d, slot: j }) (Array.elem j mutes) 90.0 (envInner (sel == Just { dest: d, slot: j }) ep sl)) slots
   -- a voice is as wide as the jacks it takes, and has no mute of its own:
   -- it is silenced where its notes come from
@@ -2249,6 +2269,37 @@ lfoTInner target sl =
             Nothing -> [] )
         <> [ cellCaption (shapeName (activeShape sl) <> " · " <> M.lfoRatio sl) ] )
   ]
+
+-- --- THROW: a one-shot CC, fired ------------------------------------------
+
+-- | A throw's rise, hold and fall across the cell, each part as long as it
+-- | is at 120 bpm against the others (an eight-bar riser is all rise), with
+-- | its lengths under it as written.
+throwInner :: forall m. M.ThrowSlot -> Array (H.ComponentHTML Action Slots m)
+throwInner sl =
+  let
+    w = 84.0
+    h = 50.0
+    beats = M.lengthBeats 120.0
+    a = beats sl.attack
+    hold = beats sl.hold
+    d = beats sl.decay
+    total = a + hold + d
+    x b = if total <= 0.0 then 0.0 else w * b / total
+    top = h * 0.1
+    pt px py = show (round2 px) <> "," <> show (round2 py)
+    poly = joinWith " " [ pt 0.0 h, pt (x a) top, pt (x (a + hold)) top, pt (x total) h, pt w h ]
+  in
+    [ svgEl "svg"
+        [ svgAttr "viewBox" ("0 0 " <> show w <> " " <> show h), svgAttr "width" "100%"
+        , svgAttr "height" (show h), svgAttr "style" "display:block;overflow:visible" ]
+        [ svgEl "polyline"
+            [ svgAttr "points" poly, svgAttr "fill" "none", svgAttr "stroke" accent
+            , svgAttr "stroke-width" "1.6", svgAttr "stroke-linejoin" "round" ] []
+        ]
+    , cellCaption ("a " <> M.lengthWord sl.attack <> " · h " <> M.lengthWord sl.hold <> " · d " <> M.lengthWord sl.decay
+        <> (if sl.start == M.StartNow then "" else " · on " <> M.startWord sl.start))
+    ]
 
 -- | A slot's summed wave, drawn across the cell.
 lfoFigure :: forall m. M.ModSlot -> H.ComponentHTML Action Slots m
