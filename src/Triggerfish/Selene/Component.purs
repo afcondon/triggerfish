@@ -154,6 +154,9 @@ type State =
   -- either half (docs/kb/plans/selene-split-banks.md); by target wire
   , splitFree :: Array String
   , publishMsg :: Maybe String   -- transient status from a publish-rack-to-Amphora click
+  -- the MIDI signal learned on the rig (its row and signal, from 1), while
+  -- the rig sends no other MIDI; told by the rig, as every page is
+  , learning :: Maybe { row :: Int, slot :: Int }
   -- The unified glyph-chip PRESET bank (docs/DESIGN-scene-modal.md): captured rack
   -- docs, anonymous or named, freely intermixed. `identity` is the parked preset's
   -- content (the chip glyph; ghosts when the live doc diverges from it); `lastChip`
@@ -280,6 +283,7 @@ data Action
   | SetLabel String String    -- name a jack (its key, the text; "" takes it off)
   | EditLabel String          -- open a jack's label for typing
   | SetMidiOut Int Int String Event  -- a MIDI row's signal: row, slot, "channel"|"cc", the field's change
+  | ToggleLearn Int Int       -- learn MIDI row n's signal k (from 1), or end the learn of it
   | EndLabel                  -- close it (left the field)
   | PickStarter Int           -- apply library shape i to the selected envelope slot
   | EnvGrab EnvHandle Int Int -- mousedown on a breakpoint (handle, clientX, clientY)
@@ -318,6 +322,7 @@ component =
           , dragOver: Nothing
           , splitFree: []
           , publishMsg: Nothing
+          , learning: Nothing
           , presets: [], identity: Nothing, lastChip: Nothing
           , selected: Nothing
           , envParam: EPDecay
@@ -632,6 +637,7 @@ handleAction = case _ of
       when (up && not st.stageSubscribed) do
         H.modify_ _ { stageSubscribed = true }
         liftEffect $ Transport.send (Binnacle.socket bin) "stage-text-subscribe"
+        liftEffect $ Transport.send (Binnacle.socket bin) "selene-learning"
       when (not up && st.stageSubscribed) (H.modify_ _ { stageSubscribed = false, stageRack = Nothing, pushed = Map.empty })
     -- an edit settled: apply it, as the Apply button does
     now <- liftEffect dateNow
@@ -966,6 +972,17 @@ handleAction = case _ of
       Left why -> do
         for_ was \o -> liftEffect (HInput.setValue (midiFieldText which o) field)
         H.modify_ _ { publishMsg = Just why }
+  -- learn: the rig sends the signal's CC and no other MIDI until it ends
+  -- (the rig answers, and tells every page, `learning selene midi1 3`)
+  ToggleLearn n k -> do
+    st <- H.get
+    let line = if st.learning == Just { row: n, slot: k } then "selene $ unlearn" else "selene $ learn midi" <> show n <> " " <> show k
+    for_ st.binnacle \bin -> liftEffect $ Transport.send (Binnacle.socket bin) ("tidal " <> line)
+  SeleneReply "unlearned selene" -> H.modify_ _ { learning = Nothing }
+  SeleneReply raw | Just rest <- Str.stripPrefix (Str.Pattern "learning selene midi") raw ->
+    case map Int.fromString (Str.split (Str.Pattern " ") rest) of
+      [ Just n, Just k ] -> H.modify_ _ { learning = Just { row: n, slot: k } }
+      _ -> pure unit
   -- the rig's answer to a dropped module
   SeleneReply raw | Just rest <- Str.stripPrefix (Str.Pattern "OK: selene: ") raw -> H.modify_ _ { publishMsg = Just ("✓ " <> rest) }
   SeleneReply raw | Just rest <- Str.stripPrefix (Str.Pattern "ERR: selene: ") raw -> H.modify_ _ { publishMsg = Just ("✗ " <> rest) }
@@ -1939,7 +1956,7 @@ destinationRow s ep sel i d =
     [ destHeader s i d
     -- a muted bank is still drawn, and editable, but faded: its jacks are at 0 V
     , HH.div [ style (slotWrap d.bank <> if d.muted then ";opacity:0.35" else "") ]
-        (Array.zipWith (\{ key, out } cell -> labelled s key (maybe cell (\o -> withMidiOut i o cell) out))
+        (Array.zipWith (\{ key, out } cell -> labelled s key (maybe cell (\o -> withMidiOut s i d o cell) out))
           (mapWithIndex (\k j -> { key: JL.jackKey d.target j, out: map (\o -> { slot: k, out: o }) (outs !! k) }) (slotJacks d))
           (slotViews ep i sel d.target d.mutedSlots d.bank))
     ]
@@ -1950,16 +1967,32 @@ destinationRow s ep sel i d =
 -- | since they are what the instrument learns, and the span of CC values it
 -- | covers (Ableton's mapping has no attenuverter). A signal with no CC
 -- | sends nothing, and is drawn faded.
-withMidiOut :: forall m. Int -> { slot :: Int, out :: M.MidiOut } -> H.ComponentHTML Action Slots m -> H.ComponentHTML Action Slots m
-withMidiOut i o cell =
+withMidiOut :: forall m. State -> Int -> M.Destination -> { slot :: Int, out :: M.MidiOut } -> H.ComponentHTML Action Slots m -> H.ComponentHTML Action Slots m
+withMidiOut s i d o cell =
   HH.div [ style "display:flex;flex-direction:column;gap:3px;align-items:center" ]
     [ HH.div [ style (if isNothing o.out.cc then "opacity:0.4" else "") ] [ cell ]
     , HH.div [ style row ]
         [ HH.text "ch", field "channel" 2, HH.text "cc", field "cc" 3 ]
     , HH.div [ style row ]
         [ field "lo" 3, HH.text "–", field "hi" 3 ]
+    , learnButton
     ]
   where
+  -- learn: while this signal is learned the rig sends no other MIDI, so the
+  -- instrument's MIDI map hears it alone; a signal with no CC has nothing to learn
+  learnButton = case d.target of
+    M.Midi n | isJust o.out.cc ->
+      let on = s.learning == Just { row: n, slot: o.slot + 1 }
+      in HH.button
+           [ HE.onClick \_ -> ToggleLearn n (o.slot + 1)
+           , HP.title (if on then "Learning: the rig sends this signal's CC and no other MIDI. Click to end it (selene $ unlearn)."
+                       else "Learn: the rig sends this signal's CC and no other MIDI, so an instrument's MIDI map hears it alone (selene $ learn midi" <> show n <> " " <> show (o.slot + 1) <> ")")
+           , style $ "font:600 8px/1 -apple-system,'Helvetica Neue',sans-serif;letter-spacing:0.08em;text-transform:uppercase;"
+               <> "padding:2px 5px;border-radius:3px;cursor:pointer;"
+               <> (if on then "border:1px solid #b5651d;background:#f6d9a8;color:#6b3a0c" else "border:1px solid #00000025;background:transparent;color:#5a5648")
+           ]
+           [ HH.text (if on then "learning ✕" else "learn") ]
+    _ -> HH.text ""
   row = "display:flex;gap:3px;align-items:center;font:9px 'SF Mono',Menlo,monospace;color:#5a5648"
   field which size =
     HH.input

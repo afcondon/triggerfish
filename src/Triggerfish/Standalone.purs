@@ -165,6 +165,10 @@ type State =
   -- machine with no transport here (Selene, whose signals run with or
   -- without a page) draws its Play and Stop from this, asked for on connect
   , hushed :: Boolean
+  -- the one Selene signal learned (`selene $ learn midi1 3`), while the rig
+  -- sends no other MIDI: every page says so, since its own notes are held
+  -- back too, with the end of it one click away
+  , learning :: Maybe String
   }
 
 -- | The panel passes on Ctrl+` pressed inside it.
@@ -191,6 +195,8 @@ data Action o
   | RigHush Boolean
   | Resume
   | StopRig
+  | RigLearn (Maybe String)
+  | Unlearn
   | RoutingChanged
   | FromMachine o
   | Key E.Event
@@ -235,7 +241,7 @@ root cfg = H.mkComponent
       { mode: Solo, playing: false, bpm: 120.0, tempoFlash: Nothing, freeT0: 0.0, chip: Nothing, machineBar: Nothing, rig: Nothing
       , rigUp: false, table: RM.defaultTable, staged: Nothing, bus: Nothing, limulus: false, limulusMade: false, limulusAsked: false, limulusAlways: false, limWidth: 560.0
       , browser: Nothing, drawer: { open: false, width: 280.0 }, lastRecall: { frozen: false, inKey: false }, renaming: Nothing, confirming: Nothing
-      , line: Nothing, lineOn: false, hushed: false }
+      , line: Nothing, lineOn: false, hushed: false, learning: Nothing }
   , render: render cfg
   , eval: H.mkEval H.defaultEval { handleAction = handleAction cfg, initialize = Just Init }
   }
@@ -272,6 +278,8 @@ handleAction cfg = case _ of
       for_ (Stage.slotOf cfg.which) \m -> when (msg == "hushed " <> m) (HS.notify listener (RigHush true))
       for_ (Stage.slotOf cfg.which) \m -> when (msg == "played " <> m) (HS.notify listener (RigHush false))
       for_ (lineHere msg) (HS.notify listener <<< RigLine)
+      for_ (String.stripPrefix (String.Pattern "learning selene ") msg) (HS.notify listener <<< RigLearn <<< Just)
+      when (msg == "unlearned selene") (HS.notify listener (RigLearn Nothing))
     liftEffect $ TransportStore.onChange (HS.notify listener ModeStored)
     liftEffect $ Tempo.onChange (HS.notify listener TempoStored)
     bus <- liftEffect Bus.open
@@ -445,6 +453,8 @@ handleAction cfg = case _ of
       publishStage cfg
       announce cfg
   RigHush h -> H.modify_ _ { hushed = h }
+  RigLearn l -> H.modify_ _ { learning = l }
+  Unlearn -> toRig "tidal selene $ unlearn"
   -- resume what the rig hushed (Selene's `selene $ play`), or stop it
   Resume -> for_ (Stage.slotOf cfg.which) \m -> toRig ("tidal " <> m <> " $ play")
   StopRig -> for_ (Stage.slotOf cfg.which) \m -> toRig ("tidal " <> m <> " $ hush")
@@ -473,6 +483,8 @@ handleAction cfg = case _ of
     -- a machine that runs on the rig without a page: is it running there?
     -- (answered as a stop or a play is told, `hushed selene`/`played selene`)
     when (ok && not st.rigUp && not cfg.playable) $ for_ (Stage.slotOf cfg.which) \m -> toRig (m <> "-running")
+    -- and is a Selene signal being learned, holding back every other MIDI send?
+    when (ok && not st.rigUp) (toRig "selene-learning")
     -- The rig came back (an Architeuthis restart, say): its voices went with
     -- it, and a machine still playing in Atlantis changed no mode, so nothing
     -- else would hand it back. Say how it sounds again, which hands the
@@ -833,6 +845,7 @@ bar cfg st =
       -- a machine that runs on the rig with or without a page (Selene) has
       -- the same button, drawing and setting whether it runs there (CR-11)
       <> (if not cfg.playable then [ button (if st.hushed then "▶ Play" else "■ Stop") (if st.hushed then Resume else StopRig) ] else [])
+      <> maybe [] (pure <<< learnChip) st.learning
       -- Limulus combines the machines, on the rig: its drawer on the right,
       -- in Atlantis
       <> [ HH.span [ style "display:flex;align-items:center;min-width:40px" ] [ chipIcons st.chip ] ]
@@ -845,6 +858,15 @@ bar cfg st =
         Nothing -> []
     )
   where
+  -- A learn under way: the rig sends this signal's CC and no other MIDI.
+  learnChip signal =
+    HH.button
+      [ HE.onClick \_ -> Unlearn
+      , HP.title ("Learning Selene's " <> signal <> ": the rig sends its controller and no other MIDI, so an instrument's MIDI map hears it alone. Click to end the learn (selene $ unlearn).")
+      , style $ "font:600 10px/1 -apple-system,'Helvetica Neue',sans-serif;letter-spacing:0.08em;text-transform:uppercase;"
+          <> "padding:5px 9px;border-radius:4px;border:1px solid #b5651d;background:#f6d9a8;color:#6b3a0c;cursor:pointer"
+      ]
+      [ HH.text ("Learn " <> signal <> " ✕") ]
   -- What a tempo hotkey set, for a moment, where the bar's middle is free.
   tempoFlash bpm =
     HH.span
