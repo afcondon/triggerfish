@@ -278,6 +278,8 @@ data Action
   | KeepModule Int            -- keep bank i as a module
   | ToggleMute Int            -- mute bank i (its jacks to 0 V, the bank kept) or unmute it
   | SetRange Int String       -- bank i's output range, by its wire word ("" = the rig's default)
+  | SetVolt Int Int String    -- POLYVOLT bank i's output j to a voltage, from its slider
+  | ConvertDest Int           -- POLYVOLT bank i becomes still LFOs at its voltages, to modulate from
   | ToggleSlotMute Int Int ME.MouseEvent  -- mute output j of bank i (kept, sent silent) or unmute it
   | RemoveDest Int            -- take bank i off the rack and free its jacks (`selene $ off`)
   | RacksChanged              -- the racks changed in Amphora (another page)
@@ -722,6 +724,8 @@ handleAction = case _ of
       else H.modify_ _ { selected = Just { dest: d, slot: j } }
   -- Arrow keys nudge the selected slot's field, per kind (see nudgeSlot). Printable
   -- keys (typed note/clock entry) are a later increment; ignored for now.
+  -- a slider's arrows are its own: it moves, and says so by its input
+  SlotKeyDown ev | isJust (target (KE.toEvent ev) >>= HInput.fromEventTarget) -> pure unit
   SlotKeyDown ev -> do
     s <- H.get
     let k = KE.key ev
@@ -896,6 +900,13 @@ handleAction = case _ of
   JoinFree wire -> H.modify_ \s -> s { splitFree = filter (_ /= wire) s.splitFree }
   ToggleMute i -> editDest i (\d -> d { muted = not d.muted })
   SetRange i w -> editDest i (\d -> d { range = M.rangeOfWire w })
+  SetVolt i j w -> for_ (Number.fromString w) \v ->
+    editDest i (onBank case _ of
+      M.GVolt xs -> M.GVolt (overAt j (_ { volts = v }) xs)
+      b -> b)
+  -- the same rack edit as any other, so the rig follows by the stage
+  -- (`selene $ convert <bank> lfo` in a line)
+  ConvertDest i -> editDest i (M.voltToLfo M.KLfo)
   -- the badge sits on the cell, whose click selects it: this click is the mute's
   ToggleSlotMute i j e -> do
     liftEffect (stopPropagation (ME.toEvent e))
@@ -1340,6 +1351,7 @@ nudgeSlot ep dir shift j = case _ of
   -- and nothing to edit)
   -- a throw's lengths are written, in a line or the rack's text
   M.GThrow xs -> M.GThrow xs
+  M.GVolt xs -> M.GVolt (overAt j (nudgeVolt dir shift) xs)
   M.GVoice vb -> M.GVoice vb { voices = overAt j (\v -> case dir of
       NUp -> v { channel = clamp 1 16 (v.channel + 1) }
       NDown -> v { channel = clamp 1 16 (v.channel - 1) }
@@ -1499,6 +1511,21 @@ nudgeEnv ep dir shift sl = case ep of
     _ -> -1
   d = if shift then 16 else 4
   bump v = clamp 0 127 (v + sign * d)
+
+-- | ↑/↓ a tenth of a volt (Shift: a volt), ←/→ a hundredth (Shift: a tenth),
+-- | within ±10 V, the most any output reaches; past the bank's range it is
+-- | kept, and shown red, as typed.
+nudgeVolt :: NudgeDir -> Boolean -> M.VoltSlot -> M.VoltSlot
+nudgeVolt dir shift sl =
+  let
+    fine = if shift then 0.1 else 0.01
+    coarse = if shift then 1.0 else 0.1
+    by = case dir of
+      NUp -> coarse
+      NDown -> -coarse
+      NRight -> fine
+      NLeft -> -fine
+  in sl { volts = M.clampNum (-10.0) 10.0 (toNumber (round ((sl.volts + by) * 100.0)) / 100.0) }
 
 nudgeNote :: NudgeDir -> Boolean -> M.PresetNoteSlot -> M.PresetNoteSlot
 nudgeNote dir shift sl =
@@ -1988,7 +2015,7 @@ destinationRow s ep sel i d =
     , HH.div [ style (slotWrap d.bank <> if d.muted then ";opacity:0.35" else "") ]
         (Array.zipWith (\{ key, out } cell -> labelled s key (maybe cell (\o -> withMidiOut s i d o cell) out))
           (mapWithIndex (\k j -> { key: JL.jackKey d.target j, out: map (\o -> { slot: k, out: o }) (outs !! k) }) (slotJacks d))
-          (slotViews ep i sel d.target d.mutedSlots d.bank))
+          (slotViews ep i sel d.target (M.voltRange d) d.mutedSlots d.bank))
     ]
   where
   outs = M.midiOutsOf d
@@ -2196,6 +2223,11 @@ destHeader s i d =
         -- the jacks' voltage range: an LFO into a 0–5V input wants 0–5V, not
         -- the ±5V an LFO gets by default. An FHX-8GT has no range to set.
         ( ( if not (hasRange d.target) || isVoices then []
+            else if isJust (M.fixedRange d.target) then
+              [ HH.span
+                  [ HP.title "The ESX-8CV's outputs are ±5V whatever is asked: it has no range to set"
+                  , style "font:10px Georgia,serif;color:#5a5648;padding:2px 4px;height:20px;box-sizing:border-box" ]
+                  [ HH.text (maybe "" M.rangeLabel (M.fixedRange d.target)) ] ]
             else
               [ HH.select
                   [ HE.onValueChange (SetRange i)
@@ -2214,6 +2246,9 @@ destHeader s i d =
                         (Just (ToggleMute i)) d.muted
                   ]
                   <> splitJoin
+                  <> (if M.bankKind d.bank == M.KVolt
+                        then [ iconButton "wave-square" "Convert to LFOs: each output a still POLYLFO at its voltage, every shape at 0; turn a shape up to modulate from where you dialled it (selene $ convert … lfo, or lfot for LFOs on the beat)" (Just (ConvertDest i)) false ]
+                        else [])
                   <> [ iconButton "bookmark" "Keep this setting, to drop on any bank (it goes in the drawer's Kept)" (Just (KeepModule i)) false
                      , iconButton "xmark" "Remove: take this off the rack and free its jacks (keep it as a module first to have it back)" (Just (RemoveDest i)) false
                      ] )
@@ -2263,8 +2298,9 @@ iconButton icon title act lit =
 -- Each slot is drawn inside a focusable cell: clicking selects it (a black box);
 -- arrow keys then nudge it. `slotViews` threads the destination index + current
 -- selection so each cell knows whether it's the selected one and what to fire.
-slotViews :: forall m. EnvParam -> Int -> Maybe Sel -> M.Target -> Array Int -> M.GenBank -> Array (H.ComponentHTML Action Slots m)
-slotViews ep d sel target mutes = case _ of
+slotViews :: forall m. EnvParam -> Int -> Maybe Sel -> M.Target -> M.OutputRange -> Array Int -> M.GenBank -> Array (H.ComponentHTML Action Slots m)
+slotViews ep d sel target outRange mutes = case _ of
+  M.GVolt slots -> mapWithIndex (\j sl -> cellFor d sel mutes 84.0 (voltInner d outRange j) j sl) slots
   M.GLfo slots -> mapWithIndex (cellFor d sel mutes 90.0 (lfoInner target)) slots
   M.GLfoT slots -> mapWithIndex (cellFor d sel mutes 90.0 (lfoTInner target)) slots
   M.GEuclid slots -> mapWithIndex (cellFor d sel mutes 70.0 (euclidInner target)) slots
@@ -2467,6 +2503,34 @@ noteInner sl =
       [ HH.text (M.noteName sl.note) ]
   , cellCaption ("midi " <> show sl.note)
   ]
+
+-- --- POLYVOLT: a steady voltage, set on a slider ------------------------------
+
+-- | The voltage, and a slider across the bank's range. A voltage the range
+-- | can't reach is kept as asked (AC: a range change leaves the volts alone),
+-- | shown red, with what it plays at.
+voltInner :: forall m. Int -> M.OutputRange -> Int -> M.VoltSlot -> Array (H.ComponentHTML Action Slots m)
+voltInner d outRange j sl =
+  let
+    span = M.rangeVolts outRange
+    clipped = M.voltClipped outRange sl.volts
+    plays = M.clampNum span.lo span.hi sl.volts
+  in
+    [ HH.div
+        [ style $ "font-family:'SF Mono',Menlo,monospace;font-size:15px;text-align:center;color:" <> (if clipped then "#b3261e" else ink) ]
+        [ HH.text (M.voltWord sl.volts) ]
+    , HH.input
+        [ HP.type_ HP.InputRange
+        , HP.min span.lo
+        , HP.max span.hi
+        , HP.step (HP.Step 0.01)
+        , HP.value (show plays)
+        , HP.title ("Output " <> show (j + 1) <> ": " <> M.rangeLabel outRange <> "; arrows when selected: ↑/↓ 0.1 V, ←/→ 0.01 V, Shift ×10")
+        , HE.onValueInput (SetVolt d j)
+        , style ("width:74px;margin:2px 0;accent-color:" <> accent)
+        ]
+    , cellCaption (if clipped then "plays " <> M.voltWord plays else M.rangeLabel outRange)
+    ]
 
 -- --- POLYVOICE: a MIDI voice, its channel and its outputs ---------------------
 

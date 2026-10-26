@@ -63,6 +63,7 @@ import Prelude
 
 import Data.Array (catMaybes, concatMap, elem, elemIndex, length, mapWithIndex, range, replicate, (!!))
 import Data.Int (round, toNumber)
+import Data.Int as Int
 import Data.Map (Map)
 import Data.Map as Map
 import Data.Maybe (Maybe(..), fromMaybe, maybe)
@@ -145,6 +146,10 @@ hueOf = case _ of
   M.KClock -> yellow
   M.KNote -> violet
   M.KThrow -> orange
+  M.KVolt -> pink
+
+pink :: Int
+pink = 112
 
 -- | The sixteen encoders, top-left first; `Nothing` is dark.
 surface :: Ops -> M.Selene -> Cursor -> Array (Maybe Control)
@@ -173,12 +178,12 @@ surface ops sel cur = top <> bottom
   top = case dest of
     Nothing -> dark 12
     Just d
-      | cur.open -> detail ops here.dest here.slot d.bank
-      | otherwise -> overview ops here.dest d.bank <> dark 4
+      | cur.open -> detail ops (M.voltRange d) here.dest here.slot d.bank
+      | otherwise -> overview ops (M.voltRange d) here.dest d.bank <> dark 4
 
 -- | Eight signals on their main fields.
-overview :: Ops -> Int -> M.GenBank -> Array (Maybe Control)
-overview ops d bank = map (\j -> follow j <$> main j) (range 0 (M.slotCount - 1))
+overview :: Ops -> M.OutputRange -> Int -> M.GenBank -> Array (Maybe Control)
+overview ops outRange d bank = map (\j -> follow j <$> main j) (range 0 (M.slotCount - 1))
   where
   follow j c = c
     { turn = \p -> case c.turn p of
@@ -197,12 +202,14 @@ overview ops d bank = map (\j -> follow j <$> main j) (range 0 (M.slotCount - 1)
     M.GVoice vb -> vb.voices !! j <#> \v -> int 1 16 v.channel red (put (\vs -> M.GVoice vb { voices = vs }) vb.voices j <<< v { channel = _ })
     -- a throw's lengths are written, not turned: dark
     M.GThrow _ -> Nothing
+    -- a voltage across the bank's range, as its slider
+    M.GVolt xs -> xs !! j <#> \sl -> volts outRange (put M.GVolt xs j) sl
   put :: forall a. (Array a -> M.GenBank) -> Array a -> Int -> a -> Act
   put mk xs j x = Edit d (const (mk (setAt j xs x)))
 
 -- | One signal's own surface: the twelve top encoders, mostly dark.
-detail :: Ops -> Int -> Int -> M.GenBank -> Array (Maybe Control)
-detail ops d j bank = fromMaybe (dark 12) case bank of
+detail :: Ops -> M.OutputRange -> Int -> Int -> M.GenBank -> Array (Maybe Control)
+detail ops outRange d j bank = fromMaybe (dark 12) case bank of
   M.GEnv xs -> xs !! j <#> \sl ->
     let f v set = int 0 127 v orange (put M.GEnv xs <<< set)
     in place [ 0, 1, 2, 3, 8, 9, 10 ]
@@ -266,6 +273,22 @@ detail ops d j bank = fromMaybe (dark 12) case bank of
          , int 0 11 semi violet \s -> p (sl { note = clamp 0 127 (oct * 12 + s) })
          ]
   M.GThrow _ -> Nothing
+  -- whole volts over hundredths, as a note's octave over its semitone, so a
+  -- CV is dialled in coarse then fine
+  M.GVolt xs -> xs !! j <#> \sl ->
+    let
+      p = put M.GVolt xs
+      span = M.rangeVolts outRange
+      cents = round (sl.volts * 100.0)
+      whole = Int.floor (toNumber cents / 100.0)
+      hundredths = cents - whole * 100
+      lo = Int.floor span.lo
+      hi = Int.floor span.hi
+      at w h = p (sl { volts = toNumber (w * 100 + h) / 100.0 })
+    in place [ 5, 9 ]
+         [ int lo hi (clamp lo hi whole) pink \w -> at w hundredths
+         , int 0 99 hundredths pink \h -> at whole h
+         ]
   where
   put :: forall a. (Array a -> M.GenBank) -> Array a -> a -> Act
   put mk xs x = Edit d (const (mk (setAt j xs x)))
@@ -324,6 +347,14 @@ phase p sl = continuous identity (min 0.999) sl.phase teal \v -> p (sl { phase =
 amp :: Ops -> (M.ModSlot -> Act) -> M.ModSlot -> Control
 amp ops p sl = continuous (_ / 2.0) (_ * 2.0) (ops.lfoAmp sl) teal \a ->
   p (ops.setLfoShape (ops.lfoShape sl) a sl)
+
+-- | A voltage across a range, to the hundredth of a volt.
+volts :: M.OutputRange -> (M.VoltSlot -> Act) -> M.VoltSlot -> Control
+volts outRange p sl = continuous to from sl.volts pink \v -> p (sl { volts = toNumber (round (v * 100.0)) / 100.0 })
+  where
+  span = M.rangeVolts outRange
+  to v = (M.clampNum span.lo span.hi v - span.lo) / (span.hi - span.lo)
+  from u = span.lo + u * (span.hi - span.lo)
 
 clockSpeed :: Ops -> (M.ClockSlot -> Act) -> M.ClockSlot -> Control
 clockSpeed ops p sl = int 0 (ops.clockSpeeds - 1) (ops.clockSpeed sl) yellow \i -> p (ops.setClockSpeed i sl)
