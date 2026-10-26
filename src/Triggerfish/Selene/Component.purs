@@ -161,6 +161,10 @@ type State =
   -- (selene_ableton): whether Live answers, and by signal ("1 2" is MIDI 1's
   -- signal 2) its state and why (docs/kb/plans/selene-ableton-destinations.md)
   , destinations :: { live :: Boolean, signals :: Map String { state :: String, said :: String } }
+  -- what each bank's mute pattern is muting now, told by the rig
+  -- (selene_mutes) as it is heard: by "socket bank" ("fh2 gt0"), its slots
+  -- from 1 (docs/kb/plans/selene-mute-patterns.md)
+  , patternMutes :: Map String (Array Int)
   -- The unified glyph-chip PRESET bank (docs/DESIGN-scene-modal.md): captured rack
   -- docs, anonymous or named, freely intermixed. `identity` is the parked preset's
   -- content (the chip glyph; ghosts when the live doc diverges from it); `lastChip`
@@ -280,6 +284,7 @@ data Action
   | SetRange Int String       -- bank i's output range, by its wire word ("" = the rig's default)
   | SetVolt Int Int String    -- POLYVOLT bank i's output j to a voltage, from its slider
   | ConvertDest Int           -- POLYVOLT bank i becomes still LFOs at its voltages, to modulate from
+  | EndMutePattern Int        -- bank i's mute pattern taken off (`# mute off`)
   | ToggleSlotMute Int Int ME.MouseEvent  -- mute output j of bank i (kept, sent silent) or unmute it
   | RemoveDest Int            -- take bank i off the rack and free its jacks (`selene $ off`)
   | RacksChanged              -- the racks changed in Amphora (another page)
@@ -333,6 +338,7 @@ component =
           , publishMsg: Nothing
           , learning: Nothing
           , destinations: { live: false, signals: Map.empty }
+          , patternMutes: Map.empty
           , presets: [], identity: Nothing, lastChip: Nothing
           , selected: Nothing
           , envParam: EPDecay
@@ -649,6 +655,7 @@ handleAction = case _ of
         liftEffect $ Transport.send (Binnacle.socket bin) "stage-text-subscribe"
         liftEffect $ Transport.send (Binnacle.socket bin) "selene-learning"
         liftEffect $ Transport.send (Binnacle.socket bin) "selene-destinations"
+        liftEffect $ Transport.send (Binnacle.socket bin) "selene-mutes"
       when (not up && st.stageSubscribed) (H.modify_ _ { stageSubscribed = false, stageRack = Nothing, pushed = Map.empty })
     -- an edit settled: apply it, as the Apply button does
     now <- liftEffect dateNow
@@ -907,6 +914,9 @@ handleAction = case _ of
   -- the same rack edit as any other, so the rig follows by the stage
   -- (`selene $ convert <bank> lfo` in a line)
   ConvertDest i -> editDest i (M.voltToLfo M.KLfo)
+  -- a rack edit, as the rest: the rig follows by the stage, stops the
+  -- pattern and sends the bank as the rack has it
+  EndMutePattern i -> editDest i (_ { mutes = Nothing })
   -- the badge sits on the cell, whose click selects it: this click is the mute's
   ToggleSlotMute i j e -> do
     liftEffect (stopPropagation (ME.toEvent e))
@@ -1014,6 +1024,11 @@ handleAction = case _ of
     case readJSON json of
       Right (d :: { live :: Boolean, signals :: Array { row :: Int, slot :: Int, state :: String, said :: String } }) ->
         H.modify_ _ { destinations = { live: d.live, signals: Map.fromFoldable (map (\x -> Tuple (show x.row <> " " <> show x.slot) { state: x.state, said: x.said }) d.signals) } }
+      Left _ -> pure unit
+  SeleneReply raw | Just json <- Str.stripPrefix (Str.Pattern "muting selene ") raw ->
+    case readJSON json of
+      Right (m :: { banks :: Array { socket :: String, bank :: String, muted :: Array Int } }) ->
+        H.modify_ _ { patternMutes = Map.fromFoldable (map (\b -> Tuple (b.socket <> " " <> b.bank) b.muted) m.banks) }
       Left _ -> pure unit
   SeleneReply "unlearned selene" -> H.modify_ _ { learning = Nothing }
   SeleneReply raw | Just rest <- Str.stripPrefix (Str.Pattern "learning selene midi") raw ->
@@ -2015,7 +2030,7 @@ destinationRow s ep sel i d =
     , HH.div [ style (slotWrap d.bank <> if d.muted then ";opacity:0.35" else "") ]
         (Array.zipWith (\{ key, out } cell -> labelled s key (maybe cell (\o -> withMidiOut s i d o cell) out))
           (mapWithIndex (\k j -> { key: JL.jackKey d.target j, out: map (\o -> { slot: k, out: o }) (outs !! k) }) (slotJacks d))
-          (slotViews ep i sel d.target (M.voltRange d) d.mutedSlots d.bank))
+          (slotViews ep i sel d.target (M.voltRange d) (silenceOf s d) d.bank))
     ]
   where
   outs = M.midiOutsOf d
@@ -2208,7 +2223,7 @@ destHeader s i d =
     -- the title as wide as the widest (a run's, with its rebus: measured 165px)
     -- and the panel straight after it, so the header is no wider than the two
     [ HH.div [ style "display:flex;flex-direction:column;gap:4px;justify-content:center;flex:0 0 172px;min-width:0;overflow:hidden" ]
-        [ HH.div [ style $ engrave <> ";font-size:10px;letter-spacing:0.1em;color:" <> ink ]
+        ( [ HH.div [ style $ engrave <> ";font-size:10px;letter-spacing:0.1em;color:" <> ink ]
             [ HH.text (M.kindLabel (M.bankKind d.bank)) ]
         -- where it plays (moving it is a drop on another row), then the
         -- setting's rebus, as the drawer shows it for a module
@@ -2219,6 +2234,21 @@ destHeader s i d =
         , HH.span [ style $ engrave <> ";font-size:8px;opacity:0.45" ]
             [ HH.text ("→ " <> M.placeWire d.target d.jacks <> gatesWire) ]
         ]
+          <> case d.mutes of
+               Just p ->
+                 [ HH.span
+                     [ HP.title ("Mute pattern: the outputs it names are silent while it names them (selene $ " <> Line.printLine d <> ")")
+                     , style "display:flex;align-items:center;gap:4px;min-width:0;font:10px 'SF Mono',Menlo,monospace;color:#6b3a0c" ]
+                     [ HH.span [ style "flex:0 0 auto;font:600 8px/1 -apple-system,'Helvetica Neue',sans-serif;letter-spacing:0.08em;text-transform:uppercase" ] [ HH.text "mute" ]
+                     , HH.span [ style "overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0" ] [ HH.text p ]
+                     , HH.button
+                         [ HE.onClick \_ -> EndMutePattern i
+                         , HP.title "End the mute pattern: every output plays as the rack has it (# mute off)"
+                         , style "flex:0 0 auto;border:none;background:transparent;padding:0 1px;cursor:pointer;font:10px/1 sans-serif;color:#5a5648" ]
+                         [ HH.text "✕" ]
+                     ]
+                 ]
+               Nothing -> [] )
     , HH.div [ style "display:flex;flex-direction:column;gap:4px;align-items:stretch;flex:0 0 auto" ]
         -- the jacks' voltage range: an LFO into a 0–5V input wants 0–5V, not
         -- the ±5V an LFO gets by default. An FHX-8GT has no range to set.
@@ -2298,7 +2328,7 @@ iconButton icon title act lit =
 -- Each slot is drawn inside a focusable cell: clicking selects it (a black box);
 -- arrow keys then nudge it. `slotViews` threads the destination index + current
 -- selection so each cell knows whether it's the selected one and what to fire.
-slotViews :: forall m. EnvParam -> Int -> Maybe Sel -> M.Target -> M.OutputRange -> Array Int -> M.GenBank -> Array (H.ComponentHTML Action Slots m)
+slotViews :: forall m. EnvParam -> Int -> Maybe Sel -> M.Target -> M.OutputRange -> (Int -> Silence) -> M.GenBank -> Array (H.ComponentHTML Action Slots m)
 slotViews ep d sel target outRange mutes = case _ of
   M.GVolt slots -> mapWithIndex (\j sl -> cellFor d sel mutes 84.0 (voltInner d outRange j) j sl) slots
   M.GLfo slots -> mapWithIndex (cellFor d sel mutes 90.0 (lfoInner target)) slots
@@ -2307,20 +2337,35 @@ slotViews ep d sel target outRange mutes = case _ of
   M.GClock slots -> mapWithIndex (cellFor d sel mutes 58.0 (clockInner target)) slots
   M.GNote slots -> mapWithIndex (cellFor d sel mutes 58.0 noteInner) slots
   M.GThrow slots -> mapWithIndex (cellFor d sel mutes 90.0 throwInner) slots
-  M.GEnv slots -> mapWithIndex (\j sl -> slotCell d j (sel == Just { dest: d, slot: j }) (Array.elem j mutes) 90.0 (envInner (sel == Just { dest: d, slot: j }) ep sl)) slots
+  M.GEnv slots -> mapWithIndex (\j sl -> slotCell d j (sel == Just { dest: d, slot: j }) (mutes j) 90.0 (envInner (sel == Just { dest: d, slot: j }) ep sl)) slots
   -- a voice is as wide as the jacks it takes, and has no mute of its own:
   -- it is silenced where its notes come from
   M.GVoice vb -> mapWithIndex (\j v -> voiceCell d j (sel == Just { dest: d, slot: j }) (if Array.elem M.VEnvelope vb.outputs then 104.0 + 40.0 * toNumber (M.voiceStride vb - 2) else 64.0) (voiceInner vb j v)) vb.voices
 
 -- | Wrap one slot's inner drawing in the focusable, selectable cell.
-cellFor :: forall m a. Int -> Maybe Sel -> Array Int -> Number -> (a -> Array (H.ComponentHTML Action Slots m)) -> Int -> a -> H.ComponentHTML Action Slots m
+cellFor :: forall m a. Int -> Maybe Sel -> (Int -> Silence) -> Number -> (a -> Array (H.ComponentHTML Action Slots m)) -> Int -> a -> H.ComponentHTML Action Slots m
 cellFor d sel mutes widthPx inner j sl =
-  slotCell d j (sel == Just { dest: d, slot: j }) (Array.elem j mutes) widthPx (inner sl)
+  slotCell d j (sel == Just { dest: d, slot: j }) (mutes j) widthPx (inner sl)
 
 -- | One output's cell, with its mute in the corner: a muted output is drawn
 -- | faded, keeps its settings (and can still be edited), and goes out silent.
-slotCell :: forall m. Int -> Int -> Boolean -> Boolean -> Number -> Array (H.ComponentHTML Action Slots m) -> H.ComponentHTML Action Slots m
-slotCell d j isSel muted widthPx body =
+-- | Whether an output plays: muted by hand (its M badge, in the rack) or,
+-- | for now, by its bank's mute pattern (told by the rig).
+data Silence = Playing | MutedByHand | MutedByPattern
+
+derive instance Eq Silence
+
+-- | An output's silence, slot j of destination d.
+silenceOf :: State -> M.Destination -> Int -> Silence
+silenceOf s d j
+  | Array.elem j d.mutedSlots = MutedByHand
+  | Just ks <- (Wire.targetSocketBank d.target >>= \sb -> Map.lookup (sb.socket <> " " <> Wire.placeOn sb d.jacks) s.patternMutes)
+  , isJust d.mutes
+  , Array.elem (j + 1) ks = MutedByPattern
+  | otherwise = Playing
+
+slotCell :: forall m. Int -> Int -> Boolean -> Silence -> Number -> Array (H.ComponentHTML Action Slots m) -> H.ComponentHTML Action Slots m
+slotCell d j isSel silence widthPx body =
   HH.div
     [ HP.tabIndex 0
     , style $ "position:relative;width:" <> show (round widthPx) <> "px;flex:0 0 auto;padding:5px 4px;border-radius:6px;"
@@ -2329,13 +2374,20 @@ slotCell d j isSel muted widthPx body =
              else "background:#ffffff55;border:1px solid #00000010;padding:6px 5px;" )
     , HE.onClick \_ -> SelectSlot d j
     , HE.onKeyDown SlotKeyDown ]
-    ( [ HH.div [ style ("display:flex;flex-direction:column;gap:2px;align-items:center" <> if muted then ";opacity:0.3" else "") ] body
+    ( [ HH.div [ style ("display:flex;flex-direction:column;gap:2px;align-items:center" <> if silence /= Playing then ";opacity:0.3" else "") ] body
       , HH.button
           [ HE.onClick (ToggleSlotMute d j)
-          , HP.title (if muted then "Unmute output " <> show (j + 1) <> ": it plays again, as it now is" else "Mute output " <> show (j + 1) <> ": it goes silent and keeps its settings")
+          , HP.title case silence of
+              MutedByHand -> "Unmute output " <> show (j + 1) <> ": it plays again, as it now is"
+              MutedByPattern -> "Muted by its bank's mute pattern, for now. Click to mute it by hand as well"
+              Playing -> "Mute output " <> show (j + 1) <> ": it goes silent and keeps its settings"
           , style $ "position:absolute;top:2px;right:2px;width:15px;height:15px;padding:0;border-radius:3px;"
               <> "font:bold 9px/13px Georgia,serif;cursor:pointer;"
-              <> if muted then "border:1px solid #b3261e;background:#b3261e;color:#fff" else "border:1px solid #00000022;background:#ffffffaa;color:#00000066" ]
+              <> case silence of
+                   MutedByHand -> "border:1px solid #b3261e;background:#b3261e;color:#fff"
+                   -- the pattern's: the learn button's amber, as an act of the rig's
+                   MutedByPattern -> "border:1px solid #b5651d;background:#f6d9a8;color:#6b3a0c"
+                   Playing -> "border:1px solid #00000022;background:#ffffffaa;color:#00000066" ]
           [ HH.text "M" ]
       ] )
 
