@@ -694,7 +694,7 @@ handleAction = case _ of
   -- survive), then re-derive the rack from the new text.
   AddDest k -> do
     H.modify_ \s ->
-      let block = Source.printDest { target: M.defaultTargetFor k, jacks: M.allJacks, range: Nothing, bank: M.freshBank k, retrig: Nothing, muted: false, mutedSlots: [], midi: [] }
+      let block = Source.printDest { target: M.defaultTargetFor k, jacks: M.allJacks, range: Nothing, bank: M.freshBank k, retrig: Nothing, mutes: Nothing, muted: false, mutedSlots: [], midi: [] }
           doc = currentDoc s <> "\n\n" <> block
       in s { live = doc, sel = Source.parseRack doc }
     persist
