@@ -830,11 +830,14 @@ handleAction = case _ of
                  (mapMaybe Wire.destinationEnvelope st.sel.destinations)
     H.modify_ \s -> s { pushed = foldr (\e m -> Map.insert (replyKey e.socket e.bank) e.json m) s.pushed envs }
     for_ st.binnacle \bin -> do
+      -- the rack goes on the stage first, where `selene $` lines read it: the
+      -- rig sends a bank with the mutes its rack's pattern holds, so it must
+      -- have the rack the bank comes from (AC, 2026-10-26: unmuting a bank
+      -- with a mute pattern let every output sound for a beat)
+      publishRack
       for_ envs \e ->
         liftEffect $ Transport.send (Binnacle.socket bin)
           ("selene-apply " <> e.socket <> " " <> e.bank <> " " <> e.json)
-      -- and the rack goes on the stage, where `selene $` lines read it
-      publishRack
     -- mark every pushed bank pending; the daemon's OK/ERR replaces it.
     H.modify_ \s -> s { replies = foldr (\e m -> Map.insert (replyKey e.socket e.bank) "…" m) s.replies envs }
 
