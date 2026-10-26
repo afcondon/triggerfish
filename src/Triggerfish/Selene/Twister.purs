@@ -284,7 +284,7 @@ detail ops outRange d j bank = fromMaybe (dark 12) case bank of
       hundredths = cents - whole * 100
       lo = Int.floor span.lo
       hi = Int.floor span.hi
-      at w h = p (sl { volts = toNumber (w * 100 + h) / 100.0 })
+      at w h = p (sl { volts = toNumber (w * 100 + h) / 100.0, pattern = Nothing })
     in place [ 5, 9 ]
          [ int lo hi (clamp lo hi whole) pink \w -> at w hundredths
          , int 0 99 hundredths pink \h -> at whole h
@@ -350,7 +350,7 @@ amp ops p sl = continuous (_ / 2.0) (_ * 2.0) (ops.lfoAmp sl) teal \a ->
 
 -- | A voltage across a range, to the hundredth of a volt.
 volts :: M.OutputRange -> (M.VoltSlot -> Act) -> M.VoltSlot -> Control
-volts outRange p sl = continuous to from sl.volts pink \v -> p (sl { volts = toNumber (round (v * 100.0)) / 100.0 })
+volts outRange p sl = continuous to from sl.volts pink \v -> p (sl { volts = toNumber (round (v * 100.0)) / 100.0, pattern = Nothing })
   where
   span = M.rangeVolts outRange
   to v = (M.clampNum span.lo span.hi v - span.lo) / (span.hi - span.lo)

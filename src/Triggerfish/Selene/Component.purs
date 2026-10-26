@@ -165,6 +165,9 @@ type State =
   -- (selene_mutes) as it is heard: by "socket bank" ("fh2 gt0"), its slots
   -- from 1 (docs/kb/plans/selene-mute-patterns.md)
   , patternMutes :: Map String (Array Int)
+  -- | the voltage each patterned POLYVOLT output holds, by "socket bank slot"
+  -- | (told by the rig, with the mutes)
+  , patternVolts :: Map String Number
   -- The unified glyph-chip PRESET bank (docs/DESIGN-scene-modal.md): captured rack
   -- docs, anonymous or named, freely intermixed. `identity` is the parked preset's
   -- content (the chip glyph; ghosts when the live doc diverges from it); `lastChip`
@@ -339,6 +342,7 @@ component =
           , learning: Nothing
           , destinations: { live: false, signals: Map.empty }
           , patternMutes: Map.empty
+          , patternVolts: Map.empty
           , presets: [], identity: Nothing, lastChip: Nothing
           , selected: Nothing
           , envParam: EPDecay
@@ -912,7 +916,8 @@ handleAction = case _ of
   SetRange i w -> editDest i (\d -> d { range = M.rangeOfWire w })
   SetVolt i j w -> for_ (Number.fromString w) \v ->
     editDest i (onBank case _ of
-      M.GVolt xs -> M.GVolt (overAt j (_ { volts = v }) xs)
+      -- a voltage set by hand ends the output's pattern, as in a line
+      M.GVolt xs -> M.GVolt (overAt j (_ { volts = v, pattern = Nothing }) xs)
       b -> b)
   -- the same rack edit as any other, so the rig follows by the stage
   -- (`selene $ convert <bank> lfo` in a line)
@@ -1030,8 +1035,9 @@ handleAction = case _ of
       Left _ -> pure unit
   SeleneReply raw | Just json <- Str.stripPrefix (Str.Pattern "muting selene ") raw ->
     case readJSON json of
-      Right (m :: { banks :: Array { socket :: String, bank :: String, muted :: Array Int } }) ->
-        H.modify_ _ { patternMutes = Map.fromFoldable (map (\b -> Tuple (b.socket <> " " <> b.bank) b.muted) m.banks) }
+      Right (m :: { banks :: Array { socket :: String, bank :: String, muted :: Array Int }, volts :: Maybe (Array { socket :: String, bank :: String, slot :: Int, volts :: Nullable Number }) }) ->
+        H.modify_ _ { patternMutes = Map.fromFoldable (map (\b -> Tuple (b.socket <> " " <> b.bank) b.muted) m.banks)
+                    , patternVolts = Map.fromFoldable (Array.mapMaybe (\v -> map (Tuple (v.socket <> " " <> v.bank <> " " <> show v.slot)) (toMaybe v.volts)) (fromMaybe [] m.volts)) }
       Left _ -> pure unit
   SeleneReply "unlearned selene" -> H.modify_ _ { learning = Nothing }
   SeleneReply raw | Just rest <- Str.stripPrefix (Str.Pattern "learning selene midi") raw ->
@@ -1286,6 +1292,11 @@ accent = "#3f6f8a"   -- steel-blue, Selene's electric accent
 
 ink :: String
 ink = "#2b2922"
+
+-- | What the rig plays on the clock (a pattern of voltages): the mute
+-- | pattern's amber, darkened for text.
+patternInk :: String
+patternInk = "#6b3a0c"
 
 -- ---------------------------------------------------------------------------
 -- render
@@ -1543,7 +1554,8 @@ nudgeVolt dir shift sl =
       NDown -> -coarse
       NRight -> fine
       NLeft -> -fine
-  in sl { volts = M.clampNum (-10.0) 10.0 (toNumber (round ((sl.volts + by) * 100.0)) / 100.0) }
+  -- a nudge sets a voltage, so it ends a pattern, as the slider does
+  in sl { volts = M.clampNum (-10.0) 10.0 (toNumber (round ((sl.volts + by) * 100.0)) / 100.0), pattern = Nothing }
 
 nudgeNote :: NudgeDir -> Boolean -> M.PresetNoteSlot -> M.PresetNoteSlot
 nudgeNote dir shift sl =
@@ -2033,7 +2045,7 @@ destinationRow s ep sel i d =
     , HH.div [ style (slotWrap d.bank <> if d.muted then ";opacity:0.35" else "") ]
         (Array.zipWith (\{ key, out } cell -> labelled s key (maybe cell (\o -> withMidiOut s i d o cell) out))
           (mapWithIndex (\k j -> { key: JL.jackKey d.target j, out: map (\o -> { slot: k, out: o }) (outs !! k) }) (slotJacks d))
-          (slotViews ep i sel d.target (M.voltRange d) (silenceOf s d) d.bank))
+          (slotViews ep i sel d.target (M.voltRange d) (silenceOf s d) (liveVoltOf s d) d.bank))
     ]
   where
   outs = M.midiOutsOf d
@@ -2331,9 +2343,9 @@ iconButton icon title act lit =
 -- Each slot is drawn inside a focusable cell: clicking selects it (a black box);
 -- arrow keys then nudge it. `slotViews` threads the destination index + current
 -- selection so each cell knows whether it's the selected one and what to fire.
-slotViews :: forall m. EnvParam -> Int -> Maybe Sel -> M.Target -> M.OutputRange -> (Int -> Silence) -> M.GenBank -> Array (H.ComponentHTML Action Slots m)
-slotViews ep d sel target outRange mutes = case _ of
-  M.GVolt slots -> mapWithIndex (\j sl -> cellFor d sel mutes 84.0 (voltInner d outRange j) j sl) slots
+slotViews :: forall m. EnvParam -> Int -> Maybe Sel -> M.Target -> M.OutputRange -> (Int -> Silence) -> (Int -> Maybe Number) -> M.GenBank -> Array (H.ComponentHTML Action Slots m)
+slotViews ep d sel target outRange mutes live = case _ of
+  M.GVolt slots -> mapWithIndex (\j sl -> cellFor d sel mutes 84.0 (voltInner d outRange (live j) j) j sl) slots
   M.GLfo slots -> mapWithIndex (cellFor d sel mutes 90.0 (lfoInner target)) slots
   M.GLfoT slots -> mapWithIndex (cellFor d sel mutes 90.0 (lfoTInner target)) slots
   M.GEuclid slots -> mapWithIndex (cellFor d sel mutes 70.0 (euclidInner target)) slots
@@ -2357,6 +2369,13 @@ cellFor d sel mutes widthPx inner j sl =
 data Silence = Playing | MutedByHand | MutedByPattern
 
 derive instance Eq Silence
+
+-- | The voltage a patterned POLYVOLT output holds now, slot j of
+-- | destination d, as the rig last told it.
+liveVoltOf :: State -> M.Destination -> Int -> Maybe Number
+liveVoltOf s d j = do
+  sb <- Wire.targetSocketBank d.target
+  Map.lookup (sb.socket <> " " <> Wire.placeOn sb d.jacks <> " " <> show (j + 1)) s.patternVolts
 
 -- | An output's silence, slot j of destination d.
 silenceOf :: State -> M.Destination -> Int -> Silence
@@ -2563,17 +2582,25 @@ noteInner sl =
 
 -- | The voltage, and a slider across the bank's range. A voltage the range
 -- | can't reach is kept as asked (AC: a range change leaves the volts alone),
--- | shown red, with what it plays at.
-voltInner :: forall m. Int -> M.OutputRange -> Int -> M.VoltSlot -> Array (H.ComponentHTML Action Slots m)
-voltInner d outRange j sl =
+-- | shown red, with what it plays at. An output that follows a pattern
+-- | shows the voltage it holds now (`live`, told by the rig) and the pattern;
+-- | the slider, moved, sets a voltage and ends the pattern.
+voltInner :: forall m. Int -> M.OutputRange -> Maybe Number -> Int -> M.VoltSlot -> Array (H.ComponentHTML Action Slots m)
+voltInner d outRange live j sl =
   let
     span = M.rangeVolts outRange
-    clipped = M.voltClipped outRange sl.volts
-    plays = M.clampNum span.lo span.hi sl.volts
+    now = case sl.pattern of
+      Just _ -> fromMaybe sl.volts live
+      Nothing -> sl.volts
+    clipped = M.voltClipped outRange now
+    plays = M.clampNum span.lo span.hi now
+    shown = case sl.pattern, live of
+      Just _, Nothing -> "–"
+      _, _ -> M.voltWord now
   in
     [ HH.div
-        [ style $ "font-family:'SF Mono',Menlo,monospace;font-size:15px;text-align:center;color:" <> (if clipped then "#b3261e" else ink) ]
-        [ HH.text (M.voltWord sl.volts) ]
+        [ style $ "font-family:'SF Mono',Menlo,monospace;font-size:15px;text-align:center;color:" <> (if clipped then "#b3261e" else if isJust sl.pattern then patternInk else ink) ]
+        [ HH.text shown ]
     , HH.input
         [ HP.type_ HP.InputRange
         , HP.min span.lo
@@ -2584,7 +2611,9 @@ voltInner d outRange j sl =
         , HE.onValueInput (SetVolt d j)
         , style ("width:74px;margin:2px 0;accent-color:" <> accent)
         ]
-    , cellCaption (if clipped then "plays " <> M.voltWord plays else M.rangeLabel outRange)
+    , case sl.pattern of
+        Just p -> HH.div [ HP.title ("Follows the pattern " <> p <> " on the clock; move the slider to set a voltage instead"), style ("font-family:'SF Mono',Menlo,monospace;font-size:9px;max-width:80px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:" <> patternInk) ] [ HH.text p ]
+        Nothing -> cellCaption (if clipped then "plays " <> M.voltWord plays else M.rangeLabel outRange)
     ]
 
 -- --- POLYVOICE: a MIDI voice, its channel and its outputs ---------------------
