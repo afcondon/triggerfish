@@ -9,6 +9,15 @@
 // Base URL follows the page host so it works at localhost or andrews-mac-mini;
 // Amphora listens on :3024 with permissive CORS.
 
+// The web build (trigger-fish.app, `window.TRIGGERFISH_WEB`) has no Amphora:
+// every request fails at once, without touching the network, so the library
+// is this browser's copy and nothing asks after the visitor's machine
+// (Triggerfish.Web, 2026-10-27).
+const reach = (url, init) =>
+  typeof window !== "undefined" && window.TRIGGERFISH_WEB === true
+    ? Promise.reject(new Error("no Amphora on the web"))
+    : fetch(url, init);
+
 const amphoraBase = () => {
   if (typeof window !== "undefined" && window.AMPHORA_BASE) return window.AMPHORA_BASE;
   const host =
@@ -31,7 +40,7 @@ const FETCH_TIMEOUT_MS = 2500;
 const getJSON = (url) => {
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), FETCH_TIMEOUT_MS);
-  return fetch(url, { signal: ctrl.signal })
+  return reach(url, { signal: ctrl.signal })
     .then((r) => {
       if (!r.ok) throw new Error("GET " + url + " → HTTP " + r.status);
       return r.json();
@@ -40,7 +49,7 @@ const getJSON = (url) => {
 };
 
 const sendJSON = (base, method, path, body) =>
-  fetch(base + path, {
+  reach(base + path, {
     method,
     headers: { "Content-Type": "application/json" },
     body: body === undefined ? undefined : JSON.stringify(body),
@@ -138,7 +147,7 @@ export const exchangeImpl = (method) => (path) => (body) => (ok) => (fail) => ()
   const timer = setTimeout(() => ctrl.abort(), FETCH_TIMEOUT_MS);
   const init = { method, signal: ctrl.signal };
   if (body !== null) { init.body = body; init.headers = { "Content-Type": "application/json" }; }
-  fetch(amphoraBase() + path, init)
+  reach(amphoraBase() + path, init)
     .then((r) => r.text().then((t) => ok({ status: r.status, body: t })()))
     .catch((e) => fail(path + ": " + String(e && e.message ? e.message : e))())
     .finally(() => clearTimeout(timer));

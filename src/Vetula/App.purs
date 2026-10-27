@@ -13,6 +13,8 @@ module Vetula.App where
 
 import Prelude
 
+import Triggerfish.Web as Web
+
 import Control.Alt ((<|>))
 
 import Data.DateTime.Instant (unInstant)
@@ -322,11 +324,14 @@ soundFromValue = case _ of
   _ -> Nothing
 
 nextSound :: AuditionSel -> AuditionSel
-nextSound = case _ of
-  AuditionBrowser -> AuditionContinuo
-  AuditionContinuo -> AuditionMidi
-  AuditionMidi -> AuditionOff
-  AuditionOff -> AuditionBrowser
+nextSound sel = if Web.onTheWeb && next sel == AuditionContinuo then next AuditionContinuo else next sel
+  where
+  -- on the web there is no continuo (it is the install's): browser → MIDI → off
+  next = case _ of
+    AuditionBrowser -> AuditionContinuo
+    AuditionContinuo -> AuditionMidi
+    AuditionMidi -> AuditionOff
+    AuditionOff -> AuditionBrowser
 
 -- | A chord's short name from its root + quality (major bare, minor "m", else
 -- | the bare root).
@@ -1816,12 +1821,15 @@ handleActionCore = case _ of
     -- response to a USER GESTURE, so this page-load request often resolves to
     -- "no Web-MIDI" the first time; clicking the sound chip (CycleSound ->
     -- setSound) re-runs it from a real gesture. See connectMidi.
-    connectMidi
+    -- On the web, Web MIDI is asked for only when MIDI is the sound chosen
+    -- (AC, 2026-10-27: "if we're not using it... better not to").
+    selNow <- H.gets _.auditionSel
+    unless (Web.onTheWeb && selNow /= AuditionMidi) connectMidi
     -- The shared transport: connect Binnacle (free-run 120 → Link-lock on the
     -- rig) and run the lookahead scheduler. It ticks the 16th-note grid always;
     -- PerfTick gates on `playing`, so Vetula is a clock-peer of Odonus/Balistes
     -- under the shell master — same downbeat, same tempo, background-safe.
-    bin <- liftEffect $ Binnacle.connect { url: rigUrl, tempo: 120.0 }
+    bin <- liftEffect $ Binnacle.connect { url: Web.rigUrl rigUrl, tempo: 120.0 }
     { emitter: stepE, listener: stepL } <- liftEffect HS.create
     _ <- H.subscribe stepE
     _ <- liftEffect $ Scheduler.startGrid (Binnacle.clock bin) gridCfg \tick ->

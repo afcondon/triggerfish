@@ -35,6 +35,7 @@ static:
 	  mkdir -p $$d; \
 	  spago bundle --module Triggerfish.$$m.Main --minify --outfile $$d/$$f.js || exit 1; \
 	  cp public/$$f.html $$d/index.html; \
+	  perl -0pi -e 's#<head>#<head>\n  <!-- the web build: reach for nothing on the visitor machine unasked (Triggerfish.Web) -->\n  <script>window.TRIGGERFISH_WEB = true;</script>#' $$d/index.html; \
 	  cp public/halogen-widgets.css public/favicon.svg $$d/; \
 	  echo "✓ $$d"; \
 	done

@@ -25,6 +25,8 @@ module Triggerfish.Dashboard
 import Reef.Vetula.VoiceName (voiceLetter)
 import Prelude
 
+import Triggerfish.Web as Web
+
 import Binnacle as Binnacle
 import Binnacle.Clock as Clock
 import Binnacle.Midi as Midi
@@ -268,7 +270,7 @@ handleAction = case _ of
     handleAction RoutingStored
     liftEffect $ RStore.onChange (HS.notify listener RoutingStored)
     free <- liftEffect $ fromMaybe 120.0 <$> Tempo.load
-    rig <- liftEffect $ Binnacle.connect { url: rigUrl, tempo: free }
+    rig <- liftEffect $ Binnacle.connect { url: Web.rigUrl rigUrl, tempo: free }
     H.modify_ _ { rig = Just rig, freeTempo = free, tempo = free }
     liftEffect $ Tempo.onChange (HS.notify listener TempoStored)
     win <- liftEffect window

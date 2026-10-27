@@ -434,6 +434,7 @@ data Action
   | RigFrame String         -- a frame from the rig: an `odonus` move's tagged gestures to follow
   -- every output port, status line
   | MidiReady RO.Outs String
+  | UseMidi Boolean         -- the web's sound choice: through MIDI, or the browser
   | RoutingStored   -- another tab saved the routing table (the dashboard's router)
   | ToggleGlide Int
   | ToggleGate Int

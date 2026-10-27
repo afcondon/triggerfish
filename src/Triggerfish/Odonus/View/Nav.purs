@@ -22,6 +22,7 @@ import Triggerfish.Odonus.Grid.Widgets (engrave, style)
 import Triggerfish.Routing.Model as RM
 import Triggerfish.Routing.Out as RO
 import Triggerfish.Transport (Sounding(..))
+import Triggerfish.Web as Web
 import Triggerfish.Odonus.Logbook (noteCount)
 
 riverControls :: forall m. State -> H.ComponentHTML Action Slots m
@@ -48,12 +49,18 @@ routingReadout s =
   -- voice, so say that, not that routes it never takes are dead (AC,
   -- 2026-10-27: "makes it look like maybe it's not going to work")
   if s.sounding /= Rig && (null s.outs || length dead == length legs) then
-      HH.span
-        [ HP.title "no MIDI port its routes reach here: Odonus plays in the browser's own voice"
-        , style $ engrave <> ";font-size:8px;letter-spacing:0.1em;color:#6a6558" ]
-        [ HH.text "\x266a IN THE BROWSER" ]
+      HH.span [ style "display:flex;align-items:baseline;gap:8px" ]
+        ( [ HH.span
+              [ HP.title "Odonus plays in the browser's own voice"
+              , style $ engrave <> ";font-size:8px;letter-spacing:0.1em;color:#6a6558" ]
+              [ HH.text "\x266a IN THE BROWSER" ] ]
+          -- on the web, MIDI is the visitor's to choose (the browser asks them)
+          <> (if not Web.onTheWeb then []
+              else if null s.outs then [ toggle "PLAY THROUGH MIDI" "play through a MIDI port instead (your browser will ask)" true ]
+              else [ toggle "BROWSER" "no route reaches a port here: back to the browser's voice, and stop asking MIDI" false ]) )
   else
-      HH.span
+    HH.span [ style "display:flex;align-items:baseline;gap:8px" ]
+      ( [ HH.span
         [ HP.title (if broken
             then joinWith " \x00b7 " (map (\d -> RM.destLabel d.dest <> " \x2014 " <> RM.reachNote d.why) dead)
             else joinWith " \x00b7 " (map (\l -> RM.destLabel l.dest) legs))
@@ -61,8 +68,14 @@ routingReadout s =
             <> (if broken then "color:#8c2f1c" else "color:#6a6558") ]
         [ HH.text (if broken
             then show (length dead) <> "/" <> show (length legs) <> " ROUTES DEAD"
-            else show (length legs) <> " ROUTES") ]
+            else show (length legs) <> " ROUTES") ] ]
+        <> (if Web.onTheWeb then [ toggle "BROWSER" "back to the browser's own voice; no MIDI is sent" false ] else []) )
   where
+  toggle label tip on =
+    HH.button
+      [ HP.title tip, HE.onClick \_ -> UseMidi on
+      , style $ engrave <> ";font-size:8px;letter-spacing:0.1em;color:#3f3c33;background:#e9e4d6;border:1px solid #00000026;border-radius:4px;padding:1px 6px;cursor:pointer" ]
+      [ HH.text label ]
   ports = { found: RO.portNames s.outs, rigUp: true }
   dead = concatMap (\h -> RM.unreachable ports s.routing (RM.SOdonusHead h)) (0 .. 3)
   legs = concatMap (\h -> RM.liveLegsFor s.routing (RM.SOdonusHead h)) (0 .. 3)

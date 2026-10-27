@@ -33,6 +33,8 @@ module Triggerfish.Standalone
 
 import Prelude
 
+import Triggerfish.Web as Web
+
 import Binnacle as Binnacle
 import Binnacle.Audio (armAudioKeepAlive)
 import Binnacle.Time (dateNow)
@@ -256,7 +258,7 @@ handleAction cfg = case _ of
     H.modify_ _ { freeT0 = now * 1000.0 }
     -- The page's own rig socket, for PANIC, as in the Triggerfish shell.
     bpm <- liftEffect $ fromMaybe 120.0 <$> Tempo.load
-    rig <- liftEffect $ Binnacle.connect { url: rigUrl, tempo: bpm }
+    rig <- liftEffect $ Binnacle.connect { url: Web.rigUrl rigUrl, tempo: bpm }
     H.modify_ _ { rig = Just rig, bpm = bpm }
     mmode <- liftEffect TransportStore.load
     for_ mmode \m -> H.modify_ _ { mode = m }

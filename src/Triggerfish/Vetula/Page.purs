@@ -13,6 +13,8 @@ module Triggerfish.Vetula.Page
 
 import Prelude
 
+import Triggerfish.Web as Web
+
 import Data.Foldable (for_)
 import Data.Maybe (Maybe(..), fromMaybe, maybe)
 import Effect.Aff (Aff)
@@ -102,7 +104,7 @@ handleAction = case _ of
     H.modify_ _ { busy = Just gate }
     void $ liftEffect $ setInterval 100 (HS.notify listener Poll)
     -- The rig: Vetula's voices and the harmony routes, for the drawer
-    bin <- liftEffect $ Binnacle.connect { url: "ws://127.0.0.1:3012/ws", tempo: 120.0 }
+    bin <- liftEffect $ Binnacle.connect { url: Web.rigUrl "ws://127.0.0.1:3012/ws", tempo: 120.0 }
     { emitter: rigE, listener: rigL } <- liftEffect HS.create
     _ <- H.subscribe rigE
     liftEffect $ Binnacle.onAppMessage bin (HS.notify rigL <<< RigFrame)

@@ -19,6 +19,8 @@ module Triggerfish.Main where
 
 import Prelude
 
+import Triggerfish.Web as Web
+
 import Data.Array (any, deleteAt, filter, find, findIndex, last, length, mapMaybe, mapWithIndex, modifyAt, null, replicate, uncons, unsnoc, (..), (:), (!!))
 import Data.FoldableWithIndex (forWithIndex_)
 import Data.Foldable (for_, sum)
@@ -484,7 +486,7 @@ handleAction = case _ of
     _ <- liftEffect $ setInterval 120 (HS.notify listener SceneTick)
     -- The shell's own rig socket, for rig-wide commands (PANIC). Opened here so
     -- it is live regardless of which machines are mounted or healthy.
-    rigBin <- liftEffect $ Binnacle.connect { url: rigUrl, tempo: 120.0 }
+    rigBin <- liftEffect $ Binnacle.connect { url: Web.rigUrl rigUrl, tempo: 120.0 }
     H.modify_ _ { rig = Just rigBin }
     -- Restore the routing table before anything can play. Same discipline as
     -- the mode below: a route is the user's CHOICE about where output goes, which

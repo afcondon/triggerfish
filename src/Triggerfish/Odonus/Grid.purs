@@ -9,6 +9,8 @@ module Triggerfish.Odonus.Grid (component, Output(..)) where
 
 import Prelude
 
+import Triggerfish.Web as Web
+
 import Data.Array (any, catMaybes, concatMap, deleteAt, elem, filter, find, findIndex, head, insertAt, length, mapMaybe, mapWithIndex, modifyAt, null, range, replicate, updateAt, (!!))
 import Data.Map as Map
 import Data.Foldable (foldl, for_)
@@ -491,7 +493,7 @@ dispatch = case _ of
     -- Connect to the rig. Binnacle's clock free-runs at 120 until the
     -- Link anchor arrives, then phase-locks — so Triggerfish runs solo
     -- without the rig, and joins the ensemble the moment it's up.
-    bin <- liftEffect $ Binnacle.connect { url: rigUrl, tempo: 120.0 }
+    bin <- liftEffect $ Binnacle.connect { url: Web.rigUrl rigUrl, tempo: 120.0 }
     -- Follow the rig: an `odonus` line evaluated elsewhere (Limulus) is applied
     -- by the BEAM voice, which broadcasts its tick-tagged gestures; queue them
     -- here like our own so both runtimes apply them on the same step.
@@ -508,38 +510,10 @@ dispatch = case _ of
     -- A separate ~30fps ticker scrolls the river smoothly.
     frameE <- frameTimer
     _ <- H.subscribe frameE
-    -- Web MIDI out (async permission prompt) — e.g. an IAC bus into Ableton.
-    { emitter: midiE, listener: midiL } <- liftEffect HS.create
-    _ <- H.subscribe midiE
-    liftEffect $ Midi.requestAccess \maccess -> case maccess of
-      Just access -> do
-        -- EVERY output port, because the routing table may name any of them —
-        -- so adding a destination in the router works with no MIDI re-init.
-        outs <- RO.openAll access
-        names <- Midi.outputNames access
-        -- Control surface IN (MidiFighter Twister, bank 1): route every incoming
-        -- message through the SAME Action pipeline the trackpad uses, so a
-        -- knob-turn is byte-identical to a knob-drag (and stays in lockstep on-rig).
-        -- Missing surface → skip; the subscription lives for the session. Fold the
-        -- in/out port status into one line so a name-match miss is visible, not silent.
-        minput <- Midi.findInput access twisterInputName
-        innames <- Midi.inputNames access
-        -- WHICH ports matter is now a property of the routing table, so the
-        -- "is anything missing" judgement moved to the view (`midiPortsOk`),
-        -- against the actual routes. This line records only what exists.
-        let twNm = case minput of
-              Just _ -> twisterInputName <> " ✓"
-              Nothing -> "no '" <> twisterInputName <> "' in: " <> joinWith ", " innames
-            nm = show (length names) <> " ports · " <> twNm
-        HS.notify midiL (MidiReady outs nm)
-        -- Through Helm's press-nudge guard first: a push always nudges the
-        -- encoder, and a field-select push must not also edit a cell.
-        feed <- Guard.guarded Guard.timing (HS.notify midiL <<< TwisterMsg)
-        for_ minput \inp -> void $ Midi.onMessage inp \m ->
-          for_ (HelmTwister.parse [ m.status, m.data1, m.data2 ]) feed
-        mtwOut <- Midi.findOutput access twisterInputName
-        for_ mtwOut (HS.notify midiL <<< TwisterOut)
-      Nothing -> HS.notify midiL (MidiReady [] "unavailable")
+    -- Web MIDI out: at once on the rig; on the web only once the visitor
+    -- has chosen MIDI (the readout's toggle), never asked for unused
+    midiChosen <- liftEffect Web.midiChosen
+    when (not Web.onTheWeb || midiChosen) openMidi
     H.modify_ _ { binnacle = Just bin }
     -- Restore the live working patch (Lepidoptera text; unparseable / absent
     -- storage falls back to defaults). The presets are what Amphora keeps
@@ -809,6 +783,11 @@ dispatch = case _ of
     when (cv /= s2.lastChip) do
       H.modify_ _ { lastChip = cv }
       H.raise (IdentityChanged cv)
+  -- the web's sound choice (the readout): MIDI asks for it; back to the
+  -- browser drops every port, so each head sounds in the browser again
+  UseMidi on -> do
+    liftEffect (Web.chooseMidi on)
+    if on then openMidi else handleAction (MidiReady [] "browser")
   MidiReady outs nm -> do
     H.modify_ _ { outs = outs, midiName = nm }
     -- a saved IAC bus this browser no longer has: moved to the one it has
@@ -1693,6 +1672,46 @@ inputBufferSteps = 2
 
 -- | The rig WebSocket (purerl-tidal). Binnacle subscribes to the Link
 -- | anchor here and relays gates/CV to es9-daemon.
+
+-- | Ask for Web MIDI and open every output (an IAC bus into Ableton, a
+-- | visitor's own synth), and the Twister's input. At once on the rig; on the
+-- | web only when the visitor chooses MIDI (`UseMidi`), since the browser asks
+-- | them first (AC, 2026-10-27).
+openMidi :: forall m. MonadAff m => H.HalogenM State Action Slots Output m Unit
+openMidi = do
+  -- Web MIDI out (async permission prompt) — e.g. an IAC bus into Ableton.
+  { emitter: midiE, listener: midiL } <- liftEffect HS.create
+  _ <- H.subscribe midiE
+  liftEffect $ Midi.requestAccess \maccess -> case maccess of
+    Just access -> do
+      -- EVERY output port, because the routing table may name any of them —
+      -- so adding a destination in the router works with no MIDI re-init.
+      outs <- RO.openAll access
+      names <- Midi.outputNames access
+      -- Control surface IN (MidiFighter Twister, bank 1): route every incoming
+      -- message through the SAME Action pipeline the trackpad uses, so a
+      -- knob-turn is byte-identical to a knob-drag (and stays in lockstep on-rig).
+      -- Missing surface → skip; the subscription lives for the session. Fold the
+      -- in/out port status into one line so a name-match miss is visible, not silent.
+      minput <- Midi.findInput access twisterInputName
+      innames <- Midi.inputNames access
+      -- WHICH ports matter is now a property of the routing table, so the
+      -- "is anything missing" judgement moved to the view (`midiPortsOk`),
+      -- against the actual routes. This line records only what exists.
+      let twNm = case minput of
+            Just _ -> twisterInputName <> " ✓"
+            Nothing -> "no '" <> twisterInputName <> "' in: " <> joinWith ", " innames
+          nm = show (length names) <> " ports · " <> twNm
+      HS.notify midiL (MidiReady outs nm)
+      -- Through Helm's press-nudge guard first: a push always nudges the
+      -- encoder, and a field-select push must not also edit a cell.
+      feed <- Guard.guarded Guard.timing (HS.notify midiL <<< TwisterMsg)
+      for_ minput \inp -> void $ Midi.onMessage inp \m ->
+        for_ (HelmTwister.parse [ m.status, m.data1, m.data2 ]) feed
+      mtwOut <- Midi.findOutput access twisterInputName
+      for_ mtwOut (HS.notify midiL <<< TwisterOut)
+    Nothing -> HS.notify midiL (MidiReady [] "unavailable")
+
 rigUrl :: String
 rigUrl = "ws://127.0.0.1:3012/ws"
 

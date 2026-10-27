@@ -16,6 +16,8 @@ module Triggerfish.Selene.Component (component, Output(..)) where
 
 import Prelude
 
+import Triggerfish.Web as Web
+
 import Data.Array (deleteAt, drop, elemIndex, filter, findIndex, insertAt, length, mapMaybe, mapWithIndex, modifyAt, null, range, (!!))
 import Data.Foldable (all, for_, foldl, foldr, traverse_)
 import Data.Tuple (Tuple(..), fst, snd)
@@ -582,7 +584,7 @@ chipViewOf s = case s.identity of
 handleAction :: forall m. MonadAff m => Action -> H.HalogenM State Action Slots Output m Unit
 handleAction = case _ of
   Initialize -> do
-    bin <- liftEffect $ Binnacle.connect { url: rigUrl, tempo: 120.0 }
+    bin <- liftEffect $ Binnacle.connect { url: Web.rigUrl rigUrl, tempo: 120.0 }
     -- Rig replies to the Apply → rig push (`selene-reply …`) arrive as non-anchor
     -- frames; route them through Halogen so the per-bank status can update.
     { emitter: replyE, listener: replyL } <- liftEffect HS.create

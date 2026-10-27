@@ -18,6 +18,8 @@ module Triggerfish.Balistes.Component (component, Output(..)) where
 
 import Prelude
 
+import Triggerfish.Web as Web
+
 import Data.Array (concatMap, deleteAt, filter, find, head, insertAt, last, length, mapWithIndex, modifyAt, null, partition, range, (!!))
 import Data.Ord (abs)
 import Reef.Balistes.Kit as Kit
@@ -313,7 +315,7 @@ handleAction = case _ of
   Initialize -> do
     -- Same rig handshake as Odonus: Binnacle free-runs at 120 until the Link
     -- anchor arrives, then phase-locks, so Balistes plays solo or in ensemble.
-    bin <- liftEffect $ Binnacle.connect { url: rigUrl, tempo: 120.0 }
+    bin <- liftEffect $ Binnacle.connect { url: Web.rigUrl rigUrl, tempo: 120.0 }
     { emitter: stepE, listener: stepL } <- liftEffect HS.create
     _ <- H.subscribe stepE
     _ <- liftEffect $ Scheduler.startGrid (Binnacle.clock bin) gridCfg \tick ->
