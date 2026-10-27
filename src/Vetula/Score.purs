@@ -294,11 +294,16 @@ staffGap = 14.0
 -- | onto a voice to have the voice play it), the badges of the voices playing it, and a
 -- | note. Every bar shares the row's vertical extent, so a note that looks
 -- | higher than its neighbour is.
+-- |
+-- | Drawn in engraving ink, black on white like a printed score: the score is
+-- | the technical view, and should look it (AC, CR-15, 2026-10-27). Colour is
+-- | kept for what is chosen or in hand (the bar's cream, a run's blue) and
+-- | for a note outside the scale (red).
 system :: forall w i. Spelling -> Handlers i -> Staff -> HH.HTML w i
 system pageSp on row =
   HH.div
     [ HP.style ("margin: 0 0 18px; padding: 10px 14px 6px; border-radius: 6px; user-select: none; -webkit-user-select: none; "
-        <> (if row.top then "background: #fffdf6; border: 1px solid #d8cfb6;" else "background: #fbf8f0; border: 1px solid #ece5d0;")) ]
+        <> (if row.top then "background: #ffffff; border: 1px solid #cfcfcf;" else "background: #fafafa; border: 1px solid #e4e4e4;")) ]
     ( [ header
       , HH.div [ HP.style "overflow-x: auto;" ] [ staff ]
       ] <> scales )
@@ -316,8 +321,8 @@ system pageSp on row =
     Just k -> spellingOf k.tonic k.scale
     Nothing -> pageSp
   savedLine = case row.saved of
-    Just k -> [ HH.span [ HP.style "font-size: 11px; color: #6c8792;" ]
-                  [ HH.text (if k.saved then "saved in " else "in "), HH.span [ HP.style "font-weight: 600; color: #2f3e44;" ] [ HH.text (pcNameIn keySp k.tonic <> " " <> k.mode) ] ] ]
+    Just k -> [ HH.span [ HP.style "font-size: 11px; color: #6b6b6b;" ]
+                  [ HH.text (if k.saved then "saved in " else "in "), HH.span [ HP.style "font-weight: 600; color: #1a1a1a;" ] [ HH.text (pcNameIn keySp k.tonic <> " " <> k.mode) ] ] ]
     Nothing -> []
   readScale r = map (\iv -> (r.root + iv) `mod` 12) (modeIntervals r.key)
   sp = case read of
@@ -336,9 +341,9 @@ system pageSp on row =
           nm = pcNameIn rsp r.root <> " " <> r.mode
           outs = Array.length r.outside
       in
-        [ HH.span [ HP.style "font-size: 11px; color: #6c8792;" ]
+        [ HH.span [ HP.style "font-size: 11px; color: #6b6b6b;" ]
             [ HH.text (show inKey <> " note" <> plural inKey <> " outside it \x00b7 reads as ")
-            , HH.span [ HP.style "font-weight: 600; color: #2f3e44;" ] [ HH.text nm ]
+            , HH.span [ HP.style "font-weight: 600; color: #1a1a1a;" ] [ HH.text nm ]
             , HH.text (if outs == 0 then "" else " (" <> show outs <> " outside)")
             ]
         , chip (if row.ownKey then "\x2713 spelled in " <> nm else "spell in " <> nm) ("show this row's notes, and colour them, as " <> nm) on.readIn
@@ -349,13 +354,13 @@ system pageSp on row =
   plural k = if k == 1 then "" else "s"
   chip label tip act =
     HH.button
-      [ HP.style "border: 1px solid #c9d6db; background: #f3f6f7; color: #2f3e44; border-radius: 4px; padding: 1px 8px; font-size: 11px; cursor: pointer;"
+      [ HP.style "border: 1px solid #c8c8c8; background: #f7f7f7; color: #1a1a1a; border-radius: 4px; padding: 1px 8px; font-size: 11px; cursor: pointer;"
       , HP.title tip, HE.onClick \_ -> act ]
       [ HH.text label ]
 
   header =
     HH.div [ HP.style "display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; margin-bottom: 2px;" ]
-      ( [ HH.span ([ HP.style "font-size: 13px; color: #2a2a2a; font-weight: 600;", HP.title "drag it onto a voice to have the voice play it" ] <> titleDrags) [ HH.text row.title ] ]
+      ( [ HH.span ([ HP.style "font-size: 13px; color: #111111; font-weight: 600;", HP.title "drag it onto a voice to have the voice play it" ] <> titleDrags) [ HH.text row.title ] ]
           <> (if Array.null row.rebus then [] else
                 [ HH.span [ HP.style "display: inline-flex; gap: 3px; align-items: center; opacity: 0.85;"
                           , HP.title "its chords as a set: the same chords in another order wear the same picture" ]
@@ -386,7 +391,7 @@ system pageSp on row =
                   [ chip "revoice" "every chord's notes, side by side, the voices joined bar to bar" (act (fromMaybe 0 row.active)) ]
                 _ -> [])
           <> map badge row.badges
-          <> (if row.note == "" then [] else [ HH.span [ HP.style "font-size: 11px; color: #9a8d6a; font-style: italic;" ] [ HH.text row.note ] ])
+          <> (if row.note == "" then [] else [ HH.span [ HP.style "font-size: 11px; color: #808080; font-style: italic;" ] [ HH.text row.note ] ])
           <> savedLine
           <> readingLine
       )
@@ -398,7 +403,7 @@ system pageSp on row =
   badge b =
     HH.span
       [ HP.style ("display: inline-flex; align-items: baseline; gap: 5px; padding: 1px 7px; border-radius: 9px; font-size: 11px; "
-          <> (if b.muted then "background: #eee9db; color: #9a9070;" else "background: #5f6f6a; color: #fff;"))
+          <> (if b.muted then "background: #eeeeee; color: #999999;" else "background: #333333; color: #fff;"))
       , HP.title ("voice " <> b.letter <> (if b.muted then ", muted" else "") <> " \x00b7 drop a progression here and this voice plays it")
       , HP.class_ (HH.ClassName "score-voice")
       , HE.handler (EventType "dragover") on.voiceOver
@@ -496,16 +501,16 @@ system pageSp on row =
           Just a, _ -> spellName sp a
           _, _ -> ""
       in
-        [ HH.div [ HP.style "margin: 4px 0 4px; padding: 8px 10px; background: #f3f6f7; border: 1px solid #d9e3e7; border-radius: 5px; font-size: 12px; color: #2f3e44;" ]
+        [ HH.div [ HP.style "margin: 4px 0 4px; padding: 8px 10px; background: #f7f7f7; border: 1px solid #e0e0e0; border-radius: 5px; font-size: 12px; color: #1a1a1a;" ]
             ( [ HH.div [ HP.style "display: flex; align-items: baseline; gap: 8px; margin-bottom: 6px;" ]
-                  [ HH.span [ HP.style "font-size: 10px; letter-spacing: 0.1em; text-transform: uppercase; color: #6c8792;" ] [ HH.text "scales for" ]
+                  [ HH.span [ HP.style "font-size: 10px; letter-spacing: 0.1em; text-transform: uppercase; color: #6b6b6b;" ] [ HH.text "scales for" ]
                   , HH.span [ HP.style "font-weight: 600;" ] [ HH.text span ]
                   , HH.span [ HP.style "flex: 1;" ] []
-                  , HH.button [ HP.style "border: none; background: none; color: #6c8792; cursor: pointer; font-size: 13px; padding: 0;"
+                  , HH.button [ HP.style "border: none; background: none; color: #6b6b6b; cursor: pointer; font-size: 13px; padding: 0;"
                               , HP.title "put the scales away", HE.onClick \_ -> on.unselect ] [ HH.text "\x00d7" ]
                   ]
               ]
-                <> (if Array.null whole then [ HH.div [ HP.style "color: #6c8792; font-style: italic; margin-bottom: 4px;" ] [ HH.text (if k > 1 then "no one scale holds every note of these chords; the closest:" else "no scale here holds every note; the closest:") ] ] else [])
+                <> (if Array.null whole then [ HH.div [ HP.style "color: #6b6b6b; font-style: italic; margin-bottom: 4px;" ] [ HH.text (if k > 1 then "no one scale holds every note of these chords; the closest:" else "no scale here holds every note; the closest:") ] ] else [])
                 <> map fitRow whole
                 <> map fitRow near
             )
@@ -520,9 +525,9 @@ system pageSp on row =
         names = map (\nm -> spelt' nm.root <> " " <> nm.mode) f.names
     in HH.div [ HP.style "display: flex; align-items: baseline; gap: 8px; padding: 2px 0;" ]
          ( [ HH.span [ HP.style "font-weight: 600; min-width: 13em;" ] [ HH.text (fromMaybe "" (Array.head names)) ]
-           , HH.span [ HP.style "color: #6c8792;" ] [ HH.text (String.joinWith " \x00b7 " (map spelt' (fromRoot f))) ]
+           , HH.span [ HP.style "color: #6b6b6b;" ] [ HH.text (String.joinWith " \x00b7 " (map spelt' (fromRoot f))) ]
            ]
-             <> (if Array.length names > 1 then [ HH.span [ HP.style "color: #8fa3ab; font-size: 11px;" ] [ HH.text ("also " <> String.joinWith ", " (Array.take 3 (Array.drop 1 names))) ] ] else [])
+             <> (if Array.length names > 1 then [ HH.span [ HP.style "color: #999999; font-size: 11px;" ] [ HH.text ("also " <> String.joinWith ", " (Array.take 3 (Array.drop 1 names))) ] ] else [])
              <> (if Array.null f.outside then [] else [ HH.span [ HP.style "color: #c0392b; font-size: 11px;" ] [ HH.text ("leaves out " <> String.joinWith ", " (map spelt' f.outside)) ] ])
          )
   -- the scale's notes from the root it is named on
@@ -535,20 +540,20 @@ system pageSp on row =
   hline x1 x2 d stroke =
     el "line" [ attr "x1" (show x1), attr "y1" (show (y d)), attr "x2" (show x2), attr "y2" (show (y d)), attr "stroke" stroke, attr "stroke-width" "1" ] []
 
-  staffLines = map (\d -> hline 4.0 (width - 2.0) d "#8a8270") (trebleLines <> bassLines)
+  staffLines = map (\d -> hline 4.0 (width - 2.0) d "#555555") (trebleLines <> bassLines)
 
   clefs =
     [ clef "\x1d11e" 39 58.0
     , clef "\x1d122" 31 34.0
     ]
   clef glyph onLine size =
-    el "text" [ attr "x" "6", attr "y" (show (y onLine)), attr "font-size" (show size), attr "dominant-baseline" "central", attr "fill" "#4a4232" ] [ HH.text glyph ]
+    el "text" [ attr "x" "6", attr "y" (show (y onLine)), attr "font-size" (show size), attr "dominant-baseline" "central", attr "fill" "#1a1a1a" ] [ HH.text glyph ]
 
   -- one bar a chord; the system closes with a double bar
   barlines =
     let top = y (topD)
         bot = y (botD)
-        bl x w = el "line" [ attr "x1" (show x), attr "y1" (show top), attr "x2" (show x), attr "y2" (show bot), attr "stroke" "#8a8270", attr "stroke-width" w ] []
+        bl x w = el "line" [ attr "x1" (show x), attr "y1" (show top), attr "x2" (show x), attr "y2" (show bot), attr "stroke" "#555555", attr "stroke-width" w ] []
     in [ bl 4.0 "1" ] <> map (\i -> bl (colX (i + 1)) (if i == n - 1 then "2" else "1")) (Array.range 0 (n - 1))
 
   bar i notes =
@@ -589,7 +594,7 @@ system pageSp on row =
                   Nothing -> [])
           ) [ el "title" [] [ HH.text (name <> " \x00b7 click: hear it and choose this bar \x00b7 drag: move it \x00b7 shift-click: choose a run of bars, for the scales that fit them") ] ]
       label =
-        el "text" [ attr "x" (show (x0 + barWidth / 2.0 + (if row.top then 6.0 else 0.0))), attr "y" "13", attr "text-anchor" "middle", attr "font-size" "11", attr "fill" "#4a4232"
+        el "text" [ attr "x" (show (x0 + barWidth / 2.0 + (if row.top then 6.0 else 0.0))), attr "y" "13", attr "text-anchor" "middle", attr "font-size" "11", attr "fill" "#1a1a1a"
                   , attr "style" "pointer-events: none;" ] [ HH.text name ]
       -- the open progression's tools, under each bar: duplicate (to vary
       -- the copy), delete; revoicing is the whole row's, in its header
@@ -597,7 +602,7 @@ system pageSp on row =
         Just act ->
           [ el "text"
               [ attr "x" (show (x0 + barWidth / 2.0 + dx)), attr "y" (show (staffBottom + 11.0)), attr "text-anchor" "middle", attr "font-size" "10"
-              , attr "fill" "#8d7a4a", attr "style" "cursor: pointer;"
+              , attr "fill" "#777777", attr "style" "cursor: pointer;"
               , HE.onClick \_ -> act i ]
               [ el "title" [] [ HH.text tip ], HH.text glyph ] ]
         Nothing -> []
@@ -609,7 +614,7 @@ system pageSp on row =
       number =
         if not row.top then []
         else
-          [ el "circle" [ attr "cx" (show (x0 + 9.0)), attr "cy" "9", attr "r" "6.2", attr "fill" "#3b3428", attr "stroke" "#fff", attr "stroke-width" "1"
+          [ el "circle" [ attr "cx" (show (x0 + 9.0)), attr "cy" "9", attr "r" "6.2", attr "fill" "#111111", attr "stroke" "#fff", attr "stroke-width" "1"
                         , attr "style" "pointer-events: none;" ] []
           , el "text" [ attr "x" (show (x0 + 9.0)), attr "y" "11.8", attr "text-anchor" "middle", attr "font-size" "8", attr "font-weight" "600", attr "fill" "#fff"
                       , attr "style" "pointer-events: none;" ] [ HH.text (show (i + 1)) ] ]
@@ -619,23 +624,23 @@ system pageSp on row =
         -- its length, when the row has a rhythm
         <> (case Array.index row.beats i of
               Just b -> [ el "text" [ attr "x" (show (x0 + barWidth - 5.0)), attr "y" "13", attr "text-anchor" "end", attr "font-size" "9"
-                                    , attr "fill" "#9a8d6a", attr "style" "pointer-events: none;" ]
+                                    , attr "fill" "#808080", attr "style" "pointer-events: none;" ]
                             [ el "title" [] [ HH.text (show b <> " beats") ], HH.text ("\x2669" <> show b) ] ]
               Nothing -> [])
         <> Array.concatMap (\g -> ledgersFor cx g.d) (Array.nubByEq (\a b -> a.d == b.d) sorted)
         <> map (\(Tuple g dx) -> el "ellipse" [ attr "cx" (show (cx + dx)), attr "cy" (show (y g.d)), attr "rx" "3.9", attr "ry" "2.9"
                                                  , attr "transform" ("rotate(-20 " <> show (cx + dx) <> " " <> show (y g.d) <> ")")
-                                                 , attr "fill" (if g.out then "#c0392b" else "#1e1c17"), attr "style" "pointer-events: none;" ] []) heads
+                                                 , attr "fill" (if g.out then "#c0392b" else "#111111"), attr "style" "pointer-events: none;" ] []) heads
         <> map (\(Tuple g col) -> el "text" [ attr "x" (show (cx - 10.0 - Int.toNumber col * 8.0)), attr "y" (show (y g.d)), attr "dominant-baseline" "central"
-                                             , attr "text-anchor" "middle", attr "font-size" "12", attr "fill" "#1e1c17", attr "style" "pointer-events: none;" ]
+                                             , attr "text-anchor" "middle", attr "font-size" "12", attr "fill" "#111111", attr "style" "pointer-events: none;" ]
                                              [ HH.text (accGlyph g.acc) ]) accCols
         <> revoiceBtn
 
   -- ledger lines between a note and the staff it is outside, and middle C's
   ledgersFor cx d
-    | d > topD = map (\k -> hline (cx - 7.0) (cx + 14.0) k "#8a8270") (Array.filter (\k -> (k - topD) `mod` 2 == 0) (Array.range (topD + 1) d))
-    | d < botD = map (\k -> hline (cx - 7.0) (cx + 14.0) k "#8a8270") (Array.filter (\k -> (botD - k) `mod` 2 == 0) (Array.range d (botD - 1)))
-    | d == 35 = [ hline (cx - 7.0) (cx + 7.0) 35 "#8a8270" ]
+    | d > topD = map (\k -> hline (cx - 7.0) (cx + 14.0) k "#555555") (Array.filter (\k -> (k - topD) `mod` 2 == 0) (Array.range (topD + 1) d))
+    | d < botD = map (\k -> hline (cx - 7.0) (cx + 14.0) k "#555555") (Array.filter (\k -> (botD - k) `mod` 2 == 0) (Array.range d (botD - 1)))
+    | d == 35 = [ hline (cx - 7.0) (cx + 7.0) 35 "#555555" ]
     | otherwise = []
 
 -- | **A chord name as the notes spell it**: the root and any slash bass by
