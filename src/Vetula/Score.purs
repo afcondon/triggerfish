@@ -285,8 +285,13 @@ botD = 25
 clefRoom :: Number
 clefRoom = 40.0
 
-barWidth :: Number
-barWidth = 74.0
+-- | A bar's width: the open progression's wider, to breathe and to fit a
+-- | long chord name (AC, 2026-10-27); other rows as they were.
+openBarWidth :: Number
+openBarWidth = 96.0
+
+rowBarWidth :: Number
+rowBarWidth = 74.0
 
 -- | The extra room between the staves.
 staffGap :: Number
@@ -304,11 +309,13 @@ staffGap = 14.0
 system :: forall w i. Spelling -> Handlers i -> Staff -> HH.HTML w i
 system pageSp on row =
   HH.div
-    [ HP.style ("margin: 0 0 18px; padding: 10px 14px 6px; border-radius: 6px; user-select: none; -webkit-user-select: none; "
-        <> (if row.top then "background: #ffffff; border: 1px solid #cfcfcf;" else "background: #fafafa; border: 1px solid #e4e4e4;")) ]
+    -- the open progression has the page, unboxed (AC, 2026-10-27); other
+    -- rows sit in a box each
+    [ HP.style ("user-select: none; -webkit-user-select: none; "
+        <> (if row.top then "margin: 0;" else "margin: 0 0 18px; padding: 10px 14px 6px; border-radius: 6px; background: #fafafa; border: 1px solid #e4e4e4;")) ]
     ( [ header
-      , HH.div [ HP.style "overflow-x: auto;" ] [ staff ]
-      ] <> scales )
+      , HH.div [ HP.style (if row.top then "overflow-x: auto; margin-top: 10px;" else "overflow-x: auto;") ] [ staff ]
+      ] <> (if row.top then keyLine else []) <> scales )
   where
   -- **What the progression is in.** The key it is shown against is the
   -- page's; its reading (Harmonia.ScaleFit) is the key-capable scale that
@@ -322,7 +329,14 @@ system pageSp on row =
   keySp = case row.saved of
     Just k -> spellingOf k.tonic k.scale
     Nothing -> pageSp
-  savedLine = case row.saved of
+  -- the open progression's key, under it, where a change shows (AC,
+  -- 2026-10-27): said, not set; the lattice's picker sets it
+  keyLine = case row.saved of
+    Just k -> [ HH.div [ HP.style "margin-top: 4px; font: 13px Georgia, serif; color: #555555;"
+                       , HP.title "the progression's key: change it from the lattice, which transposes it" ]
+                  [ HH.text (pcNameIn keySp k.tonic <> " " <> k.mode) ] ]
+    Nothing -> []
+  savedLine = if row.top then [] else case row.saved of
     Just k -> [ HH.span [ HP.style "font-size: 11px; color: #6b6b6b;" ]
                   [ HH.text (if k.saved then "saved in " else "in "), HH.span [ HP.style "font-weight: 600; color: #1a1a1a;" ] [ HH.text (pcNameIn keySp k.tonic <> " " <> k.mode) ] ] ]
     Nothing -> []
@@ -430,7 +444,9 @@ system pageSp on row =
     Just x -> f x
     Nothing -> d
 
-  labelH = 18.0
+  -- the open progression's bars: a number, and under it the chord's name
+  labelH = if row.top then 34.0 else 18.0
+  barWidth = if row.top then openBarWidth else rowBarWidth
   revoiceH = if isJust on.revoice then 16.0 else 4.0
   pad = 6.0
   -- the staves sit apart, as engraved, rather than one line-space short
@@ -602,7 +618,7 @@ system pageSp on row =
                   Nothing -> [])
           ) [ el "title" [] [ HH.text (name <> " \x00b7 click: hear it and choose this bar \x00b7 drag: move it \x00b7 shift-click: choose a run of bars, for the scales that fit them") ] ]
       label =
-        el "text" [ attr "x" (show (x0 + barWidth / 2.0 + (if row.top then 6.0 else 0.0))), attr "y" "13", attr "text-anchor" "middle", attr "font-size" "11", attr "fill" "#1a1a1a"
+        el "text" [ attr "x" (show (x0 + barWidth / 2.0 + (if row.top then 6.0 else 0.0))), attr "y" (show (labelH - 5.0)), attr "text-anchor" "middle", attr "font-size" (if row.top then "13" else "11"), attr "fill" "#1a1a1a"
                   , attr "style" "pointer-events: none;" ] [ HH.text name ]
       -- the open progression's tools, under each bar: duplicate (to vary
       -- the copy), delete; revoicing is the whole row's, in its header
@@ -622,9 +638,9 @@ system pageSp on row =
       number =
         if not row.top then []
         else
-          [ el "circle" [ attr "cx" (show (x0 + 9.0)), attr "cy" "9", attr "r" "6.2", attr "fill" "#111111", attr "stroke" "#fff", attr "stroke-width" "1"
+          [ el "circle" [ attr "cx" (show (x0 + barWidth / 2.0 + 6.0)), attr "cy" "9", attr "r" "6.2", attr "fill" "#111111", attr "stroke" "#fff", attr "stroke-width" "1"
                         , attr "style" "pointer-events: none;" ] []
-          , el "text" [ attr "x" (show (x0 + 9.0)), attr "y" "11.8", attr "text-anchor" "middle", attr "font-size" "8", attr "font-weight" "600", attr "fill" "#fff"
+          , el "text" [ attr "x" (show (x0 + barWidth / 2.0 + 6.0)), attr "y" "11.8", attr "text-anchor" "middle", attr "font-size" "8", attr "font-weight" "600", attr "fill" "#fff"
                       , attr "style" "pointer-events: none;" ] [ HH.text (show (i + 1)) ] ]
     in
       [ hits, label ]

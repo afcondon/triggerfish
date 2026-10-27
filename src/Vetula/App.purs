@@ -1241,7 +1241,9 @@ handleQuery = case _ of
       -- named by three glyphs side by side read as one)
       , icons: []
       , rebusTip: ""
-      , pickers:
+      -- the key is set on the lattice and banks; the score says it under
+      -- the progression instead (AC, 2026-10-27)
+      , pickers: if s.stage == Hunt Score then [] else
           [ { id: "key", input: (Select.defaultInput keyOptions) { selected = Just (show s.key.tonic), placeholder = "Key", minWidth = Just "72px" } }
           , { id: "scale", input: (Select.cascadingInput modeGroups) { selected = Just (currentModeValue s.key.mode), searchable = true } } ]
       , help: "keys & help"
@@ -4453,10 +4455,10 @@ soundControls st =
 previewControls :: forall m. MonadAff m => State -> Array (H.ComponentHTML Action Slots m)
 previewControls st = case st.stage of
   Hunt River -> []
+  -- the score places them itself, beside the progression
+  Hunt Score -> []
   _ ->
-    -- on the score, inside the open row's header line, which is empty on the right
-    [ HH.div [ HP.style ("position: absolute; z-index: 7; display: flex; align-items: center; gap: 8px; "
-                          <> (if st.stage == Hunt Score then "top: 20px; right: 36px;" else "top: 14px; right: 16px;")) ] (soundControls st) ]
+    [ HH.div [ HP.style "position: absolute; z-index: 7; display: flex; align-items: center; gap: 8px; top: 14px; right: 16px;" ] (soundControls st) ]
       <> case st.focusedFamily >>= (\sid -> find (\c -> c.id == sid) st.chords) of
         Just seed | st.stage /= Hunt Score ->
           let famMode = (fromMaybe st.key (Map.lookup seed.id st.familyScale)).mode
@@ -4505,18 +4507,26 @@ scoreCandidates :: forall m. State -> H.ComponentHTML Action Slots m
 scoreCandidates st =
   HH.div
     [ HP.style ("flex: " <> (if st.scoreCands then "1 1 0" else "0 0 auto") <> "; min-height: 0; display: flex; flex-direction: column; border-top: 1px solid #e2e2e2; background: #ffffff;") ]
-    ( [ HH.div [ HP.style "display: flex; align-items: baseline; gap: 10px; padding: 8px 16px 6px; font-size: 11px; color: #8a8a8a; border-bottom: 1px solid #ececec;" ]
-        ( [ paneTab PaneAlternatives "alternatives" "a chosen bar's substitutes, variations and relatives"
-          , paneTab PaneVoices ("voices" <> (if voiceCountNow == 0 then "" else " " <> show voiceCountNow)) "the voices playing on the stage, and where they sound" ]
-            <> (if st.sidePane /= PaneAlternatives then [] else case varySource st of
-                Just src ->
-                  [ HH.span [ HP.style "font-size: 14px; color: #111111; font-weight: 500; margin-left: 8px;" ] [ HH.text (chordTitle st src) ]
-                  , HH.text (case st.scoreBar of
-                      Just i | puts st -> "bar " <> show (i + 1) <> " \x00b7 click hears it in its register \x00b7 shift-click puts it there \x00b7 or drag it onto any bar"
-                      _ -> "click a bar to see its alternatives") ]
-                Nothing -> [ HH.text "click a bar of the score: its substitutes, variations and relatives show here" ])
+    -- tabs that read as tabs: the chosen one open onto its pane, the other
+    -- a closed folder; the bar's chord centred over the alternatives, its
+    -- how-to behind an (i) (AC, 2026-10-27)
+    ( [ HH.div [ HP.style "position: relative; display: flex; align-items: flex-end; gap: 4px; padding: 10px 16px 0; background: #f3f3f3; border-bottom: 1px solid #cfcfcf;" ]
+        ( [ paneTab PaneAlternatives "Alternatives" "a chosen bar's substitutes, variations and relatives"
+          , paneTab PaneVoices ("Voices" <> (if voiceCountNow == 0 then "" else " " <> show voiceCountNow)) "the voices playing on the stage, and where they sound" ]
+            <> (if st.sidePane /= PaneAlternatives then [] else
+                [ HH.div [ HP.style "position: absolute; left: 50%; bottom: 7px; transform: translateX(-50%); display: flex; align-items: baseline; gap: 8px; white-space: nowrap;" ]
+                    ( (case varySource st of
+                        Just src -> [ HH.span [ HP.style "font: 17px Georgia, serif; color: #111111;" ] [ HH.text (chordTitle st src) ]
+                                    , HH.span [ HP.style "font-size: 11px; color: #8a8a8a;" ] [ HH.text (maybe "" (\i -> "bar " <> show (i + 1)) st.scoreBar) ] ]
+                        Nothing -> [ HH.span [ HP.style "font: italic 13px Georgia, serif; color: #8a8a8a;" ] [ HH.text "choose a bar" ] ])
+                      <> [ HH.i [ HP.class_ (HH.ClassName "fa-solid fa-circle-info")
+                                , HP.style "font-size: 11px; color: #9a9a9a; cursor: help;"
+                                , HP.title (case varySource st of
+                                    Just _ | puts st -> "click an alternative: hear it in its register \x00b7 shift-click: put it in the bar \x00b7 or drag it onto any bar"
+                                    Just _ -> "click a bar to see its alternatives"
+                                    Nothing -> "click a bar of the score: its substitutes, variations and relatives show here") ] [] ] ) ])
             <> [ HH.span [ HP.style "flex: 1 1 auto;" ] []
-               , HH.span [ HP.style "font-size: 12px; color: #555555; cursor: pointer;"
+               , HH.span [ HP.style "font-size: 12px; color: #555555; cursor: pointer; padding-bottom: 8px;"
                          , HP.title (if st.scoreCands then "tuck the pane down" else "bring the pane up")
                          , HE.onClick \_ -> ToggleScoreCands ]
                    [ HH.text (if st.scoreCands then "\x25be" else "\x25b4") ] ] ) ]
@@ -4531,8 +4541,8 @@ scoreCandidates st =
   paneTab p label tip =
     let on = st.sidePane == p
     in HH.span
-         [ HP.style ("font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; cursor: pointer; padding-bottom: 3px; "
-             <> (if on then "color: #111111; border-bottom: 2px solid #111111;" else "color: #8a8a8a; border-bottom: 2px solid transparent;"))
+         [ HP.style ("font-size: 13px; cursor: pointer; padding: 7px 18px 8px; border: 1px solid #cfcfcf; border-radius: 6px 6px 0 0; margin-bottom: -1px; "
+             <> (if on then "color: #111111; font-weight: 600; background: #ffffff; border-bottom-color: #ffffff;" else "color: #6b6b6b; background: #e9e9e9;"))
          , HP.title tip, HE.onClick \_ -> SetSidePane p ]
          [ HH.text label ]
   column t =
@@ -5813,10 +5823,12 @@ scoreSurface st =
     [ HP.class_ (cn "vetula-surface vetula-surface--wide")
     -- paper: the score is drawn in engraving ink (CR-15)
     , HP.style "position: absolute; inset: 0; display: flex; flex-direction: column; background: #ffffff;" ]
-    [ HH.div [ HP.style "flex: 0 0 auto; max-height: 60%; overflow: auto; padding: 16px 22px 12px;"
+    -- the progression has the top of the page, unboxed; how previews sound
+    -- sits beside its header, in the flow, so the two never overlap
+    [ HH.div [ HP.style "flex: 0 0 auto; max-height: 70%; overflow: auto; padding: 22px 32px 26px; display: flex; align-items: flex-start; gap: 24px;"
              , HE.handler (EventType "dragover") VoiceDragOver, HE.handler (EventType "drop") StaffDrop ]
-        ( [ Score.system sp openHandlers openRow ]
-        )
+        [ HH.div [ HP.style "flex: 1 1 auto; min-width: 0; zoom: 1.2;" ] [ Score.system sp openHandlers openRow ]
+        , HH.div [ HP.style "flex: none; display: flex; align-items: center; gap: 8px;" ] (soundControls st) ]
     , scoreCandidates st
     ]
   where
@@ -5885,8 +5897,8 @@ openStaff st = openRow
     , selected: selOf (fromMaybe "new progression" st.progName) (length openChords)
     , dragging: st.scoreDrag
     , ownKey: Set.member (fromMaybe "new progression" st.progName) st.scoreRead
-    -- its key is the bar's key picker, not said again here
-    , saved: Nothing
+    -- its key, said under it (the lattice's picker sets it)
+    , saved: Just { tonic: st.key.tonic, scale: scaleSet st.key, mode: modeWord st.key.mode, saved: false }
     , glyphs: maybe [] nameGlyphs st.progName
     , beats: rhythmOf st
     , tapping: map _.at st.tapping
