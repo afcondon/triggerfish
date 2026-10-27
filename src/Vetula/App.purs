@@ -4630,7 +4630,7 @@ welcomeCard st =
             (concatMap line
               [ { what: "click", says: "a chord to hear it" }
               , { what: "shift-click", says: "to add it to your progression; its number shows where it sits" }
-              , { what: "the ladder", says: "at the right brings in more chords, from the key's own to the richest" }
+              , { what: "", says: "at the right brings in more chords, from the key's own to the richest" }
               , { what: "score", says: "lays your progression on a staff, with what could replace or follow each chord" } ])
         , HH.div [ HP.style "display: flex; align-items: center; gap: 12px; margin-top: 22px;" ]
             [ HH.div [ HP.style "flex: 1 1 auto; font-size: 12.5px; color: #8a8270;" ] [ HH.text "The rest is under \x24d8, top right." ]
@@ -4641,9 +4641,18 @@ welcomeCard st =
         ]
     ]
   where
+  -- the rung control drawn, not named (AC: "better to show than name")
+  line l | l.what == "" = [ ladder, HH.div [ HP.style "align-self: center;" ] [ HH.text l.says ] ]
   line l =
     [ HH.div [ HP.style "font-style: italic; color: #8d7a4a; white-space: nowrap;" ] [ HH.text l.what ]
     , HH.div [] [ HH.text l.says ] ]
+  ladder =
+    SE.svg [ SA.width 12.0, SA.height 54.0, SA.viewBox 0.0 0.0 12.0 54.0 ]
+      ( [ SE.line [ SA.x1 6.0, SA.y1 6.0, SA.x2 6.0, SA.y2 48.0, SA.stroke (SA.Named "#c9bd9a"), SA.strokeWidth 2.0 ] ]
+        <> mapWithIndex (\i on -> SE.circle [ SA.cx 6.0, SA.cy (6.0 + 14.0 * toNumber i), SA.r (if on then 4.5 else 3.5)
+                                             , SA.fill (SA.Named (if on then "#8d7a4a" else "#fbf8f0"))
+                                             , SA.stroke (SA.Named (if on then "#8d7a4a" else "#b8ab84")), SA.strokeWidth 1.0 ])
+            [ false, false, false, true ] )
 
 -- | A chord (by root and pitch classes) voiced near another: its root as the
 -- | bass, nearest the other's bass; the rest voice-led from the other's
