@@ -4581,8 +4581,9 @@ stageVoice st n = (st.stageCards >>= Map.lookup n) <#> \text ->
               (fromMaybe [] (st.stageHarmony >>= hush <<< HarmonyRoute.parse))
   in { n, name, found: maybe (isJust spec) (\nm -> any (\e -> e.kept && e.name == nm) st.library) name
      , muted: maybe false _.muted spec, channel, fed
-     -- feeding Odonus is the harmony route's alone (2026-10-05): `# out odo`
-     -- in a line only keeps the voice from sounding, so it is no feed
+     -- a voice feeds Odonus by a harmony route; `# out odo` silences it and
+     -- has the rig write that route (odonus_feeds' shortcut), so it shows ♫
+     -- once the route is on the stage
      , dest: if fed && (Array.null legs || map _.term spec == Just TOdo) then Odo
              else if Array.null legs || map _.term spec == Just TOdo then Unrouted
              else Sound }
@@ -6029,6 +6030,7 @@ waysOfPlaying =
       , items:
           [ { line: "# every 2", says: "the effect before it, every second time" }
           , { line: "# prob 0.5", says: "the effect before it, half the time" }
+          , { line: "# out odo", says: "silent; its chords quantise Odonus's output" }
           , { line: "# mute", says: "silent, and kept" }
           ] }
     ]
