@@ -21,10 +21,11 @@ import Triggerfish.Glyph (GlyphIcon)
 -- | `modes`: the machine recalls in four ways (`Recall`), so each row carries
 -- | the 2×2 square and the drawer its key (Odonus). `keep`: what the drawer's
 -- | keep button says (`BrowserKeep`): "keep" for a preset, "save scene" for
--- | Vetula, whose `c` captures something else.
+-- | Vetula, whose `c` captures something else. `keepTip`: what it does, in a
+-- | sentence: the button's tip, and the empty drawer's line.
 -- | `notice`: a word from the machine after something it can take back (a
 -- | rack replaced), shown with an undo (`BrowserUndo`); "" for none.
-type Browser = { title :: String, modes :: Boolean, keep :: String, notice :: String, rows :: Array Item }
+type Browser = { title :: String, modes :: Boolean, keep :: String, keepTip :: String, notice :: String, rows :: Array Item }
 
 -- | One kept thing. `slot` is the machine's own index for it; `icons` its
 -- | rebus, as the machine draws it (a preset's coloured pair; Vetula's

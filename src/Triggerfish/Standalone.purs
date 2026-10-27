@@ -717,13 +717,13 @@ browserDrawer st b =
             -- a machine with nothing to keep yet says so with no keep label
             <> (if b.keep == "" then [] else
             [ HH.button
-                [ HE.onClick \_ -> KeepRow, HP.title "Keep what the machine has now, as a new row"
+                [ HE.onClick \_ -> KeepRow, HP.title b.keepTip
                 , style "font:11px Georgia,serif;padding:2px 8px;border:1px solid #00000033;border-radius:4px;background:#f6f2e7;cursor:pointer" ]
                 [ HH.text b.keep ] ]) )
         ]
           <> (if b.notice == "" then [] else [ notice ])
           <> (if b.modes then [ key ] else [])
-          <> (if Array.null b.rows then [ HH.p [ style "font-size:12px;font-style:italic;color:#6a6657" ] [ HH.text (if b.keep == "" then "Nothing here yet." else "Nothing here yet: " <> b.keep <> " adds what is playing.") ] ] else [])
+          <> (if Array.null b.rows then [ HH.p [ style "font-size:12px;font-style:italic;color:#6a6657" ] [ HH.text (if b.keep == "" then "Nothing here yet." else "Nothing here yet: " <> b.keepTip <> ".") ] ] else [])
           <> Array.concatMap section (Array.nub (map _.section b.rows))
       ) ]
   -- a word from the machine after something it can take back

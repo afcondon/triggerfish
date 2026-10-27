@@ -240,7 +240,7 @@ handleQuery = case _ of
     s <- H.get
     let
       preset i p = { slot: i, name: fromMaybe "untitled" p.name, icons: (G.glyphOf p.content).icons, tag: "", current: s.identity == Just p.content, section: "", builtin: false, drag: OStage.patchDrag p, hint: OStage.patchHint p, actions: [ "delete" ] }
-    pure (Just (reply { title: "Presets", modes: true, keep: "keep", notice: s.notice, rows: mapWithIndex preset s.presets }))
+    pure (Just (reply { title: "Presets", modes: true, keep: "keep", keepTip: "keep adds the pattern playing now, as a new row", notice: s.notice, rows: mapWithIndex preset s.presets }))
   BrowserRecall i r next -> do
     H.modify_ _ { undoDelete = Nothing, notice = "" }
     s <- H.get

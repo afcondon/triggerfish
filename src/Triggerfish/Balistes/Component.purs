@@ -132,7 +132,7 @@ handleQuery = case _ of
   AskBrowser reply -> do
     s <- H.get
     let row i p = { slot: i, name: fromMaybe "untitled" p.name, icons: (presetGlyph p).icons, tag: maybe "" machineTag (parseTri p.content), current: s.identity == Just p.content, section: "", builtin: false, drag: Stage.rhythmDrag p, hint: Stage.rhythmHint p, actions: [ "delete" ] }
-    pure (Just (reply { title: "Beats", modes: false, keep: "keep (c)", notice: maybe "" (\d -> "Deleted " <> fromMaybe "untitled" d.preset.name) s.undoDelete, rows: mapWithIndex row s.presets }))
+    pure (Just (reply { title: "Beats", modes: false, keep: "keep (c)", keepTip: "keep adds the beat playing now, as a new row", notice: maybe "" (\d -> "Deleted " <> fromMaybe "untitled" d.preset.name) s.undoDelete, rows: mapWithIndex row s.presets }))
   BrowserRecall i _ next -> do
     H.modify_ _ { undoDelete = Nothing }
     recallPreset i

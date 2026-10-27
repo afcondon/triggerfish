@@ -675,7 +675,6 @@ type State =
   , wheelLast :: Number
   -- the progression open when the page last closed, kept (not reopened) so
   -- the score can offer it back
-  , resumable :: Maybe { name :: String, source :: String, saved :: String }
   -- The hovered PAD, carried whole. `hoveredTriad` would be enough to highlight
   -- it, but not to preview it: that path re-voices from pitch classes, and a
   -- pad's open voicing (bass pinned to the root, contour smoothed against its
@@ -833,7 +832,6 @@ data Action
   | TakeMark String ChordNode    -- Explore: a shift-click selects and takes it
   | ShuffleVary            -- re-draw all nine cells of the Vary lens from a new seed
   | ToQuadrat String       -- publish a saved progression (by name) as a clip for Quadrat to sample
-  | ResumeWorking          -- reopen the progression open when the page last closed
   | ToggleScoreCands       -- score mode: the alternatives up, or tucked down
   | SetSidePane SidePane   -- the pane under the score: alternatives or voices
   | VoiceOpen Int          -- the progression voice n plays, onto the score
@@ -916,6 +914,8 @@ data SourceQuery a
   | BarAct String a
   | LoadSceneAt Int a
   | SaveSceneQ a
+  -- the drawer's "+ new": put the progression away (it stays in the drawer)
+  | NewProgressionQ a
   -- the drawer's rename and delete of a scene, and the delete's undo
   | RenameScene Int String a
   | DeleteScene Int (Maybe Scene -> a)
@@ -1017,7 +1017,6 @@ component = H.mkComponent
       , lastLens: KeyChords
       , fieldLens: KeyChords
       , lastRung: KeyChords
-      , resumable: Nothing
       , lastHeard: Nothing
       , style: StyleBlock
       , soundChosen: false
@@ -1249,21 +1248,9 @@ handleQuery = case _ of
       , help: "keys & help"
       , helpPulse: s.helpPulse
       , chips:
-          -- no progression open: say so, or offer back the one open when the
-          -- page last closed. An open one is not named here: the score and the
-          -- drawer name it, and it is kept as it is made (AC, 2026-10-27).
-          ( case s.progName of
-              Nothing | length s.path == 0, Just w <- s.resumable ->
-                [ { id: "prog", label: "resume", active: false, attention: false
-                  , icons: nameGlyphs w.name
-                  , tip: "reopen " <> w.name <> ", the progression you had open when the page last closed" } ]
-              _ | length s.path == 0 ->
-                [ { id: "prog", label: "no progression", icons: [], active: false, attention: false
-                  , tip: "on the lattice, shift-click (or return) takes a chord into a new progression" } ]
-              _ -> []
-          ) <> (if length s.path == 0 then [] else
-          [ { id: "clear", label: "new", icons: [], active: false, attention: false
-            , tip: "start a new progression; this one stays in the drawer (delete, on the lattice)" } ])
+          -- nothing about the progression: the page and the drawer have it, and
+          -- the drawer's "+ new" starts another (AC, 2026-10-27)
+          []
       }
   BarAct act next -> do
     s <- H.get
@@ -1275,10 +1262,6 @@ handleQuery = case _ of
       "help" -> handleAction ToggleHelp
       _ | Just v <- SCU.stripPrefix (Pattern "pick:key:") act -> handleAction (SelectKey v)
         | Just v <- SCU.stripPrefix (Pattern "pick:scale:") act -> handleAction (SelectScale v)
-      "chip:prog"
-        | length s.path == 0 && isJust s.resumable -> handleAction ResumeWorking
-        | otherwise -> pure unit
-      "chip:clear" -> guardLoss "clear" (handleAction ClearPath)
       _ -> pure unit
     pure (Just next)
   LoadSceneAt i next -> do
@@ -1287,6 +1270,9 @@ handleQuery = case _ of
     pure (Just next)
   SaveSceneQ next -> do
     handleAction SaveScene
+    pure (Just next)
+  NewProgressionQ next -> do
+    handleAction ClearPath
     pure (Just next)
   RenameScene i name next -> do
     s <- H.get
@@ -1922,16 +1908,19 @@ handleActionCore = case _ of
     -- initial palette
     st <- H.get
     startWith st.key seedFocus (seedsFor st.key)
-    -- The page opens neutral: the key rung, C major, nothing loaded (AC,
-    -- 2026-10-08). The progression open when it last closed (the working
-    -- copy) is kept, so a crash or a reload loses nothing, and the score
-    -- offers it back.
+    -- The page reopens the progression open when it last closed, as an
+    -- editor reopens its document (AC, 2026-10-27), if it is still in the
+    -- library: one deleted since (here or in another browser) is not
+    -- brought back. It opens as kept, not from the working copy, which an
+    -- edit elsewhere may have overtaken.
     -- a browser's first visit: the welcome card (CR-12)
     welcomed <- liftEffect Store.loadWelcomed
     unless welcomed (H.modify_ _ { welcomeOpen = true })
     mwork <- liftEffect Store.loadWorking
-    for_ mwork \w -> when (length (parseProgression w.source) > 0) $
-      H.modify_ _ { resumable = Just (w { name = maybe w.name snd (find (\r -> fst r == w.name) migrated.renames) }) }
+    for_ mwork \w -> do
+      let name = maybe w.name snd (find (\r -> fst r == w.name) migrated.renames)
+      lib <- H.gets _.library
+      for_ (findIndex (\e -> e.kept && e.name == name) lib) \i -> handleAction (LoadProg i)
 
   ToggleScoreCands -> H.modify_ \s -> s { scoreCands = not s.scoreCands }
 
@@ -1975,34 +1964,6 @@ handleActionCore = case _ of
     liftEffect (Store.saveSound (soundValue nxt))
     setSound nxt
 
-
-  -- Reopen the working copy, numbered above every chord in the pool: a clash
-  -- of ids with the seed triads made the path point at them instead (AC,
-  -- 2026-10-06).
-  ResumeWorking -> do
-    st0 <- H.get
-    for_ st0.resumable \w -> do
-      let base = max st0.nextId (1 + fromMaybe 0 (maximum (map _.id st0.chords)))
-          noteLists = filter (\ns -> length ns > 0) (parseProgression w.source)
-          fresh = mapWithIndex (\j ns -> importChord (base + j) ns) noteLists
-          ids = map _.id fresh
-      when (length ids > 0) do
-        let name = w.name
-        H.modify_ _
-          { chords = st0.chords <> fresh
-          , imported = st0.imported <> Set.fromFoldable ids
-          , nextId = base + length fresh
-          , path = ids
-          , rhythm = parseBeats w.source
-          , progName = Just name
-          , lastCapSig = w.source
-          , lastPubSig = w.saved
-          , resumable = Nothing
-          }
-        -- its key, as loading it from the library adopts it
-        for_ (find (\e -> e.kept && e.name == name) st0.library >>= \e -> parseKeyLabel e.keyLabel) \k ->
-          H.modify_ \s -> s { key = k, lattice = latticeFor k, bankPads = bankPadsFor k s.padRoll }
-        showPathRung
 
   MidiReady mout nm ->
     H.modify_ _ { midiOut = mout, midiName = nm }
@@ -4525,8 +4486,14 @@ scoreCandidates st =
                                     Just _ | puts st -> "click an alternative: hear it in its register \x00b7 shift-click: put it in the bar \x00b7 or drag it onto any bar"
                                     Just _ -> "click a bar to see its alternatives"
                                     Nothing -> "click a bar of the score: its substitutes, variations and relatives show here") ] [] ] ) ])
-            <> [ HH.span [ HP.style "flex: 1 1 auto;" ] []
-               , HH.span [ HP.style "font-size: 12px; color: #555555; cursor: pointer; padding-bottom: 8px;"
+            <> [ HH.span [ HP.style "flex: 1 1 auto;" ] [] ]
+            -- a scene keeps what the voices play, so it is kept from here
+            <> (if st.sidePane /= PaneVoices || voiceCountNow == 0 then [] else
+                [ HH.button [ HP.style "align-self: center; margin: 0 12px 6px 0; font: 12px Georgia, serif; padding: 2px 10px; border: 1px solid #c8c8c8; border-radius: 4px; background: #ffffff; cursor: pointer;"
+                            , HP.title "keep what the voices play now as a scene, in the drawer"
+                            , HE.onClick \_ -> SaveScene ]
+                    [ HH.text "keep scene" ] ])
+            <> [ HH.span [ HP.style "font-size: 12px; color: #555555; cursor: pointer; padding-bottom: 8px;"
                          , HP.title (if st.scoreCands then "tuck the pane down" else "bring the pane up")
                          , HE.onClick \_ -> ToggleScoreCands ]
                    [ HH.text (if st.scoreCands then "\x25be" else "\x25b4") ] ] ) ]
@@ -5955,7 +5922,14 @@ fieldSurface st =
 -- | own strip, smaller than the score's, and the field fits below it, so no
 -- | chord is ever under it (AC: "shrink the two views so they don't clash").
 staffWatermark :: forall w. State -> HH.HTML w Action
-staffWatermark st =
+staffWatermark st
+  -- no progression: where it will appear, how to start one (AC, 2026-10-27)
+  | length st.path == 0 =
+      HH.div
+        [ HP.style "flex: none; align-self: flex-start; padding: 22px 32px 0; font: italic 15px Georgia, serif; color: #8a8a8a;"
+        , HE.handler (EventType "dragover") VoiceDragOver, HE.handler (EventType "drop") StaffDrop ]
+        [ HH.text "shift-click a chord to start a progression" ]
+  | otherwise =
   HH.div
     [ HP.style "flex: none; align-self: flex-start; max-width: 100%; zoom: 0.67; padding: 16px 22px 0; opacity: 0.6; overflow: hidden;"
     , HE.handler (EventType "dragover") VoiceDragOver, HE.handler (EventType "drop") StaffDrop ]

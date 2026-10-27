@@ -386,7 +386,7 @@ handleQuery = case _ of
       moduleHint = "Drag it onto a bank. Drag it into Limulus: onto a selene line it replaces what that bank plays; anywhere else it starts a line on a free bank that can take it."
       kept k m = { slot: keptSlot + k, name: m.name, icons: settingIcons m.line, tag: maybe "" signalMark (Line.moduleKind m.line), current: false, section: "Kept", builtin: false, drag: moduleDrag s m.line, hint: moduleHint, actions: [ "delete" ] }
     pure (Just (reply
-      { title: "Selene", modes: false, keep: "keep rack", notice: s.notice
+      { title: "Selene", modes: false, keep: "keep rack", keepTip: "keep rack adds the rack as it is now, as a new row", notice: s.notice
       , rows: mapWithIndex rack s.library <> [ free ] <> mapWithIndex plain M.allKinds <> mapWithIndex recipe Recipe.recipes <> mapWithIndex kept s.modules }))
   BrowserRecall i _ next -> do
     settleUndo

@@ -192,7 +192,7 @@ handleQuery = case _ of
       -- progressions first; a scene keeps the voices playing, so it is
       -- offered once there are some, and drawn without glyphs, which mean
       -- a progression (AC, 2026-10-27)
-      { title: "Progressions", modes: false, keep: if Array.null voiceRows then "" else "keep scene", notice: st.notice
+      { title: "Progressions", modes: false, keep: "+ new", keepTip: "+ new starts a progression, which is here from its first chord", notice: st.notice
       , rows: progRows <> voiceRows <> map (_ { section = "Scenes" }) (Array.mapWithIndex (\i sc -> { slot: i, name: sc.name, icons: [], tag: sc.key, current: false, section: "", builtin: false, drag: "", hint: "Click: load it onto the surface. Double-click: rename it.", actions: [ "delete" ] }) scenes) }
   -- a saved progression's row: load it
   SQ.BrowserRecall i _ next | i >= progSlotBase -> settle *> H.query _vet unit (Vetula.LoadEntry (i - progSlotBase) next)
@@ -204,9 +204,11 @@ handleQuery = case _ of
   -- its own
   SQ.BrowserRename i name next | i < Voices.slotBase -> settle *> H.query _vet unit (Vetula.RenameScene i name next)
   SQ.BrowserRename _ _ next -> pure (Just next)
+  -- the drawer's button starts a progression (AC, 2026-10-27); a scene is
+  -- kept from the Voices tab, where the voices are
   SQ.BrowserKeep next -> do
     settle
-    H.query _vet unit (Vetula.SaveSceneQ next)
+    H.query _vet unit (Vetula.NewProgressionQ next)
   SQ.BrowserUndo next -> do
     st <- H.get
     settle
