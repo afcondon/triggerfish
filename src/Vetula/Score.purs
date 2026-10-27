@@ -114,7 +114,6 @@ type Handlers i =
   -- a saved progression, sent to Quadrat to sample
   , toQuadrat :: Maybe i
   -- the progression open when the page last closed, offered back
-  , resume :: Maybe { name :: String, act :: i }
   -- back to the lattice to take more chords in; save this version
   , addChords :: Maybe i
   , save :: Maybe i
@@ -378,10 +377,6 @@ system pageSp on row =
                 Nothing -> [])
           <> (case on.addChords of
                 Just act | not (Array.null row.chords) -> [ chip "+ chords" "back to the lattice to take more chords in" act ]
-                _ -> [])
-          <> (case on.resume of
-                Just r | Array.null row.chords ->
-                  [ chip ("resume " <> r.name) "reopen the progression you had open when the page last closed" r.act ]
                 _ -> [])
           <> (case on.toQuadrat of
                 Just act -> [ chip "\x25f4 Quadrat" "send to Quadrat to sample: its chords, one a beat, and their rebus" act ]

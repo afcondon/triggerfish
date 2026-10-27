@@ -1190,10 +1190,13 @@ handleQuery = case _ of
       -- bar (AC, 2026-10-08): the second bar went
       { tabs:
           let v = huntOr s.lastLens s.stage
-          in [ { id: "lattice", label: "lattice", active: elem v rungs, tip: "the chords built on the key, from triads up" }
-             , { id: "banks", label: "banks", active: v == Pads, tip: "nine banks of sixteen: how far from home, by how rich" }
-             , { id: "score", label: "score", active: v == Score, tip: "the progression on a grand staff, to arrange and play" }
-             , { id: "review", label: "review", active: v == River, tip: "everything played this session, as a river: mark the good bits, loop them" } ]
+          in [ { id: "lattice", label: "lattice", active: elem v rungs, enabled: true, tip: "the chords built on the key, from triads up" }
+             , { id: "banks", label: "banks", active: v == Pads, enabled: true, tip: "nine banks of sixteen: how far from home, by how rich" }
+             -- no progression, no score: it would be a page with nothing to do
+             , { id: "score", label: "score", active: v == Score, enabled: length s.path > 0
+               , tip: if length s.path > 0 then "the progression on a grand staff, to arrange and play"
+                      else "the score arranges a progression: take a chord in from the lattice first (shift-click, or return)" }
+             , { id: "review", label: "review", active: v == River, enabled: true, tip: "everything played this session, as a river: mark the good bits, loop them" } ]
       -- marking is in the review view, as on Odonus
       , marks: ""
       -- the session names saved scenes; it is not shown (AC: two things
@@ -1210,9 +1213,21 @@ handleQuery = case _ of
           -- view, AC); pressing it saves, or once saved arranges it on the
           -- score. Then clear.
           [ case s.progName of
+              -- the progression open when the page last closed, offered back
+              -- here, on every view (it was on the score, which a reload
+              -- never lands on)
+              Nothing | length s.path == 0, Just w <- s.resumable ->
+                { id: "prog", label: "resume", active: false, attention: false
+                , icons: map (\icon -> { icon, color: "#2a2a2a" }) (filter (\w' -> w' /= "" && not (isJust (fromString w'))) (split (Pattern "-") (SCU.takeWhile (_ /= '′') w.name)))
+                , tip: "reopen " <> w.name <> ", the progression you had open when the page last closed" }
               Nothing ->
                 { id: "prog", label: "no progression", icons: [], active: false, attention: false
                 , tip: "on the lattice, shift-click (or return) takes a chord into a new progression" }
+              -- named, with every chord taken out: it has no score to offer
+              Just nm | length s.path == 0 ->
+                { id: "prog", label: "empty", active: false, attention: false
+                , icons: map (\icon -> { icon, color: "#2a2a2a" }) (filter (\w -> w /= "" && not (isJust (fromString w))) (split (Pattern "-") (SCU.takeWhile (_ /= '′') nm)))
+                , tip: nm <> " \x00b7 empty: on the lattice, shift-click (or return) takes a chord into it" }
               Just nm ->
                 let unsaved = length s.path > 0 && currentSource s /= s.lastPubSig
                 in { id: "prog"
@@ -1240,6 +1255,7 @@ handleQuery = case _ of
       -- the progression's chip says save while unsaved, and does it; saved,
       -- it arranges the progression on the score
       "chip:prog"
+        | length s.path == 0 && isJust s.resumable -> handleAction ResumeWorking
         | unsavedNow s -> handleAction (SaveProg false)
         | otherwise -> when (length s.path > 0) (handleAction (SetStage (Hunt Score)))
       "chip:clear" -> guardLoss "clear" (handleAction ClearPath)
@@ -1430,6 +1446,10 @@ handleAction :: forall m. MonadAff m => Action -> H.HalogenM State Action Slots 
 handleAction a = do
   before <- H.gets _.perfBoxes
   handleActionCore a
+  -- no progression, no score (AC, 2026-10-27): arriving there with none (a
+  -- link, a reload) or its last bar deleted, back to the field
+  st <- H.get
+  when (st.stage == Hunt Score && length st.path == 0) (handleActionCore (SetStage (Hunt st.fieldLens)))
   refreshCands
   syncField
   syncAuditionCard
@@ -5530,7 +5550,6 @@ scoreSurface st =
     , voiceOver: VoiceDragOver
     , voiceDrop: VoiceDrop
     , tap: Just { start: TapStart, stop: TapStop, clear: ClearRhythm }
-    , resume: (\w -> { name: w.name, act: ResumeWorking }) <$> st.resumable
     , addChords: Nothing
     , save: if unsaved then Just (SaveProg false) else Nothing
     , toQuadrat: case st.progName of
@@ -5650,7 +5669,7 @@ staffWatermark st =
     , select: const none, unselect: none, readIn: none, adopt: Nothing
     , duplicate: Nothing, remove: Nothing, dropAt: Nothing, padOver: Nothing, padDrop: Nothing
     , voiceOver: const none, voiceDrop: \_ _ -> none, titleDrag: Nothing
-    , tap: Nothing, toQuadrat: Nothing, resume: Nothing, addChords: Nothing, save: Nothing
+    , tap: Nothing, toQuadrat: Nothing, addChords: Nothing, save: Nothing
     }
 
 -- | The scene for a rung, and the frame it should fill.

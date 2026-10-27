@@ -17,7 +17,9 @@ module Triggerfish.Bar
 import Halogen.Widgets.Select as Select
 import Triggerfish.Glyph (GlyphIcon)
 
-type Tab = { id :: String, label :: String, active :: Boolean, tip :: String }
+-- | A view. `enabled` false draws it dimmed and unpressable, its tip saying
+-- | why (Vetula's score with no progression, 2026-10-27).
+type Tab = { id :: String, label :: String, active :: Boolean, enabled :: Boolean, tip :: String }
 
 -- | `marks`: the counts beside ◆ mark ("" for no mark controls in this
 -- | stage). `icons`: the rebus of what is loaded, `rebusTip` its name.

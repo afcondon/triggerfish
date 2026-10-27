@@ -891,9 +891,12 @@ bar cfg st =
     (if Array.null b.tabs then [] else
     [ HH.div [ style "display:flex;flex:0 0 auto;border:1px solid #00000026;border-radius:6px;overflow:hidden;box-shadow:0 1px 2px #0000001a" ]
         (map (\t -> HH.button
-            [ HE.onClick \_ -> PressBar ("stage:" <> t.id), HP.title t.tip
-            , style $ "padding:5px 13px;border:none;cursor:pointer;font-family:Georgia,serif;font-size:11px;letter-spacing:0.12em;"
-                <> (if t.active then "background:linear-gradient(#c8a86a,#b8975a);color:#1c1a12;font-weight:600" else "background:linear-gradient(#f4f1e8,#e2ddcf);color:#5a564b") ]
+            [ HE.onClick \_ -> PressBar ("stage:" <> t.id), HP.title t.tip, HP.disabled (not t.enabled)
+            , style $ "padding:5px 13px;border:none;font-family:Georgia,serif;font-size:11px;letter-spacing:0.12em;"
+                <> (if t.enabled then "cursor:pointer;" else "cursor:default;")
+                <> (if t.active then "background:linear-gradient(#c8a86a,#b8975a);color:#1c1a12;font-weight:600"
+                    else if t.enabled then "background:linear-gradient(#f4f1e8,#e2ddcf);color:#5a564b"
+                    else "background:linear-gradient(#f4f1e8,#e2ddcf);color:#5a564b59") ]
             [ HH.text t.label ]) b.tabs)
     ])
       <> (if b.marks == "" then [] else
