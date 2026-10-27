@@ -4570,12 +4570,25 @@ stageVoice st n = (st.stageCards >>= Map.lookup n) <#> \text ->
 -- | Its controls: mute, its line in Limulus, and play the open progression.
 voicesPane :: forall m. State -> H.ComponentHTML Action Slots m
 voicesPane st =
-  HH.div [ HP.style "flex: 1 1 auto; min-height: 0; overflow: auto; padding: 14px 16px 16px;" ]
-    [ HH.element (HH.ElemName "style") [] [ HH.text tileCss ]
-    , HH.div [ HP.style "display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px;" ]
-        (map tile (range 1 voiceCount))
-    , waysOfPlaying ]
+  HH.div [ HP.style "position: relative; flex: 1 1 auto; min-height: 0; overflow: auto; padding: 14px 16px 16px;" ]
+    -- no rig answering (the web app, trigger-fish.app): the voices shown,
+    -- faint and inert, under what they need (AC, 2026-10-27)
+    ( [ HH.div ([ HP.style (if onRig then "" else "opacity: 0.3; pointer-events: none; filter: grayscale(1);") ] <> (if onRig then [] else [ HP.attr (HH.AttrName "inert") "" ]))
+          [ HH.element (HH.ElemName "style") [] [ HH.text tileCss ]
+          , HH.div [ HP.style "display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px;" ]
+              (map tile (range 1 voiceCount))
+          , waysOfPlaying ] ]
+      <> (if onRig then [] else [ needsInstall ]) )
   where
+  onRig = isJust st.stageCards
+  needsInstall =
+    HH.div [ HP.style "position: absolute; top: 48px; left: 50%; transform: translateX(-50%); max-width: 440px; background: #fffdf8; border: 1px solid #d8cfb6; border-radius: 10px; box-shadow: 0 10px 36px rgba(0,0,0,0.14); padding: 22px 26px 18px; font-family: Georgia, serif; color: #3a3428;" ]
+      [ HH.div [ HP.style "font-size: 12px; letter-spacing: 0.16em; text-transform: uppercase; color: #8d7a4a; margin-bottom: 6px;" ] [ HH.text "Voices" ]
+      , HH.p [ HP.style "margin: 0 0 10px; font-size: 15px; line-height: 1.45;" ]
+          [ HH.text "On an installed Atlantis rig, a progression plays as up to eight voices at once: one strummed, one arpeggiated an octave up, one a bass line, each on its own instrument, and each shaped by a line of code in Limulus." ]
+      , HH.p [ HP.style "margin: 0 0 14px; font-size: 13.5px; line-height: 1.45; color: #6b6b6b;" ]
+          [ HH.text "A web page can't play the rig's instruments, so here the progression sounds in the browser. With great power comes great installation." ]
+      , HH.a [ HP.href "https://trigger-fish.app/#installed", HP.target "_blank", HP.style "font-size: 13px; color: #8d7a4a;" ] [ HH.text "What the install involves \x2192" ] ]
   openNm = if length st.path > 0 then st.progName else Nothing
   tile n = case stageVoice st n of
     Nothing -> emptyTile n
@@ -4845,6 +4858,10 @@ welcomeCard st =
               , { what: "shift-click", says: "to add it to your progression; its number shows where it sits" }
               , { what: "", says: "at the right brings in more chords, from the key's own to the richest" }
               , { what: "score", says: "lays your progression on a staff, with what could replace or follow each chord" } ])
+        -- what an install adds, said once, here (AC, 2026-10-27)
+        , HH.div [ HP.style "margin-top: 16px; padding-top: 12px; border-top: 1px solid #ece4cf; font-size: 13px; line-height: 1.45; color: #6b6b6b;" ]
+            [ HH.text "On an installed Atlantis rig, a progression also plays as voices on the rig's instruments, each shaped by a line of live code. "
+            , HH.a [ HP.href "https://trigger-fish.app/#installed", HP.target "_blank", HP.style "color: #8d7a4a;" ] [ HH.text "What the install involves" ] ]
         , HH.div [ HP.style "display: flex; align-items: center; gap: 12px; margin-top: 22px;" ]
             [ HH.div [ HP.style "flex: 1 1 auto; font-size: 12.5px; color: #8a8270;" ] [ HH.text "The rest is under \x24d8, top right." ]
             , HH.button

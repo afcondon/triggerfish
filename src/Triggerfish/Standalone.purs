@@ -410,7 +410,8 @@ handleAction cfg = case _ of
     handleAction cfg AskBrowser
   ToggleLimulus -> do
     st <- H.get
-    let open = not st.limulus && st.mode == Atlantis
+    -- with no rig, it opens onto what Limulus needs (AC, 2026-10-27)
+    let open = not st.limulus && (st.mode == Atlantis || not st.rigUp)
     -- made shut the first time, then opened a frame later, so it eases open
     -- like every later time rather than appearing at full width
     when (open && not st.limulusMade) do
@@ -433,7 +434,8 @@ handleAction cfg = case _ of
   DockWants on -> do
     st <- H.get
     -- opened without taking the keyboard: the page asked, not the player
-    if on then when (not st.limulus && st.mode == Atlantis) do
+    -- never with no rig: the page's first impression is its own
+    if on then when (not st.limulus && st.mode == Atlantis && st.rigUp) do
       unless st.limulusMade do
         H.modify_ _ { limulusMade = true }
         liftAff (delay (Milliseconds 30.0))
@@ -644,12 +646,13 @@ render cfg st =
             Just b -> [ browserDrawer st b ]
             Nothing -> [])
       <> (if limDrawer then [ limulusRail ] else [])
-      <> (if st.limulusMade || docked then [ limulusPanel { docked, open: st.limulus || docked, width: limW, rail: (limulusInput st).railWidth } ] else [])
+      <> (if st.limulusMade || docked then [ limulusPanel { docked, open: st.limulus || docked, width: limW, rail: (limulusInput st).railWidth, live: st.rigUp } ] else [])
     )
   where
   -- Limulus as a drawer from the right, in Atlantis, unless a region keeps
-  -- it open
-  limDrawer = st.mode == Atlantis && not docked
+  -- it open; and with no rig at all (the web app), where it says what it
+  -- needs, since the editor is the heart of the idea (AC, 2026-10-27)
+  limDrawer = (st.mode == Atlantis || not st.rigUp) && not docked
   limW = Drawer.clampWidth (limulusInput st) st.limWidth
   limSpan = if limDrawer then (if st.limulus then limW else 0.0) + (limulusInput st).railWidth else 0.0
   limulusRail =
@@ -802,7 +805,7 @@ browserDrawer st b =
 -- | (`data-limulus-dock="always"`), laid over that region
 -- | (`watchDocks`). One frame either way, made once and kept, so its log and
 -- | undo survive.
-limulusPanel :: forall w i. { docked :: Boolean, open :: Boolean, width :: Number, rail :: Number } -> HH.HTML w i
+limulusPanel :: forall w i. { docked :: Boolean, open :: Boolean, width :: Number, rail :: Number, live :: Boolean } -> HH.HTML w i
 limulusPanel p =
   HH.div
     ( [ HP.id "tf-limulus"
@@ -817,10 +820,29 @@ limulusPanel p =
                  <> "border-left:" <> (if p.open then "1px solid #b3ae9c" else "0") <> ";"
       ] <> (if p.open then [] else [ HP.attr (HH.AttrName "inert") "" ])
     )
-    [ HH.iframe
-        [ HP.src "/limulus/?embed&look=paper", HP.ref limulusRef, HP.title "Limulus"
-        , style ("height:100%;border:0;display:block;width:" <> (if p.docked then "100%" else show p.width <> "px"))
-        ]
+    [ if p.live then
+        HH.iframe
+          [ HP.src "/limulus/?embed&look=paper", HP.ref limulusRef, HP.title "Limulus"
+          , style ("height:100%;border:0;display:block;width:" <> (if p.docked then "100%" else show p.width <> "px"))
+          ]
+      else limulusNeedsInstall (if p.docked then "100%" else show p.width <> "px")
+    ]
+
+-- | **Limulus with no rig** (AC, 2026-10-27): the editor is the heart of the
+-- | idea, so its drawer is there, and says what it would be and what it
+-- | needs, over a few lines of what it would hold.
+limulusNeedsInstall :: forall w i. String -> HH.HTML w i
+limulusNeedsInstall width =
+  HH.div [ style ("position:relative;height:100%;width:" <> width <> ";background:#f3efe2;overflow:hidden") ]
+    [ HH.pre [ style "margin:0;padding:22px 24px;font:13px/1.9 ui-monospace,Menlo,monospace;color:#1a1a1a;opacity:0.35" ]
+        [ HH.text "P $ vetula \"crown-atom-fire\"\n\nQ $ vetula \"crown-atom-fire\" # arpup 8 # oct 1\n\nR $ vetula \"crown-atom-fire\" # bottom 1 # slow 2\n\nodonus $ degree \"<1 4 5 1>/4\"\n\nselene $ euclid fh2_1 # mute \"<1 3>/4\"" ]
+    , HH.div [ style "position:absolute;top:250px;left:22px;right:22px;background:#fffdf8;border:1px solid #d8cfb6;border-radius:10px;box-shadow:0 10px 36px rgba(0,0,0,0.14);padding:22px 24px 18px;font-family:Georgia,serif;color:#3a3428" ]
+        [ HH.div [ style "font-size:12px;letter-spacing:0.16em;text-transform:uppercase;color:#8d7a4a;margin-bottom:6px" ] [ HH.text "Limulus" ]
+        , HH.p [ style "margin:0 0 10px;font-size:15px;line-height:1.45" ]
+            [ HH.text "The live-coding editor, in Tidal. Every progression you make here can be named in a line, played as voices, and shaped as it plays, beside the rig's sequencers and the modular." ]
+        , HH.p [ style "margin:0 0 14px;font-size:13.5px;line-height:1.45;color:#6b6b6b" ]
+            [ HH.text "It needs the Atlantis rig running on your own machine: the engine, the clock, the instruments. A web page can't hold those. With great power comes great installation." ]
+        , HH.a [ HP.href "https://trigger-fish.app/#installed", HP.target "_blank", style "font-size:13px;color:#8d7a4a" ] [ HH.text "What the install involves \x2192" ] ]
     ]
 
 renameRef :: H.RefLabel
