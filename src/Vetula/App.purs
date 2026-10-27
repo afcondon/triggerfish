@@ -602,6 +602,8 @@ type State =
   , scoreRead :: Set String
   -- the open progression's bar the side panel's chords go into, and a bar being dragged
   , scoreBar :: Maybe Int
+  -- | chords heard on the field and not taken, newest first, by `markKey` (CR-14)
+  , trail :: Array String
   , scoreDrag :: Maybe Int
   , hoveredBar :: Maybe Int       -- the bar of the score under the pointer
   -- an unsaved progression about to be lost, asked once: the same act again
@@ -959,6 +961,7 @@ component = H.mkComponent
       , scoreSel: Nothing
       , scoreRead: Set.empty
       , scoreBar: Nothing
+      , trail: []
       , scoreDrag: Nothing
       , hoveredBar: Nothing
       , lossArmed: Nothing
@@ -2417,7 +2420,8 @@ handleActionCore = case _ of
     st <- H.get
     if st.panMoved then H.modify_ _ { panMoved = false }
     else do
-      H.modify_ _ { cursor = Just { key: k, chord: c }, lastHeard = Just c }
+      H.modify_ \s -> s { cursor = Just { key: k, chord: c }, lastHeard = Just c
+                        , trail = Array.take Field.trailLength (Array.cons (markKey c) (Array.filter (_ /= markKey c) s.trail)) }
       playChordQuiet c
 
   -- **Save** (AC, 2026-10-06: "explicit save and unsaved current version"):
@@ -5405,6 +5409,7 @@ type FieldSeen =
   , cursor :: Maybe String
   , path :: Array Int
   , chords :: Array ChordNode
+  , trail :: Array String
   }
 
 -- | The field rung on screen, if the view is one the field draws.
@@ -5433,13 +5438,23 @@ syncField = do
           when (p.pan /= pan) (Field.setView rt.handle false (fieldViewBox st p.frame))
           when (p.hover /= st.hoveredTriad) (Field.restyle rt.handle (glyphTint st))
           when (p.cursor /= cursorKey) (Field.select rt.handle cursorKey)
-          Ref.write (Just p { pan = pan, hover = st.hoveredTriad, cursor = cursorKey }) rt.seen
+          when (p.trail /= st.trail) (Field.retrail rt.handle (trailAgeOf st))
+          Ref.write (Just p { pan = pan, hover = st.hoveredTriad, cursor = cursorKey, trail = st.trail }) rt.seen
         _ -> do
           let sc = fieldScene st v rt.listener
           fresh <- Field.draw rt.handle sc.scene
           Field.setView rt.handle (not fresh && mounted) (fieldViewBox st sc.frame)
           Ref.write (Just { view: v, lattice: st.lattice, pads: st.bankPads, frame: sc.frame, pan, hover: st.hoveredTriad, cursor: cursorKey
-                               , path: st.path, chords: st.chords }) rt.seen
+                               , path: st.path, chords: st.chords, trail: st.trail }) rt.seen
+
+-- | A chord's place in the trail, as the field's `data-age` value: every
+-- | mark of the chord, on either view, and none for a chord in the progression,
+-- | which has its bead.
+trailAgeOf :: State -> Int -> Array Int -> String
+trailAgeOf st root pcs =
+  let k = show (mod root 12) <> ":" <> show (sort (nub (map (\p -> mod p 12) pcs)))  -- markKey, from its parts
+      taken = map (\pid -> maybe "" markKey (find (\c -> c.id == pid) st.chords)) st.path
+  in Field.trailAge (if elem k taken then Nothing else findIndex (_ == k) st.trail)
 
 -- | A glyph's tint under the current hover, as the field's `data-hi` value.
 glyphTint :: State -> Int -> Array Int -> String
@@ -5455,8 +5470,9 @@ hiName = case _ of
 fieldTintCss :: String
 fieldTintCss =
   ".vf-poly, .vf-dot { pointer-events: none; }\n"
+    <> Field.trailCss <> "\n"
     <> ".vf-cursor { display: none; fill: none; stroke: #3b3428; stroke-width: 1.6; pointer-events: none; }\n"
-    <> ".vf-mark[data-sel=\"1\"] .vf-cursor { display: inline; }\n"
+    <> ".vf-mark[data-sel=\"yes\"] .vf-cursor { display: inline; }\n"
     <> joinWith "\n"
          (map
             (\hi ->
@@ -5666,6 +5682,7 @@ fieldScene st view listener =
     mark k c x y scale shown label below =
       { key: k, root: c.root, pcs: c.pcs, x, y, scale, shown, label, below
       , tint: glyphTint st c.root c.pcs
+      , age: trailAgeOf st c.root c.pcs
       , enter: HS.notify listener (HoverPad (Just c))
       , leave: HS.notify listener (HoverPad Nothing)
       , select: HS.notify listener (SelectMark k c)

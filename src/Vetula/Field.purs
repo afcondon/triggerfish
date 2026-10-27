@@ -31,16 +31,20 @@ module Vetula.Field
   , restyle
   , select
   , containerId
+  , trailLength
+  , trailAge
+  , trailCss
+  , retrail
   ) where
 
 import Prelude
 
-import Data.Array (filter, length, mapMaybe, mapWithIndex, nub, sort, take)
+import Data.Array (filter, length, mapMaybe, mapWithIndex, nub, range, sort, take)
 import Data.Foldable (for_)
 import Data.Int (toNumber)
 import Data.Map (Map)
 import Data.Map as Map
-import Data.Maybe (Maybe(..), fromMaybe)
+import Data.Maybe (Maybe(..), fromMaybe, maybe)
 import Data.Number as Number
 import Data.String (joinWith)
 import Data.Time.Duration (Milliseconds(..))
@@ -73,6 +77,7 @@ type Mark =
   , label :: String
   , below :: Boolean          -- label under the glyph, or beside it
   , tint :: String            -- the `data-hi` value: a key into `Scene.css`
+  , age :: String             -- the `data-age` value: its place in the trail, `trailAge`
   , enter :: Effect Unit
   , leave :: Effect Unit
   , select :: Effect Unit       -- a click: make this the field's cursor
@@ -107,7 +112,7 @@ newtype Handle = Handle
   { transitions :: Ref (Maybe HATSTransitions)
   , view :: Ref { from :: ViewBox, to :: ViewBox, elapsed :: Number }
   , looping :: Ref Boolean
-  , marks :: Ref (Map String { el :: Element, root :: Int, pcs :: Array Int, tint :: String })
+  , marks :: Ref (Map String { el :: Element, root :: Int, pcs :: Array Int, tint :: String, age :: String })
   , selected :: Ref (Maybe String)
   }
 
@@ -151,7 +156,7 @@ draw (Handle h) scene = hostPresent_ selector >>= if _ then go else pure false
     keyed <- traverse (\el -> (\k -> Tuple k el) <$> hatsKey_ el) els
     Ref.write
       (Map.fromFoldable
-         (mapMaybe (\(Tuple k el) -> map (\m -> Tuple k { el, root: m.root, pcs: m.pcs, tint: m.tint }) (Map.lookup k byData)) keyed))
+         (mapMaybe (\(Tuple k el) -> map (\m -> Tuple k { el, root: m.root, pcs: m.pcs, tint: m.tint, age: m.age }) (Map.lookup k byData)) keyed))
       h.marks
     Ref.write scene.selected h.selected
     startLoop (Handle h)
@@ -195,8 +200,8 @@ select (Handle h) next = do
   prev <- Ref.read h.selected
   when (prev /= next) do
     ms <- Ref.read h.marks
-    for_ (prev >>= \k -> Map.lookup k ms) \m -> setAttr_ m.el "data-sel" "0"
-    for_ (next >>= \k -> Map.lookup k ms) \m -> setAttr_ m.el "data-sel" "1"
+    for_ (prev >>= \k -> Map.lookup k ms) \m -> setAttr_ m.el "data-sel" "no"
+    for_ (next >>= \k -> Map.lookup k ms) \m -> setAttr_ m.el "data-sel" "yes"
     Ref.write next h.selected
 
 -- ---------------------------------------------------------------------------
@@ -302,6 +307,42 @@ pathSteps scene =
           , k: length (filter (\o -> o.key == e.key) (take j placed)) })
        placed
 
+-- | **The trail** (CR-14): a chord heard and not taken keeps a green ground
+-- | under it, a step fainter with every chord heard after it, as a Game of
+-- | Life cell fades with each generation; by count, not time, so it waits
+-- | while you think. Each mark carries its ground; `data-age` shows it, so a
+-- | new chord heard costs attributes, not a redraw.
+trailLength :: Int
+trailLength = 6
+
+-- | A place in the trail as the `data-age` value, 0 the newest. Words, not
+-- | numbers: a redraw eases every number.
+trailAge :: Maybe Int -> String
+trailAge = maybe "none" (\a -> "a" <> show a)
+
+-- | The trail's rules, on each mark's `data-age`.
+trailCss :: String
+trailCss =
+  ".vf-spot { display: none; fill: #7fb27a; pointer-events: none; }\n"
+    <> joinWith "\n"
+         (map (\a -> ".vf-mark[data-age=\"" <> trailAge (Just a) <> "\"] .vf-spot { display: inline; opacity: "
+                      <> show (0.5 * toNumber (trailLength - a) / toNumber trailLength) <> "; }")
+              (range 0 (trailLength - 1)))
+
+-- | Re-age every mark, without a redraw.
+retrail :: Handle -> (Int -> Array Int -> String) -> Effect Unit
+retrail (Handle h) ageOf = do
+  ms <- Ref.read h.marks
+  ms' <- traverse
+    (\m -> do
+       let a = ageOf m.root m.pcs
+       if a == m.age then pure m
+       else do
+         setAttr_ m.el "data-age" a
+         pure m { age = a })
+    ms
+  Ref.write ms' h.marks
+
 pathBeads :: Scene -> Array { key :: String, n :: Int, x :: Number, y :: Number }
 pathBeads scene =
   map
@@ -349,11 +390,15 @@ markTree selected m =
       , F.attr "overflow" "visible"
       , F.class_ "vf-mark"
       , F.attr "data-hi" m.tint
-      , F.attr "data-sel" (if selected == Just m.key then "1" else "0")
+      , F.attr "data-age" m.age
+      , -- words, not 0/1: a redraw eases every number, and a tweened "0.96"
+      -- (or "1.0") no longer matches the cursor's rule
+      F.attr "data-sel" (if selected == Just m.key then "yes" else "no")
       , F.opacity (if m.shown then "1" else "0")
       , F.attr "pointer-events" (if m.shown then "auto" else "none")
       ]
-      ( [ elem Polygon
+      ( [ elem Circle [ F.cx 0.0, F.cy 0.0, F.r 17.0, F.class_ "vf-spot" ] []
+        , elem Polygon
             [ F.points (joinWith " " (map (\p -> let q = pt p in show q.x <> "," <> show q.y) sorted))
             , F.class_ "vf-poly"
             ]
