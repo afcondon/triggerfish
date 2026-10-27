@@ -5483,6 +5483,45 @@ scoreSurface st =
     ]
   where
   sp = Score.spellingOf st.key.tonic (scaleSet st.key)
+  unsaved = length st.path > 0 && currentSource st /= st.lastPubSig
+  openRow = openStaff st
+  openHandlers =
+    { press: ScorePress
+    , hover: \i -> HoverBar (Just i)
+    , unhover: HoverBar Nothing
+    , revoice: Just \i -> maybe (ScoreHear []) ScoreRevoice (st.path !! i)
+    , select: ScoreSelect openRow.title
+    , unselect: ScoreUnselect
+    , readIn: ScoreReadIn openRow.title
+    , adopt: Just ScoreAdopt
+    , duplicate: Just ScoreDuplicate
+    , remove: Just ScoreDelete
+    , dropAt: Just ScoreDropAt
+    , padOver: Just ScoreDragOver
+    , padDrop: Just ScoreDropPad
+    , voiceOver: VoiceDragOver
+    , voiceDrop: VoiceDrop
+    , tap: Just { start: TapStart, stop: TapStop, clear: ClearRhythm }
+    , resume: (\w -> { name: w.name, act: ResumeWorking }) <$> st.resumable
+    , addChords: Nothing
+    , save: if unsaved then Just (SaveProg false) else Nothing
+    , toQuadrat: case st.progName of
+        Just nm | any (\e -> e.kept && e.name == nm) st.library -> Just (ToQuadrat nm)
+        _ -> Nothing
+    -- the open progression as the voices would play it: once saved
+    , titleDrag: case st.progName of
+        Just nm | any (\e -> e.kept && e.name == nm) st.library -> Just (TitleDrag nm)
+        _ -> Nothing
+    }
+
+
+
+-- | **The open progression as the score draws it**: one system, which the
+-- | score shows top left and the lattice and banks show faintly in the same
+-- | place (AC, 2026-10-27), so the progression is in one place on every view.
+openStaff :: State -> Score.Staff
+openStaff st = openRow
+  where
   pathNodes = mapMaybe (\pid -> find (\c -> c.id == pid) st.chords) st.path
   openChords = map playNotes pathNodes
   unsaved = length st.path > 0 && currentSource st /= st.lastPubSig
@@ -5520,34 +5559,6 @@ scoreSurface st =
     , beats: rhythmOf st
     , tapping: map _.at st.tapping
     }
-  openHandlers =
-    { press: ScorePress
-    , hover: \i -> HoverBar (Just i)
-    , unhover: HoverBar Nothing
-    , revoice: Just \i -> maybe (ScoreHear []) ScoreRevoice (st.path !! i)
-    , select: ScoreSelect openRow.title
-    , unselect: ScoreUnselect
-    , readIn: ScoreReadIn openRow.title
-    , adopt: Just ScoreAdopt
-    , duplicate: Just ScoreDuplicate
-    , remove: Just ScoreDelete
-    , dropAt: Just ScoreDropAt
-    , padOver: Just ScoreDragOver
-    , padDrop: Just ScoreDropPad
-    , voiceOver: VoiceDragOver
-    , voiceDrop: VoiceDrop
-    , tap: Just { start: TapStart, stop: TapStop, clear: ClearRhythm }
-    , resume: (\w -> { name: w.name, act: ResumeWorking }) <$> st.resumable
-    , addChords: Nothing
-    , save: if unsaved then Just (SaveProg false) else Nothing
-    , toQuadrat: case st.progName of
-        Just nm | any (\e -> e.kept && e.name == nm) st.library -> Just (ToQuadrat nm)
-        _ -> Nothing
-    -- the open progression as the voices would play it: once saved
-    , titleDrag: case st.progName of
-        Just nm | any (\e -> e.kept && e.name == nm) st.library -> Just (TitleDrag nm)
-        _ -> Nothing
-    }
   -- the chosen run on a row, if it is this one and still fits it
   selOf title k = st.scoreSel >>= \sel ->
     if sel.row == title && sel.anchor < k && sel.to < k
@@ -5582,13 +5593,37 @@ progDragPrefix = "vetula-progression "
 
 fieldSurface :: forall m. State -> H.ComponentHTML Action Slots m
 fieldSurface st =
+  -- the field's own ground (its svg paints #fafafa) under the staff too: one surface, no band
+  HH.div [ HP.style "display: flex; flex-direction: column; width: 100%; height: 100%; background: #fafafa;" ]
+    [ staffWatermark st
+    , HH.div
+        ( [ HP.id Field.containerId
+          , HP.style "flex: 1 1 0; min-height: 0; width: 100%;"
+          , HE.onWheel \we -> LevelWheel (WE.toEvent we) (WE.deltaY we)
+          , HE.onMouseDown (PanStart <<< ME.toEvent)
+          ] <> geoPanAttrs st )
+        []
+    ]
+
+-- | **The score's staff, faint, where the score has it** (AC, 2026-10-27):
+-- | on the lattice and banks the progression collects on the staff it will
+-- | be edited on, numbered as the chords are. A picture only. It has its
+-- | own strip, smaller than the score's, and the field fits below it, so no
+-- | chord is ever under it (AC: "shrink the two views so they don't clash").
+staffWatermark :: forall w. State -> HH.HTML w Action
+staffWatermark st =
   HH.div
-    ( [ HP.id Field.containerId
-      , HP.style "width: 100%; height: 100%;"
-      , HE.onWheel \we -> LevelWheel (WE.toEvent we) (WE.deltaY we)
-      , HE.onMouseDown (PanStart <<< ME.toEvent)
-      ] <> geoPanAttrs st )
-    []
+    [ HP.style "flex: none; align-self: flex-start; max-width: 100%; zoom: 0.8; padding: 16px 22px 0; opacity: 0.6; pointer-events: none; overflow: hidden;" ]
+    [ Score.system (Score.spellingOf st.key.tonic (scaleSet st.key)) inert (openStaff st) ]
+  where
+  none = HoverBar Nothing
+  inert =
+    { press: const none, hover: const none, unhover: none, revoice: Nothing
+    , select: const none, unselect: none, readIn: none, adopt: Nothing
+    , duplicate: Nothing, remove: Nothing, dropAt: Nothing, padOver: Nothing, padDrop: Nothing
+    , voiceOver: const none, voiceDrop: \_ _ -> none, titleDrag: Nothing
+    , tap: Nothing, toQuadrat: Nothing, resume: Nothing, addChords: Nothing, save: Nothing
+    }
 
 -- | The scene for a rung, and the frame it should fill.
 fieldScene :: State -> Viewtype -> HS.Listener Action -> { scene :: Field.Scene, frame :: Box }
@@ -5641,17 +5676,32 @@ fieldScene st view listener =
     -- vanishes.
     pathKeyOf c =
       let set = pcSetOf c
-          cands = filter (\m -> sort (nub (map (\p -> mod p 12) m.pcs)) == set) marks0
+          -- on the banks only a pad holds a chord: a lattice mark there is
+          -- hidden, and lit it would sit where the lattice put it; and
+          -- on the lattice only a lattice mark (a pad's own sits where the
+          -- banks put it)
+          pool = if banks then filter _.shown marks0 else map latticeMark members
+          cands = filter (\m -> sort (nub (map (\p -> mod p 12) m.pcs)) == set) pool
           rank m = (if mod m.root 12 == mod c.root 12 then 0 else 2) + (if m.shown then 0 else 1)
       in map _.key (head (sortBy (comparing rank) cands))
-    -- a chord no mark holds (a borrowed or chromatic one) gets its own, in a
-    -- row under the lattice, across by its root, so every chord of the
-    -- progression is drawn (AC: "the progression's chords should all be visible")
-    steps = if banks then [] else pathSteps st
-    -- chords on one root stack downwards; a chord met again keeps its mark
+    -- a chord no mark holds (a borrowed or chromatic one, or on the banks a
+    -- chord in no bank) gets its own, so every chord of the progression is
+    -- drawn on every view (AC: "the progression's chords should all be
+    -- visible"). It goes in a band ELSEWHERE, across by its root: above the
+    -- lattice's highest rung, since height there is distance from the key
+    -- (AC, 2026-10-27: "one level higher than our current highest level"),
+    -- and above the banks.
+    steps = pathSteps st
+    sp = Score.spellingOf st.key.tonic (scaleSet st.key)
+    -- chords on one root stack upwards; a chord met again keeps its mark
+    latticeTop = fromMaybe latGeo.baseY (minimum (map _.cy members))
     strayMark i k c =
-      let deg = toNumber (mod (c.root - st.key.tonic + 12) 12) / 12.0 * 7.0
-      in mark ("path:" <> show i) c (latticeLeft + deg * latGeo.bandW) (latGeo.baseY + 80.0 + 56.0 * toNumber k) 1.0 true (chordNameOf c) false
+      let along = toNumber (mod (c.root - st.key.tonic + 12) 12) / 12.0
+          x = if banks then bankBox.minX + bankGeo.headW + along * (bankBox.maxX - bankBox.minX - bankGeo.headW)
+              else latticeLeft + along * 7.0 * latGeo.bandW
+          y = (if banks then bankBox.minY - 46.0 else latticeTop - 60.0) - 56.0 * toNumber k
+      -- named as the staff names it, so the two never disagree
+      in mark ("path:" <> show i) c x y 1.0 true (Score.spellName sp (OP.chordName (playNotes c))) false
     strayKey c = Tuple (mod c.root 12) (pcSetOf c)
     stepKeys = (foldl (\acc (Tuple i c) -> case pathKeyOf c of
                   Just k -> acc { out = snoc acc.out (Tuple k Nothing) }
@@ -5676,8 +5726,9 @@ fieldScene st view listener =
       , minY: topY - 30.0
       , maxY: latGeo.baseY + 40.0
       }
-    latBox = foldl (\b m -> b { minX = min b.minX (m.x - 50.0), maxX = max b.maxX (m.x + 50.0)
-                              , minY = min b.minY (m.y - 40.0), maxY = max b.maxY (m.y + 40.0) }) base pathMarks
+    grow b m = b { minX = min b.minX (m.x - 50.0), maxX = max b.maxX (m.x + 50.0)
+                 , minY = min b.minY (m.y - 40.0), maxY = max b.maxY (m.y + 40.0) }
+    latBox = foldl grow base pathMarks
     -- a chord's level: 0 the key's own, 1 common, 2 up to four notes, 3 beyond
     levelOf c
       | isKey c = 0
@@ -5708,7 +5759,7 @@ fieldScene st view listener =
         , selected: map _.key st.cursor
         , path
         }
-    , frame: if banks then bankBox { minX = bankBox.minX - 20.0, maxX = bankBox.maxX + 20.0, minY = bankBox.minY - 16.0, maxY = bankBox.maxY + 24.0 } else latBox
+    , frame: if banks then foldl grow (bankBox { minX = bankBox.minX - 20.0, maxX = bankBox.maxX + 20.0, minY = bankBox.minY - 16.0, maxY = bankBox.maxY + 24.0 }) pathMarks else latBox
     }
 
 -- | **The common chords** (AC, 2026-10-06): what a pop or jazz lead sheet

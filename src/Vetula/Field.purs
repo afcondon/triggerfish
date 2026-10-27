@@ -35,7 +35,7 @@ module Vetula.Field
 
 import Prelude
 
-import Data.Array (drop, filter, length, mapMaybe, mapWithIndex, nub, sort, take, zip)
+import Data.Array (filter, length, mapMaybe, mapWithIndex, nub, sort, take)
 import Data.Foldable (for_)
 import Data.Int (toNumber)
 import Data.Map (Map)
@@ -277,16 +277,12 @@ sceneTree scene =
             (\g -> show g.level)
             edgeGroup
             { enter: Nothing, update: Just ease, exit: Nothing } ]
-    , elem Group [ F.class_ "vf-path", F.opacity (if scene.banks then "0" else "1"), F.style "pointer-events: none;" ]
-        [ forEachWithGUP "vf-path-seg" Line (pathSegments scene) _.key segTree
-            { enter: Just { attrs: [ F.opacity "0" ], transition: ease.transition }, update: Just ease, exit: Nothing }
-        ]
     , elem Group [ F.class_ "vf-marks" ]
         [ forEachWithGUP "vf-marks" SVG scene.marks _.key (markTree scene.selected)
             { enter: Just { attrs: [ F.opacity "0" ], transition: ease.transition }
             , update: Just ease
             , exit: Nothing } ]
-    , elem Group [ F.class_ "vf-beads", F.opacity (if scene.banks then "0" else "1"), F.style "pointer-events: none;" ]
+    , elem Group [ F.class_ "vf-beads", F.style "pointer-events: none;" ]
         [ forEachWithGUP "vf-path-bead" SVG (pathBeads scene) _.key beadTree
             { enter: Just { attrs: [ F.opacity "0" ], transition: ease.transition }, update: Just ease, exit: Nothing }
         ]
@@ -306,14 +302,6 @@ pathSteps scene =
           , k: length (filter (\o -> o.key == e.key) (take j placed)) })
        placed
 
-pathSegments :: Scene -> Array { key :: String, x1 :: Number, y1 :: Number, x2 :: Number, y2 :: Number }
-pathSegments scene =
-  let st = pathSteps scene
-  in mapMaybe
-       (\(Tuple a b) -> if a.key == b.key then Nothing
-                         else Just { key: "s" <> show a.n, x1: a.x, y1: a.y, x2: b.x, y2: b.y })
-       (zip st (drop 1 st))
-
 pathBeads :: Scene -> Array { key :: String, n :: Int, x :: Number, y :: Number }
 pathBeads scene =
   map
@@ -322,13 +310,6 @@ pathBeads scene =
        let a = (-3.0 * Number.pi / 4.0) - toNumber s.k * (Number.pi / 4.0)
        in { key: "b" <> show s.n, n: s.n, x: s.x + 15.0 * Number.cos a, y: s.y + 15.0 * Number.sin a })
     (pathSteps scene)
-
-segTree :: { key :: String, x1 :: Number, y1 :: Number, x2 :: Number, y2 :: Number } -> Tree
-segTree e =
-  elem Line
-    [ F.x1 e.x1, F.y1 e.y1, F.x2 e.x2, F.y2 e.y2, F.opacity "1"
-    , F.style "stroke: #2f6f8f; stroke-width: 2; stroke-opacity: 0.55; stroke-linecap: round;" ]
-    []
 
 beadTree :: { key :: String, n :: Int, x :: Number, y :: Number } -> Tree
 beadTree b =

@@ -594,7 +594,7 @@ system pageSp on row =
                   Nothing -> [])
           ) [ el "title" [] [ HH.text (name <> " \x00b7 click: hear it and choose this bar \x00b7 drag: move it \x00b7 shift-click: choose a run of bars, for the scales that fit them") ] ]
       label =
-        el "text" [ attr "x" (show (x0 + barWidth / 2.0)), attr "y" "13", attr "text-anchor" "middle", attr "font-size" "11", attr "fill" "#4a4232"
+        el "text" [ attr "x" (show (x0 + barWidth / 2.0 + (if row.top then 6.0 else 0.0))), attr "y" "13", attr "text-anchor" "middle", attr "font-size" "11", attr "fill" "#4a4232"
                   , attr "style" "pointer-events: none;" ] [ HH.text name ]
       -- the open progression's tools, under each bar: duplicate (to vary
       -- the copy), delete; revoicing is the whole row's, in its header
@@ -609,8 +609,18 @@ system pageSp on row =
       revoiceBtn =
         tool (-6.0) "\x29c9" "duplicate this chord (then vary the copy)" on.duplicate
           <> tool 8.0 "\x00d7" "take this chord out" on.remove
+      -- the open progression's bars numbered as the lattice and banks number
+      -- its chords, in the score's ink rather than their blue (AC, 2026-10-27)
+      number =
+        if not row.top then []
+        else
+          [ el "circle" [ attr "cx" (show (x0 + 9.0)), attr "cy" "9", attr "r" "6.2", attr "fill" "#3b3428", attr "stroke" "#fff", attr "stroke-width" "1"
+                        , attr "style" "pointer-events: none;" ] []
+          , el "text" [ attr "x" (show (x0 + 9.0)), attr "y" "11.8", attr "text-anchor" "middle", attr "font-size" "8", attr "font-weight" "600", attr "fill" "#fff"
+                      , attr "style" "pointer-events: none;" ] [ HH.text (show (i + 1)) ] ]
     in
       [ hits, label ]
+        <> number
         -- its length, when the row has a rhythm
         <> (case Array.index row.beats i of
               Just b -> [ el "text" [ attr "x" (show (x0 + barWidth - 5.0)), attr "y" "13", attr "text-anchor" "end", attr "font-size" "9"
