@@ -32,6 +32,7 @@ module Vetula.Score
   , spellName
   , rootOfName
   , system
+  , systemWith
   ) where
 
 import Prelude
@@ -307,14 +308,21 @@ staffGap = 14.0
 -- | kept for what is chosen or in hand (the bar's cream, a run's blue) and
 -- | for a note outside the scale (red).
 system :: forall w i. Spelling -> Handlers i -> Staff -> HH.HTML w i
-system pageSp on row =
+system = systemWith []
+
+-- | A system with things of the page's on its key line, at the right: the
+-- | score's preview controls, which had a column of their own beside the
+-- | progression and kept it narrow (AC, 2026-10-27).
+systemWith :: forall w i. Array (HH.HTML w i) -> Spelling -> Handlers i -> Staff -> HH.HTML w i
+systemWith beside pageSp on row =
   HH.div
     -- the open progression has the page, unboxed (AC, 2026-10-27); other
     -- rows sit in a box each
     [ HP.style ("user-select: none; -webkit-user-select: none; "
         <> (if row.top then "margin: 0;" else "margin: 0 0 18px; padding: 10px 14px 6px; border-radius: 6px; background: #fafafa; border: 1px solid #e4e4e4;")) ]
-    ( [ header
-      , HH.div [ HP.style (if row.top then "overflow-x: auto; margin-top: 10px;" else "overflow-x: auto;") ] [ staff ]
+    -- the open progression is drawn a fifth larger: it has the page
+    ( [ HH.div [ HP.style (if row.top then "zoom: 1.2;" else "") ] [ header ]
+      , HH.div [ HP.style (if row.top then "overflow-x: auto; margin-top: 10px; zoom: 1.2;" else "overflow-x: auto;") ] [ staff ]
       ] <> (if row.top then keyLine else []) <> scales )
   where
   -- **What the progression is in.** The key it is shown against is the
@@ -331,11 +339,15 @@ system pageSp on row =
     Nothing -> pageSp
   -- the open progression's key, under it, where a change shows (AC,
   -- 2026-10-27): said, not set; the lattice's picker sets it
-  keyLine = case row.saved of
-    Just k -> [ HH.div [ HP.style "margin-top: 4px; font: 13px Georgia, serif; color: #555555;"
-                       , HP.title "the progression's key: change it from the lattice, which transposes it" ]
-                  [ HH.text (pcNameIn keySp k.tonic <> " " <> k.mode) ] ]
-    Nothing -> []
+  keyLine =
+    [ HH.div [ HP.style "margin-top: 6px; display: flex; align-items: center; gap: 8px;" ]
+        ( (case row.saved of
+            Just k -> [ HH.span [ HP.style "font: 15px Georgia, serif; color: #555555;"
+                                , HP.title "the progression's key: change it from the lattice, which transposes it" ]
+                          [ HH.text (pcNameIn keySp k.tonic <> " " <> k.mode) ] ]
+            Nothing -> [])
+          <> [ HH.span [ HP.style "flex: 1 1 auto;" ] [] ]
+          <> beside ) ]
   savedLine = if row.top then [] else case row.saved of
     Just k -> [ HH.span [ HP.style "font-size: 11px; color: #6b6b6b;" ]
                   [ HH.text (if k.saved then "saved in " else "in "), HH.span [ HP.style "font-weight: 600; color: #1a1a1a;" ] [ HH.text (pcNameIn keySp k.tonic <> " " <> k.mode) ] ] ]

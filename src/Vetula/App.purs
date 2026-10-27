@@ -5823,12 +5823,11 @@ scoreSurface st =
     [ HP.class_ (cn "vetula-surface vetula-surface--wide")
     -- paper: the score is drawn in engraving ink (CR-15)
     , HP.style "position: absolute; inset: 0; display: flex; flex-direction: column; background: #ffffff;" ]
-    -- the progression has the top of the page, unboxed; how previews sound
-    -- sits beside its header, in the flow, so the two never overlap
-    [ HH.div [ HP.style "flex: 0 0 auto; max-height: 70%; overflow: auto; padding: 22px 32px 26px; display: flex; align-items: flex-start; gap: 24px;"
+    -- the progression has the top of the page, unboxed and unclipped; how
+    -- previews sound is on its key line, under it
+    [ HH.div [ HP.style "flex: 0 0 auto; padding: 22px 32px 18px;"
              , HE.handler (EventType "dragover") VoiceDragOver, HE.handler (EventType "drop") StaffDrop ]
-        [ HH.div [ HP.style "flex: 1 1 auto; min-width: 0; zoom: 1.2;" ] [ Score.system sp openHandlers openRow ]
-        , HH.div [ HP.style "flex: none; display: flex; align-items: center; gap: 8px;" ] (soundControls st) ]
+        [ Score.systemWith (soundControls st) sp openHandlers openRow ]
     , scoreCandidates st
     ]
   where
@@ -5958,7 +5957,7 @@ fieldSurface st =
 staffWatermark :: forall w. State -> HH.HTML w Action
 staffWatermark st =
   HH.div
-    [ HP.style "flex: none; align-self: flex-start; max-width: 100%; zoom: 0.8; padding: 16px 22px 0; opacity: 0.6; overflow: hidden;"
+    [ HP.style "flex: none; align-self: flex-start; max-width: 100%; zoom: 0.67; padding: 16px 22px 0; opacity: 0.6; overflow: hidden;"
     , HE.handler (EventType "dragover") VoiceDragOver, HE.handler (EventType "drop") StaffDrop ]
     [ Score.system (Score.spellingOf st.key.tonic (scaleSet st.key)) inert (openStaff st) ]
   where
