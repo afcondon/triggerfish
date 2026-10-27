@@ -185,7 +185,7 @@ handleQuery = case _ of
     -- colour: a container, as a session is)
     let progRows = map (\p -> { slot: progSlotBase + p.slot, name: p.name
                               , icons: map (\icon -> { icon, color: "#2a2a2a" }) (Array.filter (_ /= "") (String.split (String.Pattern "-") (String.takeWhile (_ /= String.codePointFromChar '′') p.name))) <> p.rebus
-                              , tag: p.key, current: p.current, section: "Progressions", builtin: true, drag: "vetula-progression " <> p.name, hint: "Click: open it. Drag it onto a voice (its badge on the score) and the voice plays it. Drag it into Limulus: onto a voice's block it becomes that voice's progression; anywhere else it starts a new voice.", actions: [ "delete" ] })
+                              , tag: p.key, current: p.current, section: "Progressions", builtin: true, drag: "vetula-progression " <> p.name, hint: "Click: open it, or drag it onto the staff. Drag it onto a voice (a tile under the score, or its badge) and the voice plays it. Drag it into Limulus: onto a voice's block it becomes that voice's progression; anywhere else it starts a new voice.", actions: [ "delete" ] })
                        (fromMaybe [] mprogs)
     let voiceRows = Voices.rows st.voices st.names st.routesText
     pure $ mscenes <#> \scenes -> reply

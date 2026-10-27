@@ -22,6 +22,8 @@ module Vetula.StageCards
   , tableHasKey
   , publishLines
   , readNotes
+  , readRouting
+  , delLine
   , stageName
   , repoint
   ) where
@@ -56,6 +58,10 @@ subscribeLine = "stage-text-subscribe"
 openLine :: Int -> String
 openLine n = "stage-open " <> cardKey n
 
+-- | Delete a card: the voice goes from the stage.
+delLine :: Int -> String
+delLine n = "stage-text-del " <> cardKey n
+
 rejectLine :: Int -> String -> String
 rejectLine n reason = "stage-reject " <> cardKey n <> " " <> reason
 
@@ -77,6 +83,21 @@ readFrame msg = case stripPrefix (Pattern "stage-texts ") msg of
     pure (Written n (toMaybe w.text))
   where
   entry (Tuple key v) = (\n -> Tuple n v.text) <$> cardIdOfKey key
+
+-- | What a frame says of the voices' routing (`vetula/routing`, a
+-- | `Reef.Routing.VoiceRouting` as JSON): from the whole table, what it holds
+-- | there; from a write of that key, the new text; `Nothing` for any other.
+readRouting :: String -> Maybe (Maybe String)
+readRouting msg = case stripPrefix (Pattern "stage-texts ") msg of
+  Just json -> do
+    table :: Object { text :: String } <- hush (readJSON json)
+    pure (_.text <$> Object.lookup routingKey table)
+  Nothing -> do
+    json <- stripPrefix (Pattern "stage-text ") msg
+    w :: { key :: String, text :: Nullable String } <- hush (readJSON json)
+    if w.key == routingKey then Just (toMaybe w.text) else Nothing
+  where
+  routingKey = "vetula/routing"
 
 -- | Whether the whole table (the answer to a subscribe) holds Vetula's key
 -- | (`vetula/key`); `Nothing` for any other frame.

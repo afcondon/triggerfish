@@ -25,10 +25,11 @@ import Triggerfish.Glyph (GlyphIcon)
 -- | is lit while active: the view's own design language.
 type Tab = { id :: String, label :: String, active :: Boolean, enabled :: Boolean, look :: TabLook, tip :: String }
 
--- | `Warm`: the workspace's gold. `Ink`: black on white, as an engraved
+-- | `Warm`: the workspace's gold (Vetula's lattice). `Clay`: a terracotta
+-- | beside it (Vetula's banks). `Ink`: black on white, as an engraved
 -- | score (Vetula's score). `Night`: white on black, for a view that is
 -- | mostly black (Vetula's review river). AC, 2026-10-27.
-data TabLook = Warm | Ink | Night
+data TabLook = Warm | Clay | Ink | Night
 
 derive instance eqTabLook :: Eq TabLook
 

@@ -895,14 +895,7 @@ bar cfg st =
             [ HE.onClick \_ -> PressBar ("stage:" <> t.id), HP.title t.tip, HP.disabled (not t.enabled)
             , style $ "padding:5px 13px;border:none;font-family:Georgia,serif;font-size:11px;letter-spacing:0.12em;"
                 <> (if t.enabled then "cursor:pointer;" else "cursor:default;")
-                <> (if t.active then (case t.look of
-                      Bar.Warm -> "background:linear-gradient(#c8a86a,#b8975a);color:#1c1a12;font-weight:600"
-                      Bar.Ink -> "background:#ffffff;color:#111111;font-weight:600;box-shadow:inset 0 0 0 1px #111111"
-                      Bar.Night -> "background:#0b0b0a;color:#ffffff;font-weight:600;box-shadow:inset 0 -2px 0 #e9dfc4")
-                    -- a night view is dark even when not chosen, so the pill says what it is
-                    else if t.look == Bar.Night then "background:#2b2823;color:#e9dfc4"
-                    else if t.enabled then "background:linear-gradient(#f4f1e8,#e2ddcf);color:#5a564b"
-                    else "background:linear-gradient(#f4f1e8,#e2ddcf);color:#5a564b59") ]
+                <> tabLookStyle t.look t.active t.enabled ]
             [ HH.text t.label ]) b.tabs)
     ])
       <> (if b.marks == "" then [] else
@@ -950,3 +943,19 @@ bar cfg st =
 
 rigUrl :: String
 rigUrl = "ws://127.0.0.1:3012/ws"
+
+-- | A bar tab lit in its view's own look, chosen or not, so the pill says
+-- | what each view is all the time (AC, 2026-10-27); chosen, it is solid.
+-- | Dimmed when it cannot be chosen.
+tabLookStyle :: Bar.TabLook -> Boolean -> Boolean -> String
+tabLookStyle look active enabled
+  | not enabled = "background:linear-gradient(#f4f1e8,#e2ddcf);color:#5a564b59"
+  | otherwise = case look, active of
+      Bar.Warm, true -> "background:linear-gradient(#c8a86a,#b8975a);color:#1c1a12;font-weight:600"
+      Bar.Warm, false -> "background:linear-gradient(#f4f1e8,#e2ddcf);color:#7d6328"
+      Bar.Clay, true -> "background:linear-gradient(#cf9c80,#bd8569);color:#24140c;font-weight:600"
+      Bar.Clay, false -> "background:linear-gradient(#f6efe9,#e9dcd1);color:#97583d"
+      Bar.Ink, true -> "background:#ffffff;color:#111111;font-weight:600;box-shadow:inset 0 0 0 1px #111111"
+      Bar.Ink, false -> "background:#fbfbfa;color:#111111"
+      Bar.Night, true -> "background:#0b0b0a;color:#ffffff;font-weight:600;box-shadow:inset 0 -2px 0 #e9dfc4"
+      Bar.Night, false -> "background:#2b2823;color:#e9dfc4"

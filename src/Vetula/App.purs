@@ -113,7 +113,8 @@ import Triggerfish.Capture.View (CaptureState, capturePanel, markCode)
 import Triggerfish.Capture.View as CaptureView
 import Triggerfish.Ui.Pointer as Pointer
 import Vetula.Tidal (progressionSource, progressionSourceIn, parseBeats, parseProgression)
-import Reef.Vetula.VoiceName (voiceLetter)
+import Reef.Vetula.VoiceName (voiceCount, voiceLetter)
+import Reef.Routing (decodeVoiceRouting) as RR
 import Vetula.Lepidoptera (PerfDoc, VoiceSpec, cardProgression, docFromVoices, parseCardIn, parsePerform, printAsRecord, printCard, printProgressionIn)
 import Vetula.StageCards as SC
 import Triggerfish.StageCopy as StageCopy
@@ -183,6 +184,12 @@ data Viewtype = Fifths | Tonnetz | KeyChords | Common | Lattice4 | Lattice | Pad
 data SideTab = SideVariations | SideRelatives | SideSubstitutes
 
 derive instance eqSideTab :: Eq SideTab
+
+-- | What the pane under the score shows: the chosen bar's alternatives, or
+-- | the voices playing on the stage.
+data SidePane = PaneAlternatives | PaneVoices
+
+derive instance eqSidePane :: Eq SidePane
 
 derive instance eqViewtype :: Eq Viewtype
 
@@ -592,6 +599,11 @@ type State =
   -- The cards as the rig's stage holds them, as far as this page knows (card id →
   -- its line); Nothing until the stage has answered a subscribe. See Vetula.StageCards.
   , stageCards :: Maybe (Map Int String)
+  -- | Where each voice sounds, as the stage keeps it (`vetula/routing`, JSON)
+  , stageRouting :: Maybe String
+  , sidePane :: SidePane
+  -- | Notes heard a channel, counted, so its voice's tile pulses on each
+  , voicePulse :: Map Int Int
   -- | The saved progressions the stage holds, by name (step 4b), as far as
   -- | this page knows; `Nothing` until the rig answers.
   , stageProgs :: Maybe (Map String String)
@@ -823,6 +835,13 @@ data Action
   | ToQuadrat String       -- publish a saved progression (by name) as a clip for Quadrat to sample
   | ResumeWorking          -- reopen the progression open when the page last closed
   | ToggleScoreCands       -- score mode: the alternatives up, or tucked down
+  | SetSidePane SidePane   -- the pane under the score: alternatives or voices
+  | VoiceOpen Int          -- the progression voice n plays, onto the score
+  | VoiceLine Int          -- voice n's block, shown in Limulus
+  | VoiceMute Int          -- voice n muted, or heard again
+  | VoiceTake Int          -- voice n plays the open progression (a new voice on an empty one)
+  | StaffDrop Event        -- a progression dropped on the staff: open it
+  | VoicePulse Int         -- a note sounded on channel n: its voice's tile pulses
   | CycleSound             -- where previews sound: browser, continuo, MIDI, off
   | SetSideDensity Int
   | LevelWheel Event Number -- the wheel over the field: step the level of detail
@@ -969,6 +988,9 @@ component = H.mkComponent
       , tempo: 120
       , binnacle: Nothing
       , stageCards: Nothing
+      , stageRouting: Nothing
+      , sidePane: PaneAlternatives
+      , voicePulse: Map.empty
       , stageProgs: Nothing
       , namedCards: Map.empty
       , scoreSel: Nothing
@@ -1206,7 +1228,7 @@ handleQuery = case _ of
       { tabs:
           let v = huntOr s.lastLens s.stage
           in [ { id: "lattice", label: "lattice", active: elem v rungs, enabled: true, look: Bar.Warm, tip: "the chords built on the key, from triads up" }
-             , { id: "banks", label: "banks", active: v == Pads, enabled: true, look: Bar.Warm, tip: "nine banks of sixteen: how far from home, by how rich" }
+             , { id: "banks", label: "banks", active: v == Pads, enabled: true, look: Bar.Clay, tip: "nine banks of sixteen: how far from home, by how rich" }
              -- no progression, no score: it would be a page with nothing to do
              , { id: "score", label: "score", active: v == Score, enabled: length s.path > 0, look: Bar.Ink
                , tip: if length s.path > 0 then "the progression on a grand staff, to arrange and play"
@@ -1559,6 +1581,35 @@ readCard st n text = parseCardIn lookup n text
   lookup name = (\e -> { chords: filter (\ns -> length ns > 0) (parseProgression e.source), beats: parseBeats e.source })
     <$> find (\e -> e.kept && e.name == name) st.library
 
+-- | Write voice n's line to the stage (`Nothing` takes the voice off it),
+-- | and read it here as a write from elsewhere would be.
+writeVoice :: forall m. MonadAff m => Int -> Maybe String -> H.HalogenM State Action Slots Output m Unit
+writeVoice n mline = do
+  st <- H.get
+  for_ st.binnacle \bin -> liftEffect $ Transport.send (Binnacle.socket bin)
+    (maybe (SC.delLine n) (\line -> "stage-text " <> SC.cardKey n <> " " <> line) mline)
+  case mline of
+    Nothing -> H.modify_ \s -> s
+      { stageCards = map (Map.delete n) s.stageCards
+      , namedCards = Map.delete n s.namedCards
+      , perfBoxes = filter (\b -> b.cardId /= n) s.perfBoxes }
+    Just line -> do
+      H.modify_ \s -> s
+        { stageCards = map (Map.insert n line) s.stageCards
+        , namedCards = if isJust (cardProgression line) then Map.insert n line s.namedCards else Map.delete n s.namedCards }
+      st2 <- H.get
+      for_ (readCard st2 n line) \spec -> H.modify_ \s -> s
+        { perfBoxes = case find (\b -> b.cardId == n) s.perfBoxes of
+            Just old -> map (\b -> if b.cardId == n then boxOfCard n spec (Just old) else b) s.perfBoxes
+            Nothing -> s.perfBoxes <> [ boxOfCard n spec Nothing ] }
+
+-- | A voice's line muted (`# mute` added), or heard again (taken off).
+toggleMute :: String -> String
+toggleMute line =
+  let parts = map trim (split (Pattern "#") line)
+      muted = any (_ == "mute") (Array.drop 1 parts)
+  in if muted then joinWith " # " (filter (_ /= "mute") parts) else trim line <> " # mute"
+
 -- | Bring the stage's copy of the saved progressions up to date (step 4b):
 -- | each kept one as `vetula/progression/<name>`, which a card names
 -- | (`v1 $ vetula "bolt-tractor-horse"`) and the rig resolves. Internal: the
@@ -1700,12 +1751,19 @@ handleActionCore = case _ of
   StageFrameIn msg | Just notes <- SC.readNotes msg -> do
     perfMs <- liftEffect perfNow
     unixMs <- liftEffect dateNow
+    -- each voice's tile pulses as its notes sound: once a chord, once a note
+    -- of an arpeggio (show, don't tell, what plays and how)
+    for_ (nubByEq (\a b -> a.ch == b.ch && a.atUs == b.atUs) notes) \nt ->
+      H.fork do
+        liftAff (delay (Milliseconds (max 0.0 (nt.atUs / 1000.0 - unixMs))))
+        handleAction (VoicePulse nt.ch)
     let offsetUs = (unixMs - perfMs) * 1000.0
         fresh = map (\n -> { pitch: n.pitch, headIdx: n.ch, fireUnixMicros: n.atUs - offsetUs, vel: n.vel, gateMs: n.gateMs }) notes
     -- the logbook, which the river draws, as the page's own notes go
     H.modify_ \s -> s { capture = s.capture { logbook = Logbook.logAppend (perfMs * 1000.0) fresh s.capture.logbook }
                       }
   StageFrameIn msg -> do
+    for_ (SC.readRouting msg) \r -> H.modify_ _ { stageRouting = r }
     for_ (SC.tableHasKey msg) \has -> when has do
       st <- H.get
       H.modify_ _ { stageKey = Just (Route.printKey (contextKey st)) }
@@ -1889,6 +1947,39 @@ handleActionCore = case _ of
       H.modify_ _ { resumable = Just (w { name = maybe w.name snd (find (\r -> fst r == w.name) migrated.renames) }) }
 
   ToggleScoreCands -> H.modify_ \s -> s { scoreCands = not s.scoreCands }
+
+  -- **The voices pane** (AC, 2026-10-27): what plays, where it sounds, on or
+  -- muted, added or removed. Each gesture rewrites the voice's line on the
+  -- stage, as a drop on a badge does, so Limulus shows it; how a voice plays
+  -- stays in Limulus.
+  SetSidePane p -> H.modify_ \s ->
+    if s.sidePane == p then s { scoreCands = not s.scoreCands } else s { sidePane = p, scoreCands = true }
+
+  VoiceOpen n -> do
+    s <- H.get
+    for_ (s.stageCards >>= Map.lookup n >>= cardProgression) \nm ->
+      when (s.progName /= Just nm) $
+        for_ (findIndex (\e -> e.kept && e.name == nm) s.library) \i ->
+          guardLoss ("voice " <> show n) (handleAction (LoadProg i))
+
+  VoiceLine n -> handleAction (CardToLimulus n)
+
+  VoiceMute n -> do
+    s <- H.get
+    for_ (s.stageCards >>= Map.lookup n) \line -> writeVoice n (Just (toggleMute line))
+
+  VoiceTake n -> do
+    s0 <- H.get
+    when (length s0.path > 0 && unsavedNow s0) (handleAction (SaveProg false))
+    s <- H.get
+    for_ s.progName \nm -> when (length s.path > 0 && SC.stageName nm) do
+      let line = case s.stageCards >>= Map.lookup n of
+            Just old -> fromMaybe ("vetula \"" <> nm <> "\"") (SC.repoint nm old)
+            Nothing -> "vetula \"" <> nm <> "\""
+      writeVoice n (Just line)
+      H.modify_ _ { publishMsg = Just ("voice " <> voiceLetter n <> " plays " <> nm) }
+
+  VoicePulse ch -> H.modify_ \s -> s { voicePulse = Map.alter (Just <<< maybe 1 (_ + 1)) ch s.voicePulse }
 
   CycleSound -> do
     s <- H.get
@@ -2177,21 +2268,31 @@ handleActionCore = case _ of
     when (isJust (stripPrefix (Pattern progDragPrefix) d)) (liftEffect (Drop.allowDrop ev))
 
   VoiceDrop n ev -> do
+    -- the drop is the voice's, not the score's around it
+    liftEffect (stopPropagation ev)
     name0 <- liftEffect (Drop.dropOf "vetula-progression" ev)
     st <- H.get
     for_ (if name0 == "" then Nothing else Just name0) \name ->
-      for_ (st.stageCards >>= Map.lookup n) \old ->
-        case SC.repoint name old of
-          Nothing -> H.modify_ _ { publishMsg = Just ("✗ voice " <> voiceLetter n <> "'s line names no progression to swap") }
+      case st.stageCards >>= Map.lookup n of
+        -- an empty voice: it starts, playing it
+        Nothing -> do
+          writeVoice n (Just ("vetula \"" <> name <> "\""))
+          H.modify_ _ { publishMsg = Just ("voice " <> voiceLetter n <> " plays " <> name) }
+        Just old -> case SC.repoint name old of
+          Nothing -> H.modify_ _ { publishMsg = Just ("\x2717 voice " <> voiceLetter n <> "'s line names no progression to swap") }
           Just line -> do
-            for_ st.binnacle \bin -> liftEffect $ Transport.send (Binnacle.socket bin) ("stage-text " <> SC.cardKey n <> " " <> line)
-            H.modify_ \s -> s
-              { stageCards = map (Map.insert n line) s.stageCards
-              , namedCards = Map.insert n line s.namedCards
-              , publishMsg = Just ("voice " <> voiceLetter n <> " plays " <> name) }
-            st2 <- H.get
-            for_ (readCard st2 n line) \spec -> H.modify_ \s -> s
-              { perfBoxes = map (\b -> if b.cardId == n then boxOfCard n spec (Just b) else b) s.perfBoxes }
+            writeVoice n (Just line)
+            H.modify_ _ { publishMsg = Just ("voice " <> voiceLetter n <> " plays " <> name) }
+
+  -- **A progression dropped on the staff** (the score's, or its strip on the
+  -- lattice and banks): it is opened there, as a click on it in the drawer
+  -- or on a voice's tile would.
+  StaffDrop ev -> do
+    name <- liftEffect (Drop.dropOf "vetula-progression" ev)
+    st <- H.get
+    for_ (findIndex (\e -> e.kept && e.name == name) st.library) \i ->
+      when (st.progName /= Just name) $
+        guardLoss ("open " <> name) (handleAction (LoadProg i))
 
   TitleDrag name ev -> liftEffect (Drop.startDrag ev (progDragPrefix <> name))
 
@@ -2367,7 +2468,9 @@ handleActionCore = case _ of
     st <- H.get
     for_ (index st.library i) \entry -> do
       let noteLists = filter (\ns -> length ns > 0) (parseProgression entry.source)
-          fresh = mapWithIndex (\j ns -> importChord (st.nextId + j) ns) noteLists
+          -- named in full, as a chord taken in is, so the progression's
+          -- text reads as it was saved and it does not open "edited"
+          fresh = mapWithIndex (\j ns -> let c = importChord (st.nextId + j) ns in c { label = chordNameOf c }) noteLists
           ids = map _.id fresh
       H.modify_ _
         { chords = st.chords <> fresh
@@ -4440,29 +4543,148 @@ scoreCandidates :: forall m. State -> H.ComponentHTML Action Slots m
 scoreCandidates st =
   HH.div
     [ HP.style ("flex: " <> (if st.scoreCands then "1 1 0" else "0 0 auto") <> "; min-height: 0; display: flex; flex-direction: column; border-top: 1px solid #e2e2e2; background: #ffffff;") ]
-    ( [ HH.div [ HP.style "display: flex; align-items: baseline; gap: 10px; padding: 8px 16px 6px; font-size: 11px; color: #8a8a8a; border-bottom: 1px solid #ececec; cursor: pointer;"
-               , HP.title (if st.scoreCands then "tuck the alternatives down" else "bring the alternatives up")
-               , HE.onClick \_ -> ToggleScoreCands ]
-        ( ( case varySource st of
-            Just src ->
-              [ HH.span [ HP.style "font-size: 14px; color: #111111; font-weight: 500;" ] [ HH.text (chordTitle st src) ]
-              , HH.text (case st.scoreBar of
-                  Just i | puts st -> "bar " <> show (i + 1) <> " \x00b7 click hears it in its register \x00b7 shift-click puts it there \x00b7 or drag it onto any bar"
-                  _ -> "click a bar to see its alternatives") ]
-            Nothing -> [ HH.text "click a bar of the score: its substitutes, variations and relatives show here" ] )
+    ( [ HH.div [ HP.style "display: flex; align-items: baseline; gap: 10px; padding: 8px 16px 6px; font-size: 11px; color: #8a8a8a; border-bottom: 1px solid #ececec;" ]
+        ( [ paneTab PaneAlternatives "alternatives" "a chosen bar's substitutes, variations and relatives"
+          , paneTab PaneVoices ("voices" <> (if voiceCountNow == 0 then "" else " " <> show voiceCountNow)) "the voices playing on the stage, and where they sound" ]
+            <> (if st.sidePane /= PaneAlternatives then [] else case varySource st of
+                Just src ->
+                  [ HH.span [ HP.style "font-size: 14px; color: #111111; font-weight: 500; margin-left: 8px;" ] [ HH.text (chordTitle st src) ]
+                  , HH.text (case st.scoreBar of
+                      Just i | puts st -> "bar " <> show (i + 1) <> " \x00b7 click hears it in its register \x00b7 shift-click puts it there \x00b7 or drag it onto any bar"
+                      _ -> "click a bar to see its alternatives") ]
+                Nothing -> [ HH.text "click a bar of the score: its substitutes, variations and relatives show here" ])
             <> [ HH.span [ HP.style "flex: 1 1 auto;" ] []
-               , HH.span [ HP.style "font-size: 12px; color: #555555;" ]
-                   [ HH.text (if st.scoreCands then "substitutes \x00b7 variations \x00b7 relatives \x25be" else "substitutes \x00b7 variations \x00b7 relatives \x25b4") ] ] ) ]
-      <> (if not st.scoreCands then [] else
-      [ HH.div [ HP.style "flex: 1 1 auto; min-height: 0; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr));" ]
-          (map column [ SideSubstitutes, SideVariations, SideRelatives ]) ])
+               , HH.span [ HP.style "font-size: 12px; color: #555555; cursor: pointer;"
+                         , HP.title (if st.scoreCands then "tuck the pane down" else "bring the pane up")
+                         , HE.onClick \_ -> ToggleScoreCands ]
+                   [ HH.text (if st.scoreCands then "\x25be" else "\x25b4") ] ] ) ]
+      <> (if not st.scoreCands then [] else case st.sidePane of
+          PaneAlternatives ->
+            [ HH.div [ HP.style "flex: 1 1 auto; min-height: 0; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr));" ]
+                (map column [ SideSubstitutes, SideVariations, SideRelatives ]) ]
+          PaneVoices -> [ voicesPane st ])
     )
   where
+  voiceCountNow = maybe 0 Map.size st.stageCards
+  paneTab p label tip =
+    let on = st.sidePane == p
+    in HH.span
+         [ HP.style ("font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; cursor: pointer; padding-bottom: 3px; "
+             <> (if on then "color: #111111; border-bottom: 2px solid #111111;" else "color: #8a8a8a; border-bottom: 2px solid transparent;"))
+         , HP.title tip, HE.onClick \_ -> SetSidePane p ]
+         [ HH.text label ]
   column t =
     HH.div [ HP.style "min-height: 0; overflow: auto; padding: 8px 12px 16px; border-right: 1px solid #ececec;" ]
       ( [ HH.div [ HP.style "font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; color: #111111; margin-bottom: 6px;", HP.title (sideTip t) ]
             [ HH.text (sideLabel t) ] ]
           <> maybe [] (sideContent st t) (varySource st) )
+
+-- | **A voice on the stage**: the progression it names (and whether that is
+-- | saved here; if not, the voice is silent), whether it is muted, its
+-- | channel, and where it goes: `Odo` shapes Odonus, `Sound` reaches a
+-- | routed port, `Unrouted` is a sound with nowhere to go yet.
+type StageVoice =
+  { n :: Int
+  , name :: Maybe String
+  , found :: Boolean
+  , muted :: Boolean
+  , channel :: Int
+  , dest :: TileGoes
+  }
+
+data TileGoes = Sound | Unrouted | Odo
+
+derive instance eqTileGoes :: Eq TileGoes
+
+stageVoice :: State -> Int -> Maybe StageVoice
+stageVoice st n = (st.stageCards >>= Map.lookup n) <#> \text ->
+  let spec = readCard st n text
+      channel = maybe n _.channel spec
+      routing = st.stageRouting >>= hush <<< RR.decodeVoiceRouting
+      legs = fromMaybe [] (routing >>= \r -> r.voices !! (channel - 1))
+      name = cardProgression text
+  in { n, name, found: maybe (isJust spec) (\nm -> any (\e -> e.kept && e.name == nm) st.library) name
+     , muted: maybe false _.muted spec, channel
+     , dest: if map _.term spec == Just TOdo then Odo else if Array.null legs then Unrouted else Sound }
+
+-- | **The voices pane** (AC, 2026-10-27): the eight voices, P to W, always
+-- | there, each a tile. A tile pulses as its notes sound, so it shows that it
+-- | plays and how (a chord a bar, or an arpeggio's run); its face is the
+-- | name of the progression it plays, in glyphs; a corner says where it goes.
+-- | Its controls: mute, its line in Limulus, and play the open progression.
+voicesPane :: forall m. State -> H.ComponentHTML Action Slots m
+voicesPane st =
+  HH.div [ HP.style "flex: 1 1 auto; min-height: 0; overflow: auto; padding: 14px 16px 16px;" ]
+    [ HH.element (HH.ElemName "style") [] [ HH.text tileCss ]
+    , HH.div [ HP.style "display: grid; grid-template-columns: repeat(4, minmax(0, 168px)); gap: 12px;" ]
+        (map tile (range 1 voiceCount)) ]
+  where
+  openNm = if length st.path > 0 then st.progName else Nothing
+  tile n = case stageVoice st n of
+    Nothing -> emptyTile n
+    Just v -> voiceTile v
+  letter n dim = HH.span [ HP.style ("position: absolute; left: 9px; top: 6px; font: 700 13px system-ui, sans-serif; color: " <> (if dim then "#b0b0b0" else "#111111") <> ";") ] [ HH.text (voiceLetter n) ]
+  frame extra = "position: relative; height: 112px; border-radius: 8px; display: flex; align-items: center; justify-content: center; " <> extra
+  emptyTile n =
+    HH.div
+      ( [ HP.style (frame ("border: 1.5px dashed #d0d0d0; background: #ffffff;" <> (if isJust openNm then " cursor: pointer;" else "")))
+        , HP.title (case openNm of
+            Just nm -> "voice " <> voiceLetter n <> ": click to play " <> nm <> " here, or drop a progression on it"
+            Nothing -> "voice " <> voiceLetter n <> ": drop a progression on it") ]
+          <> (if isJust openNm then [ HE.onClick \_ -> VoiceTake n ] else [])
+          <> dropOn n )
+      ( [ letter n true ]
+          <> (if isJust openNm then [ HH.i [ HP.class_ (HH.ClassName "fa-solid fa-plus"), HP.style "font-size: 20px; color: #c4c4c4;" ] [] ] else []) )
+  voiceTile v =
+    let beats = fromMaybe 0 (Map.lookup v.channel st.voicePulse)
+        pulse = if beats == 0 || v.muted then "" else " animation: " <> (if beats `mod` 2 == 0 then "vt-pulse-a" else "vt-pulse-b") <> " 0.45s ease-out;"
+        open = isJust v.name && v.name == st.progName
+        words = maybe [] (\nm -> filter (_ /= "") (split (Pattern "-") nm)) v.name
+        triple = length words == 3
+    in
+      HH.div
+        ( [ HP.style (frame ("border: 1.5px solid #cfcfcf; background: #ffffff;" <> (if v.muted then " opacity: 0.35;" else "") <> pulse <> (if open || not v.found then "" else " cursor: pointer;")))
+          , HE.onClick \_ -> VoiceOpen v.n ]
+          <> dropOn v.n
+          <> (case v.name of
+                Just nm | v.found -> [ HP.attr (HH.AttrName "draggable") "true", HE.handler (EventType "dragstart") (TitleDrag nm) ]
+                _ -> []) )
+        [ letter v.n false
+        , HH.i [ HP.class_ (HH.ClassName ("fa-solid " <> destIcon v.dest))
+               , HP.style ("position: absolute; right: 9px; top: 8px; font-size: 13px; color: " <> (if v.dest == Unrouted then "#b3261e" else "#555555") <> ";")
+               , HP.title (destTip v.dest) ] []
+        , HH.div
+            [ HP.style "display: flex; gap: 8px; align-items: center;"
+            , HP.title (case v.name of
+                Just nm | not v.found -> nm <> ": not saved here, so silent"
+                Just nm | open -> nm <> ": open above"
+                Just nm -> nm <> ": click to open it, or drag it onto the staff, or onto another voice"
+                Nothing -> "its own chords, written in Limulus") ]
+            ( if triple
+                then map (\w -> HH.i [ HP.class_ (HH.ClassName ("fa-solid fa-" <> w)), HP.style ("font-size: 30px; color: " <> (if v.found then "#2a2a2a" else "#b3261e") <> ";") ] []) words
+                else [ HH.span [ HP.style "font: 13px Georgia, serif; color: #2a2a2a;" ] [ HH.text (fromMaybe "\x2026" v.name) ] ] )
+        , HH.div [ HP.style "position: absolute; left: 0; right: 0; bottom: 6px; display: flex; justify-content: center; gap: 4px;" ]
+            ( [ ctl (if v.muted then "fa-play" else "fa-pause") (if v.muted then "hear it again" else "mute it") (VoiceMute v.n)
+              , ctl "fa-code" "its line in Limulus, where you shape how it plays" (VoiceLine v.n) ]
+                <> (case openNm of
+                      Just nm | not open -> [ ctl "fa-arrow-down" ("play " <> nm <> " here, as this voice plays") (VoiceTake v.n) ]
+                      _ -> []) )
+        ]
+  dropOn n = [ HE.handler (EventType "dragover") VoiceDragOver, HE.handler (EventType "drop") (VoiceDrop n) ]
+  ctl icon tip act =
+    HH.button [ HP.style "border: none; background: transparent; color: #8a8a8a; cursor: pointer; padding: 2px 6px; font-size: 12px;", HP.title tip, HE.onClick \e -> StopThen (ME.toEvent e) act ]
+      [ HH.i [ HP.class_ (HH.ClassName ("fa-solid " <> icon)) ] [] ]
+  destIcon = case _ of
+    Sound -> "fa-volume-high"
+    Unrouted -> "fa-volume-off"
+    Odo -> "fa-music"
+  destTip = case _ of
+    Sound -> "it sounds"
+    Unrouted -> "it sounds nowhere yet: route it"
+    Odo -> "it shapes Odonus, and makes no sound of its own"
+  tileCss = "@keyframes vt-pulse-a { from { background: #e4e4e4; box-shadow: 0 0 0 5px rgba(17,17,17,0.22); } to { background: #ffffff; box-shadow: 0 0 0 0 rgba(17,17,17,0); } }"
+    <> " @keyframes vt-pulse-b { from { background: #e4e4e4; box-shadow: 0 0 0 5px rgba(17,17,17,0.22); } to { background: #ffffff; box-shadow: 0 0 0 0 rgba(17,17,17,0); } }"
+    <> " @media (prefers-reduced-motion: reduce) { [style*=vt-pulse] { animation: none !important; } }"
 
 -- | A chord's name as the score spells it (a chord loaded from a saved
 -- | progression is labelled by its root alone).
@@ -5629,7 +5851,8 @@ scoreSurface st =
     [ HP.class_ (cn "vetula-surface vetula-surface--wide")
     -- paper: the score is drawn in engraving ink (CR-15)
     , HP.style "position: absolute; inset: 0; display: flex; flex-direction: column; background: #ffffff;" ]
-    [ HH.div [ HP.style "flex: 0 0 auto; max-height: 60%; overflow: auto; padding: 16px 22px 12px;" ]
+    [ HH.div [ HP.style "flex: 0 0 auto; max-height: 60%; overflow: auto; padding: 16px 22px 12px;"
+             , HE.handler (EventType "dragover") VoiceDragOver, HE.handler (EventType "drop") StaffDrop ]
         ( [ Score.system sp openHandlers openRow ]
         )
     , scoreCandidates st
@@ -5767,7 +5990,8 @@ fieldSurface st =
 staffWatermark :: forall w. State -> HH.HTML w Action
 staffWatermark st =
   HH.div
-    [ HP.style "flex: none; align-self: flex-start; max-width: 100%; zoom: 0.8; padding: 16px 22px 0; opacity: 0.6; overflow: hidden;" ]
+    [ HP.style "flex: none; align-self: flex-start; max-width: 100%; zoom: 0.8; padding: 16px 22px 0; opacity: 0.6; overflow: hidden;"
+    , HE.handler (EventType "dragover") VoiceDragOver, HE.handler (EventType "drop") StaffDrop ]
     [ Score.system (Score.spellingOf st.key.tonic (scaleSet st.key)) inert (openStaff st) ]
   where
   none = HoverBar Nothing
