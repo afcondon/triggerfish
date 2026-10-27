@@ -898,7 +898,9 @@ bar cfg st =
                 <> (if t.active then (case t.look of
                       Bar.Warm -> "background:linear-gradient(#c8a86a,#b8975a);color:#1c1a12;font-weight:600"
                       Bar.Ink -> "background:#ffffff;color:#111111;font-weight:600;box-shadow:inset 0 0 0 1px #111111"
-                      Bar.Night -> "background:#111111;color:#ffffff;font-weight:600")
+                      Bar.Night -> "background:#0b0b0a;color:#ffffff;font-weight:600;box-shadow:inset 0 -2px 0 #e9dfc4")
+                    -- a night view is dark even when not chosen, so the pill says what it is
+                    else if t.look == Bar.Night then "background:#2b2823;color:#e9dfc4"
                     else if t.enabled then "background:linear-gradient(#f4f1e8,#e2ddcf);color:#5a564b"
                     else "background:linear-gradient(#f4f1e8,#e2ddcf);color:#5a564b59") ]
             [ HH.text t.label ]) b.tabs)

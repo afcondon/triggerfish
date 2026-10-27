@@ -39,7 +39,7 @@ import Prelude
 import Data.Array as Array
 import Data.Foldable (foldl)
 import Data.Int as Int
-import Data.Maybe (Maybe(..), fromMaybe, isJust)
+import Data.Maybe (Maybe(..), fromMaybe, isJust, isNothing)
 import Data.String as String
 import Data.String.CodeUnits as SCU
 import Data.Tuple (Tuple(..))
@@ -82,6 +82,8 @@ type Staff =
   -- each); and the bar a take in progress has reached
   , beats :: Array Int
   , tapping :: Maybe Int
+  -- the bar a play-through is sounding
+  , playing :: Maybe Int
   }
 
 -- | What the pointer does on a bar: a press starts a drag (released where it
@@ -111,9 +113,10 @@ type Handlers i =
   , titleDrag :: Maybe (Event -> i)
   -- tapping a rhythm in (the open progression only)
   , tap :: Maybe { start :: i, stop :: i, clear :: i }
+  -- play it through, in its rhythm, or stop
+  , play :: Maybe i
   -- a saved progression, sent to Quadrat to sample
   , toQuadrat :: Maybe i
-  -- the progression open when the page last closed, offered back
   -- back to the lattice to take more chords in; save this version
   , addChords :: Maybe i
   , save :: Maybe i
@@ -365,6 +368,11 @@ system pageSp on row =
                 [ HH.span [ HP.style "display: inline-flex; gap: 3px; align-items: center; opacity: 0.85;"
                           , HP.title "its chords as a set: the same chords in another order wear the same picture" ]
                     (map (\g -> HH.i [ HP.attr (HH.AttrName "class") ("fa-solid fa-" <> g.icon), HP.style ("font-size: 12px; color: " <> g.color <> ";") ] []) row.rebus) ])
+          <> (case on.play of
+                Just act | not (Array.null row.chords) && isNothing row.tapping ->
+                  [ chip (if isJust row.playing then "\x25a0 stop" else "\x25b6 play")
+                      (if Array.null row.beats then "play it through, a bar a chord (p)" else "play it through, in its rhythm (p)") act ]
+                _ -> [])
           <> (case on.tap, row.tapping of
                 Just t, Just at ->
                   [ HH.span [ HP.style "font-size: 11px; color: #fff; background: #b3261e; border-radius: 4px; padding: 1px 8px;" ]
@@ -452,12 +460,18 @@ system pageSp on row =
       -- the drag outline LAST: an element added before the bars shifts them,
       -- Halogen patches the nodes by position, and the press and release then
       -- land on different elements, so no click ever fires
-      ( lit <> staffLines <> clefs <> barlines <> Array.concat (Array.mapWithIndex bar spelt) <> dragged <> chosen )
+      ( lit <> staffLines <> clefs <> barlines <> Array.concat (Array.mapWithIndex bar spelt) <> dragged <> chosen <> sounding )
 
   lit = case row.active of
     Just i | i >= 0 && i < n ->
       [ el "rect" [ attr "x" (show (colX i)), attr "y" "0", attr "width" (show barWidth), attr "height" (show height)
                   , attr "fill" "#f2e7c6", attr "rx" "4" ] [] ]
+    _ -> []
+  -- the bar a play-through is sounding: outlined in ink
+  sounding = case row.playing of
+    Just i | i >= 0 && i < n ->
+      [ el "rect" [ attr "x" (show (colX i + 1.0)), attr "y" "1", attr "width" (show (barWidth - 2.0)), attr "height" (show (staffBottom - 2.0))
+                  , attr "fill" "none", attr "stroke" "#111111", attr "stroke-width" "1.5", attr "rx" "4", attr "style" "pointer-events: none;" ] [] ]
     _ -> []
   -- a chord being dragged to a new place: drop it on another bar
   dragged = case row.dragging of

@@ -605,6 +605,10 @@ type State =
   , scoreRead :: Set String
   -- the open progression's bar the side panel's chords go into, and a bar being dragged
   , scoreBar :: Maybe Int
+  -- | a play-through: the bar it is sounding, and its run (a new run, or a
+  -- | stop, ends the last at its next bar)
+  , playingBar :: Maybe Int
+  , playRun :: Int
   -- | chords heard on the field and not taken, newest first, by `markKey` (CR-14)
   , trail :: Array String
   , scoreDrag :: Maybe Int
@@ -722,7 +726,8 @@ data Action
   | CloseRevoice           -- dismiss the revoice modal
   | SlashBass Int          -- set the revoiced chord's bass to a pitch class (slash chord)
   | ReflavourFamily String -- re-flavour the focused family's scale (mode value)
-  | PlayPath               -- ▶ play the whole progression
+  | PlayPath               -- ▶ play the whole progression, or ■ stop it
+  | HearBar Int            -- the staff strip on the lattice and banks: hear a bar's chord
   | ClearPath              -- ✕ empty the progression so the next shift-click starts fresh
   | ScorePress Int         -- a press on a bar: a drag starts (a release on it is a click)
   | HoverBar (Maybe Int)   -- the pointer over a bar of the score, or off it
@@ -969,6 +974,8 @@ component = H.mkComponent
       , scoreSel: Nothing
       , scoreRead: Set.empty
       , scoreBar: Nothing
+      , playingBar: Nothing
+      , playRun: 0
       , trail: []
       , scoreDrag: Nothing
       , hoveredBar: Nothing
@@ -1973,7 +1980,7 @@ handleActionCore = case _ of
         "ArrowDown" -> octaveHand (-1)
         "f" -> for_ (handChord st) toggleFavoriteOf
         "v" -> handleAction OpenRevoice
-        "p" -> H.gets _.path >>= playPath
+        "p" -> handleActionCore PlayPath
         _ -> pure unit
 
   SelectKey v -> case fromString v of
@@ -2106,7 +2113,14 @@ handleActionCore = case _ of
     H.modify_ \s -> s { sounding = Just cid, revoicing = map (const cid) s.revoicing }
     for_ (find (\d -> d.id == cid) chords') playChord
 
-  PlayPath -> H.gets _.path >>= playPath
+  PlayPath -> do
+    st <- H.get
+    if isJust st.playingBar then H.modify_ \s -> s { playingBar = Nothing, playRun = s.playRun + 1 }
+    else do
+      let run = st.playRun + 1
+      H.modify_ _ { playRun = run }
+      void $ H.fork (playThrough run 0)
+  HearBar i -> H.get >>= \st -> for_ (nodeAtBar st i) playChordQuiet
 
   -- Clear (the bar's chip, or Delete): empty the progression, and leave the
   -- score for the lattice, so the next put starts a fresh one.
@@ -2218,7 +2232,10 @@ handleActionCore = case _ of
           _, cur -> acc { prev = cur }
         led = foldl step { prev: nodeAt at, done: Set.fromFoldable (map _.id (nodeAt at)), changed: Map.empty } (range (at + 1) (length st.path - 1))
     applyChords (map (\c -> fromMaybe c (Map.lookup c.id led.changed)) st.chords)
-    H.gets _.path >>= playPath
+    -- heard through from the top, ending any play-through already going
+    let run = st.playRun + 1
+    H.modify_ _ { playRun = run }
+    void $ H.fork (playThrough run 0)
   -- the first shift-click chooses one chord; the next on the same row
   -- stretches the run to it; one on the only chord chosen lets it go
   -- shift-click: this chord's scales. With ONE chord chosen on the row, a
@@ -3797,20 +3814,28 @@ auditionClip clip = do
         , delayMs: e.fireUnixMicros / 1000.0
         , durMs: e.gateMs }
 
--- | Arpeggiate a path: each chord in turn, lightly rolled, ~440ms apart — the
--- | segment heard as a phrase (the consonant, directional walk AC noticed).
-playPath :: forall o m. MonadAff m => Array Int -> H.HalogenM State Action Slots o m Unit
-playPath ids = do
+-- | **Play the progression through** from bar `i`: each chord for its length
+-- | in the tapped rhythm (a bar of four beats without one), at the clock's
+-- | tempo, struck or rolled as previews are. A bar at a time, so the path is
+-- | read as it stands (an edit while playing is heard) and a stop is heard at
+-- | the next bar: notes once sent cannot be called back (AC, 2026-10-27:
+-- | "you can tap a rhythm but there's no way to play it").
+playThrough :: forall o m. MonadAff m => Int -> Int -> H.HalogenM State Action Slots o m Unit
+playThrough run i = do
   st <- H.get
-  let chordsOnPath = mapMaybe (\pid -> find (\c -> c.id == pid) st.chords) ids
-      stepMs = 440.0
-      rollMs = 22.0
-  liftEffect $
-    for_ (mapWithIndex Tuple chordsOnPath) \(Tuple i c) ->
-      for_ (mapWithIndex Tuple (playNotes c)) \(Tuple j n) ->
-        auditionNote st
-          { note: n, velocity: 88
-          , delayMs: toNumber i * stepMs + toNumber j * rollMs, durMs: stepMs * 0.9 }
+  case nodeAtBar st i of
+    Just c | st.playRun == run -> do
+      tempo <- case st.binnacle of
+        Just bin -> liftEffect (_.tempo <$> Clock.read (Binnacle.clock bin))
+        Nothing -> pure (toNumber st.tempo)
+      let beats = fromMaybe 4 (rhythmOf st !! i)
+          barMs = toNumber beats * 60000.0 / max 20.0 tempo
+      H.modify_ _ { playingBar = Just i }
+      liftEffect $ for_ (styledNotes st.style (playNotes c)) \n ->
+        auditionNote st (n { durMs = barMs * 0.95 })
+      liftAff (delay (Milliseconds barMs))
+      playThrough run (i + 1)
+    _ -> H.modify_ \s -> if s.playRun == run then s { playingBar = Nothing } else s
 
 -- | Write a changed chord set back for rendering. A revoice (Tab / arrow-nudge)
 -- | changes only the glyph and the bubble's size — both read from `chords` — and
@@ -5630,6 +5655,7 @@ scoreSurface st =
     , voiceOver: VoiceDragOver
     , voiceDrop: VoiceDrop
     , tap: Just { start: TapStart, stop: TapStop, clear: ClearRhythm }
+    , play: Just PlayPath
     , addChords: Nothing
     , save: if unsaved then Just (SaveProg false) else Nothing
     , toQuadrat: case st.progName of
@@ -5685,6 +5711,7 @@ openStaff st = openRow
     , rebus: bundleRebus openChords
     , beats: rhythmOf st
     , tapping: map _.at st.tapping
+    , playing: st.playingBar
     }
   -- the chosen run on a row, if it is this one and still fits it
   selOf title k = st.scoreSel >>= \sel ->
@@ -5740,16 +5767,17 @@ fieldSurface st =
 staffWatermark :: forall w. State -> HH.HTML w Action
 staffWatermark st =
   HH.div
-    [ HP.style "flex: none; align-self: flex-start; max-width: 100%; zoom: 0.8; padding: 16px 22px 0; opacity: 0.6; pointer-events: none; overflow: hidden;" ]
+    [ HP.style "flex: none; align-self: flex-start; max-width: 100%; zoom: 0.8; padding: 16px 22px 0; opacity: 0.6; overflow: hidden;" ]
     [ Score.system (Score.spellingOf st.key.tonic (scaleSet st.key)) inert (openStaff st) ]
   where
   none = HoverBar Nothing
   inert =
-    { press: const none, hover: const none, unhover: none, revoice: Nothing
+    -- a bar pressed is heard; nothing else on the strip acts
+    { press: HearBar, hover: const none, unhover: none, revoice: Nothing
     , select: const none, unselect: none, readIn: none, adopt: Nothing
     , duplicate: Nothing, remove: Nothing, dropAt: Nothing, padOver: Nothing, padDrop: Nothing
     , voiceOver: const none, voiceDrop: \_ _ -> none, titleDrag: Nothing
-    , tap: Nothing, toQuadrat: Nothing, addChords: Nothing, save: Nothing
+    , tap: Nothing, play: Nothing, toQuadrat: Nothing, addChords: Nothing, save: Nothing
     }
 
 -- | The scene for a rung, and the frame it should fill.
