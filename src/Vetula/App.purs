@@ -752,6 +752,8 @@ data Action
   | RevoiceLead            -- voice-lead every later bar from the focused one
   | VoiceDragOver Event    -- a progression dragged over a voice's badge: let it land
   | VoiceDrop Int Event    -- dropped on voice n: the voice reads that progression
+  | TileDragOver Event     -- over a voice's tile: a progression, or a way of playing
+  | WayDrag String Event   -- a way of playing (`# arpup 8`) dragged from under the tiles
   | TitleDrag String Event -- a score row's title dragged: it carries its progression
   | ScoreSelect String Int -- the score: shift-click a chord on a row (by title), choosing a run for the scales
   | ScoreUnselect
@@ -2215,11 +2217,26 @@ handleActionCore = case _ of
     d <- liftEffect Drop.currentDrag
     when (isJust (stripPrefix (Pattern progDragPrefix) d)) (liftEffect (Drop.allowDrop ev))
 
+  TileDragOver ev -> do
+    d <- liftEffect Drop.currentDrag
+    when (isJust (stripPrefix (Pattern progDragPrefix) d) || isJust (stripPrefix (Pattern wayDragPrefix) d))
+      (liftEffect (Drop.allowDrop ev))
+
+  WayDrag way ev -> liftEffect (Drop.startDrag ev (wayDragPrefix <> way))
+
   VoiceDrop n ev -> do
     -- the drop is the voice's, not the score's around it
     liftEffect (stopPropagation ev)
     name0 <- liftEffect (Drop.dropOf "vetula-progression" ev)
+    way <- liftEffect (Drop.dropOf "vetula-way" ev)
     st <- H.get
+    -- a way of playing: added to the end of the voice's line, as typing it
+    -- there would; the line is the live-coder's, so it is only ever added to
+    unless (way == "") case st.stageCards >>= Map.lookup n of
+      Just old -> do
+        writeVoice n (Just (old <> " " <> way))
+        H.modify_ _ { publishMsg = Just ("voice " <> voiceLetter n <> ": " <> way) }
+      Nothing -> H.modify_ _ { publishMsg = Just ("\x2717 voice " <> voiceLetter n <> " plays nothing yet: drop a progression on it first") }
     for_ (if name0 == "" then Nothing else Just name0) \name ->
       case st.stageCards >>= Map.lookup n of
         -- an empty voice: it starts, playing it
@@ -4555,8 +4572,9 @@ voicesPane :: forall m. State -> H.ComponentHTML Action Slots m
 voicesPane st =
   HH.div [ HP.style "flex: 1 1 auto; min-height: 0; overflow: auto; padding: 14px 16px 16px;" ]
     [ HH.element (HH.ElemName "style") [] [ HH.text tileCss ]
-    , HH.div [ HP.style "display: grid; grid-template-columns: repeat(4, minmax(0, 168px)); gap: 12px;" ]
-        (map tile (range 1 voiceCount)) ]
+    , HH.div [ HP.style "display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px;" ]
+        (map tile (range 1 voiceCount))
+    , waysOfPlaying ]
   where
   openNm = if length st.path > 0 then st.progName else Nothing
   tile n = case stageVoice st n of
@@ -4609,7 +4627,7 @@ voicesPane st =
                       Just nm | not open -> [ ctl "fa-arrow-down" ("play " <> nm <> " here, as this voice plays") (VoiceTake v.n) ]
                       _ -> []) )
         ]
-  dropOn n = [ HE.handler (EventType "dragover") VoiceDragOver, HE.handler (EventType "drop") (VoiceDrop n) ]
+  dropOn n = [ HE.handler (EventType "dragover") TileDragOver, HE.handler (EventType "drop") (VoiceDrop n) ]
   ctl icon tip act =
     HH.button [ HP.style "border: none; background: transparent; color: #8a8a8a; cursor: pointer; padding: 2px 6px; font-size: 12px;", HP.title tip, HE.onClick \e -> StopThen (ME.toEvent e) act ]
       [ HH.i [ HP.class_ (HH.ClassName ("fa-solid " <> icon)) ] [] ]
@@ -5901,6 +5919,63 @@ nodeAtBar st i = st.path !! i >>= \pid -> find (\c -> c.id == pid) st.chords
 -- | What a dragged progression carries (the drawer's rows, a score title).
 progDragPrefix :: String
 progDragPrefix = "vetula-progression "
+
+-- | What a dragged way of playing carries (`Triggerfish.Drag`'s `vetula-way`).
+wayDragPrefix :: String
+wayDragPrefix = "vetula-way "
+
+-- | **Ways to play a voice** (AC, 2026-10-27: "a little dictionary of
+-- | suggestions"): what a voice's line can add after its progression, each
+-- | said in plain words beside the words it takes. Reference, not state:
+-- | nothing here shows or edits a line. Dragged onto a voice's tile it is
+-- | added to that voice's line; dragged into Limulus it is typed there.
+waysOfPlaying :: forall w. HH.HTML w Action
+waysOfPlaying =
+  HH.div [ HP.style "margin-top: 22px; border-top: 1px solid #ececec; padding-top: 12px;" ]
+    [ HH.div [ HP.style "display: flex; align-items: baseline; gap: 12px; margin-bottom: 10px;" ]
+        [ HH.span [ HP.style "font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; color: #111111;" ] [ HH.text "Ways to play a voice" ]
+        , HH.span [ HP.style "font: italic 12px Georgia, serif; color: #8a8a8a;" ]
+            [ HH.text "drag one onto a voice, or into its line in Limulus; they combine" ] ]
+    , HH.div [ HP.style "display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 4px 28px;" ]
+        (map group ways) ]
+  where
+  group g =
+    HH.div []
+      ( [ HH.div [ HP.style "font: 13px Georgia, serif; color: #555555; margin: 6px 0 4px;" ] [ HH.text g.title ] ]
+          <> map way g.items )
+  way w =
+    HH.div
+      [ HP.style "display: flex; align-items: baseline; gap: 10px; padding: 3px 6px; border-radius: 4px; cursor: grab;"
+      , HP.attr (HH.AttrName "draggable") "true"
+      , HE.handler (EventType "dragstart") (WayDrag w.line)
+      , HP.title ("drag onto a voice to add " <> w.line <> " to its line") ]
+      [ HH.code [ HP.style "flex: none; font: 12px ui-monospace, Menlo, monospace; color: #111111; background: #f3f3f3; padding: 1px 6px; border-radius: 3px;" ] [ HH.text w.line ]
+      , HH.span [ HP.style "font-size: 12px; color: #6b6b6b;" ] [ HH.text w.says ] ]
+  ways =
+    [ { title: "How the chord sounds"
+      , items:
+          [ { line: "# arpup 8", says: "arpeggiate it upward, eight notes a bar" }
+          , { line: "# arpdown 8", says: "downward" }
+          , { line: "# arpupdown 8", says: "up, then down" }
+          , { line: "# strum 30", says: "strum it, 30 ms between notes" }
+          ] }
+    , { title: "Its register and pace"
+      , items:
+          [ { line: "# oct 1", says: "an octave up (-1: down)" }
+          , { line: "# trans 5", says: "up five semitones" }
+          , { line: "# top 1", says: "only its highest note" }
+          , { line: "# bottom 1", says: "only its lowest: a bass line" }
+          , { line: "# slow 2", says: "a chord every two bars" }
+          , { line: "# fast 2", says: "two chords a bar" }
+          ] }
+    , { title: "When, and where it goes"
+      , items:
+          [ { line: "# every 2", says: "the effect before it, every second time" }
+          , { line: "# prob 0.5", says: "the effect before it, half the time" }
+          , { line: "# out odo", says: "not a sound: the chords quantise Odonus" }
+          , { line: "# mute", says: "silent, and kept" }
+          ] }
+    ]
 
 fieldSurface :: forall m. State -> H.ComponentHTML Action Slots m
 fieldSurface st =

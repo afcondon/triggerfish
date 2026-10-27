@@ -15,6 +15,8 @@ const kinds = {
   // a Selene module: its line (the payload also carries, tab-separated, a
   // bank for a new line and what a drop adds after it; Limulus reads those)
   "selene-module": (payload) => payload.split("\t")[0],
+  // a way of playing a Vetula voice (`# arpup 8`): added after a line's source
+  "vetula-way": (way) => " " + way,
 };
 
 const carry = (dt, text) => {
