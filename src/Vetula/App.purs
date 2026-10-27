@@ -2810,6 +2810,18 @@ handleActionCore = case _ of
       , viewCx = 0.0, viewCy = 0.0, viewZoom = 1.0, panning = Nothing, panMoved = false
       , capture = if showsRiver v then st.capture else st.capture { playing = Nothing, contextOpen = false }
       }
+    -- Arriving on the score chooses a bar, the one chosen last or else the
+    -- first, so there is always a chord being worked on and its alternatives
+    -- show. It does not sound: a view change that plays is a surprise, and
+    -- would cut across whatever is playing (AC, CR-16, 2026-10-27).
+    st <- H.get
+    when (v == Hunt Score) do
+      let n = length st.path
+          bar = case st.scoreBar of
+            Just b | b < n -> Just b
+            _ | n > 0 -> Just 0
+            _ -> Nothing
+      for_ bar \i -> H.modify_ _ { scoreBar = Just i, lastHeard = nodeAtBar st i <|> st.lastHeard }
 
   -- One 16th-note from the shared scheduler. We use the tick's absolute grid
   -- INDEX as the pulse (so every voice — and every module — aligns to the same
