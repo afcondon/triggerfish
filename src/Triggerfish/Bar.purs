@@ -37,7 +37,8 @@ derive instance eqTabLook :: Eq TabLook
 -- | `chips`: small things the page wants on show at every stage (Vetula's
 -- | progression, 2026-10-06); a press arrives as `chip:ID`. `pickers`: its
 -- | dropdowns, at the right; `help`: the ⓘ's tip ("" for none), pressed as
--- | `help`.
+-- | `help`; `helpPulse`: the ⓘ pulses once, to say where help lives (as
+-- | Vetula's welcome card closes).
 type Bar =
   { tabs :: Array Tab
   , marks :: String
@@ -46,6 +47,7 @@ type Bar =
   , chips :: Array Chip
   , pickers :: Array Picker
   , help :: String
+  , helpPulse :: Boolean
   }
 
 -- | A dropdown at the bar's right, before Panic (Vetula's key and scale,

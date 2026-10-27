@@ -275,7 +275,7 @@ handleQuery = case _ of
           Just _ -> true
           Nothing -> false
     pure $ Just $ reply
-      { tabs: [], marks: "", icons: [], rebusTip: "", pickers: [], help: ""
+      { tabs: [], marks: "", icons: [], rebusTip: "", pickers: [], help: "", helpPulse: false
       , chips:
           [ { id: "freeze", label: if frozen then "FROZEN" else "FREEZE"
             , icons: [ { icon: "snowflake", color: if frozen then "#2b5878" else "#3f3c33" } ]

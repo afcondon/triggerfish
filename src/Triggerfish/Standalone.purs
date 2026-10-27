@@ -636,7 +636,7 @@ render cfg st =
   -- and `--tf-right`, Limulus's drawer on the right, the same way
   HH.div [ style ("min-height:100vh;background:#fafafa;--tf-left:" <> show drawerSpan <> "px;--tf-right:" <> show limSpan <> "px;transition:--tf-left 180ms ease-out,--tf-right 180ms ease-out") ]
     ( [ HH.element (HH.ElemName "style") []
-          [ HH.text "@property --tf-left{syntax:'<length>';inherits:true;initial-value:0px}@property --tf-right{syntax:'<length>';inherits:true;initial-value:0px}@media (prefers-reduced-motion:reduce){#tf-browser,#tf-limulus,[style*=--tf-left]{transition:none!important}}" ]
+          [ HH.text "@property --tf-left{syntax:'<length>';inherits:true;initial-value:0px}@property --tf-right{syntax:'<length>';inherits:true;initial-value:0px}@keyframes tf-help-pulse{0%{box-shadow:0 0 0 0 #2f6f8fcc}100%{box-shadow:0 0 0 12px #2f6f8f00}}@media (prefers-reduced-motion:reduce){#tf-browser,#tf-limulus,[style*=--tf-left]{transition:none!important}.tf-help-pulse{animation:none!important}}" ]
       , bar cfg st
       , HH.slot _machine unit cfg.component unit FromMachine
       ]
@@ -932,7 +932,10 @@ bar cfg st =
       <> (if b.help == "" then [] else
         [ HH.button
             [ HE.onClick \_ -> PressBar "help", HP.title b.help
-            , style "border:1px solid #00000022;background:#faf7ee;color:#7a7a7a;cursor:pointer;width:22px;height:22px;border-radius:50%;font-size:12px;line-height:1;padding:0;flex:0 0 auto" ]
+            -- pulsing: three soft rings as it appears, and not again (the class stays; an animation plays once)
+            , HP.class_ (HH.ClassName (if b.helpPulse then "tf-help-pulse" else ""))
+            , style ("border:1px solid #00000022;background:#faf7ee;color:#7a7a7a;cursor:pointer;width:22px;height:22px;border-radius:50%;font-size:12px;line-height:1;padding:0;flex:0 0 auto"
+                <> (if b.helpPulse then ";animation:tf-help-pulse 0.9s ease-out 0.2s 3" else "")) ]
             [ HH.text "\x24d8" ] ])
   button label act =
     HH.button

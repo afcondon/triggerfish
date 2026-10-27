@@ -169,6 +169,7 @@ handleQuery = case _ of
           , active: false, attention: false, tip: "new BD, SD and HH densities, the place on the map kept" }
         , { id: "dilla", label: "", icons: [ { icon: "dice-five", color: dillaColor } ], active: false, attention: false
           , tip: "a new Dilla push: kick near the grid, snare late, hats a little either side" } ]
+    , helpPulse: false
     }
   BarAction act next -> do
     case act of

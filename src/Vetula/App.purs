@@ -555,6 +555,8 @@ type State =
   -- the Explore/Lattice surfaces — they aren't lattice nodes.
   , imported :: Set Int
   , helpOpen :: Boolean     -- is the ⓘ help overlay open? (the notes, off the canvas)
+  , welcomeOpen :: Boolean  -- the welcome card (CR-12): on a browser's first visit, or from the ⓘ
+  , helpPulse :: Boolean    -- the ⓘ pulses once as the welcome card closes, to say where help lives
   -- The progression library: every saved progression, kept (★) or
   -- auto-captured (◦).
   , library :: Array LibEntry
@@ -753,6 +755,8 @@ data Action
   | TapStop                -- Esc: the take abandoned, the rhythm as it was
   | ClearRhythm            -- back to one chord a bar
   | ToggleHelp             -- open / close the ⓘ help overlay
+  | OpenWelcome            -- the welcome card again (from the ⓘ)
+  | CloseWelcome           -- "start": remembered, and the ⓘ pulses
   | AutoCapture            -- timer: auto-capture the current path (ephemeral, update-in-place)
   | LoadProg Int           -- load library entry #i into the performance working copy
   | SaveScene              -- serialise the whole Perform surface as a vetulaScene → Amphora
@@ -796,6 +800,7 @@ data Action
   | CaptureDeleteMark Int                     -- delete a mark (its loop stops)
   | CaptureDismissCard Int                    -- put the loop card away; the loop plays on
   | Nop                    -- nothing (a handler that must name an action)
+  | StopThen Event Action  -- a click kept from the overlay under it, then the action
   | PerfStopClick ME.MouseEvent Action -- run Action but stop the click bubbling to the box
   | ZoomAt Event Number    -- geometric lens: wheel-zoom toward the cursor (event, deltaY)
   | PanStart Event         -- geometric lens: begin a grab-to-pan drag
@@ -936,6 +941,8 @@ component = H.mkComponent
       , focusedFamily: Nothing
       , imported: Set.empty
       , helpOpen: false
+      , welcomeOpen: false
+      , helpPulse: false
       , library: []
       , capSeq: 0
       , lastCapIdx: Nothing
@@ -1208,6 +1215,7 @@ handleQuery = case _ of
           [ { id: "key", input: (Select.defaultInput keyOptions) { selected = Just (show s.key.tonic), placeholder = "Key", minWidth = Just "72px" } }
           , { id: "scale", input: (Select.cascadingInput modeGroups) { selected = Just (currentModeValue s.key.mode), searchable = true } } ]
       , help: "keys & help"
+      , helpPulse: s.helpPulse
       , chips:
           -- the progression being built: its frozen name as a monochrome
           -- glyph and whether this version is saved (its length is on the
@@ -1866,6 +1874,9 @@ handleActionCore = case _ of
     -- 2026-10-08). The progression open when it last closed (the working
     -- copy) is kept, so a crash or a reload loses nothing, and the score
     -- offers it back.
+    -- a browser's first visit: the welcome card (CR-12)
+    welcomed <- liftEffect Store.loadWelcomed
+    unless welcomed (H.modify_ _ { welcomeOpen = true })
     mwork <- liftEffect Store.loadWorking
     for_ mwork \w -> when (length (parseProgression w.source) > 0) $
       H.modify_ _ { resumable = Just (w { name = maybe w.name snd (find (\r -> fst r == w.name) migrated.renames) }) }
@@ -2307,7 +2318,16 @@ handleActionCore = case _ of
     in s { key = k, lattice = latticeFor k, bankPads = bankPadsFor k s.padRoll, restScale = Nothing
          , scoreRead = Set.delete (fromMaybe "new progression" s.progName) s.scoreRead }
 
-  ToggleHelp -> H.modify_ \s -> s { helpOpen = not s.helpOpen }
+  ToggleHelp -> H.modify_ \s -> s { helpOpen = not s.helpOpen, helpPulse = false }
+  StopThen ev act -> do
+    liftEffect (stopPropagation ev)
+    handleActionCore act
+  OpenWelcome -> H.modify_ _ { helpOpen = false, welcomeOpen = true, helpPulse = false }
+  CloseWelcome -> do
+    liftEffect Store.saveWelcomed
+    H.modify_ _ { welcomeOpen = false, helpPulse = true }
+    -- any output has the shell ask for the bar again, which now pulses
+    H.gets _.stage >>= \stg -> H.raise (StageChanged (stagePath stg))
 
   -- The working copy, on a timer: an empty path ends the current line of
   -- versions; a changed one is saved locally. Keeping it is SaveProg's job.
@@ -4261,6 +4281,7 @@ render st =
     -- `perfRecallOpen`, and the modal waits for a new door.
     [ perfRecallModal st
     , helpOverlay st
+    , welcomeCard st
     , revoiceModal st
     ] )
 
@@ -4575,6 +4596,12 @@ helpOverlay st =
         [ HH.div [ HP.style "display: flex; align-items: baseline; gap: 10px; margin: 0 0 14px;" ]
             [ HH.h2 [ HP.style "font-size: 15px; font-weight: 600; margin: 0; color: #2a2a2a;" ] [ HH.text "Gestures and keys" ]
             , HH.span [ HP.style "font-size: 11px; color: #b0b0b0;" ] [ HH.text "click anywhere to close" ]
+            , HH.span [ HP.style "flex: 1 1 auto;" ] []
+            , HH.button
+                [ HP.style "border: none; background: none; padding: 0; font-size: 12px; color: #2f6f8f; cursor: pointer; text-decoration: underline;"
+                , HP.title "the welcome card, as a first visit shows it"
+                , HE.handler (EventType "click") \e -> StopThen e OpenWelcome ]
+                [ HH.text "welcome" ]
             ]
         , HH.div [ HP.style "display: grid; grid-template-columns: max-content 1fr; gap: 7px 18px; font-size: 12.5px; line-height: 1.5;" ]
             (concatMap row helpRows)
@@ -4584,6 +4611,39 @@ helpOverlay st =
   row r =
     [ HH.div [ HP.style "font-family: 'SF Mono', Menlo, monospace; font-size: 11.5px; color: #7a5c00; white-space: nowrap;" ] [ HH.text r.gesture ]
     , HH.div [ HP.style "color: #555;" ] [ HH.text r.meaning ] ]
+
+-- | **The welcome card** (CR-12): what a first visit needs and no more, the
+-- | full reference staying under the ⓘ. Shown once a browser, then from the
+-- | ⓘ's "welcome".
+welcomeCard :: forall m. State -> H.ComponentHTML Action Slots m
+welcomeCard st =
+  if not st.welcomeOpen then HH.text ""
+  else HH.div
+    [ HP.style "position: fixed; inset: 0; background: rgba(20,20,20,0.22); z-index: 55; display: flex; align-items: center; justify-content: center; padding: 20px;"
+    , HE.onClick \_ -> CloseWelcome ]
+    [ HH.div
+        [ HP.style "background: #fffdf8; max-width: 440px; border-radius: 10px; box-shadow: 0 12px 48px rgba(0,0,0,0.2); padding: 28px 32px 24px; font-family: Georgia, serif; color: #3a3428;"
+        , HE.handler (EventType "click") \e -> StopThen e Nop ]
+        [ HH.div [ HP.style "font-size: 12px; letter-spacing: 0.16em; text-transform: uppercase; color: #8d7a4a; margin-bottom: 4px;" ] [ HH.text "Vetula" ]
+        , HH.div [ HP.style "font-size: 19px; line-height: 1.3; margin-bottom: 18px;" ] [ HH.text "Find chords, and the way from one to the next." ]
+        , HH.div [ HP.style "display: grid; grid-template-columns: max-content 1fr; gap: 10px 16px; font-size: 14px; line-height: 1.45;" ]
+            (concatMap line
+              [ { what: "click", says: "a chord to hear it" }
+              , { what: "shift-click", says: "to add it to your progression; its number shows where it sits" }
+              , { what: "the ladder", says: "at the right brings in more chords, from the key's own to the richest" }
+              , { what: "score", says: "lays your progression on a staff, with what could replace or follow each chord" } ])
+        , HH.div [ HP.style "display: flex; align-items: center; gap: 12px; margin-top: 22px;" ]
+            [ HH.div [ HP.style "flex: 1 1 auto; font-size: 12.5px; color: #8a8270;" ] [ HH.text "The rest is under \x24d8, top right." ]
+            , HH.button
+                [ HP.style "border: none; border-radius: 6px; background: #8d7a4a; color: #fff; padding: 7px 20px; font-size: 13px; letter-spacing: 0.06em; cursor: pointer;"
+                , HE.onClick \_ -> CloseWelcome ]
+                [ HH.text "start" ] ]
+        ]
+    ]
+  where
+  line l =
+    [ HH.div [ HP.style "font-style: italic; color: #8d7a4a; white-space: nowrap;" ] [ HH.text l.what ]
+    , HH.div [] [ HH.text l.says ] ]
 
 -- | A chord (by root and pitch classes) voiced near another: its root as the
 -- | bass, nearest the other's bass; the rest voice-led from the other's

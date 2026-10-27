@@ -19,6 +19,8 @@ module Vetula.Store
   , WorkingCopy
   , saveWorking
   , loadWorking
+  , saveWelcomed
+  , loadWelcomed
   ) where
 
 import Prelude
@@ -135,6 +137,19 @@ type WorkingCopy = { name :: String, source :: String, saved :: String }
 
 workingKey :: String
 workingKey = "vetula.working"
+
+-- | Whether this browser has seen the welcome card (CR-12). Storage that
+-- | cannot be read says no, so a private window shows the card, never fails.
+welcomedKey :: String
+welcomedKey = "vetula.welcomed"
+
+saveWelcomed :: Effect Unit
+saveWelcomed = _save welcomedKey (_stringify true)
+
+loadWelcomed :: Effect Boolean
+loadWelcomed = do
+  m <- _load welcomedKey
+  pure (toMaybe (m :: Nullable Boolean) == Just true)
 
 saveWorking :: WorkingCopy -> Effect Unit
 saveWorking w = _save workingKey (_stringify w)
