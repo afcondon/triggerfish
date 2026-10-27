@@ -398,6 +398,9 @@ type State =
   , lastSample :: Maybe String
   -- the harmony routes as written (`routing/harmony`), for a mark's context
   , routesText :: Maybe String
+  -- Odonus's locks (`odonus/locks`): inputs keeping its own scale, a route
+  -- there held off (docs/kb/plans/routing-in-tidal.md)
+  , locks :: Route.Locks
   -- The unified glyph-chip PRESET bank (docs/DESIGN-scene-modal.md): captured live
   -- patches, anonymous or named, freely intermixed — distinct from the named SCENE
   -- library. `identity` is the parked preset's text (the chip glyph; ghosts when the
@@ -467,6 +470,7 @@ data Action
   | SetRoot Int
   | SetOutChromatic Boolean   -- Odonus's own Output choice: chromatic, or the grid's set
   | Unroute Route.Input       -- take a harmony route off an input: Odonus's own again
+  | ToggleLock Route.Input    -- the padlock: keep Odonus's own scale here, or yield to a route
   | SetOctave Int
   | SetDegShift Int
   | ToggleScaleNote Int

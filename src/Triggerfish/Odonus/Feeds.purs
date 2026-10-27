@@ -12,6 +12,7 @@ module Triggerfish.Odonus.Feeds
   , readFeeds
   , routesKey
   , readRoutes
+  , readLocks
   ) where
 
 import Prelude
@@ -22,7 +23,7 @@ import Data.Nullable (Nullable, toMaybe)
 import Data.String (Pattern(..), stripPrefix)
 import Foreign.Object (Object)
 import Foreign.Object as Object
-import Reef.Route (Feed(..), Feeds, parseFeeds)
+import Reef.Route (Feed(..), Feeds, Locks, parseFeeds, parseLocks)
 import Simple.JSON (readJSON)
 
 feedsKey :: String
@@ -51,6 +52,21 @@ readFeeds msg = case stripPrefix (Pattern "stage-texts ") msg of
   where
   unfed = { grid: Unfed, out: Unfed }
   fromText = maybe unfed (\t -> maybe unfed identity (hush (parseFeeds t)))
+
+-- | Odonus's locks a rig frame states (`odonus/locks`, Reef.Route.Locks):
+-- | the inputs that keep Odonus's own scale. None, or a deleted object, is
+-- | nothing locked; `Nothing`: says nothing of them.
+readLocks :: String -> Maybe Locks
+readLocks msg = case stripPrefix (Pattern "stage-texts ") msg of
+  Just json -> do
+    table :: Object { text :: String } <- hush (readJSON json)
+    pure (fromText (_.text <$> Object.lookup "odonus/locks" table))
+  Nothing -> do
+    json <- stripPrefix (Pattern "stage-text ") msg
+    w :: { key :: String, text :: Nullable String } <- hush (readJSON json)
+    if w.key == "odonus/locks" then Just (fromText (toMaybe w.text)) else Nothing
+  where
+  fromText = maybe [] (\t -> maybe [] identity (hush (parseLocks t)))
 
 -- | The routes' text a rig frame states: from the whole table, or a write of
 -- | `routing/harmony` (`Just Nothing`: none). `Nothing`: says nothing of them.

@@ -613,6 +613,11 @@ type State =
   , sidePane :: SidePane
   -- | Notes heard a channel, counted, so its voice's tile pulses on each
   , voicePulse :: Map Int Int
+  -- | Odonus's locks (`odonus/locks`): an input it keeps its own scale at,
+  -- | a route there held off
+  , stageLocks :: Array HarmonyRoute.Input
+  -- | the voice whose "send to Odonus" menu is open
+  , voiceSendMenu :: Maybe Int
   -- | The saved progressions the stage holds, by name (step 4b), as far as
   -- | this page knows; `Nothing` until the rig answers.
   , stageProgs :: Maybe (Map String String)
@@ -849,6 +854,8 @@ data Action
   | VoiceLine Int          -- voice n's block, shown in Limulus
   | VoiceMute Int          -- voice n muted, or heard again
   | VoiceTake Int          -- voice n plays the open progression (a new voice on an empty one)
+  | VoiceSendMenu Int      -- open (or shut) voice n's "send to Odonus" menu
+  | VoiceSend Int (Maybe HarmonyRoute.Input) -- send voice n's chords to an Odonus input; Nothing: stop
   | StaffDrop Event        -- a progression dropped on the staff: open it
   | VoicePulse Int         -- a note sounded on channel n: its voice's tile pulses
   | CycleSound             -- where previews sound: browser, continuo, MIDI, off
@@ -1003,6 +1010,8 @@ component = H.mkComponent
       , stageHarmony: Nothing
       , sidePane: PaneAlternatives
       , voicePulse: Map.empty
+      , stageLocks: []
+      , voiceSendMenu: Nothing
       , stageProgs: Nothing
       , namedCards: Map.empty
       , scoreSel: Nothing
@@ -1463,7 +1472,13 @@ connectMidi = do
 handleAction :: forall m. MonadAff m => Action -> H.HalogenM State Action Slots Output m Unit
 handleAction a = do
   before <- H.gets _.perfBoxes
+  msgBefore <- H.gets _.publishMsg
   handleActionCore a
+  -- a message lasts a few seconds, unless another replaces it first
+  msgAfter <- H.gets _.publishMsg
+  for_ msgAfter \m -> when (msgBefore /= msgAfter) $ void $ H.fork do
+    liftAff (delay (Milliseconds 5000.0))
+    H.modify_ \s -> if s.publishMsg == Just m then s { publishMsg = Nothing } else s
   -- **No save** (AC, 2026-10-27): the open progression is kept as it is made,
   -- each edit its next version, so it is in the drawer from its first chord,
   -- a line can name it at once, and its voices play each edit as it lands
@@ -1750,6 +1765,7 @@ handleActionCore = case _ of
   StageFrameIn msg -> do
     for_ (SC.readRouting msg) \r -> H.modify_ _ { stageRouting = r }
     for_ (SC.readHarmony msg) \h -> H.modify_ _ { stageHarmony = h }
+    for_ (SC.readLocks msg) \l -> H.modify_ _ { stageLocks = fromMaybe [] (l >>= hush <<< HarmonyRoute.parseLocks) }
     for_ (SC.tableHasKey msg) \has -> when has do
       st <- H.get
       H.modify_ _ { stageKey = Just (Route.printKey (contextKey st)) }
@@ -1959,6 +1975,34 @@ handleActionCore = case _ of
   VoiceMute n -> do
     s <- H.get
     for_ (s.stageCards >>= Map.lookup n) \line -> writeVoice n (Just (toggleMute line))
+
+  VoiceSendMenu n -> H.modify_ \s -> s { voiceSendMenu = if s.voiceSendMenu == Just n then Nothing else Just n }
+
+  -- **Vetula sends; Odonus receives** (AC, 2026-10-27): the voice chooses
+  -- the input, through the rig as a route line is (one check, one table);
+  -- an input takes one source, so what it replaces is said
+  VoiceSend n target -> do
+    st <- H.get
+    H.modify_ _ { voiceSendMenu = Nothing }
+    let routes = fromMaybe [] (st.stageHarmony >>= hush <<< HarmonyRoute.parse)
+        mine = map _.input (filter (\r -> r.source == HarmonyRoute.VetulaVoice n) routes)
+        lines = case target of
+          Just i -> [ "route $ " <> HarmonyRoute.inputName i <> " <- vetula " <> voiceLetter n ]
+          Nothing -> map (\i -> "route $ " <> HarmonyRoute.inputName i <> " <- none") mine
+        was = case target >>= \i -> HarmonyRoute.sourceOf i routes of
+          Just (HarmonyRoute.VetulaVoice m) | m /= n -> " (was voice " <> voiceLetter m <> ")"
+          Just HarmonyRoute.VetulaKey -> " (was Vetula's key)"
+          Just (HarmonyRoute.Scale _) -> " (was a scale set in Limulus)"
+          Just (HarmonyRoute.Harmony _) -> " (was a harmony set in Limulus)"
+          _ -> ""
+        held = case target of
+          Just i | elem i st.stageLocks -> "; Odonus has it locked, so it keeps its own until unlocked"
+          _ -> ""
+    unless (Array.null lines) $ for_ st.binnacle \bin ->
+      liftEffect $ Transport.send (Binnacle.socket bin) ("tidal " <> joinWith "\n" lines)
+    H.modify_ _ { publishMsg = Just (case target of
+      Just i -> "voice " <> voiceLetter n <> " \x2192 " <> inputWords i <> was <> held
+      Nothing -> "voice " <> voiceLetter n <> " no longer feeds Odonus") }
 
   VoiceTake n -> do
     s0 <- H.get
@@ -4518,6 +4562,11 @@ scoreCandidates st =
                                     Just _ -> "click a bar to see its alternatives"
                                     Nothing -> "click a bar of the score: its substitutes, variations and relatives show here") ] [] ] ) ])
             <> [ HH.span [ HP.style "flex: 1 1 auto;" ] [] ]
+            -- what the last voice gesture did (a send, a drop), said briefly
+            <> (case st.publishMsg of
+                  Just m | st.sidePane == PaneVoices ->
+                    [ HH.span [ HP.style "align-self: center; margin: 0 12px 6px 0; font: italic 12.5px Georgia, serif; color: #555555;" ] [ HH.text m ] ]
+                  _ -> [])
             -- a scene keeps what the voices play, so it is kept from here
             <> (if st.sidePane /= PaneVoices || voiceCountNow == 0 then [] else
                 [ HH.button [ HP.style "align-self: center; margin: 0 12px 6px 0; font: 12px Georgia, serif; padding: 2px 10px; border: 1px solid #c8c8c8; border-radius: 4px; background: #ffffff; cursor: pointer;"
@@ -4562,6 +4611,9 @@ type StageVoice =
   , dest :: TileGoes
   -- its chords feed Odonus by a harmony route, whatever else it does
   , fed :: Boolean
+  -- the Odonus inputs it feeds, and of those, the ones Odonus has locked
+  , feeds :: Array HarmonyRoute.Input
+  , held :: Array HarmonyRoute.Input
   }
 
 data TileGoes = Sound | Unrouted | Odo
@@ -4577,10 +4629,12 @@ stageVoice st n = (st.stageCards >>= Map.lookup n) <#> \text ->
       name = cardProgression text
       -- fed to Odonus by the Dashboard's chart (`odonus.out <- vetula R`):
       -- its chords shape Odonus, as `# out odo` in its own line would
-      fed = any (\r -> r.source == HarmonyRoute.VetulaVoice n)
-              (fromMaybe [] (st.stageHarmony >>= hush <<< HarmonyRoute.parse))
+      feeds = map _.input (filter (\r -> r.source == HarmonyRoute.VetulaVoice n)
+                (fromMaybe [] (st.stageHarmony >>= hush <<< HarmonyRoute.parse)))
+      fed = not (Array.null feeds)
   in { n, name, found: maybe (isJust spec) (\nm -> any (\e -> e.kept && e.name == nm) st.library) name
-     , muted: maybe false _.muted spec, channel, fed
+     , muted: maybe false _.muted spec, channel, fed, feeds
+     , held: filter (\i -> elem i st.stageLocks) feeds
      -- a voice feeds Odonus by a harmony route; `# out odo` silences it and
      -- has the rig write that route (odonus_feeds' shortcut), so it shows ♫
      -- once the route is on the stage
@@ -4655,13 +4709,14 @@ voicesPane st =
                 [ HH.i [ HP.class_ (HH.ClassName ("fa-solid " <> destIcon v.dest)) ] [] ]
             else HH.i [ HP.class_ (HH.ClassName ("fa-solid " <> destIcon v.dest))
                       , HP.style "position: absolute; right: 9px; top: 8px; font-size: 13px; color: #555555;"
-                      , HP.title (if v.fed && v.dest == Odo then fedTip else destTip v.dest) ] []
+                      , HP.title (if v.fed && v.dest == Odo then fedTip v else destTip v.dest) ] []
         -- it sounds and also feeds Odonus: both said
         , if v.fed && v.dest == Sound
             then HH.i [ HP.class_ (HH.ClassName "fa-solid fa-music")
-                      , HP.style "position: absolute; right: 30px; top: 8px; font-size: 13px; color: #555555;"
-                      , HP.title fedTip ] []
+                      , HP.style ("position: absolute; right: 30px; top: 8px; font-size: 13px; color: " <> (if Array.null v.held then "#555555" else "#b8b8b8") <> ";")
+                      , HP.title (fedTip v) ] []
             else HH.text ""
+        , sendMenu v
         , HH.div
             [ HP.style "display: flex; gap: 8px; align-items: center;"
             , HP.title (case v.name of
@@ -4677,7 +4732,8 @@ voicesPane st =
               , ctl "fa-code" "its line in Limulus, where you shape how it plays" (VoiceLine v.n) ]
                 <> (case openNm of
                       Just nm | not open -> [ ctl "fa-arrow-down" ("play " <> nm <> " here, as this voice plays") (VoiceTake v.n) ]
-                      _ -> []) )
+                      _ -> [])
+                <> [ ctl "fa-right-to-bracket" "send its chords to Odonus" (VoiceSendMenu v.n) ] )
         ]
   dropOn n = [ HE.handler (EventType "dragover") TileDragOver, HE.handler (EventType "drop") (VoiceDrop n) ]
   ctl icon tip act =
@@ -4688,7 +4744,21 @@ voicesPane st =
     -- not connected, which a silenced speaker read as muted (AC, 2026-10-27)
     Unrouted -> "fa-link-slash"
     Odo -> "fa-music"
-  fedTip = "its chords feed Odonus: a harmony route, set on the Dashboard's chart"
+  fedTip v = "its chords feed " <> joinWith " and " (map inputWords v.feeds)
+    <> (if Array.null v.held then "" else " \x00b7 locked by Odonus, which keeps its own there: kept, not followed")
+  -- the menu "send to Odonus" opens, on the tile
+  sendMenu v =
+    if st.voiceSendMenu /= Just v.n then HH.text "" else
+      HH.div [ HP.style "position: absolute; left: 8px; right: 8px; bottom: 30px; z-index: 3; background: #ffffff; border: 1px solid #cfcfcf; border-radius: 6px; box-shadow: 0 6px 18px rgba(0,0,0,0.12); padding: 4px; font-size: 12px;" ]
+        ( [ item (Just HarmonyRoute.OdonusGrid) "to Odonus's grid" "its melody takes the chords' arpeggios"
+          , item (Just HarmonyRoute.OdonusOut) "to Odonus's output" "its notes snap to the chords" ]
+            <> (if v.fed then [ item Nothing "stop sending" "Odonus keeps its own scale" ] else []) )
+    where
+    item target label sub =
+      HH.div [ HP.style ("padding: 4px 8px; border-radius: 4px; cursor: pointer;" <> (if maybe false (\i -> elem i v.feeds) target then " background: #f0f0f0; font-weight: 600;" else ""))
+             , HE.onClick \e -> StopThen (ME.toEvent e) (VoiceSend v.n target) ]
+        [ HH.div [] [ HH.text label ]
+        , HH.div [ HP.style "font-size: 10.5px; color: #8a8a8a; font-weight: 400;" ] [ HH.text sub ] ]
   destTip = case _ of
     Sound -> "it sounds"
     Unrouted -> "its channel goes nowhere: click to route it on the Dashboard (Notes)"
@@ -6908,3 +6978,10 @@ nameGlyphs :: String -> Array TGlyph.GlyphIcon
 nameGlyphs nm =
   map (\icon -> { icon, color: "#2a2a2a" })
     (filter (\w -> w /= "" && not (isJust (fromString w))) (split (Pattern "-") (SCU.takeWhile (_ /= '′') nm)))
+
+
+-- | An Odonus input, as a voice's tile says it.
+inputWords :: HarmonyRoute.Input -> String
+inputWords = case _ of
+  HarmonyRoute.OdonusGrid -> "Odonus's grid"
+  HarmonyRoute.OdonusOut -> "Odonus's output"

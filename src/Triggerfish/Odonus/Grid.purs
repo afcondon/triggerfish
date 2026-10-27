@@ -140,7 +140,7 @@ component =
         -- when you want to inspect just this module.
         , collapsed: [ "SOURCE" ], lastTap: "", lastTapMicros: 0.0
         , reconciled: false, feedsSeen: { grid: Route.Unfed, out: Route.Unfed }
-        , samples: Samples.noSamples, sampleAsked: Nothing, lastSample: Nothing, routesText: Nothing
+        , samples: Samples.noSamples, sampleAsked: Nothing, lastSample: Nothing, routesText: Nothing, locks: []
         , presets: [], identity: Nothing, lastChip: Nothing }
     , render
     , eval: H.mkEval H.defaultEval
@@ -411,7 +411,7 @@ handleAction a = do
 
 -- | A stage frame about the harmony routes or what they resolved to.
 stageAbout :: String -> Boolean
-stageAbout msg = isJust (Feeds.readFeeds msg) || isJust (Feeds.readRoutes msg)
+stageAbout msg = isJust (Feeds.readFeeds msg) || isJust (Feeds.readRoutes msg) || isJust (Feeds.readLocks msg)
   || isJust (StageCopy.table OStage.stagePrefix msg)
 
 -- | Odonus's two patterns as they stand: what a sample reads.
@@ -853,6 +853,7 @@ dispatch = case _ of
       H.modify_ \s -> s { stagePatches = Just (StageCopy.ours held (OStage.bankPatches s.presets)) }
       publishPatches
     for_ (Feeds.readRoutes msg) \r -> H.modify_ _ { routesText = r }
+    for_ (Feeds.readLocks msg) \l -> H.modify_ _ { locks = l }
     for_ (Feeds.readFeeds msg) \new -> do
       st <- H.get
       when (st.sounding /= Rig) $
@@ -1053,6 +1054,15 @@ dispatch = case _ of
     st <- H.get
     for_ st.binnacle \bin -> liftEffect $ Transport.send (Binnacle.socket bin)
       ("tidal route $ " <> Route.inputName i <> " <- none")
+  -- through the rig, as a line is: one way to lock, one check
+  ToggleLock i -> do
+    st <- H.get
+    let verb = if elem i st.locks then "unlock" else "lock"
+        word = case i of
+          Route.OdonusGrid -> "grid"
+          Route.OdonusOut -> "out"
+    for_ st.binnacle \bin -> liftEffect $ Transport.send (Binnacle.socket bin)
+      ("tidal odonus $ " <> verb <> " " <> word)
   SetOctave n -> enqueue (RI.SetOctaveShift n)
   SetDegShift n -> enqueue (RI.SetDegShift n)
   ToggleScaleNote pc -> enqueue (RI.ToggleScaleNote pc)

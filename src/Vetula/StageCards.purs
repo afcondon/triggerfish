@@ -24,6 +24,7 @@ module Vetula.StageCards
   , readNotes
   , readRouting
   , readHarmony
+  , readLocks
   , delLine
   , stageName
   , repoint
@@ -96,6 +97,10 @@ readRouting = readKey "vetula/routing"
 -- | voice, if any, feeds Odonus.
 readHarmony :: String -> Maybe (Maybe String)
 readHarmony = readKey "routing/harmony"
+
+-- | What a frame says of Odonus's locks (`odonus/locks`, Reef.Route.Locks).
+readLocks :: String -> Maybe (Maybe String)
+readLocks = readKey "odonus/locks"
 
 -- | One stage object's text, as a frame says it: from the whole table, what it
 -- | holds there; from a write of that key, the new text (or its deletion).

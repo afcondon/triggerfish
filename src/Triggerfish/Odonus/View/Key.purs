@@ -18,14 +18,15 @@ module Triggerfish.Odonus.View.Key (outputPiece, gridPiece) where
 import Reef.Vetula.VoiceName (voiceLetter)
 import Prelude
 
-import Data.Array (mapWithIndex, range, take)
+import Data.Array (elem, mapWithIndex, range, take)
 import Data.Either (hush)
 import Data.Int as Int
 import Halogen.HTML.Events as HE
 import Halogen.HTML.Properties as HP
 import Triggerfish.Scale (scaleTypes)
 import Triggerfish.Odonus.View.Progression (gridChords, outChords)
-import Data.Maybe (Maybe(..), fromMaybe, isJust)
+import Data.Maybe (Maybe(..), fromMaybe, isJust, isNothing)
+import Triggerfish.Web as Web
 import Data.String (toUpper)
 import Reef.Route as Route
 import Halogen as H
@@ -58,18 +59,34 @@ gridPiece s = (quantPieces s Route.OdonusGrid)
 -- | a record of both, built twice, cost each render four of these.
 quantPieces :: forall m. State -> Route.Input -> H.ComponentHTML Action Slots m
 quantPieces s = case _ of
-  Route.OdonusOut -> piece "Output quantisation" (outBody unit <> strip (if isJust s.odo.harmony then outChords s else []))
+  Route.OdonusOut -> piece "Output quantisation" (outBody unit <> lockOf Route.OdonusOut <> strip (if isJust s.odo.harmony then outChords s else []))
       "What each note snaps to at the end, past its head's offset: a chord colours the melody without changing its shape; chromatic leaves each note as it is. Odonus's own choice, unless a route feeds odonus.out"
-  Route.OdonusGrid -> piece "Grid quantisation" (gridBody unit <> strip (if isJust s.odo.gridHarmony then gridChords s else []))
+  Route.OdonusGrid -> piece "Grid quantisation" (gridBody unit <> lockOf Route.OdonusGrid <> strip (if isJust s.odo.gridHarmony then gridChords s else []))
       "What a cell's value is mapped onto: the melody's shape. Odonus's own scale, unless a route feeds odonus.grid (a chord's arpeggios, Vetula's key, a scale)"
   where
   ctx = contextInfo s.odo
   routes = fromMaybe [] (s.routesText >>= hush <<< Route.parse)
-  routed i = isJust (Route.sourceOf i routes)
-  fromVetula i = case Route.sourceOf i routes of
+  -- a locked input keeps Odonus's own, its route held off (the padlock)
+  locked i = elem i s.locks
+  routed i = isJust (Route.sourceOf i routes) && not (locked i)
+  fromVetula i = not (locked i) && case Route.sourceOf i routes of
     Just Route.VetulaKey -> true
     Just (Route.VetulaVoice _) -> true
     _ -> false
+  -- the padlock, on the rig only (the web has no routes to yield to); and,
+  -- locked, the route it holds off
+  lockOf i =
+    if Web.onTheWeb || isNothing s.binnacle then [] else
+      [ HH.button
+          [ HE.onClick \_ -> ToggleLock i
+          , HH.attr (HH.AttrName "title") (if locked i
+              then "Locked: Odonus keeps its own here, whatever is routed to it. Click to let a route take over"
+              else "Unlocked: a route here takes over. Click to keep Odonus's own, whatever is routed")
+          , style $ "border:none;background:transparent;cursor:pointer;padding:0 2px;font-size:12px;"
+              <> (if locked i then "color:#8c2f1c" else "color:#9a9480") ]
+          [ HH.i [ HP.class_ (HH.ClassName (if locked i then "fa-solid fa-lock" else "fa-solid fa-lock-open")) ] [] ] ]
+        <> (if locked i && isJust (Route.sourceOf i routes)
+              then [ from ("held off: " <> provenance i s) ] else [])
   outChromatic = map _.pattern s.odo.outScale == Just "chromatic"
   -- Grid: a route says where it comes from; a line names what it set; else
   -- Odonus's own scale, chosen here (the taster's only harmony, in Solo)
