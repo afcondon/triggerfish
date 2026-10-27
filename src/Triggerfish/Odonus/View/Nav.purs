@@ -21,6 +21,7 @@ import Triggerfish.Odonus.Grid.Types (Action(..), Stage(..), Slots, State)
 import Triggerfish.Odonus.Grid.Widgets (engrave, style)
 import Triggerfish.Routing.Model as RM
 import Triggerfish.Routing.Out as RO
+import Triggerfish.Transport (Sounding(..))
 import Triggerfish.Odonus.Logbook (noteCount)
 
 riverControls :: forall m. State -> H.ComponentHTML Action Slots m
@@ -42,19 +43,30 @@ riverControls s =
 -- | see without playing a note.
 routingReadout :: forall m. State -> H.ComponentHTML Action Slots m
 routingReadout s =
-  let ports = { found: RO.portNames s.outs, rigUp: true }
-      dead = concatMap (\h -> RM.unreachable ports s.routing (RM.SOdonusHead h)) (0 .. 3)
-      legs = concatMap (\h -> RM.liveLegsFor s.routing (RM.SOdonusHead h)) (0 .. 3)
-      broken = not (null dead)
-  in HH.span
-       [ HP.title (if broken
-           then joinWith " · " (map (\d -> RM.destLabel d.dest <> " — " <> RM.reachNote d.why) dead)
-           else joinWith " · " (map (\l -> RM.destLabel l.dest) legs))
-       , style $ engrave <> ";font-size:8px;letter-spacing:0.1em;"
-           <> (if broken then "color:#8c2f1c" else "color:#6a6558") ]
-       [ HH.text (if broken
-           then show (length dead) <> "/" <> show (length legs) <> " ROUTES DEAD"
-           else show (length legs) <> " ROUTES") ]
+  -- not the rig's, and no route it can reach (the web app; a browser with no
+  -- Web MIDI, or none of its routes' ports): it sounds in the browser's own
+  -- voice, so say that, not that routes it never takes are dead (AC,
+  -- 2026-10-27: "makes it look like maybe it's not going to work")
+  if s.sounding /= Rig && (null s.outs || length dead == length legs) then
+      HH.span
+        [ HP.title "no MIDI port its routes reach here: Odonus plays in the browser's own voice"
+        , style $ engrave <> ";font-size:8px;letter-spacing:0.1em;color:#6a6558" ]
+        [ HH.text "\x266a IN THE BROWSER" ]
+  else
+      HH.span
+        [ HP.title (if broken
+            then joinWith " \x00b7 " (map (\d -> RM.destLabel d.dest <> " \x2014 " <> RM.reachNote d.why) dead)
+            else joinWith " \x00b7 " (map (\l -> RM.destLabel l.dest) legs))
+        , style $ engrave <> ";font-size:8px;letter-spacing:0.1em;"
+            <> (if broken then "color:#8c2f1c" else "color:#6a6558") ]
+        [ HH.text (if broken
+            then show (length dead) <> "/" <> show (length legs) <> " ROUTES DEAD"
+            else show (length legs) <> " ROUTES") ]
+  where
+  ports = { found: RO.portNames s.outs, rigUp: true }
+  dead = concatMap (\h -> RM.unreachable ports s.routing (RM.SOdonusHead h)) (0 .. 3)
+  legs = concatMap (\h -> RM.liveLegsFor s.routing (RM.SOdonusHead h)) (0 .. 3)
+  broken = not (null dead)
 
 -- | The stage tabs. Two on Odonus (Vetula's three minus HUNT — Vetula owns the
 -- | harmony, so there is nothing here to hunt), styled identically so the control

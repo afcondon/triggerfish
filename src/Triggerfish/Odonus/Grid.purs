@@ -674,16 +674,22 @@ dispatch = case _ of
       -- (docs/kb/plans/hardware-through-the-rig.md). With no MIDI at all, the
       -- browser's own voice. In Rig (Atlantis) mode the BEAM sounds and the page
       -- only mirrors the model; while a REPLAY loop runs, replay owns the out.
+      -- A head with nowhere it can reach (no MIDI at all, or none of its
+      -- routes' ports here: a visitor's own MIDI keyboard, say) sounds in
+      -- the browser rather than not at all (AC, 2026-10-27).
       when (st.sounding == Local && isNothing st.playing) do
-        if null st.outs then
-          liftEffect $ for_ firedV \fv ->
-            browserNote (emitAtMs + subMs fv.f) (gateMsFor fv.f) fv.v (join (st.headNote !! fv.f.headIdx)) fv.f
-        else do
+        let
+          solo = RO.soloRouting st.outs st.routing (map RM.SOdonusHead [ 0, 1, 2, 3 ])
+          reaches fv = not (null st.outs) && maybe false (not <<< null) (solo.voices !! fv.f.headIdx)
+          toBrowser = filter (not <<< reaches) firedV
+          toMidi = filter reaches firedV
+        liftEffect $ for_ toBrowser \fv ->
+          browserNote (emitAtMs + subMs fv.f) (gateMsFor fv.f) fv.v (join (st.headNote !! fv.f.headIdx)) fv.f
+        unless (null st.outs) do
           let
-            solo = RO.soloRouting st.outs st.routing (map RM.SOdonusHead [ 0, 1, 2, 3 ])
             played = Art.playStep solo
               { odo: r.odo, stepMs, nowMs: emitAtMs, polys: st.soloPolys, held: st.headNote
-              , sounding: st.soloSounding, newlyMuted, notes: map (\fv -> { fired: fv.f, velocity: fv.v }) firedV }
+              , sounding: st.soloSounding, newlyMuted, notes: map (\fv -> { fired: fv.f, velocity: fv.v }) toMidi }
           _ <- liftEffect $ RO.sendAllAt st.outs emitAtMs played.sends
           H.modify_ _ { soloPolys = played.polys, soloSounding = played.sounding }
       let
