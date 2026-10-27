@@ -88,6 +88,7 @@ import Simple.JSON (readJSON, writeJSON)
 import Reef.Vetula.Perf (VChord, VVoice, VDest(..), VRenderer(..), PerfClock, cursorAtClock, renderAlphaBlockMidiAt, renderAlphaClockMidiAt, wrapAt) as RV
 import Reef.Vetula.Articulate (VArticulator(..), articulate) as RA
 import Reef.Route (printKey) as Route
+import Reef.Route as HarmonyRoute
 import Vetula.Playhead (clockFor, defaultPattern, noteClock)
 import Vetula.Realise (fromChords)
 import Vetula.Perform.Types (ArpDir(..), ChannelMode(..), Layer, PerfFx(..), PerfSel(..), PerfTerm(..), PhraseAttach, VoiceShape(..), When(..), arpOrder, mkLayer, parseVoiceShape, termRigOnly)
@@ -606,6 +607,9 @@ type State =
   , stageCards :: Maybe (Map Int String)
   -- | Where each voice sounds, as the stage keeps it (`vetula/routing`, JSON)
   , stageRouting :: Maybe String
+  -- | The harmony routes, as the stage keeps them (`routing/harmony`, set on
+  -- | the Dashboard's chart): a voice feeding Odonus is one of them
+  , stageHarmony :: Maybe String
   , sidePane :: SidePane
   -- | Notes heard a channel, counted, so its voice's tile pulses on each
   , voicePulse :: Map Int Int
@@ -996,6 +1000,7 @@ component = H.mkComponent
       , binnacle: Nothing
       , stageCards: Nothing
       , stageRouting: Nothing
+      , stageHarmony: Nothing
       , sidePane: PaneAlternatives
       , voicePulse: Map.empty
       , stageProgs: Nothing
@@ -1744,6 +1749,7 @@ handleActionCore = case _ of
                       }
   StageFrameIn msg -> do
     for_ (SC.readRouting msg) \r -> H.modify_ _ { stageRouting = r }
+    for_ (SC.readHarmony msg) \h -> H.modify_ _ { stageHarmony = h }
     for_ (SC.tableHasKey msg) \has -> when has do
       st <- H.get
       H.modify_ _ { stageKey = Just (Route.printKey (contextKey st)) }
@@ -4554,6 +4560,8 @@ type StageVoice =
   , muted :: Boolean
   , channel :: Int
   , dest :: TileGoes
+  -- its chords feed Odonus by a harmony route, whatever else it does
+  , fed :: Boolean
   }
 
 data TileGoes = Sound | Unrouted | Odo
@@ -4567,9 +4575,15 @@ stageVoice st n = (st.stageCards >>= Map.lookup n) <#> \text ->
       routing = st.stageRouting >>= hush <<< RR.decodeVoiceRouting
       legs = fromMaybe [] (routing >>= \r -> r.voices !! (channel - 1))
       name = cardProgression text
+      -- fed to Odonus by the Dashboard's chart (`odonus.out <- vetula R`):
+      -- its chords shape Odonus, as `# out odo` in its own line would
+      fed = any (\r -> r.source == HarmonyRoute.VetulaVoice n)
+              (fromMaybe [] (st.stageHarmony >>= hush <<< HarmonyRoute.parse))
   in { n, name, found: maybe (isJust spec) (\nm -> any (\e -> e.kept && e.name == nm) st.library) name
-     , muted: maybe false _.muted spec, channel
-     , dest: if map _.term spec == Just TOdo then Odo else if Array.null legs then Unrouted else Sound }
+     , muted: maybe false _.muted spec, channel, fed
+     , dest: if map _.term spec == Just TOdo then Odo
+             else if Array.null legs then (if fed then Odo else Unrouted)
+             else Sound }
 
 -- | **The voices pane** (AC, 2026-10-27): the eight voices, P to W, always
 -- | there, each a tile. A tile pulses as its notes sound, so it shows that it
@@ -4638,7 +4652,13 @@ voicesPane st =
                 [ HH.i [ HP.class_ (HH.ClassName ("fa-solid " <> destIcon v.dest)) ] [] ]
             else HH.i [ HP.class_ (HH.ClassName ("fa-solid " <> destIcon v.dest))
                       , HP.style "position: absolute; right: 9px; top: 8px; font-size: 13px; color: #555555;"
-                      , HP.title (destTip v.dest) ] []
+                      , HP.title (if v.fed && v.dest == Odo then fedTip else destTip v.dest) ] []
+        -- it sounds and also feeds Odonus: both said
+        , if v.fed && v.dest == Sound
+            then HH.i [ HP.class_ (HH.ClassName "fa-solid fa-music")
+                      , HP.style "position: absolute; right: 30px; top: 8px; font-size: 13px; color: #555555;"
+                      , HP.title fedTip ] []
+            else HH.text ""
         , HH.div
             [ HP.style "display: flex; gap: 8px; align-items: center;"
             , HP.title (case v.name of
@@ -4665,6 +4685,7 @@ voicesPane st =
     -- not connected, which a silenced speaker read as muted (AC, 2026-10-27)
     Unrouted -> "fa-link-slash"
     Odo -> "fa-music"
+  fedTip = "its chords feed Odonus: a harmony route, set on the Dashboard's chart"
   destTip = case _ of
     Sound -> "it sounds"
     Unrouted -> "its channel goes nowhere: click to route it on the Dashboard (Notes)"

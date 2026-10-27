@@ -113,7 +113,7 @@ nameOf src = L.name case src of
   RM.SDrumLane i -> { name: P.laneName i, sub: "drum lane · " <> show (P.laneNote i) }
   RM.SVetulaVoice "" -> { name: "Vetula", sub: "default voice" }
   RM.SVetulaVoice nm -> case RM.cardChannelOf src of
-    Just ch -> { name: "Card · ch " <> show ch, sub: "Vetula" }
+    Just ch -> { name: RM.sourceLabel src, sub: "Vetula voice \x00b7 ch " <> show ch }
     Nothing -> { name: nm, sub: "Vetula voice" }
   RM.SSeleneBank a -> { name: a, sub: "Selene bank" }
 

@@ -23,6 +23,7 @@ module Vetula.StageCards
   , publishLines
   , readNotes
   , readRouting
+  , readHarmony
   , delLine
   , stageName
   , repoint
@@ -88,16 +89,25 @@ readFrame msg = case stripPrefix (Pattern "stage-texts ") msg of
 -- | `Reef.Routing.VoiceRouting` as JSON): from the whole table, what it holds
 -- | there; from a write of that key, the new text; `Nothing` for any other.
 readRouting :: String -> Maybe (Maybe String)
-readRouting msg = case stripPrefix (Pattern "stage-texts ") msg of
+readRouting = readKey "vetula/routing"
+
+-- | What a frame says of the harmony routes (`routing/harmony`, `Reef.Route`'s
+-- | text: `odonus.out <- vetula R`), which the Dashboard's chart sets: which
+-- | voice, if any, feeds Odonus.
+readHarmony :: String -> Maybe (Maybe String)
+readHarmony = readKey "routing/harmony"
+
+-- | One stage object's text, as a frame says it: from the whole table, what it
+-- | holds there; from a write of that key, the new text (or its deletion).
+readKey :: String -> String -> Maybe (Maybe String)
+readKey key msg = case stripPrefix (Pattern "stage-texts ") msg of
   Just json -> do
     table :: Object { text :: String } <- hush (readJSON json)
-    pure (_.text <$> Object.lookup routingKey table)
+    pure (_.text <$> Object.lookup key table)
   Nothing -> do
     json <- stripPrefix (Pattern "stage-text ") msg
     w :: { key :: String, text :: Nullable String } <- hush (readJSON json)
-    if w.key == routingKey then Just (toMaybe w.text) else Nothing
-  where
-  routingKey = "vetula/routing"
+    if w.key == key then Just (toMaybe w.text) else Nothing
 
 -- | Whether the whole table (the answer to a subscribe) holds Vetula's key
 -- | (`vetula/key`); `Nothing` for any other frame.

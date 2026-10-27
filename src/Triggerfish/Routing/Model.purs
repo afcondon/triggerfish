@@ -94,6 +94,7 @@ import Data.Maybe (Maybe(..), fromMaybe, isJust, maybe)
 import Data.Tuple (Tuple(..), snd)
 import Data.String (Pattern(..), contains, stripPrefix)
 import Data.String.Common (joinWith)
+import Reef.Vetula.VoiceName (voiceCount, voiceLetter)
 
 import Triggerfish.Selene.Layout (Output, outputKey)
 
@@ -123,7 +124,10 @@ sourceLabel = case _ of
   SOdonusHead h -> "Odonus " <> fromMaybe (show (h + 1)) (romans !! h)
   SDrumLane i -> "Drums " <> show i
   SVetulaVoice "" -> "Vetula (default)"
-  SVetulaVoice nm | Just ch <- stripPrefix (Pattern "ch") nm -> "Vetula ch " <> ch
+  -- channels 1 to 8 are the voices P to W: named as Vetula names them
+  SVetulaVoice nm | Just ch <- stripPrefix (Pattern "ch") nm -> case Int.fromString ch of
+    Just n | n >= 1 && n <= voiceCount -> "Vetula " <> voiceLetter n
+    _ -> "Vetula ch " <> ch
   SVetulaVoice nm -> "Vetula · " <> nm
   SSeleneBank a -> "Selene · " <> a
   where
