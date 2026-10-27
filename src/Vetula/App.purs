@@ -4607,9 +4607,17 @@ voicesPane st =
                 Just nm | v.found -> [ HP.attr (HH.AttrName "draggable") "true", HE.handler (EventType "dragstart") (TitleDrag nm) ]
                 _ -> []) )
         [ letter v.n false
-        , HH.i [ HP.class_ (HH.ClassName ("fa-solid " <> destIcon v.dest))
-               , HP.style ("position: absolute; right: 9px; top: 8px; font-size: 13px; color: " <> (if v.dest == Unrouted then "#b3261e" else "#555555") <> ";")
-               , HP.title (destTip v.dest) ] []
+        -- where it goes; unrouted, a link to where routing is done, the
+        -- Dashboard's Notes table (AC, 2026-10-27), in its own tab
+        , if v.dest == Unrouted
+            then HH.a [ HP.href "/dashboard.html", HP.target "triggerfish-dashboard"
+                      , HP.style "position: absolute; right: 9px; top: 8px; font-size: 13px; color: #b3261e;"
+                      , HP.title (destTip v.dest)
+                      , HE.onClick \e -> StopThen (ME.toEvent e) Nop ]
+                [ HH.i [ HP.class_ (HH.ClassName ("fa-solid " <> destIcon v.dest)) ] [] ]
+            else HH.i [ HP.class_ (HH.ClassName ("fa-solid " <> destIcon v.dest))
+                      , HP.style "position: absolute; right: 9px; top: 8px; font-size: 13px; color: #555555;"
+                      , HP.title (destTip v.dest) ] []
         , HH.div
             [ HP.style "display: flex; gap: 8px; align-items: center;"
             , HP.title (case v.name of
@@ -4633,11 +4641,12 @@ voicesPane st =
       [ HH.i [ HP.class_ (HH.ClassName ("fa-solid " <> icon)) ] [] ]
   destIcon = case _ of
     Sound -> "fa-volume-high"
-    Unrouted -> "fa-volume-off"
+    -- not connected, which a silenced speaker read as muted (AC, 2026-10-27)
+    Unrouted -> "fa-link-slash"
     Odo -> "fa-music"
   destTip = case _ of
     Sound -> "it sounds"
-    Unrouted -> "it sounds nowhere yet: route it"
+    Unrouted -> "its channel goes nowhere: click to route it on the Dashboard (Notes)"
     Odo -> "it shapes Odonus, and makes no sound of its own"
   tileCss = "@keyframes vt-pulse-a { from { background: #e4e4e4; box-shadow: 0 0 0 5px rgba(17,17,17,0.22); } to { background: #ffffff; box-shadow: 0 0 0 0 rgba(17,17,17,0); } }"
     <> " @keyframes vt-pulse-b { from { background: #e4e4e4; box-shadow: 0 0 0 5px rgba(17,17,17,0.22); } to { background: #ffffff; box-shadow: 0 0 0 0 rgba(17,17,17,0); } }"
