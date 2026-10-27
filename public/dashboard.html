@@ -345,6 +345,8 @@
     /* the harmony patch bay: ports on the labels, cables between them */
     svg.flows .cable { fill: none; stroke: var(--s-quant); stroke-width: 2; stroke-linecap: round; cursor: pointer; }
     svg.flows .cable:hover { stroke-width: 3.5; }
+    /* a route Odonus has locked out: kept, not followed (routing-in-tidal.md) */
+    svg.flows .cable.held { stroke-dasharray: 5 5; opacity: 0.45; }
     svg.flows .port { cursor: pointer; outline: none; }
     svg.flows .port circle { fill: var(--plate); stroke: var(--s-quant); stroke-width: 1.5; }
     svg.flows .port.on circle { fill: var(--s-quant); }

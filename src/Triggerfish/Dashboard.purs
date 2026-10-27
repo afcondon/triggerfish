@@ -764,6 +764,7 @@ flowChart st =
           Router.RHarmony -> { id: "src:harmony", short: "H", label: "harmony " <> st.router.harmony, machine: Nothing, allowed }
     , routes: st.router.routes <#> \rt ->
         { input: inputWord rt.input
+        , held: Array.elem rt.input st.router.locks
         , source: case rt.source of
             HarmonyRoute.VetulaKey -> "src:key"
             HarmonyRoute.VetulaVoice v -> "src:v" <> show v

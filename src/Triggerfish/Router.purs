@@ -42,7 +42,7 @@ import Data.Either (hush)
 import Data.Int as Int
 import Data.Map (Map)
 import Data.Map as Map
-import Data.Maybe (Maybe(..), fromMaybe, isJust)
+import Data.Maybe (Maybe(..), fromMaybe, isJust, maybe)
 import Data.Nullable (Nullable, toMaybe)
 import Data.String (Pattern(..), split, stripPrefix, trim)
 import Data.Tuple (Tuple(..))
@@ -73,6 +73,9 @@ type Router =
   , cards :: Map String String
   -- Vetula's key as the stage holds it (`vetula/key`), what `vetula key` feeds
   , vetulaKey :: Maybe String
+  -- Odonus's locks (`odonus/locks`): inputs keeping its own scale, a route
+  -- there drawn held off (docs/kb/plans/routing-in-tidal.md)
+  , locks :: Route.Locks
   , scalePattern :: String
   , scaleRoot :: String
   , harmony :: String
@@ -82,7 +85,7 @@ type Router =
 
 initial :: Router
 initial =
-  { routes: [], cards: Map.empty, vetulaKey: Nothing
+  { routes: [], cards: Map.empty, vetulaKey: Nothing, locks: []
   , scalePattern: "major", scaleRoot: "c", harmony: "<c'maj7 a'min7>/2", problem: Nothing }
 
 data Line = RKey | RVoice Int | RScale | RHarmony
@@ -107,7 +110,8 @@ readFrame msg r = case stripPrefix (Pattern "stage-texts ") msg of
     let
       cards = Map.fromFoldable (mapMaybe card (Object.toUnfoldable table))
       routes = fromMaybe [] (Object.lookup key table >>= \t -> hush (Route.parse t.text))
-    pure (withRoutes routes r { cards = cards, vetulaKey = _.text <$> Object.lookup keyKey table })
+    pure (withRoutes routes r { cards = cards, vetulaKey = _.text <$> Object.lookup keyKey table
+                              , locks = locksOf (_.text <$> Object.lookup locksKey table) })
   Nothing -> case stripPrefix (Pattern "stage-text ") msg of
     Just json -> do
       w :: { key :: String, text :: Nullable String } <- hush (readJSON json)
@@ -115,6 +119,7 @@ readFrame msg r = case stripPrefix (Pattern "stage-texts ") msg of
         _ | w.key == key ->
           pure (withRoutes (fromMaybe [] (toMaybe w.text >>= \t -> hush (Route.parse t))) r { problem = Nothing })
         t | w.key == keyKey -> pure r { vetulaKey = t }
+        t | w.key == locksKey -> pure r { locks = locksOf t }
         Just t | isCard w.key -> pure r { cards = Map.insert w.key t r.cards }
         Nothing | isCard w.key -> pure r { cards = Map.delete w.key r.cards }
         _ -> Nothing
@@ -123,6 +128,8 @@ readFrame msg r = case stripPrefix (Pattern "stage-texts ") msg of
       Nothing -> Nothing
   where
   isCard k = isJust (stripPrefix (Pattern "vetula/v") k)
+  locksKey = "odonus/locks"
+  locksOf = maybe [] (\t -> maybe [] identity (hush (Route.parseLocks t)))
   card (Tuple k v) = if isCard k then Just (Tuple k v.text) else Nothing
 
 -- | The stage's routes, and the scale and harmony rows showing what they hold.

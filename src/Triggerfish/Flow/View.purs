@@ -88,7 +88,9 @@ type Dock = { slot :: String, name :: String, open :: Boolean, playing :: Boolea
 -- | port for its grid and one for its out. `allowed` names the inputs a
 -- | source may feed; `routes` the cables; `armed` the port clicked first.
 type Port = { id :: String, short :: String, label :: String, machine :: Maybe String, allowed :: Array String }
-type Patch = { sources :: Array Port, routes :: Array { input :: String, source :: String }, armed :: Maybe String }
+-- | A route's `held`: its input is locked on Odonus, so it is kept but not
+-- | followed, and drawn faded and dashed (docs/kb/plans/routing-in-tidal.md).
+type Patch = { sources :: Array Port, routes :: Array { input :: String, source :: String, held :: Boolean }, armed :: Maybe String }
 
 width :: Number
 width = 1500.0
@@ -420,10 +422,11 @@ chartOf on hot live f =
     b <- inPort r.input
     let dx = max 40.0 (abs (b.x - a.x) / 2.0)
     pure $ svg "path"
-      [ attr "class" "cable", attr "d" ("M" <> n a.x <> "," <> n a.y <> " C" <> n (a.x + dx) <> "," <> n a.y <> " " <> n (b.x - dx) <> "," <> n b.y <> " " <> n b.x <> "," <> n b.y)
+      [ attr "class" (if r.held then "cable held" else "cable"), attr "d" ("M" <> n a.x <> "," <> n a.y <> " C" <> n (a.x + dx) <> "," <> n a.y <> " " <> n (b.x - dx) <> "," <> n b.y <> " " <> n b.x <> "," <> n b.y)
       , HE.onClick \_ -> on.cable r.source r.input
       ]
-      [ svg "title" [] [ HH.text ("odonus." <> r.input <> " ← " <> s.label <> " · unplug it in Odonus\x2019s quantisation pane") ] ]
+      [ svg "title" [] [ HH.text ("odonus." <> r.input <> " ← " <> s.label
+          <> (if r.held then " · held off: Odonus has its " <> r.input <> " locked, and keeps its own" else " · unplug it in Odonus\x2019s quantisation pane")) ] ]
 
   patchBay
     | not quantShown || xray = []
