@@ -181,16 +181,19 @@ handleQuery = case _ of
     mscenes <- H.query _vet unit (Vetula.AskScenes identity)
     mprogs <- H.query _vet unit (Vetula.AskProgressions identity)
     st <- H.get
-    -- the progressions you saved, by their frozen names (a glyph triple, one
-    -- colour: a container, as a session is)
+    -- the progressions, by their frozen names: a glyph a word, the one
+    -- picture of a progression anywhere (AC, 2026-10-27)
     let progRows = map (\p -> { slot: progSlotBase + p.slot, name: p.name
-                              , icons: map (\icon -> { icon, color: "#2a2a2a" }) (Array.filter (_ /= "") (String.split (String.Pattern "-") (String.takeWhile (_ /= String.codePointFromChar '′') p.name))) <> p.rebus
-                              , tag: p.key, current: p.current, section: "Progressions", builtin: true, drag: "vetula-progression " <> p.name, hint: "Click: open it, or drag it onto the staff. Drag it onto a voice (a tile under the score, or its badge) and the voice plays it. Drag it into Limulus: onto a voice's block it becomes that voice's progression; anywhere else it starts a new voice.", actions: [ "delete" ] })
+                              , icons: map (\icon -> { icon, color: "#2a2a2a" }) (Array.filter (_ /= "") (String.split (String.Pattern "-") (String.takeWhile (_ /= String.codePointFromChar '′') p.name)))
+                              , tag: p.key, current: p.current, section: "", builtin: true, drag: "vetula-progression " <> p.name, hint: "Click: open it, or drag it onto the staff. Drag it onto a voice (a tile under the score, or its badge) and the voice plays it. Drag it into Limulus: onto a voice's block it becomes that voice's progression; anywhere else it starts a new voice.", actions: [ "delete" ] })
                        (fromMaybe [] mprogs)
     let voiceRows = Voices.rows st.voices st.names st.routesText
     pure $ mscenes <#> \scenes -> reply
-      { title: if Array.null voiceRows && Array.null progRows then "Scenes" else "Vetula", modes: false, keep: "keep scene", notice: st.notice
-      , rows: voiceRows <> progRows <> map (_ { section = if Array.null voiceRows && Array.null progRows then "" else "Scenes" }) (Array.mapWithIndex (\i sc -> { slot: i, name: sc.name, icons: map (\icon -> { icon, color: "#2a2a2a" }) (Array.filter (_ /= "") (String.split (String.Pattern "-") (sessionOf sc))), tag: sc.key, current: false, section: "", builtin: false, drag: "", hint: "Click: load it onto the surface. Double-click: rename it.", actions: [ "delete" ] }) scenes) }
+      -- progressions first; a scene keeps the voices playing, so it is
+      -- offered once there are some, and drawn without glyphs, which mean
+      -- a progression (AC, 2026-10-27)
+      { title: "Progressions", modes: false, keep: if Array.null voiceRows then "" else "keep scene", notice: st.notice
+      , rows: progRows <> voiceRows <> map (_ { section = "Scenes" }) (Array.mapWithIndex (\i sc -> { slot: i, name: sc.name, icons: [], tag: sc.key, current: false, section: "", builtin: false, drag: "", hint: "Click: load it onto the surface. Double-click: rename it.", actions: [ "delete" ] }) scenes) }
   -- a saved progression's row: load it
   SQ.BrowserRecall i _ next | i >= progSlotBase -> settle *> H.query _vet unit (Vetula.LoadEntry (i - progSlotBase) next)
   -- a voice's row: show its card in Limulus (adding the block if it is gone)
@@ -256,14 +259,3 @@ handleQuery = case _ of
   SQ.PutSource _ _ -> pure Nothing
   SQ.AskClock _ -> pure Nothing
   SQ.SetRouting _ _ -> pure Nothing
-
--- | A scene's session, for its rebus: the `session:` tag, else the name's head
--- | (scenes are named `⟨session⟩ #N`).
-sessionOf :: { name :: String, session :: String, key :: String } -> String
-sessionOf sc
-  | sc.session /= "" = sc.session
-  | otherwise =
-      let head = fromMaybe "" (Array.head (String.split (String.Pattern " #") sc.name))
-      -- an alias is icon names joined by "-": a scene from before sessions
-      -- ("scene · C locrian") has none
-      in if String.contains (String.Pattern " ") head then "" else head

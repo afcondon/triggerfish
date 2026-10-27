@@ -1035,8 +1035,9 @@ component = H.mkComponent
       , padRoll: 0
       , varyRoll: 0
       , hoveredNode: Nothing
-      -- four cards, v1–v4, on MIDI ch 1-4 (Odonus I-IV in AC's routing)
-      , perfBoxes: map (\n -> { cardId: n, channel: n, label: "P" <> show n, seq: Nothing, stack: [], seqText: "", muted: false, term: TMidi, phrase: Nothing }) (range 1 4)
+      -- no voices until one is made: a page meeting an empty stage must not
+      -- write voices onto it (empty ones were, after a wipe, 2026-10-27)
+      , perfBoxes: []
       -- placeholder; Initialize resumes the persisted session or mints a fresh one
       , perfSession: { alias: "", name: "", nextScene: 1 }
       , perfScenes: []
@@ -1246,39 +1247,21 @@ handleQuery = case _ of
       , help: "keys & help"
       , helpPulse: s.helpPulse
       , chips:
-          -- the progression being built: its frozen name as a monochrome
-          -- glyph and whether this version is saved (its length is on the
-          -- view, AC); pressing it saves, or once saved arranges it on the
-          -- score. Then clear.
-          [ case s.progName of
-              -- the progression open when the page last closed, offered back
-              -- here, on every view (it was on the score, which a reload
-              -- never lands on)
+          -- no progression open: say so, or offer back the one open when the
+          -- page last closed. An open one is not named here: the score and the
+          -- drawer name it, and it is kept as it is made (AC, 2026-10-27).
+          ( case s.progName of
               Nothing | length s.path == 0, Just w <- s.resumable ->
-                { id: "prog", label: "resume", active: false, attention: false
-                , icons: map (\icon -> { icon, color: "#2a2a2a" }) (filter (\w' -> w' /= "" && not (isJust (fromString w'))) (split (Pattern "-") (SCU.takeWhile (_ /= '′') w.name)))
-                , tip: "reopen " <> w.name <> ", the progression you had open when the page last closed" }
-              Nothing ->
-                { id: "prog", label: "no progression", icons: [], active: false, attention: false
-                , tip: "on the lattice, shift-click (or return) takes a chord into a new progression" }
-              -- named, with every chord taken out: it has no score to offer
-              Just nm | length s.path == 0 ->
-                { id: "prog", label: "empty", active: false, attention: false
-                , icons: map (\icon -> { icon, color: "#2a2a2a" }) (filter (\w -> w /= "" && not (isJust (fromString w))) (split (Pattern "-") (SCU.takeWhile (_ /= '′') nm)))
-                , tip: nm <> " \x00b7 empty: on the lattice, shift-click (or return) takes a chord into it" }
-              Just nm ->
-                let unsaved = length s.path > 0 && currentSource s /= s.lastPubSig
-                in { id: "prog"
-                   , icons: map (\icon -> { icon, color: "#2a2a2a" }) (filter (\w -> w /= "" && not (isJust (fromString w))) (split (Pattern "-") (SCU.takeWhile (_ /= '′') nm)))
-                   , label: (if SCU.contains (Pattern "′") nm then "′ " else "") <> maybe "" (\k -> show k <> " \x00b7 ") (last (split (Pattern "-") nm) >>= fromString)
-                       <> (if isJust s.lossArmed then "\x25cf unsaved: again to discard" else if unsaved then "\x25cf save" else "\x2713 saved")
-                   , active: true, attention: unsaved
-                   , tip: nm <> (if unsaved then " \x00b7 unsaved: click or \x2318S saves this version, \x2318\x21e7S a new sibling" else " \x00b7 saved \x00b7 click: arrange it, on the score")
-                       <> " \x00b7 on the lattice, backspace takes back the last chord, delete starts a new progression" }
-          ] <> (if length s.path == 0 then [] else
-          [ { id: "clear", label: "clear", icons: [], active: false, attention: false
-            , tip: "put this progression away and start a new one (delete, on the lattice)"
-                <> (if currentSource s /= s.lastPubSig then " \x00b7 its unsaved changes are lost" else "") } ])
+                [ { id: "prog", label: "resume", active: false, attention: false
+                  , icons: nameGlyphs w.name
+                  , tip: "reopen " <> w.name <> ", the progression you had open when the page last closed" } ]
+              _ | length s.path == 0 ->
+                [ { id: "prog", label: "no progression", icons: [], active: false, attention: false
+                  , tip: "on the lattice, shift-click (or return) takes a chord into a new progression" } ]
+              _ -> []
+          ) <> (if length s.path == 0 then [] else
+          [ { id: "clear", label: "new", icons: [], active: false, attention: false
+            , tip: "start a new progression; this one stays in the drawer (delete, on the lattice)" } ])
       }
   BarAct act next -> do
     s <- H.get
@@ -1290,12 +1273,9 @@ handleQuery = case _ of
       "help" -> handleAction ToggleHelp
       _ | Just v <- SCU.stripPrefix (Pattern "pick:key:") act -> handleAction (SelectKey v)
         | Just v <- SCU.stripPrefix (Pattern "pick:scale:") act -> handleAction (SelectScale v)
-      -- the progression's chip says save while unsaved, and does it; saved,
-      -- it arranges the progression on the score
       "chip:prog"
         | length s.path == 0 && isJust s.resumable -> handleAction ResumeWorking
-        | unsavedNow s -> handleAction (SaveProg false)
-        | otherwise -> when (length s.path > 0) (handleAction (SetStage (Hunt Score)))
+        | otherwise -> pure unit
       "chip:clear" -> guardLoss "clear" (handleAction ClearPath)
       _ -> pure unit
     pure (Just next)
@@ -1484,6 +1464,11 @@ handleAction :: forall m. MonadAff m => Action -> H.HalogenM State Action Slots 
 handleAction a = do
   before <- H.gets _.perfBoxes
   handleActionCore a
+  -- **No save** (AC, 2026-10-27): the open progression is kept as it is made,
+  -- each edit its next version, so it is in the drawer from its first chord,
+  -- a line can name it at once, and its voices play each edit as it lands
+  st0 <- H.get
+  when (unsavedNow st0 && isJust st0.progName) (handleActionCore (SaveProg false))
   -- no progression, no score (AC, 2026-10-27): arriving there with none (a
   -- link, a reload) or its last bar deleted, back to the field
   st <- H.get
@@ -2252,7 +2237,7 @@ handleActionCore = case _ of
         let beatMs = 60000.0 / (if st.clockTempo > 0.0 then st.clockTempo else 120.0)
             beats = map (\ms -> max 1 (round (ms / beatMs))) (zipWith (-) (drop 1 times) times)
         H.modify_ _ { tapping = Nothing, rhythm = beats, scoreBar = Nothing
-                    , publishMsg = Just ("rhythm: " <> joinWith " " (map show beats) <> " beats · save to keep it") }
+                    , publishMsg = Just ("rhythm: " <> joinWith " " (map show beats) <> " beats") }
 
   TapStop -> H.modify_ _ { tapping = Nothing, scoreBar = Nothing }
 
@@ -2602,8 +2587,8 @@ handleActionCore = case _ of
           lib = case findIndex (\e -> e.name == nm) st.library of
             Just i -> fromMaybe st.library (updateAt i entry st.library)
             Nothing -> st.library <> [ entry ]
-      H.modify_ _ { library = lib, progName = Just nm, lastPubSig = sig, lastCapIdx = findIndex (\e -> e.name == nm) lib
-                  , publishMsg = Just ("saved " <> nm) }
+      H.modify_ \s -> s { library = lib, progName = Just nm, lastPubSig = sig, lastCapIdx = findIndex (\e -> e.name == nm) lib
+                        , publishMsg = if fork then Just ("kept as " <> nm) else s.publishMsg }
       persistLib
       liftEffect (Store.saveWorking { name: nm, source: sig, saved: sig })
       publishProgressions
@@ -3287,28 +3272,6 @@ relibrary lib s = s
   { library = lib
   , lastCapIdx = s.lastCapIdx >>= (s.library !! _) >>= \e -> findIndex (\x -> x.name == e.name) lib
   }
-
--- | Capture the current progression into the stack — update the session's ephemeral
--- | ◦ in place, or open a new one — then persist. Called by the key-change
--- | snapshot (`rebuild`); uses the CURRENT key, so the snapshot is
--- | self-contained in the old key. Assumes a non-empty path.
-captureSteps :: forall o m. MonadAff m => State -> H.HalogenM State Action Slots o m Unit
-captureSteps st = do
-  let sig = currentSource st
-      kl = groupLabel st.key
-  case st.lastCapIdx of
-    Just i | Just e <- index st.library i, not e.kept ->
-      H.modify_ _ { library = fromMaybe st.library (modifyAt i (_ { keyLabel = kl, source = sig }) st.library), lastCapSig = sig }
-    _ -> do
-      let n = st.capSeq + 1
-          nm0 = fromMaybe (kl <> " ◦" <> show n) st.progName
-          -- a kept entry of the same name is frozen: editing it forks a
-          -- sibling (skull-tornado → skull-tornado-2), keeping both
-          nm = if any (\e -> e.name == nm0) st.library then siblingName st.library nm0 else nm0
-      H.modify_ _ { library = st.library <> [ { name: nm, keyLabel: kl, source: sig, kept: false, id: "" } ]
-                  , lastCapIdx = Just (length st.library), capSeq = n, lastCapSig = sig
-                  , progName = Just nm }
-  persistLib
 
 -- | Note-off every voice's currently-held notes.
 silenceHeld :: forall o m. MonadAff m => State -> H.HalogenM State Action Slots o m Unit
@@ -4299,8 +4262,6 @@ contentKey c = show c.pcs <> "|" <> show (sort c.voicing) <> "|" <> show c.bassP
 -- | pointer is reset so the transposed copy forks a fresh ◦ (the old one is frozen).
 rebuild :: forall o m. MonadAff m => Key -> H.HalogenM State Action Slots o m Unit
 rebuild key = do
-  st <- H.get
-  when (length (pathSteps st) > 0) (captureSteps st)
   st2 <- H.get
   let d = nearestShift st2.key.tonic key.tonic
       pathIds = Set.fromFoldable st2.path
@@ -4311,8 +4272,9 @@ rebuild key = do
     { chords = chords'
     , imported = Set.union st2.imported pathIds
     , familyScale = Map.empty, focusedFamily = Nothing
-    -- keep `path` (the progression, now transposed); fork a fresh capture session
-    , lastCapIdx = Nothing, lastCapSig = "" }
+    -- keep `path` (the progression, now transposed): an edit like any other,
+    -- kept under its name, in its new key
+    }
   startWith key seedFocus set
 
 -- ---------------------------------------------------------------------------
@@ -4656,7 +4618,7 @@ voicesPane st =
         , HH.div
             [ HP.style "display: flex; gap: 8px; align-items: center;"
             , HP.title (case v.name of
-                Just nm | not v.found -> nm <> ": not saved here, so silent"
+                Just nm | not v.found -> nm <> ": not in this library, so silent"
                 Just nm | open -> nm <> ": open above"
                 Just nm -> nm <> ": click to open it, or drag it onto the staff, or onto another voice"
                 Nothing -> "its own chords, written in Limulus") ]
@@ -4822,10 +4784,10 @@ helpRows =
   , { gesture: "f", meaning: "keep this voicing among the chord's favourites" }
   , { gesture: "p", meaning: "play the progression" }
   , { gesture: "backspace", meaning: "take back the progression's last chord" }
-  , { gesture: "delete", meaning: "clear the progression (unsaved: press again to confirm)" }
+  , { gesture: "delete", meaning: "start a new progression; this one stays in the drawer" }
   , { gesture: "esc", meaning: "close the innermost thing: tapping, the revoice view, the chord in hand" }
   , { gesture: "1 · 2", meaning: "previews struck (block) or rolled (arpeggio)" }
-  , { gesture: "⌘S · ⌘⇧S", meaning: "save the progression; save it as a new sibling" }
+  , { gesture: "⌘⇧S", meaning: "keep a copy of the progression as a new sibling (it is kept as you go)" }
   , { gesture: "shift-space", meaning: "the transport: play or stop" }
   , { gesture: "b · `", meaning: "the library; Limulus" }
   ]
@@ -5859,7 +5821,6 @@ scoreSurface st =
     ]
   where
   sp = Score.spellingOf st.key.tonic (scaleSet st.key)
-  unsaved = length st.path > 0 && currentSource st /= st.lastPubSig
   openRow = openStaff st
   openHandlers =
     { press: ScorePress
@@ -5880,7 +5841,6 @@ scoreSurface st =
     , tap: Just { start: TapStart, stop: TapStop, clear: ClearRhythm }
     , play: Just PlayPath
     , addChords: Nothing
-    , save: if unsaved then Just (SaveProg false) else Nothing
     , toQuadrat: case st.progName of
         Just nm | any (\e -> e.kept && e.name == nm) st.library -> Just (ToQuadrat nm)
         _ -> Nothing
@@ -5900,7 +5860,6 @@ openStaff st = openRow
   where
   pathNodes = mapMaybe (\pid -> find (\c -> c.id == pid) st.chords) st.path
   openChords = map playNotes pathNodes
-  unsaved = length st.path > 0 && currentSource st /= st.lastPubSig
 
   -- the voices on the stage, in letter order: their progression's name (if
   -- they name one), their chords, and how they play them
@@ -5917,10 +5876,7 @@ openStaff st = openRow
   openBadges = maybe [] (\nm -> map _.badge (filter (\c -> c.name == Just nm) cards)) st.progName
   openRow =
     { title: fromMaybe "new progression" st.progName
-    , note: if length st.path == 0 then "empty: take chords in from the lattice"
-            else if unsaved && not (Array.null openBadges) then "edited: its voices play the saved version until you save"
-            else if unsaved then "not saved"
-            else ""
+    , note: if length st.path == 0 then "empty: take chords in from the lattice" else ""
     , top: true
     , chords: openChords
     , names: map OP.chordName openChords
@@ -5929,9 +5885,9 @@ openStaff st = openRow
     , selected: selOf (fromMaybe "new progression" st.progName) (length openChords)
     , dragging: st.scoreDrag
     , ownKey: Set.member (fromMaybe "new progression" st.progName) st.scoreRead
-    -- the page's key, said: the open progression is in it
-    , saved: Just { tonic: st.key.tonic, scale: scaleSet st.key, mode: modeWord st.key.mode, saved: false }
-    , rebus: bundleRebus openChords
+    -- its key is the bar's key picker, not said again here
+    , saved: Nothing
+    , glyphs: maybe [] nameGlyphs st.progName
     , beats: rhythmOf st
     , tapping: map _.at st.tapping
     , playing: st.playingBar
@@ -6001,7 +5957,7 @@ staffWatermark st =
     , select: const none, unselect: none, readIn: none, adopt: Nothing
     , duplicate: Nothing, remove: Nothing, dropAt: Nothing, padOver: Nothing, padDrop: Nothing
     , voiceOver: const none, voiceDrop: \_ _ -> none, titleDrag: Nothing
-    , tap: Nothing, play: Nothing, toQuadrat: Nothing, addChords: Nothing, save: Nothing
+    , tap: Nothing, play: Nothing, toQuadrat: Nothing, addChords: Nothing
     }
 
 -- | The scene for a rung, and the frame it should fill.
@@ -6826,3 +6782,11 @@ keyOptions :: Array { value :: String, label :: String }
 keyOptions = map (\pc -> { value: show pc, label: noteName pc }) (range 0 11)
 
 
+
+-- | A progression's name as its glyphs, one a word, in ink: `crown-atom-fire`
+-- | is a crown, an atom and a fire. A numeric tail (`-2`) and a `′` are not
+-- | words and draw nothing.
+nameGlyphs :: String -> Array TGlyph.GlyphIcon
+nameGlyphs nm =
+  map (\icon -> { icon, color: "#2a2a2a" })
+    (filter (\w -> w /= "" && not (isJust (fromString w))) (split (Pattern "-") (SCU.takeWhile (_ /= '′') nm)))

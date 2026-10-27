@@ -75,9 +75,9 @@ type Staff =
   , ownKey :: Boolean
   , dragging :: Maybe Int
   , saved :: Maybe { tonic :: Int, scale :: Array Int, mode :: String, saved :: Boolean }
-  -- the rebus of its chords as a set: the same chords in another order
-  -- wear the same picture
-  , rebus :: Array GlyphIcon
+  -- its name as glyphs, one a word (AC, 2026-10-27: one picture of a
+  -- progression, its name, wherever it is shown)
+  , glyphs :: Array GlyphIcon
   -- each bar's length in beats, if a rhythm was tapped in (empty: a bar
   -- each); and the bar a take in progress has reached
   , beats :: Array Int
@@ -115,11 +115,10 @@ type Handlers i =
   , tap :: Maybe { start :: i, stop :: i, clear :: i }
   -- play it through, in its rhythm, or stop
   , play :: Maybe i
-  -- a saved progression, sent to Quadrat to sample
+  -- a progression, sent to Quadrat to sample
   , toQuadrat :: Maybe i
-  -- back to the lattice to take more chords in; save this version
+  -- back to the lattice to take more chords in
   , addChords :: Maybe i
-  , save :: Maybe i
   }
 
 -- | The natural pitch class of each letter.
@@ -352,7 +351,7 @@ system pageSp on row =
         , chip (if row.ownKey then "\x2713 spelled in " <> nm else "spell in " <> nm) ("show this row's notes, and colour them, as " <> nm) on.readIn
         ] <> case on.adopt of
           Just act | Array.length r.outside < inKey ->
-            [ chip ("make " <> nm <> " the key") ("the key becomes " <> nm <> ", with nothing transposed: the lattice follows, and saving the progression keeps it") (act r.root r.key) ]
+            [ chip ("make " <> nm <> " the key") ("the key becomes " <> nm <> ", with nothing transposed: the lattice follows, and the progression keeps it") (act r.root r.key) ]
           _ -> []
   plural k = if k == 1 then "" else "s"
   chip label tip act =
@@ -363,11 +362,9 @@ system pageSp on row =
 
   header =
     HH.div [ HP.style "display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; margin-bottom: 2px;" ]
-      ( [ HH.span ([ HP.style "font-size: 13px; color: #111111; font-weight: 600;", HP.title "drag it onto a voice to have the voice play it" ] <> titleDrags) [ HH.text row.title ] ]
-          <> (if Array.null row.rebus then [] else
-                [ HH.span [ HP.style "display: inline-flex; gap: 3px; align-items: center; opacity: 0.85;"
-                          , HP.title "its chords as a set: the same chords in another order wear the same picture" ]
-                    (map (\g -> HH.i [ HP.attr (HH.AttrName "class") ("fa-solid fa-" <> g.icon), HP.style ("font-size: 12px; color: " <> g.color <> ";") ] []) row.rebus) ])
+      ( [ HH.span ([ HP.style "display: inline-flex; align-items: center; gap: 8px; font-size: 13px; color: #111111; font-weight: 600;", HP.title "drag it onto a voice to have the voice play it, or into Limulus" ] <> titleDrags)
+            ( map (\g -> HH.i [ HP.attr (HH.AttrName "class") ("fa-solid fa-" <> g.icon), HP.style ("font-size: 18px; color: " <> g.color <> ";") ] []) row.glyphs
+                <> [ HH.text row.title ] ) ]
           <> (case on.play of
                 Just act | not (Array.null row.chords) && isNothing row.tapping ->
                   [ chip (if isJust row.playing then "\x25a0 stop" else "\x25b6 play")
@@ -385,9 +382,6 @@ system pageSp on row =
                     <> (if Array.null row.beats then [] else
                           [ chip "\x00d7 rhythm" "back to one chord a bar" t.clear ])
                 _, _ -> [])
-          <> (case on.save of
-                Just act -> [ chip "save" "save this version (\x2318S); its voices then play it" act ]
-                Nothing -> [])
           <> (case on.addChords of
                 Just act | not (Array.null row.chords) -> [ chip "+ chords" "back to the lattice to take more chords in" act ]
                 _ -> [])

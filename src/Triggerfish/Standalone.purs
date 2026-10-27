@@ -712,17 +712,18 @@ browserDrawer st b =
       [ HH.div
       [ style $ "width:" <> show w <> "px;height:100%;box-sizing:border-box;overflow-y:auto;padding:14px 12px 20px" ]
       ( [ HH.div [ style "display:flex;align-items:baseline;gap:8px;border-bottom:1px solid #00000018;padding-bottom:6px;margin-bottom:8px" ]
-            [ HH.span [ style (engrave <> ";font-size:12px;letter-spacing:0.16em;color:#3f3c33") ] [ HH.text (String.toUpper b.title) ]
-            , HH.span [ style "flex:1" ] []
-            , HH.button
+            ( [ HH.span [ style (engrave <> ";font-size:12px;letter-spacing:0.16em;color:#3f3c33") ] [ HH.text (String.toUpper b.title) ]
+            , HH.span [ style "flex:1" ] [] ]
+            -- a machine with nothing to keep yet says so with no keep label
+            <> (if b.keep == "" then [] else
+            [ HH.button
                 [ HE.onClick \_ -> KeepRow, HP.title "Keep what the machine has now, as a new row"
                 , style "font:11px Georgia,serif;padding:2px 8px;border:1px solid #00000033;border-radius:4px;background:#f6f2e7;cursor:pointer" ]
-                [ HH.text b.keep ]
-            ]
+                [ HH.text b.keep ] ]) )
         ]
           <> (if b.notice == "" then [] else [ notice ])
           <> (if b.modes then [ key ] else [])
-          <> (if Array.null b.rows then [ HH.p [ style "font-size:12px;font-style:italic;color:#6a6657" ] [ HH.text ("Nothing here yet: " <> b.keep <> " adds what is playing.") ] ] else [])
+          <> (if Array.null b.rows then [ HH.p [ style "font-size:12px;font-style:italic;color:#6a6657" ] [ HH.text (if b.keep == "" then "Nothing here yet." else "Nothing here yet: " <> b.keep <> " adds what is playing.") ] ] else [])
           <> Array.concatMap section (Array.nub (map _.section b.rows))
       ) ]
   -- a word from the machine after something it can take back
