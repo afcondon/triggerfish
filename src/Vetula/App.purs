@@ -72,6 +72,7 @@ import Triggerfish.Transport (Sounding(..))
 import Triggerfish.Midi.Routing as Routing
 import Triggerfish.Glyph (ChipView, Glyph, sessionAliasOf)
 import Triggerfish.Bar (Bar)
+import Triggerfish.Bar as Bar
 -- Qualified: `chordGlyph` is also the name of this module's lattice-node
 -- renderer, which draws a chord and has nothing to do with identity.
 import Triggerfish.Clips.Share as Share
@@ -1190,13 +1191,13 @@ handleQuery = case _ of
       -- bar (AC, 2026-10-08): the second bar went
       { tabs:
           let v = huntOr s.lastLens s.stage
-          in [ { id: "lattice", label: "lattice", active: elem v rungs, enabled: true, tip: "the chords built on the key, from triads up" }
-             , { id: "banks", label: "banks", active: v == Pads, enabled: true, tip: "nine banks of sixteen: how far from home, by how rich" }
+          in [ { id: "lattice", label: "lattice", active: elem v rungs, enabled: true, look: Bar.Warm, tip: "the chords built on the key, from triads up" }
+             , { id: "banks", label: "banks", active: v == Pads, enabled: true, look: Bar.Warm, tip: "nine banks of sixteen: how far from home, by how rich" }
              -- no progression, no score: it would be a page with nothing to do
-             , { id: "score", label: "score", active: v == Score, enabled: length s.path > 0
+             , { id: "score", label: "score", active: v == Score, enabled: length s.path > 0, look: Bar.Ink
                , tip: if length s.path > 0 then "the progression on a grand staff, to arrange and play"
                       else "the score arranges a progression: take a chord in from the lattice first (shift-click, or return)" }
-             , { id: "review", label: "review", active: v == River, enabled: true, tip: "everything played this session, as a river: mark the good bits, loop them" } ]
+             , { id: "review", label: "review", active: v == River, enabled: true, look: Bar.Night, tip: "everything played this session, as a river: mark the good bits, loop them" } ]
       -- marking is in the review view, as on Odonus
       , marks: ""
       -- the session names saved scenes; it is not shown (AC: two things
@@ -4324,13 +4325,16 @@ limulusWanted = HH.div [ HP.attr (HH.AttrName "data-limulus-dock") "open", HP.st
 -- | rolled, and where it sounds.
 soundControls :: forall m. State -> Array (H.ComponentHTML Action Slots m)
 soundControls st =
-  [ barGroup
-      [ barBtn (st.style == StyleBlock) "block" "previews strike the chord (key 1)" (SetStyle StyleBlock)
-      , barBtn (st.style == StyleArp) "arpeggio" "previews roll the chord (key 2)" (SetStyle StyleArp) ]
-  , barGroup
-      [ barBtn (st.auditionSel /= AuditionOff) ("\x266a " <> soundValue st.auditionSel)
+  [ barGroup ink
+      [ barBtn ink (st.style == StyleBlock) "block" "previews strike the chord (key 1)" (SetStyle StyleBlock)
+      , barBtn ink (st.style == StyleArp) "arpeggio" "previews roll the chord (key 2)" (SetStyle StyleArp) ]
+  , barGroup ink
+      [ barBtn ink (st.auditionSel /= AuditionOff) ("\x266a " <> soundValue st.auditionSel)
           ("where previews sound (" <> st.midiName <> ") \x00b7 click: browser \x2192 continuo \x2192 MIDI \x2192 off") CycleSound ]
   ]
+  where
+  -- on the score, its engraving ink (CR-15)
+  ink = st.stage == Hunt Score
 
 -- | **The workspace's own controls** (AC, 2026-10-08: the second bar went):
 -- | how a preview sounds, top right, on every view that previews; and the
@@ -4352,14 +4356,20 @@ previewControls st = case st.stage of
                      \(Select.Selected v) -> ReflavourFamily v ] ]
         _ -> []
 
-barGroup :: forall m. Array (H.ComponentHTML Action Slots m) -> H.ComponentHTML Action Slots m
-barGroup = HH.div [ HP.style "display: flex; border: 1px solid #d8cfb6; border-radius: 5px; overflow: hidden; background: #fbf8f0; box-shadow: 0 1px 2px #0000000d;" ]
+-- | A group of buttons; `ink` draws it in the score's engraving ink.
+barGroup :: forall m. Boolean -> Array (H.ComponentHTML Action Slots m) -> H.ComponentHTML Action Slots m
+barGroup ink = HH.div [ HP.style ("display: flex; border-radius: 5px; overflow: hidden; box-shadow: 0 1px 2px #0000000d; "
+                                    <> (if ink then "border: 1px solid #111111; background: #ffffff;" else "border: 1px solid #d8cfb6; background: #fbf8f0;")) ]
 
-barBtn :: forall m. Boolean -> String -> String -> Action -> H.ComponentHTML Action Slots m
-barBtn on label tip act =
+barBtn :: forall m. Boolean -> Boolean -> String -> String -> Action -> H.ComponentHTML Action Slots m
+barBtn ink on label tip act =
   HH.button
     [ HP.style ("border: none; padding: 4px 12px; font-size: 12px; cursor: pointer; white-space: nowrap; "
-                 <> (if on then "background: #8d7a4a; color: #fff;" else "background: #fbf8f0; color: #5a5240;"))
+                 <> (case ink, on of
+                       true, true -> "background: #111111; color: #ffffff;"
+                       true, false -> "background: #ffffff; color: #111111;"
+                       false, true -> "background: #8d7a4a; color: #fff;"
+                       false, false -> "background: #fbf8f0; color: #5a5240;"))
     , HP.title tip, HE.onClick \_ -> act ]
     [ HH.text label ]
 
@@ -4383,19 +4393,19 @@ sideTip = case _ of
 scoreCandidates :: forall m. State -> H.ComponentHTML Action Slots m
 scoreCandidates st =
   HH.div
-    [ HP.style ("flex: " <> (if st.scoreCands then "1 1 0" else "0 0 auto") <> "; min-height: 0; display: flex; flex-direction: column; border-top: 1px solid #e6dfcc; background: #fffdf8;") ]
-    ( [ HH.div [ HP.style "display: flex; align-items: baseline; gap: 10px; padding: 8px 16px 6px; font-size: 11px; color: #a09880; border-bottom: 1px solid #f0eadb; cursor: pointer;"
+    [ HP.style ("flex: " <> (if st.scoreCands then "1 1 0" else "0 0 auto") <> "; min-height: 0; display: flex; flex-direction: column; border-top: 1px solid #e2e2e2; background: #ffffff;") ]
+    ( [ HH.div [ HP.style "display: flex; align-items: baseline; gap: 10px; padding: 8px 16px 6px; font-size: 11px; color: #8a8a8a; border-bottom: 1px solid #ececec; cursor: pointer;"
                , HP.title (if st.scoreCands then "tuck the alternatives down" else "bring the alternatives up")
                , HE.onClick \_ -> ToggleScoreCands ]
         ( ( case varySource st of
             Just src ->
-              [ HH.span [ HP.style "font-size: 14px; color: #3a3428; font-weight: 500;" ] [ HH.text (chordTitle st src) ]
+              [ HH.span [ HP.style "font-size: 14px; color: #111111; font-weight: 500;" ] [ HH.text (chordTitle st src) ]
               , HH.text (case st.scoreBar of
                   Just i | puts st -> "bar " <> show (i + 1) <> " \x00b7 click hears it in its register \x00b7 shift-click puts it there \x00b7 or drag it onto any bar"
                   _ -> "click a bar to see its alternatives") ]
             Nothing -> [ HH.text "click a bar of the score: its substitutes, variations and relatives show here" ] )
             <> [ HH.span [ HP.style "flex: 1 1 auto;" ] []
-               , HH.span [ HP.style "font-size: 12px; color: #8d7a4a;" ]
+               , HH.span [ HP.style "font-size: 12px; color: #555555;" ]
                    [ HH.text (if st.scoreCands then "substitutes \x00b7 variations \x00b7 relatives \x25be" else "substitutes \x00b7 variations \x00b7 relatives \x25b4") ] ] ) ]
       <> (if not st.scoreCands then [] else
       [ HH.div [ HP.style "flex: 1 1 auto; min-height: 0; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr));" ]
@@ -4403,8 +4413,8 @@ scoreCandidates st =
     )
   where
   column t =
-    HH.div [ HP.style "min-height: 0; overflow: auto; padding: 8px 12px 16px; border-right: 1px solid #f0eadb;" ]
-      ( [ HH.div [ HP.style "font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; color: #3a3428; margin-bottom: 6px;", HP.title (sideTip t) ]
+    HH.div [ HP.style "min-height: 0; overflow: auto; padding: 8px 12px 16px; border-right: 1px solid #ececec;" ]
+      ( [ HH.div [ HP.style "font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; color: #111111; margin-bottom: 6px;", HP.title (sideTip t) ]
             [ HH.text (sideLabel t) ] ]
           <> maybe [] (sideContent st t) (varySource st) )
 
@@ -4473,7 +4483,7 @@ sideContent st t src = case st.cands of
   where
   smallBtn label tip act =
     HH.button
-      [ HP.style "border: 1px solid #cdbb8c; background: #fbf6ea; color: #7a5c00; cursor: pointer; padding: 2px 8px; border-radius: 4px; font-size: 11px; white-space: nowrap;"
+      [ HP.style "border: 1px solid #9a9a9a; background: #ffffff; color: #333333; cursor: pointer; padding: 2px 8px; border-radius: 4px; font-size: 11px; white-space: nowrap;"
       , HP.title tip, HE.onClick \_ -> act ]
       [ HH.text label ]
   substitutesOf cs =
@@ -4482,8 +4492,8 @@ sideContent st t src = case st.cands of
       section reason heading blurb =
         let cs' = map snd (filter (\(Tuple sub _) -> sub.reason == reason) nodes)
         in if length cs' == 0 then [] else
-          [ HH.div [ HP.style "font-size: 10px; letter-spacing: 0.1em; text-transform: uppercase; color: #9a8d6a; margin: 10px 0 2px;" ] [ HH.text heading ]
-          , HH.div [ HP.style "font-size: 11px; color: #a09880; margin-bottom: 4px;" ] [ HH.text blurb ]
+          [ HH.div [ HP.style "font-size: 10px; letter-spacing: 0.1em; text-transform: uppercase; color: #777777; margin: 10px 0 2px;" ] [ HH.text heading ]
+          , HH.div [ HP.style "font-size: 11px; color: #8a8a8a; margin-bottom: 4px;" ] [ HH.text blurb ]
           , HH.div [ HP.style "display: grid; grid-template-columns: repeat(4, 1fr); gap: 4px;" ] (map (padButton st) cs') ]
     in section HSub.Tritone "tritone substitute" "the dominant a tritone away: same third and seventh, swapped"
          <> section HSub.SameRoot "same root" "another quality on this root"
@@ -4505,7 +4515,7 @@ sideContent st t src = case st.cands of
   densityBtn i d =
     let on = i == st.sideDensity
     in HH.button
-         [ HP.style ("border: 1px solid " <> (if on then "#8d7a4a" else "#e0d8c2") <> "; background: " <> (if on then "#f2e7c6" else "#fbf8f0") <> "; color: #5a5240; border-radius: 4px; padding: 2px 9px; font-size: 11px; cursor: pointer;")
+         [ HP.style ("border: 1px solid " <> (if on then "#111111" else "#d6d6d6") <> "; background: " <> (if on then "#111111" else "#ffffff") <> "; color: " <> (if on then "#ffffff" else "#333333") <> "; border-radius: 4px; padding: 2px 9px; font-size: 11px; cursor: pointer;")
          , HP.title (HV.densityBlurb d), HE.onClick \_ -> SetSideDensity i ]
          [ HH.text (HV.densityLabel d) ]
   -- Three rows from the same generator at three settings of its adventure
@@ -4513,11 +4523,11 @@ sideContent st t src = case st.cands of
   relatives cs =
     let group lbl tip cs' =
           if length cs' == 0 then []
-          else [ HH.div [ HP.style "font-size: 11px; color: #7a7360; letter-spacing: 0.08em; text-transform: uppercase; margin: 8px 0 4px;", HP.title tip ] [ HH.text lbl ]
-               , HH.div [ HP.style "display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 4px; background: #fbf8f0; border: 1px solid #ece5d2; border-radius: 5px; padding: 6px;" ]
+          else [ HH.div [ HP.style "font-size: 11px; color: #555555; letter-spacing: 0.08em; text-transform: uppercase; margin: 8px 0 4px;", HP.title tip ] [ HH.text lbl ]
+               , HH.div [ HP.style "display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 4px; background: #fafafa; border: 1px solid #e6e6e6; border-radius: 5px; padding: 6px;" ]
                    (map (padButton st) cs') ]
     in [ HH.div [ HP.style "display: flex; margin-bottom: 4px;" ]
-           [ HH.div [ HP.style "flex: 1 1 auto; font-size: 11px; color: #a09880;" ] [ HH.text "what could come next, voice-led from it" ]
+           [ HH.div [ HP.style "flex: 1 1 auto; font-size: 11px; color: #8a8a8a;" ] [ HH.text "what could come next, voice-led from it" ]
            , smallBtn "shake \x27f3" "a different crop of relatives" ShakeGenerate ] ]
          <> group "smooth" "the nearest moves: most notes held or moved by a step" cs.smooth
          <> group "further" "a little more adventurous" cs.middle
@@ -5523,7 +5533,8 @@ scoreSurface st =
   -- without it every key (Esc, Tab, the arrows) stood down on the score
   HH.div
     [ HP.class_ (cn "vetula-surface vetula-surface--wide")
-    , HP.style "position: absolute; inset: 0; display: flex; flex-direction: column;" ]
+    -- paper: the score is drawn in engraving ink (CR-15)
+    , HP.style "position: absolute; inset: 0; display: flex; flex-direction: column; background: #ffffff;" ]
     [ HH.div [ HP.style "flex: 0 0 auto; max-height: 60%; overflow: auto; padding: 16px 22px 12px;" ]
         ( [ Score.system sp openHandlers openRow ]
         )
@@ -5908,8 +5919,8 @@ padButton :: forall m. State -> ChordNode -> H.ComponentHTML Action Slots m
 padButton st c =
   HH.button
     [ HP.style ("display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 1px; "
-                 <> "border: 1px solid " <> (if padLit st c then "#cdbb8c" else "#eee7d6") <> "; "
-                 <> "background: " <> (if padLit st c then "#fdf6e4" else "#ffffff") <> "; "
+                 <> "border: 1px solid " <> (if padLit st c then "#9a9a9a" else "#e6e6e6") <> "; "
+                 <> "background: " <> (if padLit st c then "#f0f0f0" else "#ffffff") <> "; "
                  <> "border-radius: 4px; padding: 5px 2px 4px; cursor: pointer; min-width: 0;")
     , HP.title (c.label <> " — " <> show (playNotes c))
     , HE.onMouseEnter \_ -> HoverPad (Just c)
@@ -5924,7 +5935,7 @@ padButton st c =
         (pcPolygon (hiFor st.hoveredTriad c.pcs) c.root c.pcs 0.0 0.0 12.0
 )
     , HH.div
-        [ HP.style "font-size: 10px; color: #6a6250; line-height: 1.1; text-align: center; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%; -webkit-user-select: none; user-select: none;" ]
+        [ HP.style "font-size: 10px; color: #444444; line-height: 1.1; text-align: center; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%; -webkit-user-select: none; user-select: none;" ]
         [ HH.text c.label ]
     ]
 
@@ -5956,8 +5967,8 @@ varyPad :: forall m. State -> ChordNode -> H.ComponentHTML Action Slots m
 varyPad st c =
   HH.button
       [ HP.style ("display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 1px; "
-                   <> "border: 1px solid " <> (if padLit st c then "#cdbb8c" else "#eee7d6") <> "; "
-                   <> "background: " <> (if padLit st c then "#fdf6e4" else "#ffffff") <> "; "
+                   <> "border: 1px solid " <> (if padLit st c then "#9a9a9a" else "#e6e6e6") <> "; "
+                   <> "background: " <> (if padLit st c then "#f0f0f0" else "#ffffff") <> "; "
                    <> "border-radius: 4px; padding: 5px 2px 4px; cursor: pointer; min-width: 0;")
       , HP.title (c.label <> " — " <> show (playNotes c))
       , HE.onMouseEnter \_ -> HoverPad (Just c)
@@ -5972,7 +5983,7 @@ varyPad st c =
           [ SA.viewBox (-15.0) (-15.0) 30.0 30.0, SA.width 30.0, SA.height 30.0 ]
           (registerStrip c)
       , HH.div
-          [ HP.style "font-size: 10px; color: #6a6250; line-height: 1.1; text-align: center; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%; -webkit-user-select: none; user-select: none;" ]
+          [ HP.style "font-size: 10px; color: #444444; line-height: 1.1; text-align: center; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%; -webkit-user-select: none; user-select: none;" ]
           [ HH.text c.label ]
       ]
 
@@ -5994,11 +6005,11 @@ registerStrip :: forall m. ChordNode -> Array (H.ComponentHTML Action Slots m)
 registerStrip c =
   [ SE.line
       [ SA.x1 0.0, SA.y1 (-13.5), SA.x2 0.0, SA.y2 13.5
-      , HP.style "stroke: #e6dfcc; stroke-width: 1;" ]
+      , HP.style "stroke: #e2e2e2; stroke-width: 1;" ]
   -- Middle C, so a register can be read rather than only compared.
   , SE.line
       [ SA.x1 (-4.0), SA.y1 (yFor 60), SA.x2 4.0, SA.y2 (yFor 60)
-      , HP.style "stroke: #ece5d2; stroke-width: 1;" ]
+      , HP.style "stroke: #e6e6e6; stroke-width: 1;" ]
   ]
     <> map dot (sort (nub (playNotes c)))
   where
@@ -6019,7 +6030,7 @@ inVaryGrid st = st.stage == Hunt Score
 varyRowHead :: forall m. HV.Drift -> H.ComponentHTML Action Slots m
 varyRowHead d =
   HH.div
-    [ HP.style "font-size: 11px; color: #7a7360; letter-spacing: 0.08em; text-transform: uppercase; padding-top: 14px; text-align: right; -webkit-user-select: none; user-select: none;"
+    [ HP.style "font-size: 11px; color: #555555; letter-spacing: 0.08em; text-transform: uppercase; padding-top: 14px; text-align: right; -webkit-user-select: none; user-select: none;"
     , HP.title (HV.driftBlurb d) ]
     [ HH.text (HV.driftLabel d) ]
 
@@ -6031,13 +6042,13 @@ varyBank st cs = case head cs of
   Nothing -> HH.div [] []
   Just cell ->
     HH.div
-      [ HP.style "background: #fbf8f0; border: 1px solid #ece5d2; border-radius: 5px; padding: 6px;" ]
+      [ HP.style "background: #fafafa; border: 1px solid #e6e6e6; border-radius: 5px; padding: 6px;" ]
       [ HH.div
           [ HP.style "display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 4px;" ]
           (map (varyPad st) cell.chords)
       , if length cell.chords >= Vary.varyRows * Vary.varyCols then HH.text ""
         else HH.div
-               [ HP.style "font-size: 9px; color: #b3aa92; text-align: right; padding-top: 4px; -webkit-user-select: none; user-select: none;"
+               [ HP.style "font-size: 9px; color: #aaaaaa; text-align: right; padding-top: 4px; -webkit-user-select: none; user-select: none;"
                , HP.title "every distinct voicing this cell holds — the neighbourhood is exhausted" ]
                [ HH.text (show (length cell.chords) <> " — all there is") ]
       ]

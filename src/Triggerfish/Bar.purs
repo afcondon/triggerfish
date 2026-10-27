@@ -10,16 +10,27 @@
 module Triggerfish.Bar
   ( Bar
   , Tab
+  , TabLook(..)
   , Chip
   , Picker
   ) where
+
+import Prelude
 
 import Halogen.Widgets.Select as Select
 import Triggerfish.Glyph (GlyphIcon)
 
 -- | A view. `enabled` false draws it dimmed and unpressable, its tip saying
--- | why (Vetula's score with no progression, 2026-10-27).
-type Tab = { id :: String, label :: String, active :: Boolean, enabled :: Boolean, tip :: String }
+-- | why (Vetula's score with no progression, 2026-10-27). `look` is how it
+-- | is lit while active: the view's own design language.
+type Tab = { id :: String, label :: String, active :: Boolean, enabled :: Boolean, look :: TabLook, tip :: String }
+
+-- | `Warm`: the workspace's gold. `Ink`: black on white, as an engraved
+-- | score (Vetula's score). `Night`: white on black, for a view that is
+-- | mostly black (Vetula's review river). AC, 2026-10-27.
+data TabLook = Warm | Ink | Night
+
+derive instance eqTabLook :: Eq TabLook
 
 -- | `marks`: the counts beside ◆ mark ("" for no mark controls in this
 -- | stage). `icons`: the rebus of what is loaded, `rebusTip` its name.
