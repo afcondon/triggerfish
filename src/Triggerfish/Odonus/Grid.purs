@@ -359,7 +359,23 @@ recallWith text r = do
     H.modify_ \s -> (if r.inKey then recallGestureText text s else recallText text s) { identity = Just text }
   st <- H.get
   when (st.genFrozen /= r.frozen) (enqueue (RI.SetFrozen r.frozen))
+  -- a patch keeps its padlocks: one from before them follows its routes
+  for_ (parsePatch text) \p -> sendLocks p.locks
   persistAll
+
+-- | Ask the rig to lock exactly these inputs (`odonus $ lock grid`), changing
+-- | only what differs; the stage's `odonus/locks` comes back to set `locks`.
+-- | Nothing without the rig: the web has no routes to hold off.
+sendLocks :: forall m. MonadAff m => Route.Locks -> H.HalogenM State Action Slots Output m Unit
+sendLocks want = do
+  st <- H.get
+  for_ st.binnacle \bin -> for_ [ Route.OdonusGrid, Route.OdonusOut ] \i ->
+    when (elem i want /= elem i st.locks) $ liftEffect $ Transport.send (Binnacle.socket bin)
+      ("tidal odonus $ " <> (if elem i want then "lock " else "unlock ") <> inputWord i)
+  where
+  inputWord = case _ of
+    Route.OdonusGrid -> "grid"
+    Route.OdonusOut -> "out"
 
 -- | Recall preset `i`: apply its patch text PHASE-PRESERVING (`recallText`, exactly
 -- | as RecallScene) so a live change flows on without a playhead jump, and park the
@@ -1057,12 +1073,7 @@ dispatch = case _ of
   -- through the rig, as a line is: one way to lock, one check
   ToggleLock i -> do
     st <- H.get
-    let verb = if elem i st.locks then "unlock" else "lock"
-        word = case i of
-          Route.OdonusGrid -> "grid"
-          Route.OdonusOut -> "out"
-    for_ st.binnacle \bin -> liftEffect $ Transport.send (Binnacle.socket bin)
-      ("tidal odonus $ " <> verb <> " " <> word)
+    sendLocks (if elem i st.locks then filter (_ /= i) st.locks else st.locks <> [ i ])
   SetOctave n -> enqueue (RI.SetOctaveShift n)
   SetDegShift n -> enqueue (RI.SetDegShift n)
   ToggleScaleNote pc -> enqueue (RI.ToggleScaleNote pc)

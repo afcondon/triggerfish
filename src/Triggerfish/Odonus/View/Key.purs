@@ -73,10 +73,18 @@ quantPieces s = case _ of
     Just Route.VetulaKey -> true
     Just (Route.VetulaVoice _) -> true
     _ -> false
-  -- the padlock, on the rig only (the web has no routes to yield to); and,
-  -- locked, the route it holds off
+  -- the padlock; and, locked, the route it holds off. With no rig (the web
+  -- build, or the rig down) nothing can be routed here, so it shows locked
+  -- and inert, and says why (AC, 2026-10-28)
   lockOf i =
-    if Web.onTheWeb || isNothing s.binnacle then [] else
+    if Web.onTheWeb || isNothing s.binnacle then
+      [ HH.span
+          [ HH.attr (HH.AttrName "title") (if Web.onTheWeb
+              then "Odonus keeps its own scales here: the web version takes no quantisation from outside. Installed with Atlantis, Vetula's voices can feed it"
+              else "Odonus keeps its own scales while the rig is away: nothing can be routed here until it is back")
+          , style "padding:0 2px;font-size:12px;color:#c4bfae;cursor:default" ]
+          [ HH.i [ HP.class_ (HH.ClassName "fa-solid fa-lock") ] [] ] ]
+    else
       [ HH.button
           [ HE.onClick \_ -> ToggleLock i
           , HH.attr (HH.AttrName "title") (if locked i

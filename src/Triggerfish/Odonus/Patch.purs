@@ -50,6 +50,7 @@ capturePatch s =
   , genBias: s.genBias
   , swing: s.swing
   , velHumanize: s.velHumanize
+  , locks: s.locks
   }
 
 -- | Odonus with what the routes feed taken out.
