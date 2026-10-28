@@ -36,6 +36,7 @@ import Data.Array as Array
 
 import Data.Array (length)
 import Data.Maybe (Maybe(..))
+import Effect (Effect)
 import Halogen as H
 import Halogen.Widgets.Select as Select
 import Web.UIEvent.KeyboardEvent (KeyboardEvent)
@@ -319,6 +320,9 @@ type State =
   -- The Twister's lights (`Triggerfish.Odonus.Twister`): its output, the last
   -- position it reported per CC, and the last ring written per CC.
   , twisterOut :: Maybe Midi.MidiOut
+  -- what an open MIDI session holds, let go before another opens (the web's
+  -- MIDI toggle): its subscription and the Twister's listener
+  , midiSession :: { sub :: Maybe H.SubscriptionId, unlisten :: Effect Unit }
   , twisterHeard :: Map Int Int
   , twisterLit :: Map Int Int
   , binnacle :: Maybe Binnacle
@@ -516,6 +520,7 @@ data Action
                                -- to run on the BEAM via the shared reef engine
   | TwisterMsg HelmTwister.TwisterMsg  -- from the MidiFighter Twister, past Helm's press-nudge guard
   | TwisterOut Midi.MidiOut    -- the Twister's output was found: its rings can be lit
+  | TwisterListening (Effect Unit)  -- the Twister's listener, to let go of later
   -- VOICE config: which FH-2 polyenv envelopes each head fires.
                                -- (status, data1, data2). Bank 1: encoders 0..15 map
                                -- 1:1 onto the 16 cells — rotate sets the cell note

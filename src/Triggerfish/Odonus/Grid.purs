@@ -121,7 +121,7 @@ component =
   H.mkComponent
     { initialState: \_ ->
         { odo: M.defaultOdonus, sounding: Silent, dragging: Nothing, dragSub: Nothing
-        , notes: [], logbook: Logbook.emptyLog, stage: Perform, selEuclid: Nothing, playing: Nothing, rigLoops: false, rigAsked: 0.0, cutting: false, cutSel: Nothing, regionDrag: Nothing, cardShut: Nothing, contextOpen: false, codeOpen: false, zoom: Whole, clips: [], twisterField: FNote, twisterOut: Nothing, twisterHeard: Map.empty, twisterLit: Map.empty, binnacle: Nothing, nowMicros: 0.0
+        , notes: [], logbook: Logbook.emptyLog, stage: Perform, selEuclid: Nothing, playing: Nothing, rigLoops: false, rigAsked: 0.0, cutting: false, cutSel: Nothing, regionDrag: Nothing, cardShut: Nothing, contextOpen: false, codeOpen: false, zoom: Whole, clips: [], twisterField: FNote, twisterOut: Nothing, midiSession: { sub: Nothing, unlisten: pure unit }, twisterHeard: Map.empty, twisterLit: Map.empty, binnacle: Nothing, nowMicros: 0.0
         , outs: [], routing: RM.defaultTable, midiName: "…", clockTempo: 120.0, clockLocked: false
         , clockBeat: 0.0, clockBar: 0, anchorCount: 0
         , notice: "", undoDelete: Nothing, stagePatches: Nothing, shelf: Nothing
@@ -803,7 +803,9 @@ dispatch = case _ of
   -- browser drops every port, so each head sounds in the browser again
   UseMidi on -> do
     liftEffect (Web.chooseMidi on)
-    if on then openMidi else handleAction (MidiReady [] "browser")
+    if on then openMidi else do
+      closeMidi
+      handleAction (MidiReady [] "browser")
   MidiReady outs nm -> do
     H.modify_ _ { outs = outs, midiName = nm }
     -- a saved IAC bus this browser no longer has: moved to the one it has
@@ -944,6 +946,7 @@ dispatch = case _ of
       when (k.layer == 0) $
         for_ (twisterFieldForPush k.index) \fld -> H.modify_ _ { twisterField = fld }
     _ -> pure unit
+  TwisterListening unlisten -> H.modify_ \s -> s { midiSession = s.midiSession { unlisten = unlisten } }
   TwisterOut out -> do
     H.modify_ _ { twisterOut = Just out, twisterLit = Map.empty }
     paintTwister
@@ -1700,9 +1703,13 @@ inputBufferSteps = 2
 -- | them first (AC, 2026-10-27).
 openMidi :: forall m. MonadAff m => H.HalogenM State Action Slots Output m Unit
 openMidi = do
+  -- a session already open (the web's MIDI toggle, pressed again) is let go
+  -- first, or each Twister turn would arrive once per opening
+  closeMidi
   -- Web MIDI out (async permission prompt) — e.g. an IAC bus into Ableton.
   { emitter: midiE, listener: midiL } <- liftEffect HS.create
-  _ <- H.subscribe midiE
+  sub <- H.subscribe midiE
+  H.modify_ _ { midiSession = { sub: Just sub, unlisten: pure unit } }
   liftEffect $ Midi.requestAccess \maccess -> case maccess of
     Just access -> do
       -- EVERY output port, because the routing table may name any of them —
@@ -1727,11 +1734,22 @@ openMidi = do
       -- Through Helm's press-nudge guard first: a push always nudges the
       -- encoder, and a field-select push must not also edit a cell.
       feed <- Guard.guarded Guard.timing (HS.notify midiL <<< TwisterMsg)
-      for_ minput \inp -> void $ Midi.onMessage inp \m ->
-        for_ (HelmTwister.parse [ m.status, m.data1, m.data2 ]) feed
+      for_ minput \inp -> do
+        unlisten <- Midi.onMessage inp \m ->
+          for_ (HelmTwister.parse [ m.status, m.data1, m.data2 ]) feed
+        HS.notify midiL (TwisterListening unlisten)
       mtwOut <- Midi.findOutput access twisterInputName
       for_ mtwOut (HS.notify midiL <<< TwisterOut)
     Nothing -> HS.notify midiL (MidiReady [] "unavailable")
+
+-- | Let go of the open MIDI session, if any: the Twister's listener and the
+-- | subscription its messages arrive on.
+closeMidi :: forall m. MonadAff m => H.HalogenM State Action Slots Output m Unit
+closeMidi = do
+  st <- H.get
+  liftEffect st.midiSession.unlisten
+  for_ st.midiSession.sub H.unsubscribe
+  H.modify_ _ { midiSession = { sub: Nothing, unlisten: pure unit }, twisterOut = Nothing }
 
 rigUrl :: String
 rigUrl = "ws://127.0.0.1:3012/ws"
