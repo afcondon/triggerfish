@@ -853,6 +853,7 @@ data Action
   | VoiceOpen Int          -- the progression voice n plays, onto the score
   | VoiceLine Int          -- voice n's block, shown in Limulus
   | VoiceMute Int          -- voice n muted, or heard again
+  | VoiceRemove Int        -- voice n hushed, its line handed to Limulus first
   | VoiceTake Int          -- voice n plays the open progression (a new voice on an empty one)
   | VoiceSendMenu Int      -- open (or shut) voice n's "send to Odonus" menu
   | VoiceSend Int (Maybe HarmonyRoute.Input) -- send voice n's chords to an Odonus input; Nothing: stop
@@ -1975,6 +1976,16 @@ handleActionCore = case _ of
   VoiceMute n -> do
     s <- H.get
     for_ (s.stageCards >>= Map.lookup n) \line -> writeVoice n (Just (toggleMute line))
+
+  -- **✕ on a tile** (AC, 2026-10-29): hush, as `P $ hush` is. The line goes
+  -- to Limulus first, so a voice made by a drag, which has no block, can
+  -- still be brought back by evaluating it; Limulus adds it only where no
+  -- block for the voice exists, and marks it removed when the hush lands.
+  VoiceRemove n -> do
+    s <- H.get
+    for_ (s.stageCards >>= Map.lookup n) \line -> for_ s.binnacle \bin ->
+      liftEffect $ Transport.send (Binnacle.socket bin) ("stage-paste " <> SC.cardKey n <> " " <> line)
+    writeVoice n Nothing
 
   VoiceSendMenu n -> H.modify_ \s -> s { voiceSendMenu = if s.voiceSendMenu == Just n then Nothing else Just n }
 
@@ -4733,7 +4744,8 @@ voicesPane st =
                 <> (case openNm of
                       Just nm | not open -> [ ctl "fa-arrow-down" ("play " <> nm <> " here, as this voice plays") (VoiceTake v.n) ]
                       _ -> [])
-                <> [ ctl "fa-right-to-bracket" "send its chords to Odonus" (VoiceSendMenu v.n) ] )
+                <> [ ctl "fa-right-to-bracket" "send its chords to Odonus" (VoiceSendMenu v.n)
+                   , ctl "fa-xmark" "hush it: the voice goes, its line is kept in Limulus to bring it back" (VoiceRemove v.n) ] )
         ]
   dropOn n = [ HE.handler (EventType "dragover") TileDragOver, HE.handler (EventType "drop") (VoiceDrop n) ]
   ctl icon tip act =
