@@ -16,6 +16,7 @@ import Prelude
 import Data.Array as Array
 import Data.Int as Int
 import Data.Map as Map
+import Data.Maybe (maybe)
 import Data.String (Pattern(..), stripPrefix)
 import Data.String as String
 import Reef.Routing as RR
@@ -37,9 +38,17 @@ cardChannels r = Array.sort (Array.nub (Array.range 1 voiceCount <> Array.mapMay
 
 -- | The table with a row for every card (each new one on its own channel of
 -- | the default port), and the Vetula routing it gives, as the stage keeps it.
-sync :: Array String -> Router.Router -> RM.Table -> { table :: RM.Table, json :: String }
-sync ports r tbl =
-  let table = RM.seedCards ports (cardChannels r) tbl
+-- | A channel row no voice owns any more (a `ch9 …` line long gone) is
+-- | dropped: rows were only ever added, and the leftovers stood in the table
+-- | as voices that did not exist (AC, 2026-10-29). P to W always stay.
+-- | `heard`: the stage's cards have arrived, so the router's are all of
+-- | them; before that a live voice's row would look unowned.
+sync :: Array String -> Router.Router -> Boolean -> RM.Table -> { table :: RM.Table, json :: String }
+sync ports r heard tbl =
+  let
+    chans = cardChannels r
+    owned row = not heard || maybe true (\ch -> Array.elem ch chans) (RM.cardChannelOf row.source)
+    table = Array.filter owned (RM.seedCards ports chans tbl)
   in { table, json: RR.encodeVoiceRouting (RO.vetulaRouting ports table) }
 
 stageLine :: String -> String

@@ -534,10 +534,10 @@ handleAction = case _ of
 
   RigOpen -> do
     H.modify_ _ { vetulaSent = Nothing }
+    -- the stage's texts: the router's routes and Vetula's cards, both
     sendRig Router.subscribeLine
     sendRig RigLoops.syncLine
     sendRig "stage-subscribe"
-    sendRig StageCards.subscribeLine
     sendRig "selene-applied"
 
   RigFrame msg -> do
@@ -1116,7 +1116,7 @@ syncCards :: forall o. M o Unit
 syncCards = do
   st <- H.get
   unless (Array.null st.ports) do
-    let s = VetulaSync.sync st.ports st.router st.table
+    let s = VetulaSync.sync st.ports st.router (isJust st.stageCards) st.table
     when (s.table /= st.table) do
       liftEffect $ RStore.save s.table
       H.modify_ _ { table = s.table }
