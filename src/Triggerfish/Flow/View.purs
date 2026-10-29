@@ -26,7 +26,7 @@ import Control.Alt ((<|>))
 import Data.Int (fromNumber, toNumber)
 import Data.Int as Int
 import Data.Map as Map
-import Data.Maybe (Maybe(..), fromMaybe, isJust, maybe)
+import Data.Maybe (Maybe(..), fromMaybe, isJust, isNothing, maybe)
 import Data.Number as Number
 import Data.String (joinWith)
 import Data.Tuple (Tuple(..), snd)
@@ -203,7 +203,9 @@ chartOf on hot live f =
   fedRoom = (if Array.any (\l -> l.signal == Quantise) f.links then 84.0 else 0.0) + openRoom
   -- a machine opened into its voices keeps its fish and name, above them
   openRoom = if Array.null openMachines then 0.0 else 34.0
-  openMachines = nub (mapMaybe (\nd -> if isJust (String.stripPrefix (String.Pattern "src:") nd.id) then nd.machine else Nothing) f.nodes)
+  -- (a machine with a node of its own, feeding another, wears it there)
+  openMachines = filter (\m -> not (Array.any (\nd -> nd.id == "m:" <> m) f.nodes))
+    (nub (mapMaybe (\nd -> if isJust (String.stripPrefix (String.Pattern "src:") nd.id) then nd.machine else Nothing) f.nodes))
   -- the X-ray's lines need room under each node, and on the right
   h = heightOf f + band + fedRoom + (if xray then 90.0 else 0.0)
   rightEdge = if xray then right - 90.0 else right
@@ -395,10 +397,11 @@ chartOf on hot live f =
   qid s = "q:" <> maybe s.label (\m -> m <> " " <> s.label) s.machine
   srcPort s = case s.machine >>= \m -> nodeAt ("m:" <> m) of
     -- a voice of a machine opened into its voices: on that voice's node
-    Nothing | Just sn <- voiceAt s -> Just (pt (sn.x1 + 9.0) (mid sn))
+    _ | Just sn <- voiceAt s -> Just (pt (sn.x1 + 9.0) (mid sn))
     Just sn ->
       let
-        mine = filter (\x -> x.machine == s.machine) live.patch.sources
+        -- the ports on the machine's own node: not those standing on a voice
+        mine = filter (\x -> x.machine == s.machine && isNothing (voiceAt x)) live.patch.sources
         k = toNumber (Array.length mine)
         j = toNumber (fromMaybe 0 (Array.findIndex (\x -> x.id == s.id) mine))
       in Just (pt (sn.x0 - 16.0 - (k - 1.0 - j) * 17.0) (mid sn + 28.0))

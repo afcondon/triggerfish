@@ -78,6 +78,7 @@ import Triggerfish.Routing.Matrix as Matrix
 import Reef.Route as HarmonyRoute
 import Triggerfish.Routing.Edit as RE
 import Triggerfish.Routing.Model as RM
+import Vetula.StageCards as StageCards
 import Triggerfish.Routing.Out as RO
 import Triggerfish.Routing.VetulaSync as VetulaSync
 import Reef.Routing as RR
@@ -163,6 +164,8 @@ type State =
   , allVoices :: Boolean
   -- the marks the rig keeps, per machine (`loops` frames), for the starfish
   , rigLoops :: Map String (Array RigLoops.RigMark)
+  -- Vetula's cards on the stage (`vetula/vN`), once the rig has said
+  , stageCards :: Maybe (Map Int String)
   -- the Atlantis group as Bosun last said, Nothing while out of reach
   , bosun :: Maybe Bosun.Health
   -- the chart's X-ray (`#atlantis`, once the Atlantis page): open, the
@@ -247,7 +250,7 @@ component = H.mkComponent
       , tempo: 120.0, freeTempo: 120.0, locked: false, bus: Nothing
       , table: RM.defaultTable, ports: [], sampleSets: [], hot: Nothing, router: Router.initial
       , matrix: Nothing, pick: Nothing, focus: Nothing, sheet: Nothing, foldDrums: true, vetulaSent: Nothing
-      , relays: false, allVoices: false, rigLoops: Map.empty, bosun: Nothing
+      , relays: false, allVoices: false, rigLoops: Map.empty, stageCards: Nothing, bosun: Nothing
       , lens: FlowView.Flowing, asked: [], confirmingDown: false, hidden: [], keyHot: Nothing, armed: Nothing, peeked: Nothing, rigPlaying: Map.empty, doctor: Nothing, midi: Nothing, portsRead: false, limulusEngine: "architeuthis", seleneBanks: [] }
   , render
   , eval: H.mkEval H.defaultEval { handleAction = handleAction, initialize = Just Init }
@@ -534,6 +537,7 @@ handleAction = case _ of
     sendRig Router.subscribeLine
     sendRig RigLoops.syncLine
     sendRig "stage-subscribe"
+    sendRig StageCards.subscribeLine
     sendRig "selene-applied"
 
   RigFrame msg -> do
@@ -541,6 +545,9 @@ handleAction = case _ of
       old <- H.gets _.seleneBanks
       when (bs /= old) (H.modify_ _ { seleneBanks = bs })
     for_ (readStage msg) \e -> H.modify_ \x -> x { rigPlaying = Map.insert e.slot e.playing x.rigPlaying }
+    for_ (StageCards.readFrame msg) case _ of
+      StageCards.Table t -> H.modify_ _ { stageCards = Just t }
+      StageCards.Written n t -> H.modify_ \x -> x { stageCards = Map.alter (const t) n <$> x.stageCards }
     for_ loopMachines \m -> do
       for_ (RigLoops.readLoops m msg) \marks -> H.modify_ \x -> x { rigLoops = Map.insert m marks x.rigLoops }
       when (RigLoops.readClear m msg) (H.modify_ \x -> x { rigLoops = Map.delete m x.rigLoops })
@@ -602,6 +609,22 @@ handleAction = case _ of
 -- | from lately.
 wasClosed :: State -> String -> Boolean
 wasClosed st slot = maybe true (not <<< isOpen st) (find (\m -> m.slot == slot) machines)
+
+-- | The routing table as the chart draws it. Vetula's rows are its voices
+-- | only while they sound (AC, 2026-10-29: the table, drawn whole, showed
+-- | voices that did not exist): a channel row while a card on the stage
+-- | plays on it unmuted, and the default row (the page's own previews and
+-- | playing) only in Solo, where the page plays itself. Until the rig has
+-- | said what is on its stage, the table as it is.
+chartTable :: State -> RM.Table
+chartTable st = case st.stageCards of
+  Nothing -> st.table
+  Just cards ->
+    let sounding = StageCards.soundingChannels cards
+    in Array.filter (\r -> case r.source of
+         RM.SVetulaVoice "" -> st.mode == Solo
+         RM.SVetulaVoice _ -> maybe false (\ch -> Array.elem ch sounding) (RM.cardChannelOf r.source)
+         _ -> true) st.table
 
 isOpen :: State -> Machine -> Boolean
 isOpen st m = case Map.lookup m.slot st.heard of
@@ -711,7 +734,7 @@ flowChart st =
         [ FlowView.chart { hover: Hover, link: ChartLink, port: PortClick, cable: CableClick, play: Command, peek: Peek, restart: RigRestart, engine: SetLimulusEngine, loop: LoopToggle } st.hot { playing: Array.nub (map _.slot (filter (playing st) machines) <> (if null (liveBanks st) then [] else [ "selene" ])), rigUp: st.rigUp, tempo: st.tempo, lamps, hidden: st.hidden, keyHot: st.keyHot, patch, dock, locked: st.locked, peeked: st.peeked, lens: st.lens, limulusEngine: st.limulusEngine }
             ( Flow.flow
                 { mode: st.mode
-                , table: st.table
+                , table: chartTable st
                 , ports: { found: st.ports, rigUp: st.rigUp }
                 , machines: map _.slot (filter (isOpen st) machines)
                 -- Vetula is always drawn as its voices, P to W, each a ribbon

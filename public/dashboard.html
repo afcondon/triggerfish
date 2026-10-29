@@ -161,6 +161,11 @@
     .matrix-card table.m th.row { text-align: left; font: 400 13px var(--display); padding: 0 14px 0 0; white-space: nowrap; height: 30px; }
     .matrix-card table.m th.row small { color: var(--muted); font: 12px var(--mono); margin-left: 6px; }
     .matrix-card table.m td { width: 44px; height: 30px; text-align: center; border-bottom: 1px solid var(--rule); border-left: 1px solid var(--rule); cursor: pointer; }
+    .matrix-card table.m td { position: relative; padding: 0; }
+    .matrix-card table.m td .hit { display: flex; align-items: center; justify-content: center; min-height: 30px; }
+    .matrix-card table.m td .unroute { position: absolute; top: 1px; right: 1px; width: 15px; height: 15px; padding: 0; border: none; border-radius: 50%; background: var(--ink); color: var(--plate); font: 11px/15px var(--display); cursor: pointer; opacity: 0; }
+    .matrix-card table.m td.filled:hover .unroute, .matrix-card table.m td .unroute:focus { opacity: .85; }
+    .matrix-card table.m tr.card td .unroute { display: none; }
     .matrix-card table.m td.focus { background: color-mix(in srgb, var(--reef) 7%, transparent); }
     .matrix-card table.m td.picked { outline: 2px solid var(--reef); outline-offset: -2px; }
     .matrix-card table.m tr:hover td, .matrix-card table.m tr:hover th.row { background: color-mix(in srgb, var(--reef) 6%, transparent); }

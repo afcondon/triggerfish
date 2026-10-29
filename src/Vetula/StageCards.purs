@@ -22,6 +22,7 @@ module Vetula.StageCards
   , tableHasKey
   , publishLines
   , readNotes
+  , soundingChannels
   , readRouting
   , readHarmony
   , readLocks
@@ -38,9 +39,9 @@ import Data.Either (hush)
 import Data.Int as Int
 import Data.Map (Map)
 import Data.Map as Map
-import Data.Maybe (Maybe(..))
+import Data.Maybe (Maybe(..), fromMaybe)
 import Data.Nullable (Nullable, toMaybe)
-import Data.String (Pattern(..), stripPrefix, trim)
+import Data.String (Pattern(..), split, stripPrefix, trim)
 import Data.String.CodeUnits as SCU
 import Data.String.CodeUnits (toCharArray)
 import Data.Tuple (Tuple(..))
@@ -85,6 +86,20 @@ readFrame msg = case stripPrefix (Pattern "stage-texts ") msg of
     pure (Written n (toMaybe w.text))
   where
   entry (Tuple key v) = (\n -> Tuple n v.text) <$> cardIdOfKey key
+
+-- | The channels the cards on the stage sound on: a card not muted
+-- | (`# mute` among its terms), on its own `chN` or else its number, which
+-- | is the channel a `vetula "name"` card takes. For the Dashboard's chart:
+-- | a voice is drawn only while it is there and heard (AC, 2026-10-29).
+soundingChannels :: Map Int String -> Array Int
+soundingChannels = Array.nub <<< mapMaybe heard <<< Map.toUnfoldable
+  where
+  heard (Tuple n line) =
+    let terms = map trim (Array.drop 1 (split (Pattern "#") line))
+    in if Array.elem "mute" terms then Nothing else Just (fromMaybe n (ownChannel line))
+  ownChannel line = do
+    rest <- stripPrefix (Pattern "ch") (trim line)
+    Int.fromString (SCU.takeWhile (\c -> c >= '0' && c <= '9') rest)
 
 -- | What a frame says of the voices' routing (`vetula/routing`, a
 -- | `Reef.Routing.VoiceRouting` as JSON): from the whole table, what it holds

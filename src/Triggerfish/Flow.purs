@@ -495,9 +495,11 @@ flow inp = { nodes, links: links <> loopLinks <> quantLinks <> makesLinks }
   -- in Feeds; a source with no page drawn (a scale, a pattern, or a machine
   -- closed or opened into voices) is a node of its own there.
   quantFrom q = case q.machine of
-    Just m | pageOpen m && not (m `elem` inp.open) -> "m:" <> m
     -- opened into its voices: from the voice that feeds it
-    Just m | pageOpen m, Just u <- q.source <#> \src -> "src:" <> sourceKey src, Array.any (\x -> x.unit == u) streams -> u
+    Just m | pageOpen m && m `elem` inp.open, Just u <- q.source <#> \src -> "src:" <> sourceKey src, Array.any (\x -> x.unit == u) streams -> u
+    -- else from the machine itself (its key belongs to it whole), which,
+    -- opened, then stands over its voices
+    Just m | pageOpen m -> "m:" <> m
     Just m -> "q:" <> m <> " " <> q.label
     Nothing -> "q:" <> q.label
   quantTo t

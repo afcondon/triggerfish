@@ -314,21 +314,37 @@ view grid env =
              Just lo, Just hi | lo /= hi -> show lo <> "–" <> show hi
              _, _ -> show (sentNote src x.leg)
     in
+      -- One click either way (AC, 2026-10-29: adding took one click and
+      -- removing two, "reminiscent of dark patterns"): an empty cell sends
+      -- there, a filled one's ✕ stops it, and the cell itself opens its
+      -- details. The ✕ is the cell's sibling, not its child, so the cell's
+      -- own click never fires with it.
       HH.td
-        [ cls ((if picked then "picked" else "") <> (if env.focus == Just c.key then " focus" else ""))
-        , HP.title (whose src <> " → " <> c.name)
-        , HE.onClick \_ ->
-            if not (null here) then env.onPick (if picked then Nothing else Just { source: src, col: c.key })
-            else case concatMap (\s -> addEdits grid s c (length (RM.legsFor env.table s))) group of
-              [] -> env.onPick Nothing
-              es -> env.onEdits es
-        ]
-        (map mark here)
+        [ cls ((if picked then "picked" else "") <> (if env.focus == Just c.key then " focus" else "") <> (if null here then "" else " filled")) ]
+        ( [ HH.div
+              [ cls "hit"
+              , HP.title (whose src <> " → " <> c.name)
+              , HE.onClick \_ ->
+                  if not (null here) then env.onPick (if picked then Nothing else Just { source: src, col: c.key })
+                  else case concatMap (\s -> addEdits grid s c (length (RM.legsFor env.table s))) group of
+                    [] -> env.onPick Nothing
+                    es -> env.onEdits es
+              ]
+              (map mark here) ]
+            <> (if null here then [] else
+                  [ HH.button
+                      [ cls "unroute", HP.title ("stop sending " <> whose src <> " to " <> c.name)
+                      , HE.onClick \_ -> env.onEdits (removals group c.key) ]
+                      [ HH.text "\x00d7" ] ]) )
+  -- every leg of the row (or folded rows) in that column, the highest index
+  -- first so the ones before it keep theirs
+  removals group key = group # concatMap \s ->
+    map (\x -> RemoveLeg s x.i) (Array.reverse (Array.sortWith _.i (legsIn env s key)))
   details = case env.sheet of
     Just key -> sheet key
     Nothing -> pickDetails
   pickDetails = case env.pick of
-    Nothing -> HH.p [ cls "matrix-hint" ] [ HH.text "Click an empty cell to send there; a filled one for its details. A Rample's slicing and a sample's window are set in the router on Triggerfish's and Balistes's own pages." ]
+    Nothing -> HH.p [ cls "matrix-hint" ] [ HH.text "Click an empty cell to send there, its × to stop, the cell for its details. A Rample's slicing and a sample's window are set in the router on Triggerfish's and Balistes's own pages." ]
     Just pk ->
       let here = legsIn env pk.source pk.col
       in HH.div [ cls "matrix-details" ]
