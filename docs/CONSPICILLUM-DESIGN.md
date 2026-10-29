@@ -1952,3 +1952,39 @@ everything it did. The mentions of it above are the record of how we got here.
 
 This page, `module.html`, stays as the prototype. Its `?model=reef` A/B is
 what licensed the port.
+
+## Step 5: a page of Triggerfish (2026-10-29)
+
+The module app left its own repo and came back as a page in the machines'
+shell (`Triggerfish.Standalone`), still served at `/conspicillum/`
+(`public/conspicillum/index.html`, bundle `public/conspicillum.js`). It had
+stood still since 2026-10-05 while the suite converged on one bar, one
+drawer and one Limulus, and next to Vetula it read as another product.
+
+- **The code** is `src/Conspicillum/**`, moved unchanged except the page
+  (`Conspicillum.App`), which lost its header, drawers, tab bus, Play and
+  keys to the shell and answers its queries instead: `AskBar` (the three
+  views, "→ Limulus", ⓘ), `AskBrowser` (the presets; kept ones renamed and
+  deleted from the drawer), `BrowserKeep`/`Capture` (kept at once as
+  "Name · HH:MM"), `SetSounding` (Play and Stop). It raises `Armed` when it
+  starts or stops by itself (a line from Limulus, the stage on a reload),
+  which the shell's transport follows.
+- **The shell learned three things**, all general: a `Con` machine
+  (`Which`), `Stage.recordsItself` (no `stage-put` for a page whose scene
+  push records its slot, or the preset in hand on the stage would be lost),
+  and two Config fields: `limulusOf` (the page asks for Limulus) and
+  `rigOnly` (Limulus beside it in Solo too).
+- **The face fits a laptop**: the ring is 340 px, and the knobs moved under
+  the sentence; container queries narrow it, then stack it, when the
+  drawers are open.
+- **The store did not move.** The shelf and the library stay where they
+  were (`conspicillum-shelf`, the ref `conspicillum/library`); the drawer is
+  a view of them. The library's categories, tags and collections are richer
+  than the suite's drawer collections (`Triggerfish.Library`, which was
+  modelled on this), so folding one into the other is a decision, not a
+  move.
+- Bosun's Atlantis group lost the `conspicillum-frontend` service (:3011)
+  and the `/conspicillum/` mount; `music/live-coding/conspicillum` is kept
+  as the record, its README pointing here.
+
+Test sheet: `docs/TEST-conspicillum.md`.

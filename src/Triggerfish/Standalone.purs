@@ -112,6 +112,12 @@ type Config o =
   , spaceHears :: Boolean
   -- | whether the bar offers Capture (c): not Selene, whose drawer keeps racks
   , capturable :: Boolean
+  -- | the machine asks for Limulus beside it (Conspicillum's "→ Limulus",
+  -- | which has just put its line there)
+  , limulusOf :: o -> Boolean
+  -- | it plays only on the rig (Conspicillum): Limulus is beside it in
+  -- | either mode, since the rig is what it needs anyway
+  , rigOnly :: Boolean
   }
 
 run :: forall o. Config o -> Effect Unit
@@ -424,7 +430,7 @@ handleAction cfg = case _ of
   ToggleLimulus -> do
     st <- H.get
     -- with no rig, it opens onto what Limulus needs (AC, 2026-10-27)
-    let open = not st.limulus && (st.mode == Atlantis || not st.rigUp)
+    let open = not st.limulus && (limulusHere cfg st || not st.rigUp)
     -- made shut the first time, then opened a frame later, so it eases open
     -- like every later time rather than appearing at full width
     when (open && not st.limulusMade) do
@@ -448,7 +454,7 @@ handleAction cfg = case _ of
     st <- H.get
     -- opened without taking the keyboard: the page asked, not the player
     -- never with no rig: the page's first impression is its own
-    if on then when (not st.limulus && st.mode == Atlantis && st.rigUp) do
+    if on then when (not st.limulus && limulusHere cfg st && st.rigUp) do
       unless st.limulusMade do
         H.modify_ _ { limulusMade = true }
         liftAff (delay (Milliseconds 30.0))
@@ -547,6 +553,10 @@ handleAction cfg = case _ of
     -- from the rig) or its controls in the bar, so both are asked for again
     handleAction cfg AskBrowser
     handleAction cfg AskBar
+    -- the machine asks for Limulus: open it, if it is shut
+    when (cfg.limulusOf out) do
+      st <- H.get
+      unless st.limulus (handleAction cfg ToggleLimulus)
     for_ (cfg.chipOf out) \cv -> do
       H.modify_ _ { chip = cv }
       publishStage cfg
@@ -592,6 +602,11 @@ handleAction cfg = case _ of
 
 -- | The machine's one `Sounding`, derived exactly as the Triggerfish shell derives
 -- | it: playing is being armed, and the mode says who makes the sound.
+-- | Limulus has a place beside the machine: in Atlantis, where the rig plays,
+-- | or always for a machine that plays nowhere else.
+limulusHere :: forall o. Config o -> State -> Boolean
+limulusHere cfg st = cfg.rigOnly || st.mode == Atlantis
+
 -- | Send a line to the rig, if it is there.
 toRig :: forall o o'. String -> M o o' Unit
 toRig line = do
@@ -614,7 +629,7 @@ sounding cfg st =
 publishStage :: forall o o'. Config o -> M o o' Unit
 publishStage cfg = do
   st <- H.get
-  for_ (Stage.slotOf cfg.which) \slot -> for_ st.rig \bin -> when st.rigUp do
+  for_ (Stage.slotOf cfg.which) \slot -> for_ st.rig \bin -> when (st.rigUp && not (Stage.recordsItself cfg.which)) do
     let line = Stage.putLine slot st.chip (sounding cfg st /= Silent)
     when (st.staged /= Just line) do
       liftEffect $ Transport.send (Binnacle.socket bin) line
@@ -665,7 +680,7 @@ render cfg st =
   -- Limulus as a drawer from the right, in Atlantis, unless a region keeps
   -- it open; and with no rig at all (the web app), where it says what it
   -- needs, since the editor is the heart of the idea (AC, 2026-10-27)
-  limDrawer = (st.mode == Atlantis || not st.rigUp) && not docked
+  limDrawer = (limulusHere cfg st || not st.rigUp) && not docked
   limW = Drawer.clampWidth (limulusInput st) st.limWidth
   limSpan = if limDrawer then (if st.limulus then limW else 0.0) + (limulusInput st).railWidth else 0.0
   limulusRail =
@@ -673,7 +688,7 @@ render cfg st =
       [ style "position:fixed;top:var(--tf-bar);right:0;bottom:0;z-index:61;display:flex;background:linear-gradient(#ece7da,#e2dccb);border-left:1px solid #b3ae9c" ]
       [ HH.slot _limdrawer unit Drawer.component (limulusInput st) FromLimDrawer ]
   -- a region that keeps Limulus open, in Atlantis (Limulus needs the rig)
-  docked = st.limulusAlways && st.mode == Atlantis
+  docked = st.limulusAlways && limulusHere cfg st
   drawerSpan = case st.browser of
     Nothing -> 0.0
     Just _ -> (if st.drawer.open then Drawer.clampWidth (drawerInput st) st.drawer.width else 0.0) + (drawerInput st).railWidth

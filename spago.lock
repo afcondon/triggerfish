@@ -10,6 +10,7 @@
             "binnacle",
             "colors",
             "console",
+            "const",
             "control",
             "effect",
             "either",
@@ -46,9 +47,12 @@
             "tailrec",
             "transformers",
             "tuples",
+            "unsafe-reference",
             "web-dom",
             "web-events",
             "web-html",
+            "web-pointerevents",
+            "web-storage",
             "web-uievents"
           ]
         },

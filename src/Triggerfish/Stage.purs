@@ -13,6 +13,7 @@
 -- | localStorage, not Amphora.
 module Triggerfish.Stage
   ( slotOf
+  , recordsItself
   , putLine
   ) where
 
@@ -34,6 +35,16 @@ slotOf = case _ of
   Sel -> Just "selene"
   Tid -> Nothing
   Suf -> Nothing
+  Con -> Just "conspicillum"
+
+-- | A machine whose page records its own slot, by pushing its scene with the
+-- | preset in hand beside it (Conspicillum's `conspicillum-scene`): the shell
+-- | sends it no `stage-put`, which would replace the entry and lose the
+-- | preset a reloaded page comes back to.
+recordsItself :: Which -> Boolean
+recordsItself = case _ of
+  Con -> true
+  _ -> false
 
 -- | The `stage-put` line recording a machine's chip and whether it sounds.
 -- | Shells send it only when it differs from the last one sent, so an

@@ -52,6 +52,11 @@ package:
     - hylograph-layout
     - hylograph-selection
     - hylograph-transitions
+    # Conspicillum (src/Conspicillum, moved in from its own repo 2026-10-29)
+    - web-pointerevents
+    - web-storage
+    - unsafe-reference
+    - const
   bundle:
     module: Triggerfish.Main
     outfile: public/bundle.js

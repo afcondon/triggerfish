@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Conspicillum</title>
+  <!-- Conspicillum in the machines' shell (src/Triggerfish/Conspicillum/Main.purs),
+       since 2026-10-29: served at /conspicillum/, where its own repo's page
+       was, so links and kept presets (#12, #k…) still work. Its bundle sits
+       beside the other pages' at the root. -->
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
+  <link rel="stylesheet" href="/halogen-widgets.css">
+  <link rel="stylesheet" href="conspicillum.css?v=1">
+  <style>
+    html, body { margin: 0; background: #fafaf8; }
+    /* The height of the shell's fixed bar, which the page sits below. */
+    :root { --tf-bar: 44px; }
+  </style>
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+</head>
+<body>
+  <!-- Per-load cache-bust, as on the other pages: static-httpd sends no Cache-Control. -->
+  <script>document.write('<script src="/conspicillum.js?v=' + Date.now() + '"><\/script>');</script>
+</body>
+</html>

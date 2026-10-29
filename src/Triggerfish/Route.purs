@@ -67,6 +67,7 @@ machineSlug = case _ of
   Vet -> "vetula"
   Tid -> "tidal"
   Suf -> "sufflamen"
+  Con -> "conspicillum"
 
 machineFromSlug :: String -> Maybe Which
 machineFromSlug s = case toLower (trim s) of

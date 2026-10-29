@@ -27,4 +27,6 @@ main = Standalone.run
   , playable: false
   , spaceHears: false
   , capturable: false
+  , limulusOf: const false
+  , rigOnly: false
   }

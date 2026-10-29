@@ -1,0 +1,262 @@
+/* Conspicillum's look, scoped to its page in the machines' shell
+   (2026-10-29): every rule under .consp, so the shell's bar and drawers keep
+   theirs. From the conspicillum repo's conspicillum.css, less its own header,
+   drawers and Play, which the shell now draws. */
+.consp { --paper:#fafaf8; --ink:#141414; --mid:#6d6d69; --faint:#c7c6c0; --hair:#e3e2dc;
+  --panel:#f2f1ec; --panel-edge:#d4d3cc; --accent:#c8371e; --accent-soft:rgba(200,55,30,.10);
+  --sans:"Helvetica Neue",Helvetica,Arial,sans-serif; --mono:"SF Mono",Menlo,Consolas,monospace; }
+.consp /* ── the bank list: the host page, .consp not the module ─────────────────────── */ aside.banks { font-size:12.5px; max-height:calc(100vh - 110px); overflow:auto; padding-right:6px; }
+.consp /* ── the panel ─────────────────────────────────────────────────────────── */ .panel { position:relative; background:var(--panel); border:1px solid var(--panel-edge); border-radius:3px;
+         box-shadow:0 1px 0 #fff inset, 0 12px 32px rgba(0,0,0,.07); padding:20px 30px 18px; }
+.consp .screw { position:absolute; width:10px; height:10px; border-radius:50%; background:#dddcd6; border:1px solid #c3c2bb; }
+.consp .screw::after { content:""; position:absolute; left:1px; right:1px; top:3.5px; height:1px; background:#b3b2ab; transform:rotate(35deg); }
+.consp .screw.tl { left:10px; top:10px; }
+.consp .screw.tr { right:10px; top:10px; }
+.consp .screw.bl { left:10px; bottom:10px; }
+.consp .screw.br { right:10px; bottom:10px; }
+.consp .ptop { display:flex; align-items:baseline; gap:12px; padding:0 8px 12px; border-bottom:1px solid var(--panel-edge); }
+.consp .brand { font-weight:700; letter-spacing:.2em; font-size:11px; }
+.consp .ptop .bankname { font-size:10px; letter-spacing:.16em; text-transform:uppercase; color:var(--mid); }
+.consp .ptop .sp { flex:1; }
+.consp .ptop .tempo { font-size:11px; color:var(--mid); font-variant-numeric:tabular-nums; }
+.consp .pbody { display:grid; grid-template-columns:420px 1fr; gap:26px; padding:14px 0 6px; }
+.consp #circle { width:420px; height:420px; display:block; touch-action:none; }
+.consp .display { display:grid; grid-template-columns:auto 1fr auto; align-items:center; gap:8px; }
+.consp .display button { border:1px solid var(--panel-edge); background:#fbfbf9; width:26px; height:26px; border-radius:50%;
+                  font:13px var(--sans); cursor:pointer; color:var(--ink); }
+.consp .display button:hover { border-color:var(--ink); }
+.consp .pname { font-size:22px; font-weight:700; letter-spacing:-.01em; line-height:1.15; }
+.consp .blurb { color:var(--mid); font-size:12.5px; margin:4px 0 0 34px; min-height:1.4em; }
+.consp .edited { margin:2px 0 0 34px; font-size:11px; color:var(--accent); min-height:1.3em; }
+.consp .edited button { border:0; background:none; font:inherit; color:var(--ink); text-decoration:underline; cursor:pointer; padding:0 0 0 6px; }
+.consp /* ── the sentence ──────────────────────────────────────────────────────── */ .sentence { font-size:16.5px; line-height:1.62; margin:16px 0 0; max-width:34em; }
+.consp .sentence p { margin:0 0 .55em; }
+.consp .sentence .set { font-family:var(--mono); font-size:13px; }
+.consp .sentence code { font-family:var(--mono); font-size:12.5px; background:#fff; border:1px solid var(--hair); padding:0 4px; border-radius:2px; }
+.consp .num { font-variant-numeric:tabular-nums; border-bottom:1px dotted var(--ink); cursor:ew-resize; padding:0 1px;
+       user-select:none; -webkit-user-select:none; outline:none; }
+.consp .num:hover, .consp .num:focus, .consp .num.hl { background:var(--accent-soft); }
+.consp .num.bound { font-weight:700; border-bottom:1.5px solid var(--accent); }
+.consp .sentence sup, .consp .klab sup { color:var(--accent); font-size:9.5px; font-weight:700; margin-left:1px; }
+.consp .sentence .note { color:var(--mid); font-size:13px; }
+.consp /* ── the knob row ──────────────────────────────────────────────────────── */ .pbottom { display:flex; align-items:flex-end; gap:22px; padding:14px 8px 4px; border-top:1px solid var(--panel-edge); }
+.consp .knob { width:78px; text-align:center; cursor:ns-resize; user-select:none; -webkit-user-select:none; touch-action:none; }
+.consp .knob svg { display:block; margin:0 auto; }
+.consp .knob .kt { fill:var(--faint); }
+.consp .knob .kv { fill:var(--accent); }
+.consp .knob .kb { fill:#fdfdfc; stroke:var(--ink); stroke-width:1.5; }
+.consp .knob .ki { stroke:var(--ink); stroke-width:2.2; stroke-linecap:round; }
+.consp .knob.hl .kb { fill:#fff3ef; }
+.consp .klab { font-size:10px; letter-spacing:.12em; text-transform:uppercase; margin-top:2px; }
+.consp .kval { font-size:11.5px; color:var(--mid); font-variant-numeric:tabular-nums; }
+.consp .pbottom .sp { flex:1; }
+.consp .jacks { display:flex; gap:12px; margin-bottom:10px; }
+.consp .jack { text-align:center; font-size:9.5px; letter-spacing:.12em; color:var(--mid); }
+.consp .jack i { display:block; width:22px; height:22px; border-radius:50%; border:1.5px solid var(--ink); margin:0 auto 3px;
+          background:radial-gradient(circle, #222 0 5px, #e9e8e3 5.5px); }
+.consp /* ── the ring: time ───────────────────────────────────────────────────── */ .tick { stroke:var(--mid); stroke-width:1; }
+.consp .tick.beat { stroke:var(--ink); stroke-width:1.6; }
+.consp .blabel { font:10px var(--sans); fill:var(--mid); text-anchor:middle; dominant-baseline:middle; }
+.consp .slotband { fill:none; stroke:#e7e6e0; }
+.consp .wd { stroke:#fff; stroke-width:.8; }
+.consp .gr.on .wd { stroke:var(--ink); stroke-width:2.2; }
+.consp .hand { stroke:var(--ink); stroke-width:1.2; }
+.consp .idle .hand { stroke:var(--mid); stroke-dasharray:3 3; }
+.consp .cloudaxis { stroke:#e2e1db; stroke-width:1; }
+.consp .cloudlab { font:8.5px var(--sans); fill:#a8a7a1; letter-spacing:.08em; }
+.consp .pt { stroke-width:1.2; }
+.consp .key { display:flex; flex-wrap:wrap; gap:4px 14px; justify-content:center; font-size:10.5px; color:var(--mid); margin-top:2px; }
+.consp .key svg { vertical-align:-2px; margin-right:4px; }
+.consp /* ── the strip: the material ───────────────────────────────────────────── */ .stripwrap { padding:8px 8px 4px; border-top:1px solid var(--panel-edge); }
+.consp .striplab { font-size:10px; letter-spacing:.14em; text-transform:uppercase; color:var(--mid); display:flex; gap:12px; }
+.consp .striplab b { color:var(--ink); font-weight:600; letter-spacing:.06em; text-transform:none; font-size:11.5px; }
+.consp .striplab .sp { flex:1; }
+.consp #strip { width:100%; display:block; margin-top:2px; }
+.consp .seg { stroke:none; }
+.consp .seg.on { stroke:var(--ink); stroke-width:2; }
+.consp .seglab { font:9.5px var(--sans); fill:var(--mid); text-anchor:middle; }
+.consp .lane { stroke:none; }
+.consp .lane.on { stroke:var(--ink); stroke-width:1.6; }
+.consp .rhead { stroke:var(--ink); stroke-width:2; }
+.consp .idle .rhead { stroke:var(--mid); }
+.consp /* ── rules as a table ──────────────────────────────────────────────────── */ table.rules { border-collapse:collapse; font-size:12.5px; margin:4px 0 10px; }
+.consp table.rules th { font-size:9.5px; letter-spacing:.12em; text-transform:uppercase; color:var(--mid); font-weight:600; text-align:left; padding:0 14px 3px 0; border-bottom:1px solid var(--panel-edge); }
+.consp table.rules td { padding:3px 14px 3px 0; border-bottom:1px solid var(--hair); vertical-align:top; }
+.consp table.rules td.op { font-family:var(--mono); font-size:12px; }
+.consp table.rules td.amt { font-family:var(--mono); font-size:12px; font-variant-numeric:tabular-nums; }
+.consp /* ── the line: the machine form, .consp under the panel ──────────────────────── */ .machine { margin-top:18px; }
+@media (max-width: 1180px) {
+  .consp .panel { width:auto; }
+}
+@media (max-width: 760px) {
+  .consp .pbody { grid-template-columns:1fr; }
+  .consp #circle { width:100%; height:auto; }
+  .consp .pbottom { flex-wrap:wrap; }
+}
+.consp /* ── the key's swatches ────────────────────────────────────────────────── */ .key .sw { display:inline-block; width:9px; height:9px; border-radius:50%; margin-right:4px; vertical-align:-1px; }
+.consp .key .sw.fwd { background:#8f8e89; }
+.consp .key .sw.back { background:rgba(143,142,137,.22); border:2px solid #8f8e89; width:8px; height:8px; }
+.consp /* ── the waveform: the sound under its colours ─────────────────────────── */ .wave { fill:#6d6d69; fill-opacity:.55; stroke:none; }
+.consp .wavecentre { stroke:#dcdbd5; stroke-width:.6; }
+.consp /* ── the loupe: the segment being read, .consp at full width ─────────────────── */ .loupelab { margin-top:6px; }
+.consp #loupe { width:100%; height:68px; display:block; margin-top:2px; background:#fbfbf9; border:1px solid var(--hair); border-radius:2px; }
+.consp .loupewave { fill:#141414; fill-opacity:.62; }
+.consp .window { fill-opacity:.28; stroke:none; }
+.consp .window.on { fill-opacity:.5; stroke:var(--ink); stroke-width:1.4; }
+.consp .reach { fill:var(--accent-soft); }
+.consp .position { stroke:var(--accent); stroke-width:1.2; stroke-dasharray:3 2; }
+.consp #loupe .rhead { stroke:var(--ink); stroke-width:2; }
+.consp .note { color:var(--mid); }
+.consp /* ── tabs ──────────────────────────────────────────────────────────────── */ nav.tabs { display:flex; gap:2px; margin-left:10px; }
+.consp /* ── the shelf ─────────────────────────────────────────────────────────── */ .bank.shelf { padding-bottom:10px; margin-bottom:6px; border-bottom:1px solid var(--hair); }
+.consp .hint { color:var(--mid); font-size:11.5px; margin:4px 6px; }
+.consp .edited button { margin-left:4px; }
+.consp .edited input.naming { font:13px var(--sans); border:1px solid var(--panel-edge); background:#fff; padding:2px 6px; width:16em; }
+.consp /* ── the material chooser ──────────────────────────────────────────────── */ .material { margin:2px 0 10px; }
+.consp .materialrow { display:flex; align-items:center; gap:10px; }
+.consp .materiallab { font-size:10px; letter-spacing:.14em; text-transform:uppercase; color:var(--mid); }
+.consp .materialrow select { font:12px var(--sans); border:1px solid var(--panel-edge); background:#fbfbf9; padding:2px 4px; max-width:420px; }
+.consp button.hold { border:1px solid var(--panel-edge); background:#fbfbf9; font:600 10px var(--sans); letter-spacing:.12em; text-transform:uppercase;
+              padding:3px 9px; border-radius:11px; cursor:pointer; color:var(--mid); }
+.consp button.hold.on { background:var(--accent); border-color:var(--accent); color:#fff; }
+.consp .tiles { display:flex; flex-wrap:wrap; gap:3px; margin-top:7px; }
+.consp .tile { width:46px; border:1px solid var(--hair); background:#fbfbf9; padding:2px 2px 1px; cursor:pointer; text-align:left; border-radius:2px; font:inherit; }
+.consp .tile:hover { border-color:var(--mid); }
+.consp .tile.on { border-color:var(--ink); box-shadow:0 0 0 1px var(--ink); background:#fff; }
+.consp .tile svg { width:40px; height:14px; display:block; }
+.consp .tile .tn { display:block; font-size:9.5px; font-variant-numeric:tabular-nums; color:var(--ink); line-height:1.2; }
+.consp .tile .tc { display:block; font-size:8.5px; color:var(--mid); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; line-height:1.2; }
+.consp .tile.all { display:flex; align-items:center; justify-content:center; min-height:38px; }
+.consp .tile.all .tn { font-weight:600; }
+.consp /* ── the laboratory ────────────────────────────────────────────────────── */ .labtop { padding-top:14px; }
+.consp .labtitle { display:flex; gap:20px; align-items:flex-start; padding:0 0 10px; border-bottom:1px solid var(--panel-edge); margin-bottom:10px; }
+.consp .labtitle .grow { flex:1; }
+.consp .labtransport { display:flex; flex-direction:column; align-items:flex-end; gap:6px; }
+.consp .labtransport .tempo { font-size:11px; color:var(--mid); font-variant-numeric:tabular-nums; }
+.consp .labgrid { display:grid; grid-template-columns:repeat(auto-fill, minmax(390px, 1fr)); gap:16px; margin-top:18px; }
+.consp .labpanel { background:var(--panel); border:1px solid var(--panel-edge); border-radius:3px; padding:12px 16px 12px; }
+.consp .labpanel h2 { font-size:10.5px; letter-spacing:.16em; text-transform:uppercase; margin:0 0 6px; font-weight:700; }
+.consp .labpanel .why { color:var(--mid); font-size:12px; margin:0 0 10px; line-height:1.45; }
+.consp .labrow { display:grid; grid-template-columns:118px 1fr 78px 22px; align-items:center; gap:8px; font-size:12.5px; padding:1px 0; }
+.consp .labrow > label { color:var(--ink); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.consp .labrow > input[type=range] { width:100%; accent-color:var(--ink); }
+.consp .labrow > output { font-variant-numeric:tabular-nums; color:var(--mid); text-align:right; font-size:12px; }
+.consp .labrow > input:not([type=range]), .consp .labrow > select { grid-column:2 / 5; font:12px var(--sans); border:1px solid var(--panel-edge); background:#fff; padding:2px 5px; }
+.consp .labrow.idle > label, .consp .labrow.idle > output { color:#a8a7a1; }
+.consp .labrow.idle > input[type=range] { opacity:.45; }
+.consp .pin { border:0; background:none; cursor:pointer; color:var(--faint); font-size:13px; padding:0; }
+.consp .pin.on { color:var(--accent); }
+.consp .pin:disabled { cursor:default; opacity:.3; }
+.consp .onsetline { position:relative; height:14px; margin:8px 0 2px; border-top:1px solid var(--panel-edge); }
+.consp .onsetline i { position:absolute; top:-5px; width:2px; height:10px; background:var(--ink); margin-left:-1px; }
+.consp .rule { display:flex; gap:4px; align-items:center; margin-bottom:4px; flex-wrap:wrap; }
+.consp .rule select, .consp .rule input { font:12px var(--sans); border:1px solid var(--panel-edge); background:#fff; padding:2px 3px; }
+.consp .rule input.small { width:50px; }
+.consp .rule input.values { width:120px; font-family:var(--mono); font-size:11.5px; }
+.consp .rule input:disabled { background:transparent; color:var(--faint); }
+.consp .rule .kill { border:0; background:none; cursor:pointer; color:var(--mid); font-size:15px; }
+.consp button.add { border:1px solid var(--panel-edge); background:#fbfbf9; font:12px var(--sans); padding:3px 10px; cursor:pointer; margin-top:4px; }
+.consp details.wire { margin-top:16px; font-size:12px; color:var(--mid); }
+.consp details.wire pre { white-space:pre-wrap; word-break:break-all; font:11px/1.45 var(--mono); background:#fff; border:1px solid var(--hair); padding:8px; max-height:280px; overflow:auto; }
+.consp section.panel:not(.labtop), .consp section.machine { max-width:860px; }
+.consp /* ── the library ───────────────────────────────────────────────────────── */ main.stage.wide { grid-template-columns:minmax(0, 1400px); }
+.consp .library { font-size:13px; }
+.consp .library .lab { font-size:10px; letter-spacing:.14em; text-transform:uppercase; color:var(--mid); margin-right:4px; }
+.consp .collections { display:flex; flex-wrap:wrap; align-items:center; gap:6px; padding-bottom:12px; border-bottom:1px solid var(--hair); }
+.consp .pill { border:1px solid var(--panel-edge); background:#fbfbf9; border-radius:13px; padding:3px 11px; font:12px var(--sans); cursor:pointer; }
+.consp .pill:hover { border-color:var(--mid); }
+.consp .pill.on { background:var(--ink); color:#fff; border-color:var(--ink); }
+.consp .pill.module { font-weight:700; }
+.consp .newcollection { font:12px var(--sans); border:1px dashed var(--panel-edge); background:#fff; padding:3px 9px; border-radius:13px; width:150px; }
+.consp .collectionctl { flex-basis:100%; display:flex; gap:8px; align-items:center; margin-top:4px; }
+.consp .collectionctl button { border:1px solid var(--panel-edge); background:#fbfbf9; font:12px var(--sans); padding:2px 9px; cursor:pointer; border-radius:2px; }
+.consp .collectionctl button.on { background:var(--accent); border-color:var(--accent); color:#fff; }
+.consp .collectionctl input:not([type]) { font:12px var(--sans); border:1px solid var(--panel-edge); padding:2px 6px; }
+.consp .collectionctl .check { display:flex; gap:5px; align-items:center; color:var(--mid); font-size:12px; }
+.consp .libfilters { display:flex; gap:8px; align-items:center; margin:12px 0 6px; }
+.consp .libfilters .search { font:13px var(--sans); border:1px solid var(--panel-edge); background:#fff; padding:4px 9px; width:320px; }
+.consp .libfilters select { font:12px var(--sans); border:1px solid var(--panel-edge); background:#fbfbf9; padding:3px 5px; }
+.consp .libfilters .count { color:var(--mid); font-size:12px; font-variant-numeric:tabular-nums; }
+.consp .tagfilter { display:flex; flex-wrap:wrap; gap:5px; align-items:center; margin-bottom:8px; }
+.consp .chip { display:inline-flex; align-items:center; gap:3px; border:1px solid var(--panel-edge); background:#fff; border-radius:10px; padding:0 7px; font:11.5px var(--sans); margin:1px 3px 1px 0; }
+.consp button.chip { cursor:pointer; padding:1px 8px; }
+.consp .chip.on { background:var(--ink); color:#fff; border-color:var(--ink); }
+.consp .chip button { border:0; background:none; cursor:pointer; color:var(--mid); padding:0; font-size:12px; }
+.consp table.libtable { border-collapse:collapse; width:100%; margin-top:6px; }
+.consp table.libtable th { font-size:9.5px; letter-spacing:.12em; text-transform:uppercase; color:var(--mid); font-weight:600; text-align:left; padding:0 10px 4px 0; border-bottom:1px solid var(--panel-edge); }
+.consp table.libtable td { padding:5px 10px 5px 0; border-bottom:1px solid var(--hair); vertical-align:top; }
+.consp table.libtable tr.current td { background:var(--accent-soft); }
+.consp table.libtable tr.unplayable { color:var(--faint); }
+.consp table.libtable td.pname { min-width:220px; }
+.consp table.libtable button.name { border:0; background:none; font:600 13px var(--sans); padding:0; cursor:pointer; text-align:left; color:var(--ink); }
+.consp table.libtable button.name:hover { text-decoration:underline; }
+.consp table.libtable button.name:disabled { color:var(--faint); cursor:default; text-decoration:none; }
+.consp table.libtable .about { color:var(--mid); font-size:11.5px; max-width:360px; }
+.consp table.libtable input.category { font:12px var(--sans); border:1px solid transparent; background:transparent; padding:1px 4px; width:130px; }
+.consp table.libtable input.category:hover, .consp table.libtable input.category:focus { border-color:var(--panel-edge); background:#fff; }
+.consp table.libtable td.tags { min-width:220px; }
+.consp table.libtable input.newtag { font:11.5px var(--sans); border:1px dashed var(--panel-edge); background:transparent; padding:0 6px; width:70px; border-radius:10px; }
+.consp table.libtable td.set { font-family:var(--mono); font-size:11.5px; color:var(--mid); }
+.consp table.libtable td.kind { font-size:11px; color:var(--mid); }
+.consp table.libtable td.order button { border:1px solid var(--panel-edge); background:#fbfbf9; cursor:pointer; padding:0 5px; margin-right:2px; }
+.consp /* ── the suite's one layout (2026-10-05): browser | instrument | Limulus ── */ .app { display:flex; flex-direction:column; height:100vh; }
+.consp .instrument { height:100%; min-width:0; overflow:auto; padding:24px 28px; box-sizing:border-box; }
+.consp .instrument section.panel:not(.labtop) { max-width:860px; margin:0 auto; }
+.consp .labtransport .tolimulus { margin:0 4px 0 0; }
+/* ── in the shell: the page under the bar, between the drawers ─────────── */
+.consp { position:fixed; top:var(--tf-bar); left:var(--tf-left,0px); right:var(--tf-right,0px); bottom:0; overflow:hidden;
+         background:var(--paper); color:var(--ink); font:14px/1.45 var(--sans); }
+.consp, .consp * { box-sizing:border-box; }
+.consp .instrument { height:100%; min-width:0; overflow:auto; padding:18px 28px 28px; }
+.consp .instrument section.panel:not(.labtop) { max-width:860px; margin:0 auto; }
+.consp .instrument.wide { padding:24px 40px; }
+.consp .instrument.wide > * { max-width:1400px; margin:0 auto; }
+.consp .note { padding:40px; }
+
+/* a laptop's height: the ring a little smaller, so the knobs stay on screen */
+.consp .pbody { grid-template-columns:340px 1fr; }
+.consp #circle { width:340px; height:340px; }
+.consp .pbottom { padding-top:10px; }
+.consp .ptop .lamp { width:7px; height:7px; border-radius:50%; background:var(--faint); align-self:center; }
+.consp .ptop .lamp.on { background:#2e8a4f; }
+
+/* ── the welcome card ──────────────────────────────────────────────────── */
+.consp .welcome { position:absolute; inset:0; background:rgba(250,250,248,.72); display:flex; align-items:center; justify-content:center; z-index:5; }
+.consp .welcome .card { width:min(600px, calc(100% - 40px)); background:#fff; border:1px solid var(--panel-edge); border-radius:4px;
+                        box-shadow:0 18px 50px rgba(0,0,0,.12); padding:26px 30px 20px; }
+.consp .welcome .eyebrow { font-size:10.5px; font-weight:700; letter-spacing:.2em; text-transform:uppercase; color:var(--accent); }
+.consp .welcome h2 { font-size:21px; font-weight:700; letter-spacing:-.01em; line-height:1.25; margin:6px 0 16px; }
+.consp .welcome dl { margin:0; display:grid; gap:9px; }
+.consp .welcome dl > div { display:grid; grid-template-columns:96px 1fr; gap:14px; }
+.consp .welcome dt { font-size:10px; letter-spacing:.14em; text-transform:uppercase; color:var(--mid); padding-top:3px; }
+.consp .welcome dd { margin:0; font-size:13.5px; line-height:1.45; }
+.consp .welcome .foot { display:flex; align-items:center; gap:16px; margin-top:20px; padding-top:14px; border-top:1px solid var(--hair);
+                        font-size:12px; color:var(--mid); }
+.consp .welcome .foot span { flex:1; }
+.consp .welcome .foot button { border:1.5px solid var(--ink); background:var(--ink); color:#fff; border-radius:18px; padding:6px 20px;
+                               font:600 11px var(--sans); letter-spacing:.12em; text-transform:uppercase; cursor:pointer; }
+
+/* the knobs in the right column, under the sentence */
+.consp .pright { display:flex; flex-direction:column; min-width:0; }
+.consp .pright .pbottom { margin-top:auto; border-top:1px solid var(--panel-edge); padding:10px 0 2px; gap:12px; align-items:flex-end; }
+.consp .pright .knob { width:66px; }
+.consp .pright .jacks { gap:8px; margin-bottom:12px; }
+.consp .sentence { font-size:15.5px; line-height:1.55; margin-top:10px; }
+.consp .key { font-size:10px; gap:2px 10px; }
+.consp .pbody { padding-bottom:10px; }
+
+/* narrow, with both drawers open: the ring smaller, then above the rest */
+.consp .instrument { container-type:inline-size; }
+@container (max-width: 900px) {
+  .consp .pbody { grid-template-columns:280px 1fr; gap:18px; }
+  .consp #circle { width:280px; height:280px; }
+  .consp .pright .knob { width:54px; }
+  .consp .pright .jacks { display:none; }
+  .consp .panel { padding:16px 18px 14px; }
+}
+@container (max-width: 700px) {
+  .consp .pbody { grid-template-columns:1fr; justify-items:center; }
+  .consp .pbody > div:first-child { width:300px; }
+  .consp #circle { width:300px; height:300px; }
+  .consp .pright { width:100%; }
+}

@@ -29,6 +29,8 @@ main = Standalone.run
   , playable: true
   , spaceHears: false
   , capturable: false
+  , limulusOf: const false
+  , rigOnly: false
   , markOf: case _ of
       Odonus.Marked at -> Just at
       _ -> Nothing

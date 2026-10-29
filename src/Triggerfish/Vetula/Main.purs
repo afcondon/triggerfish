@@ -28,6 +28,8 @@ main = Standalone.run
   , playable: true
   , spaceHears: true
   , capturable: false
+  , limulusOf: const false
+  , rigOnly: false
   , markOf: case _ of
       Page.Marked at -> Just at
       _ -> Nothing

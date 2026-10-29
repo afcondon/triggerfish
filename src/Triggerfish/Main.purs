@@ -1268,6 +1268,7 @@ querySounding w s = case w of
   Vet -> H.query _vet unit (Vetula.SetSounding s unit)
   Tid -> pure Nothing
   Suf -> pure Nothing
+  Con -> pure Nothing
 
 -- Re-derive and push every machine's Sounding (on arm-all / mode flip / init).
 pushAll :: forall o m. MonadAff m => H.HalogenM RState RAction Slots o m Unit
@@ -1462,6 +1463,7 @@ queryStagePath w segs = case w of
   Vet -> H.query _vet unit (Vetula.SetStagePath segs unit)
   Tid -> pure Nothing
   Suf -> pure Nothing
+  Con -> pure Nothing
 
 -- Write the address bar to match `w` and its remembered stage path. The ONE place
 -- the hash is written, so there is exactly one direction of flow: state → URL.
@@ -1481,6 +1483,7 @@ queryLoad w i = case w of
   Vet -> H.query _vet unit (Vetula.LoadEntry i unit)
   Tid -> pure Nothing
   Suf -> pure Nothing
+  Con -> pure Nothing
 
 queryImport :: forall o m. Which -> String -> H.HalogenM RState RAction Slots o m (Maybe Boolean)
 queryImport w txt = case w of
@@ -1490,6 +1493,7 @@ queryImport w txt = case w of
   Vet -> H.query _vet unit (Vetula.ImportText txt identity)
   Tid -> pure Nothing
   Suf -> pure Nothing
+  Con -> pure Nothing
 
 render :: forall m. MonadAff m => RState -> H.ComponentHTML RAction Slots m
 render st =
@@ -2503,6 +2507,7 @@ whichName = case _ of
   Vet -> "Vetula"
   Tid -> "Tidal"
   Suf -> "Sufflamen"
+  Con -> "Conspicillum"
 
 seg :: forall m. String -> Boolean -> RAction -> H.ComponentHTML RAction Slots m
 seg label active act =
