@@ -68,7 +68,7 @@ import Halogen.Subscription as HS
 import Reef.Conspicillum.Cloud (Spec)
 import Reef.Conspicillum.Decimal (fixed)
 import Reef.Conspicillum.Display (Material(..), materialName, segments)
-import Reef.Conspicillum.Notation (Line, parse, print)
+import Reef.Conspicillum.Notation (Line, knobLabel, parse, print)
 import Reef.Conspicillum.Parameter (Parameter(..), SendBus(..), denormalise, describe, format, normalise, read, set)
 import Reef.Conspicillum.Preset (Preset, bankName)
 import Reef.Conspicillum.Presets (presets)
@@ -346,7 +346,7 @@ baseOf = case _ of
 
 edited :: State -> Boolean
 edited st = case st.original, st.current of
-  Just o, Just c -> print o.line /= print c.line || (o.knobs <#> _.parameter) /= (c.knobs <#> _.parameter)
+  Just o, Just c -> print o.line /= print c.line
   _, _ -> false
 
 -- | The scene as a line of Tidal++, as Limulus writes it.
@@ -507,7 +507,7 @@ type SentenceInput = { preset :: Preset, set :: SampleSet, shape :: Maybe Line, 
 sentenceView :: forall m. SentenceInput -> H.ComponentHTML Action Slots m
 sentenceView = HH.memoized same \r ->
   let
-    knobs = take 4 r.preset.knobs <#> _.parameter
+    knobs = take 4 r.preset.line.knobs <#> _.parameter
   in
     sentence
       { said: sentences { line: fromMaybe r.preset.line r.shape, material: materialFor r.set r.preset.line, knobs }
@@ -541,7 +541,7 @@ modulePanel :: forall m. State -> Working -> Array (H.ComponentHTML Action Slots
 modulePanel st w =
   let
     spec = w.preset.line.spec
-    knobs = take 4 w.preset.knobs
+    knobs = take 4 w.preset.line.knobs
   in
     [ HH.section [ cls "panel" ]
         [ HH.i [ cls "screw tl" ] [], HH.i [ cls "screw tr" ] [], HH.i [ cls "screw bl" ] [], HH.i [ cls "screw br" ] []
@@ -1153,9 +1153,10 @@ handleAction = case _ of
   Pin parameter -> do
     H.modify_ \st -> st
       { current = st.current <#> \c ->
-          if elem parameter (c.knobs <#> _.parameter) then c { knobs = filter (\k -> k.parameter /= parameter) c.knobs }
-          else if length c.knobs >= 4 then c
-          else c { knobs = snoc c.knobs { parameter, label: String.toLower (describe parameter).label } }
+          let ks = c.line.knobs
+          in if elem parameter (ks <#> _.parameter) then c { line = c.line { knobs = filter (\k -> k.parameter /= parameter) ks } }
+          else if length ks >= 4 then c
+          else c { line = c.line { knobs = snoc ks { parameter, label: knobLabel parameter } } }
       }
 
   -- The arrows step through the presets; the rest of the keys (space, b,
@@ -1240,7 +1241,8 @@ playTyped :: Line -> M Unit
 playTyped line = do
   st <- H.get
   for_ st.current \p -> do
-    let typed = p { name = "From the line", about = "", line = line }
+    -- a line that names no knobs keeps the ones on the face
+    let typed = p { name = "From the line", about = "", line = if null line.knobs then line { knobs = p.line.knobs } else line }
     H.modify_ \s -> replan s
       { origin = Nothing, original = Just typed, current = Just typed, lanes = 1 }
     firstGrainInLoupe

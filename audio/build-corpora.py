@@ -82,6 +82,63 @@ def envelope(path, secs):
     return [int(round(min(1.0, p) * 255)) for p in peaks]
 
 
+# Where a sample sounds (CR-28, 2026-10-29): a granulator reads only there,
+# so grains stop landing in a hit's silent tail or a cut-up's gaps. A span is
+# where the 10 ms peak is within SOUNDING_DB of the file's own peak; gaps
+# shorter than MERGE_S are bridged, spans shorter than SHORTEST_S dropped, and
+# at most MOST_SPANS kept (the closest neighbours merged first), since every
+# span travels in every scene the page sends. `level` is the file's peak, which
+# the rig normalises each grain by (reef's `levelGain`).
+SOUNDING_DB = -24.0
+WINDOW_S, MERGE_S, SHORTEST_S, MOST_SPANS = 0.010, 0.120, 0.020, 32
+
+
+def sounding(path):
+    magnitude = read_wav(path)
+    if len(magnitude) == 0:
+        return {"sounding": [], "level": 0.0}
+    rate = rate_of(path)
+    level = float(magnitude.max())
+    if level <= 0:
+        return {"sounding": [], "level": 0.0}
+    hop = max(1, int(rate * WINDOW_S))
+    bins = len(magnitude) // hop + (1 if len(magnitude) % hop else 0)
+    peaks = np.array([magnitude[i * hop:(i + 1) * hop].max() for i in range(bins)])
+    loud = peaks >= level * (10 ** (SOUNDING_DB / 20))
+    spans, start = [], None
+    for i, on in enumerate(loud):
+        if on and start is None:
+            start = i
+        elif not on and start is not None:
+            spans.append([start, i]); start = None
+    if start is not None:
+        spans.append([start, bins])
+    merged = []
+    for a, b in spans:
+        if merged and (a - merged[-1][1]) * WINDOW_S < MERGE_S:
+            merged[-1][1] = b
+        else:
+            merged.append([a, b])
+    while len(merged) > MOST_SPANS:
+        k = min(range(len(merged) - 1), key=lambda j: merged[j + 1][0] - merged[j][1])
+        merged[k][1] = merged[k + 1][1]; del merged[k + 1]
+    merged = [m for m in merged if (m[1] - m[0]) * WINDOW_S >= SHORTEST_S] or merged
+    return {"sounding": [{"from": round(a / bins, 4), "to": round(min(b, bins) / bins, 4)} for a, b in merged],
+            "level": round(level, 6)}
+
+
+def rate_of(path):
+    with open(path, "rb") as f:
+        data = f.read(4096)
+    at = 12
+    while at + 8 <= len(data):
+        chunk, size = data[at:at + 4], struct.unpack("<I", data[at + 4:at + 8])[0]
+        if chunk == b"fmt ":
+            return struct.unpack("<I", data[at + 12:at + 16])[0]
+        at += 8 + size + (size & 1)
+    return 48000
+
+
 def corpus(name, root=SETS):
     d = json.load(open(os.path.join(root, name, "set.json")))
     samples = []
@@ -98,6 +155,7 @@ def corpus(name, root=SETS):
             # score-hits.py's kick/snare/hat per slice; empty = never scored.
             "hits": {k: (s.get("hits") or {}).get(k, []) for k in ("kick", "snare", "hat")},
             "envelope": envelope(os.path.join(root, name, s["file"]), s["end"] - s["start"]),
+            **sounding(os.path.join(root, name, s["file"])),
         })
     c = {"name": name, "samples": samples}
     # A tape carries what it means as one — bars, tempo, swing — so the page

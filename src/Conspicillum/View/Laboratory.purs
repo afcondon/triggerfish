@@ -57,7 +57,7 @@ laboratory on { preset, scene } =
     ]
   where
   spec = preset.line.spec
-  pinned = preset.knobs <#> _.parameter
+  pinned = preset.line.knobs <#> _.parameter
 
   cls :: forall r j. String -> HP.IProp (class :: String | r) j
   cls = HP.class_ <<< HH.ClassName

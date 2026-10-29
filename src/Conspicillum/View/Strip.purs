@@ -21,7 +21,7 @@ module Conspicillum.View.Strip
 
 import Prelude
 
-import Data.Array (filter, find, index, length, mapWithIndex)
+import Data.Array (filter, find, index, length, mapWithIndex, null)
 import Data.Int (toNumber)
 import Data.Maybe (Maybe(..), fromMaybe, maybe)
 import Conspicillum.Corpora (SampleSet)
@@ -30,6 +30,7 @@ import Conspicillum.View.Svg (attribute, classes, element, number)
 import Conspicillum.Waveform (Source, loudest, outline, sources, stretch)
 import Halogen.HTML as HH
 import Reef.Conspicillum.Cloud (Spec)
+import Reef.Conspicillum.Corpus (inSound)
 import Reef.Conspicillum.Display (Material, colourAt, colourCss, segments)
 
 left :: Number
@@ -173,23 +174,29 @@ loupeSource { material, set, segment } =
 
 -- | Where a grain may start, when the read head stands still, and how long it
 -- | then reads, as fractions of the segment: `position` of the way into the
--- | room a grain leaves, give or take half the spray. As reef's `grainAt`.
-reach :: LoupeInput -> Maybe { earliest :: Number, at :: Number, latest :: Number }
+-- | room a grain leaves, give or take half the spray, laid along where the
+-- | sample sounds (`spans`, which the band is drawn within). As reef's
+-- | `grainAt`, by its own `inSound`.
+reach :: LoupeInput -> Maybe { earliest :: Number, at :: Number, latest :: Number, spans :: Array { from :: Number, to :: Number } }
 reach input@{ set, spec }
   | spec.cloud.follow /= 0.0 = Nothing
   | otherwise =
       let
         { source } = loupeSource input
-        secs = maybe 1.0 _.secs (find (\s -> s.index == source.sample) set.corpus.samples)
+        sample = find (\s -> s.index == source.sample) set.corpus.samples
+        secs = maybe 1.0 _.secs sample
+        sounding = maybe [] _.sounding sample
         reads = if secs <= 0.0 then 1.0 else min 1.0 (spec.cloud.sustain / secs)
         room = 1.0 - reads
         at = spec.cloud.position * room
+        heard x = inSound sounding reads room (clamp 0.0 room x)
         local x = (x - source.from) / (source.to - source.from)
       in
         Just
-          { earliest: local (clamp 0.0 room (at - spec.cloud.spray / 2.0))
-          , at: local at
-          , latest: local (clamp 0.0 room (at + spec.cloud.spray / 2.0) + reads)
+          { earliest: local (heard (at - spec.cloud.spray / 2.0))
+          , at: local (heard at)
+          , latest: local (heard (at + spec.cloud.spray / 2.0) + reads)
+          , spans: (if null sounding then [ { from: 0.0, to: 1.0 } ] else sounding) <#> \sp -> { from: local sp.from, to: local sp.to }
           }
 
 -- | What the loupe magnifies, as a fraction of its segment. A read head that
@@ -229,11 +236,17 @@ loupeBackdrop input@{ set } =
   band = case reach input of
     Nothing -> []
     Just r ->
-      [ element "rect"
-          [ classes "reach", number "x" (seen r.earliest), number "y" 2.0
-          , number "width" (max 1.0 (seen r.latest - seen r.earliest)), number "height" 64.0
-          ] []
-      , element "line" [ classes "position", number "x1" (seen r.at), number "y1" 0.0, number "x2" (seen r.at), number "y2" 68.0 ] []
+      -- the band within each stretch that sounds: a gap or a tail stays clear
+      ( r.spans >>= \sp ->
+          let a = max r.earliest sp.from
+              b = min r.latest sp.to
+          in if b <= a then [] else
+            [ element "rect"
+                [ classes "reach", number "x" (seen a), number "y" 2.0
+                , number "width" (max 1.0 (seen b - seen a)), number "height" 64.0
+                ] [] ]
+      ) <>
+      [ element "line" [ classes "position", number "x1" (seen r.at), number "y1" 0.0, number "x2" (seen r.at), number "y2" 68.0 ] []
       ]
 
 loupe

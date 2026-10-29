@@ -23,7 +23,7 @@ module Conspicillum.Shelf
 import Prelude
 
 import Conspicillum.Http as Http
-import Data.Array (catMaybes, find)
+import Data.Array (catMaybes, find, null)
 import Data.Either (Either(..), hush)
 import Data.Maybe (Maybe, fromMaybe)
 import Data.Traversable (traverse)
@@ -60,7 +60,8 @@ stored p =
   , about: p.about
   , line: print p.line
   , query: toWireQuery p.query
-  , knobs: p.knobs <#> \k -> { parameter: identifier k.parameter, label: k.label }
+  -- also in the line since CR-29; kept beside it for pages from before
+  , knobs: p.line.knobs <#> \k -> { parameter: identifier k.parameter, label: k.label }
   }
 
 fromStored :: Stored -> Maybe Preset
@@ -70,9 +71,9 @@ fromStored s = do
     { name: s.name
     , bank: fromMaybe Early (find (\b -> bankName b == s.bank) banks)
     , about: s.about
-    , line
+    -- a preset kept before CR-29 has its knobs beside the line, not in it
+    , line: if null line.knobs then line { knobs = catMaybes (s.knobs <#> \k -> fromIdentifier k.parameter <#> \parameter -> { parameter, label: k.label }) } else line
     , query: fromWireQuery s.query
-    , knobs: catMaybes (s.knobs <#> \k -> fromIdentifier k.parameter <#> \parameter -> { parameter, label: k.label })
     }
   where
   banks = [ Early, Found, Polychords, Sector, Fix, Dub, Swung, Harmony, Envelopes, Effects, Resonators, Progressions ]

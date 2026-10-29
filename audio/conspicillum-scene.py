@@ -67,6 +67,9 @@ def corpus_of(name):
             "notes": s.get("notes") or [],
             # score-hits.py's kick/snare/hat per slice; empty = never scored.
             "hits": {k: (s.get("hits") or {}).get(k, []) for k in ("kick", "snare", "hat")},
+            # Not measured here (build-corpora.py does): the whole sample is
+            # read, and no grain is normalised.
+            "sounding": [], "level": 0.0,
         })
     return {"name": name, "samples": samples}
 
