@@ -142,19 +142,19 @@ runFlowTests = do
   let
     vetulaToOdonus = [ { source: SVetulaVoice "", legs: [ { dest: DMidi { port: "IAC Driver Tidal", channel: 5 }, offsetMs: 0.0, on: true, note: -1 } ] } ] <> odonusToAbleton
     fed = flow base { machines = [ "odonus", "vetula" ], table = vetulaToOdonus
-                    , quantise = [ { target: "odonus", input: "grid", machine: Just "vetula", label: "key" }
-                                 , { target: "odonus", input: "out", machine: Just "vetula", label: "voice 3" } ] }
+                    , quantise = [ { target: "odonus", input: "grid", machine: Just "vetula", label: "key", source: Nothing }
+                                 , { target: "odonus", input: "out", machine: Just "vetula", label: "voice 3", source: Nothing } ] }
   check "Vetula feeding Odonus's harmony stands upstream of it, one ribbon for both inputs"
     ( layerOf fed "m:vetula" == Just 0 && layerOf fed "m:odonus" == Just 1
         && ((find (\l -> l.signal == Quantise) fed.links <#> \l -> [ l.from, l.to, show l.streams ]) == Just [ "m:vetula", "m:odonus", "2" ])
     )
-  let scaled = flow base { table = odonusToAbleton, quantise = [ { target: "odonus", input: "grid", machine: Nothing, label: "scale dorian" } ] }
+  let scaled = flow base { table = odonusToAbleton, quantise = [ { target: "odonus", input: "grid", machine: Nothing, label: "scale dorian", source: Nothing } ] }
   check "a scale feeding Odonus is a node of its own, upstream"
     ( layerOf scaled "q:scale dorian" == Just 0
         && isJust (find (\l -> l.from == "q:scale dorian" && l.to == "m:odonus") scaled.links)
     )
   check "nothing is quantised when its machine is not drawn"
-    (null (flow base { machines = [], table = odonusToAbleton, quantise = [ { target: "odonus", input: "grid", machine: Nothing, label: "scale dorian" } ] }).links)
+    (null (flow base { machines = [], table = odonusToAbleton, quantise = [ { target: "odonus", input: "grid", machine: Nothing, label: "scale dorian", source: Nothing } ] }).links)
 
   let quadratOpen = flow base { machines = [ "quadrat" ], table = [] }
   check "Quadrat, open, makes sample sets: a line into them"

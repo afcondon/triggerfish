@@ -22,7 +22,9 @@ import Prelude
 
 import Data.Array (filter, foldl, mapMaybe, nub, (!!))
 import Data.Array as Array
+import Control.Alt ((<|>))
 import Data.Int (fromNumber, toNumber)
+import Data.Int as Int
 import Data.Map as Map
 import Data.Maybe (Maybe(..), fromMaybe, isJust, maybe)
 import Data.Number as Number
@@ -41,6 +43,7 @@ import Halogen.HTML.Properties as HP
 import Web.UIEvent.MouseEvent as ME
 import Triggerfish.Bosun (Lamp(..))
 import Triggerfish.Flow.Order (orderOf, rankIn)
+import Triggerfish.Routing.Model (cardSource, sourceKey)
 import Triggerfish.Flow (Column(..), Flow, Lasts(..), Link, Signal(..), columnTitle, keeps, layerOf, loopOf, nodeRank, onTheBeat, signalLabel, skeleton, storeLink)
 
 -- | What the chart reports: a machine hovered (or left), and a machine picked.
@@ -186,7 +189,7 @@ chartOf on hot live f =
         , attr "role" "img"
         , attr "aria-label" "Where each machine's output goes: through the browser or the rig, through interfaces and instruments, to your ears"
         ]
-        ( beatBand <> heads <> [ rule ] <> map link (filter (not <<< isQuant) laid.routes) <> map node laid.nodes <> beatMarks <> patchBay <> dock <> empty )
+        ( beatBand <> heads <> [ rule ] <> map link (filter (not <<< isQuant) laid.routes) <> map node laid.nodes <> openHeads <> beatMarks <> patchBay <> dock <> empty )
   where
   -- the X-ray and the storage lens share the skeleton and its layout
   xray = live.lens /= Flowing
@@ -197,7 +200,10 @@ chartOf on hot live f =
   band = if Array.null beat then 0.0 else 58.0
   -- A machine fed from the left wears its label above its bar: room for it
   -- under the column heads.
-  fedRoom = if Array.any (\l -> l.signal == Quantise) f.links then 84.0 else 0.0
+  fedRoom = (if Array.any (\l -> l.signal == Quantise) f.links then 84.0 else 0.0) + openRoom
+  -- a machine opened into its voices keeps its fish and name, above them
+  openRoom = if Array.null openMachines then 0.0 else 34.0
+  openMachines = nub (mapMaybe (\nd -> if isJust (String.stripPrefix (String.Pattern "src:") nd.id) then nd.machine else Nothing) f.nodes)
   -- the X-ray's lines need room under each node, and on the right
   h = heightOf f + band + fedRoom + (if xray then 90.0 else 0.0)
   rightEdge = if xray then right - 90.0 else right
@@ -271,7 +277,7 @@ chartOf on hot live f =
       else Nothing
 
   linkCls l | l.bone = "bone"
-  linkCls l = (if storeLink l && not store then "stored " else "") <> sigClass l.signal <> (if l.control then " control" else "") <> (if live.keyHot == Just (kindOf l) then " khot" else "") <> (if Just l.machine == hot then " hot" else "") <> (if l.broken > 0 then " broken" else "") <> (if waits l then " waiting" else if sounding l then "" else " idle")
+  linkCls l = (if storeLink l && not store then "stored " else "") <> sigClass l.signal <> (if l.control then " control" else "") <> (if live.keyHot == Just (kindOf l) then " khot" else "") <> (if Just l.machine == hot || (isJust l.voice && l.voice == hot) then " hot" else "") <> (if l.broken > 0 then " broken" else "") <> (if waits l then " waiting" else if sounding l then "" else " idle")
   -- A bone is a line, not a ribbon: it carries nothing, so it has no width
   -- to show (and alone on the chart a ribbon would fill the height).
   link route | Just l <- f.links !! route.index, l.bone =
@@ -287,7 +293,11 @@ chartOf on hot live f =
       cls = maybe "" linkCls ours'
     in
       svg "path" ([ attr "class" ("link " <> cls), attr "d" (generateRoutePath (laid.nodes <> laid.waypoints) route) ]
-          <> maybe [] (\l -> [ HE.onClick \_ -> on.link l.machine l.to ]) ours')
+          -- a ribbon hovered lights its voice (a machine opened into its
+          -- voices) or its machine, end to end
+          <> maybe [] (\l -> [ HE.onClick \_ -> on.link l.machine l.to
+                              , HE.onMouseEnter \_ -> on.hover (l.voice <|> Just l.machine)
+                              , HE.onMouseLeave \_ -> on.hover Nothing ]) ours')
         (maybe [] (\l -> [ svg "title" [] [ HH.text (linkTitle l) ] ]) ours')
 
   linkTitle l | l.bone = l.from <> " → " <> l.to <> " · " <> signalLabel l.signal <> " · the rig's wiring: nothing travels it now"
@@ -384,6 +394,8 @@ chartOf on hot live f =
   -- its own node in Feeds; else nowhere (a ghost, while an input is armed).
   qid s = "q:" <> maybe s.label (\m -> m <> " " <> s.label) s.machine
   srcPort s = case s.machine >>= \m -> nodeAt ("m:" <> m) of
+    -- a voice of a machine opened into its voices: on that voice's node
+    Nothing | Just sn <- voiceAt s -> Just (pt (sn.x1 + 9.0) (mid sn))
     Just sn ->
       let
         mine = filter (\x -> x.machine == s.machine) live.patch.sources
@@ -392,6 +404,10 @@ chartOf on hot live f =
       in Just (pt (sn.x0 - 16.0 - (k - 1.0 - j) * 17.0) (mid sn + 28.0))
     Nothing -> nodeAt (qid s) <#> \sn -> pt (sn.x1 + 9.0) (mid sn)
 
+  -- a patch source naming a Vetula voice (`src:v3`), as its node in the flow
+  voiceAt s = do
+    v <- String.stripPrefix (String.Pattern "src:v") s.id >>= Int.fromString
+    nodeAt ("src:" <> sourceKey (cardSource v))
   armedInput = live.patch.armed >>= String.stripPrefix (String.Pattern "in:")
   armedSource = live.patch.armed >>= \a -> Array.find (\s -> s.id == a) live.patch.sources
   -- unrouted sources with nowhere to stand, shown beside an armed input
@@ -446,10 +462,39 @@ chartOf on hot live f =
                  , portDot g.s.id "src can" g.p g.s.short (g.s.label <> " · plug into odonus." <> fromMaybe "" armedInput)
                  ])
 
+  -- A machine opened into its voices: its fish (still its play and stop)
+  -- and its name over the first of them; hovered, all its ribbons light.
+  openHeads = openMachines # mapMaybe \m -> do
+    sn <- Array.head (Array.sortWith _.y0 (filter (\x -> maybe false (\nd -> nd.machine == Just m && isJust (String.stripPrefix (String.Pattern "src:") nd.id)) (ours x)) laid.nodes))
+    let name = maybe m _.name (dockOf m)
+        y = sn.y0 - 22.0
+    pure $ svg "g"
+      [ attr "class" "node pick inner", attr "tabindex" "0", attr "role" "button"
+      , attr "aria-label" (name <> ", " <> plural (streamsOf m) "stream")
+      , HE.onMouseEnter \_ -> on.hover (Just m)
+      , HE.onMouseLeave \_ -> on.hover Nothing
+      , HE.onFocus \_ -> on.hover (Just m)
+      , HE.onBlur \_ -> on.hover Nothing
+      ]
+      [ svg "rect" [ attr "class" "hit", attr "x" (n (sn.x0 - 8.0 - nameWidth name - 64.0)), attr "y" (n (y - 16.0)), attr "width" (n (nameWidth name + 72.0)), attr "height" "28" ] []
+      , fishBtn m (sn.x0 - 8.0 - nameWidth name - 62.0) (y - 16.0)
+      , pickName m (sn.x0 - 8.0) (y + 2.0) "end" name
+      , svg "title" [] [ HH.text (name <> ", as its voices: hover one to follow it") ]
+      ]
+
   -- One voice of a machine opened into its voices: its name, no fish.
+  -- Hovered, its own ribbons light, to wherever it sounds.
   voiceNode sn nd =
-    svg "g" [ attr "class" "node voice" ]
-      [ bar sn, label "sub" (sn.x0 - 8.0) (mid sn + 3.5) "end" nd.name ]
+    svg "g"
+      [ attr "class" "node voice", attr "tabindex" "0"
+      , HE.onMouseEnter \_ -> on.hover (Just nd.id)
+      , HE.onMouseLeave \_ -> on.hover Nothing
+      , HE.onFocus \_ -> on.hover (Just nd.id)
+      , HE.onBlur \_ -> on.hover Nothing
+      ]
+      [ svg "rect" [ attr "class" "hit", attr "x" (n (sn.x0 - 8.0 - nameWidth nd.name)), attr "y" (n (mid sn - 9.0)), attr "width" (n (nameWidth nd.name + 14.0)), attr "height" "18" ] []
+      , bar sn, label "sub" (sn.x0 - 8.0) (mid sn + 3.5) "end" nd.name
+      , svg "title" [] [ HH.text (nd.name <> ": hover to follow it to where it sounds") ] ]
 
   -- A machine's one line: its streams and where it plays. The rest (the
   -- loaded preset, what it is) is in its hover.

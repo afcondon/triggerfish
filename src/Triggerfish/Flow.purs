@@ -147,6 +147,10 @@ type Link =
   -- | a bone of the X-ray (`skeleton`): the rig's wiring, drawn whether or
   -- | not anything travels it
   , bone :: Boolean
+  -- | the voice it carries (its `src:` node), when its machine is opened
+  -- | into its voices: then each voice is its own ribbon from end to end, so
+  -- | a hover can follow one voice to its instrument (AC, 2026-10-29, CR-23)
+  , voice :: Maybe String
   }
 
 type Flow = { nodes :: Array Node, links :: Array Link }
@@ -155,7 +159,9 @@ type Flow = { nodes :: Array Node, links :: Array Link }
 -- | Odonus's grid and out. `machine` when another machine feeds it (Vetula's
 -- | key, or a voice's chords), drawn from that machine, which then stands
 -- | upstream; else a source of its own (a scale, a harmony pattern).
-type Quant = { target :: String, input :: String, machine :: Maybe String, label :: String }
+-- | `source`: the voice feeding it, when one does, so that with its machine
+-- | opened into voices the line starts at that voice.
+type Quant = { target :: String, input :: String, machine :: Maybe String, label :: String, source :: Maybe Source }
 
 -- | A mark the rig keeps for a machine (`rig_loops`), and whether a loop is
 -- | playing it. A loop plays on the rig whether or not its page is open.
@@ -452,17 +458,19 @@ flow inp = { nodes, links: links <> loopLinks <> quantLinks <> makesLinks }
   sampleStreams = length sampleUsers
   setsLinks
     | sampleStreams > 0 =
-        [ { from: "sets", to: "d-dirt", signal: Samples, machine: "sets", streams: sampleStreams, broken: 0, wires: [], notes: [], waiting: if all _.needsRig sampleUsers then sampleStreams else 0, control: false, bone: false } ]
+        [ { from: "sets", to: "d-dirt", signal: Samples, machine: "sets", streams: sampleStreams, broken: 0, wires: [], notes: [], waiting: if all _.needsRig sampleUsers then sampleStreams else 0, control: false, bone: false, voice: Nothing } ]
     | otherwise = []
 
-  links = merge (concatMap (\s -> hopsOf s <#> \h -> { hop: h, machine: s.machine, broken: s.brokenAt == Just h.to, detail: s.detail, notes: s.notes, waiting: s.needsRig }) streams) <> setsLinks
+  links = merge (concatMap (\s -> hopsOf s <#> \h -> { hop: h, machine: s.machine, voice: voiceOf s.unit, broken: s.brokenAt == Just h.to, detail: s.detail, notes: s.notes, waiting: s.needsRig }) streams) <> setsLinks
+  -- a stream from a machine opened into its voices keeps its voice
+  voiceOf u = if isJust (stripPrefix (Pattern "src:") u) then Just u else Nothing
 
   merge = foldl add []
     where
     add acc x = case findIndex (same x) acc of
       Just i -> fromMaybe acc (Array.modifyAt i (\l -> l { streams = l.streams + 1, broken = l.broken + fromBool x.broken, wires = nub (Array.snoc l.wires x.detail), notes = nub (l.notes <> x.notes), waiting = l.waiting + fromBool x.waiting }) acc)
-      Nothing -> Array.snoc acc { from: x.hop.from, to: x.hop.to, signal: x.hop.signal, machine: x.machine, streams: 1, broken: fromBool x.broken, wires: [ x.detail ], notes: x.notes, waiting: fromBool x.waiting, control: x.hop.control, bone: false }
-    same x l = l.from == x.hop.from && l.to == x.hop.to && l.signal == x.hop.signal && l.machine == x.machine && l.control == x.hop.control
+      Nothing -> Array.snoc acc { from: x.hop.from, to: x.hop.to, signal: x.hop.signal, machine: x.machine, streams: 1, broken: fromBool x.broken, wires: [ x.detail ], notes: x.notes, waiting: fromBool x.waiting, control: x.hop.control, bone: false, voice: x.voice }
+    same x l = l.from == x.hop.from && l.to == x.hop.to && l.signal == x.hop.signal && l.machine == x.machine && l.control == x.hop.control && l.voice == x.voice
     fromBool b = if b then 1 else 0
 
   -- The loops, between the pages and the engine: each mark fed, thin, by
@@ -488,6 +496,8 @@ flow inp = { nodes, links: links <> loopLinks <> quantLinks <> makesLinks }
   -- closed or opened into voices) is a node of its own there.
   quantFrom q = case q.machine of
     Just m | pageOpen m && not (m `elem` inp.open) -> "m:" <> m
+    -- opened into its voices: from the voice that feeds it
+    Just m | pageOpen m, Just u <- q.source <#> \src -> "src:" <> sourceKey src, Array.any (\x -> x.unit == u) streams -> u
     Just m -> "q:" <> m <> " " <> q.label
     Nothing -> "q:" <> q.label
   quantTo t
@@ -500,7 +510,10 @@ flow inp = { nodes, links: links <> loopLinks <> quantLinks <> makesLinks }
     addQ acc x = case findIndex (\l -> l.from == x.from && l.to == x.to) acc of
       Just i -> fromMaybe acc (Array.modifyAt i (\l -> l { streams = l.streams + 1, wires = nub (Array.snoc l.wires x.input) }) acc)
       Nothing -> Array.snoc acc ((plain x.from x.to Quantise x.machine false) { wires = [ x.input ] })
-  feeders = nub (mapMaybe (\l -> stripPrefix (Pattern "m:") l.from) quantLinks)
+  -- the machines feeding another's harmony, drawn whole or from a voice
+  feeders = nub (quantLinks # mapMaybe \l -> case stripPrefix (Pattern "m:") l.from of
+    Just m -> Just m
+    Nothing -> _.machine <$> Array.find (\u -> u.unit == l.from) streams)
 
   -- Quadrat makes sample sets: while its page is open, a line into them,
   -- whatever plays them.
@@ -509,7 +522,7 @@ flow inp = { nodes, links: links <> loopLinks <> quantLinks <> makesLinks }
     | otherwise = []
 
   plain from to signal machine control =
-    { from, to, signal, machine, streams: 1, broken: 0, wires: [], notes: [], waiting: 0, control, bone: false }
+    { from, to, signal, machine, streams: 1, broken: 0, wires: [], notes: [], waiting: 0, control, bone: false, voice: Nothing }
 
   ids = nub (concatMap (\l -> [ l.from, l.to ]) (links <> loopLinks <> quantLinks <> makesLinks))
   units = nubByEq (\a b -> a.unit == b.unit) streams
@@ -526,7 +539,7 @@ skeleton f = { nodes: f.nodes <> added, links: f.links <> bones }
   bones = mapMaybe bone wiring
   bone b
     | Array.any (\l -> l.from == b.from && l.to == b.to) f.links = Nothing
-    | otherwise = Just { from: b.from, to: b.to, signal: b.signal, machine: "rig", streams: 1, broken: 0, wires: [], notes: [], waiting: 0, control: false, bone: true }
+    | otherwise = Just { from: b.from, to: b.to, signal: b.signal, machine: "rig", streams: 1, broken: 0, wires: [], notes: [], waiting: 0, control: false, bone: true, voice: Nothing }
   have = map _.id f.nodes
   added = filter (\nd -> not (nd.id `elem` have) && Array.any (\b -> b.from == nd.id || b.to == nd.id) bones) fixed
   wiring =
@@ -650,7 +663,7 @@ nodeOf units table loops feeders links id = case Array.find (\x -> x.id == id) f
     | Just p <- strip "inst:" -> Just { id, column: Instrument, name: p, note: "on its port", machine: Nothing }
     | Just m <- strip "m:" -> Just (machineNode m)
     | Just k <- strip "src:" -> (Array.find (\u -> u.unit == id) units) <#> \u ->
-        { id, column: Machines, name: maybe k sourceLabel (sourceOf k), note: "", machine: Just u.machine }
+        { id, column: if u.machine `elem` feeders then Feeders else Machines, name: maybe k sourceLabel (sourceOf k), note: "", machine: Just u.machine }
     | otherwise -> Nothing
   where
   strip pre = stripPrefix (Pattern pre) id

@@ -29,7 +29,7 @@ node :: String -> Column -> String -> Node
 node id column name = { id, column, name, note: "", machine: Nothing }
 
 wire :: String -> String -> Link
-wire from to = { from, to, signal: Midi, machine: "x", streams: 1, broken: 0, wires: [], notes: [], waiting: 0, control: false, bone: false }
+wire from to = { from, to, signal: Midi, machine: "x", streams: 1, broken: 0, wires: [], notes: [], waiting: 0, control: false, bone: false, voice: Nothing }
 
 -- | The fixed list's order: what the chart drew before.
 fixedOrder :: Flow -> Order

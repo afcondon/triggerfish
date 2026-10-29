@@ -714,7 +714,10 @@ flowChart st =
                 , table: st.table
                 , ports: { found: st.ports, rigUp: st.rigUp }
                 , machines: map _.slot (filter (isOpen st) machines)
-                , open: if st.allVoices then map _.slot machines else []
+                -- Vetula is always drawn as its voices, P to W, each a ribbon
+                -- to follow (AC, 2026-10-29: "represent Vetula voices as eight
+                -- different ribbons"); Every voice opens the rest
+                , open: if st.allVoices then map _.slot machines else [ "vetula" ]
                 , extras
                 , relays: st.relays
                 , loops: rigLoops
@@ -788,6 +791,10 @@ flowChart st =
         HarmonyRoute.VetulaVoice v -> "voice " <> voiceLetter v
         HarmonyRoute.Scale sc -> "scale " <> sc.pattern
         HarmonyRoute.Harmony h -> "harmony " <> h
+    -- a voice's chords: the line starts at that voice when Vetula is open
+    , source: case rt.source of
+        HarmonyRoute.VetulaVoice v -> Just (RM.cardSource v)
+        _ -> Nothing
     }
   services = maybe [] _.services st.bosun
   lamps = deviceLamps st <> serviceLamps st
