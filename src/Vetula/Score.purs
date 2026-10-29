@@ -118,6 +118,8 @@ type Handlers i =
   , play :: Maybe i
   -- a progression, sent to Quadrat to sample
   , toQuadrat :: Maybe i
+  -- the open progression into every voice on the stage at once
+  , toEveryVoice :: Maybe i
   -- back to the lattice to take more chords in
   , addChords :: Maybe i
   }
@@ -413,6 +415,9 @@ systemWith beside pageSp on row =
                 _ -> [])
           <> (case on.toQuadrat of
                 Just act -> [ chip "\x25f4 Quadrat" "send to Quadrat to sample: its chords, one a beat, and their rebus" act ]
+                Nothing -> [])
+          <> (case on.toEveryVoice of
+                Just act -> [ chip "\x2913 every voice" "every voice on the stage plays this progression, conductors too, all at once; each keeps how it plays" act ]
                 Nothing -> [])
           <> (case on.revoice of
                 Just act | not (Array.null row.chords) ->

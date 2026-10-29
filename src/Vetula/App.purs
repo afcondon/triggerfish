@@ -850,6 +850,7 @@ data Action
   | VoiceLine Int          -- voice n's block, shown in Limulus
   | VoiceMute Int          -- voice n muted, or heard again
   | VoiceRemove Int        -- voice n hushed, its line handed to Limulus first
+  | VoicesTakeAll          -- every voice on the stage plays the open progression
   | VoiceTake Int          -- voice n plays the open progression (a new voice on an empty one)
   | VoiceSendMenu Int      -- open (or shut) voice n's "send to Odonus" menu
   | VoiceSend Int (Maybe HarmonyRoute.Input) -- send voice n's chords to an Odonus input; Nothing: stop
@@ -2010,6 +2011,21 @@ handleActionCore = case _ of
     for_ (s.stageCards >>= Map.lookup n) \line -> for_ s.binnacle \bin ->
       liftEffect $ Transport.send (Binnacle.socket bin) ("stage-paste " <> SC.cardKey n <> " " <> line)
     writeVoice n Nothing
+
+  -- **Every voice at once** (AC, 2026-10-29): tee up a progression on the
+  -- staff, then every voice, the conductors with them, moves to it together,
+  -- so Odonus's harmony and what plays change on the same bar. Each voice
+  -- keeps how it plays (its `# …` words); one whose line writes its own
+  -- chords rather than naming a progression is left alone.
+  VoicesTakeAll -> do
+    s0 <- H.get
+    when (length s0.path > 0 && unsavedNow s0) (handleAction (SaveProg false))
+    s <- H.get
+    for_ s.progName \nm -> when (length s.path > 0 && SC.stageName nm) do
+      let moved = Array.mapMaybe (\(Tuple n old) -> Tuple n <$> SC.repoint nm old)
+                    (Map.toUnfoldable (fromMaybe Map.empty s.stageCards) :: Array (Tuple Int String))
+      for_ moved \(Tuple n line) -> writeVoice n (Just line)
+      H.modify_ _ { publishMsg = Just ((if Array.length moved == 1 then "1 voice plays " else show (Array.length moved) <> " voices play ") <> nm) }
 
   VoiceSendMenu n -> H.modify_ \s -> s { voiceSendMenu = if s.voiceSendMenu == Just n then Nothing else Just n }
 
@@ -4750,13 +4766,15 @@ voicesPane st =
                       , HP.title (destTip v.dest)
                       , HE.onClick \e -> StopThen (ME.toEvent e) Nop ]
                 [ HH.i [ HP.class_ (HH.ClassName ("fa-solid " <> destIcon v.dest)) ] [] ]
+            -- a conductor's ♫ in the chart's quantisation green, so it reads
+            -- at once as a voice that plays nothing (AC, 2026-10-29)
             else HH.i [ HP.class_ (HH.ClassName ("fa-solid " <> destIcon v.dest))
-                      , HP.style "position: absolute; right: 9px; top: 8px; font-size: 13px; color: #555555;"
+                      , HP.style ("position: absolute; right: 9px; top: 8px; font-size: 13px; color: " <> (if v.dest == Odo then conductorGreen else "#555555") <> ";")
                       , HP.title (if v.fed && v.dest == Odo then fedTip v else destTip v.dest) ] []
         -- it sounds and also feeds Odonus: both said
         , if v.fed && v.dest == Sound
             then HH.i [ HP.class_ (HH.ClassName "fa-solid fa-music")
-                      , HP.style ("position: absolute; right: 30px; top: 8px; font-size: 13px; color: " <> (if Array.null v.held then "#555555" else "#b8b8b8") <> ";")
+                      , HP.style ("position: absolute; right: 30px; top: 8px; font-size: 13px; color: " <> (if Array.null v.held then conductorGreen else "#b8b8b8") <> ";")
                       , HP.title (fedTip v) ] []
             else HH.text ""
         , sendMenu v
@@ -4780,6 +4798,8 @@ voicesPane st =
                 <> [ ctl "fa-right-to-bracket" "send its chords to Odonus" (VoiceSendMenu v.n)
                    , ctl "fa-xmark" "hush it: the voice goes, its line is kept in Limulus to bring it back" (VoiceRemove v.n) ] )
         ]
+  -- the Dashboard chart's quantisation colour (--s-quant)
+  conductorGreen = "#5f8f3a"
   dropOn n = [ HE.handler (EventType "dragover") TileDragOver, HE.handler (EventType "drop") (VoiceDrop n) ]
   ctl icon tip act =
     HH.button [ HP.style "border: none; background: transparent; color: #8a8a8a; cursor: pointer; padding: 2px 6px; font-size: 12px;", HP.title tip, HE.onClick \e -> StopThen (ME.toEvent e) act ]
@@ -6046,6 +6066,7 @@ scoreSurface st =
     , toQuadrat: case st.progName of
         Just nm | any (\e -> e.kept && e.name == nm) st.library -> Just (ToQuadrat nm)
         _ -> Nothing
+    , toEveryVoice: if maybe 0 Map.size st.stageCards > 0 && length st.path > 0 then Just VoicesTakeAll else Nothing
     -- the open progression as the voices would play it: once saved
     , titleDrag: case st.progName of
         Just nm | any (\e -> e.kept && e.name == nm) st.library -> Just (TitleDrag nm)
@@ -6224,7 +6245,7 @@ staffWatermark st
     , select: const none, unselect: none, readIn: none, adopt: Nothing
     , duplicate: Nothing, remove: Nothing, dropAt: Nothing, padOver: Nothing, padDrop: Nothing
     , voiceOver: const none, voiceDrop: \_ _ -> none, titleDrag: Nothing
-    , tap: Nothing, play: Nothing, toQuadrat: Nothing, addChords: Nothing
+    , tap: Nothing, play: Nothing, toQuadrat: Nothing, toEveryVoice: Nothing, addChords: Nothing
     }
 
 -- | The scene for a rung, and the frame it should fill.
