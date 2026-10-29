@@ -1619,6 +1619,10 @@ writeVoice n mline = do
             Nothing -> s.perfBoxes <> [ boxOfCard n spec Nothing ] }
 
 -- | A voice's line muted (`# mute` added), or heard again (taken off).
+-- | Whether a voice's line is muted (`# mute` among its terms).
+mutedLine :: String -> Boolean
+mutedLine line = any (_ == "mute") (Array.drop 1 (map trim (split (Pattern "#") line)))
+
 toggleMute :: String -> String
 toggleMute line =
   let parts = map trim (split (Pattern "#") line)
@@ -2022,8 +2026,14 @@ handleActionCore = case _ of
           _ -> ""
     unless (Array.null lines) $ for_ st.binnacle \bin ->
       liftEffect $ Transport.send (Binnacle.socket bin) ("tidal " <> joinWith "\n" lines)
+    -- sent to Odonus, the voice conducts and is silent, as `# out odo` is
+    -- (AC, 2026-10-29): muted, still running. Stopping the send leaves the
+    -- mute as it is; the tile's ▶ hears it again.
+    let line = st.stageCards >>= Map.lookup n
+        silenced = isJust target && maybe false (not <<< mutedLine) line
+    when silenced $ for_ line \l -> writeVoice n (Just (toggleMute l))
     H.modify_ _ { publishMsg = Just (case target of
-      Just i -> "voice " <> voiceLetter n <> " \x2192 " <> inputWords i <> was <> held
+      Just i -> "voice " <> voiceLetter n <> " \x2192 " <> inputWords i <> (if silenced then ", muted" else "") <> was <> held
       Nothing -> "voice " <> voiceLetter n <> " no longer feeds Odonus") }
 
   VoiceTake n -> do
@@ -4775,8 +4785,8 @@ voicesPane st =
   sendMenu v =
     if st.voiceSendMenu /= Just v.n then HH.text "" else
       HH.div [ HP.style "position: absolute; left: 8px; right: 8px; bottom: 30px; z-index: 3; background: #ffffff; border: 1px solid #cfcfcf; border-radius: 6px; box-shadow: 0 6px 18px rgba(0,0,0,0.12); padding: 4px; font-size: 12px;" ]
-        ( [ item (Just HarmonyRoute.OdonusGrid) "to Odonus's grid" "its melody takes the chords' arpeggios"
-          , item (Just HarmonyRoute.OdonusOut) "to Odonus's output" "its notes snap to the chords" ]
+        ( [ item (Just HarmonyRoute.OdonusGrid) "to Odonus's grid" "its melody takes the chords' arpeggios; the voice goes silent"
+          , item (Just HarmonyRoute.OdonusOut) "to Odonus's output" "its notes snap to the chords; the voice goes silent" ]
             <> (if v.fed then [ item Nothing "stop sending" "Odonus keeps its own scale" ] else []) )
     where
     item target label sub =
