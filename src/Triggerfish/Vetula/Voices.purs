@@ -133,7 +133,8 @@ rows voices names routesText = map row voices
       , actions: [ (if shapes then "\x2713 " else "") <> "shape Odonus", (if colours then "\x2713 " else "") <> "colour Odonus" ]
       }
   sounds = case _ of
-    "odo" -> "Odonus only"
+    "odo" -> "Odonus's output only"
+    "grid" -> "Odonus's grid only"
     "rig" -> "the rig"
     "mute" -> "muted"
     _ -> "MIDI"

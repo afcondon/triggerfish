@@ -91,7 +91,7 @@ import Reef.Route (printKey) as Route
 import Reef.Route as HarmonyRoute
 import Vetula.Playhead (clockFor, defaultPattern, noteClock)
 import Vetula.Realise (fromChords)
-import Vetula.Perform.Types (ArpDir(..), ChannelMode(..), Layer, PerfFx(..), PerfSel(..), PerfTerm(..), PhraseAttach, VoiceShape(..), When(..), arpOrder, mkLayer, parseVoiceShape, termRigOnly)
+import Vetula.Perform.Types (ArpDir(..), ChannelMode(..), Layer, PerfFx(..), PerfSel(..), PerfTerm(..), PhraseAttach, VoiceShape(..), When(..), arpOrder, mkLayer, parseVoiceShape, termConducts, termRigOnly)
 import Triggerfish.PatternArg (PatternArg, argSrc)
 import Tidal.Pattern.Core (compress, stack, fast, slow, every, whenCycle)
 import Vetula.Pattern (arpIndexed, arpRate, cycleRand, withSampledArg)
@@ -1619,9 +1619,18 @@ writeVoice n mline = do
             Nothing -> s.perfBoxes <> [ boxOfCard n spec Nothing ] }
 
 -- | A voice's line muted (`# mute` added), or heard again (taken off).
--- | Whether a voice's line is muted (`# mute` among its terms).
-mutedLine :: String -> Boolean
-mutedLine line = any (_ == "mute") (Array.drop 1 (map trim (split (Pattern "#") line)))
+-- | A voice's line made to conduct one of Odonus's inputs (`# grid odo`,
+-- | `# out odo`), or to conduct nothing (`Nothing`): whatever word it had
+-- | for that goes, and the rest of the line stays as written.
+conducting :: Maybe HarmonyRoute.Input -> String -> String
+conducting target line =
+  let parts = map trim (split (Pattern "#") line)
+      kept = Array.filter (\p -> p /= "out odo" && p /= "grid odo") (Array.drop 1 parts)
+      word = case target of
+        Just HarmonyRoute.OdonusGrid -> [ "grid odo" ]
+        Just HarmonyRoute.OdonusOut -> [ "out odo" ]
+        Nothing -> []
+  in joinWith " # " (Array.take 1 parts <> kept <> word)
 
 toggleMute :: String -> String
 toggleMute line =
@@ -2024,16 +2033,15 @@ handleActionCore = case _ of
         held = case target of
           Just i | elem i st.stageLocks -> "; Odonus has it locked, so it keeps its own until unlocked"
           _ -> ""
-    unless (Array.null lines) $ for_ st.binnacle \bin ->
+    -- A voice plays or conducts, never both (AC, 2026-10-29): sent to Odonus
+    -- its line gains `# grid odo` or `# out odo`, it stops sounding, and the
+    -- rig routes that input to it; stopping the send takes the word away and
+    -- it sounds again. A route set on the Dashboard's chart is taken away too.
+    for_ (st.stageCards >>= Map.lookup n) \l -> writeVoice n (Just (conducting target l))
+    unless (isJust target || Array.null lines) $ for_ st.binnacle \bin ->
       liftEffect $ Transport.send (Binnacle.socket bin) ("tidal " <> joinWith "\n" lines)
-    -- sent to Odonus, the voice conducts and is silent, as `# out odo` is
-    -- (AC, 2026-10-29): muted, still running. Stopping the send leaves the
-    -- mute as it is; the tile's ▶ hears it again.
-    let line = st.stageCards >>= Map.lookup n
-        silenced = isJust target && maybe false (not <<< mutedLine) line
-    when silenced $ for_ line \l -> writeVoice n (Just (toggleMute l))
     H.modify_ _ { publishMsg = Just (case target of
-      Just i -> "voice " <> voiceLetter n <> " \x2192 " <> inputWords i <> (if silenced then ", muted" else "") <> was <> held
+      Just i -> "voice " <> voiceLetter n <> " \x2192 " <> inputWords i <> ", silent" <> was <> held
       Nothing -> "voice " <> voiceLetter n <> " no longer feeds Odonus") }
 
   VoiceTake n -> do
@@ -4666,14 +4674,15 @@ stageVoice st n = (st.stageCards >>= Map.lookup n) <#> \text ->
       feeds = map _.input (filter (\r -> r.source == HarmonyRoute.VetulaVoice n)
                 (fromMaybe [] (st.stageHarmony >>= hush <<< HarmonyRoute.parse)))
       fed = not (Array.null feeds)
+      conductor = maybe false (termConducts <<< _.term) spec
   in { n, name, found: maybe (isJust spec) (\nm -> any (\e -> e.kept && e.name == nm) st.library) name
      , muted: maybe false _.muted spec, channel, fed, feeds
      , held: filter (\i -> elem i st.stageLocks) feeds
      -- a voice feeds Odonus by a harmony route; `# out odo` silences it and
      -- has the rig write that route (odonus_feeds' shortcut), so it shows ♫
      -- once the route is on the stage
-     , dest: if fed && (Array.null legs || map _.term spec == Just TOdo) then Odo
-             else if Array.null legs || map _.term spec == Just TOdo then Unrouted
+     , dest: if fed && (Array.null legs || conductor) then Odo
+             else if Array.null legs || conductor then Unrouted
              else Sound }
 
 -- | **The voices pane** (AC, 2026-10-27): the eight voices, P to W, always
@@ -4762,8 +4771,9 @@ voicesPane st =
                 then map (\w -> HH.i [ HP.class_ (HH.ClassName ("fa-solid fa-" <> w)), HP.style ("font-size: 30px; color: " <> (if v.found then "#2a2a2a" else "#b3261e") <> ";") ] []) words
                 else [ HH.span [ HP.style "font: 13px Georgia, serif; color: #2a2a2a;" ] [ HH.text (fromMaybe "\x2026" v.name) ] ] )
         , HH.div [ HP.style "position: absolute; left: 0; right: 0; bottom: 6px; display: flex; justify-content: center; gap: 4px;" ]
-            ( [ ctl (if v.muted then "fa-play" else "fa-pause") (if v.muted then "hear it again" else "mute it") (VoiceMute v.n)
-              , ctl "fa-code" "its line in Limulus, where you shape how it plays" (VoiceLine v.n) ]
+            -- a conductor plays nothing, so it has nothing to mute
+            ( (if v.dest == Odo then [] else [ ctl (if v.muted then "fa-play" else "fa-pause") (if v.muted then "hear it again" else "mute it") (VoiceMute v.n) ])
+              <> [ ctl "fa-code" "its line in Limulus, where you shape how it plays" (VoiceLine v.n) ]
                 <> (case openNm of
                       Just nm | not open -> [ ctl "fa-arrow-down" ("play " <> nm <> " here, as this voice plays") (VoiceTake v.n) ]
                       _ -> [])
@@ -4785,9 +4795,9 @@ voicesPane st =
   sendMenu v =
     if st.voiceSendMenu /= Just v.n then HH.text "" else
       HH.div [ HP.style "position: absolute; left: 8px; right: 8px; bottom: 30px; z-index: 3; background: #ffffff; border: 1px solid #cfcfcf; border-radius: 6px; box-shadow: 0 6px 18px rgba(0,0,0,0.12); padding: 4px; font-size: 12px;" ]
-        ( [ item (Just HarmonyRoute.OdonusGrid) "to Odonus's grid" "its melody takes the chords' arpeggios; the voice goes silent"
-          , item (Just HarmonyRoute.OdonusOut) "to Odonus's output" "its notes snap to the chords; the voice goes silent" ]
-            <> (if v.fed then [ item Nothing "stop sending" "Odonus keeps its own scale" ] else []) )
+        ( [ item (Just HarmonyRoute.OdonusGrid) "to Odonus's grid" "`# grid odo`: its melody takes the chords' arpeggios; this voice plays nothing"
+          , item (Just HarmonyRoute.OdonusOut) "to Odonus's output" "`# out odo`: its notes snap to the chords; this voice plays nothing" ]
+            <> (if v.fed then [ item Nothing "stop sending" "Odonus keeps its own scale; this voice plays again" ] else []) )
     where
     item target label sub =
       HH.div [ HP.style ("padding: 4px 8px; border-radius: 4px; cursor: pointer;" <> (if maybe false (\i -> elem i v.feeds) target then " background: #f0f0f0; font-weight: 600;" else ""))
@@ -6168,7 +6178,8 @@ waysOfPlaying =
       , items:
           [ { line: "# every 2", says: "the effect before it, every second time" }
           , { line: "# prob 0.5", says: "the effect before it, half the time" }
-          , { line: "# out odo", says: "silent; its chords quantise Odonus's output" }
+          , { line: "# out odo", says: "plays nothing; its chords quantise Odonus's output" }
+          , { line: "# grid odo", says: "plays nothing; its chords shape Odonus's grid" }
           , { line: "# mute", says: "silent, and kept" }
           ] }
     ]
