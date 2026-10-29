@@ -39,7 +39,7 @@ import Binnacle as Binnacle
 import Binnacle.Audio (armAudioKeepAlive)
 import Binnacle.Time (dateNow)
 import Binnacle.Transport as Transport
-import Data.Foldable (for_, traverse_)
+import Data.Foldable (any, for_, traverse_)
 import Data.Maybe (Maybe(..), fromMaybe, isJust, maybe)
 import Data.Set as Set
 import Effect (Effect)
@@ -214,6 +214,8 @@ data Action o
   | AskBrowser
   | AskBar
   | PressBar String
+  | TabDragOver (Array String) E.Event
+  | TabDrop String E.Event
   | FromDrawer Drawer.Output
   | RecallRow Int Browser.Recall
   | StartRename Browser.Item
@@ -356,6 +358,15 @@ handleAction cfg = case _ of
   PressBar act -> do
     void $ H.query _machine unit (SQ.BarAction act unit)
     handleAction cfg AskBar
+  -- A tab takes a drag of a kind it accepts, dimmed or not: the machine is
+  -- told `drop:ID <kind> <payload>` and decides what it means.
+  TabDragOver kinds e -> do
+    d <- liftEffect Drag.currentDrag
+    when (any (\k -> String.take (String.length k + 1) d == k <> " ") kinds) (liftEffect (Drag.allowDrop e))
+  TabDrop id e -> do
+    liftEffect (E.preventDefault e)
+    d <- liftEffect Drag.currentDrag
+    unless (d == "") (handleAction cfg (PressBar ("drop:" <> id <> " " <> d)))
   FromDrawer out -> do
     st <- H.get
     let d = case out of
@@ -917,10 +928,15 @@ bar cfg st =
     (if Array.null b.tabs then [] else
     [ HH.div [ style "display:flex;flex:0 0 auto;border:1px solid #00000026;border-radius:6px;overflow:hidden;box-shadow:0 1px 2px #0000001a" ]
         (map (\t -> HH.button
-            [ HE.onClick \_ -> PressBar ("stage:" <> t.id), HP.title t.tip, HP.disabled (not t.enabled)
+            -- a dimmed tab is not `disabled`: a disabled button takes no
+            -- drop, and a drop is how a dimmed view is reached
+            ( (if t.enabled then [ HE.onClick \_ -> PressBar ("stage:" <> t.id) ] else [ HP.attr (HH.AttrName "aria-disabled") "true" ])
+            <> (if Array.null t.accepts then [] else
+                  [ HE.handler (E.EventType "dragover") (TabDragOver t.accepts), HE.handler (E.EventType "drop") (TabDrop t.id) ])
+            <> [ HP.title t.tip
             , style $ "padding:5px 13px;border:none;font-family:Georgia,serif;font-size:11px;letter-spacing:0.12em;"
                 <> (if t.enabled then "cursor:pointer;" else "cursor:default;")
-                <> tabLookStyle t.look t.active t.enabled ]
+                <> tabLookStyle t.look t.active t.enabled ] )
             [ HH.text t.label ]) b.tabs)
     ])
       <> (if b.marks == "" then [] else

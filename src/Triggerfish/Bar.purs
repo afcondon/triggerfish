@@ -5,7 +5,8 @@
 -- | as the drawer's rows are (`Triggerfish.Browser`). The machine says what to
 -- | show (`SourceQuery.AskBar`) and is told what was pressed
 -- | (`SourceQuery.BarAction`): `stage:ID`, `mark`, `clear`, `rebus`, `chip:ID`,
--- | `pick:ID:VALUE`, `help`. A machine
+-- | `pick:ID:VALUE`, `help`, and `drop:ID TEXT` (a drag of a kind the tab
+-- | `accepts` let go on it, TEXT being the drag's `<kind> <payload>`). A machine
 -- | that answers nothing has none of these in the bar.
 module Triggerfish.Bar
   ( Bar
@@ -22,8 +23,10 @@ import Triggerfish.Glyph (GlyphIcon)
 
 -- | A view. `enabled` false draws it dimmed and unpressable, its tip saying
 -- | why (Vetula's score with no progression, 2026-10-27). `look` is how it
--- | is lit while active: the view's own design language.
-type Tab = { id :: String, label :: String, active :: Boolean, enabled :: Boolean, look :: TabLook, tip :: String }
+-- | is lit while active: the view's own design language. `accepts`: the
+-- | drag kinds (`Triggerfish.Drag`) it takes dropped on it, dimmed or not:
+-- | a progression dropped on Vetula's score opens it there (AC, 2026-10-29).
+type Tab = { id :: String, label :: String, active :: Boolean, enabled :: Boolean, look :: TabLook, tip :: String, accepts :: Array String }
 
 -- | `Warm`: the workspace's gold (Vetula's lattice). `Clay`: a terracotta
 -- | beside it (Vetula's banks). `Ink`: black on white, as an engraved

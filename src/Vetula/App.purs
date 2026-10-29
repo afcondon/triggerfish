@@ -180,19 +180,13 @@ gridCfg = { stepBeats: 0.25, lookaheadMs: 120.0, tickMs: 25 }
 -- | they work AROUND a chord you already have, so they are its alternatives.
 -- | Tonnetz and the circle of fifths (`Fifths`) are off the ladder, reachable
 -- | by URL.
-data Viewtype = Fifths | Tonnetz | KeyChords | Common | Lattice4 | Lattice | Pads | Score | River
+data Viewtype = Fifths | Tonnetz | KeyChords | Common | Lattice4 | Lattice | Pads | Score | Voices | River
 
 -- | The side panel beside an Explore view: a chord's variations (Harmonia.Vary,
 -- | drift × density) or its relatives (voice-led neighbours, `generateCandidates`).
 data SideTab = SideVariations | SideRelatives | SideSubstitutes
 
 derive instance eqSideTab :: Eq SideTab
-
--- | What the pane under the score shows: the chosen bar's alternatives, or
--- | the voices playing on the stage.
-data SidePane = PaneAlternatives | PaneVoices
-
-derive instance eqSidePane :: Eq SidePane
 
 derive instance eqViewtype :: Eq Viewtype
 
@@ -218,6 +212,7 @@ viewtypeLabel = case _ of
   Lattice -> "+ extended"
   Pads -> "banks"
   Score -> "score"
+  Voices -> "voices"
   River -> "river"
 
 -- | A view's stable string, for the URL and the remembered default.
@@ -231,6 +226,7 @@ viewtypeValue = case _ of
   Lattice -> "lattice"
   Pads -> "banks"
   Score -> "score"
+  Voices -> "voices"
   River -> "river"
 
 -- | The inverse; the old names ("fifths", "pads") still land, and anything
@@ -245,6 +241,7 @@ viewtypeFromValue = case _ of
   "banks" -> Pads
   "pads" -> Pads
   "score" -> Score
+  "voices" -> Voices
   "river" -> River
   _ -> KeyChords
 
@@ -258,7 +255,8 @@ viewtypeTip = case _ of
   Lattice4 -> "the lattice above them: every chord of up to four notes built from each degree"
   Lattice -> "the whole lattice: chords of five notes and more, up to the thirteenth"
   Pads -> "nine banks of sixteen: how far from home, by how rich"
-  Score -> "the progression on a grand staff, and every progression a voice is playing, with the voices' letters"
+  Score -> "the progression on a grand staff, and under it the alternatives for the chosen bar"
+  Voices -> "the progression on a grand staff, and under it the voices playing on the stage"
   River -> "what was played: every note, by voice, in time; mark, loop, cut a phrase into the clip library"
 
 -- | The view a Stage shows.
@@ -610,7 +608,6 @@ type State =
   -- | The harmony routes, as the stage keeps them (`routing/harmony`, set on
   -- | the Dashboard's chart): a voice feeding Odonus is one of them
   , stageHarmony :: Maybe String
-  , sidePane :: SidePane
   -- | Notes heard a channel, counted, so its voice's tile pulses on each
   , voicePulse :: Map Int Int
   -- | Odonus's locks (`odonus/locks`): an input it keeps its own scale at,
@@ -849,7 +846,6 @@ data Action
   | ShuffleVary            -- re-draw all nine cells of the Vary lens from a new seed
   | ToQuadrat String       -- publish a saved progression (by name) as a clip for Quadrat to sample
   | ToggleScoreCands       -- score mode: the alternatives up, or tucked down
-  | SetSidePane SidePane   -- the pane under the score: alternatives or voices
   | VoiceOpen Int          -- the progression voice n plays, onto the score
   | VoiceLine Int          -- voice n's block, shown in Limulus
   | VoiceMute Int          -- voice n muted, or heard again
@@ -1009,7 +1005,6 @@ component = H.mkComponent
       , stageCards: Nothing
       , stageRouting: Nothing
       , stageHarmony: Nothing
-      , sidePane: PaneAlternatives
       , voicePulse: Map.empty
       , stageLocks: []
       , voiceSendMenu: Nothing
@@ -1196,7 +1191,7 @@ handleQuery = case _ of
         open = do
           for_ (named >>= \nm -> findIndex (\e -> e.kept && e.name == nm) s.library) \i ->
             when loads (handleAction (LoadProg i))
-          handleAction (SetStage (Hunt Score))
+          handleAction (SetStage (Hunt Voices))
           -- Limulus may only now be opening: give it a moment to listen
           liftAff (delay (Milliseconds 600.0))
           handleAction (CardToLimulus n)
@@ -1249,13 +1244,22 @@ handleQuery = case _ of
       -- bar (AC, 2026-10-08): the second bar went
       { tabs:
           let v = huntOr s.lastLens s.stage
-          in [ { id: "lattice", label: "lattice", active: elem v rungs, enabled: true, look: Bar.Warm, tip: "the chords built on the key, from triads up" }
-             , { id: "banks", label: "banks", active: v == Pads, enabled: true, look: Bar.Clay, tip: "nine banks of sixteen: how far from home, by how rich" }
+              has = length s.path > 0
+              voicesNow = maybe 0 Map.size s.stageCards
+              accepts = [ "vetula-progression" ]
+          in [ { id: "lattice", label: "lattice", active: elem v rungs, enabled: true, look: Bar.Warm, tip: "the chords built on the key, from triads up", accepts }
+             , { id: "banks", label: "banks", active: v == Pads, enabled: true, look: Bar.Clay, tip: "nine banks of sixteen: how far from home, by how rich", accepts }
              -- no progression, no score: it would be a page with nothing to do
-             , { id: "score", label: "score", active: v == Score, enabled: length s.path > 0, look: Bar.Ink
-               , tip: if length s.path > 0 then "the progression on a grand staff, to arrange and play"
-                      else "the score arranges a progression: take a chord in from the lattice first (shift-click, or return)" }
-             , { id: "review", label: "review", active: v == River, enabled: true, look: Bar.Night, tip: "everything played this session, as a river: mark the good bits, loop them" } ]
+             -- no progression, no score and no voices (AC, 2026-10-29: "if one
+             -- can open why can't the other?"); a progression dropped on
+             -- either opens it there, the way past the lattice (CR-22)
+             , { id: "score", label: "score", active: v == Score, enabled: has, look: Bar.Ink, accepts
+               , tip: if has then "the progression on a grand staff, with the alternatives for the chosen bar"
+                      else "the score arranges a progression: take a chord in from the lattice first (shift-click, or return), or drop a progression from the drawer here" }
+             , { id: "voices", label: "voices" <> (if voicesNow == 0 then "" else " " <> show voicesNow), active: v == Voices, enabled: has, look: Bar.Ink, accepts
+               , tip: if has then "the progression on a grand staff, with the voices playing on the stage under it"
+                      else "the voices play progressions: open one first, or drop a progression from the drawer here" }
+             , { id: "review", label: "review", active: v == River, enabled: true, look: Bar.Night, tip: "everything played this session, as a river: mark the good bits, loop them", accepts: [] } ]
       -- marking is in the review view, as on Odonus
       , marks: ""
       -- the session names saved scenes; it is not shown (AC: two things
@@ -1264,7 +1268,7 @@ handleQuery = case _ of
       , rebusTip: ""
       -- the key is set on the lattice and banks; the score says it under
       -- the progression instead (AC, 2026-10-27)
-      , pickers: if s.stage == Hunt Score then [] else
+      , pickers: if onScore s.stage then [] else
           [ { id: "key", input: (Select.defaultInput keyOptions) { selected = Just (show s.key.tonic), placeholder = "Key", minWidth = Just "72px" } }
           , { id: "scale", input: (Select.cascadingInput modeGroups) { selected = Just (currentModeValue s.key.mode), searchable = true } } ]
       , help: "keys & help"
@@ -1280,8 +1284,18 @@ handleQuery = case _ of
       "stage:lattice" -> handleAction (SetStage (Hunt s.lastRung))
       "stage:banks" -> handleAction (SetStage (Hunt Pads))
       "stage:score" -> handleAction (SetStage (Hunt Score))
+      "stage:voices" -> handleAction (SetStage (Hunt Voices))
       "stage:review" -> handleAction (SetStage (Hunt River))
       "help" -> handleAction ToggleHelp
+      -- a progression from the drawer dropped on a view's tab: open it there
+      _ | Just rest <- SCU.stripPrefix (Pattern "drop:") act
+        , [ tab, kind, name ] <- splitFirstTwo rest
+        , kind == "vetula-progression"
+        , Just i <- findIndex (\e -> e.kept && e.name == name) s.library ->
+            guardLoss ("load " <> show i) do
+              handleAction (LoadProg i)
+              s2 <- H.get
+              for_ (tabStage s2 tab) (handleAction <<< SetStage)
       _ | Just v <- SCU.stripPrefix (Pattern "pick:key:") act -> handleAction (SelectKey v)
         | Just v <- SCU.stripPrefix (Pattern "pick:scale:") act -> handleAction (SelectScale v)
       _ -> pure unit
@@ -1488,7 +1502,7 @@ handleAction a = do
   -- no progression, no score (AC, 2026-10-27): arriving there with none (a
   -- link, a reload) or its last bar deleted, back to the field
   st <- H.get
-  when (st.stage == Hunt Score && length st.path == 0) (handleActionCore (SetStage (Hunt st.fieldLens)))
+  when (onScore st.stage && length st.path == 0) (handleActionCore (SetStage (Hunt st.fieldLens)))
   refreshCands
   syncField
   syncAuditionCard
@@ -1961,9 +1975,6 @@ handleActionCore = case _ of
   -- muted, added or removed. Each gesture rewrites the voice's line on the
   -- stage, as a drop on a badge does, so Limulus shows it; how a voice plays
   -- stays in Limulus.
-  SetSidePane p -> H.modify_ \s ->
-    if s.sidePane == p then s { scoreCands = not s.scoreCands } else s { sidePane = p, scoreCands = true }
-
   VoiceOpen n -> do
     s <- H.get
     for_ (s.stageCards >>= Map.lookup n >>= cardProgression) \nm ->
@@ -2237,7 +2248,7 @@ handleActionCore = case _ of
   ClearPath -> do
     st0 <- H.get
     -- no progression open: the lattice, where one starts
-    when (st0.stage == Hunt Score) (handleAction (SetStage (Hunt st0.fieldLens)))
+    when (onScore st0.stage) (handleAction (SetStage (Hunt st0.fieldLens)))
     H.modify_ _ { path = [], progName = Nothing, lastCapIdx = Nothing, lastCapSig = "", rhythm = [], tapping = Nothing }
     -- and the working copy with it, or a reload brings the cleared one back
     liftEffect (Store.saveWorking { name: "", source: "", saved: "" })
@@ -2441,7 +2452,7 @@ handleActionCore = case _ of
         _ -> s { scoreDrag = Nothing }
   ScorePutAt i c -> do
     st <- H.get
-    when (st.stage == Hunt Score && i < length st.path) do
+    when (onScore st.stage && i < length st.path) do
       let old = st.path !! i >>= \pid -> find (\d -> d.id == pid) st.chords
           fitted = maybe c (\o -> fitRegister o c) old
           caught = place st.key fitted (fitted { id = st.nextId, isCentre = false, pinned = false })
@@ -2997,7 +3008,7 @@ handleActionCore = case _ of
     H.raise (StageChanged (stagePath v))
     H.modify_ \st -> st
       { stage = v
-      , cursor = if (v == Hunt Score) /= (st.stage == Hunt Score) then Nothing else st.cursor
+      , cursor = if onScore v /= onScore st.stage then Nothing else st.cursor
       , lastLens = huntOr st.lastLens v
       , fieldLens = case st.stage of
           Hunt vt | not (fullView (Hunt vt)) -> vt
@@ -3014,7 +3025,7 @@ handleActionCore = case _ of
     -- show. It does not sound: a view change that plays is a surprise, and
     -- would cut across whatever is playing (AC, CR-16, 2026-10-27).
     st <- H.get
-    when (v == Hunt Score) do
+    when (onScore v) do
       let n = length st.path
           bar = case st.scoreBar of
             Just b | b < n -> Just b
@@ -4028,7 +4039,7 @@ hand :: State -> Maybe Hand
 hand st = case st.cursor of
   Just cur -> Just (Loose cur.chord)
   Nothing
-    | st.stage == Hunt Score -> st.scoreBar >>= \i -> InBar i <$> barChord st i
+    | onScore st.stage -> st.scoreBar >>= \i -> InBar i <$> barChord st i
     | otherwise -> Nothing
 
 handChord :: State -> Maybe ChordNode
@@ -4070,7 +4081,7 @@ putHand :: forall m. MonadAff m => H.HalogenM State Action Slots Output m Unit
 putHand = do
   st <- H.get
   for_ st.cursor \cur ->
-    if st.stage == Hunt Score then handleAction (AltPut cur.chord) else takeChord cur.chord
+    if onScore st.stage then handleAction (AltPut cur.chord) else takeChord cur.chord
 
 -- | Backspace: take back the progression's last chord.
 takeBack :: forall o m. MonadAff m => H.HalogenM State Action Slots o m Unit
@@ -4413,7 +4424,7 @@ render st =
       <> latticeControls st
       <> previewControls st
       -- Limulus's drawer, out while the score is up
-      <> [ if st.stage == Hunt Score then limulusWanted else HH.text "" ]
+      <> [ if onScore st.stage then limulusWanted else HH.text "" ]
       <>
     -- Scene recall belongs to the INSTRUMENT, not to one view. Its door was the
     -- session menu in the old second bar; with that gone nothing sets
@@ -4494,7 +4505,7 @@ soundControls st =
   ]
   where
   -- on the score, its engraving ink (CR-15)
-  ink = st.stage == Hunt Score
+  ink = onScore st.stage
 
 -- | **The workspace's own controls** (AC, 2026-10-08: the second bar went):
 -- | how a preview sounds, top right, on every view that previews; and the
@@ -4504,10 +4515,11 @@ previewControls st = case st.stage of
   Hunt River -> []
   -- the score places them itself, beside the progression
   Hunt Score -> []
+  Hunt Voices -> []
   _ ->
     [ HH.div [ HP.style "position: absolute; z-index: 7; display: flex; align-items: center; gap: 8px; top: 14px; right: 16px;" ] (soundControls st) ]
       <> case st.focusedFamily >>= (\sid -> find (\c -> c.id == sid) st.chords) of
-        Just seed | st.stage /= Hunt Score ->
+        Just seed | not (onScore st.stage) ->
           let famMode = (fromMaybe st.key (Map.lookup seed.id st.familyScale)).mode
           in [ HH.div [ HP.style "position: absolute; top: 14px; left: 16px; z-index: 7; display: flex; align-items: center; gap: 6px;" ]
                  [ HH.span [ HP.style "font-size: 10px; color: #9a9a9a; letter-spacing: 0.1em; text-transform: uppercase;" ] [ HH.text ("family " <> noteName seed.root) ]
@@ -4558,9 +4570,12 @@ scoreCandidates st =
     -- a closed folder; the bar's chord centred over the alternatives, its
     -- how-to behind an (i) (AC, 2026-10-27)
     ( [ HH.div [ HP.style "position: relative; display: flex; align-items: flex-end; gap: 4px; padding: 10px 16px 0; background: #f3f3f3; border-bottom: 1px solid #cfcfcf;" ]
-        ( [ paneTab PaneAlternatives "Alternatives" "a chosen bar's substitutes, variations and relatives"
-          , paneTab PaneVoices ("Voices" <> (if voiceCountNow == 0 then "" else " " <> show voiceCountNow)) "the voices playing on the stage, and where they sound" ]
-            <> (if st.sidePane /= PaneAlternatives then [] else
+        -- one pane per view now (CR-22): its name sits where its tab did,
+        -- drawn as the open tab, so each view looks as the score did with
+        -- that pane open
+        ( [ if voices then paneTitle ("Voices" <> (if voiceCountNow == 0 then "" else " " <> show voiceCountNow)) "the voices playing on the stage, and where they sound"
+            else paneTitle "Alternatives" "a chosen bar's substitutes, variations and relatives" ]
+            <> (if voices then [] else
                 [ HH.div [ HP.style "position: absolute; left: 50%; bottom: 7px; transform: translateX(-50%); display: flex; align-items: baseline; gap: 8px; white-space: nowrap;" ]
                     ( (case varySource st of
                         Just src -> [ HH.span [ HP.style "font: 17px Georgia, serif; color: #111111;" ] [ HH.text (chordTitle st src) ]
@@ -4575,11 +4590,11 @@ scoreCandidates st =
             <> [ HH.span [ HP.style "flex: 1 1 auto;" ] [] ]
             -- what the last voice gesture did (a send, a drop), said briefly
             <> (case st.publishMsg of
-                  Just m | st.sidePane == PaneVoices ->
+                  Just m | voices ->
                     [ HH.span [ HP.style "align-self: center; margin: 0 12px 6px 0; font: italic 12.5px Georgia, serif; color: #555555;" ] [ HH.text m ] ]
                   _ -> [])
             -- a scene keeps what the voices play, so it is kept from here
-            <> (if st.sidePane /= PaneVoices || voiceCountNow == 0 then [] else
+            <> (if not voices || voiceCountNow == 0 then [] else
                 [ HH.button [ HP.style "align-self: center; margin: 0 12px 6px 0; font: 12px Georgia, serif; padding: 2px 10px; border: 1px solid #c8c8c8; border-radius: 4px; background: #ffffff; cursor: pointer;"
                             , HP.title "keep what the voices play now as a scene, in the drawer"
                             , HE.onClick \_ -> SaveScene ]
@@ -4588,21 +4603,19 @@ scoreCandidates st =
                          , HP.title (if st.scoreCands then "tuck the pane down" else "bring the pane up")
                          , HE.onClick \_ -> ToggleScoreCands ]
                    [ HH.text (if st.scoreCands then "\x25be" else "\x25b4") ] ] ) ]
-      <> (if not st.scoreCands then [] else case st.sidePane of
-          PaneAlternatives ->
+      <> (if not st.scoreCands then [] else if voices then [ voicesPane st ] else
             [ HH.div [ HP.style "flex: 1 1 auto; min-height: 0; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr));" ]
-                (map column [ SideSubstitutes, SideVariations, SideRelatives ]) ]
-          PaneVoices -> [ voicesPane st ])
+                (map column [ SideSubstitutes, SideVariations, SideRelatives ]) ])
     )
   where
   voiceCountNow = maybe 0 Map.size st.stageCards
-  paneTab p label tip =
-    let on = st.sidePane == p
-    in HH.span
-         [ HP.style ("font-size: 13px; cursor: pointer; padding: 7px 18px 8px; border: 1px solid #cfcfcf; border-radius: 6px 6px 0 0; margin-bottom: -1px; "
-             <> (if on then "color: #111111; font-weight: 600; background: #ffffff; border-bottom-color: #ffffff;" else "color: #6b6b6b; background: #e9e9e9;"))
-         , HP.title tip, HE.onClick \_ -> SetSidePane p ]
-         [ HH.text label ]
+  voices = st.stage == Hunt Voices
+  -- a press tucks the pane down or brings it up, as the ▾ does
+  paneTitle label tip =
+    HH.span
+      [ HP.style "font-size: 13px; cursor: pointer; padding: 7px 18px 8px; border: 1px solid #cfcfcf; border-radius: 6px 6px 0 0; margin-bottom: -1px; color: #111111; font-weight: 600; background: #ffffff; border-bottom-color: #ffffff;"
+      , HP.title tip, HE.onClick \_ -> ToggleScoreCands ]
+      [ HH.text label ]
   column t =
     HH.div [ HP.style "min-height: 0; overflow: auto; padding: 8px 12px 16px; border-right: 1px solid #ececec;" ]
       ( [ HH.div [ HP.style "font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; color: #111111; margin-bottom: 6px;", HP.title (sideTip t) ]
@@ -5065,7 +5078,9 @@ puts st = st.stage == Hunt Score && maybe false (_ < length st.path) st.scoreBar
 surfaceKey :: State -> String
 surfaceKey st
   = case st.stage of
+      -- one surface for both, so the staff survives the switch
       Hunt Score -> "score"
+      Hunt Voices -> "score"
       Hunt River -> "river"
       Hunt Fifths -> "fifths"
       Hunt Tonnetz -> "tonnetz"
@@ -5084,6 +5099,7 @@ surface st
       Hunt Lattice -> fieldSurface st
       Hunt Pads -> fieldSurface st
       Hunt Score -> scoreSurface st
+      Hunt Voices -> scoreSurface st
       Hunt River -> riverSurface st
 
 -- | Mint a fresh Perform session: a random seed → a monochrome glyph-triple alias,
@@ -5271,11 +5287,41 @@ riverTools st =
         , HP.style "padding: 3px 10px; border-radius: 6px; cursor: pointer; border: 1px solid #ffffff1a; background: transparent; color: #ffffff66; font-size: 10px; white-space: nowrap;" ]
         [ HH.text "clear" ] ]
 
+-- | Where the score is drawn: Score and Voices are the one page with a
+-- | different pane under it (CR-22, AC: each looks as the score did with
+-- | that pane open).
+onScore :: Stage -> Boolean
+onScore = case _ of
+  Hunt Score -> true
+  Hunt Voices -> true
+  _ -> false
+
+-- | The view a bar tab names (its `id`).
+tabStage :: State -> String -> Maybe Stage
+tabStage st = case _ of
+  "lattice" -> Just (Hunt st.lastRung)
+  "banks" -> Just (Hunt Pads)
+  "score" -> Just (Hunt Score)
+  "voices" -> Just (Hunt Voices)
+  _ -> Nothing
+
+-- | `"a b c d"` as `["a", "b", "c d"]`: a dropped tab, kind and payload,
+-- | the payload keeping its spaces.
+splitFirstTwo :: String -> Array String
+splitFirstTwo str = case SCU.indexOf (Pattern " ") str of
+  Nothing -> [ str ]
+  Just i ->
+    let rest = SCU.drop (i + 1) str
+    in case SCU.indexOf (Pattern " ") rest of
+         Nothing -> [ SCU.take i str, rest ]
+         Just j -> [ SCU.take i str, SCU.take j rest, SCU.drop (j + 1) rest ]
+
 -- | The views that take the whole main space, and so are never the field
 -- | view to come back to.
 fullView :: Stage -> Boolean
 fullView = case _ of
   Hunt Score -> true
+  Hunt Voices -> true
   Hunt River -> true
   _ -> false
 
