@@ -70,7 +70,7 @@ The parser treats an argument as a pattern when it has a space, `<`, `[`, `~`,
 
 | # | Line | You should hear | ✓/✗ |
 |---|---|---|---|
-| D1 | `# trans "<0 5>"` | alternate passes a fourth up. Is it per bar or per pass? Write down which | |
+| D1 | `# trans "<0 5>"` | alternate passes a fourth up. Is it per bar or per pass? Write down which | ✓ **per bar** (AC, 2026-10-29: on a one-chord progression, a bar of four hits, then a bar of four a fourth up) |
 | D2 | `# oct "<0 1 -1>"` | the octave moves bar by bar | |
 | D3 | `# top "<1 2 3>"` | a growing top voice | |
 
@@ -78,7 +78,7 @@ The parser treats an argument as a pattern when it has a space, `<`, `[`, `~`,
 
 | # | Setup | You should hear | ✓/✗ |
 |---|---|---|---|
-| E1 | P `# bottom 1 # oct -1`, Q `# top 1 # arpup 4`, R plain | bass, melody and pads locked together, the same chord in all three | |
+| E1 | `P $ vetula "book-spa-cloud" # bottom 1 # oct -1`, `Q $ vetula "book-spa-cloud" # top 1 # arpup 4`, `R $ vetula "book-spa-cloud"` (no words: the chords as they are) | bass, melody and pads locked together, the same chord in all three | |
 | E2 | E1, then change one chord in Vetula's score | all three voices follow on the next pass, with no re-evaluation | |
 | E3 | S `# out odo`, Odonus playing | Odonus's notes follow each chord. Then load the patch `Odonus-10-32` (`locks: "out"`): Odonus ignores the voice, and the Dashboard draws the route held off | |
 | E4 | E1, then `hush` one voice | only that voice stops | |
