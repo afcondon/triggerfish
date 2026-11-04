@@ -76,7 +76,7 @@ fromStored s = do
     , query: fromWireQuery s.query
     }
   where
-  banks = [ Early, Found, Polychords, Sector, Fix, Dub, Swung, Harmony, Envelopes, Effects, Resonators, Progressions ]
+  banks = [ Early, Found, Polychords, Sector, Fix, Dub, Swung, Harmony, Envelopes, Effects, Resonators, Progressions, Sampler ]
 
 -- | Everything on the shelf. A kept preset whose line no longer parses is
 -- | left out rather than failing the rest.

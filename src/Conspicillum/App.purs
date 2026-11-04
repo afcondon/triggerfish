@@ -35,6 +35,7 @@ import Conspicillum.Frame (frames)
 import Conspicillum.Library (Library)
 import Conspicillum.Library as Library
 import Conspicillum.Plan (Grain, Plan, emptyPlan, planCycle, sceneOf)
+import Conspicillum.Plays as Plays
 import Conspicillum.Shelf (Kept)
 import Conspicillum.Shelf as Shelf
 import Conspicillum.Stage (Held)
@@ -161,6 +162,10 @@ type State =
   , now :: Number
   , phase :: Number
   , plan :: Plan
+  -- | What the rig last said a sampler's pattern holds, and what was last
+  -- | asked, so a frame asks once.
+  , plays :: Maybe Plays.Answer
+  , playsAsked :: Maybe { pattern :: String, from :: Int }
   -- | The most lanes this scene has needed, so the strip does not twitch.
   , lanes :: Int
   , dots :: Array Dot
@@ -247,6 +252,8 @@ initialState _ =
   , now: 0.0
   , phase: 0.0
   , plan: emptyPlan
+  , plays: Nothing
+  , playsAsked: Nothing
   , lanes: 1
   , dots: []
   , loupeAt: 0
@@ -325,7 +332,8 @@ replan st = case working st of
   Just w ->
     let
       scene = sceneOf { set: w.set, line: w.preset.line, query: w.preset.query, tempo: st.tempo }
-      plan = planCycle { scene, material: w.material, tempo: st.tempo } (max 0 st.plan.cycle)
+      plays cycle = Plays.inCycle scene.spec.samplePattern cycle st.plays
+      plan = planCycle { scene, material: w.material, tempo: st.tempo, plays } (max 0 st.plan.cycle)
     in
       st { plan = plan, lanes = max st.lanes plan.lanes }
 
@@ -714,6 +722,7 @@ cycleNote st m =
     "cycle " <> show c
       <> (if bars > 0 then " · bar " <> show (((c `mod` bars) + bars) `mod` bars + 1) <> "/" <> show bars else "")
       <> " · " <> fixed 1 st.tempo <> " bpm" <> (if st.locked then "" else " (free)")
+      <> maybe "" (\problem -> " · n: " <> problem) (st.plays >>= _.problem)
 
 materialNote :: Working -> String
 materialNote w = case w.material of
@@ -1013,6 +1022,7 @@ handleAction = case _ of
       dots = live now (spawnAll now planned.dots begun)
       loupeAt = maybe planned.loupeAt (\g -> g.reads.from.segment) (lastOf begun)
     H.put planned { dots = drop (length dots - 160) dots, loupeAt = loupeAt, unsent = planned.unsent || (retempo && planned.playing) }
+    when connected (askPlays (max 0 cycle))
     -- A new connection, including a re-dial after the rig restarted, asks
     -- the stage what is loaded.
     if not connected then H.modify_ _ { staged = false }
@@ -1026,6 +1036,10 @@ handleAction = case _ of
   -- Another page changed what the rig has loaded, or this page just asked:
   -- show it. Not while a number is being dragged here, since the drag's next
   -- send will win anyway. Nothing is sent: this is what is already playing.
+  FromRig text | Just answer <- Plays.readAnswer text -> do
+    H.modify_ \s -> replan s { plays = Just answer }
+    for_ answer.problem (sendText <<< Stage.rejectLine)
+
   FromRig text | Just frame <- Stage.readLine text -> case frame of
     Stage.LineHeld held -> H.modify_ _ { stagedLine = held }
     Stage.LineWritten Nothing -> H.modify_ _ { stagedLine = Nothing }
@@ -1276,6 +1290,17 @@ sendNow = do
   when st.playing $ for_ (Tuple <$> sceneText st <*> heldOf st) \(Tuple scene page) -> do
     sendText (Stage.push { base: baseOf st.origin, edited: edited st, page, scene })
     H.modify_ _ { unsent = false, sentAt = st.now }
+
+-- | Ask for a sampler's plays a few cycles ahead, so a new bar never waits on
+-- | the rig to know what it holds.
+askPlays :: Int -> M Unit
+askPlays cycle = do
+  st <- H.get
+  for_ (working st) \w -> do
+    let pattern = w.preset.line.spec.samplePattern
+    unless (pattern == "" || Plays.covers pattern (cycle + 1) st.plays || st.playsAsked == Just { pattern, from: cycle }) do
+      H.modify_ _ { playsAsked = Just { pattern, from: cycle } }
+      sendText (Plays.ask { from: cycle, count: 8, pattern })
 
 sendText :: String -> M Unit
 sendText text = do

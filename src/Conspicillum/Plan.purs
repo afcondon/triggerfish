@@ -18,7 +18,7 @@ import Data.Array (length, zipWith)
 import Data.Foldable (maximum)
 import Data.Maybe (fromMaybe, maybe)
 import Conspicillum.Corpora (SampleSet, corpusFor)
-import Reef.Conspicillum.Cloud (Emit, cycleOf)
+import Reef.Conspicillum.Cloud (Emit, Play, cycleOfPlays)
 import Reef.Conspicillum.Corpus (Query)
 import Reef.Conspicillum.Display (Location, Material, colourAt, colourCss, lanes, locate, wedges)
 import Reef.Conspicillum.Notation (Line)
@@ -60,10 +60,10 @@ sceneOf { set, line, query, tempo } =
   , seed: line.seed
   }
 
-planCycle :: { scene :: Scene, material :: Material, tempo :: Number } -> Int -> Plan
-planCycle { scene, material, tempo } cycle =
+planCycle :: { scene :: Scene, material :: Material, tempo :: Number, plays :: Int -> Array Play } -> Int -> Plan
+planCycle { scene, material, tempo, plays } cycle =
   let
-    emits = cycleOf scene.corpus scene.query scene.spec scene.seed cycle
+    emits = cycleOfPlays (plays cycle) scene.corpus scene.query scene.spec scene.seed cycle
     seconds = cycleSeconds tempo
     placed = wedges { cycleSeconds: seconds, orbit: scene.spec.chain.orbit } emits <#> \w ->
       let
