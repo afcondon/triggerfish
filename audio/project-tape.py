@@ -66,11 +66,19 @@ def project(name, bpm, bpm_from, beats, swing, bars_arg):
             bars_arg = bars_arg or int(k.get("bars", 0))
             if swing is None and k.get("swingFrom") in ("declared", "measured"):
                 swing, swing_from = k.get("swing", 0.5), k["swingFrom"]
+    # A tape is one sound. A one-layer take is that already; a layered loop is
+    # read through the mix the looper writes beside its layers (take.json
+    # "mix", since 2026-11-04). Never mixed here: how layers sum is the
+    # looper's business, and a second opinion would sound different.
     layers = take.get("layers") or []
-    if len(layers) != 1:
-        print(f"  skip {name}: {len(layers)} layers — a tape is one take, mix it first")
+    if len(layers) == 1:
+        rel, channels = layers[0]["file"], layers[0].get("channels", 2)
+    elif take.get("mix"):
+        rel, channels = take["mix"], 2
+    else:
+        print(f"  skip {name}: {len(layers)} layers and no mix — save it again from the looper")
         return None
-    src = os.path.join(tdir, layers[0]["file"])
+    src = os.path.join(tdir, rel)
     secs = take["loopSecs"]
     bar = beats * 60.0 / bpm
     raw = secs / bar
@@ -112,10 +120,10 @@ def project(name, bpm, bpm_from, beats, swing, bars_arg):
     doc = {
         "version": 1, "name": f"{name}-tape", "take": name,
         "made": time.strftime("%Y-%m-%dT%H:%M:%S.000Z", time.gmtime()),
-        "kind": "tape", "stereo": layers[0].get("channels", 2) > 1, "sliced": False,
+        "kind": "tape", "stereo": channels > 1, "sliced": False,
         "slots": 0, "slotSecs": 0, "voltsPerLevel": 10, "spec": None,
         "tape": meaning,
-        "listened": {"source": layers[0]["file"]},
+        "listened": {"source": rel},
         "schedule": [],
         "samples": [{
             "file": os.path.basename(wav), "cell": [], "start": 0.0, "end": round(secs, 6),
