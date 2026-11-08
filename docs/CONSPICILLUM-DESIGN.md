@@ -1984,7 +1984,7 @@ drawer and one Limulus, and next to Vetula it read as another product.
   modelled on this), so folding one into the other is a decision, not a
   move.
 - Bosun's Atlantis group lost the `conspicillum-frontend` service (:3011)
-  and the `/conspicillum/` mount; `music/live-coding/conspicillum` is kept
-  as the record, its README pointing here.
+  and the `/conspicillum/` mount; the old repo is kept as the record, its
+  README pointing here, and since 2026-11-08 lives at `archived/conspicillum`.
 
 Test sheet: `docs/TEST-conspicillum.md`.
