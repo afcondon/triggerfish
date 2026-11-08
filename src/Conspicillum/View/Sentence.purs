@@ -1,7 +1,8 @@
 -- | **The sentence: the scene in words**, as reef's `Reef.Conspicillum.Sentence`
 -- | says it. Every number is a `Value`: drawn with the catalogue's own
 -- | readout, draggable, and marked with its knob's number when a knob is on it.
--- | The rules follow as a table.
+-- | The rules follow as a table. Drawn as a `Halogen.Widgets.Statement`, so
+-- | it has the shape every Quadrat page's statement has.
 module Conspicillum.View.Sentence (sentence) where
 
 import Prelude
@@ -11,6 +12,7 @@ import Data.Maybe (Maybe(..))
 import Halogen.HTML as HH
 import Halogen.HTML.Events as HE
 import Halogen.HTML.Properties as HP
+import Halogen.Widgets.Statement (defaultStatement, statement)
 import Reef.Conspicillum.Cloud (Spec)
 import Reef.Conspicillum.Parameter (Parameter, format, read)
 import Reef.Conspicillum.Sentence (Fragment(..), RuleRow, Sentence)
@@ -31,13 +33,16 @@ sentence
      }
   -> HH.HTML w i
 sentence r =
-  HH.div [ HP.class_ (HH.ClassName "sentence") ]
-    ( (r.said <#> \s -> HH.p_ (s <#> fragment))
-        <> (if null r.rows then [] else [ rules ])
-        <> case r.problem of
-          Just p -> [ HH.p [ HP.class_ (HH.ClassName "note") ] [ HH.text ("The engine refused this scene: " <> p) ] ]
-          Nothing -> []
-    )
+  -- The shared statement: the same shape as Quadrat's pages. The rules are
+  -- its detail, and the engine's refusal is a warning under the claim.
+  statement defaultStatement
+    { class_ = "sentence"
+    , sentences = r.said <#> map fragment
+    , detail = if null r.rows then [] else [ rules ]
+    , warnings = case r.problem of
+        Just p -> [ HH.p [ HP.class_ (HH.ClassName "note") ] [ HH.text ("The engine refused this scene: " <> p) ] ]
+        Nothing -> []
+    }
   where
   fragment = case _ of
     Words w -> HH.text w
