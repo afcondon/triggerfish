@@ -138,6 +138,7 @@ import Halogen.Widgets.Modal as Modal
 import Harmonia.Anchor (Anchor(..))
 import Harmonia.Voicing (Voicing(..), Selector(..), voicingMidi, takeVoicing, openTriad, rootless, drop2, drop2and4, quartal, cluster)
 import Harmonia.Chord (Key, Mode(..), cMajorKey)
+import Harmonia.ProgressionKey (ProgressionKey(..), progressionKey, writtenIn)
 
 
 
@@ -1205,12 +1206,13 @@ handleQuery = case _ of
                                                , rebus: bundleRebus (parseProgression e.source) })
       (filter (\(Tuple _ e) -> e.kept) (mapWithIndex Tuple s.library))
   ImportText txt reply -> do
-    st <- H.get
     let noteLists = filter (\ns -> length ns > 0) (parseProgression txt)
     if length noteLists == 0 then pure (Just (reply false))
     else do
       let chords = mapWithIndex importChord noteLists
-      H.modify_ \s -> s { library = s.library <> [ { name: "imported", keyLabel: groupLabel st.key, source: progressionSource (groupLabel st.key) chords, kept: true, id: "" } ] }
+      -- Keyless: pasted notes declare no key, and the page's key is not
+      -- theirs. Publishing one says so rather than borrowing the page's.
+      H.modify_ \s -> s { library = s.library <> [ { name: "imported", keyLabel: "", source: progressionSource "no key" chords, kept: true, id: "" } ] }
       persistLib
       pure (Just (reply true))
   SetRouting binds next -> do
@@ -3005,7 +3007,10 @@ handleActionCore = case _ of
             now <- liftEffect dateNow
             let chords = filter (\ns -> length ns > 0) (parseProgression entry.source)
                 glyph = TGlyph.chordGlyph chords
-                clip = clipOfChords st name glyph.alias chords now
+                -- The key the progression was SAVED in, checked against its
+                -- chords; never the key the page happens to be in now.
+                pkey = progressionKey (parseKeyLabel entry.keyLabel) chords
+                clip = clipOfChords pkey name glyph.alias chords now
                 spec = Share.shareSpec clip
                          { kind: "chord-hits", glyph: glyph.alias }
             H.modify_ _ { publishMsg = Just "sending to Quadrat…" }
@@ -3773,8 +3778,13 @@ onsetWhole ev = do
 
 -- | A progression as a clip for Quadrat: one chord a beat (`chordMicros`),
 -- | named, its id from its rebus and the time.
-clipOfChords :: State -> String -> String -> Array (Array Int) -> Number -> MidiClip
-clipOfChords st name alias chords now =
+-- |
+-- | The key is the one it was written in (`key:`, via the clip), and the
+-- | chords that step outside it ride as `outside:` (indices from zero), so a
+-- | sampler never labels a chord with a key it does not keep to. A keyless
+-- | progression says no key at all.
+clipOfChords :: ProgressionKey -> String -> String -> Array (Array Int) -> Number -> MidiClip
+clipOfChords pkey name alias chords now =
   -- SECONDS, not millis. `round` targets a 32-bit Int and epoch millis
   -- (1.79e12) saturate it at 2147483647 — so every clip minted from the same
   -- rebus got the identical id, which is the one field that must not collide.
@@ -3787,13 +3797,16 @@ clipOfChords st name alias chords now =
   , capturedMicros: now
   , source: "vetula"
   , name
-  , tags: [ "progression" ]
+  , tags: [ "progression" ] <> outsideTag pkey
   , notes: ""
   , bpm: Nothing
-  , key: Just (noteName (mod st.key.tonic 12) <> " " <> show st.key.mode)
+  , key: map (\k -> noteName (mod k.tonic 12) <> " " <> show k.mode) (writtenIn pkey)
   , context: Nothing
   }
   where
+  outsideTag = case _ of
+    Leaves _ xs -> [ "outside:" <> joinWith "," (map show xs) ]
+    _ -> []
   evs i notes =
     map (\n -> { pitch: n, headIdx: 0, fireUnixMicros: toNumber i * chordMicros
                 , vel: 92, gateMs: 700.0 })
