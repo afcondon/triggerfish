@@ -1218,11 +1218,13 @@ dispatch = case _ of
   SaveMarkClip i -> do
     st <- H.get
     for_ (st.logbook.marks !! i) \m -> do
+      -- Named by its chord rebus, as Vetula's progressions are by theirs: a
+      -- name it alone wears. "clip · C minor" was every clip in C minor, and
+      -- the key is in `key` already.
       let hsum = harmonicSummary m.patch
-          nm = case hsum of
-                 Just h -> "clip · " <> h.root <> " " <> h.scale
-                 Nothing -> "clip " <> show (length st.clips + 1)
           evs = materializeRegion m.from m.to st.logbook
+          nm = if null evs then "clip " <> show (length st.clips + 1)
+               else (G.chordGlyph (map _.notes (Clips.onsetGroups evs))).alias
           clip =
             { id: "odonus-" <> show m.atMicros
             , events: evs
