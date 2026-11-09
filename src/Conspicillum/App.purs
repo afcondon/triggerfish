@@ -34,6 +34,7 @@ import Conspicillum.Corpora (Corpora, SampleSet, load, materialFor, sampleChoice
 import Conspicillum.Frame (frames)
 import Conspicillum.Library (Library)
 import Conspicillum.Library as Library
+import Conspicillum.Pads as Pads
 import Conspicillum.Plan (Grain, Plan, emptyPlan, planCycle, sceneOf)
 import Conspicillum.Plays as Plays
 import Conspicillum.Shelf (Kept)
@@ -66,6 +67,7 @@ import Halogen.HTML.Events as HE
 import Halogen.HTML.Properties as HP
 import Halogen.Query.Event as HQE
 import Halogen.Subscription as HS
+import Helm.WebMIDI (MIDIOutput)
 import Reef.Conspicillum.Cloud (Spec)
 import Reef.Conspicillum.Decimal (fixed)
 import Reef.Conspicillum.Display (Material(..), materialName, segments)
@@ -185,6 +187,11 @@ type State =
   , wantedKept :: Maybe String
   -- | The welcome card: shown on a first visit, and from ⓘ.
   , welcome :: Boolean
+  -- | The step gate, played on the Midifighter 3D (`Conspicillum.Pads`):
+  -- | empty when no pad has been pressed (the table as written), and the 3D's
+  -- | output, to light its pads, when the hub has it.
+  , gate :: Array Boolean
+  , pads :: Maybe MIDIOutput
   }
 
 data Action
@@ -212,6 +219,8 @@ data Action
   | Pin Parameter
   | Key KeyboardEvent
   | CloseWelcome
+  | FromPads Pads.Press
+  | PadsReady (Maybe MIDIOutput)
   | Swallow Event.Event
   | NoOp
 
@@ -264,6 +273,8 @@ initialState _ =
   , linePublishedAt: 0.0
   , wantedKept: Nothing
   , welcome: false
+  , gate: []
+  , pads: Nothing
   }
 
 -- ── what the state implies ───────────────────────────────────────────────────
@@ -331,7 +342,7 @@ replan st = case working st of
   Nothing -> st { plan = emptyPlan }
   Just w ->
     let
-      scene = sceneOf { set: w.set, line: w.preset.line, query: w.preset.query, tempo: st.tempo }
+      scene = sceneOf { set: w.set, line: w.preset.line, query: w.preset.query, tempo: st.tempo, gate: st.gate }
       plays cycle = Plays.inCycle scene.spec.samplePattern cycle st.plays
       plan = planCycle { scene, material: w.material, tempo: st.tempo, plays } (max 0 st.plan.cycle)
     in
@@ -339,7 +350,7 @@ replan st = case working st of
 
 sceneText :: State -> Maybe String
 sceneText st = working st <#> \w ->
-  encodeScene (sceneOf { set: w.set, line: w.preset.line, query: w.preset.query, tempo: st.tempo })
+  encodeScene (sceneOf { set: w.set, line: w.preset.line, query: w.preset.query, tempo: st.tempo, gate: st.gate })
 
 -- | The preset in hand, as the stage keeps it for the other pages.
 heldOf :: State -> Maybe Held
@@ -538,7 +549,7 @@ laboratoryView = HH.memoized same \r ->
   laboratory
     { editSpec: EditSpec, setParameter: SetParameter, pin: Pin, nothing: NoOp }
     { preset: r.preset
-    , scene: encodeScene (sceneOf { set: r.set, line: r.preset.line, query: r.preset.query, tempo: r.tempo })
+    , scene: encodeScene (sceneOf { set: r.set, line: r.preset.line, query: r.preset.query, tempo: r.tempo, gate: [] })
     }
   where
   same a b = unsafeRefEq a.preset b.preset && unsafeRefEq a.set b.set && a.tempo == b.tempo
@@ -921,6 +932,7 @@ handleAction = case _ of
     { emitter, listener } <- H.liftEffect HS.create
     void $ H.subscribe emitter
     H.liftEffect (Binnacle.onAppMessage rig (HS.notify listener <<< FromRig))
+    H.liftEffect (Pads.open { onPress: HS.notify listener <<< FromPads, onReady: HS.notify listener <<< PadsReady })
     -- `?laboratory` and `?library` open on those views.
     H.modify_ _
       { rig = Just rig
@@ -951,6 +963,21 @@ handleAction = case _ of
       handleAction (LibraryLoaded library)
 
   Loaded (Left problem) -> H.modify_ _ { problem = Just problem }
+
+  PadsReady out -> do
+    H.modify_ _ { pads = out }
+    paintPads
+
+  FromPads press -> do
+    st <- H.get
+    let grid = maybe 16 (\w -> w.preset.line.spec.steps.grid) (working st)
+    H.modify_ \s -> replan s
+      { gate = case press of
+          Pads.Pad k -> Pads.toggle grid k s.gate
+          Pads.LetGo -> []
+      }
+    changed
+    paintPads
 
   Loaded (Right corpora) -> do
     H.modify_ _ { corpora = corpora }
@@ -1273,6 +1300,13 @@ publishLineIfDue = do
     when (st.staged && isNothing st.drag && st.stagedLine /= Just text && st.now - st.linePublishedAt >= 300.0) do
       sendText (Stage.writeLine text)
       H.modify_ _ { stagedLine = Just text, linePublishedAt = st.now }
+
+-- | Light the 3D's pads for the gate in hand, at the preset's grid.
+paintPads :: M Unit
+paintPads = do
+  st <- H.get
+  let grid = maybe 16 (\w -> w.preset.line.spec.steps.grid) (working st)
+  for_ st.pads \out -> H.liftEffect (Pads.paint out grid st.gate)
 
 -- | The scene changed: send it, soon, if it is playing.
 changed :: M Unit

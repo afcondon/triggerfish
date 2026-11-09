@@ -52,11 +52,11 @@ cycleSeconds tempo = 240.0 / tempo
 
 -- | The scene as the rig is sent it. The warp ratio is the rig's tempo against
 -- | the tape's, so a new tempo is a new scene.
-sceneOf :: { set :: SampleSet, line :: Line, query :: Query, tempo :: Number } -> Scene
-sceneOf { set, line, query, tempo } =
+sceneOf :: { set :: SampleSet, line :: Line, query :: Query, tempo :: Number, gate :: Array Boolean } -> Scene
+sceneOf { set, line, query, tempo, gate } =
   { corpus: corpusFor set line
   , query
-  , spec: line.spec { warp { ratio = tempo / maybe 120.0 _.bpm set.tape } }
+  , spec: line.spec { warp { ratio = tempo / maybe 120.0 _.bpm set.tape }, steps { gate = gate } }
   , seed: line.seed
   }
 
