@@ -2181,7 +2181,44 @@ break once that library is catalogued in msm on the Mini (handed to the Mini's
 Claude), or one AC makes in Patterning → Quadrat → Conspicillum, filmed for a
 demo video.
 
-### Built: the first two
+### Built: the Demos bank (2026-11-09)
+
+This covers eleven demos: every "mode's sound" and "only this mode" cell
+for modes 1–4. The "played" column waits for the controller review.
+
+| Demo | Material | What it shows |
+|---|---|---|
+| Cloud · a bed | `chord-hits-0915-230332` | five long grains a bar, sprayed over the whole set, no timeline |
+| Cloud · Burroughs, the dark / the bright | `burroughs-cutup` | the same line twice, with the query leaning on zero crossings, low then high: switching between them changes the voice while nothing moves in time |
+| Tape · straight, then chaos | `fd-beat-bar` | the walk at zero, so it plays as recorded; turning up chaos starts the departures |
+| Tape · the step table, gated | `fd-beat-bar` | a written table, which the 3D's pads gate |
+| Tape · four bars re-laid | `guitar-1104-c-tape` (4 bars, 107 bpm) | `order "0 1 0 2 3 1 3 3"`: an eight-bar form made from four bars |
+| Tape · warp, gap | `guitar-1104-c-tape` | at any tempo other than 107, each slice keeps its pitch and gaps open or clip |
+| Virtual tape · a progression nobody played | `chord-hits-0924-171929` | eight bars, one recorded chord each, in an order nobody played |
+| Harmonic selection · grains that fit the chord | `chord-hits-0915-232247` | a cloud over every chord recorded, each grain chosen because it voices the bar's chord |
+| Sampler · a bassline from one sweep | `drum-hits-0912-121546` | one drum swept through an octave, so its samples are notes |
+| Sampler · Burroughs as a kit | `burroughs-cutup` | spoken Morphagene splices, each played whole and cutting off the last |
+
+**Corrections to the plan above, made when building:**
+- `bars-0924-220301` is the sixteen slices of one bar, not sixteen bars. Bar
+  order and warp need a tape longer than a bar recorded at another tempo,
+  which the 4-bar guitar take is.
+- Moving the query live has no knob, so for now the dark and bright demos
+  are two presets. **A query knob** (a lean along one measured axis) is what the
+  Cloud's "played" demo needs.
+- Nothing lets Conspicillum follow a live Vetula progression yet, so
+  harmonic selection follows a written `chords` line.
+
+**AC on the Sampler kit (first version):** "kinda works", though hit 11 is
+more like a snare. A swept drum makes a better bassline than a kit, so that
+demo became the bassline. **The kit demo needs a real kit**, from Samples
+From Mars or the rig's Rample.
+
+**AC on the gated step table:** "maybe points up a need for some changes in
+the UI or i need to understand better what i'm seeing". Parked, to come back to.
+
+### The first two, as built
+
 
 - **Sampler · a kit from one sweep.** `drum-hits-0912-121546` is one drum
   voice that Quadrat swept through 12 pitches at 4 decay settings (cell
@@ -2190,7 +2227,8 @@ demo video.
   - the short, bright hits 11 and 9 are the hats, with 3 as an accent;
   - the long, brightest hit 47 is the crash, every other bar.
 
-  `n "12 [~ 11] 3 [11 11] 12 [12 11] 3 <[11 9] [~ 47]>"`.
+  `n "12 [~ 11] 3 [11 11] 12 [12 11] 3 <[11 9] [~ 47]>"`. Replaced by the
+  bassline, above.
 - **Tape · the step table, gated.** `fd-beat-bar` with a step table written in:
   `steps "~ ~ ~ 0?0.5 ~ ~ 4?0.4 ~ ~ ~ ~ 8?0.5 ~ 12?0.6 ~ 2?0.3"`. The written
   steps jump on their own. Lighting a pad on the 3D gates the table:
