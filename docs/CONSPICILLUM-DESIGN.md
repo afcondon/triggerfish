@@ -2057,11 +2057,13 @@ density, spread. Pads choose *what*; the continuous hand chooses *how often*.
 a pedal's hue: pad *k* lights in the colour of slice *k* on Conspicillum's
 ring, so the device shows which pad is which part of the material. The same
 light can carry state: full for armed or in play, dim for gated off, and a
-flash for the step now sounding. **Not yet measured:** how the 3D takes a
-colour from the host. The pad colours are in the Utility's `.mfs` export
-(64 of them), but what the device does with a note or CC sent back to it has
-not been heard. Measure it with Helm's listener before designing the lights,
-as was done for its inputs.
+flash for the step now sounding. **Measured 2026-11-09** (`docs/kb/plans/helm.md`): a note-on on
+channel 3 at the pad's note sets its colour, velocity 13–120 is a hue wheel
+from red round to pink, and 0 is off. A press leaves the colour alone, and
+colours survive bank changes. No brightness control has been found yet, so
+"dim for gated off" becomes **off** for gated, the slice's colour for in play,
+and a flash (alternating with off, or with the 121–127 cyan block) for the
+step now sounding.
 
 ### When a gate takes effect
 
