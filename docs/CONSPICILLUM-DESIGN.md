@@ -2143,3 +2143,59 @@ gesture is ever to enter the shared clip library does `Reef.Clips.MidiClip`
 3. **Gating a trigger source**: a pad gates a pattern or a cloud.
 4. **Mode 5 (long material)** with the region gate, and **mode 6 (gesture)**
    with the Touché, once Samplr's backups have been looked at.
+
+## Curated demos (2026-11-09)
+
+The presets were collected as they were found, not designed as a set: about
+45 Cloud presets on two chord sets, about 40 Tape presets nearly all on
+`fd-beat-bar`, nothing for warp, no break with a step table, and no drum kit
+in Sampler mode. **The demos are designed as a set**: one bank, `Demos`,
+alongside the presets, not replacing them. Once the demos exist, the presets
+that duplicate them can go.
+
+**Three demos for each mode, each on the material that suits it best:**
+- *the mode's sound*: what it sounds like at its plainest;
+- *only this mode*: something no other mode can do;
+- *played*: a controller in hand.
+
+Samples and modes are separate choices, so a demo names its material as the
+best example, not as the only one. **Treatments** (Fix, Effects, Resonators,
+Envelopes, Swing) are a separate set that can be applied to any demo. Dub is
+moot now that SuperDirt plays to the ADAMs.
+
+| Mode | The mode's sound | Only this mode | Played |
+|---|---|---|---|
+| Cloud | a sparse bed from `chord-hits-0915-230332`, no timeline | `burroughs-cutup` with the query moved from dark grains to bright: the cloud changes character while nothing moves in time | Twister: density and query |
+| Tape | a break straight, then left to wander | **built:** *Tape · the step table, gated*; still to do: bar order over the 16 bars of `bars-0924-220301`, and warp | the 3D's gate, breaking a groove down |
+| Virtual tape | `chord-hits-0924-171929-tape`: a progression nobody played | harmonic selection from `chord-hits-0915-232247`, following a Vetula progression | KeyStep chooses the chord |
+| Sampler | **built:** *Sampler · a kit from one sweep* | `burroughs-cutup` as a kit of Morphagene splices | finger drumming on the 3D, then the recorded loop of hits |
+| Long material | — | scan `longform-0914-125645` or `guitar-1104-c-tape` and choose regions | the region gate |
+| Gesture | — | bow `brass` with the Touché | the Touché |
+
+The rows for modes 5 and 6 are their **acceptance criteria**: the mode is built
+when its demo plays.
+
+**The break is the gap.** The only break today is `fd-beat-bar`, so the Tape
+demos use it until a better one exists. That will be a Samples From Mars
+break once that library is catalogued in msm on the Mini (handed to the Mini's
+Claude), or one AC makes in Patterning → Quadrat → Conspicillum, filmed for a
+demo video.
+
+### Built: the first two
+
+- **Sampler · a kit from one sweep.** `drum-hits-0912-121546` is one drum
+  voice that Quadrat swept through 12 pitches at 4 decay settings (cell
+  `[decay row, pitch]`), not a mixed kit. So the kit is chosen by measurement:
+  - the dull, short-decay hit 12 is the kick;
+  - the short, bright hits 11 and 9 are the hats, with 3 as an accent;
+  - the long, brightest hit 47 is the crash, every other bar.
+
+  `n "12 [~ 11] 3 [11 11] 12 [12 11] 3 <[11 9] [~ 47]>"`.
+- **Tape · the step table, gated.** `fd-beat-bar` with a step table written in:
+  `steps "~ ~ ~ 0?0.5 ~ ~ 4?0.4 ~ ~ ~ ~ 8?0.5 ~ 12?0.6 ~ 2?0.3"`. The written
+  steps jump on their own. Lighting a pad on the 3D gates the table:
+  - only the lit steps may jump;
+  - a lit step with nothing written goes to a random step;
+  - a side button lets the gate go.
+
+  So the same preset plays both as written and gated.
