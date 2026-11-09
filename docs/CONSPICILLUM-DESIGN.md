@@ -2083,14 +2083,33 @@ This decides what can be built cheaply, so it comes before any wiring.
 | **KeyStep** | not measured | the **harmonic target**: play a chord, and the cloud or the virtual tape plays grains that voice it. Harmonic selection played live, which nothing else does |
 | **Twister** | `project_twister_*` memories | the page's continuous controls (chaos, grain, throw) and per-step amounts across a bank of 16 |
 
-### What recording play needs
+### Recording play: a loop of hits, kept only while it plays
 
-Pad play records as a Triggerfish `MidiClip` at full fidelity, and that clip
-can become an `n` pattern. **A gesture cannot be recorded that way:**
-`Reef.Clips.MidiClip` holds `NoteEvent`s only (pitch, velocity, gate), with no
-continuous data. Recording a bow or a tilt needs a curve beside the notes in
-the shared clip library, a design decision for `reef`, not something to work
-around in a page.
+AC's model is Samplr's slicer: finger-drum on a sliced sample (multi-touch
+there, the 3D's pads here) and it records **(slice, time)** for each hit,
+then loops it. Samplr's slicer also offers input quantisation (0, 4, 8, 16,
+32) and transpose (±1, ±12).
+
+**It is ephemeral** (AC, 2026-11-09): part of playing Conspicillum, like a
+pad mask, and not an entry in Triggerfish's clip library. If one is worth
+keeping, the preset in hand is kept, as anything else on the page is.
+
+**The engine already has the shape.** The sampler mode plays
+`Play = { at, index }` (a time within the cycle, a sample) through
+`cycleOfPlays`. A recorded loop is those plays, one array per bar of the
+loop. Today the plays come from `n` text that Architeuthis evaluates; a
+recorded loop would send them as data instead, because unquantised times do
+not print well as mini-notation.
+
+Each hit takes two paths:
+- **while playing**, the press sounds now, by the direct path;
+- **on replay**, it is a play in a known cycle, so it goes through the
+  cycle calculation like any pattern, and every gate and rule applies to it.
+
+Recording continuous gestures (a bow, a tilt) for replay needs curves beside
+the hits. Kept equally ephemeral, that is a page and voice matter. Only if a
+gesture is ever to enter the shared clip library does `Reef.Clips.MidiClip`
+(notes only today) need a curve type.
 
 ### Order (proposed, not decided)
 
@@ -2100,9 +2119,9 @@ around in a page.
    keep jumping when no pad has been touched, the die is drawn when gated, and
    an 8-step grid uses the bottom two rows. Tilt scales the armed steps'
    probabilities.
-2. **The sampler from the 3D, triggered now.** This is the direct path and
-   the first recorded pad play.
+2. **The sampler from the 3D, triggered now**, with the loop recorder:
+   (slice, time) per hit, replayed as plays. This is the direct path, and
+   Samplr's slicer without the touchscreen.
 3. **Gating a trigger source**: a pad gates a pattern or a cloud.
 4. **Mode 5 (long material)** with the region gate, and **mode 6 (gesture)**
-   with the Touché, once Samplr's backups have been looked at and clips can
-   hold curves.
+   with the Touché, once Samplr's backups have been looked at.
