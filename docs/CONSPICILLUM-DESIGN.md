@@ -2053,6 +2053,16 @@ of 16 pads addresses:
 The continuous hand (tilt, the Touché) then sets **how much**: probability,
 density, spread. Pads choose *what*; the continuous hand chooses *how often*.
 
+**The pads wear the ring's colours** (AC, 2026-11-09), as PWYF's Twister wears
+a pedal's hue: pad *k* lights in the colour of slice *k* on Conspicillum's
+ring, so the device shows which pad is which part of the material. The same
+light can carry state: full for armed or in play, dim for gated off, and a
+flash for the step now sounding. **Not yet measured:** how the 3D takes a
+colour from the host. The pad colours are in the Utility's `.mfs` export
+(64 of them), but what the device does with a note or CC sent back to it has
+not been heard. Measure it with Helm's listener before designing the lights,
+as was done for its inputs.
+
 ### When a gate takes effect
 
 This decides what can be built cheaply, so it comes before any wiring.
