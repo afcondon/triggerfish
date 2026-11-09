@@ -2125,7 +2125,13 @@ gesture is ever to enter the shared clip library does `Reef.Clips.MidiClip`
 
 ### Order (proposed, not decided)
 
-1. **The Tape step gate from the 3D, heard from the next bar.** It was AC's
+1. **Built 2026-11-09** (reef `900a7fc`, triggerfish `bbf2b04`; AC: "the
+   basic mechanism seems to work"). Lit pads latch; a lit step with no
+   written target jumps to a random other step; a side button lets the gate
+   go. Open from the first play: the page does not show the gate (only the
+   pads do), and a random target each bar can't be learnt; tilt scaling the
+   lit steps' probability is not built.
+   **The Tape step gate from the 3D, heard from the next bar.** It was AC's
    first idea, it is the smallest change (a mask in `Steps`, applied in
    `stepJump`), and the mode already exists. Presets with step tables must
    keep jumping when no pad has been touched, the die is drawn when gated, and
