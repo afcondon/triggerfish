@@ -1988,3 +1988,121 @@ drawer and one Limulus, and next to Vetula it read as another product.
   README pointing here, and since 2026-11-08 lives at `archived/conspicillum`.
 
 Test sheet: `docs/TEST-conspicillum.md`.
+
+## Playback modes, and what a controller means in each (2026-11-09)
+
+*Discussed with AC, 2026-11-09, before any controller is wired. Conspicillum
+began as a bridge from granular synthesis to beat playback and glitch engines
+like Sector. Quadrat's multi-sample sets (Rample layers and slices, Morphagene
+splices) then opened kinds of playback outside that range. This section records
+the modes as they stand, so that controllers are designed against the modes,
+not against one preset.*
+
+### The modes
+
+| | Mode | Material | What happens | Musical use | State |
+|---|---|---|---|---|---|
+| 1 | **Cloud** | a corpus, queried by Quadrat's measurements | each grain is an addressable event; no timeline (`follow` 0) | textures, drones, beds, sound design from the rig's own recordings | built |
+| 2 | **Tape** (Sector) | one or more bars of a beat | the bar's own sixteenths, in order, until they depart from it: walk, step table, reverse, stutter, swing, warp, bar order | breaking a groove down live; fills, breakdowns, how a groove changes over a piece | built |
+| 3 | **Virtual tape** and harmonic selection | chord hits | one sample a bar makes a progression nobody played; grains are chosen because they voice the current chord | harmonic beds from recorded voicings that follow Vetula | built |
+| 4 | **Sampler** (`n "0 4 7 5"`) | a kit: drum hits, Rample layers, Morphagene splices | each sample plays whole, by pattern | the rig's own Rample | built |
+| 5 | **Long material** | a Jam take, a field recording, Itajara's live ring | the timeline is a place to scan and choose regions from (Morphagene's ground) | not designed | **not built** |
+| 6 | **Gesture** (after Samplr) | any sample | a continuous hand drives the read: a **bow** (pressure is the envelope, motion is the read position), or **tape** (direction and speed by hand, scratching) | playing a sample like a string or a reel | **not built** |
+
+**Rules apply across all modes, and are not a mode of their own.** A rule
+says which grains are treated, what is done to them and by how much (kick-like
+grains through a tuned resonator, the snare to the return).
+
+**Samplr is the reference for mode 6, and for recording play.** Samplr
+records a gesture over a sample and loops it: granular play captured the way
+finger drumming captures hits. Its backups are on disk (memory
+`samplr-as-inspiration`) but have not been opened. Check its modes against
+them before naming ours after it.
+
+### Gates: one idea for every button
+
+A pad's press is a **gate**: high while held, or latched until pressed again.
+What the gate is *patched to* is a separate choice, as on a modular. The same
+press can:
+
+1. **trigger a sample**: finger drumming (the sampler);
+2. **gate a source of triggers**: a timed pattern, or a stochastic one such
+   as a cloud's density or a Euclidean rhythm, so the sound plays only while
+   the pad is held;
+3. **gate a pattern that feeds a trigger**, and so on down the chain;
+4. **gate a departure**: this step may jump (the Tape step table), these
+   regions may give grains (a cloud on long material, mode 5), this sample or
+   band is in the cloud, this chord is in the progression.
+
+These compose, because each stage only gates the one before it: a trigger,
+gated by a pad, fed by a pattern, gated by another pad. This is AC's framing
+and it should shape the code: the gate is a signal with a destination, not a
+feature of whichever mode is on the page.
+
+Each mode divides its material into a handful of parts, which is what a bank
+of 16 pads addresses:
+
+| Mode | The parts a pad addresses |
+|---|---|
+| Tape | 16 steps of the bar |
+| Cloud on long material | 16 regions of the timeline |
+| Cloud on a corpus | 16 samples, or 16 measured bands |
+| Virtual tape | its bars or chords |
+| Sampler | 16 samples |
+
+The continuous hand (tilt, the Touché) then sets **how much**: probability,
+density, spread. Pads choose *what*; the continuous hand chooses *how often*.
+
+### When a gate takes effect
+
+This decides what can be built cheaply, so it comes before any wiring.
+
+- **A trigger sounds now.** It cannot go through the cycle calculation; the
+  page sends it straight to the rig, the way a Rample hit is sent.
+- **Everything the voice plays is fixed a cycle ahead.**
+  `reef_conspicillum_voice` computes a whole cycle with one `cycleOf` call
+  when the cycle enters the lookahead horizon, and sends every grain at once
+  as timetagged bundles (§The emit path). Once sent, a grain cannot be
+  withdrawn. So a gate on a pattern, a step or a region heard **from the next
+  bar** costs nothing beyond a mask in the spec.
+- **For a gate to act within the bar**, the voice would have to hold the
+  computed cycle and send each grain shortly before its time, checking the
+  gate at the moment it sends. For a departure (a step's jump), the voice
+  would compute **both branches**, the jump taken and not taken, and the gate
+  picks one at send time. The die is still drawn either way, so the seed
+  stream is unchanged. The change is in the Erlang voice and its send path,
+  after `cycleOf`, so reef's conformance is unaffected. It is worth building
+  once the next-bar version shows that the delay is what is wrong.
+
+### The controllers
+
+| Controller | Measured | Proposed role |
+|---|---|---|
+| **Midifighter 3D** | `docs/kb/plans/helm.md` | 16 pads as gates; bank buttons choose what the pads address; tilt sets how much |
+| **Touché** | `docs/kb/plans/helm.md` | the bow (mode 6): pressure as the envelope, one axis as position or direction. It saturates quickly at its current sensitivity: set the curve in its editor before judging it |
+| **KeyStep** | not measured | the **harmonic target**: play a chord, and the cloud or the virtual tape plays grains that voice it. Harmonic selection played live, which nothing else does |
+| **Twister** | `project_twister_*` memories | the page's continuous controls (chaos, grain, throw) and per-step amounts across a bank of 16 |
+
+### What recording play needs
+
+Pad play records as a Triggerfish `MidiClip` at full fidelity, and that clip
+can become an `n` pattern. **A gesture cannot be recorded that way:**
+`Reef.Clips.MidiClip` holds `NoteEvent`s only (pitch, velocity, gate), with no
+continuous data. Recording a bow or a tilt needs a curve beside the notes in
+the shared clip library, a design decision for `reef`, not something to work
+around in a page.
+
+### Order (proposed, not decided)
+
+1. **The Tape step gate from the 3D, heard from the next bar.** It was AC's
+   first idea, it is the smallest change (a mask in `Steps`, applied in
+   `stepJump`), and the mode already exists. Presets with step tables must
+   keep jumping when no pad has been touched, the die is drawn when gated, and
+   an 8-step grid uses the bottom two rows. Tilt scales the armed steps'
+   probabilities.
+2. **The sampler from the 3D, triggered now.** This is the direct path and
+   the first recorded pad play.
+3. **Gating a trigger source**: a pad gates a pattern or a cloud.
+4. **Mode 5 (long material)** with the region gate, and **mode 6 (gesture)**
+   with the Touché, once Samplr's backups have been looked at and clips can
+   hold curves.
