@@ -19,7 +19,6 @@ module Triggerfish.Rig
   , RigConfig
   , defaultRig
   , availableTargets
-  , targetGroups
   ) where
 
 import Prelude
@@ -27,8 +26,7 @@ import Prelude
 import Data.Array (range)
 import Data.Maybe (Maybe(..))
 import Data.Monoid (guard)
-import Halogen.Widgets.Select as Select
-import Triggerfish.Selene.Model (Target(..), targetWire)
+import Triggerfish.Selene.Model (Target(..))
 
 -- | ES-9 side. `gtBlocks` = 8-gate blocks (ES-5 + each ESX-8GT); `cvBlocks` =
 -- | 8-CV blocks (each ESX-8CV). The ES-9's own eight panel jacks are `ES9Main`,
@@ -75,26 +73,6 @@ availableTargets cfg =
     Just r -> fh2Targets r
   midi n = guard (n >= 1) (map Midi (range 1 n))
 
--- | The same targets, arranged as a one-level cascade for `Select`: top-level
--- | family rows (ES-9 / FH-2 / MIDI) each flying out to their bounded leaves.
--- | Empty families are dropped so the menu never shows a headed-but-empty group.
-targetGroups :: RigConfig -> Array Select.OptionGroup
-targetGroups cfg =
-  nonEmpty (es9 cfg.es9) <> nonEmpty (fh2 cfg.fh2)
-    <> nonEmpty { label: "MIDI", options: map (opt leafLabel) (midiTargets cfg.midiChannels) }
-  where
-  es9 = case _ of
-    Nothing -> { label: "ES-9", options: [] }
-    Just r ->
-      { label: "ES-9"
-      , options: map (opt leafLabel) ([ ES9Main ] <> blocks r.gtBlocks ES9Gt <> blocks r.cvBlocks ES9Cv)
-      }
-  fh2 = case _ of
-    Nothing -> { label: "FH-2", options: [] }
-    Just r -> { label: "FH-2", options: map (opt leafLabel) (fh2Targets r) }
-  midiTargets n = guard (n >= 1) (map Midi (range 1 n))
-  nonEmpty g = guard (g.options /= []) [ g ]
-
 -- | The FH-2's banks in menu order: its own eight, the FHX-8GTs, the FHX-8CVs.
 fh2Targets :: Fh2Rig -> Array Target
 fh2Targets r = [ FH2 0 ] <> blocks r.gtExpanders (\i -> FH2 (i + 1)) <> blocks r.cvExpanders FH2Cv
@@ -103,19 +81,3 @@ fh2Targets r = [ FH2 0 ] <> blocks r.gtExpanders (\i -> FH2 (i + 1)) <> blocks r
 -- | `range 0 (-1)` never produces the descending `[0,-1]`).
 blocks :: Int -> (Int -> Target) -> Array Target
 blocks n f = guard (n >= 1) (map f (range 0 (n - 1)))
-
-opt :: (Target -> String) -> Target -> Select.Option
-opt lbl t = { value: targetWire t, label: lbl t }
-
--- | Short leaf labels — the family is already named by the enclosing group, so
--- | drop the "ES-9 · " / "FH-2 · " prefix `targetLabel` carries.
-leafLabel :: Target -> String
-leafLabel = case _ of
-  ES9Main -> "MAIN"
-  ES9Gt n -> "GT " <> show n
-  ES9Cv n -> "CV " <> show n
-  FH2 0 -> "MAIN"
-  FH2 n -> "GT " <> show (n - 1)
-  FH2Cv n -> "CV " <> show n
-  Midi n -> "CH " <> show n
-  Virtual s -> s

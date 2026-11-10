@@ -25,7 +25,6 @@ module Vetula.Score
   , Badge
   , Staff
   , Handlers
-  , spelling
   , spellingOf
   , spell
   , spellChord
@@ -148,27 +147,6 @@ pcDiff :: Int -> Int -> Int
 pcDiff to from =
   let d = ((to - from) `mod` 12 + 12) `mod` 12
   in if d > 6 then d - 12 else d
-
--- | The spelling of a key, from the tonic's NAME (it carries the letter:
--- | "E♭", "F♯") and the scale's pitch classes from the tonic. A scale of
--- | seven takes one letter a degree; any other (pentatonic, octatonic)
--- | spells from the tonic's side alone.
-spelling :: String -> Array Int -> Spelling
-spelling tonicName scale =
-  let
-    l0 = maybe' 0 letterOf (SCU.charAt 0 tonicName)
-    flatTonic = String.contains (String.Pattern "\x266d") tonicName
-    accidentals =
-      if Array.length scale == 7 then Array.mapWithIndex (\i pc -> pcDiff pc (natural (l0 + i))) scale else []
-  in
-    { letter: l0
-    , scale
-    , flats: flatTonic || Array.any (_ < 0) accidentals
-    }
-  where
-  maybe' d f = case _ of
-    Just x -> f x
-    Nothing -> d
 
 -- | The spelling of a scale given by its root and pitch classes (root
 -- | first): the tonic letter that spells it with the fewest accidentals,

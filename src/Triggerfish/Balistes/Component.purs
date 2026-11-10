@@ -52,7 +52,7 @@ import Reef.Balistes.Protocol (encodeBalSim, encodeBTagged, encodeFixed)
 import Reef.Balistes.Input as RBI
 import Reef.Balistes.Fixed as RF
 import Triggerfish.Balistes.Model as M
-import Triggerfish.Balistes.Pattern as P
+import Reef.Balistes.Pattern as P
 import Triggerfish.Routing.Model as RM
 import Triggerfish.Routing.Out as RO
 import Triggerfish.Routing.Store as RStore

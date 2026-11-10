@@ -17,7 +17,6 @@ module Triggerfish.Midi.Routing
   , SourceId(..)
   , odonusHeadChannel
   , vetulaDefaultChannel
-  , drumsChannel
   , toWire
   , sourceLabel
   , destLabel
@@ -53,10 +52,6 @@ odonusHeadChannel h = 1 + h
 -- | Vetula's default (unnamed) MIDI voice.
 vetulaDefaultChannel :: Int
 vetulaDefaultChannel = 5
-
--- | GM drums (Balistes — all three drum tabs share this).
-drumsChannel :: Int
-drumsChannel = 10
 
 -- | The ONE browser-side conversion: canonical 1..16 → WebMIDI 0..15.
 toWire :: Int -> Int

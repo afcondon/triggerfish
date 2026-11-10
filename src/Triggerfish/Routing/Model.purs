@@ -28,7 +28,7 @@
 -- | A drum lane wants ONE gate and an Odonus head wants ONE envelope, so the
 -- | destinations here address individual jacks. The two coexist rather than one
 -- | replacing the other: a Selene block claim and a drum's jack claim contend for
--- | the same hardware, which is exactly what `claims` below is for.
+-- | the same hardware.
 module Triggerfish.Routing.Model
   ( Source(..)
   , sourceLabel
@@ -40,8 +40,6 @@ module Triggerfish.Routing.Model
   , es9JackBus
   , es9JackVco
   , destLabel
-  , destDevice
-  , Device(..)
   , Leg
   , newLeg
   , drumPad
@@ -69,13 +67,10 @@ module Triggerfish.Routing.Model
   , reachOf
   , reachNote
   , unreachable
-  , Claim
-  , claims
   , Wire
   , RampleWire
   , wireOf
   , isInterface
-  , outputsOf
   , carriesLine
   , fh2Port
   , fh2GateChannel
@@ -85,7 +80,7 @@ module Triggerfish.Routing.Model
 import Prelude
 
 import Control.Alt ((<|>))
-import Data.Array (any, concatMap, filter, find, findIndex, foldl, head, length, mapMaybe, mapWithIndex, nub, snoc, updateAt, (!!))
+import Data.Array (any, filter, find, findIndex, foldl, head, length, mapMaybe, mapWithIndex, snoc, updateAt, (!!))
 import Data.Int as Int
 import Data.Maybe (Maybe(..), fromMaybe, isJust, maybe)
 import Data.Tuple (Tuple(..), snd)
@@ -93,7 +88,6 @@ import Data.String (Pattern(..), contains, stripPrefix)
 import Data.String.Common (joinWith)
 import Reef.Vetula.VoiceName (voiceCount, voiceLetter)
 
-import Triggerfish.Selene.Layout (Output, outputKey)
 
 -- ---------------------------------------------------------------------------
 -- Sources
@@ -282,8 +276,7 @@ instrumentLabel = case _ of
 -- | which, for anything that has to name it.
 -- |
 -- | Lives here rather than beside the driving code because it is ROUTING — what
--- | is patched where — and because the claims report has to know an instrument
--- | speaks for five jacks, not one.
+-- | is patched where.
 polyJacks :: InstrumentId -> { voiceBuses :: Array Int, ctrlBus :: Int, ctrlLabel :: String }
 polyJacks = case _ of
   -- Patched 2026-08-11: voices on ES-9 panel jacks 1-4, mix CV on jack 5.
@@ -292,26 +285,6 @@ polyJacks = case _ of
   -- Rings allocates internally, so however many voices it holds it presents ONE
   -- pitch input — panel jack 6 — and one STRUM, jack 7.
   Rings -> { voiceBuses: [ 13 ], ctrlBus: 14, ctrlLabel: "strum" }
-
--- | The physical thing a destination lands on. Capacity is per-device, so this
--- | is what `claims` groups by.
-data Device = DevMidi String | DevFh2 | DevEs9 | DevContinuo | DevSuperDirt
-
-derive instance eqDevice :: Eq Device
-
-destDevice :: Destination -> Device
-destDevice = case _ of
-  DMidi d -> DevMidi d.port
-  DFh2Env _ -> DevFh2
-  DFh2Gate _ -> DevFh2
-  DFh2Voice _ -> DevFh2
-  DEs9Gate _ -> DevEs9
-  DEs9Cv _ -> DevEs9
-  DContinuo _ -> DevContinuo
-  DRample d -> DevMidi d.port
-  DRamplePoly d -> DevMidi d.port
-  DPoly _ -> DevEs9
-  DSample _ -> DevSuperDirt
 
 destLabel :: Destination -> String
 destLabel = case _ of
@@ -815,53 +788,6 @@ wireOf = case _ of
   -- Not MIDI: a /dirt/play from the rig (`Reef.Routing`'s voice legs).
   DSample _ -> Nothing
 
--- ---------------------------------------------------------------------------
--- Claims — what is spoken for, and by whom
--- ---------------------------------------------------------------------------
-
--- | One occupied hardware slot, and who occupies it.
-type Claim = { device :: Device, slot :: String, by :: Array Source }
-
--- | The PHYSICAL OUTPUT a destination lands on, in `Selene.Layout`'s address
--- | vocabulary (device / bank / 0-based slot), or `Nothing` for destinations that
--- | are not a jack at all.
--- |
--- | This is the structured form of what `claims` renders as prose, and both use
--- | it, so the output-backward view and the conflict report cannot disagree about
--- | where something lands.
--- |
--- | Note the two FH-2 kinds go to DIFFERENT banks — an envelope to the FH-2's own
--- | panel, a trigger out the FHX-8GT — which is the distinction that was collapsed
--- | and had to be fixed on the rack.
-outputsOf :: Destination -> Array Output
-outputsOf = case _ of
-  DFh2Env d -> [ { device: "fh2", bank: "main", slot: d.slot - 1 } ]
-  DFh2Gate d -> [ { device: "fh2", bank: "gt0", slot: d.jack - 1 } ]
-  -- its jacks are the Selene layout's, which holds and shows them
-  DFh2Voice _ -> []
-  DEs9Gate d -> [ { device: "es9", bank: "gt" <> show d.block, slot: d.jack - 1 } ]
-  DEs9Cv d -> map (es9CvOutput <<< es9JackBus) (if d.gate > 0 then [ d.jack, d.gate ] else [ d.jack ])
-  -- A polyphonic instrument spends EVERY jack it can allocate onto, plus the one
-  -- that decides how many are audible. Reporting only one would under-report the
-  -- spend, and the failure that hides is the quiet one: something else claiming
-  -- voice 3's bus while the allocator still believes it owns it.
-  DPoly d ->
-    let js = polyJacks d.inst
-    in map es9CvOutput (snoc js.voiceBuses js.ctrlBus)
-  DMidi _ -> []
-  DContinuo _ -> []
-  DRample _ -> []
-  DRamplePoly _ -> []
-  DSample _ -> []
-
--- | es9-daemon's `/cv <bus>`: buses 8..15 ARE the ES-9's eight panel jacks, so
--- | bus 8 is panel jack 1. Confirmed twice — `reference_es9_channel_mapping` and
--- | DeepStar's CALIBRATION.md bus map ("bus 8 drives the Tona on ES-9 output 1"),
--- | and used live by `reef_voice`'s odonus_cv routes (pitch_bus 8 = out 1).
--- |
--- | Anything outside 8..15 is an expander bus whose map we have not established;
--- | it gets its own bank name rather than being folded into the panel, so a wrong
--- | guess shows up as an unknown bank instead of silently colliding with jack 1.
 -- | es9-daemon's bus for an ES-9 panel jack (1-8).
 es9JackBus :: Int -> Int
 es9JackBus jack = jack + 7
@@ -873,77 +799,3 @@ es9JackVco :: Int -> Maybe String
 es9JackVco = case _ of
   1 -> Just "instruo-tona"
   _ -> Nothing
-
-es9CvOutput :: Int -> Output
-es9CvOutput bus
-  | bus >= 8 && bus <= 15 = { device: "es9", bank: "main", slot: bus - 8 }
-  | otherwise = { device: "es9", bank: "cv?", slot: bus }
-
-
--- | Every hardware slot the table spends, grouped so the same slot claimed twice
--- | shows both claimants.
--- |
--- | **This REPORTS; it does not enforce.** The daemons already own admission —
--- | es9-daemon has capability and overlap checks with `!` eviction, fh2-config
--- | has `PortClaim`. A second opinion computed here would be a second thing to
--- | drift, and the lesson of the output-range bug is exactly that: the client
--- | that duplicates a policy silently overrides it. So the router's job is to
--- | make the spend visible before the player hears it, not to arbitrate.
--- |
--- | MIDI destinations are deliberately excluded: a channel costs nothing and
--- | several sources sharing one is legal and often wanted (layering).
-claims :: Table -> Array Claim
-claims tbl = map collect (nub (map _.slot spent))
-  where
-  spent = concatMap legsOf tbl
-  legsOf r = concatMap (slotOf r.source) (filter _.on r.legs)
-  -- **An FH-2 leg spends TWO resources, and they are not the same resource.**
-  -- Collapsing them into one was a real bug: envelopes and drum triggers appeared
-  -- to fight over the FH-2's main panel jacks, which is exactly backwards from
-  -- what the rig does.
-  --
-  --   * the **MCV** (0..15) — the scarce internal thing. polyenv allocates MCV
-  --     0..7, envelope N on MCV N-1. The drum breakout's note-filtered triggers
-  --     use MCV 0..3. So they DO collide here, and this is the collision that
-  --     matters: applying a polyenv takes the drum gates away.
-  --
-  --   * the **physical output**, which is different hardware for each. polyenv
-  --     lands on the FH-2's own panel jack N. A drum trigger is routed out the
-  --     **FHX-8GT** (`output = jack + 64`, jack 1 = 65) precisely so the FH-2's
-  --     CV-capable main jacks stay free — see the header of
-  --     `fh2-config/scripts/apply-drum-breakout.mjs`, which is the source of
-  --     truth for this config.
-  --
-  -- So both claims are issued. The MCV claim catches the cross-family collision;
-  -- the output claim catches two legs aimed at one jack, which the MCV claim
-  -- cannot see because they would be on different MCVs.
-  slotOf src leg = case leg.dest of
-    DFh2Env d -> [ { device: DevFh2, slot: mcvSlot (d.slot - 1), by: [ src ] } ] <> jack leg
-    DFh2Gate d -> [ { device: DevFh2, slot: mcvSlot (d.jack - 1), by: [ src ] } ] <> jack leg
-    -- its converter and jacks are a Selene layout's, claimed there
-    DFh2Voice _ -> []
-    DEs9Gate _ -> jack leg
-    DEs9Cv _ -> jack leg
-    DPoly _ -> jack leg
-    DMidi _ -> []
-    DContinuo _ -> []
-    DRample _ -> []
-    DRamplePoly _ -> []
-    DSample _ -> []
-    where
-    -- The output half, from the one structured definition, so this and the
-    -- backward view cannot drift about where a destination lands.
-    jack lg = map (\o -> { device: destDevice lg.dest, slot: outputKey o, by: [ src ] })
-      (outputsOf lg.dest)
-
-  -- The MCV a drum trigger uses is `jack - 1` only because the breakout table
-  -- happens to pair slot 0..3 with jack 1..4. That table says "EDIT HERE to
-  -- re-map", so the two can be pulled apart — at which point this has to learn
-  -- the slot rather than derive it.
-  mcvSlot n = "MCV " <> show n
-  collect s =
-    let here = filter (\c -> c.slot == s) spent
-    in { device: fromMaybe DevFh2 (map _.device (here !! 0))
-       , slot: s
-       , by: concatMap _.by here
-       }

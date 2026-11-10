@@ -1,7 +1,7 @@
 -- | Triggerfish.Balistes.Types — the stable DAG root for the Balistes component:
 -- | the `State` record, the `Action` set, the small closed tag types they lean on
 -- | (`Active`, `DragKind`, `KnobTarget`), and the domain constants +
--- | pure vocab (`targetRange`, `knobValue`, `applyKnob`, `drumChannel`, …).
+-- | pure vocab (`targetRange`, `knobValue`, `applyKnob`, …).
 -- |
 -- | This module owns no rendering and no state machine — it's the shared
 -- | vocabulary both the view modules (`Balistes.View.*`, `Balistes.Widgets`,
@@ -29,7 +29,6 @@ module Triggerfish.Balistes.Types
   , rigUrl
   , gridCfg
   , midiPortName
-  , drumChannel
   , editVel
   , padId
   ) where
@@ -46,14 +45,13 @@ import Binnacle.Scheduler as Scheduler
 import Halogen as H
 import Reef.Balistes.Input as RBI
 import Triggerfish.Balistes.Model as M
-import Triggerfish.Balistes.Pattern as P
+import Reef.Balistes.Pattern as P
 import Triggerfish.Glyph as G
 import Data.Map (Map)
 import Triggerfish.Balistes.Follow as Follow
 import Triggerfish.Library as Library
 import Triggerfish.Preset (Preset)
 import Triggerfish.Balistes.TriSnapshot (rhythmOfContent)
-import Triggerfish.Midi.Routing as Routing
 import Triggerfish.Transport (Sounding)
 import Web.Event.Event as E
 
@@ -348,11 +346,6 @@ gridCfg = { stepBeats: 0.25, lookaheadMs: 120.0, tickMs: 25 }
 
 midiPortName :: String
 midiPortName = "IAC"
-
--- | GM drum channel (MIDI ch 10) — the Grids device (BD/SD/HH). Canonical
--- | drums channel from the routing map, converted to WebMIDI's 0-indexed form.
-drumChannel :: Int
-drumChannel = Routing.toWire Routing.drumsChannel
 
 -- | Velocity a freshly-clicked fixed-rhythm cell lands at (a firm hit).
 editVel :: Int

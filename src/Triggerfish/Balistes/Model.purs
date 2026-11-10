@@ -12,7 +12,6 @@ module Triggerfish.Balistes.Model
   , defaultBalistes
   , tick
   , bake
-  , reset
   , reseed
   , setX
   , setY
@@ -22,7 +21,6 @@ module Triggerfish.Balistes.Model
   , wouldFire
   , densityOf
   , Inst
-  , instNote
   , instName
   , ratchetAt
   , setRatchetAt
@@ -43,7 +41,7 @@ import Prelude
 import Data.Array (replicate, updateAt)
 import Data.Foldable (foldl)
 import Data.Maybe (Maybe(..), fromMaybe)
-import Triggerfish.Balistes.Pattern as P
+import Reef.Balistes.Pattern as P
 import Reef.Balistes.Engine (Trigger, freshPerturbations, readDrumMap, clampDensity)
 import Reef.Balistes.Sim as Sim
 
@@ -143,12 +141,6 @@ bake name b0 = go 0 (b0 { step = 0 }) (P.emptyPattern name 32)
               Nothing -> acc
         in go (i + 1) r.bal (foldl place p hits)
 
--- | Jump to step 0 and resample — the panel RESET / restart.
-reset :: Balistes -> Balistes
-reset b =
-  let s = freshPerturbations b.randomness b.rng
-  in b { step = 0, perts = s.perts, rng = s.rng }
-
 -- | Re-roll the perturbation seed for a different "take" at the same settings —
 -- | the DICE. Advances the RNG by a chaotic kick then resamples.
 reseed :: Balistes -> Balistes
@@ -195,11 +187,6 @@ levelAt b inst step = readDrumMap step inst b.x b.y
 -- | current density? (The heatmap marks these; live randomness can add more.)
 wouldFire :: Balistes -> Inst -> Int -> Boolean
 wouldFire b inst step = levelAt b inst step > (255 - clampDensity (densityOf inst b))
-
--- | The kit lane's note a Grids instrument's hits carry (0 BD, 1 SD, 2 CH,
--- | 3 OH), shared with the rig; the routing chooses what an instrument hears.
-instNote :: Inst -> Int
-instNote = Sim.instNote
 
 -- | The three Grids lanes are 0=BD, 1=SD, 2=HH.
 instName :: Inst -> String

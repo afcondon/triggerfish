@@ -7,7 +7,6 @@ module Triggerfish.Odonus.Grid.Types
   , applyTarget
   , DragState
   , PendingInput
-  , Scene
   , replayTimelineId
   -- Chunk / Mark / RegionEdge / RegionDrag / Logbook / PlayState / PlaySource
   -- now come from Capture.Types (#28), re-exported via the module below.
@@ -21,7 +20,6 @@ module Triggerfish.Odonus.Grid.Types
   , stagePath
   , stageFromPath
   , TwisterField(..)
-  , twisterFieldLabel
   , State
   , Action(..)
   , CellShortcut(..)
@@ -162,14 +160,6 @@ type PendingInput = { step :: Int, input :: RI.Input }
 -- | old `patch` field became `MidiClip.context`. Persisted in the SHARED clip store
 -- | (`Triggerfish.Clips.Store`), not the Odonus envelope.
 
--- | A saved whole-Odonus setting under a name — the recallable PRESET and the
--- | unit of composition (sequencing scenes builds flowing fugues with key
--- | changes and voices dropping in and out). The setting is stored as its
--- | Lepidoptera `text` (the full authored patch rendered to eDSL — the same
--- | canonical, transferable form the Tidal page shows), parsed back on recall.
--- | Lossless: the A3 round-trip is byte-stable.
-type Scene = { name :: String, text :: String }
-
 -- | `Chunk` / `Mark` / `RegionEdge` / `RegionDrag` / `Logbook` (the always-on
 -- | capture types) moved to `Triggerfish.Capture.Types` (#28) and are re-exported
 -- | here, so every Odonus view module reaches them by their historical names.
@@ -271,17 +261,6 @@ data TwisterField
 
 derive instance eqTwisterField :: Eq TwisterField
 
-twisterFieldLabel :: TwisterField -> String
-twisterFieldLabel = case _ of
-  FNote -> "NOTE"
-  FLen -> "LEN"
-  FRatchet -> "RATCHET"
-  FVel -> "VEL"
-  FGate -> "GATE"
-  FSkip -> "SKIP"
-  FGlide -> "GLIDE"
-  FMacro -> "MACRO"
-
 type State =
   { odo :: M.Odonus
   , sounding :: Sounding     -- the ONE transport value (control-surface MISU refactor):
@@ -331,12 +310,9 @@ type State =
   -- See Triggerfish.Routing.Model.
   , outs :: RO.Outs
   , routing :: RM.Table
-  , midiName :: String
   , clockTempo :: Number
   , clockLocked :: Boolean
   , clockBeat :: Number
-  , clockBar :: Int
-  , anchorCount :: Int
   -- the drawer's word after something it can take back (a delete), and the
   -- last delete, which its undo puts back where it was
   , notice :: String
@@ -436,8 +412,8 @@ data Action
   | Frame
   | LibraryChanged         -- the presets changed in Amphora (another page)
   | RigFrame String         -- a frame from the rig: an `odonus` move's tagged gestures to follow
-  -- every output port, status line
-  | MidiReady RO.Outs String
+  -- every output port, opened
+  | MidiReady RO.Outs
   | UseMidi Boolean         -- the web's sound choice: through MIDI, or the browser
   | RoutingStored   -- another tab saved the routing table (the dashboard's router)
   | ToggleGlide Int

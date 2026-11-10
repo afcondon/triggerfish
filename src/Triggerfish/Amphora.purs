@@ -18,7 +18,6 @@ module Triggerfish.Amphora
   , PublishSpec
   , fetchCollection
   , publish
-  , unpublish
   , Reply
   , exchange
   ) where
@@ -85,13 +84,6 @@ fetchCollection collection = makeAff \cb -> do
 publish :: PublishSpec -> Aff String
 publish spec = makeAff \cb -> do
   publishImpl spec (cb <<< Left) (cb <<< Right)
-  pure nonCanceler
-
--- | Remove content from a collection ("unpublish"); content + labels stay
--- | addressable. Rejects if the store is unreachable.
-unpublish :: String -> String -> Aff Unit
-unpublish collection hash = makeAff \cb -> do
-  unpublishImpl collection hash (cb <<< Left) (cb <<< Right)
   pure nonCanceler
 
 -- | A reply of any status, for a call whose non-2xx replies mean something

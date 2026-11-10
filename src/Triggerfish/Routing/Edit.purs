@@ -20,7 +20,7 @@ import Data.Int as Int
 import Data.Maybe (Maybe(..), maybe)
 import Data.Number as Number
 import Data.String as String
-import Triggerfish.Balistes.Pattern as P
+import Reef.Balistes.Pattern as P
 import Triggerfish.Routing.Model as RM
 import Triggerfish.SampleSets (SampleSet)
 

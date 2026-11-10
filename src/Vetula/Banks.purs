@@ -28,14 +28,13 @@
 module Vetula.Banks
   ( PaletteEntry
   , butlerPalette
-  , stockPalette
   , paletteNode
   , butlerChords
   ) where
 
 import Prelude
 
-import Data.Array (mapMaybe, mapWithIndex, nub, (!!))
+import Data.Array (mapWithIndex, nub)
 import Data.Maybe (Maybe(..))
 import Harmonia.Anchor (Anchor(..))
 import Harmonia.Chord (Key)
@@ -67,15 +66,6 @@ butlerPalette =
   , { name: "hd",   intervals: [ 0, 3, 6, 10 ] }    -- half-diminished
   , { name: "fd",   intervals: [ 0, 3, 6, 9 ] }     -- fully-diminished
   ]
-
--- | The firmware's `originalChordMapping` — which Butler chords make up Émilie's
--- | original 11-chord bank, in the original order.
-stockMapping :: Array Int
-stockMapping = [ 0, 1, 9, 2, 3, 4, 5, 10, 8, 7, 6 ]
-
--- | Émilie Gillet's original 11-chord bank, as a curated subset of Butler.
-stockPalette :: Array PaletteEntry
-stockPalette = mapMaybe (\i -> butlerPalette !! i) stockMapping
 
 -- | Root a palette entry on a pitch class, producing a pool `ChordNode`. The
 -- | literal interval-voicing is placed from octave 4 (48 + root); `pcs` is the

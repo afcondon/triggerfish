@@ -22,7 +22,7 @@ import Halogen.HTML.Events as HE
 import Web.UIEvent.MouseEvent as ME
 import Triggerfish.Ui.Style (engrave, style)
 import Halogen.Widgets.Svg (svgAttr, svgEl, svgOn)
-import Triggerfish.Balistes.Pattern as P
+import Reef.Balistes.Pattern as P
 import Triggerfish.Transport (Sounding(..))
 import Triggerfish.Balistes.Types (Action(..), State, activePattern, fillShown)
 import Triggerfish.Balistes.Widgets

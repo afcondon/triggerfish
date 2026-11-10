@@ -4,15 +4,12 @@
 -- | glide, length, ratchet, velocity) moved to the PARAMETERS pane, each beside
 -- | its own generator. The transport chrome (step length, groove, status,
 -- | nameplate) stays here for now.
--- `statusBar` is exported but unhosted: the BEAT/ANCHORS/MIDI/TWISTER
--- diagnostics came off the foot of NOTES on 2026-08-06 and want a home of their
--- own (a status line in the shell, or Odonus's nav). Kept ready rather than lost.
-module Triggerfish.Odonus.View.Grid (gridPanel, transportRow, statusBar) where
+module Triggerfish.Odonus.View.Grid (gridPanel, transportRow) where
 
 import Prelude
 
-import Data.Foldable (all, maximum)
-import Data.Int (floor, round)
+import Data.Foldable (maximum)
+import Data.Int (round)
 import Data.Maybe (Maybe(..), fromMaybe, maybe)
 import Data.String.Common (toUpper)
 import Halogen as H
@@ -24,14 +21,11 @@ import Triggerfish.Odonus.Model as M
 import Triggerfish.Ui.Knob (knob)
 import Triggerfish.Odonus.Marbles (betaWeights)
 import Triggerfish.Odonus.Forms (formLibrary)
-import Triggerfish.Odonus.Grid.Types
-  ( Action(..), GenKind(..), KnobTarget(..), Slots, State, marblesPadId, twisterFieldLabel )
-import Triggerfish.Routing.Model as RM
-import Triggerfish.Routing.Out as RO
+import Triggerfish.Odonus.Grid.Types (Action(..), GenKind(..), KnobTarget(..), Slots, State, marblesPadId)
 import Triggerfish.Odonus.View.Key (gridPiece)
 import Triggerfish.Odonus.Grid.Widgets
   ( cellChrome, diceBtn, engrave, genRow, labelledRow, miniKnob, octLabel, panelShell, rateLabel, style, tabBtn )
-import Data.Array (length, mapWithIndex, null, (!!), (..))
+import Data.Array (length, mapWithIndex, (!!))
 
 gridPanel :: forall m. State -> H.ComponentHTML Action Slots m
 gridPanel s =
@@ -58,10 +52,9 @@ gridPanel s =
     , HH.div [ style "margin-top:12px" ] [ noteField s.odo ]
     -- STEP LENGTH + GATE/SWING/HUMAN moved to the top of PARAMETERS (AC,
     -- 2026-08-06) — they're global transport/feel, not part of the note field, and
-    -- NOTES had outgrown its column. The hint row and the CLOCK/BEAT/ANCHORS/MIDI
-    -- status bar went with them, deleted: the hint is learned-once, and the status
-    -- facts are diagnostics that want a home of their own rather than the foot of
-    -- the pitch pane. `statusBar` is kept below, unused, for that resurfacing.
+    -- NOTES had outgrown its column. The hint row and the status bar went: the
+    -- hint is learned-once, the tempo is the shell's tempo widget, and the MIDI
+    -- port facts were never given another home (removed 2026-11-10).
     , nameplate s
     ]
 
@@ -199,35 +192,6 @@ clockRow :: forall m. State -> H.ComponentHTML Action Slots m
 clockRow s =
   labelledRow "CLOCK"
     (mapWithIndex (\ix v -> tabBtn (rateLabel v) (s.odo.clockIx == ix) (SetOdoClock ix)) M.speedTable)
-
--- | Whether every destination the four heads are ROUTED to can currently be
--- | reached. Asks the routing table rather than testing named ports, so adding a
--- | destination automatically brings it under the same check.
-midiPortsOk :: State -> Boolean
-midiPortsOk s =
-  let ports = { found: RO.portNames s.outs, rigUp: true }
-  in all (\h -> null (RM.unreachable ports s.routing (RM.SOdonusHead h))) (0 .. 3)
-
-statusBar :: forall m. State -> H.ComponentHTML Action Slots m
-statusBar s =
-  HH.div [ style $ engrave <> ";font-size:8px;margin-top:10px;display:flex;gap:14px;color:#6a6456" ]
-    -- the tempo and whether Link sets it are the shell's, in its bar
-    -- (Triggerfish.TempoWidget, 2026-11-10); BEAT climbs iff the frame loop
-    -- runs and the clock advances.
-    [ HH.span [] [ HH.text $ "BEAT " <> show (floor s.clockBeat) ]
-      -- ANCHORS climbs iff the rig is actually feeding us (the diagnostic).
-    , HH.span [] [ HH.text $ "ANCHORS " <> show s.anchorCount ]
-      -- Red when a port we ACTUALLY NEED is absent: the note port always, the
-      -- FH-2 port only once some head has envelopes assigned. Colouring a missing
-      -- FH-2 red when nobody is using it would be noise; leaving it grey when a
-      -- head is trying to fire envelopes through it is the silent failure this
-      -- whole seam exists to avoid.
-    , HH.span [ style $ "color:" <> (if midiPortsOk s then "#6a6456" else "#b0492f") ]
-        [ HH.text $ "MIDI " <> s.midiName ]
-      -- MidiFighter Twister (bank 1): which cell grid the rotaries drive now.
-    , HH.span [ style "color:#2f6a8a" ]
-        [ HH.text $ "TWISTER ▸ " <> twisterFieldLabel s.twisterField ]
-    ]
 
 -- ---------------------------------------------------------------------------
 -- NOTE field — the one grid that stays here (the value knobs)

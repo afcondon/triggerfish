@@ -15,7 +15,6 @@
 module Triggerfish.Balistes.TriSnapshot
   ( TriSnapshot(..)
   , Brain(..)
-  , brainLabel
   , printTri
   , parseTri
   , rhythmContent
@@ -31,7 +30,7 @@ import Data.String.Common (joinWith, split, trim)
 import Data.String.Pattern (Pattern(..))
 import Triggerfish.Balistes.Lepidoptera (parsePattern, printPattern)
 import Triggerfish.Balistes.Model (Snapshot)
-import Triggerfish.Balistes.Pattern (FixedPattern)
+import Reef.Balistes.Pattern (FixedPattern)
 
 -- | A captured playing-state, tagged by which brain took it.
 -- |
@@ -53,12 +52,6 @@ data Brain = BGrids | BFixed
 
 derive instance eqBrain :: Eq Brain
 
--- | The brain's display name, for tooltips / the sequence rail.
-brainLabel :: Brain -> String
-brainLabel = case _ of
-  BGrids -> "GRIDS"
-  BFixed -> "RYTM"
-
 -- ---------------------------------------------------------------------------
 -- Text codec (slice 5) — the transferable, localStorage-friendly form.
 --
@@ -72,7 +65,7 @@ brainLabel = case _ of
 
 -- | **The M/G/T tags are FROZEN and no longer match the brains' names.** They
 -- | date from when `BGrids` was displayed as "MUTABLE" and `BFixed` as "GRIDS";
--- | the 2026-08-06 rename made those GRIDS and RYTM (see `brainLabel`), but these
+-- | the 2026-08-06 rename made those GRIDS and RYTM, but these
 -- | are the on-disk discriminator for every snapshot already in localStorage and
 -- | in Amphora. Renaming them to G/R/T would silently fail to parse every stored
 -- | slot — `parseTri` is lenient, so the Store would just drop them. Leave them.

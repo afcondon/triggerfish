@@ -42,7 +42,6 @@ module Vetula.Spread
   , invertNode
   , refootNode
   , nextBassTone
-  , toneIxOfPc
   , toneAt
   ) where
 
@@ -130,12 +129,6 @@ toneRows c =
   in mapWithIndex
        (\i b -> { ix: i, pc: mod b 12, base: b, place: fromMaybe omit (index sp i) })
        positions
-
--- | The tone index a sounding note belongs to — the ladder's dots are drawn
--- | from `playNotes` and its gestures address tones, so one has to map to the
--- | other.
-toneIxOfPc :: ChordNode -> Int -> Maybe Int
-toneIxOfPc c pc = findIndex (\r -> r.pc == mod pc 12) (toneRows c)
 
 -- | **The tones that are genuinely not heard** — the only ones that should be
 -- | drawn as ghosts.

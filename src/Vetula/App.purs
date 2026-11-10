@@ -3204,16 +3204,6 @@ displayDurs :: Int -> RV.PerfClock -> Array Int
 displayDurs n clock =
   map (\c -> sum (map _.len (filter (\s -> s.ix == c) clock.segs)) / 16) (range 0 (n - 1))
 
--- | A voice's timeline: one segment per NON-skipped chord, in chord order, each at
--- | its cumulative pulse offset. 1 bar = 16 pulses (16th notes). Skipped chords
--- | (0 bars) contribute nothing, so a voice plays only the chords it dwells on.
-timeline :: Array Int -> Array { ix :: Int, start :: Int, len :: Int }
-timeline ds = snd (foldl step (Tuple 0 []) (mapWithIndex Tuple ds))
-  where
-  step (Tuple off segs) (Tuple i d) =
-    if d <= 0 then Tuple off segs
-    else Tuple (off + d * 16) (segs <> [ { ix: i, start: off, len: d * 16 } ])
-
 -- | Bring sounding in line with the transport: the shared scheduler runs always,
 -- | so this only flips `playing` (= armed && master) and the voice note-state.
 -- | Starting clears each voice's cursor/held (a clean attack from the next

@@ -42,7 +42,6 @@ module Triggerfish.Ui.Euclid
   , nudge
   , stepOf
   , hit
-  , bits
   , ring
   , cell
   ) where
@@ -165,9 +164,6 @@ stepOf b dir shift e = case turnOf b dir shift of
 -- | note on `hit` in the module header.
 hit :: Euclid -> Int -> Boolean
 hit e i = Euclid.hit e.beats e.steps e.rotation i
-
-bits :: Euclid -> Array Boolean
-bits e = map (hit e) (range 0 (max 1 e.steps - 1))
 
 -- ---------------------------------------------------------------------------
 -- Styling

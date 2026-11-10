@@ -19,7 +19,6 @@ import Data.Ord (abs)
 import Data.Maybe (Maybe(..), fromMaybe, isJust, isNothing, maybe)
 import Data.Traversable (traverse)
 import Effect.Random (randomInt)
-import Data.String.Common (joinWith)
 import Effect (Effect)
 import Effect.Aff (attempt)
 import Effect.Aff.Class (class MonadAff, liftAff)
@@ -122,8 +121,8 @@ component =
     { initialState: \_ ->
         { odo: M.defaultOdonus, sounding: Silent, dragging: Nothing, dragSub: Nothing
         , notes: [], logbook: Logbook.emptyLog, stage: Perform, selEuclid: Nothing, playing: Nothing, rigLoops: false, rigAsked: 0.0, cutting: false, cutSel: Nothing, regionDrag: Nothing, cardShut: Nothing, contextOpen: false, codeOpen: false, zoom: Whole, clips: [], twisterField: FNote, twisterOut: Nothing, midiSession: { sub: Nothing, unlisten: pure unit }, twisterHeard: Map.empty, twisterLit: Map.empty, binnacle: Nothing, nowMicros: 0.0
-        , outs: [], routing: RM.defaultTable, midiName: "…", clockTempo: 120.0, clockLocked: false
-        , clockBeat: 0.0, clockBar: 0, anchorCount: 0
+        , outs: [], routing: RM.defaultTable, clockTempo: 120.0, clockLocked: false
+        , clockBeat: 0.0
         , notice: "", undoDelete: Nothing, stagePatches: Nothing, shelf: Nothing
         , headNote: [ Nothing, Nothing, Nothing, Nothing ]
         -- No tables yet: fetched from Amphora on Initialize. Until then the rig
@@ -415,7 +414,7 @@ handleAction a = do
     Frame -> pure unit
     Step _ -> pure unit
     DragMove _ -> pure unit
-    MidiReady _ _ -> pure unit
+    MidiReady _ -> pure unit
     Initialize -> pure unit
     _ -> persistAll
   -- Off the rig, keep the patterns' samples coming (any action may have
@@ -759,25 +758,21 @@ dispatch = case _ of
             H.modify_ _ { rigAsked = ms }
         now <- liftEffect $ Clock.unixMicrosNow (Binnacle.clock bin)
         r <- liftEffect $ Clock.read (Binnacle.clock bin)
-        -- Scene SEQUENCING moved to the macro-tidal Tidal page; Odonus just tracks
-        -- the clock here (scenes are captured/recalled, not auto-chained).
-        --
         -- Written only while something drawn needs it: every write re-renders the
         -- whole grid, and at 30 a second, idle, that was most of this page's CPU.
-        -- What is drawn from the clock: the tempo, the lock, the bar, the BEAT
-        -- readout, and the river, which moves only while a note or a mark is still
-        -- inside its window. REPLAY runs from here, so it keeps the clock current
-        -- too. Other readers take it fresh (`freshClock`, in handleAction).
+        -- What is drawn from the clock: the rig loops' playhead on REVIEW, and the
+        -- river, which moves only while a note or a mark is still inside its
+        -- window. REPLAY runs from here, so it keeps the clock current too. Other
+        -- readers take it fresh (`freshClock`, in handleAction).
         --
-        -- The clock itself is drawn only on REVIEW (its rig loops' playhead):
-        -- the status bar that showed tempo, beat and anchors is unhosted, and
+        -- The tempo is the shell's (its tempo widget reads its own clock), and
         -- under Link the tempo is nudged nearly every frame, so on PERFORM a
         -- clock change redrew the whole page some 30 times a second for
         -- nothing seen (2026-10-05, AC: the tab's CPU).
         let inWindow at = now - at < windowMicros || st.nowMicros - at < windowMicros
             clockShown = st.stage == Review
             moved = clockShown && (r.tempo /= st.clockTempo || r.locked /= st.clockLocked
-                || r.bar /= st.clockBar || floor r.beat /= floor st.clockBeat)
+                || floor r.beat /= floor st.clockBeat)
               || not (null st.notes) || isJust st.playing
               || any RL.looping st.logbook.marks
               || any (inWindow <<< _.atMicros) st.logbook.marks
@@ -786,8 +781,6 @@ dispatch = case _ of
           , clockTempo = r.tempo
           , clockLocked = r.locked
           , clockBeat = r.beat
-          , clockBar = r.bar
-          , anchorCount = r.anchorCount
           , notes = filter (\n -> (now - n.fireUnixMicros) < windowMicros) s.notes
           }
         driveReplay
@@ -805,9 +798,9 @@ dispatch = case _ of
     liftEffect (Web.chooseMidi on)
     if on then openMidi else do
       closeMidi
-      handleAction (MidiReady [] "browser")
-  MidiReady outs nm -> do
-    H.modify_ _ { outs = outs, midiName = nm }
+      handleAction (MidiReady [])
+  MidiReady outs -> do
+    H.modify_ _ { outs = outs }
     -- a saved IAC bus this browser no longer has: moved to the one it has
     healed <- liftEffect (RStore.heal (RO.portNames outs))
     for_ healed \t -> H.modify_ _ { routing = t }
@@ -1438,7 +1431,7 @@ freshClock = do
   for_ st.binnacle \bin -> do
     now <- liftEffect $ Clock.unixMicrosNow (Binnacle.clock bin)
     r <- liftEffect $ Clock.read (Binnacle.clock bin)
-    H.modify_ _ { nowMicros = now, clockTempo = r.tempo, clockLocked = r.locked, clockBeat = r.beat, clockBar = r.bar }
+    H.modify_ _ { nowMicros = now, clockTempo = r.tempo, clockLocked = r.locked, clockBeat = r.beat }
 
 -- | All-notes-off (CC 123) on the four Odonus head channels — cuts any note the
 -- | REPLAY loop left ringing, so StopPlay / leaving REPLAY is instantly silent.
@@ -1717,22 +1710,12 @@ openMidi = do
       -- EVERY output port, because the routing table may name any of them —
       -- so adding a destination in the router works with no MIDI re-init.
       outs <- RO.openAll access
-      names <- Midi.outputNames access
       -- Control surface IN (MidiFighter Twister, bank 1): route every incoming
       -- message through the SAME Action pipeline the trackpad uses, so a
       -- knob-turn is byte-identical to a knob-drag (and stays in lockstep on-rig).
-      -- Missing surface → skip; the subscription lives for the session. Fold the
-      -- in/out port status into one line so a name-match miss is visible, not silent.
+      -- Missing surface → skip; the subscription lives for the session.
       minput <- Midi.findInput access twisterInputName
-      innames <- Midi.inputNames access
-      -- WHICH ports matter is now a property of the routing table, so the
-      -- "is anything missing" judgement moved to the view (`midiPortsOk`),
-      -- against the actual routes. This line records only what exists.
-      let twNm = case minput of
-            Just _ -> twisterInputName <> " ✓"
-            Nothing -> "no '" <> twisterInputName <> "' in: " <> joinWith ", " innames
-          nm = show (length names) <> " ports · " <> twNm
-      HS.notify midiL (MidiReady outs nm)
+      HS.notify midiL (MidiReady outs)
       -- Through Helm's press-nudge guard first: a push always nudges the
       -- encoder, and a field-select push must not also edit a cell.
       feed <- Guard.guarded Guard.timing (HS.notify midiL <<< TwisterMsg)
@@ -1742,7 +1725,7 @@ openMidi = do
         HS.notify midiL (TwisterListening unlisten)
       mtwOut <- Midi.findOutput access twisterInputName
       for_ mtwOut (HS.notify midiL <<< TwisterOut)
-    Nothing -> HS.notify midiL (MidiReady [] "unavailable")
+    Nothing -> HS.notify midiL (MidiReady [])
 
 -- | Let go of the open MIDI session, if any: the Twister's listener and the
 -- | subscription its messages arrive on.

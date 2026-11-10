@@ -37,7 +37,7 @@ import Data.String as Str
 import Halogen.HTML as HH
 import Halogen.HTML.Events as HE
 import Halogen.HTML.Properties as HP
-import Triggerfish.Balistes.Pattern as P
+import Reef.Balistes.Pattern as P
 import Triggerfish.Routing.Edit (Edit(..))
 import Triggerfish.Routing.Model as RM
 import Triggerfish.SampleSets (SampleSet)

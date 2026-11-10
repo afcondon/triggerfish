@@ -24,9 +24,7 @@ module Triggerfish.Glyph
   , allMachines
   , machineTag
   , hueOf
-  , palette
   , GlyphIcon
-  , deck
   , Glyph
   , glyphOf
   , chordGlyph
@@ -147,13 +145,3 @@ glyphFromAlias = Rebus.rebusFromAlias
 -- | reads as a chord token.
 sessionAliasOf :: Int -> String
 sessionAliasOf = Rebus.sessionAliasOf
-
--- | The icon deck. Order is an identity, so this is Rebus's fixed, append-only
--- | `defaultDeck` — Triggerfish has no deck of its own and must not grow one, or
--- | it stops agreeing with Quadrat.
-deck :: Array String
-deck = Rebus.deckIcons Rebus.defaultDeck
-
--- | The per-icon colour palette — an accent, not part of the identity.
-palette :: Array String
-palette = Rebus.paletteColors Rebus.defaultPalette
