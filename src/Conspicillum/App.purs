@@ -58,7 +58,9 @@ import Data.Int (floor, fromString, toNumber)
 import Data.Maybe (Maybe(..), fromMaybe, isJust, isNothing, maybe)
 import Data.Number (abs)
 import Data.String as String
-import Data.Tuple (Tuple(..))
+import Data.Tuple (Tuple(..), snd)
+import Data.Map (Map)
+import Data.Map as Map
 import Effect (Effect)
 import Effect.Aff (Aff, Milliseconds(..), delay)
 import Halogen as H
@@ -192,10 +194,27 @@ type State =
   -- | output, to light its pads, when the hub has it.
   , gate :: Array Boolean
   , pads :: Maybe MIDIOutput
+  -- | The layer in hand (`Stage.layers`, "a" to "d"): the one this page shows
+  -- | and edits. The others play on the rig regardless; what the page knew of
+  -- | each, as it was left or as the stage last said, is `away`.
+  , layer :: String
+  , away :: Map String Away
+  }
+
+-- | A layer not in hand: the part of the state that is the layer's own.
+type Away =
+  { origin :: Maybe Origin
+  , original :: Maybe Preset
+  , current :: Maybe Preset
+  , held :: Boolean
+  , playing :: Boolean
+  , stagedLine :: Maybe String
+  , gate :: Array Boolean
   }
 
 data Action
   = Initialise
+  | ChooseLayer String
   | ToLimulus
   | Loaded (Either String Corpora)
   | ShelfLoaded (Either String (Array Kept))
@@ -276,6 +295,8 @@ initialState _ =
   , welcome: false
   , gate: []
   , pads: Nothing
+  , layer: "a"
+  , away: Map.empty
   }
 
 -- ── what the state implies ───────────────────────────────────────────────────
@@ -371,7 +392,7 @@ edited st = case st.original, st.current of
 
 -- | The scene as a line of Tidal++, as Limulus writes it.
 lineOf :: State -> Maybe String
-lineOf st = st.current <#> \c -> "conspicillum $ " <> print c.line
+lineOf st = st.current <#> \c -> Stage.headOf st.layer <> " $ " <> print c.line
 
 -- ── for the shell: the drawer and the bar ───────────────────────────────────
 
@@ -589,7 +610,8 @@ modulePanel st w =
                       ]
                 )
             , HH.div [ cls "statement" ]
-                [ whereFrom st w
+                [ layerBar st
+                , whereFrom st w
                 , presetHead st w
                 , sentenceView { preset: w.preset, set: w.set, shape: st.shape, highlighted: st.highlighted }
                 ]
@@ -597,6 +619,24 @@ modulePanel st w =
             ]
         ]
     ]
+
+-- | The layers, a to d: the one in hand inked, a dot on each that plays.
+-- | Every layer is its own cloud on the rig, on its own orbit.
+layerBar :: forall m. State -> H.ComponentHTML Action Slots m
+layerBar st =
+  HH.div [ cls "layers" ]
+    ( [ HH.span [ cls "layerslab" ] [ HH.text "layer" ] ]
+        <> (Stage.layers <#> \l ->
+          let
+            playing = if l == st.layer then st.playing else maybe false _.playing (Map.lookup l st.away)
+          in
+            HH.button
+              [ cls ("layer" <> (if l == st.layer then " on" else "") <> (if playing then " playing" else ""))
+              , HP.title (if l == st.layer then "layer " <> l <> ", in hand" else "layer " <> l <> (if playing then ", playing" else "") <> ": take it in hand")
+              , HE.onClick \_ -> ChooseLayer l
+              ]
+              [ HH.text l ])
+    )
 
 -- | Which bank and which preset of how many, and whether the rig is there:
 -- | what the panel's top bar said, above the name it belongs to.
@@ -841,7 +881,7 @@ play on = do
   st <- H.get
   unless (on == st.playing) do
     H.modify_ _ { playing = on }
-    if on then sendNow else sendText "conspicillum-stop"
+    if on then sendNow else sendText (Stage.stop st.layer)
 
 -- | The page started or stopped by itself: the shell's transport follows.
 playOfItsOwn :: Boolean -> M Unit
@@ -857,15 +897,15 @@ toLimulus = do
   st <- H.get
   for_ st.current \c -> do
     let text = print c.line
-    sendText (Stage.writeLine text)
-    sendText Stage.openLine
+    sendText (Stage.writeLine st.layer text)
+    sendText (Stage.openLine st.layer)
     H.modify_ _ { stagedLine = Just text, linePublishedAt = st.now }
   H.raise WantsLimulus
   -- once more when a Limulus opened just now has loaded and subscribed;
   -- one that already shows the line only reveals it again
   void $ H.fork do
     H.liftAff (delay (Milliseconds 2500.0))
-    sendText Stage.openLine
+    sendText (Stage.openLine st.layer)
 
 -- | The drawer's keep, and `c`: the scene as a preset of its own at once,
 -- | named by its name and the time ("Single hit · 21:14") until renamed in
@@ -1088,44 +1128,74 @@ handleAction = case _ of
   -- send will win anyway. Nothing is sent: this is what is already playing.
   FromRig text | Just answer <- Plays.readAnswer text -> do
     H.modify_ \s -> replan s { plays = Just answer }
-    for_ answer.problem (sendText <<< Stage.rejectLine)
+    st <- H.get
+    for_ answer.problem (sendText <<< Stage.rejectLine st.layer)
 
   FromRig text | Just frame <- Stage.readLine text -> case frame of
-    Stage.LineHeld held -> H.modify_ _ { stagedLine = held }
-    Stage.LineWritten Nothing -> H.modify_ _ { stagedLine = Nothing }
-    -- Written elsewhere (Limulus's `conspicillum $ …`): play it as if typed
-    -- here, or refuse it, which leaves the writer's block as it was typed.
-    Stage.LineWritten (Just text') -> do
+    Stage.LineHeld held -> H.modify_ \s -> s
+      { stagedLine = map snd (find (\(Tuple l _) -> l == s.layer) held)
+      , away = foldl (\m (Tuple l t) -> Map.update (\a -> Just a { stagedLine = Just t }) l m) s.away held
+      }
+    Stage.LineWritten layer written -> do
+      -- a line written for another layer (Limulus's `conspicillum "b" $ …`)
+      -- brings that layer into hand: the page reads every line it plays
+      st0 <- H.get
+      when (layer /= st0.layer && isJust written) (chooseLayer layer)
       st <- H.get
-      H.modify_ _ { stagedLine = Just text' }
-      case readTyped st text' of
-        Left problem -> sendText (Stage.rejectLine problem)
-        -- the line in hand, written back (another page of this one, say):
-        -- nothing changes, and the preset keeps its name
-        Right line | Just (print line) == (print <<< _.line <$> st.current) -> pure unit
-        Right line -> do
-          playTyped line
-          if st.playing then sendNow else playOfItsOwn true
+      if layer /= st.layer then
+        H.modify_ \s -> s { away = Map.update (\a -> Just a { stagedLine = written }) layer s.away }
+      else case written of
+        Nothing -> H.modify_ _ { stagedLine = Nothing }
+        -- Written elsewhere (Limulus): play it as if typed here, or refuse
+        -- it, which leaves the writer's block as it was typed.
+        Just text' -> do
+          H.modify_ _ { stagedLine = Just text' }
+          case readTyped st text' of
+            Left problem -> sendText (Stage.rejectLine layer problem)
+            -- the line in hand, written back (another page of this one, say):
+            -- nothing changes, and the preset keeps its name
+            Right line | Just (print line) == (print <<< _.line <$> st.current) -> pure unit
+            Right line -> do
+              playTyped line
+              if st.playing then sendNow else playOfItsOwn true
 
-  FromRig text -> for_ (Stage.readEntry text) \entry -> when (entry.slot == "conspicillum") do
+  FromRig text -> for_ (Stage.readEntry text) \entry -> for_ (Stage.layerOfSlot entry.slot) \layer -> do
     st <- H.get
-    when (isNothing st.drag) do
-      case entry.page >>= \page -> Tuple page <$> Shelf.fromStored page.current of
-        Nothing -> H.modify_ _ { unsent = false }
-        Just (Tuple page current) -> do
-          let origin = page.origin >>= fromToken
-          H.modify_ \s -> replan s
-            { origin = origin, original = page.original >>= Shelf.fromStored, current = Just current
-            , held = page.held, unsent = false, wantedKept = Nothing
-            , lanes = 1, dots = [], shape = Nothing
-            }
-          for_ origin remember
-          firstGrainInLoupe
-          H.raise Changed
-      -- what the rig is doing, as it is: the shell's transport follows
-      unless (entry.playing == st.playing) do
-        H.modify_ _ { playing = entry.playing }
-        H.raise (Armed entry.playing)
+    let
+      recalled = entry.page >>= \page -> Tuple page <$> Shelf.fromStored page.current
+    -- a layer not in hand: remember what it holds and whether it plays
+    if layer /= st.layer then
+      H.modify_ \s -> s
+        { away = Map.alter (\ma -> Just case ma, recalled of
+            Just a, Nothing -> a { playing = entry.playing }
+            Just a, Just (Tuple page current) -> a
+              { origin = page.origin >>= fromToken, original = page.original >>= Shelf.fromStored
+              , current = Just current, held = page.held, playing = entry.playing }
+            Nothing, Just (Tuple page current) ->
+              { origin: page.origin >>= fromToken, original: page.original >>= Shelf.fromStored
+              , current: Just current, held: page.held, playing: entry.playing, stagedLine: Nothing, gate: [] }
+            Nothing, Nothing -> (awayFrom s) { playing = entry.playing }) layer s.away
+        }
+    else do
+      when (isNothing st.drag) do
+        case recalled of
+          Nothing -> H.modify_ _ { unsent = false }
+          Just (Tuple page current) -> do
+            let origin = page.origin >>= fromToken
+            H.modify_ \s -> replan s
+              { origin = origin, original = page.original >>= Shelf.fromStored, current = Just current
+              , held = page.held, unsent = false, wantedKept = Nothing
+              , lanes = 1, dots = [], shape = Nothing
+              }
+            for_ origin remember
+            firstGrainInLoupe
+            H.raise Changed
+        -- what the rig is doing, as it is: the shell's transport follows
+        unless (entry.playing == st.playing) do
+          H.modify_ _ { playing = entry.playing }
+          H.raise (Armed entry.playing)
+
+  ChooseLayer layer -> chooseLayer layer
 
   Recall origin -> do
     recall origin
@@ -1321,8 +1391,35 @@ publishLineIfDue = do
   for_ st.current \c -> do
     let text = print c.line
     when (st.staged && isNothing st.drag && st.stagedLine /= Just text && st.now - st.linePublishedAt >= 300.0) do
-      sendText (Stage.writeLine text)
+      sendText (Stage.writeLine st.layer text)
       H.modify_ _ { stagedLine = Just text, linePublishedAt = st.now }
+
+-- | The layer in hand, as `Away`.
+awayFrom :: State -> Away
+awayFrom st =
+  { origin: st.origin, original: st.original, current: st.current, held: st.held
+  , playing: st.playing, stagedLine: st.stagedLine, gate: st.gate }
+
+-- | Put the layer in hand away and take up another. A layer never held
+-- | before starts as a copy of the one in hand, stopped: the material and the
+-- | treatment to change, rather than an empty page.
+chooseLayer :: String -> M Unit
+chooseLayer layer = do
+  st <- H.get
+  unless (layer == st.layer || not (elem layer Stage.layers)) do
+    let
+      next = fromMaybe ((awayFrom st) { playing = false, stagedLine = Nothing, gate = [] }) (Map.lookup layer st.away)
+    H.modify_ \s -> replan s
+      { away = Map.insert s.layer (awayFrom s) (Map.delete layer s.away)
+      , layer = layer
+      , origin = next.origin, original = next.original, current = next.current, held = next.held
+      , playing = next.playing, stagedLine = next.stagedLine, gate = next.gate
+      , unsent = false, lanes = 1, dots = [], shape = Nothing, drag = Nothing
+      }
+    firstGrainInLoupe
+    paintPads
+    unless (next.playing == st.playing) (H.raise (Armed next.playing))
+    H.raise Changed
 
 -- | Light the 3D's pads for the gate in hand, at the preset's grid.
 paintPads :: M Unit
@@ -1345,7 +1442,7 @@ sendNow :: M Unit
 sendNow = do
   st <- H.get
   when st.playing $ for_ (Tuple <$> sceneText st <*> heldOf st) \(Tuple scene page) -> do
-    sendText (Stage.push { base: baseOf st.origin, edited: edited st, page, scene })
+    sendText (Stage.push { layer: st.layer, base: baseOf st.origin, edited: edited st, page, scene })
     H.modify_ _ { unsent = false, sentAt = st.now }
 
 -- | Ask for a sampler's plays a few cycles ahead, so a new bar never waits on
