@@ -414,7 +414,7 @@ browserOf st =
       , actions: if kept then [ "delete" ] else []
       }
 
--- | The bar: the three views, "→ Limulus", and ⓘ.
+-- | The bar: the three views and ⓘ.
 barOf :: State -> Bar
 barOf st =
   { tabs:
@@ -425,8 +425,8 @@ barOf st =
   , marks: ""
   , icons: []
   , rebusTip: ""
-  , chips:
-      [ { id: "limulus", label: "→ Limulus", tip: "Put this scene in Limulus as a line, conspicillum $ …, and play it from there", icons: [], active: false, attention: false } ]
+  -- "→ Limulus" is on the face, beside the line it sends (2026-11-10)
+  , chips: []
   , pickers: []
   , help: "What Conspicillum is, and how to play it"
   , helpPulse: false
@@ -824,7 +824,6 @@ handleQuery = case _ of
       "stage:module" -> chooseTab ModuleTab
       "stage:laboratory" -> chooseTab LaboratoryTab
       "stage:library" -> chooseTab LibraryTab
-      "chip:limulus" -> toLimulus
       "help" -> H.modify_ _ { welcome = true }
       _ -> pure unit
     pure (Just next)
