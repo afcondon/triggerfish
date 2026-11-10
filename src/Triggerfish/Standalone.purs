@@ -38,8 +38,10 @@ import Triggerfish.Web as Web
 import Binnacle as Binnacle
 import Binnacle.Audio (armAudioKeepAlive)
 import Binnacle.Time (dateNow)
+import Binnacle.Clock as Clock
 import Binnacle.Transport as Transport
 import Data.Foldable (any, for_, traverse_)
+import Data.Number as Number
 import Data.Maybe (Maybe(..), fromMaybe, isJust, maybe)
 import Data.Set as Set
 import Effect (Effect)
@@ -73,6 +75,7 @@ import Triggerfish.Tempo as Tempo
 import Triggerfish.Transport (Mode(..), Sounding(..), Which, soundingOf)
 import Triggerfish.Drag as Drag
 import Triggerfish.Transport.Store as TransportStore
+import Triggerfish.TempoWidget as TempoWidget
 import Triggerfish.Ui.Style (engrave, style)
 import Type.Proxy (Proxy(..))
 import Halogen.Widgets.Select as Select
@@ -134,8 +137,9 @@ type State =
   -- tempo hotkeys, never on a page; the clock follows Link instead once the
   -- rig's anchor arrives.
   , bpm :: Number
-  -- The tempo a hotkey just set, shown for a moment, and which press it was.
-  , tempoFlash :: Maybe { bpm :: Number, n :: Int }
+  -- The tempo as the bar's widget draws it (Triggerfish.TempoWidget),
+  -- written only when what is drawn changes
+  , tempo :: Maybe TempoWidget.Reading
   , freeT0 :: Number
   , chip :: Maybe ChipView
   -- the machine's own controls for the bar (Triggerfish.Bar); Nothing: none
@@ -195,7 +199,8 @@ data Action o
   | TogglePlay
   | TempoStored
   | BumpTempo Tempo.Bump
-  | EndFlash Int
+  | TypeTempo String
+  | ClockTick
   | Capture
   | Panic
   | RigHushed
@@ -249,7 +254,7 @@ _machine = Proxy
 root :: forall q i o' o. Config o -> H.Component q i o' Aff
 root cfg = H.mkComponent
   { initialState: \_ ->
-      { mode: Solo, playing: false, bpm: 120.0, tempoFlash: Nothing, freeT0: 0.0, chip: Nothing, machineBar: Nothing, rig: Nothing
+      { mode: Solo, playing: false, bpm: 120.0, tempo: Nothing, freeT0: 0.0, chip: Nothing, machineBar: Nothing, rig: Nothing
       , rigUp: false, table: RM.defaultTable, staged: Nothing, bus: Nothing, limulus: false, limulusMade: false, limulusAsked: false, limulusAlways: false, limWidth: 560.0
       , browser: Nothing, drawer: { open: false, width: 280.0 }, lastRecall: { frozen: false, inKey: false }, renaming: Nothing, confirming: Nothing
       , line: Nothing, lineOn: false, hushed: false, learning: Nothing }
@@ -300,6 +305,8 @@ handleAction cfg = case _ of
     -- Ask the other pages to say where they are (the dashboard's chips).
     liftEffect $ Bus.post bus Bus.Hello
     _ <- liftEffect $ setInterval 1500 (HS.notify listener Tick)
+    -- the bar's beats: often enough that a lit beat is never late to the eye
+    _ <- liftEffect $ setInterval 40 (HS.notify listener ClockTick)
     target <- liftEffect $ Window.toEventTarget <$> window
     _ <- H.subscribe $ eventListener KET.keydown target (Just <<< Key)
     _ <- H.subscribe $ eventListener (EventType "message") target (Just <<< FromFrame)
@@ -336,21 +343,21 @@ handleAction cfg = case _ of
     for_ mbpm \bpm -> do
       H.modify_ _ { bpm = bpm }
       pushFree
-  -- A tempo hotkey: from the tempo the clock is keeping (Link's, once
-  -- anchored), set for every page and the rig; shown for a moment here.
+  -- A tempo hotkey or the widget's − and +: from the tempo the clock is
+  -- keeping (Link's, once anchored), set for every page and the rig.
   BumpTempo d -> do
     st <- H.get
     for_ st.rig \bin -> do
       now <- liftEffect $ Tempo.current bin st.bpm
-      let bpm = Tempo.clampTempo (now + d)
-          n = maybe 1 (\f -> f.n + 1) st.tempoFlash
-      liftEffect $ Tempo.set bin bpm
-      H.modify_ _ { bpm = bpm, tempoFlash = Just { bpm, n } }
-      pushFree
-      void $ H.fork do
-        liftAff $ delay (Milliseconds 1200.0)
-        handleAction cfg (EndFlash n)
-  EndFlash n -> H.modify_ \s -> s { tempoFlash = if map _.n s.tempoFlash == Just n then Nothing else s.tempoFlash }
+      setTempo (now + d)
+  -- a tempo typed into the widget
+  TypeTempo v -> for_ (Number.fromString v) setTempo
+  ClockTick -> do
+    st <- H.get
+    for_ st.rig \bin -> do
+      r <- liftEffect $ Clock.read (Binnacle.clock bin)
+      let reading = TempoWidget.reading st.bpm r
+      when (Just reading /= st.tempo) (H.modify_ _ { tempo = Just reading })
   Capture -> do
     void $ H.query _machine unit (SQ.Capture unit)
     handleAction cfg AskBrowser
@@ -652,6 +659,8 @@ announce cfg = do
 pushFree :: forall o o'. M o o' Unit
 pushFree = do
   st <- H.get
+  -- the bar's own clock too, so the widget's beats free-run with the page's
+  for_ st.rig \bin -> liftEffect $ Clock.setFreeBaseline (Binnacle.clock bin) { startMicros: st.freeT0, tempo: st.bpm }
   void $ H.query _machine unit (SQ.SyncFree st.freeT0 st.bpm unit)
 
 targetIsField :: E.Event -> Boolean
@@ -899,6 +908,7 @@ bar cfg st =
       -- a machine that runs on the rig with or without a page (Selene) has
       -- the same button, drawing and setting whether it runs there (CR-11)
       <> (if not cfg.playable then [ button (if st.hushed then "▶ Play" else "■ Stop") (if st.hushed then Resume else StopRig) ] else [])
+      <> maybe [] (\r -> [ TempoWidget.view (Just { bump: BumpTempo, set: TypeTempo }) r ]) st.tempo
       <> maybe [] (pure <<< learnChip) st.learning
       -- Limulus combines the machines, on the rig: its drawer on the right,
       -- in Atlantis
@@ -907,9 +917,6 @@ bar cfg st =
       <> [ HH.span [ style "flex:1" ] [] ]
       <> maybe [] machineRight st.machineBar
       <> [ button "Panic" Panic ]
-      <> case st.tempoFlash of
-        Just f -> [ tempoFlash f.bpm ]
-        Nothing -> []
     )
   where
   -- A learn under way: the rig sends this signal's CC and no other MIDI.
@@ -921,15 +928,6 @@ bar cfg st =
           <> "padding:5px 9px;border-radius:4px;border:1px solid #b5651d;background:#f6d9a8;color:#6b3a0c;cursor:pointer"
       ]
       [ HH.text ("Learn " <> signal <> " ✕") ]
-  -- What a tempo hotkey set, for a moment, where the bar's middle is free.
-  tempoFlash bpm =
-    HH.span
-      [ HP.title Tempo.hotkeyHelp
-      , style $ "position:absolute;left:50%;transform:translateX(-50%);padding:3px 12px;border-radius:4px;"
-          <> "font:13px 'SF Mono',Menlo,monospace;font-variant-numeric:tabular-nums;color:#1c1a12;"
-          <> "background:#fffdf6;border:1px solid #00000033;box-shadow:0 2px 8px #00000022"
-      ]
-      [ HH.text (Tempo.showTempo bpm <> " bpm") ]
   atlantisTag =
     HH.span
       [ HP.title "Atlantis: the rig plays; this page sends it what to play. The mode is set on the dashboard."
@@ -1040,3 +1038,13 @@ tabLookStyle look active enabled
       Bar.Ink, false -> "background:#fbfbfa;color:#111111"
       Bar.Night, true -> "background:#0b0b0a;color:#ffffff;font-weight:600;box-shadow:inset 0 -2px 0 #e9dfc4"
       Bar.Night, false -> "background:#2b2823;color:#e9dfc4"
+
+-- | Set the tempo for every page, and for Link if the rig is up; the widget
+-- | shows it on its next tick, from the clock.
+setTempo :: forall o o'. Number -> M o o' Unit
+setTempo n = do
+  st <- H.get
+  let bpm = Tempo.clampTempo n
+  for_ st.rig \bin -> liftEffect (Tempo.set bin bpm)
+  H.modify_ _ { bpm = bpm }
+  pushFree

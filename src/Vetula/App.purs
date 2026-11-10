@@ -599,7 +599,7 @@ type State =
                                   -- locally, the voices on the rig. Standalone stays Local.
   , playing :: Boolean           -- derived: currently sounding (= armed, under authority)
   , pulse :: Int                  -- the shared clock's 16th-note grid index (from the scheduler tick)
-  , tempo :: Int                  -- BPM display (tracks the live clock; the bpm field nudges the free baseline)
+  , tempo :: Int                  -- the clock's tempo, rounded: a fallback for step length with no clock (the shell's bar shows the tempo)
   , binnacle :: Maybe Binnacle.Binnacle  -- the shared transport (free-run → Link-lock), like Odonus/Balistes
   -- The cards as the rig's stage holds them, as far as this page knows (card id →
   -- its line); Nothing until the stage has answered a subscribe. See Vetula.StageCards.
@@ -794,7 +794,6 @@ data Action
   | ScenesChanged          -- the scenes, likewise
   | PerfCloseRecall
   | PerfLoadScene String   -- parse a scene payload and load it onto the surface
-  | SetTempo String
   | PerfTick Scheduler.Tick  -- one 16th-note pulse from the shared scheduler
   | PlayChordId Int        -- plain-click a pool chord: audition it (no path change)
   | AuditionTriad Int (Array Int)        -- Tonnetz: hear a triad off the net (root pc, pcs)
@@ -2629,19 +2628,6 @@ handleActionCore = case _ of
       then H.modify_ _ { perfRecallOpen = false, publishMsg = Just "✗ couldn't read that scene" }
       else H.modify_ _ { perfBoxes = boxes
                        , perfRecallOpen = false, publishMsg = Just "scene loaded" }
-
-  -- The bpm field nudges the shared clock's free-run baseline (so it works
-  -- standalone). On the rig the Link anchor — and in the rack the shell's
-  -- SyncFree — re-asserts the shared tempo, since Vetula is now a clock-peer.
-  SetTempo v -> case fromString v of
-    Just t -> do
-      let t' = clamp 40 240 t
-      st <- H.get
-      now <- liftEffect dateNow
-      for_ st.binnacle \bin ->
-        liftEffect (Clock.setFreeBaseline (Binnacle.clock bin) { startMicros: now * 1000.0, tempo: toNumber t' })
-      H.modify_ _ { tempo = t', clockTempo = toNumber t' }
-    Nothing -> pure unit
 
   -- A pool chord clicked: heard, unless the click ended a pan.
   PlayChordId pid -> do

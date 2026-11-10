@@ -30,6 +30,7 @@ import Binnacle (Binnacle)
 import Binnacle as Binnacle
 import Binnacle.Clock as Clock
 import Binnacle.Transport as Transport
+import Triggerfish.Tempo as Tempo
 import Conspicillum.Corpora (Corpora, SampleSet, load, materialFor, sampleChoice, setNamed, withMaterial)
 import Conspicillum.Frame (frames)
 import Conspicillum.Library (Library)
@@ -830,6 +831,12 @@ handleQuery = case _ of
   SQ.AskMarkText reply -> H.gets \st -> reply <$> lineOf st
   SQ.AskBrowser reply -> H.gets \st -> Just (reply (browserOf st))
   SQ.AskBar reply -> H.gets \st -> Just (reply (barOf st))
+  -- the free run every page keeps (Triggerfish.Tempo), for when no Link
+  -- anchor arrives: off the rig the cloud keeps the tempo the bar shows
+  SQ.SyncFree startMicros tempo next -> do
+    st <- H.get
+    for_ st.rig \rig -> H.liftEffect (Clock.setFreeBaseline (Binnacle.clock rig) { startMicros, tempo })
+    pure (Just next)
   SQ.BrowserRecall slot _ next -> do
     st <- H.get
     for_ (index (entries st) slot) \(Tuple o _) -> handleAction (Recall o)
@@ -983,7 +990,8 @@ handleAction = case _ of
     search <- H.liftEffect (Window.location w >>= Location.search)
     welcomed <- H.liftEffect (Window.localStorage w >>= Storage.getItem welcomeKey)
     let host = if reached == "" then "localhost" else reached
-    rig <- H.liftEffect (Binnacle.connect { url: "ws://" <> host <> ":3012/ws", tempo: 120.0 })
+    free <- H.liftEffect (fromMaybe 120.0 <$> Tempo.load)
+    rig <- H.liftEffect (Binnacle.connect { url: "ws://" <> host <> ":3012/ws", tempo: free })
     { emitter, listener } <- H.liftEffect HS.create
     void $ H.subscribe emitter
     H.liftEffect (Binnacle.onAppMessage rig (HS.notify listener <<< FromRig))

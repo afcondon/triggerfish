@@ -445,8 +445,8 @@ handleAction = case _ of
         r <- liftEffect $ Clock.read (Binnacle.clock bin)
         -- Write only when something drawn or read has moved. Every write
         -- re-renders the whole panel, and at 30 a second, stopped, that was most
-        -- of this page's idle CPU. What is drawn: the rounded tempo, the lock
-        -- and the bar; what is read:
+        -- of this page's idle CPU. What is drawn: the bar (the tempo and the
+        -- lock are the shell's, in its bar); what is read:
         -- the tempo (step length). The step is read from the clock where it is
         -- needed (`currentStep`).
         let moved = r.tempo /= st.clockTempo || r.locked /= st.clockLocked

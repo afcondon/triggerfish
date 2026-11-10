@@ -484,7 +484,9 @@ handleQuery = case _ of
   SetStagePath _ next -> pure (Just next)
   -- No in-machine lane view yet; the rack-wide TIDAL page still owns this one.
   PutLane _ _ next -> pure (Just next)
-  AskClock reply -> pure (Just (reply { tempo: 120.0, locked: false }))
+  AskClock reply -> do
+    s <- H.get
+    pure (Just (reply { tempo: s.clockTempo, locked: s.clockLocked }))
   SyncFree startMicros tempo next -> do
     s <- H.get
     for_ s.binnacle \bin ->

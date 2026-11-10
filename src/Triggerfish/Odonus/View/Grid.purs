@@ -4,7 +4,7 @@
 -- | glide, length, ratchet, velocity) moved to the PARAMETERS pane, each beside
 -- | its own generator. The transport chrome (step length, groove, status,
 -- | nameplate) stays here for now.
--- `statusBar` is exported but unhosted: the CLOCK/BEAT/ANCHORS/MIDI/TWISTER
+-- `statusBar` is exported but unhosted: the BEAT/ANCHORS/MIDI/TWISTER
 -- diagnostics came off the foot of NOTES on 2026-08-06 and want a home of their
 -- own (a status line in the shell, or Odonus's nav). Kept ready rather than lost.
 module Triggerfish.Odonus.View.Grid (gridPanel, transportRow, statusBar) where
@@ -200,13 +200,6 @@ clockRow s =
   labelledRow "CLOCK"
     (mapWithIndex (\ix v -> tabBtn (rateLabel v) (s.odo.clockIx == ix) (SetOdoClock ix)) M.speedTable)
 
--- | Format a positive Number to one decimal place (so Link's constant
--- | sub-BPM nudging is visible — the readout flickers when truly locked).
-oneDp :: Number -> String
-oneDp x =
-  let n = round (x * 10.0)
-  in show (n `div` 10) <> "." <> show (n `mod` 10)
-
 -- | Whether every destination the four heads are ROUTED to can currently be
 -- | reached. Asks the routing table rather than testing named ports, so adding a
 -- | destination automatically brings it under the same check.
@@ -218,11 +211,10 @@ midiPortsOk s =
 statusBar :: forall m. State -> H.ComponentHTML Action Slots m
 statusBar s =
   HH.div [ style $ engrave <> ";font-size:8px;margin-top:10px;display:flex;gap:14px;color:#6a6456" ]
-    [ HH.span [ style $ "color:" <> (if s.clockLocked then "#2f8a5c" else "#b0492f") ]
-        [ HH.text $ "CLOCK " <> oneDp s.clockTempo <> " · "
-            <> (if s.clockLocked then "LINK" else "FREE") ]
-      -- BEAT climbs iff the frame loop runs and the clock advances.
-    , HH.span [] [ HH.text $ "BEAT " <> show (floor s.clockBeat) ]
+    -- the tempo and whether Link sets it are the shell's, in its bar
+    -- (Triggerfish.TempoWidget, 2026-11-10); BEAT climbs iff the frame loop
+    -- runs and the clock advances.
+    [ HH.span [] [ HH.text $ "BEAT " <> show (floor s.clockBeat) ]
       -- ANCHORS climbs iff the rig is actually feeding us (the diagnostic).
     , HH.span [] [ HH.text $ "ANCHORS " <> show s.anchorCount ]
       -- Red when a port we ACTUALLY NEED is absent: the note port always, the

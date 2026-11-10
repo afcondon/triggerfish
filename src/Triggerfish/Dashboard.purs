@@ -43,7 +43,6 @@ import Data.Map as Map
 import Data.Maybe (Maybe(..), fromMaybe, isNothing, maybe, isJust)
 import Data.Traversable (traverse)
 import Data.Number as Number
-import Data.Number.Format (fixed, toStringWith)
 import Effect.Aff (Aff, Milliseconds(..), delay)
 import Effect.Aff.Class (class MonadAff, liftAff)
 import Effect.Class (liftEffect)
@@ -81,7 +80,6 @@ import Triggerfish.Routing.Model as RM
 import Vetula.StageCards as StageCards
 import Triggerfish.Routing.Out as RO
 import Triggerfish.Routing.VetulaSync as VetulaSync
-import Reef.Routing as RR
 import Triggerfish.Routing.Store as RStore
 import Triggerfish.SampleSets (SampleSet)
 import Triggerfish.SampleSets as SampleSets
@@ -89,6 +87,7 @@ import Binnacle.TabBus as Bus
 import Triggerfish.Transport (Mode(..))
 import Triggerfish.Transport.Store as TransportStore
 import Triggerfish.Tempo as Tempo
+import Triggerfish.TempoWidget as TempoWidget
 
 -- | A machine as the dashboard knows it: its slot, its nameplate, and where its
 -- | page is. `playable` is false for Quadrat, whose "playing" is a capture
@@ -144,6 +143,11 @@ type State =
   , locked :: Boolean
   -- the free-run tempo (Triggerfish.Tempo), what the pages keep off the rig
   , freeTempo :: Number
+  -- when this page's free run began, so its beats keep time at a new tempo
+  , freeT0 :: Number
+  -- the tempo widget's reading (Triggerfish.TempoWidget), written only when
+  -- what it draws changes
+  , clock :: Maybe TempoWidget.Reading
   , bus :: Maybe Bus.Bus
   , table :: RM.Table
   , ports :: Array String
@@ -198,6 +202,7 @@ type State =
 data Action
   = Init
   | Tick
+  | ClockTick
   | FromBus Bus.Msg
   | ModeStored
   | SetMode Mode
@@ -247,7 +252,7 @@ component :: forall q i o. H.Component q i o Aff
 component = H.mkComponent
   { initialState: \_ ->
       { mode: Solo, now: 0.0, heard: Map.empty, rig: Nothing, rigUp: false
-      , tempo: 120.0, freeTempo: 120.0, locked: false, bus: Nothing
+      , tempo: 120.0, freeTempo: 120.0, freeT0: 0.0, clock: Nothing, locked: false, bus: Nothing
       , table: RM.defaultTable, ports: [], sampleSets: [], hot: Nothing, router: Router.initial
       , matrix: Nothing, pick: Nothing, focus: Nothing, sheet: Nothing, foldDrums: true, vetulaSent: Nothing
       , relays: false, allVoices: false, rigLoops: Map.empty, stageCards: Nothing, bosun: Nothing
@@ -274,7 +279,8 @@ handleAction = case _ of
     liftEffect $ RStore.onChange (HS.notify listener RoutingStored)
     free <- liftEffect $ fromMaybe 120.0 <$> Tempo.load
     rig <- liftEffect $ Binnacle.connect { url: Web.rigUrl rigUrl, tempo: free }
-    H.modify_ _ { rig = Just rig, freeTempo = free, tempo = free }
+    t0 <- liftEffect dateNow
+    H.modify_ _ { rig = Just rig, freeTempo = free, tempo = free, freeT0 = t0 * 1000.0 }
     liftEffect $ Tempo.onChange (HS.notify listener TempoStored)
     win <- liftEffect window
     void $ H.subscribe $ eventListener KET.keydown (Window.toEventTarget win) (map KeyDown <<< KE.fromEvent)
@@ -302,6 +308,7 @@ handleAction = case _ of
       sets <- liftAff SampleSets.load
       H.modify_ _ { sampleSets = sets }
     _ <- liftEffect $ setInterval 1000 (HS.notify listener Tick)
+    _ <- liftEffect $ setInterval 40 (HS.notify listener ClockTick)
     handleAction Tick
     _ <- liftEffect $ setInterval 3000 (HS.notify listener BosunPoll)
     handleAction BosunPoll
@@ -328,6 +335,13 @@ handleAction = case _ of
     -- the rig's marks are the rig's: gone with it, sent again when it returns
     when (st.rigUp && not up) (H.modify_ _ { rigLoops = Map.empty })
 
+  -- The tempo widget's beats, from this page's clock.
+  ClockTick -> do
+    st <- H.get
+    for_ st.rig \bin -> do
+      r <- liftEffect $ Clock.read (Binnacle.clock bin)
+      let reading = TempoWidget.reading st.freeTempo r
+      when (Just reading /= st.clock) (H.modify_ _ { clock = Just reading })
   -- The tempo, typed here: for every page and, with the rig up, for Link.
   SetTempo v -> for_ (Number.fromString v) setTempo
   BumpTempo d -> do
@@ -1001,7 +1015,7 @@ topBar st =
                 <> [ HH.a [ cls "tab", HP.href "/about.html", HP.target "atlantis-about" ] [ HH.text "About" ] ]
             )
         , HH.span [ cls "spacer" ] []
-        , tempoControl st
+        , maybe (HH.text "") (TempoWidget.view (Just { bump: BumpTempo, set: SetTempo })) st.clock
         , HH.button [ cls "btn", HE.onClick \_ -> StopAll, HP.disabled (not (Array.any (playing st) machines)) ] [ HH.text "■ Stop all" ]
         , HH.button [ cls "btn panic", HE.onClick \_ -> Panic ] [ HH.text "Panic" ]
         ]
@@ -1016,38 +1030,15 @@ topBar st =
       )
       [ HH.text label ]
 
--- | The one tempo control (Triggerfish.Tempo): Link's tempo once the rig is
--- | up, else the free run every page keeps. The hotkeys work on every page,
--- | this one included.
-tempoControl :: forall m. State -> H.ComponentHTML Action () m
-tempoControl st =
-  HH.span [ cls "tempo", HP.title Tempo.hotkeyHelp ]
-    [ HH.button [ cls "step", HE.onClick \_ -> BumpTempo (-1.0), HP.title "tempo −1 (⌥−; with ⇧, −5)" ] [ HH.text "−" ]
-    , HH.input
-        [ cls "num", HP.type_ HP.InputNumber, HP.attr (AttrName "step") "1"
-        , HP.attr (AttrName "min") "20", HP.attr (AttrName "max") "300"
-        , HP.value (Tempo.showTempo st.tempo)
-        , HE.onValueChange SetTempo
-        , HP.attr (AttrName "aria-label") "Tempo, beats a minute"
-        ]
-    , HH.button [ cls "step", HE.onClick \_ -> BumpTempo 1.0, HP.title "tempo +1 (⌥=; with ⇧, +5)" ] [ HH.text "+" ]
-    , HH.text " bpm"
-    -- whose tempo this is: Link's, through Diaphus, or this page's own
-    , HH.span
-        [ cls ("tsrc" <> if st.locked then " link" else "")
-        , HP.title (if st.locked then "Locked to Link: Diaphus's anchor sets the beat." else "Free-running: no Link anchor has reached this page; it keeps its own time.")
-        ]
-        [ HH.text (if st.locked then " · Link" else " · free") ]
-    ]
-
-
 -- | Set the tempo for every page, and for Link if the rig is up; shown at
 -- | once rather than on the next tick.
 setTempo :: forall o m. MonadAff m => Number -> H.HalogenM State Action () o m Unit
 setTempo n = do
   st <- H.get
   let bpm = Tempo.clampTempo n
-  for_ st.rig \bin -> liftEffect (Tempo.set bin bpm)
+  for_ st.rig \bin -> liftEffect do
+    Tempo.set bin bpm
+    Clock.setFreeBaseline (Binnacle.clock bin) { startMicros: st.freeT0, tempo: bpm }
   H.modify_ _ { tempo = bpm, freeTempo = bpm }
 
 -- | The bar under the top row: the rig's mode, then the chart's lens and its
