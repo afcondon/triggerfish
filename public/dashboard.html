@@ -396,7 +396,7 @@
 </head>
 <body>
   
-  <!-- Per-load cache-bust, as in index.html: static-httpd sends no Cache-Control. -->
+  <!-- Per-load cache-bust: static-httpd sends no Cache-Control. -->
   <script>document.write('<script src="dashboard.js?v=' + Date.now() + '"><\/script>');</script>
 </body>
 </html>

@@ -49,9 +49,9 @@ make          # build every page's bundle into public/
 spago test
 ```
 
-Each page has its own bundle, so after changing shared code use `make`, not
-`spago bundle`, or the other pages go stale. Serve `public/` with any static
-server and open `index.html`.
+Each page has its own bundle, so after changing shared code use `make`, or the
+other pages go stale. Serve `public/` with any static server and open a
+machine's page (`odonus.html`, `vetula.html`, ...) or `dashboard.html`.
 
 ## Licence
 

@@ -24,7 +24,7 @@
 -- | dashboard, not here.
 -- |
 -- | The machine's panel is `position:fixed; top:var(--tf-bar)`, so the page must
--- | set `--tf-bar` (the HTML does, 44px, as index.html does) and the bar is pinned
+-- | set `--tf-bar` (the HTML does, 44px) and the bar is pinned
 -- | inside it. A bar in the flow sits UNDER the panel: drawn, but unclickable.
 module Triggerfish.Standalone
   ( Config

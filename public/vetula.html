@@ -9,27 +9,17 @@
        vendor locally before relying on this rig offline. -->
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
   <!-- The widget library's stylesheet (a copy of
-       purescript-halogen-widgets/css/halogen-widgets.css): the quiet controls and
-       the ledger the router is drawn with. data-theme="light" on <html> keeps the
+       purescript-halogen-widgets/css/halogen-widgets.css): the quiet controls.
+       data-theme="light" on <html> keeps the
        library light, since this page is. -->
   <link rel="stylesheet" href="halogen-widgets.css">
   <style>
-    /* Destination families: the router's marks and key. */
-    :root { --f-midi: #13807b; --f-cv: #a8327a; --f-rample: #c05a12; --f-sample: #5a55b8; --f-continuo: #8a5a2b; }
-  </style>
-
-  <style>
     html, body { margin: 0; background: #fafafa; }
 
-    /* The shared shell bar's height — the single source of truth every
-       instrument insets below (machine roots via top/height calc, the
-       in-flow Vetula + TIDAL via padding). */
+    /* The shared shell bar's height, which Vetula's surface sits below. */
     :root { --tf-bar: 44px; }
 
-    /* ───────── Vetula (the 4th instrument) surface styles ─────────
-       Ported from the standalone Vetula index.html. Scoped to its own
-       surface where it would otherwise be page-global, so the other
-       instruments are untouched. */
+    /* ───────── Vetula's surface styles ───────── */
 
     /* shift-click is a selection gesture on the Vetula surface, not text-select */
     .vetula-surface { -webkit-user-select: none; user-select: none; }

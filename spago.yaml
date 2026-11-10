@@ -57,10 +57,6 @@ package:
     - web-storage
     - unsafe-reference
     - const
-  bundle:
-    module: Triggerfish.Main
-    outfile: public/bundle.js
-    platform: browser
   test:
     main: Triggerfish.Harness
     dependencies:

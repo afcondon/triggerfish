@@ -6,8 +6,6 @@ node_modules/
 *.log
 .DS_Store
 
-# Generated frontend bundle — regenerate via `spago bundle`.
-public/bundle.js
 public/balistes.js
 public/dashboard.js
 public/selene.js
