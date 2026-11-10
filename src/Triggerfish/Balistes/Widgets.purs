@@ -15,7 +15,6 @@ module Triggerfish.Balistes.Widgets
   , stepBtn
   , armBtn
   , chip
-  , newChip
   , knobRow
   , bigKnob
   , svgRect
@@ -98,15 +97,6 @@ chip label active act =
         <> (if active then "color:#1c1a12;background:linear-gradient(#c8a86a,#b8975a)"
             else "color:#3f3c33;background:linear-gradient(#efece1,#ddd9cb)") ]
     [ HH.text label ]
-
--- The "+ NEW" tab: appends a fresh empty rhythm (dashed to read as an action).
-newChip :: forall m. H.ComponentHTML Action () m
-newChip =
-  HH.button
-    [ HE.onClick \_ -> NewPattern
-    , style $ "padding:6px 13px;border:1px dashed #a8a392;border-radius:6px;cursor:pointer;"
-        <> "font-family:Georgia,serif;font-size:12px;color:#6a6657;background:#00000006" ]
-    [ HH.text "+ NEW" ]
 
 -- One labelled row of knobs (the left label, then the knobs across).
 knobRow :: forall m. String -> Array (H.ComponentHTML Action () m) -> H.ComponentHTML Action () m

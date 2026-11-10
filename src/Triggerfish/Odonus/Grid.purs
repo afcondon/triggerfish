@@ -692,17 +692,17 @@ dispatch = case _ of
         clearedHeadNote = foldl (\arr h -> fromMaybe arr (updateAt h Nothing arr)) newHeadNote newlyMuted
         -- Built from `firedV` (not `r.fired`) so the capture carries velocity and
         -- gate length too — REPLAY re-emits these faithfully. The scope ignores them.
-        fresh = map (\fv -> { pitch: fv.f.pitch, headIdx: fv.f.headIdx
+        captured = map (\fv -> { pitch: fv.f.pitch, headIdx: fv.f.headIdx
                             , fireUnixMicros: tick.fireUnixMicros + (swingMs + subMs fv.f) * 1000.0
                             , vel: fv.v, gateMs: gateMsFor fv.f }) firedV
       H.modify_ \s -> s
-        { odo = r.odo, notes = fresh <> s.notes, headNote = clearedHeadNote
+        { odo = r.odo, notes = captured <> s.notes, headNote = clearedHeadNote
         -- Performance logbook (#151): the same fresh notes accumulate, unpruned,
         -- into the always-on capture (chunked + retention-bounded). Frontend-only.
         -- Paused while a REPLAY loop runs, so replay-time silent gen doesn't pollute
         -- the log.
         , logbook = if isJust s.playing then s.logbook
-                    else Logbook.logAppend (tick.fireUnixMicros) fresh s.logbook
+                    else Logbook.logAppend (tick.fireUnixMicros) captured s.logbook
         -- LOCKSTEP (P4c, Option 2): the model seed advances ONLY via runGen (g.seed),
         -- NOT via the velocity-humanise draws (velied.seed). Humanise still reads the
         -- seed to jitter velocity, but must not perturb the shared generative stream —
@@ -714,7 +714,7 @@ dispatch = case _ of
         -- gen gesture was synced this step), and drop the drained pending entries.
         , gen = sim0.gen, genSpread = sim0.spread, genBias = sim0.bias, genFrozen = sim0.frozen
         , pending = stillPending
-        , lastSample = if null fresh then st.lastSample else sampledEnc
+        , lastSample = if null captured then st.lastSample else sampledEnc
         -- LOCKSTEP (P5): the state written back here (odo/gen/genSeed) is exactly
         -- what the NEXT model step will consume, and that step is modelStep + 1. A
         -- Push reads this to stamp the handoff (reef-sim-at), so the BEAM plays the
@@ -725,7 +725,7 @@ dispatch = case _ of
       -- playing here, the page sends the rig what it played, for the record
       -- buffer (the rig records its own voice when it plays Odonus)
       when (st.sounding == Local && st.rigLoops) $
-        for_ (RL.recordLine "odonus" identity fresh) rigSend
+        for_ (RL.recordLine "odonus" identity captured) rigSend
   Frame -> do
     paintTwister
     st <- H.get
@@ -1778,23 +1778,6 @@ browserNote atMs gateMs vel prev f = case prev, f.glide of
     for_ (range 0 (rat - 1)) \k ->
       Voice.play { note: f.pitch, velocity: vel, delayMs: atMs - now + toNumber k * sub
                  , durMs: if rat <= 1 then gateMs else sub * 0.85 }
-
--- | MIDI output port (substring match). On macOS enable the IAC Driver in
--- | Audio MIDI Setup and receive this bus in Ableton; each head sends on
--- | its own channel (I→1 … IV→4). (The es9 modular path lives in
--- | Binnacle.Output for when the rig is patched.)
-midiPortName :: String
-midiPortName = "IAC"
-
--- | The FH-2's own USB MIDI port (substring match) — the envelope destination.
--- | Its polyenv envelopes listen on MIDI channels 1..8 of THIS port, which is why
--- | a head's envelope trigger cannot ride the note's port: same channel number,
--- | different device, different meaning. Matches the needle fh2-config uses.
--- |
--- | Hardcoded here only until step 2 of docs/DESIGN-routing.md makes the router's
--- | rows editable; then it becomes the head row's destination like any other.
-envPortName :: String
-envPortName = "FH-2"
 
 -- | The MidiFighter Twister presents a MIDI port whose name contains this.
 twisterInputName :: String

@@ -63,7 +63,6 @@ module Vetula.Pads
   , colourLevel
   , Cell
   , cellSpec
-  , cellNodes
   , grid
   , padRows
   , padCols
@@ -251,7 +250,3 @@ cellSeedIx r c = rIx r * 3 + cIx c
     Plain -> 0
     Coloured -> 1
     Extended -> 2
-
--- | Sixteen chords of one cell, for a caller that only wants the pads.
-cellNodes :: Cell -> Array ChordNode
-cellNodes = _.chords

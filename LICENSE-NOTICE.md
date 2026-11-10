@@ -19,5 +19,3 @@ the GPL.
 
 - `public/img/verrill-architeuthis-1882.webp` — A. E. Verrill, 1882; public
   domain (see `public/img/CREDITS.md`).
-- `public/samples/amen.wav` — the "Amen, Brother" drum break (The Winstons,
-  1969), included as the conventional test loop for Stellatus's onset import.

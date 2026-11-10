@@ -34,7 +34,6 @@ module Triggerfish.Clips.Share
 import Prelude
 
 import Data.Array (catMaybes)
-import Data.Maybe (Maybe(..))
 
 import Triggerfish.Amphora (PublishSpec)
 import Triggerfish.Clips (MidiClip, onsetGroups)

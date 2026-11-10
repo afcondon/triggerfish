@@ -9,14 +9,13 @@ module Triggerfish.Routing.Edit
   ( Edit(..)
   , Context
   , apply
-  , resetSources
   , newDest
   ) where
 
 import Prelude
 
 import Control.Alt ((<|>))
-import Data.Array (find, foldl, head)
+import Data.Array (find, head)
 import Data.Int as Int
 import Data.Maybe (Maybe(..), maybe)
 import Data.Number as Number
@@ -66,13 +65,6 @@ apply ctx edit tbl = case edit of
   chooseSet set = case _ of
     RM.DSample d -> RM.DSample d { set = set, n = 0 }
     d -> d
-
--- | These sources back to the shipped defaults for these ports, leaving every
--- | other source as it is: a page that shows one machine's routes restores only
--- | those.
-resetSources :: Array String -> Array RM.Source -> RM.Table -> RM.Table
-resetSources ports srcs tbl =
-  foldl (\t src -> RM.setLegs src (RM.legsFor (RM.defaultTableFor ports) src) t) tbl srcs
 
 setPort :: String -> RM.Destination -> RM.Destination
 setPort port = case _ of

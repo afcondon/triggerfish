@@ -15,10 +15,7 @@
 module Triggerfish.Balistes.TriSnapshot
   ( TriSnapshot(..)
   , Brain(..)
-  , brainOf
-  , brainBadge
   , brainLabel
-  , describeTri
   , printTri
   , parseTri
   , rhythmContent
@@ -27,14 +24,14 @@ module Triggerfish.Balistes.TriSnapshot
 
 import Prelude
 
-import Data.Array (filter, length, mapMaybe, uncons)
+import Data.Array (filter, mapMaybe, uncons)
 import Data.Int (fromString)
 import Data.Maybe (Maybe(..))
 import Data.String.Common (joinWith, split, trim)
 import Data.String.Pattern (Pattern(..))
 import Triggerfish.Balistes.Lepidoptera (parsePattern, printPattern)
 import Triggerfish.Balistes.Model (Snapshot)
-import Triggerfish.Balistes.Pattern (FixedPattern, usedLanes)
+import Triggerfish.Balistes.Pattern (FixedPattern)
 
 -- | A captured playing-state, tagged by which brain took it.
 -- |
@@ -56,32 +53,11 @@ data Brain = BGrids | BFixed
 
 derive instance eqBrain :: Eq Brain
 
--- | Which brain a snapshot belongs to (recall switches the active tab to this).
-brainOf :: TriSnapshot -> Brain
-brainOf = case _ of
-  TSGrids _ -> BGrids
-  TSFixed _ -> BFixed
-
--- | The one-letter engraved badge shown on a filled slot. DISPLAY ONLY — this is
--- | not the wire tag (see `printTri`), which is frozen at M/G/T for stored data.
-brainBadge :: Brain -> String
-brainBadge = case _ of
-  BGrids -> "G"
-  BFixed -> "R"
-
 -- | The brain's display name, for tooltips / the sequence rail.
 brainLabel :: Brain -> String
 brainLabel = case _ of
   BGrids -> "GRIDS"
   BFixed -> "RYTM"
-
--- | A compact human description of a snapshot's contents (for a slot's title
--- | attribute): the brain + a size cue (used-lane count for a rhythm, the X/Y
--- | cursor for a Grids point).
-describeTri :: TriSnapshot -> String
-describeTri = case _ of
-  TSGrids snap -> "GRIDS · x" <> show snap.x <> " y" <> show snap.y
-  TSFixed pat -> "RYTM · " <> show (length (usedLanes pat)) <> " lanes"
 
 -- ---------------------------------------------------------------------------
 -- Text codec (slice 5) — the transferable, localStorage-friendly form.

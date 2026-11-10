@@ -7,7 +7,6 @@
 module Triggerfish.Fish
   ( install
   , icon
-  , ofSource
   ) where
 
 import Prelude
@@ -16,7 +15,6 @@ import Effect (Effect)
 import Halogen.HTML as HH
 import Halogen.HTML.Core (AttrName(..), ElemName(..), Namespace(..))
 import Halogen.HTML.Properties as HP
-import Triggerfish.Routing.Model as RM
 
 foreign import install :: Effect Unit
 
@@ -35,11 +33,3 @@ icon cls slot =
     [ HH.elementNS svgNS (ElemName "use") [ HP.attr (AttrName "href") ("#sp-" <> slot) ] [] ]
   where
   svgNS = Namespace "http://www.w3.org/2000/svg"
-
--- | The machine a routing source belongs to.
-ofSource :: RM.Source -> String
-ofSource = case _ of
-  RM.SOdonusHead _ -> "odonus"
-  RM.SDrumLane _ -> "balistes"
-  RM.SVetulaVoice _ -> "vetula"
-  RM.SSeleneBank _ -> "selene"

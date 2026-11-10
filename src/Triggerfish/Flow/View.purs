@@ -428,11 +428,11 @@ chartOf on hot live f =
   usedSrc s = Array.any (\r -> r.source == s.id) live.patch.routes
   usedIn i = Array.any (\r -> r.input == i) live.patch.routes
 
-  portDot id cls' p short tip =
+  portDot id cls' p short hint =
     svg "g" [ attr "class" ("port " <> cls'), attr "role" "button", attr "tabindex" "0", HE.onClick \_ -> on.port id ]
       [ svg "circle" [ attr "cx" (n p.x), attr "cy" (n p.y), attr "r" "6.5" ] []
       , label "pl" p.x (p.y + 3.0) "middle" short
-      , svg "title" [] [ HH.text tip ]
+      , svg "title" [] [ HH.text hint ]
       ]
 
   cable r = do
@@ -535,10 +535,10 @@ chartOf on hot live f =
   -- it, in the dock), so it does not also play or stop it there.
   modified e = ME.metaKey e || ME.ctrlKey e || ME.shiftKey e
   -- The fish, reflected in place about its own middle when facing right.
-  fishUse m x y right =
+  fishUse m x y facingRight =
     svg "use"
       ( [ attr "href" ("#sp-" <> m), attr "x" (n x), attr "y" (n y), attr "width" "54", attr "height" "32" ]
-          <> (if right then [ attr "transform" ("translate(" <> n (2.0 * x + 54.0) <> " 0) scale(-1 1)") ] else [])
+          <> (if facingRight then [ attr "transform" ("translate(" <> n (2.0 * x + 54.0) <> " 0) scale(-1 1)") ] else [])
       ) []
   pickName _ x y anchor txt =
     svg "text" [ attr "class" "name", attr "x" (n x), attr "y" (n y), attr "text-anchor" anchor ] [ HH.text txt ]
@@ -808,12 +808,12 @@ chartOf on hot live f =
              , choice "architeuthis" "Architeuthis" (x - w - 10.0) "Architeuthis: the rig plays it, machines and all."
              ]
     where
-    choice key name cx hint =
-      let picked = live.limulusEngine == key
+    choice engineKey name cx hint =
+      let picked = live.limulusEngine == engineKey
       in svg "g"
            ( [ attr "class" ("engine" <> if picked then " on" else ""), attr "role" "button", attr "tabindex" "0"
              , attr "aria-pressed" (if picked then "true" else "false") ]
-               <> (if picked then [] else [ HE.onClick \_ -> on.engine key ])
+               <> (if picked then [] else [ HE.onClick \_ -> on.engine engineKey ])
            )
            [ label "sub" cx y "end" ("→ " <> name), svg "title" [] [ HH.text hint ] ]
 

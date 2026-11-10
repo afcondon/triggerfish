@@ -28,7 +28,6 @@ module Triggerfish.Balistes.Types
   , rhythmEntries
   , rigUrl
   , gridCfg
-  , stepsPerBar
   , midiPortName
   , drumChannel
   , editVel
@@ -346,10 +345,6 @@ rigUrl = "ws://127.0.0.1:3012/ws"
 -- | One Grids step = a 16th note (32 steps = two bars). Same lookahead as Odonus.
 gridCfg :: Scheduler.GridConfig
 gridCfg = { stepBeats: 0.25, lookaheadMs: 120.0, tickMs: 25 }
-
--- | Sixteenth-note steps per 4/4 bar — the unit the snapshot sequence counts in.
-stepsPerBar :: Int
-stepsPerBar = 16
 
 midiPortName :: String
 midiPortName = "IAC"

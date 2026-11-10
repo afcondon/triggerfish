@@ -39,42 +39,23 @@ module Triggerfish.Selene.Layout
   , Group
   , Layout
   , outputKey
-  , parseOutputKey
   , allocationKey
-  , parseAllocation
   , groupNamed
-  , assignmentAt
   , voiceOutputs
   , capabilities
-  , assignedOutputs
   , freeOutputs
   , Problem(..)
-  , problemNote
   , validate
-  , toJson
-  , fromJson
-  , drumTrigVerbs
-  , odonusCvRoute
-  , defaultLayout
-  , drumBreakout
   ) where
 
 import Prelude
 
-import Data.Array (catMaybes, elem, filter, findIndex, length, mapMaybe, nub, sort, (!!), (..))
-import Data.Either (Either(..))
-import Data.Int as Int
+import Data.Array (elem, filter, findIndex, length, mapMaybe, nub, sort, (!!), (..))
 import Data.Map (Map)
 import Data.Map as Map
 import Data.Maybe (Maybe(..), isNothing)
-import Data.Nullable (toNullable)
-import Data.String (Pattern(..), split)
-import Data.String.Common (joinWith)
-import Data.Traversable (traverse)
-import Data.Tuple (Tuple(..), fst)
+import Data.Tuple (Tuple(..))
 import Foreign.Object (Object)
-import Foreign.Object as Object
-import Simple.JSON (readJSON, writeJSON)
 
 -- ---------------------------------------------------------------------------
 -- The pieces
@@ -171,13 +152,6 @@ type Layout =
 outputKey :: Output -> String
 outputKey o = o.device <> "/" <> o.bank <> "/" <> show o.slot
 
-parseOutputKey :: String -> Either String Output
-parseOutputKey s = case split (Pattern "/") s of
-  [ device, bank, slotS ] -> case Int.fromString slotS of
-    Just slot -> Right { device, bank, slot }
-    Nothing -> Left ("output key '" <> s <> "' has a non-numeric slot")
-  _ -> Left ("output key '" <> s <> "' should be device/bank/slot, e.g. fh2/gt0/3")
-
 allocationKey :: Allocation -> String
 allocationKey = case _ of
   Mono -> "mono"
@@ -188,17 +162,6 @@ allocationKey = case _ of
     Highest -> "highest"
     Unison -> "unison"
 
-parseAllocation :: String -> Either String Allocation
-parseAllocation = case _ of
-  "mono" -> Right Mono
-  "indexed" -> Right Indexed
-  "poly:cyclic" -> Right (Poly Cyclic)
-  "poly:lowest" -> Right (Poly Lowest)
-  "poly:highest" -> Right (Poly Highest)
-  "poly:unison" -> Right (Poly Unison)
-  s -> Left ("unknown allocation '" <> s
-        <> "' (expected mono / indexed / poly:cyclic|lowest|highest|unison)")
-
 -- ---------------------------------------------------------------------------
 -- Reading a layout
 -- ---------------------------------------------------------------------------
@@ -207,11 +170,6 @@ groupNamed :: Layout -> String -> Maybe Group
 groupNamed lay nm = do
   i <- findIndex (\g -> g.name == nm) lay.groups
   lay.groups !! i
-
--- | What, if anything, this output is configured to carry. The whole point of
--- | keying by output: this is a lookup, not a search.
-assignmentAt :: Layout -> Output -> Maybe Assignment
-assignmentAt lay o = Map.lookup o lay.outputs
 
 -- | The outputs serving one voice of one group, with the role each carries.
 voiceOutputs :: Layout -> String -> Int -> Array { role :: Role, output :: Output }
@@ -224,9 +182,6 @@ voiceOutputs lay grp v =
 -- | Odonus fully and Balistes partially" computable rather than merely renderable.
 capabilities :: Layout -> String -> Array Role
 capabilities lay grp = sort (nub (map _.role (voiceOutputs lay grp 0)))
-
-assignedOutputs :: Layout -> Array Output
-assignedOutputs lay = map fst (Map.toUnfoldable lay.outputs :: Array (Tuple Output Assignment))
 
 -- | Of the outputs the rig actually has, the ones nothing claims. A first-class
 -- | answer, not a leftover: "which jacks are free?" is asked constantly while
@@ -247,32 +202,6 @@ data Problem
   | SelectorCount String Int Int
   | ChannelCollision Int (Array String)
   | McvCollision Int (Array String)
-
-problemNote :: Problem -> String
-problemNote = case _ of
-  UnknownGroup o g ->
-    outputKey o <> " is assigned to group '" <> g <> "', which does not exist"
-  VoiceOutOfRange o g v n ->
-    outputKey o <> " names voice " <> show v <> " of '" <> g
-      <> "', which has only " <> show n <> " (0.." <> show (n - 1) <> ")"
-  RaggedGroup g v roles ->
-    "group '" <> g <> "' is ragged: voice " <> show v <> " carries ["
-      <> joinWith ", " roles <> "], which differs from voice 0"
-  UnwiredVoice g 0 ->
-    "group '" <> g <> "' has no outputs assigned to it at all"
-  UnwiredVoice g v ->
-    "group '" <> g <> "' declares " <> show (v + 1) <> " or more voices but voice "
-      <> show v <> " has no outputs"
-  SelectorCount g got want ->
-    "group '" <> g <> "' is indexed and has " <> show got <> " selectors for "
-      <> show want <> " voices — each voice's MCV needs a note to filter on"
-  ChannelCollision ch gs ->
-    "channel " <> show ch <> " is listened on by " <> joinWith " and " gs
-      <> " — both will respond to the same notes"
-  McvCollision n gs ->
-    "MCV " <> show n <> " is wanted by " <> joinWith " and " gs
-      <> " — mutually exclusive, last applied wins, and their jacks are on"
-      <> " different hardware so nothing jack-indexed can see it"
 
 -- | All problems, in no particular order. **Reports; does not block.** The
 -- | daemons already own admission (es9-daemon has capability and overlap checks,
@@ -356,204 +285,10 @@ type WireLayout =
   , outputs :: Object Assignment
   }
 
-toJson :: Layout -> String
-toJson lay = writeJSON wire
-  where
-  wire :: WireLayout
-  wire =
-    { name: lay.name
-    , groups: Object.fromFoldable (map g lay.groups)
-    , outputs: Object.fromFoldable
-        (map (\(Tuple o a) -> Tuple (outputKey o) a)
-          (Map.toUnfoldable lay.outputs :: Array (Tuple Output Assignment)))
-    }
-  g grp = Tuple grp.name
-    { voices: grp.voices
-    , allocation: allocationKey grp.allocation
-    , channel: grp.channel
-    , mcvs: grp.mcvs
-    , vco: grp.vco
-    , selectors: grp.selectors
-    , target: grp.target
-    }
-
-fromJson :: String -> Either String Layout
-fromJson s = case readJSON s of
-  Left _ -> Left "layout JSON did not match the expected shape"
-  Right (w :: WireLayout) -> do
-    groups <- traverse toGroup (Object.toUnfoldable w.groups :: Array (Tuple String WireGroup))
-    outs <- traverse toOut (Object.toUnfoldable w.outputs :: Array (Tuple String Assignment))
-    pure { name: w.name, groups, outputs: Map.fromFoldable outs }
-  where
-  toGroup (Tuple name wg) = do
-    allocation <- parseAllocation wg.allocation
-    pure
-      { name
-      , voices: wg.voices
-      , allocation
-      , channel: wg.channel
-      , mcvs: wg.mcvs
-      , vco: wg.vco
-      , selectors: wg.selectors
-      , target: wg.target
-      }
-  toOut (Tuple k a) = do
-    o <- parseOutputKey k
-    pure (Tuple o a)
-
 -- ---------------------------------------------------------------------------
 -- Compiling to the FH-2
 -- ---------------------------------------------------------------------------
 
--- | An `Indexed` group compiles to one `set-drum-trig` verb per voice — the same
--- | verbs `apply-drum-breakout.mjs` sends, which is what makes this checkable:
--- | compile the default layout and compare.
--- |
--- | `output = slot + 1 + 64` for an FHX-8GT bank: the script's convention is
--- | "FHX-8GT jack number + 64 (jack 1 = 65)", and our slots are 0-based.
--- |
--- | Returns `Left` for anything that is not an indexed FH-2 gate group, because
--- | those want `apply-drumkit` (gate + pitch voices) instead, and silently
--- | emitting the wrong verb is worse than refusing.
-drumTrigVerbs :: Layout -> String -> Either String (Array String)
-drumTrigVerbs lay grp = case groupNamed lay grp of
-  Nothing -> Left ("no group '" <> grp <> "' in layout '" <> lay.name <> "'")
-  Just g
-    | g.allocation /= Indexed ->
-        Left ("group '" <> grp <> "' is " <> allocationKey g.allocation
-               <> "; set-drum-trig is for indexed trigger groups")
-    | length g.selectors /= g.voices ->
-        Left ("group '" <> grp <> "' has " <> show (length g.selectors)
-               <> " selectors for " <> show g.voices <> " voices")
-    | otherwise -> Right (catMaybes (map (verb g) (0 .. (g.voices - 1))))
-  where
-  verb g v = do
-    note <- g.selectors !! v
-    gate <- findGate v
-    pure ("set-drum-trig " <> show v <> " " <> show note <> " "
-            <> show (gate.slot + 1 + 64) <> " " <> show g.channel)
-  findGate v = case filter (\r -> r.role == "gate") (voiceOutputs lay grp v) of
-    [ r ] -> Just r.output
-    _ -> Nothing
-
--- | Compile a group back to an `odonus_cv` route — the map that currently lives
--- | hand-edited in `purerl_tidal.app.src` and requires a restart to change.
--- |
--- | That map is a **seventh home for placement**, and its own comment makes the
--- | routing table's argument for it: *"which VCO is on which bus is a fact about
--- | the RIG PATCH, not the music"*. Quite so — which is why it belongs in the
--- | layout, which did not exist when it was written. `CALIBRATION.md` already
--- | wants this: *"optionally source the odonus_cv map from Amphora at voice start
--- | for live re-patch without a restart."*
--- |
--- | The head is a parameter rather than a field, because a layout carries no
--- | sources. That is the binding, and it belongs elsewhere.
--- |
--- | Emits JSON rather than an Erlang term: the term is what this replaces, and
--- | Amphora is the stated destination.
-odonusCvRoute :: Layout -> String -> Int -> Either String String
-odonusCvRoute lay grp head = case groupNamed lay grp of
-  Nothing -> Left ("no group '" <> grp <> "' in layout '" <> lay.name <> "'")
-  Just g -> case g.vco of
-    Nothing -> Left ("group '" <> grp <> "' has no vco label; a pitch route needs a"
-                      <> " calibration table to correct with")
-    Just label -> do
-      pitch <- busOf "pitch"
-      pure (writeJSON
-        { head
-        , pitch_bus: pitch
-        , trig_bus: toNullable (busOfMay "gate")
-        , label
-        })
-  where
-  busOf role = case busOfMay role of
-    Just b -> Right b
-    Nothing -> Left ("group '" <> grp <> "' has no " <> role <> " output on the ES-9")
-  -- es9-daemon addresses the panel as buses 8..15, so jack N is bus N + 7 and
-  -- slot N is bus N + 8. The inverse of `Routing.Model.outputOf`.
-  busOfMay role = case filter (\r -> r.role == role && r.output.device == "es9"
-                                    && r.output.bank == "main") (voiceOutputs lay grp 0) of
-    [ r ] -> Just (r.output.slot + 8)
-    _ -> Nothing
-
 -- ---------------------------------------------------------------------------
 -- The rig as it stands
 -- ---------------------------------------------------------------------------
-
--- | The rig as the routing table currently implies it: the FH-2 drum breakout
--- | AND the polyenv bank.
--- |
--- | **This layout does not validate, and that is the point.** polyenv takes MCV
--- | 0..7 (one envelope per slot, channel = slot + 1) and the drum breakout takes
--- | MCV 0..3, so four MCVs are wanted twice. They are mutually exclusive on the
--- | hardware — publishing a polyenv silently takes the drum gates away — and that
--- | is exactly the fact that cost a morning. The outputs do not collide (main
--- | panel versus FHX-8GT), so nothing jack-indexed can see it; `validate` can.
--- |
--- | Describing only one of them would make the layout validate and make it a
--- | worse description of what the routing table is asking for.
-defaultLayout :: Layout
-defaultLayout =
-  { name: "drum breakout + polyenv"
-  , groups: [ kit, cip ] <> map envGroup (0 .. 7)
-  , outputs: Map.fromFoldable (kitOuts <> cipOuts <> envOuts)
-  }
-  where
-  kit =
-    { name: "kit"
-    , voices: 4
-    , allocation: Indexed
-    , channel: 10
-    , mcvs: 0 .. 3
-    , vco: Nothing                    -- gates carry no pitch, so nothing to correct
-    , selectors: [ 36, 38, 42, 39 ]   -- BD SD HH CP, matching canonKit
-    , target: Just "QuadDrum"
-    }
-  kitOuts = map (\i -> Tuple { device: "fh2", bank: "gt0", slot: i }
-                              { group: "kit", voice: i, role: "gate" })
-                (0 .. 3)
-
-  -- The ES-9 CV voice `reef_voice` actually plays today, from `purerl_tidal`'s
-  -- `odonus_cv` env: head 0 to CIP's pitch on out 1 (bus 8) and a trigger firing
-  -- its Percido envelope on out 2 (bus 9). No MCV — this is the ES-9, driven by
-  -- OSC from the BEAM, so `mcvs` is empty and it contends with nothing above.
-  cip =
-    { name: "cip"
-    , voices: 1
-    , allocation: Mono
-    , channel: 0                      -- not MIDI-addressed; the BEAM emits /cv
-    , mcvs: []
-    , vco: Just "cursus-iteritas-percido"
-    , selectors: []
-    , target: Just "Cursus Iteritas Percido"
-    }
-  cipOuts =
-    [ Tuple { device: "es9", bank: "main", slot: 0 } { group: "cip", voice: 0, role: "pitch" }
-    , Tuple { device: "es9", bank: "main", slot: 1 } { group: "cip", voice: 0, role: "gate" }
-    ]
-
-  -- One envelope-only, single-voice MCV each, listening on channel = slot + 1,
-  -- output at panel jack `base + 1`. Straight from `FH2.Modes.PolyEnv`'s header;
-  -- `Mono` because there is one voice and nothing to allocate.
-  envGroup i =
-    { name: "env" <> show (i + 1)
-    , voices: 1
-    , allocation: Mono
-    , channel: i + 1
-    , mcvs: [ i ]
-    , vco: Nothing
-    , selectors: []
-    , target: Nothing
-    }
-  envOuts = map (\i -> Tuple { device: "fh2", bank: "main", slot: i }
-                              { group: "env" <> show (i + 1), voice: 0, role: "env" })
-                (0 .. 7)
-
--- | Just the drum breakout — the subset that can actually be applied alongside
--- | nothing else, and the fixture `drumTrigVerbs` is checked against.
-drumBreakout :: Layout
-drumBreakout = defaultLayout
-  { name = "drum breakout"
-  , groups = filter (\g -> g.name == "kit") defaultLayout.groups
-  , outputs = Map.filter (\a -> a.group == "kit") defaultLayout.outputs
-  }

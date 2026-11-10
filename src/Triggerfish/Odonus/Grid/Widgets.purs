@@ -10,17 +10,13 @@ module Triggerfish.Odonus.Grid.Widgets
   ( module Triggerfish.Ui.Style
   , headColor
   , roman
-  , dirName
-  , speedRatio
   , rateLabel
   , signed
   , octLabel
-  , romanNum
   , panelShell
   , tabBtn
   , diceBtn
   , stepBtn
-  , stepperRow
   , labelledRow
   , miniKnob
   , headAt
@@ -33,7 +29,7 @@ import Prelude
 
 import Data.Array (elem, find, findIndex, (!!))
 import Data.Int (round, toNumber)
-import Data.Maybe (Maybe(..), fromMaybe, maybe)
+import Data.Maybe (Maybe(..), maybe)
 import Halogen as H
 import Halogen.HTML as HH
 import Halogen.HTML.Events as HE
@@ -57,15 +53,6 @@ roman = case _ of
   1 -> "II"
   2 -> "III"
   _ -> "IV"
-
-dirName :: Int -> String
-dirName = case _ of
-  0 -> "FWD"
-  1 -> "BCK"
-  _ -> "PEND"
-
-speedRatio :: Int -> String
-speedRatio ix = maybe "×1" rateLabel (M.speedTable !! ix)
 
 -- | A clock ratio as the page shows it: ×1.5, ×4, and below ×1 as the
 -- | divisor, ÷1.5, ÷4.
@@ -154,23 +141,6 @@ diceBtn tip act =
 
 octLabel :: Int -> String
 octLabel n = if n > 0 then "+" <> show n else show n
-
-romanNum :: Int -> String
-romanNum i = fromMaybe (show (i + 1))
-  ([ "I", "II", "III", "IV", "V", "VI", "VII", "VIII", "IX" ] !! i)
-
-stepperRow :: forall m. String -> String -> Action -> Action -> H.ComponentHTML Action Slots m
-stepperRow lbl val decA incA =
-  HH.div [ style "display:flex;align-items:center;justify-content:space-between;margin:8px 0" ]
-    [ HH.span [ style $ engrave <> ";font-size:9px" ] [ HH.text lbl ]
-    , HH.div [ style "display:flex;align-items:center;gap:6px" ]
-        [ stepBtn "‹" decA
-        , HH.span
-            [ style "font-family:'SF Mono',Menlo,monospace;font-size:11px;color:#3f3c33;min-width:78px;text-align:center" ]
-            [ HH.text val ]
-        , stepBtn "›" incA
-        ]
-    ]
 
 stepBtn :: forall m. String -> Action -> H.ComponentHTML Action Slots m
 stepBtn glyph act =

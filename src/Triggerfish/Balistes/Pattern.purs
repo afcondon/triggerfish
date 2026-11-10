@@ -8,7 +8,7 @@ module Triggerfish.Balistes.Pattern
   , genreStarters
   ) where
 
-import Prelude
+import Prelude ((<>))
 
 import Data.Tuple (Tuple(..))
 import Reef.Balistes.Pattern

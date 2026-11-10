@@ -28,7 +28,6 @@ module Triggerfish.Routing.Out
   , portNames
   , ResolvedLeg
   , resolveLegs
-  , fanNote
   , fanNoteAt
   , drumRouting
   , soloDrumRouting
@@ -162,28 +161,6 @@ fanNoteAt outs tbl src ev =
                 , durMs: ev.durMs
                 }
               pure 1
-    _, _ -> pure 0
-
--- | Delay-relative variant, for the emit paths that think in "ms from now".
-fanNote
-  :: Outs
-  -> Table
-  -> Source
-  -> { note :: Int, velocity :: Int, delayMs :: Number, durMs :: Number }
-  -> Effect Int
-fanNote outs tbl src ev =
-  map sum (traverse send (resolveLegs outs tbl src))
-  where
-  send r = case r.wire, r.out of
-    Just w, Just o -> do
-      Midi.scheduleNote o
-        { channel: w.channel - 1
-        , note: fromMaybe ev.note w.noteOverride
-        , velocity: ev.velocity
-        , delayMs: ev.delayMs + r.leg.offsetMs
-        , durMs: ev.durMs
-        }
-      pure 1
     _, _ -> pure 0
 
 -- | The drum lanes as `Reef.Routing` carries them, for the rig and for the

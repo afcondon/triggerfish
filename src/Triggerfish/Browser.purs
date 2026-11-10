@@ -11,7 +11,6 @@ module Triggerfish.Browser
   ( Browser
   , Item
   , Recall
-  , defaultRecall
   , stamp
   ) where
 
@@ -50,9 +49,6 @@ type Item =
 -- | keeping the key the machine is in now rather than the saved one. A machine
 -- | without modes ignores both.
 type Recall = { frozen :: Boolean, inKey :: Boolean }
-
-defaultRecall :: Recall
-defaultRecall = { frozen: false, inKey: false }
 
 -- | The time now, `HH:MM`: a capture is named "Odonus · 21:14" until renamed.
 foreign import stamp :: Effect String

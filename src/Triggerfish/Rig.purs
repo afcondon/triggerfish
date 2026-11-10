@@ -19,7 +19,6 @@ module Triggerfish.Rig
   , RigConfig
   , defaultRig
   , availableTargets
-  , rigOutputs
   , targetGroups
   ) where
 
@@ -29,7 +28,6 @@ import Data.Array (range)
 import Data.Maybe (Maybe(..))
 import Data.Monoid (guard)
 import Halogen.Widgets.Select as Select
-import Triggerfish.Selene.Layout (Output)
 import Triggerfish.Selene.Model (Target(..), targetWire)
 
 -- | ES-9 side. `gtBlocks` = 8-gate blocks (ES-5 + each ESX-8GT); `cvBlocks` =
@@ -76,33 +74,6 @@ availableTargets cfg =
     Nothing -> []
     Just r -> fh2Targets r
   midi n = guard (n >= 1) (map Midi (range 1 n))
-
--- | Every PHYSICAL OUTPUT the rig has, in `Selene.Layout`'s address vocabulary.
--- | This is the row set of the output-backward view — one row per jack, whether
--- | or not anything claims it, because "which jacks are free?" is a first-class
--- | answer rather than a leftover.
--- |
--- | The ES-9's own eight panel jacks are listed, though no `Destination`
--- | addresses them today, so they will always read as free. That is truthful:
--- | they exist and nothing here can reach them.
-rigOutputs :: RigConfig -> Array Output
-rigOutputs cfg = es9 cfg.es9 <> fh2 cfg.fh2
-  where
-  jacks device bank = map (\slot -> { device, bank, slot }) (range 0 7)
-
-  es9 = case _ of
-    Nothing -> []
-    Just r ->
-      jacks "es9" "main"
-        <> expanders "es9" "gt" r.gtBlocks
-        <> expanders "es9" "cv" r.cvBlocks
-
-  fh2 = case _ of
-    Nothing -> []
-    Just r -> jacks "fh2" "main" <> expanders "fh2" "gt" r.gtExpanders <> expanders "fh2" "cv" r.cvExpanders
-
-  expanders device prefix n =
-    guard (n >= 1) (range 0 (n - 1)) >>= \i -> jacks device (prefix <> show i)
 
 -- | The same targets, arranged as a one-level cascade for `Select`: top-level
 -- | family rows (ES-9 / FH-2 / MIDI) each flying out to their bounded leaves.

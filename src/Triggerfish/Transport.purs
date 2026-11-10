@@ -20,8 +20,6 @@ module Triggerfish.Transport
   , Sounding(..)
   , hasRigVoice
   , soundingOf
-  , localAudible
-  , anyArmed
   , allMachines
   ) where
 
@@ -84,18 +82,6 @@ soundingOf mode armed previewing w
   | otherwise = case mode of
       Solo     -> Local
       Atlantis -> if hasRigVoice w then Rig else Local
-
--- Is the frontend allowed to make LOCAL sound for this machine? True unless the
--- rig is authoritative. This gates AUDITION (manual chord/pad preview): audition
--- must survive a STOPPED transport (Silent ⇒ still audible) but may fall silent
--- when MUTED (Rig). Performance emission is stricter — it gates on `== Local`.
-localAudible :: Sounding -> Boolean
-localAudible = case _ of
-  Rig -> false
-  _   -> true
-
-anyArmed :: Set Which -> Boolean
-anyArmed = not <<< Set.isEmpty
 
 -- The machines the Triggerfish page plays — the arm-all target. Balistes and the
 -- Selene rack play on pages of their own since 2026-09-29.

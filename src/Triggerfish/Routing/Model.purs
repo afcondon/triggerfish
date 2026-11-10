@@ -40,10 +40,8 @@ module Triggerfish.Routing.Model
   , es9JackBus
   , es9JackVco
   , destLabel
-  , destShortLabel
   , destDevice
   , Device(..)
-  , deviceLabel
   , Leg
   , newLeg
   , drumPad
@@ -73,7 +71,6 @@ module Triggerfish.Routing.Model
   , unreachable
   , Claim
   , claims
-  , conflicts
   , Wire
   , RampleWire
   , wireOf
@@ -88,7 +85,7 @@ module Triggerfish.Routing.Model
 import Prelude
 
 import Control.Alt ((<|>))
-import Data.Array (any, concatMap, filter, find, findIndex, foldl, head, length, mapMaybe, mapWithIndex, nub, snoc, sort, updateAt, (!!))
+import Data.Array (any, concatMap, filter, find, findIndex, foldl, head, length, mapMaybe, mapWithIndex, nub, snoc, updateAt, (!!))
 import Data.Int as Int
 import Data.Maybe (Maybe(..), fromMaybe, isJust, maybe)
 import Data.Tuple (Tuple(..), snd)
@@ -302,14 +299,6 @@ data Device = DevMidi String | DevFh2 | DevEs9 | DevContinuo | DevSuperDirt
 
 derive instance eqDevice :: Eq Device
 
-deviceLabel :: Device -> String
-deviceLabel = case _ of
-  DevMidi p -> p
-  DevFh2 -> "FH-2"
-  DevEs9 -> "ES-9"
-  DevContinuo -> "continuo"
-  DevSuperDirt -> "SuperDirt"
-
 destDevice :: Destination -> Device
 destDevice = case _ of
   DMidi d -> DevMidi d.port
@@ -354,21 +343,6 @@ destLabel = case _ of
     d.port <> " ch " <> show d.channel <> " · Rample, 4 voices allocated"
       <> " (notes " <> joinWith "/" (map show d.triggers)
       <> ", slice of " <> show d.slots <> " from " <> show d.pitchOfSlot0 <> ")"
-
--- | For the table cells, where the column already says which machine it is.
-destShortLabel :: Destination -> String
-destShortLabel = case _ of
-  DMidi d -> d.port <> " " <> show d.channel
-  DFh2Env d -> "env " <> show d.slot
-  DFh2Gate d -> "8gt " <> show d.jack
-  DFh2Voice d -> "voice ch " <> show d.channel
-  DEs9Gate d -> "GT" <> show d.block <> "/" <> show d.jack
-  DEs9Cv d -> "cv " <> show d.jack <> (if d.gate > 0 then "+" <> show d.gate else "")
-  DPoly d -> instrumentLabel d.inst <> (if d.sortByPitch then " ↓" else "")
-  DContinuo d -> "cont " <> show d.channel
-  DRample d -> "ramp v" <> show d.voice
-  DRamplePoly _ -> "Rample x4"
-  DSample d -> d.set <> ":" <> show d.n
 
 -- ---------------------------------------------------------------------------
 -- The table
@@ -973,8 +947,3 @@ claims tbl = map collect (nub (map _.slot spent))
        , slot: s
        , by: concatMap _.by here
        }
-
--- | Claims wanted by more than one source. Worth showing, not blocking: two
--- | sources on one gate is usually a mistake and occasionally a deliberate OR.
-conflicts :: Table -> Array Claim
-conflicts = filter (\c -> length c.by > 1) <<< claims

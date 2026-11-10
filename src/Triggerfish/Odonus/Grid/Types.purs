@@ -32,7 +32,6 @@ import Triggerfish.Library as Library
 import Triggerfish.Amphora (LibItem)
 import Prelude
 
-import Data.Array as Array
 
 import Data.Array (length)
 import Data.Maybe (Maybe(..))
@@ -65,8 +64,6 @@ import Reef.Gen
 import Binnacle (Binnacle)
 import Binnacle.Midi as Midi
 import Helm.Twister as HelmTwister
-import Triggerfish.Routing.Model as RM
-import Triggerfish.Routing.Out as RO
 import Triggerfish.Routing.Model as RM
 import Triggerfish.Routing.Out as RO
 import Binnacle.Scheduler as Scheduler
@@ -525,5 +522,3 @@ data Action
                                -- (status, data1, data2). Bank 1: encoders 0..15 map
                                -- 1:1 onto the 16 cells — rotate sets the cell note
                                -- (absolute), push toggles SKIP. Decoded in the handler.
-
-

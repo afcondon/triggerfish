@@ -22,9 +22,7 @@
 -- | guard flag.
 module Triggerfish.Route
   ( Route
-  , routeOf
   , machineOf
-  , stageOf
   , print
   , parse
   , machineSlug
@@ -47,14 +45,8 @@ import Triggerfish.Transport (Which(..))
 -- | without disturbing the stage).
 newtype Route = Route { machine :: Which, stage :: Array String }
 
-routeOf :: Which -> Array String -> Route
-routeOf machine stage = Route { machine, stage }
-
 machineOf :: Route -> Which
 machineOf (Route r) = r.machine
-
-stageOf :: Route -> Array String
-stageOf (Route r) = r.stage
 
 -- | The URL name for a machine. Lower-case full names rather than the three-letter
 -- | internal tags: a URL is read by a person, and `#odonus/review` says what it is

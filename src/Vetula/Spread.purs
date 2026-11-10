@@ -44,7 +44,6 @@ module Vetula.Spread
   , nextBassTone
   , toneIxOfPc
   , toneAt
-  , favKey
   ) where
 
 import Prelude
@@ -211,8 +210,3 @@ toneAt c m = case findIndex (\r -> r.pc == mod m 12) rows of
   Just i -> map (\r -> { ix: i, oct: (m - r.base) / 12 }) (index rows i)
   where
   rows = toneRows c
-
--- | Favourites key. A kept SPREAD applies to any chord, so it is filed by tone
--- | COUNT rather than by note-set — which is the whole reason for keeping one.
-favKey :: ChordNode -> String
-favKey c = show (length (nub (map (\p -> mod p 12) (sort c.pcs))))

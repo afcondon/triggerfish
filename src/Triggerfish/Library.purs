@@ -125,8 +125,8 @@ keep doc = go 5
                   case moved of
                     Right { status: 200 } -> pure (Right { hash: Just hash, items: next })
                     Right { status: 409, body: theirs }
-                      | Right ({ current } :: { current :: Nullable { hash :: String } }) <- readJSON theirs ->
-                          case toMaybe current of
+                      | Right ({ current: latest } :: { current :: Nullable { hash :: String } }) <- readJSON theirs ->
+                          case toMaybe latest of
                             Nothing -> go (tries - 1) { hash: Nothing, items: [] } cs
                             Just now -> contentOf doc now.hash >>= case _ of
                               Left problem -> pure (Left problem)

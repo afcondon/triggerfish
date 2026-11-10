@@ -22,13 +22,11 @@
 module Triggerfish.Glyph
   ( Machine(..)
   , allMachines
-  , machineLabel
   , machineTag
   , hueOf
   , palette
   , GlyphIcon
   , deck
-  , deckSize
   , Glyph
   , glyphOf
   , chordGlyph
@@ -40,7 +38,6 @@ module Triggerfish.Glyph
 
 import Prelude
 
-import Data.Array (length)
 import Rebus as Rebus
 
 -- ---------------------------------------------------------------------------
@@ -58,14 +55,6 @@ derive instance eqMachine :: Eq Machine
 
 allMachines :: Array Machine
 allMachines = [ Odonus, Balistes, Selene, Vetula, Sufflamen ]
-
-machineLabel :: Machine -> String
-machineLabel = case _ of
-  Odonus -> "ODONUS"
-  Balistes -> "BALISTES"
-  Selene -> "SELENE"
-  Vetula -> "VETULA"
-  Sufflamen -> "SUFFLAMEN"
 
 -- | The two-letter machine tag for a mixed sequencer lane, where colour now
 -- | encodes content rather than machine. Selene and Sufflamen stay
@@ -164,9 +153,6 @@ sessionAliasOf = Rebus.sessionAliasOf
 -- | it stops agreeing with Quadrat.
 deck :: Array String
 deck = Rebus.deckIcons Rebus.defaultDeck
-
-deckSize :: Int
-deckSize = length deck
 
 -- | The per-icon colour palette — an accent, not part of the identity.
 palette :: Array String

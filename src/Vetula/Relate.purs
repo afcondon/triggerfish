@@ -12,9 +12,6 @@
 module Vetula.Relate
   ( Metric
   , metrics
-  , noneKey
-  , lookupMetric
-  , rateAll
   , intervalClass
   , icWeight
   , roughness
@@ -23,10 +20,10 @@ module Vetula.Relate
 
 import Prelude
 
-import Data.Array (concat, concatMap, drop, filter, find, length, mapWithIndex, nub)
+import Data.Array (concat, concatMap, drop, filter, length, mapWithIndex, nub)
 import Data.Foldable (elem, minimum, sum)
 import Data.Int (toNumber)
-import Data.Maybe (Maybe, fromMaybe)
+import Data.Maybe (fromMaybe)
 import Data.Tuple (Tuple(..))
 import Vetula.Harmony (ChordNode)
 
@@ -44,17 +41,6 @@ metrics =
   , { key: "succession", label: "smooth succession", affinity: successionAffinity }
   , { key: "fifths", label: "root by fifths", affinity: fifthsAffinity }
   ]
-
-noneKey :: String
-noneKey = "none"
-
-lookupMetric :: String -> Maybe Metric
-lookupMetric k = find (\m -> m.key == k) metrics
-
--- | The abstraction in one line: a metric, a reference chord, and a set of
--- | others → each other paired with its affinity to the reference.
-rateAll :: Metric -> ChordNode -> Array ChordNode -> Array { chord :: ChordNode, score :: Number }
-rateAll m ref = map \c -> { chord: c, score: m.affinity ref c }
 
 -- ---------------------------------------------------------------------------
 -- Metrics (all oriented so higher = more related / smoother)

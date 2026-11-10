@@ -185,18 +185,18 @@ reach input@{ set, spec }
         { source } = loupeSource input
         sample = find (\s -> s.index == source.sample) set.corpus.samples
         secs = maybe 1.0 _.secs sample
-        sounding = maybe [] _.sounding sample
+        soundSpans = maybe [] _.sounding sample
         reads = if secs <= 0.0 then 1.0 else min 1.0 (spec.cloud.sustain / secs)
         room = 1.0 - reads
         at = spec.cloud.position * room
-        heard x = inSound sounding reads room (clamp 0.0 room x)
+        heard x = inSound soundSpans reads room (clamp 0.0 room x)
         local x = (x - source.from) / (source.to - source.from)
       in
         Just
           { earliest: local (heard (at - spec.cloud.spray / 2.0))
           , at: local (heard at)
           , latest: local (heard (at + spec.cloud.spray / 2.0) + reads)
-          , spans: (if null sounding then [ { from: 0.0, to: 1.0 } ] else sounding) <#> \sp -> { from: local sp.from, to: local sp.to }
+          , spans: (if null soundSpans then [ { from: 0.0, to: 1.0 } ] else soundSpans) <#> \sp -> { from: local sp.from, to: local sp.to }
           }
 
 -- | What the loupe magnifies, as a fraction of its segment. A read head that

@@ -384,7 +384,7 @@ view grid env =
   -- ── sheets ────────────────────────────────────────────────────────────────
   sheet key =
     let
-      rows = concatMap (\src -> map (\x -> { src, i: x.i, leg: x.leg }) (legsIn env src key)) srcs
+      sheetRows = concatMap (\src -> map (\x -> { src, i: x.i, leg: x.leg }) (legsIn env src key)) srcs
       title = maybe key _.name (find (\c -> c.key == key) cols)
     in
       HH.div [ cls "matrix-sheet" ]
@@ -392,10 +392,10 @@ view grid env =
             [ HH.text (title <> (if Str.take 7 key == "rample:" && not (contains (Pattern "Rample") title) then " · Rample" else ""))
             , HH.button [ cls "sheet-close", HE.onClick \_ -> env.onSheet Nothing ] [ HH.text "done" ]
             ]
-        , if null rows then HH.p [ cls "matrix-hint" ] [ HH.text "Nothing is routed here yet: add it in the grid, then set it here." ]
-          else if key == "sample" then sampleSheet rows
-          else if isMidiKey key then notesSheet rows
-          else rampleSheet rows
+        , if null sheetRows then HH.p [ cls "matrix-hint" ] [ HH.text "Nothing is routed here yet: add it in the grid, then set it here." ]
+          else if key == "sample" then sampleSheet sheetRows
+          else if isMidiKey key then notesSheet sheetRows
+          else rampleSheet sheetRows
         ]
   -- The note each lane sends this port: a Drum Rack's pads (lane n, pad n),
   -- GM, or set lane by lane.
@@ -420,12 +420,12 @@ view grid env =
   padOf = case _ of
     RM.SDrumLane i -> RM.drumPad i
     _ -> 36
-  rampleSheet rows =
+  rampleSheet legs =
     HH.div_
       [ HH.p [ cls "matrix-hint" ] [ HH.text "What the card is set up for: which note fires each voice (SETTINGS > SPx), how the card is sliced, the note of slice 0, and how far ahead the slice control lands." ]
       , HH.table [ cls "sheet" ]
           [ HH.thead_ [ HH.tr_ (map (\h -> HH.th_ [ HH.text h ]) [ "", "voice", "trigger", "slices", "slice 0", "settle ms", "ch" ]) ]
-          , HH.tbody_ (map rampleRow rows)
+          , HH.tbody_ (map rampleRow legs)
           ]
       ]
   rampleRow r = case r.leg.dest of
@@ -441,10 +441,10 @@ view grid env =
         , HH.td_ (mapWithIndex (\k t -> numIn r ("trig" <> show (k + 1)) t) d.triggers)
         , num r "slots" d.slots, num r "pitchOfSlot0" d.pitchOfSlot0, HH.td_ [], num r "channel" d.channel ]
     _ -> HH.tr_ []
-  sampleSheet rows =
+  sampleSheet legs =
     HH.table [ cls "sheet" ]
       [ HH.thead_ [ HH.tr_ (map (\h -> HH.th_ [ HH.text h ]) [ "", "set", "sample", "from %", "to %", "reverse", "gain %", "chop", "" ]) ]
-      , HH.tbody_ (map sampleRow rows)
+      , HH.tbody_ (map sampleRow legs)
       ]
   sampleRow r = case r.leg.dest of
     RM.DSample d ->

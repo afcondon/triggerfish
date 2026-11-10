@@ -34,7 +34,6 @@ module Triggerfish.Ui.Euclid
   , Style
   , defaultStyle
   , Chrome
-  , defaultChrome
   , Select
   , Nudge(..)
   , Axis(..)
@@ -206,12 +205,6 @@ defaultStyle =
 -- | The selectable box's two appearances. Kept as raw css so each machine keeps
 -- | its own surface — Selene's slots float on white, Odonus's sit on a voice strip.
 type Chrome = { idle :: String, active :: String }
-
-defaultChrome :: Chrome
-defaultChrome =
-  { idle: "background:#ffffff55;border:1px solid #00000010;"
-  , active: "background:#ffffffcc;border:1px solid #1a1a1a;box-shadow:0 0 0 1px #1a1a1a;"
-  }
 
 -- | The selection contract: is this the selected ring, what to raise on click,
 -- | what to raise on a keystroke while it holds focus, and what to raise when it

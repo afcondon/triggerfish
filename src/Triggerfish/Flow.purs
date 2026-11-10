@@ -480,16 +480,16 @@ flow inp = { nodes, links: links <> loopLinks <> quantLinks <> makesLinks }
   -- started.
   loopLinks = nub (map _.machine inp.loops) # concatMap \m ->
     let
-      feeders
+      loopFeeders
         | not (pageOpen m) = []
         | m `elem` inp.open = filter (\u -> isJust (stripPrefix (Pattern "src:") u)) (map _.unit (filter (\s -> s.machine == m) streams))
         | otherwise = [ "m:" <> m ]
     in
       marks m # concatMap \l ->
         let id = loopId m l.n
-        in map (\f -> plain f id Recorded m true) feeders
+        in map (\f -> plain f id Recorded m true) loopFeeders
              <> (if l.playing then [ plain id "engine" Notes m false ]
-                 else if Array.null feeders then [ plain id "engine" Recorded m true ] else [])
+                 else if Array.null loopFeeders then [ plain id "engine" Recorded m true ] else [])
   -- Quantisation: what feeds a machine's harmony inputs, into that machine
   -- (or each of its voices, opened). A machine feeding it is drawn upstream,
   -- in Feeds; a source with no page drawn (a scale, a pattern, or a machine

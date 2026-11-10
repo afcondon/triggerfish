@@ -1283,11 +1283,6 @@ replyKey socket bank = socket <> ":" <> bank
 gridCfg :: Scheduler.GridConfig
 gridCfg = { stepBeats: 0.25, lookaheadMs: 120.0, tickMs: 25 }
 
--- | One Tidal cycle == one bar (16 sixteenths), so `x*4` is four hits on the
--- | beat. The absolute grid index is the pulse, so Selene shares the rig downbeat.
-cycleSteps :: Int
-cycleSteps = 16
-
 midiPortName :: String
 midiPortName = "IAC"
 

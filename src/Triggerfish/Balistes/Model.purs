@@ -34,7 +34,6 @@ module Triggerfish.Balistes.Model
   , setOpen
   , opensAt
   , Snapshot
-  , snapshotCount
   , captureSnapshot
   , applySnapshot
   ) where
@@ -262,9 +261,6 @@ opensAt b step = Sim.opensAt step b
 -- ---------------------------------------------------------------------------
 -- Snapshots — captured control points (the snapshot bank)
 -- ---------------------------------------------------------------------------
-
-snapshotCount :: Int
-snapshotCount = 8
 
 -- | Extract the current control point.
 captureSnapshot :: Balistes -> Snapshot

@@ -31,7 +31,6 @@ module Vetula.Banks
   , stockPalette
   , paletteNode
   , butlerChords
-  , stockChords
   ) where
 
 import Prelude
@@ -104,7 +103,3 @@ paletteNode nid root entry =
 -- | The whole Butler bank rooted on the key's tonic — an exterior populator.
 butlerChords :: Key -> Array ChordNode
 butlerChords key = mapWithIndex (\i e -> paletteNode i key.tonic e) butlerPalette
-
--- | Émilie's original bank rooted on the key's tonic.
-stockChords :: Key -> Array ChordNode
-stockChords key = mapWithIndex (\i e -> paletteNode i key.tonic e) stockPalette

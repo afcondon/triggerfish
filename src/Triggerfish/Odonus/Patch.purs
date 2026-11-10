@@ -22,14 +22,13 @@ module Triggerfish.Odonus.Patch
 
 import Prelude
 
-import Data.Array (find)
 import Data.Int (round)
-import Data.Maybe (Maybe(..), fromMaybe, maybe)
+import Data.Maybe (Maybe(..))
 import Data.String.Common (joinWith)
 import Reef.PitchSet (PitchSet(..))
 import Reef.Route (Feed(..), Feeds, printFeeds)
-import Triggerfish.Odonus.Grid.Types (GenSource, State, genKinds, genDefaultRate, genDefaultAmt)
-import Reef.Odonus.Patch (OdonusPatch, parseNow, parsePatch, printNow, printPatch, reconcileGen, withPhases)
+import Triggerfish.Odonus.Grid.Types (State)
+import Reef.Odonus.Patch (OdonusPatch, parsePatch, printNow, printPatch, reconcileGen)
 import Triggerfish.Odonus.Model as M
 import Triggerfish.Scale as Scale
 
@@ -165,7 +164,7 @@ soundingOf s =
 
 -- | A mark's harmonic context for the ♫ panel: what was sounding at the mark,
 -- | else (a mark from before 2026-10-03) what its patch says.
-markContext :: { patch :: String, sounding :: Maybe { root :: Int, scale :: Array Int, chord :: Maybe (Array Int) } | _ } -> Maybe HarmonicContext
+markContext :: forall r. { patch :: String, sounding :: Maybe { root :: Int, scale :: Array Int, chord :: Maybe (Array Int) } | r } -> Maybe HarmonicContext
 markContext m = case m.sounding of
   Just sd -> Just
     { root: Scale.rootName sd.root

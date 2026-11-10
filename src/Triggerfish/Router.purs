@@ -24,8 +24,6 @@ module Triggerfish.Router
   , toggle
   , commit
   , setScalePattern
-  , setScaleRoot
-  , setHarmony
   , subscribeLine
   , rows
   , allowed
@@ -44,7 +42,7 @@ import Data.Map (Map)
 import Data.Map as Map
 import Data.Maybe (Maybe(..), fromMaybe, isJust, maybe)
 import Data.Nullable (Nullable, toMaybe)
-import Data.String (Pattern(..), split, stripPrefix, trim)
+import Data.String (Pattern(..), stripPrefix, trim)
 import Data.Tuple (Tuple(..))
 import Foreign.Object (Object)
 import Foreign.Object as Object
@@ -195,12 +193,6 @@ commit row r =
 
 setScalePattern :: String -> Router -> Router
 setScalePattern t r = r { scalePattern = t }
-
-setScaleRoot :: String -> Router -> Router
-setScaleRoot t r = r { scaleRoot = t }
-
-setHarmony :: String -> Router -> Router
-setHarmony t r = r { harmony = t }
 
 type Handlers i =
   { toggle :: Line -> Input -> i

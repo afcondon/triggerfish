@@ -22,7 +22,6 @@
 module Triggerfish.Preset
   ( Preset
   , presetGlyph
-  , presetLabel
   , presetAlias
   , indexOfContent
   , newPreset
@@ -64,10 +63,6 @@ newPreset content name = { content, name, starred: false, word: Nothing, was: []
 -- | The preset's (derived) glyph.
 presetGlyph :: Preset -> Glyph
 presetGlyph p = glyphOf p.content
-
--- | The human label: the name if promoted, else the glyph alias.
-presetLabel :: Preset -> String
-presetLabel p = fromMaybe (glyphOf p.content).alias p.name
 
 -- | The typeable alias (always the shape-pair, independent of any name).
 presetAlias :: Preset -> String

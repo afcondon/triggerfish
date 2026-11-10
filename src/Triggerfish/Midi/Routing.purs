@@ -19,7 +19,6 @@ module Triggerfish.Midi.Routing
   , vetulaDefaultChannel
   , drumsChannel
   , toWire
-  , defaultRouting
   , sourceLabel
   , destLabel
   ) where
@@ -62,18 +61,6 @@ drumsChannel = 10
 -- | The ONE browser-side conversion: canonical 1..16 → WebMIDI 0..15.
 toWire :: Int -> Int
 toWire ch = ch - 1
-
--- | The default routing table == the standard Ableton project template.
--- | (Named Vetula voices climb 6..8 as the config page assigns them.)
-defaultRouting :: Array { source :: SourceId, dests :: Array Destination }
-defaultRouting =
-  [ { source: OdonusHead 0, dests: [ ToMidi 1 ] }
-  , { source: OdonusHead 1, dests: [ ToMidi 2 ] }
-  , { source: OdonusHead 2, dests: [ ToMidi 3 ] }
-  , { source: OdonusHead 3, dests: [ ToMidi 4 ] }
-  , { source: VetulaVoice Nothing, dests: [ ToMidi vetulaDefaultChannel ] }
-  , { source: Drums, dests: [ ToMidi drumsChannel ] }
-  ]
 
 -- | Human label for a source identity (for the Tidal-page channel map).
 sourceLabel :: SourceId -> String
