@@ -5,7 +5,7 @@
 -- | as the drawer's rows are (`Triggerfish.Browser`). The machine says what to
 -- | show (`SourceQuery.AskBar`) and is told what was pressed
 -- | (`SourceQuery.BarAction`): `stage:ID`, `mark`, `clear`, `rebus`, `chip:ID`,
--- | `pick:ID:VALUE`, `help`, and `drop:ID TEXT` (a drag of a kind the tab
+-- | `pick:ID:VALUE`, `layer:ID`, `layerplay:ID`, `help`, and `drop:ID TEXT` (a drag of a kind the tab
 -- | `accepts` let go on it, TEXT being the drag's `<kind> <payload>`). A machine
 -- | that answers nothing has none of these in the bar.
 module Triggerfish.Bar
@@ -14,6 +14,7 @@ module Triggerfish.Bar
   , TabLook(..)
   , Chip
   , Picker
+  , Layer
   ) where
 
 import Prelude
@@ -49,10 +50,17 @@ type Bar =
   , icons :: Array GlyphIcon
   , rebusTip :: String
   , chips :: Array Chip
+  , layers :: Array Layer
   , pickers :: Array Picker
   , help :: String
   , helpPulse :: Boolean
   }
+
+-- | One of the page's simultaneous layers (Conspicillum's four clouds, AC
+-- | 2026-11-10): its letter takes it in hand (`layer:ID`), and its own ▶/■
+-- | starts or stops it wherever it is (`layerplay:ID`). `inHand` draws the
+-- | letter inked; `playing` lights its ■.
+type Layer = { id :: String, label :: String, inHand :: Boolean, playing :: Boolean, tip :: String }
 
 -- | A dropdown at the bar's right, before Panic (Vetula's key and scale,
 -- | 2026-10-08): the shell draws it, and a choice arrives as `pick:ID:VALUE`.

@@ -172,6 +172,7 @@ handleQuery = case _ of
         , { id: "dilla", label: "", icons: [ { icon: "dice-five", color: dillaColor } ], active: false, attention: false
           , tip: "a new Dilla push: kick near the grid, snare late, hats a little either side" } ]
     , helpPulse: false
+    , layers: []
     }
   BarAction act next -> do
     case act of

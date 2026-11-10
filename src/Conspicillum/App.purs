@@ -50,7 +50,7 @@ import Conspicillum.View.Sentence (sentence)
 import Conspicillum.View.Strip (loupe, loupeBackdrop, loupeSource, loupeView, strip, stripBackdrop)
 import Conspicillum.View.Svg as Svg
 import Control.Alt ((<|>))
-import Data.Array (catMaybes, drop, elem, filter, find, findIndex, index, length, mapMaybe, mapWithIndex, nub, null, snoc, take, (..))
+import Data.Array (catMaybes, drop, elem, filter, find, findIndex, index, length, mapMaybe, mapWithIndex, null, snoc, take, (..))
 import Data.Const (Const)
 import Data.Either (Either(..))
 import Data.Foldable (foldl, for_)
@@ -74,12 +74,12 @@ import Reef.Conspicillum.Cloud (Spec)
 import Reef.Conspicillum.Decimal (fixed)
 import Reef.Conspicillum.Display (Material(..), materialName, segments)
 import Reef.Conspicillum.Notation (Line, knobLabel, parse, print)
-import Reef.Conspicillum.Parameter (Parameter(..), SendBus(..), denormalise, describe, format, normalise, read, set)
+import Reef.Conspicillum.Parameter (Parameter(..), SendBus(..), denormalise, format, normalise, read, set)
 import Reef.Conspicillum.Preset (Preset, bankName)
 import Reef.Conspicillum.Presets (presets)
 import Reef.Conspicillum.Protocol (encodeScene)
 import Reef.Conspicillum.Sentence (ruleRows, sentences)
-import Triggerfish.Bar (Bar, TabLook(..))
+import Triggerfish.Bar (Bar)
 import Triggerfish.Browser (Browser, Item)
 import Triggerfish.Browser as Browser
 import Triggerfish.SourceQuery as SQ
@@ -214,7 +214,7 @@ type Away =
 
 data Action
   = Initialise
-  | ChooseLayer String
+  | ChooseTab Tab
   | ToLimulus
   | Loaded (Either String Corpora)
   | ShelfLoaded (Either String (Array Kept))
@@ -435,25 +435,28 @@ browserOf st =
       , actions: if kept then [ "delete" ] else []
       }
 
--- | The bar: the three views and ⓘ.
+-- | The bar: the four layers and ⓘ. The views are the page's sub-nav.
 barOf :: State -> Bar
 barOf st =
-  { tabs:
-      [ tab ModuleTab "module" "The instrument: the ring, the material, the sentence and four knobs"
-      , tab LaboratoryTab "laboratory" "Every control, section by section; a pin puts one on the module as a knob"
-      , tab LibraryTab "library" "Every preset, to search, categorise, tag and collect"
-      ]
+  { tabs: []
   , marks: ""
   , icons: []
   , rebusTip: ""
   -- "→ Limulus" is on the face, beside the line it sends (2026-11-10)
   , chips: []
+  -- the four layers, up in the bar where the transport is (AC, 2026-11-10)
+  , layers: Stage.layers <#> \l ->
+      let
+        playing = layerPlaying st l
+        inHand = l == st.layer
+      in
+        { id: l, label: l, inHand, playing
+        , tip: "layer " <> l <> (if inHand then ", in hand" else if playing then ", playing: take it in hand" else ": take it in hand")
+        }
   , pickers: []
   , help: "What Conspicillum is, and how to play it"
   , helpPulse: false
   }
-  where
-  tab t label tip = { id: tabId t, label, active: st.tab == t, enabled: true, look: Ink, tip, accepts: [] }
 
 tabId :: Tab -> String
 tabId = case _ of
@@ -469,7 +472,8 @@ cls = HP.class_ <<< HH.ClassName
 render :: State -> H.ComponentHTML Action Slots Aff
 render st =
   HH.div [ cls "consp" ]
-    ( [ case st.tab of
+    ( [ subNav st
+      , case st.tab of
           LibraryTab -> HH.div [ cls "instrument wide" ] [ maybe note (const (libraryPanel st)) (working st) ]
           _ -> HH.div [ cls "instrument" ] case working st of
             Nothing -> [ note ]
@@ -481,6 +485,25 @@ render st =
     )
   where
   note = HH.p [ cls "note" ] [ HH.text (fromMaybe "Reading the corpora…" st.problem) ]
+
+-- | The views of the layer in hand, under the bar's layers (AC, 2026-11-10):
+-- | the module, the laboratory and the library are each about the layer in
+-- | hand, so they sit here, named for it, rather than beside the layers.
+subNav :: forall w. State -> HH.HTML w Action
+subNav st =
+  HH.nav [ cls "subnav" ]
+    ( [ HH.span [ cls "subnavlab" ] [ HH.text ("layer " <> st.layer) ] ]
+        <> map tab
+          [ Tuple ModuleTab "The instrument: the ring, the material, the sentence and four knobs"
+          , Tuple LaboratoryTab "Every control, section by section; a pin puts one on the module as a knob"
+          , Tuple LibraryTab "Every preset, to search, categorise, tag and collect; a choice loads into the layer in hand"
+          ]
+    )
+  where
+  tab (Tuple t tip) =
+    HH.button
+      [ cls ("subtab" <> if st.tab == t then " on" else ""), HP.title tip, HE.onClick \_ -> ChooseTab t ]
+      [ HH.text (tabId t) ]
 
 -- | What Conspicillum is, in one card: on a first visit, and from ⓘ.
 welcomeCard :: forall w. HH.HTML w Action
@@ -610,8 +633,7 @@ modulePanel st w =
                       ]
                 )
             , HH.div [ cls "statement" ]
-                [ layerBar st
-                , whereFrom st w
+                [ whereFrom st w
                 , presetHead st w
                 , sentenceView { preset: w.preset, set: w.set, shape: st.shape, highlighted: st.highlighted }
                 ]
@@ -619,24 +641,6 @@ modulePanel st w =
             ]
         ]
     ]
-
--- | The layers, a to d: the one in hand inked, a dot on each that plays.
--- | Every layer is its own cloud on the rig, on its own orbit.
-layerBar :: forall m. State -> H.ComponentHTML Action Slots m
-layerBar st =
-  HH.div [ cls "layers" ]
-    ( [ HH.span [ cls "layerslab" ] [ HH.text "layer" ] ]
-        <> (Stage.layers <#> \l ->
-          let
-            playing = if l == st.layer then st.playing else maybe false _.playing (Map.lookup l st.away)
-          in
-            HH.button
-              [ cls ("layer" <> (if l == st.layer then " on" else "") <> (if playing then " playing" else ""))
-              , HP.title (if l == st.layer then "layer " <> l <> ", in hand" else "layer " <> l <> (if playing then ", playing" else "") <> ": take it in hand")
-              , HE.onClick \_ -> ChooseLayer l
-              ]
-              [ HH.text l ])
-    )
 
 -- | Which bank and which preset of how many, and whether the rig is there:
 -- | what the panel's top bar said, above the name it belongs to.
@@ -865,7 +869,10 @@ handleQuery = case _ of
       "stage:laboratory" -> chooseTab LaboratoryTab
       "stage:library" -> chooseTab LibraryTab
       "help" -> H.modify_ _ { welcome = true }
-      _ -> pure unit
+      _
+        | Just l <- String.stripPrefix (String.Pattern "layerplay:") act -> toggleLayer l
+        | Just l <- String.stripPrefix (String.Pattern "layer:") act -> chooseLayer l
+        | otherwise -> pure unit
     pure (Just next)
   _ -> pure Nothing
 
@@ -1164,7 +1171,7 @@ handleAction = case _ of
     let
       recalled = entry.page >>= \page -> Tuple page <$> Shelf.fromStored page.current
     -- a layer not in hand: remember what it holds and whether it plays
-    if layer /= st.layer then
+    if layer /= st.layer then do
       H.modify_ \s -> s
         { away = Map.alter (\ma -> Just case ma, recalled of
             Just a, Nothing -> a { playing = entry.playing }
@@ -1176,6 +1183,7 @@ handleAction = case _ of
               , current: Just current, held: page.held, playing: entry.playing, stagedLine: Nothing, gate: [] }
             Nothing, Nothing -> (awayFrom s) { playing = entry.playing }) layer s.away
         }
+      H.raise Changed
     else do
       when (isNothing st.drag) do
         case recalled of
@@ -1195,7 +1203,7 @@ handleAction = case _ of
           H.modify_ _ { playing = entry.playing }
           H.raise (Armed entry.playing)
 
-  ChooseLayer layer -> chooseLayer layer
+  ChooseTab t -> chooseTab t
 
   Recall origin -> do
     recall origin
@@ -1399,6 +1407,34 @@ awayFrom :: State -> Away
 awayFrom st =
   { origin: st.origin, original: st.original, current: st.current, held: st.held
   , playing: st.playing, stagedLine: st.stagedLine, gate: st.gate }
+
+-- | Whether a layer plays, in hand or away.
+layerPlaying :: State -> String -> Boolean
+layerPlaying st l =
+  if l == st.layer then st.playing else maybe false _.playing (Map.lookup l st.away)
+
+-- | Start or stop one layer where it is: the one in hand as the transport
+-- | does, one away from what it holds, without taking it up.
+toggleLayer :: String -> M Unit
+toggleLayer l = do
+  st <- H.get
+  if l == st.layer then playOfItsOwn (not st.playing)
+  else do
+    -- a layer never held starts as a copy of the one in hand, as taking it up would
+    let a = fromMaybe ((awayFrom st) { playing = false, stagedLine = Nothing, gate = [] }) (Map.lookup l st.away)
+    if a.playing then do
+      sendText (Stage.stop l)
+      H.modify_ \s -> s { away = Map.insert l (a { playing = false }) s.away }
+      H.raise Changed
+    else do
+      let
+        there = st
+          { layer = l, origin = a.origin, original = a.original, current = a.current
+          , held = a.held, gate = a.gate }
+      for_ (Tuple <$> sceneText there <*> heldOf there) \(Tuple scene page) -> do
+        sendText (Stage.push { layer: l, base: baseOf a.origin, edited: edited there, page, scene })
+        H.modify_ \s -> s { away = Map.insert l (a { playing = true }) s.away }
+        H.raise Changed
 
 -- | Put the layer in hand away and take up another. A layer never held
 -- | before starts as a copy of the one in hand, stopped: the material and the

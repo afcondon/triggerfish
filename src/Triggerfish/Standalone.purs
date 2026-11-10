@@ -954,6 +954,7 @@ bar cfg st =
                 <> tabLookStyle t.look t.active t.enabled ] )
             [ HH.text t.label ]) b.tabs)
     ])
+      <> (if Array.null b.layers then [] else [ layerGroup b.layers ])
       <> (if b.marks == "" then [] else
         [ HH.button
             [ HE.onClick \_ -> PressBar "mark", HP.title "flag the last couple of bars as a good bit"
@@ -977,6 +978,27 @@ bar cfg st =
                 <> (if c.attention then "background:#fdf7e4;color:#8a6a10;border-color:#c9a445"
                     else if c.active then "background:#eef3f1;color:#3d5a52" else "background:transparent;color:#8a8576") ]
             (map faIcon c.icons <> (if c.label == "" then [] else [ HH.span [ style (if Array.null c.icons then "" else "margin-left:3px") ] [ HH.text c.label ] ]))) b.chips
+  -- the page's layers (Conspicillum's four clouds): a letter to take one in
+  -- hand, inked when it is; beside it the layer's own ▶ or ■, green while it
+  -- plays, whether it is in hand or not
+  layerGroup ls =
+    HH.div [ style "display:flex;flex:0 0 auto;gap:6px;align-items:center" ]
+      ( [ HH.span [ style "font-family:Georgia,serif;font-size:9px;letter-spacing:0.16em;text-transform:uppercase;color:#8a8576" ] [ HH.text "layers" ] ]
+          <> map layerCell ls )
+  layerCell l =
+    HH.div [ style "display:flex;border:1px solid #00000026;border-radius:6px;overflow:hidden;box-shadow:0 1px 2px #0000001a" ]
+      [ HH.button
+          [ HE.onClick \_ -> PressBar ("layer:" <> l.id), HP.title l.tip
+          , style $ "padding:4px 10px;border:none;cursor:pointer;font-family:Georgia,serif;font-size:12px;min-width:28px;"
+              <> (if l.inHand then "background:#1c1a12;color:#fffdf6;font-weight:600" else "background:#fffdf6;color:#3f3c33") ]
+          [ HH.text l.label ]
+      , HH.button
+          [ HE.onClick \_ -> PressBar ("layerplay:" <> l.id)
+          , HP.title (if l.playing then "stop layer " <> l.label else "play layer " <> l.label)
+          , style $ "padding:4px 7px;border:none;border-left:1px solid #00000018;cursor:pointer;font-size:10px;min-width:24px;"
+              <> (if l.playing then "background:#3f8f5a;color:#fff" else "background:#f4f1e8;color:#8a8576") ]
+          [ HH.text (if l.playing then "\x25a0" else "\x25b6") ]
+      ]
   -- the machine's dropdowns (Vetula's key and scale) and its ⓘ, at the right
   machineRight b =
     map (\p -> HH.slot (Proxy :: _ "picker") p.id Select.component p.input \(Select.Selected v) -> PressBar ("pick:" <> p.id <> ":" <> v)) b.pickers

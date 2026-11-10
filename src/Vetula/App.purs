@@ -1276,6 +1276,7 @@ handleQuery = case _ of
           , { id: "scale", input: (Select.cascadingInput modeGroups) { selected = Just (currentModeValue s.key.mode), searchable = true } } ]
       , help: "keys & help"
       , helpPulse: s.helpPulse
+      , layers: []
       , chips:
           -- nothing about the progression: the page and the drawer have it, and
           -- the drawer's "+ new" starts another (AC, 2026-10-27)
