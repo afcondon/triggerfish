@@ -611,7 +611,7 @@ modulePanel st w =
     -- material across the top, as wide as the page allows; under it, left to
     -- right, the ring, the knobs, the sentence, and the line it all comes from.
     [ HH.section [ cls "face" ]
-        [ HH.div [ cls "stripwrap" ] ([ chooser st w ] <> soundView st w)
+        [ materialStrip st w
         , HH.div [ cls "deck" ]
             [ HH.div [ cls "ringcol" ]
                 [ circle { plan: st.plan, phase: st.phase, playing: st.playing, dots: st.dots, now: st.now }
@@ -739,18 +739,17 @@ jack name level =
 
 laboratoryPanel :: forall m. State -> Working -> H.ComponentHTML Action Slots m
 laboratoryPanel st w =
-  HH.div_
-    [ HH.section [ cls "panel labtop" ]
-        ( [ HH.div [ cls "labtitle" ]
-              [ HH.div [ cls "grow" ] [ presetHead st w ]
-              , HH.div [ cls "labtransport" ] [ HH.span [ cls "tempo" ] [ HH.text (cycleNote st w.material) ] ]
-              ]
-          , chooser st w
-          ]
-            <> soundView st w
-        )
+  -- the same top as the module's, so the two views differ only below it
+  -- (AC, 2026-11-10); the name and the tagline are the module's, down there
+  HH.section [ cls "face" ]
+    [ materialStrip st w
     , laboratoryView { preset: w.preset, set: w.set, tempo: st.tempo }
     ]
+
+-- | The material across the top of the module and the laboratory alike: the
+-- | chooser, the strip and the loupe.
+materialStrip :: forall m. State -> Working -> H.ComponentHTML Action Slots m
+materialStrip st w = HH.div [ cls "stripwrap" ] ([ chooser st w ] <> soundView st w)
 
 -- ── the library ────────────────────────────────────────────────────────────
 
@@ -774,20 +773,6 @@ libraryPanel st =
     FromLibrary
 
 -- ── readouts ─────────────────────────────────────────────────────────────────
-
-cycleNote :: State -> Material -> String
-cycleNote st m =
-  let
-    bars = case m of
-      WholeTape t | t.bars > 1 -> t.bars
-      HitsAsBars keys -> length keys
-      _ -> 0
-    c = st.plan.cycle
-  in
-    "cycle " <> show c
-      <> (if bars > 0 then " · bar " <> show (((c `mod` bars) + bars) `mod` bars + 1) <> "/" <> show bars else "")
-      <> " · " <> fixed 1 st.tempo <> " bpm" <> (if st.locked then "" else " (free)")
-      <> maybe "" (\problem -> " · n: " <> problem) (st.plays >>= _.problem)
 
 -- | Where the rig is in a material of several bars, which the panel's top bar
 -- | used to say: "bar 3 of 8 · ".

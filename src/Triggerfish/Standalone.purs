@@ -893,7 +893,9 @@ bar cfg st =
       -- Solo, the base case, needs no word; in Atlantis a quiet tag says that
       -- the rig is the one playing.
       <> (if st.mode == Atlantis then [ atlantisTag ] else [])
-      <> (if cfg.playable then [ button (if st.playing then "■ Stop" else "▶ Play") TogglePlay ] else [])
+      -- a page with layers (Conspicillum) has a ▶/■ on each in the bar, which
+      -- is its transport; space still plays the layer in hand (AC, 2026-11-10)
+      <> (if cfg.playable && not hasLayers then [ button (if st.playing then "■ Stop" else "▶ Play") TogglePlay ] else [])
       -- a machine that runs on the rig with or without a page (Selene) has
       -- the same button, drawing and setting whether it runs there (CR-11)
       <> (if not cfg.playable then [ button (if st.hushed then "▶ Play" else "■ Stop") (if st.hushed then Resume else StopRig) ] else [])
@@ -935,6 +937,7 @@ bar cfg st =
           <> "text-transform:uppercase;color:#eaf3fa;background:linear-gradient(#3a6b8a,#2d5670)"
       ]
       [ HH.text "Atlantis" ]
+  hasLayers = maybe false (not <<< Array.null <<< _.layers) st.machineBar
   -- the machine's own controls (Triggerfish.Bar): its tabs, ◆ mark with the
   -- counts and clear, its rebus and its chips, drawn here as the drawer draws
   -- its rows
