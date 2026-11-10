@@ -87,6 +87,7 @@ import Binnacle.TabBus as Bus
 import Triggerfish.Transport (Mode(..))
 import Triggerfish.Transport.Store as TransportStore
 import Triggerfish.Tempo as Tempo
+import Triggerfish.LinkHealth as LinkHealth
 import Triggerfish.TempoWidget as TempoWidget
 
 -- | A machine as the dashboard knows it: its slot, its nameplate, and where its
@@ -148,6 +149,10 @@ type State =
   -- the tempo widget's reading (Triggerfish.TempoWidget), written only when
   -- what it draws changes
   , clock :: Maybe TempoWidget.Reading
+  -- the Link session's health, from the rig's `link` frame (Diaphus's peer
+  -- count, and each receiver's refused anchors), and this page's own refusals
+  , link :: Maybe LinkHealth.LinkHealth
+  , pageRefused :: Int
   , bus :: Maybe Bus.Bus
   , table :: RM.Table
   , ports :: Array String
@@ -252,7 +257,7 @@ component :: forall q i o. H.Component q i o Aff
 component = H.mkComponent
   { initialState: \_ ->
       { mode: Solo, now: 0.0, heard: Map.empty, rig: Nothing, rigUp: false
-      , tempo: 120.0, freeTempo: 120.0, freeT0: 0.0, clock: Nothing, locked: false, bus: Nothing
+      , tempo: 120.0, freeTempo: 120.0, freeT0: 0.0, clock: Nothing, link: Nothing, pageRefused: 0, locked: false, bus: Nothing
       , table: RM.defaultTable, ports: [], sampleSets: [], hot: Nothing, router: Router.initial
       , matrix: Nothing, pick: Nothing, focus: Nothing, sheet: Nothing, foldDrums: true, vetulaSent: Nothing
       , relays: false, allVoices: false, rigLoops: Map.empty, stageCards: Nothing, bosun: Nothing
@@ -342,6 +347,7 @@ handleAction = case _ of
       r <- liftEffect $ Clock.read (Binnacle.clock bin)
       let reading = TempoWidget.reading st.freeTempo r
       when (Just reading /= st.clock) (H.modify_ _ { clock = Just reading })
+      when (r.anchorsRefused /= st.pageRefused) (H.modify_ _ { pageRefused = r.anchorsRefused })
   -- The tempo, typed here: for every page and, with the rig up, for Link.
   SetTempo v -> for_ (Number.fromString v) setTempo
   BumpTempo d -> do
@@ -555,6 +561,9 @@ handleAction = case _ of
     sendRig "selene-applied"
 
   RigFrame msg -> do
+    for_ (LinkHealth.read msg) \l -> do
+      old <- H.gets _.link
+      when (Just l /= old) (H.modify_ _ { link = Just l })
     for_ (readApplied msg) \bs -> do
       old <- H.gets _.seleneBanks
       when (bs /= old) (H.modify_ _ { seleneBanks = bs })
@@ -673,6 +682,30 @@ render st =
 -- | A `stage {"slot", "playing", …}` line: what the rig plays for a slot.
 readStage :: String -> Maybe { slot :: String, playing :: Boolean }
 readStage line = String.stripPrefix (Pattern "stage ") line >>= \json -> hush (readJSON json)
+
+-- | Beside the tempo, while Link is driving it: the peers, and the refused
+-- | anchors only when there are any (or a receiver did not answer); every
+-- | count, by receiver, on hover.
+linkHealth :: forall w i. State -> HH.HTML w i
+linkHealth st = case st.link of
+  Just l | st.locked ->
+    let
+      counts = l.refused <> [ { receiver: "this page", count: Just st.pageRefused } ]
+      refused = Array.foldl (+) 0 (Array.mapMaybe _.count counts)
+      silent = Array.filter (isNothing <<< _.count) counts
+      peers = case l.peers of
+        0 -> "no peers"
+        1 -> "1 peer"
+        n -> show n <> " peers"
+      problem
+        | refused > 0 = [ HH.span [ cls "link-refused" ] [ HH.text (show refused <> " refused") ] ]
+        | not (null silent) = [ HH.span [ cls "link-silent" ] [ HH.text "?" ] ]
+        | otherwise = []
+      tip = "Link: " <> peers <> " besides the rig.\nAnchors refused, which should all be 0:\n"
+        <> String.joinWith "\n" (counts <#> \c -> "  " <> c.receiver <> ": " <> maybe "no answer" show c.count)
+    in
+      HH.span [ cls "link-health", HP.title tip ] ([ HH.text peers ] <> problem)
+  _ -> HH.text ""
 
 -- | A bank the rig keeps for the modular, and whether a hush has silenced it
 -- | (es9-daemon's panic for the ES-9; for the FH-2, the keeper's depth-0
@@ -1016,6 +1049,7 @@ topBar st =
             )
         , HH.span [ cls "spacer" ] []
         , maybe (HH.text "") (TempoWidget.view (Just { bump: BumpTempo, set: SetTempo })) st.clock
+        , linkHealth st
         , HH.button [ cls "btn", HE.onClick \_ -> StopAll, HP.disabled (not (Array.any (playing st) machines)) ] [ HH.text "■ Stop all" ]
         , HH.button [ cls "btn panic", HE.onClick \_ -> Panic ] [ HH.text "Panic" ]
         ]

@@ -66,6 +66,10 @@
     svg.flows .engine:hover .sub, svg.flows .engine:focus-visible .sub { fill: var(--ink); }
     svg.flows .engine.on { cursor: default; } svg.flows .engine.on .sub { fill: var(--ink); font-weight: 600; }
     .spacer { flex: 1; }
+    /* The Link session beside the tempo: its peers, and refused anchors only when there are any. */
+    .link-health { display: inline-flex; gap: 6px; font: 11px/1 'SF Mono', Menlo, monospace; color: var(--muted, #8a8576); cursor: default; }
+    .link-health .link-refused { color: #b3261e; }
+    .link-health .link-silent { color: #b07a12; }
 
     .btn { display: inline-block; font: 600 11px/1 var(--display); letter-spacing: .12em; text-transform: uppercase; color: var(--ink); background: transparent; border: 1px solid var(--ink); padding: 8px 12px; cursor: pointer; text-decoration: none; }
     .btn.on { background: var(--ink); color: var(--plate); }

@@ -22,6 +22,7 @@ import Test.FollowSpec (runFollowTests)
 import Test.HarmonySpec (runHarmonyTests)
 import Test.LepidopteraScaleSpec (runLepidopteraScaleTests)
 import Test.CardLineSpec (runCardLineTests)
+import Test.LinkHealthSpec (runLinkHealthTests)
 import Test.RevoiceSpec (runRevoiceTests)
 import Test.TwisterSpec (runTwisterTests)
 import Test.SeleneTwisterSpec (runSeleneTwisterTests)
@@ -166,6 +167,7 @@ main = do
   runHarmonyTests
   runLepidopteraScaleTests
   runCardLineTests
+  runLinkHealthTests
   log ("steps per scenario: " <> show n <> "\n")
 
   -- A. Chord quantiser: NOTES churning every step, chord overlay on. EVERY
