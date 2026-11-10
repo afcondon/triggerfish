@@ -196,6 +196,7 @@ type State =
 
 data Action
   = Initialise
+  | ToLimulus
   | Loaded (Either String Corpora)
   | ShelfLoaded (Either String (Array Kept))
   | LibraryLoaded (Either String { library :: Library, hash :: Maybe String })
@@ -562,11 +563,13 @@ modulePanel st w =
     spec = w.preset.line.spec
     knobs = take 4 w.preset.line.knobs
   in
-    [ HH.section [ cls "panel" ]
-        [ HH.i [ cls "screw tl" ] [], HH.i [ cls "screw tr" ] [], HH.i [ cls "screw bl" ] [], HH.i [ cls "screw br" ] []
-        , panelTop st w
-        , HH.div [ cls "pbody" ]
-            [ HH.div_
+    -- No box: the page is the instrument, between the shell's drawers. The
+    -- material across the top, as wide as the page allows; under it, left to
+    -- right, the ring, the knobs, the sentence, and the line it all comes from.
+    [ HH.section [ cls "face" ]
+        [ HH.div [ cls "stripwrap" ] ([ chooser st w ] <> soundView st w)
+        , HH.div [ cls "deck" ]
+            [ HH.div [ cls "ringcol" ]
                 [ circle { plan: st.plan, phase: st.phase, playing: st.playing, dots: st.dots, now: st.now }
                 , HH.div [ cls "key" ]
                     [ HH.span_ [ HH.span [ cls "sw fwd" ] [], HH.text "forwards" ]
@@ -575,42 +578,49 @@ modulePanel st w =
                     , HH.span_ [ HH.text "colour is where it reads" ]
                     ]
                 ]
-            -- the knobs under the sentence that names them, beside the ring,
-            -- so the whole face fits a laptop's screen
-            , HH.div [ cls "pright" ]
-                [ presetHead st w
-                , sentenceView { preset: w.preset, set: w.set, shape: st.shape, highlighted: st.highlighted }
-                , HH.div [ cls "pbottom" ]
-                    ( (mapWithIndex (knobView st spec) knobs)
-                        <> [ HH.span [ cls "sp" ] [] ]
-                        <>
-                          [ HH.div [ cls "jacks" ]
-                              [ jack "OUT" (if st.playing then Just 0.3 else Nothing)
-                              , jack "A" (Just (read (SendLevel SendA) spec))
-                              , jack "B" (Just (read (SendLevel SendB) spec))
-                              ]
+            , HH.div [ cls "knobcol" ]
+                ( mapWithIndex (knobView st spec) knobs
+                    <>
+                      [ HH.div [ cls "jacks" ]
+                          [ jack "OUT" (if st.playing then Just 0.3 else Nothing)
+                          , jack "A" (Just (read (SendLevel SendA) spec))
+                          , jack "B" (Just (read (SendLevel SendB) spec))
                           ]
-                    )
+                      ]
+                )
+            , HH.div [ cls "statement" ]
+                [ whereFrom st w
+                , presetHead st w
+                , sentenceView { preset: w.preset, set: w.set, shape: st.shape, highlighted: st.highlighted }
                 ]
+            , lineView st
             ]
-        , HH.div [ cls "stripwrap" ] ([ chooser st w ] <> soundView st w)
         ]
     ]
 
-panelTop :: forall m. State -> Working -> H.ComponentHTML Action Slots m
-panelTop st w =
-  HH.div [ cls "ptop" ]
-    [ HH.span [ cls "brand" ] [ HH.text "CONSPICILLUM" ]
-    , HH.span [ cls "bankname" ]
-        [ HH.text case st.origin of
-            Just (Factory i) -> bankName w.preset.bank <> " · " <> show (i + 1) <> "/" <> show (length st.presets)
-            Just (Shelved _) -> "kept"
-            Nothing -> if w.preset.name == "From the line" then "from the line" else "not kept"
-        ]
-    , HH.span [ cls "sp" ] []
-    , HH.span [ cls ("lamp" <> if st.connected then " on" else ""), HP.title (if st.connected then "the rig is there" else "no rig: retrying") ] []
-    , HH.span [ cls "tempo" ] [ HH.text (cycleNote st w.material) ]
+-- | Which bank and which preset of how many, and whether the rig is there:
+-- | what the panel's top bar said, above the name it belongs to.
+whereFrom :: forall m. State -> Working -> H.ComponentHTML Action Slots m
+whereFrom st w =
+  HH.div [ cls "wherefrom" ]
+    [ HH.span [ cls ("lamp" <> if st.connected then " on" else ""), HP.title (if st.connected then "the rig is there" else "no rig: retrying") ] []
+    , HH.text case st.origin of
+        Just (Factory i) -> bankName w.preset.bank <> " · " <> show (i + 1) <> "/" <> show (length st.presets)
+        Just (Shelved _) -> "kept"
+        Nothing -> if w.preset.name == "From the line" then "from the line" else "not kept"
     ]
+
+-- | The scene as the line of Tidal++ that makes it, a term to a row, as
+-- | Limulus would have it. Read here; written in Limulus (the right drawer).
+lineView :: forall m. State -> H.ComponentHTML Action Slots m
+lineView st =
+  HH.div [ cls "tidal" ]
+    [ HH.div [ cls "tidallab" ] [ HH.text "Tidal++" ]
+    , HH.pre_ [ HH.text (maybe "" termsByRow (lineOf st)) ]
+    , HH.button [ cls "tolimulus", HP.title "Put this line in Limulus, to edit and play it there", HE.onClick \_ -> ToLimulus ] [ HH.text "→ Limulus" ]
+    ]
+  where
+  termsByRow = String.replaceAll (String.Pattern " # ") (String.Replacement "\n  # ")
 
 -- | The preset's name, what it is, and whether it has been changed, with the
 -- | way back. Keeping, renaming and deleting are the drawer's.
@@ -641,7 +651,7 @@ soundView st w =
         [ HH.span_ [ HH.text (materialName w.material) ]
         , HH.b_ [ HH.text w.preset.line.set ]
         , HH.span [ cls "sp" ] []
-        , HH.span_ [ HH.text (materialNote w) ]
+        , HH.span_ [ HH.text (barNote st w.material <> materialNote w) ]
         ]
     , strip
         { material: w.material, plan: st.plan, phase: st.phase, playing: st.playing, lanes: st.lanes
@@ -734,6 +744,19 @@ cycleNote st m =
       <> (if bars > 0 then " · bar " <> show (((c `mod` bars) + bars) `mod` bars + 1) <> "/" <> show bars else "")
       <> " · " <> fixed 1 st.tempo <> " bpm" <> (if st.locked then "" else " (free)")
       <> maybe "" (\problem -> " · n: " <> problem) (st.plays >>= _.problem)
+
+-- | Where the rig is in a material of several bars, which the panel's top bar
+-- | used to say: "bar 3 of 8 · ".
+barNote :: State -> Material -> String
+barNote st m =
+  let
+    bars = case m of
+      WholeTape t | t.bars > 1 -> t.bars
+      HitsAsBars keys -> length keys
+      _ -> 0
+    c = st.plan.cycle
+  in
+    if bars > 0 && st.playing then "bar " <> show (((c `mod` bars) + bars) `mod` bars + 1) <> " of " <> show bars <> " · " else ""
 
 materialNote :: Working -> String
 materialNote w = case w.material of
@@ -922,6 +945,7 @@ remember o = H.liftEffect do
 
 handleAction :: Action -> M Unit
 handleAction = case _ of
+  ToLimulus -> toLimulus
   Initialise -> do
     w <- H.liftEffect window
     reached <- H.liftEffect (Window.location w >>= Location.hostname)
