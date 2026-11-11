@@ -76,7 +76,7 @@ import Helm.WebMIDI (MIDIOutput)
 import Reef.Conspicillum.Cloud (Spec)
 import Reef.Conspicillum.Decimal (fixed)
 import Reef.Conspicillum.Display (Material(..), materialName, segments)
-import Reef.Conspicillum.Notation (Line, knobLabel, parse, print)
+import Reef.Conspicillum.Notation (Line, Mode(..), knobLabel, modeName, modeOf, parse, print)
 import Reef.Conspicillum.Parameter (Parameter(..), SendBus(..), denormalise, format, normalise, read, set)
 import Reef.Conspicillum.Preset (Preset, bankName)
 import Reef.Conspicillum.Presets (presets)
@@ -646,6 +646,7 @@ modulePanel st w =
             , HH.div [ cls "statement" ]
                 [ whereFrom st w
                 , presetHead st w
+                , playsView st w
                 , sentenceView { preset: w.preset, set: w.set, shape: st.shape, highlighted: st.highlighted }
                 ]
             , lineView st
@@ -664,6 +665,43 @@ whereFrom st w =
         Just (Shelved _) -> "kept"
         Nothing -> if w.preset.name == "From the line" then "from the line" else "not kept"
     ]
+
+-- | How the layer plays, in words (AC, 2026-11-11): the mode its line says
+-- | first and what it plays from, one sample or a folder; then, while the 3D
+-- | is there, what its pads do in that mode.
+playsView :: forall m. State -> Working -> H.ComponentHTML Action Slots m
+playsView st w =
+  HH.div [ cls "plays" ]
+    ( [ HH.div_ [ HH.span [ cls "mode" ] [ HH.text (modeName mode) ], HH.text (" · " <> material <> bars) ] ]
+        <> case st.pads of
+          Nothing -> []
+          Just _ -> [ HH.div [ cls ("pads" <> if st.take.recording then " rec" else ""), HP.title padsTip ] [ HH.text padsText ] ]
+    )
+  where
+  line = w.preset.line
+  mode = modeOf line
+  material = case line.n of
+    Just k -> "one sample, " <> line.set <> ":" <> show k
+    Nothing -> "a folder of " <> show (length w.set.corpus.samples) <> ", " <> line.set
+  bars = case mode of
+    TapeMode
+      | not (null line.spec.tape.samples) -> " · a sample a bar, " <> plural (length line.spec.tape.samples) "bar"
+      | line.spec.tape.bars > 1 -> " · " <> plural line.spec.tape.bars "bar"
+    _ -> ""
+  padsText = "3D pads · " <> case mode of
+    SamplerMode ->
+      "sampler" <> (if st.take.recording then " · recording" else "")
+        <> " · loop " <> plural st.take.bars "bar"
+        <> (if null st.take.hits then "" else " · " <> plural (length st.take.hits) "hit")
+    TapeMode ->
+      let lit = length (filter identity st.gate)
+      in "step gate" <> (if lit > 0 then " · " <> plural lit "step" <> " lit" else "")
+    CloudMode -> "nothing yet in a cloud"
+  padsTip = case mode of
+    SamplerMode -> "Pad k plays sample k now. Side buttons: 20 records, 21 clears, 22 sets the loop to 1, 2 or 4 bars."
+    TapeMode -> "A lit pad lets its step jump, from the next bar. Any side button lets the gate go."
+    CloudMode -> "The pads do nothing on a cloud yet."
+  plural k word = show k <> " " <> word <> (if k == 1 then "" else "s")
 
 -- | The scene as the line of Tidal++ that makes it, a term to a row, as
 -- | Limulus would have it. Read here; written in Limulus (the right drawer).
@@ -1493,9 +1531,9 @@ paintPads = do
       if sampling st then Pads.paintSampler out st.take.recording
       else Pads.paint out grid st.gate
 
--- | Whether the preset in hand is a sampler (`n "…"`), so the pads play it.
+-- | Whether the preset in hand is a sampler, so the pads play it.
 sampling :: State -> Boolean
-sampling st = maybe false (\w -> w.preset.line.spec.samplePattern /= "") (working st)
+sampling st = maybe false (\w -> modeOf w.preset.line == SamplerMode) (working st)
 
 -- | Change the take, and send the scene that carries it.
 retake :: (Take -> Take) -> M Unit
