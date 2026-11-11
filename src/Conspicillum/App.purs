@@ -197,6 +197,8 @@ type State =
   -- | output, to light its pads, when the hub has it.
   , gate :: Array Boolean
   , pads :: Maybe MIDIOutput
+  -- | What the pads were last lit to show, so a frame repaints only a change.
+  , padsShown :: String
   -- | On a Sampler preset, the loop of pad hits (`Conspicillum.Take`): the
   -- | layer's own, like the gate, and never the preset's.
   , take :: Take
@@ -303,6 +305,7 @@ initialState _ =
   , gate: []
   , take: Take.empty
   , pads: Nothing
+  , padsShown: ""
   , layer: "a"
   , away: Map.empty
   }
@@ -1035,7 +1038,7 @@ handleAction = case _ of
   Loaded (Left problem) -> H.modify_ _ { problem = Just problem }
 
   PadsReady out -> do
-    H.modify_ _ { pads = out }
+    H.modify_ _ { pads = out, padsShown = "" }
     paintPads
 
   FromPads press -> do
@@ -1134,6 +1137,7 @@ handleAction = case _ of
       loupeAt = maybe planned.loupeAt (\g -> g.reads.from.segment) (lastOf begun)
     H.put planned { dots = drop (length dots - 160) dots, loupeAt = loupeAt, unsent = planned.unsent || (retempo && planned.playing) }
     when connected (askPlays (max 0 cycle))
+    paintPads
     -- A new connection, including a re-dial after the rig restarted, asks
     -- the stage what is loaded.
     if not connected then H.modify_ _ { staged = false }
@@ -1476,10 +1480,18 @@ chooseLayer layer = do
 paintPads :: M Unit
 paintPads = do
   st <- H.get
-  let grid = maybe 16 (\w -> w.preset.line.spec.steps.grid) (working st)
-  for_ st.pads \out -> H.liftEffect
-    if sampling st then Pads.paintSampler out st.take.recording
-    else Pads.paint out grid st.gate
+  let
+    grid = maybe 16 (\w -> w.preset.line.spec.steps.grid) (working st)
+    -- the preset, the layer and the take all change what the pads show, and
+    -- none of them says so: so each frame asks, and only a change is sent
+    shown =
+      if sampling st then "sampler " <> show st.take.recording
+      else "gate " <> show grid <> " " <> show st.gate
+  for_ st.pads \out -> unless (shown == st.padsShown) do
+    H.modify_ _ { padsShown = shown }
+    H.liftEffect
+      if sampling st then Pads.paintSampler out st.take.recording
+      else Pads.paint out grid st.gate
 
 -- | Whether the preset in hand is a sampler (`n "…"`), so the pads play it.
 sampling :: State -> Boolean
