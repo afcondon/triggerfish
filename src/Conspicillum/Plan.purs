@@ -18,6 +18,7 @@ import Data.Array (length, zipWith)
 import Data.Foldable (maximum)
 import Data.Maybe (fromMaybe, maybe)
 import Conspicillum.Corpora (SampleSet, corpusFor)
+import Conspicillum.Take as Take
 import Reef.Conspicillum.Cloud (Emit, Play, cycleOfPlays)
 import Reef.Conspicillum.Corpus (Query)
 import Reef.Conspicillum.Display (Location, Material, colourAt, colourCss, lanes, locate, wedges)
@@ -51,12 +52,18 @@ cycleSeconds :: Number -> Number
 cycleSeconds tempo = 240.0 / tempo
 
 -- | The scene as the rig is sent it. The warp ratio is the rig's tempo against
--- | the tape's, so a new tempo is a new scene.
-sceneOf :: { set :: SampleSet, line :: Line, query :: Query, tempo :: Number, gate :: Array Boolean } -> Scene
-sceneOf { set, line, query, tempo, gate } =
+-- | the tape's, so a new tempo is a new scene. A take (`Conspicillum.Take`,
+-- | as notation) is stacked with the preset's own pattern here and only here,
+-- | so it plays and is drawn without ever being part of the preset.
+sceneOf :: { set :: SampleSet, line :: Line, query :: Query, tempo :: Number, gate :: Array Boolean, take :: String } -> Scene
+sceneOf { set, line, query, tempo, gate, take } =
   { corpus: corpusFor set line
   , query
-  , spec: line.spec { warp { ratio = tempo / maybe 120.0 _.bpm set.tape }, steps { gate = gate } }
+  , spec: line.spec
+      { warp { ratio = tempo / maybe 120.0 _.bpm set.tape }
+      , steps { gate = gate }
+      , samplePattern = Take.stack line.spec.samplePattern take
+      }
   , seed: line.seed
   }
 

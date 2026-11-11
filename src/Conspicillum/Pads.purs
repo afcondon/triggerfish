@@ -18,11 +18,18 @@
 -- |
 -- | A lit pad wears the colour of its slice on the ring, so the pad and the
 -- | ring always agree about which part of the bar is which.
+-- |
+-- | **On a Sampler preset the pads are the sampler instead** (`Conspicillum.Take`):
+-- | pad `k` strikes sample `k` now, and the side buttons record, clear and
+-- | lengthen a loop of those hits. Which a press means is the page's choice,
+-- | so a press here is only which control it was.
 module Conspicillum.Pads
   ( Press(..)
   , parse
   , toggle
   , lights
+  , samplerLights
+  , paintSampler
   , velocityOfHue
   , open
   , paint
@@ -39,9 +46,10 @@ import Effect (Effect)
 import Helm.WebMIDI (MIDIOutput, PortMatch(..))
 import Helm.WebMIDI as Midi
 
+-- | A pad (0 to 15), or a side button by its note (20 to 25).
 data Press
   = Pad Int
-  | LetGo
+  | Side Int
 
 derive instance eqPress :: Eq Press
 
@@ -60,7 +68,7 @@ pads = 16
 parse :: Array Int -> Maybe Press
 parse = case _ of
   [ 0x92, note, velocity ] | velocity > 0 && note >= firstPad && note < firstPad + pads -> Just (Pad (note - firstPad))
-  [ 0x93, note, velocity ] | velocity > 0 && note >= 20 && note <= 25 -> Just LetGo
+  [ 0x93, note, velocity ] | velocity > 0 && note >= 20 && note <= 25 -> Just (Side note)
   _ -> Nothing
 
 -- | Light or put out step `k`'s pad. A gate is made, all out, by the first
@@ -85,6 +93,12 @@ lights grid gate = range 0 (pads - 1) <#> \k ->
     hue = toNumber k / toNumber (max 1 grid) * 300.0
   in
     [ 0x92, firstPad + k, if lit then velocityOfHue hue else 0 ]
+
+-- | The sampler's pads: each in its own colour along the hue wheel, so a
+-- | sample is found by colour; all red while recording.
+samplerLights :: Boolean -> Array (Array Int)
+samplerLights recording = range 0 (pads - 1) <#> \k ->
+  [ 0x92, firstPad + k, if recording then velocityOfHue 0.0 else velocityOfHue (toNumber k / toNumber pads * 300.0) ]
 
 -- | A hue in degrees as the 3D's velocity, by the colours AC read off the
 -- | pads on 2026-11-09. Between them, straight lines: right about which
@@ -125,3 +139,7 @@ open { onPress, onReady } =
 -- | Light the pads for a gate.
 paint :: MIDIOutput -> Int -> Array Boolean -> Effect Unit
 paint output grid gate = for_ (lights grid gate) (Midi.send output)
+
+-- | Light the pads as the sampler.
+paintSampler :: MIDIOutput -> Boolean -> Effect Unit
+paintSampler output recording = for_ (samplerLights recording) (Midi.send output)

@@ -37,6 +37,8 @@ import Conspicillum.Library (Library)
 import Conspicillum.Library as Library
 import Conspicillum.Pads as Pads
 import Conspicillum.Plan (Grain, Plan, emptyPlan, planCycle, sceneOf)
+import Conspicillum.Take (Take)
+import Conspicillum.Take as Take
 import Conspicillum.Plays as Plays
 import Conspicillum.Shelf (Kept)
 import Conspicillum.Shelf as Shelf
@@ -195,6 +197,9 @@ type State =
   -- | output, to light its pads, when the hub has it.
   , gate :: Array Boolean
   , pads :: Maybe MIDIOutput
+  -- | On a Sampler preset, the loop of pad hits (`Conspicillum.Take`): the
+  -- | layer's own, like the gate, and never the preset's.
+  , take :: Take
   -- | The layer in hand (`Stage.layers`, "a" to "d"): the one this page shows
   -- | and edits. The others play on the rig regardless; what the page knew of
   -- | each, as it was left or as the stage last said, is `away`.
@@ -211,6 +216,7 @@ type Away =
   , playing :: Boolean
   , stagedLine :: Maybe String
   , gate :: Array Boolean
+  , take :: Take
   }
 
 data Action
@@ -295,6 +301,7 @@ initialState _ =
   , wantedKept: Nothing
   , welcome: false
   , gate: []
+  , take: Take.empty
   , pads: Nothing
   , layer: "a"
   , away: Map.empty
@@ -365,7 +372,7 @@ replan st = case working st of
   Nothing -> st { plan = emptyPlan }
   Just w ->
     let
-      scene = sceneOf { set: w.set, line: w.preset.line, query: w.preset.query, tempo: st.tempo, gate: st.gate }
+      scene = sceneOf { set: w.set, line: w.preset.line, query: w.preset.query, tempo: st.tempo, gate: st.gate, take: Take.notation st.take }
       plays cycle = Plays.inCycle scene.spec.samplePattern cycle st.plays
       plan = planCycle { scene, material: w.material, tempo: st.tempo, plays } (max 0 st.plan.cycle)
     in
@@ -373,7 +380,7 @@ replan st = case working st of
 
 sceneText :: State -> Maybe String
 sceneText st = working st <#> \w ->
-  encodeScene (sceneOf { set: w.set, line: w.preset.line, query: w.preset.query, tempo: st.tempo, gate: st.gate })
+  encodeScene (sceneOf { set: w.set, line: w.preset.line, query: w.preset.query, tempo: st.tempo, gate: st.gate, take: Take.notation st.take })
 
 -- | The preset in hand, as the stage keeps it for the other pages.
 heldOf :: State -> Maybe Held
@@ -595,7 +602,7 @@ laboratoryView = HH.memoized same \r ->
   laboratory
     { editSpec: EditSpec, setParameter: SetParameter, pin: Pin, nothing: NoOp }
     { preset: r.preset
-    , scene: encodeScene (sceneOf { set: r.set, line: r.preset.line, query: r.preset.query, tempo: r.tempo, gate: [] })
+    , scene: encodeScene (sceneOf { set: r.set, line: r.preset.line, query: r.preset.query, tempo: r.tempo, gate: [], take: "" })
     }
   where
   same a b = unsafeRefEq a.preset b.preset && unsafeRefEq a.set b.set && a.tempo == b.tempo
@@ -1033,14 +1040,28 @@ handleAction = case _ of
 
   FromPads press -> do
     st <- H.get
-    let grid = maybe 16 (\w -> w.preset.line.spec.steps.grid) (working st)
-    H.modify_ \s -> replan s
-      { gate = case press of
-          Pads.Pad k -> Pads.toggle grid k s.gate
-          Pads.LetGo -> []
-      }
-    changed
-    paintPads
+    if sampling st then case press of
+      -- the sampler: strike now, and keep the hit if recording
+      Pads.Pad k -> do
+        sendText ("conspicillum-hit " <> st.layer <> " " <> show k)
+        when st.take.recording do
+          reading <- H.liftEffect (traverseRig st Clock.read)
+          for_ reading \r -> retake (Take.record (r.beat / 4.0) k)
+      Pads.Side 20 -> do
+        H.modify_ \s -> s { take = s.take { recording = not s.take.recording } }
+        paintPads
+      Pads.Side 21 -> retake Take.clear
+      Pads.Side 22 -> retake Take.lengthen
+      Pads.Side _ -> pure unit
+    else do
+      let grid = maybe 16 (\w -> w.preset.line.spec.steps.grid) (working st)
+      H.modify_ \s -> replan s
+        { gate = case press of
+            Pads.Pad k -> Pads.toggle grid k s.gate
+            Pads.Side _ -> []
+        }
+      changed
+      paintPads
 
   Loaded (Right corpora) -> do
     H.modify_ _ { corpora = corpora }
@@ -1173,7 +1194,7 @@ handleAction = case _ of
               , current = Just current, held = page.held, playing = entry.playing }
             Nothing, Just (Tuple page current) ->
               { origin: page.origin >>= fromToken, original: page.original >>= Shelf.fromStored
-              , current: Just current, held: page.held, playing: entry.playing, stagedLine: Nothing, gate: [] }
+              , current: Just current, held: page.held, playing: entry.playing, stagedLine: Nothing, gate: [], take: Take.empty }
             Nothing, Nothing -> (awayFrom s) { playing = entry.playing }) layer s.away
         }
       H.raise Changed
@@ -1399,7 +1420,7 @@ publishLineIfDue = do
 awayFrom :: State -> Away
 awayFrom st =
   { origin: st.origin, original: st.original, current: st.current, held: st.held
-  , playing: st.playing, stagedLine: st.stagedLine, gate: st.gate }
+  , playing: st.playing, stagedLine: st.stagedLine, gate: st.gate, take: st.take }
 
 -- | Whether a layer plays, in hand or away.
 layerPlaying :: State -> String -> Boolean
@@ -1414,7 +1435,7 @@ toggleLayer l = do
   if l == st.layer then playOfItsOwn (not st.playing)
   else do
     -- a layer never held starts as a copy of the one in hand, as taking it up would
-    let a = fromMaybe ((awayFrom st) { playing = false, stagedLine = Nothing, gate = [] }) (Map.lookup l st.away)
+    let a = fromMaybe ((awayFrom st) { playing = false, stagedLine = Nothing, gate = [], take = Take.empty }) (Map.lookup l st.away)
     if a.playing then do
       sendText (Stage.stop l)
       H.modify_ \s -> s { away = Map.insert l (a { playing = false }) s.away }
@@ -1423,7 +1444,7 @@ toggleLayer l = do
       let
         there = st
           { layer = l, origin = a.origin, original = a.original, current = a.current
-          , held = a.held, gate = a.gate }
+          , held = a.held, gate = a.gate, take = a.take }
       for_ (Tuple <$> sceneText there <*> heldOf there) \(Tuple scene page) -> do
         sendText (Stage.push { layer: l, base: baseOf a.origin, edited: edited there, page, scene })
         H.modify_ \s -> s { away = Map.insert l (a { playing = true }) s.away }
@@ -1437,12 +1458,12 @@ chooseLayer layer = do
   st <- H.get
   unless (layer == st.layer || not (elem layer Stage.layers)) do
     let
-      next = fromMaybe ((awayFrom st) { playing = false, stagedLine = Nothing, gate = [] }) (Map.lookup layer st.away)
+      next = fromMaybe ((awayFrom st) { playing = false, stagedLine = Nothing, gate = [], take = Take.empty }) (Map.lookup layer st.away)
     H.modify_ \s -> replan s
       { away = Map.insert s.layer (awayFrom s) (Map.delete layer s.away)
       , layer = layer
       , origin = next.origin, original = next.original, current = next.current, held = next.held
-      , playing = next.playing, stagedLine = next.stagedLine, gate = next.gate
+      , playing = next.playing, stagedLine = next.stagedLine, gate = next.gate, take = next.take
       , unsent = false, lanes = 1, dots = [], shape = Nothing, drag = Nothing
       }
     firstGrainInLoupe
@@ -1450,12 +1471,25 @@ chooseLayer layer = do
     unless (next.playing == st.playing) (H.raise (Armed next.playing))
     H.raise Changed
 
--- | Light the 3D's pads for the gate in hand, at the preset's grid.
+-- | Light the 3D's pads: as the sampler on a Sampler preset, otherwise for
+-- | the gate in hand at the preset's grid.
 paintPads :: M Unit
 paintPads = do
   st <- H.get
   let grid = maybe 16 (\w -> w.preset.line.spec.steps.grid) (working st)
-  for_ st.pads \out -> H.liftEffect (Pads.paint out grid st.gate)
+  for_ st.pads \out -> H.liftEffect
+    if sampling st then Pads.paintSampler out st.take.recording
+    else Pads.paint out grid st.gate
+
+-- | Whether the preset in hand is a sampler (`n "…"`), so the pads play it.
+sampling :: State -> Boolean
+sampling st = maybe false (\w -> w.preset.line.spec.samplePattern /= "") (working st)
+
+-- | Change the take, and send the scene that carries it.
+retake :: (Take -> Take) -> M Unit
+retake f = do
+  H.modify_ \s -> replan s { take = f s.take }
+  changed
 
 -- | The scene changed: send it, soon, if it is playing.
 changed :: M Unit
@@ -1480,7 +1514,7 @@ askPlays :: Int -> M Unit
 askPlays cycle = do
   st <- H.get
   for_ (working st) \w -> do
-    let pattern = w.preset.line.spec.samplePattern
+    let pattern = Take.stack w.preset.line.spec.samplePattern (Take.notation st.take)
     unless (pattern == "" || Plays.covers pattern (cycle + 1) st.plays || st.playsAsked == Just { pattern, from: cycle }) do
       H.modify_ _ { playsAsked = Just { pattern, from: cycle } }
       sendText (Plays.ask { from: cycle, count: 8, pattern })
