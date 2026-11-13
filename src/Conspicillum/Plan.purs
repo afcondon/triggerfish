@@ -8,15 +8,18 @@ module Conspicillum.Plan
   , emptyPlan
   , sceneOf
   , cycleSeconds
+  , reach
   , planCycle
   , stripWidth
   ) where
 
 import Prelude
 
-import Data.Array (length, zipWith)
+import Data.Array (filter, findMap, last, (!!), length, range, sortBy, zipWith)
 import Data.Foldable (maximum)
-import Data.Maybe (fromMaybe, maybe)
+import Data.Int (ceil, toNumber)
+import Data.Maybe (Maybe(..), fromMaybe, maybe)
+import Data.Ord (abs)
 import Conspicillum.Corpora (SampleSet, corpusFor)
 import Conspicillum.Take as Take
 import Reef.Conspicillum.Cloud (Emit, Play, cycleOfPlays)
@@ -67,22 +70,52 @@ sceneOf { set, line, query, tempo, gate, take } =
   , seed: line.seed
   }
 
+-- | How many bars back a sample still sounding now may have begun: the
+-- | longest sample at the scene's speed, in bars. None for a tape or a cloud,
+-- | whose grains end within their bar. At most 48: the rig answers 64 cycles
+-- | of plays at a time, and the page asks for this many behind and 8 ahead.
+reach :: Scene -> Number -> Int
+reach scene tempo
+  | scene.spec.samplePattern == "" = 0
+  | otherwise =
+      let
+        longest = fromMaybe 0.0 (maximum (scene.corpus.samples <#> _.secs))
+        rate = if scene.spec.speed == 0.0 then 1.0 else abs scene.spec.speed
+      in
+        min 48 (ceil (longest / rate / cycleSeconds tempo))
+
 planCycle :: { scene :: Scene, material :: Material, tempo :: Number, plays :: Int -> Array Play } -> Int -> Plan
 planCycle { scene, material, tempo, plays } cycle =
   let
-    emits = cycleOfPlays (plays cycle) scene.corpus scene.query scene.spec scene.seed cycle
+    orbit = scene.spec.chain.orbit
+    emitsOf c = cycleOfPlays (plays c) scene.corpus scene.query scene.spec scene.seed c
+    emits = emitsOf cycle
     seconds = cycleSeconds tempo
-    placed = wedges { cycleSeconds: seconds, orbit: scene.spec.chain.orbit } emits <#> \w ->
+    place span =
       let
-        start = locate material w.emit.n w.emit.begin
+        start = locate material span.emit.n span.emit.begin
       in
-        { emit: w.emit
-        , from: w.from
-        , to: w.to
-        , sounding: max 0.004 (w.emit.sustain / seconds)
+        { emit: span.emit
+        , from: span.from
+        , to: span.to
+        , sounding: max 0.004 (span.emit.sustain / seconds)
         , colour: colourCss (colourAt material start)
-        , reads: { from: start, to: locate material w.emit.n w.emit.end }
+        , reads: { from: start, to: locate material span.emit.n span.emit.end }
         }
+    within = wedges { cycleSeconds: seconds, orbit } emits
+    -- A sample that began in an earlier bar and has not ended: the last one
+    -- to begin before this bar, drawn from the bar's start until it ends or
+    -- the next one begins, as a wedge is. Its `from` is before zero, so the
+    -- strip's read head is as far through it as the sound is.
+    back = min cycle (reach scene tempo)
+    earlier k = last (sortBy (comparing _.at) (filter (\e -> e.chain.orbit == orbit) (emitsOf (cycle - k)))) <#> \e ->
+      { emit: e, from: e.at - toNumber k }
+    carried = do
+      c <- if back < 1 then Nothing else findMap earlier (range 1 back)
+      let ends = c.from + c.emit.sustain / seconds
+      if ends <= 0.0 then Nothing
+      else Just { emit: c.emit, from: c.from, to: min ends (maybe 1.0 _.from (within !! 0)) }
+    placed = map place (maybe within (\c -> [ c ] <> within) carried)
     laneOf = lanes (2.0 / stripWidth) (placed <#> \g -> { from: g.reads.from.along, to: g.reads.to.along })
     grains = zipWith (\g lane -> { emit: g.emit, from: g.from, to: g.to, sounding: g.sounding, colour: g.colour, reads: g.reads, lane }) placed laneOf
   in

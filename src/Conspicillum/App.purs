@@ -36,7 +36,7 @@ import Conspicillum.Frame (frames)
 import Conspicillum.Library (Library)
 import Conspicillum.Library as Library
 import Conspicillum.Pads as Pads
-import Conspicillum.Plan (Grain, Plan, emptyPlan, planCycle, sceneOf)
+import Conspicillum.Plan (Grain, Plan, emptyPlan, planCycle, reach, sceneOf)
 import Conspicillum.Take (Take)
 import Conspicillum.Take as Take
 import Conspicillum.Plays as Plays
@@ -80,7 +80,7 @@ import Reef.Conspicillum.Notation (Line, Mode(..), knobLabel, modeName, modeOf, 
 import Reef.Conspicillum.Parameter (Parameter(..), SendBus(..), denormalise, format, normalise, read, set)
 import Reef.Conspicillum.Preset (Preset, bankName)
 import Reef.Conspicillum.Presets (presets)
-import Reef.Conspicillum.Protocol (encodeScene)
+import Reef.Conspicillum.Protocol (Scene, encodeScene)
 import Reef.Conspicillum.Sentence (ruleRows, sentences)
 import Triggerfish.Bar (Bar)
 import Triggerfish.Browser (Browser, Item)
@@ -370,12 +370,16 @@ fromToken t = case String.stripPrefix (String.Pattern "k") t of
   Just h | h /= "" -> Just (Shelved h)
   _ -> fromString t <#> \n -> Factory (n - 1)
 
+-- | The scene in hand, as the rig is sent it.
+sceneIn :: State -> Working -> Scene
+sceneIn st w = sceneOf { set: w.set, line: w.preset.line, query: w.preset.query, tempo: st.tempo, gate: st.gate, take: Take.notation st.take }
+
 replan :: State -> State
 replan st = case working st of
   Nothing -> st { plan = emptyPlan }
   Just w ->
     let
-      scene = sceneOf { set: w.set, line: w.preset.line, query: w.preset.query, tempo: st.tempo, gate: st.gate, take: Take.notation st.take }
+      scene = sceneIn st w
       plays cycle = Plays.inCycle scene.spec.samplePattern cycle st.plays
       plan = planCycle { scene, material: w.material, tempo: st.tempo, plays } (max 0 st.plan.cycle)
     in
@@ -1170,7 +1174,8 @@ handleAction = case _ of
       -- The grains that began since the last frame: all up to here in a new
       -- cycle, the ones crossed in this one.
       since = if planned.plan.cycle /= st.plan.cycle then -1.0 else st.phase
-      begun = filter (\g -> g.from > since && g.from <= phase) planned.plan.grains
+      -- (not one carried in from an earlier bar, which began before zero)
+      begun = filter (\g -> g.from >= 0.0 && g.from > since && g.from <= phase) planned.plan.grains
       dots = live now (spawnAll now planned.dots begun)
       loupeAt = maybe planned.loupeAt (\g -> g.reads.from.segment) (lastOf begun)
     H.put planned { dots = drop (length dots - 160) dots, loupeAt = loupeAt, unsent = planned.unsent || (retempo && planned.playing) }
@@ -1564,10 +1569,14 @@ askPlays :: Int -> M Unit
 askPlays cycle = do
   st <- H.get
   for_ (working st) \w -> do
-    let pattern = Take.stack w.preset.line.spec.samplePattern (Take.notation st.take)
-    unless (pattern == "" || Plays.covers pattern (cycle + 1) st.plays || st.playsAsked == Just { pattern, from: cycle }) do
-      H.modify_ _ { playsAsked = Just { pattern, from: cycle } }
-      sendText (Plays.ask { from: cycle, count: 8, pattern })
+    let
+      pattern = Take.stack w.preset.line.spec.samplePattern (Take.notation st.take)
+      -- From far enough back to draw a sample still sounding from an earlier bar.
+      back = min cycle (reach (sceneIn st w) st.tempo)
+      from = cycle - back
+    unless (pattern == "" || Plays.covers pattern (cycle + 1) st.plays || st.playsAsked == Just { pattern, from }) do
+      H.modify_ _ { playsAsked = Just { pattern, from } }
+      sendText (Plays.ask { from, count: 8 + back, pattern })
 
 sendText :: String -> M Unit
 sendText text = do

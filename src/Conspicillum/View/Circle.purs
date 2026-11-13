@@ -129,8 +129,11 @@ circle { plan, phase, playing, dots, now } =
 
   wedge _ g =
     let
+      -- A sample carried in from an earlier bar began before zero: on the
+      -- ring it is drawn from the top of this bar.
+      from = max 0.0 g.from
       path = arcPathWithCenter centre.x centre.y { innerRadius: wedgeInner, outerRadius: wedgeOuter }
-        { startAngle: g.from * tau, endAngle: (g.from + max 0.002 (min (g.to - g.from) 0.9995)) * tau }
+        { startAngle: from * tau, endAngle: (from + max 0.002 (min (g.to - from) 0.9995)) * tau }
       on = phase >= g.from && phase < g.to
     in
       element "g" [ classes (if on then "gr on" else "gr") ]
