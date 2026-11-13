@@ -73,6 +73,7 @@ import Data.Tuple (Tuple(..))
 import Triggerfish.Flow.View as FlowView
 import Triggerfish.Route as Route
 import Triggerfish.Router as Router
+import Triggerfish.Continuo as Continuo
 import Triggerfish.Routing.Matrix as Matrix
 import Reef.Route as HarmonyRoute
 import Triggerfish.Routing.Edit as RE
@@ -132,6 +133,7 @@ matrixOfHash = case _ of
   "notes" -> Just Matrix.Notes
   "routing" -> Just Matrix.Notes
   "drums" -> Just Matrix.Drums
+  "continuo" -> Just Matrix.Hosted
   _ -> Nothing
 
 type State =
@@ -157,6 +159,7 @@ type State =
   , table :: RM.Table
   , ports :: Array String
   , sampleSets :: Array SampleSet
+  , continuo :: Array Continuo.Layer
   , hot :: Maybe String      -- the machine hovered on the chart
   , router :: Router.Router  -- the harmony routes, as the rig's stage holds them
   -- the notes or drums matrix, when open, its picked cell and lit column
@@ -232,6 +235,7 @@ data Action
   | TempoStored
   | KeyDown KeyboardEvent
   | Audition RM.Destination
+  | Mix Int Continuo.Mix
   | Edits (Array RE.Edit)
   | ChartLink String String
   | ShowRelays Boolean
@@ -258,7 +262,7 @@ component = H.mkComponent
   { initialState: \_ ->
       { mode: Solo, now: 0.0, heard: Map.empty, rig: Nothing, rigUp: false
       , tempo: 120.0, freeTempo: 120.0, freeT0: 0.0, clock: Nothing, link: Nothing, pageRefused: 0, locked: false, bus: Nothing
-      , table: RM.defaultTable, ports: [], sampleSets: [], hot: Nothing, router: Router.initial
+      , table: RM.defaultTable, ports: [], sampleSets: [], continuo: [], hot: Nothing, router: Router.initial
       , matrix: Nothing, pick: Nothing, focus: Nothing, sheet: Nothing, foldDrums: true, vetulaSent: Nothing
       , relays: false, allVoices: false, rigLoops: Map.empty, stageCards: Nothing, bosun: Nothing
       , lens: FlowView.Flowing, asked: [], confirmingDown: false, hidden: [], keyHot: Nothing, armed: Nothing, peeked: Nothing, rigPlaying: Map.empty, doctor: Nothing, midi: Nothing, portsRead: false, limulusEngine: "architeuthis", seleneBanks: [] }
@@ -456,6 +460,8 @@ handleAction = case _ of
 
   -- Every three seconds: which of the group's daemons are up.
   BosunPoll -> void $ H.fork do
+    hosted <- liftAff Continuo.layers
+    H.modify_ \s -> if s.continuo == hosted then s else s { continuo = hosted }
     h <- liftAff Bosun.state
     now <- liftEffect dateNow
     st <- H.get
@@ -594,6 +600,11 @@ handleAction = case _ of
 
   -- A sample voice's ▶: played once, now, through the rig.
   Audition dest -> for_ (RO.auditionLine dest) sendRig
+  -- An instrument's level or pan in Continuo: say it, and show what Continuo
+  -- then holds. No answer leaves what is shown alone.
+  Mix layer change -> do
+    hosted <- liftAff (Continuo.mix layer change)
+    unless (null hosted) (H.modify_ _ { continuo = hosted })
 
   -- Several edits as one change: an added leg, then its port and value. Saved,
   -- and every page with a machine that reads the table picks it up through its
@@ -618,7 +629,8 @@ handleAction = case _ of
         | to == "continuo" = Just "continuo"
         | to == "d-dirt" = Just "sample"
         | otherwise = Nothing
-    handleAction (OpenMatrix grid focus)
+    -- a link into Continuo opens Continuo's own grid
+    handleAction (OpenMatrix (if to == "continuo" && grid == Matrix.Notes then Matrix.Hosted else grid) focus)
 
   where
   sendRig line = do
@@ -670,9 +682,9 @@ render st =
     , case st.matrix of
         Nothing -> HH.text ""
         Just g -> Matrix.view g
-          { table: st.table, ports: st.ports, cards: VetulaSync.cardChannels st.router, sampleSets: st.sampleSets
+          { table: st.table, ports: st.ports, continuo: st.continuo, cards: VetulaSync.cardChannels st.router, sampleSets: st.sampleSets
           , pick: st.pick, focus: st.focus, sheet: st.sheet, fold: st.foldDrums
-          , onEdits: Edits, onPick: PickCell, onSheet: OpenSheet, onAudition: Audition
+          , onEdits: Edits, onPick: PickCell, onSheet: OpenSheet, onAudition: Audition, onMix: Mix
           , onGrid: \g' -> OpenMatrix g' Nothing, onFold: FoldDrums, onClose: CloseMatrix }
     ]
 
@@ -1044,6 +1056,7 @@ topBar st =
         , HH.nav [ cls "tabs", HP.attr (AttrName "aria-label") "Views" ]
             ( [ tab Matrix.Notes "#notes" "Routing: Notes"
               , tab Matrix.Drums "#drums" "Routing: Drums"
+              , tab Matrix.Hosted "#continuo" "Continuo"
               ]
                 <> [ HH.a [ cls "tab", HP.href "/about.html", HP.target "atlantis-about" ] [ HH.text "About" ] ]
             )

@@ -31,18 +31,24 @@ import Prelude
 import Data.Array (concatMap, filter, find, length, mapMaybe, mapWithIndex, nub, null, snoc)
 import Data.Array as Array
 import Data.Foldable (maximum, minimum)
+import Data.Int as Int
 import Data.Maybe (Maybe(..), fromMaybe, maybe)
+import Data.Number as Number
 import Data.String (Pattern(..), contains)
 import Data.String as Str
 import Halogen.HTML as HH
 import Halogen.HTML.Events as HE
 import Halogen.HTML.Properties as HP
 import Reef.Balistes.Pattern as P
+import Triggerfish.Continuo as Continuo
 import Triggerfish.Routing.Edit (Edit(..))
 import Triggerfish.Routing.Model as RM
 import Triggerfish.SampleSets (SampleSet)
 
-data Grid = Notes | Drums
+-- | `Hosted` is Continuo's own grid (AC, 2026-11-13): the same voices as
+-- | `Notes`, against only the instruments Continuo hosts, with its mixer
+-- | under it. `Notes` then says no more of Continuo than who goes there.
+data Grid = Notes | Drums | Hosted
 
 derive instance Eq Grid
 
@@ -52,6 +58,8 @@ type Pick = { source :: RM.Source, col :: String }
 type Env i =
   { table :: RM.Table
   , ports :: Array String
+  -- what Continuo is hosting, as it says; none when it does not answer
+  , continuo :: Array Continuo.Layer
   -- Vetula's cards' channels: each card is a row (`RM.cardSource`), routed
   -- like a head; its address, the channel, is set in its line
   , cards :: Array Int
@@ -64,6 +72,8 @@ type Env i =
   , onPick :: Maybe Pick -> i
   , onSheet :: Maybe String -> i
   , onAudition :: RM.Destination -> i
+  -- an instrument in Continuo (1 is the first) and its new level or pan
+  , onMix :: Int -> Continuo.Mix -> i
   , onGrid :: Grid -> i
   , onFold :: Boolean -> i
   , onClose :: i
@@ -87,6 +97,9 @@ type Col =
   -- the kind `Routing.Edit.AddLeg` adds for this column, and its port
   , addKind :: Maybe String
   , port :: Maybe String
+  -- the value a new leg here starts with, when the column fixes it: an
+  -- instrument in Continuo is a channel
+  , start :: Maybe Int
   }
 
 -- | The port a leg names, as the port that exists (a table may hold a needle,
@@ -94,11 +107,18 @@ type Col =
 portOf :: Array String -> String -> String
 portOf ports needle = fromMaybe needle (find (contains (Pattern needle)) ports)
 
--- | The column a destination belongs to.
-columnOf :: Array String -> RM.Destination -> String
-columnOf ports = case _ of
+-- | The column a destination belongs to. A Continuo leg belongs to the
+-- | instrument on its channel when every instrument has a channel of its own
+-- | (`Continuo.split`), and to the column of legs nothing plays when no
+-- | instrument is on that channel. Otherwise Continuo is one column and the
+-- | channel is the cell's value, as it always was.
+columnOf :: Array Continuo.Layer -> Array String -> RM.Destination -> String
+columnOf hosted ports = case _ of
   RM.DMidi d -> "midi:" <> portOf ports d.port
-  RM.DContinuo _ -> "continuo"
+  RM.DContinuo d
+    | not (Continuo.split hosted) -> "continuo"
+    | d.channel `Array.elem` Continuo.channels hosted -> "continuo:" <> show d.channel
+    | otherwise -> continuoUnheard
   RM.DFh2Env _ -> "fh2env"
   RM.DFh2Gate _ -> "fh2gate"
   RM.DEs9Cv _ -> "es9cv"
@@ -108,6 +128,26 @@ columnOf ports = case _ of
   RM.DRamplePoly d -> "rample:" <> portOf ports d.port
   RM.DPoly d -> "poly:" <> RM.instrumentLabel d.inst
   RM.DSample _ -> "sample"
+
+-- | The column a destination is drawn in, in this grid. The notes' grid
+-- | gathers every Continuo leg into one column that says only that the voice
+-- | goes there; which instrument is `Hosted`'s to say.
+keyIn :: forall i. Grid -> Env i -> RM.Destination -> String
+keyIn grid env dest = case grid, dest of
+  Notes, RM.DContinuo _ -> continuoAll
+  _, _ -> columnOf env.continuo env.ports dest
+
+-- | The notes' one column for Continuo.
+continuoAll :: String
+continuoAll = "continuo-all"
+
+-- | The column of Continuo legs on a channel no instrument listens on.
+continuoUnheard :: String
+continuoUnheard = "continuo:unheard"
+
+-- | Whether a column is one instrument in Continuo, where a leg is a tick.
+isInstrument :: String -> Boolean
+isInstrument key = Str.take 9 key == "continuo:" && key /= continuoUnheard
 
 -- | The field a cell's value steps, and the value.
 valueOf :: RM.Destination -> Maybe { field :: String, value :: Int }
@@ -125,7 +165,7 @@ valueOf = case _ of
 sources :: Grid -> RM.Table -> Array RM.Source
 sources grid tbl = case grid of
   Drums -> map RM.SDrumLane (Array.range 0 15)
-  Notes -> map RM.SOdonusHead (Array.range 0 3) <> filter isSelene (map _.source tbl)
+  _ -> map RM.SOdonusHead (Array.range 0 3) <> filter isSelene (map _.source tbl)
   where
   isSelene = case _ of
     RM.SSeleneBank _ -> true
@@ -139,17 +179,24 @@ columns grid env = Array.sortWith (\c -> fromMaybe 9 (Array.elemIndex c.group gr
   where
   groupOrder = [ "MIDI ports", "Hosted", "Modular", "Samplers", "Other" ]
   midi p = { key: "midi:" <> p, group: "MIDI ports", name: if p == "" then "no port chosen" else p, sub: if p `Array.elem` env.ports then "" else "not on this computer"
-           , fam: "midi", missing: not (p `Array.elem` env.ports), addKind: Just "midi", port: Just p }
-  one key group name sub fam addKind = { key, group, name, sub, fam, missing: false, addKind, port: Nothing }
-  rampleCols = map (\p -> { key: "rample:" <> p, group: "Samplers", name: p, sub: (if contains (Pattern "Rample") p then "" else "Rample"), fam: "rample", missing: not (p `Array.elem` env.ports), addKind: Just "rample-1", port: Just p })
+           , fam: "midi", missing: not (p `Array.elem` env.ports), addKind: Just "midi", port: Just p, start: Nothing }
+  one key group name sub fam addKind = { key, group, name, sub, fam, missing: false, addKind, port: Nothing, start: Nothing }
+  -- Continuo: a column for each instrument it hosts, when each has a channel
+  -- of its own; one column, the channel in the cell, when it does not.
+  continuoCols
+    | Continuo.split env.continuo = Continuo.channels env.continuo <#> \ch ->
+        (one ("continuo:" <> show ch) "Hosted" (Continuo.instrumentOn env.continuo ch) "Continuo" "continuo" (Just "continuo")) { start = Just ch }
+    | otherwise = [ one "continuo" "Hosted" "Continuo" "piano" "continuo" (Just "continuo") ]
+  rampleCols = map (\p -> { key: "rample:" <> p, group: "Samplers", name: p, sub: (if contains (Pattern "Rample") p then "" else "Rample"), fam: "rample", missing: not (p `Array.elem` env.ports), addKind: Just "rample-1", port: Just p, start: Nothing })
                  (filter (contains (Pattern "Rample")) env.ports)
   -- A port with a column of its own kind (the FH-2's envelopes and gates,
   -- Continuo, a Rample) is not offered again as a plain MIDI port; a leg that
   -- does name it plainly still gets its column, among the extras.
   plain p = not (Array.any (\k -> contains (Pattern k) (Str.toLower p)) [ "rample", "fh-2", "continuo" ])
-  fixed = map midi (filter plain env.ports) <> case grid of
+  fixed = if grid == Hosted then continuoCols else map midi (filter plain env.ports) <> case grid of
+    Hosted -> []
     Notes ->
-      [ one "continuo" "Hosted" "Continuo" "piano" "continuo" (Just "continuo")
+      [ one continuoAll "Hosted" "Continuo" "open" "continuo" Nothing
       , one "fh2env" "Modular" "FH-2 envelopes" "" "cv" (Just "fh2env")
       , one "es9cv" "Modular" "ES-9 CV" "calibrated" "cv" (Just "es9cv")
       , one "fh2voice" "Modular" "FH-2 voices" "by channel" "cv" (Just "fh2voice")
@@ -158,14 +205,19 @@ columns grid env = Array.sortWith (\c -> fromMaybe 9 (Array.elemIndex c.group gr
       [ one "fh2gate" "Modular" "FH-2 gates" "QuadDrum" "cv" (Just "fh2gate") ] <> rampleCols
         <> [ one "sample" "Samplers" "Sample voices" "SuperDirt" "sample" (Just "sample") ]
   known = map _.key fixed
-  used = nub (concatMap (\src -> map (columnOf env.ports <<< _.dest) (RM.legsFor env.table src)) (sources grid env.table))
+  used = filter here (nub (concatMap (\src -> map (keyIn grid env <<< _.dest) (RM.legsFor env.table src)) (sources grid env.table <> (if grid == Drums then [] else map RM.cardSource env.cards))))
+  -- Continuo's grid draws Continuo's columns and no others
+  here k = grid /= Hosted || Str.take 8 k == "continuo"
   extra = mapMaybe extraCol (filter (\k -> not (k `Array.elem` known)) used)
   extraCol k = case Array.uncons (splitKey k) of
     Just { head: "midi", tail: [ p ] } -> Just (midi p)
-    Just { head: "rample", tail: [ p ] } -> Just { key: k, group: "Samplers", name: p, sub: (if contains (Pattern "Rample") p then "" else "Rample"), fam: "rample", missing: not (p `Array.elem` env.ports), addKind: Just "rample-1", port: Just p }
+    Just { head: "rample", tail: [ p ] } -> Just { key: k, group: "Samplers", name: p, sub: (if contains (Pattern "Rample") p then "" else "Rample"), fam: "rample", missing: not (p `Array.elem` env.ports), addKind: Just "rample-1", port: Just p, start: Nothing }
     Just { head: "poly", tail: [ i ] } -> Just (one k "Modular" i "poly" "cv" Nothing)
     Just { head: "es9gate" } -> Just (one k "Modular" "ES-9 gates" "" "cv" Nothing)
     Just { head: "fh2env" } -> Just (one k "Modular" "FH-2 envelopes" "" "cv" Nothing)
+    -- legs on a channel no instrument listens on: shown, so they can be
+    -- seen and stopped, and not offered
+    Just { head: "continuo" } | k == continuoUnheard -> Just ((one k "Hosted" "Continuo" "no instrument" "continuo" Nothing) { missing = true })
     Just { head: "continuo" } -> Just (one k "Hosted" "Continuo" "piano" "continuo" Nothing)
     _ -> Just (one k "Other" k "" "midi" Nothing)
   splitKey k = case Str.indexOf (Pattern ":") k of
@@ -177,9 +229,9 @@ columns grid env = Array.sortWith (\c -> fromMaybe 9 (Array.elemIndex c.group gr
 -- ---------------------------------------------------------------------------
 
 -- | The legs of a source in a column, with their index among the source's legs.
-legsIn :: forall i. Env i -> RM.Source -> String -> Array { i :: Int, leg :: RM.Leg }
-legsIn env src key =
-  filter (\x -> columnOf env.ports x.leg.dest == key) (mapWithIndex (\i leg -> { i, leg }) legs)
+legsIn :: forall i. Grid -> Env i -> RM.Source -> String -> Array { i :: Int, leg :: RM.Leg }
+legsIn grid env src key =
+  filter (\x -> keyIn grid env x.leg.dest == key) (mapWithIndex (\i leg -> { i, leg }) legs)
   where
   -- a card with no row yet plays its default, so show that
   legs = case RM.cardChannelOf src of
@@ -187,9 +239,9 @@ legsIn env src key =
     Nothing -> RM.legsFor env.table src
 
 -- | A drum MIDI column's shared channel, when every leg in it has the same one.
-sharedChannel :: forall i. Env i -> Array RM.Source -> String -> Maybe Int
-sharedChannel env srcs key =
-  case nub (concatMap (\src -> mapMaybe (\x -> _.value <$> valueOf x.leg.dest) (legsIn env src key)) srcs) of
+sharedChannel :: forall i. Grid -> Env i -> Array RM.Source -> String -> Maybe Int
+sharedChannel grid env srcs key =
+  case nub (concatMap (\src -> mapMaybe (\x -> _.value <$> valueOf x.leg.dest) (legsIn grid env src key)) srcs) of
     [ ch ] -> Just ch
     _ -> Nothing
 
@@ -204,7 +256,7 @@ addEdits grid src col n = case col.addKind of
       <> maybe [] (\p -> [ SetPort src n p ]) col.port
       <> case kind of
            "midi" -> [ SetField src n "channel" (show start) ]
-           "continuo" -> [ SetField src n "channel" (show start) ]
+           "continuo" -> [ SetField src n "channel" (show (fromMaybe start col.start)) ]
            "fh2env" -> [ SetField src n "slot" (show own) ]
            _ -> []
   where
@@ -222,6 +274,7 @@ view grid env =
             [ HH.div [ cls "matrix-switch" ]
                 [ switch Notes "Notes" "the voices' streams · cell = channel or envelope"
                 , switch Drums "Drums" "each lane's hits · cell = jack or voice; • = the lane's own note"
+                , switch Hosted "Continuo" "the instruments Continuo hosts · a dot plays a voice on one; their levels and pans below"
                 ]
             , if grid == Drums then
                 HH.label [ cls "matrix-fold", HP.title "show lanes routed exactly alike as one row; a click in it routes them all" ]
@@ -236,7 +289,7 @@ view grid env =
         ]
     ]
   where
-  srcs = sources grid env.table <> (if grid == Notes then map RM.cardSource env.cards else [])
+  srcs = sources grid env.table <> (if grid == Drums then [] else map RM.cardSource env.cards)
   -- rows: one source each, or with folding, every drum lane routed exactly
   -- alike (same legs in every column) as one row, where the first of them stood
   rows
@@ -245,10 +298,12 @@ view grid env =
                        Just k -> fromMaybe acc (Array.modifyAt k (_ `snoc` src) acc)
                        Nothing -> snoc acc [ src ]) [] srcs
     | otherwise = map pure srcs
-  sig src = map (\c -> map (\x -> { dest: x.leg.dest, on: x.leg.on, offsetMs: x.leg.offsetMs }) (legsIn env src c.key)) cols
+  sig src = map (\c -> map (\x -> { dest: x.leg.dest, on: x.leg.on, offsetMs: x.leg.offsetMs }) (legsIn grid env src c.key)) cols
   cols = columns grid env
   switch g label hint =
     HH.button [ cls ("matrix-tab" <> if g == grid then " on" else ""), HE.onClick \_ -> env.onGrid g, HP.title hint ] [ HH.text label ]
+  -- the chart opens the matrix on "continuo": light every instrument's column
+  focused c = env.focus == Just c.key || (env.focus == Just "continuo" && Str.take 9 c.key == "continuo:")
   groups = Array.foldl (\acc c -> case Array.unsnoc acc of
                            Just { init, last } | last.name == c.group -> snoc init last { span = last.span + 1 }
                            _ -> snoc acc { name: c.group, span: 1 }) [] cols
@@ -261,22 +316,23 @@ view grid env =
       , HH.tbody_ (map row rows)
       ]
   colHead c =
-    HH.th ([ cls ("col" <> (if c.missing then " missing" else "") <> (if env.focus == Just c.key || env.sheet == Just c.key then " focus" else "") <> (if hasSheet c.key then " has-sheet" else ""))
-           , HP.title (if c.missing then c.name <> " is not on this computer" else if hasSheet c.key then c.name <> ": open its settings" else c.name) ]
-           <> (if hasSheet c.key then [ HE.onClick \_ -> env.onSheet (if env.sheet == Just c.key then Nothing else Just c.key) ] else []))
+    HH.th ([ cls ("col" <> (if c.missing then " missing" else "") <> (if focused c || env.sheet == Just c.key then " focus" else "") <> (if hasSheet c.key then " has-sheet" else ""))
+           , HP.title (if c.key == continuoAll then "Continuo: open its instruments and mixer" else if c.key == continuoUnheard then "sent to Continuo on a channel no instrument listens on: silent" else if c.missing then c.name <> " is not on this computer" else if hasSheet c.key then c.name <> ": open its settings" else c.name) ]
+           <> (if c.key == continuoAll then [ HE.onClick \_ -> env.onGrid Hosted ]
+               else if hasSheet c.key then [ HE.onClick \_ -> env.onSheet (if env.sheet == Just c.key then Nothing else Just c.key) ] else []))
       [ HH.span [ cls "lab" ]
           [ HH.b_ [ HH.text c.name ]
           , HH.small_ [ HH.text (headSub c) ]
           ]
       , HH.span [ cls ("fam " <> c.fam) ] []
       ]
-  headSub c = case grid, sharedChannel env srcs c.key of
+  headSub c = case grid, sharedChannel grid env srcs c.key of
     Drums, Just ch | isMidiKey c.key -> joinSub c.sub ("ch " <> show ch <> " · " <> noteMapName c.key)
     Drums, Nothing | isMidiKey c.key -> joinSub c.sub (noteMapName c.key)
     _, _ -> c.sub
   -- what a drum MIDI column's lanes send, as one word when they agree on one
   noteMapName key =
-    let ls = concatMap (\src -> map (\x -> { src, leg: x.leg }) (legsIn env src key)) srcs
+    let ls = concatMap (\src -> map (\x -> { src, leg: x.leg }) (legsIn grid env src key)) srcs
     in if null ls then ""
        else if Array.all (\x -> isPad x.src x.leg) ls then "pads"
        else if Array.all (\x -> x.leg.note < 0) ls then "GM"
@@ -295,9 +351,9 @@ view grid env =
   cell group c =
     let
       src = fromMaybe (RM.SDrumLane 0) (Array.head group)
-      here = legsIn env src c.key
+      here = legsIn grid env src c.key
       picked = maybe false (\pk -> pk.col == c.key && Array.elem pk.source group) env.pick
-      shared = if grid == Drums then sharedChannel env srcs c.key else Nothing
+      shared = if grid == Drums then sharedChannel grid env srcs c.key else Nothing
       mark x =
         let off = if x.leg.on then "" else " off"
         in case valueOf x.leg.dest of
@@ -305,11 +361,13 @@ view grid env =
              Just v | grid == Drums && isMidi x.leg.dest ->
                HH.span [ cls ("v " <> c.fam <> off), HP.title (noteTitle src x.leg <> (if shared == Just v.value then "" else " · ch " <> show v.value)) ]
                  [ HH.text (foldedNotes x) ]
+             -- an instrument in Continuo: the column says which, so a leg is a tick
+             Just _ | isInstrument c.key || c.key == continuoAll -> HH.span [ cls ("dot " <> c.fam <> off) ] []
              Just v | not (isMidi x.leg.dest && shared == Just v.value) -> HH.span [ cls ("v " <> c.fam <> off) ] [ HH.text (show v.value) ]
              _ -> HH.span [ cls ("dot " <> c.fam <> off) ] []
       -- a folded row's lanes play their own pads: say the run they cover
       foldedNotes x =
-        let ns = concatMap (\s -> map (sentNote s <<< _.leg) (legsIn env s c.key)) group
+        let ns = concatMap (\s -> map (sentNote s <<< _.leg) (legsIn grid env s c.key)) group
         in case minimum ns, maximum ns of
              Just lo, Just hi | lo /= hi -> show lo <> "–" <> show hi
              _, _ -> show (sentNote src x.leg)
@@ -320,12 +378,15 @@ view grid env =
       -- details. The ✕ is the cell's sibling, not its child, so the cell's
       -- own click never fires with it.
       HH.td
-        [ cls ((if picked then "picked" else "") <> (if env.focus == Just c.key then " focus" else "") <> (if null here then "" else " filled")) ]
+        [ cls ((if picked then "picked" else "") <> (if focused c then " focus" else "") <> (if null here then "" else " filled")) ]
         ( [ HH.div
               [ cls "hit"
               , HP.title (whose src <> " → " <> c.name)
               , HE.onClick \_ ->
-                  if not (null here) then env.onPick (if picked then Nothing else Just { source: src, col: c.key })
+                  -- the notes' Continuo column only says who goes there:
+                  -- which instrument is chosen in Continuo's own grid
+                  if c.key == continuoAll then env.onGrid Hosted
+                  else if not (null here) then env.onPick (if picked then Nothing else Just { source: src, col: c.key })
                   else case concatMap (\s -> addEdits grid s c (length (RM.legsFor env.table s))) group of
                     [] -> env.onPick Nothing
                     es -> env.onEdits es
@@ -339,18 +400,20 @@ view grid env =
   -- every leg of the row (or folded rows) in that column, the highest index
   -- first so the ones before it keep theirs
   removals group key = group # concatMap \s ->
-    map (\x -> RemoveLeg s x.i) (Array.reverse (Array.sortWith _.i (legsIn env s key)))
-  details = case env.sheet of
-    Just key -> sheet key
-    Nothing -> pickDetails
+    map (\x -> RemoveLeg s x.i) (Array.reverse (Array.sortWith _.i (legsIn grid env s key)))
+  details = case grid, env.sheet of
+    -- Continuo's grid always shows its mixer: every instrument, side by side
+    Hosted, _ -> HH.div [ cls "matrix-sheet" ] [ mixer ]
+    _, Just key -> sheet key
+    _, Nothing -> pickDetails
   pickDetails = case env.pick of
     Nothing -> HH.p [ cls "matrix-hint" ] [ HH.text "Click an empty cell to send there, its × to stop, the cell for its details. A Rample's slicing and a sample's window are set in the router on Triggerfish's and Balistes's own pages." ]
     Just pk ->
-      let here = legsIn env pk.source pk.col
+      let here = legsIn grid env pk.source pk.col
       in HH.div [ cls "matrix-details" ]
            ([ HH.div [ cls "who" ] [ HH.text (whose pk.source <> " → " <> maybe pk.col _.name (find (\c -> c.key == pk.col) cols)) ] ]
              <> map (legDetail pk.source) here
-             <> [ HH.button [ cls "add", HE.onClick \_ -> maybe (env.onPick Nothing) (\c -> env.onEdits (addEdits grid pk.source c (length (RM.legsFor env.table pk.source)))) (find (\c -> c.key == pk.col) cols) ] [ HH.text "+ another" ] ])
+             <> (if isInstrument pk.col then [] else [ HH.button [ cls "add", HE.onClick \_ -> maybe (env.onPick Nothing) (\c -> env.onEdits (addEdits grid pk.source c (length (RM.legsFor env.table pk.source)))) (find (\c -> c.key == pk.col) cols) ] [ HH.text "+ another" ] ]))
   legDetail src x =
     HH.div [ cls ("leg" <> if x.leg.on then "" else " off") ]
       ( ( if grid == Drums && isMidi x.leg.dest then
@@ -361,6 +424,9 @@ view grid env =
             ]
           else [] ) <>
         case valueOf x.leg.dest of
+          -- the channel of an instrument is not the player's to step: it is
+          -- the column
+          Just _ | isInstrument (columnOf env.continuo env.ports x.leg.dest) -> []
           Just v ->
             [ HH.span [ cls "field" ] [ HH.text v.field ]
             , HH.button [ HE.onClick \_ -> env.onEdits [ SetField src x.i v.field (show (v.value - 1)) ] ] [ HH.text "−" ]
@@ -384,7 +450,7 @@ view grid env =
   -- ── sheets ────────────────────────────────────────────────────────────────
   sheet key =
     let
-      sheetRows = concatMap (\src -> map (\x -> { src, i: x.i, leg: x.leg }) (legsIn env src key)) srcs
+      sheetRows = concatMap (\src -> map (\x -> { src, i: x.i, leg: x.leg }) (legsIn grid env src key)) srcs
       title = maybe key _.name (find (\c -> c.key == key) cols)
     in
       HH.div [ cls "matrix-sheet" ]
@@ -397,6 +463,38 @@ view grid env =
           else if isMidiKey key then notesSheet sheetRows
           else rampleSheet sheetRows
         ]
+  -- An instrument's place in Continuo's mix: its level and its pan. Several
+  -- instruments layered on one channel each have their own.
+  mixer =
+    let
+      here = mapWithIndex (\i layer -> { n: i + 1, layer }) env.continuo
+      slider lo hi step value title change =
+        HH.input [ HP.type_ HP.InputRange, HP.min lo, HP.max hi, HP.step (HP.Step step), HP.value (show value), HP.title title
+                 , HE.onValueInput \t -> maybe (env.onPick env.pick) change (Number.fromString t) ]
+      mixRow x =
+        HH.tr_
+          [ HH.th_ [ HH.text x.layer.name ]
+          , HH.td_ [ slider (-40.0) 6.0 0.5 x.layer.levelDb "level, in dB: 0 is the instrument's own" (env.onMix x.n <<< Continuo.Level) ]
+          , HH.td_ [ HH.text (levelText x.layer.levelDb) ]
+          , HH.td_ [ slider (-1.0) 1.0 0.05 x.layer.pan "pan: left to right" (env.onMix x.n <<< Continuo.Pan) ]
+          , HH.td_ [ HH.text (panText x.layer.pan) ]
+          , HH.td_ [ HH.button [ HE.onClick \_ -> env.onMix x.n (Continuo.Level 0.0) ] [ HH.text "0 dB" ]
+                   , HH.button [ HE.onClick \_ -> env.onMix x.n (Continuo.Pan 0.0) ] [ HH.text "centre" ] ]
+          ]
+    in
+      if null here then HH.p [ cls "matrix-hint" ] [ HH.text "Continuo is not answering: start it from the chart, and its instruments appear here." ]
+      else HH.div_
+        [ HH.p [ cls "matrix-hint" ] [ HH.text "Click an empty cell to play a voice on an instrument, its × to stop. Below, where each instrument sits in Continuo's mix; it lasts until Continuo restarts." ]
+        , HH.table [ cls "sheet" ]
+            [ HH.thead_ [ HH.tr_ (map (\h -> HH.th_ [ HH.text h ]) [ "instrument", "level", "", "pan", "", "" ]) ]
+            , HH.tbody_ (map mixRow here)
+            ]
+        ]
+  levelText db = (if db > 0.0 then "+" else "") <> show (Number.round (db * 10.0) / 10.0) <> " dB"
+  panText p
+    | p < -0.02 = "L " <> show (Int.round (negate p * 100.0))
+    | p > 0.02 = "R " <> show (Int.round (p * 100.0))
+    | otherwise = "centre"
   -- The note each lane sends this port: a Drum Rack's pads (lane n, pad n),
   -- GM, or set lane by lane.
   notesSheet legs =
