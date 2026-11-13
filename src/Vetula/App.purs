@@ -91,7 +91,7 @@ import Reef.Route (printKey) as Route
 import Reef.Route as HarmonyRoute
 import Vetula.Playhead (clockFor, defaultPattern, noteClock)
 import Vetula.Realise (fromChords)
-import Vetula.Perform.Types (ArpDir(..), ChannelMode(..), Layer, PerfFx(..), PerfSel(..), PerfTerm(..), PhraseAttach, VoiceShape(..), When(..), arpOrder, mkLayer, parseVoiceShape, termConducts, termRigOnly)
+import Vetula.Perform.Types (ArpDir(..), ChannelMode(..), Layer, PerfFx(..), PerfSel(..), PerfTerm(..), PhraseAttach, VoiceShape(..), When(..), arpOrder, defaultVelocity, mkLayer, parseVoiceShape, termConducts, termRigOnly, velocityOf)
 import Triggerfish.PatternArg (PatternArg, argSrc)
 import Tidal.Pattern.Core (compress, stack, fast, slow, every, whenCycle)
 import Vetula.Pattern (arpIndexed, arpRate, cycleRand, withSampledArg)
@@ -3507,6 +3507,9 @@ applyFx = case _ of
   -- strum stays a sink ornament (a fast ms onset stagger at the chord's onset — it
   -- rolls a block chord, it doesn't stretch), so it's identity in the pattern.
   Strum _ -> identity
+  -- velocity changes no note and no time: the scheduler reads it per note
+  -- (`velocityAt`), as it reads strum.
+  Velocity _ -> identity
 
 -- | The index-figure of an `ArpP` layer as a `Pattern String` of positions. Lenient:
 -- | an unparseable figure falls back to a steady root (`"0"`), Selene-style.
@@ -3718,17 +3721,37 @@ scheduleBox out c cycleMs _beatMs baseDelayMs rec box =
     Just ph | ph.channelMode == Original ->
       for_ (phraseClipHeads ph) \h ->
         when (not (elem h ph.mutedHeads)) $
-          schedulePat out (Routing.odonusHeadChannel h) c cycleMs baseDelayMs RBlock
+          schedulePat out (Routing.odonusHeadChannel h) c cycleMs baseDelayMs RBlock (const defaultVelocity)
             (phrasePatternFrom ph.clip.lenMicros (phraseBars ph.clip)
               (filter (\e -> e.headIdx == h) ph.clip.events)) rec
-    _ -> schedulePat out box.channel c cycleMs baseDelayMs (boxRealise box.stack) (boxPattern box) rec
+    _ -> schedulePat out box.channel c cycleMs baseDelayMs (boxRealise box.stack) (velocityAt box.stack) (boxPattern box) rec
+
+-- | How hard a note sounding over `whole` is struck: each `vel` layer whose
+-- | `when` holds in the note's bar, sampled at the note, the last one winning;
+-- | a rest in its pattern leaves the velocity as it was. As the rig reads it
+-- | (`Tidal.Vetula.Card.velocityAt`).
+velocityAt :: Array Layer -> Arc -> Int
+velocityAt stack whole@(Arc w) = foldl pick defaultVelocity stack
+  where
+  bar = floor (Rat.toNumber w.start)
+  holds = case _ of
+    Always -> true
+    Every n -> mod bar (max 1 n) == 0
+    Prob p -> cycleRand bar < p
+    AfterBar n -> bar >= n
+    Whenmod n r -> mod bar (max 1 n) >= r
+  pick was lyr = case lyr.fx of
+    Velocity arg | holds lyr.when -> case Array.head (query (argEval arg) (mkState whole)) of
+      Just ev -> velocityOf was (eventValue ev)
+      Nothing -> was
+    _ -> was
 
 -- | Schedule one `Pattern (Array Int)` on one channel over cycle `c` — the shared core
 -- | of `scheduleBox` (single channel = chord box / flattened phrase; per head = ORIGINAL
 -- | phrase). Onset-guarded and realisation-aware exactly as before, plus a `rec` tap for
 -- | the capture logbook (#28) alongside each emitted note.
-schedulePat :: Midi.MidiOut -> Int -> Int -> Number -> Number -> Realise -> PT.Pattern (Array Int) -> (EmitRec -> Effect Unit) -> Effect Unit
-schedulePat out channel c cycleMs baseDelayMs realise pat rec =
+schedulePat :: Midi.MidiOut -> Int -> Int -> Number -> Number -> Realise -> (Arc -> Int) -> PT.Pattern (Array Int) -> (EmitRec -> Effect Unit) -> Effect Unit
+schedulePat out channel c cycleMs baseDelayMs realise velocityOn pat rec =
   for_ (query pat (mkState (mkArc (Rat.fromInt c) (Rat.fromInt (c + 1))))) \ev ->
     for_ (onsetWhole ev) \(Arc w) ->
         let startMs = baseDelayMs + Rat.toNumber (w.start - Rat.fromInt c) * cycleMs
@@ -3739,10 +3762,11 @@ schedulePat out channel c cycleMs baseDelayMs realise pat rec =
               RStrum ms -> toNumber ms
               RBlock -> 0.0
             noteDur = max 20.0 (slotMs * 0.9)
+            velocity = velocityOn (Arc w)
         in for_ (mapWithIndex Tuple notes) \(Tuple k note) -> do
              let d = startMs + toNumber k * stepMs
-             Midi.scheduleNote out { channel, note, velocity: 90, delayMs: d, durMs: noteDur }
-             rec { pitch: note, headIdx: channel, delayMs: d, vel: 90, gateMs: noteDur }
+             Midi.scheduleNote out { channel, note, velocity, delayMs: d, durMs: noteDur }
+             rec { pitch: note, headIdx: channel, delayMs: d, vel: velocity, gateMs: noteDur }
 
 -- | A digital event's whole, but ONLY when its onset falls in this query (whole start
 -- | == part start). Analog events and mid-sustain continuation fragments give Nothing,
@@ -6175,6 +6199,7 @@ waysOfPlaying =
           , { line: "# arpdown 8", says: "downward" }
           , { line: "# arpupdown 8", says: "up, then down" }
           , { line: "# strum 30", says: "strum it, 30 ms between notes" }
+          , { line: "# vel \"0.4 0.8 <1 0.5>\"", says: "how hard each note is struck, by pattern: 0 to 1" }
           ] }
     , { title: "Its register and pace"
       , items:
