@@ -41,13 +41,16 @@ module Conspicillum.Library
 
 import Prelude
 
-import Conspicillum.Http as Http
+import Amphora.Api as Api
 import Data.Array (delete, deleteAt, elem, filter, find, findIndex, insertAt, length, nub, snoc, sort)
 import Data.Either (Either(..))
 import Data.Maybe (Maybe(..), fromMaybe, maybe)
-import Data.Nullable (Nullable, toMaybe, toNullable)
 import Data.String as String
 import Effect.Aff (Aff)
+import Hawser.Fetch (Trouble(..), troubleText)
+import Hawser.Fetch as Fetch
+import Hawser.Http (Endpoint)
+import Hawser.Value (fromText)
 import Simple.JSON (E, readJSON, writeJSON)
 
 type Collection = { name :: String, presets :: Array String }
@@ -157,28 +160,24 @@ type Edit = Library -> Library
 kind :: String
 kind = "conspicillum-library"
 
-base :: String -> String
-base host = "http://" <> host <> ":3024"
+refName :: String
+refName = "conspicillum/library"
 
-ref :: String -> String
-ref host = base host <> "/refs/conspicillum/library"
+-- | Ask the store on `host` one of its described operations (Amphora.Api).
+ask :: forall request reply. String -> Endpoint request reply -> request -> Aff (Either Trouble reply)
+ask host = Fetch.ask { base: "http://" <> host <> ":3024", timeoutMs: 5000 }
 
 -- | The current library and its hash, or the empty one if none was kept yet.
 load :: String -> Aff (Either String { library :: Library, hash :: Maybe String })
-load host = do
-  got <- Http.exchange "GET" (ref host) Nothing
-  case got of
-    Left problem -> pure (Left problem)
-    Right { status: 404 } -> pure (Right { library: empty, hash: Nothing })
-    Right { status: 200, body } -> case decode (readJSON :: String -> E { hash :: String }) body of
-      Left problem -> pure (Left problem)
-      Right { hash } -> map (\library -> { library, hash: Just hash }) <$> contentOf host hash
-    Right { status, body } -> pure (Left (ref host <> ": " <> show status <> " " <> body))
+load host = ask host Api.getRef { name: refName } >>= case _ of
+  Right { hash } -> map (\library -> { library, hash: Just hash }) <$> contentOf host hash
+  Left (Failed 404 _) -> pure (Right { library: empty, hash: Nothing })
+  Left trouble -> pure (Left (refName <> ": " <> troubleText trouble))
 
 contentOf :: String -> String -> Aff (Either String Library)
-contentOf host hash = do
-  got <- Http.get (base host <> "/content/" <> hash)
-  pure (got >>= decode (readJSON :: String -> E { payload :: String }) >>= \c -> decode (readJSON :: String -> E Library) c.payload)
+contentOf host hash = ask host Api.getContent { hash } <#> case _ of
+  Right { payload } -> decode (readJSON :: String -> E Library) payload
+  Left trouble -> Left (hash <> ": " <> troubleText trouble)
 
 -- | Make the edit to the library as it stands at `expected`, keep the result
 -- | and move the ref to it. If the ref has moved on, make the edit again to
@@ -191,23 +190,18 @@ keep host = attempt 5
     | tries <= 0 = pure (Left "the library kept changing under this page; reload to see it")
     | otherwise = do
         let next = edit at.library
-        saved <- Http.post (base host <> "/content") (writeJSON { kind, payload: writeJSON next })
-        case saved >>= decode (readJSON :: String -> E { hash :: String }) of
-          Left problem -> pure (Left problem)
+        ask host Api.putContent { kind, payload: writeJSON next } >>= case _ of
+          Left trouble -> pure (Left (troubleText trouble))
           Right { hash } | at.hash == Just hash -> pure (Right { library: next, hash: Just hash })
-          Right { hash } -> do
-            moved <- Http.exchange "POST" (ref host) (Just (writeJSON { to: hash, expected: toNullable at.hash }))
-            case moved of
-              Left problem -> pure (Left problem)
-              Right { status: 200 } -> pure (Right { library: next, hash: Just hash })
-              Right { status: 409, body } -> case decode (readJSON :: String -> E { current :: Nullable { hash :: String } }) body of
+          Right { hash } -> ask host Api.moveRef { name: refName, to: hash, expected: at.hash } >>= case _ of
+            Right _ -> pure (Right { library: next, hash: Just hash })
+            -- The ref had moved: the answer says where it points now.
+            Left (Failed 409 theirs) | Just { current: pointsAt } <- fromText Api.stale theirs -> case pointsAt of
+              Nothing -> attempt (tries - 1) { hash: Nothing, library: empty } edit
+              Just now -> contentOf host now.hash >>= case _ of
                 Left problem -> pure (Left problem)
-                Right { current } -> case toMaybe current of
-                  Nothing -> attempt (tries - 1) { hash: Nothing, library: empty } edit
-                  Just now -> contentOf host now.hash >>= case _ of
-                    Left problem -> pure (Left problem)
-                    Right library -> attempt (tries - 1) { hash: Just now.hash, library } edit
-              Right { status, body } -> pure (Left (ref host <> ": " <> show status <> " " <> body))
+                Right library -> attempt (tries - 1) { hash: Just now.hash, library } edit
+            Left trouble -> pure (Left (refName <> ": " <> troubleText trouble))
 
 decode :: forall a e. Show e => (String -> Either e a) -> String -> Either String a
 decode f text = case f text of

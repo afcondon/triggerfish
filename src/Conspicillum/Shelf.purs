@@ -22,12 +22,16 @@ module Conspicillum.Shelf
 
 import Prelude
 
-import Conspicillum.Http as Http
+import Amphora.Api as Api
 import Data.Array (catMaybes, find, null)
+import Data.Bifunctor (lmap)
 import Data.Either (Either(..), hush)
-import Data.Maybe (Maybe, fromMaybe)
+import Data.Maybe (Maybe(..), fromMaybe)
 import Data.Traversable (traverse)
 import Effect.Aff (Aff)
+import Hawser.Fetch (troubleText)
+import Hawser.Fetch as Fetch
+import Hawser.Http (Endpoint)
 import Reef.Conspicillum.Notation (parse, print)
 import Reef.Conspicillum.Parameter (fromIdentifier, identifier)
 import Reef.Conspicillum.Preset (Bank(..), Preset, bankName)
@@ -81,33 +85,26 @@ fromStored s = do
 -- | Everything on the shelf. A kept preset whose line no longer parses is
 -- | left out rather than failing the rest.
 shelf :: String -> Aff (Either String (Array Kept))
-shelf host = do
-  listed <- Http.get (base host <> "/favorites?collection=" <> collection)
-  case listed >>= decodeWith (readJSON :: String -> E (Array { contentHash :: String })) of
-    Left problem -> pure (Left problem)
-    Right favourites -> do
-      found <- traverse (fetchOne host <<< _.contentHash) favourites
-      pure (Right (catMaybes found))
+shelf host = ask host Api.listFavorites { collection: Just collection } >>= case _ of
+  Left problem -> pure (Left problem)
+  Right favourites -> Right <<< catMaybes <$> traverse (fetchOne host <<< _.contentHash) favourites
 
 fetchOne :: String -> String -> Aff (Maybe Kept)
-fetchOne host hash = do
-  got <- Http.get (base host <> "/content/" <> hash)
-  pure do
-    content <- hush (got >>= decodeWith (readJSON :: String -> E { payload :: String }))
-    s <- hush (readJSON content.payload :: E Stored)
-    preset <- fromStored s
-    pure { hash, preset }
+fetchOne host hash = ask host Api.getContent { hash } <#> \got -> do
+  content <- hush got
+  s <- hush (readJSON content.payload :: E Stored)
+  preset <- fromStored s
+  pure { hash, preset }
 
 -- | Put a preset on the shelf.
 keep :: String -> Preset -> Aff (Either String Kept)
-keep host preset = do
-  saved <- Http.post (base host <> "/content") (writeJSON { kind, payload: writeJSON (stored preset) })
-  case saved >>= decodeWith (readJSON :: String -> E { hash :: String }) of
-    Left problem -> pure (Left problem)
-    Right { hash } -> do
-      _ <- Http.post (base host <> "/labels") (writeJSON { contentHash: hash, name: preset.name })
-      _ <- Http.post (base host <> "/favorites") (writeJSON { contentHash: hash, collection })
-      pure (Right { hash, preset })
+keep host preset = ask host Api.putContent { kind, payload: writeJSON (stored preset) } >>= case _ of
+  Left problem -> pure (Left problem)
+  Right { hash } -> do
+    _ <- ask host Api.addLabel
+      { contentHash: hash, name: preset.name, source: Nothing, harmonicRoot: Nothing, harmonicScale: Nothing, harmonicChord: Nothing, tags: Nothing }
+    _ <- ask host Api.addFavorite { contentHash: hash, collection }
+    pure (Right { hash, preset })
 
 -- | Keep a changed version in place of one on the shelf, remembering where it
 -- | came from.
@@ -116,18 +113,16 @@ replace host old preset = do
   kept <- keep host preset
   case kept of
     Right k | k.hash /= old -> do
-      _ <- Http.post (base host <> "/morphisms") (writeJSON { from: old, to: k.hash, kind: "edit" })
+      _ <- ask host Api.addMorphism { from: old, to: k.hash, kind: "edit", params: Nothing }
       _ <- remove host old
       pure kept
     _ -> pure kept
 
 remove :: String -> String -> Aff (Either String Unit)
-remove host hash = map (const unit) <$> Http.delete (base host <> "/favorites?hash=" <> hash <> "&collection=" <> collection)
+remove host hash = map (const unit) <$> ask host Api.removeFavorite { hash, collection }
 
-base :: String -> String
-base host = "http://" <> host <> ":3024"
-
-decodeWith :: forall a e. Show e => (String -> Either e a) -> String -> Either String a
-decodeWith f text = case f text of
-  Left e -> Left (show e)
-  Right a -> Right a
+-- | Ask the store on `host` one of its described operations (Amphora.Api).
+-- | The problem, if there is one, as a sentence.
+ask :: forall request reply. String -> Endpoint request reply -> request -> Aff (Either String reply)
+ask host described request =
+  lmap troubleText <$> Fetch.ask { base: "http://" <> host <> ":3024", timeoutMs: 5000 } described request

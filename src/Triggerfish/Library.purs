@@ -29,7 +29,7 @@ module Triggerfish.Library
 import Prelude
 
 import Data.Array (any, catMaybes, cons, filter, find, findIndex, foldl, insertAt, mapWithIndex, notElem, null, snoc, updateAt, (!!))
-import Data.Either (Either(..), either)
+import Data.Either (Either(..), either, note)
 import Data.Maybe (Maybe(..), fromMaybe, isJust)
 import Data.Nullable (Nullable, toMaybe, toNullable)
 import Data.Traversable (traverse)
@@ -39,6 +39,9 @@ import Effect.Class (liftEffect)
 import Effect.Ref (Ref)
 import Effect.Ref as Ref
 import Simple.JSON (readJSON, writeJSON)
+import Amphora.Api as Api
+import Hawser.Fetch (Trouble(..), troubleText)
+import Hawser.Value (fromText)
 import Triggerfish.Amphora as Amphora
 
 -- | One collection: where it is kept, how its items are told apart and
@@ -90,20 +93,15 @@ makeChanges doc cs items = foldl one items cs
 
 -- | The library the ref points at, `Nothing` if none was kept yet.
 load :: forall a. Doc a -> Aff (Either String (Maybe (Held a)))
-load doc = Amphora.exchange "GET" ("/refs/" <> doc.ref) Nothing >>= case _ of
-  Left problem -> pure (Left problem)
-  Right { status: 404 } -> pure (Right Nothing)
-  Right { status: 200, body } | Right ({ hash } :: { hash :: String }) <- readJSON body ->
-    map (\items -> Just { hash: Just hash, items: doc.tidy items }) <$> contentOf doc hash
-  Right r -> pure (Left (doc.ref <> ": " <> show r.status <> " " <> r.body))
+load doc = Amphora.ask Api.getRef { name: doc.ref } >>= case _ of
+  Right { hash } -> map (\items -> Just { hash: Just hash, items: doc.tidy items }) <$> contentOf doc hash
+  Left (Failed 404 _) -> pure (Right Nothing)
+  Left trouble -> pure (Left (doc.ref <> ": " <> troubleText trouble))
 
 contentOf :: forall a. Doc a -> String -> Aff (Either String (Array a))
-contentOf doc hash = Amphora.exchange "GET" ("/content/" <> hash) Nothing <#> case _ of
-  Right { status: 200, body }
-    | Right ({ payload } :: { payload :: String }) <- readJSON body
-    , Just items <- doc.decode payload -> Right items
-  Right r -> Left (hash <> ": " <> show r.status <> " " <> r.body)
-  Left problem -> Left problem
+contentOf doc hash = Amphora.ask Api.getContent { hash } <#> case _ of
+  Right { payload } -> note (hash <> ": not a " <> doc.kind) (doc.decode payload)
+  Left trouble -> Left (hash <> ": " <> troubleText trouble)
 
 -- | Make the changes to the library as it stands at `at`, keep the result and
 -- | move the ref to it; when the ref has moved on, make them again to the
@@ -115,26 +113,20 @@ keep doc = go 5
     | tries <= 0 = pure (Left (doc.ref <> " kept changing under this page"))
     | otherwise = do
         let next = doc.tidy (makeChanges doc cs at.items)
-        saved <- Amphora.exchange "POST" "/content" (Just (writeJSON { kind: doc.kind, payload: doc.encode next }))
+        saved <- Amphora.ask Api.putContent { kind: doc.kind, payload: doc.encode next }
         case saved of
-          Right { status, body }
-            | status < 300, Right ({ hash } :: { hash :: String }) <- readJSON body ->
-                if at.hash == Just hash then pure (Right { hash: Just hash, items: next })
-                else do
-                  moved <- Amphora.exchange "POST" ("/refs/" <> doc.ref) (Just (writeJSON { to: hash, expected: toNullable at.hash }))
-                  case moved of
-                    Right { status: 200 } -> pure (Right { hash: Just hash, items: next })
-                    Right { status: 409, body: theirs }
-                      | Right ({ current: latest } :: { current :: Nullable { hash :: String } }) <- readJSON theirs ->
-                          case toMaybe latest of
-                            Nothing -> go (tries - 1) { hash: Nothing, items: [] } cs
-                            Just now -> contentOf doc now.hash >>= case _ of
-                              Left problem -> pure (Left problem)
-                              Right items -> go (tries - 1) { hash: Just now.hash, items: doc.tidy items } cs
-                    Right r -> pure (Left (doc.ref <> ": " <> show r.status <> " " <> r.body))
-                    Left problem -> pure (Left problem)
-          Right r -> pure (Left ("/content: " <> show r.status <> " " <> r.body))
-          Left problem -> pure (Left problem)
+          Left trouble -> pure (Left ("saving " <> doc.kind <> ": " <> troubleText trouble))
+          Right { hash } ->
+            if at.hash == Just hash then pure (Right { hash: Just hash, items: next })
+            else Amphora.ask Api.moveRef { name: doc.ref, to: hash, expected: at.hash } >>= case _ of
+              Right _ -> pure (Right { hash: Just hash, items: next })
+              -- The ref had moved: the answer says where it points now.
+              Left (Failed 409 theirs) | Just { current: pointsAt } <- fromText Api.stale theirs -> case pointsAt of
+                Nothing -> go (tries - 1) { hash: Nothing, items: [] } cs
+                Just now -> contentOf doc now.hash >>= case _ of
+                  Left problem -> pure (Left problem)
+                  Right items -> go (tries - 1) { hash: Just now.hash, items: doc.tidy items } cs
+              Left trouble -> pure (Left (doc.ref <> ": " <> troubleText trouble))
 
 -- ---------------------------------------------------------------------------
 -- A page's shelf

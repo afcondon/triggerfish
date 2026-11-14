@@ -1,154 +1,18 @@
-// Triggerfish.Amphora — the shared Amphora artefact-store client (browser).
+// Triggerfish.Amphora: where the store is. Everything else about talking to
+// Amphora is PureScript over its described operations (Amphora.Api).
 //
-// One content-addressed read/write dance, reused by every editor whose library
-// is a named collection of eDSL / Tidal text (Odonus scenes, Selene racks,
-// Vetula progressions; Balistes has its own name-in-payload variant). The name
-// and any extra metadata ride on the LABEL, not the payload, so this works
-// whether or not the eDSL embeds a name.
+// The base URL follows the page host so it works at localhost or
+// andrews-mac-mini; Amphora listens on :3024 with permissive CORS.
 //
-// Base URL follows the page host so it works at localhost or andrews-mac-mini;
-// Amphora listens on :3024 with permissive CORS.
-
 // The web build (trigger-fish.app, `window.TRIGGERFISH_WEB`) has no Amphora:
-// every request fails at once, without touching the network, so the library
-// is this browser's copy and nothing asks after the visitor's machine
-// (Triggerfish.Web, 2026-10-27).
-const reach = (url, init) =>
-  typeof window !== "undefined" && window.TRIGGERFISH_WEB === true
-    ? Promise.reject(new Error("no Amphora on the web"))
-    : fetch(url, init);
-
-const amphoraBase = () => {
-  if (typeof window !== "undefined" && window.AMPHORA_BASE) return window.AMPHORA_BASE;
-  const host =
-    typeof window !== "undefined" && window.location && window.location.hostname
-      ? window.location.hostname
-      : "localhost";
-  const proto =
-    typeof window !== "undefined" && window.location && window.location.protocol === "https:"
-      ? "https:"
-      : "http:";
+// null, so that every request fails at once without touching the network,
+// the library is this browser's copy and nothing asks after the visitor's
+// machine (Triggerfish.Web, 2026-10-27).
+export const storeBase = () => {
+  if (typeof window === "undefined") return "http://localhost:3024";
+  if (window.TRIGGERFISH_WEB === true) return null;
+  if (window.AMPHORA_BASE) return window.AMPHORA_BASE;
+  const host = window.location && window.location.hostname ? window.location.hostname : "localhost";
+  const proto = window.location && window.location.protocol === "https:" ? "https:" : "http:";
   return proto + "//" + host + ":3024";
-};
-
-// A down/unreachable Amphora (:3024) otherwise leaves fetch pending until the
-// browser's ~30s timeout, which stalls whoever awaits it. Fail fast instead so
-// the app degrades to "no favourites" in a couple of seconds. AbortError → the
-// PureScript side gets a Left and surfaces the offline banner.
-const FETCH_TIMEOUT_MS = 2500;
-
-const getJSON = (url) => {
-  const ctrl = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(), FETCH_TIMEOUT_MS);
-  return reach(url, { signal: ctrl.signal })
-    .then((r) => {
-      if (!r.ok) throw new Error("GET " + url + " → HTTP " + r.status);
-      return r.json();
-    })
-    .finally(() => clearTimeout(timer));
-};
-
-const sendJSON = (base, method, path, body) =>
-  reach(base + path, {
-    method,
-    headers: { "Content-Type": "application/json" },
-    body: body === undefined ? undefined : JSON.stringify(body),
-  }).then(async (r) => {
-    if (!r.ok) throw new Error(method + " " + path + " → HTTP " + r.status + ": " + (await r.text()));
-    return r.status === 204 ? null : r.json();
-  });
-
-// fetchCollectionImpl(collection)(onError)(onSuccess)() :: Effect Unit
-// Resolves an Array of { hash, name, payload, tags }. Joins favourites → content
-// (payload) and favourites → first label (name + tags) so PureScript stays pure.
-export const fetchCollectionImpl = (collection) => (onError) => (onSuccess) => () => {
-  const base = amphoraBase();
-  const fail = (e) => onError(e instanceof Error ? e : new Error(String(e)))();
-
-  getJSON(base + "/favorites?collection=" + encodeURIComponent(collection))
-    .then((favs) => {
-      const hashes = (favs || []).map((f) => f.contentHash).filter(Boolean);
-      return Promise.all(
-        hashes.map((h) =>
-          Promise.all([
-            getJSON(base + "/content/" + h).then((c) => (c && c.payload) || null),
-            getJSON(base + "/labels?hash=" + h).then((ls) => (ls && ls[0]) || null),
-          ]).then(([payload, label]) => {
-            if (typeof payload !== "string") return null;
-            return {
-              hash: h,
-              name: (label && label.name) || "",
-              payload,
-              tags: (label && label.tags) || [],
-            };
-          })
-        )
-      );
-    })
-    .then((items) => onSuccess(items.filter(Boolean))())
-    .catch(fail);
-};
-
-// publishImpl(spec)(onError)(onSuccess)() :: Effect Unit
-// spec = { kind, collection, name, source, payload, tags }.
-// content (dedup by hash) → label (guarded on name) → favourite (guarded).
-// Resolves the content hash.
-export const publishImpl = (spec) => (onError) => (onSuccess) => () => {
-  const base = amphoraBase();
-  const fail = (e) => onError(e instanceof Error ? e : new Error(String(e)))();
-
-  (async () => {
-    const { hash } = await sendJSON(base, "POST", "/content", {
-      kind: spec.kind,
-      payload: spec.payload,
-    });
-
-    const labels = await getJSON(base + "/labels?hash=" + hash);
-    if (!labels.some((l) => l.name === spec.name)) {
-      await sendJSON(base, "POST", "/labels", {
-        contentHash: hash,
-        name: spec.name,
-        source: spec.source,
-        tags: spec.tags,
-      });
-    }
-
-    const favs = await getJSON(base + "/favorites?collection=" + encodeURIComponent(spec.collection));
-    if (!favs.some((f) => f.contentHash === hash)) {
-      await sendJSON(base, "POST", "/favorites", {
-        contentHash: hash,
-        collection: spec.collection,
-      });
-    }
-    return hash;
-  })()
-    .then((hash) => onSuccess(hash)())
-    .catch(fail);
-};
-
-// unpublishImpl(collection)(hash)(onError)(onSuccess)() :: Effect Unit
-// DELETE the favourite; content + labels stay addressable.
-export const unpublishImpl = (collection) => (hash) => (onError) => (onSuccess) => () => {
-  const base = amphoraBase();
-  const fail = (e) => onError(e instanceof Error ? e : new Error(String(e)))();
-  sendJSON(
-    base,
-    "DELETE",
-    "/favorites?hash=" + encodeURIComponent(hash) + "&collection=" + encodeURIComponent(collection)
-  )
-    .then(() => onSuccess()())
-    .catch(fail);
-};
-
-// exchangeImpl(method)(path)(body|null)(ok)(fail)() — any status is a reply;
-// only no reply (down, or slower than the timeout) fails.
-export const exchangeImpl = (method) => (path) => (body) => (ok) => (fail) => () => {
-  const ctrl = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(), FETCH_TIMEOUT_MS);
-  const init = { method, signal: ctrl.signal };
-  if (body !== null) { init.body = body; init.headers = { "Content-Type": "application/json" }; }
-  reach(amphoraBase() + path, init)
-    .then((r) => r.text().then((t) => ok({ status: r.status, body: t })()))
-    .catch((e) => fail(path + ": " + String(e && e.message ? e.message : e))())
-    .finally(() => clearTimeout(timer));
 };

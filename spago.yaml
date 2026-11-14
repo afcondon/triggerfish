@@ -13,6 +13,9 @@ package:
     - effect
     - now
     - aff
+    - amphora-api
+    - hawser
+    - hawser-fetch
     - arrays
     - maybe
     - integers
@@ -40,7 +43,9 @@ package:
     - transformers
     - tuples
     # vendored Vetula harmonic surface (src/Vetula/**) — the 4th instrument
+    - exceptions
     - nullable
+    - parallel
     - colors
     - lists
     - foreign         # reef's Reef.Protocol/Reef.Scale (transitive via reef)
@@ -81,6 +86,14 @@ workspace:
       path: ../../../code-typography/rebus
     binnacle:
       path: ../binnacle
+    # Amphora's HTTP API, described once (amphora/api); the pages ask its
+    # operations through hawser-fetch and write no path or body of their own.
+    amphora-api:
+      path: ../amphora/api
+    hawser:
+      path: ../../../purescript-hylograph-libs/purescript-hawser
+    hawser-fetch:
+      path: ../../../purescript-hylograph-libs/purescript-hawser/fetch
     # The controllers: device profiles (the Twister's decoding, lights and
     # press-nudge guard) and the one Web MIDI FFI, shared with PWYF.
     helm:

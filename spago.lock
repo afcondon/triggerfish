@@ -6,6 +6,7 @@
         "core": {
           "dependencies": [
             "aff",
+            "amphora-api",
             "arrays",
             "binnacle",
             "colors",
@@ -14,6 +15,7 @@
             "control",
             "effect",
             "either",
+            "exceptions",
             "foldable-traversable",
             "foreign",
             "foreign-object",
@@ -22,6 +24,8 @@
             "halogen-svg-elems",
             "halogen-widgets",
             "harmonia",
+            "hawser",
+            "hawser-fetch",
             "helm",
             "hylograph-layout",
             "hylograph-selection",
@@ -36,6 +40,7 @@
             "nullable",
             "numbers",
             "ordered-collections",
+            "parallel",
             "parsing",
             "prelude",
             "random",
@@ -713,6 +718,9 @@
       }
     },
     "extra_packages": {
+      "amphora-api": {
+        "path": "../amphora/api"
+      },
       "binnacle": {
         "path": "../binnacle"
       },
@@ -721,6 +729,12 @@
       },
       "harmonia": {
         "path": "../../harmonia"
+      },
+      "hawser": {
+        "path": "../../../purescript-hylograph-libs/purescript-hawser"
+      },
+      "hawser-fetch": {
+        "path": "../../../purescript-hylograph-libs/purescript-hawser/fetch"
       },
       "helm": {
         "path": "../../helm"
@@ -762,6 +776,34 @@
         "tailrec",
         "transformers",
         "unsafe-coerce"
+      ]
+    },
+    "amphora-api": {
+      "type": "local",
+      "path": "../amphora/api",
+      "dependencies": [
+        "argonaut-core",
+        "hawser",
+        "maybe",
+        "prelude"
+      ]
+    },
+    "argonaut-core": {
+      "type": "registry",
+      "version": "7.0.0",
+      "integrity": "sha256-gYZihtBIKthVuXXoiPphMookSf8M5aHyFYkcIWqlxTM=",
+      "dependencies": [
+        "arrays",
+        "control",
+        "either",
+        "foreign-object",
+        "functions",
+        "gen",
+        "maybe",
+        "nonempty",
+        "prelude",
+        "strings",
+        "tailrec"
       ]
     },
     "arrays": {
@@ -1307,6 +1349,36 @@
         "tuples"
       ]
     },
+    "hawser": {
+      "type": "local",
+      "path": "../../../purescript-hylograph-libs/purescript-hawser",
+      "dependencies": [
+        "argonaut-core",
+        "arrays",
+        "either",
+        "foldable-traversable",
+        "foreign-object",
+        "integers",
+        "maybe",
+        "numbers",
+        "prelude",
+        "strings",
+        "tuples"
+      ]
+    },
+    "hawser-fetch": {
+      "type": "local",
+      "path": "../../../purescript-hylograph-libs/purescript-hawser/fetch",
+      "dependencies": [
+        "aff",
+        "effect",
+        "either",
+        "exceptions",
+        "functions",
+        "hawser",
+        "prelude"
+      ]
+    },
     "helm": {
       "type": "local",
       "path": "../../helm",
@@ -1324,6 +1396,7 @@
         "ordered-collections",
         "prelude",
         "refs",
+        "strings",
         "tuples"
       ]
     },
