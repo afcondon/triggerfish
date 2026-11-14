@@ -63,7 +63,6 @@ import Web.UIEvent.KeyboardEvent as KE
 import Web.UIEvent.KeyboardEvent.EventTypes as KET
 import Triggerfish.Flow as Flow
 import Triggerfish.Bosun as Bosun
-import Triggerfish.DeepStar as DeepStar
 import Triggerfish.LimulusEngine as LimulusEngine
 import Simple.JSON (readJSON)
 import Data.Either (hush)
@@ -71,6 +70,7 @@ import Triggerfish.BackgroundOpen as BackgroundOpen
 import Triggerfish.Capture.RigLoops as RigLoops
 import Data.Tuple (Tuple(..))
 import Triggerfish.Flow.View as FlowView
+import Triggerfish.RigChecks as RigChecks
 import Triggerfish.Route as Route
 import Triggerfish.Router as Router
 import Triggerfish.Continuo as Continuo
@@ -194,8 +194,8 @@ type State =
   , peeked :: Maybe String
   -- what the rig says it is playing, per slot (its stage), page or no page
   , rigPlaying :: Map String Boolean
-  -- the rig doctor's checks (DeepStar :3027), Nothing while out of reach
-  , doctor :: Maybe (Array DeepStar.Check)
+  -- the rig's checks (RigChecks), Nothing while the server is out of reach
+  , doctor :: Maybe (Array RigChecks.Check)
   -- Web MIDI, kept to read the ports again (the FH-2 coming back), and
   -- whether they have been read once (so the first read is no arrival)
   , midi :: Maybe Midi.MidiAccess
@@ -471,16 +471,14 @@ handleAction = case _ of
     -- and what the modular is running, which a Selene edit or a hush moves
     sendRig "selene-applied"
 
-  -- Every ten seconds: the rig doctor, for what Bosun cannot see (is the
-  -- ES-9 on the bus at all; does a daemon's socket answer), and the MIDI
-  -- ports again, for the FH-2.
+  -- Every ten seconds: the rig's checks, for what Bosun cannot see (is
+  -- es9-daemon's stream reaching the ES-9; does a daemon's socket answer),
+  -- and the MIDI ports again, for the FH-2. Nothing is restarted when the
+  -- ES-9 returns: es9-daemon reopens it by itself.
   DoctorPoll -> void $ H.fork do
-    d <- liftAff DeepStar.doctor
+    d <- liftAff RigChecks.checks
     st <- H.get
     when (d /= st.doctor) (H.modify_ _ { doctor = d })
-    -- the ES-9 back on the bus: es9-daemon never takes it up again itself
-    when (maybe false DeepStar.es9Absent st.doctor && maybe false DeepStar.es9Present d)
-      (handleAction (Heal "es9" "es9-daemon"))
     for_ st.midi \access -> do
       ns <- liftEffect (Midi.outputNames access)
       when (ns /= st.ports) (handleAction (SetPorts ns))
@@ -883,8 +881,8 @@ flowChart st =
   downNodes = Array.nub $ (services # Array.mapMaybe \sv ->
     if Bosun.lampOf sv == Bosun.Down && Bosun.breaksStreams sv.id then Bosun.nodeOf sv.id else Nothing)
       -- what the doctor sees: the ES-9 off the bus, es9-daemon's socket dead
-      <> (if maybe false DeepStar.es9Absent st.doctor then [ "es9" ] else [])
-      <> (if maybe false (elem "es9-daemon" <<< DeepStar.refusing) st.doctor then [ "d-es9" ] else [])
+      <> (if maybe false RigChecks.es9Absent st.doctor then [ "es9" ] else [])
+      <> (if maybe false (elem "es9-daemon" <<< RigChecks.refusing) st.doctor then [ "d-es9" ] else [])
   rigLoops = do
     Tuple m marks <- Map.toUnfoldable st.rigLoops
     mk <- Array.reverse marks
@@ -904,7 +902,7 @@ flowChart st =
       _ -> []
 
 -- | The hardware itself, which Bosun cannot see: the ES-9 on the USB bus
--- | (the rig doctor), the FH-2 among the MIDI ports. No restart: a device is
+-- | (es9-daemon's word, by the rig's checks), the FH-2 among the MIDI ports. No restart: a device is
 -- | plugged in, not restarted.
 deviceLamps :: State -> Array FlowView.DaemonLamp
 deviceLamps st = es9 <> fh2
@@ -912,8 +910,8 @@ deviceLamps st = es9 <> fh2
   es9 = case st.doctor >>= Array.find (\c -> c.name == "ES-9 present") of
     Just c ->
       [ device "es9" (if c.status == "ok" then Bosun.Up else if c.status == "down" then Bosun.Down else Bosun.Coming)
-          ("DeepStar · " <> c.detail)
-          (if c.status == "ok" then "the ES-9 is on the USB bus" else if c.status == "down" then "the ES-9 is not on the USB bus" else "the ES-9: " <> c.status) ]
+          ("es9-daemon · " <> c.detail)
+          (if c.status == "ok" then "es9-daemon is driving the ES-9" else if c.status == "down" then "es9-daemon has lost the ES-9: unplugged, or the rack is off" else "the ES-9: " <> c.status) ]
     Nothing -> []
   fh2
     | st.portsRead =
@@ -964,13 +962,13 @@ nodeName = case _ of
 stateText :: State -> Bosun.Service -> String
 stateText st sv = sv.state <> (if sv.gaveUp then ", gave up" else "")
   <> (if sv.restarts > 0 then " · " <> show sv.restarts <> " restart" <> (if sv.restarts == 1 then "" else "s") else "")
-  <> (if maybe false (elem sv.id <<< DeepStar.refusing) st.doctor then " · its socket does not answer" else "")
+  <> (if maybe false (elem sv.id <<< RigChecks.refusing) st.doctor then " · its socket does not answer" else "")
 
 -- | How the last restart asked of a service went, if one was asked.
 askedOf :: State -> String -> Maybe Bosun.Outcome
 askedOf st id = Bosun.outcome st.now st.bosun <$> find (\a -> a.service == id) st.asked
 
--- | Above the chart, in the X-ray: who watches the rig (Bosun, DeepStar),
+-- | Above the chart, in the X-ray: who watches the rig (Bosun, the rig's checks),
 -- | the group's raise and lower, and any daemon with no place on the chart.
 -- | The chart's lens, in the address: the X-ray keeps the Atlantis page's
 -- | old `#atlantis`, so links to it still land there.
@@ -1027,8 +1025,8 @@ xrayStrip st = case st.bosun of
           ]
     | otherwise = HH.button [ cls "btn small", HE.onClick \_ -> ConfirmDown true ] [ HH.text "Lower the rig…" ]
   doctorNote = case st.doctor of
-    Nothing -> [ HH.span [ cls "xray-note" ] [ HH.text "DeepStar (:3027) does not answer: the ES-9's lamp is unknown" ] ]
-    Just _ -> []
+    Nothing -> [ HH.span [ cls "xray-note" ] [ HH.text "the rig's checks (/api/rig/checks) do not answer: the ES-9's lamp is unknown" ] ]
+    Just cs -> maybe [] (\why -> [ HH.span [ cls "xray-note" ] [ HH.text ("looper latency: " <> why) ] ]) (RigChecks.latencyStale cs)
   -- nothing Bosun runs is hidden: a daemon not yet placed on the chart
   unplacedChips h =
     let rest = filter (\sv -> null (Bosun.placesOf sv.id) && not (sv.id `elem` Bosun.watchers)) h.services

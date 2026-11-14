@@ -1,6 +1,6 @@
-// DeepStar, the rig doctor, on :3027 of the page's own host.
-export const doctorImpl = (done) => () => {
-  fetch("http://" + (window.location.hostname || "localhost") + ":3027/doctor", { cache: "no-store" })
+// The rig's checks, from the page's own origin (see RigChecks.purs).
+export const checksImpl = (done) => () => {
+  fetch("/api/rig/checks", { cache: "no-store" })
     .then((r) => (r.ok ? r.json() : null))
     .then((d) => done(d && Array.isArray(d.checks)
       ? d.checks.map((c) => ({ name: String(c.name), status: String(c.status), detail: String(c.detail || "") }))

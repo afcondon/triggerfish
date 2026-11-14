@@ -98,9 +98,10 @@ placesOf = case _ of
   id -> maybe [] pure (nodeOf id)
 
 -- | The services that watch the rig and carry none of it: no line runs
--- | through them, so they stand above the chart, with Bosun.
+-- | through them, so they stand above the chart, with Bosun. None since
+-- | DeepStar was retired (2026-11-14).
 watchers :: Array String
-watchers = [ "deepstar" ]
+watchers = []
 
 -- | A restart asked of Bosun: when, and the service as it was.
 type Asked = { service :: String, at :: Number, before :: Maybe Service }
