@@ -28,6 +28,7 @@ module Triggerfish.Odonus.Grid.Types
   , Slots
   ) where
 
+import Triggerfish.Clips.Kept as ClipsKept
 import Triggerfish.Library as Library
 import Triggerfish.Amphora (LibItem)
 import Prelude
@@ -341,6 +342,7 @@ type State =
   , contextOpen :: Boolean          -- REPLAY control card: harmonic-context panel open
   , codeOpen :: Boolean             -- REPLAY control card: the mark as code
   , zoom :: Zoom                    -- REPLAY: how much of the take the surface shows
+  , clipsKept :: Maybe ClipsKept.Kept  -- the clip library's hold on Amphora
   , clips :: Array MidiClip         -- captured clips (shared library, #27), newest-first
   , twisterField :: TwisterField    -- which cell attribute the Twister's rotaries drive (bank 1)
   -- The Twister's lights (`Triggerfish.Odonus.Twister`): its output, the last
@@ -466,6 +468,7 @@ data Action
   -- every output port, opened
   | MidiReady RO.Outs
   | UseMidi Boolean         -- the web's sound choice: through MIDI, or the browser
+  | ClipsChanged    -- the clip library changed in Amphora (another page or browser)
   | RoutingStored   -- another tab saved the routing table (the dashboard's router)
   | ToggleGlide Int
   | ToggleGate Int

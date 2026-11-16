@@ -166,6 +166,10 @@ data Undo = UndoProgression String | UndoScene Int Vetula.Scene
 progSlotBase :: Int
 progSlotBase = 2000
 
+-- | And the clips', above those.
+clipSlotBase :: Int
+clipSlotBase = 3000
+
 -- | The drawer has moved on: its last delete can no longer be undone.
 settle :: M Unit
 settle = H.modify_ _ { notice = "", undo = Nothing }
@@ -190,12 +194,22 @@ handleQuery = case _ of
                               , tag: p.key, current: p.current, section: "", builtin: true, drag: "vetula-progression " <> p.name, hint: "Click: open it, or drag it onto the staff. Drag it onto a voice (a tile under the score, or its badge) and the voice plays it. Drag it into Limulus: onto a voice's block it becomes that voice's progression; anywhere else it starts a new voice.", actions: [ "delete" ] })
                        (fromMaybe [] mprogs)
     let voiceRows = Voices.rows st.voices st.names st.routesText
+    -- the clip library: a clip is dragged onto a voice, which then plays it
+    mclips <- H.query _vet unit (Vetula.AskClips identity)
+    let clipRows = map (\c -> { slot: clipSlotBase + c.slot, name: c.name
+                              , icons: map (\icon -> { icon, color: "#6b4a2a" }) (Array.filter (_ /= "") (String.split (String.Pattern "-") c.name))
+                              , tag: c.tag, current: false, section: "Clips", builtin: true, drag: "vetula-clip " <> c.name
+                              , hint: "A passage cut in a Review (here, Odonus or Melichthys). Drag it onto a voice (a tile under the score) and the voice plays it, as it was played. In Limulus: clip \"" <> c.name <> "\"."
+                              , actions: [ "delete" ] })
+                       (fromMaybe [] mclips)
     pure $ mscenes <#> \scenes -> reply
       -- progressions first; a scene keeps the voices playing, so it is
       -- offered once there are some, and drawn without glyphs, which mean
       -- a progression (AC, 2026-10-27)
       { title: "Progressions", modes: false, keep: "+ new", keepTip: "+ new starts a progression, which is here from its first chord", notice: st.notice
-      , rows: progRows <> voiceRows <> map (_ { section = "Scenes" }) (Array.mapWithIndex (\i sc -> { slot: i, name: sc.name, icons: [], tag: sc.key, current: false, section: "", builtin: false, drag: "", hint: "Click: load it onto the surface. Double-click: rename it.", actions: [ "delete" ] }) scenes) }
+      , rows: progRows <> voiceRows <> clipRows <> map (_ { section = "Scenes" }) (Array.mapWithIndex (\i sc -> { slot: i, name: sc.name, icons: [], tag: sc.key, current: false, section: "", builtin: false, drag: "", hint: "Click: load it onto the surface. Double-click: rename it.", actions: [ "delete" ] }) scenes) }
+  -- a clip's row does nothing on a click: it is dragged
+  SQ.BrowserRecall i _ next | i >= clipSlotBase -> pure (Just next)
   -- a saved progression's row: load it
   SQ.BrowserRecall i _ next | i >= progSlotBase -> settle *> H.query _vet unit (Vetula.LoadEntry (i - progSlotBase) next)
   -- a voice's row: show its card in Limulus (adding the block if it is gone)
@@ -221,6 +235,12 @@ handleQuery = case _ of
   -- shape / colour Odonus: a route line, as Limulus writes it
   -- a progression's delete (the drawer asks first): no longer kept, so its
   -- voices fall silent until the undo keeps it again
+  SQ.BrowserAction slot "delete" next | slot >= clipSlotBase -> do
+    mclips <- H.query _vet unit (Vetula.AskClips identity)
+    for_ (Array.find (\c -> c.slot == slot - clipSlotBase) (fromMaybe [] mclips)) \c -> do
+      _ <- H.query _vet unit (Vetula.DeleteClipNamed c.name unit)
+      H.modify_ _ { notice = "Deleted the clip " <> c.name, undo = Nothing }
+    pure (Just next)
   SQ.BrowserAction slot "delete" next | slot >= progSlotBase -> do
     mprogs <- H.query _vet unit (Vetula.AskProgressions identity)
     let i = slot - progSlotBase

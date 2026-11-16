@@ -102,6 +102,7 @@ import Tidal.Pattern.Types (Pattern, Event) as PT
 import Haskell.Rational as Rat
 import Haskell.Rational ((%))
 import Triggerfish.Clips (MidiClip, NoteEvent, headCount)
+import Triggerfish.Clips.Kept as ClipsKept
 import Triggerfish.Clips.Store as ClipStore
 
 import Data.Either (Either(..), hush)
@@ -120,6 +121,7 @@ import Vetula.Tidal (progressionSource, progressionSourceIn, parseBeats, parsePr
 import Reef.Vetula.VoiceName (voiceCount, voiceLetter)
 import Reef.Routing (decodeVoiceRouting) as RR
 import Vetula.Lepidoptera (PerfDoc, VoiceSpec, cardProgression, docFromVoices, parseCardIn, parsePerform, printAsRecord, printCard, printProgressionIn)
+import Reef.Vetula.Lepidoptera (StagedClip, printClip, stageClip)
 import Vetula.StageCards as SC
 import Triggerfish.StageCopy as StageCopy
 import Triggerfish.Drag as Drop
@@ -511,6 +513,7 @@ type PerfBox =
                           -- chord indices (cycle = 1 bar). "" = default (one/beat).
   , muted   :: Boolean    -- silence this pipeline without tearing it down
   , term    :: PerfTerm   -- the terminal sink: → midi | → odo | → rig
+  , clip    :: Maybe StagedClip    -- a library clip as the source, as the card names it
   , phrase  :: Maybe PhraseAttach  -- a captured phrase as the source (#27), in place of
                                    -- chords; when present it drives `base` and the box
                                    -- plays on the bar grid. Nothing = chord-sourced.
@@ -620,6 +623,8 @@ type State =
   -- | The saved progressions the stage holds, by name (step 4b), as far as
   -- | this page knows; `Nothing` until the rig answers.
   , stageProgs :: Maybe (Map String String)
+  -- the stage's copy of the clip library (`vetula/clip/<name>`), as the progressions'
+  , stageClips :: Maybe (Map String String)
   -- | The cards that name a progression, by number, as last written: the
   -- | composer's lines, which this page never prints back (not even after
   -- | refusing a write to one).
@@ -715,6 +720,7 @@ type State =
   , perfRecallOpen :: Boolean
   -- The shared MIDI clip library (#27), loaded from `Triggerfish.Clips.Store` in
   -- Initialize.
+  , clipsKept :: Maybe ClipsKept.Kept   -- the clip library's hold on Amphora
   , clipLibrary :: Array MidiClip
   -- The always-on capture logbook (#28): every note the voices/boxes emit is tapped
   -- in PerfTick and appended here (the "player piano" roll), drawn by the review
@@ -791,6 +797,7 @@ data Action
   | AutoCapture            -- timer: auto-capture the current path (ephemeral, update-in-place)
   | LoadProg Int           -- load library entry #i into the performance working copy
   | SaveScene              -- serialise the whole Perform surface as a vetulaScene → Amphora
+  | ClipsChanged           -- the clip library changed in Amphora (another page or browser)
   | ProgressionsChanged    -- the kept progressions changed in Amphora (another page)
   | ScenesChanged          -- the scenes, likewise
   | PerfCloseRecall
@@ -894,6 +901,8 @@ data SourceQuery a
   | AskSounding (Sounding -> a)
   | SyncFree Number Number a    -- adopt the rack's shared free-run baseline (start micros, BPM)
   | AskLibrary (Array { name :: String, text :: String } -> a)   -- A5 manager
+  | AskClips (Array { slot :: Int, name :: String, tag :: String } -> a)  -- the drawer's clips, by the names a voice says
+  | DeleteClipNamed String a   -- the drawer's delete of a clip
   | AskProgressions (Array { slot :: Int, name :: String, key :: String, current :: Boolean, rebus :: Array TGlyph.GlyphIcon } -> a)  -- the drawer's saved progressions
   | LoadEntry Int a
   -- the drawer's delete of a saved progression, and its undo: the one by
@@ -1011,6 +1020,7 @@ component = H.mkComponent
       , stageLocks: []
       , voiceSendMenu: Nothing
       , stageProgs: Nothing
+      , stageClips: Nothing
       , namedCards: Map.empty
       , scoreSel: Nothing
       , scoreRead: Set.empty
@@ -1062,6 +1072,7 @@ component = H.mkComponent
       , progShelf: Nothing
       , sceneShelf: Nothing
       , perfRecallOpen: false
+      , clipsKept: Nothing
       , clipLibrary: []
       , capture: { logbook: Logbook.emptyLog, playing: Nothing, regionDrag: Nothing, contextOpen: false, codeOpen: false, zoom: Whole, rig: Nothing, cutting: false, cutSel: Nothing, cardShut: Nothing }
       , rigLoops: false, rigAsked: 0.0, captureDragSub: Nothing, riverNow: 0.0
@@ -1199,6 +1210,15 @@ handleQuery = case _ of
           handleAction (CardToLimulus n)
     -- only a different progression replaces the open one
     if loads then guardLoss ("voice " <> show n) open else open
+    pure (Just next)
+  AskClips reply -> do
+    s <- H.get
+    let about c = c.source <> " \x00b7 " <> show (round (c.lenMicros / 1.0e6)) <> " s" <> maybe "" (" \x00b7 " <> _) c.key
+    -- newest first, as they were cut
+    pure $ Just $ reply $ Array.reverse (mapWithIndex (\i (Tuple nm c) -> { slot: i, name: nm, tag: about c }) (clipNames s.clipLibrary))
+  DeleteClipNamed name next -> do
+    s <- H.get
+    for_ (find (\(Tuple nm _) -> nm == name) (clipNames s.clipLibrary)) \(Tuple _ c) -> handleAction (ClipDelete c.id)
     pure (Just next)
   AskProgressions reply -> do
     s <- H.get
@@ -1597,8 +1617,11 @@ publishCards = do
 readCard :: State -> Int -> String -> Maybe VoiceSpec
 readCard st n text = parseCardIn lookup n text
   where
-  lookup name = (\e -> { chords: filter (\ns -> length ns > 0) (parseProgression e.source), beats: parseBeats e.source })
-    <$> find (\e -> e.kept && e.name == name) st.library
+  lookup name = case stripPrefix (Pattern "clip:") name of
+    Just clip -> (\(Tuple nm c) -> { chords: [], beats: [], clip: Just (stageClip nm c) })
+      <$> find (\(Tuple nm _) -> nm == clip) (clipNames st.clipLibrary)
+    Nothing -> (\e -> { chords: filter (\ns -> length ns > 0) (parseProgression e.source), beats: parseBeats e.source, clip: Nothing })
+      <$> find (\e -> e.kept && e.name == name) st.library
 
 -- | Write voice n's line to the stage (`Nothing` takes the voice off it),
 -- | and read it here as a write from elsewhere would be.
@@ -1658,6 +1681,39 @@ publishProgressions = do
     unless (Map.isEmpty now) do
       liftEffect $ for_ (StageCopy.lines progressionPrefix seen now) (Transport.send (Binnacle.socket bin))
       H.modify_ _ { stageProgs = Just now }
+
+-- | Bring the stage's copy of the clip library up to date: each clip as
+-- | `vetula/clip/<name>`, which a voice names (`v3 $ clip "gem-truck"`) and
+-- | the rig resolves, as it does a saved progression.
+publishClips :: forall m. MonadAff m => H.HalogenM State Action Slots Output m Unit
+publishClips = do
+  st <- H.get
+  for_ st.stageClips \seen -> for_ st.binnacle \bin -> do
+    let now = stagedClips st.clipLibrary
+    -- as the progressions: an empty library is a browser that has not
+    -- loaded its clips, not one that deleted them all
+    unless (Map.isEmpty now) do
+      liftEffect $ for_ (StageCopy.lines clipPrefix seen now) (Transport.send (Binnacle.socket bin))
+      H.modify_ _ { stageClips = Just now }
+
+clipPrefix :: String
+clipPrefix = "vetula/clip/"
+
+-- | **The clips by the names a voice says.** A clip's own name where a line
+-- | can say it (`cleanName`), and a number after it where two clips would
+-- | share one. Named oldest first, so a new clip never takes an old one's
+-- | name from it.
+clipNames :: Array MidiClip -> Array (Tuple String MidiClip)
+clipNames clips = (foldl step { taken: [], out: [] } (Array.sortWith _.capturedMicros clips)).out
+  where
+  step acc c =
+    let base = cleanName (if c.name == "" then "clip" else c.name)
+        nm = fromMaybe base (find (\n -> not (elem n acc.taken)) ([ base ] <> map (\k -> base <> "-" <> show k) (range 2 999)))
+    in { taken: snoc acc.taken nm, out: snoc acc.out (Tuple nm c) }
+
+-- | The clip library as the stage keeps it, by name.
+stagedClips :: Array MidiClip -> Map String String
+stagedClips clips = Map.fromFoldable (map (\(Tuple nm c) -> Tuple nm (printClip (stageClip nm c))) (clipNames clips))
 
 -- | Where the stage keeps Vetula's saved progressions (StageCopy).
 progressionPrefix :: String
@@ -1726,13 +1782,14 @@ boxOfCard n spec old =
   , seqText: spec.seqText
   , muted: spec.muted
   , term: spec.term
+  , clip: spec.clip
   , phrase: old >>= _.phrase
   }
 
 handleActionCore :: forall m. MonadAff m => Action -> H.HalogenM State Action Slots Output m Unit
 handleActionCore = case _ of
   StageOpen -> do
-    H.modify_ _ { stageCards = Nothing, stageProgs = Nothing, stageKey = Nothing }
+    H.modify_ _ { stageCards = Nothing, stageProgs = Nothing, stageClips = Nothing, stageKey = Nothing }
     -- The rig answered, so this is not the zero-install page: unless the
     -- viewer chose, auditions go to Continuo (which falls back to the
     -- browser if no port answers).
@@ -1807,6 +1864,10 @@ handleActionCore = case _ of
     for_ (StageCopy.table progressionPrefix msg) \held -> do
       H.modify_ \s -> s { stageProgs = Just (StageCopy.ours held (Map.fromFoldable (mapMaybe (stageTextOf s) s.library))) }
       publishProgressions
+    -- and the clips, likewise
+    for_ (StageCopy.table clipPrefix msg) \held -> do
+      H.modify_ \s -> s { stageClips = Just (StageCopy.ours held (stagedClips s.clipLibrary)) }
+      publishClips
     case SC.readFrame msg of
       Nothing -> pure unit
       -- the stage has no cards (a fresh rig): it gets ours
@@ -1923,8 +1984,12 @@ handleActionCore = case _ of
     H.modify_ \s -> relibrary (withKept progs.items s.library) s { progShelf = Just progs.shelf }
     when (length migrated.renames > 0) persistLib
     -- Load the shared MIDI clip library (#27) — the pool the phrase picker offers.
-    savedClips <- liftEffect ClipStore.loadClips
-    H.modify_ _ { clipLibrary = savedClips }
+    -- Kept in Amphora too: another browser's clips arrive, and the rig can
+    -- fetch one by its hash.
+    { emitter: clipsE, listener: clipsL } <- liftEffect HS.create
+    _ <- H.subscribe (ClipsChanged <$ clipsE)
+    openedClips <- liftEffect (ClipsKept.open (HS.notify clipsL unit))
+    H.modify_ _ { clipLibrary = openedClips.clips, clipsKept = Just openedClips.kept }
     -- Resume the persisted Perform session (a reload must NOT start a new session);
     -- mint one only on the very first launch. `perfSession` then rides every save.
     msess <- liftEffect Store.loadSession
@@ -2336,7 +2401,7 @@ handleActionCore = case _ of
 
   TileDragOver ev -> do
     d <- liftEffect Drop.currentDrag
-    when (isJust (stripPrefix (Pattern progDragPrefix) d) || isJust (stripPrefix (Pattern wayDragPrefix) d))
+    when (isJust (stripPrefix (Pattern progDragPrefix) d) || isJust (stripPrefix (Pattern wayDragPrefix) d) || isJust (stripPrefix (Pattern clipDragPrefix) d))
       (liftEffect (Drop.allowDrop ev))
 
   WayDrag way ev -> liftEffect (Drop.startDrag ev (wayDragPrefix <> way))
@@ -2346,7 +2411,14 @@ handleActionCore = case _ of
     liftEffect (stopPropagation ev)
     name0 <- liftEffect (Drop.dropOf "vetula-progression" ev)
     way <- liftEffect (Drop.dropOf "vetula-way" ev)
+    clip <- liftEffect (Drop.dropOf "vetula-clip" ev)
     st <- H.get
+    -- a clip from the drawer: the voice plays it, keeping its manner (every
+    -- `# …` of its line); an empty voice starts, playing it
+    unless (clip == "") do
+      let manner = Array.drop 1 (map trim (split (Pattern "#") (fromMaybe "" (st.stageCards >>= Map.lookup n))))
+      writeVoice n (Just (joinWith " # " ([ "clip \"" <> clip <> "\"" ] <> manner)))
+      H.modify_ _ { publishMsg = Just ("voice " <> voiceLetter n <> " plays the clip " <> clip) }
     -- a way of playing: added to the end of the voice's line, as typing it
     -- there would; the line is the live-coder's, so it is only ever added to
     unless (way == "") case st.stageCards >>= Map.lookup n of
@@ -2607,6 +2679,12 @@ handleActionCore = case _ of
 
   -- Another browser changed them (or this one's change was kept on top of
   -- theirs).
+  ClipsChanged -> do
+    st <- H.get
+    for_ st.clipsKept \kept -> do
+      clips <- liftEffect (ClipsKept.read kept)
+      H.modify_ _ { clipLibrary = clips }
+      publishClips
   ProgressionsChanged -> do
     st <- H.get
     for_ st.progShelf \shelf -> do
@@ -2699,14 +2777,12 @@ handleActionCore = case _ of
   ClipRename cid newName -> do
     st <- H.get
     let lib' = map (\c -> if c.id == cid then c { name = newName } else c) st.clipLibrary
-    H.modify_ _ { clipLibrary = lib' }
-    liftEffect (ClipStore.saveClips lib')
+    keepClips lib'
 
   ClipDelete cid -> do
     st <- H.get
     let lib' = filter (\c -> c.id /= cid) st.clipLibrary
-    H.modify_ _ { clipLibrary = lib' }
-    liftEffect (ClipStore.saveClips lib')
+    keepClips lib'
 
   -- The shelf's ◴ declares a PROGRESSION — chords that are alternatives to each
   -- other, one sample each. This one declares a PHRASE: a marked region whose
@@ -2919,12 +2995,12 @@ handleActionCore = case _ of
             }
       -- reload → prepend → save the whole library, so a clip Odonus wrote this
       -- session isn't clobbered (clipLibrary may be stale).
-      existing <- liftEffect ClipStore.loadClips
+      existing <- liftEffect (maybe ClipStore.loadClips ClipsKept.read st.clipsKept)
       let lib' = [ clip ] <> existing
-      liftEffect (ClipStore.saveClips lib')
+      keepClips lib'
       -- lifting ends the preview: hush before dropping it, or the lookahead rings on
       hushCapture
-      H.modify_ _ { clipLibrary = lib', capture = st.capture { playing = Nothing } }
+      H.modify_ \s -> s { capture = s.capture { playing = Nothing } }
 
   Nop -> pure unit
 
@@ -4212,6 +4288,17 @@ modeWord m = case m of
   Aeolian -> "minor"
   _ -> toLower (trim (SCU.takeWhile (_ /= '(') (maybe "" _.label (find (\c -> c.mode == m) modeChoices))))
 
+-- | The clip library as the page now has it: kept here and in Amphora, and
+-- | shown as kept (with any clip another page added meanwhile).
+keepClips :: forall m. MonadAff m => Array MidiClip -> H.HalogenM State Action Slots Output m Unit
+keepClips clips = do
+  st <- H.get
+  kept <- liftEffect case st.clipsKept of
+    Just k -> ClipsKept.save k clips
+    Nothing -> clips <$ ClipStore.saveClips clips
+  H.modify_ _ { clipLibrary = kept }
+  publishClips
+
 -- | Star / unstar the sounding chord's current voicing in its favourites — the
 -- | kept voicings of this one note-set, surfaced in the strip above the ladder.
 toggleFavorite :: forall o m. MonadAff m => H.HalogenM State Action Slots o m Unit
@@ -4635,6 +4722,7 @@ scoreCandidates st =
 type StageVoice =
   { n :: Int
   , name :: Maybe String
+  , clip :: Maybe String    -- the clip it plays, if its source is one
   , found :: Boolean
   , muted :: Boolean
   , channel :: Int
@@ -4663,7 +4751,7 @@ stageVoice st n = (st.stageCards >>= Map.lookup n) <#> \text ->
                 (fromMaybe [] (st.stageHarmony >>= hush <<< HarmonyRoute.parse)))
       fed = not (Array.null feeds)
       conductor = maybe false (termConducts <<< _.term) spec
-  in { n, name, found: maybe (isJust spec) (\nm -> any (\e -> e.kept && e.name == nm) st.library) name
+  in { n, name, clip: map _.name (spec >>= _.clip), found: maybe (isJust spec) (\nm -> any (\e -> e.kept && e.name == nm) st.library) name
      , muted: maybe false _.muted spec, channel, fed, feeds
      , held: filter (\i -> elem i st.stageLocks) feeds
      -- a voice feeds Odonus by a harmony route; `# out odo` silences it and
@@ -4759,7 +4847,10 @@ voicesPane st =
                 Nothing -> "its own chords, written in Limulus") ]
             ( if triple
                 then map (\w -> HH.i [ HP.class_ (HH.ClassName ("fa-solid fa-" <> w)), HP.style ("font-size: 30px; color: " <> (if v.found then "#2a2a2a" else "#b3261e") <> ";") ] []) words
-                else [ HH.span [ HP.style "font: 13px Georgia, serif; color: #2a2a2a;" ] [ HH.text (fromMaybe "\x2026" v.name) ] ] )
+                else case v.clip of
+                  -- a clip, by the icons of its name
+                  Just nm -> map (\w -> HH.i [ HP.class_ (HH.ClassName ("fa-solid fa-" <> w)), HP.title ("the clip " <> nm), HP.style "font-size: 24px; color: #6b4a2a;" ] []) (filter (_ /= "") (split (Pattern "-") nm))
+                  Nothing -> [ HH.span [ HP.style "font: 13px Georgia, serif; color: #2a2a2a;" ] [ HH.text (fromMaybe "\x2026" v.name) ] ] )
         , HH.div [ HP.style "position: absolute; left: 0; right: 0; bottom: 6px; display: flex; justify-content: center; gap: 4px;" ]
             -- a conductor plays nothing, so it has nothing to mute
             ( (if v.dest == Odo then [] else [ ctl (if v.muted then "fa-play" else "fa-pause") (if v.muted then "hear it again" else "mute it") (VoiceMute v.n) ])
@@ -5159,6 +5250,7 @@ boxesFromDoc doc = mapWithIndex voiceToBox doc.voices
        , seqText: v.seqText
        , muted: v.muted
        , term: v.term
+       , clip: Nothing
        , phrase: Nothing   -- phrase boxes aren't carried in the eDSL doc (#27)
        }
 
@@ -5172,6 +5264,7 @@ boxSpec box =
   , stack: box.stack
   , term: box.term
   , muted: box.muted
+  , clip: box.clip
   }
 
 -- | The recall modal — saved scenes fetched from Amphora, grouped by SESSION (each
@@ -6111,6 +6204,9 @@ progDragPrefix :: String
 progDragPrefix = "vetula-progression "
 
 -- | What a dragged way of playing carries (`Triggerfish.Drag`'s `vetula-way`).
+clipDragPrefix :: String
+clipDragPrefix = "vetula-clip "
+
 wayDragPrefix :: String
 wayDragPrefix = "vetula-way "
 

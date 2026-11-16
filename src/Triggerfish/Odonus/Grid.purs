@@ -95,6 +95,7 @@ import Triggerfish.Odonus.Patch (asCode, harmonicSummary, loadText, markText, no
 import Triggerfish.Odonus.Store as Store
 import Reef.Odonus (unisonAll) as ROdo
 import Triggerfish.Clips as Clips
+import Triggerfish.Clips.Kept as ClipsKept
 import Triggerfish.Clips.Store as ClipStore
 import Triggerfish.Amphora as Amphora
 import Triggerfish.Glyph as G
@@ -131,7 +132,7 @@ component material =
         { odo: if material == Line then Melichthys.fresh else M.defaultOdonus
         , material, timekeeper: Nothing, entriesMoved: false, grounds: [], strings: true, groundOpen: false, stringsChannel: Nothing
         , sounding: Silent, dragging: Nothing, dragSub: Nothing
-        , notes: [], logbook: Logbook.emptyLog, stage: Perform, selEuclid: Nothing, playing: Nothing, rigLoops: false, rigAsked: 0.0, cutting: false, cutSel: Nothing, regionDrag: Nothing, cardShut: Nothing, contextOpen: false, codeOpen: false, zoom: Whole, clips: [], twisterField: FNote, twisterOut: Nothing, midiSession: { sub: Nothing, unlisten: pure unit }, twisterHeard: Map.empty, twisterLit: Map.empty, binnacle: Nothing, nowMicros: 0.0
+        , notes: [], logbook: Logbook.emptyLog, stage: Perform, selEuclid: Nothing, playing: Nothing, rigLoops: false, rigAsked: 0.0, cutting: false, cutSel: Nothing, regionDrag: Nothing, cardShut: Nothing, contextOpen: false, codeOpen: false, zoom: Whole, clipsKept: Nothing, clips: [], twisterField: FNote, twisterOut: Nothing, midiSession: { sub: Nothing, unlisten: pure unit }, twisterHeard: Map.empty, twisterLit: Map.empty, binnacle: Nothing, nowMicros: 0.0
         , outs: [], routing: RM.defaultTable, clockTempo: 120.0, clockLocked: false
         , clockBeat: 0.0
         , notice: "", undoDelete: Nothing, stagePatches: Nothing, shelf: Nothing
@@ -510,7 +511,11 @@ publishPatches = do
 persistClips :: forall o m. MonadAff m => H.HalogenM State Action Slots o m Unit
 persistClips = do
   s <- H.get
-  liftEffect (ClipStore.saveClips s.clips)
+  case s.clipsKept of
+    Just kept -> do
+      clips <- liftEffect (ClipsKept.save kept s.clips)
+      H.modify_ _ { clips = clips }
+    Nothing -> liftEffect (ClipStore.saveClips s.clips)
 
 -- | What a clip cut from over a ground says of it, beside the chords its
 -- | context already holds: the progression's name in Vetula (`ground:`), if
@@ -618,8 +623,12 @@ dispatch = case _ of
     _ <- H.subscribe routeE
     liftEffect $ RStore.onChange (HS.notify routeL RoutingStored)
     -- Restore the shared MIDI clip library (#27) — captured anywhere, pickable here.
-    savedClips <- liftEffect ClipStore.loadClips
-    H.modify_ _ { clips = savedClips }
+    -- Kept in Amphora too, so another browser's clips arrive and the rig can
+    -- fetch one by its hash.
+    { emitter: clipsE, listener: clipsL } <- liftEffect HS.create
+    _ <- H.subscribe clipsE
+    openedClips <- liftEffect (ClipsKept.open (HS.notify clipsL ClipsChanged))
+    H.modify_ _ { clips = openedClips.clips, clipsKept = Just openedClips.kept }
     -- Calibration tables for any poly instrument, likewise in the background and
     -- likewise non-fatal. Missing tables are LOUD rather than silent: without
     -- them the four Saich voices differ by up to 16 cents at the same voltage,
@@ -878,6 +887,11 @@ dispatch = case _ of
     healed <- liftEffect (RStore.heal (RO.portNames outs))
     for_ healed \t -> H.modify_ _ { routing = t }
     pushRouting
+  ClipsChanged -> do
+    st <- H.get
+    for_ st.clipsKept \kept -> do
+      clips <- liftEffect (ClipsKept.read kept)
+      H.modify_ _ { clips = clips }
   RoutingStored -> do
     mroute <- liftEffect RStore.load
     for_ mroute \t -> H.modify_ _ { routing = t }
