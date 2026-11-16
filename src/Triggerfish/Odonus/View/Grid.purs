@@ -4,7 +4,7 @@
 -- | glide, length, ratchet, velocity) moved to the PARAMETERS pane, each beside
 -- | its own generator. The transport chrome (step length, groove, status,
 -- | nameplate) stays here for now.
-module Triggerfish.Odonus.View.Grid (gridPanel, transportRow) where
+module Triggerfish.Odonus.View.Grid (gridPanel, transportRow, clockRow, feelBlock) where
 
 import Prelude
 

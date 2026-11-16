@@ -4,6 +4,7 @@
 module Triggerfish.Odonus.Grid.Types
   ( KnobTarget(..)
   , Material(..)
+  , Ground
   , targetRange
   , applyTarget
   , DragState
@@ -88,6 +89,7 @@ data KnobTarget
   | HeadOffset Int
   | HeadLen Int
   | HeadEntry Int    -- Melichthys: when the head comes in, half bars after a restart
+  | LinePull         -- Melichthys: how much of the line its ground pulls to the chords
   | LineWave Int Int -- Melichthys: a wave over the line, and which control (1 cycles, 2 phase, 3 dyn, 4 bend)
   | HeadDiv Int      -- per-voice Euclidean pulse count (DIV) = k in E(k,n)
   | HeadEStep Int    -- per-voice Euclidean step count (STEPS) = n in E(k,n)
@@ -115,6 +117,7 @@ targetRange = case _ of
   HeadOffset _ -> { lo: 0, hi: 15 }
   HeadLen _ -> { lo: 1, hi: 16 }
   HeadEntry _ -> { lo: 0, hi: 64 }
+  LinePull -> { lo: 0, hi: 100 }
   LineWave _ control -> case control of
     1 -> { lo: 1, hi: 32 }
     2 -> { lo: 0, hi: 15 }
@@ -145,6 +148,7 @@ applyTarget t v = case t of
   HeadOffset h -> M.setHeadOffset h v
   HeadLen h -> M.setHeadLen h v
   HeadEntry h -> Melichthys.setEntry h v
+  LinePull -> Melichthys.setPull v
   LineWave w control -> Melichthys.setWave w control v
   HeadDiv h -> M.setHeadPulses h v
   HeadEStep h -> M.setHeadEuclidSteps h v
@@ -287,6 +291,10 @@ data TwisterField
 
 derive instance eqTwisterField :: Eq TwisterField
 
+-- | A kept progression of Vetula's, to play a line over: its chords are in
+-- | `source`, as Vetula wrote them.
+type Ground = { name :: String, keyLabel :: String, source :: String, kept :: Boolean }
+
 type State =
   { odo :: M.Odonus
   , material :: Material     -- which machine this is being (never changes)
@@ -297,6 +305,14 @@ type State =
   -- Melichthys: an entry was moved since the heads last started, so what
   -- plays is not yet what the knobs say (FROM THE TOP lights)
   , entriesMoved :: Boolean
+  -- Melichthys: Vetula's kept progressions, as this browser last had them
+  , grounds :: Array Ground
+  -- Melichthys: whether the ground's chords are held on Continuo's strings,
+  -- and the channel its Strings instrument listens on (Nothing: none hosted)
+  , strings :: Boolean
+  -- Melichthys: the list of progressions to pick a ground from is open
+  , groundOpen :: Boolean
+  , stringsChannel :: Maybe Int
   , sounding :: Sounding     -- the ONE transport value (control-surface MISU refactor):
                              -- Silent = stopped, Local = play local Web-MIDI, Rig = rig
                              -- authoritative (muted locally). Replaces running/master/audible.
@@ -472,6 +488,11 @@ data Action
   | DrawLine Int            -- Melichthys: a new line of this many bars, its seed drawn here
   | RestartLine             -- Melichthys: every head from the top, each at its entry
   | SetLineWave Int Int Int -- Melichthys: wave, control, value (the shape buttons)
+  | PickGround String       -- Melichthys: play over this kept progression of Vetula's ("": none)
+  | SetLineEvery Int        -- Melichthys: bars to a chord of the ground
+  | ReadGrounds             -- Melichthys: read Vetula's kept progressions again
+  | ToggleGroundList        -- Melichthys: open or close the list of progressions
+  | ToggleStrings           -- Melichthys: the ground's chords on Continuo's strings, or not
   | ToggleUnisonGroup Int   -- a group's bit
   | SetUnisonMask Int       -- ALL or NONE
   | ToggleVoicesModal

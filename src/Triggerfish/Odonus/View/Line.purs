@@ -16,7 +16,7 @@ module Triggerfish.Odonus.View.Line (linePanel) where
 
 import Prelude
 
-import Data.Array (concat, concatMap, filter, foldl, mapWithIndex, range, (!!))
+import Data.Array (concat, concatMap, filter, find, foldl, last, mapWithIndex, range, (!!))
 import Data.Foldable (maximum, minimum)
 import Data.Int (toNumber)
 import Data.Maybe (Maybe(..), fromMaybe, maybe)
@@ -26,29 +26,41 @@ import Halogen.HTML.Events as HE
 import Halogen.HTML.Properties as HP
 import Halogen.Widgets.Svg (svgAttr, svgEl)
 import Reef.Melichthys as Melichthys
-import Data.String (joinWith)
+import Data.String (Pattern(..), contains, joinWith)
+import Rebus as Rebus
 import Reef.Melody (barSteps)
+import Reef.Vetula.NoteText (parseProgression)
+import Triggerfish.Odonus.View.Progression (chordName)
 import Triggerfish.Odonus.Grid.Types (Action(..), GenKind(..), KnobTarget(..), Slots, State)
 import Triggerfish.Odonus.Grid.Widgets (engrave, genRow, headColor, labelledRow, miniKnob, octLabel, panelShell, style, tabBtn)
 import Triggerfish.Odonus.Model as M
-import Triggerfish.Odonus.View.Grid (transportRow)
+import Triggerfish.Odonus.View.Grid (clockRow, feelBlock)
 import Triggerfish.Odonus.View.Key (gridPiece)
+import Triggerfish.Glyph (bundleRebus)
+import Triggerfish.GlyphView (faIcon)
 
 linePanel :: forall m. State -> H.ComponentHTML Action Slots m
 linePanel s =
   panelShell s.collapsed "LINE" "one melody · four heads" "flex:1 1 560px;min-width:420px"
-    [ HH.div [ style "display:flex;gap:22px;align-items:flex-start;flex-wrap:wrap" ]
-        [ HH.div [ style "flex:0 0 280px" ]
-            [ gridPiece s
-            , labelledRow "OCTAVE"
+    -- what the notes are held to, together at the top: the scale, then the
+    -- ground's chords under it (AC, 2026-11-16)
+    [ gridPiece s
+    , maybe (HH.text "") (groundRow s) s.odo.line
+    -- two columns (AC, 2026-11-16): where the line sits and how fast, and
+    -- drawing a new one; then its feel and what changes the heads by itself
+    , HH.div [ style "display:flex;gap:26px;align-items:flex-start;flex-wrap:wrap;margin-bottom:12px" ]
+        [ HH.div [ style "flex:0 0 340px" ]
+            [ labelledRow "OCTAVE"
                 (map (\n -> tabBtn (octLabel n) (s.odo.octaveShift == n) (SetOctave n)) [ -2, -1, 0, 1, 2 ])
+            , clockRow s
             , labelledRow "DEGREE"
                 (map (\d -> tabBtn (show (d + 1)) (s.odo.degShift == d) (SetDegShift d)) [ 0, 1, 2, 3, 4, 5, 6 ])
+            , drawRow s
             ]
         , HH.div [ style "flex:0 0 250px;display:flex;flex-direction:column;gap:8px" ]
-            ( [ transportRow s ] <> map (genRow s) [ GHeads, GTransp, GSpeed ] )
+            ( [ HH.div [ style "display:flex;justify-content:space-around;margin-bottom:6px" ] [ feelBlock s ] ]
+                <> map (genRow s) [ GHeads, GTransp, GSpeed ] )
         ]
-    , drawRow s
     , case s.odo.line of
         Just l -> HH.div_ [ wavesRows l, strip s.odo (Melichthys.sounded l) ]
         Nothing -> HH.text ""
@@ -62,20 +74,21 @@ drawRow s =
     bars = maybe 0 _.bars s.odo.line
     seed = maybe 0 _.seed s.odo.line
   in
-    HH.div [ style "display:flex;align-items:flex-end;gap:14px;margin:14px 0 10px" ]
-      [ HH.div [ HP.title "draw a new line of this many bars; the heads start it from the top, each at its entry" ]
-          [ HH.div [ style $ engrave <> ";font-size:9px;margin-bottom:4px" ] [ HH.text "NEW LINE · BARS" ]
-          , HH.div [ style "display:flex;gap:3px;width:190px" ]
-              (map (\b -> tabBtn (show b) (b == bars) (DrawLine b)) [ 8, 16, 24, 32 ])
+    HH.div [ HP.title "draw a new line of this many bars; the heads start it from the top, each at its entry" ]
+      [ HH.div [ style "display:flex;align-items:baseline;justify-content:space-between;margin-bottom:4px" ]
+          [ HH.span [ style $ engrave <> ";font-size:9px" ] [ HH.text "NEW LINE · BARS" ]
+          , HH.span [ style "font-family:'SF Mono',Menlo,monospace;font-size:10px;color:#6a6456" ] [ HH.text ("line " <> show seed) ]
           ]
-      , HH.button
-          [ HE.onClick \_ -> RestartLine
-          , HP.title (if s.entriesMoved then "an entry was moved: start the heads again to hear it" else "every head back to the start of the line, each coming in at its entry")
-          , style $ "padding:5px 12px;border:1px solid #a8a392;border-radius:5px;cursor:pointer;font-family:Georgia,serif;font-size:10px;letter-spacing:0.08em;"
-              <> (if s.entriesMoved then "background:linear-gradient(#c8a86a,#b8975a);color:#1c1a12" else "background:linear-gradient(#efece1,#ddd9cb);color:#3f3c33") ]
-          [ HH.text "↺ FROM THE TOP" ]
-      , HH.span [ style "margin-left:auto;font-family:'SF Mono',Menlo,monospace;font-size:10px;color:#6a6456" ]
-          [ HH.text ("line " <> show seed) ]
+      , HH.div [ style "display:flex;align-items:center;gap:10px" ]
+          [ HH.div [ style "display:flex;gap:3px;flex:1" ]
+              (map (\b -> tabBtn (show b) (b == bars) (DrawLine b)) [ 8, 16, 24, 32 ])
+          , HH.button
+              [ HE.onClick \_ -> RestartLine
+              , HP.title (if s.entriesMoved then "an entry was moved: start the heads again to hear it" else "every head back to the start of the line, each coming in at its entry")
+              , style $ "padding:5px 12px;border:1px solid #a8a392;border-radius:5px;cursor:pointer;white-space:nowrap;font-family:Georgia,serif;font-size:10px;letter-spacing:0.08em;"
+                  <> (if s.entriesMoved then "background:linear-gradient(#c8a86a,#b8975a);color:#1c1a12" else "background:linear-gradient(#efece1,#ddd9cb);color:#3f3c33") ]
+              [ HH.text "↺ FROM THE TOP" ]
+          ]
       ]
 
 -- | The three waves, one to a row: its shape, how many cycles it makes in the
@@ -118,6 +131,76 @@ wavesRows l =
             [ svgAttr "points" (joinWith " " points), svgAttr "fill" "none"
             , svgAttr "stroke" ink, svgAttr "stroke-width" "1.2", svgAttr "opacity" (if idle then "0.3" else "0.9")
             , svgAttr "vector-effect" "non-scaling-stroke" ] [] ]
+
+-- | The ground: a kept progression of Vetula's the heads play over, a chord
+-- | every so many bars of time, the same chord for every head. PULL chooses
+-- | how much of the line goes to the chord's nearest tones: the notes that
+-- | carry most first (bar lines, long notes, phrase ends), every note at 100.
+-- | The rest pass between them in the scale.
+groundRow :: forall m. State -> M.Line -> H.ComponentHTML Action Slots m
+groundRow s l =
+  let
+    pcs = map (map (\n -> ((n `mod` 12) + 12) `mod` 12))
+    chordsOfGround g = pcs (filter (\c -> c /= []) (parseProgression g.source))
+    picked = find (\g -> chordsOfGround g == l.ground) s.grounds
+    on = l.ground /= []
+    count = max 1 (foldl (\n _ -> n + 1) 0 l.ground)
+    now = (l.tick / (16 * max 1 l.every)) `mod` count
+    -- named as voiced upward from the bass
+    voiced = foldl (\acc pc -> let low = fromMaybe 47 (last acc) in acc <> [ low + 1 + ((pc - low - 1) `mod` 12 + 12) `mod` 12 ]) []
+    chip i c = HH.span
+      [ style $ "font-family:Georgia,serif;font-size:11px;padding:1px 5px;border-radius:4px;white-space:nowrap;"
+          <> (if i == now then "background:#c8a86a;color:#1c1a12" else "color:#4a463b") ]
+      [ HH.text (chordName (voiced c)) ]
+    -- a progression by its name's rebus ("tractor-drum-cow": three icons);
+    -- one named some other way, by the rebus of its chords
+    rebusOf g = HH.span [ style "display:inline-flex;gap:5px;align-items:center" ]
+      ( map faIcon
+          ( if contains (Pattern "-") g.name then (Rebus.rebusFromAnyAlias g.name).icons
+            else bundleRebus (parseProgression g.source) ) )
+    keyOf g = HH.span [ style "font-family:Georgia,serif;font-style:italic;font-size:11px;color:#5d584b;white-space:nowrap" ] [ HH.text g.keyLabel ]
+    box lit = "display:inline-flex;align-items:center;gap:8px;padding:4px 9px;border-radius:6px;cursor:pointer;border:1px solid "
+      <> (if lit then "#8a7a4a;background:#e6dfc8" else "#00000026;background:#efece1")
+    plain t = HH.span [ style "font-family:Georgia,serif;font-size:12px;color:#5d584b" ] [ HH.text t ]
+    choice g = HH.div
+      [ HE.onClick \_ -> PickGround g.name, HP.title g.name, style (box (map _.name picked == Just g.name)) ]
+      [ rebusOf g, keyOf g ]
+  in
+    HH.div [ style "margin:0 0 14px;padding-bottom:10px;border-bottom:1px solid #00000018" ]
+      [ HH.div [ style $ engrave <> ";font-size:8px;letter-spacing:0.16em;color:#5a4a1f;margin-bottom:5px" ]
+          [ HH.text "GROUND · A PROGRESSION FROM VETULA · PICKING ONE SETS THE SCALE TO ITS KEY" ]
+      , HH.div [ style "display:flex;align-items:center;gap:14px;flex-wrap:wrap" ]
+          [ HH.div
+              [ HE.onClick \_ -> ToggleGroundList
+              , HP.title (maybe "pick a progression kept in Vetula, as this browser last had it" _.name picked)
+              , style (box false) ]
+              [ case picked of
+                  Just g -> HH.span [ style "display:inline-flex;align-items:center;gap:8px" ] [ rebusOf g, keyOf g ]
+                  Nothing -> plain (if on then "as saved" else "none")
+              , HH.span [ style "font-size:9px;color:#6a6456" ] [ HH.text (if s.groundOpen then "▲" else "▼") ]
+              ]
+          , HH.div [ HP.title "bars to a chord, counted in time: every head is under the same chord" ]
+              [ HH.div [ style $ engrave <> ";font-size:8px;margin-bottom:2px" ] [ HH.text "BARS A CHORD" ]
+              , HH.div [ style "display:flex;gap:3px;width:130px" ]
+                  (map (\b -> tabBtn (show b) (b == l.every) (SetLineEvery b)) [ 1, 2, 4, 8 ])
+              ]
+          , HH.div [ HP.title "how much of the line goes to the chord: the weightiest notes first, every note at 100" ]
+              [ miniKnob LinePull l.pull "#4a463b" "PULL" (show l.pull) ]
+          , HH.div
+              [ HP.title (if s.stringsChannel == Nothing then "Continuo is hosting no strings for the chords to be held on" else "hold each chord of the ground on Continuo's strings, under the heads")
+              , style "width:74px" ]
+              [ tabBtn "STRINGS" (s.strings && s.stringsChannel /= Nothing) ToggleStrings ]
+          ]
+      -- the list to pick from, opened in place
+      , if s.groundOpen then
+          HH.div [ style "display:flex;flex-wrap:wrap;gap:5px;margin-top:8px" ]
+            ( [ HH.div [ HE.onClick \_ -> PickGround "", style (box (not on)) ] [ plain "none" ] ]
+                <> map choice s.grounds )
+        else HH.text ""
+      -- the chords by name, in a line, the one in force lit
+      , if on then HH.div [ style "display:flex;flex-wrap:wrap;gap:2px;margin-top:8px" ] (mapWithIndex chip l.ground)
+        else HH.text ""
+      ]
 
 -- | Four bars to a row. A note is a bar at its degree's height, as long as it
 -- | lasts; a rest is a gap. Each head that has come in is a rule in its

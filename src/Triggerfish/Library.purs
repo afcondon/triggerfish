@@ -24,6 +24,7 @@ module Triggerfish.Library
   , open
   , put
   , current
+  , peek
   ) where
 
 import Prelude
@@ -233,6 +234,16 @@ type Copy = { base :: { hash :: Nullable String, items :: String }, local :: Str
 
 cacheKey :: forall a. Doc a -> String
 cacheKey doc = "triggerfish.library." <> doc.ref
+
+-- | Another page's collection as this browser last had it, read and never
+-- | written: for a page that only chooses from it (Melichthys, from Vetula's
+-- | progressions). Nothing kept here yet: none.
+peek :: forall a. String -> (String -> Maybe (Array a)) -> Effect (Array a)
+peek ref decode = do
+  text <- loadCopy ("triggerfish.library." <> ref)
+  pure $ fromMaybe [] do
+    c :: Copy <- either (const Nothing) Just (readJSON (fromMaybe "" (toMaybe text)))
+    decode c.local
 
 readCache :: forall a. Doc a -> Effect (Maybe { base :: Held a, local :: Array a })
 readCache doc = do

@@ -63,6 +63,7 @@ import Web.UIEvent.MouseEvent as ME
 import Web.UIEvent.WheelEvent as WE
 import Vetula.SvgCoord (svgYFromEvent, svgXFromEvent, isFormField, surfaceHidden)
 import Vetula.Field as Field
+import Vetula.KeyLabel (groupLabel, parseKeyLabel)
 import Vetula.Voice as Voice
 
 import Vetula.Generate (GenMode(..), generateCandidates)
@@ -1202,7 +1203,7 @@ handleQuery = case _ of
   AskProgressions reply -> do
     s <- H.get
     pure $ Just $ reply $ map (\(Tuple i e) -> { slot: i, name: e.name, key: e.keyLabel, current: s.progName == Just e.name
-                                               , rebus: bundleRebus (parseProgression e.source) })
+                                               , rebus: TGlyph.bundleRebus (parseProgression e.source) })
       (filter (\(Tuple _ e) -> e.kept) (mapWithIndex Tuple s.library))
   ImportText txt reply -> do
     let noteLists = filter (\ns -> length ns > 0) (parseProgression txt)
@@ -4204,55 +4205,12 @@ guardLoss what act = do
 lossWindowMs :: Number
 lossWindowMs = 2500.0
 
--- | The key/scale a chord is gathered under — the bubblepack it joins.
-groupLabel :: Key -> String
-groupLabel key = noteName key.tonic <> " " <> modeShort key.mode
-
-modeShort :: Mode -> String
-modeShort = case _ of
-  Ionian -> "major"
-  Aeolian -> "minor"
-  Dorian -> "dorian"
-  Phrygian -> "phrygian"
-  Lydian -> "lydian"
-  Mixolydian -> "mixolydian"
-  Locrian -> "locrian"
-  HarmonicMinor -> "harm. minor"
-  MelodicMinor -> "mel. minor"
-  LocrianNat6 -> "locrian ♮6"
-  IonianSharp5 -> "ionian ♯5"
-  DorianSharp4 -> "dorian ♯4"
-  PhrygianDominant -> "phryg. dom."
-  LydianSharp2 -> "lydian ♯2"
-  Ultralocrian -> "ultralocrian"
-  DorianFlat2 -> "dorian ♭2"
-  LydianAugmented -> "lydian aug."
-  LydianDominant -> "lydian dom."
-  MixolydianFlat6 -> "mixo. ♭6"
-  LocrianNat2 -> "locrian ♮2"
-  Altered -> "altered"
-  Custom _ -> "custom"
-
--- | Inverse of `groupLabel`: parse a stored key label ("F# phryg. dom.", "C major")
--- | back into a Key. The note name is the first word; the rest is a `modeShort`
--- | value (which can itself contain spaces, so split at the FIRST space only). Used
--- | when loading a saved progression so its key becomes the live harmonic context.
 -- | A mode as a word in a sentence: "phrygian dominant", "major", "minor".
 modeWord :: Mode -> String
 modeWord m = case m of
   Ionian -> "major"
   Aeolian -> "minor"
   _ -> toLower (trim (SCU.takeWhile (_ /= '(') (maybe "" _.label (find (\c -> c.mode == m) modeChoices))))
-
-parseKeyLabel :: String -> Maybe Key
-parseKeyLabel lbl = case SCU.indexOf (Pattern " ") lbl of
-  Nothing -> Nothing
-  Just ix -> do
-    let noteTok = SCU.take ix lbl
-        modeTok = SCU.drop (ix + 1) lbl
-    tonic <- find (\pc -> noteName pc == noteTok) (range 0 11)
-    mode <- _.mode <$> find (\c -> modeShort c.mode == modeTok) modeChoices
-    pure { tonic, mode }
 
 -- | Star / unstar the sounding chord's current voicing in its favourites — the
 -- | kept voicings of this one note-set, surfaced in the strip above the ladder.
@@ -6134,15 +6092,6 @@ openStaff st = openRow
     if sel.row == title && sel.anchor < k && sel.to < k
       then Just { from: min sel.anchor sel.to, to: max sel.anchor sel.to } else Nothing
 
-
--- | **A progression's chords as a set**, as a picture: its distinct chords,
--- | in no order, through the chord rebus. The set is a function of the
--- | progression and never stored, so it cannot go stale; two progressions
--- | of the same chords in another order wear the same one.
-bundleRebus :: Array (Array Int) -> Array TGlyph.GlyphIcon
-bundleRebus chords =
-  let set = sort (nub (map sort (filter (\ns -> length ns > 0) chords)))
-  in if length set == 0 then [] else (TGlyph.chordGlyph set).icons
 
 -- | The open progression's rhythm, if it has one a bar (an edit the
 -- | rhythm could not follow leaves it out of step: then none).

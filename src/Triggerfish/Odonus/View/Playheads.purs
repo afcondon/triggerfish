@@ -28,14 +28,17 @@ import Halogen.Widgets.Svg (svgAttr, svgEl)
 
 playheadsPanel :: forall m. State -> H.ComponentHTML Action Slots m
 playheadsPanel s =
-  panelShell s.collapsed "PLAYHEADS" "Fugue · Access" "flex:0 0 400px;min-width:min-content"
-    [ outputPiece s
-    , if overLine s then lineUnison s.unisonMask s.odo else phasingBlock s.unisonMask s.odo
-    , HH.span [ style $ engrave <> ";font-size:9px;opacity:0.85;display:block;margin-bottom:4px" ]
-        [ HH.text "COMBINATIONS" ]
-    , headMatrix s.odo
-    , headBank s
-    ]
+  -- over a line the column is narrower and the combinations four by four:
+  -- a head has less to show, and the page has the height (AC, 2026-11-16).
+  -- No output piece there either: the ground and its PULL are that pass.
+  panelShell s.collapsed "PLAYHEADS" "Fugue · Access" (if overLine s then "flex:0 0 268px;min-width:min-content" else "flex:0 0 400px;min-width:min-content")
+    ( (if overLine s then [] else [ outputPiece s ])
+        <> [ if overLine s then lineUnison s.unisonMask s.odo else phasingBlock s.unisonMask s.odo
+           , HH.span [ style $ engrave <> ";font-size:9px;opacity:0.85;display:block;margin-bottom:4px" ]
+               [ HH.text "COMBINATIONS" ]
+           , headMatrix (if overLine s then 4 else 8) s.odo
+           , headBank s
+           ] )
 
 -- | Whether the heads read a line (Melichthys) where Odonus has its grid.
 -- | Then a head has no access pattern, no ring and no choice of clock: the
@@ -181,11 +184,11 @@ unisonGroups mask =
 -- | switch is four vertical bars (I–IV, lit when that head sounds in this
 -- | combo); clicking it sets every head's mute in one move. The live combo
 -- | is ringed. Cut from any group of heads to any other in a single click.
-headMatrix :: forall m. M.Odonus -> H.ComponentHTML Action Slots m
-headMatrix odo =
+headMatrix :: forall m. Int -> M.Odonus -> H.ComponentHTML Action Slots m
+headMatrix across odo =
   let cur = M.headMask odo
   in HH.div
-       [ style "display:grid;grid-template-columns:repeat(8,1fr);gap:4px;margin-bottom:12px" ]
+       [ style ("display:grid;grid-template-columns:repeat(" <> show across <> ",1fr);gap:4px;margin-bottom:12px") ]
        (map (comboSwitch cur) (range 0 15))
 
 comboSwitch :: forall m. Int -> Int -> H.ComponentHTML Action Slots m

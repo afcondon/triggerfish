@@ -28,6 +28,7 @@ module Triggerfish.Glyph
   , Glyph
   , glyphOf
   , chordGlyph
+  , bundleRebus
   , glyphFromAlias
   , sessionAliasOf
   , rackGlyphOf
@@ -36,6 +37,7 @@ module Triggerfish.Glyph
 
 import Prelude
 
+import Data.Array (filter, length, nub, sort)
 import Rebus as Rebus
 
 -- ---------------------------------------------------------------------------
@@ -134,6 +136,15 @@ glyphOf = Rebus.rebusOfText
 -- | icons, and neither app needs to know the other exists for that to hold.
 chordGlyph :: Array (Array Int) -> Glyph
 chordGlyph = Rebus.rebusOf <<< Rebus.chordsOf
+
+-- | **A progression's chords as a set**, as a picture: its distinct chords,
+-- | in no order, through the chord rebus. The set is a function of the
+-- | progression and never stored, so it cannot go stale; two progressions
+-- | of the same chords in another order wear the same one.
+bundleRebus :: Array (Array Int) -> Array GlyphIcon
+bundleRebus chords =
+  let set = sort (nub (map sort (filter (\ns -> length ns > 0) chords)))
+  in if length set == 0 then [] else (chordGlyph set).icons
 
 -- | Recover a glyph from its alias (`"cow-ambulance"`) — for rendering a token a
 -- | macro-pattern already carries.

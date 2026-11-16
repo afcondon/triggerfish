@@ -24,7 +24,9 @@ import Effect (Effect)
 import Effect.Aff (attempt)
 import Effect.Aff.Class (class MonadAff, liftAff)
 import Effect.Class (liftEffect)
-import Data.Either (Either(..))
+import Data.Either (Either(..), hush)
+import Simple.JSON (readJSON)
+import Reef.Vetula.NoteText (parseProgression)
 import Data.String.CodeUnits (take)
 import Effect.Timer (setInterval)
 import Halogen as H
@@ -63,7 +65,7 @@ import Reef.Calibration (Table)
 import Reef.Render as Render
 import Effect.Console as Console
 import Reef.Protocol (decodeTagged, encodeInput, encodeSim, encodeTagged)
-import Data.String (Pattern(..), stripPrefix, trim) as Str
+import Data.String (Pattern(..), contains, stripPrefix, toLower, trim) as Str
 import Web.Event.Event (EventType(..), preventDefault)
 import Web.Event.EventTarget (addEventListener, eventListener, removeEventListener)
 import Web.HTML (window)
@@ -97,6 +99,9 @@ import Triggerfish.Clips.Store as ClipStore
 import Triggerfish.Amphora as Amphora
 import Triggerfish.Glyph as G
 import Triggerfish.Browser as Browser
+import Triggerfish.Continuo as Continuo
+import Harmonia.Chord (modeIntervals)
+import Vetula.KeyLabel (parseKeyLabel)
 import Triggerfish.Library as Library
 import Triggerfish.Preset (Preset, indexOfContent, newPreset, presetAlias, presetDoc, rename, withWords)
 import Triggerfish.Odonus.Stage as OStage
@@ -124,7 +129,7 @@ component material =
   H.mkComponent
     { initialState: \_ ->
         { odo: if material == Line then Melichthys.fresh else M.defaultOdonus
-        , material, timekeeper: Nothing, entriesMoved: false
+        , material, timekeeper: Nothing, entriesMoved: false, grounds: [], strings: true, groundOpen: false, stringsChannel: Nothing
         , sounding: Silent, dragging: Nothing, dragSub: Nothing
         , notes: [], logbook: Logbook.emptyLog, stage: Perform, selEuclid: Nothing, playing: Nothing, rigLoops: false, rigAsked: 0.0, cutting: false, cutSel: Nothing, regionDrag: Nothing, cardShut: Nothing, contextOpen: false, codeOpen: false, zoom: Whole, clips: [], twisterField: FNote, twisterOut: Nothing, midiSession: { sub: Nothing, unlisten: pure unit }, twisterHeard: Map.empty, twisterLit: Map.empty, binnacle: Nothing, nowMicros: 0.0
         , outs: [], routing: RM.defaultTable, clockTempo: 120.0, clockLocked: false
@@ -203,6 +208,7 @@ handleQuery = case _ of
       -- is sounding: a transport that merely stops ticking would leave them.
       let solo = RO.soloRouting st.outs st.routing (map RM.SOdonusHead [ 0, 1, 2, 3 ])
       _ <- liftEffect $ RO.sendAll st.outs (Art.releaseAll solo st.headNote st.soloSounding st.soloPolys)
+      liftEffect (hushStrings st)
       H.modify_ _ { soloPolys = [], soloSounding = map (const Nothing) st.soloSounding }
     H.modify_ \s' -> s'
       { sounding = s
@@ -506,6 +512,26 @@ persistClips = do
   s <- H.get
   liftEffect (ClipStore.saveClips s.clips)
 
+-- | What a clip cut from over a ground says of it, beside the chords its
+-- | context already holds: the progression's name in Vetula (`ground:`), if
+-- | it is still one kept there, and how many steps into the progression the
+-- | clip begins (`ground-step:`, sixteen to the bar), so the chords can be
+-- | laid under its notes again. The step is counted back from now at the
+-- | present tempo, so it is right to within a step, and wrong if the tempo
+-- | changed or the heads were started from the top since.
+groundTags :: State -> Number -> Array String
+groundTags st from = case st.odo.line of
+  Just l | not (null l.ground) ->
+    let
+      pcs = map (map (\n -> ((n `mod` 12) + 12) `mod` 12))
+      named = find (\g -> pcs (filter (not <<< null) (parseProgression g.source)) == l.ground) st.grounds
+      period = 16 * max 1 l.every * length l.ground
+      back = round ((st.nowMicros - from) / 1.0e6 * st.clockTempo / 60.0 / gridCfg.stepBeats)
+      step = (((l.tick - back) `mod` period) + period) `mod` period
+    in
+      maybe [] (\g -> [ "ground:" <> g.name ]) named <> [ "ground-step:" <> show step ]
+  _ -> []
+
 -- | Whether the rig has a voice for this machine, to be told things and
 -- | asked for them. Odonus: yes. Melichthys: not yet.
 rigHosts :: State -> Boolean
@@ -566,6 +592,7 @@ dispatch = case _ of
     midiChosen <- liftEffect Web.midiChosen
     when (not Web.onTheWeb || midiChosen) openMidi
     H.modify_ _ { timekeeper = Just bin, binnacle = if material == Grid then Just bin else Nothing }
+    when (material == Line) (handleAction ReadGrounds)
     -- Restore the live working patch (Lepidoptera text; unparseable / absent
     -- storage falls back to defaults). The presets are what Amphora keeps
     -- (`Triggerfish.Library`): this browser's copy at once, Amphora's when it
@@ -717,6 +744,15 @@ dispatch = case _ of
               , sounding: st.soloSounding, newlyMuted, notes: map (\fv -> { fired: fv.f, velocity: fv.v }) toMidi }
           _ <- liftEffect $ RO.sendAllAt st.outs emitAtMs played.sends
           H.modify_ _ { soloPolys = played.polys, soloSounding = played.sounding }
+        -- Melichthys: each chord of the ground, held on Continuo's strings
+        -- from the step it comes into force until the next one does.
+        for_ o1.line \l -> do
+          let span = 16 * max 1 l.every
+          when (st.strings && not (null l.ground) && l.tick `mod` span == 0) $
+            for_ (stringsOut st) \w -> liftEffect $
+              for_ (Melichthys.padOf (fromMaybe [] r.odo.chord)) \note ->
+                Midi.scheduleNoteAtMs w.out
+                  { channel: w.channel - 1, note, velocity: 56, atMs: emitAtMs, durMs: toNumber span * stepMs * 0.97 }
       let
         -- A glide note stays held (its pitch); a gated note auto-ends.
         nextNote f = if f.glide then Just f.pitch else Nothing
@@ -1070,6 +1106,34 @@ dispatch = case _ of
     enqueue (RI.DrawLine seed bars)
     H.modify_ _ { entriesMoved = false }
   SetLineWave w control v -> enqueue (RI.SetLineWave (w * 8 + control) v)
+  ReadGrounds -> do
+    kept <- liftEffect (Library.peek "triggerfish/vetula/progressions" (hush <<< readJSON))
+    H.modify_ _ { grounds = filter _.kept kept }
+    -- and where Continuo's strings are, for the ground's chords
+    hosted <- liftAff Continuo.layers
+    H.modify_ _ { stringsChannel = map _.channel (find (\l -> Str.contains (Str.Pattern "string") (Str.toLower l.name) && l.channel >= 1) hosted) }
+  ToggleStrings -> do
+    st <- H.get
+    when st.strings (liftEffect (hushStrings st))
+    H.modify_ _ { strings = not st.strings }
+  ToggleGroundList -> do
+    handleAction ReadGrounds
+    H.modify_ \s -> s { groundOpen = not s.groundOpen }
+  PickGround name -> do
+    handleAction ReadGrounds
+    H.modify_ _ { groundOpen = false }
+    st <- H.get
+    let picked = find (\g -> g.name == name) st.grounds
+        chords = maybe [] (\g -> filter (not <<< null) (parseProgression g.source)) picked
+    -- the line's scale becomes the progression's key, as Vetula labelled it
+    -- (a label is what the player called it: the chords may stray from it)
+    for_ (picked >>= \g -> parseKeyLabel g.keyLabel) \k -> do
+      let want = modeIntervals k.mode
+      enqueue (RI.SetRoot k.tonic)
+      for_ (filter (\iv -> elem iv want /= elem iv st.odo.scaleIvls) (range 1 11)) \iv ->
+        enqueue (RI.ToggleScaleNote (k.tonic + iv))
+    enqueue (RI.SetLineGround (Melichthys.flatOf (map (map (\n -> ((n `mod` 12) + 12) `mod` 12)) chords)))
+  SetLineEvery bars -> enqueue (RI.SetLineEvery bars)
   RestartLine -> do
     enqueue RI.RestartLine
     H.modify_ _ { entriesMoved = false }
@@ -1277,9 +1341,9 @@ dispatch = case _ of
             , capturedMicros: st.nowMicros
             , source: slug
             , name: nm
-            , tags: case hsum of
+            , tags: (case hsum of
                 Just h -> [ slug, h.root, h.scale ]
-                Nothing -> [ slug ]
+                Nothing -> [ slug ]) <> groundTags st m.from
             , notes: ""
             , bpm: Just st.clockTempo
             , key: map (\h -> h.root <> " " <> h.scale) hsum
@@ -1490,6 +1554,16 @@ freshClock = do
     now <- liftEffect $ Clock.unixMicrosNow (Binnacle.clock bin)
     r <- liftEffect $ Clock.read (Binnacle.clock bin)
     H.modify_ _ { nowMicros = now, clockTempo = r.tempo, clockLocked = r.locked, clockBeat = r.beat }
+
+-- | Where the ground's chords go: Continuo's port and its strings' channel,
+-- | when both are there.
+stringsOut :: State -> Maybe { out :: Midi.MidiOut, channel :: Int }
+stringsOut st = { out: _, channel: _ } <$> RO.outFor st.outs "continuo" <*> st.stringsChannel
+
+-- | Let go of a chord the strings are holding.
+hushStrings :: State -> Effect Unit
+hushStrings st = for_ (stringsOut st) \w ->
+  Midi.sendCC w.out { channel: w.channel - 1, controller: 123, value: 0 }
 
 -- | All-notes-off (CC 123) on the four Odonus head channels — cuts any note the
 -- | REPLAY loop left ringing, so StopPlay / leaving REPLAY is instantly silent.
@@ -1719,6 +1793,7 @@ targetToInput t v = case t of
   HeadDir h -> Just (RI.SetHeadDir h v)
   HeadEntry h -> Just (RI.SetHeadEntry h v)
   LineWave w control -> Just (RI.SetLineWave (w * 8 + control) v)
+  LinePull -> Just (RI.SetLinePull v)
   HeadSpeed h -> Just (RI.SetHeadSpeedIx h v)
   HeadTransp h -> Just (RI.SetHeadTransp h v)
   HeadOffset h -> Just (RI.SetHeadOffset h v)
