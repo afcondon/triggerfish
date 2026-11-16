@@ -14,6 +14,7 @@ import Prelude
 import Data.Array (mapWithIndex)
 import Halogen.HTML as HH
 import Halogen.HTML.Events as HE
+import Halogen.HTML.Properties as HP
 import Triggerfish.Odonus.Grid.Types (Action(..), CellShortcut(..), GenKind(..), KnobTarget(..), Slots, State)
 import Triggerfish.Odonus.View.Grid (transportRow)
 import Triggerfish.Odonus.Grid.Widgets (cellPad, diceBtn, genRow, panelShell, style, tabBtn)
@@ -51,10 +52,54 @@ cellParamsPanel s =
         [ shortcut "1" (DurAll 1), shortcut "2" (DurAll 2), shortcut "4" (DurAll 4), diceBtn "a length for each cell, mostly 1 or 2" (Shortcut DurRoll) ]
     , paramCard s GRatchet (perCellKnobGrid "#9d6b8a" 1 8 8 CellRatchet _.ratchet s.odo)
         [ shortcut "NONE" (RatchetAll 1), shortcut "×2" (RatchetAll 2), diceBtn "ratchet about one cell in five, ×2 to ×4" (Shortcut RatchetRoll) ]
-    , paramCard s GVel (perCellKnobGrid "#8a9d6b" 1 127 0 CellVel _.vel s.odo)
+    , paramCardWith [ velLimiter s ] s GVel (perCellKnobGrid "#8a9d6b" 1 127 0 CellVel _.vel s.odo)
         [ shortcut "SOFT" (VelAll 60), shortcut "MID" (VelAll 90), shortcut "LOUD" (VelAll 115)
-        , shortcut "ACCENT" VelAccent ]
+        , shortcut "ACCENT" VelAccent
+        , diceBtn "a velocity for each cell, inside the drift limit" (Shortcut VelRoll) ]
     ]
+
+-- | The VELOCITY source's limiter: one track from 1 to 127 with a handle at
+-- | each end of the span its drift stays in, the floor and the ceiling (AC,
+-- | 2026-11-15). Lit when it limits; end to end is the whole range, no
+-- | limiter. The die above draws inside it; a hand on a cell goes where it
+-- | likes. The track is 140px, the length a drag takes to cross a range
+-- | (`DragMove`), so a handle stays under the pointer.
+velLimiter :: forall m. State -> HH.ComponentHTML Action Slots m
+velLimiter s =
+  let
+    l = M.velLimitOf s.odo
+    limiting = l.lo > 1 || l.hi < 127
+    ink = if limiting then "#7a3b1f" else "#a9a497"
+    at v = ((v - 1) * 140) / 126
+    value v = HH.span
+      [ style $ "width:24px;text-align:center;font-family:'SF Mono',Menlo,monospace;font-size:11px;color:" <> ink ]
+      [ HH.text (show v) ]
+    -- where the two meet, the one that can still move away is on top
+    handle target v tip front =
+      HH.div
+        [ HE.onMouseDown \_ -> KnobDown target v
+        , HP.title tip
+        , style $ "position:absolute;top:-1px;width:10px;height:16px;margin-left:-5px;border-radius:3px;cursor:ew-resize;"
+            <> "border:1px solid #a8a392;background:linear-gradient(#efece1,#ddd9cb);box-shadow:0 1px 1px #00000022;"
+            <> "left:" <> show (at v) <> "px;z-index:" <> (if front then "2" else "1") ]
+        []
+  in
+    HH.div [ style "margin-top:8px;padding-top:6px;border-top:1px solid #00000010;user-select:none" ]
+      [ HH.div [ style "display:flex;align-items:center;justify-content:center;gap:6px" ]
+          [ value l.lo
+          , HH.div [ style "position:relative;flex:none;width:140px;height:14px" ]
+              [ HH.div [ style "position:absolute;left:0;right:0;top:5px;height:4px;border-radius:2px;background:#b4ae9c" ] []
+              , HH.div
+                  [ style $ "position:absolute;top:5px;height:4px;border-radius:2px;background:" <> (if limiting then "#8a9d6b" else "#c4bfb0")
+                      <> ";left:" <> show (at l.lo) <> "px;width:" <> show (at l.hi - at l.lo) <> "px" ] []
+              , handle VelFloor l.lo "the quietest the VELOCITY source leaves a cell" (l.lo > 64)
+              , handle VelCeiling l.hi "the loudest the VELOCITY source leaves a cell" (l.lo <= 64)
+              ]
+          , value l.hi
+          ]
+      , HH.div [ style "text-align:center;font-family:Georgia,serif;font-size:7px;letter-spacing:0.08em;opacity:0.55;margin-top:3px" ]
+          [ HH.text "DRIFT LIMIT" ]
+      ]
 
 -- | A grid-less generator (heads / transp / pattern / speed / key): the plain
 -- | source row with a divider under it, as the old GENERATE pane rendered them.
@@ -70,12 +115,21 @@ paramCard
   :: forall m
    . State -> GenKind -> HH.ComponentHTML Action Slots m -> Array (HH.ComponentHTML Action Slots m)
   -> HH.ComponentHTML Action Slots m
-paramCard s kind gridBody buttons =
+paramCard = paramCardWith []
+
+-- | A parameter card with more under its buttons (VELOCITY's drift limit).
+paramCardWith
+  :: forall m
+   . Array (HH.ComponentHTML Action Slots m)
+  -> State -> GenKind -> HH.ComponentHTML Action Slots m -> Array (HH.ComponentHTML Action Slots m)
+  -> HH.ComponentHTML Action Slots m
+paramCardWith below s kind gridBody buttons =
   HH.div [ style cardStyle ]
-    [ genRow s kind
-    , HH.div [ style "margin-top:7px" ] [ gridBody ]
-    , HH.div [ style "display:flex;gap:3px;margin-top:6px" ] buttons
-    ]
+    ( [ genRow s kind
+      , HH.div [ style "margin-top:7px" ] [ gridBody ]
+      , HH.div [ style "display:flex;gap:3px;margin-top:6px" ] buttons
+      ] <> below
+    )
 
 -- | A lamp card: the generator row over a compact 4×4 of lamps, its buttons
 -- | stacked beside the lamps rather than under them (as small as the

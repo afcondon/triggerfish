@@ -17,6 +17,7 @@ import Halogen.HTML.Properties as HP
 import Triggerfish.Ui.Euclid as Euclid
 import Triggerfish.Odonus.Model as M
 import Reef.Odonus (headOrderPos, unisonAll) as ROdo
+import Reef.Melichthys as Melichthys
 import Reef.Odonus.Voices (Rule(..), rulesOf)
 import Reef.PitchSet (cardinality)
 import Data.Ord (abs)
@@ -29,15 +30,63 @@ playheadsPanel :: forall m. State -> H.ComponentHTML Action Slots m
 playheadsPanel s =
   panelShell s.collapsed "PLAYHEADS" "Fugue · Access" "flex:0 0 400px;min-width:min-content"
     [ outputPiece s
-    , phasingBlock s.unisonMask s.odo
+    , if overLine s then lineUnison s.unisonMask s.odo else phasingBlock s.unisonMask s.odo
     , HH.span [ style $ engrave <> ";font-size:9px;opacity:0.85;display:block;margin-bottom:4px" ]
         [ HH.text "COMBINATIONS" ]
     , headMatrix s.odo
     , headBank s
     ]
 
--- | PHASING — the Reichian macros over all four heads at once. UNISON collapses
--- | to unison phase; FAN spreads the offsets into a static canon (0, n, 2n, 3n);
+-- | Whether the heads read a line (Melichthys) where Odonus has its grid.
+-- | Then a head has no access pattern, no ring and no choice of clock: the
+-- | line is read straight through on its own rhythm, and what is a head's own
+-- | is its speed, its direction, its interval and when it comes in.
+overLine :: State -> Boolean
+overLine s = case s.odo.line of
+  Just _ -> true
+  Nothing -> false
+
+-- | PHASING over a line: SPREAD and UNISON. FAN and STAGGER set offsets and
+-- | loop lengths within sixteen cells, which a line does not have; the heads'
+-- | distance apart is their ENTRY.
+lineUnison :: forall m. Int -> M.Odonus -> H.ComponentHTML Action Slots m
+lineUnison unisonMask odo =
+  let
+    spreadN = fromMaybe 0 (findIndex (\v -> v == map (\h -> { oct: h.spreadOct, deg: h.spreadDeg }) odo.heads) M.spreadVoicings)
+    lit = unisonMask `and` 38
+    lamp g =
+      let on = (lit `div` g.bit) `mod` 2 == 1
+      in HH.button
+           [ HE.onClick \_ -> ToggleUnisonGroup g.bit
+           , HP.title ((if on then "copied: " else "kept: ") <> g.tip)
+           , style $ "padding:2px 5px;border:1px solid #a8a392;border-radius:4px;cursor:pointer;font-family:Georgia,serif;font-size:8px;letter-spacing:0.05em;"
+               <> (if on then "background:linear-gradient(#c8a86a,#b8975a);color:#1c1a12" else "background:linear-gradient(#efece1,#ddd9cb);color:#8a8473") ]
+           [ HH.text g.label ]
+    unisonButton h =
+      HH.button
+        [ HE.onClick \_ -> UnifyHeads h
+        , HP.title (if lit == 0 then "nothing lit to copy" else "copy head " <> roman h <> " to every head: what is lit beside")
+        , style $ "width:24px;height:19px;padding:0;border:1px solid #a8a392;border-radius:4px;cursor:pointer;"
+            <> "background:linear-gradient(#efece1,#ddd9cb);font-family:Georgia,serif;font-size:9px;font-weight:bold;color:" <> headColor h
+            <> (if lit == 0 then ";opacity:0.4" else "") ]
+        [ HH.text (roman h) ]
+  in
+    HH.div [ style "margin-bottom:12px;display:flex;align-items:center;gap:12px" ]
+      [ miniKnob HeadSpread spreadN "#6f7f88" "SPREAD" (fromMaybe (show spreadN) (spreadNames !! spreadN))
+      , HH.div [ style "display:flex;flex-direction:column;gap:5px" ]
+          [ HH.span [ style $ engrave <> ";font-size:8px" ] [ HH.text "UNISON ≡ COPIES" ]
+          , HH.div [ style "display:flex;gap:3px;align-items:center" ]
+              ( map lamp
+                  [ { label: "DIR", bit: 32, tip: "direction" }
+                  , { label: "SPD", bit: 2, tip: "speed" }
+                  , { label: "INT", bit: 4, tip: "interval: each head's INT and SPREAD" } ]
+                  <> [ HH.span [ style "width:8px" ] [] ]
+                  <> map unisonButton (range 0 3) )
+          ]
+      ]
+
+-- | PHASING — the Reichian macros over all four heads at once. UNISON makes
+-- | every head a copy of the one pressed; FAN spreads the offsets into a static canon (0, n, 2n, 3n);
 -- | STAGGER ramps the loop lengths for metric phasing (Clapping-Music drift).
 -- | FAN/STAGGER read back from head II, so they round-trip the gesture and reflect
 -- | the live spread.
@@ -64,27 +113,32 @@ phasingBlock unisonMask odo =
           , miniKnob HeadSpread spreadN "#6f7f88" "SPREAD" (fromMaybe (show spreadN) (spreadNames !! spreadN))
           -- laid out as a miniKnob is (label, 38px body, value line), so the
           -- button sits level with the knobs' centres
+          -- a button a head (AC, 2026-11-15: the head you have been shaping
+          -- need not be I), two by two in the one ≡ button's place
           , HH.div [ style "display:flex;flex-direction:column;align-items:center;width:52px" ]
-              [ HH.span [ style $ engrave <> ";font-size:8px;margin-bottom:1px" ] [ HH.text "UNISON" ]
-              , HH.div [ style "height:38px;display:flex;align-items:center" ]
-                  [ HH.button
-                      [ HE.onClick \_ -> UnifyHeads
-                      , HP.title (if unisonMask == 0 then "nothing lit below to copy" else "copy head I to every head: the groups lit below")
-                      , style $ "width:44px;padding:7px 0;border:1px solid #a8a392;border-radius:7px;cursor:pointer;"
-                          <> "background:linear-gradient(#efece1,#ddd9cb);font-family:Georgia,serif;font-size:13px;color:#3f3c33"
-                          <> (if unisonMask == 0 then ";opacity:0.4" else "") ]
-                      [ HH.text "≡" ]
-                  ]
+              [ HH.span [ style $ engrave <> ";font-size:8px;margin-bottom:1px" ] [ HH.text "UNISON ≡" ]
+              , HH.div [ style "height:38px;display:grid;grid-template-columns:repeat(2,22px);gap:2px;align-content:center" ]
+                  (map unisonButton (range 0 3))
               ]
           ]
       , unisonGroups unisonMask
       ]
 
+  where
+  unisonButton h =
+    HH.button
+      [ HE.onClick \_ -> UnifyHeads h
+      , HP.title (if unisonMask == 0 then "nothing lit below to copy" else "copy head " <> roman h <> " to every head: the groups lit below")
+      , style $ "height:17px;padding:0;border:1px solid #a8a392;border-radius:4px;cursor:pointer;"
+          <> "background:linear-gradient(#efece1,#ddd9cb);font-family:Georgia,serif;font-size:9px;font-weight:bold;color:" <> headColor h
+          <> (if unisonMask == 0 then ";opacity:0.4" else "") ]
+      [ HH.text (roman h) ]
+
 -- | SPREAD's eight, named under the knob (`Reef.Odonus.spreadVoicings`).
 spreadNames :: Array String
 spreadNames = [ "uni", "7ths", "triad", "3rds↓", "4ths", "5ths", "open", "8ves" ]
 
--- | What UNISON copies from head I, one lamp-button a group (AC, 2026-10-14:
+-- | What UNISON copies from the head pressed, one lamp-button a group (AC, 2026-10-14:
 -- | often you want most of head I, not all of it), then ALL and NONE. Kept
 -- | per browser.
 unisonGroups :: forall m. Int -> H.ComponentHTML Action Slots m
@@ -182,7 +236,7 @@ headStrip s h hd =
       -- BOTTOM TIER, four columns centred on one line (AC, 2026-10-14: the
       -- strip wider and shorter, so the four fit the pane's height):
       -- pattern + direction · Euclid ring · INT knob · what moves the head.
-      , HH.div [ style "display:flex;align-items:center;justify-content:space-between;gap:10px" ]
+      , if overLine s then lineTier s h hd col else HH.div [ style "display:flex;align-items:center;justify-content:space-between;gap:10px" ]
           [ HH.div [ style "display:flex;flex-direction:column;align-items:center;gap:4px" ]
               [ patBlock h pat col (ROdo.headOrderPos hd)
               , dirRadio h hd.direction col
@@ -198,6 +252,34 @@ headStrip s h hd =
               ]
           , HH.div [ style "display:flex;flex-direction:column;gap:3px;width:48px" ]
               [ clockRadio h hd.clock col, restartBtn h hd col ]
+          ]
+      ]
+
+-- | A head's lower tier over a line: direction and inversion, when it comes
+-- | in, and its interval.
+lineTier :: forall m. State -> Int -> M.Head -> String -> H.ComponentHTML Action Slots m
+lineTier s h hd col =
+  let
+    entry = fromMaybe 0 (s.odo.line >>= \l -> l.entries !! h)
+    bars = (if entry / 2 > 0 || entry == 0 then show (entry / 2) else "") <> (if entry `mod` 2 == 1 then "½" else "")
+    waits = Melichthys.waiting s.odo hd
+  in
+    HH.div [ style "display:flex;align-items:center;justify-content:space-between;gap:10px" ]
+      [ HH.div [ style "display:flex;flex-direction:column;align-items:center;gap:4px" ]
+          [ dirRadio h hd.direction col, invertBtn h hd col ]
+      , HH.div
+          [ HP.title "when this head comes in: bars after the heads start from the top (FROM THE TOP, or a new line)"
+          , style "display:flex;flex-direction:column;align-items:center" ]
+          [ miniKnob (HeadEntry h) entry col "ENTRY" (bars <> if entry == 2 then " bar" else " bars")
+          , HH.span [ style "font-family:Georgia,serif;font-style:italic;font-size:9px;color:#5d584b;height:11px;white-space:nowrap" ]
+              [ HH.text (if waits && not hd.mute then "waiting" else "") ]
+          ]
+      , HH.div [ style "display:flex;flex-direction:column;align-items:center" ]
+          [ miniKnob (HeadTransp h) hd.transp col "INT" (signed hd.transp)
+          , HH.span
+              [ HP.title "this head's part: its SPREAD, or its VOICES rule; INT adds to it, in semitones"
+              , style "font-family:Georgia,serif;font-style:italic;font-size:9px;color:#5d584b;height:11px;white-space:nowrap" ]
+              [ HH.text (headRole s.odo h hd) ]
           ]
       ]
 

@@ -20,7 +20,7 @@ main :: Effect Unit
 main = Standalone.run
   { which: Odo
   , nameplate: "Triggerfish · Model Odonus"
-  , component: Odonus.component
+  , component: Odonus.component Odonus.Grid
   , chipOf: case _ of
       Odonus.IdentityChanged cv -> Just cv
       Odonus.StageChanged _ -> Nothing

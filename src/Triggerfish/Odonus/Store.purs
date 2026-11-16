@@ -11,6 +11,9 @@
 -- | Odonus is pickable in Vetula and beyond.
 module Triggerfish.Odonus.Store
   ( Saved
+  , Keys
+  , odonusKeys
+  , melichthysKeys
   , saveLive
   , loadAll
   , saveUnison
@@ -48,12 +51,22 @@ type EnvelopeV2 =
   , scenes :: Array { name :: String, text :: String }
   }
 
--- v3: added the unified glyph-chip preset bank alongside the scene library.
-storeKey :: String
-storeKey = "triggerfish.odonus.patch.v3"
+-- | Where a machine keeps itself in this browser. Odonus and Melichthys are
+-- | one component (`Odonus.Grid`) being two machines, each with its own.
+-- | `legacy` and `legacyUnison` are Odonus's older keys, read once.
+type Keys = { patch :: String, legacy :: Maybe String, unison :: String, legacyUnison :: Maybe String, unisonDefault :: Int }
 
-legacyKey :: String
-legacyKey = "triggerfish.odonus.patch.v2"
+-- v3: added the unified glyph-chip preset bank alongside the scene library.
+odonusKeys :: Keys
+odonusKeys =
+  { patch: "triggerfish.odonus.patch.v3", legacy: Just "triggerfish.odonus.patch.v2"
+  , unison: unisonKey, legacyUnison: Just legacyUnisonKey, unisonDefault: 59 }
+
+-- | Melichthys: UNISON copies direction and speed until a choice is made.
+melichthysKeys :: Keys
+melichthysKeys =
+  { patch: "triggerfish.melichthys.patch.v1", legacy: Nothing
+  , unison: "triggerfish.melichthys.unison.v1", legacyUnison: Nothing, unisonDefault: 34 }
 
 foreign import _save :: String -> String -> Effect Unit
 foreign import _load :: forall a. String -> Effect (Nullable a)
@@ -62,8 +75,8 @@ foreign import _stringify :: forall a. a -> String
 -- | Persist the live patch (best-effort — the FFI swallows quota /
 -- | private-mode errors). The presets are Amphora's (`Triggerfish.Library`,
 -- | 2026-10-13): what this store held of them is read once, to start it.
-saveLive :: String -> Effect Unit
-saveLive live = _save storeKey (_stringify env)
+saveLive :: Keys -> String -> Effect Unit
+saveLive keys live = _save keys.patch (_stringify env)
   where
   env :: Envelope
   env = { live, scenes: [], presets: [] }
@@ -71,12 +84,13 @@ saveLive live = _save storeKey (_stringify env)
 -- | Load the stored envelope. Prefers v3; migrates a v2 (live + scenes) store with
 -- | an empty preset bank; `Nothing` if absent / unparseable. The caller parses each
 -- | `text` back through `Lepidoptera.parsePatch`.
-loadAll :: Effect (Maybe Saved)
-loadAll = do
-  mEnv <- _load storeKey
-  case toMaybe (mEnv :: Nullable Envelope) of
-    Just env -> pure (Just (decode env))
-    Nothing -> do
+loadAll :: Keys -> Effect (Maybe Saved)
+loadAll keys = do
+  mEnv <- _load keys.patch
+  case toMaybe (mEnv :: Nullable Envelope), keys.legacy of
+    Just env, _ -> pure (Just (decode env))
+    Nothing, Nothing -> pure Nothing
+    Nothing, Just legacyKey -> do
       mV2 <- _load legacyKey
       pure $ toMaybe (mV2 :: Nullable EnvelopeV2) <#> \v2 ->
         { live: v2.live, presets: withWords (foldScenes v2.scenes []) }
@@ -103,19 +117,20 @@ unisonKey = "triggerfish.odonus.unison.v2"
 legacyUnisonKey :: String
 legacyUnisonKey = "triggerfish.odonus.unison"
 
-saveUnison :: Int -> Effect Unit
-saveUnison m = _save unisonKey (_stringify m)
+saveUnison :: Keys -> Int -> Effect Unit
+saveUnison keys m = _save keys.unison (_stringify m)
 
 -- | Every group but INT until a choice is made: the voices keep their intervals.
 -- | A choice saved before the split keeps its meaning: PAT lit lights DIR too.
-loadUnison :: Effect Int
-loadUnison = do
-  mask <- toMaybe <$> _load unisonKey
-  case mask of
-    Just m -> pure m
-    Nothing -> do
-      legacy <- toMaybe <$> _load legacyUnisonKey
+loadUnison :: Keys -> Effect Int
+loadUnison keys = do
+  mask <- toMaybe <$> _load keys.unison
+  case mask, keys.legacyUnison of
+    Just m, _ -> pure m
+    Nothing, Nothing -> pure keys.unisonDefault
+    Nothing, Just legacyKey -> do
+      legacy <- toMaybe <$> _load legacyKey
       pure case legacy of
         Just m | m `mod` 2 == 1 -> m + 32
         Just m -> m
-        Nothing -> 59
+        Nothing -> keys.unisonDefault

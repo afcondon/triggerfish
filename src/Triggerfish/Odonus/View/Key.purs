@@ -34,7 +34,7 @@ import Halogen.HTML as HH
 import Reef.PitchSet (PitchSet(..))
 import Triggerfish.Odonus.Model as M
 import Triggerfish.Scale as Scale
-import Triggerfish.Odonus.Grid.Types (Action(..), Slots, State)
+import Triggerfish.Odonus.Grid.Types (Action(..), Material(..), Slots, State)
 import Triggerfish.Odonus.Grid.Widgets (engrave, style)
 
 -- | Odonus's two quantisations, each opening the panel it acts on, read right
@@ -81,6 +81,7 @@ quantPieces s = case _ of
       [ HH.span
           [ HH.attr (HH.AttrName "title") (if Web.onTheWeb
               then "Odonus keeps its own scales here: the web version takes no quantisation from outside. Installed with Atlantis, Vetula's voices can feed it"
+              else if s.material == Line then "Melichthys keeps its own scale: it takes no quantisation from outside yet"
               else "Odonus keeps its own scales while the rig is away: nothing can be routed here until it is back")
           , style "padding:0 2px;font-size:12px;color:#c4bfae;cursor:default" ]
           [ HH.i [ HP.class_ (HH.ClassName "fa-solid fa-lock") ] [] ] ]

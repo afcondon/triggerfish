@@ -1,6 +1,6 @@
 # Triggerfish serves one bundle per page, so a change to shared code leaves
 # every page stale until `make` rebuilds them all.
-PAGES = Odonus:odonus Vetula:vetula Balistes:balistes Selene:selene Dashboard:dashboard Conspicillum:conspicillum
+PAGES = Odonus:odonus Melichthys:melichthys Vetula:vetula Balistes:balistes Selene:selene Dashboard:dashboard Conspicillum:conspicillum
 
 .PHONY: bundles
 bundles:

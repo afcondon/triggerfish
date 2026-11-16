@@ -36,6 +36,8 @@ slotOf = case _ of
   Tid -> Nothing
   Suf -> Nothing
   Con -> Just "conspicillum"
+  -- no slot on the rig's stage until the rig has a voice for it
+  Mel -> Nothing
 
 -- | A machine whose page records its own slot, by pushing its scene with the
 -- | preset in hand beside it (Conspicillum's `conspicillum-scene`): the shell

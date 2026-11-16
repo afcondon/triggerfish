@@ -60,10 +60,12 @@ machineSlug = case _ of
   Tid -> "tidal"
   Suf -> "sufflamen"
   Con -> "conspicillum"
+  Mel -> "melichthys"
 
 machineFromSlug :: String -> Maybe Which
 machineFromSlug s = case toLower (trim s) of
   "odonus" -> Just Odo
+  "melichthys" -> Just Mel
   -- Balistes has its own page (balistes.html), so an old link to it here is
   -- ignored rather than opening an empty pane.
   "balistes" -> Nothing

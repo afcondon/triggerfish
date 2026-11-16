@@ -3,6 +3,7 @@
 -- | view module can refer to them without a cycle.
 module Triggerfish.Odonus.Grid.Types
   ( KnobTarget(..)
+  , Material(..)
   , targetRange
   , applyTarget
   , DragState
@@ -38,6 +39,7 @@ import Halogen as H
 import Halogen.Widgets.Select as Select
 import Web.UIEvent.KeyboardEvent (KeyboardEvent)
 import Reef.Input as RI
+import Reef.Melichthys as Melichthys
 import Reef.Route as Route
 import Triggerfish.Odonus.Samples as Samples
 import Triggerfish.Odonus.Model as M
@@ -66,6 +68,15 @@ import Triggerfish.Routing.Model as RM
 import Triggerfish.Routing.Out as RO
 import Binnacle.Scheduler as Scheduler
 
+-- | What the heads read. `Grid` is Odonus: sixteen cells and their grids.
+-- | `Line` is Melichthys (`Reef.Melichthys`): the same heads over one long
+-- | drawn line, on a page of its own. The component is one; this says which
+-- | machine it is being, so which store it keeps, which panels it shows, and
+-- | whether the rig has a voice for it to talk to (Melichthys has none yet).
+data Material = Grid | Line
+
+derive instance eqMaterial :: Eq Material
+
 data KnobTarget
   = CellNote Int
   | CellDur Int
@@ -76,12 +87,16 @@ data KnobTarget
   | HeadTransp Int
   | HeadOffset Int
   | HeadLen Int
+  | HeadEntry Int    -- Melichthys: when the head comes in, half bars after a restart
+  | LineWave Int Int -- Melichthys: a wave over the line, and which control (1 cycles, 2 phase, 3 dyn, 4 bend)
   | HeadDiv Int      -- per-voice Euclidean pulse count (DIV) = k in E(k,n)
   | HeadEStep Int    -- per-voice Euclidean step count (STEPS) = n in E(k,n)
   | Spread
   | GateLen
   | SwingAmt          -- groove: % a step delays off-beat model steps (lives on State)
   | VelHuman          -- velocity humanise range ± (lives on State)
+  | VelFloor          -- the VELOCITY source's limiter: its drift stays between
+  | VelCeiling        -- these (`Reef.Odonus.limitVel`)
   | FanOff           -- Reichian FAN: spread head offsets into a canon
   | StaggerLen       -- Reichian STAGGER: ramp head lengths for metric phasing
   | HeadSpread       -- Reichian SPREAD: fan head transposes into a register-canon
@@ -99,12 +114,19 @@ targetRange = case _ of
   HeadTransp _ -> { lo: -24, hi: 24 }
   HeadOffset _ -> { lo: 0, hi: 15 }
   HeadLen _ -> { lo: 1, hi: 16 }
+  HeadEntry _ -> { lo: 0, hi: 64 }
+  LineWave _ control -> case control of
+    1 -> { lo: 1, hi: 32 }
+    2 -> { lo: 0, hi: 15 }
+    _ -> { lo: -100, hi: 100 }
   HeadDiv _ -> { lo: 0, hi: M.maxEsteps }
   HeadEStep _ -> { lo: 1, hi: M.maxEsteps }
   Spread -> { lo: 1, hi: 12 }
   GateLen -> { lo: 10, hi: 200 }
   SwingAmt -> { lo: 0, hi: 60 }
   VelHuman -> { lo: 0, hi: 40 }
+  VelFloor -> { lo: 1, hi: 127 }
+  VelCeiling -> { lo: 1, hi: 127 }
   FanOff -> { lo: 0, hi: 5 }
   StaggerLen -> { lo: 0, hi: 5 }
   HeadSpread -> { lo: 0, hi: length M.spreadVoicings - 1 }
@@ -122,6 +144,8 @@ applyTarget t v = case t of
   HeadTransp h -> M.setHeadTransp h v
   HeadOffset h -> M.setHeadOffset h v
   HeadLen h -> M.setHeadLen h v
+  HeadEntry h -> Melichthys.setEntry h v
+  LineWave w control -> Melichthys.setWave w control v
   HeadDiv h -> M.setHeadPulses h v
   HeadEStep h -> M.setHeadEuclidSteps h v
   Spread -> M.setSpread v
@@ -129,6 +153,8 @@ applyTarget t v = case t of
   FanOff -> M.fanOffsets v
   StaggerLen -> M.staggerLengths v
   HeadSpread -> M.spreadOctaves v
+  VelFloor -> M.setVelFloor v
+  VelCeiling -> M.setVelCeiling v
   SwingAmt -> identity     -- handled at State level in DragMove, not on Odonus
   VelHuman -> identity      -- handled at State level in DragMove, not on Odonus
   GenRate _ -> identity   -- handled at State level in DragMove, not on Odonus
@@ -263,6 +289,14 @@ derive instance eqTwisterField :: Eq TwisterField
 
 type State =
   { odo :: M.Odonus
+  , material :: Material     -- which machine this is being (never changes)
+  -- the Binnacle as a clock, which every page has. `binnacle` below is the
+  -- same one as the rig to talk to, and is Nothing for a machine the rig has
+  -- no voice for, so that nothing here can speak to the rig as Odonus
+  , timekeeper :: Maybe Binnacle
+  -- Melichthys: an entry was moved since the heads last started, so what
+  -- plays is not yet what the knobs say (FROM THE TOP lights)
+  , entriesMoved :: Boolean
   , sounding :: Sounding     -- the ONE transport value (control-surface MISU refactor):
                              -- Silent = stopped, Local = play local Web-MIDI, Rig = rig
                              -- authoritative (muted locally). Replaces running/master/audible.
@@ -395,6 +429,7 @@ type State =
 data CellShortcut
   = VelAll Int
   | VelAccent
+  | VelRoll          -- a velocity a cell, drawn inside the drift limit
   | DurAll Int
   | DurRoll
   | RatchetAll Int
@@ -433,7 +468,10 @@ data Action
   | SelectEuclid Int         -- click a voice's Euclid ring: select it for arrow-key editing
   | DeselectEuclid Int       -- that ring lost focus (a click anywhere else): drop the selection
   | EuclidKey KeyboardEvent  -- a keystroke on the focused ring; arrows nudge k / n
-  | UnifyHeads
+  | UnifyHeads Int          -- the head every head copies (0..3)
+  | DrawLine Int            -- Melichthys: a new line of this many bars, its seed drawn here
+  | RestartLine             -- Melichthys: every head from the top, each at its entry
+  | SetLineWave Int Int Int -- Melichthys: wave, control, value (the shape buttons)
   | ToggleUnisonGroup Int   -- a group's bit
   | SetUnisonMask Int       -- ALL or NONE
   | ToggleVoicesModal

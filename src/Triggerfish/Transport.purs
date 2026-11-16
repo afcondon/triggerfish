@@ -35,7 +35,9 @@ import Data.Set as Set
 -- behaves like Tid here: never armed, no local rig voice.
 -- Con is Conspicillum, the grain cloud: a page of its own in the shell
 -- since 2026-10-29, which plays only on the rig.
-data Which = Odo | Bal | Sel | Vet | Tid | Suf | Con
+-- Mel is Melichthys: Odonus's heads over a line, on a page of its own. The
+-- rig has no voice for it yet, so it plays from its page in both modes.
+data Which = Odo | Bal | Sel | Vet | Tid | Suf | Con | Mel
 
 derive instance Eq Which
 derive instance Ord Which
@@ -70,6 +72,7 @@ hasRigVoice = case _ of
   Tid -> false
   Suf -> false   -- rig-only at heart, but not transport-wired in the D1 prototype
   Con -> true
+  Mel -> false
 
 -- The whole authority model in one function. `previewing` is the set of machines
 -- being auditioned from the workbench: a preview forces Local (audition in place,

@@ -5,7 +5,7 @@
 -- | thumbnail beside its direction / speed / interval knobs, and a 16-switch
 -- | head-activation matrix cuts between playhead combinations. Aesthetic:
 -- | Swiss rigor × vintage-lab materiality (see BRIEF.md).
-module Triggerfish.Odonus.Grid (component, Output(..)) where
+module Triggerfish.Odonus.Grid (component, Output(..), module Material) where
 
 import Prelude
 
@@ -15,6 +15,7 @@ import Data.Array (any, catMaybes, concatMap, deleteAt, elem, filter, find, find
 import Data.Map as Map
 import Data.Foldable (foldl, for_)
 import Data.Int (ceil, floor, round, toNumber)
+import Data.Int.Bits as Bits
 import Data.Ord (abs)
 import Data.Maybe (Maybe(..), fromMaybe, isJust, isNothing, maybe)
 import Data.Traversable (traverse)
@@ -70,10 +71,13 @@ import Web.HTML.Window as Window
 import Web.UIEvent.KeyboardEvent as KE
 import Web.UIEvent.MouseEvent as ME
 import Triggerfish.Odonus.Grid.Types
-  ( Action(..), CellShortcut(..), GenKind(..), KnobTarget(..), Stage(..), stagePath, stageFromPath, RegionEdge(..), PlaySource(..), TwisterField(..), Logbook, NoteEvent, Slots, State, applyTarget, genDefaultAmt, genDefaultRate, genKinds, genLabel
+  ( Action(..), Material(..), CellShortcut(..), GenKind(..), KnobTarget(..), Stage(..), stagePath, stageFromPath, RegionEdge(..), PlaySource(..), TwisterField(..), Logbook, NoteEvent, Slots, State, applyTarget, genDefaultAmt, genDefaultRate, genKinds, genLabel
   , marblesPadId, rateMax, replayTimelineId, setAmt, setRate, targetRange
    )
 import Triggerfish.Scale (scaleTypes)
+import Triggerfish.Odonus.Grid.Types (Material(..)) as Material
+import Reef.Melichthys as Melichthys
+import Triggerfish.Odonus.View.Line (linePanel)
 import Triggerfish.Transport (Sounding(..))
 import Triggerfish.Odonus.Grid.Widgets (style)
 import Triggerfish.Odonus.Logbook as Logbook
@@ -115,11 +119,13 @@ import Triggerfish.Odonus.View.Generate (generatePanel, cellParamsPanel)
 -- | the rest of the rig's state for it.
 data Output = IdentityChanged (Maybe G.ChipView) | StageChanged (Array String) | Marked Number
 
-component :: forall i m. MonadAff m => H.Component Query i Output m
-component =
+component :: forall i m. MonadAff m => Material -> H.Component Query i Output m
+component material =
   H.mkComponent
     { initialState: \_ ->
-        { odo: M.defaultOdonus, sounding: Silent, dragging: Nothing, dragSub: Nothing
+        { odo: if material == Line then Melichthys.fresh else M.defaultOdonus
+        , material, timekeeper: Nothing, entriesMoved: false
+        , sounding: Silent, dragging: Nothing, dragSub: Nothing
         , notes: [], logbook: Logbook.emptyLog, stage: Perform, selEuclid: Nothing, playing: Nothing, rigLoops: false, rigAsked: 0.0, cutting: false, cutSel: Nothing, regionDrag: Nothing, cardShut: Nothing, contextOpen: false, codeOpen: false, zoom: Whole, clips: [], twisterField: FNote, twisterOut: Nothing, midiSession: { sub: Nothing, unlisten: pure unit }, twisterHeard: Map.empty, twisterLit: Map.empty, binnacle: Nothing, nowMicros: 0.0
         , outs: [], routing: RM.defaultTable, clockTempo: 120.0, clockLocked: false
         , clockBeat: 0.0
@@ -179,7 +185,7 @@ handleQuery = case _ of
     pure (Just (reply { tempo: s.clockTempo, locked: s.clockLocked }))
   SyncFree startMicros tempo next -> do
     s <- H.get
-    for_ s.binnacle \bin ->
+    for_ s.timekeeper \bin ->
       liftEffect (Clock.setFreeBaseline (Binnacle.clock bin) { startMicros, tempo })
     pure (Just next)
   -- The ONE transport query (control-surface MISU refactor). The shell pushes this
@@ -327,7 +333,7 @@ captureNow = do
       -- labels a library (docs/kb/plans/the-deck.md)
       at <- liftEffect Browser.stamp
       H.modify_ \st -> st
-        { presets = st.presets <> [ newPreset text (Just ("Odonus · " <> at)) ]
+        { presets = st.presets <> [ newPreset text (Just (machineName st.material <> " · " <> at)) ]
         , identity = Just text
         }
   persistAll
@@ -409,7 +415,11 @@ handleAction a = do
     DragMove _ -> pure unit
     Initialize -> pure unit
     _ -> freshClock
-  dispatch a
+  -- the Twister's sixteen rotaries are the grid's cells: a line has none to turn
+  overLine <- H.gets \s -> s.material == Line
+  case a of
+    TwisterMsg _ | overLine -> pure unit
+    _ -> dispatch a
   case a of
     Frame -> pure unit
     Step _ -> pure unit
@@ -471,7 +481,7 @@ keepSampled = do
 persistAll :: forall o m. MonadAff m => H.HalogenM State Action Slots o m Unit
 persistAll = do
   s <- H.modify \st -> st { presets = withWords st.presets }
-  liftEffect (Store.saveLive (patchText s))
+  liftEffect (Store.saveLive (storeOf s.material) (patchText s))
   for_ s.shelf \shelf -> do
     kept <- liftEffect (Library.put shelf s.presets)
     H.modify_ _ { presets = kept }
@@ -496,9 +506,32 @@ persistClips = do
   s <- H.get
   liftEffect (ClipStore.saveClips s.clips)
 
+-- | Whether the rig has a voice for this machine, to be told things and
+-- | asked for them. Odonus: yes. Melichthys: not yet.
+rigHosts :: State -> Boolean
+rigHosts st = st.material == Grid
+
+-- | The machine's name, as it labels what it keeps, and its word in keys.
+machineName :: Material -> String
+machineName = case _ of
+  Grid -> "Odonus"
+  Line -> "Melichthys"
+
+machineSlug :: Material -> String
+machineSlug = case _ of
+  Grid -> "odonus"
+  Line -> "melichthys"
+
+storeOf :: Material -> Store.Keys
+storeOf = case _ of
+  Grid -> Store.odonusKeys
+  Line -> Store.melichthysKeys
+
 dispatch :: forall m. MonadAff m => Action -> H.HalogenM State Action Slots Output m Unit
 dispatch = case _ of
   Initialize -> do
+    material <- H.gets _.material
+    let store = storeOf material
     -- Announce the opening stage so the shell can write a COMPLETE URL from a cold
     -- start (`#{slug}/{stage}`, not the bare `#{slug}`). Without this the address
     -- bar under-specifies until you touch a stage tab — still a valid route, since
@@ -514,9 +547,12 @@ dispatch = case _ of
     -- here like our own so both runtimes apply them on the same step.
     { emitter: rigE, listener: rigL } <- liftEffect HS.create
     _ <- H.subscribe rigE
-    liftEffect $ Binnacle.onAppMessage bin (HS.notify rigL <<< RigFrame)
-    -- The harmony feeds the rig resolved (`odonus/feeds`), on every connect.
-    liftEffect $ Binnacle.onOpen bin (Transport.send (Binnacle.socket bin) Feeds.subscribeLine)
+    -- Only as Odonus: the rig has no voice for Melichthys yet, so that page
+    -- takes the rig's clock and neither hears Odonus's frames nor sends any.
+    when (material == Grid) do
+      liftEffect $ Binnacle.onAppMessage bin (HS.notify rigL <<< RigFrame)
+      -- The harmony feeds the rig resolved (`odonus/feeds`), on every connect.
+      liftEffect $ Binnacle.onOpen bin (Transport.send (Binnacle.socket bin) Feeds.subscribeLine)
     -- The lookahead scheduler drives both model advance and audio.
     { emitter: stepE, listener: stepL } <- liftEffect HS.create
     _ <- H.subscribe stepE
@@ -529,20 +565,20 @@ dispatch = case _ of
     -- has chosen MIDI (the readout's toggle), never asked for unused
     midiChosen <- liftEffect Web.midiChosen
     when (not Web.onTheWeb || midiChosen) openMidi
-    H.modify_ _ { binnacle = Just bin }
+    H.modify_ _ { timekeeper = Just bin, binnacle = if material == Grid then Just bin else Nothing }
     -- Restore the live working patch (Lepidoptera text; unparseable / absent
     -- storage falls back to defaults). The presets are what Amphora keeps
     -- (`Triggerfish.Library`): this browser's copy at once, Amphora's when it
     -- answers or changes elsewhere. The first time, they start from what this
     -- browser kept before and the old `odonus-scene` collection.
-    unisonMask <- liftEffect Store.loadUnison
+    unisonMask <- liftEffect (Store.loadUnison store)
     H.modify_ _ { unisonMask = unisonMask }
-    msaved <- liftEffect Store.loadAll
+    msaved <- liftEffect (Store.loadAll store)
     for_ msaved \sv -> H.modify_ (loadText sv.live)
     { emitter: libE, listener: libL } <- liftEffect HS.create
     _ <- H.subscribe (LibraryChanged <$ libE)
-    let oldScenes = map (\it -> newPreset it.payload (Just it.name)) <$> Amphora.fetchCollection "odonus-scene"
-    opened <- liftEffect $ Library.open (presetDoc "odonus" oldScenes) (maybe [] _.presets msaved) (HS.notify libL unit)
+    let oldScenes = if material == Grid then map (\it -> newPreset it.payload (Just it.name)) <$> Amphora.fetchCollection "odonus-scene" else pure []
+    opened <- liftEffect $ Library.open (presetDoc (machineSlug material) oldScenes) (maybe [] _.presets msaved) (HS.notify libL unit)
     H.modify_ _ { presets = withWords opened.items, shelf = Just opened.shelf }
     -- Cold-start read of the routing table. The shell OWNS it and pushes it
     -- down via SetRouting; this only covers the window before its first
@@ -728,8 +764,9 @@ dispatch = case _ of
   Frame -> do
     paintTwister
     st <- H.get
-    case st.binnacle of
+    case st.timekeeper of
       Just bin -> do
+        -- (the three sends below are the rig's Odonus voice's: `rigHosts`)
         -- Connect-time rig reconcile (once, hidden): fire a global `hush` on the
         -- first Frame — by now (~one frame after connect) the WS is open, whereas
         -- an inline send right after connect would race the handshake and drop
@@ -737,7 +774,7 @@ dispatch = case _ of
         -- a previous session; a fresh load has nothing armed, so the rig should be
         -- silent, and arming re-pushes. Keeps the "user never tracks rig state" MISU
         -- promise across a frontend reload.
-        when (not st.reconciled) do
+        when (rigHosts st && not st.reconciled) do
           liftEffect $ Transport.send (Binnacle.socket bin) "hush"
           H.modify_ _ { reconciled = true }
         -- A run starts and stops with the transport (Capture.Runs): the
@@ -747,13 +784,13 @@ dispatch = case _ of
         when (playingNow /= Runs.running st.logbook.runs) do
           at <- liftEffect $ Clock.unixMicrosNow (Binnacle.clock bin)
           H.modify_ \s -> s { logbook = s.logbook { runs = (if playingNow then Runs.startRun else Runs.stopRun) at s.logbook.runs } }
-          liftEffect $ Transport.send (Binnacle.socket bin) (RL.runLine "odonus" playingNow)
+          when (rigHosts st) $ liftEffect $ Transport.send (Binnacle.socket bin) (RL.runLine "odonus" playingNow)
         -- ask the rig for the marks and loops it keeps (RigLoops): every two
         -- seconds until it answers (a request sent before the socket opens is
         -- lost), then every five, so a page sees a rig that restarted
         do
           ms <- liftEffect Time.perfNow
-          when (ms - st.rigAsked > (if st.rigLoops then 5000.0 else 2000.0)) do
+          when (rigHosts st && ms - st.rigAsked > (if st.rigLoops then 5000.0 else 2000.0)) do
             liftEffect $ Transport.send (Binnacle.socket bin) RL.syncLine
             H.modify_ _ { rigAsked = ms }
         now <- liftEffect $ Clock.unixMicrosNow (Binnacle.clock bin)
@@ -1019,10 +1056,23 @@ dispatch = case _ of
             Euclid.Steps -> RI.NudgeHeadEuclidSteps h d.amount
             Euclid.Turn -> RI.NudgeHeadEuclidRotation h d.amount
   -- UNISON copies the groups lit beneath it; all of them is the old unison.
-  UnifyHeads -> do
+  UnifyHeads h -> do
     st <- H.get
-    when (st.unisonMask /= 0) $
-      enqueue (if st.unisonMask == ROdo.unisonAll then RI.UnifyHeads else RI.UnifyHeadsOf st.unisonMask)
+    -- over a line only direction, speed and interval are a head's own: the
+    -- reading, the rhythm and the clock are the line's
+    let mask = if st.material == Line then st.unisonMask `Bits.and` 38 else st.unisonMask
+    when (mask /= 0) $
+      enqueue (RI.UnifyHeadsFrom h mask)
+  -- A new line, its seed drawn here and sent as its number, so the rig (when
+  -- it has a voice for this) draws the same one on the same step.
+  DrawLine bars -> do
+    seed <- liftEffect (randomInt 1 99999)
+    enqueue (RI.DrawLine seed bars)
+    H.modify_ _ { entriesMoved = false }
+  SetLineWave w control v -> enqueue (RI.SetLineWave (w * 8 + control) v)
+  RestartLine -> do
+    enqueue RI.RestartLine
+    H.modify_ _ { entriesMoved = false }
   SetHeadRestart h v -> enqueue (RI.SetHeadRestart h v)
   SetHeadInvert h v -> enqueue (RI.SetHeadInvert h v)
   ToggleUnisonGroup bit -> do
@@ -1030,7 +1080,7 @@ dispatch = case _ of
     unless (tapBounced "unison" st) do
       let m = if (st.unisonMask `div` bit) `mod` 2 == 1 then st.unisonMask - bit else st.unisonMask + bit
       H.modify_ (markTap "unison" >>> _ { unisonMask = m })
-      liftEffect (Store.saveUnison m)
+      liftEffect (Store.saveUnison (storeOf st.material) m)
   ToggleVoicesModal -> do
     st <- H.get
     unless (tapBounced "voicesModal" st) $
@@ -1041,8 +1091,8 @@ dispatch = case _ of
       H.modify_ (markTap "voices")
       enqueue (RI.SetVoices t)
   SetUnisonMask m -> do
-    H.modify_ _ { unisonMask = m }
-    liftEffect (Store.saveUnison m)
+    st <- H.modify _ { unisonMask = m }
+    liftEffect (Store.saveUnison (storeOf st.material) m)
   PhaseShift d -> enqueue (RI.NudgeOffsets d)
   CycleScaleType dir -> enqueue (RI.CycleScaleType dir)
   -- The Select widget picks a preset by NAME; jump straight to it by driving the
@@ -1215,20 +1265,21 @@ dispatch = case _ of
       -- name it alone wears. "clip · C minor" was every clip in C minor, and
       -- the key is in `key` already.
       let hsum = harmonicSummary m.patch
+          slug = machineSlug st.material
           evs = materializeRegion m.from m.to st.logbook
           nm = if null evs then "clip " <> show (length st.clips + 1)
                else (G.chordGlyph (map _.notes (Clips.onsetGroups evs))).alias
           clip =
-            { id: "odonus-" <> show m.atMicros
+            { id: slug <> "-" <> show m.atMicros
             , events: evs
             , lenMicros: m.to - m.from
             , heads: Clips.headCount evs
             , capturedMicros: st.nowMicros
-            , source: "odonus"
+            , source: slug
             , name: nm
             , tags: case hsum of
-                Just h -> [ "odonus", h.root, h.scale ]
-                Nothing -> [ "odonus" ]
+                Just h -> [ slug, h.root, h.scale ]
+                Nothing -> [ slug ]
             , notes: ""
             , bpm: Just st.clockTempo
             , key: map (\h -> h.root <> " " <> h.scale) hsum
@@ -1260,7 +1311,11 @@ dispatch = case _ of
   -- like any other edit, and the BEAM applies it on the same step.
   SetOdoClock ix -> enqueue (RI.SetOdoClock ix)
   KnobDown target startVal -> do
-    sid <- setupDrag
+    -- the drift limit's handles slide sideways; every knob and number drags up
+    sid <- setupDrag case target of
+      VelFloor -> true
+      VelCeiling -> true
+      _ -> false
     H.modify_ _ { dragging = Just { target, startY: 0, startVal, curVal: startVal }, dragSub = Just sid }
   DragMove clientY -> do
     st <- H.get
@@ -1303,6 +1358,9 @@ dispatch = case _ of
     for_ st.dragging \drag ->
       when (drag.startY /= 0) case drag.target of
         SwingAmt -> sendSwing st
+        HeadEntry h -> do
+          enqueue (RI.SetHeadEntry h drag.curVal)
+          H.modify_ _ { entriesMoved = true }
         _ -> for_ (targetToInput drag.target drag.curVal) enqueue
     H.modify_ _ { dragging = Nothing, dragSub = Nothing }
   ToggleGen kind -> do
@@ -1428,7 +1486,7 @@ driveReplay = do
 freshClock :: forall o m. MonadAff m => H.HalogenM State Action Slots o m Unit
 freshClock = do
   st <- H.get
-  for_ st.binnacle \bin -> do
+  for_ st.timekeeper \bin -> do
     now <- liftEffect $ Clock.unixMicrosNow (Binnacle.clock bin)
     r <- liftEffect $ Clock.read (Binnacle.clock bin)
     H.modify_ _ { nowMicros = now, clockTempo = r.tempo, clockLocked = r.locked, clockBeat = r.beat }
@@ -1542,6 +1600,7 @@ shortcutInputs :: CellShortcut -> M.Odonus -> Effect (Array RI.Input)
 shortcutInputs sc odo = case sc of
   VelAll v -> pure (every \i -> RI.SetCellVel i v)
   VelAccent -> pure (every \i -> RI.SetCellVel i (if i `mod` 4 == 0 then 115 else 90))
+  VelRoll -> let l = M.velLimitOf odo in rolled \i -> RI.SetCellVel i <$> randomInt l.lo l.hi
   DurAll n -> pure (every \i -> RI.SetCellDur i n)
   DurRoll -> rolled \i -> RI.SetCellDur i <$> pick [ 1, 1, 2, 2, 3, 4 ]
   RatchetAll n -> pure (every \i -> RI.SetCellRatchet i n)
@@ -1658,6 +1717,8 @@ targetToInput t v = case t of
   CellRatchet i -> Just (RI.SetCellRatchet i v)
   CellVel i -> Just (RI.SetCellVel i v)
   HeadDir h -> Just (RI.SetHeadDir h v)
+  HeadEntry h -> Just (RI.SetHeadEntry h v)
+  LineWave w control -> Just (RI.SetLineWave (w * 8 + control) v)
   HeadSpeed h -> Just (RI.SetHeadSpeedIx h v)
   HeadTransp h -> Just (RI.SetHeadTransp h v)
   HeadOffset h -> Just (RI.SetHeadOffset h v)
@@ -1669,6 +1730,8 @@ targetToInput t v = case t of
   FanOff -> Just (RI.FanOffsets v)
   StaggerLen -> Just (RI.StaggerLengths v)
   HeadSpread -> Just (RI.SpreadOctaves v)
+  VelFloor -> Just (RI.SetVelFloor v)
+  VelCeiling -> Just (RI.SetVelCeiling v)
   GenRate kind -> Just (RI.SetRate kind v)
   GenAmt kind -> Just (RI.SetAmt kind v)
   SwingAmt -> Nothing
@@ -1874,11 +1937,13 @@ frameTimer = liftEffect do
   _ <- setInterval 33 (HS.notify listener Frame)
   pure emitter
 
-setupDrag :: forall o m. MonadAff m => H.HalogenM State Action Slots o m H.SubscriptionId
-setupDrag =
+-- | `sideways`: the pointer's x, negated, stands for its y, so a drag to the
+-- | right raises the value as a drag upward does (140px the whole range).
+setupDrag :: forall o m. MonadAff m => Boolean -> H.HalogenM State Action Slots o m H.SubscriptionId
+setupDrag sideways =
   H.subscribe $ HS.makeEmitter \emit -> do
     moveFn <- eventListener \e -> case ME.fromEvent e of
-      Just me -> emit (DragMove (ME.clientY me))
+      Just me -> emit (DragMove (if sideways then negate (ME.clientX me) else ME.clientY me))
       Nothing -> pure unit
     upFn <- eventListener \_ -> emit DragEnd
     target <- Window.toEventTarget <$> window
@@ -1931,12 +1996,9 @@ render s =
         Perform ->
           HH.div
             [ style "height:100%;display:flex;align-items:stretch;overflow-x:auto;overflow-y:hidden" ]
-            [ scopePanel s
-            , playheadsPanel s
-            , gridPanel s
-            , generatePanel s
-            , cellParamsPanel s
-            ]
+            ( [ scopePanel s, playheadsPanel s ] <> case s.material of
+                Grid -> [ gridPanel s, generatePanel s, cellParamsPanel s ]
+                Line -> [ linePanel s ] )
         Review -> replayPanel s
     , if s.voicesOpen then voicesModal (effectiveSim s).odo else HH.text ""
     ]
