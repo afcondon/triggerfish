@@ -15,6 +15,7 @@ package:
     - aff
     - amphora-api
     - hawser
+    - bosun-protocol
     - hawser-fetch
     - arrays
     - maybe
@@ -92,6 +93,10 @@ workspace:
       path: ../amphora/api
     hawser:
       path: ../../../purescript-hylograph-libs/purescript-hawser
+    # Bosun's description of /state, which the Dashboard reads through
+    # (Triggerfish.Bosun). It describes with Hawser, declared above.
+    bosun-protocol:
+      path: ../../../ShapedSteer/bosun/protocol
     hawser-fetch:
       path: ../../../purescript-hylograph-libs/purescript-hawser/fetch
     # The controllers: device profiles (the Twister's decoding, lights and

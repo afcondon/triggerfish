@@ -10,6 +10,7 @@ module Triggerfish.Bosun
   , Service
   , Lamp(..)
   , state
+  , healthOf
   , control
   , lampOf
   , nodeOf
@@ -24,10 +25,13 @@ module Triggerfish.Bosun
 
 import Prelude
 
-import Data.Array (find)
+import Bosun.Protocol.State (StateDoc, readState)
+import Data.Array (find, sortWith)
 import Data.Either (Either(..))
 import Data.Maybe (Maybe(..), maybe)
 import Data.Nullable (Nullable, toMaybe)
+import Data.Foldable (lookup)
+import Data.Tuple (Tuple(..))
 import Effect (Effect)
 import Effect.Aff (Aff, makeAff, nonCanceler)
 
@@ -38,14 +42,30 @@ type Service = { id :: String, state :: String, restarts :: Int, gaveUp :: Boole
 -- | `desired` is the group's own wish (`up` once raised, `down` while held).
 type Health = { desired :: String, phase :: String, services :: Array Service }
 
-foreign import stateImpl :: (Nullable Health -> Effect Unit) -> Effect Unit
+foreign import stateTextImpl :: (Nullable String -> Effect Unit) -> Effect Unit
 foreign import controlImpl :: String -> String -> (Boolean -> Effect Unit) -> Effect Unit
 
--- | The group's state, or Nothing when Bosun is out of reach.
+-- | The group's state, or Nothing when Bosun is out of reach or answers a
+-- | document that Bosun's own description of `/state` does not read
+-- | (`Bosun.Protocol.State`, in `ShapedSteer/bosun/protocol`). Until
+-- | 2026-11-17 a few lines of JavaScript here picked the fields out by hand.
 state :: Aff (Maybe Health)
 state = makeAff \done -> do
-  stateImpl (done <<< Right <<< toMaybe)
+  stateTextImpl \text -> done (Right (toMaybe text >>= readState <#> healthOf))
   pure nonCanceler
+
+-- | What the Dashboard keeps of the document: each service with its row,
+-- | in order of id. A service with no row (there is none, as Bosun writes
+-- | it) counts as never restarted.
+healthOf :: StateDoc -> Health
+healthOf doc =
+  { desired: doc.desired
+  , phase: doc.phase
+  , services: sortWith _.id (doc.services <#> \(Tuple id status) ->
+      case lookup id doc.supervision of
+        Just row -> { id, state: status, restarts: row.restarts, gaveUp: row.gaveUp, since: row.lastTransitionAt }
+        Nothing -> { id, state: status, restarts: 0, gaveUp: false, since: 0.0 })
+  }
 
 -- | A `/control` verb (`restart`, `spawn`, `stop`, `up`, `down`), for one
 -- | service or ("") the group. True when Bosun accepted it.

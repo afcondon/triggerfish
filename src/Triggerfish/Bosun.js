@@ -1,18 +1,12 @@
 // Bosun's supervisor for the Atlantis group, on :3994 of the page's own host.
 const base = () => "http://" + (window.location.hostname || "localhost") + ":3994";
 
-export const stateImpl = (done) => () => {
+// The document as text, or null when Bosun is out of reach. Reading it is
+// PureScript's job (Bosun.Protocol.State), not this file's.
+export const stateTextImpl = (done) => () => {
   fetch(base() + "/state", { cache: "no-store" })
-    .then((r) => (r.ok ? r.json() : null))
-    .then((d) => {
-      if (!d || !d.services) return done(null)();
-      const sup = d.supervision || {};
-      const services = Object.keys(d.services).sort().map((id) => {
-        const s = sup[id] || {};
-        return { id, state: String(d.services[id]), restarts: s.restarts | 0, gaveUp: !!s.gaveUp, since: Number(s.lastTransitionAt) || 0 };
-      });
-      done({ desired: String(d.desired || ""), phase: String(d.phase || ""), services })();
-    })
+    .then((r) => (r.ok ? r.text() : null))
+    .then((text) => done(text)())
     .catch(() => done(null)());
 };
 
