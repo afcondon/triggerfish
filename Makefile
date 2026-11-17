@@ -22,11 +22,17 @@ bundles:
 # cloudflare-sites, each its page as index.html, its bundle minified, the
 # widgets' stylesheet and the icon. Published with `quartermaster publish`
 # from cloudflare-sites/triggerfish-<app>/compose.yml.
+#
+# `make static` stages every app and the apex. One app alone, leaving the
+# others and the Gazette as they were last staged:
+#   make static-apps STATIC=Melichthys:melichthys
 SITES = ../../../cloudflare-sites
-STATIC = Vetula:vetula Odonus:odonus
+STATIC = Vetula:vetula Odonus:odonus Melichthys:melichthys
 
-.PHONY: static
-static:
+.PHONY: static static-apps static-apex
+static: static-apps static-apex
+
+static-apps:
 	spago build
 	@for p in $(STATIC); do \
 	  m=$${p%%:*}; f=$${p##*:}; d=$(SITES)/triggerfish-$$f; \
@@ -37,6 +43,8 @@ static:
 	  cp public/halogen-widgets.css public/favicon.svg $$d/; \
 	  echo "✓ $$d"; \
 	done
+
+static-apex:
 	@# the apex, trigger-fish.app: the Gazette, its two playable machines
 	@# pointed at their sites and the rest at the installed rig
 	@a=$(SITES)/triggerfish; mkdir -p $$a/img; \

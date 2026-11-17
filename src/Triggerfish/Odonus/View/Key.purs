@@ -80,7 +80,9 @@ quantPieces s = case _ of
     if Web.onTheWeb || isNothing s.binnacle then
       [ HH.span
           [ HH.attr (HH.AttrName "title") (if Web.onTheWeb
-              then "Odonus keeps its own scales here: the web version takes no quantisation from outside. Installed with Atlantis, Vetula's voices can feed it"
+              then if s.material == Line
+                then "Melichthys keeps its own scale here: the web version takes no quantisation from outside. Installed with Atlantis, a progression of Vetula's can be its ground"
+                else "Odonus keeps its own scales here: the web version takes no quantisation from outside. Installed with Atlantis, Vetula's voices can feed it"
               else if s.material == Line then "Melichthys keeps its own scale: it takes no quantisation from outside yet"
               else "Odonus keeps its own scales while the rig is away: nothing can be routed here until it is back")
           , style "padding:0 2px;font-size:12px;color:#c4bfae;cursor:default" ]

@@ -38,6 +38,7 @@ import Triggerfish.Odonus.View.Grid (clockRow, feelBlock)
 import Triggerfish.Odonus.View.Key (gridPiece)
 import Triggerfish.Glyph (bundleRebus)
 import Triggerfish.GlyphView (faIcon)
+import Triggerfish.Web as Web
 
 linePanel :: forall m. State -> H.ComponentHTML Action Slots m
 linePanel s =
@@ -45,7 +46,10 @@ linePanel s =
     -- what the notes are held to, together at the top: the scale, then the
     -- ground's chords under it (AC, 2026-11-16)
     [ gridPiece s
-    , maybe (HH.text "") (groundRow s) s.odo.line
+    -- not on the web: the ground is picked from Vetula's kept progressions
+    -- in this browser and held on Continuo's strings, and a visitor to this
+    -- page's own site has neither
+    , if Web.onTheWeb then HH.text "" else maybe (HH.text "") (groundRow s) s.odo.line
     -- two columns (AC, 2026-11-16): where the line sits and how fast, and
     -- drawing a new one; then its feel and what changes the heads by itself
     , HH.div [ style "display:flex;gap:26px;align-items:flex-start;flex-wrap:wrap;margin-bottom:12px" ]

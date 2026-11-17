@@ -17,7 +17,7 @@ import Halogen as H
 import Halogen.HTML as HH
 import Halogen.HTML.Events as HE
 import Halogen.HTML.Properties as HP
-import Triggerfish.Odonus.Grid.Types (Action(..), Stage(..), Slots, State)
+import Triggerfish.Odonus.Grid.Types (Action(..), Material(..), Stage(..), Slots, State)
 import Triggerfish.Odonus.Grid.Widgets (engrave, style)
 import Triggerfish.Routing.Model as RM
 import Triggerfish.Routing.Out as RO
@@ -51,7 +51,7 @@ routingReadout s =
   if s.sounding /= Rig && (null s.outs || length dead == length legs) then
       HH.span [ style "display:flex;align-items:baseline;gap:8px" ]
         ( [ HH.span
-              [ HP.title "Odonus plays in the browser's own voice"
+              [ HP.title ((if s.material == Line then "Melichthys" else "Odonus") <> " plays in the browser's own voice")
               , style $ engrave <> ";font-size:8px;letter-spacing:0.1em;color:#6a6558" ]
               [ HH.text "\x266a IN THE BROWSER" ] ]
           -- on the web, MIDI is the visitor's to choose (the browser asks them)
@@ -119,7 +119,7 @@ captureControls s =
       [ HH.text (show (noteCount s.logbook) <> " notes · " <> show (length s.logbook.marks) <> " ◆") ]
   , HH.button
       [ HE.onClick \_ -> ClearLog
-      , HP.title "clear the Review surface: its notes, marks and loops (on the rig too: odonus $ clear)"
+      , HP.title ("clear the Review surface: its notes, marks and loops" <> (if s.material == Line then "" else " (on the rig too: odonus $ clear)"))
       , style $ "padding:3px 10px;border-radius:6px;cursor:pointer;border:1px solid #00000018;"
           <> "background:transparent;color:#8a8576;font-size:10px;white-space:nowrap" ]
       [ HH.text "clear" ]
